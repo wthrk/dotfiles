@@ -147,6 +147,7 @@ esac
 
 # env
 export EDITOR=nvim
+export XDG_CONFIG_HOME=~/.config
 
 ## load user .zshrc configuration file
 #

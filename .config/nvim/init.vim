@@ -56,6 +56,10 @@ set fileencodings=utf-8,ucs-bom,iso-2022-jp-3,iso-2022-jp,eucjp-ms,euc-jisx0213,
 set encoding=utf-8
 set fenc=utf-8
 
+" init python3 path
+let g:python3_host_prog = expand('~/.pyenv/shims/python')
+
+
 " プラグインがインストールされるディレクトリ
 let s:dein_dir = expand('~/.cache/dein')
 " dein.vim 本体
@@ -92,3 +96,16 @@ endif
 if dein#check_install()
   call dein#install()
 endif
+
+" for slim
+autocmd BufRead,BufNewFile *.slim setfiletype slim
+
+" for css, scss
+autocmd FileType css,sass,scss set iskeyword+=-
+let g:sass_compile_auto = 0
+
+
+" for coffee
+autocmd BufRead,BufNewFile *.coffee setfiletype coffee
+" インデント設
+autocmd FileType coffee setlocal sw=2 sts=2 ts=2 et

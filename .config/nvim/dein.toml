@@ -10,10 +10,6 @@ hook_add = '''
 '''
 
 [[plugins]]
-repo  = 'cespare/vim-toml'
-on_ft = 'toml'
-
-[[plugins]]
 repo = 'Shougo/deoplete.nvim'
 if = 'has("python3")'
 depends = 'context_filetype.vim'
@@ -68,3 +64,39 @@ on_event = 'TextYankPost'
 [[plugins]]
 repo = 'tpope/vim-rails'
 
+[[plugins]]
+repo = 'hail2u/vim-css3-syntax'
+
+[[plugins]]
+repo = 'mxw/vim-jsx'
+
+[[plugins]]
+repo = 'jiangmiao/simple-javascript-indenter'
+
+[[plugins]]
+repo = 'vim-jp/cpp-vim'
+
+[[plugins]]
+repo  = 'cespare/vim-toml'
+on_ft = 'toml'
+
+[[plugins]]
+repo = 'rcmdnk/vim-markdown'
+
+[[plugins]]
+repo = 'Shougo/neosnippet'
+
+[[plugins]]
+repo = 'Shougo/neosnippet-snippets'
+
+[[plugins]]
+repo = 'jelera/vim-javascript-syntax'
+
+[[plugins]]
+repo = 'slim-template/vim-slim'
+
+[[plugins]]
+repo = 'kchmck/vim-coffee-script'
+
+[[plugins]]
+repo = 'AtsushiM/sass-compile.vim'
