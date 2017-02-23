@@ -103,11 +103,12 @@ esac
 alias la="ls -a"
 alias lf="ls -F"
 alias ll="ls -l"
-
 alias du="du -h"
 alias df="df -h"
-
 alias su="su -l"
+
+alias vim="nvim"
+alias vi="nvim"
 
 ## terminal configuration
 #
@@ -143,6 +144,9 @@ kterm*|xterm*)
     'di=34' 'ln=35' 'so=32' 'ex=31' 'bd=46;34' 'cd=43;34'
   ;;
 esac
+
+# env
+export EDITOR=nvim
 
 ## load user .zshrc configuration file
 #
