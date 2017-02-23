@@ -100,3 +100,6 @@ repo = 'kchmck/vim-coffee-script'
 
 [[plugins]]
 repo = 'AtsushiM/sass-compile.vim'
+
+[[plugins]]
+repo = 'w0ng/vim-hybrid'

@@ -109,3 +109,7 @@ let g:sass_compile_auto = 0
 autocmd BufRead,BufNewFile *.coffee setfiletype coffee
 " インデント設
 autocmd FileType coffee setlocal sw=2 sts=2 ts=2 et
+
+" for hybrid
+set background=dark
+colorscheme hybrid
