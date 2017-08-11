@@ -106,3 +106,10 @@ repo = 'AtsushiM/sass-compile.vim'
 
 [[plugins]]
 repo = 'w0ng/vim-hybrid'
+
+[[plugins]]
+repo = 'FStarLang/VimFStar'
+
+[[plugins]]
+repo = 'mattn/emmet-vim'
+on_ft = 'html'

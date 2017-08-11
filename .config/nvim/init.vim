@@ -37,6 +37,8 @@ set cursorline
 " terminal モードから esc で脱出する
 tnoremap <silent> jj <C-\><C-n>
 
+set ambiwidth=double
+
 " insertモードから抜ける
 inoremap <silent> jj <ESC>
 inoremap <silent> <C-j> j
@@ -50,7 +52,6 @@ nnoremap : ;
 filetype indent on
 set tabstop=2
 set shiftwidth=2
-set expandtab
 
 set fileencodings=utf-8,ucs-bom,iso-2022-jp-3,iso-2022-jp,eucjp-ms,euc-jisx0213,euc-jp,sjis,cp932
 set encoding=utf-8
