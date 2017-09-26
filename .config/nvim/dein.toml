@@ -36,6 +36,18 @@ hook_post_source = '''
 
   call denite#custom#source('file_mru', 'matchers', ['matcher_fuzzy', 'matcher_project_files'])
   call denite#custom#source('file_mru', 'converters', ['converter_relative_word'])
+
+  "denite時に使用するキーマップ
+  "ESCキーでdeniteを終了
+  call denite#custom#map('insert', '<esc>', '<denite:enter_mode:normal>', 'noremap')
+  call denite#custom#map('normal', '<esc>', '<denite:quit>', 'noremap')
+'''
+hook_add = '''
+  nnoremap <silent> <C-k><C-f> :<C-u>Denite file_rec<CR>
+  nnoremap <silent> <C-k><C-g> :<C-u>Denite grep<CR>
+  nnoremap <silent> <C-k><C-l> :<C-u>Denite line<CR>
+  nnoremap <silent> <C-k><C-u> :<C-u>Denite file_mru<CR>
+  nnoremap <silent> <C-k><C-y> :<C-u>Denite neoyank<CR>
 '''
 
 [[plugins]]
@@ -97,3 +109,7 @@ repo = 'FStarLang/VimFStar'
 [[plugins]]
 repo = 'mattn/emmet-vim'
 on_ft = 'html'
+
+[[plugins]]
+repo = 'artur-shaik/vim-javacomplete2'
+hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complete'

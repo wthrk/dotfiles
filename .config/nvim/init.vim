@@ -40,10 +40,10 @@ tnoremap <silent> jj <C-\><C-n>
 set ambiwidth=double
 
 " insertモードから抜ける
-inoremap <silent> jj <ESC>
-inoremap <silent> <C-j> j
-inoremap <silent> kk <ESC>
-inoremap <silent> <C-k> k
+"inoremap <silent> jj <ESC>
+"inoremap <silent> <C-j> j
+"inoremap <silent> kk <ESC>
+"inoremap <silent> <C-k> k
 
 " ノーマルモード時だけ ; と : を入れ替える
 nnoremap ; :
@@ -58,7 +58,7 @@ set encoding=utf-8
 set fenc=utf-8
 
 " init python3 path
-let g:python3_host_prog = expand('~/.pyenv/shims/python')
+" let g:python3_host_prog = expand('/usr/bin/python3')
 
 
 " プラグインがインストールされるディレクトリ
