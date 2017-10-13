@@ -1,3 +1,4 @@
 #!/bin/bash
 ln -s ~/.dotfiles/.zshrc ~/.zshrc
-ln -s ~/.dotfiles/.config ~/.config
+mkdir -p ~/.dotfiles/.config
+ln -s ~/.dotfiles/.config/nvim ~/.config
