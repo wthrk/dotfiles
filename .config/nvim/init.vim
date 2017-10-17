@@ -60,6 +60,7 @@ set fenc=utf-8
 " init python3 path
 " let g:python3_host_prog = expand('/usr/bin/python3')
 
+filetype plugin indent on
 
 " プラグインがインストールされるディレクトリ
 let s:dein_dir = expand('~/.cache/dein')
@@ -87,6 +88,9 @@ if dein#load_state(s:dein_dir)
   " TOML を読み込み、キャッシュしておく
   call dein#load_toml(s:toml,      {'lazy': 0})
   call dein#load_toml(s:lazy_toml, {'lazy': 1})
+  
+  let g:opamshare = substitute(system('opam config var share'),'\n$','','''')
+  call dein#local(g:opamshare . '/merlin/')
 
   " 設定終了
   call dein#end()
