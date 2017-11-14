@@ -69,9 +69,6 @@ depends = 'denite.nvim'
 on_event = 'TextYankPost'
 
 [[plugins]]
-repo = 'tpope/vim-rails'
-
-[[plugins]]
 repo = 'hail2u/vim-css3-syntax'
 
 [[plugins]]
@@ -121,3 +118,12 @@ on_ft = 'html'
 [[plugins]]
 repo = 'artur-shaik/vim-javacomplete2'
 hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complete'
+
+[[plugins]]
+repo = 'posva/vim-vue'
+
+[[plugins]]
+repo = 'fishbullet/deoplete-ruby'
+
+[[plugins]]
+repo = 'Shougo/deoplete-rct'
