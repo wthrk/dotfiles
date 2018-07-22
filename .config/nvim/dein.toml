@@ -14,15 +14,12 @@ hook_add = '''
 
 [[plugins]]
 repo = 'Shougo/deoplete.nvim'
-if = 'has("python3")'
-hook_post_source = '''
-  call deoplete#custom#set('_', 'matchers', ['matcher_full_fuzzy'])
-'''
 hook_add = '''
   let g:deoplete#enable_at_startup = 1
-  let g:deoplete#auto_complete_start_length = 1
-  let g:deoplete#omni#input_patterns = {}
-  let g:deoplete#omni#input_patterns.ocaml = '[.\w]+'
+  let g:deoplete#complete_method = "complete"
+  let g:deoplete#ignore_sources = {}
+  let g:deoplete#ignore_sources.ocaml = ['buffer', 'around', 'member', 'tag']
+  let g:deoplete#auto_complete_delay = 0
 '''
 
 [[plugins]]
@@ -123,7 +120,28 @@ hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complet
 repo = 'posva/vim-vue'
 
 [[plugins]]
-repo = 'fishbullet/deoplete-ruby'
+repo = 'aklt/plantuml-syntax'
 
 [[plugins]]
-repo = 'Shougo/deoplete-rct'
+repo = 'reasonml-editor/vim-reason-plus'
+
+[[plugins]]
+repo = 'autozimu/LanguageClient-neovim'
+ref = 'next'
+build = 'bash install.sh'
+hook_add = '''
+  let g:LanguageClient_serverCommands = {
+      \ 'ruby': ['solargraph', 'stdio'],
+      \ 'reason': ['ocaml-language-server', '--stdio'],
+      \ 'ocaml': ['ocaml-language-server', '--stdio'],
+      \ }
+  nnoremap <silent> gd :call LanguageClient_textDocument_definition()<cr>
+  nnoremap <silent> gf :call LanguageClient_textDocument_formatting()<cr>
+  nnoremap <silent> <cr> :call LanguageClient_textDocument_hover()<cr>
+'''
+
+[[plugins]]
+repo = 'rgrinberg/vim-ocaml'
+
+[[plugins]]
+repo = 'copy/deoplete-ocaml'

@@ -115,6 +115,8 @@ autocmd BufRead,BufNewFile *.coffee setfiletype coffee
 " インデント設
 autocmd FileType coffee setlocal sw=2 sts=2 ts=2 et
 
+let g:python3_host_prog=$PYENV_ROOT.'/versions/3.6.5/bin/python'
+
 " for hybrid
 set background=dark
 colorscheme hybrid
