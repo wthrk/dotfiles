@@ -120,3 +120,5 @@ let g:python3_host_prog=$PYENV_ROOT.'/versions/3.6.5/bin/python'
 " for hybrid
 set background=dark
 colorscheme hybrid
+
+set backupcopy=yes
