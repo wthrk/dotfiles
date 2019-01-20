@@ -148,3 +148,16 @@ repo = 'rgrinberg/vim-ocaml'
 
 [[plugins]]
 repo = 'copy/deoplete-ocaml'
+
+[[plugins]]
+repo = 'HerringtonDarkholme/yats.vim'
+
+[[plugins]]
+repo = 'mhartington/nvim-typescript'
+build = './install.sh'
+
+[[plugins]]
+repo = 'pangloss/vim-javascript'
+
+[[plugins]]
+repo = 'mxw/vim-jsx'
