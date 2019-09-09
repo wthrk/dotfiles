@@ -58,7 +58,7 @@ set encoding=utf-8
 set fenc=utf-8
 
 " init python3 path
-" let g:python3_host_prog = expand('/usr/bin/python3')
+let g:python3_host_prog = expand('/usr/bin/python3.6')
 
 filetype plugin indent on
 
@@ -114,8 +114,6 @@ let g:sass_compile_auto = 0
 autocmd BufRead,BufNewFile *.coffee setfiletype coffee
 " インデント設
 autocmd FileType coffee setlocal sw=2 sts=2 ts=2 et
-
-let g:python3_host_prog=$PYENV_ROOT.'/versions/3.6.5/bin/python'
 
 " for hybrid
 set background=dark

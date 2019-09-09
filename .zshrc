@@ -1,5 +1,3 @@
-
-
 ## Environment variable configuration
 #
 # LANG
@@ -153,3 +151,6 @@ export XDG_CONFIG_HOME=~/.config
 ## load user .zshrc configuration file
 #
 [ -f ~/.zshrc.mine ] && source ~/.zshrc.mine
+
+# opam configuration
+test -r /home/yuki/.opam/opam-init/init.zsh && . /home/yuki/.opam/opam-init/init.zsh > /dev/null 2> /dev/null || true
