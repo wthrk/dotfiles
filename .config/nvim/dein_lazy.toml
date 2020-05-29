@@ -1,0 +1,100 @@
+[[plugins]]
+repo = 'autozimu/LanguageClient-neovim'
+rev = 'next'
+build = 'bash install.sh'
+on_ft = ['ocaml', 'reason', 'ruby']
+hook_add = '''
+  let g:LanguageClient_serverCommands = {
+      \ 'ruby': ['solargraph', 'stdio'],
+      \ 'ocaml': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")],
+      \ 'reason': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")]
+      \ }
+  nnoremap <silent> gd :call LanguageClient_textDocument_definition()<cr>
+  nnoremap <silent> gf :call LanguageClient_textDocument_formatting()<cr>
+  nnoremap <silent> <cr> :call LanguageClient_textDocument_hover()<cr>
+'''
+
+[[plugins]]
+repo = 'mattn/emmet-vim'
+on_ft = 'html'
+
+[[plugins]]
+repo = 'FStarLang/VimFStar'
+on_ft = 'fstar'
+
+[[plugins]]
+repo  = 'cespare/vim-toml'
+on_ft = 'toml'
+
+[[plugins]]
+repo = 'jiangmiao/simple-javascript-indenter'
+on_ft = ['javascript', 'javascript.jsx']
+
+[[plugins]]
+repo = 'jelera/vim-javascript-syntax'
+on_ft = ['javascript', 'javascript.jsx']
+
+[[plugins]]
+repo = 'mxw/vim-jsx'
+on_ft = ['javascript', 'javascript.jsx']
+
+[[plugins]]
+repo = 'pangloss/vim-javascript'
+on_ft = ['javascript', 'javascript.jsx']
+
+[[plugins]]
+repo = 'mxw/vim-jsx'
+on_ft = ['javascript', 'javascript.jsx']
+
+[[plugins]]
+repo = 'HerringtonDarkholme/yats.vim'
+on_ft = 'typescript'
+
+[[plugins]]
+repo = 'digitaltoad/vim-pug'
+on_ft = "pug"
+
+[[plugins]]
+repo = 'dNitro/vim-pug-complete'
+on_ft = "pug"
+
+[[plugins]]
+repo = 'hail2u/vim-css3-syntax'
+on_ft = 'css'
+
+[[plugins]]
+repo = 'posva/vim-vue'
+on_ft = 'vue'
+
+[[plugins]]
+repo = 'vim-jp/cpp-vim'
+on_ft = 'cpp'
+
+[[plugins]]
+repo = 'plasticboy/vim-markdown'
+on_ft = 'markdown'
+
+[[plugins]]
+repo = 'iwataka/minidown.vim'
+on_ft = 'markdown'
+
+[[plugins]]
+repo = 'hail2u/vim-css3-syntax'
+on_ft = 'markdown'
+
+[[plugins]]
+repo = 'slim-template/vim-slim'
+on_ft = 'slim'
+
+[[plugins]]
+repo = 'rgrinberg/vim-ocaml'
+on_ft = 'ocaml'
+
+[[plugins]]
+repo = 'reasonml-editor/vim-reason-plus'
+on_ft = 'reason'
+
+[[plugins]]
+repo = 'artur-shaik/vim-javacomplete2'
+hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complete'
+on_ft = 'java'
