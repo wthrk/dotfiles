@@ -2,12 +2,15 @@
 repo = 'autozimu/LanguageClient-neovim'
 rev = 'next'
 build = 'bash install.sh'
-on_ft = ['ocaml', 'reason', 'ruby']
+on_ft = ['ruby', 'reason', 'ocaml']
+#on_ft = ['ocaml', 'reason', 'ruby']
+#\ 'ocaml': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")],
+#\ 'reason': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")]
 hook_add = '''
   let g:LanguageClient_serverCommands = {
       \ 'ruby': ['solargraph', 'stdio'],
-      \ 'ocaml': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")],
-      \ 'reason': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")]
+      \ 'reason': ['~/rls-macos/reason-language-server'],
+      \ 'ocaml': ['ocaml-language-server', '--stdio'],
       \ }
   nnoremap <silent> gd :call LanguageClient_textDocument_definition()<cr>
   nnoremap <silent> gf :call LanguageClient_textDocument_formatting()<cr>
@@ -89,6 +92,20 @@ on_ft = 'slim'
 [[plugins]]
 repo = 'rgrinberg/vim-ocaml'
 on_ft = 'ocaml'
+
+[[plugins]]
+repo = 'artur-shaik/vim-javacomplete2'
+hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complete'
+on_ft = 'ocaml'
+
+[[plugins]]
+repo = 'copy/deoplete-ocaml'
+on_ft = 'ocaml'
+hook_add = '''
+  call deoplete#custom#option('ignore_sources', {})
+  call deoplete#custom#option('ignore_sources.ocaml', ['buffer', 'around', 'member', 'tag'])
+  call deoplete#custom#option('auto_complete_delay', 0)
+'''
 
 [[plugins]]
 repo = 'reasonml-editor/vim-reason-plus'
