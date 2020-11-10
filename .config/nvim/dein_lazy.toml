@@ -2,7 +2,7 @@
 repo = 'autozimu/LanguageClient-neovim'
 rev = 'next'
 build = 'bash install.sh'
-on_ft = ['ruby', 'reason', 'ocaml']
+on_ft = ['ruby', 'reason', 'ocaml', 'rust',]
 #on_ft = ['ocaml', 'reason', 'ruby']
 #\ 'ocaml': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")],
 #\ 'reason': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")]
@@ -11,6 +11,7 @@ hook_add = '''
       \ 'ruby': ['solargraph', 'stdio'],
       \ 'reason': ['~/rls-macos/reason-language-server'],
       \ 'ocaml': ['ocaml-language-server', '--stdio'],
+      \ 'rust': ['rustup', 'run', 'stable', 'rls']
       \ }
   nnoremap <silent> gd :call LanguageClient_textDocument_definition()<cr>
   nnoremap <silent> gf :call LanguageClient_textDocument_formatting()<cr>
@@ -115,3 +116,10 @@ on_ft = 'reason'
 repo = 'artur-shaik/vim-javacomplete2'
 hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complete'
 on_ft = 'java'
+
+[[plugins]]
+repo = 'rust-lang/rust.vim'
+on_ft = 'rust'
+hook_add = '''
+let g:rustfmt_autosave = 1
+'''

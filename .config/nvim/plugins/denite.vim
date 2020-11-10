@@ -1,11 +1,13 @@
+call denite#custom#alias('source', 'file/rec/git', 'file/rec')
+call denite#custom#var('file/rec/git', 'command',
+    \ ['git', 'ls-files'])
+
 " 【Ctrl + d + a】 カレントディレクトリとバッファを表示
 nnoremap <silent><C-d>a :<C-u>Denite file buffer -split=floating file:new<CR>
-" 【Ctrl + d + b】 バッファを表示
-nnoremap <silent><C-d>b :<C-u>Denite buffer -split=floating file:new<CR>
-" 【Ctrl + d + f】 カレントディレクトリを表示
-nnoremap <silent><C-d>f :<C-u>Denite file -split=floating file:new<CR>
-" 【Ctrl + d + r】 カレントディレクトリ以下を再帰的に表示
-nnoremap <silent><C-d>r :<C-u>Denite file/rec -split=floating file:new<CR>
+" 【Ctrl + d + b】
+nnoremap <silent><C-d>b :<C-u>Denite file_mru -split=floating file:new<CR>
+" 【Ctrl + d + f】
+nnoremap <silent><C-d>f :<C-u>Denite file/rec/git -split=floating file:new<CR>
 " 【Ctrl + d + gr】 カレントディレクトリ以下のファイルから指定した文字列を検索
 nnoremap <silent><C-d>gr :<C-u>Denite grep -buffer-name=search<CR>
 " 【Ctrl + d + ,】 カレントディレクトリ以下のファイルからカーソル下の文字列を検索
