@@ -47,10 +47,6 @@ repo = 'pangloss/vim-javascript'
 on_ft = ['javascript', 'javascript.jsx']
 
 [[plugins]]
-repo = 'mxw/vim-jsx'
-on_ft = ['javascript', 'javascript.jsx']
-
-[[plugins]]
 repo = 'HerringtonDarkholme/yats.vim'
 on_ft = 'typescript'
 
@@ -61,10 +57,6 @@ on_ft = "pug"
 [[plugins]]
 repo = 'dNitro/vim-pug-complete'
 on_ft = "pug"
-
-[[plugins]]
-repo = 'hail2u/vim-css3-syntax'
-on_ft = 'css'
 
 [[plugins]]
 repo = 'posva/vim-vue'
@@ -92,11 +84,6 @@ on_ft = 'slim'
 
 [[plugins]]
 repo = 'rgrinberg/vim-ocaml'
-on_ft = 'ocaml'
-
-[[plugins]]
-repo = 'artur-shaik/vim-javacomplete2'
-hook_post_source = 'autocmd FileType java setlocal omnifunc=javacomplete#Complete'
 on_ft = 'ocaml'
 
 [[plugins]]
