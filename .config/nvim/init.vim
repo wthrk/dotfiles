@@ -10,8 +10,6 @@ set expandtab
 set hidden
 "インクリメンタルサーチを行う
 set incsearch
-"listで表示される文字のフォーマットを指定する
-set listchars=eol:$,tab:>\ ,extends:<
 "行番号を表示する
 set number
 "シフト移動幅
@@ -121,3 +119,6 @@ set background=dark
 colorscheme hybrid
 
 set backupcopy=yes
+
+set list
+set listchars=tab:»-,trail:-,eol:↲,extends:»,precedes:«,nbsp:%
