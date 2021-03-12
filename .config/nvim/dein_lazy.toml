@@ -12,6 +12,8 @@ hook_add = '''
       \ 'reason': ['~/rls-macos/reason-language-server'],
       \ 'ocaml': ['ocaml-language-server', '--stdio'],
       \ 'python': ['/bin/pyls'],
+      \ 'typescript': ['~/.node-bin/javascript-typescript-langserver', '--stdio'],
+      \ 'typescript.tsx': ['~/.node-bin/javascript-typescript-langserver', '--stdio'],
       \ }
   nnoremap <silent> gd :call LanguageClient_textDocument_definition()<cr>
   nnoremap <silent> gf :call LanguageClient_textDocument_formatting()<cr>
@@ -29,14 +31,6 @@ on_ft = 'fstar'
 [[plugins]]
 repo  = 'cespare/vim-toml'
 on_ft = 'toml'
-
-[[plugins]]
-repo = 'jelera/vim-javascript-syntax'
-on_ft = ['javascript', 'javascript.jsx']
-
-[[plugins]]
-repo = 'mxw/vim-jsx'
-on_ft = ['javascript', 'javascript.jsx']
 
 [[plugins]]
 repo = 'pangloss/vim-javascript'

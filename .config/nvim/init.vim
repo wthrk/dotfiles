@@ -122,3 +122,6 @@ set backupcopy=yes
 
 set list
 set listchars=tab:»-,trail:-,eol:↲,extends:»,precedes:«,nbsp:%
+
+" for tsx
+autocmd BufNewFile,BufRead *.tsx setlocal filetype=typescript.tsx.
