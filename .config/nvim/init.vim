@@ -87,9 +87,6 @@ if dein#load_state(s:dein_dir)
   " TOML を読み込み、キャッシュしておく
   call dein#load_toml(s:toml,      {'lazy': 0})
   call dein#load_toml(s:lazy_toml, {'lazy': 1})
-  
-  " let g:opamshare = substitute(system('opam config var share'),'\n$','','''')
-  " call dein#local(g:opamshare . '/merlin/')
 
   " 設定終了
   call dein#end()
@@ -123,5 +120,10 @@ set backupcopy=yes
 set list
 set listchars=tab:»-,trail:-,eol:↲,extends:»,precedes:«,nbsp:%
 
+" for toml
+autocmd BufNewFile,BufRead *.toml setlocal filetype=toml
+
 " for tsx
 autocmd BufNewFile,BufRead *.tsx setlocal filetype=typescript.tsx.
+let g:opamshare = substitute(system('opam config var share'),'\n$','','''')
+execute "set rtp+=" . g:opamshare . "/merlin/vim"

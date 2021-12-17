@@ -2,18 +2,15 @@
 repo = 'autozimu/LanguageClient-neovim'
 rev = 'next'
 build = 'bash install.sh'
-on_ft = ['ruby', 'reason', 'ocaml', 'python']
-#on_ft = ['ocaml', 'reason', 'ruby']
-#\ 'ocaml': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")],
-#\ 'reason': [system("echo -n ~/.opam/$(opam switch show)/bin/ocamllsp")]
+on_ft = ['ruby', 'reason', 'ocaml', 'python', 'rust']
 hook_add = '''
   let g:LanguageClient_serverCommands = {
       \ 'ruby': ['solargraph', 'stdio'],
-      \ 'reason': ['~/rls-macos/reason-language-server'],
       \ 'ocaml': ['ocaml-language-server', '--stdio'],
       \ 'python': ['/bin/pyls'],
       \ 'typescript': ['~/.node-bin/javascript-typescript-langserver', '--stdio'],
       \ 'typescript.tsx': ['~/.node-bin/javascript-typescript-langserver', '--stdio'],
+      \ 'rust': ['rustup', 'run', 'stable', 'rls']
       \ }
   nnoremap <silent> gd :call LanguageClient_textDocument_definition()<cr>
   nnoremap <silent> gf :call LanguageClient_textDocument_formatting()<cr>
@@ -77,7 +74,7 @@ repo = 'slim-template/vim-slim'
 on_ft = 'slim'
 
 [[plugins]]
-repo = 'rgrinberg/vim-ocaml'
+repo = 'ocaml/vim-ocaml'
 on_ft = 'ocaml'
 
 [[plugins]]
@@ -95,5 +92,12 @@ hook_add = '''
 '''
 
 [[plugins]]
-repo = 'reasonml-editor/vim-reason-plus'
-on_ft = 'reason'
+repo = 'rust-lang/rust.vim'
+on_ft = 'rust'
+hook_add = '''
+let g:rustfmt_autosave = 1
+'''
+
+[[plugins]]
+repo = 'iloginow/vim-stylus'
+on_ft = 'stylus'
