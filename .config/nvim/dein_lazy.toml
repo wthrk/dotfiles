@@ -101,3 +101,10 @@ let g:rustfmt_autosave = 1
 [[plugins]]
 repo = 'iloginow/vim-stylus'
 on_ft = 'stylus'
+
+[[plugins]]
+repo = 'rescript-lang/vim-rescript'
+on_ft = 'rescript'
+hook_post_source = '''
+  autocmd BufWritePre <buffer> :RescriptFormat
+'''
