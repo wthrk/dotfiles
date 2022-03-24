@@ -125,5 +125,4 @@ autocmd BufNewFile,BufRead *.toml setlocal filetype=toml
 
 " for tsx
 autocmd BufNewFile,BufRead *.tsx setlocal filetype=typescript.tsx.
-let g:opamshare = substitute(system('opam var share'),'\n$','','''')
-execute "set rtp+=" . g:opamshare . "/merlin/vim"
+autocmd BufNewFile,BufRead *.res,*.resi setlocal filetype=rescript
