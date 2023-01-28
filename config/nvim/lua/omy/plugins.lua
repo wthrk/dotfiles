@@ -1,6 +1,11 @@
 vim.cmd "packadd vim-jetpack"
-require("jetpack.packer").startup(function(use)
-  use { "tani/vim-jetpack", opt = 1 }
-  use { "lewis6991/impatient.nvim", ["do"] = function() require "impatient" end }
-  use "rbtnn/vim-ambiwidth"
-end)
+require("jetpack.packer").add {
+  { "tani/vim-jetpack", opt = 1 },
+  { "lewis6991/impatient.nvim", run = function() require "impatient" end },
+  "rbtnn/vim-ambiwidth",
+  {
+    "nvim-treesitter/nvim-treesitter",
+    run = ":TSUpdate",
+    config = function() require "omy/configs/nvim-treesitter" end,
+  },
+}
