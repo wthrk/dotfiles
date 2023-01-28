@@ -6,6 +6,19 @@ require("jetpack.packer").add {
   {
     "nvim-treesitter/nvim-treesitter",
     run = ":TSUpdate",
-    config = function() require "omy/configs/nvim-treesitter" end,
+    config = function() require "omy.configs.nvim-treesitter" end,
+  },
+  {
+    "williamboman/mason.nvim",
+    as = "mason",
+  },
+  "neovim/nvim-lspconfig",
+  {
+    "williamboman/mason-lspconfig.nvim",
+    after = "mason",
+    config = function()
+      require "omy.configs.mason"
+      require "omy.configs.mason-lspconfig"
+    end,
   },
 }
