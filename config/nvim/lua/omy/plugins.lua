@@ -11,6 +11,7 @@ require("jetpack.packer").add {
   {
     "williamboman/mason.nvim",
     as = "mason",
+    config = function() require "omy.configs.mason" end,
   },
   {
     "neovim/nvim-lspconfig",
@@ -19,10 +20,7 @@ require("jetpack.packer").add {
   {
     "williamboman/mason-lspconfig.nvim",
     after = { "mason", "lspconfig" },
-    config = function()
-      require "omy.configs.mason"
-      require "omy.configs.mason-lspconfig"
-    end,
+    config = function() require "omy.configs.mason-lspconfig" end,
   },
   "hrsh7th/cmp-nvim-lsp",
   {
