@@ -23,6 +23,7 @@ require("jetpack.packer").add {
     config = function() require "omy.configs.mason-lspconfig" end,
   },
   "hrsh7th/cmp-nvim-lsp",
+  "hrsh7th/cmp-nvim-lsp-signature-help",
   {
     "hrsh7th/nvim-cmp",
     config = function() require "omy.configs.nvim-cmp" end,
