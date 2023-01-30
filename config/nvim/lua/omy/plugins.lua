@@ -26,6 +26,7 @@ require("jetpack.packer").add {
   "hrsh7th/cmp-nvim-lsp-signature-help",
   "hrsh7th/cmp-buffer",
   "hrsh7th/cmp-path",
+  "hrsh7th/cmp-cmdline",
   "ray-x/cmp-treesitter",
   {
     "hrsh7th/nvim-cmp",
