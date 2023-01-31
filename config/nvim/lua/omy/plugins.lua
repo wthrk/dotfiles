@@ -8,6 +8,15 @@ require("jetpack.packer").add {
   { "lewis6991/impatient.nvim", run = function() require "impatient" end },
   "rbtnn/vim-ambiwidth",
   {
+    "kyazdani42/nvim-web-devicons",
+    as = "web-devicons",
+    config = function() require "omy.configs.web-devicons" end,
+  },
+  {
+    "kkharji/sqlite.lua",
+    as = "sqlite",
+  },
+  {
     "nvim-treesitter/nvim-treesitter",
     run = ":TSUpdate",
     config = function() require "omy.configs.nvim-treesitter" end,
@@ -54,8 +63,14 @@ require("jetpack.packer").add {
   },
   {
     "nvim-telescope/telescope.nvim",
+    as = "telescope",
     requires = { "plenary" },
+    ---@diagnostic disable-next-line: different-requires
     config = function() require "omy.configs.telescope" end,
+  },
+  {
+    "nvim-telescope/telescope-frecency.nvim",
+    requires = { "sqlite", "web-devicons" },
   },
   {
     "stevearc/dressing.nvim",
@@ -68,5 +83,10 @@ require("jetpack.packer").add {
   {
     "j-hui/fidget.nvim",
     config = function() require "omy.configs.figet" end,
+  },
+  {
+    "nvim-lualine/lualine.nvim",
+    requires = { "web-devicons" },
+    config = function() require "omy.configs.lualine" end,
   },
 }
