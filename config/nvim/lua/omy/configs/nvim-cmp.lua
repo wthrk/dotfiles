@@ -2,10 +2,6 @@ vim.opt.completeopt = { "menu", "menuone", "noselect" }
 
 local cmp = require "cmp"
 
---local border_opts = {
---  border = "single",
---  winhighlight = "Normal:Normal,FloatBorder:FloatBorder,CursorLine:Visual,Search:None",
---}
 local function has_words_before()
   local line, col = unpack(vim.api.nvim_win_get_cursor(0))
   return col ~= 0
@@ -25,6 +21,11 @@ cmp.setup {
   }, {
     { name = "treesitter" },
   }),
+
+  formatting = {
+    fields = { "kind", "abbr", "menu" },
+  },
+
   mapping = {
     ["<Up>"] = cmp.mapping.select_prev_item {
       behavior = cmp.SelectBehavior.Select,
@@ -78,10 +79,6 @@ cmp.setup {
       "s",
     }),
   },
-  --window = {
-  --  completion = cmp.config.window.bordered(border_opts),
-  --  documentation = cmp.config.window.bordered(border_opts),
-  --},
 }
 
 cmp.setup.cmdline({ "/", "?" }, {

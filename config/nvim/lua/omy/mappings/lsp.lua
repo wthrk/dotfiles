@@ -1,62 +1,56 @@
 return function(client, bufnr)
   local capabilities = client.server_capabilities
-  local function noremap(mode, lhs, rhs, opt)
-    vim.keymap.set(
+  local function noremapbuf(mode, lhs, rhs, opt)
+    omy.noremap(
       mode,
       lhs,
       rhs,
-      vim.tbl_extend("force", opt or {}, { noremap = true, buffer = bufnr })
+      vim.tbl_extend("force", opt or {}, { buffer = bufnr })
     )
   end
 
-  noremap(
+  noremapbuf(
     "n",
     "<leader>ld",
-    function() vim.diagnostic.open_float() end,
-    { desc = "Hover diagnostics" }
+    "<cmd>Lspsaga show_line_diagnostics<cr>",
+    { desc = "Hover diagnostics", silent = true }
   )
-  noremap(
-    "n",
-    "[d",
-    function() vim.diagnostic.goto_prev() end,
-    { desc = "Previous diagnostic" }
-  )
-  noremap(
-    "n",
-    "]d",
-    function() vim.diagnostic.goto_next() end,
-    { desc = "Next diagnostic" }
-  )
-  noremap(
+  noremapbuf(
     "n",
     "gl",
-    function() vim.diagnostic.open_float() end,
-    { desc = "Hover diagnostics" }
+    "<cmd>Lspsaga show_line_diagnostics<cr>",
+    { desc = "Hover diagnostics", silent = true }
+  )
+  noremapbuf(
+    "n",
+    "[d",
+    "<cmd>Lspsaga diagnostic_jump_prev<cr>",
+    { desc = "Previous diagnostic", silent = true }
+  )
+  noremapbuf(
+    "n",
+    "]d",
+    "<cmd>Lspsaga diagnostic_jump_next<cr>",
+    { desc = "Next diagnostic", silent = true }
   )
 
   if capabilities.codeActionProvider then
-    noremap(
-      "n",
+    noremapbuf(
+      { "n", "v" },
       "<leader>la",
-      function() vim.lsp.buf.code_action() end,
-      { desc = "LSP code action" }
-    )
-    noremap(
-      "v",
-      "<leader>la",
-      function() vim.lsp.buf.code_action() end,
-      { desc = "LSP code action" }
+      "<cmd>Lspsaga code_action<cr>",
+      { desc = "LSP code action", silent = true }
     )
   end
 
   if capabilities.codeLensProvider then
-    noremap(
+    noremapbuf(
       "n",
       "<leader>ll",
       function() vim.lsp.codelens.refresh() end,
       { desc = "LSP codelens refresh" }
     )
-    noremap(
+    noremapbuf(
       "n",
       "<leader>lL",
       function() vim.lsp.codelens.run() end,
@@ -65,7 +59,7 @@ return function(client, bufnr)
   end
 
   if capabilities.declarationProvider then
-    noremap(
+    noremapbuf(
       "n",
       "gD",
       function() vim.lsp.buf.declaration() end,
@@ -74,7 +68,7 @@ return function(client, bufnr)
   end
 
   if capabilities.definitionProvider then
-    noremap(
+    noremapbuf(
       "n",
       "gd",
       function() vim.lsp.buf.definition() end,
@@ -83,20 +77,20 @@ return function(client, bufnr)
   end
 
   if capabilities.documentFormattingProvider then
-    noremap("n", "<leader>lf", ":Format", { desc = "Format buffer" })
+    noremapbuf("n", "<leader>lf", ":Format", { desc = "Format buffer" })
   end
 
   if capabilities.hoverProvider then
-    noremap(
+    noremapbuf(
       "n",
       "K",
-      function() vim.lsp.buf.hover() end,
-      { desc = "Hover symbol details" }
+      "<cmd>Lspsaga hover_doc<cr>",
+      { desc = "Hover symbol details", silent = true }
     )
   end
 
   if capabilities.implementationProvider then
-    noremap(
+    noremapbuf(
       "n",
       "gI",
       function() vim.lsp.buf.implementation() end,
@@ -105,13 +99,13 @@ return function(client, bufnr)
   end
 
   if capabilities.referencesProvider then
-    noremap(
+    noremapbuf(
       "n",
       "gr",
       function() vim.lsp.buf.references() end,
       { desc = "References of current symbol" }
     )
-    noremap(
+    noremapbuf(
       "n",
       "<leader>lR",
       function() vim.lsp.buf.references() end,
@@ -120,16 +114,16 @@ return function(client, bufnr)
   end
 
   if capabilities.renameProvider then
-    noremap(
+    noremapbuf(
       "n",
       "<leader>lr",
-      function() vim.lsp.buf.rename() end,
-      { desc = "Rename current symbol" }
+      "<cmd>Lspsaga rename<cr>",
+      { desc = "Rename current symbol", silent = true }
     )
   end
 
   if capabilities.signatureHelpProvider then
-    noremap(
+    noremapbuf(
       "n",
       "<leader>lh",
       function() vim.lsp.buf.signature_help() end,
@@ -138,7 +132,7 @@ return function(client, bufnr)
   end
 
   if capabilities.typeDefinitionProvider then
-    noremap(
+    noremapbuf(
       "n",
       "gT",
       function() vim.lsp.buf.type_definition() end,
@@ -147,7 +141,7 @@ return function(client, bufnr)
   end
 
   if capabilities.workspaceSymbolProvider then
-    noremap(
+    noremapbuf(
       "n",
       "<leader>lG",
       function() vim.lsp.buf.workspace_symbol() end,

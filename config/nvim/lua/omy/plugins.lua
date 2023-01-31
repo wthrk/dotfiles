@@ -26,6 +26,10 @@ require("jetpack.packer").add {
     after = { "mason", "lspconfig", "cmp" },
     config = function() require "omy.configs.mason-lspconfig" end,
   },
+  {
+    "kkharji/lspsaga.nvim",
+    config = function() require "omy.configs.lspsaga" end,
+  },
   "hrsh7th/cmp-nvim-lsp",
   "hrsh7th/cmp-nvim-lsp-signature-help",
   "hrsh7th/cmp-buffer",
@@ -41,12 +45,17 @@ require("jetpack.packer").add {
   {
     "jose-elias-alvarez/null-ls.nvim",
     as = "null-ls",
-    after = { "plenary" },
+    requires = { "plenary" },
   },
   {
     "jay-babu/mason-null-ls.nvim",
     after = { "null-ls", "mason" },
     config = function() require "omy.configs.mason-null-ls" end,
+  },
+  {
+    "nvim-telescope/telescope.nvim",
+    requires = { "plenary" },
+    config = function() require "omy.configs.telescope" end,
   },
   {
     "stevearc/dressing.nvim",
