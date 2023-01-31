@@ -56,4 +56,8 @@ require("jetpack.packer").add {
     "EdenEast/nightfox.nvim",
     config = function() require "omy.configs.nightfox" end,
   },
+  {
+    "j-hui/fidget.nvim",
+    config = function() require "omy.configs.figet" end,
+  },
 }
