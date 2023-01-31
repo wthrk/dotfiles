@@ -48,4 +48,12 @@ require("jetpack.packer").add {
     after = { "null-ls", "mason" },
     config = function() require "omy.configs.mason-null-ls" end,
   },
+  {
+    "stevearc/dressing.nvim",
+    config = function() require "omy.configs.dressing" end,
+  },
+  {
+    "EdenEast/nightfox.nvim",
+    config = function() require "omy.configs.nightfox" end,
+  },
 }
