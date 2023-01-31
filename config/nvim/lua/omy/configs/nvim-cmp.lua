@@ -21,9 +21,9 @@ cmp.setup {
     { name = "nvim_lsp" },
     { name = "nvim_lsp_signature_help" },
     { name = "path" },
-    { name = "treesitter" },
+    { name = "nvim_lua" },
   }, {
-    { name = "buffer" },
+    { name = "treesitter" },
   }),
   mapping = {
     ["<Up>"] = cmp.mapping.select_prev_item {

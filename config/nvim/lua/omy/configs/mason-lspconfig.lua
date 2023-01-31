@@ -33,3 +33,5 @@ mason_lspconfig.setup_handlers {
     }
   end,
 }
+
+require "omy.configs.lspconfig"
