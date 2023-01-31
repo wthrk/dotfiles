@@ -1,6 +1,10 @@
 vim.cmd "packadd vim-jetpack"
 require("jetpack.packer").add {
   { "tani/vim-jetpack", opt = 1 },
+  {
+    "nvim-lua/plenary.nvim",
+    as = "plenary",
+  },
   { "lewis6991/impatient.nvim", run = function() require "impatient" end },
   "rbtnn/vim-ambiwidth",
   {
@@ -32,5 +36,15 @@ require("jetpack.packer").add {
     "hrsh7th/nvim-cmp",
     config = function() require "omy.configs.nvim-cmp" end,
     as = "cmp",
+  },
+  {
+    "jose-elias-alvarez/null-ls.nvim",
+    as = "null-ls",
+    after = { "plenary" },
+  },
+  {
+    "jay-babu/mason-null-ls.nvim",
+    after = { "null-ls", "mason" },
+    config = function() require "omy.configs.mason-null-ls" end,
   },
 }
