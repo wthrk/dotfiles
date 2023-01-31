@@ -10,3 +10,12 @@ function omy.init_plugin_manager()
     fn.system("curl -fsSLo " .. jetpackfile .. " --create-dirs " .. jetpackurl)
   end
 end
+
+function omy.noremap(mode, lhs, rhs, opt)
+  vim.keymap.set(
+    mode,
+    lhs,
+    rhs,
+    vim.tbl_extend("force", opt or {}, { noremap = true })
+  )
+end

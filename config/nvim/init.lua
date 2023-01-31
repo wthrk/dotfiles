@@ -1,7 +1,5 @@
---local impatient_ok, impatient = pcall(require, "impatient")
---if impatient_ok then
---	impatient.enable_profile()
---end
+local impatient_ok, impatient = pcall(require, "impatient")
+if impatient_ok then impatient.enable_profile() end
 
 local init_sources = {
   "omy.util",

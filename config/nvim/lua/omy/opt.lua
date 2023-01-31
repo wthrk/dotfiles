@@ -12,6 +12,7 @@ vim.opt.whichwrap = "b,s,h,l,<,>,[,]"
 vim.opt.scrolloff = 5
 vim.opt.cursorline = true
 vim.opt.ambiwidth = "single"
+vim.opt.termguicolors = true
 vim.opt.fileencodings = {
   "utf-8",
   "ucs-bom",
