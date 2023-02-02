@@ -3,6 +3,7 @@ vim.opt.completeopt = { "menu", "menuone", "noselect" }
 local cmp = require "cmp"
 
 local function has_words_before()
+  ---@diagnostic disable-next-line: deprecated
   local line, col = unpack(vim.api.nvim_win_get_cursor(0))
   return col ~= 0
     and vim.api
@@ -18,12 +19,23 @@ cmp.setup {
     { name = "nvim_lsp_signature_help" },
     { name = "path" },
     { name = "nvim_lua" },
+    { name = "vsnip" },
   }, {
     { name = "treesitter" },
   }),
 
+  snippet = {
+    expand = function(args)
+      vim.fn["vsnip#anonymous"](args.body) -- For `vsnip` users.
+    end,
+  },
+
   formatting = {
-    fields = { "kind", "abbr", "menu" },
+    format = require("lspkind").cmp_format {
+      mode = "symbol",
+      maxwidth = 50,
+      ellipsis_char = "...",
+    },
   },
 
   mapping = {
