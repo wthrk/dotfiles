@@ -17,6 +17,10 @@ require("jetpack.packer").add {
     as = "sqlite",
   },
   {
+    "MunifTanjim/nui.nvim",
+    as = "nui",
+  },
+  {
     "nvim-treesitter/nvim-treesitter",
     run = ":TSUpdate",
     config = function() require "omy.configs.nvim-treesitter" end,
@@ -95,5 +99,10 @@ require("jetpack.packer").add {
     "nvim-lualine/lualine.nvim",
     requires = { "web-devicons" },
     config = function() require "omy.configs.lualine" end,
+  },
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    requires = { "web-devicons", "plenary", "nui" },
+    config = function() require "omy.configs.neo-tree" end,
   },
 }
