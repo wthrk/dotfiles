@@ -15,3 +15,11 @@ noremap(
   { desc = "Toggle Explorer" }
 )
 noremap("n", "<leader>o", "<cmd>Neotree focus<cr>", { desc = "Focus Explorer" })
+
+-- markdonw-preview
+noremap(
+  "n",
+  "<Leader>mp",
+  ":MarkdownPreview<CR>",
+  { desc = "Preview Mardown on the brower" }
+)
