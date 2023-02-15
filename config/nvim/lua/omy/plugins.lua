@@ -111,4 +111,5 @@ require("jetpack.packer").add {
     setup = function() vim.g.mkdp_filetypes = { "markdown" } end,
     ft = { "markdown" },
   },
+  "dhruvasagar/vim-table-mode",
 }

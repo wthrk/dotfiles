@@ -1,8 +1,8 @@
 local lspconfig = require "lspconfig"
 
 return {
-  sumneko_lua = function(cababilities, on_attach)
-    lspconfig.sumneko_lua.setup {
+  lua_ls = function(cababilities, on_attach)
+    lspconfig.lua_ls.setup {
       settings = {
         Lua = {
           diagnostics = {
