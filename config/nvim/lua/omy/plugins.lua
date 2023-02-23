@@ -112,4 +112,8 @@ require("jetpack.packer").add {
     ft = { "markdown" },
   },
   "dhruvasagar/vim-table-mode",
+  {
+    "folke/which-key.nvim",
+    config = function() require "omy.configs.which-key" end,
+  },
 }
