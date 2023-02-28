@@ -97,6 +97,7 @@ cmp.setup.cmdline({ "/", "?" }, {
   mapping = cmp.mapping.preset.cmdline(),
   sources = {
     { name = "buffer" },
+    { name = "treesitter" },
   },
 })
 
@@ -104,5 +105,7 @@ cmp.setup.cmdline(":", {
   mapping = cmp.mapping.preset.cmdline(),
   sources = cmp.config.sources({
     { name = "path" },
-  }, { { name = "cmdline" } }),
+  }, {
+    { name = "cmdline" },
+  }),
 })

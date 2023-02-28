@@ -116,4 +116,6 @@ require("jetpack.packer").add {
     "folke/which-key.nvim",
     config = function() require "omy.configs.which-key" end,
   },
+  "vim-firestore",
+  "ftdetect/firestore.vim",
 }
