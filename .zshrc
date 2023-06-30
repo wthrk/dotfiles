@@ -76,11 +76,6 @@ setopt hist_ignore_dups # ignore duplication command history list
 setopt share_history # share command history data
 setopt HIST_IGNORE_SPACE
 
-## Completion configuration
-#
-autoload -U compinit
-compinit
-
 ## Alias configuration
 #
 # expand aliases before completing
@@ -148,12 +143,13 @@ esac
 export EDITOR=nvim
 export XDG_CONFIG_HOME=~/.config
 
+fpath+=$(brew --prefix)/share/zsh-completions
+
+## Completion configuration
+#
+autoload -U compinit
+compinit
+
 ## load user .zshrc configuration file
 #
 [ -f ~/.zshrc.mine ] && source ~/.zshrc.mine
-
-# opam configuration
-test -r /home/yuki/.opam/opam-init/init.zsh && . /home/yuki/.opam/opam-init/init.zsh > /dev/null 2> /dev/null || true
-
-# Add RVM to PATH for scripting. Make sure this is the last PATH variable change.
-export PATH="$PATH:$HOME/.rvm/bin"
