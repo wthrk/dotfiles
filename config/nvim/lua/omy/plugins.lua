@@ -122,4 +122,5 @@ require("jetpack.packer").add {
     "github/copilot.vim",
     setup = function() require "omy.configs.copilot" end,
   },
+  "nkrkv/nvim-treesitter-rescript",
 }

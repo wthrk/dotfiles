@@ -40,4 +40,15 @@ return {
       on_attach = on_attach,
     }
   end,
+
+  rescriptls = function(cababilities, on_attach)
+    lspconfig.rescriptls.setup {
+      settings = {
+        codeLens = true,
+        autoRunCodeAnalysis = true,
+      },
+      cababilities = cababilities,
+      on_attach = on_attach,
+    }
+  end,
 }

@@ -18,4 +18,5 @@ vim.g.copilot_filetypes = {
   ["c++"] = true,
   ["go"] = true,
   ["python"] = true,
+  ["rescript"] = true,
 }
