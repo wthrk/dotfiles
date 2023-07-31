@@ -118,4 +118,8 @@ require("jetpack.packer").add {
   },
   "vim-firestore",
   "ftdetect/firestore.vim",
+  {
+    "github/copilot.vim",
+    setup = function() require "omy.configs.copilot" end,
+  },
 }
