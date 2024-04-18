@@ -29,7 +29,7 @@ return {
             buildScripts = {
               enable = true,
             },
-            features = "all",
+            features = {},
           },
           procMacro = {
             enable = true,
