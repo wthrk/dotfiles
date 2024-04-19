@@ -63,7 +63,7 @@ require("jetpack.packer").add {
     as = "cmp",
   },
   {
-    "jose-elias-alvarez/null-ls.nvim",
+    "nvimtools/none-ls.nvim",
     as = "null-ls",
     requires = { "plenary" },
   },
