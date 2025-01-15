@@ -51,4 +51,16 @@ return {
       on_attach = on_attach,
     }
   end,
+
+  ruby_lsp = function(cababilities, on_attach)
+    lspconfig.ruby_lsp.setup {
+      settings = {
+        init_options = {
+          formatter = true,
+        },
+      },
+      cababilities = cababilities,
+      on_attach = on_attach,
+    }
+  end,
 }

@@ -7,18 +7,25 @@
 #
 # set prompt
 #
+
+if [ "$(uname)" = "Darwin" ]; then
+  if [ "$(arch)" = "i386" ]; then
+    export PROMPT_ARCH="(x86_64)"
+  fi
+fi
+
 autoload colors
 colors
 case ${UID} in
 0)
-  PROMPT="%B%{${fg[red]}%}%/#%{${reset_color}%}%b "
+  PROMPT="%B%{${fg[red]}%}${PROMPT_ARCH}%/#%{${reset_color}%}%b "
   PROMPT2="%B%{${fg[red]}%}%_#%{${reset_color}%}%b "
   SPROMPT="%B%{${fg[red]}%}%r is correct? [n,y,a,e]:%{${reset_color}%}%b "
   [ -n "${REMOTEHOST}${SSH_CONNECTION}" ] &&
     PROMPT="%{${fg[white]}%}${HOST%%.*} ${PROMPT}"
   ;;
 *)
-  PROMPT="%{${fg[red]}%}%/%%%{${reset_color}%} "
+  PROMPT="%{${fg[red]}%}${PROMPT_ARCH}%/%%%{${reset_color}%} "
   PROMPT2="%{${fg[red]}%}%_%%%{${reset_color}%} "
   SPROMPT="%{${fg[red]}%}%r is correct? [n,y,a,e]:%{${reset_color}%} "
   [ -n "${REMOTEHOST}${SSH_CONNECTION}" ] &&
@@ -143,12 +150,36 @@ esac
 export EDITOR=nvim
 export XDG_CONFIG_HOME=~/.config
 
-fpath+=$(brew --prefix)/share/zsh-completions
-
 ## Completion configuration
 #
 autoload -U compinit
 compinit
+
+if [ "$(uname)" = "Darwin" ]; then
+  # switch arm64/x86_64
+  if (( $+commands[arch] )); then
+    alias a64="exec arch -arch arm64e /opt/homebrew/bin/zsh"
+    alias x64="exec arch -arch x86_64 /usr/local/bin/zsh"
+  fi
+
+  function runs_on_ARM64() { [[ `uname -m` = "arm64" ]]; }
+  function runs_on_X86_64() { [[ `uname -m` = "x86_64" ]]; }
+
+  BREW_PATH_OPT="/opt/homebrew/bin"
+  BREW_PATH_LOCAL="/usr/local/bin"
+  function brew_exists_at_opt() { [[ -d ${BREW_PATH_OPT} ]]; }
+  function brew_exists_at_local() { [[ -d ${BREW_PATH_LOCAL} ]]; }
+
+  setopt no_global_rcs
+  typeset -U path PATH
+  path=($path /usr/sbin /sbin)
+
+  if runs_on_ARM64; then
+    path=($BREW_PATH_OPT(N-/) $BREW_PATH_LOCAL(N-/) $path)
+  else
+    path=($BREW_PATH_LOCAL(N-/) $path)
+  fi
+fi
 
 ## load user .zshrc configuration file
 #
