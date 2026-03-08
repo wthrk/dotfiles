@@ -1,0 +1,32 @@
+./scripts/test-zsh-shortcuts.sh
+
+PASS T01  plugin set present
+PASS T02  Tab emacs
+PASS T03  Tab viins
+FAIL T04  Tab vicmd
+  expected: "^I" expand-or-complete
+  actual:   "^I" undefined-key
+PASS T05  Ctrl-P viins
+PASS T06  Ctrl-N viins
+FAIL T07  Ctrl-T emacs
+  expected: "^T" fzf-file-widget
+  actual:   "^T" transpose-chars
+FAIL T08  Esc-c emacs
+  expected: "^[c" fzf-cd-widget
+  actual:   "^[c" capitalize-word
+PASS T09  Ctrl-R emacs
+PASS T10  Ctrl-R viins
+FAIL T11  Ctrl-R vicmd
+  expected: "^R" fzf-history-widget
+  actual:   "^R" redo
+PASS T12  atuin widgets
+PASS T13  z function
+FAIL T14  zoxide completion fn
+  expected: __zoxide_z_complete: function
+  actual:   __zoxide_z_complete: none
+PASS T15  autosuggest widgets
+PASS T17  fzf-tab disabled
+FAIL T19  interactive startup clean
+  got startup stderr: p10k/gitstatus + option errors
+
+Summary: PASS=11 FAIL=6

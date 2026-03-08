@@ -1,9 +1,18 @@
-#!/bin/bash
-mydir=$(dirname $(readlink -f $0))
-rm -f ~/.zshrc
-ln -s $mydir/.zshrc ~/.zshrc
-mkdir -p ~/.config
-rm -f ~/.config/nvim
-ln -s $mydir/nvim ~/.config/nvim
-rm -f ~/.gitconfig
-ln -s $mydir/.gitconfig ~/.gitconfig
+#!/usr/bin/env bash
+set -euo pipefail
+
+mydir=$(cd "$(dirname "$0")" && pwd)
+
+link_force() {
+  local src="$1"
+  local dst="$2"
+  rm -rf "$dst"
+  ln -s "$src" "$dst"
+}
+
+mkdir -p "$HOME/.config"
+
+link_force "$mydir/.zshrc" "$HOME/.zshrc"
+link_force "$mydir/config/zsh" "$HOME/.config/zsh"
+link_force "$mydir/config/nvim" "$HOME/.config/nvim"
+link_force "$mydir/.gitconfig" "$HOME/.gitconfig"
