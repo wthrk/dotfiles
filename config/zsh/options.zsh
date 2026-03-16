@@ -19,8 +19,11 @@ bindkey '\ep' history-beginning-search-backward-end
 bindkey '\en' history-beginning-search-forward-end
 
 # Terminal title for common terminals
+autoload -Uz add-zsh-hook
+
 if [[ "$TERM" == xterm* || "$TERM" == screen* || "$TERM" == tmux* ]]; then
-  precmd() {
+  function _set_terminal_title() {
     print -Pn "\e]0;%n@%m:%~\a"
   }
+  add-zsh-hook precmd _set_terminal_title
 fi

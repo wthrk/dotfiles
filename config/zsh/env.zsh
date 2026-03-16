@@ -22,4 +22,11 @@ path=("$HOME/.rd/bin" $path)
 # Created by `pipx` on 2025-01-18 11:09:08
 path=("$HOME/.local/bin" $path)
 
+# Common user-local bins.
+path=(
+  "$HOME/.nodebrew/current/bin"
+  "$HOME/.agent-tools/bin"
+  $path
+)
+
 export PATH

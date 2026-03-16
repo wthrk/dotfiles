@@ -18,7 +18,9 @@ if [[ -f "$ANTIDOTE_SCRIPT" && -f "$PLUGINS_FILE" ]]; then
     )
   fi
 
-  if [[ -f "$ANTIDOTE_BUNDLE" ]]; then
+  # UI-heavy plugins such as powerlevel10k and zle widgets should only be
+  # loaded when the shell is attached to a real terminal.
+  if [[ -f "$ANTIDOTE_BUNDLE" ]] && [[ -o interactive ]] && [[ -t 0 ]] && [[ -t 1 ]]; then
     source "$ANTIDOTE_BUNDLE"
   fi
 fi

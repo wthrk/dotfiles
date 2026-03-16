@@ -25,7 +25,7 @@ fi
 
 # fzf shell key bindings (Ctrl-R/Ctrl-T/Alt-C)
 # Do not source fzf completion.zsh here because it overrides TAB and conflicts with fzf-tab.
-if [[ -o interactive ]]; then
+if [[ -o interactive ]] && [[ -t 0 ]] && [[ -t 1 ]]; then
   if [[ -f /opt/homebrew/opt/fzf/shell/key-bindings.zsh ]]; then
     source /opt/homebrew/opt/fzf/shell/key-bindings.zsh
   fi
@@ -34,12 +34,18 @@ if [[ -o interactive ]]; then
   fi
 fi
 
-# Ensure TAB has a completion action in all main keymaps.
+# Keep classic TAB path completion.
+# Expose fzf-tab on Ctrl-X TAB for cases where fuzzy selection is useful.
 if [[ -n ${widgets[fzf-tab-complete]} ]]; then
-  bindkey '^I' fzf-tab-complete
-  bindkey -M emacs '^I' fzf-tab-complete
-  bindkey -M viins '^I' fzf-tab-complete
-  bindkey -M vicmd '^I' fzf-tab-complete
+  bindkey '^I' expand-or-complete
+  bindkey -M emacs '^I' expand-or-complete
+  bindkey -M viins '^I' expand-or-complete
+  bindkey -M vicmd '^I' expand-or-complete
+
+  bindkey '^X^I' fzf-tab-complete
+  bindkey -M emacs '^X^I' fzf-tab-complete
+  bindkey -M viins '^X^I' fzf-tab-complete
+  bindkey -M vicmd '^X^I' fzf-tab-complete
 else
   bindkey '^I' expand-or-complete
   bindkey -M emacs '^I' expand-or-complete
@@ -48,7 +54,7 @@ else
 fi
 
 # External tools initialization
-if [[ -o interactive ]] && (( $+commands[atuin] )); then
+if [[ -o interactive ]] && [[ -t 0 ]] && [[ -t 1 ]] && (( $+commands[atuin] )); then
   eval "$(atuin init zsh --disable-up-arrow)"
 fi
 

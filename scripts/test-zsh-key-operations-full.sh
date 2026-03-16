@@ -13,6 +13,16 @@ zrun() {
   POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$1" 2>/dev/null
 }
 
+zrun_tty() {
+  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true \
+    script -q /dev/null zsh -ic "$1" 2>/dev/null \
+    | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+    | sed -E 's/\x1b\][^\a]*\a//g' \
+    | tr -d '\004\r\b' \
+    | sed 's/^\^D//' \
+    | sed '/^\^D*$/d'
+}
+
 expect_eq() {
   local id="$1" actual="$2" expected="$3"
   if [[ "$actual" == "$expected" ]]; then
@@ -54,36 +64,36 @@ done
 
 # 2) expected features and key operations
 plugins="$(cat "$HOME/.config/zsh/plugins.txt" 2>/dev/null || true)"
-expect_eq "PLUGIN:p10k" "$(zrun 'whence -w p10k')" 'p10k: function'
-expect_match "PLUGIN:autosuggestions" "$(zrun "zle -la | rg '^autosuggest-accept$' | head -n 1")" '^autosuggest-accept$'
-expect_eq "PLUGIN:fast-syntax-highlighting" "$(zrun 'whence -w _zsh_highlight')" '_zsh_highlight: function'
+expect_eq "PLUGIN:p10k:non-tty-gated" "$(zrun 'whence -w p10k')" 'p10k: none'
+expect_eq "PLUGIN:autosuggestions:non-tty-gated" "$(zrun "zle -la | rg '^autosuggest-accept$' | head -n 1")" ''
+expect_eq "PLUGIN:fast-syntax-highlighting:non-tty-gated" "$(zrun 'whence -w _zsh_highlight')" '_zsh_highlight: none'
+expect_eq "PLUGIN:p10k:tty" "$(zrun_tty 'whence -w p10k')" 'p10k: function'
+expect_match "PLUGIN:autosuggestions:tty" "$(zrun_tty "zle -la | rg '^autosuggest-accept$' | head -n 1")" '^autosuggest-accept$'
+expect_eq "PLUGIN:fast-syntax-highlighting:tty" "$(zrun_tty 'whence -w _zsh_highlight')" '_zsh_highlight: function'
 
 expect_eq "KEY:viins:^P" "$(zrun "bindkey -M viins '^P'")" '"^P" history-beginning-search-backward-end'
 expect_eq "KEY:viins:^N" "$(zrun "bindkey -M viins '^N'")" '"^N" history-beginning-search-forward-end'
 expect_eq "KEY:viins:\\ep" "$(zrun "bindkey -M viins '\\ep'")" '"^[p" history-beginning-search-backward-end'
 expect_eq "KEY:viins:\\en" "$(zrun "bindkey -M viins '\\en'")" '"^[n" history-beginning-search-forward-end'
 
-if grep -q 'fzf-tab' <<< "$plugins"; then
-  expect_eq "KEY:emacs:^I" "$(zrun "bindkey -M emacs '^I'")" '"^I" fzf-tab-complete'
-  expect_eq "KEY:viins:^I" "$(zrun "bindkey -M viins '^I'")" '"^I" fzf-tab-complete'
-  expect_eq "KEY:vicmd:^I" "$(zrun "bindkey -M vicmd '^I'")" '"^I" fzf-tab-complete'
-else
-  expect_eq "KEY:emacs:^I" "$(zrun "bindkey -M emacs '^I'")" '"^I" expand-or-complete'
-  expect_eq "KEY:viins:^I" "$(zrun "bindkey -M viins '^I'")" '"^I" expand-or-complete'
-  expect_eq "KEY:vicmd:^I" "$(zrun "bindkey -M vicmd '^I'")" '"^I" expand-or-complete'
-fi
+expect_eq "KEY:emacs:^I:non-tty" "$(zrun "bindkey -M emacs '^I'")" '"^I" expand-or-complete'
+expect_eq "KEY:viins:^I:non-tty" "$(zrun "bindkey -M viins '^I'")" '"^I" expand-or-complete'
+expect_eq "KEY:vicmd:^I:non-tty" "$(zrun "bindkey -M vicmd '^I'")" '"^I" expand-or-complete'
+expect_eq "KEY:emacs:^I:tty" "$(zrun_tty "bindkey -M emacs '^I'")" '"^I" expand-or-complete'
+expect_eq "KEY:viins:^I:tty" "$(zrun_tty "bindkey -M viins '^I'")" '"^I" expand-or-complete'
+expect_eq "KEY:vicmd:^I:tty" "$(zrun_tty "bindkey -M vicmd '^I'")" '"^I" expand-or-complete'
 
-expect_eq "KEY:emacs:^T" "$(zrun "bindkey -M emacs '^T'")" '"^T" fzf-file-widget'
-expect_eq "KEY:viins:^T" "$(zrun "bindkey -M viins '^T'")" '"^T" fzf-file-widget'
-expect_eq "KEY:vicmd:^T" "$(zrun "bindkey -M vicmd '^T'")" '"^T" fzf-file-widget'
+expect_eq "KEY:emacs:^T:tty" "$(zrun_tty "bindkey -M emacs '^T'")" '"^T" fzf-file-widget'
+expect_eq "KEY:viins:^T:tty" "$(zrun_tty "bindkey -M viins '^T'")" '"^T" fzf-file-widget'
+expect_eq "KEY:vicmd:^T:tty" "$(zrun_tty "bindkey -M vicmd '^T'")" '"^T" fzf-file-widget'
 
-expect_eq "KEY:emacs:\\ec" "$(zrun "bindkey -M emacs '\\ec'")" '"^[c" fzf-cd-widget'
-expect_eq "KEY:viins:\\ec" "$(zrun "bindkey -M viins '\\ec'")" '"^[c" fzf-cd-widget'
-expect_eq "KEY:vicmd:\\ec" "$(zrun "bindkey -M vicmd '\\ec'")" '"^[c" fzf-cd-widget'
+expect_eq "KEY:emacs:\\ec:tty" "$(zrun_tty "bindkey -M emacs '\\ec'")" '"^[c" fzf-cd-widget'
+expect_eq "KEY:viins:\\ec:tty" "$(zrun_tty "bindkey -M viins '\\ec'")" '"^[c" fzf-cd-widget'
+expect_eq "KEY:vicmd:\\ec:tty" "$(zrun_tty "bindkey -M vicmd '\\ec'")" '"^[c" fzf-cd-widget'
 
-expect_eq "KEY:emacs:^R" "$(zrun "bindkey -M emacs '^R'")" '"^R" atuin-search'
-expect_eq "KEY:viins:^R" "$(zrun "bindkey -M viins '^R'")" '"^R" atuin-search-viins'
-expect_eq "KEY:vicmd:/" "$(zrun "bindkey -M vicmd '/'")" '"/" atuin-search'
+expect_eq "KEY:emacs:^R:tty" "$(zrun_tty "bindkey -M emacs '^R'")" '"^R" atuin-search'
+expect_eq "KEY:viins:^R:tty" "$(zrun_tty "bindkey -M viins '^R'")" '"^R" atuin-search-viins'
+expect_eq "KEY:vicmd:/:tty" "$(zrun_tty "bindkey -M vicmd '/'")" '"/" atuin-search'
 
 expect_eq "FUNC:z" "$(zrun 'whence -w z')" 'z: function'
 expect_eq "FUNC:zi" "$(zrun 'whence -w zi')" 'zi: function'
@@ -91,14 +101,16 @@ expect_eq "FUNC:_main_complete" "$(zrun 'whence -w _main_complete')" '_main_comp
 expect_eq "FUNC:_git" "$(zrun 'whence -w _git')" '_git: function'
 
 if grep -q 'fzf-tab' <<< "$plugins"; then
-  expect_eq "FUNC:fzf-tab-complete" "$(zrun 'whence -w fzf-tab-complete')" 'fzf-tab-complete: function'
-  expect_eq "KEY:fzf-tab:emacs:^I" "$(zrun "bindkey -M emacs '^I'")" '"^I" fzf-tab-complete'
+  expect_eq "FUNC:fzf-tab-complete:non-tty-gated" "$(zrun 'whence -w fzf-tab-complete')" 'fzf-tab-complete: none'
+  expect_eq "FUNC:fzf-tab-complete:tty" "$(zrun_tty 'whence -w fzf-tab-complete')" 'fzf-tab-complete: function'
+  expect_eq "KEY:fzf-tab:emacs:^X^I:tty" "$(zrun_tty "bindkey -M emacs '^X^I'")" '"^X^I" fzf-tab-complete'
 else
   log_skip "fzf-tab checks (plugin not installed)"
 fi
 
 if grep -q 'zsh-completions' <<< "$plugins"; then
-  expect_match "FUNC:zsh-completions:fpath" "$(zrun "print -l \$fpath | rg 'zsh-completions/src$' | head -n 1")" 'zsh-completions/src$'
+  expect_eq "FUNC:zsh-completions:fpath:non-tty-gated" "$(zrun "print -l \$fpath | rg 'zsh-completions/src$' | head -n 1")" ''
+  expect_match "FUNC:zsh-completions:fpath:tty" "$(zrun_tty "print -l \$fpath | rg 'zsh-completions/src$' | head -n 1")" 'zsh-completions/src$'
 else
   log_skip "zsh-completions checks (plugin not installed)"
 fi
