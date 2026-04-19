@@ -39,6 +39,7 @@ bootstrap は Nix 優先/flake 専用です。`init.sh` は削除済みで、フ
 - `--no-switch`（`nix flake check` まで）
 - `--sops-age-key-file`（任意の鍵ファイル）
 - `--sops-age-key-dest`（既定: `/var/lib/sops-nix/key.txt`）
+- `--homebrew-owner`（nix-homebrew が管理する Homebrew の所有ユーザー。別ユーザーとして darwin switch を実行する場合に指定）
 - `--dry-run`（実行計画のみ表示して終了）
 
 dry-run 例:
