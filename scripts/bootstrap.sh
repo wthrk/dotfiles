@@ -9,6 +9,7 @@ DOTFILES_FLAKE="${DOTFILES_FLAKE:-ya}"
 DOTFILES_SOPS_AGE_KEY_DEST="${DOTFILES_SOPS_AGE_KEY_DEST:-/var/lib/sops-nix/key.txt}"
 DOTFILES_DRY_RUN="${DOTFILES_DRY_RUN:-0}"
 DOTFILES_PREPARE_NIX_DARWIN_ETC="${DOTFILES_PREPARE_NIX_DARWIN_ETC:-0}"
+DOTFILES_PREPARE_NIX_HOMEBREW="${DOTFILES_PREPARE_NIX_HOMEBREW:-0}"
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
@@ -32,6 +33,7 @@ bootstrap 実行計画:
 - flake 出力: .#${DOTFILES_FLAKE}
 - DOTFILES_RUN_SWITCH=${DOTFILES_RUN_SWITCH} を尊重
 - DOTFILES_PREPARE_NIX_DARWIN_ETC=${DOTFILES_PREPARE_NIX_DARWIN_ETC} を尊重
+- DOTFILES_PREPARE_NIX_HOMEBREW=${DOTFILES_PREPARE_NIX_HOMEBREW} を尊重
 PLAN
 }
 
@@ -46,6 +48,18 @@ prepare_nix_darwin_etc() {
       sudo mv "$path" "$backup"
     fi
   done
+}
+
+prepare_nix_homebrew() {
+  [[ "$DOTFILES_SWITCH_MODE" == "darwin" ]] || return 0
+  [[ "$DOTFILES_PREPARE_NIX_HOMEBREW" == "1" ]] || return 0
+
+  local taps=/opt/homebrew/Library/Taps
+  local backup=/opt/homebrew/Library/Taps.before-nix-homebrew
+  if [[ -d "$taps" && ! -e "$backup" ]]; then
+    echo "nix-homebrew 管理前に退避します: $taps -> $backup"
+    sudo mv "$taps" "$backup"
+  fi
 }
 
 if [[ "$DOTFILES_DRY_RUN" == "1" ]]; then
@@ -101,6 +115,7 @@ if [[ -n "${DOTFILES_SOPS_AGE_KEY_FILE:-}" ]]; then
 fi
 
 prepare_nix_darwin_etc
+prepare_nix_homebrew
 
 echo "nix flake check を実行します"
 nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
