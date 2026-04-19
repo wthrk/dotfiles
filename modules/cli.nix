@@ -48,7 +48,7 @@ in
       kubectl
       kubectx
       jujutsu
-      mysql-client
+      mariadb.client
       postgresql_14
       ripgrep
       skaffold
