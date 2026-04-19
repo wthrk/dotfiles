@@ -22,6 +22,7 @@ permissions:
 env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
+    access-tokens = github.com=${{ github.token }}
 
 jobs:
   flake-check:

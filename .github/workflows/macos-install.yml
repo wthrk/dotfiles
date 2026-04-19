@@ -20,6 +20,7 @@ permissions:
 env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
+    access-tokens = github.com=${{ github.token }}
   DOTFILES_REPO: https://github.com/${{ github.repository }}.git
 
 jobs:
