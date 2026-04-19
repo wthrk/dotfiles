@@ -57,6 +57,22 @@
         "type": "github"
       }
     },
+    "homebrew-bicep": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1775158240,
+        "narHash": "sha256-4iJ2igM2WDIF+83kRGpmtx8i80Qi4JSXHwWzR2l/j5g=",
+        "owner": "Azure",
+        "repo": "homebrew-bicep",
+        "rev": "dff4e18be1df900c36011abef4b763e196d1b047",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Azure",
+        "repo": "homebrew-bicep",
+        "type": "github"
+      }
+    },
     "homebrew-cask": {
       "flake": false,
       "locked": {
@@ -118,8 +134,8 @@
       },
       "original": {
         "owner": "NixOS",
-        "repo": "nixpkgs",
         "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
         "type": "github"
       }
     },
@@ -127,6 +143,7 @@
       "inputs": {
         "darwin": "darwin",
         "home-manager": "home-manager",
+        "homebrew-bicep": "homebrew-bicep",
         "homebrew-cask": "homebrew-cask",
         "homebrew-core": "homebrew-core",
         "nix-homebrew": "nix-homebrew",

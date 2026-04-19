@@ -23,6 +23,10 @@
       url = "github:homebrew/homebrew-cask";
       flake = false;
     };
+    homebrew-bicep = {
+      url = "github:Azure/homebrew-bicep";
+      flake = false;
+    };
   };
 
   outputs =
