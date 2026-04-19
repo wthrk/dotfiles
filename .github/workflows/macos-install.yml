@@ -312,6 +312,7 @@ jobs:
           nix_bin="/nix/var/nix/profiles/default/bin/nix"
           ya_path="/etc/profiles/per-user/ya/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           test -x "$nix_bin"
+          sudo chown -R ya:staff "$RUNNER_TEMP/dotfiles-ya-switch"
           sudo -H -u ya env \
             HOME=/Users/ya \
             USER=ya \
