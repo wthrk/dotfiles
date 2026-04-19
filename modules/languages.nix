@@ -44,12 +44,12 @@ in
       pkgs.dune_3
       pkgs.opam
       pkgs.ocamlPackages.utop
-      pkgs.nodePackages.typescript
-      pkgs.nodePackages.prettier
-      pkgs.nodePackages.eslint
-      pkgs.nodePackages.markdownlint-cli
     ]
     ++ optionalPkg [ "corepack" ]
+    ++ optionalPkg [ "typescript" ]
+    ++ optionalPkg [ "prettier" ]
+    ++ optionalPkg [ "eslint" ]
+    ++ optionalPkg [ "markdownlint-cli" ]
     ++ optionalPkg [ "clippy" ]
     ++ optionalPkg [ "rustfmt" ]
     ++ optionalPkg [ "diesel-cli" ]
