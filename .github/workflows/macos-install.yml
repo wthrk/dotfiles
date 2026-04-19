@@ -309,10 +309,58 @@ jobs:
       - name: 実運用 ya の移行後検証
         run: |
           set -euxo pipefail
-          sudo -H -u ya bash "$RUNNER_TEMP/dotfiles-ya-switch/scripts/verify-nix-migration.sh" \
-            --phase post-migration \
-            --flake ya \
-            --skip-flake-evaluation
+          nix_bin="/nix/var/nix/profiles/default/bin/nix"
+          ya_path="/etc/profiles/per-user/ya/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test -x "$nix_bin"
+          sudo -H -u ya env \
+            HOME=/Users/ya \
+            USER=ya \
+            LOGNAME=ya \
+            SHELL=/etc/profiles/per-user/ya/bin/zsh \
+            PATH="$ya_path" \
+            NIX_CONFIG="$NIX_CONFIG" \
+            "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$RUNNER_TEMP/dotfiles-ya-switch"
+          sudo -H -u ya env \
+            HOME=/Users/ya \
+            USER=ya \
+            LOGNAME=ya \
+            SHELL=/etc/profiles/per-user/ya/bin/zsh \
+            PATH="$ya_path" \
+            NIX_CONFIG="$NIX_CONFIG" \
+            "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$RUNNER_TEMP/dotfiles-ya-switch#homeConfigurations.ya.activationPackage.drvPath"
+          sudo -H -u ya env \
+            HOME=/Users/ya \
+            USER=ya \
+            LOGNAME=ya \
+            SHELL=/etc/profiles/per-user/ya/bin/zsh \
+            PATH="$ya_path" \
+            NIX_CONFIG="$NIX_CONFIG" \
+            "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$RUNNER_TEMP/dotfiles-ya-switch#darwinConfigurations.ya.system"
+          test -d /etc/profiles/per-user/ya
+          sudo -H -u ya bash -c '
+            set -euo pipefail
+            profile="$HOME/.local/state/nix/profiles/home-manager"
+            test -L "$profile"
+            generation="$(readlink "$profile")"
+            [[ "$generation" == home-manager-*-link ]]
+            test -L "$HOME/.local/state/nix/profiles/$generation"
+            store_target="$(readlink "$HOME/.local/state/nix/profiles/$generation")"
+            [[ "$store_target" == /nix/store/* ]]
+          '
+          sudo -H -u ya /etc/profiles/per-user/ya/bin/zsh -il -c '
+            set -euo pipefail
+            for tool in git gh jq rg fzf atuin zoxide nvim; do
+              tool_path="$(command -v "$tool")"
+              real_tool_path="${tool_path:A}"
+              case "$real_tool_path" in
+                /nix/store/*) ;;
+                *)
+                  echo "$tool resolved outside the Nix store: $tool_path -> $real_tool_path" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+          '
           brew="/opt/homebrew/bin/brew"
           sudo -H -u ya "$brew" tap | rg -qx "azure/bicep"
           sudo -H -u ya "$brew" tap | rg -qx "hashicorp/tap"
@@ -327,11 +375,12 @@ jobs:
           test ! -e "$old_plist"
           rg -q "/nix/store/.*/bin/colima" "$plist"
           if sudo -H -u ya launchctl print "gui/$uid" >/dev/null 2>&1; then
-            sudo -H -u ya launchctl print "gui/$uid/org.nix.colima"
+            sudo -H -u ya launchctl print "gui/$uid/org.nix.colima" | tee "$RUNNER_TEMP/org.nix.colima.launchd"
+            rg -q "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
             if sudo -H -u ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
               echo "homebrew.mxcl.colima is still loaded" >&2
               exit 1
             fi
           else
-            echo "gui/$uid launchd domain is unavailable; verified org.nix.colima plist placement"
+            echo "gui/$uid launchd domain is unavailable; verified org.nix.colima plist placement and old plist removal"
           fi

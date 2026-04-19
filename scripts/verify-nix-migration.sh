@@ -7,7 +7,6 @@ skip=0
 pass=0
 verify_migration_phase="post-migration"
 verify_flake="ya"
-skip_flake_evaluation=0
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +28,6 @@ usage() {
 Options:
   --phase pre-switch|post-migration  検証フェーズ（既定: post-migration）
   --flake NAME                       flake 出力名（既定: ya）
-  --skip-flake-evaluation            flake check/eval をこの実行では省略する
   -h, --help                         このヘルプを表示する
 USAGE
 }
@@ -43,10 +41,6 @@ while (($#)); do
     --flake)
       verify_flake="$2"
       shift 2
-      ;;
-    --skip-flake-evaluation)
-      skip_flake_evaluation=1
-      shift
       ;;
     -h|--help)
       usage
@@ -139,9 +133,7 @@ else
 fi
 
 say "Flake 評価"
-if [[ "$skip_flake_evaluation" == "1" ]]; then
-  mark_skip "flake check/eval はこの実行では省略"
-elif command -v nix >/dev/null 2>&1; then
+if command -v nix >/dev/null 2>&1; then
   run_or_fail "nix flake check" nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
   run_or_fail "home activation drvPath 評価（${verify_flake}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#homeConfigurations.${verify_flake}.activationPackage.drvPath"
   run_or_fail "darwin config 評価（${verify_flake}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#darwinConfigurations.${verify_flake}.system"
