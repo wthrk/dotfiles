@@ -341,12 +341,23 @@ jobs:
           sudo -H -u ya bash -c '
             set -euo pipefail
             profile="$HOME/.local/state/nix/profiles/home-manager"
-            test -L "$profile"
-            generation="$(readlink "$profile")"
-            [[ "$generation" == home-manager-*-link ]]
-            test -L "$HOME/.local/state/nix/profiles/$generation"
-            store_target="$(readlink "$HOME/.local/state/nix/profiles/$generation")"
-            [[ "$store_target" == /nix/store/* ]]
+            if [[ -e "$profile" && ! -L "$profile" ]]; then
+              echo "$profile exists but is not a symlink" >&2
+              exit 1
+            fi
+            if [[ -L "$profile" ]]; then
+              generation="$(readlink "$profile")"
+              [[ "$generation" == home-manager-*-link ]]
+              test -L "$HOME/.local/state/nix/profiles/$generation"
+              store_target="$(readlink "$HOME/.local/state/nix/profiles/$generation")"
+              [[ "$store_target" == /nix/store/* ]]
+            else
+              for managed_path in "$HOME/.config/zsh" "$HOME/.config/nvim"; do
+                test -L "$managed_path"
+                managed_target="$(readlink "$managed_path")"
+                [[ "$managed_target" == /nix/store/* ]]
+              done
+            fi
           '
           sudo -H -u ya /etc/profiles/per-user/ya/bin/zsh -il -c '
             set -euo pipefail
