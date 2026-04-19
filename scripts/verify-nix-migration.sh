@@ -13,6 +13,14 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$REPO_DIR"
 
+if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
+
+current_user="$(id -un)"
+export PATH="/etc/profiles/per-user/${current_user}/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:$PATH"
+
 usage() {
   cat <<USAGE
 使い方: scripts/verify-nix-migration.sh [options]
