@@ -186,22 +186,22 @@ compose_link="$HOME/.docker/cli-plugins/docker-compose"
 if [[ -L "$compose_link" ]]; then
   compose_real="$(realpath "$compose_link" 2>/dev/null || true)"
   if [[ -z "$compose_real" || ! -x "$compose_real" ]]; then
-    phase_noncompliant "compose plugin symlink が dangling または非実行可能（$compose_link -> $(readlink "$compose_link" 2>/dev/null || true)）"
+    phase_noncompliant "compose plugin symlink が dangling または非実行可能（${compose_link} -> $(readlink "$compose_link" 2>/dev/null || true)）"
   elif is_nix_owned_path "$compose_real"; then
-    mark_pass "compose plugin 実体は Nix 所有（$compose_real）"
+    mark_pass "compose plugin 実体は Nix 所有（${compose_real}）"
   elif [[ "$compose_real" == "$HOME/.rd/bin/"* || "$compose_real" == /opt/homebrew/* || "$compose_real" == /usr/local/* ]]; then
-    phase_noncompliant "compose plugin 実体が非 Nix provider（$compose_real）"
+    phase_noncompliant "compose plugin 実体が非 Nix provider（${compose_real}）"
   else
-    phase_noncompliant "compose plugin 実体が Nix 所有として判定できない（$compose_real）"
+    phase_noncompliant "compose plugin 実体が Nix 所有として判定できない（${compose_real}）"
   fi
 elif [[ -e "$compose_link" ]]; then
   if [[ -x "$compose_link" ]]; then
-    phase_noncompliant "compose plugin が symlink ではない（$compose_link）"
+    phase_noncompliant "compose plugin が symlink ではない（${compose_link}）"
   else
-    phase_noncompliant "compose plugin が存在するが実行不可（$compose_link）"
+    phase_noncompliant "compose plugin が存在するが実行不可（${compose_link}）"
   fi
 else
-  phase_noncompliant "compose plugin link が存在しない（$compose_link）"
+  phase_noncompliant "compose plugin link が存在しない（${compose_link}）"
 fi
 
 # Validate credsStore/credHelpers policy when docker config exists.
