@@ -23,10 +23,6 @@
       url = "github:homebrew/homebrew-cask";
       flake = false;
     };
-    homebrew-cask-fonts = {
-      url = "github:homebrew/homebrew-cask-fonts";
-      flake = false;
-    };
   };
 
   outputs =
