@@ -37,37 +37,120 @@
       ...
     }:
     let
-      user = "ya";
-      system = "aarch64-darwin";
-      pkgs = import nixpkgs {
-        inherit system;
-        config.allowUnfree = true;
-      };
+      systems = [
+        "aarch64-darwin"
+        "x86_64-darwin"
+      ];
 
-      yaHome = home-manager.lib.homeManagerConfiguration {
-        inherit pkgs;
-        modules = [ ./home.nix ];
-        extraSpecialArgs = { inherit inputs user; };
-      };
+      hosts = [
+        {
+          name = "ya";
+          user = "ya";
+          system = "aarch64-darwin";
+          aliases = [ "default" ];
+        }
+        {
+          name = "runner";
+          user = "runner";
+          system = "aarch64-darwin";
+          aliases = [ ];
+        }
+        {
+          name = "dotfilesci";
+          user = "dotfilesci";
+          system = "aarch64-darwin";
+          aliases = [ ];
+        }
+        {
+          name = "ya-x86_64-darwin";
+          user = "ya";
+          system = "x86_64-darwin";
+          aliases = [ ];
+        }
+      ];
 
-      yaDarwin = darwin.lib.darwinSystem {
-        inherit system;
-        modules = [
-          ./darwin.nix
-          home-manager.darwinModules.home-manager
-          inputs.nix-homebrew.darwinModules.nix-homebrew
-          inputs.sops-nix.darwinModules.sops
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
+
+      mkHome =
+        {
+          user,
+          system,
+        }:
+        home-manager.lib.homeManagerConfiguration {
+          pkgs = pkgsFor system;
+          modules = [ ./home.nix ];
+          extraSpecialArgs = { inherit inputs user; };
+        };
+
+      mkDarwin =
+        {
+          user,
+          system,
+        }:
+        darwin.lib.darwinSystem {
+          inherit system;
+          modules = [
+            ./darwin.nix
+            home-manager.darwinModules.home-manager
+            inputs.nix-homebrew.darwinModules.nix-homebrew
+            inputs.sops-nix.darwinModules.sops
+          ];
+          specialArgs = { inherit inputs user; };
+        };
+
+      homeEntriesForHost =
+        host:
+        let
+          cfg = {
+            inherit (host) user system;
+          };
+          value = mkHome cfg;
+        in
+        [
+          {
+            name = host.name;
+            inherit value;
+          }
+          {
+            name = "${host.user}@${host.name}";
+            inherit value;
+          }
         ];
-        specialArgs = { inherit inputs user; };
-      };
+
+      darwinEntriesForHost =
+        host:
+        let
+          cfg = {
+            inherit (host) user system;
+          };
+          value = mkDarwin cfg;
+        in
+        [
+          {
+            name = host.name;
+            inherit value;
+          }
+        ]
+        ++ map (alias: {
+          name = alias;
+          inherit value;
+        }) host.aliases;
+
+      formatterEntries = map (system: {
+        name = system;
+        value = (pkgsFor system).nixfmt-rfc-style;
+      }) systems;
     in
     {
-      homeConfigurations.${user} = yaHome;
-      homeConfigurations."${user}@${user}" = yaHome;
+      homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost hosts);
 
-      darwinConfigurations.${user} = yaDarwin;
-      darwinConfigurations.default = yaDarwin;
+      darwinConfigurations = builtins.listToAttrs (builtins.concatMap darwinEntriesForHost hosts);
 
-      formatter.${system} = pkgs.nixfmt-rfc-style;
+      formatter = builtins.listToAttrs formatterEntries;
     };
 }

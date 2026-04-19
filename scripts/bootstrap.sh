@@ -8,6 +8,12 @@ DOTFILES_RUN_SWITCH="${DOTFILES_RUN_SWITCH:-1}"
 DOTFILES_FLAKE="${DOTFILES_FLAKE:-ya}"
 DOTFILES_SOPS_AGE_KEY_DEST="${DOTFILES_SOPS_AGE_KEY_DEST:-/var/lib/sops-nix/key.txt}"
 DOTFILES_DRY_RUN="${DOTFILES_DRY_RUN:-0}"
+NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
+
+if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
 
 print_plan() {
   cat <<PLAN
@@ -72,7 +78,7 @@ if [[ -n "${DOTFILES_SOPS_AGE_KEY_FILE:-}" ]]; then
 fi
 
 echo "nix flake check を実行します"
-nix flake check
+nix "${NIX_EXTRA_ARGS[@]}" flake check
 
 if [[ "$DOTFILES_RUN_SWITCH" == "0" ]]; then
   echo "DOTFILES_RUN_SWITCH=0 のため、flake check 後に終了します"
@@ -81,10 +87,19 @@ fi
 
 case "$DOTFILES_SWITCH_MODE" in
   darwin)
-    sudo darwin-rebuild switch --flake ".#$DOTFILES_FLAKE"
+    if command -v darwin-rebuild >/dev/null 2>&1; then
+      sudo darwin-rebuild switch --flake ".#$DOTFILES_FLAKE"
+    else
+      nix_bin="$(command -v nix)"
+      sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run github:LnL7/nix-darwin -- switch --flake ".#$DOTFILES_FLAKE"
+    fi
     ;;
   home-manager)
-    home-manager switch --flake ".#$DOTFILES_FLAKE"
+    if command -v home-manager >/dev/null 2>&1; then
+      home-manager switch --flake ".#$DOTFILES_FLAKE"
+    else
+      nix "${NIX_EXTRA_ARGS[@]}" run github:nix-community/home-manager -- switch --flake ".#$DOTFILES_FLAKE"
+    fi
     ;;
   *)
     echo "未対応の DOTFILES_SWITCH_MODE: $DOTFILES_SWITCH_MODE" >&2
