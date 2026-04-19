@@ -36,6 +36,17 @@ run_or_warn() {
   fi
 }
 
+run_or_fail() {
+  local label="$1"
+  shift
+  printf '$ %s\n' "$*"
+  if "$@"; then
+    mark_pass "$label"
+  else
+    mark_fail "$label"
+  fi
+}
+
 check_runtime_auth_not_symlink_if_present() {
   local label="$1"
   local path="$2"
@@ -79,11 +90,11 @@ fi
 
 say "Flake 評価"
 if command -v nix >/dev/null 2>&1; then
-  run_or_warn "nix flake check" nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
-  run_or_warn "home activation drvPath 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#homeConfigurations.${VERIFY_FLAKE}.activationPackage.drvPath"
-  run_or_warn "darwin config 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#darwinConfigurations.${VERIFY_FLAKE}.system"
+  run_or_fail "nix flake check" nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
+  run_or_fail "home activation drvPath 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#homeConfigurations.${VERIFY_FLAKE}.activationPackage.drvPath"
+  run_or_fail "darwin config 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#darwinConfigurations.${VERIFY_FLAKE}.system"
 else
-  mark_skip "nix 未導入のため flake 検証を SKIP"
+  phase_noncompliant "nix 未導入のため flake 検証不可"
 fi
 
 say "zsh 検証"

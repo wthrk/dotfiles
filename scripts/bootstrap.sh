@@ -12,6 +12,7 @@ NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
 HOME_MANAGER_INSTALLER_FLAKE="github:nix-community/home-manager/5b56ad02dc643808b8af6d5f3ff179e2ce9593f4"
+prepared_paths=()
 
 if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   # shellcheck disable=SC1091
@@ -38,22 +39,48 @@ prepare_nix_darwin_etc() {
 
   for path in /etc/bashrc /etc/zshrc; do
     backup="${path}.before-nix-darwin"
-    if [[ -e "$path" && ! -e "$backup" ]]; then
-      echo "nix-darwin 管理前に退避します: $path -> $backup"
-      sudo mv "$path" "$backup"
-    fi
+    move_aside "$path" "$backup" "nix-darwin 管理前に退避します"
   done
 }
 
 prepare_nix_homebrew() {
   [[ "$DOTFILES_SWITCH_MODE" == "darwin" ]] || return 0
 
-  local taps=/opt/homebrew/Library/Taps
-  local backup=/opt/homebrew/Library/Taps.before-nix-homebrew
-  if [[ -d "$taps" && ! -e "$backup" ]]; then
-    echo "nix-homebrew 管理前に退避します: $taps -> $backup"
-    sudo mv "$taps" "$backup"
+  local prefix
+  for prefix in /opt/homebrew /usr/local; do
+    move_aside "$prefix/Library/Taps" "$prefix/Library/Taps.before-nix-homebrew" "nix-homebrew 管理前に退避します"
+  done
+}
+
+move_aside() {
+  local path="$1"
+  local backup="$2"
+  local message="$3"
+
+  [[ -e "$path" ]] || return 0
+
+  if [[ -e "$backup" ]]; then
+    echo "退避先が既に存在します: $backup" >&2
+    echo "確認してから $path を手動で整理してください。" >&2
+    return 1
   fi
+
+  echo "$message: $path -> $backup"
+  sudo mv "$path" "$backup"
+  prepared_paths+=("$path|$backup")
+}
+
+restore_prepared_paths() {
+  local item path backup i
+  for ((i = ${#prepared_paths[@]} - 1; i >= 0; i--)); do
+    item="${prepared_paths[$i]}"
+    path="${item%%|*}"
+    backup="${item#*|}"
+    if [[ ! -e "$path" && -e "$backup" ]]; then
+      echo "失敗したため退避を戻します: $backup -> $path" >&2
+      sudo mv "$backup" "$path" || true
+    fi
+  done
 }
 
 if [[ "$DOTFILES_DRY_RUN" == "1" ]]; then
@@ -108,9 +135,6 @@ if [[ -n "${DOTFILES_SOPS_AGE_KEY_FILE:-}" ]]; then
   sudo install -m 0400 "$DOTFILES_SOPS_AGE_KEY_FILE" "$DOTFILES_SOPS_AGE_KEY_DEST"
 fi
 
-prepare_nix_darwin_etc
-prepare_nix_homebrew
-
 echo "nix flake check を実行します"
 nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
 
@@ -121,19 +145,15 @@ fi
 
 case "$DOTFILES_SWITCH_MODE" in
   darwin)
-    if command -v darwin-rebuild >/dev/null 2>&1; then
-      sudo darwin-rebuild switch --flake ".#$DOTFILES_FLAKE"
-    else
-      nix_bin="$(command -v nix)"
-      sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
-    fi
+    trap restore_prepared_paths ERR
+    prepare_nix_darwin_etc
+    prepare_nix_homebrew
+    nix_bin="$(command -v nix)"
+    sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
+    trap - ERR
     ;;
   home-manager)
-    if command -v home-manager >/dev/null 2>&1; then
-      home-manager switch --flake ".#$DOTFILES_FLAKE"
-    else
-      nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
-    fi
+    nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
     ;;
   *)
     echo "未対応の DOTFILES_SWITCH_MODE: $DOTFILES_SWITCH_MODE" >&2

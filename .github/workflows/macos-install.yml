@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
@@ -26,7 +30,7 @@ env:
 jobs:
   fresh-install:
     name: ゼロ状態の macOS に導入
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'fresh-install' }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'fresh-install') }}
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -44,6 +48,15 @@ jobs:
           uname -a
           id
           xcode-select -p
+
+      - name: Nix 未導入を確認
+        run: |
+          set -euxo pipefail
+          if command -v nix >/dev/null 2>&1; then
+            echo "ゼロ状態の導入テストでは Nix 未導入を前提にします。" >&2
+            command -v nix >&2
+            exit 1
+          fi
 
       - name: bootstrap 事前確認
         run: |
@@ -69,7 +82,7 @@ jobs:
 
   install-as-second-user:
     name: 既存 Nix 環境に別ユーザーで導入
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'install-as-second-user' }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'install-as-second-user') }}
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -99,10 +112,13 @@ jobs:
 
       - name: 追加ユーザーを作成
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           if ! id dotfilesci >/dev/null 2>&1; then
-            sudo sysadminctl -addUser dotfilesci -fullName "Dotfiles CI" -password "$(openssl rand -base64 24)" -home /Users/dotfilesci
+            password="$(openssl rand -base64 24)"
+            echo "::add-mask::$password"
+            sudo sysadminctl -addUser dotfilesci -fullName "Dotfiles CI" -password "$password" -home /Users/dotfilesci
           fi
+          set -x
           sudo mkdir -p /Users/dotfilesci/.dotfiles
           sudo ditto "$GITHUB_WORKSPACE" /Users/dotfilesci/.dotfiles
           sudo chown -R dotfilesci:staff /Users/dotfilesci/.dotfiles
