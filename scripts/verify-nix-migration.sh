@@ -7,7 +7,7 @@ skip=0
 pass=0
 VERIFY_MIGRATION_PHASE="${VERIFY_MIGRATION_PHASE:-post-migration}"
 VERIFY_FLAKE="${VERIFY_FLAKE:-${DOTFILES_FLAKE:-ya}}"
-NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
+NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes" --no-update-lock-file)
 
 say() { printf '\n## %s\n' "$1"; }
 mark_pass() { printf 'PASS %s\n' "$1"; pass=$((pass+1)); }
@@ -59,6 +59,13 @@ if [[ "$VERIFY_MIGRATION_PHASE" == "pre-switch" || "$VERIFY_MIGRATION_PHASE" == 
   mark_pass "VERIFY_MIGRATION_PHASE=$VERIFY_MIGRATION_PHASE"
 else
   phase_noncompliant "VERIFY_MIGRATION_PHASE の値が不正: $VERIFY_MIGRATION_PHASE"
+fi
+
+say "Flake lock"
+if [[ -s flake.lock ]]; then
+  mark_pass "flake.lock が存在する"
+else
+  mark_fail "flake.lock が存在しないか空です"
 fi
 
 say "Nix 利用可否"

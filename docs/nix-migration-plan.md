@@ -21,6 +21,8 @@
 - この文書は日本語で管理する。
 - 入口は単一ユーザーの dotfiles とする。ただし多ユーザー環境へ拡張できるよう、system 設定と user 設定の境界を崩さない。
 - 初期適用の flake 入口は `.#ya` を許容する。多ユーザーまたは複数 host へ広げる場合は `darwinConfigurations.<host>` と `homeConfigurations."<user>@<host>"` に分離する。
+- `flake.lock` を repository に置き、CI では lock の暗黙更新を禁止する。入力更新は明示的な lock 差分としてレビューする。
+- `flake.lock` を意図的に外す一時状態では floating branch を評価しない。lock を戻すまで flake input URL を commit SHA 固定にする。
 - 言語環境をグローバルから消さない。グローバルに Nix 管理の言語環境を置き、プロジェクトごとの devShell で上書きできる構成にする。
 - 既存の手動導入物は、Nix で置換して検証するまで削除しない。
 
