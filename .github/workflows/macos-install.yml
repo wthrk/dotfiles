@@ -374,9 +374,9 @@ jobs:
             done
           '
           brew="/opt/homebrew/bin/brew"
-          sudo -H -u ya "$brew" tap | rg -qx "azure/bicep"
-          sudo -H -u ya "$brew" tap | rg -qx "hashicorp/tap"
-          if sudo -H -u ya "$brew" list --formula | rg -qx "packer"; then
+          sudo -H -u ya "$brew" tap | /usr/bin/grep -Fxq "azure/bicep"
+          sudo -H -u ya "$brew" tap | /usr/bin/grep -Fxq "hashicorp/tap"
+          if sudo -H -u ya "$brew" list --formula | /usr/bin/grep -Fxq "packer"; then
             echo "packer formula remains after Homebrew cleanup" >&2
             exit 1
           fi
@@ -385,10 +385,10 @@ jobs:
           uid="$(id -u ya)"
           test -s "$plist"
           test ! -e "$old_plist"
-          rg -q "/nix/store/.*/bin/colima" "$plist"
+          /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist"
           if sudo -H -u ya launchctl print "gui/$uid" >/dev/null 2>&1; then
             sudo -H -u ya launchctl print "gui/$uid/org.nix.colima" | tee "$RUNNER_TEMP/org.nix.colima.launchd"
-            rg -q "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
+            /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
             if sudo -H -u ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
               echo "homebrew.mxcl.colima is still loaded" >&2
               exit 1
