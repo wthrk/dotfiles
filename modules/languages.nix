@@ -17,6 +17,7 @@ let
       ]
     );
   ruby = if has [ "ruby_3_3" ] pkgs then pkgs.ruby_3_3 else pkgs.ruby;
+  go = if has [ "go_1_25" ] pkgs then pkgs.go_1_25 else pkgs.go;
 in
 {
   home.packages =
@@ -34,7 +35,7 @@ in
       pkgs.cargo-edit
       pkgs.cargo-llvm-cov
       pkgs.cargo-make
-      pkgs.go_1_23
+      go
       pkgs.golangci-lint
       pkgs.delve
       pkgs.php
