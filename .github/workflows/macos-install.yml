@@ -60,8 +60,6 @@ jobs:
           DOTFILES_FLAKE=runner \
           DOTFILES_SWITCH_MODE=darwin \
           DOTFILES_RUN_SWITCH=1 \
-          DOTFILES_PREPARE_NIX_DARWIN_ETC=1 \
-          DOTFILES_PREPARE_NIX_HOMEBREW=1 \
           bash scripts/bootstrap.sh
 
       - name: 移行後検証
@@ -97,8 +95,6 @@ jobs:
           DOTFILES_FLAKE=runner \
           DOTFILES_SWITCH_MODE=darwin \
           DOTFILES_RUN_SWITCH=1 \
-          DOTFILES_PREPARE_NIX_DARWIN_ETC=1 \
-          DOTFILES_PREPARE_NIX_HOMEBREW=1 \
           bash scripts/bootstrap.sh
 
       - name: 追加ユーザーを作成
