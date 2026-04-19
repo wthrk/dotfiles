@@ -1,15 +1,25 @@
-{ inputs, user, pkgs, ... }:
+{
+  inputs,
+  user,
+  pkgs,
+  ...
+}:
 {
   imports = [
     ./modules/macos.nix
     ./modules/homebrew.nix
     ./modules/macos-defaults.nix
-    ./modules/launchagents.nix
   ];
 
   nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    trusted-users = [ "root" user ];
+    experimental-features = [
+      "nix-command"
+      "flakes"
+    ];
+    trusted-users = [
+      "root"
+      user
+    ];
   };
 
   nixpkgs.config.allowUnfree = true;

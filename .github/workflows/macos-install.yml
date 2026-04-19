@@ -241,7 +241,16 @@ jobs:
           sudo -H -u dotfilesci test -L /Users/dotfilesci/.config/nvim
           sudo -H -u dotfilesci zsh -lc '[[ "$(readlink "$HOME/.config/zsh")" == /nix/store/* ]]'
           sudo -H -u dotfilesci zsh -lc '[[ "$(readlink "$HOME/.config/nvim")" == /nix/store/* ]]'
-          sudo -H -u dotfilesci zsh -lc 'command -v home-manager && home-manager generations'
+          sudo -H -u dotfilesci bash -lc '
+            set -euo pipefail
+            profile="$HOME/.local/state/nix/profiles/home-manager"
+            test -L "$profile"
+            generation="$(readlink "$profile")"
+            [[ "$generation" == home-manager-*-link ]]
+            test -L "$HOME/.local/state/nix/profiles/$generation"
+            store_target="$(readlink "$HOME/.local/state/nix/profiles/$generation")"
+            [[ "$store_target" == /nix/store/* ]]
+          '
           sudo -H -u dotfilesci env \
             HOME=/Users/dotfilesci \
             USER=dotfilesci \
@@ -298,3 +307,18 @@ jobs:
         run: |
           set -euxo pipefail
           bash "$RUNNER_TEMP/dotfiles-ya-switch/scripts/verify-nix-migration.sh" --phase post-migration --flake ya
+          plist="/Users/ya/Library/LaunchAgents/org.nix.colima.plist"
+          old_plist="/Users/ya/Library/LaunchAgents/homebrew.mxcl.colima.plist"
+          uid="$(id -u ya)"
+          test -s "$plist"
+          test ! -e "$old_plist"
+          rg -q "/nix/store/.*/bin/colima" "$plist"
+          if sudo -H -u ya launchctl print "gui/$uid" >/dev/null 2>&1; then
+            sudo -H -u ya launchctl print "gui/$uid/org.nix.colima"
+            if sudo -H -u ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
+              echo "homebrew.mxcl.colima is still loaded" >&2
+              exit 1
+            fi
+          else
+            echo "gui/$uid launchd domain is unavailable; verified org.nix.colima plist placement"
+          fi

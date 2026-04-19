@@ -12,6 +12,7 @@
     ./modules/app-configs.nix
     ./modules/secrets.nix
     ./modules/direnv.nix
+    ./modules/launchagents.nix
   ];
 
   home.username = user;
