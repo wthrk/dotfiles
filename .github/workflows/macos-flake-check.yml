@@ -1,0 +1,112 @@
+name: macOS flake check
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "手動実行する flake 検証"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - flake-check
+          - ya
+          - runner
+          - dotfilesci
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+
+jobs:
+  flake-check:
+    name: nix flake check
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'flake-check' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: DeterminateSystems/nix-installer-action@v20
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: nix flake check
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" flake check
+
+  eval-ya:
+    name: ya output を評価
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'ya' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: DeterminateSystems/nix-installer-action@v20
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: ya output を評価
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" eval .#homeConfigurations.ya.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval .#darwinConfigurations.ya.system
+
+  eval-runner:
+    name: runner output を評価
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'runner' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: DeterminateSystems/nix-installer-action@v20
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: runner output を評価
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" eval .#homeConfigurations.runner.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval .#darwinConfigurations.runner.system
+
+  eval-dotfilesci:
+    name: dotfilesci output を評価
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'dotfilesci' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: DeterminateSystems/nix-installer-action@v20
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: dotfilesci output を評価
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" eval .#homeConfigurations.dotfilesci.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval .#darwinConfigurations.dotfilesci.system
