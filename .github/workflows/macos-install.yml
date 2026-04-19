@@ -310,6 +310,13 @@ jobs:
         run: |
           set -euxo pipefail
           bash "$RUNNER_TEMP/dotfiles-ya-switch/scripts/verify-nix-migration.sh" --phase post-migration --flake ya
+          brew="/opt/homebrew/bin/brew"
+          sudo -H -u ya "$brew" tap | rg -qx "azure/bicep"
+          sudo -H -u ya "$brew" tap | rg -qx "hashicorp/tap"
+          if sudo -H -u ya "$brew" list --formula | rg -qx "packer"; then
+            echo "packer formula remains after Homebrew cleanup" >&2
+            exit 1
+          fi
           plist="/Users/ya/Library/LaunchAgents/org.nix.colima.plist"
           old_plist="/Users/ya/Library/LaunchAgents/homebrew.mxcl.colima.plist"
           uid="$(id -u ya)"

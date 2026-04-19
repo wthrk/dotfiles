@@ -105,6 +105,22 @@
         "type": "github"
       }
     },
+    "homebrew-hashicorp": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776258526,
+        "narHash": "sha256-cggpDch1UlazYPo+Uj1iKMtU8Dz78xlAJ7ezFcMGGOU=",
+        "owner": "hashicorp",
+        "repo": "homebrew-tap",
+        "rev": "b3736797deda743a2bd6a9c013ceddce47ae4743",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hashicorp",
+        "repo": "homebrew-tap",
+        "type": "github"
+      }
+    },
     "nix-homebrew": {
       "inputs": {
         "brew-src": "brew-src"
@@ -146,6 +162,7 @@
         "homebrew-bicep": "homebrew-bicep",
         "homebrew-cask": "homebrew-cask",
         "homebrew-core": "homebrew-core",
+        "homebrew-hashicorp": "homebrew-hashicorp",
         "nix-homebrew": "nix-homebrew",
         "nixpkgs": "nixpkgs",
         "sops-nix": "sops-nix"

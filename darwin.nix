@@ -45,6 +45,7 @@
       "homebrew/homebrew-core" = inputs.homebrew-core;
       "homebrew/homebrew-cask" = inputs.homebrew-cask;
       "azure/homebrew-bicep" = inputs.homebrew-bicep;
+      "hashicorp/homebrew-tap" = inputs.homebrew-hashicorp;
     };
   };
 

@@ -27,6 +27,10 @@
       url = "github:Azure/homebrew-bicep";
       flake = false;
     };
+    homebrew-hashicorp = {
+      url = "github:hashicorp/homebrew-tap";
+      flake = false;
+    };
   };
 
   outputs =
