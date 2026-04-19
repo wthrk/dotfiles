@@ -1,18 +1,94 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
-DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/wthrk/dotfiles.git}"
-DOTFILES_SWITCH_MODE="${DOTFILES_SWITCH_MODE:-darwin}"
-DOTFILES_RUN_SWITCH="${DOTFILES_RUN_SWITCH:-1}"
-DOTFILES_FLAKE="${DOTFILES_FLAKE:-ya}"
-DOTFILES_SOPS_AGE_KEY_DEST="${DOTFILES_SOPS_AGE_KEY_DEST:-/var/lib/sops-nix/key.txt}"
-DOTFILES_DRY_RUN="${DOTFILES_DRY_RUN:-0}"
+dotfiles_dir="$HOME/.dotfiles"
+dotfiles_repo="https://github.com/wthrk/dotfiles.git"
+switch_mode="darwin"
+run_switch=1
+flake_name="ya"
+sops_age_key_file=""
+sops_age_key_dest="/var/lib/sops-nix/key.txt"
+dry_run=0
+self_test=0
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
 HOME_MANAGER_INSTALLER_FLAKE="github:nix-community/home-manager/5b56ad02dc643808b8af6d5f3ff179e2ce9593f4"
 prepared_paths=()
+rollback_required=0
+
+usage() {
+  cat <<USAGE
+使い方: scripts/bootstrap.sh [options]
+
+Options:
+  --dir PATH                 checkout 先（既定: \$HOME/.dotfiles）
+  --repo URL_OR_PATH         clone 元（既定: https://github.com/wthrk/dotfiles.git）
+  --mode darwin|home-manager 適用モード（既定: darwin）
+  --flake NAME               flake 出力名（既定: ya）
+  --run-switch               flake check 後に switch する（既定）
+  --no-switch                flake check 後に終了する
+  --sops-age-key-file PATH   配置する sops age key
+  --sops-age-key-dest PATH   sops age key 配置先（既定: /var/lib/sops-nix/key.txt）
+  --dry-run                  実行計画だけ表示する
+  --self-test                内部の安全性テストだけ実行する
+  -h, --help                 このヘルプを表示する
+USAGE
+}
+
+while (($#)); do
+  case "$1" in
+    --dir)
+      dotfiles_dir="$2"
+      shift 2
+      ;;
+    --repo)
+      dotfiles_repo="$2"
+      shift 2
+      ;;
+    --mode)
+      switch_mode="$2"
+      shift 2
+      ;;
+    --flake)
+      flake_name="$2"
+      shift 2
+      ;;
+    --run-switch)
+      run_switch=1
+      shift
+      ;;
+    --no-switch)
+      run_switch=0
+      shift
+      ;;
+    --sops-age-key-file)
+      sops_age_key_file="$2"
+      shift 2
+      ;;
+    --sops-age-key-dest)
+      sops_age_key_dest="$2"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --self-test)
+      self_test=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "未対応の引数: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   # shellcheck disable=SC1091
@@ -24,18 +100,18 @@ print_plan() {
 bootstrap 実行計画:
 - macOS であることを確認
 - Xcode Command Line Tools の導入状態を確認（未導入なら案内）
-- dotfiles checkout を clone または既存利用: ${DOTFILES_DIR}
+- dotfiles checkout を clone または既存利用: ${dotfiles_dir}
 - Nix daemon モードの導入確認
-- 必要時のみ sops age key を配置: ${DOTFILES_SOPS_AGE_KEY_DEST}（DOTFILES_SOPS_AGE_KEY_FILE 指定時）
+- 必要時のみ sops age key を配置: ${sops_age_key_dest}
 - 実行: nix flake check
-- 適用モード: ${DOTFILES_SWITCH_MODE}
-- flake 出力: .#${DOTFILES_FLAKE}
-- DOTFILES_RUN_SWITCH=${DOTFILES_RUN_SWITCH} を尊重
+- 適用モード: ${switch_mode}
+- flake 出力: .#${flake_name}
+- switch 実行: ${run_switch}
 PLAN
 }
 
 prepare_nix_darwin_etc() {
-  [[ "$DOTFILES_SWITCH_MODE" == "darwin" ]] || return 0
+  [[ "$switch_mode" == "darwin" ]] || return 0
 
   for path in /etc/bashrc /etc/zshrc; do
     backup="${path}.before-nix-darwin"
@@ -44,7 +120,7 @@ prepare_nix_darwin_etc() {
 }
 
 prepare_nix_homebrew() {
-  [[ "$DOTFILES_SWITCH_MODE" == "darwin" ]] || return 0
+  [[ "$switch_mode" == "darwin" ]] || return 0
 
   local prefix
   for prefix in /opt/homebrew /usr/local; do
@@ -71,21 +147,139 @@ move_aside() {
 }
 
 restore_prepared_paths() {
-  local item path backup i
+  local item path backup failed_path i
   for ((i = ${#prepared_paths[@]} - 1; i >= 0; i--)); do
     item="${prepared_paths[$i]}"
     path="${item%%|*}"
     backup="${item#*|}"
-    if [[ ! -e "$path" && -e "$backup" ]]; then
-      echo "失敗したため退避を戻します: $backup -> $path" >&2
-      sudo mv "$backup" "$path" || true
+    [[ -e "$backup" ]] || continue
+
+    if [[ -e "$path" ]]; then
+      failed_path="${path}.failed-nix-switch.$(date +%Y%m%d%H%M%S)"
+      echo "失敗後に生成されたパスを退避します: $path -> $failed_path" >&2
+      sudo mv "$path" "$failed_path" || true
     fi
+
+    echo "失敗したため退避を戻します: $backup -> $path" >&2
+    sudo mv "$backup" "$path" || true
   done
 }
 
-if [[ "$DOTFILES_DRY_RUN" == "1" ]]; then
+rollback_on_exit() {
+  local status=$?
+  if [[ "$rollback_required" == "1" && "$status" -ne 0 ]]; then
+    restore_prepared_paths
+  fi
+}
+
+abort_with_status() {
+  local status="$1"
+  exit "$status"
+}
+
+install_sops_age_key() {
+  local source="$1"
+  local dest="$2"
+
+  if [[ -e "$dest" ]]; then
+    if sudo cmp -s "$source" "$dest"; then
+      echo "既存の sops age key を使用します: $dest"
+      sudo chmod 0400 "$dest"
+      return 0
+    fi
+
+    echo "既存の sops age key が異なるため上書きしません: $dest" >&2
+    echo "必要なら内容を確認してから手動で更新してください。" >&2
+    return 1
+  fi
+
+  echo "sops age key を配置します: $dest"
+  sudo mkdir -p "$(dirname "$dest")"
+  sudo install -m 0400 "$source" "$dest"
+}
+
+run_self_test() {
+  local tmp old new path backup generated signal
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  sudo -n true
+
+  old="$tmp/key-old"
+  new="$tmp/key-new"
+  printf 'old\n' > "$old"
+  printf 'new\n' > "$new"
+  if install_sops_age_key "$new" "$old"; then
+    echo "self-test failed: sops age key overwrite was allowed" >&2
+    return 1
+  fi
+  if [[ "$(cat "$old")" != "old" ]]; then
+    echo "self-test failed: sops age key was modified" >&2
+    return 1
+  fi
+
+  path="$tmp/path"
+  backup="$tmp/path.before-test"
+  generated="$tmp/path.failed-nix-switch"
+  (
+    set -euo pipefail
+    prepared_paths=()
+    rollback_required=1
+    trap rollback_on_exit EXIT
+    printf 'original\n' > "$path"
+    move_aside "$path" "$backup" "self-test"
+    printf 'generated\n' > "$path"
+    exit 42
+  ) || true
+
+  if [[ "$(cat "$path")" != "original" ]]; then
+    echo "self-test failed: rollback did not restore original path" >&2
+    return 1
+  fi
+  if ! ls "$generated".* >/dev/null 2>&1; then
+    echo "self-test failed: rollback did not preserve failed generated path" >&2
+    return 1
+  fi
+
+  for signal in INT TERM HUP; do
+    path="$tmp/path-${signal}"
+    backup="$tmp/path-${signal}.before-test"
+    generated="$tmp/path-${signal}.failed-nix-switch"
+    (
+      set -euo pipefail
+      prepared_paths=()
+      rollback_required=1
+      trap rollback_on_exit EXIT
+      trap 'abort_with_status 130' INT
+      trap 'abort_with_status 143' TERM
+      trap 'abort_with_status 129' HUP
+      printf 'original\n' > "$path"
+      move_aside "$path" "$backup" "self-test ${signal}"
+      printf 'generated\n' > "$path"
+      kill "-${signal}" "$(bash -c 'echo $PPID')"
+      sleep 1
+    ) || true
+
+    if [[ "$(cat "$path")" != "original" ]]; then
+      echo "self-test failed: ${signal} did not restore original path" >&2
+      return 1
+    fi
+    if ! ls "$generated".* >/dev/null 2>&1; then
+      echo "self-test failed: ${signal} did not preserve failed generated path" >&2
+      return 1
+    fi
+  done
+
+  echo "self-test passed"
+}
+
+if [[ "$self_test" == "1" ]]; then
+  run_self_test
+  exit 0
+fi
+
+if [[ "$dry_run" == "1" ]]; then
   print_plan
-  echo "DOTFILES_DRY_RUN=1 のため、変更を加えず終了します。"
+  echo "--dry-run のため、変更を加えず終了します。"
   exit 0
 fi
 
@@ -101,14 +295,14 @@ if ! xcode-select -p >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ -d "$DOTFILES_DIR/.git" ]]; then
-  echo "既存 checkout を使用します: $DOTFILES_DIR"
+if [[ -d "$dotfiles_dir/.git" ]]; then
+  echo "既存 checkout を使用します: $dotfiles_dir"
 else
-  echo "dotfiles を clone します: $DOTFILES_DIR"
-  git clone "$DOTFILES_REPO" "$DOTFILES_DIR"
+  echo "dotfiles を clone します: $dotfiles_dir"
+  git clone "$dotfiles_repo" "$dotfiles_dir"
 fi
 
-cd "$DOTFILES_DIR"
+cd "$dotfiles_dir"
 
 if [[ ! -f flake.nix ]]; then
   echo "flake.nix が必要です。Nix 移行後のため init フォールバックはありません（`init.sh` は削除済み）。" >&2
@@ -129,34 +323,37 @@ if ! command -v nix >/dev/null 2>&1; then
   fi
 fi
 
-if [[ -n "${DOTFILES_SOPS_AGE_KEY_FILE:-}" ]]; then
-  echo "sops age key を配置します: $DOTFILES_SOPS_AGE_KEY_DEST"
-  sudo mkdir -p "$(dirname "$DOTFILES_SOPS_AGE_KEY_DEST")"
-  sudo install -m 0400 "$DOTFILES_SOPS_AGE_KEY_FILE" "$DOTFILES_SOPS_AGE_KEY_DEST"
+if [[ -n "$sops_age_key_file" ]]; then
+  install_sops_age_key "$sops_age_key_file" "$sops_age_key_dest"
 fi
 
 echo "nix flake check を実行します"
 nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
 
-if [[ "$DOTFILES_RUN_SWITCH" == "0" ]]; then
-  echo "DOTFILES_RUN_SWITCH=0 のため、flake check 後に終了します"
+if [[ "$run_switch" == "0" ]]; then
+  echo "--no-switch のため、flake check 後に終了します"
   exit 0
 fi
 
-case "$DOTFILES_SWITCH_MODE" in
+case "$switch_mode" in
   darwin)
-    trap restore_prepared_paths ERR
+    rollback_required=1
+    trap rollback_on_exit EXIT
+    trap 'abort_with_status 130' INT
+    trap 'abort_with_status 143' TERM
+    trap 'abort_with_status 129' HUP
     prepare_nix_darwin_etc
     prepare_nix_homebrew
     nix_bin="$(command -v nix)"
-    sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
-    trap - ERR
+    sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
+    rollback_required=0
+    trap - EXIT INT TERM HUP
     ;;
   home-manager)
-    nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
+    nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
     ;;
   *)
-    echo "未対応の DOTFILES_SWITCH_MODE: $DOTFILES_SWITCH_MODE" >&2
+    echo "未対応の適用モード: $switch_mode" >&2
     exit 1
     ;;
 esac

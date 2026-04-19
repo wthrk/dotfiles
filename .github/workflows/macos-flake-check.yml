@@ -12,8 +12,9 @@ on:
           - all
           - flake-check
           - ya
-          - runner
-          - dotfilesci
+          - ya-x86_64-darwin
+          - home-runner
+          - home-dotfilesci
   pull_request:
 
 permissions:
@@ -77,10 +78,16 @@ jobs:
           set -euxo pipefail
           nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.ya.activationPackage.drvPath
           nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.system
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.enable)" = "true"
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.mutableTaps)" = "false"
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.config.homebrew.enable)" = "true"
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --json --no-update-lock-file .#darwinConfigurations.ya.config.homebrew.taps --apply 'map (tap: tap.name)')" = "$(nix --extra-experimental-features "nix-command flakes" eval --json --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.taps --apply builtins.attrNames)"
+          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#homeConfigurations.ya.activationPackage
+          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#darwinConfigurations.ya.system
 
   eval-runner:
-    name: runner output を評価
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'runner' }}
+    name: runner Home Manager output を評価
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'home-runner' }}
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -97,15 +104,15 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
-      - name: runner output を評価
+      - name: runner Home Manager output を評価
         run: |
           set -euxo pipefail
           nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.runner.activationPackage.drvPath
-          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.runner.system
+          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#homeConfigurations.runner.activationPackage
 
   eval-dotfilesci:
-    name: dotfilesci output を評価
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'dotfilesci' }}
+    name: dotfilesci Home Manager output を評価
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'home-dotfilesci' }}
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -122,8 +129,35 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
-      - name: dotfilesci output を評価
+      - name: dotfilesci Home Manager output を評価
         run: |
           set -euxo pipefail
           nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.dotfilesci.activationPackage.drvPath
-          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.dotfilesci.system
+          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#homeConfigurations.dotfilesci.activationPackage
+
+  eval-ya-x86_64-darwin:
+    name: ya x86_64-darwin output を評価
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'ya-x86_64-darwin' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: flake.lock を確認
+        run: test -s flake.lock
+
+      - name: Nix を導入
+        uses: DeterminateSystems/nix-installer-action@v20
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: ya x86_64-darwin output を評価
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.ya-x86_64-darwin.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya-x86_64-darwin.system
+          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#homeConfigurations.ya-x86_64-darwin.activationPackage
+          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#darwinConfigurations.ya-x86_64-darwin.system

@@ -31,20 +31,20 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scri
 
 bootstrap は Nix 優先/flake 専用です。`init.sh` は削除済みで、フォールバックはありません。
 
-主要な env var:
+主要な options:
 
-- `DOTFILES_DIR`（既定: `~/.dotfiles`）
-- `DOTFILES_FLAKE`（既定: `ya`、この移行フェーズの標準）
-- `DOTFILES_SWITCH_MODE`（`darwin` または `home-manager`、既定: `darwin`）
-- `DOTFILES_RUN_SWITCH`（`0` で `nix flake check` まで）
-- `DOTFILES_SOPS_AGE_KEY_FILE`（任意の 鍵ファイル）
-- `DOTFILES_SOPS_AGE_KEY_DEST`（既定: `/var/lib/sops-nix/key.txt`）
-- `DOTFILES_DRY_RUN`（`1` で実行計画のみ表示して終了）
+- `--dir`（既定: `~/.dotfiles`）
+- `--flake`（既定: `ya`、この移行フェーズの標準）
+- `--mode`（`darwin` または `home-manager`、既定: `darwin`）
+- `--no-switch`（`nix flake check` まで）
+- `--sops-age-key-file`（任意の鍵ファイル）
+- `--sops-age-key-dest`（既定: `/var/lib/sops-nix/key.txt`）
+- `--dry-run`（実行計画のみ表示して終了）
 
 dry-run 例:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstrap.sh | DOTFILES_DRY_RUN=1 bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstrap.sh | bash -s -- --dry-run
 ```
 
 ## 所有権ルール
@@ -97,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstr
 bash scripts/verify-nix-migration.sh
 ```
 
-`verify` は pre-switch 状態やローカル状態（例: Neovim parser cache）に応じて `WARN`/`SKIP` を返す場合があります。`VERIFY_MIGRATION_PHASE=post-migration` では Compose plugin の非 Nix 供給元を失敗として扱います。
+`verify` は pre-switch 状態やローカル状態（例: Neovim parser cache）に応じて `WARN`/`SKIP` を返す場合があります。`--phase post-migration` では Compose plugin の非 Nix 供給元を失敗として扱います。
 
 zsh 検証:
 

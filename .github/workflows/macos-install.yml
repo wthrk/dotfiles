@@ -4,14 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: "手動実行する導入シナリオ"
+        description: "手動実行する検証シナリオ"
         required: true
         default: all
         type: choice
         options:
           - all
-          - fresh-install
-          - install-as-second-user
+          - fresh-bootstrap
+          - second-user-home-manager
+          - darwin-switch-ya
   pull_request:
 
 permissions:
@@ -25,12 +26,11 @@ env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
     access-tokens = github.com=${{ github.token }}
-  DOTFILES_REPO: https://github.com/${{ github.repository }}.git
 
 jobs:
-  fresh-install:
-    name: ゼロ状態の macOS に導入
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'fresh-install') }}
+  fresh-bootstrap:
+    name: ゼロ状態から bootstrap を検証
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'fresh-bootstrap' }}
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -61,28 +61,117 @@ jobs:
       - name: bootstrap 事前確認
         run: |
           set -euxo pipefail
-          DOTFILES_DRY_RUN=1 \
-          DOTFILES_DIR="$GITHUB_WORKSPACE" \
-          DOTFILES_FLAKE=runner \
-          bash scripts/bootstrap.sh
+          bash scripts/bootstrap.sh --dry-run --flake ya
 
-      - name: ゼロ状態から Nix / nix-darwin を適用
+      - name: ゼロ状態から clone / Nix / flake check を検証
         run: |
           set -euxo pipefail
-          DOTFILES_DIR="$GITHUB_WORKSPACE" \
-          DOTFILES_FLAKE=runner \
-          DOTFILES_SWITCH_MODE=darwin \
-          DOTFILES_RUN_SWITCH=1 \
-          bash scripts/bootstrap.sh
+          rm -rf "$RUNNER_TEMP/dotfiles-bootstrap"
+          bash scripts/bootstrap.sh \
+            --repo "$GITHUB_WORKSPACE" \
+            --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
+            --flake ya \
+            --mode darwin \
+            --no-switch
 
-      - name: 移行後検証
+      - name: clone された checkout を確認
         run: |
           set -euxo pipefail
-          VERIFY_MIGRATION_PHASE=post-migration VERIFY_FLAKE=runner bash scripts/verify-nix-migration.sh
+          test -d "$RUNNER_TEMP/dotfiles-bootstrap/.git"
+          test -s "$RUNNER_TEMP/dotfiles-bootstrap/flake.lock"
+          test "$(git -C "$RUNNER_TEMP/dotfiles-bootstrap" rev-parse HEAD)" = "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
 
-  install-as-second-user:
-    name: 既存 Nix 環境に別ユーザーで導入
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'install-as-second-user') }}
+      - name: no-switch の副作用がないことを確認
+        run: |
+          set -euxo pipefail
+          test ! -e /etc/bashrc.before-nix-darwin
+          test ! -e /etc/zshrc.before-nix-darwin
+          test ! -e /opt/homebrew/Library/Taps.before-nix-homebrew
+          test ! -e /usr/local/Library/Taps.before-nix-homebrew
+          before="$RUNNER_TEMP/no-switch-before.txt"
+          after="$RUNNER_TEMP/no-switch-after.txt"
+          : > "$before"
+          for path in /etc/bashrc /etc/zshrc /opt/homebrew/Library/Taps /usr/local/Library/Taps; do
+            if [[ -e "$path" ]]; then
+              stat -f '%N %z %m %u %g %p' "$path" >> "$before"
+            else
+              printf 'missing %s\n' "$path" >> "$before"
+            fi
+          done
+
+          bash "$RUNNER_TEMP/dotfiles-bootstrap/scripts/bootstrap.sh" \
+            --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
+            --flake ya \
+            --mode darwin \
+            --no-switch
+
+          : > "$after"
+          for path in /etc/bashrc /etc/zshrc /opt/homebrew/Library/Taps /usr/local/Library/Taps; do
+            if [[ -e "$path" ]]; then
+              stat -f '%N %z %m %u %g %p' "$path" >> "$after"
+            else
+              printf 'missing %s\n' "$path" >> "$after"
+            fi
+          done
+          diff -u "$before" "$after"
+
+      - name: flake.lock 欠落時の失敗を確認
+        run: |
+          set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/dotfiles-missing-lock"
+          git clone "$GITHUB_WORKSPACE" "$RUNNER_TEMP/dotfiles-missing-lock"
+          rm "$RUNNER_TEMP/dotfiles-missing-lock/flake.lock"
+          if bash "$GITHUB_WORKSPACE/scripts/bootstrap.sh" \
+            --dir "$RUNNER_TEMP/dotfiles-missing-lock" \
+            --flake ya \
+            --mode darwin \
+            --no-switch; then
+            echo "flake.lock がない bootstrap が成功しました" >&2
+            exit 1
+          fi
+
+      - name: flake check 失敗時の失敗を確認
+        run: |
+          set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/dotfiles-broken-flake"
+          git clone "$GITHUB_WORKSPACE" "$RUNNER_TEMP/dotfiles-broken-flake"
+          printf '\nthis is invalid nix\n' >> "$RUNNER_TEMP/dotfiles-broken-flake/flake.nix"
+          if bash "$GITHUB_WORKSPACE/scripts/bootstrap.sh" \
+            --dir "$RUNNER_TEMP/dotfiles-broken-flake" \
+            --flake ya \
+            --mode darwin \
+            --no-switch; then
+            echo "壊れた flake の bootstrap が成功しました" >&2
+            exit 1
+          fi
+
+      - name: sops age key CLI の上書き拒否を確認
+        run: |
+          set -euxo pipefail
+          key_dir="$RUNNER_TEMP/sops-key-test"
+          mkdir -p "$key_dir"
+          printf 'old-key\n' > "$key_dir/current.txt"
+          printf 'new-key\n' > "$key_dir/new.txt"
+          if bash scripts/bootstrap.sh \
+            --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
+            --flake ya \
+            --mode darwin \
+            --no-switch \
+            --sops-age-key-file "$key_dir/new.txt" \
+            --sops-age-key-dest "$key_dir/current.txt"; then
+            echo "異なる sops age key の上書きが成功しました" >&2
+            exit 1
+          fi
+          test "$(cat "$key_dir/current.txt")" = "old-key"
+
+      - name: bootstrap rollback self-test
+        run: |
+          set -euxo pipefail
+          bash scripts/bootstrap.sh --self-test
+
+  second-user-home-manager:
+    name: 既存 Nix 環境で別ユーザーの Home Manager を検証
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'second-user-home-manager' }}
     runs-on: macos-15
     timeout-minutes: 90
 
@@ -101,14 +190,16 @@ jobs:
           id
           xcode-select -p
 
-      - name: 先行ユーザーで Nix / nix-darwin を適用
+      - name: 先行ユーザーで Nix と flake check を準備
         run: |
           set -euxo pipefail
-          DOTFILES_DIR="$GITHUB_WORKSPACE" \
-          DOTFILES_FLAKE=runner \
-          DOTFILES_SWITCH_MODE=darwin \
-          DOTFILES_RUN_SWITCH=1 \
-          bash scripts/bootstrap.sh
+          rm -rf "$RUNNER_TEMP/dotfiles-bootstrap"
+          bash scripts/bootstrap.sh \
+            --repo "$GITHUB_WORKSPACE" \
+            --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
+            --flake ya \
+            --mode darwin \
+            --no-switch
 
       - name: 追加ユーザーを作成
         run: |
@@ -119,9 +210,10 @@ jobs:
             sudo sysadminctl -addUser dotfilesci -fullName "Dotfiles CI" -password "$password" -home /Users/dotfilesci
           fi
           set -x
-          sudo mkdir -p /Users/dotfilesci/.dotfiles
-          sudo ditto "$GITHUB_WORKSPACE" /Users/dotfilesci/.dotfiles
-          sudo chown -R dotfilesci:staff /Users/dotfilesci/.dotfiles
+          sudo createhomedir -c -u dotfilesci || true
+          sudo mkdir -p /Users/dotfilesci
+          sudo chown dotfilesci:staff /Users/dotfilesci
+          sudo rm -rf /Users/dotfilesci/.dotfiles
 
       - name: 別ユーザーで Home Manager を適用
         run: |
@@ -132,21 +224,77 @@ jobs:
             LOGNAME=dotfilesci \
             SHELL=/bin/zsh \
             NIX_CONFIG="$NIX_CONFIG" \
-            DOTFILES_DIR=/Users/dotfilesci/.dotfiles \
-            DOTFILES_FLAKE=dotfilesci \
-            DOTFILES_SWITCH_MODE=home-manager \
-            DOTFILES_RUN_SWITCH=1 \
-            bash /Users/dotfilesci/.dotfiles/scripts/bootstrap.sh
+            bash "$GITHUB_WORKSPACE/scripts/bootstrap.sh" \
+              --repo "$GITHUB_WORKSPACE" \
+              --dir /Users/dotfilesci/.dotfiles \
+              --flake dotfilesci \
+              --mode home-manager \
+              --run-switch
 
       - name: 別ユーザーの移行後検証
         run: |
           set -euxo pipefail
+          sudo -H -u dotfilesci test -d /Users/dotfilesci/.dotfiles/.git
+          sudo -H -u dotfilesci test -s /Users/dotfilesci/.dotfiles/flake.lock
+          sudo -H -u dotfilesci test -e /Users/dotfilesci/.nix-profile
+          sudo -H -u dotfilesci test -L /Users/dotfilesci/.config/zsh
+          sudo -H -u dotfilesci test -L /Users/dotfilesci/.config/nvim
+          sudo -H -u dotfilesci zsh -lc '[[ "$(readlink "$HOME/.config/zsh")" == /nix/store/* ]]'
+          sudo -H -u dotfilesci zsh -lc '[[ "$(readlink "$HOME/.config/nvim")" == /nix/store/* ]]'
+          sudo -H -u dotfilesci zsh -lc 'command -v home-manager && home-manager generations'
           sudo -H -u dotfilesci env \
             HOME=/Users/dotfilesci \
             USER=dotfilesci \
             LOGNAME=dotfilesci \
             SHELL=/bin/zsh \
             NIX_CONFIG="$NIX_CONFIG" \
-            VERIFY_FLAKE=dotfilesci \
-            VERIFY_MIGRATION_PHASE=post-migration \
-            bash /Users/dotfilesci/.dotfiles/scripts/verify-nix-migration.sh
+            nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file /Users/dotfilesci/.dotfiles#homeConfigurations.dotfilesci.activationPackage.drvPath
+
+  darwin-switch-ya:
+    name: 実運用 ya の nix-darwin switch を検証
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'darwin-switch-ya' }}
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: flake.lock を確認
+        run: test -s flake.lock
+
+      - name: runner 情報
+        run: |
+          set -euxo pipefail
+          sw_vers
+          uname -a
+          id
+          xcode-select -p
+
+      - name: ya ユーザーを作成
+        run: |
+          set -euo pipefail
+          if ! id ya >/dev/null 2>&1; then
+            password="$(openssl rand -base64 24)"
+            echo "::add-mask::$password"
+            sudo sysadminctl -addUser ya -fullName "ya" -password "$password" -home /Users/ya
+          fi
+          set -x
+          sudo createhomedir -c -u ya || true
+          sudo mkdir -p /Users/ya
+          sudo chown ya:staff /Users/ya
+
+      - name: 実運用 ya を適用
+        run: |
+          set -euxo pipefail
+          bash scripts/bootstrap.sh \
+            --repo "$GITHUB_WORKSPACE" \
+            --dir "$RUNNER_TEMP/dotfiles-ya-switch" \
+            --flake ya \
+            --mode darwin \
+            --run-switch
+
+      - name: 実運用 ya の移行後検証
+        run: |
+          set -euxo pipefail
+          bash "$RUNNER_TEMP/dotfiles-ya-switch/scripts/verify-nix-migration.sh" --phase post-migration --flake ya

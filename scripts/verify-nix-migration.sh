@@ -5,10 +5,46 @@ fail=0
 warn=0
 skip=0
 pass=0
-VERIFY_MIGRATION_PHASE="${VERIFY_MIGRATION_PHASE:-post-migration}"
-VERIFY_FLAKE="${VERIFY_FLAKE:-${DOTFILES_FLAKE:-ya}}"
+verify_migration_phase="post-migration"
+verify_flake="ya"
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$REPO_DIR"
+
+usage() {
+  cat <<USAGE
+使い方: scripts/verify-nix-migration.sh [options]
+
+Options:
+  --phase pre-switch|post-migration  検証フェーズ（既定: post-migration）
+  --flake NAME                       flake 出力名（既定: ya）
+  -h, --help                         このヘルプを表示する
+USAGE
+}
+
+while (($#)); do
+  case "$1" in
+    --phase)
+      verify_migration_phase="$2"
+      shift 2
+      ;;
+    --flake)
+      verify_flake="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "未対応の引数: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 say() { printf '\n## %s\n' "$1"; }
 mark_pass() { printf 'PASS %s\n' "$1"; pass=$((pass+1)); }
@@ -18,7 +54,7 @@ mark_skip() { printf 'SKIP %s\n' "$1"; skip=$((skip+1)); }
 
 phase_noncompliant() {
   local msg="$1"
-  if [[ "$VERIFY_MIGRATION_PHASE" == "pre-switch" ]]; then
+  if [[ "$verify_migration_phase" == "pre-switch" ]]; then
     mark_warn "${msg}（pre-switch モード）"
   else
     mark_fail "$msg"
@@ -67,10 +103,10 @@ is_nix_owned_path() {
 }
 
 say "検証モード"
-if [[ "$VERIFY_MIGRATION_PHASE" == "pre-switch" || "$VERIFY_MIGRATION_PHASE" == "post-migration" ]]; then
-  mark_pass "VERIFY_MIGRATION_PHASE=$VERIFY_MIGRATION_PHASE"
+if [[ "$verify_migration_phase" == "pre-switch" || "$verify_migration_phase" == "post-migration" ]]; then
+  mark_pass "phase=$verify_migration_phase"
 else
-  phase_noncompliant "VERIFY_MIGRATION_PHASE の値が不正: $VERIFY_MIGRATION_PHASE"
+  phase_noncompliant "phase の値が不正: $verify_migration_phase"
 fi
 
 say "Flake lock"
@@ -91,8 +127,8 @@ fi
 say "Flake 評価"
 if command -v nix >/dev/null 2>&1; then
   run_or_fail "nix flake check" nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
-  run_or_fail "home activation drvPath 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#homeConfigurations.${VERIFY_FLAKE}.activationPackage.drvPath"
-  run_or_fail "darwin config 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#darwinConfigurations.${VERIFY_FLAKE}.system"
+  run_or_fail "home activation drvPath 評価（${verify_flake}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#homeConfigurations.${verify_flake}.activationPackage.drvPath"
+  run_or_fail "darwin config 評価（${verify_flake}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#darwinConfigurations.${verify_flake}.system"
 else
   phase_noncompliant "nix 未導入のため flake 検証不可"
 fi

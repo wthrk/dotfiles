@@ -44,38 +44,38 @@ bootstrap の責務:
 
 - macOS 以外では失敗する。
 - Xcode Command Line Tools がない場合は `xcode-select --install` を起動し、完了後の再実行を要求する。
-- dotfiles repository を `DOTFILES_DIR`（既定: `~/.dotfiles`）へ clone する。既存 checkout がある場合はそれを使う。
+- dotfiles repository を `--dir`（既定: `~/.dotfiles`）へ clone する。既存 checkout がある場合はそれを使う。
 - Nix がない場合は公式 installer を multi-user daemon mode（`--daemon`）で導入する。
-- `DOTFILES_SOPS_AGE_KEY_FILE` が指定された場合だけ、age secret key を `DOTFILES_SOPS_AGE_KEY_DEST`（既定: `/var/lib/sops-nix/key.txt`）へ `0400` で配置する。
-- `flake.nix` が存在する場合は `nix flake check` を実行し、`DOTFILES_SWITCH_MODE` に応じて `darwin-rebuild switch` または `home-manager switch` を実行する。
+- `--sops-age-key-file` が指定された場合だけ、age secret key を `--sops-age-key-dest`（既定: `/var/lib/sops-nix/key.txt`）へ `0400` で配置する。
+- `flake.nix` が存在する場合は `nix flake check` を実行し、`--mode` に応じて `darwin-rebuild switch` または `home-manager switch` を実行する。
 - bootstrap は flake 専用とし、`flake.nix` がない checkout では失敗させる（`init.sh` フォールバックは持たない）。
 
 代表的な実行例:
 
 ```sh
 # host 名を明示して nix-darwin 構成を適用する
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | DOTFILES_FLAKE=ya bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | bash -s -- --flake ya
 
 # switch せず、clone / Nix 導入 / flake check までで止める
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | DOTFILES_RUN_SWITCH=0 bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | bash -s -- --no-switch
 
 # 完全 dry-run（実行計画だけ表示して終了。インストール/鍵配置/switch は行わない）
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | DOTFILES_DRY_RUN=1 bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | bash -s -- --dry-run
 
 # standalone Home Manager として適用する
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | DOTFILES_SWITCH_MODE=home-manager DOTFILES_FLAKE=ya bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | bash -s -- --mode home-manager --flake ya
 
 # sops-nix 用 age key を同時に配置する
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | DOTFILES_SOPS_AGE_KEY_FILE=/Volumes/Secrets/sops-age-key.txt bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/<bootstrap-entrypoint> | bash -s -- --sops-age-key-file /Volumes/Secrets/sops-age-key.txt
 ```
 
 新しい環境での作業順:
 
 1. macOS 初期設定後、ネットワーク接続と Apple ID / App Store signin 要否を確認する。
 2. Xcode Command Line Tools を入れる。未導入なら bootstrap が installer を起動する。
-3. secret を復号する必要がある host では、age key を外部媒体または 1Password 等から取り出し、`DOTFILES_SOPS_AGE_KEY_FILE=/path/to/key.txt` を指定して bootstrap を実行する。
-4. `DOTFILES_RUN_SWITCH=0` で `nix flake check` まで通し、差分と secret 配置を確認する。
-5. `DOTFILES_FLAKE=ya` を明示して `darwin-rebuild switch --flake .#ya` 相当を実行する（この移行フェーズの標準）。
+3. secret を復号する必要がある host では、age key を外部媒体または 1Password 等から取り出し、`--sops-age-key-file /path/to/key.txt` を指定して bootstrap を実行する。
+4. `--no-switch` で `nix flake check` まで通し、差分と secret 配置を確認する。
+5. `--flake ya` を明示して `darwin-rebuild switch --flake .#ya` 相当を実行する（この移行フェーズの標準）。
 6. `command -v zsh git nvim nix`、`nix flake check`、`sudo darwin-rebuild build --flake .#ya`、`home-manager generations` を確認する。
 
 ## 現状の棚卸し
@@ -2838,7 +2838,7 @@ zsh -i -c 'echo ok'
 
 ## 移行順序
 
-1. curl bootstrap の公開 endpoint、環境変数、鍵投入、`DOTFILES_RUN_SWITCH=0` の dry-run 手順を確定する。
+1. curl bootstrap の公開 endpoint、CLI options、鍵投入、`--no-switch` の dry-run 手順を確定する。
 2. `flake.nix` と `home.nix` の最小構成を作る。
 3. Home Manager の運用モード（standalone か nix-darwin 統合）を確定し、適用コマンドを一本化する。
 4. 多ユーザーへ広げる場合の `darwinConfigurations.<host>` / `homeConfigurations."<user>@<host>"` 分割を先に決める。

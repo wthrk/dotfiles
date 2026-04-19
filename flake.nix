@@ -38,24 +38,35 @@
         "x86_64-darwin"
       ];
 
-      hosts = [
+      homeHosts = [
         {
           name = "ya";
           user = "ya";
           system = "aarch64-darwin";
-          aliases = [ "default" ];
         }
         {
           name = "runner";
           user = "runner";
           system = "aarch64-darwin";
-          aliases = [ ];
         }
         {
           name = "dotfilesci";
           user = "dotfilesci";
           system = "aarch64-darwin";
-          aliases = [ ];
+        }
+        {
+          name = "ya-x86_64-darwin";
+          user = "ya";
+          system = "x86_64-darwin";
+        }
+      ];
+
+      darwinHosts = [
+        {
+          name = "ya";
+          user = "ya";
+          system = "aarch64-darwin";
+          aliases = [ "default" ];
         }
         {
           name = "ya-x86_64-darwin";
@@ -143,9 +154,9 @@
       }) systems;
     in
     {
-      homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost hosts);
+      homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost homeHosts);
 
-      darwinConfigurations = builtins.listToAttrs (builtins.concatMap darwinEntriesForHost hosts);
+      darwinConfigurations = builtins.listToAttrs (builtins.concatMap darwinEntriesForHost darwinHosts);
 
       formatter = builtins.listToAttrs formatterEntries;
     };
