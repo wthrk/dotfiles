@@ -81,7 +81,9 @@ jobs:
           test "$(nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.enable)" = "true"
           test "$(nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.mutableTaps)" = "false"
           test "$(nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.config.homebrew.enable)" = "true"
-          test "$(nix --extra-experimental-features "nix-command flakes" eval --json --no-update-lock-file .#darwinConfigurations.ya.config.homebrew.taps --apply 'map (tap: tap.name)')" = "$(nix --extra-experimental-features "nix-command flakes" eval --json --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.taps --apply builtins.attrNames)"
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --json --no-update-lock-file .#darwinConfigurations.ya.config.nix-homebrew.taps --apply builtins.attrNames)" = '["azure/homebrew-bicep","homebrew/homebrew-cask","homebrew/homebrew-core"]'
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --json --no-update-lock-file .#darwinConfigurations.ya.config.homebrew.taps --apply 'map (tap: tap.name)')" = '["homebrew/homebrew-core","homebrew/homebrew-cask","azure/bicep"]'
+          test "$(nix --extra-experimental-features "nix-command flakes" eval --raw --no-update-lock-file .#darwinConfigurations.ya.config.homebrew.taps --apply 'taps: (builtins.elemAt (builtins.filter (tap: tap.name == "azure/bicep") taps) 0).clone_target')" = "https://github.com/Azure/homebrew-bicep"
           nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#homeConfigurations.ya.activationPackage
           nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#darwinConfigurations.ya.system
 

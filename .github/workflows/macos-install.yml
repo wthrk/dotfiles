@@ -304,7 +304,6 @@ jobs:
             --dir "$RUNNER_TEMP/dotfiles-ya-switch" \
             --flake ya \
             --mode darwin \
-            --homebrew-owner ya \
             --run-switch
 
       - name: 実運用 ya の移行後検証

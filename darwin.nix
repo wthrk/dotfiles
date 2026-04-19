@@ -44,7 +44,7 @@
     taps = {
       "homebrew/homebrew-core" = inputs.homebrew-core;
       "homebrew/homebrew-cask" = inputs.homebrew-cask;
-      "azure/bicep" = inputs.homebrew-bicep;
+      "azure/homebrew-bicep" = inputs.homebrew-bicep;
     };
   };
 

@@ -8,7 +8,6 @@ run_switch=1
 flake_name="ya"
 sops_age_key_file=""
 sops_age_key_dest="/var/lib/sops-nix/key.txt"
-homebrew_owner=""
 dry_run=0
 self_test=0
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
@@ -31,7 +30,6 @@ Options:
   --no-switch                flake check 後に終了する
   --sops-age-key-file PATH   配置する sops age key
   --sops-age-key-dest PATH   sops age key 配置先（既定: /var/lib/sops-nix/key.txt）
-  --homebrew-owner USER      nix-homebrew が管理する Homebrew の所有ユーザー
   --dry-run                  実行計画だけ表示する
   --self-test                内部の安全性テストだけ実行する
   -h, --help                 このヘルプを表示する
@@ -72,10 +70,6 @@ while (($#)); do
       sops_age_key_dest="$2"
       shift 2
       ;;
-    --homebrew-owner)
-      homebrew_owner="$2"
-      shift 2
-      ;;
     --dry-run)
       dry_run=1
       shift
@@ -113,7 +107,6 @@ bootstrap 実行計画:
 - 適用モード: ${switch_mode}
 - flake 出力: .#${flake_name}
 - switch 実行: ${run_switch}
-- Homebrew 所有ユーザー: ${homebrew_owner:-指定なし}
 PLAN
 }
 
@@ -131,20 +124,8 @@ prepare_nix_homebrew() {
 
   local prefix
   for prefix in /opt/homebrew /usr/local; do
-    [[ -e "$prefix/Library/Taps" ]] || continue
     move_aside "$prefix/Library/Taps" "$prefix/Library/Taps.before-nix-homebrew" "nix-homebrew 管理前に退避します"
-    prepare_homebrew_taps_owner "$prefix"
   done
-}
-
-prepare_homebrew_taps_owner() {
-  local prefix="$1"
-
-  [[ -n "$homebrew_owner" ]] || return 0
-  [[ -d "$prefix/Library" ]] || return 0
-
-  sudo mkdir -p "$prefix/Library/Taps"
-  sudo chown "$homebrew_owner:admin" "$prefix/Library/Taps"
 }
 
 move_aside() {

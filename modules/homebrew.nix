@@ -1,8 +1,14 @@
-{ config, ... }:
 {
   homebrew = {
     enable = true;
-    taps = builtins.attrNames config.nix-homebrew.taps;
+    taps = [
+      "homebrew/homebrew-core"
+      "homebrew/homebrew-cask"
+      {
+        name = "azure/bicep";
+        clone_target = "https://github.com/Azure/homebrew-bicep";
+      }
+    ];
 
     onActivation = {
       autoUpdate = false;
