@@ -257,7 +257,7 @@ jobs:
             LOGNAME=dotfilesci \
             SHELL=/bin/zsh \
             NIX_CONFIG="$NIX_CONFIG" \
-            nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file /Users/dotfilesci/.dotfiles#homeConfigurations.dotfilesci.activationPackage.drvPath
+            /nix/var/nix/profiles/default/bin/nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file /Users/dotfilesci/.dotfiles#homeConfigurations.dotfilesci.activationPackage.drvPath
 
   darwin-switch-ya:
     name: 実運用 ya の nix-darwin switch を検証
@@ -292,6 +292,9 @@ jobs:
           sudo createhomedir -c -u ya || true
           sudo mkdir -p /Users/ya
           sudo chown ya:staff /Users/ya
+          if [[ -d /opt/homebrew ]]; then
+            sudo chown -R ya:admin /opt/homebrew
+          fi
 
       - name: 実運用 ya を適用
         run: |
