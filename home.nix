@@ -1,6 +1,7 @@
-{ user, ... }:
+{ inputs, user, ... }:
 {
   imports = [
+    inputs.sops-nix.homeManagerModules.sops
     ./modules/cli.nix
     ./modules/languages.nix
     ./modules/zsh.nix
