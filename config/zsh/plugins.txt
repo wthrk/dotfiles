@@ -1,5 +1,2 @@
-romkatv/powerlevel10k path:powerlevel10k.zsh-theme
-zsh-users/zsh-autosuggestions
-zdharma-continuum/fast-syntax-highlighting
-Aloxaf/fzf-tab
-zsh-users/zsh-completions kind:fpath path:src
+# Deprecated: plugin ownership moved to Home Manager programs.zsh.plugins.
+# Kept only as migration documentation for previous Antidote setup.

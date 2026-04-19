@@ -1,24 +1,131 @@
 # dotfiles
 
-## zsh
-- Run `./init.sh` to link `~/.zshrc` and `~/.config/zsh`.
-- Main loader: `~/.zshrc` -> `~/.config/zsh/.zshrc`.
-- Modular files:
-  - `config/zsh/env.zsh`
-  - `config/zsh/options.zsh`
-  - `config/zsh/history.zsh`
-  - `config/zsh/aliases.zsh`
-  - `config/zsh/plugins.zsh`
-  - `config/zsh/completion.zsh`
-  - `config/zsh/prompt.zsh`
-  - `config/zsh/local.zsh`
-- Managed plugins (via antidote): `powerlevel10k`, `zsh-autosuggestions`,
-  `fast-syntax-highlighting`, `fzf-tab`, `zsh-completions`.
-- Recommended tools: `fzf`, `atuin`, `zoxide`.
-- First prompt setup: run `p10k configure`.
+`ya` ユーザー向けの Home Manager + nix-darwin 管理 dotfiles。
 
-## neovim
-* install python3
-  * on linux ```curl -L https://raw.githubusercontent.com/yyuu/pyenv-installer/master/bin/pyenv-installer | bash```
-* install neovim python package. ```pip install neovim```
-* open nvim
+## 適用手順
+
+統合モード（既定）:
+
+```sh
+nix flake check
+sudo darwin-rebuild switch --flake .#ya
+```
+
+Home Manager 単体モード（任意。通常運用では統合モードと混在しない）:
+
+```sh
+home-manager switch --flake .#ya
+```
+
+## 初回導入（公開 raw エンドポイント）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstrap.sh | bash
+```
+
+tag/commit 固定 URL:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scripts/bootstrap.sh | bash
+```
+
+bootstrap は Nix 優先/flake 専用です。`init.sh` は削除済みで、フォールバックはありません。
+
+主要な env var:
+
+- `DOTFILES_DIR`（既定: `~/.dotfiles`）
+- `DOTFILES_FLAKE`（既定: `ya`、この移行フェーズの標準）
+- `DOTFILES_SWITCH_MODE`（`darwin` または `home-manager`、既定: `darwin`）
+- `DOTFILES_RUN_SWITCH`（`0` で `nix flake check` まで）
+- `DOTFILES_SOPS_AGE_KEY_FILE`（任意の 鍵ファイル）
+- `DOTFILES_SOPS_AGE_KEY_DEST`（既定: `/var/lib/sops-nix/key.txt`）
+- `DOTFILES_DRY_RUN`（`1` で実行計画のみ表示して終了）
+
+dry-run 例:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstrap.sh | DOTFILES_DRY_RUN=1 bash
+```
+
+## 所有権ルール
+
+- `programs.*`: `git`, `gh`, `neovim`, `direnv`, `zsh`, `fzf`, `atuin`, `zoxide`
+- `home.packages`: 単機能の実行バイナリと言語ランタイムツール
+- nix-darwin: `homebrew.*`, `fonts`, `launchd`, `system.defaults`, `mas`
+- nix-homebrew: Homebrew 本体と taps の所有
+
+## zsh 方針
+
+- Antidote の起動時 clone は廃止。
+- plugin は Home Manager `programs.zsh.plugins` で固定。
+- `programs.fzf.enableZshIntegration = false`。
+- `key-bindings.zsh` は Nix 提供のみを source。
+- `^I` は `expand-or-complete`、`^X^I` は `fzf-tab-complete`。
+- 優先 PATH から除外する対象: `~/.nodebrew/current/bin`, `~/.bun/bin`, `~/.cargo/bin`, `~/.pyenv/bin`, `~/.rbenv/bin`。
+- 管理対象外として許容する PATH: `~/.agent-tools/bin`, `~/.rd/bin`。
+- Rancher Desktop の shell injection block（例: `### MANAGED BY RANCHER DESKTOP ...`）は ランタイム/アプリ管理状態 として扱い、repo/HM 管理の `.zshrc` には保持しません。必要なら Rancher Desktop 設定側で再生成・管理します。
+
+## Neovim 方針
+
+- LSP の所有権は editor 側（Mason 利用可）。
+- Mason の PATH 挿入は無効（`PATH = "skip"`）。
+- formatter/linter の Mason installer は無効（`mason-null-ls` の installer list は空）。
+- `mason-lspconfig` の `ensure_installed` で `tsserver` は `ts_ls` へ移行。
+
+## シークレット管理（sops-nix）
+
+既定では雛形のみ用意し、secrets は明示設定まで無効:
+
+- `.sops.yaml`
+- `secrets/common.yaml`
+- `secrets/hosts/ya.yaml`
+- `secrets/users/ya.yaml`
+
+暗号化と鍵配置後に有効化:
+
+- host key: `/var/lib/sops-nix/key.txt`（`0400`）
+- user key: `~/.config/sops/age/keys.txt`（`0600`）
+- Home Manager 側で `dotfiles.enableSops = true`
+
+ランタイム認証状態は管理対象外（例: `~/.docker/config.json` の auth、`~/.kube/config`、`~/.config/gcloud/*db`、`~/.config/gh/hosts.yml`）。
+
+## 検証
+
+基本検証:
+
+```sh
+bash scripts/verify-nix-migration.sh
+```
+
+`verify` は pre-switch 状態やローカル状態（例: Neovim parser cache）に応じて `WARN`/`SKIP` を返す場合があります。`VERIFY_MIGRATION_PHASE=post-migration` では Compose plugin の非 Nix 供給元を失敗として扱います。
+
+zsh 検証:
+
+```sh
+bash scripts/test-zsh-shortcuts.sh
+bash scripts/test-zsh-key-operations-full.sh
+```
+
+## 例外
+
+- `openvino` はグローバル既定で導入しません。プロジェクトの devShell/例外運用で扱います。
+
+## ロールバック
+
+統合 nix-darwin モード:
+
+```sh
+sudo darwin-rebuild --list-generations
+sudo darwin-rebuild switch --rollback
+```
+
+Home Manager 単体モード:
+
+```sh
+home-manager generations
+home-manager switch --rollback
+```
+
+## 廃止済み項目
+
+`init.sh` は Nix 移行後に削除済みです。初回導入は `scripts/bootstrap.sh` を使用し、適用は `darwin-rebuild` または `home-manager` の経路を使用してください。
