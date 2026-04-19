@@ -8,7 +8,8 @@ DOTFILES_RUN_SWITCH="${DOTFILES_RUN_SWITCH:-1}"
 DOTFILES_FLAKE="${DOTFILES_FLAKE:-ya}"
 DOTFILES_SOPS_AGE_KEY_DEST="${DOTFILES_SOPS_AGE_KEY_DEST:-/var/lib/sops-nix/key.txt}"
 DOTFILES_DRY_RUN="${DOTFILES_DRY_RUN:-0}"
-NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes" --no-update-lock-file)
+NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
+NIX_FLAKE_ARGS=(--no-update-lock-file)
 DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
 HOME_MANAGER_INSTALLER_FLAKE="github:nix-community/home-manager/5b56ad02dc643808b8af6d5f3ff179e2ce9593f4"
 
@@ -85,7 +86,7 @@ if [[ -n "${DOTFILES_SOPS_AGE_KEY_FILE:-}" ]]; then
 fi
 
 echo "nix flake check を実行します"
-nix "${NIX_EXTRA_ARGS[@]}" flake check
+nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
 
 if [[ "$DOTFILES_RUN_SWITCH" == "0" ]]; then
   echo "DOTFILES_RUN_SWITCH=0 のため、flake check 後に終了します"
@@ -98,14 +99,14 @@ case "$DOTFILES_SWITCH_MODE" in
       sudo darwin-rebuild switch --flake ".#$DOTFILES_FLAKE"
     else
       nix_bin="$(command -v nix)"
-      sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
+      sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
     fi
     ;;
   home-manager)
     if command -v home-manager >/dev/null 2>&1; then
       home-manager switch --flake ".#$DOTFILES_FLAKE"
     else
-      nix "${NIX_EXTRA_ARGS[@]}" run "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
+      nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$DOTFILES_FLAKE"
     fi
     ;;
   *)

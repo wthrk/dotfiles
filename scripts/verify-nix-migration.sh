@@ -7,7 +7,8 @@ skip=0
 pass=0
 VERIFY_MIGRATION_PHASE="${VERIFY_MIGRATION_PHASE:-post-migration}"
 VERIFY_FLAKE="${VERIFY_FLAKE:-${DOTFILES_FLAKE:-ya}}"
-NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes" --no-update-lock-file)
+NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
+NIX_FLAKE_ARGS=(--no-update-lock-file)
 
 say() { printf '\n## %s\n' "$1"; }
 mark_pass() { printf 'PASS %s\n' "$1"; pass=$((pass+1)); }
@@ -78,9 +79,9 @@ fi
 
 say "Flake 評価"
 if command -v nix >/dev/null 2>&1; then
-  run_or_warn "nix flake check" nix "${NIX_EXTRA_ARGS[@]}" flake check
-  run_or_warn "home activation drvPath 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval ".#homeConfigurations.${VERIFY_FLAKE}.activationPackage.drvPath"
-  run_or_warn "darwin config 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval ".#darwinConfigurations.${VERIFY_FLAKE}.system"
+  run_or_warn "nix flake check" nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
+  run_or_warn "home activation drvPath 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#homeConfigurations.${VERIFY_FLAKE}.activationPackage.drvPath"
+  run_or_warn "darwin config 評価（${VERIFY_FLAKE}）" nix "${NIX_EXTRA_ARGS[@]}" eval "${NIX_FLAKE_ARGS[@]}" ".#darwinConfigurations.${VERIFY_FLAKE}.system"
 else
   mark_skip "nix 未導入のため flake 検証を SKIP"
 fi

@@ -47,7 +47,7 @@ jobs:
       - name: nix flake check
         run: |
           set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file flake check
+          nix --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file
 
   eval-ya:
     name: ya output を評価
@@ -71,8 +71,8 @@ jobs:
       - name: ya output を評価
         run: |
           set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file eval .#homeConfigurations.ya.activationPackage.drvPath
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file eval .#darwinConfigurations.ya.system
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.ya.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.ya.system
 
   eval-runner:
     name: runner output を評価
@@ -96,8 +96,8 @@ jobs:
       - name: runner output を評価
         run: |
           set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file eval .#homeConfigurations.runner.activationPackage.drvPath
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file eval .#darwinConfigurations.runner.system
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.runner.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.runner.system
 
   eval-dotfilesci:
     name: dotfilesci output を評価
@@ -121,5 +121,5 @@ jobs:
       - name: dotfilesci output を評価
         run: |
           set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file eval .#homeConfigurations.dotfilesci.activationPackage.drvPath
-          nix --extra-experimental-features "nix-command flakes" --no-update-lock-file eval .#darwinConfigurations.dotfilesci.system
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.dotfilesci.activationPackage.drvPath
+          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#darwinConfigurations.dotfilesci.system
