@@ -5,8 +5,15 @@ let
   optionalPkg = path: if has path pkgs then [ (get path pkgs) ] else [ ];
 
   node = if has [ "nodejs_22" ] pkgs then pkgs.nodejs_22 else pkgs.nodejs;
+  pythonBase =
+    if has [ "python313" ] pkgs then
+      pkgs.python313
+    else if has [ "python312" ] pkgs then
+      pkgs.python312
+    else
+      pkgs.python3;
   python =
-    (if has [ "python311" ] pkgs then pkgs.python311 else pkgs.python3).withPackages (
+    pythonBase.withPackages (
       ps: with ps; [
         pip
         virtualenv
