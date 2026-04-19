@@ -52,7 +52,6 @@ in
       pkgs.opam
       pkgs.ocamlPackages.utop
     ]
-    ++ optionalPkg [ "corepack" ]
     ++ optionalPkg [ "typescript" ]
     ++ optionalPkg [ "prettier" ]
     ++ optionalPkg [ "eslint" ]
