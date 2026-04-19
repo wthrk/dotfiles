@@ -8,6 +8,7 @@ DOTFILES_RUN_SWITCH="${DOTFILES_RUN_SWITCH:-1}"
 DOTFILES_FLAKE="${DOTFILES_FLAKE:-ya}"
 DOTFILES_SOPS_AGE_KEY_DEST="${DOTFILES_SOPS_AGE_KEY_DEST:-/var/lib/sops-nix/key.txt}"
 DOTFILES_DRY_RUN="${DOTFILES_DRY_RUN:-0}"
+DOTFILES_PREPARE_NIX_DARWIN_ETC="${DOTFILES_PREPARE_NIX_DARWIN_ETC:-0}"
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
@@ -30,7 +31,21 @@ bootstrap 実行計画:
 - 適用モード: ${DOTFILES_SWITCH_MODE}
 - flake 出力: .#${DOTFILES_FLAKE}
 - DOTFILES_RUN_SWITCH=${DOTFILES_RUN_SWITCH} を尊重
+- DOTFILES_PREPARE_NIX_DARWIN_ETC=${DOTFILES_PREPARE_NIX_DARWIN_ETC} を尊重
 PLAN
+}
+
+prepare_nix_darwin_etc() {
+  [[ "$DOTFILES_SWITCH_MODE" == "darwin" ]] || return 0
+  [[ "$DOTFILES_PREPARE_NIX_DARWIN_ETC" == "1" ]] || return 0
+
+  for path in /etc/bashrc /etc/zshrc; do
+    backup="${path}.before-nix-darwin"
+    if [[ -e "$path" && ! -e "$backup" ]]; then
+      echo "nix-darwin 管理前に退避します: $path -> $backup"
+      sudo mv "$path" "$backup"
+    fi
+  done
 }
 
 if [[ "$DOTFILES_DRY_RUN" == "1" ]]; then
@@ -84,6 +99,8 @@ if [[ -n "${DOTFILES_SOPS_AGE_KEY_FILE:-}" ]]; then
   sudo mkdir -p "$(dirname "$DOTFILES_SOPS_AGE_KEY_DEST")"
   sudo install -m 0400 "$DOTFILES_SOPS_AGE_KEY_FILE" "$DOTFILES_SOPS_AGE_KEY_DEST"
 fi
+
+prepare_nix_darwin_etc
 
 echo "nix flake check を実行します"
 nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
