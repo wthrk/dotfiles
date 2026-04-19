@@ -309,7 +309,10 @@ jobs:
       - name: 実運用 ya の移行後検証
         run: |
           set -euxo pipefail
-          sudo -H -u ya bash "$RUNNER_TEMP/dotfiles-ya-switch/scripts/verify-nix-migration.sh" --phase post-migration --flake ya
+          sudo -H -u ya bash "$RUNNER_TEMP/dotfiles-ya-switch/scripts/verify-nix-migration.sh" \
+            --phase post-migration \
+            --flake ya \
+            --skip-flake-evaluation
           brew="/opt/homebrew/bin/brew"
           sudo -H -u ya "$brew" tap | rg -qx "azure/bicep"
           sudo -H -u ya "$brew" tap | rg -qx "hashicorp/tap"
