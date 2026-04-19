@@ -1,12 +1,13 @@
+{ config, ... }:
 {
   homebrew = {
     enable = true;
-    taps = [ ];
+    taps = builtins.attrNames config.nix-homebrew.taps;
 
     onActivation = {
       autoUpdate = false;
       upgrade = false;
-      cleanup = "none";
+      cleanup = "uninstall";
     };
 
     casks = [
