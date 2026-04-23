@@ -292,6 +292,8 @@ jobs:
           sudo createhomedir -c -u ya || true
           sudo mkdir -p /Users/ya
           sudo chown ya:staff /Users/ya
+          sudo -H -u ya mkdir -p /Users/ya/Library/LaunchAgents
+          sudo -H -u ya ln -s /nix/store/missing-org.nix.colima.plist /Users/ya/Library/LaunchAgents/org.nix.colima.plist
           if [[ -d /opt/homebrew ]]; then
             sudo chown -R ya:admin /opt/homebrew
           fi

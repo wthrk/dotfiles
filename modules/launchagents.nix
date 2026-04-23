@@ -10,9 +10,7 @@ let
   oldLabel = "homebrew.mxcl.colima";
   plistPath = "${config.home.homeDirectory}/Library/LaunchAgents/${label}.plist";
   oldPlistPath = "${config.home.homeDirectory}/Library/LaunchAgents/${oldLabel}.plist";
-in
-{
-  home.file."Library/LaunchAgents/${label}.plist".text = ''
+  plistFile = pkgs.writeText "${label}.plist" ''
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
       "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,6 +37,17 @@ in
     </dict>
     </plist>
   '';
+in
+{
+  home.file."Library/LaunchAgents/${label}.plist".source = plistFile;
+
+  home.activation.removeDanglingColimaLaunchAgent = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
+    plist="${plistPath}"
+
+    if [ -L "$plist" ] && [ ! -e "$plist" ]; then
+      /bin/rm -f "$plist"
+    fi
+  '';
 
   home.activation.loadColimaLaunchAgent = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
     plist="${plistPath}"
@@ -47,7 +56,7 @@ in
     service="$domain/${label}"
     old_service="$domain/${oldLabel}"
 
-    /bin/mkdir -p "$HOME/Library/Logs"
+    /bin/mkdir -p "${config.home.homeDirectory}/Library/Logs"
 
     if /bin/launchctl print "$domain" >/dev/null 2>&1; then
       if ! /bin/launchctl print "$service" >/dev/null 2>&1; then
