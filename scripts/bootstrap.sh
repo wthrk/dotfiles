@@ -177,9 +177,35 @@ abort_with_status() {
   exit "$status"
 }
 
+require_sudo() {
+  local purpose="$1"
+
+  if sudo -n true 2>/dev/null; then
+    return 0
+  fi
+
+  if [[ -t 0 ]]; then
+    echo "sudo 認証が必要です: $purpose" >&2
+    sudo -v
+    return
+  fi
+
+  if { : </dev/tty; } 2>/dev/null; then
+    echo "sudo 認証が必要です: $purpose" >/dev/tty
+    sudo -v
+    return
+  fi
+
+  echo "sudo 認証が必要ですが、この実行環境ではパスワード入力できません: $purpose" >&2
+  echo "対話端末で sudo -v を実行してから再実行してください。" >&2
+  return 1
+}
+
 install_sops_age_key() {
   local source="$1"
   local dest="$2"
+
+  require_sudo "sops age key 配置: $dest"
 
   if [[ -e "$dest" ]]; then
     if sudo cmp -s "$source" "$dest"; then
@@ -202,7 +228,7 @@ run_self_test() {
   local tmp old new path backup generated signal
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
-  sudo -n true
+  require_sudo "--self-test"
 
   old="$tmp/key-old"
   new="$tmp/key-new"
@@ -305,7 +331,7 @@ fi
 cd "$dotfiles_dir"
 
 if [[ ! -f flake.nix ]]; then
-  echo "flake.nix が必要です。Nix 移行後のため init フォールバックはありません（`init.sh` は削除済み）。" >&2
+  echo "flake.nix が必要です。Nix 移行後のため init フォールバックはありません（init.sh は削除済み）。" >&2
   exit 1
 fi
 
@@ -315,6 +341,7 @@ if [[ ! -s flake.lock ]]; then
 fi
 
 if ! command -v nix >/dev/null 2>&1; then
+  require_sudo "Nix daemon mode インストール"
   echo "Nix をインストールします（daemon mode）..."
   sh <(curl -L https://nixos.org/nix/install) --daemon
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
@@ -337,6 +364,7 @@ fi
 
 case "$switch_mode" in
   darwin)
+    require_sudo "nix-darwin switch のための /etc と Homebrew Taps 退避"
     rollback_required=1
     trap rollback_on_exit EXIT
     trap 'abort_with_status 130' INT
