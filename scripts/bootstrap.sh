@@ -14,6 +14,7 @@ NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
 HOME_MANAGER_INSTALLER_FLAKE="github:nix-community/home-manager/5b56ad02dc643808b8af6d5f3ff179e2ce9593f4"
+HOME_MANAGER_BACKUP_EXTENSION="before-home-manager"
 prepared_paths=()
 rollback_required=0
 
@@ -378,7 +379,7 @@ case "$switch_mode" in
     trap - EXIT INT TERM HUP
     ;;
   home-manager)
-    nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
+    nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch -b "$HOME_MANAGER_BACKUP_EXTENSION" --flake ".#$flake_name"
     ;;
   *)
     echo "未対応の適用モード: $switch_mode" >&2

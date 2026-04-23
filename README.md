@@ -30,6 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scri
 ```
 
 bootstrap は Nix 優先/flake 専用です。`init.sh` は削除済みで、フォールバックはありません。
+既存の Home Manager 管理対象ファイルは `*.before-home-manager` にバックアップしてから置き換えます。
 
 主要な options:
 
