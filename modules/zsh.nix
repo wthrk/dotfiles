@@ -1,5 +1,7 @@
 { pkgs, ... }:
 {
+  home.file.".zshrc".force = true;
+
   programs.zsh = {
     enable = true;
     enableCompletion = true;
