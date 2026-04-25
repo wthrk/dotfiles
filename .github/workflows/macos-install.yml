@@ -384,10 +384,14 @@ jobs:
           fi
           plist="/Users/ya/Library/LaunchAgents/org.nix.colima.plist"
           old_plist="/Users/ya/Library/LaunchAgents/homebrew.mxcl.colima.plist"
+          plist_target="$(readlink "$plist")"
           uid="$(id -u ya)"
-          test -s "$plist"
+          test -L "$plist"
+          test -n "$plist_target"
+          test -e "$plist_target"
+          test -s "$plist_target"
           test ! -e "$old_plist"
-          /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist"
+          /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist_target"
           if sudo -H -u ya launchctl print "gui/$uid" >/dev/null 2>&1; then
             sudo -H -u ya launchctl print "gui/$uid/org.nix.colima" | tee "$RUNNER_TEMP/org.nix.colima.launchd"
             /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
