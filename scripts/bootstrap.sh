@@ -133,13 +133,14 @@ move_aside() {
   local path="$1"
   local backup="$2"
   local message="$3"
+  local existing_backup
 
   [[ -e "$path" ]] || return 0
 
   if [[ -e "$backup" ]]; then
-    echo "退避先が既に存在します: $backup" >&2
-    echo "確認してから $path を手動で整理してください。" >&2
-    return 1
+    existing_backup="${backup}.previous.$(date +%Y%m%d%H%M%S)"
+    echo "既存の退避先を保持します: $backup -> $existing_backup"
+    sudo mv "$backup" "$existing_backup"
   fi
 
   echo "$message: $path -> $backup"
@@ -330,6 +331,7 @@ else
 fi
 
 cd "$dotfiles_dir"
+dotfiles_dir="$(pwd -P)"
 
 if [[ ! -f flake.nix ]]; then
   echo "flake.nix が必要です。Nix 移行後のため init フォールバックはありません（init.sh は削除済み）。" >&2
@@ -374,7 +376,7 @@ case "$switch_mode" in
     prepare_nix_darwin_etc
     prepare_nix_homebrew
     nix_bin="$(command -v nix)"
-    sudo --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
+    sudo -H --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
     rollback_required=0
     trap - EXIT INT TERM HUP
     ;;

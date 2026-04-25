@@ -158,8 +158,8 @@
 
       formatterEntries = map (system: {
         name = system;
-        value = (pkgsFor system).nixfmt-rfc-style;
-      }) systems;
+        value = (pkgsFor system).nixfmt;
+      }) [ "aarch64-darwin" ];
     in
     {
       homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost homeHosts);
