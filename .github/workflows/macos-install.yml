@@ -293,6 +293,7 @@ jobs:
           sudo mkdir -p /Users/ya
           sudo chown ya:staff /Users/ya
           sudo -H -u ya mkdir -p /Users/ya/Library/LaunchAgents
+          sudo -H -u ya rm -f /Users/ya/Library/LaunchAgents/org.nix.colima.plist
           sudo -H -u ya ln -s /nix/store/missing-org.nix.colima.plist /Users/ya/Library/LaunchAgents/org.nix.colima.plist
           if [[ -d /opt/homebrew ]]; then
             sudo chown -R ya:admin /opt/homebrew
@@ -342,24 +343,11 @@ jobs:
           test -d /etc/profiles/per-user/ya
           sudo -H -u ya bash -c '
             set -euo pipefail
-            profile="$HOME/.local/state/nix/profiles/home-manager"
-            if [[ -e "$profile" && ! -L "$profile" ]]; then
-              echo "$profile exists but is not a symlink" >&2
-              exit 1
-            fi
-            if [[ -L "$profile" ]]; then
-              generation="$(readlink "$profile")"
-              [[ "$generation" == home-manager-*-link ]]
-              test -L "$HOME/.local/state/nix/profiles/$generation"
-              store_target="$(readlink "$HOME/.local/state/nix/profiles/$generation")"
-              [[ "$store_target" == /nix/store/* ]]
-            else
-              for managed_path in "$HOME/.config/zsh" "$HOME/.config/nvim"; do
-                test -L "$managed_path"
-                managed_target="$(readlink "$managed_path")"
-                [[ "$managed_target" == /nix/store/* ]]
-              done
-            fi
+            for managed_path in "$HOME/.config/zsh" "$HOME/.config/nvim" "$HOME/.zshrc" "$HOME/.zshenv"; do
+              test -L "$managed_path"
+              managed_target="$(readlink "$managed_path")"
+              [[ "$managed_target" == /nix/store/* ]]
+            done
           '
           sudo -H -u ya /etc/profiles/per-user/ya/bin/zsh -il -c '
             set -euo pipefail
@@ -391,6 +379,7 @@ jobs:
             plist="$HOME/Library/LaunchAgents/org.nix.colima.plist"
             old_plist="$HOME/Library/LaunchAgents/homebrew.mxcl.colima.plist"
             plist_target="$plist"
+            activation_mode_file="$HOME/.local/state/nix/org.nix.colima.activation-mode"
 
             if [[ -L "$plist" ]]; then
               readlink "$plist"
@@ -406,9 +395,19 @@ jobs:
             test -s "$plist_target"
             test ! -e "$old_plist"
             /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist_target"
+            test -f "$activation_mode_file"
+            activation_mode="$(cat "$activation_mode_file")"
+            case "$activation_mode" in
+              loaded|installed-without-loading) ;;
+              *)
+                echo "unexpected activation mode: $activation_mode" >&2
+                exit 1
+                ;;
+            esac
           '
+          activation_mode="$(sudo -H -u ya cat /Users/ya/.local/state/nix/org.nix.colima.activation-mode)"
           uid="$(id -u ya)"
-          if sudo -H -u ya launchctl print "gui/$uid" >/dev/null 2>&1; then
+          if [[ "$activation_mode" == "loaded" ]]; then
             sudo -H -u ya launchctl print "gui/$uid/org.nix.colima" | tee "$RUNNER_TEMP/org.nix.colima.launchd"
             /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
             if sudo -H -u ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
@@ -416,5 +415,9 @@ jobs:
               exit 1
             fi
           else
-            echo "gui/$uid launchd domain is unavailable; verified org.nix.colima plist placement and old plist removal"
+            if sudo -H -u ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
+              echo "homebrew.mxcl.colima is still loaded" >&2
+              exit 1
+            fi
+            echo "activation ended in $activation_mode; verified org.nix.colima plist placement and old plist removal"
           fi

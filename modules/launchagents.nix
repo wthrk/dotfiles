@@ -10,6 +10,7 @@ let
   oldLabel = "homebrew.mxcl.colima";
   plistPath = "${config.home.homeDirectory}/Library/LaunchAgents/${label}.plist";
   oldPlistPath = "${config.home.homeDirectory}/Library/LaunchAgents/${oldLabel}.plist";
+  activationStatePath = "${config.xdg.stateHome}/nix/${label}.activation-mode";
   plistFile = pkgs.writeText "${label}.plist" ''
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -39,7 +40,10 @@ let
   '';
 in
 {
-  home.file."Library/LaunchAgents/${label}.plist".source = plistFile;
+  home.file."Library/LaunchAgents/${label}.plist" = {
+    force = true;
+    source = plistFile;
+  };
 
   home.activation.removeDanglingColimaLaunchAgent = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
     plist="${plistPath}"
@@ -51,23 +55,32 @@ in
 
   home.activation.loadColimaLaunchAgent = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
     plist="${plistPath}"
+    state_file="${activationStatePath}"
     uid="$(id -u)"
     domain="gui/$uid"
     service="$domain/${label}"
     old_service="$domain/${oldLabel}"
 
     /bin/mkdir -p "${config.home.homeDirectory}/Library/Logs"
+    /bin/mkdir -p "$(/usr/bin/dirname "$state_file")"
 
     if /bin/launchctl print "$domain" >/dev/null 2>&1; then
       if ! /bin/launchctl print "$service" >/dev/null 2>&1; then
-        /bin/launchctl bootstrap "$domain" "$plist"
+        if ! /bin/launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1; then
+          /bin/sleep 1
+          if ! /bin/launchctl print "$service" >/dev/null 2>&1; then
+            /bin/launchctl bootstrap "$domain" "$plist"
+          fi
+        fi
       fi
       /bin/launchctl enable "$service" >/dev/null 2>&1 || true
 
       /bin/launchctl bootout "$old_service" >/dev/null 2>&1 || true
       /bin/rm -f "${oldPlistPath}"
+      /bin/printf '%s\n' "loaded" > "$state_file"
     else
       /bin/rm -f "${oldPlistPath}"
+      /bin/printf '%s\n' "installed-without-loading" > "$state_file"
       echo "$domain launchd domain is unavailable; installed ${label} plist without loading it"
     fi
   '';
