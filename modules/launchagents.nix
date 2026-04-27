@@ -77,10 +77,10 @@ in
 
       /bin/launchctl bootout "$old_service" >/dev/null 2>&1 || true
       /bin/rm -f "${oldPlistPath}"
-      /bin/printf '%s\n' "loaded" > "$state_file"
+      printf '%s\n' "loaded" > "$state_file"
     else
       /bin/rm -f "${oldPlistPath}"
-      /bin/printf '%s\n' "installed-without-loading" > "$state_file"
+      printf '%s\n' "installed-without-loading" > "$state_file"
       echo "$domain launchd domain is unavailable; installed ${label} plist without loading it"
     fi
   '';
