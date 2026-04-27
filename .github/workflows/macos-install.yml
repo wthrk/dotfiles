@@ -385,25 +385,29 @@ jobs:
           ls -la /Users/ya/Library || true
           ls -la /Users/ya/Library/LaunchAgents || true
           sudo -H -u ya ls -la /Users/ya/Library/LaunchAgents || true
-          find /Users/ya/Library -maxdepth 3 -name '*colima*.plist' -print || true
-          if [ -L /Users/ya/Library/LaunchAgents/org.nix.colima.plist ]; then
-            readlink /Users/ya/Library/LaunchAgents/org.nix.colima.plist
-          fi
-          plist="/Users/ya/Library/LaunchAgents/org.nix.colima.plist"
-          old_plist="/Users/ya/Library/LaunchAgents/homebrew.mxcl.colima.plist"
-          plist_target="$plist"
+          sudo -H -u ya find /Users/ya/Library -maxdepth 3 -name '*colima*.plist' -print || true
+          sudo -H -u ya bash -c '
+            set -euo pipefail
+            plist="$HOME/Library/LaunchAgents/org.nix.colima.plist"
+            old_plist="$HOME/Library/LaunchAgents/homebrew.mxcl.colima.plist"
+            plist_target="$plist"
+
+            if [[ -L "$plist" ]]; then
+              readlink "$plist"
+            fi
+            test -e "$plist"
+            if [[ -L "$plist" ]]; then
+              plist_target="$(readlink "$plist")"
+              test -n "$plist_target"
+              test -e "$plist_target"
+            else
+              test -f "$plist"
+            fi
+            test -s "$plist_target"
+            test ! -e "$old_plist"
+            /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist_target"
+          '
           uid="$(id -u ya)"
-          test -e "$plist"
-          if [[ -L "$plist" ]]; then
-            plist_target="$(readlink "$plist")"
-            test -n "$plist_target"
-            test -e "$plist_target"
-          else
-            test -f "$plist"
-          fi
-          test -s "$plist_target"
-          test ! -e "$old_plist"
-          /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist_target"
           if sudo -H -u ya launchctl print "gui/$uid" >/dev/null 2>&1; then
             sudo -H -u ya launchctl print "gui/$uid/org.nix.colima" | tee "$RUNNER_TEMP/org.nix.colima.launchd"
             /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
