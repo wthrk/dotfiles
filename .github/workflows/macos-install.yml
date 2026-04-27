@@ -384,11 +384,16 @@ jobs:
           fi
           plist="/Users/ya/Library/LaunchAgents/org.nix.colima.plist"
           old_plist="/Users/ya/Library/LaunchAgents/homebrew.mxcl.colima.plist"
-          plist_target="$(readlink "$plist")"
+          plist_target="$plist"
           uid="$(id -u ya)"
-          test -L "$plist"
-          test -n "$plist_target"
-          test -e "$plist_target"
+          test -e "$plist"
+          if [[ -L "$plist" ]]; then
+            plist_target="$(readlink "$plist")"
+            test -n "$plist_target"
+            test -e "$plist_target"
+          else
+            test -f "$plist"
+          fi
           test -s "$plist_target"
           test ! -e "$old_plist"
           /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist_target"
