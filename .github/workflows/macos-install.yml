@@ -382,6 +382,13 @@ jobs:
             echo "packer formula remains after Homebrew cleanup" >&2
             exit 1
           fi
+          ls -la /Users/ya/Library
+          ls -la /Users/ya/Library/LaunchAgents || true
+          sudo -H -u ya ls -la /Users/ya/Library/LaunchAgents || true
+          find /Users/ya/Library -maxdepth 3 -name '*colima*.plist' -print || true
+          if [ -L /Users/ya/Library/LaunchAgents/org.nix.colima.plist ]; then
+            readlink /Users/ya/Library/LaunchAgents/org.nix.colima.plist
+          fi
           plist="/Users/ya/Library/LaunchAgents/org.nix.colima.plist"
           old_plist="/Users/ya/Library/LaunchAgents/homebrew.mxcl.colima.plist"
           plist_target="$plist"
