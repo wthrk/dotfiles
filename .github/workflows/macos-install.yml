@@ -382,7 +382,7 @@ jobs:
             echo "packer formula remains after Homebrew cleanup" >&2
             exit 1
           fi
-          ls -la /Users/ya/Library
+          ls -la /Users/ya/Library || true
           ls -la /Users/ya/Library/LaunchAgents || true
           sudo -H -u ya ls -la /Users/ya/Library/LaunchAgents || true
           find /Users/ya/Library -maxdepth 3 -name '*colima*.plist' -print || true
