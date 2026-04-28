@@ -226,32 +226,26 @@ darwin_switch_ya() {
   nix_bin="/nix/var/nix/profiles/default/bin/nix"
   ya_path="/etc/profiles/per-user/ya/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   test -x "$nix_bin"
-  sudo -H -u ya env \
-    HOME=/Users/ya \
-    USER=ya \
-    LOGNAME=ya \
-    SHELL=/etc/profiles/per-user/ya/bin/zsh \
-    PATH="$ya_path" \
-    NIX_CONFIG="$NIX_CONFIG" \
-    "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$GITHUB_WORKSPACE"
-  sudo -H -u ya env \
-    HOME=/Users/ya \
-    USER=ya \
-    LOGNAME=ya \
-    SHELL=/etc/profiles/per-user/ya/bin/zsh \
-    PATH="$ya_path" \
-    NIX_CONFIG="$NIX_CONFIG" \
-    "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$GITHUB_WORKSPACE#homeConfigurations.ya.activationPackage.drvPath"
-  sudo -H -u ya env \
-    HOME=/Users/ya \
-    USER=ya \
-    LOGNAME=ya \
-    SHELL=/etc/profiles/per-user/ya/bin/zsh \
-    PATH="$ya_path" \
-    NIX_CONFIG="$NIX_CONFIG" \
-    "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$GITHUB_WORKSPACE#darwinConfigurations.ya.system"
+  run_as_ya() {
+    sudo -H -u ya env \
+      HOME=/Users/ya \
+      USER=ya \
+      LOGNAME=ya \
+      SHELL=/etc/profiles/per-user/ya/bin/zsh \
+      PATH="$ya_path" \
+      NIX_CONFIG="$NIX_CONFIG" \
+      /bin/bash -lc '
+        set -euo pipefail
+        cd "$HOME"
+        exec "$@"
+      ' bash "$@"
+  }
+
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$GITHUB_WORKSPACE"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$GITHUB_WORKSPACE#homeConfigurations.ya.activationPackage.drvPath"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$GITHUB_WORKSPACE#darwinConfigurations.ya.system"
   test -d /etc/profiles/per-user/ya
-  sudo -H -u ya bash -c '
+  run_as_ya /bin/bash -c '
     set -euo pipefail
     for managed_path in "$HOME/.config/zsh" "$HOME/.config/nvim" "$HOME/.zshrc" "$HOME/.zshenv"; do
       test -L "$managed_path"
@@ -259,7 +253,7 @@ darwin_switch_ya() {
       [[ "$managed_target" == /nix/store/* ]]
     done
   '
-  sudo -H -u ya /etc/profiles/per-user/ya/bin/zsh -il -c '
+  run_as_ya /etc/profiles/per-user/ya/bin/zsh -il -c '
     set -euo pipefail
     for tool in git gh jq rg fzf atuin zoxide nvim; do
       tool_path="$(command -v "$tool")"
@@ -274,13 +268,13 @@ darwin_switch_ya() {
     done
   '
   brew="/opt/homebrew/bin/brew"
-  sudo -H -u ya "$brew" tap | /usr/bin/grep -Fxq "azure/bicep"
-  sudo -H -u ya "$brew" tap | /usr/bin/grep -Fxq "hashicorp/tap"
-  if sudo -H -u ya "$brew" list --formula | /usr/bin/grep -Fxq "packer"; then
+  run_as_ya "$brew" tap | /usr/bin/grep -Fxq "azure/bicep"
+  run_as_ya "$brew" tap | /usr/bin/grep -Fxq "hashicorp/tap"
+  if run_as_ya "$brew" list --formula | /usr/bin/grep -Fxq "packer"; then
     echo "packer formula remains after Homebrew cleanup" >&2
     exit 1
   fi
-  sudo -H -u ya bash -c '
+  run_as_ya /bin/bash -c '
     set -euo pipefail
     plist="$HOME/Library/LaunchAgents/org.nix.colima.plist"
     old_plist="$HOME/Library/LaunchAgents/homebrew.mxcl.colima.plist"
@@ -299,10 +293,10 @@ darwin_switch_ya() {
     /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$plist_target"
   '
   uid="$(id -u ya)"
-  if sudo -H -u ya launchctl print "gui/$uid/org.nix.colima" 2>&1 | tee "$RUNNER_TEMP/org.nix.colima.launchd" >/dev/null; then
+  if run_as_ya launchctl print "gui/$uid/org.nix.colima" 2>&1 | tee "$RUNNER_TEMP/org.nix.colima.launchd" >/dev/null; then
     /usr/bin/grep -Eq "/nix/store/.*/bin/colima" "$RUNNER_TEMP/org.nix.colima.launchd"
   fi
-  if sudo -H -u ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
+  if run_as_ya launchctl print "gui/$uid/homebrew.mxcl.colima" >/dev/null 2>&1; then
     echo "homebrew.mxcl.colima is still loaded" >&2
     exit 1
   fi
