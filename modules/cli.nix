@@ -66,6 +66,7 @@ in
       gnumake
     ]
     ++ lib.optional (gcloudPackage != null) gcloudPackage
+    ++ optionalPkg [ "tart" ]
     ++ optionalPkg [ "temurin-bin" ]
     ++ optionalPkg [ "php84Packages" "composer" ]
     ++ lib.optionals (!(has [ "php84Packages" "composer" ] pkgs) && has [ "composer" ] pkgs) [ pkgs.composer ];

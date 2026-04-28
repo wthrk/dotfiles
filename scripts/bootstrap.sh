@@ -129,6 +129,19 @@ prepare_nix_homebrew() {
   done
 }
 
+ensure_root_git_safe_directory() {
+  local repo_path="$1"
+  local root_git_config="/var/root/.gitconfig"
+
+  require_sudo "root の git safe.directory 設定"
+
+  if sudo git config --file "$root_git_config" --get-all safe.directory 2>/dev/null | grep -Fxq "$repo_path"; then
+    return 0
+  fi
+
+  sudo git config --file "$root_git_config" --add safe.directory "$repo_path"
+}
+
 move_aside() {
   local path="$1"
   local backup="$2"
@@ -346,11 +359,19 @@ fi
 if ! command -v nix >/dev/null 2>&1; then
   require_sudo "Nix daemon mode インストール"
   echo "Nix をインストールします（daemon mode）..."
-  sh <(curl -L https://nixos.org/nix/install) --daemon
+  NIX_INSTALLER_NO_CHANNEL_ADD=1 sh <(curl -L https://nixos.org/nix/install) --daemon
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   fi
+  for _ in $(seq 1 30); do
+    if [[ -S /nix/var/nix/daemon-socket/socket ]]; then
+      break
+    fi
+    sleep 1
+  done
+  export NIX_REMOTE=daemon
+  hash -r
 fi
 
 if [[ -n "$sops_age_key_file" ]]; then
@@ -375,6 +396,7 @@ case "$switch_mode" in
     trap 'abort_with_status 129' HUP
     prepare_nix_darwin_etc
     prepare_nix_homebrew
+    ensure_root_git_safe_directory "$dotfiles_dir"
     nix_bin="$(command -v nix)"
     sudo -H --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
     rollback_required=0

@@ -9,6 +9,7 @@
     ./modules/macos.nix
     ./modules/homebrew.nix
     ./modules/macos-defaults.nix
+    ./modules/launchagents.nix
   ];
 
   nix.settings = {

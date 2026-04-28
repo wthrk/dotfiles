@@ -15,6 +15,11 @@
 
     nix-homebrew.url = "github:zhaofengli-wip/nix-homebrew";
 
+    macos-image-templates = {
+      url = "github:cirruslabs/macos-image-templates/70cb4395fee576f4fc49e3b58b2538a7d3400c05";
+      flake = false;
+    };
+
     homebrew-core = {
       url = "github:homebrew/homebrew-core";
       flake = false;
@@ -160,11 +165,56 @@
         name = system;
         value = (pkgsFor system).nixfmt;
       }) [ "aarch64-darwin" ];
+
+      packageEntries = map (system: {
+        name = system;
+        value =
+          let
+            pkgs = pkgsFor system;
+          in
+          {
+            tart-macos-install = pkgs.writeShellApplication {
+              name = "tart-macos-install";
+              runtimeInputs = with pkgs; [
+                ansible
+                bash
+                coreutils
+                git
+                gnugrep
+                gnused
+                jq
+                packer
+                tart
+              ];
+              text = ''
+                export DOTFILES_MACOS_IMAGE_TEMPLATES_DIR=${inputs.macos-image-templates}
+                ${builtins.readFile ./scripts/tart-macos-install.sh}
+              '';
+            };
+            run-macos-install-scenario = pkgs.writeShellApplication {
+              name = "run-macos-install-scenario";
+              runtimeInputs = with pkgs; [
+                bash
+                coreutils
+                git
+                gnugrep
+                gnused
+                jq
+              ];
+              text = builtins.readFile ./scripts/run-macos-install-scenario.sh;
+            };
+            tart = pkgs.tart;
+            packer = pkgs.packer;
+            ansible = pkgs.ansible;
+          };
+      }) [ "aarch64-darwin" ];
     in
     {
       homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost homeHosts);
 
       darwinConfigurations = builtins.listToAttrs (builtins.concatMap darwinEntriesForHost darwinHosts);
+
+      packages = builtins.listToAttrs packageEntries;
 
       formatter = builtins.listToAttrs formatterEntries;
     };
