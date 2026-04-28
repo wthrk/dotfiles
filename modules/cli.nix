@@ -8,8 +8,7 @@ let
   gcloudPackage =
     if has [ "google-cloud-sdk" "components" "gke-gcloud-auth-plugin" ] pkgs then
       pkgs.google-cloud-sdk.withExtraComponents (
-        with pkgs.google-cloud-sdk.components;
-        [ gke-gcloud-auth-plugin ]
+        with pkgs.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ]
       )
     else if has [ "google-cloud-sdk" ] pkgs then
       pkgs.google-cloud-sdk
@@ -68,6 +67,11 @@ in
     ++ lib.optional (gcloudPackage != null) gcloudPackage
     ++ optionalPkg [ "tart" ]
     ++ optionalPkg [ "temurin-bin" ]
-    ++ optionalPkg [ "php84Packages" "composer" ]
-    ++ lib.optionals (!(has [ "php84Packages" "composer" ] pkgs) && has [ "composer" ] pkgs) [ pkgs.composer ];
+    ++ optionalPkg [
+      "php84Packages"
+      "composer"
+    ]
+    ++ lib.optionals (!(has [ "php84Packages" "composer" ] pkgs) && has [ "composer" ] pkgs) [
+      pkgs.composer
+    ];
 }
