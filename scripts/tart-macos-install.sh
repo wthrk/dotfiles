@@ -93,6 +93,7 @@ vm_name="${vm_name:-dotfiles-${scenario}-${timestamp}}"
 guest_script_dir="$(mktemp -d)"
 guest_script="$guest_script_dir/guest.sh"
 guest_runner="$guest_script_dir/run-macos-install-scenario.sh"
+guest_exit="$guest_script_dir/guest.exit"
 packer_log_dir="$guest_script_dir/packer-logs"
 tart_run_log="/tmp/${vm_name}.log"
 tart_cli_log="$guest_script_dir/tart.log"
@@ -111,6 +112,7 @@ print_log_tail() {
   fi
 }
 
+# shellcheck disable=SC2329
 print_failure_diagnostics() {
   local status="$1"
   if [[ "$status" -eq 0 ]]; then
@@ -192,21 +194,7 @@ EOF
   return "$rc"
 }
 
-tart_image_exists() {
-  local image_name="$1"
-  local list_output
-
-  if ! list_output="$(tart list 2>&1)"; then
-    printf '===== tart list =====\n%s\n' "$list_output" >>"$tart_cli_log"
-    echo "tart failed: list" >&2
-    print_log_tail "tart cli log" "$tart_cli_log" 200
-    return 1
-  fi
-
-  printf '===== tart list =====\n%s\n' "$list_output" >>"$tart_cli_log"
-  awk '{ print $1 }' <<<"$list_output" | grep -Fxq "$image_name"
-}
-
+# shellcheck disable=SC2329
 cleanup() {
   local status=$?
   print_failure_diagnostics "$status"
@@ -234,12 +222,21 @@ export RUNNER_TEMP="$HOME/runner-temp"
 export NIX_CONFIG='experimental-features = nix-command flakes'
 mkdir -p "$RUNNER_TEMP"
 log_path="/Volumes/My Shared Files/guest/guest.log"
+exit_path="/Volumes/My Shared Files/guest/guest.exit"
 mkdir -p "$(dirname "$log_path")"
 rm -f "$log_path"
+rm -f "$exit_path"
 exec > >(tee -a "$log_path") 2>&1
 
+finish() {
+  local status=$?
+  printf '%s\n' "$status" >"$exit_path"
+  exit "$status"
+}
+trap finish EXIT
+
 cd "$GITHUB_WORKSPACE"
-exec bash "/Volumes/My Shared Files/guest/run-macos-install-scenario.sh" "$scenario"
+bash "/Volumes/My Shared Files/guest/run-macos-install-scenario.sh" "$scenario"
 GUEST
 
 chmod +x "$guest_script"
@@ -272,6 +269,31 @@ if [[ -z "$vm_ip" ]] || ! run_ssh_logged "ssh ${vm_name} /usr/bin/true" "/usr/bi
 fi
 
 echo "running scenario: $scenario"
+rm -f "$guest_exit"
 run_ssh_logged \
-  "ssh ${vm_name} guest.sh ${scenario}" \
-  "/bin/bash '/Volumes/My Shared Files/guest/guest.sh' '${scenario}'"
+  "ssh ${vm_name} start guest.sh ${scenario}" \
+  "/bin/bash -lc 'nohup /bin/bash \"/Volumes/My Shared Files/guest/guest.sh\" \"${scenario}\" >/dev/null 2>&1 </dev/null &'" \
+  >/dev/null
+
+for _ in $(seq 1 3600); do
+  if [[ -s "$guest_exit" ]]; then
+    status="$(tr -d '[:space:]' <"$guest_exit")"
+    if [[ "$status" != "0" ]]; then
+      print_log_tail "guest log" "$guest_script_dir/guest.log" 200
+      exit "$status"
+    fi
+    exit 0
+  fi
+
+  if ! tart list | awk 'NR > 1 { print $2 }' | grep -Fxq "$vm_name"; then
+    echo "guest 実行中に VM が停止しました" >&2
+    print_log_tail "guest log" "$guest_script_dir/guest.log" 200
+    exit 1
+  fi
+
+  sleep 1
+done
+
+echo "guest 実行がタイムアウトしました" >&2
+print_log_tail "guest log" "$guest_script_dir/guest.log" 200
+exit 1

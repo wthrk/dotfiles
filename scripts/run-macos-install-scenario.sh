@@ -205,6 +205,8 @@ darwin_switch_ya() {
   test -s flake.lock
   runner_info
 
+  local ya_checkout=/Users/ya/.dotfiles
+
   ensure_local_user ya "ya" "Ya-Temp-2026!" /Users/ya 80
   sudo createhomedir -c -u ya || true
   sudo mkdir -p /Users/ya
@@ -216,9 +218,18 @@ darwin_switch_ya() {
     sudo chown -R ya:admin /opt/homebrew
   fi
 
+  sudo git config --global --add safe.directory "$GITHUB_WORKSPACE/.git"
+  sudo rm -rf "$ya_checkout"
+  sudo git -c safe.directory="$GITHUB_WORKSPACE/.git" clone "$GITHUB_WORKSPACE" "$ya_checkout"
+  sudo chown -R ya:staff "$ya_checkout"
+  sudo git config --global --add safe.directory "$ya_checkout"
+  test -d "$ya_checkout/.git"
+  test -s "$ya_checkout/flake.nix"
+  test -s "$ya_checkout/flake.lock"
+
   bash scripts/bootstrap.sh \
     --repo "$GITHUB_WORKSPACE" \
-    --dir "$GITHUB_WORKSPACE" \
+    --dir "$ya_checkout" \
     --flake ya \
     --mode darwin \
     --run-switch
@@ -243,9 +254,9 @@ darwin_switch_ya() {
     )
   }
 
-  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$GITHUB_WORKSPACE"
-  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$GITHUB_WORKSPACE#homeConfigurations.ya.activationPackage.drvPath"
-  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$GITHUB_WORKSPACE#darwinConfigurations.ya.system"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$ya_checkout"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$ya_checkout#homeConfigurations.ya.activationPackage.drvPath"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$ya_checkout#darwinConfigurations.ya.system"
   test -d /etc/profiles/per-user/ya
   run_as_ya /bin/bash -c '
     set -euo pipefail

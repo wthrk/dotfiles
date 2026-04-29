@@ -303,6 +303,9 @@ run_self_test() {
       if [[ "$signal" == "INT" ]]; then
         abort_with_status 130
       fi
+      if [[ "$signal" == "HUP" ]]; then
+        abort_with_status 129
+      fi
       kill "-${signal}" "$(bash -c 'echo $PPID')"
       sleep 1
     ) || true
