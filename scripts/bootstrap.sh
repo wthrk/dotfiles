@@ -189,6 +189,10 @@ rollback_on_exit() {
 
 abort_with_status() {
   local status="$1"
+  if [[ "${rollback_required:-0}" == "1" ]]; then
+    rollback_required=0
+    restore_prepared_paths
+  fi
   exit "$status"
 }
 
@@ -296,6 +300,9 @@ run_self_test() {
       printf 'original\n' > "$path"
       move_aside "$path" "$backup" "self-test ${signal}"
       printf 'generated\n' > "$path"
+      if [[ "$signal" == "INT" ]]; then
+        abort_with_status 130
+      fi
       kill "-${signal}" "$(bash -c 'echo $PPID')"
       sleep 1
     ) || true
