@@ -161,13 +161,16 @@
           inherit value;
         }) host.aliases;
 
-      formatterEntries = map (system: {
-        name = system;
-        value = (pkgsFor system).nixfmt;
-      }) [
-        "aarch64-darwin"
-        "x86_64-linux"
-      ];
+      formatterEntries =
+        map
+          (system: {
+            name = system;
+            value = (pkgsFor system).nixfmt;
+          })
+          [
+            "aarch64-darwin"
+            "x86_64-linux"
+          ];
 
       packageEntries = map (system: {
         name = system;
