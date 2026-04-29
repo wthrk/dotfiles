@@ -38,6 +38,7 @@ in
       docker-buildx
       docker-compose
       docker-credential-helpers
+      eza
       fd
       ffmpeg
       glow
