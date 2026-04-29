@@ -227,18 +227,20 @@ darwin_switch_ya() {
   ya_path="/etc/profiles/per-user/ya/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   test -x "$nix_bin"
   run_as_ya() {
-    sudo -H -u ya env \
-      HOME=/Users/ya \
-      USER=ya \
-      LOGNAME=ya \
-      SHELL=/etc/profiles/per-user/ya/bin/zsh \
-      PATH="$ya_path" \
-      NIX_CONFIG="$NIX_CONFIG" \
-      /bin/bash -lc '
-        set -euo pipefail
-        cd "$HOME"
-        exec "$@"
-      ' bash "$@"
+    (
+      cd /Users/ya
+      sudo -H -u ya env \
+        HOME=/Users/ya \
+        USER=ya \
+        LOGNAME=ya \
+        SHELL=/etc/profiles/per-user/ya/bin/zsh \
+        PATH="$ya_path" \
+        NIX_CONFIG="$NIX_CONFIG" \
+        /bin/bash -lc '
+          set -euo pipefail
+          exec "$@"
+        ' bash "$@"
+    )
   }
 
   run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$GITHUB_WORKSPACE"
