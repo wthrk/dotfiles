@@ -79,4 +79,3 @@ jobs:
         run: |
           set -euxo pipefail
           nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.runner.activationPackage.drvPath
-          nix --extra-experimental-features "nix-command flakes" build --no-update-lock-file --no-link .#homeConfigurations.runner.activationPackage

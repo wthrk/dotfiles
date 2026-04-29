@@ -164,7 +164,10 @@
       formatterEntries = map (system: {
         name = system;
         value = (pkgsFor system).nixfmt;
-      }) [ "aarch64-darwin" ];
+      }) [
+        "aarch64-darwin"
+        "x86_64-linux"
+      ];
 
       packageEntries = map (system: {
         name = system;
