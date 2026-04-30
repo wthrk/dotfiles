@@ -4,7 +4,7 @@
   outputs =
     { self, nixpkgs }:
     let
-      system = "aarch64-darwin";
+      system = builtins.currentSystem;
       pkgs = import nixpkgs { inherit system; };
     in
     {

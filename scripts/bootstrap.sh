@@ -8,6 +8,7 @@ run_switch=1
 flake_name="ya"
 sops_age_key_file=""
 sops_age_key_dest="/var/lib/sops-nix/key.txt"
+sops_user_age_key_dest="$HOME/.config/sops/age/keys.txt"
 dry_run=0
 self_test=0
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
@@ -31,6 +32,7 @@ Options:
   --no-switch                flake check 後に終了する
   --sops-age-key-file PATH   配置する sops age key
   --sops-age-key-dest PATH   sops age key 配置先（既定: /var/lib/sops-nix/key.txt）
+  --sops-user-age-key-dest PATH Home Manager 用 sops age key 配置先（既定: ~/.config/sops/age/keys.txt）
   --dry-run                  実行計画だけ表示する
   --self-test                内部の安全性テストだけ実行する
   -h, --help                 このヘルプを表示する
@@ -71,6 +73,10 @@ while (($#)); do
       sops_age_key_dest="$2"
       shift 2
       ;;
+    --sops-user-age-key-dest)
+      sops_user_age_key_dest="$2"
+      shift 2
+      ;;
     --dry-run)
       dry_run=1
       shift
@@ -103,7 +109,7 @@ bootstrap 実行計画:
 - Xcode Command Line Tools の導入状態を確認（未導入なら案内）
 - dotfiles checkout を clone または既存利用: ${dotfiles_dir}
 - Nix daemon モードの導入確認
-- 必要時のみ sops age key を配置: ${sops_age_key_dest}
+- 必要時のみ sops age key を配置: host=${sops_age_key_dest}, user=${sops_user_age_key_dest}
 - 実行: nix flake check
 - 適用モード: ${switch_mode}
 - flake 出力: .#${flake_name}
@@ -241,6 +247,27 @@ install_sops_age_key() {
   echo "sops age key を配置します: $dest"
   sudo mkdir -p "$(dirname "$dest")"
   sudo install -m 0400 "$source" "$dest"
+}
+
+install_user_sops_age_key() {
+  local source="$1"
+  local dest="$2"
+
+  if [[ -e "$dest" ]]; then
+    if cmp -s "$source" "$dest"; then
+      echo "既存の user sops age key を使用します: $dest"
+      chmod 0600 "$dest"
+      return 0
+    fi
+
+    echo "既存の user sops age key が異なるため上書きしません: $dest" >&2
+    echo "必要なら内容を確認してから手動で更新してください。" >&2
+    return 1
+  fi
+
+  echo "user sops age key を配置します: $dest"
+  mkdir -p "$(dirname "$dest")"
+  install -m 0600 "$source" "$dest"
 }
 
 run_self_test() {
@@ -386,6 +413,7 @@ fi
 
 if [[ -n "$sops_age_key_file" ]]; then
   install_sops_age_key "$sops_age_key_file" "$sops_age_key_dest"
+  install_user_sops_age_key "$sops_age_key_file" "$sops_user_age_key_dest"
 fi
 
 echo "nix flake check を実行します"
