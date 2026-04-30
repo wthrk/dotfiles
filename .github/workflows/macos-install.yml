@@ -13,7 +13,8 @@ on:
           - fresh-bootstrap
           - second-user-home-manager
           - darwin-switch-ya
-  pull_request:
+  schedule:
+    - cron: "0 15 * * 0"
 
 permissions:
   contents: read
