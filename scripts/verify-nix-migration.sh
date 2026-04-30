@@ -216,8 +216,9 @@ fi
 docker_cfg="$HOME/.docker/config.json"
 if [[ -e "$docker_cfg" ]]; then
   if command -v jq >/dev/null 2>&1; then
-    helpers="$(jq -r '.credsStore? // empty, (.credHelpers? // {} | to_entries[] | .value)' "$docker_cfg" 2>/dev/null | awk 'NF' | sort -u || true)"
-    if [[ -z "$helpers" ]]; then
+    if ! helpers="$(jq -r '.credsStore? // empty, (.credHelpers? // {} | to_entries[] | .value)' "$docker_cfg" 2>/dev/null | awk 'NF' | sort -u)"; then
+      phase_noncompliant "docker config.json を解析できない（${docker_cfg}）"
+    elif [[ -z "$helpers" ]]; then
       mark_pass "docker credsStore/credHelpers は未設定"
     else
       mark_pass "docker credsStore/credHelpers を解析"

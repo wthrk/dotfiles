@@ -369,7 +369,7 @@ fi
 if ! command -v nix >/dev/null 2>&1; then
   require_sudo "Nix daemon mode インストール"
   echo "Nix をインストールします（daemon mode）..."
-  NIX_INSTALLER_NO_CHANNEL_ADD=1 sh <(curl -L https://nixos.org/nix/install) --daemon
+  NIX_INSTALLER_NO_CHANNEL_ADD=1 sh <(curl -fsSL --retry 5 --retry-delay 2 https://nixos.org/nix/install) --daemon
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh

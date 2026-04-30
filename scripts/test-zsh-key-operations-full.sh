@@ -11,7 +11,7 @@ log_skip() { printf 'SKIP %s\n' "$1"; skip=$((skip+1)); }
 
 zrun() {
   local script="$1"
-  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$script" 2>/dev/null || true
+  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$script" 2>/dev/null
 }
 
 expect_eq() {

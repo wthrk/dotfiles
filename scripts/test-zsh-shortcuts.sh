@@ -33,7 +33,7 @@ check_match() {
 
 run_zsh() {
   local script="$1"
-  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$script" 2>/dev/null || true
+  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$script" 2>/dev/null
 }
 
 fzf_tab_widget="$(run_zsh "zle -la | rg '^fzf-tab-complete$' | head -n 1")"
