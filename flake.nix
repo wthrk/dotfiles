@@ -10,9 +10,6 @@
     home-manager.url = "github:nix-community/home-manager";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
 
-    sops-nix.url = "github:Mic92/sops-nix";
-    sops-nix.inputs.nixpkgs.follows = "nixpkgs";
-
     nix-homebrew.url = "github:zhaofengli-wip/nix-homebrew";
 
     macos-image-templates = {
@@ -118,7 +115,6 @@
             ./darwin.nix
             home-manager.darwinModules.home-manager
             inputs.nix-homebrew.darwinModules.nix-homebrew
-            inputs.sops-nix.darwinModules.sops
           ];
           specialArgs = { inherit inputs user; };
         };

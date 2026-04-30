@@ -56,6 +56,16 @@ jobs:
           set -euxo pipefail
           nix --extra-experimental-features "nix-command flakes" fmt -- --check $(git ls-files '*.nix')
 
+      - name: zsh shortcuts を検証
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" shell nixpkgs#bash nixpkgs#zsh nixpkgs#ripgrep --command bash scripts/test-zsh-shortcuts.sh
+
+      - name: zsh key operations を検証
+        run: |
+          set -euxo pipefail
+          nix --extra-experimental-features "nix-command flakes" shell nixpkgs#bash nixpkgs#zsh nixpkgs#ripgrep --command bash scripts/test-zsh-key-operations-full.sh
+
   eval-runner:
     name: runner Home Manager output を評価
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'home-runner' }}

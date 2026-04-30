@@ -1,7 +1,6 @@
-{ inputs, user, ... }:
+{ user, ... }:
 {
   imports = [
-    inputs.sops-nix.homeManagerModules.sops
     ./modules/cli.nix
     ./modules/languages.nix
     ./modules/zsh.nix
@@ -10,7 +9,6 @@
     ./modules/editor-apps.nix
     ./modules/shell-files.nix
     ./modules/app-configs.nix
-    ./modules/secrets.nix
     ./modules/direnv.nix
   ];
 

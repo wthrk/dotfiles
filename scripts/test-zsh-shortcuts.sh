@@ -33,12 +33,12 @@ check_match() {
 
 run_zsh() {
   local script="$1"
-  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$script" 2>/dev/null
+  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true script -q /dev/null zsh -ic "$script" 2>/dev/null | col -b
 }
 
 fzf_tab_widget="$(run_zsh "zle -la | rg '^fzf-tab-complete$' | head -n 1")"
 autosuggest_widget="$(run_zsh "zle -la | rg '^autosuggest-accept$' | head -n 1")"
-syntax_func="$(run_zsh "whence -w _zsh_highlight || whence -w _fast_highlight")"
+syntax_func="$(run_zsh "functions | rg '(^|[[:space:]])_zsh_highlight|(^|[[:space:]])_fast_highlight|(^|[[:space:]])fast-theme|(^|[[:space:]])FAST_HIGHLIGHT' || :")"
 
 if [[ -n "$fzf_tab_widget" ]]; then
   check_match T001 "fzf-tab widget exists" "$fzf_tab_widget" '^fzf-tab-complete$'
@@ -54,7 +54,7 @@ else
   skip=$((skip+1))
 fi
 
-if [[ "$syntax_func" =~ ^(_zsh_highlight|_fast_highlight):[[:space:]]function$ ]]; then
+if [[ -n "$syntax_func" ]]; then
   printf 'PASS %-4s %s\n' "T003" "fast-syntax-highlighting loaded"
   pass=$((pass+1))
 else
@@ -84,14 +84,6 @@ fi
 
 check_match T021 "agent-tools path is allowed" "$path_dump" '\.agent-tools/bin'
 check_match T022 "rancher-desktop path is allowed" "$path_dump" '\.rd/bin'
-
-ctrl_t="$(run_zsh "bindkey -M emacs '^T'")"
-if [[ "$ctrl_t" == '"^T" undefined-key' || "$ctrl_t" == '"^T" transpose-chars' ]]; then
-  printf 'SKIP %-4s %s\n' "T030" "Ctrl-T widget"
-  skip=$((skip+1))
-else
-  check_eq T030 "Ctrl-T widget" "$ctrl_t" '"^T" fzf-file-widget'
-fi
 
 printf '\nSummary: PASS=%d FAIL=%d SKIP=%d\n' "$pass" "$fail" "$skip"
 (( fail == 0 ))

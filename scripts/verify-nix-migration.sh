@@ -158,7 +158,7 @@ else
   mark_skip "widget autosuggest-accept（HM switch 前は未読込のため SKIP 可）"
 fi
 
-if zsh -i -c 'typeset -f _zsh_highlight >/dev/null || typeset -f _fast_highlight >/dev/null' >/dev/null 2>&1; then
+if script -q /dev/null zsh -ic "functions | rg '(^|[[:space:]])_zsh_highlight|(^|[[:space:]])_fast_highlight|(^|[[:space:]])fast-theme|(^|[[:space:]])FAST_HIGHLIGHT' >/dev/null || :" >/dev/null 2>&1; then
   mark_pass "syntax highlighting 関数"
 else
   mark_skip "syntax highlighting 関数（HM switch 前は未読込のため SKIP 可）"

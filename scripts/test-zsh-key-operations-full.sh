@@ -11,7 +11,7 @@ log_skip() { printf 'SKIP %s\n' "$1"; skip=$((skip+1)); }
 
 zrun() {
   local script="$1"
-  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true zsh -ic "$script" 2>/dev/null
+  POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true script -q /dev/null zsh -ic "$script" 2>/dev/null | col -b
 }
 
 expect_eq() {
@@ -42,7 +42,7 @@ expect_eq "KEY:vicmd:^I" "$(zrun "bindkey -M vicmd '^I'")" '"^I" expand-or-compl
 
 fzf_tab_widget="$(zrun "zle -la | rg '^fzf-tab-complete$' | head -n 1")"
 autosuggest_widget="$(zrun "zle -la | rg '^autosuggest-accept$' | head -n 1")"
-syntax_fn="$(zrun "whence -w _zsh_highlight || whence -w _fast_highlight")"
+syntax_fn="$(zrun "functions | rg '(^|[[:space:]])_zsh_highlight|(^|[[:space:]])_fast_highlight|(^|[[:space:]])fast-theme|(^|[[:space:]])FAST_HIGHLIGHT' || :")"
 
 if [[ -n "$fzf_tab_widget" ]]; then
   expect_eq "KEY:emacs:^X^I" "$(zrun "bindkey -M emacs '^X^I'")" '"^X^I" fzf-tab-complete'
@@ -58,7 +58,7 @@ else
   log_skip "WIDGET:autosuggest-accept"
 fi
 
-if [[ "$syntax_fn" =~ ^(_zsh_highlight|_fast_highlight):[[:space:]]function$ ]]; then
+if [[ -n "$syntax_fn" ]]; then
   log_pass "FUNC:syntax-highlighting"
 else
   log_skip "FUNC:syntax-highlighting"

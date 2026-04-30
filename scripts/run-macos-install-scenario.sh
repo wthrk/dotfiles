@@ -129,22 +129,6 @@ fresh_bootstrap() {
     exit 1
   fi
 
-  key_dir="$RUNNER_TEMP/sops-key-test"
-  mkdir -p "$key_dir"
-  printf 'old-key\n' >"$key_dir/current.txt"
-  printf 'new-key\n' >"$key_dir/new.txt"
-  if bash scripts/bootstrap.sh \
-    --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
-    --flake ya \
-    --mode darwin \
-    --no-switch \
-    --sops-age-key-file "$key_dir/new.txt" \
-    --sops-age-key-dest "$key_dir/current.txt"; then
-    echo "異なる sops age key の上書きが成功しました" >&2
-    exit 1
-  fi
-  test "$(cat "$key_dir/current.txt")" = "old-key"
-
   bash scripts/bootstrap.sh --self-test
 }
 
