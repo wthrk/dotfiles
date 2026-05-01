@@ -22,6 +22,28 @@ runner_info() {
   xcode-select -p
 }
 
+copy_workspace_to() {
+  local target="$1"
+
+  rm -rf "$target"
+  mkdir -p "$(dirname "$target")" "$target"
+  rsync -a \
+    --exclude '/.direnv/' \
+    --exclude '/target/' \
+    "$GITHUB_WORKSPACE"/ "$target"/
+}
+
+copy_workspace_to_with_sudo() {
+  local target="$1"
+
+  sudo rm -rf "$target"
+  sudo mkdir -p "$(dirname "$target")" "$target"
+  sudo rsync -a \
+    --exclude '/.direnv/' \
+    --exclude '/target/' \
+    "$GITHUB_WORKSPACE"/ "$target"/
+}
+
 next_uid() {
   dscl . -list /Users UniqueID | awk '{ print $2 }' | sort -n | awk 'BEGIN { uid = 501 } { if ($1 >= uid) uid = $1 + 1 } END { print uid }'
 }
@@ -60,13 +82,12 @@ fresh_bootstrap() {
     exit 1
   fi
 
-  bash scripts/bootstrap.sh --dry-run --flake ya
+  bash scripts/bootstrap.sh --dry-run
 
   rm -rf "$RUNNER_TEMP/dotfiles-bootstrap"
   bash scripts/bootstrap.sh \
     --repo "$GITHUB_WORKSPACE" \
     --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
-    --flake ya \
     --mode darwin \
     --no-switch
 
@@ -91,7 +112,6 @@ fresh_bootstrap() {
 
   bash "$RUNNER_TEMP/dotfiles-bootstrap/scripts/bootstrap.sh" \
     --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
-    --flake ya \
     --mode darwin \
     --no-switch
 
@@ -105,24 +125,20 @@ fresh_bootstrap() {
   done
   diff -u "$before" "$after"
 
-  rm -rf "$RUNNER_TEMP/dotfiles-missing-lock"
-  git clone "$GITHUB_WORKSPACE" "$RUNNER_TEMP/dotfiles-missing-lock"
+  copy_workspace_to "$RUNNER_TEMP/dotfiles-missing-lock"
   rm "$RUNNER_TEMP/dotfiles-missing-lock/flake.lock"
   if bash "$GITHUB_WORKSPACE/scripts/bootstrap.sh" \
     --dir "$RUNNER_TEMP/dotfiles-missing-lock" \
-    --flake ya \
     --mode darwin \
     --no-switch; then
     echo "flake.lock がない bootstrap が成功しました" >&2
     exit 1
   fi
 
-  rm -rf "$RUNNER_TEMP/dotfiles-broken-flake"
-  git clone "$GITHUB_WORKSPACE" "$RUNNER_TEMP/dotfiles-broken-flake"
+  copy_workspace_to "$RUNNER_TEMP/dotfiles-broken-flake"
   printf '\nthis is invalid nix\n' >>"$RUNNER_TEMP/dotfiles-broken-flake/flake.nix"
   if bash "$GITHUB_WORKSPACE/scripts/bootstrap.sh" \
     --dir "$RUNNER_TEMP/dotfiles-broken-flake" \
-    --flake ya \
     --mode darwin \
     --no-switch; then
     echo "壊れた flake の bootstrap が成功しました" >&2
@@ -141,7 +157,6 @@ second_user_home_manager() {
   bash scripts/bootstrap.sh \
     --repo "$GITHUB_WORKSPACE" \
     --dir "$RUNNER_TEMP/dotfiles-bootstrap" \
-    --flake ya \
     --mode darwin \
     --no-switch
 
@@ -202,9 +217,8 @@ darwin_switch_ya() {
     sudo chown -R ya:admin /opt/homebrew
   fi
 
-  sudo git config --global --add safe.directory "$GITHUB_WORKSPACE/.git"
-  sudo rm -rf "$ya_checkout"
-  sudo git -c safe.directory="$GITHUB_WORKSPACE/.git" clone "$GITHUB_WORKSPACE" "$ya_checkout"
+  sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+  copy_workspace_to_with_sudo "$ya_checkout"
   sudo chown -R ya:staff "$ya_checkout"
   sudo git config --global --add safe.directory "$ya_checkout"
   test -d "$ya_checkout/.git"
@@ -214,7 +228,6 @@ darwin_switch_ya() {
   bash scripts/bootstrap.sh \
     --repo "$GITHUB_WORKSPACE" \
     --dir "$ya_checkout" \
-    --flake ya \
     --mode darwin \
     --run-switch
 
@@ -239,8 +252,8 @@ darwin_switch_ya() {
   }
 
   run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file "$ya_checkout"
-  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$ya_checkout#homeConfigurations.ya.activationPackage.drvPath"
-  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$ya_checkout#darwinConfigurations.ya.system"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$ya_checkout#homeConfigurations.default.activationPackage.drvPath"
+  run_as_ya "$nix_bin" --extra-experimental-features "nix-command flakes" eval --no-update-lock-file "$ya_checkout#darwinConfigurations.default.system"
   test -d /etc/profiles/per-user/ya
   run_as_ya /bin/bash -c '
     set -euo pipefail

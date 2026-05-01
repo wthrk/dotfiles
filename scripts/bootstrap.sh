@@ -5,7 +5,7 @@ dotfiles_dir="$HOME/.dotfiles"
 dotfiles_repo="https://github.com/wthrk/dotfiles.git"
 switch_mode="darwin"
 run_switch=1
-flake_name="ya"
+flake_name="default"
 dry_run=0
 self_test=0
 NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
@@ -24,13 +24,34 @@ Options:
   --dir PATH                 checkout 先（既定: \$HOME/.dotfiles）
   --repo URL_OR_PATH         clone 元（既定: https://github.com/wthrk/dotfiles.git）
   --mode darwin|home-manager 適用モード（既定: darwin）
-  --flake NAME               flake 出力名（既定: ya）
+  --flake NAME               flake 出力名（既定: default）
   --run-switch               flake check 後に switch する（既定）
   --no-switch                flake check 後に終了する
   --dry-run                  実行計画だけ表示する
   --self-test                内部の安全性テストだけ実行する
   -h, --help                 このヘルプを表示する
 USAGE
+}
+
+copy_local_worktree() {
+  local source_dir="$1"
+  local target_dir="$2"
+
+  source_dir="$(cd "$source_dir" && pwd -P)"
+
+  if [[ -e "$target_dir" ]]; then
+    if ! rmdir "$target_dir" 2>/dev/null; then
+      echo "checkout 先が空ではありません: $target_dir" >&2
+      exit 1
+    fi
+  fi
+
+  mkdir -p "$(dirname "$target_dir")"
+  mkdir -p "$target_dir"
+  rsync -a \
+    --exclude '/.direnv/' \
+    --exclude '/target/' \
+    "$source_dir"/ "$target_dir"/
 }
 
 while (($#)); do
@@ -299,6 +320,9 @@ fi
 
 if [[ -d "$dotfiles_dir/.git" ]]; then
   echo "既存 checkout を使用します: $dotfiles_dir"
+elif git -C "$dotfiles_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "ローカル作業ツリーをコピーします: $dotfiles_dir"
+  copy_local_worktree "$dotfiles_repo" "$dotfiles_dir"
 else
   echo "dotfiles を clone します: $dotfiles_dir"
   git clone "$dotfiles_repo" "$dotfiles_dir"
