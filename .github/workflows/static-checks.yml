@@ -10,8 +10,7 @@ on:
         type: choice
         options:
           - all
-          - flake-check
-          - home-runner
+          - static
   pull_request:
 
 permissions:
@@ -27,9 +26,9 @@ env:
     access-tokens = github.com=${{ github.token }}
 
 jobs:
-  flake-check:
-    name: nix flake check
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'flake-check' }}
+  static:
+    name: static checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'static' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -46,46 +45,7 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
-      - name: nix flake check
+      - name: static checks
         run: |
           set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" flake check --no-update-lock-file
-
-      - name: nix format を確認
-        run: |
-          set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" fmt -- --check $(git ls-files '*.nix')
-
-      - name: zsh shortcuts を検証
-        run: |
-          set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" shell nixpkgs#bash nixpkgs#zsh nixpkgs#ripgrep --command bash scripts/test-zsh-shortcuts.sh
-
-      - name: zsh key operations を検証
-        run: |
-          set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" shell nixpkgs#bash nixpkgs#zsh nixpkgs#ripgrep --command bash scripts/test-zsh-key-operations-full.sh
-
-  eval-runner:
-    name: runner Home Manager output を評価
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'home-runner' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: checkout
-        uses: actions/checkout@v5
-
-      - name: flake.lock を確認
-        run: test -s flake.lock
-
-      - name: Nix を導入
-        uses: DeterminateSystems/nix-installer-action@v20
-        with:
-          extra-conf: |
-            experimental-features = nix-command flakes
-
-      - name: runner Home Manager output を評価
-        run: |
-          set -euxo pipefail
-          nix --extra-experimental-features "nix-command flakes" eval --no-update-lock-file .#homeConfigurations.runner.activationPackage.drvPath
+          nix develop -c cargo xtask check static

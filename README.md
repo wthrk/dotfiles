@@ -7,14 +7,14 @@
 通常:
 
 ```sh
-nix flake check --no-update-lock-file
-sudo darwin-rebuild switch --flake .#ya
+nix develop -c cargo xtask check static
+sudo darwin-rebuild switch --flake .#default
 ```
 
 Home Manager のみ:
 
 ```sh
-home-manager switch --flake .#ya
+home-manager switch --flake .#default
 ```
 
 ## 初回導入
@@ -48,19 +48,14 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstr
 ## 検証
 
 ```sh
-bash scripts/verify-nix-migration.sh
+nix develop -c cargo xtask check static
+nix develop -c cargo xtask check zsh
 ```
 
-主な option:
-
-- `--phase pre-switch|post-migration`
-- `--flake NAME`
-
-追加検証:
-
 ```sh
-bash scripts/test-zsh-shortcuts.sh
-bash scripts/test-zsh-key-operations-full.sh
+nix develop -c cargo xtask check runtime fresh-bootstrap
+nix develop -c cargo xtask check runtime second-user-home-manager
+nix develop -c cargo xtask check runtime darwin-switch-ya
 ```
 
 ## ロールバック

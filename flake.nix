@@ -50,7 +50,7 @@
 
       homeHosts = [
         {
-          name = "ya";
+          name = "default";
           user = "ya";
           system = "aarch64-darwin";
         }
@@ -64,25 +64,13 @@
           user = "dotfilesci";
           system = "aarch64-darwin";
         }
-        {
-          name = "ya-x86_64-darwin";
-          user = "ya";
-          system = "x86_64-darwin";
-        }
       ];
 
       darwinHosts = [
         {
-          name = "ya";
+          name = "default";
           user = "ya";
           system = "aarch64-darwin";
-          aliases = [ "default" ];
-        }
-        {
-          name = "ya-x86_64-darwin";
-          user = "ya";
-          system = "x86_64-darwin";
-          aliases = [ ];
         }
       ];
 
@@ -151,11 +139,7 @@
             name = host.name;
             inherit value;
           }
-        ]
-        ++ map (alias: {
-          name = alias;
-          inherit value;
-        }) host.aliases;
+        ];
 
       formatterEntries =
         map
@@ -210,6 +194,50 @@
             ansible = pkgs.ansible;
           };
       }) [ "aarch64-darwin" ];
+
+      devShellEntries =
+        map
+          (system: {
+            name = system;
+            value =
+              let
+                pkgs = pkgsFor system;
+                darwinPackages =
+                  if pkgs.stdenv.isDarwin then
+                    [
+                      pkgs.ansible
+                      pkgs.packer
+                      pkgs.tart
+                    ]
+                  else
+                    [ ];
+              in
+              {
+                default = pkgs.mkShell {
+                  packages =
+                    with pkgs;
+                    [
+                      bash
+                      cargo
+                      coreutils
+                      git
+                      gnugrep
+                      gnused
+                      jq
+                      ripgrep
+                      rustc
+                      rustfmt
+                      shellcheck
+                      zsh
+                    ]
+                    ++ darwinPackages;
+                };
+              };
+          })
+          [
+            "aarch64-darwin"
+            "x86_64-linux"
+          ];
     in
     {
       homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost homeHosts);
@@ -217,6 +245,8 @@
       darwinConfigurations = builtins.listToAttrs (builtins.concatMap darwinEntriesForHost darwinHosts);
 
       packages = builtins.listToAttrs packageEntries;
+
+      devShells = builtins.listToAttrs devShellEntries;
 
       formatter = builtins.listToAttrs formatterEntries;
     };

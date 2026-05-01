@@ -50,7 +50,7 @@ jobs:
           id
           xcode-select -p
       - name: ゼロ状態から bootstrap を検証
-        run: bash scripts/run-macos-install-scenario.sh fresh-bootstrap
+        run: cargo xtask check runtime fresh-bootstrap
 
   second-user-home-manager:
     name: 既存 Nix 環境で別ユーザーの Home Manager を検証
@@ -74,7 +74,7 @@ jobs:
           xcode-select -p
 
       - name: 既存 Nix 環境で別ユーザーの Home Manager を検証
-        run: bash scripts/run-macos-install-scenario.sh second-user-home-manager
+        run: cargo xtask check runtime second-user-home-manager
 
   darwin-switch-ya:
     name: 実運用 ya の nix-darwin switch を検証
@@ -98,4 +98,4 @@ jobs:
           xcode-select -p
 
       - name: 実運用 ya の nix-darwin switch を検証
-        run: bash scripts/run-macos-install-scenario.sh darwin-switch-ya
+        run: cargo xtask check runtime darwin-switch-ya
