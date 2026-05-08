@@ -1,1 +1,4 @@
 /lsp
+/.direnv/
+/target/
+target/
