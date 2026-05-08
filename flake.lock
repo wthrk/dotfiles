@@ -121,23 +121,6 @@
         "type": "github"
       }
     },
-    "macos-image-templates": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1775407116,
-        "narHash": "sha256-WZ09I0lmWihEQqvJmzwkJBp4+vgIfImCYuSugpGxbDc=",
-        "owner": "cirruslabs",
-        "repo": "macos-image-templates",
-        "rev": "70cb4395fee576f4fc49e3b58b2538a7d3400c05",
-        "type": "github"
-      },
-      "original": {
-        "owner": "cirruslabs",
-        "repo": "macos-image-templates",
-        "rev": "70cb4395fee576f4fc49e3b58b2538a7d3400c05",
-        "type": "github"
-      }
-    },
     "nix-homebrew": {
       "inputs": {
         "brew-src": "brew-src"
@@ -180,7 +163,6 @@
         "homebrew-cask": "homebrew-cask",
         "homebrew-core": "homebrew-core",
         "homebrew-hashicorp": "homebrew-hashicorp",
-        "macos-image-templates": "macos-image-templates",
         "nix-homebrew": "nix-homebrew",
         "nixpkgs": "nixpkgs"
       }

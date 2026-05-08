@@ -12,11 +12,6 @@
 
     nix-homebrew.url = "github:zhaofengli-wip/nix-homebrew";
 
-    macos-image-templates = {
-      url = "github:cirruslabs/macos-image-templates/70cb4395fee576f4fc49e3b58b2538a7d3400c05";
-      flake = false;
-    };
-
     homebrew-core = {
       url = "github:homebrew/homebrew-core";
       flake = false;
@@ -43,6 +38,8 @@
       ...
     }:
     let
+      # Home Manager 出力は実ユーザーと CI/runtime シナリオの両方で使う。
+      # bootstrap --flake から参照するため、これらの名前は安定させる。
       homeHosts = [
         {
           name = "default";
@@ -61,14 +58,7 @@
         }
       ];
 
-      darwinHosts = [
-        {
-          name = "default";
-          user = "ya";
-          system = "aarch64-darwin";
-        }
-      ];
-
+      # system 名から、その環境向けの nixpkgs package set を作る。
       pkgsFor =
         system:
         import nixpkgs {
@@ -76,6 +66,8 @@
           config.allowUnfree = true;
         };
 
+      # homeConfigurations の各値を作る関数。user/system を受け取り、
+      # ./home.nix を Home Manager module として評価する。
       mkHome =
         {
           user,
@@ -87,6 +79,8 @@
           extraSpecialArgs = { inherit inputs user; };
         };
 
+      # darwinConfigurations の各値を作る関数。user/system を受け取り、
+      # ./darwin.nix、Home Manager、nix-homebrew の module をまとめて評価する。
       mkDarwin =
         {
           user,
@@ -102,6 +96,39 @@
           specialArgs = { inherit inputs user; };
         };
 
+      # devShells.<system>.default の shell を作る関数。
+      mkDevShell =
+        pkgs:
+        {
+          default = pkgs.mkShell {
+            packages = [
+              pkgs.bash
+              pkgs.cargo
+              pkgs.clippy
+              pkgs.coreutils
+              pkgs.git
+              pkgs.gnugrep
+              pkgs.gnused
+              pkgs.jq
+              pkgs.nil
+              pkgs.nixd
+              pkgs.ripgrep
+              pkgs.rust-analyzer
+              pkgs.rustc
+              pkgs.rustfmt
+              pkgs.shellcheck
+              pkgs.zsh
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.ansible
+              pkgs.packer
+              pkgs.sshpass
+              pkgs.tart
+            ];
+          };
+        };
+
+      # homeHosts の 1 要素から、homeConfigurations に入れる attrset entry を作る。
       homeEntriesForHost =
         host:
         let
@@ -111,6 +138,8 @@
           value = mkHome cfg;
         in
         [
+          # 手動の home-manager コマンドで .#default と .#ya@default の
+          # どちらも使えるように、短い名前と明示名を両方出す。
           {
             name = host.name;
             inherit value;
@@ -120,104 +149,31 @@
             inherit value;
           }
         ];
-
-      darwinEntriesForHost =
-        host:
-        let
-          cfg = {
-            inherit (host) user system;
-          };
-          value = mkDarwin cfg;
-        in
-        [
-          {
-            name = host.name;
-            inherit value;
-          }
-        ];
-
-      formatterEntries =
-        map
-          (system: {
-            name = system;
-            value = (pkgsFor system).nixfmt;
-          })
-          [
-            "aarch64-darwin"
-            "x86_64-linux"
-          ];
-
-      packageEntries = map (system: {
-        name = system;
-        value =
-          let
-            pkgs = pkgsFor system;
-          in
-          {
-            tart = pkgs.tart;
-            packer = pkgs.packer;
-            ansible = pkgs.ansible;
-          };
-      }) [ "aarch64-darwin" ];
-
-      devShellEntries =
-        map
-          (system: {
-            name = system;
-            value =
-              let
-                pkgs = pkgsFor system;
-                darwinPackages =
-                  if pkgs.stdenv.isDarwin then
-                    [
-                      pkgs.ansible
-                      pkgs.packer
-                      pkgs.sshpass
-                      pkgs.tart
-                    ]
-                  else
-                    [ ];
-              in
-              {
-                default = pkgs.mkShell {
-                  packages =
-                    with pkgs;
-                    [
-                      bash
-                      cargo
-                      clippy
-                      coreutils
-                      git
-                      gnugrep
-                      gnused
-                      jq
-                      nil
-                      nixd
-                      ripgrep
-                      rust-analyzer
-                      rustc
-                      rustfmt
-                      shellcheck
-                      zsh
-                    ]
-                    ++ darwinPackages;
-                };
-              };
-          })
-          [
-            "aarch64-darwin"
-            "x86_64-linux"
-          ];
     in
     {
       homeConfigurations = builtins.listToAttrs (builtins.concatMap homeEntriesForHost homeHosts);
 
-      darwinConfigurations = builtins.listToAttrs (builtins.concatMap darwinEntriesForHost darwinHosts);
+      # nix-darwin は実 macOS host だけ公開する。CI 専用ユーザーは standalone
+      # Home Manager output を使う。
+      darwinConfigurations.default = mkDarwin {
+        user = "ya";
+        system = "aarch64-darwin";
+      };
 
-      packages = builtins.listToAttrs packageEntries;
+      packages.aarch64-darwin =
+        let
+          pkgs = pkgsFor "aarch64-darwin";
+        in
+        {
+          tart = pkgs.tart;
+          packer = pkgs.packer;
+          ansible = pkgs.ansible;
+        };
 
-      devShells = builtins.listToAttrs devShellEntries;
+      devShells.aarch64-darwin = mkDevShell (pkgsFor "aarch64-darwin");
+      devShells.x86_64-linux = mkDevShell (pkgsFor "x86_64-linux");
 
-      formatter = builtins.listToAttrs formatterEntries;
+      formatter.aarch64-darwin = (pkgsFor "aarch64-darwin").nixfmt;
+      formatter.x86_64-linux = (pkgsFor "x86_64-linux").nixfmt;
     };
 }
