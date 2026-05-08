@@ -193,6 +193,7 @@
                       nil
                       nixd
                       ripgrep
+                      rust-analyzer
                       rustc
                       rustfmt
                       shellcheck

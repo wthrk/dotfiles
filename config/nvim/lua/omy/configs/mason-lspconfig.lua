@@ -2,7 +2,7 @@ local mason_lspconfig = require "mason-lspconfig"
 local lspconfig = require "lspconfig"
 
 mason_lspconfig.setup {
-  ensure_installed = { "lua_ls", "rust_analyzer", "marksman", "ts_ls" },
+  ensure_installed = { "lua_ls", "marksman", "ts_ls" },
 }
 
 local capabilities = require("cmp_nvim_lsp").default_capabilities()

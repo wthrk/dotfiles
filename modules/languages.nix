@@ -35,6 +35,7 @@ in
     pkgs.black
     pkgs.rustc
     pkgs.cargo
+    pkgs.rust-analyzer
     pkgs.cargo-audit
     pkgs.cargo-deny
     pkgs.cargo-edit
