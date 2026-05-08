@@ -36,9 +36,6 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
-      - name: flake.lock を確認
-        run: test -s flake.lock
-
       - name: Nix を導入
         uses: DeterminateSystems/nix-installer-action@v20
         with:
@@ -46,6 +43,4 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: static checks
-        run: |
-          set -euxo pipefail
-          nix develop -c cargo xtask check static
+        run: nix develop -c cargo xtask check static

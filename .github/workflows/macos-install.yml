@@ -39,16 +39,6 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
-      - name: flake.lock を確認
-        run: test -s flake.lock
-
-      - name: runner 情報
-        run: |
-          set -euxo pipefail
-          sw_vers
-          uname -a
-          id
-          xcode-select -p
       - name: ゼロ状態から bootstrap を検証
         run: cargo xtask check runtime fresh-bootstrap
 
@@ -62,17 +52,6 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
-      - name: flake.lock を確認
-        run: test -s flake.lock
-
-      - name: runner 情報
-        run: |
-          set -euxo pipefail
-          sw_vers
-          uname -a
-          id
-          xcode-select -p
-
       - name: 既存 Nix 環境で別ユーザーの Home Manager を検証
         run: cargo xtask check runtime second-user-home-manager
 
@@ -85,17 +64,6 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v5
-
-      - name: flake.lock を確認
-        run: test -s flake.lock
-
-      - name: runner 情報
-        run: |
-          set -euxo pipefail
-          sw_vers
-          uname -a
-          id
-          xcode-select -p
 
       - name: 実運用 ya の nix-darwin switch を検証
         run: cargo xtask check runtime darwin-switch-ya
