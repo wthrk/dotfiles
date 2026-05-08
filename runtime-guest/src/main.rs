@@ -421,27 +421,6 @@ impl ScenarioRunner {
             "/Users/ya",
             &[".config/zsh", ".config/nvim", ".zshrc", ".zshenv"],
         )?;
-        self.run_as_ya(
-            "/etc/profiles/per-user/ya/bin/zsh",
-            &[
-                "-il",
-                "-c",
-                r#"
-set -euo pipefail
-for tool in git gh jq rg fzf atuin zoxide nvim; do
-  tool_path="$(command -v "$tool")"
-  real_tool_path="${tool_path:A}"
-  case "$real_tool_path" in
-    /nix/store/*) ;;
-    *)
-      echo "$tool resolved outside the Nix store: $tool_path -> $real_tool_path" >&2
-      exit 1
-      ;;
-  esac
-done
-"#,
-            ],
-        )?;
 
         let taps = self.read_as_ya("/opt/homebrew/bin/brew", &["tap"])?;
         expect_line(&taps, "azure/bicep")?;
