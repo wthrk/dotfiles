@@ -2,19 +2,32 @@
 
 `ya` 用の `nix-darwin` + `home-manager` 管理 dotfiles。
 
-## 適用
+## 開発環境
 
-通常:
+初回だけ許可します。
 
 ```sh
-nix develop -c cargo xtask check static
-sudo darwin-rebuild switch --flake .#default
+direnv allow .
 ```
 
-Home Manager のみ:
+このディレクトリでは `direnv` が flake の devShell を読み込みます。検証や補助タスクは `cargo xtask` で実行します。
 
 ```sh
-home-manager switch --flake .#default
+cargo xtask check
+```
+
+## 適用
+
+すべて適用:
+
+```sh
+cargo xtask apply
+```
+
+Home Manager のみ部分適用:
+
+```sh
+cargo xtask apply home-manager
 ```
 
 ## 初回導入
@@ -48,14 +61,31 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstr
 ## 検証
 
 ```sh
-nix develop -c cargo xtask check static
-nix develop -c cargo xtask check zsh
+cargo xtask check
 ```
 
+`cargo xtask check` は Rust の format/check/clippy/test、flake check、Nix format、Home Manager output 評価、zsh 挙動検証を実行します。Tart VM を使う runtime 検証は含めません。
+
+すべて実行する場合:
+
 ```sh
-nix develop -c cargo xtask check runtime fresh-bootstrap
-nix develop -c cargo xtask check runtime second-user-home-manager
-nix develop -c cargo xtask check runtime darwin-switch-ya
+cargo xtask check all
+```
+
+個別に実行する場合:
+
+```sh
+cargo xtask check static
+cargo xtask check zsh
+```
+
+Tart VM を使う runtime 検証:
+
+```sh
+cargo xtask check runtime all
+cargo xtask check runtime fresh-bootstrap
+cargo xtask check runtime second-user-home-manager
+cargo xtask check runtime darwin-switch-ya
 ```
 
 ## ロールバック

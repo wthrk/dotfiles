@@ -43,11 +43,6 @@
       ...
     }:
     let
-      systems = [
-        "aarch64-darwin"
-        "x86_64-darwin"
-      ];
-
       homeHosts = [
         {
           name = "default";
@@ -159,36 +154,6 @@
             pkgs = pkgsFor system;
           in
           {
-            tart-macos-install = pkgs.writeShellApplication {
-              name = "tart-macos-install";
-              runtimeInputs = with pkgs; [
-                ansible
-                bash
-                coreutils
-                git
-                gnugrep
-                gnused
-                jq
-                packer
-                tart
-              ];
-              text = ''
-                export DOTFILES_MACOS_IMAGE_TEMPLATES_DIR=${inputs.macos-image-templates}
-                ${builtins.readFile ./scripts/tart-macos-install.sh}
-              '';
-            };
-            run-macos-install-scenario = pkgs.writeShellApplication {
-              name = "run-macos-install-scenario";
-              runtimeInputs = with pkgs; [
-                bash
-                coreutils
-                git
-                gnugrep
-                gnused
-                jq
-              ];
-              text = builtins.readFile ./scripts/run-macos-install-scenario.sh;
-            };
             tart = pkgs.tart;
             packer = pkgs.packer;
             ansible = pkgs.ansible;
@@ -207,6 +172,7 @@
                     [
                       pkgs.ansible
                       pkgs.packer
+                      pkgs.sshpass
                       pkgs.tart
                     ]
                   else
@@ -224,6 +190,8 @@
                       gnugrep
                       gnused
                       jq
+                      nil
+                      nixd
                       ripgrep
                       rustc
                       rustfmt

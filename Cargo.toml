@@ -1,4 +1,6 @@
 [workspace]
-members = ["xtask"]
+members = ["runtime-guest", "xtask"]
 resolver = "2"
 
+[workspace.package]
+edition = "2024"
