@@ -185,6 +185,7 @@
                     [
                       bash
                       cargo
+                      clippy
                       coreutils
                       git
                       gnugrep
