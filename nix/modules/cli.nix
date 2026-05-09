@@ -1,9 +1,25 @@
-{ lib, pkgs, ... }:
+{
+  inputs ? null,
+  lib,
+  pkgs,
+  ...
+}:
 let
   has = lib.hasAttrByPath;
   get = lib.getAttrFromPath;
 
   optionalPkg = path: if has path pkgs then [ (get path pkgs) ] else [ ];
+  system = pkgs.stdenv.hostPlatform.system;
+  dotfilesPackage =
+    if
+      inputs != null
+      && inputs ? self
+      && inputs.self ? packages
+      && has [ system "default" ] inputs.self.packages
+    then
+      inputs.self.packages.${system}.default
+    else
+      null;
 
   gcloudPackage =
     if has [ "google-cloud-sdk" "components" "gke-gcloud-auth-plugin" ] pkgs then
@@ -65,6 +81,7 @@ in
       silver-searcher
       gnumake
     ]
+    ++ lib.optional (dotfilesPackage != null) dotfilesPackage
     ++ lib.optional (gcloudPackage != null) gcloudPackage
     ++ optionalPkg [ "tart" ]
     ++ optionalPkg [ "temurin-bin" ]

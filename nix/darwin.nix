@@ -1,6 +1,9 @@
 {
   inputs,
+  lib,
+  root,
   user,
+  host,
   pkgs,
   ...
 }:
@@ -25,6 +28,8 @@
 
   nixpkgs.config.allowUnfree = true;
 
+  networking.hostName = lib.mkDefault host;
+
   programs.zsh.enable = true;
 
   users.users.${user} = {
@@ -37,7 +42,7 @@
   home-manager.useGlobalPkgs = true;
   home-manager.useUserPackages = true;
   home-manager.backupFileExtension = "before-home-manager";
-  home-manager.extraSpecialArgs = { inherit inputs user; };
+  home-manager.extraSpecialArgs = { inherit inputs root user; };
   home-manager.users.${user} = import ./home.nix;
 
   nix-homebrew = {

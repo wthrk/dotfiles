@@ -1,14 +1,14 @@
-{ ... }:
+{ root, ... }:
 {
   xdg.enable = true;
 
   xdg.configFile."zsh" = {
-    source = ../config/zsh;
+    source = "${root}/config/zsh";
     force = true;
   };
 
   xdg.configFile."nvim" = {
-    source = ../config/nvim;
+    source = "${root}/config/nvim";
     force = true;
   };
 }
