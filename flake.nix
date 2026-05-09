@@ -199,6 +199,7 @@
             pkgs.gnused
             pkgs.jq
             pkgs.nil
+            pkgs.nix
             pkgs.nixd
             pkgs.ripgrep
             pkgs.rust-analyzer
