@@ -5,7 +5,7 @@
 # `nix run <source> -- switch ...` に委譲する。古い checkout 前提の引数は互換用に受けるだけにする。
 set -euo pipefail
 
-dotfiles_source="github:wthrk/dotfiles"
+dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-github:wthrk/dotfiles}"
 switch_mode="darwin"
 run_switch=1
 user=""

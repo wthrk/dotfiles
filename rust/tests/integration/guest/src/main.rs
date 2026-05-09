@@ -22,6 +22,8 @@ type Result<T> = dotfiles_core::Result<T>;
 struct Args {
     #[arg(value_enum)]
     scenario: Option<RuntimeScenario>,
+    #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
+    source_hash: Option<String>,
 }
 
 /// シナリオ中のコマンド失敗を標準エラーへ出し、ホスト側 SSH に非 0 終了を返す。
@@ -37,5 +39,6 @@ fn main() -> ExitCode {
 
 /// ゲスト環境を検出してから、選択された順序付きシナリオを実行する。
 fn run(args: Args) -> Result<()> {
-    scenario::ScenarioRunner::new()?.run_scenario(args.scenario.unwrap_or(RuntimeScenario::Full))
+    scenario::ScenarioRunner::new(args.source_hash)?
+        .run_scenario(args.scenario.unwrap_or(RuntimeScenario::Full))
 }

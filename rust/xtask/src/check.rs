@@ -24,9 +24,15 @@ pub fn run(target: Option<CheckTarget>) -> Result<()> {
         Some(CheckTarget::Zsh) => {
             command.arg("zsh");
         }
-        Some(CheckTarget::Runtime { scenario }) => match scenario {
+        Some(CheckTarget::Runtime {
+            scenario,
+            source_hash,
+        }) => match scenario {
             Some(RuntimeScenario::Full) | None => {
                 command.arg("integration");
+                if let Some(source_hash) = source_hash {
+                    command.arg("--source-hash").arg(source_hash);
+                }
             }
         },
         Some(CheckTarget::All) => {

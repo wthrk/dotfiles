@@ -27,6 +27,8 @@ struct Args {
     github_actions: Option<String>,
     #[arg(long, env = "DOTFILES_REPO_DIR", value_name = "PATH")]
     repo_dir: Option<PathBuf>,
+    #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
+    source_hash: Option<String>,
     #[arg(
         long,
         env = "DOTFILES_TART_IMAGE",
@@ -65,7 +67,7 @@ fn main() -> std::process::ExitCode {
 /// GitHub Actions の macOS ゲスト内では直接実行し、それ以外では Tart VM を作って実行する。
 fn run(args: Args) -> Result<()> {
     if args.github_actions.is_some() {
-        run_guest_in_ci(args.scenario())
+        run_guest_in_ci(args.scenario(), args.source_hash.as_deref())
     } else {
         TartRunner::new(args)?.run()
     }
@@ -79,10 +81,11 @@ impl Args {
 }
 
 /// CI が既にゲスト環境を提供している場合は、Tart を使わず guest クレートを直接実行する。
-fn run_guest_in_ci(scenario: RuntimeScenario) -> Result<()> {
+fn run_guest_in_ci(scenario: RuntimeScenario, source_hash: Option<&str>) -> Result<()> {
     step("integration test guest");
     let mut command = Command::new("cargo");
     command.args(["run", "--package", "dotfiles-integration-test-guest"]);
+    append_guest_args(&mut command, source_hash);
     match scenario {
         RuntimeScenario::Full => run_command(
             command,
@@ -91,10 +94,26 @@ fn run_guest_in_ci(scenario: RuntimeScenario) -> Result<()> {
     }
 }
 
+fn append_guest_args(command: &mut Command, source_hash: Option<&str>) {
+    if let Some(source_hash) = source_hash {
+        command.args(["--", "--source-hash", source_hash]);
+    }
+}
+
+fn guest_args(source_hash: Option<&str>) -> Vec<String> {
+    let mut args = vec!["/tmp/dotfiles-integration-test-guest".to_string()];
+    if let Some(source_hash) = source_hash {
+        args.push("--source-hash".to_string());
+        args.push(source_hash.to_string());
+    }
+    args
+}
+
 /// Tart VM、共有ディレクトリ、SSH 制御接続の前提値をまとめて所有する。
 struct TartRunner {
     scenario: RuntimeScenario,
     repo_dir: PathBuf,
+    source_hash: Option<String>,
     image: String,
     vm_name: String,
     temp_dir: PathBuf,
@@ -145,6 +164,7 @@ impl TartRunner {
         Ok(Self {
             scenario,
             repo_dir,
+            source_hash: args.source_hash,
             image: args.image,
             vm_name,
             temp_dir,
@@ -203,7 +223,9 @@ impl TartRunner {
         match self.scenario {
             RuntimeScenario::Full => {
                 println!("running full runtime scenario");
-                session.run(&["/tmp/dotfiles-integration-test-guest"])?;
+                let args = guest_args(self.source_hash.as_deref());
+                let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+                session.run(&refs)?;
             }
         }
 

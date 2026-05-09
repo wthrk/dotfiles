@@ -59,9 +59,9 @@ pub(crate) struct ScenarioRunner {
 
 impl ScenarioRunner {
     /// 現在のゲスト環境を 1 回だけ検出し、以後の手順で共有する。
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new(source_hash: Option<String>) -> Result<Self> {
         Ok(Self {
-            env: ScenarioEnv::current()?,
+            env: ScenarioEnv::current(source_hash)?,
         })
     }
 
@@ -112,7 +112,7 @@ impl ScenarioRunner {
             );
         }
 
-        self.run("scripts/bootstrap.sh", &["--dry-run"])?;
+        self.run(self.bootstrap_script_str().as_str(), &["--dry-run"])?;
         self.bootstrap_current_user_no_switch()?;
         // 切り替えなしの初期設定でも、利用可能なローカル flake は書かれている必要がある。
         ensure_nonempty_path(local_config_flake_for_current_user()?)?;
@@ -124,23 +124,18 @@ impl ScenarioRunner {
         self.ensure_absent("/opt/homebrew/Library/Taps.before-nix-homebrew")?;
         self.ensure_absent("/usr/local/Library/Taps.before-nix-homebrew")?;
 
-        self.run(
-            path_str(self.env.workspace.join("scripts/bootstrap.sh")).as_str(),
-            &[
-                "--source",
-                self.workspace_str().as_str(),
-                "--user",
-                current_user().as_str(),
-                "--host",
-                current_host()?.as_str(),
-                "--mode",
-                "darwin",
-                "--no-switch",
-                "--force",
-            ],
-        )?;
+        self.run_bootstrap(&[
+            "--user",
+            current_user().as_str(),
+            "--host",
+            current_host()?.as_str(),
+            "--mode",
+            "darwin",
+            "--no-switch",
+            "--force",
+        ])?;
 
-        self.run("scripts/bootstrap.sh", &["--self-test"])
+        self.run(self.bootstrap_script_str().as_str(), &["--self-test"])
     }
 
     /// 追加ユーザーが自分のローカル flake から Home Manager switch できることを確認する。
@@ -166,13 +161,10 @@ impl ScenarioRunner {
             ],
         )?;
 
-        self.run_sudo_user(
+        self.run_bootstrap_sudo_user(
             "dotfilesci",
             &dotfilesci_env(&self.env.nix_config)?,
-            path_str(self.env.workspace.join("scripts/bootstrap.sh")).as_str(),
             &[
-                "--source",
-                self.workspace_str().as_str(),
                 "--user",
                 "dotfilesci",
                 "--host",
@@ -234,13 +226,10 @@ impl ScenarioRunner {
                 self.workspace_str().as_str(),
             ],
         )?;
-        self.run_sudo_user(
+        self.run_bootstrap_sudo_user(
             "ya",
             &ya_env(&self.env.nix_config)?,
-            path_str(self.env.workspace.join("scripts/bootstrap.sh")).as_str(),
             &[
-                "--source",
-                self.workspace_str().as_str(),
                 "--user",
                 "ya",
                 "--host",
@@ -258,7 +247,7 @@ impl ScenarioRunner {
             nix,
             &[
                 "run",
-                self.workspace_str().as_str(),
+                self.dotfiles_source_str(),
                 "--",
                 "switch",
                 "darwin",
@@ -304,21 +293,16 @@ impl ScenarioRunner {
 
     /// 現在ユーザーで bootstrap の no-switch 経路を実行し、ローカル flake 生成だけを確認する。
     fn bootstrap_current_user_no_switch(&self) -> Result<()> {
-        self.run(
-            "scripts/bootstrap.sh",
-            &[
-                "--source",
-                self.workspace_str().as_str(),
-                "--user",
-                current_user().as_str(),
-                "--host",
-                current_host()?.as_str(),
-                "--mode",
-                "darwin",
-                "--no-switch",
-                "--force",
-            ],
-        )
+        self.run_bootstrap(&[
+            "--user",
+            current_user().as_str(),
+            "--host",
+            current_host()?.as_str(),
+            "--mode",
+            "darwin",
+            "--no-switch",
+            "--force",
+        ])
     }
 
     /// checkout 内の前提ファイルが空でないことを確認し、壊れた共有マウントを早めに検出する。
@@ -346,6 +330,44 @@ impl ScenarioRunner {
         path_str(&self.env.workspace)
     }
 
+    fn bootstrap_script_str(&self) -> String {
+        path_str(&self.env.bootstrap_script)
+    }
+
+    fn dotfiles_source_str(&self) -> &str {
+        &self.env.dotfiles_source
+    }
+
+    fn bootstrap_args(&self, args: &[&str]) -> Vec<String> {
+        let mut result = Vec::new();
+        if self.env.pass_source_to_bootstrap {
+            result.push("--source".to_string());
+            result.push(self.dotfiles_source_str().to_string());
+        }
+        result.extend(args.iter().map(|arg| (*arg).to_string()));
+        result
+    }
+
+    fn run_bootstrap(&self, args: &[&str]) -> Result<()> {
+        run_with_env(
+            Some(&self.env),
+            self.bootstrap_script_str().as_str(),
+            self.bootstrap_args(args),
+        )
+    }
+
+    fn run_bootstrap_sudo_user(
+        &self,
+        user: &str,
+        envs: &[(String, String)],
+        args: &[&str],
+    ) -> Result<()> {
+        let program = self.bootstrap_script_str();
+        let args = self.bootstrap_args(args);
+        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        self.run_sudo_user(user, envs, program.as_str(), &arg_refs)
+    }
+
     /// 別ユーザーの HOME/PATH を明示して `sudo -u` し、呼び出し元環境の漏れを防ぐ。
     fn run_sudo_user(
         &self,
@@ -354,10 +376,14 @@ impl ScenarioRunner {
         program: &str,
         args: &[&str],
     ) -> Result<()> {
+        let mut envs = envs.to_vec();
+        if let Some(source) = &self.env.bootstrap_source_env {
+            envs.push(("DOTFILES_BOOTSTRAP_SOURCE".to_string(), source.clone()));
+        }
         run_with_env(
             Some(&self.env),
             "sudo",
-            sudo_user_args(user, envs, program, args),
+            sudo_user_args(user, &envs, program, args),
         )
     }
 

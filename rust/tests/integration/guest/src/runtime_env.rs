@@ -4,23 +4,29 @@
 //! ユーザー切り替え時の HOME/PATH もここで作り、各 step が個別に推測しないようにする。
 
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::Result;
 use anyhow::{Context, bail};
-use dotfiles_core::host;
+use dotfiles_core::{host, path::display as path_str};
 
 /// シナリオ中の全コマンドが共有する作業場所と Nix 設定。
 pub(crate) struct ScenarioEnv {
     pub(crate) workspace: PathBuf,
+    pub(crate) bootstrap_script: PathBuf,
+    pub(crate) dotfiles_source: String,
+    pub(crate) pass_source_to_bootstrap: bool,
+    pub(crate) bootstrap_source_env: Option<String>,
     pub(crate) runner_temp: PathBuf,
     pub(crate) nix_config: String,
 }
 
 impl ScenarioEnv {
     /// CI、Tart、手元実行の順で作業ディレクトリを決め、実行用一時ディレクトリを作る。
-    pub(crate) fn current() -> Result<Self> {
+    pub(crate) fn current(source_hash: Option<String>) -> Result<Self> {
         let guest_workspace = PathBuf::from("/Volumes/My Shared Files/repo");
         let workspace = env::var_os("GITHUB_WORKSPACE")
             .map(PathBuf::from)
@@ -46,8 +52,13 @@ impl ScenarioEnv {
         let nix_config = env::var("NIX_CONFIG")
             .unwrap_or_else(|_| "experimental-features = nix-command flakes".to_string());
         std::fs::create_dir_all(&runner_temp)?;
+        let source = RuntimeSource::new(&workspace, &runner_temp, source_hash.as_deref())?;
         Ok(Self {
             workspace,
+            bootstrap_script: source.bootstrap_script,
+            dotfiles_source: source.dotfiles_source,
+            pass_source_to_bootstrap: source.pass_source_to_bootstrap,
+            bootstrap_source_env: source.bootstrap_source_env,
             runner_temp,
             nix_config,
         })
@@ -63,6 +74,54 @@ impl ScenarioEnv {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        if let Some(source) = &self.bootstrap_source_env {
+            command.env("DOTFILES_BOOTSTRAP_SOURCE", source);
+        }
+    }
+}
+
+struct RuntimeSource {
+    bootstrap_script: PathBuf,
+    dotfiles_source: String,
+    pass_source_to_bootstrap: bool,
+    bootstrap_source_env: Option<String>,
+}
+
+impl RuntimeSource {
+    fn new(workspace: &Path, runner_temp: &Path, source_hash: Option<&str>) -> Result<Self> {
+        let Some(source_hash) = source_hash else {
+            return Ok(Self {
+                bootstrap_script: workspace.join("scripts/bootstrap.sh"),
+                dotfiles_source: path_str(workspace),
+                pass_source_to_bootstrap: true,
+                bootstrap_source_env: None,
+            });
+        };
+        if source_hash.trim().is_empty() {
+            bail!("source hash must not be empty");
+        }
+
+        let dotfiles_source = format!("github:wthrk/dotfiles/{source_hash}");
+        let bootstrap_script = runner_temp.join("bootstrap.sh");
+        let url = format!(
+            "https://raw.githubusercontent.com/wthrk/dotfiles/{source_hash}/scripts/bootstrap.sh"
+        );
+        let status = Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&bootstrap_script)
+            .arg(&url)
+            .status()?;
+        if !status.success() {
+            bail!("failed to download bootstrap.sh: {url}: {status}");
+        }
+        fs::set_permissions(&bootstrap_script, fs::Permissions::from_mode(0o755))?;
+
+        Ok(Self {
+            bootstrap_script,
+            dotfiles_source: dotfiles_source.clone(),
+            pass_source_to_bootstrap: false,
+            bootstrap_source_env: Some(dotfiles_source),
+        })
     }
 }
 

@@ -32,6 +32,8 @@ enum CheckTarget {
     Integration {
         #[arg(value_enum)]
         scenario: Option<RuntimeScenario>,
+        #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
+        source_hash: Option<String>,
     },
     All,
 }
@@ -60,9 +62,10 @@ fn run(target: Option<CheckTarget>) -> Result<()> {
         Some(CheckTarget::Static) => static_checks(),
         Some(CheckTarget::Zsh) => zsh::check(),
         Some(CheckTarget::All) => all_checks(),
-        Some(CheckTarget::Integration { scenario }) => {
-            integration(scenario.unwrap_or(RuntimeScenario::Full))
-        }
+        Some(CheckTarget::Integration {
+            scenario,
+            source_hash,
+        }) => integration(scenario.unwrap_or(RuntimeScenario::Full), source_hash),
     }
 }
 
@@ -85,7 +88,7 @@ fn default_checks() -> Result<()> {
 /// VM 内での初期導入シナリオまで含めて実行する。
 fn all_checks() -> Result<()> {
     default_checks()?;
-    integration(RuntimeScenario::Full)
+    integration(RuntimeScenario::Full, None)
 }
 
 /// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint、テストを回す。
@@ -254,11 +257,19 @@ fn external_module_flake(source: &str) -> String {
 }
 
 /// VM の準備と guest 実行は integration クレート側へ任せる。
-fn integration(scenario: RuntimeScenario) -> Result<()> {
+fn integration(scenario: RuntimeScenario, source_hash: Option<String>) -> Result<()> {
     let shell = Shell::new()?;
     match scenario {
         RuntimeScenario::Full => {
-            cmd!(shell, "cargo run --package dotfiles-integration-tests").run()?;
+            let mut args = vec![
+                "run".to_string(),
+                "--package".to_string(),
+                "dotfiles-integration-tests".to_string(),
+            ];
+            if let Some(source_hash) = source_hash {
+                args.extend(["--".to_string(), "--source-hash".to_string(), source_hash]);
+            }
+            cmd!(shell, "cargo {args...}").run()?;
         }
     }
     Ok(())

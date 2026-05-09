@@ -46,6 +46,8 @@ pub(crate) enum CheckTarget {
     Runtime {
         #[arg(value_enum)]
         scenario: Option<RuntimeScenario>,
+        #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
+        source_hash: Option<String>,
     },
     All,
 }
