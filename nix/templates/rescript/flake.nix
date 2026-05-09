@@ -1,3 +1,5 @@
+# `nix flake init -t <dotfiles>#rescript` で使う ReScript 開発用テンプレート。
+# Node.js、Bun、TypeScript、ReScript を現在のシステム向け devShell に入れる。
 {
   description = "ReScript devShell";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

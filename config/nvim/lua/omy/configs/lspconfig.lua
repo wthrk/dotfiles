@@ -1,3 +1,4 @@
+-- 各 language server の capabilities と個別設定を定義し、Mason/lspconfig から参照させる。
 local lspconfig = require "lspconfig"
 
 return {

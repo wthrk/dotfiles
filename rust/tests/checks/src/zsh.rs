@@ -1,3 +1,8 @@
+//! Home Manager が生成した zsh 設定を、実ホームを触らずに起動して検証する。
+//!
+//! activation package の home-files を一時ホームへ写し、リンク先や HOME を置換したうえで
+//! 対話 zsh を起動する。これにより現在のユーザー環境を汚さずに補完、キーバインド、PATH を見る。
+
 use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +14,7 @@ use xshell::{Shell, cmd};
 
 use crate::{Result, command::current_user};
 
+/// 一時ホームを作り、ショートカットとキー操作の両方を検証する。
 pub fn check() -> Result<()> {
     let shell = Shell::new()?;
     let home = TestHome::new(&shell)?;
@@ -16,6 +22,7 @@ pub fn check() -> Result<()> {
     key_operations(&shell, &home)
 }
 
+/// zsh モジュールが利用者に約束する補完、ウィジェット、PATH の不変条件を検証する。
 fn shortcuts(shell: &Shell, home: &TestHome) -> Result<()> {
     let fzf_tab_widget = zsh_output(shell, home, "zle -la | rg '^fzf-tab-complete$' | head -n 1")?;
     let autosuggest_widget = zsh_output(
@@ -26,17 +33,24 @@ fn shortcuts(shell: &Shell, home: &TestHome) -> Result<()> {
     let syntax = zsh_output(shell, home, syntax_probe())?;
     let path_dump = zsh_output(shell, home, "print -l $path")?;
 
+    // fzf-tab が読み込まれている必要がある。読み込まれていない場合、
+    // TAB 補完が黙って素の zsh 挙動に戻る。
     expect_match(
         "T001 fzf-tab widget exists",
         &fzf_tab_widget,
         "fzf-tab-complete",
     )?;
+    // キー割り当てがウィジェットを参照するため、autosuggestions が読み込まれている必要がある。
     expect_match(
         "T002 autosuggest widget exists",
         &autosuggest_widget,
         "autosuggest-accept",
     )?;
+    // syntax highlighting はプラグインパスではなく関数の存在で見る。
+    // Home Manager の store パスが変わっても検査が壊れないようにする。
     expect_nonempty("T003 fast-syntax-highlighting loaded", &syntax)?;
+    // TAB は全キーマップで通常補完のままにする。
+    // fzf-tab は意図的に Ctrl-X TAB に割り当てる。
     expect_eq(
         "T010 TAB emacs",
         &zsh_output(shell, home, "bindkey -M emacs '^I'")?,
@@ -57,6 +71,8 @@ fn shortcuts(shell: &Shell, home: &TestHome) -> Result<()> {
         &zsh_output(shell, home, "bindkey -M emacs '^X^I'")?,
         "\"^X^I\" fzf-tab-complete",
     )?;
+    // 言語環境は Nix/Home Manager 管理に寄せるため、旧 language-manager の
+    // PATH エントリは意図的に除外する。
     expect_absent(
         "T020 legacy language-manager PATH entries are absent",
         &path_dump,
@@ -68,6 +84,7 @@ fn shortcuts(shell: &Shell, home: &TestHome) -> Result<()> {
             ".rbenv/bin",
         ],
     )?;
+    // これらのユーザーローカルなツールパスは意図的に残す。
     expect_contains(
         "T021 agent-tools path is allowed",
         &path_dump,
@@ -81,7 +98,10 @@ fn shortcuts(shell: &Shell, home: &TestHome) -> Result<()> {
     Ok(())
 }
 
+/// 既存の手動確認表と同じラベルで、キー操作の退行を検出する。
 fn key_operations(shell: &Shell, home: &TestHome) -> Result<()> {
+    // 過去のキーマップ検証と同じ観点で、emacs/insert/command mode の TAB 挙動を
+    // 固定する。
     expect_eq(
         "KEY:emacs:^I",
         &zsh_output(shell, home, "bindkey -M emacs '^I'")?,
@@ -102,6 +122,7 @@ fn key_operations(shell: &Shell, home: &TestHome) -> Result<()> {
         &zsh_output(shell, home, "bindkey -M emacs '^X^I'")?,
         "\"^X^I\" fzf-tab-complete",
     )?;
+    // ウィジェット検証はキー割り当てが読み込み済みプラグイン関数を指すことを確認する。
     expect_match(
         "WIDGET:fzf-tab-complete",
         &zsh_output(shell, home, "zle -la | rg '^fzf-tab-complete$' | head -n 1")?,
@@ -121,6 +142,8 @@ fn key_operations(shell: &Shell, home: &TestHome) -> Result<()> {
         &zsh_output(shell, home, syntax_probe())?,
     )?;
     let path_dump = zsh_output(shell, home, "print -l $path")?;
+    // PATH 検証では旧 language-manager shim を排除しつつ、
+    // 意図的なユーザーローカルなツールパスは残す。
     expect_absent(
         "PATH:legacy-managers-absent",
         &path_dump,
@@ -136,6 +159,8 @@ fn key_operations(shell: &Shell, home: &TestHome) -> Result<()> {
     expect_contains("PATH:rancher-desktop-allowed", &path_dump, ".rd/bin")?;
 
     let startup = zsh_output(shell, home, "exit")?;
+    // 起動時に典型的なシェルエラーを出してはいけない。
+    // プロンプトが正常に読み込めることは zsh モジュールの利用者向け契約。
     if startup.contains("command not found")
         || startup.contains("no such file")
         || startup.contains("error")
@@ -146,10 +171,12 @@ fn key_operations(shell: &Shell, home: &TestHome) -> Result<()> {
     Ok(())
 }
 
+/// store パスに依存せず、fast-syntax-highlighting が読み込まれた事実だけを見る probe を返す。
 fn syntax_probe() -> &'static str {
     "functions | rg '(^|[[:space:]])_zsh_highlight|(^|[[:space:]])_fast_highlight|(^|[[:space:]])fast-theme|(^|[[:space:]])FAST_HIGHLIGHT' || :"
 }
 
+/// `script(1)` 経由で zsh を対話起動し、TTY がないと再現しない補完初期化も通す。
 fn zsh_output(shell: &Shell, home: &TestHome, script: &str) -> Result<String> {
     let home_path = home.path().display().to_string();
     let user = home.user();
@@ -162,6 +189,7 @@ fn zsh_output(shell: &Shell, home: &TestHome, script: &str) -> Result<String> {
     Ok(strip_script_control(&raw))
 }
 
+/// Home Manager の生成物を使って、実ホームとは別の `$HOME` を構築する。
 struct TestHome {
     path: PathBuf,
     user: String,
@@ -169,6 +197,7 @@ struct TestHome {
 }
 
 impl TestHome {
+    /// activation package をビルドし、生成時のホームパスを一時ホームへ差し替えて起動可能にする。
     fn new(shell: &Shell) -> Result<Self> {
         let user = current_user()?;
         let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -201,6 +230,8 @@ impl TestHome {
         .to_string();
         let home_files = PathBuf::from(activation_package).join("home-files");
         let zshrc = home_files.join(".zshrc");
+        // 対話シェル検証を走らせる前に、アクティベーションパッケージが zshrc を
+        // 含むことを確認する。
         if !zshrc.is_file() {
             bail!("{} is missing", zshrc.display());
         }
@@ -232,10 +263,12 @@ impl TestHome {
         })
     }
 
+    /// zsh 起動時に `HOME` として渡す一時ディレクトリを返す。
     fn path(&self) -> &PathBuf {
         &self.path
     }
 
+    /// `USER` と `LOGNAME` に渡す名前を返し、prompt 初期化が実ユーザー名に依存しないようにする。
     fn user(&self) -> &str {
         &self.user
     }
@@ -248,6 +281,7 @@ impl Drop for TestHome {
     }
 }
 
+/// Home Manager が埋め込んだ元ホームパスを一時ホームに置換してからファイルを配置する。
 fn copy_with_home_rewrite(
     source: &Path,
     dest: &Path,
@@ -260,6 +294,7 @@ fn copy_with_home_rewrite(
     Ok(())
 }
 
+/// `script(1)` が付ける制御文字を落とし、bindkey 出力を安定して比較できる形にする。
 fn strip_script_control(input: &str) -> String {
     input
         .lines()
@@ -274,6 +309,7 @@ fn strip_script_control(input: &str) -> String {
         .to_string()
 }
 
+/// 期待する bindkey 結果のように、余分な文字を許容しない値を検証する。
 fn expect_eq(label: &str, actual: &str, expected: &str) -> Result<()> {
     if actual == expected {
         println!("PASS {label}");
@@ -283,6 +319,7 @@ fn expect_eq(label: &str, actual: &str, expected: &str) -> Result<()> {
     }
 }
 
+/// `zle -la` のような複数行出力から、期待するウィジェット名が単独行で存在することを検証する。
 fn expect_match(label: &str, actual: &str, expected: &str) -> Result<()> {
     if actual.lines().any(|line| line.trim() == expected) {
         println!("PASS {label}");
@@ -292,6 +329,7 @@ fn expect_match(label: &str, actual: &str, expected: &str) -> Result<()> {
     }
 }
 
+/// 関数一覧の probe が何かを見つけたことだけを要求し、store パスや関数本文には依存しない。
 fn expect_nonempty(label: &str, actual: &str) -> Result<()> {
     if actual.trim().is_empty() {
         bail!("FAIL {label}\n  actual: <empty>")
@@ -301,6 +339,7 @@ fn expect_nonempty(label: &str, actual: &str) -> Result<()> {
     }
 }
 
+/// PATH など順序付き出力に、許可対象の断片が残っていることを検証する。
 fn expect_contains(label: &str, actual: &str, needle: &str) -> Result<()> {
     if actual.contains(needle) {
         println!("PASS {label}");
@@ -310,6 +349,7 @@ fn expect_contains(label: &str, actual: &str, needle: &str) -> Result<()> {
     }
 }
 
+/// PATH など順序付き出力に、旧 language manager の断片が混入していないことを検証する。
 fn expect_absent(label: &str, actual: &str, needles: &[&str]) -> Result<()> {
     if let Some(needle) = needles.iter().find(|needle| actual.contains(**needle)) {
         bail!("FAIL {label}\n  unexpected substring: {needle}\n  actual: {actual}")

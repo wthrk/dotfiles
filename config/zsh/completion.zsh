@@ -1,3 +1,4 @@
+# 対話 zsh で使う補完システムを初期化する。
 autoload -Uz compinit
 
 ZSH_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
@@ -10,12 +11,12 @@ else
   compinit -i -d "$ZSH_COMPDUMP"
 fi
 
-# Completion UI
+# 補完候補の表示は zsh 標準補完に合わせ、曖昧な候補を選びやすくする。
 zstyle ':completion:*' menu select
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
 
-# fzf-tab behavior
+# fzf-tab は補完候補の絞り込みにだけ使い、通常の TAB 動作は奪わない。
 zstyle ':fzf-tab:*' fzf-command fzf
 if [[ "$OSTYPE" == darwin* || "$OSTYPE" == freebsd* ]]; then
   zstyle ':fzf-tab:complete:cd:*' fzf-preview 'ls -la -G $realpath'
@@ -23,7 +24,7 @@ else
   zstyle ':fzf-tab:complete:cd:*' fzf-preview 'ls -la --color=always $realpath'
 fi
 
-# fzf shell key bindings (Ctrl-R/Ctrl-T/Alt-C) from Nix-provided fzf.
+# Nix が提供する fzf の Ctrl-R/Ctrl-T/Alt-C 設定を読み込む。
 if [[ -o interactive ]] && [[ -t 0 ]] && [[ -t 1 ]] && (( $+commands[fzf] )); then
   fzf_root="$(cd "$(dirname -- "$(dirname -- "$(command -v fzf)")")" 2>/dev/null && pwd -P)"
   fzf_key_bindings="$fzf_root/share/fzf/key-bindings.zsh"
@@ -32,7 +33,7 @@ if [[ -o interactive ]] && [[ -t 0 ]] && [[ -t 1 ]] && (( $+commands[fzf] )); th
   fi
 fi
 
-# Keep classic TAB completion and expose fzf-tab on Ctrl-X TAB.
+# TAB は zsh 標準補完、Ctrl-X TAB は fzf-tab に分けて、既存の筋肉記憶を壊さない。
 bindkey '^I' expand-or-complete
 bindkey -M emacs '^I' expand-or-complete
 bindkey -M viins '^I' expand-or-complete
@@ -45,7 +46,7 @@ if [[ -n ${widgets[fzf-tab-complete]} ]]; then
   bindkey -M vicmd '^X^I' fzf-tab-complete
 fi
 
-# External tools initialization
+# 外部ツールの補完設定は、コマンドが存在する場合だけ読み込む。
 if [[ -o interactive ]] && [[ -t 0 ]] && [[ -t 1 ]] && (( $+commands[atuin] )); then
   eval "$(atuin init zsh --disable-up-arrow)"
 fi

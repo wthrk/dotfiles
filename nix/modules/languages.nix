@@ -1,3 +1,7 @@
+# ユーザー環境へ入れる言語ツールチェーン。
+#
+# nixpkgs の属性名が更新で変わるものは候補を順に選ぶ。rbenv、pyenv、nodebrew などの
+# ホーム配下 shim に頼らず、PATH は Nix 由来のツールを優先する前提にする。
 { lib, pkgs, ... }:
 let
   has = lib.hasAttrByPath;

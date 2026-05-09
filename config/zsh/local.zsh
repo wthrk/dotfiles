@@ -1,2 +1,4 @@
-# Local machine-specific overrides live here.
-# This file is sourced last.
+# 共通設定に入れないマシン固有の zsh 上書きをここへ置く。
+#
+# このファイルは最後に読み込まれるため、一時的な PATH 追加やローカル alias を共通設定から
+# 分離できる。

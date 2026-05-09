@@ -1,3 +1,8 @@
+//! ホスト側で Tart VM を管理し、ゲスト内の実行時統合テストを起動する。
+//!
+//! ゲスト用バイナリは検証対象のチェックアウトからビルドして VM にコピーする。
+//! SSH はパスワード認証を制御マスターの確立時だけに限定し、その後のシナリオは同じ接続で流す。
+
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -14,6 +19,7 @@ use dotfiles_core::{command as command_format, path::find_executable};
 type Result<T> = dotfiles_core::Result<T>;
 
 #[derive(Parser)]
+/// Tart イメージ、VM 名、SSH 認証情報、検証対象リポジトリを clap/env から受け取る。
 struct Args {
     #[arg(value_enum)]
     scenario: Option<RuntimeScenario>,
@@ -40,10 +46,12 @@ struct Args {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+/// ゲストに渡すシナリオ。現状は初期設定から switch までの full のみ。
 enum RuntimeScenario {
     Full,
 }
 
+/// ホスト準備またはゲスト実行の失敗を、xtask へ非 0 終了として返す。
 fn main() -> std::process::ExitCode {
     match run(Args::parse()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -54,6 +62,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// GitHub Actions の macOS ゲスト内では直接実行し、それ以外では Tart VM を作って実行する。
 fn run(args: Args) -> Result<()> {
     if args.github_actions.is_some() {
         run_guest_in_ci(args.scenario())
@@ -63,11 +72,13 @@ fn run(args: Args) -> Result<()> {
 }
 
 impl Args {
+    /// CLI で省略された場合は full シナリオを選び、文字列による分岐を呼び出し側へ漏らさない。
     fn scenario(&self) -> RuntimeScenario {
         self.scenario.unwrap_or(RuntimeScenario::Full)
     }
 }
 
+/// CI が既にゲスト環境を提供している場合は、Tart を使わず guest クレートを直接実行する。
 fn run_guest_in_ci(scenario: RuntimeScenario) -> Result<()> {
     step("integration test guest");
     let mut command = Command::new("cargo");
@@ -80,6 +91,7 @@ fn run_guest_in_ci(scenario: RuntimeScenario) -> Result<()> {
     }
 }
 
+/// Tart VM、共有ディレクトリ、SSH 制御接続の前提値をまとめて所有する。
 struct TartRunner {
     scenario: RuntimeScenario,
     repo_dir: PathBuf,
@@ -96,6 +108,7 @@ struct TartRunner {
 }
 
 impl TartRunner {
+    /// macOS/Apple Silicon と必要コマンドを確認し、VM 名と一時ディレクトリを確定する。
     fn new(args: Args) -> Result<Self> {
         if env::consts::OS != "macos" {
             bail!("tart 検証は macOS ホストでのみ実行できます");
@@ -145,6 +158,7 @@ impl TartRunner {
         })
     }
 
+    /// guest バイナリを共有ディレクトリへ置き、VM 起動後に SSH で full シナリオを流す。
     fn run(mut self) -> Result<()> {
         fs::create_dir_all(&self.temp_dir)?;
         let guest_binary = self.build_guest_binary()?;
@@ -196,6 +210,7 @@ impl TartRunner {
         Ok(())
     }
 
+    /// ホスト側で見えている検証対象リポジトリから guest バイナリをビルドする。
     fn build_guest_binary(&self) -> Result<PathBuf> {
         step("build integration test guest");
         let mut command = Command::new("cargo");
@@ -211,6 +226,8 @@ impl TartRunner {
 
         let binary = target_dir(&self.repo_dir, self.cargo_target_dir.as_deref())
             .join("debug/dotfiles-integration-test-guest");
+        // VM 内で使うテスト実行ファイルはこのゲスト用実行器だけなので、
+        // 出力が存在しない場合はこのチェックアウトを検証できていない。
         if !binary.is_file() {
             bail!(
                 "integration test guest binary is missing: {}",
@@ -221,6 +238,7 @@ impl TartRunner {
         Ok(binary)
     }
 
+    /// Tart が IP を返し、SSH ポートが開くまで待つ。VM プロセスが先に落ちた場合は失敗にする。
     fn wait_for_ssh(&mut self) -> Result<String> {
         for _ in 0..180 {
             if let Some(child) = self.tart_child.as_mut()
@@ -241,6 +259,7 @@ impl TartRunner {
         bail!("ssh の起動待ちに失敗しました")
     }
 
+    /// パスワード認証を 1 回だけ行う SSH 制御マスターを確立し、以後の remote command で共有する。
     fn connect_ssh(&mut self) -> Result<SshSession> {
         let ip = self.wait_for_ssh()?;
         let mut session = SshSession {
@@ -253,6 +272,7 @@ impl TartRunner {
         Ok(session)
     }
 
+    /// sshpass で制御マスターを起動し、以後は control socket 経由で接続する。
     fn spawn_ssh_master(&self, ip: &str) -> Result<Child> {
         let control_path = self.ssh_control_path();
         let mut command = password_command("ssh", &self.ssh_password);
@@ -265,15 +285,18 @@ impl TartRunner {
         Ok(command.spawn()?)
     }
 
+    /// 同時実行しても衝突しないよう、一時ディレクトリ配下の制御ソケットパスを返す。
     fn ssh_control_path(&self) -> String {
         self.temp_dir.join("ssh-control").display().to_string()
     }
 }
 
+/// CI ログでホスト側の進行位置を追えるよう、手順の境界を固定形式で出す。
 fn step(label: &str) {
     println!("==> {label}");
 }
 
+/// 確立済み control socket と接続先を保持し、remote command を同じ SSH セッションで実行する。
 struct SshSession {
     user: String,
     control_path: String,
@@ -282,6 +305,7 @@ struct SshSession {
 }
 
 impl SshSession {
+    /// control socket が作られ、`true` が実行できるまで待つ。パスワード再入力のリトライはしない。
     fn wait_until_ready(&mut self) -> Result<()> {
         for _ in 0..30 {
             if let Some(status) = self.master.try_wait()? {
@@ -303,6 +327,7 @@ impl SshSession {
         bail!("ssh control master did not become ready")
     }
 
+    /// remote command の非 0 終了を、そのままシナリオ失敗として返す。
     fn run(&self, remote_args: &[&str]) -> Result<()> {
         let status = self.status(remote_args)?;
         if status.success() {
@@ -312,6 +337,7 @@ impl SshSession {
         }
     }
 
+    /// control socket がない状態での実行を拒否し、未接続状態を型ではなく状態確認で検出する。
     fn status(&self, remote_args: &[&str]) -> Result<std::process::ExitStatus> {
         if !Path::new(&self.control_path).exists() {
             bail!("ssh control socket is missing: {}", self.control_path);
@@ -325,6 +351,7 @@ impl SshSession {
         Ok(command.status()?)
     }
 
+    /// user と VM の IP から ssh の接続先文字列を作る。
     fn destination(&self) -> String {
         format!("{}@{}", self.user, self.ip)
     }
@@ -358,6 +385,7 @@ impl Drop for TartRunner {
     }
 }
 
+/// `CARGO_TARGET_DIR` が相対パスなら検証対象リポジトリ相対として扱い、guest バイナリの位置を決める。
 fn target_dir(repo_dir: &Path, cargo_target_dir: Option<&Path>) -> PathBuf {
     cargo_target_dir
         .map(|path| {
@@ -370,6 +398,7 @@ fn target_dir(repo_dir: &Path, cargo_target_dir: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| repo_dir.join("target"))
 }
 
+/// Tart などホスト側コマンドをログ表示と同じ引数配列で実行する。
 fn run_plain<I, S>(program: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
@@ -381,6 +410,7 @@ where
     run_command(command, &command_format::display(program, &args))
 }
 
+/// `tart ip` のように stdout が必要なホスト側コマンドを実行し、失敗時は stderr も出す。
 fn read_plain<I, S>(program: &str, args: I) -> Result<String>
 where
     I: IntoIterator<Item = S>,
@@ -399,6 +429,7 @@ where
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// SSH daemon の準備完了を、認証前の TCP 接続可否で軽く確認する。
 fn ssh_port_ready(ip: &str) -> Result<bool> {
     Ok(Command::new("nc")
         .args(["-G", "1", "-z", ip, "22"])
@@ -406,6 +437,7 @@ fn ssh_port_ready(ip: &str) -> Result<bool> {
         .success())
 }
 
+/// 構築済み `Command` を実行し、失敗時はログに出した label と終了状態を報告する。
 fn run_command(mut command: Command, label: &str) -> Result<()> {
     println!("$ {label}");
     let status = command.status()?;
@@ -416,12 +448,14 @@ fn run_command(mut command: Command, label: &str) -> Result<()> {
     }
 }
 
+/// 初回 SSH 制御マスター作成時だけ、環境変数 `SSHPASS` 経由でパスワードを渡す。
 fn password_command(program: &str, password: &str) -> Command {
     let mut command = Command::new("sshpass");
     command.args(["-e", program]).env("SSHPASS", password);
     command
 }
 
+/// 初回接続では公開鍵認証を無効化し、パスワードプロンプト 1 回だけに固定する。
 fn ssh_options() -> [&'static str; 10] {
     [
         "-o",
@@ -437,6 +471,7 @@ fn ssh_options() -> [&'static str; 10] {
     ]
 }
 
+/// 制御マスター確立後は認証方式を追加せず、既存 control socket だけを使う。
 fn session_ssh_options() -> [&'static str; 6] {
     [
         "-o",

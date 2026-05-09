@@ -1,3 +1,5 @@
+//! ゲスト内で起動するコマンドに、シナリオ共通の環境とログ形式を適用する。
+
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -5,6 +7,7 @@ use crate::{Result, runtime_env::ScenarioEnv};
 use anyhow::bail;
 use dotfiles_core::command as command_format;
 
+/// シナリオ環境を反映したうえでコマンドを実行し、非 0 終了を失敗にする。
 pub(crate) fn run_with_env<I, S>(env: Option<&ScenarioEnv>, program: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
@@ -19,6 +22,7 @@ where
     run_command(command, &command_format::display(program, &args))
 }
 
+/// 存在確認など失敗も観測対象になるコマンドを実行し、終了状態だけを返す。
 pub(crate) fn status_with_env<I, S>(
     env: Option<&ScenarioEnv>,
     program: &str,
@@ -38,6 +42,7 @@ where
     Ok(command.status()?)
 }
 
+/// 別ユーザーの HOME/USER/PATH を明示して実行するための `sudo -H -u ... env ...` 引数を作る。
 pub(crate) fn sudo_user_args(
     user: &str,
     envs: &[(String, String)],
@@ -56,6 +61,7 @@ pub(crate) fn sudo_user_args(
     result
 }
 
+/// ログに出した表示と同じ `Command` を実行し、失敗時は終了状態をそのまま報告する。
 fn run_command(mut command: Command, label: &str) -> Result<()> {
     println!("$ {label}");
     let status = command.status()?;

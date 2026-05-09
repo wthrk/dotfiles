@@ -1,3 +1,9 @@
+//! ゲスト側で実行する実行時統合シナリオ。
+//!
+//! 全体シナリオは 1 つの順序付き手順として扱う。初期状態システムの初期設定、
+//! 2 人目ユーザーの Home Manager 切り替え、対象ユーザーの nix-darwin 切り替え、
+//! 管理対象リンクの確認までを一続きで検証する。
+
 use std::path::Path;
 
 use crate::{
@@ -22,11 +28,13 @@ const FULL_SCENARIO: &[RuntimeStep] = &[
 ];
 
 #[derive(Clone, Copy, ValueEnum)]
+/// ホスト側 runner または CI が選択するシナリオ。現状は順序固定の full のみ。
 pub(crate) enum RuntimeScenario {
     Full,
 }
 
 #[derive(Clone, Copy)]
+/// full シナリオ内の順序付き手順。前段の成果物を後段が使うため、独立実行にはしない。
 enum RuntimeStep {
     FreshBootstrap,
     SecondUserHomeManager,
@@ -34,6 +42,7 @@ enum RuntimeStep {
 }
 
 impl RuntimeStep {
+    /// CI ログでどの段階が失敗したか追えるよう、手順ごとの固定ラベルを返す。
     fn label(self) -> &'static str {
         match self {
             RuntimeStep::FreshBootstrap => "fresh-bootstrap",
@@ -43,17 +52,20 @@ impl RuntimeStep {
     }
 }
 
+/// 検出済みのゲスト環境を保持し、各手順を同じ checkout と Nix 設定で実行する。
 pub(crate) struct ScenarioRunner {
     pub(crate) env: ScenarioEnv,
 }
 
 impl ScenarioRunner {
+    /// 現在のゲスト環境を 1 回だけ検出し、以後の手順で共有する。
     pub(crate) fn new() -> Result<Self> {
         Ok(Self {
             env: ScenarioEnv::current()?,
         })
     }
 
+    /// full シナリオの手順を定義順に実行し、途中失敗したら後続手順へ進まない。
     pub(crate) fn run_scenario(&self, scenario: RuntimeScenario) -> Result<()> {
         match scenario {
             RuntimeScenario::Full => {
@@ -67,14 +79,17 @@ impl ScenarioRunner {
         }
     }
 
+    /// シナリオ共通の作業ディレクトリと環境を反映してコマンドを実行する。
     pub(crate) fn run(&self, program: &str, args: &[&str]) -> Result<()> {
         run_with_env(Some(&self.env), program, args)
     }
 
+    /// `id <user>` のように失敗も期待結果になる確認で、終了状態を呼び出し側に返す。
     pub(crate) fn status(&self, program: &str, args: &[&str]) -> Result<std::process::ExitStatus> {
         status_with_env(Some(&self.env), program, args)
     }
 
+    /// enum の各手順を対応する実装へ写像し、文字列による分岐を避ける。
     fn run_step(&self, step: RuntimeStep) -> Result<()> {
         match step {
             RuntimeStep::FreshBootstrap => self.fresh_bootstrap(),
@@ -83,10 +98,13 @@ impl ScenarioRunner {
         }
     }
 
+    /// Nix 未導入状態から bootstrap がローカル設定を作ることを確認する。
     fn fresh_bootstrap(&self) -> Result<()> {
         self.ensure_nonempty("flake.lock")?;
         self.runner_info()?;
 
+        // 最初の手順はインストーラ経路の検証そのものなので、既に Nix がある場合は
+        // 初期状態の経路を検証できていない。
         if let Some(nix) = find_executable("nix") {
             bail!(
                 "ゼロ状態の導入テストでは Nix 未導入を前提にします: {}",
@@ -96,8 +114,11 @@ impl ScenarioRunner {
 
         self.run("scripts/bootstrap.sh", &["--dry-run"])?;
         self.bootstrap_current_user_no_switch()?;
+        // 切り替えなしの初期設定でも、利用可能なローカル flake は書かれている必要がある。
         ensure_nonempty_path(local_config_flake_for_current_user()?)?;
 
+        // 予行実行と切り替えなしの初期設定は、システムパスを変更してはいけない。
+        // これらは `dotfiles switch darwin` だけが準備する。
         self.ensure_absent("/etc/bashrc.before-nix-darwin")?;
         self.ensure_absent("/etc/zshrc.before-nix-darwin")?;
         self.ensure_absent("/opt/homebrew/Library/Taps.before-nix-homebrew")?;
@@ -122,6 +143,7 @@ impl ScenarioRunner {
         self.run("scripts/bootstrap.sh", &["--self-test"])
     }
 
+    /// 追加ユーザーが自分のローカル flake から Home Manager switch できることを確認する。
     fn second_user_home_manager(&self) -> Result<()> {
         self.ensure_nonempty("flake.lock")?;
         self.runner_info()?;
@@ -162,8 +184,12 @@ impl ScenarioRunner {
             ],
         )?;
 
+        // 2 人目のユーザーは管理者ユーザーのホーム状態を流用せず、
+        // 自分の生成設定とプロファイルを持つ必要がある。
         ensure_nonempty_path(local_config_flake_for_user("dotfilesci")?)?;
         ensure_exists(dotfilesci_home.join(".nix-profile"))?;
+        // Home Manager のアクティベーションは、2 人目ユーザーのホームに期待する管理リンクを
+        // 導入する必要がある。
         assert_managed_links(
             path_str(&dotfilesci_home).as_str(),
             &[".config/zsh", ".config/nvim", ".zshrc", ".zshenv"],
@@ -172,6 +198,8 @@ impl ScenarioRunner {
             "dotfilesci",
             "homeConfigurations.dotfilesci.activationPackage.drvPath",
         )?;
+        // ローカル設定の所有者と同じユーザーでアクティベーションパスを評価する。
+        // これにより権限と出力名の退行を検出する。
         self.run_sudo_user(
             "dotfilesci",
             &dotfilesci_env(&self.env.nix_config)?,
@@ -184,6 +212,7 @@ impl ScenarioRunner {
         )
     }
 
+    /// 対象ユーザー `ya` のローカル flake から nix-darwin switch できることを確認する。
     fn darwin_switch_ya(&self) -> Result<()> {
         self.ensure_nonempty("flake.lock")?;
         self.runner_info()?;
@@ -239,6 +268,7 @@ impl ScenarioRunner {
                 "ya",
             ],
         )?;
+        // nix-darwin 切り替え後も生成ローカル設定が評価できる必要がある。
         self.run_as_ya(
             nix,
             &["flake", "check", "--no-update-lock-file", &ya_config_dir],
@@ -254,6 +284,8 @@ impl ScenarioRunner {
             nix,
             &["eval", "--no-update-lock-file", ya_darwin_system.as_str()],
         )?;
+        // 最後の利用者向け検査として、切り替え対象ユーザーが Nix store 由来の
+        // 管理対象シェルやエディタ設定ファイルを受け取ったことを確認する。
         assert_managed_links(
             path_str(&ya_home).as_str(),
             &[".config/zsh", ".config/nvim", ".zshrc", ".zshenv"],
@@ -262,6 +294,7 @@ impl ScenarioRunner {
         Ok(())
     }
 
+    /// 失敗時の環境差分を追えるよう、OS、kernel、ユーザー、Xcode path をログに出す。
     fn runner_info(&self) -> Result<()> {
         self.run("sw_vers", &[])?;
         self.run("uname", &["-a"])?;
@@ -269,6 +302,7 @@ impl ScenarioRunner {
         self.run("xcode-select", &["-p"])
     }
 
+    /// 現在ユーザーで bootstrap の no-switch 経路を実行し、ローカル flake 生成だけを確認する。
     fn bootstrap_current_user_no_switch(&self) -> Result<()> {
         self.run(
             "scripts/bootstrap.sh",
@@ -287,10 +321,12 @@ impl ScenarioRunner {
         )
     }
 
+    /// checkout 内の前提ファイルが空でないことを確認し、壊れた共有マウントを早めに検出する。
     fn ensure_nonempty(&self, path: &str) -> Result<()> {
         ensure_nonempty_path(self.env.workspace.join(path))
     }
 
+    /// 2 人目以降の手順が、前段で入った multi-user Nix を使っていることを確認する。
     fn require_existing_nix(&self) -> Result<()> {
         let nix = Path::new("/nix/var/nix/profiles/default/bin/nix");
         let nix_daemon_profile =
@@ -300,14 +336,17 @@ impl ScenarioRunner {
             .context("second-user-home-manager requires existing Nix daemon profile")
     }
 
+    /// dry-run/no-switch がシステム側のパスを作っていないことを検証する。
     fn ensure_absent(&self, path: &str) -> Result<()> {
         ensure_absent_path(path)
     }
 
+    /// guest 内で見えている checkout パスを、bootstrap の `--source` に渡す文字列へ変換する。
     fn workspace_str(&self) -> String {
         path_str(&self.env.workspace)
     }
 
+    /// 別ユーザーの HOME/PATH を明示して `sudo -u` し、呼び出し元環境の漏れを防ぐ。
     fn run_sudo_user(
         &self,
         user: &str,
@@ -322,6 +361,7 @@ impl ScenarioRunner {
         )
     }
 
+    /// `ya` 用のログイン風環境を使って、Darwin switch 後の評価と確認を行う。
     fn run_as_ya(&self, program: &str, args: &[&str]) -> Result<()> {
         self.run_sudo_user("ya", &ya_env(&self.env.nix_config)?, program, args)
     }

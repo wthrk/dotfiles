@@ -1,3 +1,4 @@
+# 管理対象の対話シェルで、重複を抑えつつ複数端末間で履歴を共有する。
 HISTFILE="$HOME/.zsh_history"
 HISTSIZE=50000
 SAVEHIST=50000

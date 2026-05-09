@@ -1,3 +1,5 @@
+# `nix flake init -t <dotfiles>#go` で使う Go 開発用テンプレート。
+# Go 本体、lint、debugger を現在のシステム向け devShell に入れる。
 {
   description = "Go devShell";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

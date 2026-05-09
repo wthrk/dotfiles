@@ -1,3 +1,4 @@
+-- keymap と plugin manager 初期化で共有する関数だけを `_G.omy` に置く。
 _G.omy = {}
 
 function omy.init_plugin_manager()

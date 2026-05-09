@@ -1,3 +1,7 @@
+# `home.packages` に入れる CLI ツール群。
+#
+# 引数 `pkgs` の属性有無を見て、Darwin/Linux や nixpkgs 更新で存在しないパッケージを落とす。
+# `inputs` が渡された場合は、この flake がビルドした `dotfiles` CLI を同じユーザー環境へ入れる。
 {
   inputs ? null,
   lib,

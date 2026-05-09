@@ -1,3 +1,4 @@
+# 管理対象マシン間で挙動差が出にくい対話用 alias だけを置く。
 alias where='command -v'
 alias j='jobs -l'
 alias du='du -h'

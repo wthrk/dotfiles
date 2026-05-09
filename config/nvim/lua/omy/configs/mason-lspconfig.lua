@@ -1,3 +1,4 @@
+-- Mason が管理する language server を lspconfig に登録し、各 server の個別設定をここで渡す。
 local mason_lspconfig = require "mason-lspconfig"
 local lspconfig = require "lspconfig"
 

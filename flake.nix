@@ -1,3 +1,9 @@
+# このリポジトリを外部 flake から参照するときの公開面を定義する。
+#
+# `packages`/`apps` は `dotfiles` CLI を提供する。`homeManagerModules.default` と
+# `darwinModules.default` は利用側 flake で `dotfiles.user` / `dotfiles.host` を設定して
+# 評価するモジュールであり、`lib.mkHome` / `lib.mkDarwin` は同じ設定を関数引数から生成する。
+# 具体的な利用者名、ホスト名、対象システムは、このリポジトリではなく利用側 flake に置く。
 {
   description = "wthrk dotfiles managed by Home Manager + nix-darwin";
 
@@ -47,7 +53,8 @@
         "x86_64-linux"
       ];
 
-      # system 名から、その環境向けの nixpkgs package set を作る。
+      # flake 出力を作るときに使う nixpkgs。CLI は macOS と Linux の両方で評価するため、
+      # allowUnfree はここで揃えて、各モジュール側で再指定しない。
       pkgsFor =
         system:
         import nixpkgs {
@@ -108,8 +115,8 @@
           };
         };
 
-      # homeConfigurations の各値を作る関数。user/system を受け取り、
-      # ./nix/home.nix を Home Manager module として評価する。
+      # 利用側 flake の `homeConfigurations.<name>` に置く評価済み Home Manager 構成を生成する。
+      # `user` は Home Manager の `home.username` と出力名、`system` は nixpkgs の評価対象に使う。
       mkHome =
         {
           user,
@@ -123,8 +130,9 @@
           ];
         };
 
-      # darwinConfigurations の各値を作る関数。user/system を受け取り、
-      # ./nix/darwin.nix、Home Manager、nix-homebrew の module をまとめて評価する。
+      # 利用側 flake の `darwinConfigurations.<name>` に置く評価済み nix-darwin 構成を生成する。
+      # `user` は primaryUser と Home Manager 対象、`host` は networking.hostName、
+      # `system` は nix-darwin の評価対象に使う。
       mkDarwin =
         {
           user,
@@ -177,7 +185,8 @@
           };
         };
 
-      # devShells.<system>.default の shell を作る関数。
+      # 開発用シェルは検証コマンドが要求するツールを固定する。Darwin 専用の VM 検証ツールは
+      # Linux 評価に混ぜず、対応プラットフォームでだけ入れる。
       mkDevShell = pkgs: {
         default = pkgs.mkShell {
           packages = [

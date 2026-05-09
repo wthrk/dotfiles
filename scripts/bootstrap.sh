@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Nix や `dotfiles` CLI がまだ無いマシンで、最初のローカル flake を作る。
+#
+# `nix run <source> -- init` を呼べる状態まで必要なら Nix を導入し、生成後の適用は
+# `nix run <source> -- switch ...` に委譲する。古い checkout 前提の引数は互換用に受けるだけにする。
 set -euo pipefail
 
 dotfiles_source="github:wthrk/dotfiles"
@@ -14,19 +18,20 @@ deprecated_dir=""
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 
 usage() {
+  # CLI 自体を取得する前にも使うスクリプトなので、help は clap に依存させない。
   cat <<USAGE
 使い方: scripts/bootstrap.sh [options]
 
 Options:
   --source FLAKE             dotfiles flake（既定: github:wthrk/dotfiles）
   --repo URL_OR_PATH         --source の互換 alias
-  --user USER                local config に書くユーザー名
-  --host HOST                local config に書く host 名
-  --system SYSTEM            local config に書く system（例: aarch64-darwin）
+  --user USER                生成する flake に書くユーザー名
+  --host HOST                生成する flake に書くホスト名
+  --system SYSTEM            生成 flake に書く system（例: aarch64-darwin）
   --mode darwin|home-manager|all
                              適用モード（既定: darwin）
   --force                    既存 ~/.config/dotfiles/flake.nix を上書きする
-  --run-switch               init 後に switch する（既定）
+  --run-switch               init 後に適用する（既定）
   --no-switch                init 後に終了する
   --dry-run                  実行計画だけ表示する
   --self-test                bootstrap 自体の軽い検証だけ実行する
@@ -37,6 +42,8 @@ USAGE
 }
 
 legacy_repo_to_source() {
+  # 旧 bootstrap の `--repo` は clone URL を受けていた。既知の dotfiles URL だけを flake 参照へ直し、
+  # それ以外は利用者が渡した参照をそのまま `nix run` に渡す。
   case "$1" in
     https://github.com/wthrk/dotfiles.git|git@github.com:wthrk/dotfiles.git)
       printf '%s\n' "github:wthrk/dotfiles"
@@ -127,6 +134,7 @@ if [[ "$self_test" == "1" ]]; then
 fi
 
 print_plan() {
+  # 予行実行では、インストール、init、switch の実行予定だけを表示し、状態変更は行わない。
   cat <<PLAN
 bootstrap 実行計画:
 - macOS であることを確認
@@ -144,6 +152,8 @@ PLAN
 }
 
 require_sudo() {
+  # Nix インストールや Darwin switch の前に sudo 権限を確認する。失敗時の再試行やパスワード制御は
+  # sudo 側の責務にし、このスクリプトでは隠れたリトライを入れない。
   local purpose="$1"
 
   if sudo -n true 2>/dev/null; then

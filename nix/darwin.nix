@@ -1,3 +1,10 @@
+# nix-darwin で管理するホスト設定の最上位モジュール。
+#
+# 引数 `user` は `system.primaryUser`、Home Manager の対象ユーザー、nix-homebrew の所有者に使う。
+# 引数 `host` は `networking.hostName` に使う。`root` は設定ファイルのリンク元、`inputs` は
+# Homebrew tap と Home Manager / nix-homebrew 連携に使う。
+# 評価結果は Nix 設定、macOS defaults、Homebrew、launch agent、Home Manager をまとめた
+# `darwinConfigurations.<host>` 用の構成になる。
 {
   inputs,
   lib,

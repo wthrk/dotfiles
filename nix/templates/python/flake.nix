@@ -1,3 +1,5 @@
+# `nix flake init -t <dotfiles>#python` で使う Python 開発用テンプレート。
+# uv、型検査、formatter、linter と、利用可能な最新寄りの Python を devShell に入れる。
 {
   description = "Python devShell";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

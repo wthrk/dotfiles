@@ -1,3 +1,4 @@
+-- どの言語や plugin でも共通に使う編集挙動を固定する。
 vim.opt.expandtab = true
 vim.opt.shiftwidth = 2
 vim.opt.tabstop = 2

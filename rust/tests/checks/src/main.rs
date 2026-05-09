@@ -1,3 +1,8 @@
+//! `cargo xtask check` から呼ばれる検証本体。
+//!
+//! xtask は起動コマンドだけを持つため、Rust、Nix、公開モジュール、zsh 挙動の検証手順はここへ集約する。
+//! runtime 統合検証だけは Tart ゲストを使う別クレートへ委譲する。
+
 use std::{env, fs, path::PathBuf, process};
 
 use anyhow::bail;
@@ -13,12 +18,14 @@ type Result<T> = dotfiles_core::Result<T>;
 
 #[derive(Parser)]
 #[command(name = "dotfiles-checks")]
+/// `cargo xtask check` から渡される検証グループ。
 struct Cli {
     #[command(subcommand)]
     target: Option<CheckTarget>,
 }
 
 #[derive(Subcommand)]
+/// VM なしで実行できる検証と、VM が必要な統合検証を分ける。
 enum CheckTarget {
     Static,
     Zsh,
@@ -30,10 +37,12 @@ enum CheckTarget {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+/// 統合テスト実行器へ渡すシナリオ。現状は初期設定から switch までの full のみ。
 enum RuntimeScenario {
     Full,
 }
 
+/// anyhow の失敗を標準エラーへ出し、xtask へ非 0 終了として返す。
 fn main() -> std::process::ExitCode {
     match run(Cli::parse().target) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -44,6 +53,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// 未指定時はローカル開発で毎回回す検証に絞り、VM 統合検証は明示指定時だけ動かす。
 fn run(target: Option<CheckTarget>) -> Result<()> {
     match target {
         None => default_checks(),
@@ -56,6 +66,7 @@ fn run(target: Option<CheckTarget>) -> Result<()> {
     }
 }
 
+/// dirty な実マシン状態に依存しない、リポジトリ内だけで完結する検証を実行する。
 fn static_checks() -> Result<()> {
     let shell = Shell::new()?;
     rust(&shell)?;
@@ -65,16 +76,19 @@ fn static_checks() -> Result<()> {
     exported_modules(&shell)
 }
 
+/// 開発時の既定検証として、静的検証に加えて生成 zsh 設定の起動確認も行う。
 fn default_checks() -> Result<()> {
     static_checks()?;
     zsh::check()
 }
 
+/// VM 内での初期導入シナリオまで含めて実行する。
 fn all_checks() -> Result<()> {
     default_checks()?;
     integration(RuntimeScenario::Full)
 }
 
+/// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint、テストを回す。
 fn rust(shell: &Shell) -> Result<()> {
     step("cargo fmt");
     cmd!(shell, "cargo fmt --all -- --check").run()?;
@@ -95,8 +109,11 @@ fn rust(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// lock file が存在する状態で、Nix flake の評価と Nix ファイルの整形を検証する。
 fn nix(shell: &Shell) -> Result<()> {
     step("flake.lock exists");
+    // リポジトリには明示的なロックファイルが必要。検証が暗黙の flake 入力解決に
+    // 依存していないことをここで確認する。
     cmd!(shell, "test -s flake.lock").run()?;
     step("nix flake check");
     cmd!(shell, "nix flake check --no-update-lock-file").run()?;
@@ -108,6 +125,7 @@ fn nix(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// devShell に入っている `nil` で Nix 診断を実行し、モジュール評価の静的な崩れを検出する。
 fn nix_diagnostics(shell: &Shell) -> Result<()> {
     let files = nix_files(shell)?;
     if files.is_empty() {
@@ -128,6 +146,8 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
         }
     }
     if !diagnostics.is_empty() {
+        // Nix モジュールは生成 flake 向けの公開 API なので、
+        // nil 診断は実際の失敗として扱う。
         bail!(
             "nix diagnostics reported issues:\n{}",
             diagnostics.join("\n")
@@ -136,6 +156,7 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// `dotfiles init` が作ったローカル flake から Home Manager 出力を評価できることを確認する。
 fn runner_home(shell: &Shell) -> Result<()> {
     let config_dir = TempDir::new("dotfiles-check")?;
     let config_dir_path = config_dir.path().display().to_string();
@@ -157,6 +178,7 @@ fn runner_home(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// `homeManagerModules.default` と `darwinModules.default` が外部 flake から単独で評価できることを確認する。
 fn exported_modules(shell: &Shell) -> Result<()> {
     let config_dir = TempDir::new("dotfiles-module-check")?;
     let config_dir_path = config_dir.path().display().to_string();
@@ -170,6 +192,8 @@ fn exported_modules(shell: &Shell) -> Result<()> {
     cmd!(shell, "nix flake lock {config_dir_path}").run()?;
 
     step("exported Home Manager module eval");
+    // `lib.mkHome` だけではなく、公開モジュールの `homeManagerModules.default` 経由で
+    // 動作する必要がある。
     cmd!(
         shell,
         "nix eval --no-update-lock-file {config_dir_path}#homeConfigurations.runner.activationPackage.drvPath"
@@ -177,6 +201,7 @@ fn exported_modules(shell: &Shell) -> Result<()> {
     .run()?;
 
     step("exported nix-darwin module eval");
+    // `darwinModules.default` に隠れた specialArgs 依存が混入した場合に検出する。
     cmd!(
         shell,
         "nix eval --no-update-lock-file {config_dir_path}#darwinConfigurations.runner.system"
@@ -185,6 +210,7 @@ fn exported_modules(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// 公開モジュールを利用側 flake が直接読み込むときの最小構成を生成する。
 fn external_module_flake(source: &str) -> String {
     format!(
         r#"{{
@@ -227,6 +253,7 @@ fn external_module_flake(source: &str) -> String {
     )
 }
 
+/// VM の準備と guest 実行は integration クレート側へ任せる。
 fn integration(scenario: RuntimeScenario) -> Result<()> {
     let shell = Shell::new()?;
     match scenario {
@@ -237,6 +264,7 @@ fn integration(scenario: RuntimeScenario) -> Result<()> {
     Ok(())
 }
 
+/// `target` 配下を除外し、整形と nil 診断の対象になる Nix ファイルだけを列挙する。
 fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     Ok(cmd!(
         shell,
@@ -249,11 +277,13 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     .collect())
 }
 
+/// 生成 flake を置く検証用ディレクトリを、検証終了時に消すための所有者。
 struct TempDir {
     path: PathBuf,
 }
 
 impl TempDir {
+    /// 同じプロセス ID の残骸を先に消し、検証対象が前回の flake.lock を読まないようにする。
     fn new(prefix: &str) -> Result<Self> {
         let path = env::temp_dir().join(format!("{prefix}-{}", process::id()));
         let _ = fs::remove_dir_all(&path);
@@ -261,6 +291,7 @@ impl TempDir {
         Ok(Self { path })
     }
 
+    /// xshell の command interpolation に渡すため、所有中のパスを参照で返す。
     fn path(&self) -> &PathBuf {
         &self.path
     }

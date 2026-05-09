@@ -1,3 +1,5 @@
+# `nix flake init -t <dotfiles>#ruby` で使う Ruby 開発用テンプレート。
+# Ruby 3.3 と Bundler を現在のシステム向け devShell に入れる。
 {
   description = "Ruby devShell";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

@@ -1,3 +1,8 @@
+//! `dotfiles init` がユーザー所有のローカル flake を作る処理。
+//!
+//! 書き込む先は既定で `$HOME/.config/dotfiles/flake.nix`。生成後に `nix flake lock` を実行し、
+//! 後続の `switch` が暗黙の入力更新をしない状態にする。
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -14,6 +19,7 @@ use crate::{
 
 const DEFAULT_SOURCE: &str = "github:wthrk/dotfiles";
 
+/// 既存ファイルは `--force` なしでは上書きせず、生成後に lock file を具体化する。
 pub(crate) fn run(options: InitOptions) -> Result<()> {
     let config_path = config_path(options.config_dir.clone())?;
     if config_path.exists() && !options.force {
@@ -41,6 +47,7 @@ pub(crate) fn run(options: InitOptions) -> Result<()> {
     Ok(())
 }
 
+/// 生成先ディレクトリで `nix flake lock` を実行し、入力解決を明示的な lock file に固定する。
 fn lock_config(config_dir: &std::path::Path) -> Result<()> {
     run_process(
         "nix",
@@ -54,6 +61,7 @@ fn lock_config(config_dir: &std::path::Path) -> Result<()> {
 }
 
 #[derive(Args)]
+/// ローカル flake に記録するユーザー名、ホスト名、システム名、参照元を受け取る。
 pub(crate) struct InitOptions {
     #[arg(long, env = "DOTFILES_USER")]
     user: Option<String>,

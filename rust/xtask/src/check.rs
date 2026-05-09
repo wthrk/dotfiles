@@ -1,3 +1,8 @@
+//! `cargo xtask check` から実際の検証クレートを起動する層。
+//!
+//! 利用者が叩くコマンドは xtask に固定し、検証内容は `dotfiles-checks` へ集約する。
+//! これにより xtask が独自にテスト手順を再実装しない。
+
 use std::process::Command;
 
 use anyhow::bail;
@@ -7,6 +12,7 @@ use crate::{
     cli::{CheckTarget, RuntimeScenario},
 };
 
+/// xtask のサブコマンドを `dotfiles-checks` のサブコマンドへ 1 対 1 で変換する。
 pub fn run(target: Option<CheckTarget>) -> Result<()> {
     let mut command = Command::new("cargo");
     command.args(["run", "--package", "dotfiles-checks", "--"]);

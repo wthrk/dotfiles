@@ -1,3 +1,5 @@
+# `nix flake init -t <dotfiles>#rust` で使う Rust 開発用テンプレート。
+# compiler、formatter、lint、audit、coverage など、通常の Rust 開発で使う CLI を devShell に入れる。
 {
   description = "Rust devShell";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

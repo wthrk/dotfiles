@@ -1,2 +1,2 @@
-# Deprecated: plugin ownership moved to Home Manager programs.zsh.plugins.
-# Kept only as migration documentation for previous Antidote setup.
+# 旧 Antidote 用の互換ファイル。プラグインの所有権は Home Manager `programs.zsh.plugins` に移した。
+# 起動時に Antidote が clone 対象を読まないよう、内容は空のまま残す。

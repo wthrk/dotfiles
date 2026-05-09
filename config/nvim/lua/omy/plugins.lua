@@ -1,3 +1,4 @@
+-- vim-jetpack に渡す plugin 一覧。設定本体は `configs/*` へ分け、読み込み順だけここで決める。
 vim.cmd "packadd vim-jetpack"
 require("jetpack.packer").add {
   { "tani/vim-jetpack", opt = 1 },

@@ -1,8 +1,9 @@
+-- language server が attach した buffer だけに、保存時処理などの LSP 依存 autocmd を追加する。
 return function(client, bufnr)
   local capabilities = client.server_capabilities
 
   if capabilities.documentFormattingProvider then
-    -- auto format の切り替え機能を入れる？
+    -- formatter の自動実行は null-ls 側に寄せるため、ここではまだ切り替えを持たない。
     vim.api.nvim_buf_create_user_command(
       bufnr,
       "Format",

@@ -1,3 +1,5 @@
+# `nix flake init -t <dotfiles>#node` で使う Node.js 開発用テンプレート。
+# Node.js 22、Corepack、Bun、TypeScript 周辺ツールを現在のシステム向け devShell に入れる。
 {
   description = "Node devShell";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

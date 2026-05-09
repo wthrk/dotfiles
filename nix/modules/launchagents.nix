@@ -1,3 +1,7 @@
+# Colima 用 launch agent を対象ユーザーの `~/Library/LaunchAgents` に配置する。
+#
+# 引数 `user` からホームディレクトリと plist の配置先を作る。既存の Homebrew 由来 plist は
+# 同じサービスを二重起動しないよう退避し、activation 時に launchctl の登録状態を揃える。
 {
   lib,
   pkgs,

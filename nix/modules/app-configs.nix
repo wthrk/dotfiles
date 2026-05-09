@@ -1,3 +1,7 @@
+# Home Manager の activation で作る、アプリケーション別の補助設定。
+#
+# Docker Compose プラグインの参照先と AWS/ghq 用ディレクトリを用意する。ホスト固有の認証情報や
+# 可変ファイルは生成せず、ホーム配下に作っても再実行で壊れないディレクトリとリンクだけを扱う。
 { lib, pkgs, ... }:
 let
   composePluginCandidates = [
