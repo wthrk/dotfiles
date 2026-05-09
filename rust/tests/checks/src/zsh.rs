@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, process};
 
+use anyhow::bail;
 use xshell::{Shell, cmd};
 
-use crate::Result;
+use crate::{Result, command::current_user};
 
 pub fn check() -> Result<()> {
     let shell = Shell::new()?;
@@ -139,7 +140,7 @@ fn key_operations(shell: &Shell, home: &TestHome) -> Result<()> {
         || startup.contains("no such file")
         || startup.contains("error")
     {
-        return Err(format!("FAIL STARTUP:clean\n{startup}").into());
+        bail!("FAIL STARTUP:clean\n{startup}");
     }
     println!("PASS STARTUP:clean");
     Ok(())
@@ -151,9 +152,10 @@ fn syntax_probe() -> &'static str {
 
 fn zsh_output(shell: &Shell, home: &TestHome, script: &str) -> Result<String> {
     let home_path = home.path().display().to_string();
+    let user = home.user();
     let raw = cmd!(
         shell,
-        "env HOME={home_path} USER=ya LOGNAME=ya POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true script -q /dev/null zsh -ic {script}"
+        "env HOME={home_path} USER={user} LOGNAME={user} POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true script -q /dev/null zsh -ic {script}"
     )
     .ignore_status()
     .read()?;
@@ -162,13 +164,37 @@ fn zsh_output(shell: &Shell, home: &TestHome, script: &str) -> Result<String> {
 
 struct TestHome {
     path: PathBuf,
+    user: String,
+    config_dir: PathBuf,
 }
 
 impl TestHome {
     fn new(shell: &Shell) -> Result<Self> {
+        let user = current_user()?;
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let config_dir =
+            env::temp_dir().join(format!("dotfiles-zsh-config-{}-{suffix}", process::id()));
+        let config_dir_path = config_dir.display().to_string();
+        let source = env::current_dir()?.canonicalize()?.display().to_string();
+        let _ = fs::remove_dir_all(&config_dir);
+        fs::create_dir_all(&config_dir)?;
+
+        cmd!(
+            shell,
+            "env DOTFILES_CONFIG_DIR={config_dir_path} cargo run --package dotfiles-cli -- init --user {user} --host {user} --system aarch64-darwin --source {source}"
+        )
+        .run()?;
+
         let activation_package = cmd!(
             shell,
-            "nix build --no-update-lock-file --no-link --print-out-paths .#homeConfigurations.default.activationPackage"
+            "nix build --no-link --print-out-paths {config_dir_path}#homeConfigurations.{user}.activationPackage"
+        )
+        .read()?
+        .trim()
+        .to_string();
+        let generated_home = cmd!(
+            shell,
+            "nix eval --raw --no-update-lock-file {config_dir_path}#homeConfigurations.{user}.config.home.homeDirectory"
         )
         .read()?
         .trim()
@@ -176,10 +202,9 @@ impl TestHome {
         let home_files = PathBuf::from(activation_package).join("home-files");
         let zshrc = home_files.join(".zshrc");
         if !zshrc.is_file() {
-            return Err(format!("{} is missing", zshrc.display()).into());
+            bail!("{} is missing", zshrc.display());
         }
 
-        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = env::temp_dir().join(format!("dotfiles-zsh-home-{}-{suffix}", process::id()));
         fs::create_dir_all(&path)?;
         fs::create_dir_all(path.join(".config"))?;
@@ -192,26 +217,45 @@ impl TestHome {
             path.join(".config/direnv"),
         )?;
         unix_fs::symlink(home_files.join(".zsh"), path.join(".zsh"))?;
-        copy_with_home_rewrite(&zshrc, &path.join(".zshrc"), &path)?;
-        copy_with_home_rewrite(&home_files.join(".zshenv"), &path.join(".zshenv"), &path)?;
+        copy_with_home_rewrite(&zshrc, &path.join(".zshrc"), &path, &generated_home)?;
+        copy_with_home_rewrite(
+            &home_files.join(".zshenv"),
+            &path.join(".zshenv"),
+            &path,
+            &generated_home,
+        )?;
 
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            user,
+            config_dir,
+        })
     }
 
     fn path(&self) -> &PathBuf {
         &self.path
+    }
+
+    fn user(&self) -> &str {
+        &self.user
     }
 }
 
 impl Drop for TestHome {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+        let _ = fs::remove_dir_all(&self.config_dir);
     }
 }
 
-fn copy_with_home_rewrite(source: &Path, dest: &Path, home: &Path) -> Result<()> {
+fn copy_with_home_rewrite(
+    source: &Path,
+    dest: &Path,
+    home: &Path,
+    generated_home: &str,
+) -> Result<()> {
     let text = fs::read_to_string(source)?;
-    let rewritten = text.replace("/Users/ya", &home.display().to_string());
+    let rewritten = text.replace(generated_home, &home.display().to_string());
     fs::write(dest, rewritten)?;
     Ok(())
 }
@@ -235,7 +279,7 @@ fn expect_eq(label: &str, actual: &str, expected: &str) -> Result<()> {
         println!("PASS {label}");
         Ok(())
     } else {
-        Err(format!("FAIL {label}\n  expected: {expected}\n  actual:   {actual}").into())
+        bail!("FAIL {label}\n  expected: {expected}\n  actual:   {actual}")
     }
 }
 
@@ -244,13 +288,13 @@ fn expect_match(label: &str, actual: &str, expected: &str) -> Result<()> {
         println!("PASS {label}");
         Ok(())
     } else {
-        Err(format!("FAIL {label}\n  expected: {expected}\n  actual:   {actual}").into())
+        bail!("FAIL {label}\n  expected: {expected}\n  actual:   {actual}")
     }
 }
 
 fn expect_nonempty(label: &str, actual: &str) -> Result<()> {
     if actual.trim().is_empty() {
-        Err(format!("FAIL {label}\n  actual: <empty>").into())
+        bail!("FAIL {label}\n  actual: <empty>")
     } else {
         println!("PASS {label}");
         Ok(())
@@ -262,13 +306,13 @@ fn expect_contains(label: &str, actual: &str, needle: &str) -> Result<()> {
         println!("PASS {label}");
         Ok(())
     } else {
-        Err(format!("FAIL {label}\n  expected substring: {needle}\n  actual: {actual}").into())
+        bail!("FAIL {label}\n  expected substring: {needle}\n  actual: {actual}")
     }
 }
 
 fn expect_absent(label: &str, actual: &str, needles: &[&str]) -> Result<()> {
     if let Some(needle) = needles.iter().find(|needle| actual.contains(**needle)) {
-        Err(format!("FAIL {label}\n  unexpected substring: {needle}\n  actual: {actual}").into())
+        bail!("FAIL {label}\n  unexpected substring: {needle}\n  actual: {actual}")
     } else {
         println!("PASS {label}");
         Ok(())

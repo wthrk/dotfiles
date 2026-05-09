@@ -1,0 +1,11 @@
+[package]
+name = "dotfiles-checks"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dotfiles-core.workspace = true
+xshell.workspace = true

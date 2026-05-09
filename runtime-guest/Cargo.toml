@@ -1,7 +1,0 @@
-[package]
-name = "dotfiles-runtime-guest"
-version = "0.1.0"
-edition.workspace = true
-publish = false
-
-[dependencies]
