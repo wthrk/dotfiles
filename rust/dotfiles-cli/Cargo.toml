@@ -1,0 +1,14 @@
+[package]
+name = "dotfiles-cli"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "dotfiles"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dotfiles-core.workspace = true

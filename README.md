@@ -1,6 +1,6 @@
 # dotfiles
 
-`ya` 用の `nix-darwin` + `home-manager` 管理 dotfiles。
+Nix flake として再利用できる `nix-darwin` + `home-manager` 管理 dotfiles。
 
 ## 開発環境
 
@@ -10,15 +10,42 @@
 direnv allow .
 ```
 
-このディレクトリでは `direnv` が flake の devShell を読み込みます。検証や補助タスクは `cargo xtask` で実行します。
+このディレクトリでは `direnv` が flake の devShell を読み込みます。検証や内部開発タスクは `cargo xtask` で実行します。
 
 ```sh
 cargo xtask check
 ```
 
-## 適用
+## CLI
 
-すべて適用:
+ユーザー向けの入口は `dotfiles` コマンドです。ユーザー固有の flake は `~/.config/dotfiles/flake.nix` に生成します。
+
+```sh
+nix run github:wthrk/dotfiles -- init
+nix run github:wthrk/dotfiles -- init --user alice --host macbook --system aarch64-darwin
+nix run github:wthrk/dotfiles -- init --source github:wthrk/dotfiles --force
+```
+
+適用:
+
+```sh
+dotfiles switch home
+dotfiles switch darwin
+dotfiles switch all
+```
+
+まだ `dotfiles` が PATH にない初回は `nix run github:wthrk/dotfiles -- switch darwin` のように実行できます。
+
+実行される switch:
+
+```sh
+home-manager switch --flake ~/.config/dotfiles#<user>
+sudo darwin-rebuild switch --flake ~/.config/dotfiles#<host>
+```
+
+## 内部タスク
+
+`xtask` はこの repository の開発用です。
 
 ```sh
 cargo xtask apply
@@ -50,13 +77,16 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstr
 
 主な option:
 
-- `--dir` checkout 先
-- `--flake` flake 出力名
+- `--source` dotfiles flake
+- `--user`
+- `--host`
+- `--system`
+- `--force`
 - `--mode darwin|home-manager`
 - `--no-switch`
 - `--dry-run`
 
-既存の Home Manager 管理対象ファイルは `*.before-home-manager` に退避してから置き換えます。
+bootstrap は Nix を用意して `dotfiles init` / `dotfiles switch` を呼びます。`~/.dotfiles` checkout は前提にしません。既存の Home Manager 管理対象ファイルは `*.before-home-manager` に退避してから置き換えます。
 
 ## 検証
 
@@ -82,10 +112,7 @@ cargo xtask check zsh
 Tart VM を使う runtime 検証:
 
 ```sh
-cargo xtask check runtime all
-cargo xtask check runtime fresh-bootstrap
-cargo xtask check runtime second-user-home-manager
-cargo xtask check runtime darwin-switch-ya
+cargo xtask check runtime
 ```
 
 ## ロールバック

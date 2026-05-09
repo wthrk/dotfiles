@@ -1,67 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-dotfiles_dir="$HOME/.dotfiles"
-dotfiles_repo="https://github.com/wthrk/dotfiles.git"
+dotfiles_source="github:wthrk/dotfiles"
 switch_mode="darwin"
 run_switch=1
-flake_name="default"
+user=""
+host=""
+system=""
+force=0
 dry_run=0
 self_test=0
-NIX_EXTRA_ARGS=(--extra-experimental-features "nix-command flakes")
+deprecated_dir=""
 NIX_FLAKE_ARGS=(--no-update-lock-file)
-DARWIN_REBUILD_INSTALLER_FLAKE="github:LnL7/nix-darwin/06648f4902343228ce2de79f291dd5a58ee12146"
-HOME_MANAGER_INSTALLER_FLAKE="github:nix-community/home-manager/5b56ad02dc643808b8af6d5f3ff179e2ce9593f4"
-HOME_MANAGER_BACKUP_EXTENSION="before-home-manager"
-prepared_paths=()
-rollback_required=0
 
 usage() {
   cat <<USAGE
 使い方: scripts/bootstrap.sh [options]
 
 Options:
-  --dir PATH                 checkout 先（既定: \$HOME/.dotfiles）
-  --repo URL_OR_PATH         clone 元（既定: https://github.com/wthrk/dotfiles.git）
-  --mode darwin|home-manager 適用モード（既定: darwin）
-  --flake NAME               flake 出力名（既定: default）
-  --run-switch               flake check 後に switch する（既定）
-  --no-switch                flake check 後に終了する
+  --source FLAKE             dotfiles flake（既定: github:wthrk/dotfiles）
+  --repo URL_OR_PATH         --source の互換 alias
+  --user USER                local config に書くユーザー名
+  --host HOST                local config に書く host 名
+  --system SYSTEM            local config に書く system（例: aarch64-darwin）
+  --mode darwin|home-manager|all
+                             適用モード（既定: darwin）
+  --force                    既存 ~/.config/dotfiles/flake.nix を上書きする
+  --run-switch               init 後に switch する（既定）
+  --no-switch                init 後に終了する
   --dry-run                  実行計画だけ表示する
-  --self-test                内部の安全性テストだけ実行する
+  --self-test                bootstrap 自体の軽い検証だけ実行する
+  --dir PATH                 互換用。checkout は作らず無視する
+  --flake NAME               互換用。--user 未指定時の USER として扱う
   -h, --help                 このヘルプを表示する
 USAGE
 }
 
-copy_local_worktree() {
-  local source_dir="$1"
-  local target_dir="$2"
-
-  source_dir="$(cd "$source_dir" && pwd -P)"
-
-  if [[ -e "$target_dir" ]]; then
-    if ! rmdir "$target_dir" 2>/dev/null; then
-      echo "checkout 先が空ではありません: $target_dir" >&2
-      exit 1
-    fi
-  fi
-
-  mkdir -p "$(dirname "$target_dir")"
-  mkdir -p "$target_dir"
-  rsync -a \
-    --exclude '/.direnv/' \
-    --exclude '/target/' \
-    "$source_dir"/ "$target_dir"/
+legacy_repo_to_source() {
+  case "$1" in
+    https://github.com/wthrk/dotfiles.git|git@github.com:wthrk/dotfiles.git)
+      printf '%s\n' "github:wthrk/dotfiles"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
 }
 
 while (($#)); do
   case "$1" in
-    --dir)
-      dotfiles_dir="$2"
+    --source)
+      dotfiles_source="$2"
       shift 2
       ;;
     --repo)
-      dotfiles_repo="$2"
+      dotfiles_source="$(legacy_repo_to_source "$2")"
+      shift 2
+      ;;
+    --user)
+      user="$2"
+      shift 2
+      ;;
+    --host)
+      host="$2"
+      shift 2
+      ;;
+    --system)
+      system="$2"
       shift 2
       ;;
     --mode)
@@ -69,8 +74,12 @@ while (($#)); do
       shift 2
       ;;
     --flake)
-      flake_name="$2"
+      user="${user:-$2}"
       shift 2
+      ;;
+    --force)
+      force=1
+      shift
       ;;
     --run-switch)
       run_switch=1
@@ -87,6 +96,10 @@ while (($#)); do
     --self-test)
       self_test=1
       shift
+      ;;
+    --dir)
+      deprecated_dir="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -105,103 +118,29 @@ if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 fi
 
+export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
+
+if [[ "$self_test" == "1" ]]; then
+  bash -n "$0"
+  echo "self-test passed"
+  exit 0
+fi
+
 print_plan() {
   cat <<PLAN
 bootstrap 実行計画:
 - macOS であることを確認
 - Xcode Command Line Tools の導入状態を確認（未導入なら案内）
-- dotfiles checkout を clone または既存利用: ${dotfiles_dir}
 - Nix daemon モードの導入確認
-- 実行: nix flake check
+- 実行: dotfiles init
+- dotfiles source: ${dotfiles_source}
+- local config: \$HOME/.config/dotfiles/flake.nix
 - 適用モード: ${switch_mode}
-- flake 出力: .#${flake_name}
 - switch 実行: ${run_switch}
 PLAN
-}
-
-prepare_nix_darwin_etc() {
-  [[ "$switch_mode" == "darwin" ]] || return 0
-
-  for path in /etc/bashrc /etc/zshrc; do
-    backup="${path}.before-nix-darwin"
-    move_aside "$path" "$backup" "nix-darwin 管理前に退避します"
-  done
-}
-
-prepare_nix_homebrew() {
-  [[ "$switch_mode" == "darwin" ]] || return 0
-
-  local prefix
-  for prefix in /opt/homebrew /usr/local; do
-    move_aside "$prefix/Library/Taps" "$prefix/Library/Taps.before-nix-homebrew" "nix-homebrew 管理前に退避します"
-  done
-}
-
-ensure_root_git_safe_directory() {
-  local repo_path="$1"
-  local root_git_config="/var/root/.gitconfig"
-
-  require_sudo "root の git safe.directory 設定"
-
-  if sudo git config --file "$root_git_config" --get-all safe.directory 2>/dev/null | grep -Fxq "$repo_path"; then
-    return 0
+  if [[ -n "$deprecated_dir" ]]; then
+    echo "- --dir は互換用に受け取りますが checkout は作りません: ${deprecated_dir}"
   fi
-
-  sudo git config --file "$root_git_config" --add safe.directory "$repo_path"
-}
-
-move_aside() {
-  local path="$1"
-  local backup="$2"
-  local message="$3"
-  local existing_backup
-
-  [[ -e "$path" ]] || return 0
-
-  if [[ -e "$backup" ]]; then
-    existing_backup="${backup}.previous.$(date +%Y%m%d%H%M%S)"
-    echo "既存の退避先を保持します: $backup -> $existing_backup"
-    sudo mv "$backup" "$existing_backup"
-  fi
-
-  echo "$message: $path -> $backup"
-  sudo mv "$path" "$backup"
-  prepared_paths+=("$path|$backup")
-}
-
-restore_prepared_paths() {
-  local item path backup failed_path i
-  for ((i = ${#prepared_paths[@]} - 1; i >= 0; i--)); do
-    item="${prepared_paths[$i]}"
-    path="${item%%|*}"
-    backup="${item#*|}"
-    [[ -e "$backup" ]] || continue
-
-    if [[ -e "$path" ]]; then
-      failed_path="${path}.failed-nix-switch.$(date +%Y%m%d%H%M%S)"
-      echo "失敗後に生成されたパスを退避します: $path -> $failed_path" >&2
-      sudo mv "$path" "$failed_path" || true
-    fi
-
-    echo "失敗したため退避を戻します: $backup -> $path" >&2
-    sudo mv "$backup" "$path" || true
-  done
-}
-
-rollback_on_exit() {
-  local status=$?
-  if [[ "$rollback_required" == "1" && "$status" -ne 0 ]]; then
-    restore_prepared_paths
-  fi
-}
-
-abort_with_status() {
-  local status="$1"
-  if [[ "${rollback_required:-0}" == "1" ]]; then
-    rollback_required=0
-    restore_prepared_paths
-  fi
-  exit "$status"
 }
 
 require_sudo() {
@@ -228,78 +167,6 @@ require_sudo() {
   return 1
 }
 
-run_self_test() {
-  local tmp path backup generated signal
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  require_sudo "--self-test"
-
-  path="$tmp/path"
-  backup="$tmp/path.before-test"
-  generated="$tmp/path.failed-nix-switch"
-  (
-    set -euo pipefail
-    prepared_paths=()
-    rollback_required=1
-    trap rollback_on_exit EXIT
-    printf 'original\n' > "$path"
-    move_aside "$path" "$backup" "self-test"
-    printf 'generated\n' > "$path"
-    exit 42
-  ) || true
-
-  if [[ "$(cat "$path")" != "original" ]]; then
-    echo "self-test failed: rollback did not restore original path" >&2
-    return 1
-  fi
-  if ! ls "$generated".* >/dev/null 2>&1; then
-    echo "self-test failed: rollback did not preserve failed generated path" >&2
-    return 1
-  fi
-
-  for signal in INT TERM HUP; do
-    path="$tmp/path-${signal}"
-    backup="$tmp/path-${signal}.before-test"
-    generated="$tmp/path-${signal}.failed-nix-switch"
-    (
-      set -euo pipefail
-      prepared_paths=()
-      rollback_required=1
-      trap rollback_on_exit EXIT
-      trap 'abort_with_status 130' INT
-      trap 'abort_with_status 143' TERM
-      trap 'abort_with_status 129' HUP
-      printf 'original\n' > "$path"
-      move_aside "$path" "$backup" "self-test ${signal}"
-      printf 'generated\n' > "$path"
-      if [[ "$signal" == "INT" ]]; then
-        abort_with_status 130
-      fi
-      if [[ "$signal" == "HUP" ]]; then
-        abort_with_status 129
-      fi
-      kill "-${signal}" "$(bash -c 'echo $PPID')"
-      sleep 1
-    ) || true
-
-    if [[ "$(cat "$path")" != "original" ]]; then
-      echo "self-test failed: ${signal} did not restore original path" >&2
-      return 1
-    fi
-    if ! ls "$generated".* >/dev/null 2>&1; then
-      echo "self-test failed: ${signal} did not preserve failed generated path" >&2
-      return 1
-    fi
-  done
-
-  echo "self-test passed"
-}
-
-if [[ "$self_test" == "1" ]]; then
-  run_self_test
-  exit 0
-fi
-
 if [[ "$dry_run" == "1" ]]; then
   print_plan
   echo "--dry-run のため、変更を加えず終了します。"
@@ -315,29 +182,6 @@ if ! xcode-select -p >/dev/null 2>&1; then
   echo "Xcode Command Line Tools が必要です。インストーラを起動します..."
   xcode-select --install || true
   echo "Command Line Tools の導入完了後に再実行してください。"
-  exit 1
-fi
-
-if [[ -d "$dotfiles_dir/.git" ]]; then
-  echo "既存 checkout を使用します: $dotfiles_dir"
-elif git -C "$dotfiles_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "ローカル作業ツリーをコピーします: $dotfiles_dir"
-  copy_local_worktree "$dotfiles_repo" "$dotfiles_dir"
-else
-  echo "dotfiles を clone します: $dotfiles_dir"
-  git clone "$dotfiles_repo" "$dotfiles_dir"
-fi
-
-cd "$dotfiles_dir"
-dotfiles_dir="$(pwd -P)"
-
-if [[ ! -f flake.nix ]]; then
-  echo "flake.nix が必要です。Nix 移行後のため init フォールバックはありません（init.sh は削除済み）。" >&2
-  exit 1
-fi
-
-if [[ ! -s flake.lock ]]; then
-  echo "flake.lock が必要です。CI と bootstrap では flake input の暗黙更新を許可しません。" >&2
   exit 1
 fi
 
@@ -359,35 +203,56 @@ if ! command -v nix >/dev/null 2>&1; then
   hash -r
 fi
 
-echo "nix flake check を実行します"
-nix "${NIX_EXTRA_ARGS[@]}" flake check "${NIX_FLAKE_ARGS[@]}"
+init_args=(init --source "$dotfiles_source")
+if [[ -n "$user" ]]; then
+  init_args+=(--user "$user")
+fi
+if [[ -n "$host" ]]; then
+  init_args+=(--host "$host")
+fi
+if [[ -n "$system" ]]; then
+  init_args+=(--system "$system")
+fi
+if [[ "$force" == "1" ]]; then
+  init_args+=(--force)
+fi
+
+echo "dotfiles init を実行します"
+nix run "${NIX_FLAKE_ARGS[@]}" "$dotfiles_source" -- "${init_args[@]}"
 
 if [[ "$run_switch" == "0" ]]; then
-  echo "--no-switch のため、flake check 後に終了します"
+  echo "--no-switch のため、init 後に終了します"
   exit 0
 fi
 
 case "$switch_mode" in
   darwin)
-    require_sudo "nix-darwin switch のための /etc と Homebrew Taps 退避"
-    rollback_required=1
-    trap rollback_on_exit EXIT
-    trap 'abort_with_status 130' INT
-    trap 'abort_with_status 143' TERM
-    trap 'abort_with_status 129' HUP
-    prepare_nix_darwin_etc
-    prepare_nix_homebrew
-    ensure_root_git_safe_directory "$dotfiles_dir"
-    nix_bin="$(command -v nix)"
-    sudo -H --preserve-env=NIX_CONFIG "$nix_bin" "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$DARWIN_REBUILD_INSTALLER_FLAKE" -- switch --flake ".#$flake_name"
-    rollback_required=0
-    trap - EXIT INT TERM HUP
+    switch_target="darwin"
     ;;
   home-manager)
-    nix "${NIX_EXTRA_ARGS[@]}" run "${NIX_FLAKE_ARGS[@]}" "$HOME_MANAGER_INSTALLER_FLAKE" -- switch -b "$HOME_MANAGER_BACKUP_EXTENSION" --flake ".#$flake_name"
+    switch_target="home"
+    ;;
+  all)
+    switch_target="all"
     ;;
   *)
     echo "未対応の適用モード: $switch_mode" >&2
     exit 1
     ;;
 esac
+
+if [[ "$switch_target" == "darwin" || "$switch_target" == "all" ]]; then
+  require_sudo "nix-darwin switch"
+fi
+
+echo "dotfiles switch ${switch_target} を実行します"
+switch_env=()
+if [[ -n "$user" ]]; then
+  switch_env+=(DOTFILES_USER="$user")
+fi
+if [[ -n "$host" ]]; then
+  switch_env+=(DOTFILES_HOST="$host")
+fi
+switch_env+=(DOTFILES_SOURCE="$dotfiles_source")
+
+env "${switch_env[@]}" nix run "${NIX_FLAKE_ARGS[@]}" "$dotfiles_source" -- switch "$switch_target"
