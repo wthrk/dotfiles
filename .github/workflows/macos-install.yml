@@ -2,6 +2,7 @@ name: macOS runtime integration
 
 on:
   workflow_dispatch:
+  pull_request:
   schedule:
     - cron: "0 15 * * 0"
 
@@ -9,14 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
     access-tokens = github.com=${{ github.token }}
-  DOTFILES_TEST_SOURCE_HASH: ${{ github.sha }}
+  DOTFILES_TEST_SOURCE_HASH: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   runtime:
@@ -27,6 +28,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ env.DOTFILES_TEST_SOURCE_HASH }}
 
       - name: runtime integration
-        run: cargo xtask check runtime
+        run: cargo xtask check runtime --source-hash "$DOTFILES_TEST_SOURCE_HASH"
