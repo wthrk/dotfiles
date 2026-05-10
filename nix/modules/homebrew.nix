@@ -1,7 +1,7 @@
-# nix-darwin 経由で Homebrew の tap、formula、cask を宣言する。
+# nix-darwin の `homebrew` option に渡す Homebrew 宣言。
 #
-# tap の実体は `nix/darwin.nix` の nix-homebrew 設定で flake input に固定する。このモジュールでは
-# brew bundle 相当の内容だけを宣言し、手動 tap 更新に依存しない。
+# `taps` は brew bundle が参照する tap 名、`casks` は switch 時に導入する cask、
+# `onActivation` は switch 時の更新と cleanup の扱いを指定する。
 {
   homebrew = {
     enable = true;
