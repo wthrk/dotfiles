@@ -123,7 +123,7 @@ fn nix(shell: &Shell) -> Result<()> {
     let files = nix_files(shell)?;
     if !files.is_empty() {
         step("nix fmt");
-        cmd!(shell, "nix fmt -- --check {files...}").run()?;
+        cmd!(shell, "nix fmt -- --ci {files...}").run()?;
     }
     Ok(())
 }

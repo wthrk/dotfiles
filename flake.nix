@@ -263,7 +263,7 @@
       devShells.aarch64-darwin = mkDevShell (pkgsFor "aarch64-darwin");
       devShells.x86_64-linux = mkDevShell (pkgsFor "x86_64-linux");
 
-      formatter.aarch64-darwin = (pkgsFor "aarch64-darwin").nixfmt;
-      formatter.x86_64-linux = (pkgsFor "x86_64-linux").nixfmt;
+      formatter.aarch64-darwin = (pkgsFor "aarch64-darwin").nixfmt-tree;
+      formatter.x86_64-linux = (pkgsFor "x86_64-linux").nixfmt-tree;
     };
 }
