@@ -30,5 +30,29 @@ jobs:
         with:
           ref: ${{ env.DOTFILES_TEST_SOURCE_HASH }}
 
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Use rustup toolchain binaries
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/.cargo/bin"
+          toolchain_bin="$(dirname "$(rustup which cargo)")"
+          ln -sf "$toolchain_bin"/* "$HOME/.cargo/bin/"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: reset Homebrew installation
+        run: |
+          set -euxo pipefail
+          sudo rm -rf \
+            /opt/homebrew \
+            /usr/local/Homebrew \
+            /usr/local/Caskroom \
+            /usr/local/Cellar \
+            /usr/local/Frameworks \
+            /usr/local/opt \
+            /usr/local/var/homebrew \
+            /usr/local/bin/brew
+
       - name: runtime integration
         run: cargo xtask check runtime --source-hash "$DOTFILES_TEST_SOURCE_HASH"
