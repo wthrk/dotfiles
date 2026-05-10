@@ -2,7 +2,7 @@
 # Nix や `dotfiles` CLI がまだ無いマシンで、最初のローカル flake を作る。
 #
 # `nix run <source> -- init` を呼べる状態まで必要なら Nix を導入し、生成後の適用は
-# `nix run <source> -- switch ...` に委譲する。古い checkout 前提の引数は互換用に受けるだけにする。
+# `nix run <source> -- switch ...` に委譲する。
 set -euo pipefail
 
 dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-github:wthrk/dotfiles}"
@@ -12,9 +12,6 @@ user=""
 host=""
 system=""
 force=0
-dry_run=0
-self_test=0
-deprecated_dir=""
 NIX_FLAKE_ARGS=(--no-update-lock-file)
 
 usage() {
@@ -24,44 +21,21 @@ usage() {
 
 Options:
   --source FLAKE             dotfiles flake（既定: github:wthrk/dotfiles）
-  --repo URL_OR_PATH         --source の互換 alias
   --user USER                生成する flake に書くユーザー名
   --host HOST                生成する flake に書くホスト名
   --system SYSTEM            生成 flake に書く system（例: aarch64-darwin）
   --mode darwin|home-manager|all
                              適用モード（既定: darwin）
   --force                    既存 ~/.config/dotfiles/flake.nix を上書きする
-  --run-switch               init 後に適用する（既定）
   --no-switch                init 後に終了する
-  --dry-run                  実行計画だけ表示する
-  --self-test                bootstrap 自体の軽い検証だけ実行する
-  --dir PATH                 互換用。checkout は作らず無視する
-  --flake NAME               互換用。--user 未指定時の USER として扱う
   -h, --help                 このヘルプを表示する
 USAGE
-}
-
-legacy_repo_to_source() {
-  # 旧 bootstrap の `--repo` は clone URL を受けていた。既知の dotfiles URL だけを flake 参照へ直し、
-  # それ以外は利用者が渡した参照をそのまま `nix run` に渡す。
-  case "$1" in
-    https://github.com/wthrk/dotfiles.git|git@github.com:wthrk/dotfiles.git)
-      printf '%s\n' "github:wthrk/dotfiles"
-      ;;
-    *)
-      printf '%s\n' "$1"
-      ;;
-  esac
 }
 
 while (($#)); do
   case "$1" in
     --source)
       dotfiles_source="$2"
-      shift 2
-      ;;
-    --repo)
-      dotfiles_source="$(legacy_repo_to_source "$2")"
       shift 2
       ;;
     --user)
@@ -80,33 +54,13 @@ while (($#)); do
       switch_mode="$2"
       shift 2
       ;;
-    --flake)
-      user="${user:-$2}"
-      shift 2
-      ;;
     --force)
       force=1
-      shift
-      ;;
-    --run-switch)
-      run_switch=1
       shift
       ;;
     --no-switch)
       run_switch=0
       shift
-      ;;
-    --dry-run)
-      dry_run=1
-      shift
-      ;;
-    --self-test)
-      self_test=1
-      shift
-      ;;
-    --dir)
-      deprecated_dir="$2"
-      shift 2
       ;;
     -h|--help)
       usage
@@ -126,30 +80,6 @@ if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
 fi
 
 export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
-
-if [[ "$self_test" == "1" ]]; then
-  bash -n "$0"
-  echo "self-test passed"
-  exit 0
-fi
-
-print_plan() {
-  # 予行実行では、インストール、init、switch の実行予定だけを表示し、状態変更は行わない。
-  cat <<PLAN
-bootstrap 実行計画:
-- macOS であることを確認
-- Xcode Command Line Tools の導入状態を確認（未導入なら案内）
-- Nix daemon モードの導入確認
-- 実行: dotfiles init
-- dotfiles source: ${dotfiles_source}
-- local config: \$HOME/.config/dotfiles/flake.nix
-- 適用モード: ${switch_mode}
-- switch 実行: ${run_switch}
-PLAN
-  if [[ -n "$deprecated_dir" ]]; then
-    echo "- --dir は互換用に受け取りますが checkout は作りません: ${deprecated_dir}"
-  fi
-}
 
 require_sudo() {
   # Nix インストールや Darwin switch の前に sudo 権限を確認する。失敗時の再試行やパスワード制御は
@@ -176,12 +106,6 @@ require_sudo() {
   echo "対話端末で sudo -v を実行してから再実行してください。" >&2
   return 1
 }
-
-if [[ "$dry_run" == "1" ]]; then
-  print_plan
-  echo "--dry-run のため、変更を加えず終了します。"
-  exit 0
-fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "この bootstrap は macOS 専用です。" >&2

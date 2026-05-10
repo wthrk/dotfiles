@@ -69,12 +69,6 @@ commit / tag 固定:
 curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scripts/bootstrap.sh | bash
 ```
 
-dry-run:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstrap.sh | bash -s -- --dry-run
-```
-
 主な option:
 
 - `--source` dotfiles flake
@@ -82,9 +76,8 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstr
 - `--host`
 - `--system`
 - `--force`
-- `--mode darwin|home-manager`
+- `--mode darwin|home-manager|all`
 - `--no-switch`
-- `--dry-run`
 
 bootstrap は Nix を用意して `dotfiles init` / `dotfiles switch` を呼びます。`~/.dotfiles` checkout は前提にしません。既存の Home Manager 管理対象ファイルは `*.before-home-manager` に退避してから置き換えます。
 

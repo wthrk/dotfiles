@@ -112,13 +112,12 @@ impl ScenarioRunner {
             );
         }
 
-        self.run(self.bootstrap_script_str().as_str(), &["--dry-run"])?;
         self.bootstrap_current_user_no_switch()?;
         // 切り替えなしの初期設定でも、利用可能なローカル flake は書かれている必要がある。
         ensure_nonempty_path(local_config_flake_for_current_user()?)?;
 
-        // 予行実行と切り替えなしの初期設定は、システムパスを変更してはいけない。
-        // これらは `dotfiles switch darwin` だけが準備する。
+        // 切り替えなしの初期設定は、システムパスを変更してはいけない。
+        // システムパスの準備は `dotfiles switch darwin` だけが行う。
         self.ensure_absent("/etc/bashrc.before-nix-darwin")?;
         self.ensure_absent("/etc/zshrc.before-nix-darwin")?;
         self.ensure_absent("/opt/homebrew/Library/Taps.before-nix-homebrew")?;
@@ -133,9 +132,7 @@ impl ScenarioRunner {
             "darwin",
             "--no-switch",
             "--force",
-        ])?;
-
-        self.run(self.bootstrap_script_str().as_str(), &["--self-test"])
+        ])
     }
 
     /// 追加ユーザーが自分のローカル flake から Home Manager switch できることを確認する。
@@ -171,7 +168,6 @@ impl ScenarioRunner {
                 "dotfilesci",
                 "--mode",
                 "home-manager",
-                "--run-switch",
                 "--force",
             ],
         )?;
