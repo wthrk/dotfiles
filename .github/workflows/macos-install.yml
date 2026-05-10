@@ -1,18 +1,7 @@
-name: macOS Nix install
+name: macOS runtime integration
 
 on:
   workflow_dispatch:
-    inputs:
-      scenario:
-        description: "手動実行する検証シナリオ"
-        required: true
-        default: all
-        type: choice
-        options:
-          - all
-          - fresh-bootstrap
-          - second-user-home-manager
-          - darwin-switch-ya
   schedule:
     - cron: "0 15 * * 0"
 
@@ -20,50 +9,24 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
     access-tokens = github.com=${{ github.token }}
+  DOTFILES_TEST_SOURCE_HASH: ${{ github.sha }}
 
 jobs:
-  fresh-bootstrap:
-    name: ゼロ状態から bootstrap を検証
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'fresh-bootstrap' }}
+  runtime:
+    name: bootstrap から darwin switch まで検証
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
       - name: checkout
         uses: actions/checkout@v5
 
-      - name: ゼロ状態から bootstrap を検証
-        run: cargo xtask check runtime fresh-bootstrap
-
-  second-user-home-manager:
-    name: 既存 Nix 環境で別ユーザーの Home Manager を検証
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'second-user-home-manager' }}
-    runs-on: macos-15
-    timeout-minutes: 90
-
-    steps:
-      - name: checkout
-        uses: actions/checkout@v5
-
-      - name: 既存 Nix 環境で別ユーザーの Home Manager を検証
-        run: cargo xtask check runtime second-user-home-manager
-
-  darwin-switch-ya:
-    name: 実運用 ya の nix-darwin switch を検証
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.scenario == 'all' || inputs.scenario == 'darwin-switch-ya' }}
-    runs-on: macos-15
-    timeout-minutes: 90
-
-    steps:
-      - name: checkout
-        uses: actions/checkout@v5
-
-      - name: 実運用 ya の nix-darwin switch を検証
-        run: cargo xtask check runtime darwin-switch-ya
+      - name: runtime integration
+        run: cargo xtask check runtime
