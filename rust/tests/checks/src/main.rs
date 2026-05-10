@@ -5,7 +5,6 @@
 
 use std::{env, fs, path::PathBuf, process};
 
-use anyhow::bail;
 use clap::{Parser, Subcommand, ValueEnum};
 use xshell::{Shell, cmd};
 
@@ -134,28 +133,9 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
-    let nil = cmd!(shell, "command -v nil").ignore_status().read()?;
-    if nil.trim().is_empty() {
-        step("nil diagnostics skipped (nil not found)");
-        return Ok(());
-    }
 
     step("nil diagnostics");
-    let mut diagnostics = Vec::new();
-    for file in files {
-        let output = cmd!(shell, "nil diagnostics {file}").read()?;
-        if !output.trim().is_empty() {
-            diagnostics.push(format!("{file}:\n{output}"));
-        }
-    }
-    if !diagnostics.is_empty() {
-        // Nix モジュールは生成 flake 向けの公開 API なので、
-        // nil 診断は実際の失敗として扱う。
-        bail!(
-            "nix diagnostics reported issues:\n{}",
-            diagnostics.join("\n")
-        );
-    }
+    cmd!(shell, "nil diagnostics --deny-warnings {files...}").run()?;
     Ok(())
 }
 
