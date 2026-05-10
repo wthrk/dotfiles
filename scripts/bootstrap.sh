@@ -5,7 +5,11 @@
 # `nix run <source> -- switch ...` に委譲する。
 set -euo pipefail
 
-dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-github:wthrk/dotfiles}"
+default_dotfiles_source="github:wthrk/dotfiles"
+if [[ -n "${DOTFILES_BOOTSTRAP_SOURCE_REF:-}" ]]; then
+  default_dotfiles_source="github:wthrk/dotfiles/${DOTFILES_BOOTSTRAP_SOURCE_REF}"
+fi
+dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-$default_dotfiles_source}"
 switch_mode="darwin"
 run_switch=1
 user=""

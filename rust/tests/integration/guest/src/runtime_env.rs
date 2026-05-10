@@ -19,7 +19,7 @@ pub(crate) struct ScenarioEnv {
     pub(crate) bootstrap_script: PathBuf,
     pub(crate) dotfiles_source: String,
     pub(crate) pass_source_to_bootstrap: bool,
-    pub(crate) bootstrap_source_env: Option<String>,
+    pub(crate) bootstrap_source_ref_env: Option<String>,
     pub(crate) runner_temp: PathBuf,
     pub(crate) nix_config: String,
 }
@@ -58,7 +58,7 @@ impl ScenarioEnv {
             bootstrap_script: source.bootstrap_script,
             dotfiles_source: source.dotfiles_source,
             pass_source_to_bootstrap: source.pass_source_to_bootstrap,
-            bootstrap_source_env: source.bootstrap_source_env,
+            bootstrap_source_ref_env: source.bootstrap_source_ref_env,
             runner_temp,
             nix_config,
         })
@@ -74,8 +74,8 @@ impl ScenarioEnv {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        if let Some(source) = &self.bootstrap_source_env {
-            command.env("DOTFILES_BOOTSTRAP_SOURCE", source);
+        if let Some(source_ref) = &self.bootstrap_source_ref_env {
+            command.env("DOTFILES_BOOTSTRAP_SOURCE_REF", source_ref);
         }
     }
 }
@@ -84,7 +84,7 @@ struct RuntimeSource {
     bootstrap_script: PathBuf,
     dotfiles_source: String,
     pass_source_to_bootstrap: bool,
-    bootstrap_source_env: Option<String>,
+    bootstrap_source_ref_env: Option<String>,
 }
 
 impl RuntimeSource {
@@ -94,7 +94,7 @@ impl RuntimeSource {
                 bootstrap_script: workspace.join("scripts/bootstrap.sh"),
                 dotfiles_source: path_str(workspace),
                 pass_source_to_bootstrap: true,
-                bootstrap_source_env: None,
+                bootstrap_source_ref_env: None,
             });
         };
         if source_hash.trim().is_empty() {
@@ -120,7 +120,7 @@ impl RuntimeSource {
             bootstrap_script,
             dotfiles_source: dotfiles_source.clone(),
             pass_source_to_bootstrap: false,
-            bootstrap_source_env: Some(dotfiles_source),
+            bootstrap_source_ref_env: Some(source_hash.to_string()),
         })
     }
 }

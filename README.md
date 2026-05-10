@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/main/scripts/bootstr
 commit / tag 固定:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scripts/bootstrap.sh | DOTFILES_BOOTSTRAP_SOURCE_REF=<tag-or-commit> bash
 ```
 
 主な option:

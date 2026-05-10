@@ -373,8 +373,11 @@ impl ScenarioRunner {
         args: &[&str],
     ) -> Result<()> {
         let mut envs = envs.to_vec();
-        if let Some(source) = &self.env.bootstrap_source_env {
-            envs.push(("DOTFILES_BOOTSTRAP_SOURCE".to_string(), source.clone()));
+        if let Some(source_ref) = &self.env.bootstrap_source_ref_env {
+            envs.push((
+                "DOTFILES_BOOTSTRAP_SOURCE_REF".to_string(),
+                source_ref.clone(),
+            ));
         }
         run_with_env(
             Some(&self.env),
