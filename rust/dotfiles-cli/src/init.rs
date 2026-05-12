@@ -47,13 +47,14 @@ pub(crate) fn run(options: InitOptions) -> Result<()> {
     Ok(())
 }
 
-/// 生成先ディレクトリで `nix flake lock` を実行し、入力解決を明示的な lock file に固定する。
+/// 生成先ディレクトリで `nix flake lock` を実行し、dirty な local input も lock file に固定する。
 fn lock_config(config_dir: &std::path::Path) -> Result<()> {
     run_process(
         "nix",
         [
             OsString::from("flake"),
             OsString::from("lock"),
+            OsString::from("--allow-dirty-locks"),
             config_dir.as_os_str().to_os_string(),
         ],
         false,

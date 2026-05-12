@@ -6,7 +6,6 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -15,6 +14,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::bail;
 use clap::{Parser, ValueEnum};
 use dotfiles_core::{command as command_format, path::find_executable};
+
+mod fs_util;
 
 type Result<T> = dotfiles_core::Result<T>;
 
@@ -32,7 +33,7 @@ struct Args {
     #[arg(
         long,
         env = "DOTFILES_TART_IMAGE",
-        default_value = "ghcr.io/cirruslabs/macos-sequoia-vanilla:latest"
+        default_value = "sequoia-vanilla"
     )]
     image: String,
     #[arg(long, env = "DOTFILES_TART_VM_NAME")]
@@ -45,6 +46,8 @@ struct Args {
     keep_vm: Option<String>,
     #[arg(long, env = "CARGO_TARGET_DIR", value_name = "PATH", hide = true)]
     cargo_target_dir: Option<PathBuf>,
+    #[arg(long, env = "DOTFILES_TART_DISK_SIZE_GB", default_value_t = 120)]
+    disk_size_gb: u16,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -121,6 +124,7 @@ struct TartRunner {
     ssh_password: String,
     keep_vm: bool,
     cargo_target_dir: Option<PathBuf>,
+    disk_size_gb: u16,
     vm_created: bool,
     vm_started: bool,
     tart_child: Option<Child>,
@@ -172,6 +176,7 @@ impl TartRunner {
             ssh_password: args.ssh_password,
             keep_vm: args.keep_vm.is_some(),
             cargo_target_dir: args.cargo_target_dir,
+            disk_size_gb: args.disk_size_gb,
             vm_created: false,
             vm_started: false,
             tart_child: None,
@@ -184,12 +189,25 @@ impl TartRunner {
         let guest_binary = self.build_guest_binary()?;
         let mounted_guest_binary = self.temp_dir.join("dotfiles-integration-test-guest");
         fs::copy(&guest_binary, &mounted_guest_binary)?;
-        fs::set_permissions(&mounted_guest_binary, fs::Permissions::from_mode(0o755))?;
+        fs_util::executable(&mounted_guest_binary)?;
+        let mounted_repo = self.temp_dir.join("repo");
+        fs_util::copy_repo_source(&self.repo_dir, &mounted_repo)?;
 
         step("tart clone");
         println!("cloning VM: {} -> {}", self.image, self.vm_name);
         run_plain("tart", ["clone", &self.image, &self.vm_name])?;
         self.vm_created = true;
+
+        step("tart disk resize");
+        println!(
+            "resizing VM disk: {} -> {}GB",
+            self.vm_name, self.disk_size_gb
+        );
+        let disk_size = self.disk_size_gb.to_string();
+        run_plain(
+            "tart",
+            ["set", &self.vm_name, "--disk-size", disk_size.as_str()],
+        )?;
 
         step("tart run");
         println!("starting VM: {}", self.vm_name);
@@ -199,7 +217,7 @@ impl TartRunner {
             .args([
                 "run",
                 "--no-graphics",
-                &format!("--dir=repo:{}:ro", self.repo_dir.display()),
+                &format!("--dir=repo:{}:ro", mounted_repo.display()),
                 &format!("--dir=guest:{}", self.temp_dir.display()),
                 &self.vm_name,
             ])
@@ -246,7 +264,7 @@ impl TartRunner {
             "cargo build --package dotfiles-integration-test-guest",
         )?;
 
-        let binary = target_dir(&self.repo_dir, self.cargo_target_dir.as_deref())
+        let binary = fs_util::target_dir(&self.repo_dir, self.cargo_target_dir.as_deref())
             .join("debug/dotfiles-integration-test-guest");
         // VM 内で使うテスト実行ファイルはこのゲスト用実行器だけなので、
         // 出力が存在しない場合はこのチェックアウトを検証できていない。
@@ -256,7 +274,7 @@ impl TartRunner {
                 binary.display()
             );
         }
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
+        fs_util::executable(&binary)?;
         Ok(binary)
     }
 
@@ -405,19 +423,6 @@ impl Drop for TartRunner {
         }
         let _ = fs::remove_dir_all(&self.temp_dir);
     }
-}
-
-/// `CARGO_TARGET_DIR` が相対パスなら検証対象リポジトリ相対として扱い、guest バイナリの位置を決める。
-fn target_dir(repo_dir: &Path, cargo_target_dir: Option<&Path>) -> PathBuf {
-    cargo_target_dir
-        .map(|path| {
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                repo_dir.join(path)
-            }
-        })
-        .unwrap_or_else(|| repo_dir.join("target"))
 }
 
 /// Tart などホスト側コマンドをログ表示と同じ引数配列で実行する。
