@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "rust/dotfiles-cli",
+  "rust/dotfiles-core",
+  "rust/tests/checks",
+  "rust/tests/integration",
+  "rust/tests/integration/guest",
+  "rust/xtask",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.0.0"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.49", features = ["derive", "env"] }
+dotfiles-core = { path = "rust/dotfiles-core" }
+xshell = "0.2"

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 現在の zsh 設定が作るキーマップを全件出力し、補完やキーバインドの変更確認に使う。
+#
+# 設定ファイルは変更せず、`bindkey -l` と各 keymap の `bindkey -M` 結果だけを観測する。
 set -euo pipefail
 
 out_md="docs/zsh-keymaps-full.md"

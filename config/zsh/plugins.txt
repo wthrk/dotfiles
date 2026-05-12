@@ -1,5 +1,2 @@
-romkatv/powerlevel10k path:powerlevel10k.zsh-theme
-zsh-users/zsh-autosuggestions
-zdharma-continuum/fast-syntax-highlighting
-Aloxaf/fzf-tab
-zsh-users/zsh-completions kind:fpath path:src
+# 旧 Antidote 用の互換ファイル。プラグインの所有権は Home Manager `programs.zsh.plugins` に移した。
+# 起動時に Antidote が clone 対象を読まないよう、内容は空のまま残す。

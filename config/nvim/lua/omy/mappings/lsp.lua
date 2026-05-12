@@ -1,3 +1,4 @@
+-- language server が attach した buffer だけに、定義ジャンプや診断操作の keymap を追加する。
 return function(client, bufnr)
   local capabilities = client.server_capabilities
   local function noremapbuf(mode, lhs, rhs, opt)

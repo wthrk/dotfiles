@@ -1,32 +1,30 @@
+# `.zshrc` より前に必要な環境変数をここで決める。
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 
 export EDITOR="nvim"
 
-# Keep PATH unique while preserving order.
+# Nix と許可済みローカルパスの優先順位を保ったまま、重複だけを落とす。
 typeset -U path PATH
 
-# Core system paths.
+# macOS と Nix daemon が前提にする最小限のシステムパス。
 path=(/usr/sbin /sbin $path)
 
-# Homebrew paths (Apple Silicon + Intel Rosetta).
-if [[ "$OSTYPE" == darwin* ]]; then
-  path=(/opt/homebrew/bin(N-/) /usr/local/bin(N-/) $path)
-fi
+# Nix 管理外でも、既存ツールとの連携のために残すユーザー所有パス。
+path=("$HOME/.agent-tools/bin" "$HOME/.rd/bin" $path)
 
-### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
-path=("$HOME/.rd/bin" $path)
-### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
-
-# Created by `pipx` on 2025-01-18 11:09:08
-path=("$HOME/.local/bin" $path)
-
-# Common user-local bins.
+# ユーザーごとの bin は使えるようにするが、言語管理ツールの shim は優先しない。
 path=(
-  "$HOME/.nodebrew/current/bin"
-  "$HOME/.agent-tools/bin"
+  "$HOME/.local/bin"
   $path
 )
+
+# rbenv、pyenv、nodebrew などの可変 shim が Nix 管理ツールより先に来ることを防ぐ。
+path=(${path:#$HOME/.nodebrew/current/bin})
+path=(${path:#$HOME/.bun/bin})
+path=(${path:#$HOME/.cargo/bin})
+path=(${path:#$HOME/.pyenv/bin})
+path=(${path:#$HOME/.rbenv/bin})
 
 export PATH

@@ -1,3 +1,6 @@
+-- Home Manager がリンクした Lua 設定を、失敗箇所が分かる形で順に読み込む。
+--
+-- plugin manager の初期化、keymap、基本 option を分け、どの require で壊れたか表示する。
 local impatient_ok, impatient = pcall(require, "impatient")
 if impatient_ok then impatient.enable_profile() end
 

@@ -1,4 +1,4 @@
--- telescope
+-- Telescope の検索系 keymap をまとめ、通常のファイル操作 keymap と分ける。
 local noremap = omy.noremap
 local builtin = require "telescope.builtin"
 ---@diagnostic disable-next-line: different-requires

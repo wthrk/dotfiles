@@ -1,3 +1,4 @@
+-- Copilot は明示した filetype だけで有効化し、無関係な buffer では候補を出さない。
 vim.g.copilot_assume_mapped = true
 vim.api.nvim_set_keymap(
   "i",

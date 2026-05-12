@@ -1,0 +1,25 @@
+# `nix flake init -t <dotfiles>#cloud` で使うクラウド開発用テンプレート。
+# 現在のシステム向けに AWS/GCP/Kubernetes/コンテナ操作の CLI を入れた devShell を出す。
+{
+  description = "Cloud and container CLI devShell";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  outputs =
+    { self, nixpkgs }:
+    let
+      system = builtins.currentSystem;
+      pkgs = import nixpkgs { inherit system; };
+    in
+    {
+      devShells.${system}.default = pkgs.mkShell {
+        packages = with pkgs; [
+          awscli2
+          google-cloud-sdk
+          kubectl
+          kubectx
+          skaffold
+          docker
+          docker-compose
+        ];
+      };
+    };
+}

@@ -1,0 +1,10 @@
+[package]
+name = "dotfiles-integration-test-guest"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dotfiles-core.workspace = true

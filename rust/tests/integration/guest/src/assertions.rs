@@ -1,0 +1,63 @@
+//! ゲスト内で観測できるファイル状態を検査する処理。
+//!
+//! Nix の内部値を再検証するのではなく、switch 後に利用者が実際に受け取るリンクやファイルだけを見る。
+
+use std::fs;
+use std::path::Path;
+
+use crate::Result;
+use anyhow::bail;
+
+/// 指定したホーム配下のファイルが Home Manager 由来の `/nix/store` リンクになっていることを検証する。
+pub(crate) fn assert_managed_links(home: &str, paths: &[&str]) -> Result<()> {
+    for relative in paths {
+        let path = Path::new(home).join(relative);
+        let meta = fs::symlink_metadata(&path)?;
+        // 管理対象のホームファイルはシンボリックリンクである必要がある。通常ファイルの場合、
+        // アクティベーションが期待する Home Manager 出力を導入できていない。
+        if !meta.file_type().is_symlink() {
+            bail!("{} is not a symlink", path.display());
+        }
+        let target = fs::read_link(&path)?;
+        // リンク先は Nix store 由来である必要がある。
+        // これにより、ローカルコピーの残骸ではなく Nix 管理ファイルだと確認する。
+        if !target.starts_with("/nix/store") {
+            bail!(
+                "{} does not point into /nix/store: {}",
+                path.display(),
+                target.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// シナリオの前提または成果物として必要なパスが存在することを検証する。
+pub(crate) fn ensure_exists(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        Ok(())
+    } else {
+        bail!("{} is missing", path.display())
+    }
+}
+
+/// dry-run や no-switch が作ってはいけないパスについて、壊れたリンクも含めて不在を確認する。
+pub(crate) fn ensure_absent_path(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() || fs::symlink_metadata(path).is_ok() {
+        bail!("{} exists", path.display())
+    } else {
+        Ok(())
+    }
+}
+
+/// flake や lock file など、空ファイルでは意味がない成果物の存在を確認する。
+pub(crate) fn ensure_nonempty_path(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if path.metadata()?.len() > 0 {
+        Ok(())
+    } else {
+        bail!("{} is empty", path.display())
+    }
+}

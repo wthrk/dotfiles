@@ -1,3 +1,4 @@
+-- nvim-cmp の source、表示、確定キーを設定し、snippet 展開と LSP 補完を接続する。
 vim.opt.completeopt = { "menu", "menuone", "noselect" }
 
 local cmp = require "cmp"

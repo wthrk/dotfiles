@@ -1,0 +1,58 @@
+name: macOS runtime integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 15 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    access-tokens = github.com=${{ github.token }}
+  DOTFILES_TEST_SOURCE_HASH: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  runtime:
+    name: bootstrap から darwin switch まで検証
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.DOTFILES_TEST_SOURCE_HASH }}
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Use rustup toolchain binaries
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/.cargo/bin"
+          toolchain_bin="$(dirname "$(rustup which cargo)")"
+          ln -sf "$toolchain_bin"/* "$HOME/.cargo/bin/"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: reset Homebrew installation
+        run: |
+          set -euxo pipefail
+          sudo rm -rf \
+            /opt/homebrew \
+            /usr/local/Homebrew \
+            /usr/local/Caskroom \
+            /usr/local/Cellar \
+            /usr/local/Frameworks \
+            /usr/local/opt \
+            /usr/local/var/homebrew \
+            /usr/local/bin/brew
+
+      - name: runtime integration
+        run: cargo xtask check runtime --source-hash "$DOTFILES_TEST_SOURCE_HASH"
