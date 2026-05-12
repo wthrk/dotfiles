@@ -1,7 +1,7 @@
 //! `dotfiles switch` がローカル flake の出力を適用する処理。
 //!
 //! Home Manager は `#<user>`、nix-darwin は `#<host>` を参照する。Darwin 適用前には
-//! `/etc/zshrc` と `/etc/zshenv` が既存通常ファイルの場合だけ退避し、nix-darwin のリンク作成を妨げない。
+//! `/etc/bashrc` と `/etc/zshrc` が既存通常ファイルの場合だけ退避し、nix-darwin のリンク作成を妨げない。
 
 use std::ffi::OsString;
 use std::fs;

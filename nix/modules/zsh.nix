@@ -1,21 +1,14 @@
 # Home Manager で zsh、補完、プロンプト、プラグインを有効化する。
 #
-# `.zshrc` はリポジトリ管理のファイルへ置き換える。TAB は通常補完に残し、
-# fzf-tab は Ctrl-X TAB に割り当てる前提を `rust/tests/checks/src/zsh.rs` で検証する。
+# `.zshrc` と `.zshenv` は Home Manager に生成させる。TAB は通常補完に残し、fzf-tab は
+# Ctrl-X TAB に割り当てる前提を `rust/tests/checks/src/zsh.rs` で検証する。
 {
   config,
   lib,
   pkgs,
-  root,
   ...
 }:
 {
-  home.file."./.zshrc" = {
-    force = true;
-    source = "${root}/.zshrc";
-    target = ".zshrc";
-  };
-
   programs.zsh = {
     enable = true;
     enableCompletion = true;

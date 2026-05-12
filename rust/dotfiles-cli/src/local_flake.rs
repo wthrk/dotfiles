@@ -36,7 +36,10 @@ pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> Stri
 
 /// CLI 由来の値を Nix の二重引用符文字列へ安全に埋め込む。
 fn escape_nix_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace("${", "\\${")
 }
 
 #[cfg(test)]
@@ -72,12 +75,17 @@ mod tests {
 
     #[test]
     fn escapes_nix_strings() {
-        let flake = render("path:/tmp/a\"b", "a\\b", "h\"ost", "x86_64-linux");
+        let flake = render(
+            "path:/tmp/a\"b/${bad}",
+            "a\\b",
+            "h\"ost/${host}",
+            "x86_64-linux",
+        );
 
         // 動的な参照、ユーザー名、ホスト名は Nix 文字列に埋め込むため、
-        // 引用符とバックスラッシュで生成 flake を壊してはいけない。
-        assert!(flake.contains(r#"inputs.dotfiles.url = "path:/tmp/a\"b";"#));
+        // 引用符、バックスラッシュ、補間開始で生成 flake を壊してはいけない。
+        assert!(flake.contains(r#"inputs.dotfiles.url = "path:/tmp/a\"b/\${bad}";"#));
         assert!(flake.contains(r#"homeConfigurations."a\\b""#));
-        assert!(flake.contains(r#"host = "h\"ost";"#));
+        assert!(flake.contains(r#"host = "h\"ost/\${host}";"#));
     }
 }

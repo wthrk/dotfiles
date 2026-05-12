@@ -10,6 +10,7 @@ if [[ -n "${DOTFILES_BOOTSTRAP_SOURCE_REF:-}" ]]; then
   default_dotfiles_source="github:wthrk/dotfiles/${DOTFILES_BOOTSTRAP_SOURCE_REF}"
 fi
 dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-$default_dotfiles_source}"
+nix_installer_url="${DOTFILES_NIX_INSTALLER_URL:-https://releases.nixos.org/nix/nix-2.34.6/install}"
 switch_mode="darwin"
 run_switch=1
 user=""
@@ -126,7 +127,14 @@ fi
 if ! command -v nix >/dev/null 2>&1; then
   require_sudo "Nix daemon mode インストール"
   echo "Nix をインストールします（daemon mode）..."
-  NIX_INSTALLER_NO_CHANNEL_ADD=1 sh <(curl -fsSL --retry 5 --retry-delay 2 https://nixos.org/nix/install) --daemon
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL --retry 5 --retry-delay 2 --proto '=https' --tlsv1.2 "$nix_installer_url" -o "$installer"
+  if [[ ! -s "$installer" ]]; then
+    echo "Nix installer を取得できませんでした: $nix_installer_url" >&2
+    exit 1
+  fi
+  NIX_INSTALLER_NO_CHANNEL_ADD=1 sh "$installer" --daemon
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
