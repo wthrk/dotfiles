@@ -99,7 +99,7 @@ in
     };
 
   system.activationScripts.postActivation.text = lib.mkAfter ''
-    uid="$(id -u -- ${lib.escapeShellArg user})"
+    uid="$(id -u ${lib.escapeShellArg user})"
 
     launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- launchctl bootout "gui/$uid/${oldLabel}" >/dev/null 2>&1 || true
     sudo --user=${lib.escapeShellArg user} -- rm -f ${lib.escapeShellArg oldPlistPath}

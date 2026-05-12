@@ -30,11 +30,7 @@ struct Args {
     repo_dir: Option<PathBuf>,
     #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
     source_hash: Option<String>,
-    #[arg(
-        long,
-        env = "DOTFILES_TART_IMAGE",
-        default_value = "sequoia-vanilla"
-    )]
+    #[arg(long, env = "DOTFILES_TART_IMAGE", default_value = "sequoia-vanilla")]
     image: String,
     #[arg(long, env = "DOTFILES_TART_VM_NAME")]
     vm_name: Option<String>,
