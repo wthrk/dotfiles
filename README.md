@@ -22,6 +22,8 @@ bootstrap は必要に応じて Nix を用意し、ローカル flake の生成�
 
 既存の Home Manager 管理対象ファイルは `*.before-home-manager` に退避してから置き換えます。
 
+sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になります。初回 bootstrap で Nix や nix-darwin を入れる前の sudo 認証は、通常のパスワード入力が必要になる場合があります。
+
 ## 日常的な適用
 
 初回導入後は `dotfiles` コマンドで現在のローカル flake を適用します。
