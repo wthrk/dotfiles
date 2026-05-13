@@ -190,6 +190,7 @@
       mkDevShell = pkgs: {
         default = pkgs.mkShell {
           packages = [
+            pkgs.actionlint
             pkgs.bash
             pkgs.cargo
             pkgs.clippy

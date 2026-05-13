@@ -24,23 +24,28 @@ bootstrap は必要に応じて Nix を用意し、ローカル flake の生成�
 
 sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になります。初回 bootstrap で Nix や nix-darwin を入れる前の sudo 認証は、通常のパスワード入力が必要になる場合があります。
 
-## 日常的な適用
+## 更新と適用
 
-初回導入後は `dotfiles` コマンドで現在のローカル flake を適用します。
+導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。
+対象を省略すると `all` として扱い、Home Manager の後に nix-darwin を適用します。
 
 ```sh
+dotfiles update
+dotfiles update home
+dotfiles update darwin
+dotfiles update all
+```
+
+更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。
+
+```sh
+dotfiles switch
 dotfiles switch home
 dotfiles switch darwin
 dotfiles switch all
 ```
 
-まだ `dotfiles` が PATH にない初回は、flake から直接実行できます。
-
-```sh
-nix run github:wthrk/dotfiles -- switch darwin
-```
-
-実行される switch:
+適用時に呼ばれるコマンド:
 
 ```sh
 home-manager switch --flake ~/.config/dotfiles#<user>
@@ -107,7 +112,7 @@ cargo xtask apply home-manager
 cargo xtask check
 ```
 
-`cargo xtask check` は Rust の format/check/clippy/test、flake check、Nix format、Home Manager output 評価、zsh 挙動検証を実行します。Tart VM を使う runtime 検証は含めません。
+通常の静的検証を実行します。Rust、Nix、shell script、GitHub Actions workflow を確認します。
 
 すべて実行する場合:
 

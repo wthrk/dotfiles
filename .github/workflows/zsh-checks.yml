@@ -1,20 +1,21 @@
-name: Static checks
+name: Zsh checks
 
 on:
   workflow_dispatch:
-  pull_request:
+  schedule:
+    - cron: "0 15 * * 0"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  static:
-    name: static checks
-    runs-on: ubuntu-latest
+  zsh:
+    name: zsh checks
+    runs-on: macos-latest
     timeout-minutes: 60
 
     steps:
@@ -26,5 +27,5 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      - name: static checks
-        run: nix develop -c cargo xtask check static
+      - name: zsh checks
+        run: nix develop -c cargo xtask check zsh
