@@ -61,14 +61,14 @@ fn run(target: Option<CheckTarget>) -> Result<()> {
     }
 }
 
-/// 開発時の既定検証として、静的検証に加えて生成 zsh 設定の起動確認も行う。
+/// 開発時の既定検証は、重い zsh 起動確認を含めず静的検証だけを行う。
 fn default_checks() -> Result<()> {
-    static_checks::check()?;
-    zsh::check()
+    static_checks::check()
 }
 
 /// VM 内での初期導入シナリオまで含めて実行する。
 fn all_checks() -> Result<()> {
-    default_checks()?;
+    static_checks::check()?;
+    zsh::check()?;
     integration::run(RuntimeScenario::Full, None)
 }

@@ -1,8 +1,8 @@
 # このリポジトリを外部 flake から参照するときの公開面を定義する。
 #
-# `packages`/`apps` は `dotfiles` CLI を提供する。`homeManagerModules.default` と
-# `darwinModules.default` は利用側 flake で `dotfiles.user` / `dotfiles.host` を設定して
-# 評価するモジュールであり、`lib.mkHome` / `lib.mkDarwin` は同じ設定を関数引数から生成する。
+# `packages`/`apps` は `dotfiles` CLI を提供する。`darwinModules.default` と
+# `lib.homeManagerModules.default` は利用側 flake で `dotfiles.user` / `dotfiles.host` を
+# 設定して評価するモジュールであり、`lib.mkHome` / `lib.mkDarwin` は同じ設定を関数引数から生成する。
 # 具体的な利用者名、ホスト名、対象システムは、このリポジトリではなく利用側 flake に置く。
 {
   description = "wthrk dotfiles managed by Home Manager + nix-darwin";
@@ -48,7 +48,6 @@
 
       packageSystems = [
         "aarch64-darwin"
-        "x86_64-darwin"
         "aarch64-linux"
         "x86_64-linux"
       ];
@@ -190,6 +189,7 @@
       mkDevShell = pkgs: {
         default = pkgs.mkShell {
           packages = [
+            pkgs.actionlint
             pkgs.bash
             pkgs.cargo
             pkgs.clippy
@@ -252,12 +252,11 @@
         };
       });
 
-      homeManagerModules.default = homeManagerModule;
-
       darwinModules.default = darwinModule;
 
       lib = {
         inherit mkHome mkDarwin;
+        homeManagerModules.default = homeManagerModule;
       };
 
       devShells.aarch64-darwin = mkDevShell (pkgsFor "aarch64-darwin");

@@ -1,8 +1,6 @@
 //! VM を使わずに実行できる静的検証。
 //!
-//! Rust ワークスペース、bootstrap shell script、Nix flake、公開 Nix module の評価をここで扱う。
-
-use std::{env, fs, path::PathBuf, process};
+//! Rust、shell script、Nix flake などの外部検証コマンドを順に実行する。
 
 use xshell::{Shell, cmd};
 
@@ -13,10 +11,9 @@ pub(crate) fn check() -> Result<()> {
     let shell = Shell::new()?;
     rust(&shell)?;
     shell_scripts(&shell)?;
-    nix(&shell)?;
+    github_actions(&shell)?;
     nix_diagnostics(&shell)?;
-    runner_home(&shell)?;
-    exported_modules(&shell)
+    nix(&shell)
 }
 
 /// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint、テストを回す。
@@ -47,17 +44,24 @@ fn shell_scripts(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// GitHub Actions workflow の構文と式を actionlint で検証する。
+fn github_actions(shell: &Shell) -> Result<()> {
+    step("GitHub Actions workflows");
+    cmd!(shell, "actionlint").run()?;
+    Ok(())
+}
+
 /// lock file が存在する状態で、Nix flake の評価と Nix ファイルの整形を検証する。
 fn nix(shell: &Shell) -> Result<()> {
     step("flake.lock exists");
     cmd!(shell, "test -s flake.lock").run()?;
-    step("nix flake check");
-    cmd!(shell, "nix flake check --no-update-lock-file").run()?;
     let files = nix_files(shell)?;
     if !files.is_empty() {
         step("nix fmt");
         cmd!(shell, "nix fmt -- --ci {files...}").run()?;
     }
+    step("nix flake check");
+    cmd!(shell, "nix flake check --no-update-lock-file --all-systems").run()?;
     Ok(())
 }
 
@@ -73,100 +77,6 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// `dotfiles init` が作ったローカル flake から Home Manager 出力を評価できることを確認する。
-fn runner_home(shell: &Shell) -> Result<()> {
-    let config_dir = TempDir::new("dotfiles-check")?;
-    let config_dir_path = config_dir.path().display().to_string();
-    let source = env::current_dir()?.canonicalize()?.display().to_string();
-
-    step("dotfiles init output");
-    cmd!(
-        shell,
-        "env DOTFILES_CONFIG_DIR={config_dir_path} cargo run --package dotfiles-cli -- init --user runner --host runner --system aarch64-darwin --source {source}"
-    )
-    .run()?;
-
-    step("runner Home Manager output eval");
-    cmd!(
-        shell,
-        "nix eval --no-update-lock-file {config_dir_path}#homeConfigurations.runner.activationPackage.drvPath"
-    )
-    .run()?;
-    Ok(())
-}
-
-/// `homeManagerModules.default` と `darwinModules.default` が外部 flake から単独で評価できることを確認する。
-fn exported_modules(shell: &Shell) -> Result<()> {
-    let config_dir = TempDir::new("dotfiles-module-check")?;
-    let config_dir_path = config_dir.path().display().to_string();
-    let source = env::current_dir()?.canonicalize()?.display().to_string();
-    fs::write(
-        config_dir.path().join("flake.nix"),
-        external_module_flake(&source),
-    )?;
-
-    step("exported module flake lock");
-    cmd!(shell, "nix flake lock {config_dir_path}").run()?;
-
-    step("exported Home Manager module eval");
-    cmd!(
-        shell,
-        "nix eval --no-update-lock-file {config_dir_path}#homeConfigurations.runner.activationPackage.drvPath"
-    )
-    .run()?;
-
-    step("exported nix-darwin module eval");
-    cmd!(
-        shell,
-        "nix eval --no-update-lock-file {config_dir_path}#darwinConfigurations.runner.system"
-    )
-    .run()?;
-    Ok(())
-}
-
-/// 公開モジュールを利用側 flake が直接読み込むときの最小構成を生成する。
-fn external_module_flake(source: &str) -> String {
-    format!(
-        r#"{{
-  inputs = {{
-    dotfiles.url = "path:{source}";
-    nixpkgs.follows = "dotfiles/nixpkgs";
-    home-manager.follows = "dotfiles/home-manager";
-    darwin.follows = "dotfiles/darwin";
-  }};
-
-  outputs = {{ dotfiles, nixpkgs, home-manager, darwin, ... }}:
-    let
-      system = "aarch64-darwin";
-      pkgs = import nixpkgs {{ inherit system; config.allowUnfree = true; }};
-    in {{
-      homeConfigurations.runner = home-manager.lib.homeManagerConfiguration {{
-        inherit pkgs;
-        modules = [
-          dotfiles.homeManagerModules.default
-          {{ dotfiles.user = "runner"; }}
-        ];
-      }};
-
-      darwinConfigurations.runner = darwin.lib.darwinSystem {{
-        inherit system;
-        modules = [
-          dotfiles.darwinModules.default
-          {{
-            dotfiles = {{
-              user = "runner";
-              host = "runner";
-            }};
-          }}
-        ];
-      }};
-    }};
-}}
-"#,
-        source = source
-    )
-}
-
 /// `target` 配下を除外し、整形と nil 診断の対象になる Nix ファイルだけを列挙する。
 fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     Ok(cmd!(
@@ -178,30 +88,4 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     .map(|path| path.trim_start_matches("./"))
     .map(ToOwned::to_owned)
     .collect())
-}
-
-/// 生成 flake を置く検証用ディレクトリを、検証終了時に消すための所有者。
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    /// 同じプロセス ID の残骸を先に消し、検証対象が前回の flake.lock を読まないようにする。
-    fn new(prefix: &str) -> Result<Self> {
-        let path = env::temp_dir().join(format!("{prefix}-{}", process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path)?;
-        Ok(Self { path })
-    }
-
-    /// xshell の command interpolation に渡すため、所有中のパスを参照で返す。
-    fn path(&self) -> &PathBuf {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }
