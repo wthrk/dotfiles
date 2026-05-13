@@ -18,7 +18,21 @@ use crate::{
 
 /// 指定された対象を、生成済みローカル flake の属性名規約に従って適用する。
 pub(crate) fn run(options: SwitchOptions) -> Result<()> {
-    let config_dir = config_dir(options.config_dir.clone())?;
+    let config_dir = options.config_dir()?;
+    ensure_config_exists(&config_dir)?;
+
+    match options.target() {
+        SwitchTarget::Home => switch_home(&config_dir, &options),
+        SwitchTarget::Darwin => switch_darwin(&config_dir, &options),
+        SwitchTarget::All => {
+            switch_home(&config_dir, &options)?;
+            switch_darwin(&config_dir, &options)
+        }
+    }
+}
+
+/// 既定または明示された設定ディレクトリに、適用対象の flake が存在することを確認する。
+pub(crate) fn ensure_config_exists(config_dir: &Path) -> Result<()> {
     let config_path = config_dir.join("flake.nix");
     if !config_path.is_file() {
         bail!(
@@ -27,14 +41,7 @@ pub(crate) fn run(options: SwitchOptions) -> Result<()> {
         );
     }
 
-    match options.target {
-        SwitchTarget::Home => switch_home(&config_dir, &options),
-        SwitchTarget::Darwin => switch_darwin(&config_dir, &options),
-        SwitchTarget::All => {
-            switch_home(&config_dir, &options)?;
-            switch_darwin(&config_dir, &options)
-        }
-    }
+    Ok(())
 }
 
 /// `home-manager switch --flake <config-dir>#<user>` を実行する。
@@ -129,7 +136,7 @@ fn flake_ref(path: &Path, output: &str) -> OsString {
 #[derive(Args)]
 /// 適用対象、出力名の上書き、外部コマンドのパス、予行実行を受け取る。
 pub(crate) struct SwitchOptions {
-    target: SwitchTarget,
+    target: Option<SwitchTarget>,
     #[arg(long, env = "DOTFILES_USER")]
     user: Option<String>,
     #[arg(long, env = "DOTFILES_HOST")]
@@ -146,6 +153,23 @@ pub(crate) struct SwitchOptions {
     darwin_rebuild: OsString,
     #[arg(long)]
     dry_run: bool,
+}
+
+impl SwitchOptions {
+    /// `switch` と `update` が同じ設定ディレクトリ解決を使うための入口。
+    pub(crate) fn config_dir(&self) -> Result<PathBuf> {
+        config_dir(self.config_dir.clone())
+    }
+
+    /// 対象省略時は、日常利用で期待する Home Manager と Darwin の両方を適用する。
+    fn target(&self) -> SwitchTarget {
+        self.target.unwrap_or(SwitchTarget::All)
+    }
+
+    /// `update` が lock 更新と switch の両方を同じ予行実行モードで扱う。
+    pub(crate) fn dry_run(&self) -> bool {
+        self.dry_run
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]

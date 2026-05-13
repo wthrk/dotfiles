@@ -11,6 +11,7 @@ mod init;
 mod local_flake;
 mod process;
 mod switch;
+mod update;
 
 type Result<T> = dotfiles_core::Result<T>;
 
