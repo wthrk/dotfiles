@@ -46,6 +46,39 @@
     let
       root = ./.;
 
+      # Homebrew tap の宣言は `homebrew-*` の flake input 名に集約し、そこから各設定を生成する。
+      homebrewTapInputs = nixpkgs.lib.filterAttrs (
+        name: _: nixpkgs.lib.hasPrefix "homebrew-" name
+      ) inputs;
+
+      homebrewTaps =
+        let
+          mkTapName =
+            sourceInfo:
+            let
+              owner = nixpkgs.lib.toLower sourceInfo.owner;
+              repo = nixpkgs.lib.toLower sourceInfo.repo;
+              shortRepo = nixpkgs.lib.removePrefix "homebrew-" repo;
+            in
+            "${owner}/${shortRepo}";
+
+          mkHomebrewTap =
+            _: source:
+            let
+              sourceInfo = source.sourceInfo;
+              name = mkTapName sourceInfo;
+            in
+            {
+              inherit name source;
+              nixHomebrewName = "${nixpkgs.lib.toLower sourceInfo.owner}/${sourceInfo.repo}";
+              brewTap = {
+                inherit name;
+                clone_target = "https://github.com/${sourceInfo.owner}/${sourceInfo.repo}";
+              };
+            };
+        in
+        nixpkgs.lib.mapAttrsToList mkHomebrewTap homebrewTapInputs;
+
       packageSystems = [
         "aarch64-darwin"
         "aarch64-linux"
@@ -107,7 +140,7 @@
 
           config = {
             _module.args = {
-              inherit inputs root;
+              inherit inputs root homebrewTaps;
               user = cfg.user;
               host = cfg.host;
             };
