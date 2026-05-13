@@ -69,7 +69,7 @@ Run the default validation suite before finishing normal changes:
 cargo xtask check
 ```
 
-Default checks run static validation and zsh startup/behavior checks. They do not run Tart VM runtime integration.
+Default checks run static validation only. They do not run zsh startup/behavior checks or Tart VM runtime integration.
 
 Focused checks:
 
@@ -77,6 +77,8 @@ Focused checks:
 cargo xtask check static
 cargo xtask check zsh
 ```
+
+Run the focused zsh check when a change affects zsh configuration, shell startup behavior, TAB bindings, fzf-tab, autosuggestions, syntax highlighting, or PATH handling.
 
 Use runtime checks when a change affects bootstrap, first-run behavior, host switching, or cross-machine assumptions:
 

@@ -69,7 +69,7 @@ cargo run --package dotfiles-cli -- switch all
 cargo xtask check
 ```
 
-既定の検証は静的検証と zsh の起動・挙動検証を実行します。Tart VM を使う runtime integration は実行しません。
+既定の検証は静的検証のみを実行します。zsh の起動・挙動検証や、Tart VM を使う runtime integration は実行しません。
 
 個別確認:
 
@@ -77,6 +77,8 @@ cargo xtask check
 cargo xtask check static
 cargo xtask check zsh
 ```
+
+zsh 設定、shell startup behavior、TAB bindings、fzf-tab、autosuggestions、syntax highlighting、PATH handling に影響する変更では、個別の zsh 検証を実行してください。
 
 bootstrap、初回実行、ホスト切り替え、マシンをまたぐ前提に影響する変更では runtime checks を使ってください:
 
