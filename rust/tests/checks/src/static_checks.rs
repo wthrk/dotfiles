@@ -61,7 +61,7 @@ fn nix(shell: &Shell) -> Result<()> {
         cmd!(shell, "nix fmt -- --ci {files...}").run()?;
     }
     step("nix flake check");
-    cmd!(shell, "nix flake check --no-update-lock-file").run()?;
+    cmd!(shell, "nix flake check --no-update-lock-file --all-systems").run()?;
     Ok(())
 }
 
