@@ -1,4 +1,5 @@
 /lsp
 /.direnv/
+/.serena/
 /target/
 target/
