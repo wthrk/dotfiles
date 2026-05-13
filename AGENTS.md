@@ -35,6 +35,13 @@ Do not hand-edit generated or machine-local dotfiles outside the repository. The
 
 Do not manually test local flake generation by writing to the developer's real `~/.config/dotfiles`. Validate local flake generation through the repository's sandboxed checks, especially the runtime tests for fresh-machine and target-path behavior.
 
+## Workspace and Branching
+
+- Before starting work, always inspect the current branch and decide whether it is appropriate for the requested change.
+- If the current branch is not appropriate, create or switch to an appropriate work branch before editing files.
+- Whenever creating a new work branch, first confirm that `main` is up to date with its upstream, update it if needed, and branch from the latest `main`.
+- Do not assume the local `main` is current. Fetch the upstream state before using `main` as a branch base.
+
 ## Development Commands
 
 Use `xtask` for repository maintenance:
