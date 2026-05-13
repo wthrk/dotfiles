@@ -39,6 +39,12 @@
 
   programs.zsh.enable = true;
 
+  # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
+  security.pam.services.sudo_local = {
+    touchIdAuth = true;
+    reattach = true;
+  };
+
   users.users.${user} = {
     home = "/Users/${user}";
     shell = pkgs.zsh;
