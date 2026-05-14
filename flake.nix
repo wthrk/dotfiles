@@ -18,19 +18,19 @@
 
     nix-homebrew.url = "github:zhaofengli-wip/nix-homebrew";
 
-    homebrew-core = {
+    homebrew-homebrew-core = {
       url = "github:homebrew/homebrew-core";
       flake = false;
     };
-    homebrew-cask = {
+    homebrew-homebrew-cask = {
       url = "github:homebrew/homebrew-cask";
       flake = false;
     };
-    homebrew-bicep = {
+    homebrew-azure-bicep = {
       url = "github:Azure/homebrew-bicep";
       flake = false;
     };
-    homebrew-hashicorp = {
+    homebrew-hashicorp-tap = {
       url = "github:hashicorp/homebrew-tap";
       flake = false;
     };
@@ -46,34 +46,29 @@
     let
       root = ./.;
 
-      # Homebrew tap の宣言は `homebrew-*` の flake input 名に集約し、そこから各設定を生成する。
+      # Homebrew tap の宣言は `homebrew-<owner>-<tap>` の flake input 名に集約し、
+      # そこから nix-homebrew と brew bundle の tap 名、clone 先を生成する。
       homebrewTapInputs = nixpkgs.lib.filterAttrs (
         name: _: nixpkgs.lib.hasPrefix "homebrew-" name
       ) inputs;
 
       homebrewTaps =
         let
-          mkTapName =
-            sourceInfo:
-            let
-              owner = nixpkgs.lib.toLower sourceInfo.owner;
-              repo = nixpkgs.lib.toLower sourceInfo.repo;
-              shortRepo = nixpkgs.lib.removePrefix "homebrew-" repo;
-            in
-            "${owner}/${shortRepo}";
-
           mkHomebrewTap =
-            _: source:
+            inputName: source:
             let
-              sourceInfo = source.sourceInfo;
-              name = mkTapName sourceInfo;
+              inputParts = nixpkgs.lib.splitString "-" (nixpkgs.lib.removePrefix "homebrew-" inputName);
+              owner = nixpkgs.lib.elemAt inputParts 0;
+              tap = nixpkgs.lib.concatStringsSep "-" (nixpkgs.lib.tail inputParts);
+              repo = "homebrew-${tap}";
+              name = "${owner}/${tap}";
+              nixHomebrewName = "${owner}/${repo}";
             in
             {
-              inherit name source;
-              nixHomebrewName = "${nixpkgs.lib.toLower sourceInfo.owner}/${sourceInfo.repo}";
+              inherit name nixHomebrewName source;
               brewTap = {
                 inherit name;
-                clone_target = "https://github.com/${sourceInfo.owner}/${sourceInfo.repo}";
+                clone_target = "https://github.com/${nixHomebrewName}";
               };
             };
         in

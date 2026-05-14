@@ -6,6 +6,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -118,6 +119,7 @@ struct TartRunner {
     temp_dir: PathBuf,
     ssh_user: String,
     ssh_password: String,
+    ssh_control_path: String,
     keep_vm: bool,
     cargo_target_dir: Option<PathBuf>,
     disk_size_gb: u16,
@@ -170,6 +172,7 @@ impl TartRunner {
             temp_dir,
             ssh_user: args.ssh_user,
             ssh_password: args.ssh_password,
+            ssh_control_path: random_ssh_control_path()?,
             keep_vm: args.keep_vm.is_some(),
             cargo_target_dir: args.cargo_target_dir,
             disk_size_gb: args.disk_size_gb,
@@ -321,10 +324,17 @@ impl TartRunner {
         Ok(command.spawn()?)
     }
 
-    /// 同時実行しても衝突しないよう、一時ディレクトリ配下の制御ソケットパスを返す。
+    /// macOS の Unix domain socket 長制限に当たらない短い制御ソケットパスを返す。
     fn ssh_control_path(&self) -> String {
-        self.temp_dir.join("ssh-control").display().to_string()
+        self.ssh_control_path.clone()
     }
+}
+
+/// ControlPath の長さ制限を避けるため、短いランダム名を `/tmp` 直下に作る。
+fn random_ssh_control_path() -> Result<String> {
+    let mut bytes = [0_u8; 4];
+    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(format!("/tmp/df-{:08x}.s", u32::from_ne_bytes(bytes)))
 }
 
 /// CI ログでホスト側の進行位置を追えるよう、手順の境界を固定形式で出す。
