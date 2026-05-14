@@ -70,6 +70,7 @@ in
       jujutsu
       mariadb.client
       postgresql_14
+      pkgconf
       ripgrep
       skaffold
       sqlite-interactive

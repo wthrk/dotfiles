@@ -5,7 +5,17 @@
 { pkgs, ... }:
 {
   environment.systemPackages = with pkgs; [
+    discord
+    firefox-bin
+    google-chrome
+    iterm2
+    kmonad
     mas
+    notion-app
+    slack
+    vscode
+    xquartz
+    zed-editor
   ];
 
   fonts.packages = with pkgs; [

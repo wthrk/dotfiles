@@ -15,7 +15,10 @@
     };
 
     casks = [
+      "azookey"
+      "codex-app"
       "font-cica"
+      "ghostty"
     ];
 
     masApps = { };
