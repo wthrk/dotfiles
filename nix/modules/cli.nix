@@ -51,6 +51,8 @@ in
       android-tools
       awscli2
       automake
+      age
+      bitwarden-cli
       cmake
       colima
       coreutils
@@ -62,6 +64,7 @@ in
       fd
       ffmpeg
       glow
+      gnupg
       graphviz
       helix
       jq
@@ -70,6 +73,8 @@ in
       jujutsu
       mariadb.client
       postgresql_14
+      pass
+      pinentry_mac
       pkgconf
       ripgrep
       skaffold
@@ -80,6 +85,7 @@ in
       uv
       vips
       wget
+      yubikey-manager
       yt-dlp
       zsh-completions
       chromedriver
