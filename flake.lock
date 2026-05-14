@@ -57,7 +57,7 @@
         "type": "github"
       }
     },
-    "homebrew-bicep": {
+    "homebrew-azure-bicep": {
       "flake": false,
       "locked": {
         "lastModified": 1775158240,
@@ -73,7 +73,23 @@
         "type": "github"
       }
     },
-    "homebrew-cask": {
+    "homebrew-hashicorp-tap": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776258526,
+        "narHash": "sha256-cggpDch1UlazYPo+Uj1iKMtU8Dz78xlAJ7ezFcMGGOU=",
+        "owner": "hashicorp",
+        "repo": "homebrew-tap",
+        "rev": "b3736797deda743a2bd6a9c013ceddce47ae4743",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hashicorp",
+        "repo": "homebrew-tap",
+        "type": "github"
+      }
+    },
+    "homebrew-homebrew-cask": {
       "flake": false,
       "locked": {
         "lastModified": 1776595637,
@@ -89,7 +105,7 @@
         "type": "github"
       }
     },
-    "homebrew-core": {
+    "homebrew-homebrew-core": {
       "flake": false,
       "locked": {
         "lastModified": 1776600113,
@@ -102,22 +118,6 @@
       "original": {
         "owner": "homebrew",
         "repo": "homebrew-core",
-        "type": "github"
-      }
-    },
-    "homebrew-hashicorp": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1776258526,
-        "narHash": "sha256-cggpDch1UlazYPo+Uj1iKMtU8Dz78xlAJ7ezFcMGGOU=",
-        "owner": "hashicorp",
-        "repo": "homebrew-tap",
-        "rev": "b3736797deda743a2bd6a9c013ceddce47ae4743",
-        "type": "github"
-      },
-      "original": {
-        "owner": "hashicorp",
-        "repo": "homebrew-tap",
         "type": "github"
       }
     },
@@ -159,10 +159,10 @@
       "inputs": {
         "darwin": "darwin",
         "home-manager": "home-manager",
-        "homebrew-bicep": "homebrew-bicep",
-        "homebrew-cask": "homebrew-cask",
-        "homebrew-core": "homebrew-core",
-        "homebrew-hashicorp": "homebrew-hashicorp",
+        "homebrew-azure-bicep": "homebrew-azure-bicep",
+        "homebrew-hashicorp-tap": "homebrew-hashicorp-tap",
+        "homebrew-homebrew-cask": "homebrew-homebrew-cask",
+        "homebrew-homebrew-core": "homebrew-homebrew-core",
         "nix-homebrew": "nix-homebrew",
         "nixpkgs": "nixpkgs"
       }
