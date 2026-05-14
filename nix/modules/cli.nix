@@ -74,7 +74,6 @@ in
       mariadb.client
       postgresql_14
       pass
-      pinentry_mac
       pkgconf
       ripgrep
       skaffold
@@ -94,6 +93,9 @@ in
     ]
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
     ++ lib.optional (gcloudPackage != null) gcloudPackage
+    ++ lib.optionals pkgs.stdenv.isDarwin [
+      pinentry_mac
+    ]
     ++ optionalPkg [ "tart" ]
     ++ optionalPkg [ "temurin-bin" ]
     ++ optionalPkg [
