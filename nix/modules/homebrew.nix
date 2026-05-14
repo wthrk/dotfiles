@@ -16,9 +16,11 @@
 
     casks = [
       "azookey"
+      "bitwarden"
       "codex-app"
       "font-cica"
       "ghostty"
+      "yubico-authenticator"
     ];
 
     masApps = { };
