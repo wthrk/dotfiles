@@ -2,21 +2,11 @@
 #
 # `taps` は brew bundle が参照する tap 名、`casks` は switch 時に導入する cask、
 # `onActivation` は switch 時の更新と cleanup の扱いを指定する。
+{ homebrewTaps, ... }:
 {
   homebrew = {
     enable = true;
-    taps = [
-      "homebrew/homebrew-core"
-      "homebrew/homebrew-cask"
-      {
-        name = "azure/bicep";
-        clone_target = "https://github.com/Azure/homebrew-bicep";
-      }
-      {
-        name = "hashicorp/tap";
-        clone_target = "https://github.com/hashicorp/homebrew-tap";
-      }
-    ];
+    taps = map (tap: tap.brewTap) homebrewTaps;
 
     onActivation = {
       autoUpdate = false;
@@ -25,7 +15,10 @@
     };
 
     casks = [
+      "azookey"
+      "codex-app"
       "font-cica"
+      "ghostty"
     ];
 
     masApps = { };

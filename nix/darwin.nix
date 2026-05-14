@@ -1,11 +1,12 @@
 # nix-darwin で管理するホスト設定の最上位モジュール。
 #
 # 引数 `user` は `system.primaryUser`、Home Manager の対象ユーザー、nix-homebrew の所有者に使う。
-# 引数 `host` は `networking.hostName` に使う。`root` は設定ファイルのリンク元、`inputs` は
-# Homebrew tap と Home Manager / nix-homebrew 連携に使う。
+# 引数 `host` は `networking.hostName` に使う。`root` は設定ファイルのリンク元、`inputs` と
+# `homebrewTaps` は Home Manager / nix-homebrew 連携と pin 済み tap の生成に使う。
 # 評価結果は Nix 設定、macOS defaults、Homebrew、launch agent、Home Manager をまとめた
 # `darwinConfigurations.<host>` 用の構成になる。
 {
+  homebrewTaps,
   inputs,
   lib,
   root,
@@ -63,12 +64,12 @@
     inherit user;
     autoMigrate = true;
     mutableTaps = false;
-    taps = {
-      "homebrew/homebrew-core" = inputs.homebrew-core;
-      "homebrew/homebrew-cask" = inputs.homebrew-cask;
-      "azure/homebrew-bicep" = inputs.homebrew-bicep;
-      "hashicorp/homebrew-tap" = inputs.homebrew-hashicorp;
-    };
+    taps = builtins.listToAttrs (
+      map (tap: {
+        name = tap.nixHomebrewName;
+        value = tap.source;
+      }) homebrewTaps
+    );
   };
 
   system.stateVersion = 6;
