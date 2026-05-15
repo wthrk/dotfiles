@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -19,28 +19,37 @@ use zeroize::Zeroizing;
 use super::storage::{self, SecretName};
 use crate::Result;
 
+/// signal handler から通常の error path へ中断を伝える process-global flag。
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+/// signal handler の登録状態を process 全体で 1 組に保つ。
+static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
+    LazyLock::new(|| Mutex::new(InterruptRegistration::default()));
 const MEMORY_LOCK_PROBE_LEN: usize = 256 * 1024;
 
 /// 平文 secret を保持する期間だけ有効な signal registration。
-pub(crate) struct InterruptGuard {
-    sigint: SigId,
-    sigterm: SigId,
+pub(crate) struct InterruptGuard;
+
+/// ネストした `InterruptGuard` が共有する signal handler 登録状態。
+#[derive(Default)]
+struct InterruptRegistration {
+    /// 現在生存している guard 数。0 から 1 へ変わる時だけ handler を登録する。
+    depth: usize,
+    /// SIGINT handler の登録 ID。最外側 guard の Drop で解除する。
+    sigint: Option<SigId>,
+    /// SIGTERM handler の登録 ID。最外側 guard の Drop で解除する。
+    sigterm: Option<SigId>,
 }
 
 impl InterruptGuard {
     /// SIGINT/SIGTERM は即時終了させず記録し、Drop による unlock/zeroize 後に失敗させる。
     pub(crate) fn install() -> Result<Self> {
-        INTERRUPTED.store(false, Ordering::SeqCst);
-        let sigint = register_interrupt(signal::SIGINT)?;
-        let sigterm = match register_interrupt(signal::SIGTERM) {
-            Ok(sigterm) => sigterm,
-            Err(err) => {
-                signal_hook::low_level::unregister(sigint);
-                return Err(err);
-            }
-        };
-        Ok(Self { sigint, sigterm })
+        let mut registration = interrupt_registration();
+        if registration.depth == 0 {
+            INTERRUPTED.store(false, Ordering::SeqCst);
+            registration.install_handlers()?;
+        }
+        registration.depth += 1;
+        Ok(Self)
     }
 
     /// 保護区間の外側へ出る前に、遅延していた SIGINT/SIGTERM を command failure にする。
@@ -62,9 +71,50 @@ impl InterruptGuard {
 
 impl Drop for InterruptGuard {
     fn drop(&mut self) {
-        signal_hook::low_level::unregister(self.sigint);
-        signal_hook::low_level::unregister(self.sigterm);
-        INTERRUPTED.store(false, Ordering::SeqCst);
+        let mut registration = interrupt_registration();
+        if registration.depth == 0 {
+            return;
+        }
+        registration.depth -= 1;
+        if registration.depth == 0 {
+            registration.unregister_handlers();
+            INTERRUPTED.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// panic 後も最後の guard が signal handler を解除できるよう、poisoned lock から state を回収する。
+fn interrupt_registration() -> MutexGuard<'static, InterruptRegistration> {
+    match INTERRUPT_REGISTRATION.lock() {
+        Ok(registration) => registration,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+impl InterruptRegistration {
+    /// signal handler は process global なので、最外側 guard だけが登録と解除を担う。
+    fn install_handlers(&mut self) -> Result<()> {
+        let sigint = register_interrupt(signal::SIGINT)?;
+        let sigterm = match register_interrupt(signal::SIGTERM) {
+            Ok(sigterm) => sigterm,
+            Err(err) => {
+                signal_hook::low_level::unregister(sigint);
+                return Err(err);
+            }
+        };
+        self.sigint = Some(sigint);
+        self.sigterm = Some(sigterm);
+        Ok(())
+    }
+
+    /// 登録済み handler ID を消費し、次の最外側 guard が再登録できる状態に戻す。
+    fn unregister_handlers(&mut self) {
+        if let Some(sigint) = self.sigint.take() {
+            signal_hook::low_level::unregister(sigint);
+        }
+        if let Some(sigterm) = self.sigterm.take() {
+            signal_hook::low_level::unregister(sigterm);
+        }
     }
 }
 
