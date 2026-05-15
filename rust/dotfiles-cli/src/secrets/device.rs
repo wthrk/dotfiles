@@ -91,8 +91,9 @@ fn open_device_until(
 /// `enroll-spare` で primary の 3 secret を読み終えた後に spare を開く。
 ///
 /// `--spare-serial` があればその YubiKey を直接開く。対話実行で serial 指定がなければ、
-/// primary を抜いて spare を挿すための Enter 待ちを挟む。非対話実行では差し替え
-/// prompt を出せないため、`--spare-serial` を必須にする。
+/// まず接続済み候補から選択させる。選択結果が primary と同じ serial の場合だけ、
+/// 差し替えを促して Enter 待ちに進む。非対話実行では差し替え prompt を出せないため、
+/// `--spare-serial` を必須にする。
 pub(crate) fn open_spare_device(
     spare_serial: Option<u32>,
     primary_serial: Option<u32>,
@@ -113,18 +114,14 @@ pub(crate) fn open_spare_device(
         if Instant::now() >= deadline {
             bail!("timed out waiting for spare YubiKey");
         }
-
-        if primary_serial.is_some() {
-            eprintln!("Insert the spare YubiKey, then press Enter.");
-            wait_for_enter(deadline, interrupt)?;
-        }
-
         let device = open_device_until(None, deadline, interrupt)?;
         if ensure_spare_serial(&device, primary_serial).is_ok() {
             return Ok(device);
         }
 
         eprintln!("The selected YubiKey is the primary; replace it with the spare.");
+        eprintln!("Insert the spare YubiKey, then press Enter.");
+        wait_for_enter(deadline, interrupt)?;
     }
 }
 
@@ -268,6 +265,10 @@ impl SecretDevice for YubikeySecretDevice {
             bail!("YubiKey PIN retries are exhausted");
         }
         Ok(())
+    }
+
+    fn check_management_auth_preconditions(&mut self) -> Result<()> {
+        self.authenticate_management()
     }
 
     fn generate_key(&mut self) -> Result<()> {

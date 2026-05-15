@@ -130,7 +130,7 @@ token 入力前に local storage の復号可能性を確認し、更新不能�
 
 ### `dotfiles secrets verify-yubikey`
 
-挿さっている YubiKey が復旧入口として使えるか確認する。1 本だけ接続されている場合はその YubiKey を対象にし、複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` で対象を明示する。secret 本文は stdout / stderr に出力しない。復旧前の全確認には `--all` を使う。
+挿さっている YubiKey が復旧入口として使えるか確認する。1 本だけ接続されている場合はその YubiKey を対象にし、複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` で対象を明示する。secret 本文は stdout / stderr に出力しない。
 
 確認項目:
 

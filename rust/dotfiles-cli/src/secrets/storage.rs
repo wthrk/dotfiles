@@ -160,6 +160,8 @@ pub trait SecretDevice {
     fn key_exists(&mut self) -> Result<bool>;
     /// secret storage 用 PIV key 生成に必要な device 固有条件を確認する。
     fn check_key_generation_preconditions(&mut self) -> Result<()>;
+    /// setup で永続書き込みを始める前に management key 認証可否を確認する。
+    fn check_management_auth_preconditions(&mut self) -> Result<()>;
     /// secret storage 用 PIV key を device 内で生成する。
     fn generate_key(&mut self) -> Result<()>;
     /// PIV data object を読み取る。存在しない場合は `None` を返す。
@@ -271,6 +273,7 @@ pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
 /// secret 入力前に、setup が永続書き込みを開始できる device 状態か確認する。
 pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
     device.check_key_generation_preconditions()?;
+    device.check_management_auth_preconditions()?;
 
     if device.key_exists()? {
         if let Ok(manifest) = read_manifest(device) {
@@ -610,6 +613,7 @@ mod tests {
     struct FakeDevice {
         serial: u32,
         key_exists: bool,
+        management_auth_ok: bool,
         objects: BTreeMap<u32, Zeroizing<Vec<u8>>>,
     }
 
@@ -618,6 +622,7 @@ mod tests {
             Self {
                 serial,
                 key_exists: false,
+                management_auth_ok: true,
                 objects: BTreeMap::new(),
             }
         }
@@ -634,6 +639,14 @@ mod tests {
 
         fn check_key_generation_preconditions(&mut self) -> Result<()> {
             Ok(())
+        }
+
+        fn check_management_auth_preconditions(&mut self) -> Result<()> {
+            if self.management_auth_ok {
+                Ok(())
+            } else {
+                bail!("management key authentication failed");
+            }
         }
 
         fn generate_key(&mut self) -> Result<()> {
@@ -734,6 +747,78 @@ mod tests {
     }
 
     #[test]
+    fn secret_blob_rejects_wrapped_key_length_larger_than_payload() -> Result<()> {
+        let blob = SecretBlob {
+            name: SecretName::BwEmail,
+            nonce: [1; NONCE_LEN],
+            wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+            ciphertext: Zeroizing::new(vec![5, 6]),
+            tag: [7; TAG_LEN],
+        };
+        let mut encoded = blob.encode()?;
+        let offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
+        encoded[offset..offset + 2].copy_from_slice(&(4u16).to_be_bytes());
+
+        assert!(SecretBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_wrapped_key_length_smaller_than_payload() -> Result<()> {
+        let blob = SecretBlob {
+            name: SecretName::BwEmail,
+            nonce: [1; NONCE_LEN],
+            wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+            ciphertext: Zeroizing::new(vec![5, 6]),
+            tag: [7; TAG_LEN],
+        };
+        let mut encoded = blob.encode()?;
+        let offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
+        encoded[offset..offset + 2].copy_from_slice(&(2u16).to_be_bytes());
+
+        assert!(SecretBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_ciphertext_length_larger_than_payload() -> Result<()> {
+        let blob = SecretBlob {
+            name: SecretName::BwEmail,
+            nonce: [1; NONCE_LEN],
+            wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+            ciphertext: Zeroizing::new(vec![5, 6]),
+            tag: [7; TAG_LEN],
+        };
+        let mut encoded = blob.encode()?;
+        let wrapped_len_offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
+        let ciphertext_len_offset = wrapped_len_offset + 2 + blob.wrapped_key.len();
+        encoded[ciphertext_len_offset..ciphertext_len_offset + 4]
+            .copy_from_slice(&(3u32).to_be_bytes());
+
+        assert!(SecretBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_ciphertext_length_smaller_than_payload() -> Result<()> {
+        let blob = SecretBlob {
+            name: SecretName::BwEmail,
+            nonce: [1; NONCE_LEN],
+            wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+            ciphertext: Zeroizing::new(vec![5, 6]),
+            tag: [7; TAG_LEN],
+        };
+        let mut encoded = blob.encode()?;
+        let wrapped_len_offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
+        let ciphertext_len_offset = wrapped_len_offset + 2 + blob.wrapped_key.len();
+        encoded[ciphertext_len_offset..ciphertext_len_offset + 4]
+            .copy_from_slice(&(1u32).to_be_bytes());
+
+        assert!(SecretBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn setup_stops_when_storage_object_exists() {
         let mut device = FakeDevice::new(1234);
         device
@@ -749,6 +834,15 @@ mod tests {
         device.key_exists = true;
 
         assert!(setup(&mut device).is_err());
+    }
+
+    #[test]
+    fn setup_stops_when_management_auth_precondition_fails() {
+        let mut device = FakeDevice::new(1234);
+        device.management_auth_ok = false;
+
+        assert!(setup(&mut device).is_err());
+        assert!(!device.key_exists);
     }
 
     #[test]
@@ -840,6 +934,49 @@ mod tests {
             summary.checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Ok)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
+        let mut source = FakeDevice::new(1234);
+        setup(&mut source)?;
+        put(&mut source, SecretName::BwEmail, b"user@example.com", false)?;
+
+        let mut replay = FakeDevice::new(5678);
+        replay.key_exists = true;
+        replay.objects.insert(
+            MANIFEST_OBJECT_ID,
+            source
+                .read_object(MANIFEST_OBJECT_ID)?
+                .context("missing manifest")?,
+        );
+        replay.objects.insert(
+            SecretName::BwEmail.object_id(),
+            source
+                .read_object(SecretName::BwEmail.object_id())?
+                .context("missing secret blob")?,
+        );
+
+        assert!(get(&mut replay, SecretName::BwEmail).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn decryption_fails_when_secret_blob_name_and_object_are_swapped() -> Result<()> {
+        let mut device = FakeDevice::new(1234);
+        setup(&mut device)?;
+        put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
+
+        let email_blob = device
+            .read_object(SecretName::BwEmail.object_id())?
+            .context("missing bw-email blob")?;
+        let mut tampered = SecretBlob::decode(&email_blob)?;
+        tampered.name = SecretName::BwPassword;
+        let tampered_encoded = tampered.encode()?;
+        device.write_object(SecretName::BwPassword.object_id(), &tampered_encoded)?;
+
+        assert!(get(&mut device, SecretName::BwPassword).is_err());
         Ok(())
     }
 }

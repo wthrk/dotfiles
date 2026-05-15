@@ -286,7 +286,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
   "serial": 12345678,
   "checks": {
     "local_storage": "ok",
-    "bws": "ok",
+    "bws": "skipped",
     "bw_login": "skipped"
   }
 }
