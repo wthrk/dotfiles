@@ -12,7 +12,10 @@ use crate::Result;
 
 use super::{
     storage::{BootstrapSecrets, SecretBytes},
-    util::{protection::ProtectedInputBuffer, terminal},
+    util::{
+        protection::{ProtectedInputBuffer, SecretMemoryGuard},
+        terminal,
+    },
 };
 
 /// prompt/stdin/JSON field から受け取った secret を、保護対象に渡す直前まで保持する入力型。
@@ -64,12 +67,15 @@ pub(crate) fn read_yubikey_pin() -> Result<Zeroizing<Vec<u8>>> {
 }
 
 /// `--stdin` の単一 secret は行区切りの末尾 newline だけを除いて保存する。
-pub(super) fn read_one_stdin_secret(limit: usize) -> Result<SecretInputBuffer> {
+pub(super) fn read_one_stdin_secret(
+    limit: usize,
+    memory: Option<&SecretMemoryGuard>,
+) -> Result<SecretInputBuffer> {
     let input = ProtectedInputBuffer::read_from(
         io::stdin(),
         limit,
         "stdin secret input is too large",
-        None,
+        memory,
     )?;
     Ok(input.into())
 }

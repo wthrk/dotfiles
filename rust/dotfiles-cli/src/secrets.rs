@@ -18,7 +18,9 @@ mod util;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, bail};
-use application::{ProtectedBootstrapSecrets, ProtectedSecret, protect_secret_input};
+use application::{
+    ProtectedBootstrapSecrets, ProtectedSecret, protect_secret, protect_secret_input,
+};
 use clap::{Args, Subcommand, ValueEnum};
 use device::{open_device, open_spare_device};
 use input::{
@@ -26,7 +28,7 @@ use input::{
     read_visible_secret_line, read_yubikey_pin, reject_secret_stdout_terminal,
     write_secret_to_stdout,
 };
-use storage::{BootstrapSecrets, SecretDevice, SecretName, YubikeyRole};
+use storage::{SecretDevice, SecretName, YubikeyRole};
 use util::{
     protection::{InterruptGuard, ProtectedInputBuffer, SecretMemoryGuard},
     terminal::{
@@ -246,7 +248,7 @@ fn read_protected_secret_for_put(
     memory: &SecretMemoryGuard,
 ) -> Result<ProtectedSecret> {
     let secret = if stdin {
-        read_one_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN)?
+        read_one_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, Some(memory))?
     } else {
         read_hidden_secret(&format!("{}: ", name))?
     };
@@ -341,23 +343,30 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     Ok(())
 }
 
-/// primary 復号結果は bootstrap secret 集合として保護済みにしてから登録処理へ渡す。
+/// primary 復号結果は secret ごとに保護済みに移してから次の復号へ進む。
 fn read_protected_bootstrap_from_device<D: SecretDevice>(
     primary: &mut D,
     interrupt_guard: &InterruptGuard,
     memory: &SecretMemoryGuard,
 ) -> Result<ProtectedBootstrapSecrets> {
-    ProtectedBootstrapSecrets::protect(
-        BootstrapSecrets {
-            bw_email: interrupt_guard
-                .run_yubikey_operation(|| storage::get(primary, SecretName::BwEmail))?,
-            bw_password: interrupt_guard
-                .run_yubikey_operation(|| storage::get(primary, SecretName::BwPassword))?,
-            bws_access_token: interrupt_guard
-                .run_yubikey_operation(|| storage::get(primary, SecretName::BwsAccessToken))?,
-        },
+    let bw_email = protect_secret(
+        interrupt_guard.run_yubikey_operation(|| storage::get(primary, SecretName::BwEmail))?,
         memory,
-    )
+    )?;
+    let bw_password = protect_secret(
+        interrupt_guard.run_yubikey_operation(|| storage::get(primary, SecretName::BwPassword))?,
+        memory,
+    )?;
+    let bws_access_token = protect_secret(
+        interrupt_guard
+            .run_yubikey_operation(|| storage::get(primary, SecretName::BwsAccessToken))?,
+        memory,
+    )?;
+    Ok(ProtectedBootstrapSecrets::new(
+        bw_email,
+        bw_password,
+        bws_access_token,
+    ))
 }
 
 /// BWS token を 1 本または対話で選んだ複数本の YubiKey に保存する。
@@ -609,6 +618,8 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::*;
+    use crate::secrets::storage::BootstrapSecrets;
+
     struct FakeDevice {
         serial: u32,
         key_exists: bool,

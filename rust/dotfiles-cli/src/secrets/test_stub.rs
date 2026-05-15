@@ -85,7 +85,7 @@ impl SecretsBoundary for TestSecretsBoundary {
         memory: &SecretMemoryGuard,
     ) -> Result<ProtectedSecret> {
         let secret = if stdin {
-            read_one_stdin_secret(super::MAX_SINGLE_STDIN_SECRET_LEN)?
+            read_one_stdin_secret(super::MAX_SINGLE_STDIN_SECRET_LEN, Some(memory))?
         } else {
             read_hidden_secret(&format!("{}: ", name))?
         };
