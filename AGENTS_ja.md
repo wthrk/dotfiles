@@ -120,6 +120,9 @@ Runtime checks には、dev shell に含まれる Tart/Packer/Ansible などの 
 - 非自明なモジュール、スクリプト、コマンド入口、検証フローを定義するファイルには、そのファイルの役割を説明するファイル冒頭コメントまたは言語標準のドキュメントコメントが必要です。
 - リポジトリ由来の説明コメントは、既存の Rust、Nix、shell のコメントスタイルに合わせて日本語で書いてください。周囲のファイルがすでに英語で書かれている場合、upstream からコピーしたテキストの場合、または外部形式が要求する場合だけ英語を使ってください。
 - コメントは、永続的な設計意図、不変条件、制約、または非自明な運用上の文脈を説明しなければなりません。コードの言い換え、個人的な作業メモ、曖昧な TODO/FIXME を書かないでください。
+- 低価値なコメントは patch に入る前に抑制してください。helper が「X する」とだけ言う、関数名を言い換える、通常の制御フローを説明する、または具体的な不変条件を示さずに「normal error path」「safe path」「cleanup」「properly」「handle」「temporary」のような曖昧な表現を使うコメントは低価値です。
+- コメントが必要な場合は、不変条件を直接書いてください。code が守るべき lifecycle boundary、external contract、signal-safety requirement、wire-format rule、security property、user interaction constraint を具体名で示します。そのどれも示せないコメントは、示せるまで書き換えてください。
+- コメントを追加または編集する patch を完了する前に、`git diff` の `+//`、`+///`、`+#` など追加コメント行をすべて確認してください。上の規則に合わないコメントは、検証を走らせる前に削除または書き換えてください。
 - 挙動を変更するときは、同じ patch で近くのコメントも更新してください。誤解を招くコメントは、古い履歴として inline に残さず削除してください。
 - 公開コマンドの flow と非自明な private helper は、具体的な操作タイミング、必要な入力、interaction boundary を言語標準のドキュメントコメントで説明してください。これらの詳細を code、prompt、test からの推測にだけ残さないでください。
 - 外部ドキュメントに書かれた wire format、lifecycle step、または運用制約を code が実装するときは、code comment は document-backed invariant に絞り、手順全体を comment だけに閉じ込めず該当ドキュメントを更新してください。
@@ -128,11 +131,14 @@ Rust:
 
 - ワークスペースの edition は Rust 2024 です。
 - 公開 CLI のロジックは `rust/dotfiles-cli`、リポジトリ保守コマンドは `rust/xtask`、共通ヘルパーは `rust/dotfiles-core` に置いてください。
+- module boundary は責務に合わせてください。command dispatcher の file に terminal IO、process/signal policy、platform adapter、wire-format parsing、cryptographic helper、それらすべての test を蓄積させないでください。混在した file に挙動を足す前に、focused sibling modules へ分割してください。
+- review では、file が無関係な concern を持っている場合、または patch が既存の責務混在を悪化させる場合に、責務混在として明示的に指摘してください。有用な review comment は、移すべき concern と target module boundary を具体名で示します。
 - リポジトリの result alias を通じて `anyhow` を使い、panic ではなく context を付けて伝播してください。
 - loop が item の filter や transform だけを行う場合は、mutable な list を作って push するのではなく、iterator adapter と `collect` を優先してください。
 - `match collection.len()` で分岐しないでください。slice pattern、`is_empty`、または domain-specific state を使ってください。
-- できるだけ immutable かつ宣言的に構築してください。`mut` は API が mutation を要求する場合、または in-place mutation が式による構築より明確な場合だけ導入してください。
+- できるだけ immutable かつ宣言的に構築してください。`mut` は API が mutation を要求する場合、または in-place mutation が式による構築より明確な場合だけ導入してください。Rust 変更を完了する前に、`git diff` で追加された `let mut` と `mut` parameter を確認し、mutable API call が必要とするもの、または避けられない in-place state だけを残してください。
 - role、state、mode、kind などの閉じた集合を raw string で渡さないでください。enum または newtype として表現し、serde/display 変換は IO 境界だけで行ってください。
+- リポジトリ由来の Rust では `unsafe` block や unsafe function を書かないでください。signal handling、file descriptor、FFI に近い挙動、platform integration でも、safe な standard-library API または safe crate を使ってください。Rust 変更を完了する前に、`git diff` で `unsafe` token が追加されていないことを確認してください。
 - test を含めて `unwrap` や `expect` を使わないでください。test は `Result` を返して `?` を使うか、明示的な error/success condition を assert してください。
 - warnings を clean に保ってください。check suite は warnings を errors として扱います。
 

@@ -120,6 +120,9 @@ Comments:
 - Files that define non-trivial modules, scripts, command entry points, or validation flows must have a file-level comment or language-native documentation comment explaining the file's role.
 - Write repository-authored explanatory comments in Japanese, matching the existing Rust, Nix, and shell comment style. Use English only when the surrounding file is already English, the text is copied from upstream, or an external format requires it.
 - Comments must explain durable project intent, invariants, constraints, or non-obvious operational context. Do not restate the code, write personal work notes, or leave vague TODO/FIXME comments.
+- Suppress low-value comments before they enter the patch. A comment is low-value if it only says that a helper "does X", repeats the function name, describes ordinary control flow, or uses vague phrases such as "normal error path", "safe path", "cleanup", "properly", "handle", or "temporary" without naming the concrete invariant being protected.
+- When a comment is needed, write the invariant directly: name the lifecycle boundary, external contract, signal-safety requirement, wire-format rule, security property, or user interaction constraint that the code must preserve. If the comment cannot identify one of those, rewrite it until it can.
+- Before finalizing a patch that adds or edits comments, review every added `+//`, `+///`, `+#`, or equivalent comment line in `git diff`. Remove or rewrite any comment that fails the rules above before running validation.
 - When changing behavior, update nearby comments in the same patch. Delete misleading comments instead of preserving stale history inline.
 - Public command flows and non-obvious private helpers must document concrete operation timing, required inputs, and interaction boundaries in language-native documentation comments. Do not leave these details implied only by code, prompts, or tests.
 - When code implements an externally documented wire format, lifecycle step, or operational constraint, keep the code comment focused on the document-backed invariant and update the document instead of encoding the full procedure only in comments.
@@ -128,11 +131,14 @@ Rust:
 
 - Workspace edition is Rust 2024.
 - Keep public CLI logic in `rust/dotfiles-cli`, repository maintenance commands in `rust/xtask`, and shared helpers in `rust/dotfiles-core`.
+- Keep module boundaries aligned with responsibility. Do not let a command dispatcher file accumulate terminal IO, process/signal policy, platform adapters, wire-format parsing, cryptographic helpers, and tests for all of them. Split mixed files into focused sibling modules before adding more behavior.
+- During review, flag responsibility mixing explicitly when a file owns unrelated concerns or when a patch makes an existing mixed file worse. A useful review comment must name the concerns that should move and the target module boundary.
 - Use `anyhow` through repository result aliases; propagate context instead of panicking.
 - Prefer iterator adapters and `collect` over creating a mutable list and pushing in a loop when the loop only filters or transforms items.
 - Do not branch with `match collection.len()`. Use slice patterns, `is_empty`, or domain-specific state instead.
-- Prefer immutable, declarative construction. Introduce `mut` only when an API requires mutation or when in-place mutation is materially clearer than expression-based construction.
+- Prefer immutable, declarative construction. Introduce `mut` only when an API requires mutation or when in-place mutation is materially clearer than expression-based construction. Before finalizing Rust changes, inspect added `let mut` and `mut` parameters in `git diff`; keep only the ones required by a mutable API call or by unavoidable in-place state.
 - Do not pass roles, states, modes, kinds, or other closed sets as raw strings. Model them as enums or newtypes, and use serde/display conversion only at IO boundaries.
+- Do not write `unsafe` blocks or unsafe functions in repository-authored Rust. Use safe standard-library APIs or safe crates instead, including for signal handling, file descriptors, FFI-adjacent behavior, and platform integration. Before finalizing Rust changes, verify that `git diff` adds no `unsafe` token.
 - Do not use `unwrap` or `expect`, including in tests. Return `Result` from tests and use `?`, or assert on explicit error/success conditions.
 - Keep warnings clean. The check suite treats warnings as errors.
 
