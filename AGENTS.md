@@ -19,6 +19,12 @@ When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and Gi
 - When editing `AGENTS.md`, update `AGENTS_ja.md` in the same change.
 - During review, verify that `AGENTS_ja.md` remains semantically equivalent to `AGENTS.md`.
 
+## Communication
+
+- Respond to the user in Japanese unless the user explicitly requests another language.
+- Write code review findings, PR summaries, and validation notes in Japanese.
+- Keep technical identifiers, command names, file paths, commit types, and quoted upstream text in their original language when clearer.
+
 ## Setup
 
 Use the flake dev shell for repository work:
@@ -75,7 +81,7 @@ For code, Nix, shell, workflow, bootstrap, or generated-file changes, run the de
 cargo xtask check
 ```
 
-Always run validation commands from the flake dev shell.
+Always run validation commands from the flake dev shell. If the current shell is not already the flake dev shell, invoke validation through `direnv exec .`, for example `direnv exec . cargo test ...` or `direnv exec . cargo xtask check static`. Do not run validation commands directly from the ambient shell and then treat the result as repository validation.
 
 Default checks run static validation only. They do not run zsh startup/behavior checks or Tart VM runtime integration.
 
@@ -110,12 +116,19 @@ Comments:
 - Write repository-authored explanatory comments in Japanese, matching the existing Rust, Nix, and shell comment style. Use English only when the surrounding file is already English, the text is copied from upstream, or an external format requires it.
 - Comments must explain durable project intent, invariants, constraints, or non-obvious operational context. Do not restate the code, write personal work notes, or leave vague TODO/FIXME comments.
 - When changing behavior, update nearby comments in the same patch. Delete misleading comments instead of preserving stale history inline.
+- Public command flows and non-obvious private helpers must document concrete operation timing, required inputs, and interaction boundaries in language-native documentation comments. Do not leave these details implied only by code, prompts, or tests.
+- When code implements an externally documented wire format, lifecycle step, or operational constraint, keep the code comment focused on the document-backed invariant and update the document instead of encoding the full procedure only in comments.
 
 Rust:
 
 - Workspace edition is Rust 2024.
 - Keep public CLI logic in `rust/dotfiles-cli`, repository maintenance commands in `rust/xtask`, and shared helpers in `rust/dotfiles-core`.
 - Use `anyhow` through repository result aliases; propagate context instead of panicking.
+- Prefer iterator adapters and `collect` over creating a mutable list and pushing in a loop when the loop only filters or transforms items.
+- Do not branch with `match collection.len()`. Use slice patterns, `is_empty`, or domain-specific state instead.
+- Prefer immutable, declarative construction. Introduce `mut` only when an API requires mutation or when in-place mutation is materially clearer than expression-based construction.
+- Do not pass roles, states, modes, kinds, or other closed sets as raw strings. Model them as enums or newtypes, and use serde/display conversion only at IO boundaries.
+- Do not use `unwrap` or `expect`, including in tests. Return `Result` from tests and use `?`, or assert on explicit error/success conditions.
 - Keep warnings clean. The check suite treats warnings as errors.
 
 Nix:

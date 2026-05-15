@@ -19,6 +19,12 @@
 - `AGENTS.md` を編集するときは、同じ変更で `AGENTS_ja.md` も更新してください。
 - レビュー時は、`AGENTS_ja.md` が `AGENTS.md` と意味的に等価なままか確認してください。
 
+## コミュニケーション
+
+- ユーザーが明示的に別の言語を求めない限り、日本語で応答してください。
+- コードレビューの指摘、PR 要約、検証結果は日本語で書いてください。
+- 技術識別子、コマンド名、ファイルパス、コミット種別、upstream からの引用は、明確な場合は元の言語のままにしてください。
+
 ## セットアップ
 
 リポジトリ作業には flake の dev shell を使ってください:
@@ -75,7 +81,7 @@ code、Nix、shell、workflow、bootstrap、generated file に関わる変更で
 cargo xtask check
 ```
 
-検証コマンドは常に flake dev shell から実行してください。
+検証コマンドは常に flake dev shell から実行してください。現在の shell が flake dev shell ではない場合は、`direnv exec . cargo test ...` や `direnv exec . cargo xtask check static` のように `direnv exec .` 経由で検証を実行してください。周囲の shell から検証コマンドを直接実行し、その結果をリポジトリの検証結果として扱わないでください。
 
 既定の検証は静的検証のみを実行します。zsh の起動・挙動検証や、Tart VM を使う runtime integration は実行しません。
 
@@ -110,12 +116,19 @@ Runtime checks には、dev shell に含まれる Tart/Packer/Ansible などの 
 - リポジトリ由来の説明コメントは、既存の Rust、Nix、shell のコメントスタイルに合わせて日本語で書いてください。周囲のファイルがすでに英語で書かれている場合、upstream からコピーしたテキストの場合、または外部形式が要求する場合だけ英語を使ってください。
 - コメントは、永続的な設計意図、不変条件、制約、または非自明な運用上の文脈を説明しなければなりません。コードの言い換え、個人的な作業メモ、曖昧な TODO/FIXME を書かないでください。
 - 挙動を変更するときは、同じ patch で近くのコメントも更新してください。誤解を招くコメントは、古い履歴として inline に残さず削除してください。
+- 公開コマンドの flow と非自明な private helper は、具体的な操作タイミング、必要な入力、interaction boundary を言語標準のドキュメントコメントで説明してください。これらの詳細を code、prompt、test からの推測にだけ残さないでください。
+- 外部ドキュメントに書かれた wire format、lifecycle step、または運用制約を code が実装するときは、code comment は document-backed invariant に絞り、手順全体を comment だけに閉じ込めず該当ドキュメントを更新してください。
 
 Rust:
 
 - ワークスペースの edition は Rust 2024 です。
 - 公開 CLI のロジックは `rust/dotfiles-cli`、リポジトリ保守コマンドは `rust/xtask`、共通ヘルパーは `rust/dotfiles-core` に置いてください。
 - リポジトリの result alias を通じて `anyhow` を使い、panic ではなく context を付けて伝播してください。
+- loop が item の filter や transform だけを行う場合は、mutable な list を作って push するのではなく、iterator adapter と `collect` を優先してください。
+- `match collection.len()` で分岐しないでください。slice pattern、`is_empty`、または domain-specific state を使ってください。
+- できるだけ immutable かつ宣言的に構築してください。`mut` は API が mutation を要求する場合、または in-place mutation が式による構築より明確な場合だけ導入してください。
+- role、state、mode、kind などの閉じた集合を raw string で渡さないでください。enum または newtype として表現し、serde/display 変換は IO 境界だけで行ってください。
+- test を含めて `unwrap` や `expect` を使わないでください。test は `Result` を返して `?` を使うか、明示的な error/success condition を assert してください。
 - warnings を clean に保ってください。check suite は warnings を errors として扱います。
 
 Nix:

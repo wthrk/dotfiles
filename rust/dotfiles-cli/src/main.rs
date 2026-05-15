@@ -10,6 +10,7 @@ mod environment;
 mod init;
 mod local_flake;
 mod process;
+mod secrets;
 mod switch;
 mod update;
 

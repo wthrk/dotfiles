@@ -49,16 +49,17 @@ pub(crate) fn sudo_user_args(
     program: &str,
     args: &[&str],
 ) -> Vec<String> {
-    let mut result = vec![
+    [
         "-H".to_string(),
         "-u".to_string(),
         user.to_string(),
         "env".to_string(),
-    ];
-    result.extend(envs.iter().map(|(key, value)| format!("{key}={value}")));
-    result.push(program.to_string());
-    result.extend(args.iter().map(|arg| (*arg).to_string()));
-    result
+    ]
+    .into_iter()
+    .chain(envs.iter().map(|(key, value)| format!("{key}={value}")))
+    .chain(std::iter::once(program.to_string()))
+    .chain(args.iter().map(|arg| (*arg).to_string()))
+    .collect()
 }
 
 /// ログに出した表示と同じ `Command` を実行し、失敗時は終了状態をそのまま報告する。

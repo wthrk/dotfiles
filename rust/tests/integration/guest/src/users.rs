@@ -16,7 +16,7 @@ pub(crate) fn ensure_local_user(
         return Ok(());
     }
 
-    let mut args = vec![
+    let args = [
         "sysadminctl",
         "-addUser",
         user,
@@ -26,9 +26,9 @@ pub(crate) fn ensure_local_user(
         password,
         "-shell",
         "/bin/zsh",
-    ];
-    if admin {
-        args.push("-admin");
-    }
+    ]
+    .into_iter()
+    .chain(admin.then_some("-admin"))
+    .collect::<Vec<_>>();
     runner.run("sudo", &args)
 }

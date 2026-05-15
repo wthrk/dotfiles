@@ -62,6 +62,21 @@ nix run github:wthrk/dotfiles -- init --user alice --host macbook --system aarch
 nix run github:wthrk/dotfiles -- init --source github:wthrk/dotfiles --force
 ```
 
+## 秘密情報復旧
+
+新規マシン復旧用の bootstrap secret は YubiKey PIV 領域に保存します。通常は primary 登録と spare 登録だけを使います。
+
+```sh
+dotfiles secrets yubikey enroll-primary
+dotfiles secrets yubikey enroll-spare
+dotfiles secrets verify-yubikey
+dotfiles secrets yubikey rotate-bws-token
+```
+
+`enroll-spare` は primary YubiKey から `bw-email`、`bw-password`、`bws-access-token` を読み出した直後に spare YubiKey を選択します。1 本ずつしか接続できない場合は、この時点で primary を抜いて spare を挿し、表示された prompt で Enter を押します。非対話実行では `--primary-serial` と `--spare-serial` を指定します。
+
+`setup`、`put`、`get` は低水準コマンドです。直接使う場合でも secret 本文は CLI 引数では受け取らず、prompt または stdin から読みます。
+
 ## ロールバック
 
 `nix-darwin`:

@@ -335,13 +335,18 @@ impl ScenarioRunner {
     }
 
     fn bootstrap_args(&self, args: &[&str]) -> Vec<String> {
-        let mut result = Vec::new();
-        if self.env.pass_source_to_bootstrap {
-            result.push("--source".to_string());
-            result.push(self.dotfiles_source_str().to_string());
-        }
-        result.extend(args.iter().map(|arg| (*arg).to_string()));
-        result
+        self.env
+            .pass_source_to_bootstrap
+            .then(|| {
+                [
+                    "--source".to_string(),
+                    self.dotfiles_source_str().to_string(),
+                ]
+            })
+            .into_iter()
+            .flatten()
+            .chain(args.iter().map(|arg| (*arg).to_string()))
+            .collect()
     }
 
     fn run_bootstrap(&self, args: &[&str]) -> Result<()> {
@@ -372,13 +377,21 @@ impl ScenarioRunner {
         program: &str,
         args: &[&str],
     ) -> Result<()> {
-        let mut envs = envs.to_vec();
-        if let Some(source_ref) = &self.env.bootstrap_source_ref_env {
-            envs.push((
-                "DOTFILES_BOOTSTRAP_SOURCE_REF".to_string(),
-                source_ref.clone(),
-            ));
-        }
+        let envs = envs
+            .iter()
+            .cloned()
+            .chain(
+                self.env
+                    .bootstrap_source_ref_env
+                    .as_ref()
+                    .map(|source_ref| {
+                        (
+                            "DOTFILES_BOOTSTRAP_SOURCE_REF".to_string(),
+                            source_ref.clone(),
+                        )
+                    }),
+            )
+            .collect::<Vec<_>>();
         run_with_env(
             Some(&self.env),
             "sudo",
