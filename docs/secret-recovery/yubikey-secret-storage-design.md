@@ -264,7 +264,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bws-access-token` だけを更新する。`--force` は不要にし、このコマンド自体が rotate intent を表す。更新後は local verify と BWS 接続確認を実行する。BWS client API が未実装の段階では local verify までを実装し、#13 で BWS 接続確認を接続する。
+指定 YubiKey の `bws-access-token` だけを更新する。`--force` は不要にし、このコマンド自体が rotate intent を表す。対話実行では新しい token を一度だけ読み取り、primary と spare を順に選択して更新する。非対話実行では `--serial` で 1 本だけを更新する。更新後は local verify と BWS 接続確認を実行する。BWS client API が未実装の段階では local verify までを実装し、#13 で BWS 接続確認を接続する。
 
 ### `dotfiles secrets verify-yubikey`
 

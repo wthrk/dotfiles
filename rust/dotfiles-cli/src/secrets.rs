@@ -161,7 +161,7 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
         YubikeyCommand::Get(options) => {
             let mut device = open_device(options.serial)?;
             let secret = storage::get(&mut device, options.name)?;
-            io::stdout().write_all(&secret)?;
+            write_secret_to_stdout(&secret)?;
             Ok(())
         }
         YubikeyCommand::EnrollPrimary(options) => {
@@ -172,13 +172,7 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
             Ok(())
         }
         YubikeyCommand::EnrollSpare(options) => run_enroll_spare(options),
-        YubikeyCommand::RotateBwsToken(options) => {
-            let mut device = open_device(options.serial)?;
-            let token = read_hidden("bws-access-token: ")?;
-            let summary = storage::rotate_bws_token(&mut device, &token)?;
-            println!("{}", serde_json::to_string_pretty(&summary)?);
-            Ok(())
-        }
+        YubikeyCommand::RotateBwsToken(options) => run_rotate_bws_token(options),
     }
 }
 
@@ -201,23 +195,52 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
         let mut primary = open_device(options.primary_serial)?;
         let primary_serial = primary.serial();
         let secrets = BootstrapSecrets {
-            bw_email: protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwEmail)?),
-            bw_password: protect_zeroizing_secret(storage::get(
-                &mut primary,
+            bw_email: memory.lock_secret(
+                SecretName::BwEmail,
+                protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwEmail)?),
+            )?,
+            bw_password: memory.lock_secret(
                 SecretName::BwPassword,
-            )?),
-            bws_access_token: protect_zeroizing_secret(storage::get(
-                &mut primary,
+                protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwPassword)?),
+            )?,
+            bws_access_token: memory.lock_secret(
                 SecretName::BwsAccessToken,
-            )?),
+                protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwsAccessToken)?),
+            )?,
         };
-        (memory.lock_bootstrap(secrets)?, Some(primary_serial))
+        (secrets, Some(primary_serial))
     };
 
     let mut spare = open_spare_device(options.spare_serial, primary_serial)?;
 
     let summary = storage::enroll(&mut spare, YubikeyRole::Spare, &bootstrap)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+/// BWS token を 1 本または対話で選んだ複数本の YubiKey に保存する。
+///
+/// 非対話実行では `--serial` で 1 本だけを更新する。対話実行で serial 指定がない場合は
+/// token を一度だけ受け取り、利用者が終了を選ぶまで YubiKey 選択と更新を繰り返す。
+fn run_rotate_bws_token(options: SerialOptions) -> Result<()> {
+    if let Some(serial) = options.serial {
+        let mut device = open_device(Some(serial))?;
+        let token = read_hidden("bws-access-token: ")?;
+        let summary = storage::rotate_bws_token(&mut device, &token)?;
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
+
+    let mut device = open_device(None)?;
+    let token = read_hidden("bws-access-token: ")?;
+    let mut summaries = vec![storage::rotate_bws_token(&mut device, &token)?];
+
+    while prompt_yes_no("Update another YubiKey? [y/N] ")? {
+        let mut device = open_device(None)?;
+        summaries.push(storage::rotate_bws_token(&mut device, &token)?);
+    }
+
+    println!("{}", serde_json::to_string_pretty(&summaries)?);
     Ok(())
 }
 
@@ -298,11 +321,11 @@ fn read_bootstrap_secrets(
         return lock_bootstrap_secrets(secrets, memory);
     }
 
-    let mut email = String::new();
+    let mut email = Zeroizing::new(String::new());
     eprint!("bw-email: ");
     io::stderr().flush()?;
     io::stdin().read_line(&mut email)?;
-    let mut email = email.into_bytes();
+    let mut email = std::mem::take(&mut *email).into_bytes();
     trim_one_trailing_newline(&mut email);
 
     let secrets = BootstrapSecrets {
@@ -338,10 +361,10 @@ fn read_hidden(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
 
 /// stdin 全体を 1 secret として読み取り、末尾改行だけを正規化する。
 fn read_one_stdin_secret() -> Result<Zeroizing<Vec<u8>>> {
-    let mut input = Vec::default();
+    let mut input = Zeroizing::new(Vec::default());
     io::stdin().read_to_end(&mut input)?;
     trim_one_trailing_newline(&mut input);
-    Ok(Zeroizing::new(input))
+    Ok(input)
 }
 
 /// stdin 由来の secret から terminal 入力で混入しやすい末尾改行を 1 つだけ除く。
@@ -384,15 +407,27 @@ impl SecretMemoryGuard {
 
     /// bootstrap secret 一式を memory lock 対象に登録する。
     fn lock_bootstrap(&mut self, secrets: BootstrapSecrets) -> Result<BootstrapSecrets> {
-        let bw_email = lock_secret_memory(&secrets.bw_email)?;
-        let bw_password = lock_secret_memory(&secrets.bw_password)?;
-        let bws_access_token = lock_secret_memory(&secrets.bws_access_token)?;
+        Ok(BootstrapSecrets {
+            bw_email: self.lock_secret(SecretName::BwEmail, secrets.bw_email)?,
+            bw_password: self.lock_secret(SecretName::BwPassword, secrets.bw_password)?,
+            bws_access_token: self
+                .lock_secret(SecretName::BwsAccessToken, secrets.bws_access_token)?,
+        })
+    }
 
-        self.bw_email = bw_email;
-        self.bw_password = bw_password;
-        self.bws_access_token = bws_access_token;
-
-        Ok(secrets)
+    /// 1 secret を受け取った直後に memory lock 対象へ入れる。
+    fn lock_secret(
+        &mut self,
+        name: SecretName,
+        secret: storage::SecretBytes,
+    ) -> Result<storage::SecretBytes> {
+        let guard = lock_secret_memory(&secret)?;
+        match name {
+            SecretName::BwEmail => self.bw_email = guard,
+            SecretName::BwPassword => self.bw_password = guard,
+            SecretName::BwsAccessToken => self.bws_access_token = guard,
+        }
+        Ok(secret)
     }
 }
 
@@ -481,6 +516,26 @@ fn wait_for_enter() -> Result<()> {
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
+    Ok(())
+}
+
+/// 対話 command の継続確認を読む。
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    if !io::stdin().is_terminal() {
+        return Ok(false);
+    }
+
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+/// 低水準 `get` command の唯一の出力として secret bytes を標準出力へ渡す。
+fn write_secret_to_stdout(secret: &[u8]) -> Result<()> {
+    let mut input = secret;
+    io::copy(&mut input, &mut io::stdout())?;
     Ok(())
 }
 
@@ -706,7 +761,6 @@ fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     #[test]
     fn trims_one_trailing_newline() {
@@ -720,16 +774,6 @@ mod tests {
     }
 
     #[test]
-    fn verify_summary_keeps_external_checks_skipped_until_later_issues() {
-        let checks = BTreeMap::from([
-            (CheckName::LocalStorage, CheckStatus::Ok),
-            (CheckName::Bws, CheckStatus::Skipped),
-            (CheckName::BwLogin, CheckStatus::Skipped),
-        ]);
-        assert_eq!(checks.get(&CheckName::Bws), Some(&CheckStatus::Skipped));
-    }
-
-    #[test]
     fn oaep_unpad_round_trips_rsa_oaep_sha256() -> Result<()> {
         let message = b"test-content-encryption-key";
         let encoded = oaep_pad_sha256_for_test(message, 256);
@@ -740,8 +784,9 @@ mod tests {
 
     #[test]
     fn oaep_unpad_rejects_invalid_padding() {
-        let mut encoded = vec![0u8; 256];
-        encoded[0] = 1;
+        let encoded: Vec<u8> = std::iter::once(1)
+            .chain(std::iter::repeat_n(0u8, 255))
+            .collect();
         assert!(oaep_unpad_sha256(&encoded, 256).is_err());
     }
 
@@ -750,11 +795,14 @@ mod tests {
         let ps_len = key_len - message.len() - (2 * hash_len) - 2;
         let label_hash = Sha256::digest([]);
 
-        let mut db = Vec::with_capacity(key_len - hash_len - 1);
-        db.extend_from_slice(label_hash.as_slice());
-        db.extend(std::iter::repeat_n(0u8, ps_len));
-        db.push(1);
-        db.extend_from_slice(message);
+        let db: Vec<u8> = label_hash
+            .as_slice()
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n(0u8, ps_len))
+            .chain(std::iter::once(1))
+            .chain(message.iter().copied())
+            .collect();
 
         let seed = [0x42u8; 32];
         let db_mask = mgf1_sha256(&seed, key_len - hash_len - 1);
@@ -771,10 +819,9 @@ mod tests {
             .map(|(left, right)| left ^ right)
             .collect();
 
-        let mut encoded = Vec::with_capacity(key_len);
-        encoded.push(0);
-        encoded.extend_from_slice(&masked_seed);
-        encoded.extend_from_slice(&masked_db);
-        encoded
+        std::iter::once(0)
+            .chain(masked_seed)
+            .chain(masked_db)
+            .collect()
     }
 }

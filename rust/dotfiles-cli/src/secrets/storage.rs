@@ -240,6 +240,11 @@ pub fn secret_bytes(value: Vec<u8>) -> SecretBytes {
 /// 既存 key または対象 object が存在する場合は、上書きせず停止する。
 pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
     if device.key_exists()? {
+        if let Ok(manifest) = read_manifest(device) {
+            manifest.validate_expected()?;
+            bail!("YubiKey secret storage is already initialized");
+        }
+
         bail!("YubiKey PIV slot {KEY_SLOT} already contains a key");
     }
 
@@ -700,6 +705,18 @@ mod tests {
                 .checks
                 .get(&CheckName::LocalStorage),
             Some(&CheckStatus::Ok)
+        );
+        assert_eq!(
+            verify_local_storage(&mut device)?
+                .checks
+                .get(&CheckName::Bws),
+            Some(&CheckStatus::Skipped)
+        );
+        assert_eq!(
+            verify_local_storage(&mut device)?
+                .checks
+                .get(&CheckName::BwLogin),
+            Some(&CheckStatus::Skipped)
         );
         Ok(())
     }
