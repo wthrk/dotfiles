@@ -133,15 +133,16 @@ impl SecretMemoryGuard {
         Ok(Self)
     }
 
-    /// 空でない byte 範囲を持つ値は memory lock に成功した場合だけ返す。
+    /// lock 後に中断を検出した場合も、値の Drop が unlock より先に走る所有形へ移す。
     pub(crate) fn protect_value<T>(
         &self,
         value: T,
         expose: impl FnOnce(&T) -> &[u8],
     ) -> Result<Protected<T>> {
         let lock = lock_secret_memory(expose(&value))?;
+        let protected = Protected { value, _lock: lock };
         interrupted_result()?;
-        Ok(Protected { value, _lock: lock })
+        Ok(protected)
     }
 
     /// JSON parse 前の入力 buffer は storage 型へ移る前から同じ mlock policy で守る。
