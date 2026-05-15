@@ -80,31 +80,39 @@ pub(crate) fn read_bootstrap_secrets(
         return secrets;
     }
 
-    let mut memory = memory;
-    let mut email = Zeroizing::new(String::new());
-    eprint!("bw-email: ");
-    io::stderr().flush()?;
-    io::stdin().read_line(&mut email)?;
-    let mut email = std::mem::take(&mut *email).into_bytes();
-    trim_one_trailing_newline(&mut email);
+    let email_bytes = read_visible_secret_line("bw-email: ")?;
+
+    if let Some(memory) = memory {
+        return Ok(BootstrapSecrets {
+            bw_email: memory
+                .lock_secret(SecretName::BwEmail, storage::secret_bytes(email_bytes))?,
+            bw_password: memory.lock_secret(
+                SecretName::BwPassword,
+                protect_zeroizing_secret(read_hidden("bw-password: ")?),
+            )?,
+            bws_access_token: memory.lock_secret(
+                SecretName::BwsAccessToken,
+                protect_zeroizing_secret(read_hidden("bws-access-token: ")?),
+            )?,
+        });
+    }
 
     Ok(BootstrapSecrets {
-        bw_email: lock_bootstrap_secret(
-            &mut memory,
-            SecretName::BwEmail,
-            storage::secret_bytes(email),
-        )?,
-        bw_password: lock_bootstrap_secret(
-            &mut memory,
-            SecretName::BwPassword,
-            protect_zeroizing_secret(read_hidden("bw-password: ")?),
-        )?,
-        bws_access_token: lock_bootstrap_secret(
-            &mut memory,
-            SecretName::BwsAccessToken,
-            protect_zeroizing_secret(read_hidden("bws-access-token: ")?),
-        )?,
+        bw_email: storage::secret_bytes(email_bytes),
+        bw_password: protect_zeroizing_secret(read_hidden("bw-password: ")?),
+        bws_access_token: protect_zeroizing_secret(read_hidden("bws-access-token: ")?),
     })
+}
+
+/// 表示入力の secret line は読み取り直後に bytes 化し、末尾改行だけを保存対象から外す。
+fn read_visible_secret_line(prompt: &str) -> Result<Vec<u8>> {
+    let mut line = Zeroizing::new(String::new());
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    io::stdin().read_line(&mut line)?;
+    let mut bytes = std::mem::take(&mut *line).into_bytes();
+    trim_one_trailing_newline(&mut bytes);
+    Ok(bytes)
 }
 
 /// hidden prompt の戻り値は、CLI 側へ渡す前から zeroize 対象の bytes として保持する。
@@ -197,8 +205,7 @@ pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
     if io::stdout().is_terminal() {
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
-    let mut stdout = io::stdout().lock();
-    stdout.write_all(bytes)?;
+    io::stdout().lock().write_all(bytes)?;
     Ok(())
 }
 
@@ -212,33 +219,16 @@ fn lock_bootstrap_secrets(
     secrets: BootstrapSecrets,
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
-    let mut memory = memory;
-    Ok(BootstrapSecrets {
-        bw_email: lock_bootstrap_secret(&mut memory, SecretName::BwEmail, secrets.bw_email)?,
-        bw_password: lock_bootstrap_secret(
-            &mut memory,
-            SecretName::BwPassword,
-            secrets.bw_password,
-        )?,
-        bws_access_token: lock_bootstrap_secret(
-            &mut memory,
-            SecretName::BwsAccessToken,
-            secrets.bws_access_token,
-        )?,
-    })
-}
-
-/// prompt 経路では 1 secret を受け取るたびに lock し、後続入力中の平文保持を短くする。
-fn lock_bootstrap_secret(
-    memory: &mut Option<&mut SecretMemoryGuard>,
-    name: SecretName,
-    secret: storage::SecretBytes,
-) -> Result<storage::SecretBytes> {
-    if let Some(memory) = memory.as_deref_mut() {
-        return memory.lock_secret(name, secret);
+    if let Some(memory) = memory {
+        return Ok(BootstrapSecrets {
+            bw_email: memory.lock_secret(SecretName::BwEmail, secrets.bw_email)?,
+            bw_password: memory.lock_secret(SecretName::BwPassword, secrets.bw_password)?,
+            bws_access_token: memory
+                .lock_secret(SecretName::BwsAccessToken, secrets.bws_access_token)?,
+        });
     }
 
-    Ok(secret)
+    Ok(secrets)
 }
 
 /// `--stdin-json` の構造検証は serde に任せ、decode 後の field 文字列を zeroize 対象にする。
