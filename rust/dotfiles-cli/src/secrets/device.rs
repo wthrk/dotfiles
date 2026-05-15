@@ -1,7 +1,8 @@
-//! 実機 YubiKey を secret storage の device trait に接続する adapter。
+//! `dotfiles secrets` の device 層。
 //!
-//! PIV PIN verification は 1 command 内で 1 回だけ行い、management key authentication
-//! は setup / object write の直前に閉じ込める。
+//! この層は実機 YubiKey discovery と PIV adapter を `storage::SecretDevice` へ接続する。
+//! 端末選択 UI、process 保護の interrupt guard、OAEP 補助、storage trait だけに依存し、
+//! command orchestration や bootstrap 入力 schema には依存しない。
 
 use std::{
     thread,
@@ -19,13 +20,15 @@ use yubikey::{
 use zeroize::Zeroizing;
 
 use super::{
-    input::{
-        SPARE_SERIAL_NONINTERACTIVE_ERROR, SPARE_WAIT_TIMEOUT_ERROR, YubikeySelectionCandidate,
-        select_yubikey_candidate, stdin_is_terminal, wait_for_spare_replacement,
+    storage::{PivObjectId, SecretDevice},
+    util::{
+        oaep::oaep_unpad_sha256,
+        protection::InterruptGuard,
+        terminal::{
+            SPARE_SERIAL_NONINTERACTIVE_ERROR, SPARE_WAIT_TIMEOUT_ERROR, YubikeySelectionCandidate,
+            select_yubikey_candidate, stdin_is_terminal, wait_for_spare_replacement,
+        },
     },
-    memory::InterruptGuard,
-    oaep::oaep_unpad_sha256,
-    storage::SecretDevice,
 };
 use crate::Result;
 
@@ -386,18 +389,18 @@ impl SecretDevice for YubikeySecretDevice {
         Ok(())
     }
 
-    fn read_object(&mut self, object_id: u32) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        match self.yubikey.fetch_object(object_id) {
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        match self.yubikey.fetch_object(object_id.value()) {
             Ok(value) => Ok(Some(value)),
             Err(yubikey::Error::NotFound) => Ok(None),
             Err(err) => Err(err.into()),
         }
     }
 
-    fn write_object(&mut self, object_id: u32, value: &[u8]) -> Result<()> {
+    fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()> {
         self.authenticate_management()?;
         let mut value = Zeroizing::new(value.to_vec());
-        self.yubikey.save_object(object_id, &mut value)?;
+        self.yubikey.save_object(object_id.value(), &mut value)?;
         Ok(())
     }
 

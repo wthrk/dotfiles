@@ -3,32 +3,72 @@
 //! wire format と暗号処理の詳細は他モジュールへ分離し、このファイルは呼び出し境界で
 //! 安定させたい型と識別子定義だけを保持する。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use anyhow::{Result as AnyhowResult, bail};
 use secrecy::{ExposeSecret, SecretBox};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use zeroize::Zeroizing;
 
 use crate::Result;
 
+/// secret blob の先頭で dotfiles wire format を識別する magic bytes。
 pub(crate) const BLOB_MAGIC: &[u8] = b"DOTFILES-YK-SECRET\0";
+/// 現在の binary blob format version。
 pub(crate) const BLOB_VERSION: u8 = 1;
+/// blob header に保存する AES-256-GCM algorithm id。
 pub(crate) const ALGORITHM_AES_256_GCM: u8 = 1;
+/// AES-GCM nonce の固定長。
 pub(crate) const NONCE_LEN: usize = 12;
+/// AES-GCM tag の固定長。
 pub(crate) const TAG_LEN: usize = 16;
+/// per-secret content encryption key の byte 長。
 pub(crate) const CONTENT_KEY_LEN: usize = 32;
 
-/// bootstrap secret 本文を明示的な expose が必要な型で保持する。
-pub type SecretBytes = SecretBox<Vec<u8>>;
+/// bootstrap secret 本文を明示的な expose が必要で、Drop 時に zeroize される型で保持する。
+pub struct SecretBytes(SecretBox<Zeroizing<Vec<u8>>>);
 
-/// manifest を保存する PIV data object ID。
-pub const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
+/// manifest と secret blob の PIV object ID 変換を storage model 側で一元化する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PivObjectId(u32);
+
+impl PivObjectId {
+    /// manifest を保存する PIV data object ID。
+    pub const MANIFEST: Self = Self(0x005f_ff16);
+
+    /// 実機 adapter が `yubikey` crate へ渡す境界でだけ raw object ID に戻す。
+    pub fn value(self) -> u32 {
+        self.0
+    }
+
+    /// AEAD additional data では PIV object ID を big-endian 4 bytes として固定する。
+    fn to_be_bytes(self) -> [u8; 4] {
+        self.0.to_be_bytes()
+    }
+}
+
+impl fmt::Display for PivObjectId {
+    /// user-facing error では PIV object ID を 8 桁 hex 表記で示す。
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "0x{:08X}", self.0)
+    }
+}
+
 /// manifest が dotfiles secret recovery 用であることを示す app id。
 pub const MANIFEST_APP: &str = "dotfiles.secret-recovery";
 /// bootstrap secret storage 専用の retired key management slot。
 pub const KEY_SLOT: &str = "82";
+
+/// YubiKey secret storage が予約する PIV data object ID 集合。
+pub struct StorageObjectIds;
+
+impl StorageObjectIds {
+    /// manifest と全 secret blob の object ID を列挙する。
+    pub fn iter() -> impl Iterator<Item = PivObjectId> {
+        std::iter::once(PivObjectId::MANIFEST).chain(SecretName::iter().map(SecretName::object_id))
+    }
+}
 
 /// YubiKey bootstrap に保存できる secret 名。
 #[derive(
@@ -72,12 +112,22 @@ impl SecretName {
     }
 
     /// secret ごとに割り当てた PIV data object ID。
-    pub fn object_id(self) -> u32 {
+    pub fn object_id(self) -> PivObjectId {
         match self {
-            Self::BwEmail => 0x005f_ff17,
-            Self::BwPassword => 0x005f_ff18,
-            Self::BwsAccessToken => 0x005f_ff19,
+            Self::BwEmail => PivObjectId(0x005f_ff17),
+            Self::BwPassword => PivObjectId(0x005f_ff18),
+            Self::BwsAccessToken => PivObjectId(0x005f_ff19),
         }
+    }
+
+    /// blob の入れ替え検出に使う AEAD additional data を構築する。
+    pub fn additional_data(self, serial: u32) -> Vec<u8> {
+        [
+            &[BLOB_VERSION, self.secret_id()][..],
+            &self.object_id().to_be_bytes(),
+            &serial.to_be_bytes(),
+        ]
+        .concat()
     }
 
     /// binary blob の secret id を型付き secret 名へ戻す。
@@ -169,9 +219,9 @@ pub trait SecretDevice {
     /// secret storage 用 PIV key を device 内で生成する。
     fn generate_key(&mut self) -> Result<()>;
     /// PIV data object を読み取る。存在しない場合は `None` を返す。
-    fn read_object(&mut self, object_id: u32) -> Result<Option<Zeroizing<Vec<u8>>>>;
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>>;
     /// PIV data object に bytes を保存する。
-    fn write_object(&mut self, object_id: u32, value: &[u8]) -> Result<()>;
+    fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()>;
     /// content encryption key を device の public key で wrap する。
     fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
     /// private key operation の前に、入力済み PIN で PIV session を検証する。
@@ -251,20 +301,56 @@ pub struct BootstrapSecrets {
     pub bws_access_token: SecretBytes,
 }
 
-impl BootstrapSecrets {
+/// 登録処理が参照する bootstrap secret 一式。
+pub trait BootstrapSecretSource {
     /// secret 名に対応する平文 bytes を返す。
-    pub fn get(&self, name: SecretName) -> &[u8] {
+    fn get(&self, name: SecretName) -> &[u8];
+}
+
+impl BootstrapSecretSource for BootstrapSecrets {
+    /// 未保護の bootstrap secret model は storage 内部の検証や fake でだけ平文参照を返す。
+    fn get(&self, name: SecretName) -> &[u8] {
         match name {
-            SecretName::BwEmail => self.bw_email.expose_secret(),
-            SecretName::BwPassword => self.bw_password.expose_secret(),
-            SecretName::BwsAccessToken => self.bws_access_token.expose_secret(),
+            SecretName::BwEmail => self.bw_email.as_slice(),
+            SecretName::BwPassword => self.bw_password.as_slice(),
+            SecretName::BwsAccessToken => self.bws_access_token.as_slice(),
         }
     }
 }
 
-/// raw bytes を bootstrap secret 用 wrapper に入れる。
-pub fn secret_bytes(value: Vec<u8>) -> SecretBytes {
-    SecretBox::new(Box::new(value))
+impl SecretBytes {
+    /// raw bytes は生成時点で zeroize 対象の所有 buffer に入れる。
+    pub fn new(value: Vec<u8>) -> Self {
+        Zeroizing::new(value).into()
+    }
+
+    /// 平文参照は暗号処理や検証の呼び出し境界だけに限定する。
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.expose_secret().as_ref()
+    }
+
+    /// 空 secret は storage 登録と検証の precondition で拒否する。
+    pub fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+}
+
+impl From<Zeroizing<Vec<u8>>> for SecretBytes {
+    /// zeroize 対象 buffer を `SecretBox` の inner value として保持し、Drop 時まで消去対象にする。
+    fn from(value: Zeroizing<Vec<u8>>) -> Self {
+        Self(SecretBox::new(Box::new(value)))
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretBytes {
+    /// JSON string field は decode 直後に `SecretBytes` へ移し、serde 側の一時文字列を zeroize する。
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Zeroizing::<String>::deserialize(deserializer)?;
+        Ok(Self::new(value.as_bytes().to_vec()))
+    }
 }
 
 impl SecretBlob {
@@ -277,24 +363,4 @@ impl SecretBlob {
     pub fn decode(input: &[u8]) -> AnyhowResult<Self> {
         crate::secrets::storage::wire::decode_secret_blob(input)
     }
-}
-
-/// blob の入れ替えを検出するため AEAD additional data を構築する。
-pub(crate) fn additional_data(serial: u32, name: SecretName) -> Vec<u8> {
-    [
-        &[BLOB_VERSION, name.secret_id()][..],
-        &name.object_id().to_be_bytes(),
-        &serial.to_be_bytes(),
-    ]
-    .concat()
-}
-
-/// PIV data object ID を manifest 表示用の 8 桁 hex 文字列にする。
-pub(crate) fn format_object_id(object_id: u32) -> String {
-    format!("0x{object_id:08X}")
-}
-
-/// manifest と全 secret blob の object ID を列挙する。
-pub(crate) fn storage_object_ids() -> impl Iterator<Item = u32> {
-    std::iter::once(MANIFEST_OBJECT_ID).chain(SecretName::iter().map(SecretName::object_id))
 }

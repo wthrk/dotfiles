@@ -16,6 +16,7 @@ use super::model::{
     ALGORITHM_AES_256_GCM, BLOB_MAGIC, BLOB_VERSION, NONCE_LEN, SecretBlob, SecretName, TAG_LEN,
 };
 
+/// `SecretBlob` を設計資料で固定した binary wire format へ serialize する。
 pub(crate) fn encode_secret_blob(blob: &SecretBlob) -> Result<Zeroizing<Vec<u8>>> {
     let wrapped_key_len = u16::try_from(blob.wrapped_key.len())
         .context("wrapped YubiKey content key is too large")?;
@@ -37,6 +38,7 @@ pub(crate) fn encode_secret_blob(blob: &SecretBlob) -> Result<Zeroizing<Vec<u8>>
     ))
 }
 
+/// PIV object から読んだ bytes を、余剰 bytes なしの `SecretBlob` として decode する。
 pub(crate) fn decode_secret_blob(input: &[u8]) -> Result<SecretBlob> {
     all_consuming(parse_secret_blob)
         .parse(input)

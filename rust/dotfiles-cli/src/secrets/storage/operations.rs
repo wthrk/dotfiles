@@ -3,22 +3,15 @@
 //! setup / put / get / enroll / verify の境界を維持し、manifest 整合性確認と呼び出し
 //! エラー契約をこのモジュールで一元管理する。
 
-use anyhow::{Context, bail};
-use zeroize::Zeroizing;
-
 use crate::Result;
+use anyhow::{Context, bail};
 
 use super::crypto::{decrypt_secret, encrypt_secret};
 use super::model::{
-    BootstrapSecrets, CheckName, CheckStatus, EnrollSummary, KEY_SLOT, MANIFEST_OBJECT_ID,
-    SecretBlob, SecretDevice, SecretManifest, SecretName, VerifySummary, YubikeyRole,
-    format_object_id, storage_object_ids,
+    BootstrapSecretSource, CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId,
+    SecretBlob, SecretBytes, SecretDevice, SecretManifest, SecretName, StorageObjectIds,
+    VerifySummary, YubikeyRole,
 };
-
-/// エラーメッセージと summary では serde/CLI と同じ kebab-case 名を使う。
-pub(crate) fn secret_name(name: SecretName) -> String {
-    name.to_string()
-}
 
 /// secret storage 用 PIV key と manifest を新規作成する。
 ///
@@ -43,12 +36,9 @@ pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> 
         bail!("YubiKey PIV slot {KEY_SLOT} already contains a key");
     }
 
-    for object_id in storage_object_ids() {
+    for object_id in StorageObjectIds::iter() {
         if device.read_object(object_id)?.is_some() {
-            bail!(
-                "YubiKey PIV object {} already exists",
-                format_object_id(object_id)
-            );
+            bail!("YubiKey PIV object {} already exists", object_id);
         }
     }
 
@@ -65,7 +55,7 @@ pub fn put<D: SecretDevice>(
     force: bool,
 ) -> Result<()> {
     if secret.is_empty() {
-        bail!("{} must not be empty", secret_name(name));
+        bail!("{} must not be empty", name);
     }
 
     check_put_target_writable(device, name, force)?;
@@ -93,10 +83,7 @@ fn check_put_target_writable<D: SecretDevice>(
     read_manifest(device)?.validate_expected()?;
     device.check_management_auth_preconditions()?;
     if device.read_object(name.object_id())?.is_some() && !force {
-        bail!(
-            "{} already exists; pass --force to replace it",
-            secret_name(name)
-        );
+        bail!("{} already exists; pass --force to replace it", name);
     }
     Ok(())
 }
@@ -104,18 +91,15 @@ fn check_put_target_writable<D: SecretDevice>(
 /// 1 secret を YubiKey object から読み出して復号する。
 ///
 /// blob 内の secret id と要求された secret 名が一致しない場合は拒否する。
-pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<Zeroizing<Vec<u8>>> {
+pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBytes> {
     read_manifest(device)?.validate_expected()?;
     let encoded = device
         .read_object(name.object_id())?
-        .with_context(|| format!("{} is not stored on this YubiKey", secret_name(name)))?;
-    let blob = SecretBlob::decode(&encoded)
-        .with_context(|| format!("failed to decode {}", secret_name(name)))?;
+        .with_context(|| format!("{} is not stored on this YubiKey", name))?;
+    let blob =
+        SecretBlob::decode(&encoded).with_context(|| format!("failed to decode {}", name))?;
     if blob.name != name {
-        bail!(
-            "YubiKey secret blob name does not match requested {}",
-            secret_name(name)
-        );
+        bail!("YubiKey secret blob name does not match requested {}", name);
     }
 
     decrypt_secret(device, &blob)
@@ -125,14 +109,14 @@ pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<Zeroizin
 ///
 /// setup、3 secret 保存、local verify をこの順に実行し、成功した確認項目だけを
 /// summary に含める。
-pub fn enroll<D: SecretDevice>(
+pub fn enroll<D: SecretDevice, S: BootstrapSecretSource>(
     device: &mut D,
     role: YubikeyRole,
-    secrets: &BootstrapSecrets,
+    secrets: &S,
 ) -> Result<EnrollSummary> {
     for name in SecretName::iter() {
         if secrets.get(name).is_empty() {
-            bail!("{} must not be empty", secret_name(name));
+            bail!("{} must not be empty", name);
         }
     }
 
@@ -179,7 +163,7 @@ pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySum
     for name in SecretName::iter() {
         let secret = get(device, name)?;
         if secret.is_empty() {
-            bail!("{} stored on this YubiKey is empty", secret_name(name));
+            bail!("{} stored on this YubiKey is empty", name);
         }
     }
 
@@ -200,13 +184,13 @@ pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySum
 /// manifest は secret blob より先に書き、以後の put/get/verify の storage sentinel にする。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
     let manifest = serde_json::to_vec(&SecretManifest::expected())?;
-    device.write_object(MANIFEST_OBJECT_ID, &manifest)
+    device.write_object(PivObjectId::MANIFEST, &manifest)
 }
 
 /// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
 fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
     let manifest = device
-        .read_object(MANIFEST_OBJECT_ID)?
+        .read_object(PivObjectId::MANIFEST)?
         .context("YubiKey secret manifest is missing")?;
     serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
 }

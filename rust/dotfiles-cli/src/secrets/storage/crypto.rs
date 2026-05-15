@@ -13,10 +13,10 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::Result;
 
 use super::model::{
-    CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName, TAG_LEN, additional_data,
+    CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretBytes, SecretDevice, SecretName, TAG_LEN,
 };
-use super::operations::secret_name;
 
+/// secret 本文を per-secret content key で暗号化し、その key を YubiKey public key で wrap する。
 pub(crate) fn encrypt_secret<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
@@ -32,7 +32,7 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
                 aes_gcm::Nonce::from_slice(&nonce),
                 Payload {
                     msg: secret,
-                    aad: &additional_data(device.serial(), name),
+                    aad: &name.additional_data(device.serial()),
                 },
             )
             .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?,
@@ -57,10 +57,11 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
     })
 }
 
+/// YubiKey private operation で content key を unwrap し、blob の AEAD を検証して復号する。
 pub(crate) fn decrypt_secret<D: SecretDevice>(
     device: &mut D,
     blob: &SecretBlob,
-) -> Result<Zeroizing<Vec<u8>>> {
+) -> Result<SecretBytes> {
     let mut content_key = device.unwrap_key(&blob.wrapped_key)?;
     if content_key.len() != CONTENT_KEY_LEN {
         bail!("unwrapped YubiKey content key has invalid length");
@@ -72,11 +73,11 @@ pub(crate) fn decrypt_secret<D: SecretDevice>(
     cipher
         .decrypt_in_place_detached(
             aes_gcm::Nonce::from_slice(&blob.nonce),
-            &additional_data(device.serial(), blob.name),
+            &blob.name.additional_data(device.serial()),
             plaintext.as_mut(),
             aes_gcm::Tag::from_slice(&blob.tag),
         )
-        .map_err(|_| anyhow::anyhow!("failed to decrypt {}", secret_name(blob.name)))?;
+        .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
     content_key.zeroize();
-    Ok(plaintext)
+    Ok(plaintext.into())
 }

@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use zeroize::Zeroizing;
 
-use super::model::{
-    CheckName, CheckStatus, MANIFEST_APP, MANIFEST_OBJECT_ID, SecretBlob, SecretManifest,
-};
+use super::model::{CheckName, CheckStatus, MANIFEST_APP, PivObjectId, SecretBlob, SecretManifest};
 use super::*;
 use crate::Result;
 
@@ -18,7 +16,7 @@ struct FakeDevice {
     management_auth_check_calls: usize,
     management_auth_write_calls: usize,
     write_fail_after: Option<usize>,
-    objects: BTreeMap<u32, Zeroizing<Vec<u8>>>,
+    objects: BTreeMap<PivObjectId, Zeroizing<Vec<u8>>>,
 }
 
 impl FakeDevice {
@@ -81,11 +79,11 @@ impl SecretDevice for FakeDevice {
         Ok(())
     }
 
-    fn read_object(&mut self, object_id: u32) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>> {
         Ok(self.objects.get(&object_id).cloned())
     }
 
-    fn write_object(&mut self, object_id: u32, value: &[u8]) -> Result<()> {
+    fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()> {
         self.authenticate_management_for_write()?;
         self.objects
             .insert(object_id, Zeroizing::new(value.to_vec()));
@@ -114,7 +112,7 @@ fn secret_name_rejects_unknown_name() {
 #[test]
 fn secret_names_match_design_object_mapping() {
     let objects: BTreeMap<_, _> = SecretName::iter()
-        .map(|name| (secret_name(name), model::format_object_id(name.object_id())))
+        .map(|name| (name.to_string(), name.object_id().to_string()))
         .collect();
 
     assert_eq!(
@@ -255,7 +253,7 @@ fn setup_stops_when_storage_object_exists() {
     let mut device = FakeDevice::new(1234);
     device
         .objects
-        .insert(MANIFEST_OBJECT_ID, Zeroizing::new(b"occupied".to_vec()));
+        .insert(PivObjectId::MANIFEST, Zeroizing::new(b"occupied".to_vec()));
 
     assert!(setup(&mut device).is_err());
 }
@@ -292,9 +290,9 @@ fn setup_uses_management_auth_for_precondition_and_manifest_write() -> Result<()
 fn enroll_rejects_empty_secret_before_setup() {
     let mut device = FakeDevice::new(1234);
     let secrets = BootstrapSecrets {
-        bw_email: secret_bytes(b"user@example.com".to_vec()),
-        bw_password: secret_bytes(Vec::new()),
-        bws_access_token: secret_bytes(b"token".to_vec()),
+        bw_email: SecretBytes::new(b"user@example.com".to_vec()),
+        bw_password: SecretBytes::new(Vec::new()),
+        bws_access_token: SecretBytes::new(b"token".to_vec()),
     };
 
     assert!(enroll(&mut device, YubikeyRole::Primary, &secrets).is_err());
@@ -413,9 +411,9 @@ fn enroll_fails_when_management_auth_breaks_during_secret_writes() {
     let mut device = FakeDevice::new(1234);
     device.set_write_fail_after(1);
     let secrets = BootstrapSecrets {
-        bw_email: secret_bytes(b"user@example.com".to_vec()),
-        bw_password: secret_bytes(b"password".to_vec()),
-        bws_access_token: secret_bytes(b"token".to_vec()),
+        bw_email: SecretBytes::new(b"user@example.com".to_vec()),
+        bw_password: SecretBytes::new(b"password".to_vec()),
+        bws_access_token: SecretBytes::new(b"token".to_vec()),
     };
 
     let result = enroll(&mut device, YubikeyRole::Primary, &secrets);
@@ -434,9 +432,9 @@ fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
     let mut replay = FakeDevice::new(5678);
     replay.key_exists = true;
     replay.objects.insert(
-        MANIFEST_OBJECT_ID,
+        PivObjectId::MANIFEST,
         source
-            .read_object(MANIFEST_OBJECT_ID)?
+            .read_object(PivObjectId::MANIFEST)?
             .context("missing manifest")?,
     );
     replay.objects.insert(
