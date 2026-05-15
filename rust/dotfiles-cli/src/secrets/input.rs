@@ -65,17 +65,19 @@ pub(crate) fn read_bootstrap_secrets(
         } else {
             None
         };
-        io::stdin()
+        let read_result = io::stdin()
             .take((MAX_BOOTSTRAP_JSON_LEN + 1) as u64)
-            .read_to_end(&mut input)?;
-        if input.len() > MAX_BOOTSTRAP_JSON_LEN {
-            bail!("bootstrap secret JSON input is too large");
-        }
-        let secrets = parse_bootstrap_secrets_json(&input, memory)
-            .context("failed to parse bootstrap secret JSON")?;
+            .read_to_end(&mut input);
+        let secrets = read_result.map_err(anyhow::Error::from).and_then(|_| {
+            if input.len() > MAX_BOOTSTRAP_JSON_LEN {
+                bail!("bootstrap secret JSON input is too large");
+            }
+            parse_bootstrap_secrets_json(&input, memory)
+                .context("failed to parse bootstrap secret JSON")
+        });
         input.zeroize();
         drop(input_lock);
-        return Ok(secrets);
+        return secrets;
     }
 
     let mut memory = memory;
@@ -83,8 +85,8 @@ pub(crate) fn read_bootstrap_secrets(
     eprint!("bw-email: ");
     io::stderr().flush()?;
     io::stdin().read_line(&mut email)?;
-    let email = std::mem::take(&mut *email).into_bytes();
-    let email = strip_one_trailing_newline(email);
+    let mut email = std::mem::take(&mut *email).into_bytes();
+    trim_one_trailing_newline(&mut email);
 
     Ok(BootstrapSecrets {
         bw_email: lock_bootstrap_secret(
@@ -191,11 +193,12 @@ pub(crate) fn select_yubikey_candidate(
 /// 低水準 `get` command の唯一の出力として secret bytes を pipe / redirect へ渡す。
 ///
 /// terminal へ直接出す実行は、平文 secret が画面や scrollback に残るため拒否する。
-pub(crate) fn write_secret_to_stdout(secret: &[u8]) -> Result<()> {
+pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
     if io::stdout().is_terminal() {
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
-    io::stdout().write_all(secret)?;
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(bytes)?;
     Ok(())
 }
 
@@ -283,19 +286,18 @@ fn read_one_stdin_secret() -> Result<Zeroizing<Vec<u8>>> {
         bail!("stdin secret input is too large");
     }
 
-    Ok(Zeroizing::new(strip_one_trailing_newline(input)))
+    trim_one_trailing_newline(&mut input);
+    Ok(Zeroizing::new(input))
 }
 
 /// stdin/prompt 由来の入力で混入しやすい末尾 newline 1 個だけを保存対象から外す。
-fn strip_one_trailing_newline(input: Vec<u8>) -> Vec<u8> {
-    if let Some(input) = input.strip_suffix(b"\r\n") {
-        return input.to_vec();
+fn trim_one_trailing_newline(input: &mut Vec<u8>) {
+    if input.ends_with(b"\n") {
+        input.pop();
+        if input.ends_with(b"\r") {
+            input.pop();
+        }
     }
-    if let Some(input) = input.strip_suffix(b"\n") {
-        return input.to_vec();
-    }
-
-    input
 }
 
 /// spare 差し替え待ちは端末 event API で読み、timeout 後に stdin 待ち thread を残さない。
@@ -387,13 +389,16 @@ mod tests {
 
     #[test]
     fn trims_one_trailing_newline() {
-        let value = strip_one_trailing_newline(b"secret\n".to_vec());
+        let mut value = b"secret\n".to_vec();
+        trim_one_trailing_newline(&mut value);
         assert_eq!(value, b"secret");
 
-        let value = strip_one_trailing_newline(b"secret\n\n".to_vec());
+        let mut value = b"secret\n\n".to_vec();
+        trim_one_trailing_newline(&mut value);
         assert_eq!(value, b"secret\n");
 
-        let value = strip_one_trailing_newline(b"secret\r\n".to_vec());
+        let mut value = b"secret\r\n".to_vec();
+        trim_one_trailing_newline(&mut value);
         assert_eq!(value, b"secret");
     }
 }

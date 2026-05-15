@@ -175,9 +175,9 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
             let interrupt_guard = InterruptGuard::install()?;
             let mut device = open_device(options.serial)?;
             verify_pin_from_input(&mut device)?;
-            let secret = interrupt_guard
+            let output_bytes = interrupt_guard
                 .run_yubikey_operation(|| storage::get(&mut device, options.name))?;
-            write_secret_to_stdout(&secret)?;
+            write_secret_to_stdout(&output_bytes)?;
             Ok(())
         }
         YubikeyCommand::EnrollPrimary(options) => {
