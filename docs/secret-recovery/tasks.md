@@ -84,6 +84,9 @@ Design PR で決めること:
 - YubiKey PIV 操作に使う Rust crate
 - secret 保存形式
 - 使用する PIV slot / object / identifier
+- スペア YubiKey に同じ bootstrap secret を事前配布する方法
+- 挿さっている YubiKey が必要な secret を保持し、外部 service へ接続できることを確認する test command の分担
+- 外部サービス側の spare key 登録と、この repository が自動化する範囲の境界
 - 既存 YubiKey 設定と衝突した場合の停止条件
 - `bw-password` / `bws-access-token` の name validation
 - secret 入力方法
@@ -98,6 +101,14 @@ Implementation PR の完了条件:
 - `dotfiles secrets yubikey setup` を実装する。
 - `dotfiles secrets yubikey put <name>` を実装する。
 - `dotfiles secrets yubikey get <name>` を実装する。
+- `dotfiles secrets yubikey enroll-primary` を実装する。
+- `dotfiles secrets yubikey enroll-spare` を実装する。
+- `dotfiles secrets yubikey rotate-bws-token` を実装する。
+- `dotfiles secrets verify-yubikey` の local storage check を実装する。
+- 通常の対話実行では、1 本だけ接続されている YubiKey を自動選択し、複数本接続時は一覧から選択させる。
+- 非対話実行では serial option で対象を明示させる。
+- primary と spare の両方に同じ bootstrap secret を登録できる。
+- `enroll-spare` は primary から secret を読み出し、spare に再暗号化して保存する。通常手順で secret の再入力を要求しない。
 - 許可された name だけを受け付ける。
 - secret 本文を CLI 引数、ログ、一時ファイルに残さない。
 - 同名 secret の上書きには明示 option を要求する。
@@ -106,6 +117,8 @@ Implementation PR の完了条件:
 検証観点:
 
 - 実機検証は read-only 確認と専用領域への書き込みに限定する。
+- `verify-yubikey` で `bw-password` と `bws-access-token` を復号できることを確認する。
+- `enroll-spare` だけで primary 読み出し、spare setup、spare への再暗号化保存、local verify が完了することを確認する。
 - reset / credential 削除 / 既存領域上書きを含む検証は行わない。
 - 既存の FIDO2 / OTP / OpenPGP / PIV credential に影響しないことを確認する。
 
@@ -132,11 +145,13 @@ Implementation PR の完了条件:
 - fake client を実装する。
 - unit test を追加する。
 - `restore-gpg` / `restore-pass` から使える API を提供する。
+- `dotfiles secrets verify-yubikey --check bws` から使える接続確認 API を提供する。
 - 復旧本線で `bw` CLI に依存しない。
 
 検証観点:
 
 - fake client で正常系、secret 不在、認証失敗を検証する。
+- `verify-yubikey --check bws` で `gpg-secret-key-backup` と `password-store-remote` を取得できることを検証する。
 - access token が不要な範囲に保持されないことを確認する。
 - SDK の error を利用者向けの context 付き error に変換する。
 
@@ -219,6 +234,8 @@ Design PR で決めること:
 
 - `bw` CLI を使う範囲を login / unlock に限定する明文化
 - YubiKey OTP 入力方法
+- Bitwarden account に primary と spare の YubiKey が登録済みであることの前提と validation 手順
+- `dotfiles secrets verify-yubikey --check bw-login --email <email>` の挙動
 - `BW_PASSWORD` / `BW_SESSION` の寿命
 - 出力形式
 
@@ -227,12 +244,15 @@ Implementation PR の完了条件:
 - `dotfiles secrets bw-login --email <email>` を実装する。
 - `bw login <email> --passwordenv BW_PASSWORD --method 3 --code <otp>` を実行する。
 - `bw unlock --passwordenv BW_PASSWORD --raw` を実行する。
+- `dotfiles secrets verify-yubikey --check bw-login --email <email>` を実装する。
 - `BW_PASSWORD` を保存しない。
+- primary と spare のどちらでも manual login validation を行える手順を文書化する。
 - unit test を追加する。
 
 検証観点:
 
 - manual Bitwarden OTP login validation を行う。
+- `verify-yubikey --check bw-login` が secret、password、session token を出力しないことを確認する。
 - `bw` CLI の利用範囲が login / unlock に限定されていることを確認する。
 - `BW_PASSWORD` がログ、引数、一時ファイル、永続環境変数に残らないことを確認する。
 - `BW_SESSION` の出力と寿命が設計どおりであることを確認する。
@@ -252,6 +272,7 @@ Design PR で決めること:
 - 初期セットアップ手順
 - 新規マシン復旧手順
 - validation checklist
+- `dotfiles secrets verify-yubikey --all --email <email>` を復旧前 check として組み込むかどうか
 - 失敗時の停止条件と再実行手順
 - `scripts/bootstrap.sh` と接続するかどうか
 
@@ -259,6 +280,7 @@ Implementation PR の完了条件:
 
 - 統合手順書を更新する。
 - 必要な接続実装を追加する。
+- `verify-yubikey --all` の end-to-end validation 結果を記録する。
 - restore validation 結果を記録する。
 - bootstrap behavior に変更がある場合は `README.md` を更新する。
 

@@ -9,6 +9,9 @@
 - YubiKey 上に専用の PIV 鍵を生成し、secret はローカルで envelope encryption した blob として custom PIV data object に保存する。
 - 専用 PIV 鍵は retired key management slot `82` を使う。
 - data object は PIV の undefined tag 範囲から `0x005FDF10` から `0x005FDF12` までを使う。
+- スペア YubiKey は同じ PIV 秘密鍵を複製せず、各 YubiKey で専用鍵を生成して同じ secret を個別に保存する。
+- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` / `get` を直接並べる手順にしない。
+- `dotfiles secrets verify-yubikey` で、挿さっている YubiKey が bootstrap secret を復号できることを確認する。
 - `dotfiles secrets yubikey setup` は既存の PIV credential や data object と衝突した場合に停止する。
 - `put` は同名 secret が存在する場合、`--force` が指定されていなければ停止する。
 - `get` は復旧コマンド内部の利用を主用途とし、直接実行時は stdout に secret 本文だけを出力する。
@@ -44,6 +47,48 @@ PIN policy は `Always`、touch policy は `Cached` とする。`get` 実行時�
 | `0x005FDF12` | `bws-access-token` encrypted blob |
 
 PIV data object は app 独自データを置けるが、読み出し自体は secret 保護境界にしない。そのため data object に置くのは暗号化済み blob と manifest だけにする。
+
+## スペア YubiKey
+
+この文書で扱うスペア YubiKey は、`dotfiles` 独自の bootstrap secret storage に限る。Bitwarden、GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F / OTP 登録は各サービス側で primary と spare を別々に登録する。OATH TOTP は同じ TOTP secret / QR code を primary と spare の両方に登録する。
+
+スペア YubiKey は事前登録を必須にする。primary YubiKey の紛失後に、primary だけに保存されていた `bw-password` や `bws-access-token` からスペアを後付け作成することはできない。
+
+同じ PIV 秘密鍵を複製して複数 YubiKey に入れる運用は採用しない。各 YubiKey で slot `82` に別々の non-exportable key を生成し、同じ secret をその YubiKey の public key で個別に wrap して保存する。
+
+スペア作成手順は次の 1 コマンドにまとめる。
+
+```sh
+dotfiles secrets yubikey enroll-spare
+```
+
+`enroll-spare` は次を一連の処理として実行する。
+
+1. primary YubiKey を選択し、PIN verification と touch を経て `bw-password` と `bws-access-token` を復号する。
+2. spare YubiKey を選択する。primary と spare を同時接続できない場合は、primary 読み出し後に spare へ差し替えさせる。
+3. spare の専用 PIV slot / object が未使用であることを確認し、必要なら setup を行う。
+4. primary から読み出した secret を spare の public key で再暗号化して保存する。
+5. local verify を実行し、spare 単体で両方の secret を復号できることを確認する。
+
+secret はプロセスメモリ上の zeroize 可能な buffer にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-password` と `bws-access-token` の再入力を要求しない。
+
+YubiKey の選択は対話を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示する。
+
+primary の初期登録も同じ考え方にし、通常は次のコマンドだけを使う。
+
+```sh
+dotfiles secrets yubikey enroll-primary
+```
+
+`bws-access-token` を rotate した場合は、primary とすべての spare に対して次を実行する。
+
+```sh
+dotfiles secrets yubikey rotate-bws-token
+```
+
+`rotate-bws-token` は新しい token を一度だけ受け取り、対象 YubiKey を対話的に選択させながら primary と spare を更新する。各 YubiKey への保存後に local verify と `verify-yubikey --check bws` 相当の接続確認を行う。非対話実行では `--serial <serial>` を指定して 1 本ずつ更新する。
+
+外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `get` の成功は GitHub、Bitwarden、Google、Apple などで spare key が登録済みであることを保証しない。
 
 ## 保存形式
 
@@ -92,9 +137,9 @@ Envelope encryption は次の役割分担にする。
 
 ### `dotfiles secrets yubikey setup`
 
-`setup` は次を確認する。
+`setup` は低水準コマンドであり、通常は `enroll-primary` / `enroll-spare` から内部的に実行する。直接実行時は次を確認する。
 
-- YubiKey が 1 本だけ選択できること。複数本ある場合は `--serial <serial>` を要求する。
+- YubiKey が 1 本だけ接続されていればそれを対象にする。複数本ある場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` を要求する。
 - PIV application version が利用条件を満たすこと。
 - slot `82` に既存 key / certificate がないこと。
 - `0x005FDF10`、`0x005FDF11`、`0x005FDF12` に既存 data object がないこと。
@@ -103,9 +148,11 @@ Envelope encryption は次の役割分担にする。
 
 確認後、slot `82` に専用鍵を生成し、manifest を保存する。既存の FIDO2 / OTP / OpenPGP / PIV credential は reset しない。衝突がある場合に自動削除や上書きはしない。
 
+複数本の YubiKey を運用する場合でも、`setup` は指定された 1 本だけを変更する。接続中の他 YubiKey へ同時に書き込む batch mode は実装しない。
+
 ### `dotfiles secrets yubikey put <name>`
 
-`<name>` は `bw-password` または `bws-access-token` のみ許可する。それ以外は CLI parsing 後の validation で拒否する。
+`put` は低水準コマンドであり、通常の primary / spare 登録では `enroll-primary` / `enroll-spare` を使う。`<name>` は `bw-password` または `bws-access-token` のみ許可する。それ以外は CLI parsing 後の validation で拒否する。
 
 secret 入力は次の順で受け付ける。
 
@@ -120,31 +167,111 @@ CLI 引数で secret 本文は受け取らない。stdin 入力時も trailing n
 
 `<name>` は `bw-password` または `bws-access-token` のみ許可する。PIN verification と touch を経て secret を復号し、stdout に secret 本文だけを出力する。stderr には進行状況を出さない。取得失敗時の error には secret name までを含め、secret 本文、ciphertext、wrapped key は含めない。
 
+### `dotfiles secrets yubikey enroll-primary`
+
+primary YubiKey を復旧入口として登録する高水準コマンドである。これは bootstrap secret の正本を最初に登録する操作なので、`bw-password` と `bws-access-token` を hidden prompt から受け取る。非対話または migration 用に限り `--stdin-json` を許可する。
+
+### `dotfiles secrets yubikey enroll-spare`
+
+spare YubiKey を復旧入口として登録する高水準コマンドである。primary から bootstrap secret を読み出して spare に再暗号化する操作にまとめ、利用者が低水準コマンドを手順として並べたり、secret を再入力したりしなくてよいようにする。
+
+`--stdin-json` は primary YubiKey が利用できないが、別経路で正本 secret を持っている場合の recovery / migration 用に限る。この場合だけ次の JSON を stdin から 1 回だけ受け取る。
+
+```json
+{
+  "bw-password": "secret",
+  "bws-access-token": "secret"
+}
+```
+
+入力 bytes をログや一時ファイルへ残さない。JSON parse 後の secret は zeroize 可能な buffer として扱う。
+
+`enroll-primary` / `enroll-spare` は成功時に secret 本文を出さず、次の summary だけを出力する。
+
+```json
+{
+  "serial": 12345678,
+  "role": "spare",
+  "checks": {
+    "setup": "ok",
+    "bw-password": "ok",
+    "bws-access-token": "ok",
+    "local_storage": "ok"
+  }
+}
+```
+
+### `dotfiles secrets yubikey rotate-bws-token`
+
+指定 YubiKey の `bws-access-token` だけを更新する。`--force` は不要にし、このコマンド自体が rotate intent を表す。更新後は local verify と BWS 接続確認を実行する。BWS client API が未実装の段階では local verify までを実装し、#13 で BWS 接続確認を接続する。
+
+### `dotfiles secrets verify-yubikey`
+
+挿さっている YubiKey が復旧入口として使えるか確認する。#12 の implementation PR では YubiKey local storage の確認までを実装し、Bitwarden Secrets Manager への接続確認は #13、Bitwarden Password Manager login / unlock 確認は #16、統合された end-to-end check は #17 で完成させる。
+
+引数:
+
+- `--serial <serial>`: 非対話実行時に対象 YubiKey を指定する。対話実行では、1 本だけ接続されていれば自動選択し、複数本接続時は一覧から選択させる。
+- `--check bws`: `bws-access-token` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
+- `--check bw-login --email <email>`: `bw-password` と入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができることを確認する。
+- `--all`: local storage、BWS、Bitwarden login の全確認を行う。`bw-login` 確認には `--email <email>` を必須にする。
+
+出力は machine-readable な summary にし、secret 本文、access token、Bitwarden session token は出力しない。
+
+```json
+{
+  "serial": 12345678,
+  "checks": {
+    "local_storage": "ok",
+    "bws": "ok",
+    "bw_login": "skipped"
+  }
+}
+```
+
+local storage check は次を確認する。
+
+- manifest が存在し、app、version、slot、object mapping が期待値と一致する。
+- `bw-password` と `bws-access-token` の blob が存在する。
+- PIN verification と touch を経て両方の secret を復号できる。
+- 復号した secret は空ではない。
+
+このコマンドは GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F 登録状況を検証しない。
+
 ## 停止条件
 
 - YubiKey が見つからない。
-- 複数 YubiKey が接続され、`--serial` が指定されていない。
+- 非対話実行で複数 YubiKey が接続され、`--serial` または用途別 serial option が指定されていない。
 - 指定 serial の YubiKey が見つからない。
 - PIV application が利用できない。
 - PIN retries が 0。
 - management key authentication に失敗する。
 - slot `82` に既存 key または certificate がある。
 - 使用予定 object ID に既存 data object がある。
+- `enroll-primary` / `enroll-spare` の途中で setup、保存、local verify のいずれかに失敗した。
+- `rotate-bws-token` 後の local verify または BWS 接続確認に失敗した。
 - manifest が存在するが app、version、slot、object mapping が期待値と一致しない。
 - 許可されていない secret name が指定された。
 - 同名 secret が存在し、`--force` が指定されていない。
 - secret 入力が空。
 - secret blob の magic、version、name、AEAD additional data が一致しない。
 - 復号または認証 tag 検証に失敗した。
+- `verify-yubikey` で必須 check が失敗した。
 
 ## テスト方針
 
 Unit test は fake YubiKey adapter で行う。
 
 - 許可 name と拒否 name。
+- 対話実行で複数 YubiKey がある場合に一覧から選択できること。
+- 非対話実行で複数 YubiKey がある場合に serial option なしで停止すること。
 - manifest parse / serialize。
 - object ID mapping。
 - `put` の既存 blob 検出と `--force`。
+- `enroll-primary` が setup、2 secret 保存、local verify を順に実行すること。
+- `enroll-spare` が primary 読み出し、spare setup、spare への再暗号化保存、local verify を順に実行すること。
+- `rotate-bws-token` が `bws-access-token` だけを更新し、`bw-password` を変更しないこと。
+- `verify-yubikey` local storage check の正常系と missing manifest / missing blob / decrypt failure。
 - empty secret の拒否。
 - blob magic / version / name mismatch の拒否。
 - adapter error から利用者向け error context への変換。
@@ -157,4 +284,6 @@ Unit test は fake YubiKey adapter で行う。
 - Yubico PIV slots: https://docs.yubico.com/yesdk/users-manual/application-piv/slots.html
 - Yubico PIV data objects: https://docs.yubico.com/yesdk/users-manual/application-piv/piv-objects.html
 - Yubico PIV tool object/slot reference: https://docs.yubico.com/software/yubikey/tools/pivtool/piv-tool-command.html
+- Yubico Getting Started with Your YubiKey: https://support.yubico.com/hc/en-us/articles/5041539306780-Getting-Started-with-Your-YubiKey
+- Yubico Authenticator spare YubiKey tips: https://docs.yubico.com/software/yubikey/tools/authenticator/auth-guide/tips.html
 - `yubikey` crate docs: https://docs.rs/yubikey/latest/yubikey/
