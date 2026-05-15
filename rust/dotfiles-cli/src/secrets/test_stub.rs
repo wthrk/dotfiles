@@ -15,7 +15,7 @@ use super::{
     storage::{self, SecretDevice, SecretName},
     util::{
         protection::{InterruptGuard, SecretMemoryGuard},
-        terminal::stdin_is_terminal,
+        terminal::{stdin_is_terminal, stdout_is_terminal},
     },
 };
 use crate::Result;
@@ -40,6 +40,10 @@ impl SecretsBoundary for TestSecretsBoundary {
 
     fn stdin_is_terminal(&self) -> bool {
         stdin_is_terminal()
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        stdout_is_terminal()
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {

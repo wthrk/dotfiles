@@ -102,9 +102,20 @@ impl BootstrapSecretsInput {
 }
 
 /// 低水準 `get` の出力先が TTY の場合は平文 secret を書かない。
-pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
+pub(crate) fn ensure_secret_stdout_not_terminal() -> Result<()> {
     if terminal::stdout_is_terminal() {
-        bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
+        reject_secret_stdout_terminal()?;
     }
+    Ok(())
+}
+
+/// 呼び出し側が出力先を復号前に確認したうえで、secret bytes を stdout へ渡す。
+pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
+    ensure_secret_stdout_not_terminal()?;
     terminal::write_all_stdout(bytes)
+}
+
+/// 実プロセス以外の境界でも TTY 出力拒否の error contract を共有する。
+pub(crate) fn reject_secret_stdout_terminal() -> Result<()> {
+    bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
 }

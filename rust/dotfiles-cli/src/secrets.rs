@@ -23,7 +23,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use device::{open_device, open_spare_device};
 use input::{
     parse_bootstrap_secrets_json, read_hidden_secret, read_one_stdin_secret,
-    read_visible_secret_line, read_yubikey_pin, write_secret_to_stdout,
+    read_visible_secret_line, read_yubikey_pin, reject_secret_stdout_terminal,
+    write_secret_to_stdout,
 };
 use storage::{BootstrapSecrets, SecretDevice, SecretName, YubikeyRole};
 use util::{
@@ -198,6 +199,7 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
             })
         }
         YubikeyCommand::Get(options) => {
+            require_secret_stdout_for_boundary(boundary)?;
             let interrupt_guard = InterruptGuard::install()?;
             let mut device = boundary.open_device(options.serial)?;
             verify_pin_for_secret_reads(boundary, &mut device)?;
@@ -212,12 +214,18 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
                 StdinSecretMode::BootstrapJson,
                 boundary,
             )?;
+            let interrupt_guard = InterruptGuard::install()?;
             let mut device = boundary.open_device(options.serial)?;
-            storage::check_setup_preconditions(&mut device)?;
+            interrupt_guard
+                .run_yubikey_operation(|| storage::check_setup_preconditions(&mut device))?;
             let memory = SecretMemoryGuard::prepare()?;
-            let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &memory)?;
-            verify_pin_for_secret_reads(boundary, &mut device)?;
-            let summary = storage::enroll(&mut device, YubikeyRole::Primary, &secrets)?;
+            let summary = {
+                let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &memory)?;
+                verify_pin_for_secret_reads(boundary, &mut device)?;
+                interrupt_guard.run_yubikey_operation(|| {
+                    storage::enroll(&mut device, YubikeyRole::Primary, &secrets)
+                })?
+            };
             println!("{}", serde_json::to_string_pretty(&summary)?);
             Ok(())
         }
@@ -328,6 +336,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     verify_pin_for_secret_reads(boundary, &mut spare)?;
     let summary = interrupt_guard
         .run_yubikey_operation(|| storage::enroll(&mut spare, YubikeyRole::Spare, &bootstrap))?;
+    drop(bootstrap);
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
@@ -373,6 +382,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
             boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &memory)?;
         let summary = interrupt_guard
             .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, token.as_slice()))?;
+        drop(token);
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
@@ -405,6 +415,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         );
     }
 
+    drop(token);
     println!("{}", serde_json::to_string_pretty(&summaries)?);
     Ok(())
 }
@@ -451,6 +462,7 @@ trait SecretsBoundary {
     type Device: SecretDevice;
 
     fn stdin_is_terminal(&self) -> bool;
+    fn stdout_is_terminal(&self) -> bool;
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device>;
     fn open_spare_device(
         &mut self,
@@ -500,6 +512,15 @@ fn require_stdin_secret_source_for_boundary<B: SecretsBoundary>(
     Ok(())
 }
 
+/// `get` は PIN/touch 前に出力先を確定し、TTY へ平文 secret を復号しない。
+fn require_secret_stdout_for_boundary<B: SecretsBoundary>(boundary: &B) -> Result<()> {
+    if boundary.stdout_is_terminal() {
+        reject_secret_stdout_terminal()?;
+    }
+
+    Ok(())
+}
+
 /// `--stdin-json` で primary を読まない経路では、spare prompt も非対話前に禁止する。
 fn require_spare_serial_for_stdin_json<B: SecretsBoundary>(
     spare_serial: Option<u32>,
@@ -536,6 +557,10 @@ impl SecretsBoundary for RealSecretsBoundary {
 
     fn stdin_is_terminal(&self) -> bool {
         input_stdin_is_terminal()
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        util::terminal::stdout_is_terminal()
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
@@ -659,6 +684,7 @@ mod tests {
 
     struct FakeBoundary {
         stdin_is_terminal: bool,
+        stdout_is_terminal: bool,
         devices: VecDeque<FakeDevice>,
         prompts: VecDeque<bool>,
         open_device_calls: usize,
@@ -671,6 +697,7 @@ mod tests {
         fn new(devices: Vec<FakeDevice>) -> Self {
             Self {
                 stdin_is_terminal: true,
+                stdout_is_terminal: false,
                 devices: devices.into(),
                 prompts: VecDeque::new(),
                 open_device_calls: 0,
@@ -686,6 +713,10 @@ mod tests {
 
         fn stdin_is_terminal(&self) -> bool {
             self.stdin_is_terminal
+        }
+
+        fn stdout_is_terminal(&self) -> bool {
+            self.stdout_is_terminal
         }
 
         fn open_device(&mut self, _serial: Option<u32>) -> Result<Self::Device> {
@@ -814,6 +845,31 @@ mod tests {
         assert_eq!(
             result.err().map(|err| err.to_string()),
             Some(stdin_secret_source_error(StdinSecretMode::Single).to_owned())
+        );
+        assert_eq!(boundary.open_device_calls, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn get_rejects_tty_stdout_before_opening_device() -> Result<()> {
+        let options = YubikeyOptions {
+            command: YubikeyCommand::Get(GetOptions {
+                name: SecretName::BwsAccessToken,
+                serial: Some(2001),
+            }),
+        };
+        let mut boundary = FakeBoundary::new(vec![FakeDevice::provisioned(2001)?]);
+        boundary.stdout_is_terminal = true;
+
+        let result = run_yubikey_with(options, &mut boundary);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().map(|err| err.to_string()),
+            Some(
+                "refusing to write secret to terminal; redirect stdout to a file or pipe"
+                    .to_owned()
+            )
         );
         assert_eq!(boundary.open_device_calls, 0);
         Ok(())
