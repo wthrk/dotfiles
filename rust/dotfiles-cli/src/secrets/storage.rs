@@ -311,6 +311,12 @@ pub fn enroll<D: SecretDevice>(
     role: YubikeyRole,
     secrets: &BootstrapSecrets,
 ) -> Result<EnrollSummary> {
+    for name in SecretName::iter() {
+        if secrets.get(name).is_empty() {
+            bail!("{} must not be empty", secret_name(name));
+        }
+    }
+
     setup(device)?;
     for name in SecretName::iter() {
         put(device, name, secrets.get(name), false)?;

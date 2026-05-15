@@ -165,16 +165,16 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
             Ok(())
         }
         YubikeyCommand::EnrollPrimary(options) => {
-            let secrets = read_bootstrap_secrets(options.stdin_json, None)?;
             let mut device = open_device(options.serial)?;
+            let secrets = read_bootstrap_secrets(options.stdin_json, None)?;
             let summary = storage::enroll(&mut device, YubikeyRole::Primary, &secrets)?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
             Ok(())
         }
         YubikeyCommand::EnrollSpare(options) => run_enroll_spare(options),
         YubikeyCommand::RotateBwsToken(options) => {
-            let token = read_hidden("bws-access-token: ")?;
             let mut device = open_device(options.serial)?;
+            let token = read_hidden("bws-access-token: ")?;
             let summary = storage::rotate_bws_token(&mut device, &token)?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
             Ok(())
@@ -190,6 +190,9 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
 fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
     let mut memory = SecretMemoryGuard::prepare()?;
     let (bootstrap, primary_serial) = if options.stdin_json {
+        if options.spare_serial.is_none() && !io::stdin().is_terminal() {
+            bail!("pass --spare-serial in non-interactive use");
+        }
         (
             read_bootstrap_secrets(true, Some(&mut memory))?,
             options.primary_serial,
@@ -724,5 +727,54 @@ mod tests {
             (CheckName::BwLogin, CheckStatus::Skipped),
         ]);
         assert_eq!(checks.get(&CheckName::Bws), Some(&CheckStatus::Skipped));
+    }
+
+    #[test]
+    fn oaep_unpad_round_trips_rsa_oaep_sha256() -> Result<()> {
+        let message = b"test-content-encryption-key";
+        let encoded = oaep_pad_sha256_for_test(message, 256);
+        let decoded = oaep_unpad_sha256(&encoded, 256)?;
+        assert_eq!(decoded.as_slice(), message);
+        Ok(())
+    }
+
+    #[test]
+    fn oaep_unpad_rejects_invalid_padding() {
+        let mut encoded = vec![0u8; 256];
+        encoded[0] = 1;
+        assert!(oaep_unpad_sha256(&encoded, 256).is_err());
+    }
+
+    fn oaep_pad_sha256_for_test(message: &[u8], key_len: usize) -> Vec<u8> {
+        let hash_len = 32usize;
+        let ps_len = key_len - message.len() - (2 * hash_len) - 2;
+        let label_hash = Sha256::digest([]);
+
+        let mut db = Vec::with_capacity(key_len - hash_len - 1);
+        db.extend_from_slice(label_hash.as_slice());
+        db.extend(std::iter::repeat_n(0u8, ps_len));
+        db.push(1);
+        db.extend_from_slice(message);
+
+        let seed = [0x42u8; 32];
+        let db_mask = mgf1_sha256(&seed, key_len - hash_len - 1);
+        let masked_db: Vec<u8> = db
+            .iter()
+            .zip(db_mask)
+            .map(|(left, right)| left ^ right)
+            .collect();
+
+        let seed_mask = mgf1_sha256(&masked_db, hash_len);
+        let masked_seed: Vec<u8> = seed
+            .iter()
+            .zip(seed_mask)
+            .map(|(left, right)| left ^ right)
+            .collect();
+
+        let mut encoded = Vec::with_capacity(key_len);
+        encoded.push(0);
+        encoded.extend_from_slice(&masked_seed);
+        encoded.extend_from_slice(&masked_db);
+        encoded
     }
 }
