@@ -19,7 +19,7 @@ use yubikey::{
     MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
 
@@ -283,9 +283,10 @@ fn read_bootstrap_secrets(
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
     if stdin_json {
-        let mut input = String::new();
+        let mut input = Zeroizing::new(String::new());
         io::stdin().read_to_string(&mut input)?;
         let parsed: BootstrapSecretsJson = serde_json::from_str(&input)?;
+        input.zeroize();
         let secrets = BootstrapSecrets {
             bw_email: storage::secret_bytes(parsed.bw_email.into_bytes()),
             bw_password: storage::secret_bytes(parsed.bw_password.into_bytes()),
@@ -651,17 +652,21 @@ fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroizing<Vec<u8>
 
     let (masked_seed, masked_db) = encoded[1..].split_at(hash_len);
     let seed_mask = mgf1_sha256(masked_db, hash_len);
-    let seed: Vec<u8> = masked_seed
-        .iter()
-        .zip(seed_mask)
-        .map(|(left, right)| left ^ right)
-        .collect();
+    let seed = Zeroizing::new(
+        masked_seed
+            .iter()
+            .zip(seed_mask)
+            .map(|(left, right)| left ^ right)
+            .collect::<Vec<u8>>(),
+    );
     let db_mask = mgf1_sha256(&seed, key_len - hash_len - 1);
-    let db: Vec<u8> = masked_db
-        .iter()
-        .zip(db_mask)
-        .map(|(left, right)| left ^ right)
-        .collect();
+    let db = Zeroizing::new(
+        masked_db
+            .iter()
+            .zip(db_mask)
+            .map(|(left, right)| left ^ right)
+            .collect::<Vec<u8>>(),
+    );
 
     let label_hash = Sha256::digest([]);
     if db.get(..hash_len) != Some(label_hash.as_slice()) {
