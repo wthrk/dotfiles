@@ -11,7 +11,7 @@
 - ユーザー設定: `config/` 配下の zsh と Neovim 設定。
 - bootstrap の入口: `scripts/bootstrap.sh`。
 
-秘密情報復旧基盤の作業を継続するときは、`docs/secret-recovery/tasks.md` と GitHub issue `#11` を進捗管理の入口にしてください。
+秘密情報復旧基盤の作業を継続するときは、`docs/secret-recovery/tasks.md` と GitHub issue `#11` を進捗管理の入口にしてください。秘密情報復旧基盤の実装変更またはレビューを行う前に、`docs/secret-recovery/implementation-guidelines.md` を読み、そこにあるテスト、レイヤー、コーディング、コメントの規約を適用してください。
 
 ## 翻訳同期
 

@@ -11,7 +11,7 @@ Main areas:
 - User configuration: zsh and Neovim config under `config/`.
 - Bootstrap entry point: `scripts/bootstrap.sh`.
 
-When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point.
+When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point. Before changing secret recovery implementation or reviewing that work, read `docs/secret-recovery/implementation-guidelines.md` and apply its testing, layering, coding, and comment rules.
 
 ## Translation Sync
 
