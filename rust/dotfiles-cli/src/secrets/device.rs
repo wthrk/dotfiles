@@ -209,6 +209,9 @@ fn select_interactive_yubikey_with_input(
         InteractiveDiscovery::NoDevice => Err(interactive_select_error(anyhow::anyhow!(
             "no YubiKey detected"
         ))),
+        InteractiveDiscovery::OpenError { .. } if allow_no_device => {
+            Err(InteractiveSelectError::NoDevice)
+        }
         InteractiveDiscovery::OpenError { reader, source } => {
             let err = anyhow::Error::from(source)
                 .context(format!("failed to open YubiKey reader '{reader}'"));
