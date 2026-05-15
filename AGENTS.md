@@ -181,6 +181,7 @@ Lua/Neovim:
 - PR grouping and commit grouping are separate decisions. One PR does not imply one commit unless the user explicitly requests it.
 - When deciding commit boundaries or messages, inspect `git status` and `git diff`. Do not rely on memory, chat context, or assumptions.
 - Mention validation in the commit body when it matters, especially when runtime checks were skipped or could not be run.
+- Commit sub-agents must not run validation commands. Validation is the parent agent's responsibility before commit delegation. The commit sub-agent may inspect `git status`, `git diff`, and existing file contents to decide commit boundaries and messages, then create the commit from the current working tree.
 
 ## Pull Request Guidelines
 

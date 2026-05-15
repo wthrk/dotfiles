@@ -181,6 +181,7 @@ Lua/Neovim:
 - PR grouping と commit grouping は別の判断です。ユーザーが明示的に 1 commit を要求しない限り、1 PR は 1 commit を意味しません。
 - commit boundaries や messages を判断するときは、`git status` と `git diff` を確認してください。memory、chat context、assumptions に頼らないでください。
 - runtime checks を skip した、または実行できなかった場合など、重要なときは commit body に validation を記載してください。
+- commit sub-agent は validation command を実行してはいけません。validation は commit 委譲前の parent agent の責務です。commit sub-agent は `git status`、`git diff`、既存 file contents を確認して commit boundary と message を決め、現在の working tree から commit を作成できます。
 
 ## Pull Request 規約
 
