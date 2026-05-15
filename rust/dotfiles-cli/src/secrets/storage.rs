@@ -268,7 +268,7 @@ pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
     write_manifest(device)
 }
 
-/// storage setup が既存 PIV key/object を上書きしないことを事前確認する。
+/// secret 入力前に、setup が永続書き込みを開始できる device 状態か確認する。
 pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
     device.check_key_generation_preconditions()?;
 

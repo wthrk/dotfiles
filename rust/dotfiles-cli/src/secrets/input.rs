@@ -126,10 +126,12 @@ pub(crate) fn write_secret_to_stdout(secret: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// prompt/stdin の一時 buffer から secret wrapper へ所有権を移し、元 buffer の Drop で残存を消す。
 pub(crate) fn protect_zeroizing_secret(mut secret: Zeroizing<Vec<u8>>) -> storage::SecretBytes {
     storage::secret_bytes(std::mem::take(&mut *secret))
 }
 
+/// memory guard がある enroll-spare 経路では、3 secret すべてを guard 管理下へ移す。
 fn lock_bootstrap_secrets(
     secrets: BootstrapSecrets,
     memory: Option<&mut SecretMemoryGuard>,
@@ -156,6 +158,7 @@ struct BootstrapSecretsSeed<'a> {
     memory: Option<&'a mut SecretMemoryGuard>,
 }
 
+/// serde が確保した field 文字列を、decode 直後から zeroize 対象として受け取る seed。
 struct ZeroizingStringSeed;
 
 impl<'de> Deserialize<'de> for BootstrapSecretField {
@@ -252,6 +255,7 @@ impl<'de> Visitor<'de> for BootstrapSecretsSeed<'_> {
 }
 
 impl BootstrapSecretsSeed<'_> {
+    /// 1 field 分の allocation を次の JSON field へ進む前に secret wrapper / memory lock へ移す。
     fn read_secret<'de, A>(
         &mut self,
         map: &mut A,

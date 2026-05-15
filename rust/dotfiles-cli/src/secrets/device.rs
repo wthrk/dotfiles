@@ -152,6 +152,7 @@ fn select_interactive_yubikey_until(
     select_interactive_yubikey_with_input(Some((deadline, interrupt)))
 }
 
+/// 複数 YubiKey 選択時だけ、secret 保持中の deadline / interrupt 境界を入力待ちへ渡す。
 fn select_interactive_yubikey_with_input(
     timed_input: Option<(Instant, &InterruptGuard)>,
 ) -> Result<YubiKey> {

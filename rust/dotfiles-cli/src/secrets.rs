@@ -179,39 +179,44 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
 
 /// primary から secret 一式を読み出し、spare に再暗号化して登録する。
 ///
-/// 通常実行では primary YubiKey から 3 secret を復号し終えた後に spare 選択へ進む。
-/// `--stdin-json` は primary が使えない migration / recovery 用で、この場合だけ
-/// stdin の secret 一式を正本として扱う。
+/// `--spare-serial` 指定時は secret 復号前に spare の準備状態を確定し、primary と
+/// 同一 serial の取り違えを先に拒否する。`--stdin-json` は primary が使えない
+/// migration / recovery 用で、この場合だけ stdin の secret 一式を正本として扱う。
 fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
     let interrupt_guard = InterruptGuard::install()?;
     let mut memory = SecretMemoryGuard::prepare()?;
+    let mut spare = if options.spare_serial.is_some() {
+        let mut spare = open_spare_device(
+            options.spare_serial,
+            options.primary_serial,
+            &interrupt_guard,
+        )?;
+        interrupt_guard.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
+        Some(spare)
+    } else {
+        None
+    };
     let (bootstrap, primary_serial, spare) = if options.stdin_json {
         if options.spare_serial.is_none() && !io::stdin().is_terminal() {
             bail!("pass --spare-serial in non-interactive use");
         }
-        let spare = if options.spare_serial.is_some() {
-            let mut spare = open_spare_device(
-                options.spare_serial,
-                options.primary_serial,
-                &interrupt_guard,
-            )?;
-            interrupt_guard
-                .run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
-            Some(spare)
-        } else {
-            None
-        };
         if interrupt_guard.interrupted() {
             bail!("interrupted while handling bootstrap secrets");
         }
         (
             read_bootstrap_secrets(true, Some(&mut memory))?,
             options.primary_serial,
-            spare,
+            spare.take(),
         )
     } else {
         let mut primary = open_device(options.primary_serial)?;
         let primary_serial = primary.serial();
+        if spare
+            .as_ref()
+            .is_some_and(|spare_device| spare_device.serial() == primary_serial)
+        {
+            bail!("primary and spare YubiKey serial must be different");
+        }
         let secrets =
             BootstrapSecrets {
                 bw_email: memory.lock_secret(
@@ -233,7 +238,7 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
                     })?),
                 )?,
             };
-        (secrets, Some(primary_serial), None)
+        (secrets, Some(primary_serial), spare.take())
     };
 
     let mut spare = match spare {

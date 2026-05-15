@@ -130,6 +130,7 @@ fn register_interrupt(signal: i32) -> Result<SigId> {
         .context("failed to install signal handler")
 }
 
+/// signal handler が記録した中断を、guard の Drop が走る `Result` error に変換する。
 fn interrupted_result() -> Result<()> {
     if INTERRUPTED.load(Ordering::SeqCst) {
         bail!("interrupted while handling bootstrap secrets");
@@ -150,6 +151,7 @@ fn lock_secret_memory(secret: &storage::SecretBytes) -> Result<Option<region::Lo
         .context("failed to lock bootstrap secret memory")
 }
 
+/// stdin JSON など、secret wrapper 化前の一時 buffer を同じ memory lock policy で守る。
 fn lock_memory_range(ptr: *const u8, len: usize) -> Result<region::LockGuard> {
     region::lock(ptr, len).map_err(Into::into)
 }
