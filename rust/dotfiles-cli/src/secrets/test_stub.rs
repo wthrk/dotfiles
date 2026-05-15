@@ -9,8 +9,11 @@ use std::collections::{BTreeMap, VecDeque};
 use zeroize::Zeroizing;
 
 use super::{
-    EnrollSpareOptions, SecretsBoundary, SecretsCommand, SecretsOptions, YubikeyCommand,
-    application::{ProtectedBootstrapSecrets, ProtectedSecret, protect_secret_input},
+    EnrollSpareOptions, SecretsCommand, SecretsOptions, YubikeyCommand,
+    application::{
+        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedSecret, SecretsBoundary,
+        protect_secret_input,
+    },
     input::{read_hidden_secret, read_one_stdin_secret},
     storage::{self, SecretDevice, SecretName},
     util::{
@@ -75,7 +78,7 @@ impl SecretsBoundary for TestSecretsBoundary {
         stdin_json: bool,
         memory: &SecretMemoryGuard,
     ) -> Result<ProtectedBootstrapSecrets> {
-        super::read_protected_bootstrap_secrets(stdin_json, memory)
+        super::application::read_protected_bootstrap_secrets(stdin_json, memory)
     }
 
     fn read_secret_for_put(
@@ -85,7 +88,7 @@ impl SecretsBoundary for TestSecretsBoundary {
         memory: &SecretMemoryGuard,
     ) -> Result<ProtectedSecret> {
         let secret = if stdin {
-            read_one_stdin_secret(super::MAX_SINGLE_STDIN_SECRET_LEN, Some(memory))?
+            read_one_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, Some(memory))?
         } else {
             read_hidden_secret(&format!("{}: ", name))?
         };
