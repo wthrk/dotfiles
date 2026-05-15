@@ -65,9 +65,6 @@ pub(crate) fn read_bootstrap_secrets(
             &mut input,
             "bootstrap secret JSON input is too large",
         )?;
-        if input_len > MAX_BOOTSTRAP_JSON_LEN {
-            bail!("bootstrap secret JSON input is too large");
-        }
         input.truncate(input_len);
         let secrets = parse_bootstrap_secrets_json(&input, memory)
             .context("failed to parse bootstrap secret JSON")?;
@@ -313,9 +310,6 @@ fn read_one_stdin_secret() -> Result<Zeroizing<Vec<u8>>> {
         &mut input,
         "stdin secret input is too large",
     )?;
-    if input_len > MAX_SINGLE_STDIN_SECRET_LEN {
-        bail!("stdin secret input is too large");
-    }
     input.truncate(input_len);
     trim_one_trailing_newline(&mut input);
     Ok(input)
@@ -397,6 +391,36 @@ fn receive_terminal_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::ExposeSecret;
+
+    #[test]
+    fn parses_bootstrap_secrets_json() -> Result<()> {
+        let input = br#"{"bw-email":"u@example.com","bw-password":"pw","bws-access-token":"tok"}"#;
+        let secrets = parse_bootstrap_secrets_json(input, None)?;
+        assert_eq!(secrets.bw_email.expose_secret(), b"u@example.com");
+        assert_eq!(secrets.bw_password.expose_secret(), b"pw");
+        assert_eq!(secrets.bws_access_token.expose_secret(), b"tok");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_bootstrap_secrets_json_with_missing_field() {
+        let input = br#"{"bw-email":"u@example.com","bw-password":"pw"}"#;
+        assert!(parse_bootstrap_secrets_json(input, None).is_err());
+    }
+
+    #[test]
+    fn rejects_bootstrap_secrets_json_with_duplicate_field() {
+        let input =
+            br#"{"bw-email":"a","bw-email":"b","bw-password":"pw","bws-access-token":"tok"}"#;
+        assert!(parse_bootstrap_secrets_json(input, None).is_err());
+    }
+
+    #[test]
+    fn rejects_bootstrap_secrets_json_with_non_string_field() {
+        let input = br#"{"bw-email":"u@example.com","bw-password":123,"bws-access-token":"tok"}"#;
+        assert!(parse_bootstrap_secrets_json(input, None).is_err());
+    }
 
     #[test]
     fn trims_one_trailing_newline() {

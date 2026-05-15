@@ -158,6 +158,8 @@ pub trait SecretDevice {
     fn serial(&self) -> u32;
     /// secret storage 用 PIV key が存在するか確認する。
     fn key_exists(&mut self) -> Result<bool>;
+    /// secret storage 用 PIV key 生成に必要な device 固有条件を確認する。
+    fn check_key_generation_preconditions(&mut self) -> Result<()>;
     /// secret storage 用 PIV key を device 内で生成する。
     fn generate_key(&mut self) -> Result<()>;
     /// PIV data object を読み取る。存在しない場合は `None` を返す。
@@ -268,6 +270,8 @@ pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
 
 /// storage setup が既存 PIV key/object を上書きしないことを事前確認する。
 pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
+    device.check_key_generation_preconditions()?;
+
     if device.key_exists()? {
         if let Ok(manifest) = read_manifest(device) {
             manifest.validate_expected()?;
@@ -626,6 +630,10 @@ mod tests {
 
         fn key_exists(&mut self) -> Result<bool> {
             Ok(self.key_exists)
+        }
+
+        fn check_key_generation_preconditions(&mut self) -> Result<()> {
+            Ok(())
         }
 
         fn generate_key(&mut self) -> Result<()> {

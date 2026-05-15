@@ -252,28 +252,40 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
 /// 非対話実行では `--serial` で 1 本だけを更新する。対話実行で serial 指定がない場合は
 /// token を一度だけ受け取り、利用者が終了を選ぶまで YubiKey 選択と更新を繰り返す。
 fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
+    let interrupt_guard = InterruptGuard::install()?;
+
     if let Some(serial) = options.serial {
         let mut device = open_device(Some(serial))?;
-        storage::check_rotate_preconditions(&mut device)?;
+        interrupt_guard
+            .run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
         let token = read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
-        let summary = storage::rotate_bws_token(&mut device, &token)?;
+        let summary = interrupt_guard
+            .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, &token))?;
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
 
     let mut device = open_device(None)?;
-    storage::check_rotate_preconditions(&mut device)?;
+    interrupt_guard.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
     let token = read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
-    let mut summaries = vec![storage::rotate_bws_token(&mut device, &token)?];
+    let mut summaries = vec![
+        interrupt_guard.run_yubikey_operation(|| storage::rotate_bws_token(&mut device, &token))?,
+    ];
 
-    while prompt_yes_no("Update another YubiKey? [y/N] ")? {
+    while interrupt_guard
+        .run_yubikey_operation(|| prompt_yes_no("Update another YubiKey? [y/N] "))?
+    {
         let mut device = open_device(None)?;
         if !updated_serials.insert(device.serial()) {
             bail!("selected YubiKey was already updated");
         }
-        storage::check_rotate_preconditions(&mut device)?;
-        summaries.push(storage::rotate_bws_token(&mut device, &token)?);
+        interrupt_guard
+            .run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+        summaries.push(
+            interrupt_guard
+                .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, &token))?,
+        );
     }
 
     println!("{}", serde_json::to_string_pretty(&summaries)?);

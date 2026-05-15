@@ -255,7 +255,7 @@ impl SecretDevice for YubikeySecretDevice {
         }
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn check_key_generation_preconditions(&mut self) -> Result<()> {
         let version = self.yubikey.version();
         if version_lt(version, MIN_PIV_METADATA_VERSION) {
             bail!(
@@ -266,7 +266,11 @@ impl SecretDevice for YubikeySecretDevice {
         if self.yubikey.get_pin_retries()? == 0 {
             bail!("YubiKey PIN retries are exhausted");
         }
+        Ok(())
+    }
 
+    fn generate_key(&mut self) -> Result<()> {
+        self.check_key_generation_preconditions()?;
         self.authenticate_management()?;
         piv::generate(
             &mut self.yubikey,
