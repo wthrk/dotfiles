@@ -11,11 +11,13 @@ use std::sync::{
 use anyhow::{Context, bail};
 use secrecy::ExposeSecret;
 use signal_hook::{SigId, consts::signal};
+use zeroize::Zeroizing;
 
 use super::storage::{self, BootstrapSecrets, SecretName};
 use crate::Result;
 
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+const MEMORY_LOCK_PROBE_LEN: usize = 256 * 1024;
 
 /// 平文 secret を保持する期間だけ有効な signal registration。
 pub(crate) struct InterruptGuard {
@@ -35,6 +37,17 @@ impl InterruptGuard {
 
     pub(crate) fn interrupted(&self) -> bool {
         INTERRUPTED.load(Ordering::SeqCst)
+    }
+
+    /// 長い YubiKey operation の前後で、signal flag を command failure へ反映する。
+    pub(crate) fn run_yubikey_operation<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        interrupted_result()?;
+        let result = operation();
+        interrupted_result()?;
+        result
     }
 }
 
@@ -59,7 +72,7 @@ impl SecretMemoryGuard {
         rlimit::setrlimit(rlimit::Resource::CORE, 0, 0)
             .context("failed to disable core dumps before reading bootstrap secrets")?;
 
-        let probe = [0u8; 1];
+        let probe = Zeroizing::new(vec![0u8; MEMORY_LOCK_PROBE_LEN]);
         let probe_guard = region::lock(probe.as_ptr(), probe.len())
             .context("failed to lock memory before reading bootstrap secrets")?;
         drop(probe_guard);

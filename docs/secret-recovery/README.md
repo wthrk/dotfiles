@@ -124,7 +124,7 @@ spare YubiKey を復旧入口として初期登録する。通常は primary Yub
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bws-access-token` を更新し、更新後に local verify と BWS 接続確認を実行する。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、コマンドが対象 YubiKey を順に選択させる。非対話実行では `--serial` で 1 本だけを更新する。
+指定 YubiKey の `bws-access-token` を更新し、更新後に local verify を実行する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目として扱い、現在の実装では skipped として summary に残す。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、コマンドが対象 YubiKey を順に選択させる。非対話実行では `--serial` で 1 本だけを更新する。
 
 ### `dotfiles secrets verify-yubikey`
 

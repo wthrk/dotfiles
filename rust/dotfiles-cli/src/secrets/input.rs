@@ -15,7 +15,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{
     memory::{InterruptGuard, SecretMemoryGuard},
-    storage::{self, BootstrapSecrets, SecretName},
+    storage::{self, BootstrapSecrets, SecretName, secret_name},
 };
 use crate::Result;
 
@@ -115,13 +115,6 @@ pub(crate) fn write_secret_to_stdout(secret: &[u8]) -> Result<()> {
 
 pub(crate) fn protect_zeroizing_secret(mut secret: Zeroizing<Vec<u8>>) -> storage::SecretBytes {
     storage::secret_bytes(std::mem::take(&mut *secret))
-}
-
-pub(crate) fn secret_name(name: SecretName) -> String {
-    serde_json::to_value(name)
-        .ok()
-        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .unwrap_or_else(|| format!("{name:?}"))
 }
 
 fn lock_bootstrap_secrets(

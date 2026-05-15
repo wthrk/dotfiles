@@ -406,7 +406,7 @@ impl SecretBlob {
         all_consuming(parse_secret_blob)
             .parse(input)
             .map(|(_, blob)| blob)
-            .map_err(|err| anyhow::anyhow!("invalid YubiKey secret blob: {err}"))
+            .map_err(|_| anyhow::anyhow!("invalid YubiKey secret blob"))
     }
 }
 
@@ -416,7 +416,7 @@ fn format_object_id(object_id: u32) -> String {
 }
 
 /// secret 名を manifest / error 表示用の kebab-case 文字列にする。
-fn secret_name(name: SecretName) -> String {
+pub(crate) fn secret_name(name: SecretName) -> String {
     serde_json::to_value(name)
         .ok()
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
@@ -754,6 +754,35 @@ mod tests {
         assert_eq!(
             get(&mut device, SecretName::BwsAccessToken)?.as_slice(),
             b"new"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
+        let mut device = FakeDevice::new(1234);
+        setup(&mut device)?;
+        put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
+        put(&mut device, SecretName::BwPassword, b"password", false)?;
+        put(&mut device, SecretName::BwsAccessToken, b"old-token", false)?;
+
+        let summary = rotate_bws_token(&mut device, b"new-token")?;
+
+        assert_eq!(
+            get(&mut device, SecretName::BwEmail)?.as_slice(),
+            b"user@example.com"
+        );
+        assert_eq!(
+            get(&mut device, SecretName::BwPassword)?.as_slice(),
+            b"password"
+        );
+        assert_eq!(
+            get(&mut device, SecretName::BwsAccessToken)?.as_slice(),
+            b"new-token"
+        );
+        assert_eq!(
+            summary.checks.get(&CheckName::LocalStorage),
+            Some(&CheckStatus::Ok)
         );
         Ok(())
     }

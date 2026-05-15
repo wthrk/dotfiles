@@ -201,7 +201,8 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
 
     let mut spare = open_spare_device(options.spare_serial, primary_serial, &interrupt_guard)?;
 
-    let summary = storage::enroll(&mut spare, YubikeyRole::Spare, &bootstrap)?;
+    let summary = interrupt_guard
+        .run_yubikey_operation(|| storage::enroll(&mut spare, YubikeyRole::Spare, &bootstrap))?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
