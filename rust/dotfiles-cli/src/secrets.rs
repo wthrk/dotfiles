@@ -11,6 +11,8 @@ mod application;
 mod device;
 mod input;
 mod storage;
+#[cfg(feature = "secrets-test-stub")]
+mod test_stub;
 mod util;
 
 use std::collections::BTreeSet;
@@ -41,6 +43,9 @@ const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 #[derive(Args)]
 /// GPG、pass、Bitwarden 復旧に必要な秘密情報を扱う。
 pub(crate) struct SecretsOptions {
+    #[cfg(feature = "secrets-test-stub")]
+    #[arg(long, hide = true)]
+    test_stub_yubikey: bool,
     #[command(subcommand)]
     command: SecretsCommand,
 }
@@ -148,9 +153,20 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を実行する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
+    #[cfg(feature = "secrets-test-stub")]
+    if options.test_stub_yubikey {
+        let mut boundary = test_stub::TestSecretsBoundary::for_options(&options)?;
+        return run_with_boundary(options, &mut boundary);
+    }
+
+    let mut boundary = RealSecretsBoundary;
+    run_with_boundary(options, &mut boundary)
+}
+
+fn run_with_boundary<B: SecretsBoundary>(options: SecretsOptions, boundary: &mut B) -> Result<()> {
     match options.command {
-        SecretsCommand::Yubikey(options) => run_yubikey(options),
-        SecretsCommand::VerifyYubikey(options) => run_verify_yubikey(options),
+        SecretsCommand::Yubikey(options) => run_yubikey_with(options, boundary),
+        SecretsCommand::VerifyYubikey(options) => run_verify_yubikey_with(options, boundary),
     }
 }
 
@@ -158,47 +174,55 @@ pub(crate) fn run(options: SecretsOptions) -> Result<()> {
 ///
 /// 低水準 command は単一 secret または storage setup だけを扱い、高水準 command は
 /// primary / spare 登録と local verify までを一連の操作として扱う。
-fn run_yubikey(options: YubikeyOptions) -> Result<()> {
+fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut B) -> Result<()> {
     match options.command {
         YubikeyCommand::Setup(options) => {
-            let mut device = open_device(options.serial)?;
+            let mut device = boundary.open_device(options.serial)?;
             storage::setup(&mut device)
         }
         YubikeyCommand::Put(options) => {
-            require_stdin_secret_source(options.stdin, StdinSecretMode::Single)?;
+            require_stdin_secret_source_for_boundary(
+                options.stdin,
+                StdinSecretMode::Single,
+                boundary,
+            )?;
             let interrupt_guard = InterruptGuard::install()?;
             let memory = SecretMemoryGuard::prepare()?;
-            let mut device = open_device(options.serial)?;
+            let mut device = boundary.open_device(options.serial)?;
             interrupt_guard.run_yubikey_operation(|| {
                 storage::check_put_preconditions(&mut device, options.name, options.force)
             })?;
-            let secret = read_protected_secret_for_put(options.name, options.stdin, &memory)?;
+            let secret = boundary.read_secret_for_put(options.name, options.stdin, &memory)?;
             interrupt_guard.run_yubikey_operation(|| {
                 storage::put(&mut device, options.name, secret.as_slice(), options.force)
             })
         }
         YubikeyCommand::Get(options) => {
             let interrupt_guard = InterruptGuard::install()?;
-            let mut device = open_device(options.serial)?;
-            verify_pin_from_input(&mut device)?;
+            let mut device = boundary.open_device(options.serial)?;
+            verify_pin_for_secret_reads(boundary, &mut device)?;
             let output_bytes = interrupt_guard
                 .run_yubikey_operation(|| storage::get(&mut device, options.name))?;
             write_secret_to_stdout(output_bytes.as_slice())?;
             Ok(())
         }
         YubikeyCommand::EnrollPrimary(options) => {
-            require_stdin_secret_source(options.stdin_json, StdinSecretMode::BootstrapJson)?;
-            let mut device = open_device(options.serial)?;
+            require_stdin_secret_source_for_boundary(
+                options.stdin_json,
+                StdinSecretMode::BootstrapJson,
+                boundary,
+            )?;
+            let mut device = boundary.open_device(options.serial)?;
             storage::check_setup_preconditions(&mut device)?;
             let memory = SecretMemoryGuard::prepare()?;
-            let secrets = read_protected_bootstrap_secrets(options.stdin_json, &memory)?;
-            verify_pin_from_input(&mut device)?;
+            let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &memory)?;
+            verify_pin_for_secret_reads(boundary, &mut device)?;
             let summary = storage::enroll(&mut device, YubikeyRole::Primary, &secrets)?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
             Ok(())
         }
-        YubikeyCommand::EnrollSpare(options) => run_enroll_spare(options),
-        YubikeyCommand::RotateBwsToken(options) => run_rotate_bws_token(options),
+        YubikeyCommand::EnrollSpare(options) => run_enroll_spare_with(options, boundary),
+        YubikeyCommand::RotateBwsToken(options) => run_rotate_bws_token_with(options, boundary),
     }
 }
 
@@ -207,11 +231,6 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
 /// `--spare-serial` 指定時は secret 復号前に spare の準備状態を確定し、primary と
 /// 同一 serial の取り違えを先に拒否する。`--stdin-json` は primary が使えない
 /// migration / recovery 用で、この場合だけ stdin の secret 一式を正本として扱う。
-fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
-    let mut boundary = RealSecretsBoundary;
-    run_enroll_spare_with(options, &mut boundary)
-}
-
 /// `put` / token 更新の secret は読み取り直後に保護済み値へ移す。
 fn read_protected_secret_for_put(
     name: SecretName,
@@ -336,11 +355,6 @@ fn read_protected_bootstrap_from_device<D: SecretDevice>(
 ///
 /// 非対話実行では `--serial` で 1 本だけを更新する。対話実行で serial 指定がない場合は
 /// token を一度だけ受け取り、利用者が終了を選ぶまで YubiKey 選択と更新を繰り返す。
-fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
-    let mut boundary = RealSecretsBoundary;
-    run_rotate_bws_token_with(options, &mut boundary)
-}
-
 /// token 入力を 1 回に限定し、複数 YubiKey 更新時も同じ token buffer を再利用する。
 fn run_rotate_bws_token_with<B: SecretsBoundary>(
     options: RotateBwsTokenOptions,
@@ -398,11 +412,6 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 /// local storage の復号確認を行い、外部確認要求は利用不可として拒否する。
 ///
 /// 引数なしの実行だけが YubiKey 上の bootstrap secret 復号を検証する。
-fn run_verify_yubikey(options: VerifyYubikeyOptions) -> Result<()> {
-    let mut boundary = RealSecretsBoundary;
-    run_verify_yubikey_with(options, &mut boundary)
-}
-
 /// 外部 service check は未実装として device access 前に拒否し、local storage 検証だけを通す。
 fn run_verify_yubikey_with<B: SecretsBoundary>(
     options: VerifyYubikeyOptions,
@@ -478,15 +487,6 @@ enum StdinSecretMode {
     BootstrapJson,
 }
 
-/// 非対話実行では secret prompt を使えないため、stdin 入力 option を先に確定する。
-fn require_stdin_secret_source(enabled: bool, mode: StdinSecretMode) -> Result<()> {
-    if !enabled && !input_stdin_is_terminal() {
-        bail!(stdin_secret_source_error(mode));
-    }
-
-    Ok(())
-}
-
 /// fake 境界を使う command でも、secret 入力前の非対話契約を同じ判定にそろえる。
 fn require_stdin_secret_source_for_boundary<B: SecretsBoundary>(
     enabled: bool,
@@ -510,12 +510,6 @@ fn require_spare_serial_for_stdin_json<B: SecretsBoundary>(
     }
 
     Ok(())
-}
-
-/// 復号系 operation の前に PIN 入力を orchestration 層で完了させる。
-fn verify_pin_from_input<D: SecretDevice>(device: &mut D) -> Result<()> {
-    let pin = read_yubikey_pin()?;
-    device.verify_pin(&pin)
 }
 
 /// fake 境界を使う高水準 command でも、PIN 入力を device adapter の外側に固定する。
@@ -669,6 +663,8 @@ mod tests {
         prompts: VecDeque<bool>,
         open_device_calls: usize,
         read_bootstrap_calls: usize,
+        read_secret_calls: usize,
+        read_secret_stdin_values: Vec<bool>,
     }
 
     impl FakeBoundary {
@@ -679,6 +675,8 @@ mod tests {
                 prompts: VecDeque::new(),
                 open_device_calls: 0,
                 read_bootstrap_calls: 0,
+                read_secret_calls: 0,
+                read_secret_stdin_values: Vec::new(),
             }
         }
     }
@@ -725,9 +723,11 @@ mod tests {
         fn read_secret_for_put(
             &mut self,
             _name: SecretName,
-            _stdin: bool,
+            stdin: bool,
             memory: &SecretMemoryGuard,
         ) -> Result<ProtectedSecret> {
+            self.read_secret_calls += 1;
+            self.read_secret_stdin_values.push(stdin);
             protect_secret_input(Zeroizing::new(b"token".to_vec()).into(), memory)
         }
 
@@ -816,6 +816,40 @@ mod tests {
             Some(stdin_secret_source_error(StdinSecretMode::Single).to_owned())
         );
         assert_eq!(boundary.open_device_calls, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_bws_token_accepts_non_interactive_stdin_with_stub_yubikey() -> Result<()> {
+        let options = RotateBwsTokenOptions {
+            serial: Some(2001),
+            stdin: true,
+        };
+        let mut boundary = FakeBoundary::new(vec![FakeDevice::provisioned(2001)?]);
+        boundary.stdin_is_terminal = false;
+
+        run_rotate_bws_token_with(options, &mut boundary)?;
+
+        assert_eq!(boundary.open_device_calls, 1);
+        assert_eq!(boundary.read_secret_calls, 1);
+        assert_eq!(boundary.read_secret_stdin_values, vec![true]);
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_bws_token_accepts_tty_prompt_with_stub_yubikey() -> Result<()> {
+        let options = RotateBwsTokenOptions {
+            serial: Some(2001),
+            stdin: false,
+        };
+        let mut boundary = FakeBoundary::new(vec![FakeDevice::provisioned(2001)?]);
+        boundary.stdin_is_terminal = true;
+
+        run_rotate_bws_token_with(options, &mut boundary)?;
+
+        assert_eq!(boundary.open_device_calls, 1);
+        assert_eq!(boundary.read_secret_calls, 1);
+        assert_eq!(boundary.read_secret_stdin_values, vec![false]);
         Ok(())
     }
 

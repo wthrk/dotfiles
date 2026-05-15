@@ -4,9 +4,17 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+secrets-test-stub = []
+
 [[bin]]
 name = "dotfiles"
 path = "src/main.rs"
+
+[[test]]
+name = "secrets_cli"
+path = "tests/secrets_cli.rs"
+required-features = ["secrets-test-stub"]
 
 [lints]
 workspace = true
@@ -33,3 +41,6 @@ signal-hook.workspace = true
 strum.workspace = true
 yubikey.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+portable-pty.workspace = true
