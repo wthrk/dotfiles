@@ -36,7 +36,7 @@
 
 鍵は YubiKey 上で生成する。秘密鍵 material は export しない。鍵種別は `RSA2048` とし、content encryption key の wrap / unwrap にだけ使う。RSA padding は OAEP を使う。implementation PR では `yubikey` crate の PIV decrypt API と対応 padding を確認し、対応できない場合は design PR に戻して方式を見直す。
 
-PIN policy は `Always`、touch policy は `Cached` とする。`get` 実行時には PIN verification を要求し、secret 復号操作では YubiKey touch を要求する。ただし接続された YubiKey firmware が `Cached` touch を扱えない場合は `Always` に落とし、touch なしにはしない。
+PIN policy は `Always`、touch policy は `Always` とする。`get` 実行時には PIN verification を要求し、secret 復号操作ごとに YubiKey touch を要求する。連続した復旧コマンドでも touch を省略しない。
 
 ### Object IDs
 
@@ -68,10 +68,12 @@ dotfiles secrets yubikey enroll-spare
 1. primary YubiKey を選択し、PIN verification と touch を経て `bw-email`、`bw-password`、`bws-access-token` を復号する。
 2. spare YubiKey を選択する。primary と spare を同時接続できない場合は、primary 読み出し後に spare へ差し替えさせる。
 3. spare の専用 PIV slot / object が未使用であることを確認し、必要なら setup を行う。
-4. primary から読み出した secret を spare の public key で再暗号化して保存する。
-5. local verify を実行し、spare 単体で両方の secret を復号できることを確認する。
+4. primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
+5. local verify を実行し、spare 単体で 3 種類の secret を復号できることを確認する。
 
 secret はプロセスメモリ上の zeroize 可能な buffer にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-email`、`bw-password`、`bws-access-token` の再入力を要求しない。
+
+spare に保存する blob は primary の ciphertext や wrapped key を流用しない。AEAD additional data には spare の serial と保存先 object ID を使い、primary 由来の serial が spare 側の blob に残らないようにする。
 
 YubiKey の選択は対話を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示する。
 
@@ -115,20 +117,20 @@ DOTFILES-YK-SECRET\0
 version: u8 = 1
 name_len: u8
 name: utf8 bytes
-algorithm: u8
-nonce_len: u8
-nonce: bytes
+algorithm: u8 = 1
+nonce: [u8; 12]
 wrapped_key_len: u16
 wrapped_key: bytes
 ciphertext_len: u32
 ciphertext: bytes
-tag_len: u8
-tag: bytes
+tag: [u8; 16]
 ```
 
 Envelope encryption は次の役割分担にする。
 
-- secret 本文はランダムな content encryption key で AEAD 暗号化する。
+- `algorithm = 1` は AES-256-GCM を表す。
+- secret 本文はランダムな 32-byte content encryption key で AEAD 暗号化する。
+- AES-256-GCM の nonce は 12 bytes、tag は 16 bytes に固定する。format 互換性を単純に保つため、nonce / tag の可変長 field は持たない。
 - content encryption key は slot `82` の RSA public key で wrap する。
 - `get` は PIV private key operation で content encryption key を unwrap し、AEAD で secret 本文を復号する。
 - AEAD additional data には `version`、`name`、object ID、YubiKey serial を含め、blob の入れ替えを検出する。
@@ -197,9 +199,9 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
   "role": "spare",
   "checks": {
     "setup": "ok",
-    "bw-email": "ok",
-    "bw-password": "ok",
-    "bws-access-token": "ok",
+    "bw_email": "ok",
+    "bw_password": "ok",
+    "bws_access_token": "ok",
     "local_storage": "ok"
   }
 }
@@ -237,7 +239,7 @@ local storage check は次を確認する。
 
 - manifest が存在し、app、version、slot、object mapping が期待値と一致する。
 - `bw-email`、`bw-password`、`bws-access-token` の blob が存在する。
-- PIN verification と touch を経て両方の secret を復号できる。
+- PIN verification と touch を経て 3 種類の secret を復号できる。
 - 復号した secret は空ではない。
 
 このコマンドは GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F 登録状況を検証しない。
@@ -253,6 +255,8 @@ local storage check は次を確認する。
 - slot `82` に既存 key または certificate がある。
 - 使用予定 object ID に既存 data object がある。
 - `enroll-primary` / `enroll-spare` の途中で setup、保存、local verify のいずれかに失敗した。
+- `enroll-spare` で primary と spare の serial が同一である。
+- `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
 - `rotate-bws-token` 後の local verify または BWS 接続確認に失敗した。
 - manifest が存在するが app、version、slot、object mapping が期待値と一致しない。
 - 許可されていない secret name が指定された。
@@ -272,8 +276,9 @@ Unit test は fake YubiKey adapter で行う。
 - manifest parse / serialize。
 - object ID mapping。
 - `put` の既存 blob 検出と `--force`。
-- `enroll-primary` が setup、2 secret 保存、local verify を順に実行すること。
+- `enroll-primary` が setup、3 secret 保存、local verify を順に実行すること。
 - `enroll-spare` が primary 読み出し、spare setup、spare への再暗号化保存、local verify を順に実行すること。
+- `enroll-spare` が primary / spare 同一 serial と spare 待ち timeout を拒否すること。
 - `rotate-bws-token` が `bws-access-token` だけを更新し、`bw-email` と `bw-password` を変更しないこと。
 - `verify-yubikey` local storage check の正常系と missing manifest / missing blob / decrypt failure。
 - empty secret の拒否。
