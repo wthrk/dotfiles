@@ -8,7 +8,7 @@
 - 平文 secret は PIV data object に保存しない。
 - YubiKey 上に専用の PIV 鍵を生成し、secret はローカルで envelope encryption した blob として custom PIV data object に保存する。
 - 専用 PIV 鍵は retired key management slot `82` を使う。
-- data object は PIV の undefined tag 範囲から `0x005FDF10` から `0x005FDF13` までを使う。
+- data object は Yubico が application 用に確保している custom data object range から `0x005FFF00` から `0x005FFF03` までを使う。
 - スペア YubiKey は同じ PIV 秘密鍵を複製せず、各 YubiKey で専用鍵を生成して同じ secret を個別に保存する。
 - 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` / `get` を直接並べる手順にしない。
 - `dotfiles secrets verify-yubikey` で、挿さっている YubiKey が bootstrap secret を復号できることを確認する。
@@ -34,18 +34,18 @@
 
 専用 PIV 鍵には retired key management slot `82` を使う。標準用途の `9A`、`9C`、`9D`、`9E` は使わない。`82` に既存 key または certificate がある場合、`setup` は停止する。
 
-鍵は YubiKey 上で生成する。秘密鍵 material は export しない。鍵種別は `RSA2048` とし、content encryption key の wrap / unwrap にだけ使う。RSA padding は OAEP を使う。implementation PR では `yubikey` crate の PIV decrypt API と対応 padding を確認し、対応できない場合は design PR に戻して方式を見直す。
+鍵は YubiKey 上で生成する。秘密鍵 material は export しない。鍵種別は `RSA2048` とし、content encryption key の wrap / unwrap にだけ使う。PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。implementation PR では `yubikey` crate の PIV decrypt API が raw decrypt bytes を返す前提で OAEP unpad を実装し、対応できない場合は design PR に戻して方式を見直す。
 
-PIN policy は `Always`、touch policy は `Always` とする。`get` 実行時には PIN verification を要求し、secret 復号操作ごとに YubiKey touch を要求する。連続した復旧コマンドでも touch を省略しない。
+PIN policy は `Once`、touch policy は `Always` とする。1 コマンド内では PIN verification を 1 回に抑え、secret 復号操作ごとに YubiKey touch を要求する。例えば `enroll-spare` は primary 側の 3 secret 読み出しで 3 回、spare 側の local verify で 3 回の touch が発生する。連続した復旧コマンドでも touch を省略しない。
 
 ### Object IDs
 
 | Object ID | 用途 |
 | --- | --- |
-| `0x005FDF10` | dotfiles secret storage manifest |
-| `0x005FDF11` | `bw-email` encrypted blob |
-| `0x005FDF12` | `bw-password` encrypted blob |
-| `0x005FDF13` | `bws-access-token` encrypted blob |
+| `0x005FFF00` | dotfiles secret storage manifest |
+| `0x005FFF01` | `bw-email` encrypted blob |
+| `0x005FFF02` | `bw-password` encrypted blob |
+| `0x005FFF03` | `bws-access-token` encrypted blob |
 
 PIV data object は app 独自データを置けるが、読み出し自体は secret 保護境界にしない。そのため data object に置くのは暗号化済み blob と manifest だけにする。
 
@@ -75,6 +75,8 @@ secret はプロセスメモリ上の zeroize 可能な buffer にだけ保持�
 
 spare に保存する blob は primary の ciphertext や wrapped key を流用しない。AEAD additional data には spare の serial と保存先 object ID を使い、primary 由来の serial が spare 側の blob に残らないようにする。
 
+primary 読み出し後に spare へ差し替える間も、平文 secret は zeroize 可能な memory guard の内側だけに置く。正常終了、error、timeout、Ctrl-C などの interrupt path では必ず zeroize する。panic message、debug 表示、error context には secret 本文を含めない。`enroll-spare` は平文 secret を保持している間、core dump を無効化し、可能な環境では `mlock` 相当で buffer を lock する。memory lock に失敗した場合は、secret を読み出す前に停止する。
+
 YubiKey の選択は対話を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示する。
 
 primary の初期登録も同じ考え方にし、通常は次のコマンドだけを使う。
@@ -103,9 +105,9 @@ Manifest は JSON とし、UTF-8 bytes を PIV data object に保存する。
   "app": "dotfiles.secret-recovery",
   "key_slot": "82",
   "objects": {
-    "bw-email": "0x005FDF11",
-    "bw-password": "0x005FDF12",
-    "bws-access-token": "0x005FDF13"
+    "bw-email": "0x005FFF01",
+    "bw-password": "0x005FFF02",
+    "bws-access-token": "0x005FFF03"
   }
 }
 ```
@@ -115,8 +117,7 @@ Secret blob は binary format とする。先頭に ASCII magic と version を�
 ```text
 DOTFILES-YK-SECRET\0
 version: u8 = 1
-name_len: u8
-name: utf8 bytes
+secret_id: u8
 algorithm: u8 = 1
 nonce: [u8; 12]
 wrapped_key_len: u16
@@ -129,11 +130,12 @@ tag: [u8; 16]
 Envelope encryption は次の役割分担にする。
 
 - `algorithm = 1` は AES-256-GCM を表す。
+- `secret_id` は `1 = bw-email`、`2 = bw-password`、`3 = bws-access-token` を表す。
 - secret 本文はランダムな 32-byte content encryption key で AEAD 暗号化する。
 - AES-256-GCM の nonce は 12 bytes、tag は 16 bytes に固定する。format 互換性を単純に保つため、nonce / tag の可変長 field は持たない。
 - content encryption key は slot `82` の RSA public key で wrap する。
 - `get` は PIV private key operation で content encryption key を unwrap し、AEAD で secret 本文を復号する。
-- AEAD additional data には `version`、`name`、object ID、YubiKey serial を含め、blob の入れ替えを検出する。
+- AEAD additional data には `version`、`secret_id`、object ID、YubiKey serial を含め、blob の入れ替えを検出する。
 
 平文 secret は `String` ではなく zeroize 可能な byte buffer として扱う。ログ、error context、debug 表示に secret 本文や復号済み buffer を含めない。
 
@@ -146,7 +148,7 @@ Envelope encryption は次の役割分担にする。
 - YubiKey が 1 本だけ接続されていればそれを対象にする。複数本ある場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` を要求する。
 - PIV application version が利用条件を満たすこと。
 - slot `82` に既存 key / certificate がないこと。
-- `0x005FDF10`、`0x005FDF11`、`0x005FDF12`、`0x005FDF13` に既存 data object がないこと。
+- `0x005FFF00`、`0x005FFF01`、`0x005FFF02`、`0x005FFF03` に既存 data object がないこと。
 - PIN retries が 0 ではないこと。
 - management key authentication が可能なこと。
 
@@ -191,11 +193,25 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 
 入力 bytes をログや一時ファイルへ残さない。JSON parse 後の secret は zeroize 可能な buffer として扱う。
 
-`enroll-primary` / `enroll-spare` は成功時に secret 本文を出さず、次の summary だけを出力する。
+`enroll-primary` / `enroll-spare` は成功時に secret 本文を出さず、次の summary だけを出力する。`role` は `primary` または `spare` のいずれかで、複数 spare の識別には YubiKey serial を使う。
 
 ```json
 {
   "serial": 12345678,
+  "role": "primary",
+  "checks": {
+    "setup": "ok",
+    "bw_email": "ok",
+    "bw_password": "ok",
+    "bws_access_token": "ok",
+    "local_storage": "ok"
+  }
+}
+```
+
+```json
+{
+  "serial": 87654321,
   "role": "spare",
   "checks": {
     "setup": "ok",
@@ -257,12 +273,13 @@ local storage check は次を確認する。
 - `enroll-primary` / `enroll-spare` の途中で setup、保存、local verify のいずれかに失敗した。
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
+- `enroll-spare` で平文 secret を保持する前に core dump 無効化または memory lock の準備に失敗した。
 - `rotate-bws-token` 後の local verify または BWS 接続確認に失敗した。
 - manifest が存在するが app、version、slot、object mapping が期待値と一致しない。
 - 許可されていない secret name が指定された。
 - 同名 secret が存在し、`--force` が指定されていない。
 - secret 入力が空。
-- secret blob の magic、version、name、AEAD additional data が一致しない。
+- secret blob の magic、version、secret id、AEAD additional data が一致しない。
 - 復号または認証 tag 検証に失敗した。
 - `verify-yubikey` で必須 check が失敗した。
 
@@ -279,10 +296,11 @@ Unit test は fake YubiKey adapter で行う。
 - `enroll-primary` が setup、3 secret 保存、local verify を順に実行すること。
 - `enroll-spare` が primary 読み出し、spare setup、spare への再暗号化保存、local verify を順に実行すること。
 - `enroll-spare` が primary / spare 同一 serial と spare 待ち timeout を拒否すること。
+- `enroll-spare` の error / interrupt path で平文 buffer が zeroize されること。
 - `rotate-bws-token` が `bws-access-token` だけを更新し、`bw-email` と `bw-password` を変更しないこと。
 - `verify-yubikey` local storage check の正常系と missing manifest / missing blob / decrypt failure。
 - empty secret の拒否。
-- blob magic / version / name mismatch の拒否。
+- blob magic / version / secret id mismatch の拒否。
 - adapter error から利用者向け error context への変換。
 - secret 本文が error 表示に含まれないこと。
 

@@ -242,6 +242,7 @@ Design PR で決めること:
 Implementation PR の完了条件:
 
 - `dotfiles secrets bw-login` を実装する。
+- YubiKey 内の `bw-email` を通常の login email として使い、override が必要な場合だけ `--email <email>` を許可する。
 - `bw login <email> --passwordenv BW_PASSWORD --method 3 --code <otp>` を実行する。
 - `bw unlock --passwordenv BW_PASSWORD --raw` を実行する。
 - `dotfiles secrets verify-yubikey --check bw-login` を実装する。
