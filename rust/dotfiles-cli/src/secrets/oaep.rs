@@ -56,7 +56,7 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
     Ok(Zeroizing::new(rest[separator + 1..].to_vec()))
 }
 
-/// RSA-OAEP SHA-256 で使う MGF1 mask を生成する。
+/// `rsa` crate の OAEP unpad は非公開 API のため、YubiKey の raw RSA 出力だけを復号境界に戻す。
 fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
     let mut counter = 0u32;

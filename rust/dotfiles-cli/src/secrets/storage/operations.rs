@@ -15,12 +15,9 @@ use super::model::{
     format_object_id, storage_object_ids,
 };
 
-/// secret 名を manifest / error 表示用の kebab-case 文字列にする。
+/// エラーメッセージと summary では serde/CLI と同じ kebab-case 名を使う。
 pub(crate) fn secret_name(name: SecretName) -> String {
-    serde_json::to_value(name)
-        .ok()
-        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .unwrap_or_else(|| format!("{name:?}"))
+    name.to_string()
 }
 
 /// secret storage 用 PIV key と manifest を新規作成する。
@@ -198,13 +195,13 @@ pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySum
     })
 }
 
-/// 期待 manifest を PIV data object に保存する。
+/// manifest は secret blob より先に書き、以後の put/get/verify の storage sentinel にする。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
     let manifest = serde_json::to_vec(&SecretManifest::expected())?;
     device.write_object(MANIFEST_OBJECT_ID, &manifest)
 }
 
-/// PIV data object から manifest を読み出して JSON として parse する。
+/// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
 fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
     let manifest = device
         .read_object(MANIFEST_OBJECT_ID)?

@@ -1,6 +1,4 @@
-//! storage モジュール分割後も維持する回帰テスト群。
-//!
-//! 公開 API の互換性と、wire format・暗号境界・操作フローの不変条件をまとめて検証する。
+//! storage の公開 API が保つ wire format、暗号境界、YubiKey 書き込み認証契約を検証する。
 
 use std::collections::BTreeMap;
 

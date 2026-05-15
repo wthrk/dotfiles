@@ -71,7 +71,7 @@ fn parse_secret_blob(input: &[u8]) -> nom::IResult<&[u8], SecretBlob> {
     ))
 }
 
-/// `nom` parser で固定長 byte 配列を読み取る。
+/// wire format の固定長領域は、短い入力を parse error として全体 decode 失敗へ寄せる。
 fn fixed_bytes<const N: usize>(input: &[u8]) -> nom::IResult<&[u8], [u8; N]> {
     map_res(take(N), <[u8; N]>::try_from).parse(input)
 }

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result as AnyhowResult, bail};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};
-use strum::{EnumIter, IntoEnumIterator};
+use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use zeroize::Zeroizing;
 
 use crate::Result;
@@ -31,8 +31,22 @@ pub const MANIFEST_APP: &str = "dotfiles.secret-recovery";
 pub const KEY_SLOT: &str = "82";
 
 /// YubiKey bootstrap に保存できる secret 名。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Display,
+    EnumIter,
+    EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum SecretName {
     /// Bitwarden login email。
     BwEmail,

@@ -36,7 +36,7 @@ pub(crate) struct SecretsOptions {
 }
 
 #[derive(Subcommand)]
-/// `dotfiles secrets` 配下の操作種別。
+/// `dotfiles secrets` は低水準 YubiKey 操作と利用者向け検証を別の入口として扱う。
 enum SecretsCommand {
     Yubikey(YubikeyOptions),
     VerifyYubikey(VerifyYubikeyOptions),
@@ -61,7 +61,7 @@ enum YubikeyCommand {
 }
 
 #[derive(Args)]
-/// 単一 YubiKey を serial で指定する option。
+/// 非対話実行では secret 入力前に対象 YubiKey を serial で固定する。
 struct SerialOptions {
     #[arg(long)]
     serial: Option<u32>,
@@ -204,7 +204,7 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
     run_enroll_spare_with(options, &mut boundary)
 }
 
-/// `enroll-spare` の統合フローを、device/input 境界を差し替え可能にして実行する。
+/// device/input 境界を差し替え、secret 読み込み前の spare 準備と同一 serial 拒否を固定する。
 fn run_enroll_spare_with<B: SecretsBoundary>(
     options: EnrollSpareOptions,
     boundary: &mut B,
@@ -289,7 +289,7 @@ fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
     run_rotate_bws_token_with(options, &mut boundary)
 }
 
-/// `rotate-bws-token` の統合フローを、device/input 境界を差し替え可能にして実行する。
+/// token 入力を 1 回に限定し、複数 YubiKey 更新時も同じ token buffer を再利用する。
 fn run_rotate_bws_token_with<B: SecretsBoundary>(
     options: RotateBwsTokenOptions,
     boundary: &mut B,
@@ -345,7 +345,7 @@ fn run_verify_yubikey(options: VerifyYubikeyOptions) -> Result<()> {
     run_verify_yubikey_with(options, &mut boundary)
 }
 
-/// `verify-yubikey` の統合フローを、device 境界を差し替え可能にして実行する。
+/// 外部 service check は未実装として device access 前に拒否し、local storage 検証だけを通す。
 fn run_verify_yubikey_with<B: SecretsBoundary>(
     options: VerifyYubikeyOptions,
     boundary: &mut B,
@@ -397,9 +397,10 @@ trait SecretsBoundary {
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
 }
 
-/// CLI 引数の secret 名を storage model の closed set に変換する。
+/// CLI は kebab-case 名だけを受け付け、wire format の secret id 変換とは分離する。
 fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
-    serde_json::from_value(serde_json::Value::String(value.to_owned()))
+    value
+        .parse()
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
 }
 

@@ -161,7 +161,7 @@ pub(crate) fn open_spare_device(
     }
 }
 
-/// spare として開いた YubiKey が primary と同一 serial でないことを確認する。
+/// spare 登録では primary と同じ serial を、secret 再保存の前に拒否する。
 fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>) -> Result<()> {
     if Some(device.serial()) == primary_serial {
         bail!("primary and spare YubiKey serial must be different");
@@ -339,7 +339,7 @@ impl YubikeySecretDevice {
         Ok(())
     }
 
-    /// secret storage 用 slot に生成済みの RSA public key を取得する。
+    /// PIV metadata から取得した public key だけを使い、private key material は host へ出さない。
     fn public_key(&mut self) -> Result<RsaPublicKey> {
         let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
         let public = metadata

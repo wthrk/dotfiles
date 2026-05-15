@@ -3,7 +3,6 @@
 //! secret 本文は CLI 引数にせず、読み込み開始時点から zeroize 対象の buffer に置く。
 
 use std::{
-    fmt,
     io::{self, IsTerminal, Read, Write},
     os::fd::AsFd,
     time::{Duration, Instant},
@@ -15,10 +14,7 @@ use nix::{
     poll::{PollFd, PollFlags, PollTimeout, poll},
     unistd,
 };
-use serde::{
-    Deserialize, Deserializer,
-    de::{self, DeserializeSeed, MapAccess, Visitor},
-};
+use serde::Deserialize;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
@@ -29,13 +25,6 @@ use crate::Result;
 
 const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
-
-enum BootstrapSecretField {
-    BwEmail,
-    BwPassword,
-    BwsAccessToken,
-    Ignored,
-}
 
 /// `put` 用の secret を prompt または stdin から読み取る。
 ///
@@ -92,13 +81,13 @@ pub(crate) fn read_bootstrap_secrets(
     lock_bootstrap_secrets(secrets, memory)
 }
 
-/// 端末に表示しない prompt から 1 secret を読み取る。
+/// hidden prompt の戻り値は、CLI 側へ渡す前から zeroize 対象の bytes として保持する。
 pub(crate) fn read_hidden(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
     let value = rpassword::prompt_password(prompt)?;
     Ok(Zeroizing::new(value.into_bytes()))
 }
 
-/// rotate 対話実行で次の YubiKey も更新するか確認する。
+/// 非対話 stdin では追加更新を prompt できないため、複数本更新を開始しない。
 pub(crate) fn prompt_yes_no(prompt: &str) -> Result<bool> {
     if !io::stdin().is_terminal() {
         return Ok(false);
@@ -140,7 +129,7 @@ pub(crate) fn protect_zeroizing_secret(mut secret: Zeroizing<Vec<u8>>) -> storag
     storage::secret_bytes(std::mem::take(&mut *secret))
 }
 
-/// memory guard がある登録経路では、3 secret すべてを guard 管理下へ移す。
+/// memory guard がある登録経路では、3 secret すべてを同じ process/memory 保護下に置く。
 fn lock_bootstrap_secrets(
     secrets: BootstrapSecrets,
     memory: Option<&mut SecretMemoryGuard>,
@@ -152,167 +141,37 @@ fn lock_bootstrap_secrets(
     Ok(secrets)
 }
 
-/// `--stdin-json` の各 field は、次の field を読む前に secret wrapper と memory lock 対象へ移す。
+/// `--stdin-json` の構造検証は serde に任せ、decode 後の field 文字列を zeroize 対象にする。
 fn parse_bootstrap_secrets_json(
     input: &[u8],
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
-    let mut deserializer = serde_json::Deserializer::from_slice(input);
-    let secrets = BootstrapSecretsSeed { memory }.deserialize(&mut deserializer)?;
-    deserializer.end()?;
-    Ok(secrets)
+    let input: BootstrapSecretsInput = serde_json::from_slice(input)?;
+    lock_bootstrap_secrets(input.into_bootstrap_secrets(), memory)
 }
 
-struct BootstrapSecretsSeed<'a> {
-    memory: Option<&'a mut SecretMemoryGuard>,
+#[derive(Deserialize)]
+struct BootstrapSecretsInput {
+    #[serde(rename = "bw-email")]
+    bw_email: Zeroizing<String>,
+    #[serde(rename = "bw-password")]
+    bw_password: Zeroizing<String>,
+    #[serde(rename = "bws-access-token")]
+    bws_access_token: Zeroizing<String>,
 }
 
-/// serde が確保した field 文字列を、decode 直後から zeroize 対象として受け取る seed。
-struct ZeroizingStringSeed;
-
-impl<'de> Deserialize<'de> for BootstrapSecretField {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct FieldVisitor;
-
-        impl Visitor<'_> for FieldVisitor {
-            type Value = BootstrapSecretField;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("bootstrap secret field")
-            }
-
-            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(match value {
-                    "bw-email" => BootstrapSecretField::BwEmail,
-                    "bw-password" => BootstrapSecretField::BwPassword,
-                    "bws-access-token" => BootstrapSecretField::BwsAccessToken,
-                    _ => BootstrapSecretField::Ignored,
-                })
-            }
+impl BootstrapSecretsInput {
+    fn into_bootstrap_secrets(self) -> BootstrapSecrets {
+        BootstrapSecrets {
+            bw_email: secret_string_bytes(self.bw_email),
+            bw_password: secret_string_bytes(self.bw_password),
+            bws_access_token: secret_string_bytes(self.bws_access_token),
         }
-
-        deserializer.deserialize_identifier(FieldVisitor)
     }
 }
 
-impl<'de> DeserializeSeed<'de> for BootstrapSecretsSeed<'_> {
-    type Value = BootstrapSecrets;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(self)
-    }
-}
-
-impl<'de> Visitor<'de> for BootstrapSecretsSeed<'_> {
-    type Value = BootstrapSecrets;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("bootstrap secret JSON object")
-    }
-
-    fn visit_map<A>(mut self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut bw_email = None;
-        let mut bw_password = None;
-        let mut bws_access_token = None;
-
-        while let Some(field) = map.next_key()? {
-            match field {
-                BootstrapSecretField::BwEmail => {
-                    if bw_email.is_some() {
-                        return Err(de::Error::duplicate_field("bw-email"));
-                    }
-                    bw_email = Some(self.read_secret(&mut map, SecretName::BwEmail)?);
-                }
-                BootstrapSecretField::BwPassword => {
-                    if bw_password.is_some() {
-                        return Err(de::Error::duplicate_field("bw-password"));
-                    }
-                    bw_password = Some(self.read_secret(&mut map, SecretName::BwPassword)?);
-                }
-                BootstrapSecretField::BwsAccessToken => {
-                    if bws_access_token.is_some() {
-                        return Err(de::Error::duplicate_field("bws-access-token"));
-                    }
-                    bws_access_token =
-                        Some(self.read_secret(&mut map, SecretName::BwsAccessToken)?);
-                }
-                BootstrapSecretField::Ignored => {
-                    map.next_value::<de::IgnoredAny>()?;
-                }
-            }
-        }
-
-        Ok(BootstrapSecrets {
-            bw_email: bw_email.ok_or_else(|| de::Error::missing_field("bw-email"))?,
-            bw_password: bw_password.ok_or_else(|| de::Error::missing_field("bw-password"))?,
-            bws_access_token: bws_access_token
-                .ok_or_else(|| de::Error::missing_field("bws-access-token"))?,
-        })
-    }
-}
-
-impl BootstrapSecretsSeed<'_> {
-    /// 1 field 分の allocation を次の JSON field へ進む前に secret wrapper / memory lock へ移す。
-    fn read_secret<'de, A>(
-        &mut self,
-        map: &mut A,
-        name: SecretName,
-    ) -> std::result::Result<storage::SecretBytes, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut value = map.next_value_seed(ZeroizingStringSeed)?;
-        let secret = storage::secret_bytes(std::mem::take(&mut *value).into_bytes());
-        if let Some(memory) = self.memory.as_deref_mut() {
-            return memory.lock_secret(name, secret).map_err(de::Error::custom);
-        }
-
-        Ok(secret)
-    }
-}
-
-impl<'de> DeserializeSeed<'de> for ZeroizingStringSeed {
-    type Value = Zeroizing<String>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct ZeroizingStringVisitor;
-
-        impl Visitor<'_> for ZeroizingStringVisitor {
-            type Value = Zeroizing<String>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("bootstrap secret string")
-            }
-
-            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
-                Ok(Zeroizing::new(value))
-            }
-
-            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(Zeroizing::new(value.to_owned()))
-            }
-        }
-
-        deserializer.deserialize_string(ZeroizingStringVisitor)
-    }
+fn secret_string_bytes(mut secret: Zeroizing<String>) -> storage::SecretBytes {
+    storage::secret_bytes(std::mem::take(&mut *secret).into_bytes())
 }
 
 /// stdin から単一 secret を読み、terminal 入力由来の末尾改行だけを正規化する。
