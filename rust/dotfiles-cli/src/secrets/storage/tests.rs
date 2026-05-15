@@ -96,6 +96,10 @@ impl SecretDevice for FakeDevice {
         Ok(Zeroizing::new(key.iter().map(|byte| byte ^ 0xa5).collect()))
     }
 
+    fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
+        Ok(())
+    }
+
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         self.wrap_key(wrapped_key)
     }
@@ -417,7 +421,7 @@ fn enroll_fails_when_management_auth_breaks_during_secret_writes() {
     let result = enroll(&mut device, YubikeyRole::Primary, &secrets);
 
     assert!(result.is_err());
-    assert_eq!(device.management_auth_check_calls, 1);
+    assert_eq!(device.management_auth_check_calls, 2);
     assert!(device.management_auth_write_calls >= 2);
 }
 

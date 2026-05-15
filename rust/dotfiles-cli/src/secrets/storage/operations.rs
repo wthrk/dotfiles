@@ -91,6 +91,7 @@ fn check_put_target_writable<D: SecretDevice>(
     force: bool,
 ) -> Result<()> {
     read_manifest(device)?.validate_expected()?;
+    device.check_management_auth_preconditions()?;
     if device.read_object(name.object_id())?.is_some() && !force {
         bail!(
             "{} already exists; pass --force to replace it",
@@ -166,7 +167,8 @@ pub fn rotate_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result
 
 /// `rotate-bws-token` の token 入力前に、local storage が更新可能か確認する。
 pub fn check_rotate_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
-    verify_local_storage(device).map(|_| ())
+    verify_local_storage(device)?;
+    device.check_management_auth_preconditions()
 }
 
 /// YubiKey 上の manifest と 3 secret の復号可能性を検証する。

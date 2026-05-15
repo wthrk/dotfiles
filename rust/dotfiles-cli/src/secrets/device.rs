@@ -4,7 +4,6 @@
 //! は setup / object write の直前に閉じ込める。
 
 use std::{
-    io::{self, IsTerminal, Write},
     thread,
     time::{Duration, Instant},
 };
@@ -20,7 +19,10 @@ use yubikey::{
 use zeroize::Zeroizing;
 
 use super::{
-    input::{read_hidden, read_terminal_line_until, wait_for_enter},
+    input::{
+        SPARE_SERIAL_NONINTERACTIVE_ERROR, SPARE_WAIT_TIMEOUT_ERROR, YubikeySelectionCandidate,
+        select_yubikey_candidate, stdin_is_terminal, wait_for_spare_replacement,
+    },
     memory::InterruptGuard,
     oaep::oaep_unpad_sha256,
     storage::SecretDevice,
@@ -58,9 +60,7 @@ pub(crate) struct YubikeySecretDevice {
 ///
 /// 非対話実行では secret 読み込み前に対象 device を確定するため、serial 指定を必須にする。
 pub(crate) fn open_device(serial: Option<u32>) -> Result<YubikeySecretDevice> {
-    if serial.is_none() && !io::stdin().is_terminal() {
-        bail!("pass --serial in non-interactive use");
-    }
+    require_serial_for_noninteractive(serial)?;
 
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
@@ -79,21 +79,15 @@ fn open_device_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
-    if serial.is_none() && !io::stdin().is_terminal() {
-        bail!("pass --serial in non-interactive use");
-    }
+    require_serial_for_noninteractive(serial)?;
 
-    if interrupt.interrupted() {
-        bail!("interrupted while handling bootstrap secrets");
-    }
+    interrupt.check_interrupted()?;
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
         open_interactive_device_until(deadline, interrupt)?
     };
-    if interrupt.interrupted() {
-        bail!("interrupted while handling bootstrap secrets");
-    }
+    interrupt.check_interrupted()?;
 
     Ok(YubikeySecretDevice {
         yubikey,
@@ -104,16 +98,14 @@ fn open_device_until(
 /// primary 抜去直後の 0 本状態を許容し、待機期限までは検出を再試行する。
 fn open_interactive_device_until(deadline: Instant, interrupt: &InterruptGuard) -> Result<YubiKey> {
     loop {
-        if interrupt.interrupted() {
-            bail!("interrupted while handling bootstrap secrets");
-        }
+        interrupt.check_interrupted()?;
 
         match select_interactive_yubikey_until(deadline, interrupt) {
             Ok(yubikey) => return Ok(yubikey),
             Err(InteractiveSelectError::NoDevice) => {
                 let now = Instant::now();
                 if now >= deadline {
-                    bail!("timed out waiting for spare YubiKey");
+                    bail!(SPARE_WAIT_TIMEOUT_ERROR);
                 }
                 let sleep_duration =
                     SPARE_DETECT_POLL_INTERVAL.min(deadline.saturating_duration_since(now));
@@ -135,9 +127,7 @@ pub(crate) fn open_spare_device(
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
-    if spare_serial.is_none() && !io::stdin().is_terminal() {
-        bail!("pass --spare-serial in non-interactive use");
-    }
+    require_spare_serial_for_noninteractive(spare_serial)?;
 
     if let Some(spare_serial) = spare_serial {
         let device = open_device(Some(spare_serial))?;
@@ -148,17 +138,33 @@ pub(crate) fn open_spare_device(
     let deadline = Instant::now() + SPARE_WAIT_TIMEOUT;
     loop {
         if Instant::now() >= deadline {
-            bail!("timed out waiting for spare YubiKey");
+            bail!(SPARE_WAIT_TIMEOUT_ERROR);
         }
         let device = open_device_until(None, deadline, interrupt)?;
         if ensure_spare_serial(&device, primary_serial).is_ok() {
             return Ok(device);
         }
 
-        eprintln!("The selected YubiKey is the primary; replace it with the spare.");
-        eprintln!("Insert the spare YubiKey, then press Enter.");
-        wait_for_enter(deadline, interrupt)?;
+        wait_for_spare_replacement(deadline, interrupt)?;
     }
+}
+
+/// 非対話実行では YubiKey 選択 prompt に入る前に対象 serial を要求する。
+fn require_serial_for_noninteractive(serial: Option<u32>) -> Result<()> {
+    if serial.is_none() && !stdin_is_terminal() {
+        bail!("pass --serial in non-interactive use");
+    }
+
+    Ok(())
+}
+
+/// spare 差し替え prompt が使えない入力元では spare serial を必須にする。
+fn require_spare_serial_for_noninteractive(spare_serial: Option<u32>) -> Result<()> {
+    if spare_serial.is_none() && !stdin_is_terminal() {
+        bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
+    }
+
+    Ok(())
 }
 
 /// spare 登録では primary と同じ serial を、secret 再保存の前に拒否する。
@@ -178,10 +184,11 @@ fn select_interactive_yubikey() -> Result<YubiKey> {
     select_interactive_yubikey_with_input(None, false).map_err(map_select_interactive_error)
 }
 
+/// spare 待機中の対話選択では、deadline と interrupt を入力待ちにも適用する。
 fn select_interactive_yubikey_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
-) -> std::result::Result<YubiKey, InteractiveSelectError> {
+) -> InteractiveSelectResult<YubiKey> {
     select_interactive_yubikey_with_input(Some((deadline, interrupt)), true)
 }
 
@@ -189,22 +196,20 @@ fn select_interactive_yubikey_until(
 fn select_interactive_yubikey_with_input(
     timed_input: Option<(Instant, &InterruptGuard)>,
     allow_no_device: bool,
-) -> std::result::Result<YubiKey, InteractiveSelectError> {
-    let mut context = yubikey::Context::open()
-        .map_err(anyhow::Error::from)
-        .map_err(InteractiveSelectError::Other)?;
+) -> InteractiveSelectResult<YubiKey> {
+    let mut context = yubikey::Context::open().map_err(interactive_select_error)?;
     let discovery =
-        discover_interactive_yubikeys(&mut context).map_err(InteractiveSelectError::Other)?;
+        discover_interactive_yubikeys(&mut context).map_err(interactive_select_error)?;
 
     match discovery {
         InteractiveDiscovery::NoDevice if allow_no_device => Err(InteractiveSelectError::NoDevice),
-        InteractiveDiscovery::NoDevice => Err(InteractiveSelectError::Other(anyhow::anyhow!(
+        InteractiveDiscovery::NoDevice => Err(interactive_select_error(anyhow::anyhow!(
             "no YubiKey detected"
         ))),
         InteractiveDiscovery::OpenError { reader, source } => {
             let err = anyhow::Error::from(source)
                 .context(format!("failed to open YubiKey reader '{reader}'"));
-            Err(InteractiveSelectError::Other(err))
+            Err(interactive_select_error(err))
         }
         InteractiveDiscovery::Found(keys) => match keys.as_slice() {
             [_] => {
@@ -212,61 +217,34 @@ fn select_interactive_yubikey_with_input(
                     .into_iter()
                     .next()
                     .context("single selected YubiKey disappeared")
-                    .map_err(InteractiveSelectError::Other)?;
+                    .map_err(interactive_select_error)?;
                 Ok(yubikey)
             }
             [_, ..] => {
-                if !io::stdin().is_terminal() {
-                    return Err(InteractiveSelectError::Other(anyhow::anyhow!(
-                        "multiple YubiKeys detected; pass a serial option in non-interactive use"
-                    )));
-                }
-
-                eprintln!("Select YubiKey:");
-                for (index, (reader, yubikey)) in keys.iter().enumerate() {
-                    eprintln!("{}: serial {} ({reader})", index + 1, yubikey.serial());
-                }
-                eprint!("number: ");
-                io::stderr()
-                    .flush()
-                    .map_err(anyhow::Error::from)
-                    .map_err(InteractiveSelectError::Other)?;
-
-                let input = if let Some((deadline, interrupt)) = timed_input {
-                    read_terminal_line_until(deadline, interrupt)
-                        .map_err(InteractiveSelectError::Other)?
-                } else {
-                    let mut input = String::new();
-                    io::stdin()
-                        .read_line(&mut input)
-                        .map_err(anyhow::Error::from)
-                        .map_err(InteractiveSelectError::Other)?;
-                    input
-                };
-                let selected = input
-                    .trim()
-                    .parse::<usize>()
-                    .context("invalid selection")
-                    .map_err(InteractiveSelectError::Other)?;
-                if selected == 0 || selected > keys.len() {
-                    return Err(InteractiveSelectError::Other(anyhow::anyhow!(
-                        "selected YubiKey is out of range"
-                    )));
-                }
+                let candidates = keys
+                    .iter()
+                    .map(|(reader, yubikey)| YubikeySelectionCandidate {
+                        reader,
+                        serial: yubikey.serial().0,
+                    })
+                    .collect::<Vec<_>>();
+                let selected = select_yubikey_candidate(&candidates, timed_input)
+                    .map_err(interactive_select_error)?;
                 let (_, yubikey) = keys
                     .into_iter()
-                    .nth(selected - 1)
+                    .nth(selected)
                     .context("selected YubiKey disappeared")
-                    .map_err(InteractiveSelectError::Other)?;
+                    .map_err(interactive_select_error)?;
                 Ok(yubikey)
             }
-            [] => Err(InteractiveSelectError::Other(anyhow::anyhow!(
+            [] => Err(interactive_select_error(anyhow::anyhow!(
                 "no YubiKey detected"
             ))),
         },
     }
 }
 
+/// reader open error を保持し、権限や PC/SC 障害を no-device と誤報しない。
 fn discover_interactive_yubikeys(context: &mut yubikey::Context) -> Result<InteractiveDiscovery> {
     let attempts = context
         .iter()?
@@ -284,6 +262,14 @@ enum InteractiveSelectError {
     Other(anyhow::Error),
 }
 
+type InteractiveSelectResult<T> = std::result::Result<T, InteractiveSelectError>;
+
+/// 対話選択だけが許す no-device sentinel と通常 error path を分ける。
+fn interactive_select_error(error: impl Into<anyhow::Error>) -> InteractiveSelectError {
+    InteractiveSelectError::Other(error.into())
+}
+
+/// 通常の対話選択では no-device sentinel を利用者向け error に戻す。
 fn map_select_interactive_error(err: InteractiveSelectError) -> anyhow::Error {
     match err {
         InteractiveSelectError::NoDevice => anyhow::anyhow!("no YubiKey detected"),
@@ -291,6 +277,7 @@ fn map_select_interactive_error(err: InteractiveSelectError) -> anyhow::Error {
     }
 }
 
+/// 開けた YubiKey を優先し、1 本も開けない場合だけ最初の open error を返す。
 fn classify_interactive_discovery(
     attempts: Vec<ReaderOpenAttempt<YubiKey>>,
 ) -> Result<InteractiveDiscovery> {
@@ -318,21 +305,20 @@ fn classify_interactive_discovery(
 }
 
 impl YubikeySecretDevice {
-    /// PIV private key operation に必要な PIN verification を遅延実行する。
-    fn verify_pin_once(&mut self) -> Result<()> {
+    /// PIV private key operation に必要な PIN verification を 1 command で 1 回だけ行う。
+    fn verify_pin_once(&mut self, pin: &[u8]) -> Result<()> {
         if self.pin_verified {
             return Ok(());
         }
 
-        let pin = read_hidden("YubiKey PIN: ")?;
-        self.yubikey.verify_pin(&pin)?;
+        self.yubikey.verify_pin(pin)?;
         self.pin_verified = true;
         Ok(())
     }
 
     /// 本実装は既定 management key 固定運用を前提とし、個別 key を使う YubiKey は対象外とする。
     ///
-    /// 秘密復旧フローでは対象 key の運用境界を明示し、誤って「任意管理鍵対応」と誤認しない状態を維持する。
+    /// 秘密復旧フローでは既定鍵以外を対象外とし、任意 management key 対応として扱わない。
     fn authenticate_management(&mut self) -> Result<()> {
         let key = MgmKey::get_default(&self.yubikey)?;
         self.yubikey.authenticate(&key)?;
@@ -421,8 +407,14 @@ impl SecretDevice for YubikeySecretDevice {
         Ok(Zeroizing::new(wrapped))
     }
 
+    fn verify_pin(&mut self, pin: &[u8]) -> Result<()> {
+        self.verify_pin_once(pin)
+    }
+
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        self.verify_pin_once()?;
+        if !self.pin_verified {
+            bail!("YubiKey PIN must be verified before reading stored secrets");
+        }
         let decrypted = piv::decrypt_data(
             &mut self.yubikey,
             wrapped_key,
@@ -434,10 +426,12 @@ impl SecretDevice for YubikeySecretDevice {
     }
 }
 
+/// `yubikey::Version` に ordering がないため、PIV metadata 要件だけ tuple 比較する。
 fn version_lt(left: Version, right: Version) -> bool {
     (left.major, left.minor, left.patch) < (right.major, right.minor, right.patch)
 }
 
+/// PIV application version を user-facing error に出す dotted 表記へ変換する。
 fn format_version(version: Version) -> String {
     format!("{}.{}.{}", version.major, version.minor, version.patch)
 }

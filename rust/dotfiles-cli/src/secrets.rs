@@ -9,17 +9,15 @@ mod memory;
 mod oaep;
 mod storage;
 
-use std::{
-    collections::BTreeSet,
-    io::{self, IsTerminal},
-};
+use std::collections::BTreeSet;
 
 use anyhow::bail;
 use clap::{Args, Subcommand, ValueEnum};
 use device::{open_device, open_spare_device};
 use input::{
-    prompt_yes_no, protect_zeroizing_secret, read_bootstrap_secrets, read_secret_for_put,
-    write_secret_to_stdout,
+    SPARE_SERIAL_NONINTERACTIVE_ERROR, prompt_yes_no, protect_zeroizing_secret,
+    read_bootstrap_secrets, read_secret_for_put, read_yubikey_pin,
+    stdin_is_terminal as input_stdin_is_terminal, write_secret_to_stdout,
 };
 use memory::{InterruptGuard, SecretMemoryGuard};
 use secrecy::ExposeSecret;
@@ -155,6 +153,7 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
             storage::setup(&mut device)
         }
         YubikeyCommand::Put(options) => {
+            require_stdin_secret_source(options.stdin, StdinSecretMode::Single)?;
             let interrupt_guard = InterruptGuard::install()?;
             let mut memory = SecretMemoryGuard::prepare()?;
             let mut device = open_device(options.serial)?;
@@ -175,16 +174,19 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
         YubikeyCommand::Get(options) => {
             let interrupt_guard = InterruptGuard::install()?;
             let mut device = open_device(options.serial)?;
+            verify_pin_from_input(&mut device)?;
             let secret = interrupt_guard
                 .run_yubikey_operation(|| storage::get(&mut device, options.name))?;
             write_secret_to_stdout(&secret)?;
             Ok(())
         }
         YubikeyCommand::EnrollPrimary(options) => {
+            require_stdin_secret_source(options.stdin_json, StdinSecretMode::BootstrapJson)?;
             let mut device = open_device(options.serial)?;
             storage::check_setup_preconditions(&mut device)?;
             let mut memory = SecretMemoryGuard::prepare()?;
             let secrets = read_bootstrap_secrets(options.stdin_json, Some(&mut memory))?;
+            verify_pin_from_input(&mut device)?;
             let summary = storage::enroll(&mut device, YubikeyRole::Primary, &secrets)?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
             Ok(())
@@ -223,12 +225,8 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         None
     };
     let (bootstrap, primary_serial, spare) = if options.stdin_json {
-        if options.spare_serial.is_none() && !boundary.stdin_is_terminal() {
-            bail!("pass --spare-serial in non-interactive use");
-        }
-        if interrupt_guard.interrupted() {
-            bail!("interrupted while handling bootstrap secrets");
-        }
+        require_spare_serial_for_stdin_json(options.spare_serial, boundary)?;
+        interrupt_guard.check_interrupted()?;
         (
             boundary.read_bootstrap_secrets(true, Some(&mut memory))?,
             options.primary_serial,
@@ -243,6 +241,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         {
             bail!("primary and spare YubiKey serial must be different");
         }
+        verify_pin_for_secret_reads(boundary, &mut primary)?;
         let secrets =
             BootstrapSecrets {
                 bw_email: memory.lock_secret(
@@ -274,6 +273,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         }
     };
 
+    verify_pin_for_secret_reads(boundary, &mut spare)?;
     let summary = interrupt_guard
         .run_yubikey_operation(|| storage::enroll(&mut spare, YubikeyRole::Spare, &bootstrap))?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -297,10 +297,9 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     let interrupt_guard = InterruptGuard::install()?;
 
     if let Some(serial) = options.serial {
-        if !options.stdin && !boundary.stdin_is_terminal() {
-            bail!("pass --stdin in non-interactive use with --serial");
-        }
+        require_stdin_secret_source_for_boundary(options.stdin, StdinSecretMode::Single, boundary)?;
         let mut device = boundary.open_device(Some(serial))?;
+        verify_pin_for_secret_reads(boundary, &mut device)?;
         interrupt_guard
             .run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
         let token = boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
@@ -311,6 +310,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     }
 
     let mut device = boundary.open_device(None)?;
+    verify_pin_for_secret_reads(boundary, &mut device)?;
     interrupt_guard.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
     let token = boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
@@ -325,6 +325,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         if !updated_serials.insert(device.serial()) {
             bail!("selected YubiKey was already updated");
         }
+        verify_pin_for_secret_reads(boundary, &mut device)?;
         interrupt_guard
             .run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
         summaries.push(
@@ -370,6 +371,7 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
     }
 
     let mut device = boundary.open_device(options.serial)?;
+    verify_pin_for_secret_reads(boundary, &mut device)?;
     let summary = storage::verify_local_storage(&mut device)?;
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -394,6 +396,7 @@ trait SecretsBoundary {
         memory: Option<&mut SecretMemoryGuard>,
     ) -> Result<BootstrapSecrets>;
     fn read_secret_for_put(&mut self, name: SecretName, stdin: bool) -> Result<Zeroizing<Vec<u8>>>;
+    fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>>;
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
 }
 
@@ -404,13 +407,77 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
 }
 
+/// 非対話実行で prompt の代わりに要求する secret 入力形式。
+#[derive(Clone, Copy)]
+enum StdinSecretMode {
+    Single,
+    BootstrapJson,
+}
+
+/// 非対話実行では secret prompt を使えないため、stdin 入力 option を先に確定する。
+fn require_stdin_secret_source(enabled: bool, mode: StdinSecretMode) -> Result<()> {
+    if !enabled && !input_stdin_is_terminal() {
+        bail!(stdin_secret_source_error(mode));
+    }
+
+    Ok(())
+}
+
+/// fake 境界を使う command でも、secret 入力前の非対話契約を同じ判定にそろえる。
+fn require_stdin_secret_source_for_boundary<B: SecretsBoundary>(
+    enabled: bool,
+    mode: StdinSecretMode,
+    boundary: &B,
+) -> Result<()> {
+    if !enabled && !boundary.stdin_is_terminal() {
+        bail!(stdin_secret_source_error(mode));
+    }
+
+    Ok(())
+}
+
+/// `--stdin-json` で primary を読まない経路では、spare prompt も非対話前に禁止する。
+fn require_spare_serial_for_stdin_json<B: SecretsBoundary>(
+    spare_serial: Option<u32>,
+    boundary: &B,
+) -> Result<()> {
+    if spare_serial.is_none() && !boundary.stdin_is_terminal() {
+        bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
+    }
+
+    Ok(())
+}
+
+/// 復号系 operation の前に PIN 入力を orchestration 層で完了させる。
+fn verify_pin_from_input<D: SecretDevice>(device: &mut D) -> Result<()> {
+    let pin = read_yubikey_pin()?;
+    device.verify_pin(&pin)
+}
+
+/// fake 境界を使う高水準 command でも、PIN 入力を device adapter の外側に固定する。
+fn verify_pin_for_secret_reads<B: SecretsBoundary>(
+    boundary: &mut B,
+    device: &mut B::Device,
+) -> Result<()> {
+    let pin = boundary.read_yubikey_pin()?;
+    device.verify_pin(&pin)
+}
+
+/// command ごとの stdin option 名を error message の単一 source にする。
+fn stdin_secret_source_error(mode: StdinSecretMode) -> &'static str {
+    match mode {
+        StdinSecretMode::Single => "pass --stdin in non-interactive use",
+        StdinSecretMode::BootstrapJson => "pass --stdin-json in non-interactive use",
+    }
+}
+
 struct RealSecretsBoundary;
 
 impl SecretsBoundary for RealSecretsBoundary {
     type Device = device::YubikeySecretDevice;
 
     fn stdin_is_terminal(&self) -> bool {
-        io::stdin().is_terminal()
+        input_stdin_is_terminal()
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
@@ -436,6 +503,10 @@ impl SecretsBoundary for RealSecretsBoundary {
 
     fn read_secret_for_put(&mut self, name: SecretName, stdin: bool) -> Result<Zeroizing<Vec<u8>>> {
         read_secret_for_put(name, stdin)
+    }
+
+    fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>> {
+        read_yubikey_pin()
     }
 
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
@@ -512,6 +583,10 @@ mod tests {
             Ok(Zeroizing::new(key.iter().map(|byte| byte ^ 0xa5).collect()))
         }
 
+        fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
         fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
             self.wrap_key(wrapped_key)
         }
@@ -581,6 +656,10 @@ mod tests {
             Ok(Zeroizing::new(b"token".to_vec()))
         }
 
+        fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>> {
+            Ok(Zeroizing::new(b"123456".to_vec()))
+        }
+
         fn prompt_yes_no(&mut self, _prompt: &str) -> Result<bool> {
             Ok(self.prompts.pop_front().unwrap_or(false))
         }
@@ -601,7 +680,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.err().map(|err| err.to_string()),
-            Some("pass --spare-serial in non-interactive use".to_owned())
+            Some(SPARE_SERIAL_NONINTERACTIVE_ERROR.to_owned())
         );
     }
 
@@ -659,7 +738,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.err().map(|err| err.to_string()),
-            Some("pass --stdin in non-interactive use with --serial".to_owned())
+            Some(stdin_secret_source_error(StdinSecretMode::Single).to_owned())
         );
         assert_eq!(boundary.open_device_calls, 0);
         Ok(())

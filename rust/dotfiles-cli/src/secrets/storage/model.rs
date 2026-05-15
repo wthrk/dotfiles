@@ -174,6 +174,8 @@ pub trait SecretDevice {
     fn write_object(&mut self, object_id: u32, value: &[u8]) -> Result<()>;
     /// content encryption key を device の public key で wrap する。
     fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+    /// private key operation の前に、入力済み PIN で PIV session を検証する。
+    fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
     /// wrapped content encryption key を device の private key operation で unwrap する。
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
 }

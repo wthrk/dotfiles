@@ -22,9 +22,9 @@ expect_used = "deny"
 anyhow = "1.0.100"
 aes-gcm = { version = "0.10.3", features = ["zeroize"] }
 clap = { version = "4.5.49", features = ["derive", "env"] }
+crossterm = "0.29.0"
 dotfiles-core = { path = "rust/dotfiles-core" }
 nom = "8.0.0"
-nix = { version = "0.30.1", features = ["poll"] }
 rand = "0.9.2"
 region = "3.0.2"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
@@ -36,6 +36,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 signal-hook = "0.4.4"
+scopeguard = "1.2.0"
 strum = { version = "0.27.2", features = ["derive"] }
 xshell = "0.2"
 yubikey = { version = "0.9.0-pre.0", features = ["untested"] }

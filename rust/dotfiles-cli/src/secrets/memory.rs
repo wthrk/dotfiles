@@ -3,9 +3,12 @@
 //! primary から読んだ secret または `--stdin-json` 由来の secret は、spare へ保存する
 //! まで core dump 抑止と memory lock の対象に入れる。
 
-use std::sync::{
-    Arc, LazyLock,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, bail};
@@ -13,7 +16,7 @@ use secrecy::ExposeSecret;
 use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
-use super::storage::{self, BootstrapSecrets, SecretName};
+use super::storage::{self, SecretName};
 use crate::Result;
 
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
@@ -40,8 +43,9 @@ impl InterruptGuard {
         Ok(Self { sigint, sigterm })
     }
 
-    pub(crate) fn interrupted(&self) -> bool {
-        INTERRUPTED.load(Ordering::SeqCst)
+    /// 保護区間の外側へ出る前に、遅延していた SIGINT/SIGTERM を command failure にする。
+    pub(crate) fn check_interrupted(&self) -> Result<()> {
+        interrupted_result()
     }
 
     /// 長い YubiKey operation の前後で、signal flag を command failure へ反映する。
@@ -49,9 +53,9 @@ impl InterruptGuard {
         &self,
         operation: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
-        interrupted_result()?;
+        self.check_interrupted()?;
         let result = operation();
-        interrupted_result()?;
+        self.check_interrupted()?;
         result
     }
 }
@@ -66,9 +70,7 @@ impl Drop for InterruptGuard {
 
 /// spare 登録で平文 secret を読む前に必要な process / memory 保護を準備する。
 pub(crate) struct SecretMemoryGuard {
-    bw_email: Option<region::LockGuard>,
-    bw_password: Option<region::LockGuard>,
-    bws_access_token: Option<region::LockGuard>,
+    locks: BTreeMap<SecretName, region::LockGuard>,
 }
 
 impl SecretMemoryGuard {
@@ -83,20 +85,7 @@ impl SecretMemoryGuard {
         drop(probe_guard);
 
         Ok(Self {
-            bw_email: None,
-            bw_password: None,
-            bws_access_token: None,
-        })
-    }
-
-    /// bootstrap secret 一式を memory lock 対象に登録する。
-    pub(crate) fn lock_bootstrap(&mut self, secrets: BootstrapSecrets) -> Result<BootstrapSecrets> {
-        interrupted_result()?;
-        Ok(BootstrapSecrets {
-            bw_email: self.lock_secret(SecretName::BwEmail, secrets.bw_email)?,
-            bw_password: self.lock_secret(SecretName::BwPassword, secrets.bw_password)?,
-            bws_access_token: self
-                .lock_secret(SecretName::BwsAccessToken, secrets.bws_access_token)?,
+            locks: BTreeMap::new(),
         })
     }
 
@@ -108,10 +97,10 @@ impl SecretMemoryGuard {
     ) -> Result<storage::SecretBytes> {
         let guard = lock_secret_memory(&secret)?;
         interrupted_result()?;
-        match name {
-            SecretName::BwEmail => self.bw_email = guard,
-            SecretName::BwPassword => self.bw_password = guard,
-            SecretName::BwsAccessToken => self.bws_access_token = guard,
+        if let Some(guard) = guard {
+            self.locks.insert(name, guard);
+        } else {
+            self.locks.remove(&name);
         }
         Ok(secret)
     }

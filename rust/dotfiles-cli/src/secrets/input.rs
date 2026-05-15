@@ -4,15 +4,13 @@
 
 use std::{
     io::{self, IsTerminal, Read, Write},
-    os::fd::AsFd,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
-use nix::{
-    errno::Errno,
-    poll::{PollFd, PollFlags, PollTimeout, poll},
-    unistd,
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use serde::Deserialize;
 use zeroize::{Zeroize, Zeroizing};
@@ -25,6 +23,20 @@ use crate::Result;
 
 const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
+pub(crate) const SPARE_SERIAL_NONINTERACTIVE_ERROR: &str =
+    "pass --spare-serial in non-interactive use";
+pub(crate) const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
+
+/// 対話選択で利用者へ表示する YubiKey 候補。
+pub(crate) struct YubikeySelectionCandidate<'a> {
+    pub(crate) reader: &'a str,
+    pub(crate) serial: u32,
+}
+
+/// 非対話実行の precondition を command / device 境界から同じ判定へ集約する。
+pub(crate) fn stdin_is_terminal() -> bool {
+    io::stdin().is_terminal()
+}
 
 /// `put` 用の secret を prompt または stdin から読み取る。
 ///
@@ -47,18 +59,18 @@ pub(crate) fn read_bootstrap_secrets(
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
     if stdin_json {
-        let mut input = Zeroizing::new(vec![0_u8; MAX_BOOTSTRAP_JSON_LEN + 1]);
+        let mut input = Zeroizing::new(Vec::with_capacity(MAX_BOOTSTRAP_JSON_LEN + 1));
         let input_lock = if let Some(memory) = memory.as_deref() {
-            Some(memory.lock_transient_buffer(input.as_ptr(), input.len())?)
+            Some(memory.lock_transient_buffer(input.as_ptr(), input.capacity())?)
         } else {
             None
         };
-        let input_len = read_stdin_into_fixed_buffer(
-            &mut io::stdin(),
-            &mut input,
-            "bootstrap secret JSON input is too large",
-        )?;
-        input.truncate(input_len);
+        io::stdin()
+            .take((MAX_BOOTSTRAP_JSON_LEN + 1) as u64)
+            .read_to_end(&mut input)?;
+        if input.len() > MAX_BOOTSTRAP_JSON_LEN {
+            bail!("bootstrap secret JSON input is too large");
+        }
         let secrets = parse_bootstrap_secrets_json(&input, memory)
             .context("failed to parse bootstrap secret JSON")?;
         input.zeroize();
@@ -66,25 +78,42 @@ pub(crate) fn read_bootstrap_secrets(
         return Ok(secrets);
     }
 
+    let mut memory = memory;
     let mut email = Zeroizing::new(String::new());
     eprint!("bw-email: ");
     io::stderr().flush()?;
     io::stdin().read_line(&mut email)?;
-    let mut email = std::mem::take(&mut *email).into_bytes();
-    trim_one_trailing_newline(&mut email);
+    let email = std::mem::take(&mut *email).into_bytes();
+    let email = strip_one_trailing_newline(email);
 
-    let secrets = BootstrapSecrets {
-        bw_email: storage::secret_bytes(email),
-        bw_password: protect_zeroizing_secret(read_hidden("bw-password: ")?),
-        bws_access_token: protect_zeroizing_secret(read_hidden("bws-access-token: ")?),
-    };
-    lock_bootstrap_secrets(secrets, memory)
+    Ok(BootstrapSecrets {
+        bw_email: lock_bootstrap_secret(
+            &mut memory,
+            SecretName::BwEmail,
+            storage::secret_bytes(email),
+        )?,
+        bw_password: lock_bootstrap_secret(
+            &mut memory,
+            SecretName::BwPassword,
+            protect_zeroizing_secret(read_hidden("bw-password: ")?),
+        )?,
+        bws_access_token: lock_bootstrap_secret(
+            &mut memory,
+            SecretName::BwsAccessToken,
+            protect_zeroizing_secret(read_hidden("bws-access-token: ")?),
+        )?,
+    })
 }
 
 /// hidden prompt の戻り値は、CLI 側へ渡す前から zeroize 対象の bytes として保持する。
 pub(crate) fn read_hidden(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
     let value = rpassword::prompt_password(prompt)?;
     Ok(Zeroizing::new(value.into_bytes()))
+}
+
+/// YubiKey PIV private operation の PIN を hidden prompt で受け取る。
+pub(crate) fn read_yubikey_pin() -> Result<Zeroizing<Vec<u8>>> {
+    read_hidden("YubiKey PIN: ")
 }
 
 /// 非対話 stdin では追加更新を prompt できないため、複数本更新を開始しない。
@@ -108,9 +137,55 @@ pub(crate) fn prompt_yes_no(prompt: &str) -> Result<bool> {
 /// stdin が terminal でない場合は prompt による同期ができないため失敗させる。
 pub(crate) fn wait_for_enter(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
     if !io::stdin().is_terminal() {
-        bail!("pass --spare-serial in non-interactive use");
+        bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
     }
     read_terminal_line_until(deadline, interrupt).map(|_| ())
+}
+
+/// primary と同じ YubiKey が選ばれた場合だけ、spare への差し替えを対話で同期する。
+pub(crate) fn wait_for_spare_replacement(
+    deadline: Instant,
+    interrupt: &InterruptGuard,
+) -> Result<()> {
+    eprintln!("The selected YubiKey is the primary; replace it with the spare.");
+    eprintln!("Insert the spare YubiKey, then press Enter.");
+    wait_for_enter(deadline, interrupt)
+}
+
+/// 複数 YubiKey 候補を表示し、利用者が選んだ候補 index を返す。
+pub(crate) fn select_yubikey_candidate(
+    candidates: &[YubikeySelectionCandidate<'_>],
+    timed_input: Option<(Instant, &InterruptGuard)>,
+) -> Result<usize> {
+    if !io::stdin().is_terminal() {
+        bail!("multiple YubiKeys detected; pass a serial option in non-interactive use");
+    }
+
+    eprintln!("Select YubiKey:");
+    for (index, candidate) in candidates.iter().enumerate() {
+        eprintln!(
+            "{}: serial {} ({})",
+            index + 1,
+            candidate.serial,
+            candidate.reader
+        );
+    }
+    eprint!("number: ");
+    io::stderr().flush()?;
+
+    let input = if let Some((deadline, interrupt)) = timed_input {
+        read_terminal_line_until(deadline, interrupt)?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        input
+    };
+    let selected = input.trim().parse::<usize>().context("invalid selection")?;
+    if selected == 0 || selected > candidates.len() {
+        bail!("selected YubiKey is out of range");
+    }
+
+    Ok(selected - 1)
 }
 
 /// 低水準 `get` command の唯一の出力として secret bytes を pipe / redirect へ渡す。
@@ -120,7 +195,7 @@ pub(crate) fn write_secret_to_stdout(secret: &[u8]) -> Result<()> {
     if io::stdout().is_terminal() {
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
-    io::copy(&mut &*secret, &mut io::stdout())?;
+    io::stdout().write_all(secret)?;
     Ok(())
 }
 
@@ -134,11 +209,33 @@ fn lock_bootstrap_secrets(
     secrets: BootstrapSecrets,
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
-    if let Some(memory) = memory {
-        return memory.lock_bootstrap(secrets);
+    let mut memory = memory;
+    Ok(BootstrapSecrets {
+        bw_email: lock_bootstrap_secret(&mut memory, SecretName::BwEmail, secrets.bw_email)?,
+        bw_password: lock_bootstrap_secret(
+            &mut memory,
+            SecretName::BwPassword,
+            secrets.bw_password,
+        )?,
+        bws_access_token: lock_bootstrap_secret(
+            &mut memory,
+            SecretName::BwsAccessToken,
+            secrets.bws_access_token,
+        )?,
+    })
+}
+
+/// prompt 経路では 1 secret を受け取るたびに lock し、後続入力中の平文保持を短くする。
+fn lock_bootstrap_secret(
+    memory: &mut Option<&mut SecretMemoryGuard>,
+    name: SecretName,
+    secret: storage::SecretBytes,
+) -> Result<storage::SecretBytes> {
+    if let Some(memory) = memory.as_deref_mut() {
+        return memory.lock_secret(name, secret);
     }
 
-    Ok(secrets)
+    Ok(secret)
 }
 
 /// `--stdin-json` の構造検証は serde に任せ、decode 後の field 文字列を zeroize 対象にする。
@@ -161,6 +258,7 @@ struct BootstrapSecretsInput {
 }
 
 impl BootstrapSecretsInput {
+    /// JSON field ごとの `Zeroizing<String>` から storage 用 secret bytes へ所有権を移す。
     fn into_bootstrap_secrets(self) -> BootstrapSecrets {
         BootstrapSecrets {
             bw_email: secret_string_bytes(self.bw_email),
@@ -170,109 +268,91 @@ impl BootstrapSecretsInput {
     }
 }
 
+/// serde が生成した string buffer を再確保せず bytes に変換し、元 string の Drop で残存を消す。
 fn secret_string_bytes(mut secret: Zeroizing<String>) -> storage::SecretBytes {
     storage::secret_bytes(std::mem::take(&mut *secret).into_bytes())
 }
 
 /// stdin から単一 secret を読み、terminal 入力由来の末尾改行だけを正規化する。
 fn read_one_stdin_secret() -> Result<Zeroizing<Vec<u8>>> {
-    let mut input = Zeroizing::new(vec![0_u8; MAX_SINGLE_STDIN_SECRET_LEN + 1]);
-    let input_len = read_stdin_into_fixed_buffer(
-        &mut io::stdin(),
-        &mut input,
-        "stdin secret input is too large",
-    )?;
-    input.truncate(input_len);
-    trim_one_trailing_newline(&mut input);
-    Ok(input)
-}
-
-/// 事前確保した buffer の範囲だけへ読み込み、上限超過を追加確保なしで検出する。
-fn read_stdin_into_fixed_buffer<R: Read>(
-    reader: &mut R,
-    buffer: &mut [u8],
-    oversized_error: &str,
-) -> Result<usize> {
-    let mut total_len = 0;
-    while total_len < buffer.len() {
-        let read_len = reader.read(&mut buffer[total_len..])?;
-        if read_len == 0 {
-            return Ok(total_len);
-        }
-        total_len += read_len;
+    let mut input = Vec::with_capacity(MAX_SINGLE_STDIN_SECRET_LEN + 1);
+    io::stdin()
+        .take((MAX_SINGLE_STDIN_SECRET_LEN + 1) as u64)
+        .read_to_end(&mut input)?;
+    if input.len() > MAX_SINGLE_STDIN_SECRET_LEN {
+        bail!("stdin secret input is too large");
     }
 
-    bail!("{oversized_error}");
+    Ok(Zeroizing::new(strip_one_trailing_newline(input)))
 }
 
 /// stdin/prompt 由来の入力で混入しやすい末尾 newline 1 個だけを保存対象から外す。
-fn trim_one_trailing_newline(input: &mut Vec<u8>) {
-    if input.ends_with(b"\n") {
-        input.pop();
-        if input.ends_with(b"\r") {
-            input.pop();
-        }
+fn strip_one_trailing_newline(input: Vec<u8>) -> Vec<u8> {
+    if let Some(input) = input.strip_suffix(b"\r\n") {
+        return input.to_vec();
     }
+    if let Some(input) = input.strip_suffix(b"\n") {
+        return input.to_vec();
+    }
+
+    input
 }
 
-/// spare 差し替え待ちは同一 thread で 1 byte ずつ読み、timeout 後に入力消費を残さない。
+/// spare 差し替え待ちは端末 event API で読み、timeout 後に stdin 待ち thread を残さない。
 pub(crate) fn read_terminal_line_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
 ) -> Result<String> {
-    let stdin = io::stdin();
-    let mut bytes = Vec::new();
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
+    let _raw_mode = scopeguard::guard((), |_| {
+        let _ = disable_raw_mode();
+    });
+    let mut line = String::new();
     loop {
-        let timeout = next_terminal_poll_timeout(deadline, interrupt)?;
+        interrupt.check_interrupted()?;
+        let now = Instant::now();
+        if now >= deadline {
+            bail!(SPARE_WAIT_TIMEOUT_ERROR);
+        }
+        let timeout = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
 
-        let mut fds = [PollFd::new(stdin.as_fd(), PollFlags::POLLIN)];
-        match poll(&mut fds, timeout) {
-            Ok(0) => {}
-            Ok(_) => {
-                let mut byte = [0_u8; 1];
-                let read_len = match unistd::read(stdin.as_fd(), &mut byte) {
-                    Ok(read_len) => read_len,
-                    Err(Errno::EINTR) => continue,
-                    Err(err) => return Err(io::Error::from_raw_os_error(err as i32).into()),
-                };
-                if read_len == 0 {
-                    bail!("failed to read terminal input");
-                }
-                bytes.push(byte[0]);
-                if byte[0] == b'\n' {
-                    let line =
-                        String::from_utf8(bytes).context("terminal input is not valid UTF-8")?;
-                    return Ok(line);
+        if !event::poll(timeout)? {
+            continue;
+        }
+
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        match key.code {
+            KeyCode::Enter => {
+                eprintln!();
+                return Ok(line);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                bail!("interrupted while reading terminal input");
+            }
+            KeyCode::Char(ch) => {
+                line.push(ch);
+                eprint!("{ch}");
+                io::stderr().flush()?;
+            }
+            KeyCode::Backspace => {
+                if line.pop().is_some() {
+                    eprint!("\u{8} \u{8}");
+                    io::stderr().flush()?;
                 }
             }
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(io::Error::from_raw_os_error(err as i32).into()),
+            _ => {}
         }
     }
 }
 
-/// 対話入力待ちループは中断と期限超過を poll 前に確定し、待機時間だけを返す。
-fn next_terminal_poll_timeout(
-    deadline: Instant,
-    interrupt: &InterruptGuard,
-) -> Result<PollTimeout> {
-    if interrupt.interrupted() {
-        bail!("interrupted while handling bootstrap secrets");
-    }
-    let now = Instant::now();
-    if now >= deadline {
-        bail!("timed out waiting for spare YubiKey");
-    }
-
-    let poll_interval = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
-    PollTimeout::try_from(poll_interval)
-        .map_err(|_| anyhow::anyhow!("failed to convert terminal poll timeout"))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use secrecy::ExposeSecret;
 
@@ -307,46 +387,13 @@ mod tests {
 
     #[test]
     fn trims_one_trailing_newline() {
-        let mut value = b"secret\n".to_vec();
-        trim_one_trailing_newline(&mut value);
+        let value = strip_one_trailing_newline(b"secret\n".to_vec());
         assert_eq!(value, b"secret");
 
-        let mut value = b"secret\n\n".to_vec();
-        trim_one_trailing_newline(&mut value);
+        let value = strip_one_trailing_newline(b"secret\n\n".to_vec());
         assert_eq!(value, b"secret\n");
-    }
 
-    #[test]
-    fn fixed_buffer_reader_rejects_oversized_input() {
-        let mut reader = io::Cursor::new(vec![b'x'; 5]);
-        let mut buffer = vec![0_u8; 4];
-        let result = read_stdin_into_fixed_buffer(&mut reader, &mut buffer, "too large");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn fixed_buffer_reader_accepts_input_when_sentinel_slot_remains() -> Result<()> {
-        let mut reader = io::Cursor::new(vec![b'x'; 3]);
-        let mut buffer = vec![0_u8; 4];
-        let len = read_stdin_into_fixed_buffer(&mut reader, &mut buffer, "too large")?;
-        assert_eq!(len, 3);
-        Ok(())
-    }
-
-    #[test]
-    fn terminal_poll_timeout_rejects_expired_deadline() -> Result<()> {
-        let guard = InterruptGuard::install()?;
-        let result = next_terminal_poll_timeout(Instant::now(), &guard);
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn terminal_poll_timeout_rejects_interrupt_before_poll() -> Result<()> {
-        let guard = InterruptGuard::install()?;
-        signal_hook::low_level::raise(signal_hook::consts::signal::SIGINT)?;
-        let result = next_terminal_poll_timeout(Instant::now() + Duration::from_secs(1), &guard);
-        assert!(result.is_err());
-        Ok(())
+        let value = strip_one_trailing_newline(b"secret\r\n".to_vec());
+        assert_eq!(value, b"secret");
     }
 }

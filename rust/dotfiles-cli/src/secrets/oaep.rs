@@ -38,7 +38,7 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
     let label_hash = Sha256::digest([]);
     let label_mismatch = db[..hash_len]
         .iter()
-        .zip(label_hash.as_slice())
+        .zip(label_hash.iter())
         .fold(0u8, |acc, (left, right)| acc | (left ^ right));
     let leading_and_label_valid = encoded[0] == 0 && label_mismatch == 0;
 
