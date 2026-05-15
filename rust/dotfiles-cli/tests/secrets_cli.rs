@@ -56,6 +56,18 @@ fn put_reads_non_tty_stdin_with_stub_yubikey() -> TestResult<()> {
 }
 
 #[test]
+fn put_rejects_non_tty_without_serial_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pipe(
+        ["yubikey", "put", "bws-access-token", "--stdin"],
+        Some("secret\r"),
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stderr.contains("pass --serial in non-interactive use"));
+    Ok(())
+}
+
+#[test]
 fn put_reads_tty_prompt_with_stub_yubikey() -> TestResult<()> {
     let run = run_pty(
         ["yubikey", "put", "bws-access-token", "--serial", "2001"],
@@ -147,6 +159,27 @@ fn enroll_spare_reads_non_tty_stdin_json_with_stub_yubikey() -> TestResult<()> {
     assert!(run.success, "stderr: {}", run.stderr);
     assert!(run.stdout.contains("\"role\": \"spare\""));
     assert!(run.stdout.contains("\"serial\": 2002"));
+    Ok(())
+}
+
+#[test]
+fn enroll_spare_rejects_non_tty_without_spare_serial_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pipe(
+        [
+            "yubikey",
+            "enroll-spare",
+            "--primary-serial",
+            "2001",
+            "--stdin-json",
+        ],
+        Some(bootstrap_json()),
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("pass --spare-serial in non-interactive use")
+    );
     Ok(())
 }
 

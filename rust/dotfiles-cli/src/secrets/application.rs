@@ -175,6 +175,7 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
             let memory = SecretMemoryGuard::prepare()?;
             let summary = {
                 let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &memory)?;
+                interrupt_guard.check_interrupted()?;
                 verify_pin_for_secret_reads(boundary, &mut device)?;
                 interrupt_guard.run_yubikey_operation(|| {
                     storage::enroll(&mut device, storage::YubikeyRole::Primary, &secrets)
@@ -239,6 +240,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     boundary: &mut B,
 ) -> Result<()> {
     let interrupt_guard = InterruptGuard::install()?;
+    require_spare_serial_for_noninteractive(options.spare_serial, boundary)?;
     let memory = SecretMemoryGuard::prepare()?;
     let prepared_spare = if options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(
@@ -252,7 +254,6 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         None
     };
     let (bootstrap, primary_serial, spare) = if options.stdin_json {
-        require_spare_serial_for_stdin_json(options.spare_serial, boundary)?;
         interrupt_guard.check_interrupted()?;
         (
             boundary.read_bootstrap_secrets(true, &memory)?,
@@ -274,6 +275,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         (secrets, Some(primary_serial), prepared_spare)
     };
 
+    interrupt_guard.check_interrupted()?;
     let mut spare = match spare {
         Some(spare) => spare,
         None => {
@@ -281,6 +283,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         }
     };
 
+    interrupt_guard.check_interrupted()?;
     verify_pin_for_secret_reads(boundary, &mut spare)?;
     let summary = interrupt_guard.run_yubikey_operation(|| {
         storage::enroll(&mut spare, storage::YubikeyRole::Spare, &bootstrap)
@@ -353,7 +356,9 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     while interrupt_guard
         .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
     {
+        interrupt_guard.check_interrupted()?;
         let mut device = boundary.open_device(None)?;
+        interrupt_guard.check_interrupted()?;
         if !updated_serials.insert(device.serial()) {
             bail!("selected YubiKey was already updated");
         }
@@ -463,8 +468,8 @@ fn require_secret_stdout_for_boundary<B: SecretsBoundary>(boundary: &B) -> Resul
     Ok(())
 }
 
-/// `--stdin-json` で primary を読まない経路では、spare prompt も非対話前に禁止する。
-fn require_spare_serial_for_stdin_json<B: SecretsBoundary>(
+/// 非対話の spare 登録では primary 読み出し前に spare serial まで確定する。
+fn require_spare_serial_for_noninteractive<B: SecretsBoundary>(
     spare_serial: Option<u32>,
     boundary: &B,
 ) -> Result<()> {
