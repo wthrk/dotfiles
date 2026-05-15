@@ -5,12 +5,16 @@
 use std::{
     fmt,
     io::{self, IsTerminal, Read, Write},
-    sync::mpsc,
-    thread,
+    os::fd::AsFd,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
+use nix::{
+    errno::Errno,
+    poll::{PollFd, PollFlags, PollTimeout, poll},
+    unistd,
+};
 use serde::{
     Deserialize, Deserializer,
     de::{self, DeserializeSeed, MapAccess, Visitor},
@@ -120,8 +124,13 @@ pub(crate) fn wait_for_enter(deadline: Instant, interrupt: &InterruptGuard) -> R
     read_terminal_line_until(deadline, interrupt).map(|_| ())
 }
 
-/// 低水準 `get` command の唯一の出力として secret bytes を標準出力へ渡す。
+/// 低水準 `get` command の唯一の出力として secret bytes を pipe / redirect へ渡す。
+///
+/// terminal へ直接出す実行は、平文 secret が画面や scrollback に残るため拒否する。
 pub(crate) fn write_secret_to_stdout(secret: &[u8]) -> Result<()> {
+    if io::stdout().is_terminal() {
+        bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
+    }
     io::copy(&mut &*secret, &mut io::stdout())?;
     Ok(())
 }
@@ -347,53 +356,64 @@ fn trim_one_trailing_newline(input: &mut Vec<u8>) {
     }
 }
 
-/// spare 差し替え待ちは、terminal read の完了より timeout / interrupt を優先する。
+/// spare 差し替え待ちは同一 thread で 1 byte ずつ読み、timeout 後に入力消費を残さない。
 pub(crate) fn read_terminal_line_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
 ) -> Result<String> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut line = String::new();
-        let result = io::stdin().read_line(&mut line).map(|_| line);
-        let _ = sender.send(result);
-    });
-
-    receive_terminal_line(deadline, receiver, interrupt)
-}
-
-/// `enroll-spare` の spare 差し替え待ちは、secret 保持中の timeout / interrupt 境界になる。
-fn receive_terminal_line(
-    deadline: Instant,
-    receiver: mpsc::Receiver<io::Result<String>>,
-    interrupt: &InterruptGuard,
-) -> Result<String> {
+    let stdin = io::stdin();
+    let mut bytes = Vec::new();
     loop {
-        if interrupt.interrupted() {
-            bail!("interrupted while handling bootstrap secrets");
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            bail!("timed out waiting for spare YubiKey");
-        }
+        let timeout = next_terminal_poll_timeout(deadline, interrupt)?;
 
-        let poll_interval = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
-        match receiver.recv_timeout(poll_interval) {
-            Ok(Ok(line)) => return Ok(line),
-            Ok(Err(err)) if err.kind() == io::ErrorKind::Interrupted && interrupt.interrupted() => {
-                bail!("interrupted while handling bootstrap secrets");
+        let mut fds = [PollFd::new(stdin.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, timeout) {
+            Ok(0) => {}
+            Ok(_) => {
+                let mut byte = [0_u8; 1];
+                let read_len = match unistd::read(stdin.as_fd(), &mut byte) {
+                    Ok(read_len) => read_len,
+                    Err(Errno::EINTR) => continue,
+                    Err(err) => return Err(io::Error::from_raw_os_error(err as i32).into()),
+                };
+                if read_len == 0 {
+                    bail!("failed to read terminal input");
+                }
+                bytes.push(byte[0]);
+                if byte[0] == b'\n' {
+                    let line =
+                        String::from_utf8(bytes).context("terminal input is not valid UTF-8")?;
+                    return Ok(line);
+                }
             }
-            Ok(Err(err)) => return Err(err.into()),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                bail!("failed to read terminal input");
-            }
+            Err(Errno::EINTR) => {}
+            Err(err) => return Err(io::Error::from_raw_os_error(err as i32).into()),
         }
     }
 }
 
+/// 対話入力待ちループは中断と期限超過を poll 前に確定し、待機時間だけを返す。
+fn next_terminal_poll_timeout(
+    deadline: Instant,
+    interrupt: &InterruptGuard,
+) -> Result<PollTimeout> {
+    if interrupt.interrupted() {
+        bail!("interrupted while handling bootstrap secrets");
+    }
+    let now = Instant::now();
+    if now >= deadline {
+        bail!("timed out waiting for spare YubiKey");
+    }
+
+    let poll_interval = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
+    PollTimeout::try_from(poll_interval)
+        .map_err(|_| anyhow::anyhow!("failed to convert terminal poll timeout"))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use secrecy::ExposeSecret;
 
@@ -435,5 +455,39 @@ mod tests {
         let mut value = b"secret\n\n".to_vec();
         trim_one_trailing_newline(&mut value);
         assert_eq!(value, b"secret\n");
+    }
+
+    #[test]
+    fn fixed_buffer_reader_rejects_oversized_input() {
+        let mut reader = io::Cursor::new(vec![b'x'; 5]);
+        let mut buffer = vec![0_u8; 4];
+        let result = read_stdin_into_fixed_buffer(&mut reader, &mut buffer, "too large");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fixed_buffer_reader_accepts_input_when_sentinel_slot_remains() -> Result<()> {
+        let mut reader = io::Cursor::new(vec![b'x'; 3]);
+        let mut buffer = vec![0_u8; 4];
+        let len = read_stdin_into_fixed_buffer(&mut reader, &mut buffer, "too large")?;
+        assert_eq!(len, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_poll_timeout_rejects_expired_deadline() -> Result<()> {
+        let guard = InterruptGuard::install()?;
+        let result = next_terminal_poll_timeout(Instant::now(), &guard);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_poll_timeout_rejects_interrupt_before_poll() -> Result<()> {
+        let guard = InterruptGuard::install()?;
+        signal_hook::low_level::raise(signal_hook::consts::signal::SIGINT)?;
+        let result = next_terminal_poll_timeout(Instant::now() + Duration::from_secs(1), &guard);
+        assert!(result.is_err());
+        Ok(())
     }
 }

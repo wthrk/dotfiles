@@ -35,7 +35,8 @@
 - `dotfiles secrets verify-yubikey` で、挿さっている YubiKey が bootstrap secret を復号できることを確認する。
 - `dotfiles secrets yubikey setup` は既存の PIV credential や data object と衝突した場合に停止する。
 - `put` は同名 secret が存在する場合、`--force` が指定されていなければ停止する。
-- `get` は復旧コマンド内部の利用を主用途とし、直接実行時は stdout に secret 本文だけを出力する。
+- `get` は復旧コマンド内部の利用を主用途とし、直接実行時は pipe または redirect された stdout にだけ secret 本文を出力する。
+- 現段階の書き込み操作は YubiKey の既定 management key で認証する。既定 key のまま運用する YubiKey では、PIN と touch を通せなくても既知の management key でこの機能の PIV object を上書きできるため、非既定 management key を使う運用は別途対応が必要である。
 
 ## 採用 crate
 
@@ -121,7 +122,7 @@ dotfiles secrets yubikey enroll-primary
 dotfiles secrets yubikey rotate-bws-token
 ```
 
-`rotate-bws-token` は新しい token を一度だけ受け取り、対象 YubiKey を対話的に選択させながら primary と spare を更新する。各 YubiKey への保存後に local verify を行う。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、local secret storage の検証とは別の確認として summary に残す。非対話実行では `--serial <serial>` を指定して 1 本ずつ更新し、token は `--stdin` で渡せる。
+`rotate-bws-token` は新しい token を一度だけ受け取り、対象 YubiKey を対話的に選択させながら更新する。各 YubiKey への保存後に local verify を行う。利用者は primary とすべての spare を更新対象にし、summary に出た serial で対象全本が更新済みであることを確認する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、local secret storage の検証とは別の確認として summary に残す。非対話実行では `--serial <serial>` を指定して 1 本ずつ更新し、token は `--stdin` で渡せる。
 
 外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `get` の成功は GitHub、Bitwarden、Google、Apple などで spare key が登録済みであることを保証しない。
 
@@ -208,7 +209,7 @@ CLI 引数で secret 本文は受け取らない。stdin 入力時も trailing n
 
 ### `dotfiles secrets yubikey get <name>`
 
-`<name>` は `bw-email`、`bw-password`、`bws-access-token` のみ許可する。PIN verification と touch を経て secret を復号し、stdout に secret 本文だけを出力する。stderr には進行状況を出さない。取得失敗時の error には secret name までを含め、secret 本文、ciphertext、wrapped key は含めない。
+`<name>` は `bw-email`、`bw-password`、`bws-access-token` のみ許可する。PIN verification と touch を経て secret を復号し、stdout に secret 本文だけを出力する。stdout が terminal の場合は、画面や scrollback に平文 secret が残るため拒否する。stderr には進行状況を出さない。取得失敗時の error には secret name までを含め、secret 本文、ciphertext、wrapped key は含めない。
 
 ### `dotfiles secrets yubikey enroll-primary`
 
@@ -264,7 +265,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bws-access-token` だけを更新する。対話実行では新しい token を一度だけ読み取り、primary と spare を順に選択して更新する。同一 serial を同じ実行内で再選択した場合は停止する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に local storage が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は local verify を実行する。BWS 接続確認は local secret storage とは別の外部確認として扱う。
+指定 YubiKey の `bws-access-token` だけを更新する。対話実行では新しい token を一度だけ読み取り、利用者が選択した YubiKey を更新する。同一 serial を同じ実行内で再選択した場合は停止する。primary とすべての spare を更新対象にし、出力 summary の serial で対象全本の更新完了を確認する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に local storage が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は local verify を実行する。BWS 接続確認は local secret storage とは別の外部確認として扱う。
 
 ### `dotfiles secrets verify-yubikey`
 
@@ -273,9 +274,9 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 引数:
 
 - `--serial <serial>`: 非対話実行時に対象 YubiKey を指定する。対話実行では、1 本だけ接続されていれば自動選択し、複数本接続時は一覧から選択させる。
-- `--check bws`: `bws-access-token` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
-- `--check bw-login`: `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができることを確認する。override が必要な場合だけ `--email <email>` を許可する。
-- `--all`: local storage、BWS、Bitwarden login の全確認を行う。通常は YubiKey 内の `bw-email` を使う。
+- `--check bws`: 将来の外部確認項目。現段階では未実装として失敗する。実装後は `bws-access-token` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
+- `--check bw-login`: 将来の外部確認項目。現段階では未実装として失敗する。実装後は `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができることを確認する。email override が必要な場合の option は、この外部確認を実装する PR で追加する。
+- `--all`: 将来の外部確認を含む全確認項目。現段階では未実装の外部確認を含むため失敗する。
 
 外部確認を明示要求した場合（`--check bws`、`--check bw-login`、`--all`）は、`skipped` で成功扱いにせず、外部確認が利用できないことを error として返す。引数なしの `verify-yubikey` は local storage のみ検証し、外部確認項目を未実行状態として summary に残す。
 

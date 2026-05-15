@@ -17,6 +17,7 @@ anyhow.workspace = true
 clap.workspace = true
 dotfiles-core.workspace = true
 nom.workspace = true
+nix.workspace = true
 rand.workspace = true
 region.workspace = true
 rand_core.workspace = true

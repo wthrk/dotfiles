@@ -5,6 +5,7 @@
 
 use std::{
     io::{self, IsTerminal, Write},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -34,6 +35,18 @@ const MIN_PIV_METADATA_VERSION: Version = Version {
     patch: 0,
 };
 const SPARE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+const SPARE_DETECT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+enum InteractiveDiscovery {
+    Found(Vec<(String, YubiKey)>),
+    NoDevice,
+    OpenError {
+        reader: String,
+        source: yubikey::Error,
+    },
+}
+
+type ReaderOpenAttempt<T> = (String, std::result::Result<T, (String, yubikey::Error)>);
 
 /// 1 command 内で共有する実機 YubiKey transaction state。
 pub(crate) struct YubikeySecretDevice {
@@ -76,7 +89,7 @@ fn open_device_until(
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
-        select_interactive_yubikey_until(deadline, interrupt)?
+        open_interactive_device_until(deadline, interrupt)?
     };
     if interrupt.interrupted() {
         bail!("interrupted while handling bootstrap secrets");
@@ -86,6 +99,29 @@ fn open_device_until(
         yubikey,
         pin_verified: false,
     })
+}
+
+/// primary 抜去直後の 0 本状態を許容し、待機期限までは検出を再試行する。
+fn open_interactive_device_until(deadline: Instant, interrupt: &InterruptGuard) -> Result<YubiKey> {
+    loop {
+        if interrupt.interrupted() {
+            bail!("interrupted while handling bootstrap secrets");
+        }
+
+        match select_interactive_yubikey_until(deadline, interrupt) {
+            Ok(yubikey) => return Ok(yubikey),
+            Err(InteractiveSelectError::NoDevice) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    bail!("timed out waiting for spare YubiKey");
+                }
+                let sleep_duration =
+                    SPARE_DETECT_POLL_INTERVAL.min(deadline.saturating_duration_since(now));
+                thread::sleep(sleep_duration);
+            }
+            Err(InteractiveSelectError::Other(err)) => return Err(err),
+        }
+    }
 }
 
 /// `enroll-spare` で primary の 3 secret を読み終えた後に spare を開く。
@@ -139,68 +175,146 @@ fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>
 /// 1 本だけ検出された場合はそのまま選び、複数本ある場合は reader 名と serial を
 /// 表示して番号入力を求める。
 fn select_interactive_yubikey() -> Result<YubiKey> {
-    select_interactive_yubikey_with_input(None)
+    select_interactive_yubikey_with_input(None, false).map_err(map_select_interactive_error)
 }
 
 fn select_interactive_yubikey_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
-) -> Result<YubiKey> {
-    select_interactive_yubikey_with_input(Some((deadline, interrupt)))
+) -> std::result::Result<YubiKey, InteractiveSelectError> {
+    select_interactive_yubikey_with_input(Some((deadline, interrupt)), true)
 }
 
 /// 複数 YubiKey 選択時だけ、secret 保持中の deadline / interrupt 境界を入力待ちへ渡す。
 fn select_interactive_yubikey_with_input(
     timed_input: Option<(Instant, &InterruptGuard)>,
-) -> Result<YubiKey> {
-    let mut context = yubikey::Context::open()?;
-    let keys: Vec<_> = context
-        .iter()?
-        .filter_map(|reader| {
-            let name = reader.name().into_owned();
-            reader.open().ok().map(|yubikey| (name, yubikey))
-        })
-        .collect();
+    allow_no_device: bool,
+) -> std::result::Result<YubiKey, InteractiveSelectError> {
+    let mut context = yubikey::Context::open()
+        .map_err(anyhow::Error::from)
+        .map_err(InteractiveSelectError::Other)?;
+    let discovery =
+        discover_interactive_yubikeys(&mut context).map_err(InteractiveSelectError::Other)?;
 
-    match keys.as_slice() {
-        [] => bail!("no YubiKey detected"),
-        [_] => {
-            let (_, yubikey) = keys
-                .into_iter()
-                .next()
-                .context("single selected YubiKey disappeared")?;
-            Ok(yubikey)
+    match discovery {
+        InteractiveDiscovery::NoDevice if allow_no_device => Err(InteractiveSelectError::NoDevice),
+        InteractiveDiscovery::NoDevice => Err(InteractiveSelectError::Other(anyhow::anyhow!(
+            "no YubiKey detected"
+        ))),
+        InteractiveDiscovery::OpenError { reader, source } => {
+            let err = anyhow::Error::from(source)
+                .context(format!("failed to open YubiKey reader '{reader}'"));
+            Err(InteractiveSelectError::Other(err))
         }
-        [_, ..] => {
-            if !io::stdin().is_terminal() {
-                bail!("multiple YubiKeys detected; pass a serial option in non-interactive use");
+        InteractiveDiscovery::Found(keys) => match keys.as_slice() {
+            [_] => {
+                let (_, yubikey) = keys
+                    .into_iter()
+                    .next()
+                    .context("single selected YubiKey disappeared")
+                    .map_err(InteractiveSelectError::Other)?;
+                Ok(yubikey)
             }
+            [_, ..] => {
+                if !io::stdin().is_terminal() {
+                    return Err(InteractiveSelectError::Other(anyhow::anyhow!(
+                        "multiple YubiKeys detected; pass a serial option in non-interactive use"
+                    )));
+                }
 
-            eprintln!("Select YubiKey:");
-            for (index, (reader, yubikey)) in keys.iter().enumerate() {
-                eprintln!("{}: serial {} ({reader})", index + 1, yubikey.serial());
-            }
-            eprint!("number: ");
-            io::stderr().flush()?;
+                eprintln!("Select YubiKey:");
+                for (index, (reader, yubikey)) in keys.iter().enumerate() {
+                    eprintln!("{}: serial {} ({reader})", index + 1, yubikey.serial());
+                }
+                eprint!("number: ");
+                io::stderr()
+                    .flush()
+                    .map_err(anyhow::Error::from)
+                    .map_err(InteractiveSelectError::Other)?;
 
-            let input = if let Some((deadline, interrupt)) = timed_input {
-                read_terminal_line_until(deadline, interrupt)?
-            } else {
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)?;
-                input
-            };
-            let selected = input.trim().parse::<usize>().context("invalid selection")?;
-            if selected == 0 || selected > keys.len() {
-                bail!("selected YubiKey is out of range");
+                let input = if let Some((deadline, interrupt)) = timed_input {
+                    read_terminal_line_until(deadline, interrupt)
+                        .map_err(InteractiveSelectError::Other)?
+                } else {
+                    let mut input = String::new();
+                    io::stdin()
+                        .read_line(&mut input)
+                        .map_err(anyhow::Error::from)
+                        .map_err(InteractiveSelectError::Other)?;
+                    input
+                };
+                let selected = input
+                    .trim()
+                    .parse::<usize>()
+                    .context("invalid selection")
+                    .map_err(InteractiveSelectError::Other)?;
+                if selected == 0 || selected > keys.len() {
+                    return Err(InteractiveSelectError::Other(anyhow::anyhow!(
+                        "selected YubiKey is out of range"
+                    )));
+                }
+                let (_, yubikey) = keys
+                    .into_iter()
+                    .nth(selected - 1)
+                    .context("selected YubiKey disappeared")
+                    .map_err(InteractiveSelectError::Other)?;
+                Ok(yubikey)
             }
-            let (_, yubikey) = keys
-                .into_iter()
-                .nth(selected - 1)
-                .context("selected YubiKey disappeared")?;
-            Ok(yubikey)
+            [] => Err(InteractiveSelectError::Other(anyhow::anyhow!(
+                "no YubiKey detected"
+            ))),
+        },
+    }
+}
+
+fn discover_interactive_yubikeys(context: &mut yubikey::Context) -> Result<InteractiveDiscovery> {
+    let attempts = context
+        .iter()?
+        .map(|reader| {
+            let name = reader.name().into_owned();
+            let opened = reader.open().map_err(|err| (name.clone(), err));
+            (name, opened)
+        })
+        .collect::<Vec<_>>();
+    classify_interactive_discovery(attempts)
+}
+
+enum InteractiveSelectError {
+    NoDevice,
+    Other(anyhow::Error),
+}
+
+fn map_select_interactive_error(err: InteractiveSelectError) -> anyhow::Error {
+    match err {
+        InteractiveSelectError::NoDevice => anyhow::anyhow!("no YubiKey detected"),
+        InteractiveSelectError::Other(err) => err,
+    }
+}
+
+fn classify_interactive_discovery(
+    attempts: Vec<ReaderOpenAttempt<YubiKey>>,
+) -> Result<InteractiveDiscovery> {
+    let mut keys = Vec::new();
+    let mut first_open_error = None;
+    for (reader, opened) in attempts {
+        match opened {
+            Ok(yubikey) => keys.push((reader, yubikey)),
+            Err((name, err)) if first_open_error.is_none() => {
+                first_open_error = Some((name, err));
+            }
+            Err(_) => {}
         }
     }
+
+    if !keys.is_empty() {
+        return Ok(InteractiveDiscovery::Found(keys));
+    }
+
+    if let Some((reader, source)) = first_open_error {
+        return Ok(InteractiveDiscovery::OpenError { reader, source });
+    }
+
+    Ok(InteractiveDiscovery::NoDevice)
 }
 
 impl YubikeySecretDevice {
@@ -216,7 +330,9 @@ impl YubikeySecretDevice {
         Ok(())
     }
 
-    /// YubiKey の既定 management key で PIV 書き込み操作を認証する。
+    /// 本実装は既定 management key 固定運用を前提とし、個別 key を使う YubiKey は対象外とする。
+    ///
+    /// 秘密復旧フローでは対象 key の運用境界を明示し、誤って「任意管理鍵対応」と誤認しない状態を維持する。
     fn authenticate_management(&mut self) -> Result<()> {
         let key = MgmKey::get_default(&self.yubikey)?;
         self.yubikey.authenticate(&key)?;
@@ -324,4 +440,53 @@ fn version_lt(left: Version, right: Version) -> bool {
 
 fn format_version(version: Version) -> String {
     format!("{}.{}.{}", version.major, version.minor, version.patch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn classify_empty_attempts_for_test(
+        attempts: Vec<ReaderOpenAttempt<()>>,
+    ) -> InteractiveDiscovery {
+        let mut first_open_error = None;
+        for (_, opened) in attempts {
+            if let Err((name, err)) = opened {
+                first_open_error = first_open_error.or(Some((name, err)));
+            }
+        }
+        if let Some((reader, source)) = first_open_error {
+            return InteractiveDiscovery::OpenError { reader, source };
+        }
+        InteractiveDiscovery::NoDevice
+    }
+
+    #[test]
+    fn classify_interactive_discovery_returns_no_device_without_readers() {
+        let result = classify_empty_attempts_for_test(Vec::new());
+        assert!(matches!(result, InteractiveDiscovery::NoDevice));
+    }
+
+    #[test]
+    fn classify_interactive_discovery_prefers_first_open_error_when_no_opened_key() -> Result<()> {
+        let attempts = vec![
+            (
+                "reader-a".to_string(),
+                Err(("reader-a".to_string(), yubikey::Error::NotFound)),
+            ),
+            (
+                "reader-b".to_string(),
+                Err(("reader-b".to_string(), yubikey::Error::NotFound)),
+            ),
+        ];
+        let result = classify_empty_attempts_for_test(attempts);
+        match result {
+            InteractiveDiscovery::OpenError { reader, source } => {
+                assert_eq!(reader, "reader-a");
+                assert!(matches!(source, yubikey::Error::NotFound));
+            }
+            _ => bail!("expected open error"),
+        }
+        Ok(())
+    }
 }
