@@ -86,6 +86,8 @@ For code, Nix, shell, workflow, bootstrap, or generated-file changes, run the de
 cargo xtask check
 ```
 
+Do not rerun an already-passing validation command unless the working tree changed after that validation, the earlier command did not cover the final diff, or the user explicitly asks for a rerun. Read-only inspection such as `git status`, `git diff`, log review, PR metadata checks, or commit/push preparation is not a reason to rerun validation.
+
 Always run validation commands from the flake dev shell. If the current shell is not already the flake dev shell, invoke validation through `direnv exec .`, for example `direnv exec . cargo test ...` or `direnv exec . cargo xtask check static`. Do not run validation commands directly from the ambient shell and then treat the result as repository validation.
 
 Default checks run static validation only. They do not run zsh startup/behavior checks or Tart VM runtime integration.

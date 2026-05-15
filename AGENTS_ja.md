@@ -86,6 +86,8 @@ code、Nix、shell、workflow、bootstrap、generated file に関わる変更で
 cargo xtask check
 ```
 
+すでに成功している検証コマンドは、その後に working tree が変わった場合、以前のコマンドが最終差分を覆っていなかった場合、またはユーザーが明示的に再実行を求めた場合を除き、再実行しないでください。`git status`、`git diff`、log review、PR metadata check、commit/push preparation のような読み取り専用の確認は、検証を再実行する理由になりません。
+
 検証コマンドは常に flake dev shell から実行してください。現在の shell が flake dev shell ではない場合は、`direnv exec . cargo test ...` や `direnv exec . cargo xtask check static` のように `direnv exec .` 経由で検証を実行してください。周囲の shell から検証コマンドを直接実行し、その結果をリポジトリの検証結果として扱わないでください。
 
 既定の検証は静的検証のみを実行します。zsh の起動・挙動検証や、Tart VM を使う runtime integration は実行しません。
