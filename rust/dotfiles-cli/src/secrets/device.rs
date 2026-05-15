@@ -19,7 +19,7 @@ use yubikey::{
 use zeroize::Zeroizing;
 
 use super::{
-    input::{read_hidden, wait_for_enter},
+    input::{read_hidden, read_terminal_line_until, wait_for_enter},
     memory::InterruptGuard,
     oaep::oaep_unpad_sha256,
     storage::SecretDevice,
@@ -61,6 +61,33 @@ pub(crate) fn open_device(serial: Option<u32>) -> Result<YubikeySecretDevice> {
     })
 }
 
+fn open_device_until(
+    serial: Option<u32>,
+    deadline: Instant,
+    interrupt: &InterruptGuard,
+) -> Result<YubikeySecretDevice> {
+    if serial.is_none() && !io::stdin().is_terminal() {
+        bail!("pass --serial in non-interactive use");
+    }
+
+    if interrupt.interrupted() {
+        bail!("interrupted while handling bootstrap secrets");
+    }
+    let yubikey = if let Some(serial) = serial {
+        YubiKey::open_by_serial(Serial(serial))?
+    } else {
+        select_interactive_yubikey_until(deadline, interrupt)?
+    };
+    if interrupt.interrupted() {
+        bail!("interrupted while handling bootstrap secrets");
+    }
+
+    Ok(YubikeySecretDevice {
+        yubikey,
+        pin_verified: false,
+    })
+}
+
 /// `enroll-spare` で primary の 3 secret を読み終えた後に spare を開く。
 ///
 /// `--spare-serial` があればその YubiKey を直接開く。対話実行で serial 指定がなければ、
@@ -92,7 +119,7 @@ pub(crate) fn open_spare_device(
             wait_for_enter(deadline, interrupt)?;
         }
 
-        let device = open_device(None)?;
+        let device = open_device_until(None, deadline, interrupt)?;
         if ensure_spare_serial(&device, primary_serial).is_ok() {
             return Ok(device);
         }
@@ -115,6 +142,19 @@ fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>
 /// 1 本だけ検出された場合はそのまま選び、複数本ある場合は reader 名と serial を
 /// 表示して番号入力を求める。
 fn select_interactive_yubikey() -> Result<YubiKey> {
+    select_interactive_yubikey_with_input(None)
+}
+
+fn select_interactive_yubikey_until(
+    deadline: Instant,
+    interrupt: &InterruptGuard,
+) -> Result<YubiKey> {
+    select_interactive_yubikey_with_input(Some((deadline, interrupt)))
+}
+
+fn select_interactive_yubikey_with_input(
+    timed_input: Option<(Instant, &InterruptGuard)>,
+) -> Result<YubiKey> {
     let mut context = yubikey::Context::open()?;
     let keys: Vec<_> = context
         .iter()?
@@ -145,8 +185,13 @@ fn select_interactive_yubikey() -> Result<YubiKey> {
             eprint!("number: ");
             io::stderr().flush()?;
 
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
+            let input = if let Some((deadline, interrupt)) = timed_input {
+                read_terminal_line_until(deadline, interrupt)?
+            } else {
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                input
+            };
             let selected = input.trim().parse::<usize>().context("invalid selection")?;
             if selected == 0 || selected > keys.len() {
                 bail!("selected YubiKey is out of range");

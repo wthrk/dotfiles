@@ -120,7 +120,7 @@ pub(crate) fn wait_for_enter(deadline: Instant, interrupt: &InterruptGuard) -> R
     if !io::stdin().is_terminal() {
         bail!("pass --spare-serial in non-interactive use");
     }
-    read_terminal_line_until(deadline, interrupt)
+    read_terminal_line_until(deadline, interrupt).map(|_| ())
 }
 
 /// 低水準 `get` command の唯一の出力として secret bytes を標準出力へ渡す。
@@ -150,9 +150,9 @@ fn parse_bootstrap_secrets_json(
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
     let mut deserializer = serde_json::Deserializer::from_slice(input);
-    BootstrapSecretsSeed { memory }
-        .deserialize(&mut deserializer)
-        .map_err(Into::into)
+    let secrets = BootstrapSecretsSeed { memory }.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(secrets)
 }
 
 struct BootstrapSecretsSeed<'a> {
@@ -350,11 +350,14 @@ fn trim_one_trailing_newline(input: &mut Vec<u8>) {
 }
 
 /// spare 差し替え待ちは、terminal read の完了より timeout / interrupt を優先する。
-fn read_terminal_line_until(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
+pub(crate) fn read_terminal_line_until(
+    deadline: Instant,
+    interrupt: &InterruptGuard,
+) -> Result<String> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
-        let result = io::stdin().read_line(&mut line);
+        let result = io::stdin().read_line(&mut line).map(|_| line);
         let _ = sender.send(result);
     });
 
@@ -364,9 +367,9 @@ fn read_terminal_line_until(deadline: Instant, interrupt: &InterruptGuard) -> Re
 /// `enroll-spare` の spare 差し替え待ちは、secret 保持中の timeout / interrupt 境界になる。
 fn receive_terminal_line(
     deadline: Instant,
-    receiver: mpsc::Receiver<io::Result<usize>>,
+    receiver: mpsc::Receiver<io::Result<String>>,
     interrupt: &InterruptGuard,
-) -> Result<()> {
+) -> Result<String> {
     loop {
         if interrupt.interrupted() {
             bail!("interrupted while handling bootstrap secrets");
@@ -378,7 +381,7 @@ fn receive_terminal_line(
 
         let poll_interval = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
         match receiver.recv_timeout(poll_interval) {
-            Ok(Ok(_)) => return Ok(()),
+            Ok(Ok(line)) => return Ok(line),
             Ok(Err(err)) if err.kind() == io::ErrorKind::Interrupted && interrupt.interrupted() => {
                 bail!("interrupted while handling bootstrap secrets");
             }

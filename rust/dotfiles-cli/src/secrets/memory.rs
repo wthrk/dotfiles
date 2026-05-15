@@ -29,10 +29,15 @@ impl InterruptGuard {
     /// SIGINT/SIGTERM は即時終了させず記録し、Drop による unlock/zeroize 後に失敗させる。
     pub(crate) fn install() -> Result<Self> {
         INTERRUPTED.store(false, Ordering::SeqCst);
-        Ok(Self {
-            sigint: register_interrupt(signal::SIGINT)?,
-            sigterm: register_interrupt(signal::SIGTERM)?,
-        })
+        let sigint = register_interrupt(signal::SIGINT)?;
+        let sigterm = match register_interrupt(signal::SIGTERM) {
+            Ok(sigterm) => sigterm,
+            Err(err) => {
+                signal_hook::low_level::unregister(sigint);
+                return Err(err);
+            }
+        };
+        Ok(Self { sigint, sigterm })
     }
 
     pub(crate) fn interrupted(&self) -> bool {

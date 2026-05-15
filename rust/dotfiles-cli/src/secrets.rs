@@ -166,6 +166,7 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
         }
         YubikeyCommand::EnrollPrimary(options) => {
             let mut device = open_device(options.serial)?;
+            storage::check_setup_preconditions(&mut device)?;
             let secrets = read_bootstrap_secrets(options.stdin_json, None)?;
             let summary = storage::enroll(&mut device, YubikeyRole::Primary, &secrets)?;
             println!("{}", serde_json::to_string_pretty(&summary)?);

@@ -261,6 +261,13 @@ pub fn secret_bytes(value: Vec<u8>) -> SecretBytes {
 ///
 /// 既存 key または対象 object が存在する場合は、上書きせず停止する。
 pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
+    check_setup_preconditions(device)?;
+    device.generate_key()?;
+    write_manifest(device)
+}
+
+/// storage setup が既存 PIV key/object を上書きしないことを事前確認する。
+pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
     if device.key_exists()? {
         if let Ok(manifest) = read_manifest(device) {
             manifest.validate_expected()?;
@@ -279,8 +286,7 @@ pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
         }
     }
 
-    device.generate_key()?;
-    write_manifest(device)
+    Ok(())
 }
 
 /// 1 secret を encrypted blob として YubiKey object に保存する。
