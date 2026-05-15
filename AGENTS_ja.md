@@ -67,7 +67,7 @@ cargo run --package dotfiles-cli -- switch all
 
 変更したファイルと挙動に関係する検証を選んでください。変更内容を検証しない広範なリポジトリ check を機械的に実行しないでください。
 
-Markdown だけのドキュメント変更では、生成ドキュメント、検証が必要な記載コマンド、またはユーザーの明示指示に影響しない限り、`cargo xtask check` や `cargo xtask check static` を実行しないでください。代わりに `git diff --check`、必要に応じた Markdown 表示確認、変更したリンクや参照先ファイルの確認など、対象を絞った確認を使ってください。
+Markdown だけのドキュメント変更では、生成ドキュメント、検証が必要な記載コマンド、またはユーザーが明示的に指示する場合を除き、`cargo xtask check` や `cargo xtask check static` を実行しないでください。代わりに `git diff --check`、必要に応じた Markdown 表示確認、変更したリンクや参照先ファイルの確認など、対象を絞った確認を使ってください。
 
 code、Nix、shell、workflow、bootstrap、generated file に関わる変更では、通常の変更を終える前に既定の検証 suite を実行してください:
 
