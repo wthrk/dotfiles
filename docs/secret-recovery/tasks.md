@@ -77,7 +77,7 @@ Issue:
 
 目的:
 
-YubiKey に `bw-password` と `bws-access-token` を保存し、復旧コマンドから安全に取得できるようにする。
+YubiKey に `bw-email`、`bw-password`、`bws-access-token` を保存し、復旧コマンドから安全に取得できるようにする。
 
 Design PR で決めること:
 
@@ -88,7 +88,7 @@ Design PR で決めること:
 - 挿さっている YubiKey が必要な secret を保持し、外部 service へ接続できることを確認する test command の分担
 - 外部サービス側の spare key 登録と、この repository が自動化する範囲の境界
 - 既存 YubiKey 設定と衝突した場合の停止条件
-- `bw-password` / `bws-access-token` の name validation
+- `bw-email` / `bw-password` / `bws-access-token` の name validation
 - secret 入力方法
 - 上書き時の option
 
@@ -117,7 +117,7 @@ Implementation PR の完了条件:
 検証観点:
 
 - 実機検証は read-only 確認と専用領域への書き込みに限定する。
-- `verify-yubikey` で `bw-password` と `bws-access-token` を復号できることを確認する。
+- `verify-yubikey` で `bw-email`、`bw-password`、`bws-access-token` を復号できることを確認する。
 - `enroll-spare` だけで primary 読み出し、spare setup、spare への再暗号化保存、local verify が完了することを確認する。
 - reset / credential 削除 / 既存領域上書きを含む検証は行わない。
 - 既存の FIDO2 / OTP / OpenPGP / PIV credential に影響しないことを確認する。
@@ -235,16 +235,16 @@ Design PR で決めること:
 - `bw` CLI を使う範囲を login / unlock に限定する明文化
 - YubiKey OTP 入力方法
 - Bitwarden account に primary と spare の YubiKey が登録済みであることの前提と validation 手順
-- `dotfiles secrets verify-yubikey --check bw-login --email <email>` の挙動
+- `dotfiles secrets verify-yubikey --check bw-login` の挙動
 - `BW_PASSWORD` / `BW_SESSION` の寿命
 - 出力形式
 
 Implementation PR の完了条件:
 
-- `dotfiles secrets bw-login --email <email>` を実装する。
+- `dotfiles secrets bw-login` を実装する。
 - `bw login <email> --passwordenv BW_PASSWORD --method 3 --code <otp>` を実行する。
 - `bw unlock --passwordenv BW_PASSWORD --raw` を実行する。
-- `dotfiles secrets verify-yubikey --check bw-login --email <email>` を実装する。
+- `dotfiles secrets verify-yubikey --check bw-login` を実装する。
 - `BW_PASSWORD` を保存しない。
 - primary と spare のどちらでも manual login validation を行える手順を文書化する。
 - unit test を追加する。
@@ -272,7 +272,7 @@ Design PR で決めること:
 - 初期セットアップ手順
 - 新規マシン復旧手順
 - validation checklist
-- `dotfiles secrets verify-yubikey --all --email <email>` を復旧前 check として組み込むかどうか
+- `dotfiles secrets verify-yubikey --all` を復旧前 check として組み込むかどうか
 - 失敗時の停止条件と再実行手順
 - `scripts/bootstrap.sh` と接続するかどうか
 
