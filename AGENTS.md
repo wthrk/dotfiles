@@ -65,7 +65,11 @@ cargo run --package dotfiles-cli -- switch all
 
 ## Testing
 
-Run the default validation suite before finishing normal changes:
+Choose validation that is relevant to the files and behavior changed. Do not run broad repository checks mechanically when they do not exercise the change.
+
+For Markdown-only documentation changes, do not run `cargo xtask check` or `cargo xtask check static` unless the change also affects generated docs, documented commands that need verification, or the user explicitly asks for it. Use targeted checks such as `git diff --check`, reviewing rendered Markdown when useful, and verifying links or referenced files when they changed.
+
+For code, Nix, shell, workflow, bootstrap, or generated-file changes, run the default validation suite before finishing normal changes:
 
 ```sh
 cargo xtask check
