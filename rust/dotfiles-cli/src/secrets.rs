@@ -190,11 +190,14 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
             bail!("pass --spare-serial in non-interactive use");
         }
         let spare = if options.spare_serial.is_some() {
-            Some(open_spare_device(
+            let mut spare = open_spare_device(
                 options.spare_serial,
                 options.primary_serial,
                 &interrupt_guard,
-            )?)
+            )?;
+            interrupt_guard
+                .run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
+            Some(spare)
         } else {
             None
         };
