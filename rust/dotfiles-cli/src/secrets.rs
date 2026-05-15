@@ -268,6 +268,7 @@ fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
         if !updated_serials.insert(device.serial()) {
             bail!("selected YubiKey was already updated");
         }
+        storage::check_rotate_preconditions(&mut device)?;
         summaries.push(storage::rotate_bws_token(&mut device, &token)?);
     }
 
