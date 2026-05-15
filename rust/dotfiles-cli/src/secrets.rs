@@ -22,7 +22,7 @@ use input::{
     write_secret_to_stdout,
 };
 use memory::{InterruptGuard, SecretMemoryGuard};
-use storage::{BootstrapSecrets, CheckName, CheckStatus, SecretDevice, SecretName, YubikeyRole};
+use storage::{BootstrapSecrets, SecretDevice, SecretName, YubikeyRole};
 
 use crate::Result;
 
@@ -154,6 +154,7 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
         }
         YubikeyCommand::Put(options) => {
             let mut device = open_device(options.serial)?;
+            storage::check_put_preconditions(&mut device, options.name, options.force)?;
             let secret = read_secret_for_put(options.name, options.stdin)?;
             storage::put(&mut device, options.name, &secret, options.force)
         }
@@ -196,6 +197,9 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
         } else {
             None
         };
+        if interrupt_guard.interrupted() {
+            bail!("interrupted while handling bootstrap secrets");
+        }
         (
             read_bootstrap_secrets(true, Some(&mut memory))?,
             options.primary_serial,
@@ -246,6 +250,7 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
 fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
     if let Some(serial) = options.serial {
         let mut device = open_device(Some(serial))?;
+        storage::check_rotate_preconditions(&mut device)?;
         let token = read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
         let summary = storage::rotate_bws_token(&mut device, &token)?;
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -253,6 +258,7 @@ fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
     }
 
     let mut device = open_device(None)?;
+    storage::check_rotate_preconditions(&mut device)?;
     let token = read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
     let mut summaries = vec![storage::rotate_bws_token(&mut device, &token)?];
@@ -269,31 +275,31 @@ fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
     Ok(())
 }
 
-/// local storage の復号確認を行い、指定された外部確認項目を summary に含める。
+/// local storage の復号確認を行い、外部確認要求は利用不可として拒否する。
 ///
-/// 現時点の外部確認は placeholder として `skipped` を返し、YubiKey 上の bootstrap
-/// secret が復号できることだけを実際に検証する。
+/// 引数なしの実行だけが YubiKey 上の bootstrap secret 復号を検証する。
 fn run_verify_yubikey(options: VerifyYubikeyOptions) -> Result<()> {
     if options.all && !options.check.is_empty() {
         bail!("--all and --check cannot be used together");
     }
+    if options.all {
+        bail!("verify-yubikey --all includes unsupported external checks: bws, bw-login");
+    }
+    if !options.check.is_empty() {
+        let requested = options
+            .check
+            .iter()
+            .map(|check| match check {
+                VerifyCheck::Bws => "bws",
+                VerifyCheck::BwLogin => "bw-login",
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("unsupported external checks requested: {requested}");
+    }
 
     let mut device = open_device(options.serial)?;
-    let mut summary = storage::verify_local_storage(&mut device)?;
-
-    for check in options.check {
-        let key = match check {
-            VerifyCheck::Bws => CheckName::Bws,
-            VerifyCheck::BwLogin => CheckName::BwLogin,
-        };
-        summary.checks.insert(key, CheckStatus::Skipped);
-    }
-    if options.all {
-        summary.checks.insert(CheckName::Bws, CheckStatus::Skipped);
-        summary
-            .checks
-            .insert(CheckName::BwLogin, CheckStatus::Skipped);
-    }
+    let summary = storage::verify_local_storage(&mut device)?;
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())

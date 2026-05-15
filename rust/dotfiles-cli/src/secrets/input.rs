@@ -20,6 +20,7 @@ use super::{
 use crate::Result;
 
 const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
+const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 
 #[derive(Deserialize)]
 /// `--stdin-json` で受け取る bootstrap secret 入力。
@@ -53,18 +54,21 @@ pub(crate) fn read_bootstrap_secrets(
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
     if stdin_json {
-        let mut input = Zeroizing::new(Vec::with_capacity(MAX_BOOTSTRAP_JSON_LEN));
+        let mut input = Zeroizing::new(vec![0_u8; MAX_BOOTSTRAP_JSON_LEN + 1]);
         let input_lock = if let Some(memory) = memory.as_deref() {
-            Some(memory.lock_transient_buffer(input.as_ptr(), input.capacity())?)
+            Some(memory.lock_transient_buffer(input.as_ptr(), input.len())?)
         } else {
             None
         };
-        io::stdin()
-            .take((MAX_BOOTSTRAP_JSON_LEN + 1) as u64)
-            .read_to_end(&mut input)?;
-        if input.len() > MAX_BOOTSTRAP_JSON_LEN {
+        let input_len = read_stdin_into_fixed_buffer(
+            &mut io::stdin(),
+            &mut input,
+            "bootstrap secret JSON input is too large",
+        )?;
+        if input_len > MAX_BOOTSTRAP_JSON_LEN {
             bail!("bootstrap secret JSON input is too large");
         }
+        input.truncate(input_len);
         let parsed: BootstrapSecretsJson =
             serde_json::from_slice(&input).context("failed to parse bootstrap secret JSON")?;
         input.zeroize();
@@ -147,10 +151,36 @@ fn lock_bootstrap_secrets(
 
 /// stdin から単一 secret を読み、terminal 入力由来の末尾改行だけを正規化する。
 fn read_one_stdin_secret() -> Result<Zeroizing<Vec<u8>>> {
-    let mut input = Zeroizing::new(Vec::default());
-    io::stdin().read_to_end(&mut input)?;
+    let mut input = Zeroizing::new(vec![0_u8; MAX_SINGLE_STDIN_SECRET_LEN + 1]);
+    let input_len = read_stdin_into_fixed_buffer(
+        &mut io::stdin(),
+        &mut input,
+        "stdin secret input is too large",
+    )?;
+    if input_len > MAX_SINGLE_STDIN_SECRET_LEN {
+        bail!("stdin secret input is too large");
+    }
+    input.truncate(input_len);
     trim_one_trailing_newline(&mut input);
     Ok(input)
+}
+
+/// 事前確保した buffer の範囲だけへ読み込み、上限超過を追加確保なしで検出する。
+fn read_stdin_into_fixed_buffer<R: Read>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    oversized_error: &str,
+) -> Result<usize> {
+    let mut total_len = 0;
+    while total_len < buffer.len() {
+        let read_len = reader.read(&mut buffer[total_len..])?;
+        if read_len == 0 {
+            return Ok(total_len);
+        }
+        total_len += read_len;
+    }
+
+    bail!("{oversized_error}");
 }
 
 /// stdin/prompt 由来の入力で混入しやすい末尾 newline 1 個だけを保存対象から外す。

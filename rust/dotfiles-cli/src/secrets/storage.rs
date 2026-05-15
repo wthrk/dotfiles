@@ -116,7 +116,7 @@ impl SecretManifest {
 }
 
 /// PIV object に保存する暗号化済み secret blob。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SecretBlob {
     /// blob に入っている secret 名。
     pub name: SecretName,
@@ -128,6 +128,28 @@ pub struct SecretBlob {
     pub ciphertext: Zeroizing<Vec<u8>>,
     /// AES-256-GCM authentication tag。
     pub tag: [u8; TAG_LEN],
+}
+
+impl std::fmt::Debug for SecretBlob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SecretBlob")
+            .field("name", &self.name)
+            .field(
+                "nonce",
+                &format_args!("<redacted:{} bytes>", self.nonce.len()),
+            )
+            .field(
+                "wrapped_key",
+                &format_args!("<redacted:{} bytes>", self.wrapped_key.len()),
+            )
+            .field(
+                "ciphertext",
+                &format_args!("<redacted:{} bytes>", self.ciphertext.len()),
+            )
+            .field("tag", &format_args!("<redacted:{} bytes>", self.tag.len()))
+            .finish()
+    }
 }
 
 /// 実機 YubiKey と fake test double に共通する最小操作。
@@ -287,6 +309,22 @@ pub fn put<D: SecretDevice>(
     device.write_object(name.object_id(), &encoded)
 }
 
+/// `put` 実行前に、secret 入力なしで検証できる保存条件を確認する。
+pub fn check_put_preconditions<D: SecretDevice>(
+    device: &mut D,
+    name: SecretName,
+    force: bool,
+) -> Result<()> {
+    read_manifest(device)?.validate_expected()?;
+    if device.read_object(name.object_id())?.is_some() && !force {
+        bail!(
+            "{} already exists; pass --force to replace it",
+            secret_name(name)
+        );
+    }
+    Ok(())
+}
+
 /// 1 secret を YubiKey object から読み出して復号する。
 ///
 /// blob 内の secret id と要求された secret 名が一致しない場合は拒否する。
@@ -351,10 +389,14 @@ pub fn rotate_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result
     verify_local_storage(device)
 }
 
+/// `rotate-bws-token` の token 入力前に、local storage が更新可能か確認する。
+pub fn check_rotate_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
+    verify_local_storage(device).map(|_| ())
+}
+
 /// YubiKey 上の manifest と 3 secret の復号可能性を検証する。
 ///
-/// BWS / Bitwarden login の外部通信確認は別 issue の範囲なので、ここでは `skipped`
-/// として summary に残す。
+/// local storage verification は外部 service へ接続せず、BWS / Bitwarden login を未実行項目として残す。
 pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySummary> {
     read_manifest(device)?.validate_expected()?;
     for name in SecretName::iter() {

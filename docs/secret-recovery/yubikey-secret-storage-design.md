@@ -264,7 +264,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bws-access-token` だけを更新する。対話実行では新しい token を一度だけ読み取り、primary と spare を順に選択して更新する。同一 serial を同じ実行内で再選択した場合は停止する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新後は local verify を実行する。BWS 接続確認は外部サービス確認項目として summary に含め、local secret storage の検証と区別する。
+指定 YubiKey の `bws-access-token` だけを更新する。対話実行では新しい token を一度だけ読み取り、primary と spare を順に選択して更新する。同一 serial を同じ実行内で再選択した場合は停止する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に local storage が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は local verify を実行する。BWS 接続確認は local secret storage とは別の外部確認として扱う。
 
 ### `dotfiles secrets verify-yubikey`
 
@@ -276,6 +276,8 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 - `--check bws`: `bws-access-token` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
 - `--check bw-login`: `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができることを確認する。override が必要な場合だけ `--email <email>` を許可する。
 - `--all`: local storage、BWS、Bitwarden login の全確認を行う。通常は YubiKey 内の `bw-email` を使う。
+
+外部確認を明示要求した場合（`--check bws`、`--check bw-login`、`--all`）は、`skipped` で成功扱いにせず、外部確認が利用できないことを error として返す。引数なしの `verify-yubikey` は local storage のみ検証し、外部確認項目を未実行状態として summary に残す。
 
 出力は machine-readable な summary にし、secret 本文、access token、Bitwarden session token は出力しない。
 
@@ -311,6 +313,7 @@ local storage check は次を確認する。
 - slot `82` に既存 key または certificate がある。
 - 使用予定 object ID に既存 data object がある。
 - `enroll-primary` / `enroll-spare` の途中で setup、保存、local verify のいずれかに失敗した。
+- `enroll-primary` / `enroll-spare` の途中失敗で setup 済みの部分状態（manifest または一部 secret object）が残ることがある。この状態は回復可能で、同一 YubiKey では `put --force` で不足分を埋めるか、運用手順として専用領域を初期化して再 enroll する。
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
 - `enroll-spare` で平文 secret を読む前に core dump 無効化または memory lock の準備に失敗した。
@@ -318,6 +321,7 @@ local storage check は次を確認する。
 - manifest が存在するが app、version が期待値と一致しない。
 - 許可されていない secret name が指定された。
 - 同名 secret が存在し、`--force` が指定されていない。
+- `put` の入力前 precondition（manifest 不一致、`--force` なし上書き要求）に失敗した。
 - secret 入力が空。
 - secret blob の magic、version、algorithm、secret id、length field、AEAD additional data が一致しない。
 - 復号または認証 tag 検証に失敗した。

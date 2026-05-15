@@ -93,7 +93,7 @@ private `password-store` repository の clone は `git2` と SSH agent を使う
 1. `dotfiles secrets yubikey enroll-primary` で primary YubiKey に必要な bootstrap secret を登録し、local verify まで実行する。
 2. スペア YubiKey がある場合は、`dotfiles secrets yubikey enroll-spare` で primary から bootstrap secret を読み出し、spare に再暗号化して保存し、local verify まで実行する。
 3. Bitwarden、GitHub、Google、Apple など YubiKey を使う外部サービスに primary と spare を登録する。
-4. `dotfiles secrets verify-yubikey --all` で、挿さっている YubiKey に必要な bootstrap secret があり、Bitwarden Secrets Manager と Bitwarden Password Manager に到達できることを確認する。
+4. `dotfiles secrets verify-yubikey` で、挿さっている YubiKey に必要な bootstrap secret があることを確認する。BWS と Bitwarden Password Manager の外部確認は専用コマンドが提供する段階で復旧前確認に加える。
 5. `bws-access-token` を rotate した場合は `dotfiles secrets yubikey rotate-bws-token` で primary と spare を順に更新する。非対話実行では `--serial` と `--stdin` を指定して 1 本ずつ更新する。
 6. `dotfiles secrets restore-gpg` で Bitwarden Secrets Manager から GPG secret key backup を取得し、GPG secret key を import する。
 7. `dotfiles gpg export-ssh-public-key` で GPG authentication subkey 由来の SSH public key を出力し、GitHub SSH keys に登録する。
@@ -109,6 +109,7 @@ YubiKey 5 PIV の利用前提を確認し、この機能で使う保存領域が
 ### `dotfiles secrets yubikey put <name>`
 
 YubiKey に secret を保存する。`<name>` は `bw-email`、`bw-password`、`bws-access-token` のみ許可する。secret 本文は hidden prompt または stdin から受け取る。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
+このコマンドは入力前に manifest と既存 object の状態を検証し、`--force` なしで上書きが必要な場合は secret を読まずに停止する。
 
 ### `dotfiles secrets yubikey get <name>`
 
@@ -124,7 +125,8 @@ spare YubiKey を復旧入口として初期登録する。通常は primary Yub
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bws-access-token` を更新し、更新後に local verify を実行する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目として扱い、local secret storage の検証と区別して summary に残す。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、コマンドが対象 YubiKey を順に選択させる。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
+指定 YubiKey の `bws-access-token` を更新し、更新後に local verify を実行する。BWS 接続確認は local secret storage の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、コマンドが対象 YubiKey を順に選択させる。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
+token 入力前に local storage の復号可能性を確認し、更新不能な状態では新しい token を読まずに停止する。
 
 ### `dotfiles secrets verify-yubikey`
 
@@ -135,6 +137,8 @@ spare YubiKey を復旧入口として初期登録する。通常は primary Yub
 - `bw-email`、`bw-password`、`bws-access-token` が YubiKey に保存され、PIN verification と touch を経て復号できる。
 - `bws-access-token` で Bitwarden Secrets Manager に接続し、`gpg-secret-key-backup` と `password-store-remote` を取得できる。
 - `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができる。
+
+このコマンドは local storage 確認だけを実行する。`--check bws`、`--check bw-login`、`--all` は外部確認を要求する option なので、外部確認の実装がない状態では明示的に失敗する。
 
 このコマンドは GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F 登録状況を検証しない。外部サービスの spare key 登録は各サービスの設定画面で確認する。
 
