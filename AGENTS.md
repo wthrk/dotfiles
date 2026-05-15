@@ -50,6 +50,11 @@ Do not manually test local flake generation by writing to the developer's real `
 - Whenever creating a new work branch, first confirm that `main` is up to date with its upstream, update it if needed, and branch from the latest `main`.
 - Do not assume the local `main` is current. Fetch the upstream state before using `main` as a branch base.
 
+## Instruction Compliance
+
+- Before editing files or running broad validation, identify the project instructions that apply to the requested work and keep the implementation within those constraints.
+- For code changes, review the changed constructs against the Code Style rules before finalizing. Do not treat formatter, lint, or test success as a substitute for instruction compliance.
+
 ## Development Commands
 
 Use `xtask` for repository maintenance:
