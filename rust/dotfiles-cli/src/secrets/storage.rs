@@ -688,6 +688,28 @@ mod tests {
     }
 
     #[test]
+    fn setup_stops_when_key_exists_without_manifest() {
+        let mut device = FakeDevice::new(1234);
+        device.key_exists = true;
+
+        assert!(setup(&mut device).is_err());
+    }
+
+    #[test]
+    fn enroll_rejects_empty_secret_before_setup() {
+        let mut device = FakeDevice::new(1234);
+        let secrets = BootstrapSecrets {
+            bw_email: secret_bytes(b"user@example.com".to_vec()),
+            bw_password: secret_bytes(Vec::new()),
+            bws_access_token: secret_bytes(b"token".to_vec()),
+        };
+
+        assert!(enroll(&mut device, YubikeyRole::Primary, &secrets).is_err());
+        assert!(!device.key_exists);
+        assert!(device.objects.is_empty());
+    }
+
+    #[test]
     fn put_get_and_verify_round_trip_through_device() -> Result<()> {
         let mut device = FakeDevice::new(1234);
         setup(&mut device)?;
