@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use serde::Deserialize;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -18,6 +18,8 @@ use super::{
     storage::{self, BootstrapSecrets, SecretName, secret_name},
 };
 use crate::Result;
+
+const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 
 #[derive(Deserialize)]
 /// `--stdin-json` で受け取る bootstrap secret 入力。
@@ -51,10 +53,22 @@ pub(crate) fn read_bootstrap_secrets(
     memory: Option<&mut SecretMemoryGuard>,
 ) -> Result<BootstrapSecrets> {
     if stdin_json {
-        let mut input = Zeroizing::new(String::new());
-        io::stdin().read_to_string(&mut input)?;
-        let parsed: BootstrapSecretsJson = serde_json::from_str(&input)?;
+        let mut input = Zeroizing::new(Vec::with_capacity(MAX_BOOTSTRAP_JSON_LEN));
+        let input_lock = if let Some(memory) = memory.as_deref() {
+            Some(memory.lock_transient_buffer(input.as_ptr(), input.capacity())?)
+        } else {
+            None
+        };
+        io::stdin()
+            .take((MAX_BOOTSTRAP_JSON_LEN + 1) as u64)
+            .read_to_end(&mut input)?;
+        if input.len() > MAX_BOOTSTRAP_JSON_LEN {
+            bail!("bootstrap secret JSON input is too large");
+        }
+        let parsed: BootstrapSecretsJson =
+            serde_json::from_slice(&input).context("failed to parse bootstrap secret JSON")?;
         input.zeroize();
+        drop(input_lock);
         let secrets = BootstrapSecrets {
             bw_email: storage::secret_bytes(parsed.bw_email.into_bytes()),
             bw_password: storage::secret_bytes(parsed.bw_password.into_bytes()),
@@ -94,7 +108,10 @@ pub(crate) fn prompt_yes_no(prompt: &str) -> Result<bool> {
     io::stderr().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// YubiKey 差し替え prompt の Enter 入力を待つ。

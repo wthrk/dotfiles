@@ -74,11 +74,20 @@ fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::OsRng;
+    use rsa::{
+        BigUint, Oaep, RsaPrivateKey, RsaPublicKey,
+        traits::{PrivateKeyParts, PublicKeyParts},
+    };
 
     #[test]
     fn oaep_unpad_round_trips_rsa_oaep_sha256() -> Result<()> {
+        let mut rng = OsRng;
+        let private = RsaPrivateKey::new(&mut rng, 2048)?;
+        let public = RsaPublicKey::from(&private);
         let message = b"test-content-encryption-key";
-        let encoded = oaep_pad_sha256_for_test(message, 256);
+        let ciphertext = public.encrypt(&mut rng, Oaep::new::<Sha256>(), message)?;
+        let encoded = raw_rsa_decrypt_for_test(&private, &ciphertext)?;
         let decoded = oaep_unpad_sha256(&encoded, 256)?;
         assert_eq!(decoded.as_slice(), message);
         Ok(())
@@ -92,38 +101,16 @@ mod tests {
         assert!(oaep_unpad_sha256(&encoded, 256).is_err());
     }
 
-    fn oaep_pad_sha256_for_test(message: &[u8], key_len: usize) -> Vec<u8> {
-        let hash_len = 32usize;
-        let ps_len = key_len - message.len() - (2 * hash_len) - 2;
-        let label_hash = Sha256::digest([]);
+    fn raw_rsa_decrypt_for_test(private: &RsaPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let decrypted = BigUint::from_bytes_be(ciphertext).modpow(private.d(), private.n());
+        let key_len = private.size();
+        let bytes = decrypted.to_bytes_be();
+        if bytes.len() > key_len {
+            bail!("raw RSA decrypted value is longer than the key size");
+        }
 
-        let db: Vec<u8> = label_hash
-            .as_slice()
-            .iter()
-            .copied()
-            .chain(std::iter::repeat_n(0u8, ps_len))
-            .chain(std::iter::once(1))
-            .chain(message.iter().copied())
-            .collect();
-
-        let seed = [0x42u8; 32];
-        let db_mask = mgf1_sha256(&seed, key_len - hash_len - 1);
-        let masked_db: Vec<u8> = db
-            .iter()
-            .zip(db_mask)
-            .map(|(left, right)| left ^ right)
-            .collect();
-
-        let seed_mask = mgf1_sha256(&masked_db, hash_len);
-        let masked_seed: Vec<u8> = seed
-            .iter()
-            .zip(seed_mask)
-            .map(|(left, right)| left ^ right)
-            .collect();
-
-        std::iter::once(0)
-            .chain(masked_seed)
-            .chain(masked_db)
-            .collect()
+        Ok(std::iter::repeat_n(0u8, key_len - bytes.len())
+            .chain(bytes)
+            .collect())
     }
 }

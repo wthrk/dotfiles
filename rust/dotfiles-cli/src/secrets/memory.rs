@@ -110,6 +110,14 @@ impl SecretMemoryGuard {
         }
         Ok(secret)
     }
+
+    pub(crate) fn lock_transient_buffer(
+        &self,
+        ptr: *const u8,
+        len: usize,
+    ) -> Result<region::LockGuard> {
+        lock_memory_range(ptr, len).context("failed to lock bootstrap secret input memory")
+    }
 }
 
 fn register_interrupt(signal: i32) -> Result<SigId> {
@@ -135,4 +143,8 @@ fn lock_secret_memory(secret: &storage::SecretBytes) -> Result<Option<region::Lo
     region::lock(secret.as_ptr(), secret.len())
         .map(Some)
         .context("failed to lock bootstrap secret memory")
+}
+
+fn lock_memory_range(ptr: *const u8, len: usize) -> Result<region::LockGuard> {
+    region::lock(ptr, len).map_err(Into::into)
 }

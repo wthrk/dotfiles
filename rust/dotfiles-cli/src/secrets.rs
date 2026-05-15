@@ -9,14 +9,17 @@ mod memory;
 mod oaep;
 mod storage;
 
-use std::io::{self, IsTerminal};
+use std::{
+    collections::BTreeSet,
+    io::{self, IsTerminal},
+};
 
 use anyhow::bail;
 use clap::{Args, Subcommand, ValueEnum};
 use device::{open_device, open_spare_device};
 use input::{
-    prompt_yes_no, protect_zeroizing_secret, read_bootstrap_secrets, read_hidden,
-    read_secret_for_put, write_secret_to_stdout,
+    prompt_yes_no, protect_zeroizing_secret, read_bootstrap_secrets, read_secret_for_put,
+    write_secret_to_stdout,
 };
 use memory::{InterruptGuard, SecretMemoryGuard};
 use storage::{BootstrapSecrets, CheckName, CheckStatus, SecretDevice, SecretName, YubikeyRole};
@@ -52,7 +55,7 @@ enum YubikeyCommand {
     Get(GetOptions),
     EnrollPrimary(EnrollPrimaryOptions),
     EnrollSpare(EnrollSpareOptions),
-    RotateBwsToken(SerialOptions),
+    RotateBwsToken(RotateBwsTokenOptions),
 }
 
 #[derive(Args)]
@@ -102,6 +105,15 @@ struct EnrollSpareOptions {
     spare_serial: Option<u32>,
     #[arg(long)]
     stdin_json: bool,
+}
+
+#[derive(Args)]
+/// `rotate-bws-token` で更新する YubiKey と token の受け取り境界を表す option。
+struct RotateBwsTokenOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+    #[arg(long)]
+    stdin: bool,
 }
 
 #[derive(Args)]
@@ -171,35 +183,55 @@ fn run_yubikey(options: YubikeyOptions) -> Result<()> {
 fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
     let interrupt_guard = InterruptGuard::install()?;
     let mut memory = SecretMemoryGuard::prepare()?;
-    let (bootstrap, primary_serial) = if options.stdin_json {
+    let (bootstrap, primary_serial, spare) = if options.stdin_json {
         if options.spare_serial.is_none() && !io::stdin().is_terminal() {
             bail!("pass --spare-serial in non-interactive use");
         }
+        let spare = if options.spare_serial.is_some() {
+            Some(open_spare_device(
+                options.spare_serial,
+                options.primary_serial,
+                &interrupt_guard,
+            )?)
+        } else {
+            None
+        };
         (
             read_bootstrap_secrets(true, Some(&mut memory))?,
             options.primary_serial,
+            spare,
         )
     } else {
         let mut primary = open_device(options.primary_serial)?;
         let primary_serial = primary.serial();
-        let secrets = BootstrapSecrets {
-            bw_email: memory.lock_secret(
-                SecretName::BwEmail,
-                protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwEmail)?),
-            )?,
-            bw_password: memory.lock_secret(
-                SecretName::BwPassword,
-                protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwPassword)?),
-            )?,
-            bws_access_token: memory.lock_secret(
-                SecretName::BwsAccessToken,
-                protect_zeroizing_secret(storage::get(&mut primary, SecretName::BwsAccessToken)?),
-            )?,
-        };
-        (secrets, Some(primary_serial))
+        let secrets =
+            BootstrapSecrets {
+                bw_email: memory.lock_secret(
+                    SecretName::BwEmail,
+                    protect_zeroizing_secret(interrupt_guard.run_yubikey_operation(|| {
+                        storage::get(&mut primary, SecretName::BwEmail)
+                    })?),
+                )?,
+                bw_password: memory.lock_secret(
+                    SecretName::BwPassword,
+                    protect_zeroizing_secret(interrupt_guard.run_yubikey_operation(|| {
+                        storage::get(&mut primary, SecretName::BwPassword)
+                    })?),
+                )?,
+                bws_access_token: memory.lock_secret(
+                    SecretName::BwsAccessToken,
+                    protect_zeroizing_secret(interrupt_guard.run_yubikey_operation(|| {
+                        storage::get(&mut primary, SecretName::BwsAccessToken)
+                    })?),
+                )?,
+            };
+        (secrets, Some(primary_serial), None)
     };
 
-    let mut spare = open_spare_device(options.spare_serial, primary_serial, &interrupt_guard)?;
+    let mut spare = match spare {
+        Some(spare) => spare,
+        None => open_spare_device(options.spare_serial, primary_serial, &interrupt_guard)?,
+    };
 
     let summary = interrupt_guard
         .run_yubikey_operation(|| storage::enroll(&mut spare, YubikeyRole::Spare, &bootstrap))?;
@@ -211,21 +243,25 @@ fn run_enroll_spare(options: EnrollSpareOptions) -> Result<()> {
 ///
 /// 非対話実行では `--serial` で 1 本だけを更新する。対話実行で serial 指定がない場合は
 /// token を一度だけ受け取り、利用者が終了を選ぶまで YubiKey 選択と更新を繰り返す。
-fn run_rotate_bws_token(options: SerialOptions) -> Result<()> {
+fn run_rotate_bws_token(options: RotateBwsTokenOptions) -> Result<()> {
     if let Some(serial) = options.serial {
         let mut device = open_device(Some(serial))?;
-        let token = read_hidden("bws-access-token: ")?;
+        let token = read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
         let summary = storage::rotate_bws_token(&mut device, &token)?;
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
 
     let mut device = open_device(None)?;
-    let token = read_hidden("bws-access-token: ")?;
+    let token = read_secret_for_put(SecretName::BwsAccessToken, options.stdin)?;
+    let mut updated_serials = BTreeSet::from([device.serial()]);
     let mut summaries = vec![storage::rotate_bws_token(&mut device, &token)?];
 
     while prompt_yes_no("Update another YubiKey? [y/N] ")? {
         let mut device = open_device(None)?;
+        if !updated_serials.insert(device.serial()) {
+            bail!("selected YubiKey was already updated");
+        }
         summaries.push(storage::rotate_bws_token(&mut device, &token)?);
     }
 

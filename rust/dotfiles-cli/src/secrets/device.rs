@@ -13,7 +13,7 @@ use rand_core::OsRng;
 use rsa::{Oaep, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
 use sha2::Sha256;
 use yubikey::{
-    MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
+    MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 use zeroize::Zeroizing;
@@ -28,6 +28,11 @@ use crate::Result;
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
+const MIN_PIV_METADATA_VERSION: Version = Version {
+    major: 5,
+    minor: 3,
+    patch: 0,
+};
 const SPARE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// 1 command 内で共有する実機 YubiKey transaction state。
@@ -194,15 +199,25 @@ impl SecretDevice for YubikeySecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
             Ok(_) => Ok(true),
-            Err(yubikey::Error::NotFound) => Ok(self
-                .yubikey
-                .fetch_object(SECRET_SLOT_CERT_OBJECT_ID)
-                .is_ok()),
+            Err(yubikey::Error::NotFound) => {
+                match self.yubikey.fetch_object(SECRET_SLOT_CERT_OBJECT_ID) {
+                    Ok(_) => Ok(true),
+                    Err(yubikey::Error::NotFound) => Ok(false),
+                    Err(err) => Err(err.into()),
+                }
+            }
             Err(err) => Err(err.into()),
         }
     }
 
     fn generate_key(&mut self) -> Result<()> {
+        let version = self.yubikey.version();
+        if version_lt(version, MIN_PIV_METADATA_VERSION) {
+            bail!(
+                "YubiKey PIV application version must be at least {}",
+                format_version(MIN_PIV_METADATA_VERSION)
+            );
+        }
         if self.yubikey.get_pin_retries()? == 0 {
             bail!("YubiKey PIN retries are exhausted");
         }
@@ -228,7 +243,7 @@ impl SecretDevice for YubikeySecretDevice {
 
     fn write_object(&mut self, object_id: u32, value: &[u8]) -> Result<()> {
         self.authenticate_management()?;
-        let mut value = value.to_vec();
+        let mut value = Zeroizing::new(value.to_vec());
         self.yubikey.save_object(object_id, &mut value)?;
         Ok(())
     }
@@ -247,6 +262,15 @@ impl SecretDevice for YubikeySecretDevice {
             AlgorithmId::Rsa2048,
             SECRET_SLOT,
         )?;
+        let decrypted = Zeroizing::new(decrypted);
         oaep_unpad_sha256(&decrypted, 256)
     }
+}
+
+fn version_lt(left: Version, right: Version) -> bool {
+    (left.major, left.minor, left.patch) < (right.major, right.minor, right.patch)
+}
+
+fn format_version(version: Version) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
 }

@@ -48,7 +48,7 @@ secret memory handling は役割ごとに crate を分ける。
 - `rlimit`: `enroll-spare` で secret を読む前に core dump を無効化する。
 - `region`: `enroll-spare` で primary から読んだ 3 secret、または `--stdin-json` 由来の 3 secret を memory lock する。
 
-実装 PR では次を満たす。
+YubiKey adapter は次を満たす。
 
 - `yubikey` の version を明示的に固定する。
 - object read/write API が feature gate を要求する場合、その feature は YubiKey adapter module だけで使う。
@@ -64,7 +64,7 @@ secret memory handling は役割ごとに crate を分ける。
 
 鍵は YubiKey 上で生成する。秘密鍵 material は export しない。鍵種別は `RSA2048` とし、content encryption key の wrap / unwrap にだけ使う。host は PIV private key そのものを読まず、`wrapped_key` の unwrap に必要な private key operation だけを YubiKey に依頼する。
 
-PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。implementation PR では `yubikey` crate の PIV decrypt API が raw decrypt bytes を返す前提で OAEP unpad を実装し、対応できない場合は design PR に戻して方式を見直す。
+PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。`yubikey` crate の PIV decrypt API から得た raw decrypt bytes は、secret storage adapter 境界で OAEP unpad して content key に戻す。
 
 PIN policy は `Once`、touch policy は `Always` とする。1 コマンド内では PIN verification を 1 回に抑え、secret 復号操作ごとに YubiKey touch を要求する。例えば `enroll-spare` は primary 側の 3 secret 読み出しで 3 回、spare 側の local verify で 3 回の touch が発生する。連続した復旧コマンドでも touch を省略しない。
 
@@ -121,7 +121,7 @@ dotfiles secrets yubikey enroll-primary
 dotfiles secrets yubikey rotate-bws-token
 ```
 
-`rotate-bws-token` は新しい token を一度だけ受け取り、対象 YubiKey を対話的に選択させながら primary と spare を更新する。各 YubiKey への保存後に local verify と `verify-yubikey --check bws` 相当の接続確認を行う。非対話実行では `--serial <serial>` を指定して 1 本ずつ更新する。
+`rotate-bws-token` は新しい token を一度だけ受け取り、対象 YubiKey を対話的に選択させながら primary と spare を更新する。各 YubiKey への保存後に local verify を行う。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、local secret storage の検証とは別の確認として summary に残す。非対話実行では `--serial <serial>` を指定して 1 本ずつ更新し、token は `--stdin` で渡せる。
 
 外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `get` の成功は GitHub、Bitwarden、Google、Apple などで spare key が登録済みであることを保証しない。
 
@@ -264,11 +264,11 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bws-access-token` だけを更新する。`--force` は不要にし、このコマンド自体が rotate intent を表す。対話実行では新しい token を一度だけ読み取り、primary と spare を順に選択して更新する。非対話実行では `--serial` で 1 本だけを更新する。更新後は local verify と BWS 接続確認を実行する。BWS client API が未実装の段階では local verify までを実装し、#13 で BWS 接続確認を接続する。
+指定 YubiKey の `bws-access-token` だけを更新する。対話実行では新しい token を一度だけ読み取り、primary と spare を順に選択して更新する。同一 serial を同じ実行内で再選択した場合は停止する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新後は local verify を実行する。BWS 接続確認は外部サービス確認項目として summary に含め、local secret storage の検証と区別する。
 
 ### `dotfiles secrets verify-yubikey`
 
-挿さっている YubiKey が復旧入口として使えるか確認する。#12 の implementation PR では YubiKey local storage の確認までを実装し、Bitwarden Secrets Manager への接続確認は #13、Bitwarden Password Manager login / unlock 確認は #16、統合された end-to-end check は #17 で完成させる。
+挿さっている YubiKey が復旧入口として使えるか確認する。local storage 確認では YubiKey 上の manifest と 3 secret の復号可能性を検証する。BWS と Bitwarden login は外部サービス確認項目として summary に含め、local storage の検証結果と区別する。
 
 引数:
 
@@ -314,7 +314,7 @@ local storage check は次を確認する。
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
 - `enroll-spare` で平文 secret を読む前に core dump 無効化または memory lock の準備に失敗した。
-- `rotate-bws-token` 後の local verify または BWS 接続確認に失敗した。
+- `rotate-bws-token` 後の local verify に失敗した。
 - manifest が存在するが app、version が期待値と一致しない。
 - 許可されていない secret name が指定された。
 - 同名 secret が存在し、`--force` が指定されていない。
@@ -347,7 +347,7 @@ Unit test は fake YubiKey adapter で行う。
 - adapter error から利用者向け error context への変換。
 - secret 本文が error 表示に含まれないこと。
 
-実機 validation は implementation PR で手順を明記する。対象は専用 slot / object が空の検証用 YubiKey に限定し、reset、credential 削除、既存領域上書きは行わない。
+実機 validation は、専用 slot / object が空の検証用 YubiKey に限定する。reset、credential 削除、既存領域上書きを含む検証は行わない。
 
 ## 参考
 
