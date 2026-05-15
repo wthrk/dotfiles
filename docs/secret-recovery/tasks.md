@@ -43,10 +43,9 @@ cargo xtask check static
 
 現在の進捗:
 
-- ブランチ `docs/secret-recovery-plan` を作成済み。
-- `docs/secret-recovery/README.md` と `docs/secret-recovery/tasks.md` を作成済み。
-- `direnv exec . cargo xtask check static` は通過済み。
-- 次はこの documentation-only 変更を first PR として出す。
+- First PR #19 は merge 済み。
+- 検証済み: `direnv exec . cargo xtask check static`
+- 次は #12 YubiKey 秘密情報保存の design PR に進む。
 
 完了時の issue 管理:
 
@@ -89,6 +88,10 @@ Design PR で決めること:
 - `bw-password` / `bws-access-token` の name validation
 - secret 入力方法
 - 上書き時の option
+
+Design PR の成果物:
+
+- `docs/secret-recovery/yubikey-secret-storage-design.md`
 
 Implementation PR の完了条件:
 

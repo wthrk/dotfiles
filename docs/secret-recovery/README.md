@@ -41,6 +41,8 @@ YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-pass
 
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP / PIV credential を reset しない。既存領域と衝突する場合は停止する。
 
+詳細設計は [YubiKey 秘密情報保存設計](./yubikey-secret-storage-design.md) に置く。
+
 ### Bitwarden Secrets Manager
 
 Bitwarden Secrets Manager は復旧に必要な機械向け secret を保持する。対象は `gpg-secret-key-backup` と `password-store-remote` である。
