@@ -131,7 +131,7 @@ pub(crate) fn protect_zeroizing_secret(mut secret: Zeroizing<Vec<u8>>) -> storag
     storage::secret_bytes(std::mem::take(&mut *secret))
 }
 
-/// memory guard がある enroll-spare 経路では、3 secret すべてを guard 管理下へ移す。
+/// memory guard がある登録経路では、3 secret すべてを guard 管理下へ移す。
 fn lock_bootstrap_secrets(
     secrets: BootstrapSecrets,
     memory: Option<&mut SecretMemoryGuard>,
