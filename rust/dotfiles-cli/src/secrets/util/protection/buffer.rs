@@ -52,21 +52,26 @@ impl ProtectedInputBuffer {
         &self.buffer[..self.len]
     }
 
-    /// 行入力の区切りとして現れた末尾 newline だけを除いて bytes を返す。
-    pub(crate) fn into_trimmed_bytes(mut self) -> Zeroizing<Vec<u8>> {
-        if self.as_slice().ends_with(b"\r\n") {
-            self.len -= 2;
-        } else if self.as_slice().ends_with(b"\n") {
-            self.len -= 1;
-        }
-        self.into_bytes()
-    }
+    /// 末尾 newline を除いた入力を、読み込み時の lock を保持したまま次の所有型へ移す。
+    pub(crate) fn into_trimmed_bytes_with_lock<T>(
+        self,
+        convert: impl FnOnce(Zeroizing<Vec<u8>>) -> Result<T>,
+    ) -> Result<T> {
+        let Self { buffer, len, _lock } = self;
+        let lock = _lock;
+        let mut buffer = buffer;
+        let len = if buffer[..len].ends_with(b"\r\n") {
+            len - 2
+        } else if buffer[..len].ends_with(b"\n") {
+            len - 1
+        } else {
+            len
+        };
+        buffer.truncate(len);
 
-    /// 未使用領域を secret 値から外し、読み込み済み bytes の所有権だけを返す。
-    pub(crate) fn into_bytes(self) -> Zeroizing<Vec<u8>> {
-        let mut buffer = self.buffer;
-        buffer.truncate(self.len);
-        buffer
+        let result = convert(buffer);
+        drop(lock);
+        result
     }
 }
 

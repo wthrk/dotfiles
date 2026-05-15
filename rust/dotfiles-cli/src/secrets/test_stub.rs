@@ -12,13 +12,13 @@ use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, YubikeyCommand,
     application::{
         MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedSecret, SecretsBoundary,
-        protect_secret_input,
+        protect_secret_input, read_protected_stdin_secret,
     },
-    input::{read_hidden_secret, read_one_stdin_secret},
+    input::read_hidden_secret,
     storage::{self, SecretDevice, SecretName},
     util::{
         protection::{InterruptGuard, SecretMemoryGuard},
-        terminal::{stdin_is_terminal, stdout_is_terminal},
+        terminal::{SPARE_SERIAL_NONINTERACTIVE_ERROR, stdin_is_terminal, stdout_is_terminal},
     },
 };
 use crate::Result;
@@ -50,6 +50,10 @@ impl SecretsBoundary for TestSecretsBoundary {
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
+        if serial.is_none() && !stdin_is_terminal() {
+            anyhow::bail!("pass --serial in non-interactive use");
+        }
+
         let mut device = self
             .devices
             .pop_front()
@@ -66,6 +70,10 @@ impl SecretsBoundary for TestSecretsBoundary {
         _primary_serial: Option<u32>,
         _interrupt: &InterruptGuard,
     ) -> Result<Self::Device> {
+        if spare_serial.is_none() && !stdin_is_terminal() {
+            anyhow::bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
+        }
+
         let mut device = self.open_device(spare_serial)?;
         if spare_serial.is_none() {
             device.serial = SPARE_SERIAL;
@@ -87,12 +95,11 @@ impl SecretsBoundary for TestSecretsBoundary {
         stdin: bool,
         memory: &SecretMemoryGuard,
     ) -> Result<ProtectedSecret> {
-        let secret = if stdin {
-            read_one_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, Some(memory))?
+        if stdin {
+            read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
         } else {
-            read_hidden_secret(&format!("{}: ", name))?
-        };
-        protect_secret_input(secret, memory)
+            protect_secret_input(read_hidden_secret(&format!("{}: ", name))?, memory)
+        }
     }
 
     fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>> {

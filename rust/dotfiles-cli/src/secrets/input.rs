@@ -5,17 +5,13 @@
 
 use anyhow::bail;
 use serde::Deserialize;
-use std::io;
 use zeroize::Zeroizing;
 
 use crate::Result;
 
 use super::{
     storage::{BootstrapSecrets, SecretBytes},
-    util::{
-        protection::{ProtectedInputBuffer, SecretMemoryGuard},
-        terminal,
-    },
+    util::terminal,
 };
 
 /// prompt/stdin/JSON field から受け取った secret を、保護対象に渡す直前まで保持する入力型。
@@ -39,15 +35,6 @@ impl From<SecretInputBuffer> for SecretBytes {
     }
 }
 
-impl From<ProtectedInputBuffer> for SecretInputBuffer {
-    /// `--stdin` の単一 secret は行区切りの末尾 newline だけを除いて storage secret 型へ移す。
-    fn from(buffer: ProtectedInputBuffer) -> Self {
-        Self {
-            secret: buffer.into_trimmed_bytes().into(),
-        }
-    }
-}
-
 /// 表示入力を許す secret は、読み取り直後に入力用 secret 型へ移す。
 pub(super) fn read_visible_secret_line(prompt: &str, limit: usize) -> Result<SecretInputBuffer> {
     let input =
@@ -64,20 +51,6 @@ pub(super) fn read_hidden_secret(prompt: &str) -> Result<SecretInputBuffer> {
 /// YubiKey PIN は PIV session 検証だけに使い、storage secret にはしない。
 pub(crate) fn read_yubikey_pin() -> Result<Zeroizing<Vec<u8>>> {
     terminal::read_hidden_bytes("YubiKey PIN: ")
-}
-
-/// `--stdin` の単一 secret は行区切りの末尾 newline だけを除いて保存する。
-pub(super) fn read_one_stdin_secret(
-    limit: usize,
-    memory: Option<&SecretMemoryGuard>,
-) -> Result<SecretInputBuffer> {
-    let input = ProtectedInputBuffer::read_from(
-        io::stdin(),
-        limit,
-        "stdin secret input is too large",
-        memory,
-    )?;
-    Ok(input.into())
 }
 
 /// `--stdin-json` は既定 schema 以外の key 欠落や型違いを serde error として拒否する。
@@ -124,4 +97,77 @@ pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
 /// 実プロセス以外の境界でも TTY 出力拒否の error contract を共有する。
 pub(crate) fn reject_secret_stdout_terminal() -> Result<()> {
     bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bootstrap_secrets_json_accepts_expected_schema() -> Result<()> {
+        let secrets = parse_bootstrap_secrets_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-password": "password",
+                "bws-access-token": "token"
+            }"#,
+        )?;
+
+        assert_eq!(secrets.bw_email.as_slice(), b"alice@example.com");
+        assert_eq!(secrets.bw_password.as_slice(), b"password");
+        assert_eq!(secrets.bws_access_token.as_slice(), b"token");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_bootstrap_secrets_json_rejects_missing_field() {
+        let result = parse_bootstrap_secrets_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-password": "password"
+            }"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bootstrap_secrets_json_rejects_duplicate_field() {
+        let result = parse_bootstrap_secrets_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-email": "bob@example.com",
+                "bw-password": "password",
+                "bws-access-token": "token"
+            }"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bootstrap_secrets_json_rejects_non_string_field() {
+        let result = parse_bootstrap_secrets_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-password": 123,
+                "bws-access-token": "token"
+            }"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bootstrap_secrets_json_rejects_trailing_garbage() {
+        let result = parse_bootstrap_secrets_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-password": "password",
+                "bws-access-token": "token"
+            } trailing"#,
+        );
+
+        assert!(result.is_err());
+    }
 }

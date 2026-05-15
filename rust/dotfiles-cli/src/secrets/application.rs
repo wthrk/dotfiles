@@ -13,9 +13,8 @@ use super::{
     YubikeyCommand, YubikeyOptions,
     device::{self, open_device, open_spare_device},
     input::{
-        parse_bootstrap_secrets_json, read_hidden_secret, read_one_stdin_secret,
-        read_visible_secret_line, read_yubikey_pin, reject_secret_stdout_terminal,
-        write_secret_to_stdout,
+        parse_bootstrap_secrets_json, read_hidden_secret, read_visible_secret_line,
+        read_yubikey_pin, reject_secret_stdout_terminal, write_secret_to_stdout,
     },
     storage::{self, BootstrapSecretSource, BootstrapSecrets, SecretDevice, SecretName},
     util::{
@@ -93,6 +92,20 @@ pub(crate) fn protect_secret_input(
     memory: &SecretMemoryGuard,
 ) -> Result<ProtectedSecret> {
     protect_secret(input.into(), memory)
+}
+
+/// stdin の単一 secret は読み込み時の lock を保持したまま保護済み値へ移す。
+pub(super) fn read_protected_stdin_secret(
+    limit: usize,
+    memory: &SecretMemoryGuard,
+) -> Result<ProtectedSecret> {
+    let input = ProtectedInputBuffer::read_from(
+        std::io::stdin(),
+        limit,
+        "stdin secret input is too large",
+        Some(memory),
+    )?;
+    input.into_trimmed_bytes_with_lock(|buffer| protect_secret(buffer.into(), memory))
 }
 
 /// CLI で parse 済みの `dotfiles secrets` command を application flow へ渡す。
@@ -181,12 +194,11 @@ fn read_protected_secret_for_put(
     stdin: bool,
     memory: &SecretMemoryGuard,
 ) -> Result<ProtectedSecret> {
-    let secret = if stdin {
-        read_one_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, Some(memory))?
+    if stdin {
+        read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
     } else {
-        read_hidden_secret(&format!("{}: ", name))?
-    };
-    protect_secret_input(secret, memory)
+        protect_secret_input(read_hidden_secret(&format!("{}: ", name))?, memory)
+    }
 }
 
 /// 登録用 bootstrap secret は、3 field すべてを保護済み値として組み立てる。
