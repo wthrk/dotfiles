@@ -11,6 +11,8 @@ Main areas:
 - User configuration: zsh and Neovim config under `config/`.
 - Bootstrap entry point: `scripts/bootstrap.sh`.
 
+When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point.
+
 ## Translation Sync
 
 - `AGENTS_ja.md` must be an accurate Japanese translation of `AGENTS.md`.
@@ -68,6 +70,8 @@ Run the default validation suite before finishing normal changes:
 ```sh
 cargo xtask check
 ```
+
+Always run validation commands from the flake dev shell.
 
 Default checks run static validation only. They do not run zsh startup/behavior checks or Tart VM runtime integration.
 

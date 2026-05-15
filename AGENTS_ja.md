@@ -11,6 +11,8 @@
 - ユーザー設定: `config/` 配下の zsh と Neovim 設定。
 - bootstrap の入口: `scripts/bootstrap.sh`。
 
+秘密情報復旧基盤の作業を継続するときは、`docs/secret-recovery/tasks.md` と GitHub issue `#11` を進捗管理の入口にしてください。
+
 ## 翻訳同期
 
 - `AGENTS_ja.md` は `AGENTS.md` の正確な日本語訳でなければなりません。
@@ -68,6 +70,8 @@ cargo run --package dotfiles-cli -- switch all
 ```sh
 cargo xtask check
 ```
+
+検証コマンドは常に flake dev shell から実行してください。
 
 既定の検証は静的検証のみを実行します。zsh の起動・挙動検証や、Tart VM を使う runtime integration は実行しません。
 
