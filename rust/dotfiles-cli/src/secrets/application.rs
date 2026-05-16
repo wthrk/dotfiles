@@ -18,7 +18,7 @@ use super::{
     },
     storage::{self, BootstrapSecretSource, BootstrapSecrets, SecretDevice, SecretName},
     util::{
-        protection::{InterruptGuard, Protected, ProtectedInputBuffer, SecretMemoryGuard},
+        protection::{InterruptGuard, Protected, ProtectedInputBuffer, SecretSession},
         terminal::{
             SPARE_SERIAL_NONINTERACTIVE_ERROR, prompt_yes_no,
             stdin_is_terminal as input_stdin_is_terminal,
@@ -31,21 +31,21 @@ const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 
 /// 単一 secret を memory lock guard と同じ生存期間で保持する use-case 状態。
-pub(crate) type ProtectedSecret = Protected<storage::SecretBytes>;
+pub(crate) type ProtectedSecret<'session> = Protected<'session, storage::SecretBytes>;
 
 /// bootstrap 登録が保存前に要求する 3 種類の保護済み secret。
-pub(crate) struct ProtectedBootstrapSecrets {
-    bw_email: ProtectedSecret,
-    bw_password: ProtectedSecret,
-    bws_access_token: ProtectedSecret,
+pub(crate) struct ProtectedBootstrapSecrets<'session> {
+    bw_email: ProtectedSecret<'session>,
+    bw_password: ProtectedSecret<'session>,
+    bws_access_token: ProtectedSecret<'session>,
 }
 
-impl ProtectedBootstrapSecrets {
+impl<'session> ProtectedBootstrapSecrets<'session> {
     /// prompt 経路で field ごとに保護済みになった値だけを bootstrap 入力として受ける。
     pub(crate) fn new(
-        bw_email: ProtectedSecret,
-        bw_password: ProtectedSecret,
-        bws_access_token: ProtectedSecret,
+        bw_email: ProtectedSecret<'session>,
+        bw_password: ProtectedSecret<'session>,
+        bws_access_token: ProtectedSecret<'session>,
     ) -> Self {
         Self {
             bw_email,
@@ -57,17 +57,17 @@ impl ProtectedBootstrapSecrets {
     /// JSON や device 復号で得た bootstrap secret は field ごとに lock してから登録へ渡す。
     pub(crate) fn protect(
         secrets: BootstrapSecrets,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedBootstrapSecrets> {
+        session: &'session SecretSession,
+    ) -> Result<ProtectedBootstrapSecrets<'session>> {
         Ok(ProtectedBootstrapSecrets {
-            bw_email: protect_secret(secrets.bw_email, memory)?,
-            bw_password: protect_secret(secrets.bw_password, memory)?,
-            bws_access_token: protect_secret(secrets.bws_access_token, memory)?,
+            bw_email: protect_secret(secrets.bw_email, session)?,
+            bw_password: protect_secret(secrets.bw_password, session)?,
+            bws_access_token: protect_secret(secrets.bws_access_token, session)?,
         })
     }
 }
 
-impl BootstrapSecretSource for ProtectedBootstrapSecrets {
+impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
     /// storage 登録中だけ、要求された bootstrap secret の平文 bytes を借用する。
     fn get(&self, name: SecretName) -> &[u8] {
         match name {
@@ -81,32 +81,32 @@ impl BootstrapSecretSource for ProtectedBootstrapSecrets {
 /// 単一 secret は memory lock 付き状態にしてから storage 操作へ渡す。
 pub(crate) fn protect_secret(
     secret: storage::SecretBytes,
-    memory: &SecretMemoryGuard,
-) -> Result<ProtectedSecret> {
-    memory.protect_value(secret, storage::SecretBytes::as_slice)
+    session: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
+    session.protect_value(secret, storage::SecretBytes::as_slice)
 }
 
 /// command 入力境界で確定した単一 secret を memory lock 付き状態へ移す。
 pub(crate) fn protect_secret_input(
     input: super::input::SecretInputBuffer,
-    memory: &SecretMemoryGuard,
-) -> Result<ProtectedSecret> {
-    protect_secret(input.into(), memory)
+    session: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
+    protect_secret(input.into(), session)
 }
 
 /// stdin の単一 secret は読み込み時の lock を保持したまま保護済み値へ移す。
 pub(super) fn read_protected_stdin_secret(
     limit: usize,
-    memory: &SecretMemoryGuard,
-) -> Result<ProtectedSecret> {
+    session: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
     let input = ProtectedInputBuffer::read_from(
         std::io::stdin(),
         limit,
         "stdin secret input is too large",
-        Some(memory),
+        Some(session),
     )?;
     let (buffer, lock) = input.into_trimmed_bytes_and_lock();
-    memory.protect_locked_value(buffer.into(), lock)
+    session.protect_locked_value(buffer.into(), lock)
 }
 
 /// CLI で parse 済みの `dotfiles secrets` command を application flow へ渡す。
@@ -142,14 +142,13 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
                 StdinSecretMode::Single,
                 boundary,
             )?;
-            let interrupt_guard = InterruptGuard::install()?;
-            let memory = SecretMemoryGuard::prepare()?;
+            let session = SecretSession::start()?;
             let mut device = boundary.open_device(options.serial)?;
-            interrupt_guard.run_yubikey_operation(|| {
+            session.run_yubikey_operation(|| {
                 storage::check_put_preconditions(&mut device, options.name, options.force)
             })?;
-            let secret = boundary.read_secret_for_put(options.name, options.stdin, &memory)?;
-            interrupt_guard.run_yubikey_operation(|| {
+            let secret = boundary.read_secret_for_put(options.name, options.stdin, &session)?;
+            session.run_yubikey_operation(|| {
                 storage::put(&mut device, options.name, secret.as_slice(), options.force)
             })
         }
@@ -169,16 +168,14 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
                 StdinSecretMode::BootstrapJson,
                 boundary,
             )?;
-            let interrupt_guard = InterruptGuard::install()?;
+            let session = SecretSession::start()?;
             let mut device = boundary.open_device(options.serial)?;
-            interrupt_guard
-                .run_yubikey_operation(|| storage::check_setup_preconditions(&mut device))?;
-            let memory = SecretMemoryGuard::prepare()?;
+            session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut device))?;
             let summary = {
-                let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &memory)?;
-                interrupt_guard.check_interrupted()?;
+                let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &session)?;
+                session.check_interrupted()?;
                 verify_pin_for_secret_reads(boundary, &mut device)?;
-                interrupt_guard.run_yubikey_operation(|| {
+                session.run_yubikey_operation(|| {
                     storage::enroll(&mut device, storage::YubikeyRole::Primary, &secrets)
                 })?
             };
@@ -194,8 +191,8 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
 fn read_protected_secret_for_put(
     name: SecretName,
     stdin: bool,
-    memory: &SecretMemoryGuard,
-) -> Result<ProtectedSecret> {
+    memory: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
     if stdin {
         read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
     } else {
@@ -209,8 +206,8 @@ fn read_protected_secret_for_put(
 /// 登録用 bootstrap secret は、3 field すべてを保護済み値として組み立てる。
 pub(super) fn read_protected_bootstrap_secrets(
     stdin_json: bool,
-    memory: &SecretMemoryGuard,
-) -> Result<ProtectedBootstrapSecrets> {
+    memory: &SecretSession,
+) -> Result<ProtectedBootstrapSecrets<'_>> {
     if stdin_json {
         let input = ProtectedInputBuffer::read_from(
             std::io::stdin(),
@@ -243,25 +240,24 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     options: EnrollSpareOptions,
     boundary: &mut B,
 ) -> Result<()> {
-    let interrupt_guard = InterruptGuard::install()?;
+    let session = SecretSession::start()?;
     require_primary_serial_for_noninteractive(options.primary_serial, boundary)?;
     require_spare_serial_for_noninteractive(options.spare_serial, boundary)?;
-    let memory = SecretMemoryGuard::prepare()?;
     let prepared_spare = if options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(
             options.spare_serial,
             options.primary_serial,
-            &interrupt_guard,
+            session.interrupt(),
         )?;
-        interrupt_guard.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
+        session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
         Some(spare)
     } else {
         None
     };
     let (bootstrap, primary_serial, spare) = if options.stdin_json {
-        interrupt_guard.check_interrupted()?;
+        session.check_interrupted()?;
         (
-            boundary.read_bootstrap_secrets(true, &memory)?,
+            boundary.read_bootstrap_secrets(true, &session)?,
             options.primary_serial,
             prepared_spare,
         )
@@ -275,22 +271,21 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
             bail!("primary and spare YubiKey serial must be different");
         }
         verify_pin_for_secret_reads(boundary, &mut primary)?;
-        let secrets =
-            read_protected_bootstrap_from_device(&mut primary, &interrupt_guard, &memory)?;
+        let secrets = read_protected_bootstrap_from_device(&mut primary, &session)?;
         (secrets, Some(primary_serial), prepared_spare)
     };
 
-    interrupt_guard.check_interrupted()?;
+    session.check_interrupted()?;
     let mut spare = match spare {
         Some(spare) => spare,
         None => {
-            boundary.open_spare_device(options.spare_serial, primary_serial, &interrupt_guard)?
+            boundary.open_spare_device(options.spare_serial, primary_serial, session.interrupt())?
         }
     };
 
-    interrupt_guard.check_interrupted()?;
+    session.check_interrupted()?;
     verify_pin_for_secret_reads(boundary, &mut spare)?;
-    let summary = interrupt_guard.run_yubikey_operation(|| {
+    let summary = session.run_yubikey_operation(|| {
         storage::enroll(&mut spare, storage::YubikeyRole::Spare, &bootstrap)
     })?;
     drop(bootstrap);
@@ -299,23 +294,21 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
 }
 
 /// primary 復号結果は secret ごとに保護済みに移してから次の復号へ進む。
-fn read_protected_bootstrap_from_device<D: storage::SecretDevice>(
+fn read_protected_bootstrap_from_device<'session, D: storage::SecretDevice>(
     primary: &mut D,
-    interrupt_guard: &InterruptGuard,
-    memory: &SecretMemoryGuard,
-) -> Result<ProtectedBootstrapSecrets> {
+    session: &'session SecretSession,
+) -> Result<ProtectedBootstrapSecrets<'session>> {
     let bw_email = protect_secret(
-        interrupt_guard.run_yubikey_operation(|| storage::get(primary, SecretName::BwEmail))?,
-        memory,
+        session.run_yubikey_operation(|| storage::get(primary, SecretName::BwEmail))?,
+        session,
     )?;
     let bw_password = protect_secret(
-        interrupt_guard.run_yubikey_operation(|| storage::get(primary, SecretName::BwPassword))?,
-        memory,
+        session.run_yubikey_operation(|| storage::get(primary, SecretName::BwPassword))?,
+        session,
     )?;
     let bws_access_token = protect_secret(
-        interrupt_guard
-            .run_yubikey_operation(|| storage::get(primary, SecretName::BwsAccessToken))?,
-        memory,
+        session.run_yubikey_operation(|| storage::get(primary, SecretName::BwsAccessToken))?,
+        session,
     )?;
     Ok(ProtectedBootstrapSecrets::new(
         bw_email,
@@ -329,50 +322,47 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     options: super::RotateBwsTokenOptions,
     boundary: &mut B,
 ) -> Result<()> {
-    let interrupt_guard = InterruptGuard::install()?;
+    let session = SecretSession::start()?;
 
     if let Some(serial) = options.serial {
         require_stdin_secret_source_for_boundary(options.stdin, StdinSecretMode::Single, boundary)?;
-        let memory = SecretMemoryGuard::prepare()?;
         let mut device = boundary.open_device(Some(serial))?;
         verify_pin_for_secret_reads(boundary, &mut device)?;
-        interrupt_guard
-            .run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+        session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
         let token =
-            boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &memory)?;
-        let summary = interrupt_guard
+            boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
+        let summary = session
             .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, token.as_slice()))?;
         drop(token);
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
 
-    let memory = SecretMemoryGuard::prepare()?;
     let mut device = boundary.open_device(None)?;
     verify_pin_for_secret_reads(boundary, &mut device)?;
-    interrupt_guard.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
-    let token = boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &memory)?;
+    session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+    let token =
+        boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
     let mut summaries = vec![
-        interrupt_guard
+        session
             .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, token.as_slice()))?,
     ];
     drop(device);
 
-    while interrupt_guard
+    while session
         .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
     {
-        interrupt_guard.check_interrupted()?;
+        session.check_interrupted()?;
         let mut device = boundary.open_device(None)?;
-        interrupt_guard.check_interrupted()?;
+        session.check_interrupted()?;
         if !updated_serials.insert(device.serial()) {
             bail!("selected YubiKey was already updated");
         }
         verify_pin_for_secret_reads(boundary, &mut device)?;
-        interrupt_guard
-            .run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+        session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
         summaries.push(
-            interrupt_guard.run_yubikey_operation(|| {
+            session.run_yubikey_operation(|| {
                 storage::rotate_bws_token(&mut device, token.as_slice())
             })?,
         );
@@ -430,17 +420,17 @@ pub(super) trait SecretsBoundary {
         primary_serial: Option<u32>,
         interrupt: &InterruptGuard,
     ) -> Result<Self::Device>;
-    fn read_bootstrap_secrets(
+    fn read_bootstrap_secrets<'session>(
         &mut self,
         stdin_json: bool,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedBootstrapSecrets>;
-    fn read_secret_for_put(
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedBootstrapSecrets<'session>>;
+    fn read_secret_for_put<'session>(
         &mut self,
         name: SecretName,
         stdin: bool,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedSecret>;
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>>;
     fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>>;
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
 }
@@ -541,20 +531,20 @@ impl SecretsBoundary for RealSecretsBoundary {
         open_spare_device(spare_serial, primary_serial, interrupt)
     }
 
-    fn read_bootstrap_secrets(
+    fn read_bootstrap_secrets<'session>(
         &mut self,
         stdin_json: bool,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedBootstrapSecrets> {
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedBootstrapSecrets<'session>> {
         read_protected_bootstrap_secrets(stdin_json, memory)
     }
 
-    fn read_secret_for_put(
+    fn read_secret_for_put<'session>(
         &mut self,
         name: SecretName,
         stdin: bool,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedSecret> {
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
         read_protected_secret_for_put(name, stdin, memory)
     }
 

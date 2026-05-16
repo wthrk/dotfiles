@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 use crate::Result;
 
-use super::SecretMemoryGuard;
+use super::SecretSession;
 
 /// 上限超過検出用の余剰 1 byte まで同じ memory lock 範囲で保持する入力 buffer。
 pub(crate) struct ProtectedInputBuffer {
@@ -18,10 +18,10 @@ pub(crate) struct ProtectedInputBuffer {
 
 impl ProtectedInputBuffer {
     /// caller が指定した容量全体を確保し、必要なら読み込み前に lock する。
-    pub(crate) fn new(capacity: usize, memory: Option<&SecretMemoryGuard>) -> Result<Self> {
+    pub(crate) fn new(capacity: usize, session: Option<&SecretSession>) -> Result<Self> {
         let buffer = Zeroizing::new(vec![0; capacity]);
-        let lock = match memory {
-            Some(memory) => Some(memory.lock_transient_buffer(buffer.as_ptr(), capacity)?),
+        let lock = match session {
+            Some(session) => Some(session.lock_transient_buffer(buffer.as_ptr(), capacity)?),
             None => None,
         };
         Ok(Self {
@@ -36,9 +36,9 @@ impl ProtectedInputBuffer {
         reader: impl Read,
         limit: usize,
         too_large_error: &'static str,
-        memory: Option<&SecretMemoryGuard>,
+        session: Option<&SecretSession>,
     ) -> Result<Self> {
-        let mut buffer = Self::new(limit + 1, memory)?;
+        let mut buffer = Self::new(limit + 1, session)?;
         let len = io::copy(&mut reader.take((limit + 1) as u64), &mut buffer)? as usize;
         if len > limit {
             bail!(too_large_error);

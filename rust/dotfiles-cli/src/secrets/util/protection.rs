@@ -1,6 +1,7 @@
 //! 平文 secret を扱う間だけ有効にする process / memory 保護。
 
 use std::{
+    marker::PhantomData,
     ops::Deref,
     sync::{
         Arc, LazyLock, Mutex, MutexGuard,
@@ -109,19 +110,87 @@ impl InterruptRegistration {
 }
 
 /// 平文 secret を読む前に core dump と mlock 利用可否を確定する。
-pub(crate) struct SecretMemoryGuard;
+struct SecretMemoryGuard;
+
+/// 平文 secret を扱う use case の signal / memory 保護境界。
+pub(crate) struct SecretSession {
+    interrupt: InterruptGuard,
+    memory: SecretMemoryGuard,
+}
 
 /// secret 値と memory lock guard を同じ所有値として保持する。
 ///
 /// `Deref` で借用できるのはこの値の生存中だけで、unlock は inner value の Drop 後に走る。
-pub(crate) struct Protected<T> {
+pub(crate) struct Protected<'session, T> {
     value: T,
     _lock: Option<region::LockGuard>,
+    _session: PhantomData<&'session SecretSession>,
+}
+
+impl SecretSession {
+    /// secret 入力前に signal handler、core dump 抑止、mlock probe を同じ境界で確立する。
+    pub(crate) fn start() -> Result<Self> {
+        Ok(Self {
+            interrupt: InterruptGuard::install()?,
+            memory: SecretMemoryGuard::prepare()?,
+        })
+    }
+
+    /// 保護区間の途中で受けた SIGINT/SIGTERM を、明示的な失敗として返す。
+    pub(crate) fn check_interrupted(&self) -> Result<()> {
+        self.interrupt.check_interrupted()
+    }
+
+    /// YubiKey operation 前後に signal flag を確認し、途中中断を後続処理へ進めない。
+    pub(crate) fn run_yubikey_operation<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        self.interrupt.run_yubikey_operation(operation)
+    }
+
+    /// device adapter など既存境界へ、同じ保護スコープの interrupt guard だけを貸し出す。
+    pub(crate) fn interrupt(&self) -> &InterruptGuard {
+        &self.interrupt
+    }
+
+    /// secret 値をこの session より長生きできない memory lock 付き所有値へ移す。
+    pub(crate) fn protect_value<T>(
+        &self,
+        value: T,
+        expose: impl FnOnce(&T) -> &[u8],
+    ) -> Result<Protected<'_, T>> {
+        let lock = lock_secret_memory(expose(&value))?;
+        self.protect_locked_value(value, lock)
+    }
+
+    /// 読み込み時点で lock 済みの allocation から作った値は、同じ guard を引き継ぐ。
+    pub(crate) fn protect_locked_value<T>(
+        &self,
+        value: T,
+        lock: Option<region::LockGuard>,
+    ) -> Result<Protected<'_, T>> {
+        let protected = Protected {
+            value,
+            _lock: lock,
+            _session: PhantomData,
+        };
+        interrupted_result()?;
+        Ok(protected)
+    }
+
+    /// JSON parse 前の入力 buffer は storage 型へ移る前から同じ mlock policy で守る。
+    pub(super) fn lock_transient_buffer(
+        &self,
+        ptr: *const u8,
+        len: usize,
+    ) -> Result<region::LockGuard> {
+        self.memory.lock_transient_buffer(ptr, len)
+    }
 }
 
 impl SecretMemoryGuard {
-    /// secret 入力を始める前に core dump を無効化し、mlock 不可なら中断する。
-    pub(crate) fn prepare() -> Result<Self> {
+    fn prepare() -> Result<Self> {
         rlimit::setrlimit(rlimit::Resource::CORE, 0, 0)
             .context("failed to disable core dumps before reading bootstrap secrets")?;
 
@@ -133,38 +202,12 @@ impl SecretMemoryGuard {
         Ok(Self)
     }
 
-    /// lock 後に中断を検出した場合も、値の Drop が unlock より先に走る所有形へ移す。
-    pub(crate) fn protect_value<T>(
-        &self,
-        value: T,
-        expose: impl FnOnce(&T) -> &[u8],
-    ) -> Result<Protected<T>> {
-        let lock = lock_secret_memory(expose(&value))?;
-        self.protect_locked_value(value, lock)
-    }
-
-    /// すでに lock 済みの allocation から作った値は、同じ guard を所有値へ引き継ぐ。
-    pub(crate) fn protect_locked_value<T>(
-        &self,
-        value: T,
-        lock: Option<region::LockGuard>,
-    ) -> Result<Protected<T>> {
-        let protected = Protected { value, _lock: lock };
-        interrupted_result()?;
-        Ok(protected)
-    }
-
-    /// JSON parse 前の入力 buffer は storage 型へ移る前から同じ mlock policy で守る。
-    pub(super) fn lock_transient_buffer(
-        &self,
-        ptr: *const u8,
-        len: usize,
-    ) -> Result<region::LockGuard> {
+    fn lock_transient_buffer(&self, ptr: *const u8, len: usize) -> Result<region::LockGuard> {
         lock_memory_range(ptr, len).context("failed to lock bootstrap secret input memory")
     }
 }
 
-impl<T> Deref for Protected<T> {
+impl<T> Deref for Protected<'_, T> {
     type Target = T;
 
     /// 保護値の借用は `Protected<T>` の生存期間に縛り、unlock より後へ延ばさない。

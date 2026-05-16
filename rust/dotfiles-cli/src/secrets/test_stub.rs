@@ -17,7 +17,7 @@ use super::{
     input::read_hidden_secret,
     storage::{self, SecretDevice, SecretName},
     util::{
-        protection::{InterruptGuard, SecretMemoryGuard},
+        protection::{InterruptGuard, SecretSession},
         terminal::{SPARE_SERIAL_NONINTERACTIVE_ERROR, stdin_is_terminal, stdout_is_terminal},
     },
 };
@@ -81,20 +81,20 @@ impl SecretsBoundary for TestSecretsBoundary {
         Ok(device)
     }
 
-    fn read_bootstrap_secrets(
+    fn read_bootstrap_secrets<'session>(
         &mut self,
         stdin_json: bool,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedBootstrapSecrets> {
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedBootstrapSecrets<'session>> {
         super::application::read_protected_bootstrap_secrets(stdin_json, memory)
     }
 
-    fn read_secret_for_put(
+    fn read_secret_for_put<'session>(
         &mut self,
         name: SecretName,
         stdin: bool,
-        memory: &SecretMemoryGuard,
-    ) -> Result<ProtectedSecret> {
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
         if stdin {
             read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
         } else {
