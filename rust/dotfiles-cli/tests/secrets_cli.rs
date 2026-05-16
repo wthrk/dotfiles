@@ -91,6 +91,8 @@ enum StubFixture {
     SeedSecret(StubSecret, &'static str),
     /// 指定 secret の保存 object を JSON ではないバイト列に置き換える。
     InvalidStoredObject(StubSecret),
+    /// PIN 入力だけは固定値でなく、PTY 上の hidden prompt 経由で読む。
+    ReadPinFromTty,
 }
 
 impl StubFixture {
@@ -116,6 +118,9 @@ impl StubFixture {
                 test_stub_contract::CORRUPT_SECRET_ENV,
                 secret.name().to_owned(),
             )),
+            Self::ReadPinFromTty => {
+                Ok((test_stub_contract::READ_PIN_FROM_TTY_ENV, "true".to_owned()))
+            }
         }
     }
 }
@@ -513,6 +518,24 @@ fn enroll_spare_uses_stub_yubikey_without_secret_reentry() -> TestResult<()> {
 }
 
 #[test]
+fn enroll_spare_reads_yubikey_pins_from_pty_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pty_with_stub(
+        ["yubikey", "enroll-spare"],
+        Some("123456\n123456\n"),
+        &[
+            StubFixture::SerialState(PRIMARY_SERIAL, StubDeviceState::Provisioned),
+            StubFixture::SerialState(SPARE_SERIAL, StubDeviceState::Fresh),
+            StubFixture::ReadPinFromTty,
+        ],
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("YubiKey PIN: "));
+    assert!(run.output.contains("\"role\": \"spare\""));
+    Ok(())
+}
+
+#[test]
 fn rotate_bws_token_stores_non_tty_stdin_secret_with_stub_yubikey() -> TestResult<()> {
     let run = run_pipe_with_stub(
         vec![
@@ -653,6 +676,27 @@ fn verify_yubikey_checks_seeded_stub_storage_with_stub_yubikey() -> TestResult<(
     assert!(run.success, "stderr: {}", run.stderr);
     assert!(run.stdout.contains("\"local_storage\": \"ok\""));
     assert!(run.stdout.contains("\"bws\": \"skipped\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_reads_yubikey_pin_from_pty_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pty_with_stub(
+        vec![
+            "verify-yubikey".to_owned(),
+            "--serial".to_owned(),
+            PRIMARY_SERIAL.to_string(),
+        ],
+        Some("123456\n"),
+        &[
+            StubFixture::State(StubDeviceState::Provisioned),
+            StubFixture::ReadPinFromTty,
+        ],
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("YubiKey PIN: "));
+    assert!(run.output.contains("\"local_storage\": \"ok\""));
     Ok(())
 }
 

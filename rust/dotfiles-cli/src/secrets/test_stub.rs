@@ -18,8 +18,7 @@ use super::{
         read_protected_stdin_secret,
     },
     device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
-    input::YubikeyPin,
-    input::read_hidden_secret,
+    input::{YubikeyPin, read_hidden_secret, read_yubikey_pin},
     storage::{self, SecretDevice, SecretName},
     util::{
         protection::{InterruptGuard, ProtectedSecret, SecretSession},
@@ -28,9 +27,9 @@ use super::{
 };
 use crate::Result;
 use test_stub_contract::{
-    CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, SEED_BW_EMAIL_ENV,
-    SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_SERIAL, SPARE_STUB_STATE_ENV,
-    STUB_STATE_ENV, WRITE_EVENT_PREFIX,
+    CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
+    SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_SERIAL,
+    SPARE_STUB_STATE_ENV, STUB_STATE_ENV, WRITE_EVENT_PREFIX,
 };
 
 const DEFAULT_SERIAL: u32 = PRIMARY_SERIAL;
@@ -47,6 +46,8 @@ struct TestStubConfig {
     state_2002: Option<TestDeviceState>,
     #[arg(long, env = CORRUPT_SECRET_ENV, value_parser = parse_test_stub_secret_name)]
     corrupt_secret: Option<SecretName>,
+    #[arg(long, env = READ_PIN_FROM_TTY_ENV)]
+    read_pin_from_tty: bool,
     #[arg(long, env = SEED_BW_EMAIL_ENV)]
     seed_bw_email: Option<String>,
     #[arg(long, env = SEED_BW_PASSWORD_ENV)]
@@ -187,6 +188,10 @@ impl SecretsBoundary for TestSecretsBoundary {
         &mut self,
         memory: &'session SecretSession,
     ) -> Result<ProtectedPin<'session>> {
+        if self.config.read_pin_from_tty {
+            return read_yubikey_pin(memory);
+        }
+
         let pin = YubikeyPin::new(b"123456".to_vec())?;
         let lock = memory.lock_secret_value(&pin, YubikeyPin::memory_range)?;
         memory.protect_locked_value(pin, lock)
