@@ -345,7 +345,7 @@ Unit test は fake YubiKey adapter で行う。
 - `enroll-spare` が primary 読み出し、spare setup、spare への再暗号化保存、local verify を順に実行すること。
 - `enroll-spare` が primary / spare 同一 serial と spare 待ち timeout を拒否すること。
 - `enroll-spare` が secret 読み込み前に core dump 無効化と memory lock probe を実行すること。
-- `enroll-spare` の error / interrupt path で secret wrapper が zeroize されること。
+- `enroll-spare` の error / interrupt path で `ProtectedSecret` が zeroize されること。
 - `rotate-bws-token` が `bws-access-token` だけを更新し、`bw-email` と `bw-password` を変更しないこと。
 - `verify-yubikey` local storage check の正常系と missing manifest / missing blob / decrypt failure。
 - empty secret の拒否。
