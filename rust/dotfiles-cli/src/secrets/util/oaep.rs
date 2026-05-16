@@ -2,6 +2,8 @@
 //!
 //! `yubikey` crate の PIV decrypt は raw RSA 結果を返すため、host 側で OAEP を検証する。
 
+use std::io::Write;
+
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
 
@@ -10,10 +12,14 @@ use crate::Result;
 const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
 const HASH_LEN: usize = 32;
 
-/// RSA-OAEP SHA-256 encoded message を検証し、message bytes を返す。
+/// RSA-OAEP SHA-256 encoded message を検証し、message bytes を writer へ書き込む。
 ///
 /// 入力長が key 長と一致しない場合や padding が不正な場合は同じ error で失敗する。
-pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Vec<u8>> {
+pub(crate) fn write_oaep_unpadded_sha256(
+    encoded: &[u8],
+    key_len: usize,
+    output: &mut impl Write,
+) -> Result<()> {
     if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);
     }
@@ -47,7 +53,8 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Vec<u8
     }
     let separator = separator.context(OAEP_UNPAD_ERROR)?;
 
-    Ok(rest[separator + 1..].to_vec())
+    output.write_all(&rest[separator + 1..])?;
+    Ok(())
 }
 
 /// MGF1-SHA256 mask を指定長で生成する。
@@ -101,7 +108,8 @@ mod tests {
         let message = b"test-content-encryption-key";
         let ciphertext = public.encrypt(&mut rng, Oaep::new::<Sha256>(), message)?;
         let encoded = raw_rsa_decrypt_for_test(&private, &ciphertext)?;
-        let decoded = oaep_unpad_sha256(&encoded, 256)?;
+        let mut decoded = Vec::new();
+        write_oaep_unpadded_sha256(&encoded, 256, &mut decoded)?;
         assert_eq!(decoded.as_slice(), message);
         Ok(())
     }
@@ -111,7 +119,8 @@ mod tests {
         let encoded: Vec<u8> = std::iter::once(1)
             .chain(std::iter::repeat_n(0u8, 255))
             .collect();
-        assert!(oaep_unpad_sha256(&encoded, 256).is_err());
+        let mut decoded = Vec::new();
+        assert!(write_oaep_unpadded_sha256(&encoded, 256, &mut decoded).is_err());
     }
 
     fn raw_rsa_decrypt_for_test(private: &RsaPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8>> {

@@ -6,4 +6,4 @@ mod oaep;
 pub(crate) mod protection;
 pub(crate) mod terminal;
 
-pub(crate) use oaep::oaep_unpad_sha256;
+pub(crate) use oaep::write_oaep_unpadded_sha256;

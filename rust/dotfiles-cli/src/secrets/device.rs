@@ -22,9 +22,9 @@ use yubikey::{
 use super::{
     storage::{PivObjectId, SecretDevice},
     util::{
-        oaep_unpad_sha256,
         protection::InterruptGuard,
         terminal::{read_terminal_line_until, stdin_is_terminal, wait_for_enter},
+        write_oaep_unpadded_sha256,
     },
 };
 use crate::Result;
@@ -500,14 +500,16 @@ impl SecretDevice for YubikeySecretDevice {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        let decrypted = piv::decrypt_data(
-            &mut self.yubikey,
-            wrapped_key,
-            AlgorithmId::Rsa2048,
-            SECRET_SLOT,
-        )?;
-        let unwrapped = oaep_unpad_sha256(&decrypted, 256)?;
-        output.write_all(&unwrapped)?;
+        let decrypted = scopeguard::guard(
+            piv::decrypt_data(
+                &mut self.yubikey,
+                wrapped_key,
+                AlgorithmId::Rsa2048,
+                SECRET_SLOT,
+            )?,
+            |mut decrypted| decrypted.fill(0),
+        );
+        write_oaep_unpadded_sha256(&decrypted, 256, output)?;
         Ok(())
     }
 }
