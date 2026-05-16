@@ -9,12 +9,12 @@ mod operations;
 mod wire;
 
 pub use model::{
-    BootstrapSecretSource, BootstrapSecrets, PivObjectId, SecretBytes, SecretDevice, SecretName,
-    VerifySummary, YubikeyRole,
+    BootstrapSecretSource, BootstrapSecrets, CheckName, CheckStatus, PivObjectId, SecretBytes,
+    SecretDevice, SecretName, VerifySummary, YubikeyRole,
 };
 pub use operations::{
-    check_put_preconditions, check_rotate_preconditions, check_setup_preconditions, enroll, get,
-    put, rotate_bws_token, setup, verify_local_storage,
+    check_put_preconditions, check_setup_preconditions, enroll_without_verify, get, put,
+    replace_bws_token, setup,
 };
 
 #[cfg(test)]

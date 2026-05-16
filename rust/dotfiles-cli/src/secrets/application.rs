@@ -70,11 +70,17 @@ impl<'session> ProtectedBootstrapSecrets<'session> {
 
 impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
     /// 平文 bytes の借用範囲を storage 呼び出し中に限定する。
-    fn get(&self, name: SecretName) -> &[u8] {
+    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
         match name {
-            SecretName::BwEmail => self.bw_email.as_slice(),
-            SecretName::BwPassword => self.bw_password.as_slice(),
-            SecretName::BwsAccessToken => self.bws_access_token.as_slice(),
+            SecretName::BwEmail => self
+                .bw_email
+                .with_secret_bytes(storage::SecretBytes::with_secret, borrow),
+            SecretName::BwPassword => self
+                .bw_password
+                .with_secret_bytes(storage::SecretBytes::with_secret, borrow),
+            SecretName::BwsAccessToken => self
+                .bws_access_token
+                .with_secret_bytes(storage::SecretBytes::with_secret, borrow),
         }
     }
 }
@@ -84,7 +90,7 @@ pub(crate) fn protect_secret(
     secret: storage::SecretBytes,
     session: &SecretSession,
 ) -> Result<ProtectedSecret<'_>> {
-    session.protect_value(secret, storage::SecretBytes::as_slice)
+    session.protect_value(secret, storage::SecretBytes::memory_range)
 }
 
 /// prompt 入力の secret buffer を storage model 化し、現在の session へ所属させる。
@@ -146,17 +152,21 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
             })?;
             let secret = boundary.read_secret_for_put(options.name, options.stdin, &session)?;
             session.run_yubikey_operation(|| {
-                storage::put(&mut device, options.name, secret.as_slice(), options.force)
+                secret.with_secret_bytes(storage::SecretBytes::with_secret, |secret| {
+                    storage::put(&mut device, options.name, secret, options.force)
+                })
             })
         }
         YubikeyCommand::Get(options) => {
             require_secret_stdout_for_boundary(boundary)?;
-            let interrupt_guard = InterruptGuard::install()?;
+            let session = SecretSession::start()?;
             let mut device = boundary.open_device(options.serial)?;
             verify_pin_for_secret_reads(boundary, &mut device)?;
-            let output_bytes = interrupt_guard
-                .run_yubikey_operation(|| storage::get(&mut device, options.name))?;
-            write_secret_to_stdout(output_bytes.as_slice())?;
+            let output_bytes = session
+                .run_yubikey_operation(|| storage::get(&mut device, options.name))
+                .and_then(|secret| protect_secret(secret, &session))?;
+            output_bytes
+                .with_secret_bytes(storage::SecretBytes::with_secret, write_secret_to_stdout)?;
             Ok(())
         }
         YubikeyCommand::EnrollPrimary(options) => {
@@ -172,9 +182,15 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
                 let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &session)?;
                 session.check_interrupted()?;
                 verify_pin_for_secret_reads(boundary, &mut device)?;
-                session.run_yubikey_operation(|| {
-                    storage::enroll(&mut device, storage::YubikeyRole::Primary, &secrets)
-                })?
+                let summary = session.run_yubikey_operation(|| {
+                    storage::enroll_without_verify(
+                        &mut device,
+                        storage::YubikeyRole::Primary,
+                        &secrets,
+                    )
+                })?;
+                verify_local_storage_protected(&mut device, &session)?;
+                summary
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);
             Ok(())
@@ -283,8 +299,9 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     session.check_interrupted()?;
     verify_pin_for_secret_reads(boundary, &mut spare)?;
     let summary = session.run_yubikey_operation(|| {
-        storage::enroll(&mut spare, storage::YubikeyRole::Spare, &bootstrap)
+        storage::enroll_without_verify(&mut spare, storage::YubikeyRole::Spare, &bootstrap)
     })?;
+    verify_local_storage_protected(&mut spare, &session)?;
     drop(bootstrap);
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
@@ -325,11 +342,15 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         require_stdin_secret_source_for_boundary(options.stdin, StdinSecretMode::Single, boundary)?;
         let mut device = boundary.open_device(Some(serial))?;
         verify_pin_for_secret_reads(boundary, &mut device)?;
-        session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+        check_rotate_preconditions_protected(&mut device, &session)?;
         let token =
             boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
-        let summary = session
-            .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, token.as_slice()))?;
+        session.run_yubikey_operation(|| {
+            token.with_secret_bytes(storage::SecretBytes::with_secret, |token| {
+                storage::replace_bws_token(&mut device, token)
+            })
+        })?;
+        let summary = verify_local_storage_protected(&mut device, &session)?;
         drop(token);
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
@@ -337,14 +358,16 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 
     let mut device = boundary.open_device(None)?;
     verify_pin_for_secret_reads(boundary, &mut device)?;
-    session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+    check_rotate_preconditions_protected(&mut device, &session)?;
     let token =
         boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
-    let mut summaries = vec![
-        session
-            .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, token.as_slice()))?,
-    ];
+    session.run_yubikey_operation(|| {
+        token.with_secret_bytes(storage::SecretBytes::with_secret, |token| {
+            storage::replace_bws_token(&mut device, token)
+        })
+    })?;
+    let mut summaries = vec![verify_local_storage_protected(&mut device, &session)?];
     drop(device);
 
     let remaining_result = (|| -> Result<()> {
@@ -358,10 +381,13 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
                 bail!("selected YubiKey was already updated");
             }
             verify_pin_for_secret_reads(boundary, &mut device)?;
-            session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
-            summaries.push(session.run_yubikey_operation(|| {
-                storage::rotate_bws_token(&mut device, token.as_slice())
-            })?);
+            check_rotate_preconditions_protected(&mut device, &session)?;
+            session.run_yubikey_operation(|| {
+                token.with_secret_bytes(storage::SecretBytes::with_secret, |token| {
+                    storage::replace_bws_token(&mut device, token)
+                })
+            })?;
+            summaries.push(verify_local_storage_protected(&mut device, &session)?);
         }
         Ok(())
     })();
@@ -416,14 +442,51 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
         bail!("unsupported external checks requested: {requested}");
     }
 
-    let interrupt_guard = InterruptGuard::install()?;
+    let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device)?;
-    let summary =
-        interrupt_guard.run_yubikey_operation(|| storage::verify_local_storage(&mut device))?;
+    let summary = verify_local_storage_protected(&mut device, &session)?;
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+/// local verify の復号結果は、空判定前に session の保護境界へ移す。
+fn verify_local_storage_protected<D: storage::SecretDevice>(
+    device: &mut D,
+    session: &SecretSession,
+) -> Result<storage::VerifySummary> {
+    for name in SecretName::iter() {
+        let secret = session
+            .run_yubikey_operation(|| storage::get(device, name))
+            .and_then(|secret| protect_secret(secret, session))?;
+        secret.with_secret_bytes(storage::SecretBytes::with_secret, |secret| {
+            if secret.is_empty() {
+                bail!("{} stored on this YubiKey is empty", name);
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(storage::VerifySummary {
+        serial: device.serial(),
+        checks: [
+            (storage::CheckName::LocalStorage, storage::CheckStatus::Ok),
+            (storage::CheckName::Bws, storage::CheckStatus::Skipped),
+            (storage::CheckName::BwLogin, storage::CheckStatus::Skipped),
+        ]
+        .into_iter()
+        .collect(),
+    })
+}
+
+/// rotation は token 入力前に local verify と management auth を保護境界内で確認する。
+fn check_rotate_preconditions_protected<D: storage::SecretDevice>(
+    device: &mut D,
+    session: &SecretSession,
+) -> Result<()> {
+    verify_local_storage_protected(device, session)?;
+    session.run_yubikey_operation(|| device.check_management_auth_preconditions())
 }
 
 /// application 層が実機 I/O と test stub を同じ use case に接続する境界。

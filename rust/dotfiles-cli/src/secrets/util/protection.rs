@@ -2,7 +2,6 @@
 
 use std::{
     marker::PhantomData,
-    ops::Deref,
     sync::{
         Arc, LazyLock, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -158,9 +157,10 @@ impl SecretSession {
     pub(crate) fn protect_value<T>(
         &self,
         value: T,
-        expose: impl FnOnce(&T) -> &[u8],
+        memory_range: impl FnOnce(&T) -> (*const u8, usize),
     ) -> Result<Protected<'_, T>> {
-        let lock = lock_secret_memory(expose(&value))?;
+        let (ptr, len) = memory_range(&value);
+        let lock = lock_secret_memory(ptr, len)?;
         self.protect_locked_value(value, lock)
     }
 
@@ -207,12 +207,14 @@ impl SecretMemoryGuard {
     }
 }
 
-impl<T> Deref for Protected<'_, T> {
-    type Target = T;
-
-    /// 保護値の借用は `Protected<T>` の生存期間に縛り、unlock より後へ延ばさない。
-    fn deref(&self) -> &Self::Target {
-        &self.value
+impl<T> Protected<'_, T> {
+    /// guard が必要な値は、型そのものではなく平文 byte 借用だけを closure 内へ渡す。
+    pub(crate) fn with_secret_bytes<R, F, E>(&self, expose: E, borrow: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+        E: FnOnce(&T, F) -> R,
+    {
+        expose(&self.value, borrow)
     }
 }
 
@@ -229,12 +231,12 @@ fn interrupted_result() -> Result<()> {
     Ok(())
 }
 
-fn lock_secret_memory(secret: &[u8]) -> Result<Option<region::LockGuard>> {
-    if secret.is_empty() {
+fn lock_secret_memory(ptr: *const u8, len: usize) -> Result<Option<region::LockGuard>> {
+    if len == 0 {
         return Ok(None);
     }
 
-    region::lock(secret.as_ptr(), secret.len())
+    region::lock(ptr, len)
         .map(Some)
         .context("failed to lock bootstrap secret memory")
 }

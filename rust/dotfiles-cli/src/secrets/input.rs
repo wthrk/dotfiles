@@ -114,9 +114,15 @@ mod tests {
             }"#,
         )?;
 
-        assert_eq!(secrets.bw_email.as_slice(), b"alice@example.com");
-        assert_eq!(secrets.bw_password.as_slice(), b"password");
-        assert_eq!(secrets.bws_access_token.as_slice(), b"token");
+        secrets
+            .bw_email
+            .with_secret(|secret| assert_eq!(secret, b"alice@example.com"));
+        secrets
+            .bw_password
+            .with_secret(|secret| assert_eq!(secret, b"password"));
+        secrets
+            .bws_access_token
+            .with_secret(|secret| assert_eq!(secret, b"token"));
         Ok(())
     }
 

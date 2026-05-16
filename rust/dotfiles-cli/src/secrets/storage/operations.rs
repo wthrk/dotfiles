@@ -11,7 +11,7 @@ use super::crypto::{decrypt_secret, encrypt_secret};
 use super::model::{
     BootstrapSecretSource, CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId,
     SecretBlob, SecretBytes, SecretDevice, SecretManifest, SecretName, StorageObjectIds,
-    VerifySummary, YubikeyRole,
+    YubikeyRole,
 };
 
 /// secret storage 用 PIV key と manifest を新規作成する。
@@ -106,26 +106,26 @@ pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBy
     decrypt_secret(device, &blob)
 }
 
-/// primary または spare として bootstrap secret 一式を登録する。
-///
-/// setup、3 secret 保存、local verify の順序を固定し、成功した確認項目を summary に含める。
-pub fn enroll<D: SecretDevice, S: BootstrapSecretSource>(
+/// bootstrap secret を保存し、local verify は呼び出し側の保護境界で実行させる。
+pub fn enroll_without_verify<D: SecretDevice, S: BootstrapSecretSource>(
     device: &mut D,
     role: YubikeyRole,
     secrets: &S,
 ) -> Result<EnrollSummary> {
     for name in SecretName::iter() {
-        if secrets.get(name).is_empty() {
+        if secrets.with_secret(name, <[u8]>::is_empty) {
             bail!("{} must not be empty", name);
         }
     }
 
     setup(device)?;
     for name in SecretName::iter() {
-        put(device, name, secrets.get(name), false)?;
+        secrets.with_secret(name, |secret| put(device, name, secret, false))?;
     }
-    verify_local_storage(device)?;
+    Ok(enroll_summary(device.serial(), role))
+}
 
+fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
     let checks = [
         (CheckName::Setup, CheckStatus::Ok),
         (CheckName::BwEmail, CheckStatus::Ok),
@@ -136,49 +136,16 @@ pub fn enroll<D: SecretDevice, S: BootstrapSecretSource>(
     .into_iter()
     .collect();
 
-    Ok(EnrollSummary {
-        serial: device.serial(),
+    EnrollSummary {
+        serial,
         role,
         checks,
-    })
-}
-
-/// BWS access token を置き換えた後、同じ device 上の local storage 整合性を再検証する。
-pub fn rotate_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result<VerifySummary> {
-    put(device, SecretName::BwsAccessToken, token, true)?;
-    verify_local_storage(device)
-}
-
-/// token を読む前に、更新対象 YubiKey が dotfiles storage として初期化済みか確認する。
-pub fn check_rotate_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
-    verify_local_storage(device)?;
-    device.check_management_auth_preconditions()
-}
-
-/// YubiKey 上の manifest と 3 secret の復号可能性を検証する。
-///
-/// local storage verification は外部 service に接続せず、remote check は未実行項目として残す。
-pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySummary> {
-    read_manifest(device)?.validate_expected()?;
-    for name in SecretName::iter() {
-        let secret = get(device, name)?;
-        if secret.is_empty() {
-            bail!("{} stored on this YubiKey is empty", name);
-        }
     }
+}
 
-    let checks = [
-        (CheckName::LocalStorage, CheckStatus::Ok),
-        (CheckName::Bws, CheckStatus::Skipped),
-        (CheckName::BwLogin, CheckStatus::Skipped),
-    ]
-    .into_iter()
-    .collect();
-
-    Ok(VerifySummary {
-        serial: device.serial(),
-        checks,
-    })
+/// BWS access token を置き換え、local verify は呼び出し側の保護境界で実行させる。
+pub fn replace_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result<()> {
+    put(device, SecretName::BwsAccessToken, token, true)
 }
 
 /// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。

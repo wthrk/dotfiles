@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use zeroize::Zeroizing;
 
-use super::model::{CheckName, CheckStatus, MANIFEST_APP, PivObjectId, SecretBlob, SecretManifest};
+use super::model::{MANIFEST_APP, PivObjectId, SecretBlob, SecretManifest};
 use super::*;
 use crate::Result;
 
@@ -295,7 +295,7 @@ fn enroll_rejects_empty_secret_before_setup() {
         bws_access_token: SecretBytes::new(b"token".to_vec()),
     };
 
-    assert!(enroll(&mut device, YubikeyRole::Primary, &secrets).is_err());
+    assert!(enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets).is_err());
     assert!(!device.key_exists);
     assert!(device.objects.is_empty());
 }
@@ -309,28 +309,11 @@ fn put_get_and_verify_round_trip_through_device() -> Result<()> {
     put(&mut device, SecretName::BwPassword, b"password", false)?;
     put(&mut device, SecretName::BwsAccessToken, b"token", false)?;
 
-    assert_eq!(
-        get(&mut device, SecretName::BwEmail)?.as_slice(),
-        b"user@example.com"
-    );
-    assert_eq!(
-        verify_local_storage(&mut device)?
-            .checks
-            .get(&CheckName::LocalStorage),
-        Some(&CheckStatus::Ok)
-    );
-    assert_eq!(
-        verify_local_storage(&mut device)?
-            .checks
-            .get(&CheckName::Bws),
-        Some(&CheckStatus::Skipped)
-    );
-    assert_eq!(
-        verify_local_storage(&mut device)?
-            .checks
-            .get(&CheckName::BwLogin),
-        Some(&CheckStatus::Skipped)
-    );
+    get(&mut device, SecretName::BwEmail)?
+        .with_secret(|secret| assert_eq!(secret, b"user@example.com"));
+    for name in SecretName::iter() {
+        get(&mut device, name)?.with_secret(|secret| assert!(!secret.is_empty()));
+    }
     Ok(())
 }
 
@@ -342,10 +325,7 @@ fn put_requires_force_for_existing_secret() -> Result<()> {
 
     assert!(put(&mut device, SecretName::BwsAccessToken, b"new", false).is_err());
     put(&mut device, SecretName::BwsAccessToken, b"new", true)?;
-    assert_eq!(
-        get(&mut device, SecretName::BwsAccessToken)?.as_slice(),
-        b"new"
-    );
+    get(&mut device, SecretName::BwsAccessToken)?.with_secret(|secret| assert_eq!(secret, b"new"));
     Ok(())
 }
 
@@ -370,24 +350,13 @@ fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
     put(&mut device, SecretName::BwPassword, b"password", false)?;
     put(&mut device, SecretName::BwsAccessToken, b"old-token", false)?;
 
-    let summary = rotate_bws_token(&mut device, b"new-token")?;
+    replace_bws_token(&mut device, b"new-token")?;
 
-    assert_eq!(
-        get(&mut device, SecretName::BwEmail)?.as_slice(),
-        b"user@example.com"
-    );
-    assert_eq!(
-        get(&mut device, SecretName::BwPassword)?.as_slice(),
-        b"password"
-    );
-    assert_eq!(
-        get(&mut device, SecretName::BwsAccessToken)?.as_slice(),
-        b"new-token"
-    );
-    assert_eq!(
-        summary.checks.get(&CheckName::LocalStorage),
-        Some(&CheckStatus::Ok)
-    );
+    get(&mut device, SecretName::BwEmail)?
+        .with_secret(|secret| assert_eq!(secret, b"user@example.com"));
+    get(&mut device, SecretName::BwPassword)?.with_secret(|secret| assert_eq!(secret, b"password"));
+    get(&mut device, SecretName::BwsAccessToken)?
+        .with_secret(|secret| assert_eq!(secret, b"new-token"));
     Ok(())
 }
 
@@ -400,7 +369,7 @@ fn rotate_uses_management_auth_for_token_replacement() -> Result<()> {
     put(&mut device, SecretName::BwsAccessToken, b"old-token", false)?;
     device.management_auth_write_calls = 0;
 
-    rotate_bws_token(&mut device, b"new-token")?;
+    replace_bws_token(&mut device, b"new-token")?;
 
     assert_eq!(device.management_auth_write_calls, 1);
     Ok(())
@@ -416,7 +385,7 @@ fn enroll_fails_when_management_auth_breaks_during_secret_writes() {
         bws_access_token: SecretBytes::new(b"token".to_vec()),
     };
 
-    let result = enroll(&mut device, YubikeyRole::Primary, &secrets);
+    let result = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets);
 
     assert!(result.is_err());
     assert_eq!(device.management_auth_check_calls, 2);

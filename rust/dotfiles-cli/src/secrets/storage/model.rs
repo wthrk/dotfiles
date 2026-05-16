@@ -303,17 +303,17 @@ pub struct BootstrapSecrets {
 
 /// 登録処理が参照する bootstrap secret 一式。
 pub trait BootstrapSecretSource {
-    /// secret 名に対応する平文 bytes の借用範囲を呼び出し側へ委ねる。
-    fn get(&self, name: SecretName) -> &[u8];
+    /// secret 名に対応する平文 bytes の借用を呼び出し closure 内に閉じる。
+    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R;
 }
 
 impl BootstrapSecretSource for BootstrapSecrets {
     /// 未保護 model の平文参照は storage tests と fake 境界に限定する。
-    fn get(&self, name: SecretName) -> &[u8] {
+    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
         match name {
-            SecretName::BwEmail => self.bw_email.as_slice(),
-            SecretName::BwPassword => self.bw_password.as_slice(),
-            SecretName::BwsAccessToken => self.bws_access_token.as_slice(),
+            SecretName::BwEmail => self.bw_email.with_secret(borrow),
+            SecretName::BwPassword => self.bw_password.with_secret(borrow),
+            SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
         }
     }
 }
@@ -324,14 +324,14 @@ impl SecretBytes {
         Zeroizing::new(value).into()
     }
 
-    /// 平文参照は暗号化、復号後検証、stdout 書き込みの呼び出し中に限定する。
-    pub fn as_slice(&self) -> &[u8] {
-        self.0.expose_secret().as_ref()
+    /// memory lock は secret bytes の allocation 範囲に対して取得する。
+    pub(crate) fn memory_range(&self) -> (*const u8, usize) {
+        self.with_secret(|secret| (secret.as_ptr(), secret.len()))
     }
 
-    /// 空 secret は storage 登録と検証の precondition で拒否する。
-    pub fn is_empty(&self) -> bool {
-        self.as_slice().is_empty()
+    /// 平文参照は呼び出し closure 内に閉じ、所有値から直接取り出させない。
+    pub fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+        borrow(self.0.expose_secret().as_ref())
     }
 }
 
