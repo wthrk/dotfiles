@@ -5,6 +5,7 @@
 //! error contract を固定する。
 
 use std::{
+    io::{self, Write},
     thread,
     time::{Duration, Instant},
 };
@@ -24,10 +25,7 @@ use super::{
     util::{
         oaep::oaep_unpad_sha256,
         protection::InterruptGuard,
-        terminal::{
-            SPARE_SERIAL_NONINTERACTIVE_ERROR, SPARE_WAIT_TIMEOUT_ERROR, YubikeySelectionCandidate,
-            select_yubikey_candidate, stdin_is_terminal, wait_for_spare_replacement,
-        },
+        terminal::{read_terminal_line_until, stdin_is_terminal, wait_for_enter},
     },
 };
 use crate::Result;
@@ -41,6 +39,14 @@ const MIN_PIV_METADATA_VERSION: Version = Version {
 };
 const SPARE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const SPARE_DETECT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+pub(crate) const SPARE_SERIAL_NONINTERACTIVE_ERROR: &str =
+    "pass --spare-serial in non-interactive use";
+const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
+
+struct YubikeySelectionCandidate<'a> {
+    reader: &'a str,
+    serial: u32,
+}
 
 enum InteractiveDiscovery {
     Found(Vec<(String, YubiKey)>),
@@ -53,7 +59,9 @@ enum InteractiveDiscovery {
 
 type ReaderOpenAttempt<T> = (String, std::result::Result<T, (String, yubikey::Error)>);
 
-/// 1 command 中の PIN 検証状態と開いた PIV session を保持する実機 adapter。
+/// 開いた YubiKey PIV session と PIN 検証状態を保持する実機 adapter。
+///
+/// PIN verification は 1 command 中に同じ session へ再利用する。
 pub(crate) struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
@@ -61,7 +69,7 @@ pub(crate) struct YubikeySecretDevice {
 
 /// serial 指定または対話選択で 1 本の YubiKey を開く。
 ///
-/// 非対話実行では secret 読み込み前に対象 device を serial で確定する。
+/// 非対話実行では対象 device を prompt で選べないため、serial 指定がない場合は失敗する。
 pub(crate) fn open_device(serial: Option<u32>) -> Result<YubikeySecretDevice> {
     require_serial_for_noninteractive(serial)?;
 
@@ -98,7 +106,9 @@ fn open_device_until(
     })
 }
 
-/// spare 待機では未挿入状態を再試行対象とし、reader open error は即時に呼び出し側へ返す。
+/// deadline まで対話選択可能な YubiKey を待って開く。
+///
+/// 未挿入状態は再試行し、reader open error は即時に呼び出し側へ返す。
 fn open_interactive_device_until(deadline: Instant, interrupt: &InterruptGuard) -> Result<YubiKey> {
     loop {
         interrupt.check_interrupted()?;
@@ -119,7 +129,7 @@ fn open_interactive_device_until(deadline: Instant, interrupt: &InterruptGuard) 
     }
 }
 
-/// `enroll-spare` では primary の 3 secret を読み終えた後に spare を開く。
+/// spare 登録対象の YubiKey を開く。
 ///
 /// `--spare-serial` があればその YubiKey を直接開く。対話実行で serial 指定がなければ、
 /// まず接続済み候補から選択させる。選択結果が primary と同じ serial の場合は
@@ -152,7 +162,9 @@ pub(crate) fn open_spare_device(
     }
 }
 
-/// 非対話実行では YubiKey 選択 prompt に入る前に対象 serial を要求する。
+/// 非対話実行で device を一意に特定できるか確認する。
+///
+/// serial 指定がなく stdin も TTY でない場合は、選択 prompt に入らず失敗する。
 fn require_serial_for_noninteractive(serial: Option<u32>) -> Result<()> {
     if serial.is_none() && !stdin_is_terminal() {
         bail!("pass --serial in non-interactive use");
@@ -161,7 +173,9 @@ fn require_serial_for_noninteractive(serial: Option<u32>) -> Result<()> {
     Ok(())
 }
 
-/// spare 差し替え prompt が使えない入力元では spare serial を必須にする。
+/// 非対話実行で spare device を一意に特定できるか確認する。
+///
+/// spare serial 指定がなく stdin も TTY でない場合は、差し替え prompt に入らず失敗する。
 fn require_spare_serial_for_noninteractive(spare_serial: Option<u32>) -> Result<()> {
     if spare_serial.is_none() && !stdin_is_terminal() {
         bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
@@ -170,7 +184,9 @@ fn require_spare_serial_for_noninteractive(spare_serial: Option<u32>) -> Result<
     Ok(())
 }
 
-/// spare 登録では primary と同じ serial を、secret 再保存の前に拒否する。
+/// spare 登録対象が primary と別 serial か確認する。
+///
+/// 同一 serial の場合は、secret 再保存を始める前に失敗する。
 fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>) -> Result<()> {
     if Some(device.serial()) == primary_serial {
         bail!("primary and spare YubiKey serial must be different");
@@ -179,7 +195,7 @@ fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>
     Ok(())
 }
 
-/// 接続中の YubiKey を対話的に 1 本選択する。
+/// 接続中の YubiKey から対話的に 1 本を選ぶ。
 ///
 /// 検出結果が 1 本の場合はそのまま選び、複数本ある場合は reader 名と serial を
 /// 表示して番号入力を求める。
@@ -187,7 +203,9 @@ fn select_interactive_yubikey() -> Result<YubiKey> {
     select_interactive_yubikey_with_input(None, false).map_err(map_select_interactive_error)
 }
 
-/// spare 待機中の選択 prompt は、secret 保持中の deadline と interrupt policy を共有する。
+/// deadline 付きの spare 待機中に、接続中の YubiKey から 1 本を選ぶ。
+///
+/// 選択 prompt は secret 保持中の deadline と interrupt policy を共有する。
 fn select_interactive_yubikey_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
@@ -195,7 +213,9 @@ fn select_interactive_yubikey_until(
     select_interactive_yubikey_with_input(Some((deadline, interrupt)), true)
 }
 
-/// 複数候補の選択入力にも、spare 待機で決めた中断と期限の契約を適用する。
+/// 接続中の YubiKey discovery 結果を 1 本の選択結果へ変換する。
+///
+/// timed input が指定された場合は、複数候補の選択入力にも同じ中断と期限の契約を適用する。
 fn select_interactive_yubikey_with_input(
     timed_input: Option<(Instant, &InterruptGuard)>,
     allow_no_device: bool,
@@ -247,7 +267,61 @@ fn select_interactive_yubikey_with_input(
     }
 }
 
-/// reader open error を保持し、権限や PC/SC 障害を no-device と誤報しない。
+/// primary と同じ device が選ばれた後、spare への差し替え完了を Enter で待つ。
+///
+/// 待機は spare 登録の deadline と interrupt policy に従う。
+fn wait_for_spare_replacement(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
+    eprintln!("The selected YubiKey is the primary; replace it with the spare.");
+    eprintln!("Insert the spare YubiKey, then press Enter.");
+    wait_for_enter(
+        deadline,
+        interrupt,
+        SPARE_SERIAL_NONINTERACTIVE_ERROR,
+        SPARE_WAIT_TIMEOUT_ERROR,
+    )
+}
+
+/// 複数の YubiKey 候補を表示し、利用者が選んだ index を返す。
+///
+/// stdin が TTY でない場合は番号入力を読まず、serial 指定を求める error で失敗する。
+fn select_yubikey_candidate(
+    candidates: &[YubikeySelectionCandidate<'_>],
+    timed_input: Option<(Instant, &InterruptGuard)>,
+) -> Result<usize> {
+    if !stdin_is_terminal() {
+        bail!("multiple YubiKeys detected; pass a serial option in non-interactive use");
+    }
+
+    eprintln!("Select YubiKey:");
+    for (index, candidate) in candidates.iter().enumerate() {
+        eprintln!(
+            "{}: serial {} ({})",
+            index + 1,
+            candidate.serial,
+            candidate.reader
+        );
+    }
+    eprint!("number: ");
+    io::stderr().flush()?;
+
+    let input = if let Some((deadline, interrupt)) = timed_input {
+        read_terminal_line_until(deadline, interrupt, SPARE_WAIT_TIMEOUT_ERROR)?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        input
+    };
+    let selected = input.trim().parse::<usize>().context("invalid selection")?;
+    if selected == 0 || selected > candidates.len() {
+        bail!("selected YubiKey is out of range");
+    }
+
+    Ok(selected - 1)
+}
+
+/// PC/SC reader の discovery 結果を、選択可能な device 状態へ分類する。
+///
+/// reader open error は保持し、権限や PC/SC 障害を no-device と誤報しない。
 fn discover_interactive_yubikeys(context: &mut yubikey::Context) -> Result<InteractiveDiscovery> {
     let attempts = context
         .iter()?
@@ -267,12 +341,16 @@ enum InteractiveSelectError {
 
 type InteractiveSelectResult<T> = std::result::Result<T, InteractiveSelectError>;
 
-/// no-device は spare 待機で再試行可能な状態として通常 error と分離する。
+/// 通常 error を対話選択用 error 型へ包む。
+///
+/// no-device は spare 待機で再試行可能な状態として別 variant に分離する。
 fn interactive_select_error(error: impl Into<anyhow::Error>) -> InteractiveSelectError {
     InteractiveSelectError::Other(error.into())
 }
 
-/// 通常の対話選択では no-device sentinel を利用者向け error に戻す。
+/// 対話選択用 error を利用者向け error へ戻す。
+///
+/// 通常の対話選択では no-device sentinel を再試行せず、検出失敗として返す。
 fn map_select_interactive_error(err: InteractiveSelectError) -> anyhow::Error {
     match err {
         InteractiveSelectError::NoDevice => anyhow::anyhow!("no YubiKey detected"),
@@ -280,6 +358,8 @@ fn map_select_interactive_error(err: InteractiveSelectError) -> anyhow::Error {
     }
 }
 
+/// reader open attempts を discovery 状態へ分類する。
+///
 /// reader が見えているのに開けない状態は、no-device ではなく最初の open error として残す。
 fn classify_interactive_discovery(
     attempts: Vec<ReaderOpenAttempt<YubiKey>>,
@@ -308,7 +388,9 @@ fn classify_interactive_discovery(
 }
 
 impl YubikeySecretDevice {
-    /// PIV private key operation に必要な PIN verification を 1 command で 1 回に制限する。
+    /// PIV private key operation に必要な PIN verification を実行する。
+    ///
+    /// 同じ command 中で検証済みの場合は、同じ session の検証状態を再利用する。
     fn verify_pin_once(&mut self, pin: &[u8]) -> Result<()> {
         if self.pin_verified {
             return Ok(());
@@ -319,7 +401,7 @@ impl YubikeySecretDevice {
         Ok(())
     }
 
-    /// 既定 management key で認証できない YubiKey は、この storage backend の対象外とする。
+    /// 既定 management key で PIV management auth を実行する。
     ///
     /// 既定鍵運用のリスクは設計資料に明記し、任意 management key 対応は別設計にする。
     fn authenticate_management(&mut self) -> Result<()> {
@@ -328,7 +410,9 @@ impl YubikeySecretDevice {
         Ok(())
     }
 
-    /// PIV metadata から取得した public key を使い、private key material は host へ出さない。
+    /// PIV metadata から secret storage key の public key を取得する。
+    ///
+    /// private key material は host へ出さない。
     fn public_key(&mut self) -> Result<RsaPublicKey> {
         let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
         let public = metadata
@@ -429,12 +513,14 @@ impl SecretDevice for YubikeySecretDevice {
     }
 }
 
-/// `yubikey::Version` に ordering がないため、PIV metadata 要件を tuple 比較する。
+/// 2 つの `yubikey::Version` を semantic version 順で比較する。
+///
+/// `yubikey::Version` に ordering がないため、PIV metadata 要件は tuple 比較で判定する。
 fn version_lt(left: Version, right: Version) -> bool {
     (left.major, left.minor, left.patch) < (right.major, right.minor, right.patch)
 }
 
-/// PIV application version を user-facing error に出す dotted 表記へ変換する。
+/// PIV application version を dotted 表記の文字列へ変換する。
 fn format_version(version: Version) -> String {
     format!("{}.{}.{}", version.major, version.minor, version.patch)
 }

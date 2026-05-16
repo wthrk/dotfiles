@@ -26,10 +26,12 @@ pub(crate) const TAG_LEN: usize = 16;
 /// per-secret content encryption key の byte 長。
 pub(crate) const CONTENT_KEY_LEN: usize = 32;
 
-/// bootstrap secret 本文を明示的な expose が必要で、Drop 時に zeroize される型で保持する。
+/// secret 本文を明示的な expose が必要な所有値として保持する。
+///
+/// inner buffer は Drop 時に zeroize される。
 pub struct SecretBytes(SecretBox<Zeroizing<Vec<u8>>>);
 
-/// manifest と secret blob の PIV object ID 変換を storage model 側で一元化する。
+/// PIV data object ID を型付き値として表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PivObjectId(u32);
 
@@ -37,19 +39,19 @@ impl PivObjectId {
     /// manifest を保存する PIV data object ID。
     pub const MANIFEST: Self = Self(0x005f_ff16);
 
-    /// raw object ID は実機 adapter が `yubikey` crate を呼ぶ境界で取り出す。
+    /// PIV data object API に渡す raw object ID を返す。
     pub fn value(self) -> u32 {
         self.0
     }
 
-    /// AEAD additional data では PIV object ID を big-endian 4 bytes として固定する。
+    /// PIV object ID を AEAD additional data 用の big-endian bytes へ変換する。
     fn to_be_bytes(self) -> [u8; 4] {
         self.0.to_be_bytes()
     }
 }
 
 impl fmt::Display for PivObjectId {
-    /// user-facing error では PIV object ID を 8 桁 hex 表記で示す。
+    /// PIV object ID を 8 桁 hex 表記で表示する。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "0x{:08X}", self.0)
     }
@@ -97,12 +99,12 @@ pub enum SecretName {
 }
 
 impl SecretName {
-    /// summary と verify で使う secret 名の安定した列挙順。
+    /// summary と verify で使う secret 名を安定順で列挙する。
     pub fn iter() -> impl Iterator<Item = Self> {
         <Self as IntoEnumIterator>::iter()
     }
 
-    /// binary blob に保存する固定 secret id。
+    /// binary blob header に保存する固定 secret id を返す。
     pub fn secret_id(self) -> u8 {
         match self {
             Self::BwEmail => 1,
@@ -111,7 +113,7 @@ impl SecretName {
         }
     }
 
-    /// secret ごとに割り当てた PIV data object ID。
+    /// secret ごとに割り当てた PIV data object ID を返す。
     pub fn object_id(self) -> PivObjectId {
         match self {
             Self::BwEmail => PivObjectId(0x005f_ff17),
@@ -120,7 +122,9 @@ impl SecretName {
         }
     }
 
-    /// serial と object ID を AEAD additional data に含め、blob の差し替えを検出する。
+    /// AEAD additional data に使う保存 context bytes を構築する。
+    ///
+    /// version、secret id、object ID、device serial を含め、blob の差し替えを検出する。
     pub fn additional_data(self, serial: u32) -> Vec<u8> {
         [
             &[BLOB_VERSION, self.secret_id()][..],
@@ -151,7 +155,7 @@ pub struct SecretManifest {
 }
 
 impl SecretManifest {
-    /// この repository が認識する manifest sentinel。
+    /// この repository が認識する manifest sentinel を構築する。
     pub fn expected() -> Self {
         Self {
             version: 1,
@@ -159,7 +163,7 @@ impl SecretManifest {
         }
     }
 
-    /// 読み出した manifest が現在の storage format と一致することを確認する。
+    /// manifest が現在の storage format と一致することを確認する。
     pub fn validate_expected(&self) -> Result<()> {
         if self != &Self::expected() {
             bail!("YubiKey secret manifest does not match dotfiles secret-recovery format");
@@ -206,7 +210,9 @@ impl std::fmt::Debug for SecretBlob {
     }
 }
 
-/// 実機 YubiKey と fake test double に共通する最小操作。
+/// storage 操作が必要とする device API。
+///
+/// 実機 YubiKey と fake test double はこの最小操作を共有する。
 pub trait SecretDevice {
     /// device 固有の serial。AEAD additional data にも含める。
     fn serial(&self) -> u32;
@@ -218,7 +224,9 @@ pub trait SecretDevice {
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
     /// secret storage 用 PIV key を device 内で生成する。
     fn generate_key(&mut self) -> Result<()>;
-    /// 存在しない PIV data object は `None` として storage precondition へ渡る。
+    /// PIV data object を読み出す。
+    ///
+    /// object が存在しない場合は `None` を返す。
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>>;
     /// PIV data object に bytes を保存する。
     fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()>;
@@ -236,7 +244,7 @@ pub enum CheckStatus {
     /// 確認に成功した状態。
     #[serde(rename = "ok")]
     Ok,
-    /// 現在の command では実行しない確認項目。
+    /// 現在の実行範囲では省略した確認項目。
     #[serde(rename = "skipped")]
     Skipped,
 }
@@ -303,12 +311,12 @@ pub struct BootstrapSecrets {
 
 /// 登録処理が参照する bootstrap secret 一式。
 pub trait BootstrapSecretSource {
-    /// secret 名に対応する平文 bytes の借用を呼び出し closure 内に閉じる。
+    /// secret 名に対応する平文 bytes を closure へ貸し出す。
     fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R;
 }
 
 impl BootstrapSecretSource for BootstrapSecrets {
-    /// 未保護 model の平文参照は storage tests と fake 境界に限定する。
+    /// 未保護 model から secret 名に対応する平文 bytes を closure へ貸し出す。
     fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
         match name {
             SecretName::BwEmail => self.bw_email.with_secret(borrow),
@@ -319,31 +327,33 @@ impl BootstrapSecretSource for BootstrapSecrets {
 }
 
 impl SecretBytes {
-    /// raw bytes は生成時点で zeroize 対象の所有 buffer に入れる。
+    /// raw bytes を zeroize 対象の所有 buffer に入れる。
     pub fn new(value: Vec<u8>) -> Self {
         Zeroizing::new(value).into()
     }
 
-    /// memory lock は secret bytes の allocation 範囲に対して取得する。
+    /// memory lock 対象にする allocation 範囲を返す。
     pub(crate) fn memory_range(&self) -> (*const u8, usize) {
         self.with_secret(|secret| (secret.as_ptr(), secret.len()))
     }
 
-    /// 平文参照は呼び出し closure 内に閉じ、所有値から直接取り出させない。
+    /// 平文 bytes を closure へ貸し出す。
     pub fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.0.expose_secret().as_ref())
     }
 }
 
 impl From<Zeroizing<Vec<u8>>> for SecretBytes {
-    /// zeroize 対象 buffer を `SecretBox` の inner value として保持し、Drop 時まで消去対象にする。
+    /// zeroize 対象 buffer を `SecretBox` の inner value として保持する。
     fn from(value: Zeroizing<Vec<u8>>) -> Self {
         Self(SecretBox::new(Box::new(value)))
     }
 }
 
 impl<'de> Deserialize<'de> for SecretBytes {
-    /// JSON string field は decode 直後に `SecretBytes` へ移し、serde 側の一時文字列を zeroize する。
+    /// JSON string field を `SecretBytes` へ deserialize する。
+    ///
+    /// serde 側の一時文字列は decode 直後から zeroize 対象にする。
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,

@@ -23,7 +23,9 @@ pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
     write_manifest(device)
 }
 
-/// secret 入力前に、setup が永続書き込みを開始できる device 状態か確認する。
+/// setup が永続書き込みを開始できる device 状態か確認する。
+///
+/// key 生成条件、management auth、既存 key、予約済み object の衝突を検証する。
 pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
     device.check_key_generation_preconditions()?;
     device.check_management_auth_preconditions()?;
@@ -66,7 +68,7 @@ pub fn put<D: SecretDevice>(
     device.write_object(name.object_id(), &encoded)
 }
 
-/// `put` 実行前に、secret 入力なしで検証できる保存条件を確認する。
+/// `put` 実行前に検証できる保存条件を確認する。
 pub fn check_put_preconditions<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
@@ -75,7 +77,9 @@ pub fn check_put_preconditions<D: SecretDevice>(
     check_put_target_writable(device, name, force)
 }
 
-/// `put` 系 command の共通事前条件として、manifest 整合性と上書き可否を確認する。
+/// `put` 系操作の共通保存条件を確認する。
+///
+/// manifest 整合性、management auth、既存 blob の上書き可否を検証する。
 fn check_put_target_writable<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
@@ -106,7 +110,9 @@ pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBy
     decrypt_secret(device, &blob)
 }
 
-/// bootstrap secret を保存し、local verify は呼び出し側の保護境界で実行させる。
+/// bootstrap secrets を device へ保存し、enroll summary を返す。
+///
+/// local verify は呼び出し側の保護境界で実行する。
 pub fn enroll_without_verify<D: SecretDevice, S: BootstrapSecretSource>(
     device: &mut D,
     role: YubikeyRole,
@@ -143,17 +149,23 @@ fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
     }
 }
 
-/// BWS access token を置き換え、local verify は呼び出し側の保護境界で実行させる。
+/// BWS access token の blob を置き換える。
+///
+/// local verify は呼び出し側の保護境界で実行する。
 pub fn replace_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result<()> {
     put(device, SecretName::BwsAccessToken, token, true)
 }
 
+/// expected manifest を PIV object へ書き込む。
+///
 /// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
     let manifest = serde_json::to_vec(&SecretManifest::expected())?;
     device.write_object(PivObjectId::MANIFEST, &manifest)
 }
 
+/// PIV object から manifest を読み出して parse する。
+///
 /// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
 fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
     let manifest = device

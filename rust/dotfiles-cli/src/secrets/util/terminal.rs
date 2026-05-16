@@ -1,7 +1,7 @@
-//! 利用者の端末と command 境界を接続する I/O adapter。
+//! 端末の標準入出力、TTY 判定、raw mode 入力を扱う I/O adapter。
 //!
-//! prompt、TTY 判定、raw mode 入力、stdout の安全判定を集約し、呼び出し側が決めた
-//! deadline と interrupt policy に従って入力待ちを終了する。
+//! prompt 表示、TTY 判定、deadline、interrupt policy、失敗理由を受け取り、
+//! 端末入力の完了または中断を呼び出し側へ返す。
 
 use std::{
     io::{self, BufRead, IsTerminal, Read, Write},
@@ -19,35 +19,27 @@ use crate::Result;
 
 use super::protection::InterruptGuard;
 
-/// 非対話実行で spare serial なしに差し替え prompt へ進む契約違反。
-pub(crate) const SPARE_SERIAL_NONINTERACTIVE_ERROR: &str =
-    "pass --spare-serial in non-interactive use";
-/// spare 差し替え待ちの期限切れを示す command error sentinel。
-pub(crate) const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
-
-/// YubiKey 選択 prompt に表示する reader 名と serial。
-pub(crate) struct YubikeySelectionCandidate<'a> {
-    pub(crate) reader: &'a str,
-    pub(crate) serial: u32,
-}
-
-/// secret prompt や YubiKey 選択 prompt に入れる入力元か判定する。
+/// 現在の stdin が対話入力を読める TTY かを返す。
 pub(crate) fn stdin_is_terminal() -> bool {
     io::stdin().is_terminal()
 }
 
-/// 低水準 `get` が平文 secret を画面へ出さないための出力先判定。
+/// 現在の stdout が画面表示される TTY かを返す。
 pub(crate) fn stdout_is_terminal() -> bool {
     io::stdout().is_terminal()
 }
 
-/// hidden prompt から得た文字列は byte 化した直後から zeroize 対象にする。
+/// prompt を表示して echo なしで 1 行を読む。
+///
+/// 返す byte buffer は生成直後から zeroize 対象にする。
 pub(crate) fn read_hidden_bytes(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
     let value = rpassword::prompt_password(prompt)?;
     Ok(Zeroizing::new(value.into_bytes()))
 }
 
-/// 保存対象 secret の hidden prompt は読み込み直後に byte 上限を検証する。
+/// echo なしで読んだ 1 行を byte buffer として返す。
+///
+/// 上限超過時は指定 error で失敗する。
 pub(crate) fn read_hidden_bytes_with_limit(
     prompt: &str,
     limit: usize,
@@ -60,7 +52,11 @@ pub(crate) fn read_hidden_bytes_with_limit(
     Ok(value)
 }
 
-/// 表示 prompt の行入力は、末尾改行を除いた secret 本体に上限を適用する。
+/// prompt を stderr へ表示して stdin から 1 行を読む。
+///
+/// 戻り値は末尾改行を除いた byte buffer とする。
+///
+/// 上限超過時は指定 error で失敗する。
 pub(crate) fn read_visible_line_bytes(
     prompt: &str,
     limit: usize,
@@ -81,7 +77,9 @@ pub(crate) fn read_visible_line_bytes(
     Ok(input)
 }
 
-/// 非対話実行では追加更新の確認 prompt に入らない。
+/// TTY では prompt を stderr へ表示し、stdin の 1 行を yes/no 応答として返す。
+///
+/// stdin が TTY でない場合は入力を読まずに `false` を返す。
 pub(crate) fn prompt_yes_no(prompt: &str) -> Result<bool> {
     if !stdin_is_terminal() {
         return Ok(false);
@@ -97,70 +95,35 @@ pub(crate) fn prompt_yes_no(prompt: &str) -> Result<bool> {
     ))
 }
 
-/// spare 差し替え待ちは期限切れまたは中断を Enter より優先して返す。
-pub(crate) fn wait_for_enter(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
-    if !stdin_is_terminal() {
-        bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
-    }
-    read_terminal_line_until(deadline, interrupt).map(|_| ())
-}
-
-/// primary が選ばれた場合に、spare 挿入を Enter 入力で同期する。
-pub(crate) fn wait_for_spare_replacement(
+/// TTY で Enter 入力を待ち、入力完了、期限切れ、中断のいずれかを返す。
+///
+/// stdin が TTY でない場合と deadline 超過時の error 文言は呼び出し側が指定する。
+pub(crate) fn wait_for_enter(
     deadline: Instant,
     interrupt: &InterruptGuard,
+    noninteractive_error: &'static str,
+    timeout_error: &'static str,
 ) -> Result<()> {
-    eprintln!("The selected YubiKey is the primary; replace it with the spare.");
-    eprintln!("Insert the spare YubiKey, then press Enter.");
-    wait_for_enter(deadline, interrupt)
-}
-
-/// 複数候補の選択 prompt は対話実行に限定し、非対話では serial 指定を要求する。
-pub(crate) fn select_yubikey_candidate(
-    candidates: &[YubikeySelectionCandidate<'_>],
-    timed_input: Option<(Instant, &InterruptGuard)>,
-) -> Result<usize> {
     if !stdin_is_terminal() {
-        bail!("multiple YubiKeys detected; pass a serial option in non-interactive use");
+        bail!(noninteractive_error);
     }
-
-    eprintln!("Select YubiKey:");
-    for (index, candidate) in candidates.iter().enumerate() {
-        eprintln!(
-            "{}: serial {} ({})",
-            index + 1,
-            candidate.serial,
-            candidate.reader
-        );
-    }
-    eprint!("number: ");
-    io::stderr().flush()?;
-
-    let input = if let Some((deadline, interrupt)) = timed_input {
-        read_terminal_line_until(deadline, interrupt)?
-    } else {
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        input
-    };
-    let selected = input.trim().parse::<usize>().context("invalid selection")?;
-    if selected == 0 || selected > candidates.len() {
-        bail!("selected YubiKey is out of range");
-    }
-
-    Ok(selected - 1)
+    read_terminal_line_until(deadline, interrupt, timeout_error).map(|_| ())
 }
 
-/// caller が TTY 拒否を済ませた後、secret bytes を pipe/redirect へ書き込む。
+/// byte 列を stdout へそのまま書き込む。
 pub(crate) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
     io::stdout().lock().write_all(bytes)?;
     Ok(())
 }
 
-/// raw mode 入力では Enter、Ctrl-C、deadline、interrupt の優先順位を同じ thread で決める。
+/// raw mode で 1 行を読み、Enter で入力を確定してそれまでの文字列を返す。
+///
+/// Ctrl-C、中断 flag、deadline 超過を同じ loop で監視し、deadline 超過時の error 文言は
+/// 呼び出し側が指定する。
 pub(crate) fn read_terminal_line_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
+    timeout_error: &'static str,
 ) -> Result<String> {
     enable_raw_mode().context("failed to enable terminal raw mode")?;
     let _raw_mode = scopeguard::guard((), |_| {
@@ -171,7 +134,7 @@ pub(crate) fn read_terminal_line_until(
         interrupt.check_interrupted()?;
         let now = Instant::now();
         if now >= deadline {
-            bail!(SPARE_WAIT_TIMEOUT_ERROR);
+            bail!(timeout_error);
         }
         let timeout = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
 
@@ -210,7 +173,7 @@ pub(crate) fn read_terminal_line_until(
     }
 }
 
-/// prompt/stdin 由来の行終端 1 個を保存対象から外す。
+/// stdin の行入力で付く末尾の LF または CRLF を 1 行分だけ取り除く。
 fn trim_one_trailing_newline(input: &mut Vec<u8>) {
     if input.ends_with(b"\n") {
         input.pop();

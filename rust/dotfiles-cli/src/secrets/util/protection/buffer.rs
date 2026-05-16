@@ -1,4 +1,4 @@
-//! secret 入力の読み込み容量と memory lock 範囲を同じ所有値で管理する buffer。
+//! 入力 bytes の読み込み容量と memory lock 範囲を同じ所有値で管理する buffer。
 
 use std::io::{self, Read, Write};
 
@@ -9,7 +9,9 @@ use crate::Result;
 
 use super::SecretSession;
 
-/// 上限判定に必要な余剰 bytes まで lock 対象から外さない入力 buffer。
+/// 読み込み済み bytes と、その allocation に対応する memory lock guard を所有する。
+///
+/// 上限超過判定に使う余剰 bytes も同じ allocation に含める。
 pub(crate) struct ProtectedInputBuffer {
     buffer: Zeroizing<Vec<u8>>,
     len: usize,
@@ -17,7 +19,9 @@ pub(crate) struct ProtectedInputBuffer {
 }
 
 impl ProtectedInputBuffer {
-    /// 読み込み先の allocation 全体を先に確保し、session がある場合は同じ範囲を lock する。
+    /// 指定容量の読み込み先 allocation を作る。
+    ///
+    /// session がある場合は、allocation 全体を同じ範囲で lock する。
     pub(crate) fn new(capacity: usize, session: Option<&SecretSession>) -> Result<Self> {
         let buffer = Zeroizing::new(vec![0; capacity]);
         let lock = match session {
@@ -31,7 +35,9 @@ impl ProtectedInputBuffer {
         })
     }
 
-    /// raw 入力は改行を特別扱いせず、上限を超えた時点で拒否する。
+    /// reader から最大 `limit + 1` bytes を読み込む。
+    ///
+    /// `limit` を超えた場合は指定 error で失敗する。
     pub(crate) fn read_from(
         reader: impl Read,
         limit: usize,
@@ -47,7 +53,9 @@ impl ProtectedInputBuffer {
         Ok(buffer)
     }
 
-    /// 行入力の上限は、端末由来の末尾改行を取り除いた secret 本体に対して適用する。
+    /// reader から行入力用の bytes を読み込む。
+    ///
+    /// 末尾改行を除いた後に上限判定できるよう、CRLF 分の余剰容量を確保する。
     pub(crate) fn read_line_from(
         reader: impl Read,
         limit: usize,
@@ -59,12 +67,12 @@ impl ProtectedInputBuffer {
         Ok(buffer)
     }
 
-    /// 読み込み済み範囲だけを parse 境界へ渡し、未消費領域を入力として扱わせない。
+    /// 読み込み済み範囲を byte slice として返す。
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]
     }
 
-    /// 末尾 newline を除いた入力 bytes と読み込み時の lock guard を同時に所有境界へ移す。
+    /// 末尾 newline を除いた入力 bytes と lock guard を返す。
     pub(crate) fn into_trimmed_bytes_and_lock(
         self,
     ) -> (Zeroizing<Vec<u8>>, Option<region::LockGuard>) {
@@ -82,7 +90,9 @@ impl ProtectedInputBuffer {
         (buffer, _lock)
     }
 
-    /// 行入力 secret の上限は、末尾改行を除いた保存対象 bytes に適用する。
+    /// 行入力 bytes を末尾改行を除いた所有 buffer と lock guard へ変換する。
+    ///
+    /// 上限は末尾改行を除いた bytes に適用し、超過時は指定 error で失敗する。
     pub(crate) fn into_secret_line_and_lock(
         self,
         limit: usize,
@@ -97,7 +107,7 @@ impl ProtectedInputBuffer {
 }
 
 impl Write for ProtectedInputBuffer {
-    /// `io::copy` からの書き込みは確保済み lock 範囲の内側に収める。
+    /// bytes を確保済み allocation の残り容量へ書き込む。
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.buffer.len().saturating_sub(self.len);
         let len = remaining.min(bytes.len());
@@ -106,7 +116,7 @@ impl Write for ProtectedInputBuffer {
         Ok(len)
     }
 
-    /// memory buffer writer なので flush は永続化や外部 I/O を伴わない。
+    /// memory buffer writer として flush を完了扱いにする。
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }

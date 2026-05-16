@@ -1,6 +1,6 @@
-//! `dotfiles secrets` の端末操作と暗号 primitive 補助。
+//! `dotfiles secrets` で再利用する utility 群。
 //!
-//! command option、storage model、YubiKey discovery を持たない汎用部品を置く。
+//! 端末 I/O、process / memory 保護、暗号 primitive 補助をここに置く。
 
 pub(crate) mod oaep;
 pub(crate) mod protection;

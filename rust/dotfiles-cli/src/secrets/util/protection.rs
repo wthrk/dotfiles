@@ -1,4 +1,4 @@
-//! 平文 secret の生存期間に紐づける process / memory 保護。
+//! 平文 bytes の生存期間に紐づける process / memory 保護。
 
 use std::{
     marker::PhantomData,
@@ -23,7 +23,7 @@ static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
     LazyLock::new(|| Mutex::new(InterruptRegistration::default()));
 const MEMORY_LOCK_PROBE_LEN: usize = 256 * 1024;
 
-/// 平文 secret を保持する保護区間では SIGINT/SIGTERM の既定動作を遅延する。
+/// SIGINT/SIGTERM を flag として記録する保護区間 guard。
 pub(crate) struct InterruptGuard;
 
 #[derive(Default)]
@@ -34,6 +34,8 @@ struct InterruptRegistration {
 }
 
 impl InterruptGuard {
+    /// SIGINT/SIGTERM handler を登録した保護区間を開始する。
+    ///
     /// ネスト時は最外側の guard が handler を登録し、最後の guard の Drop で解除する。
     pub(crate) fn install() -> Result<Self> {
         let mut registration = interrupt_registration();
@@ -45,12 +47,14 @@ impl InterruptGuard {
         Ok(Self)
     }
 
-    /// 保護区間の途中で受けた SIGINT/SIGTERM を、明示的な失敗として返す。
+    /// 保護区間中に記録された SIGINT/SIGTERM を error として返す。
     pub(crate) fn check_interrupted(&self) -> Result<()> {
         interrupted_result()
     }
 
-    /// YubiKey operation 前後に signal flag を確認し、途中中断を後続処理へ進めない。
+    /// operation を実行し、前後で interrupt flag を確認する。
+    ///
+    /// operation 中に記録された中断は後続処理へ進めず error として返す。
     pub(crate) fn run_yubikey_operation<T>(
         &self,
         operation: impl FnOnce() -> Result<T>,
@@ -108,10 +112,10 @@ impl InterruptRegistration {
     }
 }
 
-/// 平文 secret を読む前に core dump と mlock 利用可否を確定する。
+/// core dump 抑止と mlock 利用可否を保持する memory guard。
 struct SecretMemoryGuard;
 
-/// 平文 secret を読む use case 全体の signal / memory 保護境界。
+/// 平文 bytes を読む use case 全体の signal / memory 保護境界。
 pub(crate) struct SecretSession {
     interrupt: InterruptGuard,
     memory: SecretMemoryGuard,
@@ -127,7 +131,7 @@ pub(crate) struct Protected<'session, T> {
 }
 
 impl SecretSession {
-    /// secret 入力前に signal handler、core dump 抑止、mlock probe を同じ境界で確立する。
+    /// signal handler、core dump 抑止、mlock probe を同じ保護境界で確立する。
     pub(crate) fn start() -> Result<Self> {
         Ok(Self {
             interrupt: InterruptGuard::install()?,
@@ -135,12 +139,12 @@ impl SecretSession {
         })
     }
 
-    /// 保護区間の途中で受けた SIGINT/SIGTERM を、明示的な失敗として返す。
+    /// 現在の保護区間で記録された SIGINT/SIGTERM を error として返す。
     pub(crate) fn check_interrupted(&self) -> Result<()> {
         self.interrupt.check_interrupted()
     }
 
-    /// YubiKey operation 前後に signal flag を確認し、途中中断を後続処理へ進めない。
+    /// operation を実行し、前後で interrupt flag を確認する。
     pub(crate) fn run_yubikey_operation<T>(
         &self,
         operation: impl FnOnce() -> Result<T>,
@@ -148,12 +152,12 @@ impl SecretSession {
         self.interrupt.run_yubikey_operation(operation)
     }
 
-    /// device adapter へ同じ保護スコープの interrupt guard を貸し出す。
+    /// 同じ保護 scope の interrupt guard を貸し出す。
     pub(crate) fn interrupt(&self) -> &InterruptGuard {
         &self.interrupt
     }
 
-    /// secret 値をこの session より長生きできない memory lock 付き所有値へ移す。
+    /// 値をこの session に所属する memory lock 付き所有値へ移す。
     pub(crate) fn protect_value<T>(
         &self,
         value: T,
@@ -164,7 +168,9 @@ impl SecretSession {
         self.protect_locked_value(value, lock)
     }
 
-    /// 読み込み時点で lock 済みの allocation から作った値は、同じ guard を引き継ぐ。
+    /// lock 済み allocation から作った値を、この session に所属する所有値へ移す。
+    ///
+    /// 渡された lock guard は値と同じ所有値へ引き継ぐ。
     pub(crate) fn protect_locked_value<T>(
         &self,
         value: T,
@@ -179,7 +185,7 @@ impl SecretSession {
         Ok(protected)
     }
 
-    /// JSON parse 前の入力 buffer は storage 型へ移る前から同じ mlock policy で守る。
+    /// 一時入力 buffer の memory range を現在の session で lock する。
     pub(super) fn lock_transient_buffer(
         &self,
         ptr: *const u8,
@@ -208,7 +214,9 @@ impl SecretMemoryGuard {
 }
 
 impl<T> Protected<'_, T> {
-    /// guard が必要な値は、型そのものではなく平文 byte 借用だけを closure 内へ渡す。
+    /// 保護値の平文 byte 借用を closure 内へ渡す。
+    ///
+    /// guard を含む所有値そのものは closure 外へ取り出させない。
     pub(crate) fn with_secret_bytes<R, F, E>(&self, expose: E, borrow: F) -> R
     where
         F: FnOnce(&[u8]) -> R,

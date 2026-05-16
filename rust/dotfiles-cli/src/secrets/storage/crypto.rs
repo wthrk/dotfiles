@@ -11,7 +11,10 @@ use crate::Result;
 
 use super::model::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretBytes, SecretDevice, SecretName};
 
-/// secret 本文を per-secret content key で暗号化し、その key を YubiKey public key で wrap する。
+/// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。
+///
+/// content key は device public key で wrap し、AEAD additional data には secret 名由来の
+/// 保存 context を使う。
 pub(crate) fn encrypt_secret<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
@@ -45,7 +48,10 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
     })
 }
 
-/// YubiKey private operation で content key を unwrap し、blob の AEAD を検証して復号する。
+/// 保存用 blob を検証し、secret 本文へ復号する。
+///
+/// content key は device private operation で unwrap し、AEAD tag は secret 名由来の
+/// 保存 context で検証する。
 pub(crate) fn decrypt_secret<D: SecretDevice>(
     device: &mut D,
     blob: &SecretBlob,

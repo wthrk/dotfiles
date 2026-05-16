@@ -11,7 +11,9 @@ use crate::Result;
 const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
 const HASH_LEN: usize = 32;
 
-/// YubiKey の raw RSA decrypt 結果から RSA-OAEP SHA-256 padding を検証して外す。
+/// RSA-OAEP SHA-256 encoded message を検証し、message bytes を返す。
+///
+/// 入力長が key 長と一致しない場合や padding が不正な場合は同じ error で失敗する。
 pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroizing<Vec<u8>>> {
     if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);
@@ -53,7 +55,7 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
     Ok(Zeroizing::new(rest[separator + 1..].to_vec()))
 }
 
-/// `rsa` crate の OAEP unpad は非公開 API なので、YubiKey の raw RSA 出力を復号境界で検証する。
+/// MGF1-SHA256 mask を指定長で生成する。
 fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
     let mut counter = 0u32;
@@ -68,7 +70,9 @@ fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
     out
 }
 
-/// OAEP の padding 走査は separator 位置で短絡せず、invalid blob 間の分岐差を狭める。
+/// OAEP data block から padding separator の位置と padding 妥当性を返す。
+///
+/// 走査は separator 位置で短絡せず、invalid blob 間の分岐差を狭める。
 fn find_oaep_separator(rest: &[u8]) -> (Option<usize>, bool) {
     let mut separator = None;
     let mut padding_mismatch = 0u8;

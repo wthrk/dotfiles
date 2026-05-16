@@ -14,11 +14,12 @@ use super::{
         MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedSecret, SecretsBoundary,
         protect_secret_input, read_protected_stdin_secret,
     },
+    device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
     input::read_hidden_secret,
     storage::{self, SecretDevice, SecretName},
     util::{
         protection::{InterruptGuard, SecretSession},
-        terminal::{SPARE_SERIAL_NONINTERACTIVE_ERROR, stdin_is_terminal, stdout_is_terminal},
+        terminal::{stdin_is_terminal, stdout_is_terminal},
     },
 };
 use crate::Result;

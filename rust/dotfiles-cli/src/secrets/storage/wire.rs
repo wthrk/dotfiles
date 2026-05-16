@@ -38,7 +38,9 @@ pub(crate) fn encode_secret_blob(blob: &SecretBlob) -> Result<Zeroizing<Vec<u8>>
     ))
 }
 
-/// PIV object から読んだ bytes を、余剰 bytes なしの `SecretBlob` として decode する。
+/// PIV object から読んだ bytes を `SecretBlob` として decode する。
+///
+/// 入力全体を消費できない場合は invalid blob として失敗する。
 pub(crate) fn decode_secret_blob(input: &[u8]) -> Result<SecretBlob> {
     all_consuming(parse_secret_blob)
         .parse(input)
@@ -46,7 +48,9 @@ pub(crate) fn decode_secret_blob(input: &[u8]) -> Result<SecretBlob> {
         .map_err(|_| anyhow::anyhow!("invalid YubiKey secret blob"))
 }
 
-/// `docs/secret-recovery/yubikey-secret-storage-design.md` の binary blob format:
+/// 設計資料で固定した binary blob format を parse する。
+///
+/// `docs/secret-recovery/yubikey-secret-storage-design.md` の byte 配置:
 /// magic, version, secret_id, algorithm, 12-byte nonce, u16be wrapped_key length,
 /// wrapped_key bytes, u32be ciphertext length, ciphertext bytes, 16-byte tag.
 fn parse_secret_blob(input: &[u8]) -> nom::IResult<&[u8], SecretBlob> {
@@ -73,7 +77,9 @@ fn parse_secret_blob(input: &[u8]) -> nom::IResult<&[u8], SecretBlob> {
     ))
 }
 
-/// wire format の固定長領域は、短い入力を parse error として全体 decode 失敗へ寄せる。
+/// 固定長領域を配列として parse する。
+///
+/// 必要な byte 数に満たない入力は parse error として全体 decode 失敗へ寄せる。
 fn fixed_bytes<const N: usize>(input: &[u8]) -> nom::IResult<&[u8], [u8; N]> {
     map_res(take(N), <[u8; N]>::try_from).parse(input)
 }
