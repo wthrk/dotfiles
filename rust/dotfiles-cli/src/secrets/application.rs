@@ -6,15 +6,12 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{Context, bail};
-use zeroize::Zeroizing;
-
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
     YubikeyCommand, YubikeyOptions,
     device::{self, SPARE_SERIAL_NONINTERACTIVE_ERROR, open_device, open_spare_device},
     input::{
-        parse_bootstrap_secrets_json, read_hidden_secret, read_visible_secret_line,
+        YubikeyPin, parse_bootstrap_secrets_json, read_hidden_secret, read_visible_secret_line,
         read_yubikey_pin, reject_secret_stdout_terminal, write_secret_to_stdout,
     },
     storage::{self, BootstrapSecretSource, BootstrapSecrets, SecretDevice, SecretName},
@@ -24,6 +21,7 @@ use super::{
     },
 };
 use crate::Result;
+use anyhow::{Context, bail};
 
 const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
@@ -32,6 +30,7 @@ pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 ///
 /// 値の lifetime は use case 実行中の session より長くできない。
 pub(crate) type ProtectedSecret<'session> = Protected<'session, storage::SecretBytes>;
+pub(crate) type ProtectedPin<'session> = Protected<'session, YubikeyPin>;
 
 /// bootstrap 登録に必要な 3 field を同じ保護 session で所有する。
 pub(crate) struct ProtectedBootstrapSecrets<'session> {
@@ -102,9 +101,12 @@ pub(super) fn read_protected_stdin_secret(
     session: &SecretSession,
 ) -> Result<ProtectedSecret<'_>> {
     let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, Some(session))?;
-    let (buffer, lock) =
-        input.into_secret_line_and_lock(limit, "stdin secret input is too large")?;
-    session.protect_locked_value(buffer.into(), lock)
+    input.into_protected_line(
+        session,
+        limit,
+        "stdin secret input is too large",
+        Into::into,
+    )
 }
 
 /// 実機境界を使って parse 済み options の use case を開始する。
@@ -177,7 +179,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     require_secret_stdout_for_boundary(boundary)?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
-    verify_pin_for_secret_reads(boundary, &mut device)?;
+    verify_pin_for_secret_reads(boundary, &mut device, &session)?;
     let output_bytes = session
         .run_yubikey_operation(|| storage::get(&mut device, options.name))
         .and_then(|secret| protect_secret(secret, &session))?;
@@ -203,7 +205,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     let summary = {
         let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &session)?;
         session.check_interrupted()?;
-        verify_pin_for_secret_reads(boundary, &mut device)?;
+        verify_pin_for_secret_reads(boundary, &mut device, &session)?;
         let summary = session.run_yubikey_operation(|| {
             storage::enroll_without_verify(&mut device, storage::YubikeyRole::Primary, &secrets)
         })?;
@@ -225,9 +227,7 @@ fn read_protected_secret_for_put(
     if stdin {
         read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
     } else {
-        let (secret, lock) =
-            read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-        memory.protect_locked_value(secret, lock)
+        read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
     }
 }
 
@@ -250,9 +250,7 @@ pub(super) fn read_protected_bootstrap_secrets(
         return ProtectedBootstrapSecrets::protect(secrets, memory);
     }
 
-    let (bw_email, bw_email_lock) =
-        read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-    let bw_email = memory.protect_locked_value(bw_email, bw_email_lock)?;
+    let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
     let bw_password = read_protected_secret_for_put(SecretName::BwPassword, false, memory)?;
     let bws_access_token =
         read_protected_secret_for_put(SecretName::BwsAccessToken, false, memory)?;
@@ -301,7 +299,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         {
             bail!("primary and spare YubiKey serial must be different");
         }
-        verify_pin_for_secret_reads(boundary, &mut primary)?;
+        verify_pin_for_secret_reads(boundary, &mut primary, &session)?;
         let secrets = read_protected_bootstrap_from_device(&mut primary, &session)?;
         (secrets, Some(primary_serial), prepared_spare)
     };
@@ -315,7 +313,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     };
 
     session.check_interrupted()?;
-    verify_pin_for_secret_reads(boundary, &mut spare)?;
+    verify_pin_for_secret_reads(boundary, &mut spare, &session)?;
     let summary = session.run_yubikey_operation(|| {
         storage::enroll_without_verify(&mut spare, storage::YubikeyRole::Spare, &bootstrap)
     })?;
@@ -412,7 +410,7 @@ fn prepare_bws_token_rotation_device<B: SecretsBoundary>(
     session: &SecretSession,
 ) -> Result<B::Device> {
     let mut device = boundary.open_device(serial)?;
-    verify_pin_for_secret_reads(boundary, &mut device)?;
+    verify_pin_for_secret_reads(boundary, &mut device, session)?;
     check_rotate_preconditions_protected(&mut device, session)?;
     Ok(device)
 }
@@ -479,7 +477,7 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
 
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
-    verify_pin_for_secret_reads(boundary, &mut device)?;
+    verify_pin_for_secret_reads(boundary, &mut device, &session)?;
     let summary = verify_local_storage_protected(&mut device, &session)?;
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -554,7 +552,10 @@ pub(super) trait SecretsBoundary {
         stdin: bool,
         memory: &'session SecretSession,
     ) -> Result<ProtectedSecret<'session>>;
-    fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>>;
+    fn read_yubikey_pin<'session>(
+        &mut self,
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedPin<'session>>;
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
 }
 
@@ -621,9 +622,10 @@ fn require_spare_serial_for_noninteractive<B: SecretsBoundary>(
 fn verify_pin_for_secret_reads<B: SecretsBoundary>(
     boundary: &mut B,
     device: &mut B::Device,
+    session: &SecretSession,
 ) -> Result<()> {
-    let pin = boundary.read_yubikey_pin()?;
-    device.verify_pin(&pin)
+    let pin = boundary.read_yubikey_pin(session)?;
+    pin.with_secret_bytes(YubikeyPin::with_pin, |pin| device.verify_pin(pin))
 }
 
 /// 非対話入力の不足時に表示する error message を返す。
@@ -679,8 +681,11 @@ impl SecretsBoundary for RealSecretsBoundary {
         read_protected_secret_for_put(name, stdin, memory)
     }
 
-    fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>> {
-        read_yubikey_pin()
+    fn read_yubikey_pin<'session>(
+        &mut self,
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedPin<'session>> {
+        read_yubikey_pin(memory)
     }
 
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
@@ -763,8 +768,14 @@ mod tests {
             protect_secret(storage::SecretBytes::new(b"rotated-token".to_vec()), memory)
         }
 
-        fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>> {
-            Ok(Zeroizing::new(b"123456".to_vec()))
+        fn read_yubikey_pin<'session>(
+            &mut self,
+            memory: &'session SecretSession,
+        ) -> Result<ProtectedPin<'session>> {
+            memory.protect_value(
+                YubikeyPin::new(b"123456".to_vec())?,
+                YubikeyPin::memory_range,
+            )
         }
 
         fn prompt_yes_no(&mut self, _prompt: &str) -> Result<bool> {

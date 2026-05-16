@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 use crate::Result;
 
-use super::SecretSession;
+use super::{Protected, SecretSession};
 
 /// 読み込み済み bytes と、その allocation に対応する memory lock guard を所有する。
 ///
@@ -95,10 +95,7 @@ impl ProtectedInputBuffer {
         &self.buffer[..self.len]
     }
 
-    /// 末尾 newline を除いた入力 bytes と lock guard を返す。
-    pub(crate) fn into_trimmed_bytes_and_lock(
-        self,
-    ) -> (Zeroizing<Vec<u8>>, Option<region::LockGuard>) {
+    fn into_trimmed_bytes_and_lock(self) -> (Zeroizing<Vec<u8>>, Option<region::LockGuard>) {
         let Self { buffer, len, _lock } = self;
         let mut buffer = buffer;
         let len = if buffer[..len].ends_with(b"\r\n") {
@@ -113,19 +110,21 @@ impl ProtectedInputBuffer {
         (buffer, _lock)
     }
 
-    /// 行入力 bytes を末尾改行を除いた所有 buffer と lock guard へ変換する。
+    /// 行入力 bytes を、同じ memory lock guard を引き継ぐ保護済み値へ移す。
     ///
     /// 上限は末尾改行を除いた bytes に適用し、超過時は指定 error で失敗する。
-    pub(crate) fn into_secret_line_and_lock(
+    pub(crate) fn into_protected_line<'session, T>(
         self,
+        session: &'session SecretSession,
         limit: usize,
         too_large_error: &'static str,
-    ) -> Result<(Zeroizing<Vec<u8>>, Option<region::LockGuard>)> {
+        build: impl FnOnce(Zeroizing<Vec<u8>>) -> T,
+    ) -> Result<Protected<'session, T>> {
         let (buffer, lock) = self.into_trimmed_bytes_and_lock();
         if buffer.len() > limit {
             bail!(too_large_error);
         }
-        Ok((buffer, lock))
+        session.protect_locked_value(build(buffer), lock)
     }
 }
 
@@ -149,6 +148,8 @@ impl Write for ProtectedInputBuffer {
 mod tests {
     use std::io::Cursor;
 
+    use zeroize::Zeroizing;
+
     use crate::Result;
 
     use super::ProtectedInputBuffer;
@@ -156,27 +157,37 @@ mod tests {
     #[test]
     fn secret_line_accepts_exact_limit_with_lf() -> Result<()> {
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\n"), 3, None)?;
-        let (secret, _lock) = input.into_secret_line_and_lock(3, "too large")?;
+        let session = crate::secrets::util::protection::SecretSession::start()?;
+        let secret = input.into_protected_line(&session, 3, "too large", |buffer| buffer)?;
 
-        assert_eq!(secret.as_slice(), b"abc");
+        secret.with_secret_bytes(expose_zeroizing_bytes, |secret| assert_eq!(secret, b"abc"));
         Ok(())
     }
 
     #[test]
     fn secret_line_accepts_exact_limit_with_crlf() -> Result<()> {
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\r\n"), 3, None)?;
-        let (secret, _lock) = input.into_secret_line_and_lock(3, "too large")?;
+        let session = crate::secrets::util::protection::SecretSession::start()?;
+        let secret = input.into_protected_line(&session, 3, "too large", |buffer| buffer)?;
 
-        assert_eq!(secret.as_slice(), b"abc");
+        secret.with_secret_bytes(expose_zeroizing_bytes, |secret| assert_eq!(secret, b"abc"));
         Ok(())
     }
 
     #[test]
     fn secret_line_rejects_body_past_limit_after_trim() -> Result<()> {
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abcd\n"), 3, None)?;
-        let err = input.into_secret_line_and_lock(3, "too large");
+        let session = crate::secrets::util::protection::SecretSession::start()?;
+        let err = input.into_protected_line(&session, 3, "too large", |buffer| buffer);
 
         assert!(err.is_err());
         Ok(())
+    }
+
+    fn expose_zeroizing_bytes<R>(
+        secret: &Zeroizing<Vec<u8>>,
+        borrow: impl FnOnce(&[u8]) -> R,
+    ) -> R {
+        borrow(secret.as_slice())
     }
 }

@@ -4,60 +4,93 @@
 //! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
 
 use anyhow::bail;
+use secrecy::{ExposeSecret, SecretBox};
 use serde::Deserialize;
-use zeroize::Zeroizing;
 
 use crate::Result;
 
 use super::{
     storage::{BootstrapSecrets, SecretBytes},
     util::{
-        protection::{ProtectedInputBuffer, SecretSession},
+        protection::{Protected, ProtectedInputBuffer, SecretSession},
         terminal,
     },
 };
 
+const PIV_PIN_MIN_LEN: usize = 6;
+const PIV_PIN_MAX_LEN: usize = 8;
+
+pub(crate) struct YubikeyPin(SecretBox<Vec<u8>>);
+
+impl YubikeyPin {
+    pub(crate) fn new(pin: Vec<u8>) -> Result<Self> {
+        validate_yubikey_pin(&pin)?;
+        Ok(Self(SecretBox::new(Box::new(pin))))
+    }
+
+    pub(crate) fn memory_range(&self) -> (*const u8, usize) {
+        let pin = self.0.expose_secret();
+        (pin.as_ptr(), pin.len())
+    }
+
+    pub(crate) fn with_pin<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+        borrow(self.0.expose_secret().as_slice())
+    }
+}
+
 /// 表示 prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
-pub(super) fn read_visible_secret_line(
+pub(super) fn read_visible_secret_line<'session>(
     prompt: &str,
     limit: usize,
-    memory: &SecretSession,
-) -> Result<(SecretBytes, Option<region::LockGuard>)> {
+    memory: &'session SecretSession,
+) -> Result<Protected<'session, SecretBytes>> {
     use std::io::{self, Write};
 
     eprint!("{prompt}");
     io::stderr().flush()?;
     let input =
         ProtectedInputBuffer::read_line_until_newline_from(std::io::stdin(), limit, Some(memory))?;
-    let (buffer, lock) =
-        input.into_secret_line_and_lock(limit, "visible secret input is too large")?;
-    Ok((buffer.into(), lock))
+    input.into_protected_line(
+        memory,
+        limit,
+        "visible secret input is too large",
+        Into::into,
+    )
 }
 
 /// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 読み込んだ bytes に上限を適用する。
-pub(super) fn read_hidden_secret(
+pub(super) fn read_hidden_secret<'session>(
     prompt: &str,
     limit: usize,
-    memory: &SecretSession,
-) -> Result<(SecretBytes, Option<region::LockGuard>)> {
-    let value = Zeroizing::new(rpassword::prompt_password(prompt)?.into_bytes());
+    memory: &'session SecretSession,
+) -> Result<Protected<'session, SecretBytes>> {
+    let value = rpassword::prompt_password(prompt)?.into_bytes();
     if value.len() > limit {
         bail!("hidden secret input is too large");
     }
-    let secret = SecretBytes::from(value);
+    let secret = SecretBytes::new(value);
     let lock = memory.lock_secret_value(&secret, SecretBytes::memory_range)?;
-    Ok((secret, lock))
+    memory.protect_locked_value(secret, lock)
 }
 
-/// echo なしの prompt で YubiKey PIN を読み、PIV session 検証用の byte buffer として返す。
-pub(crate) fn read_yubikey_pin() -> Result<Zeroizing<Vec<u8>>> {
-    Ok(Zeroizing::new(
-        rpassword::prompt_password("YubiKey PIN: ")?.into_bytes(),
-    ))
+/// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
+pub(crate) fn read_yubikey_pin<'session>(
+    memory: &'session SecretSession,
+) -> Result<Protected<'session, YubikeyPin>> {
+    let pin = YubikeyPin::new(rpassword::prompt_password("YubiKey PIN: ")?.into_bytes())?;
+    let lock = memory.lock_secret_value(&pin, YubikeyPin::memory_range)?;
+    memory.protect_locked_value(pin, lock)
+}
+
+fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
+    if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
+        bail!("YubiKey PIN must be 6 to 8 bytes");
+    }
+    Ok(())
 }
 
 /// stdin の JSON bytes を bootstrap 登録用 schema として parse し、型付き model へ変換する。
@@ -182,5 +215,18 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_yubikey_pin_accepts_piv_length_range() -> Result<()> {
+        validate_yubikey_pin(b"123456")?;
+        validate_yubikey_pin(b"12345678")?;
+        Ok(())
+    }
+
+    #[test]
+    fn validate_yubikey_pin_rejects_values_outside_piv_length_range() {
+        assert!(validate_yubikey_pin(b"12345").is_err());
+        assert!(validate_yubikey_pin(b"123456789").is_err());
     }
 }

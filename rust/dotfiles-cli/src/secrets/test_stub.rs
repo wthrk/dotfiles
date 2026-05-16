@@ -11,10 +11,11 @@ use zeroize::Zeroizing;
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, YubikeyCommand,
     application::{
-        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedSecret, SecretsBoundary,
-        read_protected_stdin_secret,
+        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedPin, ProtectedSecret,
+        SecretsBoundary, read_protected_stdin_secret,
     },
     device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
+    input::YubikeyPin,
     input::read_hidden_secret,
     storage::{self, SecretDevice, SecretName},
     util::{
@@ -99,14 +100,18 @@ impl SecretsBoundary for TestSecretsBoundary {
         if stdin {
             read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
         } else {
-            let (secret, lock) =
-                read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-            memory.protect_locked_value(secret, lock)
+            read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
         }
     }
 
-    fn read_yubikey_pin(&mut self) -> Result<Zeroizing<Vec<u8>>> {
-        Ok(Zeroizing::new(b"123456".to_vec()))
+    fn read_yubikey_pin<'session>(
+        &mut self,
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedPin<'session>> {
+        memory.protect_value(
+            YubikeyPin::new(b"123456".to_vec())?,
+            YubikeyPin::memory_range,
+        )
     }
 
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
