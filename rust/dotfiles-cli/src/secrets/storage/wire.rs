@@ -10,32 +10,29 @@ use nom::{
     combinator::{all_consuming, map_res, verify},
     number::complete::{be_u8, be_u16, be_u32},
 };
-use zeroize::Zeroizing;
 
 use super::model::{
     ALGORITHM_AES_256_GCM, BLOB_MAGIC, BLOB_VERSION, NONCE_LEN, SecretBlob, SecretName, TAG_LEN,
 };
 
 /// `SecretBlob` を設計資料で固定した binary wire format へ serialize する。
-pub(crate) fn encode_secret_blob(blob: &SecretBlob) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn encode_secret_blob(blob: &SecretBlob) -> Result<Vec<u8>> {
     let wrapped_key_len = u16::try_from(blob.wrapped_key.len())
         .context("wrapped YubiKey content key is too large")?;
     let ciphertext_len =
         u32::try_from(blob.ciphertext.len()).context("YubiKey secret ciphertext is too large")?;
 
-    Ok(Zeroizing::new(
-        [
-            BLOB_MAGIC,
-            &[BLOB_VERSION, blob.name.secret_id(), ALGORITHM_AES_256_GCM],
-            &blob.nonce,
-            &wrapped_key_len.to_be_bytes(),
-            &blob.wrapped_key,
-            &ciphertext_len.to_be_bytes(),
-            &blob.ciphertext,
-            &blob.tag,
-        ]
-        .concat(),
-    ))
+    Ok([
+        BLOB_MAGIC,
+        &[BLOB_VERSION, blob.name.secret_id(), ALGORITHM_AES_256_GCM],
+        &blob.nonce,
+        &wrapped_key_len.to_be_bytes(),
+        &blob.wrapped_key,
+        &ciphertext_len.to_be_bytes(),
+        &blob.ciphertext,
+        &blob.tag,
+    ]
+    .concat())
 }
 
 /// PIV object から読んだ bytes を `SecretBlob` として decode する。
@@ -70,8 +67,8 @@ fn parse_secret_blob(input: &[u8]) -> nom::IResult<&[u8], SecretBlob> {
         SecretBlob {
             name,
             nonce,
-            wrapped_key: Zeroizing::new(wrapped_key.to_vec()),
-            ciphertext: Zeroizing::new(ciphertext.to_vec()),
+            wrapped_key: wrapped_key.to_vec(),
+            ciphertext: ciphertext.to_vec(),
             tag,
         },
     ))

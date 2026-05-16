@@ -17,7 +17,6 @@ pub(crate) mod buffer;
 pub(crate) use buffer::ProtectedInputBuffer;
 
 use crate::Result;
-use crate::secrets::storage::SecretBytes;
 
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
@@ -131,6 +130,22 @@ pub(crate) struct Protected<'session, T> {
     _session: PhantomData<&'session SecretSession>,
 }
 
+/// secret 本文を session lifetime に閉じ込める保護済み所有値。
+///
+/// 平文 bytes は `with_secret` の借用中だけ公開し、Drop 時の zeroize と memory unlock は
+/// 同じ所有値の破棄順序に従う。
+pub(crate) struct ProtectedSecret<'session> {
+    value: Zeroizing<Vec<u8>>,
+    _lock: Option<region::LockGuard>,
+    _session: PhantomData<&'session SecretSession>,
+}
+
+impl ProtectedSecret<'_> {
+    pub(crate) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+        borrow(self.value.as_ref())
+    }
+}
+
 impl SecretSession {
     /// signal handler、core dump 抑止、mlock probe を同じ保護境界で確立する。
     pub(crate) fn start() -> Result<Self> {
@@ -156,17 +171,6 @@ impl SecretSession {
     /// 同じ保護 scope の interrupt guard を貸し出す。
     pub(crate) fn interrupt(&self) -> &InterruptGuard {
         &self.interrupt
-    }
-
-    /// 値をこの session に所属する memory lock 付き所有値へ移す。
-    pub(crate) fn protect_value<T>(
-        &self,
-        value: T,
-        memory_range: impl FnOnce(&T) -> (*const u8, usize),
-    ) -> Result<Protected<'_, T>> {
-        let (ptr, len) = memory_range(&value);
-        let lock = lock_secret_memory(ptr, len)?;
-        self.protect_locked_value(value, lock)
     }
 
     /// secret 値の memory range を現在の session で lock する。
@@ -204,6 +208,28 @@ impl SecretSession {
     ) -> Result<region::LockGuard> {
         self.memory.lock_transient_buffer(ptr, len)
     }
+
+    #[cfg(test)]
+    /// raw secret bytes を zeroize 対象 buffer に移し、この session の memory lock 境界へ所属させる。
+    pub(crate) fn protect_secret_bytes(&self, value: Vec<u8>) -> Result<ProtectedSecret<'_>> {
+        let value = Zeroizing::new(value);
+        let lock = lock_secret_memory(value.as_ptr(), value.len())?;
+        self.protect_locked_secret_value(value, lock)
+    }
+
+    pub(super) fn protect_locked_secret_value(
+        &self,
+        value: Zeroizing<Vec<u8>>,
+        lock: Option<region::LockGuard>,
+    ) -> Result<ProtectedSecret<'_>> {
+        let protected = ProtectedSecret {
+            value,
+            _lock: lock,
+            _session: PhantomData,
+        };
+        interrupted_result()?;
+        Ok(protected)
+    }
 }
 
 impl SecretMemoryGuard {
@@ -224,19 +250,13 @@ impl SecretMemoryGuard {
     }
 }
 
-pub(crate) trait ProtectedSecretBytes {
+pub(crate) trait ProtectedByteAccess {
     fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R;
 }
 
-impl<T: ProtectedSecretBytes> Protected<'_, T> {
+impl<T: ProtectedByteAccess> Protected<'_, T> {
     pub(crate) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         self.value.with_protected_bytes(borrow)
-    }
-}
-
-impl ProtectedSecretBytes for SecretBytes {
-    fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        self.with_secret(borrow)
     }
 }
 

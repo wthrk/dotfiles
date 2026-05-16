@@ -9,11 +9,11 @@ mod operations;
 mod wire;
 
 pub use model::{
-    BootstrapSecretSource, CheckName, CheckStatus, PivObjectId, SecretBytes, SecretDevice,
-    SecretName, VerifySummary, YubikeyRole,
+    BootstrapSecretSource, CheckName, CheckStatus, PivObjectId, SecretDevice, SecretName,
+    VerifySummary, YubikeyRole,
 };
 pub use operations::{
-    check_put_preconditions, check_setup_preconditions, enroll_without_verify, get, put,
+    check_put_preconditions, check_setup_preconditions, enroll_without_verify, get_protected, put,
     replace_bws_token, setup,
 };
 

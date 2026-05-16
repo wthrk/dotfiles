@@ -5,13 +5,13 @@
 //! 順序と検証結果の JSON 契約を固定する。
 
 use crate::Result;
+use crate::secrets::util::protection::{ProtectedSecret, SecretSession};
 use anyhow::{Context, bail};
 
-use super::crypto::{decrypt_secret, encrypt_secret};
+use super::crypto::{decrypt_secret_protected, encrypt_secret};
 use super::model::{
     BootstrapSecretSource, CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId,
-    SecretBlob, SecretBytes, SecretDevice, SecretManifest, SecretName, StorageObjectIds,
-    YubikeyRole,
+    SecretBlob, SecretDevice, SecretManifest, SecretName, StorageObjectIds, YubikeyRole,
 };
 
 /// secret storage 用 PIV key と manifest を新規作成する。
@@ -93,10 +93,19 @@ fn check_put_target_writable<D: SecretDevice>(
     Ok(())
 }
 
-/// 1 secret を YubiKey object から読み出して復号する。
+/// 1 secret を YubiKey object から読み出して保護済み値へ復号する。
 ///
 /// blob 内の secret id と要求された secret 名が一致しない場合は拒否する。
-pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBytes> {
+pub fn get_protected<'session, D: SecretDevice>(
+    device: &mut D,
+    name: SecretName,
+    session: &'session SecretSession,
+) -> Result<ProtectedSecret<'session>> {
+    let blob = read_secret_blob(device, name)?;
+    decrypt_secret_protected(device, &blob, session)
+}
+
+fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBlob> {
     read_manifest(device)?.validate_expected()?;
     let encoded = device
         .read_object(name.object_id())?
@@ -106,8 +115,7 @@ pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBy
     if blob.name != name {
         bail!("YubiKey secret blob name does not match requested {}", name);
     }
-
-    decrypt_secret(device, &blob)
+    Ok(blob)
 }
 
 /// bootstrap secrets を device へ保存し、enroll summary を返す。

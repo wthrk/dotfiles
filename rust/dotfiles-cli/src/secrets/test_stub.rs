@@ -7,7 +7,6 @@
 use std::collections::BTreeMap;
 
 use clap::{Parser, ValueEnum};
-use zeroize::Zeroizing;
 
 #[path = "test_stub_contract.rs"]
 mod test_stub_contract;
@@ -15,15 +14,15 @@ mod test_stub_contract;
 use super::{
     SecretsOptions,
     application::{
-        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedPin, ProtectedSecret,
-        SecretsBoundary, read_protected_stdin_secret,
+        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedPin, SecretsBoundary,
+        read_protected_stdin_secret,
     },
     device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
     input::YubikeyPin,
     input::read_hidden_secret,
     storage::{self, SecretDevice, SecretName},
     util::{
-        protection::{InterruptGuard, SecretSession},
+        protection::{InterruptGuard, ProtectedSecret, SecretSession},
         terminal::{stdin_is_terminal, stdout_is_terminal},
     },
 };
@@ -188,10 +187,9 @@ impl SecretsBoundary for TestSecretsBoundary {
         &mut self,
         memory: &'session SecretSession,
     ) -> Result<ProtectedPin<'session>> {
-        memory.protect_value(
-            YubikeyPin::new(b"123456".to_vec())?,
-            YubikeyPin::memory_range,
-        )
+        let pin = YubikeyPin::new(b"123456".to_vec())?;
+        let lock = memory.lock_secret_value(&pin, YubikeyPin::memory_range)?;
+        memory.protect_locked_value(pin, lock)
     }
 
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
@@ -204,7 +202,7 @@ pub(super) struct TestDevice {
     key_exists: bool,
     config: TestStubConfig,
     emit_write_events: bool,
-    objects: BTreeMap<storage::PivObjectId, Zeroizing<Vec<u8>>>,
+    objects: BTreeMap<storage::PivObjectId, Vec<u8>>,
 }
 
 impl TestDevice {
@@ -265,7 +263,7 @@ impl TestDevice {
         if let Some(name) = config.corrupt_secret {
             device
                 .objects
-                .insert(name.object_id(), Zeroizing::new(b"not-json".to_vec()));
+                .insert(name.object_id(), b"not-json".to_vec());
         }
         Ok(device)
     }
@@ -302,29 +300,25 @@ impl SecretDevice for TestDevice {
         Ok(())
     }
 
-    fn read_object(
-        &mut self,
-        object_id: storage::PivObjectId,
-    ) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    fn read_object(&mut self, object_id: storage::PivObjectId) -> Result<Option<Vec<u8>>> {
         Ok(self.objects.get(&object_id).cloned())
     }
 
     fn write_object(&mut self, object_id: storage::PivObjectId, value: &[u8]) -> Result<()> {
-        self.objects
-            .insert(object_id, Zeroizing::new(value.to_vec()));
+        self.objects.insert(object_id, value.to_vec());
         self.emit_write_event(object_id)?;
         Ok(())
     }
 
-    fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        Ok(Zeroizing::new(key.iter().map(|byte| byte ^ 0xa5).collect()))
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
+        Ok(key.iter().map(|byte| byte ^ 0xa5).collect())
     }
 
     fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
         Ok(())
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
         self.wrap_key(wrapped_key)
     }
 }
@@ -338,7 +332,8 @@ impl TestDevice {
         let Some(name) = secret_name_for_object_id(object_id) else {
             return Ok(());
         };
-        let secret = storage::get(self, name)?;
+        let session = SecretSession::start()?;
+        let secret = storage::get_protected(self, name, &session)?;
         secret.with_secret(|value| {
             eprintln!(
                 "{} serial={} name={} value={}",

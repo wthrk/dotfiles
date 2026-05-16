@@ -473,9 +473,9 @@ impl SecretDevice for YubikeySecretDevice {
         Ok(())
     }
 
-    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
         match self.yubikey.fetch_object(object_id.value()) {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => Ok(Some(value.to_vec())),
             Err(yubikey::Error::NotFound) => Ok(None),
             Err(err) => Err(err.into()),
         }
@@ -483,22 +483,21 @@ impl SecretDevice for YubikeySecretDevice {
 
     fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()> {
         self.authenticate_management()?;
-        let mut value = Zeroizing::new(value.to_vec());
+        let mut value = value.to_vec();
         self.yubikey.save_object(object_id.value(), &mut value)?;
         Ok(())
     }
 
-    fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
         let public = self.public_key()?;
-        let wrapped = public.encrypt(&mut OsRng, Oaep::new::<Sha256>(), key)?;
-        Ok(Zeroizing::new(wrapped))
+        Ok(public.encrypt(&mut OsRng, Oaep::new::<Sha256>(), key)?)
     }
 
     fn verify_pin(&mut self, pin: &[u8]) -> Result<()> {
         self.verify_pin_once(pin)
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }

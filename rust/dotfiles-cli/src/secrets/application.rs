@@ -17,7 +17,9 @@ use super::{
     },
     storage::{self, BootstrapSecretSource, SecretDevice, SecretName},
     util::{
-        protection::{InterruptGuard, Protected, ProtectedInputBuffer, SecretSession},
+        protection::{
+            InterruptGuard, Protected, ProtectedInputBuffer, ProtectedSecret, SecretSession,
+        },
         terminal::{prompt_yes_no, stdin_is_terminal as input_stdin_is_terminal},
     },
 };
@@ -27,10 +29,6 @@ use anyhow::{Context, bail};
 const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 
-/// 単一 secret を `SecretSession` の保護境界に所属させる所有値。
-///
-/// 値の lifetime は use case 実行中の session より長くできない。
-pub(crate) type ProtectedSecret<'session> = Protected<'session, storage::SecretBytes>;
 pub(crate) type ProtectedPin<'session> = Protected<'session, YubikeyPin>;
 
 /// bootstrap 登録に必要な 3 field を同じ保護 session で所有する。
@@ -66,14 +64,6 @@ impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
             SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
         }
     }
-}
-
-/// 復号済み secret を現在の session の保護境界へ移す。
-pub(crate) fn protect_secret(
-    secret: storage::SecretBytes,
-    session: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
-    session.protect_value(secret, storage::SecretBytes::memory_range)
 }
 
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
@@ -157,8 +147,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device, &session)?;
     let output_bytes = session
-        .run_yubikey_operation(|| storage::get(&mut device, options.name))
-        .and_then(|secret| protect_secret(secret, &session))?;
+        .run_yubikey_operation(|| storage::get_protected(&mut device, options.name, &session))?;
     output_bytes.with_secret(write_secret_to_stdout)?;
     Ok(())
 }
@@ -287,8 +276,11 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     let mut spare = match spare {
         Some(spare) => spare,
         None => {
-            let mut spare =
-                boundary.open_spare_device(options.spare_serial, primary_serial, session.interrupt())?;
+            let mut spare = boundary.open_spare_device(
+                options.spare_serial,
+                primary_serial,
+                session.interrupt(),
+            )?;
             session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
             spare
         }
@@ -312,18 +304,14 @@ fn read_protected_bootstrap_from_device<'session, D: storage::SecretDevice>(
     primary: &mut D,
     session: &'session SecretSession,
 ) -> Result<ProtectedBootstrapSecrets<'session>> {
-    let bw_email = protect_secret(
-        session.run_yubikey_operation(|| storage::get(primary, SecretName::BwEmail))?,
-        session,
-    )?;
-    let bw_password = protect_secret(
-        session.run_yubikey_operation(|| storage::get(primary, SecretName::BwPassword))?,
-        session,
-    )?;
-    let bws_access_token = protect_secret(
-        session.run_yubikey_operation(|| storage::get(primary, SecretName::BwsAccessToken))?,
-        session,
-    )?;
+    let bw_email = session
+        .run_yubikey_operation(|| storage::get_protected(primary, SecretName::BwEmail, session))?;
+    let bw_password = session.run_yubikey_operation(|| {
+        storage::get_protected(primary, SecretName::BwPassword, session)
+    })?;
+    let bws_access_token = session.run_yubikey_operation(|| {
+        storage::get_protected(primary, SecretName::BwsAccessToken, session)
+    })?;
     Ok(ProtectedBootstrapSecrets::new(
         bw_email,
         bw_password,
@@ -509,9 +497,8 @@ fn verify_local_storage_protected<D: storage::SecretDevice>(
     session: &SecretSession,
 ) -> Result<storage::VerifySummary> {
     for name in SecretName::iter() {
-        let secret = session
-            .run_yubikey_operation(|| storage::get(device, name))
-            .and_then(|secret| protect_secret(secret, session))?;
+        let secret =
+            session.run_yubikey_operation(|| storage::get_protected(device, name, session))?;
         secret.with_secret(|secret| {
             if secret.is_empty() {
                 bail!("{} stored on this YubiKey is empty", name);
@@ -714,8 +701,6 @@ impl SecretsBoundary for RealSecretsBoundary {
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
 
-    use zeroize::Zeroizing;
-
     use super::*;
 
     struct FakeBoundary {
@@ -782,17 +767,16 @@ mod tests {
             _stdin: bool,
             memory: &'session SecretSession,
         ) -> Result<ProtectedSecret<'session>> {
-            protect_secret(storage::SecretBytes::new(b"rotated-token".to_vec()), memory)
+            memory.protect_secret_bytes(b"rotated-token".to_vec())
         }
 
         fn read_yubikey_pin<'session>(
             &mut self,
             memory: &'session SecretSession,
         ) -> Result<ProtectedPin<'session>> {
-            memory.protect_value(
-                YubikeyPin::new(b"123456".to_vec())?,
-                YubikeyPin::memory_range,
-            )
+            let pin = YubikeyPin::new(b"123456".to_vec())?;
+            let lock = memory.lock_secret_value(&pin, YubikeyPin::memory_range)?;
+            memory.protect_locked_value(pin, lock)
         }
 
         fn prompt_yes_no(&mut self, _prompt: &str) -> Result<bool> {
@@ -805,7 +789,7 @@ mod tests {
     struct FakeDevice {
         serial: u32,
         key_exists: bool,
-        objects: BTreeMap<storage::PivObjectId, Zeroizing<Vec<u8>>>,
+        objects: BTreeMap<storage::PivObjectId, Vec<u8>>,
     }
 
     impl FakeDevice {
@@ -848,28 +832,24 @@ mod tests {
             Ok(())
         }
 
-        fn read_object(
-            &mut self,
-            object_id: storage::PivObjectId,
-        ) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        fn read_object(&mut self, object_id: storage::PivObjectId) -> Result<Option<Vec<u8>>> {
             Ok(self.objects.get(&object_id).cloned())
         }
 
         fn write_object(&mut self, object_id: storage::PivObjectId, value: &[u8]) -> Result<()> {
-            self.objects
-                .insert(object_id, Zeroizing::new(value.to_vec()));
+            self.objects.insert(object_id, value.to_vec());
             Ok(())
         }
 
-        fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-            Ok(Zeroizing::new(key.iter().map(|byte| byte ^ 0xa5).collect()))
+        fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
+            Ok(key.iter().map(|byte| byte ^ 0xa5).collect())
         }
 
         fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
             Ok(())
         }
 
-        fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
             self.wrap_key(wrapped_key)
         }
     }
@@ -919,12 +899,9 @@ mod tests {
         memory: &'session SecretSession,
     ) -> Result<ProtectedBootstrapSecrets<'session>> {
         Ok(ProtectedBootstrapSecrets::new(
-            protect_secret(
-                storage::SecretBytes::new(b"user@example.com".to_vec()),
-                memory,
-            )?,
-            protect_secret(storage::SecretBytes::new(b"password".to_vec()), memory)?,
-            protect_secret(storage::SecretBytes::new(b"token".to_vec()), memory)?,
+            memory.protect_secret_bytes(b"user@example.com".to_vec())?,
+            memory.protect_secret_bytes(b"password".to_vec())?,
+            memory.protect_secret_bytes(b"token".to_vec())?,
         ))
     }
 }

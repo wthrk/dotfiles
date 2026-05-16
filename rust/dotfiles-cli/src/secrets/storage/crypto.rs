@@ -8,8 +8,9 @@ use anyhow::bail;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
+use crate::secrets::util::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession};
 
-use super::model::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretBytes, SecretDevice, SecretName};
+use super::model::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName};
 
 /// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。
 ///
@@ -43,19 +44,20 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
         name,
         nonce,
         wrapped_key,
-        ciphertext,
+        ciphertext: ciphertext.to_vec(),
         tag,
     })
 }
 
-/// 保存用 blob を検証し、secret 本文へ復号する。
+/// 保存用 blob を検証し、secret 本文を保護済み値へ復号する。
 ///
-/// content key は device private operation で unwrap し、AEAD tag は secret 名由来の
-/// 保存 context で検証する。
-pub(crate) fn decrypt_secret<D: SecretDevice>(
+/// 復号先 allocation は session の memory lock 範囲に含め、平文は `ProtectedSecret` の
+/// closure API 以外へ渡さない。
+pub(crate) fn decrypt_secret_protected<'session, D: SecretDevice>(
     device: &mut D,
     blob: &SecretBlob,
-) -> Result<SecretBytes> {
+    session: &'session SecretSession,
+) -> Result<ProtectedSecret<'session>> {
     let mut content_key = device.unwrap_key(&blob.wrapped_key)?;
     if content_key.len() != CONTENT_KEY_LEN {
         bail!("unwrapped YubiKey content key has invalid length");
@@ -63,15 +65,15 @@ pub(crate) fn decrypt_secret<D: SecretDevice>(
 
     let cipher = Aes256Gcm::new_from_slice(&content_key)
         .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
-    let mut plaintext = blob.ciphertext.clone();
+    let mut input = ProtectedInputBuffer::from_slice(&blob.ciphertext, Some(session))?;
     cipher
         .decrypt_in_place_detached(
             aes_gcm::Nonce::from_slice(&blob.nonce),
             &blob.name.additional_data(device.serial()),
-            plaintext.as_mut(),
+            input.as_mut_slice(),
             aes_gcm::Tag::from_slice(&blob.tag),
         )
         .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
     content_key.zeroize();
-    SecretBytes::new_locked(plaintext)
+    input.into_protected_secret(session)
 }

@@ -2,12 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::Context;
-use zeroize::Zeroizing;
-
 use super::model::{MANIFEST_APP, PivObjectId, SecretBlob, SecretManifest};
 use super::*;
 use crate::Result;
+use crate::secrets::util::protection::SecretSession;
+use anyhow::Context;
 
 struct FakeDevice {
     serial: u32,
@@ -16,21 +15,21 @@ struct FakeDevice {
     management_auth_check_calls: usize,
     management_auth_write_calls: usize,
     write_fail_after: Option<usize>,
-    objects: BTreeMap<PivObjectId, Zeroizing<Vec<u8>>>,
+    objects: BTreeMap<PivObjectId, Vec<u8>>,
 }
 
 struct TestBootstrapSecrets {
-    bw_email: SecretBytes,
-    bw_password: SecretBytes,
-    bws_access_token: SecretBytes,
+    bw_email: Vec<u8>,
+    bw_password: Vec<u8>,
+    bws_access_token: Vec<u8>,
 }
 
 impl TestBootstrapSecrets {
     fn new(bw_email: Vec<u8>, bw_password: Vec<u8>, bws_access_token: Vec<u8>) -> Self {
         Self {
-            bw_email: SecretBytes::new(bw_email),
-            bw_password: SecretBytes::new(bw_password),
-            bws_access_token: SecretBytes::new(bws_access_token),
+            bw_email,
+            bw_password,
+            bws_access_token,
         }
     }
 }
@@ -38,9 +37,9 @@ impl TestBootstrapSecrets {
 impl BootstrapSecretSource for TestBootstrapSecrets {
     fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
         match name {
-            SecretName::BwEmail => self.bw_email.with_secret(borrow),
-            SecretName::BwPassword => self.bw_password.with_secret(borrow),
-            SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
+            SecretName::BwEmail => borrow(&self.bw_email),
+            SecretName::BwPassword => borrow(&self.bw_password),
+            SecretName::BwsAccessToken => borrow(&self.bws_access_token),
         }
     }
 }
@@ -105,28 +104,37 @@ impl SecretDevice for FakeDevice {
         Ok(())
     }
 
-    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
         Ok(self.objects.get(&object_id).cloned())
     }
 
     fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()> {
         self.authenticate_management_for_write()?;
-        self.objects
-            .insert(object_id, Zeroizing::new(value.to_vec()));
+        self.objects.insert(object_id, value.to_vec());
         Ok(())
     }
 
-    fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        Ok(Zeroizing::new(key.iter().map(|byte| byte ^ 0xa5).collect()))
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
+        Ok(key.iter().map(|byte| byte ^ 0xa5).collect())
     }
 
     fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
         Ok(())
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
         self.wrap_key(wrapped_key)
     }
+}
+
+fn with_stored_secret<R>(
+    device: &mut FakeDevice,
+    name: SecretName,
+    borrow: impl FnOnce(&[u8]) -> R,
+) -> Result<R> {
+    let session = SecretSession::start()?;
+    let secret = get_protected(device, name, &session)?;
+    Ok(secret.with_secret(borrow))
 }
 
 #[test]
@@ -169,8 +177,8 @@ fn secret_blob_round_trips_binary_format() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwsAccessToken,
         nonce: [7; model::NONCE_LEN],
-        wrapped_key: Zeroizing::new(vec![1, 2, 3]),
-        ciphertext: Zeroizing::new(vec![4, 5, 6, 7]),
+        wrapped_key: vec![1, 2, 3],
+        ciphertext: vec![4, 5, 6, 7],
         tag: [9; model::TAG_LEN],
     };
 
@@ -186,17 +194,16 @@ fn secret_blob_rejects_trailing_bytes() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; model::NONCE_LEN],
-        wrapped_key: Zeroizing::new(vec![2]),
-        ciphertext: Zeroizing::new(vec![3]),
+        wrapped_key: vec![2],
+        ciphertext: vec![3],
         tag: [4; model::TAG_LEN],
     };
-    let encoded = Zeroizing::new(
-        blob.encode()?
-            .iter()
-            .copied()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>(),
-    );
+    let encoded = blob
+        .encode()?
+        .iter()
+        .copied()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
 
     assert!(SecretBlob::decode(&encoded).is_err());
     Ok(())
@@ -207,8 +214,8 @@ fn secret_blob_rejects_wrapped_key_length_larger_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; model::NONCE_LEN],
-        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
-        ciphertext: Zeroizing::new(vec![5, 6]),
+        wrapped_key: vec![2, 3, 4],
+        ciphertext: vec![5, 6],
         tag: [7; model::TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -224,8 +231,8 @@ fn secret_blob_rejects_wrapped_key_length_smaller_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; model::NONCE_LEN],
-        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
-        ciphertext: Zeroizing::new(vec![5, 6]),
+        wrapped_key: vec![2, 3, 4],
+        ciphertext: vec![5, 6],
         tag: [7; model::TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -241,8 +248,8 @@ fn secret_blob_rejects_ciphertext_length_larger_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; model::NONCE_LEN],
-        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
-        ciphertext: Zeroizing::new(vec![5, 6]),
+        wrapped_key: vec![2, 3, 4],
+        ciphertext: vec![5, 6],
         tag: [7; model::TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -260,8 +267,8 @@ fn secret_blob_rejects_ciphertext_length_smaller_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; model::NONCE_LEN],
-        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
-        ciphertext: Zeroizing::new(vec![5, 6]),
+        wrapped_key: vec![2, 3, 4],
+        ciphertext: vec![5, 6],
         tag: [7; model::TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -279,7 +286,7 @@ fn setup_stops_when_storage_object_exists() {
     let mut device = FakeDevice::new(1234);
     device
         .objects
-        .insert(PivObjectId::MANIFEST, Zeroizing::new(b"occupied".to_vec()));
+        .insert(PivObjectId::MANIFEST, b"occupied".to_vec());
 
     assert!(setup(&mut device).is_err());
 }
@@ -332,10 +339,11 @@ fn put_get_and_verify_round_trip_through_device() -> Result<()> {
     put(&mut device, SecretName::BwPassword, b"password", false)?;
     put(&mut device, SecretName::BwsAccessToken, b"token", false)?;
 
-    get(&mut device, SecretName::BwEmail)?
-        .with_secret(|secret| assert_eq!(secret, b"user@example.com"));
+    with_stored_secret(&mut device, SecretName::BwEmail, |secret| {
+        assert_eq!(secret, b"user@example.com")
+    })?;
     for name in SecretName::iter() {
-        get(&mut device, name)?.with_secret(|secret| assert!(!secret.is_empty()));
+        with_stored_secret(&mut device, name, |secret| assert!(!secret.is_empty()))?;
     }
     Ok(())
 }
@@ -348,7 +356,9 @@ fn put_requires_force_for_existing_secret() -> Result<()> {
 
     assert!(put(&mut device, SecretName::BwsAccessToken, b"new", false).is_err());
     put(&mut device, SecretName::BwsAccessToken, b"new", true)?;
-    get(&mut device, SecretName::BwsAccessToken)?.with_secret(|secret| assert_eq!(secret, b"new"));
+    with_stored_secret(&mut device, SecretName::BwsAccessToken, |secret| {
+        assert_eq!(secret, b"new")
+    })?;
     Ok(())
 }
 
@@ -375,11 +385,15 @@ fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
 
     replace_bws_token(&mut device, b"new-token")?;
 
-    get(&mut device, SecretName::BwEmail)?
-        .with_secret(|secret| assert_eq!(secret, b"user@example.com"));
-    get(&mut device, SecretName::BwPassword)?.with_secret(|secret| assert_eq!(secret, b"password"));
-    get(&mut device, SecretName::BwsAccessToken)?
-        .with_secret(|secret| assert_eq!(secret, b"new-token"));
+    with_stored_secret(&mut device, SecretName::BwEmail, |secret| {
+        assert_eq!(secret, b"user@example.com")
+    })?;
+    with_stored_secret(&mut device, SecretName::BwPassword, |secret| {
+        assert_eq!(secret, b"password")
+    })?;
+    with_stored_secret(&mut device, SecretName::BwsAccessToken, |secret| {
+        assert_eq!(secret, b"new-token")
+    })?;
     Ok(())
 }
 
@@ -436,7 +450,7 @@ fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
             .context("missing secret blob")?,
     );
 
-    assert!(get(&mut replay, SecretName::BwEmail).is_err());
+    assert!(with_stored_secret(&mut replay, SecretName::BwEmail, |_| ()).is_err());
     Ok(())
 }
 
@@ -454,6 +468,6 @@ fn decryption_fails_when_secret_blob_name_and_object_are_swapped() -> Result<()>
     let tampered_encoded = tampered.encode()?;
     device.write_object(SecretName::BwPassword.object_id(), &tampered_encoded)?;
 
-    assert!(get(&mut device, SecretName::BwPassword).is_err());
+    assert!(with_stored_secret(&mut device, SecretName::BwPassword, |_| ()).is_err());
     Ok(())
 }

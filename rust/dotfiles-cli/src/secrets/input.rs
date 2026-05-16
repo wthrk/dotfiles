@@ -16,9 +16,10 @@ use crate::Result;
 use super::storage::{BootstrapSecretSource, SecretName};
 use super::{
     application::ProtectedBootstrapSecrets,
-    storage::SecretBytes,
     util::{
-        protection::{Protected, ProtectedInputBuffer, ProtectedSecretBytes, SecretSession},
+        protection::{
+            Protected, ProtectedByteAccess, ProtectedInputBuffer, ProtectedSecret, SecretSession,
+        },
         terminal,
     },
 };
@@ -40,7 +41,7 @@ impl YubikeyPin {
     }
 }
 
-impl ProtectedSecretBytes for YubikeyPin {
+impl ProtectedByteAccess for YubikeyPin {
     fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.0.expose_secret().as_slice())
     }
@@ -53,7 +54,7 @@ pub(super) fn read_visible_secret_line<'session>(
     prompt: &str,
     limit: usize,
     memory: &'session SecretSession,
-) -> Result<Protected<'session, SecretBytes>> {
+) -> Result<ProtectedSecret<'session>> {
     use std::io::{self, Write};
 
     eprint!("{prompt}");
@@ -70,7 +71,7 @@ pub(super) fn read_hidden_secret<'session>(
     prompt: &str,
     limit: usize,
     memory: &'session SecretSession,
-) -> Result<Protected<'session, SecretBytes>> {
+) -> Result<ProtectedSecret<'session>> {
     read_hidden_secret_line(prompt, limit, memory)?.into_protected_secret_line(
         memory,
         limit,
@@ -170,7 +171,7 @@ fn protected_json_field<'session>(
     field_limit: usize,
     memory: &'session SecretSession,
     name: &str,
-) -> Result<Protected<'session, SecretBytes>> {
+) -> Result<ProtectedSecret<'session>> {
     if value.len() > field_limit {
         bail!("{name} is too large");
     }

@@ -7,8 +7,7 @@ use zeroize::Zeroizing;
 
 use crate::Result;
 
-use super::{Protected, SecretSession};
-use crate::secrets::storage::SecretBytes;
+use super::{ProtectedSecret, SecretSession};
 
 /// 読み込み済み bytes と、その allocation に対応する memory lock guard を所有する。
 ///
@@ -102,6 +101,10 @@ impl ProtectedInputBuffer {
         &self.buffer[..self.len]
     }
 
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.buffer[..self.len]
+    }
+
     pub(crate) fn pop(&mut self) {
         self.len = self.len.saturating_sub(1);
     }
@@ -139,12 +142,22 @@ impl ProtectedInputBuffer {
         session: &'session SecretSession,
         limit: usize,
         too_large_error: &'static str,
-    ) -> Result<Protected<'session, SecretBytes>> {
+    ) -> Result<ProtectedSecret<'session>> {
         if self.trimmed_len() > limit {
             bail!(too_large_error);
         }
         let (buffer, lock) = self.into_trimmed_bytes_and_lock();
-        session.protect_locked_value(buffer.into(), lock)
+        session.protect_locked_secret_value(buffer, lock)
+    }
+
+    pub(crate) fn into_protected_secret<'session>(
+        self,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
+        let Self { buffer, len, _lock } = self;
+        let mut buffer = buffer;
+        buffer.truncate(len);
+        session.protect_locked_secret_value(buffer, _lock)
     }
 }
 

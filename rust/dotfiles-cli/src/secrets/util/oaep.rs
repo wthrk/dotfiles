@@ -14,7 +14,7 @@ const HASH_LEN: usize = 32;
 /// RSA-OAEP SHA-256 encoded message を検証し、message bytes を返す。
 ///
 /// 入力長が key 長と一致しない場合や padding が不正な場合は同じ error で失敗する。
-pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Vec<u8>> {
     if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);
     }
@@ -52,7 +52,7 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
     }
     let separator = separator.context(OAEP_UNPAD_ERROR)?;
 
-    Ok(Zeroizing::new(rest[separator + 1..].to_vec()))
+    Ok(rest[separator + 1..].to_vec())
 }
 
 /// MGF1-SHA256 mask を指定長で生成する。

@@ -5,11 +5,9 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use anyhow::{Context, Result as AnyhowResult, bail};
-use secrecy::{ExposeSecret, SecretBox};
-use serde::{Deserialize, Deserializer, Serialize};
+use anyhow::{Result as AnyhowResult, bail};
+use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
-use zeroize::Zeroizing;
 
 use crate::Result;
 
@@ -25,14 +23,6 @@ pub(crate) const NONCE_LEN: usize = 12;
 pub(crate) const TAG_LEN: usize = 16;
 /// per-secret content encryption key の byte 長。
 pub(crate) const CONTENT_KEY_LEN: usize = 32;
-
-/// secret 本文を明示的な expose が必要な所有値として保持する。
-///
-/// inner buffer は Drop 時に zeroize される。
-pub struct SecretBytes {
-    value: SecretBox<Zeroizing<Vec<u8>>>,
-    _lock: Option<region::LockGuard>,
-}
 
 /// PIV data object ID を型付き値として表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -184,9 +174,9 @@ pub struct SecretBlob {
     /// AES-256-GCM nonce。
     pub nonce: [u8; NONCE_LEN],
     /// YubiKey public key で wrap した content encryption key。
-    pub wrapped_key: Zeroizing<Vec<u8>>,
+    pub wrapped_key: Vec<u8>,
     /// secret 本文の ciphertext。
-    pub ciphertext: Zeroizing<Vec<u8>>,
+    pub ciphertext: Vec<u8>,
     /// AES-256-GCM authentication tag。
     pub tag: [u8; TAG_LEN],
 }
@@ -230,15 +220,15 @@ pub trait SecretDevice {
     /// PIV data object を読み出す。
     ///
     /// object が存在しない場合は `None` を返す。
-    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>>;
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
     /// PIV data object に bytes を保存する。
     fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()>;
     /// content encryption key を device の public key で wrap する。
-    fn wrap_key(&mut self, key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>>;
     /// private key operation の前に、入力済み PIN で PIV session を検証する。
     fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
     /// wrapped content encryption key を device の private key operation で unwrap する。
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>>;
 }
 
 /// summary に出す確認項目の状態。
@@ -311,64 +301,9 @@ pub trait BootstrapSecretSource {
     fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R;
 }
 
-impl SecretBytes {
-    /// raw bytes を zeroize 対象の所有 buffer に入れる。
-    pub fn new(value: Vec<u8>) -> Self {
-        Zeroizing::new(value).into()
-    }
-
-    pub(crate) fn new_locked(value: Zeroizing<Vec<u8>>) -> Result<Self> {
-        let lock = if value.is_empty() {
-            None
-        } else {
-            Some(
-                region::lock(value.as_ptr(), value.len())
-                    .context("failed to lock decrypted YubiKey secret memory")?,
-            )
-        };
-        Ok(Self {
-            value: SecretBox::new(Box::new(value)),
-            _lock: lock,
-        })
-    }
-
-    /// memory lock 対象にする allocation 範囲を返す。
-    pub(crate) fn memory_range(&self) -> (*const u8, usize) {
-        self.with_secret(|secret| (secret.as_ptr(), secret.len()))
-    }
-
-    /// 平文 bytes を closure へ貸し出す。
-    pub fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        borrow(self.value.expose_secret().as_ref())
-    }
-}
-
-impl From<Zeroizing<Vec<u8>>> for SecretBytes {
-    /// zeroize 対象 buffer を `SecretBox` の inner value として保持する。
-    fn from(value: Zeroizing<Vec<u8>>) -> Self {
-        Self {
-            value: SecretBox::new(Box::new(value)),
-            _lock: None,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for SecretBytes {
-    /// JSON string field を `SecretBytes` へ deserialize する。
-    ///
-    /// serde 側の一時文字列は decode 直後から zeroize 対象にする。
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Zeroizing::<String>::deserialize(deserializer)?;
-        Ok(Self::new(value.as_bytes().to_vec()))
-    }
-}
-
 impl SecretBlob {
     /// secret blob を設計資料の binary wire format に encode する。
-    pub fn encode(&self) -> AnyhowResult<Zeroizing<Vec<u8>>> {
+    pub fn encode(&self) -> AnyhowResult<Vec<u8>> {
         crate::secrets::storage::wire::encode_secret_blob(self)
     }
 
