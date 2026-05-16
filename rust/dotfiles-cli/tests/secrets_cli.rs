@@ -399,8 +399,6 @@ fn enroll_spare_stores_non_tty_stdin_json_with_stub_yubikey() -> TestResult<()> 
         [
             "yubikey".to_owned(),
             "enroll-spare".to_owned(),
-            "--primary-serial".to_owned(),
-            PRIMARY_SERIAL.to_string(),
             "--spare-serial".to_owned(),
             SPARE_SERIAL.to_string(),
             "--stdin-json".to_owned(),

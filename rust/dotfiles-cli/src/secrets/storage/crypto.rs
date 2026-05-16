@@ -5,7 +5,7 @@
 
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
 use anyhow::bail;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::Result;
 use crate::secrets::util::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession};
@@ -58,7 +58,7 @@ pub(crate) fn decrypt_secret_protected<'session, D: SecretDevice>(
     blob: &SecretBlob,
     session: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    let mut content_key = device.unwrap_key(&blob.wrapped_key)?;
+    let content_key = Zeroizing::new(device.unwrap_key(&blob.wrapped_key)?);
     if content_key.len() != CONTENT_KEY_LEN {
         bail!("unwrapped YubiKey content key has invalid length");
     }
@@ -74,6 +74,5 @@ pub(crate) fn decrypt_secret_protected<'session, D: SecretDevice>(
             aes_gcm::Tag::from_slice(&blob.tag),
         )
         .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
-    content_key.zeroize();
     input.into_protected_secret(session)
 }

@@ -238,7 +238,9 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     boundary: &mut B,
 ) -> Result<()> {
     let session = SecretSession::start()?;
-    require_primary_serial_for_noninteractive(options.primary_serial, boundary)?;
+    if !options.stdin_json {
+        require_primary_serial_for_noninteractive(options.primary_serial, boundary)?;
+    }
     require_spare_serial_for_noninteractive(options.spare_serial, boundary)?;
     let prepared_spare = if options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(
