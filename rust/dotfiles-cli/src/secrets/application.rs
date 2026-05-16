@@ -72,15 +72,9 @@ impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
     /// 借用範囲は storage 呼び出し中に限定し、所有値を直接取り出させない。
     fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
         match name {
-            SecretName::BwEmail => self
-                .bw_email
-                .with_secret_bytes(storage::SecretBytes::with_secret, borrow),
-            SecretName::BwPassword => self
-                .bw_password
-                .with_secret_bytes(storage::SecretBytes::with_secret, borrow),
-            SecretName::BwsAccessToken => self
-                .bws_access_token
-                .with_secret_bytes(storage::SecretBytes::with_secret, borrow),
+            SecretName::BwEmail => self.bw_email.with_secret(borrow),
+            SecretName::BwPassword => self.bw_password.with_secret(borrow),
+            SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
         }
     }
 }
@@ -101,12 +95,7 @@ pub(super) fn read_protected_stdin_secret(
     session: &SecretSession,
 ) -> Result<ProtectedSecret<'_>> {
     let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, Some(session))?;
-    input.into_protected_line(
-        session,
-        limit,
-        "stdin secret input is too large",
-        Into::into,
-    )
+    input.into_protected_secret_line(session, limit, "stdin secret input is too large")
 }
 
 /// 実機境界を使って parse 済み options の use case を開始する。
@@ -166,9 +155,7 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
     })?;
     let secret = boundary.read_secret_for_put(options.name, options.stdin, &session)?;
     session.run_yubikey_operation(|| {
-        secret.with_secret_bytes(storage::SecretBytes::with_secret, |secret| {
-            storage::put(&mut device, options.name, secret, options.force)
-        })
+        secret.with_secret(|secret| storage::put(&mut device, options.name, secret, options.force))
     })
 }
 
@@ -183,7 +170,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     let output_bytes = session
         .run_yubikey_operation(|| storage::get(&mut device, options.name))
         .and_then(|secret| protect_secret(secret, &session))?;
-    output_bytes.with_secret_bytes(storage::SecretBytes::with_secret, write_secret_to_stdout)?;
+    output_bytes.with_secret(write_secret_to_stdout)?;
     Ok(())
 }
 
@@ -424,9 +411,7 @@ fn rotate_bws_token_on_device<D: storage::SecretDevice>(
     session: &SecretSession,
 ) -> Result<storage::VerifySummary> {
     session.run_yubikey_operation(|| {
-        token.with_secret_bytes(storage::SecretBytes::with_secret, |token| {
-            storage::replace_bws_token(device, token)
-        })
+        token.with_secret(|token| storage::replace_bws_token(device, token))
     })?;
     verify_local_storage_protected(device, session)
 }
@@ -495,7 +480,7 @@ fn verify_local_storage_protected<D: storage::SecretDevice>(
         let secret = session
             .run_yubikey_operation(|| storage::get(device, name))
             .and_then(|secret| protect_secret(secret, session))?;
-        secret.with_secret_bytes(storage::SecretBytes::with_secret, |secret| {
+        secret.with_secret(|secret| {
             if secret.is_empty() {
                 bail!("{} stored on this YubiKey is empty", name);
             }
@@ -625,7 +610,7 @@ fn verify_pin_for_secret_reads<B: SecretsBoundary>(
     session: &SecretSession,
 ) -> Result<()> {
     let pin = boundary.read_yubikey_pin(session)?;
-    pin.with_secret_bytes(YubikeyPin::with_pin, |pin| device.verify_pin(pin))
+    pin.with_secret(|pin| device.verify_pin(pin))
 }
 
 /// 非対話入力の不足時に表示する error message を返す。

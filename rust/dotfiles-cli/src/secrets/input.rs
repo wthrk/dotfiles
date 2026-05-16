@@ -12,7 +12,7 @@ use crate::Result;
 use super::{
     storage::{BootstrapSecrets, SecretBytes},
     util::{
-        protection::{Protected, ProtectedInputBuffer, SecretSession},
+        protection::{Protected, ProtectedInputBuffer, ProtectedSecretBytes, SecretSession},
         terminal,
     },
 };
@@ -32,8 +32,10 @@ impl YubikeyPin {
         let pin = self.0.expose_secret();
         (pin.as_ptr(), pin.len())
     }
+}
 
-    pub(crate) fn with_pin<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+impl ProtectedSecretBytes for YubikeyPin {
+    fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.0.expose_secret().as_slice())
     }
 }
@@ -52,12 +54,7 @@ pub(super) fn read_visible_secret_line<'session>(
     io::stderr().flush()?;
     let input =
         ProtectedInputBuffer::read_line_until_newline_from(std::io::stdin(), limit, Some(memory))?;
-    input.into_protected_line(
-        memory,
-        limit,
-        "visible secret input is too large",
-        Into::into,
-    )
+    input.into_protected_secret_line(memory, limit, "visible secret input is too large")
 }
 
 /// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。

@@ -17,6 +17,7 @@ pub(crate) mod buffer;
 pub(crate) use buffer::ProtectedInputBuffer;
 
 use crate::Result;
+use crate::secrets::storage::SecretBytes;
 
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
@@ -223,16 +224,19 @@ impl SecretMemoryGuard {
     }
 }
 
-impl<T> Protected<'_, T> {
-    /// 保護値の平文 byte 借用を closure 内へ渡す。
-    ///
-    /// guard を含む所有値そのものは closure 外へ取り出させない。
-    pub(crate) fn with_secret_bytes<R, F, E>(&self, expose: E, borrow: F) -> R
-    where
-        F: FnOnce(&[u8]) -> R,
-        E: FnOnce(&T, F) -> R,
-    {
-        expose(&self.value, borrow)
+pub(crate) trait ProtectedSecretBytes {
+    fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R;
+}
+
+impl<T: ProtectedSecretBytes> Protected<'_, T> {
+    pub(crate) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+        self.value.with_protected_bytes(borrow)
+    }
+}
+
+impl ProtectedSecretBytes for SecretBytes {
+    fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+        self.with_secret(borrow)
     }
 }
 
