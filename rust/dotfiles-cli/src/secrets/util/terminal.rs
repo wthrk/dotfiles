@@ -4,6 +4,7 @@
 //! 端末入力の完了または中断を呼び出し側へ返す。
 
 use std::{
+    fs::OpenOptions,
     io::{self, IsTerminal, Write},
     time::{Duration, Instant},
 };
@@ -15,7 +16,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
-use super::protection::InterruptGuard;
+use super::protection::{InterruptGuard, ProtectedInputBuffer, SecretSession};
 
 /// 現在の stdin が対話入力を読める TTY かを返す。
 pub(crate) fn stdin_is_terminal() -> bool {
@@ -64,6 +65,67 @@ pub(crate) fn wait_for_enter(
 pub(crate) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
     io::stdout().lock().write_all(bytes)?;
     Ok(())
+}
+
+/// echo せずに TTY から 1 行を読み、保護済み入力 buffer へ保持する。
+///
+/// 入力 bytes は `SecretSession` の memory lock 範囲へ直接書き込み、Enter で確定する。
+/// stdin が pipe の場合は controlling terminal を開き、secret payload 用 stdin を消費しない。
+pub(crate) fn read_hidden_input(
+    prompt: &str,
+    limit: usize,
+    session: &SecretSession,
+) -> Result<ProtectedInputBuffer> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
+    let _raw_mode = scopeguard::guard((), |_| {
+        let _ = disable_raw_mode();
+    });
+    let mut input = ProtectedInputBuffer::new(limit + 1, session)?;
+    let mut reader = hidden_input_reader()?;
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte)? == 0 {
+            return Ok(input);
+        }
+
+        match byte[0] {
+            b'\r' | b'\n' => {
+                eprintln!();
+                return Ok(input);
+            }
+            3 => {
+                bail!("interrupted while reading hidden input");
+            }
+            8 | 127 => {
+                input.pop_byte();
+            }
+            value => {
+                input.write_all(&[value])?;
+                if input.as_slice().len() > limit {
+                    bail!("hidden input is too large");
+                }
+            }
+        }
+    }
+}
+
+/// hidden prompt の入力元を、stdin または controlling terminal として開く。
+///
+/// stdin payload と PIN / hidden prompt を併用する経路では `/dev/tty` を使う。
+fn hidden_input_reader() -> Result<Box<dyn io::Read>> {
+    if stdin_is_terminal() {
+        return Ok(Box::new(io::stdin()));
+    }
+
+    let tty = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("failed to open controlling terminal")?;
+    Ok(Box::new(tty))
 }
 
 /// raw mode で 1 行を読み、Enter で入力を確定してそれまでの文字列を返す。

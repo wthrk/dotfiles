@@ -56,6 +56,7 @@ pub fn put<D: SecretDevice>(
     name: SecretName,
     secret: &[u8],
     force: bool,
+    session: &SecretSession,
 ) -> Result<()> {
     if secret.is_empty() {
         bail!("{} must not be empty", name);
@@ -63,7 +64,7 @@ pub fn put<D: SecretDevice>(
 
     check_put_target_writable(device, name, force)?;
 
-    let blob = encrypt_secret(device, name, secret)?;
+    let blob = encrypt_secret(device, name, secret, session)?;
     let encoded = blob.encode()?;
     device.write_object(name.object_id(), &encoded)
 }
@@ -120,11 +121,13 @@ fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result
 
 /// bootstrap secrets を device へ保存し、enroll summary を返す。
 ///
-/// local verify は呼び出し側の保護境界で実行する。
+/// local verify は呼び出し側の保護境界で実行するため、返却時点の summary では
+/// `local_storage` を未確認として扱う。
 pub fn enroll_without_verify<D: SecretDevice, S: BootstrapSecretSource>(
     device: &mut D,
     role: YubikeyRole,
     secrets: &S,
+    session: &SecretSession,
 ) -> Result<EnrollSummary> {
     for name in SecretName::iter() {
         if secrets.with_secret(name, <[u8]>::is_empty) {
@@ -134,7 +137,7 @@ pub fn enroll_without_verify<D: SecretDevice, S: BootstrapSecretSource>(
 
     setup(device)?;
     for name in SecretName::iter() {
-        secrets.with_secret(name, |secret| put(device, name, secret, false))?;
+        secrets.with_secret(name, |secret| put(device, name, secret, false, session))?;
     }
     Ok(enroll_summary(device.serial(), role))
 }
@@ -145,7 +148,7 @@ fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
         (CheckName::BwEmail, CheckStatus::Ok),
         (CheckName::BwPassword, CheckStatus::Ok),
         (CheckName::BwsAccessToken, CheckStatus::Ok),
-        (CheckName::LocalStorage, CheckStatus::Ok),
+        (CheckName::LocalStorage, CheckStatus::Skipped),
     ]
     .into_iter()
     .collect();
@@ -160,8 +163,12 @@ fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
 /// BWS access token の blob を置き換える。
 ///
 /// local verify は呼び出し側の保護境界で実行する。
-pub fn replace_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result<()> {
-    put(device, SecretName::BwsAccessToken, token, true)
+pub fn replace_bws_token<D: SecretDevice>(
+    device: &mut D,
+    token: &[u8],
+    session: &SecretSession,
+) -> Result<()> {
+    put(device, SecretName::BwsAccessToken, token, true, session)
 }
 
 /// expected manifest を PIV object へ書き込む。

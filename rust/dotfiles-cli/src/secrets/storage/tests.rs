@@ -1,6 +1,6 @@
 //! storage の公開 API が保つ wire format、暗号境界、YubiKey 書き込み認証契約を検証する。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Write};
 
 use super::model::{MANIFEST_APP, PivObjectId, SecretBlob, SecretManifest};
 use super::*;
@@ -122,8 +122,9 @@ impl SecretDevice for FakeDevice {
         Ok(())
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        self.wrap_key(wrapped_key)
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
+        output.write_all(&self.wrap_key(wrapped_key)?)?;
+        Ok(())
     }
 }
 
@@ -320,24 +321,64 @@ fn setup_uses_management_auth_for_precondition_and_manifest_write() -> Result<()
 }
 
 #[test]
-fn enroll_rejects_empty_secret_before_setup() {
+fn enroll_rejects_empty_secret_before_setup() -> Result<()> {
     let mut device = FakeDevice::new(1234);
     let secrets =
         TestBootstrapSecrets::new(b"user@example.com".to_vec(), Vec::new(), b"token".to_vec());
+    let session = SecretSession::start()?;
 
-    assert!(enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets).is_err());
+    assert!(enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets, &session).is_err());
     assert!(!device.key_exists);
     assert!(device.objects.is_empty());
+    Ok(())
+}
+
+#[test]
+fn enroll_without_verify_marks_local_storage_skipped() -> Result<()> {
+    let mut device = FakeDevice::new(1234);
+    let secrets = TestBootstrapSecrets::new(
+        b"user@example.com".to_vec(),
+        b"password".to_vec(),
+        b"token".to_vec(),
+    );
+    let session = SecretSession::start()?;
+
+    let summary = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets, &session)?;
+
+    assert_eq!(
+        summary.checks.get(&CheckName::LocalStorage),
+        Some(&CheckStatus::Skipped)
+    );
+    Ok(())
 }
 
 #[test]
 fn put_get_and_verify_round_trip_through_device() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut device = FakeDevice::new(1234);
     setup(&mut device)?;
 
-    put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
-    put(&mut device, SecretName::BwPassword, b"password", false)?;
-    put(&mut device, SecretName::BwsAccessToken, b"token", false)?;
+    put(
+        &mut device,
+        SecretName::BwEmail,
+        b"user@example.com",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwPassword,
+        b"password",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwsAccessToken,
+        b"token",
+        false,
+        &session,
+    )?;
 
     with_stored_secret(&mut device, SecretName::BwEmail, |secret| {
         assert_eq!(secret, b"user@example.com")
@@ -350,12 +391,34 @@ fn put_get_and_verify_round_trip_through_device() -> Result<()> {
 
 #[test]
 fn put_requires_force_for_existing_secret() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut device = FakeDevice::new(1234);
     setup(&mut device)?;
-    put(&mut device, SecretName::BwsAccessToken, b"old", false)?;
+    put(
+        &mut device,
+        SecretName::BwsAccessToken,
+        b"old",
+        false,
+        &session,
+    )?;
 
-    assert!(put(&mut device, SecretName::BwsAccessToken, b"new", false).is_err());
-    put(&mut device, SecretName::BwsAccessToken, b"new", true)?;
+    assert!(
+        put(
+            &mut device,
+            SecretName::BwsAccessToken,
+            b"new",
+            false,
+            &session
+        )
+        .is_err()
+    );
+    put(
+        &mut device,
+        SecretName::BwsAccessToken,
+        b"new",
+        true,
+        &session,
+    )?;
     with_stored_secret(&mut device, SecretName::BwsAccessToken, |secret| {
         assert_eq!(secret, b"new")
     })?;
@@ -364,12 +427,25 @@ fn put_requires_force_for_existing_secret() -> Result<()> {
 
 #[test]
 fn put_uses_management_auth_for_each_secret_write() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut device = FakeDevice::new(1234);
     setup(&mut device)?;
     device.management_auth_write_calls = 0;
 
-    put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
-    put(&mut device, SecretName::BwPassword, b"password", false)?;
+    put(
+        &mut device,
+        SecretName::BwEmail,
+        b"user@example.com",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwPassword,
+        b"password",
+        false,
+        &session,
+    )?;
 
     assert_eq!(device.management_auth_write_calls, 2);
     Ok(())
@@ -377,13 +453,32 @@ fn put_uses_management_auth_for_each_secret_write() -> Result<()> {
 
 #[test]
 fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut device = FakeDevice::new(1234);
     setup(&mut device)?;
-    put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
-    put(&mut device, SecretName::BwPassword, b"password", false)?;
-    put(&mut device, SecretName::BwsAccessToken, b"old-token", false)?;
+    put(
+        &mut device,
+        SecretName::BwEmail,
+        b"user@example.com",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwPassword,
+        b"password",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwsAccessToken,
+        b"old-token",
+        false,
+        &session,
+    )?;
 
-    replace_bws_token(&mut device, b"new-token")?;
+    replace_bws_token(&mut device, b"new-token", &session)?;
 
     with_stored_secret(&mut device, SecretName::BwEmail, |secret| {
         assert_eq!(secret, b"user@example.com")
@@ -399,21 +494,40 @@ fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
 
 #[test]
 fn rotate_uses_management_auth_for_token_replacement() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut device = FakeDevice::new(1234);
     setup(&mut device)?;
-    put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
-    put(&mut device, SecretName::BwPassword, b"password", false)?;
-    put(&mut device, SecretName::BwsAccessToken, b"old-token", false)?;
+    put(
+        &mut device,
+        SecretName::BwEmail,
+        b"user@example.com",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwPassword,
+        b"password",
+        false,
+        &session,
+    )?;
+    put(
+        &mut device,
+        SecretName::BwsAccessToken,
+        b"old-token",
+        false,
+        &session,
+    )?;
     device.management_auth_write_calls = 0;
 
-    replace_bws_token(&mut device, b"new-token")?;
+    replace_bws_token(&mut device, b"new-token", &session)?;
 
     assert_eq!(device.management_auth_write_calls, 1);
     Ok(())
 }
 
 #[test]
-fn enroll_fails_when_management_auth_breaks_during_secret_writes() {
+fn enroll_fails_when_management_auth_breaks_during_secret_writes() -> Result<()> {
     let mut device = FakeDevice::new(1234);
     device.set_write_fail_after(1);
     let secrets = TestBootstrapSecrets::new(
@@ -421,19 +535,28 @@ fn enroll_fails_when_management_auth_breaks_during_secret_writes() {
         b"password".to_vec(),
         b"token".to_vec(),
     );
+    let session = SecretSession::start()?;
 
-    let result = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets);
+    let result = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets, &session);
 
     assert!(result.is_err());
     assert_eq!(device.management_auth_check_calls, 2);
     assert!(device.management_auth_write_calls >= 2);
+    Ok(())
 }
 
 #[test]
 fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut source = FakeDevice::new(1234);
     setup(&mut source)?;
-    put(&mut source, SecretName::BwEmail, b"user@example.com", false)?;
+    put(
+        &mut source,
+        SecretName::BwEmail,
+        b"user@example.com",
+        false,
+        &session,
+    )?;
 
     let mut replay = FakeDevice::new(5678);
     replay.key_exists = true;
@@ -456,9 +579,16 @@ fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
 
 #[test]
 fn decryption_fails_when_secret_blob_name_and_object_are_swapped() -> Result<()> {
+    let session = SecretSession::start()?;
     let mut device = FakeDevice::new(1234);
     setup(&mut device)?;
-    put(&mut device, SecretName::BwEmail, b"user@example.com", false)?;
+    put(
+        &mut device,
+        SecretName::BwEmail,
+        b"user@example.com",
+        false,
+        &session,
+    )?;
 
     let email_blob = device
         .read_object(SecretName::BwEmail.object_id())?

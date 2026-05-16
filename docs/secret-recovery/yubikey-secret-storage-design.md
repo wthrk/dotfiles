@@ -23,7 +23,7 @@
 ## 決定事項
 
 - PIV 操作には Rust crate `yubikey` を使う。
-- bootstrap secret 本文は `secrecy` の secret wrapper で保持し、明示的な expose なしに参照できないようにする。
+- bootstrap secret 本文は `ProtectedSecret` で保持し、`SecretSession` の memory lock と zeroize の所有境界から外へ出さない。
 - 平文 secret は PIV data object に保存しない。
 - 平文 content encryption key も PIV data object に保存しない。
 - YubiKey 上に専用の PIV 鍵を生成し、secret はローカルで envelope encryption した blob として custom PIV data object に保存する。
@@ -44,8 +44,7 @@
 
 secret memory handling は役割ごとに crate を分ける。
 
-- `secrecy`: bootstrap secret 本文の型。`ExposeSecret` 経由でだけ中身へ触り、Debug 表示や不用意な複製を避け、drop 時に zeroize する。
-- `zeroize`: encrypted blob、wrapped key、PIV operation の一時 buffer など、`secrecy` の外側に残る byte buffer の zeroize。
+- `zeroize`: bootstrap secret 本文、content encryption key、復号済み secret buffer など、平文 secret material を保持する byte buffer の zeroize。
 - `rlimit`: `enroll-spare` で secret を読む前に core dump を無効化する。
 - `region`: `enroll-spare` で primary から読んだ 3 secret、または `--stdin-json` 由来の 3 secret を memory lock する。
 
@@ -102,11 +101,11 @@ dotfiles secrets yubikey enroll-spare
 4. primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
 5. local verify を実行し、spare 単体で 3 種類の secret を復号できることを確認する。
 
-secret はプロセスメモリ上の secret wrapper にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-email`、`bw-password`、`bws-access-token` の再入力を要求しない。
+secret はプロセスメモリ上の `ProtectedSecret` にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-email`、`bw-password`、`bws-access-token` の再入力を要求しない。
 
 spare に保存する blob は primary の ciphertext、nonce、wrapped key を流用しない。spare の PIV public key に対して新しい content encryption key を wrap し、AEAD additional data には spare の serial と保存先 object ID を使う。これにより、primary 由来の serial や blob を spare 側に持ち込まない。
 
-primary 読み出し後に spare へ差し替える間も、平文 secret は `secrecy` の wrapper と memory guard の内側だけに置く。正常終了、error、timeout、Ctrl-C などの interrupt path では必ず zeroize する。panic message、debug 表示、error context には secret 本文を含めない。`enroll-spare` は secret を読む前に core dump を無効化し、`mlock` 相当の memory lock が使えることを確認する。準備に失敗した場合は、primary YubiKey や stdin から secret を読み始める前に停止する。
+primary 読み出し後に spare へ差し替える間も、平文 secret は `ProtectedSecret` と memory guard の内側だけに置く。正常終了、error、timeout、Ctrl-C などの interrupt path では必ず zeroize する。panic message、debug 表示、error context には secret 本文を含めない。`enroll-spare` は secret を読む前に core dump を無効化し、`mlock` 相当の memory lock が使えることを確認する。準備に失敗した場合は、primary YubiKey や stdin から secret を読み始める前に停止する。
 
 YubiKey の選択は対話を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示する。
 
@@ -175,7 +174,7 @@ Envelope encryption は次の役割分担にする。
 
 保存時の blob が漏れた場合でも、slot `82` の private key operation を通せなければ `wrapped_key` は content encryption key に戻せない。復号時には host memory 上に content encryption key と平文 secret が一時的に現れるため、この方式は実行中 host の compromise を防ぐものではない。
 
-平文 secret は `String` ではなく `secrecy` の secret wrapper に入れた byte buffer として扱う。ログ、error context、debug 表示に secret 本文や復号済み buffer を含めない。暗号化 blob や PIV operation の一時 buffer など wrapper の外に出る bytes は `zeroize` 対象にする。
+平文 secret は `String` ではなく `ProtectedSecret` の byte buffer として扱う。ログ、error context、debug 表示に secret 本文や復号済み buffer を含めない。暗号化済み blob は平文 secret material の保護境界には含めず、diagnostics では byte 列を redaction する。
 
 ## コマンド仕様
 
@@ -222,6 +221,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 通常実行では、まず primary YubiKey を選択して 3 種類の secret を復号する。復号が終わった直後に spare YubiKey の選択へ進む。YubiKey を 1 本ずつしか接続できない環境では、この時点で primary を抜き、spare を挿して Enter を押す。同時接続できる環境では、spare の serial を対話選択するか `--spare-serial <serial>` で明示する。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。
 
 `--stdin-json` は primary YubiKey が利用できないが、別経路で正本 secret を持っている場合の recovery / migration 用に限る。この場合だけ次の JSON を stdin から 1 回だけ受け取る。
+`enroll-primary` と `enroll-spare --stdin-json` は JSON payload を読む前に YubiKey PIN を要求し、PIN は JSON 用 stdin から読まず controlling terminal から読む。controlling terminal を開けない場合は JSON payload を読み始める前に停止する。
 
 ```json
 {
@@ -231,7 +231,8 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 }
 ```
 
-入力 bytes をログや一時ファイルへ残さない。JSON parse 後の secret は `secrecy` の secret wrapper として扱う。
+入力 bytes をログや一時ファイルへ残さない。JSON parse 後の secret は `ProtectedSecret` として扱う。
+JSON 文字列の値は JSON として decode した bytes をそのまま保存し、行入力用の trailing newline 除去は適用しない。
 
 `enroll-primary` / `enroll-spare` は成功時に secret 本文を出さず、次の summary だけを出力する。`role` は `primary` または `spare` のいずれかで、複数 spare の識別には YubiKey serial を使う。
 

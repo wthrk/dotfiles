@@ -3,7 +3,7 @@
 //! wire format と暗号処理の詳細は他モジュールへ分離し、このファイルは PIV object、
 //! secret 名、summary JSON の型付き contract を定義する。
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, io::Write};
 
 use anyhow::{Result as AnyhowResult, bail};
 use serde::{Deserialize, Serialize};
@@ -228,7 +228,7 @@ pub trait SecretDevice {
     /// private key operation の前に、入力済み PIN で PIV session を検証する。
     fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
     /// wrapped content encryption key を device の private key operation で unwrap する。
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>>;
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()>;
 }
 
 /// summary に出す確認項目の状態。

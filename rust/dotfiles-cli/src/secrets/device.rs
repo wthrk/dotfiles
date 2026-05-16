@@ -18,12 +18,11 @@ use yubikey::{
     MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
-use zeroize::Zeroizing;
 
 use super::{
     storage::{PivObjectId, SecretDevice},
     util::{
-        oaep::oaep_unpad_sha256,
+        oaep_unpad_sha256,
         protection::InterruptGuard,
         terminal::{read_terminal_line_until, stdin_is_terminal, wait_for_enter},
     },
@@ -497,7 +496,7 @@ impl SecretDevice for YubikeySecretDevice {
         self.verify_pin_once(pin)
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
@@ -507,8 +506,9 @@ impl SecretDevice for YubikeySecretDevice {
             AlgorithmId::Rsa2048,
             SECRET_SLOT,
         )?;
-        let decrypted = Zeroizing::new(decrypted);
-        oaep_unpad_sha256(&decrypted, 256)
+        let unwrapped = oaep_unpad_sha256(&decrypted, 256)?;
+        output.write_all(&unwrapped)?;
+        Ok(())
     }
 }
 

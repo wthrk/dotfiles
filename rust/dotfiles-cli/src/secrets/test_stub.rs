@@ -4,7 +4,7 @@
 //! 差し替える。通常 build には含めず、TTY / pipe の入力契約を binary integration test
 //! で検証する境界として閉じる。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Cursor, io::Write};
 
 use clap::{Parser, ValueEnum};
 
@@ -14,14 +14,14 @@ mod test_stub_contract;
 use super::{
     SecretsOptions,
     application::{
-        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedPin, SecretsBoundary,
+        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, SecretsBoundary,
         read_protected_stdin_secret,
     },
     device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
-    input::{YubikeyPin, read_hidden_secret, read_yubikey_pin},
+    input::{read_hidden_secret, read_yubikey_pin},
     storage::{self, SecretDevice, SecretName},
     util::{
-        protection::{InterruptGuard, ProtectedSecret, SecretSession},
+        protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
         terminal::{stdin_is_terminal, stdout_is_terminal},
     },
 };
@@ -150,15 +150,19 @@ impl SecretsBoundary for TestSecretsBoundary {
     fn open_spare_device(
         &mut self,
         spare_serial: Option<u32>,
-        _primary_serial: Option<u32>,
+        primary_serial: Option<u32>,
         _interrupt: &InterruptGuard,
     ) -> Result<Self::Device> {
         if spare_serial.is_none() && !stdin_is_terminal() {
             anyhow::bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
         }
 
-        let mut device =
-            TestDevice::from_config(spare_serial.unwrap_or(SPARE_SERIAL), &self.config)?;
+        let serial = spare_serial.unwrap_or(SPARE_SERIAL);
+        if primary_serial == Some(serial) {
+            anyhow::bail!("primary and spare YubiKey serial must be different");
+        }
+
+        let mut device = TestDevice::from_config(serial, &self.config)?;
         device.emit_write_events = true;
         Ok(device)
     }
@@ -187,14 +191,14 @@ impl SecretsBoundary for TestSecretsBoundary {
     fn read_yubikey_pin<'session>(
         &mut self,
         memory: &'session SecretSession,
-    ) -> Result<ProtectedPin<'session>> {
+    ) -> Result<ProtectedSecret<'session>> {
         if self.config.read_pin_from_tty {
             return read_yubikey_pin(memory);
         }
 
-        let pin = YubikeyPin::new(b"123456".to_vec())?;
-        let lock = memory.lock_secret_value(&pin, YubikeyPin::memory_range)?;
-        memory.protect_locked_value(pin, lock)
+        let input =
+            ProtectedInputBuffer::read_from(Cursor::new(b"123456"), 6, "too large", memory)?;
+        input.into_protected_secret(memory)
     }
 
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
@@ -245,6 +249,7 @@ impl TestDevice {
     }
 
     fn provisioned(serial: u32, config: &TestStubConfig) -> Result<Self> {
+        let session = SecretSession::start()?;
         let mut device = Self::initialized(serial)?;
         device.config = config.clone();
         storage::put(
@@ -252,18 +257,21 @@ impl TestDevice {
             SecretName::BwEmail,
             &config.seed_secret(SecretName::BwEmail),
             false,
+            &session,
         )?;
         storage::put(
             &mut device,
             SecretName::BwPassword,
             &config.seed_secret(SecretName::BwPassword),
             false,
+            &session,
         )?;
         storage::put(
             &mut device,
             SecretName::BwsAccessToken,
             &config.seed_secret(SecretName::BwsAccessToken),
             false,
+            &session,
         )?;
         if let Some(name) = config.corrupt_secret {
             device
@@ -274,10 +282,17 @@ impl TestDevice {
     }
 
     fn writable_for(serial: u32, target: SecretName, config: &TestStubConfig) -> Result<Self> {
+        let session = SecretSession::start()?;
         let mut device = Self::initialized(serial)?;
         device.config = config.clone();
         for name in SecretName::iter().filter(|name| *name != target) {
-            storage::put(&mut device, name, &config.seed_secret(name), false)?;
+            storage::put(
+                &mut device,
+                name,
+                &config.seed_secret(name),
+                false,
+                &session,
+            )?;
         }
         Ok(device)
     }
@@ -323,8 +338,9 @@ impl SecretDevice for TestDevice {
         Ok(())
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        self.wrap_key(wrapped_key)
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
+        output.write_all(&self.wrap_key(wrapped_key)?)?;
+        Ok(())
     }
 }
 

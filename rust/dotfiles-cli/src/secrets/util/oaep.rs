@@ -4,7 +4,6 @@
 
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
 
 use crate::Result;
 
@@ -20,22 +19,18 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Vec<u8
     }
 
     let (masked_seed, masked_db) = encoded[1..].split_at(HASH_LEN);
-    let seed_mask = Zeroizing::new(mgf1_sha256(masked_db, HASH_LEN));
-    let seed = Zeroizing::new(
-        masked_seed
-            .iter()
-            .zip(seed_mask.iter())
-            .map(|(left, right)| left ^ right)
-            .collect::<Vec<u8>>(),
-    );
-    let db_mask = Zeroizing::new(mgf1_sha256(&seed, key_len - HASH_LEN - 1));
-    let db = Zeroizing::new(
-        masked_db
-            .iter()
-            .zip(db_mask.iter())
-            .map(|(left, right)| left ^ right)
-            .collect::<Vec<u8>>(),
-    );
+    let seed_mask = mgf1_sha256(masked_db, HASH_LEN);
+    let seed = masked_seed
+        .iter()
+        .zip(seed_mask.iter())
+        .map(|(left, right)| left ^ right)
+        .collect::<Vec<u8>>();
+    let db_mask = mgf1_sha256(&seed, key_len - HASH_LEN - 1);
+    let db = masked_db
+        .iter()
+        .zip(db_mask.iter())
+        .map(|(left, right)| left ^ right)
+        .collect::<Vec<u8>>();
 
     let label_hash = Sha256::digest([]);
     let label_mismatch = db[..HASH_LEN]

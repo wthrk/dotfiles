@@ -2,6 +2,8 @@
 //!
 //! 端末 I/O、process / memory 保護、暗号 primitive 補助をここに置く。
 
-pub(crate) mod oaep;
+mod oaep;
 pub(crate) mod protection;
 pub(crate) mod terminal;
+
+pub(crate) use oaep::oaep_unpad_sha256;

@@ -118,15 +118,18 @@ YubiKey から指定 secret を取得する。`<name>` は `bw-email`、`bw-pass
 ### `dotfiles secrets yubikey enroll-primary`
 
 primary YubiKey を復旧入口として初期登録する。接続中の YubiKey を選択し、専用 PIV 領域を setup し、`bw-email`、`bw-password`、`bws-access-token` を prompt から受け取り、保存後に local verify を実行する。非対話または migration 用に限り stdin からの入力を許可する。
+`--stdin-json` で bootstrap secret を渡す場合も、PIN は JSON 用 stdin ではなく controlling terminal から読む。PIN verification と保存先の事前確認に失敗した場合は、JSON payload を読み始める前に停止する。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
 spare YubiKey を復旧入口として初期登録する。通常は primary YubiKey から `bw-email`、`bw-password`、`bws-access-token` を読み出し、spare YubiKey の public key で再暗号化して保存する。利用者に bootstrap secret の再入力を要求しない。外部サービスの FIDO2 / passkey / U2F / OTP 登録は自動化しない。
+`--stdin-json` で bootstrap secret を渡す場合も、PIN は JSON 用 stdin ではなく controlling terminal から読む。PIN verification と保存先の事前確認に失敗した場合は、JSON payload を読み始める前に停止する。
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
 指定 YubiKey の `bws-access-token` を更新し、更新後に local verify を実行する。BWS 接続確認は local secret storage の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、利用者が更新対象の YubiKey を選ぶ。出力 summary の serial を確認し、対象全本が更新済みになるまで選択を続ける。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
 token 入力前に local storage の復号可能性を確認し、更新不能な状態では新しい token を読まずに停止する。
+`--stdin` で token を渡す場合も、PIN は token 用 stdin ではなく controlling terminal から読む。
 
 ### `dotfiles secrets verify-yubikey`
 
@@ -135,10 +138,9 @@ token 入力前に local storage の復号可能性を確認し、更新不能�
 確認項目:
 
 - `bw-email`、`bw-password`、`bws-access-token` が YubiKey に保存され、PIN verification と touch を経て復号できる。
-- `bws-access-token` で Bitwarden Secrets Manager に接続し、`gpg-secret-key-backup` と `password-store-remote` を取得できる。
-- `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができる。
 
 このコマンドは local storage 確認だけを実行する。`--check bws`、`--check bw-login`、`--all` は外部確認を要求する option なので、外部確認の実装がない状態では明示的に失敗する。
+Bitwarden Secrets Manager と Bitwarden Password Manager の確認は後続 PR の実装範囲であり、現段階の summary では `skipped` として残す。
 
 このコマンドは GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F 登録状況を検証しない。外部サービスの spare key 登録は各サービスの設定画面で確認する。
 
@@ -174,7 +176,7 @@ GPG authentication subkey 由来の SSH public key を stdout に出力する。
 - 許可されていない secret name が指定された。
 - 同名 secret が存在し、明示的な上書き option が指定されていない。
 - Bitwarden Secrets Manager から必要な secret が取得できない。
-- `verify-yubikey` で YubiKey 内の bootstrap secret、Bitwarden Secrets Manager、または Bitwarden Password Manager への到達確認に失敗する。
+- `verify-yubikey` で YubiKey 内の bootstrap secret 確認に失敗する。外部確認を実装した後は、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認失敗も停止条件に含める。
 - import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない。
 - `gpg-agent` SSH support が利用できない。
 - `~/.password-store` が既に存在する。

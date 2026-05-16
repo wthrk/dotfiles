@@ -3,9 +3,11 @@
 //! content key 生成、AEAD 追加認証データ、YubiKey wrap/unwrap をこのモジュールへ集約し、
 //! 操作フロー側から暗号手順の詳細を分離する。
 
+use std::io::Write;
+
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
 use anyhow::bail;
-use zeroize::Zeroizing;
+use rand::Rng;
 
 use crate::Result;
 use crate::secrets::util::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession};
@@ -20,17 +22,21 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
     secret: &[u8],
+    session: &SecretSession,
 ) -> Result<SecretBlob> {
-    let content_key = Zeroizing::new(rand::random::<[u8; CONTENT_KEY_LEN]>());
+    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN, session)?;
+    content_key.write_all(&[0; CONTENT_KEY_LEN])?;
+    rand::rng().fill(content_key.as_mut_slice());
     let nonce = rand::random::<[u8; NONCE_LEN]>();
-    let cipher = Aes256Gcm::new_from_slice(content_key.as_ref())
+    let cipher = Aes256Gcm::new_from_slice(content_key.as_slice())
         .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
-    let mut ciphertext = Zeroizing::new(secret.to_vec());
+    let mut ciphertext = ProtectedInputBuffer::new(secret.len(), session)?;
+    ciphertext.write_all(secret)?;
     let tag = cipher
         .encrypt_in_place_detached(
             aes_gcm::Nonce::from_slice(&nonce),
             &name.additional_data(device.serial()),
-            ciphertext.as_mut(),
+            ciphertext.as_mut_slice(),
         )
         .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
     let tag = tag
@@ -38,13 +44,13 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
         .try_into()
         .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
 
-    let wrapped_key = device.wrap_key(content_key.as_ref())?;
+    let wrapped_key = device.wrap_key(content_key.as_slice())?;
 
     Ok(SecretBlob {
         name,
         nonce,
         wrapped_key,
-        ciphertext: ciphertext.to_vec(),
+        ciphertext: ciphertext.as_slice().to_vec(),
         tag,
     })
 }
@@ -58,14 +64,16 @@ pub(crate) fn decrypt_secret_protected<'session, D: SecretDevice>(
     blob: &SecretBlob,
     session: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    let content_key = Zeroizing::new(device.unwrap_key(&blob.wrapped_key)?);
-    if content_key.len() != CONTENT_KEY_LEN {
+    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN + 1, session)?;
+    device.write_unwrapped_key(&blob.wrapped_key, &mut content_key)?;
+    if content_key.as_slice().len() != CONTENT_KEY_LEN {
         bail!("unwrapped YubiKey content key has invalid length");
     }
 
-    let cipher = Aes256Gcm::new_from_slice(&content_key)
+    let cipher = Aes256Gcm::new_from_slice(content_key.as_slice())
         .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
-    let mut input = ProtectedInputBuffer::from_slice(&blob.ciphertext, Some(session))?;
+    let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
+    input.write_all(&blob.ciphertext)?;
     cipher
         .decrypt_in_place_detached(
             aes_gcm::Nonce::from_slice(&blob.nonce),

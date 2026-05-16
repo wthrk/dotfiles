@@ -18,6 +18,8 @@ pub(crate) use buffer::ProtectedInputBuffer;
 
 use crate::Result;
 
+type SecretBytes = Zeroizing<Vec<u8>>;
+
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
     LazyLock::new(|| Mutex::new(InterruptRegistration::default()));
@@ -121,26 +123,18 @@ pub(crate) struct SecretSession {
     memory: SecretMemoryGuard,
 }
 
-/// secret 値と memory lock guard を同じ所有値として保持する。
-///
-/// `Deref` の借用期間はこの値の生存期間に縛られ、unlock は inner value の Drop 後に走る。
-pub(crate) struct Protected<'session, T> {
-    value: T,
-    _lock: Option<region::LockGuard>,
-    _session: PhantomData<&'session SecretSession>,
-}
-
 /// secret 本文を session lifetime に閉じ込める保護済み所有値。
 ///
 /// 平文 bytes は `with_secret` の借用中だけ公開し、Drop 時の zeroize と memory unlock は
 /// 同じ所有値の破棄順序に従う。
 pub(crate) struct ProtectedSecret<'session> {
-    value: Zeroizing<Vec<u8>>,
+    value: SecretBytes,
     _lock: Option<region::LockGuard>,
     _session: PhantomData<&'session SecretSession>,
 }
 
 impl ProtectedSecret<'_> {
+    /// 平文 bytes を closure の実行中だけ借用として公開する。
     pub(crate) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.value.as_ref())
     }
@@ -173,33 +167,6 @@ impl SecretSession {
         &self.interrupt
     }
 
-    /// secret 値の memory range を現在の session で lock する。
-    pub(crate) fn lock_secret_value<T>(
-        &self,
-        value: &T,
-        memory_range: impl FnOnce(&T) -> (*const u8, usize),
-    ) -> Result<Option<region::LockGuard>> {
-        let (ptr, len) = memory_range(value);
-        lock_secret_memory(ptr, len)
-    }
-
-    /// lock 済み allocation から作った値を、この session に所属する所有値へ移す。
-    ///
-    /// 渡された lock guard は値と同じ所有値へ引き継ぐ。
-    pub(crate) fn protect_locked_value<T>(
-        &self,
-        value: T,
-        lock: Option<region::LockGuard>,
-    ) -> Result<Protected<'_, T>> {
-        let protected = Protected {
-            value,
-            _lock: lock,
-            _session: PhantomData,
-        };
-        interrupted_result()?;
-        Ok(protected)
-    }
-
     /// 一時入力 buffer の memory range を現在の session で lock する。
     pub(super) fn lock_transient_buffer(
         &self,
@@ -209,17 +176,10 @@ impl SecretSession {
         self.memory.lock_transient_buffer(ptr, len)
     }
 
-    #[cfg(test)]
-    /// raw secret bytes を zeroize 対象 buffer に移し、この session の memory lock 境界へ所属させる。
-    pub(crate) fn protect_secret_bytes(&self, value: Vec<u8>) -> Result<ProtectedSecret<'_>> {
-        let value = Zeroizing::new(value);
-        let lock = lock_secret_memory(value.as_ptr(), value.len())?;
-        self.protect_locked_secret_value(value, lock)
-    }
-
+    /// lock 済み allocation の所有権を、session lifetime に紐づく secret 値へ移す。
     pub(super) fn protect_locked_secret_value(
         &self,
-        value: Zeroizing<Vec<u8>>,
+        value: SecretBytes,
         lock: Option<region::LockGuard>,
     ) -> Result<ProtectedSecret<'_>> {
         let protected = ProtectedSecret {
@@ -250,16 +210,6 @@ impl SecretMemoryGuard {
     }
 }
 
-pub(crate) trait ProtectedByteAccess {
-    fn with_protected_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R;
-}
-
-impl<T: ProtectedByteAccess> Protected<'_, T> {
-    pub(crate) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        self.value.with_protected_bytes(borrow)
-    }
-}
-
 fn register_interrupt(signal: i32) -> Result<SigId> {
     signal_hook::flag::register(signal, Arc::clone(&INTERRUPTED))
         .context("failed to install signal handler")
@@ -271,16 +221,6 @@ fn interrupted_result() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn lock_secret_memory(ptr: *const u8, len: usize) -> Result<Option<region::LockGuard>> {
-    if len == 0 {
-        return Ok(None);
-    }
-
-    region::lock(ptr, len)
-        .map(Some)
-        .context("failed to lock bootstrap secret memory")
 }
 
 fn lock_memory_range(ptr: *const u8, len: usize) -> Result<region::LockGuard> {
