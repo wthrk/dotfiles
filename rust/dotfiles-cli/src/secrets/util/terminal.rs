@@ -1,7 +1,7 @@
-//! 対話 prompt、raw mode 入力、stdout 書き込みを扱う端末境界。
+//! 利用者の端末と command 境界を接続する I/O adapter。
 //!
-//! secret の保存形式や JSON schema は扱わない。spare 差し替え待ちだけは期限と
-//! `InterruptGuard` を受け取り、入力待ちを command の中断境界に合わせる。
+//! prompt、TTY 判定、raw mode 入力、stdout の安全判定を集約し、呼び出し側が決めた
+//! deadline と interrupt policy に従って入力待ちを終了する。
 
 use std::{
     io::{self, BufRead, IsTerminal, Read, Write},
