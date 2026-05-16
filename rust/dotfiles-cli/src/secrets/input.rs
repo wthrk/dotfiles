@@ -42,9 +42,10 @@ pub(super) fn read_visible_secret_line(prompt: &str, limit: usize) -> Result<Sec
     Ok(input.into())
 }
 
-/// 保存対象 secret の hidden prompt は PIN 入力と型を分ける。
-pub(super) fn read_hidden_secret(prompt: &str) -> Result<SecretInputBuffer> {
-    let value = terminal::read_hidden_bytes(prompt)?;
+/// 保存対象 secret の hidden prompt は PIN 入力と型・サイズ上限を分ける。
+pub(super) fn read_hidden_secret(prompt: &str, limit: usize) -> Result<SecretInputBuffer> {
+    let value =
+        terminal::read_hidden_bytes_with_limit(prompt, limit, "hidden secret input is too large")?;
     Ok(value.into())
 }
 

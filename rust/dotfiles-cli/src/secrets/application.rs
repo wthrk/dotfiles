@@ -105,7 +105,8 @@ pub(super) fn read_protected_stdin_secret(
         "stdin secret input is too large",
         Some(memory),
     )?;
-    input.into_trimmed_bytes_with_lock(|buffer| protect_secret(buffer.into(), memory))
+    let (buffer, lock) = input.into_trimmed_bytes_and_lock();
+    memory.protect_locked_value(buffer.into(), lock)
 }
 
 /// CLI で parse 済みの `dotfiles secrets` command を application flow へ渡す。
@@ -198,7 +199,10 @@ fn read_protected_secret_for_put(
     if stdin {
         read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
     } else {
-        protect_secret_input(read_hidden_secret(&format!("{}: ", name))?, memory)
+        protect_secret_input(
+            read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN)?,
+            memory,
+        )
     }
 }
 
@@ -240,6 +244,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     boundary: &mut B,
 ) -> Result<()> {
     let interrupt_guard = InterruptGuard::install()?;
+    require_primary_serial_for_noninteractive(options.primary_serial, boundary)?;
     require_spare_serial_for_noninteractive(options.spare_serial, boundary)?;
     let memory = SecretMemoryGuard::prepare()?;
     let prepared_spare = if options.spare_serial.is_some() {
@@ -352,6 +357,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         interrupt_guard
             .run_yubikey_operation(|| storage::rotate_bws_token(&mut device, token.as_slice()))?,
     ];
+    drop(device);
 
     while interrupt_guard
         .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
@@ -454,6 +460,18 @@ fn require_stdin_secret_source_for_boundary<B: SecretsBoundary>(
 ) -> Result<()> {
     if !enabled && !boundary.stdin_is_terminal() {
         bail!(stdin_secret_source_error(mode));
+    }
+
+    Ok(())
+}
+
+/// 非対話の spare 登録では primary secret 読み出し前に primary serial を確定する。
+fn require_primary_serial_for_noninteractive<B: SecretsBoundary>(
+    primary_serial: Option<u32>,
+    boundary: &B,
+) -> Result<()> {
+    if primary_serial.is_none() && !boundary.stdin_is_terminal() {
+        bail!("pass --primary-serial in non-interactive use");
     }
 
     Ok(())

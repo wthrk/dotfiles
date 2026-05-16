@@ -98,7 +98,10 @@ impl SecretsBoundary for TestSecretsBoundary {
         if stdin {
             read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
         } else {
-            protect_secret_input(read_hidden_secret(&format!("{}: ", name))?, memory)
+            protect_secret_input(
+                read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN)?,
+                memory,
+            )
         }
     }
 

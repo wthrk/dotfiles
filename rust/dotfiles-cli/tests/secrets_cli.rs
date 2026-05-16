@@ -184,6 +184,18 @@ fn enroll_spare_rejects_non_tty_without_spare_serial_with_stub_yubikey() -> Test
 }
 
 #[test]
+fn enroll_spare_rejects_non_tty_without_primary_serial_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pipe(["yubikey", "enroll-spare", "--spare-serial", "2002"], None)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("pass --primary-serial in non-interactive use")
+    );
+    Ok(())
+}
+
+#[test]
 fn enroll_spare_uses_stub_yubikey_without_secret_reentry() -> TestResult<()> {
     let run = run_pipe(
         [

@@ -47,6 +47,19 @@ pub(crate) fn read_hidden_bytes(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
     Ok(Zeroizing::new(value.into_bytes()))
 }
 
+/// 保存対象 secret の hidden prompt は読み込み直後に byte 上限を検証する。
+pub(crate) fn read_hidden_bytes_with_limit(
+    prompt: &str,
+    limit: usize,
+    too_large_error: &'static str,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let value = read_hidden_bytes(prompt)?;
+    if value.len() > limit {
+        bail!(too_large_error);
+    }
+    Ok(value)
+}
+
 /// 表示 prompt の行入力は `limit + 1` byte だけ読み、上限超過を即時に検出する。
 pub(crate) fn read_visible_line_bytes(
     prompt: &str,

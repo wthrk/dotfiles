@@ -140,6 +140,15 @@ impl SecretMemoryGuard {
         expose: impl FnOnce(&T) -> &[u8],
     ) -> Result<Protected<T>> {
         let lock = lock_secret_memory(expose(&value))?;
+        self.protect_locked_value(value, lock)
+    }
+
+    /// すでに lock 済みの allocation から作った値は、同じ guard を所有値へ引き継ぐ。
+    pub(crate) fn protect_locked_value<T>(
+        &self,
+        value: T,
+        lock: Option<region::LockGuard>,
+    ) -> Result<Protected<T>> {
         let protected = Protected { value, _lock: lock };
         interrupted_result()?;
         Ok(protected)

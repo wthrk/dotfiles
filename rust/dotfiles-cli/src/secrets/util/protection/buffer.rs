@@ -52,13 +52,11 @@ impl ProtectedInputBuffer {
         &self.buffer[..self.len]
     }
 
-    /// 末尾 newline を除いた入力を、読み込み時の lock を保持したまま次の所有型へ移す。
-    pub(crate) fn into_trimmed_bytes_with_lock<T>(
+    /// 末尾 newline を除いた入力 bytes と読み込み時の lock guard を同じ所有境界へ渡す。
+    pub(crate) fn into_trimmed_bytes_and_lock(
         self,
-        convert: impl FnOnce(Zeroizing<Vec<u8>>) -> Result<T>,
-    ) -> Result<T> {
+    ) -> (Zeroizing<Vec<u8>>, Option<region::LockGuard>) {
         let Self { buffer, len, _lock } = self;
-        let lock = _lock;
         let mut buffer = buffer;
         let len = if buffer[..len].ends_with(b"\r\n") {
             len - 2
@@ -69,9 +67,7 @@ impl ProtectedInputBuffer {
         };
         buffer.truncate(len);
 
-        let result = convert(buffer);
-        drop(lock);
-        result
+        (buffer, _lock)
     }
 }
 
