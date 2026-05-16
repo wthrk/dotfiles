@@ -19,6 +19,32 @@ struct FakeDevice {
     objects: BTreeMap<PivObjectId, Zeroizing<Vec<u8>>>,
 }
 
+struct TestBootstrapSecrets {
+    bw_email: SecretBytes,
+    bw_password: SecretBytes,
+    bws_access_token: SecretBytes,
+}
+
+impl TestBootstrapSecrets {
+    fn new(bw_email: Vec<u8>, bw_password: Vec<u8>, bws_access_token: Vec<u8>) -> Self {
+        Self {
+            bw_email: SecretBytes::new(bw_email),
+            bw_password: SecretBytes::new(bw_password),
+            bws_access_token: SecretBytes::new(bws_access_token),
+        }
+    }
+}
+
+impl BootstrapSecretSource for TestBootstrapSecrets {
+    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
+        match name {
+            SecretName::BwEmail => self.bw_email.with_secret(borrow),
+            SecretName::BwPassword => self.bw_password.with_secret(borrow),
+            SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
+        }
+    }
+}
+
 impl FakeDevice {
     fn new(serial: u32) -> Self {
         Self {
@@ -289,11 +315,8 @@ fn setup_uses_management_auth_for_precondition_and_manifest_write() -> Result<()
 #[test]
 fn enroll_rejects_empty_secret_before_setup() {
     let mut device = FakeDevice::new(1234);
-    let secrets = BootstrapSecrets {
-        bw_email: SecretBytes::new(b"user@example.com".to_vec()),
-        bw_password: SecretBytes::new(Vec::new()),
-        bws_access_token: SecretBytes::new(b"token".to_vec()),
-    };
+    let secrets =
+        TestBootstrapSecrets::new(b"user@example.com".to_vec(), Vec::new(), b"token".to_vec());
 
     assert!(enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets).is_err());
     assert!(!device.key_exists);
@@ -379,11 +402,11 @@ fn rotate_uses_management_auth_for_token_replacement() -> Result<()> {
 fn enroll_fails_when_management_auth_breaks_during_secret_writes() {
     let mut device = FakeDevice::new(1234);
     device.set_write_fail_after(1);
-    let secrets = BootstrapSecrets {
-        bw_email: SecretBytes::new(b"user@example.com".to_vec()),
-        bw_password: SecretBytes::new(b"password".to_vec()),
-        bws_access_token: SecretBytes::new(b"token".to_vec()),
-    };
+    let secrets = TestBootstrapSecrets::new(
+        b"user@example.com".to_vec(),
+        b"password".to_vec(),
+        b"token".to_vec(),
+    );
 
     let result = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets);
 

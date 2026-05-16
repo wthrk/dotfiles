@@ -9,8 +9,8 @@ mod operations;
 mod wire;
 
 pub use model::{
-    BootstrapSecretSource, BootstrapSecrets, CheckName, CheckStatus, PivObjectId, SecretBytes,
-    SecretDevice, SecretName, VerifySummary, YubikeyRole,
+    BootstrapSecretSource, CheckName, CheckStatus, PivObjectId, SecretBytes, SecretDevice,
+    SecretName, VerifySummary, YubikeyRole,
 };
 pub use operations::{
     check_put_preconditions, check_setup_preconditions, enroll_without_verify, get, put,

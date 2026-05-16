@@ -11,10 +11,11 @@ use super::{
     YubikeyCommand, YubikeyOptions,
     device::{self, SPARE_SERIAL_NONINTERACTIVE_ERROR, open_device, open_spare_device},
     input::{
-        YubikeyPin, parse_bootstrap_secrets_json, read_hidden_secret, read_visible_secret_line,
-        read_yubikey_pin, reject_secret_stdout_terminal, write_secret_to_stdout,
+        YubikeyPin, parse_protected_bootstrap_secrets_json, read_hidden_secret,
+        read_visible_secret_line, read_yubikey_pin, reject_secret_stdout_terminal,
+        write_secret_to_stdout,
     },
-    storage::{self, BootstrapSecretSource, BootstrapSecrets, SecretDevice, SecretName},
+    storage::{self, BootstrapSecretSource, SecretDevice, SecretName},
     util::{
         protection::{InterruptGuard, Protected, ProtectedInputBuffer, SecretSession},
         terminal::{prompt_yes_no, stdin_is_terminal as input_stdin_is_terminal},
@@ -51,18 +52,6 @@ impl<'session> ProtectedBootstrapSecrets<'session> {
             bw_password,
             bws_access_token,
         }
-    }
-
-    /// 未保護の bootstrap model を field 単位で session 所属の値へ移す。
-    pub(crate) fn protect(
-        secrets: BootstrapSecrets,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedBootstrapSecrets<'session>> {
-        Ok(ProtectedBootstrapSecrets {
-            bw_email: protect_secret(secrets.bw_email, session)?,
-            bw_password: protect_secret(secrets.bw_password, session)?,
-            bws_access_token: protect_secret(secrets.bws_access_token, session)?,
-        })
     }
 }
 
@@ -232,9 +221,12 @@ pub(super) fn read_protected_bootstrap_secrets(
             "bootstrap secret JSON input is too large",
             Some(memory),
         )?;
-        let secrets = parse_bootstrap_secrets_json(input.as_slice())
-            .context("failed to parse bootstrap secret JSON")?;
-        return ProtectedBootstrapSecrets::protect(secrets, memory);
+        return parse_protected_bootstrap_secrets_json(
+            input.as_slice(),
+            MAX_SINGLE_STDIN_SECRET_LEN,
+            memory,
+        )
+        .context("failed to parse bootstrap secret JSON");
     }
 
     let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
@@ -295,7 +287,10 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     let mut spare = match spare {
         Some(spare) => spare,
         None => {
-            boundary.open_spare_device(options.spare_serial, primary_serial, session.interrupt())?
+            let mut spare =
+                boundary.open_spare_device(options.spare_serial, primary_serial, session.interrupt())?;
+            session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
+            spare
         }
     };
 
@@ -350,17 +345,22 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         let mut device = prepare_bws_token_rotation_device(boundary, Some(serial), &session)?;
         let token =
             boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
-        let summary = rotate_bws_token_on_device(&mut device, &token, &session)?;
+        let rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
         drop(token);
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-        return Ok(());
+        println!("{}", serde_json::to_string_pretty(&rotation.summary)?);
+        return rotation.result;
     }
 
     let mut device = prepare_bws_token_rotation_device(boundary, None, &session)?;
     let token =
         boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
-    let mut summaries = vec![rotate_bws_token_on_device(&mut device, &token, &session)?];
+    let first_rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
+    let mut summaries = vec![first_rotation.summary];
+    if let Err(err) = first_rotation.result {
+        write_partial_rotate_bws_token_summary(&summaries)?;
+        return Err(err);
+    }
     drop(device);
 
     let remaining_result = (|| -> Result<()> {
@@ -373,7 +373,9 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
             if !updated_serials.insert(device.serial()) {
                 bail!("selected YubiKey was already updated");
             }
-            summaries.push(rotate_bws_token_on_device(&mut device, &token, &session)?);
+            let rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
+            summaries.push(rotation.summary);
+            rotation.result?;
         }
         Ok(())
     })();
@@ -409,11 +411,25 @@ fn rotate_bws_token_on_device<D: storage::SecretDevice>(
     device: &mut D,
     token: &ProtectedSecret<'_>,
     session: &SecretSession,
-) -> Result<storage::VerifySummary> {
+) -> Result<RotateBwsTokenResult> {
     session.run_yubikey_operation(|| {
         token.with_secret(|token| storage::replace_bws_token(device, token))
     })?;
-    verify_local_storage_protected(device, session)
+    match verify_local_storage_protected(device, session) {
+        Ok(summary) => Ok(RotateBwsTokenResult {
+            summary,
+            result: Ok(()),
+        }),
+        Err(err) => Ok(RotateBwsTokenResult {
+            summary: failed_local_storage_summary(device.serial()),
+            result: Err(err),
+        }),
+    }
+}
+
+struct RotateBwsTokenResult {
+    summary: storage::VerifySummary,
+    result: Result<()>,
 }
 
 #[derive(serde::Serialize)]
@@ -432,6 +448,22 @@ fn write_partial_rotate_bws_token_summary(summaries: &[storage::VerifySummary]) 
     let partial = PartialRotateBwsTokenSummary { updated: summaries };
     println!("{}", serde_json::to_string_pretty(&partial)?);
     Ok(())
+}
+
+fn failed_local_storage_summary(serial: u32) -> storage::VerifySummary {
+    storage::VerifySummary {
+        serial,
+        checks: [
+            (
+                storage::CheckName::LocalStorage,
+                storage::CheckStatus::Failed,
+            ),
+            (storage::CheckName::Bws, storage::CheckStatus::Skipped),
+            (storage::CheckName::BwLogin, storage::CheckStatus::Skipped),
+        ]
+        .into_iter()
+        .collect(),
+    }
 }
 
 /// YubiKey local storage の verify を実行し、summary JSON を出力する。
@@ -741,7 +773,7 @@ mod tests {
             _stdin_json: bool,
             memory: &'session SecretSession,
         ) -> Result<ProtectedBootstrapSecrets<'session>> {
-            ProtectedBootstrapSecrets::protect(bootstrap_secrets(), memory)
+            protected_bootstrap_secrets(memory)
         }
 
         fn read_secret_for_put<'session>(
@@ -787,11 +819,9 @@ mod tests {
 
         fn provisioned(serial: u32) -> Result<Self> {
             let mut device = Self::fresh(serial);
-            storage::enroll_without_verify(
-                &mut device,
-                storage::YubikeyRole::Primary,
-                &bootstrap_secrets(),
-            )?;
+            let session = SecretSession::start()?;
+            let secrets = protected_bootstrap_secrets(&session)?;
+            storage::enroll_without_verify(&mut device, storage::YubikeyRole::Primary, &secrets)?;
             Ok(device)
         }
     }
@@ -885,11 +915,16 @@ mod tests {
         Ok(())
     }
 
-    fn bootstrap_secrets() -> storage::BootstrapSecrets {
-        storage::BootstrapSecrets {
-            bw_email: storage::SecretBytes::new(b"user@example.com".to_vec()),
-            bw_password: storage::SecretBytes::new(b"password".to_vec()),
-            bws_access_token: storage::SecretBytes::new(b"token".to_vec()),
-        }
+    fn protected_bootstrap_secrets<'session>(
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedBootstrapSecrets<'session>> {
+        Ok(ProtectedBootstrapSecrets::new(
+            protect_secret(
+                storage::SecretBytes::new(b"user@example.com".to_vec()),
+                memory,
+            )?,
+            protect_secret(storage::SecretBytes::new(b"password".to_vec()), memory)?,
+            protect_secret(storage::SecretBytes::new(b"token".to_vec()), memory)?,
+        ))
     }
 }

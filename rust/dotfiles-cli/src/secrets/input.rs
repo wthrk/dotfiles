@@ -3,14 +3,20 @@
 //! TTY 判定と stdout 書き込みは `util::terminal`、memory lock は `util::protection` に委譲し、
 //! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
 
+use std::io::{self, Read, Write};
+
 use anyhow::bail;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::Deserialize;
 
 use crate::Result;
 
+#[cfg(test)]
+use super::storage::{BootstrapSecretSource, SecretName};
 use super::{
-    storage::{BootstrapSecrets, SecretBytes},
+    application::ProtectedBootstrapSecrets,
+    storage::SecretBytes,
     util::{
         protection::{Protected, ProtectedInputBuffer, ProtectedSecretBytes, SecretSession},
         terminal,
@@ -65,22 +71,59 @@ pub(super) fn read_hidden_secret<'session>(
     limit: usize,
     memory: &'session SecretSession,
 ) -> Result<Protected<'session, SecretBytes>> {
-    let value = rpassword::prompt_password(prompt)?.into_bytes();
-    if value.len() > limit {
-        bail!("hidden secret input is too large");
-    }
-    let secret = SecretBytes::new(value);
-    let lock = memory.lock_secret_value(&secret, SecretBytes::memory_range)?;
-    memory.protect_locked_value(secret, lock)
+    read_hidden_secret_line(prompt, limit, memory)?.into_protected_secret_line(
+        memory,
+        limit,
+        "hidden secret input is too large",
+    )
 }
 
 /// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
 pub(crate) fn read_yubikey_pin<'session>(
     memory: &'session SecretSession,
 ) -> Result<Protected<'session, YubikeyPin>> {
-    let pin = YubikeyPin::new(rpassword::prompt_password("YubiKey PIN: ")?.into_bytes())?;
+    let pin = read_hidden_secret_line("YubiKey PIN: ", PIV_PIN_MAX_LEN, memory)?
+        .into_protected_secret_line(memory, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
+    let pin = pin.with_secret(|pin| YubikeyPin::new(pin.to_vec()))?;
     let lock = memory.lock_secret_value(&pin, YubikeyPin::memory_range)?;
     memory.protect_locked_value(pin, lock)
+}
+
+fn read_hidden_secret_line(
+    prompt: &str,
+    limit: usize,
+    memory: &SecretSession,
+) -> Result<ProtectedInputBuffer> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    enable_raw_mode()?;
+    let _raw_mode = scopeguard::guard((), |_| {
+        let _ = disable_raw_mode();
+    });
+    let mut input = ProtectedInputBuffer::new(limit + 1, Some(memory))?;
+    let mut stdin = io::stdin();
+    let mut byte = [0u8; 1];
+    loop {
+        if stdin.read(&mut byte)? == 0 {
+            return Ok(input);
+        }
+        match byte[0] {
+            b'\r' | b'\n' => {
+                eprintln!();
+                return Ok(input);
+            }
+            3 => bail!("interrupted while reading hidden secret input"),
+            8 | 127 => {
+                input.pop();
+            }
+            value => {
+                if input.as_slice().len() + 1 > limit {
+                    bail!("hidden secret input is too large");
+                }
+                input.write_all(&[value])?;
+            }
+        }
+    }
 }
 
 fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
@@ -90,31 +133,49 @@ fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// stdin の JSON bytes を bootstrap 登録用 schema として parse し、型付き model へ変換する。
-pub(super) fn parse_bootstrap_secrets_json(input: &[u8]) -> Result<BootstrapSecrets> {
-    let input: BootstrapSecretsInput = serde_json::from_slice(input)?;
-    Ok(input.into_bootstrap_secrets())
+pub(super) fn parse_protected_bootstrap_secrets_json<'session>(
+    input: &[u8],
+    field_limit: usize,
+    memory: &'session SecretSession,
+) -> Result<ProtectedBootstrapSecrets<'session>> {
+    let input: BorrowedBootstrapSecretsInput<'_> = serde_json::from_slice(input)?;
+    let bw_email = protected_json_field(input.bw_email, field_limit, memory, "bw-email")?;
+    let bw_password = protected_json_field(input.bw_password, field_limit, memory, "bw-password")?;
+    let bws_access_token = protected_json_field(
+        input.bws_access_token,
+        field_limit,
+        memory,
+        "bws-access-token",
+    )?;
+    Ok(ProtectedBootstrapSecrets::new(
+        bw_email,
+        bw_password,
+        bws_access_token,
+    ))
 }
 
 #[derive(Deserialize)]
-struct BootstrapSecretsInput {
-    #[serde(rename = "bw-email")]
-    bw_email: SecretBytes,
-    #[serde(rename = "bw-password")]
-    bw_password: SecretBytes,
-    #[serde(rename = "bws-access-token")]
-    bws_access_token: SecretBytes,
+#[serde(deny_unknown_fields)]
+struct BorrowedBootstrapSecretsInput<'input> {
+    #[serde(rename = "bw-email", borrow)]
+    bw_email: &'input str,
+    #[serde(rename = "bw-password", borrow)]
+    bw_password: &'input str,
+    #[serde(rename = "bws-access-token", borrow)]
+    bws_access_token: &'input str,
 }
 
-impl BootstrapSecretsInput {
-    /// JSON 入力の 3 field を bootstrap 登録用 model へ所有権ごと移す。
-    fn into_bootstrap_secrets(self) -> BootstrapSecrets {
-        BootstrapSecrets {
-            bw_email: self.bw_email,
-            bw_password: self.bw_password,
-            bws_access_token: self.bws_access_token,
-        }
+fn protected_json_field<'session>(
+    value: &str,
+    field_limit: usize,
+    memory: &'session SecretSession,
+    name: &str,
+) -> Result<Protected<'session, SecretBytes>> {
+    if value.len() > field_limit {
+        bail!("{name} is too large");
     }
+    let input = ProtectedInputBuffer::from_slice(value.as_bytes(), Some(memory))?;
+    input.into_protected_secret_line(memory, field_limit, "bootstrap secret field is too large")
 }
 
 /// stdout が TTY の場合は、復号結果を書き込む前に利用者向け error で停止する。
@@ -140,78 +201,140 @@ pub(crate) fn reject_secret_stdout_terminal() -> Result<()> {
 mod tests {
     use super::*;
 
+    fn parse_test_bootstrap_json<'session>(
+        input: &[u8],
+        field_limit: usize,
+        memory: &'session SecretSession,
+    ) -> Result<ProtectedBootstrapSecrets<'session>> {
+        parse_protected_bootstrap_secrets_json(input, field_limit, memory)
+    }
+
     #[test]
     fn parse_bootstrap_secrets_json_accepts_expected_schema() -> Result<()> {
-        let secrets = parse_bootstrap_secrets_json(
+        let session = SecretSession::start()?;
+        let secrets = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
                 "bw-password": "password",
                 "bws-access-token": "token"
             }"#,
+            16 * 1024,
+            &session,
         )?;
 
-        secrets
-            .bw_email
-            .with_secret(|secret| assert_eq!(secret, b"alice@example.com"));
-        secrets
-            .bw_password
-            .with_secret(|secret| assert_eq!(secret, b"password"));
-        secrets
-            .bws_access_token
-            .with_secret(|secret| assert_eq!(secret, b"token"));
+        secrets.with_secret(SecretName::BwEmail, |secret| {
+            assert_eq!(secret, b"alice@example.com")
+        });
+        secrets.with_secret(SecretName::BwPassword, |secret| {
+            assert_eq!(secret, b"password")
+        });
+        secrets.with_secret(SecretName::BwsAccessToken, |secret| {
+            assert_eq!(secret, b"token");
+        });
         Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_missing_field() {
-        let result = parse_bootstrap_secrets_json(
+    fn parse_bootstrap_secrets_json_rejects_missing_field() -> Result<()> {
+        let session = SecretSession::start()?;
+        let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
                 "bw-password": "password"
             }"#,
+            16 * 1024,
+            &session,
         );
 
         assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_duplicate_field() {
-        let result = parse_bootstrap_secrets_json(
+    fn parse_bootstrap_secrets_json_rejects_duplicate_field() -> Result<()> {
+        let session = SecretSession::start()?;
+        let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
                 "bw-email": "bob@example.com",
                 "bw-password": "password",
                 "bws-access-token": "token"
             }"#,
+            16 * 1024,
+            &session,
         );
 
         assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_non_string_field() {
-        let result = parse_bootstrap_secrets_json(
+    fn parse_bootstrap_secrets_json_rejects_non_string_field() -> Result<()> {
+        let session = SecretSession::start()?;
+        let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
                 "bw-password": 123,
                 "bws-access-token": "token"
             }"#,
+            16 * 1024,
+            &session,
         );
 
         assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_trailing_garbage() {
-        let result = parse_bootstrap_secrets_json(
+    fn parse_bootstrap_secrets_json_rejects_trailing_garbage() -> Result<()> {
+        let session = SecretSession::start()?;
+        let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
                 "bw-password": "password",
                 "bws-access-token": "token"
             } trailing"#,
+            16 * 1024,
+            &session,
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_bootstrap_secrets_json_rejects_unknown_field() -> Result<()> {
+        let session = SecretSession::start()?;
+        let result = parse_test_bootstrap_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-password": "password",
+                "bws-access-token": "token",
+                "extra-secret": "ignored"
+            }"#,
+            16 * 1024,
+            &session,
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_bootstrap_secrets_json_rejects_field_past_limit() -> Result<()> {
+        let session = SecretSession::start()?;
+        let result = parse_test_bootstrap_json(
+            br#"{
+                "bw-email": "alice@example.com",
+                "bw-password": "abcd",
+                "bws-access-token": "token"
+            }"#,
+            3,
+            &session,
+        );
+
+        assert!(result.is_err());
+        Ok(())
     }
 
     #[test]

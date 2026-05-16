@@ -5,7 +5,7 @@
 //! スタブ端末上で復号できる値まで確認する。
 
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -693,7 +693,11 @@ where
     let mut child = command.spawn()?;
     if let Some(input) = input {
         let mut stdin = child.stdin.take().context("failed to open child stdin")?;
-        stdin.write_all(input.as_bytes())?;
+        match stdin.write_all(input.as_bytes()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::BrokenPipe => {}
+            Err(err) => return Err(err.into()),
+        }
     }
 
     let output = child.wait_with_output()?;

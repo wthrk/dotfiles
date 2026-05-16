@@ -5,7 +5,7 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use anyhow::{Result as AnyhowResult, bail};
+use anyhow::{Context, Result as AnyhowResult, bail};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
@@ -29,7 +29,10 @@ pub(crate) const CONTENT_KEY_LEN: usize = 32;
 /// secret 本文を明示的な expose が必要な所有値として保持する。
 ///
 /// inner buffer は Drop 時に zeroize される。
-pub struct SecretBytes(SecretBox<Zeroizing<Vec<u8>>>);
+pub struct SecretBytes {
+    value: SecretBox<Zeroizing<Vec<u8>>>,
+    _lock: Option<region::LockGuard>,
+}
 
 /// PIV data object ID を型付き値として表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -244,6 +247,9 @@ pub enum CheckStatus {
     /// 確認に成功した状態。
     #[serde(rename = "ok")]
     Ok,
+    /// 永続書き込み後の確認に失敗した状態。
+    #[serde(rename = "failed")]
+    Failed,
     /// 現在の実行範囲では省略した確認項目。
     #[serde(rename = "skipped")]
     Skipped,
@@ -299,37 +305,31 @@ pub enum CheckName {
     BwLogin,
 }
 
-/// primary / spare 登録で保存する bootstrap secret 一式。
-pub struct BootstrapSecrets {
-    /// Bitwarden login email bytes。
-    pub bw_email: SecretBytes,
-    /// Bitwarden login password bytes。
-    pub bw_password: SecretBytes,
-    /// Bitwarden Secrets Manager access token bytes。
-    pub bws_access_token: SecretBytes,
-}
-
 /// 登録処理が参照する bootstrap secret 一式。
 pub trait BootstrapSecretSource {
     /// secret 名に対応する平文 bytes を closure へ貸し出す。
     fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R;
 }
 
-impl BootstrapSecretSource for BootstrapSecrets {
-    /// 未保護 model から secret 名に対応する平文 bytes を closure へ貸し出す。
-    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        match name {
-            SecretName::BwEmail => self.bw_email.with_secret(borrow),
-            SecretName::BwPassword => self.bw_password.with_secret(borrow),
-            SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
-        }
-    }
-}
-
 impl SecretBytes {
     /// raw bytes を zeroize 対象の所有 buffer に入れる。
     pub fn new(value: Vec<u8>) -> Self {
         Zeroizing::new(value).into()
+    }
+
+    pub(crate) fn new_locked(value: Zeroizing<Vec<u8>>) -> Result<Self> {
+        let lock = if value.is_empty() {
+            None
+        } else {
+            Some(
+                region::lock(value.as_ptr(), value.len())
+                    .context("failed to lock decrypted YubiKey secret memory")?,
+            )
+        };
+        Ok(Self {
+            value: SecretBox::new(Box::new(value)),
+            _lock: lock,
+        })
     }
 
     /// memory lock 対象にする allocation 範囲を返す。
@@ -339,14 +339,17 @@ impl SecretBytes {
 
     /// 平文 bytes を closure へ貸し出す。
     pub fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        borrow(self.0.expose_secret().as_ref())
+        borrow(self.value.expose_secret().as_ref())
     }
 }
 
 impl From<Zeroizing<Vec<u8>>> for SecretBytes {
     /// zeroize 対象 buffer を `SecretBox` の inner value として保持する。
     fn from(value: Zeroizing<Vec<u8>>) -> Self {
-        Self(SecretBox::new(Box::new(value)))
+        Self {
+            value: SecretBox::new(Box::new(value)),
+            _lock: None,
+        }
     }
 }
 

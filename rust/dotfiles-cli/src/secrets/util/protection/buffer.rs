@@ -36,6 +36,12 @@ impl ProtectedInputBuffer {
         })
     }
 
+    pub(crate) fn from_slice(bytes: &[u8], session: Option<&SecretSession>) -> Result<Self> {
+        let mut buffer = Self::new(bytes.len(), session)?;
+        buffer.write_all(bytes)?;
+        Ok(buffer)
+    }
+
     /// reader から最大 `limit + 1` bytes を読み込む。
     ///
     /// `limit` を超えた場合は指定 error で失敗する。
@@ -96,6 +102,20 @@ impl ProtectedInputBuffer {
         &self.buffer[..self.len]
     }
 
+    pub(crate) fn pop(&mut self) {
+        self.len = self.len.saturating_sub(1);
+    }
+
+    fn trimmed_len(&self) -> usize {
+        if self.as_slice().ends_with(b"\r\n") {
+            self.len - 2
+        } else if self.as_slice().ends_with(b"\n") {
+            self.len - 1
+        } else {
+            self.len
+        }
+    }
+
     fn into_trimmed_bytes_and_lock(self) -> (Zeroizing<Vec<u8>>, Option<region::LockGuard>) {
         let Self { buffer, len, _lock } = self;
         let mut buffer = buffer;
@@ -120,10 +140,10 @@ impl ProtectedInputBuffer {
         limit: usize,
         too_large_error: &'static str,
     ) -> Result<Protected<'session, SecretBytes>> {
-        let (buffer, lock) = self.into_trimmed_bytes_and_lock();
-        if buffer.len() > limit {
+        if self.trimmed_len() > limit {
             bail!(too_large_error);
         }
+        let (buffer, lock) = self.into_trimmed_bytes_and_lock();
         session.protect_locked_value(buffer.into(), lock)
     }
 }

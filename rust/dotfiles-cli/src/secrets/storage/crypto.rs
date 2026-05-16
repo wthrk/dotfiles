@@ -73,5 +73,5 @@ pub(crate) fn decrypt_secret<D: SecretDevice>(
         )
         .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
     content_key.zeroize();
-    Ok(plaintext.into())
+    SecretBytes::new_locked(plaintext)
 }
