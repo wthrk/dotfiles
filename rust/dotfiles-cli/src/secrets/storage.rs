@@ -10,7 +10,7 @@ mod wire;
 
 pub use model::{
     BootstrapSecretSource, BootstrapSecrets, PivObjectId, SecretBytes, SecretDevice, SecretName,
-    YubikeyRole,
+    VerifySummary, YubikeyRole,
 };
 pub use operations::{
     check_put_preconditions, check_rotate_preconditions, check_setup_preconditions, enroll, get,

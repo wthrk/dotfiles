@@ -31,7 +31,7 @@ impl ProtectedInputBuffer {
         })
     }
 
-    /// `limit + 1` byte だけ読み、超過判定に使った byte も lock 範囲外へ出さない。
+    /// raw 入力は改行を特別扱いせず、上限を超えた時点で拒否する。
     pub(crate) fn read_from(
         reader: impl Read,
         limit: usize,
@@ -44,6 +44,18 @@ impl ProtectedInputBuffer {
             bail!(too_large_error);
         }
 
+        Ok(buffer)
+    }
+
+    /// 行入力の上限は、端末由来の末尾改行を取り除いた secret 本体に対して適用する。
+    pub(crate) fn read_line_from(
+        reader: impl Read,
+        limit: usize,
+        session: Option<&SecretSession>,
+    ) -> Result<Self> {
+        let read_limit = limit + 3;
+        let mut buffer = Self::new(read_limit, session)?;
+        buffer.len = io::copy(&mut reader.take(read_limit as u64), &mut buffer)? as usize;
         Ok(buffer)
     }
 
@@ -69,6 +81,19 @@ impl ProtectedInputBuffer {
 
         (buffer, _lock)
     }
+
+    /// 行入力として受けた secret は、末尾改行を除いた値だけを上限検証して返す。
+    pub(crate) fn into_secret_line_and_lock(
+        self,
+        limit: usize,
+        too_large_error: &'static str,
+    ) -> Result<(Zeroizing<Vec<u8>>, Option<region::LockGuard>)> {
+        let (buffer, lock) = self.into_trimmed_bytes_and_lock();
+        if buffer.len() > limit {
+            bail!(too_large_error);
+        }
+        Ok((buffer, lock))
+    }
 }
 
 impl Write for ProtectedInputBuffer {
@@ -83,6 +108,42 @@ impl Write for ProtectedInputBuffer {
 
     /// 入力 buffer は外部 writer を持たないため flush で追加処理を行わない。
     fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::Result;
+
+    use super::ProtectedInputBuffer;
+
+    #[test]
+    fn secret_line_accepts_exact_limit_with_lf() -> Result<()> {
+        let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\n"), 3, None)?;
+        let (secret, _lock) = input.into_secret_line_and_lock(3, "too large")?;
+
+        assert_eq!(secret.as_slice(), b"abc");
+        Ok(())
+    }
+
+    #[test]
+    fn secret_line_accepts_exact_limit_with_crlf() -> Result<()> {
+        let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\r\n"), 3, None)?;
+        let (secret, _lock) = input.into_secret_line_and_lock(3, "too large")?;
+
+        assert_eq!(secret.as_slice(), b"abc");
+        Ok(())
+    }
+
+    #[test]
+    fn secret_line_rejects_body_past_limit_after_trim() -> Result<()> {
+        let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abcd\n"), 3, None)?;
+        let err = input.into_secret_line_and_lock(3, "too large");
+
+        assert!(err.is_err());
         Ok(())
     }
 }

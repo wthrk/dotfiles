@@ -99,13 +99,9 @@ pub(super) fn read_protected_stdin_secret(
     limit: usize,
     session: &SecretSession,
 ) -> Result<ProtectedSecret<'_>> {
-    let input = ProtectedInputBuffer::read_from(
-        std::io::stdin(),
-        limit,
-        "stdin secret input is too large",
-        Some(session),
-    )?;
-    let (buffer, lock) = input.into_trimmed_bytes_and_lock();
+    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, Some(session))?;
+    let (buffer, lock) =
+        input.into_secret_line_and_lock(limit, "stdin secret input is too large")?;
     session.protect_locked_value(buffer.into(), lock)
 }
 
@@ -350,26 +346,48 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     ];
     drop(device);
 
-    while session
-        .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
-    {
-        session.check_interrupted()?;
-        let mut device = boundary.open_device(None)?;
-        session.check_interrupted()?;
-        if !updated_serials.insert(device.serial()) {
-            bail!("selected YubiKey was already updated");
-        }
-        verify_pin_for_secret_reads(boundary, &mut device)?;
-        session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
-        summaries.push(
-            session.run_yubikey_operation(|| {
+    let remaining_result = (|| -> Result<()> {
+        while session
+            .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
+        {
+            session.check_interrupted()?;
+            let mut device = boundary.open_device(None)?;
+            session.check_interrupted()?;
+            if !updated_serials.insert(device.serial()) {
+                bail!("selected YubiKey was already updated");
+            }
+            verify_pin_for_secret_reads(boundary, &mut device)?;
+            session.run_yubikey_operation(|| storage::check_rotate_preconditions(&mut device))?;
+            summaries.push(session.run_yubikey_operation(|| {
                 storage::rotate_bws_token(&mut device, token.as_slice())
-            })?,
-        );
+            })?);
+        }
+        Ok(())
+    })();
+
+    if let Err(err) = remaining_result {
+        write_partial_rotate_bws_token_summary(&summaries)?;
+        return Err(err);
     }
 
     drop(token);
     println!("{}", serde_json::to_string_pretty(&summaries)?);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct PartialRotateBwsTokenSummary<'a> {
+    updated: &'a [storage::VerifySummary],
+}
+
+/// 複数本更新の途中失敗時は、完了済み serial を機械処理できる JSON として残す。
+fn write_partial_rotate_bws_token_summary(summaries: &[storage::VerifySummary]) -> Result<()> {
+    if summaries.is_empty() {
+        return Ok(());
+    }
+
+    let partial = PartialRotateBwsTokenSummary { updated: summaries };
+    println!("{}", serde_json::to_string_pretty(&partial)?);
     Ok(())
 }
 

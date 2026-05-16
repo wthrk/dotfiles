@@ -60,7 +60,7 @@ pub(crate) fn read_hidden_bytes_with_limit(
     Ok(value)
 }
 
-/// 表示 prompt の行入力は `limit + 1` byte だけ読み、上限超過を即時に検出する。
+/// 表示 prompt の行入力は、末尾改行を除いた secret 本体に上限を適用する。
 pub(crate) fn read_visible_line_bytes(
     prompt: &str,
     limit: usize,
@@ -68,15 +68,16 @@ pub(crate) fn read_visible_line_bytes(
 ) -> Result<Zeroizing<Vec<u8>>> {
     eprint!("{prompt}");
     io::stderr().flush()?;
-    let mut input = Zeroizing::new(Vec::with_capacity(limit.min(4096)));
-    let len = io::stdin()
+    let read_limit = limit + 3;
+    let mut input = Zeroizing::new(Vec::with_capacity(read_limit.min(4096)));
+    io::stdin()
         .lock()
-        .take((limit + 1) as u64)
+        .take(read_limit as u64)
         .read_until(b'\n', &mut input)?;
-    if len > limit {
+    trim_one_trailing_newline(&mut input);
+    if input.len() > limit {
         bail!(too_large_error);
     }
-    trim_one_trailing_newline(&mut input);
     Ok(input)
 }
 
