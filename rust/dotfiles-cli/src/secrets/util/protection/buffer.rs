@@ -59,7 +59,7 @@ impl ProtectedInputBuffer {
         Ok(buffer)
     }
 
-    /// 未初期化扱いの余剰容量を JSON parser へ見せない。
+    /// 読み込み済み範囲だけを parse 境界へ渡し、未消費領域を入力として扱わせない。
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]
     }

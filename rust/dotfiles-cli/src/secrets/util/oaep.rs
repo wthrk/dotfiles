@@ -9,16 +9,16 @@ use zeroize::Zeroizing;
 use crate::Result;
 
 const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
+const HASH_LEN: usize = 32;
 
 /// YubiKey の raw RSA decrypt 結果から RSA-OAEP SHA-256 padding を検証して外す。
 pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroizing<Vec<u8>>> {
-    let hash_len = 32;
-    if encoded.len() != key_len || key_len < 2 * hash_len + 2 {
+    if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);
     }
 
-    let (masked_seed, masked_db) = encoded[1..].split_at(hash_len);
-    let seed_mask = Zeroizing::new(mgf1_sha256(masked_db, hash_len));
+    let (masked_seed, masked_db) = encoded[1..].split_at(HASH_LEN);
+    let seed_mask = Zeroizing::new(mgf1_sha256(masked_db, HASH_LEN));
     let seed = Zeroizing::new(
         masked_seed
             .iter()
@@ -26,7 +26,7 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
             .map(|(left, right)| left ^ right)
             .collect::<Vec<u8>>(),
     );
-    let db_mask = Zeroizing::new(mgf1_sha256(&seed, key_len - hash_len - 1));
+    let db_mask = Zeroizing::new(mgf1_sha256(&seed, key_len - HASH_LEN - 1));
     let db = Zeroizing::new(
         masked_db
             .iter()
@@ -36,17 +36,14 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
     );
 
     let label_hash = Sha256::digest([]);
-    let label_mismatch = db[..hash_len]
+    let label_mismatch = db[..HASH_LEN]
         .iter()
         .zip(label_hash.iter())
         .fold(0u8, |acc, (left, right)| acc | (left ^ right));
     let leading_and_label_valid = encoded[0] == 0 && label_mismatch == 0;
 
-    let rest = &db[hash_len..];
-    let separator = rest.iter().position(|byte| *byte == 1);
-    let padding_valid = separator
-        .map(|separator| rest[..separator].iter().all(|byte| *byte == 0))
-        .unwrap_or(false);
+    let rest = &db[HASH_LEN..];
+    let (separator, padding_valid) = find_oaep_separator(rest);
 
     if !leading_and_label_valid || !padding_valid {
         bail!(OAEP_UNPAD_ERROR);
@@ -69,6 +66,23 @@ fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
     }
     out.truncate(len);
     out
+}
+
+/// OAEP の padding 走査は separator 位置で短絡せず、invalid blob 間の分岐差を狭める。
+fn find_oaep_separator(rest: &[u8]) -> (Option<usize>, bool) {
+    let mut separator = None;
+    let mut padding_mismatch = 0u8;
+    for (index, byte) in rest.iter().copied().enumerate() {
+        if separator.is_none() {
+            if byte == 1 {
+                separator = Some(index);
+            } else {
+                padding_mismatch |= byte;
+            }
+        }
+    }
+
+    (separator, separator.is_some() && padding_mismatch == 0)
 }
 
 #[cfg(test)]

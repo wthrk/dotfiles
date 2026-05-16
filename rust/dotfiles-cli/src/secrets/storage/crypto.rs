@@ -3,18 +3,13 @@
 //! content key 生成、AEAD 追加認証データ、YubiKey wrap/unwrap をこのモジュールへ集約し、
 //! 操作フロー側から暗号手順の詳細を分離する。
 
-use aes_gcm::{
-    Aes256Gcm, KeyInit,
-    aead::{Aead, AeadInPlace, Payload},
-};
-use anyhow::{Context, bail};
+use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
+use anyhow::bail;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
 
-use super::model::{
-    CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretBytes, SecretDevice, SecretName, TAG_LEN,
-};
+use super::model::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretBytes, SecretDevice, SecretName};
 
 /// secret 本文を per-secret content key で暗号化し、その key を YubiKey public key で wrap する。
 pub(crate) fn encrypt_secret<D: SecretDevice>(
@@ -26,23 +21,16 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
     let nonce = rand::random::<[u8; NONCE_LEN]>();
     let cipher = Aes256Gcm::new_from_slice(content_key.as_ref())
         .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
-    let ciphertext_and_tag = Zeroizing::new(
-        cipher
-            .encrypt(
-                aes_gcm::Nonce::from_slice(&nonce),
-                Payload {
-                    msg: secret,
-                    aad: &name.additional_data(device.serial()),
-                },
-            )
-            .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?,
-    );
-    let tag_offset = ciphertext_and_tag
-        .len()
-        .checked_sub(TAG_LEN)
-        .context("AES-256-GCM output is shorter than its tag")?;
-    let (ciphertext, tag) = ciphertext_and_tag.split_at(tag_offset);
+    let mut ciphertext = Zeroizing::new(secret.to_vec());
+    let tag = cipher
+        .encrypt_in_place_detached(
+            aes_gcm::Nonce::from_slice(&nonce),
+            &name.additional_data(device.serial()),
+            ciphertext.as_mut(),
+        )
+        .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
     let tag = tag
+        .as_slice()
         .try_into()
         .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
 
@@ -52,7 +40,7 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
         name,
         nonce,
         wrapped_key,
-        ciphertext: Zeroizing::new(ciphertext.to_vec()),
+        ciphertext,
         tag,
     })
 }
