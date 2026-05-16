@@ -1,8 +1,8 @@
-//! `secrets-test-stub` feature でだけ使う CLI 統合テスト用 YubiKey 境界。
+//! `secrets-test-stub` feature の CLI 統合テスト用 YubiKey 境界。
 //!
-//! この module は実プロセスの stdin/stdout/stderr をそのまま使い、YubiKey PIV 操作だけを
-//! in-memory device に差し替える。通常 build には含めず、TTY / pipe の入力契約を binary
-//! integration test で検証するための境界として閉じる。
+//! 実プロセスの stdin/stdout/stderr を通し、YubiKey PIV 操作を in-memory device に
+//! 差し替える。通常 build には含めず、TTY / pipe の入力契約を binary integration test
+//! で検証する境界として閉じる。
 
 use std::collections::{BTreeMap, VecDeque};
 

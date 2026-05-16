@@ -1,7 +1,7 @@
-//! `dotfiles secrets` の command 入力を storage へ渡せる値に変換する。
+//! `dotfiles secrets` の command 入力を storage model へ接続する入力層。
 //!
-//! prompt と stdin の読み取り方法はこの module で選ぶ。端末の低水準操作は `util`、
-//! memory lock と zeroize 対象 buffer の所有は `util::protection` が扱う。
+//! 端末 I/O は `util::terminal`、memory lock は `util::protection` に委譲し、この層は
+//! prompt / stdin / JSON schema を command の入力契約として固定する。
 
 use anyhow::bail;
 use serde::Deserialize;
@@ -14,13 +14,13 @@ use super::{
     util::terminal,
 };
 
-/// prompt/stdin/JSON field から受け取った secret を、保護対象に渡す直前まで保持する入力型。
+/// prompt 入力で得た secret を、application の保護境界へ移すまで zeroize 対象にする。
 pub(crate) struct SecretInputBuffer {
     secret: SecretBytes,
 }
 
 impl From<Zeroizing<Vec<u8>>> for SecretInputBuffer {
-    /// prompt 入力は zeroize 対象 buffer の所有権を維持したまま storage secret 型へ移す。
+    /// prompt 入力の allocation を作り替えず、storage model の secret 所有値へ移す。
     fn from(buffer: Zeroizing<Vec<u8>>) -> Self {
         Self {
             secret: buffer.into(),
@@ -29,32 +29,32 @@ impl From<Zeroizing<Vec<u8>>> for SecretInputBuffer {
 }
 
 impl From<SecretInputBuffer> for SecretBytes {
-    /// 入力境界で確定した secret は、memory lock 直前に storage model へ移す。
+    /// application 層が保護済み値を作る直前に、入力型から storage model へ所有権を移す。
     fn from(input: SecretInputBuffer) -> Self {
         input.secret
     }
 }
 
-/// 表示入力を許す secret は、読み取り直後に入力用 secret 型へ移す。
+/// 表示 prompt を使う secret は、端末 newline 契約と byte 上限を入力境界で検証する。
 pub(super) fn read_visible_secret_line(prompt: &str, limit: usize) -> Result<SecretInputBuffer> {
     let input =
         terminal::read_visible_line_bytes(prompt, limit, "visible secret input is too large")?;
     Ok(input.into())
 }
 
-/// 保存対象 secret の hidden prompt は PIN 入力と型・サイズ上限を分ける。
+/// 保存対象 secret の hidden prompt は、PIN と異なる上限エラー契約を持つ。
 pub(super) fn read_hidden_secret(prompt: &str, limit: usize) -> Result<SecretInputBuffer> {
     let value =
         terminal::read_hidden_bytes_with_limit(prompt, limit, "hidden secret input is too large")?;
     Ok(value.into())
 }
 
-/// YubiKey PIN は PIV session 検証だけに使い、storage secret にはしない。
+/// YubiKey PIN は PIV session 検証専用で、storage model へ変換しない。
 pub(crate) fn read_yubikey_pin() -> Result<Zeroizing<Vec<u8>>> {
     terminal::read_hidden_bytes("YubiKey PIN: ")
 }
 
-/// `--stdin-json` は既定 schema 以外の key 欠落や型違いを serde error として拒否する。
+/// `--stdin-json` は bootstrap schema から外れる key 欠落や型違いを登録前に拒否する。
 pub(super) fn parse_bootstrap_secrets_json(input: &[u8]) -> Result<BootstrapSecrets> {
     let input: BootstrapSecretsInput = serde_json::from_slice(input)?;
     Ok(input.into_bootstrap_secrets())
@@ -71,7 +71,7 @@ struct BootstrapSecretsInput {
 }
 
 impl BootstrapSecretsInput {
-    /// serde が検証した 3 field を、bootstrap 登録用の storage model へ移す。
+    /// JSON 入力の 3 field を bootstrap 登録用の storage model へ所有権ごと移す。
     fn into_bootstrap_secrets(self) -> BootstrapSecrets {
         BootstrapSecrets {
             bw_email: self.bw_email,
@@ -89,7 +89,7 @@ pub(crate) fn ensure_secret_stdout_not_terminal() -> Result<()> {
     Ok(())
 }
 
-/// 呼び出し側が出力先を復号前に確認したうえで、secret bytes を stdout へ渡す。
+/// 復号後の secret bytes は、TTY 拒否済みの stdout に書き込む。
 pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
     ensure_secret_stdout_not_terminal()?;
     terminal::write_all_stdout(bytes)

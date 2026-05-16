@@ -56,7 +56,7 @@ pub(crate) fn oaep_unpad_sha256(encoded: &[u8], key_len: usize) -> Result<Zeroiz
     Ok(Zeroizing::new(rest[separator + 1..].to_vec()))
 }
 
-/// `rsa` crate の OAEP unpad は非公開 API のため、YubiKey の raw RSA 出力だけを復号境界に戻す。
+/// `rsa` crate の OAEP unpad は非公開 API なので、YubiKey の raw RSA 出力を復号境界で検証する。
 fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
     let mut counter = 0u32;

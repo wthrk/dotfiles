@@ -1,7 +1,8 @@
 //! YubiKey bootstrap secret storage の操作フロー。
 //!
-//! setup / put / get / enroll / verify の境界を維持し、manifest 整合性確認と呼び出し
-//! エラー契約をこのモジュールで一元管理する。
+//! setup / put / get / enroll / verify は同じ manifest sentinel と PIV object mapping を
+//! 共有する。device adapter の実装差は `SecretDevice` trait に閉じ、ここでは永続書き込みの
+//! 順序と検証結果の JSON 契約を固定する。
 
 use crate::Result;
 use anyhow::{Context, bail};
@@ -107,8 +108,7 @@ pub fn get<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBy
 
 /// primary または spare として bootstrap secret 一式を登録する。
 ///
-/// setup、3 secret 保存、local verify をこの順に実行し、成功した確認項目だけを
-/// summary に含める。
+/// setup、3 secret 保存、local verify の順序を固定し、成功した確認項目を summary に含める。
 pub fn enroll<D: SecretDevice, S: BootstrapSecretSource>(
     device: &mut D,
     role: YubikeyRole,
@@ -143,13 +143,13 @@ pub fn enroll<D: SecretDevice, S: BootstrapSecretSource>(
     })
 }
 
-/// BWS access token だけを置き換え、local storage を再検証する。
+/// BWS access token を置き換えた後、同じ device 上の local storage 整合性を再検証する。
 pub fn rotate_bws_token<D: SecretDevice>(device: &mut D, token: &[u8]) -> Result<VerifySummary> {
     put(device, SecretName::BwsAccessToken, token, true)?;
     verify_local_storage(device)
 }
 
-/// `rotate-bws-token` の token 入力前に、local storage が更新可能か確認する。
+/// token を読む前に、更新対象 YubiKey が dotfiles storage として初期化済みか確認する。
 pub fn check_rotate_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
     verify_local_storage(device)?;
     device.check_management_auth_preconditions()
@@ -157,7 +157,7 @@ pub fn check_rotate_preconditions<D: SecretDevice>(device: &mut D) -> Result<()>
 
 /// YubiKey 上の manifest と 3 secret の復号可能性を検証する。
 ///
-/// local storage verification は外部 service へ接続せず、BWS / Bitwarden login を未実行項目として残す。
+/// local storage verification は外部 service に接続せず、remote check は未実行項目として残す。
 pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySummary> {
     read_manifest(device)?.validate_expected()?;
     for name in SecretName::iter() {
@@ -181,7 +181,7 @@ pub fn verify_local_storage<D: SecretDevice>(device: &mut D) -> Result<VerifySum
     })
 }
 
-/// manifest は secret blob より先に書き、以後の put/get/verify の storage sentinel にする。
+/// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
     let manifest = serde_json::to_vec(&SecretManifest::expected())?;
     device.write_object(PivObjectId::MANIFEST, &manifest)

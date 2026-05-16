@@ -1,7 +1,7 @@
 //! YubiKey bootstrap secret storage のデータモデルと装置抽象。
 //!
-//! wire format と暗号処理の詳細は他モジュールへ分離し、このファイルは呼び出し境界で
-//! 安定させたい型と識別子定義だけを保持する。
+//! wire format と暗号処理の詳細は他モジュールへ分離し、このファイルは PIV object、
+//! secret 名、summary JSON の型付き contract を定義する。
 
 use std::{collections::BTreeMap, fmt};
 
@@ -37,7 +37,7 @@ impl PivObjectId {
     /// manifest を保存する PIV data object ID。
     pub const MANIFEST: Self = Self(0x005f_ff16);
 
-    /// 実機 adapter が `yubikey` crate へ渡す境界でだけ raw object ID に戻す。
+    /// raw object ID は実機 adapter が `yubikey` crate を呼ぶ境界で取り出す。
     pub fn value(self) -> u32 {
         self.0
     }
@@ -97,7 +97,7 @@ pub enum SecretName {
 }
 
 impl SecretName {
-    /// bootstrap recovery で扱う secret 名を enum 定義順で列挙する。
+    /// summary と verify で使う secret 名の安定した列挙順。
     pub fn iter() -> impl Iterator<Item = Self> {
         <Self as IntoEnumIterator>::iter()
     }
@@ -120,7 +120,7 @@ impl SecretName {
         }
     }
 
-    /// blob の入れ替え検出に使う AEAD additional data を構築する。
+    /// serial と object ID を AEAD additional data に含め、blob の差し替えを検出する。
     pub fn additional_data(self, serial: u32) -> Vec<u8> {
         [
             &[BLOB_VERSION, self.secret_id()][..],
@@ -218,7 +218,7 @@ pub trait SecretDevice {
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
     /// secret storage 用 PIV key を device 内で生成する。
     fn generate_key(&mut self) -> Result<()>;
-    /// PIV data object を読み取る。存在しない場合は `None` を返す。
+    /// 存在しない PIV data object は `None` として storage precondition へ渡る。
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Zeroizing<Vec<u8>>>>;
     /// PIV data object に bytes を保存する。
     fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()>;
@@ -303,12 +303,12 @@ pub struct BootstrapSecrets {
 
 /// 登録処理が参照する bootstrap secret 一式。
 pub trait BootstrapSecretSource {
-    /// secret 名に対応する平文 bytes を返す。
+    /// secret 名に対応する平文 bytes の借用範囲を呼び出し側へ委ねる。
     fn get(&self, name: SecretName) -> &[u8];
 }
 
 impl BootstrapSecretSource for BootstrapSecrets {
-    /// 未保護の bootstrap secret model は storage 内部の検証や fake でだけ平文参照を返す。
+    /// 未保護 model の平文参照は storage tests と fake 境界に限定する。
     fn get(&self, name: SecretName) -> &[u8] {
         match name {
             SecretName::BwEmail => self.bw_email.as_slice(),
@@ -324,7 +324,7 @@ impl SecretBytes {
         Zeroizing::new(value).into()
     }
 
-    /// 平文参照は暗号処理や検証の呼び出し境界だけに限定する。
+    /// 平文参照は暗号化、復号後検証、stdout 書き込みの呼び出し中に限定する。
     pub fn as_slice(&self) -> &[u8] {
         self.0.expose_secret().as_ref()
     }

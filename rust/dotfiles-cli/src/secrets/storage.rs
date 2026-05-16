@@ -1,7 +1,7 @@
 //! `dotfiles secrets` の storage 層。
 //!
-//! この層は secret storage のデータモデル、wire format、暗号処理、device trait
-//! に対する保存操作を扱う。端末 I/O、process 保護、実機 YubiKey discovery には依存しない。
+//! secret storage のデータモデル、wire format、暗号処理、device trait への保存操作を
+//! 定義する。端末 I/O、process 保護、実機 YubiKey discovery は上位層の責務とする。
 
 mod crypto;
 mod model;

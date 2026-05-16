@@ -19,10 +19,10 @@ use crate::Result;
 
 use super::protection::InterruptGuard;
 
-/// 非対話実行で spare serial なしに差し替え prompt へ進まないための error。
+/// 非対話実行で spare serial なしに差し替え prompt へ進む契約違反。
 pub(crate) const SPARE_SERIAL_NONINTERACTIVE_ERROR: &str =
     "pass --spare-serial in non-interactive use";
-/// spare 差し替え待ちの期限切れを command error として返す sentinel。
+/// spare 差し替え待ちの期限切れを示す command error sentinel。
 pub(crate) const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
 
 /// YubiKey 選択 prompt に表示する reader 名と serial。
@@ -36,7 +36,7 @@ pub(crate) fn stdin_is_terminal() -> bool {
     io::stdin().is_terminal()
 }
 
-/// 低水準 `get` で平文 secret を直接画面へ出さないための出力先判定。
+/// 低水準 `get` が平文 secret を画面へ出さないための出力先判定。
 pub(crate) fn stdout_is_terminal() -> bool {
     io::stdout().is_terminal()
 }
@@ -105,7 +105,7 @@ pub(crate) fn wait_for_enter(deadline: Instant, interrupt: &InterruptGuard) -> R
     read_terminal_line_until(deadline, interrupt).map(|_| ())
 }
 
-/// primary が選ばれた場合だけ、spare 挿入を Enter 入力で同期する。
+/// primary が選ばれた場合に、spare 挿入を Enter 入力で同期する。
 pub(crate) fn wait_for_spare_replacement(
     deadline: Instant,
     interrupt: &InterruptGuard,
@@ -157,7 +157,7 @@ pub(crate) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// raw mode の event loop で Enter、Ctrl-C、deadline、interrupt を同じ thread で扱う。
+/// raw mode 入力では Enter、Ctrl-C、deadline、interrupt の優先順位を同じ thread で決める。
 pub(crate) fn read_terminal_line_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
@@ -210,7 +210,7 @@ pub(crate) fn read_terminal_line_until(
     }
 }
 
-/// prompt/stdin 由来の末尾 newline 1 個だけを保存対象から外す。
+/// prompt/stdin 由来の行終端 1 個を保存対象から外す。
 fn trim_one_trailing_newline(input: &mut Vec<u8>) {
     if input.ends_with(b"\n") {
         input.pop();

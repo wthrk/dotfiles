@@ -1,6 +1,6 @@
 //! `dotfiles secrets` の端末操作と暗号 primitive 補助。
 //!
-//! ここに置く処理は command option、storage model、YubiKey discovery を受け取らない。
+//! command option、storage model、YubiKey discovery を持たない汎用部品を置く。
 
 pub(crate) mod oaep;
 pub(crate) mod protection;

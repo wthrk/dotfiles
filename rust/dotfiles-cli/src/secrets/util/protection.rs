@@ -1,4 +1,4 @@
-//! 平文 secret を扱う間だけ有効にする process / memory 保護。
+//! 平文 secret の生存期間に紐づける process / memory 保護。
 
 use std::{
     marker::PhantomData,
@@ -24,7 +24,7 @@ static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
     LazyLock::new(|| Mutex::new(InterruptRegistration::default()));
 const MEMORY_LOCK_PROBE_LEN: usize = 256 * 1024;
 
-/// 平文 secret を保持する区間だけ SIGINT/SIGTERM の既定動作を遅延する。
+/// 平文 secret を保持する保護区間では SIGINT/SIGTERM の既定動作を遅延する。
 pub(crate) struct InterruptGuard;
 
 #[derive(Default)]
@@ -35,7 +35,7 @@ struct InterruptRegistration {
 }
 
 impl InterruptGuard {
-    /// ネスト時は最外側だけが handler を登録し、最後の guard の Drop で解除する。
+    /// ネスト時は最外側の guard が handler を登録し、最後の guard の Drop で解除する。
     pub(crate) fn install() -> Result<Self> {
         let mut registration = interrupt_registration();
         if registration.depth == 0 {
@@ -112,7 +112,7 @@ impl InterruptRegistration {
 /// 平文 secret を読む前に core dump と mlock 利用可否を確定する。
 struct SecretMemoryGuard;
 
-/// 平文 secret を扱う use case の signal / memory 保護境界。
+/// 平文 secret を読む use case 全体の signal / memory 保護境界。
 pub(crate) struct SecretSession {
     interrupt: InterruptGuard,
     memory: SecretMemoryGuard,
@@ -120,7 +120,7 @@ pub(crate) struct SecretSession {
 
 /// secret 値と memory lock guard を同じ所有値として保持する。
 ///
-/// `Deref` で借用できるのはこの値の生存中だけで、unlock は inner value の Drop 後に走る。
+/// `Deref` の借用期間はこの値の生存期間に縛られ、unlock は inner value の Drop 後に走る。
 pub(crate) struct Protected<'session, T> {
     value: T,
     _lock: Option<region::LockGuard>,
@@ -149,7 +149,7 @@ impl SecretSession {
         self.interrupt.run_yubikey_operation(operation)
     }
 
-    /// device adapter など既存境界へ、同じ保護スコープの interrupt guard だけを貸し出す。
+    /// device adapter へ同じ保護スコープの interrupt guard を貸し出す。
     pub(crate) fn interrupt(&self) -> &InterruptGuard {
         &self.interrupt
     }

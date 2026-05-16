@@ -1,7 +1,8 @@
 //! `dotfiles secrets` の application 層。
 //!
-//! storage model は保存形式と secret 値そのものを表す。この層は command ごとの use case
-//! flow、device/input 境界、use-case 実行中だけ必要な memory lock 付き所有状態を扱う。
+//! この層は command ごとの use case と外部境界の順序を所有する。secret を読む前に
+//! device と非対話条件を確定し、平文 secret は `SecretSession` に紐づく保護済み値として
+//! storage 層へ渡す。
 
 use std::collections::BTreeSet;
 
@@ -30,10 +31,10 @@ use crate::Result;
 const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 
-/// 単一 secret を memory lock guard と同じ生存期間で保持する use-case 状態。
+/// use case 実行中の `SecretSession` より長生きできない単一 secret。
 pub(crate) type ProtectedSecret<'session> = Protected<'session, storage::SecretBytes>;
 
-/// bootstrap 登録が保存前に要求する 3 種類の保護済み secret。
+/// bootstrap 登録に必要な 3 field を同一 session の保護境界へ閉じ込める。
 pub(crate) struct ProtectedBootstrapSecrets<'session> {
     bw_email: ProtectedSecret<'session>,
     bw_password: ProtectedSecret<'session>,
@@ -41,7 +42,7 @@ pub(crate) struct ProtectedBootstrapSecrets<'session> {
 }
 
 impl<'session> ProtectedBootstrapSecrets<'session> {
-    /// prompt 経路で field ごとに保護済みになった値だけを bootstrap 入力として受ける。
+    /// 各 field が同じ `SecretSession` に紐づくことを型で固定する。
     pub(crate) fn new(
         bw_email: ProtectedSecret<'session>,
         bw_password: ProtectedSecret<'session>,
@@ -54,7 +55,7 @@ impl<'session> ProtectedBootstrapSecrets<'session> {
         }
     }
 
-    /// JSON や device 復号で得た bootstrap secret は field ごとに lock してから登録へ渡す。
+    /// 未保護の bootstrap model は field 単位で保護済み値へ移してから採用する。
     pub(crate) fn protect(
         secrets: BootstrapSecrets,
         session: &'session SecretSession,
@@ -68,7 +69,7 @@ impl<'session> ProtectedBootstrapSecrets<'session> {
 }
 
 impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
-    /// storage 登録中だけ、要求された bootstrap secret の平文 bytes を借用する。
+    /// 平文 bytes の借用範囲を storage 呼び出し中に限定する。
     fn get(&self, name: SecretName) -> &[u8] {
         match name {
             SecretName::BwEmail => self.bw_email.as_slice(),
@@ -78,7 +79,7 @@ impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
     }
 }
 
-/// 単一 secret は memory lock 付き状態にしてから storage 操作へ渡す。
+/// device から復号した単一 secret を現在の session の保護境界へ移す。
 pub(crate) fn protect_secret(
     secret: storage::SecretBytes,
     session: &SecretSession,
@@ -86,7 +87,7 @@ pub(crate) fn protect_secret(
     session.protect_value(secret, storage::SecretBytes::as_slice)
 }
 
-/// command 入力境界で確定した単一 secret を memory lock 付き状態へ移す。
+/// prompt 入力の secret buffer を storage model 化し、現在の session へ所属させる。
 pub(crate) fn protect_secret_input(
     input: super::input::SecretInputBuffer,
     session: &SecretSession,
@@ -94,7 +95,7 @@ pub(crate) fn protect_secret_input(
     protect_secret(input.into(), session)
 }
 
-/// stdin の単一 secret は読み込み時の lock を保持したまま保護済み値へ移す。
+/// stdin secret は読み込み時の lock guard を引き継ぎ、unlock を値の破棄後に遅延させる。
 pub(super) fn read_protected_stdin_secret(
     limit: usize,
     session: &SecretSession,
@@ -105,13 +106,13 @@ pub(super) fn read_protected_stdin_secret(
     session.protect_locked_value(buffer.into(), lock)
 }
 
-/// CLI で parse 済みの `dotfiles secrets` command を application flow へ渡す。
+/// 実機境界を使って parse 済み command の use case を開始する。
 pub(super) fn run(options: SecretsOptions) -> Result<()> {
     let mut boundary = RealSecretsBoundary;
     run_with_boundary(options, &mut boundary)
 }
 
-/// integration test は YubiKey 境界だけを差し替え、CLI 入力境界は実プロセスで通す。
+/// test stub でも実プロセスの TTY / pipe 契約を維持して use case を実行する。
 pub(super) fn run_with_boundary<B: SecretsBoundary>(
     options: SecretsOptions,
     boundary: &mut B,
@@ -124,8 +125,8 @@ pub(super) fn run_with_boundary<B: SecretsBoundary>(
 
 /// `dotfiles secrets yubikey` 配下の command を実行する。
 ///
-/// 低水準 command は単一 secret または storage setup だけを扱い、高水準 command は
-/// primary / spare 登録と local verify までを一連の操作として扱う。
+/// 低水準 command は単一 secret と storage setup に限定し、高水準 command は
+/// primary / spare 登録と local verify までを一連の操作として定義する。
 fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut B) -> Result<()> {
     match options.command {
         YubikeyCommand::Setup(options) => {
@@ -183,7 +184,7 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
     }
 }
 
-/// `put` / token 更新の secret は読み取り直後に保護済み値へ移す。
+/// 保存対象 secret は入力直後に session 所属の保護済み値へ移す。
 fn read_protected_secret_for_put(
     name: SecretName,
     stdin: bool,
@@ -199,7 +200,7 @@ fn read_protected_secret_for_put(
     }
 }
 
-/// 登録用 bootstrap secret は、3 field すべてを保護済み値として組み立てる。
+/// bootstrap secret は field ごとの保護境界をそろえてから登録用 model にする。
 pub(super) fn read_protected_bootstrap_secrets(
     stdin_json: bool,
     memory: &SecretSession,
@@ -231,7 +232,7 @@ pub(super) fn read_protected_bootstrap_secrets(
     ))
 }
 
-/// device/input 境界を差し替え、secret 読み込み前の spare 準備と同一 serial 拒否を固定する。
+/// spare 登録では primary 復号前に spare の候補と serial 制約を確定する。
 fn run_enroll_spare_with<B: SecretsBoundary>(
     options: EnrollSpareOptions,
     boundary: &mut B,
@@ -289,7 +290,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     Ok(())
 }
 
-/// primary 復号結果は secret ごとに保護済みに移してから次の復号へ進む。
+/// primary から復号した各 field は、次の device 操作前に保護済み値へ移す。
 fn read_protected_bootstrap_from_device<'session, D: storage::SecretDevice>(
     primary: &mut D,
     session: &'session SecretSession,
@@ -313,7 +314,7 @@ fn read_protected_bootstrap_from_device<'session, D: storage::SecretDevice>(
     ))
 }
 
-/// token 入力を 1 回に限定し、複数 YubiKey 更新時も同じ token buffer を再利用する。
+/// BWS token rotation は 1 回読んだ token を複数 device 更新に再利用する。
 fn run_rotate_bws_token_with<B: SecretsBoundary>(
     options: super::RotateBwsTokenOptions,
     boundary: &mut B,
@@ -380,7 +381,7 @@ struct PartialRotateBwsTokenSummary<'a> {
     updated: &'a [storage::VerifySummary],
 }
 
-/// 複数本更新の途中失敗時は、完了済み serial を機械処理できる JSON として残す。
+/// 部分更新が起きた rotation 失敗では、再実行対象を判別できる JSON を標準出力へ残す。
 fn write_partial_rotate_bws_token_summary(summaries: &[storage::VerifySummary]) -> Result<()> {
     if summaries.is_empty() {
         return Ok(());
@@ -391,7 +392,7 @@ fn write_partial_rotate_bws_token_summary(summaries: &[storage::VerifySummary]) 
     Ok(())
 }
 
-/// 外部 service check は未実装として device access 前に拒否し、local storage 検証だけを通す。
+/// 外部 service check は device touch 前に拒否し、未実装項目で secret を復号しない。
 fn run_verify_yubikey_with<B: SecretsBoundary>(
     options: VerifyYubikeyOptions,
     boundary: &mut B,
@@ -425,7 +426,7 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
     Ok(())
 }
 
-/// CLI 統合フローが依存する device/input 境界。
+/// application 層が実機 I/O と test stub を同じ use case に接続する境界。
 pub(super) trait SecretsBoundary {
     type Device: storage::SecretDevice;
 
@@ -453,14 +454,14 @@ pub(super) trait SecretsBoundary {
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
 }
 
-/// 非対話実行で prompt の代わりに要求する secret 入力形式。
+/// 非対話実行時に prompt の代替として許可する secret 入力形式。
 #[derive(Clone, Copy)]
 enum StdinSecretMode {
     Single,
     BootstrapJson,
 }
 
-/// fake 境界を使う command でも、secret 入力前の非対話契約を同じ判定にそろえる。
+/// secret 読み込み前に、実機境界と test 境界で同じ非対話契約を適用する。
 fn require_stdin_secret_source_for_boundary<B: SecretsBoundary>(
     enabled: bool,
     mode: StdinSecretMode,
@@ -473,7 +474,7 @@ fn require_stdin_secret_source_for_boundary<B: SecretsBoundary>(
     Ok(())
 }
 
-/// 非対話の spare 登録では primary secret 読み出し前に primary serial を確定する。
+/// 非対話 spare 登録は primary device を prompt なしで特定できる場合に開始する。
 fn require_primary_serial_for_noninteractive<B: SecretsBoundary>(
     primary_serial: Option<u32>,
     boundary: &B,
@@ -494,7 +495,7 @@ fn require_secret_stdout_for_boundary<B: SecretsBoundary>(boundary: &B) -> Resul
     Ok(())
 }
 
-/// 非対話の spare 登録では primary 読み出し前に spare serial まで確定する。
+/// 非対話 spare 登録は差し替え prompt を使わず spare device を特定できる場合に進める。
 fn require_spare_serial_for_noninteractive<B: SecretsBoundary>(
     spare_serial: Option<u32>,
     boundary: &B,
@@ -506,7 +507,7 @@ fn require_spare_serial_for_noninteractive<B: SecretsBoundary>(
     Ok(())
 }
 
-/// fake 境界を使う高水準 command でも、PIN 入力を device adapter の外側に固定する。
+/// PIN 入力は device adapter へ閉じ込めず、application の入力順序で取得する。
 fn verify_pin_for_secret_reads<B: SecretsBoundary>(
     boundary: &mut B,
     device: &mut B::Device,
@@ -515,7 +516,7 @@ fn verify_pin_for_secret_reads<B: SecretsBoundary>(
     device.verify_pin(&pin)
 }
 
-/// command ごとの stdin option 名を error message の単一 source にする。
+/// stdin 契約違反の error message を command option 名と一致させる。
 fn stdin_secret_source_error(mode: StdinSecretMode) -> &'static str {
     match mode {
         StdinSecretMode::Single => "pass --stdin in non-interactive use",

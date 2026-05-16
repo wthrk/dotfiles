@@ -1,7 +1,8 @@
 //! `dotfiles secrets` の CLI orchestration 層。
 //!
-//! この機能は orchestration、application、input、device、storage、util に分ける。
-//! orchestration は clap option、非対話 precondition、保護区間、YubiKey 操作の順序だけを固定する。
+//! この機能は CLI 入口、application、input、device、storage、util に分ける。
+//! CLI 入口は clap option の型付けと公開 command 名を固定し、secret の取得順序や
+//! device 操作の失敗契約は application 以下へ閉じ込める。
 //!
 //! `storage` は command 入力、process 保護、実機 discovery に依存しない。process
 //! 保護や端末 I/O の汎用部品は `util` に置き、use-case 中の保護済み状態は
@@ -21,7 +22,7 @@ use storage::SecretName;
 use crate::Result;
 
 #[derive(Args)]
-/// GPG、pass、Bitwarden 復旧に必要な秘密情報を扱う。
+/// 復旧用 secret の保存先と検証手段を選ぶ最上位 command。
 pub(crate) struct SecretsOptions {
     #[cfg(feature = "secrets-test-stub")]
     #[arg(long, hide = true)]
@@ -31,7 +32,7 @@ pub(crate) struct SecretsOptions {
 }
 
 #[derive(Subcommand)]
-/// `dotfiles secrets` は低水準 YubiKey 操作と利用者向け検証を別の入口として扱う。
+/// YubiKey storage の初期化操作と、復旧手順向けの高水準操作を分けて公開する。
 enum SecretsCommand {
     Yubikey(YubikeyOptions),
     VerifyYubikey(VerifyYubikeyOptions),
@@ -142,7 +143,7 @@ pub(crate) fn run(options: SecretsOptions) -> Result<()> {
     application::run(options)
 }
 
-/// CLI は kebab-case 名だけを受け付け、wire format の secret id 変換とは分離する。
+/// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。
 fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
     value
         .parse()

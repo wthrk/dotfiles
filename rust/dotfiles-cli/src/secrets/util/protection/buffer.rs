@@ -1,4 +1,4 @@
-//! secret 入力を読み込む前に容量と memory lock 範囲を確定する buffer。
+//! secret 入力の読み込み容量と memory lock 範囲を同じ所有値で管理する buffer。
 
 use std::io::{self, Read, Write};
 
@@ -9,7 +9,7 @@ use crate::Result;
 
 use super::SecretSession;
 
-/// 上限超過検出用の余剰 1 byte まで同じ memory lock 範囲で保持する入力 buffer。
+/// 上限判定に必要な余剰 bytes まで lock 対象から外さない入力 buffer。
 pub(crate) struct ProtectedInputBuffer {
     buffer: Zeroizing<Vec<u8>>,
     len: usize,
@@ -17,7 +17,7 @@ pub(crate) struct ProtectedInputBuffer {
 }
 
 impl ProtectedInputBuffer {
-    /// caller が指定した容量全体を確保し、必要なら読み込み前に lock する。
+    /// 読み込み先の allocation 全体を先に確保し、session がある場合は同じ範囲を lock する。
     pub(crate) fn new(capacity: usize, session: Option<&SecretSession>) -> Result<Self> {
         let buffer = Zeroizing::new(vec![0; capacity]);
         let lock = match session {
@@ -59,12 +59,12 @@ impl ProtectedInputBuffer {
         Ok(buffer)
     }
 
-    /// JSON parse には読み込み済みの範囲だけを渡す。
+    /// 未初期化扱いの余剰容量を JSON parser へ見せない。
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]
     }
 
-    /// 末尾 newline を除いた入力 bytes と読み込み時の lock guard を同じ所有境界へ渡す。
+    /// 末尾 newline を除いた入力 bytes と読み込み時の lock guard を同時に所有境界へ移す。
     pub(crate) fn into_trimmed_bytes_and_lock(
         self,
     ) -> (Zeroizing<Vec<u8>>, Option<region::LockGuard>) {
@@ -82,7 +82,7 @@ impl ProtectedInputBuffer {
         (buffer, _lock)
     }
 
-    /// 行入力として受けた secret は、末尾改行を除いた値だけを上限検証して返す。
+    /// 行入力 secret の上限は、末尾改行を除いた保存対象 bytes に適用する。
     pub(crate) fn into_secret_line_and_lock(
         self,
         limit: usize,
@@ -97,7 +97,7 @@ impl ProtectedInputBuffer {
 }
 
 impl Write for ProtectedInputBuffer {
-    /// `io::copy` の書き込み先として、確保済みの lock 範囲を超えた bytes は受け取らない。
+    /// `io::copy` からの書き込みは確保済み lock 範囲の内側に収める。
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.buffer.len().saturating_sub(self.len);
         let len = remaining.min(bytes.len());
@@ -106,7 +106,7 @@ impl Write for ProtectedInputBuffer {
         Ok(len)
     }
 
-    /// 入力 buffer は外部 writer を持たないため flush で追加処理を行わない。
+    /// memory buffer writer なので flush は永続化や外部 I/O を伴わない。
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
