@@ -233,7 +233,6 @@
             pkgs.nil
             pkgs.nix
             pkgs.nixd
-            pkgs.pcsclite
             pkgs.pkg-config
             pkgs.ripgrep
             pkgs.rust-analyzer
@@ -241,6 +240,9 @@
             pkgs.rustfmt
             pkgs.shellcheck
             pkgs.zsh
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.pcsclite
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.ansible
