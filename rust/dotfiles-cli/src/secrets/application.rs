@@ -94,14 +94,6 @@ pub(crate) fn protect_secret(
     session.protect_value(secret, storage::SecretBytes::memory_range)
 }
 
-/// prompt 入力 buffer を storage model へ変換し、現在の session へ所属させる。
-pub(crate) fn protect_secret_input(
-    input: super::input::SecretInputBuffer,
-    session: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
-    protect_secret(input.into(), session)
-}
-
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
 ///
 /// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。
@@ -233,10 +225,9 @@ fn read_protected_secret_for_put(
     if stdin {
         read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
     } else {
-        protect_secret_input(
-            read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN)?,
-            memory,
-        )
+        let (secret, lock) =
+            read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+        memory.protect_locked_value(secret, lock)
     }
 }
 
@@ -259,10 +250,9 @@ pub(super) fn read_protected_bootstrap_secrets(
         return ProtectedBootstrapSecrets::protect(secrets, memory);
     }
 
-    let bw_email = protect_secret_input(
-        read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN)?,
-        memory,
-    )?;
+    let (bw_email, bw_email_lock) =
+        read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+    let bw_email = memory.protect_locked_value(bw_email, bw_email_lock)?;
     let bw_password = read_protected_secret_for_put(SecretName::BwPassword, false, memory)?;
     let bws_access_token =
         read_protected_secret_for_put(SecretName::BwsAccessToken, false, memory)?;

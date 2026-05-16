@@ -168,6 +168,16 @@ impl SecretSession {
         self.protect_locked_value(value, lock)
     }
 
+    /// secret 値の memory range を現在の session で lock する。
+    pub(crate) fn lock_secret_value<T>(
+        &self,
+        value: &T,
+        memory_range: impl FnOnce(&T) -> (*const u8, usize),
+    ) -> Result<Option<region::LockGuard>> {
+        let (ptr, len) = memory_range(value);
+        lock_secret_memory(ptr, len)
+    }
+
     /// lock 済み allocation から作った値を、この session に所属する所有値へ移す。
     ///
     /// 渡された lock guard は値と同じ所有値へ引き継ぐ。

@@ -1,7 +1,7 @@
 //! `dotfiles secrets` の利用者入力を storage model へ変換する入力層。
 //!
-//! 端末 I/O は `util::terminal`、memory lock は `util::protection` に委譲し、この層は
-//! prompt、stdin、JSON schema の入力形式と error contract を固定する。
+//! TTY 判定と stdout 書き込みは `util::terminal`、memory lock は `util::protection` に委譲し、
+//! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
 
 use anyhow::bail;
 use serde::Deserialize;
@@ -11,47 +11,53 @@ use crate::Result;
 
 use super::{
     storage::{BootstrapSecrets, SecretBytes},
-    util::terminal,
+    util::{
+        protection::{ProtectedInputBuffer, SecretSession},
+        terminal,
+    },
 };
 
-/// prompt 入力で得た byte 列を、application の保護境界へ移すまで zeroize 対象として保持する。
-pub(crate) struct SecretInputBuffer {
-    secret: SecretBytes,
-}
+/// 表示 prompt で 1 行を読み、lock 済み入力 buffer として返す。
+///
+/// 末尾改行を除いた bytes に上限を適用する。
+pub(super) fn read_visible_secret_line(
+    prompt: &str,
+    limit: usize,
+    memory: &SecretSession,
+) -> Result<(SecretBytes, Option<region::LockGuard>)> {
+    use std::io::{self, Write};
 
-impl From<Zeroizing<Vec<u8>>> for SecretInputBuffer {
-    /// terminal adapter が返した allocation を作り替えず、storage model の所有値へ移す。
-    fn from(buffer: Zeroizing<Vec<u8>>) -> Self {
-        Self {
-            secret: buffer.into(),
-        }
-    }
-}
-
-impl From<SecretInputBuffer> for SecretBytes {
-    /// application 層が保護済み値を作る直前に、入力 buffer の所有権を storage model へ移す。
-    fn from(input: SecretInputBuffer) -> Self {
-        input.secret
-    }
-}
-
-/// 表示 prompt で 1 行を読み、端末 newline の除去と byte 上限を入力境界で検証する。
-pub(super) fn read_visible_secret_line(prompt: &str, limit: usize) -> Result<SecretInputBuffer> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
     let input =
-        terminal::read_visible_line_bytes(prompt, limit, "visible secret input is too large")?;
-    Ok(input.into())
+        ProtectedInputBuffer::read_line_until_newline_from(std::io::stdin(), limit, Some(memory))?;
+    let (buffer, lock) =
+        input.into_secret_line_and_lock(limit, "visible secret input is too large")?;
+    Ok((buffer.into(), lock))
 }
 
-/// echo なしの prompt で 1 行を読み、secret 入力用の byte 上限 error を適用する。
-pub(super) fn read_hidden_secret(prompt: &str, limit: usize) -> Result<SecretInputBuffer> {
-    let value =
-        terminal::read_hidden_bytes_with_limit(prompt, limit, "hidden secret input is too large")?;
-    Ok(value.into())
+/// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。
+///
+/// 読み込んだ bytes に上限を適用する。
+pub(super) fn read_hidden_secret(
+    prompt: &str,
+    limit: usize,
+    memory: &SecretSession,
+) -> Result<(SecretBytes, Option<region::LockGuard>)> {
+    let value = Zeroizing::new(rpassword::prompt_password(prompt)?.into_bytes());
+    if value.len() > limit {
+        bail!("hidden secret input is too large");
+    }
+    let secret = SecretBytes::from(value);
+    let lock = memory.lock_secret_value(&secret, SecretBytes::memory_range)?;
+    Ok((secret, lock))
 }
 
 /// echo なしの prompt で YubiKey PIN を読み、PIV session 検証用の byte buffer として返す。
 pub(crate) fn read_yubikey_pin() -> Result<Zeroizing<Vec<u8>>> {
-    terminal::read_hidden_bytes("YubiKey PIN: ")
+    Ok(Zeroizing::new(
+        rpassword::prompt_password("YubiKey PIN: ")?.into_bytes(),
+    ))
 }
 
 /// stdin の JSON bytes を bootstrap 登録用 schema として parse し、型付き model へ変換する。

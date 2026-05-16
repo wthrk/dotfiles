@@ -12,7 +12,7 @@ use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, YubikeyCommand,
     application::{
         MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, ProtectedSecret, SecretsBoundary,
-        protect_secret_input, read_protected_stdin_secret,
+        read_protected_stdin_secret,
     },
     device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
     input::read_hidden_secret,
@@ -99,10 +99,9 @@ impl SecretsBoundary for TestSecretsBoundary {
         if stdin {
             read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
         } else {
-            protect_secret_input(
-                read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN)?,
-                memory,
-            )
+            let (secret, lock) =
+                read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+            memory.protect_locked_value(secret, lock)
         }
     }
 

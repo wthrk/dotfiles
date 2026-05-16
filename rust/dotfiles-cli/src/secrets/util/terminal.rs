@@ -4,18 +4,16 @@
 //! 端末入力の完了または中断を呼び出し側へ返す。
 
 use std::{
-    io::{self, BufRead, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Write},
     time::{Duration, Instant},
 };
 
+use crate::Result;
 use anyhow::{Context, bail};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use zeroize::Zeroizing;
-
-use crate::Result;
 
 use super::protection::InterruptGuard;
 
@@ -27,54 +25,6 @@ pub(crate) fn stdin_is_terminal() -> bool {
 /// 現在の stdout が画面表示される TTY かを返す。
 pub(crate) fn stdout_is_terminal() -> bool {
     io::stdout().is_terminal()
-}
-
-/// prompt を表示して echo なしで 1 行を読む。
-///
-/// 返す byte buffer は生成直後から zeroize 対象にする。
-pub(crate) fn read_hidden_bytes(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
-    let value = rpassword::prompt_password(prompt)?;
-    Ok(Zeroizing::new(value.into_bytes()))
-}
-
-/// echo なしで読んだ 1 行を byte buffer として返す。
-///
-/// 上限超過時は指定 error で失敗する。
-pub(crate) fn read_hidden_bytes_with_limit(
-    prompt: &str,
-    limit: usize,
-    too_large_error: &'static str,
-) -> Result<Zeroizing<Vec<u8>>> {
-    let value = read_hidden_bytes(prompt)?;
-    if value.len() > limit {
-        bail!(too_large_error);
-    }
-    Ok(value)
-}
-
-/// prompt を stderr へ表示して stdin から 1 行を読む。
-///
-/// 戻り値は末尾改行を除いた byte buffer とする。
-///
-/// 上限超過時は指定 error で失敗する。
-pub(crate) fn read_visible_line_bytes(
-    prompt: &str,
-    limit: usize,
-    too_large_error: &'static str,
-) -> Result<Zeroizing<Vec<u8>>> {
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    let read_limit = limit + 3;
-    let mut input = Zeroizing::new(Vec::with_capacity(read_limit.min(4096)));
-    io::stdin()
-        .lock()
-        .take(read_limit as u64)
-        .read_until(b'\n', &mut input)?;
-    trim_one_trailing_newline(&mut input);
-    if input.len() > limit {
-        bail!(too_large_error);
-    }
-    Ok(input)
 }
 
 /// TTY では prompt を stderr へ表示し、stdin の 1 行を yes/no 応答として返す。
@@ -169,16 +119,6 @@ pub(crate) fn read_terminal_line_until(
                 }
             }
             _ => {}
-        }
-    }
-}
-
-/// stdin の行入力で付く末尾の LF または CRLF を 1 行分だけ取り除く。
-fn trim_one_trailing_newline(input: &mut Vec<u8>) {
-    if input.ends_with(b"\n") {
-        input.pop();
-        if input.ends_with(b"\r") {
-            input.pop();
         }
     }
 }
