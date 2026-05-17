@@ -127,9 +127,14 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     let mut device = boundary.open_device(options.serial)?;
     session.run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut device))?;
     let summary = {
+        if options.stdin_json {
+            verify_pin_for_secret_reads(boundary, &mut device, &session)?;
+        }
         let secrets = boundary.read_enrollment_secret_set(options.stdin_json, &session)?;
         session.check_interrupted()?;
-        verify_pin_for_secret_reads(boundary, &mut device, &session)?;
+        if !options.stdin_json {
+            verify_pin_for_secret_reads(boundary, &mut device, &session)?;
+        }
         let mut summary = session.run_yubikey_operation(|| {
             enroll_without_local_verify(
                 &mut device,

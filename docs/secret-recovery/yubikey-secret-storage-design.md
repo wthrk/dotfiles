@@ -202,7 +202,7 @@ secret 入力は次の順で受け付ける。
 - default: hidden prompt
 - `--stdin`: stdin から 1 secret を読む
 
-CLI 引数で secret 本文は受け取らない。stdin 入力時も trailing newline は 1 つだけ除去し、それ以外の bytes は保持する。
+CLI 引数で secret 本文は受け取らない。`--stdin` は pipe または redirect された stdin だけを受け付け、TTY stdin では hidden prompt を使わせるため失敗させる。stdin 入力時も trailing newline は 1 つだけ除去し、それ以外の bytes は保持する。
 
 保存先 object に既存 blob がある場合は `--force` がない限り停止する。`--force` がある場合も、manifest の app / version が一致しない場合は停止する。
 
@@ -232,7 +232,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 ```
 
 入力 bytes をログや一時ファイルへ残さない。JSON parse 後の secret は `ProtectedSecret` として扱う。
-JSON 文字列の値は JSON として decode した bytes をそのまま保存し、行入力用の trailing newline 除去は適用しない。
+JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode した bytes をそのまま保存し、行入力用の trailing newline 除去は適用しない。
 
 `enroll-primary` / `enroll-spare` は成功時に secret 本文を出さず、次の summary だけを出力する。`role` は `primary` または `spare` のいずれかで、複数 spare の識別には YubiKey serial を使う。
 
