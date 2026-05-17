@@ -165,6 +165,9 @@ pub(crate) fn open_device(
     backend: &mut DeviceBackend,
     serial: Option<u32>,
 ) -> Result<YubikeySecretDevice> {
+    if serial.is_none() && !stdin_is_terminal() {
+        anyhow::bail!("pass --serial in non-interactive use");
+    }
     let io = yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
@@ -194,6 +197,9 @@ pub(crate) fn open_spare_device(
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
+    if spare_serial.is_none() && !stdin_is_terminal() {
+        anyhow::bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
+    }
     let io = yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
@@ -219,7 +225,6 @@ pub(crate) fn open_spare_device(
 /// reader 選択と spare 差し替え待機だけをここへ集約し、`yubikey` module は device 操作へ専念させる。
 fn yubikey_interaction<'a>() -> yubikey::YubikeyInteraction<'a> {
     yubikey::YubikeyInteraction {
-        stdin_is_terminal: &stdin_is_terminal,
         select_candidate: &select_yubikey_candidate,
         wait_for_spare_replacement: &wait_for_spare_replacement,
     }
@@ -227,15 +232,11 @@ fn yubikey_interaction<'a>() -> yubikey::YubikeyInteraction<'a> {
 
 /// 複数の YubiKey 候補を表示し、利用者が選んだ index を返す。
 ///
-/// stdin が TTY でない場合は番号入力を読まず、serial 指定を求める error で失敗する。
+/// 非対話実行の判定は caller 側で完了してから呼ばれるため、この関数は候補表示と番号入力だけを扱う。
 fn select_yubikey_candidate(
     candidates: &[yubikey::YubikeySelectionCandidate<'_>],
     timed_input: Option<(Instant, &InterruptGuard)>,
 ) -> Result<usize> {
-    if !stdin_is_terminal() {
-        anyhow::bail!("multiple YubiKeys detected; pass a serial option in non-interactive use");
-    }
-
     eprintln!("Select YubiKey:");
     for (index, candidate) in candidates.iter().enumerate() {
         eprintln!(

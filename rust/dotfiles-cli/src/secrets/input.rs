@@ -6,13 +6,14 @@
 use std::io::Read;
 
 use anyhow::{Context, bail};
+use zeroize::Zeroize;
 
 use crate::Result;
 
 #[cfg(test)]
 use super::domain::SecretName;
 use super::{
-    ports::EnrollmentSecretSet,
+    ports::{EnrollmentSecretSet, SECRET_STDOUT_TERMINAL_ERROR},
     support::{
         protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
         terminal,
@@ -286,8 +287,10 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
         };
         let ch = char::from_u32(scalar).context("invalid unicode scalar value")?;
         let mut utf8 = [0u8; 4];
-        let encoded = ch.encode_utf8(&mut utf8);
-        write_plaintext(encoded.as_bytes())
+        let encoded_len = ch.encode_utf8(&mut utf8).len();
+        let result = write_plaintext(&utf8[..encoded_len]);
+        utf8.zeroize();
+        result
     }
 
     fn parse_hex_u16(&mut self) -> Result<u16> {
@@ -355,7 +358,7 @@ pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
 
 /// stdout が TTY の場合に返す利用者向け error を、実プロセス境界と test 境界で共有する。
 pub(crate) fn reject_secret_stdout_terminal() -> Result<()> {
-    bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
+    bail!(SECRET_STDOUT_TERMINAL_ERROR);
 }
 
 #[cfg(test)]

@@ -7,20 +7,12 @@ use std::{collections::BTreeMap, io::Write};
 
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
-use rand::Rng;
-use zeroize::Zeroizing;
 
 use crate::Result;
 use crate::secrets::{
-    adapters::SPARE_SERIAL_NONINTERACTIVE_ERROR,
-    domain::{
-        self, CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretManifest, SecretName,
-    },
-    support::{
-        aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
-        protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-        terminal::stdin_is_terminal,
-    },
+    domain::{self, SecretBlob, SecretDevice, SecretManifest, SecretName},
+    secret_blob_crypto::{decrypt_secret_protected, encrypt_secret},
+    support::protection::{ProtectedSecret, SecretSession},
 };
 use dotfiles_cli_secrets_test_contract::{
     CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
@@ -144,13 +136,7 @@ impl TestDeviceFactory {
     }
 
     /// 通常操作対象の device stub を開く。
-    ///
-    /// 非対話実行で serial がない場合は実機 adapter と同じ利用者向け error で停止する。
     pub(crate) fn open_device(&mut self, serial: Option<u32>) -> Result<TestDevice> {
-        if serial.is_none() && !stdin_is_terminal() {
-            anyhow::bail!("pass --serial in non-interactive use");
-        }
-
         let serial = serial.unwrap_or_else(|| {
             let serial = self.next_interactive_serial;
             self.next_interactive_serial = SPARE_SERIAL;
@@ -169,10 +155,6 @@ impl TestDeviceFactory {
         spare_serial: Option<u32>,
         primary_serial: Option<u32>,
     ) -> Result<TestDevice> {
-        if spare_serial.is_none() && !stdin_is_terminal() {
-            anyhow::bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
-        }
-
         let serial = spare_serial.unwrap_or(SPARE_SERIAL);
         if primary_serial == Some(serial) {
             anyhow::bail!("primary and spare YubiKey serial must be different");
@@ -313,28 +295,7 @@ impl TestDevice {
         secret: &[u8],
         session: &SecretSession,
     ) -> Result<SecretBlob> {
-        let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN, session)?;
-        content_key.write_all(&[0; CONTENT_KEY_LEN])?;
-        rand::rng().fill(content_key.as_mut_slice());
-        let nonce = rand::random::<[u8; NONCE_LEN]>();
-        let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
-        let mut ciphertext = ProtectedInputBuffer::new(secret.len(), session)?;
-        ciphertext.write_all(secret)?;
-        let tag = encrypt_detached(
-            &cipher,
-            &nonce,
-            &name.additional_data(self.serial()),
-            ciphertext.as_mut_slice(),
-        )?;
-        let wrapped_key = self.wrap_key(content_key.as_slice())?;
-
-        Ok(SecretBlob {
-            name,
-            nonce,
-            wrapped_key: Zeroizing::new(wrapped_key),
-            ciphertext: Zeroizing::new(ciphertext.as_slice().to_vec()),
-            tag,
-        })
+        encrypt_secret(self, name, secret, session)
     }
 }
 
@@ -430,25 +391,7 @@ impl TestDevice {
         if blob.name != name {
             bail!("YubiKey secret blob name does not match requested {}", name);
         }
-
-        let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN + 1, session)?;
-        self.write_unwrapped_key(&blob.wrapped_key, &mut content_key)?;
-        if content_key.as_slice().len() != CONTENT_KEY_LEN {
-            bail!("unwrapped YubiKey content key has invalid length");
-        }
-
-        let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
-        let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
-        input.write_all(&blob.ciphertext)?;
-        decrypt_detached(
-            &cipher,
-            &blob.nonce,
-            &blob.name.additional_data(self.serial()),
-            input.as_mut_slice(),
-            &blob.tag,
-        )
-        .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
-        input.into_protected_secret(session)
+        decrypt_secret_protected(self, &blob, session)
     }
 }
 

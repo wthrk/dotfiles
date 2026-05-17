@@ -5,7 +5,9 @@
 //! スタブ端末上で復号できる値まで確認する。
 
 use std::{
+    fs,
     io::{ErrorKind, Read, Write},
+    path::PathBuf,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -572,6 +574,57 @@ fn rotate_bws_token_stores_non_tty_stdin_secret_with_stub_yubikey() -> TestResul
 }
 
 #[test]
+fn rotate_bws_token_reads_pin_from_tty_while_token_comes_from_pipe_with_stub_yubikey()
+-> TestResult<()> {
+    let run = run_pty_pipe_stdin_with_stub(
+        [
+            "yubikey".to_owned(),
+            "rotate-bws-token".to_owned(),
+            "--serial".to_owned(),
+            PRIMARY_SERIAL.to_string(),
+            "--stdin".to_owned(),
+        ],
+        "new-token\n",
+        Some("123456\n"),
+        &[
+            StubFixture::State(StubDeviceState::Provisioned),
+            StubFixture::ReadPinFromTty,
+        ],
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(run.stderr.contains("YubiKey PIN: "));
+    assert!(run.stdout.contains(&serial_json_field(PRIMARY_SERIAL)));
+    Ok(())
+}
+
+#[test]
+fn rotate_bws_token_rejects_tty_stdin_before_pin_prompt_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pty_split_with_stub(
+        [
+            "yubikey",
+            "rotate-bws-token",
+            "--serial",
+            &PRIMARY_SERIAL.to_string(),
+            "--stdin",
+        ],
+        Some("new-token\n"),
+        &[
+            StubFixture::State(StubDeviceState::Provisioned),
+            StubFixture::ReadPinFromTty,
+        ],
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("--stdin requires pipe or redirect input")
+    );
+    assert!(!run.stderr.contains("YubiKey PIN: "));
+    Ok(())
+}
+
+#[test]
 fn rotate_bws_token_fails_when_seeded_stub_storage_is_corrupt_with_stub_yubikey() -> TestResult<()>
 {
     let run = run_pipe_with_stub(
@@ -643,6 +696,24 @@ fn rotate_bws_token_updates_spare_after_tty_device_replacement_with_stub_yubikey
         StubSecret::BwsAccessToken,
         "new-token",
     );
+    Ok(())
+}
+
+#[test]
+fn rotate_bws_token_emits_partial_success_json_when_replacement_fails_with_stub_yubikey()
+-> TestResult<()> {
+    let run = run_pty_split_with_stub(
+        ["yubikey", "rotate-bws-token"],
+        Some("new-token\ny\ny\n"),
+        &[StubFixture::State(StubDeviceState::Provisioned)],
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stdout.contains("\"updated\""));
+    assert!(run.stdout.contains(&serial_json_field(PRIMARY_SERIAL)));
+    assert!(run.stdout.contains(&serial_json_field(SPARE_SERIAL)));
+    assert!(!run.stdout.contains("selected YubiKey was already updated"));
+    assert!(run.stderr.contains("selected YubiKey was already updated"));
     Ok(())
 }
 
@@ -930,6 +1001,165 @@ where
         success: status.success(),
         output,
     })
+}
+
+/// PTY の対話契約を維持したまま、stdout/stderr を別経路で観測する。
+fn run_pty_split_with_stub<I, S>(
+    args: I,
+    input: Option<&str>,
+    fixtures: &[StubFixture],
+) -> TestResult<CommandRun>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let stdout_path = std::env::temp_dir().join(format!("dotfiles-secrets-cli-{token}.stdout"));
+    let stderr_path = std::env::temp_dir().join(format!("dotfiles-secrets-cli-{token}.stderr"));
+    let args_shell = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shell_command = format!(
+        "{} secrets {STUB_FLAG} {args_shell} >{} 2>{}",
+        env!("CARGO_BIN_EXE_dotfiles"),
+        stdout_path.display(),
+        stderr_path.display()
+    );
+
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.arg("-lc");
+    command.arg(shell_command);
+    apply_pty_stub_fixtures(&mut command, fixtures)?;
+    let mut child = pair.slave.spawn_command(command)?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader()?;
+    let drain_handle = thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).map(|_| ())
+    });
+
+    if let Some(input) = input {
+        let mut writer = pair.master.take_writer()?;
+        writer.write_all(input.as_bytes())?;
+        drop(writer);
+    }
+
+    let status = wait_pty_child(&mut child)?;
+    drop(pair.master);
+    drain_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join PTY drain reader"))??;
+
+    let stdout = read_optional_file(&stdout_path)?;
+    let stderr = read_optional_file(&stderr_path)?;
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+    Ok(CommandRun {
+        success: status.success(),
+        stdout,
+        stderr,
+    })
+}
+
+fn run_pty_pipe_stdin_with_stub<I, S>(
+    args: I,
+    stdin_input: &str,
+    tty_input: Option<&str>,
+    fixtures: &[StubFixture],
+) -> TestResult<CommandRun>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let stdin_path = std::env::temp_dir().join(format!("dotfiles-secrets-cli-{token}.stdin"));
+    let stdout_path = std::env::temp_dir().join(format!("dotfiles-secrets-cli-{token}.stdout"));
+    let stderr_path = std::env::temp_dir().join(format!("dotfiles-secrets-cli-{token}.stderr"));
+    fs::write(&stdin_path, stdin_input)?;
+
+    let args_shell = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shell_command = format!(
+        "{} secrets {STUB_FLAG} {args_shell} <{} >{} 2>{}",
+        env!("CARGO_BIN_EXE_dotfiles"),
+        stdin_path.display(),
+        stdout_path.display(),
+        stderr_path.display()
+    );
+
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.arg("-lc");
+    command.arg(shell_command);
+    apply_pty_stub_fixtures(&mut command, fixtures)?;
+    let mut child = pair.slave.spawn_command(command)?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader()?;
+    let drain_handle = thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).map(|_| ())
+    });
+
+    if let Some(input) = tty_input {
+        let mut writer = pair.master.take_writer()?;
+        writer.write_all(input.as_bytes())?;
+        drop(writer);
+    }
+
+    let status = wait_pty_child(&mut child)?;
+    drop(pair.master);
+    drain_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join PTY drain reader"))??;
+
+    let stdout = read_optional_file(&stdout_path)?;
+    let stderr = read_optional_file(&stderr_path)?;
+    let _ = fs::remove_file(&stdin_path);
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+    Ok(CommandRun {
+        success: status.success(),
+        stdout,
+        stderr,
+    })
+}
+
+fn read_optional_file(path: &PathBuf) -> TestResult<String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn apply_stub_fixtures(command: &mut Command, fixtures: &[StubFixture]) -> TestResult<()> {

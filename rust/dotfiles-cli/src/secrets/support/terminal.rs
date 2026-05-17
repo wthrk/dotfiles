@@ -79,12 +79,12 @@ pub(crate) fn read_hidden_input(
     eprint!("{prompt}");
     io::stderr().flush()?;
 
+    let mut reader = hidden_input_reader()?;
     enable_raw_mode().context("failed to enable terminal raw mode")?;
     let _raw_mode = scopeguard::guard((), |_| {
         let _ = disable_raw_mode();
     });
     let mut input = ProtectedInputBuffer::new(limit + 1, session)?;
-    let mut reader = hidden_input_reader()?;
     let mut byte = [0u8; 1];
     loop {
         if reader.read(&mut byte)? == 0 {

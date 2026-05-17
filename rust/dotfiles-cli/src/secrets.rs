@@ -12,6 +12,7 @@ mod application;
 mod domain;
 mod input;
 mod ports;
+mod secret_blob_crypto;
 mod support;
 
 use clap::{Args, Subcommand, ValueEnum};

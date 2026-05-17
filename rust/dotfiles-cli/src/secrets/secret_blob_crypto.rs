@@ -1,13 +1,12 @@
-//! YubiKey secret blob の暗号処理境界。
+//! YubiKey secret blob の暗号処理共通部。
 //!
-//! content key 生成、AEAD 追加認証データ、YubiKey wrap/unwrap をこのモジュールへ集約し、
-//! 操作フロー側から暗号手順の詳細を分離する。
+//! application の storage 操作と test stub の in-memory device が同じ暗号 contract を使うため、
+//! content key 生成、AEAD 追加認証データ、YubiKey wrap/unwrap をこのモジュールに集約する。
 
 use std::io::Write;
 
 use anyhow::bail;
 use rand::Rng;
-use zeroize::Zeroizing;
 
 use crate::Result;
 use crate::secrets::support::{
@@ -46,8 +45,8 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
     Ok(SecretBlob {
         name,
         nonce,
-        wrapped_key: Zeroizing::new(wrapped_key),
-        ciphertext: Zeroizing::new(ciphertext.as_slice().to_vec()),
+        wrapped_key,
+        ciphertext: ciphertext.as_slice().to_vec(),
         tag,
     })
 }

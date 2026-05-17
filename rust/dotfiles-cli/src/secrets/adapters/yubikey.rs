@@ -43,7 +43,6 @@ type SelectCandidateFn<'a> = dyn Fn(&[YubikeySelectionCandidate<'_>], Option<(In
 type WaitForSpareReplacementFn<'a> = dyn Fn(Instant, &InterruptGuard) -> Result<()> + 'a;
 
 pub(crate) struct YubikeyInteraction<'a> {
-    pub(crate) stdin_is_terminal: &'a dyn Fn() -> bool,
     pub(crate) select_candidate: &'a SelectCandidateFn<'a>,
     pub(crate) wait_for_spare_replacement: &'a WaitForSpareReplacementFn<'a>,
 }
@@ -73,14 +72,10 @@ pub(crate) struct YubikeySecretDevice {
 }
 
 /// serial 指定または対話選択で 1 本の YubiKey を開く。
-///
-/// 非対話実行では対象 device を prompt で選べないため、serial 指定がない場合は失敗する。
 pub(crate) fn open_device(
     serial: Option<u32>,
     io: &YubikeyInteraction<'_>,
 ) -> Result<YubikeySecretDevice> {
-    require_serial_for_noninteractive(serial, io)?;
-
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
@@ -99,8 +94,6 @@ fn open_device_until(
     interrupt: &InterruptGuard,
     io: &YubikeyInteraction<'_>,
 ) -> Result<YubikeySecretDevice> {
-    require_serial_for_noninteractive(serial, io)?;
-
     interrupt.check_interrupted()?;
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
@@ -146,16 +139,13 @@ fn open_interactive_device_until(
 ///
 /// `--spare-serial` があればその YubiKey を直接開く。対話実行で serial 指定がなければ、
 /// まず接続済み候補から選択させる。選択結果が primary と同じ serial の場合は
-/// 差し替えを促して Enter 待ちに進む。非対話実行では差し替え prompt を使わず、
-/// `--spare-serial` によって spare を特定する。
+/// 差し替えを促して Enter 待ちに進む。非対話実行時の `--spare-serial` 必須条件は caller 側で検証する。
 pub(crate) fn open_spare_device(
     spare_serial: Option<u32>,
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
     io: &YubikeyInteraction<'_>,
 ) -> Result<YubikeySecretDevice> {
-    require_spare_serial_for_noninteractive(spare_serial, io)?;
-
     if let Some(spare_serial) = spare_serial {
         let device = open_device(Some(spare_serial), io)?;
         ensure_spare_serial(&device, primary_serial)?;
@@ -174,34 +164,6 @@ pub(crate) fn open_spare_device(
 
         (io.wait_for_spare_replacement)(deadline, interrupt)?;
     }
-}
-
-/// 非対話実行で device を一意に特定できるか確認する。
-///
-/// serial 指定がなく stdin も TTY でない場合は、選択 prompt に入らず失敗する。
-fn require_serial_for_noninteractive(
-    serial: Option<u32>,
-    io: &YubikeyInteraction<'_>,
-) -> Result<()> {
-    if serial.is_none() && !(io.stdin_is_terminal)() {
-        bail!("pass --serial in non-interactive use");
-    }
-
-    Ok(())
-}
-
-/// 非対話実行で spare device を一意に特定できるか確認する。
-///
-/// spare serial 指定がなく stdin も TTY でない場合は、差し替え prompt に入らず失敗する。
-fn require_spare_serial_for_noninteractive(
-    spare_serial: Option<u32>,
-    io: &YubikeyInteraction<'_>,
-) -> Result<()> {
-    if spare_serial.is_none() && !(io.stdin_is_terminal)() {
-        bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
-    }
-
-    Ok(())
 }
 
 /// spare 登録対象が primary と別 serial か確認する。

@@ -8,11 +8,11 @@ use crate::Result;
 use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
 use anyhow::{Context, bail};
 
-use super::secret_blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::domain::{
     CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId, SecretBlob, SecretDevice,
     SecretManifest, SecretName, StorageObjectIds, YubikeyRole,
 };
+use crate::secrets::secret_blob_crypto::{decrypt_secret_protected, encrypt_secret};
 
 /// secret storage 用 PIV key と manifest を新規作成する。
 ///
