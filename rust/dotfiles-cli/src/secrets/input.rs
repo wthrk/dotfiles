@@ -3,17 +3,9 @@
 //! TTY 判定と stdout 書き込みは `support::terminal`、memory lock は `support::protection` に委譲し、
 //! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
 
-use std::{
-    borrow::Cow,
-    fmt,
-    io::{Read, Write},
-};
+use std::io::Read;
 
 use anyhow::{Context, bail};
-use serde::{
-    Deserialize,
-    de::{self, DeserializeSeed, MapAccess, Visitor},
-};
 
 use crate::Result;
 
@@ -116,23 +108,12 @@ fn parse_protected_enrollment_secret_set_json<'session>(
     field_limit: usize,
     memory: &'session SecretSession,
 ) -> Result<EnrollmentSecretSet<'session>> {
-    let mut deserializer = serde_json::Deserializer::from_slice(input);
-    let secrets = EnrollmentSecretSetSeed {
-        field_limit,
-        memory,
-    }
-    .deserialize(&mut deserializer)?;
-    deserializer.end()?;
-    Ok(secrets)
+    EnrollmentSecretSetParser::new(input, field_limit, memory).parse()
 }
 
-#[derive(Deserialize)]
 enum BootstrapSecretField {
-    #[serde(rename = "bw-email")]
     BwEmail,
-    #[serde(rename = "bw-password")]
     BwPassword,
-    #[serde(rename = "bws-access-token")]
     BwsAccessToken,
 }
 
@@ -144,98 +125,217 @@ impl BootstrapSecretField {
             Self::BwsAccessToken => "bws-access-token",
         }
     }
+    fn from_decoded_key(key: &str) -> Option<Self> {
+        match key {
+            "bw-email" => Some(Self::BwEmail),
+            "bw-password" => Some(Self::BwPassword),
+            "bws-access-token" => Some(Self::BwsAccessToken),
+            _ => None,
+        }
+    }
 }
 
-struct EnrollmentSecretSetSeed<'session> {
+struct EnrollmentSecretSetParser<'input, 'session> {
+    input: &'input [u8],
+    cursor: usize,
     field_limit: usize,
     memory: &'session SecretSession,
 }
 
-impl<'de, 'session> DeserializeSeed<'de> for EnrollmentSecretSetSeed<'session> {
-    type Value = EnrollmentSecretSet<'session>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_map(EnrollmentSecretSetVisitor {
-            field_limit: self.field_limit,
-            memory: self.memory,
-        })
-    }
-}
-
-struct EnrollmentSecretSetVisitor<'session> {
-    field_limit: usize,
-    memory: &'session SecretSession,
-}
-
-impl<'de, 'session> Visitor<'de> for EnrollmentSecretSetVisitor<'session> {
-    type Value = EnrollmentSecretSet<'session>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("enrollment secrets object")
+impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
+    fn new(input: &'input [u8], field_limit: usize, memory: &'session SecretSession) -> Self {
+        Self {
+            input,
+            cursor: 0,
+            field_limit,
+            memory,
+        }
     }
 
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
+    fn parse(mut self) -> Result<EnrollmentSecretSet<'session>> {
+        self.skip_whitespace();
+        self.expect_byte(b'{')?;
+
         let mut bw_email = None;
         let mut bw_password = None;
         let mut bws_access_token = None;
+        let mut first = true;
+        loop {
+            self.skip_whitespace();
+            if self.peek_byte() == Some(b'}') {
+                self.cursor += 1;
+                break;
+            }
+            if !first {
+                self.expect_byte(b',')?;
+                self.skip_whitespace();
+            }
+            first = false;
 
-        while let Some(field) = map.next_key::<BootstrapSecretField>()? {
+            let key = self.parse_json_string_to_plaintext()?;
+            let field = BootstrapSecretField::from_decoded_key(&key)
+                .ok_or_else(|| anyhow::anyhow!("unknown field `{key}`"))?;
+            self.skip_whitespace();
+            self.expect_byte(b':')?;
+            self.skip_whitespace();
+            let secret = self.parse_json_string_to_protected_secret()?;
             let target = match field {
                 BootstrapSecretField::BwEmail => &mut bw_email,
                 BootstrapSecretField::BwPassword => &mut bw_password,
                 BootstrapSecretField::BwsAccessToken => &mut bws_access_token,
             };
             if target.is_some() {
-                return Err(de::Error::duplicate_field(field.name()));
+                bail!("duplicate field `{}`", field.name());
             }
-            *target = Some(map.next_value_seed(ProtectedJsonFieldSeed {
-                field_limit: self.field_limit,
-                memory: self.memory,
-            })?);
+            *target = Some(secret);
         }
 
-        let bw_email = bw_email.ok_or_else(|| de::Error::missing_field("bw-email"))?;
-        let bw_password = bw_password.ok_or_else(|| de::Error::missing_field("bw-password"))?;
-        let bws_access_token =
-            bws_access_token.ok_or_else(|| de::Error::missing_field("bws-access-token"))?;
+        self.skip_whitespace();
+        if self.cursor != self.input.len() {
+            bail!("trailing characters after bootstrap secret JSON object");
+        }
+
+        let bw_email = bw_email.context("missing field `bw-email`")?;
+        let bw_password = bw_password.context("missing field `bw-password`")?;
+        let bws_access_token = bws_access_token.context("missing field `bws-access-token`")?;
         Ok(EnrollmentSecretSet::new(
             bw_email,
             bw_password,
             bws_access_token,
         ))
     }
-}
 
-struct ProtectedJsonFieldSeed<'session> {
-    field_limit: usize,
-    memory: &'session SecretSession,
-}
+    fn parse_json_string_to_plaintext(&mut self) -> Result<String> {
+        let mut output = Vec::new();
+        self.parse_json_string_into(|bytes| {
+            output.extend_from_slice(bytes);
+            Ok(())
+        })?;
+        String::from_utf8(output).context("JSON object key must be valid UTF-8")
+    }
 
-impl<'de, 'session> DeserializeSeed<'de> for ProtectedJsonFieldSeed<'session> {
-    type Value = ProtectedSecret<'session>;
+    fn parse_json_string_to_protected_secret(&mut self) -> Result<ProtectedSecret<'session>> {
+        let field_limit = self.field_limit;
+        let mut input = ProtectedInputBuffer::new(field_limit, self.memory)?;
+        self.parse_json_string_into(|bytes| {
+            let new_len = input.as_slice().len() + bytes.len();
+            if new_len > field_limit {
+                bail!("protected input is too large");
+            }
+            use std::io::Write;
+            input.write_all(bytes)?;
+            Ok(())
+        })?;
+        input.into_protected_secret(self.memory)
+    }
 
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Cow::<'de, str>::deserialize(deserializer)?;
-        if value.len() > self.field_limit {
-            return Err(de::Error::custom("protected input is too large"));
+    fn parse_json_string_into(
+        &mut self,
+        mut write_plaintext: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        self.expect_byte(b'"')?;
+        while let Some(byte) = self.take_byte() {
+            match byte {
+                b'"' => return Ok(()),
+                b'\\' => self.parse_escape(&mut write_plaintext)?,
+                0x00..=0x1F => bail!("control character in JSON string"),
+                ascii => write_plaintext(&[ascii])?,
+            }
         }
-        let mut input =
-            ProtectedInputBuffer::new(value.len(), self.memory).map_err(de::Error::custom)?;
-        input
-            .write_all(value.as_bytes())
-            .map_err(de::Error::custom)?;
-        input
-            .into_protected_secret(self.memory)
-            .map_err(de::Error::custom)
+        bail!("unterminated JSON string")
+    }
+
+    fn parse_escape(
+        &mut self,
+        write_plaintext: &mut impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let escaped = self
+            .take_byte()
+            .ok_or_else(|| anyhow::anyhow!("unterminated escape sequence"))?;
+        match escaped {
+            b'"' => write_plaintext(b"\""),
+            b'\\' => write_plaintext(b"\\"),
+            b'/' => write_plaintext(b"/"),
+            b'b' => write_plaintext(&[0x08]),
+            b'f' => write_plaintext(&[0x0C]),
+            b'n' => write_plaintext(b"\n"),
+            b'r' => write_plaintext(b"\r"),
+            b't' => write_plaintext(b"\t"),
+            b'u' => self.parse_unicode_escape(write_plaintext),
+            _ => bail!("invalid escape sequence in JSON string"),
+        }
+    }
+
+    fn parse_unicode_escape(
+        &mut self,
+        write_plaintext: &mut impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let high = self.parse_hex_u16()?;
+        let scalar = if (0xD800..=0xDBFF).contains(&high) {
+            self.expect_byte(b'\\')?;
+            self.expect_byte(b'u')?;
+            let low = self.parse_hex_u16()?;
+            if !(0xDC00..=0xDFFF).contains(&low) {
+                bail!("invalid low surrogate in JSON string");
+            }
+            0x10000 + (((high as u32 - 0xD800) << 10) | (low as u32 - 0xDC00))
+        } else if (0xDC00..=0xDFFF).contains(&high) {
+            bail!("unexpected low surrogate in JSON string");
+        } else {
+            high as u32
+        };
+        let ch = char::from_u32(scalar).context("invalid unicode scalar value")?;
+        let mut utf8 = [0u8; 4];
+        let encoded = ch.encode_utf8(&mut utf8);
+        write_plaintext(encoded.as_bytes())
+    }
+
+    fn parse_hex_u16(&mut self) -> Result<u16> {
+        let mut value = 0u16;
+        for _ in 0..4 {
+            let byte = self
+                .take_byte()
+                .ok_or_else(|| anyhow::anyhow!("truncated unicode escape in JSON string"))?;
+            value = (value << 4) | Self::hex_value(byte)?;
+        }
+        Ok(value)
+    }
+
+    fn hex_value(byte: u8) -> Result<u16> {
+        match byte {
+            b'0'..=b'9' => Ok((byte - b'0') as u16),
+            b'a'..=b'f' => Ok((byte - b'a' + 10) as u16),
+            b'A'..=b'F' => Ok((byte - b'A' + 10) as u16),
+            _ => bail!("invalid hexadecimal digit in unicode escape"),
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek_byte(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.cursor += 1;
+        }
+    }
+
+    fn expect_byte(&mut self, expected: u8) -> Result<()> {
+        match self.take_byte() {
+            Some(actual) if actual == expected => Ok(()),
+            Some(actual) => bail!(
+                "expected `{}`, found `{}`",
+                expected as char,
+                actual as char
+            ),
+            None => bail!("unexpected end of JSON input"),
+        }
+    }
+
+    fn peek_byte(&self) -> Option<u8> {
+        self.input.get(self.cursor).copied()
+    }
+
+    fn take_byte(&mut self) -> Option<u8> {
+        let byte = self.peek_byte()?;
+        self.cursor += 1;
+        Some(byte)
     }
 }
 
