@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, fmt, io::Write};
 use anyhow::{Result as AnyhowResult, bail};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+use zeroize::Zeroizing;
 
 use crate::Result;
 
@@ -174,9 +175,9 @@ pub struct SecretBlob {
     /// AES-256-GCM nonce。
     pub nonce: [u8; NONCE_LEN],
     /// YubiKey public key で wrap した content encryption key。
-    pub wrapped_key: Vec<u8>,
+    pub wrapped_key: Zeroizing<Vec<u8>>,
     /// secret 本文の ciphertext。
-    pub ciphertext: Vec<u8>,
+    pub ciphertext: Zeroizing<Vec<u8>>,
     /// AES-256-GCM authentication tag。
     pub tag: [u8; TAG_LEN],
 }
@@ -299,7 +300,7 @@ pub enum CheckName {
 
 impl SecretBlob {
     /// secret blob を設計資料の binary wire format に encode する。
-    pub fn encode(&self) -> AnyhowResult<Vec<u8>> {
+    pub fn encode(&self) -> AnyhowResult<Zeroizing<Vec<u8>>> {
         crate::secrets::domain::wire::encode_secret_blob(self)
     }
 

@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, io::Write};
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
 use rand::Rng;
+use zeroize::Zeroizing;
 
 use crate::Result;
 use crate::secrets::{
@@ -300,7 +301,8 @@ impl TestDevice {
         }
 
         let blob = self.encrypt_seed_secret(name, secret, session)?;
-        self.objects.insert(name.object_id(), blob.encode()?);
+        self.objects
+            .insert(name.object_id(), blob.encode()?.to_vec());
         Ok(())
     }
 
@@ -331,8 +333,8 @@ impl TestDevice {
         Ok(SecretBlob {
             name,
             nonce,
-            wrapped_key,
-            ciphertext: ciphertext.as_slice().to_vec(),
+            wrapped_key: Zeroizing::new(wrapped_key),
+            ciphertext: Zeroizing::new(ciphertext.as_slice().to_vec()),
             tag,
         })
     }

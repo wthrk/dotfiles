@@ -10,6 +10,7 @@ use crate::secrets::domain::{
 };
 use crate::secrets::support::protection::SecretSession;
 use anyhow::Context;
+use zeroize::Zeroizing;
 
 struct FakeDevice {
     serial: u32,
@@ -147,8 +148,8 @@ fn secret_blob_round_trips_binary_format() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwsAccessToken,
         nonce: [7; NONCE_LEN],
-        wrapped_key: vec![1, 2, 3],
-        ciphertext: vec![4, 5, 6, 7],
+        wrapped_key: Zeroizing::new(vec![1, 2, 3]),
+        ciphertext: Zeroizing::new(vec![4, 5, 6, 7]),
         tag: [9; TAG_LEN],
     };
 
@@ -164,8 +165,8 @@ fn secret_blob_rejects_trailing_bytes() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; NONCE_LEN],
-        wrapped_key: vec![2],
-        ciphertext: vec![3],
+        wrapped_key: Zeroizing::new(vec![2]),
+        ciphertext: Zeroizing::new(vec![3]),
         tag: [4; TAG_LEN],
     };
     let encoded = blob
@@ -184,8 +185,8 @@ fn secret_blob_rejects_wrapped_key_length_larger_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; NONCE_LEN],
-        wrapped_key: vec![2, 3, 4],
-        ciphertext: vec![5, 6],
+        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+        ciphertext: Zeroizing::new(vec![5, 6]),
         tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -201,8 +202,8 @@ fn secret_blob_rejects_wrapped_key_length_smaller_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; NONCE_LEN],
-        wrapped_key: vec![2, 3, 4],
-        ciphertext: vec![5, 6],
+        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+        ciphertext: Zeroizing::new(vec![5, 6]),
         tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -218,8 +219,8 @@ fn secret_blob_rejects_ciphertext_length_larger_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; NONCE_LEN],
-        wrapped_key: vec![2, 3, 4],
-        ciphertext: vec![5, 6],
+        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+        ciphertext: Zeroizing::new(vec![5, 6]),
         tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
@@ -237,8 +238,8 @@ fn secret_blob_rejects_ciphertext_length_smaller_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
         nonce: [1; NONCE_LEN],
-        wrapped_key: vec![2, 3, 4],
-        ciphertext: vec![5, 6],
+        wrapped_key: Zeroizing::new(vec![2, 3, 4]),
+        ciphertext: Zeroizing::new(vec![5, 6]),
         tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;

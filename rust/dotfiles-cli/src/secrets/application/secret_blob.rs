@@ -7,6 +7,7 @@ use std::io::Write;
 
 use anyhow::bail;
 use rand::Rng;
+use zeroize::Zeroizing;
 
 use crate::Result;
 use crate::secrets::support::{
@@ -45,8 +46,8 @@ pub(crate) fn encrypt_secret<D: SecretDevice>(
     Ok(SecretBlob {
         name,
         nonce,
-        wrapped_key,
-        ciphertext: ciphertext.as_slice().to_vec(),
+        wrapped_key: Zeroizing::new(wrapped_key),
+        ciphertext: Zeroizing::new(ciphertext.as_slice().to_vec()),
         tag,
     })
 }
