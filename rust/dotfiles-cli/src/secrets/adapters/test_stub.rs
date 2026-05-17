@@ -5,7 +5,6 @@
 
 use std::{collections::BTreeMap, io::Write};
 
-use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
 use rand::Rng;
@@ -17,6 +16,7 @@ use crate::secrets::{
         self, CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretManifest, SecretName,
     },
     support::{
+        aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
         protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
         terminal::stdin_is_terminal,
     },
@@ -317,21 +317,15 @@ impl TestDevice {
         content_key.write_all(&[0; CONTENT_KEY_LEN])?;
         rand::rng().fill(content_key.as_mut_slice());
         let nonce = rand::random::<[u8; NONCE_LEN]>();
-        let cipher = Aes256Gcm::new_from_slice(content_key.as_slice())
-            .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
+        let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
         let mut ciphertext = ProtectedInputBuffer::new(secret.len(), session)?;
         ciphertext.write_all(secret)?;
-        let tag = cipher
-            .encrypt_in_place_detached(
-                aes_gcm::Nonce::from_slice(&nonce),
-                &name.additional_data(self.serial()),
-                ciphertext.as_mut_slice(),
-            )
-            .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
-        let tag = tag
-            .as_slice()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
+        let tag = encrypt_detached(
+            &cipher,
+            &nonce,
+            &name.additional_data(self.serial()),
+            ciphertext.as_mut_slice(),
+        )?;
         let wrapped_key = self.wrap_key(content_key.as_slice())?;
 
         Ok(SecretBlob {
@@ -443,18 +437,17 @@ impl TestDevice {
             bail!("unwrapped YubiKey content key has invalid length");
         }
 
-        let cipher = Aes256Gcm::new_from_slice(content_key.as_slice())
-            .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
+        let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
         let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
         input.write_all(&blob.ciphertext)?;
-        cipher
-            .decrypt_in_place_detached(
-                aes_gcm::Nonce::from_slice(&blob.nonce),
-                &blob.name.additional_data(self.serial()),
-                input.as_mut_slice(),
-                aes_gcm::Tag::from_slice(&blob.tag),
-            )
-            .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
+        decrypt_detached(
+            &cipher,
+            &blob.nonce,
+            &blob.name.additional_data(self.serial()),
+            input.as_mut_slice(),
+            &blob.tag,
+        )
+        .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
         input.into_protected_secret(session)
     }
 }

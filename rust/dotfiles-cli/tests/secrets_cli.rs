@@ -698,6 +698,72 @@ fn verify_yubikey_reads_yubikey_pin_from_pty_with_stub_yubikey() -> TestResult<(
     Ok(())
 }
 
+#[test]
+fn verify_yubikey_rejects_all_flag_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pipe_with_stub(
+        vec![
+            "verify-yubikey".to_owned(),
+            "--serial".to_owned(),
+            PRIMARY_SERIAL.to_string(),
+            "--all".to_owned(),
+        ],
+        None,
+        &[StubFixture::State(StubDeviceState::Provisioned)],
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("verify-yubikey --all includes unsupported external checks: bws, bw-login")
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_rejects_check_flag_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pipe_with_stub(
+        vec![
+            "verify-yubikey".to_owned(),
+            "--serial".to_owned(),
+            PRIMARY_SERIAL.to_string(),
+            "--check".to_owned(),
+            "bws".to_owned(),
+        ],
+        None,
+        &[StubFixture::State(StubDeviceState::Provisioned)],
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("unsupported external checks requested: bws")
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_rejects_all_and_check_combination_with_stub_yubikey() -> TestResult<()> {
+    let run = run_pipe_with_stub(
+        vec![
+            "verify-yubikey".to_owned(),
+            "--serial".to_owned(),
+            PRIMARY_SERIAL.to_string(),
+            "--all".to_owned(),
+            "--check".to_owned(),
+            "bw-login".to_owned(),
+        ],
+        None,
+        &[StubFixture::State(StubDeviceState::Provisioned)],
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("--all and --check cannot be used together")
+    );
+    Ok(())
+}
+
 /// 非 TTY 実行では stdin/stdout/stderr を明示的に pipe/null へ接続し、TTY 判定を実際に変える。
 fn run_pipe<I, S>(args: I, input: Option<&str>) -> TestResult<CommandRun>
 where
