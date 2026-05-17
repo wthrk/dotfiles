@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
     YubikeyCommand, YubikeyOptions,
-    adapters::{self, SPARE_SERIAL_NONINTERACTIVE_ERROR, open_device, open_spare_device},
+    adapters::{self, SPARE_SERIAL_NONINTERACTIVE_ERROR},
     domain::{self, SecretDevice, SecretName},
     input::{
         MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
@@ -31,9 +31,11 @@ use super::{
 use crate::Result;
 use anyhow::bail;
 
-/// 実機境界を使って parse 済み options の use case を開始する。
-pub(super) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = RealSecretsBoundary;
+/// 指定された device backend を使って parse 済み options の use case を開始する。
+///
+/// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
+pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> Result<()> {
+    let mut boundary = RealSecretsBoundary { backend };
     run_with_boundary(options, &mut boundary)
 }
 
@@ -598,14 +600,18 @@ fn require_spare_serial_for_noninteractive<B: SecretsBoundary>(
     Ok(())
 }
 
-/// PIN を入力境界から読み取り、device の PIV session を検証する。
+/// device が要求する場合に PIN を入力境界から読み取り、PIV session を検証する。
 ///
-/// PIN 入力は device adapter に閉じ込めず、application が決める入力順序で取得する。
+/// PIN 入力順序は application が所有し、device は検証済み状態かどうかだけを公開する。
 fn verify_pin_for_secret_reads<B: SecretsBoundary>(
     boundary: &mut B,
     device: &mut B::Device,
     session: &SecretSession,
 ) -> Result<()> {
+    if !device.requires_pin_input() {
+        return Ok(());
+    }
+
     let pin = boundary.read_yubikey_pin(session)?;
     pin.with_secret(|pin| device.verify_pin(pin))
 }
@@ -620,7 +626,12 @@ fn stdin_secret_source_error(mode: StdinSecretMode) -> &'static str {
     }
 }
 
-struct RealSecretsBoundary;
+/// 実プロセスの stdin/stdout と device backend を application port に接続する境界。
+///
+/// device backend が stub の場合も、secret 入力と stdout 安全判定は同じ実プロセス境界を通る。
+struct RealSecretsBoundary {
+    backend: adapters::DeviceBackend,
+}
 
 impl SecretsBoundary for RealSecretsBoundary {
     type Device = adapters::YubikeySecretDevice;
@@ -634,7 +645,7 @@ impl SecretsBoundary for RealSecretsBoundary {
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
-        open_device(serial)
+        adapters::open_device(&mut self.backend, serial)
     }
 
     fn open_spare_device(
@@ -643,7 +654,7 @@ impl SecretsBoundary for RealSecretsBoundary {
         primary_serial: Option<u32>,
         interrupt: &InterruptGuard,
     ) -> Result<Self::Device> {
-        open_spare_device(spare_serial, primary_serial, interrupt)
+        adapters::open_spare_device(&mut self.backend, spare_serial, primary_serial, interrupt)
     }
 
     fn read_enrollment_secret_set<'session>(
@@ -834,6 +845,10 @@ mod tests {
 
         fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
             Ok(())
+        }
+
+        fn requires_pin_input(&self) -> bool {
+            true
         }
 
         fn write_unwrapped_key(

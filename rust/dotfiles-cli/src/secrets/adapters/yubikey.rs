@@ -495,6 +495,10 @@ impl SecretDevice for YubikeySecretDevice {
         self.verify_pin_once(pin)
     }
 
+    fn requires_pin_input(&self) -> bool {
+        !self.pin_verified
+    }
+
     fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");

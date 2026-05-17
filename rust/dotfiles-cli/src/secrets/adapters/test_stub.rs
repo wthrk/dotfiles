@@ -1,10 +1,9 @@
-//! `secrets-test-stub` feature の CLI 統合テスト用 YubiKey 境界。
+//! `secrets-test-stub` feature の YubiKey device stub。
 //!
-//! 実プロセスの stdin/stdout/stderr を通し、YubiKey PIV 操作を in-memory device に
-//! 差し替える。通常 build には含めず、TTY / pipe の入力契約を binary integration test
-//! で検証する境界として閉じる。
+//! PIV device port だけを in-memory 実装へ差し替え、stdin/stdout/stderr と secret 入力順序は
+//! application の通常境界に従う。
 
-use std::{collections::BTreeMap, io::Cursor, io::Write};
+use std::{collections::BTreeMap, io::Write};
 
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
 use anyhow::{Context, bail};
@@ -13,20 +12,13 @@ use rand::Rng;
 
 use crate::Result;
 use crate::secrets::{
-    SecretsOptions,
     adapters::SPARE_SERIAL_NONINTERACTIVE_ERROR,
     domain::{
         self, CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretManifest, SecretName,
     },
-    input::{
-        MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
-        read_protected_enrollment_secret_set, read_protected_stdin_secret,
-        read_visible_secret_line, read_yubikey_pin,
-    },
-    ports::{EnrollmentSecretSet, SecretsBoundary},
     support::{
-        protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
-        terminal::{stdin_is_terminal, stdout_is_terminal},
+        protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+        terminal::stdin_is_terminal,
     },
 };
 use dotfiles_cli_secrets_test_contract::{
@@ -37,35 +29,52 @@ use dotfiles_cli_secrets_test_contract::{
 
 const DEFAULT_SERIAL: u32 = PRIMARY_SERIAL;
 
+/// device stub の初期状態と保存後検証条件を integration test contract から受け取る。
+///
+/// すべて clap の env 解決を通すため、binary 起動時の引数構造をテスト専用に増やさない。
 #[derive(Clone, Default, Parser)]
 #[command(name = "dotfiles-secrets-test-stub")]
-/// device mock の初期状態と保存後検証条件を clap の env 経由で受け取る。
 struct TestStubConfig {
+    /// serial 個別指定がない device に適用する初期状態。
     #[arg(long, env = STUB_STATE_ENV, value_enum)]
     state: Option<TestDeviceState>,
+    /// primary serial の device に適用する初期状態。
     #[arg(long, env = PRIMARY_STUB_STATE_ENV, value_enum)]
     state_2001: Option<TestDeviceState>,
+    /// spare serial の device に適用する初期状態。
     #[arg(long, env = SPARE_STUB_STATE_ENV, value_enum)]
     state_2002: Option<TestDeviceState>,
+    /// 読み出し・検証系 command の失敗経路を確認するために破損させる secret object。
     #[arg(long, env = CORRUPT_SECRET_ENV, value_parser = parse_test_stub_secret_name)]
     corrupt_secret: Option<SecretName>,
+    /// PIN prompt の TTY 契約を検証する場合に、application の PIN 入力境界を通す。
     #[arg(long, env = READ_PIN_FROM_TTY_ENV)]
     read_pin_from_tty: bool,
+    /// `bw-email` の保存済み stub 値。
     #[arg(long, env = SEED_BW_EMAIL_ENV)]
     seed_bw_email: Option<String>,
+    /// `bw-password` の保存済み stub 値。
     #[arg(long, env = SEED_BW_PASSWORD_ENV)]
     seed_bw_password: Option<String>,
+    /// `bws-access-token` の保存済み stub 値。
     #[arg(long, env = SEED_BWS_ACCESS_TOKEN_ENV)]
     seed_bws_access_token: Option<String>,
 }
 
+/// device stub が起動時に持つ PIV object 状態。
 #[derive(Clone, Copy, ValueEnum)]
 enum TestDeviceState {
+    /// PIV key と manifest が未作成の device。
     Fresh,
+    /// PIV key と manifest だけが作成済みの device。
     Initialized,
+    /// 3 secret がすべて保存済みの device。
     Provisioned,
+    /// `bw-email` だけを書き込み対象として空けた device。
     WritableBwEmail,
+    /// `bw-password` だけを書き込み対象として空けた device。
     WritableBwPassword,
+    /// `bws-access-token` だけを書き込み対象として空けた device。
     WritableBwsAccessToken,
 }
 
@@ -91,6 +100,9 @@ impl TestStubConfig {
             })
     }
 
+    /// serial 固有設定を優先して device stub の初期状態を決める。
+    ///
+    /// serial 固有設定がない場合は共通設定、共通設定もない場合は fresh device とする。
     fn state_for_serial(&self, serial: u32) -> TestDeviceState {
         match serial {
             PRIMARY_SERIAL => self.state_2001,
@@ -102,40 +114,38 @@ impl TestStubConfig {
     }
 }
 
+/// integration test contract から受けた secret 名を domain の閉じた集合へ変換する。
 fn parse_test_stub_secret_name(value: &str) -> std::result::Result<SecretName, String> {
     value
         .parse()
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
 }
 
-pub(crate) struct TestSecretsBoundary {
+/// CLI 統合テスト用の YubiKey device stub を生成する factory。
+///
+/// 対話的 serial 選択では primary から spare の順に同じ候補列を返し、application の通常
+/// device 選択順序を変えない。
+pub(crate) struct TestDeviceFactory {
+    /// contract から読んだ device 初期状態。
     config: TestStubConfig,
+    /// serial 指定なしの対話選択で次に返す serial。
     next_interactive_serial: u32,
 }
 
-impl TestSecretsBoundary {
-    pub(crate) fn for_options(options: &SecretsOptions) -> Result<Self> {
+impl TestDeviceFactory {
+    /// integration test contract の環境変数から device stub factory を構築する。
+    pub(crate) fn from_env() -> Result<Self> {
         let config = TestStubConfig::from_env()?;
-        let _ = options;
         Ok(Self {
             config,
             next_interactive_serial: DEFAULT_SERIAL,
         })
     }
-}
 
-impl SecretsBoundary for TestSecretsBoundary {
-    type Device = TestDevice;
-
-    fn stdin_is_terminal(&self) -> bool {
-        stdin_is_terminal()
-    }
-
-    fn stdout_is_terminal(&self) -> bool {
-        stdout_is_terminal()
-    }
-
-    fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
+    /// 通常操作対象の device stub を開く。
+    ///
+    /// 非対話実行で serial がない場合は実機 adapter と同じ利用者向け error で停止する。
+    pub(crate) fn open_device(&mut self, serial: Option<u32>) -> Result<TestDevice> {
         if serial.is_none() && !stdin_is_terminal() {
             anyhow::bail!("pass --serial in non-interactive use");
         }
@@ -150,12 +160,14 @@ impl SecretsBoundary for TestSecretsBoundary {
         Ok(device)
     }
 
-    fn open_spare_device(
+    /// spare 登録対象の device stub を開く。
+    ///
+    /// primary と同じ serial は、secret 再保存を始める前に実機 adapter と同じ error で拒否する。
+    pub(crate) fn open_spare_device(
         &mut self,
         spare_serial: Option<u32>,
         primary_serial: Option<u32>,
-        _interrupt: &InterruptGuard,
-    ) -> Result<Self::Device> {
+    ) -> Result<TestDevice> {
         if spare_serial.is_none() && !stdin_is_terminal() {
             anyhow::bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
         }
@@ -169,72 +181,27 @@ impl SecretsBoundary for TestSecretsBoundary {
         device.emit_write_events = true;
         Ok(device)
     }
-
-    fn read_enrollment_secret_set<'session>(
-        &mut self,
-        stdin_json: bool,
-        memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
-        if stdin_json {
-            return read_protected_enrollment_secret_set(
-                std::io::stdin(),
-                MAX_BOOTSTRAP_JSON_LEN,
-                MAX_SINGLE_STDIN_SECRET_LEN,
-                memory,
-            );
-        }
-
-        let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-        let bw_password = read_hidden_secret("bw-password: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-        let bws_access_token =
-            read_hidden_secret("bws-access-token: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-        Ok(EnrollmentSecretSet::new(
-            bw_email,
-            bw_password,
-            bws_access_token,
-        ))
-    }
-
-    fn read_secret_for_put<'session>(
-        &mut self,
-        name: SecretName,
-        stdin: bool,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        if stdin {
-            read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
-        } else {
-            read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
-        }
-    }
-
-    fn read_yubikey_pin<'session>(
-        &mut self,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        if self.config.read_pin_from_tty {
-            return read_yubikey_pin(memory);
-        }
-
-        let input =
-            ProtectedInputBuffer::read_from(Cursor::new(b"123456"), 6, "too large", memory)?;
-        input.into_protected_secret(memory)
-    }
-
-    fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
-        crate::secrets::support::terminal::prompt_yes_no(prompt)
-    }
 }
 
+/// YubiKey PIV object storage を memory 上で保持する device stub。
+///
+/// `SecretDevice` port 以外の入力境界は持たず、stdin/stdout/stderr の契約は application の
+/// 通常境界に残す。
 pub(crate) struct TestDevice {
+    /// device 固有 serial。AEAD additional data と summary に使う。
     serial: u32,
+    /// PIV key が生成済みかを表す stub 状態。
     key_exists: bool,
+    /// PIN prompt と fixture secret を決める contract 設定。
     config: TestStubConfig,
+    /// write 後に integration test contract の stderr event を出すかを表す。
     emit_write_events: bool,
+    /// PIV object ID ごとの保存済み payload。
     objects: BTreeMap<domain::PivObjectId, Vec<u8>>,
 }
 
 impl TestDevice {
+    /// contract で指定された初期状態を持つ device stub を構築する。
     fn from_config(serial: u32, config: &TestStubConfig) -> Result<Self> {
         match config.state_for_serial(serial) {
             TestDeviceState::Fresh => Ok(Self::fresh(serial)),
@@ -252,6 +219,7 @@ impl TestDevice {
         }
     }
 
+    /// PIV key も manifest も存在しない device stub を構築する。
     fn fresh(serial: u32) -> Self {
         Self {
             serial,
@@ -262,12 +230,16 @@ impl TestDevice {
         }
     }
 
+    /// PIV key と manifest が作成済みの device stub を構築する。
     fn initialized(serial: u32) -> Result<Self> {
         let mut device = Self::fresh(serial);
         device.initialize_storage()?;
         Ok(device)
     }
 
+    /// 3 secret がすべて復号可能な device stub を構築する。
+    ///
+    /// `corrupt_secret` が指定された場合は、指定 object だけを invalid payload に置き換える。
     fn provisioned(serial: u32, config: &TestStubConfig) -> Result<Self> {
         let session = SecretSession::start()?;
         let mut device = Self::initialized(serial)?;
@@ -295,6 +267,7 @@ impl TestDevice {
         Ok(device)
     }
 
+    /// 指定 secret だけが未保存の writable device stub を構築する。
     fn writable_for(serial: u32, target: SecretName, config: &TestStubConfig) -> Result<Self> {
         let session = SecretSession::start()?;
         let mut device = Self::initialized(serial)?;
@@ -305,6 +278,7 @@ impl TestDevice {
         Ok(device)
     }
 
+    /// setup 済み状態として PIV key flag と manifest object を作成する。
     fn initialize_storage(&mut self) -> Result<()> {
         self.key_exists = true;
         let manifest = serde_json::to_vec(&SecretManifest::expected())?;
@@ -312,6 +286,9 @@ impl TestDevice {
         Ok(())
     }
 
+    /// 保存済み fixture secret を encrypted blob として device object へ入れる。
+    ///
+    /// application の put use case を呼ばず、device stub の初期状態だけを作る。
     fn write_seed_secret(
         &mut self,
         name: SecretName,
@@ -327,6 +304,9 @@ impl TestDevice {
         Ok(())
     }
 
+    /// fixture secret を実 storage と同じ blob format に暗号化する。
+    ///
+    /// content key と ciphertext の一時平文は `SecretSession` の保護 buffer に置く。
     fn encrypt_seed_secret(
         &mut self,
         name: SecretName,
@@ -404,6 +384,10 @@ impl SecretDevice for TestDevice {
         Ok(())
     }
 
+    fn requires_pin_input(&self) -> bool {
+        self.config.read_pin_from_tty
+    }
+
     fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         output.write_all(&self.wrap_key(wrapped_key)?)?;
         Ok(())
@@ -411,7 +395,9 @@ impl SecretDevice for TestDevice {
 }
 
 impl TestDevice {
-    /// 保存直後に同じ device mock から復号し、CLI 統合テストが stderr で観測できる event を出す。
+    /// 保存直後に同じ device stub から復号し、integration test contract の write event を出す。
+    ///
+    /// event は CLI integration test の観測用で、secret stdout の安全判定とは別の stderr 契約にする。
     fn emit_write_event(&mut self, object_id: domain::PivObjectId) -> Result<()> {
         if !self.emit_write_events {
             return Ok(());
@@ -433,6 +419,9 @@ impl TestDevice {
         Ok(())
     }
 
+    /// 保存済み fixture blob を復号し、保護済み secret として返す。
+    ///
+    /// write event 生成時も raw plaintext を返さず、`ProtectedSecret` の借用範囲に閉じる。
     fn read_seed_secret<'session>(
         &mut self,
         name: SecretName,
@@ -470,6 +459,7 @@ impl TestDevice {
     }
 }
 
+/// PIV object ID が secret object に対応する場合だけ secret 名へ戻す。
 fn secret_name_for_object_id(object_id: domain::PivObjectId) -> Option<SecretName> {
     SecretName::iter().find(|name| name.object_id() == object_id)
 }

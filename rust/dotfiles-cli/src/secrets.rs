@@ -133,12 +133,10 @@ enum VerifyCheck {
 /// CLI で parse 済みの `dotfiles secrets` command を実行する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
     #[cfg(feature = "secrets-test-stub")]
-    if options.test_stub_yubikey {
-        let mut boundary = adapters::TestSecretsBoundary::for_options(&options)?;
-        return application::run_with_boundary(options, &mut boundary);
-    }
-
-    application::run(options)
+    let backend = adapters::DeviceBackend::from_test_flag(options.test_stub_yubikey)?;
+    #[cfg(not(feature = "secrets-test-stub"))]
+    let backend = adapters::DeviceBackend::from_test_flag(false)?;
+    application::run(options, backend)
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。

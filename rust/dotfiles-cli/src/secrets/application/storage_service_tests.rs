@@ -87,6 +87,10 @@ impl SecretDevice for FakeDevice {
         Ok(())
     }
 
+    fn requires_pin_input(&self) -> bool {
+        true
+    }
+
     fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         output.write_all(&self.wrap_key(wrapped_key)?)?;
         Ok(())
