@@ -35,14 +35,14 @@ impl ProtectedInputBuffer {
     ///
     /// `limit` を超えた場合は指定 error で失敗する。
     pub(crate) fn read_from(
-        reader: impl Read,
+        mut reader: impl Read,
         limit: usize,
         too_large_error: &'static str,
         session: &SecretSession,
     ) -> Result<Self> {
         let mut buffer = Self::new(limit + 1, session)?;
-        let len = io::copy(&mut reader.take((limit + 1) as u64), &mut buffer)? as usize;
-        if len > limit {
+        buffer.read_capped_from(&mut reader, limit + 1)?;
+        if buffer.len > limit {
             bail!(too_large_error);
         }
 
@@ -53,14 +53,26 @@ impl ProtectedInputBuffer {
     ///
     /// 末尾改行を除いた後に上限判定できるよう、CRLF 分の余剰容量を確保する。
     pub(crate) fn read_line_from(
-        reader: impl Read,
+        mut reader: impl Read,
         limit: usize,
         session: &SecretSession,
     ) -> Result<Self> {
         let read_limit = limit + 3;
         let mut buffer = Self::new(read_limit, session)?;
-        buffer.len = io::copy(&mut reader.take(read_limit as u64), &mut buffer)? as usize;
+        buffer.read_capped_from(&mut reader, read_limit)?;
         Ok(buffer)
+    }
+
+    fn read_capped_from(&mut self, reader: &mut impl Read, cap: usize) -> io::Result<()> {
+        let target_len = cap.min(self.buffer.len());
+        while self.len < target_len {
+            let read = reader.read(&mut self.buffer[self.len..target_len])?;
+            if read == 0 {
+                break;
+            }
+            self.len += read;
+        }
+        Ok(())
     }
 
     /// reader から newline までの行入力 bytes を読み込む。

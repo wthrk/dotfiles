@@ -205,8 +205,8 @@ impl TestDevice {
     /// contract で指定された初期状態を持つ device stub を構築する。
     fn from_config(serial: u32, config: &TestStubConfig) -> Result<Self> {
         match config.state_for_serial(serial) {
-            TestDeviceState::Fresh => Ok(Self::fresh(serial)),
-            TestDeviceState::Initialized => Self::initialized(serial),
+            TestDeviceState::Fresh => Ok(Self::fresh(serial, config.clone())),
+            TestDeviceState::Initialized => Self::initialized(serial, config.clone()),
             TestDeviceState::Provisioned => Self::provisioned(serial, config),
             TestDeviceState::WritableBwEmail => {
                 Self::writable_for(serial, SecretName::BwEmail, config)
@@ -221,19 +221,19 @@ impl TestDevice {
     }
 
     /// PIV key も manifest も存在しない device stub を構築する。
-    fn fresh(serial: u32) -> Self {
+    fn fresh(serial: u32, config: TestStubConfig) -> Self {
         Self {
             serial,
             key_exists: false,
-            config: TestStubConfig::default(),
+            config,
             emit_write_events: false,
             objects: BTreeMap::new(),
         }
     }
 
     /// PIV key と manifest が作成済みの device stub を構築する。
-    fn initialized(serial: u32) -> Result<Self> {
-        let mut device = Self::fresh(serial);
+    fn initialized(serial: u32, config: TestStubConfig) -> Result<Self> {
+        let mut device = Self::fresh(serial, config);
         device.initialize_storage()?;
         Ok(device)
     }
@@ -243,8 +243,7 @@ impl TestDevice {
     /// `corrupt_secret` が指定された場合は、指定 object だけを invalid payload に置き換える。
     fn provisioned(serial: u32, config: &TestStubConfig) -> Result<Self> {
         let session = SecretSession::start()?;
-        let mut device = Self::initialized(serial)?;
-        device.config = config.clone();
+        let mut device = Self::initialized(serial, config.clone())?;
         device.write_seed_secret(
             SecretName::BwEmail,
             &config.seed_secret(SecretName::BwEmail),
@@ -271,8 +270,7 @@ impl TestDevice {
     /// 指定 secret だけが未保存の writable device stub を構築する。
     fn writable_for(serial: u32, target: SecretName, config: &TestStubConfig) -> Result<Self> {
         let session = SecretSession::start()?;
-        let mut device = Self::initialized(serial)?;
-        device.config = config.clone();
+        let mut device = Self::initialized(serial, config.clone())?;
         for name in SecretName::iter().filter(|name| *name != target) {
             device.write_seed_secret(name, &config.seed_secret(name), &session)?;
         }
