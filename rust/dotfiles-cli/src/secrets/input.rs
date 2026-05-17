@@ -322,11 +322,7 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
     fn expect_byte(&mut self, expected: u8) -> Result<()> {
         match self.take_byte() {
             Some(actual) if actual == expected => Ok(()),
-            Some(actual) => bail!(
-                "expected `{}`, found `{}`",
-                expected as char,
-                actual as char
-            ),
+            Some(_) => bail!("expected `{}` in JSON input", expected as char),
             None => bail!("unexpected end of JSON input"),
         }
     }
