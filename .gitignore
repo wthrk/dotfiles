@@ -1,5 +1,6 @@
 /lsp
 /.direnv/
+/.worktrees/
 /.serena/
 /target/
 target/
