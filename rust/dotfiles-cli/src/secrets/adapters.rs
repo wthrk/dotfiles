@@ -6,11 +6,16 @@
 mod test_stub;
 mod yubikey;
 
+use anyhow::Context;
 #[cfg(feature = "secrets-test-stub")]
 use std::io::Write;
+use std::{io, time::Instant};
 
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::domain::{PivObjectId, SecretDevice};
+use crate::secrets::support::terminal::{
+    read_terminal_line_until, stdin_is_terminal, wait_for_enter,
+};
 use crate::{Result, secrets::support::protection::InterruptGuard};
 
 pub(crate) use yubikey::SPARE_SERIAL_NONINTERACTIVE_ERROR;
@@ -160,6 +165,7 @@ pub(crate) fn open_device(
     backend: &mut DeviceBackend,
     serial: Option<u32>,
 ) -> Result<YubikeySecretDevice> {
+    let io = yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
         DeviceBackend::TestStub(factory) => factory
@@ -168,11 +174,11 @@ pub(crate) fn open_device(
         DeviceBackend::Real => {
             #[cfg(feature = "secrets-test-stub")]
             {
-                yubikey::open_device(serial).map(YubikeySecretDevice::Real)
+                yubikey::open_device(serial, &io).map(YubikeySecretDevice::Real)
             }
             #[cfg(not(feature = "secrets-test-stub"))]
             {
-                yubikey::open_device(serial)
+                yubikey::open_device(serial, &io)
             }
         }
     }
@@ -188,6 +194,7 @@ pub(crate) fn open_spare_device(
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
+    let io = yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
         DeviceBackend::TestStub(factory) => factory
@@ -196,13 +203,79 @@ pub(crate) fn open_spare_device(
         DeviceBackend::Real => {
             #[cfg(feature = "secrets-test-stub")]
             {
-                yubikey::open_spare_device(spare_serial, primary_serial, interrupt)
+                yubikey::open_spare_device(spare_serial, primary_serial, interrupt, &io)
                     .map(YubikeySecretDevice::Real)
             }
             #[cfg(not(feature = "secrets-test-stub"))]
             {
-                yubikey::open_spare_device(spare_serial, primary_serial, interrupt)
+                yubikey::open_spare_device(spare_serial, primary_serial, interrupt, &io)
             }
         }
     }
+}
+
+/// 実機 YubiKey adapter の対話 I/O 境界を組み立てる。
+///
+/// reader 選択と spare 差し替え待機だけをここへ集約し、`yubikey` module は device 操作へ専念させる。
+fn yubikey_interaction<'a>() -> yubikey::YubikeyInteraction<'a> {
+    yubikey::YubikeyInteraction {
+        stdin_is_terminal: &stdin_is_terminal,
+        select_candidate: &select_yubikey_candidate,
+        wait_for_spare_replacement: &wait_for_spare_replacement,
+    }
+}
+
+/// 複数の YubiKey 候補を表示し、利用者が選んだ index を返す。
+///
+/// stdin が TTY でない場合は番号入力を読まず、serial 指定を求める error で失敗する。
+fn select_yubikey_candidate(
+    candidates: &[yubikey::YubikeySelectionCandidate<'_>],
+    timed_input: Option<(Instant, &InterruptGuard)>,
+) -> Result<usize> {
+    if !stdin_is_terminal() {
+        anyhow::bail!("multiple YubiKeys detected; pass a serial option in non-interactive use");
+    }
+
+    eprintln!("Select YubiKey:");
+    for (index, candidate) in candidates.iter().enumerate() {
+        eprintln!(
+            "{}: serial {} ({})",
+            index + 1,
+            candidate.serial,
+            candidate.reader
+        );
+    }
+    eprint!("number: ");
+    std::io::Write::flush(&mut io::stderr())?;
+
+    let input = if let Some((deadline, interrupt)) = timed_input {
+        read_terminal_line_until(deadline, interrupt, "timed out waiting for spare YubiKey")?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        input
+    };
+    let selected = input
+        .trim()
+        .parse::<usize>()
+        .map_err(anyhow::Error::from)
+        .context("invalid selection")?;
+    if selected == 0 || selected > candidates.len() {
+        anyhow::bail!("selected YubiKey is out of range");
+    }
+    Ok(selected - 1)
+}
+
+/// primary と同じ device が選ばれた後、spare への差し替え完了を Enter で待つ。
+///
+/// 待機は spare 登録の deadline と interrupt policy に従う。
+fn wait_for_spare_replacement(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
+    eprintln!("The selected YubiKey is the primary; replace it with the spare.");
+    eprintln!("Insert the spare YubiKey, then press Enter.");
+    wait_for_enter(
+        deadline,
+        interrupt,
+        SPARE_SERIAL_NONINTERACTIVE_ERROR,
+        "timed out waiting for spare YubiKey",
+    )
 }
