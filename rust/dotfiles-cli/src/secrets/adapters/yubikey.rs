@@ -1,6 +1,6 @@
 //! `dotfiles secrets` の device 層。
 //!
-//! 実機 YubiKey discovery と PIV adapter を `storage::SecretDevice` へ接続する。PIN や
+//! 実機 YubiKey discovery と PIV adapter を `domain::SecretDevice` へ接続する。PIN や
 //! secret の入力は application 層で取得し、この層は reader / serial 選択と PIV 操作の
 //! error contract を固定する。
 
@@ -19,15 +19,15 @@ use yubikey::{
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 
-use super::{
-    storage::{PivObjectId, SecretDevice},
-    util::{
+use crate::Result;
+use crate::secrets::{
+    domain::{PivObjectId, SecretDevice},
+    support::{
         protection::InterruptGuard,
         terminal::{read_terminal_line_until, stdin_is_terminal, wait_for_enter},
         write_oaep_unpadded_sha256,
     },
 };
-use crate::Result;
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
@@ -480,10 +480,9 @@ impl SecretDevice for YubikeySecretDevice {
         }
     }
 
-    fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()> {
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
         self.authenticate_management()?;
-        let mut value = value.to_vec();
-        self.yubikey.save_object(object_id.value(), &mut value)?;
+        self.yubikey.save_object(object_id.value(), value)?;
         Ok(())
     }
 
@@ -500,15 +499,12 @@ impl SecretDevice for YubikeySecretDevice {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        let decrypted = scopeguard::guard(
-            piv::decrypt_data(
-                &mut self.yubikey,
-                wrapped_key,
-                AlgorithmId::Rsa2048,
-                SECRET_SLOT,
-            )?,
-            |mut decrypted| decrypted.fill(0),
-        );
+        let decrypted = piv::decrypt_data(
+            &mut self.yubikey,
+            wrapped_key,
+            AlgorithmId::Rsa2048,
+            SECRET_SLOT,
+        )?;
         write_oaep_unpadded_sha256(&decrypted, 256, output)?;
         Ok(())
     }

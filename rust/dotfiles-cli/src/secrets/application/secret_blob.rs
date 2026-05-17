@@ -10,9 +10,9 @@ use anyhow::bail;
 use rand::Rng;
 
 use crate::Result;
-use crate::secrets::util::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession};
+use crate::secrets::support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession};
 
-use super::model::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName};
+use crate::secrets::domain::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName};
 
 /// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。
 ///

@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [features]
-secrets-test-stub = []
+secrets-test-stub = ["dep:dotfiles-cli-secrets-test-contract"]
 
 [[bin]]
 name = "dotfiles"
@@ -25,6 +25,7 @@ anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
+dotfiles-cli-secrets-test-contract = { workspace = true, optional = true }
 nom.workspace = true
 rand.workspace = true
 region.workspace = true

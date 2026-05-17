@@ -1,12 +1,8 @@
 //! 入力 bytes の読み込み容量と memory lock 範囲を同じ所有値で管理する buffer。
 
-use std::{
-    fmt,
-    io::{self, Read, Write},
-};
+use std::io::{self, Read, Write};
 
 use anyhow::bail;
-use serde::de::{self, DeserializeSeed, Visitor};
 
 use crate::Result;
 
@@ -102,7 +98,10 @@ impl ProtectedInputBuffer {
 
     /// 端末 backspace 用に直前の byte を buffer から除く。
     pub(crate) fn pop_byte(&mut self) {
-        self.len = self.len.saturating_sub(1);
+        if self.len > 0 {
+            self.len -= 1;
+            self.buffer[self.len] = 0;
+        }
     }
 
     fn trimmed_len(&self) -> usize {
@@ -125,6 +124,7 @@ impl ProtectedInputBuffer {
         } else {
             len
         };
+        buffer[len..].fill(0);
         buffer.truncate(len);
 
         (buffer, _lock)
@@ -155,64 +155,9 @@ impl ProtectedInputBuffer {
     ) -> Result<ProtectedSecret<'session>> {
         let Self { buffer, len, _lock } = self;
         let mut buffer = buffer;
+        buffer[len..].fill(0);
         buffer.truncate(len);
         session.protect_locked_secret_value(buffer, Some(_lock))
-    }
-
-    /// serde の string value を現在の session に属する buffer へ直接 decode する seed を返す。
-    pub(crate) fn serde_string_seed(
-        limit: usize,
-        session: &SecretSession,
-    ) -> ProtectedInputBufferStringSeed<'_> {
-        ProtectedInputBufferStringSeed { limit, session }
-    }
-}
-
-/// serde string value を `ProtectedInputBuffer` として受け取る decode seed。
-pub(crate) struct ProtectedInputBufferStringSeed<'session> {
-    limit: usize,
-    session: &'session SecretSession,
-}
-
-impl<'de, 'session> DeserializeSeed<'de> for ProtectedInputBufferStringSeed<'session> {
-    type Value = ProtectedInputBuffer;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_str(ProtectedInputBufferStringVisitor {
-            limit: self.limit,
-            session: self.session,
-        })
-    }
-}
-
-struct ProtectedInputBufferStringVisitor<'session> {
-    limit: usize,
-    session: &'session SecretSession,
-}
-
-impl<'de, 'session> Visitor<'de> for ProtectedInputBufferStringVisitor<'session> {
-    type Value = ProtectedInputBuffer;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("protected input string")
-    }
-
-    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        if value.len() > self.limit {
-            return Err(de::Error::custom("protected input is too large"));
-        }
-        let mut input =
-            ProtectedInputBuffer::new(value.len(), self.session).map_err(de::Error::custom)?;
-        input
-            .write_all(value.as_bytes())
-            .map_err(de::Error::custom)?;
-        Ok(input)
     }
 }
 
@@ -220,10 +165,15 @@ impl Write for ProtectedInputBuffer {
     /// bytes を確保済み allocation の残り容量へ書き込む。
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.buffer.len().saturating_sub(self.len);
-        let len = remaining.min(bytes.len());
-        self.buffer[self.len..self.len + len].copy_from_slice(&bytes[..len]);
-        self.len += len;
-        Ok(len)
+        if bytes.len() > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "protected input buffer capacity exceeded",
+            ));
+        }
+        self.buffer[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+        Ok(bytes.len())
     }
 
     /// memory buffer writer として flush を完了扱いにする。
@@ -242,7 +192,7 @@ mod tests {
 
     #[test]
     fn secret_line_accepts_exact_limit_with_lf() -> Result<()> {
-        let session = crate::secrets::util::protection::SecretSession::start()?;
+        let session = crate::secrets::support::protection::SecretSession::start()?;
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\n"), 3, &session)?;
         let secret = input.into_protected_secret_line(&session, 3, "too large")?;
 
@@ -252,7 +202,7 @@ mod tests {
 
     #[test]
     fn secret_line_accepts_exact_limit_with_crlf() -> Result<()> {
-        let session = crate::secrets::util::protection::SecretSession::start()?;
+        let session = crate::secrets::support::protection::SecretSession::start()?;
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\r\n"), 3, &session)?;
         let secret = input.into_protected_secret_line(&session, 3, "too large")?;
 
@@ -262,7 +212,7 @@ mod tests {
 
     #[test]
     fn secret_line_rejects_body_past_limit_after_trim() -> Result<()> {
-        let session = crate::secrets::util::protection::SecretSession::start()?;
+        let session = crate::secrets::support::protection::SecretSession::start()?;
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abcd\n"), 3, &session)?;
         let err = input.into_protected_secret_line(&session, 3, "too large");
 

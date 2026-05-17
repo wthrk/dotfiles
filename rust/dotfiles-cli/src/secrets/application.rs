@@ -2,75 +2,34 @@
 //!
 //! この層は command ごとの use case と外部境界の順序を所有する。secret を読む前に
 //! device と非対話条件を確定し、平文 secret は `SecretSession` に紐づく保護済み値として
-//! storage 層へ渡す。
+//! domain の保存操作へ渡す。
+
+mod secret_blob;
+mod storage_service;
+#[cfg(test)]
+mod storage_service_tests;
 
 use std::collections::BTreeSet;
 
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
     YubikeyCommand, YubikeyOptions,
-    device::{self, SPARE_SERIAL_NONINTERACTIVE_ERROR, open_device, open_spare_device},
+    adapters::{self, SPARE_SERIAL_NONINTERACTIVE_ERROR, open_device, open_spare_device},
+    domain::{self, SecretDevice, SecretName},
     input::{
-        parse_protected_bootstrap_secrets_json, read_hidden_secret, read_visible_secret_line,
-        read_yubikey_pin, reject_secret_stdout_terminal, write_secret_to_stdout,
+        MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
+        read_protected_enrollment_secret_set, read_protected_stdin_secret,
+        read_visible_secret_line, read_yubikey_pin, reject_secret_stdout_terminal,
+        write_secret_to_stdout,
     },
-    storage::{self, BootstrapSecretSource, SecretDevice, SecretName},
-    util::{
-        protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    ports::{EnrollmentSecretSet, SecretsBoundary},
+    support::{
+        protection::{InterruptGuard, ProtectedSecret, SecretSession},
         terminal::{prompt_yes_no, stdin_is_terminal as input_stdin_is_terminal},
     },
 };
 use crate::Result;
-use anyhow::{Context, bail};
-
-const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
-pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
-
-/// bootstrap 登録に必要な 3 field を同じ保護 session で所有する。
-pub(crate) struct ProtectedBootstrapSecrets<'session> {
-    bw_email: ProtectedSecret<'session>,
-    bw_password: ProtectedSecret<'session>,
-    bws_access_token: ProtectedSecret<'session>,
-}
-
-impl<'session> ProtectedBootstrapSecrets<'session> {
-    /// 同じ `SecretSession` に所属する 3 field から bootstrap 入力を構築する。
-    pub(crate) fn new(
-        bw_email: ProtectedSecret<'session>,
-        bw_password: ProtectedSecret<'session>,
-        bws_access_token: ProtectedSecret<'session>,
-    ) -> Self {
-        Self {
-            bw_email,
-            bw_password,
-            bws_access_token,
-        }
-    }
-}
-
-impl BootstrapSecretSource for ProtectedBootstrapSecrets<'_> {
-    /// 指定された secret の平文 bytes を closure へ貸し出す。
-    ///
-    /// 借用範囲は storage 呼び出し中に限定し、所有値を直接取り出させない。
-    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        match name {
-            SecretName::BwEmail => self.bw_email.with_secret(borrow),
-            SecretName::BwPassword => self.bw_password.with_secret(borrow),
-            SecretName::BwsAccessToken => self.bws_access_token.with_secret(borrow),
-        }
-    }
-}
-
-/// stdin から 1 secret を読み、現在の session の保護済み値として返す。
-///
-/// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。
-pub(super) fn read_protected_stdin_secret(
-    limit: usize,
-    session: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
-    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, session)?;
-    input.into_protected_secret_line(session, limit, "stdin secret input is too large")
-}
+use anyhow::bail;
 
 /// 実機境界を使って parse 済み options の use case を開始する。
 pub(super) fn run(options: SecretsOptions) -> Result<()> {
@@ -106,15 +65,15 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
     }
 }
 
-/// `setup` 用の device を開き、storage setup を実行する。
+/// `setup` 用の device を開き、PIV object setup を実行する。
 ///
-/// PIV 領域の衝突検出は storage 層に委ねる。
+/// PIV 領域の衝突検出は domain 層に委ねる。
 fn run_setup_with<B: SecretsBoundary>(
     options: super::SerialOptions,
     boundary: &mut B,
 ) -> Result<()> {
     let mut device = boundary.open_device(options.serial)?;
-    storage::setup(&mut device)
+    storage_service::setup(&mut device)
 }
 
 /// 単一 secret を読み込み、指定された storage object へ保存する。
@@ -125,12 +84,12 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     session.run_yubikey_operation(|| {
-        storage::check_put_preconditions(&mut device, options.name, options.force)
+        storage_service::check_put_preconditions(&mut device, options.name, options.force)
     })?;
     let secret = boundary.read_secret_for_put(options.name, options.stdin, &session)?;
     session.run_yubikey_operation(|| {
         secret.with_secret(|secret| {
-            storage::put(&mut device, options.name, secret, options.force, &session)
+            storage_service::put(&mut device, options.name, secret, options.force, &session)
         })
     })
 }
@@ -143,15 +102,16 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device, &session)?;
-    let output_bytes = session
-        .run_yubikey_operation(|| storage::get_protected(&mut device, options.name, &session))?;
+    let output_bytes = session.run_yubikey_operation(|| {
+        storage_service::get_protected(&mut device, options.name, &session)
+    })?;
     output_bytes.with_secret(write_secret_to_stdout)?;
     Ok(())
 }
 
-/// primary 用 bootstrap secrets を読み込み、device へ登録して local verify まで実行する。
+/// primary 用 enrollment secrets を読み込み、device へ登録して local verify まで実行する。
 ///
-/// storage 衝突確認が終わるまでは bootstrap secrets を読み始めない。
+/// storage 衝突確認が終わるまでは enrollment secrets を読み始めない。
 fn run_enroll_primary_with<B: SecretsBoundary>(
     options: super::EnrollPrimaryOptions,
     boundary: &mut B,
@@ -163,15 +123,15 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     )?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
-    session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut device))?;
+    session.run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut device))?;
     let summary = {
-        let secrets = boundary.read_bootstrap_secrets(options.stdin_json, &session)?;
+        let secrets = boundary.read_enrollment_secret_set(options.stdin_json, &session)?;
         session.check_interrupted()?;
         verify_pin_for_secret_reads(boundary, &mut device, &session)?;
         let mut summary = session.run_yubikey_operation(|| {
-            storage::enroll_without_verify(
+            enroll_without_local_verify(
                 &mut device,
-                storage::YubikeyRole::Primary,
+                domain::YubikeyRole::Primary,
                 &secrets,
                 &session,
             )
@@ -179,7 +139,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
         verify_local_storage_protected(&mut device, &session)?;
         summary
             .checks
-            .insert(storage::CheckName::LocalStorage, storage::CheckStatus::Ok);
+            .insert(domain::CheckName::LocalStorage, domain::CheckStatus::Ok);
         summary
     };
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -189,7 +149,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
 /// `put` 用の単一 secret を prompt または stdin から読み込む。
 ///
 /// 読み込んだ直後に session 所属の保護済み値へ移す。
-fn read_protected_secret_for_put(
+pub(crate) fn read_protected_secret_for_put(
     name: SecretName,
     stdin: bool,
     memory: &SecretSession,
@@ -201,26 +161,20 @@ fn read_protected_secret_for_put(
     }
 }
 
-/// bootstrap 登録用の 3 field を prompt または stdin JSON から読み込む。
+/// 登録用の 3 field を prompt または stdin JSON から読み込む。
 ///
 /// field ごとの保護境界を同じ session にそろえてから登録用 model にする。
-pub(super) fn read_protected_bootstrap_secrets(
+fn read_enrollment_secret_set_from_user(
     stdin_json: bool,
     memory: &SecretSession,
-) -> Result<ProtectedBootstrapSecrets<'_>> {
+) -> Result<EnrollmentSecretSet<'_>> {
     if stdin_json {
-        let input = ProtectedInputBuffer::read_from(
+        return read_protected_enrollment_secret_set(
             std::io::stdin(),
             MAX_BOOTSTRAP_JSON_LEN,
-            "bootstrap secret JSON input is too large",
-            memory,
-        )?;
-        return parse_protected_bootstrap_secrets_json(
-            input.as_slice(),
             MAX_SINGLE_STDIN_SECRET_LEN,
             memory,
-        )
-        .context("failed to parse bootstrap secret JSON");
+        );
     }
 
     let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
@@ -228,14 +182,14 @@ pub(super) fn read_protected_bootstrap_secrets(
     let bws_access_token =
         read_protected_secret_for_put(SecretName::BwsAccessToken, false, memory)?;
 
-    Ok(ProtectedBootstrapSecrets::new(
+    Ok(EnrollmentSecretSet::new(
         bw_email,
         bw_password,
         bws_access_token,
     ))
 }
 
-/// spare 用 bootstrap secrets を取得し、別 device へ登録して local verify まで実行する。
+/// spare 用 enrollment secrets を取得し、別 device へ登録して local verify まで実行する。
 ///
 /// primary から復号する経路では、復号前に spare 候補と serial 制約を確定する。
 fn run_enroll_spare_with<B: SecretsBoundary>(
@@ -253,7 +207,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
             options.primary_serial,
             session.interrupt(),
         )?;
-        session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
+        session.run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut spare))?;
         if options.stdin_json {
             verify_pin_for_secret_reads(boundary, &mut spare, &session)?;
         }
@@ -264,7 +218,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     let (bootstrap, primary_serial, spare) = if options.stdin_json {
         session.check_interrupted()?;
         (
-            boundary.read_bootstrap_secrets(true, &session)?,
+            boundary.read_enrollment_secret_set(true, &session)?,
             options.primary_serial,
             prepared_spare,
         )
@@ -291,7 +245,8 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
                 primary_serial,
                 session.interrupt(),
             )?;
-            session.run_yubikey_operation(|| storage::check_setup_preconditions(&mut spare))?;
+            session
+                .run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut spare))?;
             spare
         }
     };
@@ -301,42 +256,79 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         verify_pin_for_secret_reads(boundary, &mut spare, &session)?;
     }
     let mut summary = session.run_yubikey_operation(|| {
-        storage::enroll_without_verify(
-            &mut spare,
-            storage::YubikeyRole::Spare,
-            &bootstrap,
-            &session,
-        )
+        enroll_without_local_verify(&mut spare, domain::YubikeyRole::Spare, &bootstrap, &session)
     })?;
     verify_local_storage_protected(&mut spare, &session)?;
     summary
         .checks
-        .insert(storage::CheckName::LocalStorage, storage::CheckStatus::Ok);
+        .insert(domain::CheckName::LocalStorage, domain::CheckStatus::Ok);
     drop(bootstrap);
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
 
-/// primary device から bootstrap 登録用の 3 field を復号する。
+/// primary device から 登録用の 3 field を復号する。
 ///
 /// 各 field は次の device 操作前に session 所属の保護済み値へ移す。
-fn read_protected_bootstrap_from_device<'session, D: storage::SecretDevice>(
+fn read_protected_bootstrap_from_device<'session, D: domain::SecretDevice>(
     primary: &mut D,
     session: &'session SecretSession,
-) -> Result<ProtectedBootstrapSecrets<'session>> {
-    let bw_email = session
-        .run_yubikey_operation(|| storage::get_protected(primary, SecretName::BwEmail, session))?;
+) -> Result<EnrollmentSecretSet<'session>> {
+    let bw_email = session.run_yubikey_operation(|| {
+        storage_service::get_protected(primary, SecretName::BwEmail, session)
+    })?;
     let bw_password = session.run_yubikey_operation(|| {
-        storage::get_protected(primary, SecretName::BwPassword, session)
+        storage_service::get_protected(primary, SecretName::BwPassword, session)
     })?;
     let bws_access_token = session.run_yubikey_operation(|| {
-        storage::get_protected(primary, SecretName::BwsAccessToken, session)
+        storage_service::get_protected(primary, SecretName::BwsAccessToken, session)
     })?;
-    Ok(ProtectedBootstrapSecrets::new(
+    Ok(EnrollmentSecretSet::new(
         bw_email,
         bw_password,
         bws_access_token,
     ))
+}
+
+/// 登録の永続書き込みを行い、local verify 前の summary を返す。
+///
+/// 3 field の空チェックを完了してから PIV key / manifest 作成へ進む。
+fn enroll_without_local_verify<D: domain::SecretDevice>(
+    device: &mut D,
+    role: domain::YubikeyRole,
+    secrets: &EnrollmentSecretSet<'_>,
+    session: &SecretSession,
+) -> Result<domain::EnrollSummary> {
+    secrets.bw_email.with_secret(|secret| {
+        if secret.is_empty() {
+            bail!("{} must not be empty", SecretName::BwEmail);
+        }
+        Ok(())
+    })?;
+    secrets.bw_password.with_secret(|secret| {
+        if secret.is_empty() {
+            bail!("{} must not be empty", SecretName::BwPassword);
+        }
+        Ok(())
+    })?;
+    secrets.bws_access_token.with_secret(|secret| {
+        if secret.is_empty() {
+            bail!("{} must not be empty", SecretName::BwsAccessToken);
+        }
+        Ok(())
+    })?;
+
+    storage_service::setup(device)?;
+    secrets.bw_email.with_secret(|secret| {
+        storage_service::put(device, SecretName::BwEmail, secret, false, session)
+    })?;
+    secrets.bw_password.with_secret(|secret| {
+        storage_service::put(device, SecretName::BwPassword, secret, false, session)
+    })?;
+    secrets.bws_access_token.with_secret(|secret| {
+        storage_service::put(device, SecretName::BwsAccessToken, secret, false, session)
+    })?;
+    Ok(storage_service::enroll_summary(device.serial(), role))
 }
 
 /// BWS access token を読み込み、1 本または複数本の device へ反映する。
@@ -417,13 +409,13 @@ fn prepare_bws_token_rotation_device<B: SecretsBoundary>(
 /// 1 本の device へ BWS access token を書き込み、local verify を実行する。
 ///
 /// token の平文借用範囲は storage 書き込み呼び出し中に限定する。
-fn rotate_bws_token_on_device<D: storage::SecretDevice>(
+fn rotate_bws_token_on_device<D: domain::SecretDevice>(
     device: &mut D,
     token: &ProtectedSecret<'_>,
     session: &SecretSession,
 ) -> Result<RotateBwsTokenResult> {
     session.run_yubikey_operation(|| {
-        token.with_secret(|token| storage::replace_bws_token(device, token, session))
+        token.with_secret(|token| storage_service::replace_bws_token(device, token, session))
     })?;
     match verify_local_storage_protected(device, session) {
         Ok(summary) => Ok(RotateBwsTokenResult {
@@ -438,19 +430,19 @@ fn rotate_bws_token_on_device<D: storage::SecretDevice>(
 }
 
 struct RotateBwsTokenResult {
-    summary: storage::VerifySummary,
+    summary: domain::VerifySummary,
     result: Result<()>,
 }
 
 #[derive(serde::Serialize)]
 struct PartialRotateBwsTokenSummary<'a> {
-    updated: &'a [storage::VerifySummary],
+    updated: &'a [domain::VerifySummary],
 }
 
 /// rotation 済み device の summary を部分成功 JSON として stdout へ出力する。
 ///
 /// 途中失敗時に、利用者が再実行対象を判別できる情報を残す。
-fn write_partial_rotate_bws_token_summary(summaries: &[storage::VerifySummary]) -> Result<()> {
+fn write_partial_rotate_bws_token_summary(summaries: &[domain::VerifySummary]) -> Result<()> {
     if summaries.is_empty() {
         return Ok(());
     }
@@ -460,16 +452,13 @@ fn write_partial_rotate_bws_token_summary(summaries: &[storage::VerifySummary]) 
     Ok(())
 }
 
-fn failed_local_storage_summary(serial: u32) -> storage::VerifySummary {
-    storage::VerifySummary {
+fn failed_local_storage_summary(serial: u32) -> domain::VerifySummary {
+    domain::VerifySummary {
         serial,
         checks: [
-            (
-                storage::CheckName::LocalStorage,
-                storage::CheckStatus::Failed,
-            ),
-            (storage::CheckName::Bws, storage::CheckStatus::Skipped),
-            (storage::CheckName::BwLogin, storage::CheckStatus::Skipped),
+            (domain::CheckName::LocalStorage, domain::CheckStatus::Failed),
+            (domain::CheckName::Bws, domain::CheckStatus::Skipped),
+            (domain::CheckName::BwLogin, domain::CheckStatus::Skipped),
         ]
         .into_iter()
         .collect(),
@@ -514,13 +503,13 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
 /// device 上の local storage secrets を復号し、空でないことを確認する。
 ///
 /// 復号結果は空判定前に session の保護境界へ移す。
-fn verify_local_storage_protected<D: storage::SecretDevice>(
+fn verify_local_storage_protected<D: domain::SecretDevice>(
     device: &mut D,
     session: &SecretSession,
-) -> Result<storage::VerifySummary> {
+) -> Result<domain::VerifySummary> {
     for name in SecretName::iter() {
-        let secret =
-            session.run_yubikey_operation(|| storage::get_protected(device, name, session))?;
+        let secret = session
+            .run_yubikey_operation(|| storage_service::get_protected(device, name, session))?;
         secret.with_secret(|secret| {
             if secret.is_empty() {
                 bail!("{} stored on this YubiKey is empty", name);
@@ -529,12 +518,12 @@ fn verify_local_storage_protected<D: storage::SecretDevice>(
         })?;
     }
 
-    Ok(storage::VerifySummary {
+    Ok(domain::VerifySummary {
         serial: device.serial(),
         checks: [
-            (storage::CheckName::LocalStorage, storage::CheckStatus::Ok),
-            (storage::CheckName::Bws, storage::CheckStatus::Skipped),
-            (storage::CheckName::BwLogin, storage::CheckStatus::Skipped),
+            (domain::CheckName::LocalStorage, domain::CheckStatus::Ok),
+            (domain::CheckName::Bws, domain::CheckStatus::Skipped),
+            (domain::CheckName::BwLogin, domain::CheckStatus::Skipped),
         ]
         .into_iter()
         .collect(),
@@ -544,45 +533,12 @@ fn verify_local_storage_protected<D: storage::SecretDevice>(
 /// rotation の書き込み前条件として local verify と management auth を確認する。
 ///
 /// 確認は token 入力前に現在の保護境界内で実行する。
-fn check_rotate_preconditions_protected<D: storage::SecretDevice>(
+fn check_rotate_preconditions_protected<D: domain::SecretDevice>(
     device: &mut D,
     session: &SecretSession,
 ) -> Result<()> {
     verify_local_storage_protected(device, session)?;
     session.run_yubikey_operation(|| device.check_management_auth_preconditions())
-}
-
-/// application use case が利用する外部 I/O 境界。
-///
-/// 実機 adapter と test stub は同じ非対話条件、入力順序、device 操作順序をこの trait で共有する。
-pub(super) trait SecretsBoundary {
-    type Device: storage::SecretDevice;
-
-    fn stdin_is_terminal(&self) -> bool;
-    fn stdout_is_terminal(&self) -> bool;
-    fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device>;
-    fn open_spare_device(
-        &mut self,
-        spare_serial: Option<u32>,
-        primary_serial: Option<u32>,
-        interrupt: &InterruptGuard,
-    ) -> Result<Self::Device>;
-    fn read_bootstrap_secrets<'session>(
-        &mut self,
-        stdin_json: bool,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedBootstrapSecrets<'session>>;
-    fn read_secret_for_put<'session>(
-        &mut self,
-        name: SecretName,
-        stdin: bool,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
-    fn read_yubikey_pin<'session>(
-        &mut self,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
-    fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
 }
 
 /// 非対話実行時に prompt の代替として許可する入力形式。
@@ -667,14 +623,14 @@ fn stdin_secret_source_error(mode: StdinSecretMode) -> &'static str {
 struct RealSecretsBoundary;
 
 impl SecretsBoundary for RealSecretsBoundary {
-    type Device = device::YubikeySecretDevice;
+    type Device = adapters::YubikeySecretDevice;
 
     fn stdin_is_terminal(&self) -> bool {
         input_stdin_is_terminal()
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        super::util::terminal::stdout_is_terminal()
+        super::support::terminal::stdout_is_terminal()
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
@@ -690,12 +646,12 @@ impl SecretsBoundary for RealSecretsBoundary {
         open_spare_device(spare_serial, primary_serial, interrupt)
     }
 
-    fn read_bootstrap_secrets<'session>(
+    fn read_enrollment_secret_set<'session>(
         &mut self,
         stdin_json: bool,
         memory: &'session SecretSession,
-    ) -> Result<ProtectedBootstrapSecrets<'session>> {
-        read_protected_bootstrap_secrets(stdin_json, memory)
+    ) -> Result<EnrollmentSecretSet<'session>> {
+        read_enrollment_secret_set_from_user(stdin_json, memory)
     }
 
     fn read_secret_for_put<'session>(
@@ -725,6 +681,7 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::*;
+    use crate::secrets::support::protection::ProtectedInputBuffer;
 
     struct FakeBoundary {
         devices: VecDeque<FakeDevice>,
@@ -780,12 +737,12 @@ mod tests {
             Ok(device)
         }
 
-        fn read_bootstrap_secrets<'session>(
+        fn read_enrollment_secret_set<'session>(
             &mut self,
             _stdin_json: bool,
             memory: &'session SecretSession,
-        ) -> Result<ProtectedBootstrapSecrets<'session>> {
-            protected_bootstrap_secrets(memory)
+        ) -> Result<EnrollmentSecretSet<'session>> {
+            protected_enrollment_secret_set(memory)
         }
 
         fn read_secret_for_put<'session>(
@@ -814,7 +771,7 @@ mod tests {
     struct FakeDevice {
         serial: u32,
         key_exists: bool,
-        objects: BTreeMap<storage::PivObjectId, Vec<u8>>,
+        objects: BTreeMap<domain::PivObjectId, Vec<u8>>,
     }
 
     impl FakeDevice {
@@ -829,10 +786,10 @@ mod tests {
         fn provisioned(serial: u32) -> Result<Self> {
             let mut device = Self::fresh(serial);
             let session = SecretSession::start()?;
-            let secrets = protected_bootstrap_secrets(&session)?;
-            storage::enroll_without_verify(
+            let secrets = protected_enrollment_secret_set(&session)?;
+            enroll_without_local_verify(
                 &mut device,
-                storage::YubikeyRole::Primary,
+                domain::YubikeyRole::Primary,
                 &secrets,
                 &session,
             )?;
@@ -840,7 +797,7 @@ mod tests {
         }
     }
 
-    impl storage::SecretDevice for FakeDevice {
+    impl domain::SecretDevice for FakeDevice {
         fn serial(&self) -> u32 {
             self.serial
         }
@@ -862,11 +819,11 @@ mod tests {
             Ok(())
         }
 
-        fn read_object(&mut self, object_id: storage::PivObjectId) -> Result<Option<Vec<u8>>> {
+        fn read_object(&mut self, object_id: domain::PivObjectId) -> Result<Option<Vec<u8>>> {
             Ok(self.objects.get(&object_id).cloned())
         }
 
-        fn write_object(&mut self, object_id: storage::PivObjectId, value: &[u8]) -> Result<()> {
+        fn write_object(&mut self, object_id: domain::PivObjectId, value: &mut [u8]) -> Result<()> {
             self.objects.insert(object_id, value.to_vec());
             Ok(())
         }
@@ -930,10 +887,10 @@ mod tests {
         Ok(())
     }
 
-    fn protected_bootstrap_secrets<'session>(
+    fn protected_enrollment_secret_set<'session>(
         memory: &'session SecretSession,
-    ) -> Result<ProtectedBootstrapSecrets<'session>> {
-        Ok(ProtectedBootstrapSecrets::new(
+    ) -> Result<EnrollmentSecretSet<'session>> {
+        Ok(EnrollmentSecretSet::new(
             protected_test_secret(b"user@example.com", memory)?,
             protected_test_secret(b"password", memory)?,
             protected_test_secret(b"token", memory)?,

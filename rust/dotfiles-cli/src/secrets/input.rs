@@ -1,11 +1,14 @@
-//! `dotfiles secrets` の利用者入力を storage model へ変換する入力層。
+//! `dotfiles secrets` の利用者入力を application の保護済み値へ変換する入力層。
 //!
-//! TTY 判定と stdout 書き込みは `util::terminal`、memory lock は `util::protection` に委譲し、
+//! TTY 判定と stdout 書き込みは `support::terminal`、memory lock は `support::protection` に委譲し、
 //! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
 
-use std::fmt;
+use std::{
+    fmt,
+    io::{Read, Write},
+};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use serde::{
     Deserialize,
     de::{self, DeserializeSeed, MapAccess, Visitor},
@@ -14,10 +17,10 @@ use serde::{
 use crate::Result;
 
 #[cfg(test)]
-use super::storage::{BootstrapSecretSource, SecretName};
+use super::domain::SecretName;
 use super::{
-    application::ProtectedBootstrapSecrets,
-    util::{
+    ports::EnrollmentSecretSet,
+    support::{
         protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
         terminal,
     },
@@ -25,11 +28,24 @@ use super::{
 
 const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
+pub(crate) const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
+pub(crate) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
+
+/// stdin から 1 secret を読み、現在の session の保護済み値として返す。
+///
+/// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。
+pub(crate) fn read_protected_stdin_secret(
+    limit: usize,
+    session: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
+    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, session)?;
+    input.into_protected_secret_line(session, limit, "stdin secret input is too large")
+}
 
 /// 表示 prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
-pub(super) fn read_visible_secret_line<'session>(
+pub(crate) fn read_visible_secret_line<'session>(
     prompt: &str,
     limit: usize,
     memory: &'session SecretSession,
@@ -46,7 +62,7 @@ pub(super) fn read_visible_secret_line<'session>(
 /// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 読み込んだ bytes に上限を適用する。
-pub(super) fn read_hidden_secret<'session>(
+pub(crate) fn read_hidden_secret<'session>(
     prompt: &str,
     limit: usize,
     memory: &'session SecretSession,
@@ -75,19 +91,44 @@ fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn parse_protected_bootstrap_secrets_json<'session>(
+pub(crate) fn read_protected_enrollment_secret_set<'session>(
+    reader: impl Read,
+    input_limit: usize,
+    field_limit: usize,
+    memory: &'session SecretSession,
+) -> Result<EnrollmentSecretSet<'session>> {
+    let input = ProtectedInputBuffer::read_from(
+        reader,
+        input_limit,
+        "bootstrap secret JSON input is too large",
+        memory,
+    )?;
+    parse_protected_enrollment_secret_set_json(input.as_slice(), field_limit, memory)
+        .context("failed to parse bootstrap secret JSON")
+}
+
+fn parse_protected_enrollment_secret_set_json<'session>(
     input: &[u8],
     field_limit: usize,
     memory: &'session SecretSession,
-) -> Result<ProtectedBootstrapSecrets<'session>> {
+) -> Result<EnrollmentSecretSet<'session>> {
+    reject_json_string_escapes(input)?;
     let mut deserializer = serde_json::Deserializer::from_slice(input);
-    let secrets = BootstrapSecretsSeed {
+    let secrets = EnrollmentSecretSetSeed {
         field_limit,
         memory,
     }
     .deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(secrets)
+}
+
+/// JSON string escape による serde 内部 scratch への secret 展開を入力境界で拒否する。
+fn reject_json_string_escapes(input: &[u8]) -> Result<()> {
+    if input.contains(&b'\\') {
+        bail!("bootstrap secret JSON strings must not contain escape sequences");
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -110,35 +151,35 @@ impl BootstrapSecretField {
     }
 }
 
-struct BootstrapSecretsSeed<'session> {
+struct EnrollmentSecretSetSeed<'session> {
     field_limit: usize,
     memory: &'session SecretSession,
 }
 
-impl<'de, 'session> DeserializeSeed<'de> for BootstrapSecretsSeed<'session> {
-    type Value = ProtectedBootstrapSecrets<'session>;
+impl<'de, 'session> DeserializeSeed<'de> for EnrollmentSecretSetSeed<'session> {
+    type Value = EnrollmentSecretSet<'session>;
 
     fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(BootstrapSecretsVisitor {
+        deserializer.deserialize_map(EnrollmentSecretSetVisitor {
             field_limit: self.field_limit,
             memory: self.memory,
         })
     }
 }
 
-struct BootstrapSecretsVisitor<'session> {
+struct EnrollmentSecretSetVisitor<'session> {
     field_limit: usize,
     memory: &'session SecretSession,
 }
 
-impl<'de, 'session> Visitor<'de> for BootstrapSecretsVisitor<'session> {
-    type Value = ProtectedBootstrapSecrets<'session>;
+impl<'de, 'session> Visitor<'de> for EnrollmentSecretSetVisitor<'session> {
+    type Value = EnrollmentSecretSet<'session>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("bootstrap secrets object")
+        formatter.write_str("enrollment secrets object")
     }
 
     fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
@@ -168,7 +209,7 @@ impl<'de, 'session> Visitor<'de> for BootstrapSecretsVisitor<'session> {
         let bw_password = bw_password.ok_or_else(|| de::Error::missing_field("bw-password"))?;
         let bws_access_token =
             bws_access_token.ok_or_else(|| de::Error::missing_field("bws-access-token"))?;
-        Ok(ProtectedBootstrapSecrets::new(
+        Ok(EnrollmentSecretSet::new(
             bw_email,
             bw_password,
             bws_access_token,
@@ -188,8 +229,15 @@ impl<'de, 'session> DeserializeSeed<'de> for ProtectedJsonFieldSeed<'session> {
     where
         D: serde::Deserializer<'de>,
     {
-        let input = ProtectedInputBuffer::serde_string_seed(self.field_limit, self.memory)
-            .deserialize(deserializer)?;
+        let value = <&'de str>::deserialize(deserializer)?;
+        if value.len() > self.field_limit {
+            return Err(de::Error::custom("protected input is too large"));
+        }
+        let mut input =
+            ProtectedInputBuffer::new(value.len(), self.memory).map_err(de::Error::custom)?;
+        input
+            .write_all(value.as_bytes())
+            .map_err(de::Error::custom)?;
         input
             .into_protected_secret(self.memory)
             .map_err(de::Error::custom)
@@ -223,12 +271,12 @@ mod tests {
         input: &[u8],
         field_limit: usize,
         memory: &'session SecretSession,
-    ) -> Result<ProtectedBootstrapSecrets<'session>> {
-        parse_protected_bootstrap_secrets_json(input, field_limit, memory)
+    ) -> Result<EnrollmentSecretSet<'session>> {
+        parse_protected_enrollment_secret_set_json(input, field_limit, memory)
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_accepts_expected_schema() -> Result<()> {
+    fn parse_enrollment_secret_set_json_accepts_expected_schema() -> Result<()> {
         let session = SecretSession::start()?;
         let secrets = parse_test_bootstrap_json(
             br#"{
@@ -240,22 +288,16 @@ mod tests {
             &session,
         )?;
 
-        secrets.with_secret(SecretName::BwEmail, |secret| {
-            assert_eq!(secret, b"alice@example.com")
-        });
-        secrets.with_secret(SecretName::BwPassword, |secret| {
-            assert_eq!(secret, b"password")
-        });
-        secrets.with_secret(SecretName::BwsAccessToken, |secret| {
-            assert_eq!(secret, b"token");
-        });
+        secrets.assert_secret_eq(SecretName::BwEmail, b"alice@example.com");
+        secrets.assert_secret_eq(SecretName::BwPassword, b"password");
+        secrets.assert_secret_eq(SecretName::BwsAccessToken, b"token");
         Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_decodes_json_string_escapes() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_json_string_escapes() -> Result<()> {
         let session = SecretSession::start()?;
-        let secrets = parse_test_bootstrap_json(
+        let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice\u0040example.com",
                 "bw-password": "line\nslash\\quote\"",
@@ -263,24 +305,16 @@ mod tests {
             }"#,
             16 * 1024,
             &session,
-        )?;
+        );
 
-        secrets.with_secret(SecretName::BwEmail, |secret| {
-            assert_eq!(secret, b"alice@example.com")
-        });
-        secrets.with_secret(SecretName::BwPassword, |secret| {
-            assert_eq!(secret, b"line\nslash\\quote\"")
-        });
-        secrets.with_secret(SecretName::BwsAccessToken, |secret| {
-            assert_eq!(secret, b"emoji-\xf0\x9f\x94\x91");
-        });
+        assert!(result.is_err());
         Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_preserves_decoded_trailing_newline() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_escaped_trailing_newline() -> Result<()> {
         let session = SecretSession::start()?;
-        let secrets = parse_test_bootstrap_json(
+        let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com\n",
                 "bw-password": "password\n",
@@ -288,22 +322,14 @@ mod tests {
             }"#,
             16 * 1024,
             &session,
-        )?;
+        );
 
-        secrets.with_secret(SecretName::BwEmail, |secret| {
-            assert_eq!(secret, b"alice@example.com\n")
-        });
-        secrets.with_secret(SecretName::BwPassword, |secret| {
-            assert_eq!(secret, b"password\n")
-        });
-        secrets.with_secret(SecretName::BwsAccessToken, |secret| {
-            assert_eq!(secret, b"token\n");
-        });
+        assert!(result.is_err());
         Ok(())
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_missing_field() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_missing_field() -> Result<()> {
         let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
@@ -319,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_duplicate_field() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_duplicate_field() -> Result<()> {
         let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
@@ -337,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_non_string_field() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_non_string_field() -> Result<()> {
         let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
@@ -354,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_trailing_garbage() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_trailing_garbage() -> Result<()> {
         let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
@@ -371,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_unknown_field() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_unknown_field() -> Result<()> {
         let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
@@ -389,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bootstrap_secrets_json_rejects_field_past_limit() -> Result<()> {
+    fn parse_enrollment_secret_set_json_rejects_field_past_limit() -> Result<()> {
         let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{

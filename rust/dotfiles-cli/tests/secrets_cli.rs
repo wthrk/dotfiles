@@ -12,11 +12,9 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use dotfiles_cli_secrets_test_contract as test_stub_contract;
+use dotfiles_cli_secrets_test_contract::{PRIMARY_SERIAL, SPARE_SERIAL};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
-
-#[path = "../src/secrets/test_stub_contract.rs"]
-mod test_stub_contract;
-use test_stub_contract::{PRIMARY_SERIAL, SPARE_SERIAL};
 
 type TestResult<T> = anyhow::Result<T>;
 

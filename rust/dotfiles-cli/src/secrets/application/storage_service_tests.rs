@@ -1,11 +1,14 @@
-//! storage の公開 API が保つ wire format、暗号境界、YubiKey 書き込み認証契約を検証する。
+//! application storage service が保つ wire format、暗号境界、YubiKey 書き込み認証契約を検証する。
 
 use std::{collections::BTreeMap, io::Write};
 
-use super::model::{MANIFEST_APP, PivObjectId, SecretBlob, SecretManifest};
-use super::*;
 use crate::Result;
-use crate::secrets::util::protection::SecretSession;
+use crate::secrets::application::storage_service::{get_protected, put, replace_bws_token, setup};
+use crate::secrets::domain::{
+    BLOB_MAGIC, MANIFEST_APP, NONCE_LEN, PivObjectId, SecretBlob, SecretDevice, SecretManifest,
+    SecretName, TAG_LEN,
+};
+use crate::secrets::support::protection::SecretSession;
 use anyhow::Context;
 
 struct FakeDevice {
@@ -14,34 +17,7 @@ struct FakeDevice {
     management_auth_ok: bool,
     management_auth_check_calls: usize,
     management_auth_write_calls: usize,
-    write_fail_after: Option<usize>,
     objects: BTreeMap<PivObjectId, Vec<u8>>,
-}
-
-struct TestBootstrapSecrets {
-    bw_email: Vec<u8>,
-    bw_password: Vec<u8>,
-    bws_access_token: Vec<u8>,
-}
-
-impl TestBootstrapSecrets {
-    fn new(bw_email: Vec<u8>, bw_password: Vec<u8>, bws_access_token: Vec<u8>) -> Self {
-        Self {
-            bw_email,
-            bw_password,
-            bws_access_token,
-        }
-    }
-}
-
-impl BootstrapSecretSource for TestBootstrapSecrets {
-    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        match name {
-            SecretName::BwEmail => borrow(&self.bw_email),
-            SecretName::BwPassword => borrow(&self.bw_password),
-            SecretName::BwsAccessToken => borrow(&self.bws_access_token),
-        }
-    }
 }
 
 impl FakeDevice {
@@ -52,13 +28,8 @@ impl FakeDevice {
             management_auth_ok: true,
             management_auth_check_calls: 0,
             management_auth_write_calls: 0,
-            write_fail_after: None,
             objects: BTreeMap::new(),
         }
-    }
-
-    fn set_write_fail_after(&mut self, allowed_writes: usize) {
-        self.write_fail_after = Some(allowed_writes);
     }
 
     /// 実機は object 書き込みごとに management key 認証を要求するため、Fake でも同条件にする。
@@ -66,12 +37,6 @@ impl FakeDevice {
         self.management_auth_write_calls += 1;
         if !self.management_auth_ok {
             anyhow::bail!("management key authentication failed");
-        }
-        if let Some(remaining) = &mut self.write_fail_after {
-            if *remaining == 0 {
-                anyhow::bail!("management key authentication failed");
-            }
-            *remaining -= 1;
         }
         Ok(())
     }
@@ -108,7 +73,7 @@ impl SecretDevice for FakeDevice {
         Ok(self.objects.get(&object_id).cloned())
     }
 
-    fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()> {
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
         self.authenticate_management_for_write()?;
         self.objects.insert(object_id, value.to_vec());
         Ok(())
@@ -177,10 +142,10 @@ fn manifest_is_format_sentinel_only() {
 fn secret_blob_round_trips_binary_format() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwsAccessToken,
-        nonce: [7; model::NONCE_LEN],
+        nonce: [7; NONCE_LEN],
         wrapped_key: vec![1, 2, 3],
         ciphertext: vec![4, 5, 6, 7],
-        tag: [9; model::TAG_LEN],
+        tag: [9; TAG_LEN],
     };
 
     let encoded = blob.encode()?;
@@ -194,10 +159,10 @@ fn secret_blob_round_trips_binary_format() -> Result<()> {
 fn secret_blob_rejects_trailing_bytes() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
-        nonce: [1; model::NONCE_LEN],
+        nonce: [1; NONCE_LEN],
         wrapped_key: vec![2],
         ciphertext: vec![3],
-        tag: [4; model::TAG_LEN],
+        tag: [4; TAG_LEN],
     };
     let encoded = blob
         .encode()?
@@ -214,13 +179,13 @@ fn secret_blob_rejects_trailing_bytes() -> Result<()> {
 fn secret_blob_rejects_wrapped_key_length_larger_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
-        nonce: [1; model::NONCE_LEN],
+        nonce: [1; NONCE_LEN],
         wrapped_key: vec![2, 3, 4],
         ciphertext: vec![5, 6],
-        tag: [7; model::TAG_LEN],
+        tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
-    let offset = model::BLOB_MAGIC.len() + 1 + 1 + 1 + model::NONCE_LEN;
+    let offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
     encoded[offset..offset + 2].copy_from_slice(&(4u16).to_be_bytes());
 
     assert!(SecretBlob::decode(&encoded).is_err());
@@ -231,13 +196,13 @@ fn secret_blob_rejects_wrapped_key_length_larger_than_payload() -> Result<()> {
 fn secret_blob_rejects_wrapped_key_length_smaller_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
-        nonce: [1; model::NONCE_LEN],
+        nonce: [1; NONCE_LEN],
         wrapped_key: vec![2, 3, 4],
         ciphertext: vec![5, 6],
-        tag: [7; model::TAG_LEN],
+        tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
-    let offset = model::BLOB_MAGIC.len() + 1 + 1 + 1 + model::NONCE_LEN;
+    let offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
     encoded[offset..offset + 2].copy_from_slice(&(2u16).to_be_bytes());
 
     assert!(SecretBlob::decode(&encoded).is_err());
@@ -248,13 +213,13 @@ fn secret_blob_rejects_wrapped_key_length_smaller_than_payload() -> Result<()> {
 fn secret_blob_rejects_ciphertext_length_larger_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
-        nonce: [1; model::NONCE_LEN],
+        nonce: [1; NONCE_LEN],
         wrapped_key: vec![2, 3, 4],
         ciphertext: vec![5, 6],
-        tag: [7; model::TAG_LEN],
+        tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
-    let wrapped_len_offset = model::BLOB_MAGIC.len() + 1 + 1 + 1 + model::NONCE_LEN;
+    let wrapped_len_offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
     let ciphertext_len_offset = wrapped_len_offset + 2 + blob.wrapped_key.len();
     encoded[ciphertext_len_offset..ciphertext_len_offset + 4]
         .copy_from_slice(&(3u32).to_be_bytes());
@@ -267,13 +232,13 @@ fn secret_blob_rejects_ciphertext_length_larger_than_payload() -> Result<()> {
 fn secret_blob_rejects_ciphertext_length_smaller_than_payload() -> Result<()> {
     let blob = SecretBlob {
         name: SecretName::BwEmail,
-        nonce: [1; model::NONCE_LEN],
+        nonce: [1; NONCE_LEN],
         wrapped_key: vec![2, 3, 4],
         ciphertext: vec![5, 6],
-        tag: [7; model::TAG_LEN],
+        tag: [7; TAG_LEN],
     };
     let mut encoded = blob.encode()?;
-    let wrapped_len_offset = model::BLOB_MAGIC.len() + 1 + 1 + 1 + model::NONCE_LEN;
+    let wrapped_len_offset = BLOB_MAGIC.len() + 1 + 1 + 1 + NONCE_LEN;
     let ciphertext_len_offset = wrapped_len_offset + 2 + blob.wrapped_key.len();
     encoded[ciphertext_len_offset..ciphertext_len_offset + 4]
         .copy_from_slice(&(1u32).to_be_bytes());
@@ -317,38 +282,6 @@ fn setup_uses_management_auth_for_precondition_and_manifest_write() -> Result<()
 
     assert_eq!(device.management_auth_check_calls, 1);
     assert_eq!(device.management_auth_write_calls, 1);
-    Ok(())
-}
-
-#[test]
-fn enroll_rejects_empty_secret_before_setup() -> Result<()> {
-    let mut device = FakeDevice::new(1234);
-    let secrets =
-        TestBootstrapSecrets::new(b"user@example.com".to_vec(), Vec::new(), b"token".to_vec());
-    let session = SecretSession::start()?;
-
-    assert!(enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets, &session).is_err());
-    assert!(!device.key_exists);
-    assert!(device.objects.is_empty());
-    Ok(())
-}
-
-#[test]
-fn enroll_without_verify_marks_local_storage_skipped() -> Result<()> {
-    let mut device = FakeDevice::new(1234);
-    let secrets = TestBootstrapSecrets::new(
-        b"user@example.com".to_vec(),
-        b"password".to_vec(),
-        b"token".to_vec(),
-    );
-    let session = SecretSession::start()?;
-
-    let summary = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets, &session)?;
-
-    assert_eq!(
-        summary.checks.get(&CheckName::LocalStorage),
-        Some(&CheckStatus::Skipped)
-    );
     Ok(())
 }
 
@@ -527,25 +460,6 @@ fn rotate_uses_management_auth_for_token_replacement() -> Result<()> {
 }
 
 #[test]
-fn enroll_fails_when_management_auth_breaks_during_secret_writes() -> Result<()> {
-    let mut device = FakeDevice::new(1234);
-    device.set_write_fail_after(1);
-    let secrets = TestBootstrapSecrets::new(
-        b"user@example.com".to_vec(),
-        b"password".to_vec(),
-        b"token".to_vec(),
-    );
-    let session = SecretSession::start()?;
-
-    let result = enroll_without_verify(&mut device, YubikeyRole::Primary, &secrets, &session);
-
-    assert!(result.is_err());
-    assert_eq!(device.management_auth_check_calls, 2);
-    assert!(device.management_auth_write_calls >= 2);
-    Ok(())
-}
-
-#[test]
 fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
     let session = SecretSession::start()?;
     let mut source = FakeDevice::new(1234);
@@ -595,8 +509,8 @@ fn decryption_fails_when_secret_blob_name_and_object_are_swapped() -> Result<()>
         .context("missing bw-email blob")?;
     let mut tampered = SecretBlob::decode(&email_blob)?;
     tampered.name = SecretName::BwPassword;
-    let tampered_encoded = tampered.encode()?;
-    device.write_object(SecretName::BwPassword.object_id(), &tampered_encoded)?;
+    let mut tampered_encoded = tampered.encode()?;
+    device.write_object(SecretName::BwPassword.object_id(), &mut tampered_encoded)?;
 
     assert!(with_stored_secret(&mut device, SecretName::BwPassword, |_| ()).is_err());
     Ok(())

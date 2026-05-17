@@ -221,8 +221,8 @@ pub trait SecretDevice {
     ///
     /// object が存在しない場合は `None` を返す。
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
-    /// PIV data object に bytes を保存する。
-    fn write_object(&mut self, object_id: PivObjectId, value: &[u8]) -> Result<()>;
+    /// PIV data object に caller 所有の mutable bytes を保存する。
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
     /// content encryption key を device の public key で wrap する。
     fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>>;
     /// private key operation の前に、入力済み PIN で PIV session を検証する。
@@ -295,20 +295,14 @@ pub enum CheckName {
     BwLogin,
 }
 
-/// 登録処理が参照する bootstrap secret 一式。
-pub trait BootstrapSecretSource {
-    /// secret 名に対応する平文 bytes を closure へ貸し出す。
-    fn with_secret<R>(&self, name: SecretName, borrow: impl FnOnce(&[u8]) -> R) -> R;
-}
-
 impl SecretBlob {
     /// secret blob を設計資料の binary wire format に encode する。
     pub fn encode(&self) -> AnyhowResult<Vec<u8>> {
-        crate::secrets::storage::wire::encode_secret_blob(self)
+        crate::secrets::domain::wire::encode_secret_blob(self)
     }
 
     /// secret blob を設計資料の binary wire format から decode する。
     pub fn decode(input: &[u8]) -> AnyhowResult<Self> {
-        crate::secrets::storage::wire::decode_secret_blob(input)
+        crate::secrets::domain::wire::decode_secret_blob(input)
     }
 }

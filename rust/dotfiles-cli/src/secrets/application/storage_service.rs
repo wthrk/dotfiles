@@ -5,13 +5,13 @@
 //! 順序と検証結果の JSON 契約を固定する。
 
 use crate::Result;
-use crate::secrets::util::protection::{ProtectedSecret, SecretSession};
+use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
 use anyhow::{Context, bail};
 
-use super::crypto::{decrypt_secret_protected, encrypt_secret};
-use super::model::{
-    BootstrapSecretSource, CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId,
-    SecretBlob, SecretDevice, SecretManifest, SecretName, StorageObjectIds, YubikeyRole,
+use super::secret_blob::{decrypt_secret_protected, encrypt_secret};
+use crate::secrets::domain::{
+    CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId, SecretBlob, SecretDevice,
+    SecretManifest, SecretName, StorageObjectIds, YubikeyRole,
 };
 
 /// secret storage 用 PIV key と manifest を新規作成する。
@@ -65,8 +65,8 @@ pub fn put<D: SecretDevice>(
     check_put_target_writable(device, name, force)?;
 
     let blob = encrypt_secret(device, name, secret, session)?;
-    let encoded = blob.encode()?;
-    device.write_object(name.object_id(), &encoded)
+    let mut encoded = blob.encode()?;
+    device.write_object(name.object_id(), &mut encoded)
 }
 
 /// `put` 実行前に検証できる保存条件を確認する。
@@ -119,30 +119,10 @@ fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result
     Ok(blob)
 }
 
-/// bootstrap secrets を device へ保存し、enroll summary を返す。
+/// 登録直後の summary 初期値を構築する。
 ///
-/// local verify は呼び出し側の保護境界で実行するため、返却時点の summary では
-/// `local_storage` を未確認として扱う。
-pub fn enroll_without_verify<D: SecretDevice, S: BootstrapSecretSource>(
-    device: &mut D,
-    role: YubikeyRole,
-    secrets: &S,
-    session: &SecretSession,
-) -> Result<EnrollSummary> {
-    for name in SecretName::iter() {
-        if secrets.with_secret(name, <[u8]>::is_empty) {
-            bail!("{} must not be empty", name);
-        }
-    }
-
-    setup(device)?;
-    for name in SecretName::iter() {
-        secrets.with_secret(name, |secret| put(device, name, secret, false, session))?;
-    }
-    Ok(enroll_summary(device.serial(), role))
-}
-
-fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
+/// local verify は application の保護境界で実行するため、初期値では `local_storage` を未確認として扱う。
+pub fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
     let checks = [
         (CheckName::Setup, CheckStatus::Ok),
         (CheckName::BwEmail, CheckStatus::Ok),
@@ -175,8 +155,8 @@ pub fn replace_bws_token<D: SecretDevice>(
 ///
 /// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
-    let manifest = serde_json::to_vec(&SecretManifest::expected())?;
-    device.write_object(PivObjectId::MANIFEST, &manifest)
+    let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
+    device.write_object(PivObjectId::MANIFEST, &mut manifest)
 }
 
 /// PIV object から manifest を読み出して parse する。

@@ -6,27 +6,30 @@
 
 use std::{collections::BTreeMap, io::Cursor, io::Write};
 
+use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
+use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
+use rand::Rng;
 
-#[path = "test_stub_contract.rs"]
-mod test_stub_contract;
-
-use super::{
+use crate::Result;
+use crate::secrets::{
     SecretsOptions,
-    application::{
-        MAX_SINGLE_STDIN_SECRET_LEN, ProtectedBootstrapSecrets, SecretsBoundary,
-        read_protected_stdin_secret,
+    adapters::SPARE_SERIAL_NONINTERACTIVE_ERROR,
+    domain::{
+        self, CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretManifest, SecretName,
     },
-    device::SPARE_SERIAL_NONINTERACTIVE_ERROR,
-    input::{read_hidden_secret, read_yubikey_pin},
-    storage::{self, SecretDevice, SecretName},
-    util::{
+    input::{
+        MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
+        read_protected_enrollment_secret_set, read_protected_stdin_secret,
+        read_visible_secret_line, read_yubikey_pin,
+    },
+    ports::{EnrollmentSecretSet, SecretsBoundary},
+    support::{
         protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
         terminal::{stdin_is_terminal, stdout_is_terminal},
     },
 };
-use crate::Result;
-use test_stub_contract::{
+use dotfiles_cli_secrets_test_contract::{
     CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
     SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_SERIAL,
     SPARE_STUB_STATE_ENV, STUB_STATE_ENV, WRITE_EVENT_PREFIX,
@@ -105,13 +108,13 @@ fn parse_test_stub_secret_name(value: &str) -> std::result::Result<SecretName, S
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
 }
 
-pub(super) struct TestSecretsBoundary {
+pub(crate) struct TestSecretsBoundary {
     config: TestStubConfig,
     next_interactive_serial: u32,
 }
 
 impl TestSecretsBoundary {
-    pub(super) fn for_options(options: &SecretsOptions) -> Result<Self> {
+    pub(crate) fn for_options(options: &SecretsOptions) -> Result<Self> {
         let config = TestStubConfig::from_env()?;
         let _ = options;
         Ok(Self {
@@ -167,12 +170,29 @@ impl SecretsBoundary for TestSecretsBoundary {
         Ok(device)
     }
 
-    fn read_bootstrap_secrets<'session>(
+    fn read_enrollment_secret_set<'session>(
         &mut self,
         stdin_json: bool,
         memory: &'session SecretSession,
-    ) -> Result<ProtectedBootstrapSecrets<'session>> {
-        super::application::read_protected_bootstrap_secrets(stdin_json, memory)
+    ) -> Result<EnrollmentSecretSet<'session>> {
+        if stdin_json {
+            return read_protected_enrollment_secret_set(
+                std::io::stdin(),
+                MAX_BOOTSTRAP_JSON_LEN,
+                MAX_SINGLE_STDIN_SECRET_LEN,
+                memory,
+            );
+        }
+
+        let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+        let bw_password = read_hidden_secret("bw-password: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+        let bws_access_token =
+            read_hidden_secret("bws-access-token: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+        Ok(EnrollmentSecretSet::new(
+            bw_email,
+            bw_password,
+            bws_access_token,
+        ))
     }
 
     fn read_secret_for_put<'session>(
@@ -202,16 +222,16 @@ impl SecretsBoundary for TestSecretsBoundary {
     }
 
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
-        super::util::terminal::prompt_yes_no(prompt)
+        crate::secrets::support::terminal::prompt_yes_no(prompt)
     }
 }
 
-pub(super) struct TestDevice {
+pub(crate) struct TestDevice {
     serial: u32,
     key_exists: bool,
     config: TestStubConfig,
     emit_write_events: bool,
-    objects: BTreeMap<storage::PivObjectId, Vec<u8>>,
+    objects: BTreeMap<domain::PivObjectId, Vec<u8>>,
 }
 
 impl TestDevice {
@@ -244,7 +264,7 @@ impl TestDevice {
 
     fn initialized(serial: u32) -> Result<Self> {
         let mut device = Self::fresh(serial);
-        storage::setup(&mut device)?;
+        device.initialize_storage()?;
         Ok(device)
     }
 
@@ -252,25 +272,19 @@ impl TestDevice {
         let session = SecretSession::start()?;
         let mut device = Self::initialized(serial)?;
         device.config = config.clone();
-        storage::put(
-            &mut device,
+        device.write_seed_secret(
             SecretName::BwEmail,
             &config.seed_secret(SecretName::BwEmail),
-            false,
             &session,
         )?;
-        storage::put(
-            &mut device,
+        device.write_seed_secret(
             SecretName::BwPassword,
             &config.seed_secret(SecretName::BwPassword),
-            false,
             &session,
         )?;
-        storage::put(
-            &mut device,
+        device.write_seed_secret(
             SecretName::BwsAccessToken,
             &config.seed_secret(SecretName::BwsAccessToken),
-            false,
             &session,
         )?;
         if let Some(name) = config.corrupt_secret {
@@ -286,15 +300,67 @@ impl TestDevice {
         let mut device = Self::initialized(serial)?;
         device.config = config.clone();
         for name in SecretName::iter().filter(|name| *name != target) {
-            storage::put(
-                &mut device,
-                name,
-                &config.seed_secret(name),
-                false,
-                &session,
-            )?;
+            device.write_seed_secret(name, &config.seed_secret(name), &session)?;
         }
         Ok(device)
+    }
+
+    fn initialize_storage(&mut self) -> Result<()> {
+        self.key_exists = true;
+        let manifest = serde_json::to_vec(&SecretManifest::expected())?;
+        self.objects.insert(domain::PivObjectId::MANIFEST, manifest);
+        Ok(())
+    }
+
+    fn write_seed_secret(
+        &mut self,
+        name: SecretName,
+        secret: &[u8],
+        session: &SecretSession,
+    ) -> Result<()> {
+        if secret.is_empty() {
+            bail!("{} must not be empty", name);
+        }
+
+        let blob = self.encrypt_seed_secret(name, secret, session)?;
+        self.objects.insert(name.object_id(), blob.encode()?);
+        Ok(())
+    }
+
+    fn encrypt_seed_secret(
+        &mut self,
+        name: SecretName,
+        secret: &[u8],
+        session: &SecretSession,
+    ) -> Result<SecretBlob> {
+        let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN, session)?;
+        content_key.write_all(&[0; CONTENT_KEY_LEN])?;
+        rand::rng().fill(content_key.as_mut_slice());
+        let nonce = rand::random::<[u8; NONCE_LEN]>();
+        let cipher = Aes256Gcm::new_from_slice(content_key.as_slice())
+            .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
+        let mut ciphertext = ProtectedInputBuffer::new(secret.len(), session)?;
+        ciphertext.write_all(secret)?;
+        let tag = cipher
+            .encrypt_in_place_detached(
+                aes_gcm::Nonce::from_slice(&nonce),
+                &name.additional_data(self.serial()),
+                ciphertext.as_mut_slice(),
+            )
+            .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
+        let tag = tag
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("failed to encrypt YubiKey secret"))?;
+        let wrapped_key = self.wrap_key(content_key.as_slice())?;
+
+        Ok(SecretBlob {
+            name,
+            nonce,
+            wrapped_key,
+            ciphertext: ciphertext.as_slice().to_vec(),
+            tag,
+        })
     }
 }
 
@@ -320,11 +386,11 @@ impl SecretDevice for TestDevice {
         Ok(())
     }
 
-    fn read_object(&mut self, object_id: storage::PivObjectId) -> Result<Option<Vec<u8>>> {
+    fn read_object(&mut self, object_id: domain::PivObjectId) -> Result<Option<Vec<u8>>> {
         Ok(self.objects.get(&object_id).cloned())
     }
 
-    fn write_object(&mut self, object_id: storage::PivObjectId, value: &[u8]) -> Result<()> {
+    fn write_object(&mut self, object_id: domain::PivObjectId, value: &mut [u8]) -> Result<()> {
         self.objects.insert(object_id, value.to_vec());
         self.emit_write_event(object_id)?;
         Ok(())
@@ -346,7 +412,7 @@ impl SecretDevice for TestDevice {
 
 impl TestDevice {
     /// 保存直後に同じ device mock から復号し、CLI 統合テストが stderr で観測できる event を出す。
-    fn emit_write_event(&mut self, object_id: storage::PivObjectId) -> Result<()> {
+    fn emit_write_event(&mut self, object_id: domain::PivObjectId) -> Result<()> {
         if !self.emit_write_events {
             return Ok(());
         }
@@ -354,7 +420,7 @@ impl TestDevice {
             return Ok(());
         };
         let session = SecretSession::start()?;
-        let secret = storage::get_protected(self, name, &session)?;
+        let secret = self.read_seed_secret(name, &session)?;
         secret.with_secret(|value| {
             eprintln!(
                 "{} serial={} name={} value={}",
@@ -366,8 +432,44 @@ impl TestDevice {
         });
         Ok(())
     }
+
+    fn read_seed_secret<'session>(
+        &mut self,
+        name: SecretName,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
+        let encoded = self
+            .objects
+            .get(&name.object_id())
+            .with_context(|| format!("{} is not stored on this YubiKey", name))?;
+        let blob =
+            SecretBlob::decode(encoded).with_context(|| format!("failed to decode {}", name))?;
+        if blob.name != name {
+            bail!("YubiKey secret blob name does not match requested {}", name);
+        }
+
+        let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN + 1, session)?;
+        self.write_unwrapped_key(&blob.wrapped_key, &mut content_key)?;
+        if content_key.as_slice().len() != CONTENT_KEY_LEN {
+            bail!("unwrapped YubiKey content key has invalid length");
+        }
+
+        let cipher = Aes256Gcm::new_from_slice(content_key.as_slice())
+            .map_err(|_| anyhow::anyhow!("invalid AES-256-GCM key length"))?;
+        let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
+        input.write_all(&blob.ciphertext)?;
+        cipher
+            .decrypt_in_place_detached(
+                aes_gcm::Nonce::from_slice(&blob.nonce),
+                &blob.name.additional_data(self.serial()),
+                input.as_mut_slice(),
+                aes_gcm::Tag::from_slice(&blob.tag),
+            )
+            .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
+        input.into_protected_secret(session)
+    }
 }
 
-fn secret_name_for_object_id(object_id: storage::PivObjectId) -> Option<SecretName> {
+fn secret_name_for_object_id(object_id: domain::PivObjectId) -> Option<SecretName> {
     SecretName::iter().find(|name| name.object_id() == object_id)
 }

@@ -4,21 +4,21 @@
 
 対象は `rust/dotfiles-cli/src/secrets/`、関連する CLI 定義、secret recovery docs、secret recovery の integration / runtime tests である。
 
-## レイヤー構造
+## アーキテクチャ
 
-`dotfiles secrets` は、責務の向きが一方向になるように分ける。
+`dotfiles secrets` は Hexagonal Architecture（Ports and Adapters）で実装する。内側の domain は保存仕様だけを表し、外側の adapter や support の具体実装へ依存しない。依存方向は常に CLI から application、application から domain port と adapter、adapter から外部 API へ向ける。
 
-| レイヤー | 役割 | 置き場所の目安 |
+| 区分 | 役割 | 置き場所 |
 | --- | --- | --- |
-| CLI orchestration | clap で受けた command を use case に渡し、利用者向けの停止条件を決める。 | `secrets.rs` |
-| Application | enroll / rotate / verify などの use case 状態、境界 trait、use case 単位の保護済み secret 所有を扱う。 | `secrets/application.rs` と use case sibling module |
-| Storage model | YubiKey に保存するデータ型、wire format 上の値、secret name など保存形式に属する型を扱う。 | `secrets/storage/model.rs` |
-| Storage operations | manifest、object 読み書き、保存前提条件、復号・暗号化の組み合わせを扱う。 | `secrets/storage/operations.rs` |
-| Adapter | YubiKey、terminal、process、filesystem など外部 I/O を扱う。 | `secrets/device.rs`、`secrets/util/terminal.rs` など |
-| Utility | secret buffer、memory lock、interrupt guard、暗号の低水準 helper など、業務語彙を持たない再利用部品を扱う。 | `secrets/util/`、`secrets/storage/crypto.rs` |
-| Tests | レイヤー境界ごとの単体テストと、実際の I/O 境界を通す統合テストを分ける。 | 対象 module の test、`rust/tests/` |
+| CLI | clap で受けた command を application use case へ渡す。secret lifecycle、YubiKey 操作、wire format は持たない。 | `secrets.rs` |
+| Application | use case の順序を所有する。secret を読む前の precondition、PIN/touch、interrupt、summary 出力、複数 device 更新の順序を決める。 | `secrets/application.rs`、`secrets/application/` |
+| Domain | `SecretName`、PIV object id、manifest、blob wire format、summary 型、保存規則を表す。terminal、YubiKey crate、memory lock、`ProtectedSecret`、stdin/stdout を知らない。 | `secrets/domain.rs`、`secrets/domain/` |
+| Ports | domain/application が必要とする外部操作の最小 contract を定義する。port は raw plaintext を返さず、必要な処理範囲だけ caller 管理の writer / buffer へ書く。 | `secrets/ports.rs` または domain 内の port module |
+| Adapters | YubiKey、terminal、stdout、test stub など外部 I/O を port に接続する。外部 crate の都合、mutable copy、raw RSA 結果は adapter 内で閉じる。 | `secrets/adapters.rs`、`secrets/adapters/` |
+| Support | memory lock、zeroize、interrupt guard、OAEP/MGF1 など業務語彙を持たない安全部品。domain 名、command 名、secret 名へ依存しない。 | `secrets/support.rs`、`secrets/support/` |
+| Tests | domain は保存仕様、application は順序、adapter は外部 I/O 契約、support は保護境界を検証する。 | 対象 module の test、`rust/tests/` |
 
-依存方向は CLI orchestration から application、application から storage / adapter / utility へ向ける。storage model は CLI orchestration、terminal I/O、YubiKey adapter に依存させない。utility は業務 flow や secret name を知らない形にする。
+禁止する依存は具体的に扱う。domain から application / adapter / support への依存、support から domain / application への依存、adapter から application use case への依存、test helper から通常 bytes を secret 所有型へ変換する経路は禁止する。`storage`、`crypto`、`protection` のような機構名をレイヤー名にしない。保存仕様は domain、暗号処理は domain の規則を満たす support 呼び出し、保護メモリは support の責務として分ける。
 
 ファイルが terminal I/O、YubiKey adapter、wire format、暗号処理、use case、test harness を同時に持ち始めたら、機能追加の前に分割する。レビューでは「責務が混在している」とだけ書かず、混在している concern と移動先の層を明記する。
 

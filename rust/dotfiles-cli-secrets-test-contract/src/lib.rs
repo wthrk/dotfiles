@@ -1,4 +1,4 @@
-//! `secrets-test-stub` feature の device mock と CLI 統合テストが共有する入出力契約名。
+//! `secrets-test-stub` feature の binary と CLI 統合テストが共有する入出力契約名。
 
 pub const SEED_BW_EMAIL_ENV: &str = "DOTFILES_SECRETS_TEST_SEED_BW_EMAIL";
 pub const SEED_BW_PASSWORD_ENV: &str = "DOTFILES_SECRETS_TEST_SEED_BW_PASSWORD";

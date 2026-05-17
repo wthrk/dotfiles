@@ -1,23 +1,21 @@
 //! `dotfiles secrets` の CLI orchestration 層。
 //!
-//! この機能は CLI 入口、application、input、device、storage、util に分ける。
+//! この機能は CLI、application、domain、adapter、support の責務に分ける。
 //! CLI 入口は clap option の型付けと公開 command 名を固定し、secret の取得順序や
 //! device 操作の失敗契約は application 以下へ閉じ込める。
 //!
-//! `storage` は command 入力、process 保護、実機 discovery に依存しない。process
-//! 保護や端末 I/O の汎用部品は `util` に置き、use-case 中の保護済み状態は
-//! `application` に置く。
+//! domain は command 入力、process 保護、実機 discovery に依存しない。保護メモリや
+//! 端末 I/O の業務語彙を持たない部品は support として扱い、use case の順序は application に置く。
 
+mod adapters;
 mod application;
-mod device;
+mod domain;
 mod input;
-mod storage;
-#[cfg(feature = "secrets-test-stub")]
-mod test_stub;
-mod util;
+mod ports;
+mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
-use storage::SecretName;
+use domain::SecretName;
 
 use crate::Result;
 
@@ -136,7 +134,7 @@ enum VerifyCheck {
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
     #[cfg(feature = "secrets-test-stub")]
     if options.test_stub_yubikey {
-        let mut boundary = test_stub::TestSecretsBoundary::for_options(&options)?;
+        let mut boundary = adapters::TestSecretsBoundary::for_options(&options)?;
         return application::run_with_boundary(options, &mut boundary);
     }
 
