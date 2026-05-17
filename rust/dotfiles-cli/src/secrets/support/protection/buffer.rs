@@ -166,6 +166,8 @@ impl Write for ProtectedInputBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.buffer.len().saturating_sub(self.len);
         if bytes.len() > remaining {
+            self.buffer[..self.len].fill(0);
+            self.len = 0;
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
                 "protected input buffer capacity exceeded",
@@ -184,7 +186,7 @@ impl Write for ProtectedInputBuffer {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
 
     use crate::Result;
 
@@ -217,6 +219,18 @@ mod tests {
         let err = input.into_protected_secret_line(&session, 3, "too large");
 
         assert!(err.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn write_failure_zeroizes_existing_bytes() -> Result<()> {
+        let session = crate::secrets::support::protection::SecretSession::start()?;
+        let mut input = ProtectedInputBuffer::new(3, &session)?;
+        input.write_all(b"abc")?;
+        let err = input.write_all(b"d");
+
+        assert!(err.is_err());
+        assert_eq!(input.as_slice(), b"");
         Ok(())
     }
 }

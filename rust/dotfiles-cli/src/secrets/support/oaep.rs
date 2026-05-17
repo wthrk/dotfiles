@@ -6,6 +6,7 @@ use std::io::Write;
 
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::Result;
 
@@ -26,17 +27,21 @@ pub(crate) fn write_oaep_unpadded_sha256(
 
     let (masked_seed, masked_db) = encoded[1..].split_at(HASH_LEN);
     let seed_mask = mgf1_sha256(masked_db, HASH_LEN);
-    let seed = masked_seed
-        .iter()
-        .zip(seed_mask.iter())
-        .map(|(left, right)| left ^ right)
-        .collect::<Vec<u8>>();
+    let seed = Zeroizing::new(
+        masked_seed
+            .iter()
+            .zip(seed_mask.iter())
+            .map(|(left, right)| left ^ right)
+            .collect::<Vec<u8>>(),
+    );
     let db_mask = mgf1_sha256(&seed, key_len - HASH_LEN - 1);
-    let db = masked_db
-        .iter()
-        .zip(db_mask.iter())
-        .map(|(left, right)| left ^ right)
-        .collect::<Vec<u8>>();
+    let db = Zeroizing::new(
+        masked_db
+            .iter()
+            .zip(db_mask.iter())
+            .map(|(left, right)| left ^ right)
+            .collect::<Vec<u8>>(),
+    );
 
     let label_hash = Sha256::digest([]);
     let label_mismatch = db[..HASH_LEN]
@@ -58,8 +63,8 @@ pub(crate) fn write_oaep_unpadded_sha256(
 }
 
 /// MGF1-SHA256 mask を指定長で生成する。
-fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len);
+fn mgf1_sha256(seed: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(len));
     let mut counter = 0u32;
     while out.len() < len {
         let mut digest = Sha256::new();

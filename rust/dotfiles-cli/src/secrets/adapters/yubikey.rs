@@ -18,6 +18,7 @@ use yubikey::{
     MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
+use zeroize::Zeroizing;
 
 use crate::Result;
 use crate::secrets::{
@@ -503,12 +504,12 @@ impl SecretDevice for YubikeySecretDevice {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        let decrypted = piv::decrypt_data(
+        let decrypted = Zeroizing::new(piv::decrypt_data(
             &mut self.yubikey,
             wrapped_key,
             AlgorithmId::Rsa2048,
             SECRET_SLOT,
-        )?;
+        )?);
         write_oaep_unpadded_sha256(&decrypted, 256, output)?;
         Ok(())
     }
