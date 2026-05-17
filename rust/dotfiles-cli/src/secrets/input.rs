@@ -4,6 +4,7 @@
 //! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
 
 use std::{
+    borrow::Cow,
     fmt,
     io::{Read, Write},
 };
@@ -38,6 +39,9 @@ pub(crate) fn read_protected_stdin_secret(
     limit: usize,
     session: &SecretSession,
 ) -> Result<ProtectedSecret<'_>> {
+    if terminal::stdin_is_terminal() {
+        bail!("--stdin requires pipe or redirect input");
+    }
     let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, session)?;
     input.into_protected_secret_line(session, limit, "stdin secret input is too large")
 }
@@ -112,7 +116,6 @@ fn parse_protected_enrollment_secret_set_json<'session>(
     field_limit: usize,
     memory: &'session SecretSession,
 ) -> Result<EnrollmentSecretSet<'session>> {
-    reject_json_string_escapes(input)?;
     let mut deserializer = serde_json::Deserializer::from_slice(input);
     let secrets = EnrollmentSecretSetSeed {
         field_limit,
@@ -121,14 +124,6 @@ fn parse_protected_enrollment_secret_set_json<'session>(
     .deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(secrets)
-}
-
-/// JSON string escape による serde 内部 scratch への secret 展開を入力境界で拒否する。
-fn reject_json_string_escapes(input: &[u8]) -> Result<()> {
-    if input.contains(&b'\\') {
-        bail!("bootstrap secret JSON strings must not contain escape sequences");
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -229,7 +224,7 @@ impl<'de, 'session> DeserializeSeed<'de> for ProtectedJsonFieldSeed<'session> {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = <&'de str>::deserialize(deserializer)?;
+        let value = Cow::<'de, str>::deserialize(deserializer)?;
         if value.len() > self.field_limit {
             return Err(de::Error::custom("protected input is too large"));
         }
@@ -295,9 +290,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_enrollment_secret_set_json_rejects_json_string_escapes() -> Result<()> {
+    fn parse_enrollment_secret_set_json_decodes_json_string_escapes() -> Result<()> {
         let session = SecretSession::start()?;
-        let result = parse_test_bootstrap_json(
+        let secrets = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice\u0040example.com",
                 "bw-password": "line\nslash\\quote\"",
@@ -305,16 +300,17 @@ mod tests {
             }"#,
             16 * 1024,
             &session,
-        );
-
-        assert!(result.is_err());
+        )?;
+        secrets.assert_secret_eq(SecretName::BwEmail, b"alice@example.com");
+        secrets.assert_secret_eq(SecretName::BwPassword, b"line\nslash\\quote\"");
+        secrets.assert_secret_eq(SecretName::BwsAccessToken, "emoji-\u{1F511}".as_bytes());
         Ok(())
     }
 
     #[test]
-    fn parse_enrollment_secret_set_json_rejects_escaped_trailing_newline() -> Result<()> {
+    fn parse_enrollment_secret_set_json_keeps_decoded_trailing_newline() -> Result<()> {
         let session = SecretSession::start()?;
-        let result = parse_test_bootstrap_json(
+        let secrets = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com\n",
                 "bw-password": "password\n",
@@ -322,9 +318,10 @@ mod tests {
             }"#,
             16 * 1024,
             &session,
-        );
-
-        assert!(result.is_err());
+        )?;
+        secrets.assert_secret_eq(SecretName::BwEmail, b"alice@example.com\n");
+        secrets.assert_secret_eq(SecretName::BwPassword, b"password\n");
+        secrets.assert_secret_eq(SecretName::BwsAccessToken, b"token\n");
         Ok(())
     }
 
