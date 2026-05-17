@@ -4,6 +4,7 @@
 //! device と非対話条件を確定し、平文 secret は `SecretSession` に紐づく保護済み値として
 //! domain の保存操作へ渡す。
 
+mod real_boundary;
 mod secret_blob;
 mod storage_service;
 #[cfg(test)]
@@ -19,14 +20,10 @@ use super::{
     input::{
         MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
         read_protected_enrollment_secret_set, read_protected_stdin_secret,
-        read_visible_secret_line, read_yubikey_pin, reject_secret_stdout_terminal,
-        write_secret_to_stdout,
+        read_visible_secret_line, reject_secret_stdout_terminal, write_secret_to_stdout,
     },
     ports::{EnrollmentSecretSet, SecretsBoundary},
-    support::{
-        protection::{InterruptGuard, ProtectedSecret, SecretSession},
-        terminal::{prompt_yes_no, stdin_is_terminal as input_stdin_is_terminal},
-    },
+    support::protection::{ProtectedSecret, SecretSession},
 };
 use crate::Result;
 use anyhow::bail;
@@ -35,7 +32,7 @@ use anyhow::bail;
 ///
 /// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
 pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> Result<()> {
-    let mut boundary = RealSecretsBoundary { backend };
+    let mut boundary = real_boundary::RealSecretsBoundary { backend };
     run_with_boundary(options, &mut boundary)
 }
 
@@ -349,7 +346,8 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 
     if let Some(serial) = options.serial {
         require_stdin_secret_source_for_boundary(options.stdin, StdinSecretMode::Single, boundary)?;
-        let mut device = prepare_bws_token_rotation_device(boundary, Some(serial), &session)?;
+        let mut device = boundary.open_device(Some(serial))?;
+        prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
         let token =
             boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
         let rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
@@ -358,7 +356,8 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         return rotation.result;
     }
 
-    let mut device = prepare_bws_token_rotation_device(boundary, None, &session)?;
+    let mut device = boundary.open_device(None)?;
+    prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
     let token =
         boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
@@ -376,11 +375,12 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
             .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
         {
             session.check_interrupted()?;
-            let mut device = prepare_bws_token_rotation_device(boundary, None, &session)?;
+            let mut device = boundary.open_device(None)?;
             session.check_interrupted()?;
             if !updated_serials.insert(device.serial()) {
                 bail!("selected YubiKey was already updated");
             }
+            prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
             let rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
             summaries.push(rotation.summary);
             rotation.result?;
@@ -404,13 +404,11 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 /// token 入力前に既存 secrets の復号確認と management auth を済ませる。
 fn prepare_bws_token_rotation_device<B: SecretsBoundary>(
     boundary: &mut B,
-    serial: Option<u32>,
+    device: &mut B::Device,
     session: &SecretSession,
-) -> Result<B::Device> {
-    let mut device = boundary.open_device(serial)?;
-    verify_pin_for_secret_reads(boundary, &mut device, session)?;
-    check_rotate_preconditions_protected(&mut device, session)?;
-    Ok(device)
+) -> Result<()> {
+    verify_pin_for_secret_reads(boundary, device, session)?;
+    check_rotate_preconditions_protected(device, session)
 }
 
 /// 1 本の device へ BWS access token を書き込み、local verify を実行する。
@@ -631,73 +629,13 @@ fn stdin_secret_source_error(mode: StdinSecretMode) -> &'static str {
     }
 }
 
-/// 実プロセスの stdin/stdout と device backend を application port に接続する境界。
-///
-/// device backend が stub の場合も、secret 入力と stdout 安全判定は同じ実プロセス境界を通る。
-struct RealSecretsBoundary {
-    backend: adapters::DeviceBackend,
-}
-
-impl SecretsBoundary for RealSecretsBoundary {
-    type Device = adapters::YubikeySecretDevice;
-
-    fn stdin_is_terminal(&self) -> bool {
-        input_stdin_is_terminal()
-    }
-
-    fn stdout_is_terminal(&self) -> bool {
-        super::support::terminal::stdout_is_terminal()
-    }
-
-    fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
-        adapters::open_device(&mut self.backend, serial)
-    }
-
-    fn open_spare_device(
-        &mut self,
-        spare_serial: Option<u32>,
-        primary_serial: Option<u32>,
-        interrupt: &InterruptGuard,
-    ) -> Result<Self::Device> {
-        adapters::open_spare_device(&mut self.backend, spare_serial, primary_serial, interrupt)
-    }
-
-    fn read_enrollment_secret_set<'session>(
-        &mut self,
-        stdin_json: bool,
-        memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
-        read_enrollment_secret_set_from_user(stdin_json, memory)
-    }
-
-    fn read_secret_for_put<'session>(
-        &mut self,
-        name: SecretName,
-        stdin: bool,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        read_protected_secret_for_put(name, stdin, memory)
-    }
-
-    fn read_yubikey_pin<'session>(
-        &mut self,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        read_yubikey_pin(memory)
-    }
-
-    fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
-        prompt_yes_no(prompt)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::io::{Cursor, Write};
 
     use super::*;
-    use crate::secrets::support::protection::ProtectedInputBuffer;
+    use crate::secrets::support::protection::{InterruptGuard, ProtectedInputBuffer};
 
     struct FakeBoundary {
         devices: VecDeque<FakeDevice>,
@@ -904,6 +842,31 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("rotate-bws-token accepted duplicate serials"))?;
 
         assert_eq!(err.to_string(), "selected YubiKey was already updated");
+        Ok(())
+    }
+
+    #[test]
+    fn partial_rotate_summary_serializes_updated_entries() -> Result<()> {
+        let summaries = vec![failed_local_storage_summary(42)];
+        let value = serde_json::to_value(PartialRotateBwsTokenSummary {
+            updated: &summaries,
+        })?;
+        let updated = value
+            .get("updated")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("updated field is missing"))?;
+        assert_eq!(updated.len(), 1);
+        let serial = updated[0]
+            .get("serial")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("serial field is missing"))?;
+        assert_eq!(serial, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn partial_rotate_summary_skips_output_when_empty() -> Result<()> {
+        write_partial_rotate_bws_token_summary(&[])?;
         Ok(())
     }
 
