@@ -17,12 +17,12 @@ generic な planning mode、assistant 既定の質問順、または他文書の
 
 | Step | 開始条件 | 実行内容 | 必要出力 | 次段階 | 失敗時の戻り先 |
 | --- | --- | --- | --- | --- | --- |
-| 1. 入口確認 | planning request を受領 | current request のためにこの文書を再読し、planning procedure の正本がこの文書であることを確認する。進捗管理入口が `tasks.md` と issue `#11` であることも確認する。 | planning gate 確認 | Step 2 | この手順 |
-| 2. 構造診断 | Step 1 完了 | repo、設計文書、progress artifact を探索し、要求に関係する現状構造、既知違反、関連 issue / PR / artifact を集める。探索で確定できる事実はここで確定する。 | concern map、既知違反一覧 | Step 3 | Step 1 |
-| 3. 要求整理 | Step 2 完了 | 探索で確定できなかった高影響の未確定事項だけを切り分け、request-specific に確認する。探索で解決できる点を質問してはならない。 | 要求整理済み状態 | Step 4 | Step 2 |
-| 4. Phase A 草案 | Step 3 完了 | `## 11` と `## 12` に従い、Architecture Governance のプラン草案を作成する。プランは責務境界、依存方向、公開面、差戻し先が判断できる内容に限定する。 | Phase A 提出物 | Step 5 | Step 3 |
+| 1. 入口確認 | planning request を受領 | Main Orchestrator が、current request のためにこの文書を再読し、planning procedure の正本がこの文書であることを確認する。進捗管理入口が `tasks.md` と issue `#11` であることも確認する。 | planning gate 確認 | Step 2 | この手順 |
+| 2. 構造診断 | Step 1 完了 | Plan Drafting Agent が、repo、設計文書、progress artifact を探索し、要求に関係する現状構造、既知違反、関連 issue / PR / artifact を集める。探索で確定できる事実はここで確定する。 | concern map、既知違反一覧 | Step 3 | Step 1 |
+| 3. 要求整理 | Step 2 完了 | Plan Drafting Agent が、探索で確定できなかった高影響の未確定事項だけを切り分け、request-specific に確認する。探索で解決できる点を質問してはならない。 | 要求整理済み状態 | Step 4 | Step 2 |
+| 4. Phase A 草案 | Step 3 完了 | Plan Drafting Agent が、`## 11` と `## 12` に従い、Architecture Governance のプラン草案を作成する。プランは責務境界、依存方向、公開面、差戻し先が判断できる内容に限定する。 | Phase A 提出物 | Step 5 | Step 3 |
 | 5. Phase A review | Step 4 完了 | Plan Review Agent が `plan-section-checklist.md` を基準に review し、`APPROVED` または差戻しを確定する。`scope-conflict` と `content-conflict` はこの phase で扱う。 | Phase A `APPROVED` または差戻し | Step 6 | Step 4 または Step 3 |
-| 6. Phase B 草案と review | Phase A `APPROVED` | `## 11` の移行手順と `## 13` の Phase B に従い、実装プランを作成し review する。実装順序、確認方法、差戻し先、報告更新を判断できる状態まで確定する。 | Phase B `APPROVED` または差戻し | `## 11` Step `実装反映` と `## 13` Phase C 以降 | Step 4 または Step 3 |
+| 6. Phase B 草案と review | Phase A `APPROVED` | Implementation Plan Drafting Agent が `## 11` の移行手順と `## 13` の Phase B に従って実装プランを作成し、Implementation Plan Review Agent が review する。実装順序、確認方法、差戻し先、報告更新を判断できる状態まで確定する。 | Phase B `APPROVED` または差戻し | `## 11` Step `実装反映` と `## 13` Phase C 以降 | Step 4 または Step 3 |
 
 質問戦略は次のとおり固定する。探索で確定できる repo / doc / artifact 事実は先に探索で確定し、利用者には聞かない。質問するのは、探索で解決できず、かつ答えにより Phase A または Phase B の結論が変わる高影響事項だけとする。対象範囲、成功条件、承認単位、互換性境界、除外対象、報告単位のような high-impact ambiguity を残したまま Phase A 草案へ進んではならない。
 
