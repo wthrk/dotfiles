@@ -74,6 +74,7 @@ pub(crate) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
 pub(crate) fn read_hidden_input(
     prompt: &str,
     limit: usize,
+    limit_error: &'static str,
     session: &SecretSession,
 ) -> Result<ProtectedInputBuffer> {
     eprint!("{prompt}");
@@ -105,7 +106,7 @@ pub(crate) fn read_hidden_input(
             value => {
                 input.write_all(&[value])?;
                 if input.as_slice().len() > limit {
-                    bail!("hidden input is too large");
+                    bail!(limit_error);
                 }
             }
         }

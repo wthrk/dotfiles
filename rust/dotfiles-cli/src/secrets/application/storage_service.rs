@@ -65,6 +65,7 @@ pub fn put<D: SecretDevice>(
     check_put_target_writable(device, name, force)?;
 
     let blob = encrypt_secret(device, name, secret, session)?;
+    session.check_interrupted()?;
     let mut encoded = blob.encode()?;
     device.write_object(name.object_id(), &mut encoded)
 }

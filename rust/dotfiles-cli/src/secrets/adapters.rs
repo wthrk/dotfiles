@@ -266,7 +266,7 @@ fn wait_for_spare_replacement(deadline: Instant, interrupt: &InterruptGuard) -> 
     wait_for_enter(
         deadline,
         interrupt,
-        "pass --spare-serial in non-interactive use",
+        "cannot wait for spare YubiKey replacement without a controlling terminal",
         "timed out waiting for spare YubiKey",
     )
 }

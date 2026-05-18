@@ -66,19 +66,21 @@ pub(crate) fn read_hidden_secret<'session>(
     limit: usize,
     memory: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    terminal::read_hidden_input(prompt, limit, memory)?.into_protected_secret_line(
-        memory,
-        limit,
-        "hidden secret input is too large",
-    )
+    terminal::read_hidden_input(prompt, limit, "hidden secret input is too large", memory)?
+        .into_protected_secret_line(memory, limit, "hidden secret input is too large")
 }
 
 /// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
 pub(crate) fn read_yubikey_pin<'session>(
     memory: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    let pin = terminal::read_hidden_input("YubiKey PIN: ", PIV_PIN_MAX_LEN, memory)?
-        .into_protected_secret_line(memory, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
+    let pin = terminal::read_hidden_input(
+        "YubiKey PIN: ",
+        PIV_PIN_MAX_LEN,
+        "YubiKey PIN is too long",
+        memory,
+    )?
+    .into_protected_secret_line(memory, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
     pin.with_secret(validate_yubikey_pin)?;
     Ok(pin)
 }

@@ -29,6 +29,7 @@ use anyhow::bail;
 const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use";
 const NONINTERACTIVE_PRIMARY_SERIAL_ERROR: &str = "pass --primary-serial in non-interactive use";
 const NONINTERACTIVE_SPARE_SERIAL_ERROR: &str = "pass --spare-serial in non-interactive use";
+const STDIN_JSON_TTY_ERROR: &str = "--stdin-json requires pipe or redirect input";
 
 /// 指定された device backend を使って parse 済み options の use case を開始する。
 ///
@@ -121,6 +122,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     boundary: &mut B,
 ) -> Result<()> {
     require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
+    require_stdin_json_source(boundary, options.stdin_json)?;
     require_noninteractive_option(boundary, options.stdin_json, "--stdin-json")?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
@@ -202,7 +204,6 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     options: EnrollSpareOptions,
     boundary: &mut B,
 ) -> Result<()> {
-    let session = SecretSession::start()?;
     if !options.stdin_json {
         require_noninteractive_serial(
             boundary,
@@ -215,6 +216,8 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         options.spare_serial,
         NONINTERACTIVE_SPARE_SERIAL_ERROR,
     )?;
+    require_stdin_json_source(boundary, options.stdin_json)?;
+    let session = SecretSession::start()?;
     let prepared_spare = if options.stdin_json || options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(
             options.spare_serial,
@@ -333,12 +336,15 @@ fn enroll_without_local_verify<D: domain::SecretDevice>(
     })?;
 
     storage_service::setup(device)?;
+    session.check_interrupted()?;
     secrets.bw_email.with_secret(|secret| {
         storage_service::put(device, SecretName::BwEmail, secret, false, session)
     })?;
+    session.check_interrupted()?;
     secrets.bw_password.with_secret(|secret| {
         storage_service::put(device, SecretName::BwPassword, secret, false, session)
     })?;
+    session.check_interrupted()?;
     secrets.bws_access_token.with_secret(|secret| {
         storage_service::put(device, SecretName::BwsAccessToken, secret, false, session)
     })?;
@@ -572,7 +578,7 @@ fn verify_pin_for_secret_reads<B: SecretsBoundary>(
     }
 
     let pin = boundary.read_yubikey_pin(session)?;
-    pin.with_secret(|pin| device.verify_pin(pin))
+    pin.with_secret(|pin| session.run_yubikey_operation(|| device.verify_pin(pin)))
 }
 
 /// 単一 secret を stdin から読む command の入力契約を確認する。
@@ -617,6 +623,14 @@ fn require_noninteractive_option<B: SecretsBoundary>(
 fn require_secret_stdout_target<B: SecretsBoundary>(boundary: &B) -> Result<()> {
     if boundary.stdout_is_terminal() {
         super::input::reject_secret_stdout_terminal()?;
+    }
+    Ok(())
+}
+
+/// `--stdin-json` は平文 secret を端末へ echo しないよう、pipe/redirect のみ許可する。
+fn require_stdin_json_source<B: SecretsBoundary>(boundary: &B, stdin_json: bool) -> Result<()> {
+    if stdin_json && boundary.stdin_is_terminal() {
+        bail!(STDIN_JSON_TTY_ERROR);
     }
     Ok(())
 }
@@ -993,11 +1007,49 @@ mod tests {
     }
 
     #[test]
+    fn enroll_primary_rejects_tty_stdin_json_before_device_open() -> Result<()> {
+        let mut boundary = FakeBoundary::new(vec![]);
+        let options = super::super::EnrollPrimaryOptions {
+            serial: Some(10),
+            stdin_json: true,
+        };
+        let err = run_enroll_primary_with(options, &mut boundary)
+            .err()
+            .ok_or_else(|| {
+                anyhow::anyhow!("enroll-primary unexpectedly accepted tty stdin-json")
+            })?;
+        assert_eq!(
+            err.to_string(),
+            "--stdin-json requires pipe or redirect input"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enroll_spare_rejects_tty_stdin_json_before_device_open() -> Result<()> {
+        let mut boundary = FakeBoundary::new(vec![]);
+        let options = EnrollSpareOptions {
+            primary_serial: Some(10),
+            spare_serial: Some(20),
+            stdin_json: true,
+        };
+        let err = run_enroll_spare_with(options, &mut boundary)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("enroll-spare unexpectedly accepted tty stdin-json"))?;
+        assert_eq!(
+            err.to_string(),
+            "--stdin-json requires pipe or redirect input"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn enroll_primary_stdin_json_stops_before_secret_read_when_pin_verification_fails() -> Result<()>
     {
         let mut boundary = FakeBoundary::new(vec![
             FakeDevice::fresh(10).with_pin_error("pin verification failed"),
-        ]);
+        ])
+        .with_stdin_terminal(false);
         let options = super::super::EnrollPrimaryOptions {
             serial: Some(10),
             stdin_json: true,
@@ -1017,7 +1069,8 @@ mod tests {
     {
         let mut boundary = FakeBoundary::new(vec![
             FakeDevice::fresh(20).with_pin_error("pin verification failed"),
-        ]);
+        ])
+        .with_stdin_terminal(false);
         let options = EnrollSpareOptions {
             primary_serial: Some(10),
             spare_serial: Some(20),
