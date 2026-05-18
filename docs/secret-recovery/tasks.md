@@ -67,6 +67,8 @@ cargo xtask check static
 
 Design PR では crate / API / 保存形式 / 停止条件 / 検証方法を確定する。Implementation PR では設計で決めた範囲だけを実装し、unit test と必要な manual validation を追加する。
 
+planning request、Architecture Governance、review / verification / finding traceability / unresolved zero check の正本は [implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) である。planning procedure は、最初に `## 3. planning request 実行手順` を読み、その後で `## 11` から `## 14` の移行手順、役割分担、phase、報告規則に従う。
+
 ## Sub-Issues
 
 ### 1. YubiKey secret storage
@@ -139,6 +141,7 @@ Architecture Governance milestones:
 Architecture Governance rules:
 
 - 進捗管理入口は `tasks.md` と issue `#11` のみとする。
+- planning procedure の入口は `implementation-guidelines.md` の `## 3. planning request 実行手順` のみとする。
 - 各節目完了時に `tasks.md` と issue `#11` の両方を更新する。
 - issue `#11` の進捗コメントには current PR、predecessor PR、関係の一行説明を必ず書く。
 - 未解決指摘ゼロ確認が終わるまで `Done` に進めない。

@@ -1,6 +1,6 @@
 # 秘密情報復旧基盤の実装ガイドライン
 
-この文書は、秘密情報復旧基盤の実装、確認、レビュー、報告の正本である。`dotfiles secrets` の構造、成果物配置、秘密値境界、恒久レビュー規則はこの文書を基準に判断する。
+この文書は、秘密情報復旧基盤の実装、確認、レビュー、報告の正本である。planning request では、planning procedure 自体もこの文書を正本として扱う。`dotfiles secrets` の構造、成果物配置、秘密値境界、恒久レビュー規則はこの文書を基準に判断する。
 
 ## 1. 目的と対象範囲
 
@@ -10,11 +10,28 @@
 
 一般構造の判断は [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) を正本とする。機能仕様と保存仕様の判断は [docs/secret-recovery/yubikey-secret-storage-design.md](/Users/ya/works/dotfiles/docs/secret-recovery/yubikey-secret-storage-design.md) を参照する。進捗管理の正本は issue `#11` が open の間は [docs/secret-recovery/tasks.md](/Users/ya/works/dotfiles/docs/secret-recovery/tasks.md) と issue `#11` だけとする。
 
-## 3. `dotfiles secrets` の目標構造
+## 3. planning request 実行手順
+
+planning request を受けた agent は、この節を planning procedure の入口として扱う。最初にこの節を読み、ここで参照する後続節へ進む。plan、planning summary、planning procedure explanation、planning-related recommendation は、この節の Step 1 から Step 6 を順に満たすまで出してはならない。
+
+| Step | 開始条件 | 実行内容 | 必要出力 | 次段階 | 失敗時の戻り先 |
+| --- | --- | --- | --- | --- | --- |
+| 1. 入口確認 | planning request を受領 | current request のためにこの文書を再読し、planning procedure の正本がこの文書であることを確認する。進捗管理入口が `tasks.md` と issue `#11` であることも確認する。 | planning gate 確認 | Step 2 | この手順 |
+| 2. 構造診断 | Step 1 完了 | repo、設計文書、progress artifact を探索し、要求に関係する現状構造、既知違反、関連 issue / PR / artifact を集める。探索で確定できる事実はここで確定する。 | concern map、既知違反一覧 | Step 3 | Step 1 |
+| 3. 要求整理 | Step 2 完了 | 探索で確定できなかった高影響の未確定事項だけを切り分け、request-specific に確認する。探索で解決できる点を質問してはならない。 | 要求整理済み状態 | Step 4 | Step 2 |
+| 4. Phase A 草案 | Step 3 完了 | `## 11` と `## 12` に従い、Architecture Governance のプラン草案を作成する。プランは責務境界、依存方向、公開面、差戻し先が判断できる内容に限定する。 | Phase A 提出物 | Step 5 | Step 3 |
+| 5. Phase A review | Step 4 完了 | Plan Review Agent が `plan-section-checklist.md` を基準に review し、`APPROVED` または差戻しを確定する。`scope-conflict` と `content-conflict` はこの phase で扱う。 | Phase A `APPROVED` または差戻し | Step 6 | Step 4 または Step 3 |
+| 6. Phase B 草案と review | Phase A `APPROVED` | `## 11` の移行手順と `## 13` の Phase B に従い、実装プランを作成し review する。実装順序、確認方法、差戻し先、報告更新を判断できる状態まで確定する。 | Phase B `APPROVED` または差戻し | `## 11` Step `実装反映` と `## 13` Phase C 以降 | Step 4 または Step 3 |
+
+質問戦略は次のとおり固定する。探索で確定できる repo / doc / artifact 事実は先に探索で確定し、利用者には聞かない。質問するのは、探索で解決できず、かつ答えにより Phase A または Phase B の結論が変わる高影響事項だけとする。対象範囲、成功条件、承認単位、互換性境界、除外対象、報告単位のような high-impact ambiguity を残したまま Phase A 草案へ進んではならない。
+
+finalization rule は次のとおり固定する。Phase A は Plan Review Agent の `APPROVED` が出るまで完了しない。Phase B は Implementation Plan Review Agent の `APPROVED` が出るまで完了しない。planning-related output を終えるときは、現在地が Step 1 から Step 6 のどこか、未解決事項が何か、差戻し先がどこかを文書上の phase 名で説明できなければならない。
+
+## 4. `dotfiles secrets` の目標構造
 
 `dotfiles secrets` は `entrypoint`、`application`、`domain`、`port`、`adapter`、`support`、`tests` の分離を維持する。command parsing は `entrypoint`、use-case orchestration は `application`、domain invariants and wire format は `domain`、port contracts は `port`、device selection と prompt and stdin handling と stdout policy と JSON parsing/decoding は `adapter`、secret protection utilities は `support`、summaries and reporting DTOs は `application`、test doubles and PTY/integration tests は `tests` に属する。
 
-## 4. `dotfiles secrets` の層責務割当
+## 5. `dotfiles secrets` の層責務割当
 
 | 層 | 所有責務 | 必須モジュール | 禁止 concern |
 | --- | --- | --- | --- |
@@ -26,7 +43,7 @@
 | `support` | secret protection utilities、zeroization、memory protection、byte utility | `protect`, `zeroize`, `buffer`, `guard` | business vocabulary in support layer、command 名、secret 名 |
 | `tests` | test doubles and PTY/integration tests、層契約検証 | `fakes`, `pty`, `integration`, `fixtures` | production export、review 証跡の代替 |
 
-## 5. 成果物配置規則
+## 6. 成果物配置規則
 
 | 成果物 | 所有層 | 許可表現 | 禁止表現 | 生存期間規則 |
 | --- | --- | --- | --- | --- |
@@ -42,7 +59,7 @@
 | summaries and reporting DTOs | `application` | summary、report value | port contract への流出 | command 完了まで |
 | test doubles and PTY/integration tests | `tests` | fake port、PTY harness、integration flow | production module 再公開 | test 実行中のみ |
 
-## 6. 秘密値の所有境界
+## 7. 秘密値の所有境界
 
 | 成果物 | 所有層 | 許可表現 | 禁止表現 | 生存期間規則 |
 | --- | --- | --- | --- | --- |
@@ -56,7 +73,7 @@
 
 plain secret、PIN、decoded input field は `support` の保護境界を通さずに `application` や `domain` に渡してはならない。`application` が扱ってよいのは、`docs/architecture/hexagonal-implementation-rules.md` で許可された `support` の機能中立な保護型だけであり、feature 固有 utility や device/session API を保持してはならない。summary/report value は secret 本文を含まず、device handle は adapter 境界の外へ漏らしてはならない。
 
-## 7. 公開面規則
+## 8. 公開面規則
 
 | モジュール領域 | 許可公開項目 | 必須非公開項目 | 再公開規則 |
 | --- | --- | --- | --- |
@@ -68,11 +85,11 @@ plain secret、PIN、decoded input field は `support` の保護境界を通さ�
 | `support` | protected primitive の最小 API | feature vocabulary、summary/report helper | feature 名を含む再公開禁止 |
 | `tests` | test module 内 helper | production path | 本番 code へ再公開しない |
 
-## 8. ドキュメントコメント要件
+## 9. ドキュメントコメント要件
 
 この節の comment / doc comment 要件は [AGENTS.md](/Users/ya/works/dotfiles/AGENTS.md) と [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) の規則を継承し、それらの要求を狭めてはならない。各非自明 module は file-level comment または module doc comment で役割を説明する。repository-authored explanatory comment は日本語で書き、durable project intent、invariant、constraint、non-obvious operational context だけを残す。低価値 comment、個人メモ、曖昧な TODO/FIXME は入れてはならない。`dotfiles secrets` の public command flow、非自明な private helper、wire-format 型、port trait、adapter module は、先頭文で主要契約を述べ、その後に必要入力、失敗時の停止条件、secret 所有境界、interaction boundary を別文または別段落で記述する。複数段落の doc comment は第 1 段落で通常系契約、第 2 段落以降で non-TTY behavior、timeout、ownership transfer、zeroization、locking、output safety、retry rule のような制約を記述する。`support` comment は security property、ownership transfer、zeroization、locking、output safety のいずれかを具体的に書く。
 
-## 9. 除去すべき既知違反パターン
+## 10. 除去すべき既知違反パターン
 
 | 違反パターン | 検出条件 | 必要な是正 |
 | --- | --- | --- |
@@ -82,7 +99,7 @@ plain secret、PIN、decoded input field は `support` の保護境界を通さ�
 | business vocabulary in support layer | `support` module が command 名、secret 名、role 名を持つ | 中立 primitive へ削減し語彙を domain/application へ戻す |
 | rename-only or directory-only refactors that preserve the old structure | path だけ変わり責務境界が不変 | 層責務、公開面、依存方向の実体を是正する |
 
-## 10. リファクタ移行手順
+## 11. リファクタ移行手順
 
 | 移行手順 | 必要入力 | 必要出力 | 次段階 | 失敗時の戻り先 |
 | --- | --- | --- | --- | --- |
@@ -94,7 +111,7 @@ plain secret、PIN、decoded input field は `support` の保護境界を通さ�
 | 確認 | 差分、artifact、参照正本 | 確認結果、差戻しまたは承認 | レビュー | 実装反映 |
 | レビュー対応 | 確認結果、review findings | 解決済み差分、追跡表更新 | 未解決ゼロ確認 | 確認 |
 
-## 11. secret-recovery 作業のエージェント実行モデル
+## 12. secret-recovery 作業のエージェント実行モデル
 
 | 役割 | 兼務禁止 | 必要証跡 | 承認出力 |
 | --- | --- | --- | --- |
@@ -113,7 +130,7 @@ plain secret、PIN、decoded input field は `support` の保護境界を通さ�
 
 Main Orchestrator は実装、コマンド実行、ファイル確認、差分確認、検証、レビュー、証跡作成を行わない。Plan Review Agent と Implementation Plan Review Agent は、互いの drafting role を含む前段 planning role 以外の実装、確認、起票、review role を兼務してはならない。Main Orchestrator の最小確認責務は、`review-matrix.md` の承認状態確認、`finding-traceability.md` の `unresolved` と `same-class recurrence` のゼロ確認、`tasks.md` と issue `#11` の更新完了確認である。
 
-## 12. レビュー・確認・承認ワークフロー
+## 13. レビュー・確認・承認ワークフロー
 
 この節で定義する Phase A から Phase F-2 までを、secret-recovery work における `Architecture Governance` ワークフローと呼ぶ。
 
@@ -133,7 +150,7 @@ conflict type は `scope-conflict`、`content-conflict`、`planning-conflict`、
 
 Review D の監査対象 PR 集合は、Review D 開始時点で Verification Agent が `review-matrix.md` に記録した issue `#11` progress comment の `comment ID`、`timestamp`、`comment body hash` により凍結する。凍結コメントには current PR number、同一 work item の predecessor PR numbers、各 predecessor の one-line relation を必須とする。凍結後の進捗コメントが編集された場合、Verification Agent は `audit-source-conflict` を記録し、現在の Review D 実行を無効化して Phase D に戻す。監査 source は PR review threads、PR review comments、top-level PR conversation comments に固定し、finding 出力形式は `resolved`、`unresolved`、`same-class recurrence`、`follow-up issue required` に固定する。
 
-## 13. 報告規則
+## 14. 報告規則
 
 この節の節目更新は、[docs/secret-recovery/tasks.md](/Users/ya/works/dotfiles/docs/secret-recovery/tasks.md) の `Architecture Governance milestones` と issue `#11` progress comment を同じ用語で同期する。
 

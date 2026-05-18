@@ -1,5 +1,13 @@
 # AGENTS_ja.md
 
+## Critical Planning Gate
+
+このリポジトリの planning request では、planning procedure そのものは `docs/secret-recovery/implementation-guidelines.md` に定義されています。
+planning flow、orchestration order、review loop、reporting order、return path の正本はその文書だけとして扱ってください。
+planning request では、他の文書より先に `docs/secret-recovery/implementation-guidelines.md` を読んでください。
+その文書では、まず `## 3. planning request 実行手順` から読み始め、その節が参照する後続節に従ってください。
+chat で別の planning procedure を即興で作ったり、言い換えたり、要約したり、置き換えたりしてはいけません。
+
 ## プロジェクト概要
 
 このリポジトリは、macOS のユーザー環境向け dotfiles を管理する Nix flake プロジェクトです。`dotfiles` CLI、Home Manager / nix-darwin モジュール、ローカル flake 用ヘルパーを提供します。

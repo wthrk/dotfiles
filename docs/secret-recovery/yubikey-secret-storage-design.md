@@ -357,7 +357,7 @@ Unit test は fake YubiKey adapter で行う。
 
 ## Architecture Governance
 
-Architecture Governance の構造判断は [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) を一般正本として行う。`dotfiles secrets` の層責務、成果物配置、review / verification / finding traceability / unresolved zero check 規則は [docs/secret-recovery/implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) を正本として行う。
+Architecture Governance の構造判断は [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) を一般正本として行う。`dotfiles secrets` の層責務、成果物配置、review / verification / finding traceability / unresolved zero check 規則は [docs/secret-recovery/implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) を正本として行う。planning request の手順は、最初に [implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) の `## 3. planning request 実行手順` を読み、その節が参照する移行手順、役割分担、phase、報告規則に従う。
 
 ## 参考
 

@@ -1,5 +1,13 @@
 # AGENTS.md
 
+## Critical Planning Gate
+
+For any planning request in this repository, the planning procedure itself is defined in `docs/secret-recovery/implementation-guidelines.md`.
+Treat that document as the sole authoritative procedure for planning flow, orchestration order, review loop, reporting order, and return paths.
+Before reading anything else for a planning request, read `docs/secret-recovery/implementation-guidelines.md`.
+Start with `## 3. planning request 実行手順` in that document, then follow the later sections it points to.
+Do not invent, paraphrase, summarize, or substitute a different planning procedure in chat.
+
 ## Project Overview
 
 This repository is a Nix flake managed dotfiles project for macOS user environments. It provides the `dotfiles` CLI, Home Manager and nix-darwin modules, and local flake helpers.

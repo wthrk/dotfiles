@@ -12,6 +12,10 @@
 - 平文 secret を CLI 引数、ログ、一時ファイル、永続環境変数に残さない。
 - 破壊的な YubiKey reset や既存 credential の削除を自動化しない。
 
+## Architecture Governance の読み方
+
+planning request、Architecture Governance、review / verification / finding traceability / unresolved zero check の正本は [implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) である。planning procedure は、最初に [implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) の `## 3. planning request 実行手順` を読み、その節が参照する移行手順、役割分担、phase、報告規則へ順に進む。
+
 ## 復旧対象
 
 - GnuPG secret key
