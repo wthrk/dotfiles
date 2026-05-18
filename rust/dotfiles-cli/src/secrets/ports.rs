@@ -4,17 +4,11 @@
 //! 入出力差分は adapter 側に閉じる。
 
 use crate::Result;
-use anyhow::bail;
 
 use super::{
     domain::{self, SecretName},
     support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
 };
-
-pub(crate) const SPARE_SERIAL_NONINTERACTIVE_ERROR: &str =
-    "pass --spare-serial in non-interactive use";
-pub(crate) const SECRET_STDOUT_TERMINAL_ERROR: &str =
-    "refusing to write secret to terminal; redirect stdout to a file or pipe";
 
 /// 登録に必要な 3 field を同じ保護 session で所有する。
 pub(crate) struct EnrollmentSecretSet<'session> {
@@ -55,7 +49,8 @@ impl<'session> EnrollmentSecretSet<'session> {
 
 /// application use case が利用する外部 I/O 境界。
 ///
-/// 実機 adapter と test stub は同じ非対話条件、入力順序、device 操作順序をこの trait で共有する。
+/// 実機 adapter と test stub は同じ入力順序と device 操作順序をこの trait で共有する。
+/// 非対話条件や利用者向け error contract は application 層が所有する。
 pub(crate) trait SecretsBoundary {
     type Device: domain::SecretDevice;
 
@@ -84,38 +79,4 @@ pub(crate) trait SecretsBoundary {
         memory: &'session SecretSession,
     ) -> Result<ProtectedSecret<'session>>;
     fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
-    fn require_serial_for_noninteractive(&self, serial: Option<u32>) -> Result<()> {
-        if serial.is_none() && !self.stdin_is_terminal() {
-            bail!("pass --serial in non-interactive use");
-        }
-        Ok(())
-    }
-    fn require_spare_serial_for_noninteractive(&self, spare_serial: Option<u32>) -> Result<()> {
-        if spare_serial.is_none() && !self.stdin_is_terminal() {
-            bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
-        }
-        Ok(())
-    }
-    fn require_primary_serial_for_noninteractive(&self, primary_serial: Option<u32>) -> Result<()> {
-        if primary_serial.is_none() && !self.stdin_is_terminal() {
-            bail!("pass --primary-serial in non-interactive use");
-        }
-        Ok(())
-    }
-    fn require_stdin_for_noninteractive(
-        &self,
-        enabled: bool,
-        option_name: &'static str,
-    ) -> Result<()> {
-        if !enabled && !self.stdin_is_terminal() {
-            bail!("pass {option_name} in non-interactive use");
-        }
-        Ok(())
-    }
-    fn require_secret_stdout_target(&self) -> Result<()> {
-        if self.stdout_is_terminal() {
-            bail!(SECRET_STDOUT_TERMINAL_ERROR);
-        }
-        Ok(())
-    }
 }

@@ -13,12 +13,8 @@ use std::{io, time::Instant};
 
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::domain::{PivObjectId, SecretDevice};
-use crate::secrets::support::terminal::{
-    read_terminal_line_until, stdin_is_terminal, wait_for_enter,
-};
+use crate::secrets::support::terminal::{read_terminal_line_until, wait_for_enter};
 use crate::{Result, secrets::support::protection::InterruptGuard};
-
-pub(crate) use yubikey::SPARE_SERIAL_NONINTERACTIVE_ERROR;
 
 #[cfg(feature = "secrets-test-stub")]
 /// CLI 実行で使う YubiKey device adapter の選択状態。
@@ -165,9 +161,6 @@ pub(crate) fn open_device(
     backend: &mut DeviceBackend,
     serial: Option<u32>,
 ) -> Result<YubikeySecretDevice> {
-    if serial.is_none() && !stdin_is_terminal() {
-        anyhow::bail!("pass --serial in non-interactive use");
-    }
     let io = yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
@@ -197,9 +190,6 @@ pub(crate) fn open_spare_device(
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
-    if spare_serial.is_none() && !stdin_is_terminal() {
-        anyhow::bail!(SPARE_SERIAL_NONINTERACTIVE_ERROR);
-    }
     let io = yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
@@ -276,7 +266,7 @@ fn wait_for_spare_replacement(deadline: Instant, interrupt: &InterruptGuard) -> 
     wait_for_enter(
         deadline,
         interrupt,
-        SPARE_SERIAL_NONINTERACTIVE_ERROR,
+        "pass --spare-serial in non-interactive use",
         "timed out waiting for spare YubiKey",
     )
 }

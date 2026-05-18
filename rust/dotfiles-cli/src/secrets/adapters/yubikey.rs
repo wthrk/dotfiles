@@ -34,8 +34,6 @@ const MIN_PIV_METADATA_VERSION: Version = Version {
 };
 const SPARE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const SPARE_DETECT_POLL_INTERVAL: Duration = Duration::from_millis(200);
-pub(crate) const SPARE_SERIAL_NONINTERACTIVE_ERROR: &str =
-    "pass --spare-serial in non-interactive use";
 const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
 
 type SelectCandidateFn<'a> = dyn Fn(&[YubikeySelectionCandidate<'_>], Option<(Instant, &InterruptGuard)>) -> Result<usize>

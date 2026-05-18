@@ -13,7 +13,7 @@ use crate::Result;
 #[cfg(test)]
 use super::domain::SecretName;
 use super::{
-    ports::{EnrollmentSecretSet, SECRET_STDOUT_TERMINAL_ERROR},
+    ports::EnrollmentSecretSet,
     support::{
         protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
         terminal,
@@ -24,6 +24,8 @@ const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
 pub(crate) const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 pub(crate) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
+pub(crate) const SECRET_STDOUT_TERMINAL_ERROR: &str =
+    "refusing to write secret to terminal; redirect stdout to a file or pipe";
 
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
 ///

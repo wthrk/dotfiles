@@ -26,6 +26,10 @@ use super::{
 use crate::Result;
 use anyhow::bail;
 
+const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use";
+const NONINTERACTIVE_PRIMARY_SERIAL_ERROR: &str = "pass --primary-serial in non-interactive use";
+const NONINTERACTIVE_SPARE_SERIAL_ERROR: &str = "pass --spare-serial in non-interactive use";
+
 /// 指定された device backend を使って parse 済み options の use case を開始する。
 ///
 /// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
@@ -69,6 +73,7 @@ fn run_setup_with<B: SecretsBoundary>(
     options: super::SerialOptions,
     boundary: &mut B,
 ) -> Result<()> {
+    require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
     let mut device = boundary.open_device(options.serial)?;
     storage_service::setup(&mut device)
 }
@@ -77,7 +82,7 @@ fn run_setup_with<B: SecretsBoundary>(
 ///
 /// 既存 object の上書き可否は secret 入力より前に確定する。
 fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B) -> Result<()> {
-    boundary.require_serial_for_noninteractive(options.serial)?;
+    require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
     require_single_stdin_secret_source(options.stdin, boundary)?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
@@ -96,8 +101,8 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
 ///
 /// stdout が pipe/redirect でない場合は、PIN verification と touch の前に停止する。
 fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B) -> Result<()> {
-    boundary.require_serial_for_noninteractive(options.serial)?;
-    boundary.require_secret_stdout_target()?;
+    require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
+    require_secret_stdout_target(boundary)?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device, &session)?;
@@ -115,8 +120,8 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     options: super::EnrollPrimaryOptions,
     boundary: &mut B,
 ) -> Result<()> {
-    boundary.require_serial_for_noninteractive(options.serial)?;
-    boundary.require_stdin_for_noninteractive(options.stdin_json, "--stdin-json")?;
+    require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
+    require_noninteractive_option(boundary, options.stdin_json, "--stdin-json")?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     session.run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut device))?;
@@ -199,9 +204,17 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
 ) -> Result<()> {
     let session = SecretSession::start()?;
     if !options.stdin_json {
-        boundary.require_primary_serial_for_noninteractive(options.primary_serial)?;
+        require_noninteractive_serial(
+            boundary,
+            options.primary_serial,
+            NONINTERACTIVE_PRIMARY_SERIAL_ERROR,
+        )?;
     }
-    boundary.require_spare_serial_for_noninteractive(options.spare_serial)?;
+    require_noninteractive_serial(
+        boundary,
+        options.spare_serial,
+        NONINTERACTIVE_SPARE_SERIAL_ERROR,
+    )?;
     let prepared_spare = if options.stdin_json || options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(
             options.spare_serial,
@@ -353,6 +366,8 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
         return rotation.result;
     }
 
+    require_noninteractive_serial(boundary, None, NONINTERACTIVE_SERIAL_ERROR)?;
+    require_noninteractive_option(boundary, options.stdin, "--stdin")?;
     let mut device = boundary.open_device(None)?;
     prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
     let token =
@@ -474,7 +489,7 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
     options: VerifyYubikeyOptions,
     boundary: &mut B,
 ) -> Result<()> {
-    boundary.require_serial_for_noninteractive(options.serial)?;
+    require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
     if options.all && !options.check.is_empty() {
         bail!("--all and --check cannot be used together");
     }
@@ -571,7 +586,39 @@ fn require_single_stdin_secret_source<B: SecretsBoundary>(stdin: bool, boundary:
         return Ok(());
     }
 
-    boundary.require_stdin_for_noninteractive(false, "--stdin")
+    require_noninteractive_option(boundary, false, "--stdin")
+}
+
+/// 非対話実行で対象 serial を省略していないかを、device 操作前に確認する。
+fn require_noninteractive_serial<B: SecretsBoundary>(
+    boundary: &B,
+    serial: Option<u32>,
+    error_message: &'static str,
+) -> Result<()> {
+    if serial.is_none() && !boundary.stdin_is_terminal() {
+        bail!(error_message);
+    }
+    Ok(())
+}
+
+/// 非対話実行で必須 option を欠いていないかを、入力消費前に確認する。
+fn require_noninteractive_option<B: SecretsBoundary>(
+    boundary: &B,
+    enabled: bool,
+    option_name: &'static str,
+) -> Result<()> {
+    if !enabled && !boundary.stdin_is_terminal() {
+        bail!("pass {option_name} in non-interactive use");
+    }
+    Ok(())
+}
+
+/// 平文 secret を stdout へ出す経路が端末を向いていないことを確認する。
+fn require_secret_stdout_target<B: SecretsBoundary>(boundary: &B) -> Result<()> {
+    if boundary.stdout_is_terminal() {
+        super::input::reject_secret_stdout_terminal()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -888,6 +935,17 @@ mod tests {
     }
 
     #[test]
+    fn setup_rejects_noninteractive_without_serial_before_device_open() -> Result<()> {
+        let mut boundary = FakeBoundary::new(vec![]).with_stdin_terminal(false);
+        let options = super::super::SerialOptions { serial: None };
+        let err = run_setup_with(options, &mut boundary)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("setup unexpectedly succeeded"))?;
+        assert_eq!(err.to_string(), "pass --serial in non-interactive use");
+        Ok(())
+    }
+
+    #[test]
     fn put_rejects_noninteractive_without_stdin_option() -> Result<()> {
         let mut boundary =
             FakeBoundary::new(vec![FakeDevice::provisioned(10)?]).with_stdin_terminal(false);
@@ -917,6 +975,20 @@ mod tests {
             .err()
             .ok_or_else(|| anyhow::anyhow!("put unexpectedly accepted tty stdin"))?;
         assert_eq!(err.to_string(), "--stdin requires pipe or redirect input");
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_bws_token_rejects_noninteractive_without_serial() -> Result<()> {
+        let mut boundary = FakeBoundary::new(vec![]).with_stdin_terminal(false);
+        let options = super::super::RotateBwsTokenOptions {
+            serial: None,
+            stdin: true,
+        };
+        let err = run_rotate_bws_token_with(options, &mut boundary)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("rotate-bws-token unexpectedly succeeded"))?;
+        assert_eq!(err.to_string(), "pass --serial in non-interactive use");
         Ok(())
     }
 
