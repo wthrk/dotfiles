@@ -16,16 +16,14 @@ use zeroize::Zeroize;
 use crate::{
     Result,
     secrets::{
-        ports::EnrollmentSecretSet,
+        application::EnrollmentSecretSet,
+        domain::SecretName,
         support::{
             protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
             terminal,
         },
     },
 };
-
-#[cfg(test)]
-use crate::secrets::domain::SecretName;
 
 const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
@@ -87,6 +85,19 @@ pub(crate) fn read_yubikey_pin<'session>(
     .into_protected_secret_line(memory, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
     pin.with_secret(validate_yubikey_pin)?;
     Ok(pin)
+}
+
+/// `put` 用の単一 secret を prompt または stdin から読み込む。
+pub(crate) fn read_secret_for_put(
+    name: SecretName,
+    stdin: bool,
+    memory: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
+    if stdin {
+        read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
+    } else {
+        read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
+    }
 }
 
 fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
@@ -164,6 +175,31 @@ pub(crate) fn read_protected_enrollment_secret_set<'session>(
     )?;
     parse_protected_enrollment_secret_set_json(input.as_slice(), field_limit, memory)
         .context("failed to parse bootstrap secret JSON")
+}
+
+/// 登録用の 3 field を prompt または stdin JSON から読み込む。
+pub(crate) fn read_enrollment_secret_set_from_user(
+    stdin_json: bool,
+    memory: &SecretSession,
+) -> Result<EnrollmentSecretSet<'_>> {
+    if stdin_json {
+        return read_protected_enrollment_secret_set(
+            std::io::stdin(),
+            MAX_BOOTSTRAP_JSON_LEN,
+            MAX_SINGLE_STDIN_SECRET_LEN,
+            memory,
+        );
+    }
+
+    let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+    let bw_password = read_secret_for_put(SecretName::BwPassword, false, memory)?;
+    let bws_access_token = read_secret_for_put(SecretName::BwsAccessToken, false, memory)?;
+
+    Ok(EnrollmentSecretSet::new(
+        bw_email,
+        bw_password,
+        bws_access_token,
+    ))
 }
 
 fn parse_protected_enrollment_secret_set_json<'session>(
