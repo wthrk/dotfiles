@@ -7,7 +7,6 @@
 | `docs/architecture/hexagonal-implementation-rules.md` 見出し | 1 から 12 の required heading | completed | [hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md:1) |
 | `docs/architecture/hexagonal-implementation-rules.md` 表 | required 5 tables | completed | [hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md:17) |
 | project 固有名非依存 | project 固有名、機能固有名を一般規約へ書かない | completed | [hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md:1) |
-
 承認状態:
 
 - Plan Drafting Agent: completed

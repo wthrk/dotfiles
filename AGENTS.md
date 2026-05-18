@@ -9,6 +9,8 @@ Start with `## 3. planning request 実行手順` in that document, then follow t
 Do not invent, paraphrase, summarize, or substitute a different planning procedure in chat.
 Do not let generic planning behavior, default assistant workflow, or higher-level planning heuristics override that repository-specific procedure.
 During any planning request, each planning-related response must stay anchored to that procedure's current Step or Phase, and when the response cannot name the current Step or return path, stop and re-read `docs/secret-recovery/implementation-guidelines.md` before continuing.
+For secret-recovery planning work, do not rely on any generic planning workflow or default execution habit after reading that document; if behavior would come from memory instead of the document, stop.
+For secret-recovery planning work, the main agent is an Orchestrator only. It must not perform repo exploration, command execution, file inspection, diff inspection, validation, review, or artifact creation itself; if it starts doing any of those, stop immediately and return to `## 3. planning request 実行手順`.
 
 ## Project Overview
 

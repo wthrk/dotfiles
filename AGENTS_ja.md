@@ -9,6 +9,8 @@ planning request では、他の文書より先に `docs/secret-recovery/impleme
 chat で別の planning procedure を即興で作ったり、言い換えたり、要約したり、置き換えたりしてはいけません。
 generic な planning behavior、assistant の default workflow、または上位の planning heuristic に、その repository 固有の procedure を上書きさせてはいけません。
 planning request 中の各 planning-related response は、必ずその procedure 上の current Step または Phase に結び付いていなければなりません。応答が current Step または return path を言えない状態になったら、続行せず `docs/secret-recovery/implementation-guidelines.md` を再読してください。
+secret-recovery の planning work では、その文書を読んだ後に generic な planning workflow や既定の実行癖へ戻ってはいけません。挙動の根拠がその文書ではなく記憶や通常フローになりそうなら、その時点で停止してください。
+secret-recovery の planning work では、メインエージェントは Orchestrator 専任です。repo 探索、コマンド実行、ファイル確認、差分確認、検証、レビュー、証跡作成を自分で行ってはいけません。それらを始めた時点で直ちに停止し、`## 3. planning request 実行手順` に戻ってください。
 
 ## プロジェクト概要
 
