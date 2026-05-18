@@ -14,12 +14,12 @@ use std::collections::BTreeSet;
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
     YubikeyCommand, YubikeyOptions, adapters,
-    domain::{self, SecretDevice, SecretName},
-    input::{
+    adapters::input::{
         MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
         read_protected_enrollment_secret_set, read_protected_stdin_secret,
         read_visible_secret_line, write_secret_to_stdout,
     },
+    domain::{self, SecretDevice, SecretName},
     ports::{EnrollmentSecretSet, SecretsBoundary},
     support::protection::{ProtectedSecret, SecretSession},
 };
@@ -622,7 +622,7 @@ fn require_noninteractive_option<B: SecretsBoundary>(
 /// 平文 secret を stdout へ出す経路が端末を向いていないことを確認する。
 fn require_secret_stdout_target<B: SecretsBoundary>(boundary: &B) -> Result<()> {
     if boundary.stdout_is_terminal() {
-        super::input::reject_secret_stdout_terminal()?;
+        super::adapters::input::reject_secret_stdout_terminal()?;
     }
     Ok(())
 }

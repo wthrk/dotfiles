@@ -10,8 +10,8 @@ use clap::{Parser, ValueEnum};
 
 use crate::Result;
 use crate::secrets::{
+    blob::{decrypt_secret_protected, encrypt_secret},
     domain::{self, SecretBlob, SecretDevice, SecretManifest, SecretName},
-    secret_blob_crypto::{decrypt_secret_protected, encrypt_secret},
     support::protection::{ProtectedSecret, SecretSession},
 };
 use dotfiles_cli_secrets_test_contract::{

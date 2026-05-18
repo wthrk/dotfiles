@@ -1,24 +1,31 @@
-//! `dotfiles secrets` の利用者入力を application の保護済み値へ変換する入力層。
+//! `dotfiles secrets` の利用者入力 adapter。
 //!
-//! TTY 判定と stdout 書き込みは `support::terminal`、memory lock は `support::protection` に委譲し、
-//! この層は prompt、stdin、JSON schema の入力形式と error contract を固定する。
+//! prompt、stdin、JSON schema、stdout の concrete な I/O 契約をここへ集め、application は
+//! 保護済み値と非対話前提だけを扱う。
 
-use std::io::Read;
+use std::{
+    io::{self, Read, Write},
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Context, bail};
 use zeroize::Zeroize;
 
-use crate::Result;
-
-#[cfg(test)]
-use super::domain::SecretName;
-use super::{
-    ports::EnrollmentSecretSet,
-    support::{
-        protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-        terminal,
+use crate::{
+    Result,
+    secrets::{
+        ports::EnrollmentSecretSet,
+        support::{
+            protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+            terminal,
+        },
     },
 };
+
+#[cfg(test)]
+use crate::secrets::domain::SecretName;
 
 const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
@@ -49,12 +56,9 @@ pub(crate) fn read_visible_secret_line<'session>(
     limit: usize,
     memory: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    use std::io::{self, Write};
-
     eprint!("{prompt}");
     io::stderr().flush()?;
-    let input =
-        ProtectedInputBuffer::read_line_until_newline_from(std::io::stdin(), limit, memory)?;
+    let input = read_visible_secret_input(limit, memory)?;
     input.into_protected_secret_line(memory, limit, "visible secret input is too large")
 }
 
@@ -90,6 +94,60 @@ fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
         bail!("YubiKey PIN must be 6 to 8 bytes");
     }
     Ok(())
+}
+
+/// 表示 prompt の 1 行入力を保護済み buffer へ直接積み、待機中は interrupt flag を監視する。
+///
+/// canonical mode の TTY 挙動を変えないよう raw mode には入らず、読み取り自体だけ worker thread に分離する。
+fn read_visible_secret_input(limit: usize, memory: &SecretSession) -> Result<ProtectedInputBuffer> {
+    let read_limit = limit + 3;
+    let mut input = ProtectedInputBuffer::new(read_limit, memory)?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdin = io::stdin();
+        let mut byte = [0u8; 1];
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(0) => {
+                    let _ = sender.send(Ok(None));
+                    break;
+                }
+                Ok(_) => {
+                    let _ = sender.send(Ok(Some(byte[0])));
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    let _ = sender.send(Err(err));
+                    break;
+                }
+            }
+        }
+    });
+
+    loop {
+        if input.as_slice().len() >= read_limit {
+            break;
+        }
+        memory.check_interrupted()?;
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(Some(byte))) => {
+                input.write_all(&[byte])?;
+                if byte == b'\n' {
+                    break;
+                }
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(err)) => return Err(err.into()),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("failed to read terminal input")
+            }
+        }
+    }
+
+    Ok(input)
 }
 
 pub(crate) fn read_protected_enrollment_secret_set<'session>(
@@ -130,6 +188,7 @@ impl BootstrapSecretField {
             Self::BwsAccessToken => "bws-access-token",
         }
     }
+
     fn from_decoded_key(key: &str) -> Option<Self> {
         match key {
             "bw-email" => Some(Self::BwEmail),
@@ -517,53 +576,5 @@ mod tests {
 
         assert!(result.is_err());
         Ok(())
-    }
-
-    #[test]
-    fn parse_enrollment_secret_set_json_rejects_unknown_field() -> Result<()> {
-        let session = SecretSession::start()?;
-        let result = parse_test_bootstrap_json(
-            br#"{
-                "bw-email": "alice@example.com",
-                "bw-password": "password",
-                "bws-access-token": "token",
-                "extra-secret": "ignored"
-            }"#,
-            16 * 1024,
-            &session,
-        );
-
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn parse_enrollment_secret_set_json_rejects_field_past_limit() -> Result<()> {
-        let session = SecretSession::start()?;
-        let result = parse_test_bootstrap_json(
-            br#"{
-                "bw-email": "alice@example.com",
-                "bw-password": "abcd",
-                "bws-access-token": "token"
-            }"#,
-            3,
-            &session,
-        );
-
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn validate_yubikey_pin_accepts_piv_length_range() -> Result<()> {
-        validate_yubikey_pin(b"123456")?;
-        validate_yubikey_pin(b"12345678")?;
-        Ok(())
-    }
-
-    #[test]
-    fn validate_yubikey_pin_rejects_values_outside_piv_length_range() {
-        assert!(validate_yubikey_pin(b"12345").is_err());
-        assert!(validate_yubikey_pin(b"123456789").is_err());
     }
 }

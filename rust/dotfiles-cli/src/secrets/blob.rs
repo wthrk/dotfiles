@@ -1,7 +1,7 @@
-//! YubiKey secret blob の暗号処理共通部。
+//! YubiKey secret blob の暗号化と復号を扱う保存 helper。
 //!
-//! application の storage 操作と test stub の in-memory device が同じ暗号 contract を使うため、
-//! content key 生成、AEAD 追加認証データ、YubiKey wrap/unwrap をこのモジュールに集約する。
+//! 保存前の平文 secret と device の wrap/unwrap 操作を結び、`SecretBlob` の wire format が要求する
+//! content key、AEAD 追加認証データ、保護済み復号先の契約を 1 箇所で保つ。
 
 use std::io::Write;
 
@@ -9,12 +9,13 @@ use anyhow::bail;
 use rand::Rng;
 
 use crate::Result;
-use crate::secrets::support::{
-    aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
-    protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+use crate::secrets::{
+    domain::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName},
+    support::{
+        aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
+        protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    },
 };
-
-use crate::secrets::domain::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName};
 
 /// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。
 ///

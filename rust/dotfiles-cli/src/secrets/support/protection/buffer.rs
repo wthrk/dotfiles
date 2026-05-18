@@ -75,29 +75,6 @@ impl ProtectedInputBuffer {
         Ok(())
     }
 
-    /// reader から newline までの行入力 bytes を読み込む。
-    ///
-    /// TTY prompt では EOF を待たず、LF を読んだ時点で入力完了にする。
-    pub(crate) fn read_line_until_newline_from(
-        mut reader: impl Read,
-        limit: usize,
-        session: &SecretSession,
-    ) -> Result<Self> {
-        let read_limit = limit + 3;
-        let mut buffer = Self::new(read_limit, session)?;
-        let mut byte = [0u8; 1];
-        while buffer.len < read_limit {
-            if reader.read(&mut byte)? == 0 {
-                break;
-            }
-            buffer.write_all(&byte)?;
-            if byte[0] == b'\n' {
-                break;
-            }
-        }
-        Ok(buffer)
-    }
-
     /// 読み込み済み範囲を byte slice として返す。
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]

@@ -6,8 +6,8 @@ use super::{adapters, read_enrollment_secret_set_from_user, read_protected_secre
 use crate::{
     Result,
     secrets::{
+        adapters::input::read_yubikey_pin,
         domain::SecretName,
-        input::read_yubikey_pin,
         ports::{EnrollmentSecretSet, SecretsBoundary},
         support::{
             protection::{InterruptGuard, ProtectedSecret, SecretSession},
