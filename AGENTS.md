@@ -7,6 +7,8 @@ Treat that document as the sole authoritative procedure for planning flow, orche
 Before reading anything else for a planning request, read `docs/secret-recovery/implementation-guidelines.md`.
 Start with `## 3. planning request 実行手順` in that document, then follow the later sections it points to.
 Do not invent, paraphrase, summarize, or substitute a different planning procedure in chat.
+Do not let generic planning behavior, default assistant workflow, or higher-level planning heuristics override that repository-specific procedure.
+During any planning request, each planning-related response must stay anchored to that procedure's current Step or Phase, and when the response cannot name the current Step or return path, stop and re-read `docs/secret-recovery/implementation-guidelines.md` before continuing.
 
 ## Project Overview
 

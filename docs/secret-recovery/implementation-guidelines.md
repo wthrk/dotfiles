@@ -13,6 +13,7 @@
 ## 3. planning request 実行手順
 
 planning request を受けた agent は、この節を planning procedure の入口として扱う。最初にこの節を読み、ここで参照する後続節へ進む。plan、planning summary、planning procedure explanation、planning-related recommendation は、この節の Step 1 から Step 6 を順に満たすまで出してはならない。
+generic な planning mode、assistant 既定の質問順、または他文書の一般論は、この節の Step 管理、phase 遷移、差戻し先、review 順序を置き換えてはならない。planning request 中の planning-related response は、毎回 current Step または current Phase、次段階、失敗時の戻り先をこの文書の名称で示せる状態に保つ。これを示せない応答は無効とし、直前の成立済み Step へ戻ってこの節からやり直す。
 
 | Step | 開始条件 | 実行内容 | 必要出力 | 次段階 | 失敗時の戻り先 |
 | --- | --- | --- | --- | --- | --- |
@@ -26,6 +27,7 @@ planning request を受けた agent は、この節を planning procedure の入
 質問戦略は次のとおり固定する。探索で確定できる repo / doc / artifact 事実は先に探索で確定し、利用者には聞かない。質問するのは、探索で解決できず、かつ答えにより Phase A または Phase B の結論が変わる高影響事項だけとする。対象範囲、成功条件、承認単位、互換性境界、除外対象、報告単位のような high-impact ambiguity を残したまま Phase A 草案へ進んではならない。
 
 finalization rule は次のとおり固定する。Phase A は Plan Review Agent の `APPROVED` が出るまで完了しない。Phase B は Implementation Plan Review Agent の `APPROVED` が出るまで完了しない。planning-related output を終えるときは、現在地が Step 1 から Step 6 のどこか、未解決事項が何か、差戻し先がどこかを文書上の phase 名で説明できなければならない。
+Step 1 から Step 6 の間で planning-related response を返すたびに、少なくとも current Step、未解決事項の有無、次段階、失敗時の戻り先を文書上の用語で維持する。current Step を言えないまま探索、質問、草案提示、要約、手順説明へ進んではならない。
 
 ## 4. `dotfiles secrets` の目標構造
 

@@ -7,6 +7,8 @@ planning flow、orchestration order、review loop、reporting order、return pat
 planning request では、他の文書より先に `docs/secret-recovery/implementation-guidelines.md` を読んでください。
 その文書では、まず `## 3. planning request 実行手順` から読み始め、その節が参照する後続節に従ってください。
 chat で別の planning procedure を即興で作ったり、言い換えたり、要約したり、置き換えたりしてはいけません。
+generic な planning behavior、assistant の default workflow、または上位の planning heuristic に、その repository 固有の procedure を上書きさせてはいけません。
+planning request 中の各 planning-related response は、必ずその procedure 上の current Step または Phase に結び付いていなければなりません。応答が current Step または return path を言えない状態になったら、続行せず `docs/secret-recovery/implementation-guidelines.md` を再読してください。
 
 ## プロジェクト概要
 
