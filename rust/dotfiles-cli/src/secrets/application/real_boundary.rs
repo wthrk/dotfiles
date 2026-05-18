@@ -69,7 +69,7 @@ impl SecretsBoundary for RealSecretsBoundary {
         read_yubikey_pin(memory)
     }
 
-    fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool> {
-        prompt_yes_no(prompt)
+    fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
+        prompt_yes_no(prompt, interrupt)
     }
 }

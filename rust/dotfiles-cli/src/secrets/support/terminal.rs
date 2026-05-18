@@ -6,6 +6,8 @@
 use std::{
     fs::OpenOptions,
     io::{self, IsTerminal, Write},
+    sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -31,15 +33,14 @@ pub(crate) fn stdout_is_terminal() -> bool {
 /// TTY では prompt を stderr へ表示し、stdin の 1 行を yes/no 応答として返す。
 ///
 /// stdin が TTY でない場合は入力を読まずに `false` を返す。
-pub(crate) fn prompt_yes_no(prompt: &str) -> Result<bool> {
+pub(crate) fn prompt_yes_no(prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
     if !stdin_is_terminal() {
         return Ok(false);
     }
 
     eprint!("{prompt}");
     io::stderr().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    let input = read_terminal_line_interruptible(interrupt)?;
     Ok(matches!(
         input.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
@@ -113,6 +114,30 @@ pub(crate) fn read_hidden_input(
     }
 }
 
+/// `stdin.read_line` の EOF 契約を保ったまま、interrupt flag を監視して 1 行入力を返す。
+///
+/// 標準入出力には portable な非同期 cancel API がないため、読み取り自体は worker thread に任せ、
+/// 呼び出し側は一定間隔で interrupt flag を確認する。
+pub(crate) fn read_terminal_line_interruptible(interrupt: &InterruptGuard) -> Result<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut input = String::new();
+        let result = io::stdin().read_line(&mut input).map(|_| input);
+        let _ = sender.send(result);
+    });
+
+    loop {
+        interrupt.check_interrupted()?;
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(result) => return Ok(result?),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("failed to read terminal input")
+            }
+        }
+    }
+}
+
 /// hidden prompt の入力元を、stdin または controlling terminal として開く。
 ///
 /// stdin payload と PIN / hidden prompt を併用する経路では `/dev/tty` を使う。
@@ -155,33 +180,40 @@ pub(crate) fn read_terminal_line_until(
             continue;
         }
 
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-
-        match key.code {
-            KeyCode::Enter => {
-                eprintln!();
-                return Ok(line);
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                bail!("interrupted while reading terminal input");
-            }
-            KeyCode::Char(ch) => {
-                line.push(ch);
-                eprint!("{ch}");
-                io::stderr().flush()?;
-            }
-            KeyCode::Backspace => {
-                if line.pop().is_some() {
-                    eprint!("\u{8} \u{8}");
-                    io::stderr().flush()?;
-                }
-            }
-            _ => {}
+        if let Some(completed) = read_terminal_key_event(&mut line)? {
+            return Ok(completed);
         }
     }
+}
+
+fn read_terminal_key_event(line: &mut String) -> Result<Option<String>> {
+    let Event::Key(key) = event::read()? else {
+        return Ok(None);
+    };
+    if key.kind != KeyEventKind::Press {
+        return Ok(None);
+    }
+
+    match key.code {
+        KeyCode::Enter => {
+            eprintln!();
+            return Ok(Some(line.clone()));
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            bail!("interrupted while reading terminal input");
+        }
+        KeyCode::Char(ch) => {
+            line.push(ch);
+            eprint!("{ch}");
+            io::stderr().flush()?;
+        }
+        KeyCode::Backspace => {
+            if line.pop().is_some() {
+                eprint!("\u{8} \u{8}");
+                io::stderr().flush()?;
+            }
+        }
+        _ => {}
+    }
+    Ok(None)
 }

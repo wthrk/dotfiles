@@ -78,5 +78,5 @@ pub(crate) trait SecretsBoundary {
         &mut self,
         memory: &'session SecretSession,
     ) -> Result<ProtectedSecret<'session>>;
-    fn prompt_yes_no(&mut self, prompt: &str) -> Result<bool>;
+    fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool>;
 }

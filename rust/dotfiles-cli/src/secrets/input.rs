@@ -244,10 +244,33 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
                 b'"' => return Ok(()),
                 b'\\' => self.parse_escape(&mut write_plaintext)?,
                 0x00..=0x1F => bail!("control character in JSON string"),
-                ascii => write_plaintext(&[ascii])?,
+                0x20..=0x7F => write_plaintext(&[byte])?,
+                utf8_head => self.parse_utf8_sequence(utf8_head, &mut write_plaintext)?,
             }
         }
         bail!("unterminated JSON string")
+    }
+
+    fn parse_utf8_sequence(
+        &mut self,
+        first_byte: u8,
+        write_plaintext: &mut impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let sequence_len = match first_byte {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => bail!("invalid UTF-8 in JSON string"),
+        };
+        let start = self.cursor - 1;
+        let end = start + sequence_len;
+        if end > self.input.len() {
+            bail!("invalid UTF-8 in JSON string");
+        }
+        let sequence = &self.input[start..end];
+        std::str::from_utf8(sequence).context("invalid UTF-8 in JSON string")?;
+        self.cursor = end;
+        write_plaintext(sequence)
     }
 
     fn parse_escape(

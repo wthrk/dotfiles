@@ -358,10 +358,10 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     options: super::RotateBwsTokenOptions,
     boundary: &mut B,
 ) -> Result<()> {
+    require_single_stdin_secret_source(options.stdin, boundary)?;
     let session = SecretSession::start()?;
 
     if let Some(serial) = options.serial {
-        require_single_stdin_secret_source(options.stdin, boundary)?;
         let mut device = boundary.open_device(Some(serial))?;
         prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
         let token =
@@ -389,9 +389,9 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     drop(device);
 
     let remaining_result = (|| -> Result<()> {
-        while session
-            .run_yubikey_operation(|| boundary.prompt_yes_no("Update another YubiKey? [y/N] "))?
-        {
+        while session.run_yubikey_operation(|| {
+            boundary.prompt_yes_no("Update another YubiKey? [y/N] ", session.interrupt())
+        })? {
             session.check_interrupted()?;
             let mut device = boundary.open_device(None)?;
             session.check_interrupted()?;
@@ -737,7 +737,7 @@ mod tests {
             protected_test_secret(b"123456", memory)
         }
 
-        fn prompt_yes_no(&mut self, _prompt: &str) -> Result<bool> {
+        fn prompt_yes_no(&mut self, _prompt: &str, _interrupt: &InterruptGuard) -> Result<bool> {
             self.prompts
                 .pop_front()
                 .ok_or_else(|| anyhow::anyhow!("fake prompt queue is empty"))

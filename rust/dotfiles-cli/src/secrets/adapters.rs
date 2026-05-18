@@ -13,7 +13,9 @@ use std::{io, time::Instant};
 
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::domain::{PivObjectId, SecretDevice};
-use crate::secrets::support::terminal::{read_terminal_line_until, wait_for_enter};
+use crate::secrets::support::terminal::{
+    read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
+};
 use crate::{Result, secrets::support::protection::InterruptGuard};
 
 #[cfg(feature = "secrets-test-stub")]
@@ -242,9 +244,9 @@ fn select_yubikey_candidate(
     let input = if let Some((deadline, interrupt)) = timed_input {
         read_terminal_line_until(deadline, interrupt, "timed out waiting for spare YubiKey")?
     } else {
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        input
+        let interrupt = InterruptGuard::install()
+            .context("failed to install interrupt handler for YubiKey selection")?;
+        read_terminal_line_interruptible(&interrupt)?
     };
     let selected = input
         .trim()
