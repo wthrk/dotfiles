@@ -22,29 +22,6 @@
 
 ファイルが terminal I/O、YubiKey adapter、wire format、暗号処理、use case、test harness を同時に持ち始めたら、機能追加の前に分割する。レビューでは「責務が混在している」とだけ書かず、混在している concern と移動先の層を明記する。
 
-### Secret module 構成規約
-
-`dotfiles secrets` では、見た目だけ `adapters/` 配下に寄せた構成を禁止する。module 配置は次の責務分割を満たさなければならない。
-
-- `ports/device.rs`
-  - YubiKey の選択、open、spare 差し替え待機など device 系の最小 contract を置く。
-- `ports/io.rs`
-  - secret 入力、PIN 入力、stdout 出力拒否、yes/no prompt など terminal 系の最小 contract を置く。
-- `ports/*.rs` の trait は用途別に分け、`SecretsBoundary` のような巨大な集約 trait に戻さない。
-- `application` は port trait と application 専用 DTO だけに依存し、`adapters::*` の free function を直接 import しない。
-- adapter は `struct` または明示的な実装型で port trait を実装し、application から top-level 関数群として呼ばせない。
-- port trait に含めるのは application が順序制御のために必要な最小 contract だけにし、concrete な prompt 文言、command option 名、CLI 文脈は持ち込まない。
-- application 専用 DTO は `application/` 配下に置き、`ports/` に application の組み立て用 struct を置かない。
-- `stdin` / prompt / JSON parse / stdout policy のような concrete I/O は adapter に置き、domain や application helper file に残さない。
-- blob の暗号化・復号 helper は `SecretBlob` の保存仕様に属するため、top-level の機構名 file として生やさず、domain か domain 寄り module に置く。
-
-レビューでは次を failure として扱う。
-
-- application が `adapters::input::*` や `adapters::*` の free function を import している
-- 1 つの port trait が device 操作と terminal I/O を同時に背負っている
-- DTO と port trait が同じ file に混在している
-- `input.rs` や `crypto.rs` のような責務不明の top-level file が再発している
-
 ## 型設計
 
 保護が必要な値は、呼び出し側が任意の場所で `lock` を呼ぶ設計にしない。保護済みでなければ業務 flow に渡せない型を用意し、生成時に memory lock と zeroize の順序を型の責務に含める。

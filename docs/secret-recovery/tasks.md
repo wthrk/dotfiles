@@ -67,8 +67,6 @@ cargo xtask check static
 
 Design PR では crate / API / 保存形式 / 停止条件 / 検証方法を確定する。Implementation PR では設計で決めた範囲だけを実装し、unit test と必要な manual validation を追加する。
 
-Implementation PR を始める前に、対象 issue の design doc へ module architecture を明記する。少なくとも port 分割、adapter 実装型、application DTO の置き場所、禁止依存を先に確定し、その文書に従わない code 変更を先行させない。
-
 ## Sub-Issues
 
 ### 1. YubiKey secret storage
@@ -85,7 +83,6 @@ Design PR で決めること:
 
 - YubiKey PIV 操作に使う Rust crate
 - secret 保存形式
-- module architecture と port 分割
 - 使用する PIV slot / object / identifier
 - スペア YubiKey に同じ bootstrap secret を事前配布する方法
 - 挿さっている YubiKey が必要な secret を保持し、外部 service へ接続できることを確認する test command の分担
