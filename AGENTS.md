@@ -12,7 +12,9 @@ Main areas:
 - Bootstrap entry point: `scripts/bootstrap.sh`.
 
 When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point. Before changing secret recovery implementation or reviewing that work, read `docs/secret-recovery/implementation-guidelines.md` and apply its testing, layering, coding, comment, review, verification, finding traceability, and unresolved zero check rules.
-For every planning request in this repository, follow the planning instructions in `docs/secret-recovery/implementation-guidelines.md`.
+For every planning request in this repository, read `docs/secret-recovery/implementation-guidelines.md` before producing any plan, planning summary, planning procedure explanation, or planning-related recommendation, and follow the planning instructions there.
+Do not produce any plan, planning summary, planning procedure explanation, or planning-related recommendation until that document has been read for the current request.
+Do not restate, summarize, weaken, strengthen, or replace those planning instructions in chat or in other repository documents. When planning behavior is in doubt, re-read `docs/secret-recovery/implementation-guidelines.md` and follow its phase order, question strategy, and finalization rule as the authoritative procedure.
 
 ## Translation Sync
 

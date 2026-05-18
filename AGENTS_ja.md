@@ -12,7 +12,9 @@
 - bootstrap の入口: `scripts/bootstrap.sh`。
 
 秘密情報復旧基盤の作業を継続するときは、`docs/secret-recovery/tasks.md` と GitHub issue `#11` を進捗管理の入口にしてください。秘密情報復旧基盤の実装変更またはレビューを行う前に、`docs/secret-recovery/implementation-guidelines.md` を読み、そこにあるテスト、レイヤー、コーディング、コメント、review、verification、finding traceability、unresolved zero check の規約を適用してください。
-このリポジトリのすべての planning request では、`docs/secret-recovery/implementation-guidelines.md` に定義された planning 指示に従ってください。
+このリポジトリのすべての planning request では、plan、planning summary、planning procedure explanation、または planning-related recommendation を出す前に `docs/secret-recovery/implementation-guidelines.md` を読み、そこに定義された planning 指示に従ってください。
+現在の request に対してその文書を読む前に、plan、planning summary、planning procedure explanation、または planning-related recommendation を出してはいけません。
+その planning 指示を chat や他の repository 文書で言い換え、要約、緩和、強化、または置換してはいけません。planning の進め方に迷いがある場合は、`docs/secret-recovery/implementation-guidelines.md` を再読し、そこに定義された phase order、question strategy、finalization rule を正本としてそのまま適用してください。
 
 ## 翻訳同期
 
