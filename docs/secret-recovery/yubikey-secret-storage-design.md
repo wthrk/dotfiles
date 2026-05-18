@@ -355,6 +355,10 @@ Unit test は fake YubiKey adapter で行う。
 
 実機 validation は、専用 slot / object が空の検証用 YubiKey に限定する。reset、credential 削除、既存領域上書きを含む検証は行わない。
 
+## Architecture Governance
+
+Architecture Governance の構造判断は [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) を一般正本として行う。`dotfiles secrets` の層責務、成果物配置、review / verification / finding traceability / unresolved zero check 規則は [docs/secret-recovery/implementation-guidelines.md](/Users/ya/works/dotfiles/docs/secret-recovery/implementation-guidelines.md) を正本として行う。
+
 ## 参考
 
 - Yubico PIV slots: https://docs.yubico.com/yesdk/users-manual/application-piv/slots.html

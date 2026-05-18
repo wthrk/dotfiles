@@ -1,90 +1,158 @@
-# 秘密情報復旧基盤の実装方針
+# 秘密情報復旧基盤の実装ガイドライン
 
-この文書は、秘密情報復旧基盤の実装・レビュー・検証で守る設計方針を定義する。`dotfiles secrets` の実装を変更する前に読み、レビュー時はこの文書との差分として指摘を整理する。
+この文書は、秘密情報復旧基盤の実装、確認、レビュー、報告の正本である。`dotfiles secrets` の構造、成果物配置、秘密値境界、恒久レビュー規則はこの文書を基準に判断する。
 
-対象は `rust/dotfiles-cli/src/secrets/`、関連する CLI 定義、secret recovery docs、secret recovery の integration / runtime tests である。
+## 1. 目的と対象範囲
 
-## アーキテクチャ
+目的は、秘密情報復旧基盤の実装を一貫した層構造、秘密値の所有境界、レビュー運用に固定し、secret-recovery work 全体で同じ判断基準を維持することである。対象は `dotfiles secrets` の command flow、関連する domain model、wire format、port、adapter、support utility、review artifact、設計文書、進捗報告である。
 
-`dotfiles secrets` は Hexagonal Architecture（Ports and Adapters）で実装する。内側の domain は保存仕様だけを表し、外側の adapter や support の具体実装へ依存しない。依存方向は常に CLI から application、application から domain port と adapter、adapter から外部 API へ向ける。
+## 2. 参照正本
 
-| 区分 | 役割 | 置き場所 |
+一般構造の判断は [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) を正本とする。機能仕様と保存仕様の判断は [docs/secret-recovery/yubikey-secret-storage-design.md](/Users/ya/works/dotfiles/docs/secret-recovery/yubikey-secret-storage-design.md) を参照する。進捗管理の正本は issue `#11` が open の間は [docs/secret-recovery/tasks.md](/Users/ya/works/dotfiles/docs/secret-recovery/tasks.md) と issue `#11` だけとする。
+
+## 3. `dotfiles secrets` の目標構造
+
+`dotfiles secrets` は `entrypoint`、`application`、`domain`、`port`、`adapter`、`support`、`tests` の分離を維持する。command parsing は `entrypoint`、use-case orchestration は `application`、domain invariants and wire format は `domain`、port contracts は `port`、device selection と prompt and stdin handling と stdout policy と JSON parsing/decoding は `adapter`、secret protection utilities は `support`、summaries and reporting DTOs は `application`、test doubles and PTY/integration tests は `tests` に属する。
+
+## 4. `dotfiles secrets` の層責務割当
+
+| 層 | 所有責務 | 必須モジュール | 禁止 concern |
+| --- | --- | --- | --- |
+| `entrypoint` | command parsing、CLI 引数境界、終了 code 変換 | `command`, `args`, `dispatch` | device selection、prompt、JSON decode、wire format |
+| `application` | use-case orchestration、停止条件、summary/report DTO | `use_case`, `flow`, `summary`, `report` | concrete I/O、device handle 操作、stdin 読み取り |
+| `domain` | domain invariants and wire format、secret 名制約、保存仕様 | `value`, `policy`, `wire_format`, `error` | prompt、stdout policy、SDK 型、JSON parser |
+| `port` | port contracts、application が要求する capability | `device_port`, `terminal_port`, `storage_port`, `report_port` | DTO in ports、prompt 文言、parser |
+| `adapter` | device selection、prompt and stdin handling、stdout policy、JSON parsing/decoding、外部 API bridge | `device`, `terminal`, `stdout`, `json`, `storage` | use case の順序制御、domain policy 決定 |
+| `support` | secret protection utilities、zeroization、memory protection、byte utility | `protect`, `zeroize`, `buffer`, `guard` | business vocabulary in support layer、command 名、secret 名 |
+| `tests` | test doubles and PTY/integration tests、層契約検証 | `fakes`, `pty`, `integration`, `fixtures` | production export、review 証跡の代替 |
+
+## 5. 成果物配置規則
+
+| 成果物 | 所有層 | 許可表現 | 禁止表現 | 生存期間規則 |
+| --- | --- | --- | --- | --- |
+| command parsing | `entrypoint` | enum/newtype への入力変換 | adapter 内 parser、domain 内 clap 依存 | 入口で完結させる |
+| use-case orchestration | `application` | use case、flow、停止条件 | adapter callback による順序制御 | command 実行中のみ |
+| domain invariants and wire format | `domain` | value object、wire model、validation | terminal 文言、SDK 型、I/O policy | version 契約が続く限り維持 |
+| port contracts | `port` | trait と capability 契約 | DTO in ports、prompt、JSON 文言 | adapter 差し替え可能性が続く限り維持 |
+| device selection | `adapter` | serial 列挙、選択結果変換 | application 手順への侵入 | 実行ごと |
+| prompt and stdin handling | `adapter` | hidden prompt、TTY 判定、stdin read | domain validation の混在 | 入力境界で破棄 |
+| stdout policy | `adapter` | terminal/pipe 判定、redaction policy | application 層からの直接 print | 出力完了まで |
+| JSON parsing/decoding | `adapter` | serde decode、I/O 境界変換 | domain 内 parser、port DTO | decode 後ただちに移譲 |
+| secret protection utilities | `support` | protected buffer、zeroize、guard | business vocabulary、report logic | secret 破棄まで |
+| summaries and reporting DTOs | `application` | summary、report value | port contract への流出 | command 完了まで |
+| test doubles and PTY/integration tests | `tests` | fake port、PTY harness、integration flow | production module 再公開 | test 実行中のみ |
+
+## 6. 秘密値の所有境界
+
+| 成果物 | 所有層 | 許可表現 | 禁止表現 | 生存期間規則 |
+| --- | --- | --- | --- | --- |
+| plain secret | `support` の機能中立な保護型として生成し `application` が一時所有 | protected buffer | `String`、debug 表示、永続 log | 直後に zeroize |
+| PIN | `adapter` 入力境界から `support` 保護型へ移送 | protected input value | CLI 引数、平文 summary | verify 完了まで |
+| decoded input field | `adapter` | decode 済み protected field | domain に unprotected bytes を渡すこと | use case 移譲まで |
+| wrapped key | `domain`/`adapter` 境界 | wire-format field | plaintext key と同一型での混在 | unwrap 完了まで |
+| encrypted blob | `domain` | wire-format blob | plaintext 扱い、debug dump | 保存仕様が有効な限り |
+| summary/report value | `application` | redacted summary | secret 含有 DTO | report 出力まで |
+| device handle | `adapter` | device/session handle | `application` や `domain` での所有 | I/O 完了まで |
+
+plain secret、PIN、decoded input field は `support` の保護境界を通さずに `application` や `domain` に渡してはならない。`application` が扱ってよいのは、`docs/architecture/hexagonal-implementation-rules.md` で許可された `support` の機能中立な保護型だけであり、feature 固有 utility や device/session API を保持してはならない。summary/report value は secret 本文を含まず、device handle は adapter 境界の外へ漏らしてはならない。
+
+## 7. 公開面規則
+
+| モジュール領域 | 許可公開項目 | 必須非公開項目 | 再公開規則 |
+| --- | --- | --- | --- |
+| `entrypoint` | command enum、dispatch entry | parser helper、prompt text | binary 境界以外へ再公開しない |
+| `application` | use case 起動 API、summary/report 型 | branch helper、adapter concrete type | top-level module で必要最小限のみ再公開 |
+| `domain` | value、policy、wire-format 型 | parse helper の内部 detail | 不変条件を保つ型だけ再公開可 |
+| `port` | trait、capability request/response | DTO、prompt text、serde helper | adapter 実装が必要な contract に限定 |
+| `adapter` | composition root 用 constructor | SDK 型、device handle、terminal raw state | domain/application へ再公開しない |
+| `support` | protected primitive の最小 API | feature vocabulary、summary/report helper | feature 名を含む再公開禁止 |
+| `tests` | test module 内 helper | production path | 本番 code へ再公開しない |
+
+## 8. ドキュメントコメント要件
+
+この節の comment / doc comment 要件は [AGENTS.md](/Users/ya/works/dotfiles/AGENTS.md) と [docs/architecture/hexagonal-implementation-rules.md](/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md) の規則を継承し、それらの要求を狭めてはならない。各非自明 module は file-level comment または module doc comment で役割を説明する。repository-authored explanatory comment は日本語で書き、durable project intent、invariant、constraint、non-obvious operational context だけを残す。低価値 comment、個人メモ、曖昧な TODO/FIXME は入れてはならない。`dotfiles secrets` の public command flow、非自明な private helper、wire-format 型、port trait、adapter module は、先頭文で主要契約を述べ、その後に必要入力、失敗時の停止条件、secret 所有境界、interaction boundary を別文または別段落で記述する。複数段落の doc comment は第 1 段落で通常系契約、第 2 段落以降で non-TTY behavior、timeout、ownership transfer、zeroization、locking、output safety、retry rule のような制約を記述する。`support` comment は security property、ownership transfer、zeroization、locking、output safety のいずれかを具体的に書く。
+
+## 9. 除去すべき既知違反パターン
+
+| 違反パターン | 検出条件 | 必要な是正 |
 | --- | --- | --- |
-| CLI | clap で受けた command を application use case へ渡す。secret lifecycle、YubiKey 操作、wire format は持たない。 | `secrets.rs` |
-| Application | use case の順序を所有する。secret を読む前の precondition、PIN/touch、interrupt、summary 出力、複数 device 更新の順序を決める。 | `secrets/application.rs`、`secrets/application/` |
-| Domain | `SecretName`、PIV object id、manifest、blob wire format、summary 型、保存規則を表す。terminal、YubiKey crate、memory lock、`ProtectedSecret`、stdin/stdout を知らない。 | `secrets/domain.rs`、`secrets/domain/` |
-| Ports | domain/application が必要とする外部操作の最小 contract を定義する。port は raw plaintext を返さず、必要な処理範囲だけ caller 管理の writer / buffer へ書く。 | `secrets/ports.rs` または domain 内の port module |
-| Adapters | YubiKey、terminal、stdout、test stub など外部 I/O を port に接続する。外部 crate の都合、mutable copy、raw RSA 結果は adapter 内で閉じる。 | `secrets/adapters.rs`、`secrets/adapters/` |
-| Support | memory lock、zeroize、interrupt guard、OAEP/MGF1 など業務語彙を持たない安全部品。domain 名、command 名、secret 名へ依存しない。 | `secrets/support.rs`、`secrets/support/` |
-| Tests | domain は保存仕様、application は順序、adapter は外部 I/O 契約、support は保護境界を検証する。 | 対象 module の test、`rust/tests/` |
+| DTO in ports | `port` module が serde struct や end-user 出力 DTO を持つ | contract を trait/request-response の最小形へ戻し DTO を adapter/application へ移す |
+| parser/prompt/stdout policy/device selection mixed into one adapter surface | 1 adapter module が入力、出力、device 選択、利用者文言を同時に抱える | adapter を terminal/device/stdout/json へ分割する |
+| concrete I/O in application layer | `application` が stdin/stdout/device/session を直接扱う | port 呼び出しへ置換し I/O 詳細を adapter へ移す |
+| business vocabulary in support layer | `support` module が command 名、secret 名、role 名を持つ | 中立 primitive へ削減し語彙を domain/application へ戻す |
+| rename-only or directory-only refactors that preserve the old structure | path だけ変わり責務境界が不変 | 層責務、公開面、依存方向の実体を是正する |
 
-禁止する依存は具体的に扱う。domain から application / adapter / support への依存、support から domain / application への依存、adapter から application use case への依存、test helper から通常 bytes を secret 所有型へ変換する経路は禁止する。`storage`、`crypto`、`protection` のような機構名をレイヤー名にしない。保存仕様は domain、暗号処理は domain の規則を満たす support 呼び出し、保護メモリは support の責務として分ける。
+## 10. リファクタ移行手順
 
-ファイルが terminal I/O、YubiKey adapter、wire format、暗号処理、use case、test harness を同時に持ち始めたら、機能追加の前に分割する。レビューでは「責務が混在している」とだけ書かず、混在している concern と移動先の層を明記する。
+| 移行手順 | 必要入力 | 必要出力 | 次段階 | 失敗時の戻り先 |
+| --- | --- | --- | --- | --- |
+| 構造診断 | 現行 module、既知違反一覧、参照正本 | concern map、違反一覧 | 責務分解 | この手順 |
+| 責務分解 | concern map、違反一覧 | 層ごとの移動計画 | 公開面整理 | 構造診断 |
+| 公開面整理 | 移動計画、公開 API 一覧 | visibility plan、re-export plan | 秘密値境界修正 | 責務分解 |
+| 秘密値境界修正 | visibility plan、secret lifecycle | protected ownership plan | 実装反映 | 公開面整理 |
+| 実装反映 | 承認済み plan、対象 code/doc | 更新済み module/doc | 確認 | 秘密値境界修正 |
+| 確認 | 差分、artifact、参照正本 | 確認結果、差戻しまたは承認 | レビュー | 実装反映 |
+| レビュー対応 | 確認結果、review findings | 解決済み差分、追跡表更新 | 未解決ゼロ確認 | 確認 |
 
-## 型設計
+## 11. secret-recovery 作業のエージェント実行モデル
 
-保護が必要な値は、呼び出し側が任意の場所で `lock` を呼ぶ設計にしない。保護済みでなければ業務 flow に渡せない型を用意し、生成時に memory lock と zeroize の順序を型の責務に含める。
+| 役割 | 兼務禁止 | 必要証跡 | 承認出力 |
+| --- | --- | --- | --- |
+| Main Orchestrator | Implementation、Verification、Follow-up Issue、Review A/B/C/D | 段階遷移記録 | 完了宣言 |
+| Plan Drafting Agent | Plan Review Agent | 計画案 | Phase A 提出 |
+| Plan Review Agent | Plan Drafting Agent、Implementation Plan Drafting Agent、Implementation Plan Review Agent、Implementation Agent、Verification Agent、Follow-up Issue Agent、Review A/B/C/D | `plan-section-checklist.md` | `APPROVED` または差戻し |
+| Implementation Plan Drafting Agent | Implementation Plan Review Agent | 実装計画案 | Phase B 提出 |
+| Implementation Plan Review Agent | Plan Drafting Agent、Plan Review Agent、Implementation Plan Drafting Agent、Implementation Agent、Verification Agent、Follow-up Issue Agent、Review A/B/C/D | 実装計画レビュー記録 | `APPROVED` または差戻し |
+| Implementation Agent | Verification、Follow-up Issue、Review A/B/C/D | 更新済み文書、artifact 初版 | Phase C 出力 |
+| Verification Agent | Follow-up Issue、Review A/B/C/D | checklist、review matrix、cross-link 証跡 | Phase D/F 承認 |
+| Follow-up Issue Agent | Review A/B/C/D | issue 起票証跡、報告草案 | issue 情報提出 |
+| Review A | Review B/C/D | review record | `APPROVED` または差戻し |
+| Review B | Review A/C/D | review record | `APPROVED` または差戻し |
+| Review C | Review A/B/D | review record | `APPROVED` または差戻し |
+| Review D | Review A/B/C | `finding-traceability.md` 初版 | `APPROVED`、差戻し、follow-up issue 要求 |
 
-入力 buffer、保護済み secret、保存 model はそれぞれ所有者を明確にする。型が自然に持つ操作は free function ではなく method、標準 trait、または `From` / `TryFrom` / `AsRef` / `Deref` / `Write` / `Read` など Rust の一般的な変換・I/O 境界で表す。独自の `from_zeroizing` のような名前は、標準 trait では表せない追加不変条件がある場合だけ使う。
+Main Orchestrator は実装、コマンド実行、ファイル確認、差分確認、検証、レビュー、証跡作成を行わない。Plan Review Agent と Implementation Plan Review Agent は、互いの drafting role を含む前段 planning role 以外の実装、確認、起票、review role を兼務してはならない。Main Orchestrator の最小確認責務は、`review-matrix.md` の承認状態確認、`finding-traceability.md` の `unresolved` と `same-class recurrence` のゼロ確認、`tasks.md` と issue `#11` の更新完了確認である。
 
-閉じた集合は raw string で扱わない。secret name、check kind、role、mode、state は enum または newtype にし、`Display` / `FromStr` / serde 変換は CLI、JSON、wire format などの I/O 境界に閉じ込める。serde を使う場合も、閉じた enum を `serde_json::Value` 経由で往復させるような迂回を入れない。
+## 12. レビュー・確認・承認ワークフロー
 
-`mut` は API が mutable reference を要求する場合、または in-place state が設計上の所有者である場合だけ使う。所有権を消費できる値は消費し、`&mut` で中身を抜く実装にしない。`ManuallyDrop`、`take`、手作業の drop 順序制御は、型設計で保証できない状態を作りやすいため避ける。
+この節で定義する Phase A から Phase F-2 までを、secret-recovery work における `Architecture Governance` ワークフローと呼ぶ。
 
-repository-authored Rust では `unsafe` を書かない。TTY、file descriptor、signal、memory protection など OS 境界の処理は、安全な標準 API または安全な crate を選ぶ。
+| レビュー段階 | 開始条件 | 担当者 | 完了条件 | 失敗時の戻り先 |
+| --- | --- | --- | --- | --- |
+| Phase A: アーキテクチャ規約プラン | 要求整理済み | Plan Drafting Agent / Plan Review Agent | `APPROVED` | Phase A |
+| Phase B: 実装プラン | Phase A `APPROVED` | Implementation Plan Drafting Agent / Implementation Plan Review Agent | `APPROVED` | Phase B |
+| Phase C: 規約文書更新 | Phase B `APPROVED` | Implementation Agent | 更新済み 6 文書と review artifact 一式 | Phase C |
+| Phase D: 確認 | Phase C 出力揃い | Verification Agent | ファイル存在、見出し一致、表列一致、リンク整合、証跡存在が `APPROVED` | Phase C |
+| Phase E: レビュー | Phase D `APPROVED` | Review A/B/C/D | A/B/C/D 全員 `APPROVED` | Review A/B/C failure は Phase C、Review D の planning weakness は Phase B、architecture weakness は Phase A、implementation issue は Phase C、follow-up issue required は Phase F-1 |
+| Phase F-1: 後続 issue 起票 | Review D が follow-up issue を要求 | Follow-up Issue Agent と Verification Agent | issue 番号と紐付け確認が `APPROVED` | Phase F-1 |
+| Phase F-2: 未解決指摘ゼロ確認 | Phase E 完了後または F-1 完了後 | Verification Agent | `unresolved` 0、`same-class recurrence` 0、状態列妥当 | implementation issue は Phase C、implementation-plan weakness は Phase B、Architecture Governance weakness は Phase A |
 
-## 入力と TTY
+Review A は責務境界、依存方向、公開面を確認する。Review B は見出し、表、doc comment 規約、用語整合を確認する。Review C は移行手順、検証手順、進捗報告、承認フローを確認する。Review D は過去 PR 指摘の全件再監査、同種再発確認、指摘単位の状態分類を行う。
 
-入力処理は terminal I/O の adapter と、secret を保持する utility / model を分ける。YubiKey device adapter は利用者への prompt や stdin 読み取りを持たない。device 操作に PIN や secret が必要な場合は、上位層が入力境界で取得した保護済み値を渡す。
+conflict type は `scope-conflict`、`content-conflict`、`planning-conflict`、`execution-conflict`、`audit-source-conflict` に固定する。Verification Agent は conflict を `open` で記録し、rules-document work 中は Plan Review Agent が `scope-conflict` と `content-conflict` を判定し、implementation work 中は Implementation Plan Review Agent が `planning-conflict` と `execution-conflict` を判定し、Review D の監査元不整合は Verification Agent が `audit-source-conflict` として記録する。該当 phase の担当者が修正し、Verification Agent が再確認し、解消後に `review-matrix.md` へ `closed` を記録する。
 
-stdin から secret を読む経路は、buffer の確保上限、zeroize、memory lock、parse error 時の drop 順序を型で閉じる。`read_to_end` の再確保や lock 外 buffer を避ける必要がある場合は、読み込み可能な保護 buffer 型に `Write` / `Read` 境界または専用 method を持たせ、業務 flow に細かい read loop を露出させない。
+Review D の監査対象 PR 集合は、Review D 開始時点で Verification Agent が `review-matrix.md` に記録した issue `#11` progress comment の `comment ID`、`timestamp`、`comment body hash` により凍結する。凍結コメントには current PR number、同一 work item の predecessor PR numbers、各 predecessor の one-line relation を必須とする。凍結後の進捗コメントが編集された場合、Verification Agent は `audit-source-conflict` を記録し、現在の Review D 実行を無効化して Phase D に戻す。監査 source は PR review threads、PR review comments、top-level PR conversation comments に固定し、finding 出力形式は `resolved`、`unresolved`、`same-class recurrence`、`follow-up issue required` に固定する。
 
-TTY prompt、hidden prompt、timeout 付き待機、interrupt 付き待機は、実際の TTY / PTY で検証する。fake boundary の unit test は orchestration の分岐確認には使えるが、terminal mode、raw input、TTY 判定、stdin/stdout/stderr の接続状態は検証できない。TTY 入力を変更した PR では、PTY を使う integration test または手動 TTY 検証結果を残す。
+## 13. 報告規則
 
-非対話実行は `--serial`、`--stdin`、`--stdin-json` など必要な入力境界を明示させる。TTY で secret を stdout に出す経路は拒否するか、設計文書で定義した明示 option を要求する。
+この節の節目更新は、[docs/secret-recovery/tasks.md](/Users/ya/works/dotfiles/docs/secret-recovery/tasks.md) の `Architecture Governance milestones` と issue `#11` progress comment を同じ用語で同期する。
 
-## 既存 crate と API
+| 節目 | tasks.md 更新内容 | issue #11 更新内容 | 必要承認者 |
+| --- | --- | --- | --- |
+| アーキテクチャ規約プラン草案 | 対象節目を追加し状態を更新 | current PR、predecessor PR、関係一行説明付き進捗コメント | Plan Review Agent |
+| プランレビュー承認 | `APPROVED` を記録 | 承認コメントまたは要約 | Plan Review Agent |
+| 実装プラン草案 | 節目状態更新 | 同上 | Implementation Plan Review Agent |
+| 実装プランレビュー承認 | `APPROVED` を記録 | 同上 | Implementation Plan Review Agent |
+| 規約文書更新 | Phase C 完了を記録 | current PR、predecessor PR、関係一行説明付き進捗コメント | Verification Agent |
+| 確認承認 | 確認節目を更新 | 確認結果と不足有無 | Verification Agent |
+| レビュー承認 | Review A/B/C/D の承認完了を更新 | 各 review の結論要約 | Review A/B/C/D |
+| 後続 issue 起票確認 | issue 番号を記録 | 後続 issue 番号と finding 紐付け | Verification Agent |
+| conflict 解消確認 | conflict 状態を `closed` 記録 | conflict 解消報告 | Verification Agent |
+| 未解決指摘ゼロ確認 | `Done` 直前にゼロ確認を記録 | `unresolved` 0、`same-class recurrence` 0 を報告 | Verification Agent |
+| issue `#11` への報告 | 最終更新日時と報告完了を記録 | 完了報告 | Main Orchestrator |
 
-標準 library、既存 dependency、安全な crate が提供する機能を優先する。特に terminal input、PTY、password prompt、polling、signal handling、memory protection、serde parsing、cryptographic primitive は、手書き実装を追加する前に既存 API を確認する。
+issue `#11` が open の間は `tasks.md` を secret-recovery 全体の進捗正本として使う。issue `#11` close 後に新たな secret-recovery epic を始める場合は、着手前に後継 issue と後継 tasks 文書を新設または指定する。review、verification、指摘追跡、未解決ゼロ確認、Review D は今後の secret-recovery work 全体に適用する恒久規則であり、`tasks.md` はこれらを緩和または上書きしてはならない。
 
-既存 crate を使わず自前実装する場合は、理由をコードではなく設計文書または PR 説明に残す。理由は「依存を増やしたくない」だけでは不十分で、必要な安全性、platform behavior、API 制約、検証可能性を具体的に説明する。
-
-serde のカスタム visitor や手書き parser は、wire format の互換性、streaming、zero-copy、secret lifetime など標準 derive で満たせない要件がある場合だけ使う。通常の JSON 入力では derive と明示的な型で受ける。
-
-## コメントとドキュメントコメント
-
-コメントは備忘録や作業履歴にしない。コードの言い換え、関数名の説明、通常の制御フロー、曖昧な安全そうな表現は書かない。
-
-必要なコメントは、永続する不変条件、外部 contract、lifecycle boundary、security property、wire format rule、interaction boundary を説明する。公開 command flow と非自明な private helper は、操作タイミング、必要入力、利用者との境界、失敗時の停止条件をドキュメントコメントで明示する。
-
-既存のドキュメントコメントを削るだけで終わらせない。低価値なコメントを見つけた場合は、削除で足りるか、設計上必要な不変条件を説明するコメントに置き換えるかを判断する。必要な説明を消したままにしない。
-
-コメントの品質確認はフィルタ検索に頼らない。patch に追加・変更されたコメント行を `git diff` で全件読み、各コメントが上記のいずれの不変条件を説明しているか確認する。
-
-## テスト方針
-
-テストは、実装の層と失敗モードに合わせて置く。
-
-| 対象 | 必要な検証 |
-| --- | --- |
-| Storage model / wire format | roundtrip、未知 version、欠落 field、secret name validation、互換性。 |
-| Crypto / protection utility | lock と zeroize の所有境界、drop 順序、エラー時の secret lifetime。 |
-| Application flow | fake device / fake input による分岐、停止条件、複数 YubiKey 更新、同一 serial 拒否。 |
-| Terminal input | PTY または手動 TTY での prompt、hidden input、timeout、interrupt、TTY 判定。 |
-| Device adapter | 実機 read-only 確認、専用領域への限定書き込み、open error の保持。 |
-| CLI integration | `dotfiles secrets` 経路が clap から use case へ届くこと、非対話契約が崩れないこと。 |
-
-fake device / fake input の unit test だけで「TTY 入力が動く」と判断しない。TTY 入力を扱う変更では、PTY test を追加するか、実際の terminal での手動検証を PR に記録する。
-
-実機 YubiKey 検証は read-only 確認と専用領域への書き込みに限定し、reset、既存 credential 削除、既存領域上書きを含めない。YubiKey がない環境では実機検証を skipped / blocked として記録し、unit / PTY / fake boundary の結果と混同しない。
-
-検証コマンドは変更内容に対応させる。Markdown だけの変更では `git diff --check`、リンク確認、表示確認を使い、`cargo xtask check` を機械的に再実行しない。code 変更後にすでに同等の検証が成功し、その後 working tree が変わっていない場合は再実行しない。
-
-## レビュー運用
-
-レビュー対応では未解決コメントを範囲でまとめて処理した扱いにしない。各コメントについて、修正したか、設計判断として残したか、後続 issue に分離したかを確認する。
-
-Copilot などの automated review が継続して指摘を出す場合は、個別指摘の修正だけでなく、同じ種類の問題を生む設計を直す。たとえば secret lock 呼び出し漏れの指摘が出た場合は、呼び出し箇所を増やすのではなく、保護済み型でなければ use case に渡せない設計へ寄せる。
-
-PR へ push したあとは automated review が新しい指摘を出す前提で確認し、未解決指摘がなくなるまで確認と対応を繰り返す。コード修正が必要な大きい対応では、作業範囲を分けて sub-agent を使える場合でも、最終的な未解決指摘の確認は親 agent が行う。
+| 指摘元 | 指摘ID | 分類 | 状態 | 証跡パス | 次の対応 |
+| --- | --- | --- | --- | --- | --- |
+| Review A/B/C/D、Verification、issue `#11` progress freeze | 固有 ID | `responsibility-boundary` / `docs-contract` / `workflow-gap` / `same-class recurrence` / `follow-up issue required` | `resolved` / `design-accepted` / `follow-up-issued` / `unresolved` | `docs/secret-recovery/review-artifacts/architecture-rules/` 配下 | Phase A/B/C/F の戻り先に従う |

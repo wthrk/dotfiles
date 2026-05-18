@@ -11,7 +11,8 @@ Main areas:
 - User configuration: zsh and Neovim config under `config/`.
 - Bootstrap entry point: `scripts/bootstrap.sh`.
 
-When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point. Before changing secret recovery implementation or reviewing that work, read `docs/secret-recovery/implementation-guidelines.md` and apply its testing, layering, coding, and comment rules.
+When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point. Before changing secret recovery implementation or reviewing that work, read `docs/secret-recovery/implementation-guidelines.md` and apply its testing, layering, coding, comment, review, verification, finding traceability, and unresolved zero check rules.
+For secret-recovery work only, the review / verification / finding traceability / unresolved zero check rules defined in `docs/secret-recovery/implementation-guidelines.md` take precedence over the general AGENTS workflow. Outside secret-recovery work, use the general AGENTS workflow.
 
 ## Translation Sync
 

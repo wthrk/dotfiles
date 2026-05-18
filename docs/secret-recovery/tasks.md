@@ -122,6 +122,27 @@ Implementation PR の完了条件:
 - reset / credential 削除 / 既存領域上書きを含む検証は行わない。
 - 既存の FIDO2 / OTP / OpenPGP / PIV credential に影響しないことを確認する。
 
+Architecture Governance milestones:
+
+- [completed] アーキテクチャ規約プラン草案
+- [completed] プランレビュー承認
+- [completed] 実装プラン草案
+- [completed] 実装プランレビュー承認
+- [completed] 規約文書更新
+- [completed] 確認承認
+- [completed] レビュー承認
+- [completed] 後続 issue 起票確認
+- [completed] conflict 解消確認
+- [completed] 未解決指摘ゼロ確認
+- [completed] issue `#11` への報告
+
+Architecture Governance rules:
+
+- 進捗管理入口は `tasks.md` と issue `#11` のみとする。
+- 各節目完了時に `tasks.md` と issue `#11` の両方を更新する。
+- issue `#11` の進捗コメントには current PR、predecessor PR、関係の一行説明を必ず書く。
+- 未解決指摘ゼロ確認が終わるまで `Done` に進めない。
+
 ### 2. Bitwarden Secrets Manager client
 
 Issue:
