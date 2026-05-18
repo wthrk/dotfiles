@@ -12,9 +12,7 @@ Main areas:
 - Bootstrap entry point: `scripts/bootstrap.sh`.
 
 When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point. Before changing secret recovery implementation or reviewing that work, read `docs/secret-recovery/implementation-guidelines.md` and apply its testing, layering, coding, comment, review, verification, finding traceability, and unresolved zero check rules.
-For secret-recovery work only, the review / verification / finding traceability / unresolved zero check rules defined in `docs/secret-recovery/implementation-guidelines.md` take precedence over the general AGENTS workflow. Outside secret-recovery work, use the general AGENTS workflow.
-When the user asks to "plan", "do planning", or "create a plan" for this repository, first identify whether the target area already defines a planning or governance workflow in repository documents. If such a document-defined workflow exists, treat the request as an instruction to follow that workflow before applying any generic planning behavior.
-For secret-recovery work, interpret any planning request as a request to follow the `Architecture Governance` workflow in `docs/secret-recovery/implementation-guidelines.md`. In that case, the main agent must act only as `Main Orchestrator` and must not explore files, run commands, inspect diffs, verify artifacts, or draft the plan itself unless that document explicitly assigns those actions to `Main Orchestrator`.
+For every planning request in this repository, follow the planning instructions in `docs/secret-recovery/implementation-guidelines.md`.
 
 ## Translation Sync
 

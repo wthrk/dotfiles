@@ -12,9 +12,7 @@
 - bootstrap の入口: `scripts/bootstrap.sh`。
 
 秘密情報復旧基盤の作業を継続するときは、`docs/secret-recovery/tasks.md` と GitHub issue `#11` を進捗管理の入口にしてください。秘密情報復旧基盤の実装変更またはレビューを行う前に、`docs/secret-recovery/implementation-guidelines.md` を読み、そこにあるテスト、レイヤー、コーディング、コメント、review、verification、finding traceability、unresolved zero check の規約を適用してください。
-秘密情報復旧基盤の作業に限り、`docs/secret-recovery/implementation-guidelines.md` に定義された review / verification / finding traceability / unresolved zero check 規則は、AGENTS の一般運用より優先します。秘密情報復旧基盤以外の作業では、AGENTS の一般運用を使ってください。
-ユーザーがこのリポジトリに対して「plan」「planning」「プランを作る」「プランニングする」と依頼した場合は、まず対象領域に対して planning または governance workflow を定義した repository document があるか特定してください。そのような文書定義の workflow がある場合、一般的な planning 挙動より先に、その workflow に従う指示として扱ってください。
-秘密情報復旧基盤の作業では、あらゆる planning 依頼を `docs/secret-recovery/implementation-guidelines.md` にある `Architecture Governance` workflow を進める依頼として解釈してください。その場合、main agent は `Main Orchestrator` としてのみ振る舞い、その文書が `Main Orchestrator` に明示的に割り当てていない限り、file exploration、command 実行、diff 確認、artifact verification、または plan 草案作成を行ってはいけません。
+このリポジトリのすべての planning request では、`docs/secret-recovery/implementation-guidelines.md` に定義された planning 指示に従ってください。
 
 ## 翻訳同期
 
