@@ -2,77 +2,76 @@
 
 ## Critical Planning Gate
 
-For any planning request in this repository, the planning procedure itself is defined in `docs/secret-recovery/implementation-guidelines.md`.
-Treat that document as the sole authoritative procedure for planning flow, orchestration order, review loop, reporting order, and return paths.
-Before reading anything else for a planning request, read `docs/secret-recovery/implementation-guidelines.md`.
-Start with `## 3. planning request 実行手順` in that document, then follow the later sections it points to.
-Do not invent, paraphrase, summarize, or substitute a different planning procedure in chat.
-Do not let generic planning behavior, default assistant workflow, or higher-level planning heuristics override that repository-specific procedure.
-During any planning request, each planning-related response must stay anchored to that procedure's current Step or Phase, and when the response cannot name the current Step or return path, stop and re-read `docs/secret-recovery/implementation-guidelines.md` before continuing.
-For secret-recovery planning work, do not rely on any generic planning workflow or default execution habit after reading that document; if behavior would come from memory instead of the document, stop.
-For secret-recovery planning work, the main agent is an Orchestrator only. It must not perform repo exploration, command execution, file inspection, diff inspection, validation, review, or artifact creation itself; if it starts doing any of those, stop immediately and return to `## 3. planning request 実行手順`.
+When handling a `planning request` in this repository, the only source of truth is `docs/secret-recovery/implementation-guidelines.md`. Follow that document for implementation units, role assignments in the planning/implementation/review phases, review cycles, and implementation policy.
+
+For any `planning request`, check the fixed implementation units section in `docs/secret-recovery/implementation-guidelines.md` before any other document, and reference the predefined implementation units without redefining them.
+
+Do not create, paraphrase, summarize, or replace planning procedures in chat. Do not override this repository-specific source of truth with generic planning habits or default workflows.
 
 ## Project Overview
 
-This repository is a Nix flake managed dotfiles project for macOS user environments. It provides the `dotfiles` CLI, Home Manager and nix-darwin modules, and local flake helpers.
+This repository is a Nix flake project for managing dotfiles for macOS user environments. It provides the `dotfiles` CLI, Home Manager / nix-darwin modules, and local flake helpers.
 
-Main areas:
+Primary structure:
 
-- Rust workspace: `rust/dotfiles-cli`, `rust/dotfiles-core`, `rust/xtask`, and validation crates under `rust/tests/`.
-- Nix flake and modules: `flake.nix`, `nix/home.nix`, `nix/darwin.nix`, and `nix/modules/`.
-- User configuration: zsh and Neovim config under `config/`.
-- Bootstrap entry point: `scripts/bootstrap.sh`.
+- Rust workspace: `rust/dotfiles-cli`, `rust/dotfiles-core`, `rust/xtask`, and test crates under `rust/tests/`
+- Nix flake and modules: `flake.nix`, `nix/home.nix`, `nix/darwin.nix`, `nix/modules/`
+- User configuration: zsh / Neovim settings under `config/`
+- Bootstrap entrypoint: `scripts/bootstrap.sh`
 
-When continuing secret recovery work, use `docs/secret-recovery/tasks.md` and GitHub issue `#11` as the progress-management entry point. Before changing secret recovery implementation or reviewing that work, read `docs/secret-recovery/implementation-guidelines.md` and apply its testing, layering, coding, comment, review, verification, finding traceability, and unresolved zero check rules.
-For every planning request in this repository, read `docs/secret-recovery/implementation-guidelines.md` before producing any plan, planning summary, planning procedure explanation, or planning-related recommendation, and follow the planning instructions there.
-Do not produce any plan, planning summary, planning procedure explanation, or planning-related recommendation until that document has been read for the current request.
-Do not restate, summarize, weaken, strengthen, or replace those planning instructions in chat or in other repository documents. When planning behavior is in doubt, re-read `docs/secret-recovery/implementation-guidelines.md` and follow its phase order, question strategy, and finalization rule as the authoritative procedure.
+For ongoing secret-recovery work, first use `docs/README.md` as the document entrypoint, then use `docs/secret-recovery/tasks.md` as the progress-management entrypoint. Before implementation changes or reviews, read `docs/secret-recovery/implementation-guidelines.md` and apply its fixed implementation units, role assignments, and implementation policy.
+Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoints, and follow each file's explicit scope (what to write, what not to write, and references) defined in those README files and `docs/docs-governance.md`.
 
-## Translation Sync
+## Translation Synchronization
 
-- `AGENTS_ja.md` must be an accurate Japanese translation of `AGENTS.md`.
-- When editing `AGENTS.md`, update `AGENTS_ja.md` in the same change.
-- During review, verify that `AGENTS_ja.md` remains semantically equivalent to `AGENTS.md`.
+- `AGENTS_ja.md` must remain semantically aligned with `AGENTS.md`.
+- If `AGENTS.md` is edited, update `AGENTS_ja.md` in the same change.
+- During review, verify semantic equivalence between both documents.
+
+## Applying Document Instructions
+
+- When executing a prompt, extract the document instructions that apply to the current request before starting work, and continue applying them throughout execution.
+- Do not provide proposals, edits, or reports that violate document instructions. If instructions conflict, confirm with the user before starting work.
 
 ## Communication
 
-- Respond to the user in Japanese unless the user explicitly requests another language.
-- Write code review findings, PR summaries, and validation notes in Japanese.
-- Keep technical identifiers, command names, file paths, commit types, and quoted upstream text in their original language when clearer.
+- Unless the user explicitly specifies another language, respond in Japanese.
+- Write code review findings, PR summaries, and verification notes in Japanese.
+- Keep technical identifiers, command names, file paths, commit types, and upstream quotations in their original form when needed.
 
 ## Setup
 
-Use the flake dev shell for repository work:
+Perform work in the flake development shell.
 
 ```sh
 direnv allow .
 ```
 
-If `direnv` is not active:
+If `direnv` is not enabled:
 
 ```sh
 nix develop
 ```
 
-Do not hand-edit generated or machine-local dotfiles outside the repository. The source of truth is this repository plus the generated local flake under `~/.config/dotfiles`.
+Do not manually edit generated dotfiles outside this repository or machine-specific dotfiles. The source of truth is this repository and the local flake generated under `~/.config/dotfiles`.
 
-Do not manually test local flake generation by writing to the developer's real `~/.config/dotfiles`. Validate local flake generation through the repository's sandboxed checks, especially the runtime tests for fresh-machine and target-path behavior.
+Do not write to the developer's real `~/.config/dotfiles` to manually validate local flake generation. Validate new-machine-equivalent behavior and target-path behavior using sandbox verification in this repository, especially runtime tests.
 
-## Branching
+## Branches
 
-- Before starting work, always inspect the current branch and decide whether it is appropriate for the requested change.
-- If the current branch is not appropriate, create or switch to an appropriate work branch before editing files.
-- Whenever creating a new work branch, first confirm that `main` is up to date with its upstream, update it if needed, and branch from the latest `main`.
-- Do not assume the local `main` is current. Fetch the upstream state before using `main` as a branch base.
+- Check the current branch before starting work and decide whether it is appropriate for the request.
+- If it is not appropriate, switch to or create a suitable working branch before editing.
+- When creating a new working branch, verify that `main` is up to date with upstream and update it if needed before branching.
+- Do not assume local `main` is current. Fetch upstream before branching.
 
 ## Instruction Compliance
 
-- Before editing files or running broad validation, identify the project instructions that apply to the requested work and keep the implementation within those constraints.
-- For code changes, review the changed constructs against the Code Style rules before finalizing. Do not treat formatter, lint, or test success as a substitute for instruction compliance.
+- Before editing or broad verification, identify which instructions apply and implement within those constraints.
+- For code changes, verify diffs against code-style rules before completion. Successful formatter/lint/test runs are not a substitute for instruction compliance.
 
 ## Development Commands
 
-Use `xtask` for repository maintenance:
+Use `xtask` for maintenance operations.
 
 ```sh
 cargo xtask check
@@ -80,7 +79,7 @@ cargo xtask apply
 cargo xtask apply home-manager
 ```
 
-Run the public CLI from the workspace when needed:
+Public CLI execution when needed:
 
 ```sh
 cargo run --package dotfiles-cli -- init
@@ -91,127 +90,114 @@ cargo run --package dotfiles-cli -- switch all
 
 ## Testing
 
-Choose validation that is relevant to the files and behavior changed. Do not run broad repository checks mechanically when they do not exercise the change.
+Choose only verification relevant to changed targets. Do not mechanically run broad checks that do not validate your changes.
 
-For Markdown-only documentation changes, do not run `cargo xtask check` or `cargo xtask check static` unless the change also affects generated docs, documented commands that need verification, or the user explicitly asks for it. Use targeted checks such as `git diff --check`, reviewing rendered Markdown when useful, and verifying links or referenced files when they changed.
+For Markdown-only changes, do not run `cargo xtask check` or `cargo xtask check static` unless the change affects generated documentation, command validation described in docs, or the user explicitly requests it. Instead, run `git diff --check`, necessary rendering checks, and changed-link validation.
 
-For code, Nix, shell, workflow, bootstrap, or generated-file changes, run the default validation suite before finishing normal changes:
+For changes to code, Nix, shell, workflow, bootstrap, or generated artifacts, run the default verification.
 
 ```sh
 cargo xtask check
 ```
 
-Do not rerun an already-passing validation command unless the working tree changed after that validation, the earlier command did not cover the final diff, or the user explicitly asks for a rerun. Read-only inspection such as `git status`, `git diff`, log review, PR metadata checks, or commit/push preparation is not a reason to rerun validation.
+Re-run already successful verification only when any of the following applies: diffs changed afterward, final diff is not covered, or the user requests rerun. Read-only checks such as `git status` or `git diff` are not rerun reasons.
 
-Always run validation commands from the flake dev shell. If the current shell is not already the flake dev shell, invoke validation through `direnv exec .`, for example `direnv exec . cargo test ...` or `direnv exec . cargo xtask check static`. Do not run validation commands directly from the ambient shell and then treat the result as repository validation.
+Always run verification from the flake dev shell. If outside the dev shell, run via `direnv exec .`.
 
-Default checks run static validation only. They do not run zsh startup/behavior checks or Tart VM runtime integration.
+```sh
+direnv exec . cargo test ...
+direnv exec . cargo xtask check static
+```
 
-Focused checks:
+Default verification covers static checks only and does not include zsh startup behavior or Tart VM runtime integration.
+
+Targeted checks:
 
 ```sh
 cargo xtask check static
 cargo xtask check zsh
 ```
 
-Run the focused zsh check when a change affects zsh configuration, shell startup behavior, TAB bindings, fzf-tab, autosuggestions, syntax highlighting, or PATH handling.
+For changes affecting zsh configuration, startup behavior, TAB binding, fzf-tab, autosuggestions, syntax highlighting, or PATH handling, run `cargo xtask check zsh`.
 
-Use runtime checks when a change affects bootstrap, first-run behavior, host switching, or cross-machine assumptions:
+For changes affecting bootstrap, first-run behavior, host switching, or cross-machine assumptions, run runtime checks.
 
 ```sh
 cargo xtask check runtime
 ```
 
-Run all checks, including runtime integration:
+Run all checks:
 
 ```sh
 cargo xtask check all
 ```
 
-Runtime checks require Darwin VM tooling from the dev shell, including Tart/Packer/Ansible. Static check details live in `rust/tests/checks/src/static_checks.rs`; zsh invariants live in `rust/tests/checks/src/zsh.rs`.
+Runtime checks require Darwin VM toolchains (Tart/Packer/Ansible) in the dev shell. For static-check details, see `rust/tests/checks/src/static_checks.rs`; for zsh invariants, see `rust/tests/checks/src/zsh.rs`.
 
 ## Code Style
 
-Comments:
-
-- Files that define non-trivial modules, scripts, command entry points, or validation flows must have a file-level comment or language-native documentation comment explaining the file's role.
-- Write repository-authored explanatory comments in Japanese, matching the existing Rust, Nix, and shell comment style. Use English only when the surrounding file is already English, the text is copied from upstream, or an external format requires it.
-- Comments must explain durable project intent, invariants, constraints, or non-obvious operational context. Do not restate the code, write personal work notes, or leave vague TODO/FIXME comments.
-- Suppress low-value comments before they enter the patch. A comment is low-value if it only says that a helper "does X", repeats the function name, describes ordinary control flow, or uses vague phrases such as "normal error path", "safe path", "cleanup", "properly", "handle", or "temporary" without naming the concrete invariant being protected.
-- When a comment is needed, write the invariant directly: name the lifecycle boundary, external contract, signal-safety requirement, wire-format rule, security property, or user interaction constraint that the code must preserve. If the comment cannot identify one of those, rewrite it until it can.
-- Documentation comments for functions, methods, types, and modules must start by naming the primary contract in terms of what the item does or represents. Do not start with only a special case, failure mode, reason, or caller responsibility.
-- When a documented item has important conditions, branches, error behavior, timing, or caller responsibilities, write those after the primary contract in a separate sentence or paragraph. Do not compress the primary behavior and conditions into one overloaded sentence.
-- For multi-line documentation comments, use the first paragraph for the main behavior and later paragraphs for constraints such as non-TTY behavior, timeout behavior, ownership transfer, zeroization, locking, output safety, or retry rules. A reader must be able to learn both the normal path and the exceptional contract from the comment alone.
-- Do not document what the code does not do unless that negative statement is a required safety boundary, security property, or caller-visible contract. Prefer documenting the positive responsibility that the item owns.
-- Keep comments at the abstraction level of the file. Utility and adapter modules must not mention use-case vocabulary such as command names, roles, storage names, or product-specific nouns unless those are part of that module's own public contract.
-- Before finalizing a patch that adds or edits comments, review every added `+//`, `+///`, `+#`, or equivalent comment line in `git diff`. Remove or rewrite any comment that fails the rules above before running validation.
-- When changing behavior, update nearby comments in the same patch. Delete misleading comments instead of preserving stale history inline.
-- Public command flows and non-obvious private helpers must document concrete operation timing, required inputs, and interaction boundaries in language-native documentation comments. Do not leave these details implied only by code, prompts, or tests.
-- When code implements an externally documented wire format, lifecycle step, or operational constraint, keep the code comment focused on the document-backed invariant and update the document instead of encoding the full procedure only in comments.
+- For non-trivial modules, scripts, command entrypoints, and verification-flow definition files, add a file-level comment or language-standard doc comment explaining the role.
+- Repository-authored explanatory comments must be written in Japanese. English is allowed only when surrounding context is fixed in English, for upstream quotations, or for external format requirements.
+- Comments must describe persistent intent, invariants, constraints, and non-obvious operational context, and must not be mere code paraphrases, personal notes, or vague TODO/FIXME items.
+- When comments are needed, concretize one of the following: lifecycle boundaries, external contracts, signal-safety requirements, wire-format rules, security properties, or user-operation constraints.
+- In function/type/module doc comments, present the primary contract first, then separate conditions and failure-time contracts afterward.
+- When behavior changes, update nearby comments in the same patch and do not leave misleading stale comments.
 
 Rust:
 
 - Workspace edition is Rust 2024.
-- Keep public CLI logic in `rust/dotfiles-cli`, repository maintenance commands in `rust/xtask`, and shared helpers in `rust/dotfiles-core`.
-- Keep module boundaries aligned with responsibility. Do not let a command dispatcher file accumulate terminal IO, process/signal policy, platform adapters, wire-format parsing, cryptographic helpers, and tests for all of them. Split mixed files into focused sibling modules before adding more behavior.
-- During review, flag responsibility mixing explicitly when a file owns unrelated concerns or when a patch makes an existing mixed file worse. A useful review comment must name the concerns that should move and the target module boundary.
-- Use `anyhow` through repository result aliases; propagate context instead of panicking.
-- Prefer iterator adapters and `collect` over creating a mutable list and pushing in a loop when the loop only filters or transforms items.
-- Do not branch with `match collection.len()`. Use slice patterns, `is_empty`, or domain-specific state instead.
-- Prefer immutable, declarative construction. Introduce `mut` only when an API requires mutation or when in-place mutation is materially clearer than expression-based construction. Before finalizing Rust changes, inspect added `let mut` and `mut` parameters in `git diff`; keep only the ones required by a mutable API call or by unavoidable in-place state.
-- Do not pass roles, states, modes, kinds, or other closed sets as raw strings. Model them as enums or newtypes, and use serde/display conversion only at IO boundaries.
-- Do not write `unsafe` blocks or unsafe functions in repository-authored Rust. Use safe standard-library APIs or safe crates instead, including for signal handling, file descriptors, FFI-adjacent behavior, and platform integration. Before finalizing Rust changes, verify that `git diff` adds no `unsafe` token.
-- Do not use `unwrap` or `expect`, including in tests. Return `Result` from tests and use `?`, or assert on explicit error/success conditions.
-- Keep warnings clean. The check suite treats warnings as errors.
+- Put public CLI logic in `rust/dotfiles-cli`, maintenance commands in `rust/xtask`, and shared helpers in `rust/dotfiles-core`.
+- Do not mix responsibilities. Do not overload dispatcher files with terminal I/O, signal policy, crypto helpers, wire formats, and tests.
+- Use `anyhow` through the repository's Result alias, and propagate with context instead of panicking.
+- Prefer iterators and `collect` for simple transforms/extractions.
+- Do not branch on `match collection.len()` when slice patterns, `is_empty`, or domain states can express intent.
+- Do not introduce unnecessary `mut`; verify necessity in `git diff`.
+- Do not pass closed sets as raw strings; use enums/newtypes.
+- Do not introduce `unsafe` in repository-authored Rust.
+- Do not use `unwrap` or `expect`, including tests.
+- Leave no warnings.
 
 Nix:
 
-- Keep user configuration in Home Manager modules and host/system configuration in nix-darwin modules.
-- Preserve the public flake API unless the requested change explicitly includes a breaking migration.
-- Do not introduce concrete user names, host names, or machine-specific paths into reusable modules. These must flow through `dotfiles.user`, `dotfiles.host`, or generated local flakes.
-- Format Nix through the flake formatter used by `cargo xtask check static`.
+- Put user configuration in Home Manager and host/system configuration in nix-darwin.
+- Keep the public flake API stable unless an explicit destructive migration is requested.
+- Do not embed real usernames, real hostnames, or machine-specific paths in reusable modules.
+- Follow the flake formatter used by `cargo xtask check static` for Nix formatting.
 
 Shell/zsh:
 
-- Treat `scripts/bootstrap.sh` as install-critical. Keep it portable and syntax-checkable with `bash -n`.
-- Keep zsh behavior compatible with `rust/tests/checks/src/zsh.rs`, especially TAB bindings, fzf-tab placement, autosuggestions, syntax highlighting, and PATH exclusions for legacy language managers.
-- User-local runtime state such as app-managed shell injection and Docker authentication belongs outside this repo.
+- Treat `scripts/bootstrap.sh` as installation-critical; keep it portable and maintain a state that passes `bash -n` syntax validation.
+- Keep zsh behavior aligned with assumptions in `rust/tests/checks/src/zsh.rs` (TAB, fzf-tab, autosuggestions, syntax highlighting, PATH exclusion).
+- Keep user-local mutable state, such as app-management shell injection and Docker auth, outside this repository.
 
 Lua/Neovim:
 
-- Keep configuration under `config/nvim/lua/omy/` organized by the existing `configs`, `mappings`, and `autocmds` structure.
-- Prefer small module-local changes over reshaping the Neovim layout.
+- Keep existing `configs` / `mappings` / `autocmds` structure under `config/nvim/lua/omy/`.
+- Prefer local changes over large structural rewrites.
 
 ## Security
 
 - Do not commit machine secrets, credentials, API tokens, Docker auth state, SSH private keys, or app session files.
-- Keep mutable per-machine state out of Home Manager modules unless it is intentionally declarative.
-- Homebrew taps are pinned through flake inputs; avoid mutable tap behavior unless the repository design changes explicitly.
+- Do not put machine-specific mutable state in Home Manager modules unless intentionally declaring it.
+- Homebrew taps are pinned by flake inputs; do not introduce mutable tap operations unless a design change requires it.
 
-## Commit Guidelines
+## Commit Rules
 
-- Commit-related work must be delegated to a sub-agent with only this instruction: read `AGENTS.md` and handle the commit work. Do not summarize rules or repository state for the sub-agent.
-- Use Conventional Commits: `<type>(<scope>): <description>`.
-- Use common types such as `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, and `build`.
-- Write the description in Japanese. Keep the type and optional scope in ASCII, for example `docs: エージェント向け作業規約を追加`.
-- Do not write commit messages as work logs, agent notes, or chat summaries.
-- Keep each commit focused on one logical change. Split commits when changes can be reviewed, reverted, or explained independently.
-- Separate behavior changes from mechanical formatting, documentation updates from code changes, generated output from source changes, and refactors from functional fixes.
-- Keep changes together only when splitting would leave an intermediate commit broken, misleading, or without required tests/docs.
-- PR grouping and commit grouping are separate decisions. One PR does not imply one commit unless the user explicitly requests it.
-- When deciding commit boundaries or messages, inspect `git status` and `git diff`. Do not rely on memory, chat context, or assumptions.
-- Mention validation in the commit body when it matters, especially when runtime checks were skipped or could not be run.
-- Commit sub-agents must not run validation commands. Validation is the parent agent's responsibility before commit delegation. The commit sub-agent may inspect `git status`, `git diff`, and existing file contents to decide commit boundaries and messages, then create the commit from the current working tree.
+- Delegate commit-related tasks to a sub-agent, and only instruct it: "Read `AGENTS.md` and perform commit work."
+- Use Conventional Commits format: `<type>(<scope>): <description>`.
+- Preferred types are `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`.
+- Write descriptions in Japanese; keep type/scope in ASCII.
+- One logical change per commit by default; split when needed.
+- Always check `git status` and `git diff` when deciding commit boundaries.
+- If skipping or being unable to run verification is significant, state it in the commit body.
+- The commit sub-agent must not run verification commands. Verification responsibility belongs to the parent agent.
 
-## Pull Request Guidelines
+## Pull Request Rules
 
-- PR-related work must be delegated to a sub-agent with only this instruction: read `AGENTS.md` and handle the PR work. Do not summarize rules or repository state for the sub-agent.
-- Do not push directly to `main`. All repository changes must go through a feature branch and PR.
-- Name branches as `<type>/<scope>-<short-kebab-description>`, using the same type vocabulary as Conventional Commits. Keep names lowercase and free of personal notes or chat context.
-- PRs must describe the durable repository change, why it is needed, and the validation performed. Do not describe chat history or agent workflow.
-- Keep PRs focused. A single PR may contain multiple logical commits; summarize that structure when it helps review.
-- When deciding PR scope, title, or description, inspect `git status`, `git diff`, and staged changes if applicable. Do not infer PR content from conversation alone.
-- Call out user-visible behavior changes, bootstrap changes, module API changes, generated output removal, and migration steps explicitly.
-- Include screenshots or command output summaries only when they clarify review. Do not paste noisy logs.
-- Update `README.md` when changing user-visible commands, bootstrap behavior, module boundaries, or zsh key behavior.
-- If any expected check is skipped, blocked, or run outside the dev shell, state that clearly in the PR.
+- Delegate PR-related tasks to a sub-agent, and only instruct it: "Read `AGENTS.md` and perform PR work."
+- Do not push directly to `main`. Merge changes through a feature branch and PR.
+- Use branch name format `<type>/<scope>-<short-kebab-description>` and keep it lowercase.
+- In PRs, describe permanent changes, rationale, and performed verification; do not include chat history or work logs.
+- Explicitly mention user-visible behavior changes, bootstrap changes, module API changes, generated-artifact deletions, and migration steps.
+- If changing user-visible commands, bootstrap behavior, module boundaries, or zsh key behavior, update `README.md`.
+- If expected checks are skipped, not run, or run outside the dev shell, explicitly note that in the PR.
