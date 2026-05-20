@@ -499,29 +499,44 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
     if options.all && !options.check.is_empty() {
         bail!("--all and --check cannot be used together");
     }
-    if options.all {
-        bail!("verify-yubikey --all includes unsupported external checks: bws, bw-login");
-    }
-    if !options.check.is_empty() {
-        let requested = options
-            .check
-            .iter()
-            .map(|check| match check {
-                VerifyCheck::Bws => "bws",
-                VerifyCheck::BwLogin => "bw-login",
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("unsupported external checks requested: {requested}");
-    }
-
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device, &session)?;
-    let summary = verify_local_storage_protected(&mut device, &session)?;
+    let mut summary = verify_local_storage_protected(&mut device, &session)?;
+    let requested = requested_external_checks(&options);
+    if !requested.is_empty() {
+        for check in &requested {
+            summary.checks.insert(*check, domain::CheckStatus::Failed);
+        }
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        let requested_names = requested
+            .iter()
+            .map(|check| match check {
+                domain::CheckName::Bws => "bws",
+                domain::CheckName::BwLogin => "bw-login",
+                _ => unreachable!("requested_external_checks returns only external checks"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("external checks are not implemented yet: {requested_names}");
+    }
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+fn requested_external_checks(options: &VerifyYubikeyOptions) -> Vec<domain::CheckName> {
+    if options.all {
+        return vec![domain::CheckName::Bws, domain::CheckName::BwLogin];
+    }
+    options
+        .check
+        .iter()
+        .map(|check| match check {
+            VerifyCheck::Bws => domain::CheckName::Bws,
+            VerifyCheck::BwLogin => domain::CheckName::BwLogin,
+        })
+        .collect()
 }
 
 /// device 上の local storage secrets を復号し、空でないことを確認する。

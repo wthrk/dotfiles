@@ -18,11 +18,14 @@
 - 恒久仕様文書は完成形の到達仕様を記載し、現行実装での利用可否や進捗は進捗管理用ファイルで確認する。
 - secret-recovery の進捗入口は [secret-recovery/tasks.md](secret-recovery/tasks.md) に固定し、他文書に別の進捗入口を定義しない。
 - secret-recovery の完了追跡は、tasks.md で固定実装単位ごとの成果物と完了条件を対応づけて管理する。
+- secret-recovery の Phase/Issue レベルの完了判定は [secret-recovery/implementation-guidelines.md](secret-recovery/implementation-guidelines.md) の進捗状態判定規則を正本とし、`tasks.md` の作業項目完了をそのまま Phase/Issue 完了に読み替えない。
 
 ## タスク管理解釈規則
 
 - プロジェクト内で `次のタスク`（`next task`）の指示を受けた場合、作業開始前に進捗管理用ファイルを参照し、未完了の先頭作業項目を現在の作業対象として扱う。
+- secret-recovery では、先頭の未完了作業項目が executable behavior を含み `実装状態` が `未実装` または `実装中` の場合、`次のタスク` の主対象は実装・コード作業とし、固定実装単位トラッカーは従属情報として扱う。
 - secret-recovery の進捗管理用ファイルは [secret-recovery/tasks.md](secret-recovery/tasks.md) を正本とし、進捗状態の更新が発生するたびに同ファイルを更新する。
+- この正本性は固定実装単位と作業項目の進捗管理に限定し、Phase/Issue レベルの完了判定正本は上記判定規則に従う。
 - README を含む他文書は進捗管理用ファイルへの導線だけを持ち、進捗状態そのものの正本を重複定義しない。
 
 ## 参照規則

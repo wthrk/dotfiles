@@ -795,9 +795,12 @@ fn verify_yubikey_rejects_all_flag_with_stub_yubikey() -> TestResult<()> {
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stdout.contains("\"local_storage\": \"ok\""));
+    assert!(run.stdout.contains("\"bws\": \"failed\""));
+    assert!(run.stdout.contains("\"bw_login\": \"failed\""));
     assert!(
         run.stderr
-            .contains("verify-yubikey --all includes unsupported external checks: bws, bw-login")
+            .contains("external checks are not implemented yet: bws, bw-login")
     );
     Ok(())
 }
@@ -817,9 +820,11 @@ fn verify_yubikey_rejects_check_flag_with_stub_yubikey() -> TestResult<()> {
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stdout.contains("\"local_storage\": \"ok\""));
+    assert!(run.stdout.contains("\"bws\": \"failed\""));
     assert!(
         run.stderr
-            .contains("unsupported external checks requested: bws")
+            .contains("external checks are not implemented yet: bws")
     );
     Ok(())
 }
