@@ -7,6 +7,7 @@ When handling a `planning request` in this repository, the only source of truth 
 For any `planning request`, check the fixed implementation units section in `docs/secret-recovery/implementation-guidelines.md` before any other document, and reference the predefined implementation units without redefining them.
 
 Do not create, paraphrase, summarize, or replace planning procedures in chat. Do not override this repository-specific source of truth with generic planning habits or default workflows.
+For secret-recovery planning, implementation, verification, review, and follow-up work, the main agent is orchestration-only. It must not perform repo exploration, command execution, file inspection, diff inspection, validation, review, or artifact editing itself when those actions belong to the assigned implementation or review role in `docs/secret-recovery/implementation-guidelines.md`.
 
 ## Project Overview
 
