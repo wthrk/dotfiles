@@ -21,6 +21,7 @@ secret-recovery の計画、実装、確認、レビュー、後続対応を伴�
 - bootstrap 入口: `scripts/bootstrap.sh`
 
 secret-recovery の継続作業では、まず `docs/README.md` を文書入口として参照し、そのうえで進捗管理入口を `docs/secret-recovery/tasks.md` に固定する。実装変更やレビューの前に `docs/secret-recovery/implementation-guidelines.md` を読み、固定実装単位、役割分担、実装方針を適用する。
+タスク管理の解釈規則（`次のタスク` のような指示を含む）は `docs/docs-governance.md` を正本とし、secret-recovery では `docs/secret-recovery/tasks.md` を参照し、進捗変化のたびに同ファイルへ反映する。
 文書参照は `docs/README.md` と `docs/secret-recovery/README.md` を入口にし、各 README と `docs/docs-governance.md` に記載された「何を書く・何を書かない・どれを参照する」の範囲定義に従う。
 
 ## 翻訳同期

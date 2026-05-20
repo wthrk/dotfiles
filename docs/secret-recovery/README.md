@@ -10,3 +10,8 @@
 - [yubikey-secret-storage-design.md](yubikey-secret-storage-design.md): YubiKey 保存方式の設計を定義する。
 - [tasks.md](tasks.md): 固定実装単位ごとの進捗と完了条件を追跡する進捗入口。
 - [review-artifacts/README.md](review-artifacts/README.md): レビュー関連文書の配置先を案内する。
+
+## 進捗運用
+
+- `次のタスク` の解釈規則は `docs/docs-governance.md` を正本として参照する。
+- secret-recovery の進捗正本は [tasks.md](tasks.md) とし、進捗変化が発生した都度更新する。

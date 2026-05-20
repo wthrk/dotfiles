@@ -21,6 +21,7 @@ Primary structure:
 - Bootstrap entrypoint: `scripts/bootstrap.sh`
 
 For ongoing secret-recovery work, first use `docs/README.md` as the document entrypoint, then use `docs/secret-recovery/tasks.md` as the progress-management entrypoint. Before implementation changes or reviews, read `docs/secret-recovery/implementation-guidelines.md` and apply its fixed implementation units, role assignments, and implementation policy.
+Task-management interpretation (including instructions such as `next task`) is defined by `docs/docs-governance.md`; for secret-recovery it is routed to `docs/secret-recovery/tasks.md`, and progress changes must be reflected there.
 Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoints, and follow each file's explicit scope (what to write, what not to write, and references) defined in those README files and `docs/docs-governance.md`.
 
 ## Translation Synchronization
