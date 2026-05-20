@@ -217,6 +217,7 @@ CLI 引数で secret 本文は受け取らない。`--stdin` は pipe または 
 ### `dotfiles secrets yubikey enroll-primary`
 
 primary YubiKey を復旧入口として登録する高水準コマンドである。これは bootstrap secret の正本を最初に登録する操作なので、`bw-email`、`bw-password`、`bws-access-token` を prompt から受け取る。`bw-email` は通常表示 prompt、`bw-password` と `bws-access-token` は hidden prompt にする。非対話または migration 用に限り `--stdin-json` を許可する。
+`--stdin-json` を使う場合も PIN は controlling terminal から読み、JSON 用 stdin からは読まない。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
@@ -323,6 +324,8 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
 - `enroll-spare` で平文 secret を読む前に core dump 無効化または memory lock の準備に失敗した。
+- `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
+- `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
 - `rotate-bws-token` 後の ローカル確認 に失敗した。
 - manifest が存在するが app、version が期待値と一致しない。
 - 許可されていない secret name が指定された。

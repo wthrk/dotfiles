@@ -61,6 +61,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-email`、`bw-password`、`bws-access-token` の 3 種類だけである。
 
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 を reset しない。既存領域と衝突する場合は停止する。
+書き込みは management key 認証を前提にし、既定 management key のまま運用しない。既定 key のままでは想定外の上書きリスクを抑止できないため、専用領域を運用する前に非既定 management key への変更を必須にする。
 
 詳細設計は [YubiKey 秘密情報保存設計](./yubikey-secret-storage-design.md) に置く。
 
@@ -69,6 +70,8 @@ YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV �
 Bitwarden Secrets Manager は復旧に必要な機械向け secret を保持する。対象は `gpg-secret-key-backup` と `password-store-remote` である。
 
 復旧本線では公式 `bitwarden` Rust SDK を使う。`bw` CLI は Bitwarden Secrets Manager からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。
+
+詳細設計は [Bitwarden Secrets Manager 復旧設計](./bitwarden-secrets-manager-design.md) に置く。
 
 ### Bitwarden Password Manager
 
@@ -141,7 +144,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 - `bw-email`、`bw-password`、`bws-access-token` が YubiKey に保存され、PIN 検証 と touch を経て復号できる。
 
-このコマンドは ローカル保管 確認だけを実行する。`--check bws`、`--check bw-login`、`--all` は外部確認を要求する option なので、利用できない場合は明示的に失敗する。引数なし実行の 要約 では外部確認項目を機械可読状態値 `skipped` として残す。
+このコマンドは ローカル保管 確認だけを実行する。`--check bws`、`--check bw-login`、`--all` は外部確認を要求する option なので、利用できない場合は明示的に失敗する。引数なし実行の 要約 では外部確認項目を機械可読状態値 `skipped` として残す。要約の状態値は `ok` と `skipped` を使い、表示文言は別層で扱う。
 
 このコマンドは GitHub、Google、Apple など外部サービス の FIDO2 / passkey / U2F 登録状況を検証しない。外部サービス の spare key 登録は各サービスの設定画面で確認する。
 
@@ -179,6 +182,8 @@ GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。G
 - Bitwarden Secrets Manager から必要な secret が取得できない。
 - `verify-yubikey` で YubiKey 内の bootstrap secret 確認に失敗する。
 - `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。
+- `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
+- `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
 - import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない。
 - `gpg-agent` SSH support が利用できない。
 - `~/.password-store` が既に存在する。
