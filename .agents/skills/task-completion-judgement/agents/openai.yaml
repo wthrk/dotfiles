@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Completion Judgement"
+  short_description: "Judges task completion gates and closure"
+  default_prompt: "Use $task-completion-judgement to decide whether a work item can close and whether follow-up gates are satisfied."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implementation Execution"
+  short_description: "Implements under strict architecture rules"
+  default_prompt: "Use $implementation-execution to implement changes while strictly following repository architecture and existing-code reread requirements."

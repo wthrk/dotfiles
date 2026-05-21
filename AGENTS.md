@@ -2,12 +2,12 @@
 
 ## Critical Planning Gate
 
-When handling a `planning request` in this repository, the only source of truth is `docs/secret-recovery/implementation-guidelines.md`. Follow that document for implementation units, role assignments in the planning/implementation/review phases, review cycles, and implementation policy.
+When handling a `planning request` for `secret-recovery`, the only source of truth is `docs/secret-recovery/implementation-guidelines.md`. Follow that document for implementation units, role assignments in the planning/implementation/review phases, review cycles, and implementation policy.
 
-For any `planning request`, check the fixed implementation units section in `docs/secret-recovery/implementation-guidelines.md` before any other document, and reference the predefined implementation units without redefining them.
+For any `secret-recovery planning request`, check the fixed implementation units section in `docs/secret-recovery/implementation-guidelines.md` before any other document, and reference the predefined implementation units without redefining them.
 
 Do not create, paraphrase, summarize, or replace planning procedures in chat. Do not override this repository-specific source of truth with generic planning habits or default workflows.
-For secret-recovery planning, implementation, verification, review, and follow-up work, the main agent is orchestration-only when a distinct implementation or review role can actually be assigned and executed. If the current execution environment cannot launch or use that assigned role, the current executor must immediately fall back to the required implementation role instead of stopping in orchestration or reverting to documentation-only progress handling.
+For secret-recovery planning, implementation, verification, review, and follow-up work, the main agent is orchestration-only when distinct implementation and required review roles can actually be assigned and executed. Secret-recovery review must use multiple reviewer roles when the governing documents require them. If the current execution environment cannot launch or use an assigned role, the current executor must continue via explicit per-role fallback with recorded reason/evidence (`対象役割`, `起動失敗理由`, `起動失敗証跡`, `代替実行者`, `代替実行者 agent/run 識別子`, `no-reuse 規則充足根拠`) instead of stopping in orchestration or reverting to documentation-only progress handling.
 
 ## Project Overview
 
@@ -20,8 +20,8 @@ Primary structure:
 - User configuration: zsh / Neovim settings under `config/`
 - Bootstrap entrypoint: `scripts/bootstrap.sh`
 
-At the start of work in this repository, immediately read `docs/README.md`, then `docs/secret-recovery/tasks.md`, before any other interpretation. `docs/secret-recovery/tasks.md` is the only file to treat as a task list in this repository. On any resumed session, cleared context, or continuation request, read that file before taking action or asking which task to run. Before implementation changes or reviews for work governed by that file, read `docs/secret-recovery/implementation-guidelines.md` and apply its fixed implementation units, role assignments, and implementation policy.
-Task-management interpretation for progress/continuation requests is defined by `docs/docs-governance.md`; for secret-recovery it is routed to `docs/secret-recovery/tasks.md`, and progress changes must be reflected there.
+At the start of work in this repository, immediately read `docs/README.md`, then discover the active area task ledger via `docs/tasks/README.md`, before any other interpretation. On any resumed session, cleared context, or continuation request, read `docs/tasks/README.md` first, then the selected area `tasks.md`, before taking action or asking which task to run. Before implementation changes or reviews for `secret-recovery` work, read `docs/secret-recovery/implementation-guidelines.md` and apply its fixed implementation units, role assignments, and implementation policy.
+Task-management interpretation for progress/continuation requests is defined by `docs/docs-governance.md`; progress changes must be reflected in the selected area ledger (`docs/tasks/<area>/tasks.md`).
 Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoints, and follow each file's explicit scope (what to write, what not to write, and references) defined in those README files and `docs/docs-governance.md`.
 
 ## Translation Synchronization
@@ -29,21 +29,32 @@ Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoint
 - `AGENTS_ja.md` must remain semantically aligned with `AGENTS.md`.
 - If `AGENTS.md` is edited, update `AGENTS_ja.md` in the same change.
 - During review, verify semantic equivalence between both documents.
+- If a new `AGENTS.md` is added anywhere in this repository, add the sibling `AGENTS_ja.md` in the same change.
+- Do not create or leave a directory-scoped `AGENTS.md` without its sibling `AGENTS_ja.md`.
+
+## Required References
+
+- Before work in this repository, you must read `docs/README.md`.
+- Before task-governance, task-ledger, or progress changes, you must read `docs/task-governance/README.md`.
+- Before changes to area task artifacts, you must read `docs/tasks/README.md`.
+- Before implementation, verification, or review that can touch sensitive data, you must read `docs/task-governance/security-obligations.md`.
+- Before secret-recovery implementation or review work, you must read `docs/secret-recovery/implementation-guidelines.md`.
 
 ## Applying Document Instructions
 
 - When executing a prompt, extract the document instructions that apply to the current request before starting work, and continue applying them throughout execution.
 - Do not provide proposals, edits, or reports that violate document instructions. If instructions conflict, confirm with the user before starting work.
 - For secret-recovery work, an explicit documentation-fix request targets the named documents directly and must not be reinterpreted as implementation progress.
-- For secret-recovery progress/continuation requests, use `docs/secret-recovery/tasks.md` as the governing source and treat its listed work items as code-first implementation work unless the user explicitly asked for documentation remediation itself.
-- For secret-recovery progress/continuation requests, treat each work item's `対象コードパス` in `docs/secret-recovery/tasks.md` as the implementation starting point, not an edit boundary. You may follow directly necessary callers, callees, shared types, ports/adapters, and corresponding tests.
-- For secret-recovery work items in `docs/secret-recovery/tasks.md`, do not treat documentation-only diffs as implementation progress in the target code paths. Until code changes exist in relevant executable paths, do not advance implementation-facing progress artifacts (`確認`, `レビュー`, `実装状態` progression, or implementation-complete interpretation).
+- For secret-recovery progress/continuation requests, use `docs/tasks/secret-recovery/tasks.md` as the governing source: treat work items whose primary artifact is executable code as code-first implementation work, and treat work items whose primary artifact is documentation as documentation-primary work that may advance through documentation diffs when required confirmation/review evidence is recorded.
+- For secret-recovery progress/continuation requests, treat each work item's `対象コードパス` in `docs/tasks/secret-recovery/tasks.md` as the implementation starting point, not an edit boundary. You may follow directly necessary callers, callees, shared types, ports/adapters, and corresponding tests.
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md`, do not treat documentation-only diffs as implementation progress in the target code paths. Until code changes exist in relevant executable paths, do not advance implementation-facing progress artifacts (`確認`, `レビュー`, `実装状態` progression, or implementation-complete interpretation).
 - In secret-recovery progress updates, explicitly separate `文書整合` from `実装` and mark `コード差分なし` when no relevant executable-path diff exists.
-- For secret-recovery work items in `docs/secret-recovery/tasks.md`, if relevant executable-path code diffs do not exist, hard-stop `確認` / `レビュー` as `未着手`, keep `実装状態` at `未実装` or `実装中`, and do not treat those artifacts as implementation-ready or review-ready.
-- For secret-recovery work items in `docs/secret-recovery/tasks.md`, any forward transition of `実装状態` / `確認` / `レビュー` is invalid unless the same change set also updates prerequisite evidence (relevant code-diff identifier and required confirmation/review artifacts).
-- For secret-recovery work items in `docs/secret-recovery/tasks.md`, `コード差分なし` records are temporary documentation records only and must never justify any forward transition of `実装状態` / `確認` / `レビュー`.
-- For secret-recovery work items in `docs/secret-recovery/tasks.md`, documentation-only work must remain subordinate and must not be used as the primary response to a progress request.
-- For secret-recovery work items in `docs/secret-recovery/tasks.md`, documentation edits are allowed only when explicitly requested by the user or directly required to keep implementation artifacts consistent.
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md`, if relevant executable-path code diffs do not exist, hard-stop `確認` / `レビュー` as `未着手`, keep `実装状態` at `未実装` or `実装中`, and do not treat those artifacts as implementation-ready or review-ready.
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md`, any forward transition of `実装状態` / `確認` / `レビュー` is invalid unless the same change set also updates prerequisite evidence (relevant code-diff identifier and required confirmation/review artifacts).
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md`, `コード差分なし` records are temporary documentation records only and must never justify any forward transition of `実装状態` / `確認` / `レビュー`.
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md` whose primary artifact is executable code, documentation-only work must remain subordinate and must not be used as the primary response to a progress request.
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md` whose declared primary artifact is documentation, documentation-only progress handling is allowed when required confirmation and review evidence are recorded.
+- For secret-recovery work items in `docs/tasks/secret-recovery/tasks.md`, documentation edits are always allowed when they are directly required to keep implementation artifacts consistent; for documentation-primary work items declared in the ledger, documentation edits are also allowed as the primary deliverable without a separate explicit documentation-fix request.
 
 ## Communication
 

@@ -1,37 +1,31 @@
 # docs 文書運用規約
 
-この文書は `docs/` 配下の文書運用規約を定義する。
+この文書は `docs/` 配下の文書配置、正本、重複禁止を定義する。
 
 ## 配置規則
 
-- `docs/README.md` は文書入口として扱い、ディレクトリ概要と `docs/` 配下項目の役割を記載する。
-- `docs/architecture/README.md` は architecture 文書群の入口として扱い、ディレクトリ概要と配下項目の役割を記載する。
-- `docs/secret-recovery/README.md` は secret-recovery 文書群の入口として扱い、ディレクトリ概要と配下項目の役割を記載する。
-- `docs/secret-recovery/review-artifacts/README.md` は review-artifacts 文書群の入口として扱い、ディレクトリ概要と配下項目の役割を記載する。
-- `docs/secret-recovery/review-artifacts/architecture-rules/README.md` は architecture-rules 文書群の入口として扱い、ディレクトリ概要と配下項目の役割を記載する。
+- `docs/README.md` は `docs/` 全体の入口として扱う。
+- `docs/task-governance/README.md` は全体タスク運用文書群の入口として扱う。
+- `docs/tasks/README.md` は領域別タスク文書群の入口として扱う。
+- `docs/architecture/README.md` は architecture 文書群の入口として扱う。
+- `docs/secret-recovery/README.md` は secret-recovery の仕様、設計、実装ガイドラインの入口として扱う。
+
+## 正本規則
+
+- 文書配置と責務分離の正本はこの文書とする。
+- タスク運用の一般則は `docs/task-governance/` 配下へ置き、個別領域文書へ再掲しない。
+- 領域別のタスク台帳、作業定義、粗粒度進捗、証跡は `docs/tasks/<area>/` 配下へ置く。
+- 領域固有の仕様、設計、実装ガイドラインは `docs/<area>/` 配下へ置く。
+- 進捗台帳は現在値と参照先だけを持ち、詳細な作業定義は `work-items/` へ分離する。
+- 粗粒度 issue / phase 進捗は専用文書へ置き、進捗台帳へ混在させない。
 
 ## 記載規則
 
-- 仕様・設計・実装規約の本文は対象ファイルに記載し、README には重複掲載しない。
-- 作業進捗、現在の実装状況、レビューの実施ログは、進捗管理用ファイルに記載し、仕様・設計・規約ファイルには記載しない。
-- 仕様・設計・実装規約などの恒久文書には、`現段階`、`後続 PR`、`実装後` など時点依存の進捗メモを記載しない。
-- 恒久仕様文書は完成形の到達仕様を記載し、現行実装での利用可否や進捗は進捗管理用ファイルで確認する。
-- secret-recovery の進捗入口は [secret-recovery/tasks.md](secret-recovery/tasks.md) に固定し、他文書に別の進捗入口を定義しない。
-- secret-recovery の完了追跡は、tasks.md で固定実装単位ごとの成果物と完了条件を対応づけて管理する。
-- secret-recovery の Phase/Issue レベルの完了判定は [secret-recovery/implementation-guidelines.md](secret-recovery/implementation-guidelines.md) の進捗状態判定規則を正本とし、`tasks.md` の作業項目完了をそのまま Phase/Issue 完了に読み替えない。
-
-## タスク管理解釈規則
-
-- プロジェクト内で進行依頼（作業継続、進捗更新など）を受けた場合、作業開始前に進捗管理用ファイルを参照し、未完了の先頭作業項目を現在の作業対象として扱う。
-- secret-recovery では、先頭の未完了作業項目が `実装状態: 未実装` または `実装中` の場合、主対象は実装・コード作業とし、固定実装単位トラッカーは従属情報として扱う。
-- secret-recovery の進捗管理用ファイルは [secret-recovery/tasks.md](secret-recovery/tasks.md) を正本とし、進捗状態の更新が発生するたびに同ファイルを更新する。
-- この正本性は固定実装単位と作業項目の進捗管理に限定し、Phase/Issue レベルの完了判定正本は上記判定規則に従う。
-- README を含む他文書は進捗管理用ファイルへの導線だけを持ち、進捗状態そのものの正本を重複定義しない。
+- 仕様、設計、実装規約、進捗台帳、証跡、粗粒度進捗は責務を混在させない。
+- 同じ判断基準、手順本文、完了条件、作業定義を複数ファイルで重複定義しない。
+- README は入口と参照導線だけを持ち、本文の正本を再掲しない。
+- 恒久文書には時点依存の進捗メモを残さない。進捗は台帳または粗粒度進捗文書へ記録する。
 
 ## 参照規則
 
-参照は章番号ではなく、ファイルパスと見出し名で行う。文書更新時は参照元と参照先を同一変更で整合させる。
-
-## 正本の扱い
-
-同一内容の判断基準を複数ファイルで重複定義しない。正本を移す場合は旧ファイルの該当箇所を案内へ置き換えるか削除し、重複を残さない。
+参照は章番号ではなく、ファイルパスと見出し名で行う。正本を移す場合は旧ファイル側の本文を削るか参照へ置き換え、重複を残さない。
