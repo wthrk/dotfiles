@@ -1,12 +1,22 @@
 # 新規マシン秘密情報復旧基盤タスク
 
-この文書は、secret-recovery の進捗入口である。ここでは `docs/secret-recovery/implementation-guidelines.md` の固定実装単位に従い、実装作業の完了追跡だけを扱う。
+この文書は、secret-recovery の進捗入口である。ここでは `docs/secret-recovery/implementation-guidelines.md` の固定実装単位に従い、実装作業の完了追跡だけを扱う。明示的に文書是正を依頼された場合を除き、この文書の作業項目は実コード差分を主成果物とする。
 
 ## 運用規約
 
-- `次のタスク` 指示を受けた場合は、この文書の作業項目一覧を上から確認し、`状態` が `完了` ではない先頭項目を着手対象にする。
-- `次のタスク` 指示時、先頭の未完了作業項目が executable behavior を含み、`実装状態` が `未実装` または `実装中` なら、主対象は実装・コード作業とする。この場合、固定実装単位トラッカーは報告・追跡の従属情報として扱う。
-- 先頭の未完了作業項目が文書専用、または `実装状態` が `実装完了` の場合に限り、文書系実装単位（例: `規約文書更新`）を `次のタスク` の主対象にしてよい。
+- 進行依頼（作業継続、進捗更新など）を受けた場合は、この文書の作業項目一覧を上から確認し、`状態` が `完了` ではない先頭項目を着手対象にする。
+- 着手対象を選んだら、その作業項目に記載された `対象コードパス` を開始点として現在の着手先にする。対象コードパスが書かれていない状態で着手してはならない。
+- `対象コードパス` は開始点であって編集上限ではない。実装に直接必要な呼び出し元、呼び出し先、共有型、port / adapter、対応テストは追加で探索・編集してよい。
+- 利用者が文書是正・文書修正を明示的に依頼した場合、その依頼は指定文書への直接修正依頼として扱い、進行依頼や実装進捗へ再解釈してはならない。
+- 先頭の未完了作業項目で `実装状態` が `未実装` または `実装中` なら、主対象は実装・コード作業とする。この場合、固定実装単位トラッカーは報告・追跡の従属情報として扱う。
+- 現在の実行環境が別担当の実装役割を起動または利用できない場合は、現在の実行主体がそのままコード実装へ進まなければならない。役割起動不能を理由に文書のみの作業、暫定進捗追加、停止応答へ切り替えてはならない。
+- 文書のみの差分では進行依頼を充足した扱いにしてはならない。対象コードパスまたはそこから直接必要と判定した隣接コードパスに実コード差分を作成するまで、進行依頼は未充足として扱う。
+- 文書修正は、利用者が文書是正そのものを明示的に依頼した場合、または実装成果物との整合維持に直接必要な最小限の従属修正に限る。
+- この文書の作業項目では、対象コードパスまたはそこから直接必要と判定した隣接コードパスに実コード差分が存在しない限り、`確認`・`レビュー`・`実装状態` を前進させてはならない。文書のみの差分で更新可能な進捗は `規約文書更新` と `文書整合` の記録に限定する。
+- `コード差分なし` の場合、`確認` と `レビュー` は原則 `未着手` のままとし、必要な場合は「実装前進を示さない暫定記録」であることを成果物に明記する。
+- `実装状態`・`確認`・`レビュー` を前進させる場合、同一変更セットで前提証跡を同時更新しなければならない（対象コード差分識別子、および遷移対象に応じた確認/レビュー成果物）。
+- 上記前提証跡の同時更新を満たさない前進遷移は無効とし、この文書の状態へ反映してはならない。
+- `コード差分なし` は暫定記録であり、`実装状態`・`確認`・`レビュー` の前進根拠として利用してはならない。
 - `現在の作業項目` は 1 つだけ選び、実装の主対象を示す。
 - 固定実装単位または作業項目の進捗状態が変化した場合は、その都度この文書を更新する。
 - 各作業項目は、固定実装単位（`規約計画` / `実装計画` / `規約文書更新` / `確認` / `レビュー` / `必要時の後続対応`）ごとに状態を管理する。
@@ -19,13 +29,29 @@
 ## 進捗
 
 - 現在の作業項目: `YubiKey`
+- 現在の着手コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/src/secrets/application/storage_service.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 
 ## 作業項目一覧
 
 ### YubiKey
 
 - 状態: `進行中`
-- 対象種別: `executable behavior を含む`
+- 主成果物: `実コード差分`
+- 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/src/secrets/application/storage_service.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `未実装`
 - 固定実装単位トラッカー:
 
@@ -33,15 +59,20 @@
 | --- | --- | --- | --- |
 | 規約計画 | 完了 | `secret-recovery-spec.md` の `責務分担 > YubiKey` と `API / Command Policy` の適用範囲定義 | 適用規約・参照正本・除外範囲が衝突なく定義されている |
 | 実装計画 | 完了 | `secret-recovery-spec.md` の YubiKey 関連コマンド節に対応する更新対象の確定 | 更新対象文書と更新順序が示され、他作業項目への越境がない |
-| 規約文書更新 | 進行中 | `secret-recovery-spec.md`、`yubikey-secret-storage-design.md`、必要に応じて関連 README | 規約語彙・責務境界・参照先が整合している |
-| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` に対象差分識別情報・確認手順・手順ごとの結果・未実施理由（該当時）を記録 | レビュー担当が追試可能な確認証跡が揃っている |
-| レビュー | 未着手 | `review-artifacts/yubikey/review.md`（合格: 差戻しなし） | レビュー合格時のみ完了。不合格時は差戻し対象を明示し未完了のままとする |
-| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` の後続対応判定は `不要`（理由: 差戻し事項がなく、追加の文書修正を要求しないため） | レビューで必要と判定された追従更新およびコミット関連作業の実施・委譲記録が完了、または不要理由を記録した `完了（不要）` へ遷移 |
+| 規約文書更新 | 完了 | `secret-recovery-spec.md`、`yubikey-secret-storage-design.md`、必要に応じて関連 README | 規約語彙・責務境界・参照先が整合している |
+| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md`（`コード差分なし` のため実装前進を示さない暫定記録のみ） | 前進遷移時は同一変更セットで対象コード差分識別子と確認証跡を同時更新し、レビュー担当が追試可能であること |
+| レビュー | 未着手 | `review-artifacts/yubikey/review.md`（`コード差分なし` のためレビュー未着手を維持） | 前進遷移時は同一変更セットで対象コード差分識別子とレビュー判定証跡を同時更新し、合格時のみ完了。不合格時は差戻し対象を明示し未完了のままとする |
+| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md`（レビュー未着手のため後続対応判定も未着手） | レビューで必要と判定された追従更新およびコミット関連作業の実施・委譲記録が完了、または不要理由を記録した `完了（不要）` へ遷移 |
 
 ### Bitwarden Secrets Manager
 
 - 状態: `進行中`
-- 対象種別: `executable behavior を含む`
+- 主成果物: `実コード差分`
+- 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/src/secrets/ports.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `未実装`
 - 固定実装単位トラッカー:
 
@@ -57,7 +88,11 @@
 ### Bitwarden Password Manager
 
 - 状態: `進行中`
-- 対象種別: `executable behavior を含む`
+- 主成果物: `実コード差分`
+- 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `未実装`
 - 固定実装単位トラッカー:
 
@@ -73,7 +108,11 @@
 ### GnuPG / SSH
 
 - 状態: `進行中`
-- 対象種別: `executable behavior を含む`
+- 主成果物: `実コード差分`
+- 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `未実装`
 - 固定実装単位トラッカー:
 
@@ -89,7 +128,11 @@
 ### Git
 
 - 状態: `進行中`
-- 対象種別: `executable behavior を含む`
+- 主成果物: `実コード差分`
+- 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `未実装`
 - 固定実装単位トラッカー:
 

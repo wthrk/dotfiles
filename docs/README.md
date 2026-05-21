@@ -10,6 +10,6 @@
 
 ## タスク管理の参照順
 
-- タスク管理の解釈規則（`次のタスク` の解釈を含む）は [docs-governance.md](docs-governance.md) を正本として参照する。
+- タスク管理の解釈規則（進行依頼全般）は [docs-governance.md](docs-governance.md) を正本として参照する。
 - secret-recovery の運用時は [secret-recovery/tasks.md](secret-recovery/tasks.md) を固定実装単位と作業項目の進捗正本として参照する。
 - secret-recovery の Phase/Issue レベルの完了判定は [secret-recovery/implementation-guidelines.md](secret-recovery/implementation-guidelines.md) の判定規則を正本とし、`tasks.md` の完了表示だけで代替しない。

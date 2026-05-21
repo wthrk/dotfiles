@@ -7,7 +7,7 @@ When handling a `planning request` in this repository, the only source of truth 
 For any `planning request`, check the fixed implementation units section in `docs/secret-recovery/implementation-guidelines.md` before any other document, and reference the predefined implementation units without redefining them.
 
 Do not create, paraphrase, summarize, or replace planning procedures in chat. Do not override this repository-specific source of truth with generic planning habits or default workflows.
-For secret-recovery planning, implementation, verification, review, and follow-up work, the main agent is orchestration-only. It must not perform repo exploration, command execution, file inspection, diff inspection, validation, review, or artifact editing itself when those actions belong to the assigned implementation or review role in `docs/secret-recovery/implementation-guidelines.md`.
+For secret-recovery planning, implementation, verification, review, and follow-up work, the main agent is orchestration-only when a distinct implementation or review role can actually be assigned and executed. If the current execution environment cannot launch or use that assigned role, the current executor must immediately fall back to the required implementation role instead of stopping in orchestration or reverting to documentation-only progress handling.
 
 ## Project Overview
 
@@ -20,8 +20,8 @@ Primary structure:
 - User configuration: zsh / Neovim settings under `config/`
 - Bootstrap entrypoint: `scripts/bootstrap.sh`
 
-For ongoing secret-recovery work, first use `docs/README.md` as the document entrypoint, then use `docs/secret-recovery/tasks.md` as the progress-management entrypoint. Before implementation changes or reviews, read `docs/secret-recovery/implementation-guidelines.md` and apply its fixed implementation units, role assignments, and implementation policy.
-Task-management interpretation (including instructions such as `next task`) is defined by `docs/docs-governance.md`; for secret-recovery it is routed to `docs/secret-recovery/tasks.md`, and progress changes must be reflected there.
+At the start of work in this repository, immediately read `docs/README.md`, then `docs/secret-recovery/tasks.md`, before any other interpretation. `docs/secret-recovery/tasks.md` is the only file to treat as a task list in this repository. On any resumed session, cleared context, or continuation request, read that file before taking action or asking which task to run. Before implementation changes or reviews for work governed by that file, read `docs/secret-recovery/implementation-guidelines.md` and apply its fixed implementation units, role assignments, and implementation policy.
+Task-management interpretation for progress/continuation requests is defined by `docs/docs-governance.md`; for secret-recovery it is routed to `docs/secret-recovery/tasks.md`, and progress changes must be reflected there.
 Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoints, and follow each file's explicit scope (what to write, what not to write, and references) defined in those README files and `docs/docs-governance.md`.
 
 ## Translation Synchronization
@@ -34,6 +34,16 @@ Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoint
 
 - When executing a prompt, extract the document instructions that apply to the current request before starting work, and continue applying them throughout execution.
 - Do not provide proposals, edits, or reports that violate document instructions. If instructions conflict, confirm with the user before starting work.
+- For secret-recovery work, an explicit documentation-fix request targets the named documents directly and must not be reinterpreted as implementation progress.
+- For secret-recovery progress/continuation requests, use `docs/secret-recovery/tasks.md` as the governing source and treat its listed work items as code-first implementation work unless the user explicitly asked for documentation remediation itself.
+- For secret-recovery progress/continuation requests, treat each work item's `対象コードパス` in `docs/secret-recovery/tasks.md` as the implementation starting point, not an edit boundary. You may follow directly necessary callers, callees, shared types, ports/adapters, and corresponding tests.
+- For secret-recovery work items in `docs/secret-recovery/tasks.md`, do not treat documentation-only diffs as implementation progress in the target code paths. Until code changes exist in relevant executable paths, do not advance implementation-facing progress artifacts (`確認`, `レビュー`, `実装状態` progression, or implementation-complete interpretation).
+- In secret-recovery progress updates, explicitly separate `文書整合` from `実装` and mark `コード差分なし` when no relevant executable-path diff exists.
+- For secret-recovery work items in `docs/secret-recovery/tasks.md`, if relevant executable-path code diffs do not exist, hard-stop `確認` / `レビュー` as `未着手`, keep `実装状態` at `未実装` or `実装中`, and do not treat those artifacts as implementation-ready or review-ready.
+- For secret-recovery work items in `docs/secret-recovery/tasks.md`, any forward transition of `実装状態` / `確認` / `レビュー` is invalid unless the same change set also updates prerequisite evidence (relevant code-diff identifier and required confirmation/review artifacts).
+- For secret-recovery work items in `docs/secret-recovery/tasks.md`, `コード差分なし` records are temporary documentation records only and must never justify any forward transition of `実装状態` / `確認` / `レビュー`.
+- For secret-recovery work items in `docs/secret-recovery/tasks.md`, documentation-only work must remain subordinate and must not be used as the primary response to a progress request.
+- For secret-recovery work items in `docs/secret-recovery/tasks.md`, documentation edits are allowed only when explicitly requested by the user or directly required to keep implementation artifacts consistent.
 
 ## Communication
 
@@ -70,6 +80,10 @@ Do not write to the developer's real `~/.config/dotfiles` to manually validate l
 
 - Before editing or broad verification, identify which instructions apply and implement within those constraints.
 - For code changes, verify diffs against code-style rules before completion. Successful formatter/lint/test runs are not a substitute for instruction compliance.
+- The agent must not send a final response before the assigned work is actually completed within the allowed scope.
+- The agent must not use a short or simple answer to stop progress when assigned work remains incomplete.
+- The agent must continue execution until the assigned remediation or work item is complete, unless blocked by a real constraint that must be explicitly surfaced to the user.
+- These completion and continuation rules are binding workflow requirements for all future sessions in this repository, not optional guidance.
 
 ## Development Commands
 
