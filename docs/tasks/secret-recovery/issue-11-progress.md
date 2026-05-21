@@ -6,9 +6,8 @@
 
 - `#11 新規マシン秘密情報復旧基盤を実装する`
 - 完了条件:
-  - `#12` から `#18` がすべて閉じていること。
+  - `#12` から `#17` がすべて閉じていること。
   - `#17 新規マシン復旧フロー統合` が完了していること。
-  - `#18 最終ドキュメント整理` が完了していること。
 
 ## 履歴ソース（旧パス）
 
@@ -57,4 +56,4 @@
 | `#15` | password-store 復元 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#16` | Bitwarden Password Manager CLI ログイン | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#17` | 新規マシン復旧フロー統合 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
-| `#18` | 最終ドキュメント整理 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
+| `#18` | 最終ドキュメント整理 | `移管済み（repo-global へ移設）` | `docs/tasks/repo-governance/tasks.md` と `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/{confirmation,review}.md` を参照 |

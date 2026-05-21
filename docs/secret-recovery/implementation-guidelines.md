@@ -10,7 +10,7 @@
 
 - 全体タスク運用: [../task-governance/workflow.md](../task-governance/workflow.md#タスク運用ワークフロー)
 - 実装担当の強制義務: [../task-governance/implementation-execution.md](../task-governance/implementation-execution.md#実装担当の強制義務)
-- タスクファイル契約: [../task-governance/task-file-contract.md](../task-governance/task-file-contract.md#タスクファイルに必須の項目)
+- タスクファイル契約: [../task-governance/task-file-contract.md](../task-governance/task-file-contract.md#タスクファイルに必須の項目最小)
 - 状態遷移と完了判定: [../task-governance/progress-judgement.md](../task-governance/progress-judgement.md#進捗判定規則)、[../task-governance/task-completion-judgement.md](../task-governance/task-completion-judgement.md#タスク完了判定)
 - 粗粒度進捗の扱い: [../task-governance/legacy-issue-tracking.md](../task-governance/legacy-issue-tracking.md#復元規則)
 - secret-recovery タスク入口: [../tasks/secret-recovery/README.md](../tasks/secret-recovery/README.md#tasks--secret-recovery)
@@ -31,7 +31,7 @@ secret-recovery の計画、実装、確認、レビューで扱う実装単位�
 ## secret-recovery で使う役割
 
 - `オーケストレーター`: [../tasks/secret-recovery/tasks.md](../tasks/secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)、[../tasks/secret-recovery/work-items/README.md](../tasks/secret-recovery/work-items/README.md#secret-recovery-work-items)、[../tasks/secret-recovery/issue-11-progress.md](../tasks/secret-recovery/issue-11-progress.md#11-系粗粒度進捗)、固定実装単位トラッカーの参照順を制御する。
-- `実装担当`: [../task-governance/implementation-execution.md](../task-governance/implementation-execution.md#実装担当の強制義務) に従い、対象コードパス、修正範囲内既存コード、直接必要な隣接コードを再読し、実コード差分、確認証跡、必要最小限の文書整合差分を作る。
+- `実装担当`: [../task-governance/implementation-execution.md](../task-governance/implementation-execution.md#実装担当の強制義務) に従い、対象コードパス、修正範囲内既存コード、直接必要な隣接コードを再読し、実コード差分、確認証跡、重複した文書同期を避けるために必要最小限の文書整合差分を作る（構造是正や再設計の範囲を最小化する意味ではない）。
 - `構造レビュー担当`: アーキテクチャ規約、作業定義文書、責務境界、依存方向、公開インターフェース境界に照らして判定する。
 - `運用整合レビュー担当`: 状態遷移、証跡、台帳更新、履歴復元、参照整合に照らして判定する。
 - `セキュリティレビュー担当`: 秘密値、認証情報、権限境界、永続化、ログ、外部入出力、危険な失敗時挙動に照らして判定する。
@@ -63,10 +63,13 @@ secret-recovery の計画、実装、確認、レビューで扱う実装単位�
 3. 複数レビュー担当が役割別に差分と証跡を確認し、個別判定を返す。
 4. 差戻しがある場合は同一作業項目内で再実施する。
 5. 進捗判定担当は、複数レビュー担当の結果と他の必要証跡が同一変更セットに揃った時だけ [../tasks/secret-recovery/tasks.md](../tasks/secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク) と [../tasks/secret-recovery/issue-11-progress.md](../tasks/secret-recovery/issue-11-progress.md#11-系粗粒度進捗) を前進させる。
+6. コミット関連作業は、上記 1-5 の結果が台帳・レビュー成果物・必要な進捗記録へ反映された後にのみ着手できる。チャット上の完了宣言だけで着手してはならない。
 
 ## 実装方針
 
 - 実装担当はアーキテクチャ規約と領域固有規約へ厳密に適合させなければならない。
+- 最小構成で済まそうとしてはならない。
+- 最小差分化や継承された既存構造の温存は目的ではなく、それらが既存のアーキテクチャ、仕様、作業定義への厳密適合を阻害する場合は適合構造への再設計を優先し、当該適合が満たされるまで修正対象から外してはならない。
 - [../tasks/secret-recovery/tasks.md](../tasks/secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク) の `対象コードパス` は実装開始点であり、直接必要な呼び出し元、呼び出し先、共有型、port / adapter、対応テストへは追ってよい。
 - 修正範囲内既存コードと直接必要な隣接コードに見えている規約違反は、今回の再編対象から外してはならない。
 - executable behavior を含む作業では、主成果物は実コード差分である。文書差分だけで実装前進やレビュー準備完了を主張してはならない。
@@ -89,7 +92,7 @@ secret-recovery の計画、実装、確認、レビューで扱う実装単位�
 
 ### `規約文書更新`
 
-- 実装差分に従属して必要最小限だけ更新する。
+- 実装差分に従属して、重複した文書同期を避けるために必要最小限だけ更新する（構造是正や再設計の範囲を最小化する意味ではない）。
 - 作業定義の不足が見つかった場合は [../tasks/secret-recovery/work-items/README.md](../tasks/secret-recovery/work-items/README.md#secret-recovery-work-items) から対象文書を更新し、[../tasks/secret-recovery/tasks.md](../tasks/secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク) は参照だけを維持する。
 
 ### `確認`
@@ -105,3 +108,4 @@ secret-recovery の計画、実装、確認、レビューで扱う実装単位�
 ### `必要時の後続対応`
 
 - レビューで必要と判定された追従更新と、コミット関連作業の委譲記録だけを扱う。
+- コミット関連作業の委譲は、`レビュー` 集約判定と `進捗判定` 記録が正本成果物に反映済みである場合に限る。未反映の場合は委譲を開始してはならない。

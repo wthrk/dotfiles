@@ -199,8 +199,9 @@ Shell/zsh:
 
 Lua/Neovim:
 
-- 設定は `config/nvim/lua/omy/` 配下で既存の `configs` / `mappings` / `autocmds` 構造を維持する。
-- 大規模な構造変更より局所変更を優先する。
+- 設定の主領域は `config/nvim/lua/omy/` とし、厳密適合のために必要なら `configs` / `mappings` / `autocmds` の構造を再編する。
+- 最小差分や継承された既存構造の温存を最適化目標にしてはならない。
+- 現行構造がアーキテクチャ・仕様・作業定義に抵触する場合、適合構造へ再設計する。必要ならモジュール境界・文書境界のゼロベース再編を行う。
 
 ## セキュリティ
 
@@ -211,6 +212,9 @@ Lua/Neovim:
 ## コミット規約
 
 - コミット関連作業は 副エージェント に委譲し、指示は「`AGENTS.md` を読みコミット作業を行う」だけにする。
+- コミット作業は、支配記録のコミット着手条件（差分識別子、必須レビュー役割の記録、集約後レビュー合格）が満たされるまで明示的に禁止する。`docs/task-governance/workflow.md#6-コミット着手ゲート`、`docs/task-governance/implementation-review-judgement.md#コミット連動規則`、`docs/task-governance/progress-judgement.md#コミット可否との連動`、`docs/task-governance/task-completion-judgement.md#コミット許可条件` に従うこと。
+- チャット上の no-findings、口頭確認、サブエージェントメッセージのみを根拠にコミット可と判断してはならない。
+- 文書是正では、無関係な粗粒度進捗更新や重複した台帳同期をコミット着手ゲートとして要求してはならない。
 - Conventional Commits 形式 `<type>(<scope>): <description>` を使う。
 - `feat`、`fix`、`docs`、`refactor`、`test`、`chore`、`build` を基本種別とする。
 - 説明文は日本語、type/scope は ASCII のままにする。

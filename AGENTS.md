@@ -199,8 +199,9 @@ Shell/zsh:
 
 Lua/Neovim:
 
-- Keep existing `configs` / `mappings` / `autocmds` structure under `config/nvim/lua/omy/`.
-- Prefer local changes over large structural rewrites.
+- Use `config/nvim/lua/omy/` as the base area, and restructure `configs` / `mappings` / `autocmds` when needed for strict compliance.
+- Do not optimize for smallest diff or preserving inherited structure.
+- If current structure conflicts with architecture/spec/work definition, redesign to compliant structure, including zero-base rewrites of module/document boundaries when needed.
 
 ## Security
 
@@ -211,6 +212,9 @@ Lua/Neovim:
 ## Commit Rules
 
 - Delegate commit-related tasks to a sub-agent, and only instruct it: "Read `AGENTS.md` and perform commit work."
+- Commit work is explicitly forbidden until commit-start conditions are met in governing records: diff identifier present, required review roles recorded, and aggregated review result is pass. Follow `docs/task-governance/workflow.md#6-コミット着手ゲート`, `docs/task-governance/implementation-review-judgement.md#コミット連動規則`, `docs/task-governance/progress-judgement.md#コミット可否との連動`, and `docs/task-governance/task-completion-judgement.md#コミット許可条件`.
+- Reviewer no-findings in chat, oral confirmation, or sub-agent messages alone never make commit work eligible.
+- For documentation remediation, do not require unrelated coarse-grained progress or duplicate ledger synchronization as a commit gate.
 - Use Conventional Commits format: `<type>(<scope>): <description>`.
 - Preferred types are `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`.
 - Write descriptions in Japanese; keep type/scope in ASCII.

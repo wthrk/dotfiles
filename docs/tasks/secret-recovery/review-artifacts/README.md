@@ -18,8 +18,7 @@
 - [bitwarden-password-manager/review.md](bitwarden-password-manager/review.md)
 - [integration/confirmation.md](integration/confirmation.md)
 - [integration/review.md](integration/review.md)
-- [final-documentation/confirmation.md](final-documentation/confirmation.md)
-- [final-documentation/review.md](final-documentation/review.md)
+- repo-global 文書整合作業の証跡は [../../repo-governance/review-artifacts/README.md](../../repo-governance/review-artifacts/README.md#review-artifacts) を参照する。
 
 ## 正本参照
 

@@ -11,7 +11,7 @@
 
 ## 参照順
 
-1. 全体の進め方は [../../task-governance/workflow.md](../../task-governance/workflow.md#進め方) を参照する。
+1. 全体の進め方は [../../task-governance/workflow.md](../../task-governance/workflow.md#タスク運用ワークフロー) を参照する。
 2. secret-recovery 固有の固定実装単位と実装方針は [../../secret-recovery/implementation-guidelines.md](../../secret-recovery/implementation-guidelines.md#計画依頼の固定実装単位) を参照する。
 3. 現在の状態は [tasks.md](tasks.md#新規マシン秘密情報復旧基盤タスク) を参照する。
 4. 作業内容は `work-items/` 配下を参照する。
