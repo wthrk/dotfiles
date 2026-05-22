@@ -26,6 +26,5 @@
 ## 状態注記
 
 - 現行サイクル状態: `working-tree-current-2026-05-22 の確認完了証跡。`
-- 現行サイクル owner 注記: `この confirmation は working-tree-current-2026-05-22 の未コミット documentation-remediation diff を所有する commit-start 証跡の一部であり、root active item の前進後も失効しない。`
 - スコープ整合注記: `現行サイクルでは exact tracked-file set の列挙を gate に使わず、変更要約と確認手順を正本として扱う。`
 - 履歴分離注記: `2026-05-21 完了は docs-remediation-final-documentation-2026-05-21-001 の履歴事実として confirmation.md に保持し、本記録とは分離する。`

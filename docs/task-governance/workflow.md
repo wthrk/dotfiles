@@ -78,8 +78,6 @@
 - チャットや口頭報告のみを根拠にしていない。
 - 領域固有文書がより厳格な条件を定める場合は、その条件を満たしている。
 - 文書是正の記録は、厳密な tracked-file 数や exact file-set 列挙を commit/review gate にしてはならない。最小記録は「何の変更を確認/レビューしたか」「何の確認を実行したか」「どの判定が返ったか」とする。
-- root active ledger の `現在の作業項目` が次の未完了項目へ進んだ後でも、current diff を明示的に所有する documentation-remediation current cycle が area ledger / confirmation / review 記録で特定できる場合、コミット着手可否はその owning work item の記録で判定してよい。
-- 上記の場合、root active item の前進は既存 current diff の commit-start eligibility を失効させない。コミット担当は、root active item そのものではなく、current diff を所有する work item の現行 confirmation/review 記録を正本として扱う。
 
 文書是正では、レビュー記録を主記録とし、粗粒度進捗同期は任意とする。
 

@@ -16,6 +16,5 @@
   - included documentation targets: `.agents/skills/AGENTS.md`, `.agents/skills/AGENTS_ja.md`, `.agents/skills/dotfiles-task-governance/SKILL.md`, `.agents/skills/implementation-execution/SKILL.md`, `.agents/skills/implementation-review-judgement/SKILL.md`, `.agents/skills/task-completion-judgement/SKILL.md`, `AGENTS*`, `docs/docs-governance.md`, `docs/tasks/README.md`, `docs/secret-recovery/implementation-guidelines.md`, secret-recovery 配下の移管支援/移管証跡文書
 - 現行差分スコープ（working-tree-current-2026-05-22）: task-governance の commit/review gate 簡素化、repo-governance current-cycle records の整合更新、verdict 表示規則統一に直接影響する review artifacts の更新。
 - 現行サイクル証跡（2026-05-22）: `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/{confirmation-2026-05-22.md,review-2026-05-22.md}`
-- 現行サイクル owner 規則: `root active ledger が次の work item へ進んだ後も、working-tree-current-2026-05-22 の未コミット文書差分はこの work item が owner であり、commit-start gate は上記 confirmation/review 記録で継続判定する。`
 - 境界条件: `docs/secret-recovery/implementation-guidelines.md` は active cross-area documentation target として変更セットに含めるが、repo-governance の判定正本（governing source）には含めない。
 - レビュー合格条件: `repo-global 文書整合作業が専用台帳で追跡され、repo-governance が area 固有ガバナンス規約へ依存しないこと。`

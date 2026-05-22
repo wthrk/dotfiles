@@ -94,7 +94,6 @@
 | 必要時の後続対応 | 完了（不要） | `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md` | [workflow.md#タスク運用ワークフロー](../../task-governance/workflow.md#タスク運用ワークフロー) |
 
 - 現行サイクル注記: `2026-05-22 の現行差分識別子 working-tree-current-2026-05-22 について、確認記録とレビュー記録（運用整合/構造・履歴/参照整合の各判定: 合格、および集約後レビュー判定: 合格）を充足し、現行サイクルの documentation-remediation を完了として閉じた。現行サイクルの正本は confirmation-2026-05-22.md と review-2026-05-22.md の変更要約・確認手順・review verdict とする。2026-05-21 完了記録は docs-remediation-final-documentation-2026-05-21-001 の履歴事実として保持し、現行差分の判定とは分離する。`
-- 現行サイクル所有注記: `working-tree-current-2026-05-22 の未コミット documentation-remediation diff は、この作業項目 ガバナンス文書整合 の 2026-05-22 現行サイクル証跡が所有する。root active ledger の 現在の作業項目 が YubiKey へ進んだ後も、この diff の commit-start eligibility は confirmation-2026-05-22.md と review-2026-05-22.md で継続判定する。`
 - 現行サイクル役割実行証跡（2026-05-22）:
   - 実装担当: `impl-agent-repo-governance-current-cycle`
   - 実装担当 agent/run 識別子: `agent:impl-repo-governance-current-cycle / run:2026-05-22-repo-gov-impl-001`
