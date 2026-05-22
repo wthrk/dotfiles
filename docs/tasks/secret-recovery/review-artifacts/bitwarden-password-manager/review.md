@@ -1,6 +1,6 @@
-# bitwarden-password-manager レビュー記録
+# Bitwarden Password Manager レビュー記録
 
-この文書は [tasks.md](../../tasks.md) の作業項目 `bitwarden-password-manager` に対する固定実装単位 `レビュー` の記録先である。
+この文書は `docs/tasks/secret-recovery/tasks.md` の作業項目 `Bitwarden Password Manager` に対する固定実装単位 `レビュー` の記録先である。
 
 ## 実装担当からの引き継ぎ
 
@@ -8,7 +8,7 @@
 - 対象ブランチ: `未記入`
 - 確認開始時 HEAD: `未記入`
 - 対象差分識別子: `未記入`
-- 実装側確認証跡: [confirmation.md](confirmation.md)
+- 実装側確認証跡: `./confirmation.md`
 
 ## レビュー担当チェック項目
 
@@ -46,33 +46,14 @@
 ## 役割別レビュー判定（レビュー担当記入）
 
 - 構造レビュー担当 判定: `未着手`
-- 構造レビュー担当 agent/run 識別子: `未記入`
 - 運用整合レビュー担当 判定: `未着手`
-- 運用整合レビュー担当 agent/run 識別子: `未記入`
 - セキュリティレビュー担当 判定: `未着手`
-- セキュリティレビュー担当 agent/run 識別子: `未記入`
 - 仕様適合レビュー担当 判定: `未着手`
-- 仕様適合レビュー担当 agent/run 識別子: `未記入`
 - 参照整合レビュー担当 判定: `未着手（不要な場合は理由を記録）`
-- 参照整合レビュー担当 agent/run 識別子: `未記入`
-## 役割別フォールバック記録（必要時のみ必須）
+- 起動不能役割がある場合の記録参照: `未記入`
 
-- フォールバック記録の記入規則: [implementation-guidelines.md#planning--implementation--review-の役割分担](../../../../secret-recovery/implementation-guidelines.md#planning--implementation--review-の役割分担)
-- no-reuse の要件: [implementation-guidelines.md#役割別-agentrun-記録義務fresh-subagent--no-reuse-監査](../../../../secret-recovery/implementation-guidelines.md#役割別-agentrun-記録義務fresh-subagent--no-reuse-監査)
-
-- 対象役割: `未記入`
-- 対象役割の agent/run 記録: `未記入`
-- 起動失敗理由: `未記入`
-- 起動失敗証跡: `未記入`
-- 代替実行者: `未記入`
-- 代替実行者 agent/run 識別子: `未記入`
-- no-reuse 規則充足根拠: `未記入`
-
-## 集約判定（進捗判定担当のみ記入）
+## 集約判定
 
 - 集約後レビュー判定: `未着手`
 - 差戻し事項: `未記入`
 - 後続対応判定: `未着手`
-- 進捗判定担当 agent/run 識別子: `未記入`
-- 進捗判定担当が不在時の代替実行有無: `未記入`
-- 代替実行時フォールバック記録参照: `未記入`
