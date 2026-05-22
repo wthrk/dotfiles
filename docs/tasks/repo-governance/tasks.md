@@ -93,7 +93,8 @@
 | レビュー | 完了（2026-05-22 現行サイクル証跡・集約合格） | `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md` | [implementation-review-judgement.md#実装レビュー判定](../../task-governance/implementation-review-judgement.md#実装レビュー判定) |
 | 必要時の後続対応 | 完了（不要） | `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md` | [workflow.md#タスク運用ワークフロー](../../task-governance/workflow.md#タスク運用ワークフロー) |
 
-- 現行サイクル注記: `2026-05-22 の現行差分識別子 working-tree-current-2026-05-22 について、確認記録とレビュー記録（運用整合/構造・履歴/参照整合の no blockers、および集約後レビュー判定: 合格）を充足し、現行サイクルの documentation-remediation を完了として閉じた。差分スコープは total 28 paths（tracked 25 + untracked 3。untracked: docs/tasks/tasks.md, docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/confirmation-2026-05-22.md, docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md）で管理し、2026-05-21 完了記録は docs-remediation-final-documentation-2026-05-21-001 の履歴事実として保持して現行差分の判定とは分離する。`
+- 現行サイクル注記: `2026-05-22 の現行差分識別子 working-tree-current-2026-05-22 について、確認記録とレビュー記録（運用整合/構造・履歴/参照整合の各判定: 合格、および集約後レビュー判定: 合格）を充足し、現行サイクルの documentation-remediation を完了として閉じた。現行サイクルの正本は confirmation-2026-05-22.md と review-2026-05-22.md の変更要約・確認手順・review verdict とする。2026-05-21 完了記録は docs-remediation-final-documentation-2026-05-21-001 の履歴事実として保持し、現行差分の判定とは分離する。`
+- 現行サイクル所有注記: `working-tree-current-2026-05-22 の未コミット documentation-remediation diff は、この作業項目 ガバナンス文書整合 の 2026-05-22 現行サイクル証跡が所有する。root active ledger の 現在の作業項目 が YubiKey へ進んだ後も、この diff の commit-start eligibility は confirmation-2026-05-22.md と review-2026-05-22.md で継続判定する。`
 - 現行サイクル役割実行証跡（2026-05-22）:
   - 実装担当: `impl-agent-repo-governance-current-cycle`
   - 実装担当 agent/run 識別子: `agent:impl-repo-governance-current-cycle / run:2026-05-22-repo-gov-impl-001`
@@ -104,34 +105,9 @@
   - 進捗判定担当: `progress-judge-repo-governance-current-cycle`
   - 進捗判定担当 agent/run 識別子: `agent:progress-repo-governance-current-cycle / run:2026-05-22-repo-gov-progress-001`
 - 現行サイクル対象（working-tree-current-2026-05-22）:
-  - `.agents/skills/AGENTS.md`
-  - `.agents/skills/AGENTS_ja.md`
-  - `.agents/skills/dotfiles-task-governance/SKILL.md`
-  - `.agents/skills/implementation-execution/SKILL.md`
-  - `.agents/skills/implementation-review-judgement/SKILL.md`
-  - `.agents/skills/task-completion-judgement/SKILL.md`
-  - `AGENTS.md`
-  - `AGENTS_ja.md`
-  - `docs/docs-governance.md`
-  - `docs/secret-recovery/implementation-guidelines.md`
-  - `docs/task-governance/implementation-execution.md`
-  - `docs/task-governance/implementation-review-judgement.md`
-  - `docs/task-governance/progress-judgement.md`
-  - `docs/task-governance/task-completion-judgement.md`
-  - `docs/task-governance/task-file-contract.md`
-  - `docs/task-governance/workflow.md`
-  - `docs/tasks/README.md`
-  - `docs/tasks/repo-governance/README.md`
-  - `docs/tasks/repo-governance/review-artifacts/README.md`
-  - `docs/tasks/repo-governance/issue-01-progress.md`
-  - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/confirmation-2026-05-22.md`
-  - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md`
-  - `docs/tasks/repo-governance/tasks.md`
-  - `docs/tasks/repo-governance/work-items/global-documentation-remediation.md`
-  - `docs/tasks/secret-recovery/README.md`
-  - `docs/tasks/secret-recovery/tasks.md`
-  - `docs/tasks/secret-recovery/review-artifacts/_review-template.md`
-  - `docs/tasks/tasks.md`
+  - `task-governance` の commit/review gate 簡素化
+  - `repo-governance` current-cycle confirmation/review/tasks/work-item の整合更新
+  - verdict 表示規則統一に直接影響する `secret-recovery` review artifacts の整形
 
 ## 進捗記録
 

@@ -44,6 +44,10 @@ Use `docs/README.md` and `docs/secret-recovery/README.md` as document entrypoint
 
 - When executing a prompt, extract the document instructions that apply to the current request before starting work, and continue applying them throughout execution.
 - Do not provide proposals, edits, or reports that violate document instructions. If instructions conflict, confirm with the user before starting work.
+- For any task-execution request in this repository (including progress/continuation/complete-type commands), execution must start with orchestration: select the active work item from `docs/tasks/tasks.md` and fix delegation boundaries before any implementation/review/completion action.
+- After active-item selection, the orchestrator may only do one of the following: launch the required delegated roles, or record launch/use failure in the governing record specified by the active item.
+- Before role-launch success/failure handling is finished, the orchestrator must not read target code/spec/tests/review artifacts for implementation judgement, must not run tests, and must not edit files.
+- When the user request is already a task-execution command, the orchestrator must not ask the user for additional delegation permission.
 - For secret-recovery work, an explicit documentation-fix request targets the named documents directly and must not be reinterpreted as implementation progress.
 - For secret-recovery progress/continuation requests, select the active work item from `docs/tasks/tasks.md`, then follow the execution-governing references required by that item under the selected area: treat work items whose primary artifact is executable code as code-first implementation work, and treat work items whose primary artifact is documentation as documentation-primary work that may advance through documentation diffs when required confirmation/review evidence is recorded.
 - For secret-recovery progress/continuation requests, treat each selected work item's `対象コードパス` from its required referenced governing materials as the implementation starting point, not an edit boundary. You may follow directly necessary callers, callees, shared types, ports/adapters, and corresponding tests.
@@ -213,6 +217,7 @@ Lua/Neovim:
 ## Commit Rules
 
 - Delegate commit-related tasks to a sub-agent, and only instruct it: "Read `AGENTS.md` and perform commit work."
+- The actor launched by that exact instruction is the terminal commit sub-agent for the current cycle. It must execute commit work directly and must not recursively delegate commit work again.
 - Commit work is explicitly forbidden until commit-start conditions are met in governing records: diff identifier present, required review roles recorded, and aggregated review result is pass. Follow `docs/task-governance/workflow.md#6-コミット着手ゲート`, `docs/task-governance/implementation-review-judgement.md#コミット連動規則`, `docs/task-governance/progress-judgement.md#コミット可否との連動`, and `docs/task-governance/task-completion-judgement.md#コミット許可条件`.
 - Reviewer no-findings in chat, oral confirmation, or sub-agent messages alone never make commit work eligible.
 - For documentation remediation, do not require unrelated coarse-grained progress or duplicate ledger synchronization as a commit gate.

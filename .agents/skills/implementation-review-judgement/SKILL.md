@@ -36,3 +36,11 @@ Actor binding: while this skill is active, the current actor is the implementati
 - Judge only review-start and aggregation conditions.
 - Delegate completion judgement to `task-completion-judgement`.
 - Select the active item from `docs/tasks/tasks.md`, verify the review target aligns with that item, and follow that item's referenced review artifacts and area task definitions as execution-governing sources.
+- Return reviewer verdicts using the single explicit label set only: `合格`, `要修正`, `不合格`.
+- Start every reviewer response with this exact structure:
+  - `判定: <合格|要修正|不合格>`
+  - `判定要約: <所見なし|主要論点要約>`
+  - `根拠:`
+- Do not use freeform lead verdicts such as `通しません`, `No findings`, `指摘なし`, `no blockers`, or `pass` in place of the explicit `判定` line.
+- When the verdict is `合格`, use `判定要約: 所見なし`.
+- When any concern, residual risk, unresolved doubt, follow-up item, or operational dependency remains, the verdict must be at least `要修正`; record the remediation condition in `根拠:` and do not emit `合格`.

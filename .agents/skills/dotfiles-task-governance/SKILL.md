@@ -35,6 +35,10 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 ## Rules
 
 - Keep context minimal; do not pre-read implementation specs or target code for delegated roles.
+- Any task-execution request starts with orchestration from `docs/tasks/tasks.md` active-item selection.
+- Immediately after active-item selection, the orchestrator may only launch delegated roles or record launch/use failure in the governing record.
+- Before launch success/failure handling is completed, do not read target code/spec/tests/review artifacts for implementation judgement, do not run tests, and do not edit files.
+- If the user request is already a task-execution command, do not ask for additional delegation permission.
 - While using this skill, do not read target implementation code, implementation specs, architecture rules, or review artifacts in order to judge implementation sufficiency yourself. That work belongs to delegated implementation, review, and completion-judgement roles.
 - Treat completion or progress continuation requests as requests to advance the currently selected active work item from the root active ledger (`docs/tasks/tasks.md`), not as permission to sweep branch-wide diffs and close unrelated or inactive items.
 - Do not infer implementation sufficiency, review pass, or completion from coarse signals alone. For work items whose primary artifact is an executable code diff, those judgements are valid only when delegated roles trace the current code against the work-item completion conditions and violation-remediation targets, and confirm that no unresolved items remain.
