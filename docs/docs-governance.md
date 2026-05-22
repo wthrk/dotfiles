@@ -12,7 +12,9 @@
 ## 正本規則
 
 - 共通運用規約は `docs/task-governance/` に置く。
+- active work item の選定正本は `docs/tasks/tasks.md` とする。
 - 領域別の作業管理は `docs/tasks/<area>/` に置く。
+- `docs/tasks/<area>/tasks.md` は存在する場合に限り、領域内の補助台帳/履歴として扱う。
 - レビュー結果の正本は `review-artifacts` とする。
 - 台帳はレビュー証跡への参照を保持すればよく、同一事実の重複記録を必須化しない。
 
@@ -24,5 +26,8 @@
 
 ## 参照規則
 
+- `docs/tasks/tasks.md` で active work item を選定し、以降はその項目が要求する参照先を必須参照として扱う。
+- `docs/tasks/<area>/tasks.md` は active work item が要求している場合のみ必須参照とし、未要求の場合は存在を前提にしない。
+- `docs/tasks/<area>/tasks.md` に active work item 選定子（`現在の作業項目`）を置いてはならない。
 - 参照はファイルパスと見出し名で行う。
 - 正本を移す場合は旧記述を削除または参照化し、二重正本を残さない。

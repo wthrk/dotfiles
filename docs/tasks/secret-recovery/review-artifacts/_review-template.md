@@ -57,8 +57,8 @@
 - 参照整合レビュー担当 agent/run 識別子: `未記入`
 ## 役割別フォールバック記録（必要時のみ必須）
 
-- フォールバック記録の記入規則: [implementation-guidelines.md#planning--implementation--review-の役割分担](../../../secret-recovery/implementation-guidelines.md#planning--implementation--review-の役割分担)
-- no-reuse の要件: [implementation-guidelines.md#役割別-agentrun-記録義務fresh-subagent--no-reuse-監査](../../../secret-recovery/implementation-guidelines.md#役割別-agentrun-記録義務fresh-subagent--no-reuse-監査)
+- フォールバック記録の記入規則: [implementation-guidelines.md](../../../secret-recovery/implementation-guidelines.md)
+- no-reuse の要件: [implementation-guidelines.md](../../../secret-recovery/implementation-guidelines.md)
 
 - 対象役割: `未記入`
 - 対象役割の agent/run 記録: `未記入`
@@ -66,7 +66,7 @@
 - 起動失敗証跡: `未記入`
 - 代替実行者: `未記入`
 - 代替実行者 agent/run 識別子: `未記入`
-- no-reuse 規則充足根拠: `未記入`
+- no-reuse 規則充足根拠: `未記入（代替実行者が current orchestrator/current executor ではないことを明記）`
 
 ## 集約判定（進捗判定担当のみ記入）
 

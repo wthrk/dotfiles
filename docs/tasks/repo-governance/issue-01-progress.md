@@ -6,6 +6,7 @@
 - 子 issue / subtask の識別子: `docs/tasks/repo-governance/tasks.md#ガバナンス文書整合`
 - 段階モデル: `規約計画 -> 実装計画 -> 規約文書更新 -> 確認 -> レビュー -> 必要時の後続対応`
 - 現在状態: `必要時の後続対応（完了（不要））`
+- 注記: `この状態は 2026-05-21 履歴サイクルの記録。2026-05-22 現行サイクルは confirmation/review 証跡（docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/{confirmation-2026-05-22.md,review-2026-05-22.md}）で完了クローズ済み。現行状態は docs/tasks/tasks.md（root active ledger）と docs/tasks/repo-governance/tasks.md を正本参照する。`
 - 復元根拠となる commit / log / issue / PR:
   - `git log -- docs/tasks/repo-governance/`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/confirmation.md`

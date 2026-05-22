@@ -2,18 +2,6 @@
 
 この文書は secret-recovery の進捗台帳である。進め方は [../../task-governance/workflow.md](../../task-governance/workflow.md#タスク運用ワークフロー)、固定実装単位は [../../secret-recovery/implementation-guidelines.md](../../secret-recovery/implementation-guidelines.md#計画依頼の固定実装単位) を参照する。
 
-## 進捗
-
-- 現在の作業項目: `YubiKey`
-- 現在の着手コードパス:
-  - `rust/dotfiles-cli/src/secrets.rs`
-  - `rust/dotfiles-cli/src/secrets/application.rs`
-  - `rust/dotfiles-cli/src/secrets/application/storage_service.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
-  - `rust/dotfiles-cli/tests/secrets_cli.rs`
-
 ## 作業項目一覧
 
 ### YubiKey
@@ -21,6 +9,7 @@
 - 状態: `未開始`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
+- レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -30,7 +19,7 @@
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 次回着手前オーケストレーション記録:
+- 過去サイクル実行記録（履歴・次サイクル再利用禁止）:
   - 実装担当: `impl-agent-yubikey-dryrun`
   - 実装担当 agent/run 識別子: `agent:impl-yubikey-dryrun / run:2026-05-21-yubikey-impl-001`
   - レビュー担当一覧:
@@ -56,6 +45,12 @@
     - no-reuse 規則充足根拠: `代替実行者は他役割と異なる agent 識別子を使用`
   - 現行対象再読確認: `2026-05-21: 対象コードパス 7 件と対応証跡 2 件を再読済み`
   - 境界注記: `dry-run のためコード差分未作成。確認/レビュー/実装状態は前進させない`
+- 次サイクル着手計画スロット（未設定）:
+  - 実装担当: `未設定`
+  - 確認担当: `未設定`
+  - レビュー担当一覧: `未設定`
+  - 進捗判定担当: `未設定`
+  - 着手順序: `未設定`
 - 実装状態: `未実装`
 - 固定実装単位トラッカー:
 
@@ -73,13 +68,14 @@
 - 状態: `未開始`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
+- レビュー記録: [review-artifacts/bitwarden-secrets-manager/review.md](review-artifacts/bitwarden-secrets-manager/review.md#bitwarden-secrets-manager-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 次回着手前オーケストレーション記録:
+- 次サイクル着手計画スロット（未設定）:
   - 実装担当: `未確定`
   - 実装担当 agent/run 識別子: `未確定`
   - レビュー担当一覧:
@@ -102,7 +98,7 @@
     - 起動失敗証跡: `未確定`
     - 代替実行者: `未確定`
     - 代替実行者 agent/run 識別子: `未確定`
-    - no-reuse 規則充足根拠: `未確定`
+    - no-reuse 規則充足根拠: `未確定（代替実行者が current orchestrator/current executor ではない根拠を明記）`
   - 現行対象再読確認: `未確定`
   - 境界注記: `未確定`
 - 実装状態: `未実装`
@@ -121,13 +117,14 @@
 
 - 状態: `未開始`
 - 主成果物: `実コード差分`
-- 作業定義文書: [work-items/gnupg-ssh.md](work-items/gnupg-ssh.md#14-gpg-復元--gpg-agent-ssh-対応)
+- 作業定義文書: [work-items/gnupg-ssh.md](work-items/gnupg-ssh.md)
+- レビュー記録: [review-artifacts/gnupg-ssh/review.md](review-artifacts/gnupg-ssh/review.md)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 次回着手前オーケストレーション記録:
+- 次サイクル着手計画スロット（未設定）:
   - 実装担当: `未確定`
   - 実装担当 agent/run 識別子: `未確定`
   - レビュー担当一覧:
@@ -150,7 +147,7 @@
     - 起動失敗証跡: `未確定`
     - 代替実行者: `未確定`
     - 代替実行者 agent/run 識別子: `未確定`
-    - no-reuse 規則充足根拠: `未確定`
+    - no-reuse 規則充足根拠: `未確定（代替実行者が current orchestrator/current executor ではない根拠を明記）`
   - 現行対象再読確認: `未確定`
   - 境界注記: `未確定`
 - 実装状態: `未実装`
@@ -170,12 +167,13 @@
 - 状態: `未開始`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/git.md](work-items/git.md#15-password-store-復元)
+- レビュー記録: [review-artifacts/git/review.md](review-artifacts/git/review.md#git-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 次回着手前オーケストレーション記録:
+- 次サイクル着手計画スロット（未設定）:
   - 実装担当: `未確定`
   - 実装担当 agent/run 識別子: `未確定`
   - レビュー担当一覧:
@@ -198,7 +196,7 @@
     - 起動失敗証跡: `未確定`
     - 代替実行者: `未確定`
     - 代替実行者 agent/run 識別子: `未確定`
-    - no-reuse 規則充足根拠: `未確定`
+    - no-reuse 規則充足根拠: `未確定（代替実行者が current orchestrator/current executor ではない根拠を明記）`
   - 現行対象再読確認: `未確定`
   - 境界注記: `未確定`
 - 実装状態: `未実装`
@@ -218,12 +216,13 @@
 - 状態: `未開始`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-password-manager.md](work-items/bitwarden-password-manager.md#16-bitwarden-password-manager-cli-ログイン)
+- レビュー記録: [review-artifacts/bitwarden-password-manager/review.md](review-artifacts/bitwarden-password-manager/review.md#bitwarden-password-manager-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 次回着手前オーケストレーション記録:
+- 次サイクル着手計画スロット（未設定）:
   - 実装担当: `未確定`
   - 実装担当 agent/run 識別子: `未確定`
   - レビュー担当一覧:
@@ -246,7 +245,7 @@
     - 起動失敗証跡: `未確定`
     - 代替実行者: `未確定`
     - 代替実行者 agent/run 識別子: `未確定`
-    - no-reuse 規則充足根拠: `未確定`
+    - no-reuse 規則充足根拠: `未確定（代替実行者が current orchestrator/current executor ではない根拠を明記）`
   - 現行対象再読確認: `未確定`
   - 境界注記: `未確定`
 - 実装状態: `未実装`
@@ -266,12 +265,13 @@
 - 状態: `未開始`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/integration.md](work-items/integration.md#17-新規マシン復旧フロー統合)
+- レビュー記録: [review-artifacts/integration/review.md](review-artifacts/integration/review.md)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 次回着手前オーケストレーション記録:
+- 次サイクル着手計画スロット（未設定）:
   - 実装担当: `未確定`
   - 実装担当 agent/run 識別子: `未確定`
   - レビュー担当一覧:
@@ -294,7 +294,7 @@
     - 起動失敗証跡: `未確定`
     - 代替実行者: `未確定`
     - 代替実行者 agent/run 識別子: `未確定`
-    - no-reuse 規則充足根拠: `未確定`
+    - no-reuse 規則充足根拠: `未確定（代替実行者が current orchestrator/current executor ではない根拠を明記）`
   - 現行対象再読確認: `未確定`
   - 境界注記: `未確定`
 - 実装状態: `未実装`

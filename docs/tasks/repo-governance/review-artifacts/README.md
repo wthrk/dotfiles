@@ -4,8 +4,12 @@
 
 ## 配下の項目
 
-- [global-documentation-remediation/confirmation.md](global-documentation-remediation/confirmation.md)
-- [global-documentation-remediation/review.md](global-documentation-remediation/review.md)
+- 現行サイクル（2026-05-22）:
+  - [global-documentation-remediation/confirmation-2026-05-22.md](global-documentation-remediation/confirmation-2026-05-22.md)
+  - [global-documentation-remediation/review-2026-05-22.md](global-documentation-remediation/review-2026-05-22.md)
+- 履歴（2026-05-21）:
+  - [global-documentation-remediation/confirmation.md](global-documentation-remediation/confirmation.md)
+  - [global-documentation-remediation/review.md](global-documentation-remediation/review.md)
 
 ## 正本参照
 
