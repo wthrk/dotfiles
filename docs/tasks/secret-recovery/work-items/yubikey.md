@@ -10,9 +10,88 @@
   - `support` は保護メモリ、補助暗号、割り込み制御などの横断補助だけを持つ。
 - 既存実装の流用方針: `既存コードは参照してよいが、責務境界が規約に合わない場合は大幅な再分割、再配置、削除を前提とする。`
 - 規約違反の解消対象:
-  - `CLI/application/domain/adapters/support` の責務混在
-  - use case 順序と low-level storage 操作の結合
-  - 実機依存、process I/O 依存、保護メモリ依存の境界漏れ
-  - review 時に「動くが構造が規約に合わない」と判定される残存違反
-- レビュー合格条件: `アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。`
+  - **V1** `application.rs` が `adapters` / `adapters::input` を直接 import し、`DeviceBackend` / `RealSecretsBoundary` を直接組み立てている（`application` から `adapter` への依存禁止違反）。
+  - **V2** `application.rs` が `read_hidden_secret` / `read_visible_secret_line` / `read_protected_enrollment_secret_set` / `write_secret_to_stdout` を直接呼び、`println!` による report 出力を行っている（concrete I/O / stdin / stdout policy は `adapter` 所有規則違反）。
+  - **V3** `application.rs` が `let mut device = ...` を全 use case で長寿命に保持し、`serial()` / `verify_pin()` / `check_management_auth_preconditions()` まで呼んでいる（device handle は `adapter` 所有規則違反）。
+  - **V4** `application/real_boundary.rs` が adapter 実装そのものを `application/` 配下に置いている（adapter と application の分離規則違反）。
+  - **V5** `application/storage_service.rs` が永続書き込み、manifest の serde_json parse/serialize、blob decode、device precondition、summary 構築を一緒に持つ（concrete I/O / parser は `adapter` 所有規則違反）。
+  - **V6** `ports.rs` の `EnrollmentSecretSet` が port に DTO を置き、`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む（port への DTO 配置禁止・parser/prompt は `adapter` 所有規則違反）。
+  - **V7** `ports.rs` が `support::protection::{InterruptGuard, ProtectedSecret, SecretSession}` に依存している（port は domain にのみ依存可能規則違反）。
+  - **V8** `domain/model.rs` が `SecretDevice` trait を定義している（port contract は `port` に置く規則違反）。
+  - **V9** `domain/model.rs` が `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` を保持している（summary / reporting DTO は `application` 所有規則違反）。
+  - **V10** `blob.rs` が層無所属のまま wire format / AEAD 暗号化 / content-key 生成 / port 呼び出し / ProtectedSecret 生成を同居させている（単一ファイル責務混在禁止違反）。
+  - **V11** `support/terminal.rs` が TTY 判定 / prompt / raw mode / stdout 書き込みを `support` 配下に置いている（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
+  - **V12** `adapters/input.rs` が hidden prompt / visible prompt / PIN input / stdin ingest / JSON decode / stdout terminal policy を 1 ファイルに集約し、port DTO に直接 decode している（port DTO 依存増幅・adapter 面混在違反）。
+  - **V13** `adapters.rs` が backend selection / test-stub selection / interactive device selection / spare 交換 prompt を同一 surface に混在させている（adapter 面分割規則違反）。
+  - **V14** `secrets.rs` / `adapters/test_stub.rs` / `dotfiles-cli-secrets-test-contract` が production crate の command path に test double を feature-gate で埋め込んでいる（test double は tests 層所有・production export 禁止規則違反）。
+  - **V15** `application.rs` 内部 test module と `application/storage_service_tests.rs` が fake boundary / fake device を production tree 配下に置いている（同上）。
+  - **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
+- 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
+  - `application` が `adapter` の具体型を import しない（V1, V4 の解消）。
+  - `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない（V2, V3 の解消）。
+  - `ports` に DTO / parser / prompt が存在しない（V6 の解消）。
+  - `ports` が `support` に依存しない（V7 の解消）。
+  - `domain` に port contract / summary DTO / I/O 型が存在しない（V8, V9, V16 の解消）。
+  - `support` に terminal I/O / prompt が存在しない（V11 の解消）。
+  - `blob.rs` の責務が単一層に属する（V10 の解消）。
+  - production コードに test double が含まれない（V14, V15 の解消）。
+- レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
+
+## 差戻し条件
+
+以下のいずれか1件でも該当する場合、レビュー担当は `要修正` または `不合格` を返し、実装担当は当該ステップへ差戻しとなる。
+
+- `application` が `adapter` の具体型を import している（V1, V4 未解消）
+- `application` が `println!` / stdin 読み取り / concrete device handle 操作を含む（V2, V3 未解消）
+- `ports` に DTO / parser / prompt が残存している（V6 未解消）
+- `ports` が `support` に依存している（V7 未解消）
+- `domain` に port contract / summary DTO / I/O 型が残存している（V8, V9, V16 未解消）
+- `support` に terminal I/O / prompt が残存している（V11 未解消）
+- `blob.rs` の責務が複数層にまたがっている（V10 未解消）
+- production コードに test double が含まれている（V14, V15 未解消）
+- 「動作する」という事実のみを根拠に完了報告している
 - 粗粒度進捗注記: `#12` の design PR は `#21` として成立済みであり、現段階の主作業は implementation / code review / validation 面である。
+
+## 実装順序ガイド（推奨）
+
+規約違反 V1〜V16 の解消は、依存関係の順序を考慮して以下の順で着手することを推奨する。
+
+1. **V7, V8, V16 を先に解消する**（port / domain の依存整理）
+   - V7：`ports.rs` から `support::protection` 依存を除去
+   - V8：`domain/model.rs` の `SecretDevice` を `ports.rs` へ移設
+   - V16：`SecretDevice::write_unwrapped_key` の `std::io::Write` を除去
+2. **V9 を解消する**（domain の summary DTO 除去）
+   - domain が clean になった後で summary DTO を application 層へ移設
+3. **V6 を解消する**（port の DTO・parser・prompt 除去）
+   - port contract を最小 capability 契約に縮小
+4. **V10 を解消する**（blob.rs の責務分割）
+   - wire format・AEAD・port 呼び出しを各層へ分離
+5. **V11, V12, V13 を解消する**（adapter 面の整理）
+   - terminal I/O・prompt を support から adapter へ移設
+   - adapter 面を個別 adapter に分割
+6. **V4, V5 を解消する**（application 配下の adapter 実装を移設）
+7. **V1, V2, V3 を解消する**（application の concrete I/O 依存を除去）
+8. **V14, V15 を解消する**（test double を production tree から除去）
+
+差戻し時は本ガイドの該当ステップへ戻る。
+
+## 違反ファイルマップ（実装担当参照用）
+
+作業定義の `規約違反の解消対象` V1〜V16 と対象ファイルの対応を示す。
+
+| 違反 | 対象ファイル | 解消操作の方向 |
+|------|------------|--------------|
+| V1, V3 | `src/secrets/application.rs` | adapter import を除去。device handle は adapter 所有へ移設。 |
+| V2 | `src/secrets/application.rs` | `println!` / stdin 読み取りを adapter へ移設。port 経由に統一。 |
+| V4 | `src/secrets/application/real_boundary.rs` | adapters 層へ移設する。 |
+| V5 | `src/secrets/application/storage_service.rs` | serde_json parse / blob decode を adapter へ移設。 |
+| V6 | `src/secrets/ports.rs` | `EnrollmentSecretSet` DTO を除去。`SecretsBoundary` を最小 capability 契約に分割。 |
+| V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去し domain 型経由に変更。 |
+| V8 | `src/secrets/domain/model.rs` | `SecretDevice` を ports 層へ移設。 |
+| V9 | `src/secrets/domain/model.rs` | summary DTO（`EnrollSummary` 等）を application 層へ移設。 |
+| V10 | `src/secrets/blob.rs` | 層ごとに分割し、wire format は domain/wire、AEAD は support/crypto 相当、port 呼び出しは adapter へ。 |
+| V11 | `src/secrets/support/terminal.rs` | adapters/terminal（仮称）へ移設し support からは除去。 |
+| V12 | `src/secrets/adapters/input.rs` | prompt / stdin / JSON decode / stdout policy を個別 adapter に分割。DTO への直接 decode を廃止。 |
+| V13 | `src/secrets/adapters.rs` | backend selection / test-stub selection / device prompt を各専用 adapter に分離。 |
+| V14, V15 | `src/secrets/adapters/test_stub.rs`、`src/secrets/application/storage_service_tests.rs`、`dotfiles-cli-secrets-test-contract` | production feature path から除去し tests/ 層へ移設。 |
+| V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |

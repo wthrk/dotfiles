@@ -4,13 +4,14 @@
 
 ## 現在の作業項目
 
-- `YubiKey`
+- `Bitwarden Secrets Manager`
 
 ## 作業項目一覧
 
 ### YubiKey
 
-- 状態: `未開始`
+- 状態: `完了`
+- GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -27,6 +28,7 @@
 ### Bitwarden Secrets Manager
 
 - 状態: `未開始`
+- GitHub issue: #13
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets/application.rs`
@@ -40,6 +42,7 @@
 ### GnuPG / SSH
 
 - 状態: `未開始`
+- GitHub issue: #14
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -52,6 +55,7 @@
 ### Git
 
 - 状態: `未開始`
+- GitHub issue: #15
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -64,6 +68,7 @@
 ### Bitwarden Password Manager
 
 - 状態: `未開始`
+- GitHub issue: #16
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -76,6 +81,7 @@
 ### 新規マシン復旧フロー統合
 
 - 状態: `未開始`
+- GitHub issue: #17
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
