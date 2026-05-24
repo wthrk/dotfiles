@@ -3,8 +3,6 @@
 //! YubiKey device の実装差を `SecretDevice` port に閉じ、application へ同じ device contract を渡す。
 
 pub(super) mod input;
-pub(crate) mod real_boundary;
-pub(crate) mod storage_io;
 pub(crate) mod terminal;
 #[cfg(feature = "secrets-test-stub")]
 mod test_stub;
