@@ -5,10 +5,23 @@
 
 use crate::Result;
 
-use super::{
-    domain::{self, SecretName},
-    support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
-};
+use super::domain::{PivObjectId, SecretName};
+use super::support::protection::{InterruptGuard, ProtectedSecret, SecretSession};
+
+/// application/storage 操作が要求する最小の YubiKey device capability 契約。
+pub(crate) trait SecretDevice {
+    fn serial(&self) -> u32;
+    fn key_exists(&mut self) -> Result<bool>;
+    fn check_key_generation_preconditions(&mut self) -> Result<()>;
+    fn check_management_auth_preconditions(&mut self) -> Result<()>;
+    fn generate_key(&mut self) -> Result<()>;
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>>;
+    fn requires_pin_input(&self) -> bool;
+    fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>>;
+}
 
 /// 登録に必要な 3 field を同じ保護 session で所有する。
 pub(crate) struct EnrollmentSecretSet<'session> {
@@ -52,7 +65,7 @@ impl<'session> EnrollmentSecretSet<'session> {
 /// 実機 adapter と test stub は同じ入力順序と device 操作順序をこの trait で共有する。
 /// 非対話条件や利用者向け error contract は application 層が所有する。
 pub(crate) trait SecretsBoundary {
-    type Device: domain::SecretDevice;
+    type Device: SecretDevice;
 
     fn stdin_is_terminal(&self) -> bool;
     fn stdout_is_terminal(&self) -> bool;
