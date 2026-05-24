@@ -19,10 +19,7 @@ use yubikey::{
 };
 use zeroize::Zeroizing;
 
-use crate::secrets::{
-    domain::{PivObjectId, SecretDevice},
-    support::{protection::InterruptGuard, write_oaep_unpadded_sha256},
-};
+use crate::secrets::{domain::PivObjectId, ports::SecretDevice, support::protection::InterruptGuard};
 use crate::Result;
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
@@ -430,22 +427,11 @@ impl SecretDevice for YubikeySecretDevice {
         !self.pin_verified
     }
 
-    fn write_unwrapped_key(
-        &mut self,
-        wrapped_key: &[u8],
-        output: &mut impl std::io::Write,
-    ) -> Result<()> {
-        if !self.pin_verified {
-            bail!("YubiKey PIN must be verified before reading stored secrets");
-        }
-        let decrypted = Zeroizing::new(piv::decrypt_data(
-            &mut self.yubikey,
-            wrapped_key,
-            AlgorithmId::Rsa2048,
-            SECRET_SLOT,
-        )?);
-        write_oaep_unpadded_sha256(&decrypted, 256, output)?;
-        Ok(())
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
+        let mut output = Vec::new();
+        self.yubikey
+            .decrypt_data(SECRET_SLOT, wrapped_key, &mut output)?;
+        Ok(output)
     }
 }
 

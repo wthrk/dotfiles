@@ -10,7 +10,8 @@ use clap::{Parser, ValueEnum};
 
 use crate::secrets::{
     blob::{decrypt_secret_protected, encrypt_secret},
-    domain::{self, SecretBlob, SecretDevice, SecretManifest, SecretName},
+    domain::{self, SecretBlob, SecretManifest, SecretName},
+    ports::SecretDevice,
     support::protection::{ProtectedSecret, SecretSession},
 };
 use crate::Result;
@@ -343,7 +344,7 @@ impl SecretDevice for TestDevice {
         self.config.read_pin_from_tty
     }
 
-    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
+    fn unwrap_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         output.write_all(&self.wrap_key(wrapped_key)?)?;
         Ok(())
     }
