@@ -10,15 +10,15 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use zeroize::Zeroize;
 
 use crate::{
+    Result,
     secrets::{
         adapters::terminal,
         support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
     },
-    Result,
 };
 
 #[cfg(test)]
@@ -36,6 +36,23 @@ pub(crate) struct EnrollmentInputSet<'session> {
     pub(crate) bw_email: ProtectedSecret<'session>,
     pub(crate) bw_password: ProtectedSecret<'session>,
     pub(crate) bws_access_token: ProtectedSecret<'session>,
+}
+
+#[cfg(test)]
+impl<'session> EnrollmentInputSet<'session> {
+    fn assert_secret_eq(&self, name: SecretName, expected: &[u8]) {
+        match name {
+            SecretName::BwEmail => self
+                .bw_email
+                .with_secret(|secret| assert_eq!(secret, expected)),
+            SecretName::BwPassword => self
+                .bw_password
+                .with_secret(|secret| assert_eq!(secret, expected)),
+            SecretName::BwsAccessToken => self
+                .bws_access_token
+                .with_secret(|secret| assert_eq!(secret, expected)),
+        }
+    }
 }
 
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。

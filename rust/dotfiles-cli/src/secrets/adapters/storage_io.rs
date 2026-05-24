@@ -6,8 +6,8 @@
 use anyhow::Context;
 
 use crate::{
-    secrets::domain::{PivObjectId, SecretBlob, SecretManifest, SecretName},
     Result,
+    secrets::domain::{PivObjectId, SecretBlob, SecretManifest, SecretName},
 };
 
 /// expected manifest を JSON bytes に直列化する。

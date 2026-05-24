@@ -4,7 +4,7 @@
 
 use std::io::Write;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -101,8 +101,8 @@ mod tests {
     use super::*;
     use rand_core::OsRng;
     use rsa::{
-        traits::{PrivateKeyParts, PublicKeyParts},
         BigUint, Oaep, RsaPrivateKey, RsaPublicKey,
+        traits::{PrivateKeyParts, PublicKeyParts},
     };
 
     #[test]
