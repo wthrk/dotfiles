@@ -5,6 +5,7 @@
 //! error contract を固定する。
 
 use std::{
+    io,
     thread,
     time::{Duration, Instant},
 };
@@ -20,6 +21,7 @@ use yubikey::{
 use zeroize::Zeroizing;
 
 use crate::secrets::{
+    adapters::terminal::{read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter},
     domain::PivObjectId,
     ports::SecretDevice,
     support::{protection::InterruptGuard, write_oaep_unpadded_sha256},
@@ -37,18 +39,9 @@ const SPARE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const SPARE_DETECT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
 
-type SelectCandidateFn<'a> = dyn Fn(&[YubikeySelectionCandidate<'_>], Option<(Instant, &InterruptGuard)>) -> Result<usize>
-    + 'a;
-type WaitForSpareReplacementFn<'a> = dyn Fn(Instant, &InterruptGuard) -> Result<()> + 'a;
-
-pub(crate) struct YubikeyInteraction<'a> {
-    pub(crate) select_candidate: &'a SelectCandidateFn<'a>,
-    pub(crate) wait_for_spare_replacement: &'a WaitForSpareReplacementFn<'a>,
-}
-
-pub(crate) struct YubikeySelectionCandidate<'a> {
-    pub(crate) reader: &'a str,
-    pub(crate) serial: u32,
+struct YubikeySelectionCandidate<'a> {
+    reader: &'a str,
+    serial: u32,
 }
 
 enum InteractiveDiscovery {
@@ -71,14 +64,11 @@ pub(crate) struct YubikeySecretDevice {
 }
 
 /// serial 指定または対話選択で 1 本の YubiKey を開く。
-pub(crate) fn open_device(
-    serial: Option<u32>,
-    io: &YubikeyInteraction<'_>,
-) -> Result<YubikeySecretDevice> {
+pub(crate) fn open_device(serial: Option<u32>) -> Result<YubikeySecretDevice> {
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
-        select_interactive_yubikey(io)?
+        select_interactive_yubikey()?
     };
 
     Ok(YubikeySecretDevice {
@@ -91,13 +81,12 @@ fn open_device_until(
     serial: Option<u32>,
     deadline: Instant,
     interrupt: &InterruptGuard,
-    io: &YubikeyInteraction<'_>,
 ) -> Result<YubikeySecretDevice> {
     interrupt.check_interrupted()?;
     let yubikey = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
-        open_interactive_device_until(deadline, interrupt, io)?
+        open_interactive_device_until(deadline, interrupt)?
     };
     interrupt.check_interrupted()?;
 
@@ -113,12 +102,11 @@ fn open_device_until(
 fn open_interactive_device_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
-    io: &YubikeyInteraction<'_>,
 ) -> Result<YubiKey> {
     loop {
         interrupt.check_interrupted()?;
 
-        match select_interactive_yubikey_until(deadline, interrupt, io) {
+        match select_interactive_yubikey_until(deadline, interrupt) {
             Ok(yubikey) => return Ok(yubikey),
             Err(InteractiveSelectError::NoDevice) => {
                 let now = Instant::now();
@@ -143,10 +131,9 @@ pub(crate) fn open_spare_device(
     spare_serial: Option<u32>,
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
-    io: &YubikeyInteraction<'_>,
 ) -> Result<YubikeySecretDevice> {
     if let Some(spare_serial) = spare_serial {
-        let device = open_device(Some(spare_serial), io)?;
+        let device = open_device(Some(spare_serial))?;
         ensure_spare_serial(&device, primary_serial)?;
         return Ok(device);
     }
@@ -156,12 +143,12 @@ pub(crate) fn open_spare_device(
         if Instant::now() >= deadline {
             bail!(SPARE_WAIT_TIMEOUT_ERROR);
         }
-        let device = open_device_until(None, deadline, interrupt, io)?;
+        let device = open_device_until(None, deadline, interrupt)?;
         if ensure_spare_serial(&device, primary_serial).is_ok() {
             return Ok(device);
         }
 
-        (io.wait_for_spare_replacement)(deadline, interrupt)?;
+        wait_for_spare_replacement(deadline, interrupt)?;
     }
 }
 
@@ -180,8 +167,8 @@ fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>
 ///
 /// 検出結果が 1 本の場合はそのまま選び、複数本ある場合は reader 名と serial を
 /// 表示して番号入力を求める。
-fn select_interactive_yubikey(io: &YubikeyInteraction<'_>) -> Result<YubiKey> {
-    select_interactive_yubikey_with_input(None, false, io).map_err(map_select_interactive_error)
+fn select_interactive_yubikey() -> Result<YubiKey> {
+    select_interactive_yubikey_with_input(None, false).map_err(map_select_interactive_error)
 }
 
 /// deadline 付きの spare 待機中に、接続中の YubiKey から 1 本を選ぶ。
@@ -190,9 +177,8 @@ fn select_interactive_yubikey(io: &YubikeyInteraction<'_>) -> Result<YubiKey> {
 fn select_interactive_yubikey_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
-    io: &YubikeyInteraction<'_>,
 ) -> InteractiveSelectResult<YubiKey> {
-    select_interactive_yubikey_with_input(Some((deadline, interrupt)), true, io)
+    select_interactive_yubikey_with_input(Some((deadline, interrupt)), true)
 }
 
 /// 接続中の YubiKey discovery 結果を 1 本の選択結果へ変換する。
@@ -201,7 +187,6 @@ fn select_interactive_yubikey_until(
 fn select_interactive_yubikey_with_input(
     timed_input: Option<(Instant, &InterruptGuard)>,
     allow_no_device: bool,
-    io: &YubikeyInteraction<'_>,
 ) -> InteractiveSelectResult<YubiKey> {
     let mut context = yubikey::Context::open().map_err(interactive_select_error)?;
     let discovery =
@@ -234,8 +219,8 @@ fn select_interactive_yubikey_with_input(
                         serial: yubikey.serial().0,
                     })
                     .collect::<Vec<_>>();
-                let selected = (io.select_candidate)(&candidates, timed_input)
-                    .map_err(interactive_select_error)?;
+                let selected =
+                    select_yubikey_candidate(&candidates, timed_input).map_err(interactive_select_error)?;
                 let (_, yubikey) = keys
                     .into_iter()
                     .nth(selected)
@@ -287,6 +272,53 @@ fn map_select_interactive_error(err: InteractiveSelectError) -> anyhow::Error {
         InteractiveSelectError::NoDevice => anyhow::anyhow!("no YubiKey detected"),
         InteractiveSelectError::Other(err) => err,
     }
+}
+
+/// 複数の YubiKey 候補を表示し、利用者が選んだ index を返す。
+fn select_yubikey_candidate(
+    candidates: &[YubikeySelectionCandidate<'_>],
+    timed_input: Option<(Instant, &InterruptGuard)>,
+) -> Result<usize> {
+    eprintln!("Select YubiKey:");
+    for (index, candidate) in candidates.iter().enumerate() {
+        eprintln!(
+            "{}: serial {} ({})",
+            index + 1,
+            candidate.serial,
+            candidate.reader
+        );
+    }
+    eprint!("number: ");
+    std::io::Write::flush(&mut io::stderr())?;
+
+    let input = if let Some((deadline, interrupt)) = timed_input {
+        read_terminal_line_until(deadline, interrupt, "timed out waiting for spare YubiKey")?
+    } else {
+        let interrupt = InterruptGuard::install()
+            .context("failed to install interrupt handler for YubiKey selection")?;
+        read_terminal_line_interruptible(&interrupt)?
+    };
+    let selected = input
+        .trim()
+        .parse::<usize>()
+        .map_err(anyhow::Error::from)
+        .context("invalid selection")?;
+    if selected == 0 || selected > candidates.len() {
+        anyhow::bail!("selected YubiKey is out of range");
+    }
+    Ok(selected - 1)
+}
+
+/// primary と同じ device が選ばれた後、spare への差し替え完了を Enter で待つ。
+fn wait_for_spare_replacement(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
+    eprintln!("The selected YubiKey is the primary; replace it with the spare.");
+    eprintln!("Insert the spare YubiKey, then press Enter.");
+    wait_for_enter(
+        deadline,
+        interrupt,
+        "cannot wait for spare YubiKey replacement without a controlling terminal",
+        "timed out waiting for spare YubiKey",
+    )
 }
 
 /// reader open attempts を discovery 状態へ分類する。

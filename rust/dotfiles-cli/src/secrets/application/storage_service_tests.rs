@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::Result;
-use crate::secrets::application::storage_service::{get_protected, put, replace_bws_token, setup};
+use crate::secrets::adapters::{
+    get_secret_protected as get_protected, put_secret as put, replace_bws_token, setup_storage as setup,
+};
 use crate::secrets::domain::{
     BLOB_MAGIC, MANIFEST_APP, NONCE_LEN, PivObjectId, SecretBlob, SecretManifest,
     SecretName, TAG_LEN,

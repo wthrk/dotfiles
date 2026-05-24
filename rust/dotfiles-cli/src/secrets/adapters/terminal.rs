@@ -19,19 +19,19 @@ use crossterm::{
 };
 
 /// 現在の stdin が対話入力を読める TTY かを返す。
-pub(crate) fn stdin_is_terminal() -> bool {
+pub(super) fn stdin_is_terminal() -> bool {
     io::stdin().is_terminal()
 }
 
 /// 現在の stdout が画面表示される TTY かを返す。
-pub(crate) fn stdout_is_terminal() -> bool {
+pub(super) fn stdout_is_terminal() -> bool {
     io::stdout().is_terminal()
 }
 
 /// TTY では prompt を stderr へ表示し、stdin の 1 行を yes/no 応答として返す。
 ///
 /// stdin が TTY でない場合は入力を読まずに `false` を返す。
-pub(crate) fn prompt_yes_no(prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
+pub(super) fn prompt_yes_no(prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
     if !stdin_is_terminal() {
         return Ok(false);
     }
@@ -48,7 +48,7 @@ pub(crate) fn prompt_yes_no(prompt: &str, interrupt: &InterruptGuard) -> Result<
 /// TTY で Enter 入力を待ち、入力完了、期限切れ、中断のいずれかを返す。
 ///
 /// stdin が TTY でない場合と deadline 超過時の error 文言は呼び出し側が指定する。
-pub(crate) fn wait_for_enter(
+pub(super) fn wait_for_enter(
     deadline: Instant,
     interrupt: &InterruptGuard,
     noninteractive_error: &'static str,
@@ -61,7 +61,7 @@ pub(crate) fn wait_for_enter(
 }
 
 /// byte 列を stdout へそのまま書き込む。
-pub(crate) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
+pub(super) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
     io::stdout().lock().write_all(bytes)?;
     Ok(())
 }
@@ -70,7 +70,7 @@ pub(crate) fn write_all_stdout(bytes: &[u8]) -> Result<()> {
 ///
 /// 入力 bytes は `SecretSession` の memory lock 範囲へ直接書き込み、Enter で確定する。
 /// stdin が pipe の場合は controlling terminal を開き、secret payload 用 stdin を消費しない。
-pub(crate) fn read_hidden_input(
+pub(super) fn read_hidden_input(
     prompt: &str,
     limit: usize,
     limit_error: &'static str,
@@ -116,7 +116,7 @@ pub(crate) fn read_hidden_input(
 ///
 /// 標準入出力には portable な非同期 cancel API がないため、読み取り自体は worker thread に任せ、
 /// 呼び出し側は一定間隔で interrupt flag を確認する。
-pub(crate) fn read_terminal_line_interruptible(interrupt: &InterruptGuard) -> Result<String> {
+pub(super) fn read_terminal_line_interruptible(interrupt: &InterruptGuard) -> Result<String> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut input = String::new();
@@ -156,7 +156,7 @@ fn hidden_input_reader() -> Result<Box<dyn io::Read>> {
 ///
 /// Ctrl-C、中断 flag、deadline 超過を同じ loop で監視し、deadline 超過時の error 文言は
 /// 呼び出し側が指定する。
-pub(crate) fn read_terminal_line_until(
+pub(super) fn read_terminal_line_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
     timeout_error: &'static str,

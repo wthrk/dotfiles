@@ -15,12 +15,11 @@ use crate::secrets::domain::{
     KEY_SLOT, PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds,
 };
 use crate::secrets::ports::SecretDevice;
-use super::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 
 /// secret storage 用 PIV key と manifest を新規作成する。
 ///
 /// 既存 key または対象 object が存在する場合は、上書きせず停止する。
-pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
+pub(super) fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
     check_setup_preconditions(device)?;
     device.generate_key()?;
     write_manifest(device)
@@ -29,7 +28,7 @@ pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
 /// setup が永続書き込みを開始できる device 状態か確認する。
 ///
 /// key 生成条件、management auth、既存 key、予約済み object の衝突を検証する。
-pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
+pub(super) fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> {
     device.check_key_generation_preconditions()?;
     device.check_management_auth_preconditions()?;
 
@@ -54,7 +53,7 @@ pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> 
 /// 1 secret を encrypted blob として YubiKey object に保存する。
 ///
 /// manifest が期待値と一致することを確認し、既存 blob は `force` がない限り拒否する。
-pub fn put<D: SecretDevice>(
+pub(super) fn put<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
     secret: &[u8],
@@ -84,7 +83,7 @@ pub fn put<D: SecretDevice>(
 }
 
 /// `put` 実行前に検証できる保存条件を確認する。
-pub fn check_put_preconditions<D: SecretDevice>(
+pub(super) fn check_put_preconditions<D: SecretDevice>(
     device: &mut D,
     name: SecretName,
     force: bool,
@@ -111,7 +110,7 @@ fn check_put_target_writable<D: SecretDevice>(
 /// 1 secret を YubiKey object から読み出して保護済み値へ復号する。
 ///
 /// blob 内の secret id と要求された secret 名が一致しない場合は拒否する。
-pub fn get_protected<'session, D: SecretDevice>(
+pub(super) fn get_protected<'session, D: SecretDevice>(
     device: &mut D,
     name: SecretName,
     session: &'session SecretSession,
@@ -143,31 +142,10 @@ fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result
     Ok(blob)
 }
 
-/// 登録直後の summary 初期値を構築する。
-///
-/// local verify は application の保護境界で実行するため、初期値では `local_storage` を未確認として扱う。
-pub fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
-    let checks = [
-        (CheckName::Setup, CheckStatus::Ok),
-        (CheckName::BwEmail, CheckStatus::Ok),
-        (CheckName::BwPassword, CheckStatus::Ok),
-        (CheckName::BwsAccessToken, CheckStatus::Ok),
-        (CheckName::LocalStorage, CheckStatus::Skipped),
-    ]
-    .into_iter()
-    .collect();
-
-    EnrollSummary {
-        serial,
-        role,
-        checks,
-    }
-}
-
 /// BWS access token の blob を置き換える。
 ///
 /// local verify は呼び出し側の保護境界で実行する。
-pub fn replace_bws_token<D: SecretDevice>(
+pub(super) fn replace_bws_token<D: SecretDevice>(
     device: &mut D,
     token: &[u8],
     session: &SecretSession,

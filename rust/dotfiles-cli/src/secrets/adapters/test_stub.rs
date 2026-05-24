@@ -121,7 +121,7 @@ fn parse_test_stub_secret_name(value: &str) -> std::result::Result<SecretName, S
 ///
 /// 対話的 serial 選択では primary から spare の順に同じ候補列を返し、application の通常
 /// device 選択順序を変えない。
-pub(crate) struct TestDeviceFactory {
+pub(in crate::secrets) struct TestDeviceFactory {
     /// contract から読んだ device 初期状態。
     config: TestStubConfig,
     /// serial 指定なしの対話選択で次に返す serial。
@@ -130,7 +130,7 @@ pub(crate) struct TestDeviceFactory {
 
 impl TestDeviceFactory {
     /// integration test contract の環境変数から device stub factory を構築する。
-    pub(crate) fn from_env() -> Result<Self> {
+    pub(in crate::secrets) fn from_env() -> Result<Self> {
         let config = TestStubConfig::from_env()?;
         Ok(Self {
             config,
@@ -139,7 +139,7 @@ impl TestDeviceFactory {
     }
 
     /// 通常操作対象の device stub を開く。
-    pub(crate) fn open_device(&mut self, serial: Option<u32>) -> Result<TestDevice> {
+    pub(in crate::secrets) fn open_device(&mut self, serial: Option<u32>) -> Result<TestDevice> {
         let serial = serial.unwrap_or_else(|| {
             let serial = self.next_interactive_serial;
             self.next_interactive_serial = SPARE_SERIAL;
@@ -153,7 +153,7 @@ impl TestDeviceFactory {
     /// spare 登録対象の device stub を開く。
     ///
     /// primary と同じ serial は、secret 再保存を始める前に実機 adapter と同じ error で拒否する。
-    pub(crate) fn open_spare_device(
+    pub(in crate::secrets) fn open_spare_device(
         &mut self,
         spare_serial: Option<u32>,
         primary_serial: Option<u32>,
@@ -173,7 +173,7 @@ impl TestDeviceFactory {
 ///
 /// `SecretDevice` port 以外の入力境界は持たず、stdin/stdout/stderr の契約は application の
 /// 通常境界に残す。
-pub(crate) struct TestDevice {
+pub(in crate::secrets) struct TestDevice {
     /// device 固有 serial。AEAD additional data と summary に使う。
     serial: u32,
     /// PIV key が生成済みかを表す stub 状態。
