@@ -36,7 +36,7 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - All detailed orchestration obligations, role-separation rules, state transitions, commit-gate conditions, and fallback handling are defined in `docs/task-governance/workflow.md`. Follow that document as the authoritative source; do not reproduce or reinterpret its rules here.
 - Any task-execution request starts with active-item selection from `docs/tasks/tasks.md` before assigning any role.
 - After active-item selection, the only permitted orchestrator actions are launching required roles or recording launch/use failure. Do not advance to self-execution.
-- Do not ask the user for delegation permission when the user request is already a task-execution command.
+- Do not ask the user for delegation permission when the user request is already a task-execution command. When a task-execution command is received, launch the required subagent roles immediately and autonomously. Delegation is mandatory — do not treat the absence of an explicit spawn request as a reason to stop.
 - Do not reuse a subagent across different task items, different roles, or different cycles of the same task item.
 - When a fresh agent launch fails due to limits, release completed subagents and retry with a fresh agent before considering any alternative.
 - Fallback execution must be delegated to an executor other than the current orchestrator.
