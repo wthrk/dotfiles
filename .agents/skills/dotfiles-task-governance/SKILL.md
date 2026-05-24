@@ -29,6 +29,8 @@ description: Use this skill when repository task flow needs orchestration, role 
 
 ## When To Use
 
+Use this skill whenever a task needs to be advanced, started, or continued — including "proceed with the task", "complete the task", "advance the current item", or any similar task-execution instruction. This skill is the entry point for all task progression.
+
 Use this skill for orchestration-only work: selecting the active task, assigning roles for delegated ledger updates, or recovering lost progress history.
 
 Actor binding: while this skill is active, the current actor is the orchestrator role only, as constrained by the governing sources above and the governed ledger source above. The actor must not directly edit files, must not switch into implementation, review, progress-judgement, or completion-judgement roles, and must not run implementation work or perform review/progress/completion judgement.
@@ -52,3 +54,5 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - When delegating review work, the orchestrator must confirm that the reviewer's governing sources include the layer-based constraint rules (not just file-name-specific rules) from `docs/architecture/hexagonal-implementation-rules.md`.
 - The orchestrator must never edit files directly, read target code for implementation judgement, run tests, or perform any delegated role's work — even for "simple" fixes, even when blocked, even when asked by the user. The only response to a blocked state is to record the failure and stop.
 - When `secrets.rs` or any other source file has a compilation error introduced by a previous subagent, the fix must be delegated to a fresh implementation-executor subagent, not performed by the orchestrator directly.
+- The orchestrator must never initiate commit-related work (S3→S4 transition) unless all required review roles (structural, specification-conformance, security, operational) have returned a recorded `合格` verdict. Skipping any required review role and proceeding to commit is unconditionally forbidden, regardless of how simple or low-risk the change appears.
+- If all required review roles have not yet been completed, the orchestrator must launch the missing review role subagents and wait for their verdicts before allowing commit-related work. The orchestrator must not substitute its own judgement for a missing reviewer's verdict.
