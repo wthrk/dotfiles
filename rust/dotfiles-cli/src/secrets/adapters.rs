@@ -2,6 +2,7 @@
 //!
 //! YubiKey device の実装差を `SecretDevice` port に閉じ、application へ同じ device contract を渡す。
 
+pub(crate) mod boundary;
 pub(super) mod input;
 pub(super) mod terminal;
 #[cfg(feature = "secrets-test-stub")]
@@ -13,6 +14,8 @@ use std::{io, time::Instant};
 
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::domain::PivObjectId;
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::domain::{SecretBlob, SecretManifest, SecretName};
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::ports::SecretDevice;
 use crate::secrets::adapters::terminal::{
@@ -154,6 +157,34 @@ impl SecretDevice for YubikeySecretDevice {
         match self {
             Self::Real(device) => device.unwrap_key(wrapped_key),
             Self::TestStub(device) => device.unwrap_key(wrapped_key),
+        }
+    }
+
+    fn write_expected_manifest(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_expected_manifest(),
+            Self::TestStub(device) => device.write_expected_manifest(),
+        }
+    }
+
+    fn read_manifest(&mut self) -> Result<SecretManifest> {
+        match self {
+            Self::Real(device) => device.read_manifest(),
+            Self::TestStub(device) => device.read_manifest(),
+        }
+    }
+
+    fn write_secret_blob(&mut self, name: SecretName, blob: &SecretBlob) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_secret_blob(name, blob),
+            Self::TestStub(device) => device.write_secret_blob(name, blob),
+        }
+    }
+
+    fn read_secret_blob(&mut self, name: SecretName) -> Result<SecretBlob> {
+        match self {
+            Self::Real(device) => device.read_secret_blob(name),
+            Self::TestStub(device) => device.read_secret_blob(name),
         }
     }
 }

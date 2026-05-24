@@ -4,7 +4,6 @@
 //! device と非対話条件を確定し、平文 secret は `SecretSession` に紐づく保護済み値として
 //! domain の保存操作へ渡す。
 
-mod real_boundary;
 mod summary;
 mod storage_service;
 #[cfg(test)]
@@ -112,7 +111,7 @@ const STDIN_JSON_TTY_ERROR: &str = "--stdin-json requires pipe or redirect input
 ///
 /// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
 pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> Result<()> {
-    let mut boundary = real_boundary::RealSecretsBoundary { backend };
+    let mut boundary = adapters::boundary::RealSecretsBoundary { backend };
     run_with_boundary(options, &mut boundary)
 }
 
@@ -249,7 +248,7 @@ pub(crate) fn read_protected_secret_for_put(
 /// 登録用の 3 field を prompt または stdin JSON から読み込む。
 ///
 /// field ごとの保護境界を同じ session にそろえてから登録用 model にする。
-fn read_enrollment_secret_set_from_user(
+pub(crate) fn read_enrollment_secret_set_from_user(
     stdin_json: bool,
     memory: &SecretSession,
 ) -> Result<EnrollmentSecretSet<'_>> {

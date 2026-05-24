@@ -5,7 +5,7 @@
 
 use crate::Result;
 
-use super::domain::PivObjectId;
+use super::domain::{PivObjectId, SecretBlob, SecretManifest, SecretName};
 
 /// application/storage 操作が要求する最小の YubiKey device capability 契約。
 pub(crate) trait SecretDevice {
@@ -20,4 +20,8 @@ pub(crate) trait SecretDevice {
     fn requires_pin_input(&self) -> bool;
     fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>>;
+    fn write_expected_manifest(&mut self) -> Result<()>;
+    fn read_manifest(&mut self) -> Result<SecretManifest>;
+    fn write_secret_blob(&mut self, name: SecretName, blob: &SecretBlob) -> Result<()>;
+    fn read_secret_blob(&mut self, name: SecretName) -> Result<SecretBlob>;
 }
