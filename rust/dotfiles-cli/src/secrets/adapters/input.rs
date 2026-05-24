@@ -15,6 +15,7 @@ use zeroize::Zeroize;
 
 use crate::{
     secrets::{
+        ports::EnrollmentSecretSet,
         support::{
             protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
             terminal,
@@ -32,13 +33,6 @@ pub(crate) const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 pub(crate) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 pub(crate) const SECRET_STDOUT_TERMINAL_ERROR: &str =
     "refusing to write secret to terminal; redirect stdout to a file or pipe";
-
-/// 登録時の 3 つの秘密値を adapter 内でまとめる入力 DTO。
-pub(crate) struct EnrollmentInputSet<'session> {
-    pub(crate) bw_email: ProtectedSecret<'session>,
-    pub(crate) bw_password: ProtectedSecret<'session>,
-    pub(crate) bws_access_token: ProtectedSecret<'session>,
-}
 
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
 ///
@@ -161,7 +155,7 @@ pub(crate) fn read_protected_enrollment_secret_set<'session>(
     input_limit: usize,
     field_limit: usize,
     memory: &'session SecretSession,
-) -> Result<EnrollmentInputSet<'session>> {
+) -> Result<EnrollmentSecretSet<'session>> {
     let input = ProtectedInputBuffer::read_from(
         reader,
         input_limit,
@@ -176,7 +170,7 @@ fn parse_protected_enrollment_secret_set_json<'session>(
     input: &[u8],
     field_limit: usize,
     memory: &'session SecretSession,
-) -> Result<EnrollmentInputSet<'session>> {
+) -> Result<EnrollmentSecretSet<'session>> {
     EnrollmentSecretSetParser::new(input, field_limit, memory).parse()
 }
 
@@ -222,7 +216,7 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
         }
     }
 
-    fn parse(mut self) -> Result<EnrollmentInputSet<'session>> {
+    fn parse(mut self) -> Result<EnrollmentSecretSet<'session>> {
         self.skip_whitespace();
         self.expect_byte(b'{')?;
 
@@ -268,11 +262,11 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
         let bw_email = bw_email.context("missing field `bw-email`")?;
         let bw_password = bw_password.context("missing field `bw-password`")?;
         let bws_access_token = bws_access_token.context("missing field `bws-access-token`")?;
-        Ok(EnrollmentInputSet {
+        Ok(EnrollmentSecretSet::new(
             bw_email,
             bw_password,
             bws_access_token,
-        })
+        ))
     }
 
     fn parse_json_string_to_plaintext(&mut self) -> Result<String> {
@@ -457,7 +451,7 @@ mod tests {
         input: &[u8],
         field_limit: usize,
         memory: &'session SecretSession,
-    ) -> Result<EnrollmentInputSet<'session>> {
+    ) -> Result<EnrollmentSecretSet<'session>> {
         parse_protected_enrollment_secret_set_json(input, field_limit, memory)
     }
 
