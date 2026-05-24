@@ -5,10 +5,12 @@
 //! 順序と検証結果の JSON 契約を固定する。
 
 use crate::Result;
-use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
+use crate::secrets::support::{
+    blob_crypto::{decrypt_secret_payload, encrypt_secret_payload},
+    protection::{ProtectedSecret, SecretSession},
+};
 use anyhow::{Context, bail};
 
-use crate::secrets::blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::domain::{
     KEY_SLOT, PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds,
 };
@@ -65,7 +67,17 @@ pub fn put<D: SecretDevice>(
 
     check_put_target_writable(device, name, force)?;
 
-    let blob = encrypt_secret(device, name, secret, session)?;
+    let additional_data = name.additional_data(device.serial());
+    let (nonce, ciphertext, tag, content_key) =
+        encrypt_secret_payload(secret, &additional_data, session)?;
+    let wrapped_key = device.wrap_key(&content_key)?;
+    let blob = SecretBlob {
+        name,
+        nonce,
+        wrapped_key,
+        ciphertext,
+        tag,
+    };
     session.check_interrupted()?;
     let mut encoded = blob.encode()?;
     device.write_object(name.object_id(), &mut encoded)
@@ -105,7 +117,17 @@ pub fn get_protected<'session, D: SecretDevice>(
     session: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
     let blob = read_secret_blob(device, name)?;
-    decrypt_secret_protected(device, &blob, session)
+    let additional_data = blob.name.additional_data(device.serial());
+    let unwrapped_key = device.unwrap_key(&blob.wrapped_key)?;
+    decrypt_secret_payload(
+        &unwrapped_key,
+        &blob.nonce,
+        &blob.ciphertext,
+        &blob.tag,
+        &additional_data,
+        session,
+    )
+    .map_err(|_| anyhow::anyhow!("failed to decrypt {}", name))
 }
 
 fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBlob> {

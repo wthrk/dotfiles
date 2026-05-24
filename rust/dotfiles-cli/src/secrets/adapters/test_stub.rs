@@ -9,10 +9,12 @@ use anyhow::{bail, Context};
 use clap::{Parser, ValueEnum};
 
 use crate::secrets::{
-    blob::{decrypt_secret_protected, encrypt_secret},
     domain::{self, SecretBlob, SecretManifest, SecretName},
     ports::SecretDevice,
-    support::protection::{ProtectedSecret, SecretSession},
+    support::{
+        blob_crypto::{decrypt_secret_payload, encrypt_secret_payload},
+        protection::{ProtectedSecret, SecretSession},
+    },
 };
 use crate::Result;
 use dotfiles_cli_secrets_test_contract::{
@@ -296,7 +298,17 @@ impl TestDevice {
         secret: &[u8],
         session: &SecretSession,
     ) -> Result<SecretBlob> {
-        encrypt_secret(self, name, secret, session)
+        let additional_data = name.additional_data(self.serial());
+        let (nonce, ciphertext, tag, content_key) =
+            encrypt_secret_payload(secret, &additional_data, session)?;
+        let wrapped_key = self.wrap_key(&content_key)?;
+        Ok(SecretBlob {
+            name,
+            nonce,
+            wrapped_key,
+            ciphertext,
+            tag,
+        })
     }
 }
 
@@ -391,7 +403,17 @@ impl TestDevice {
         if blob.name != name {
             bail!("YubiKey secret blob name does not match requested {}", name);
         }
-        decrypt_secret_protected(self, &blob, session)
+        let additional_data = blob.name.additional_data(self.serial());
+        let unwrapped_key = self.unwrap_key(&blob.wrapped_key)?;
+        decrypt_secret_payload(
+            &unwrapped_key,
+            &blob.nonce,
+            &blob.ciphertext,
+            &blob.tag,
+            &additional_data,
+            session,
+        )
+        .map_err(|_| anyhow::anyhow!("failed to decrypt {}", name))
     }
 }
 
