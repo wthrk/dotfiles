@@ -42,3 +42,5 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - Do not reuse a subagent across different task items, different roles, or different cycles of the same task item.
 - When a fresh agent launch fails due to limits, release completed subagents and retry with a fresh agent before considering any alternative.
 - Fallback execution must be delegated to an executor other than the current orchestrator.
+- Even when Codex cannot commit due to sandbox constraints, the orchestrator must not perform a commit on its behalf until all required review roles — structural review, specification-conformance review, security review, and operational-consistency review — have each returned a passing verdict. The absence of commit capability in a subagent does not waive any review gate.
+- A passing `cargo check` result does not substitute for a passing verdict from any required review role. Build success is a necessary precondition for compilation, not evidence of architectural, specification, security, or operational correctness.
