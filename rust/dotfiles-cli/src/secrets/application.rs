@@ -14,11 +14,6 @@ use std::collections::BTreeSet;
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
     YubikeyCommand, YubikeyOptions, adapters,
-    adapters::input::{
-        MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, read_hidden_secret,
-        read_protected_enrollment_secret_set, read_protected_stdin_secret,
-        read_visible_secret_line, write_secret_to_stdout,
-    },
     domain::{self, SecretDevice, SecretName},
     ports::{EnrollmentSecretSet, SecretsBoundary},
     support::protection::{ProtectedSecret, SecretSession},
@@ -110,7 +105,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     let output_bytes = session.run_yubikey_operation(|| {
         storage_service::get_protected(&mut device, options.name, &session)
     })?;
-    output_bytes.with_secret(write_secret_to_stdout)?;
+    output_bytes.with_secret(|secret| boundary.write_secret_to_stdout(secret))?;
     Ok(())
 }
 
@@ -150,53 +145,13 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
             .insert(domain::CheckName::LocalStorage, domain::CheckStatus::Ok);
         summary
     };
-    println!("{}", serde_json::to_string_pretty(&summary)?);
+    boundary.write_json_line(&serde_json::to_string_pretty(&summary)?)?;
     Ok(())
 }
 
 /// `put` 用の単一 secret を prompt または stdin から読み込む。
 ///
 /// 読み込んだ直後に session 所属の保護済み値へ移す。
-pub(crate) fn read_protected_secret_for_put(
-    name: SecretName,
-    stdin: bool,
-    memory: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
-    if stdin {
-        read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
-    } else {
-        read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
-    }
-}
-
-/// 登録用の 3 field を prompt または stdin JSON から読み込む。
-///
-/// field ごとの保護境界を同じ session にそろえてから登録用 model にする。
-fn read_enrollment_secret_set_from_user(
-    stdin_json: bool,
-    memory: &SecretSession,
-) -> Result<EnrollmentSecretSet<'_>> {
-    if stdin_json {
-        return read_protected_enrollment_secret_set(
-            std::io::stdin(),
-            MAX_BOOTSTRAP_JSON_LEN,
-            MAX_SINGLE_STDIN_SECRET_LEN,
-            memory,
-        );
-    }
-
-    let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-    let bw_password = read_protected_secret_for_put(SecretName::BwPassword, false, memory)?;
-    let bws_access_token =
-        read_protected_secret_for_put(SecretName::BwsAccessToken, false, memory)?;
-
-    Ok(EnrollmentSecretSet::new(
-        bw_email,
-        bw_password,
-        bws_access_token,
-    ))
-}
-
 /// spare 用 enrollment secrets を取得し、別 device へ登録して local verify まで実行する。
 ///
 /// primary から復号する経路では、復号前に spare 候補と serial 制約を確定する。
@@ -280,7 +235,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         .checks
         .insert(domain::CheckName::LocalStorage, domain::CheckStatus::Ok);
     drop(bootstrap);
-    println!("{}", serde_json::to_string_pretty(&summary)?);
+    boundary.write_json_line(&serde_json::to_string_pretty(&summary)?)?;
     Ok(())
 }
 
@@ -368,7 +323,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
             boundary.read_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
         let rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
         drop(token);
-        println!("{}", serde_json::to_string_pretty(&rotation.summary)?);
+        boundary.write_json_line(&serde_json::to_string_pretty(&rotation.summary)?)?;
         return rotation.result;
     }
 
@@ -383,7 +338,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     let mut summaries = vec![first_rotation.summary];
     if let Err(err) = first_rotation.result {
         drop(token);
-        write_partial_rotate_bws_token_summary(&summaries)?;
+        write_partial_rotate_bws_token_summary(boundary, &summaries)?;
         return Err(err);
     }
     drop(device);
@@ -408,12 +363,12 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 
     if let Err(err) = remaining_result {
         drop(token);
-        write_partial_rotate_bws_token_summary(&summaries)?;
+        write_partial_rotate_bws_token_summary(boundary, &summaries)?;
         return Err(err);
     }
 
     drop(token);
-    println!("{}", serde_json::to_string_pretty(&summaries)?);
+    boundary.write_json_line(&serde_json::to_string_pretty(&summaries)?)?;
     Ok(())
 }
 
@@ -465,14 +420,16 @@ struct PartialRotateBwsTokenSummary<'a> {
 /// rotation 済み device の summary を部分成功 JSON として stdout へ出力する。
 ///
 /// 途中失敗時に、利用者が再実行対象を判別できる情報を残す。
-fn write_partial_rotate_bws_token_summary(summaries: &[domain::VerifySummary]) -> Result<()> {
+fn write_partial_rotate_bws_token_summary<B: SecretsBoundary>(
+    boundary: &mut B,
+    summaries: &[domain::VerifySummary],
+) -> Result<()> {
     if summaries.is_empty() {
         return Ok(());
     }
 
     let partial = PartialRotateBwsTokenSummary { updated: summaries };
-    println!("{}", serde_json::to_string_pretty(&partial)?);
-    Ok(())
+    boundary.write_json_line(&serde_json::to_string_pretty(&partial)?)
 }
 
 fn failed_local_storage_summary(serial: u32) -> domain::VerifySummary {
@@ -508,7 +465,7 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
         for check in &requested {
             summary.checks.insert(*check, domain::CheckStatus::Failed);
         }
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+        boundary.write_json_line(&serde_json::to_string_pretty(&summary)?)?;
         let requested_names = requested
             .iter()
             .map(|check| match check {
@@ -521,7 +478,7 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
         bail!("external checks are not implemented yet: {requested_names}");
     }
 
-    println!("{}", serde_json::to_string_pretty(&summary)?);
+    boundary.write_json_line(&serde_json::to_string_pretty(&summary)?)?;
     Ok(())
 }
 
@@ -637,7 +594,7 @@ fn require_noninteractive_option<B: SecretsBoundary>(
 /// 平文 secret を stdout へ出す経路が端末を向いていないことを確認する。
 fn require_secret_stdout_target<B: SecretsBoundary>(boundary: &B) -> Result<()> {
     if boundary.stdout_is_terminal() {
-        super::adapters::input::reject_secret_stdout_terminal()?;
+        boundary.reject_secret_stdout_terminal()?;
     }
     Ok(())
 }
@@ -756,6 +713,18 @@ mod tests {
             self.prompts
                 .pop_front()
                 .ok_or_else(|| anyhow::anyhow!("fake prompt queue is empty"))
+        }
+
+        fn write_secret_to_stdout(&mut self, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_json_line(&mut self, _line: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn reject_secret_stdout_terminal(&self) -> Result<()> {
+            bail!("refusing to write secret to terminal; redirect stdout to a file or pipe")
         }
     }
 
@@ -943,7 +912,8 @@ mod tests {
 
     #[test]
     fn partial_rotate_summary_skips_output_when_empty() -> Result<()> {
-        write_partial_rotate_bws_token_summary(&[])?;
+        let mut boundary = FakeBoundary::new(vec![]);
+        write_partial_rotate_bws_token_summary(&mut boundary, &[])?;
         Ok(())
     }
 
