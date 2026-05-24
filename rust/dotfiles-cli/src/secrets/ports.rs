@@ -6,12 +6,12 @@
 use crate::Result;
 
 use super::domain::PivObjectId;
+use super::support::protection::{ProtectedSecret, SecretSession};
 
 /// application use case が利用する外部 I/O 境界。
 ///
 /// 実機 adapter と test stub は同じ device 操作順序をこの trait で共有する。
-/// 非対話条件・利用者向け error contract・secret 入力・prompt は application または adapter 層が所有する。
-/// device 取得のみを担う最小 capability 契約。
+/// 非対話条件・device 取得・secret 入力・出力はすべてこの trait を通す。
 pub(crate) trait SecretsBoundary {
     type Device: SecretDevice;
 
@@ -21,6 +21,55 @@ pub(crate) trait SecretsBoundary {
         spare_serial: Option<u32>,
         primary_serial: Option<u32>,
     ) -> Result<Self::Device>;
+
+    /// stdin が対話入力を読める TTY かを返す。
+    fn stdin_is_terminal(&self) -> bool;
+
+    /// stdout が画面表示される TTY かを返す。
+    fn stdout_is_terminal(&self) -> bool;
+
+    /// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
+    fn read_yubikey_pin<'session>(
+        &self,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>>;
+
+    /// echo なしの prompt で 1 行を読み、保護済み値として返す。
+    fn read_hidden_secret<'session>(
+        &self,
+        prompt: &str,
+        limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>>;
+
+    /// 表示 prompt で 1 行を読み、保護済み値として返す。
+    fn read_visible_secret_line<'session>(
+        &self,
+        prompt: &str,
+        limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>>;
+
+    /// stdin から 1 secret を読み、保護済み値として返す。
+    fn read_protected_stdin_secret<'session>(
+        &self,
+        limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>>;
+
+    /// stdin JSON から 3 field を読み、保護済み enrollment secret set として返す。
+    fn read_protected_enrollment_secret_set<'session>(
+        &self,
+        input_limit: usize,
+        field_limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<super::adapters::enrollment_json::EnrollmentSecretSet<'session>>;
+
+    /// 復号済み secret bytes を stdout へ書き込む。stdout が TTY の場合は停止する。
+    fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()>;
+
+    /// summary を JSON として stdout へ出力する。
+    fn write_report(&self, value: &impl serde::Serialize) -> Result<()>;
 }
 
 /// storage 操作が必要とする device API。

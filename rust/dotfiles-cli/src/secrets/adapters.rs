@@ -10,7 +10,7 @@ pub(super) mod input;
 pub(crate) mod manifest;
 mod prompt;
 pub(crate) mod real_boundary;
-mod stdin;
+pub(crate) mod stdin;
 mod stdout;
 pub(super) mod terminal;
 #[cfg(feature = "secrets-test-stub")]

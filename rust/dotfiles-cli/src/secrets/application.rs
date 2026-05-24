@@ -12,13 +12,9 @@ pub(super) mod summary;
 use std::collections::BTreeSet;
 
 use super::{
-    adapters,
     adapters::{
-        input::{
-            read_hidden_secret, read_protected_enrollment_secret_set, read_protected_stdin_secret,
-            read_visible_secret_line, write_secret_to_stdout, EnrollmentSecretSet,
-            MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN,
-        },
+        enrollment_json::{EnrollmentSecretSet, MAX_BOOTSTRAP_JSON_LEN},
+        stdin::MAX_SINGLE_STDIN_SECRET_LEN,
         terminal,
     },
     domain::SecretName,
@@ -34,14 +30,6 @@ const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use"
 const NONINTERACTIVE_PRIMARY_SERIAL_ERROR: &str = "pass --primary-serial in non-interactive use";
 const NONINTERACTIVE_SPARE_SERIAL_ERROR: &str = "pass --spare-serial in non-interactive use";
 const STDIN_JSON_TTY_ERROR: &str = "--stdin-json requires pipe or redirect input";
-
-/// 指定された device backend を使って parse 済み options の use case を開始する。
-///
-/// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
-pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> Result<()> {
-    let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };
-    run_with_boundary(options, &mut boundary)
-}
 
 /// 指定された外部境界を使って parse 済み options の use case を実行する。
 ///
@@ -94,7 +82,7 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
     session.run_yubikey_operation(|| {
         storage_service::check_put_preconditions(&mut device, options.name, options.force)
     })?;
-    let secret = read_protected_secret_for_put(options.name, options.stdin, &session)?;
+    let secret = read_protected_secret_for_put(boundary, options.name, options.stdin, &session)?;
     secret.with_secret(|secret| {
         session.run_yubikey_operation(|| {
             storage_service::put(&mut device, options.name, secret, options.force, &session)
@@ -114,7 +102,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     let output_bytes = session.run_yubikey_operation(|| {
         storage_service::get_protected(&mut device, options.name, &session)
     })?;
-    output_bytes.with_secret(write_secret_to_stdout)?;
+    output_bytes.with_secret(|bytes| boundary.write_secret_to_stdout(bytes))?;
     Ok(())
 }
 
@@ -135,7 +123,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
         if options.stdin_json {
             verify_pin_for_secret_reads(boundary, &mut device, &session)?;
         }
-        let secrets = read_enrollment_secret_set_from_user(options.stdin_json, &session)?;
+        let secrets = read_enrollment_secret_set_from_user(boundary, options.stdin_json, &session)?;
         session.check_interrupted()?;
         if !options.stdin_json {
             verify_pin_for_secret_reads(boundary, &mut device, &session)?;
@@ -154,45 +142,48 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
             .insert(summary::CheckName::LocalStorage, summary::CheckStatus::Ok);
         summary
     };
-    println!("{}", serde_json::to_string_pretty(&summary)?);
+    boundary.write_report(&summary)?;
     Ok(())
 }
 
 /// `put` 用の単一 secret を prompt または stdin から読み込む。
 ///
 /// 読み込んだ直後に session 所属の保護済み値へ移す。
-pub(crate) fn read_protected_secret_for_put(
+fn read_protected_secret_for_put<'session, B: SecretsBoundary>(
+    boundary: &B,
     name: SecretName,
     stdin: bool,
-    memory: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
+    memory: &'session SecretSession,
+) -> Result<ProtectedSecret<'session>> {
     if stdin {
-        read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
+        boundary.read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
     } else {
-        read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
+        boundary.read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
     }
 }
 
 /// 登録用の 3 field を prompt または stdin JSON から読み込む。
 ///
 /// field ごとの保護境界を同じ session にそろえてから登録用 model にする。
-fn read_enrollment_secret_set_from_user(
+fn read_enrollment_secret_set_from_user<'session, B: SecretsBoundary>(
+    boundary: &B,
     stdin_json: bool,
-    memory: &SecretSession,
-) -> Result<EnrollmentSecretSet<'_>> {
+    memory: &'session SecretSession,
+) -> Result<EnrollmentSecretSet<'session>> {
     if stdin_json {
-        return read_protected_enrollment_secret_set(
-            std::io::stdin(),
+        return boundary.read_protected_enrollment_secret_set(
             MAX_BOOTSTRAP_JSON_LEN,
             MAX_SINGLE_STDIN_SECRET_LEN,
             memory,
         );
     }
 
-    let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
-    let bw_password = read_protected_secret_for_put(SecretName::BwPassword, false, memory)?;
+    let bw_email =
+        boundary.read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+    let bw_password =
+        read_protected_secret_for_put(boundary, SecretName::BwPassword, false, memory)?;
     let bws_access_token =
-        read_protected_secret_for_put(SecretName::BwsAccessToken, false, memory)?;
+        read_protected_secret_for_put(boundary, SecretName::BwsAccessToken, false, memory)?;
 
     Ok(EnrollmentSecretSet::new(
         bw_email,
@@ -227,7 +218,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     let (bootstrap, primary_serial, spare) = if options.stdin_json {
         session.check_interrupted()?;
         (
-            read_enrollment_secret_set_from_user(true, &session)?,
+            read_enrollment_secret_set_from_user(boundary, true, &session)?,
             options.primary_serial,
             prepared_spare,
         )
@@ -273,7 +264,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         .checks
         .insert(summary::CheckName::LocalStorage, summary::CheckStatus::Ok);
     drop(bootstrap);
-    println!("{}", serde_json::to_string_pretty(&summary)?);
+    boundary.write_report(&summary)?;
     Ok(())
 }
 
@@ -357,11 +348,15 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     if let Some(serial) = options.serial {
         let mut device = boundary.open_device(Some(serial))?;
         prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
-        let token =
-            read_protected_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
+        let token = read_protected_secret_for_put(
+            boundary,
+            SecretName::BwsAccessToken,
+            options.stdin,
+            &session,
+        )?;
         let rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
         drop(token);
-        println!("{}", serde_json::to_string_pretty(&rotation.summary)?);
+        boundary.write_report(&rotation.summary)?;
         return rotation.result;
     }
 
@@ -369,7 +364,12 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     require_noninteractive_option(options.stdin, "--stdin")?;
     let mut device = boundary.open_device(None)?;
     prepare_bws_token_rotation_device(boundary, &mut device, &session)?;
-    let token = read_protected_secret_for_put(SecretName::BwsAccessToken, options.stdin, &session)?;
+    let token = read_protected_secret_for_put(
+        boundary,
+        SecretName::BwsAccessToken,
+        options.stdin,
+        &session,
+    )?;
     let mut updated_serials = BTreeSet::from([device.serial()]);
     let first_rotation = rotate_bws_token_on_device(&mut device, &token, &session)?;
     let mut summaries = vec![first_rotation.summary];
@@ -405,7 +405,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     }
 
     drop(token);
-    println!("{}", serde_json::to_string_pretty(&summaries)?);
+    boundary.write_report(&summaries)?;
     Ok(())
 }
 

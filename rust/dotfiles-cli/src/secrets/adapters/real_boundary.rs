@@ -4,9 +4,15 @@
 
 use anyhow::Context;
 
-use super::{open_device, open_spare_device, DeviceBackend, YubikeySecretDevice};
+use super::{
+    enrollment_json::EnrollmentSecretSet, input, open_device, open_spare_device, terminal,
+    DeviceBackend, YubikeySecretDevice,
+};
 use crate::{
-    secrets::{ports::SecretsBoundary, support::protection::InterruptGuard},
+    secrets::{
+        ports::SecretsBoundary,
+        support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
+    },
     Result,
 };
 
@@ -30,5 +36,69 @@ impl SecretsBoundary for RealSecretsBoundary {
         let interrupt = InterruptGuard::install()
             .context("failed to install interrupt handler for spare YubiKey")?;
         open_spare_device(&mut self.backend, spare_serial, primary_serial, &interrupt)
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        terminal::stdin_is_terminal()
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        terminal::stdout_is_terminal()
+    }
+
+    fn read_yubikey_pin<'session>(
+        &self,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
+        input::read_yubikey_pin(session)
+    }
+
+    fn read_hidden_secret<'session>(
+        &self,
+        prompt: &str,
+        limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
+        input::read_hidden_secret(prompt, limit, session)
+    }
+
+    fn read_visible_secret_line<'session>(
+        &self,
+        prompt: &str,
+        limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
+        input::read_visible_secret_line(prompt, limit, session)
+    }
+
+    fn read_protected_stdin_secret<'session>(
+        &self,
+        limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<ProtectedSecret<'session>> {
+        input::read_protected_stdin_secret(limit, session)
+    }
+
+    fn read_protected_enrollment_secret_set<'session>(
+        &self,
+        input_limit: usize,
+        field_limit: usize,
+        session: &'session SecretSession,
+    ) -> Result<EnrollmentSecretSet<'session>> {
+        input::read_protected_enrollment_secret_set(
+            std::io::stdin(),
+            input_limit,
+            field_limit,
+            session,
+        )
+    }
+
+    fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()> {
+        input::write_secret_to_stdout(bytes)
+    }
+
+    fn write_report(&self, value: &impl serde::Serialize) -> Result<()> {
+        println!("{}", serde_json::to_string_pretty(value)?);
+        Ok(())
     }
 }
