@@ -78,6 +78,17 @@
 
 差戻し時は本ガイドの該当ステップへ戻る。
 
+## 実装セッション制約
+
+1 回の実装セッションで実施する範囲は、固定実装単位トラッカーの最初の `未着手` ステップのみとする。
+
+- 固定実装単位トラッカーを確認し、最初の `未着手` エントリを特定する
+- そのステップに対応する違反のみを解消する
+- `cargo check -p dotfiles-cli` で成功を確認する
+- トラッカーのそのエントリを `完了` に更新する
+- 変更をコミットする（コミットメッセージにステップ番号と対象違反を含める）
+- 次のステップには進まず停止する
+
 ## 違反ファイルマップ（実装担当参照用）
 
 作業定義の `規約違反の解消対象` V1〜V16 と対象ファイルの対応を示す。
@@ -98,3 +109,16 @@
 | V13 | `src/secrets/adapters.rs` | backend selection / test-stub selection / device prompt を各専用 adapter に分離。 |
 | V14, V15 | `src/secrets/adapters/test_stub.rs`、`src/secrets/application/storage_service_tests.rs`、`dotfiles-cli-secrets-test-contract` | production feature path から除去し tests/ 層へ移設。 |
 | V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
+
+## 固定実装単位トラッカー
+
+| 実装単位 | 状態 | 成果物 | 参照 |
+| --- | --- | --- | --- |
+| 実装 ステップ1: V7,V8,V16（port/domain依存整理） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ2: V9（domain summary DTO除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ3: V6（port DTO/parser/prompt除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ4: V10（blob.rs責務分割） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
