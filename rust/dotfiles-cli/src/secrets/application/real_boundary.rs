@@ -8,13 +8,10 @@ use super::{
 };
 use crate::{
     secrets::{
-        adapters::input::read_yubikey_pin,
+        adapters::{input::read_yubikey_pin, terminal},
         domain::SecretName,
         ports::SecretsBoundary,
-        support::{
-            protection::{InterruptGuard, ProtectedSecret, SecretSession},
-            terminal::{prompt_yes_no, stdin_is_terminal},
-        },
+        support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
     },
     Result,
 };
@@ -34,11 +31,11 @@ impl SecretsBoundary for RealSecretsBoundary {
 
 impl InteractionBoundary for RealSecretsBoundary {
     fn stdin_is_terminal(&self) -> bool {
-        stdin_is_terminal()
+        terminal::stdin_is_terminal()
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        super::super::support::terminal::stdout_is_terminal()
+        terminal::stdout_is_terminal()
     }
 
     fn open_spare_device(
@@ -75,6 +72,6 @@ impl InteractionBoundary for RealSecretsBoundary {
     }
 
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
-        prompt_yes_no(prompt, interrupt)
+        terminal::prompt_yes_no(prompt, interrupt)
     }
 }
