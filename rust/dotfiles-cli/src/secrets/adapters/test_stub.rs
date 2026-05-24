@@ -7,12 +7,15 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context};
 use clap::{Parser, ValueEnum};
+use rand::Rng;
 
 use crate::secrets::{
-    blob::{decrypt_secret_protected, encrypt_secret},
-    domain::{self, SecretBlob, SecretManifest, SecretName},
+    domain::{self, CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretManifest, SecretName},
     ports::SecretDevice,
-    support::protection::{ProtectedSecret, SecretSession},
+    support::{
+        blob_crypto::{decrypt_secret_payload, encrypt_secret_payload},
+        protection::{ProtectedSecret, SecretSession},
+    },
 };
 use crate::Result;
 use dotfiles_cli_secrets_test_contract::{
@@ -296,7 +299,25 @@ impl TestDevice {
         secret: &[u8],
         session: &SecretSession,
     ) -> Result<SecretBlob> {
-        encrypt_secret(self, name, secret, session)
+        let mut content_key = [0_u8; CONTENT_KEY_LEN];
+        rand::rng().fill(&mut content_key);
+        let nonce = rand::random::<[u8; NONCE_LEN]>();
+        let (ciphertext, tag) = encrypt_secret_payload(
+            name,
+            self.serial(),
+            &content_key,
+            &nonce,
+            secret,
+            session,
+        )?;
+        let wrapped_key = self.wrap_key(&content_key)?;
+        Ok(SecretBlob {
+            name,
+            nonce,
+            wrapped_key,
+            ciphertext,
+            tag,
+        })
     }
 }
 
@@ -391,7 +412,16 @@ impl TestDevice {
         if blob.name != name {
             bail!("YubiKey secret blob name does not match requested {}", name);
         }
-        decrypt_secret_protected(self, &blob, session)
+        let unwrapped_key = self.unwrap_key(&blob.wrapped_key)?;
+        decrypt_secret_payload(
+            blob.name,
+            self.serial(),
+            &unwrapped_key,
+            &blob.nonce,
+            &blob.ciphertext,
+            &blob.tag,
+            session,
+        )
     }
 }
 

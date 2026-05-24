@@ -8,12 +8,14 @@ use crate::Result;
 use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
 use anyhow::{Context, bail};
 
-use crate::secrets::blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 use crate::secrets::domain::{
-    KEY_SLOT, PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds,
+    CONTENT_KEY_LEN, KEY_SLOT, NONCE_LEN, PivObjectId, SecretBlob, SecretManifest, SecretName,
+    StorageObjectIds,
 };
 use crate::secrets::ports::SecretDevice;
+use crate::secrets::support::blob_crypto::{decrypt_secret_payload, encrypt_secret_payload};
+use rand::Rng;
 
 /// secret storage 用 PIV key と manifest を新規作成する。
 ///
@@ -65,7 +67,19 @@ pub fn put<D: SecretDevice>(
 
     check_put_target_writable(device, name, force)?;
 
-    let blob = encrypt_secret(device, name, secret, session)?;
+    let mut content_key = [0_u8; CONTENT_KEY_LEN];
+    rand::rng().fill(&mut content_key);
+    let nonce = rand::random::<[u8; NONCE_LEN]>();
+    let (ciphertext, tag) =
+        encrypt_secret_payload(name, device.serial(), &content_key, &nonce, secret, session)?;
+    let wrapped_key = device.wrap_key(&content_key)?;
+    let blob = SecretBlob {
+        name,
+        nonce,
+        wrapped_key,
+        ciphertext,
+        tag,
+    };
     session.check_interrupted()?;
     let mut encoded = blob.encode()?;
     device.write_object(name.object_id(), &mut encoded)
@@ -105,7 +119,16 @@ pub fn get_protected<'session, D: SecretDevice>(
     session: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
     let blob = read_secret_blob(device, name)?;
-    decrypt_secret_protected(device, &blob, session)
+    let unwrapped_key = device.unwrap_key(&blob.wrapped_key)?;
+    decrypt_secret_payload(
+        blob.name,
+        device.serial(),
+        &unwrapped_key,
+        &blob.nonce,
+        &blob.ciphertext,
+        &blob.tag,
+        session,
+    )
 }
 
 fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBlob> {
