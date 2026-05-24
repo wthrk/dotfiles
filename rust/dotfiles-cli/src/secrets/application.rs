@@ -6,6 +6,8 @@
 
 mod summary;
 mod storage_service;
+#[cfg(test)]
+mod storage_service_tests;
 
 use std::collections::BTreeSet;
 

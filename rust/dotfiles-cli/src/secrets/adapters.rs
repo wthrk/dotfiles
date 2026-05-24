@@ -5,34 +5,189 @@
 pub(crate) mod boundary;
 pub(super) mod input;
 pub(super) mod terminal;
+#[cfg(feature = "secrets-test-stub")]
+mod test_stub;
 mod yubikey;
 
 use anyhow::Context;
 use std::{io, time::Instant};
 
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::domain::PivObjectId;
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::domain::{SecretBlob, SecretManifest, SecretName};
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::ports::SecretDevice;
 use crate::secrets::adapters::terminal::{
     read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
 };
 use crate::{secrets::support::protection::InterruptGuard, Result};
 
+#[cfg(feature = "secrets-test-stub")]
+/// CLI 実行で使う YubiKey device adapter の選択状態。
+///
+/// application はこの値を保持するだけで、実機か stub かに応じた別 use case を持たない。
+pub(crate) enum DeviceBackend {
+    /// 実機 YubiKey adapter を使う通常実行。
+    Real,
+    /// CLI 統合テスト用の in-memory device adapter を使う実行。
+    TestStub(test_stub::TestDeviceFactory),
+}
+
+#[cfg(not(feature = "secrets-test-stub"))]
 #[derive(Clone, Copy)]
 /// CLI 実行で使う YubiKey device adapter の選択状態。
 ///
-/// 実行時に利用する device backend は実機 adapter のみに固定する。
+/// 通常 build では実機 adapter だけを持ち、stub 用の実行経路を含めない。
 pub(crate) enum DeviceBackend {
     /// 実機 YubiKey adapter を使う通常実行。
     Real,
 }
 
 impl DeviceBackend {
-    /// 通常実行で使う device backend を構築する。
-    pub(crate) fn real() -> Self {
-        Self::Real
+    #[cfg(feature = "secrets-test-stub")]
+    /// CLI option から device adapter の選択状態を構築する。
+    ///
+    /// `secrets-test-stub` feature 有効時だけ hidden test flag を解釈し、stub の初期状態は
+    /// integration test contract の環境変数から読む。
+    pub(crate) fn from_test_flag(enabled: bool) -> Result<Self> {
+        if enabled {
+            return Ok(Self::TestStub(test_stub::TestDeviceFactory::from_env()?));
+        }
+        Ok(Self::Real)
+    }
+
+    #[cfg(not(feature = "secrets-test-stub"))]
+    /// 通常 build で実機 adapter の選択状態を構築する。
+    ///
+    /// stub 用 flag は clap 定義に存在しないため、この build では常に実機 adapter を選ぶ。
+    pub(crate) fn from_test_flag(_enabled: bool) -> Result<Self> {
+        Ok(Self::Real)
     }
 }
 
+#[cfg(feature = "secrets-test-stub")]
+/// 実機 YubiKey と device stub を同じ `SecretDevice` port として扱う adapter。
+///
+/// `secrets-test-stub` feature でだけ enum になり、application の use case は variant を見ない。
+pub(crate) enum YubikeySecretDevice {
+    /// 実機 YubiKey の PIV device adapter。
+    Real(yubikey::YubikeySecretDevice),
+    /// CLI 統合テスト用の in-memory PIV device adapter。
+    TestStub(test_stub::TestDevice),
+}
+
+#[cfg(not(feature = "secrets-test-stub"))]
 /// 通常 build で application が扱う YubiKey device adapter。
 pub(crate) type YubikeySecretDevice = yubikey::YubikeySecretDevice;
+
+#[cfg(feature = "secrets-test-stub")]
+impl SecretDevice for YubikeySecretDevice {
+    fn serial(&self) -> u32 {
+        match self {
+            Self::Real(device) => device.serial(),
+            Self::TestStub(device) => device.serial(),
+        }
+    }
+
+    fn key_exists(&mut self) -> Result<bool> {
+        match self {
+            Self::Real(device) => device.key_exists(),
+            Self::TestStub(device) => device.key_exists(),
+        }
+    }
+
+    fn check_key_generation_preconditions(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.check_key_generation_preconditions(),
+            Self::TestStub(device) => device.check_key_generation_preconditions(),
+        }
+    }
+
+    fn check_management_auth_preconditions(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.check_management_auth_preconditions(),
+            Self::TestStub(device) => device.check_management_auth_preconditions(),
+        }
+    }
+
+    fn generate_key(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.generate_key(),
+            Self::TestStub(device) => device.generate_key(),
+        }
+    }
+
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Real(device) => device.read_object(object_id),
+            Self::TestStub(device) => device.read_object(object_id),
+        }
+    }
+
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_object(object_id, value),
+            Self::TestStub(device) => device.write_object(object_id, value),
+        }
+    }
+
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
+        match self {
+            Self::Real(device) => device.wrap_key(key),
+            Self::TestStub(device) => device.wrap_key(key),
+        }
+    }
+
+    fn verify_pin(&mut self, pin: &[u8]) -> Result<()> {
+        match self {
+            Self::Real(device) => device.verify_pin(pin),
+            Self::TestStub(device) => device.verify_pin(pin),
+        }
+    }
+
+    fn requires_pin_input(&self) -> bool {
+        match self {
+            Self::Real(device) => device.requires_pin_input(),
+            Self::TestStub(device) => device.requires_pin_input(),
+        }
+    }
+
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
+        match self {
+            Self::Real(device) => device.unwrap_key(wrapped_key),
+            Self::TestStub(device) => device.unwrap_key(wrapped_key),
+        }
+    }
+
+    fn write_expected_manifest(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_expected_manifest(),
+            Self::TestStub(device) => device.write_expected_manifest(),
+        }
+    }
+
+    fn read_manifest(&mut self) -> Result<SecretManifest> {
+        match self {
+            Self::Real(device) => device.read_manifest(),
+            Self::TestStub(device) => device.read_manifest(),
+        }
+    }
+
+    fn write_secret_blob(&mut self, name: SecretName, blob: &SecretBlob) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_secret_blob(name, blob),
+            Self::TestStub(device) => device.write_secret_blob(name, blob),
+        }
+    }
+
+    fn read_secret_blob(&mut self, name: SecretName) -> Result<SecretBlob> {
+        match self {
+            Self::Real(device) => device.read_secret_blob(name),
+            Self::TestStub(device) => device.read_secret_blob(name),
+        }
+    }
+}
 
 /// backend に対応する通常操作対象 device を開く。
 ///
@@ -43,7 +198,20 @@ pub(crate) fn open_device(
 ) -> Result<YubikeySecretDevice> {
     let io = yubikey_interaction();
     match backend {
-        DeviceBackend::Real => yubikey::open_device(serial, &io),
+        #[cfg(feature = "secrets-test-stub")]
+        DeviceBackend::TestStub(factory) => factory
+            .open_device(serial)
+            .map(YubikeySecretDevice::TestStub),
+        DeviceBackend::Real => {
+            #[cfg(feature = "secrets-test-stub")]
+            {
+                yubikey::open_device(serial, &io).map(YubikeySecretDevice::Real)
+            }
+            #[cfg(not(feature = "secrets-test-stub"))]
+            {
+                yubikey::open_device(serial, &io)
+            }
+        }
     }
 }
 
@@ -59,7 +227,21 @@ pub(crate) fn open_spare_device(
 ) -> Result<YubikeySecretDevice> {
     let io = yubikey_interaction();
     match backend {
-        DeviceBackend::Real => yubikey::open_spare_device(spare_serial, primary_serial, interrupt, &io),
+        #[cfg(feature = "secrets-test-stub")]
+        DeviceBackend::TestStub(factory) => factory
+            .open_spare_device(spare_serial, primary_serial)
+            .map(YubikeySecretDevice::TestStub),
+        DeviceBackend::Real => {
+            #[cfg(feature = "secrets-test-stub")]
+            {
+                yubikey::open_spare_device(spare_serial, primary_serial, interrupt, &io)
+                    .map(YubikeySecretDevice::Real)
+            }
+            #[cfg(not(feature = "secrets-test-stub"))]
+            {
+                yubikey::open_spare_device(spare_serial, primary_serial, interrupt, &io)
+            }
+        }
     }
 }
 
