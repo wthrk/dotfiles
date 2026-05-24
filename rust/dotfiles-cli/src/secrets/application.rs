@@ -19,7 +19,7 @@ use super::{
         read_visible_secret_line, write_secret_to_stdout, MAX_BOOTSTRAP_JSON_LEN,
         MAX_SINGLE_STDIN_SECRET_LEN,
     },
-    domain::{self, SecretName},
+    domain::SecretName,
     ports::{self, EnrollmentSecretSet, SecretDevice, SecretsBoundary},
     support::protection::{ProtectedSecret, SecretSession},
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
@@ -662,7 +662,7 @@ fn require_stdin_json_source<B: SecretsBoundary>(boundary: &B, stdin_json: bool)
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Write};
+    use std::io::Cursor;
     use std::{
         cell::RefCell,
         collections::{BTreeMap, VecDeque},
@@ -670,7 +670,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::secrets::support::protection::{InterruptGuard, ProtectedInputBuffer};
+    use crate::secrets::{
+        domain,
+        support::protection::{InterruptGuard, ProtectedInputBuffer},
+    };
 
     struct FakeBoundary {
         devices: VecDeque<FakeDevice>,
