@@ -2,22 +2,21 @@
 //!
 //! YubiKey device の実装差を `SecretDevice` port に閉じ、application へ同じ device contract を渡す。
 
-pub(crate) mod boundary;
 pub(super) mod input;
-pub(crate) mod terminal;
 #[cfg(feature = "secrets-test-stub")]
-#[path = "../../tests/support/secrets_test_stub.rs"]
 mod test_stub;
 mod yubikey;
 
 use anyhow::Context;
+#[cfg(feature = "secrets-test-stub")]
+use std::io::Write;
 use std::{io, time::Instant};
 
-use crate::secrets::adapters::terminal::{
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::domain::{PivObjectId, SecretDevice};
+use crate::secrets::support::terminal::{
     read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
 };
-#[cfg(feature = "secrets-test-stub")]
-use crate::secrets::{domain::PivObjectId, ports::SecretDevice};
 use crate::{Result, secrets::support::protection::InterruptGuard};
 
 #[cfg(feature = "secrets-test-stub")]
@@ -150,10 +149,10 @@ impl SecretDevice for YubikeySecretDevice {
         }
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         match self {
-            Self::Real(device) => device.unwrap_key(wrapped_key),
-            Self::TestStub(device) => device.unwrap_key(wrapped_key),
+            Self::Real(device) => device.write_unwrapped_key(wrapped_key, output),
+            Self::TestStub(device) => device.write_unwrapped_key(wrapped_key, output),
         }
     }
 }

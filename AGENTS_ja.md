@@ -170,7 +170,7 @@ cargo xtask check all
 
 - このリポジトリは Hexagonal Architecture を採用している。層モデル、層ごとの許可成果物・禁止成果物・公開範囲規則は `docs/architecture/hexagonal-implementation-rules.md` に定義されている。
 - `rust/` 配下のコードを実装またはレビューする前に `docs/architecture/hexagonal-implementation-rules.md` を読み、層ベースルールを適用する。
-- `adapter` 層のファイルは port trait の実装のみを公開できる。port trait の実装でない項目は、`pub`・`pub(crate)`・`pub(super)` のいずれであっても層違反であり、除去または private 化しなければならない。ヘルパー関数（stdin 読み取り、プロンプト、JSON デコード、terminal I/O 等）は port trait の実装ではないため、adapter ファイル内で private（`fn`）にとどめなければならない。
+- `adapter` 層のファイルは port trait の実装のみを `pub` で公開できる。それ以外の `pub` 項目は層違反である。
 - `application` 層のファイルに adapter 具体型の import を含めてはならず、`println!` や stdin 読み取りを含めてはならない。
 - 層ベース制約はファイル名固定ルールより優先する。名前付き違反（V1〜V16 等）を解消したように見えても、層ベース違反が残っている場合は解消扱いにならない。
 

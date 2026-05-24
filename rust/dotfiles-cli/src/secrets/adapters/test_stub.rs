@@ -3,21 +3,16 @@
 //! PIV device port だけを in-memory 実装へ差し替え、stdin/stdout/stderr と secret 入力順序は
 //! application の通常境界に従う。
 
-use std::collections::BTreeMap;
-use std::io::Write;
+use std::{collections::BTreeMap, io::Write};
 
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
-use rand::Rng;
 
 use crate::Result;
 use crate::secrets::{
-    domain::{self, CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretManifest, SecretName},
-    ports::SecretDevice,
-    support::{
-        aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
-        protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-    },
+    blob::{decrypt_secret_protected, encrypt_secret},
+    domain::{self, SecretBlob, SecretDevice, SecretManifest, SecretName},
+    support::protection::{ProtectedSecret, SecretSession},
 };
 use dotfiles_cli_secrets_test_contract::{
     CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
@@ -348,8 +343,9 @@ impl SecretDevice for TestDevice {
         self.config.read_pin_from_tty
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        self.wrap_key(wrapped_key)
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
+        output.write_all(&self.wrap_key(wrapped_key)?)?;
+        Ok(())
     }
 }
 
@@ -402,60 +398,4 @@ impl TestDevice {
 /// PIV object ID が secret object に対応する場合だけ secret 名へ戻す。
 fn secret_name_for_object_id(object_id: domain::PivObjectId) -> Option<SecretName> {
     SecretName::iter().find(|name| name.object_id() == object_id)
-}
-
-fn encrypt_secret<D: SecretDevice>(
-    device: &mut D,
-    name: SecretName,
-    secret: &[u8],
-    session: &SecretSession,
-) -> Result<SecretBlob> {
-    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN, session)?;
-    content_key.write_all(&[0; CONTENT_KEY_LEN])?;
-    rand::rng().fill(content_key.as_mut_slice());
-    let nonce = rand::random::<[u8; NONCE_LEN]>();
-    let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
-    let mut ciphertext = ProtectedInputBuffer::new(secret.len(), session)?;
-    ciphertext.write_all(secret)?;
-    let tag = encrypt_detached(
-        &cipher,
-        &nonce,
-        &name.additional_data(device.serial()),
-        ciphertext.as_mut_slice(),
-    )?;
-
-    let wrapped_key = device.wrap_key(content_key.as_slice())?;
-
-    Ok(SecretBlob {
-        name,
-        nonce,
-        wrapped_key,
-        ciphertext: ciphertext.as_slice().to_vec(),
-        tag,
-    })
-}
-
-fn decrypt_secret_protected<'session, D: SecretDevice>(
-    device: &mut D,
-    blob: &SecretBlob,
-    session: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
-    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN + 1, session)?;
-    content_key.write_all(&device.unwrap_key(&blob.wrapped_key)?)?;
-    if content_key.as_slice().len() != CONTENT_KEY_LEN {
-        bail!("unwrapped YubiKey content key has invalid length");
-    }
-
-    let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
-    let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
-    input.write_all(&blob.ciphertext)?;
-    decrypt_detached(
-        &cipher,
-        &blob.nonce,
-        &blob.name.additional_data(device.serial()),
-        input.as_mut_slice(),
-        &blob.tag,
-    )
-    .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
-    input.into_protected_secret(session)
 }

@@ -3,7 +3,7 @@
 //! wire format と暗号処理の詳細は他モジュールへ分離し、このファイルは PIV object、
 //! secret 名、summary JSON の型付き contract を定義する。
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt, io::Write};
 
 use anyhow::{Result as AnyhowResult, bail};
 use serde::{Deserialize, Serialize};
@@ -202,6 +202,101 @@ impl std::fmt::Debug for SecretBlob {
             .finish()
     }
 }
+
+/// storage 操作が必要とする device API。
+///
+/// 実機 YubiKey と fake test double はこの最小操作を共有する。
+pub trait SecretDevice {
+    /// device 固有の serial。AEAD additional data にも含める。
+    fn serial(&self) -> u32;
+    /// secret storage 用 PIV key が存在するか確認する。
+    fn key_exists(&mut self) -> Result<bool>;
+    /// secret storage 用 PIV key 生成に必要な device 固有条件を確認する。
+    fn check_key_generation_preconditions(&mut self) -> Result<()>;
+    /// setup で永続書き込みを始める前に management key 認証可否を確認する。
+    fn check_management_auth_preconditions(&mut self) -> Result<()>;
+    /// secret storage 用 PIV key を device 内で生成する。
+    fn generate_key(&mut self) -> Result<()>;
+    /// PIV data object を読み出す。
+    ///
+    /// object が存在しない場合は `None` を返す。
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
+    /// PIV data object に caller 所有の mutable bytes を保存する。
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
+    /// content encryption key を device の public key で wrap する。
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>>;
+    /// private key operation 前に application 側の PIN 入力境界を通す必要がある状態を表す。
+    fn requires_pin_input(&self) -> bool;
+    /// private key operation の前に、入力済み PIN で PIV session を検証する。
+    fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
+    /// wrapped content encryption key を device 境界内で unwrap し、writer へ書き込む。
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()>;
+}
+
+/// summary に出す確認項目の状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CheckStatus {
+    /// 確認に成功した状態。
+    #[serde(rename = "ok")]
+    Ok,
+    /// 永続書き込み後の確認に失敗した状態。
+    #[serde(rename = "failed")]
+    Failed,
+    /// 現在の実行範囲では省略した確認項目。
+    #[serde(rename = "skipped")]
+    Skipped,
+}
+
+/// enroll 系 command の成功 summary。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EnrollSummary {
+    /// 登録対象 YubiKey の serial。
+    pub serial: u32,
+    /// 登録した YubiKey の role。
+    pub role: YubikeyRole,
+    /// 登録中に完了した確認項目。
+    pub checks: BTreeMap<CheckName, CheckStatus>,
+}
+
+/// YubiKey を primary と spare のどちらとして登録したかを表す role。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum YubikeyRole {
+    /// 正本 secret を最初に登録する primary YubiKey。
+    Primary,
+    /// primary から再暗号化した secret を持つ spare YubiKey。
+    Spare,
+}
+
+/// verify 系 command の成功 summary。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VerifySummary {
+    /// 検証対象 YubiKey の serial。
+    pub serial: u32,
+    /// 実行または省略した確認項目。
+    pub checks: BTreeMap<CheckName, CheckStatus>,
+}
+
+/// summary JSON の `checks` key として使う閉じた確認項目名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckName {
+    /// PIV key と manifest の初期作成。
+    Setup,
+    /// `bw-email` の保存または復号確認。
+    BwEmail,
+    /// `bw-password` の保存または復号確認。
+    BwPassword,
+    /// `bws-access-token` の保存または復号確認。
+    BwsAccessToken,
+    /// YubiKey local storage 上の 3 secret 復号確認。
+    LocalStorage,
+    /// Bitwarden Secrets Manager への接続確認。
+    Bws,
+    /// Bitwarden login secret の妥当性確認。
+    BwLogin,
+}
+
 impl SecretBlob {
     /// secret blob を設計資料の binary wire format に encode する。
     pub fn encode(&self) -> AnyhowResult<Vec<u8>> {
