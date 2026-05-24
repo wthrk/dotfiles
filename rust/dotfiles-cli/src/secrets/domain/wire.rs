@@ -5,14 +5,14 @@
 
 use anyhow::{Context, Result};
 use nom::{
-    Parser,
     bytes::complete::{tag, take},
     combinator::{all_consuming, map_res, verify},
-    number::complete::{be_u8, be_u16, be_u32},
+    number::complete::{be_u16, be_u32, be_u8},
+    Parser,
 };
 
 use super::model::{
-    ALGORITHM_AES_256_GCM, BLOB_MAGIC, BLOB_VERSION, NONCE_LEN, SecretBlob, SecretName, TAG_LEN,
+    SecretBlob, SecretName, ALGORITHM_AES_256_GCM, BLOB_MAGIC, BLOB_VERSION, NONCE_LEN, TAG_LEN,
 };
 
 /// `SecretBlob` を設計資料で固定した binary wire format へ serialize する。

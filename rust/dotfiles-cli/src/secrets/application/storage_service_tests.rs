@@ -2,14 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::Result;
 use crate::secrets::application::storage_service::{get_protected, put, replace_bws_token, setup};
 use crate::secrets::domain::{
-    BLOB_MAGIC, MANIFEST_APP, NONCE_LEN, PivObjectId, SecretBlob, SecretManifest,
-    SecretName, TAG_LEN,
+    PivObjectId, SecretBlob, SecretManifest, SecretName, BLOB_MAGIC, MANIFEST_APP, NONCE_LEN,
+    TAG_LEN,
 };
 use crate::secrets::ports::SecretDevice;
 use crate::secrets::support::protection::SecretSession;
+use crate::Result;
 use anyhow::Context;
 
 struct FakeDevice {
@@ -339,16 +339,14 @@ fn put_requires_force_for_existing_secret() -> Result<()> {
         &session,
     )?;
 
-    assert!(
-        put(
-            &mut device,
-            SecretName::BwsAccessToken,
-            b"new",
-            false,
-            &session
-        )
-        .is_err()
-    );
+    assert!(put(
+        &mut device,
+        SecretName::BwsAccessToken,
+        b"new",
+        false,
+        &session
+    )
+    .is_err());
     put(
         &mut device,
         SecretName::BwsAccessToken,
