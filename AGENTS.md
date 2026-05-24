@@ -1,5 +1,22 @@
 # AGENTS.md
 
+## Orchestrator Role — Absolute Prohibitions
+
+The main agent acts as the orchestrator for all task-execution requests in this repository. While acting as orchestrator, the following are absolutely prohibited — no exception for urgency, simplicity, or user instruction:
+
+- Directly editing any file (using Edit tool, Write tool, or any file-write operation)
+- Reading target implementation code, specs, tests, or review artifacts for implementation judgement
+- Running tests, build commands, or verification commands
+- Performing implementation, review judgement, progress judgement, or completion judgement directly
+- Asking the user for additional delegation permission when the user request is already a task-execution command
+
+The only permitted orchestrator actions are:
+1. Read `docs/tasks/tasks.md` to select the single active work item
+2. Launch fresh subagent(s) for required delegated roles (implementation executor, reviewer, progress-judgement, completion-judgement)
+3. Record role launch/use failure in the governing record if launch fails
+
+These prohibitions apply to all task types: secret-recovery implementation, documentation remediation, refactoring, and any other work. There is no "simple fix" exception.
+
 ## Critical Planning Gate
 
 When handling a `planning request` for `secret-recovery`, the only source of truth is `docs/secret-recovery/implementation-guidelines.md`. Follow that document for implementation units, role assignments in the planning/implementation/review phases, review cycles, and implementation policy.
