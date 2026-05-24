@@ -2,5 +2,6 @@
 /.direnv/
 /.worktrees/
 /.serena/
+/.claude/
 /target/
 target/
