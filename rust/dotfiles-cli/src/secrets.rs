@@ -9,7 +9,6 @@
 
 mod adapters;
 mod application;
-mod blob;
 mod domain;
 mod ports;
 mod support;
@@ -136,7 +135,8 @@ pub(crate) fn run(options: SecretsOptions) -> Result<()> {
     let backend = adapters::DeviceBackend::from_test_flag(options.test_stub_yubikey)?;
     #[cfg(not(feature = "secrets-test-stub"))]
     let backend = adapters::DeviceBackend::from_test_flag(false)?;
-    application::run(options, backend)
+    let mut boundary = adapters::boundary::RealSecretsBoundary { backend };
+    application::run(options, &mut boundary)
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。

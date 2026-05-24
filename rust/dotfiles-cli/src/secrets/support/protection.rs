@@ -162,11 +162,6 @@ impl SecretSession {
         self.interrupt.run_yubikey_operation(operation)
     }
 
-    /// 同じ保護 scope の interrupt guard を貸し出す。
-    pub(crate) fn interrupt(&self) -> &InterruptGuard {
-        &self.interrupt
-    }
-
     /// 一時入力 buffer の memory range を現在の session で lock する。
     pub(super) fn lock_transient_buffer(
         &self,

@@ -73,3 +73,23 @@
 - 参照整合レビュー担当（再レビュー）: `判定: 合格` / 判定要約: 所見なし
 - 集約後レビュー判定: `合格`
 - 集約根拠: 必須レビュー担当（運用整合・参照整合）全員が合格。差戻し修正後に再レビュー実施済み。
+
+## 2026-05-24 adapter 公開制約ドキュメント是正
+
+- 実施日: `2026-05-24`
+- 対象依頼: `hexagonal-implementation-rules.md の adapter 公開制約が pub のみ言及していて pub(crate) を除外していないため、Codex が何度リファクタリングしても adapters/input.rs の pub(crate) 関数群が残留する。pub(crate) を含む全可視性に適用される絶対制約として記述を強化する。AGENTS.md・AGENTS_ja.md・SKILL.md 2ファイルも同様に修正する。`
+- 分類 (`task-list-outside` 固定): `task-list-outside`
+- 責任境界: `docs/architecture/hexagonal-implementation-rules.md`、`AGENTS.md`、`AGENTS_ja.md`、`.agents/skills/implementation-execution/SKILL.md`、`.agents/skills/implementation-review-judgement/SKILL.md` の adapter 公開制約記述のみ。active work item（YubiKey）のソースコード差分・tasks.md の状態は変更しない。
+- 対象差分識別子（着手時に未確定なら `未確定`）: `2026-05-24-adapter-visibility-constraint-remediation`
+- レビュー記録の保存先: `docs/task-governance/review-artifacts/outside-ledger-intake.md`（本記録をもって最小記録とする）
+- 備考（任意）: V12 未解消の根本原因は、ドキュメントが pub のみ明示していたため Codex が pub(crate) を許容していたこと。pub(crate)/pub(super) を含む任意の可視性での非 port-trait-impl 公開を禁止する絶対ルールとして強化する。
+
+## 2026-05-24 YubiKey active item 復帰・リファクタリング実行
+
+- 実施日: `2026-05-24`
+- 対象依頼: `docs/tasks/tasks.md の現在の作業項目を YubiKey に変更し、Codex に完全な V1〜V16 リファクタリングを実行させる。アーキテクチャとの整合を自己確認し、ダメならドキュメントを修正してやり直す。`
+- 分類 (`task-list-outside` 固定): `task-list-outside`
+- 責任境界: `docs/tasks/tasks.md` の `現在の作業項目` を `YubiKey` に変更すること、および Codex による YubiKey V1〜V16 完全リファクタリングの実行と整合確認。active item 変更後は YubiKey 作業項目の状態も `実装中` に更新する。
+- 対象差分識別子（着手時に未確定なら `未確定`）: `2026-05-24-yubikey-full-refactoring`
+- レビュー記録の保存先: `docs/task-governance/review-artifacts/outside-ledger-intake.md`（本記録をもって最小記録とする）
+- 備考（任意）: YubiKey は tasks.md では `完了` と記録されているが、V1〜V16（hexagonal-implementation-rules.md の層ベース制約違反）が未解消のため active item に戻す。Codex が完全に正しいリファクタリングを行うまで実行ループを継続する。

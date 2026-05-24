@@ -16,11 +16,8 @@ use zeroize::Zeroize;
 use crate::{
     Result,
     secrets::{
-        ports::EnrollmentSecretSet,
-        support::{
-            protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-            terminal,
-        },
+        adapters::terminal,
+        support::protection::{ProtectedInputBuffer, SecretSession},
     },
 };
 
@@ -34,50 +31,79 @@ pub(crate) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
 pub(crate) const SECRET_STDOUT_TERMINAL_ERROR: &str =
     "refusing to write secret to terminal; redirect stdout to a file or pipe";
 
+struct EnrollmentSecretSet {
+    bw_email: Vec<u8>,
+    bw_password: Vec<u8>,
+    bws_access_token: Vec<u8>,
+}
+
+impl EnrollmentSecretSet {
+    fn new(bw_email: Vec<u8>, bw_password: Vec<u8>, bws_access_token: Vec<u8>) -> Self {
+        Self {
+            bw_email,
+            bw_password,
+            bws_access_token,
+        }
+    }
+
+    #[cfg(test)]
+    fn assert_secret_eq(&self, name: SecretName, expected: &[u8]) {
+        let actual = match name {
+            SecretName::BwEmail => &self.bw_email,
+            SecretName::BwPassword => &self.bw_password,
+            SecretName::BwsAccessToken => &self.bws_access_token,
+        };
+        assert_eq!(actual, expected);
+    }
+}
+
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
 ///
 /// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。
-pub(crate) fn read_protected_stdin_secret(
-    limit: usize,
-    session: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
+pub(crate) fn read_protected_stdin_secret() -> Result<Vec<u8>> {
+    let session = SecretSession::start()?;
+    let limit = MAX_SINGLE_STDIN_SECRET_LEN;
     if terminal::stdin_is_terminal() {
         bail!("--stdin requires pipe or redirect input");
     }
-    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, session)?;
-    input.into_protected_secret_line(session, limit, "stdin secret input is too large")
+    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, &session)?;
+    let secret =
+        input.into_protected_secret_line(&session, limit, "stdin secret input is too large")?;
+    Ok(secret.with_secret(|s| s.to_vec()))
 }
 
 /// 表示 prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
-pub(crate) fn read_visible_secret_line<'session>(
-    prompt: &str,
-    limit: usize,
-    memory: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
+pub(crate) fn read_visible_secret_line(prompt: &str) -> Result<Vec<u8>> {
+    let session = SecretSession::start()?;
+    let limit = MAX_SINGLE_STDIN_SECRET_LEN;
+    let memory = &session;
     eprint!("{prompt}");
     io::stderr().flush()?;
     let input = read_visible_secret_input(limit, memory)?;
-    input.into_protected_secret_line(memory, limit, "visible secret input is too large")
+    let secret =
+        input.into_protected_secret_line(memory, limit, "visible secret input is too large")?;
+    Ok(secret.with_secret(|s| s.to_vec()))
 }
 
 /// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 読み込んだ bytes に上限を適用する。
-pub(crate) fn read_hidden_secret<'session>(
-    prompt: &str,
-    limit: usize,
-    memory: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
-    terminal::read_hidden_input(prompt, limit, "hidden secret input is too large", memory)?
-        .into_protected_secret_line(memory, limit, "hidden secret input is too large")
+pub(crate) fn read_hidden_secret(prompt: &str) -> Result<Vec<u8>> {
+    let session = SecretSession::start()?;
+    let limit = MAX_SINGLE_STDIN_SECRET_LEN;
+    let memory = &session;
+    let secret =
+        terminal::read_hidden_input(prompt, limit, "hidden secret input is too large", memory)?
+            .into_protected_secret_line(memory, limit, "hidden secret input is too large")?;
+    Ok(secret.with_secret(|s| s.to_vec()))
 }
 
 /// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
-pub(crate) fn read_yubikey_pin<'session>(
-    memory: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
+pub(crate) fn read_yubikey_pin() -> Result<Vec<u8>> {
+    let session = SecretSession::start()?;
+    let memory = &session;
     let pin = terminal::read_hidden_input(
         "YubiKey PIN: ",
         PIV_PIN_MAX_LEN,
@@ -86,7 +112,7 @@ pub(crate) fn read_yubikey_pin<'session>(
     )?
     .into_protected_secret_line(memory, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
     pin.with_secret(validate_yubikey_pin)?;
-    Ok(pin)
+    Ok(pin.with_secret(|s| s.to_vec()))
 }
 
 fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
@@ -150,12 +176,12 @@ fn read_visible_secret_input(limit: usize, memory: &SecretSession) -> Result<Pro
     Ok(input)
 }
 
-pub(crate) fn read_protected_enrollment_secret_set<'session>(
+fn read_protected_enrollment_secret_set(
     reader: impl Read,
     input_limit: usize,
     field_limit: usize,
-    memory: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
+    memory: &SecretSession,
+) -> Result<EnrollmentSecretSet> {
     let input = ProtectedInputBuffer::read_from(
         reader,
         input_limit,
@@ -166,11 +192,11 @@ pub(crate) fn read_protected_enrollment_secret_set<'session>(
         .context("failed to parse bootstrap secret JSON")
 }
 
-fn parse_protected_enrollment_secret_set_json<'session>(
+fn parse_protected_enrollment_secret_set_json(
     input: &[u8],
     field_limit: usize,
-    memory: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
+    memory: &SecretSession,
+) -> Result<EnrollmentSecretSet> {
     EnrollmentSecretSetParser::new(input, field_limit, memory).parse()
 }
 
@@ -216,7 +242,7 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
         }
     }
 
-    fn parse(mut self) -> Result<EnrollmentSecretSet<'session>> {
+    fn parse(mut self) -> Result<EnrollmentSecretSet> {
         self.skip_whitespace();
         self.expect_byte(b'{')?;
 
@@ -278,7 +304,7 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
         String::from_utf8(output).context("JSON object key must be valid UTF-8")
     }
 
-    fn parse_json_string_to_protected_secret(&mut self) -> Result<ProtectedSecret<'session>> {
+    fn parse_json_string_to_protected_secret(&mut self) -> Result<Vec<u8>> {
         let field_limit = self.field_limit;
         let mut input = ProtectedInputBuffer::new(field_limit, self.memory)?;
         self.parse_json_string_into(|bytes| {
@@ -290,7 +316,8 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
             input.write_all(bytes)?;
             Ok(())
         })?;
-        input.into_protected_secret(self.memory)
+        let secret = input.into_protected_secret(self.memory)?;
+        Ok(secret.with_secret(|s| s.to_vec()))
     }
 
     fn parse_json_string_into(
@@ -443,15 +470,28 @@ pub(crate) fn reject_secret_stdout_terminal() -> Result<()> {
     bail!(SECRET_STDOUT_TERMINAL_ERROR);
 }
 
+pub(crate) fn read_enrollment_secret_set_from_json(
+    reader: impl Read,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let session = SecretSession::start()?;
+    let set = read_protected_enrollment_secret_set(
+        reader,
+        MAX_BOOTSTRAP_JSON_LEN,
+        MAX_SINGLE_STDIN_SECRET_LEN,
+        &session,
+    )?;
+    Ok((set.bw_email, set.bw_password, set.bws_access_token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_test_bootstrap_json<'session>(
+    fn parse_test_bootstrap_json(
         input: &[u8],
         field_limit: usize,
-        memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
+        memory: &SecretSession,
+    ) -> Result<EnrollmentSecretSet> {
         parse_protected_enrollment_secret_set_json(input, field_limit, memory)
     }
 

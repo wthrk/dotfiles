@@ -18,7 +18,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
-use super::protection::{InterruptGuard, ProtectedInputBuffer, SecretSession};
+use crate::secrets::support::protection::{InterruptGuard, ProtectedInputBuffer, SecretSession};
 
 /// 現在の stdin が対話入力を読める TTY かを返す。
 pub(crate) fn stdin_is_terminal() -> bool {
