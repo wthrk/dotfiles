@@ -8,8 +8,8 @@ use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
 use crate::Result;
 use anyhow::{bail, Context};
 
+use crate::secrets::adapters::blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
-use crate::secrets::blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::domain::{
     PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, KEY_SLOT,
 };

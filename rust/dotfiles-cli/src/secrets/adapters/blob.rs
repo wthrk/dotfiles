@@ -8,15 +8,15 @@ use std::io::Write;
 use anyhow::bail;
 use rand::Rng;
 
-use crate::Result;
 use crate::secrets::{
-    domain::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretName},
+    domain::{SecretBlob, SecretName, CONTENT_KEY_LEN, NONCE_LEN},
     ports::SecretDevice,
     support::{
         aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
         protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
     },
 };
+use crate::Result;
 
 /// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。
 ///

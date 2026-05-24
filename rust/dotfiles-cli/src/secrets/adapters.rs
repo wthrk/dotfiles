@@ -2,6 +2,7 @@
 //!
 //! YubiKey device の実装差を `SecretDevice` port に閉じ、application へ同じ device contract を渡す。
 
+pub(super) mod blob;
 pub(super) mod input;
 #[cfg(feature = "secrets-test-stub")]
 mod test_stub;
@@ -10,11 +11,11 @@ mod yubikey;
 use anyhow::Context;
 use std::{io, time::Instant};
 
-#[cfg(feature = "secrets-test-stub")]
-use crate::secrets::{domain::PivObjectId, ports::SecretDevice};
 use crate::secrets::support::terminal::{
     read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
 };
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::{domain::PivObjectId, ports::SecretDevice};
 use crate::{secrets::support::protection::InterruptGuard, Result};
 
 #[cfg(feature = "secrets-test-stub")]
