@@ -3,14 +3,14 @@
 //! PIV device port だけを in-memory 実装へ差し替え、stdin/stdout/stderr と secret 入力順序は
 //! application の通常境界に従う。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Write};
 
 use anyhow::{bail, Context};
 use clap::{Parser, ValueEnum};
 
 use crate::secrets::{
     blob::{decrypt_secret_protected, encrypt_secret},
-    domain::{self, SecretBlob, SecretManifest, SecretName}, ports::SecretDevice,
+    domain::{self, SecretBlob, SecretDevice, SecretManifest, SecretName},
     support::protection::{ProtectedSecret, SecretSession},
 };
 use crate::Result;
@@ -343,8 +343,9 @@ impl SecretDevice for TestDevice {
         self.config.read_pin_from_tty
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        self.wrap_key(wrapped_key)
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
+        output.write_all(&self.wrap_key(wrapped_key)?)?;
+        Ok(())
     }
 }
 

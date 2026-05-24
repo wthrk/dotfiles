@@ -10,10 +10,9 @@ use anyhow::{Context, bail};
 
 use crate::secrets::blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::domain::{
-    CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId, SecretBlob, SecretManifest,
-    SecretName, StorageObjectIds, YubikeyRole,
+    CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId, SecretBlob, SecretDevice,
+    SecretManifest, SecretName, StorageObjectIds, YubikeyRole,
 };
-use crate::secrets::ports::SecretDevice;
 
 /// secret storage 用 PIV key と manifest を新規作成する。
 ///
