@@ -2,64 +2,24 @@
 //!
 //! YubiKey device の実装差を `SecretDevice` port に閉じ、application へ同じ device contract を渡す。
 
+mod backend;
 pub(super) mod blob;
+mod device_prompt;
+pub(super) mod enrollment_json;
 pub(super) mod input;
+mod prompt;
+mod stdin;
+mod stdout;
+pub(super) mod terminal;
 #[cfg(feature = "secrets-test-stub")]
 mod test_stub;
 mod yubikey;
 
-use anyhow::Context;
-use std::{io, time::Instant};
-
-use crate::secrets::support::terminal::{
-    read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
-};
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::{domain::PivObjectId, ports::SecretDevice};
 use crate::{secrets::support::protection::InterruptGuard, Result};
 
-#[cfg(feature = "secrets-test-stub")]
-/// CLI 実行で使う YubiKey device adapter の選択状態。
-///
-/// application はこの値を保持するだけで、実機か stub かに応じた別 use case を持たない。
-pub(crate) enum DeviceBackend {
-    /// 実機 YubiKey adapter を使う通常実行。
-    Real,
-    /// CLI 統合テスト用の in-memory device adapter を使う実行。
-    TestStub(test_stub::TestDeviceFactory),
-}
-
-#[cfg(not(feature = "secrets-test-stub"))]
-#[derive(Clone, Copy)]
-/// CLI 実行で使う YubiKey device adapter の選択状態。
-///
-/// 通常 build では実機 adapter だけを持ち、stub 用の実行経路を含めない。
-pub(crate) enum DeviceBackend {
-    /// 実機 YubiKey adapter を使う通常実行。
-    Real,
-}
-
-impl DeviceBackend {
-    #[cfg(feature = "secrets-test-stub")]
-    /// CLI option から device adapter の選択状態を構築する。
-    ///
-    /// `secrets-test-stub` feature 有効時だけ hidden test flag を解釈し、stub の初期状態は
-    /// integration test contract の環境変数から読む。
-    pub(crate) fn from_test_flag(enabled: bool) -> Result<Self> {
-        if enabled {
-            return Ok(Self::TestStub(test_stub::TestDeviceFactory::from_env()?));
-        }
-        Ok(Self::Real)
-    }
-
-    #[cfg(not(feature = "secrets-test-stub"))]
-    /// 通常 build で実機 adapter の選択状態を構築する。
-    ///
-    /// stub 用 flag は clap 定義に存在しないため、この build では常に実機 adapter を選ぶ。
-    pub(crate) fn from_test_flag(_enabled: bool) -> Result<Self> {
-        Ok(Self::Real)
-    }
-}
+pub(crate) use backend::DeviceBackend;
 
 #[cfg(feature = "secrets-test-stub")]
 /// 実機 YubiKey と device stub を同じ `SecretDevice` port として扱う adapter。
@@ -163,7 +123,7 @@ pub(crate) fn open_device(
     backend: &mut DeviceBackend,
     serial: Option<u32>,
 ) -> Result<YubikeySecretDevice> {
-    let io = yubikey_interaction();
+    let io = device_prompt::yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
         DeviceBackend::TestStub(factory) => factory
@@ -192,7 +152,7 @@ pub(crate) fn open_spare_device(
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
-    let io = yubikey_interaction();
+    let io = device_prompt::yubikey_interaction();
     match backend {
         #[cfg(feature = "secrets-test-stub")]
         DeviceBackend::TestStub(factory) => factory
@@ -210,65 +170,4 @@ pub(crate) fn open_spare_device(
             }
         }
     }
-}
-
-/// 実機 YubiKey adapter の対話 I/O 境界を組み立てる。
-///
-/// reader 選択と spare 差し替え待機だけをここへ集約し、`yubikey` module は device 操作へ専念させる。
-fn yubikey_interaction<'a>() -> yubikey::YubikeyInteraction<'a> {
-    yubikey::YubikeyInteraction {
-        select_candidate: &select_yubikey_candidate,
-        wait_for_spare_replacement: &wait_for_spare_replacement,
-    }
-}
-
-/// 複数の YubiKey 候補を表示し、利用者が選んだ index を返す。
-///
-/// 非対話実行の判定は caller 側で完了してから呼ばれるため、この関数は候補表示と番号入力だけを扱う。
-fn select_yubikey_candidate(
-    candidates: &[yubikey::YubikeySelectionCandidate<'_>],
-    timed_input: Option<(Instant, &InterruptGuard)>,
-) -> Result<usize> {
-    eprintln!("Select YubiKey:");
-    for (index, candidate) in candidates.iter().enumerate() {
-        eprintln!(
-            "{}: serial {} ({})",
-            index + 1,
-            candidate.serial,
-            candidate.reader
-        );
-    }
-    eprint!("number: ");
-    std::io::Write::flush(&mut io::stderr())?;
-
-    let input = if let Some((deadline, interrupt)) = timed_input {
-        read_terminal_line_until(deadline, interrupt, "timed out waiting for spare YubiKey")?
-    } else {
-        let interrupt = InterruptGuard::install()
-            .context("failed to install interrupt handler for YubiKey selection")?;
-        read_terminal_line_interruptible(&interrupt)?
-    };
-    let selected = input
-        .trim()
-        .parse::<usize>()
-        .map_err(anyhow::Error::from)
-        .context("invalid selection")?;
-    if selected == 0 || selected > candidates.len() {
-        anyhow::bail!("selected YubiKey is out of range");
-    }
-    Ok(selected - 1)
-}
-
-/// primary と同じ device が選ばれた後、spare への差し替え完了を Enter で待つ。
-///
-/// 待機は spare 登録の deadline と interrupt policy に従う。
-fn wait_for_spare_replacement(deadline: Instant, interrupt: &InterruptGuard) -> Result<()> {
-    eprintln!("The selected YubiKey is the primary; replace it with the spare.");
-    eprintln!("Insert the spare YubiKey, then press Enter.");
-    wait_for_enter(
-        deadline,
-        interrupt,
-        "cannot wait for spare YubiKey replacement without a controlling terminal",
-        "timed out waiting for spare YubiKey",
-    )
 }

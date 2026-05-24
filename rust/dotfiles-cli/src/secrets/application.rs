@@ -14,17 +14,17 @@ use std::collections::BTreeSet;
 
 use super::{
     adapters,
-    adapters::input::{
-        read_hidden_secret, read_protected_enrollment_secret_set, read_protected_stdin_secret,
-        read_visible_secret_line, write_secret_to_stdout, EnrollmentSecretSet,
-        MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN,
+    adapters::{
+        input::{
+            read_hidden_secret, read_protected_enrollment_secret_set, read_protected_stdin_secret,
+            read_visible_secret_line, write_secret_to_stdout, EnrollmentSecretSet,
+            MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN,
+        },
+        terminal,
     },
     domain::SecretName,
     ports::{self, SecretDevice, SecretsBoundary},
-    support::{
-        protection::{ProtectedSecret, SecretSession},
-        terminal,
-    },
+    support::protection::{ProtectedSecret, SecretSession},
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
     YubikeyCommand, YubikeyOptions,
 };
@@ -383,10 +383,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 
     let remaining_result = (|| -> Result<()> {
         while session.run_yubikey_operation(|| {
-            super::support::terminal::prompt_yes_no(
-                "Update another YubiKey? [y/N] ",
-                session.interrupt(),
-            )
+            terminal::prompt_yes_no("Update another YubiKey? [y/N] ", session.interrupt())
         })? {
             session.check_interrupted()?;
             let mut device = boundary.open_device(None)?;
