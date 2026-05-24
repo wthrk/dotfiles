@@ -6,8 +6,8 @@ use super::{adapters, read_enrollment_secret_set_from_user, read_protected_secre
 use crate::{
     secrets::{
         adapters::input::read_yubikey_pin,
+        application::{EnrollmentSecretSet, SecretsBoundary},
         domain::SecretName,
-        ports::{EnrollmentSecretSet, SecretsBoundary},
         support::{
             protection::{InterruptGuard, ProtectedSecret, SecretSession},
             terminal::{prompt_yes_no, stdin_is_terminal},
