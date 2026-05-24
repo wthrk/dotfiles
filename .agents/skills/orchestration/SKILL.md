@@ -25,7 +25,9 @@ description: Use this skill whenever a task-execution instruction is received â€
 
 ## When To Use
 
-Use this skill for any task-execution instruction: file creation, implementation, review, progress judgement, completion judgement, or any other execution request. This skill must be activated before any delegated role is assigned.
+Use this skill for any task-execution instruction: file creation, implementation, review, progress judgement, completion judgement, or any other execution request â€” including any instruction to create files or execute directives of any kind. This skill must be activated before any delegated role is assigned.
+
+When receiving an instruction, derive the orchestration intent from the current message and, when necessary, from prior conversation history. Do not assume context that is not stated; read what is present in the conversation to determine which task items are active and which roles to launch.
 
 This skill is the repository-agnostic entry point for orchestration. For dotfiles-repository-specific orchestration (including secrets-module layer rules and domain-specific delegation constraints), use `dotfiles-task-governance` instead. Use this skill when no repository-specific skill applies.
 
