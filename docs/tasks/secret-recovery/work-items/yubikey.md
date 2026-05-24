@@ -38,6 +38,7 @@
   - `support` に terminal I/O / prompt が存在しない（V11 の解消）。
   - `blob.rs` の責務が単一層に属する（V10 の解消）。
   - production コードに test double が含まれない（V14, V15 の解消）。
+  - `adapters/` 配下の全ファイルで、port trait を実装する型・メソッド以外が `pub`・`pub(crate)`・`pub(super)` で外部公開されていない（V12, V13 の解消）。
 - レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
 
 ## 差戻し条件
@@ -52,6 +53,7 @@
 - `support` に terminal I/O / prompt が残存している（V11 未解消）
 - `blob.rs` の責務が複数層にまたがっている（V10 未解消）
 - production コードに test double が含まれている（V14, V15 未解消）
+- `adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている（V12, V13 未解消）
 - 「動作する」という事実のみを根拠に完了報告している
 - 粗粒度進捗注記: `#12` の design PR は `#21` として成立済みであり、現段階の主作業は implementation / code review / validation 面である。
 
