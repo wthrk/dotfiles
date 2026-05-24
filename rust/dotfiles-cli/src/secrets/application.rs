@@ -9,7 +9,7 @@ mod storage_service;
 #[cfg(test)]
 mod storage_service_tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     EnrollSpareOptions, SecretsCommand, SecretsOptions, VerifyCheck, VerifyYubikeyOptions,
@@ -19,7 +19,7 @@ use super::{
         read_protected_enrollment_secret_set, read_protected_stdin_secret,
         read_visible_secret_line, write_secret_to_stdout,
     },
-    domain::{self, SecretName},
+    domain::SecretName,
     ports::SecretDevice,
     ports::{EnrollmentSecretSet, SecretsBoundary},
     support::protection::{ProtectedSecret, SecretSession},
@@ -31,6 +31,70 @@ const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use"
 const NONINTERACTIVE_PRIMARY_SERIAL_ERROR: &str = "pass --primary-serial in non-interactive use";
 const NONINTERACTIVE_SPARE_SERIAL_ERROR: &str = "pass --spare-serial in non-interactive use";
 const STDIN_JSON_TTY_ERROR: &str = "--stdin-json requires pipe or redirect input";
+
+/// summary に出す確認項目の状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) enum CheckStatus {
+    /// 確認に成功した状態。
+    #[serde(rename = "ok")]
+    Ok,
+    /// 永続書き込み後の確認に失敗した状態。
+    #[serde(rename = "failed")]
+    Failed,
+    /// 現在の実行範囲では省略した確認項目。
+    #[serde(rename = "skipped")]
+    Skipped,
+}
+
+/// YubiKey を primary と spare のどちらとして登録したかを表す role。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum YubikeyRole {
+    /// 正本 secret を最初に登録する primary YubiKey。
+    Primary,
+    /// primary から再暗号化した secret を持つ spare YubiKey。
+    Spare,
+}
+
+/// summary JSON の `checks` key として使う閉じた確認項目名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CheckName {
+    /// PIV key と manifest の初期作成。
+    Setup,
+    /// `bw-email` の保存または復号確認。
+    BwEmail,
+    /// `bw-password` の保存または復号確認。
+    BwPassword,
+    /// `bws-access-token` の保存または復号確認。
+    BwsAccessToken,
+    /// YubiKey local storage 上の 3 secret 復号確認。
+    LocalStorage,
+    /// Bitwarden Secrets Manager への接続確認。
+    Bws,
+    /// Bitwarden login secret の妥当性確認。
+    BwLogin,
+}
+
+/// enroll 系 command の成功 summary。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct EnrollSummary {
+    /// 登録対象 YubiKey の serial。
+    pub(crate) serial: u32,
+    /// 登録した YubiKey の role。
+    pub(crate) role: YubikeyRole,
+    /// 登録中に完了した確認項目。
+    pub(crate) checks: BTreeMap<CheckName, CheckStatus>,
+}
+
+/// verify 系 command の成功 summary。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct VerifySummary {
+    /// 検証対象 YubiKey の serial。
+    pub(crate) serial: u32,
+    /// 実行または省略した確認項目。
+    pub(crate) checks: BTreeMap<CheckName, CheckStatus>,
+}
 
 /// 指定された device backend を使って parse 済み options の use case を開始する。
 ///
@@ -140,7 +204,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
         let mut summary = session.run_yubikey_operation(|| {
             enroll_without_local_verify(
                 &mut device,
-                domain::YubikeyRole::Primary,
+                YubikeyRole::Primary,
                 &secrets,
                 &session,
             )
@@ -148,7 +212,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
         verify_local_storage_protected(&mut device, &session)?;
         summary
             .checks
-            .insert(domain::CheckName::LocalStorage, domain::CheckStatus::Ok);
+            .insert(CheckName::LocalStorage, CheckStatus::Ok);
         summary
     };
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -274,12 +338,12 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         verify_pin_for_secret_reads(boundary, &mut spare, &session)?;
     }
     let mut summary = session.run_yubikey_operation(|| {
-        enroll_without_local_verify(&mut spare, domain::YubikeyRole::Spare, &bootstrap, &session)
+        enroll_without_local_verify(&mut spare, YubikeyRole::Spare, &bootstrap, &session)
     })?;
     verify_local_storage_protected(&mut spare, &session)?;
     summary
         .checks
-        .insert(domain::CheckName::LocalStorage, domain::CheckStatus::Ok);
+        .insert(CheckName::LocalStorage, CheckStatus::Ok);
     drop(bootstrap);
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
@@ -313,10 +377,10 @@ fn read_protected_bootstrap_from_device<'session, D: SecretDevice>(
 /// 3 field の空チェックを完了してから PIV key / manifest 作成へ進む。
 fn enroll_without_local_verify<D: SecretDevice>(
     device: &mut D,
-    role: domain::YubikeyRole,
+    role: YubikeyRole,
     secrets: &EnrollmentSecretSet<'_>,
     session: &SecretSession,
-) -> Result<domain::EnrollSummary> {
+) -> Result<EnrollSummary> {
     secrets.bw_email.with_secret(|secret| {
         if secret.is_empty() {
             bail!("{} must not be empty", SecretName::BwEmail);
@@ -454,19 +518,19 @@ fn rotate_bws_token_on_device<D: SecretDevice>(
 }
 
 struct RotateBwsTokenResult {
-    summary: domain::VerifySummary,
+    summary: VerifySummary,
     result: Result<()>,
 }
 
 #[derive(serde::Serialize)]
 struct PartialRotateBwsTokenSummary<'a> {
-    updated: &'a [domain::VerifySummary],
+    updated: &'a [VerifySummary],
 }
 
 /// rotation 済み device の summary を部分成功 JSON として stdout へ出力する。
 ///
 /// 途中失敗時に、利用者が再実行対象を判別できる情報を残す。
-fn write_partial_rotate_bws_token_summary(summaries: &[domain::VerifySummary]) -> Result<()> {
+fn write_partial_rotate_bws_token_summary(summaries: &[VerifySummary]) -> Result<()> {
     if summaries.is_empty() {
         return Ok(());
     }
@@ -476,13 +540,13 @@ fn write_partial_rotate_bws_token_summary(summaries: &[domain::VerifySummary]) -
     Ok(())
 }
 
-fn failed_local_storage_summary(serial: u32) -> domain::VerifySummary {
-    domain::VerifySummary {
+fn failed_local_storage_summary(serial: u32) -> VerifySummary {
+    VerifySummary {
         serial,
         checks: [
-            (domain::CheckName::LocalStorage, domain::CheckStatus::Failed),
-            (domain::CheckName::Bws, domain::CheckStatus::Skipped),
-            (domain::CheckName::BwLogin, domain::CheckStatus::Skipped),
+            (CheckName::LocalStorage, CheckStatus::Failed),
+            (CheckName::Bws, CheckStatus::Skipped),
+            (CheckName::BwLogin, CheckStatus::Skipped),
         ]
         .into_iter()
         .collect(),
@@ -507,14 +571,14 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
     let requested = requested_external_checks(&options);
     if !requested.is_empty() {
         for check in &requested {
-            summary.checks.insert(*check, domain::CheckStatus::Failed);
+            summary.checks.insert(*check, CheckStatus::Failed);
         }
         println!("{}", serde_json::to_string_pretty(&summary)?);
         let requested_names = requested
             .iter()
             .map(|check| match check {
-                domain::CheckName::Bws => "bws",
-                domain::CheckName::BwLogin => "bw-login",
+                CheckName::Bws => "bws",
+                CheckName::BwLogin => "bw-login",
                 _ => unreachable!("requested_external_checks returns only external checks"),
             })
             .collect::<Vec<_>>()
@@ -526,16 +590,16 @@ fn run_verify_yubikey_with<B: SecretsBoundary>(
     Ok(())
 }
 
-fn requested_external_checks(options: &VerifyYubikeyOptions) -> Vec<domain::CheckName> {
+fn requested_external_checks(options: &VerifyYubikeyOptions) -> Vec<CheckName> {
     if options.all {
-        return vec![domain::CheckName::Bws, domain::CheckName::BwLogin];
+        return vec![CheckName::Bws, CheckName::BwLogin];
     }
     options
         .check
         .iter()
         .map(|check| match check {
-            VerifyCheck::Bws => domain::CheckName::Bws,
-            VerifyCheck::BwLogin => domain::CheckName::BwLogin,
+            VerifyCheck::Bws => CheckName::Bws,
+            VerifyCheck::BwLogin => CheckName::BwLogin,
         })
         .collect()
 }
@@ -546,7 +610,7 @@ fn requested_external_checks(options: &VerifyYubikeyOptions) -> Vec<domain::Chec
 fn verify_local_storage_protected<D: SecretDevice>(
     device: &mut D,
     session: &SecretSession,
-) -> Result<domain::VerifySummary> {
+) -> Result<VerifySummary> {
     for name in SecretName::iter() {
         let secret = session
             .run_yubikey_operation(|| storage_service::get_protected(device, name, session))?;
@@ -558,12 +622,12 @@ fn verify_local_storage_protected<D: SecretDevice>(
         })?;
     }
 
-    Ok(domain::VerifySummary {
+    Ok(VerifySummary {
         serial: device.serial(),
         checks: [
-            (domain::CheckName::LocalStorage, domain::CheckStatus::Ok),
-            (domain::CheckName::Bws, domain::CheckStatus::Skipped),
-            (domain::CheckName::BwLogin, domain::CheckStatus::Skipped),
+            (CheckName::LocalStorage, CheckStatus::Ok),
+            (CheckName::Bws, CheckStatus::Skipped),
+            (CheckName::BwLogin, CheckStatus::Skipped),
         ]
         .into_iter()
         .collect(),
@@ -804,7 +868,7 @@ mod tests {
             let secrets = protected_enrollment_secret_set(&session)?;
             enroll_without_local_verify(
                 &mut device,
-                domain::YubikeyRole::Primary,
+                YubikeyRole::Primary,
                 &secrets,
                 &session,
             )?;
@@ -1113,7 +1177,7 @@ mod tests {
 
         let err = enroll_without_local_verify(
             &mut { device },
-            domain::YubikeyRole::Primary,
+            YubikeyRole::Primary,
             &secrets,
             &session,
         )
@@ -1140,7 +1204,7 @@ mod tests {
 
         let err = enroll_without_local_verify(
             &mut { device },
-            domain::YubikeyRole::Spare,
+            YubikeyRole::Spare,
             &secrets,
             &session,
         )
