@@ -5,13 +5,10 @@
 use super::{adapters, read_enrollment_secret_set_from_user, read_protected_secret_for_put};
 use crate::{
     secrets::{
-        adapters::input::read_yubikey_pin,
+        adapters::{input::read_yubikey_pin, terminal},
         application::{EnrollmentSecretSet, SecretsBoundary},
         domain::SecretName,
-        support::{
-            protection::{InterruptGuard, ProtectedSecret, SecretSession},
-            terminal::{prompt_yes_no, stdin_is_terminal},
-        },
+        support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
     },
     Result,
 };
@@ -25,11 +22,11 @@ impl SecretsBoundary for RealSecretsBoundary {
     type Device = adapters::YubikeySecretDevice;
 
     fn stdin_is_terminal(&self) -> bool {
-        stdin_is_terminal()
+        terminal::stdin_is_terminal()
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        super::super::support::terminal::stdout_is_terminal()
+        terminal::stdout_is_terminal()
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
@@ -70,6 +67,6 @@ impl SecretsBoundary for RealSecretsBoundary {
     }
 
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
-        prompt_yes_no(prompt, interrupt)
+        terminal::prompt_yes_no(prompt, interrupt)
     }
 }

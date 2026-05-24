@@ -15,11 +15,9 @@ use zeroize::Zeroize;
 
 use crate::{
     secrets::{
+        adapters::terminal,
         application::EnrollmentSecretSet,
-        support::{
-            protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-            terminal,
-        },
+        support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
     },
     Result,
 };
