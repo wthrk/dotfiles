@@ -8,10 +8,8 @@ use crate::{
         adapters::input::read_yubikey_pin,
         domain::SecretName,
         application::{EnrollmentSecretSet, SecretsBoundary},
-        support::{
-            protection::{InterruptGuard, ProtectedSecret, SecretSession},
-            terminal::{prompt_yes_no, stdin_is_terminal},
-        },
+        support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
+        adapters::terminal::{prompt_yes_no, stdin_is_terminal, stdout_is_terminal},
     },
     Result,
 };
@@ -29,7 +27,7 @@ impl SecretsBoundary for RealSecretsBoundary {
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        super::super::support::terminal::stdout_is_terminal()
+        stdout_is_terminal()
     }
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {

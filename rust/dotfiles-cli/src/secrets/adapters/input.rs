@@ -18,8 +18,8 @@ use crate::{
         application::EnrollmentSecretSet,
         support::{
             protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-            terminal,
         },
+        adapters::terminal,
     },
     Result,
 };

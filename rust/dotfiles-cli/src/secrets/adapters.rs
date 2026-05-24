@@ -5,6 +5,7 @@
 pub(super) mod input;
 #[cfg(feature = "secrets-test-stub")]
 mod test_stub;
+pub(super) mod terminal;
 mod yubikey;
 
 use anyhow::Context;
@@ -12,7 +13,7 @@ use std::{io, time::Instant};
 
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::{domain::PivObjectId, ports::SecretDevice};
-use crate::secrets::support::terminal::{
+use crate::secrets::adapters::terminal::{
     read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
 };
 use crate::{secrets::support::protection::InterruptGuard, Result};
