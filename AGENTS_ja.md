@@ -99,6 +99,23 @@ direnv allow .
 nix develop
 ```
 
+Nix 環境に依存するコマンド（cargo・xtask・テスト）はすべて dev shell 内で実行する。dev shell 外にいる場合は `direnv exec .` を前置する：
+
+```sh
+direnv exec . cargo check
+direnv exec . cargo xtask check
+```
+
+## Codex
+
+実装作業の委譲には `npx @openai/codex@latest` を使う。タスクプロンプトは `exec` で渡す：
+
+```sh
+npx @openai/codex@latest exec "<タスク説明>"
+```
+
+Codex は実装担当役割として動作し、実装作業を直接実行しなければならない。再委譲は禁止する。オーケストレーター制約（自己実行禁止・サブエージェント委譲必須）は `exec` 経由で起動した Codex セッションには適用されない。
+
 リポジトリ外の生成済み dotfiles やマシン固有 dotfiles を手編集しない。正本はこのリポジトリと `~/.config/dotfiles` に生成されるローカル flake である。
 
 開発者の実 `~/.config/dotfiles` に書き込んでローカル flake 生成を手動検証してはならない。新規マシン相当や対象パス挙動は、リポジトリのサンドボックス検証、とくに実行時テストで確認する。

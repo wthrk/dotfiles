@@ -99,6 +99,23 @@ If `direnv` is not enabled:
 nix develop
 ```
 
+All commands that depend on the Nix environment (cargo, xtask, tests) must be run inside the dev shell. When not already in the dev shell, prefix commands with `direnv exec .`:
+
+```sh
+direnv exec . cargo check
+direnv exec . cargo xtask check
+```
+
+## Codex
+
+Use `npx @openai/codex@latest` to delegate implementation work to Codex CLI. Pass the task prompt via `exec`:
+
+```sh
+npx @openai/codex@latest exec "<task description>"
+```
+
+Codex runs as the implementation executor role. It must perform implementation work directly and must not re-delegate. Orchestrator constraints (no self-execution, must delegate) do not apply to Codex sessions invoked via `exec`.
+
 Do not manually edit generated dotfiles outside this repository or machine-specific dotfiles. The source of truth is this repository and the local flake generated under `~/.config/dotfiles`.
 
 Do not write to the developer's real `~/.config/dotfiles` to manually validate local flake generation. Validate new-machine-equivalent behavior and target-path behavior using sandbox verification in this repository, especially runtime tests.
