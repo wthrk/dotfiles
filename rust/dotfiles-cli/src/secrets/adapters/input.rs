@@ -155,7 +155,7 @@ pub(crate) fn read_protected_enrollment_secret_set<'session>(
     input_limit: usize,
     field_limit: usize,
     memory: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
+) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
     let input = ProtectedInputBuffer::read_from(
         reader,
         input_limit,
@@ -170,7 +170,7 @@ fn parse_protected_enrollment_secret_set_json<'session>(
     input: &[u8],
     field_limit: usize,
     memory: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
+) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
     EnrollmentSecretSetParser::new(input, field_limit, memory).parse()
 }
 
@@ -216,7 +216,7 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
         }
     }
 
-    fn parse(mut self) -> Result<EnrollmentSecretSet<'session>> {
+    fn parse(mut self) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
         self.skip_whitespace();
         self.expect_byte(b'{')?;
 
@@ -451,7 +451,7 @@ mod tests {
         input: &[u8],
         field_limit: usize,
         memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
+    ) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
         parse_protected_enrollment_secret_set_json(input, field_limit, memory)
     }
 

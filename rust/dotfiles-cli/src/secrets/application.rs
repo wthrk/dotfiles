@@ -19,17 +19,32 @@ use super::{
         read_protected_enrollment_secret_set, read_protected_stdin_secret,
         read_visible_secret_line, write_secret_to_stdout,
     },
-    domain::{self, SecretDevice, SecretName},
-    ports::{EnrollmentSecretSet, SecretsBoundary},
-    support::protection::{ProtectedSecret, SecretSession},
+    domain::{self, SecretName},
+    ports::{EnrollmentSecretSet, SecretDevice, SecretsBoundary},
+    support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
 };
 use crate::Result;
+use crate::secrets::ports::ProtectedSecretLike;
 use anyhow::bail;
 
 const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use";
 const NONINTERACTIVE_PRIMARY_SERIAL_ERROR: &str = "pass --primary-serial in non-interactive use";
 const NONINTERACTIVE_SPARE_SERIAL_ERROR: &str = "pass --spare-serial in non-interactive use";
 const STDIN_JSON_TTY_ERROR: &str = "--stdin-json requires pipe or redirect input";
+
+pub(super) trait AppBoundary:
+    SecretsBoundary<InterruptSignal = InterruptGuard, SecretSession = SecretSession>
+where
+    for<'session> Self: SecretsBoundary<ProtectedSecret<'session> = ProtectedSecret<'session>>,
+{
+}
+
+impl<T> AppBoundary for T
+where
+    T: SecretsBoundary<InterruptSignal = InterruptGuard, SecretSession = SecretSession>,
+    for<'session> T: SecretsBoundary<ProtectedSecret<'session> = ProtectedSecret<'session>>,
+{
+}
 
 /// 指定された device backend を使って parse 済み options の use case を開始する。
 ///
@@ -42,7 +57,7 @@ pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> 
 /// 指定された外部境界を使って parse 済み options の use case を実行する。
 ///
 /// test stub でも実プロセスの TTY / pipe 契約を同じ境界 trait に通す。
-pub(super) fn run_with_boundary<B: SecretsBoundary>(
+pub(super) fn run_with_boundary<B: AppBoundary>(
     options: SecretsOptions,
     boundary: &mut B,
 ) -> Result<()> {
@@ -56,7 +71,7 @@ pub(super) fn run_with_boundary<B: SecretsBoundary>(
 ///
 /// 単一 secret 操作、storage setup、primary / spare 登録、token rotation をそれぞれ
 /// 対応する use case へ分岐する。
-fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut B) -> Result<()> {
+fn run_yubikey_with<B: AppBoundary>(options: YubikeyOptions, boundary: &mut B) -> Result<()> {
     match options.command {
         YubikeyCommand::Setup(options) => run_setup_with(options, boundary),
         YubikeyCommand::Put(options) => run_put_with(options, boundary),
@@ -70,7 +85,7 @@ fn run_yubikey_with<B: SecretsBoundary>(options: YubikeyOptions, boundary: &mut 
 /// `setup` 用の device を開き、PIV object setup を実行する。
 ///
 /// PIV 領域の衝突検出は domain 層に委ねる。
-fn run_setup_with<B: SecretsBoundary>(
+fn run_setup_with<B: AppBoundary>(
     options: super::SerialOptions,
     boundary: &mut B,
 ) -> Result<()> {
@@ -82,7 +97,7 @@ fn run_setup_with<B: SecretsBoundary>(
 /// 単一 secret を読み込み、指定された storage object へ保存する。
 ///
 /// 既存 object の上書き可否は secret 入力より前に確定する。
-fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B) -> Result<()> {
+fn run_put_with<B: AppBoundary>(options: super::PutOptions, boundary: &mut B) -> Result<()> {
     require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
     require_single_stdin_secret_source(options.stdin, boundary)?;
     let session = SecretSession::start()?;
@@ -92,7 +107,7 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
     })?;
     let secret = boundary.read_secret_for_put(options.name, options.stdin, &session)?;
     session.run_yubikey_operation(|| {
-        secret.with_secret(|secret| {
+        ProtectedSecretLike::with_secret(&secret, |secret| {
             storage_service::put(&mut device, options.name, secret, options.force, &session)
         })
     })
@@ -101,7 +116,7 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
 /// 指定された secret を device から復号し、stdout へ書き込む。
 ///
 /// stdout が pipe/redirect でない場合は、PIN verification と touch の前に停止する。
-fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B) -> Result<()> {
+fn run_get_with<B: AppBoundary>(options: super::GetOptions, boundary: &mut B) -> Result<()> {
     require_noninteractive_serial(boundary, options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
     require_secret_stdout_target(boundary)?;
     let session = SecretSession::start()?;
@@ -117,7 +132,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
 /// primary 用 enrollment secrets を読み込み、device へ登録して local verify まで実行する。
 ///
 /// storage 衝突確認が終わるまでは enrollment secrets を読み始めない。
-fn run_enroll_primary_with<B: SecretsBoundary>(
+fn run_enroll_primary_with<B: AppBoundary>(
     options: super::EnrollPrimaryOptions,
     boundary: &mut B,
 ) -> Result<()> {
@@ -175,7 +190,7 @@ pub(crate) fn read_protected_secret_for_put(
 fn read_enrollment_secret_set_from_user(
     stdin_json: bool,
     memory: &SecretSession,
-) -> Result<EnrollmentSecretSet<'_>> {
+) -> Result<EnrollmentSecretSet<ProtectedSecret<'_>>> {
     if stdin_json {
         return read_protected_enrollment_secret_set(
             std::io::stdin(),
@@ -200,7 +215,7 @@ fn read_enrollment_secret_set_from_user(
 /// spare 用 enrollment secrets を取得し、別 device へ登録して local verify まで実行する。
 ///
 /// primary から復号する経路では、復号前に spare 候補と serial 制約を確定する。
-fn run_enroll_spare_with<B: SecretsBoundary>(
+fn run_enroll_spare_with<B: AppBoundary>(
     options: EnrollSpareOptions,
     boundary: &mut B,
 ) -> Result<()> {
@@ -287,10 +302,10 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
 /// primary device から 登録用の 3 field を復号する。
 ///
 /// 各 field は次の device 操作前に session 所属の保護済み値へ移す。
-fn read_protected_bootstrap_from_device<'session, D: domain::SecretDevice>(
+fn read_protected_bootstrap_from_device<'session, D: SecretDevice>(
     primary: &mut D,
     session: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
+) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
     let bw_email = session.run_yubikey_operation(|| {
         storage_service::get_protected(primary, SecretName::BwEmail, session)
     })?;
@@ -310,10 +325,10 @@ fn read_protected_bootstrap_from_device<'session, D: domain::SecretDevice>(
 /// 登録の永続書き込みを行い、local verify 前の summary を返す。
 ///
 /// 3 field の空チェックを完了してから PIV key / manifest 作成へ進む。
-fn enroll_without_local_verify<D: domain::SecretDevice>(
+fn enroll_without_local_verify<D: SecretDevice>(
     device: &mut D,
     role: domain::YubikeyRole,
-    secrets: &EnrollmentSecretSet<'_>,
+    secrets: &EnrollmentSecretSet<ProtectedSecret<'_>>,
     session: &SecretSession,
 ) -> Result<domain::EnrollSummary> {
     secrets.bw_email.with_secret(|secret| {
@@ -354,7 +369,7 @@ fn enroll_without_local_verify<D: domain::SecretDevice>(
 /// BWS access token を読み込み、1 本または複数本の device へ反映する。
 ///
 /// 複数更新では 1 回読んだ token を session 内で再利用する。
-fn run_rotate_bws_token_with<B: SecretsBoundary>(
+fn run_rotate_bws_token_with<B: AppBoundary>(
     options: super::RotateBwsTokenOptions,
     boundary: &mut B,
 ) -> Result<()> {
@@ -420,7 +435,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
 /// BWS token rotation の対象 device を開き、更新前条件を確認する。
 ///
 /// token 入力前に既存 secrets の復号確認と management auth を済ませる。
-fn prepare_bws_token_rotation_device<B: SecretsBoundary>(
+fn prepare_bws_token_rotation_device<B: AppBoundary>(
     boundary: &mut B,
     device: &mut B::Device,
     session: &SecretSession,
@@ -432,7 +447,7 @@ fn prepare_bws_token_rotation_device<B: SecretsBoundary>(
 /// 1 本の device へ BWS access token を書き込み、local verify を実行する。
 ///
 /// token の平文借用範囲は storage 書き込み呼び出し中に限定する。
-fn rotate_bws_token_on_device<D: domain::SecretDevice>(
+fn rotate_bws_token_on_device<D: SecretDevice>(
     device: &mut D,
     token: &ProtectedSecret<'_>,
     session: &SecretSession,
@@ -491,7 +506,7 @@ fn failed_local_storage_summary(serial: u32) -> domain::VerifySummary {
 /// YubiKey local storage の verify を実行し、summary JSON を出力する。
 ///
 /// 未実装の外部 service check は device touch 前に拒否する。
-fn run_verify_yubikey_with<B: SecretsBoundary>(
+fn run_verify_yubikey_with<B: AppBoundary>(
     options: VerifyYubikeyOptions,
     boundary: &mut B,
 ) -> Result<()> {
@@ -542,7 +557,7 @@ fn requested_external_checks(options: &VerifyYubikeyOptions) -> Vec<domain::Chec
 /// device 上の local storage secrets を復号し、空でないことを確認する。
 ///
 /// 復号結果は空判定前に session の保護境界へ移す。
-fn verify_local_storage_protected<D: domain::SecretDevice>(
+fn verify_local_storage_protected<D: SecretDevice>(
     device: &mut D,
     session: &SecretSession,
 ) -> Result<domain::VerifySummary> {
@@ -572,7 +587,7 @@ fn verify_local_storage_protected<D: domain::SecretDevice>(
 /// rotation の書き込み前条件として local verify と management auth を確認する。
 ///
 /// 確認は token 入力前に現在の保護境界内で実行する。
-fn check_rotate_preconditions_protected<D: domain::SecretDevice>(
+fn check_rotate_preconditions_protected<D: SecretDevice>(
     device: &mut D,
     session: &SecretSession,
 ) -> Result<()> {
@@ -583,7 +598,7 @@ fn check_rotate_preconditions_protected<D: domain::SecretDevice>(
 /// device が要求する場合に PIN を入力境界から読み取り、PIV session を検証する。
 ///
 /// PIN 入力順序は application が所有し、device は検証済み状態かどうかだけを公開する。
-fn verify_pin_for_secret_reads<B: SecretsBoundary>(
+fn verify_pin_for_secret_reads<B: AppBoundary>(
     boundary: &mut B,
     device: &mut B::Device,
     session: &SecretSession,
@@ -599,7 +614,7 @@ fn verify_pin_for_secret_reads<B: SecretsBoundary>(
 /// 単一 secret を stdin から読む command の入力契約を確認する。
 ///
 /// 非対話では `--stdin` を必須にし、TTY stdin では hidden prompt と混同しないよう拒否する。
-fn require_single_stdin_secret_source<B: SecretsBoundary>(stdin: bool, boundary: &B) -> Result<()> {
+fn require_single_stdin_secret_source<B: AppBoundary>(stdin: bool, boundary: &B) -> Result<()> {
     if stdin {
         if boundary.stdin_is_terminal() {
             bail!("--stdin requires pipe or redirect input");
@@ -611,7 +626,7 @@ fn require_single_stdin_secret_source<B: SecretsBoundary>(stdin: bool, boundary:
 }
 
 /// 非対話実行で対象 serial を省略していないかを、device 操作前に確認する。
-fn require_noninteractive_serial<B: SecretsBoundary>(
+fn require_noninteractive_serial<B: AppBoundary>(
     boundary: &B,
     serial: Option<u32>,
     error_message: &'static str,
@@ -623,7 +638,7 @@ fn require_noninteractive_serial<B: SecretsBoundary>(
 }
 
 /// 非対話実行で必須 option を欠いていないかを、入力消費前に確認する。
-fn require_noninteractive_option<B: SecretsBoundary>(
+fn require_noninteractive_option<B: AppBoundary>(
     boundary: &B,
     enabled: bool,
     option_name: &'static str,
@@ -635,7 +650,7 @@ fn require_noninteractive_option<B: SecretsBoundary>(
 }
 
 /// 平文 secret を stdout へ出す経路が端末を向いていないことを確認する。
-fn require_secret_stdout_target<B: SecretsBoundary>(boundary: &B) -> Result<()> {
+fn require_secret_stdout_target<B: AppBoundary>(boundary: &B) -> Result<()> {
     if boundary.stdout_is_terminal() {
         super::adapters::input::reject_secret_stdout_terminal()?;
     }
@@ -643,7 +658,7 @@ fn require_secret_stdout_target<B: SecretsBoundary>(boundary: &B) -> Result<()> 
 }
 
 /// `--stdin-json` は平文 secret を端末へ echo しないよう、pipe/redirect のみ許可する。
-fn require_stdin_json_source<B: SecretsBoundary>(boundary: &B, stdin_json: bool) -> Result<()> {
+fn require_stdin_json_source<B: AppBoundary>(boundary: &B, stdin_json: bool) -> Result<()> {
     if stdin_json && boundary.stdin_is_terminal() {
         bail!(STDIN_JSON_TTY_ERROR);
     }
@@ -694,6 +709,9 @@ mod tests {
 
     impl SecretsBoundary for FakeBoundary {
         type Device = FakeDevice;
+        type InterruptSignal = InterruptGuard;
+        type SecretSession = SecretSession;
+        type ProtectedSecret<'session> = ProtectedSecret<'session>;
 
         fn stdin_is_terminal(&self) -> bool {
             self.stdin_terminal
@@ -731,7 +749,7 @@ mod tests {
             &mut self,
             _stdin_json: bool,
             memory: &'session SecretSession,
-        ) -> Result<EnrollmentSecretSet<'session>> {
+        ) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
             self.enrollment_read_calls += 1;
             protected_enrollment_secret_set(memory)
         }
@@ -811,7 +829,7 @@ mod tests {
         }
     }
 
-    impl domain::SecretDevice for FakeDevice {
+    impl SecretDevice for FakeDevice {
         fn serial(&self) -> u32 {
             self.serial
         }
@@ -860,7 +878,7 @@ mod tests {
             true
         }
 
-        fn write_unwrapped_key(
+        fn unwrap_key(
             &mut self,
             wrapped_key: &[u8],
             output: &mut impl Write,
@@ -1157,7 +1175,7 @@ mod tests {
 
     fn protected_enrollment_secret_set<'session>(
         memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
+    ) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
         Ok(EnrollmentSecretSet::new(
             protected_test_secret(b"user@example.com", memory)?,
             protected_test_secret(b"password", memory)?,
