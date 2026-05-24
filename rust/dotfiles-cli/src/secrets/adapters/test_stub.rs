@@ -9,7 +9,7 @@ use anyhow::{bail, Context};
 use clap::{Parser, ValueEnum};
 
 use crate::secrets::{
-    blob::{decrypt_secret_protected, encrypt_secret},
+    adapters::blob::{decrypt_secret_protected, encrypt_secret},
     domain::{self, SecretBlob, SecretManifest, SecretName},
     ports::SecretDevice,
     support::protection::{ProtectedSecret, SecretSession},

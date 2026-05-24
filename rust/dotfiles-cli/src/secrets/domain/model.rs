@@ -12,15 +12,15 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use crate::Result;
 
 /// secret blob の先頭で dotfiles wire format を識別する magic bytes。
-pub(crate) const BLOB_MAGIC: &[u8] = b"DOTFILES-YK-SECRET\0";
+pub const BLOB_MAGIC: &[u8] = b"DOTFILES-YK-SECRET\0";
 /// 現在の binary blob format version。
 pub(crate) const BLOB_VERSION: u8 = 1;
 /// blob header に保存する AES-256-GCM algorithm id。
 pub(crate) const ALGORITHM_AES_256_GCM: u8 = 1;
 /// AES-GCM nonce の固定長。
-pub(crate) const NONCE_LEN: usize = 12;
+pub const NONCE_LEN: usize = 12;
 /// AES-GCM tag の固定長。
-pub(crate) const TAG_LEN: usize = 16;
+pub const TAG_LEN: usize = 16;
 /// per-secret content encryption key の byte 長。
 pub(crate) const CONTENT_KEY_LEN: usize = 32;
 

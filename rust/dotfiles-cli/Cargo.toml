@@ -11,6 +11,11 @@ secrets-test-stub = ["dep:dotfiles-cli-secrets-test-contract"]
 name = "dotfiles"
 path = "src/main.rs"
 
+[[bin]]
+name = "dotfiles-stub"
+path = "src/main.rs"
+required-features = ["secrets-test-stub"]
+
 [[test]]
 name = "secrets_cli"
 path = "tests/secrets_cli.rs"

@@ -13,14 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use dotfiles_cli_secrets_test_contract as test_stub_contract;
 use dotfiles_cli_secrets_test_contract::{PRIMARY_SERIAL, SPARE_SERIAL};
-use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 
 type TestResult<T> = anyhow::Result<T>;
 
-const STUB_FLAG: &str = "--test-stub-yubikey";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 struct CommandRun {
@@ -155,10 +154,9 @@ fn setup_rejects_initialized_stub_yubikey() -> TestResult<()> {
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("YubiKey secret storage is already initialized")
-    );
+    assert!(run
+        .stderr
+        .contains("YubiKey secret storage is already initialized"));
     Ok(())
 }
 
@@ -458,10 +456,9 @@ fn enroll_spare_rejects_same_primary_and_spare_serial_with_stub_yubikey() -> Tes
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("primary and spare YubiKey serial must be different")
-    );
+    assert!(run
+        .stderr
+        .contains("primary and spare YubiKey serial must be different"));
     Ok(())
 }
 
@@ -479,10 +476,9 @@ fn enroll_spare_rejects_non_tty_without_spare_serial_with_stub_yubikey() -> Test
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("pass --spare-serial in non-interactive use")
-    );
+    assert!(run
+        .stderr
+        .contains("pass --spare-serial in non-interactive use"));
     Ok(())
 }
 
@@ -499,10 +495,9 @@ fn enroll_spare_rejects_non_tty_without_primary_serial_with_stub_yubikey() -> Te
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("pass --primary-serial in non-interactive use")
-    );
+    assert!(run
+        .stderr
+        .contains("pass --primary-serial in non-interactive use"));
     Ok(())
 }
 
@@ -574,8 +569,8 @@ fn rotate_bws_token_stores_non_tty_stdin_secret_with_stub_yubikey() -> TestResul
 }
 
 #[test]
-fn rotate_bws_token_reads_pin_from_tty_while_token_comes_from_pipe_with_stub_yubikey()
--> TestResult<()> {
+fn rotate_bws_token_reads_pin_from_tty_while_token_comes_from_pipe_with_stub_yubikey(
+) -> TestResult<()> {
     let run = run_pty_pipe_stdin_with_stub(
         [
             "yubikey".to_owned(),
@@ -616,10 +611,9 @@ fn rotate_bws_token_rejects_tty_stdin_before_pin_prompt_with_stub_yubikey() -> T
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("--stdin requires pipe or redirect input")
-    );
+    assert!(run
+        .stderr
+        .contains("--stdin requires pipe or redirect input"));
     assert!(!run.stderr.contains("YubiKey PIN: "));
     Ok(())
 }
@@ -700,8 +694,8 @@ fn rotate_bws_token_updates_spare_after_tty_device_replacement_with_stub_yubikey
 }
 
 #[test]
-fn rotate_bws_token_emits_partial_success_json_when_replacement_fails_with_stub_yubikey()
--> TestResult<()> {
+fn rotate_bws_token_emits_partial_success_json_when_replacement_fails_with_stub_yubikey(
+) -> TestResult<()> {
     let run = run_pty_split_with_stub(
         ["yubikey", "rotate-bws-token"],
         Some("new-token\ny\ny\n"),
@@ -798,10 +792,9 @@ fn verify_yubikey_rejects_all_flag_with_stub_yubikey() -> TestResult<()> {
     assert!(run.stdout.contains("\"local_storage\": \"ok\""));
     assert!(run.stdout.contains("\"bws\": \"failed\""));
     assert!(run.stdout.contains("\"bw_login\": \"failed\""));
-    assert!(
-        run.stderr
-            .contains("external checks are not implemented yet: bws, bw-login")
-    );
+    assert!(run
+        .stderr
+        .contains("external checks are not implemented yet: bws, bw-login"));
     Ok(())
 }
 
@@ -822,10 +815,9 @@ fn verify_yubikey_rejects_check_flag_with_stub_yubikey() -> TestResult<()> {
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(run.stdout.contains("\"local_storage\": \"ok\""));
     assert!(run.stdout.contains("\"bws\": \"failed\""));
-    assert!(
-        run.stderr
-            .contains("external checks are not implemented yet: bws")
-    );
+    assert!(run
+        .stderr
+        .contains("external checks are not implemented yet: bws"));
     Ok(())
 }
 
@@ -845,10 +837,9 @@ fn verify_yubikey_rejects_all_and_check_combination_with_stub_yubikey() -> TestR
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("--all and --check cannot be used together")
-    );
+    assert!(run
+        .stderr
+        .contains("--all and --check cannot be used together"));
     Ok(())
 }
 
@@ -930,10 +921,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles-stub"));
     command
         .arg("secrets")
-        .arg(STUB_FLAG)
+        .arg("--test-stub-yubikey")
         .args(args)
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -978,9 +969,9 @@ where
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_dotfiles"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_dotfiles-stub"));
     command.arg("secrets");
-    command.arg(STUB_FLAG);
+    command.arg("--test-stub-yubikey");
     command.args(args);
     apply_pty_stub_fixtures(&mut command, fixtures)?;
     let mut child = pair.slave.spawn_command(command)?;
@@ -1033,8 +1024,8 @@ where
         .collect::<Vec<_>>()
         .join(" ");
     let shell_command = format!(
-        "{} secrets {STUB_FLAG} {args_shell} >{} 2>{}",
-        env!("CARGO_BIN_EXE_dotfiles"),
+        "{} secrets --test-stub-yubikey {args_shell} >{} 2>{}",
+        env!("CARGO_BIN_EXE_dotfiles-stub"),
         stdout_path.display(),
         stderr_path.display()
     );
@@ -1109,8 +1100,8 @@ where
         .collect::<Vec<_>>()
         .join(" ");
     let shell_command = format!(
-        "{} secrets {STUB_FLAG} {args_shell} <{} >{} 2>{}",
-        env!("CARGO_BIN_EXE_dotfiles"),
+        "{} secrets --test-stub-yubikey {args_shell} <{} >{} 2>{}",
+        env!("CARGO_BIN_EXE_dotfiles-stub"),
         stdin_path.display(),
         stdout_path.display(),
         stderr_path.display()
