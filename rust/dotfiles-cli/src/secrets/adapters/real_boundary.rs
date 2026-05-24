@@ -2,13 +2,13 @@
 //!
 //! use case orchestration から concrete 境界実装を分離し、application 本体は順序制御だけに集中させる。
 
-use super::{
-    InteractionBoundary, EnrollmentSecretSet, adapters, read_enrollment_secret_set_from_user,
-    read_protected_secret_for_put,
-};
 use crate::{
     secrets::{
-        adapters::{input::read_yubikey_pin, terminal},
+        adapters::{self, input::read_yubikey_pin, terminal},
+        application::{
+            EnrollmentSecretSet, InteractionBoundary, read_enrollment_secret_set_from_user,
+            read_protected_secret_for_put,
+        },
         domain::SecretName,
         ports::SecretsBoundary,
         support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
@@ -17,8 +17,8 @@ use crate::{
 };
 
 /// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。
-pub(super) struct RealSecretsBoundary {
-    pub(super) backend: adapters::DeviceBackend,
+pub(crate) struct RealSecretsBoundary {
+    pub(crate) backend: adapters::DeviceBackend,
 }
 
 impl SecretsBoundary for RealSecretsBoundary {

@@ -5,7 +5,6 @@
 //! domain の保存操作へ渡す。
 
 mod blob_crypto;
-mod real_boundary;
 mod storage_service;
 #[cfg(test)]
 mod storage_service_tests;
@@ -71,7 +70,7 @@ impl<'session> EnrollmentSecretSet<'session> {
 }
 
 /// application use case が要求する対話 I/O 境界。
-pub(super) trait InteractionBoundary: SecretsBoundary {
+pub(crate) trait InteractionBoundary: SecretsBoundary {
     fn stdin_is_terminal(&self) -> bool;
     fn stdout_is_terminal(&self) -> bool;
     fn open_spare_device(
@@ -149,7 +148,7 @@ pub(crate) struct VerifySummary {
 ///
 /// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
 pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> Result<()> {
-    let mut boundary = real_boundary::RealSecretsBoundary { backend };
+    let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };
     run_with_boundary(options, &mut boundary)
 }
 
@@ -286,7 +285,7 @@ pub(crate) fn read_protected_secret_for_put(
 /// 登録用の 3 field を prompt または stdin JSON から読み込む。
 ///
 /// field ごとの保護境界を同じ session にそろえてから登録用 model にする。
-fn read_enrollment_secret_set_from_user(
+pub(crate) fn read_enrollment_secret_set_from_user(
     stdin_json: bool,
     memory: &SecretSession,
 ) -> Result<EnrollmentSecretSet<'_>> {

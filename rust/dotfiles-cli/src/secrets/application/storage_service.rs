@@ -8,9 +8,8 @@ use crate::Result;
 use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
 use anyhow::{Context, bail};
 
-use crate::secrets::domain::{
-    KEY_SLOT, PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds,
-};
+use crate::secrets::adapters::storage_io;
+use crate::secrets::domain::{KEY_SLOT, SecretBlob, SecretManifest, SecretName, StorageObjectIds};
 use crate::secrets::ports::SecretDevice;
 use crate::secrets::application::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 use crate::secrets::application::blob_crypto::{decrypt_secret_protected, encrypt_secret};
@@ -113,12 +112,7 @@ fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result
     let encoded = device
         .read_object(name.object_id())?
         .with_context(|| format!("{} is not stored on this YubiKey", name))?;
-    let blob =
-        SecretBlob::decode(&encoded).with_context(|| format!("failed to decode {}", name))?;
-    if blob.name != name {
-        bail!("YubiKey secret blob name does not match requested {}", name);
-    }
-    Ok(blob)
+    storage_io::decode_secret_blob(&encoded, name)
 }
 
 /// 登録直後の summary 初期値を構築する。
@@ -157,8 +151,8 @@ pub fn replace_bws_token<D: SecretDevice>(
 ///
 /// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
-    let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
-    device.write_object(PivObjectId::MANIFEST, &mut manifest)
+    let mut manifest = storage_io::encode_expected_manifest()?;
+    device.write_object(storage_io::manifest_object_id(), &mut manifest)
 }
 
 /// PIV object から manifest を読み出して parse する。
@@ -166,7 +160,7 @@ fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
 /// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
 fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
     let manifest = device
-        .read_object(PivObjectId::MANIFEST)?
+        .read_object(storage_io::manifest_object_id())?
         .context("YubiKey secret manifest is missing")?;
-    serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
+    storage_io::decode_manifest(&manifest)
 }
