@@ -79,7 +79,4 @@ pub(crate) trait SecretsBoundary {
         memory: &'session SecretSession,
     ) -> Result<ProtectedSecret<'session>>;
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool>;
-    fn write_secret_to_stdout(&mut self, bytes: &[u8]) -> Result<()>;
-    fn write_json_line(&mut self, line: &str) -> Result<()>;
-    fn reject_secret_stdout_terminal(&self) -> Result<()>;
 }
