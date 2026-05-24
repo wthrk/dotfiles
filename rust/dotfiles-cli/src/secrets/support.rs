@@ -3,7 +3,6 @@
 //! 端末 I/O、process / memory 保護、暗号 primitive 補助をここに置く。
 
 pub(crate) mod aead;
-pub(crate) mod blob_crypto;
 mod oaep;
 pub(crate) mod protection;
 pub(crate) mod terminal;

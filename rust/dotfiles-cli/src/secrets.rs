@@ -9,6 +9,7 @@
 
 mod adapters;
 mod application;
+mod blob;
 mod domain;
 mod ports;
 mod support;
