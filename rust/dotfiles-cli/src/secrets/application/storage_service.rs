@@ -9,9 +9,9 @@ use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
 use anyhow::{Context, bail};
 
 use crate::secrets::blob::{decrypt_secret_protected, encrypt_secret};
+use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 use crate::secrets::domain::{
-    CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId, SecretBlob, SecretManifest,
-    SecretName, StorageObjectIds, YubikeyRole,
+    KEY_SLOT, PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds,
 };
 use crate::secrets::ports::SecretDevice;
 
