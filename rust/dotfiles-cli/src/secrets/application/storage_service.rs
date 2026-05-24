@@ -4,14 +4,14 @@
 //! 共有する。device adapter の実装差は `SecretDevice` trait に閉じ、ここでは永続書き込みの
 //! 順序と検証結果の JSON 契約を固定する。
 
-use crate::Result;
 use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
-use anyhow::{Context, bail};
+use crate::Result;
+use anyhow::{bail, Context};
 
+use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 use crate::secrets::blob::{decrypt_secret_protected, encrypt_secret};
 use crate::secrets::domain::{
-    CheckName, CheckStatus, EnrollSummary, KEY_SLOT, PivObjectId, SecretBlob, SecretManifest,
-    SecretName, StorageObjectIds, YubikeyRole,
+    PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, KEY_SLOT,
 };
 use crate::secrets::ports::SecretDevice;
 
