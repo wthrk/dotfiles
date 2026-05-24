@@ -4,7 +4,6 @@
 //! device と非対話条件を確定し、平文 secret は `SecretSession` に紐づく保護済み値として
 //! domain の保存操作へ渡す。
 
-mod real_boundary;
 mod storage_service;
 #[cfg(test)]
 mod storage_service_tests;
@@ -40,7 +39,7 @@ const STDIN_JSON_TTY_ERROR: &str = "--stdin-json requires pipe or redirect input
 ///
 /// device backend は実機と stub の差分だけを持ち、secret 入力や stdout 判定は同じ境界を通す。
 pub(super) fn run(options: SecretsOptions, backend: adapters::DeviceBackend) -> Result<()> {
-    let mut boundary = real_boundary::RealSecretsBoundary { backend };
+    let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };
     run_with_boundary(options, &mut boundary)
 }
 

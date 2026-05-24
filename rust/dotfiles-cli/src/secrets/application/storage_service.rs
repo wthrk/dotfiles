@@ -9,10 +9,9 @@ use crate::Result;
 use anyhow::{bail, Context};
 
 use crate::secrets::adapters::blob::{decrypt_secret_protected, encrypt_secret};
+use crate::secrets::adapters::manifest::{read_manifest, write_manifest};
 use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
-use crate::secrets::domain::{
-    PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, KEY_SLOT,
-};
+use crate::secrets::domain::{SecretBlob, SecretName, StorageObjectIds, KEY_SLOT};
 use crate::secrets::ports::SecretDevice;
 
 /// secret storage 用 PIV key と manifest を新規作成する。
@@ -151,22 +150,4 @@ pub fn replace_bws_token<D: SecretDevice>(
     session: &SecretSession,
 ) -> Result<()> {
     put(device, SecretName::BwsAccessToken, token, true, session)
-}
-
-/// expected manifest を PIV object へ書き込む。
-///
-/// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
-fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
-    let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
-    device.write_object(PivObjectId::MANIFEST, &mut manifest)
-}
-
-/// PIV object から manifest を読み出して parse する。
-///
-/// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
-fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
-    let manifest = device
-        .read_object(PivObjectId::MANIFEST)?
-        .context("YubiKey secret manifest is missing")?;
-    serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
 }
