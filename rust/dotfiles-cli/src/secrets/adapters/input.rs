@@ -15,11 +15,11 @@ use zeroize::Zeroize;
 
 use crate::{
     secrets::{
-        boundary::EnrollmentSecretSet,
+        ports::EnrollmentSecretSet,
         support::{
             protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+            terminal,
         },
-        adapters::terminal,
     },
     Result,
 };
@@ -29,15 +29,15 @@ use crate::secrets::domain::SecretName;
 
 const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
-pub(super) const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
-pub(super) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
-pub(super) const SECRET_STDOUT_TERMINAL_ERROR: &str =
+pub(crate) const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
+pub(crate) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
+pub(crate) const SECRET_STDOUT_TERMINAL_ERROR: &str =
     "refusing to write secret to terminal; redirect stdout to a file or pipe";
 
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
 ///
 /// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。
-pub(super) fn read_protected_stdin_secret(
+pub(crate) fn read_protected_stdin_secret(
     limit: usize,
     session: &SecretSession,
 ) -> Result<ProtectedSecret<'_>> {
@@ -51,7 +51,7 @@ pub(super) fn read_protected_stdin_secret(
 /// 表示 prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
-pub(super) fn read_visible_secret_line<'session>(
+pub(crate) fn read_visible_secret_line<'session>(
     prompt: &str,
     limit: usize,
     memory: &'session SecretSession,
@@ -65,7 +65,7 @@ pub(super) fn read_visible_secret_line<'session>(
 /// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。
 ///
 /// 読み込んだ bytes に上限を適用する。
-pub(super) fn read_hidden_secret<'session>(
+pub(crate) fn read_hidden_secret<'session>(
     prompt: &str,
     limit: usize,
     memory: &'session SecretSession,
@@ -75,7 +75,7 @@ pub(super) fn read_hidden_secret<'session>(
 }
 
 /// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
-pub(super) fn read_yubikey_pin<'session>(
+pub(crate) fn read_yubikey_pin<'session>(
     memory: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
     let pin = terminal::read_hidden_input(
@@ -150,7 +150,7 @@ fn read_visible_secret_input(limit: usize, memory: &SecretSession) -> Result<Pro
     Ok(input)
 }
 
-pub(super) fn read_protected_enrollment_secret_set<'session>(
+pub(crate) fn read_protected_enrollment_secret_set<'session>(
     reader: impl Read,
     input_limit: usize,
     field_limit: usize,
@@ -425,7 +425,7 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
 }
 
 /// stdout が TTY の場合は、復号結果を書き込む前に利用者向け error で停止する。
-pub(super) fn ensure_secret_stdout_not_terminal() -> Result<()> {
+pub(crate) fn ensure_secret_stdout_not_terminal() -> Result<()> {
     if terminal::stdout_is_terminal() {
         reject_secret_stdout_terminal()?;
     }
@@ -433,13 +433,13 @@ pub(super) fn ensure_secret_stdout_not_terminal() -> Result<()> {
 }
 
 /// stdout の TTY 拒否を確認してから、復号済み bytes を stdout へ書き込む。
-pub(super) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
     ensure_secret_stdout_not_terminal()?;
     terminal::write_all_stdout(bytes)
 }
 
 /// stdout が TTY の場合に返す利用者向け error を、実プロセス境界と test 境界で共有する。
-pub(super) fn reject_secret_stdout_terminal() -> Result<()> {
+pub(crate) fn reject_secret_stdout_terminal() -> Result<()> {
     bail!(SECRET_STDOUT_TERMINAL_ERROR);
 }
 
