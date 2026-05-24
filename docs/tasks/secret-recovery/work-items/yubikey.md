@@ -59,14 +59,14 @@
 
 規約違反 V1〜V16 の解消は、依存関係の順序を考慮して以下の順で着手することを推奨する。
 
-1. **V7, V8, V16 を先に解消する**（port / domain の依存整理）
-   - V7：`ports.rs` から `support::protection` 依存を除去
+1. **V8, V16 を先に解消する**（domain → port の依存整理）
    - V8：`domain/model.rs` の `SecretDevice` を `ports.rs` へ移設
    - V16：`SecretDevice::write_unwrapped_key` の `std::io::Write` を除去
 2. **V9 を解消する**（domain の summary DTO 除去）
    - domain が clean になった後で summary DTO を application 層へ移設
-3. **V6 を解消する**（port の DTO・parser・prompt 除去）
-   - port contract を最小 capability 契約に縮小
+3. **V6, V7 を解消する**（port の DTO・parser・prompt・support 依存を除去）
+   - V6：port contract を最小 capability 契約に縮小（`EnrollmentSecretSet` DTO 除去、`prompt_yes_no`/`stdin_is_terminal`/`stdout_is_terminal` を adapter 所有へ）
+   - V7：V6 の整理に伴い `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去し `support::protection` 依存を断つ
 4. **V10 を解消する**（blob.rs の責務分割）
    - wire format・AEAD・port 呼び出しを各層へ分離
 5. **V11, V12, V13 を解消する**（adapter 面の整理）
@@ -100,7 +100,7 @@
 | V4 | `src/secrets/application/real_boundary.rs` | adapters 層へ移設する。 |
 | V5 | `src/secrets/application/storage_service.rs` | serde_json parse / blob decode を adapter へ移設。 |
 | V6 | `src/secrets/ports.rs` | `EnrollmentSecretSet` DTO を除去。`SecretsBoundary` を最小 capability 契約に分割。 |
-| V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去する。`domain.rs` への re-export 迂回は不可。`SecretsBoundary` のシグネチャから `InterruptGuard`/`ProtectedSecret`/`SecretSession` を除去し、domain 層に属する境界型へ置き換えること。 |
+| V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去する。V6（`SecretsBoundary` 整理）と連動しており、V6 で `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去するか domain 層へ移設することで解消する。ステップ1では V8/V16 のみ対象とし V7 はステップ3（V6 と同時）で解消する。 |
 | V8 | `src/secrets/domain/model.rs` | `SecretDevice` を ports 層へ移設。 |
 | V9 | `src/secrets/domain/model.rs` | summary DTO（`EnrollSummary` 等）を application 層へ移設。 |
 | V10 | `src/secrets/blob.rs` | 層ごとに分割し、wire format は domain/wire、AEAD は support/crypto 相当、port 呼び出しは adapter へ。 |
@@ -114,9 +114,9 @@
 
 | 実装単位 | 状態 | 成果物 | 参照 |
 | --- | --- | --- | --- |
-| 実装 ステップ1: V7,V8,V16（port/domain依存整理） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（domain summary DTO除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ3: V6（port DTO/parser/prompt除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ4: V10（blob.rs責務分割） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
