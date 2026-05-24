@@ -1,5 +1,21 @@
 # AGENTS.md
 
+## Default Skills — Role-to-Skill Binding
+
+At the start of every session and every request in this repository, invoke the `/orchestration` skill before taking any other action. Do not begin active-item selection, delegation, reading, or file operations until the skill is active.
+
+Every role in this repository must invoke its designated skill before performing any work. The binding is:
+
+| Role | Skill |
+|---|---|
+| Orchestrator | `/orchestration` |
+| Repository-specific orchestration (secrets module, domain-specific constraints) | `/dotfiles-task-governance` |
+| Implementation executor | `/implementation-execution` |
+| Review (structural, spec-conformance, security, operational) | `/implementation-review-judgement` |
+| Completion judgement | `/task-completion-judgement` |
+
+A role must not begin active-item selection, file reads, file edits, subagent delegation, or any judgement before its designated skill is active.
+
 ## Orchestrator Role — Absolute Prohibitions
 
 The main agent acts as the orchestrator for all task-execution requests in this repository. While acting as orchestrator, the following are absolutely prohibited — no exception for urgency, simplicity, or user instruction:

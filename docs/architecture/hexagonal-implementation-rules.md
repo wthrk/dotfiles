@@ -95,61 +95,25 @@
 - 関数、型、module の doc comment は主要契約を先頭文で述べ、条件、分岐、失敗時契約、caller responsibility は別文または別段落で続ける。
 - 複数段落の doc comment は、先頭段落で通常系の主契約を示し、後続段落で非 TTY 動作、タイムアウト、所有権移譲、ゼロ化、ロック、出力安全性、再試行規則のような制約を記す。
 
-## secrets モジュール構成
+## ディレクトリと層の対応規則
 
-`rust/dotfiles-cli/src/secrets/` 配下の現在のファイル構成と層の対応を以下に示す。
+ディレクトリ名が層を決定する。ファイルの所属層は、そのファイルが置かれているディレクトリ名から導く。
 
-### ファイルと層の対応表
-
-| ファイルパス | 所属層 |
+| ディレクトリパターン | 所属層 |
 |---|---|
-| `secrets/adapters.rs` | adapter |
-| `secrets/adapters/input.rs` | adapter |
-| `secrets/adapters/terminal.rs` | adapter |
-| `secrets/adapters/test_stub.rs` | tests（production tree への埋め込みは V14 違反） |
-| `secrets/adapters/yubikey.rs` | adapter |
-| `secrets/application.rs` | application |
-| `secrets/application/real_boundary.rs` | adapter（application/ 配下への配置は V4 違反） |
-| `secrets/application/storage_service.rs` | application |
-| `secrets/application/storage_service_tests.rs` | tests（production tree への埋め込みは V15 違反） |
-| `secrets/blob.rs` | 層未確定（wire format は domain/wire、AEAD は support/crypto、port 呼び出しは adapter に分割要） |
-| `secrets/domain.rs` | domain |
-| `secrets/domain/model.rs` | domain |
-| `secrets/domain/wire.rs` | domain |
-| `secrets/ports.rs` | port |
-| `secrets/support.rs` | support |
-| `secrets/support/aead.rs` | support |
-| `secrets/support/oaep.rs` | support |
-| `secrets/support/protection.rs` | support |
-| `secrets/support/protection/buffer.rs` | support |
-| `secrets/support/terminal.rs` | adapter（support/ 配下への配置は V11 違反） |
+| `<module>/adapters/` または `<module>/adapters.rs` | adapter |
+| `<module>/application/` または `<module>/application.rs` | application |
+| `<module>/domain/` または `<module>/domain.rs` | domain |
+| `<module>/ports/` または `<module>/ports.rs` | port |
+| `<module>/support/` または `<module>/support.rs` | support |
+| `<module>/entrypoint/` または `<module>/entrypoint.rs` | entrypoint |
+| `tests/` または `*_tests.rs`、`test_*.rs` | tests |
 
-### 層別の許可・禁止事項
+ディレクトリ名と層が一致しないファイルは配置違反とみなす。配置違反の解消は、ファイルを正しいディレクトリへ移動することで行う。個別機能の違反一覧は各機能の作業定義文書（`docs/tasks/<area>/work-items/`）を正本として管理する。
 
-**application 層**（`secrets/application.rs`、`secrets/application/storage_service.rs`）:
-- 許可: use case の順序制御、port 経由の外部境界呼び出し、flow 分岐、停止条件
-- 禁止: adapter 具体型の import、`println!`・stdin 読み取り・concrete device handle 操作、adapter 実装ファイルの application/ 配下への配置
+## レビュー観点
 
-**port 層**（`secrets/ports.rs`）:
-- 許可: capability contract を表す trait、request/response の最小境界型
-- 禁止: DTO の配置、parser の配置、prompt の配置、利用者向け文言、`support::protection` 等の support 具体型への直接依存
-
-**domain 層**（`secrets/domain.rs`、`secrets/domain/model.rs`、`secrets/domain/wire.rs`）:
-- 許可: value/newtype、不変条件、状態遷移、wire format、domain error
-- 禁止: port contract（SecretDevice trait 等）、summary DTO（EnrollSummary 等）、`std::io::Write` 等の I/O 型
-
-**adapter 層**（`secrets/adapters.rs`、`secrets/adapters/input.rs`、`secrets/adapters/terminal.rs`、`secrets/adapters/yubikey.rs`）:
-- 許可: port trait の実装、外部 API 変換、SDK bridge、terminal bridge、filesystem bridge
-- 禁止: use case の順序制御、domain policy の決定、利用者向け文言の埋め込み
-- **公開制約（厳格・絶対）**: adapters/ 配下のすべてのファイルにおいて、`pub`・`pub(crate)`・`pub(super)` を含む任意の可視性で外部（同一ファイル外）に公開できるのは、port trait を実装する型（struct/enum）と、その trait のメソッド実装のみである。port trait の実装ではない関数・型・定数・モジュールは、`pub(crate)` であっても adapter ファイルから外部に公開してはならない。adapter ファイル内の内部ヘルパー（stdin 読み取り関数、プロンプト関数、JSON デコード関数、terminal I/O 関数等）は、port trait の実装の一部でない限り private（`fn`）にとどめなければならない。これは「adapter ファイルに書いてある」「utility 的に見える」等の理由で免除されない絶対規則である。
-
-**support 層**（`secrets/support.rs`、`secrets/support/aead.rs`、`secrets/support/oaep.rs`、`secrets/support/protection.rs`、`secrets/support/protection/buffer.rs`）:
-- 許可: 業務語彙を持たない共通技術部品（保護メモリ、暗号プリミティブ、byte utility）
-- 禁止: terminal I/O、prompt、機能固有 vocabulary、command 名、role 名
-
-**tests**（`secrets/adapters/test_stub.rs`、`secrets/application/storage_service_tests.rs`）:
-- 許可: unit test、integration test、test double、fixture（ただし tests/ 層のみ）
-- 禁止: production tree（adapters/、application/ 配下等）への test double の埋め込み、production module への再公開
+ディレクトリ別のチェック観点は [review-checklist.md](review-checklist.md) を参照する。層ごとの責務・禁止事項・依存方向・公開範囲はこの文書の各セクションを正本とし、review-checklist.md はその正本を引用してチェック項目を導く。
 
 ## エージェント運用とレビューの参照先
 
