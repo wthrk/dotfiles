@@ -2,12 +2,15 @@
 //!
 //! use case orchestration から concrete 境界実装を分離し、application 本体は順序制御だけに集中させる。
 
-use super::{adapters, read_enrollment_secret_set_from_user, read_protected_secret_for_put};
+use super::{
+    InteractionBoundary, EnrollmentSecretSet, adapters, read_enrollment_secret_set_from_user,
+    read_protected_secret_for_put,
+};
 use crate::{
     secrets::{
         adapters::input::read_yubikey_pin,
         domain::SecretName,
-        ports::{EnrollmentSecretSet, SecretsBoundary},
+        ports::SecretsBoundary,
         support::{
             protection::{InterruptGuard, ProtectedSecret, SecretSession},
             terminal::{prompt_yes_no, stdin_is_terminal},
@@ -24,16 +27,18 @@ pub(super) struct RealSecretsBoundary {
 impl SecretsBoundary for RealSecretsBoundary {
     type Device = adapters::YubikeySecretDevice;
 
+    fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
+        adapters::open_device(&mut self.backend, serial)
+    }
+}
+
+impl InteractionBoundary for RealSecretsBoundary {
     fn stdin_is_terminal(&self) -> bool {
         stdin_is_terminal()
     }
 
     fn stdout_is_terminal(&self) -> bool {
         super::super::support::terminal::stdout_is_terminal()
-    }
-
-    fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
-        adapters::open_device(&mut self.backend, serial)
     }
 
     fn open_spare_device(
