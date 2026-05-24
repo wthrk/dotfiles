@@ -4,7 +4,6 @@
 //! device と非対話条件を確定し、平文 secret は `SecretSession` に紐づく保護済み値として
 //! domain の保存操作へ渡す。
 
-mod blob_crypto;
 mod real_boundary;
 mod storage_service;
 #[cfg(test)]
