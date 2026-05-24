@@ -10,6 +10,8 @@
   - active work item が要求する領域資料（`docs/tasks/<area>/...`）
   - `docs/tasks/<area>/work-items/<item>.md`
   - `docs/<area>/implementation-guidelines.md`（存在する場合）
+- `docs/tasks/<area>/work-items/<item>.md` を読む際は、先頭から末尾まで全セクションを通読し、着手前要件・実装セッション制約・差戻し条件・完了条件を含む全ての指示を確認しなければならない。途中で読み飛ばしてはならない。
+- `docs/tasks/<area>/work-items/<item>.md` に着手前要件が存在する場合、その要件がすべて満たされていることを確認してから実装に着手しなければならない。確認を省略したまま実装に着手してはならない。
 - `docs/tasks/<area>/tasks.md` は、active work item が参照している場合に限り必須参照とする。未参照時は存在を前提にしてはならない。
 - 局所的に動くことは、規約違反を残してよい理由にならない。
 - 規約に合わない責務境界、依存方向、公開インターフェース境界は温存してはならない。
