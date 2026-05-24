@@ -3,14 +3,12 @@
 //! use case orchestration から concrete 境界実装を分離し、application 本体は順序制御だけに集中させる。
 
 use crate::{
-    Result,
     secrets::{
         adapters::{
             self,
             input::{
-                MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN,
-                ensure_secret_stdout_not_terminal, read_hidden_secret,
-                read_protected_enrollment_secret_set, read_protected_stdin_secret,
+                MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN, ensure_secret_stdout_not_terminal,
+                read_hidden_secret, read_protected_enrollment_secret_set, read_protected_stdin_secret,
                 read_visible_secret_line, read_yubikey_pin, write_secret_to_stdout,
             },
             terminal,
@@ -20,6 +18,7 @@ use crate::{
         ports::{SecretDevice, SecretsBoundary},
         support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
     },
+    Result,
 };
 
 /// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。

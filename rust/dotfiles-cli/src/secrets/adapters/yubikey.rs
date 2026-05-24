@@ -9,22 +9,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use rand_core::OsRng;
-use rsa::{Oaep, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
+use rsa::{pkcs1::DecodeRsaPublicKey, Oaep, RsaPublicKey};
 use sha2::Sha256;
 use yubikey::{
-    MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
+    MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
 };
 use zeroize::Zeroizing;
 
-use crate::Result;
 use crate::secrets::{
-    domain::PivObjectId,
-    ports::SecretDevice,
+    domain::PivObjectId, ports::SecretDevice,
     support::{protection::InterruptGuard, write_oaep_unpadded_sha256},
 };
+use crate::Result;
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
@@ -65,14 +64,9 @@ type ReaderOpenAttempt<T> = (String, std::result::Result<T, (String, yubikey::Er
 /// 開いた YubiKey PIV session と PIN 検証状態を保持する実機 adapter。
 ///
 /// PIN verification は 1 command 中に同じ session へ再利用する。
-pub(crate) struct RealYubikeySecretDevice {
+pub(crate) struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
-}
-
-/// application が扱う device 実装を実機/stub で切り替える。
-pub(crate) enum YubikeySecretDevice {
-    Real(RealYubikeySecretDevice),
 }
 
 /// serial 指定または対話選択で 1 本の YubiKey を開く。
@@ -86,10 +80,10 @@ pub(crate) fn open_device(
         select_interactive_yubikey(io)?
     };
 
-    Ok(YubikeySecretDevice::Real(RealYubikeySecretDevice {
+    Ok(YubikeySecretDevice {
         yubikey,
         pin_verified: false,
-    }))
+    })
 }
 
 fn open_device_until(
@@ -106,10 +100,10 @@ fn open_device_until(
     };
     interrupt.check_interrupted()?;
 
-    Ok(YubikeySecretDevice::Real(RealYubikeySecretDevice {
+    Ok(YubikeySecretDevice {
         yubikey,
         pin_verified: false,
-    }))
+    })
 }
 
 /// deadline まで対話選択可能な YubiKey を待って開く。
@@ -323,7 +317,7 @@ fn classify_interactive_discovery(
     Ok(InteractiveDiscovery::NoDevice)
 }
 
-impl RealYubikeySecretDevice {
+impl YubikeySecretDevice {
     /// PIV private key operation に必要な PIN verification を実行する。
     ///
     /// 同じ command 中で検証済みの場合は、同じ session の検証状態を再利用する。
@@ -361,135 +355,94 @@ impl RealYubikeySecretDevice {
 
 impl SecretDevice for YubikeySecretDevice {
     fn serial(&self) -> u32 {
-        match self {
-            Self::Real(device) => device.yubikey.serial().0,
-        }
+        self.yubikey.serial().0
     }
 
     fn key_exists(&mut self) -> Result<bool> {
-        match self {
-            Self::Real(device) => match piv::metadata(&mut device.yubikey, SECRET_SLOT) {
-                Ok(_) => Ok(true),
-                Err(yubikey::Error::NotFound) => {
-                    match device.yubikey.fetch_object(SECRET_SLOT_CERT_OBJECT_ID) {
-                        Ok(_) => Ok(true),
-                        Err(yubikey::Error::NotFound) => Ok(false),
-                        Err(err) => Err(err.into()),
-                    }
+        match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
+            Ok(_) => Ok(true),
+            Err(yubikey::Error::NotFound) => {
+                match self.yubikey.fetch_object(SECRET_SLOT_CERT_OBJECT_ID) {
+                    Ok(_) => Ok(true),
+                    Err(yubikey::Error::NotFound) => Ok(false),
+                    Err(err) => Err(err.into()),
                 }
-                Err(err) => Err(err.into()),
-            },
+            }
+            Err(err) => Err(err.into()),
         }
     }
 
     fn check_key_generation_preconditions(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => {
-                let version = device.yubikey.version();
-                if version_lt(version, MIN_PIV_METADATA_VERSION) {
-                    bail!(
-                        "YubiKey PIV application version must be at least {}",
-                        format_version(MIN_PIV_METADATA_VERSION)
-                    );
-                }
-                if device.yubikey.get_pin_retries()? == 0 {
-                    bail!("YubiKey PIN retries are exhausted");
-                }
-                Ok(())
-            }
+        let version = self.yubikey.version();
+        if version_lt(version, MIN_PIV_METADATA_VERSION) {
+            bail!(
+                "YubiKey PIV application version must be at least {}",
+                format_version(MIN_PIV_METADATA_VERSION)
+            );
         }
+        if self.yubikey.get_pin_retries()? == 0 {
+            bail!("YubiKey PIN retries are exhausted");
+        }
+        Ok(())
     }
 
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.authenticate_management(),
-        }
+        self.authenticate_management()
     }
 
     fn generate_key(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => {
-                let version = device.yubikey.version();
-                if version_lt(version, MIN_PIV_METADATA_VERSION) {
-                    bail!(
-                        "YubiKey PIV application version must be at least {}",
-                        format_version(MIN_PIV_METADATA_VERSION)
-                    );
-                }
-                if device.yubikey.get_pin_retries()? == 0 {
-                    bail!("YubiKey PIN retries are exhausted");
-                }
-                device.authenticate_management()?;
-                piv::generate(
-                    &mut device.yubikey,
-                    SECRET_SLOT,
-                    AlgorithmId::Rsa2048,
-                    PinPolicy::Once,
-                    TouchPolicy::Always,
-                )?;
-                Ok(())
-            }
-        }
+        self.check_key_generation_preconditions()?;
+        self.authenticate_management()?;
+        piv::generate(
+            &mut self.yubikey,
+            SECRET_SLOT,
+            AlgorithmId::Rsa2048,
+            PinPolicy::Once,
+            TouchPolicy::Always,
+        )?;
+        Ok(())
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
-        match self {
-            Self::Real(device) => match device.yubikey.fetch_object(object_id.value()) {
-                Ok(value) => Ok(Some(value.to_vec())),
-                Err(yubikey::Error::NotFound) => Ok(None),
-                Err(err) => Err(err.into()),
-            },
+        match self.yubikey.fetch_object(object_id.value()) {
+            Ok(value) => Ok(Some(value.to_vec())),
+            Err(yubikey::Error::NotFound) => Ok(None),
+            Err(err) => Err(err.into()),
         }
     }
 
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
-        match self {
-            Self::Real(device) => {
-                device.authenticate_management()?;
-                device.yubikey.save_object(object_id.value(), value)?;
-                Ok(())
-            }
-        }
+        self.authenticate_management()?;
+        self.yubikey.save_object(object_id.value(), value)?;
+        Ok(())
     }
 
     fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
-        match self {
-            Self::Real(device) => {
-                let public = device.public_key()?;
-                Ok(public.encrypt(&mut OsRng, Oaep::new::<Sha256>(), key)?)
-            }
-        }
+        let public = self.public_key()?;
+        Ok(public.encrypt(&mut OsRng, Oaep::new::<Sha256>(), key)?)
     }
 
     fn verify_pin(&mut self, pin: &[u8]) -> Result<()> {
-        match self {
-            Self::Real(device) => device.verify_pin_once(pin),
-        }
+        self.verify_pin_once(pin)
     }
 
     fn requires_pin_input(&self) -> bool {
-        match self {
-            Self::Real(device) => !device.pin_verified,
-        }
+        !self.pin_verified
     }
 
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        match self {
-            Self::Real(device) => {
-                if !device.pin_verified {
-                    bail!("YubiKey PIN must be verified before reading stored secrets");
-                }
-                let decrypted = Zeroizing::new(piv::decrypt_data(
-                    &mut device.yubikey,
-                    wrapped_key,
-                    AlgorithmId::Rsa2048,
-                    SECRET_SLOT,
-                )?);
-                let mut output = Vec::new();
-                write_oaep_unpadded_sha256(&decrypted, 256, &mut output)?;
-                Ok(output)
-            }
+        if !self.pin_verified {
+            bail!("YubiKey PIN must be verified before reading stored secrets");
         }
+        let decrypted = Zeroizing::new(piv::decrypt_data(
+            &mut self.yubikey,
+            wrapped_key,
+            AlgorithmId::Rsa2048,
+            SECRET_SLOT,
+        )?);
+        let mut output = Vec::new();
+        write_oaep_unpadded_sha256(&decrypted, 256, &mut output)?;
+        Ok(output)
     }
 }
 

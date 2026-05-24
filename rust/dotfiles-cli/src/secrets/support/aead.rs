@@ -2,7 +2,7 @@
 //!
 //! key/nonce/tag 長の妥当性確認と detached API 呼び出しをここに集約する。
 
-use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
+use aes_gcm::{aead::AeadInPlace, Aes256Gcm, KeyInit};
 use anyhow::bail;
 
 use crate::Result;

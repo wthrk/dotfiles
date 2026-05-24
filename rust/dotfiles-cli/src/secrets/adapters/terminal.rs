@@ -11,15 +11,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
 use crate::{
-    Result,
     secrets::support::protection::{InterruptGuard, ProtectedInputBuffer, SecretSession},
+    Result,
 };
 
 /// 現在の stdin が対話入力を読める TTY かを返す。
@@ -55,14 +55,12 @@ pub(crate) fn prompt_yes_no(prompt: &str, interrupt: &InterruptGuard) -> Result<
 pub(crate) fn wait_for_enter(
     deadline: Instant,
     interrupt: &InterruptGuard,
-    prompt: &'static str,
     noninteractive_error: &'static str,
     timeout_error: &'static str,
 ) -> Result<()> {
     if !stdin_is_terminal() {
         bail!(noninteractive_error);
     }
-    eprintln!("{prompt}");
     read_terminal_line_until(deadline, interrupt, timeout_error).map(|_| ())
 }
 

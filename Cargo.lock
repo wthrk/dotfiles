@@ -545,6 +545,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "dotfiles-cli-secrets-test-contract",
  "dotfiles-core",
  "nom",
  "portable-pty",
