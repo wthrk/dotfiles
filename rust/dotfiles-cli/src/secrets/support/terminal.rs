@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::Result;
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},

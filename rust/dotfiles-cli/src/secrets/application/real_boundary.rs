@@ -4,7 +4,6 @@
 
 use super::{adapters, read_enrollment_secret_set_from_user, read_protected_secret_for_put};
 use crate::{
-    Result,
     secrets::{
         adapters::input::read_yubikey_pin,
         domain::SecretName,
@@ -14,6 +13,7 @@ use crate::{
             terminal::{prompt_yes_no, stdin_is_terminal},
         },
     },
+    Result,
 };
 
 /// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。

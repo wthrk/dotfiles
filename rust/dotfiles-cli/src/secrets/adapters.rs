@@ -17,7 +17,7 @@ use crate::secrets::domain::{PivObjectId, SecretDevice};
 use crate::secrets::support::terminal::{
     read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
 };
-use crate::{Result, secrets::support::protection::InterruptGuard};
+use crate::{secrets::support::protection::InterruptGuard, Result};
 
 #[cfg(feature = "secrets-test-stub")]
 /// CLI 実行で使う YubiKey device adapter の選択状態。

@@ -9,21 +9,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use rand_core::OsRng;
-use rsa::{Oaep, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
+use rsa::{pkcs1::DecodeRsaPublicKey, Oaep, RsaPublicKey};
 use sha2::Sha256;
 use yubikey::{
-    MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
+    MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
 };
 use zeroize::Zeroizing;
 
-use crate::Result;
 use crate::secrets::{
     domain::{PivObjectId, SecretDevice},
     support::{protection::InterruptGuard, write_oaep_unpadded_sha256},
 };
+use crate::Result;
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;

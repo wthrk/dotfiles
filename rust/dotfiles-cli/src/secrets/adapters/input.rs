@@ -10,11 +10,10 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use zeroize::Zeroize;
 
 use crate::{
-    Result,
     secrets::{
         ports::EnrollmentSecretSet,
         support::{
@@ -22,6 +21,7 @@ use crate::{
             terminal,
         },
     },
+    Result,
 };
 
 #[cfg(test)]

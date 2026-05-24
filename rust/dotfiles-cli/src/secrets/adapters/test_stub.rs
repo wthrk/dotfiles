@@ -5,18 +5,18 @@
 
 use std::{collections::BTreeMap, io::Write};
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use clap::{Parser, ValueEnum};
 
-use crate::Result;
 use crate::secrets::{
     blob::{decrypt_secret_protected, encrypt_secret},
     domain::{self, SecretBlob, SecretDevice, SecretManifest, SecretName},
     support::protection::{ProtectedSecret, SecretSession},
 };
+use crate::Result;
 use dotfiles_cli_secrets_test_contract::{
     CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
-    SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_SERIAL,
+    SEED_BWS_ACCESS_TOKEN_ENV, SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SPARE_SERIAL,
     SPARE_STUB_STATE_ENV, STUB_STATE_ENV, WRITE_EVENT_PREFIX,
 };
 

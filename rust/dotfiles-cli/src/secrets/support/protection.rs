@@ -3,13 +3,13 @@
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, LazyLock, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
+        Arc, LazyLock, Mutex, MutexGuard,
     },
 };
 
-use anyhow::{Context, bail};
-use signal_hook::{SigId, consts::signal};
+use anyhow::{bail, Context};
+use signal_hook::{consts::signal, SigId};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
