@@ -1,14 +1,13 @@
 //! application storage service が保つ wire format、暗号境界、YubiKey 書き込み認証契約を検証する。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::Write};
 
 use crate::Result;
 use crate::secrets::application::storage_service::{get_protected, put, replace_bws_token, setup};
 use crate::secrets::domain::{
-    BLOB_MAGIC, MANIFEST_APP, NONCE_LEN, PivObjectId, SecretBlob, SecretManifest, SecretName,
-    TAG_LEN,
+    BLOB_MAGIC, MANIFEST_APP, NONCE_LEN, PivObjectId, SecretBlob, SecretDevice, SecretManifest,
+    SecretName, TAG_LEN,
 };
-use crate::secrets::ports::{SecretDevice, UnwrappedContentKey};
 use crate::secrets::support::protection::SecretSession;
 use anyhow::Context;
 
@@ -92,8 +91,9 @@ impl SecretDevice for FakeDevice {
         true
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<UnwrappedContentKey> {
-        Ok(UnwrappedContentKey::new(self.wrap_key(wrapped_key)?))
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
+        output.write_all(&self.wrap_key(wrapped_key)?)?;
+        Ok(())
     }
 }
 

@@ -10,8 +10,7 @@ use rand::Rng;
 
 use crate::Result;
 use crate::secrets::{
-    domain::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretName},
-    ports::SecretDevice,
+    domain::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, SecretDevice, SecretName},
     support::{
         aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
         protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
@@ -62,12 +61,13 @@ pub(crate) fn decrypt_secret_protected<'session, D: SecretDevice>(
     blob: &SecretBlob,
     session: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    let unwrapped = device.unwrap_key(&blob.wrapped_key)?;
-    if unwrapped.as_slice().len() != CONTENT_KEY_LEN {
+    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN + 1, session)?;
+    device.write_unwrapped_key(&blob.wrapped_key, &mut content_key)?;
+    if content_key.as_slice().len() != CONTENT_KEY_LEN {
         bail!("unwrapped YubiKey content key has invalid length");
     }
 
-    let cipher = aes_256_gcm_from_key(unwrapped.as_slice())?;
+    let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
     let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
     input.write_all(&blob.ciphertext)?;
     decrypt_detached(

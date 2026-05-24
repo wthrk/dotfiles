@@ -7,7 +7,7 @@ use crate::{
     secrets::{
         adapters::input::read_yubikey_pin,
         domain::SecretName,
-        ports::{EnrollmentSecretSet, ProtectedSecretLike, SecretsBoundary},
+        ports::{EnrollmentSecretSet, SecretsBoundary},
         support::{
             protection::{InterruptGuard, ProtectedSecret, SecretSession},
             terminal::{prompt_yes_no, stdin_is_terminal},
@@ -23,9 +23,6 @@ pub(super) struct RealSecretsBoundary {
 
 impl SecretsBoundary for RealSecretsBoundary {
     type Device = adapters::YubikeySecretDevice;
-    type InterruptSignal = InterruptGuard;
-    type SecretSession = SecretSession;
-    type ProtectedSecret<'session> = ProtectedSecret<'session>;
 
     fn stdin_is_terminal(&self) -> bool {
         stdin_is_terminal()
@@ -52,7 +49,7 @@ impl SecretsBoundary for RealSecretsBoundary {
         &mut self,
         stdin_json: bool,
         memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<ProtectedSecret<'session>>> {
+    ) -> Result<EnrollmentSecretSet<'session>> {
         read_enrollment_secret_set_from_user(stdin_json, memory)
     }
 
@@ -74,11 +71,5 @@ impl SecretsBoundary for RealSecretsBoundary {
 
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
         prompt_yes_no(prompt, interrupt)
-    }
-}
-
-impl<'session> ProtectedSecretLike for ProtectedSecret<'session> {
-    fn with_secret<T>(&self, callback: impl FnOnce(&[u8]) -> T) -> T {
-        self.with_secret(callback)
     }
 }

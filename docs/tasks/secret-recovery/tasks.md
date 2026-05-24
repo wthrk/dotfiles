@@ -19,7 +19,7 @@
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 実装状態: `実装中`
+- 実装状態: `未実装`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -27,7 +27,7 @@
 | 規約計画 | 完了 | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/yubikey.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 完了 | `docs/secret-recovery/yubikey-secret-storage-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 実装 ステップ1: V7,V8,V16（port/domain依存整理） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ1: V7,V8,V16（port/domain依存整理） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（domain summary DTO除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ3: V6（port DTO/parser/prompt除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ4: V10（blob.rs責務分割） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |

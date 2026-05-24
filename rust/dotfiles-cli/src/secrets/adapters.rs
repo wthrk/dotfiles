@@ -8,14 +8,12 @@ mod test_stub;
 mod yubikey;
 
 use anyhow::Context;
+#[cfg(feature = "secrets-test-stub")]
+use std::io::Write;
 use std::{io, time::Instant};
 
 #[cfg(feature = "secrets-test-stub")]
-use crate::secrets::domain::PivObjectId;
-#[cfg(feature = "secrets-test-stub")]
-use crate::secrets::ports::SecretDevice;
-#[cfg(feature = "secrets-test-stub")]
-use crate::secrets::ports::UnwrappedContentKey;
+use crate::secrets::domain::{PivObjectId, SecretDevice};
 use crate::secrets::support::terminal::{
     read_terminal_line_interruptible, read_terminal_line_until, wait_for_enter,
 };
@@ -151,10 +149,10 @@ impl SecretDevice for YubikeySecretDevice {
         }
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<UnwrappedContentKey> {
+    fn write_unwrapped_key(&mut self, wrapped_key: &[u8], output: &mut impl Write) -> Result<()> {
         match self {
-            Self::Real(device) => device.unwrap_key(wrapped_key),
-            Self::TestStub(device) => device.unwrap_key(wrapped_key),
+            Self::Real(device) => device.write_unwrapped_key(wrapped_key, output),
+            Self::TestStub(device) => device.write_unwrapped_key(wrapped_key, output),
         }
     }
 }
