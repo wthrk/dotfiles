@@ -15,8 +15,10 @@ use zeroize::Zeroize;
 
 use crate::{
     secrets::{
-        adapters::terminal,
-        support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+        support::{
+            protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+            terminal,
+        },
     },
     Result,
 };
