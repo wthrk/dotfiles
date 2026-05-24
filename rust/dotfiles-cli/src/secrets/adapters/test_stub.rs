@@ -368,36 +368,6 @@ impl SecretDevice for TestDevice {
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
         self.wrap_key(wrapped_key)
     }
-
-    fn write_expected_manifest(&mut self) -> Result<()> {
-        let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
-        self.write_object(domain::PivObjectId::MANIFEST, &mut manifest)
-    }
-
-    fn read_manifest(&mut self) -> Result<SecretManifest> {
-        let manifest = self
-            .read_object(domain::PivObjectId::MANIFEST)?
-            .context("YubiKey secret manifest is missing")?;
-        serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
-    }
-
-    fn write_secret_blob(&mut self, name: SecretName, blob: &SecretBlob) -> Result<()> {
-        let mut encoded = blob.encode()?;
-        self.write_object(name.object_id(), &mut encoded)
-    }
-
-    fn read_secret_blob(&mut self, name: SecretName) -> Result<SecretBlob> {
-        let encoded = self
-            .objects
-            .get(&name.object_id())
-            .with_context(|| format!("{} is not stored on this YubiKey", name))?;
-        let blob =
-            SecretBlob::decode(encoded).with_context(|| format!("failed to decode {}", name))?;
-        if blob.name != name {
-            bail!("YubiKey secret blob name does not match requested {}", name);
-        }
-        Ok(blob)
-    }
 }
 
 impl TestDevice {

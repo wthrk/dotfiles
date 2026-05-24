@@ -6,10 +6,13 @@
 
 use crate::Result;
 use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
-use anyhow::bail;
+use anyhow::{Context, bail};
 
 use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
-use crate::secrets::domain::{CONTENT_KEY_LEN, KEY_SLOT, NONCE_LEN, SecretBlob, SecretName, StorageObjectIds};
+use crate::secrets::domain::{
+    CONTENT_KEY_LEN, KEY_SLOT, NONCE_LEN, PivObjectId, SecretBlob, SecretManifest, SecretName,
+    StorageObjectIds,
+};
 use crate::secrets::ports::SecretDevice;
 use crate::secrets::support::blob_crypto::{decrypt_secret_payload, encrypt_secret_payload};
 use rand::Rng;
@@ -20,7 +23,7 @@ use rand::Rng;
 pub fn setup<D: SecretDevice>(device: &mut D) -> Result<()> {
     check_setup_preconditions(device)?;
     device.generate_key()?;
-    device.write_expected_manifest()
+    write_manifest(device)
 }
 
 /// setup が永続書き込みを開始できる device 状態か確認する。
@@ -31,7 +34,7 @@ pub fn check_setup_preconditions<D: SecretDevice>(device: &mut D) -> Result<()> 
     device.check_management_auth_preconditions()?;
 
     if device.key_exists()? {
-        if let Ok(manifest) = device.read_manifest() {
+        if let Ok(manifest) = read_manifest(device) {
             manifest.validate_expected()?;
             bail!("YubiKey secret storage is already initialized");
         }
@@ -78,7 +81,8 @@ pub fn put<D: SecretDevice>(
         tag,
     };
     session.check_interrupted()?;
-    device.write_secret_blob(name, &blob)
+    let mut encoded = blob.encode()?;
+    device.write_object(name.object_id(), &mut encoded)
 }
 
 /// `put` 実行前に検証できる保存条件を確認する。
@@ -98,7 +102,7 @@ fn check_put_target_writable<D: SecretDevice>(
     name: SecretName,
     force: bool,
 ) -> Result<()> {
-    device.read_manifest()?.validate_expected()?;
+    read_manifest(device)?.validate_expected()?;
     device.check_management_auth_preconditions()?;
     if device.read_object(name.object_id())?.is_some() && !force {
         bail!("{} already exists; pass --force to replace it", name);
@@ -114,7 +118,7 @@ pub fn get_protected<'session, D: SecretDevice>(
     name: SecretName,
     session: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    let blob = device.read_secret_blob(name)?;
+    let blob = read_secret_blob(device, name)?;
     let unwrapped_key = device.unwrap_key(&blob.wrapped_key)?;
     decrypt_secret_payload(
         blob.name,
@@ -125,6 +129,19 @@ pub fn get_protected<'session, D: SecretDevice>(
         &blob.tag,
         session,
     )
+}
+
+fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result<SecretBlob> {
+    read_manifest(device)?.validate_expected()?;
+    let encoded = device
+        .read_object(name.object_id())?
+        .with_context(|| format!("{} is not stored on this YubiKey", name))?;
+    let blob =
+        SecretBlob::decode(&encoded).with_context(|| format!("failed to decode {}", name))?;
+    if blob.name != name {
+        bail!("YubiKey secret blob name does not match requested {}", name);
+    }
+    Ok(blob)
 }
 
 /// 登録直後の summary 初期値を構築する。
@@ -157,4 +174,22 @@ pub fn replace_bws_token<D: SecretDevice>(
     session: &SecretSession,
 ) -> Result<()> {
     put(device, SecretName::BwsAccessToken, token, true, session)
+}
+
+/// expected manifest を PIV object へ書き込む。
+///
+/// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
+fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
+    let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
+    device.write_object(PivObjectId::MANIFEST, &mut manifest)
+}
+
+/// PIV object から manifest を読み出して parse する。
+///
+/// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
+fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
+    let manifest = device
+        .read_object(PivObjectId::MANIFEST)?
+        .context("YubiKey secret manifest is missing")?;
+    serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
 }
