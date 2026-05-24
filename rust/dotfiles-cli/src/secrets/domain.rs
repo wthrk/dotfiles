@@ -12,6 +12,7 @@ pub(crate) use model::MANIFEST_APP;
 pub(crate) use model::{BLOB_MAGIC, TAG_LEN};
 pub(crate) use model::{
     CONTENT_KEY_LEN, CheckName, CheckStatus, EnrollSummary, KEY_SLOT, NONCE_LEN, PivObjectId,
-    SecretBlob, SecretDevice, SecretManifest, SecretName, StorageObjectIds, VerifySummary,
+    SecretBlob, SecretManifest, SecretName, StorageObjectIds, VerifySummary,
     YubikeyRole,
 };
+pub(crate) use super::support::protection::{InterruptGuard, ProtectedSecret, SecretSession};
