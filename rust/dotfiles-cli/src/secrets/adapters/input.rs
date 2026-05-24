@@ -15,7 +15,7 @@ use zeroize::Zeroize;
 
 use crate::{
     secrets::{
-        ports::EnrollmentSecretSet,
+        application::EnrollmentSecretSet,
         support::{
             protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
             terminal,

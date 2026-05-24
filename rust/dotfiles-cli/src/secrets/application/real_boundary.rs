@@ -7,7 +7,7 @@ use crate::{
     secrets::{
         adapters::input::read_yubikey_pin,
         domain::SecretName,
-        ports::{EnrollmentSecretSet, SecretsBoundary},
+        application::{EnrollmentSecretSet, SecretsBoundary},
         support::{
             protection::{InterruptGuard, ProtectedSecret, SecretSession},
             terminal::{prompt_yes_no, stdin_is_terminal},
