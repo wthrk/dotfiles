@@ -9,6 +9,7 @@ description: Use this skill when a subagent is assigned implementation work and 
 
 - `docs/task-governance/workflow.md` governs role assignment, fallback, and subagent assignment.
 - `docs/task-governance/implementation-execution.md` governs execution obligations, evidence recording, and remediation scope.
+- `docs/architecture/hexagonal-implementation-rules.md` governs layer-based responsibility boundaries, allowed and forbidden artifacts per layer, and visibility rules.
 
 ## Required Reading Order
 
@@ -16,12 +17,13 @@ description: Use this skill when a subagent is assigned implementation work and 
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/workflow.md`
 4. `docs/task-governance/implementation-execution.md`
-5. `docs/tasks/README.md`
-6. `docs/tasks/tasks.md`
-7. `docs/tasks/<area>/README.md`
-8. `docs/tasks/<area>/work-items/<item>.md`
-9. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
-10. `docs/<area>/implementation-guidelines.md` (if present)
+5. `docs/architecture/hexagonal-implementation-rules.md`
+6. `docs/tasks/README.md`
+7. `docs/tasks/tasks.md`
+8. `docs/tasks/<area>/README.md`
+9. `docs/tasks/<area>/work-items/<item>.md`
+10. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
+11. `docs/<area>/implementation-guidelines.md` (if present)
 
 `docs/tasks/<area>/tasks.md` is mandatory only when the active work item explicitly references it.
 
@@ -38,3 +40,6 @@ Actor binding: while this skill is active, the current actor is the implementati
 - For review-feedback remediation scope, follow the binding full-scope reviewer-perspective rule in `docs/task-governance/implementation-execution.md`.
 - Apply the implementation rule text as written, including `最小構成で済まそうとしてはならない。`.
 - Smallest diff and inherited-structure preservation are not goals; redesign to compliant structure (including zero-base module/document boundary rewrites when needed).
+- Before writing any code in `adapters/`, verify that the implementation exposes only port trait implementations. Any `pub` item that is not a port trait implementation is a layer violation and must be removed.
+- Before writing any code in `application/`, verify that no adapter concrete types are imported and no `println!` / stdin reads are present.
+- Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` take precedence over file-name-specific rules. When a file-name-specific violation target (e.g., V1〜V16 in `yubikey.md`) appears resolved but a layer-based violation persists, the item is NOT resolved.

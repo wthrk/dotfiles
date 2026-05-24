@@ -25,6 +25,7 @@ description: Use this skill when repository task flow needs orchestration, role 
 6. `docs/tasks/README.md`
 7. `docs/tasks/tasks.md`
 8. The selected area `docs/tasks/<area>/README.md`
+9. `docs/architecture/hexagonal-implementation-rules.md` (architecture rules — understand before delegating to implementation or review roles)
 
 ## When To Use
 
@@ -47,3 +48,5 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - Do not reuse a subagent across different task items or different roles.
 - If a fresh launch fails because of an agent/thread limit, first release completed subagents and retry with a fresh agent. Launch limits never justify reusing a subagent that is already assigned to another task item or role.
 - Fallback execution must be delegated to an executor other than the current orchestrator. The current orchestrator cannot serve as the fallback executor.
+- When delegating implementation work for secret-recovery items, the orchestrator must confirm that the implementation executor's governing sources include `docs/architecture/hexagonal-implementation-rules.md` and the secrets-module layer mapping defined therein.
+- When delegating review work, the orchestrator must confirm that the reviewer's governing sources include the layer-based constraint rules (not just file-name-specific rules) from `docs/architecture/hexagonal-implementation-rules.md`.

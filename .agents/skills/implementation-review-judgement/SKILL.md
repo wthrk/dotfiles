@@ -10,6 +10,7 @@ description: Use this skill when a subagent must judge implementation review-sta
 - `docs/task-governance/workflow.md` governs role assignment, fallback, and subagent assignment.
 - `docs/task-governance/implementation-review-judgement.md` governs review-start gates, reviewer roles, and aggregation rules.
 - `docs/task-governance/security-obligations.md` governs security constraints that are binding for review judgement and recorded artifacts.
+- `docs/architecture/hexagonal-implementation-rules.md` governs layer-based architectural constraints that must be applied during structural review.
 
 ## Required Reading Order
 
@@ -18,10 +19,11 @@ description: Use this skill when a subagent must judge implementation review-sta
 3. `docs/task-governance/workflow.md`
 4. `docs/task-governance/implementation-review-judgement.md`
 5. `docs/task-governance/security-obligations.md`
-6. `docs/tasks/README.md`
-7. `docs/tasks/tasks.md`
-8. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
-9. Relevant `docs/tasks/<area>/review-artifacts/...`
+6. `docs/architecture/hexagonal-implementation-rules.md`
+7. `docs/tasks/README.md`
+8. `docs/tasks/tasks.md`
+9. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
+10. Relevant `docs/tasks/<area>/review-artifacts/...`
 
 `docs/tasks/<area>/tasks.md` is mandatory only when the active work item explicitly references it.
 
@@ -44,3 +46,6 @@ Actor binding: while this skill is active, the current actor is the implementati
 - Do not use freeform lead verdicts such as `通しません`, `No findings`, `指摘なし`, `no blockers`, or `pass` in place of the explicit `判定` line.
 - When the verdict is `合格`, use `判定要約: 所見なし`.
 - When any concern, residual risk, unresolved doubt, follow-up item, or operational dependency remains, the verdict must be at least `要修正`; record the remediation condition in `根拠:` and do not emit `合格`.
+- Structural review must apply layer-based rules from `docs/architecture/hexagonal-implementation-rules.md`, not only file-name-specific violation targets. If an `adapters/` file exposes any `pub` item that is not a port trait implementation, emit `判定: 不合格`.
+- When reviewing secret-recovery code diffs: for each modified file, identify its layer from the secrets module layer mapping in `docs/architecture/hexagonal-implementation-rules.md`, then verify that the file's contents satisfy that layer's responsibility constraints and prohibition rules.
+- A diff that passes compilation but violates layer-based constraints must receive `判定: 不合格` regardless of test results.

@@ -10,22 +10,25 @@
   - `support` は保護メモリ、補助暗号、割り込み制御などの横断補助だけを持つ。
 - 既存実装の流用方針: `既存コードは参照してよいが、責務境界が規約に合わない場合は大幅な再分割、再配置、削除を前提とする。`
 - 規約違反の解消対象:
-  - **V1** `application.rs` が `adapters` / `adapters::input` を直接 import し、`DeviceBackend` / `RealSecretsBoundary` を直接組み立てている（`application` から `adapter` への依存禁止違反）。
-  - **V2** `application.rs` が `read_hidden_secret` / `read_visible_secret_line` / `read_protected_enrollment_secret_set` / `write_secret_to_stdout` を直接呼び、`println!` による report 出力を行っている（concrete I/O / stdin / stdout policy は `adapter` 所有規則違反）。
-  - **V3** `application.rs` が `let mut device = ...` を全 use case で長寿命に保持し、`serial()` / `verify_pin()` / `check_management_auth_preconditions()` まで呼んでいる（device handle は `adapter` 所有規則違反）。
-  - **V4** `application/real_boundary.rs` が adapter 実装そのものを `application/` 配下に置いている（adapter と application の分離規則違反）。
-  - **V5** `application/storage_service.rs` が永続書き込み、manifest の serde_json parse/serialize、blob decode、device precondition、summary 構築を一緒に持つ（concrete I/O / parser は `adapter` 所有規則違反）。
-  - **V6** `ports.rs` の `EnrollmentSecretSet` が port に DTO を置き、`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む（port への DTO 配置禁止・parser/prompt は `adapter` 所有規則違反）。
-  - **V7** `ports.rs` が `support::protection::{InterruptGuard, ProtectedSecret, SecretSession}` に依存している（port は domain にのみ依存可能規則違反）。
-  - **V8** `domain/model.rs` が `SecretDevice` trait を定義している（port contract は `port` に置く規則違反）。
-  - **V9** `domain/model.rs` が `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` を保持している（summary / reporting DTO は `application` 所有規則違反）。
-  - **V10** `blob.rs` が層無所属のまま wire format / AEAD 暗号化 / content-key 生成 / port 呼び出し / ProtectedSecret 生成を同居させている（単一ファイル責務混在禁止違反）。
-  - **V11** `support/terminal.rs` が TTY 判定 / prompt / raw mode / stdout 書き込みを `support` 配下に置いている（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
-  - **V12** `adapters/input.rs` が hidden prompt / visible prompt / PIN input / stdin ingest / JSON decode / stdout terminal policy を 1 ファイルに集約し、port DTO に直接 decode している（port DTO 依存増幅・adapter 面混在違反）。
-  - **V13** `adapters.rs` が backend selection / test-stub selection / interactive device selection / spare 交換 prompt を同一 surface に混在させている（adapter 面分割規則違反）。
-  - **V14** `secrets.rs` / `adapters/test_stub.rs` / `dotfiles-cli-secrets-test-contract` が production crate の command path に test double を feature-gate で埋め込んでいる（test double は tests 層所有・production export 禁止規則違反）。
-  - **V15** `application.rs` 内部 test module と `application/storage_service_tests.rs` が fake boundary / fake device を production tree 配下に置いている（同上）。
-  - **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
+
+  この違反リストの判定基準は `docs/architecture/hexagonal-implementation-rules.md` の層ごとの責務と禁止事項に基づく。ファイル名は参考であり、判定は層への所属で行う。
+
+  - **[層違反: application → adapter具体型への依存禁止]** **V1** `application.rs` が `adapters` / `adapters::input` を直接 import し、`DeviceBackend` / `RealSecretsBoundary` を直接組み立てている（`application` から `adapter` への依存禁止違反）。
+  - **[層違反: application → concrete I/O・stdin・stdout policy は adapter 所有]** **V2** `application.rs` が `read_hidden_secret` / `read_visible_secret_line` / `read_protected_enrollment_secret_set` / `write_secret_to_stdout` を直接呼び、`println!` による report 出力を行っている（concrete I/O / stdin / stdout policy は `adapter` 所有規則違反）。
+  - **[層違反: application → device handle は adapter 所有]** **V3** `application.rs` が `let mut device = ...` を全 use case で長寿命に保持し、`serial()` / `verify_pin()` / `check_management_auth_preconditions()` まで呼んでいる（device handle は `adapter` 所有規則違反）。
+  - **[層違反: application配下 → adapter実装は adapters/ 層のみ許可]** **V4** `application/real_boundary.rs` が adapter 実装そのものを `application/` 配下に置いている（adapter と application の分離規則違反）。
+  - **[層違反: application → concrete I/O・parser は adapter 所有]** **V5** `application/storage_service.rs` が永続書き込み、manifest の serde_json parse/serialize、blob decode、device precondition、summary 構築を一緒に持つ（concrete I/O / parser は `adapter` 所有規則違反）。
+  - **[層違反: port → DTO・parser・prompt は adapter 所有]** **V6** `ports.rs` の `EnrollmentSecretSet` が port に DTO を置き、`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む（port への DTO 配置禁止・parser/prompt は `adapter` 所有規則違反）。
+  - **[層違反: port → domain 以外への依存禁止]** **V7** `ports.rs` が `support::protection::{InterruptGuard, ProtectedSecret, SecretSession}` に依存している（port は domain にのみ依存可能規則違反）。
+  - **[層違反: domain → port contract は port 層に置く]** **V8** `domain/model.rs` が `SecretDevice` trait を定義している（port contract は `port` に置く規則違反）。
+  - **[層違反: domain → summary DTO は application 所有]** **V9** `domain/model.rs` が `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` を保持している（summary / reporting DTO は `application` 所有規則違反）。
+  - **[層違反: 層未確定 → 単一ファイル責務混在禁止]** **V10** `blob.rs` が層無所属のまま wire format / AEAD 暗号化 / content-key 生成 / port 呼び出し / ProtectedSecret 生成を同居させている（単一ファイル責務混在禁止違反）。
+  - **[層違反: support → prompt・stdin・stdout policy は adapter 所有]** **V11** `support/terminal.rs` が TTY 判定 / prompt / raw mode / stdout 書き込みを `support` 配下に置いている（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
+  - **[層違反: adapters → port実装以外の公開禁止]** **V12** `adapters/input.rs` が hidden prompt / visible prompt / PIN input / stdin ingest / JSON decode / stdout terminal policy を 1 ファイルに集約し、port DTO に直接 decode している（port DTO 依存増幅・adapter 面混在違反）。
+  - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` が backend selection / test-stub selection / interactive device selection / spare 交換 prompt を同一 surface に混在させている（adapter 面分割規則違反）。
+  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V14** `secrets.rs` / `adapters/test_stub.rs` / `dotfiles-cli-secrets-test-contract` が production crate の command path に test double を feature-gate で埋め込んでいる（test double は tests 層所有・production export 禁止規則違反）。
+  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V15** `application.rs` 内部 test module と `application/storage_service_tests.rs` が fake boundary / fake device を production tree 配下に置いている（同上）。
+  - **[層違反: domain・port → I/O 型禁止]** **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
 - 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
   - `application` が `adapter` の具体型を import しない（V1, V4 の解消）。
   - `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない（V2, V3 の解消）。

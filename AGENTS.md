@@ -166,6 +166,14 @@ cargo xtask check all
 
 Runtime checks require Darwin VM toolchains (Tart/Packer/Ansible) in the dev shell. For static-check details, see `rust/tests/checks/src/static_checks.rs`; for zsh invariants, see `rust/tests/checks/src/zsh.rs`.
 
+## Architecture Constraints
+
+- This repository adopts Hexagonal Architecture. The layer model, per-layer allowed artifacts, forbidden artifacts, and visibility rules are defined in `docs/architecture/hexagonal-implementation-rules.md`.
+- Before implementing or reviewing any code under `rust/`, read `docs/architecture/hexagonal-implementation-rules.md` and apply its layer-based rules.
+- `adapter` layer files must expose only port trait implementations as `pub`. Any other `pub` item is a layer violation.
+- `application` layer files must not import adapter concrete types and must not contain `println!` or stdin reads.
+- Layer-based constraints override file-name-specific rules. Resolving a named violation (e.g., V1〜V16) without eliminating the underlying layer violation does not constitute resolution.
+
 ## Code Style
 
 - For non-trivial modules, scripts, command entrypoints, and verification-flow definition files, add a file-level comment or language-standard doc comment explaining the role.
