@@ -74,12 +74,20 @@ pub(crate) trait SecretsBoundary {
         stdin: bool,
         memory: &'session SecretSession,
     ) -> Result<ProtectedSecret<'session>>;
-    fn read_yubikey_pin<'session>(
-        &mut self,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
     fn write_secret_output(&mut self, secret: &[u8]) -> Result<()>;
+    fn write_json_output<T: serde::Serialize>(&mut self, value: &T) -> Result<()>;
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool>;
+    fn device_serial(&self, device: &Self::Device) -> u32;
+    fn verify_pin_for_secret_reads(
+        &mut self,
+        device: &mut Self::Device,
+        session: &SecretSession,
+    ) -> Result<()>;
+    fn check_management_auth_preconditions(
+        &mut self,
+        device: &mut Self::Device,
+        session: &SecretSession,
+    ) -> Result<()>;
 }
 
 /// summary に出す確認項目の状態。

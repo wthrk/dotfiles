@@ -2,7 +2,10 @@
 //!
 //! use case orchestration から concrete 境界実装を分離し、application 本体は順序制御だけに集中させる。
 
-use crate::secrets::boundary::{EnrollmentSecretSet, SecretsBoundary};
+use crate::secrets::{
+    boundary::{EnrollmentSecretSet, SecretsBoundary},
+    ports::SecretDevice,
+};
 use crate::{
     secrets::{
         adapters::input::{
@@ -16,6 +19,8 @@ use crate::{
     },
     Result,
 };
+use anyhow::Context;
+use std::io::Write;
 
 /// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。
 pub(in crate::secrets) struct RealSecretsBoundary {
@@ -96,18 +101,43 @@ impl SecretsBoundary for RealSecretsBoundary {
         }
     }
 
-    fn read_yubikey_pin<'session>(
-        &mut self,
-        memory: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        read_yubikey_pin(memory)
-    }
-
     fn write_secret_output(&mut self, secret: &[u8]) -> Result<()> {
         write_secret_to_stdout(secret)
     }
 
+    fn write_json_output<T: serde::Serialize>(&mut self, value: &T) -> Result<()> {
+        let mut stdout = std::io::stdout().lock();
+        serde_json::to_writer_pretty(&mut stdout, value)
+            .context("failed to serialize JSON output")?;
+        stdout.write_all(b"\n")?;
+        Ok(())
+    }
+
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
         prompt_yes_no(prompt, interrupt)
+    }
+
+    fn device_serial(&self, device: &Self::Device) -> u32 {
+        device.serial()
+    }
+
+    fn verify_pin_for_secret_reads(
+        &mut self,
+        device: &mut Self::Device,
+        session: &SecretSession,
+    ) -> Result<()> {
+        if !device.requires_pin_input() {
+            return Ok(());
+        }
+        let pin = read_yubikey_pin(session)?;
+        pin.with_secret(|pin| session.run_yubikey_operation(|| device.verify_pin(pin)))
+    }
+
+    fn check_management_auth_preconditions(
+        &mut self,
+        device: &mut Self::Device,
+        session: &SecretSession,
+    ) -> Result<()> {
+        session.run_yubikey_operation(|| device.check_management_auth_preconditions())
     }
 }
