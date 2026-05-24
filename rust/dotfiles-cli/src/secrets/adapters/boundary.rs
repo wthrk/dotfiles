@@ -4,8 +4,16 @@
 
 use crate::{
     secrets::{
-        adapters::{self, input::read_yubikey_pin, terminal},
-        application::{EnrollmentSecretSet, SecretsBoundary, read_enrollment_secret_set_from_user, read_protected_secret_for_put},
+        adapters::{
+            self,
+            input::{
+                self, MAX_BOOTSTRAP_JSON_LEN, MAX_SINGLE_STDIN_SECRET_LEN,
+                read_hidden_secret, read_protected_enrollment_secret_set,
+                read_protected_stdin_secret, read_visible_secret_line, read_yubikey_pin,
+            },
+            terminal,
+        },
+        application::{EnrollmentSecretSet, SecretsBoundary},
         domain::SecretName,
         support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
     },
@@ -68,4 +76,54 @@ impl SecretsBoundary for RealSecretsBoundary {
     fn prompt_yes_no(&mut self, prompt: &str, interrupt: &InterruptGuard) -> Result<bool> {
         terminal::prompt_yes_no(prompt, interrupt)
     }
+
+    fn write_secret_to_stdout(&mut self, bytes: &[u8]) -> Result<()> {
+        input::write_secret_to_stdout(bytes)
+    }
+
+    fn reject_secret_stdout_terminal(&mut self) -> Result<()> {
+        input::reject_secret_stdout_terminal()
+    }
+
+    fn write_json_report<T: serde::Serialize>(&mut self, report: &T) -> Result<()> {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        Ok(())
+    }
+}
+
+fn read_protected_secret_for_put(
+    name: SecretName,
+    stdin: bool,
+    memory: &SecretSession,
+) -> Result<ProtectedSecret<'_>> {
+    if stdin {
+        read_protected_stdin_secret(MAX_SINGLE_STDIN_SECRET_LEN, memory)
+    } else {
+        read_hidden_secret(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN, memory)
+    }
+}
+
+fn read_enrollment_secret_set_from_user(
+    stdin_json: bool,
+    memory: &SecretSession,
+) -> Result<EnrollmentSecretSet<'_>> {
+    if stdin_json {
+        return read_protected_enrollment_secret_set(
+            std::io::stdin(),
+            MAX_BOOTSTRAP_JSON_LEN,
+            MAX_SINGLE_STDIN_SECRET_LEN,
+            memory,
+        );
+    }
+
+    let bw_email = read_visible_secret_line("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN, memory)?;
+    let bw_password = read_protected_secret_for_put(SecretName::BwPassword, false, memory)?;
+    let bws_access_token =
+        read_protected_secret_for_put(SecretName::BwsAccessToken, false, memory)?;
+
+    Ok(EnrollmentSecretSet::new(
+        bw_email,
+        bw_password,
+        bws_access_token,
+    ))
 }
