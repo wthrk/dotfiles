@@ -141,7 +141,7 @@
 **adapter 層**（`secrets/adapters.rs`、`secrets/adapters/input.rs`、`secrets/adapters/terminal.rs`、`secrets/adapters/yubikey.rs`）:
 - 許可: port trait の実装、外部 API 変換、SDK bridge、terminal bridge、filesystem bridge
 - 禁止: use case の順序制御、domain policy の決定、利用者向け文言の埋め込み
-- **公開制約（厳格）**: adapters/ 配下のすべてのファイルは、port trait の実装のみを公開でき、use case の順序制御・domain policy の決定・利用者向け文言を含めてはならない。`pub` で公開できるのは port trait 実装型のみであり、それ以外の関数・型を `pub` で公開してはならない。
+- **公開制約（厳格・絶対）**: adapters/ 配下のすべてのファイルにおいて、`pub`・`pub(crate)`・`pub(super)` を含む任意の可視性で外部（同一ファイル外）に公開できるのは、port trait を実装する型（struct/enum）と、その trait のメソッド実装のみである。port trait の実装ではない関数・型・定数・モジュールは、`pub(crate)` であっても adapter ファイルから外部に公開してはならない。adapter ファイル内の内部ヘルパー（stdin 読み取り関数、プロンプト関数、JSON デコード関数、terminal I/O 関数等）は、port trait の実装の一部でない限り private（`fn`）にとどめなければならない。これは「adapter ファイルに書いてある」「utility 的に見える」等の理由で免除されない絶対規則である。
 
 **support 層**（`secrets/support.rs`、`secrets/support/aead.rs`、`secrets/support/oaep.rs`、`secrets/support/protection.rs`、`secrets/support/protection/buffer.rs`）:
 - 許可: 業務語彙を持たない共通技術部品（保護メモリ、暗号プリミティブ、byte utility）
