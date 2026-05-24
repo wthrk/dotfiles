@@ -4,13 +4,13 @@
 
 ## 現在の作業項目
 
-- `Bitwarden Secrets Manager`
+- `YubiKey`
 
 ## 作業項目一覧
 
 ### YubiKey
 
-- 状態: `完了`
+- 状態: `未開始`
 - GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:
@@ -22,7 +22,6 @@
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
-- レビュー記録: [secret-recovery/review-artifacts/yubikey/review.md](secret-recovery/review-artifacts/yubikey/review.md)
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### Bitwarden Secrets Manager
