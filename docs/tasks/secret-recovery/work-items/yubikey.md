@@ -100,7 +100,7 @@
 | V4 | `src/secrets/application/real_boundary.rs` | adapters 層へ移設する。 |
 | V5 | `src/secrets/application/storage_service.rs` | serde_json parse / blob decode を adapter へ移設。 |
 | V6 | `src/secrets/ports.rs` | `EnrollmentSecretSet` DTO を除去。`SecretsBoundary` を最小 capability 契約に分割。 |
-| V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去し domain 型経由に変更。 |
+| V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去する。`domain.rs` への re-export 迂回は不可。`SecretsBoundary` のシグネチャから `InterruptGuard`/`ProtectedSecret`/`SecretSession` を除去し、domain 層に属する境界型へ置き換えること。 |
 | V8 | `src/secrets/domain/model.rs` | `SecretDevice` を ports 層へ移設。 |
 | V9 | `src/secrets/domain/model.rs` | summary DTO（`EnrollSummary` 等）を application 層へ移設。 |
 | V10 | `src/secrets/blob.rs` | 層ごとに分割し、wire format は domain/wire、AEAD は support/crypto 相当、port 呼び出しは adapter へ。 |
