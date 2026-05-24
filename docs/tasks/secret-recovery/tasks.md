@@ -28,7 +28,7 @@
 | 実装計画 | 完了 | `work-items/yubikey.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 完了 | `docs/secret-recovery/yubikey-secret-storage-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ2: V9（domain summary DTO除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ2: V9（domain summary DTO除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ4: V10（blob.rs責務分割） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
