@@ -19,8 +19,8 @@ use super::{
         read_protected_enrollment_secret_set, read_protected_stdin_secret,
         read_visible_secret_line, write_secret_to_stdout,
     },
-    domain::{self, SecretName},
-    ports::{EnrollmentSecretSet, SecretDevice, SecretsBoundary},
+    domain::{self, SecretDevice, SecretName},
+    ports::{EnrollmentSecretSet, SecretsBoundary},
     support::protection::{ProtectedSecret, SecretSession},
 };
 use crate::Result;
@@ -287,7 +287,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
 /// primary device から 登録用の 3 field を復号する。
 ///
 /// 各 field は次の device 操作前に session 所属の保護済み値へ移す。
-fn read_protected_bootstrap_from_device<'session, D: SecretDevice>(
+fn read_protected_bootstrap_from_device<'session, D: domain::SecretDevice>(
     primary: &mut D,
     session: &'session SecretSession,
 ) -> Result<EnrollmentSecretSet<'session>> {
@@ -310,7 +310,7 @@ fn read_protected_bootstrap_from_device<'session, D: SecretDevice>(
 /// 登録の永続書き込みを行い、local verify 前の summary を返す。
 ///
 /// 3 field の空チェックを完了してから PIV key / manifest 作成へ進む。
-fn enroll_without_local_verify<D: SecretDevice>(
+fn enroll_without_local_verify<D: domain::SecretDevice>(
     device: &mut D,
     role: domain::YubikeyRole,
     secrets: &EnrollmentSecretSet<'_>,
@@ -432,7 +432,7 @@ fn prepare_bws_token_rotation_device<B: SecretsBoundary>(
 /// 1 本の device へ BWS access token を書き込み、local verify を実行する。
 ///
 /// token の平文借用範囲は storage 書き込み呼び出し中に限定する。
-fn rotate_bws_token_on_device<D: SecretDevice>(
+fn rotate_bws_token_on_device<D: domain::SecretDevice>(
     device: &mut D,
     token: &ProtectedSecret<'_>,
     session: &SecretSession,
@@ -542,7 +542,7 @@ fn requested_external_checks(options: &VerifyYubikeyOptions) -> Vec<domain::Chec
 /// device 上の local storage secrets を復号し、空でないことを確認する。
 ///
 /// 復号結果は空判定前に session の保護境界へ移す。
-fn verify_local_storage_protected<D: SecretDevice>(
+fn verify_local_storage_protected<D: domain::SecretDevice>(
     device: &mut D,
     session: &SecretSession,
 ) -> Result<domain::VerifySummary> {
@@ -572,7 +572,7 @@ fn verify_local_storage_protected<D: SecretDevice>(
 /// rotation の書き込み前条件として local verify と management auth を確認する。
 ///
 /// 確認は token 入力前に現在の保護境界内で実行する。
-fn check_rotate_preconditions_protected<D: SecretDevice>(
+fn check_rotate_preconditions_protected<D: domain::SecretDevice>(
     device: &mut D,
     session: &SecretSession,
 ) -> Result<()> {
@@ -811,7 +811,7 @@ mod tests {
         }
     }
 
-    impl SecretDevice for FakeDevice {
+    impl domain::SecretDevice for FakeDevice {
         fn serial(&self) -> u32 {
             self.serial
         }
@@ -860,8 +860,13 @@ mod tests {
             true
         }
 
-        fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-            self.wrap_key(wrapped_key)
+        fn write_unwrapped_key(
+            &mut self,
+            wrapped_key: &[u8],
+            output: &mut impl Write,
+        ) -> Result<()> {
+            output.write_all(&self.wrap_key(wrapped_key)?)?;
+            Ok(())
         }
     }
 
