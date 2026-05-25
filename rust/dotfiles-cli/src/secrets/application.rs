@@ -348,7 +348,7 @@ fn enroll_without_local_verify<D: ports::SecretDevice>(
     secrets.bws_access_token.with_secret(|secret| {
         storage_service::put(device, SecretName::BwsAccessToken, secret, false, session)
     })?;
-    Ok(storage_service::enroll_summary(device.serial(), role))
+    Ok(summary::EnrollSummary::initial(device.serial(), role))
 }
 
 /// BWS access token を読み込み、1 本または複数本の device へ反映する。

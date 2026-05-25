@@ -12,13 +12,24 @@
 - レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
-  - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/application/storage_service.rs`
+  - `rust/dotfiles-cli/src/secrets/application/summary.rs`
+  - `rust/dotfiles-cli/src/secrets/ports.rs`
+  - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
+  - `rust/dotfiles-cli/src/secrets/support.rs`
+  - `rust/dotfiles-cli/src/secrets/support/aead.rs`
+  - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
+  - `rust/dotfiles-cli/Cargo.toml`
+  - `rust/dotfiles-cli-secrets-test-contract/src/lib.rs`
 - 実装状態: `実装中`
 - 固定実装単位トラッカー:
 
@@ -32,7 +43,7 @@
 | 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ4: V10（blob.rs責務分割） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |

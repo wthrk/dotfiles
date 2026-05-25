@@ -70,3 +70,26 @@ pub(crate) enum CheckName {
     /// Bitwarden login secret の妥当性確認。
     BwLogin,
 }
+
+impl EnrollSummary {
+    /// 登録直後の summary 初期値を構築する。
+    ///
+    /// local verify は application の保護境界で実行するため、初期値では `local_storage` を未確認として扱う。
+    pub(crate) fn initial(serial: u32, role: YubikeyRole) -> Self {
+        let checks = [
+            (CheckName::Setup, CheckStatus::Ok),
+            (CheckName::BwEmail, CheckStatus::Ok),
+            (CheckName::BwPassword, CheckStatus::Ok),
+            (CheckName::BwsAccessToken, CheckStatus::Ok),
+            (CheckName::LocalStorage, CheckStatus::Skipped),
+        ]
+        .into_iter()
+        .collect();
+
+        Self {
+            serial,
+            role,
+            checks,
+        }
+    }
+}

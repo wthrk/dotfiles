@@ -12,7 +12,6 @@ use std::io::Write;
 use anyhow::{bail, Context};
 use rand::Rng;
 
-use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 use crate::secrets::domain::{
     decode_manifest, encode_manifest, PivObjectId, SecretBlob, SecretManifest, SecretName,
     StorageObjectIds, CONTENT_KEY_LEN, KEY_SLOT, NONCE_LEN,
@@ -213,27 +212,6 @@ fn read_secret_blob<D: SecretDevice>(device: &mut D, name: SecretName) -> Result
         bail!("YubiKey secret blob name does not match requested {}", name);
     }
     Ok(blob)
-}
-
-/// 登録直後の summary 初期値を構築する。
-///
-/// local verify は application の保護境界で実行するため、初期値では `local_storage` を未確認として扱う。
-pub fn enroll_summary(serial: u32, role: YubikeyRole) -> EnrollSummary {
-    let checks = [
-        (CheckName::Setup, CheckStatus::Ok),
-        (CheckName::BwEmail, CheckStatus::Ok),
-        (CheckName::BwPassword, CheckStatus::Ok),
-        (CheckName::BwsAccessToken, CheckStatus::Ok),
-        (CheckName::LocalStorage, CheckStatus::Skipped),
-    ]
-    .into_iter()
-    .collect();
-
-    EnrollSummary {
-        serial,
-        role,
-        checks,
-    }
 }
 
 /// BWS access token の blob を置き換える。
