@@ -749,3 +749,102 @@ pub(super) fn build_real_boundary(test_stub: bool) -> Result<impl crate::secrets
 第5回差し戻し対応（`7cd4c96`）により、V12/V13 の強化された完了条件（非port実装ファイルの物理削除）が充足された。adapters/ 配下は `real_boundary.rs`・`yubikey.rs`・`test_stub.rs` の3ファイルのみとなり、いずれも port trait 実装ファイルである。
 
 差戻し条件に抵触する違反は残存しない。再レビュー着手可能と判断する。
+
+---
+
+## 第9回確認（2026-05-25）— 第8回差し戻し対応後の現行 HEAD 確認
+
+- 確認対象コミット: `ed0104b`（第8回差し戻し対応: adapters/real_boundary.rs の #[cfg(test)] テストブロック削除・セキュリティ義務除外規定追加・台帳整合・レビュー証跡記録）
+- 確認開始時 HEAD: `ed0104b`
+- 対象ブランチ: `feat/yubikey-secret-storage`
+
+### 第8回レビュー差し戻し事項と対応確認
+
+第8回レビューサイクルで返された差し戻し事項（review.md 集約判定記録より）:
+
+1. **テストレビュー 不合格**: `adapters/real_boundary.rs` の `#[cfg(test)] mod tests` ブロック（enrollment JSON parser unit test 9関数）が production adapter ファイルに残存
+2. **セキュリティレビュー 要修正**: `test_stub.rs` の `emit_write_event` に対する `security-obligations.md` 明示的適用除外なし
+3. **運用整合レビュー 要修正**: `docs/tasks/secret-recovery/tasks.md` の YubiKey 状態が「完了」で root ledger `docs/tasks/tasks.md` の「差し戻し」と不整合
+
+#### 差し戻し事項 1: #[cfg(test)] mod tests ブロック削除
+
+**解消済み**
+
+```
+grep -n "cfg(test)\|mod tests" rust/dotfiles-cli/src/secrets/adapters/real_boundary.rs
+```
+
+出力なし。`real_boundary.rs` に `#[cfg(test)]` ブロックは存在しない。`ed0104b` のコミット差分（-168行）で削除済み。ファイル行数は 1259 行。
+
+対応する振る舞い（`read_enrollment_json_bytes` の parser unit test）は `tests/secrets_cli.rs` の統合テストでカバー済み。
+
+#### 差し戻し事項 2: security-obligations.md 明示的適用除外
+
+**解消済み**
+
+`docs/task-governance/security-obligations.md` に「明示的適用除外」セクションが追加されており、`secrets-test-stub` feature 配下の `emit_write_event` が feature-gate により通常 build から除外される旨が記録されている（`ed0104b` で追加）。
+
+#### 差し戻し事項 3: tasks.md 整合
+
+**解消済み**
+
+`docs/tasks/secret-recovery/tasks.md` の YubiKey 状態が `差し戻し` に修正済み（`ed0104b` で修正）。
+
+### cargo check 結果
+
+- コマンド: `cargo check -p dotfiles-cli --manifest-path rust/dotfiles-cli/Cargo.toml`
+- 結果: **エラーゼロ**（警告1件: `main.rs` の複数 binary target 警告のみ）
+- コマンド: `cargo check -p dotfiles-cli --manifest-path rust/dotfiles-cli/Cargo.toml --features secrets-test-stub`
+- 結果: **エラーゼロ**（警告1件: `test_stub.rs` の `DEFAULT_SERIAL` unused 警告のみ）
+
+### cargo test 結果
+
+- コマンド: `cargo test -p dotfiles-cli --manifest-path rust/dotfiles-cli/Cargo.toml --bins`
+- 結果: **9 passed; 0 failed**
+
+### adapters/ 配下の物理ファイル確認
+
+現在の `adapters/` 配下のファイル:
+
+```
+real_boundary.rs
+test_stub.rs
+yubikey.rs
+```
+
+3ファイルのみ。すべて port trait 実装ファイル。`pub(crate)` は存在しない。`pub(super)` で公開されているのは port trait 実装型とそのコンストラクタのみ。
+
+### V1〜V16 全件の最終適合確認
+
+| 違反 | 現在の状態 |
+|------|-----------|
+| V1, V4: application → adapter 具体型依存 | 解消済み（第8回確認から変化なし） |
+| V2, V3: application → concrete I/O / stdin / device handle | 解消済み（第8回確認から変化なし） |
+| V5: storage_service serde_json parse/blob decode | 解消済み（第8回確認から変化なし） |
+| V6: ports に DTO/parser/prompt | 解消済み（第8回確認から変化なし） |
+| V7: ports が support に依存 | 解消済み（第8回確認から変化なし） |
+| V8: domain に SecretDevice trait | 解消済み（第8回確認から変化なし） |
+| V9: domain に summary DTO | 解消済み（第8回確認から変化なし） |
+| V10: blob.rs の責務混在 | 解消済み（第8回確認から変化なし） |
+| V11: support に terminal I/O | 解消済み（第8回確認から変化なし） |
+| V12, V13: adapters/ 非port実装ファイルの物理残存 | 解消済み（第8回確認から変化なし; real_boundary.rs・yubikey.rs・test_stub.rs の3ファイルのみ） |
+| V14: test_stub.rs が production 実行経路に混入 | 解消済み（第8回確認から変化なし） |
+| V15: fake boundary が production source tree に存在 | 解消済み（第8回確認から変化なし） |
+| V16: domain/port に io::Write | 解消済み（第8回確認から変化なし） |
+| 追加: real_boundary.rs の #[cfg(test)] mod tests ブロック残存 | **本確認で解消を確認**（ed0104b で削除済み） |
+| 追加: security-obligations.md の適用除外記載欠如 | **本確認で解消を確認**（ed0104b で追加済み） |
+| 追加: tasks.md 状態不整合 | **本確認で解消を確認**（ed0104b で修正済み） |
+
+## 前進可否判定（第9回）
+
+**前進可**
+
+第8回レビューサイクルで返された3件の差し戻し事項がすべて `ed0104b` で解消された。
+
+- テストレビュー 不合格: `real_boundary.rs` の `#[cfg(test)] mod tests` 削除 → **解消**
+- セキュリティレビュー 要修正: `security-obligations.md` に適用除外追加 → **解消**
+- 運用整合レビュー 要修正: `tasks.md` 状態修正 → **解消**
+
+構造レビュー 不合格・仕様適合レビュー 要修正 の指摘事項は review.md 集約判定の注記の通り旧バージョン（adapters/ 複数ファイル分割時代）に基づく指摘であり、現行 HEAD では解消済み（第8回確認にて確認済み）。
+
+差戻し条件に抵触する違反は残存しない。第9回レビューサイクル着手可能と判断する。
