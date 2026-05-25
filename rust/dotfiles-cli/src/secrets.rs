@@ -168,8 +168,7 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を実行する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let backend = adapters::DeviceBackend::from_test_flag(false)?;
-    let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };
+    let mut boundary = adapters::build_real_boundary()?;
     application::run_with_boundary(options, &mut boundary)
 }
 

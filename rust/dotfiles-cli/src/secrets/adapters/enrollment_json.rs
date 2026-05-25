@@ -18,7 +18,7 @@ use crate::{
 /// stdin JSON から enrollment secret の raw bytes を読み出す。
 ///
 /// JSON をデコードして各フィールドの値を `Zeroizing<Vec<u8>>` として返す。
-pub(crate) fn read_enrollment_json_bytes(
+pub(super) fn read_enrollment_json_bytes(
     reader: impl Read,
     input_limit: usize,
     field_limit: usize,

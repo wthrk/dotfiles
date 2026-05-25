@@ -15,8 +15,15 @@ use crate::{
 };
 
 /// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。
-pub(crate) struct RealSecretsBoundary {
-    pub(crate) backend: DeviceBackend,
+pub(super) struct RealSecretsBoundary {
+    backend: DeviceBackend,
+}
+
+impl RealSecretsBoundary {
+    /// 指定した `DeviceBackend` で `RealSecretsBoundary` を構築する。
+    pub(super) fn new(backend: DeviceBackend) -> Self {
+        Self { backend }
+    }
 }
 
 impl SecretsBoundary for RealSecretsBoundary {
