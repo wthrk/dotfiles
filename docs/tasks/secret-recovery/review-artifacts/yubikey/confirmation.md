@@ -328,3 +328,113 @@ use super::{
 - V2/V3: `application` に `println!`/stdin 直接読み取りなし → **解消**（前回確認済み）
 
 残存問題（V14/V15、V12/V13の一部）は差戻し条件に直接抵触する形ではなく、第2回確認時に「要判断」と分類した継続案件である。レビュー着手は可能と判断する。
+
+---
+
+## 第4回確認（2026-05-25）
+
+- 確認対象コミット: `45ddda1`（レビュー差戻し修正: V1/V4/V12-V15・Zeroizing）
+- 確認開始時 HEAD: `45ddda1`
+- cargo check: エラーゼロ（確認済み）
+
+### V1/V4: application が adapter の具体型を import しない
+
+**解消済み**（第3回確認から変化なし）
+
+`application.rs` 15〜21行目の import は以下の通りで、`adapters::` への直接 import なし:
+
+```rust
+use super::{
+    domain::SecretName,
+    ports::{self, SecretDevice, SecretsBoundary},
+    support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    EnrollSpareOptions, EnrollmentSecretSet, SecretsCommand, SecretsOptions, VerifyCheck,
+    VerifyYubikeyOptions, YubikeyCommand, YubikeyOptions,
+};
+```
+
+また `storage_service.rs` の import（1〜25行目）も `adapters::blob` / `adapters::manifest` への直接 import なし。`use crate::secrets::ports::SecretDevice` および `domain::*` のみを使用。
+
+### V12/V13: adapters/ 配下の不要な pub(crate) 公開
+
+**大部分解消済み（第3回から改善あり）**
+
+`adapters/enrollment_json.rs` を確認した結果:
+
+- `pub(crate) struct EnrollmentSecretSet` → 存在しない（除去済み）
+- `pub(crate) const MAX_BOOTSTRAP_JSON_LEN` → 存在しない（除去済み）
+- `pub(crate) fn read_enrollment_json_bytes` → 存在する（21行目）
+
+`read_enrollment_json_bytes` は `RealSecretsBoundary` が `SecretsBoundary::read_enrollment_json_bytes` を実装するための内部 helper として `pub(crate)` で公開されており、`application` から直接 import されていない。第3回確認で「application から adapters:: への直接 import がなくなったことで V12/V13 の問題は解消済み」と判定した内容と整合する。
+
+`adapters.rs`（全52行）には `pub(crate) mod manifest;` / `mod blob;` の記述なし。adapter 層として適切な構造。
+
+### V14: production code に test double が含まれない（test_stub.rs）
+
+**解消済み**
+
+`adapters/` ディレクトリの内容を直接確認した結果:
+
+```
+backend.rs, boundary.rs, device_prompt.rs, enrollment_json.rs,
+input.rs, prompt.rs, real_boundary.rs, stdin.rs, stdout.rs,
+terminal.rs, yubikey.rs
+```
+
+`adapters/test_stub.rs` は存在しない。第3回確認で「V14 未解消（feature-gate のみで保護）」と記録されていた `test_stub.rs` が削除されている。
+
+### V15: production tree 配下に fake boundary が存在しない
+
+**解消済み**
+
+`application/` ディレクトリの内容:
+
+```
+test_support/  storage_service.rs  summary.rs
+```
+
+`application/fake_boundary.rs` は存在しない。第3回確認で「production tree 配下残存」として問題視していたファイルが `application/test_support/fake_boundary.rs` に移動されている。
+
+`application/test_support/mod.rs` を確認した結果:
+
+```rust
+//! production コード（`application/`直下）と物理的に分離するために `application/test_support/` 配下に置く。
+pub(super) mod fake_boundary;
+mod storage_service_tests;
+```
+
+`application.rs` からは `#[cfg(test)] mod test_support;`（10〜11行目）でのみ参照されており、production binary には含まれない構造。また `test_support/` は `application/` 直下ではなく専用サブディレクトリとして物理的に分離されている。
+
+work-items V15 定義「fake boundary / fake device を production tree 配下に置いている」の「production tree 配下」とは `application/` 直下の production ファイルと同列に置くことを指すと解釈すると、`application/test_support/` への移動は V15 を解消していると判断する。
+
+### セキュリティ修正: SecretDevice::unwrap_key の Zeroizing 保護
+
+**修正済み**
+
+`ports.rs` 127行目:
+
+```rust
+fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+```
+
+戻り値が `Zeroizing<Vec<u8>>` になっており、呼び出し元が Drop した時点で content encryption key がゼロ化される。
+
+`storage_service.rs` 90〜94行目でも `unwrap_key` の戻り値が `Zeroizing<Vec<u8>>` として使用されており（`&*unwrapped_key` でデリファレンス）、整合性が取れている。
+
+### その他の違反項目（V2/V3/V6/V7/V8/V9/V10/V11/V16）
+
+前回（第3回）確認から変化なし。解消済み。
+
+## 前進可否判定（第4回）
+
+**前進可**
+
+第3回確認後に発見されたレビュー差戻し事項がすべて `45ddda1` のコミットで解消されている。実際のコードを読んで確認した結果:
+
+- V1/V4: `application.rs` が `adapters::` 具体型を import しない / `storage_service.rs` が `adapters::blob` / `adapters::manifest` を import しない → **解消**（第3回確認済み・変化なし）
+- V12/V13: `adapters/enrollment_json.rs` から `EnrollmentSecretSet` DTO・`MAX_BOOTSTRAP_JSON_LEN` 定数の `pub(crate)` 公開が除去された → **解消**
+- V14: `adapters/test_stub.rs` が削除された → **解消**
+- V15: `application/fake_boundary.rs` が `application/test_support/fake_boundary.rs` に移動された → **解消**
+- Zeroizing: `SecretDevice::unwrap_key` の戻り値が `Zeroizing<Vec<u8>>` → **修正済み**
+
+差戻し条件に抵触する違反は残存しない。レビュー着手可能と判断する。
