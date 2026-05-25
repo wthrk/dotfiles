@@ -438,3 +438,77 @@ fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
 - Zeroizing: `SecretDevice::unwrap_key` の戻り値が `Zeroizing<Vec<u8>>` → **修正済み**
 
 差戻し条件に抵触する違反は残存しない。レビュー着手可能と判断する。
+
+---
+
+## 第5回確認（2026-05-25）
+
+- 確認対象コミット: `6d8d2d3`（差戻し修正: V12/V13/V15の再修正）
+- 確認開始時 HEAD: `6d8d2d3`
+- 確認内容: 第4回確認後のレビュー差戻しによる修正（V12/V13/V15の再修正）
+
+### V15: production tree 配下に test double が存在しない
+
+**解消済み**
+
+`application/` ディレクトリの内容:
+
+```
+storage_service.rs  summary.rs
+```
+
+第4回確認で「解消済み」と判定していた `application/test_support/` ディレクトリが、今回の `6d8d2d3` コミットで削除されている。`test_support/` サブディレクトリ自体が存在しない。
+
+`application.rs` の `#[cfg(test)] mod tests` ブロック（621行目以降）には `FakeBoundary` と `FakeDevice` の定義がインライン化されており、`mod test_support;` の外部参照は存在しない。`#[cfg(test)]` ブロックは production binary に含まれないため、V15 の「production tree 配下に fake boundary / fake device を置いている」という問題は解消されている。
+
+### V12/V13: adapters/ 配下のシンボル可視性
+
+**解消済み**
+
+`adapters/enrollment_json.rs` 21行目:
+
+```rust
+pub(super) fn read_enrollment_json_bytes(
+```
+
+第4回確認時に `pub(crate)` であった `read_enrollment_json_bytes` が `pub(super)` に変更されている。`adapters` モジュール内部（`real_boundary.rs` など）からのみアクセス可能であり、`adapters` 外部からの直接参照は不可能。
+
+`adapters.rs` 26行目・34行目・47行目:
+
+```rust
+pub(super) fn build_real_boundary() -> ...
+pub(super) fn open_device(...) -> ...
+pub(super) fn open_spare_device(...) -> ...
+```
+
+`build_real_boundary`・`open_device`・`open_spare_device` の3関数はいずれも `pub(super)` で、`secrets` モジュール内部（`secrets.rs`）からのみ呼び出し可能。`application` からの直接 import は不可能。
+
+`adapters/real_boundary.rs` 18〜24行目:
+
+```rust
+pub(super) struct RealSecretsBoundary {
+    backend: DeviceBackend,
+}
+
+impl RealSecretsBoundary {
+    pub(super) fn new(backend: DeviceBackend) -> Self {
+```
+
+`backend` フィールドは可視性修飾子なし（非公開）。コンストラクタ `new` は `pub(super)` で公開されており、`backend` フィールドへの直接アクセスは不可能な構造。
+
+### V1/V4, V2/V3, V6/V7, V8/V9/V16, V10/V11, V14
+
+前回（第4回）確認から変化なし。解消済み。
+
+## 前進可否判定（第5回）
+
+**前進可**
+
+`6d8d2d3` コミットにより、差戻し修正対象の3件（V12/V13/V15）がすべて解消されている。実際のコードを読んで確認した結果:
+
+- V15: `application/test_support/` ディレクトリが削除された → **解消**
+- V12/V13: `adapters/enrollment_json.rs` の `read_enrollment_json_bytes` が `pub(crate)` → `pub(super)` に変更された → **解消**
+- V12/V13: `adapters.rs` の `build_real_boundary`・`open_device`・`open_spare_device` が `pub(super)` になっている → **解消**
+- V12/V13: `adapters/real_boundary.rs` の `backend` フィールドが非公開でコンストラクタ `new` 経由のみのアクセスになっている → **解消**
+
+差戻し条件に抵触する違反は残存しない。レビュー着手可能と判断する。
