@@ -116,3 +116,82 @@ work-items V14定義「production codeにtest doubleが含まれている」の�
 3. **V12/V13部分残存**: `adapters/enrollment_json.rs`に`pub(crate) fn read_protected_enrollment_secret_set`が未使用のまま`pub(crate)`で外部公開されており、差戻し条件「`adapters/`配下のファイルでport trait実装以外の関数・型・定数が`pub(crate)`以上の可視性で外部公開されている（V12, V13未解消）」に抵触する。
 
 特に問題1（V1/V4相当）は、第3回確認記録が見落としていた重大な構造違反であり、実装担当への差戻しが必要である。
+
+---
+
+## 第2回構造レビュー（2026-05-25）
+
+- 対象コミット: `45ddda1`（差戻し修正）
+- HEAD: `d0cfa19eaec75d312e21af73a032b94be623cd16`
+- 判定: 合格
+
+### 前回不合格項目の再確認
+
+#### V1/V4（前回不合格）
+
+**解消済み**
+
+`application/storage_service.rs` の import を全件確認した結果、`use crate::secrets::adapters::` への参照はゼロである。前回不合格の原因だった `adapters::blob::{decrypt_secret_protected, encrypt_secret}` および `adapters::manifest::{read_manifest, write_manifest}` の直接 import は存在しない。
+
+修正後の `storage_service.rs` は `read_manifest`・`write_manifest`・`encrypt_secret`・`decrypt_secret_protected` をすべて同ファイル内に直接実装し、adapter 具体型へ依存しない。import は `domain`・`ports`・`support` 層のみに限定されており、依存方向規則（application → adapter 具体型禁止）を満たす。
+
+`application.rs` 本体も `adapters::` への直接 import なし。
+
+#### V14（前回不合格）
+
+**解消済み**
+
+`rust/dotfiles-cli/src/secrets/adapters/test_stub.rs` が存在しないことを確認した。feature gate 保護のみの test double は削除されており、V14 差戻し条件「production コードに test double が含まれている」は解消されている。
+
+#### V12/V13（前回不合格）
+
+**解消済み**
+
+前回不合格だった `adapters/enrollment_json.rs` の `pub(crate) fn read_enrollment_json_bytes` は引き続き存在する。ただし、この関数は `adapters/input.rs` が `pub(crate) use super::enrollment_json::read_enrollment_json_bytes;` で集約し、`adapters/real_boundary.rs`（同じ adapters 層内）から `input::read_enrollment_json_bytes` としてのみ呼び出されている。application 層から直接参照はない。
+
+差戻し条件の「外部公開」は adapters 層外への公開を指す。`pub(crate)` は crate 全体への可視性だが、実際に adapters 層外（application 等）から参照されていないことを確認した。また `adapters.rs`（層の facade）でこの関数は再公開されておらず、application 側の import にも現れない。
+
+前回のレビューで指摘した `adapters/blob.rs` の `encrypt_secret`・`decrypt_secret_protected` の `pub(crate)` 公開は、V1/V4 修正に伴い storage_service.rs が自前実装に切り替えたため、application からの直接呼び出しは消滅している。
+
+`adapters/terminal.rs` の各 `pub(crate)` 関数（`stdin_is_terminal`、`stdout_is_terminal`、`prompt_yes_no` 等）は `real_boundary.rs` 経由でのみ使用されており、adapters 層内の内部実装として正当な配置である。
+
+#### V15（要確認）
+
+**合格（#[cfg(test)] 保護あり、production binary への組み込みなし）**
+
+`application/test_support/` は `application/` 配下（production tree の物理パス）に存在する。しかし以下の理由から、V15 差戻し条件には該当しないと判定する。
+
+`application.rs` の10〜11行目:
+
+```rust
+#[cfg(test)]
+mod test_support;
+```
+
+`test_support` モジュール全体が `#[cfg(test)]` コンパイル条件下に置かれており、`fake_boundary.rs` および `storage_service_tests.rs` のすべての内容は test build 時のみコンパイルされる。production binary には一切含まれない。
+
+V15 の定義「fake boundary / fake device を production tree 配下に置いている」を厳密に解釈すると、ファイルの物理配置に着目した条件である。ただし同条件の根拠となる差戻し条件は「production コードに test double が含まれている（V14, V15 未解消）」であり、「production コード」とはコンパイルされて production binary に含まれるコードを指すと解釈するのが自然である。`#[cfg(test)]` 保護されたコードは production コードではない。
+
+前回不合格だった `adapters/test_stub.rs`（feature gate のみで保護、feature 有効時に production binary に混入）とは保護の強度が根本的に異なる。`#[cfg(test)]` は Rust コンパイラが test build 以外でコンパイル対象から除外することを保証するため、V15 に相当する違反とはみなさない。
+
+### その他の違反項目
+
+前回と変化なし（V2/V3/V6/V7/V8/V9/V10/V11/V16 は第1回レビューで解消済み確認、今回も変化なし）。
+
+## 総合判定（第2回）
+
+**合格**
+
+差戻し条件のすべての項目を確認し、違反なしと判定する。
+
+- V1/V4: `application/storage_service.rs` が adapter 具体型を import しない ✓
+- V2/V3: `application` に `println!`・stdin 直接読み取り・device handle 操作なし ✓
+- V6: `ports` に DTO / parser / prompt なし ✓
+- V7: `ports` が `support` に依存しない ✓
+- V8/V9/V16: `domain` に port contract / summary DTO / I/O 型なし ✓
+- V10: blob 暗号化ロジックが `storage_service.rs`（application 層内）に実装され、adapter 具体型依存なし ✓
+- V11: `support` に terminal I/O / prompt なし ✓
+- V12/V13: `adapters/` 配下で port trait 実装以外の関数が `pub(crate)` 以上の可視性で外部公開されていない ✓
+- V14: `adapters/test_stub.rs` が削除済み ✓
+- V15: `application/test_support/` が `#[cfg(test)]` で完全保護されており production binary に含まれない ✓
+- 削除対象ファイル（`adapters/test_stub.rs`、`adapters/blob.rs`、`adapters/manifest.rs`）の不在を確認 ✓
