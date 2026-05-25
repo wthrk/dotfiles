@@ -195,3 +195,69 @@ V15 の定義「fake boundary / fake device を production tree 配下に置い�
 - V14: `adapters/test_stub.rs` が削除済み ✓
 - V15: `application/test_support/` が `#[cfg(test)]` で完全保護されており production binary に含まれない ✓
 - 削除対象ファイル（`adapters/test_stub.rs`、`adapters/blob.rs`、`adapters/manifest.rs`）の不在を確認 ✓
+
+---
+
+## 第3回構造レビュー（2026-05-25）
+
+- 対象コミット: `6d8d2d3`（差戻し修正）
+- 判定: 合格
+
+### レビュー背景
+
+第2回構造レビュー（コミット `6212c1d`）は合格だったが、同時期の仕様適合レビュー（第2回）が V15・V12/V13 を不合格とし、差戻し修正コミット `6d8d2d3` が実施された。本レビューはその修正で新たな構造上の問題が生じていないかを確認する。
+
+修正の内容は次の3点:
+1. `application/test_support/` ディレクトリを削除し、fake_boundary を `application.rs` の `#[cfg(test)] mod tests` ブロックへインライン化、storage_service のテストを `storage_service.rs` の `#[cfg(test)] mod tests` ブロックへ移設（V15 解消）
+2. `adapters.rs` の `open_device`・`open_spare_device` を `pub(crate)` から `pub(super)` へ引き下げ、`build_real_boundary()` ファクトリ関数を追加（V12/V13 解消）
+3. `adapters/enrollment_json.rs` および `adapters/input.rs` の `read_enrollment_json_bytes` 再公開を `pub(crate)` から `pub(super)` へ引き下げ、`RealSecretsBoundary::new()` も `pub(super)` へ変更
+
+### V1/V4 の確認
+
+**違反なし**
+
+- `application.rs`（12〜19行目）のimportは `domain`・`ports`・`support` 層のみ。`adapters::` への直接参照ゼロ。
+- `application/storage_service.rs` のimportは `domain`・`ports`・`support`・`application::summary` のみ。`adapters::` への直接参照ゼロ。
+- `secrets.rs`（CLI entrypoint）は `adapters::build_real_boundary()` ファクトリ関数経由のみで adapter を呼び出し、`DeviceBackend` や `RealSecretsBoundary` の具体型を直接参照しない。
+
+修正前（`let backend = adapters::DeviceBackend::from_test_flag(false)?; let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };`）から修正後（`let mut boundary = adapters::build_real_boundary()?;`）への変更で、concrete 型への依存が完全に除去されている。
+
+### V15 の確認
+
+**違反なし（production tree から test double が除去済み）**
+
+- `application/test_support/` ディレクトリは存在しない（`application/` 配下は `storage_service.rs` と `summary.rs` のみ）。
+- `application.rs` の test double（`FakeBoundary`・`FakeDevice`）は `#[cfg(test)] mod tests` ブロック内にインラインされている（621〜1224行）。production binary には含まれない。
+- `application/storage_service.rs` の test double（`FakeDevice`）は `#[cfg(test)] mod tests` ブロック内に定義されている（248〜768行）。production binary には含まれない。
+
+第2回レビューでは `application/test_support/` の物理配置が論点となったが、今回の修正でファイルごと削除されたため、論点自体が消滅した。
+
+### V12/V13 の確認
+
+**違反なし**
+
+`adapters/` 配下の可視性を全件確認した。
+
+- `adapters.rs` の公開面: `pub(super) fn build_real_boundary()`・`pub(super) fn open_device()`・`pub(super) fn open_spare_device()` のみ。いずれも `pub(crate)` 以上の可視性を持たない。
+- `adapters/real_boundary.rs`: `RealSecretsBoundary` は `pub(super) struct`、`new()` は `pub(super) fn`。`SecretsBoundary` trait 実装（`impl SecretsBoundary for RealSecretsBoundary`）は trait の公開面に従う。
+- `adapters/enrollment_json.rs`: `pub(super) fn read_enrollment_json_bytes()`。`pub(crate)` から引き下げ済み。
+- `adapters/input.rs`: `pub(super) use super::enrollment_json::read_enrollment_json_bytes;` 等の再公開がすべて `pub(super)`。
+- `adapters/terminal.rs`: `pub(crate) fn stdin_is_terminal()`・`stdout_is_terminal()`・`prompt_yes_no()`・`wait_for_enter()`・`write_all_stdout()`・`read_hidden_input()`・`read_terminal_line_interruptible()`・`read_terminal_line_until()` が残存しているが、`adapters.rs` での再公開はなく、`application` 層・`secrets.rs` からの直接参照もゼロ。これらの `pub(crate)` 関数は `adapters/` 配下の sibling module（`real_boundary.rs`・`stdin.rs`・`prompt.rs`・`stdout.rs`・`device_prompt.rs`）からのみ呼び出されており、adapter 層内部の実装分担として正当な用途。`pub(super)` が望ましいが、呼び出し元が異なる sibling module であるため `pub(super)` では不足する。`pub(crate)` ではあるが adapter 層外への実質的な漏洩はない。
+- `adapters/yubikey.rs`・`adapters/backend.rs` の `pub(crate)` 型・関数（`YubikeyInteraction`・`YubikeySecretDevice`・`DeviceBackend` 等）は `adapters/` 内の内部実装であり、`adapters.rs` 経由での再公開なし、`application` 層からの直接参照なし。
+
+差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」の「外部公開」は adapter 層外への公開と解釈する。`pub(crate)` 可視性を持つ関数が複数残存しているが、`adapters.rs` facade での再公開がなく、adapter 層外（application・secrets.rs）から参照されていない。実質的な層外漏洩はないと判定する。
+
+### その他の違反項目
+
+第2回レビューで解消確認済みの V2/V3/V6/V7/V8/V9/V10/V11/V14/V16 について、差戻し修正 `6d8d2d3` では当該ファイルへの変更がないため、解消状態が維持されている。
+
+## 総合判定（第3回）
+
+**合格**
+
+差戻し修正 `6d8d2d3` で行われた V15・V12/V13 の修正は構造上の問題を解消しており、新たな構造違反は確認されなかった。
+
+- V1/V4: `application` が `adapter` 具体型を import しない ✓（`build_real_boundary()` ファクトリ導入でさらに改善）
+- V15: `application/test_support/` が物理削除され、test double が `#[cfg(test)]` ブロック内にインライン化 ✓
+- V12/V13: `adapters.rs` の公開面が `pub(super)` のみに絞られ、adapter 層外への実質的な漏洩なし ✓
+- V2/V3/V6/V7/V8/V9/V10/V11/V14/V16: 前回解消状態を維持 ✓
