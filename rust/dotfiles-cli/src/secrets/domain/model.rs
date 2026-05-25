@@ -22,7 +22,7 @@ pub const NONCE_LEN: usize = 12;
 /// AES-GCM tag の固定長。
 pub const TAG_LEN: usize = 16;
 /// per-secret content encryption key の byte 長。
-pub(crate) const CONTENT_KEY_LEN: usize = 32;
+pub const CONTENT_KEY_LEN: usize = 32;
 
 /// PIV data object ID を型付き値として表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

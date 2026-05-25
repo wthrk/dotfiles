@@ -19,11 +19,10 @@ pub type Result<T> = dotfiles_core::Result<T>;
 
 pub use cli::dispatch;
 
-/// CLI 統合テストの専用 stub binary が production 経路を駆動するための公開境界。
+/// tests 層の stub crate が production 経路を駆動するための公開境界。
 ///
-/// この module は production binary からは参照されず、tests 層の stub crate だけが依存する。
-/// 公開するのは port 契約・domain wire format・実プロセス境界の組立 seam に限り、test double
-/// （実依存を肩代わりする型）は本 crate に置かない。
-pub mod testing {
-    pub use crate::secrets::testing::*;
-}
+/// port 契約・domain wire format・実プロセス境界の組立 seam を公開する。
+/// test double（実依存を肩代わりする型）は本 crate に置かない。
+pub use secrets::boundary;
+pub use secrets::domain;
+pub use secrets::run_with_args;

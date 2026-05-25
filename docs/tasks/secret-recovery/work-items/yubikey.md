@@ -167,7 +167,7 @@
 | 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ8: V14,V15（test double除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

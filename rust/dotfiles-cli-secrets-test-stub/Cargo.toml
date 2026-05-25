@@ -1,16 +1,16 @@
 [package]
-name = "dotfiles-cli"
+name = "dotfiles-cli-secrets-test-stub"
 version.workspace = true
 edition.workspace = true
 publish = false
 
-[lib]
-name = "dotfiles_cli"
-path = "src/lib.rs"
+[[bin]]
+name = "dotfiles-stub"
+path = "src/main.rs"
 
 [[bin]]
 name = "dotfiles"
-path = "src/main.rs"
+path = "src/dotfiles_main.rs"
 
 [[test]]
 name = "secrets_cli"
@@ -23,22 +23,14 @@ workspace = true
 aes-gcm.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-crossterm.workspace = true
-dotfiles-core.workspace = true
-nom.workspace = true
+dotfiles-cli.workspace = true
+dotfiles-cli-secrets-test-contract.workspace = true
 rand.workspace = true
-region.workspace = true
-rand_core.workspace = true
-rlimit.workspace = true
-rsa.workspace = true
-scopeguard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-signal-hook.workspace = true
-strum.workspace = true
-yubikey.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+dotfiles-cli-secrets-test-contract.workspace = true
+portable-pty.workspace = true
