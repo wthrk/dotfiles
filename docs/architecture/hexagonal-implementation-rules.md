@@ -121,20 +121,57 @@
 
 ## ドキュメントコメント規則
 
-各層で次を必須とする。
+各層で次を必須とする。この comment / doc comment 規則はリポジトリ共通のコメント規約の正本であり、層をまたいで適用する。
 
-- この文書の comment / doc comment 規則は [AGENTS.md](../../AGENTS.md) の Code Style コメント規則を継承し、その適用範囲を狭めてはならない。
-- 非自明な module、command entrypoint、use case、adapter、support utility には file-level comment または module doc comment を付ける。
-- repository-authored explanatory comment は日本語で書き、周辺文脈が英語で固定されている場合だけ英語を許可する。
-- comment は恒久的な設計意図、不変条件、制約、自明でない運用上の文脈を記し、低価値 comment、個人メモ、曖昧な TODO/FIXME を禁止する。
+- 非自明な module、script、command entrypoint、use case、adapter、support utility、検証フロー定義ファイルには file-level comment または言語標準 doc comment を付け、役割を説明する。
+- repository-authored explanatory comment は日本語で書く。周辺文脈が英語で固定されている場合、上流引用、外部形式要件の場合のみ英語を許可する。
+- comment は恒久的な設計意図、不変条件、制約、自明でない運用上の文脈を記し、単なるコード言い換え、個人メモ、曖昧な TODO/FIXME を禁止する。
 - comment が必要な場合はライフサイクル境界、外部契約、シグナル安全性要件、ワイヤ形式規則、セキュリティ特性、利用者操作制約のいずれかを具体名で記す。
+- 関数、型、module の doc comment は主要契約を先頭文で述べ、条件、分岐、失敗時契約、caller responsibility は別文または別段落で続ける。
+- 挙動変更時は近傍コメントを同パッチで更新し、誤解を生む旧コメントを残さない。
 - `application` の public command flow と非自明な private helper は、主要契約を先頭文で述べ、その後に必要入力、停止条件、外部 interaction boundary を記す。
 - `domain` の value、policy、wire-format 型は、何を表すかを先頭文で記し、その後に不変条件、version rule、error 条件を書く。
 - `port` の trait は、要求する capability と caller/implementor の責任分界を明記する。
 - `adapter` の module comment は、どの port をどの外部 API へ接続するか、どの制約を内部で吸収するかを記す。
 - `support` の comment は、セキュリティ特性、ライフサイクル境界、シグナル安全性要件、所有権規則のいずれかを具体名で記す。
-- 関数、型、module の doc comment は主要契約を先頭文で述べ、条件、分岐、失敗時契約、caller responsibility は別文または別段落で続ける。
 - 複数段落の doc comment は、先頭段落で通常系の主契約を示し、後続段落で非 TTY 動作、タイムアウト、所有権移譲、ゼロ化、ロック、出力安全性、再試行規則のような制約を記す。
+
+## 言語別コードスタイル
+
+この節はリポジトリ共通の言語別コードスタイル規約の正本である。
+
+Rust:
+
+- ワークスペースの edition は Rust 2024。
+- 公開 CLI ロジックは `rust/dotfiles-cli`、保守コマンドは `rust/xtask`、共通補助は `rust/dotfiles-core` に置く。
+- 責務を混在させない。dispatcher ファイルに端末 I/O、信号方針、暗号補助、ワイヤ形式、テストを過密に載せない。
+- `anyhow` はリポジトリの Result 別名を通して使い、panic ではなく文脈付きで伝播する。
+- 単純な変換・抽出は反復子と `collect` を優先する。
+- `match collection.len()` ではなくスライスパターン、`is_empty`、ドメイン状態で分岐する。
+- 不要な `mut` を導入しない。必要性を `git diff` で確認する。
+- 閉じた集合を生文字列で渡さず列挙型/新規型で表現する。
+- リポジトリ由来 Rust に `unsafe` を導入しない。
+- テストを含め `unwrap` と `expect` を使わない。
+- 警告を残さない。
+
+Nix:
+
+- 利用者設定は Home Manager、ホスト/システム設定は nix-darwin に置く。
+- 明示的な破壊的移行依頼がない限り公開 flake API を維持する。
+- 再利用モジュールに実ユーザー名、実ホスト名、マシン固有パスを埋め込まない。
+- Nix 整形は `cargo xtask check static` が使う flake formatter に従う。
+
+Shell/zsh:
+
+- `scripts/bootstrap.sh` は導入クリティカルとして扱い、可搬に保ち `bash -n` で構文検証できる状態を維持する。
+- zsh 挙動は `rust/tests/checks/src/zsh.rs` の前提（TAB、fzf-tab、autosuggestions、syntax highlighting、PATH 除外）と整合させる。
+- アプリ管理の shell 注入や Docker 認証など、利用者ローカル可変状態はリポジトリ外に置く。
+
+Lua/Neovim:
+
+- 設定の主領域は `config/nvim/lua/omy/` とし、厳密適合のために必要なら `configs` / `mappings` / `autocmds` の構造を再編する。
+- 最小差分や継承された既存構造の温存を最適化目標にしてはならない。
+- 現行構造がアーキテクチャ・仕様・作業定義に抵触する場合、適合構造へ再設計する。必要ならモジュール境界・文書境界のゼロベース再編を行う。
 
 ## ディレクトリと層の対応規則
 

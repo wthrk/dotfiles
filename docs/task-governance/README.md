@@ -4,7 +4,7 @@
 
 ## 配下の項目
 
-- [workflow.md](workflow.md#タスク運用ワークフロー): 最小フロー、状態、コミット着手ゲート。
+- [workflow.md](workflow.md#タスク運用ワークフロー): 最小フロー、状態、コミット着手ゲート、ブランチ・コミット・プルリクエスト運用。
 - [implementation-execution.md](implementation-execution.md#実装実行規則): 実装担当の実行規則。
 - [implementation-review-judgement.md](implementation-review-judgement.md#実装レビュー判定): 必須レビュー役割と集約規則。
 - [progress-judgement.md](progress-judgement.md#進捗判定規則): 進捗前進の最小証跡要件。
