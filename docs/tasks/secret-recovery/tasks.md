@@ -6,7 +6,7 @@
 
 ### YubiKey
 
-- 状態: `未開始`
+- 状態: `完了`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)
@@ -19,7 +19,7 @@
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 実装状態: `未実装`
+- 実装状態: `完了`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -35,9 +35,9 @@
 | 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ8: V14,V15（test double除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 確認 | 完了 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
 
 ### Bitwarden Secrets Manager
 
