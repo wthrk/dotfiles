@@ -29,7 +29,9 @@ description: Use this skill when a subagent is assigned as the テストレビ�
 3. `docs/architecture/hexagonal-implementation-rules.md`（tests/ 層の配置ルール確認のため）
 4. `docs/architecture/review-checklist.md`（tests/ 配下のチェック項目）
 5. `docs/task-governance/implementation-review-judgement.md`
-6. 作業定義文書（渡されたパス）
+6. `docs/tasks/README.md`
+7. `docs/tasks/tasks.md`
+8. 作業定義文書（渡されたパス）
 
 ## Rules
 

@@ -25,7 +25,9 @@ description: Use this skill when a subagent is assigned as the ドキュメン�
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
-4. `docs/docs-governance.md`（存在する場合）
+4. `docs/tasks/README.md`
+5. `docs/tasks/tasks.md`
+6. `docs/docs-governance.md`（存在する場合）
 
 ## Rules
 
