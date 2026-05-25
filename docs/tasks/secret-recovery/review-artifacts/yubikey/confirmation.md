@@ -648,3 +648,104 @@ pub(super) fn build_real_boundary(test_stub: bool) -> Result<impl crate::secrets
 第4回差し戻し対応として、第6回確認で発見されなかった support/ 層の残留業務語彙（`protection.rs` エラーメッセージ 4 件・`oaep.rs` モジュール doc comment）を修正した。修正後の cargo check はエラーゼロ。
 
 差戻し条件に抵触する違反は残存しない。再レビュー着手可能と判断する。
+
+---
+
+## 第8回確認（2026-05-25）— 第5回差し戻し対応: adapters/ 非port実装ファイルの物理削除
+
+- 確認対象コミット: `7cd4c96`（差し戻し対応: adapters/ から非port実装ファイルを物理削除しreal_boundaryへインライン化）
+- 確認開始時 HEAD: `7cd4c96`
+- cargo check 結果: エラーゼロ（`cargo check -p dotfiles-cli` および `--features secrets-test-stub` 両方で確認）
+
+### 背景
+
+`f4a7fe9`（"docs(yubikey): strengthen V12/V13 completion condition to require physical removal of non-port-impl files from adapters/"）により、V12/V13 の完了条件が強化された。新しい完了条件は「port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去すること」であり、論理的な可視性制御だけでは不十分で、ファイルの物理的な削除が必要となった。
+
+### 確認 1: adapters/ 配下ファイル一覧
+
+現在の `adapters/` 配下のファイル（ls にて確認）:
+
+```
+real_boundary.rs
+test_stub.rs
+yubikey.rs
+```
+
+第6回確認時に存在していた以下の7ファイルが物理削除されている:
+
+- `backend.rs` — 削除済み
+- `device_prompt.rs` — 削除済み
+- `enrollment_json.rs` — 削除済み
+- `prompt.rs` — 削除済み
+- `stdin.rs` — 削除済み
+- `stdout.rs` — 削除済み
+- `terminal.rs` — 削除済み
+
+残存する3ファイルはすべて port trait の実装ファイルである:
+
+- `real_boundary.rs` — `SecretsBoundary` trait を実装する `RealSecretsBoundary`
+- `yubikey.rs` — `SecretDevice` trait を実装する `YubikeySecretDevice`
+- `test_stub.rs` — `SecretDevice` trait を実装する `TestDevice`（`#[cfg(feature = "secrets-test-stub")]` で保護）
+
+### 確認 2: adapters/ 配下に pub(crate) が存在しないこと
+
+```
+grep -rn "pub(crate)" rust/dotfiles-cli/src/secrets/adapters/
+```
+
+出力なし。adapters/ 配下に `pub(crate)` は存在しない。
+
+### 確認 3: adapters/ の公開シンボルが port 実装型・そのコンストラクタのみであること
+
+```
+grep -rn "pub(super)" rust/dotfiles-cli/src/secrets/adapters/
+```
+
+結果:
+
+- `yubikey.rs:34: pub(super) struct YubikeySecretDevice` — `SecretDevice` 実装型
+- `yubikey.rs:41:     pub(super) fn from_yubikey(...)` — `YubikeySecretDevice` のコンストラクタ
+- `test_stub.rs:127: pub(super) struct TestDevice` — `SecretDevice` 実装型（feature-gated）
+- `test_stub.rs:144:     pub(super) fn open(serial: u32) -> ...` — `TestDevice` のコンストラクタ（feature-gated）
+- `real_boundary.rs:92: pub(super) enum YubikeySecretDevice` — cfg により分岐する enum（feature 有効時）
+- `real_boundary.rs:101: pub(super) type YubikeySecretDevice = ...` — cfg により分岐する type alias（feature 無効時）
+- `real_boundary.rs:1156: pub(super) struct RealSecretsBoundary` — `SecretsBoundary` 実装型
+- `real_boundary.rs:1162:     pub(super) fn new(test_stub: bool) -> ...` — `RealSecretsBoundary` のコンストラクタ
+
+port trait を実装しない型・関数・定数は `pub(super)` で公開されていない。
+
+### 確認 4: adapters.rs が外部へ公開するのは build_real_boundary のみであること
+
+`adapters.rs` の `pub(super)` シンボル:
+
+```rust
+pub(super) fn build_real_boundary(test_stub: bool) -> Result<impl crate::secrets::ports::SecretsBoundary>
+```
+
+`build_real_boundary` のみが `pub(super)` で、モジュール宣言（`mod real_boundary;` 等）はプライベート。
+
+### 確認 5: cargo check・cargo test 結果
+
+- `direnv exec . cargo check -p dotfiles-cli`: エラーゼロ（警告1件: `main.rs` の複数 binary target 警告のみ）
+- `direnv exec . cargo check -p dotfiles-cli --features secrets-test-stub`: エラーゼロ（警告1件: `test_stub.rs` の `DEFAULT_SERIAL` unused 警告のみ）
+- `direnv exec . cargo test -p dotfiles-cli`: 18 passed; 0 failed
+
+### 確認 6: V12/V13 完了条件の充足（強化された条件）
+
+`f4a7fe9` で強化された完了条件:
+
+> `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること。
+
+現在の `adapters/` は `real_boundary.rs`・`yubikey.rs`・`test_stub.rs` の3ファイルのみであり、上記に列挙された非port実装ファイルはすべて物理削除されている。列挙外の非port実装ファイルも存在しない。完了条件を充足している。
+
+### 確認 7: その他の違反項目（V1〜V11, V14, V15, V16）
+
+前回（第7回）確認から変化なし。解消済み。
+
+## 前進可否判定（第8回）
+
+**前進可**
+
+第5回差し戻し対応（`7cd4c96`）により、V12/V13 の強化された完了条件（非port実装ファイルの物理削除）が充足された。adapters/ 配下は `real_boundary.rs`・`yubikey.rs`・`test_stub.rs` の3ファイルのみとなり、いずれも port trait 実装ファイルである。
+
+差戻し条件に抵触する違反は残存しない。再レビュー着手可能と判断する。
