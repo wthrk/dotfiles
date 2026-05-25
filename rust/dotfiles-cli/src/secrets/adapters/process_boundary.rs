@@ -1,7 +1,9 @@
-//! 実プロセス I/O と実機/stub backend を `SecretsBoundary` へ接続する adapter。
+//! 実プロセス I/O と実機 YubiKey device を `SecretsBoundary` port へ接続する adapter。
 //!
-//! stdin/stdout/terminal prompt・enrollment JSON decode・device backend 選択・device selection
-//! prompt をすべてこの 1 ファイルに集約し、application 本体は順序制御だけに集中させる。
+//! この module は実プロセスの stdin/stdout/terminal 境界と実機 YubiKey の discovery / open /
+//! PIV 操作翻訳だけを行う。test double（in-memory stub device）の定義は持たない。
+//! device の取得と I/O の翻訳を `RealSecretsBoundary` 一型に閉じ、application は
+//! `SecretsBoundary` port contract だけを通して境界を使う。
 
 use std::{
     fs::OpenOptions,
@@ -21,8 +23,6 @@ use crossterm::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(feature = "secrets-test-stub")]
-use super::test_stub;
 use super::yubikey;
 use crate::{
     secrets::{
@@ -32,154 +32,14 @@ use crate::{
     },
     Result,
 };
-#[cfg(feature = "secrets-test-stub")]
-use crate::secrets::domain;
 
-// ── device backend ────────────────────────────────────────────────────────────
+// ── device type ───────────────────────────────────────────────────────────────
 
-#[cfg(feature = "secrets-test-stub")]
-use dotfiles_cli_secrets_test_contract::{PRIMARY_SERIAL, SPARE_SERIAL};
-
-#[cfg(feature = "secrets-test-stub")]
-/// CLI 実行で使う YubiKey device adapter の選択状態。
+/// 実機 YubiKey PIV session を `SecretDevice` port へ接続する adapter 型。
 ///
-/// application はこの値を保持するだけで、実機か stub かに応じた別 use case を持たない。
-enum DeviceBackend {
-    /// 実機 YubiKey adapter を使う通常実行。
-    Real,
-    /// CLI 統合テスト用の in-memory device adapter を使う実行。
-    ///
-    /// `next_interactive_serial` は serial 指定なし device 選択で次に使う serial を追跡する。
-    TestStub { next_interactive_serial: u32 },
-}
-
-#[cfg(not(feature = "secrets-test-stub"))]
-#[derive(Clone, Copy)]
-/// CLI 実行で使う YubiKey device adapter の選択状態。
-///
-/// 通常 build では実機 adapter だけを持ち、stub 用の実行経路を含めない。
-enum DeviceBackend {
-    /// 実機 YubiKey adapter を使う通常実行。
-    Real,
-}
-
-impl DeviceBackend {
-    #[cfg(feature = "secrets-test-stub")]
-    /// CLI option から device adapter の選択状態を構築する。
-    ///
-    /// `secrets-test-stub` feature 有効時だけ hidden test flag を解釈する。
-    fn from_test_flag(enabled: bool) -> Result<Self> {
-        if enabled {
-            return Ok(Self::TestStub {
-                next_interactive_serial: PRIMARY_SERIAL,
-            });
-        }
-        Ok(Self::Real)
-    }
-
-    #[cfg(not(feature = "secrets-test-stub"))]
-    /// 通常 build で実機 adapter の選択状態を構築する。
-    fn from_test_flag(_enabled: bool) -> Result<Self> {
-        Ok(Self::Real)
-    }
-}
-
-// ── combined device type ──────────────────────────────────────────────────────
-
-#[cfg(feature = "secrets-test-stub")]
-/// 実機 YubiKey と device stub を同じ `SecretDevice` port として扱う adapter。
-///
-/// `secrets-test-stub` feature でだけ enum になり、application の use case は variant を見ない。
-pub(super) enum YubikeySecretDevice {
-    /// 実機 YubiKey の PIV device adapter。
-    Real(yubikey::YubikeySecretDevice),
-    /// CLI 統合テスト用の in-memory PIV device adapter。
-    TestStub(test_stub::TestDevice),
-}
-
-#[cfg(not(feature = "secrets-test-stub"))]
-/// 通常 build で application が扱う YubiKey device adapter。
+/// 実プロセスの device discovery と PIV 操作は `yubikey` module に閉じ、
+/// この型は discovery 結果を port contract へ翻訳する seam として機能する。
 pub(super) type YubikeySecretDevice = yubikey::YubikeySecretDevice;
-
-#[cfg(feature = "secrets-test-stub")]
-impl SecretDevice for YubikeySecretDevice {
-    fn serial(&self) -> u32 {
-        match self {
-            Self::Real(device) => device.serial(),
-            Self::TestStub(device) => device.serial(),
-        }
-    }
-
-    fn key_exists(&mut self) -> Result<bool> {
-        match self {
-            Self::Real(device) => device.key_exists(),
-            Self::TestStub(device) => device.key_exists(),
-        }
-    }
-
-    fn check_key_generation_preconditions(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.check_key_generation_preconditions(),
-            Self::TestStub(device) => device.check_key_generation_preconditions(),
-        }
-    }
-
-    fn check_management_auth_preconditions(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.check_management_auth_preconditions(),
-            Self::TestStub(device) => device.check_management_auth_preconditions(),
-        }
-    }
-
-    fn generate_key(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.generate_key(),
-            Self::TestStub(device) => device.generate_key(),
-        }
-    }
-
-    fn read_object(&mut self, object_id: domain::PivObjectId) -> Result<Option<Vec<u8>>> {
-        match self {
-            Self::Real(device) => device.read_object(object_id),
-            Self::TestStub(device) => device.read_object(object_id),
-        }
-    }
-
-    fn write_object(&mut self, object_id: domain::PivObjectId, value: &mut [u8]) -> Result<()> {
-        match self {
-            Self::Real(device) => device.write_object(object_id, value),
-            Self::TestStub(device) => device.write_object(object_id, value),
-        }
-    }
-
-    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
-        match self {
-            Self::Real(device) => device.wrap_key(key),
-            Self::TestStub(device) => device.wrap_key(key),
-        }
-    }
-
-    fn verify_pin(&mut self, pin: &[u8]) -> Result<()> {
-        match self {
-            Self::Real(device) => device.verify_pin(pin),
-            Self::TestStub(device) => device.verify_pin(pin),
-        }
-    }
-
-    fn requires_pin_input(&self) -> bool {
-        match self {
-            Self::Real(device) => device.requires_pin_input(),
-            Self::TestStub(device) => device.requires_pin_input(),
-        }
-    }
-
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        match self {
-            Self::Real(device) => device.unwrap_key(wrapped_key),
-            Self::TestStub(device) => device.unwrap_key(wrapped_key),
-        }
-    }
-}
 
 // ── terminal I/O helpers ──────────────────────────────────────────────────────
 
@@ -1063,63 +923,20 @@ fn ensure_spare_serial(device: &yubikey::YubikeySecretDevice, primary_serial: Op
 
 // ── device open helpers ───────────────────────────────────────────────────────
 
-/// backend に対応する通常操作対象 device を開く。
-///
-/// 非対話時の serial 必須条件は実機 adapter の error contract にする。
-fn open_device(backend: &mut DeviceBackend, serial: Option<u32>) -> Result<YubikeySecretDevice> {
-    match backend {
-        #[cfg(feature = "secrets-test-stub")]
-        DeviceBackend::TestStub { next_interactive_serial } => {
-            let resolved_serial = serial.unwrap_or_else(|| {
-                let s = *next_interactive_serial;
-                *next_interactive_serial = SPARE_SERIAL;
-                s
-            });
-            test_stub::TestDevice::open(resolved_serial).map(YubikeySecretDevice::TestStub)
-        }
-        DeviceBackend::Real => {
-            #[cfg(feature = "secrets-test-stub")]
-            {
-                open_real_device(serial).map(YubikeySecretDevice::Real)
-            }
-            #[cfg(not(feature = "secrets-test-stub"))]
-            {
-                open_real_device(serial)
-            }
-        }
-    }
+/// 通常操作対象の実機 YubiKey device を serial 指定または対話選択で開く。
+fn open_device(serial: Option<u32>) -> Result<YubikeySecretDevice> {
+    open_real_device(serial)
 }
 
-/// backend に対応する spare 登録対象 device を開く。
+/// spare 登録対象の実機 YubiKey device を開く。
 ///
-/// 実機 adapter では spare 待機の interrupt policy を適用する。
+/// 実機 adapter の spare 待機 interrupt policy を適用する。
 fn open_spare_device(
-    backend: &mut DeviceBackend,
     spare_serial: Option<u32>,
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
 ) -> Result<YubikeySecretDevice> {
-    match backend {
-        #[cfg(feature = "secrets-test-stub")]
-        DeviceBackend::TestStub { .. } => {
-            let serial = spare_serial.unwrap_or(SPARE_SERIAL);
-            if primary_serial == Some(serial) {
-                bail!("primary and spare YubiKey serial must be different");
-            }
-            test_stub::TestDevice::open(serial).map(YubikeySecretDevice::TestStub)
-        }
-        DeviceBackend::Real => {
-            let device = open_real_spare_device(spare_serial, primary_serial, interrupt)?;
-            #[cfg(feature = "secrets-test-stub")]
-            {
-                Ok(YubikeySecretDevice::Real(device))
-            }
-            #[cfg(not(feature = "secrets-test-stub"))]
-            {
-                Ok(device)
-            }
-        }
-    }
+    open_real_spare_device(spare_serial, primary_serial, interrupt)
 }
 
 /// spare 登録対象の実機 YubiKey を開く。
@@ -1153,16 +970,16 @@ fn open_real_spare_device(
 
 // ── RealSecretsBoundary ───────────────────────────────────────────────────────
 
-/// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。
-pub struct RealSecretsBoundary {
-    backend: DeviceBackend,
-}
+/// 実プロセスの stdin/stdout と実機 YubiKey device を `SecretsBoundary` port へ接続する adapter。
+///
+/// この型は実プロセスの I/O と実機 YubiKey のみを対象とし、test double（in-memory stub device）
+/// の実行経路は持たない。CLI 統合テスト向けの代替境界は tests 層の専用 crate が定義する。
+pub struct RealSecretsBoundary;
 
 impl RealSecretsBoundary {
-    /// 指定した backend flag で `RealSecretsBoundary` を構築する。
-    pub fn new(test_stub: bool) -> Result<Self> {
-        let backend = DeviceBackend::from_test_flag(test_stub)?;
-        Ok(Self { backend })
+    /// 実プロセス境界を構築する。
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -1170,7 +987,7 @@ impl SecretsBoundary for RealSecretsBoundary {
     type Device = YubikeySecretDevice;
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
-        open_device(&mut self.backend, serial)
+        open_device(serial)
     }
 
     fn open_spare_device(
@@ -1180,7 +997,7 @@ impl SecretsBoundary for RealSecretsBoundary {
     ) -> Result<Self::Device> {
         let interrupt = InterruptGuard::install()
             .context("failed to install interrupt handler for spare YubiKey")?;
-        open_spare_device(&mut self.backend, spare_serial, primary_serial, &interrupt)
+        open_spare_device(spare_serial, primary_serial, &interrupt)
     }
 
     fn require_serial(&self, serial: Option<u32>, error_message: &'static str) -> Result<()> {

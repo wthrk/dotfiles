@@ -165,7 +165,7 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を実機 YubiKey 境界で実行する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::build_real_boundary()?;
+    let mut boundary = adapters::build_real_boundary();
     application::run_with_boundary(options, &mut boundary)
 }
 

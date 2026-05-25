@@ -1,6 +1,6 @@
 //! 実機 YubiKey PIV セッションを `SecretDevice` port へ接続する adapter。
 //!
-//! device の開き方・discovery・selection は呼び出し元（`real_boundary`）が担い、
+//! device の開き方・discovery・selection は呼び出し元（`process_boundary`）が担い、
 //! この module は開かれた `YubiKey` session 上での PIV 操作だけを行う。
 
 use anyhow::{bail, Context};
