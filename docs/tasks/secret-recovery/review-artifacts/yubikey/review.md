@@ -75,10 +75,17 @@
 
 ### セキュリティレビュー担当
 
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
+- 判定: 合格
+- 判定要約: 所見なし
 - 根拠:
-  - `未記入`
+  - 秘密情報のコミット禁止: 違反なし（test 値はすべて `#[cfg(test)]` 内）
+  - ログ・stdout・コマンド引数・一時ファイルへの秘密情報出力禁止: 違反なし（`write_secret_to_stdout` の TTY 防衛、`write_report` は summary 型のみ、`SecretBlob::Debug` は `<redacted>` 実装済み）
+  - 失敗時挙動での秘密情報露出禁止: 違反なし（AEAD 失敗は名前のみのエラー、OAEP unpad は constant-time 走査、`ProtectedInputBuffer::write` 失敗時はゼロ化後に error 返却）
+  - 保護メモリ管理（mlock・zeroize・core dump 抑止）: 問題なし（`unwrap_key` の戻り値が `Zeroizing<Vec<u8>>`、core dump 無効化・mlock probe 確認済み）
+  - production コードへの test double 混入禁止: 違反なし（`backend.rs` は常に `Real` のみ、`FakeBoundary`/`FakeDevice` は `#[cfg(test)]` 内のみ）
+  - AEAD additional data によるデバイスバインド: 問題なし（serial・object_id・secret_id を additional data に含む）
+  - PIN 未検証状態での private key 操作禁止: 問題なし（`pin_verified` フラグで `piv::decrypt_data` へのアクセスをガード）
+  - 独立再実施レビュー詳細: `review-artifacts/yubikey/review-security-2026-05-25.md`（2026-05-25 独立新規セッション）
 
 ### 仕様適合レビュー担当
 

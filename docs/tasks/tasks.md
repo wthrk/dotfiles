@@ -10,17 +10,39 @@
 
 ### YubiKey
 
-- 状態: `完了`
+- 状態: `差し戻し`
 - GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/application/storage_service.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/application/summary.rs`
+  - `rust/dotfiles-cli/src/secrets/ports.rs`
+  - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/backend.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/boundary.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/device_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/enrollment_json.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/input.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/real_boundary.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/stdin.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/stdout.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/terminal.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/support.rs`
+  - `rust/dotfiles-cli/src/secrets/support/aead.rs`
+  - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/terminal.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
+  - `rust/dotfiles-cli/Cargo.toml`
+  - `rust/dotfiles-cli-secrets-test-contract/src/lib.rs`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
