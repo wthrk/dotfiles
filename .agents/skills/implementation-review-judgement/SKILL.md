@@ -22,10 +22,11 @@ description: Use this skill when a subagent must judge implementation review-sta
 4. `docs/task-governance/implementation-review-judgement.md`
 5. `docs/task-governance/security-obligations.md`
 6. `docs/architecture/hexagonal-implementation-rules.md`
-7. `docs/tasks/README.md`
-8. `docs/tasks/tasks.md`
-9. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
-10. Relevant `docs/tasks/<area>/review-artifacts/...`
+7. `docs/architecture/review-checklist.md` (philosophical questions and per-directory check items — apply "レビュー時の問い" for each layer before applying checklist items)
+8. `docs/tasks/README.md`
+9. `docs/tasks/tasks.md`
+10. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
+11. Relevant `docs/tasks/<area>/review-artifacts/...`
 
 `docs/tasks/<area>/tasks.md` is mandatory only when the active work item explicitly references it.
 
