@@ -3,6 +3,8 @@ name: implementation-review-judgement
 description: Use this skill when a subagent must judge implementation review-start readiness and multi-reviewer aggregation.
 ---
 
+> **Start here**: Read this entire file before taking any action. This file is your governing source — do not proceed until you have read every section.
+
 # Implementation Review Judgement
 
 ## Governing Sources
