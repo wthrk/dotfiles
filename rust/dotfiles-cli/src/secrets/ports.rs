@@ -63,13 +63,16 @@ pub(crate) trait SecretsBoundary {
         input_limit: usize,
         field_limit: usize,
         session: &'session SecretSession,
-    ) -> Result<super::adapters::enrollment_json::EnrollmentSecretSet<'session>>;
+    ) -> Result<super::EnrollmentSecretSet<'session>>;
 
     /// 復号済み secret bytes を stdout へ書き込む。stdout が TTY の場合は停止する。
     fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()>;
 
     /// summary を JSON として stdout へ出力する。
     fn write_report(&self, value: &impl serde::Serialize) -> Result<()>;
+
+    /// TTY で yes/no prompt を表示し、応答を返す。stdin が TTY でない場合は false を返す。
+    fn prompt_yes_no(&self, prompt: &str, session: &SecretSession) -> Result<bool>;
 }
 
 /// storage 操作が必要とする device API。

@@ -10,8 +10,6 @@ use anyhow::bail;
 
 use super::terminal;
 
-pub(crate) const MAX_SINGLE_STDIN_SECRET_LEN: usize = 16 * 1024;
-
 /// stdin から 1 secret を読み、現在の session の保護済み値として返す。
 ///
 /// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。

@@ -9,16 +9,14 @@ use zeroize::Zeroize;
 
 use crate::{
     secrets::{
-        ports::EnrollmentSecretSet,
         support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+        EnrollmentSecretSet,
     },
     Result,
 };
 
 #[cfg(test)]
 use crate::secrets::domain::SecretName;
-
-pub(crate) const MAX_BOOTSTRAP_JSON_LEN: usize = 64 * 1024;
 
 pub(crate) fn read_protected_enrollment_secret_set<'session>(
     reader: impl Read,

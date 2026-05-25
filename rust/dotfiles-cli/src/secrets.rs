@@ -15,8 +15,48 @@ mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
 use domain::SecretName;
+use support::protection::ProtectedSecret;
 
 use crate::Result;
+
+/// 登録に必要な 3 field を同じ保護 session で所有する共通型。
+///
+/// port と application の両方から参照するため、secrets module トップレベルに定義する。
+pub(self) struct EnrollmentSecretSet<'session> {
+    pub(self) bw_email: ProtectedSecret<'session>,
+    pub(self) bw_password: ProtectedSecret<'session>,
+    pub(self) bws_access_token: ProtectedSecret<'session>,
+}
+
+impl<'session> EnrollmentSecretSet<'session> {
+    /// 同じ `SecretSession` に所属する 3 field から登録対象 secret を構築する。
+    pub(self) fn new(
+        bw_email: ProtectedSecret<'session>,
+        bw_password: ProtectedSecret<'session>,
+        bws_access_token: ProtectedSecret<'session>,
+    ) -> Self {
+        Self {
+            bw_email,
+            bw_password,
+            bws_access_token,
+        }
+    }
+
+    #[cfg(test)]
+    pub(self) fn assert_secret_eq(&self, name: domain::SecretName, expected: &[u8]) {
+        match name {
+            domain::SecretName::BwEmail => self
+                .bw_email
+                .with_secret(|secret| assert_eq!(secret, expected)),
+            domain::SecretName::BwPassword => self
+                .bw_password
+                .with_secret(|secret| assert_eq!(secret, expected)),
+            domain::SecretName::BwsAccessToken => self
+                .bws_access_token
+                .with_secret(|secret| assert_eq!(secret, expected)),
+        }
+    }
+}
 
 #[derive(Args)]
 /// 復旧用 secret の保存先と検証手段を選ぶ最上位 command。

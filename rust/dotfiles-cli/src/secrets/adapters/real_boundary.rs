@@ -4,14 +4,12 @@
 
 use anyhow::Context;
 
-use super::{
-    enrollment_json::EnrollmentSecretSet, input, open_device, open_spare_device, terminal,
-    DeviceBackend, YubikeySecretDevice,
-};
+use super::{input, open_device, open_spare_device, terminal, DeviceBackend, YubikeySecretDevice};
 use crate::{
     secrets::{
         ports::SecretsBoundary,
         support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
+        EnrollmentSecretSet,
     },
     Result,
 };
@@ -100,5 +98,9 @@ impl SecretsBoundary for RealSecretsBoundary {
     fn write_report(&self, value: &impl serde::Serialize) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(value)?);
         Ok(())
+    }
+
+    fn prompt_yes_no(&self, prompt: &str, session: &SecretSession) -> Result<bool> {
+        terminal::prompt_yes_no(prompt, session.interrupt())
     }
 }

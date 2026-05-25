@@ -5,4 +5,4 @@
 pub(crate) use super::enrollment_json::read_protected_enrollment_secret_set;
 pub(crate) use super::prompt::{read_hidden_secret, read_visible_secret_line, read_yubikey_pin};
 pub(crate) use super::stdin::read_protected_stdin_secret;
-pub(crate) use super::stdout::{reject_secret_stdout_terminal, write_secret_to_stdout};
+pub(crate) use super::stdout::write_secret_to_stdout;
