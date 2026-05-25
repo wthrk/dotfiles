@@ -976,12 +976,6 @@ fn open_real_spare_device(
 /// の実行経路は持たない。CLI 統合テスト向けの代替境界は tests 層の専用 crate が定義する。
 pub struct RealSecretsBoundary;
 
-impl RealSecretsBoundary {
-    /// 実プロセス境界を構築する。
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 impl SecretsBoundary for RealSecretsBoundary {
     type Device = YubikeySecretDevice;

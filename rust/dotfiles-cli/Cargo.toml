@@ -4,22 +4,13 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-[features]
-secrets-test-stub = ["dep:dotfiles-cli-secrets-test-contract"]
+[lib]
+name = "dotfiles_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "dotfiles"
 path = "src/main.rs"
-
-[[bin]]
-name = "dotfiles-stub"
-path = "src/main.rs"
-required-features = ["secrets-test-stub"]
-
-[[test]]
-name = "secrets_cli"
-path = "tests/secrets_cli.rs"
-required-features = ["secrets-test-stub"]
 
 [lints]
 workspace = true
@@ -29,7 +20,6 @@ aes-gcm.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
-dotfiles-cli-secrets-test-contract = { workspace = true, optional = true }
 dotfiles-core.workspace = true
 nom.workspace = true
 rand.workspace = true
@@ -45,7 +35,3 @@ signal-hook.workspace = true
 strum.workspace = true
 yubikey.workspace = true
 zeroize.workspace = true
-
-[dev-dependencies]
-portable-pty.workspace = true
-

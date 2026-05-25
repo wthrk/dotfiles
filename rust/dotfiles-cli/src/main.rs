@@ -1,23 +1,12 @@
 //! ユーザー向け `dotfiles` コマンドのプロセス境界。
 //!
 //! ここでは clap の解析結果を実処理へ渡し、エラーを標準エラーと終了コードへ変換する。
-//! 生成、環境検出、外部コマンド実行はそれぞれのモジュールに分ける。
+//! 実装ロジックは library crate（`dotfiles_cli`）側に置き、binary は dispatch だけを担う。
 
 use std::process::ExitCode;
 
-mod cli;
-mod environment;
-mod init;
-mod local_flake;
-mod process;
-mod secrets;
-mod switch;
-mod update;
-
-type Result<T> = dotfiles_core::Result<T>;
-
 fn main() -> ExitCode {
-    match cli::dispatch() {
+    match dotfiles_cli::dispatch() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");

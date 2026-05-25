@@ -164,8 +164,11 @@ enum VerifyCheck {
 }
 
 /// CLI で parse 済みの `dotfiles secrets` command を実機 YubiKey 境界で実行する。
+///
+/// 実プロセス境界（`RealSecretsBoundary`）の組み立てはここで行い、application 層は
+/// port 契約だけを通じて境界を利用する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::build_real_boundary();
+    let mut boundary = adapters::process_boundary::RealSecretsBoundary;
     application::run_with_boundary(options, &mut boundary)
 }
 

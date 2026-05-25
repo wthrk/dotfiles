@@ -1,14 +1,14 @@
 # YubiKey レビュー記録
 
-この文書は `docs/tasks/secret-recovery/tasks.md` の作業項目 `YubiKey` に対する固定実装単位 `レビュー` の記録先である。
+この文書は `docs/tasks/secret-recovery/tasks.md` の作業項目 `YubiKey` に対する固定実装単位 `レビュー` の正本記録である。2026-05-26 の現行コード全体レビュー結果を保持し、2026-05-25 以前の個別レビュー記録は履歴参照として同ディレクトリに残す。
 
 ## 実装担当からの引き継ぎ
 
-- レビュー状態: `差し戻し中（第8回サイクル完了・是正実施中）`
+- レビュー状態: `差し戻し中（2026-05-26 現行コード全体レビューで不合格）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 確認開始時 HEAD: `6a6f6ea`
-- 対象差分識別子: `feat/yubikey-secret-storage @ 6a6f6ea`
-- 実装側確認証跡: `./confirmation.md`
+- 確認開始時 HEAD: `47db89710975156fd971a4d49c915950694c223a`
+- 対象差分識別子: `yubikey-current-code-full-review-2026-05-26-head-47db89710975156fd971a4d49c915950694c223a-codepaths-sha256-3efea38d6259d5b1c255b9cc141a1cc596aea0c5683f4c4acda9f6341fa1dbd2`
+- 実装側確認証跡: `./confirmation.md`（履歴参照用。今回判定は現行コードを直接読んだ独立レビュー結果を正本とする）
 
 ## レビュー担当チェック項目
 
@@ -36,110 +36,112 @@
 ### 1) 秘密値・認証情報の扱い
 
 - 確認状態: `確認済`
-- 確認対象（ファイル/経路）: `src/secrets/` 配下全ファイル
-- 所見: ハードコードされた実秘密値なし。テストコード内の固定値はすべて統合テスト専用。
+- 確認対象（ファイル/経路）: `rust/dotfiles-cli/src/secrets.rs`、`rust/dotfiles-cli/src/secrets/`、`rust/dotfiles-cli/tests/secrets_cli.rs`、`rust/dotfiles-cli/Cargo.toml`、`rust/dotfiles-cli-secrets-test-contract/src/`
+- 所見: 平文の認証情報・鍵素材・トークン等のコミットは確認されず、秘密値の所有境界は `SecretSession` / `ProtectedInputBuffer` / `ProtectedSecret` により保護されている。
 - 差戻し要否: `なし`
 - 未実施理由（未実施時のみ）: —
 
 ### 2) 漏えい経路（ログ/引数/一時ファイル/stdout/stderr）
 
-- 確認状態: `確認済（要修正あり）`
-- 確認対象（出力経路）: `adapters/test_stub.rs` `emit_write_event`
-- 所見: `secrets-test-stub` feature 配下の `emit_write_event` が統合テスト contract として復号済み secret 値を stderr へ出力する。セキュリティ義務2（ログ・stderr への秘密情報出力禁止）の適用対象。feature-gate により通常 build には含まれないが義務文書に明示的除外規定がなかった。
-- 差戻し要否: `あり → security-obligations.md に明示的適用除外を追加することで解消`
+- 確認状態: `確認済`
+- 確認対象（出力経路）: `write_secret_to_stdout`、`require_stdout_pipe`、`ensure_secret_stdout_not_terminal`、失敗時メッセージ経路
+- 所見: 本番経路の secret 出力は stdout pipe 前提に制限されており、stderr / log / error message への secret 値露出は確認されなかった。
+- 差戻し要否: `なし`
 - 未実施理由（未実施時のみ）: —
 
 ### 3) 権限境界・永続化・失敗時挙動
 
 - 確認状態: `確認済`
-- 確認対象（境界/保存先/失敗経路）: `application/storage_service.rs`、`adapters/yubikey.rs`、`support/oaep.rs`、`support/protection/buffer.rs`
-- 所見: AEAD 失敗は名前のみのエラー、OAEP unpad は constant-time 走査、ProtectedInputBuffer は容量超過時ゼロ化後 error 返却。問題なし。
+- 確認対象（境界/保存先/失敗経路）: `support/protection`、`support/aead`、`adapters/yubikey.rs`、secret I/O 境界
+- 所見: 保護メモリ、zeroize、割り込み処理、AEAD 復号失敗時の振る舞いは `security-obligations.md` の要求と整合し、追加の権限昇格経路や秘密値漏えい経路は確認されなかった。
 - 差戻し要否: `なし`
 - 未実施理由（未実施時のみ）: —
 
-## 役割別レビュー記録（レビュー担当記入）
+## 役割別レビュー記録（2026-05-26 現行コード全体レビュー）
 
 ### 構造レビュー担当
 
 - 判定: 不合格
-- 判定要約: adapters/ 層で port trait 実装でない pub(crate) シンボルが19件存在（公開面最小化違反）および support/ 層で InterruptGuard::run_yubikey_operation に業務語彙混入（第8回レビューサイクル記録 — ただし対象コードは旧バージョン; 詳細は review-structural-2026-05-25.md を参照）
+- 判定要約: `adapters` 層に test 代替責務の混入と公開面規約違反があり、`ProcessSecretsBoundary` 前提の組立面と実装中核が自己整合していない。
 - 根拠:
-  - adapters/terminal.rs（8件）、adapters/prompt.rs（3件）、adapters/stdin.rs（1件）、adapters/stdout.rs（1件）、adapters/backend.rs（2件）、adapters/yubikey.rs（4件）に port trait 実装でない pub(crate) シンボルが存在（合計19件）
-  - support/protection.rs の InterruptGuard::run_yubikey_operation に特定製品名 "yubikey" が含まれる（業務語彙禁止違反）
-  - 注記: 本レビューは旧コード構造（adapters/ が複数ファイルに分割）を対象にしており、現行 HEAD (6a6f6ea) では adapters/ は real_boundary.rs・yubikey.rs・test_stub.rs の3ファイルに統合済み。run_yubikey_operation は run_operation へ改名済み。現行コードへの再レビューが必要。
-  - 詳細: `review-artifacts/yubikey/review-structural-2026-05-25.md`
+  - `rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs` に `DeviceBackend::TestStub` と `test_stub::TestDevice` が残存し、実外部技術の翻訳ではなくテスト時の実依存肩代わり責務が production adapter に混入している。
+  - `rust/dotfiles-cli/src/secrets/adapters.rs` の `pub(crate) fn build_real_boundary` は port trait 実装型でもそのメソッドでもなく、adapter 公開面の絶対規則に適合しない。
+  - `rust/dotfiles-cli/src/secrets.rs` / `rust/dotfiles-cli/src/secrets/adapters.rs` が前提にする `ProcessSecretsBoundary` / `RealSecretDeviceFactory` と、`process_boundary.rs` 側の `RealSecretsBoundary` 実体が一致していない。
 
 ### 運用整合レビュー担当
 
-- 判定: 要修正
-- 判定要約: review.md 集約判定フィールドがプレースホルダのまま、adapters/ pub(crate) 非port関数の差戻し条件抵触、統合テストがコンパイル不可（第8回レビューサイクル記録）
+- 判定: 不合格
+- 判定要約: レビュー・確認証跡を再現可能にする実行経路が現行コードで成立しておらず、強制可能性と監査可能性を満たしていない。
 - 根拠:
-  - review.md の集約後レビュー判定フィールドがテンプレートプレースホルダのまま「完了」が記録されており、ゲート条件の監査可能性が不成立
-  - adapters/ 配下の pub(crate) 非port関数が差戻し条件に直接抵触
-  - tests/secrets_cli.rs が CARGO_BIN_EXE_dotfiles-stub を参照するが Cargo.toml に定義がなくコンパイル不可
-  - docs/tasks/tasks.md の YubiKey 状態が「差し戻し」だが docs/tasks/secret-recovery/tasks.md は「完了」で不整合
-  - 注記: dotfiles-stub [[bin]] は現行 HEAD で追加済み。pub(crate) 問題は統合後の real_boundary.rs では private 関数に変更済み。tasks.md 不整合は本サイクルで是正済み。
-  - 詳細: `review-artifacts/yubikey/review-operational-2026-05-25.md`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs` と `rust/dotfiles-cli/src/secrets.rs` が要求する `ProcessSecretsBoundary` / `RealSecretDeviceFactory` が実装側で解決できず、`direnv exec . cargo check -p dotfiles-cli` 前提の運用経路が破綻している。
+  - `rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs` に `#[cfg(feature = "secrets-test-stub")]` 経路が残る一方、`rust/dotfiles-cli/Cargo.toml` に当該 feature 定義がなく、構成で有効条件を強制できない。
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` は `CARGO_BIN_EXE_dotfiles-stub` と `--test-stub-yubikey` を前提にするが、`rust/dotfiles-cli/Cargo.toml` に `dotfiles-stub` バイナリ定義がなく、確認手順の再現性が欠けている。
+  - 作業定義と台帳では過去に完了扱いされていたが、現行コードはビルド不能かつ確認経路欠落のため、完了判定ロジックと監査証跡が整合しない。
 
 ### セキュリティレビュー担当
-
-- 判定: 要修正
-- 判定要約: adapters/test_stub.rs の emit_write_event が secrets-test-stub feature 配下で復号済み secret 値を stderr へ出力しており、security-obligations.md に明示的除外規定がなかった
-- 根拠:
-  - `adapters/test_stub.rs` の `emit_write_event` 関数（行 334–353）が `eprintln!("... value={}", String::from_utf8_lossy(value))` で復号済み secret 値を stderr へ出力する
-  - セキュリティ義務2「ログ・stderr への秘密情報出力禁止」に feature-gate による例外規定が存在しなかった
-  - 解消策: `docs/task-governance/security-obligations.md` に明示的適用除外を追加（本サイクルで実施済み）
-  - 他義務項目はすべて合格: 秘密情報のコミット禁止・失敗時挙動・保護メモリ管理・AEAD additional data バインド・PIN 未検証ガードに問題なし
-  - 詳細: `review-artifacts/yubikey/review-security-2026-05-25.md`
-
-### 仕様適合レビュー担当
-
-- 判定: 要修正
-- 判定要約: V14「production コードに test double が含まれない」条件が未解消（application.rs・storage_service.rs に FakeBoundary・FakeDevice が残存）および dotfiles-stub バイナリが未定義でコンパイル不可（第8回レビューサイクル記録 — 対象コードは旧バージョン）
-- 根拠:
-  - application.rs 行 621–939 の #[cfg(test)] mod tests 内に FakeBoundary・FakeDevice・FakeDeviceState が production source tree（src/）に残存（V14・V15 違反）
-  - application/storage_service.rs 行 263–346 の FakeDevice も同様
-  - tests/secrets_cli.rs が参照する CARGO_BIN_EXE_dotfiles-stub に対応する [[bin]] エントリが Cargo.toml に未定義
-  - adapters/test_stub.rs は TestDevice が SecretDevice port を実装するため構造レビュー担当は合格判定
-  - 注記: application.rs・storage_service.rs の FakeBoundary・FakeDevice は現行 HEAD (6a6f6ea) では除去済み（ファイル行数が大幅削減）。dotfiles-stub [[bin]] も追加済み。残存するのは adapters/test_stub.rs の V14 concern のみ。
-  - 詳細: `review-artifacts/yubikey/review-spec-2026-05-25.md`
-
-### テストレビュー担当
-
-- 判定: 不合格
-- 判定要約: real_boundary.rs の #[cfg(test)] mod tests ブロック（9関数）が production adapter ファイルに残存しており tests/ 層への移設が完了していない
-- 根拠:
-  - `rust/dotfiles-cli/src/secrets/adapters/real_boundary.rs` 行 1262–1427 に `#[cfg(test)] mod tests` が存在し、`read_enrollment_json_bytes` の 9 unit test 関数が production ファイルに物理的に存在する
-  - test double ではないが、#[cfg(test)] ラップのテストコードが production ファイル（adapters/ 配下）に残存することはテストレビュー規則違反
-  - 統合テスト tests/secrets_cli.rs で enrollment JSON parse の振る舞い面テストカバレッジは確認済み（integration test 代替可能）
-  - 解消策: 該当 #[cfg(test)] mod tests ブロックを削除（本サイクルで実施済み）
-  - 詳細: `review-artifacts/yubikey/review-test-2026-05-25.md`
-
-### ドキュメントレビュー担当
 
 - 判定: 合格
 - 判定要約: 所見なし
 - 根拠:
-  - secrets.rs・application.rs・application/storage_service.rs・adapters/yubikey.rs・domain/model.rs・domain/wire.rs・tests/secrets_cli.rs の全ドキュメントコメントを実装と照合し、矛盾・乖離なし
-  - What のみの繰り返しコメントなし。Why の説明が適切に配置されている
-  - 詳細: `review-artifacts/yubikey/review-doc-2026-05-25.md`
+  - 指定対象パスに平文の認証情報・鍵素材・トークン等のコミットは確認されなかった。
+  - 本番経路の secret 出力は `write_secret_to_stdout` に限定され、TTY への誤出力拒否が実装されている。
+  - 失敗時メッセージは secret 値を含まず、保護メモリ・zeroize・割り込み処理も `security-obligations.md` の要求と整合している。
+
+### 仕様適合レビュー担当
+
+- 判定: 不合格
+- 判定要約: `規約違反の解消対象`・`構造完了条件`・`完了条件` の複数項目が未充足で、特に V5/V6/V10/V12/V13/V14 とテスト実行基盤の不整合が残存している。
+- 根拠:
+  - `rust/dotfiles-cli/src/secrets/application/storage_service.rs` に永続 I/O・manifest JSON parse/serialize・blob/wire/暗号・summary 構築が再混在し、V5/V10 が未解消である。
+  - `rust/dotfiles-cli/src/secrets/ports.rs` に DTO と prompt/stdin/stdout 契約が残り、V6 が未解消である。
+  - `rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs` と `rust/dotfiles-cli/src/secrets/adapters.rs` に adapter 面の責務集中と seam 不一致が残り、V12/V13 が未解消である。
+  - production source tree に `secrets-test-stub` 経路が残り、V14 の「production コードに test double が含まれない」を満たしていない。
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` の `CARGO_BIN_EXE_dotfiles-stub` 前提と `rust/dotfiles-cli/Cargo.toml` の定義が一致せず、完了条件の検証基盤が成立していない。
+
+### テストレビュー担当
+
+- 判定: 不合格
+- 判定要約: 完了条件を直接検証するテスト網羅が不足し、production tree への test double 責務混入とテスト実行不能が残っている。
+- 根拠:
+  - `docs/tasks/secret-recovery/work-items/yubikey.md` の V1〜V16 解消を直接検証する構造テストが確認できず、現行テストは主に CLI 動作中心である。
+  - `rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs` に `secrets-test-stub` 経路の test double 責務が残っており、production コードに test double を含めない条件に反する。
+  - `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` 前提で見ると、`ProcessSecretsBoundary` / `RealSecretDeviceFactory` 未解決や feature 未定義によりテスト基盤自体が成立していない。
+
+### ドキュメントレビュー担当
+
+- 判定: 要修正
+- 判定要約: `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントに現行実装と不一致な参照がある。
+- 根拠:
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` の冒頭コメントが呼び出し元を `real_boundary` と記載しているが、現行境界実装は `process_boundary.rs` と `adapters.rs` の構成になっており名称・参照が一致しない。
+  - 主要ドキュメントコメントの why 記述自体は概ね足りているため、差戻し対象はこの不整合の是正に限定される。
+
+### アーキテクチャ整合レビュー担当
+
+- 判定: 不合格
+- 判定要約: 主契約として語られる `ProcessSecretsBoundary` + `SecretDeviceFactory` seam と実装実体の `RealSecretsBoundary` が不一致で、モジュール全体が一貫した 1 つの設計になっていない。
+- 根拠:
+  - `rust/dotfiles-cli/src/secrets.rs` と `rust/dotfiles-cli/src/secrets/adapters.rs` は `ProcessSecretsBoundary` / `RealSecretDeviceFactory` を公開 seam として前提にする一方、`rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs` は `RealSecretsBoundary` を中核にしており、モジュールの語る境界と実体が一致していない。
+  - adapter 境界だけが「差し替え可能 factory seam」と「実プロセス専用境界」の 2 設計を同時主張しており、責務分配が全体で一貫していない。
+  - 新しい use case / adapter を自然に追加できる拡張点がコード上で確定しておらず、全体設計の受容性が不足している。
 
 ### 起動不能役割がある場合の記録参照
 
-- 記録参照: 参照整合レビュー担当は今サイクルで未起動（AGENTS.md・スキル・task-governance 文書への変更なし）
+- 記録参照: なし（実装差分の必須 7 担当はすべて判定を回収済み）
 
 ## 集約判定
 
 - 集約後レビュー判定: 不合格
-- 集約判定要約: テストレビュー・セキュリティレビュー・仕様適合レビュー・運用整合レビュー・構造レビューに差戻し事項あり（第8回サイクル）。本サイクルで是正実施中。
+- 集約判定要約: 必須 7 担当のうち `セキュリティレビュー担当` 以外で差戻し事項が残っており、YubiKey を完了扱いする妥当性は確認できない。
 - 集約根拠:
-  - テストレビュー 不合格: adapters/real_boundary.rs に #[cfg(test)] mod tests ブロックが残存 → 本サイクルで削除済み
-  - セキュリティレビュー 要修正: test_stub.rs emit_write_event の stderr 秘密情報出力に明示的除外規定なし → security-obligations.md に明示的適用除外を追加済み
-  - 仕様適合レビュー 要修正: V14/V15 test double 残存・dotfiles-stub 未定義 → 旧バージョンに基づく指摘（現行 HEAD では解消済み）; adapters/test_stub.rs の V14 concern は構造レビュー担当が合格判定
-  - 運用整合レビュー 要修正: review.md プレースホルダ・tasks.md 不整合 → 本サイクルで是正済み
-  - 構造レビュー 不合格: 旧 adapters/ 構造の pub(crate) 19件・business 語彙 → 旧バージョンに基づく指摘; 現行 HEAD では adapters/ 統合済み・run_operation 改名済み
-  - ドキュメントレビュー 合格
-- 差戻し事項（第8回サイクルからの是正): 上記4件を本サイクルで是正した。是正後に新たなレビューサイクル（第9回）が必要。
-- 後続対応状態: `是正実施中`
+  - `構造レビュー担当`: 不合格
+  - `運用整合レビュー担当`: 不合格
+  - `セキュリティレビュー担当`: 合格
+  - `仕様適合レビュー担当`: 不合格
+  - `テストレビュー担当`: 不合格
+  - `ドキュメントレビュー担当`: 要修正
+  - `アーキテクチャ整合レビュー担当`: 不合格
+  - `ProcessSecretsBoundary` 系 seam と `RealSecretsBoundary` 実体の不一致、`application` / `ports` / `storage_service` / `adapters` への責務残留、production tree への test double 責務混入、`dotfiles-stub` / feature 定義とテスト実行基盤の不整合、`adapters/yubikey.rs` コメント不整合が未解消である。
+- 差戻し事項: `docs/tasks/secret-recovery/work-items/yubikey.md` の「現行レビュー差し戻しに基づく追加是正項目（2026-05-26）」を正本とし、ステップ3〜8の再実装、テスト実行基盤整合、コメント不整合是正を完了してから再レビューすること。
+- 後続対応状態: `差し戻し済み`
+- 後続対応メモ: 今回のレビューは `コード差分なし / 現行コード全体` を対象にした完了妥当性確認であり、進捗前進の根拠には使わない。新たな実コード差分と確認証跡が揃うまで、台帳上の `確認` / `レビュー` / `必要時の後続対応` は `未着手` を維持する。
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
-- 後続対応メモ: 第8回サイクル差し戻し事項の是正を本サイクルで実施。コミット後に第9回レビューサイクルへ進む。

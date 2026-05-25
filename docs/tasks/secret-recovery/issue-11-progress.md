@@ -50,10 +50,10 @@
 
 | Issue | 名称 | 現在状態 | 根拠 |
 | --- | --- | --- | --- |
-| `#12` | YubiKey 秘密情報保存 | `Design PR 完了 / 実装以降は未完了` | `#21` merge、現行 tasks で `未開始` |
+| `#12` | YubiKey 秘密情報保存 | `Design PR 完了 / 実装進行中（レビュー差し戻し中）` | `#21` merge、現行 tasks で `進行中`、review 正本は `review-artifacts/yubikey/review.md` |
 | `#13` | Bitwarden Secrets Manager クライアント | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#14` | GPG 復元 / gpg-agent SSH 対応 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#15` | password-store 復元 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#16` | Bitwarden Password Manager CLI ログイン | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#17` | 新規マシン復旧フロー統合 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
-| `#18` | 最終ドキュメント整理 | `移管済み（repo-global へ移設）` | `docs/tasks/repo-governance/tasks.md` と `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/{confirmation,review}.md` を参照 |
+| `#18` | 最終ドキュメント整理 | `移管済み（repo-global へ移設）` | `docs/tasks/repo-governance/tasks.md`、`docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/confirmation-2026-05-22.md`、`docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md` を参照 |
