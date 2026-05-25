@@ -1,6 +1,7 @@
-//! YubiKey PIV の raw RSA decrypt 結果から RSA-OAEP SHA-256 padding を外す。
+//! RSA-OAEP SHA-256 padding を除去する暗号 utility。
 //!
-//! `yubikey` crate の PIV decrypt は raw RSA 結果を返すため、host 側で OAEP を検証する。
+//! raw RSA decrypt 出力から OAEP padding を host 側で検証・除去する。padding separator の
+//! 走査は constant-time に近い形で全体を走査し、タイミング情報による oracle 攻撃を狭める。
 
 use std::io::Write;
 

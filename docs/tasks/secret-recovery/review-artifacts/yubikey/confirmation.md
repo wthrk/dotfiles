@@ -592,3 +592,59 @@ pub(super) fn build_real_boundary(test_stub: bool) -> Result<impl crate::secrets
 第3回差し戻し対応（commits: 049619c, 81af4f6, 13bb0f7）により、差戻し条件に列挙されたすべての違反（V12/V13 pub(crate)、support/ 業務語彙、test double 残存、dotfiles-stub 未定義）が解消された。加えて、レビュー担当が指摘しなかった層違反（adapters/input.rs 再エクスポート集約ファイル）も本確認中に発見・解消済み。
 
 差戻し条件に抵触する違反は残存しない。再レビュー着手可能と判断する。
+
+---
+
+## 第7回確認（2026-05-25）— 第4回差し戻し対応: support/ 業務語彙の完全除去
+
+- 確認対象コミット: （本確認のコミット後に記録）
+- 確認開始時 HEAD: `a719ee0`
+- cargo check 結果: エラーゼロ（`cargo check -p dotfiles-cli` および `--features secrets-test-stub` 両方で確認）
+
+### 発見と修正: support/ 層の残留業務語彙
+
+第6回確認では support/ の `run_yubikey_operation` 除去が確認されたが、以下の業務語彙が残存していた。
+
+**`support/protection.rs`（修正前）:**
+- `SecretMemoryGuard::prepare`: `"failed to disable core dumps before reading bootstrap secrets"`
+- `SecretMemoryGuard::prepare`: `"failed to lock memory before reading bootstrap secrets"`
+- `SecretMemoryGuard::lock_transient_buffer`: `"failed to lock bootstrap secret input memory"`
+- `interrupted_result`: `"interrupted while handling bootstrap secrets"`
+
+"bootstrap secrets" は本製品固有の enrollment flow 用語（業務語彙）であり、`review-checklist.md` support/ 層の「機能固有 vocabulary を含まないこと」・「別プロダクトにそのままコピーして使えるか」に違反する。
+
+**`support/oaep.rs`（修正前）:**
+- モジュール doc comment に `"YubiKey PIV の raw RSA decrypt 結果から"` および `"yubikey crate の PIV decrypt"` が含まれていた。
+
+"YubiKey PIV" は特定ハードウェアベンダー・製品名であり、support 層の業務語彙禁止規則違反。
+
+### 修正内容
+
+**`support/protection.rs`（修正後）:**
+- `"failed to disable core dumps before reading bootstrap secrets"` → `"failed to disable core dumps"`
+- `"failed to lock memory before reading bootstrap secrets"` → `"failed to lock process memory"`
+- `"failed to lock bootstrap secret input memory"` → `"failed to lock input buffer memory"`
+- `"interrupted while handling bootstrap secrets"` → `"operation interrupted"`
+
+**`support/oaep.rs`（修正後）:**
+- モジュール doc comment を `"RSA-OAEP SHA-256 padding を除去する暗号 utility。raw RSA decrypt 出力から OAEP padding を host 側で検証・除去する。padding separator の走査は constant-time に近い形で全体を走査し、タイミング情報による oracle 攻撃を狭める。"` に更新。YubiKey 参照を除去し、セキュリティ特性（タイミング攻撃対策）を説明。
+
+### cargo check 結果
+
+- `direnv exec . cargo check -p dotfiles-cli`: エラーゼロ（警告1件: `main.rs` の複数 binary target 警告のみ）
+- `cargo check -p dotfiles-cli --features secrets-test-stub`: エラーゼロ（同上）
+
+### V1〜V16 最終適合確認
+
+前回（第6回）確認から変化なし。解消済み。
+
+追加修正:
+- support/ 業務語彙（"bootstrap secrets", "YubiKey PIV"）の残留: **解消済み（本確認で修正）**
+
+## 前進可否判定（第7回）
+
+**前進可**
+
+第4回差し戻し対応として、第6回確認で発見されなかった support/ 層の残留業務語彙（`protection.rs` エラーメッセージ 4 件・`oaep.rs` モジュール doc comment）を修正した。修正後の cargo check はエラーゼロ。
+
+差戻し条件に抵触する違反は残存しない。再レビュー着手可能と判断する。

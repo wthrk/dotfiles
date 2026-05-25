@@ -190,18 +190,18 @@ impl SecretSession {
 impl SecretMemoryGuard {
     fn prepare() -> Result<Self> {
         rlimit::setrlimit(rlimit::Resource::CORE, 0, 0)
-            .context("failed to disable core dumps before reading bootstrap secrets")?;
+            .context("failed to disable core dumps")?;
 
         let probe = Zeroizing::new(vec![0u8; MEMORY_LOCK_PROBE_LEN]);
         let probe_guard = region::lock(probe.as_ptr(), probe.len())
-            .context("failed to lock memory before reading bootstrap secrets")?;
+            .context("failed to lock process memory")?;
         drop(probe_guard);
 
         Ok(Self)
     }
 
     fn lock_transient_buffer(&self, ptr: *const u8, len: usize) -> Result<region::LockGuard> {
-        lock_memory_range(ptr, len).context("failed to lock bootstrap secret input memory")
+        lock_memory_range(ptr, len).context("failed to lock input buffer memory")
     }
 }
 
@@ -212,7 +212,7 @@ fn register_interrupt(signal: i32) -> Result<SigId> {
 
 fn interrupted_result() -> Result<()> {
     if INTERRUPTED.load(Ordering::SeqCst) {
-        bail!("interrupted while handling bootstrap secrets");
+        bail!("operation interrupted");
     }
 
     Ok(())
