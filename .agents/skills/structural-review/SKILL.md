@@ -24,19 +24,30 @@ description: Use this skill when a subagent is assigned as the 構造レビュ�
 3. `docs/architecture/hexagonal-implementation-rules.md`
 4. `docs/architecture/review-checklist.md`
 5. `docs/task-governance/implementation-review-judgement.md`
-6. `docs/tasks/README.md`
-7. `docs/tasks/tasks.md`
-8. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
 
 ## Rules
 
-- **Before reading any code**, open `docs/architecture/review-checklist.md` and read the "レビュー時の問い" section for every layer present in the review target. Then read the code and answer each question explicitly. A reviewer who cannot answer the philosophical questions for the applicable layers has not completed the review.
-- If any philosophical question is answered with "this code violates the philosophical intent" — regardless of whether individual checklist items pass — emit `判定: 不合格`. Checklist compliance is necessary but not sufficient. The philosophical questions take precedence over checklist results.
-- Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` take precedence over file-name-specific rules. A violation of layer philosophy overrides apparent structural correctness (correct file placement, correct naming).
-- For each modified file in the diff, identify its layer from the directory-to-layer mapping in `docs/architecture/hexagonal-implementation-rules.md`, then apply every check item in the corresponding section of `docs/architecture/review-checklist.md`. A violation of any check item in the applicable section must result in `判定: 不合格`. Do not duplicate checklist content here — the canonical source is `docs/architecture/review-checklist.md`.
-- When reviewing `adapters/` files: do not rely on the work item's listed "対象コードパス" as the complete set of files to inspect. Open the `adapters/` directory directly and enumerate every file present. For each file, list every `pub`, `pub(crate)`, and `pub(super)` symbol. Any symbol that is not a port trait implementation type or its method must result in `判定: 不合格`.
-- When reviewing `adapters/` files: inspect `adapters.rs` (or `adapters/mod.rs`) to determine whether any child module is re-exported as `pub(super)` or higher. Trace this export chain and apply the port-trait-implementation-only rule to all symbols reachable from outside `adapters/`.
-- When reviewing `application/` files: verify that no adapter concrete types are imported and no `println!` / stdin reads are present.
+Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` take precedence over file-name-specific rules. A violation of layer philosophy overrides apparent structural correctness (correct file placement, correct naming).
+
+### ステップ1 — 哲学的検証（コードを読む前に実施、必須・先行）
+
+- `docs/architecture/review-checklist.md` を開き、レビュー対象の全層の「レビュー時の問い」を読む。
+- コードを読み、各問いに「このコードは〜のみをしているか」という形で明示的に回答する。
+- 回答を `根拠:` に必ず記録する。
+- 1つでも「哲学に違反している」であれば、チェックリスト照合に進まず即座に `判定: 不合格` を確定する。
+- ステップ1を完了せずステップ2に進んではならない。
+- 哲学的問いへの回答が `根拠:` に記録されていないレビューは未完了であり提出してはならない。
+
+### ステップ2 — チェックリスト照合（ステップ1で哲学違反なしと判定した場合のみ実施）
+
+- `adapters/` 全ファイルを自力列挙し `pub`/`pub(crate)`/`pub(super)` シンボルを全列挙する。
+  - Port trait 実装でないシンボルが1件でもあれば `判定: 不合格`。
+  - `adapters.rs`（または `adapters/mod.rs`）で `pub(super)` 以上に再エクスポートされているモジュールを特定し、外部から到達可能な全シンボルに同規則を適用する。
+- `application/` ファイルでは adapter 具体型 import と `println!`/stdin 読み取りがないことを確認する。
+- その他 `docs/architecture/review-checklist.md` の対応層チェック項目を適用する。各違反は `判定: 不合格`。チェックリスト内容をここに複製しない — 正典は `docs/architecture/review-checklist.md`。
+
+### 共通制約
+
 - The reviewer role is limited to returning a verdict. The reviewer must not directly edit source files, must not commit changes, and must not perform any implementation work. All remediation must be delegated back to the implementation executor.
 - **Review independence**: Read and inspect the actual code directly. Past review records, confirmation records, or implementer reports must not substitute for independent judgment. Even if previous cycle records show a pass, personally verify the current code before returning a pass verdict.
 - Verdict format is governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate the verdict format rules here — the canonical source is that document. Record philosophical question answers explicitly in `根拠:`.
