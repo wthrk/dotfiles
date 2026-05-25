@@ -8,9 +8,7 @@ mod storage_service;
 pub(super) mod summary;
 
 #[cfg(test)]
-mod fake_boundary;
-#[cfg(test)]
-mod storage_service_tests;
+mod test_support;
 
 use std::collections::BTreeSet;
 
@@ -627,7 +625,7 @@ fn require_single_stdin_secret_source<B: SecretsBoundary>(stdin: bool, boundary:
 mod tests {
     use super::*;
 
-    use fake_boundary::{make_fake_secret, FakeBoundary, FakeDevice};
+    use test_support::fake_boundary::{make_fake_secret, FakeBoundary, FakeDevice};
 
     #[test]
     fn enroll_spare_rejects_same_primary_and_spare_serial() -> Result<()> {

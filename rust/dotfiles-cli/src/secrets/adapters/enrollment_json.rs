@@ -11,13 +11,9 @@ use crate::{
     secrets::{
         ports::EnrollmentBytes,
         support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-        EnrollmentSecretSet,
     },
     Result,
 };
-
-#[cfg(test)]
-use crate::secrets::domain::SecretName;
 
 /// stdin JSON から enrollment secret の raw bytes を読み出す。
 ///
@@ -37,30 +33,6 @@ pub(crate) fn read_enrollment_json_bytes(
     EnrollmentSecretSetParser::new(input.as_slice(), field_limit, &session)
         .parse_to_bytes()
         .context("failed to parse bootstrap secret JSON")
-}
-
-pub(crate) fn read_protected_enrollment_secret_set<'session>(
-    reader: impl Read,
-    input_limit: usize,
-    field_limit: usize,
-    memory: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
-    let input = ProtectedInputBuffer::read_from(
-        reader,
-        input_limit,
-        "bootstrap secret JSON input is too large",
-        memory,
-    )?;
-    parse_protected_enrollment_secret_set_json(input.as_slice(), field_limit, memory)
-        .context("failed to parse bootstrap secret JSON")
-}
-
-fn parse_protected_enrollment_secret_set_json<'session>(
-    input: &[u8],
-    field_limit: usize,
-    memory: &'session SecretSession,
-) -> Result<EnrollmentSecretSet<'session>> {
-    EnrollmentSecretSetParser::new(input, field_limit, memory).parse()
 }
 
 enum BootstrapSecretField {
@@ -103,59 +75,6 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
             field_limit,
             memory,
         }
-    }
-
-    fn parse(mut self) -> Result<EnrollmentSecretSet<'session>> {
-        self.skip_whitespace();
-        self.expect_byte(b'{')?;
-
-        let mut bw_email = None;
-        let mut bw_password = None;
-        let mut bws_access_token = None;
-        let mut first = true;
-        loop {
-            self.skip_whitespace();
-            if self.peek_byte() == Some(b'}') {
-                self.cursor += 1;
-                break;
-            }
-            if !first {
-                self.expect_byte(b',')?;
-                self.skip_whitespace();
-            }
-            first = false;
-
-            let key = self.parse_json_string_to_plaintext()?;
-            let field = BootstrapSecretField::from_decoded_key(&key)
-                .ok_or_else(|| anyhow::anyhow!("unknown field `{key}`"))?;
-            self.skip_whitespace();
-            self.expect_byte(b':')?;
-            self.skip_whitespace();
-            let secret = self.parse_json_string_to_protected_secret()?;
-            let target = match field {
-                BootstrapSecretField::BwEmail => &mut bw_email,
-                BootstrapSecretField::BwPassword => &mut bw_password,
-                BootstrapSecretField::BwsAccessToken => &mut bws_access_token,
-            };
-            if target.is_some() {
-                bail!("duplicate field `{}`", field.name());
-            }
-            *target = Some(secret);
-        }
-
-        self.skip_whitespace();
-        if self.cursor != self.input.len() {
-            bail!("trailing characters after bootstrap secret JSON object");
-        }
-
-        let bw_email = bw_email.context("missing field `bw-email`")?;
-        let bw_password = bw_password.context("missing field `bw-password`")?;
-        let bws_access_token = bws_access_token.context("missing field `bws-access-token`")?;
-        Ok(EnrollmentSecretSet::new(
-            bw_email,
-            bw_password,
-            bws_access_token,
-        ))
     }
 
     fn parse_to_bytes(mut self) -> Result<EnrollmentBytes> {
@@ -370,17 +289,12 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
 mod tests {
     use super::*;
 
-    fn parse_test_bootstrap_json<'session>(
-        input: &[u8],
-        field_limit: usize,
-        memory: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
-        parse_protected_enrollment_secret_set_json(input, field_limit, memory)
+    fn parse_test_bootstrap_json(input: &[u8], field_limit: usize) -> Result<EnrollmentBytes> {
+        read_enrollment_json_bytes(input, input.len() + 1, field_limit)
     }
 
     #[test]
     fn parse_enrollment_secret_set_json_accepts_expected_schema() -> Result<()> {
-        let session = SecretSession::start()?;
         let secrets = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
@@ -388,18 +302,16 @@ mod tests {
                 "bws-access-token": "token"
             }"#,
             16 * 1024,
-            &session,
         )?;
 
-        secrets.assert_secret_eq(SecretName::BwEmail, b"alice@example.com");
-        secrets.assert_secret_eq(SecretName::BwPassword, b"password");
-        secrets.assert_secret_eq(SecretName::BwsAccessToken, b"token");
+        assert_eq!(&*secrets.bw_email, b"alice@example.com");
+        assert_eq!(&*secrets.bw_password, b"password");
+        assert_eq!(&*secrets.bws_access_token, b"token");
         Ok(())
     }
 
     #[test]
     fn parse_enrollment_secret_set_json_decodes_json_string_escapes() -> Result<()> {
-        let session = SecretSession::start()?;
         let emoji_key = "\u{1F511}";
         let input = format!(
             r#"{{
@@ -408,11 +320,11 @@ mod tests {
                 "bws-access-token": "emoji-{emoji_key}"
             }}"#
         );
-        let secrets = parse_test_bootstrap_json(input.as_bytes(), 16 * 1024, &session)?;
-        secrets.assert_secret_eq(SecretName::BwEmail, b"alice@example.com");
-        secrets.assert_secret_eq(SecretName::BwPassword, b"line\nslash\\quote\"");
-        secrets.assert_secret_eq(
-            SecretName::BwsAccessToken,
+        let secrets = parse_test_bootstrap_json(input.as_bytes(), 16 * 1024)?;
+        assert_eq!(&*secrets.bw_email, b"alice@example.com");
+        assert_eq!(&*secrets.bw_password, b"line\nslash\\quote\"");
+        assert_eq!(
+            &*secrets.bws_access_token,
             format!("emoji-{emoji_key}").as_bytes(),
         );
         Ok(())
@@ -420,7 +332,6 @@ mod tests {
 
     #[test]
     fn parse_enrollment_secret_set_json_keeps_decoded_trailing_newline() -> Result<()> {
-        let session = SecretSession::start()?;
         let secrets = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com\n",
@@ -428,24 +339,21 @@ mod tests {
                 "bws-access-token": "token\n"
             }"#,
             16 * 1024,
-            &session,
         )?;
-        secrets.assert_secret_eq(SecretName::BwEmail, b"alice@example.com\n");
-        secrets.assert_secret_eq(SecretName::BwPassword, b"password\n");
-        secrets.assert_secret_eq(SecretName::BwsAccessToken, b"token\n");
+        assert_eq!(&*secrets.bw_email, b"alice@example.com\n");
+        assert_eq!(&*secrets.bw_password, b"password\n");
+        assert_eq!(&*secrets.bws_access_token, b"token\n");
         Ok(())
     }
 
     #[test]
     fn parse_enrollment_secret_set_json_rejects_missing_field() -> Result<()> {
-        let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
                 "bw-password": "password"
             }"#,
             16 * 1024,
-            &session,
         );
 
         assert!(result.is_err());
@@ -454,7 +362,6 @@ mod tests {
 
     #[test]
     fn parse_enrollment_secret_set_json_rejects_duplicate_field() -> Result<()> {
-        let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
@@ -463,7 +370,6 @@ mod tests {
                 "bws-access-token": "token"
             }"#,
             16 * 1024,
-            &session,
         );
 
         assert!(result.is_err());
@@ -472,7 +378,6 @@ mod tests {
 
     #[test]
     fn parse_enrollment_secret_set_json_rejects_non_string_field() -> Result<()> {
-        let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
@@ -480,7 +385,6 @@ mod tests {
                 "bws-access-token": "token"
             }"#,
             16 * 1024,
-            &session,
         );
 
         assert!(result.is_err());
@@ -489,7 +393,6 @@ mod tests {
 
     #[test]
     fn parse_enrollment_secret_set_json_rejects_trailing_garbage() -> Result<()> {
-        let session = SecretSession::start()?;
         let result = parse_test_bootstrap_json(
             br#"{
                 "bw-email": "alice@example.com",
@@ -497,7 +400,6 @@ mod tests {
                 "bws-access-token": "token"
             } trailing"#,
             16 * 1024,
-            &session,
         );
 
         assert!(result.is_err());

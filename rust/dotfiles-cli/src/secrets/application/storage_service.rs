@@ -3,16 +3,109 @@
 //! setup / put / get / enroll / verify は同じ manifest sentinel と PIV object mapping を
 //! 共有する。device adapter の実装差は `SecretDevice` trait に閉じ、ここでは永続書き込みの
 //! 順序と検証結果の JSON 契約を固定する。
+//!
+//! 暗号処理（AEAD 暗号化・複号）と manifest の JSON serialize/deserialize はこのモジュール内に
+//! 閉じ込め、adapter 具体型へは依存しない。
 
-use crate::secrets::support::protection::{ProtectedSecret, SecretSession};
-use crate::Result;
+use std::io::Write;
+
 use anyhow::{bail, Context};
+use rand::Rng;
 
-use crate::secrets::adapters::blob::{decrypt_secret_protected, encrypt_secret};
-use crate::secrets::adapters::manifest::{read_manifest, write_manifest};
 use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
-use crate::secrets::domain::{SecretBlob, SecretName, StorageObjectIds, KEY_SLOT};
+use crate::secrets::domain::{
+    PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, CONTENT_KEY_LEN,
+    KEY_SLOT, NONCE_LEN,
+};
 use crate::secrets::ports::SecretDevice;
+use crate::secrets::support::{
+    aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
+    protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+};
+use crate::Result;
+
+/// expected manifest を PIV object へ書き込む。
+///
+/// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
+fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
+    let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
+    device.write_object(PivObjectId::MANIFEST, &mut manifest)
+}
+
+/// PIV object から manifest を読み出して parse する。
+///
+/// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
+fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
+    let manifest = device
+        .read_object(PivObjectId::MANIFEST)?
+        .context("YubiKey secret manifest is missing")?;
+    serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
+}
+
+/// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。
+///
+/// content key は device public key で wrap し、AEAD additional data には secret 名由来の
+/// 保存 context を使う。
+fn encrypt_secret<D: SecretDevice>(
+    device: &mut D,
+    name: SecretName,
+    secret: &[u8],
+    session: &SecretSession,
+) -> Result<SecretBlob> {
+    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN, session)?;
+    content_key.write_all(&[0; CONTENT_KEY_LEN])?;
+    rand::rng().fill(content_key.as_mut_slice());
+    let nonce = rand::random::<[u8; NONCE_LEN]>();
+    let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
+    let mut ciphertext = ProtectedInputBuffer::new(secret.len(), session)?;
+    ciphertext.write_all(secret)?;
+    let tag = encrypt_detached(
+        &cipher,
+        &nonce,
+        &name.additional_data(device.serial()),
+        ciphertext.as_mut_slice(),
+    )?;
+
+    let wrapped_key = device.wrap_key(content_key.as_slice())?;
+
+    Ok(SecretBlob {
+        name,
+        nonce,
+        wrapped_key,
+        ciphertext: ciphertext.as_slice().to_vec(),
+        tag,
+    })
+}
+
+/// 保存用 blob を検証し、secret 本文を保護済み値へ復号する。
+///
+/// 復号先 allocation は session の memory lock 範囲に含め、平文は `ProtectedSecret` の
+/// closure API 以外へ渡さない。
+fn decrypt_secret_protected<'session, D: SecretDevice>(
+    device: &mut D,
+    blob: &SecretBlob,
+    session: &'session SecretSession,
+) -> Result<ProtectedSecret<'session>> {
+    let mut content_key = ProtectedInputBuffer::new(CONTENT_KEY_LEN + 1, session)?;
+    let unwrapped_key = device.unwrap_key(&blob.wrapped_key)?;
+    if unwrapped_key.len() != CONTENT_KEY_LEN {
+        bail!("unwrapped YubiKey content key has invalid length");
+    }
+    content_key.write_all(&*unwrapped_key)?;
+
+    let cipher = aes_256_gcm_from_key(content_key.as_slice())?;
+    let mut input = ProtectedInputBuffer::new(blob.ciphertext.len(), session)?;
+    input.write_all(&blob.ciphertext)?;
+    decrypt_detached(
+        &cipher,
+        &blob.nonce,
+        &blob.name.additional_data(device.serial()),
+        input.as_mut_slice(),
+        &blob.tag,
+    )
+    .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob.name))?;
+    input.into_protected_secret(session)
+}
 
 /// secret storage 用 PIV key と manifest を新規作成する。
 ///

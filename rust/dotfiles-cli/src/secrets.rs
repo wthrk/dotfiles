@@ -61,9 +61,6 @@ impl<'session> EnrollmentSecretSet<'session> {
 #[derive(Args)]
 /// 復旧用 secret の保存先と検証手段を選ぶ最上位 command。
 pub(crate) struct SecretsOptions {
-    #[cfg(feature = "secrets-test-stub")]
-    #[arg(long, hide = true)]
-    test_stub_yubikey: bool,
     #[command(subcommand)]
     command: SecretsCommand,
 }
@@ -171,9 +168,6 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を実行する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    #[cfg(feature = "secrets-test-stub")]
-    let backend = adapters::DeviceBackend::from_test_flag(options.test_stub_yubikey)?;
-    #[cfg(not(feature = "secrets-test-stub"))]
     let backend = adapters::DeviceBackend::from_test_flag(false)?;
     let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };
     application::run_with_boundary(options, &mut boundary)

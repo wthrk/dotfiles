@@ -122,5 +122,7 @@ pub(crate) trait SecretDevice {
     /// private key operation の前に、入力済み PIN で PIV session を検証する。
     fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
     /// wrapped content encryption key を device 境界内で unwrap して返す。
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>>;
+    ///
+    /// 戻り値は zeroize 保護済みにし、呼び出し元が Drop した時点で content encryption key がヒープ上にゼロ化されることを保証する。
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
 }

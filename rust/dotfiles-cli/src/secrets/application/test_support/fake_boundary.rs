@@ -1,7 +1,7 @@
 //! application 層 unit test 用の fake 境界実装。
 //!
-//! production source tree には置けない fake/stub 型をこのファイルに集約する。
-//! `application.rs` の `#[cfg(test)] mod fake_boundary;` から参照する。
+//! production コードと物理的に分離するため `application/test_support/` 配下に置く。
+//! `application.rs` の `#[cfg(test)] mod test_support;` から参照する。
 
 use std::io::Cursor;
 use std::{
@@ -23,17 +23,18 @@ use crate::{
     Result,
 };
 
-use super::{enroll_without_local_verify, ports, summary};
+use crate::secrets::application::enroll_without_local_verify;
+use crate::secrets::{application::summary, ports};
 
-pub(super) struct FakeBoundary {
-    pub(super) devices: RefCell<VecDeque<FakeDevice>>,
-    pub(super) prompts: RefCell<VecDeque<bool>>,
-    pub(super) stdin_terminal: bool,
-    pub(super) stdout_terminal: bool,
+pub(crate) struct FakeBoundary {
+    pub(crate) devices: RefCell<VecDeque<FakeDevice>>,
+    pub(crate) prompts: RefCell<VecDeque<bool>>,
+    pub(crate) stdin_terminal: bool,
+    pub(crate) stdout_terminal: bool,
 }
 
 impl FakeBoundary {
-    pub(super) fn new(devices: Vec<FakeDevice>) -> Self {
+    pub(crate) fn new(devices: Vec<FakeDevice>) -> Self {
         Self {
             devices: RefCell::new(devices.into()),
             prompts: RefCell::new(VecDeque::new()),
@@ -42,12 +43,12 @@ impl FakeBoundary {
         }
     }
 
-    pub(super) fn with_prompts(self, prompts: Vec<bool>) -> Self {
+    pub(crate) fn with_prompts(self, prompts: Vec<bool>) -> Self {
         *self.prompts.borrow_mut() = prompts.into();
         self
     }
 
-    pub(super) fn with_stdin_terminal(mut self, stdin_terminal: bool) -> Self {
+    pub(crate) fn with_stdin_terminal(mut self, stdin_terminal: bool) -> Self {
         self.stdin_terminal = stdin_terminal;
         self
     }
@@ -165,20 +166,20 @@ impl SecretsBoundary for FakeBoundary {
     }
 }
 
-pub(super) struct FakeDevice {
-    pub(super) serial: u32,
-    pub(super) state: Rc<RefCell<FakeDeviceState>>,
-    pub(super) pin_error: Option<&'static str>,
+pub(crate) struct FakeDevice {
+    pub(crate) serial: u32,
+    pub(crate) state: Rc<RefCell<FakeDeviceState>>,
+    pub(crate) pin_error: Option<&'static str>,
 }
 
 #[derive(Default)]
-pub(super) struct FakeDeviceState {
-    pub(super) key_exists: bool,
-    pub(super) objects: BTreeMap<domain::PivObjectId, Vec<u8>>,
+pub(crate) struct FakeDeviceState {
+    pub(crate) key_exists: bool,
+    pub(crate) objects: BTreeMap<domain::PivObjectId, Vec<u8>>,
 }
 
 impl FakeDevice {
-    pub(super) fn fresh(serial: u32) -> Self {
+    pub(crate) fn fresh(serial: u32) -> Self {
         Self {
             serial,
             state: Rc::new(RefCell::new(FakeDeviceState::default())),
@@ -186,7 +187,7 @@ impl FakeDevice {
         }
     }
 
-    pub(super) fn fresh_with_state(serial: u32) -> (Self, Rc<RefCell<FakeDeviceState>>) {
+    pub(crate) fn fresh_with_state(serial: u32) -> (Self, Rc<RefCell<FakeDeviceState>>) {
         let state = Rc::new(RefCell::new(FakeDeviceState::default()));
         (
             Self {
@@ -198,12 +199,12 @@ impl FakeDevice {
         )
     }
 
-    pub(super) fn with_pin_error(mut self, pin_error: &'static str) -> Self {
+    pub(crate) fn with_pin_error(mut self, pin_error: &'static str) -> Self {
         self.pin_error = Some(pin_error);
         self
     }
 
-    pub(super) fn provisioned(serial: u32) -> Result<Self> {
+    pub(crate) fn provisioned(serial: u32) -> Result<Self> {
         let mut device = Self::fresh(serial);
         let session = SecretSession::start()?;
         let secrets = protected_enrollment_secret_set(&session)?;
@@ -266,12 +267,12 @@ impl ports::SecretDevice for FakeDevice {
         true
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        self.wrap_key(wrapped_key)
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(self.wrap_key(wrapped_key)?))
     }
 }
 
-pub(super) fn protected_enrollment_secret_set<'session>(
+pub(crate) fn protected_enrollment_secret_set<'session>(
     memory: &'session SecretSession,
 ) -> Result<EnrollmentSecretSet<'session>> {
     Ok(EnrollmentSecretSet::new(
@@ -281,7 +282,7 @@ pub(super) fn protected_enrollment_secret_set<'session>(
     ))
 }
 
-pub(super) fn make_fake_secret<'session>(
+pub(crate) fn make_fake_secret<'session>(
     bytes: &'static [u8],
     memory: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {

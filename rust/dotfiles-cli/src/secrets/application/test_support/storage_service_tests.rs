@@ -11,6 +11,7 @@ use crate::secrets::ports::SecretDevice;
 use crate::secrets::support::protection::SecretSession;
 use crate::Result;
 use anyhow::Context;
+use zeroize::Zeroizing;
 
 struct FakeDevice {
     serial: u32,
@@ -92,8 +93,8 @@ impl SecretDevice for FakeDevice {
         true
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Vec<u8>> {
-        self.wrap_key(wrapped_key)
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(self.wrap_key(wrapped_key)?))
     }
 }
 
