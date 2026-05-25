@@ -4,6 +4,23 @@
 
 ## 作業項目一覧
 
+### 責務基準レビュー強制への是正
+
+- 状態: `完了`
+- 主成果物: `文書差分`
+- 作業定義文書: [work-items/responsibility-based-review-enforcement.md](work-items/responsibility-based-review-enforcement.md#責務基準レビュー強制への是正)
+- 確認記録: [review-artifacts/responsibility-based-review-enforcement/confirmation.md](review-artifacts/responsibility-based-review-enforcement/confirmation.md)
+- レビュー記録: [review-artifacts/responsibility-based-review-enforcement/review.md](review-artifacts/responsibility-based-review-enforcement/review.md)（集約後レビュー判定: 合格。個別判定: [運用整合](review-artifacts/responsibility-based-review-enforcement/review-operational-2026-05-25.md)・[参照整合](review-artifacts/responsibility-based-review-enforcement/review-reference-2026-05-25.md)）
+- 対象文書パス:
+  - `docs/architecture/review-checklist.md`
+  - `.agents/skills/test-review/SKILL.md`
+  - `docs/task-governance/implementation-review-judgement.md`
+  - `.agents/skills/architectural-consistency-review/SKILL.md`
+  - `.agents/skills/orchestration/SKILL.md`
+  - `.agents/skills/dotfiles-task-governance/SKILL.md`
+  - `.agents/skills/implementation-review-judgement/SKILL.md`
+  - `docs/tasks/repo-governance/work-items/responsibility-based-review-enforcement.md`
+
 ### ガバナンス文書整合
 
 - 状態: `完了`

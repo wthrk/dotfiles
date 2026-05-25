@@ -17,6 +17,9 @@ description: Use this skill when a subagent must judge implementation review-sta
 - **仕様適合レビュー担当**: `.agents/skills/specification-conformance-review/SKILL.md`
 - **セキュリティレビュー担当**: `.agents/skills/security-review/SKILL.md`
 - **運用整合レビュー担当**: `.agents/skills/operational-consistency-review/SKILL.md`
+- **テストレビュー担当**: `.agents/skills/test-review/SKILL.md`
+- **ドキュメントレビュー担当**: `.agents/skills/documentation-review/SKILL.md`
+- **アーキテクチャ整合レビュー担当**: `.agents/skills/architectural-consistency-review/SKILL.md`
 - **参照整合レビュー担当**: `.agents/skills/reference-integrity-review/SKILL.md`
 
 ## Governing Sources

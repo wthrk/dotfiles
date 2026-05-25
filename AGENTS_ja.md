@@ -11,7 +11,7 @@
 | オーケストレーター | `/orchestration` |
 | リポジトリ固有オーケストレーション（secrets モジュール・ドメイン固有制約） | `/dotfiles-task-governance` |
 | 実装担当 | `/implementation-execution` |
-| レビュー担当（構造・仕様適合・セキュリティ・運用整合） | `/implementation-review-judgement` |
+| レビュー担当（必須レビュー担当集合は `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」に従う） | `/implementation-review-judgement` |
 | 完了判定担当 | `/task-completion-judgement` |
 
 各役割は、対応スキルが有効になる前に active work item の選定・ファイル読み取り・ファイル編集・サブエージェント委譲・判定のいずれも開始してはならない。

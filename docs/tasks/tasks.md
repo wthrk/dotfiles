@@ -112,6 +112,24 @@
 - レビュー記録: [secret-recovery/review-artifacts/integration/review.md](secret-recovery/review-artifacts/integration/review.md)
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
+### 責務基準レビュー強制への是正
+
+- 状態: `完了`
+- 主成果物: `文書差分`
+- 対象文書パス:
+  - `docs/architecture/review-checklist.md`
+  - `.agents/skills/test-review/SKILL.md`
+  - `docs/task-governance/implementation-review-judgement.md`
+  - `.agents/skills/architectural-consistency-review/SKILL.md`
+  - `.agents/skills/orchestration/SKILL.md`
+  - `.agents/skills/dotfiles-task-governance/SKILL.md`
+  - `.agents/skills/implementation-review-judgement/SKILL.md`
+  - `docs/tasks/repo-governance/work-items/responsibility-based-review-enforcement.md`
+- 作業定義文書: [repo-governance/work-items/responsibility-based-review-enforcement.md](repo-governance/work-items/responsibility-based-review-enforcement.md#責務基準レビュー強制への是正)
+- 確認記録: [repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md](repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md)
+- レビュー記録: [repo-governance/review-artifacts/responsibility-based-review-enforcement/review.md](repo-governance/review-artifacts/responsibility-based-review-enforcement/review.md)（集約後レビュー判定: 合格。個別判定: [運用整合](repo-governance/review-artifacts/responsibility-based-review-enforcement/review-operational-2026-05-25.md)・[参照整合](repo-governance/review-artifacts/responsibility-based-review-enforcement/review-reference-2026-05-25.md)）
+- 領域台帳/履歴: [repo-governance/tasks.md](repo-governance/tasks.md#repo-global-ガバナンス文書整合タスク)
+
 ### ガバナンス文書整合
 
 - 状態: `完了`

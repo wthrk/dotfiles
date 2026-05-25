@@ -4,6 +4,8 @@
 
 ## 配下の項目
 
+- 責務基準レビュー強制への是正:
+  - [responsibility-based-review-enforcement/confirmation.md](responsibility-based-review-enforcement/confirmation.md)
 - 現行サイクル（2026-05-22）:
   - [global-documentation-remediation/confirmation-2026-05-22.md](global-documentation-remediation/confirmation-2026-05-22.md)
   - [global-documentation-remediation/review-2026-05-22.md](global-documentation-remediation/review-2026-05-22.md)

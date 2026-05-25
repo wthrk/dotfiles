@@ -11,7 +11,7 @@ Every role in this repository must invoke its designated skill before performing
 | Orchestrator | `/orchestration` |
 | Repository-specific orchestration (secrets module, domain-specific constraints) | `/dotfiles-task-governance` |
 | Implementation executor | `/implementation-execution` |
-| Review (structural, spec-conformance, security, operational) | `/implementation-review-judgement` |
+| Review (required reviewer set per `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」) | `/implementation-review-judgement` |
 | Completion judgement | `/task-completion-judgement` |
 
 A role must not begin active-item selection, file reads, file edits, subagent delegation, or any judgement before its designated skill is active.

@@ -8,6 +8,24 @@
 2. 所属層に対応するセクションのチェック項目を適用する。
 3. ディレクトリ名と層が一致しないファイルは配置違反として記録する。
 
+### 責務基準の判定原則（形式より責務）
+
+このチェックリストの全項目は、形式（ファイル名パターン・命名・公開面の有無・port trait を実装しているか・`#[cfg(test)]` か `#[cfg(feature)]` で gate されているか）ではなく、コードの**責務**が層の責務に一致するかで判定する。形式が正しくても責務が層に属さなければ `判定: 不合格` とする。これは [hexagonal-implementation-rules.md の哲学](hexagonal-implementation-rules.md#哲学)（「visibility はシンボルの見え方を制御するが、そのコードが属すべき層の責務を変えない」）から導かれる強制原則である。
+
+レビュー担当は、各シンボル・各ファイル・各 `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックについて、次の2問を必ず立て、`根拠:` に回答を明示しなければならない。
+
+- 問1: このコードの責務は何か（一文で述べる）。
+- 問2: その責務はこのファイルが属する層の責務か。
+
+問2の答えが「否」であれば、以下のいずれが成立していても `判定: 不合格` とする。形式的正しさは責務不一致の免除理由にならない。
+
+- 正しいディレクトリに置かれている。
+- 命名規約に従っている。
+- port trait を実装している。
+- `#[cfg(test)]` でラップされている。
+- `#[cfg(feature = "...")]` で gate されている。
+- 通常 build には含まれない。
+
 ## adapters/ 配下
 
 ### なぜこの制約が存在するか
@@ -29,13 +47,22 @@
 - このファイルは複数の外部技術を1ファイルに混在させていないか。異なる外部技術の翻訳が混在しているなら分割されていなければならない。逆に単一の外部技術の翻訳が不必要に複数ファイルに断片化されていないか。
 - この分割は「特定の外部技術とポートの間に独立した責務の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
 - 再エクスポートや委譲のみで実質的な翻訳をしないファイルになっていないか。翻訳の実体を持たないファイルはアダプター層に存在してはならない。
+- このファイル（または `#[cfg(feature = "...")]`/`#[cfg(test)]` で gate されたモジュール）の責務は、実在の外部技術とポート契約の間の翻訳か、それともテスト用に実依存を肩代わりすること（device の模倣・固定応答の返却・in-memory state の保持）か。後者であれば、それは test double（Fake/Stub/Mock）であり、`adapter` 層の責務ではない。port trait（`SecretDevice` 等）を実装していること、`#[cfg(feature = "...")]` で gate されていること、`#[cfg(test)]` でラップされていることは、いずれもこの判定の免除理由にならない。test double の定義は `tests/` 層または専用の test-support crate に属する。
 
 ### 確認手順
 
+`adapters/` 配下では、後続の公開面・private 関数チェックを行う前に、まず各ファイル・各 gate ブロックの責務がテスト用の肩代わり（test double）でないことを確認する。順序は次のとおり。
+
+0. **test double 混入検出（先行・必須）**: `adapters/` 配下の各ファイルおよび各 `#[cfg(feature = "...")]`/`#[cfg(test)]` ブロックについて、その責務が「実在の外部技術とポート契約の間の翻訳」か「テスト用に実依存を肩代わりすること」かを判定する。次のいずれかに該当する型・モジュールは test double であり、port trait を実装していても・feature gate されていても・通常 build に含まれなくても、`adapter` 層への配置は配置違反であり即座に `判定: 不合格` とする。
+   - 実在のデバイス／外部 API へ接続せず、in-memory state・固定値・乱数で応答を生成する port 実装。
+   - 名前または doc comment が stub/fake/mock/test/dummy を表し、テスト時にのみ実依存の代わりに使われる型。
+   - integration test contract・test fixture からのみ駆動され、本番経路では決して使われない型。
+   - 解消方法は、当該 test double 定義を `tests/` 層または専用 test-support crate へ移動すること（feature gate の有無では解消しない）。
+
 1. `adapters/` 配下の全ファイルを開く（`adapters.rs` 含む）。対象ファイルの列挙は作業定義文書の「対象コードパス」に依存せず、ディレクトリ内の全ファイルを自分で確認すること。
 2. 各ファイルで `pub fn`、`pub(crate) fn`、`pub(super) fn`、`pub struct`、`pub(crate) struct`、`pub(super) struct`、`pub type`、`pub const` をすべて列挙する。
-3. 列挙した各公開シンボルについて「これは port trait を実装する型か、またはそのメソッド実装か」を判定する。
-4. 1件でも「port trait 実装でない公開シンボル」が存在した場合、即座に `判定: 不合格` とする。
+3. 列挙した各公開シンボルについて「これは port trait を実装する型か、またはそのメソッド実装か」を判定する。port trait を実装していること自体は配置の十分条件ではない。手順0で test double と判定した型は、port trait を実装していても `adapter` 層に属さない。
+4. 1件でも「port trait 実装でない公開シンボル」または「port trait を実装するが責務が翻訳でない型（手順0の test double 等）」が存在した場合、即座に `判定: 不合格` とする。
 5. `adapters.rs`（または `adapters/mod.rs`）が `pub(super)` で子モジュールを公開している場合、そのモジュール内の公開シンボルが親モジュールから参照可能になる。この経路も確認する。
 6. 各ファイルの `fn`（private 関数）をすべて列挙する。列挙した各 private 関数について「この関数の責務は翻訳（外部技術の型をポートの型に変換すること）のみか」を判定する。use case の順序制御・domain policy の決定・ビジネスロジックの判断を含む private 関数が1件でも存在した場合、即座に `判定: 不合格` とする。private であることはこの制約の免除理由にならない。
 
@@ -116,6 +143,26 @@
 
 ## tests/ 配下・`*_tests.rs`・`test_*.rs`
 
-- **配置**: test double・fixture は production tree（`adapters/`・`application/` 配下等）に置かないこと。
+### レビュー時の問い
+
+- production 層（`adapters/`・`application/`・`domain/`・`ports/`・`support/`）の各ファイルに、実依存を肩代わりする責務を持つ型（Fake/Stub/Mock）が定義されていないか。その型は、テストのためだけに存在し本番経路では使われないか。そうであれば配置違反である。
+- production 層に置かれた `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックの中身は、(a) その module 自身の private 関数を検証する `#[test]` 関数か、(b) 実依存を肩代わりする double の**定義**か。(b) であれば配置違反である。(a) は許可される（後述）。
+- ある double の責務は「テスト時に実依存を substitute すること」か。そうであれば、それが port trait を実装していても・feature gate されていても、production 層ではなく `tests/` 層または専用 test-support crate に属する。
+
+### 許可される in, 禁止される out（責務で区別する）
+
+- **許可**: production 層の `src/` ファイル内に置かれた通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`）。これはその module 自身の private 関数を検証する標準的かつ idiomatic な Rust であり、削除を要求してはならない。inline unit test を一律禁止すると、本番関数をテストのためだけに `pub` 化する圧力が生じ、公開面最小化の哲学に反する。`#[test]` 関数の存在のみを理由に `判定: 不合格` としてはならない。
+- **禁止**: production 層に置かれた test double の**定義**（Fake/Stub/Mock 型、すなわち実依存を肩代わりする型）。これは `#[cfg(test)]` でラップされていても・`#[cfg(feature = "...")]` で gate されていても・port trait を実装していても禁止である。
+
+判定の分かれ目は「形式（`#[cfg(test)]` か `#[cfg(feature)]` か）」ではなく「責務（その module 自身の検証か、実依存の肩代わり定義か）」である。
+
+### 確認手順
+
+1. production 層（`adapters/`・`application/`・`domain/`・`ports/`・`support/`）配下の全ファイルを開く。
+2. 各ファイルで `impl <PortTrait> for <Type>` を含む型定義、および名前・doc comment が stub/fake/mock/dummy を表す型定義を列挙する。`#[cfg(test)]`/`#[cfg(feature = "...")]` で gate された定義も対象に含める。
+3. 列挙した各型について手順問1（責務は何か）を立てる。責務が「実依存をテスト用に肩代わりすること」である型が production 層に1件でも存在した場合、即座に `判定: 不合格` とする。解消方法は当該定義を `tests/` 層または専用 test-support crate へ移動すること。
+4. `#[cfg(test)] mod tests` ブロック内に `#[test]` 関数のみがあり double 定義を含まない場合は配置違反としない。double 定義を含む場合のみ手順3に従う。
+
+- **配置**: test double（Fake/Stub/Mock の定義）・fixture は production tree（`adapters/`・`application/`・`domain/`・`ports/`・`support/` 配下等）に置かないこと。`#[cfg(test)]` ラップや `#[cfg(feature = "...")]` gate、port trait 実装はこの禁止の免除理由にならない。production 層の `src/` における通常の inline unit test（`#[test]` 関数）はこの禁止の対象外であり許可される。
 - **責務**: unit test・integration test・test double・fixture に限定されていること。本番公開 API やレビュー代替の設計判断を含まないこと。
 - **公開**: test helper を本番 module へ再公開しないこと。
