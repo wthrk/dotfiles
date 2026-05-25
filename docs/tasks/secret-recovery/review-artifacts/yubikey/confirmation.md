@@ -597,8 +597,8 @@ pub(super) fn build_real_boundary(test_stub: bool) -> Result<impl crate::secrets
 
 ## 第7回確認（2026-05-25）— 第4回差し戻し対応: support/ 業務語彙の完全除去
 
-- 確認対象コミット: （本確認のコミット後に記録）
-- 確認開始時 HEAD: `a719ee0`
+- 確認対象コミット: `5f63463`（第4回差し戻し対応: support/ 業務語彙完全除去）
+- 確認開始時 HEAD: `5f63463`
 - cargo check 結果: エラーゼロ（`cargo check -p dotfiles-cli` および `--features secrets-test-stub` 両方で確認）
 
 ### 発見と修正: support/ 層の残留業務語彙
