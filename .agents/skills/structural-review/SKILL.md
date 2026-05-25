@@ -11,6 +11,12 @@ description: Use this skill when a subagent is assigned as the 構造レビュ�
 
 `docs/architecture/hexagonal-implementation-rules.md` の層別責務・依存方向・公開範囲規則を適用する。主たる義務は `docs/architecture/review-checklist.md` の「レビュー時の問い」を各層についてコードを読む前に適用することである。問いへの答えが「哲学に違反している」であれば、チェックリスト項目が通過していても `判定: 不合格` とする。層別哲学的問いへの回答を `根拠:` に明示すること。見た目の構造（ファイル配置・命名）が正しくても実装の責務が層の哲学に反している場合は `判定: 不合格` とする。
 
+## 受け取るパラメーター
+
+**レビュー対象コードパスのみ**（例: `rust/dotfiles-cli/src/`）。
+
+作業定義文書パス・タスクリストは渡されない。これらを自己判断で読んではならない。タスク固有の violation 番号（V12/V13 等）はこの役割の入力ではなく、それらを参照したチェックリスト照合は禁止する。
+
 ## Governing Sources
 
 - `docs/architecture/hexagonal-implementation-rules.md` governs layer-based responsibility, dependency direction, and visibility rules.

@@ -11,6 +11,10 @@ description: Use this skill when a subagent is assigned as the セキュリテ�
 
 `docs/task-governance/security-obligations.md` に定義された制約を適用する。機密情報の露出・不正アクセス経路・権限昇格の可能性を確認する。
 
+## 受け取るパラメーター
+
+**レビュー対象コードパスのみ**。作業定義文書パスは渡されない。
+
 ## Governing Sources
 
 - `docs/task-governance/security-obligations.md` governs the security constraints binding for this review.

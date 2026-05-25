@@ -11,6 +11,10 @@ description: Use this skill when a subagent is assigned as the 運用整合レ�
 
 実行手順・役割分離・ゲート条件・証跡要件・完了判定ロジックの実運用での強制可能性・監査可能性を確認する。強制可能性・監査可能性に具体的懸念がある状態で `合格` としてはならない。
 
+## 受け取るパラメーター
+
+**作業定義文書パス**（`docs/tasks/<area>/work-items/<item>.md`）と**レビュー対象コードパス**の両方。
+
 ## Governing Sources
 
 - `docs/task-governance/workflow.md` governs role separation, gate conditions, and execution obligations that must be enforced in practice.

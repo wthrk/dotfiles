@@ -67,7 +67,12 @@ Actor binding: while this skill is active, the current actor is the orchestrator
   - 実装差分（executable behavior を含む変更）: 構造レビュー担当、運用整合レビュー担当、セキュリティレビュー担当、仕様適合レビュー担当 の4担当
   - 文書是正・文書主成果物: 運用整合レビュー担当、参照整合レビュー担当 の2担当
   - 高リスク変更を含む場合は変更種別によらずセキュリティレビュー担当を追加する
-  Launch each required reviewer as a **separate independent subagent**. Pass only the corresponding reviewer skill file path (`.agents/skills/<reviewer-name>/SKILL.md`) and the work-item path to each subagent. Do not consolidate multiple reviewer roles into a single subagent. Do not inline judgment conditions, verification procedures, output destinations, or any other content from governing sources into the prompt — each subagent must read those sources itself via its skill's Required Reading Order.
+  Launch each required reviewer as a **separate independent subagent**. Do not consolidate multiple reviewer roles into a single subagent. Do not inline judgment conditions, verification procedures, output destinations, or any other content from governing sources into the prompt — each subagent must read those sources itself via its skill's Required Reading Order. Pass parameters to each reviewer as follows — do not pass parameters not listed for that role:
+  - **構造レビュー担当**: 対象コードが存在するリポジトリパス（例: `rust/dotfiles-cli/src/`）のみを渡す。作業定義文書パスを渡してはならない。
+  - **仕様適合レビュー担当**: 作業定義文書パス（`docs/tasks/<area>/work-items/<item>.md`）とレビュー対象コードパスの両方を渡す。
+  - **セキュリティレビュー担当**: レビュー対象コードパスのみを渡す。作業定義文書パスは渡してはならない。
+  - **運用整合レビュー担当**: 作業定義文書パスとレビュー対象コードパスの両方を渡す。
+  - **参照整合レビュー担当**: レビュー対象文書パスのみを渡す。
 - The orchestrator must never edit files directly, read target code for implementation judgement, run tests, or perform any delegated role's work — even for "simple" fixes, even when blocked, even when asked by the user. The only response to a blocked state is to record the failure and stop.
 - When `secrets.rs` or any other source file has a compilation error introduced by a previous subagent, the fix must be delegated to a fresh implementation-executor subagent, not performed by the orchestrator directly.
 - The orchestrator must never initiate commit-related work (S3→S4 transition) unless all required review roles (structural, specification-conformance, security, operational) have returned a recorded `合格` verdict. 文書是正を含む場合は参照整合レビュー担当を追加する。変更種別による必須担当の詳細は `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」セクションに従う。Skipping any required review role and proceeding to commit is unconditionally forbidden, regardless of how simple or low-risk the change appears.

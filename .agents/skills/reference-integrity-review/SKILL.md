@@ -11,6 +11,10 @@ description: Use this skill when a subagent is assigned as the 参照整合レ�
 
 文書内のリンク・参照先・ファイルパス・定義の一貫性を確認する。参照先が存在しない・定義と参照が不一致の場合は `判定: 不合格` とする。
 
+## 受け取るパラメーター
+
+**レビュー対象文書パスのみ**。作業定義文書パスは渡されない。
+
 ## Governing Sources
 
 - `docs/task-governance/implementation-review-judgement.md` governs verdict format, aggregation rules, and the applicable review targets (document remediation and document-primary deliverables).

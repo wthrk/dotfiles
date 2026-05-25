@@ -11,6 +11,10 @@ description: Use this skill when a subagent is assigned as the 仕様適合レ�
 
 作業定義文書の `規約違反の解消対象`・`構造完了条件`・`完了条件` を現行コードに対して直接照合する。各項目について現行コードを開いて未解消が残っていないかを確認する。サマリーや実装担当の報告で代替してはならない。
 
+## 受け取るパラメーター
+
+**作業定義文書パス**（`docs/tasks/<area>/work-items/<item>.md`）と**レビュー対象コードパス**の両方。
+
 ## Governing Sources
 
 - `docs/tasks/<area>/work-items/<item>.md` (the active work item's work definition document) governs the specific review perspectives, constraints, completion conditions, and violation remediation targets for this review.
