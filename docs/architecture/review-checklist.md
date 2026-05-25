@@ -10,9 +10,21 @@
 
 ## adapters/ 配下
 
+### なぜこの制約が存在するか
+
+`adapter` は外部技術とポートの契約の間を翻訳する唯一の場所である。`adapter` が port trait 実装以外の型・関数を `pub(crate)` 以上で公開した時点で、その公開面は「翻訳者」の役割を超えた結合点になる。呼び出し側がその面に依存し始めると、アダプター差し替え時にその依存が壊れる。`pub(crate)` はクレート内に見えるという意味であり、「外部公開ではない」という意味ではない。`adapters/` 配下の全関数・型・定数について、port trait を実装する型またはそのメソッド実装でなければ `pub` も `pub(crate)` も `pub(super)` も禁止である。「adapter 内部で使いやすいから」という理由は公開の正当化にならない。
+
 - **依存方向**: `port`、`domain`、`support` にのみ依存していること。`application` の use case 型・flow 関数を import していないこと。
 - **責務**: port trait の実装、外部 API 変換、SDK bridge に限定されていること。use case の順序制御・domain policy の決定を含まないこと。
 - **公開面（絶対規則）**: `pub`・`pub(crate)`・`pub(super)` で外部に公開できるのは、port trait を実装する型（struct/enum）とそのメソッド実装のみ。stdin 読み取り関数・プロンプト関数・JSON デコード関数・terminal I/O 関数・定数は port trait 実装の一部でない限り private にとどめること。
+
+### 確認手順
+
+1. `adapters/` 配下の全ファイルを開く（`adapters.rs` 含む）。対象ファイルの列挙は作業定義文書の「対象コードパス」に依存せず、ディレクトリ内の全ファイルを自分で確認すること。
+2. 各ファイルで `pub fn`、`pub(crate) fn`、`pub(super) fn`、`pub struct`、`pub(crate) struct`、`pub(super) struct`、`pub type`、`pub const` をすべて列挙する。
+3. 列挙した各公開シンボルについて「これは port trait を実装する型か、またはそのメソッド実装か」を判定する。
+4. 1件でも「port trait 実装でない公開シンボル」が存在した場合、即座に `判定: 不合格` とする。
+5. `adapters.rs`（または `adapters/mod.rs`）が `pub(super)` で子モジュールを公開している場合、そのモジュール内の公開シンボルが `secrets` 親モジュールから参照可能になる。この経路も確認する。
 
 ## application/ 配下
 
