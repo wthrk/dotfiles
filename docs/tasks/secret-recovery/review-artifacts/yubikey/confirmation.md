@@ -136,3 +136,103 @@
 **前進不可**
 
 上記の重大問題（V1/V2/V4/V6/V7未解消）はすべて `work-items/yubikey.md` の差戻し条件に直接抵触する。ステップ7「V1,V2,V3 を解消」およびステップ3「V6,V7 を解消」が完了扱いになっているが、実際のコードに違反が残存している。レビュー着手前に差戻しが必要。
+
+---
+
+## 第2回確認（2026-05-25）
+
+- 確認対象コミット: `8730160`（`require_noninteractive_serial` 引数不足修正）、`cebb94c`（V2/V3/V6/V7/V12/V13/V15 残存違反修正）
+- 確認開始時 HEAD: `cebb94c`
+- cargo check: エラーゼロ（事前確認済み）
+
+### V1, V4: `application` が `adapter` の具体型を import しない
+
+**解消済み**
+
+- `application.rs` 17〜23行目の import は `domain::SecretName`、`ports::{self, SecretDevice, SecretsBoundary}`、`support::protection::{ProtectedSecret, SecretSession}`、`EnrollmentSecretSet` などに限定されており、`adapters::` 配下の具体型・定数・関数を直接 import する記述なし。
+- `adapters::input::read_yubikey_pin` の直接呼び出しも除去済み（`boundary.read_yubikey_pin(session)?` に変更）。
+
+### V2, V3: `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない
+
+**解消済み**
+
+- `application.rs` および `application/` 配下全ファイルに `println!` なし（Read ツールで確認）。
+- stdin 読み取りの直接呼び出しなし。device handle は `ports::SecretDevice` trait 経由のみ（`storage_service::*` に委譲）。
+- `write_partial_rotate_bws_token_summary` 等のレポート出力は `boundary.write_report()` 経由に統一済み。
+
+### V6: `ports` に DTO / parser / prompt が存在しない
+
+**違反あり（部分残存）**
+
+- `EnrollmentSecretSet` DTO は `ports.rs` から `secrets.rs` トップレベルへ移設済みで、ports への DTO 配置は解消されている。
+- しかし `SecretsBoundary` トレイトに `stdin_is_terminal`（26行目）、`stdout_is_terminal`（29行目）、`prompt_yes_no`（75行目）が依然として含まれている。
+- V6 の原文定義は「`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む（port への DTO 配置禁止・parser/prompt は adapter 所有規則違反）」であり、これらのメソッドは port に残存している。
+
+### V7: `ports` が `support` に依存しない
+
+**違反あり**
+
+- `ports.rs` 9行目に `use super::support::protection::{ProtectedSecret, SecretSession};` が残存。
+- `SecretsBoundary` の各メソッドシグネチャ（`read_yubikey_pin`、`read_hidden_secret`、`read_visible_secret_line`、`read_protected_stdin_secret`、`read_protected_enrollment_secret_set`、`read_yubikey_pin`、`prompt_yes_no`）が `ProtectedSecret<'session>` または `SecretSession` を引数・戻り値に持つ。
+- `cebb94c` のコミットメッセージに「V7: move EnrollmentSecretSet from ports.rs to secrets.rs top level」とあるが、`support::protection` 依存はメソッドシグネチャに残存しており V7 は未解消。
+
+### V8, V9, V16: `domain` に port contract / summary DTO / I/O 型が存在しない
+
+**解消済み**
+
+- `domain/model.rs` に `SecretDevice` trait なし（ステップ1で解消済み、前回確認と変化なし）。
+- `domain/model.rs` に summary DTO なし（ステップ2で解消済み、変化なし）。
+- `domain/model.rs` に `io::Write` / `std::io` の import なし。
+
+### V11: `support` に terminal I/O / prompt が存在しない
+
+**解消済み**
+
+- `support/terminal.rs` の内容は `// moved to adapters/terminal.rs` の1行のみ（前回確認と変化なし）。
+
+### V10: `blob.rs` の責務が単一層に属する
+
+**解消済み**
+
+- `blob.rs` は `adapters/blob.rs` に配置済み（前回確認と変化なし）。
+
+### V14, V15: production コードに test double が含まれない
+
+**V15: 部分的に改善、ただし production tree 配下残存の問題は未解消**
+
+- `application.rs` 内の `#[cfg(test)] mod fake_boundary;` は別ファイル `application/fake_boundary.rs` に分離された。`FakeBoundary` と `FakeDevice` が `application.rs` の同一ファイルから除去されたことは改善である。
+- しかし `application/fake_boundary.rs` は `application/` ディレクトリ（production tree 配下）に存在し、`#[cfg(test)]` ブロックからのみ参照される。`#[cfg(test)]` は production binary に含まれないが、ファイルとして production tree に存在する点は変化なし。
+- `adapters/test_stub.rs` も `#[cfg(feature = "secrets-test-stub")]` の feature gate のみで保護されており、feature 有効時は production binary に組み込まれる構造は変化なし（V14 未解消）。
+- work-items V15 定義「fake boundary / fake device を production tree 配下に置いている」への該当性は前回と同様に要判断。
+
+### V12, V13: `adapters/` 配下の全ファイルで port trait 実装以外が `pub`/`pub(crate)`/`pub(super)` で外部公開されていない
+
+**改善あり、ただし要検討点が残存**
+
+- `cebb94c` で以下の定数が削除された:
+  - `adapters/stdin.rs` から `MAX_SINGLE_STDIN_SECRET_LEN` の `pub(crate)` 公開なし（`stdin.rs` は `pub(crate) fn read_protected_stdin_secret` のみ）。
+  - `adapters/enrollment_json.rs` から `EnrollmentSecretSet` 型・`MAX_BOOTSTRAP_JSON_LEN` 定数・`read_protected_enrollment_secret_set` 関数の `pub(crate)` 公開が残存しているが、これらは `RealSecretsBoundary` の trait 実装を支援するための helper である。
+  - `adapters/stdout.rs` は `SECRET_STDOUT_TERMINAL_ERROR`・`ensure_secret_stdout_not_terminal` が `pub(crate)` から非公開に変更され、`write_secret_to_stdout` のみ `pub(crate)` で公開。
+- `adapters.rs` の `pub(crate) mod stdin;` は `stdin::read_protected_stdin_secret` を `input.rs` 経由で集約するための経路として残存。
+- `pub(crate) mod real_boundary;` は `secrets.rs` の `run` 関数から `RealSecretsBoundary` を組み立てるために必要（secrets.rs は CLI orchestration 層であり adapter を組み立てる責務を持つ）。
+- `application.rs` から `adapters::` への直接 import がなくなったことで、V12/V13 の「application が直接参照する問題」は解消されている。
+
+## 発見された問題点（第2回）
+
+### 重大（差戻し条件に直接抵触）
+
+1. **V6 部分残存**: `ports.rs` の `SecretsBoundary` トレイトに `stdin_is_terminal`（26行目）、`stdout_is_terminal`（29行目）、`prompt_yes_no`（75行目）が残存。work-items V6 定義の「`prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` を含む」に直接抵触。
+2. **V7 未解消**: `ports.rs` 9行目に `use super::support::protection::{ProtectedSecret, SecretSession};` が残存し、`SecretsBoundary` メソッドシグネチャが `ProtectedSecret`/`SecretSession` を使用している。差戻し条件「`ports` が `support` に依存している（V7 未解消）」に直接抵触。
+
+### 解消確認済み
+
+3. **V1/V4 解消**: `application.rs` から `adapters::` の直接 import が除去された。
+4. **V2/V3 解消**: `application.rs` から `println!` が除去され、レポート出力は `boundary.write_report()` 経由に統一された。stdin 読み取りの直接呼び出しも除去済み。
+5. **V15 部分改善**: `FakeBoundary`/`FakeDevice` が `application.rs` 本体から `fake_boundary.rs` に分離された（production tree 配下残存の問題は継続）。
+6. **V12/V13 部分改善**: `adapters/stdin.rs`、`adapters/stdout.rs` から不要な `pub(crate)` 定数が除去された。`application` から `adapters::` への直接依存も解消。
+
+## 前進可否判定（第2回）
+
+**前進不可**
+
+V6 および V7 の違反が `ports.rs` に残存しており、`work-items/yubikey.md` の差戻し条件（「`ports` に DTO / parser / prompt が残存している（V6 未解消）」「`ports` が `support` に依存している（V7 未解消）」）に直接抵触する。`cebb94c` のコミットメッセージは V6/V7 解消を主張しているが、実際のコード（`ports.rs` 26行・29行・75行の `stdin_is_terminal`/`stdout_is_terminal`/`prompt_yes_no`、および9行目の `support::protection` import）に違反が残存している。差戻しが必要。
