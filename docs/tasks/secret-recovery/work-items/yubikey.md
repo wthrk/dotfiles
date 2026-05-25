@@ -18,6 +18,7 @@
   - `application` は use case の順序制御と外部境界呼び出しだけを持つ。
   - `domain` は YubiKey 実機、stdin/stdout、保護メモリ、外部 crate の I/O 型に依存しない。
   - `adapters` は実機 YubiKey と process I/O の接続に限定し、業務判断や use case 順序を持たない。
+  - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること。
   - `support` は保護メモリ、補助暗号、割り込み制御などの横断補助だけを持つ。
 - 既存実装の流用方針: `既存コードは参照してよいが、責務境界が規約に合わない場合は大幅な再分割、再配置、削除を前提とする。`
 - 規約違反の解消対象:
@@ -49,7 +50,7 @@
   - `support` に terminal I/O / prompt が存在しない（V11 の解消）。
   - `blob.rs` の責務が単一層に属する（V10 の解消）。
   - production コードに test double が含まれない（V14, V15 の解消）。
-  - `adapters/` 配下の全ファイルで、port trait を実装する型・メソッド以外が `pub`・`pub(crate)`・`pub(super)` で外部公開されていない（V12, V13 の解消）。
+  - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること（V12, V13 の解消）。
 - レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
 
 ## 差戻し条件
@@ -64,7 +65,7 @@
 - `support` に terminal I/O / prompt が残存している（V11 未解消）
 - `blob.rs` の責務が複数層にまたがっている（V10 未解消）
 - production コードに test double が含まれている（V14, V15 未解消）
-- `adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている（V12, V13 未解消）
+- `adapters/` 配下に port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）が存在している（V12, V13 未解消）
 - 「動作する」という事実のみを根拠に完了報告している
 - 粗粒度進捗注記: `#12` の design PR は `#21` として成立済みであり、現段階の主作業は implementation / code review / validation 面である。
 
