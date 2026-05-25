@@ -6,6 +6,7 @@
 
 - 実装担当は、次の正本を着手前に読み、適用しなければならない。
   - `docs/architecture/hexagonal-implementation-rules.md`
+  - `docs/architecture/review-checklist.md`（ディレクトリ別公開面・依存方向・責務チェック項目 — レビュー時だけでなく実装時にも適用する）
   - `docs/task-governance/security-obligations.md`
   - active work item が要求する領域資料（`docs/tasks/<area>/...`）
   - `docs/tasks/<area>/work-items/<item>.md`

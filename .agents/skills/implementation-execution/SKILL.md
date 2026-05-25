@@ -18,12 +18,13 @@ description: Use this skill when a subagent is assigned implementation work and 
 3. `docs/task-governance/workflow.md`
 4. `docs/task-governance/implementation-execution.md`
 5. `docs/architecture/hexagonal-implementation-rules.md`
-6. `docs/tasks/README.md`
-7. `docs/tasks/tasks.md`
-8. `docs/tasks/<area>/README.md`
-9. `docs/tasks/<area>/work-items/<item>.md`
-10. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
-11. `docs/<area>/implementation-guidelines.md` (if present)
+6. `docs/architecture/review-checklist.md` (per-directory check items — apply these constraints during implementation, not only during review)
+7. `docs/tasks/README.md`
+8. `docs/tasks/tasks.md`
+9. `docs/tasks/<area>/README.md`
+10. `docs/tasks/<area>/work-items/<item>.md`
+11. Area-specific artifacts required by the active work item (`docs/tasks/<area>/...`)
+12. `docs/<area>/implementation-guidelines.md` (if present)
 
 `docs/tasks/<area>/tasks.md` is mandatory only when the active work item explicitly references it.
 
