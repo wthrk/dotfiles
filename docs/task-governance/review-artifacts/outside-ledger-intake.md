@@ -66,6 +66,16 @@
 - 結果: `/Users/ya/works/dotfiles/docs/tasks/secret-recovery/work-items/yubikey.md`、`/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md`、`/Users/ya/works/dotfiles/docs/task-governance/review-artifacts/outside-ledger-intake.md`
 - 差戻し修正: `.agents/skills/dotfiles-task-governance/SKILL.md` L29 の日本語括弧注釈を英語に修正（参照整合レビュー担当の指摘による）
 
+## 2026-05-25 ドキュメント遵守失敗分析と文書整備
+
+- 実施日: `2026-05-25`
+- 対象依頼: `前回セッション（メインサブ含む）でドキュメント遵守に至らなかった原因をファイルから確認し、正しい哲学のもとに実装とレビューを行うようにドキュメントを整備修正する`
+- 分類 (`task-list-outside` 固定): `task-list-outside`
+- 責任境界: `docs/task-governance/`、`.agents/skills/` 配下の関連 SKILL.md、`docs/tasks/secret-recovery/review-artifacts/_review-template.md`。active work item（Bitwarden Secrets Manager）の実装進捗・`docs/tasks/tasks.md` の作業項目状態は変更しない。
+- 対象差分識別子（着手時に未確定なら `未確定`）: `未確定`
+- レビュー記録の保存先: `docs/task-governance/review-artifacts/outside-ledger-intake.md`（本記録および後続レビュー記録）
+- 備考（任意）: 根本原因はオーケストレーター自身による必須レビュー役割スキップとself-execution。文書に記載されているにもかかわらず、サブエージェントが起動時に確実に遵守しなかった。文書の何が不十分だったかを調査し是正する。
+
 ### 2026-05-24 レビュー集約（2026-05-24-doc-zero-base-redesign）
 
 - 運用整合レビュー担当: `判定: 合格` / 判定要約: 所見なし

@@ -26,6 +26,7 @@ description: Use this skill when repository task flow needs orchestration, role 
 7. `docs/tasks/tasks.md`
 8. The selected area `docs/tasks/<area>/README.md`
 9. `docs/architecture/hexagonal-implementation-rules.md` (architecture rules — understand before delegating to implementation or review roles)
+10. `docs/architecture/review-checklist.md` (per-directory check items derived from hexagonal-implementation-rules.md — must be included in all review role delegation instructions)
 
 ## When To Use
 
@@ -56,3 +57,6 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - When `secrets.rs` or any other source file has a compilation error introduced by a previous subagent, the fix must be delegated to a fresh implementation-executor subagent, not performed by the orchestrator directly.
 - The orchestrator must never initiate commit-related work (S3→S4 transition) unless all required review roles (structural, specification-conformance, security, operational) have returned a recorded `合格` verdict. Skipping any required review role and proceeding to commit is unconditionally forbidden, regardless of how simple or low-risk the change appears.
 - If all required review roles have not yet been completed, the orchestrator must launch the missing review role subagents and wait for their verdicts before allowing commit-related work. The orchestrator must not substitute its own judgement for a missing reviewer's verdict.
+- When a subagent (e.g., Codex) cannot commit due to sandbox constraints, the orchestrator may perform the commit on its behalf only after all required review roles have returned recorded `合格` verdicts. The inability of a subagent to commit is never a reason to bypass review gates.
+- When a subagent's implementation contains compilation errors, the orchestrator must not fix the errors directly using Edit or Write tools. The fix must be delegated to a fresh implementation-executor subagent.
+- When `git restore`, `rm`, or other revert commands are blocked by permission constraints, the orchestrator must not attempt to recover by overwriting files with the Write tool. The orchestrator must report the blocked operation to the user and wait for explicit permission or alternative instruction before proceeding.
