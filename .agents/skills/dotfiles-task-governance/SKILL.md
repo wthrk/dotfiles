@@ -29,15 +29,9 @@ All four prohibitions above are drawn from `docs/task-governance/workflow.md` (t
 ## Required Reading Order
 
 1. `docs/README.md`
-2. `docs/task-governance/README.md`
-3. `docs/task-governance/workflow.md`
-4. `docs/task-governance/implementation-review-judgement.md`
-5. `docs/task-governance/task-completion-judgement.md`
-6. `docs/tasks/README.md`
-7. `docs/tasks/tasks.md`
-8. The selected area `docs/tasks/<area>/README.md`
-9. `docs/architecture/hexagonal-implementation-rules.md` (architecture rules — understand before delegating to implementation or review roles)
-10. `docs/architecture/review-checklist.md` (per-directory check items derived from hexagonal-implementation-rules.md — must be included in all review role delegation instructions)
+2. `docs/tasks/README.md`
+3. `docs/tasks/tasks.md`
+4. The selected area `docs/tasks/<area>/README.md`
 
 ## When To Use
 
