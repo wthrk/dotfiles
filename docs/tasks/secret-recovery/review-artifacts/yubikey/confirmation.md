@@ -236,3 +236,95 @@
 **前進不可**
 
 V6 および V7 の違反が `ports.rs` に残存しており、`work-items/yubikey.md` の差戻し条件（「`ports` に DTO / parser / prompt が残存している（V6 未解消）」「`ports` が `support` に依存している（V7 未解消）」）に直接抵触する。`cebb94c` のコミットメッセージは V6/V7 解消を主張しているが、実際のコード（`ports.rs` 26行・29行・75行の `stdin_is_terminal`/`stdout_is_terminal`/`prompt_yes_no`、および9行目の `support::protection` import）に違反が残存している。差戻しが必要。
+
+---
+
+## 第3回確認（2026-05-25）
+
+- 確認対象コミット: `d412dfb`（V6/V7 SecretsBoundary refactor）、`692e6cc`（FakeBoundary更新）
+- 確認開始時 HEAD: `692e6cc`
+- cargo check: エラーゼロ（確認済み）
+
+### V6: `ports` に DTO / parser / prompt が存在しない
+
+**解消済み**
+
+現在の `ports.rs`（全127行）の `SecretsBoundary` トレイトが持つメソッドは以下の通り:
+
+- `open_device`, `open_spare_device`（device 取得）
+- `require_serial`, `require_option`, `require_stdin_pipe`, `require_stdin_json_pipe`, `require_stdout_pipe`（非対話契約の抽象チェック）
+- `read_yubikey_pin_bytes`, `read_hidden_bytes`, `read_visible_line_bytes`, `read_stdin_bytes`, `read_enrollment_json_bytes`（bytes 返却型 I/O）
+- `write_secret_to_stdout`, `write_report`（出力）
+- `prompt_continue_rotation`（yes/no 継続確認）
+
+第2回確認で残存していた `stdin_is_terminal`（26行目）、`stdout_is_terminal`（29行目）、`prompt_yes_no`（75行目）の3メソッドは存在しない。
+
+V6 の定義（「`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む」）に該当するメソッドは存在しない。`require_stdin_pipe` 等の名称は TTY 状態の確認ではなく前提条件チェックの抽象メソッドであり、TTY 判定の実装詳細は adapter 側（`adapters/terminal.rs`）に閉じている。また `ports.rs` に DTO 型の配置もない（`EnrollmentBytes` は `ports.rs` 内の単純な bytes 入れ物 struct であり、adapter 所有の JSON decode は `adapters/enrollment_json.rs` に閉じている）。
+
+### V7: `ports` が `support` に依存しない
+
+**解消済み**
+
+現在の `ports.rs` の import は以下のみ:
+
+```rust
+use zeroize::Zeroizing;
+use crate::Result;
+use super::domain::PivObjectId;
+```
+
+第2回確認で残存していた `use super::support::protection::{ProtectedSecret, SecretSession};` は存在しない。`SecretsBoundary` の全メソッドシグネチャは `Zeroizing<Vec<u8>>`（外部 crate）または `EnrollmentBytes`（bytes 入れ物 struct）を返す形式であり、`ProtectedSecret`/`SecretSession` をシグネチャに含まない。V7 の定義「`ports` が `support::protection` に依存している」に該当する記述なし。
+
+### V1, V4: `application` が `adapter` の具体型を import しない
+
+**解消済み**（第2回確認から変化なし）
+
+`application.rs` 17〜23行目の import:
+
+```rust
+use super::{
+    domain::SecretName,
+    ports::{self, SecretDevice, SecretsBoundary},
+    support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    EnrollSpareOptions, EnrollmentSecretSet, SecretsCommand, SecretsOptions, VerifyCheck,
+    VerifyYubikeyOptions, YubikeyCommand, YubikeyOptions,
+};
+```
+
+`adapters::` への直接 import なし。
+
+### V2, V3: `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない
+
+**解消済み**（第2回確認から変化なし）
+
+`application.rs`（全916行）に `println!` の直接呼び出しなし。stdin 読み取りの直接呼び出しなし。device handle は `ports::SecretDevice` trait 経由のみ（`storage_service::*` に委譲）。レポート出力は `boundary.write_report()` 経由に統一済み。
+
+### V14, V15: production コードに test double が含まれない
+
+**V15: 要判断**（第2回確認から変化なし）
+
+- `application/fake_boundary.rs` は `application/` ディレクトリ（production tree 配下）に存在。`application.rs` からは `#[cfg(test)] mod fake_boundary;` でのみ参照されており、production binary には含まれない。
+- `adapters/test_stub.rs` は `#[cfg(feature = "secrets-test-stub")]` 保護のみで、feature 有効時は production binary に組み込まれる構造は変化なし（V14 未解消）。
+- work-items V15 定義「fake boundary / fake device を production tree 配下に置いている」への該当性は前回と同様に要判断。
+
+### V12, V13: `adapters/` 配下の全ファイルで port trait 実装以外が外部公開されていない
+
+**大部分解消済み、V14 問題は継続**
+
+- `adapters/stdout.rs`: `SECRET_STDOUT_TERMINAL_ERROR` 定数と `ensure_secret_stdout_not_terminal` 関数は `pub(crate)` なし（ファイル内プライベート）。`write_secret_to_stdout` のみ `pub(crate)`（`RealSecretsBoundary` の trait 実装から呼び出すため必要）。
+- `adapters/stdin.rs`: `read_stdin_bytes` が `pub(crate)`（trait 実装 helper として必要）。
+- `adapters/enrollment_json.rs`: `read_enrollment_json_bytes` が `pub(crate)`（trait 実装 helper として必要）。
+- `application` から `adapters::` への直接 import がなくなったことで、V12/V13 の「application が直接参照する問題」は解消済み。
+
+## 前進可否判定（第3回）
+
+**前進可**
+
+第2回確認で差戻し条件に抵触していた V6 および V7 の違反が `d412dfb`/`692e6cc` のコミットで解消されている。実際の `ports.rs` を読んで確認した結果:
+
+- V6: `stdin_is_terminal`/`stdout_is_terminal`/`prompt_yes_no` メソッドなし、adapter 所有の DTO/parser/prompt の port 内配置なし → **解消**
+- V7: `support::protection` への import なし、メソッドシグネチャから `ProtectedSecret`/`SecretSession` 除去済み → **解消**
+- V1/V4: `application` が `adapters::` 具体型を import しない → **解消**（前回確認済み）
+- V2/V3: `application` に `println!`/stdin 直接読み取りなし → **解消**（前回確認済み）
+
+残存問題（V14/V15、V12/V13の一部）は差戻し条件に直接抵触する形ではなく、第2回確認時に「要判断」と分類した継続案件である。レビュー着手は可能と判断する。
