@@ -61,7 +61,7 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - When receiving an instruction that contains multiple numbered items, execute them in order starting from item 1. Confirm completion of each item before advancing to the next. Do not skip ahead to a later item.
 - When delegating implementation work, the subagent prompt must instruct the subagent to read `.claude/skills/implementation-execution/SKILL.md` as its first action. Pass only the skill file path and the work-item path (`docs/tasks/<area>/work-items/<item>.md`). Do not inline work-item content, violation lists, checklist items, or any other content from governing sources into the prompt — the subagent must read those sources itself via the skill's Required Reading Order.
 - When delegating review work, first determine the change type (実装差分 or 文書是正・文書主成果物) from the work item, then consult the「必須レビュー担当」section of `docs/task-governance/implementation-review-judgement.md` to identify the required reviewer roles for that change type:
-  - 実装差分（executable behavior を含む変更）: 構造レビュー担当、運用整合レビュー担当、セキュリティレビュー担当、仕様適合レビュー担当 の4担当
+  - 実装差分（executable behavior を含む変更）: 構造レビュー担当、運用整合レビュー担当、セキュリティレビュー担当、仕様適合レビュー担当、テストレビュー担当、ドキュメントレビュー担当 の6担当
   - 文書是正・文書主成果物: 運用整合レビュー担当、参照整合レビュー担当 の2担当
   - 高リスク変更を含む場合は変更種別によらずセキュリティレビュー担当を追加する
   Launch each required reviewer as a **separate independent subagent**. Do not consolidate multiple reviewer roles into a single subagent. Do not inline judgment conditions, verification procedures, output destinations, or any other content from governing sources into the prompt — each subagent must read those sources itself via its skill's Required Reading Order. Pass parameters to each reviewer as follows — do not pass parameters not listed for that role:
@@ -70,3 +70,5 @@ Actor binding: while this skill is active, the current actor is the orchestrator
   - **セキュリティレビュー担当**: レビュー対象コードパスのみを渡す。作業定義文書パスは渡してはならない。
   - **運用整合レビュー担当**: 作業定義文書パスとレビュー対象コードパスの両方を渡す。
   - **参照整合レビュー担当**: レビュー対象文書パスのみを渡す。
+  - **テストレビュー担当**: 作業定義文書パス（`docs/tasks/<area>/work-items/<item>.md`）とレビュー対象コードパスの両方を渡す。
+  - **ドキュメントレビュー担当**: レビュー対象コードパスのみを渡す。作業定義文書パスは渡してはならない。
