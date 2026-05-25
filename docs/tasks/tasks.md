@@ -4,7 +4,7 @@
 
 ## 現在の作業項目
 
-- `YubiKey`
+- `Bitwarden Secrets Manager`
 
 ## 作業項目一覧
 
