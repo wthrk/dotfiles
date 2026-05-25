@@ -11,11 +11,12 @@ use std::{
 };
 
 use anyhow::bail;
+use zeroize::Zeroizing;
 
 use crate::{
     secrets::{
         domain,
-        ports::SecretsBoundary,
+        ports::{EnrollmentBytes, SecretsBoundary},
         support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
         EnrollmentSecretSet,
     },
@@ -79,64 +80,73 @@ impl SecretsBoundary for FakeBoundary {
         Ok(device)
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        self.stdin_terminal
+    fn require_serial(&self, serial: Option<u32>, error_message: &'static str) -> Result<()> {
+        if !self.stdin_terminal && serial.is_none() {
+            bail!("{}", error_message);
+        }
+        Ok(())
     }
 
-    fn stdout_is_terminal(&self) -> bool {
-        self.stdout_terminal
+    fn require_option(&self, enabled: bool, option_name: &'static str) -> Result<()> {
+        if !self.stdin_terminal && !enabled {
+            bail!("pass {} in non-interactive use", option_name);
+        }
+        Ok(())
     }
 
-    fn read_yubikey_pin<'session>(
-        &self,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        make_fake_secret(b"fake-pin", session)
-    }
-
-    fn read_hidden_secret<'session>(
-        &self,
-        _prompt: &str,
-        _limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        make_fake_secret(b"fake-hidden", session)
-    }
-
-    fn read_visible_secret_line<'session>(
-        &self,
-        _prompt: &str,
-        _limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        make_fake_secret(b"fake-visible", session)
-    }
-
-    fn read_protected_stdin_secret<'session>(
-        &self,
-        _limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
+    fn require_stdin_pipe(&self) -> Result<()> {
         if self.stdin_terminal {
             bail!("--stdin requires pipe or redirect input");
         }
-        make_fake_secret(b"fake-stdin", session)
+        Ok(())
     }
 
-    fn read_protected_enrollment_secret_set<'session>(
+    fn require_stdin_json_pipe(&self, enabled: bool) -> Result<()> {
+        if enabled && self.stdin_terminal {
+            bail!("--stdin-json requires pipe or redirect input");
+        }
+        Ok(())
+    }
+
+    fn require_stdout_pipe(&self) -> Result<()> {
+        if self.stdout_terminal {
+            bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
+        }
+        Ok(())
+    }
+
+    fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(b"fake-pin".to_vec()))
+    }
+
+    fn read_hidden_bytes(&self, _prompt: &str, _limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(b"fake-hidden".to_vec()))
+    }
+
+    fn read_visible_line_bytes(&self, _prompt: &str, _limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(b"fake-visible".to_vec()))
+    }
+
+    fn read_stdin_bytes(&self, _limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        if self.stdin_terminal {
+            bail!("--stdin requires pipe or redirect input");
+        }
+        Ok(Zeroizing::new(b"fake-stdin".to_vec()))
+    }
+
+    fn read_enrollment_json_bytes(
         &self,
         _input_limit: usize,
         _field_limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
+    ) -> Result<EnrollmentBytes> {
         if self.stdin_terminal {
             bail!("--stdin-json requires pipe or redirect input");
         }
-        Ok(EnrollmentSecretSet::new(
-            make_fake_secret(b"user@example.com", session)?,
-            make_fake_secret(b"password", session)?,
-            make_fake_secret(b"token", session)?,
-        ))
+        Ok(EnrollmentBytes {
+            bw_email: Zeroizing::new(b"user@example.com".to_vec()),
+            bw_password: Zeroizing::new(b"password".to_vec()),
+            bws_access_token: Zeroizing::new(b"token".to_vec()),
+        })
     }
 
     fn write_secret_to_stdout(&self, _bytes: &[u8]) -> Result<()> {
@@ -150,7 +160,7 @@ impl SecretsBoundary for FakeBoundary {
         Ok(())
     }
 
-    fn prompt_yes_no(&self, _prompt: &str, _session: &SecretSession) -> Result<bool> {
+    fn prompt_continue_rotation(&self) -> Result<bool> {
         Ok(self.prompts.borrow_mut().pop_front().unwrap_or(false))
     }
 }
