@@ -234,3 +234,63 @@ V15「production tree 配下に置いている」条件には引き続き抵触�
 **解消確認済み項目（第2回確認）**:
 
 - V14: `adapters/test_stub.rs` 削除・feature gate 除去 → 解消（前回不合格から解消）
+
+---
+
+## 第3回仕様適合レビュー（2026-05-25）
+
+- 対象コミット: `6d8d2d3`（差戻し修正）
+- 判定: **合格**
+
+### 前回不合格項目の再確認
+
+#### V15（前回不合格 — production tree 配下への物理存在）
+
+**解消済み**
+
+`application/test_support/` ディレクトリが存在しないことを `find` コマンドで確認済み。`application/` 配下のファイル一覧は `storage_service.rs` と `summary.rs` のみ。
+
+`application.rs` の 620〜939 行に `#[cfg(test)] mod tests { ... }` ブロックが存在し、その内部に `mod fake_boundary { ... }` がインライン定義されている。test double（`FakeBoundary`、`FakeDevice`）はすべて `application.rs` ファイル内の `#[cfg(test)]` ブロックに収まっており、production tree に別ファイルとして物理存在しない。
+
+V15「fake boundary / fake device を production tree 配下に置いている」条件への抵触は解消された。
+
+#### V12/V13（前回不合格）
+
+**解消済み**
+
+修正後の可視性を以下で確認した。
+
+**`adapters/enrollment_json.rs`**:
+- `pub(super) fn read_enrollment_json_bytes(...)` — `pub(crate)` から `pub(super)` へ変更済み
+
+**`adapters/input.rs`**:
+- すべての re-export が `pub(super) use ...` に変更済み:
+  - `pub(super) use super::enrollment_json::read_enrollment_json_bytes;`
+  - `pub(super) use super::prompt::{read_hidden_bytes, read_visible_line_bytes, read_yubikey_pin_raw};`
+  - `pub(super) use super::stdin::read_stdin_bytes;`
+  - `pub(super) use super::stdout::write_secret_to_stdout;`
+
+**`adapters.rs`**:
+- `pub(super) fn open_device(...)` — `pub(crate)` から `pub(super)` へ変更済み
+- `pub(super) fn open_spare_device(...)` — `pub(crate)` から `pub(super)` へ変更済み
+- `pub(super) mod input;`、`pub(super) mod terminal;`、`pub(super) fn build_real_boundary()` はいずれも `pub(super)` で `secrets` モジュール内にのみ公開
+
+**`adapters/real_boundary.rs`**:
+- `pub(super) struct RealSecretsBoundary { backend: DeviceBackend, }` — `backend` フィールドに `pub(crate)` なし（非公開に変更済み）
+- `pub(super) fn new(backend: DeviceBackend) -> Self` のみが公開
+
+差戻し条件の文言「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」との照合: `pub(super)` は `pub(crate)` 未満の可視性であり、`adapters` モジュール外には公開されない。差戻し条件への抵触なし。
+
+`adapters.rs` の `open_device`/`open_spare_device` は `pub(super)` により `secrets` モジュール直下にのみ可視であり、`adapters/` サブモジュール内からは `super::open_device` として参照できるが、`secrets` 外部には公開されない。`secrets.rs` の `run()` は `adapters::build_real_boundary()` のみを呼ぶ構造に変わっており、`RealSecretsBoundary { backend }` の直接フィールド初期化は存在しない。
+
+V12/V13 の差戻し条件への抵触は解消された。
+
+### その他の完了判定条件
+
+条件1〜7（V1/V4, V2/V3, V6, V7, V8/V9/V16, V11, V10）は第1回レビュー時点で解消確認済みであり、今回の差戻し修正による退行はない（変更対象ファイル外）。
+
+### 総合判定（第3回）
+
+**合格**
+
+前回不合格の3項目（V15、V12/V13）がいずれも解消されており、全完了判定条件を満たす。差戻し条件に抵触する項目なし。
