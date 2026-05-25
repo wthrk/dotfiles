@@ -6,7 +6,7 @@
 
 ### YubiKey
 
-- 状態: `完了`
+- 状態: `差し戻し`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)

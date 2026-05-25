@@ -8,6 +8,12 @@
 - ログ、標準出力、コマンド引数、一時ファイル、レビュー証跡に秘密情報を残してはならない。
 - 機密値の検証が必要な場合は、秘匿化済みの値または再現手順のみを記録し、平文を記録してはならない。
 
+## 明示的適用除外
+
+以下は上記義務の例外として明示的に許可する。
+
+- `secrets-test-stub` feature（`#[cfg(feature = "secrets-test-stub")]`）配下の `emit_write_event` 関数が、CLI 統合テストの保存検証用途で復号済み secret 値を stderr へ出力する動作。この出力は実機 YubiKey を介さない integration test contract の一部であり、`secrets-test-stub` feature を無効にした通常 build には含まれない。対象ファイル: `rust/dotfiles-cli/src/secrets/adapters/test_stub.rs`。
+
 ## 役割別義務
 
 - `実装担当`: 差分作成時に秘密情報の永続化経路、出力経路、失敗時挙動を確認する。
