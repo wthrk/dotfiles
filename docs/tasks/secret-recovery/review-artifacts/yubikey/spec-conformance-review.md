@@ -143,3 +143,94 @@ work-items の差戻し条件は「`adapters/` 配下のファイルで port tra
 - V8/V9/V16: `domain` に port contract/summary DTO/I/O 型なし → 解消
 - V11: `support` に terminal I/O/prompt なし → 解消
 - V10: `blob.rs` の責務が adapter 層に単一化 → 解消
+
+---
+
+## 第2回仕様適合レビュー（2026-05-25）
+
+- 対象コミット: `45ddda1`（差戻し修正）
+- HEAD: `e410a4cc55bc3e5cb822a120b20f1c02567b1f11`
+- 判定: 不合格
+
+### 前回不合格項目の再確認
+
+#### V14（前回不合格）
+
+**解消済み**
+
+`adapters/` ディレクトリを確認した結果、`test_stub.rs` は存在しない（ファイル一覧: `backend.rs`, `boundary.rs`, `device_prompt.rs`, `enrollment_json.rs`, `input.rs`, `prompt.rs`, `real_boundary.rs`, `stdin.rs`, `stdout.rs`, `terminal.rs`, `yubikey.rs`）。
+
+`adapters.rs` の宣言にも `mod test_stub;` は存在しない（commit `45ddda1` の diff で削除済みを確認）。feature gate `secrets-test-stub` は `Cargo.toml` から削除されており、CLI に `--test-stub-yubikey` フラグが露出する経路も消えている。
+
+V14「production crate の command path に test double を feature-gate で埋め込んでいる」は解消済み。
+
+#### V15（前回不合格 — 文言厳密解釈）
+
+**解消未達（差戻し条件に引き続き抵触）**
+
+前回の不合格対象は `application/fake_boundary.rs` と `application/storage_service_tests.rs` が `application/` 直下に物理存在することであった。
+
+修正後の構造:
+- `application/fake_boundary.rs` → `application/test_support/fake_boundary.rs` へ移動（物理削除確認済み）
+- `application/storage_service_tests.rs` → `application/test_support/storage_service_tests.rs` へ移動（物理削除確認済み）
+- `application/test_support/mod.rs` が新設され、内容は以下:
+
+```rust
+pub(super) mod fake_boundary;
+mod storage_service_tests;
+```
+
+- `application.rs` での参照: `#[cfg(test)] mod test_support;`（9〜10行目）
+
+**`#[cfg(test)]` 保護の確認**: `application.rs` が `#[cfg(test)] mod test_support;` で宣言しているため、Rust コンパイラは `cargo build`（非テストビルド）時に `test_support/` モジュール全体をコンパイル対象から除外する。production binary への混入はない。
+
+**V15 文言との照合**: work-items V15 の定義は「fake boundary / fake device を production tree 配下に置いている」。`application/test_support/` ディレクトリは `application/` 配下（= production tree 配下）に物理的に存在する。前回不合格判定の根拠「production tree 配下に物理存在する」は、移動先でも依然として成立している。`test_support/mod.rs` 自体に `#[cfg(test)]` 属性はなく、production tree ディレクトリへの物理配置という事実は変わっていない。
+
+差戻し修正は `application/` 直下から `application/test_support/` サブディレクトリへの移動にとどまっており、production tree からの除去（`tests/` 層への移設や separate test crate への分離）は実施されていない。
+
+V15「production tree 配下に置いている」条件には引き続き抵触すると判定する。
+
+#### V12/V13（前回不合格）
+
+**解消未達（差戻し条件に引き続き抵触）**
+
+**`adapters/enrollment_json.rs`**:
+- `pub(crate) fn read_enrollment_json_bytes(...)` が存在する（21行目）
+- 前回と同じ `pub(crate)` 可視性のまま残存
+- `read_protected_enrollment_secret_set` は今回のファイルに存在しない（前回指摘の一部は解消）
+
+**`adapters/input.rs`**:
+- `pub(crate) use super::enrollment_json::read_enrollment_json_bytes;` で re-export（5行目）
+- `pub(crate) use super::prompt::{read_hidden_bytes, read_visible_line_bytes, read_yubikey_pin_raw};`
+- `pub(crate) use super::stdin::read_stdin_bytes;`
+- `pub(crate) use super::stdout::write_secret_to_stdout;`
+
+これらは `real_boundary.rs` の port trait 実装（`SecretsBoundary for RealSecretsBoundary`）から呼ばれる helper であるが、いずれも port trait を実装する型・メソッドそのものではなく、独立した公開関数・re-export である。
+
+**`adapters.rs`**:
+- `pub(crate) fn open_device(...)` および `pub(crate) fn open_spare_device(...)` が残存（26〜51行目）
+- これらは `real_boundary.rs` の `SecretsBoundary::open_device` / `open_spare_device` 実装から呼ばれているが、port trait method そのものではなく独立した公開関数である
+
+**`adapters/real_boundary.rs`**:
+- `pub(crate) struct RealSecretsBoundary { pub(crate) backend: DeviceBackend, }` の `pub(crate) backend` フィールドが残存（18〜20行目）
+- `secrets.rs` の `run()` から `RealSecretsBoundary { backend }` という struct literal 初期化で使用されているため除去できていない
+
+差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」に引き続き抵触する。
+
+### その他の完了判定条件
+
+前回から変化なし。条件1〜7（V1/V4, V2/V3, V6, V7, V8/V9/V16, V11, V10）は第1回レビュー時点で解消確認済みであり、今回の差戻し修正による変化はない。
+
+## 総合判定（第2回）
+
+**不合格**
+
+以下の差戻し条件に該当する違反が残存している:
+
+1. **V15 未解消**（差戻し条件「production コードに test double が含まれている」に抵触）: `application/fake_boundary.rs` は `application/test_support/fake_boundary.rs` へ移動されたが、`test_support/` ディレクトリは依然として `application/` 配下（production tree）に物理存在する。work-items V15「fake boundary / fake device を production tree 配下に置いている」条件への抵触は解消されていない。解消のためには `tests/` 層への移設または separate test crate への分離が必要である。
+
+2. **V12/V13 未解消**（差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」に抵触）: `adapters/enrollment_json.rs` の `read_enrollment_json_bytes`（`pub(crate)`）、`adapters.rs` の `open_device`・`open_spare_device`（`pub(crate)`）、`adapters/real_boundary.rs` の `pub(crate) backend` フィールドが残存している。
+
+**解消確認済み項目（第2回確認）**:
+
+- V14: `adapters/test_stub.rs` 削除・feature gate 除去 → 解消（前回不合格から解消）
