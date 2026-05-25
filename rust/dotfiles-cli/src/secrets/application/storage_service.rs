@@ -4,8 +4,8 @@
 //! 共有する。device adapter の実装差は `SecretDevice` trait に閉じ、ここでは永続書き込みの
 //! 順序と検証結果の JSON 契約を固定する。
 //!
-//! 暗号処理（AEAD 暗号化・複号）と manifest の JSON serialize/deserialize はこのモジュール内に
-//! 閉じ込め、adapter 具体型へは依存しない。
+//! 暗号処理（AEAD 暗号化・複号）はこのモジュール内に閉じ込め、adapter 具体型へは依存しない。
+//! manifest の JSON wire format encode/decode は `domain::wire` に閉じ、parser 実装はここに置かない。
 
 use std::io::Write;
 
@@ -14,8 +14,8 @@ use rand::Rng;
 
 use crate::secrets::application::summary::{CheckName, CheckStatus, EnrollSummary, YubikeyRole};
 use crate::secrets::domain::{
-    PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, CONTENT_KEY_LEN,
-    KEY_SLOT, NONCE_LEN,
+    decode_manifest, encode_manifest, PivObjectId, SecretBlob, SecretManifest, SecretName,
+    StorageObjectIds, CONTENT_KEY_LEN, KEY_SLOT, NONCE_LEN,
 };
 use crate::secrets::ports::SecretDevice;
 use crate::secrets::support::{
@@ -27,19 +27,21 @@ use crate::Result;
 /// expected manifest を PIV object へ書き込む。
 ///
 /// manifest は secret blob より先に書き、以後の put/get/verify が storage 所有権を判定する sentinel にする。
+/// JSON wire format encode は `domain::wire::encode_manifest` に委譲し、parser 実装をここに持ち込まない。
 fn write_manifest<D: SecretDevice>(device: &mut D) -> Result<()> {
-    let mut manifest = serde_json::to_vec(&SecretManifest::expected())?;
+    let mut manifest = encode_manifest(&SecretManifest::expected())?;
     device.write_object(PivObjectId::MANIFEST, &mut manifest)
 }
 
 /// PIV object から manifest を読み出して parse する。
 ///
 /// manifest が存在しない YubiKey は secret storage 未初期化として扱う。
+/// JSON wire format decode は `domain::wire::decode_manifest` に委譲し、parser 実装をここに持ち込まない。
 fn read_manifest<D: SecretDevice>(device: &mut D) -> Result<SecretManifest> {
     let manifest = device
         .read_object(PivObjectId::MANIFEST)?
         .context("YubiKey secret manifest is missing")?;
-    serde_json::from_slice(&manifest).context("failed to parse YubiKey secret manifest")
+    decode_manifest(&manifest)
 }
 
 /// secret 本文を per-secret content key で暗号化し、保存用 blob を構築する。

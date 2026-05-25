@@ -10,3 +10,4 @@ pub(crate) use model::{
     PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, CONTENT_KEY_LEN,
     KEY_SLOT, NONCE_LEN,
 };
+pub(crate) use wire::{decode_manifest, encode_manifest};

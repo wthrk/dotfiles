@@ -1,6 +1,6 @@
-//! YubiKey secret blob の binary wire format の encode / decode。
+//! YubiKey secret blob の binary wire format と manifest の JSON wire format の encode / decode。
 //!
-//! 設計資料で固定した byte 配置の互換性を守るため、parser と serializer をこの
+//! 設計資料で固定した byte 配置・JSON 契約の互換性を守るため、parser と serializer をこの
 //! モジュールへ隔離し、他責務から wire 詳細を切り離す。
 
 use anyhow::{Context, Result};
@@ -12,8 +12,23 @@ use nom::{
 };
 
 use super::model::{
-    SecretBlob, SecretName, ALGORITHM_AES_256_GCM, BLOB_MAGIC, BLOB_VERSION, NONCE_LEN, TAG_LEN,
+    SecretBlob, SecretManifest, SecretName, ALGORITHM_AES_256_GCM, BLOB_MAGIC, BLOB_VERSION,
+    NONCE_LEN, TAG_LEN,
 };
+
+/// `SecretManifest` を設計資料で固定した JSON wire format へ serialize する。
+///
+/// 呼び出し元は serialization error を manifest context と共に扱うこと。
+pub(crate) fn encode_manifest(manifest: &SecretManifest) -> Result<Vec<u8>> {
+    serde_json::to_vec(manifest).context("failed to serialize YubiKey secret manifest")
+}
+
+/// bytes を `SecretManifest` として JSON wire format から deserialize する。
+///
+/// manifest が存在しない場合は `None` を渡し、存在する場合は bytes を渡すこと。
+pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<SecretManifest> {
+    serde_json::from_slice(bytes).context("failed to parse YubiKey secret manifest")
+}
 
 /// `SecretBlob` を設計資料で固定した binary wire format へ serialize する。
 pub(crate) fn encode_secret_blob(blob: &SecretBlob) -> Result<Vec<u8>> {
