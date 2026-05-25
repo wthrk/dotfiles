@@ -6,22 +6,25 @@
 //! ## 設計制約
 //!
 //! - port は `domain` にのみ依存可能。`support` 型はシグネチャに使えない
-//! - TTY 判定・prompt 文言・入力形式の詳細は adapter 所有
+//! - TTY 判定・prompt 文言・stdin/stdout 操作の詳細は adapter 所有
 //! - 非対話条件チェックも境界が行い、application は use case 順序だけを所有する
 //! - DTO（`EnrollmentBytes` 等）は port に置かない。adapter と application の共有型は
-//!   secrets module ルートに `pub(crate)` で定義する
+//!   secrets module ルートに定義する
+//! - port はドメインが何を必要とするかの capability 宣言のみを持つ。プロンプト文言、
+//!   stdin/stdout パイプ契約、入力の echo 制御などの I/O 機構はこの層に置かない
 
 use zeroize::Zeroizing;
 
 use crate::Result;
 
-use super::domain::PivObjectId;
+use super::domain::{PivObjectId, SecretName};
 use super::EnrollmentBytes;
 
 /// application use case が利用する外部 I/O 境界。
 ///
 /// 実機 adapter と test stub は同じ device 操作順序をこの trait で共有する。
-/// 非対話条件・device 取得・secret 入力・出力はすべてこの trait を通す。
+/// 非対話条件・device 取得・secret の読み取りと出力はすべてこの trait を通す。
+/// stdin/stdout/prompt の I/O 機構は adapter が内部で解決し、port シグネチャには露出しない。
 pub trait SecretsBoundary {
     type Device: SecretDevice;
 
@@ -43,50 +46,38 @@ pub trait SecretsBoundary {
     /// `enabled` が `false` かつ非対話実行の場合は `option_name` を含む error で失敗する。
     fn require_option(&self, enabled: bool, option_name: &'static str) -> Result<()>;
 
-    /// `--stdin` が pipe/redirect 入力を指していることを確認する。
+    /// device 認証に使う PIN を読み取り、zeroize 保護済み bytes として返す。
     ///
-    /// stdin が TTY の場合は error で失敗する。
-    fn require_stdin_pipe(&self) -> Result<()>;
+    /// adapter が適切な入力形式（echo なし等）を選択する。
+    fn read_pin(&self) -> Result<Zeroizing<Vec<u8>>>;
 
-    /// `--stdin-json` が pipe/redirect 入力を指していることを確認する。
+    /// 指定した secret を読み取り、zeroize 保護済み bytes として返す。
     ///
-    /// `enabled` が `true` かつ stdin が TTY の場合は error で失敗する。
-    fn require_stdin_json_pipe(&self, enabled: bool) -> Result<()>;
-
-    /// stdout が pipe/redirect を向いていることを確認する。
-    ///
-    /// stdout が TTY の場合は secret 書き込みを拒否して error で失敗する。
-    fn require_stdout_pipe(&self) -> Result<()>;
-
-    /// echo なしの prompt で YubiKey PIN を読み、zeroize 保護済み bytes として返す。
-    fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>>;
-
-    /// echo なしの prompt で 1 行を読み、zeroize 保護済み bytes として返す。
-    fn read_hidden_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>>;
-
-    /// 表示 prompt で 1 行を読み、zeroize 保護済み bytes として返す。
-    fn read_visible_line_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>>;
-
-    /// stdin から 1 secret を読み、zeroize 保護済み bytes として返す。
-    fn read_stdin_bytes(&self, limit: usize) -> Result<Zeroizing<Vec<u8>>>;
+    /// `from_stdin` が `true` の場合は stdin から読み取る（stdin が pipe でなければ失敗）。
+    /// `false` の場合は対話入力を使い、adapter が secret 種別に応じた入力形式を選択する。
+    fn read_secret(&self, name: SecretName, from_stdin: bool) -> Result<Zeroizing<Vec<u8>>>;
 
     /// stdin JSON から enrollment secret set の 3 field を読み、bytes として返す。
+    ///
+    /// stdin が pipe でない場合は失敗する。JSON 解析は adapter 内部で行う。
     fn read_enrollment_json_bytes(
         &self,
         input_limit: usize,
         field_limit: usize,
     ) -> Result<EnrollmentBytes>;
 
-    /// 復号済み secret bytes を stdout へ書き込む。stdout が TTY の場合は停止する。
-    fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()>;
+    /// 復号済み secret bytes を外部へ書き出す。
+    ///
+    /// stdout が TTY の場合は adapter が拒否して error で失敗する。
+    fn write_secret(&self, bytes: &[u8]) -> Result<()>;
 
     /// summary を JSON として stdout へ出力する。
     fn write_report(&self, value: &impl serde::Serialize) -> Result<()>;
 
-    /// TTY で次の YubiKey を更新するか yes/no で確認し、応答を返す。
+    /// 次の YubiKey を続けて更新するかを利用者に確認し、応答を返す。
     ///
-    /// stdin が TTY でない場合は false を返す。prompt 文言は adapter 側で保持する。
-    fn prompt_continue_rotation(&self) -> Result<bool>;
+    /// adapter が適切な対話形式で確認を行い、非対話時は `false` を返す。
+    fn ask_continue_rotation(&self) -> Result<bool>;
 }
 
 /// device 境界が必要とする YubiKey device の取得契約。

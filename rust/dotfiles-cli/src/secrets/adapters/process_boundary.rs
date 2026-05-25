@@ -1,9 +1,11 @@
-//! 実プロセス I/O と実機 YubiKey device を `SecretsBoundary` port へ接続する adapter。
+//! 実プロセス I/O と実機 YubiKey device を port へ接続する adapter。
 //!
-//! この module は実プロセスの stdin/stdout/terminal 境界と実機 YubiKey の discovery / open /
-//! PIV 操作翻訳だけを行う。test double（in-memory stub device）の定義は持たない。
-//! device の取得と I/O の翻訳を `RealSecretsBoundary` 一型に閉じ、application は
-//! `SecretsBoundary` port contract だけを通して境界を使う。
+//! `SecretsBoundary` への実機接続: stdin/stdout/terminal 境界と実機 YubiKey の
+//! discovery / open / PIV 操作翻訳を `RealSecretsBoundary` 一型に閉じ込める。
+//! `SecretDevice` への実機接続: 開いた `YubiKey` PIV session を `YubikeySecretDevice` が担う。
+//!
+//! test double（in-memory stub device）の定義は持たない。CLI 統合テスト向けの代替境界は
+//! tests 層の専用 crate が定義する。
 
 use std::{
     fs::OpenOptions,
@@ -15,31 +17,199 @@ use std::{
 
 use ::yubikey::{Context as YkContext, Serial, YubiKey};
 use ::yubikey::Error as YkError;
+use ::yubikey::piv::{self, AlgorithmId, RetiredSlotId, SlotId};
+use ::yubikey::{MgmKey, PinPolicy, TouchPolicy, Version};
 
 use anyhow::{bail, Context};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
+use rand_core::OsRng;
+use rsa::{pkcs1::DecodeRsaPublicKey, Oaep, RsaPublicKey};
+use sha2::Sha256;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::yubikey;
 use crate::{
     secrets::{
+        domain::{PivObjectId, SecretName},
         ports::{SecretDevice, SecretsBoundary},
-        support::protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
+        support::{
+            self,
+            protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
+        },
         EnrollmentBytes,
     },
     Result,
 };
 
-// ── device type ───────────────────────────────────────────────────────────────
+// ── YubikeySecretDevice ───────────────────────────────────────────────────────
 
-/// 実機 YubiKey PIV session を `SecretDevice` port へ接続する adapter 型。
+const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
+const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
+const MIN_PIV_METADATA_VERSION: Version = Version {
+    major: 5,
+    minor: 3,
+    patch: 0,
+};
+
+/// 開いた YubiKey PIV session と PIN 検証状態を保持する実機 adapter。
 ///
-/// 実プロセスの device discovery と PIV 操作は `yubikey` module に閉じ、
-/// この型は discovery 結果を port contract へ翻訳する seam として機能する。
-pub(super) type YubikeySecretDevice = yubikey::YubikeySecretDevice;
+/// PIN verification は 1 command 中に同じ session へ再利用する。
+/// `SecretDevice` port を実装し、device discovery / open は `RealSecretsBoundary` が担う。
+pub struct YubikeySecretDevice {
+    yubikey: YubiKey,
+    pin_verified: bool,
+}
+
+impl YubikeySecretDevice {
+    /// 開いた YubiKey session から device adapter を構築する。
+    fn new(yubikey: YubiKey) -> Self {
+        Self {
+            yubikey,
+            pin_verified: false,
+        }
+    }
+
+    /// PIV private key operation に必要な PIN verification を実行する。
+    ///
+    /// 同じ command 中で検証済みの場合は、同じ session の検証状態を再利用する。
+    fn verify_pin_once(&mut self, pin: &[u8]) -> Result<()> {
+        if self.pin_verified {
+            return Ok(());
+        }
+
+        self.yubikey.verify_pin(pin)?;
+        self.pin_verified = true;
+        Ok(())
+    }
+
+    /// 既定 management key で PIV management auth を実行する。
+    ///
+    /// 既定鍵運用のリスクは設計資料に明記し、任意 management key 対応は別設計にする。
+    fn authenticate_management(&mut self) -> Result<()> {
+        let key = MgmKey::get_default(&self.yubikey)?;
+        self.yubikey.authenticate(&key)?;
+        Ok(())
+    }
+
+    /// PIV metadata から secret storage key の public key を取得する。
+    ///
+    /// private key material は host へ出さない。
+    fn public_key(&mut self) -> Result<RsaPublicKey> {
+        let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
+        let public = metadata
+            .public
+            .context("YubiKey secret storage key has no public key metadata")?;
+        RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
+            .context("failed to parse YubiKey secret storage public key")
+    }
+}
+
+impl SecretDevice for YubikeySecretDevice {
+    fn serial(&self) -> u32 {
+        self.yubikey.serial().0
+    }
+
+    fn key_exists(&mut self) -> Result<bool> {
+        match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
+            Ok(_) => Ok(true),
+            Err(yubikey::Error::NotFound) => {
+                match self.yubikey.fetch_object(SECRET_SLOT_CERT_OBJECT_ID) {
+                    Ok(_) => Ok(true),
+                    Err(yubikey::Error::NotFound) => Ok(false),
+                    Err(err) => Err(err.into()),
+                }
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn check_key_generation_preconditions(&mut self) -> Result<()> {
+        let version = self.yubikey.version();
+        if version_lt(version, MIN_PIV_METADATA_VERSION) {
+            bail!(
+                "YubiKey PIV application version must be at least {}",
+                format_version(MIN_PIV_METADATA_VERSION)
+            );
+        }
+        if self.yubikey.get_pin_retries()? == 0 {
+            bail!("YubiKey PIN retries are exhausted");
+        }
+        Ok(())
+    }
+
+    fn check_management_auth_preconditions(&mut self) -> Result<()> {
+        self.authenticate_management()
+    }
+
+    fn generate_key(&mut self) -> Result<()> {
+        self.check_key_generation_preconditions()?;
+        self.authenticate_management()?;
+        piv::generate(
+            &mut self.yubikey,
+            SECRET_SLOT,
+            AlgorithmId::Rsa2048,
+            PinPolicy::Once,
+            TouchPolicy::Always,
+        )?;
+        Ok(())
+    }
+
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
+        match self.yubikey.fetch_object(object_id.value()) {
+            Ok(value) => Ok(Some(value.to_vec())),
+            Err(yubikey::Error::NotFound) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
+        self.authenticate_management()?;
+        self.yubikey.save_object(object_id.value(), value)?;
+        Ok(())
+    }
+
+    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
+        let public = self.public_key()?;
+        Ok(public.encrypt(&mut OsRng, Oaep::new::<Sha256>(), key)?)
+    }
+
+    fn verify_pin(&mut self, pin: &[u8]) -> Result<()> {
+        self.verify_pin_once(pin)
+    }
+
+    fn requires_pin_input(&self) -> bool {
+        !self.pin_verified
+    }
+
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        if !self.pin_verified {
+            bail!("YubiKey PIN must be verified before reading stored secrets");
+        }
+        let decrypted = Zeroizing::new(piv::decrypt_data(
+            &mut self.yubikey,
+            wrapped_key,
+            AlgorithmId::Rsa2048,
+            SECRET_SLOT,
+        )?);
+        let mut output = Zeroizing::new(Vec::new());
+        support::write_oaep_unpadded_sha256(&decrypted, 256, &mut *output)?;
+        Ok(output)
+    }
+}
+
+/// 2 つの `yubikey::Version` を semantic version 順で比較する。
+///
+/// `yubikey::Version` に ordering がないため、PIV metadata 要件は tuple 比較で判定する。
+fn version_lt(left: Version, right: Version) -> bool {
+    (left.major, left.minor, left.patch) < (right.major, right.minor, right.patch)
+}
+
+/// PIV application version を dotted 表記の文字列へ変換する。
+fn format_version(version: Version) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
+}
 
 // ── terminal I/O helpers ──────────────────────────────────────────────────────
 
@@ -246,6 +416,27 @@ fn read_terminal_key_event(line: &mut String) -> Result<Option<String>> {
 const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
 
+/// echo なしの prompt で YubiKey PIN を読み、zeroize 保護済み bytes として返す。
+fn read_yubikey_pin_bytes() -> Result<Zeroizing<Vec<u8>>> {
+    let session = SecretSession::start()?;
+    let pin = read_hidden_input(
+        "YubiKey PIN: ",
+        PIV_PIN_MAX_LEN,
+        "YubiKey PIN is too long",
+        &session,
+    )?
+    .into_protected_secret_line(&session, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
+    pin.with_secret(validate_yubikey_pin)?;
+    Ok(Zeroizing::new(pin.with_secret(|b| b.to_vec())))
+}
+
+fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
+    if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
+        bail!("YubiKey PIN must be 6 to 8 bytes");
+    }
+    Ok(())
+}
+
 /// 表示 prompt で 1 行を読み、zeroize 保護済み bytes として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
@@ -268,27 +459,6 @@ fn read_hidden_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
         read_hidden_input(prompt, limit, "hidden secret input is too large", &session)?
             .into_protected_secret_line(&session, limit, "hidden secret input is too large")?;
     Ok(Zeroizing::new(protected.with_secret(|b| b.to_vec())))
-}
-
-/// echo なしの prompt で YubiKey PIN を読み、zeroize 保護済み bytes として返す。
-fn read_yubikey_pin_raw() -> Result<Zeroizing<Vec<u8>>> {
-    let session = SecretSession::start()?;
-    let pin = read_hidden_input(
-        "YubiKey PIN: ",
-        PIV_PIN_MAX_LEN,
-        "YubiKey PIN is too long",
-        &session,
-    )?
-    .into_protected_secret_line(&session, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
-    pin.with_secret(validate_yubikey_pin)?;
-    Ok(Zeroizing::new(pin.with_secret(|b| b.to_vec())))
-}
-
-fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {
-    if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
-        bail!("YubiKey PIN must be 6 to 8 bytes");
-    }
-    Ok(())
 }
 
 /// 表示 prompt の 1 行入力を保護済み buffer へ直接積み、待機中は interrupt flag を監視する。
@@ -366,17 +536,13 @@ fn read_stdin_bytes(limit: usize) -> Result<Zeroizing<Vec<u8>>> {
 const SECRET_STDOUT_TERMINAL_ERROR: &str =
     "refusing to write secret to terminal; redirect stdout to a file or pipe";
 
-/// stdout が TTY の場合は、復号結果を書き込む前に利用者向け error で停止する。
-fn ensure_secret_stdout_not_terminal() -> Result<()> {
+/// stdout の TTY 拒否を確認してから、復号済み bytes を stdout へ書き込む。
+///
+/// stdout が TTY の場合は、secret を書き込む前に利用者向け error で停止する。
+fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
     if stdout_is_terminal() {
         bail!(SECRET_STDOUT_TERMINAL_ERROR);
     }
-    Ok(())
-}
-
-/// stdout の TTY 拒否を確認してから、復号済み bytes を stdout へ書き込む。
-fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
-    ensure_secret_stdout_not_terminal()?;
     write_all_stdout(bytes)
 }
 
@@ -385,6 +551,17 @@ fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
 /// stdin JSON から enrollment secret の raw bytes を読み出す。
 ///
 /// JSON をデコードして各フィールドの値を `Zeroizing<Vec<u8>>` として返す。
+/// stdin が TTY の場合は error で失敗する。
+fn read_enrollment_json_bytes_from_stdin(
+    input_limit: usize,
+    field_limit: usize,
+) -> Result<EnrollmentBytes> {
+    if stdin_is_terminal() {
+        bail!("--stdin-json requires pipe or redirect input");
+    }
+    read_enrollment_json_bytes(std::io::stdin(), input_limit, field_limit)
+}
+
 fn read_enrollment_json_bytes(
     reader: impl Read,
     input_limit: usize,
@@ -866,12 +1043,12 @@ fn select_interactive_yubikey_until(
 fn open_interactive_device_until(
     deadline: Instant,
     interrupt: &InterruptGuard,
-) -> Result<yubikey::YubikeySecretDevice> {
+) -> Result<YubikeySecretDevice> {
     loop {
         interrupt.check_interrupted()?;
 
         match select_interactive_yubikey_until(deadline, interrupt) {
-            Ok(yk) => return Ok(yubikey::YubikeySecretDevice::from_yubikey(yk)),
+            Ok(yk) => return Ok(YubikeySecretDevice::new(yk)),
             Err(InteractiveSelectError::NoDevice) => {
                 let now = Instant::now();
                 if now >= deadline {
@@ -887,13 +1064,13 @@ fn open_interactive_device_until(
 }
 
 /// serial 指定または対話選択で実機 YubiKey device を開く。
-fn open_real_device(serial: Option<u32>) -> Result<yubikey::YubikeySecretDevice> {
+fn open_real_device(serial: Option<u32>) -> Result<YubikeySecretDevice> {
     let yk = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
         select_interactive_yubikey()?
     };
-    Ok(yubikey::YubikeySecretDevice::from_yubikey(yk))
+    Ok(YubikeySecretDevice::new(yk))
 }
 
 /// deadline 付きで serial 指定または対話選択で実機 YubiKey device を開く。
@@ -901,20 +1078,19 @@ fn open_real_device_until(
     serial: Option<u32>,
     deadline: Instant,
     interrupt: &InterruptGuard,
-) -> Result<yubikey::YubikeySecretDevice> {
+) -> Result<YubikeySecretDevice> {
     interrupt.check_interrupted()?;
     let yk = if let Some(serial) = serial {
         YubiKey::open_by_serial(Serial(serial))?
     } else {
-        // open_interactive_device_until returns the device directly
         return open_interactive_device_until(deadline, interrupt);
     };
     interrupt.check_interrupted()?;
-    Ok(yubikey::YubikeySecretDevice::from_yubikey(yk))
+    Ok(YubikeySecretDevice::new(yk))
 }
 
 /// spare 登録対象が primary と別 serial か確認する。
-fn ensure_spare_serial(device: &yubikey::YubikeySecretDevice, primary_serial: Option<u32>) -> Result<()> {
+fn ensure_spare_serial(device: &YubikeySecretDevice, primary_serial: Option<u32>) -> Result<()> {
     if Some(SecretDevice::serial(device)) == primary_serial {
         bail!("primary and spare YubiKey serial must be different");
     }
@@ -948,7 +1124,7 @@ fn open_real_spare_device(
     spare_serial: Option<u32>,
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,
-) -> Result<yubikey::YubikeySecretDevice> {
+) -> Result<YubikeySecretDevice> {
     if let Some(spare_serial) = spare_serial {
         let device = open_real_device(Some(spare_serial))?;
         ensure_spare_serial(&device, primary_serial)?;
@@ -968,6 +1144,24 @@ fn open_real_spare_device(
     }
 }
 
+// ── secret read helpers ───────────────────────────────────────────────────────
+
+/// secret 種別と入力元に応じた読み取りを実行し、zeroize 保護済み bytes を返す。
+///
+/// `from_stdin=true` の場合は stdin から読み取る（stdin が pipe でなければ失敗）。
+/// `from_stdin=false` の場合は adapter が secret 種別に応じた prompt 形式を選択する:
+/// `BwEmail` は表示入力、その他の secret と PIN は echo なし入力を使う。
+fn read_secret_bytes(name: SecretName, from_stdin: bool) -> Result<Zeroizing<Vec<u8>>> {
+    const LIMIT: usize = 16 * 1024;
+    if from_stdin {
+        return read_stdin_bytes(LIMIT);
+    }
+    match name {
+        SecretName::BwEmail => read_visible_line_bytes(&format!("{}: ", name), LIMIT),
+        _ => read_hidden_bytes(&format!("{}: ", name), LIMIT),
+    }
+}
+
 // ── RealSecretsBoundary ───────────────────────────────────────────────────────
 
 /// 実プロセスの stdin/stdout と実機 YubiKey device を `SecretsBoundary` port へ接続する adapter。
@@ -975,7 +1169,6 @@ fn open_real_spare_device(
 /// この型は実プロセスの I/O と実機 YubiKey のみを対象とし、test double（in-memory stub device）
 /// の実行経路は持たない。CLI 統合テスト向けの代替境界は tests 層の専用 crate が定義する。
 pub struct RealSecretsBoundary;
-
 
 impl SecretsBoundary for RealSecretsBoundary {
     type Device = YubikeySecretDevice;
@@ -1008,41 +1201,12 @@ impl SecretsBoundary for RealSecretsBoundary {
         Ok(())
     }
 
-    fn require_stdin_pipe(&self) -> Result<()> {
-        if stdin_is_terminal() {
-            bail!("--stdin requires pipe or redirect input");
-        }
-        Ok(())
+    fn read_pin(&self) -> Result<Zeroizing<Vec<u8>>> {
+        read_yubikey_pin_bytes()
     }
 
-    fn require_stdin_json_pipe(&self, enabled: bool) -> Result<()> {
-        if enabled && stdin_is_terminal() {
-            bail!("--stdin-json requires pipe or redirect input");
-        }
-        Ok(())
-    }
-
-    fn require_stdout_pipe(&self) -> Result<()> {
-        if stdout_is_terminal() {
-            bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
-        }
-        Ok(())
-    }
-
-    fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
-        read_yubikey_pin_raw()
-    }
-
-    fn read_hidden_bytes(&self, prompt_text: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-        read_hidden_bytes(prompt_text, limit)
-    }
-
-    fn read_visible_line_bytes(&self, prompt_text: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-        read_visible_line_bytes(prompt_text, limit)
-    }
-
-    fn read_stdin_bytes(&self, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-        read_stdin_bytes(limit)
+    fn read_secret(&self, name: SecretName, from_stdin: bool) -> Result<Zeroizing<Vec<u8>>> {
+        read_secret_bytes(name, from_stdin)
     }
 
     fn read_enrollment_json_bytes(
@@ -1050,10 +1214,10 @@ impl SecretsBoundary for RealSecretsBoundary {
         input_limit: usize,
         field_limit: usize,
     ) -> Result<EnrollmentBytes> {
-        read_enrollment_json_bytes(std::io::stdin(), input_limit, field_limit)
+        read_enrollment_json_bytes_from_stdin(input_limit, field_limit)
     }
 
-    fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()> {
+    fn write_secret(&self, bytes: &[u8]) -> Result<()> {
         write_secret_to_stdout(bytes)
     }
 
@@ -1062,7 +1226,7 @@ impl SecretsBoundary for RealSecretsBoundary {
         Ok(())
     }
 
-    fn prompt_continue_rotation(&self) -> Result<bool> {
+    fn ask_continue_rotation(&self) -> Result<bool> {
         prompt_yes_no(
             "Update another YubiKey? [y/N] ",
             &InterruptGuard::install()?,

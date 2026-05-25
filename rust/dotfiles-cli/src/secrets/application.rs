@@ -89,17 +89,16 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
 
 /// 指定された secret を device から復号し、stdout へ書き込む。
 ///
-/// stdout が pipe/redirect でない場合は、PIN verification と touch の前に停止する。
+/// stdout が TTY の場合は adapter が書き込みを拒否して失敗する。
 fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B) -> Result<()> {
     boundary.require_serial(options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
-    boundary.require_stdout_pipe()?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device, &session)?;
     let output_bytes = session.run_operation(|| {
         storage_service::get_protected(&mut device, options.name, &session)
     })?;
-    output_bytes.with_secret(|bytes| boundary.write_secret_to_stdout(bytes))?;
+    output_bytes.with_secret(|bytes| boundary.write_secret(bytes))?;
     Ok(())
 }
 
@@ -111,7 +110,6 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     boundary: &mut B,
 ) -> Result<()> {
     boundary.require_serial(options.serial, NONINTERACTIVE_SERIAL_ERROR)?;
-    boundary.require_stdin_json_pipe(options.stdin_json)?;
     boundary.require_option(options.stdin_json, "--stdin-json")?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
@@ -143,26 +141,25 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     Ok(())
 }
 
-/// `put` 用の単一 secret を prompt または stdin から読み込む。
+/// `put` 用の単一 secret を対話入力または stdin から読み込む。
 ///
 /// bytes を受け取り、session 所属の保護済み値へ移す。
+/// 入力形式（echo なし / 表示 / stdin）は adapter が secret 種別と `from_stdin` に応じて選択する。
 fn read_protected_secret_for_put<'session, B: SecretsBoundary>(
     boundary: &B,
     name: SecretName,
     stdin: bool,
     memory: &'session SecretSession,
 ) -> Result<ProtectedSecret<'session>> {
-    let bytes = if stdin {
-        boundary.read_stdin_bytes(MAX_SINGLE_STDIN_SECRET_LEN)?
-    } else {
-        boundary.read_hidden_bytes(&format!("{}: ", name), MAX_SINGLE_STDIN_SECRET_LEN)?
-    };
+    let bytes = boundary.read_secret(name, stdin)?;
     protect_bytes(bytes, memory)
 }
 
-/// 登録用の 3 field を prompt または stdin JSON から読み込む。
+/// 登録用の 3 field を対話入力または stdin JSON から読み込む。
 ///
 /// field ごとの保護境界を同じ session にそろえてから登録用 model にする。
+/// `stdin_json=true` の場合は stdin の JSON から読み取る（stdin が pipe でなければ adapter が失敗する）。
+/// `stdin_json=false` の場合は adapter が各 secret 種別に応じた対話入力を行う。
 fn read_enrollment_secret_set_from_user<'session, B: SecretsBoundary>(
     boundary: &B,
     stdin_json: bool,
@@ -181,10 +178,8 @@ fn read_enrollment_secret_set_from_user<'session, B: SecretsBoundary>(
         ));
     }
 
-    let bw_email = protect_bytes(
-        boundary.read_visible_line_bytes("bw-email: ", MAX_SINGLE_STDIN_SECRET_LEN)?,
-        memory,
-    )?;
+    let bw_email =
+        read_protected_secret_for_put(boundary, SecretName::BwEmail, false, memory)?;
     let bw_password =
         read_protected_secret_for_put(boundary, SecretName::BwPassword, false, memory)?;
     let bws_access_token =
@@ -219,7 +214,6 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         boundary.require_serial(options.primary_serial, NONINTERACTIVE_PRIMARY_SERIAL_ERROR)?;
     }
     boundary.require_serial(options.spare_serial, NONINTERACTIVE_SPARE_SERIAL_ERROR)?;
-    boundary.require_stdin_json_pipe(options.stdin_json)?;
     let session = SecretSession::start()?;
     let prepared_spare = if options.stdin_json || options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(options.spare_serial, options.primary_serial)?;
@@ -397,7 +391,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     drop(device);
 
     let remaining_result = (|| -> Result<()> {
-        while session.run_operation(|| boundary.prompt_continue_rotation())? {
+        while session.run_operation(|| boundary.ask_continue_rotation())? {
             session.check_interrupted()?;
             let mut device = boundary.open_device(None)?;
             session.check_interrupted()?;
@@ -603,17 +597,18 @@ fn verify_pin_for_secret_reads<B: SecretsBoundary>(
         return Ok(());
     }
 
-    let pin_bytes = boundary.read_yubikey_pin_bytes()?;
+    let pin_bytes = boundary.read_pin()?;
     let pin = protect_bytes(pin_bytes, session)?;
     pin.with_secret(|pin| session.run_operation(|| device.verify_pin(pin)))
 }
 
 /// 単一 secret を stdin から読む command の入力契約を確認する。
 ///
-/// 非対話では `--stdin` を必須にし、TTY stdin では hidden prompt と混同しないよう拒否する。
+/// `stdin=false` の場合は非対話モードで `--stdin` が必須であることを確認する。
+/// `stdin=true` の場合は adapter の `read_secret` が stdin の pipe 契約を内部で確認する。
 fn require_single_stdin_secret_source<B: SecretsBoundary>(stdin: bool, boundary: &B) -> Result<()> {
-    if stdin {
-        return boundary.require_stdin_pipe();
+    if !stdin {
+        return boundary.require_option(false, "--stdin");
     }
-    boundary.require_option(false, "--stdin")
+    Ok(())
 }

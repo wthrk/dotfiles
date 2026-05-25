@@ -10,7 +10,7 @@
 mod adapters;
 mod application;
 pub mod domain;
-mod ports;
+pub mod ports;
 mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
@@ -24,7 +24,7 @@ use crate::Result;
 ///
 /// adapter が JSON を decode して構築し、application 層が `SecretSession` へ移送する。
 /// adapter と application の両方から参照するため、secrets module トップレベルに定義する。
-/// CLI 統合テストの stub crate は `boundary` module 経由でこの型にアクセスする。
+/// `SecretsBoundary::read_enrollment_json_bytes` の返り値型として ports module からも参照される。
 pub struct EnrollmentBytes {
     pub bw_email: Zeroizing<Vec<u8>>,
     pub bw_password: Zeroizing<Vec<u8>>,
@@ -181,8 +181,7 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
 
 /// argv を `dotfiles secrets <subcommand>` として解釈し、与えられた境界で use case を実行する。
 ///
-/// 実プロセスの stdin/stdout/PIN/JSON 契約は `boundary` が所有し、device の取得だけが
-/// 呼び出し側の `SecretsBoundary` 実装で差し替わる。
+/// 実プロセスの I/O・device 取得契約は呼び出し側の `SecretsBoundary` 実装が差し替える。
 /// tests 層の stub crate（`dotfiles-cli-secrets-test-stub`）が production 経路を駆動するために使う。
 pub fn run_with_args<I, T, B>(args: I, boundary: &mut B) -> Result<()>
 where
@@ -206,14 +205,4 @@ where
 
     let ArgsCommand::Secrets(options) = ArgsCli::try_parse_from(args)?.command;
     application::run_with_boundary(options, boundary)
-}
-
-/// ports および adapters の公開型を crate 外から参照するための再エクスポート。
-///
-/// tests 層の stub crate が境界実装の構築に使う production 型だけを公開する。
-/// test double 定義（実依存を肩代わりする型）は本 crate に置かない。
-pub mod boundary {
-    pub use super::adapters::process_boundary::RealSecretsBoundary;
-    pub use super::EnrollmentBytes;
-    pub use super::ports::{SecretDevice, SecretDeviceFactory, SecretsBoundary};
 }

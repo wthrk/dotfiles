@@ -19,10 +19,12 @@ pub type Result<T> = dotfiles_core::Result<T>;
 
 pub use cli::dispatch;
 
-/// tests 層の stub crate が production 経路を駆動するための公開境界。
+/// tests 層の stub crate が production 経路を駆動するための公開 seam。
 ///
-/// port 契約・domain wire format・実プロセス境界の組立 seam を公開する。
+/// port 契約型・domain wire format・application entrypoint 関数を公開する。
+/// adapter 具体型（`RealSecretsBoundary` 等）は tests 層から直接参照させない。
 /// test double（実依存を肩代わりする型）は本 crate に置かない。
-pub use secrets::boundary;
 pub use secrets::domain;
+pub use secrets::ports;
 pub use secrets::run_with_args;
+pub use secrets::EnrollmentBytes;
