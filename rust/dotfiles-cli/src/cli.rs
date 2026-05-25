@@ -25,7 +25,7 @@ enum Command {
 }
 
 /// clap が確定したオプションだけを各処理へ渡し、ここでは実行ロジックを持たない。
-pub(crate) fn dispatch() -> Result<()> {
+pub fn dispatch() -> Result<()> {
     match Cli::parse().command {
         Command::Init(options) => crate::init::run(options),
         Command::Secrets(options) => crate::secrets::run(options),

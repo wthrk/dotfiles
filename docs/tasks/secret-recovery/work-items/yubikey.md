@@ -69,6 +69,32 @@
 - 「動作する」という事実のみを根拠に完了報告している
 - 粗粒度進捗注記: `#12` の design PR は `#21` として成立済みであり、現段階の主作業は implementation / code review / validation 面である。
 
+## 現行レビュー差し戻しに基づく追加是正項目（2026-05-26）
+
+2026-05-26 の規定レビュー担当一式によって、固定実装単位トラッカーの `完了` 扱いを維持できない残課題が再確認された。次回実装サイクルでは、以下を差戻し対象として明示的に解消すること。
+
+- **レビュー/状態記録の扱い**
+  - 今回の `コード差分なし` レビューは完了前進の根拠に使わず、`review-artifacts/yubikey/review.md` の不合格記録を差戻し正本として保持する。
+  - 新たな実コード差分と確認証跡が揃うまで、固定実装単位トラッカーの `確認` / `レビュー` / `必要時の後続対応` は `未着手` のまま維持する。
+
+- **ステップ3 を再開する（V6 再差戻し）**
+  - `ports.rs` から DTO / prompt / stdin / stdout / terminal 判定に相当する契約を除去し、port を capability 宣言へ戻す。
+- **ステップ4 を再開する（V10 再差戻し）**
+  - `application/storage_service.rs` に再集中している blob / wire / 暗号 / manifest / 永続 I/O の責務を単一層へ再分離する。
+- **ステップ5 を再開する（V12, V13 再差戻し + adapter seam 不整合解消）**
+  - `ProcessSecretsBoundary` / `RealSecretDeviceFactory` を前提にする公開面と、`RealSecretsBoundary` を中核にする実装実体の不一致を解消し、adapter 境界契約を単一の seam に統一する。
+  - `process_boundary.rs` から test double / test 用 backend 分岐を除去し、production adapter が実外部技術と port 契約の翻訳だけを担う状態へ戻す。
+  - `adapters.rs` の公開面が port 実装以外に依存しないよう再設計し、`build_real_boundary` を含む adapter surface の責務を見直す。
+- **ステップ6 を再開する（V5 再差戻し）**
+  - `application/storage_service.rs` から manifest JSON parse/serialize、blob decode、永続 I/O、summary 構築の混在を除去する。
+- **ステップ7 を再開する（V2, V3 再差戻し）**
+  - `application.rs` から stdin 読み取り、stdout 書き込み方針、prompt、concrete device handle の長寿命保持と直接操作を除去する。
+- **ステップ8 を再開する（V14 再差戻し + テスト実行基盤整合）**
+  - production source tree から test double 責務を完全に除去し、`secrets-test-stub` 経路や `dotfiles-stub` 前提を tests 層 / test-support 側へ閉じる。
+  - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
+- **文書整合の是正**
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントで現行実装と一致しない `real_boundary` 参照を修正する。
+
 ## 実装順序ガイド（推奨）
 
 規約違反 V1〜V16 の解消は、依存関係の順序を考慮して以下の順で着手することを推奨する。
@@ -137,11 +163,11 @@
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（domain summary DTO除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ4: V10（blob.rs責務分割） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ8: V14,V15（test double除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 確認 | 完了 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 実装 ステップ4: V10（blob.rs責務分割） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

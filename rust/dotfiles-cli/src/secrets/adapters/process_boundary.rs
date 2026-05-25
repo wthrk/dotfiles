@@ -26,8 +26,9 @@ use super::test_stub;
 use super::yubikey;
 use crate::{
     secrets::{
-        ports::{EnrollmentBytes, SecretDevice, SecretsBoundary},
+        ports::{SecretDevice, SecretsBoundary},
         support::protection::{InterruptGuard, ProtectedInputBuffer, ProtectedSecret, SecretSession},
+        EnrollmentBytes,
     },
     Result,
 };
@@ -1153,13 +1154,13 @@ fn open_real_spare_device(
 // ── RealSecretsBoundary ───────────────────────────────────────────────────────
 
 /// 実プロセスの stdin/stdout と device backend を接続する `SecretsBoundary` 実装。
-pub(super) struct RealSecretsBoundary {
+pub struct RealSecretsBoundary {
     backend: DeviceBackend,
 }
 
 impl RealSecretsBoundary {
     /// 指定した backend flag で `RealSecretsBoundary` を構築する。
-    pub(super) fn new(test_stub: bool) -> Result<Self> {
+    pub fn new(test_stub: bool) -> Result<Self> {
         let backend = DeviceBackend::from_test_flag(test_stub)?;
         Ok(Self { backend })
     }

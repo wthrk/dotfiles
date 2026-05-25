@@ -8,18 +8,21 @@
 //! - port は `domain` にのみ依存可能。`support` 型はシグネチャに使えない
 //! - TTY 判定・prompt 文言・入力形式の詳細は adapter 所有
 //! - 非対話条件チェックも境界が行い、application は use case 順序だけを所有する
+//! - DTO（`EnrollmentBytes` 等）は port に置かない。adapter と application の共有型は
+//!   secrets module ルートに `pub(crate)` で定義する
 
 use zeroize::Zeroizing;
 
 use crate::Result;
 
 use super::domain::PivObjectId;
+use super::EnrollmentBytes;
 
 /// application use case が利用する外部 I/O 境界。
 ///
 /// 実機 adapter と test stub は同じ device 操作順序をこの trait で共有する。
 /// 非対話条件・device 取得・secret 入力・出力はすべてこの trait を通す。
-pub(crate) trait SecretsBoundary {
+pub trait SecretsBoundary {
     type Device: SecretDevice;
 
     fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device>;
@@ -86,19 +89,31 @@ pub(crate) trait SecretsBoundary {
     fn prompt_continue_rotation(&self) -> Result<bool>;
 }
 
-/// stdin JSON から読み出した enrollment secret set の raw bytes。
+/// device 境界が必要とする YubiKey device の取得契約。
 ///
-/// 各 field は zeroize 保護済みで、application 層が `SecretSession` へ移送する。
-pub(crate) struct EnrollmentBytes {
-    pub(crate) bw_email: Zeroizing<Vec<u8>>,
-    pub(crate) bw_password: Zeroizing<Vec<u8>>,
-    pub(crate) bws_access_token: Zeroizing<Vec<u8>>,
+/// 実プロセス境界はこの contract を通じてだけ device を開き、実機 discovery と CLI 統合テストの
+/// 代替 device 実装は同じ取得順序をこの trait で共有する。`SecretDevice`（port）と serial 値だけに
+/// 依存し、terminal 待機や interrupt policy のような実装詳細は実装側に閉じる。
+pub trait SecretDeviceFactory {
+    type Device: SecretDevice;
+
+    /// 通常操作対象 device を serial 指定または対話選択で開く。
+    fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device>;
+
+    /// spare 登録対象 device を開く。
+    ///
+    /// spare が primary と別 serial であることの確認は実装側が担う。
+    fn open_spare_device(
+        &mut self,
+        spare_serial: Option<u32>,
+        primary_serial: Option<u32>,
+    ) -> Result<Self::Device>;
 }
 
 /// storage 操作が必要とする device API。
 ///
 /// 実機 YubiKey と fake test double はこの最小操作を共有する。
-pub(crate) trait SecretDevice {
+pub trait SecretDevice {
     /// device 固有の serial。AEAD additional data にも含める。
     fn serial(&self) -> u32;
     /// secret storage 用 PIV key が存在するか確認する。

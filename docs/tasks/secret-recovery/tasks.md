@@ -6,7 +6,7 @@
 
 ### YubiKey
 
-- 状態: `差し戻し`
+- 状態: `進行中`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)
@@ -19,7 +19,7 @@
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 実装状態: `完了`
+- 実装状態: `実装中`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -30,14 +30,19 @@
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（domain summary DTO除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ4: V10（blob.rs責務分割） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 実装 ステップ8: V14,V15（test double除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
-| 確認 | 完了 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 実装 ステップ4: V10（blob.rs責務分割） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
+| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+
+- 現行レビュー差し戻しメモ（2026-05-26）:
+  - 再開対象は `work-items/yubikey.md` の「現行レビュー差し戻しに基づく追加是正項目（2026-05-26）」を正本とする。
+  - レビュー正本は `review-artifacts/yubikey/review.md` の 2026-05-26 現行コード全体レビュー記録を参照する。
+  - 主な差戻し論点は `ProcessSecretsBoundary` 系 seam と `RealSecretsBoundary` 実体の不一致、`application`/`ports`/`storage_service`/`adapters` への責務残留、production tree への test double 責務混入、`dotfiles-stub` / feature 定義とテスト実行基盤の不整合、`adapters/yubikey.rs` コメント不整合である。
 
 ### Bitwarden Secrets Manager
 
