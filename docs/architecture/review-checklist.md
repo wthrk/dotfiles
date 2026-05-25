@@ -24,7 +24,7 @@
 2. 各ファイルで `pub fn`、`pub(crate) fn`、`pub(super) fn`、`pub struct`、`pub(crate) struct`、`pub(super) struct`、`pub type`、`pub const` をすべて列挙する。
 3. 列挙した各公開シンボルについて「これは port trait を実装する型か、またはそのメソッド実装か」を判定する。
 4. 1件でも「port trait 実装でない公開シンボル」が存在した場合、即座に `判定: 不合格` とする。
-5. `adapters.rs`（または `adapters/mod.rs`）が `pub(super)` で子モジュールを公開している場合、そのモジュール内の公開シンボルが `secrets` 親モジュールから参照可能になる。この経路も確認する。
+5. `adapters.rs`（または `adapters/mod.rs`）が `pub(super)` で子モジュールを公開している場合、そのモジュール内の公開シンボルが親モジュールから参照可能になる。この経路も確認する。
 
 ## application/ 配下
 
