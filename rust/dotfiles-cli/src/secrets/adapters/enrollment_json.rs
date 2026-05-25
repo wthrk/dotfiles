@@ -5,10 +5,11 @@
 use std::io::Read;
 
 use anyhow::{bail, Context};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     secrets::{
+        ports::EnrollmentBytes,
         support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
         EnrollmentSecretSet,
     },
@@ -17,6 +18,26 @@ use crate::{
 
 #[cfg(test)]
 use crate::secrets::domain::SecretName;
+
+/// stdin JSON から enrollment secret の raw bytes を読み出す。
+///
+/// JSON をデコードして各フィールドの値を `Zeroizing<Vec<u8>>` として返す。
+pub(crate) fn read_enrollment_json_bytes(
+    reader: impl Read,
+    input_limit: usize,
+    field_limit: usize,
+) -> Result<EnrollmentBytes> {
+    let session = SecretSession::start()?;
+    let input = ProtectedInputBuffer::read_from(
+        reader,
+        input_limit,
+        "bootstrap secret JSON input is too large",
+        &session,
+    )?;
+    EnrollmentSecretSetParser::new(input.as_slice(), field_limit, &session)
+        .parse_to_bytes()
+        .context("failed to parse bootstrap secret JSON")
+}
 
 pub(crate) fn read_protected_enrollment_secret_set<'session>(
     reader: impl Read,
@@ -135,6 +156,59 @@ impl<'input, 'session> EnrollmentSecretSetParser<'input, 'session> {
             bw_password,
             bws_access_token,
         ))
+    }
+
+    fn parse_to_bytes(mut self) -> Result<EnrollmentBytes> {
+        self.skip_whitespace();
+        self.expect_byte(b'{')?;
+
+        let mut bw_email: Option<ProtectedSecret<'session>> = None;
+        let mut bw_password: Option<ProtectedSecret<'session>> = None;
+        let mut bws_access_token: Option<ProtectedSecret<'session>> = None;
+        let mut first = true;
+        loop {
+            self.skip_whitespace();
+            if self.peek_byte() == Some(b'}') {
+                self.cursor += 1;
+                break;
+            }
+            if !first {
+                self.expect_byte(b',')?;
+                self.skip_whitespace();
+            }
+            first = false;
+
+            let key = self.parse_json_string_to_plaintext()?;
+            let field = BootstrapSecretField::from_decoded_key(&key)
+                .ok_or_else(|| anyhow::anyhow!("unknown field `{key}`"))?;
+            self.skip_whitespace();
+            self.expect_byte(b':')?;
+            self.skip_whitespace();
+            let secret = self.parse_json_string_to_protected_secret()?;
+            let target = match field {
+                BootstrapSecretField::BwEmail => &mut bw_email,
+                BootstrapSecretField::BwPassword => &mut bw_password,
+                BootstrapSecretField::BwsAccessToken => &mut bws_access_token,
+            };
+            if target.is_some() {
+                bail!("duplicate field `{}`", field.name());
+            }
+            *target = Some(secret);
+        }
+
+        self.skip_whitespace();
+        if self.cursor != self.input.len() {
+            bail!("trailing characters after bootstrap secret JSON object");
+        }
+
+        let bw_email = bw_email.context("missing field `bw-email`")?;
+        let bw_password = bw_password.context("missing field `bw-password`")?;
+        let bws_access_token = bws_access_token.context("missing field `bws-access-token`")?;
+        Ok(EnrollmentBytes {
+            bw_email: Zeroizing::new(bw_email.with_secret(|b| b.to_vec())),
+            bw_password: Zeroizing::new(bw_password.with_secret(|b| b.to_vec())),
+            bws_access_token: Zeroizing::new(bws_access_token.with_secret(|b| b.to_vec())),
+        })
     }
 
     fn parse_json_string_to_plaintext(&mut self) -> Result<String> {

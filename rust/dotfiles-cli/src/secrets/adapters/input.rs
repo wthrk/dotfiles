@@ -2,7 +2,7 @@
 //!
 //! 各責務は個別の adapter module に委譲する。
 
-pub(crate) use super::enrollment_json::read_protected_enrollment_secret_set;
-pub(crate) use super::prompt::{read_hidden_secret, read_visible_secret_line, read_yubikey_pin};
-pub(crate) use super::stdin::read_protected_stdin_secret;
+pub(crate) use super::enrollment_json::read_enrollment_json_bytes;
+pub(crate) use super::prompt::{read_hidden_bytes, read_visible_line_bytes, read_yubikey_pin_raw};
+pub(crate) use super::stdin::read_stdin_bytes;
 pub(crate) use super::stdout::write_secret_to_stdout;

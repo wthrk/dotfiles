@@ -2,24 +2,26 @@
 //!
 //! pipe または redirect された stdin から保護済み値を読み込む。
 
+use anyhow::bail;
+use zeroize::Zeroizing;
+
 use crate::{
-    secrets::support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    secrets::support::protection::{ProtectedInputBuffer, SecretSession},
     Result,
 };
-use anyhow::bail;
 
 use super::terminal;
 
-/// stdin から 1 secret を読み、現在の session の保護済み値として返す。
+/// stdin から 1 secret を読み、zeroize 保護済み bytes として返す。
 ///
-/// 読み込み時の lock guard を引き継ぎ、unlock は値の破棄後に遅延させる。
-pub(crate) fn read_protected_stdin_secret(
-    limit: usize,
-    session: &SecretSession,
-) -> Result<ProtectedSecret<'_>> {
+/// stdin が TTY の場合は error で失敗する。
+pub(crate) fn read_stdin_bytes(limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     if terminal::stdin_is_terminal() {
         bail!("--stdin requires pipe or redirect input");
     }
-    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, session)?;
-    input.into_protected_secret_line(session, limit, "stdin secret input is too large")
+    let session = SecretSession::start()?;
+    let input = ProtectedInputBuffer::read_line_from(std::io::stdin(), limit, &session)?;
+    let protected =
+        input.into_protected_secret_line(&session, limit, "stdin secret input is too large")?;
+    Ok(Zeroizing::new(protected.with_secret(|b| b.to_vec())))
 }

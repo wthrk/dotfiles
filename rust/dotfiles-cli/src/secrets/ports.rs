@@ -2,11 +2,18 @@
 //!
 //! application はこの module の trait だけに依存し、実機 YubiKey と test stub の具体的な
 //! 入出力差分は adapter 側に閉じる。
+//!
+//! ## 設計制約
+//!
+//! - port は `domain` にのみ依存可能。`support` 型はシグネチャに使えない
+//! - TTY 判定・prompt 文言・入力形式の詳細は adapter 所有
+//! - 非対話条件チェックも境界が行い、application は use case 順序だけを所有する
+
+use zeroize::Zeroizing;
 
 use crate::Result;
 
 use super::domain::PivObjectId;
-use super::support::protection::{ProtectedSecret, SecretSession};
 
 /// application use case が利用する外部 I/O 境界。
 ///
@@ -22,48 +29,50 @@ pub(crate) trait SecretsBoundary {
         primary_serial: Option<u32>,
     ) -> Result<Self::Device>;
 
-    /// stdin が対話入力を読める TTY かを返す。
-    fn stdin_is_terminal(&self) -> bool;
+    /// 非対話時に serial が必須であることを確認する。
+    ///
+    /// `serial` が `None` かつ非対話実行の場合は `error_message` で失敗する。
+    /// TTY 判定は adapter 内部で行い、port シグネチャには露出しない。
+    fn require_serial(&self, serial: Option<u32>, error_message: &'static str) -> Result<()>;
 
-    /// stdout が画面表示される TTY かを返す。
-    fn stdout_is_terminal(&self) -> bool;
+    /// 非対話時に必須 option が指定されていることを確認する。
+    ///
+    /// `enabled` が `false` かつ非対話実行の場合は `option_name` を含む error で失敗する。
+    fn require_option(&self, enabled: bool, option_name: &'static str) -> Result<()>;
 
-    /// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
-    fn read_yubikey_pin<'session>(
-        &self,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
+    /// `--stdin` が pipe/redirect 入力を指していることを確認する。
+    ///
+    /// stdin が TTY の場合は error で失敗する。
+    fn require_stdin_pipe(&self) -> Result<()>;
 
-    /// echo なしの prompt で 1 行を読み、保護済み値として返す。
-    fn read_hidden_secret<'session>(
-        &self,
-        prompt: &str,
-        limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
+    /// `--stdin-json` が pipe/redirect 入力を指していることを確認する。
+    ///
+    /// `enabled` が `true` かつ stdin が TTY の場合は error で失敗する。
+    fn require_stdin_json_pipe(&self, enabled: bool) -> Result<()>;
 
-    /// 表示 prompt で 1 行を読み、保護済み値として返す。
-    fn read_visible_secret_line<'session>(
-        &self,
-        prompt: &str,
-        limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
+    /// stdout が pipe/redirect を向いていることを確認する。
+    ///
+    /// stdout が TTY の場合は secret 書き込みを拒否して error で失敗する。
+    fn require_stdout_pipe(&self) -> Result<()>;
 
-    /// stdin から 1 secret を読み、保護済み値として返す。
-    fn read_protected_stdin_secret<'session>(
-        &self,
-        limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>>;
+    /// echo なしの prompt で YubiKey PIN を読み、zeroize 保護済み bytes として返す。
+    fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>>;
 
-    /// stdin JSON から 3 field を読み、保護済み enrollment secret set として返す。
-    fn read_protected_enrollment_secret_set<'session>(
+    /// echo なしの prompt で 1 行を読み、zeroize 保護済み bytes として返す。
+    fn read_hidden_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>>;
+
+    /// 表示 prompt で 1 行を読み、zeroize 保護済み bytes として返す。
+    fn read_visible_line_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>>;
+
+    /// stdin から 1 secret を読み、zeroize 保護済み bytes として返す。
+    fn read_stdin_bytes(&self, limit: usize) -> Result<Zeroizing<Vec<u8>>>;
+
+    /// stdin JSON から enrollment secret set の 3 field を読み、bytes として返す。
+    fn read_enrollment_json_bytes(
         &self,
         input_limit: usize,
         field_limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<super::EnrollmentSecretSet<'session>>;
+    ) -> Result<EnrollmentBytes>;
 
     /// 復号済み secret bytes を stdout へ書き込む。stdout が TTY の場合は停止する。
     fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()>;
@@ -71,8 +80,19 @@ pub(crate) trait SecretsBoundary {
     /// summary を JSON として stdout へ出力する。
     fn write_report(&self, value: &impl serde::Serialize) -> Result<()>;
 
-    /// TTY で yes/no prompt を表示し、応答を返す。stdin が TTY でない場合は false を返す。
-    fn prompt_yes_no(&self, prompt: &str, session: &SecretSession) -> Result<bool>;
+    /// TTY で次の YubiKey を更新するか yes/no で確認し、応答を返す。
+    ///
+    /// stdin が TTY でない場合は false を返す。prompt 文言は adapter 側で保持する。
+    fn prompt_continue_rotation(&self) -> Result<bool>;
+}
+
+/// stdin JSON から読み出した enrollment secret set の raw bytes。
+///
+/// 各 field は zeroize 保護済みで、application 層が `SecretSession` へ移送する。
+pub(crate) struct EnrollmentBytes {
+    pub(crate) bw_email: Zeroizing<Vec<u8>>,
+    pub(crate) bw_password: Zeroizing<Vec<u8>>,
+    pub(crate) bws_access_token: Zeroizing<Vec<u8>>,
 }
 
 /// storage 操作が必要とする device API。

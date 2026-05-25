@@ -10,55 +10,53 @@ use std::{
 };
 
 use anyhow::bail;
+use zeroize::Zeroizing;
 
 use super::terminal;
 use crate::{
-    secrets::support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    secrets::support::protection::{ProtectedInputBuffer, SecretSession},
     Result,
 };
 
 const PIV_PIN_MIN_LEN: usize = 6;
 const PIV_PIN_MAX_LEN: usize = 8;
 
-/// 表示 prompt で 1 行を読み、lock 済み入力 buffer として返す。
+/// 表示 prompt で 1 行を読み、zeroize 保護済み bytes として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
-pub(crate) fn read_visible_secret_line<'session>(
-    prompt: &str,
-    limit: usize,
-    memory: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
+pub(crate) fn read_visible_line_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+    let session = SecretSession::start()?;
     eprint!("{prompt}");
     io::stderr().flush()?;
-    let input = read_visible_secret_input(limit, memory)?;
-    input.into_protected_secret_line(memory, limit, "visible secret input is too large")
+    let input = read_visible_secret_input(limit, &session)?;
+    let protected =
+        input.into_protected_secret_line(&session, limit, "visible secret input is too large")?;
+    Ok(Zeroizing::new(protected.with_secret(|b| b.to_vec())))
 }
 
-/// echo なしの prompt で 1 行を読み、lock 済み入力 buffer として返す。
+/// echo なしの prompt で 1 行を読み、zeroize 保護済み bytes として返す。
 ///
 /// 読み込んだ bytes に上限を適用する。
-pub(crate) fn read_hidden_secret<'session>(
-    prompt: &str,
-    limit: usize,
-    memory: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
-    terminal::read_hidden_input(prompt, limit, "hidden secret input is too large", memory)?
-        .into_protected_secret_line(memory, limit, "hidden secret input is too large")
+pub(crate) fn read_hidden_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+    let session = SecretSession::start()?;
+    let protected =
+        terminal::read_hidden_input(prompt, limit, "hidden secret input is too large", &session)?
+            .into_protected_secret_line(&session, limit, "hidden secret input is too large")?;
+    Ok(Zeroizing::new(protected.with_secret(|b| b.to_vec())))
 }
 
-/// echo なしの prompt で YubiKey PIN を読み、保護 session に所属させる。
-pub(crate) fn read_yubikey_pin<'session>(
-    memory: &'session SecretSession,
-) -> Result<ProtectedSecret<'session>> {
+/// echo なしの prompt で YubiKey PIN を読み、zeroize 保護済み bytes として返す。
+pub(crate) fn read_yubikey_pin_raw() -> Result<Zeroizing<Vec<u8>>> {
+    let session = SecretSession::start()?;
     let pin = terminal::read_hidden_input(
         "YubiKey PIN: ",
         PIV_PIN_MAX_LEN,
         "YubiKey PIN is too long",
-        memory,
+        &session,
     )?
-    .into_protected_secret_line(memory, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
+    .into_protected_secret_line(&session, PIV_PIN_MAX_LEN, "YubiKey PIN is too long")?;
     pin.with_secret(validate_yubikey_pin)?;
-    Ok(pin)
+    Ok(Zeroizing::new(pin.with_secret(|b| b.to_vec())))
 }
 
 fn validate_yubikey_pin(pin: &[u8]) -> Result<()> {

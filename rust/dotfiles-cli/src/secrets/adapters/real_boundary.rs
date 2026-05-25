@@ -2,14 +2,14 @@
 //!
 //! use case orchestration から concrete 境界実装を分離し、application 本体は順序制御だけに集中させる。
 
-use anyhow::Context;
+use anyhow::{bail, Context};
+use zeroize::Zeroizing;
 
 use super::{input, open_device, open_spare_device, terminal, DeviceBackend, YubikeySecretDevice};
 use crate::{
     secrets::{
-        ports::SecretsBoundary,
-        support::protection::{InterruptGuard, ProtectedSecret, SecretSession},
-        EnrollmentSecretSet,
+        ports::{EnrollmentBytes, SecretsBoundary},
+        support::protection::InterruptGuard,
     },
     Result,
 };
@@ -36,59 +36,64 @@ impl SecretsBoundary for RealSecretsBoundary {
         open_spare_device(&mut self.backend, spare_serial, primary_serial, &interrupt)
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        terminal::stdin_is_terminal()
+    fn require_serial(&self, serial: Option<u32>, error_message: &'static str) -> Result<()> {
+        if serial.is_none() && !terminal::stdin_is_terminal() {
+            bail!(error_message);
+        }
+        Ok(())
     }
 
-    fn stdout_is_terminal(&self) -> bool {
-        terminal::stdout_is_terminal()
+    fn require_option(&self, enabled: bool, option_name: &'static str) -> Result<()> {
+        if !enabled && !terminal::stdin_is_terminal() {
+            bail!("pass {option_name} in non-interactive use");
+        }
+        Ok(())
     }
 
-    fn read_yubikey_pin<'session>(
-        &self,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        input::read_yubikey_pin(session)
+    fn require_stdin_pipe(&self) -> Result<()> {
+        if terminal::stdin_is_terminal() {
+            bail!("--stdin requires pipe or redirect input");
+        }
+        Ok(())
     }
 
-    fn read_hidden_secret<'session>(
-        &self,
-        prompt: &str,
-        limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        input::read_hidden_secret(prompt, limit, session)
+    fn require_stdin_json_pipe(&self, enabled: bool) -> Result<()> {
+        if enabled && terminal::stdin_is_terminal() {
+            bail!("--stdin-json requires pipe or redirect input");
+        }
+        Ok(())
     }
 
-    fn read_visible_secret_line<'session>(
-        &self,
-        prompt: &str,
-        limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        input::read_visible_secret_line(prompt, limit, session)
+    fn require_stdout_pipe(&self) -> Result<()> {
+        if terminal::stdout_is_terminal() {
+            bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
+        }
+        Ok(())
     }
 
-    fn read_protected_stdin_secret<'session>(
-        &self,
-        limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        input::read_protected_stdin_secret(limit, session)
+    fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
+        let protected = input::read_yubikey_pin_raw()?;
+        Ok(protected)
     }
 
-    fn read_protected_enrollment_secret_set<'session>(
+    fn read_hidden_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        input::read_hidden_bytes(prompt, limit)
+    }
+
+    fn read_visible_line_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        input::read_visible_line_bytes(prompt, limit)
+    }
+
+    fn read_stdin_bytes(&self, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        input::read_stdin_bytes(limit)
+    }
+
+    fn read_enrollment_json_bytes(
         &self,
         input_limit: usize,
         field_limit: usize,
-        session: &'session SecretSession,
-    ) -> Result<EnrollmentSecretSet<'session>> {
-        input::read_protected_enrollment_secret_set(
-            std::io::stdin(),
-            input_limit,
-            field_limit,
-            session,
-        )
+    ) -> Result<EnrollmentBytes> {
+        input::read_enrollment_json_bytes(std::io::stdin(), input_limit, field_limit)
     }
 
     fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()> {
@@ -100,7 +105,10 @@ impl SecretsBoundary for RealSecretsBoundary {
         Ok(())
     }
 
-    fn prompt_yes_no(&self, prompt: &str, session: &SecretSession) -> Result<bool> {
-        terminal::prompt_yes_no(prompt, session.interrupt())
+    fn prompt_continue_rotation(&self) -> Result<bool> {
+        terminal::prompt_yes_no(
+            "Update another YubiKey? [y/N] ",
+            &InterruptGuard::install()?,
+        )
     }
 }
