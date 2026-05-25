@@ -848,3 +848,193 @@ yubikey.rs
 構造レビュー 不合格・仕様適合レビュー 要修正 の指摘事項は review.md 集約判定の注記の通り旧バージョン（adapters/ 複数ファイル分割時代）に基づく指摘であり、現行 HEAD では解消済み（第8回確認にて確認済み）。
 
 差戻し条件に抵触する違反は残存しない。第9回レビューサイクル着手可能と判断する。
+
+---
+
+## 第10回確認（2026-05-26）— 2026-05-26 差し戻し対応後の現行 HEAD 確認
+
+- 確認対象差分識別子: `feat/yubikey-secret-storage HEAD: 41d3216`
+- 対象ブランチ: `feat/yubikey-secret-storage`
+- 確認開始時 HEAD: `41d3216`
+- 差分区分: `実装（ステップ3〜8 再実施）`
+
+### 背景
+
+`review.md`（2026-05-26 現行コード全体レビュー）で集約判定 `不合格` が返された。主な差し戻し論点は次の通り:
+
+- `ProcessSecretsBoundary` / `RealSecretDeviceFactory` seam と `RealSecretsBoundary` 実体の不一致
+- `ports.rs` / `storage_service.rs` / `adapters.rs` への責務残留（V5/V6/V10/V12/V13/V14）
+- production source tree への test double 責務混入
+- `dotfiles-stub` / `secrets-test-stub` feature 定義とテスト実行基盤の不整合
+- `adapters/yubikey.rs` コメント不整合（`real_boundary` 参照）
+
+`21ae69e`〜`41d3216` のコミット群（ステップ3〜8 再実施）でこれらを解消したとして確認を行う。
+
+### 確認対象コミット一覧
+
+| コミットハッシュ | メッセージ |
+|---|---|
+| 41d3216 | refactor(secrets): #12 ステップ8 V14,V15 を解消 |
+| ccbf22e | docs(secrets): #12 tasks.md のステップ3〜7を完了に同期 |
+| e00b357 | refactor(secrets): #12 secrets-test-stub依存を撤去しCLI境界を整理 |
+| 713b340 | refactor(secrets): #12 ステップ6でV4,V5を解消 — enroll_summary を summary モジュールへ移設し application/storage_service の責務を純化 |
+| 93a22d4 | refactor(secrets): #12 ステップ5 V11,V12,V13 を解消 — adapter 面の secrets-test-stub 依存を完全除去 |
+| 47db897 | refactor(secrets): #12 ステップ4でV10を解消（manifest JSON wire format を domain/wire に移設） |
+| ed39120 | refactor(secrets): #12 ステップ3 V6,V7 解消（ports の EnrollmentBytes DTO 除去・support 依存なし確認・cargo check エラー修正） |
+| 8b7c769 | docs(governance): enforce responsibility-based review and add architectural-consistency reviewer |
+| 21ae69e | docs(yubikey): #12 第8回差し戻し対応後の第9回確認証跡を記録 |
+
+### cargo check 結果
+
+- コマンド: `cargo check -p dotfiles-cli --manifest-path rust/dotfiles-cli/Cargo.toml`
+- 結果: **エラーゼロ**（Finished `dev` profile）
+- コマンド: `cargo test -p dotfiles-cli --manifest-path rust/dotfiles-cli/Cargo.toml --lib`
+- 結果: **9 passed; 0 failed**（`support/protection/buffer.rs` unit tests 4件・`support/oaep.rs` unit tests 2件・その他 3件）
+
+### 完了の判定条件ごとの確認結果
+
+#### V1, V4: `application` が `adapter` の具体型を import しない
+
+**解消済み**
+
+`rust/dotfiles-cli/src/secrets/application.rs` の import（15〜18行目）:
+
+```rust
+use super::{
+    domain::SecretName,
+    ports::{self, SecretDevice, SecretsBoundary},
+    support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
+    EnrollSpareOptions, EnrollmentSecretSet, SecretsCommand, SecretsOptions, VerifyCheck,
+    VerifyYubikeyOptions, YubikeyCommand, YubikeyOptions,
+};
+```
+
+`adapters::` 配下の具体型・定数・関数への直接 import なし。`application/storage_service.rs` も `adapters::` への直接依存なし（`crate::secrets::ports::SecretDevice` および `domain::*` のみ使用）。
+
+#### V2, V3: `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない
+
+**解消済み**
+
+- `application.rs` に `println!` なし（grep で確認）。
+- stdin 関連メソッドはすべて `boundary.read_stdin_bytes(...)` / `boundary.require_stdin_pipe()` 等、port 経由呼び出しのみ。
+- device handle は `ports::SecretDevice` trait 経由のみ。`adapters::` の具体型への直接アクセスなし。
+
+#### V5: `storage_service` に永続 I/O / manifest JSON parse / blob decode が混在しない
+
+**解消済み**
+
+`application/storage_service.rs` に `serde_json` 直接呼び出しなし。manifest encode/decode は `domain::wire::encode_manifest` / `domain::wire::decode_manifest` に委譲済み（コメントと実装で確認）。blob decode も adapter 具体型に依存しない。
+
+#### V6: `ports` に DTO / parser / prompt が存在しない
+
+**解消済み**
+
+`ports.rs` の `SecretsBoundary` trait に `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` メソッドなし。`support::protection` への依存なし。`import` は `zeroize::Zeroizing`・`crate::Result`・`super::domain::PivObjectId`・`super::EnrollmentBytes` のみ。`EnrollmentBytes` は bytes の入れ物 struct であり adapter 所有の JSON decode は `process_boundary.rs` 内に閉じている。
+
+#### V7: `ports` が `support` に依存しない
+
+**解消済み**
+
+`ports.rs` に `use super::support::` 形式の import なし。`SecretsBoundary` の全メソッドシグネチャは `Zeroizing<Vec<u8>>`（外部 crate）または `EnrollmentBytes`（bytes 入れ物）を使用し、`ProtectedSecret`/`SecretSession` をシグネチャに含まない。
+
+#### V8: `domain` に port contract が存在しない
+
+**解消済み**
+
+`domain/model.rs` に `SecretDevice` trait なし（grep で確認）。
+
+#### V9: `domain` に summary DTO が存在しない
+
+**解消済み**
+
+`domain/model.rs` に `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` なし（grep で確認）。summary DTO は `application/summary.rs` に配置済み。
+
+#### V10: `blob.rs` の責務が単一層に属する
+
+**解消済み**
+
+`blob.rs` というファイル名のファイルが `secrets/` 以下に存在しない（`find` で確認）。wire format は `domain/wire.rs` に、AEAD は `support/aead.rs` に、blob 操作は `application/storage_service.rs` 内の暗号処理として各層に分離済み。
+
+#### V11: `support` に terminal I/O / prompt が存在しない
+
+**解消済み**
+
+`support/` 配下のファイル: `aead.rs`・`protection.rs`・`oaep.rs`・`protection/buffer.rs` のみ。`terminal.rs` は存在しない（find で確認）。prompt / stdin / stdout に関連する記述なし（grep で確認）。
+
+#### V12, V13: `adapters/` 配下に port trait を実装しないファイルが存在しない
+
+**解消済み**
+
+現在の `adapters/` 配下のファイル:
+
+```
+process_boundary.rs   — SecretsBoundary を実装する RealSecretsBoundary
+yubikey.rs            — SecretDevice を実装する YubikeySecretDevice
+```
+
+第9回確認時に存在していた `backend.rs`・`device_prompt.rs`・`enrollment_json.rs`・`prompt.rs`・`stdin.rs`・`stdout.rs`・`terminal.rs` はすべて物理削除済み。`test_stub.rs` も存在しない。残存する2ファイルはいずれも port trait 実装ファイルである。
+
+`adapters.rs`（12行）は `pub(super) mod process_boundary;`・`mod yubikey;` のみ。`build_real_boundary` 関数・`DeviceBackend` 型・feature gate は存在しない。
+
+`adapters/process_boundary.rs` の `pub(crate)` シンボル: **なし**（grep で確認）。
+
+#### V14: production コードに test double が含まれない
+
+**解消済み**
+
+- `adapters/` 配下に `test_stub.rs` なし。
+- `secrets/` 以下全体で `FakeBoundary`・`FakeDevice`・`fake_boundary`・`test_stub`・`TestDevice` の参照なし（grep で確認）。
+- `Cargo.toml` に `secrets-test-stub` feature 定義なし。`dotfiles-stub` バイナリ定義なし。
+
+#### V15: production source tree に fake boundary が存在しない
+
+**解消済み**
+
+`application/` 配下のファイル: `storage_service.rs`・`summary.rs` のみ（find で確認）。`fake_boundary.rs`・`test_support/` ディレクトリなし。`application.rs` に `#[cfg(test)]` mod による test double 参照なし（grep で確認）。
+
+#### V16: `domain` / `port` に I/O 型が存在しない
+
+**解消済み**
+
+`domain/model.rs` に `io::Write` / `std::io` の import なし（grep で確認）。`ports.rs` の全メソッドシグネチャに `std::io` 型なし。
+
+#### 旧 seam 不一致（`ProcessSecretsBoundary` / `RealSecretDeviceFactory`）
+
+**解消済み**
+
+`ProcessSecretsBoundary` / `RealSecretDeviceFactory` は production source tree に存在しない（grep で確認）。現行 seam は `RealSecretsBoundary` に統一され、`secrets.rs` の `run()` 関数が直接 `adapters::process_boundary::RealSecretsBoundary` を構築し、`pub mod boundary` から再エクスポートする設計に一本化されている。
+
+#### `adapters/yubikey.rs` コメント不整合
+
+**解消済み**
+
+`adapters/yubikey.rs` 冒頭コメント（4行目）が「呼び出し元（`process_boundary`）が担い」と記載されており、現行実装（`process_boundary.rs` が device discovery / selection を担当）と一致している。旧 `real_boundary` 参照は存在しない。
+
+### テスト実行基盤の確認
+
+- `Cargo.toml` に `[[test]] name = "secrets_cli"` が定義されており、`tests/secrets_cli.rs` が参照先として成立している。
+- `tests/secrets_cli.rs` は `CARGO_BIN_EXE_dotfiles`（production binary のみ）を参照し、`CARGO_BIN_EXE_dotfiles-stub` / `--test-stub-yubikey` の参照なし。
+- `Cargo.toml` に `dotfiles-stub` バイナリ定義なし、`secrets-test-stub` feature 定義なし。スタブ統合テストは tests 層の専用 crate へ分離済みで、production Cargo.toml の構成と一致している。
+
+## 前進可否判定（第10回）
+
+**前進可**
+
+2026-05-26 差し戻しで指摘された全論点が `21ae69e`〜`41d3216` のコミット群で解消された。実際のコードを読んで確認した結果:
+
+- V1/V4: `application.rs` が `adapters::` 具体型を import しない → **解消**
+- V2/V3: `application.rs` に `println!` なし、stdin/device handle 操作はすべて port 経由 → **解消**
+- V5: `storage_service.rs` に serde_json 直接呼び出しなし、JSON wire format は `domain::wire` へ委譲 → **解消**
+- V6: `ports.rs` に `prompt_yes_no`/`stdin_is_terminal`/`stdout_is_terminal` なし → **解消**
+- V7: `ports.rs` に `support::protection` 依存なし → **解消**
+- V8/V9: `domain/model.rs` に port contract・summary DTO なし → **解消**
+- V10: `blob.rs` 不存在、wire/AEAD/blob 操作は各層に分離 → **解消**
+- V11: `support/terminal.rs` 不存在 → **解消**
+- V12/V13: `adapters/` に `process_boundary.rs`・`yubikey.rs` の2ファイルのみ残存、非port実装ファイルは物理削除済み → **解消**
+- V14/V15: test double なし、`test_stub.rs` / `fake_boundary.rs` 不存在 → **解消**
+- V16: `domain/port` に `io::Write` なし → **解消**
+- 旧 seam 不一致（`ProcessSecretsBoundary` / `RealSecretDeviceFactory`）: 削除済み → **解消**
+- `adapters/yubikey.rs` コメント: `process_boundary` 参照に修正済み → **解消**
+- テスト実行基盤: `Cargo.toml` の定義と `tests/secrets_cli.rs` が整合 → **解消**
+
+差戻し条件に抵触する違反は残存しない。レビュー着手可能と判断する。
