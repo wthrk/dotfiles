@@ -120,58 +120,6 @@ fn parse_test_stub_secret_name(value: &str) -> std::result::Result<SecretName, S
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
 }
 
-/// CLI 統合テスト用の YubiKey device stub を生成する factory。
-///
-/// 対話的 serial 選択では primary から spare の順に同じ候補列を返し、application の通常
-/// device 選択順序を変えない。
-pub(super) struct TestDeviceFactory {
-    /// contract から読んだ device 初期状態。
-    config: TestStubConfig,
-    /// serial 指定なしの対話選択で次に返す serial。
-    next_interactive_serial: u32,
-}
-
-impl TestDeviceFactory {
-    /// integration test contract の環境変数から device stub factory を構築する。
-    pub(super) fn from_env() -> Result<Self> {
-        let config = TestStubConfig::from_env()?;
-        Ok(Self {
-            config,
-            next_interactive_serial: DEFAULT_SERIAL,
-        })
-    }
-
-    /// 通常操作対象の device stub を開く。
-    pub(super) fn open_device(&mut self, serial: Option<u32>) -> Result<TestDevice> {
-        let serial = serial.unwrap_or_else(|| {
-            let serial = self.next_interactive_serial;
-            self.next_interactive_serial = SPARE_SERIAL;
-            serial
-        });
-        let mut device = TestDevice::from_config(serial, &self.config)?;
-        device.emit_write_events = true;
-        Ok(device)
-    }
-
-    /// spare 登録対象の device stub を開く。
-    ///
-    /// primary と同じ serial は、secret 再保存を始める前に実機 adapter と同じ error で拒否する。
-    pub(super) fn open_spare_device(
-        &mut self,
-        spare_serial: Option<u32>,
-        primary_serial: Option<u32>,
-    ) -> Result<TestDevice> {
-        let serial = spare_serial.unwrap_or(SPARE_SERIAL);
-        if primary_serial == Some(serial) {
-            anyhow::bail!("primary and spare YubiKey serial must be different");
-        }
-
-        let mut device = TestDevice::from_config(serial, &self.config)?;
-        device.emit_write_events = true;
-        Ok(device)
-    }
-}
-
 /// YubiKey PIV object storage を memory 上で保持する device stub。
 ///
 /// `SecretDevice` port 以外の入力境界は持たず、stdin/stdout/stderr の契約は application の
@@ -190,6 +138,16 @@ pub(super) struct TestDevice {
 }
 
 impl TestDevice {
+    /// integration test contract の環境変数から指定 serial の device stub を開く。
+    ///
+    /// `emit_write_events` は有効にして返す。
+    pub(super) fn open(serial: u32) -> Result<Self> {
+        let config = TestStubConfig::from_env()?;
+        let mut device = Self::from_config(serial, &config)?;
+        device.emit_write_events = true;
+        Ok(device)
+    }
+
     /// contract で指定された初期状態を持つ device stub を構築する。
     fn from_config(serial: u32, config: &TestStubConfig) -> Result<Self> {
         match config.state_for_serial(serial) {
