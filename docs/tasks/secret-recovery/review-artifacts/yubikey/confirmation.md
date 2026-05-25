@@ -512,3 +512,83 @@ impl RealSecretsBoundary {
 - V12/V13: `adapters/real_boundary.rs` の `backend` フィールドが非公開でコンストラクタ `new` 経由のみのアクセスになっている → **解消**
 
 差戻し条件に抵触する違反は残存しない。レビュー着手可能と判断する。
+
+---
+
+## 第6回確認（2026-05-25）— 第3回差し戻し対応後の最終状態確認
+
+- 確認対象コミット範囲: `049619c`（第3回差し戻し修正: pub(crate)/pub(super), run_operation, test doubles, dotfiles-stub）→ `81af4f6`（adapters/ 公開面 pub(super)/private 限定・dead code 除去）→ `13bb0f7`（adapters/input.rs 再エクスポート集約ファイル除去・デッドファイル削除）
+- 確認開始時 HEAD: `13bb0f7`
+- cargo check 結果: エラーゼロ（`direnv exec . cargo check -p dotfiles-cli` および `--features secrets-test-stub` 両方で確認）
+
+### 確認 1: adapters/ 配下の pub(crate) が存在しないこと
+
+`grep -rn "pub(crate)" rust/dotfiles-cli/src/secrets/adapters/` の結果: **出力なし**
+
+adapters/ 配下の全ファイルに `pub(crate)` は存在しない。存在するシンボルの可視性は `pub(super)` または private のみ。
+
+### 確認 2: 再エクスポート集約ファイルが adapters/ 層に存在しないこと
+
+`adapters/input.rs` は削除済み（`hexagonal-implementation-rules.md` の「再エクスポート集約ファイルはアダプター層に置いてはならない」に基づく）。
+
+現在の adapters/ ファイル一覧:
+```
+backend.rs, device_prompt.rs, enrollment_json.rs, prompt.rs,
+real_boundary.rs, stdin.rs, stdout.rs, terminal.rs, test_stub.rs, yubikey.rs
+```
+
+各ファイルは特定の外部技術とポート契約の翻訳責務を持つ（backend 選択、device prompt、JSON decode、PIN 入力、boundary 実装、stdin、stdout、TTY、test stub、YubiKey PIV）。
+
+### 確認 3: デッドファイルが除去されたこと
+
+- `adapters/boundary.rs`（`// removed` のみ）: 削除済み
+- `support/terminal.rs`（`// moved to adapters/terminal.rs` のみ）: 削除済み
+
+### 確認 4: adapters.rs が外部へ公開するのは build_real_boundary のみであること
+
+```rust
+pub(super) fn build_real_boundary(test_stub: bool) -> Result<impl crate::secrets::ports::SecretsBoundary>
+```
+
+`adapters.rs` からの公開シンボルは `build_real_boundary` のみ。全 mod 宣言はプライベート（`pub(super)` なし）。
+
+### 確認 5: support/protection.rs の業務語彙除去
+
+`grep -n "run_yubikey_operation" rust/dotfiles-cli/src/secrets/support/protection.rs` の結果: **出力なし**
+
+`InterruptGuard` と `SecretSession` のメソッドは `run_operation` に改名済み。
+
+### 確認 6: test double が production source tree に存在しないこと
+
+- `application.rs` に `FakeBoundary` / `FakeDevice`: **存在しない**（grep 結果: 出力なし）
+- `application/storage_service.rs` に `FakeDevice`: **存在しない**（grep 結果: 出力なし）
+- `secrets.rs` に `assert_secret_eq`: **存在しない**（grep 結果: 出力なし）
+- `adapters/test_stub.rs`: 存在するが `#[cfg(feature = "secrets-test-stub")]` で保護。通常ビルドには含まれない。
+
+### 確認 7: V1〜V16 全件の最終適合確認
+
+| 違反 | 現在の状態 |
+|------|-----------|
+| V1, V4: application → adapter 具体型依存 | 解消済み（application.rs に adapters:: 直接 import なし） |
+| V2, V3: application → concrete I/O / stdin / device handle | 解消済み（println! なし、stdin 直接読み取りなし） |
+| V5: storage_service serde_json parse/blob decode | 解消済み（decode は adapters/enrollment_json.rs に分離） |
+| V6: ports に DTO/parser/prompt | 解消済み（ports.rs に prompt_yes_no 等なし） |
+| V7: ports が support に依存 | 解消済み（ports.rs の import は zeroize, crate::Result, domain のみ） |
+| V8: domain/model.rs に SecretDevice trait | 解消済み（ports.rs に移設済み） |
+| V9: domain に summary DTO | 解消済み（application/summary.rs に移設済み） |
+| V10: blob.rs の責務混在 | 解消済み（domain/wire.rs, support/aead.rs, application/storage_service.rs に分離） |
+| V11: support に terminal I/O | 解消済み（support/terminal.rs 削除済み） |
+| V12, V13: adapters/ pub(crate) 以上の非port公開 | 解消済み（pub(crate) なし、pub(super) のみ、adapters 外部参照不可） |
+| V14: test_stub.rs が production 実行経路に混入 | 解消済み（#[cfg(feature)] で通常ビルドから除外） |
+| V15: fake boundary が production source tree に存在 | 解消済み（production ファイルに test double なし） |
+| V16: domain/port に io::Write | 解消済み（domain/model.rs に std::io 依存なし） |
+| 追加: adapters/input.rs 再エクスポート集約ファイル | 解消済み（13bb0f7 で削除） |
+| 追加: adapters/boundary.rs デッドファイル | 解消済み（13bb0f7 で削除） |
+
+## 前進可否判定（第6回）
+
+**前進可**
+
+第3回差し戻し対応（commits: 049619c, 81af4f6, 13bb0f7）により、差戻し条件に列挙されたすべての違反（V12/V13 pub(crate)、support/ 業務語彙、test double 残存、dotfiles-stub 未定義）が解消された。加えて、レビュー担当が指摘しなかった層違反（adapters/input.rs 再エクスポート集約ファイル）も本確認中に発見・解消済み。
+
+差戻し条件に抵触する違反は残存しない。再レビュー着手可能と判断する。
