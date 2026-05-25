@@ -5,6 +5,17 @@ description: Use this skill when repository task flow needs orchestration, role 
 
 # Dotfiles Task Governance
 
+## Absolute Prohibitions (read this before anything else)
+
+The following are unconditionally forbidden for the orchestrator. No exception exists.
+
+1. **Do not read files outside the Required Reading Order** — implementation code, test code, review artifacts, work-item body content, and any file not listed in the Required Reading Order below are prohibited for the orchestrator to read. Delegate all such reading to subagents.
+2. **Do not ask the user for delegation permission** — when the user request is already a task-execution command, launch required subagent roles immediately and autonomously. Treating the absence of an explicit spawn request as a reason to pause is a violation.
+3. **Do not self-execute review, implementation, or judgement** — no matter how simple the change, no matter whether blocked, the orchestrator must not perform implementation, review, progress judgement, or completion judgement. The only response to a blocked state is to record the failure and stop.
+4. **Do not take any action other than launching subagents after active-item selection** — once the active item is selected, the only permitted orchestrator actions are launching the required subagent roles or recording launch/use failure. Proceeding to read more files, make decisions, or execute any work yourself is a violation.
+
+All four prohibitions above are drawn from `docs/task-governance/workflow.md` (the authoritative source). These are reproduced here so they are visible immediately upon reading this skill file.
+
 ## Governing Sources
 
 - `docs/task-governance/workflow.md` governs role assignment, fallback, and subagent assignment.
@@ -60,3 +71,6 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - When a subagent (e.g., Codex) cannot commit due to sandbox constraints, the orchestrator may perform the commit on its behalf only after all required review roles have returned recorded `合格` verdicts. The inability of a subagent to commit is never a reason to bypass review gates.
 - When a subagent's implementation contains compilation errors, the orchestrator must not fix the errors directly using Edit or Write tools. The fix must be delegated to a fresh implementation-executor subagent.
 - When `git restore`, `rm`, or other revert commands are blocked by permission constraints, the orchestrator must not attempt to recover by overwriting files with the Write tool. The orchestrator must report the blocked operation to the user and wait for explicit permission or alternative instruction before proceeding.
+- Do not accept a subagent's completion report as the final conclusion. After each subagent returns, verify the actual repository state (e.g., `git status`, `git diff HEAD`) before proceeding to the next task.
+- Before delegating a revert task, confirm that the required shell operations (`rm`, `git restore`, etc.) are permitted under the current permission mode. If the required operations are blocked, report this to the user before proceeding.
+- When receiving an instruction that contains multiple numbered items, execute them in order starting from item 1. Confirm completion of each item before advancing to the next. Do not skip ahead to a later item.
