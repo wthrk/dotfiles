@@ -6,11 +6,7 @@
 mod model;
 mod wire;
 
-#[cfg(test)]
-pub(crate) use model::MANIFEST_APP;
 pub(crate) use model::{
     PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, CONTENT_KEY_LEN,
     KEY_SLOT, NONCE_LEN,
 };
-#[cfg(test)]
-pub(crate) use model::{BLOB_MAGIC, TAG_LEN};

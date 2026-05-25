@@ -24,7 +24,7 @@ const PIV_PIN_MAX_LEN: usize = 8;
 /// 表示 prompt で 1 行を読み、zeroize 保護済み bytes として返す。
 ///
 /// 末尾改行を除いた bytes に上限を適用する。
-pub(crate) fn read_visible_line_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+pub(super) fn read_visible_line_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     let session = SecretSession::start()?;
     eprint!("{prompt}");
     io::stderr().flush()?;
@@ -37,7 +37,7 @@ pub(crate) fn read_visible_line_bytes(prompt: &str, limit: usize) -> Result<Zero
 /// echo なしの prompt で 1 行を読み、zeroize 保護済み bytes として返す。
 ///
 /// 読み込んだ bytes に上限を適用する。
-pub(crate) fn read_hidden_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+pub(super) fn read_hidden_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     let session = SecretSession::start()?;
     let protected =
         terminal::read_hidden_input(prompt, limit, "hidden secret input is too large", &session)?
@@ -46,7 +46,7 @@ pub(crate) fn read_hidden_bytes(prompt: &str, limit: usize) -> Result<Zeroizing<
 }
 
 /// echo なしの prompt で YubiKey PIN を読み、zeroize 保護済み bytes として返す。
-pub(crate) fn read_yubikey_pin_raw() -> Result<Zeroizing<Vec<u8>>> {
+pub(super) fn read_yubikey_pin_raw() -> Result<Zeroizing<Vec<u8>>> {
     let session = SecretSession::start()?;
     let pin = terminal::read_hidden_input(
         "YubiKey PIN: ",

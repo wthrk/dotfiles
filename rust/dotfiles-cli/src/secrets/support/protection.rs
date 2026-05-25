@@ -57,7 +57,7 @@ impl InterruptGuard {
     /// operation を実行し、前後で interrupt flag を確認する。
     ///
     /// operation 中に記録された中断は後続処理へ進めず error として返す。
-    pub(crate) fn run_yubikey_operation<T>(
+    pub(crate) fn run_operation<T>(
         &self,
         operation: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
@@ -155,11 +155,11 @@ impl SecretSession {
     }
 
     /// operation を実行し、前後で interrupt flag を確認する。
-    pub(crate) fn run_yubikey_operation<T>(
+    pub(crate) fn run_operation<T>(
         &self,
         operation: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
-        self.interrupt.run_yubikey_operation(operation)
+        self.interrupt.run_operation(operation)
     }
 
     /// 同じ保護 scope の interrupt guard を貸し出す。

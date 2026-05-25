@@ -41,26 +41,14 @@ impl<'session> EnrollmentSecretSet<'session> {
             bws_access_token,
         }
     }
-
-    #[cfg(test)]
-    pub(self) fn assert_secret_eq(&self, name: domain::SecretName, expected: &[u8]) {
-        match name {
-            domain::SecretName::BwEmail => self
-                .bw_email
-                .with_secret(|secret| assert_eq!(secret, expected)),
-            domain::SecretName::BwPassword => self
-                .bw_password
-                .with_secret(|secret| assert_eq!(secret, expected)),
-            domain::SecretName::BwsAccessToken => self
-                .bws_access_token
-                .with_secret(|secret| assert_eq!(secret, expected)),
-        }
-    }
 }
 
 #[derive(Args)]
 /// 復旧用 secret の保存先と検証手段を選ぶ最上位 command。
 pub(crate) struct SecretsOptions {
+    #[cfg(feature = "secrets-test-stub")]
+    #[arg(long, hide = true)]
+    test_stub_yubikey: bool,
     #[command(subcommand)]
     command: SecretsCommand,
 }
@@ -168,7 +156,10 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を実行する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::build_real_boundary()?;
+    #[cfg(feature = "secrets-test-stub")]
+    let mut boundary = adapters::build_real_boundary(options.test_stub_yubikey)?;
+    #[cfg(not(feature = "secrets-test-stub"))]
+    let mut boundary = adapters::build_real_boundary(false)?;
     application::run_with_boundary(options, &mut boundary)
 }
 

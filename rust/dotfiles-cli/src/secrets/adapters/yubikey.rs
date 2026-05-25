@@ -41,14 +41,14 @@ type SelectCandidateFn<'a> = dyn Fn(&[YubikeySelectionCandidate<'_>], Option<(In
     + 'a;
 type WaitForSpareReplacementFn<'a> = dyn Fn(Instant, &InterruptGuard) -> Result<()> + 'a;
 
-pub(crate) struct YubikeyInteraction<'a> {
-    pub(crate) select_candidate: &'a SelectCandidateFn<'a>,
-    pub(crate) wait_for_spare_replacement: &'a WaitForSpareReplacementFn<'a>,
+pub(super) struct YubikeyInteraction<'a> {
+    pub(super) select_candidate: &'a SelectCandidateFn<'a>,
+    pub(super) wait_for_spare_replacement: &'a WaitForSpareReplacementFn<'a>,
 }
 
-pub(crate) struct YubikeySelectionCandidate<'a> {
-    pub(crate) reader: &'a str,
-    pub(crate) serial: u32,
+pub(super) struct YubikeySelectionCandidate<'a> {
+    pub(super) reader: &'a str,
+    pub(super) serial: u32,
 }
 
 enum InteractiveDiscovery {
@@ -71,7 +71,7 @@ pub(crate) struct YubikeySecretDevice {
 }
 
 /// serial 指定または対話選択で 1 本の YubiKey を開く。
-pub(crate) fn open_device(
+pub(super) fn open_device(
     serial: Option<u32>,
     io: &YubikeyInteraction<'_>,
 ) -> Result<YubikeySecretDevice> {
@@ -139,7 +139,7 @@ fn open_interactive_device_until(
 /// `--spare-serial` があればその YubiKey を直接開く。対話実行で serial 指定がなければ、
 /// まず接続済み候補から選択させる。選択結果が primary と同じ serial の場合は
 /// 差し替えを促して Enter 待ちに進む。非対話実行時の `--spare-serial` 必須条件は caller 側で検証する。
-pub(crate) fn open_spare_device(
+pub(super) fn open_spare_device(
     spare_serial: Option<u32>,
     primary_serial: Option<u32>,
     interrupt: &InterruptGuard,

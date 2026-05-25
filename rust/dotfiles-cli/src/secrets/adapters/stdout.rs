@@ -19,7 +19,7 @@ fn ensure_secret_stdout_not_terminal() -> Result<()> {
 }
 
 /// stdout の TTY 拒否を確認してから、復号済み bytes を stdout へ書き込む。
-pub(crate) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
+pub(super) fn write_secret_to_stdout(bytes: &[u8]) -> Result<()> {
     ensure_secret_stdout_not_terminal()?;
     terminal::write_all_stdout(bytes)
 }

@@ -15,7 +15,7 @@ use super::terminal;
 /// stdin から 1 secret を読み、zeroize 保護済み bytes として返す。
 ///
 /// stdin が TTY の場合は error で失敗する。
-pub(crate) fn read_stdin_bytes(limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+pub(super) fn read_stdin_bytes(limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     if terminal::stdin_is_terminal() {
         bail!("--stdin requires pipe or redirect input");
     }

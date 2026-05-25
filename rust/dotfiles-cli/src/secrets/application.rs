@@ -76,12 +76,12 @@ fn run_put_with<B: SecretsBoundary>(options: super::PutOptions, boundary: &mut B
     require_single_stdin_secret_source(options.stdin, boundary)?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
-    session.run_yubikey_operation(|| {
+    session.run_operation(|| {
         storage_service::check_put_preconditions(&mut device, options.name, options.force)
     })?;
     let secret = read_protected_secret_for_put(boundary, options.name, options.stdin, &session)?;
     secret.with_secret(|secret| {
-        session.run_yubikey_operation(|| {
+        session.run_operation(|| {
             storage_service::put(&mut device, options.name, secret, options.force, &session)
         })
     })
@@ -96,7 +96,7 @@ fn run_get_with<B: SecretsBoundary>(options: super::GetOptions, boundary: &mut B
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
     verify_pin_for_secret_reads(boundary, &mut device, &session)?;
-    let output_bytes = session.run_yubikey_operation(|| {
+    let output_bytes = session.run_operation(|| {
         storage_service::get_protected(&mut device, options.name, &session)
     })?;
     output_bytes.with_secret(|bytes| boundary.write_secret_to_stdout(bytes))?;
@@ -115,7 +115,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
     boundary.require_option(options.stdin_json, "--stdin-json")?;
     let session = SecretSession::start()?;
     let mut device = boundary.open_device(options.serial)?;
-    session.run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut device))?;
+    session.run_operation(|| storage_service::check_setup_preconditions(&mut device))?;
     let summary = {
         if options.stdin_json {
             verify_pin_for_secret_reads(boundary, &mut device, &session)?;
@@ -125,7 +125,7 @@ fn run_enroll_primary_with<B: SecretsBoundary>(
         if !options.stdin_json {
             verify_pin_for_secret_reads(boundary, &mut device, &session)?;
         }
-        let mut summary = session.run_yubikey_operation(|| {
+        let mut summary = session.run_operation(|| {
             enroll_without_local_verify(
                 &mut device,
                 summary::YubikeyRole::Primary,
@@ -223,7 +223,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     let session = SecretSession::start()?;
     let prepared_spare = if options.stdin_json || options.spare_serial.is_some() {
         let mut spare = boundary.open_spare_device(options.spare_serial, options.primary_serial)?;
-        session.run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut spare))?;
+        session.run_operation(|| storage_service::check_setup_preconditions(&mut spare))?;
         if options.stdin_json {
             verify_pin_for_secret_reads(boundary, &mut spare, &session)?;
         }
@@ -258,7 +258,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
         None => {
             let mut spare = boundary.open_spare_device(options.spare_serial, primary_serial)?;
             session
-                .run_yubikey_operation(|| storage_service::check_setup_preconditions(&mut spare))?;
+                .run_operation(|| storage_service::check_setup_preconditions(&mut spare))?;
             spare
         }
     };
@@ -267,7 +267,7 @@ fn run_enroll_spare_with<B: SecretsBoundary>(
     if !options.stdin_json {
         verify_pin_for_secret_reads(boundary, &mut spare, &session)?;
     }
-    let mut summary = session.run_yubikey_operation(|| {
+    let mut summary = session.run_operation(|| {
         enroll_without_local_verify(
             &mut spare,
             summary::YubikeyRole::Spare,
@@ -291,13 +291,13 @@ fn read_protected_bootstrap_from_device<'session, D: ports::SecretDevice>(
     primary: &mut D,
     session: &'session SecretSession,
 ) -> Result<EnrollmentSecretSet<'session>> {
-    let bw_email = session.run_yubikey_operation(|| {
+    let bw_email = session.run_operation(|| {
         storage_service::get_protected(primary, SecretName::BwEmail, session)
     })?;
-    let bw_password = session.run_yubikey_operation(|| {
+    let bw_password = session.run_operation(|| {
         storage_service::get_protected(primary, SecretName::BwPassword, session)
     })?;
-    let bws_access_token = session.run_yubikey_operation(|| {
+    let bws_access_token = session.run_operation(|| {
         storage_service::get_protected(primary, SecretName::BwsAccessToken, session)
     })?;
     Ok(EnrollmentSecretSet::new(
@@ -397,7 +397,7 @@ fn run_rotate_bws_token_with<B: SecretsBoundary>(
     drop(device);
 
     let remaining_result = (|| -> Result<()> {
-        while session.run_yubikey_operation(|| boundary.prompt_continue_rotation())? {
+        while session.run_operation(|| boundary.prompt_continue_rotation())? {
             session.check_interrupted()?;
             let mut device = boundary.open_device(None)?;
             session.check_interrupted()?;
@@ -443,7 +443,7 @@ fn rotate_bws_token_on_device<D: ports::SecretDevice>(
     token: &ProtectedSecret<'_>,
     session: &SecretSession,
 ) -> Result<RotateBwsTokenResult> {
-    session.run_yubikey_operation(|| {
+    session.run_operation(|| {
         token.with_secret(|token| storage_service::replace_bws_token(device, token, session))
     })?;
     match verify_local_storage_protected(device, session) {
@@ -559,7 +559,7 @@ fn verify_local_storage_protected<D: ports::SecretDevice>(
 ) -> Result<summary::VerifySummary> {
     for name in SecretName::iter() {
         let secret = session
-            .run_yubikey_operation(|| storage_service::get_protected(device, name, session))?;
+            .run_operation(|| storage_service::get_protected(device, name, session))?;
         secret.with_secret(|secret| {
             if secret.is_empty() {
                 bail!("{} stored on this YubiKey is empty", name);
@@ -588,7 +588,7 @@ fn check_rotate_preconditions_protected<D: ports::SecretDevice>(
     session: &SecretSession,
 ) -> Result<()> {
     verify_local_storage_protected(device, session)?;
-    session.run_yubikey_operation(|| device.check_management_auth_preconditions())
+    session.run_operation(|| device.check_management_auth_preconditions())
 }
 
 /// device が要求する場合に PIN を入力境界から読み取り、PIV session を検証する。
@@ -605,7 +605,7 @@ fn verify_pin_for_secret_reads<B: SecretsBoundary>(
 
     let pin_bytes = boundary.read_yubikey_pin_bytes()?;
     let pin = protect_bytes(pin_bytes, session)?;
-    pin.with_secret(|pin| session.run_yubikey_operation(|| device.verify_pin(pin)))
+    pin.with_secret(|pin| session.run_operation(|| device.verify_pin(pin)))
 }
 
 /// 単一 secret を stdin から読む command の入力契約を確認する。
@@ -616,609 +616,4 @@ fn require_single_stdin_secret_source<B: SecretsBoundary>(stdin: bool, boundary:
         return boundary.require_stdin_pipe();
     }
     boundary.require_option(false, "--stdin")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use fake_boundary::{make_fake_secret, FakeBoundary, FakeDevice};
-
-    mod fake_boundary {
-        use std::io::Cursor;
-        use std::{
-            cell::RefCell,
-            collections::{BTreeMap, VecDeque},
-            rc::Rc,
-        };
-
-        use anyhow::bail;
-        use zeroize::Zeroizing;
-
-        use crate::{
-            secrets::{
-                domain,
-                ports::{EnrollmentBytes, SecretsBoundary},
-                support::protection::{ProtectedInputBuffer, ProtectedSecret, SecretSession},
-                EnrollmentSecretSet,
-            },
-            Result,
-        };
-
-        use crate::secrets::application::enroll_without_local_verify;
-        use crate::secrets::{application::summary, ports};
-
-        pub(crate) struct FakeBoundary {
-            pub(crate) devices: RefCell<VecDeque<FakeDevice>>,
-            pub(crate) prompts: RefCell<VecDeque<bool>>,
-            pub(crate) stdin_terminal: bool,
-            pub(crate) stdout_terminal: bool,
-        }
-
-        impl FakeBoundary {
-            pub(crate) fn new(devices: Vec<FakeDevice>) -> Self {
-                Self {
-                    devices: RefCell::new(devices.into()),
-                    prompts: RefCell::new(VecDeque::new()),
-                    stdin_terminal: true,
-                    stdout_terminal: false,
-                }
-            }
-
-            pub(crate) fn with_prompts(self, prompts: Vec<bool>) -> Self {
-                *self.prompts.borrow_mut() = prompts.into();
-                self
-            }
-
-            pub(crate) fn with_stdin_terminal(mut self, stdin_terminal: bool) -> Self {
-                self.stdin_terminal = stdin_terminal;
-                self
-            }
-        }
-
-        impl SecretsBoundary for FakeBoundary {
-            type Device = FakeDevice;
-
-            fn open_device(&mut self, serial: Option<u32>) -> Result<Self::Device> {
-                let mut device = self
-                    .devices
-                    .borrow_mut()
-                    .pop_front()
-                    .ok_or_else(|| anyhow::anyhow!("fake device queue is empty"))?;
-                if let Some(serial) = serial {
-                    device.serial = serial;
-                }
-                Ok(device)
-            }
-
-            fn open_spare_device(
-                &mut self,
-                spare_serial: Option<u32>,
-                primary_serial: Option<u32>,
-            ) -> Result<Self::Device> {
-                let device = self.open_device(spare_serial)?;
-                if primary_serial == Some(device.serial) {
-                    bail!("primary and spare YubiKey serial must be different");
-                }
-                Ok(device)
-            }
-
-            fn require_serial(
-                &self,
-                serial: Option<u32>,
-                error_message: &'static str,
-            ) -> Result<()> {
-                if !self.stdin_terminal && serial.is_none() {
-                    bail!("{}", error_message);
-                }
-                Ok(())
-            }
-
-            fn require_option(&self, enabled: bool, option_name: &'static str) -> Result<()> {
-                if !self.stdin_terminal && !enabled {
-                    bail!("pass {} in non-interactive use", option_name);
-                }
-                Ok(())
-            }
-
-            fn require_stdin_pipe(&self) -> Result<()> {
-                if self.stdin_terminal {
-                    bail!("--stdin requires pipe or redirect input");
-                }
-                Ok(())
-            }
-
-            fn require_stdin_json_pipe(&self, enabled: bool) -> Result<()> {
-                if enabled && self.stdin_terminal {
-                    bail!("--stdin-json requires pipe or redirect input");
-                }
-                Ok(())
-            }
-
-            fn require_stdout_pipe(&self) -> Result<()> {
-                if self.stdout_terminal {
-                    bail!(
-                        "refusing to write secret to terminal; redirect stdout to a file or pipe"
-                    );
-                }
-                Ok(())
-            }
-
-            fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
-                Ok(Zeroizing::new(b"fake-pin".to_vec()))
-            }
-
-            fn read_hidden_bytes(
-                &self,
-                _prompt: &str,
-                _limit: usize,
-            ) -> Result<Zeroizing<Vec<u8>>> {
-                Ok(Zeroizing::new(b"fake-hidden".to_vec()))
-            }
-
-            fn read_visible_line_bytes(
-                &self,
-                _prompt: &str,
-                _limit: usize,
-            ) -> Result<Zeroizing<Vec<u8>>> {
-                Ok(Zeroizing::new(b"fake-visible".to_vec()))
-            }
-
-            fn read_stdin_bytes(&self, _limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-                if self.stdin_terminal {
-                    bail!("--stdin requires pipe or redirect input");
-                }
-                Ok(Zeroizing::new(b"fake-stdin".to_vec()))
-            }
-
-            fn read_enrollment_json_bytes(
-                &self,
-                _input_limit: usize,
-                _field_limit: usize,
-            ) -> Result<EnrollmentBytes> {
-                if self.stdin_terminal {
-                    bail!("--stdin-json requires pipe or redirect input");
-                }
-                Ok(EnrollmentBytes {
-                    bw_email: Zeroizing::new(b"user@example.com".to_vec()),
-                    bw_password: Zeroizing::new(b"password".to_vec()),
-                    bws_access_token: Zeroizing::new(b"token".to_vec()),
-                })
-            }
-
-            fn write_secret_to_stdout(&self, _bytes: &[u8]) -> Result<()> {
-                if self.stdout_terminal {
-                    bail!(
-                        "refusing to write secret to terminal; redirect stdout to a file or pipe"
-                    );
-                }
-                Ok(())
-            }
-
-            fn write_report(&self, _value: &impl serde::Serialize) -> Result<()> {
-                Ok(())
-            }
-
-            fn prompt_continue_rotation(&self) -> Result<bool> {
-                Ok(self.prompts.borrow_mut().pop_front().unwrap_or(false))
-            }
-        }
-
-        pub(crate) struct FakeDevice {
-            pub(crate) serial: u32,
-            pub(crate) state: Rc<RefCell<FakeDeviceState>>,
-            pub(crate) pin_error: Option<&'static str>,
-        }
-
-        #[derive(Default)]
-        pub(crate) struct FakeDeviceState {
-            pub(crate) key_exists: bool,
-            pub(crate) objects: BTreeMap<domain::PivObjectId, Vec<u8>>,
-        }
-
-        impl FakeDevice {
-            pub(crate) fn fresh(serial: u32) -> Self {
-                Self {
-                    serial,
-                    state: Rc::new(RefCell::new(FakeDeviceState::default())),
-                    pin_error: None,
-                }
-            }
-
-            pub(crate) fn fresh_with_state(serial: u32) -> (Self, Rc<RefCell<FakeDeviceState>>) {
-                let state = Rc::new(RefCell::new(FakeDeviceState::default()));
-                (
-                    Self {
-                        serial,
-                        state: Rc::clone(&state),
-                        pin_error: None,
-                    },
-                    state,
-                )
-            }
-
-            pub(crate) fn with_pin_error(mut self, pin_error: &'static str) -> Self {
-                self.pin_error = Some(pin_error);
-                self
-            }
-
-            pub(crate) fn provisioned(serial: u32) -> Result<Self> {
-                let mut device = Self::fresh(serial);
-                let session = SecretSession::start()?;
-                let secrets = protected_enrollment_secret_set(&session)?;
-                enroll_without_local_verify(
-                    &mut device,
-                    summary::YubikeyRole::Primary,
-                    &secrets,
-                    &session,
-                )?;
-                Ok(device)
-            }
-        }
-
-        impl ports::SecretDevice for FakeDevice {
-            fn serial(&self) -> u32 {
-                self.serial
-            }
-
-            fn key_exists(&mut self) -> Result<bool> {
-                Ok(self.state.borrow().key_exists)
-            }
-
-            fn check_key_generation_preconditions(&mut self) -> Result<()> {
-                Ok(())
-            }
-
-            fn check_management_auth_preconditions(&mut self) -> Result<()> {
-                Ok(())
-            }
-
-            fn generate_key(&mut self) -> Result<()> {
-                self.state.borrow_mut().key_exists = true;
-                Ok(())
-            }
-
-            fn read_object(&mut self, object_id: domain::PivObjectId) -> Result<Option<Vec<u8>>> {
-                Ok(self.state.borrow().objects.get(&object_id).cloned())
-            }
-
-            fn write_object(
-                &mut self,
-                object_id: domain::PivObjectId,
-                value: &mut [u8],
-            ) -> Result<()> {
-                self.state
-                    .borrow_mut()
-                    .objects
-                    .insert(object_id, value.to_vec());
-                Ok(())
-            }
-
-            fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>> {
-                Ok(key.iter().map(|byte| byte ^ 0xa5).collect())
-            }
-
-            fn verify_pin(&mut self, _pin: &[u8]) -> Result<()> {
-                if let Some(pin_error) = self.pin_error {
-                    bail!(pin_error);
-                }
-                Ok(())
-            }
-
-            fn requires_pin_input(&self) -> bool {
-                true
-            }
-
-            fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-                Ok(Zeroizing::new(self.wrap_key(wrapped_key)?))
-            }
-        }
-
-        pub(crate) fn protected_enrollment_secret_set<'session>(
-            memory: &'session SecretSession,
-        ) -> Result<EnrollmentSecretSet<'session>> {
-            Ok(EnrollmentSecretSet::new(
-                make_fake_secret(b"user@example.com", memory)?,
-                make_fake_secret(b"password", memory)?,
-                make_fake_secret(b"token", memory)?,
-            ))
-        }
-
-        pub(crate) fn make_fake_secret<'session>(
-            bytes: &'static [u8],
-            memory: &'session SecretSession,
-        ) -> Result<ProtectedSecret<'session>> {
-            let input = ProtectedInputBuffer::read_from(
-                Cursor::new(bytes),
-                bytes.len(),
-                "too large",
-                memory,
-            )?;
-            input.into_protected_secret(memory)
-        }
-    }
-
-    #[test]
-    fn enroll_spare_rejects_same_primary_and_spare_serial() -> Result<()> {
-        let mut boundary =
-            FakeBoundary::new(vec![FakeDevice::fresh(10), FakeDevice::provisioned(10)?]);
-        let options = EnrollSpareOptions {
-            primary_serial: Some(10),
-            spare_serial: Some(10),
-            stdin_json: false,
-        };
-
-        let err = run_enroll_spare_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("enroll-spare accepted duplicate serials"))?;
-
-        assert_eq!(
-            err.to_string(),
-            "primary and spare YubiKey serial must be different"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rotate_bws_token_rejects_already_updated_serial() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![
-            FakeDevice::provisioned(10)?,
-            FakeDevice::provisioned(10)?,
-        ])
-        .with_prompts(vec![true]);
-        let options = super::super::RotateBwsTokenOptions {
-            serial: None,
-            stdin: false,
-        };
-
-        let err = run_rotate_bws_token_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("rotate-bws-token accepted duplicate serials"))?;
-
-        assert_eq!(err.to_string(), "selected YubiKey was already updated");
-        Ok(())
-    }
-
-    #[test]
-    fn partial_rotate_summary_serializes_updated_entries() -> Result<()> {
-        let summaries = vec![failed_local_storage_summary(42)];
-        let value = serde_json::to_value(PartialRotateBwsTokenSummary {
-            updated: &summaries,
-        })?;
-        let updated = value
-            .get("updated")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("updated field is missing"))?;
-        assert_eq!(updated.len(), 1);
-        let serial = updated[0]
-            .get("serial")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("serial field is missing"))?;
-        assert_eq!(serial, 42);
-        let checks = updated[0]
-            .get("checks")
-            .and_then(serde_json::Value::as_object)
-            .ok_or_else(|| anyhow::anyhow!("checks field is missing"))?;
-        assert_eq!(
-            checks
-                .get("local_storage")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("local_storage check is missing"))?,
-            "failed"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn partial_rotate_summary_skips_output_when_empty() -> Result<()> {
-        let boundary = FakeBoundary::new(vec![]);
-        write_partial_rotate_bws_token_summary(&boundary, &[])?;
-        Ok(())
-    }
-
-    #[test]
-    fn put_rejects_noninteractive_without_serial_before_device_open() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![]).with_stdin_terminal(false);
-        let options = super::super::PutOptions {
-            serial: None,
-            name: SecretName::BwsAccessToken,
-            stdin: true,
-            force: false,
-        };
-        let err = run_put_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("put unexpectedly succeeded"))?;
-        assert_eq!(err.to_string(), "pass --serial in non-interactive use");
-        Ok(())
-    }
-
-    #[test]
-    fn setup_rejects_noninteractive_without_serial_before_device_open() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![]).with_stdin_terminal(false);
-        let options = super::super::SerialOptions { serial: None };
-        let err = run_setup_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("setup unexpectedly succeeded"))?;
-        assert_eq!(err.to_string(), "pass --serial in non-interactive use");
-        Ok(())
-    }
-
-    #[test]
-    fn put_rejects_noninteractive_without_stdin_option() -> Result<()> {
-        let mut boundary =
-            FakeBoundary::new(vec![FakeDevice::provisioned(10)?]).with_stdin_terminal(false);
-        let options = super::super::PutOptions {
-            serial: Some(10),
-            name: SecretName::BwsAccessToken,
-            stdin: false,
-            force: true,
-        };
-        let err = run_put_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("put unexpectedly accepted missing --stdin"))?;
-        assert_eq!(err.to_string(), "pass --stdin in non-interactive use");
-        Ok(())
-    }
-
-    #[test]
-    fn put_rejects_tty_stdin_before_device_open() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![]);
-        let options = super::super::PutOptions {
-            serial: Some(10),
-            name: SecretName::BwsAccessToken,
-            stdin: true,
-            force: false,
-        };
-        let err = run_put_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("put unexpectedly accepted tty stdin"))?;
-        assert_eq!(err.to_string(), "--stdin requires pipe or redirect input");
-        Ok(())
-    }
-
-    #[test]
-    fn rotate_bws_token_rejects_noninteractive_without_serial() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![]).with_stdin_terminal(false);
-        let options = super::super::RotateBwsTokenOptions {
-            serial: None,
-            stdin: true,
-        };
-        let err = run_rotate_bws_token_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("rotate-bws-token unexpectedly succeeded"))?;
-        assert_eq!(err.to_string(), "pass --serial in non-interactive use");
-        Ok(())
-    }
-
-    #[test]
-    fn enroll_primary_rejects_tty_stdin_json_before_device_open() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![]);
-        let options = super::super::EnrollPrimaryOptions {
-            serial: Some(10),
-            stdin_json: true,
-        };
-        let err = run_enroll_primary_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| {
-                anyhow::anyhow!("enroll-primary unexpectedly accepted tty stdin-json")
-            })?;
-        assert_eq!(
-            err.to_string(),
-            "--stdin-json requires pipe or redirect input"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn enroll_spare_rejects_tty_stdin_json_before_device_open() -> Result<()> {
-        let mut boundary = FakeBoundary::new(vec![]);
-        let options = EnrollSpareOptions {
-            primary_serial: Some(10),
-            spare_serial: Some(20),
-            stdin_json: true,
-        };
-        let err = run_enroll_spare_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("enroll-spare unexpectedly accepted tty stdin-json"))?;
-        assert_eq!(
-            err.to_string(),
-            "--stdin-json requires pipe or redirect input"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn enroll_primary_stdin_json_stops_before_secret_read_when_pin_verification_fails() -> Result<()>
-    {
-        let mut boundary = FakeBoundary::new(vec![
-            FakeDevice::fresh(10).with_pin_error("pin verification failed")
-        ])
-        .with_stdin_terminal(false);
-        let options = super::super::EnrollPrimaryOptions {
-            serial: Some(10),
-            stdin_json: true,
-        };
-
-        let err = run_enroll_primary_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("enroll-primary unexpectedly succeeded"))?;
-
-        assert_eq!(err.to_string(), "pin verification failed");
-        Ok(())
-    }
-
-    #[test]
-    fn enroll_spare_stdin_json_stops_before_secret_read_when_pin_verification_fails() -> Result<()>
-    {
-        let mut boundary = FakeBoundary::new(vec![
-            FakeDevice::fresh(20).with_pin_error("pin verification failed")
-        ])
-        .with_stdin_terminal(false);
-        let options = EnrollSpareOptions {
-            primary_serial: Some(10),
-            spare_serial: Some(20),
-            stdin_json: true,
-        };
-
-        let err = run_enroll_spare_with(options, &mut boundary)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("enroll-spare unexpectedly succeeded"))?;
-
-        assert_eq!(err.to_string(), "pin verification failed");
-        Ok(())
-    }
-
-    #[test]
-    fn enroll_primary_rejects_empty_secret_before_setup() -> Result<()> {
-        let (device, state) = FakeDevice::fresh_with_state(10);
-        let session = SecretSession::start()?;
-        let empty = make_fake_secret(b"", &session)?;
-        let secrets = EnrollmentSecretSet::new(
-            empty,
-            make_fake_secret(b"pw", &session)?,
-            make_fake_secret(b"token", &session)?,
-        );
-
-        let err = enroll_without_local_verify(
-            &mut { device },
-            summary::YubikeyRole::Primary,
-            &secrets,
-            &session,
-        )
-        .err()
-        .ok_or_else(|| anyhow::anyhow!("enroll unexpectedly accepted empty bw-email"))?;
-
-        assert_eq!(err.to_string(), "bw-email must not be empty");
-        let state = state.borrow();
-        assert!(!state.key_exists);
-        assert!(state.objects.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn enroll_spare_rejects_empty_secret_before_setup() -> Result<()> {
-        let (device, state) = FakeDevice::fresh_with_state(20);
-        let session = SecretSession::start()?;
-        let empty = make_fake_secret(b"", &session)?;
-        let secrets = EnrollmentSecretSet::new(
-            make_fake_secret(b"user@example.com", &session)?,
-            empty,
-            make_fake_secret(b"token", &session)?,
-        );
-
-        let err = enroll_without_local_verify(
-            &mut { device },
-            summary::YubikeyRole::Spare,
-            &secrets,
-            &session,
-        )
-        .err()
-        .ok_or_else(|| anyhow::anyhow!("enroll unexpectedly accepted empty bw-password"))?;
-
-        assert_eq!(err.to_string(), "bw-password must not be empty");
-        let state = state.borrow();
-        assert!(!state.key_exists);
-        assert!(state.objects.is_empty());
-        Ok(())
-    }
 }
