@@ -5,7 +5,7 @@
 use anyhow::{bail, Context};
 use zeroize::Zeroizing;
 
-use super::{device_prompt, input, terminal, DeviceBackend};
+use super::{device_prompt, enrollment_json, prompt, stdin, stdout, terminal, DeviceBackend};
 use super::yubikey;
 #[cfg(feature = "secrets-test-stub")]
 use super::test_stub;
@@ -231,20 +231,19 @@ impl SecretsBoundary for RealSecretsBoundary {
     }
 
     fn read_yubikey_pin_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
-        let protected = input::read_yubikey_pin_raw()?;
-        Ok(protected)
+        prompt::read_yubikey_pin_raw()
     }
 
-    fn read_hidden_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-        input::read_hidden_bytes(prompt, limit)
+    fn read_hidden_bytes(&self, prompt_text: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        prompt::read_hidden_bytes(prompt_text, limit)
     }
 
-    fn read_visible_line_bytes(&self, prompt: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-        input::read_visible_line_bytes(prompt, limit)
+    fn read_visible_line_bytes(&self, prompt_text: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+        prompt::read_visible_line_bytes(prompt_text, limit)
     }
 
     fn read_stdin_bytes(&self, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
-        input::read_stdin_bytes(limit)
+        stdin::read_stdin_bytes(limit)
     }
 
     fn read_enrollment_json_bytes(
@@ -252,11 +251,11 @@ impl SecretsBoundary for RealSecretsBoundary {
         input_limit: usize,
         field_limit: usize,
     ) -> Result<EnrollmentBytes> {
-        input::read_enrollment_json_bytes(std::io::stdin(), input_limit, field_limit)
+        enrollment_json::read_enrollment_json_bytes(std::io::stdin(), input_limit, field_limit)
     }
 
     fn write_secret_to_stdout(&self, bytes: &[u8]) -> Result<()> {
-        input::write_secret_to_stdout(bytes)
+        stdout::write_secret_to_stdout(bytes)
     }
 
     fn write_report(&self, value: &impl serde::Serialize) -> Result<()> {

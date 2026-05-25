@@ -5,7 +5,6 @@
 mod backend;
 mod device_prompt;
 mod enrollment_json;
-mod input;
 mod prompt;
 mod real_boundary;
 mod stdin;
