@@ -97,9 +97,30 @@
 
 再エクスポートのみで構成されるファイル（`use` 宣言・`pub(super) use` のみで実体を持たないファイル）は責務の境界を表さないため、どの層にも置いてはならない。ファイルに実装の実体がなければ、そのファイルが存在する意味を一文で述べられない。述べられないなら削除または統合せよ。
 
+## application 層のサブモジュール分割方針
+
+`application` 層のロジックはユースケースの責務ごとにサブモジュールへ分割する。`application.rs` 本体はコマンドへの dispatch エントリーポイントのみに留め、個別のユースケース実装・サービス組立・ビジネスフローは各責務を担うサブモジュールへ切り出す。
+
+`storage_service.rs` のようなサービス組立を担うサブモジュールがすでに存在する場合、他の責務（例: enroll フロー、verify フロー）も同様にサブモジュールへ分割して整合性を保つ。一部の責務のみをサブモジュール化し、残りを `application.rs` 本体に直書きしてはならない。
+
+ファイル分割の根拠はここでも「独立した責務の境界が存在するから」のみである。「長くなったから」「まとめたいから」はサブモジュール分割の正当な理由にならない（[ファイル分割の判断基準](#ファイル分割の判断基準) を参照）。
+
+## summary / reporting 型の配置
+
+`EnrollSummary`、`VerifySummary` のようなユースケース出力の summary 型は、I/O やインフラに依存しない純粋なデータ型であれば `domain` 層に属する。
+
+判断基準は以下のとおりである。
+
+- その型がインフラを持たない環境（ファイルもネットワークも外部 SDK もない）でも意味を持つか。持つなら domain に置く。
+- その型に外部 SDK 型・端末状態・プロセス状態が含まれるか。含まれるなら domain に置いてはならない。
+
+`application` 層に summary 型を定義してはならない。summary 型が `application` 配下に置かれている場合は配置違反とし、`domain` 層の適切なモジュールへ移動して解消する。
+
+`Summary` と `Report` は port や adapter の公開 contract に流出させてはならない。これは summary 型が domain に属する場合も同様である。
+
 ## 標準シンボル構成
 
-標準シンボルは `Command`、`UseCase`、`Policy`、`Value`、`Port`、`Adapter`、`Summary`、`Report`、`Error` の役割を分離して命名する。閉じた集合は raw string で表現せず enum または newtype を使う。`Summary` と `Report` は application の出力専用にとどめ、port や adapter の公開 contract に流出させない。
+標準シンボルは `Command`、`UseCase`、`Policy`、`Value`、`Port`、`Adapter`、`Summary`、`Report`、`Error` の役割を分離して命名する。閉じた集合は raw string で表現せず enum または newtype を使う。`Summary` と `Report` は I/O やインフラに依存しない純粋なデータ型として `domain` 層に定義し、port や adapter の公開 contract に流出させない（詳細は [summary / reporting 型の配置](#summary--reporting-型の配置) を参照）。
 
 ## 公開範囲と再公開規則
 
