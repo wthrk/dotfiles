@@ -84,3 +84,64 @@ YubiKey PIN の取得経路は `adapters/prompt.rs` の `read_yubikey_pin_raw()`
 同様に `adapters/yubikey.rs` の `unwrap_key` 実装において、OAEP アンパッド結果を格納する `output: Vec<u8>` が `Zeroizing` 非ラップのまま返される。
 
 `SecretDevice::unwrap_key` の戻り値型を `Zeroizing<Vec<u8>>` に変更し、関連する実装・呼び出し側を修正することでリスクは解消できる。他の観点（PINのメモリ保護・エラー情報漏洩・clone/copy禁止・stdout境界・EnrollmentBytes保護）については問題を確認できなかった。
+
+---
+
+## 第2回セキュリティレビュー（2026-05-25）
+
+- 対象コミット: `45ddda1`（差戻し修正）
+- HEAD: `e410a4c`
+- 判定: 合格
+
+### 前回不合格項目の再確認
+
+#### unwrap_key の Zeroizing 保護（前回不合格）
+
+**合格**
+
+修正が正しく行われていることを以下の3箇所で確認した。
+
+**`ports.rs` L127**: `SecretDevice::unwrap_key` のシグネチャが `Result<Zeroizing<Vec<u8>>>` になっている。
+
+```rust
+fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+```
+
+コメントも「戻り値は zeroize 保護済みにし、呼び出し元が Drop した時点で content encryption key がヒープ上にゼロ化されることを保証する」と明示されており、意図が文書化されている。
+
+**`adapters/yubikey.rs` L434-447**: `YubikeySecretDevice::unwrap_key` の実装で、`piv::decrypt_data` の生出力を `Zeroizing::new(...)` でラップし、OAEP アンパッド先の output buffer も `Zeroizing::new(Vec::new())` で初期化している。
+
+```rust
+let decrypted = Zeroizing::new(piv::decrypt_data(...)?);
+let mut output = Zeroizing::new(Vec::new());
+write_oaep_unpadded_sha256(&decrypted, 256, &mut *output)?;
+Ok(output)
+```
+
+中間バッファ `decrypted` と最終出力 `output` の双方が `Zeroizing` ラップされており、いずれも Drop 時にゼロ化される。
+
+**`application/storage_service.rs` L90-94**: `decrypt_secret_protected` で `unwrap_key` の戻り値を `unwrapped_key: Zeroizing<Vec<u8>>` として受け取り、`content_key.write_all(&*unwrapped_key)` の `Deref` 越しのスライスアクセスで使用している。`unwrapped_key` はこの関数スコープ末尾で Drop されゼロ化される。
+
+**`application/test_support/fake_boundary.rs` L270-272**: `FakeDevice::unwrap_key` も `Result<Zeroizing<Vec<u8>>>` を返す実装になっている。
+
+```rust
+fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    Ok(Zeroizing::new(self.wrap_key(wrapped_key)?))
+}
+```
+
+前回不合格の原因はすべて解消されている。
+
+### 前回合格項目の変更確認
+
+変化なし。
+
+- **PINのメモリ内保持**: `adapters/prompt.rs` → `Zeroizing<Vec<u8>>` → `protect_bytes()` の流れは維持されている。`ports.rs` の `read_yubikey_pin_bytes` シグネチャも `Result<Zeroizing<Vec<u8>>>` のまま。
+- **エラーメッセージによる情報漏洩なし**: `storage_service.rs` のエラー文言（「failed to decrypt {name}」等）は秘密値を含まない。`map_err(|_| anyhow!(...))` で復号失敗の詳細を捨てる pattern も維持。
+- **EnrollmentBytesのZeroizing保護**: `ports.rs` の `EnrollmentBytes` の各フィールドが `Zeroizing<Vec<u8>>` のまま維持されている。
+
+## 総合判定（第2回）
+
+**合格**
+
+前回不合格の根拠であった `SecretDevice::unwrap_key` の `Vec<u8>` 非保護問題が、port シグネチャ・実機 adapter 実装・呼び出し側・fake test double の4箇所すべてで `Zeroizing<Vec<u8>>` に修正されており、content encryption key のヒープ上残留リスクが解消されている。前回合格した観点（PINのメモリ保護・エラー情報漏洩・stdout境界・EnrollmentBytes保護）に変更はなく、引き続き問題なし。
