@@ -50,6 +50,8 @@ Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` tak
   - Port trait 実装でないシンボルが1件でもあれば `判定: 不合格`。
   - `adapters.rs`（または `adapters/mod.rs`）で `pub(super)` 以上に再エクスポートされているモジュールを特定し、外部から到達可能な全シンボルに同規則を適用する。
 - `application/` ファイルでは adapter 具体型 import と `println!`/stdin 読み取りがないことを確認する。
+- `application/` と `adapters/` の private helper について、helper ごとに責務を一文で記述し、その責務が当該層に属するかを判定する。1件でも説明不能または層不一致なら `判定: 不合格`。
+- helper が多数に分裂している場合、単なる整理不足ではなく port capability の粒度不足（粗い契約）を原因候補として必ず評価する。原因が port 設計にある場合、file-level 分割済みでも `判定: 不合格` とし port 再分割を要求する。
 - その他 `docs/architecture/review-checklist.md` の対応層チェック項目を適用する。各違反は `判定: 不合格`。チェックリスト内容をここに複製しない — 正典は `docs/architecture/review-checklist.md`。
 
 ### 共通制約

@@ -3,13 +3,13 @@
 use std::{
     marker::PhantomData,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, LazyLock, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
-use anyhow::{bail, Context};
-use signal_hook::{consts::signal, SigId};
+use anyhow::{Context, bail};
+use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
@@ -52,19 +52,6 @@ impl InterruptGuard {
     /// 保護区間中に記録された SIGINT/SIGTERM を error として返す。
     pub(crate) fn check_interrupted(&self) -> Result<()> {
         interrupted_result()
-    }
-
-    /// operation を実行し、前後で interrupt flag を確認する。
-    ///
-    /// operation 中に記録された中断は後続処理へ進めず error として返す。
-    pub(crate) fn run_operation<T>(
-        &self,
-        operation: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        self.check_interrupted()?;
-        let result = operation();
-        self.check_interrupted()?;
-        result
     }
 }
 
@@ -154,14 +141,6 @@ impl SecretSession {
         self.interrupt.check_interrupted()
     }
 
-    /// operation を実行し、前後で interrupt flag を確認する。
-    pub(crate) fn run_operation<T>(
-        &self,
-        operation: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        self.interrupt.run_operation(operation)
-    }
-
     /// 一時入力 buffer の memory range を現在の session で lock する。
     pub(super) fn lock_transient_buffer(
         &self,
@@ -189,12 +168,11 @@ impl SecretSession {
 
 impl SecretMemoryGuard {
     fn prepare() -> Result<Self> {
-        rlimit::setrlimit(rlimit::Resource::CORE, 0, 0)
-            .context("failed to disable core dumps")?;
+        rlimit::setrlimit(rlimit::Resource::CORE, 0, 0).context("failed to disable core dumps")?;
 
         let probe = Zeroizing::new(vec![0u8; MEMORY_LOCK_PROBE_LEN]);
-        let probe_guard = region::lock(probe.as_ptr(), probe.len())
-            .context("failed to lock process memory")?;
+        let probe_guard =
+            region::lock(probe.as_ptr(), probe.len()).context("failed to lock process memory")?;
         drop(probe_guard);
 
         Ok(Self)

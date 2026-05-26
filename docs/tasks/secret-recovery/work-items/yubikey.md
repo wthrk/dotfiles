@@ -12,14 +12,18 @@
 ---
 
 - 作業種別: `モジュール構造のゼロベース書き換えを含む規約適合リファクタリング`
+- 現行サイクル状態: `要修正`
 - 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の動作有無ではなくアーキテクチャ規約への厳密適合を基準に作り直す。責務境界が崩れている箇所を読み直し、モジュール分割、依存方向、入出力境界を再構成すること自体が仕事である。
 - 構造完了条件:
   - `CLI` は clap option の型付けと公開 command 名だけを持つ。
-  - `application` は use case の順序制御と外部境界呼び出しだけを持つ。
+  - `application` は use case の順序制御と外部境界呼び出しだけを持ち、各 use case は `rust/dotfiles-cli/src/secrets/application/` 直下の sibling file にある単一の `run_*` 関数として表現される。
+  - `application.rs` は sibling `run_*.rs` 群の module 配線だけを持ち、`application/use_case/` ディレクトリを新設せず、`mod.rs` と `#[path = "..."]` を使わない。
+  - `application` は `domain` と `port` にのみ依存し、乱数生成は port 経由でのみ取得する。use case 独自型を定義せず、use case が扱う型は `domain` 層定義に限定する。
+  - use case-to-use case call を禁止し、use case 層での logic commonization を行わない。重複が必要なら許容し、共通責務は下位層へ押し戻す。
   - `domain` は YubiKey 実機、stdin/stdout、保護メモリ、外部 crate の I/O 型に依存しない。
   - `adapters` は実機 YubiKey と process I/O の接続に限定し、業務判断や use case 順序を持たない。
   - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること。
-  - `support` は保護メモリ、補助暗号、割り込み制御などの横断補助だけを持つ。
+  - `support` は保護メモリ、補助暗号、割り込み制御などの横断補助だけを持ち、terminal I/O / prompt は `support/console_io.rs` を含めて残さない。
 - 既存実装の流用方針: `既存コードは参照してよいが、責務境界が規約に合わない場合は大幅な再分割、再配置、削除を前提とする。`
 - 規約違反の解消対象:
 
@@ -28,30 +32,34 @@
   - **[層違反: application → adapter具体型への依存禁止]** **V1** `application.rs` が `adapters` / `adapters::input` を直接 import し、`DeviceBackend` / `RealSecretsBoundary` を直接組み立てている（`application` から `adapter` への依存禁止違反）。
   - **[層違反: application → concrete I/O・stdin・stdout policy は adapter 所有]** **V2** `application.rs` が `read_hidden_secret` / `read_visible_secret_line` / `read_protected_enrollment_secret_set` / `write_secret_to_stdout` を直接呼び、`println!` による report 出力を行っている（concrete I/O / stdin / stdout policy は `adapter` 所有規則違反）。
   - **[層違反: application → device handle は adapter 所有]** **V3** `application.rs` が `let mut device = ...` を全 use case で長寿命に保持し、`serial()` / `verify_pin()` / `check_management_auth_preconditions()` まで呼んでいる（device handle は `adapter` 所有規則違反）。
-  - **[層違反: application配下 → adapter実装は adapters/ 層のみ許可]** **V4** `application/real_boundary.rs` が adapter 実装そのものを `application/` 配下に置いている（adapter と application の分離規則違反）。
-  - **[層違反: application → concrete I/O・parser は adapter 所有]** **V5** `application/storage_service.rs` が永続書き込み、manifest の serde_json parse/serialize、blob decode、device precondition、summary 構築を一緒に持つ（concrete I/O / parser は `adapter` 所有規則違反）。
+  - **[層違反: application配下 → adapter実装は adapters/ 層のみ許可]** **V4** `application/` 配下に adapter 実装責務（実 I/O・実機 discovery・外部 API 変換）が混入している（adapter と application の分離規則違反）。
+  - **[層違反: application → concrete I/O・parser・protected-secret ownership は adapter/support 所有]** **V5** `application/run_*.rs` に永続書き込み、manifest の serde_json parse/serialize、blob decode、device precondition、summary 構築、AEAD 呼び出し順序、`SecretSession` / `ProtectedSecret` 系の所有が混在している（concrete I/O / parser / crypto 実装詳細 / protected-secret ownership は `application` 保有禁止違反）。
   - **[層違反: port → DTO・parser・prompt は adapter 所有]** **V6** `ports.rs` の `EnrollmentSecretSet` が port に DTO を置き、`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む（port への DTO 配置禁止・parser/prompt は `adapter` 所有規則違反）。
   - **[層違反: port → domain 以外への依存禁止]** **V7** `ports.rs` が `support::protection::{InterruptGuard, ProtectedSecret, SecretSession}` に依存している（port は domain にのみ依存可能規則違反）。
   - **[層違反: domain → port contract は port 層に置く]** **V8** `domain/model.rs` が `SecretDevice` trait を定義している（port contract は `port` に置く規則違反）。
-  - **[層違反: domain → summary DTO は application 所有]** **V9** `domain/model.rs` が `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` を保持している（summary / reporting DTO は `application` 所有規則違反）。
-  - **[層違反: 層未確定 → 単一ファイル責務混在禁止]** **V10** `blob.rs` が層無所属のまま wire format / AEAD 暗号化 / content-key 生成 / port 呼び出し / ProtectedSecret 生成を同居させている（単一ファイル責務混在禁止違反）。
-  - **[層違反: support → prompt・stdin・stdout policy は adapter 所有]** **V11** `support/terminal.rs` が TTY 判定 / prompt / raw mode / stdout 書き込みを `support` 配下に置いている（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
-  - **[層違反: adapters → port実装以外の公開禁止]** **V12** `adapters/input.rs` が hidden prompt / visible prompt / PIN input / stdin ingest / JSON decode / stdout terminal policy を 1 ファイルに集約し、port DTO に直接 decode している（port DTO 依存増幅・adapter 面混在違反）。
-  - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` が backend selection / test-stub selection / interactive device selection / spare 交換 prompt を同一 surface に混在させている（adapter 面分割規則違反）。
-  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V14** `secrets.rs` / `adapters/test_stub.rs` / `dotfiles-cli-secrets-test-contract` が production crate の command path に test double を feature-gate で埋め込んでいる（test double は tests 層所有・production export 禁止規則違反）。
-  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V15** `application.rs` 内部 test module と `application/storage_service_tests.rs` が fake boundary / fake device を production tree 配下に置いている（同上）。
+  - **[層違反: application → use case 独自型禁止・domain 型限定]** **V9** `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` のような use case outcome 型を `application` 側へ所有・移設してはならない。use case が扱う型は `domain` 層定義に限定し、application 独自型の導入を禁止する。
+  - **[層違反: application → ユースケース単位分割 + 技術詳細排除]** **V10** `application.rs` が sibling `run_*.rs` の module 配線を超える責務を持っている、または `application/run_*.rs` が wire format / AEAD / protected-secret ownership / device 操作 / use case 手順以外の責務を再混在させている。各 use case は sibling file に 1 つの `run_*` 関数として表現し、`application.rs` は module 配線専用に限定する必要がある（1 use case = 1 function 原則違反・application 層責務混在違反）。
+  - **[層違反: support → prompt・stdin・stdout policy は adapter 所有]** **V11** support 層に TTY 判定 / prompt / raw mode / stdout 書き込み責務が混入している。`support/console_io.rs` のような terminal I/O 集約も support では許可しない（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
+  - **[層違反: adapters → port実装以外の公開禁止]** **V12** `adapters/piv_io.rs` が input modality（prompt/stdin/stdin-json）を port 契約へ逆流させる公開面を維持し、report DTO 変換まで一体化している（port 契約汚染・adapter 面混在違反）。
+  - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` / `adapters/piv_io.rs` が device selection・interactive prompt・stdin JSON decode・report 出力変換を同一 seam で保持し、差し替え単位が不明確になっている（adapter 面分割規則違反）。
+  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V14** test double を production crate の command path に埋め込み、tests 層専用 crate（`dotfiles-cli-secrets-test-stub`）へ分離していない（test double は tests 層所有・production export 禁止規則違反）。
+- **[層違反: tests → test double は tests 層所有・production export 禁止]** **V15** `application/` 配下の production module 内部 test module に fake boundary / fake device を production tree 配下で保持していた（同上）。
   - **[層違反: domain・port → I/O 型禁止]** **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
 - 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
   - `application` が `adapter` の具体型を import しない（V1, V4 の解消）。
   - `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない（V2, V3 の解消）。
+  - `application` は `domain` と `port` にのみ依存し、乱数生成を port 経由で取得する。`application.rs` は sibling `run_*.rs` の module 配線だけを持ち、各 sibling `run_*.rs` は単一の `run_*` 関数だけを持ち、use case-to-use case call や use case 層での logic commonization を持たない（V1, V5, V9, V10 の解消）。
   - `ports` に DTO / parser / prompt が存在しない（V6 の解消）。
   - `ports` が `support` に依存しない（V7 の解消）。
-  - `domain` に port contract / summary DTO / I/O 型が存在しない（V8, V9, V16 の解消）。
-  - `support` に terminal I/O / prompt が存在しない（V11 の解消）。
-  - `blob.rs` の責務が単一層に属する（V10 の解消）。
+  - `domain` に port contract / I/O 型が存在せず、use case outcome 型は `domain` 側にのみ定義され presentation 仕様を含まない（V8, V9, V16 の解消）。
+  - `support` に terminal I/O / prompt が存在しない。`support/console_io.rs` のような process I/O 集約は adapter へ移すか除去する（V11 の解消）。
+  - `application/run_*.rs`・`adapters/yubikey.rs`・`domain/wire.rs` 間で、wire/crypto/device/use-case の責務境界が単一層原則に従って分離されている（V10 の解消）。
   - production コードに test double が含まれない（V14, V15 の解消）。
   - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること（V12, V13 の解消）。
 - レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
+  - `application/` と `adapters/` の private helper について、helper 単位で責務が層責務に一致することを説明できること。説明できない helper が1件でもあれば設計誤りとして不合格。
+  - helper 増殖が見られる場合、review では helper の個別修正で閉じず、port capability 設計の粗さ（契約粒度不足）が原因でないかを必ず判定すること。原因が port 設計にある場合は port 再分割まで要求すること。
+  - file-level 分割の実施有無だけで合格にしてはならない。helper ごとの責務確定が確認できるまで V10/V12/V13 は未解消扱いとする。
 
 ## 差戻し条件
 
@@ -61,11 +69,16 @@
 - `application` が `println!` / stdin 読み取り / concrete device handle 操作を含む（V2, V3 未解消）
 - `ports` に DTO / parser / prompt が残存している（V6 未解消）
 - `ports` が `support` に依存している（V7 未解消）
-- `domain` に port contract / summary DTO / I/O 型が残存している（V8, V9, V16 未解消）
-- `support` に terminal I/O / prompt が残存している（V11 未解消）
-- `blob.rs` の責務が複数層にまたがっている（V10 未解消）
+- `domain` に port contract / I/O 型が残存している、または use case outcome 型が `application` 側へ移されている（V8, V9, V16 未解消）
+- `support` に terminal I/O / prompt が残存している。`support/console_io.rs` のような terminal bridge を support に残したままにしている（V11 未解消）
+- `application.rs` が sibling `run_*.rs` の module 配線を超える責務を持っている、`application/use_case/` ディレクトリを導入している、または sibling `run_*.rs` ごとの単一 `run_*` 関数原則を破っている（V10 未解消）
+- use case-to-use case call または use case 層での logic commonization を導入している
 - production コードに test double が含まれている（V14, V15 未解消）
 - `adapters/` 配下に port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）が存在している（V12, V13 未解消）
+- `application/` または `adapters/` の private helper について責務説明ができず、helper 単位の責務判定を省略している
+- helper 増殖を port 契約粒度の問題として評価せず、file-level 分割のみで解消扱いにしている
+- `application/run_*.rs` の公開 entrypoint または core workflow 非自明 helper に doc comment coverage が不足し、停止条件・責務境界・caller responsibility・why の説明が欠落している
+- `ports`/`adapters`/`support` の層責務境界を担う非自明要素で doc comment が欠落し、責任分界説明がない
 - 「動作する」という事実のみを根拠に完了報告している
 - 粗粒度進捗注記: `#12` の design PR は `#21` として成立済みであり、現段階の主作業は implementation / code review / validation 面である。
 
@@ -79,21 +92,27 @@
 
 - **ステップ3 を再開する（V6 再差戻し）**
   - `ports.rs` から DTO / prompt / stdin / stdout / terminal 判定に相当する契約を除去し、port を capability 宣言へ戻す。
+  - 2026-05-26 実装サイクル追記: `SecretsBoundary` から `require_serial` / `require_option` / `read_enrollment_json_bytes` / `ask_continue_rotation` を除去し、enrollment 入力は field 単位 capability へ再設計した。`ports.rs` の `support` 依存は引き続き存在しない（V7 維持）。
 - **ステップ4 を再開する（V10 再差戻し）**
-  - `application/storage_service.rs` に再集中している blob / wire / 暗号 / manifest / 永続 I/O の責務を単一層へ再分離する。
+  - `application.rs` を sibling `run_*.rs` の module 配線専用に保ち、各 use case を `application/` 直下の sibling `run_*.rs` にある単一 `run_*` 関数として維持する。
+  - `application/use_case/` ディレクトリ、`mod.rs`、`#[path = "..."]` を導入しない。
+  - 各 use case から blob / wire / 暗号 / manifest / 永続 I/O / protected-secret ownership を除去し、use case-to-use case call と logic commonization を持ち込まない。
 - **ステップ5 を再開する（V12, V13 再差戻し + adapter seam 不整合解消）**
-  - `ProcessSecretsBoundary` / `RealSecretDeviceFactory` を前提にする公開面と、`RealSecretsBoundary` を中核にする実装実体の不一致を解消し、adapter 境界契約を単一の seam に統一する。
-  - `process_boundary.rs` から test double / test 用 backend 分岐を除去し、production adapter が実外部技術と port 契約の翻訳だけを担う状態へ戻す。
-  - `adapters.rs` の公開面が port 実装以外に依存しないよう再設計し、`build_real_boundary` を含む adapter surface の責務を見直す。
+  - `adapters.rs` の公開面と `adapters/piv_io/` 配下の実装責務を一致させ、adapter 境界契約を単一の seam に統一する。
+  - `adapters/piv_io/` から test double / test 用 backend 分岐を除去し、production adapter が実外部技術と port 契約の翻訳だけを担う状態へ戻す。
+  - `adapters.rs` の公開面が port 実装以外に依存しないよう再設計し、adapter surface の責務を見直す。
 - **ステップ6 を再開する（V5 再差戻し）**
-  - `application/storage_service.rs` から manifest JSON parse/serialize、blob decode、永続 I/O、summary 構築の混在を除去する。
+  - `application/run_*.rs` の helper 群から manifest JSON parse/serialize、blob decode、永続 I/O、summary 構築、AEAD 呼び出し順序、`SecretSession` / `ProtectedSecret` 所有の混在を除去する。
+  - use case 独自型の導入で責務を逃がさず、use case が扱う型を domain 層定義だけに戻す。
 - **ステップ7 を再開する（V2, V3 再差戻し）**
   - `application.rs` から stdin 読み取り、stdout 書き込み方針、prompt、concrete device handle の長寿命保持と直接操作を除去する。
 - **ステップ8 を再開する（V14 再差戻し + テスト実行基盤整合）**
-  - production source tree から test double 責務を完全に除去し、`secrets-test-stub` 経路や `dotfiles-stub` 前提を tests 層 / test-support 側へ閉じる。
+  - production source tree から test double 責務を完全に除去し、`dotfiles-stub` を含む stub 実行経路を tests 層専用 crate（`dotfiles-cli-secrets-test-stub`）へ閉じる。
   - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントで現行実装と一致しない `real_boundary` 参照を修正する。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/` と `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントを現行実装の責務境界と一致させる。
+  - `rust/dotfiles-cli/src/secrets/application/run_*.rs` の公開 use-case entrypoint と非自明 helper、ならびに sibling `run_*.rs` を配線する `application.rs` に必要な doc comment coverage を付与し、`what` だけでなく `why` を明記する。
+  - `application/run_*.rs` に限らず、`ports`/`adapters`/`support` の層境界説明が必要な非自明 type/function で doc comment 欠落を残さない。欠落はレビュー blocker として扱う。
 
 ## 実装順序ガイド（推奨）
 
@@ -102,12 +121,12 @@
 1. **V8, V16 を先に解消する**（domain → port の依存整理）
    - V8：`domain/model.rs` の `SecretDevice` を `ports.rs` へ移設
    - V16：`SecretDevice::write_unwrapped_key` の `std::io::Write` を除去
-2. **V9 を解消する**（domain の summary DTO 除去）
-   - domain が clean になった後で summary DTO を application 層へ移設
+2. **V9 を解消する**（use case outcome 型の domain 統一）
+   - use case 独自型を禁止し、use case outcome 型を domain 層定義へ統一する。application 側への移設は解消ではなく再違反である。
 3. **V6, V7 を解消する**（port の DTO・parser・prompt・support 依存を除去）
    - V6：port contract を最小 capability 契約に縮小（`EnrollmentSecretSet` DTO 除去、`prompt_yes_no`/`stdin_is_terminal`/`stdout_is_terminal` を adapter 所有へ）
    - V7：V6 の整理に伴い `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去し `support::protection` 依存を断つ
-4. **V10 を解消する**（blob.rs の責務分割）
+4. **V10 を解消する**（`application.rs` / `application/run_*.rs` / `adapters/yubikey.rs` / `domain/wire.rs` 間の責務再分離）
    - wire format・AEAD・port 呼び出しを各層へ分離
 5. **V11, V12, V13 を解消する**（adapter 面の整理）
    - terminal I/O・prompt を support から adapter へ移設
@@ -141,19 +160,18 @@
 
 | 違反 | 対象ファイル | 解消操作の方向 |
 |------|------------|--------------|
-| V1, V3 | `src/secrets/application.rs` | adapter import を除去。device handle は adapter 所有へ移設。 |
-| V2 | `src/secrets/application.rs` | `println!` / stdin 読み取りを adapter へ移設。port 経由に統一。 |
-| V4 | `src/secrets/application/real_boundary.rs` | adapters 層へ移設する。 |
-| V5 | `src/secrets/application/storage_service.rs` | serde_json parse / blob decode を adapter へ移設。 |
+| V1, V2, V3 | `src/secrets/application.rs` | adapter import を除去し、`println!` / stdin 読み取り / device handle 直接操作を adapter 所有へ移設して port 経由に統一する。 |
+| V4 | `src/secrets/application/` | application 配下の adapter 実装責務を `adapters/` へ移設する。 |
+| V5 | `src/secrets/application/run_*.rs` | serde_json parse / blob decode / AEAD 呼び出し順序 / `SecretSession`・`ProtectedSecret` 所有を application から除去し、adapter・support・domain の責務境界へ戻す。 |
 | V6 | `src/secrets/ports.rs` | `EnrollmentSecretSet` DTO を除去。`SecretsBoundary` を最小 capability 契約に分割。 |
 | V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去する。V6（`SecretsBoundary` 整理）と連動しており、V6 で `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去するか domain 層へ移設することで解消する。ステップ1では V8/V16 のみ対象とし V7 はステップ3（V6 と同時）で解消する。 |
 | V8 | `src/secrets/domain/model.rs` | `SecretDevice` を ports 層へ移設。 |
-| V9 | `src/secrets/domain/model.rs` | summary DTO（`EnrollSummary` 等）を application 層へ移設。 |
-| V10 | `src/secrets/blob.rs` | 層ごとに分割し、wire format は domain/wire、AEAD は support/crypto 相当、port 呼び出しは adapter へ。 |
-| V11 | `src/secrets/support/terminal.rs` | adapters/terminal（仮称）へ移設し support からは除去。 |
-| V12 | `src/secrets/adapters/input.rs` | prompt / stdin / JSON decode / stdout policy を個別 adapter に分割。DTO への直接 decode を廃止。 |
-| V13 | `src/secrets/adapters.rs` | backend selection / test-stub selection / device prompt を各専用 adapter に分離。 |
-| V14, V15 | `src/secrets/adapters/test_stub.rs`、`src/secrets/application/storage_service_tests.rs`、`dotfiles-cli-secrets-test-contract` | production feature path から除去し tests/ 層へ移設。 |
+| V9 | `src/secrets/domain/model.rs`、`src/secrets/application/summary.rs`（存在する場合） | use case outcome 型（`EnrollSummary` 等）を domain 層へ統一し、application 独自型を残さない。 |
+| V10 | `src/secrets/application.rs`、`src/secrets/application/run_*.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/domain/wire.rs` | `application.rs` を sibling `run_*.rs` の module 配線専用に限定し、`application/` 直下の sibling `run_*.rs` ごとに単一 `run_*` 関数を維持する。use-case 手順、device 外部 API 変換、wire parser/serializer、protected-secret ownership の責務を層ごとに再分離し、use case-to-use case call と use case 層 commonization を禁止する。 |
+| V11 | `src/secrets/support/` | `support/console_io.rs` を含む terminal I/O / prompt を adapters 層へ移設し support からは除去。 |
+| V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
+| V13 | `src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/report.rs` | device selection / input / report の責務境界を明示し、adapter seam を分離する。 |
+| V14, V15 | `src/secrets/adapters/test_stub.rs`（過去違反ファイル）、`src/secrets/application/*.rs`（`#[cfg(test)]` 節）、`dotfiles-cli-secrets-test-stub`、`dotfiles-cli-secrets-test-contract` | production command path から test double を除去し、tests 層専用 crate（stub 実装と contract）へ分離する。 |
 | V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
 
 ## 固定実装単位トラッカー
@@ -161,13 +179,13 @@
 | 実装単位 | 状態 | 成果物 | 参照 |
 | --- | --- | --- | --- |
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ2: V9（domain summary DTO除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ4: V10（blob.rs責務分割） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ8: V14,V15（test double除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 確認 | 完了 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 完了（不要） | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 実装 ステップ2: V9（use case outcome 型の domain 統一） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
+| 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ4: V10（責務再分離） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

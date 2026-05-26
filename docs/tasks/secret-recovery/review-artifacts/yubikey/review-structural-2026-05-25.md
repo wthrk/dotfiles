@@ -88,7 +88,7 @@
 
 #### 問い 3: application/ 配下にアダプター実装が紛れ込んでいないか。
 
-回答: `application/` 配下に adapter 実装ファイルは存在しない。`boundary.rs` は `// removed` の 1 行のみ。違反なし。
+回答: `application/` 配下に adapter 実装ファイルは存在しない。違反なし。
 
 #### 問い 4: CLI→Web API に移植したとき変更は最小限か。
 

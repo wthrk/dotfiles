@@ -12,48 +12,15 @@ mod application;
 pub mod domain;
 pub mod ports;
 mod support;
+pub use application::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole};
 
 use clap::{Args, Subcommand, ValueEnum};
-use domain::SecretName;
-use support::protection::ProtectedSecret;
-use zeroize::Zeroizing;
+use domain::{
+    EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, GetCommand, PutCommand,
+    RotateBwsTokenCommand, SecretName, SetupCommand, VerifyYubikeyCommand,
+};
 
 use crate::Result;
-
-/// stdin JSON から読み出した enrollment secret set の raw bytes。
-///
-/// adapter が JSON を decode して構築し、application 層が `SecretSession` へ移送する。
-/// adapter と application の両方から参照するため、secrets module トップレベルに定義する。
-/// `SecretsBoundary::read_enrollment_json_bytes` の返り値型として ports module からも参照される。
-pub struct EnrollmentBytes {
-    pub bw_email: Zeroizing<Vec<u8>>,
-    pub bw_password: Zeroizing<Vec<u8>>,
-    pub bws_access_token: Zeroizing<Vec<u8>>,
-}
-
-/// 登録に必要な 3 field を同じ保護 session で所有する共通型。
-///
-/// port と application の両方から参照するため、secrets module トップレベルに定義する。
-pub(self) struct EnrollmentSecretSet<'session> {
-    pub(self) bw_email: ProtectedSecret<'session>,
-    pub(self) bw_password: ProtectedSecret<'session>,
-    pub(self) bws_access_token: ProtectedSecret<'session>,
-}
-
-impl<'session> EnrollmentSecretSet<'session> {
-    /// 同じ `SecretSession` に所属する 3 field から登録対象 secret を構築する。
-    pub(self) fn new(
-        bw_email: ProtectedSecret<'session>,
-        bw_password: ProtectedSecret<'session>,
-        bws_access_token: ProtectedSecret<'session>,
-    ) -> Self {
-        Self {
-            bw_email,
-            bw_password,
-            bws_access_token,
-        }
-    }
-}
 
 #[derive(Args)]
 /// 復旧用 secret の保存先と検証手段を選ぶ最上位 command。
@@ -168,8 +135,8 @@ enum VerifyCheck {
 /// 実プロセス境界（`RealSecretsBoundary`）の組み立てはここで行い、application 層は
 /// port 契約だけを通じて境界を利用する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::process_boundary::RealSecretsBoundary;
-    application::run_with_boundary(options, &mut boundary)
+    let mut boundary = adapters::RealSecretsBoundary::default();
+    dispatch(options, &mut boundary)
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。
@@ -181,13 +148,148 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
 
 /// argv を `dotfiles secrets <subcommand>` として解釈し、与えられた境界で use case を実行する。
 ///
-/// 実プロセスの I/O・device 取得契約は呼び出し側の `SecretsBoundary` 実装が差し替える。
+/// 実プロセスの I/O・device 取得契約は呼び出し側の port 実装が差し替える。
 /// tests 層の stub crate（`dotfiles-cli-secrets-test-stub`）が production 経路を駆動するために使う。
 pub fn run_with_args<I, T, B>(args: I, boundary: &mut B) -> Result<()>
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
-    B: ports::SecretsBoundary,
+    B: ports::DeviceSelectionPort
+        + ports::DeviceSelectionInputPort
+        + ports::DeviceSerialPort
+        + ports::PinInputPort
+        + ports::SpareDeviceWaitPort
+        + ports::SpareDeviceSerialPort
+        + ports::SecretInputPort
+        + ports::SecretLoadPort
+        + ports::SecretOutputPort
+        + ports::SecretStorePort
+        + ports::StorageSetupPort
+        + ports::BootstrapSecretLoadPort
+        + ports::BootstrapSecretStorePort
+        + ports::StorageVerifyPort
+        + ports::ReportPort
+        + ports::RandomBytesPort,
+{
+    let options = parse_secrets_options(args)?;
+    dispatch(options, boundary)
+}
+
+fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
+where
+    B: ports::DeviceSelectionPort
+        + ports::DeviceSelectionInputPort
+        + ports::DeviceSerialPort
+        + ports::PinInputPort
+        + ports::SpareDeviceWaitPort
+        + ports::SpareDeviceSerialPort
+        + ports::SecretInputPort
+        + ports::SecretLoadPort
+        + ports::SecretOutputPort
+        + ports::SecretStorePort
+        + ports::StorageSetupPort
+        + ports::BootstrapSecretLoadPort
+        + ports::BootstrapSecretStorePort
+        + ports::StorageVerifyPort
+        + ports::ReportPort
+        + ports::RandomBytesPort,
+{
+    match options.command {
+        SecretsCommand::Yubikey(options) => match options.command {
+            YubikeyCommand::Setup(options) => application::run_setup_with::run_setup_with(
+                SetupCommand {
+                    serial: options.serial,
+                },
+                boundary,
+            ),
+            YubikeyCommand::Put(options) => {
+                let command = PutCommand {
+                    name: options.name,
+                    serial: options.serial,
+                    force: options.force,
+                };
+                if options.stdin {
+                    application::run_put_with_stdin::run_put_with_stdin(command, boundary)
+                } else {
+                    application::run_put_with_prompt::run_put_with_prompt(command, boundary)
+                }
+            }
+            YubikeyCommand::Get(options) => application::run_get_with::run_get_with(
+                GetCommand {
+                    name: options.name,
+                    serial: options.serial,
+                },
+                boundary,
+            ),
+            YubikeyCommand::EnrollPrimary(options) => {
+                let command = EnrollPrimaryCommand {
+                    serial: options.serial,
+                };
+                if options.stdin_json {
+                    application::run_enroll_primary_with_stdin_json::run_enroll_primary_with_stdin_json(
+                        command,
+                        boundary,
+                    )
+                } else {
+                    application::run_enroll_primary_with_prompt::run_enroll_primary_with_prompt(
+                        command, boundary,
+                    )
+                }
+            }
+            YubikeyCommand::EnrollSpare(options) => {
+                let command = EnrollSpareCommand {
+                    primary_serial: options.primary_serial,
+                    spare_serial: options.spare_serial,
+                };
+                if options.stdin_json {
+                    application::run_enroll_spare_with_stdin_json::run_enroll_spare_with_stdin_json(
+                        command, boundary,
+                    )
+                } else {
+                    application::run_enroll_spare_with_prompt::run_enroll_spare_with_prompt(
+                        command, boundary,
+                    )
+                }
+            }
+            YubikeyCommand::RotateBwsToken(options) => {
+                let command = RotateBwsTokenCommand {
+                    serial: options.serial,
+                };
+                if options.stdin {
+                    application::run_rotate_bws_token_with_stdin::run_rotate_bws_token_with_stdin(
+                        command, boundary,
+                    )
+                } else {
+                    application::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
+                        command, boundary,
+                    )
+                }
+            }
+        },
+        SecretsCommand::VerifyYubikey(options) => {
+            application::run_verify_yubikey_with::run_verify_yubikey_with(
+                VerifyYubikeyCommand {
+                    serial: options.serial,
+                    checks: options
+                        .check
+                        .into_iter()
+                        .map(|check| match check {
+                            VerifyCheck::Bws => ExternalCheck::Bws,
+                            VerifyCheck::BwLogin => ExternalCheck::BwLogin,
+                        })
+                        .collect(),
+                    all: options.all,
+                },
+                boundary,
+            )
+        }
+    }
+}
+
+fn parse_secrets_options<I, T>(args: I) -> Result<SecretsOptions>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
 {
     use clap::Parser;
 
@@ -204,5 +306,5 @@ where
     }
 
     let ArgsCommand::Secrets(options) = ArgsCli::try_parse_from(args)?.command;
-    application::run_with_boundary(options, boundary)
+    Ok(options)
 }

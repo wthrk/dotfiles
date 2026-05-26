@@ -14,7 +14,7 @@
 
 以下は上記義務の例外として明示的に許可する。
 
-- `secrets-test-stub` feature（`#[cfg(feature = "secrets-test-stub")]`）配下の `emit_write_event` 関数が、CLI 統合テストの保存検証用途で復号済み secret 値を stderr へ出力する動作。この出力は実機 YubiKey を介さない integration test contract の一部であり、`secrets-test-stub` feature を無効にした通常 build には含まれない。対象ファイル: `rust/dotfiles-cli/src/secrets/adapters/test_stub.rs`。
+- tests 層専用 crate `rust/dotfiles-cli-secrets-test-stub` の `TestDevice::emit_write_event` 関数が、CLI 統合テストの保存検証用途で復号済み secret 値を stderr へ出力する動作。対象ファイル: `rust/dotfiles-cli-secrets-test-stub/src/device.rs`。この出力は integration test contract の一部として許可し、production crate（`rust/dotfiles-cli`）へ混入してはならない。
 
 ## 役割別義務
 

@@ -20,12 +20,11 @@
 
 ### 義務1: 秘密情報・認証情報・鍵素材のコミットへの混入禁止
 
-確認対象: `src/secrets.rs`、`src/secrets/application.rs`、`src/secrets/application/storage_service.rs`、`src/secrets/application/summary.rs`、`src/secrets/ports.rs`、`src/secrets/domain/model.rs`、`src/secrets/domain/wire.rs`、`src/secrets/adapters.rs`、`src/secrets/adapters/backend.rs`、`src/secrets/adapters/boundary.rs`、`src/secrets/adapters/device_prompt.rs`、`src/secrets/adapters/enrollment_json.rs`、`src/secrets/adapters/input.rs`、`src/secrets/adapters/prompt.rs`、`src/secrets/adapters/real_boundary.rs`、`src/secrets/adapters/stdin.rs`、`src/secrets/adapters/stdout.rs`、`src/secrets/adapters/terminal.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/support.rs`、`src/secrets/support/aead.rs`、`src/secrets/support/oaep.rs`、`src/secrets/support/protection.rs`、`src/secrets/support/protection/buffer.rs`、`src/secrets/support/terminal.rs`、`tests/secrets_cli.rs`。
+確認対象: `src/secrets.rs`、`src/secrets/application.rs`、`src/secrets/application/storage_service.rs`、`src/secrets/application/summary.rs`、`src/secrets/ports.rs`、`src/secrets/domain/model.rs`、`src/secrets/domain/wire.rs`、`src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/console_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/adapters/piv_io/report.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/support.rs`、`src/secrets/support/aead.rs`、`src/secrets/support/console_io.rs`、`src/secrets/support/oaep.rs`、`src/secrets/support/protection.rs`、`src/secrets/support/protection/buffer.rs`、`tests/secrets_cli.rs`。
 
 - production コード全体にハードコードされた実秘密値（パスワード・トークン・鍵マテリアル）は存在しない。
 - `tests/secrets_cli.rs` に現れる固定文字列（`"new-token"`・`"user@example.com"` 等）は integration test 専用の入力値であり、production ソースツリーではなくテストコード内のみに存在する。
-- `adapters/enrollment_json.rs` の `#[cfg(test)]` ブロック内テスト値（`"alice@example.com"`・`"password"`・`"token"` 等）は test 専用であり、production ビルドには含まれない。
-- `support/terminal.rs` は `// moved to adapters/terminal.rs` のコメントのみ。`adapters/boundary.rs` は `// removed` のみ。いずれも実コードなし。
+- `adapters/piv_io/secret_io.rs` の `#[cfg(test)]` ブロック内テスト値（`"alice@example.com"`・`"password"`・`"token"` 等）は test 専用であり、production ビルドには含まれない。
 
 **違反なし。**
 
@@ -35,16 +34,16 @@
 
 **stdout 出力経路:**
 
-- `adapters/stdout.rs` の `write_secret_to_stdout` は `ensure_secret_stdout_not_terminal()` を先に呼び、stdout が TTY の場合は書き込み前に停止する（`SECRET_STDOUT_TERMINAL_ERROR`）。
+- `adapters/piv_io/console_io.rs` の `write_secret_to_stdout` は `ensure_secret_stdout_not_terminal()` を先に呼び、stdout が TTY の場合は書き込み前に停止する（`SECRET_STDOUT_TERMINAL_ERROR`）。
 - `application.rs` の `run_get_with` は `boundary.require_stdout_pipe()` を device open より前に呼ぶため、PIV 操作到達前に停止できる。
-- `adapters/real_boundary.rs` の `write_report` は `serde_json::to_string_pretty(value)` を `println!` へ渡す。渡される型は `EnrollSummary`・`VerifySummary`・`PartialRotateBwsTokenSummary` の summary 型のみであり、これらは serial・role・check status 等のメタデータのみを含む。`write_report` 呼び出し箇所を `application.rs` 全体で確認し、secret 本文がこの経路を通る実装はない。
+- `adapters/piv_io/report.rs` の `write_report` は `serde_json::to_string_pretty(value)` を `println!` へ渡す。渡される型は `EnrollSummary`・`VerifySummary`・`PartialRotateBwsTokenSummary` の summary 型のみであり、これらは serial・role・check status 等のメタデータのみを含む。`write_report` 呼び出し箇所を `application.rs` 全体で確認し、secret 本文がこの経路を通る実装はない。
 
 **stderr 出力経路:**
 
-- `adapters/terminal.rs` の `prompt_yes_no` は prompt 文字列のみ stderr へ出力し、入力文字列は返値として返すだけであり stderr には書かない。`read_terminal_key_event` では入力文字 `ch` を echo するが、これは visible prompt（YubiKey 選択番号等）のみで hidden input には使用されていない。
-- `adapters/terminal.rs` の `read_hidden_input` は raw mode で入力を受け取り、入力 byte を `ProtectedInputBuffer` に書き込む。通常文字はエコーせず（case `value =>` では `input.write_all(&[value])?` のみ）、stderr への出力はない。
-- `adapters/prompt.rs` の `read_visible_line_bytes` は `eprint!("{prompt}")` で prompt のみ出力し、入力 bytes は `ProtectedInputBuffer` に蓄積する。
-- `adapters/device_prompt.rs` の `select_yubikey_candidate` は reader 名と serial（非機密情報）を stderr へ出力するのみ。`wait_for_spare_replacement` は固定文字列のみ stderr へ出力する。
+- `adapters/piv_io/console_io.rs` の `prompt_yes_no` は prompt 文字列のみ stderr へ出力し、入力文字列は返値として返すだけであり stderr には書かない。`read_terminal_key_event` では入力文字 `ch` を echo するが、これは visible prompt（YubiKey 選択番号等）のみで hidden input には使用されていない。
+- `adapters/piv_io/console_io.rs` の `read_hidden_input` は raw mode で入力を受け取り、入力 byte を `ProtectedInputBuffer` に書き込む。通常文字はエコーせず（case `value =>` では `input.write_all(&[value])?` のみ）、stderr への出力はない。
+- `adapters/piv_io/secret_io.rs` の `read_visible_line_bytes` は `eprint!("{prompt}")` で prompt のみ出力し、入力 bytes は `ProtectedInputBuffer` に蓄積する。
+- `adapters/piv_io/device.rs` の `select_yubikey_candidate` は reader 名と serial（非機密情報）を stderr へ出力するのみ。`wait_for_spare_replacement` は固定文字列のみ stderr へ出力する。
 
 **ログ経路:**
 
@@ -68,7 +67,7 @@
 - `application/storage_service.rs` の `decrypt_secret_protected`（L106）: AEAD 復号失敗時のエラーメッセージは `"failed to decrypt {}"` で secret 名のみ。`map_err(|_| ...)` でパディング・タグ検証詳細を破棄する。
 - `support/oaep.rs` の `write_oaep_unpadded_sha256`: 失敗時エラーは定数 `OAEP_UNPAD_ERROR = "invalid RSA-OAEP encoded message"` のみ。`find_oaep_separator` は separator 位置で短絡せず全体を走査する（タイミング差を抑制するコメント付き）。
 - `support/protection/buffer.rs` の `ProtectedInputBuffer::write`（L155〜164）: 容量超過時は `self.buffer[..self.len].fill(0)` でゼロ化してから error を返す。部分秘密の漏洩なし。
-- `adapters/prompt.rs` の `validate_yubikey_pin`（L62〜66）: PIN 長検証失敗時は `"YubiKey PIN must be 6 to 8 bytes"` のみ。PIN 内容をエラー文字列に含まない。
+- `adapters/piv_io/secret_io.rs` の `validate_yubikey_pin`（L62〜66）: PIN 長検証失敗時は `"YubiKey PIN must be 6 to 8 bytes"` のみ。PIN 内容をエラー文字列に含まない。
 - `application.rs` の全 `bail!` 呼び出しを確認した。エラー文字列は操作名・状態・device serial 等のメタデータのみを含み、secret 平文を含むものはない。
 - `support/aead.rs` の `decrypt_detached` 失敗時: `"failed to decrypt YubiKey secret"` のみ。`aes_gcm` 内部の詳細を露出しない。
 
@@ -86,7 +85,7 @@
 - `adapters/yubikey.rs` の `unwrap_key`（L434〜447）: `piv::decrypt_data` 出力を `Zeroizing::new(...)` でラップ。OAEP アンパッド先の `output` も `Zeroizing::new(Vec::new())` で初期化。中間バッファ `decrypted` と最終出力 `output` の双方が Drop 時にゼロ化される。
 - `application/storage_service.rs` の `decrypt_secret_protected`（L90〜94）: `unwrap_key` の戻り値を `Zeroizing<Vec<u8>>` として受け取り、Deref 越しのスライスアクセスで使用。スコープ末尾で Drop されゼロ化される。
 - `support/oaep.rs`: 中間計算値（`seed`・`db`・`db_mask`・`seed_mask` 相当）はすべて `Zeroizing<Vec<u8>>` で保護されている。
-- `adapters/enrollment_json.rs` の `parse_unicode_escape`: 一時 `utf8` 配列は `utf8.zeroize()` で明示的にゼロ化（L239）。
+- `adapters/piv_io/secret_io.rs` の `parse_unicode_escape`: 一時 `utf8` 配列は `utf8.zeroize()` で明示的にゼロ化（L239）。
 
 **保護メモリ管理に問題なし。**
 
@@ -94,14 +93,11 @@
 
 ### 義務5: production コードへの test double 混入禁止
 
-- `adapters/backend.rs` の `#[cfg(not(feature = "secrets-test-stub"))]` branch（L43〜48）: `from_test_flag(_enabled: bool)` は引数に関わらず常に `Ok(Self::Real)` のみを返す。test stub 実行経路は含まれない。
-- `adapters/backend.rs` の `#[cfg(feature = "secrets-test-stub")]` branch: stub 機能は feature flag で保護されており、通常ビルドでは `mod test_stub` は `adapters.rs` にも存在しない（`#[cfg(feature = "secrets-test-stub")] mod test_stub;` として制限）。
-- `adapters.rs` の mod 宣言: `test_stub` は `#[cfg(feature = "secrets-test-stub")]` で条件付きであり、通常ビルドには含まれない。
+- `adapters.rs` と `src/secrets.rs` を確認し、`secrets-test-stub` feature 経路および `test_stub` モジュール宣言は存在しない。
 - `application.rs` の `FakeBoundary`・`FakeDevice` はすべて `#[cfg(test)] mod tests { ... }` 内のみに定義されており、production ビルドには含まれない（独立確認済み）。
 - `application/storage_service.rs` の `FakeDevice` も `#[cfg(test)] mod tests` 内のみ。
 - `adapters/yubikey.rs` の `classify_empty_attempts_for_test` も `#[cfg(test)] mod tests` 内のみ。
-- `support/terminal.rs` は `// moved to adapters/terminal.rs` のみ。
-- `adapters/boundary.rs` は `// removed` のみ。
+- `support/console_io.rs` のみが存在し、secret module で terminal ファイルの旧配置（`support/terminal.rs`）は参照されない。
 
 **違反なし。**
 
@@ -139,24 +135,19 @@
 | `ports.rs` | port | trait 定義のみ。secret 経路は `Zeroizing<Vec<u8>>` と `ProtectedSecret` で型付け。 |
 | `domain/model.rs` | domain | 定数・型定義・`Debug` 手動実装。secret 平文を含まない。 |
 | `domain/wire.rs` | domain | binary encode/decode のみ。secret 平文は扱わない。 |
-| `adapters.rs` | adapter | backend 選択と open_device/open_spare_device の dispatch のみ。 |
-| `adapters/backend.rs` | adapter | DeviceBackend 選択のみ。通常ビルドで stub 経路なし。 |
+| `adapters.rs` | adapter | `piv_io` / `yubikey` の公開面配線のみ。 |
 | `adapters/yubikey.rs` | adapter | PIV 操作と PIN 検証。`unwrap_key` の PIN ガードと Zeroizing ラップを直接確認。 |
-| `adapters/real_boundary.rs` | adapter | SecretsBoundary 実装。`write_report` は summary DTO のみ出力。 |
-| `adapters/prompt.rs` | adapter | hidden/visible prompt 読み取り。stderr に secret 出力なし。 |
-| `adapters/stdin.rs` | adapter | stdin からの secret 読み取り。TTY 拒否確認済み。 |
-| `adapters/stdout.rs` | adapter | stdout への secret 書き込み。TTY 拒否確認済み。 |
-| `adapters/terminal.rs` | adapter | TTY 判定・raw mode 入力。secret echo なし。 |
-| `adapters/enrollment_json.rs` | adapter | JSON parse。secret は `ProtectedInputBuffer` に直接書き込む。unicode escape の utf8 一時バッファを `zeroize()` で明示クリア。 |
-| `adapters/device_prompt.rs` | adapter | reader 名と serial のみ stderr 出力。secret 漏洩なし。 |
-| `adapters/input.rs` | adapter | 集約 re-export のみ。 |
-| `adapters/boundary.rs` | adapter | `// removed` のみ。 |
+| `adapters/piv_io.rs` | adapter | `SecretsBoundary` 実装の境界。 |
+| `adapters/piv_io/console_io.rs` | adapter | TTY 判定・stdin/stdout 境界・hidden input。 |
+| `adapters/piv_io/device.rs` | adapter | reader 選択と device open の翻訳。 |
+| `adapters/piv_io/report.rs` | adapter | report JSON 出力。 |
+| `adapters/piv_io/secret_io.rs` | adapter | prompt/stdin/json 入力の翻訳。 |
 | `support.rs` | support | re-export のみ。 |
 | `support/aead.rs` | support | AES-256-GCM primitive。エラーは一定文字列のみ。 |
 | `support/oaep.rs` | support | OAEP unpad。タイミング差抑制あり。エラーは一定文字列のみ。 |
 | `support/protection.rs` | support | mlock・zeroize・signal handler。core dump 抑止確認済み。 |
 | `support/protection/buffer.rs` | support | ProtectedInputBuffer。容量超過時ゼロ化確認済み。 |
-| `support/terminal.rs` | support | `// moved to adapters/terminal.rs` のみ。 |
+| `support/console_io.rs` | support | 端末補助I/O（adapter から利用）。 |
 
 すべてのファイルにおいて、層の責務制約とセキュリティ要件への適合を独立に確認した。
 

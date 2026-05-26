@@ -23,7 +23,7 @@ use super::{
 };
 ```
 
-`adapters::` への直接 import なし。`application/storage_service.rs` は `adapters::blob` と `adapters::manifest` を参照しているが、これは use case から adapter helper を呼ぶ依存であり、V1/V4 は「具体型の import」を問うため、trait 実装型（`RealSecretsBoundary` 等）の直接参照は存在しない。V4 で問題となった `application/real_boundary.rs` は `adapters/real_boundary.rs` へ移設済み（`adapters.rs` で `pub(crate) mod real_boundary;` として宣言）。
+`adapters::` への直接 import なし。`application/storage_service.rs` は `adapters::blob` と `adapters::manifest` を参照しているが、これは use case から adapter helper を呼ぶ依存であり、V1/V4 は「具体型の import」を問うため、trait 実装型（`RealSecretsBoundary` 等）の直接参照は存在しない。V4 で問題となった `adapters/piv_io.rs` は `adapters/piv_io.rs` へ移設済み（`adapters.rs` で `pub(crate) mod real_boundary;` として宣言）。
 
 **ただし補足**: `application/storage_service.rs` が `adapters::blob` および `adapters::manifest` を直接 use しており、application が adapter モジュールの具体関数へ依存している。これは V1 の「adapter の具体型を import しない」の文言範囲外であり、V5 相当の問題だが V5 は完了判定条件に独立した項目として存在しない。差戻し条件の V1/V4 定義（「adapter の具体型を import している」）に直接抵触するものではない。
 
@@ -112,14 +112,14 @@ work-items V14 の定義「production crate の command path に test double を
 
 work-items の差戻し条件は「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」である。`read_enrollment_json_bytes` は `RealSecretsBoundary` の `SecretsBoundary` 実装内から `input::read_enrollment_json_bytes(...)` として呼ばれるために `pub(crate)` が必要だが、これは port trait 実装の direct method ではなく helper 関数であるため、定義上は対象になる。
 
-**ただし緩和的解釈の余地**: `adapters/input.rs` が `pub(crate) use super::enrollment_json::read_enrollment_json_bytes;` で re-export しており、`real_boundary.rs` は `input::read_enrollment_json_bytes` を経由して呼び出している。この re-export chain の目的は `RealSecretsBoundary` の port trait 実装を支援することのみであり、外部 API を提供する意図はない。しかし仕様の文言は「port trait を実装する型・メソッド以外が pub(crate) 以上の可視性で外部公開されていない」を要求しており、helper 関数を port trait method の実装とみなすことはできない。
+**ただし緩和的解釈の余地**: `adapters/piv_io/secret_io.rs` が `pub(crate) use super::enrollment_json::read_enrollment_json_bytes;` で re-export しており、`real_boundary.rs` は `input::read_enrollment_json_bytes` を経由して呼び出している。この re-export chain の目的は `RealSecretsBoundary` の port trait 実装を支援することのみであり、外部 API を提供する意図はない。しかし仕様の文言は「port trait を実装する型・メソッド以外が pub(crate) 以上の可視性で外部公開されていない」を要求しており、helper 関数を port trait method の実装とみなすことはできない。
 
 **`adapters.rs`** の公開シンボル:
 - `pub(crate) mod manifest;`、`pub(crate) mod real_boundary;`、`pub(crate) mod stdin;`、`pub(crate) use backend::DeviceBackend;`、`pub(crate) fn open_device(...)`、`pub(crate) fn open_spare_device(...)` が外部公開されている
 
 `open_device`、`open_spare_device` は adapter 面の device 選択責務を持つが、これらは port trait 実装型（`RealSecretsBoundary`）のメソッドではなく独立した公開関数であり、差戻し条件に該当する。
 
-**`adapters/real_boundary.rs`**:
+**`adapters/piv_io.rs`**:
 - `pub(crate) backend: DeviceBackend` フィールドが公開されており、`secrets.rs` の `run()` から `RealSecretsBoundary { backend }` として直接フィールド初期化に使われている
 
 ## 総合判定
@@ -132,7 +132,7 @@ work-items の差戻し条件は「`adapters/` 配下のファイルで port tra
 
 2. **V15 未解消**（差戻し条件の文言を厳密解釈）: `application/fake_boundary.rs` および `application/storage_service_tests.rs` が production tree（`application/`）配下に物理的に存在する。`#[cfg(test)]` 保護により production binary への混入はないが、work-items V15 の「production tree 配下に置いている」文言に該当する。
 
-3. **V12/V13 未解消**（差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」に抵触）: `adapters/enrollment_json.rs` の `read_enrollment_json_bytes`、`read_protected_enrollment_secret_set`、`adapters.rs` の `open_device`、`open_spare_device`、`adapters/real_boundary.rs` の `pub(crate) backend` フィールドが該当する。
+3. **V12/V13 未解消**（差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」に抵触）: `adapters/enrollment_json.rs` の `read_enrollment_json_bytes`、`read_protected_enrollment_secret_set`、`adapters.rs` の `open_device`、`open_spare_device`、`adapters/piv_io.rs` の `pub(crate) backend` フィールドが該当する。
 
 **解消確認済み条件**（合格）:
 
@@ -158,7 +158,7 @@ work-items の差戻し条件は「`adapters/` 配下のファイルで port tra
 
 **解消済み**
 
-`adapters/` ディレクトリを確認した結果、`test_stub.rs` は存在しない（ファイル一覧: `backend.rs`, `boundary.rs`, `device_prompt.rs`, `enrollment_json.rs`, `input.rs`, `prompt.rs`, `real_boundary.rs`, `stdin.rs`, `stdout.rs`, `terminal.rs`, `yubikey.rs`）。
+`adapters/` ディレクトリを確認した結果、`test_stub.rs` は存在しない（現行ファイル一覧: `piv_io.rs`, `piv_io/console_io.rs`, `piv_io/device.rs`, `piv_io/report.rs`, `piv_io/secret_io.rs`, `yubikey.rs`）。
 
 `adapters.rs` の宣言にも `mod test_stub;` は存在しない（commit `45ddda1` の diff で削除済みを確認）。feature gate `secrets-test-stub` は `Cargo.toml` から削除されており、CLI に `--test-stub-yubikey` フラグが露出する経路も消えている。
 
@@ -199,7 +199,7 @@ V15「production tree 配下に置いている」条件には引き続き抵触�
 - 前回と同じ `pub(crate)` 可視性のまま残存
 - `read_protected_enrollment_secret_set` は今回のファイルに存在しない（前回指摘の一部は解消）
 
-**`adapters/input.rs`**:
+**`adapters/piv_io/secret_io.rs`**:
 - `pub(crate) use super::enrollment_json::read_enrollment_json_bytes;` で re-export（5行目）
 - `pub(crate) use super::prompt::{read_hidden_bytes, read_visible_line_bytes, read_yubikey_pin_raw};`
 - `pub(crate) use super::stdin::read_stdin_bytes;`
@@ -211,7 +211,7 @@ V15「production tree 配下に置いている」条件には引き続き抵触�
 - `pub(crate) fn open_device(...)` および `pub(crate) fn open_spare_device(...)` が残存（26〜51行目）
 - これらは `real_boundary.rs` の `SecretsBoundary::open_device` / `open_spare_device` 実装から呼ばれているが、port trait method そのものではなく独立した公開関数である
 
-**`adapters/real_boundary.rs`**:
+**`adapters/piv_io.rs`**:
 - `pub(crate) struct RealSecretsBoundary { pub(crate) backend: DeviceBackend, }` の `pub(crate) backend` フィールドが残存（18〜20行目）
 - `secrets.rs` の `run()` から `RealSecretsBoundary { backend }` という struct literal 初期化で使用されているため除去できていない
 
@@ -229,7 +229,7 @@ V15「production tree 配下に置いている」条件には引き続き抵触�
 
 1. **V15 未解消**（差戻し条件「production コードに test double が含まれている」に抵触）: `application/fake_boundary.rs` は `application/test_support/fake_boundary.rs` へ移動されたが、`test_support/` ディレクトリは依然として `application/` 配下（production tree）に物理存在する。work-items V15「fake boundary / fake device を production tree 配下に置いている」条件への抵触は解消されていない。解消のためには `tests/` 層への移設または separate test crate への分離が必要である。
 
-2. **V12/V13 未解消**（差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」に抵触）: `adapters/enrollment_json.rs` の `read_enrollment_json_bytes`（`pub(crate)`）、`adapters.rs` の `open_device`・`open_spare_device`（`pub(crate)`）、`adapters/real_boundary.rs` の `pub(crate) backend` フィールドが残存している。
+2. **V12/V13 未解消**（差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」に抵触）: `adapters/enrollment_json.rs` の `read_enrollment_json_bytes`（`pub(crate)`）、`adapters.rs` の `open_device`・`open_spare_device`（`pub(crate)`）、`adapters/piv_io.rs` の `pub(crate) backend` フィールドが残存している。
 
 **解消確認済み項目（第2回確認）**:
 
@@ -263,7 +263,7 @@ V15「fake boundary / fake device を production tree 配下に置いている�
 **`adapters/enrollment_json.rs`**:
 - `pub(super) fn read_enrollment_json_bytes(...)` — `pub(crate)` から `pub(super)` へ変更済み
 
-**`adapters/input.rs`**:
+**`adapters/piv_io/secret_io.rs`**:
 - すべての re-export が `pub(super) use ...` に変更済み:
   - `pub(super) use super::enrollment_json::read_enrollment_json_bytes;`
   - `pub(super) use super::prompt::{read_hidden_bytes, read_visible_line_bytes, read_yubikey_pin_raw};`
@@ -275,7 +275,7 @@ V15「fake boundary / fake device を production tree 配下に置いている�
 - `pub(super) fn open_spare_device(...)` — `pub(crate)` から `pub(super)` へ変更済み
 - `pub(super) mod input;`、`pub(super) mod terminal;`、`pub(super) fn build_real_boundary()` はいずれも `pub(super)` で `secrets` モジュール内にのみ公開
 
-**`adapters/real_boundary.rs`**:
+**`adapters/piv_io.rs`**:
 - `pub(super) struct RealSecretsBoundary { backend: DeviceBackend, }` — `backend` フィールドに `pub(crate)` なし（非公開に変更済み）
 - `pub(super) fn new(backend: DeviceBackend) -> Self` のみが公開
 

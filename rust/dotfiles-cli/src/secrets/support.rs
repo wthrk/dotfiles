@@ -5,5 +5,6 @@
 pub(crate) mod aead;
 mod oaep;
 pub(crate) mod protection;
+pub(crate) mod version;
 
 pub(crate) use oaep::write_oaep_unpadded_sha256;

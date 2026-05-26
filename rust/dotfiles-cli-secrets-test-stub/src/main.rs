@@ -13,8 +13,8 @@ use clap::{Parser, Subcommand};
 
 use dotfiles_cli::run_with_args;
 use dotfiles_cli_secrets_test_contract::{
-    CORRUPT_SECRET_ENV, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV, SEED_BWS_ACCESS_TOKEN_ENV,
-    SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SPARE_STUB_STATE_ENV, STUB_STATE_ENV,
+    CORRUPT_SECRET_ENV, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV, SEED_BW_EMAIL_ENV,
+    SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_STUB_STATE_ENV, STUB_STATE_ENV,
 };
 
 use device::{TestDeviceState, TestStubBoundary};
@@ -141,8 +141,7 @@ fn run() -> anyhow::Result<()> {
 
     let corrupt_secret = std::env::var(CORRUPT_SECRET_ENV).ok();
 
-    let read_pin_from_tty =
-        std::env::var(READ_PIN_FROM_TTY_ENV).as_deref() == Ok("true");
+    let read_pin_from_tty = std::env::var(READ_PIN_FROM_TTY_ENV).as_deref() == Ok("true");
 
     let seed_bw_email = std::env::var(SEED_BW_EMAIL_ENV).ok();
     let seed_bw_password = std::env::var(SEED_BW_PASSWORD_ENV).ok();
@@ -245,11 +244,7 @@ fn build_args_from_subcommand(subcommand: StubSecretsSubcommand) -> Vec<String> 
                 }
             }
         }
-        StubSecretsSubcommand::VerifyYubikey {
-            serial,
-            check,
-            all,
-        } => {
+        StubSecretsSubcommand::VerifyYubikey { serial, check, all } => {
             args.push("verify-yubikey".to_owned());
             if let Some(s) = serial {
                 args.push("--serial".to_owned());

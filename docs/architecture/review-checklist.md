@@ -43,6 +43,7 @@
 - このコードが存在する理由を一文で言えるか。「外部技術Xとポート契約Yの間を翻訳するため」と言えるか。それ以外の理由が混在しているなら、その部分は adapter に属さない。
 - このファイルを削除して別の技術に差し替えたとき、application/ や domain/ のコードを変更する必要が生じるか。生じるなら、adapter がその依存を外に漏らしている。
 - このファイル内の private な関数・ロジックを含む全コードについて：外部技術とポートの契約の間の翻訳のみを行っているか。use case の順序制御・domain policy の決定・ビジネスロジックの判断が private コードとして潜り込んでいないか。
+- private helper が増殖している場合、それは port capability が粗すぎる兆候ではないか。helper 群が port 契約不足の穴埋めになっていないか。なっている場合は helper 整理ではなく port 分割を要求すること。
 - このファイルが独立して存在することで「特定の外部技術とポートの間の翻訳」として何が独立・差し替え可能になるか。答えられないなら分割の意義がない。
 - このファイルは複数の外部技術を1ファイルに混在させていないか。異なる外部技術の翻訳が混在しているなら分割されていなければならない。逆に単一の外部技術の翻訳が不必要に複数ファイルに断片化されていないか。
 - この分割は「特定の外部技術とポートの間に独立した責務の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
@@ -65,24 +66,41 @@
 4. 1件でも「port trait 実装でない公開シンボル」または「port trait を実装するが責務が翻訳でない型（手順0の test double 等）」が存在した場合、即座に `判定: 不合格` とする。
 5. `adapters.rs`（または `adapters/mod.rs`）が `pub(super)` で子モジュールを公開している場合、そのモジュール内の公開シンボルが親モジュールから参照可能になる。この経路も確認する。
 6. 各ファイルの `fn`（private 関数）をすべて列挙する。列挙した各 private 関数について「この関数の責務は翻訳（外部技術の型をポートの型に変換すること）のみか」を判定する。use case の順序制御・domain policy の決定・ビジネスロジックの判断を含む private 関数が1件でも存在した場合、即座に `判定: 不合格` とする。private であることはこの制約の免除理由にならない。
+7. file-level に分割済みでも、helper 単位の責務判定を省略してはならない。各 helper について「責務は何か」「その責務はこの層か」を記録し、1件でも答えられなければ `判定: 不合格` とする。
 
 ## application/ 配下
 
 ### レビュー時の問い
 
-- このコードはユースケースの「順序」を知っているだけか。具体的なデバイス、I/O、パーサーの実装を知っていないか。
+- このコードはユースケースの「順序」と「分岐」を知っているだけか。具体的なデバイス、I/O、パーサーの実装や意味づけを知っていないか。
+- use-case entrypoint と非自明な internal type/function（private helper 含む）に、主要契約と責務境界を示す doc comment があるか。`what` の言い換えだけで `why` が欠落していないか。
 - `boundary.some_method()` の呼び出しを見たとき：「この呼び出しはポートの契約を通じているか、それともアダプターの具体型を直接知っているか」を確認せよ。
 - `application/` 配下にアダプター実装が紛れ込んでいないか。ファイル名ではなく責務で判断せよ。
-- このコードが「何をするか」ではなく「何の順序で呼ぶか」だけを知っているか。具体的な入出力の形・エラーの詳細・デバイスの挙動を知っていたら application に属さない。
+- このコードが「何をするか」ではなく「何の順序で、どこで分岐して呼ぶか」だけを知っているか。具体的な入出力の形・エラーの詳細・デバイスの挙動・summary の意味づけを知っていたら application に属さない。
 - このuse caseを別のインターフェース（CLI→Web API）に移植したとき、このファイルの変更は最小限で済むか。済まないなら、インターフェース固有の知識が混入している。
 - このファイル内の private な関数・ロジックを含む全コードについて：concrete I/O（`println!`・stdin 読み取り・端末文言）、アダプターの具体型参照、外部 SDK 型が含まれていないか。private であることはこれらの禁止事項の免除理由にならない。
+- 乱数生成（key material、nonce、challenge、seed 等）を `application` が直接呼んでいないか。必ず port 経由になっているか。
+- private helper が増え続けている場合、port capability が粗く application が技術詳細の調停を肩代わりしていないか。helper 追加で対応せず、port 契約の再分割要求を返せるか。
 - このファイルが独立した use case として意味を持つか。「このファイルが担う use case とは何か」を一文で言えるか。答えられないなら分割の意義がない。
 - use case を細分化した断片になっていないか。逆に複数の use case を1ファイルに詰め込んでいないか。1ファイル1 use case の対応が崩れているなら分割を見直せ。
+- 各 sibling file が `run_*` 関数を 1 つだけ持ち、1 use case = 1 function を守っているか。`application/use_case.rs` を再導入して use case 実装の置き場にしていないか。
+- `application/use_case/` ディレクトリ、`mod.rs`、`#[path = \"...\"]` を使った配線を導入していないか。
+- ある use case が別の use case を呼び出していないか。use case-to-use case call を共通化手段として使っていないか。
+- use case 層で logic commonization をしていないか。共通 helper を増やしている場合、その責務は本当に application 層か。重複を許容してでも他層へ押し戻すべきものではないか。
+- `application` が use case 順序制御に専念しているか。command dispatch や技術 helper（保護メモリ変換・wire/crypto/persistence 実装詳細）を保持していないか。
+- `application.rs` が `application/` 直下の `run_*.rs` にある同等関数へ単純委譲する façade になっていないか。責務を持たない公開面の二重化を作っていないか。
 - この分割は「独立した use case の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
+- doc comment 欠落を「実装を読めば分かる」で見逃していないか。core workflow の責務境界説明がない場合はレビュー不合格にすべきか。
 
-- **依存方向**: `domain`、`port`、および機能中立な `support` 保護型にのみ依存していること。`adapter` の具体型を import していないこと。
-- **責務**: use case の順序制御・分岐・停止条件に限定されていること。`println!`・stdin 読み取り・concrete device handle 操作を含まないこと。
+- **依存方向**: `domain` と `port` にのみ依存していること。`support` を含む他層へ依存していないこと。`adapter` の具体型を import していないこと。
+- **型規則**: use case 独自の struct / enum / type alias / summary 型を定義していないこと。use case が扱う型は `domain` 層で定義された型のみに限定されていること。
+- **関数構成**: `rust/dotfiles-cli/src/secrets/application/` 配下では sibling file ごとに `run_*` 関数を 1 つだけ持たせること。`application/use_case.rs` を再導入せず、`application/use_case/`・`mod.rs`・`#[path = \"...\"]` による疑似レイヤー配線を持ち込まないこと。
+- **責務**: use case の順序制御・分岐・停止条件に限定されていること。意味・方針・summary semantics の決定、`println!`、stdin 読み取り、concrete device handle 操作を含まないこと。
+- **依存取得**: 乱数生成は port 経由のみとし、`application` が直接 external crate や標準 API から乱数を取得していないこと。
+- **外部 crate 例外**: `application` で使う外部 crate は `anyhow` と `zeroize` のみに限定されていること。
+- **共通化禁止**: use case-to-use case call と、use case 層での logic commonization を禁止する。共通 helper の抽出を完了条件にしてはならず、重複は許容される。
 - **配置**: adapter 実装ファイルを `application/` 配下に置かないこと。
+- **ドキュメントコメント（必須）**: use-case entrypoint と非自明な internal type/function に doc comment があり、主要契約の先頭文と `why`/責務境界（順序制御理由・停止条件・caller responsibility のいずれか）を示していること。欠落時は `判定: 不合格`。
 
 ## domain/ 配下
 
@@ -99,13 +117,13 @@
 
 - **依存方向**: 言語標準ライブラリ以外に依存しないこと。外部 SDK 型・端末状態・プロセス状態へ依存しないこと。
 - **責務**: value/newtype・不変条件・状態遷移・wire format・domain error に限定されていること。
-- **禁止成果物**: port contract（trait）・summary DTO・`std::io::Write` 等の I/O 型を含まないこと。
+- **禁止成果物**: port contract（trait）・presentation DTO・`std::io::Write` 等の I/O 型を含まないこと。
 
 ## ports/ 配下
 
 ### レビュー時の問い
 
-- この trait またはこの型は「ドメインが何を必要とするかの宣言」になっているか。「どのように実装するか」の詳細を含んでいないか。
+- この trait またはこの型は「ドメインが何を必要とするかの宣言」だけになっているか。「どのように実装するか」の詳細や意味づけ済みの実装選択を含んでいないか。
 - ここに定義された struct/enum について：「これは技術の詳細（SDK型・パーサー・プロンプト文言・raw bytes）か、それともドメインの意図の表明か」と問え。技術詳細であれば adapter に属する。
 - port が肥大化しているとき：「これはドメインの要求か、それともアダプターの実装都合か」を問え。
 - この trait を読んだとき「システムが外界に何を要求しているか」が分かるか。「どうやって実現するか」の痕跡が残っていたら ports に属さない。
@@ -113,6 +131,8 @@
 - このファイル内の private な型・関数・ロジックを含む全コードについて：「ドメインが何を必要とするかの宣言のみ」という責務を満たしているか。parser・DTO・prompt・利用者向け文言が private コードとして潜り込んでいないか。private であることはこれらの禁止事項の免除理由にならない。
 - この trait が独立した capability として意味を持つか。「このファイルが宣言する capability とは何か」を一文で言えるか。答えられないなら分割の意義がない。
 - 1つの外部依存の契約を不必要に複数の trait に分割していないか。逆に無関係な複数の capability を1ファイルに混在させていないか。capability の境界と trait の境界が一致しているか確認せよ。
+- device 取得・secret 入力・secret 出力・report 出力のように変更理由が異なる capability を 1 trait に押し込んでいないか。use case が必要とする capability だけを境界として要求できる構造になっているか。
+- `Summary` / `Report` の具体 DTO が ports に定義されていないか。ports に置けるのは report 出力 capability の宣言までであり、use case が扱う outcome の意味は domain、presentation DTO は adapter 側に置くこと。
 - この分割は「独立した capability の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
 
 - **依存方向**: `domain` にのみ依存していること。`support` の具体型（`ProtectedSecret` 等）へ直接依存していないこと。
@@ -135,6 +155,21 @@
 - **依存方向**: 言語標準ライブラリと外部技術 crate にのみ依存していること。他層の業務語彙へ依存しないこと。
 - **責務**: 業務語彙を持たない共通技術部品（保護メモリ・暗号プリミティブ・byte utility）に限定されていること。
 - **禁止成果物**: terminal I/O・prompt・機能固有 vocabulary・command 名・role 名を含まないこと。
+
+## secret-recovery 判定クイックガイド（application / ports / adapters / support）
+
+各層レビューで次を追加確認する。
+
+- application:
+  command dispatch、input modality（Prompt/Stdin/StdinJson 等）、report DTO 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装を含めていないか。
+- ports:
+  modality enum や stdin-json の手段表現を契約へ露出していないか。`read_secret_from_prompt` のように capability 名で表現されているか。
+- adapters:
+  `application::...` 型へ直接依存せず、port 契約へ変換しているか。device selection と report 出力は adapter が担い、技術的な実行/翻訳以外の意味づけや use case 順序は持ち込んでいないか。
+- support:
+  protected buffer / zeroization / crypto helper に限定され、YubiKey など業務語彙の error 文言を持っていないか。
+
+上記は形式チェックではなく責務判定である。`pub` 範囲や feature gate の有無は免除理由にならない。
 
 ## entrypoint/ 配下
 

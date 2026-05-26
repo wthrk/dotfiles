@@ -18,7 +18,7 @@
 ### [確認済] V1/V4: `application` が `adapter` 具体型を import しない
 
 - `/rust/dotfiles-cli/src/secrets/application.rs` の import（12〜19行目）を直接確認した。`adapters::` への参照なし。`DeviceBackend` / `RealSecretsBoundary` の直接 import なし。
-- `application/real_boundary.rs` ファイルは存在しない（`adapters/real_boundary.rs` に移設済み）。
+- `adapters/piv_io.rs` ファイルは存在しない（`adapters/piv_io.rs` に移設済み）。
 - `secrets.rs` の `run()` が `adapters::build_real_boundary()` を呼ぶが、これは CLI module root（application 層の外）の責務であり違反に該当しない。
 - **V1・V4: 解消済**
 
@@ -76,7 +76,7 @@
 - `adapters.rs` は `mod backend;`、`mod device_prompt;`、`mod enrollment_json;`、`pub(super) mod input;`、`mod prompt;`、`mod real_boundary;`、`mod stdin;`、`mod stdout;`、`pub(super) mod terminal;`、`mod yubikey;` と宣言。`backend`、`yubikey`、`prompt`、`stdin`、`stdout` は非公開モジュール。
 - `secrets.rs` は `adapters::build_real_boundary()` のみを呼ぶ（`pub(super)` 宣言）。
 - `application.rs` は `adapters/` 内のいかなるシンボルも直接参照しない。
-- `adapters/terminal.rs`・`adapters/yubikey.rs` 等の `pub(crate)` 関数は `adapters/real_boundary.rs`、`adapters/device_prompt.rs`、`adapters/input.rs` からのみ参照されており、実際には `adapters/` 内部利用に留まっている。
+- `adapters/terminal.rs`・`adapters/yubikey.rs` 等の `pub(crate)` 関数は `adapters/piv_io.rs`、`adapters/device_prompt.rs`、`adapters/piv_io/secret_io.rs` からのみ参照されており、実際には `adapters/` 内部利用に留まっている。
 
 **評価**: 作業定義文書の完了条件「port trait を実装する型・メソッド以外が `pub`・`pub(crate)`・`pub(super)` で外部公開されていない」は `pub(crate)` による crate 全体での可視性を文言上は禁じている。しかし、非公開モジュール宣言（`mod backend;` 等）によりモジュール境界で外部参照は物理的に遮断されており、`adapters/` 外部からの直接アクセスは不可能である。`pub(crate)` は `adapters/` 内部の module 間連携のみに使われている。差戻し事由として単独起票するには根拠が不十分と判断し、構造レビュー担当の判定を最終判断とする。
 

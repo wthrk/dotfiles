@@ -1,263 +1,28 @@
 # 構造レビュー記録
 
-- レビュー実施日: 2026-05-25
-- 対象ブランチ: feat/yubikey-secret-storage
-- HEAD: c581d2e8f835c750d4a105718e67e9f2785574b5
-- 判定: 不合格
-
-## 各違反項目の確認結果
-
-### V1/V4
-
-**違反あり（V1相当）**
-
-`application/storage_service.rs`（application層）が以下のようにadapters層の具体実装を直接importしている。
-
-```rust
-use crate::secrets::adapters::blob::{decrypt_secret_protected, encrypt_secret};
-use crate::secrets::adapters::manifest::{read_manifest, write_manifest};
-```
-
-`application.rs` 本体（17〜23行目）から`adapters::`への直接importは存在しない。しかし`application/`配下の`storage_service.rs`もapplication層に属し、同層がadapters層の具体型・関数を直接importしているのは依存方向違反（application → adapter具体型依存禁止）に該当する。
-
-`application/fake_boundary.rs`（V4相当）は`#[cfg(test)] mod fake_boundary;`からのみ参照されており、adapter実装がapplication/配下に存在する問題ではない。
-
-### V2/V3
-
-**解消済み**
-
-- `application.rs`（全916行）に`println!`の直接呼び出しなし。
-- `application/`配下全ファイルに`println!`なし（`real_boundary.rs`の`println!`はadapters層）。
-- stdin読み取りの直接呼び出しなし。
-- device handleは`ports::SecretDevice` trait経由のみ（`storage_service::*`に委譲）。
-- レポート出力は`boundary.write_report()`経由に統一済み。
-
-### V6
-
-**解消済み**
-
-現在の`ports.rs`（127行）の`SecretsBoundary`トレイトが持つメソッドは以下の通り:
-
-- `open_device`, `open_spare_device`（device取得）
-- `require_serial`, `require_option`, `require_stdin_pipe`, `require_stdin_json_pipe`, `require_stdout_pipe`（非対話契約の抽象チェック）
-- `read_yubikey_pin_bytes`, `read_hidden_bytes`, `read_visible_line_bytes`, `read_stdin_bytes`, `read_enrollment_json_bytes`（bytes返却型I/O）
-- `write_secret_to_stdout`, `write_report`（出力）
-- `prompt_continue_rotation`（yes/no継続確認）
-
-第3回確認で指摘されていた`stdin_is_terminal`（26行目）、`stdout_is_terminal`（29行目）、`prompt_yes_no`（75行目）は存在しない。`EnrollmentBytes`は`ports.rs`内のbytes入れ物structであり、adapter所有のJSONデコードは`adapters/enrollment_json.rs`に閉じている。DTOのport内配置なし。
-
-### V7
-
-**解消済み**
-
-現在の`ports.rs`のimportは以下のみ:
-
-```rust
-use zeroize::Zeroizing;
-use crate::Result;
-use super::domain::PivObjectId;
-```
-
-`use super::support::protection::{ProtectedSecret, SecretSession};`は存在しない。`SecretsBoundary`の全メソッドシグネチャは`Zeroizing<Vec<u8>>`（外部crate）または`EnrollmentBytes`（bytes入れ物struct）を返す形式であり、`ProtectedSecret`/`SecretSession`をシグネチャに含まない。
-
-### V8/V9/V16
-
-**解消済み**
-
-- `domain/model.rs`に`SecretDevice` traitなし（ステップ1で解消済み）。
-- `domain/model.rs`に`CheckName`/`CheckStatus`/`EnrollSummary`/`VerifySummary`/`YubikeyRole`なし（`application/summary.rs`へ移設済み）。
-- `domain/model.rs`に`io::Write`/`std::io`のimportなし。
-- `domain/model.rs`はstd::fmtのみをimportし、外部I/O型に依存しない。
-
-### V10
-
-**解消済み**
-
-- `adapters/blob.rs`に配置され、adapter層に所属している。
-- wire format encode/decodeは`domain/wire.rs`（`SecretBlob::encode/decode`が`crate::secrets::domain::wire`を呼び出す）に分離済み。
-- AEAD暗号化は`support/aead.rs`に分離済み。
-
-### V11
-
-**解消済み**
-
-- `support/terminal.rs`の内容は`// moved to adapters/terminal.rs`の1行のみ。
-- terminal I/O / promptは`adapters/terminal.rs`に移設済み。
-
-### V12/V13
-
-**部分的違反あり**
-
-- `adapters/enrollment_json.rs`に`pub(crate) fn read_protected_enrollment_secret_set`（42行目）が残存しており、`adapters/real_boundary.rs`も`adapters/input.rs`も参照していない未使用の`pub(crate)`公開関数が存在する。これはport trait実装以外の関数が`pub(crate)`で外部公開されている状態に該当する。
-- `adapters/blob.rs`の`encrypt_secret`と`decrypt_secret_protected`が`pub(crate)`で公開されており、`application/storage_service.rs`（application層）から直接呼び出されている。これはV1/V4の問題と同根であるが、adapter面の外部公開としてもV12/V13に抵触する。
-- `adapters/terminal.rs`の各`pub(crate)`関数（`stdin_is_terminal`、`stdout_is_terminal`、`prompt_yes_no`等）は`real_boundary.rs`経由でのみ使用されており、applicationからの直接参照はないことを確認した。
-- `adapters.rs`の`pub(crate) use backend::DeviceBackend;`は`secrets.rs`のCLI orchestration層から組み立てるため必要であり、`pub(crate) mod real_boundary;`も同様に正当な用途とみなせる。
-
-### V14/V15
-
-**V15: production tree配下残存の問題が継続**
-
-- `application/fake_boundary.rs`は`application/`ディレクトリ（production tree配下）に存在する。`application.rs`からは`#[cfg(test)] mod fake_boundary;`でのみ参照されており、production binaryには含まれないが、ファイルとして production tree に存在している。
-- `application/storage_service_tests.rs`も`application/`配下に存在し、`FakeDevice`をこのファイル内に定義している。`#[cfg(test)]`ブロックではなく独立ファイルとして存在しており、`application.rs`から`#[cfg(test)] mod storage_service_tests;`でのみ参照される。
-- `adapters/test_stub.rs`は`#[cfg(feature = "secrets-test-stub")]`保護のみであり、feature有効時はproduction binaryに組み込まれる構造（V14 未解消）。
-
-work-items V14定義「production codeにtest doubleが含まれている」の観点では、feature gateで保護された`test_stub.rs`はfeature有効時にproduction pathに組み込まれるため該当する。
-
-## 総合判定
-
-**不合格**
-
-以下の違反が差戻し条件に抵触する:
-
-1. **V1/V4相当（新規発見）**: `application/storage_service.rs`がadapters層の`adapters::blob::{decrypt_secret_protected, encrypt_secret}`および`adapters::manifest::{read_manifest, write_manifest}`を直接importしている。第3回確認では`application.rs`本体のimportのみを確認したが、`application/`配下の`storage_service.rs`も同層に属し、同じ依存方向違反が存在する。差戻し条件「`application`が`adapter`の具体型をimportしている（V1, V4未解消）」に直接抵触する。
-
-2. **V14未解消**: `adapters/test_stub.rs`が`#[cfg(feature = "secrets-test-stub")]`のfeature gate保護のみであり、feature有効時はproduction binaryにtest doubleが組み込まれる。差戻し条件「production コードにtest doubleが含まれている（V14, V15未解消）」に抵触する。
-
-3. **V12/V13部分残存**: `adapters/enrollment_json.rs`に`pub(crate) fn read_protected_enrollment_secret_set`が未使用のまま`pub(crate)`で外部公開されており、差戻し条件「`adapters/`配下のファイルでport trait実装以外の関数・型・定数が`pub(crate)`以上の可視性で外部公開されている（V12, V13未解消）」に抵触する。
-
-特に問題1（V1/V4相当）は、第3回確認記録が見落としていた重大な構造違反であり、実装担当への差戻しが必要である。
-
----
-
-## 第2回構造レビュー（2026-05-25）
-
-- 対象コミット: `45ddda1`（差戻し修正）
-- HEAD: `d0cfa19eaec75d312e21af73a032b94be623cd16`
-- 判定: 合格
-
-### 前回不合格項目の再確認
-
-#### V1/V4（前回不合格）
-
-**解消済み**
-
-`application/storage_service.rs` の import を全件確認した結果、`use crate::secrets::adapters::` への参照はゼロである。前回不合格の原因だった `adapters::blob::{decrypt_secret_protected, encrypt_secret}` および `adapters::manifest::{read_manifest, write_manifest}` の直接 import は存在しない。
-
-修正後の `storage_service.rs` は `read_manifest`・`write_manifest`・`encrypt_secret`・`decrypt_secret_protected` をすべて同ファイル内に直接実装し、adapter 具体型へ依存しない。import は `domain`・`ports`・`support` 層のみに限定されており、依存方向規則（application → adapter 具体型禁止）を満たす。
-
-`application.rs` 本体も `adapters::` への直接 import なし。
-
-#### V14（前回不合格）
-
-**解消済み**
-
-`rust/dotfiles-cli/src/secrets/adapters/test_stub.rs` が存在しないことを確認した。feature gate 保護のみの test double は削除されており、V14 差戻し条件「production コードに test double が含まれている」は解消されている。
-
-#### V12/V13（前回不合格）
-
-**解消済み**
-
-前回不合格だった `adapters/enrollment_json.rs` の `pub(crate) fn read_enrollment_json_bytes` は引き続き存在する。ただし、この関数は `adapters/input.rs` が `pub(crate) use super::enrollment_json::read_enrollment_json_bytes;` で集約し、`adapters/real_boundary.rs`（同じ adapters 層内）から `input::read_enrollment_json_bytes` としてのみ呼び出されている。application 層から直接参照はない。
-
-差戻し条件の「外部公開」は adapters 層外への公開を指す。`pub(crate)` は crate 全体への可視性だが、実際に adapters 層外（application 等）から参照されていないことを確認した。また `adapters.rs`（層の facade）でこの関数は再公開されておらず、application 側の import にも現れない。
-
-前回のレビューで指摘した `adapters/blob.rs` の `encrypt_secret`・`decrypt_secret_protected` の `pub(crate)` 公開は、V1/V4 修正に伴い storage_service.rs が自前実装に切り替えたため、application からの直接呼び出しは消滅している。
-
-`adapters/terminal.rs` の各 `pub(crate)` 関数（`stdin_is_terminal`、`stdout_is_terminal`、`prompt_yes_no` 等）は `real_boundary.rs` 経由でのみ使用されており、adapters 層内の内部実装として正当な配置である。
-
-#### V15（要確認）
-
-**合格（#[cfg(test)] 保護あり、production binary への組み込みなし）**
-
-`application/test_support/` は `application/` 配下（production tree の物理パス）に存在する。しかし以下の理由から、V15 差戻し条件には該当しないと判定する。
-
-`application.rs` の10〜11行目:
-
-```rust
-#[cfg(test)]
-mod test_support;
-```
-
-`test_support` モジュール全体が `#[cfg(test)]` コンパイル条件下に置かれており、`fake_boundary.rs` および `storage_service_tests.rs` のすべての内容は test build 時のみコンパイルされる。production binary には一切含まれない。
-
-V15 の定義「fake boundary / fake device を production tree 配下に置いている」を厳密に解釈すると、ファイルの物理配置に着目した条件である。ただし同条件の根拠となる差戻し条件は「production コードに test double が含まれている（V14, V15 未解消）」であり、「production コード」とはコンパイルされて production binary に含まれるコードを指すと解釈するのが自然である。`#[cfg(test)]` 保護されたコードは production コードではない。
-
-前回不合格だった `adapters/test_stub.rs`（feature gate のみで保護、feature 有効時に production binary に混入）とは保護の強度が根本的に異なる。`#[cfg(test)]` は Rust コンパイラが test build 以外でコンパイル対象から除外することを保証するため、V15 に相当する違反とはみなさない。
-
-### その他の違反項目
-
-前回と変化なし（V2/V3/V6/V7/V8/V9/V10/V11/V16 は第1回レビューで解消済み確認、今回も変化なし）。
-
-## 総合判定（第2回）
-
-**合格**
-
-差戻し条件のすべての項目を確認し、違反なしと判定する。
-
-- V1/V4: `application/storage_service.rs` が adapter 具体型を import しない ✓
-- V2/V3: `application` に `println!`・stdin 直接読み取り・device handle 操作なし ✓
-- V6: `ports` に DTO / parser / prompt なし ✓
-- V7: `ports` が `support` に依存しない ✓
-- V8/V9/V16: `domain` に port contract / summary DTO / I/O 型なし ✓
-- V10: blob 暗号化ロジックが `storage_service.rs`（application 層内）に実装され、adapter 具体型依存なし ✓
-- V11: `support` に terminal I/O / prompt なし ✓
-- V12/V13: `adapters/` 配下で port trait 実装以外の関数が `pub(crate)` 以上の可視性で外部公開されていない ✓
-- V14: `adapters/test_stub.rs` が削除済み ✓
-- V15: `application/test_support/` が `#[cfg(test)]` で完全保護されており production binary に含まれない ✓
-- 削除対象ファイル（`adapters/test_stub.rs`、`adapters/blob.rs`、`adapters/manifest.rs`）の不在を確認 ✓
-
----
-
-## 第3回構造レビュー（2026-05-25）
-
-- 対象コミット: `6d8d2d3`（差戻し修正）
-- 判定: 合格
-
-### レビュー背景
-
-第2回構造レビュー（コミット `6212c1d`）は合格だったが、同時期の仕様適合レビュー（第2回）が V15・V12/V13 を不合格とし、差戻し修正コミット `6d8d2d3` が実施された。本レビューはその修正で新たな構造上の問題が生じていないかを確認する。
-
-修正の内容は次の3点:
-1. `application/test_support/` ディレクトリを削除し、fake_boundary を `application.rs` の `#[cfg(test)] mod tests` ブロックへインライン化、storage_service のテストを `storage_service.rs` の `#[cfg(test)] mod tests` ブロックへ移設（V15 解消）
-2. `adapters.rs` の `open_device`・`open_spare_device` を `pub(crate)` から `pub(super)` へ引き下げ、`build_real_boundary()` ファクトリ関数を追加（V12/V13 解消）
-3. `adapters/enrollment_json.rs` および `adapters/input.rs` の `read_enrollment_json_bytes` 再公開を `pub(crate)` から `pub(super)` へ引き下げ、`RealSecretsBoundary::new()` も `pub(super)` へ変更
-
-### V1/V4 の確認
-
-**違反なし**
-
-- `application.rs`（12〜19行目）のimportは `domain`・`ports`・`support` 層のみ。`adapters::` への直接参照ゼロ。
-- `application/storage_service.rs` のimportは `domain`・`ports`・`support`・`application::summary` のみ。`adapters::` への直接参照ゼロ。
-- `secrets.rs`（CLI entrypoint）は `adapters::build_real_boundary()` ファクトリ関数経由のみで adapter を呼び出し、`DeviceBackend` や `RealSecretsBoundary` の具体型を直接参照しない。
-
-修正前（`let backend = adapters::DeviceBackend::from_test_flag(false)?; let mut boundary = adapters::real_boundary::RealSecretsBoundary { backend };`）から修正後（`let mut boundary = adapters::build_real_boundary()?;`）への変更で、concrete 型への依存が完全に除去されている。
-
-### V15 の確認
-
-**違反なし（production tree から test double が除去済み）**
-
-- `application/test_support/` ディレクトリは存在しない（`application/` 配下は `storage_service.rs` と `summary.rs` のみ）。
-- `application.rs` の test double（`FakeBoundary`・`FakeDevice`）は `#[cfg(test)] mod tests` ブロック内にインラインされている（621〜1224行）。production binary には含まれない。
-- `application/storage_service.rs` の test double（`FakeDevice`）は `#[cfg(test)] mod tests` ブロック内に定義されている（248〜768行）。production binary には含まれない。
-
-第2回レビューでは `application/test_support/` の物理配置が論点となったが、今回の修正でファイルごと削除されたため、論点自体が消滅した。
-
-### V12/V13 の確認
-
-**違反なし**
-
-`adapters/` 配下の可視性を全件確認した。
-
-- `adapters.rs` の公開面: `pub(super) fn build_real_boundary()`・`pub(super) fn open_device()`・`pub(super) fn open_spare_device()` のみ。いずれも `pub(crate)` 以上の可視性を持たない。
-- `adapters/real_boundary.rs`: `RealSecretsBoundary` は `pub(super) struct`、`new()` は `pub(super) fn`。`SecretsBoundary` trait 実装（`impl SecretsBoundary for RealSecretsBoundary`）は trait の公開面に従う。
-- `adapters/enrollment_json.rs`: `pub(super) fn read_enrollment_json_bytes()`。`pub(crate)` から引き下げ済み。
-- `adapters/input.rs`: `pub(super) use super::enrollment_json::read_enrollment_json_bytes;` 等の再公開がすべて `pub(super)`。
-- `adapters/terminal.rs`: `pub(crate) fn stdin_is_terminal()`・`stdout_is_terminal()`・`prompt_yes_no()`・`wait_for_enter()`・`write_all_stdout()`・`read_hidden_input()`・`read_terminal_line_interruptible()`・`read_terminal_line_until()` が残存しているが、`adapters.rs` での再公開はなく、`application` 層・`secrets.rs` からの直接参照もゼロ。これらの `pub(crate)` 関数は `adapters/` 配下の sibling module（`real_boundary.rs`・`stdin.rs`・`prompt.rs`・`stdout.rs`・`device_prompt.rs`）からのみ呼び出されており、adapter 層内部の実装分担として正当な用途。`pub(super)` が望ましいが、呼び出し元が異なる sibling module であるため `pub(super)` では不足する。`pub(crate)` ではあるが adapter 層外への実質的な漏洩はない。
-- `adapters/yubikey.rs`・`adapters/backend.rs` の `pub(crate)` 型・関数（`YubikeyInteraction`・`YubikeySecretDevice`・`DeviceBackend` 等）は `adapters/` 内の内部実装であり、`adapters.rs` 経由での再公開なし、`application` 層からの直接参照なし。
-
-差戻し条件「`adapters/` 配下のファイルで port trait 実装以外の関数・型・定数が `pub(crate)` 以上の可視性で外部公開されている」の「外部公開」は adapter 層外への公開と解釈する。`pub(crate)` 可視性を持つ関数が複数残存しているが、`adapters.rs` facade での再公開がなく、adapter 層外（application・secrets.rs）から参照されていない。実質的な層外漏洩はないと判定する。
-
-### その他の違反項目
-
-第2回レビューで解消確認済みの V2/V3/V6/V7/V8/V9/V10/V11/V14/V16 について、差戻し修正 `6d8d2d3` では当該ファイルへの変更がないため、解消状態が維持されている。
-
-## 総合判定（第3回）
-
-**合格**
-
-差戻し修正 `6d8d2d3` で行われた V15・V12/V13 の修正は構造上の問題を解消しており、新たな構造違反は確認されなかった。
-
-- V1/V4: `application` が `adapter` 具体型を import しない ✓（`build_real_boundary()` ファクトリ導入でさらに改善）
-- V15: `application/test_support/` が物理削除され、test double が `#[cfg(test)]` ブロック内にインライン化 ✓
-- V12/V13: `adapters.rs` の公開面が `pub(super)` のみに絞られ、adapter 層外への実質的な漏洩なし ✓
-- V2/V3/V6/V7/V8/V9/V10/V11/V14/V16: 前回解消状態を維持 ✓
+- レビュー実施日: `2026-05-26`
+- 対象ブランチ: `feat/yubikey-secret-storage`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-26-head-d32848a`
+- 判定: `要修正`
+
+## 判定要約
+
+履歴セクションに混在していた古い path/判定の矛盾を除去し、現行 worktree と review artifact 間の整合を優先して差し戻し継続とする。
+
+## 現行参照パス
+
+- `rust/dotfiles-cli/src/secrets/application.rs`
+- `rust/dotfiles-cli/src/secrets/application/run_*.rs`
+- `rust/dotfiles-cli/src/secrets/ports.rs`
+- `rust/dotfiles-cli/src/secrets/adapters.rs`
+- `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+- `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
+- `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
+- `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
+- `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+
+## 根拠
+
+- `review.md` と `confirmation.md` の current-cycle diff identifier を一致させた。
+- 現行パスに存在しない古い参照を構造判定根拠から除外した。
+- 現行サイクルの集約判定は `要修正` であり、構造レビュー単独で `合格` 固定しない。

@@ -10,19 +10,21 @@
 
 ### YubiKey
 
-- 状態: `完了`
+- 状態: `進行中`
 - GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets/application.rs`
-  - `rust/dotfiles-cli/src/secrets/application/storage_service.rs`
-  - `rust/dotfiles-cli/src/secrets/application/summary.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_*.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/process_boundary.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`

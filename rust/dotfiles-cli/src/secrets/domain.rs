@@ -7,7 +7,14 @@ pub mod model;
 mod wire;
 
 pub use model::{
-    PivObjectId, SecretBlob, SecretManifest, SecretName, StorageObjectIds, CONTENT_KEY_LEN,
-    KEY_SLOT, NONCE_LEN, TAG_LEN,
+    BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument, CONTENT_KEY_LEN, CheckName,
+    CheckStatus, EnrollPrimaryCommand, EnrollSpareCommand, EnrollSummary, ExternalCheck,
+    GetCommand, KEY_SLOT, NONCE_LEN, PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, PutCommand,
+    RotateBwsTokenCommand, SecretBlob, SecretManifest, SecretName, SetupCommand, StorageObjectIds,
+    TAG_LEN, VerifySummary, VerifyYubikeyCommand, YubikeyRole, decode_initialized_manifest,
+    ensure_secret_value_non_empty, ensure_storage_setup_allowed,
 };
-pub(crate) use wire::{decode_manifest, encode_manifest};
+pub(crate) use wire::{
+    aes_256_gcm_from_key, decode_bootstrap_secret_document, decode_manifest, decrypt_detached,
+    encode_manifest, encrypt_detached,
+};

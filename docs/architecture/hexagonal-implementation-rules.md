@@ -52,13 +52,13 @@
 
 `entrypoint` は利用者入力、CLI/API 境界、use case 起動を担う。許可する成果物は command 定義、引数値変換、呼び出し開始 DTO、終了 code 変換である。domain rule、本格的な順序制御、具体的な device 制御は置かない。
 
-`application` は use case orchestration、停止条件、手順順序を担う。許可する成果物は use case 型、service 組立、分岐制御、要約生成である。具体 I/O、parser 実装、端末文言、外部 SDK 型は置かない。
+`application` は use case の順序制御、停止条件、分岐だけを担う。許可する成果物は use case ごとの `run_*` 関数と、その関数内での port 呼び出し順序・停止条件・分岐制御である。use case 独自型、要約型、意味や方針の決定、service 組立、具体 I/O、parser 実装、端末文言、外部 SDK 型は置かない。
 
 `domain` は不変条件、状態遷移、wire format、値制約を担う。許可する成果物は enum/newtype、wire model、validation、domain error である。端末 I/O、プロセス制御、具体 adapter 呼び出しは置かない。
 
-`port` は外部依存 contract の最小定義を担う。許可する成果物は trait、request/response 境界、capability 契約である。parser、DTO、prompt、利用者向け文言は置かない。
+`port` は外部依存 contract only の層であり、「何を必要とするか」の最小定義だけを担う。許可する成果物は trait、request/response 境界、capability 契約である。parser、DTO、prompt、利用者向け文言、意味づけ済みの実装詳細は置かない。
 
-`adapter` は port 実装、外部 API 変換、環境差異吸収を担う。許可する成果物は SDK bridge、terminal bridge、filesystem bridge、JSON decode bridge である。use case の順序制御や domain policy の決定は置かない。
+`adapter` は port 実装、外部 API 変換、環境差異吸収という技術的な実行と翻訳だけを担う。許可する成果物は SDK bridge、terminal bridge、filesystem bridge、JSON decode bridge である。use case の順序制御、domain policy の決定、summary の意味づけは置かない。
 
 アダプター層に置いてよいファイルは「特定の port trait を実装するファイル」のみである。以下のファイルはシンボルの公開範囲に関わらずアダプター層に属してはならない。
 
@@ -69,6 +69,62 @@
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
+## secret-recovery の層別判断（具体化）
+
+以下は本 repository の `dotfiles secrets` で繰り返し誤配置が起きた論点を、allowed / forbidden / 典型誤配置 / 判定質問 / 具体例で固定する。
+
+### application
+
+- allowed:
+  use case の順序制御、停止条件、分岐、port 呼び出しの順番
+- forbidden:
+  command dispatch、input modality の分岐詳細（Prompt/Stdin/StdinJson 等）、report DTO の JSON 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装、use case 独自型定義
+- 典型的な誤配置:
+  `application` が `--stdin`/`--stdin-json` の実装詳細を enum で保持する、`println!` で report を整形する、`YubiKey::open_*` 相当を直接呼ぶ
+- 判定質問:
+  「このコードは手順の宣言だけか。具体 I/O 形式・デバイス選択・シリアライズ仕様を知っていないか」
+- この repo の具体例:
+  `run_with_args` での subcommand 分岐は entrypoint、`run_enroll_primary_with` の手順制御は application、JSON report 生成は adapter
+
+### ports
+
+- allowed:
+  capability 契約（例: `read_secret_from_prompt`、`read_secret_from_stdin`、`write_secret`、`write_*_report`）
+- forbidden:
+  input modality の手段表現そのもの（`Prompt/Stdin/StdinJson` enum）、report DTO の具体型、prompt 文言、stdin JSON parser
+- 典型的な誤配置:
+  `read_secret(name, source_enum)` のように手段を port 契約へ露出する、`EnrollmentJson` DTO を ports に置く
+- 判定質問:
+  「この契約は“何をしたいか”だけを表しているか。“どう入力するか/どう表示するか”を含んでいないか」
+- この repo の具体例:
+  `SecretInputPort` は modality enum を持たず、`read_secret_from_prompt` と `read_secret_from_stdin` を別 capability として宣言する
+
+### adapters
+
+- allowed:
+  device selection（serial 指定・対話選択）、stdin/stdout/terminal I/O、report DTO 変換、外部 API 変換
+- forbidden:
+  application 型への直接依存、use case の順序決定、業務判断の中心化
+- 典型的な誤配置:
+  adapter が `domain::...Summary` を import して report を生成せず presentation DTO を持ち込む、adapter 内で command flow の可否を決める
+- 判定質問:
+  「このコードは port 契約と外部技術の翻訳だけか。手順そのものを決めていないか」
+- この repo の具体例:
+  `adapters/piv_io.rs` は `ReportPort` の出力契約を実装し、summary の表示形式・シリアライズ形式だけを adapter 側で決める。summary 自体の意味は domain 型として保持する
+
+### support
+
+- allowed:
+  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）
+- forbidden:
+  YubiKey、Bitwarden、stdin-json、enroll/verify など業務語彙を持つ error/message
+- 典型的な誤配置:
+  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が terminal prompt を持つ
+- 判定質問:
+  「この部品は別プロダクトへそのまま移せるか。機能名を知らずに成立するか」
+- この repo の具体例:
+  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない
+
 ## 層ごとの禁止事項
 
 `port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に use case の順序制御を置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state を置いてはならない。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
@@ -78,8 +134,8 @@
 標準構成は次の分割を基準にする。
 
 - `entrypoint/`: command 定義、外部入力値の境界変換
-- `application/`: use case、flow、summary
-- `domain/`: value、policy、wire-format、error
+- `application/`: use case、flow
+- `domain/`: value、policy、summary、wire-format、error
 - `port/`: 外部依存 contract
 - `adapter/`: device、terminal、filesystem、network、serialization
 - `support/`: zeroization、protection、shared primitive
@@ -97,30 +153,60 @@
 
 再エクスポートのみで構成されるファイル（`use` 宣言・`pub(super) use` のみで実体を持たないファイル）は責務の境界を表さないため、どの層にも置いてはならない。ファイルに実装の実体がなければ、そのファイルが存在する意味を一文で述べられない。述べられないなら削除または統合せよ。
 
+`application/` または `adapters/` に private helper が存在すること自体は許可されるが、helper を「設計逃がし（本来は port 境界や層境界で解くべき責務を局所関数へ退避する行為）」として使ってはならない。helper の責務が層責務を超えた時点で設計誤りである。`adapters/` の helper が port 契約の不足を肩代わりし始めた場合は、まず helper を増やすのではなく port 契約の粒度（capability 分割、request/response 境界）を再設計すること。
+
+file-level の分割（`xxx.rs` を `xxx/` 配下へ分ける等）は責務分離の十分条件ではない。分割後も helper ごとに「この helper の責務は何か」「その責務はこの層に属するか」を確定できなければ不合格である。
+
 ## application 層のサブモジュール分割方針
 
-`application` 層のロジックはユースケースの責務ごとにサブモジュールへ分割する。`application.rs` 本体はコマンドへの dispatch エントリーポイントのみに留め、個別のユースケース実装・サービス組立・ビジネスフローは各責務を担うサブモジュールへ切り出す。
+`application` 層のロジックはユースケースの責務ごとにサブモジュールへ分割する。`entrypoint` が command 選択を担い、`application` は選択済み use case の orchestration に専念する。
 
-`storage_service.rs` のようなサービス組立を担うサブモジュールがすでに存在する場合、他の責務（例: enroll フロー、verify フロー）も同様にサブモジュールへ分割して整合性を保つ。一部の責務のみをサブモジュール化し、残りを `application.rs` 本体に直書きしてはならない。
+`application` 層では use case orchestration だけを保持し、command dispatch は `entrypoint` 層へ置く。ユースケースが必要とする補助処理（manifest 読み書き、blob 変換、暗号呼び出し順序など）のうち技術実装に属するものは `adapter` / `support` 側へ移し、application 側は順序制御と分岐だけを保持する。
+
+`application.rs` が `application/` 直下の `run_*.rs` にある同等関数へ単純委譲するだけの façade になる構造は許可しない。公開面と実装が二重化し、責務境界ではなく導線だけが増えるためである。`application` の公開面を残すならそこで責務を持つこと。責務を持たない場合は module 宣言に縮退させること。
+
+`application` の分割・配線では、次を強制する。
+
+- 乱数生成（key material、nonce、challenge、seed 等を含む）は `application` から直接呼び出してはならない。必ず `port` 契約を経由して取得すること。
+- use case は独自の型定義を持ってはならない。use case で扱う型は `domain` 層で定義された型のみを使用すること。
+- 各 use case は 1 つの `run_*` 関数として表現し、1 use case = 1 function を崩してはならない。
+- `rust/dotfiles-cli/src/secrets/application/` 配下では sibling file ごとに `run_*` 関数を 1 つだけ持たせること。複数 use case を 1 ファイルへ混在させてはならない。
+- `application/use_case.rs` を新設してはならない。use case 実装は `application/` 直下の sibling `run_*.rs` に限定し、疑似レイヤーを増やしてはならない。
+- `application/use_case/` ディレクトリを新設してはならない。`application` 直下の sibling file だけで構成し、`application` 配下に疑似レイヤーを増やすことを禁止する。
+- `mod.rs` を新設してはならない。`#[path = \"...\"]` による分割・配線も禁止する。標準の module 宣言だけで配線すること。
+- ある use case から別の use case を呼び出してはならない。共通順序を作りたくなった場合でも use case-to-use case call で接続してはならない。
+- use case 層での logic commonization は禁止する。重複を許容し、共通化が必要なら domain / port / adapter / support の責務として再設計すること。
 
 ファイル分割の根拠はここでも「独立した責務の境界が存在するから」のみである。「長くなったから」「まとめたいから」はサブモジュール分割の正当な理由にならない（[ファイル分割の判断基準](#ファイル分割の判断基準) を参照）。
 
 ## summary / reporting 型の配置
 
-`EnrollSummary`、`VerifySummary` のようなユースケース出力の summary 型は、I/O やインフラに依存しない純粋なデータ型であれば `domain` 層に属する。
+use case 独自型は定義してはならない。`EnrollSummary`、`VerifySummary` のように use case が入出力で扱う outcome 型も、`application` ではなく `domain` 層の型として定義する。application はそれらの domain 型を順序制御に利用するだけであり、独自の outcome / summary / result 型を所有してはならない。
+
+一方で、JSON key 名、status の文字列表現、pretty-print の有無、writer 選択などの **presentation 仕様** は domain に置かない。これは adapter（出力境界翻訳）の責務である。domain が保持してよいのは outcome の意味・方針・summary semantics だけであり、表示形式・シリアライズ形式は持たない。
 
 判断基準は以下のとおりである。
 
-- その型がインフラを持たない環境（ファイルもネットワークも外部 SDK もない）でも意味を持つか。持つなら domain に置く。
-- その型に外部 SDK 型・端末状態・プロセス状態が含まれるか。含まれるなら domain に置いてはならない。
+- その型は「ユースケース結果の意味」か「外部出力フォーマット」か。前者は domain、後者は adapter。
+- その型が変わる理由は業務手順（チェック項目の追加/削除）か、表示仕様（JSON key・status 表記・出力整形）か。前者は domain、後者は adapter。
 
-`application` 層に summary 型を定義してはならない。summary 型が `application` 配下に置かれている場合は配置違反とし、`domain` 層の適切なモジュールへ移動して解消する。
+`application` 層に outcome/reporting 型を定義してはならない。`domain` は不変条件・値制約・wire 仕様に加えて、use case が扱う純粋な result / summary value を保持できる。`port` には報告出力 capability（例: `write_report`）のみを置き、具体 DTO は公開 contract に流出させない。
 
-`Summary` と `Report` は port や adapter の公開 contract に流出させてはならない。これは summary 型が domain に属する場合も同様である。
+## port 契約の分割方針
+
+1 つの巨大 trait に device 取得・secret 入力・secret 出力・report 出力・端末制約を混在させてはならない。`port` は capability 単位に分割し、use case が必要な capability だけを型境界として要求する。
+
+- `DeviceSelectionPort` のような device 取得 capability
+- `SecretInputPort` のような secret 入力 capability
+- `SecretOutputPort` のような secret 出力 capability
+- `ReportPort` のような報告提示 capability
+
+entrypoint や tests で扱いやすくするために、上記 capability を束ねる合成 trait（supertrait）を定義することは許可する。
+ただし合成 trait は「呼び出し都合の束ね」であり、境界設計上の最小契約は capability 分割側を正本とする。
 
 ## 標準シンボル構成
 
-標準シンボルは `Command`、`UseCase`、`Policy`、`Value`、`Port`、`Adapter`、`Summary`、`Report`、`Error` の役割を分離して命名する。閉じた集合は raw string で表現せず enum または newtype を使う。`Summary` と `Report` は I/O やインフラに依存しない純粋なデータ型として `domain` 層に定義し、port や adapter の公開 contract に流出させない（詳細は [summary / reporting 型の配置](#summary--reporting-型の配置) を参照）。
+標準シンボルは `Command`、`UseCase`、`Policy`、`Value`、`Port`、`Adapter`、`Summary`、`Report`、`Error` の役割を分離して命名する。閉じた集合は raw string で表現せず enum または newtype を使う。`Summary` は domain の value、`Report` は adapter の presentation 変換として扱い、port の公開 contract に具体 DTO を流出させない（詳細は [summary / reporting 型の配置](#summary--reporting-型の配置) を参照）。
 
 ## 公開範囲と再公開規則
 
@@ -134,11 +220,11 @@
 
 ## 依存方向規則
 
-依存方向は常に外側から内側へ向かう。`entrypoint` は `application` と `domain` に依存できるが、`adapter` の具体型へ直接依存してはならない。`application` は `domain`、`port`、`support` の機能中立な保護型に依存できるが、`entrypoint`、`adapter`、`support` の機能固有 API へ依存してはならない。
+依存方向は常に外側から内側へ向かう。`entrypoint` は `application` と `domain` に依存できるが、`adapter` の具体型へ直接依存してはならない。`application`（`application/use_case` を含む）は `domain` と `port` にのみ依存できる。`entrypoint`、`adapter`、`support` への依存は禁止する。
 
 `domain` は言語標準 library 以外に依存しない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
 
-`application` が `support` へ依存できるのは、秘密保護、zeroization、ownership guard のような機能中立な保護型を一時保持し、その寿命管理責務を果たす場合に限る。`application` は `support` の機能固有 API や業務語彙を導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
+`application` で許容する外部クレート依存は、current worktree の use case 実装で実際に必要な次の2つに限定する: `anyhow`（エラー文脈付与）、`zeroize`（秘密値のゼロ化）。この2つ以外の外部クレートは `application` へ導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
 
 ## ドキュメントコメント規則
 
@@ -151,11 +237,14 @@
 - 関数、型、module の doc comment は主要契約を先頭文で述べ、条件、分岐、失敗時契約、caller responsibility は別文または別段落で続ける。
 - 挙動変更時は近傍コメントを同パッチで更新し、誤解を生む旧コメントを残さない。
 - `application` の public command flow と非自明な private helper は、主要契約を先頭文で述べ、その後に必要入力、停止条件、外部 interaction boundary を記す。
+- `application` の use-case entrypoint（公開開始関数・主要 orchestration 関数）には doc comment を必須とし、先頭文の主要契約に続けて「なぜその順序制御が必要か」または「どの責務境界を保護するためか」を明記する。
+- `application/use_case` を含む core workflow の非自明な internal type/function（private helper を含む）は、役割がコードから自明でない場合に doc comment を必須とし、`what` の言い換えではなく `why`・停止条件・caller responsibility のうち必要な項目を記す。
 - `domain` の value、policy、wire-format 型は、何を表すかを先頭文で記し、その後に不変条件、version rule、error 条件を書く。
 - `port` の trait は、要求する capability と caller/implementor の責任分界を明記する。
 - `adapter` の module comment は、どの port をどの外部 API へ接続するか、どの制約を内部で吸収するかを記す。
 - `support` の comment は、セキュリティ特性、ライフサイクル境界、シグナル安全性要件、所有権規則のいずれかを具体名で記す。
 - 複数段落の doc comment は、先頭段落で通常系の主契約を示し、後続段落で非 TTY 動作、タイムアウト、所有権移譲、ゼロ化、ロック、出力安全性、再試行規則のような制約を記す。
+- 上記必須対象で doc comment が欠落している場合、コメント整備は任意改善ではなく規約違反として扱う。レビュー担当は欠落を `要修正` 以上の差戻し条件として判定しなければならない。
 
 ## 言語別コードスタイル
 

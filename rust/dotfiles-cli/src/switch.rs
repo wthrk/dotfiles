@@ -1,7 +1,8 @@
 //! `dotfiles switch` がローカル flake の出力を適用する処理。
 //!
 //! Home Manager は `#<user>`、nix-darwin は `#<host>` を参照する。Darwin 適用前には
-//! `/etc/bashrc` と `/etc/zshrc` が既存通常ファイルの場合だけ退避し、nix-darwin のリンク作成を妨げない。
+//! `/etc/bashrc` と `/etc/zshrc` について、nix-darwin 管理リンク以外があれば退避し、
+//! nix-darwin のリンク作成を妨げない。
 
 use std::ffi::OsString;
 use std::fs;
@@ -86,7 +87,8 @@ fn prepare_nix_darwin_etc(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// 管理済みリンクは触らず、通常ファイルだけを `<name>.before-nix-darwin` へ移動する。
+/// 管理済みリンクは触らず、それ以外（通常ファイル・未管理シンボリックリンク）を
+/// `<name>.before-nix-darwin` へ移動する。
 fn move_etc_file_before_nix_darwin(path: &Path, dry_run: bool) -> Result<()> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
@@ -120,7 +122,7 @@ fn move_etc_file_before_nix_darwin(path: &Path, dry_run: bool) -> Result<()> {
     )
 }
 
-/// `/etc/static`、`/run/current-system`、`/nix/store` へのリンクなら管理済みとみなす。
+/// nix-darwin が管理する代表的なリンク先（`/etc/static`、`/run/current-system`、`/nix/store`）なら管理済みとみなす。
 fn is_nix_darwin_etc_link(path: &Path) -> Result<bool> {
     let target = fs::read_link(path)?;
     Ok(target.starts_with("/etc/static")

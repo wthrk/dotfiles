@@ -80,11 +80,6 @@ impl ProtectedInputBuffer {
         &self.buffer[..self.len]
     }
 
-    /// 読み込み済み範囲を in-place 暗号処理の書き込み先として返す。
-    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.buffer[..self.len]
-    }
-
     /// 端末 backspace 用に直前の byte を buffer から除く。
     pub(crate) fn pop_byte(&mut self) {
         if self.len > 0 {
@@ -133,20 +128,6 @@ impl ProtectedInputBuffer {
         }
         let (buffer, lock) = self.into_trimmed_bytes_and_lock();
         session.protect_locked_secret_value(buffer, Some(lock))
-    }
-
-    /// 読み込み済み bytes を、改行除去せず保護済み値へ移す。
-    ///
-    /// JSON string や復号結果など、入力形式側で bytes が確定している値に使う。
-    pub(crate) fn into_protected_secret<'session>(
-        self,
-        session: &'session SecretSession,
-    ) -> Result<ProtectedSecret<'session>> {
-        let Self { buffer, len, _lock } = self;
-        let mut buffer = buffer;
-        buffer[len..].fill(0);
-        buffer.truncate(len);
-        session.protect_locked_secret_value(buffer, Some(_lock))
     }
 }
 

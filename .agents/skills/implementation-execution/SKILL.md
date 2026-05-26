@@ -33,11 +33,14 @@ description: Use this skill when a subagent is assigned implementation work and 
 Use this skill for implementation assignments.
 
 Actor binding: while this skill is active, the current actor is the implementation executor role under the governing sources above.
+If this skill was provided by a parent orchestrator for a delegated task, treat orchestration as already completed for that task. Do not re-enter `/orchestration`, do not re-select the active item, and do not spawn subworkers for the same delegated implementation assignment.
 
 ## Rules
 
+- Read orchestrator-only instructions in `AGENTS.md` and `docs/task-governance/workflow.md` as constraints on the parent orchestrator unless the current request itself is a new task-execution request addressed to you as the top-level agent.
+- For a delegated implementation assignment, execute the implementation directly after the Required Reading Order. Do not reply that "the main agent is always orchestrator" and do not convert the delegated assignment into a new orchestration cycle.
 - Follow required references, file-category reread obligations, and recording requirements from `docs/task-governance/implementation-execution.md`.
-- Select the active item from `docs/tasks/tasks.md`, then follow that item's required references under `docs/tasks/<area>/...` as execution-governing sources.
+- Read `docs/tasks/tasks.md` as part of the required repository context, but when a parent orchestrator has already supplied the work-item path for a delegated task, treat that supplied work item as the already-selected active item. Do not use `docs/tasks/tasks.md` to re-select a different item or start a new orchestration cycle.
 - For review-feedback remediation scope, follow the binding full-scope reviewer-perspective rule in `docs/task-governance/implementation-execution.md`.
 - Apply the implementation rule text as written, including `最小構成で済まそうとしてはならない。`.
 - Smallest diff and inherited-structure preservation are not goals; redesign to compliant structure (including zero-base module/document boundary rewrites when needed).

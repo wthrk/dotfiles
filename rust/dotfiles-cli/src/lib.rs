@@ -27,4 +27,4 @@ pub use cli::dispatch;
 pub use secrets::domain;
 pub use secrets::ports;
 pub use secrets::run_with_args;
-pub use secrets::EnrollmentBytes;
+pub use secrets::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole};
