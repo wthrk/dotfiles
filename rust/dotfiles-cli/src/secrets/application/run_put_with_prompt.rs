@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::{PutCommand, SecretName},
+    domain::values::PutCommand,
     ports::{self},
 };
 
@@ -14,18 +14,10 @@ pub(crate) fn run_put_with_prompt<
     boundary: &mut B,
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
-    let secret = read_secret_for_name(boundary, command.name)?;
-    boundary.store_secret(serial, command.name, command.force, secret.as_ref())
-}
-
-fn read_secret_for_name<B: ports::SecretInputPort>(
-    boundary: &B,
-    name: SecretName,
-) -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    let label = format!("{name}: ");
-    if name.uses_visible_input() {
-        boundary.read_visible_secret(&label)
+    let secret = if command.name.uses_visible_input() {
+        boundary.read_visible_secret()?
     } else {
-        boundary.read_hidden_secret(&label)
-    }
+        boundary.read_hidden_secret(command.name)?
+    };
+    boundary.store_secret(serial, command.name, command.force, &secret)
 }

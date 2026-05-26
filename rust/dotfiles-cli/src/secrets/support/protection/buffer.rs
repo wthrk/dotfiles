@@ -3,18 +3,19 @@
 use std::io::{self, Read, Write};
 
 use anyhow::bail;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
 
-use super::{ProtectedSecret, SecretBytes, SecretSession};
+use super::{ProtectedSecret, SecretSession};
 
 /// 読み込み済み bytes と、その allocation に対応する memory lock guard を所有する。
 ///
 /// 上限超過判定に使う余剰 bytes も同じ allocation に含める。
 pub(crate) struct ProtectedInputBuffer {
-    buffer: SecretBytes,
+    buffer: Zeroizing<Vec<u8>>,
     len: usize,
-    _lock: region::LockGuard,
+    lock: Option<region::LockGuard>,
 }
 
 impl ProtectedInputBuffer {
@@ -22,12 +23,12 @@ impl ProtectedInputBuffer {
     ///
     /// allocation 全体を現在の session の memory lock 範囲へ入れる。
     pub(crate) fn new(capacity: usize, session: &SecretSession) -> Result<Self> {
-        let buffer = SecretBytes::new(vec![0; capacity]);
+        let buffer = Zeroizing::new(vec![0; capacity]);
         let lock = session.lock_transient_buffer(buffer.as_ptr(), capacity)?;
         Ok(Self {
             buffer,
             len: 0,
-            _lock: lock,
+            lock: Some(lock),
         })
     }
 
@@ -84,7 +85,6 @@ impl ProtectedInputBuffer {
     pub(crate) fn pop_byte(&mut self) {
         if self.len > 0 {
             self.len -= 1;
-            self.buffer[self.len] = 0;
         }
     }
 
@@ -98,9 +98,15 @@ impl ProtectedInputBuffer {
         }
     }
 
-    fn into_trimmed_bytes_and_lock(self) -> (SecretBytes, region::LockGuard) {
-        let Self { buffer, len, _lock } = self;
-        let mut buffer = buffer;
+    fn into_trimmed_bytes_and_lock(self) -> (Vec<u8>, region::LockGuard) {
+        let mut this = self;
+        let mut wrapped = std::mem::take(&mut this.buffer);
+        let mut buffer = std::mem::take(&mut *wrapped);
+        let len = this.len;
+        let lock = match this.lock.take() {
+            Some(lock) => lock,
+            None => panic!("protected input buffer lock must exist"),
+        };
         let len = if buffer[..len].ends_with(b"\r\n") {
             len - 2
         } else if buffer[..len].ends_with(b"\n") {
@@ -108,21 +114,20 @@ impl ProtectedInputBuffer {
         } else {
             len
         };
-        buffer[len..].fill(0);
         buffer.truncate(len);
 
-        (buffer, _lock)
+        (buffer, lock)
     }
 
     /// 行入力 bytes を、同じ memory lock guard を引き継ぐ保護済み値へ移す。
     ///
     /// 上限は末尾改行を除いた bytes に適用し、超過時は指定 error で失敗する。
-    pub(crate) fn into_protected_secret_line<'session>(
+    pub(crate) fn into_protected_secret_line(
         self,
-        session: &'session SecretSession,
+        session: &SecretSession,
         limit: usize,
         too_large_error: &'static str,
-    ) -> Result<ProtectedSecret<'session>> {
+    ) -> Result<ProtectedSecret> {
         if self.trimmed_len() > limit {
             bail!(too_large_error);
         }
@@ -136,7 +141,7 @@ impl Write for ProtectedInputBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let remaining = self.buffer.len().saturating_sub(self.len);
         if bytes.len() > remaining {
-            self.buffer[..self.len].fill(0);
+            self.buffer[..self.len].zeroize();
             self.len = 0;
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,

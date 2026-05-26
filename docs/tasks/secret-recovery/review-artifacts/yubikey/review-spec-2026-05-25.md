@@ -38,7 +38,7 @@
 
 ### [確認済] V7: `ports` が `support` に依存しない
 
-- `ports.rs` の use 宣言は `use zeroize::Zeroizing`、`use crate::Result`、`use super::domain::PivObjectId` の 3 件のみ。
+- `ports.rs` の use 宣言は `use zeroize::Zeroizing`、`use anyhow::Result`、`use super::domain::PivObjectId` の 3 件のみ。
 - `support::protection::{InterruptGuard, ProtectedSecret, SecretSession}` への依存なし。`SecretDevice::unwrap_key` 戻り値は `Zeroizing<Vec<u8>>`。
 - **V7: 解消済**
 

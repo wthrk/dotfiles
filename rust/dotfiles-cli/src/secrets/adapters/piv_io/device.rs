@@ -1,199 +1,193 @@
-use yubikey::{Context as YubikeyContext, Serial, YubiKey};
+#[cfg(feature = "secrets-test-stub")]
+use std::env;
 
-use crate::{
-    Result,
-    secrets::domain::{
-        BootstrapSecretDocument, CONTENT_KEY_LEN, NONCE_LEN, PivObjectId, SecretBlob,
-        SecretManifest, SecretName, StorageObjectIds, aes_256_gcm_from_key,
-        decode_initialized_manifest, decrypt_detached, encode_manifest, encrypt_detached,
-        ensure_secret_value_non_empty,
-    },
-    secrets::ports::RandomBytesPort,
+use anyhow::Result;
+#[cfg(feature = "secrets-test-stub")]
+use dotfiles_cli_secrets_test_contract::{
+    ADAPTER_ROUTE_AUDIT_PREFIX, TEST_STUB_CONTEXT_ENV, TEST_STUB_CONTEXT_VALUE, USE_TEST_STUB_ENV,
 };
-use anyhow::{Context, anyhow, bail};
-use zeroize::Zeroizing;
 
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::adapters::piv_io::device_test_stub::{
+    SelectedSecretDevice, TestStubDeviceAdapter,
+};
 use crate::secrets::{
-    adapters::yubikey::YubikeySecretDevice,
-    ports::{DeviceSelectionPort, SecretDevice},
+    adapters::yubikey::RealDeviceAdapter, domain::values::DeviceCandidate,
+    ports::DeviceSelectionPort,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredDevice {
-    pub serial: u32,
-    pub label: String,
+#[cfg(not(feature = "secrets-test-stub"))]
+const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
+
+/// 同一 production command path 上で device 選択 route を確定する adapter。
+///
+/// 既定では実機 `real` route を使うが、`secrets-test-stub` feature 有効時のみ、
+/// 許可済み env 条件ペアがそろった場合に限って `stub` route へ分岐する。
+/// いずれの route も同一の command path / port 契約を通る same-route 検証境界内で扱う。
+pub(crate) struct SelectedDeviceAdapter {
+    inner: DeviceSelectionInner,
 }
 
-pub(crate) struct RealDeviceAdapter;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeviceAdapterRoute {
+    Real,
+    #[cfg(feature = "secrets-test-stub")]
+    Stub,
+}
 
-impl RealDeviceAdapter {
-    /// production で実機 YubiKey へ接続する concrete device adapter を返す。
-    pub(crate) fn production() -> Self {
-        Self
+impl DeviceAdapterRoute {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Real => "real",
+            #[cfg(feature = "secrets-test-stub")]
+            Self::Stub => "stub",
+        }
     }
 }
 
-impl DeviceSelectionPort for RealDeviceAdapter {
-    type Device = YubikeySecretDevice;
-    type DeviceCandidate = DiscoveredDevice;
+impl Default for SelectedDeviceAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    fn discover_devices(&mut self) -> Result<Vec<Self::DeviceCandidate>> {
-        let mut context = YubikeyContext::open()?;
-        let mut devices = Vec::new();
-        for reader in context.iter()? {
-            let label = reader.name().into_owned();
-            let yubikey = reader.open()?;
-            devices.push(DiscoveredDevice {
-                serial: yubikey.serial().0,
-                label,
-            });
+enum DeviceSelectionInner {
+    Real(RealDeviceAdapter),
+    #[cfg(feature = "secrets-test-stub")]
+    Stub(TestStubDeviceAdapter),
+}
+
+impl SelectedDeviceAdapter {
+    /// `real`/`stub` の route 選択と監査出力を 1 箇所で固定する。
+    ///
+    /// same-route 検証で確認するべき分岐条件と `ADAPTER_ROUTE_AUDIT_PREFIX` 出力を
+    /// この境界関数に集約し、呼び出し側が独自に route 判定や監査出力を増やさないようにする。
+    /// caller / 運用側の責務はこの adapter をそのまま利用し、route 制御を
+    /// `secrets-test-stub` + 許可済み env 条件以外へ拡張しないことに限定される。
+    fn new() -> Self {
+        #[cfg(feature = "secrets-test-stub")]
+        {
+            let use_stub = env::var(USE_TEST_STUB_ENV).as_deref() == Ok("true")
+                && env::var(TEST_STUB_CONTEXT_ENV).as_deref() == Ok(TEST_STUB_CONTEXT_VALUE);
+            if use_stub {
+                eprintln!("{ADAPTER_ROUTE_AUDIT_PREFIX}=stub");
+                return Self {
+                    inner: DeviceSelectionInner::Stub(TestStubDeviceAdapter::default()),
+                };
+            }
         }
-        Ok(devices)
+
+        eprintln!("{ADAPTER_ROUTE_AUDIT_PREFIX}=real");
+        Self {
+            inner: DeviceSelectionInner::Real(RealDeviceAdapter),
+        }
+    }
+
+    /// 選択済み adapter route を report 連携用 label として返す。
+    ///
+    /// route 判定は `new` で確定済みであり、この関数は確定値の受け渡し専用。
+    /// caller 側は返却値を report 出力へそのまま連携し、独自 route 名や再判定を
+    /// 持ち込まない責務を負う。
+    pub(super) fn adapter_route_label(&self) -> &'static str {
+        match self.inner {
+            DeviceSelectionInner::Real(_) => DeviceAdapterRoute::Real.as_str(),
+            #[cfg(feature = "secrets-test-stub")]
+            DeviceSelectionInner::Stub(_) => DeviceAdapterRoute::Stub.as_str(),
+        }
+    }
+}
+
+impl DeviceSelectionPort for SelectedDeviceAdapter {
+    #[cfg(not(feature = "secrets-test-stub"))]
+    type Device = <RealDeviceAdapter as DeviceSelectionPort>::Device;
+    #[cfg(feature = "secrets-test-stub")]
+    type Device = SelectedSecretDevice;
+
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
+        match &mut self.inner {
+            DeviceSelectionInner::Real(inner) => inner.discover_devices(),
+            #[cfg(feature = "secrets-test-stub")]
+            DeviceSelectionInner::Stub(inner) => inner.discover_devices(),
+        }
     }
 
     fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device> {
-        Ok(YubikeySecretDevice {
-            yubikey: YubiKey::open_by_serial(Serial(serial))?,
-            pin_verified: false,
-        })
+        match &mut self.inner {
+            #[cfg(not(feature = "secrets-test-stub"))]
+            DeviceSelectionInner::Real(inner) => inner.open_device_by_serial(serial),
+            #[cfg(feature = "secrets-test-stub")]
+            DeviceSelectionInner::Real(inner) => inner
+                .open_device_by_serial(serial)
+                .map(SelectedSecretDevice::Real),
+            #[cfg(feature = "secrets-test-stub")]
+            DeviceSelectionInner::Stub(inner) => inner
+                .open_device_by_serial(serial)
+                .map(SelectedSecretDevice::Stub),
+        }
     }
 }
 
-pub(crate) trait SecretDeviceExt: SecretDevice {
-    fn setup_storage(&mut self) -> Result<()> {
-        self.check_key_generation_preconditions()?;
-        self.check_management_auth_preconditions()?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{LazyLock, Mutex};
 
-        let key_exists = self.key_exists()?;
-        let manifest_bytes = self.read_object(PivObjectId::MANIFEST)?;
-        let mut occupied_object_ids = Vec::new();
-        for object_id in StorageObjectIds::iter() {
-            if self.read_object(object_id)?.is_some() {
-                occupied_object_ids.push(object_id);
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn selected_device_adapter_uses_real_route_by_default() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(feature = "secrets-test-stub")]
+        {
+            // SAFETY: tests serialize process-wide env mutation via `ENV_LOCK`.
+            unsafe {
+                std::env::remove_var(USE_TEST_STUB_ENV);
+                std::env::remove_var(TEST_STUB_CONTEXT_ENV);
             }
         }
-        crate::secrets::domain::ensure_storage_setup_allowed(
-            key_exists,
-            manifest_bytes.as_deref(),
-            &occupied_object_ids,
-        )?;
-
-        self.generate_key()?;
-        let mut manifest = encode_manifest(&SecretManifest::expected())?;
-        self.write_object(PivObjectId::MANIFEST, &mut manifest)
+        let adapter = SelectedDeviceAdapter::default();
+        assert_eq!(adapter.adapter_route_label(), "real");
     }
 
-    fn store_secret(
-        &mut self,
-        random: &impl RandomBytesPort,
-        name: SecretName,
-        secret: &[u8],
-        force: bool,
-    ) -> Result<()> {
-        ensure_secret_value_non_empty(name, secret)?;
-        self.ensure_storage_initialized()?;
-        self.check_management_auth_preconditions()?;
-        if self.read_object(name.object_id())?.is_some() && !force {
-            bail!("{} already exists; pass --force to replace it", name);
+    #[cfg(feature = "secrets-test-stub")]
+    #[test]
+    fn selected_device_adapter_uses_stub_route_only_with_explicit_env_pair() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // SAFETY: tests serialize process-wide env mutation via `ENV_LOCK`.
+        unsafe {
+            std::env::set_var(USE_TEST_STUB_ENV, "true");
+            std::env::set_var(TEST_STUB_CONTEXT_ENV, TEST_STUB_CONTEXT_VALUE);
         }
-
-        let mut content_key = Zeroizing::new([0u8; CONTENT_KEY_LEN]);
-        random.fill_random_bytes(&mut *content_key)?;
-        let mut nonce = [0u8; NONCE_LEN];
-        random.fill_random_bytes(&mut nonce)?;
-        let cipher = aes_256_gcm_from_key(content_key.as_ref())?;
-
-        let mut ciphertext = Zeroizing::new(secret.to_vec());
-        let tag = encrypt_detached(
-            &cipher,
-            &nonce,
-            &name.additional_data(self.serial()),
-            ciphertext.as_mut_slice(),
-        )?;
-        let wrapped_key = self.wrap_key(content_key.as_ref())?;
-        let blob = SecretBlob {
-            name,
-            nonce,
-            wrapped_key,
-            ciphertext: ciphertext.to_vec(),
-            tag,
-        };
-
-        let mut encoded = blob.encode()?;
-        self.write_object(name.object_id(), &mut encoded)
-    }
-
-    fn load_secret(&mut self, name: SecretName) -> Result<Zeroizing<Vec<u8>>> {
-        self.ensure_storage_initialized()?;
-        let encoded = self
-            .read_object(name.object_id())?
-            .with_context(|| format!("{} is not stored on this YubiKey", name))?;
-        let blob =
-            SecretBlob::decode(&encoded).with_context(|| format!("failed to decode {}", name))?;
-        if blob.name != name {
-            bail!("YubiKey secret blob name does not match requested {}", name);
+        let adapter = SelectedDeviceAdapter::default();
+        assert_eq!(adapter.adapter_route_label(), "stub");
+        // SAFETY: tests serialize process-wide env mutation via `ENV_LOCK`.
+        unsafe {
+            std::env::remove_var(USE_TEST_STUB_ENV);
+            std::env::remove_var(TEST_STUB_CONTEXT_ENV);
         }
+    }
 
-        let content_key = self.unwrap_key(&blob.wrapped_key)?;
-        if content_key.len() != CONTENT_KEY_LEN {
-            bail!("unwrapped YubiKey content key has invalid length");
+    #[cfg(feature = "secrets-test-stub")]
+    #[test]
+    fn selected_device_adapter_rejects_partial_stub_env() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // SAFETY: tests serialize process-wide env mutation via `ENV_LOCK`.
+        unsafe {
+            std::env::set_var(USE_TEST_STUB_ENV, "true");
+            std::env::set_var(TEST_STUB_CONTEXT_ENV, "unexpected");
         }
-
-        let cipher = aes_256_gcm_from_key(&content_key)?;
-        let mut secret = Zeroizing::new(blob.ciphertext.clone());
-        decrypt_detached(
-            &cipher,
-            &blob.nonce,
-            &blob.name.additional_data(self.serial()),
-            secret.as_mut_slice(),
-            &blob.tag,
-        )
-        .map_err(|_| anyhow!("failed to decrypt {}", blob.name))?;
-        Ok(secret)
-    }
-
-    fn store_bootstrap_secret_document(
-        &mut self,
-        random: &impl RandomBytesPort,
-        document: &BootstrapSecretDocument,
-    ) -> Result<()> {
-        self.store_secret(
-            random,
-            SecretName::BwEmail,
-            document.bw_email.as_bytes(),
-            false,
-        )?;
-        self.store_secret(
-            random,
-            SecretName::BwPassword,
-            document.bw_password.as_bytes(),
-            false,
-        )?;
-        self.store_secret(
-            random,
-            SecretName::BwsAccessToken,
-            document.bws_access_token.as_bytes(),
-            false,
-        )
-    }
-
-    fn verify_required_secrets(&mut self) -> Result<()> {
-        for name in SecretName::iter() {
-            let secret = self.load_secret(name)?;
-            ensure_secret_value_non_empty(name, secret.as_ref())?;
+        let adapter = SelectedDeviceAdapter::default();
+        assert_eq!(adapter.adapter_route_label(), "real");
+        // SAFETY: tests serialize process-wide env mutation via `ENV_LOCK`.
+        unsafe {
+            std::env::remove_var(USE_TEST_STUB_ENV);
+            std::env::remove_var(TEST_STUB_CONTEXT_ENV);
         }
-        Ok(())
-    }
-
-    fn ensure_storage_initialized(&mut self) -> Result<SecretManifest> {
-        let manifest_bytes = self.read_object(PivObjectId::MANIFEST)?;
-        decode_initialized_manifest(manifest_bytes.as_deref())
     }
 }
-
-impl SecretDeviceExt for YubikeySecretDevice {}
-
-#[cfg(not(feature = "secrets-test-stub"))]
-pub(crate) type SelectedDeviceAdapter = RealDeviceAdapter;
-#[cfg(feature = "secrets-test-stub")]
-pub(crate) use super::device_test_stub::TestStubDeviceAdapter as SelectedDeviceAdapter;

@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::SetupCommand,
+    domain::values::SetupCommand,
     ports::{self},
 };
 

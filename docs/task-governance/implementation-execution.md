@@ -28,8 +28,11 @@
 - 変更対象の直接呼び出し元と直接呼び出し先
 - 対応テスト（既存テストと追加・更新対象テスト）
 - 同一作業項目で更新対象となる確認証跡・レビュー記録テンプレート
+- 差し戻し再実装で親オーケストレーターから受け取った handoff 一式（未解消 finding 本文、reviewer role、verdict、file:line references、required fix、artifact path）
 
 前回読んだ記憶だけで編集してはならない。再開時は再読を取り直す。
+差し戻し handoff は入力正本の一部として扱い、要約へ置換してはならない。未解消 finding の本文とレビュー成果物を突合してから再実装すること。
+この詳細 handoff は `current-cycle` review 後に新しい実装担当へ差し戻す remediation 委譲でのみ受け取る想定であり、reviewer 委譲の通常入力に流用してはならない。
 
 ## 実装時の判断規則
 

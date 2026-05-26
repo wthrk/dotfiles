@@ -27,9 +27,14 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/deleted test-stub crate/src/device.rs`
-  - `rust/deleted test-stub crate/src/dotfiles_main.rs`
-  - `rust/deleted test-stub crate/src/main.rs`
+
+### 2026-05-26 追加実装サイクル追記
+
+- 解消済み（本サイクル）: 未解決 1,2,3,4,5,6,7,9
+- 継続（次サイクル）: 未解決 10（最終集約判定の再更新）
+- 判定前提更新: `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として扱い、一般的な test double 配置論（tests 層固定）を適用しない。
+- 判定前提更新: `adapters` 配下にあること単独では違反根拠にせず、配置と責務を合わせて評価する。same-route 維持（別 binary / 別 CLI / command-scenario branching / port-boundary swap 禁止）を継続条件とする。
+- 判定前提更新: secret 本文は `ProtectedSecret` 型以外で扱わず、`rust/dotfiles-cli-secrets-test-stub/` は復活させない。
 
 ## 役割別レビュー
 

@@ -3,75 +3,72 @@
 //! この module は capability 契約のみを定義し、具体的な parser / 暗号処理 / 端末 I/O /
 //! device 操作手順は adapter 側の実装へ閉じ込める。
 
-use std::time::Duration;
-
-use zeroize::Zeroizing;
-
-use crate::Result;
+use anyhow::Result;
 
 use super::domain::{
-    BootstrapSecretDocument, CheckName, EnrollSummary, PivObjectId, SecretName, VerifySummary,
+    manifest::BootstrapSecretDocument,
+    material::SecretMaterial,
+    piv::{PivObjectId, SecretName},
+    values::{DeviceCandidate, EnrollSummary, VerifySummary},
 };
-
-pub const SPARE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
-pub const SPARE_DETECT_POLL_INTERVAL: Duration = Duration::from_millis(200);
-pub const SPARE_WAIT_TIMEOUT_ERROR: &str = "timed out waiting for spare YubiKey";
 
 /// use case が device 候補列挙と open を要求する capability 契約。
 pub trait DeviceSelectionPort {
     type Device: SecretDevice;
-    type DeviceCandidate;
-
-    fn discover_devices(&mut self) -> Result<Vec<Self::DeviceCandidate>>;
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device>;
 }
 
-/// 複数候補から対象 device serial を決定する capability 契約。
-pub trait DeviceSelectionInputPort: DeviceSelectionPort {
-    fn choose_device(&self, devices: &[Self::DeviceCandidate]) -> Result<u32>;
-}
-
-/// use case が対象 YubiKey serial を解決するための capability 契約。
+/// use case が primary 対象の serial を確定する capability 契約。
 pub trait DeviceSerialPort {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
 }
 
-/// spare YubiKey の挿入待ちを処理する capability 契約。
-pub trait SpareDeviceWaitPort {
-    fn wait_for_spare_device(&self) -> Result<()>;
+/// use case が対象 device の PIN 要否を判定する capability 契約。
+pub trait DevicePinPolicyPort {
+    fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
 }
 
-/// use case が primary と衝突しない spare YubiKey serial を解決する契約。
+/// use case が spare 対象の serial を確定する capability 契約。
 pub trait SpareDeviceSerialPort {
+    /// primary serial が指定された場合は primary と異なる spare serial を返さなければならない。
     fn resolve_spare_device_serial(
         &mut self,
         primary_serial: Option<u32>,
-        spare_serial: Option<u32>,
+        requested_spare_serial: Option<u32>,
     ) -> Result<u32>;
 }
 
 /// use case が PIV PIN を取得するための capability 契約。
 pub trait PinInputPort {
-    fn read_pin(&self) -> Result<Zeroizing<Vec<u8>>>;
+    fn read_pin(&self) -> Result<SecretMaterial>;
 }
 
 /// use case が必要とする secret 入力 capability 契約。
 pub trait SecretInputPort {
-    fn read_visible_secret(&self, label: &str) -> Result<Zeroizing<Vec<u8>>>;
-    fn read_hidden_secret(&self, label: &str) -> Result<Zeroizing<Vec<u8>>>;
-    fn read_stdin_secret(&self) -> Result<Zeroizing<Vec<u8>>>;
-    fn read_secret_document_noninteractive(&self) -> Result<Zeroizing<Vec<u8>>>;
-    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument>;
+    fn read_visible_secret(&self) -> Result<SecretMaterial>;
+    fn read_hidden_secret(&self, name: SecretName) -> Result<SecretMaterial>;
+    fn read_stdin_secret(&self) -> Result<SecretMaterial>;
+}
+
+/// stdin JSON から bootstrap secret 文書を取得する capability 契約。
+pub trait BootstrapSecretDocumentInputPort {
+    fn read_bootstrap_secret_document_noninteractive(&self) -> Result<BootstrapSecretDocument>;
 }
 
 /// use case が復号済み secret を出力境界へ渡す契約。
 pub trait SecretOutputPort {
-    fn write_secret(&self, bytes: &[u8]) -> Result<()>;
+    fn write_secret(&self, secret: &SecretMaterial) -> Result<()>;
 }
 
 /// use case が保存済み secret を読み出すための契約。
 pub trait SecretLoadPort {
-    fn load_secret(&mut self, serial: u32, name: SecretName) -> Result<Zeroizing<Vec<u8>>>;
+    fn load_secret(
+        &mut self,
+        serial: u32,
+        name: SecretName,
+        pin: Option<&SecretMaterial>,
+    ) -> Result<SecretMaterial>;
 }
 
 /// use case が secret を保存するための契約。
@@ -81,7 +78,7 @@ pub trait SecretStorePort {
         serial: u32,
         name: SecretName,
         force: bool,
-        secret: &[u8],
+        secret: &SecretMaterial,
     ) -> Result<()>;
 }
 
@@ -90,38 +87,15 @@ pub trait StorageSetupPort {
     fn setup_storage(&mut self, serial: u32) -> Result<()>;
 }
 
-/// use case が bootstrap secret 文書を読み出すための契約。
-pub trait BootstrapSecretLoadPort {
-    fn load_bootstrap_secret_document(&mut self, serial: u32) -> Result<BootstrapSecretDocument>;
-}
-
-/// use case が bootstrap secret 文書を保存するための契約。
-pub trait BootstrapSecretStorePort {
-    fn store_bootstrap_secret_document(
-        &mut self,
-        serial: u32,
-        document: &BootstrapSecretDocument,
-    ) -> Result<()>;
-}
-
 /// use case が local storage の整合性を検証する契約。
 pub trait StorageVerifyPort {
-    fn verify_local_storage(&mut self, serial: u32) -> Result<()>;
+    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()>;
 }
 
 /// use case が結果報告を出力境界へ渡すための契約。
 pub trait ReportPort {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()>;
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
-    fn report_primary_enrollment(&self, serial: u32) -> Result<()>;
-    fn report_spare_enrollment(&self, serial: u32) -> Result<()>;
-    fn report_local_storage_verified(&self, serial: u32) -> Result<()>;
-    fn report_local_storage_failed(&self, serial: u32) -> Result<()>;
-    fn report_external_checks_unavailable(
-        &self,
-        serial: u32,
-        checks: impl IntoIterator<Item = CheckName>,
-    ) -> Result<()>;
 }
 
 /// use case が鍵素材生成に必要な乱数を要求する契約。
@@ -131,15 +105,60 @@ pub trait RandomBytesPort {
 
 /// YubiKey device adapter が満たす低水準 device 操作契約。
 pub trait SecretDevice {
+    /// 接続先 device serial を返す。
+    ///
+    /// caller はこの値を監査表示・対象識別にのみ使い、device 選択ロジックへ逆流させない。
     fn serial(&self) -> u32;
+    /// 管理鍵スロットが初期化済みかを返す。
+    ///
+    /// implementor は外部 API 差異を吸収し、caller へは bool 契約だけを返す責務を負う。
     fn key_exists(&mut self) -> Result<bool>;
+    /// 鍵生成前に必要なデバイス前提条件を検証する。
+    ///
+    /// caller は `generate_key` の前にこの検証を呼ぶ責務を負う。
     fn check_key_generation_preconditions(&mut self) -> Result<()>;
+    /// 既存管理鍵を使う操作の前提条件を検証する。
+    ///
+    /// caller は write/load 前にこの検証が必要な実装かを考慮する責務を負う。
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
+    /// 管理鍵を生成してデバイスへ反映する。
     fn generate_key(&mut self) -> Result<()>;
+    /// PIV object bytes を読み出す。
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
+    /// PIV object bytes を書き込む。
+    ///
+    /// value のゼロ化や一時バッファ管理は implementor 側の責務とする。
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
-    fn wrap_key(&mut self, key: &[u8]) -> Result<Vec<u8>>;
+    /// content key を device の wrapping key でラップする。
+    fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>>;
+    /// 現在の device state で PIN 入力が必要かどうかを返す。
+    ///
+    /// この値は `verify_pin` 呼び出し要否を判断するための signal であり、
+    /// PIN 入力手段（prompt / stdin）の選択責務は caller 側にある。
     fn requires_pin_input(&self) -> bool;
-    fn verify_pin(&mut self, pin: &[u8]) -> Result<()>;
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+    /// PIN 検証を実行し、以後の復号操作に必要な認証状態へ遷移させる。
+    ///
+    /// 実装は PIN 値を保持し続けず、失敗時は認証状態を進めない責務を負う。
+    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
+    /// `wrap_key` で得た wrapped bytes を復号する。
+    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial>;
+    /// manifest と storage layout を初期化する。
+    fn setup_storage(&mut self) -> Result<()>;
+    /// secret を保存する。
+    ///
+    /// `force=false` の場合、既存値がある secret は失敗させる責務を implementor が負う。
+    /// `force=true` は caller が明示的に上書きを許可した合図であり、既存値判定を飛ばす理由にのみ使う。
+    fn store_secret(
+        &mut self,
+        random: &impl RandomBytesPort,
+        name: SecretName,
+        secret: &SecretMaterial,
+        force: bool,
+    ) -> Result<()>;
+    /// 指定 secret を読み出し、復号に必要な検証済み状態を満たしていなければ失敗する。
+    ///
+    /// caller は `requires_pin_input` と `verify_pin` の契約順序を守って呼び出す責務を負う。
+    fn load_secret(&mut self, name: SecretName) -> Result<SecretMaterial>;
+    /// local storage の必須 secret が読み出し可能か検証する。
+    fn verify_required_secrets(&mut self) -> Result<()>;
 }

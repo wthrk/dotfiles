@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::GetCommand,
+    domain::values::GetCommand,
     ports::{self},
 };
 
@@ -8,12 +8,21 @@ use crate::secrets::{
 ///
 /// 読み出し経路の secret 値を application 層で加工せず、復号と出力方針は adapter 側の責務境界へ固定する。
 pub(crate) fn run_get_with<
-    B: ports::DeviceSerialPort + ports::SecretLoadPort + ports::SecretOutputPort,
+    B: ports::DeviceSerialPort
+        + ports::DevicePinPolicyPort
+        + ports::PinInputPort
+        + ports::SecretLoadPort
+        + ports::SecretOutputPort,
 >(
     command: GetCommand,
     boundary: &mut B,
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
-    let secret = boundary.load_secret(serial, command.name)?;
-    boundary.write_secret(secret.as_ref())
+    let pin = if boundary.device_requires_pin(serial)? {
+        Some(boundary.read_pin()?)
+    } else {
+        None
+    };
+    let secret = boundary.load_secret(serial, command.name, pin.as_ref())?;
+    boundary.write_secret(&secret)
 }

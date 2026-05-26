@@ -12,12 +12,12 @@ mod application;
 pub mod domain;
 pub mod ports;
 mod support;
-pub use application::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole};
 
 use clap::{Args, Subcommand, ValueEnum};
-use domain::{
+use domain::piv::SecretName;
+use domain::values::{
     EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, GetCommand, PutCommand,
-    RotateBwsTokenCommand, SecretName, SetupCommand, VerifyYubikeyCommand,
+    RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
 };
 
 use crate::Result;
@@ -132,10 +132,11 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を実機 YubiKey 境界で実行する。
 ///
-/// 実プロセス境界（`RealSecretsBoundary`）の組み立てはここで行い、application 層は
-/// port 契約だけを通じて境界を利用する。
+/// CLI 入口は解析済み command を dispatch し、crate 内に閉じた実プロセス境界を与える。
+///
+/// adapter concrete は `secrets` module 内だけに閉じ、crate 公開や adapter surface 化はしない。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::select_secrets_boundary();
+    let mut boundary = adapters::RealSecretsBoundary::default();
     dispatch(options, &mut boundary)
 }
 
@@ -146,21 +147,23 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
 }
 
+/// parse 済み command を use case に橋渡しする。
+///
+/// command ごとに分岐順序をここへ固定し、各 use case が必要とする境界 trait 集合を
+/// 1 箇所に明示することで、CLI 層から adapter 具体型依存が漏れることを防ぐ。
 fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
 where
     B: ports::DeviceSelectionPort
-        + ports::DeviceSelectionInputPort
         + ports::DeviceSerialPort
-        + ports::PinInputPort
-        + ports::SpareDeviceWaitPort
+        + ports::DevicePinPolicyPort
         + ports::SpareDeviceSerialPort
+        + ports::PinInputPort
         + ports::SecretInputPort
+        + ports::BootstrapSecretDocumentInputPort
         + ports::SecretLoadPort
         + ports::SecretOutputPort
         + ports::SecretStorePort
         + ports::StorageSetupPort
-        + ports::BootstrapSecretLoadPort
-        + ports::BootstrapSecretStorePort
         + ports::StorageVerifyPort
         + ports::ReportPort
         + ports::RandomBytesPort,

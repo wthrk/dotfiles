@@ -2,6 +2,8 @@
 
 この文書は、レビュー開始条件・集約条件・完了判定への接続を定義する。
 
+本書で `現行サイクル（current-cycle）` とは、同一差分識別子に対してレビュー開始条件を満たした 1 回のレビュー実施単位を指す。差し戻し後の再レビューは新しいサイクルとして扱い、前サイクルの `finding` は未解消項目のみを明示的に引き継ぐ。
+
 レビューサイクルは次の3段階に分離する。
 
 1. **レビュー開始**（`S1 -> S2`）: 差分識別子と確認記録の存在確認、必須担当の割当。
@@ -37,6 +39,8 @@
 
 `docs/architecture/hexagonal-implementation-rules.md` の層別責務・依存方向・公開範囲規則を適用する。主たる義務は `docs/architecture/review-checklist.md` の「レビュー時の問い」を各層についてコードを読む前に適用することである。問いへの答えが「哲学に違反している」であれば、チェックリスト項目が通過していても `判定: 不合格` とする。層別哲学的問いへの回答を `根拠:` に明示すること。見た目の構造（ファイル配置・命名）が正しくても実装の責務が層の哲学に反している場合は `判定: 不合格` とする。
 
+secret-recovery の active item `YubiKey` において、`rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` が PIV/YubiKey 固有 concrete 実装として same-route・配置+責務・単一 production command path を満たす場合、`runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一モジュール配下に stub があること自体` は構造レビューの不合格根拠に使用してはならない。不合格根拠にできるのは、上記3条件のいずれかが不成立であることをコード根拠付きで示せる場合のみとする。
+
 ### 仕様適合レビュー担当
 
 作業定義文書の `規約違反の解消対象`・`構造完了条件`・`完了条件` を現行コードに対して直接照合する。各項目について現行コードを開いて未解消が残っていないかを確認する。サマリーや実装担当の報告で代替してはならない。
@@ -51,25 +55,37 @@
 
 ### テストレビュー担当
 
-テストコードが仕様（作業定義文書の完了条件）を実際に検証しているかを確認する。test double 混入の判定は形式（`#[cfg(test)]` か `#[cfg(feature = "...")]` か・port trait を実装しているか）ではなく責務で行う。各シンボル・各ファイル・各 gate ブロックについて「責務は何か」「その責務はこの層に属すか」を問い、責務が層に属さなければ形式が正しくても `判定: 不合格` とする。実依存をテスト用に肩代わりする型（Fake/Stub/Mock の**定義**）が production source tree（`adapters/`・`application/`・`domain/`・`ports/`・`support/` 配下等）に存在する場合は、`#[cfg(test)]` ラップ・`#[cfg(feature = "...")]` gate・port trait 実装のいずれであっても `判定: 不合格` とする。これらは `tests/` 層または専用 test-support crate に属する。一方、production 層の `src/` における通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`、その module 自身の private 関数を検証するもの）は許可され、`#[test]` 関数や `#[cfg(test)]` ブロックの存在のみを理由に `判定: 不合格` としてはならない。判定基準の正本は `docs/architecture/review-checklist.md` の `tests/` 配下セクションとする。テストが存在しない完了条件項目があれば `判定: 不合格` とする。
+テストコードが仕様（作業定義文書の完了条件）を実際に検証しているかを確認する。完了条件は項目ごとに `テストで検証すべき項目` と `構造確認・文書確認で満たす項目` を分類し、前者に対してのみテスト網羅を要求する。後者を機械的に `テスト網羅不足` と判定してはならず、`根拠:` にテスト不要の理由と参照した完了条件項目を明記すること。test double 判定は形式（`#[cfg(test)]` か `#[cfg(feature = "...")]` か・port trait を実装しているか・配置場所）ではなく責務で行う。各シンボル・各ファイル・各 gate ブロックについて「責務は何か」「その責務はこの層に属すか」を問い、責務が層に属さなければ形式が正しくても `判定: 不合格` とする。`#[cfg(test)]` ラップ・`#[cfg(feature = "...")]` gate・port trait 実装・production source tree への配置だけを理由に機械的に `判定: 不合格` としてはならない。責務不一致が確認できる場合に限って不合格とする。production 層の `src/` における通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`、その module 自身の private 関数を検証するもの）は許可され、`#[test]` 関数や `#[cfg(test)]` ブロックの存在のみを理由に `判定: 不合格` としてはならない。判定基準の正本は `docs/architecture/review-checklist.md` の `tests/` 配下セクションとする。テストが存在しない完了条件項目（テストで検証すべき項目に分類されたもの）があれば `判定: 不合格` とする。
+
+secret-recovery の `YubiKey` 作業項目（`docs/tasks/secret-recovery/work-items/yubikey.md`）に対しては、V15 の定義を優先し、`rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` を generic test double として機械的に不合格判定してはならない。判定は `adapters` 配置の形式ではなく、当該ファイルの責務が PIV/YubiKey 固有 concrete 実装として adapter 層責務（port 契約と外部技術の翻訳）に一致するかで行う。
+
+secret-recovery の active item `YubiKey` に対しては、次の文言を finding として返してはならない。1) `完了条件に対するテスト網羅不足` を完了条件の構造項目・文書項目・責務項目へ機械的に適用すること。2) `責務基準での production 層 test double 混入` を `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` に generic 適用すること。これら2件は YubiKey では誤判定として扱い、`判定: 要修正` または `判定: 不合格` の根拠に使用してはならない。
+
+secret-recovery の `YubiKey` 作業項目で V14（same-route）を判定するときは、禁止対象と許可対象を次のように分ける。禁止対象は、利用者向け別 CLI/別 binary、`--test-stub-yubikey`・`yubikey_runtime`・`secrets-test-stub` feature / env などを使った command-scenario branching により production behavior を変形すること、production command path 自体を差し替える port-boundary swap である。feature / env の存在自体は不合格根拠にしてはならない。許可対象は、同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection であり、これを単独理由に `判定: 要修正` または `判定: 不合格` としてはならない。
+
+同じく secret-recovery の `YubiKey` 作業項目に対しては、`rust/dotfiles-cli/src/secrets/support/process_io.rs` の残存だけを理由に V11 未解消としてはならない。判定は「process-generic な標準入出力補助か」「YubiKey-specific な prompt 方針、device 選択判断、use case 手順を持っているか」で行う。
 
 ### ドキュメントレビュー担当
 
-コード内ドキュメントコメント（`///`・`//!`・`/** */` 等）が実装と整合しているかを確認する。`docs/docs-governance.md` が存在する場合はその文書規約への適合を確認する。コメントが「何をするか（what）」の説明にとどまらず「なぜ（why）」を説明しているかを確認する。誤解を招くコメント・古くなったコメント・実装と矛盾するコメントを指摘する。
+コード内ドキュメントコメント（`///`・`//!`・`/** */` 等）が実装と整合しているかを確認する。判定対象と必須範囲の正本は `docs/architecture/hexagonal-implementation-rules.md` の「ドキュメントコメント規則」とする。`docs/docs-governance.md` が存在する場合はその文書規約への適合を確認する。コメントが「何をするか（what）」の説明にとどまらず「なぜ（why）」を説明しているかを確認する。誤解を招くコメント・古くなったコメント・実装と矛盾するコメントを指摘する。
 
 欠落を見逃してはならない必須対象は次のとおり。
 
-- `application/` 直下の各 use-case sibling file にある主要 `run_*` entrypoint。`application/use_case.rs` を前提にせず、主要 use-case 実装や doc comment 対象の本体を sibling `run_*.rs` に置くこと
+- `application/` 直下の各 use-case sibling file にある主要 `run_*` entrypoint。`application/use_case.rs` を前提にせず、主要 use-case 実装や doc comment 対象の本体を sibling `run_*.rs` に置くこと。ここでいう対象は production use case entrypoint であり、`#[cfg(test)] mod tests` や `*_tests.rs` を `run_*` 単一関数原則の違反根拠としてはならない。
 - core workflow を構成する非自明な internal type/function（private helper を含む）で、順序制御理由・停止条件・責務境界・caller responsibility の理解に説明を要する要素
 - `port` trait の責任分界、`adapter` の翻訳境界、`support` の安全性境界など、層責務の境界説明が必要な要素
 
 上記の必須対象で doc comment coverage が不足している場合、または `what` の言い換えだけで `why`/責務境界説明を欠く場合は blocker として扱い、少なくとも `判定: 要修正` を返すこと。`合格` を返してはならない。
+
+`#[test]` 関数、`#[cfg(test)] mod tests`、`tests/` 配下、`*_tests.rs`、`test_*.rs` のテストケースに対しては、ヘッダコメントを機械的に必須化してはならない。ドキュメントレビュー担当は、production code の非自明要素/境界要素に対する必須規則と、テストケース除外を区別して判定すること。
 
 ### アーキテクチャ整合レビュー担当
 
 モジュール（あるいはコードベース）を**全体として**読み、その設計が `docs/architecture/hexagonal-implementation-rules.md` の哲学と整合しているかを独立に判定する。この担当の責務は、他のレビュー担当が「部分を個別ルールに照らして合否判定する」のとは構造的に異なる。構造レビュー担当が adapter シンボルを1つずつ列挙し、テストレビュー担当が test double を確認し、仕様適合レビュー担当が完了条件項目を1つずつ照合するのに対し、この担当は「モジュール全体の構造が一貫した1つの設計を表現しているか」「責務が層をまたいで一貫して分配されているか」「層関係が全体として意味をなすか」「有能なアーキテクトが全体を通読したとき一貫した設計と呼ぶか、それともルールを各々通過しただけの部品の山と呼ぶか」という全体への問いで判定する。
 
 各部分が個別ルール（公開面・依存方向・test double 混入・命名・配置・完了条件・コメント等）にすべて合格していても、全体として設計が破綻している場合は `判定: 不合格` とする。集約ロールは各担当の個別判定を**収集**するだけであり、全体としての設計整合は誰も判定しない——この構造的欠落を埋めるのがこの担当の役割である。この担当は対象モジュールのコードを自分で全体として読まなければならず、他担当の個別判定・過去のレビュー記録・実装担当の報告を全体整合判定の代替にしてはならない。チェックリスト項目を1つずつ照合する形に退化させてはならず、その責務は部分の合格の総和では捉えられない全体の非整合を捉えることにある。
+
+secret-recovery の active item `YubiKey` において、`rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` が PIV/YubiKey 固有 concrete 実装として same-route・配置+責務・単一 production command path を満たす場合、アーキテクチャ整合レビューは `runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一モジュール配下に stub があること自体` を全体非整合の根拠として使用してはならない。全体非整合として不合格にするには、same-route 不成立、配置+責務不一致、または単一 production command path の破綻を、モジュール全体文脈で具体的に示すことを必須とする。
 
 ### 参照整合レビュー担当（文書是正専用）
 
@@ -104,6 +120,16 @@
 ## レビュー独立性規則
 
 レビュー担当は過去のレビュー記録・確認記録・実装担当の報告を参照して判定の代替にしてはならない。判定は必ず対象コードを直接読んで独立に行わなければならない。過去サイクルの記録が合格であっても、現行コードを自分で確認せずに合格を返してはならない。既存のレビュー記録の存在は、実コード精査を省略する根拠にならない。
+レビュー委譲時に、オーケストレーターが reviewer へ `current-cycle findings` 本文や差し戻し用詳細 handoff を渡してはならない。レビュー委譲は本書およびスキル定義が定める最小パラメーター（作業定義文書パス・レビュー対象パス等）に限定し、reviewer が独立に対象を読んで判定する前提を崩してはならない。
+
+## 差し戻し時の受け渡し規則
+
+- 差し戻しで再実装を委譲する際、オーケストレーターは `current-cycle` の**未解消 findings 内容そのもの**を新しい実装担当へ handoff できる。要約への圧縮を必須化してはならない。
+- 上記の詳細 handoff 許可は、`current-cycle` review 後に新しい実装担当へ差し戻す remediation handoff に限定される。レビュー委譲（reviewer 起動）へこの詳細 handoff ルールを拡張してはならない。
+- handoff には、未解消 finding ごとに少なくとも次を含めることを必須とする: `reviewer role`、`verdict`、`file:line references`、`required fix`、`finding 本文`、`artifact path`。
+- 受け渡しは lossless を原則とし、未解消 finding の意味が失われる再要約・省略・言い換えをしてはならない。レビュー成果物本文をそのまま渡してよい。
+- 実装担当は、受け渡された handoff を入力正本の一部として扱い、`current-cycle` の該当レビュー成果物と突合して未解消 finding を必ず再読したうえで再実装しなければならない。
+- 集約担当は、差し戻し後の再レビュー開始時に、上記 handoff 要素（`reviewer role`、`verdict`、`file:line references`、`required fix`、`finding 本文`、`artifact path`）が委譲記録に存在することを確認しなければならない。欠落している場合はレビュー開始条件未充足として扱う。
 
 ## 集約規則
 

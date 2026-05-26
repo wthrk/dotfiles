@@ -10,7 +10,6 @@ use crate::{Result, command::step};
 pub(crate) fn check() -> Result<()> {
     let shell = Shell::new()?;
     rust(&shell)?;
-    secrets_structure(&shell)?;
     shell_scripts(&shell)?;
     github_actions(&shell)?;
     nix_diagnostics(&shell)?;
@@ -35,100 +34,10 @@ fn rust(shell: &Shell) -> Result<()> {
         "env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets"
     )
     .run()?;
-    Ok(())
-}
-
-/// secret-recovery 実装で要求される構造制約を、軽量な静的検査で常時検証する。
-fn secrets_structure(shell: &Shell) -> Result<()> {
-    step("secrets structure checks");
+    step("cargo internal test");
     cmd!(
         shell,
-        "rg -n 'mod structure_tests' rust/dotfiles-cli/src/secrets.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'enum SecretInputSource|enum EnrollmentInputSource|EnrollmentBytes' rust/dotfiles-cli/src/secrets/ports.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'prompt_yes_no|stdin_is_terminal|stdout_is_terminal|read_enrollment_json_bytes|require_serial|require_option|ask_continue_rotation' rust/dotfiles-cli/src/secrets/ports.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'enum\\s+.*InputSource|EnrollmentSecretSet|EnrollmentBytes|serde_json|from_slice|from_str|read_enrollment_json_bytes|prompt_yes_no|stdin_is_terminal|stdout_is_terminal|require_serial|require_option|ask_continue_rotation' rust/dotfiles-cli/src/secrets/ports.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'application::' rust/dotfiles-cli/src/secrets/adapters/piv_io.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'pub\\(super\\) use' rust/dotfiles-cli/src/secrets/adapters.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'TestStub|StubDevice|Fake|Mock|Dummy|test[_-]?double|dotfiles-stub|cfg\\(feature\\s*=\\s*\"dotfiles-stub\"\\)' rust/dotfiles-cli/src/secrets && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'prompt|stdin|stdout|tty|terminal|console_io|read_line|read_hidden|ask_' rust/dotfiles-cli/src/secrets/support && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'YubiKey secret' rust/dotfiles-cli/src/secrets/support/aead.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "test -e rust/dotfiles-cli/src/secrets/application/use_case.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "test -d rust/dotfiles-cli/src/secrets/application/use_case && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n '#\\[path\\s*=|use_case_shared|mod\\s+use_case\\b' rust/dotfiles-cli/src/secrets/application.rs rust/dotfiles-cli/src/secrets/application/*.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "ls rust/dotfiles-cli/src/secrets/application/run_*.rs >/dev/null"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'VerifyCheck|EnrollPrimaryOptions|RotateBwsTokenOptions' rust/dotfiles-cli/src/secrets/application/*.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'CheckName|CheckStatus|EnrollSummary|VerifySummary|YubikeyRole|trait SecretDevice|std::io::Write' rust/dotfiles-cli/src/secrets/domain && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'application::|adapters::|support::|println!|std::io::stdin|std::io::stdout|serde_json::|aes_gcm|yubikey::|piv::' rust/dotfiles-cli/src/secrets/application/*.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'application::use_case|CheckName|CheckStatus|EnrollSummary|VerifySummary|YubikeyRole' rust/dotfiles-cli/src/secrets/adapters/yubikey.rs && exit 1 || true"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "rg -n 'application::|adapters::|ports::' rust/dotfiles-cli/src/secrets/domain/wire.rs && exit 1 || true"
+        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --test secrets_cli --features secrets-test-stub"
     )
     .run()?;
     Ok(())

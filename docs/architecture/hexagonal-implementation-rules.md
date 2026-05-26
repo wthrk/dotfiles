@@ -222,13 +222,16 @@ entrypoint や tests で扱いやすくするために、上記 capability を�
 
 依存方向は常に外側から内側へ向かう。`entrypoint` は `application` と `domain` に依存できるが、`adapter` の具体型へ直接依存してはならない。`application`（`application/use_case` を含む）は `domain` と `port` にのみ依存できる。`entrypoint`、`adapter`、`support` への依存は禁止する。
 
-`domain` は言語標準 library 以外に依存しない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
+`domain` は外部 SDK 型・端末状態・プロセス状態へ依存してはならない。`domain` の外部 crate 利用可否は active work item の current-cycle 指示に従って判定し、`言語標準 library 以外に依存しない` という単独規則を機械適用してはならない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
 
 `application` で許容する外部クレート依存は、current worktree の use case 実装で実際に必要な次の2つに限定する: `anyhow`（エラー文脈付与）、`zeroize`（秘密値のゼロ化）。この2つ以外の外部クレートは `application` へ導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
 
 ## ドキュメントコメント規則
 
 各層で次を必須とする。この comment / doc comment 規則はリポジトリ共通のコメント規約の正本であり、層をまたいで適用する。
+
+- **ヘッダコメント必須対象**: production code の非自明要素/境界要素（use-case entrypoint、core workflow の非自明な internal type/function、`port` trait の責任分界、`adapter` の翻訳境界、`support` の安全性境界）には、対象要素の直上に役割と責務境界を示すヘッダコメント（言語標準 doc comment を含む）を必須とする。
+- **テストケース除外**: `#[test]` 関数、`#[cfg(test)] mod tests`、`tests/` 配下、`*_tests.rs`、`test_*.rs` については、ヘッダコメントを機械的に必須化してはならない。テストコードは可読性のためのコメントを任意とし、本節の必須対象は production code の非自明要素/境界要素に限定する。
 
 - 非自明な module、script、command entrypoint、use case、adapter、support utility、検証フロー定義ファイルには file-level comment または言語標準 doc comment を付け、役割を説明する。
 - repository-authored explanatory comment は日本語で書く。周辺文脈が英語で固定されている場合、上流引用、外部形式要件の場合のみ英語を許可する。

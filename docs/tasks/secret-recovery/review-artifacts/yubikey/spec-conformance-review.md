@@ -53,7 +53,7 @@ use super::{
 
 ```rust
 use zeroize::Zeroizing;
-use crate::Result;
+use anyhow::Result;
 use super::domain::PivObjectId;
 ```
 

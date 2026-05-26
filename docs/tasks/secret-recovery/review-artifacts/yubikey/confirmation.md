@@ -27,20 +27,26 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/deleted test-stub crate/src/device.rs`
-  - `rust/deleted test-stub crate/src/dotfiles_main.rs`
-  - `rust/deleted test-stub crate/src/main.rs`
 
 ## 実行コマンド
 
 - `direnv exec . cargo check -p dotfiles-cli`
-- `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run`
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-test-stub --test secrets_cli --no-run`
 
 ## 結果要約
 
 - `cargo check`: 実行済み
 - `cargo test --no-run`: 実行済み
 - 判定: `要修正`
+
+## 2026-05-26 追加実装サイクル追記
+
+- 未解決 1,2,3,4,5,6,7,9 のコード是正を反映した。
+- `device_test_stub.rs` の書き込みイベントは `<redacted>` を出力しており、stub 側 plaintext stderr 出力は現 current worktree では再現していない。
+- 未解決 10 は本追記を含め review/confirmation/work-item の同期を再実施した。
+- 判定前提更新: `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として評価し、tests 層固定の一般論は適用しない。
+- 判定前提更新: same-route 維持を前提に、`--test-stub-yubikey` / `yubikey_runtime` / 別 binary / 別 CLI / command-scenario branching / port-boundary swap は採用しない。
+- 判定前提更新: secret 本文は `ProtectedSecret` 型以外で扱わず、`rust/dotfiles-cli-secrets-test-stub/` は復活させない。
 
 ## ブロッカー要約
 
