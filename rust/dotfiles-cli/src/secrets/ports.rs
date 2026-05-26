@@ -142,23 +142,4 @@ pub trait SecretDevice {
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
     /// `wrap_key` で得た wrapped bytes を復号する。
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial>;
-    /// manifest と storage layout を初期化する。
-    fn setup_storage(&mut self) -> Result<()>;
-    /// secret を保存する。
-    ///
-    /// `force=false` の場合、既存値がある secret は失敗させる責務を implementor が負う。
-    /// `force=true` は caller が明示的に上書きを許可した合図であり、既存値判定を飛ばす理由にのみ使う。
-    fn store_secret(
-        &mut self,
-        random: &impl RandomBytesPort,
-        name: SecretName,
-        secret: &SecretMaterial,
-        force: bool,
-    ) -> Result<()>;
-    /// 指定 secret を読み出し、復号に必要な検証済み状態を満たしていなければ失敗する。
-    ///
-    /// caller は `requires_pin_input` と `verify_pin` の契約順序を守って呼び出す責務を負う。
-    fn load_secret(&mut self, name: SecretName) -> Result<SecretMaterial>;
-    /// local storage の必須 secret が読み出し可能か検証する。
-    fn verify_required_secrets(&mut self) -> Result<()>;
 }
