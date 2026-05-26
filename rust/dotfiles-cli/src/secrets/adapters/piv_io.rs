@@ -2,20 +2,17 @@
 
 mod console_io;
 mod device;
+#[cfg(feature = "secrets-test-stub")]
+mod device_test_stub;
 mod report;
 mod secret_io;
 
-use anyhow::{Context, anyhow, bail};
-use zeroize::Zeroizing;
+use anyhow::bail;
 
 use crate::{
     Result,
-    secrets::adapters::yubikey::YubikeySecretDevice,
     secrets::domain::{
-        BootstrapSecretDocument, CONTENT_KEY_LEN, CheckName, EnrollSummary, NONCE_LEN, PivObjectId,
-        SecretBlob, SecretManifest, SecretName, StorageObjectIds, VerifySummary,
-        aes_256_gcm_from_key, decode_initialized_manifest, decrypt_detached, encode_manifest,
-        encrypt_detached, ensure_secret_value_non_empty,
+        BootstrapSecretDocument, CheckName, EnrollSummary, SecretName, VerifySummary,
     },
     secrets::ports::{
         BootstrapSecretLoadPort, BootstrapSecretStorePort, DeviceSelectionInputPort,
@@ -26,72 +23,64 @@ use crate::{
 };
 
 use self::{
-    device::{DiscoveredDevice, RealDeviceAdapter},
+    device::{DiscoveredDevice, SecretDeviceExt, SelectedDeviceAdapter},
     report::JsonReportAdapter,
     secret_io::RealSecretIoAdapter,
 };
 
+pub(crate) type SelectedSecretsBoundary = RealSecretsBoundary<SelectedDeviceAdapter>;
+
+pub(crate) fn build_selected_secrets_boundary() -> SelectedSecretsBoundary {
+    RealSecretsBoundary::production()
+}
+
 /// 実機 device・実プロセス I/O・report 出力を束ねる runtime adapter。
-pub struct RealSecretsBoundary {
-    device: RealDeviceAdapter,
+pub(crate) struct RealSecretsBoundary<D = SelectedDeviceAdapter>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
+    device: D,
     secret_io: RealSecretIoAdapter,
     report: JsonReportAdapter,
 }
 
-impl Default for RealSecretsBoundary {
+impl Default for RealSecretsBoundary<SelectedDeviceAdapter> {
     fn default() -> Self {
+        Self::production()
+    }
+}
+
+impl RealSecretsBoundary<SelectedDeviceAdapter> {
+    /// production ルートで使う実機 YubiKey adapter を束ねて境界を構築する。
+    pub(crate) fn production() -> Self {
         Self {
-            device: RealDeviceAdapter,
+            device: SelectedDeviceAdapter::production(),
             secret_io: RealSecretIoAdapter,
             report: JsonReportAdapter,
         }
     }
 }
 
-impl RealSecretsBoundary {
-    fn open_device(&mut self, serial: u32) -> Result<YubikeySecretDevice> {
-        self.device.open_device_by_serial(serial)
-    }
-
+impl<D> RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn choose_device(&self, devices: &[DiscoveredDevice]) -> Result<u32> {
-        match devices {
-            [] => bail!("no YubiKey detected"),
-            [device] => Ok(device.serial),
-            _ => {
-                eprintln!("Multiple YubiKeys detected:");
-                for (index, device) in devices.iter().enumerate() {
-                    eprintln!(
-                        "  {}: {} (serial {})",
-                        index + 1,
-                        device.label,
-                        device.serial
-                    );
-                }
-                let selection = console_io::read_prompt_line("Select YubiKey by number: ")?;
-                let selected_index = selection
-                    .trim()
-                    .parse::<usize>()
-                    .context("device selection must be a number")?;
-                let serial = devices
-                    .get(selected_index.saturating_sub(1))
-                    .context("device selection out of range")?
-                    .serial;
-                Ok(serial)
-            }
-        }
+        console_io::choose_device_serial(devices)
     }
 
     fn with_device<T>(
         &mut self,
         serial: u32,
-        operation: impl FnOnce(&mut YubikeySecretDevice, &mut Self) -> Result<T>,
+        operation: impl FnOnce(&mut D::Device, &mut Self) -> Result<T>,
     ) -> Result<T> {
-        let mut device = self.open_device(serial)?;
+        let mut device = self.device.open_device_by_serial(serial)?;
         operation(&mut device, self)
     }
 
     /// 読み出し系処理の前に PIN 検証を強制し、秘密値復号を許可する。
-    fn ensure_pin_verified(&self, device: &mut YubikeySecretDevice) -> Result<()> {
+    fn ensure_pin_verified(&self, device: &mut D::Device) -> Result<()> {
         if device.requires_pin_input() {
             let pin = self.read_pin()?;
             device.verify_pin(pin.as_ref())?;
@@ -102,157 +91,20 @@ impl RealSecretsBoundary {
     fn with_verified_device<T>(
         &mut self,
         serial: u32,
-        operation: impl FnOnce(&mut YubikeySecretDevice, &mut Self) -> Result<T>,
+        operation: impl FnOnce(&mut D::Device, &mut Self) -> Result<T>,
     ) -> Result<T> {
         self.with_device(serial, |device, boundary| {
             boundary.ensure_pin_verified(device)?;
             operation(device, boundary)
         })
     }
-
-    /// manifest の存在と format 一致を確認し、初期化済み storage として扱えることを保証する。
-    fn ensure_storage_initialized(device: &mut YubikeySecretDevice) -> Result<SecretManifest> {
-        let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
-        decode_initialized_manifest(manifest_bytes.as_deref())
-    }
-
-    /// secret storage layout が未初期化であることを確認した上で初期化を実行する。
-    fn setup_storage_on_device(device: &mut YubikeySecretDevice) -> Result<()> {
-        device.check_key_generation_preconditions()?;
-        device.check_management_auth_preconditions()?;
-
-        let key_exists = device.key_exists()?;
-        let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
-        let mut occupied_object_ids = Vec::new();
-        for object_id in StorageObjectIds::iter() {
-            if device.read_object(object_id)?.is_some() {
-                occupied_object_ids.push(object_id);
-            }
-        }
-        crate::secrets::domain::ensure_storage_setup_allowed(
-            key_exists,
-            manifest_bytes.as_deref(),
-            &occupied_object_ids,
-        )?;
-
-        device.generate_key()?;
-        let mut manifest = encode_manifest(&SecretManifest::expected())?;
-        device.write_object(PivObjectId::MANIFEST, &mut manifest)
-    }
-
-    /// YubiKey storage へ 1 secret を暗号化保存する。
-    fn store_secret_on_device(
-        device: &mut YubikeySecretDevice,
-        random: &impl RandomBytesPort,
-        name: SecretName,
-        secret: &[u8],
-        force: bool,
-    ) -> Result<()> {
-        ensure_secret_value_non_empty(name, secret)?;
-        Self::ensure_storage_initialized(device)?;
-        device.check_management_auth_preconditions()?;
-        if device.read_object(name.object_id())?.is_some() && !force {
-            bail!("{} already exists; pass --force to replace it", name);
-        }
-
-        let mut content_key = Zeroizing::new([0u8; CONTENT_KEY_LEN]);
-        random.fill_random_bytes(&mut *content_key)?;
-        let mut nonce = [0u8; NONCE_LEN];
-        random.fill_random_bytes(&mut nonce)?;
-        let cipher = aes_256_gcm_from_key(content_key.as_ref())?;
-
-        let mut ciphertext = Zeroizing::new(secret.to_vec());
-        let tag = encrypt_detached(
-            &cipher,
-            &nonce,
-            &name.additional_data(device.serial()),
-            ciphertext.as_mut_slice(),
-        )?;
-        let wrapped_key = device.wrap_key(content_key.as_ref())?;
-        let blob = SecretBlob {
-            name,
-            nonce,
-            wrapped_key,
-            ciphertext: ciphertext.to_vec(),
-            tag,
-        };
-
-        let mut encoded = blob.encode()?;
-        device.write_object(name.object_id(), &mut encoded)
-    }
-
-    /// YubiKey storage から 1 secret を復号し、zeroizing buffer として返す。
-    fn load_secret_from_device(
-        device: &mut YubikeySecretDevice,
-        name: SecretName,
-    ) -> Result<Zeroizing<Vec<u8>>> {
-        Self::ensure_storage_initialized(device)?;
-        let encoded = device
-            .read_object(name.object_id())?
-            .with_context(|| format!("{} is not stored on this YubiKey", name))?;
-        let blob =
-            SecretBlob::decode(&encoded).with_context(|| format!("failed to decode {}", name))?;
-        if blob.name != name {
-            bail!("YubiKey secret blob name does not match requested {}", name);
-        }
-
-        let content_key = device.unwrap_key(&blob.wrapped_key)?;
-        if content_key.len() != CONTENT_KEY_LEN {
-            bail!("unwrapped YubiKey content key has invalid length");
-        }
-
-        let cipher = aes_256_gcm_from_key(&content_key)?;
-        let mut secret = Zeroizing::new(blob.ciphertext.clone());
-        decrypt_detached(
-            &cipher,
-            &blob.nonce,
-            &blob.name.additional_data(device.serial()),
-            secret.as_mut_slice(),
-            &blob.tag,
-        )
-        .map_err(|_| anyhow!("failed to decrypt {}", blob.name))?;
-        Ok(secret)
-    }
-
-    fn store_bootstrap_secret_document_on_device(
-        device: &mut YubikeySecretDevice,
-        random: &impl RandomBytesPort,
-        document: &BootstrapSecretDocument,
-    ) -> Result<()> {
-        // 追加コピーを避け、document 文字列の byte slice をそのまま暗号化経路へ渡す。
-        Self::store_secret_on_device(
-            device,
-            random,
-            SecretName::BwEmail,
-            document.bw_email.as_bytes(),
-            false,
-        )?;
-        Self::store_secret_on_device(
-            device,
-            random,
-            SecretName::BwPassword,
-            document.bw_password.as_bytes(),
-            false,
-        )?;
-        Self::store_secret_on_device(
-            device,
-            random,
-            SecretName::BwsAccessToken,
-            document.bws_access_token.as_bytes(),
-            false,
-        )
-    }
-
-    fn verify_required_secrets_on_device(device: &mut YubikeySecretDevice) -> Result<()> {
-        for name in SecretName::iter() {
-            let secret = Self::load_secret_from_device(device, name)?;
-            ensure_secret_value_non_empty(name, secret.as_ref())?;
-        }
-        Ok(())
-    }
 }
 
-impl DeviceSerialPort for RealSecretsBoundary {
+impl<D> DeviceSerialPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
         match requested {
             Some(serial) => Ok(serial),
@@ -264,8 +116,12 @@ impl DeviceSerialPort for RealSecretsBoundary {
     }
 }
 
-impl DeviceSelectionPort for RealSecretsBoundary {
-    type Device = YubikeySecretDevice;
+impl<D> DeviceSelectionPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
+    type Device = D::Device;
     type DeviceCandidate = DiscoveredDevice;
 
     fn discover_devices(&mut self) -> Result<Vec<Self::DeviceCandidate>> {
@@ -277,13 +133,21 @@ impl DeviceSelectionPort for RealSecretsBoundary {
     }
 }
 
-impl DeviceSelectionInputPort for RealSecretsBoundary {
+impl<D> DeviceSelectionInputPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn choose_device(&self, devices: &[Self::DeviceCandidate]) -> Result<u32> {
         RealSecretsBoundary::choose_device(self, devices)
     }
 }
 
-impl SpareDeviceSerialPort for RealSecretsBoundary {
+impl<D> SpareDeviceSerialPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn resolve_spare_device_serial(
         &mut self,
         primary_serial: Option<u32>,
@@ -307,20 +171,29 @@ impl SpareDeviceSerialPort for RealSecretsBoundary {
     }
 }
 
-impl SpareDeviceWaitPort for RealSecretsBoundary {
+impl<D> SpareDeviceWaitPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
     fn wait_for_spare_device(&self) -> Result<()> {
         let _ = console_io::read_prompt_line("Insert spare YubiKey and press Enter to continue: ")?;
         Ok(())
     }
 }
 
-impl PinInputPort for RealSecretsBoundary {
+impl<D> PinInputPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
     fn read_pin(&self) -> Result<zeroize::Zeroizing<Vec<u8>>> {
         self.secret_io.read_pin()
     }
 }
 
-impl SecretInputPort for RealSecretsBoundary {
+impl<D> SecretInputPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
     fn read_visible_secret(&self, label: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
         self.secret_io.read_visible_secret(label)
     }
@@ -342,25 +215,34 @@ impl SecretInputPort for RealSecretsBoundary {
     }
 }
 
-impl SecretOutputPort for RealSecretsBoundary {
+impl<D> SecretOutputPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
     fn write_secret(&self, bytes: &[u8]) -> Result<()> {
         self.secret_io.write_secret(bytes)
     }
 }
 
-impl SecretLoadPort for RealSecretsBoundary {
+impl<D> SecretLoadPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn load_secret(
         &mut self,
         serial: u32,
         name: SecretName,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>> {
-        self.with_verified_device(serial, |device, _| {
-            Self::load_secret_from_device(device, name)
-        })
+        self.with_verified_device(serial, |device, _| device.load_secret(name))
     }
 }
 
-impl SecretStorePort for RealSecretsBoundary {
+impl<D> SecretStorePort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn store_secret(
         &mut self,
         serial: u32,
@@ -369,24 +251,31 @@ impl SecretStorePort for RealSecretsBoundary {
         secret: &[u8],
     ) -> Result<()> {
         self.with_device(serial, |device, boundary| {
-            Self::store_secret_on_device(device, boundary, name, secret, force)
+            device.store_secret(boundary, name, secret, force)
         })
     }
 }
 
-impl StorageSetupPort for RealSecretsBoundary {
+impl<D> StorageSetupPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn setup_storage(&mut self, serial: u32) -> Result<()> {
-        self.with_device(serial, |device, _| Self::setup_storage_on_device(device))
+        self.with_device(serial, |device, _| device.setup_storage())
     }
 }
 
-impl BootstrapSecretLoadPort for RealSecretsBoundary {
+impl<D> BootstrapSecretLoadPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn load_bootstrap_secret_document(&mut self, serial: u32) -> Result<BootstrapSecretDocument> {
         self.with_verified_device(serial, |device, _| {
-            let bw_email = Self::load_secret_from_device(device, SecretName::BwEmail)?;
-            let bw_password = Self::load_secret_from_device(device, SecretName::BwPassword)?;
-            let bws_access_token =
-                Self::load_secret_from_device(device, SecretName::BwsAccessToken)?;
+            let bw_email = device.load_secret(SecretName::BwEmail)?;
+            let bw_password = device.load_secret(SecretName::BwPassword)?;
+            let bws_access_token = device.load_secret(SecretName::BwsAccessToken)?;
             BootstrapSecretDocument::from_interactive_secrets(
                 bw_email.as_ref(),
                 bw_password.as_ref(),
@@ -396,27 +285,36 @@ impl BootstrapSecretLoadPort for RealSecretsBoundary {
     }
 }
 
-impl BootstrapSecretStorePort for RealSecretsBoundary {
+impl<D> BootstrapSecretStorePort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn store_bootstrap_secret_document(
         &mut self,
         serial: u32,
         document: &BootstrapSecretDocument,
     ) -> Result<()> {
         self.with_device(serial, |device, boundary| {
-            Self::store_bootstrap_secret_document_on_device(device, boundary, document)
+            device.store_bootstrap_secret_document(boundary, document)
         })
     }
 }
 
-impl StorageVerifyPort for RealSecretsBoundary {
+impl<D> StorageVerifyPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+    D::Device: SecretDeviceExt,
+{
     fn verify_local_storage(&mut self, serial: u32) -> Result<()> {
-        self.with_verified_device(serial, |device, _| {
-            Self::verify_required_secrets_on_device(device)
-        })
+        self.with_verified_device(serial, |device, _| device.verify_required_secrets())
     }
 }
 
-impl ReportPort for RealSecretsBoundary {
+impl<D> ReportPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
         self.report.write_enroll_report(summary)
     }
@@ -450,7 +348,10 @@ impl ReportPort for RealSecretsBoundary {
     }
 }
 
-impl RandomBytesPort for RealSecretsBoundary {
+impl<D> RandomBytesPort for RealSecretsBoundary<D>
+where
+    D: DeviceSelectionPort<DeviceCandidate = DiscoveredDevice>,
+{
     fn fill_random_bytes(&self, out: &mut [u8]) -> Result<()> {
         use rand::RngCore;
         rand::rng().fill_bytes(out);

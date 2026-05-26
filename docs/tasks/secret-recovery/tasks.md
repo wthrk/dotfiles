@@ -32,7 +32,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
-  - `rust/dotfiles-cli-secrets-test-contract/src/lib.rs`
 - 実装状態: `実装中`
 - 固定実装単位トラッカー:
 

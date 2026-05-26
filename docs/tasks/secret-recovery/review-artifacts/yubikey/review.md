@@ -27,10 +27,9 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/dotfiles-cli-secrets-test-contract/src/lib.rs`
-  - `rust/dotfiles-cli-secrets-test-stub/src/device.rs`
-  - `rust/dotfiles-cli-secrets-test-stub/src/dotfiles_main.rs`
-  - `rust/dotfiles-cli-secrets-test-stub/src/main.rs`
+  - `rust/deleted test-stub crate/src/device.rs`
+  - `rust/deleted test-stub crate/src/dotfiles_main.rs`
+  - `rust/deleted test-stub crate/src/main.rs`
 
 ## 役割別レビュー
 

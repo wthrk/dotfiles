@@ -135,7 +135,7 @@ enum VerifyCheck {
 /// 実プロセス境界（`RealSecretsBoundary`）の組み立てはここで行い、application 層は
 /// port 契約だけを通じて境界を利用する。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::RealSecretsBoundary::default();
+    let mut boundary = adapters::select_secrets_boundary();
     dispatch(options, &mut boundary)
 }
 
@@ -144,35 +144,6 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
     value
         .parse()
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
-}
-
-/// argv を `dotfiles secrets <subcommand>` として解釈し、与えられた境界で use case を実行する。
-///
-/// 実プロセスの I/O・device 取得契約は呼び出し側の port 実装が差し替える。
-/// tests 層の stub crate（`dotfiles-cli-secrets-test-stub`）が production 経路を駆動するために使う。
-pub fn run_with_args<I, T, B>(args: I, boundary: &mut B) -> Result<()>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString> + Clone,
-    B: ports::DeviceSelectionPort
-        + ports::DeviceSelectionInputPort
-        + ports::DeviceSerialPort
-        + ports::PinInputPort
-        + ports::SpareDeviceWaitPort
-        + ports::SpareDeviceSerialPort
-        + ports::SecretInputPort
-        + ports::SecretLoadPort
-        + ports::SecretOutputPort
-        + ports::SecretStorePort
-        + ports::StorageSetupPort
-        + ports::BootstrapSecretLoadPort
-        + ports::BootstrapSecretStorePort
-        + ports::StorageVerifyPort
-        + ports::ReportPort
-        + ports::RandomBytesPort,
-{
-    let options = parse_secrets_options(args)?;
-    dispatch(options, boundary)
 }
 
 fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
@@ -284,27 +255,4 @@ where
             )
         }
     }
-}
-
-fn parse_secrets_options<I, T>(args: I) -> Result<SecretsOptions>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString> + Clone,
-{
-    use clap::Parser;
-
-    #[derive(Parser)]
-    #[command(name = "dotfiles")]
-    struct ArgsCli {
-        #[command(subcommand)]
-        command: ArgsCommand,
-    }
-
-    #[derive(clap::Subcommand)]
-    enum ArgsCommand {
-        Secrets(SecretsOptions),
-    }
-
-    let ArgsCommand::Secrets(options) = ArgsCli::try_parse_from(args)?.command;
-    Ok(options)
 }

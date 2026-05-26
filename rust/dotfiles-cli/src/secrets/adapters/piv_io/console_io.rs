@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     Result,
+    secrets::adapters::piv_io::device::DiscoveredDevice,
     secrets::support::protection::{ProtectedInputBuffer, SecretSession},
 };
 
@@ -101,6 +102,38 @@ pub(super) fn read_prompt_line(prompt: &str) -> Result<String> {
         }
     }
     String::from_utf8(out).context("terminal input must be UTF-8")
+}
+
+pub(super) fn choose_device_serial(devices: &[DiscoveredDevice]) -> Result<u32> {
+    match devices {
+        [] => bail!("no YubiKey detected"),
+        [device] => Ok(device.serial),
+        _ => {
+            eprintln!("Multiple YubiKeys detected:");
+            for (index, device) in devices.iter().enumerate() {
+                eprintln!(
+                    "  {}: {} (serial {})",
+                    index + 1,
+                    device.label,
+                    device.serial
+                );
+            }
+            let selected = read_prompt_line("Select YubiKey by number: ")?;
+            parse_device_selection(&selected, devices)
+        }
+    }
+}
+
+fn parse_device_selection(selection: &str, devices: &[DiscoveredDevice]) -> Result<u32> {
+    let selected_index = selection
+        .trim()
+        .parse::<usize>()
+        .context("device selection must be a number")?;
+    let serial = devices
+        .get(selected_index.saturating_sub(1))
+        .context("device selection out of range")?
+        .serial;
+    Ok(serial)
 }
 
 fn hidden_input_reader() -> Result<Box<dyn io::Read>> {

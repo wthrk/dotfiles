@@ -50,7 +50,7 @@ This section is high-level orientation only. It points to owning documents for d
 
 ### Major Directory / File Layout
 
-- `rust/` — Cargo workspace for the `dotfiles` CLI. Members: `dotfiles-cli` (CLI binary), `dotfiles-core` (shared core), `xtask` (internal task runner), test crates `dotfiles-cli-secrets-test-contract` / `dotfiles-cli-secrets-test-stub`, and integration/check crates under `rust/tests/`. Layer/visibility rules are owned by `docs/architecture/`.
+- `rust/` — Cargo workspace for the `dotfiles` CLI. Members: `dotfiles-cli` (CLI binary), `dotfiles-core` (shared core), `xtask` (internal task runner), and integration/check crates under `rust/tests/`. Layer/visibility rules are owned by `docs/architecture/`.
 - `nix/` — Nix configuration referenced by the flake: `home.nix` (Home Manager), `darwin.nix` (nix-darwin), reusable modules in `nix/modules/`, and project templates in `nix/templates/`.
 - `flake.nix` / `flake.lock` / `Cargo.toml` / `Cargo.lock` — repository-root flake and Rust-workspace manifests.
 - `config/` — user application configuration: `config/zsh/` (zsh) and `config/nvim/` (Neovim).

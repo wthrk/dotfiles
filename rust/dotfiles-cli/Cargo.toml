@@ -19,6 +19,9 @@ path = "tests/secrets_cli.rs"
 [lints]
 workspace = true
 
+[features]
+secrets-test-stub = []
+
 [dependencies]
 aes-gcm.workspace = true
 anyhow.workspace = true
@@ -42,3 +45,4 @@ zeroize.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+portable-pty.workspace = true

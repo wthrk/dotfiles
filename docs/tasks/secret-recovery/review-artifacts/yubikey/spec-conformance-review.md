@@ -88,7 +88,7 @@ use super::domain::PivObjectId;
 `adapters/test_stub.rs` は `#[cfg(feature = "secrets-test-stub")]` の feature gate で保護されているが、feature を有効にしてビルドすると production binary に `TestDevice`、`TestDeviceFactory` が組み込まれる。
 
 - `TestDeviceFactory::from_env()`、`TestDevice::from_config()` 等が `pub(crate)` で公開されている
-- `adapters.rs` で `#[cfg(feature = "secrets-test-stub")] mod test_stub;` として宣言され、`secrets.rs` の `run()` から feature 有効時に `adapters::DeviceBackend::from_test_flag(options.test_stub_yubikey)?` で呼び出される（`--test-stub-yubikey` フラグが CLI に露出している）
+- `adapters.rs` で `#[cfg(feature = "secrets-test-stub")] mod test_stub;` として宣言され、`secrets.rs` の `run()` から feature 有効時に `adapters::DeviceBackend::from_test_flag(options.test_stub_yubikey)?` で呼び出される（`--deleted test-stub flag` フラグが CLI に露出している）
 
 work-items V14 の定義「production crate の command path に test double を feature-gate で埋め込んでいる（test double は tests 層所有・production export 禁止規則違反）」に該当する。feature gate は test binary への限定ではなく production feature として機能している。
 
@@ -128,7 +128,7 @@ work-items の差戻し条件は「`adapters/` 配下のファイルで port tra
 
 以下の差戻し条件に該当する違反が残存している:
 
-1. **V14 未解消**（差戻し条件「production コードに test double が含まれている」に抵触）: `adapters/test_stub.rs` が `#[cfg(feature = "secrets-test-stub")]` feature gate で保護されているが、feature 有効時に production binary に `TestDevice`/`TestDeviceFactory` が組み込まれ、CLI に `--test-stub-yubikey` フラグが露出する。
+1. **V14 未解消**（差戻し条件「production コードに test double が含まれている」に抵触）: `adapters/test_stub.rs` が `#[cfg(feature = "secrets-test-stub")]` feature gate で保護されているが、feature 有効時に production binary に `TestDevice`/`TestDeviceFactory` が組み込まれ、CLI に `--deleted test-stub flag` フラグが露出する。
 
 2. **V15 未解消**（差戻し条件の文言を厳密解釈）: `application/fake_boundary.rs` および `application/storage_service_tests.rs` が production tree（`application/`）配下に物理的に存在する。`#[cfg(test)]` 保護により production binary への混入はないが、work-items V15 の「production tree 配下に置いている」文言に該当する。
 
@@ -160,7 +160,7 @@ work-items の差戻し条件は「`adapters/` 配下のファイルで port tra
 
 `adapters/` ディレクトリを確認した結果、`test_stub.rs` は存在しない（現行ファイル一覧: `piv_io.rs`, `piv_io/console_io.rs`, `piv_io/device.rs`, `piv_io/report.rs`, `piv_io/secret_io.rs`, `yubikey.rs`）。
 
-`adapters.rs` の宣言にも `mod test_stub;` は存在しない（commit `45ddda1` の diff で削除済みを確認）。feature gate `secrets-test-stub` は `Cargo.toml` から削除されており、CLI に `--test-stub-yubikey` フラグが露出する経路も消えている。
+`adapters.rs` の宣言にも `mod test_stub;` は存在しない（commit `45ddda1` の diff で削除済みを確認）。feature gate `secrets-test-stub` は `Cargo.toml` から削除されており、CLI に `--deleted test-stub flag` フラグが露出する経路も消えている。
 
 V14「production crate の command path に test double を feature-gate で埋め込んでいる」は解消済み。
 

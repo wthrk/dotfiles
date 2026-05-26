@@ -2,7 +2,6 @@
 members = [
   "rust/dotfiles-cli",
   "rust/dotfiles-cli-secrets-test-contract",
-  "rust/dotfiles-cli-secrets-test-stub",
   "rust/dotfiles-core",
   "rust/tests/checks",
   "rust/tests/integration",

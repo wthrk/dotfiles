@@ -547,6 +547,7 @@ dependencies = [
  "crossterm",
  "dotfiles-core",
  "nom",
+ "portable-pty",
  "rand 0.9.4",
  "rand_core 0.6.4",
  "region",
@@ -565,22 +566,6 @@ dependencies = [
 [[package]]
 name = "dotfiles-cli-secrets-test-contract"
 version = "0.0.0"
-
-[[package]]
-name = "dotfiles-cli-secrets-test-stub"
-version = "0.0.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "clap",
- "dotfiles-cli",
- "dotfiles-cli-secrets-test-contract",
- "portable-pty",
- "rand 0.9.4",
- "serde",
- "serde_json",
- "zeroize",
-]
 
 [[package]]
 name = "dotfiles-core"

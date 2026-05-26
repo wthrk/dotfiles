@@ -29,22 +29,10 @@ fn rust(shell: &Shell) -> Result<()> {
         "cargo clippy --workspace --all-targets -- -D warnings"
     )
     .run()?;
-    step("cargo clippy secrets CLI stub crate");
-    cmd!(
-        shell,
-        "cargo clippy -p dotfiles-cli-secrets-test-stub --test secrets_cli -- -D warnings"
-    )
-    .run()?;
     step("cargo test");
     cmd!(
         shell,
         "env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets"
-    )
-    .run()?;
-    step("cargo test secrets CLI stub crate");
-    cmd!(
-        shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli-secrets-test-stub --test secrets_cli"
     )
     .run()?;
     Ok(())

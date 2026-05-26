@@ -42,7 +42,7 @@
   - **[層違反: support → prompt・stdin・stdout policy は adapter 所有]** **V11** support 層に TTY 判定 / prompt / raw mode / stdout 書き込み責務が混入している。`support/console_io.rs` のような terminal I/O 集約も support では許可しない（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
   - **[層違反: adapters → port実装以外の公開禁止]** **V12** `adapters/piv_io.rs` が input modality（prompt/stdin/stdin-json）を port 契約へ逆流させる公開面を維持し、report DTO 変換まで一体化している（port 契約汚染・adapter 面混在違反）。
   - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` / `adapters/piv_io.rs` が device selection・interactive prompt・stdin JSON decode・report 出力変換を同一 seam で保持し、差し替え単位が不明確になっている（adapter 面分割規則違反）。
-  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V14** test double を production crate の command path に埋め込み、tests 層専用 crate（`dotfiles-cli-secrets-test-stub`）へ分離していない（test double は tests 層所有・production export 禁止規則違反）。
+  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V14** test double を production crate の command path に埋め込み、tests 層専用 crate（`deleted test-stub crate`）へ分離していない（test double は tests 層所有・production export 禁止規則違反）。
 - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V15** `application/` 配下の production module 内部 test module に fake boundary / fake device を production tree 配下で保持していた（同上）。
   - **[層違反: domain・port → I/O 型禁止]** **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
 - 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
@@ -107,7 +107,7 @@
 - **ステップ7 を再開する（V2, V3 再差戻し）**
   - `application.rs` から stdin 読み取り、stdout 書き込み方針、prompt、concrete device handle の長寿命保持と直接操作を除去する。
 - **ステップ8 を再開する（V14 再差戻し + テスト実行基盤整合）**
-  - production source tree から test double 責務を完全に除去し、`dotfiles-stub` を含む stub 実行経路を tests 層専用 crate（`dotfiles-cli-secrets-test-stub`）へ閉じる。
+  - production source tree から test double 責務を完全に除去し、`dotfiles-stub` を含む stub 実行経路を tests 層専用 crate（`deleted test-stub crate`）へ閉じる。
   - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/` と `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントを現行実装の責務境界と一致させる。
@@ -171,7 +171,7 @@
 | V11 | `src/secrets/support/` | `support/console_io.rs` を含む terminal I/O / prompt を adapters 層へ移設し support からは除去。 |
 | V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
 | V13 | `src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/report.rs` | device selection / input / report の責務境界を明示し、adapter seam を分離する。 |
-| V14, V15 | `src/secrets/adapters/test_stub.rs`（過去違反ファイル）、`src/secrets/application/*.rs`（`#[cfg(test)]` 節）、`dotfiles-cli-secrets-test-stub`、`dotfiles-cli-secrets-test-contract` | production command path から test double を除去し、tests 層専用 crate（stub 実装と contract）へ分離する。 |
+| V14, V15 | `src/secrets/adapters/test_stub.rs`（過去違反ファイル）、`src/secrets/application/*.rs`（`#[cfg(test)]` 節）、`deleted test-stub crate` | production command path から test double を除去し、tests 層専用 crate（stub 実装）へ分離する。 |
 | V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
 
 ## 固定実装単位トラッカー

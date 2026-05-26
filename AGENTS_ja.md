@@ -50,7 +50,7 @@
 
 ### 主要ディレクトリ / ファイル構成
 
-- `rust/` — `dotfiles` CLI の Cargo ワークスペース。メンバー: `dotfiles-cli`（CLI バイナリ）、`dotfiles-core`（共有コア）、`xtask`（内部タスクランナー）、テスト crate `dotfiles-cli-secrets-test-contract` / `dotfiles-cli-secrets-test-stub`、`rust/tests/` 配下の integration/check crate。層・公開範囲規則は `docs/architecture/` が正本。
+- `rust/` — `dotfiles` CLI の Cargo ワークスペース。メンバー: `dotfiles-cli`（CLI バイナリ）、`dotfiles-core`（共有コア）、`xtask`（内部タスクランナー）、`rust/tests/` 配下の integration/check crate。層・公開範囲規則は `docs/architecture/` が正本。
 - `nix/` — flake から参照される Nix 設定: `home.nix`（Home Manager）、`darwin.nix`（nix-darwin）、再利用モジュール `nix/modules/`、プロジェクトテンプレート `nix/templates/`。
 - `flake.nix` / `flake.lock` / `Cargo.toml` / `Cargo.lock` — リポジトリ直下の flake と Rust ワークスペースのマニフェスト。
 - `config/` — 利用者アプリ設定: `config/zsh/`（zsh）、`config/nvim/`（Neovim）。

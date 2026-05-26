@@ -119,7 +119,7 @@ mod tests {
 
 `#[cfg(test)]` 属性により production binary には含まれないが、作業定義文書の解消操作方向は「production feature path から除去し **tests/ 層へ移設**」であり、`#[cfg(test)]` でラップしたまま `src/` に残存させることは「tests/ 層への移設完了」とは見なせない。
 
-`adapters/test_stub.rs` は現在存在しない（V14 の元の違反ファイルの一部）。`adapters/backend.rs` の `DeviceBackend::from_test_flag` は常に `Real` を返しており、test stub への production 実行経路は除去されている。`dotfiles-cli-secrets-test-contract` crate は環境変数名定数のみを定義し、test double 実装は含まない。
+`adapters/test_stub.rs` は現在存在しない（V14 の元の違反ファイルの一部）。`adapters/backend.rs` の `DeviceBackend::from_test_flag` は常に `Real` を返しており、test stub への production 実行経路は除去されている。
 
 また、`tests/secrets_cli.rs` が `env!("CARGO_BIN_EXE_dotfiles-stub")` を参照しているが、`dotfiles-cli/Cargo.toml` に `dotfiles-stub` という `[[bin]]` エントリが存在しない。テスト用 stub binary の配置先が未確立であり、test infrastructure が不完全な状態にある。
 
