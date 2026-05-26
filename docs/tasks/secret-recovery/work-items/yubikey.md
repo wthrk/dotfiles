@@ -42,8 +42,8 @@
   - **[層違反: support → prompt・stdin・stdout policy は adapter 所有]** **V11** support 層に TTY 判定 / prompt / raw mode / stdout 書き込み責務が混入している。`support/console_io.rs` のような terminal I/O 集約も support では許可しない（prompt/stdin/stdout policy は `adapter` 所有規則違反）。
   - **[層違反: adapters → port実装以外の公開禁止]** **V12** `adapters/piv_io.rs` が input modality（prompt/stdin/stdin-json）を port 契約へ逆流させる公開面を維持し、report DTO 変換まで一体化している（port 契約汚染・adapter 面混在違反）。
   - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` / `adapters/piv_io.rs` が device selection・interactive prompt・stdin JSON decode・report 出力変換を同一 seam で保持し、差し替え単位が不明確になっている（adapter 面分割規則違反）。
-  - **[層違反: tests → test double は tests 層所有・production export 禁止]** **V14** test double を production crate の command path に埋め込み、tests 層専用 crate（`deleted test-stub crate`）へ分離していない（test double は tests 層所有・production export 禁止規則違反）。
-- **[層違反: tests → test double は tests 層所有・production export 禁止]** **V15** `application/` 配下の production module 内部 test module に fake boundary / fake device を production tree 配下で保持していた（同上）。
+  - **[経路違反: production command path の境界維持]** **V14** `adapters/piv_io/device.rs` の `SelectedDeviceAdapter` 配線が `secrets-test-stub` feature 分岐を持ち、same-route 原則と衝突する。`--test-stub-yubikey`、`yubikey_runtime`、別 binary / 別 CLI / command-scenario branching / port-boundary swap を導入せず、現行 command path を単一路で維持すること。
+  - **[配置・責務評価違反: PIV/YubiKey 固有 concrete 実装の整合]** **V15** `adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有の concrete 実装として扱い、一般的な test double 配置論だけで不適合判定しない。判定は「配置（adapters 配下であること）単独」ではなく「配置 + 責務」が adapter 層責務（port 契約と外部技術の翻訳）に一致するかで行う。
   - **[層違反: domain・port → I/O 型禁止]** **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
 - 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
   - `application` が `adapter` の具体型を import しない（V1, V4 の解消）。
@@ -54,7 +54,8 @@
   - `domain` に port contract / I/O 型が存在せず、use case outcome 型は `domain` 側にのみ定義され presentation 仕様を含まない（V8, V9, V16 の解消）。
   - `support` に terminal I/O / prompt が存在しない。`support/console_io.rs` のような process I/O 集約は adapter へ移すか除去する（V11 の解消）。
   - `application/run_*.rs`・`adapters/yubikey.rs`・`domain/wire.rs` 間で、wire/crypto/device/use-case の責務境界が単一層原則に従って分離されている（V10 の解消）。
-  - production コードに test double が含まれない（V14, V15 の解消）。
+  - `SelectedDeviceAdapter` は same-route 原則を満たす単一 command path を維持し、`--test-stub-yubikey` / `yubikey_runtime` / 別 binary / 別 CLI / command-scenario branching / port-boundary swap を導入しない（V14 の解消）。
+  - `adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として、配置と責務を合わせて評価する。`adapters` 配下にあることだけを違反根拠にしない（V15 の解消）。
   - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること（V12, V13 の解消）。
 - レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
   - `application/` と `adapters/` の private helper について、helper 単位で責務が層責務に一致することを説明できること。説明できない helper が1件でもあれば設計誤りとして不合格。
@@ -73,7 +74,8 @@
 - `support` に terminal I/O / prompt が残存している。`support/console_io.rs` のような terminal bridge を support に残したままにしている（V11 未解消）
 - `application.rs` が sibling `run_*.rs` の module 配線を超える責務を持っている、`application/use_case/` ディレクトリを導入している、または sibling `run_*.rs` ごとの単一 `run_*` 関数原則を破っている（V10 未解消）
 - use case-to-use case call または use case 層での logic commonization を導入している
-- production コードに test double が含まれている（V14, V15 未解消）
+- same-route を崩す command path 分岐（`secrets-test-stub` feature 分岐、`--test-stub-yubikey`、`yubikey_runtime`、別 binary / 別 CLI / command-scenario branching / port-boundary swap）が導入されている（V14 未解消）
+- `adapters/piv_io/device_test_stub.rs` を「adapters 配下にある」という形式理由だけで違反扱いし、配置と責務を合わせた判定をしていない（V15 未解消）
 - `adapters/` 配下に port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）が存在している（V12, V13 未解消）
 - `application/` または `adapters/` の private helper について責務説明ができず、helper 単位の責務判定を省略している
 - helper 増殖を port 契約粒度の問題として評価せず、file-level 分割のみで解消扱いにしている
@@ -83,6 +85,12 @@
 - 粗粒度進捗注記: `#12` の design PR は `#21` として成立済みであり、現段階の主作業は implementation / code review / validation 面である。
 
 ## 現行レビュー差し戻しに基づく追加是正項目（2026-05-26）
+
+### 2026-05-26 追加実装サイクル結果
+
+- 解消済み: 未解決 1,2,3,4,5,6,7,9
+- 未解消継続: 未解決 8（stub 側 plaintext stderr 出力）
+- 証跡同期: 未解決 10 は `review.md` / `confirmation.md` / 本ファイルへ同内容追記で同期済み
 
 2026-05-26 の規定レビュー担当一式によって、固定実装単位トラッカーの `完了` 扱いを維持できない残課題が再確認された。次回実装サイクルでは、以下を差戻し対象として明示的に解消すること。
 
@@ -99,15 +107,18 @@
   - 各 use case から blob / wire / 暗号 / manifest / 永続 I/O / protected-secret ownership を除去し、use case-to-use case call と logic commonization を持ち込まない。
 - **ステップ5 を再開する（V12, V13 再差戻し + adapter seam 不整合解消）**
   - `adapters.rs` の公開面と `adapters/piv_io/` 配下の実装責務を一致させ、adapter 境界契約を単一の seam に統一する。
-  - `adapters/piv_io/` から test double / test 用 backend 分岐を除去し、production adapter が実外部技術と port 契約の翻訳だけを担う状態へ戻す。
+  - `adapters/piv_io/` の分岐は same-route 原則に合わせ、command-scenario branching や port-boundary swap を持ち込まない形で整理する。
   - `adapters.rs` の公開面が port 実装以外に依存しないよう再設計し、adapter surface の責務を見直す。
 - **ステップ6 を再開する（V5 再差戻し）**
   - `application/run_*.rs` の helper 群から manifest JSON parse/serialize、blob decode、永続 I/O、summary 構築、AEAD 呼び出し順序、`SecretSession` / `ProtectedSecret` 所有の混在を除去する。
   - use case 独自型の導入で責務を逃がさず、use case が扱う型を domain 層定義だけに戻す。
 - **ステップ7 を再開する（V2, V3 再差戻し）**
   - `application.rs` から stdin 読み取り、stdout 書き込み方針、prompt、concrete device handle の長寿命保持と直接操作を除去する。
-- **ステップ8 を再開する（V14 再差戻し + テスト実行基盤整合）**
-  - production source tree から test double 責務を完全に除去し、`dotfiles-stub` を含む stub 実行経路を tests 層専用 crate（`deleted test-stub crate`）へ閉じる。
+- **ステップ8 を再開する（V14,V15 再差戻し + 経路/責務整合）**
+  - `adapters/piv_io/device.rs` の `SelectedDeviceAdapter` は same-route を維持し、`secrets-test-stub` feature 分岐に依存した command path 変形を解消する。
+  - `adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として、配置と責務の両面で adapter 層適合を再判定する。一般的な test double 配置論は適用しない。
+  - secret 本文は `ProtectedSecret` 型以外で扱わない前提を維持する。
+  - `rust/dotfiles-cli-secrets-test-stub/` を復活させない。
   - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/` と `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントを現行実装の責務境界と一致させる。
@@ -133,7 +144,7 @@
    - adapter 面を個別 adapter に分割
 6. **V4, V5 を解消する**（application 配下の adapter 実装を移設）
 7. **V1, V2, V3 を解消する**（application の concrete I/O 依存を除去）
-8. **V14, V15 を解消する**（test double を production tree から除去）
+8. **V14, V15 を解消する**（same-route 維持 + PIV/YubiKey 固有 concrete 実装の配置/責務整合）
 
 差戻し時は本ガイドの該当ステップへ戻る。
 
@@ -171,7 +182,7 @@
 | V11 | `src/secrets/support/` | `support/console_io.rs` を含む terminal I/O / prompt を adapters 層へ移設し support からは除去。 |
 | V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
 | V13 | `src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/report.rs` | device selection / input / report の責務境界を明示し、adapter seam を分離する。 |
-| V14, V15 | `src/secrets/adapters/test_stub.rs`（過去違反ファイル）、`src/secrets/application/*.rs`（`#[cfg(test)]` 節）、`deleted test-stub crate` | production command path から test double を除去し、tests 層専用 crate（stub 実装）へ分離する。 |
+| V14, V15 | `src/secrets/adapters/piv_io/device.rs`、`src/secrets/adapters/piv_io/device_test_stub.rs`、`rust/dotfiles-cli/tests/secrets_cli.rs` | same-route を崩す分岐を解消し、`device_test_stub.rs` を PIV/YubiKey 固有 concrete 実装として配置+責務で判定する（`adapters` 配下であること単独を違反根拠にしない）。 |
 | V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
 
 ## 固定実装単位トラッカー
@@ -180,12 +191,12 @@
 | --- | --- | --- | --- |
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（use case outcome 型の domain 統一） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
-| 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ4: V10（責務再分離） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ8: V14,V15（test double除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
