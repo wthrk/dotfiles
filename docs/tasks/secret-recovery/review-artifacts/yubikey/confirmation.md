@@ -6,17 +6,17 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-5217c7f`
-- 確認基準: `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
-- current-cycle reviewer 判定追跡（2026-05-27時点）:
-  - `structural`: artifact `未生成（現行サイクル用 artifact 未確定。履歴専用 artifact は current-cycle 判定対象外）` / 状態 `未実施（再レビュー待ち）`
-  - `operational`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-operational-2026-05-25.md` / 状態 `未実施（現行サイクル Fail 是正中）`
-  - `security`: artifact `未生成（現行サイクル用 artifact 未確定。review-security-2026-05-25.md は履歴専用）` / 状態 `未実施（再レビュー待ち）`
-  - `specification-conformance`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-spec-2026-05-25.md` / 状態 `未実施`
-  - `test`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-test-2026-05-25.md` / 状態 `未実施`
-  - `documentation`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-doc-2026-05-25.md` / 状態 `未実施`
-  - `architectural-consistency`: artifact `未生成（current-cycle artifact path 未確定）` / 状態 `未実施`
-  - `reference-integrity`（文書修正別枠）: artifact `未生成（current-cycle artifact path 未確定）` / 状態 `未実施`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-095ab3b`
+- 確認基準: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
+- current-cycle reviewer 判定追跡（2026-05-28時点）:
+  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -52,6 +52,16 @@
   - `e619fba test(secrets): application internal testsを復旧`
   - `850eb54 test(secrets): app usecaseテストをmockitoで復旧`
   - `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
+  - `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
+  - `91e9fed fix(secrets): operational fail証跡を補正`
+  - `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
+
+## 2026-05-28 current-cycle 証跡是正コミット
+
+- 是正コミット: `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
+- 是正コミット: `91e9fed fix(secrets): operational fail証跡を補正`
+- 是正コミット: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
+- 紐付け: latest HEAD `095ab3b` を current-cycle 記録の保存コミット終端として扱う。
 - `6fd4014..5217c7f` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`

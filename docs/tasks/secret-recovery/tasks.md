@@ -11,8 +11,8 @@
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)（現行サイクル状態: 再レビュー待ち）
-- 現行サイクル確認基準: `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
-- 現行サイクル保存コミット終端: `5217c7f`
+- 現行サイクル確認基準: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
+- 現行サイクル保存コミット終端: `095ab3b`
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
