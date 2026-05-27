@@ -33,11 +33,12 @@ pub(crate) fn run_get_with<
         device.verify_pin(pin)?;
     }
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+    let storage = command.storage_spec(serial);
     let encoded = device
-        .read_object(command.name.object_id())?
-        .ok_or_else(|| anyhow::anyhow!("{} is not stored on this YubiKey", command.name))?;
+        .read_object(storage.object_id)?
+        .ok_or_else(|| storage.missing_error())?;
     let secret = device
-        .open_from_storage(command.name.storage_spec(serial), &encoded)
-        .map_err(|error| anyhow::anyhow!("failed to decode {}: {error}", command.name))?;
+        .open_from_storage(storage.clone(), &encoded)
+        .map_err(|error| storage.decode_error(error))?;
     boundary.write_secret(&secret)
 }

@@ -165,6 +165,30 @@ impl SecretName {
     }
 }
 
+impl SecretStorageSpec {
+    /// 指定 serial における全 secret storage spec を安定順で返す。
+    ///
+    /// 保存対象集合と各 object/spec の対応は storage domain rule であり、use case は
+    /// 個別の `SecretName` から対応関係を再構築せず、この集合を順序制御へ適用する。
+    pub fn all_for_serial(serial: u32) -> [Self; 3] {
+        [
+            SecretName::BwEmail.storage_spec(serial),
+            SecretName::BwPassword.storage_spec(serial),
+            SecretName::BwsAccessToken.storage_spec(serial),
+        ]
+    }
+
+    /// この spec に対応する保存済み secret が欠落した domain error を返す。
+    pub fn missing_error(&self) -> anyhow::Error {
+        anyhow::anyhow!("{} is not stored on this YubiKey", self.name)
+    }
+
+    /// この spec に対応する encrypted blob の復号失敗を domain error へ変換する。
+    pub fn decode_error(&self, error: anyhow::Error) -> anyhow::Error {
+        anyhow::anyhow!("failed to decode {}: {error}", self.name)
+    }
+}
+
 impl fmt::Display for SecretName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {

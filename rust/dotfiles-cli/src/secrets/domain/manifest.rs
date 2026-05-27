@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use super::{
     material::SecretMaterial,
-    piv::{PivObjectId, SecretName},
+    piv::{PivObjectId, SecretName, SecretStorageSpec},
     wire::ManifestWire,
 };
 
@@ -141,12 +141,21 @@ impl BootstrapSecretDocument {
         })
     }
 
-    /// bootstrap document の 3 secrets を storage 固定順の `(SecretName, value)` で返す。
-    pub fn entries(&self) -> [(SecretName, &SecretMaterial); 3] {
+    /// bootstrap document の 3 secrets を storage 固定順の `(SecretStorageSpec, value)` で返す。
+    ///
+    /// document field と YubiKey storage object の対応は domain rule なので、use case は
+    /// field 名から object id / AAD 規則を再構築せず、この対応を保存手順へ適用する。
+    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &SecretMaterial); 3] {
         [
-            (SecretName::BwEmail, &self.bw_email),
-            (SecretName::BwPassword, &self.bw_password),
-            (SecretName::BwsAccessToken, &self.bws_access_token),
+            (SecretName::BwEmail.storage_spec(serial), &self.bw_email),
+            (
+                SecretName::BwPassword.storage_spec(serial),
+                &self.bw_password,
+            ),
+            (
+                SecretName::BwsAccessToken.storage_spec(serial),
+                &self.bws_access_token,
+            ),
         ]
     }
 }

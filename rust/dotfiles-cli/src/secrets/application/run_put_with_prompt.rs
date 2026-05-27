@@ -22,10 +22,11 @@ pub(crate) fn run_put_with_prompt<
     let mut device = boundary.open_device_by_serial(serial)?;
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
     device.check_management_auth_preconditions()?;
+    let storage = command.storage_spec(serial);
     command.name.ensure_write_allowed(
-        device.read_object(command.name.object_id())?.is_some(),
+        device.read_object(storage.object_id)?.is_some(),
         command.force,
     )?;
-    let mut encoded = device.seal_for_storage(command.name.storage_spec(serial), &secret)?;
-    device.write_object(command.name.object_id(), &mut encoded)
+    let mut encoded = device.seal_for_storage(storage.clone(), &secret)?;
+    device.write_object(storage.object_id, &mut encoded)
 }

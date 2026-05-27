@@ -4,7 +4,7 @@ use crate::Result;
 use crate::secrets::{
     domain::{
         manifest::SecretManifest,
-        piv::{PivObjectId, SecretName},
+        piv::{PivObjectId, SecretStorageSpec},
         values::{VerifySummary, VerifyYubikeyCommand},
     },
     ports::{self, SecretDevice},
@@ -38,13 +38,13 @@ pub(crate) fn run_verify_yubikey_with<
         device.verify_pin(pin)?;
     }
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
-    for name in SecretName::iter() {
+    for storage in SecretStorageSpec::all_for_serial(serial) {
         let encoded = device
-            .read_object(name.object_id())?
-            .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
+            .read_object(storage.object_id)?
+            .ok_or_else(|| storage.missing_error())?;
         let _secret = device
-            .open_from_storage(name.storage_spec(serial), &encoded)
-            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
+            .open_from_storage(storage.clone(), &encoded)
+            .map_err(|error| storage.decode_error(error))?;
     }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(

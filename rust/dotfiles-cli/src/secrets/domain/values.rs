@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 
+use super::piv::{SecretName, SecretStorageSpec};
+
 /// verify-yubikey で要求できる外部検証種別。
 ///
 /// CLI 入力の閉じた集合を表し、domain check 名への写像元として使う。
@@ -24,9 +26,16 @@ pub struct SetupCommand {
 /// 対象 secret、device serial、既存値上書き可否という domain 意味だけを保持する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PutCommand {
-    pub name: super::piv::SecretName,
+    pub name: SecretName,
     pub serial: Option<u32>,
     pub force: bool,
+}
+
+impl PutCommand {
+    /// 指定 serial に対する put 対象の storage spec を返す。
+    pub fn storage_spec(&self, serial: u32) -> SecretStorageSpec {
+        self.name.storage_spec(serial)
+    }
 }
 
 /// get use case の入力 command。
@@ -34,8 +43,15 @@ pub struct PutCommand {
 /// 取得対象 secret と device serial だけを保持し、出力形式は含めない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GetCommand {
-    pub name: super::piv::SecretName,
+    pub name: SecretName,
     pub serial: Option<u32>,
+}
+
+impl GetCommand {
+    /// 指定 serial に対する get 対象の storage spec を返す。
+    pub fn storage_spec(&self, serial: u32) -> SecretStorageSpec {
+        self.name.storage_spec(serial)
+    }
 }
 
 /// enroll-primary use case の入力 command。
@@ -89,6 +105,18 @@ impl EnrollSpareCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RotateBwsTokenCommand {
     pub serial: Option<u32>,
+}
+
+impl RotateBwsTokenCommand {
+    /// rotate 対象 secret 名を返す。
+    pub fn target_secret(self) -> SecretName {
+        SecretName::BwsAccessToken
+    }
+
+    /// 指定 serial に対する rotate 対象の storage spec を返す。
+    pub fn storage_spec(self, serial: u32) -> SecretStorageSpec {
+        self.target_secret().storage_spec(serial)
+    }
 }
 
 /// verify-yubikey use case の入力 command。

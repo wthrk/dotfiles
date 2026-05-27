@@ -4,9 +4,7 @@ use crate::secrets::{
         manifest::BootstrapSecretDocument,
         manifest::SecretManifest,
         material::SecretMaterial,
-        piv::PivObjectId,
-        piv::SecretName,
-        piv::StorageObjectIds,
+        piv::{PivObjectId, SecretStorageSpec, StorageObjectIds},
         values::{EnrollSpareCommand, EnrollSummary},
     },
     ports::{self, SecretDevice},
@@ -66,25 +64,31 @@ pub(crate) fn run_enroll_spare_with_prompt<
             .read_object(PivObjectId::MANIFEST)?
             .as_deref(),
     )?;
-    let read_secret = |device: &mut B::Device, name: SecretName| -> Result<SecretMaterial> {
-        let encoded = device
-            .read_object(name.object_id())?
-            .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-        device
-            .open_from_storage(name.storage_spec(primary_serial), &encoded)
-            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))
-    };
-    let bw_email = read_secret(&mut primary_device, SecretName::BwEmail)?;
-    let bw_password = read_secret(&mut primary_device, SecretName::BwPassword)?;
-    let bws_access_token = read_secret(&mut primary_device, SecretName::BwsAccessToken)?;
+    let read_secret =
+        |device: &mut B::Device, storage: SecretStorageSpec| -> Result<SecretMaterial> {
+            let encoded = device
+                .read_object(storage.object_id)?
+                .ok_or_else(|| storage.missing_error())?;
+            device
+                .open_from_storage(storage.clone(), &encoded)
+                .map_err(|error| storage.decode_error(error))
+        };
+    let [
+        bw_email_storage,
+        bw_password_storage,
+        bws_access_token_storage,
+    ] = SecretStorageSpec::all_for_serial(primary_serial);
+    let bw_email = read_secret(&mut primary_device, bw_email_storage)?;
+    let bw_password = read_secret(&mut primary_device, bw_password_storage)?;
+    let bws_access_token = read_secret(&mut primary_device, bws_access_token_storage)?;
     let document =
         BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
-    for (name, value) in document.entries() {
+    for (storage, value) in document.storage_entries(spare_serial) {
         let mut device = boundary.open_device_by_serial(spare_serial)?;
         SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
         device.check_management_auth_preconditions()?;
-        let mut encoded = device.seal_for_storage(name.storage_spec(spare_serial), value)?;
-        device.write_object(name.object_id(), &mut encoded)?;
+        let mut encoded = device.seal_for_storage(storage.clone(), value)?;
+        device.write_object(storage.object_id, &mut encoded)?;
     }
     let spare_pin = if boundary.device_requires_pin(spare_serial)? {
         Some(boundary.read_pin()?)
@@ -101,16 +105,17 @@ pub(crate) fn run_enroll_spare_with_prompt<
     SecretManifest::decode_initialized(
         verify_device.read_object(PivObjectId::MANIFEST)?.as_deref(),
     )?;
-    let read_spare_secret = |device: &mut B::Device, name: SecretName| -> Result<SecretMaterial> {
-        let encoded = device
-            .read_object(name.object_id())?
-            .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-        device
-            .open_from_storage(name.storage_spec(spare_serial), &encoded)
-            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))
-    };
-    for name in SecretName::iter() {
-        let _secret = read_spare_secret(&mut verify_device, name)?;
+    let read_spare_secret =
+        |device: &mut B::Device, storage: SecretStorageSpec| -> Result<SecretMaterial> {
+            let encoded = device
+                .read_object(storage.object_id)?
+                .ok_or_else(|| storage.missing_error())?;
+            device
+                .open_from_storage(storage.clone(), &encoded)
+                .map_err(|error| storage.decode_error(error))
+        };
+    for storage in SecretStorageSpec::all_for_serial(spare_serial) {
+        let _secret = read_spare_secret(&mut verify_device, storage)?;
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }
