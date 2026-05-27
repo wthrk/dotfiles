@@ -54,12 +54,12 @@
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
 - structural 差し戻し修正:
-  - `adapters.rs` の再エクスポート集約を廃止し、runtime adapter は `adapters::real_secrets_boundary()` で生成する。
+  - `adapters.rs` の再エクスポート集約と公開 factory を廃止し、runtime adapter は port trait 実装型 `SecretsAdapters` として entrypoint へ渡す。
   - `adapters/piv_io/device.rs` の route label helper を公開 helper から private trait 実装へ閉じる。
-  - `adapters/piv_io/report.rs` の route 付き report helper 公開を廃止し、route は `JsonReportAdapter` の内部状態として `ReportPort` 実装内で使う。
+  - `adapters/piv_io/report.rs` の route 付き report adapter 生成を廃止し、route は `RealSecretsBoundary` の `ReportPort` 実装内で使う。
 - 追加 structural 差し戻し修正:
-  - `adapters.rs` の `piv_io` module 公開を廃止し、entrypoint は adapters 内の `real_secrets_boundary()` だけを利用する。
-  - `JsonReportAdapter` の `route` field 公開を廃止し、同 module 内 constructor で初期化する。
+  - `adapters.rs` の `piv_io` module 公開を廃止し、entrypoint は `SecretsAdapters::default()` だけを利用する。
+  - `JsonReportAdapter` とその constructor を廃止し、report 翻訳は `ReportPort for RealSecretsBoundary` の trait 実装境界へ閉じる。
 - operational 差し戻し修正:
   - current-cycle の基準を `ad92152` として明示し、変更ファイル集合を記録した。
   - `tasks.md` と `work-items/yubikey.md` を `再レビュー待ち` / `修正済み` 基準で同期した。

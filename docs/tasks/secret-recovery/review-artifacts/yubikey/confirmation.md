@@ -90,6 +90,17 @@
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
 - 判定: `再レビュー待ち`
 
+## 2026-05-27 adapter 構造説明同期
+
+- 対象コミット: `959269a docs(secrets): adapter構造修正の検証証跡を追記`
+- 確認内容: current-cycle の structural 修正説明を実コードの現構成へ同期した。
+- 現構成:
+  - entrypoint は `SecretsAdapters::default()` を利用する。
+  - `adapters::real_secrets_boundary()` は存在しない。
+  - `JsonReportAdapter` と公開 constructor は存在しない。
+  - report 翻訳は `ReportPort for RealSecretsBoundary` の trait 実装境界に閉じている。
+- 判定: `再レビュー待ち`
+
 ## 2026-05-26 追加実装サイクル追記
 
 - 未解決 1,2,3,4,5,6,7,9 のコード是正を反映した。
