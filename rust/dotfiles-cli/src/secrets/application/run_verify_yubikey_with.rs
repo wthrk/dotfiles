@@ -45,3 +45,48 @@ pub(crate) fn run_verify_yubikey_with<
 
     boundary.write_verify_report(&VerifySummary::local_storage_verified(serial))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary,
+        domain::values::{ExternalCheck, VerifyYubikeyCommand},
+    };
+
+    use super::run_verify_yubikey_with;
+
+    #[test]
+    fn verify_requests_pin_when_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_report().expect_pin();
+        boundary.primary_requires_pin = true;
+        run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: Vec::new(),
+                all: false,
+            },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn verify_stops_when_external_checks_requested() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_report();
+        let err = run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: vec![ExternalCheck::Bws],
+                all: false,
+            },
+            &mut boundary,
+        )
+        .expect_err("external checks should fail in current phase");
+
+        assert!(
+            err.to_string()
+                .contains("external checks are not implemented yet")
+        );
+        Ok(())
+    }
+}

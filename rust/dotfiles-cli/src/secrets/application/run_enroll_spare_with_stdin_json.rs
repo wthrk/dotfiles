@@ -57,3 +57,69 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary, domain::values::EnrollSpareCommand,
+    };
+
+    use super::run_enroll_spare_with_stdin_json;
+
+    #[test]
+    fn enroll_spare_stdin_json_passes_primary_serial_to_spare_resolution() {
+        let mut boundary = AppMockBoundary::new();
+        let result = run_enroll_spare_with_stdin_json(
+            EnrollSpareCommand {
+                primary_serial: Some(2002),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "same primary/spare serial should stop");
+    }
+
+    #[test]
+    fn enroll_spare_stdin_json_reads_pin_for_verify_when_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_enrollment_success()
+            .expect_pin();
+        boundary.spare_requires_pin = true;
+        run_enroll_spare_with_stdin_json(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn enroll_spare_stdin_json_skips_pin_when_not_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_enrollment_success();
+        run_enroll_spare_with_stdin_json(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn enroll_spare_stdin_json_stops_when_verify_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.mock.expect_event_times("store", 3);
+        boundary.loaded_len = 0;
+        let result = run_enroll_spare_with_stdin_json(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "verify error should stop use case");
+    }
+}

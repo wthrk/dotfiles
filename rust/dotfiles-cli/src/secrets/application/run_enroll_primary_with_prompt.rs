@@ -59,3 +59,78 @@ pub(crate) fn run_enroll_primary_with_prompt<
     }
     boundary.write_enroll_report(&EnrollSummary::primary_completed(serial))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary,
+        domain::{piv::SecretName, values::EnrollPrimaryCommand},
+    };
+
+    use super::run_enroll_primary_with_prompt;
+
+    #[test]
+    fn enroll_primary_prompt_path_stores_all_required_secrets() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_enrollment_success();
+        run_enroll_primary_with_prompt(EnrollPrimaryCommand { serial: Some(2001) }, &mut boundary)?;
+        assert_eq!(
+            boundary.stores,
+            vec![
+                SecretName::BwEmail,
+                SecretName::BwPassword,
+                SecretName::BwsAccessToken
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enroll_primary_reads_pin_when_device_requires_it() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_enrollment_success()
+            .expect_pin();
+        boundary.primary_requires_pin = true;
+        run_enroll_primary_with_prompt(EnrollPrimaryCommand { serial: Some(2001) }, &mut boundary)
+    }
+
+    #[test]
+    fn enroll_primary_stops_when_setup_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.fail_setup = true;
+        let result = run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "setup error should stop use case");
+        assert!(boundary.stores.is_empty());
+    }
+
+    #[test]
+    fn enroll_primary_stops_when_secret_store_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.mock.expect_event("store");
+        boundary.fail_on_store = Some(SecretName::BwPassword);
+        let result = run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "store failure should stop use case");
+        assert_eq!(boundary.stores, vec![SecretName::BwEmail]);
+    }
+
+    #[test]
+    fn enroll_primary_stops_when_verify_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.mock.expect_event_times("store", 3);
+        boundary.loaded_len = 0;
+        let result = run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "verify error should stop use case");
+    }
+}

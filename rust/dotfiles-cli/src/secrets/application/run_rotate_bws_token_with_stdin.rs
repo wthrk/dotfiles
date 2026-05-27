@@ -55,3 +55,67 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
             .and(Err(err)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary,
+        domain::values::{CheckName, CheckStatus, RotateBwsTokenCommand},
+    };
+
+    use super::run_rotate_bws_token_with_stdin;
+
+    #[test]
+    fn rotate_stdin_stops_without_serial() {
+        let mut boundary = AppMockBoundary::new();
+        let result =
+            run_rotate_bws_token_with_stdin(RotateBwsTokenCommand { serial: None }, &mut boundary);
+        assert!(result.is_err(), "serial is required for stdin rotation");
+    }
+
+    #[test]
+    fn rotate_stdin_reports_verify_success_and_failure() -> Result<()> {
+        let mut success = AppMockBoundary::new().expect_rotation_success();
+        run_rotate_bws_token_with_stdin(
+            RotateBwsTokenCommand { serial: Some(2001) },
+            &mut success,
+        )?;
+        assert_eq!(
+            success.reports.borrow()[0]
+                .checks
+                .get(&CheckName::LocalStorage),
+            Some(&CheckStatus::Ok)
+        );
+
+        let mut failed = AppMockBoundary::new().expect_rotation_success();
+        failed.loaded_len = 0;
+        let result = run_rotate_bws_token_with_stdin(
+            RotateBwsTokenCommand { serial: Some(2001) },
+            &mut failed,
+        );
+        assert!(result.is_err(), "verify failure should fail rotation");
+        assert_eq!(
+            failed.reports.borrow()[0]
+                .checks
+                .get(&CheckName::LocalStorage),
+            Some(&CheckStatus::Failed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_stdin_reads_pin_only_when_required() -> Result<()> {
+        let mut requires_pin = AppMockBoundary::new()
+            .expect_rotation_success()
+            .expect_pin();
+        requires_pin.primary_requires_pin = true;
+        run_rotate_bws_token_with_stdin(
+            RotateBwsTokenCommand { serial: Some(2001) },
+            &mut requires_pin,
+        )?;
+
+        let mut no_pin = AppMockBoundary::new().expect_rotation_success();
+        run_rotate_bws_token_with_stdin(RotateBwsTokenCommand { serial: Some(2001) }, &mut no_pin)
+    }
+}

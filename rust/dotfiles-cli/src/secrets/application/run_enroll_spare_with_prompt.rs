@@ -93,3 +93,72 @@ pub(crate) fn run_enroll_spare_with_prompt<
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary, domain::values::EnrollSpareCommand,
+    };
+
+    use super::run_enroll_spare_with_prompt;
+
+    #[test]
+    fn enroll_spare_prompt_resolves_primary_then_spare() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_enrollment_success();
+        run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        )?;
+        assert_eq!(boundary.resolution_order, vec!["primary", "spare"]);
+        Ok(())
+    }
+
+    #[test]
+    fn enroll_spare_prompt_reads_pin_for_spare_verify_when_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_enrollment_success()
+            .expect_pin();
+        boundary.spare_requires_pin = true;
+        run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn enroll_spare_prompt_reads_primary_pin_when_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_enrollment_success()
+            .expect_pin();
+        boundary.primary_requires_pin = true;
+        run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn enroll_spare_prompt_stops_when_verify_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.loaded_len = 0;
+        let result = run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "verify error should stop use case");
+    }
+}

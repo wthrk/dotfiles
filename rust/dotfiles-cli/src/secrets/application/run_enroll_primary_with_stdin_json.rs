@@ -56,3 +56,47 @@ pub(crate) fn run_enroll_primary_with_stdin_json<
     }
     boundary.write_enroll_report(&EnrollSummary::primary_completed(serial))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary, domain::values::EnrollPrimaryCommand,
+    };
+
+    use super::run_enroll_primary_with_stdin_json;
+
+    #[test]
+    fn enroll_primary_stdin_json_reads_pin_only_when_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_enrollment_success()
+            .expect_pin();
+        boundary.primary_requires_pin = true;
+        run_enroll_primary_with_stdin_json(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn enroll_primary_stdin_json_skips_pin_when_not_required() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_enrollment_success();
+        run_enroll_primary_with_stdin_json(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut boundary,
+        )
+    }
+
+    #[test]
+    fn enroll_primary_stdin_json_stops_when_verify_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.mock.expect_event_times("store", 3);
+        boundary.loaded_len = 0;
+        let result = run_enroll_primary_with_stdin_json(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "verify error should stop use case");
+    }
+}
