@@ -13,8 +13,6 @@ use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
-#[cfg(feature = "secrets-test-stub")]
-pub(crate) mod masked_key_wrap;
 pub(crate) mod sealed_blob;
 pub(crate) mod secret_consumer;
 pub(crate) mod secret_random;

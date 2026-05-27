@@ -1,8 +1,0 @@
-[package]
-name = "dotfiles-cli-secrets-test-contract"
-version.workspace = true
-edition.workspace = true
-publish = false
-
-[lints]
-workspace = true

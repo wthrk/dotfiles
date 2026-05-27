@@ -19,7 +19,6 @@
   - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`

@@ -18,8 +18,8 @@ use crate::{
         },
     },
     secrets::ports::{
-        BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort,
-        PinInputPort, SecretInputPort, SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort,
+        BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
+        SecretInputPort, SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort,
     },
 };
 
@@ -32,16 +32,9 @@ trait SelectedDeviceDiscoveryIo {
 }
 
 /// device serial 解決と PIN 要否判定を port 契約へ翻訳する adapter。
+#[derive(Default)]
 pub(crate) struct DeviceSelectionAdapter {
     device: SelectedDeviceAdapter,
-}
-
-impl Default for DeviceSelectionAdapter {
-    fn default() -> Self {
-        Self {
-            device: SelectedDeviceAdapter::default(),
-        }
-    }
 }
 
 impl DeviceSelectionAdapter {
@@ -116,16 +109,9 @@ impl SecretOutputPort for ProcessIoAdapter {
 }
 
 /// YubiKey object storage を secret storage port 契約へ翻訳する adapter。
+#[derive(Default)]
 pub(crate) struct StorageAdapter {
     device: SelectedDeviceAdapter,
-}
-
-impl Default for StorageAdapter {
-    fn default() -> Self {
-        Self {
-            device: SelectedDeviceAdapter::default(),
-        }
-    }
 }
 
 impl StorageAdapter {
@@ -240,7 +226,6 @@ impl Default for JsonReportAdapter {
 
 // Device selection is kept inside this port-implementation file so adapters/ does not expose a helper module.
 use crate::secrets::adapters::yubikey::{RealDeviceAdapter, YubikeySecretDevice};
-
 
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
 

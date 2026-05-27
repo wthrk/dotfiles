@@ -34,18 +34,6 @@ pub(crate) struct SealWithKeyWrapRequest<'a> {
     pub label: &'a str,
 }
 
-#[cfg(feature = "secrets-test-stub")]
-pub(crate) struct TestSealRequest<'a> {
-    pub secret_id: u8,
-    pub nonce: [u8; NONCE_LEN],
-    pub wrapped_key: Vec<u8>,
-    pub plaintext: &'a [u8],
-    pub content_key: &'a ProtectedSecret,
-    pub aad: &'a [u8],
-    pub minimum_plaintext_len: usize,
-    pub label: &'a str,
-}
-
 #[derive(Serialize, Deserialize)]
 struct SealedBlob {
     version: u8,
@@ -145,28 +133,6 @@ pub(crate) fn seal_with_key_wrap(
         minimum_plaintext_len: request.minimum_plaintext_len,
         label: request.label,
     })
-}
-
-#[cfg(feature = "secrets-test-stub")]
-pub(crate) fn seal_plaintext_bytes_for_test(request: TestSealRequest<'_>) -> Result<Vec<u8>> {
-    ensure_minimum_plaintext_len(
-        request.plaintext,
-        request.minimum_plaintext_len,
-        request.label,
-    )?;
-    let cipher = request.content_key.with_secret(aes_256_gcm_from_key)?;
-    let mut ciphertext = request.plaintext.to_vec();
-    let tag = encrypt_detached(&cipher, &request.nonce, request.aad, &mut ciphertext)?;
-    SealedBlob {
-        version: BLOB_VERSION,
-        algorithm: ALGORITHM_AES_256_GCM,
-        secret_id: request.secret_id,
-        nonce: request.nonce,
-        wrapped_key: request.wrapped_key,
-        ciphertext,
-        tag,
-    }
-    .encode()
 }
 
 pub(crate) fn open_with_key_unwrap(

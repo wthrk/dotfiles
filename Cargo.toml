@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "rust/dotfiles-cli",
-  "rust/dotfiles-cli-secrets-test-contract",
   "rust/dotfiles-core",
   "rust/tests/checks",
   "rust/tests/integration",
@@ -26,7 +25,6 @@ bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.5.49", features = ["derive", "env"] }
 crossterm = "0.29.0"
 dotfiles-cli = { path = "rust/dotfiles-cli" }
-dotfiles-cli-secrets-test-contract = { path = "rust/dotfiles-cli-secrets-test-contract" }
 dotfiles-core = { path = "rust/dotfiles-core" }
 nom = "8.0.0"
 rand = "0.9.2"

@@ -9,11 +9,11 @@ use yubikey::{
 
 use crate::Result;
 use crate::secrets::{
+    adapters::DeviceCandidate,
     domain::{
         material::SecretMaterial,
         piv::{PivObjectId, SecretStorageSpec},
     },
-    adapters::DeviceCandidate,
     support::protection::{sealed_blob, secret_consumer, secret_random},
 };
 

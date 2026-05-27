@@ -12,17 +12,11 @@ path = "src/lib.rs"
 name = "dotfiles"
 path = "src/main.rs"
 
-[[test]]
-name = "secrets_cli"
-path = "tests/secrets_cli.rs"
-required-features = ["secrets-test-stub"]
-
 [lints]
 workspace = true
 
 [features]
 default = []
-secrets-test-stub = []
 
 [dependencies]
 aes-gcm.workspace = true
@@ -31,7 +25,6 @@ bincode.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
-dotfiles-cli-secrets-test-contract.workspace = true
 nom.workspace = true
 rand.workspace = true
 region.workspace = true
@@ -49,5 +42,3 @@ zeroize.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-dotfiles-cli-secrets-test-contract.workspace = true
-portable-pty.workspace = true

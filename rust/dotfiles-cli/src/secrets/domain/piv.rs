@@ -112,15 +112,6 @@ impl SecretName {
         }
     }
 
-    /// PIV data object ID に対応する secret 名を返す。
-    ///
-    /// object ID と secret 名の逆引きも storage layout の一部なので、adapter は
-    /// 独自に `object_id` 対応を再実装せずこの domain 規則を使う。
-    #[cfg(feature = "secrets-test-stub")]
-    pub fn from_object_id(object_id: PivObjectId) -> Option<Self> {
-        Self::iter().find(|name| name.object_id() == object_id)
-    }
-
     /// 既存 secret object への書き込みが許可されるかを確認する。
     ///
     /// `force` なしで既存値を置き換えない方針は secret storage の domain policy であり、

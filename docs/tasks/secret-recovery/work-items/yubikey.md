@@ -43,8 +43,8 @@
   - **[層違反: support → feature-specific terminal policy / orchestration は禁止]** **V11** support 層に YubiKey-specific な prompt 方針、device 選択判断、use case 手順、feature 固有の stdout policy が混入している。`rust/dotfiles-cli/src/secrets/support/process_io.rs` の残存自体は defect ではなく、判定は「process-generic な補助か」「feature 固有の判断を持ち込んでいるか」で行う。
   - **[層違反: adapters → port実装以外の公開禁止]** **V12** `adapters/piv_io.rs` が input modality（prompt/stdin/stdin-json）を port 契約へ逆流させる公開面を維持し、report DTO 変換まで一体化している（port 契約汚染・adapter 面混在違反）。
   - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` / `adapters/piv_io.rs` が device selection・interactive prompt・stdin JSON decode・report 出力変換を同一 seam で保持し、差し替え単位が不明確になっている（adapter 面分割規則違反）。
-  - **[経路違反: production command path の境界維持]** **V14** `adapters/piv_io/device.rs` の `SelectedDeviceAdapter` 配線は same-route 原則を満たす単一路でなければならない。禁止対象は、利用者向けの別 CLI / 別 binary、および `--test-stub-yubikey`・`yubikey_runtime`・`secrets-test-stub` feature / env などを使って command-scenario を分岐し production behavior を変形すること、または production command path 自体を差し替える port-boundary swap である。feature / env の存在自体を blanket 禁止してはならない。一方で、同一 production command path と同一 port 契約を維持したまま行う test 時の dependency selection / fixture selection（例: テストハーネス側での許可済み実装選択、固定 fixture 入力）は許可し、V14 違反として扱ってはならない。
-  - **[配置・責務評価違反: PIV/YubiKey 固有 concrete 実装の整合]** **V15** `adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有の concrete 実装として扱い、一般的な test double 配置論だけで不適合判定しない。判定は「配置（adapters 配下であること）単独」ではなく「配置 + 責務」が adapter 層責務（port 契約と外部技術の翻訳）に一致するかで行う。
+  - **[経路違反: production command path の境界維持]** **V14** `adapters/piv_io.rs` 内の device selection 配線は same-route 原則を満たす単一路でなければならない。禁止対象は、利用者向けの別 CLI / 別 binary、および `--test-stub-yubikey`・`yubikey_runtime`・`secrets-test-stub` feature / env などを使って command-scenario を分岐し production behavior を変形すること、または production command path 自体を差し替える port-boundary swap である。feature / env の存在自体を blanket 禁止してはならない。一方で、同一 production command path と同一 port 契約を維持したまま行う test 時の dependency selection / fixture selection（例: テストハーネス側での許可済み実装選択、固定 fixture 入力）は許可し、V14 違反として扱ってはならない。
+  - **[配置・責務評価違反: production adapter 面の整合]** **V15** production adapter 面に test stub / fake device / fixture state を持ち込まない。PIV/YubiKey 実機 adapter は port 契約と外部技術の翻訳だけを持ち、test fixture は production command path を変形しない検証層へ分離する。
   - **[層違反: domain・port → I/O 型禁止]** **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
 - 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
   - `application` が `adapter` の具体型を import しない（V1, V4 の解消）。
@@ -57,7 +57,7 @@
   - `application/run_*.rs`・`adapters/yubikey.rs`・`domain/wire.rs` 間で、wire/crypto/device/use-case の責務境界が単一層原則に従って分離されている（V10 の解消）。
   - `SelectedDeviceAdapter` は same-route 原則を満たす単一 production command path を維持し、`--test-stub-yubikey` / `yubikey_runtime` / `secrets-test-stub` feature / env / 別 binary / 別 CLI / command-scenario branching / production command path を差し替える port-boundary swap を、product behavior 変形として導入しない（V14 の解消）。
   - same-route 判定では、同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection を禁止しない。これらは command path 変形や product behavior 変更を伴わない限り許可される。
-  - `adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として、配置と責務を合わせて評価する。`adapters` 配下にあることだけを違反根拠にしない（V15 の解消）。
+  - production adapter 面に `adapters/piv_io/device_test_stub.rs` のような test stub / fake device / fixture state を残さない（V15 の解消）。
   - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること（V12, V13 の解消）。
 - レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
   - `application/` と `adapters/` の private helper について、helper 単位で責務が層責務に一致することを説明できること。説明できない helper が1件でもあれば設計誤りとして不合格。
@@ -78,7 +78,7 @@
 - use case-to-use case call または use case 層での logic commonization を導入している
 - same-route を崩す command path 分岐（`secrets-test-stub` feature / env、`--test-stub-yubikey`、`yubikey_runtime`、別 binary / 別 CLI / command-scenario branching / production command path を差し替える port-boundary swap を使い、product behavior を変形する分岐）が導入されている（V14 未解消）
 - 同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection まで禁止・不合格判定している（V14 判定誤り）
-- `adapters/piv_io/device_test_stub.rs` を「adapters 配下にある」という形式理由だけで違反扱いし、配置と責務を合わせた判定をしていない（V15 未解消）
+- production adapter 面に test stub / fake device / fixture state が残存している（V15 未解消）
 - `adapters/` 配下に port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）が存在している（V12, V13 未解消）
 - `application/` または `adapters/` の private helper について責務説明ができず、helper 単位の責務判定を省略している
 - helper 増殖を port 契約粒度の問題として評価せず、file-level 分割のみで解消扱いにしている
@@ -119,12 +119,12 @@
 - **ステップ7 を再開する（V2, V3 再差戻し）**
   - `application.rs` から stdin 読み取り、stdout 書き込み方針、prompt、concrete device handle の長寿命保持と直接操作を除去する。
 - **ステップ8 を再開する（V14,V15 再差戻し + 経路/責務整合）**
-  - `adapters/piv_io/device.rs` の `SelectedDeviceAdapter` は same-route を維持し、`secrets-test-stub` feature / env 分岐・`--test-stub-yubikey`・`yubikey_runtime`・別 CLI/別 binary などを使った product behavior 変形としての command path 変形を解消する。
+  - `adapters/piv_io.rs` 内の `SelectedDeviceAdapter` は same-route を維持し、`secrets-test-stub` feature / env 分岐・`--test-stub-yubikey`・`yubikey_runtime`・別 CLI/別 binary などを使った product behavior 変形としての command path 変形を解消する。
   - same-route 判定では、同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection を許可対象として扱う。禁止対象は product behavior を切り替える command-scenario branching と production command path 差し替えに限定する。
-  - `adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として、配置と責務の両面で adapter 層適合を再判定する。一般的な test double 配置論は適用しない。
+  - production adapter 面に test stub / fake device / fixture state を残さず、テストは production command path を feature/env で差し替えない範囲へ限定する。
   - secret 本文は `ProtectedSecret` 型以外で扱わない前提を維持する。
   - `rust/dotfiles-cli-secrets-test-stub/` を復活させない。
-  - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --features secrets-test-stub --no-run` がレビュー前提として成立する状態へ戻す。
+  - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/` と `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントを現行実装の責務境界と一致させる。
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs` の公開 use-case entrypoint と非自明 helper、ならびに sibling `run_*.rs` を配線する `application.rs` に必要な doc comment coverage を付与し、`what` だけでなく `why` を明記する。
@@ -185,9 +185,9 @@
 | V9 | `src/secrets/domain/model.rs`、`src/secrets/application/summary.rs`（存在する場合） | use case outcome 型（`EnrollSummary` 等）を domain 層へ統一し、application 独自型を残さない。 |
 | V10 | `src/secrets/application.rs`、`src/secrets/application/run_*.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/domain/wire.rs` | `application.rs` を sibling `run_*.rs` の module 配線専用に限定し、production use case entrypoint としての `application/` 直下 sibling `run_*.rs` ごとに単一 `run_*` 関数を維持する。use-case 手順、device 外部 API 変換、wire parser/serializer、protected-secret ownership の責務を層ごとに再分離し、use case-to-use case call と use case 層 commonization を禁止する。`#[cfg(test)] mod tests` と `*_tests.rs` はこの単一 `run_*` 制約の対象外。 |
 | V11 | `src/secrets/support/` | feature-specific な terminal I/O / prompt / orchestration を support から除去する。`support/process_io.rs` のような process-generic 補助は残してよい。 |
-| V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
+| V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
 | V13 | `src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/report.rs` | device selection / input / report の責務境界を明示し、adapter seam を分離する。 |
-| V14, V15 | `src/secrets/adapters/piv_io/device.rs`、`src/secrets/adapters/piv_io/device_test_stub.rs`、`rust/dotfiles-cli/tests/secrets_cli.rs` | same-route を崩す分岐を解消し、`device_test_stub.rs` を PIV/YubiKey 固有 concrete 実装として配置+責務で判定する（`adapters` 配下であること単独を違反根拠にしない）。 |
+| V14, V15 | `src/secrets/adapters/piv_io.rs`、`rust/dotfiles-cli/tests/secrets_cli.rs` | same-route を崩す分岐を解消し、production adapter 面から test stub / fake device / fixture state を除去する。 |
 | V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
 
 ## 固定実装単位トラッカー
