@@ -1,6 +1,11 @@
 use std::{fmt, str::FromStr};
 
 const STORAGE_BLOB_VERSION: u8 = 1;
+const MIN_PIV_METADATA_VERSION: PivApplicationVersion = PivApplicationVersion {
+    major: 5,
+    minor: 3,
+    patch: 0,
+};
 
 /// YubiKey PIV PIN の最小 byte 長。
 pub const PIV_PIN_MIN_LEN: usize = 6;
@@ -14,6 +19,42 @@ pub const PIV_PIN_MAX_LEN: usize = 8;
 pub fn validate_piv_pin_len(len: usize) -> crate::Result<()> {
     if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&len) {
         anyhow::bail!("YubiKey PIN must be 6 to 8 bytes");
+    }
+    Ok(())
+}
+
+/// YubiKey PIV application version を SDK 非依存に表す値オブジェクト。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PivApplicationVersion {
+    pub major: u8,
+    pub minor: u8,
+    pub patch: u8,
+}
+
+impl PivApplicationVersion {
+    /// secret storage setup に必要な最小 PIV application version を返す。
+    pub fn minimum_for_secret_storage() -> Self {
+        MIN_PIV_METADATA_VERSION
+    }
+}
+
+impl fmt::Display for PivApplicationVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// secret storage setup 前に PIV application の状態が業務上許容されるかを確認する。
+pub fn validate_secret_storage_setup_preconditions(
+    version: PivApplicationVersion,
+    pin_retries: u8,
+) -> crate::Result<()> {
+    let minimum = PivApplicationVersion::minimum_for_secret_storage();
+    if version < minimum {
+        anyhow::bail!("YubiKey PIV application version must be at least {minimum}");
+    }
+    if pin_retries == 0 {
+        anyhow::bail!("YubiKey PIN retries are exhausted");
     }
     Ok(())
 }
@@ -227,5 +268,44 @@ impl FromStr for SecretName {
             "bws-access-token" => Ok(Self::BwsAccessToken),
             _ => Err(format!("unsupported YubiKey secret name: {value}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_storage_setup_preconditions_accept_minimum_version_with_pin_retries() {
+        let result = validate_secret_storage_setup_preconditions(
+            PivApplicationVersion::minimum_for_secret_storage(),
+            1,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn secret_storage_setup_preconditions_reject_old_piv_version() {
+        let result = validate_secret_storage_setup_preconditions(
+            PivApplicationVersion {
+                major: 5,
+                minor: 2,
+                patch: 9,
+            },
+            1,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn secret_storage_setup_preconditions_reject_exhausted_pin_retries() {
+        let result = validate_secret_storage_setup_preconditions(
+            PivApplicationVersion::minimum_for_secret_storage(),
+            0,
+        );
+
+        assert!(result.is_err());
     }
 }

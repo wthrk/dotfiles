@@ -9,7 +9,7 @@ use crate::secrets::{
 
 /// 対象 serial の YubiKey storage layout を初期化する。
 ///
-/// setup 可否判定や PIV 操作詳細は adapter/device 側へ委譲し、application では順序制御だけを保持する。
+/// setup 可否判定は domain intent、PIV 操作詳細は adapter 側へ委譲し、application では順序制御だけを保持する。
 pub(crate) fn run_setup_with<B: ports::DeviceSerialPort + SecretStoragePort>(
     command: SetupCommand,
     boundary: &mut B,

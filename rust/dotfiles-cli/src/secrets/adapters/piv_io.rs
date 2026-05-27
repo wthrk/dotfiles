@@ -4,7 +4,7 @@ use anyhow::{Context, bail};
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
 use serde_json::json;
 use yubikey::{
-    Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
+    Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 
@@ -16,7 +16,7 @@ use crate::{
         domain::{
             manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT,
             material::SecretMaterial,
-            piv::{PIV_PIN_MAX_LEN, PivObjectId, SecretStorageSpec},
+            piv::{PIV_PIN_MAX_LEN, PivApplicationVersion, PivObjectId, SecretStorageSpec},
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
@@ -38,12 +38,6 @@ use crate::{
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
-const MIN_PIV_METADATA_VERSION: Version = Version {
-    major: 5,
-    minor: 3,
-    patch: 0,
-};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeviceCandidate {
     serial: u32,
@@ -57,7 +51,8 @@ trait RealDeviceIo {
 
 trait SecretDeviceIo {
     fn key_exists(&mut self) -> Result<bool>;
-    fn check_key_generation_preconditions(&mut self) -> Result<()>;
+    fn piv_application_version(&self) -> PivApplicationVersion;
+    fn pin_retries(&mut self) -> Result<u8>;
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
     fn generate_key(&mut self) -> Result<()>;
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
@@ -242,6 +237,8 @@ impl SecretStoragePort for StorageAdapter {
     ) -> Result<SecretStorageSetupInspection> {
         let mut device = self.open_device_by_serial(serial)?;
         let key_exists = device.key_exists()?;
+        let piv_version = device.piv_application_version();
+        let pin_retries = device.pin_retries()?;
         let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
         let mut occupied_object_ids = Vec::new();
         for object_id in probe.object_ids() {
@@ -251,6 +248,8 @@ impl SecretStoragePort for StorageAdapter {
         }
         Ok(SecretStorageSetupInspection {
             key_exists,
+            piv_version,
+            pin_retries,
             manifest_bytes,
             occupied_object_ids,
         })
@@ -262,7 +261,6 @@ impl SecretStoragePort for StorageAdapter {
         mut intent: SecretStorageSetupIntent,
     ) -> Result<()> {
         let mut device = self.open_device_by_serial(serial)?;
-        device.check_key_generation_preconditions()?;
         device.check_management_auth_preconditions()?;
         device.generate_key()?;
         device.write_object(PivObjectId::MANIFEST, &mut intent.manifest_bytes)
@@ -458,9 +456,15 @@ impl SecretDeviceIo for SelectedSecretDevice {
         }
     }
 
-    fn check_key_generation_preconditions(&mut self) -> Result<()> {
+    fn piv_application_version(&self) -> PivApplicationVersion {
         match self {
-            Self::Real(device) => device.check_key_generation_preconditions(),
+            Self::Real(device) => device.piv_application_version(),
+        }
+    }
+
+    fn pin_retries(&mut self) -> Result<u8> {
+        match self {
+            Self::Real(device) => device.pin_retries(),
         }
     }
 
@@ -568,23 +572,13 @@ impl YubikeySecretDevice {
         MgmKey::get_default(&self.yubikey).context("failed to load default YubiKey management key")
     }
 
-    fn is_version_below_minimum(&self) -> bool {
+    fn piv_application_version(&self) -> PivApplicationVersion {
         let version = self.yubikey.version();
-        (version.major, version.minor, version.patch)
-            < (
-                MIN_PIV_METADATA_VERSION.major,
-                MIN_PIV_METADATA_VERSION.minor,
-                MIN_PIV_METADATA_VERSION.patch,
-            )
-    }
-
-    fn minimum_version_string() -> String {
-        format!(
-            "{}.{}.{}",
-            MIN_PIV_METADATA_VERSION.major,
-            MIN_PIV_METADATA_VERSION.minor,
-            MIN_PIV_METADATA_VERSION.patch
-        )
+        PivApplicationVersion {
+            major: version.major,
+            minor: version.minor,
+            patch: version.patch,
+        }
     }
 
     fn wrap_content_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
@@ -648,17 +642,12 @@ impl SecretDeviceIo for YubikeySecretDevice {
         }
     }
 
-    fn check_key_generation_preconditions(&mut self) -> Result<()> {
-        if self.is_version_below_minimum() {
-            bail!(
-                "YubiKey PIV application version must be at least {}",
-                Self::minimum_version_string()
-            );
-        }
-        if self.yubikey.get_pin_retries()? == 0 {
-            bail!("YubiKey PIN retries are exhausted");
-        }
-        Ok(())
+    fn piv_application_version(&self) -> PivApplicationVersion {
+        self.piv_application_version()
+    }
+
+    fn pin_retries(&mut self) -> Result<u8> {
+        self.yubikey.get_pin_retries().map_err(anyhow::Error::new)
     }
 
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
@@ -668,7 +657,6 @@ impl SecretDeviceIo for YubikeySecretDevice {
     }
 
     fn generate_key(&mut self) -> Result<()> {
-        self.check_key_generation_preconditions()?;
         let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
         piv::generate(

@@ -7,7 +7,10 @@ use crate::Result;
 
 use super::{
     manifest::SecretManifest,
-    piv::{PivObjectId, SecretStorageSpec, StorageObjectIds},
+    piv::{
+        PivApplicationVersion, PivObjectId, SecretStorageSpec, StorageObjectIds,
+        validate_secret_storage_setup_preconditions,
+    },
 };
 
 /// setup 前に adapter が観測すべき予約済み object ID 集合。
@@ -18,6 +21,8 @@ pub struct SecretStorageSetupProbe {
 /// setup 前の device/storage 観測値。
 pub struct SecretStorageSetupInspection {
     pub key_exists: bool,
+    pub piv_version: PivApplicationVersion,
+    pub pin_retries: u8,
     pub manifest_bytes: Option<Vec<u8>>,
     pub occupied_object_ids: Vec<PivObjectId>,
 }
@@ -89,6 +94,10 @@ impl SecretStorageVerificationPlan {
 impl SecretStorageSetupIntent {
     /// setup 観測値に domain の未初期化規則を適用し、書き込み intent を作る。
     pub fn from_inspection(inspection: SecretStorageSetupInspection) -> Result<Self> {
+        validate_secret_storage_setup_preconditions(
+            inspection.piv_version,
+            inspection.pin_retries,
+        )?;
         SecretManifest::ensure_setup_allowed(
             inspection.key_exists,
             inspection.manifest_bytes.as_deref(),
