@@ -13,11 +13,11 @@ use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+#[cfg(feature = "secrets-test-stub")]
+pub(crate) mod masked_key_wrap;
 pub(crate) mod sealed_blob;
 pub(crate) mod secret_random;
 pub(crate) mod yubikey_pin;
-#[cfg(feature = "secrets-test-stub")]
-pub(crate) mod yubikey_stub_crypto;
 
 use crate::Result;
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));

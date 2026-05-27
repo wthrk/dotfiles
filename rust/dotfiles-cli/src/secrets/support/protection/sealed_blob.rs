@@ -291,10 +291,11 @@ mod tests {
             minimum_plaintext_len: 1,
             label: TEST_LABEL,
         })?;
-        let last = encoded
-            .last_mut()
-            .expect("sealed blob test fixture must not be empty");
-        *last ^= 0x01;
+        if let Some(last) = encoded.last_mut() {
+            *last ^= 0x01;
+        } else {
+            anyhow::bail!("sealed blob test fixture must not be empty");
+        }
 
         let result = open_with_key_unwrap(
             &encoded,

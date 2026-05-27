@@ -10,7 +10,7 @@ use crate::{
             piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName, SecretStorageSpec},
         },
         ports::DeviceCandidate,
-        support::protection::{sealed_blob, yubikey_stub_crypto},
+        support::protection::{ProtectedSecret, masked_key_wrap, sealed_blob},
     },
 };
 use dotfiles_cli_secrets_test_contract::{
@@ -20,6 +20,8 @@ use dotfiles_cli_secrets_test_contract::{
 };
 
 const REDACTED_WRITE_VALUE: &str = "<redacted>";
+const STUB_WRAP_PREFIX: &[u8] = b"dotfiles-stub-wrapped-v1:";
+const STUB_WRAP_MASK: u8 = 0xa5;
 
 /// env 契約の state 文字列を `StubState` へ変換する。
 ///
@@ -44,13 +46,13 @@ fn default_state_for_serial(serial: u32) -> StubState {
 fn make_seed_blob(name: SecretName, plaintext: &[u8]) -> Vec<u8> {
     let storage = name.storage_spec(PRIMARY_SERIAL);
     let nonce = [0u8; sealed_blob::NONCE_LEN];
-    let Ok(content_key) = yubikey_stub_crypto::zero_content_key() else {
+    let Ok(content_key) = ProtectedSecret::new(sealed_blob::CONTENT_KEY_LEN) else {
         return Vec::new();
     };
     sealed_blob::seal_plaintext_bytes_for_test(sealed_blob::TestSealRequest {
         secret_id: storage.secret_id,
         nonce,
-        wrapped_key: yubikey_stub_crypto::wrap_content_key(&content_key),
+        wrapped_key: masked_key_wrap::wrap(&content_key, STUB_WRAP_PREFIX, STUB_WRAP_MASK),
         plaintext,
         content_key: &content_key,
         aad: &storage.additional_data,
@@ -147,7 +149,7 @@ impl TestStubSecretDevice {
         if self.read_pin_from_tty && !self.pin_verified {
             anyhow::bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        yubikey_stub_crypto::unwrap_content_key(wrapped_key)
+        masked_key_wrap::unwrap(wrapped_key, STUB_WRAP_PREFIX, STUB_WRAP_MASK)
     }
 }
 
@@ -301,7 +303,13 @@ impl SecretDeviceIo for TestStubSecretDevice {
                 minimum_plaintext_len: storage.minimum_plaintext_len,
                 label: &storage.label,
             },
-            |content_key| Ok(yubikey_stub_crypto::wrap_content_key(content_key)),
+            |content_key| {
+                Ok(masked_key_wrap::wrap(
+                    content_key,
+                    STUB_WRAP_PREFIX,
+                    STUB_WRAP_MASK,
+                ))
+            },
         )
     }
 
