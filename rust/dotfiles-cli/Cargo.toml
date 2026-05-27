@@ -17,6 +17,7 @@ workspace = true
 
 [features]
 default = []
+secrets-internal-test-stub = ["dep:mockito"]
 
 [dependencies]
 aes-gcm.workspace = true
@@ -25,6 +26,7 @@ bincode.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
+mockito = { workspace = true, optional = true }
 nom.workspace = true
 rand.workspace = true
 region.workspace = true

@@ -34,6 +34,12 @@ fn rust(shell: &Shell) -> Result<()> {
         "env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets"
     )
     .run()?;
+    step("cargo test secrets internal stub");
+    cmd!(
+        shell,
+        "cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli"
+    )
+    .run()?;
     Ok(())
 }
 

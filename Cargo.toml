@@ -26,6 +26,7 @@ clap = { version = "4.5.49", features = ["derive", "env"] }
 crossterm = "0.29.0"
 dotfiles-cli = { path = "rust/dotfiles-cli" }
 dotfiles-core = { path = "rust/dotfiles-core" }
+mockito = "1.7.2"
 nom = "8.0.0"
 rand = "0.9.2"
 region = "3.0.2"
