@@ -13,8 +13,8 @@
 
 - 作業種別: `モジュール構造のゼロベース書き換えを含む規約適合リファクタリング`
 - 現行サイクル状態: `再レビュー待ち`
-- 現行サイクル確認基準: `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
-- 現行サイクル保存コミット終端: `9a87f46`
+- 現行サイクル確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`
+- 現行サイクル保存コミット終端: `HEAD`
 - 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の動作有無ではなくアーキテクチャ規約への厳密適合を基準に作り直す。責務境界が崩れている箇所を読み直し、モジュール分割、依存方向、入出力境界を再構成すること自体が仕事である。
 - 現行サイクル既知例外: `MgmKey::get_default` による factory-default management key を暫定前提とする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。
 - 構造完了条件:

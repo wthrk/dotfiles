@@ -11,8 +11,12 @@ use yubikey::{
 use std::collections::BTreeMap;
 
 #[cfg(feature = "secrets-internal-test-stub")]
-#[path = "piv_io/internal_stub.rs"]
-mod internal_stub;
+mod internal_stub {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/secrets_internal_stub/piv_io_internal_stub.rs"
+    ));
+}
 
 use crate::{
     Result,
@@ -43,10 +47,16 @@ use crate::{
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
 
+/// `ProtectedSecret` backend を domain の secret 境界型へ移す adapter 内部変換。
+///
+/// `Zeroizing` は protection 内部実装詳細として閉じ、adapter 外へ露出させない。
 fn material_from_protected(protected: ProtectedSecret) -> SecretMaterial {
     SecretMaterial::from_backend(protected, ProtectedSecret::len, ProtectedSecret::try_clone)
 }
 
+/// domain の secret 境界型から protection backend を借用する adapter 内部変換。
+///
+/// adapter は backend の存在確認だけを行い、平文 bytes や `Zeroizing` の所有権を外へ出さない。
 fn protected_from_material(secret: &SecretMaterial) -> Result<&ProtectedSecret> {
     secret
         .as_backend::<ProtectedSecret>()
@@ -460,9 +470,11 @@ fn report_check_status(value: CheckStatus) -> &'static str {
     }
 }
 
-/// Internal test seam の compile-time 注入点。
+/// internal test 専用 stub の compile-time 注入点。
 ///
 /// production command path と port 契約は固定し、backend 実装だけを compile-time で切り替える。
+/// `secrets-internal-test-stub` は internal test 専用であり、xtask 側の実行箇所は
+/// `rust/tests/checks/src/static_checks.rs` の internal test command 定義で固定する。
 struct SelectedDeviceAdapter;
 
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
@@ -579,8 +591,8 @@ impl YubikeySecretDevice {
     }
 
     fn default_management_key(&self) -> Result<MgmKey> {
-        // Current phase assumes the factory-default management key; repository-specific
-        // non-default management-key handling is deferred to a later phase.
+        // 現行フェーズは factory-default management key 前提で固定する。
+        // repository 固有の非既定 management key の取得・注入は次フェーズの鍵管理作業で扱う。
         MgmKey::get_default(&self.yubikey).context("failed to load default YubiKey management key")
     }
 

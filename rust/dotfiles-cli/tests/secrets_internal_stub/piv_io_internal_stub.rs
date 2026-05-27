@@ -11,6 +11,9 @@ use super::{
     material_from_protected, protected_from_material, secret_consumer,
 };
 
+// `secrets-internal-test-stub` feature 専用の mockito stub adapter。
+// production command path は `SelectedDeviceAdapter` の同一 port 契約を通し、fixture の選択だけを
+// xtask internal test 経路（`rust/tests/checks/src/static_checks.rs`）から注入する。
 const INTERNAL_STUB_ENDPOINT_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_MOCKITO_URL";
 
 #[derive(serde::Deserialize)]
@@ -137,10 +140,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
         match stub_http_request_with_status("GET", &path, &[])? {
             (200, body) => Ok(Some(body)),
             (404, _) => Ok(None),
-            (status, body) => anyhow::bail!(
-                "internal stub read_object failed: status={status} body={}",
-                String::from_utf8_lossy(&body)
-            ),
+            (status, _) => anyhow::bail!("internal stub read_object failed: status={status}"),
         }
     }
 
@@ -238,10 +238,7 @@ fn stub_http_request(method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>> {
     if (200..300).contains(&status) {
         Ok(body)
     } else {
-        anyhow::bail!(
-            "internal stub request failed: {method} {path} status={status} body={}",
-            String::from_utf8_lossy(&body)
-        );
+        anyhow::bail!("internal stub request failed: {method} {path} status={status}");
     }
 }
 

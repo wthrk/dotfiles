@@ -6,8 +6,8 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-9a87f46`
-- 確認基準: `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-HEAD`
+- 確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
   - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
   - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
@@ -58,6 +58,9 @@
   - `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一`
   - `1b47dd2 docs(secrets): current-cycle判定ラベルと差分基準を是正`
   - `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
+  - `bbef5d4 fix(secrets): V15のstub実装をpiv_io本体から分離`
+  - `2bd7e0a fix(secrets): internal stub helper公開を除去`
+  - `HEAD current-cycle Fail remediation`
 
 ## 2026-05-28 current-cycle 証跡是正コミット
 
@@ -67,8 +70,11 @@
 - 是正コミット: `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一`
 - 是正コミット: `1b47dd2 docs(secrets): current-cycle判定ラベルと差分基準を是正`
 - 実装コミット: `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
-- 紐付け: current-cycle 保存コミット終端は `9a87f46`。actual latest HEAD は `9a87f46`。`c1cc107` / `1b47dd2` は証跡是正、`9a87f46` は実装差分として分離して記録する。
-- 実装差分集合: `6fd4014..9a87f46` の変更ファイル集合:
+- 追加実装コミット: `bbef5d4 fix(secrets): V15のstub実装をpiv_io本体から分離`
+- 追加実装コミット: `2bd7e0a fix(secrets): internal stub helper公開を除去`
+- 追加修正: `2bd7e0a..HEAD` の current-cycle Fail remediation
+- 紐付け: current-cycle 保存コミット終端は `HEAD`。actual latest HEAD は `HEAD`。`2bd7e0a..HEAD` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
+- 実装差分集合: `6fd4014..HEAD` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -88,6 +94,8 @@
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
+  - `rust/dotfiles-cli/tests/secrets_internal_stub/piv_io_internal_stub.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_stdin_json.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_prompt.rs`
@@ -143,6 +151,9 @@
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`
+- `direnv exec . cargo test -p dotfiles-cli secrets::application:: --lib`
+- `direnv exec . cargo clippy -p dotfiles-cli --all-targets`
+- `git diff --check`
 
 ## 結果要約
 
@@ -153,6 +164,10 @@
 - `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`5217c7f`）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（33 passed, 0 failed）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
+- `cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 24 filtered out）
+- `cargo check -p dotfiles-cli`: 成功
+- `cargo clippy -p dotfiles-cli --all-targets`: 成功
+- `git diff --check`: 成功
 - 状態: `再レビュー待ち`
 
 ## 2026-05-26 ad92152 基準履歴追記

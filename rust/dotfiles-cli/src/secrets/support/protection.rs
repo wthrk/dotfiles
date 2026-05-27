@@ -119,6 +119,7 @@ pub(crate) struct SecretSession {
 ///
 /// ** メソッドを拡張してコピーのためのセキュリティホールを新築してはならない**
 /// 平文 bytes は `with_secret` / `with_secret_mut` の借用中だけ公開する。
+/// `Zeroizing` はこの protection 境界の内部実装詳細であり、外部層へ所有権や型を露出しない。
 /// memory lock は入力 session から引き継いだ値、または clone/copy 用の locked destination
 /// として確保した値で保持し、Drop 時に zeroize を実行する。
 pub struct ProtectedSecret {
