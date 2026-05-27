@@ -4,9 +4,9 @@
 
 ## 現行サイクル（2026-05-26）
 
-- 確認状態: `実施済み（要修正）`
+- 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-26-head-d32848a`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-26-base-ad92152`
 - 確認基準: `current worktree を正本とする`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets/application.rs`
@@ -37,7 +37,27 @@
 
 - `cargo check`: 実行済み
 - `cargo test --no-run`: 実行済み
-- 判定: `要修正`
+- 判定: `再レビュー待ち`
+
+## 2026-05-26 ad92152 基準 current-cycle 追記
+
+- current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
+- 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
+- 現行状態: `再レビュー待ち`
+- 確認前提: security は pass 済み。structural / operational Fail 修正の確認対象であり、合格とは記録しない。
+- `ad92152` 以降の変更ファイル集合:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/yubikey_pin.rs`
+  - `docs/tasks/secret-recovery/tasks.md`
+  - `docs/tasks/secret-recovery/work-items/yubikey.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
 
 ## 2026-05-26 追加実装サイクル追記
 

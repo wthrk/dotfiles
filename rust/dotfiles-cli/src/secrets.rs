@@ -136,7 +136,7 @@ enum VerifyCheck {
 ///
 /// adapter concrete は `secrets` module 内だけに閉じ、crate 公開や adapter surface 化はしない。
 pub(crate) fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::RealSecretsBoundary::default();
+    let mut boundary = adapters::piv_io::RealSecretsBoundary::default();
     dispatch(options, &mut boundary)
 }
 

@@ -27,6 +27,10 @@ use self::{
     device::SelectedDeviceAdapter, report::JsonReportAdapter, secret_io::RealSecretIoAdapter,
 };
 
+trait DeviceAdapterRouteLabel {
+    fn adapter_route_label(&self) -> &'static str;
+}
+
 /// 実機 device・実プロセス I/O・report 出力を束ねる runtime adapter。
 ///
 /// この型は複数 port の実装を 1 箇所に集約し、application 層へ concrete I/O を漏らさない境界として機能する。
@@ -39,15 +43,14 @@ where
     report: JsonReportAdapter,
 }
 
-impl<D> Default for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort + Default,
-{
+impl Default for RealSecretsBoundary<SelectedDeviceAdapter> {
     fn default() -> Self {
+        let device = SelectedDeviceAdapter::default();
+        let route = device.adapter_route_label();
         Self {
-            device: D::default(),
+            device,
             secret_io: RealSecretIoAdapter,
-            report: JsonReportAdapter,
+            report: JsonReportAdapter { route },
         }
     }
 }
@@ -152,12 +155,10 @@ where
 
 impl ReportPort for RealSecretsBoundary<SelectedDeviceAdapter> {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-        self.report
-            .write_enroll_report_for_route(summary, self.device.adapter_route_label())
+        self.report.write_enroll_report(summary)
     }
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        self.report
-            .write_verify_report_for_route(summary, self.device.adapter_route_label())
+        self.report.write_verify_report(summary)
     }
 }

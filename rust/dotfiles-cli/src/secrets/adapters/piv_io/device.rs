@@ -18,6 +18,8 @@ use crate::secrets::{
     ports::{DeviceCandidate, DeviceSelectionPort},
 };
 
+use super::DeviceAdapterRouteLabel;
+
 #[cfg(not(feature = "secrets-test-stub"))]
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
 
@@ -198,13 +200,10 @@ impl SelectedDeviceAdapter {
             inner: DeviceSelectionInner::Real(RealDeviceAdapter),
         }
     }
+}
 
-    /// 選択済み adapter route を report 連携用 label として返す。
-    ///
-    /// route 判定は `new` で確定済みであり、この関数は確定値の受け渡し専用。
-    /// caller 側は返却値を report 出力へそのまま連携し、独自 route 名や再判定を
-    /// 持ち込まない責務を負う。
-    pub(super) fn adapter_route_label(&self) -> &'static str {
+impl DeviceAdapterRouteLabel for SelectedDeviceAdapter {
+    fn adapter_route_label(&self) -> &'static str {
         match self.inner {
             DeviceSelectionInner::Real(_) => DeviceAdapterRoute::Real.as_str(),
             #[cfg(feature = "secrets-test-stub")]

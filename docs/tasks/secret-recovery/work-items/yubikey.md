@@ -12,7 +12,7 @@
 ---
 
 - 作業種別: `モジュール構造のゼロベース書き換えを含む規約適合リファクタリング`
-- 現行サイクル状態: `要修正`
+- 現行サイクル状態: `再レビュー待ち`
 - 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の動作有無ではなくアーキテクチャ規約への厳密適合を基準に作り直す。責務境界が崩れている箇所を読み直し、モジュール分割、依存方向、入出力境界を再構成すること自体が仕事である。
 - 構造完了条件:
   - `CLI` は clap option の型付けと公開 command 名だけを持つ。
@@ -164,9 +164,9 @@
 5. **以下のコマンドを必ず実行してコミットを完了させる（省略・省エネは禁止）**:
    ```
    git add <変更した全ファイル>
-   git commit -m "refactor(secrets): #12 ステップN でVX,VY を解消"
+   git commit -m "<type>(secrets): <#12 の保存点を表す簡潔な説明>"
    ```
-   `git commit` コマンドを実際に実行し、`[feat/yubikey-secret-storage <hash>]` の出力を確認すること。
+   `git commit` コマンドを実際に実行し、`[feat/yubikey-secret-storage <hash>]` の出力を確認すること。メッセージは実施した保存点の内容に合わせ、過去の固定例へ無理に合わせない。
 6. `git log --oneline -1` でコミットが記録されたことを確認する
 7. 次のステップには進まず停止する
 
@@ -197,11 +197,11 @@
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（use case outcome 型の domain 統一） | 完了 | 実コード差分 | [#実装順序ガイド推奨](#実装順序ガイド推奨) |
 | 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ4: V10（責務再分離） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 未着手 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 実装 ステップ4: V10（責務再分離） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 確認 | 再レビュー待ち | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 再レビュー待ち | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 修正済み | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

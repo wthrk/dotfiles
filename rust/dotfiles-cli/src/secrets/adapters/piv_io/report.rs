@@ -10,7 +10,9 @@ use crate::{
 };
 
 /// application が渡す report 列挙値を CLI 向け JSON payload に整形する runtime adapter。
-pub(super) struct JsonReportAdapter;
+pub(super) struct JsonReportAdapter {
+    pub(super) route: &'static str,
+}
 
 impl JsonReportAdapter {
     /// enroll 結果を route 監査情報つき JSON report へ翻訳して stdout へ出力する。
@@ -18,16 +20,12 @@ impl JsonReportAdapter {
     /// この関数は adapter 翻訳境界として、domain/application 値を CLI 出力契約へ
     /// 変換する責務のみを持つ。caller 側は route 判定済みの境界値を渡し、
     /// ここで route 判定ロジックを追加しない責務を負う。
-    pub(super) fn write_enroll_report_for_route(
-        &self,
-        summary: &EnrollSummary,
-        route: &'static str,
-    ) -> Result<()> {
+    fn write_enroll_report_for_route(&self, summary: &EnrollSummary) -> Result<()> {
         let payload = json!({
             "serial": summary.serial,
             "role": Self::report_role(summary.role),
             "checks": Self::report_checks(&summary.checks),
-            "device-adapter-route": route,
+            "device-adapter-route": self.route,
         });
         let rendered =
             serde_json::to_string_pretty(&payload).context("failed to serialize report")?;
@@ -40,15 +38,11 @@ impl JsonReportAdapter {
     /// adapter では「report 形式への写像」と「出力」だけを扱い、route 選択は扱わない。
     /// caller 側は same-route 監査で確定した route 値を渡し、境界外で別ルートを
     /// 生成しないことが責務となる。
-    pub(super) fn write_verify_report_for_route(
-        &self,
-        summary: &VerifySummary,
-        route: &'static str,
-    ) -> Result<()> {
+    fn write_verify_report_for_route(&self, summary: &VerifySummary) -> Result<()> {
         let payload = json!({
             "serial": summary.serial,
             "checks": Self::report_checks(&summary.checks),
-            "device-adapter-route": route,
+            "device-adapter-route": self.route,
         });
         let rendered =
             serde_json::to_string_pretty(&payload).context("failed to serialize report")?;
@@ -59,11 +53,11 @@ impl JsonReportAdapter {
 
 impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-        self.write_enroll_report_for_route(summary, "real")
+        self.write_enroll_report_for_route(summary)
     }
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        self.write_verify_report_for_route(summary, "real")
+        self.write_verify_report_for_route(summary)
     }
 }
 

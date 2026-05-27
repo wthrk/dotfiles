@@ -2,7 +2,5 @@
 //!
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
-mod piv_io;
+pub(crate) mod piv_io;
 mod yubikey;
-
-pub(crate) use self::piv_io::RealSecretsBoundary;

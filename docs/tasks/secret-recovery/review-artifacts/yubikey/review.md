@@ -5,8 +5,8 @@
 ## 現行サイクル（2026-05-26）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: 現行 worktree で review artifact を再整備したが、差し戻し継続状態のため完了判定には進めない。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-26-head-d32848a`
+- 集約判定要約: `ad92152` 基準の structural / operational 差し戻し修正を反映した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-26-base-ad92152`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets/application.rs`
@@ -27,6 +27,34 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
+
+### 2026-05-26 ad92152 基準 current-cycle 追記
+
+- current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
+- 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
+- 現行状態: `再レビュー待ち`
+- レビュー前提: security は pass 済み。structural / operational の Fail 指摘だけを対象に修正中として扱い、合格とは記録しない。
+- `ad92152` 以降の変更ファイル集合:
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/yubikey_pin.rs`
+  - `docs/tasks/secret-recovery/tasks.md`
+  - `docs/tasks/secret-recovery/work-items/yubikey.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
+- structural 差し戻し修正:
+  - `adapters.rs` の再エクスポート集約を廃止し、runtime adapter は翻訳実体を持つ `adapters::piv_io` module から参照する。
+  - `adapters/piv_io/device.rs` の route label helper を公開 helper から private trait 実装へ閉じる。
+  - `adapters/piv_io/report.rs` の route 付き report helper 公開を廃止し、route は `JsonReportAdapter` の内部状態として `ReportPort` 実装内で使う。
+- operational 差し戻し修正:
+  - current-cycle の基準を `ad92152` として明示し、変更ファイル集合を記録した。
+  - `tasks.md` と `work-items/yubikey.md` を `再レビュー待ち` / `修正済み` 基準で同期した。
+  - 保存コミット規定は既存コミットを書き換えず、現行サイクル追記として運用実態と整合させる。
 
 ### 2026-05-26 追加実装サイクル追記
 
