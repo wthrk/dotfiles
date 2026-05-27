@@ -258,6 +258,34 @@ mod tests {
     }
 
     #[test]
+    fn setup_stops_when_storage_object_exists() -> Result<()> {
+        let occupied = SecretStorageSetupInspection {
+            occupied_object_ids: vec![PivObjectId::MANIFEST],
+            ..clean_setup_inspection()
+        };
+
+        let error = error_message(SecretStorageSetupIntent::from_inspection(occupied))?;
+
+        assert!(error.contains("already exists"));
+        Ok(())
+    }
+
+    #[test]
+    fn setup_stops_when_key_exists_without_manifest() -> Result<()> {
+        let key_exists_without_manifest = SecretStorageSetupInspection {
+            key_exists: true,
+            ..clean_setup_inspection()
+        };
+
+        let error = error_message(SecretStorageSetupIntent::from_inspection(
+            key_exists_without_manifest,
+        ))?;
+
+        assert!(error.contains("PIV slot is already initialized"));
+        Ok(())
+    }
+
+    #[test]
     fn store_intent_requires_initialized_manifest_and_non_empty_secret() -> Result<()> {
         let storage = storage();
         let intent = SecretStorageWriteIntent::store(
@@ -298,6 +326,35 @@ mod tests {
             1,
         ))?;
         assert!(overwrite_error.contains("pass --force"));
+
+        let forced = SecretStorageWriteIntent::put(
+            storage.clone(),
+            SecretStorageWriteInspection {
+                manifest_bytes: Some(expected_manifest_bytes()?),
+                object_exists: true,
+            },
+            true,
+            1,
+        )?;
+        assert_eq!(forced.storage, storage);
+        Ok(())
+    }
+
+    #[test]
+    fn put_requires_force_for_existing_secret() -> Result<()> {
+        let storage = storage();
+        let existing_object = SecretStorageWriteInspection {
+            manifest_bytes: Some(expected_manifest_bytes()?),
+            object_exists: true,
+        };
+
+        let error = error_message(SecretStorageWriteIntent::put(
+            storage.clone(),
+            existing_object,
+            false,
+            1,
+        ))?;
+        assert!(error.contains("pass --force"));
 
         let forced = SecretStorageWriteIntent::put(
             storage.clone(),

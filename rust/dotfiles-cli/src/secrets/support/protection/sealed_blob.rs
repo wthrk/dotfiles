@@ -179,6 +179,80 @@ mod tests {
         Ok(key)
     }
 
+    fn encoded_test_blob() -> Result<Vec<u8>> {
+        SealedBlob {
+            version: BLOB_VERSION,
+            algorithm: ALGORITHM_AES_256_GCM,
+            payload_id: TEST_PAYLOAD_ID,
+            nonce: [7; NONCE_LEN],
+            wrapped_key: vec![1, 2, 3],
+            ciphertext: vec![4, 5, 6, 7],
+            tag: [9; TAG_LEN],
+        }
+        .encode()
+    }
+
+    #[test]
+    fn secret_blob_round_trips_binary_format() -> Result<()> {
+        let encoded = encoded_test_blob()?;
+        let decoded = SealedBlob::decode(&encoded)?;
+
+        assert_eq!(decoded.payload_id, TEST_PAYLOAD_ID);
+        assert_eq!(decoded.nonce, [7; NONCE_LEN]);
+        assert_eq!(decoded.wrapped_key, vec![1, 2, 3]);
+        assert_eq!(decoded.ciphertext, vec![4, 5, 6, 7]);
+        assert_eq!(decoded.tag, [9; TAG_LEN]);
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_trailing_bytes() -> Result<()> {
+        let mut encoded = encoded_test_blob()?;
+        encoded.push(0);
+
+        assert!(SealedBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_wrapped_key_length_larger_than_payload() -> Result<()> {
+        let mut encoded = encoded_test_blob()?;
+        encoded.truncate(encoded.len().saturating_sub(TAG_LEN + 1));
+
+        assert!(SealedBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_wrapped_key_length_smaller_than_payload() -> Result<()> {
+        let mut encoded = encoded_test_blob()?;
+        let payload = BLOB_MAGIC.len();
+        if let Some(byte) = encoded.get_mut(payload) {
+            *byte = byte.wrapping_add(1);
+        }
+
+        assert!(SealedBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_ciphertext_length_larger_than_payload() -> Result<()> {
+        let mut encoded = encoded_test_blob()?;
+        encoded.truncate(encoded.len().saturating_sub(1));
+
+        assert!(SealedBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn secret_blob_rejects_ciphertext_length_smaller_than_payload() -> Result<()> {
+        let mut encoded = encoded_test_blob()?;
+        encoded.extend_from_slice(b"extra");
+
+        assert!(SealedBlob::decode(&encoded).is_err());
+        Ok(())
+    }
+
     #[test]
     fn sealed_blob_round_trips_without_aliasing_plaintext() -> Result<()> {
         let mut plaintext = protected_from_test_bytes(b"secret-value")?;

@@ -308,4 +308,31 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn secret_name_rejects_unknown_name() {
+        let parsed = "github-token".parse::<SecretName>();
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn secret_names_match_design_object_mapping() {
+        let objects = SecretName::iter()
+            .map(|name| (name.to_string(), name.object_id().to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            objects.get("bw-email").map(String::as_str),
+            Some("0x005FFF17")
+        );
+        assert_eq!(
+            objects.get("bw-password").map(String::as_str),
+            Some("0x005FFF18")
+        );
+        assert_eq!(
+            objects.get("bws-access-token").map(String::as_str),
+            Some("0x005FFF19")
+        );
+    }
 }

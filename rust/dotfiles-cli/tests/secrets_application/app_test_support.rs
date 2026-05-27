@@ -124,6 +124,12 @@ impl AppMock {
         self.configure(|state| state.loaded_len = len);
     }
 
+    pub(crate) fn set_loaded_secret_value(&self, secret: SecretName, value: &'static [u8]) {
+        self.configure(|state| {
+            state.loaded_values.insert(secret, value);
+        });
+    }
+
     pub(crate) fn set_setup_failure(&self, fail: bool) {
         self.configure(|state| state.fail_setup = fail);
     }
@@ -142,6 +148,12 @@ impl AppMock {
 
     pub(crate) fn set_streamed_secret_error(&self, error: &'static str) {
         self.configure(|state| state.streamed_secret_error = Some(error));
+    }
+
+    pub(crate) fn set_secret_value(&self, secret: SecretName, value: &'static [u8]) {
+        self.configure(|state| {
+            state.secret_values.insert(secret, value);
+        });
     }
 
     pub(crate) fn stores(&self) -> Vec<SecretName> {
@@ -444,10 +456,14 @@ impl SecretStoragePort for AppMockBoundary {
     fn load_secret(
         &mut self,
         _serial: u32,
-        _intent: &SecretStorageReadIntent,
+        intent: &SecretStorageReadIntent,
         _pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial> {
-        let bytes = self.mock.request("POST", "/storage/load", &[])?;
+        let bytes = self.mock.request(
+            "POST",
+            "/storage/load",
+            intent.storage.name.to_string().as_bytes(),
+        )?;
         Ok(secret_material(bytes))
     }
 }
@@ -460,11 +476,13 @@ struct AppMockState {
     spare_requires_pin: bool,
     primary_available: bool,
     loaded_len: usize,
+    loaded_values: BTreeMap<SecretName, &'static [u8]>,
     fail_setup: bool,
     fail_on_store: Option<SecretName>,
     pin_error: Option<&'static str>,
     stdin_json_error: Option<&'static str>,
     streamed_secret_error: Option<&'static str>,
+    secret_values: BTreeMap<SecretName, &'static [u8]>,
     stores: Vec<SecretName>,
     resolution_order: Vec<&'static str>,
     reports: Vec<(u32, CheckStatus)>,
@@ -481,11 +499,19 @@ impl Default for AppMockState {
             spare_requires_pin: false,
             primary_available: true,
             loaded_len: 1,
+            loaded_values: BTreeMap::new(),
             fail_setup: false,
             fail_on_store: None,
             pin_error: None,
             stdin_json_error: None,
             streamed_secret_error: None,
+            secret_values: [
+                (SecretName::BwEmail, &b"u@example.com"[..]),
+                (SecretName::BwPassword, &b"secret"[..]),
+                (SecretName::BwsAccessToken, &b"token"[..]),
+            ]
+            .into_iter()
+            .collect(),
             stores: Vec::new(),
             resolution_order: Vec::new(),
             reports: Vec::new(),
@@ -599,9 +625,9 @@ impl AppMockState {
                 .to_string()
                 .into_bytes(),
             "/pin/read" => error_or_bytes(self.pin_error, b"123456"),
-            "/secret/bw-email/read" => b"u@example.com".to_vec(),
-            "/secret/bw-password/read" => b"secret".to_vec(),
-            "/secret/bws-access-token/read" => b"token".to_vec(),
+            "/secret/bw-email/read" => self.secret_value(SecretName::BwEmail),
+            "/secret/bw-password/read" => self.secret_value(SecretName::BwPassword),
+            "/secret/bws-access-token/read" => self.secret_value(SecretName::BwsAccessToken),
             "/secret/streamed/read" => error_or_bytes(self.streamed_secret_error, b"token"),
             "/bootstrap/read-fields" => error_or_bytes(
                 self.stdin_json_error,
@@ -611,9 +637,22 @@ impl AppMockState {
             "/storage/store" if self.fail_on_store == parse_secret_name(body) => {
                 b"store failed".to_vec()
             }
-            "/storage/load" => vec![0; self.loaded_len],
+            "/storage/load" => parse_secret_name(body)
+                .and_then(|secret| self.loaded_values.get(&secret).copied())
+                .map(<[u8]>::to_vec)
+                .unwrap_or_else(|| vec![0; self.loaded_len]),
             _ => Vec::new(),
         }
+    }
+}
+
+impl AppMockState {
+    fn secret_value(&self, secret: SecretName) -> Vec<u8> {
+        self.secret_values
+            .get(&secret)
+            .copied()
+            .unwrap_or_default()
+            .to_vec()
     }
 }
 

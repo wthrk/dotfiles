@@ -191,4 +191,43 @@ mod tests {
         assert_eq!(err.to_string(), "pin verification failed");
         Ok(())
     }
+
+    #[test]
+    fn enroll_primary_rejects_empty_secret_before_setup() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.mock.set_primary_serial(10);
+        boundary.mock.set_secret_value(SecretName::BwEmail, b"");
+        let err = super::run_enroll_primary_with_prompt::run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(10) },
+            &mut boundary,
+        )
+        .expect_err("enroll-primary accepted empty bw-email");
+
+        assert_eq!(err.to_string(), "bw-email must not be empty");
+        assert!(boundary.mock.stores().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn enroll_spare_rejects_empty_secret_before_setup() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event("setup");
+        boundary.mock.set_primary_serial(10);
+        boundary.mock.set_spare_serial(20);
+        boundary.mock.set_loaded_secret_value(SecretName::BwEmail, b"");
+        let command = EnrollSpareCommand {
+            primary_serial: Some(10),
+            spare_serial: Some(20),
+        };
+        let err = super::run_enroll_spare_with_prompt::run_enroll_spare_with_prompt(
+            command,
+            &mut boundary,
+        )
+        .expect_err("enroll-spare accepted empty bw-email");
+
+        assert_eq!(err.to_string(), "bw-email must not be empty");
+        assert!(boundary.mock.stores().is_empty());
+        Ok(())
+    }
 }

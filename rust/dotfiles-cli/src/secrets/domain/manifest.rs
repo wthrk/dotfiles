@@ -227,3 +227,17 @@ impl BootstrapSecretDocument {
 fn invalid_data(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_is_format_sentinel_only() {
+        let manifest = SecretManifest::expected();
+
+        assert_eq!(manifest.version, 1);
+        assert_eq!(manifest.app, MANIFEST_APP);
+        assert!(manifest.validate_expected().is_ok());
+    }
+}
