@@ -11,7 +11,7 @@
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)（現行サイクル状態: 再レビュー待ち）
-- 現行サイクル確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`
+- 現行サイクル確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`（latest saved fix: `a910eca`）
 - 現行サイクル保存コミット終端: `HEAD`
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:

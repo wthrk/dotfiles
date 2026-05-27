@@ -6,7 +6,7 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-HEAD`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-HEAD-a910eca-saved`
 - 確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
   - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
@@ -60,7 +60,10 @@
   - `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
   - `bbef5d4 fix(secrets): V15のstub実装をpiv_io本体から分離`
   - `2bd7e0a fix(secrets): internal stub helper公開を除去`
-  - `HEAD current-cycle Fail remediation`
+  - `d301035 fix(secrets): YubiKey直近レビューFailを解消`
+  - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
+  - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
+  - `HEAD current-cycle evidence sync`
 
 ## 2026-05-28 current-cycle 証跡是正コミット
 
@@ -72,7 +75,10 @@
 - 実装コミット: `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
 - 追加実装コミット: `bbef5d4 fix(secrets): V15のstub実装をpiv_io本体から分離`
 - 追加実装コミット: `2bd7e0a fix(secrets): internal stub helper公開を除去`
-- 追加修正: `2bd7e0a..HEAD` の current-cycle Fail remediation
+- 追加修正コミット: `d301035 fix(secrets): YubiKey直近レビューFailを解消`
+- 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
+- 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
+- 追加修正: `2bd7e0a..HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
 - 紐付け: current-cycle 保存コミット終端は `HEAD`。actual latest HEAD は `HEAD`。`2bd7e0a..HEAD` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
 - 実装差分集合: `6fd4014..HEAD` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
@@ -88,6 +94,9 @@
   - `docs/tasks/secret-recovery/tasks.md`
   - `docs/tasks/secret-recovery/work-items/yubikey.md`
   - `docs/tasks/tasks.md`
+  - `docs/architecture/hexagonal-implementation-rules.md`
+  - `docs/architecture/review-checklist.md`
+  - `.agents/skills/structural-review/SKILL.md`
   - `Cargo.toml`
   - `Cargo.lock`
   - `rust/tests/checks/src/static_checks.rs`
