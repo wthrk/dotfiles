@@ -12,7 +12,7 @@ pub(crate) const NONCE_LEN: usize = 12;
 pub(crate) const TAG_LEN: usize = 16;
 pub(crate) const CONTENT_KEY_LEN: usize = 32;
 
-const BLOB_MAGIC: &[u8] = b"DOTFILES-SEALED-SECRET\0";
+const BLOB_MAGIC: &[u8] = b"PROTECTED-SEALED-BLOB\0";
 const BLOB_VERSION: u8 = 1;
 const ALGORITHM_AES_256_GCM: u8 = 1;
 
@@ -86,24 +86,22 @@ pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<Pro
 }
 
 pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
-    request.plaintext.with_secret(|_| {
-        let cipher = request.content_key.with_secret(aes_256_gcm_from_key)?;
-        let mut ciphertext_secret = ProtectedSecret::try_clone(request.plaintext)?;
-        let tag = ciphertext_secret.with_secret_mut(|ciphertext_bytes| {
-            encrypt_detached(&cipher, &request.nonce, request.aad, ciphertext_bytes)
-        })?;
-        ciphertext_secret.with_secret(|ciphertext_bytes| {
-            SealedBlob {
-                version: BLOB_VERSION,
-                algorithm: ALGORITHM_AES_256_GCM,
-                secret_id: request.secret_id,
-                nonce: request.nonce,
-                wrapped_key: request.wrapped_key,
-                ciphertext: ciphertext_bytes.to_vec(),
-                tag,
-            }
-            .encode()
-        })
+    let cipher = request.content_key.with_secret(aes_256_gcm_from_key)?;
+    let mut ciphertext_secret = ProtectedSecret::try_clone(request.plaintext)?;
+    let tag = ciphertext_secret.with_secret_mut(|ciphertext_bytes| {
+        encrypt_detached(&cipher, &request.nonce, request.aad, ciphertext_bytes)
+    })?;
+    ciphertext_secret.with_secret(|ciphertext_bytes| {
+        SealedBlob {
+            version: BLOB_VERSION,
+            algorithm: ALGORITHM_AES_256_GCM,
+            secret_id: request.secret_id,
+            nonce: request.nonce,
+            wrapped_key: request.wrapped_key,
+            ciphertext: ciphertext_bytes.to_vec(),
+            tag,
+        }
+        .encode()
     })
 }
 
