@@ -1,8 +1,9 @@
 use std::fmt;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use super::{material::SecretMaterial, piv::SecretName};
+use crate::secrets::support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached};
 
 /// secret blob の先頭で dotfiles wire format を識別する magic bytes。
 pub(crate) const BLOB_MAGIC: &[u8] = b"DOTFILES-YK-SECRET\0";
@@ -131,6 +132,81 @@ impl SecretBlob {
             return invalid_blob();
         }
 
+        Ok(Self {
+            name,
+            nonce,
+            wrapped_key,
+            ciphertext,
+            tag,
+        })
+    }
+
+    /// 期待する secret 名と一致する blob を decode する。
+    pub fn decode_for_name(input: &[u8], expected_name: SecretName) -> Result<Self> {
+        let blob = Self::decode(input)
+            .map_err(|error| anyhow::anyhow!("failed to decode {expected_name}: {error}"))?;
+        if blob.name != expected_name {
+            bail!(
+                "YubiKey secret blob name does not match requested {}",
+                expected_name
+            );
+        }
+        Ok(blob)
+    }
+
+    /// content key / AAD 規則を適用して平文を復元する。
+    pub fn decrypt_secret(
+        self,
+        serial: u32,
+        content_key: &SecretMaterial,
+    ) -> Result<SecretMaterial> {
+        if content_key.len() != CONTENT_KEY_LEN {
+            bail!("unwrapped YubiKey content key has invalid length");
+        }
+        let Self {
+            name,
+            nonce,
+            wrapped_key: _,
+            mut ciphertext,
+            tag,
+        } = self;
+        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
+        ciphertext
+            .with_secret_mut(|secret_bytes| {
+                decrypt_detached(
+                    &cipher,
+                    &nonce,
+                    &name.additional_data(serial),
+                    secret_bytes,
+                    &tag,
+                )
+            })
+            .map_err(|_| anyhow::anyhow!("failed to decrypt {}", name))?;
+        Ok(ciphertext)
+    }
+
+    /// 平文・content key・nonce・wrapped key から domain 規則付き blob を構築する。
+    pub fn encrypt_secret(
+        name: SecretName,
+        serial: u32,
+        nonce: [u8; NONCE_LEN],
+        wrapped_key: Vec<u8>,
+        plaintext: &SecretMaterial,
+        content_key: &SecretMaterial,
+    ) -> Result<Self> {
+        if content_key.len() != CONTENT_KEY_LEN {
+            bail!("unwrapped YubiKey content key has invalid length");
+        }
+        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
+        let mut ciphertext = plaintext.with_bytes(SecretMaterial::copy_from_slice)?;
+        let tag = ciphertext.with_secret_mut(|ciphertext_bytes| {
+            encrypt_detached(
+                &cipher,
+                &nonce,
+                &name.additional_data(serial),
+                ciphertext_bytes,
+            )
+        })?;
         Ok(Self {
             name,
             nonce,

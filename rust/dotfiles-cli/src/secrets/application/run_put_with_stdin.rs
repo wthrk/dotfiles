@@ -8,7 +8,6 @@ use crate::secrets::{
         values::PutCommand,
     },
     ports::{self, SecretDevice},
-    support::aead::{aes_256_gcm_from_key, encrypt_detached},
 };
 
 const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use";
@@ -40,24 +39,15 @@ pub(crate) fn run_put_with_stdin<
     content_key.with_secret_mut(|value| boundary.fill_random_bytes(value))?;
     let mut nonce = [0u8; NONCE_LEN];
     boundary.fill_random_bytes(&mut nonce)?;
-    let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
-    let mut ciphertext = secret.with_bytes(SecretMaterial::copy_from_slice)?;
-    let tag = ciphertext.with_secret_mut(|ciphertext_bytes| {
-        encrypt_detached(
-            &cipher,
-            &nonce,
-            &command.name.additional_data(device.serial()),
-            ciphertext_bytes,
-        )
-    })?;
     let wrapped_key = device.wrap_key(&content_key)?;
-    let blob = SecretBlob {
-        name: command.name,
+    let blob = SecretBlob::encrypt_secret(
+        command.name,
+        device.serial(),
         nonce,
         wrapped_key,
-        ciphertext,
-        tag,
-    };
+        &secret,
+        &content_key,
+    )?;
     let mut encoded = blob.encode()?;
     device.write_object(command.name.object_id(), &mut encoded)
 }
