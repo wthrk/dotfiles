@@ -10,7 +10,14 @@ use super::ProtectedSecret;
 const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
 const HASH_LEN: usize = 32;
 
-/// raw RSA decrypt 出力から OAEP-SHA256 を除去して content key を復元する。
+/// raw RSA decrypt 出力から OAEP-SHA256 を除去して secret payload を復元する。
+///
+/// `encoded` は RSA modulus byte 長と同じ `key_len` でなければならず、この入口で
+/// `encoded.len() == key_len` と OAEP-SHA256 の最小長を検証する。label は空 bytes として
+/// SHA-256 hash を照合し、leading byte、masked seed / DB 復元後の padding separator、
+/// separator より前の zero padding をすべて満たす場合だけ payload を取り出す。
+/// 失敗時は secret slice を caller へ返さず、成功時の payload は新規 `ProtectedSecret` へ
+/// コピーしてから返す。
 pub(crate) fn unwrap_oaep_sha256(encoded: &[u8], key_len: usize) -> Result<ProtectedSecret> {
     if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);

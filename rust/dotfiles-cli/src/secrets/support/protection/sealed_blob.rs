@@ -99,6 +99,13 @@ impl SealedBlob {
     }
 }
 
+/// raw RSA decrypt 出力から content key を OAEP-SHA256 unpad で復元する。
+///
+/// `decrypted` は adapter 側で RSA decrypt 済みの encoded message 全体でなければならず、
+/// caller は対応する RSA modulus byte 長を `key_len` として渡す責務を負う。
+/// 長さ不一致、短すぎる key 長、leading byte / 空 label hash / padding separator の不正は
+/// 復元失敗として扱い、平文 key slice を返さない。復元できた content key はこの support
+/// 境界でただちに `ProtectedSecret` に閉じ、adapter へ平文 bytes ownership を返さない。
 pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<ProtectedSecret> {
     oaep::unwrap_oaep_sha256(decrypted, key_len)
 }

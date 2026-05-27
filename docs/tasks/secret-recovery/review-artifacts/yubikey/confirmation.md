@@ -9,15 +9,15 @@
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
-- 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
+- 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（本記録修正後の文書-only HEAD 対象）`
+  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（本記録修正後の current-cycle 補正 HEAD 対象）`
   - `security`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
-  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
   - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（documentation Fail の doc comment 補正 HEAD 対象。過去 Pass の持ち越しでは閉じない）`
-  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
   - `reference-integrity`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
@@ -69,7 +69,7 @@
   - `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
   - `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
   - `この実装コメント補正 HEAD`（documentation reviewer Fail の doc comment 補正 commit。自己 hash は本文へ埋め込まず git log で確認する）
-  - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
+  - `この current-cycle 補正 HEAD`（実装コメント補正と証跡整合を含む commit。自己 hash は本文へ埋め込まず git log で確認する）
 
 ## 2026-05-28 app 回帰テスト復旧追記
 
@@ -159,9 +159,9 @@
 - 追加修正コミット: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 追加修正コミット: `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
 - 追加修正コミット: `この実装コメント補正 HEAD`（documentation reviewer Fail の doc comment 補正。自己 hash は本文へ埋め込まず git log で確認する）
-- 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
+- 現行補正コミット: `この current-cycle 補正 HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
 - 追加修正: `2bd7e0a..この実装コメント補正 HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` と `4c82da8` は security Fail の assertion output 秘匿化を含み、この実装コメント補正 HEAD は documentation Fail の support 暗号境界 doc comment 補正を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `この実装コメント補正 HEAD`。この文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..この実装コメント補正 HEAD` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail、documentation Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
+- 紐付け: 実装/テスト差分の保存コミット終端は `この実装コメント補正 HEAD`。この current-cycle 補正 HEAD は support 暗号境界 doc comment 補正と review artifact / ledger 整合を同じ current-cycle 補正として保持する。補正 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..この実装コメント補正 HEAD` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail、documentation Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
 - 実装差分集合: `6fd4014..この実装コメント補正 HEAD` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
