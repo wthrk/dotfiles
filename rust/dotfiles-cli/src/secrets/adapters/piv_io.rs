@@ -1,10 +1,8 @@
 //! YubiKey PIV discovery/selection と実プロセス I/O を port 契約へ接続する adapter。
 
-mod report;
-mod secret_io;
-
 use anyhow::{Context, bail};
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
+use serde_json::json;
 use yubikey::{
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
@@ -14,24 +12,27 @@ use crate::{
     Result,
     secrets::{
         domain::{
-            manifest::BootstrapSecretDocument,
+            manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument},
             material::SecretMaterial,
-            piv::{PivObjectId, SecretName, SecretStorageSpec},
+            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName, SecretStorageSpec},
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
                 SecretStorageWriteIntent,
             },
+            values::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole},
         },
         ports::{
             BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            SecretInputPort, SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort,
+            ReportPort, SecretInputPort, SecretOutputPort, SecretStoragePort,
+            SpareDeviceSerialPort,
         },
-        support::protection::{sealed_blob, secret_consumer, secret_random},
+        support::{
+            process_io,
+            protection::{sealed_blob, secret_consumer, secret_random},
+        },
     },
 };
-
-use self::secret_io::RealSecretIoAdapter;
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
@@ -76,6 +77,70 @@ trait SecretDeviceIo {
 trait SelectedDeviceDiscoveryIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice>;
+}
+
+/// `dotfiles secrets` の標準入出力境界を担う runtime adapter。
+#[derive(Default)]
+struct RealSecretIoAdapter;
+
+impl PinInputPort for RealSecretIoAdapter {
+    fn read_pin(&self) -> Result<SecretMaterial> {
+        let protected = process_io::read_hidden_line(
+            "YubiKey PIN: ",
+            PIV_PIN_MAX_LEN,
+            "YubiKey PIN is too long",
+        )?;
+        let pin = protected;
+        if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
+            bail!("YubiKey PIN must be 6 to 8 bytes");
+        }
+        Ok(pin)
+    }
+}
+
+impl SecretInputPort for RealSecretIoAdapter {
+    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial> {
+        if name.uses_visible_input() {
+            return process_io::read_visible_line(
+                "bw-email: ",
+                16 * 1024,
+                "visible secret input is too large",
+            );
+        }
+        let prompt = format!("{name}: ");
+        process_io::read_hidden_line(&prompt, 16 * 1024, "hidden secret input is too large")
+    }
+
+    fn read_streamed_secret(&self) -> Result<SecretMaterial> {
+        let protected = process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")?;
+        Ok(protected)
+    }
+}
+
+impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
+    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
+        let protected =
+            process_io::read_stdin_all(64 * 1024, "bootstrap secret JSON input is too large")?;
+        let mut fields = protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)?;
+        let missing = |field: &str| anyhow::anyhow!("JSON field `{field}` is missing");
+        let bw_email = fields
+            .remove("bw-email")
+            .ok_or_else(|| missing("bw-email"))?;
+        let bw_password = fields
+            .remove("bw-password")
+            .ok_or_else(|| missing("bw-password"))?;
+        let bws_access_token = fields
+            .remove("bws-access-token")
+            .ok_or_else(|| missing("bws-access-token"))?;
+
+        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)
+    }
+}
+
+impl SecretOutputPort for RealSecretIoAdapter {
+    fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
+        process_io::write_secret_stdout(secret)
+    }
 }
 
 /// device serial 解決と PIN 要否判定を port 契約へ翻訳する adapter。
@@ -268,6 +333,96 @@ pub(crate) struct JsonReportAdapter {
 impl Default for JsonReportAdapter {
     fn default() -> Self {
         Self { route: "real" }
+    }
+}
+
+impl ReportPort for JsonReportAdapter {
+    fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
+        write_enroll_report_for_route(self.route, summary)
+    }
+
+    fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
+        write_verify_report_for_route(self.route, summary)
+    }
+}
+
+/// enroll 結果を route 監査情報つき JSON report へ翻訳して stdout へ出力する。
+///
+/// この関数は adapter 翻訳境界として、domain/application 値を CLI 出力契約へ
+/// 変換する責務のみを持つ。caller 側は route 判定済みの境界値を渡し、
+/// ここで route 判定ロジックを追加しない責務を負う。
+fn write_enroll_report_for_route(route: &'static str, summary: &EnrollSummary) -> Result<()> {
+    let payload = json!({
+        "serial": summary.serial,
+        "role": report_role(summary.role),
+        "checks": report_checks(&summary.checks),
+        "device-adapter-route": route,
+    });
+    let rendered = serde_json::to_string_pretty(&payload).context("failed to serialize report")?;
+    println!("{rendered}");
+    Ok(())
+}
+
+/// verify 結果を route 監査情報つき JSON report へ翻訳して stdout へ出力する。
+///
+/// adapter では「report 形式への写像」と「出力」だけを扱い、route 選択は扱わない。
+/// caller 側は same-route 監査で確定した route 値を渡し、境界外で別ルートを
+/// 生成しないことが責務となる。
+fn write_verify_report_for_route(route: &'static str, summary: &VerifySummary) -> Result<()> {
+    let payload = json!({
+        "serial": summary.serial,
+        "checks": report_checks(&summary.checks),
+        "device-adapter-route": route,
+    });
+    let rendered = serde_json::to_string_pretty(&payload).context("failed to serialize report")?;
+    println!("{rendered}");
+    Ok(())
+}
+
+/// domain 側の check map を CLI JSON 配列形式へ翻訳する。
+///
+/// check 名と状態の表記は外部出力契約なので、domain 値の意味を変えずにここで文字列化する。
+fn report_checks(
+    checks: &std::collections::BTreeMap<CheckName, CheckStatus>,
+) -> Vec<serde_json::Value> {
+    checks
+        .iter()
+        .map(|(name, status)| {
+            json!({
+                "name": report_check(*name),
+                "status": report_check_status(*status),
+            })
+        })
+        .collect()
+}
+
+/// domain role 列挙値を JSON wire の安定 key 文字列へ写像する。
+fn report_role(value: YubikeyRole) -> &'static str {
+    match value {
+        YubikeyRole::Primary => "primary",
+        YubikeyRole::Spare => "spare",
+    }
+}
+
+/// domain check 名を互換性維持対象の JSON key 文字列へ翻訳する。
+fn report_check(value: CheckName) -> &'static str {
+    match value {
+        CheckName::Setup => "setup",
+        CheckName::BwEmail => "bw-email",
+        CheckName::BwPassword => "bw-password",
+        CheckName::BwsAccessToken => "bws-access-token",
+        CheckName::LocalStorage => "local-storage",
+        CheckName::Bws => "bws",
+        CheckName::BwLogin => "bw-login",
+    }
+}
+
+/// domain status 列挙値を report wire status 文字列へ翻訳する。
+fn report_check_status(value: CheckStatus) -> &'static str {
+    match value {
+        CheckStatus::Ok => "ok",
+        CheckStatus::Failed => "failed",
+        CheckStatus::Skipped => "skipped",
     }
 }
 
