@@ -30,7 +30,8 @@ pub(crate) fn run_verify_yubikey_with<
     for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-        let _secret = boundary.load_secret(serial, intent, pin.as_ref())?;
+        let secret = boundary.load_secret(serial, &intent, pin.as_ref())?;
+        intent.validate_loaded_secret(&secret)?;
     }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(

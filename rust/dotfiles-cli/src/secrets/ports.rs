@@ -97,7 +97,7 @@ pub trait SecretStoragePort {
     fn load_secret(
         &mut self,
         serial: u32,
-        intent: SecretStorageReadIntent,
+        intent: &SecretStorageReadIntent,
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial>;
 }

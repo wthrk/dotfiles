@@ -28,6 +28,7 @@ pub(crate) fn run_get_with<
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-    let secret = boundary.load_secret(serial, intent, pin.as_ref())?;
+    let secret = boundary.load_secret(serial, &intent, pin.as_ref())?;
+    intent.validate_loaded_secret(&secret)?;
     boundary.write_secret(&secret)
 }

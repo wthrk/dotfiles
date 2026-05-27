@@ -23,14 +23,12 @@ pub(crate) struct SealRequest<'a> {
     pub plaintext: &'a ProtectedSecret,
     pub content_key: &'a ProtectedSecret,
     pub aad: &'a [u8],
-    pub minimum_plaintext_len: usize,
 }
 
 pub(crate) struct SealWithKeyWrapRequest<'a> {
     pub secret_id: u8,
     pub plaintext: &'a ProtectedSecret,
     pub aad: &'a [u8],
-    pub minimum_plaintext_len: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -88,8 +86,7 @@ pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<Pro
 }
 
 pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
-    request.plaintext.with_secret(|plaintext_bytes| {
-        ensure_minimum_plaintext_len(plaintext_bytes, request.minimum_plaintext_len)?;
+    request.plaintext.with_secret(|_| {
         let cipher = request.content_key.with_secret(aes_256_gcm_from_key)?;
         let mut ciphertext_secret = ProtectedSecret::try_clone(request.plaintext)?;
         let tag = ciphertext_secret.with_secret_mut(|ciphertext_bytes| {
@@ -125,7 +122,6 @@ pub(crate) fn seal_with_key_wrap(
         plaintext: request.plaintext,
         content_key: &content_key,
         aad: request.aad,
-        minimum_plaintext_len: request.minimum_plaintext_len,
     })
 }
 
@@ -134,18 +130,16 @@ pub(crate) fn open_with_key_unwrap(
     expected_secret_id: u8,
     mut unwrap_key: impl FnMut(&[u8]) -> Result<ProtectedSecret>,
     aad: &[u8],
-    minimum_plaintext_len: usize,
 ) -> Result<ProtectedSecret> {
     let blob = SealedBlob::decode_for_secret_id(input, expected_secret_id)?;
     let content_key = unwrap_key(&blob.wrapped_key)?;
-    open_decoded(blob, &content_key, aad, minimum_plaintext_len)
+    open_decoded(blob, &content_key, aad)
 }
 
 fn open_decoded(
     blob: SealedBlob,
     content_key: &ProtectedSecret,
     aad: &[u8],
-    minimum_plaintext_len: usize,
 ) -> Result<ProtectedSecret> {
     let cipher = content_key.with_secret(aes_256_gcm_from_key)?;
     let mut secret = ProtectedSecret::new(blob.ciphertext.len())?;
@@ -155,20 +149,11 @@ fn open_decoded(
             decrypt_detached(&cipher, &blob.nonce, aad, secret_bytes, &blob.tag)
         })
         .map_err(|_| anyhow::anyhow!("failed to decrypt payload"))?;
-    secret
-        .with_secret(|plaintext| ensure_minimum_plaintext_len(plaintext, minimum_plaintext_len))?;
     Ok(secret)
 }
 
 fn invalid_blob<T>() -> Result<T> {
     Err(invalid_data("invalid sealed secret blob").into())
-}
-
-fn ensure_minimum_plaintext_len(plaintext: &[u8], minimum_plaintext_len: usize) -> Result<()> {
-    if plaintext.len() < minimum_plaintext_len {
-        return Err(invalid_data("protected plaintext is shorter than required minimum").into());
-    }
-    Ok(())
 }
 
 fn invalid_data(message: impl Into<String>) -> std::io::Error {
@@ -209,7 +194,6 @@ mod tests {
             plaintext: &plaintext,
             content_key: &content_key,
             aad: TEST_AAD,
-            minimum_plaintext_len: 1,
         })?;
 
         plaintext.with_secret_mut(|bytes| bytes.fill(b'x'));
@@ -219,7 +203,6 @@ mod tests {
             TEST_SECRET_ID,
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
-            1,
         )?;
         opened.with_secret(|bytes| {
             assert_eq!(bytes, b"secret-value");
@@ -238,7 +221,6 @@ mod tests {
             plaintext: &plaintext,
             content_key: &content_key,
             aad: TEST_AAD,
-            minimum_plaintext_len: 1,
         })?;
         if let Some(last) = encoded.last_mut() {
             *last ^= 0x01;
@@ -251,7 +233,6 @@ mod tests {
             TEST_SECRET_ID,
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
-            1,
         );
 
         assert!(result.is_err());

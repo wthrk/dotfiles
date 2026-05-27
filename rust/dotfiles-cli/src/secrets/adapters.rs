@@ -138,7 +138,7 @@ impl SecretStoragePort for SecretsAdapters {
     fn load_secret(
         &mut self,
         serial: u32,
-        intent: SecretStorageReadIntent,
+        intent: &SecretStorageReadIntent,
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial> {
         self.storage.load_secret(serial, intent, pin)

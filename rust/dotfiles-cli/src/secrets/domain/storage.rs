@@ -7,6 +7,7 @@ use crate::Result;
 
 use super::{
     manifest::SecretManifest,
+    material::SecretMaterial,
     piv::{
         PivApplicationVersion, PivObjectId, SecretStorageSpec, StorageObjectIds,
         validate_secret_storage_setup_preconditions,
@@ -156,5 +157,10 @@ impl SecretStorageReadIntent {
     /// 復号処理の失敗を対象 secret の domain error へ変換する。
     pub fn decode_error(&self, error: anyhow::Error) -> anyhow::Error {
         self.storage.decode_error(error)
+    }
+
+    /// 復号済み secret が対象 storage の値制約を満たすことを確認する。
+    pub fn validate_loaded_secret(&self, secret: &SecretMaterial) -> Result<()> {
+        self.storage.ensure_plaintext_len(secret.len())
     }
 }

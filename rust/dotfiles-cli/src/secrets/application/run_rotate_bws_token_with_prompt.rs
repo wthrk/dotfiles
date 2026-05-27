@@ -41,7 +41,8 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
             let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-            let _secret = boundary.load_secret(serial, intent, pin.as_ref())?;
+            let secret = boundary.load_secret(serial, &intent, pin.as_ref())?;
+            intent.validate_loaded_secret(&secret)?;
         }
         Ok(())
     })();

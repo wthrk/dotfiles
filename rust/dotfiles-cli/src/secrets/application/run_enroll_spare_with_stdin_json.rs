@@ -50,7 +50,8 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-        let _secret = boundary.load_secret(spare_serial, intent, pin.as_ref())?;
+        let secret = boundary.load_secret(spare_serial, &intent, pin.as_ref())?;
+        intent.validate_loaded_secret(&secret)?;
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }

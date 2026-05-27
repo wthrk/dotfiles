@@ -309,7 +309,7 @@ impl SecretStoragePort for StorageAdapter {
     fn load_secret(
         &mut self,
         serial: u32,
-        intent: SecretStorageReadIntent,
+        intent: &SecretStorageReadIntent,
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial> {
         let mut device = self.open_device_by_serial(serial)?;
@@ -707,7 +707,6 @@ impl SecretDeviceIo for YubikeySecretDevice {
                 secret_id: storage.secret_id,
                 plaintext,
                 aad: &storage.additional_data,
-                minimum_plaintext_len: storage.minimum_plaintext_len,
             },
             |content_key| self.wrap_content_key(content_key),
         )
@@ -723,7 +722,6 @@ impl SecretDeviceIo for YubikeySecretDevice {
             storage.secret_id,
             |wrapped_key| self.unwrap_content_key(wrapped_key),
             &storage.additional_data,
-            storage.minimum_plaintext_len,
         )
     }
 }
