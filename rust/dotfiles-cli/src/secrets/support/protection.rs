@@ -15,6 +15,7 @@ use zeroize::Zeroizing;
 pub(crate) mod buffer;
 pub(crate) mod sealed_blob;
 pub(crate) mod secret_random;
+pub(crate) mod yubikey_pin;
 #[cfg(feature = "secrets-test-stub")]
 pub(crate) mod yubikey_stub_crypto;
 
@@ -165,7 +166,7 @@ impl ProtectedSecret {
     /// 平文 bytes を closure の実行中だけ借用として公開する。
     ///
     /// クロージャー内でデータを外部被保護バッファにコピーしてはならない
-    pub(in crate::secrets) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+    pub(super) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.value.as_slice())
     }
 

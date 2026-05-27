@@ -14,7 +14,7 @@ use crate::secrets::{
         piv::{PivObjectId, SecretStorageSpec},
     },
     ports::{DeviceCandidate, SecretDevice},
-    support::protection::{sealed_blob, secret_random},
+    support::protection::{sealed_blob, secret_random, yubikey_pin},
 };
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
@@ -173,11 +173,7 @@ impl SecretDevice for YubikeySecretDevice {
         if self.pin_verified {
             return Ok(());
         }
-        pin.with_secret(|pin_bytes| {
-            self.yubikey
-                .verify_pin(pin_bytes)
-                .map_err(anyhow::Error::new)
-        })?;
+        yubikey_pin::verify(&mut self.yubikey, pin)?;
         self.pin_verified = true;
         Ok(())
     }
