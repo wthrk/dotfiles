@@ -26,7 +26,7 @@ const MIN_PIV_METADATA_VERSION: Version = Version {
 };
 
 /// 開いた YubiKey PIV session と PIN 検証状態を保持する実機 adapter。
-pub struct YubikeySecretDevice {
+pub(crate) struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
 }

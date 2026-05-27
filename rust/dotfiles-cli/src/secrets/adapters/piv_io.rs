@@ -11,21 +11,16 @@ use anyhow::bail;
 use crate::{
     Result,
     secrets::domain::{
-        manifest::BootstrapSecretDocument,
-        material::SecretMaterial,
-        piv::SecretName,
-        values::{EnrollSummary, VerifySummary},
+        manifest::BootstrapSecretDocument, material::SecretMaterial, piv::SecretName,
     },
     secrets::ports::{
         BootstrapSecretDocumentInputPort, DeviceCandidate, DevicePinPolicyPort,
-        DeviceSelectionPort, DeviceSerialPort, PinInputPort, ReportPort, SecretDevice,
-        SecretInputPort, SecretOutputPort, SpareDeviceSerialPort,
+        DeviceSelectionPort, DeviceSerialPort, PinInputPort, SecretDevice, SecretInputPort,
+        SecretOutputPort, SpareDeviceSerialPort,
     },
 };
 
-use self::{
-    device::SelectedDeviceAdapter, report::JsonReportAdapter, secret_io::RealSecretIoAdapter,
-};
+use self::{device::SelectedDeviceAdapter, secret_io::RealSecretIoAdapter};
 
 trait DeviceAdapterRouteLabel {
     fn adapter_route_label(&self) -> &'static str;
@@ -34,33 +29,26 @@ trait DeviceAdapterRouteLabel {
 /// 実機 device・実プロセス I/O・report 出力を束ねる runtime adapter。
 ///
 /// この型は複数 port の実装を 1 箇所に集約し、application 層へ concrete I/O を漏らさない境界として機能する。
-pub(crate) struct RealSecretsBoundary<D = SelectedDeviceAdapter>
-where
-    D: DeviceSelectionPort,
-{
-    device: D,
+pub(crate) struct RealSecretsBoundary {
+    device: SelectedDeviceAdapter,
     secret_io: RealSecretIoAdapter,
-    report: JsonReportAdapter,
+    route: &'static str,
 }
 
-impl Default for RealSecretsBoundary<SelectedDeviceAdapter> {
+impl Default for RealSecretsBoundary {
     fn default() -> Self {
         let device = SelectedDeviceAdapter::default();
         let route = device.adapter_route_label();
         Self {
             device,
             secret_io: RealSecretIoAdapter,
-            report: JsonReportAdapter::new(route),
+            route,
         }
     }
 }
 
-impl<D> DeviceSelectionPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-    D::Device: SecretDevice,
-{
-    type Device = D::Device;
+impl DeviceSelectionPort for RealSecretsBoundary {
+    type Device = <SelectedDeviceAdapter as DeviceSelectionPort>::Device;
 
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         self.device.discover_devices()
@@ -71,10 +59,7 @@ where
     }
 }
 
-impl<D> DeviceSerialPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
+impl DeviceSerialPort for RealSecretsBoundary {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
         if let Some(serial) = requested {
             return Ok(serial);
@@ -88,39 +73,26 @@ where
     }
 }
 
-impl<D> SpareDeviceSerialPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
+impl SpareDeviceSerialPort for RealSecretsBoundary {
     fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32> {
         self.resolve_device_serial(requested_spare_serial)
     }
 }
 
-impl<D> DevicePinPolicyPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-    D::Device: SecretDevice,
-{
+impl DevicePinPolicyPort for RealSecretsBoundary {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
         let device = self.open_device_by_serial(serial)?;
         Ok(device.requires_pin_input())
     }
 }
 
-impl<D> PinInputPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
+impl PinInputPort for RealSecretsBoundary {
     fn read_pin(&self) -> Result<SecretMaterial> {
         self.secret_io.read_pin()
     }
 }
 
-impl<D> SecretInputPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
+impl SecretInputPort for RealSecretsBoundary {
     fn read_visible_secret(&self) -> Result<SecretMaterial> {
         self.secret_io.read_visible_secret()
     }
@@ -134,31 +106,15 @@ where
     }
 }
 
-impl<D> BootstrapSecretDocumentInputPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
+impl BootstrapSecretDocumentInputPort for RealSecretsBoundary {
     fn read_bootstrap_secret_document_noninteractive(&self) -> Result<BootstrapSecretDocument> {
         self.secret_io
             .read_bootstrap_secret_document_noninteractive()
     }
 }
 
-impl<D> SecretOutputPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
+impl SecretOutputPort for RealSecretsBoundary {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
         self.secret_io.write_secret(secret)
-    }
-}
-
-impl ReportPort for RealSecretsBoundary<SelectedDeviceAdapter> {
-    fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-        self.report.write_enroll_report(summary)
-    }
-
-    fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        self.report.write_verify_report(summary)
     }
 }
