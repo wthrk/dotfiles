@@ -16,8 +16,8 @@ pub(crate) mod buffer;
 #[cfg(feature = "secrets-test-stub")]
 pub(crate) mod masked_key_wrap;
 pub(crate) mod sealed_blob;
+pub(crate) mod secret_consumer;
 pub(crate) mod secret_random;
-pub(crate) mod yubikey_pin;
 
 use crate::Result;
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));

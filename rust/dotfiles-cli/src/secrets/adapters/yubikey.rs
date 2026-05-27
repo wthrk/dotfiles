@@ -14,7 +14,7 @@ use crate::secrets::{
         piv::{PivObjectId, SecretStorageSpec},
     },
     ports::DeviceCandidate,
-    support::protection::{sealed_blob, secret_random, yubikey_pin},
+    support::protection::{sealed_blob, secret_consumer, secret_random},
 };
 
 use super::{RealDeviceIo, SecretDeviceIo};
@@ -186,7 +186,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
         if self.pin_verified {
             return Ok(());
         }
-        yubikey_pin::verify(&mut self.yubikey, pin)?;
+        secret_consumer::consume(pin, &mut YubikeyPinVerifier(&mut self.yubikey))?;
         self.pin_verified = true;
         Ok(())
     }
@@ -226,5 +226,13 @@ impl SecretDeviceIo for YubikeySecretDevice {
             &storage.label,
         )?;
         Ok(secret)
+    }
+}
+
+struct YubikeyPinVerifier<'a>(&'a mut YubiKey);
+
+impl secret_consumer::SecretConsumer for YubikeyPinVerifier<'_> {
+    fn consume(&mut self, bytes: &[u8]) -> Result<()> {
+        self.0.verify_pin(bytes).map_err(anyhow::Error::new)
     }
 }
