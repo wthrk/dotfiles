@@ -13,8 +13,8 @@
 
 - 作業種別: `モジュール構造のゼロベース書き換えを含む規約適合リファクタリング`
 - 現行サイクル状態: `再レビュー待ち`
-- 現行サイクル確認基準: `2bd7e0a..02281d2 current-cycle app regression test remediation`
-- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+- 現行サイクル確認基準: `2bd7e0a..b0c5fd5 current-cycle app regression test remediation`
+- 実装/テスト差分の保存コミット終端: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
 - 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の動作有無ではなくアーキテクチャ規約への厳密適合を基準に作り直す。責務境界が崩れている箇所を読み直し、モジュール分割、依存方向、入出力境界を再構成すること自体が仕事である。
 - 現行サイクル既知例外: `MgmKey::get_default` による factory-default management key を暫定前提とする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。

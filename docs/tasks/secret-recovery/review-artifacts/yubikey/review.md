@@ -5,19 +5,19 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `02281d2` は、履歴上の旧 app/storage-service 回帰テスト復旧を追加したため再レビュー待ち。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-02281d2-plus-evidence-sync-head`
-- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `b0c5fd5` は、security Fail の assertion output 秘匿化を追加したため再レビュー待ち。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-b0c5fd5-plus-evidence-sync-head`
+- 実装/テスト差分の保存コミット終端: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
   - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（この文書-only HEAD 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
@@ -66,6 +66,7 @@
   - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
   - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
   - `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+  - `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
   - `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
 
@@ -89,11 +90,12 @@
 - 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
 - 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
 - 追加修正コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+- 追加修正コミット: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 証跡同期コミット: `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 追加修正: `2bd7e0a..02281d2` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `02281d2`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..02281d2` は直近レビュー Fail と app 回帰テスト未復旧 Fail を対象とする。
-- 実装差分集合: `6fd4014..02281d2` の変更ファイル集合:
+- 追加修正: `2bd7e0a..b0c5fd5` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` は security Fail の assertion output 秘匿化を含む。
+- 紐付け: 実装/テスト差分の保存コミット終端は `b0c5fd5`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..b0c5fd5` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail を対象とする。
+- 実装差分集合: `6fd4014..b0c5fd5` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -292,7 +294,7 @@
 - 集約後レビュー判定: `要修正`
 - 集約判定要約: `02281d2` で履歴上の旧 app/storage-service 回帰テスト復旧を追加したため、必須 reviewer の再レビュー完了まで commit gate は未充足。
 - 集約根拠:
-  - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-02281d2-plus-evidence-sync-head` に一致させた。
+  - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-b0c5fd5-plus-evidence-sync-head` に一致させた。
   - 実装/テスト差分の保存コミット終端を `02281d2 test(secrets): 履歴上のapp回帰テストを復旧` として記録した。
   - `secrets::application` は 43 tests へ増加し、履歴上の未復旧 test 名 12 件を現行責務層へ復旧済み。
   - structural / operational-consistency / security / specification-conformance / test / documentation / architectural-consistency / reference-integrity は再レビュー待ち。

@@ -6,18 +6,18 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-02281d2-plus-evidence-sync-head`
-- 確認基準: `2bd7e0a..02281d2 current-cycle app regression test remediation`
-- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-b0c5fd5-plus-evidence-sync-head`
+- 確認基準: `2bd7e0a..b0c5fd5 current-cycle app regression test remediation`
+- 実装/テスト差分の保存コミット終端: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
-  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
+  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（b0c5fd5 対象）`
   - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（この文書-only HEAD 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
@@ -66,6 +66,7 @@
   - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
   - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
   - `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+  - `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
   - `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
 
@@ -99,6 +100,20 @@
 - `git diff --check`: 成功
 - 状態: `再レビュー待ち`
 
+## 2026-05-28 security Fail 修正追記
+
+- 実装コミット: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
+- 修正対象:
+  - `rust/dotfiles-cli/src/secrets/application.rs`: `output_secret_value()` / `stored_secret_value(...)` の平文 `assert_eq!` を長さ + SHA-256 digest 比較へ置換し、失敗時 output に secret/load bytes を出さない。
+  - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`: 復号 plaintext の平文 `assert_eq!` を長さ + SHA-256 digest 比較へ置換し、失敗時 output に plaintext bytes を出さない。
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（43 passed, 0 failed）
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::`: 成功（80 passed, 0 failed）
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
+- `direnv exec . cargo check -p dotfiles-cli`: 成功
+- `direnv exec . cargo clippy -p dotfiles-cli --all-targets`: 成功
+- `git diff --check`: 成功
+- 状態: `security 再レビュー待ち`
+
 ## 2026-05-28 current-cycle 証跡是正コミット
 
 - 是正コミット: `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
@@ -113,11 +128,12 @@
 - 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
 - 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
 - 追加修正コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+- 追加修正コミット: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 証跡同期コミット: `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 追加修正: `2bd7e0a..02281d2` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `02281d2`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..02281d2` は直近レビュー Fail と app 回帰テスト未復旧 Fail を対象とする。
-- 実装差分集合: `6fd4014..02281d2` の変更ファイル集合:
+- 追加修正: `2bd7e0a..b0c5fd5` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` は security Fail の assertion output 秘匿化を含む。
+- 紐付け: 実装/テスト差分の保存コミット終端は `b0c5fd5`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..b0c5fd5` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail を対象とする。
+- 実装差分集合: `6fd4014..b0c5fd5` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
