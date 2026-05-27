@@ -38,7 +38,7 @@
   - **[層違反: application → concrete I/O・parser・protected-secret ownership は adapter/support 所有]** **V5** `application/run_*.rs` に永続書き込み、manifest の serde_json parse/serialize、blob decode、device precondition、summary 構築、AEAD 呼び出し順序、`SecretSession` / `ProtectedSecret` 系の所有が混在している（concrete I/O / parser / crypto 実装詳細 / protected-secret ownership は `application` 保有禁止違反）。
   - **[層違反: port → DTO・parser・prompt は adapter 所有]** **V6** `ports.rs` の `EnrollmentSecretSet` が port に DTO を置き、`SecretsBoundary` が `prompt_yes_no` / `stdin_is_terminal` / `stdout_is_terminal` / stdin JSON decode を含む（port への DTO 配置禁止・parser/prompt は `adapter` 所有規則違反）。
   - **[層違反: port → domain 以外への依存禁止]** **V7** `ports.rs` が `support::protection::{InterruptGuard, ProtectedSecret, SecretSession}` に依存している（port は domain にのみ依存可能規則違反）。
-  - **[層違反: domain → port contract は port 層に置く]** **V8** `domain/model.rs` が `SecretDevice` trait を定義している（port contract は `port` に置く規則違反）。
+  - **[層違反: domain → port contract は port 層に置く]** **V8** 旧 domain 集約 module が `SecretDevice` trait を定義していた（port contract は `port` に置く規則違反）。現行 tree では domain は `domain.rs` と `domain/*`、port contract は `ports.rs` を実在 path として参照する。
   - **[層違反: application → use case 独自型禁止・domain 型限定]** **V9** `CheckName` / `CheckStatus` / `EnrollSummary` / `VerifySummary` / `YubikeyRole` のような use case outcome 型を `application` 側へ所有・移設してはならない。use case が扱う型は `domain` 層定義に限定し、application 独自型の導入を禁止する。
   - **[層違反: application → ユースケース単位分割 + 技術詳細排除]** **V10** `application.rs` が sibling `run_*.rs` の module 配線を超える責務を持っている、または `application/run_*.rs` が wire format / AEAD / protected-secret ownership / device 操作 / use case 手順以外の責務を再混在させている。各 use case は sibling file に 1 つの `run_*` 関数として表現し、`application.rs` は module 配線専用に限定する必要がある（1 use case = 1 function 原則違反・application 層責務混在違反）。
   - **[層違反: support → feature-specific terminal policy / orchestration は禁止]** **V11** support 層に YubiKey-specific な prompt 方針、device 選択判断、use case 手順、feature 固有の stdout policy が混入している。`rust/dotfiles-cli/src/secrets/support/process_io.rs` の残存自体は defect ではなく、判定は「process-generic な補助か」「feature 固有の判断を持ち込んでいるか」で行う。
@@ -46,7 +46,7 @@
   - **[層違反: adapters → adapter 面は責務別に分割]** **V13** `adapters.rs` / `adapters/piv_io.rs` が device selection・interactive prompt・stdin JSON decode・report 出力変換を同一 seam で保持し、差し替え単位が不明確になっている（adapter 面分割規則違反）。
   - **[経路違反: production command path の境界維持]** **V14** `adapters/piv_io.rs` 内の device selection 配線は same-route 原則を満たす単一路でなければならない。禁止対象は、利用者向けの別 CLI / 別 binary、および `--test-stub-yubikey`・`yubikey_runtime`・`secrets-test-stub` feature / env などを使って command-scenario を分岐し production behavior を変形すること、または production command path 自体を差し替える port-boundary swap である。feature / env の存在自体を blanket 禁止してはならない。一方で、同一 production command path と同一 port 契約を維持したまま行う test 時の dependency selection / fixture selection（例: テストハーネス側での許可済み実装選択、固定 fixture 入力）は許可し、V14 違反として扱ってはならない。
   - **[配置・責務評価違反: production adapter 面の整合]** **V15** production adapter 面に test stub / fake device / fixture state を持ち込まない。PIV/YubiKey 実機 adapter は port 契約と外部技術の翻訳だけを持ち、test fixture は production command path を変形しない検証層へ分離する。
-  - **[層違反: domain・port → I/O 型禁止]** **V16** `domain/model.rs` の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいる（port / domain に I/O 型禁止規則違反）。
+  - **[層違反: domain・port → I/O 型禁止]** **V16** 旧 domain 集約 module の `SecretDevice::write_unwrapped_key` が `std::io::Write` を domain/port 境界に持ち込んでいた（port / domain に I/O 型禁止規則違反）。現行 tree では domain は `domain.rs` と `domain/*`、port contract は `ports.rs` を実在 path として参照する。
 - 完了の判定条件（以下を全て満たすこと。1件でも残れば未完了とする）:
   - `application` が `adapter` の具体型を import しない（V1, V4 の解消）。
   - `application` が `println!` / stdin 読み取り / concrete device handle 操作を含まない（V2, V3 の解消）。
@@ -124,7 +124,7 @@
   - same-route 判定では、同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection を許可対象として扱う。禁止対象は product behavior を切り替える command-scenario branching と production command path 差し替えに限定する。
   - production adapter 面に test stub / fake device / fixture state を残さず、テストは production command path を feature/env で差し替えない範囲へ限定する。
   - secret 本文は `ProtectedSecret` 型以外で扱わない前提を維持する。
-  - `rust/dotfiles-cli-secrets-test-stub/` を復活させない。
+  - 旧 dedicated test-stub crate を復活させない。
   - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` と `rust/dotfiles-cli/src/secrets/adapters/piv_io/` のモジュール説明コメントを現行実装の責務境界と一致させる。
@@ -136,7 +136,7 @@
 規約違反 V1〜V16 の解消は、依存関係の順序を考慮して以下の順で着手することを推奨する。
 
 1. **V8, V16 を先に解消する**（domain → port の依存整理）
-   - V8：`domain/model.rs` の `SecretDevice` を `ports.rs` へ移設
+   - V8：旧 domain 集約 module の `SecretDevice` を `ports.rs` へ移設
    - V16：`SecretDevice::write_unwrapped_key` の `std::io::Write` を除去
 2. **V9 を解消する**（use case outcome 型の domain 統一）
    - use case 独自型を禁止し、use case outcome 型を domain 層定義へ統一する。application 側への移設は解消ではなく再違反である。
@@ -182,14 +182,14 @@
 | V5 | `src/secrets/application/run_*.rs` | serde_json parse / blob decode / AEAD 呼び出し順序 / `SecretSession`・`ProtectedSecret` 所有を application から除去し、adapter・support・domain の責務境界へ戻す。 |
 | V6 | `src/secrets/ports.rs` | `EnrollmentSecretSet` DTO を除去。`SecretsBoundary` を最小 capability 契約に分割。 |
 | V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去する。V6（`SecretsBoundary` 整理）と連動しており、V6 で `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去するか domain 層へ移設することで解消する。ステップ1では V8/V16 のみ対象とし V7 はステップ3（V6 と同時）で解消する。 |
-| V8 | `src/secrets/domain/model.rs` | `SecretDevice` を ports 層へ移設。 |
-| V9 | `src/secrets/domain/model.rs`、`src/secrets/application/summary.rs`（存在する場合） | use case outcome 型（`EnrollSummary` 等）を domain 層へ統一し、application 独自型を残さない。 |
+| V8 | `src/secrets/domain.rs`, `src/secrets/domain/*`, `src/secrets/ports.rs` | 旧 domain 集約 module の `SecretDevice` を ports 層へ移設。 |
+| V9 | `src/secrets/domain/values.rs`, `src/secrets/application.rs` | use case outcome 型（`EnrollSummary` 等）を domain 層へ統一し、application 独自型を残さない。 |
 | V10 | `src/secrets/application.rs`、`src/secrets/application/run_*.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/domain/wire.rs` | `application.rs` を sibling `run_*.rs` の module 配線専用に限定し、production use case entrypoint としての `application/` 直下 sibling `run_*.rs` ごとに単一 `run_*` 関数を維持する。use-case 手順、device 外部 API 変換、wire parser/serializer、protected-secret ownership の責務を層ごとに再分離し、use case-to-use case call と use case 層 commonization を禁止する。`#[cfg(test)] mod tests` と `*_tests.rs` はこの単一 `run_*` 制約の対象外。 |
 | V11 | `src/secrets/support/` | feature-specific な terminal I/O / prompt / orchestration を support から除去する。`support/process_io.rs` のような process-generic 補助は残してよい。 |
 | V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
 | V13 | `src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs` | device selection / input / report の責務境界を明示し、adapter seam を分離する。 |
 | V14, V15 | `src/secrets/adapters/piv_io.rs`、`rust/dotfiles-cli/tests/secrets_cli.rs` | same-route を崩す分岐を解消し、production adapter 面から test stub / fake device / fixture state を除去する。 |
-| V16 | `src/secrets/domain/model.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
+| V16 | `src/secrets/domain.rs`, `src/secrets/domain/*`, `src/secrets/ports.rs` | `write_unwrapped_key` の `impl Write` 引数をバイト列 / protected 型へ変更し I/O 型を除去。 |
 
 ## 固定実装単位トラッカー
 

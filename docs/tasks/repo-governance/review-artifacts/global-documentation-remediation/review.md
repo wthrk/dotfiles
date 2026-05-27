@@ -50,15 +50,20 @@
 
 ## 役割別レビュー判定（レビュー担当記入）
 
-- 構造レビュー担当 判定: `合格（no findings）`
+- 構造レビュー担当 判定: `合格`
+- 構造レビュー担当 判定要約: `所見なし`
 - 構造レビュー担当 agent/run 識別子: `agent:review-structure-finaldoc-closeout / run:2026-05-21-finaldoc-rs-002`
-- 運用整合レビュー担当 判定: `合格（no findings）`
+- 運用整合レビュー担当 判定: `合格`
+- 運用整合レビュー担当 判定要約: `所見なし`
 - 運用整合レビュー担当 agent/run 識別子: `agent:review-ops-finaldoc-closeout / run:2026-05-21-finaldoc-ro-002`
-- セキュリティレビュー担当 判定: `合格（文書差分 / no findings）`
+- セキュリティレビュー担当 判定: `合格`
+- セキュリティレビュー担当 判定要約: `文書差分、所見なし`
 - セキュリティレビュー担当 agent/run 識別子: `agent:review-security-finaldoc-closeout / run:2026-05-21-finaldoc-rsec-002`
-- 仕様適合レビュー担当 判定: `合格（no findings）`
+- 仕様適合レビュー担当 判定: `合格`
+- 仕様適合レビュー担当 判定要約: `所見なし`
 - 仕様適合レビュー担当 agent/run 識別子: `agent:review-spec-finaldoc-closeout / run:2026-05-21-finaldoc-rsp-002`
-- 参照整合レビュー担当 判定: `合格（no findings）`
+- 参照整合レビュー担当 判定: `合格`
+- 参照整合レビュー担当 判定要約: `所見なし`
 - 参照整合レビュー担当 agent/run 識別子: `agent:review-reference-finaldoc-closeout / run:2026-05-21-finaldoc-rr-002`
 ## 役割別フォールバック記録（必要時のみ必須）
 

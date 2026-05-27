@@ -5,8 +5,8 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: `ce7dc31` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-ce7dc31`
+- 集約判定要約: `01979bf` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-01979bf`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
@@ -14,6 +14,7 @@
   - `1cc9889 refactor(secrets): 保護secret操作をprotection内部へ閉じる`
   - `cc39c6b docs(secrets): YubiKey運用証跡を9352e14基準へ同期`
   - `ce7dc31 refactor(secrets): secret入力規則をdomainへ寄せる`
+  - `01979bf docs(secrets): YubiKey現行サイクル参照を同期`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
@@ -108,18 +109,28 @@
 - 追加保存コミット: `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
 - 追加保存コミット: `1cc9889 refactor(secrets): 保護secret操作をprotection内部へ閉じる`
 - 追加保存コミット: `cc39c6b docs(secrets): YubiKey運用証跡を9352e14基準へ同期`
-- 本 operational 修正文書コミット: `この追記を含む保存コミット`
+- 本 operational 修正文書コミット: `01979bf docs(secrets): YubiKey現行サイクル参照を同期`
 - レビュー前保存コミット扱い: 上記保存コミットは作業状態を失わないための中間保存点であり、レビュー合格、完了判定、または `S3 -> S4` の commit gate 充足根拠にはしない。
 - management key 前提: 現行 YubiKey work item サイクルでは factory-default management key を暫定前提にする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。
-- `9352e14` 以降の変更ファイル集合:
-  - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
-  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
-  - `docs/tasks/secret-recovery/tasks.md`
-  - `docs/tasks/secret-recovery/work-items/yubikey.md`
+- `9352e14..01979bf` の変更ファイル集合:
   - `docs/secret-recovery/secret-recovery-spec.md`
   - `docs/secret-recovery/yubikey-secret-storage-design.md`
+  - `docs/task-governance/implementation-review-judgement.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/structural-review.md`
+  - `docs/tasks/secret-recovery/tasks.md`
+  - `docs/tasks/secret-recovery/work-items/yubikey.md`
   - `docs/tasks/tasks.md`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_put_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/piv.rs`
+  - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
@@ -127,7 +138,8 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
 - 確認結果:
-  - `9352e14` 保存点の後続で adapter 補助ファイル内包、protection 内部化、`cc39c6b` の operational 証跡同期コミットを確認した。
+  - `9352e14..01979bf` の実差分出力と上記変更ファイル集合を同期した。
+  - `cc39c6b` と `01979bf` を保存コミット列へ明示した。
   - 本追記では operational 証跡整合のみを扱い、合格とは記録しない。
 
 ### 2026-05-26 追加実装サイクル追記
