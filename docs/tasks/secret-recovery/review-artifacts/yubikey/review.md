@@ -35,6 +35,8 @@
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 確認証跡同期コミット: `734823d docs(secrets): record yubikey verification evidence`
 - 追加保存コミット: `e148c0d fix(secrets): YubiKey再レビュー指摘を修正`
+- 追加保存コミット: `e06bf4d fix(secrets): adapter公開面をport実装型へ限定`
+- 追加保存コミット: `41084ae fix(secrets): adapter境界のclippy指摘を修正`
 - 現行状態: `再レビュー待ち`
 - レビュー前提: security は pass 済み。structural / operational の Fail 指摘は本追記以降の保存点で修正済みとして扱い、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
@@ -66,6 +68,12 @@
   - レビュー前保存コミットは `S3 -> S4` の終端コミットとは別の中間保存点であり、レビュー合格/完了コミット gate を満たさないことを workflow 正本へ明記した。
   - 今後の保存点コミットメッセージを `<type>(<scope>): <日本語説明>` に統一することを workflow 正本へ明記した。
 - e148c0d 検証結果:
+  - `direnv exec . cargo xtask check`: 成功
+  - `direnv exec . cargo clippy --workspace --all-targets`: 成功
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
+- 41084ae 検証結果:
+  - `cargo check -p dotfiles-cli`: 成功
+  - `git diff --check`: 成功
   - `direnv exec . cargo xtask check`: 成功
   - `direnv exec . cargo clippy --workspace --all-targets`: 成功
   - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
