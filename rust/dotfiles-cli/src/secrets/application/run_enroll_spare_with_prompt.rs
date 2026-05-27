@@ -113,7 +113,7 @@ mod tests {
             },
             &mut boundary,
         )?;
-        assert_eq!(boundary.resolution_order, vec!["primary", "spare"]);
+        assert_eq!(boundary.mock.resolution_order(), vec!["primary", "spare"]);
         Ok(())
     }
 
@@ -122,7 +122,7 @@ mod tests {
         let mut boundary = AppMockBoundary::new()
             .expect_enrollment_success()
             .expect_pin();
-        boundary.spare_requires_pin = true;
+        boundary.mock.set_spare_requires_pin(true);
         run_enroll_spare_with_prompt(
             EnrollSpareCommand {
                 primary_serial: Some(2001),
@@ -137,7 +137,7 @@ mod tests {
         let mut boundary = AppMockBoundary::new()
             .expect_enrollment_success()
             .expect_pin();
-        boundary.primary_requires_pin = true;
+        boundary.mock.set_primary_requires_pin(true);
         run_enroll_spare_with_prompt(
             EnrollSpareCommand {
                 primary_serial: Some(2001),
@@ -151,7 +151,7 @@ mod tests {
     fn enroll_spare_prompt_stops_when_verify_fails() {
         let mut boundary = AppMockBoundary::new();
         boundary.mock.expect_event("setup");
-        boundary.loaded_len = 0;
+        boundary.mock.set_loaded_len(0);
         let result = run_enroll_spare_with_prompt(
             EnrollSpareCommand {
                 primary_serial: Some(2001),

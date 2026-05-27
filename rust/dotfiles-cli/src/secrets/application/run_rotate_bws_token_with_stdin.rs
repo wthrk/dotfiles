@@ -81,24 +81,22 @@ mod tests {
             RotateBwsTokenCommand { serial: Some(2001) },
             &mut success,
         )?;
+        let success_reports = success.mock.reports();
         assert_eq!(
-            success.reports.borrow()[0]
-                .checks
-                .get(&CheckName::LocalStorage),
+            success_reports[0].checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Ok)
         );
 
         let mut failed = AppMockBoundary::new().expect_rotation_success();
-        failed.loaded_len = 0;
+        failed.mock.set_loaded_len(0);
         let result = run_rotate_bws_token_with_stdin(
             RotateBwsTokenCommand { serial: Some(2001) },
             &mut failed,
         );
         assert!(result.is_err(), "verify failure should fail rotation");
+        let failed_reports = failed.mock.reports();
         assert_eq!(
-            failed.reports.borrow()[0]
-                .checks
-                .get(&CheckName::LocalStorage),
+            failed_reports[0].checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Failed)
         );
         Ok(())
@@ -109,7 +107,7 @@ mod tests {
         let mut requires_pin = AppMockBoundary::new()
             .expect_rotation_success()
             .expect_pin();
-        requires_pin.primary_requires_pin = true;
+        requires_pin.mock.set_primary_requires_pin(true);
         run_rotate_bws_token_with_stdin(
             RotateBwsTokenCommand { serial: Some(2001) },
             &mut requires_pin,

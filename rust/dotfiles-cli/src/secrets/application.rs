@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn put_rejects_noninteractive_without_serial_before_device_open() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
-        boundary.device_serial_available = false;
+        boundary.mock.set_primary_available(false);
         let command = PutCommand {
             name: SecretName::BwsAccessToken,
             serial: None,
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn setup_rejects_noninteractive_without_serial_before_device_open() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
-        boundary.device_serial_available = false;
+        boundary.mock.set_primary_available(false);
         let err =
             super::run_setup_with::run_setup_with(SetupCommand { serial: None }, &mut boundary)
                 .expect_err("setup unexpectedly succeeded");
@@ -80,8 +80,10 @@ mod tests {
     #[test]
     fn put_rejects_tty_stdin_before_device_open() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
-        boundary.device_serial = 10;
-        boundary.streamed_secret_error = Some("--stdin requires pipe or redirect input");
+        boundary.mock.set_primary_serial(10);
+        boundary
+            .mock
+            .set_streamed_secret_error("--stdin requires pipe or redirect input");
         let command = PutCommand {
             name: SecretName::BwsAccessToken,
             serial: Some(10),
@@ -96,7 +98,7 @@ mod tests {
     #[test]
     fn rotate_bws_token_rejects_noninteractive_without_serial() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
-        boundary.device_serial_available = false;
+        boundary.mock.set_primary_available(false);
         let err = super::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
             &mut boundary,
@@ -109,8 +111,10 @@ mod tests {
     #[test]
     fn enroll_primary_rejects_tty_stdin_json_before_device_open() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_setup();
-        boundary.device_serial = 10;
-        boundary.stdin_json_error = Some("--stdin-json requires pipe or redirect input");
+        boundary.mock.set_primary_serial(10);
+        boundary
+            .mock
+            .set_stdin_json_error("--stdin-json requires pipe or redirect input");
         let err = super::run_enroll_primary_with_stdin_json::run_enroll_primary_with_stdin_json(
             EnrollPrimaryCommand { serial: Some(10) },
             &mut boundary,
@@ -126,8 +130,10 @@ mod tests {
     #[test]
     fn enroll_spare_rejects_tty_stdin_json_before_device_open() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_setup();
-        boundary.spare_serial = 20;
-        boundary.stdin_json_error = Some("--stdin-json requires pipe or redirect input");
+        boundary.mock.set_spare_serial(20);
+        boundary
+            .mock
+            .set_stdin_json_error("--stdin-json requires pipe or redirect input");
         let command = EnrollSpareCommand {
             primary_serial: Some(10),
             spare_serial: Some(20),
@@ -148,9 +154,9 @@ mod tests {
     fn enroll_primary_stdin_json_stops_before_secret_read_when_pin_verification_fails() -> Result<()>
     {
         let mut boundary = AppMockBoundary::new().expect_setup().expect_store_times(3);
-        boundary.device_serial = 10;
-        boundary.primary_requires_pin = true;
-        boundary.pin_error = Some("pin verification failed");
+        boundary.mock.set_primary_serial(10);
+        boundary.mock.set_primary_requires_pin(true);
+        boundary.mock.set_pin_error("pin verification failed");
         let err = super::run_enroll_primary_with_stdin_json::run_enroll_primary_with_stdin_json(
             EnrollPrimaryCommand { serial: Some(10) },
             &mut boundary,
@@ -164,9 +170,9 @@ mod tests {
     fn enroll_spare_stdin_json_stops_before_secret_read_when_pin_verification_fails() -> Result<()>
     {
         let mut boundary = AppMockBoundary::new().expect_setup().expect_store_times(3);
-        boundary.spare_serial = 20;
-        boundary.spare_requires_pin = true;
-        boundary.pin_error = Some("pin verification failed");
+        boundary.mock.set_spare_serial(20);
+        boundary.mock.set_spare_requires_pin(true);
+        boundary.mock.set_pin_error("pin verification failed");
         let command = EnrollSpareCommand {
             primary_serial: Some(10),
             spare_serial: Some(20),

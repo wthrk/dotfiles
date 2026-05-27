@@ -85,7 +85,7 @@ mod tests {
         let mut boundary = AppMockBoundary::new()
             .expect_enrollment_success()
             .expect_pin();
-        boundary.spare_requires_pin = true;
+        boundary.mock.set_spare_requires_pin(true);
         run_enroll_spare_with_stdin_json(
             EnrollSpareCommand {
                 primary_serial: Some(2001),
@@ -112,7 +112,7 @@ mod tests {
         let mut boundary = AppMockBoundary::new();
         boundary.mock.expect_event("setup");
         boundary.mock.expect_event_times("store", 3);
-        boundary.loaded_len = 0;
+        boundary.mock.set_loaded_len(0);
         let result = run_enroll_spare_with_stdin_json(
             EnrollSpareCommand {
                 primary_serial: Some(2001),

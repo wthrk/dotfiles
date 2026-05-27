@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn verify_requests_pin_when_required() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_report().expect_pin();
-        boundary.primary_requires_pin = true;
+        boundary.mock.set_primary_requires_pin(true);
         run_verify_yubikey_with(
             VerifyYubikeyCommand {
                 serial: Some(2001),

@@ -1,10 +1,10 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use mockito::{Mock, Server, ServerGuard};
+use mockito::{Matcher, Server, ServerGuard};
 
 use crate::Result;
 use crate::secrets::{
@@ -17,43 +17,141 @@ use crate::secrets::{
             SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
             SecretStorageWriteIntent,
         },
-        values::{EnrollSummary, VerifySummary},
+        values::{CheckName, CheckStatus, EnrollSummary, VerifySummary},
     },
     ports::{self, SecretStoragePort},
 };
 
 pub(crate) struct AppMock {
     server: ServerGuard,
-    mocks: Vec<Mock>,
+    state: Arc<Mutex<AppMockState>>,
+    _get: mockito::Mock,
+    _post: mockito::Mock,
 }
 
 impl AppMock {
     pub(crate) fn new() -> Self {
+        let mut server = Server::new();
+        let state = Arc::new(Mutex::new(AppMockState::default()));
+        let get_status_state = Arc::clone(&state);
+        let get_body_state = Arc::clone(&state);
+        let post_status_state = Arc::clone(&state);
+        let post_body_state = Arc::clone(&state);
+
+        let get = server
+            .mock("GET", Matcher::Any)
+            .with_status_code_from_request(move |request| {
+                get_status_state
+                    .lock()
+                    .map(|state| state.get_status(request.path()))
+                    .unwrap_or(500)
+            })
+            .with_body_from_request(move |request| {
+                get_body_state
+                    .lock()
+                    .map(|state| state.get_body(request.path()))
+                    .unwrap_or_default()
+            })
+            .expect_at_least(0)
+            .create();
+        let post = server
+            .mock("POST", Matcher::Any)
+            .with_status_code_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or(&[]);
+                post_status_state
+                    .lock()
+                    .map(|mut state| state.post_status(request.path(), body))
+                    .unwrap_or(500)
+            })
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or(&[]);
+                post_body_state
+                    .lock()
+                    .map(|state| state.post_body(request.path(), body))
+                    .unwrap_or_default()
+            })
+            .expect_at_least(0)
+            .create();
+
         Self {
-            server: Server::new(),
-            mocks: Vec::new(),
+            server,
+            state,
+            _get: get,
+            _post: post,
         }
     }
 
     pub(crate) fn expect_event(&mut self, event: &'static str) {
-        let mock = self
-            .server
-            .mock("POST", format!("/events/{event}").as_str())
-            .expect(1)
-            .create();
-        self.mocks.push(mock);
+        self.configure(|state| state.expect_event(event, 1));
     }
 
     pub(crate) fn expect_event_times(&mut self, event: &'static str, hits: usize) {
-        let mock = self
-            .server
-            .mock("POST", format!("/events/{event}").as_str())
-            .expect(hits)
-            .create();
-        self.mocks.push(mock);
+        self.configure(|state| state.expect_event(event, hits));
     }
 
-    pub(crate) fn event(&self, event: &'static str) -> Result<()> {
+    pub(crate) fn set_primary_serial(&self, serial: u32) {
+        self.configure(|state| state.primary_serial = serial);
+    }
+
+    pub(crate) fn set_spare_serial(&self, serial: u32) {
+        self.configure(|state| state.spare_serial = serial);
+    }
+
+    pub(crate) fn set_primary_available(&self, available: bool) {
+        self.configure(|state| state.primary_available = available);
+    }
+
+    pub(crate) fn set_primary_requires_pin(&self, requires_pin: bool) {
+        self.configure(|state| state.primary_requires_pin = requires_pin);
+    }
+
+    pub(crate) fn set_spare_requires_pin(&self, requires_pin: bool) {
+        self.configure(|state| state.spare_requires_pin = requires_pin);
+    }
+
+    pub(crate) fn set_loaded_len(&self, len: usize) {
+        self.configure(|state| state.loaded_len = len);
+    }
+
+    pub(crate) fn set_setup_failure(&self, fail: bool) {
+        self.configure(|state| state.fail_setup = fail);
+    }
+
+    pub(crate) fn set_store_failure(&self, secret: SecretName) {
+        self.configure(|state| state.fail_on_store = Some(secret));
+    }
+
+    pub(crate) fn set_pin_error(&self, error: &'static str) {
+        self.configure(|state| state.pin_error = Some(error));
+    }
+
+    pub(crate) fn set_stdin_json_error(&self, error: &'static str) {
+        self.configure(|state| state.stdin_json_error = Some(error));
+    }
+
+    pub(crate) fn set_streamed_secret_error(&self, error: &'static str) {
+        self.configure(|state| state.streamed_secret_error = Some(error));
+    }
+
+    pub(crate) fn stores(&self) -> Vec<SecretName> {
+        self.snapshot(|state| state.stores.clone())
+    }
+
+    pub(crate) fn resolution_order(&self) -> Vec<&'static str> {
+        self.snapshot(|state| state.resolution_order.clone())
+    }
+
+    pub(crate) fn reports(&self) -> Vec<VerifySummary> {
+        self.snapshot(|state| {
+            state
+                .reports
+                .iter()
+                .map(|(serial, status)| verify_summary(*serial, *status))
+                .collect()
+        })
+    }
+
+    fn request(&self, method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>> {
         let endpoint = self
             .server
             .url()
@@ -66,55 +164,73 @@ impl AppMock {
         let mut stream = TcpStream::connect((host, port.parse::<u16>()?))?;
         write!(
             stream,
-            "POST /events/{event} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
         )?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-        if !response.starts_with("HTTP/1.1 200") {
-            anyhow::bail!("mockito event `{event}` failed: {response}");
+        stream.write_all(body)?;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response)?;
+        let header_end = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or_else(|| anyhow::anyhow!("mockito response missing header terminator"))?;
+        let headers = String::from_utf8_lossy(&response[..header_end]);
+        let status = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .ok_or_else(|| anyhow::anyhow!("mockito response missing status"))?
+            .parse::<u16>()?;
+        let body = response[header_end + 4..].to_vec();
+        if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            let message = String::from_utf8_lossy(&body);
+            anyhow::bail!("{message}");
         }
-        Ok(())
+    }
+
+    fn configure(&self, update: impl FnOnce(&mut AppMockState)) {
+        if let Ok(mut state) = self.state.lock() {
+            update(&mut state);
+        }
+    }
+
+    fn snapshot<T>(&self, read: impl FnOnce(&AppMockState) -> T) -> T {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        read(&state)
+    }
+}
+
+impl Drop for AppMock {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        for (event, expected) in &state.expected_events {
+            let actual = state.event_hits.get(event).copied().unwrap_or_default();
+            assert_eq!(
+                actual, *expected,
+                "mockito app event `{event}` hit count mismatch"
+            );
+        }
     }
 }
 
 pub(crate) struct AppMockBoundary {
     pub(crate) mock: AppMock,
-    pub(crate) device_serial: u32,
-    pub(crate) spare_serial: u32,
-    pub(crate) primary_requires_pin: bool,
-    pub(crate) spare_requires_pin: bool,
-    pub(crate) device_serial_available: bool,
-    pub(crate) spare_serial_available: bool,
-    pub(crate) loaded_len: usize,
-    pub(crate) stores: Vec<SecretName>,
-    pub(crate) resolution_order: Vec<&'static str>,
-    pub(crate) fail_setup: bool,
-    pub(crate) fail_on_store: Option<SecretName>,
-    pub(crate) pin_error: Option<&'static str>,
-    pub(crate) stdin_json_error: Option<&'static str>,
-    pub(crate) streamed_secret_error: Option<&'static str>,
-    pub(crate) reports: RefCell<Vec<VerifySummary>>,
 }
 
 impl AppMockBoundary {
     pub(crate) fn new() -> Self {
         Self {
             mock: AppMock::new(),
-            device_serial: 2001,
-            spare_serial: 2002,
-            primary_requires_pin: false,
-            spare_requires_pin: false,
-            device_serial_available: true,
-            spare_serial_available: true,
-            loaded_len: 1,
-            stores: Vec::new(),
-            resolution_order: Vec::new(),
-            fail_setup: false,
-            fail_on_store: None,
-            pin_error: None,
-            stdin_json_error: None,
-            streamed_secret_error: None,
-            reports: RefCell::new(Vec::new()),
         }
     }
 
@@ -149,10 +265,8 @@ impl AppMockBoundary {
 
 impl ports::DeviceSerialPort for AppMockBoundary {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
-        self.resolution_order.push("primary");
-        requested
-            .or(self.device_serial_available.then_some(self.device_serial))
-            .ok_or_else(|| anyhow::anyhow!("pass --serial in non-interactive use"))
+        let body = option_u32_body(requested);
+        parse_u32(&self.mock.request("POST", "/device/primary/resolve", &body)?)
     }
 }
 
@@ -161,81 +275,90 @@ impl ports::SpareDeviceSerialPort for AppMockBoundary {
         &mut self,
         requested_spare_serial: Option<u32>,
     ) -> Result<u32> {
-        self.resolution_order.push("spare");
-        requested_spare_serial
-            .or(self.spare_serial_available.then_some(self.spare_serial))
-            .ok_or_else(|| anyhow::anyhow!("pass --serial in non-interactive use"))
+        let body = option_u32_body(requested_spare_serial);
+        parse_u32(&self.mock.request("POST", "/device/spare/resolve", &body)?)
     }
 }
 
 impl ports::DevicePinPolicyPort for AppMockBoundary {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
-        Ok(if serial == self.device_serial {
-            self.primary_requires_pin
-        } else {
-            self.spare_requires_pin
-        })
+        parse_bool(
+            &self
+                .mock
+                .request("GET", &format!("/device/{serial}/requires-pin"), &[])?,
+        )
     }
 }
 
 impl ports::PinInputPort for AppMockBoundary {
     fn read_pin(&self) -> Result<SecretMaterial> {
-        if let Some(error) = self.pin_error {
-            anyhow::bail!(error);
-        }
-        self.mock.event("pin")?;
-        Ok(secret_material(b"123456"))
+        let bytes = self.mock.request("POST", "/pin/read", &[])?;
+        Ok(secret_material(bytes))
     }
 }
 
 impl ports::SecretInputPort for AppMockBoundary {
     fn read_bw_email_secret(&self) -> Result<SecretMaterial> {
-        Ok(secret_material(b"u@example.com"))
+        let bytes = self.mock.request("POST", "/secret/bw-email/read", &[])?;
+        Ok(secret_material(bytes))
     }
 
     fn read_bw_password_secret(&self) -> Result<SecretMaterial> {
-        Ok(secret_material(b"secret"))
+        let bytes = self.mock.request("POST", "/secret/bw-password/read", &[])?;
+        Ok(secret_material(bytes))
     }
 
     fn read_bws_access_token_secret(&self) -> Result<SecretMaterial> {
-        Ok(secret_material(b"token"))
+        let bytes = self
+            .mock
+            .request("POST", "/secret/bws-access-token/read", &[])?;
+        Ok(secret_material(bytes))
     }
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {
-        if let Some(error) = self.streamed_secret_error {
-            anyhow::bail!(error);
-        }
-        Ok(secret_material(b"token"))
+        let bytes = self.mock.request("POST", "/secret/streamed/read", &[])?;
+        Ok(secret_material(bytes))
     }
 }
 
 impl ports::BootstrapSecretDocumentInputPort for AppMockBoundary {
     fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>> {
-        if let Some(error) = self.stdin_json_error {
-            anyhow::bail!(error);
-        }
-        Ok(BTreeMap::from([
-            ("bw-email".to_string(), secret_material(b"u@example.com")),
-            ("bw-password".to_string(), secret_material(b"secret")),
-            ("bws-access-token".to_string(), secret_material(b"secret")),
-        ]))
+        let body = self.mock.request("POST", "/bootstrap/read-fields", &[])?;
+        let text = String::from_utf8(body).context("mockito bootstrap response must be UTF-8")?;
+        text.lines()
+            .map(|line| {
+                let (key, value) = line
+                    .split_once('=')
+                    .ok_or_else(|| anyhow::anyhow!("mockito bootstrap field is invalid"))?;
+                Ok((key.to_string(), secret_material(value.as_bytes().to_vec())))
+            })
+            .collect()
     }
 }
 
 impl ports::SecretOutputPort for AppMockBoundary {
     fn write_secret(&self, _secret: &SecretMaterial) -> Result<()> {
-        Ok(())
+        self.mock.request("POST", "/secret/output/write", &[]).map(drop)
     }
 }
 
 impl ports::ReportPort for AppMockBoundary {
     fn write_enroll_report(&self, _summary: &EnrollSummary) -> Result<()> {
-        self.mock.event("report")
+        self.mock
+            .request("POST", "/report/enroll", b"enroll")
+            .map(drop)
     }
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        self.reports.borrow_mut().push(summary.clone());
-        self.mock.event("report")
+        let local_storage = summary
+            .checks
+            .get(&CheckName::LocalStorage)
+            .copied()
+            .unwrap_or(CheckStatus::Skipped);
+        let body = format!("{} {}", summary.serial, check_status_wire(local_storage));
+        self.mock
+            .request("POST", "/report/verify", body.as_bytes())
+            .map(drop)
     }
 }
 
@@ -245,10 +368,7 @@ impl SecretStoragePort for AppMockBoundary {
         _serial: u32,
         _probe: &SecretStorageSetupProbe,
     ) -> Result<SecretStorageSetupInspection> {
-        self.mock.event("setup")?;
-        if self.fail_setup {
-            anyhow::bail!("setup failed");
-        }
+        self.mock.request("POST", "/storage/setup/inspect", &[])?;
         Ok(SecretStorageSetupInspection {
             key_exists: false,
             piv_version: PivApplicationVersion::minimum_for_secret_storage(),
@@ -263,7 +383,9 @@ impl SecretStoragePort for AppMockBoundary {
         _serial: u32,
         _intent: SecretStorageSetupIntent,
     ) -> Result<()> {
-        Ok(())
+        self.mock
+            .request("POST", "/storage/setup/initialize", &[])
+            .map(drop)
     }
 
     fn inspect_secret_storage_write(
@@ -271,6 +393,7 @@ impl SecretStoragePort for AppMockBoundary {
         _serial: u32,
         _storage: &SecretStorageSpec,
     ) -> Result<SecretStorageWriteInspection> {
+        self.mock.request("POST", "/storage/write/inspect", &[])?;
         Ok(SecretStorageWriteInspection {
             manifest_bytes: Some(SecretManifest::expected().encode()?),
             object_exists: false,
@@ -283,13 +406,13 @@ impl SecretStoragePort for AppMockBoundary {
         intent: SecretStorageWriteIntent,
         _secret: &SecretMaterial,
     ) -> Result<()> {
-        let name = intent.storage.name;
-        if self.fail_on_store == Some(name) {
-            anyhow::bail!("store failed");
-        }
-        self.mock.event("store")?;
-        self.stores.push(name);
-        Ok(())
+        self.mock
+            .request(
+                "POST",
+                "/storage/store",
+                intent.storage.name.to_string().as_bytes(),
+            )
+            .map(drop)
     }
 
     fn inspect_secret_storage_read(
@@ -297,6 +420,7 @@ impl SecretStoragePort for AppMockBoundary {
         _serial: u32,
         _storage: &SecretStorageSpec,
     ) -> Result<SecretStorageReadInspection> {
+        self.mock.request("POST", "/storage/read/inspect", &[])?;
         Ok(SecretStorageReadInspection {
             manifest_bytes: Some(SecretManifest::expected().encode()?),
             encoded: Some(vec![1]),
@@ -309,20 +433,262 @@ impl SecretStoragePort for AppMockBoundary {
         _intent: &SecretStorageReadIntent,
         _pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial> {
-        Ok(secret_with_len(self.loaded_len))
+        let bytes = self.mock.request("POST", "/storage/load", &[])?;
+        Ok(secret_material(bytes))
     }
 }
 
-fn secret_material(bytes: &'static [u8]) -> SecretMaterial {
-    SecretMaterial::from_backend(
-        bytes.to_vec(),
-        |secret| secret.len(),
-        |secret| Ok(secret.clone()),
-    )
+#[derive(Clone)]
+struct AppMockState {
+    primary_serial: u32,
+    spare_serial: u32,
+    primary_requires_pin: bool,
+    spare_requires_pin: bool,
+    primary_available: bool,
+    loaded_len: usize,
+    fail_setup: bool,
+    fail_on_store: Option<SecretName>,
+    pin_error: Option<&'static str>,
+    stdin_json_error: Option<&'static str>,
+    streamed_secret_error: Option<&'static str>,
+    stores: Vec<SecretName>,
+    resolution_order: Vec<&'static str>,
+    reports: Vec<(u32, CheckStatus)>,
+    expected_events: BTreeMap<&'static str, usize>,
+    event_hits: BTreeMap<&'static str, usize>,
 }
 
-fn secret_with_len(len: usize) -> SecretMaterial {
-    SecretMaterial::from_backend(vec![0; len], |secret| secret.len(), |secret| {
-        Ok(secret.clone())
-    })
+impl Default for AppMockState {
+    fn default() -> Self {
+        Self {
+            primary_serial: 2001,
+            spare_serial: 2002,
+            primary_requires_pin: false,
+            spare_requires_pin: false,
+            primary_available: true,
+            loaded_len: 1,
+            fail_setup: false,
+            fail_on_store: None,
+            pin_error: None,
+            stdin_json_error: None,
+            streamed_secret_error: None,
+            stores: Vec::new(),
+            resolution_order: Vec::new(),
+            reports: Vec::new(),
+            expected_events: BTreeMap::new(),
+            event_hits: BTreeMap::new(),
+        }
+    }
+}
+
+impl AppMockState {
+    fn expect_event(&mut self, event: &'static str, hits: usize) {
+        self.expected_events.insert(event, hits);
+    }
+
+    fn hit_event(&mut self, event: &'static str) {
+        *self.event_hits.entry(event).or_insert(0) += 1;
+    }
+
+    fn get_status(&self, path: &str) -> usize {
+        if path.starts_with("/device/") && path.ends_with("/requires-pin") {
+            200
+        } else {
+            404
+        }
+    }
+
+    fn get_body(&self, path: &str) -> Vec<u8> {
+        if let Some(serial) = parse_device_requires_pin_path(path) {
+            let value = if serial == self.primary_serial {
+                self.primary_requires_pin
+            } else if serial == self.spare_serial {
+                self.spare_requires_pin
+            } else {
+                false
+            };
+            return bool_wire(value);
+        }
+        Vec::new()
+    }
+
+    fn post_status(&mut self, path: &str, body: &[u8]) -> usize {
+        match path {
+            "/device/primary/resolve" => {
+                self.resolution_order.push("primary");
+                if parse_optional_u32(body).is_some() || self.primary_available {
+                    200
+                } else {
+                    409
+                }
+            }
+            "/device/spare/resolve" => {
+                self.resolution_order.push("spare");
+                200
+            }
+            "/pin/read" => {
+                self.hit_event("pin");
+                status_for_error(self.pin_error)
+            }
+            "/secret/streamed/read" => status_for_error(self.streamed_secret_error),
+            "/bootstrap/read-fields" => status_for_error(self.stdin_json_error),
+            "/storage/setup/inspect" => {
+                self.hit_event("setup");
+                if self.fail_setup { 500 } else { 200 }
+            }
+            "/storage/store" => {
+                let secret = parse_secret_name(body);
+                if self.fail_on_store == secret {
+                    500
+                } else {
+                    self.hit_event("store");
+                    if let Some(secret) = secret {
+                        self.stores.push(secret);
+                    }
+                    200
+                }
+            }
+            "/report/enroll" => {
+                self.hit_event("report");
+                200
+            }
+            "/report/verify" => {
+                self.hit_event("report");
+                if let Some((serial, status)) = parse_verify_report(body) {
+                    self.reports.push((serial, status));
+                }
+                200
+            }
+            "/secret/bw-email/read"
+            | "/secret/bw-password/read"
+            | "/secret/bws-access-token/read"
+            | "/secret/output/write"
+            | "/storage/setup/initialize"
+            | "/storage/write/inspect"
+            | "/storage/read/inspect"
+            | "/storage/load" => 200,
+            _ => 404,
+        }
+    }
+
+    fn post_body(&self, path: &str, body: &[u8]) -> Vec<u8> {
+        match path {
+            "/device/primary/resolve" if parse_optional_u32(body).is_none() && !self.primary_available => {
+                b"pass --serial in non-interactive use".to_vec()
+            }
+            "/device/primary/resolve" => parse_optional_u32(body)
+                .unwrap_or(self.primary_serial)
+                .to_string()
+                .into_bytes(),
+            "/device/spare/resolve" => parse_optional_u32(body)
+                .unwrap_or(self.spare_serial)
+                .to_string()
+                .into_bytes(),
+            "/pin/read" => error_or_bytes(self.pin_error, b"123456"),
+            "/secret/bw-email/read" => b"u@example.com".to_vec(),
+            "/secret/bw-password/read" => b"secret".to_vec(),
+            "/secret/bws-access-token/read" => b"token".to_vec(),
+            "/secret/streamed/read" => error_or_bytes(self.streamed_secret_error, b"token"),
+            "/bootstrap/read-fields" => error_or_bytes(
+                self.stdin_json_error,
+                b"bw-email=u@example.com\nbw-password=secret\nbws-access-token=secret\n",
+            ),
+            "/storage/setup/inspect" if self.fail_setup => b"setup failed".to_vec(),
+            "/storage/store" if self.fail_on_store == parse_secret_name(body) => {
+                b"store failed".to_vec()
+            }
+            "/storage/load" => vec![0; self.loaded_len],
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn secret_material(bytes: Vec<u8>) -> SecretMaterial {
+    SecretMaterial::from_backend(bytes, |secret| secret.len(), |secret| Ok(secret.clone()))
+}
+
+fn verify_summary(serial: u32, local_storage: CheckStatus) -> VerifySummary {
+    match local_storage {
+        CheckStatus::Ok => VerifySummary::local_storage_verified(serial),
+        CheckStatus::Failed => VerifySummary::local_storage_failed(serial),
+        CheckStatus::Skipped => VerifySummary::external_checks_unavailable(serial, []),
+    }
+}
+
+fn option_u32_body(value: Option<u32>) -> Vec<u8> {
+    value.map(|serial| serial.to_string()).unwrap_or_default().into_bytes()
+}
+
+fn parse_u32(body: &[u8]) -> Result<u32> {
+    String::from_utf8(body.to_vec())?
+        .parse::<u32>()
+        .map_err(Into::into)
+}
+
+fn parse_bool(body: &[u8]) -> Result<bool> {
+    Ok(body == b"true")
+}
+
+fn bool_wire(value: bool) -> Vec<u8> {
+    if value {
+        b"true".to_vec()
+    } else {
+        b"false".to_vec()
+    }
+}
+
+fn parse_optional_u32(body: &[u8]) -> Option<u32> {
+    if body.is_empty() {
+        None
+    } else {
+        String::from_utf8_lossy(body).parse::<u32>().ok()
+    }
+}
+
+fn parse_device_requires_pin_path(path: &str) -> Option<u32> {
+    path.strip_prefix("/device/")
+        .and_then(|rest| rest.strip_suffix("/requires-pin"))
+        .and_then(|serial| serial.parse::<u32>().ok())
+}
+
+fn parse_secret_name(body: &[u8]) -> Option<SecretName> {
+    match body {
+        b"bw-email" => Some(SecretName::BwEmail),
+        b"bw-password" => Some(SecretName::BwPassword),
+        b"bws-access-token" => Some(SecretName::BwsAccessToken),
+        _ => None,
+    }
+}
+
+fn parse_verify_report(body: &[u8]) -> Option<(u32, CheckStatus)> {
+    let text = String::from_utf8_lossy(body);
+    let (serial, status) = text.split_once(' ')?;
+    Some((serial.parse().ok()?, parse_check_status(status)?))
+}
+
+fn parse_check_status(status: &str) -> Option<CheckStatus> {
+    match status {
+        "ok" => Some(CheckStatus::Ok),
+        "failed" => Some(CheckStatus::Failed),
+        "skipped" => Some(CheckStatus::Skipped),
+        _ => None,
+    }
+}
+
+fn check_status_wire(status: CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Ok => "ok",
+        CheckStatus::Failed => "failed",
+        CheckStatus::Skipped => "skipped",
+    }
+}
+
+fn status_for_error(error: Option<&str>) -> usize {
+    if error.is_some() { 500 } else { 200 }
+}
+
+fn error_or_bytes(error: Option<&str>, bytes: &[u8]) -> Vec<u8> {
+    error
+        .map(|message| message.as_bytes().to_vec())
+        .unwrap_or_else(|| bytes.to_vec())
 }
