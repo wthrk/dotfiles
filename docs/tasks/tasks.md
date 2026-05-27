@@ -41,6 +41,8 @@
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [secret-recovery/review-artifacts/yubikey/review.md](secret-recovery/review-artifacts/yubikey/review.md#yubikey-レビュー記録)
+- 現行サイクル確認基準: `6fd4014 refactor(secrets): storage復元規則をdomainへ移す`
+- 現行サイクル保存コミット終端: `6fd4014`
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### Bitwarden Secrets Manager

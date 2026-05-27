@@ -6,8 +6,8 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-01979bf`
-- 確認基準: `01979bf docs(secrets): YubiKey現行サイクル参照を同期`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-6fd4014`
+- 確認基準: `6fd4014 refactor(secrets): storage復元規則をdomainへ移す`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -15,6 +15,10 @@
   - `cc39c6b docs(secrets): YubiKey運用証跡を9352e14基準へ同期`
   - `ce7dc31 refactor(secrets): secret入力規則をdomainへ寄せる`
   - `01979bf docs(secrets): YubiKey現行サイクル参照を同期`
+  - `6fd4014 refactor(secrets): storage復元規則をdomainへ移す`
+- `1db05bc..6fd4014` の変更ファイル集合:
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/manifest.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`

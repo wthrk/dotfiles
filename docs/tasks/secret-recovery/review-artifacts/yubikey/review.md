@@ -5,8 +5,8 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: `01979bf` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-01979bf`
+- 集約判定要約: `6fd4014` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-6fd4014`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
@@ -15,6 +15,10 @@
   - `cc39c6b docs(secrets): YubiKey運用証跡を9352e14基準へ同期`
   - `ce7dc31 refactor(secrets): secret入力規則をdomainへ寄せる`
   - `01979bf docs(secrets): YubiKey現行サイクル参照を同期`
+  - `6fd4014 refactor(secrets): storage復元規則をdomainへ移す`
+- `1db05bc..6fd4014` の変更ファイル集合:
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/manifest.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
