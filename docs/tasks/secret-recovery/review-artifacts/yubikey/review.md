@@ -142,6 +142,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/Cargo.toml`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 対象スコープ:

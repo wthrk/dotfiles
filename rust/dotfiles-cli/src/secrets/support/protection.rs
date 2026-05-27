@@ -143,7 +143,15 @@ impl ProtectedSecret {
         Self::allocate_locked_destination(len)
     }
 
-    /// 唯一許されたバッファコピー
+    /// locked destination へ secret bytes を複製する唯一のコピー境界。
+    ///
+    /// `ProtectedSecret` の複製は、コピー先を確保して memory lock を取得してから平文 bytes を
+    /// 借用中だけ書き込むこの経路に限定する。確保または lock に失敗した場合は `Err` を返し、
+    /// unlocked copy や途中状態の protected value を返さない。
+    ///
+    /// caller が `with_secret` から直接コピー経路を作ると、lock 前の平文複製や zeroize 管理外の
+    /// buffer を作れるため禁止する。新しい複製 API が必要な場合も、この関数を経由して
+    /// lock-before-copy の順序を維持する。
     pub(crate) fn try_clone(from: &Self) -> Result<Self> {
         let mut this = Self::new(from.len())?;
         this.with_secret_mut(|to| from.with_secret(|from| to.copy_from_slice(from)));

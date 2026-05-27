@@ -136,6 +136,8 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`: file-level comment と、`SealRequest` / `SealWithKeyWrapRequest` / `SealedBlob` / `seal` / `seal_with_key_wrap` / `open_with_key_unwrap` の doc comment を追加し、AEAD・key wrap・AAD・payload id の責務境界を明記した。
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`: `aes_256_gcm_from_key` / `encrypt_detached` / `decrypt_detached` の doc comment を追加し、nonce/tag/AAD の扱いと caller responsibility を明記した。
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`: `mgf1_sha256` / `xor_with_mask` / `find_oaep_separator` の doc comment を追加し、OAEP 復元の失敗条件、padding 判定、secret buffer 境界を明記した。
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`: `rsa_oaep_encrypt` の doc comment を補正し、public key 境界、`ProtectedSecret` 借用中だけの平文化、opaque wrapped key 返却、失敗時に未 wrap key material を露出しない責務を明記した。
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`: `ProtectedSecret::try_clone` の doc comment を補正し、唯一許可される copy 経路、copy 前 lock、失敗時に unlocked copy を返さないこと、caller が直接 copy 経路を作ってはいけない理由を明記した。
 - 挙動変更: なし。doc comment / file-level comment の追加のみ。
 - `direnv exec . cargo fmt --check`: 成功
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::support::`: 成功（19 passed, 0 failed, 64 filtered out）
@@ -207,6 +209,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/Cargo.toml`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 対象スコープ:
