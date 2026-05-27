@@ -1,3 +1,9 @@
+// `secrets-internal-test-stub` feature 専用の mockito stub adapter。
+//
+// この file は `src/secrets/adapters/piv_io.rs` の test-only bridge からのみ読み込まれる。
+// production command path は `SelectedDeviceAdapter` の同一 port 契約を通し、fixture の選択だけを
+// xtask internal test 経路（`rust/tests/checks/src/static_checks.rs`）から注入する。
+
 use std::{
     io::{Read, Write},
     net::TcpStream,
@@ -11,9 +17,6 @@ use super::{
     material_from_protected, protected_from_material, secret_consumer,
 };
 
-// `secrets-internal-test-stub` feature 専用の mockito stub adapter。
-// production command path は `SelectedDeviceAdapter` の同一 port 契約を通し、fixture の選択だけを
-// xtask internal test 経路（`rust/tests/checks/src/static_checks.rs`）から注入する。
 const INTERNAL_STUB_ENDPOINT_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_MOCKITO_URL";
 
 #[derive(serde::Deserialize)]
@@ -54,11 +57,6 @@ struct StubSealConsumer {
     encoded: Option<Vec<u8>>,
 }
 
-/// Internal stub backend が選択されたことを示す監査用 route 名を返す。
-fn selected_device_route_label() -> &'static str {
-    "stub"
-}
-
 /// mockito 経由の internal stub から device 候補を取得し、adapter 境界型へ翻訳する。
 fn discover_devices() -> Result<Vec<DeviceCandidate>> {
     let response = stub_http_request("GET", "/devices", &[])?;
@@ -81,12 +79,6 @@ fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
         serial,
         pin_verified: false,
     }))
-}
-
-impl SelectedDeviceAdapter {
-    pub(super) fn route_label() -> &'static str {
-        selected_device_route_label()
-    }
 }
 
 impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {

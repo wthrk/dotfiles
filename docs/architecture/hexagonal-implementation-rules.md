@@ -71,6 +71,23 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
+### Rust private module 用 test-only bridge
+
+test double / fixture の本体は原則として `tests/` 配下に置く。Rust の private module / private usecase を同一 module context で検査する必要がある場合に限り、`#[cfg(all(test, feature = "..."))]` で `tests/` 配下の test support を対象 module へ `include!` する bridge を許可する。
+
+この bridge は次の条件をすべて満たす場合に限り、production source tree への test double 混入とは扱わない。
+
+- production build に含まれない。
+- internal test 専用 feature に限定される。
+- runtime の real/stub 分岐を作らない。
+- production command path を変更しない。
+- port trait 契約で usecase を駆動する。
+- domain/business logic を test support 側へ移さない。
+- mock/fake 本体は `tests/` 配下に置く。
+- module/comment で test-only bridge であることと xtask/internal test 経路を明記する。
+
+この許可は test-only bridge の配置に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の test support への移動、production command path の差し替えは、この bridge 条件を満たさないため引き続き禁止する。
+
 ## 責任分離の判断原則
 
 層の所属は、処理が低水準か高水準かではなく、その処理がどの責任を持つかで判断する。暗号、binary codec、SDK 呼び出し、JSON、端末 I/O のように技術的に見える処理であっても、業務上の意味、保存可能条件、オブジェクト間の整合、変換規則、状態遷移を決めているなら、その決定部分は domain または application の責務である。逆に、実行手段や外部 API への型変換だけであれば adapter / support の責務になりうる。

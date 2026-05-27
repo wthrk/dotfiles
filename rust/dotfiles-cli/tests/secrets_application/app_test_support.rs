@@ -1,3 +1,10 @@
+// application usecase test の port 実行を mockito HTTP route へ集約する共通 support。
+//
+// この file は `secrets-internal-test-stub` feature の test-only bridge から
+// module context へ読み込まれる。mock/fake 本体は `tests/` 配下に置き、production
+// build と production command path には含めない。internal test の実行経路は
+// `rust/tests/checks/src/static_checks.rs` の `secrets::application` test command に固定する。
+
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -22,6 +29,10 @@ use crate::secrets::{
     ports::{self, SecretStoragePort},
 };
 
+/// usecase port 呼び出しを mockito HTTP route と共有 state へ集約する test support。
+///
+/// 非 2xx response body は PIN/secret を含み得るため、error へ載せず、path/status から
+/// 安全な固定メッセージだけを返す。
 pub(crate) struct AppMock {
     server: ServerGuard,
     state: Arc<Mutex<AppMockState>>,
@@ -185,8 +196,7 @@ impl AppMock {
         if (200..300).contains(&status) {
             Ok(body)
         } else {
-            let message = String::from_utf8_lossy(&body);
-            anyhow::bail!("{message}");
+            anyhow::bail!("{}", safe_error_message(path, status));
         }
     }
 
@@ -223,6 +233,10 @@ impl Drop for AppMock {
     }
 }
 
+/// application usecase が要求する port trait を mockito route 経由で実装する境界。
+///
+/// 独自 fake の field 駆動ではなく、各 port method を `AppMock::request` に集約して
+/// usecase からは production と同じ port 契約だけを見せる。
 pub(crate) struct AppMockBoundary {
     pub(crate) mock: AppMock,
 }
@@ -680,6 +694,20 @@ fn check_status_wire(status: CheckStatus) -> &'static str {
         CheckStatus::Ok => "ok",
         CheckStatus::Failed => "failed",
         CheckStatus::Skipped => "skipped",
+    }
+}
+
+fn safe_error_message(path: &str, status: u16) -> String {
+    match path {
+        "/device/primary/resolve" if status == 409 => {
+            "pass --serial in non-interactive use".to_string()
+        }
+        "/pin/read" => "pin verification failed".to_string(),
+        "/secret/streamed/read" => "--stdin requires pipe or redirect input".to_string(),
+        "/bootstrap/read-fields" => "--stdin-json requires pipe or redirect input".to_string(),
+        "/storage/setup/inspect" => "mockito app route failed: storage setup inspect".to_string(),
+        "/storage/store" => "mockito app route failed: storage store".to_string(),
+        _ => format!("mockito app route failed: path={path} status={status}"),
     }
 }
 

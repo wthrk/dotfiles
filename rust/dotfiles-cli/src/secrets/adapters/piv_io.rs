@@ -12,6 +12,13 @@ use std::collections::BTreeMap;
 
 #[cfg(feature = "secrets-internal-test-stub")]
 mod internal_stub {
+    // Rust private module の internal stub を検査する test-only bridge。
+    //
+    // stub 本体は `tests/secrets_internal_stub/` に置き、`secrets-internal-test-stub`
+    // feature の internal test でのみ module context へ読み込む。xtask 側の実行経路は
+    // `rust/tests/checks/src/static_checks.rs` の `secrets_cli` / `secrets::application`
+    // internal test command。production command path と port 契約は変えず、runtime
+    // real/stub 分岐も作らない。
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/secrets_internal_stub/piv_io_internal_stub.rs"
@@ -486,7 +493,7 @@ fn selected_device_route_label() -> &'static str {
 
 #[cfg(feature = "secrets-internal-test-stub")]
 fn selected_device_route_label() -> &'static str {
-    SelectedDeviceAdapter::route_label()
+    "stub"
 }
 
 impl Default for SelectedDeviceAdapter {

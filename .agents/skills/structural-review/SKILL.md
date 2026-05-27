@@ -49,6 +49,7 @@ Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` tak
 - Enumerate all files under `adapters/` and all `pub`/`pub(crate)`/`pub(super)` symbols.
   - If any symbol is not a port-trait implementation, return `Verdict: Fail`.
   - Identify modules re-exported as `pub(super)` or wider from `adapters.rs` (or `adapters/mod.rs`) and apply the same rule to all externally reachable symbols.
+- For `#[cfg(all(test, feature = "..."))]` blocks that `include!` test support from `tests/`, apply `docs/architecture/hexagonal-implementation-rules.md` の `Rust private module 用 test-only bridge` 条件 before treating them as production-source test double mixing. If all conditions are met, do not fail solely because the bridge exists. This does not relax adapter visibility: unnecessary `pub(super)` helpers still fail.
 - Verify there is no adapter concrete-type import and no `println!`/stdin read in `application/` files.
 - For private helpers in `application/` and `adapters/`, describe each helper's responsibility in one sentence and judge whether it belongs to that layer. If any helper is unexplained or layer-mismatched, return `Verdict: Fail`.
 - If helpers are heavily split, evaluate port-capability granularity (coarse contract) as a potential cause, not only code organization. If root cause is port design, return `Verdict: Fail` and require port re-splitting even when files are already split.
