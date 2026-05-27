@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::Result;
 
-use super::protection::ProtectedSecret;
+use super::ProtectedSecret;
 
 const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
 const HASH_LEN: usize = 32;

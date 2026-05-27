@@ -24,9 +24,9 @@
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
-  - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)

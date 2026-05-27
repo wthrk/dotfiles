@@ -7,7 +7,9 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 use crate::Result;
 
-use super::protection::{ProtectedSecret, SecretSession, buffer::ProtectedInputBuffer};
+use super::protection::{
+    ProtectedSecret, SecretSession, buffer::ProtectedInputBuffer, secret_consumer,
+};
 
 /// 制御端末優先の reader を返し、pipe 実行時も対話入力境界を維持する。
 fn stdin_or_tty_reader() -> Result<Box<dyn io::Read>> {
@@ -109,6 +111,6 @@ pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
     if io::stdout().is_terminal() {
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
-    secret.with_secret(|bytes| io::stdout().lock().write_all(bytes))?;
+    secret_consumer::write_to(secret, &mut io::stdout().lock())?;
     Ok(())
 }

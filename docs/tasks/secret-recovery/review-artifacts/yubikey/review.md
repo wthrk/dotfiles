@@ -14,16 +14,12 @@
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
-  - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
@@ -46,9 +42,6 @@
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/yubikey_pin.rs`
   - `docs/tasks/secret-recovery/tasks.md`
@@ -57,8 +50,8 @@
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
 - structural 差し戻し修正:
   - `adapters.rs` の再エクスポート集約と公開 factory を廃止し、runtime adapter は port trait 実装型 `SecretsAdapters` として entrypoint へ渡す。
-  - `adapters/piv_io/device.rs` の route label helper を公開 helper から private trait 実装へ閉じる。
-  - `adapters/piv_io/report.rs` の route 付き report adapter 生成を廃止し、route は `RealSecretsBoundary` の `ReportPort` 実装内で使う。
+  - 旧 adapter 補助ファイルの route label helper を公開 helper から private trait 実装へ閉じる。
+  - 旧 report adapter 生成を廃止し、route は現行の port trait 実装境界で使う。
 - 追加 structural 差し戻し修正:
   - `adapters.rs` の `piv_io` module 公開を廃止し、entrypoint は `SecretsAdapters::default()` だけを利用する。
   - `JsonReportAdapter` とその constructor を廃止し、report 翻訳は `ReportPort for RealSecretsBoundary` の trait 実装境界へ閉じる。
@@ -83,7 +76,6 @@
   - PIV object ID から `SecretName` への逆引き規則を adapter stub から `domain::piv::SecretName::from_object_id` へ移した。
 - 78f10ac 検証結果:
   - `cargo check -p dotfiles-cli`: 成功
-  - `cargo check -p dotfiles-cli --features secrets-test-stub`: 成功
   - `git diff --check`: 成功
 - 9ff38d7 修正内容:
   - `put` の既存 secret 上書き可否判定を `domain::piv::SecretName::ensure_write_allowed` へ移した。
@@ -95,9 +87,7 @@
 
 - 解消済み（本サイクル）: 未解決 1,2,3,4,5,6,7,9
 - 継続（次サイクル）: 未解決 10（最終集約判定の再更新）
-- 判定前提更新: `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として扱い、一般的な test double 配置論（tests 層固定）を適用しない。
 - 判定前提更新: `adapters` 配下にあること単独では違反根拠にせず、配置と責務を合わせて評価する。same-route 維持（別 binary / 別 CLI / command-scenario branching / port-boundary swap 禁止）を継続条件とする。
-- 判定前提更新: secret 本文は `ProtectedSecret` 型以外で扱わず、`rust/dotfiles-cli-secrets-test-stub/` は復活させない。
 
 ## 役割別レビュー
 

@@ -14,16 +14,12 @@
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/domain/model.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
-  - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
@@ -31,7 +27,6 @@
 ## 実行コマンド
 
 - `direnv exec . cargo check -p dotfiles-cli`
-- `direnv exec . cargo test -p dotfiles-cli --features secrets-test-stub --test secrets_cli --no-run`
 - `direnv exec . cargo xtask check`
 - `direnv exec . cargo clippy --workspace --all-targets`
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`
@@ -64,9 +59,6 @@
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/yubikey_pin.rs`
   - `docs/tasks/secret-recovery/tasks.md`
@@ -97,7 +89,6 @@
 - 対象コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
 - 修正内容: PIV object ID から `SecretName` への逆引き規則を adapter stub から `domain::piv::SecretName::from_object_id` へ移した。
 - `cargo check -p dotfiles-cli`: 成功
-- `cargo check -p dotfiles-cli --features secrets-test-stub`: 成功
 - `git diff --check`: 成功
 - 判定: `再レビュー待ち`
 
@@ -123,11 +114,8 @@
 ## 2026-05-26 追加実装サイクル追記
 
 - 未解決 1,2,3,4,5,6,7,9 のコード是正を反映した。
-- `device_test_stub.rs` の書き込みイベントは `<redacted>` を出力しており、stub 側 plaintext stderr 出力は現 current worktree では再現していない。
 - 未解決 10 は本追記を含め review/confirmation/work-item の同期を再実施した。
-- 判定前提更新: `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` は PIV/YubiKey 固有 concrete 実装として評価し、tests 層固定の一般論は適用しない。
 - 判定前提更新: same-route 維持を前提に、`--test-stub-yubikey` / `yubikey_runtime` / 別 binary / 別 CLI / command-scenario branching / port-boundary swap は採用しない。
-- 判定前提更新: secret 本文は `ProtectedSecret` 型以外で扱わず、`rust/dotfiles-cli-secrets-test-stub/` は復活させない。
 
 ## ブロッカー要約
 

@@ -23,9 +23,9 @@
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
-  - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 実装状態: `実装中`

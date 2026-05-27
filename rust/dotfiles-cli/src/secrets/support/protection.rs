@@ -13,6 +13,7 @@ use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+mod oaep;
 pub(crate) mod sealed_blob;
 pub(crate) mod secret_consumer;
 pub(crate) mod secret_random;
@@ -164,14 +165,20 @@ impl ProtectedSecret {
     /// 平文 bytes を closure の実行中だけ借用として公開する。
     ///
     /// クロージャー内でデータを外部被保護バッファにコピーしてはならない
-    pub(super) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+    pub(in crate::secrets::support::protection) fn with_secret<R>(
+        &self,
+        borrow: impl FnOnce(&[u8]) -> R,
+    ) -> R {
         borrow(self.value.as_slice())
     }
 
     /// 平文 bytes を closure の実行中だけ mutable 借用として公開する。
     ///
     /// クロージャー内でデータを外部被保護バッファにコピーしてはならない
-    pub(super) fn with_secret_mut<R>(&mut self, borrow: impl FnOnce(&mut [u8]) -> R) -> R {
+    pub(in crate::secrets::support::protection) fn with_secret_mut<R>(
+        &mut self,
+        borrow: impl FnOnce(&mut [u8]) -> R,
+    ) -> R {
         borrow(self.value.as_mut_slice())
     }
 

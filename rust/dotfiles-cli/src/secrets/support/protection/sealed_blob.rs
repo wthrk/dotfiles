@@ -4,8 +4,9 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::secrets::support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached};
-use crate::secrets::support::oaep;
 use crate::secrets::support::protection::{ProtectedSecret, secret_random};
+
+use super::oaep;
 
 pub(crate) const NONCE_LEN: usize = 12;
 pub(crate) const TAG_LEN: usize = 16;
