@@ -241,7 +241,7 @@
 - `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`5217c7f`）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（43 passed, 0 failed）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
-- `cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 24 filtered out）
+- `cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 40 filtered out）
 - `cargo check -p dotfiles-cli`: 成功
 - `cargo clippy -p dotfiles-cli --all-targets`: 成功
 - `git diff --check`: 成功
