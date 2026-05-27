@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        piv::validate_piv_pin_len,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
         values::{VerifySummary, VerifyYubikeyCommand},
     },
@@ -20,7 +21,9 @@ pub(crate) fn run_verify_yubikey_with<
     let serial = command.required_serial()?;
     let requested = command.requested_external_checks()?;
     let pin = if boundary.device_requires_pin(serial)? {
-        Some(boundary.read_pin()?)
+        let pin = boundary.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
     } else {
         None
     };

@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::{storage::SecretStorageReadIntent, values::GetCommand},
+    domain::{piv::validate_piv_pin_len, storage::SecretStorageReadIntent, values::GetCommand},
     ports::{self, SecretStoragePort},
 };
 
@@ -19,7 +19,9 @@ pub(crate) fn run_get_with<
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
     let pin = if boundary.device_requires_pin(serial)? {
-        Some(boundary.read_pin()?)
+        let pin = boundary.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
     } else {
         None
     };

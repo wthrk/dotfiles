@@ -2,6 +2,7 @@ use crate::Result;
 use crate::secrets::{
     domain::{
         manifest::BootstrapSecretDocument,
+        piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
             SecretStorageVerificationPlan, SecretStorageWriteIntent,
@@ -34,7 +35,9 @@ pub(crate) fn run_enroll_spare_with_prompt<
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
     boundary.initialize_secret_storage(spare_serial, setup_intent)?;
     let primary_pin = if boundary.device_requires_pin(primary_serial)? {
-        Some(boundary.read_pin()?)
+        let pin = boundary.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
     } else {
         None
     };
@@ -65,7 +68,9 @@ pub(crate) fn run_enroll_spare_with_prompt<
         boundary.store_secret(spare_serial, intent, value)?;
     }
     let spare_pin = if boundary.device_requires_pin(spare_serial)? {
-        Some(boundary.read_pin()?)
+        let pin = boundary.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
     } else {
         None
     };

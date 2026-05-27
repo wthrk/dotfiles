@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
             SecretStorageVerificationPlan, SecretStorageWriteIntent,
@@ -37,7 +38,9 @@ pub(crate) fn run_enroll_primary_with_stdin_json<
         boundary.store_secret(serial, intent, value)?;
     }
     let pin = if boundary.device_requires_pin(serial)? {
-        Some(boundary.read_pin()?)
+        let pin = boundary.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
     } else {
         None
     };
