@@ -32,8 +32,9 @@
 
 - current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
+- 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 現行状態: `再レビュー待ち`
-- レビュー前提: security は pass 済み。structural / operational の Fail 指摘だけを対象に修正中として扱い、合格とは記録しない。
+- レビュー前提: security は pass 済み。structural / operational の Fail 指摘は `022c21b` で修正済みとして扱い、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
@@ -90,7 +91,7 @@
 ### 仕様適合レビュー担当
 
 - 判定: `要修正`
-- 判定要約: work item の現行サイクル状態 (`要修正`) と整合するため、完了判定を保留。
+- 判定要約: work item の現行サイクル状態 (`再レビュー待ち`) と整合するため、完了判定を保留。
 - 根拠:
   - `docs/tasks/secret-recovery/work-items/yubikey.md` の差し戻し前提に従う。
 

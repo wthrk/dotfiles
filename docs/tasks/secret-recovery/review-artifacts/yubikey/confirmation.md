@@ -43,8 +43,9 @@
 
 - current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
+- 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 現行状態: `再レビュー待ち`
-- 確認前提: security は pass 済み。structural / operational Fail 修正の確認対象であり、合格とは記録しない。
+- 確認前提: security は pass 済み。structural / operational Fail 修正は `022c21b` で反映済みであり、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
@@ -70,10 +71,10 @@
 
 ## ブロッカー要約
 
-- review artifact 間で verdict の整合が崩れていたため、現行サイクルの判定を `要修正` に統一した。
+- review artifact 間で verdict の整合が崩れていたため、review verdict は `要修正` を維持し、task/current-cycle 状態は `再レビュー待ち` として同期した。
 - 履歴レビュー内に現行 code path と不一致な参照が混在していたため、現行実在パスへ更新した。
 
 ## 前進可否
 
 - 前進可否: `前進不可（差し戻し継続）`
-- 理由: `review.md` の現行サイクル集約判定が `要修正` のため。
+- 理由: `review.md` の現行サイクル集約判定は再レビュー前の `要修正` を維持しているため。
