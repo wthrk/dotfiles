@@ -164,3 +164,200 @@ impl SecretStorageReadIntent {
         self.storage.ensure_plaintext_len(secret.len())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::domain::piv::SecretName;
+
+    struct TestSecret {
+        len: usize,
+    }
+
+    fn secret_with_len(len: usize) -> SecretMaterial {
+        SecretMaterial::from_backend(
+            TestSecret { len },
+            |secret| secret.len,
+            |secret| Ok(TestSecret { len: secret.len }),
+        )
+    }
+
+    fn expected_manifest_bytes() -> Result<Vec<u8>> {
+        SecretManifest::expected().encode()
+    }
+
+    fn minimum_piv_version() -> PivApplicationVersion {
+        PivApplicationVersion::minimum_for_secret_storage()
+    }
+
+    fn clean_setup_inspection() -> SecretStorageSetupInspection {
+        SecretStorageSetupInspection {
+            key_exists: false,
+            piv_version: minimum_piv_version(),
+            pin_retries: 1,
+            manifest_bytes: None,
+            occupied_object_ids: Vec::new(),
+        }
+    }
+
+    fn write_inspection(manifest_bytes: Option<Vec<u8>>) -> SecretStorageWriteInspection {
+        SecretStorageWriteInspection {
+            manifest_bytes,
+            object_exists: false,
+        }
+    }
+
+    fn read_inspection(
+        manifest_bytes: Option<Vec<u8>>,
+        encoded: Option<Vec<u8>>,
+    ) -> SecretStorageReadInspection {
+        SecretStorageReadInspection {
+            manifest_bytes,
+            encoded,
+        }
+    }
+
+    fn storage() -> SecretStorageSpec {
+        SecretName::BwEmail.storage_spec(12_345)
+    }
+
+    fn error_message<T>(result: Result<T>) -> Result<String> {
+        match result {
+            Ok(_) => anyhow::bail!("domain rule unexpectedly accepted invalid input"),
+            Err(error) => Ok(error.to_string()),
+        }
+    }
+
+    #[test]
+    fn setup_intent_accepts_uninitialized_storage_and_emits_expected_manifest() -> Result<()> {
+        let intent = SecretStorageSetupIntent::from_inspection(clean_setup_inspection())?;
+        let manifest = SecretManifest::decode(&intent.manifest_bytes)?;
+
+        assert_eq!(manifest, SecretManifest::expected());
+        Ok(())
+    }
+
+    #[test]
+    fn setup_intent_rejects_existing_manifest_or_occupied_object() -> Result<()> {
+        let initialized = SecretStorageSetupInspection {
+            key_exists: true,
+            manifest_bytes: Some(expected_manifest_bytes()?),
+            ..clean_setup_inspection()
+        };
+        let initialized_error =
+            error_message(SecretStorageSetupIntent::from_inspection(initialized))?;
+        assert!(initialized_error.contains("already initialized"));
+
+        let occupied = SecretStorageSetupInspection {
+            occupied_object_ids: vec![PivObjectId::MANIFEST],
+            ..clean_setup_inspection()
+        };
+        let occupied_error = error_message(SecretStorageSetupIntent::from_inspection(occupied))?;
+        assert!(occupied_error.contains("already exists"));
+        Ok(())
+    }
+
+    #[test]
+    fn store_intent_requires_initialized_manifest_and_non_empty_secret() -> Result<()> {
+        let storage = storage();
+        let intent = SecretStorageWriteIntent::store(
+            storage.clone(),
+            write_inspection(Some(expected_manifest_bytes()?)),
+            1,
+        )?;
+        assert_eq!(intent.storage, storage);
+
+        let missing_manifest_error = error_message(SecretStorageWriteIntent::store(
+            storage.clone(),
+            write_inspection(None),
+            1,
+        ))?;
+        assert!(missing_manifest_error.contains("manifest is missing"));
+
+        let empty_secret_error = error_message(SecretStorageWriteIntent::store(
+            storage,
+            write_inspection(Some(expected_manifest_bytes()?)),
+            0,
+        ))?;
+        assert!(empty_secret_error.contains("must not be empty"));
+        Ok(())
+    }
+
+    #[test]
+    fn put_intent_applies_overwrite_policy_before_accepting_existing_object() -> Result<()> {
+        let storage = storage();
+        let existing_object = SecretStorageWriteInspection {
+            manifest_bytes: Some(expected_manifest_bytes()?),
+            object_exists: true,
+        };
+
+        let overwrite_error = error_message(SecretStorageWriteIntent::put(
+            storage.clone(),
+            existing_object,
+            false,
+            1,
+        ))?;
+        assert!(overwrite_error.contains("pass --force"));
+
+        let forced = SecretStorageWriteIntent::put(
+            storage.clone(),
+            SecretStorageWriteInspection {
+                manifest_bytes: Some(expected_manifest_bytes()?),
+                object_exists: true,
+            },
+            true,
+            1,
+        )?;
+        assert_eq!(forced.storage, storage);
+        Ok(())
+    }
+
+    #[test]
+    fn read_intent_requires_initialized_manifest_and_existing_encoded_blob() -> Result<()> {
+        let storage = storage();
+        let encoded = b"encoded blob".to_vec();
+        let intent = SecretStorageReadIntent::from_inspection(
+            storage.clone(),
+            read_inspection(Some(expected_manifest_bytes()?), Some(encoded.clone())),
+        )?;
+        assert_eq!(intent.storage, storage);
+        assert_eq!(intent.encoded, encoded);
+
+        let missing_blob_error = error_message(SecretStorageReadIntent::from_inspection(
+            storage.clone(),
+            read_inspection(Some(expected_manifest_bytes()?), None),
+        ))?;
+        assert!(missing_blob_error.contains("is not stored"));
+
+        let missing_manifest_error = error_message(SecretStorageReadIntent::from_inspection(
+            storage,
+            read_inspection(None, Some(b"encoded blob".to_vec())),
+        ))?;
+        assert!(missing_manifest_error.contains("manifest is missing"));
+        Ok(())
+    }
+
+    #[test]
+    fn read_intent_maps_decode_error_and_validates_loaded_secret_length() -> Result<()> {
+        let intent = SecretStorageReadIntent::from_inspection(
+            storage(),
+            read_inspection(
+                Some(expected_manifest_bytes()?),
+                Some(b"encoded blob".to_vec()),
+            ),
+        )?;
+
+        let decode_error = intent.decode_error(anyhow::anyhow!("ciphertext rejected"));
+        assert!(
+            decode_error
+                .to_string()
+                .contains("failed to decode bw-email")
+        );
+        assert!(decode_error.to_string().contains("ciphertext rejected"));
+
+        intent.validate_loaded_secret(&secret_with_len(1))?;
+        let empty_secret_error = error_message(intent.validate_loaded_secret(&secret_with_len(0)))?;
+        assert!(empty_secret_error.contains("must not be empty"));
+        Ok(())
+    }
+}
