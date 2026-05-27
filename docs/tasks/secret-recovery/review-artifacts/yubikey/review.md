@@ -9,9 +9,9 @@
 - 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-5217c7f`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-27時点）:
-  - `structural`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/structural-review.md` / 状態 `実施`
+  - `structural`: artifact `未生成（現行サイクル用 artifact 未確定。履歴専用 artifact は current-cycle 判定対象外）` / 状態 `未実施（再レビュー待ち）`
   - `operational`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-operational-2026-05-25.md` / 状態 `未実施（現行サイクル Fail 是正中）`
-  - `security`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-security-2026-05-25.md` / 状態 `未実施`
+  - `security`: artifact `未生成（現行サイクル用 artifact 未確定。review-security-2026-05-25.md は履歴専用）` / 状態 `未実施（再レビュー待ち）`
   - `specification-conformance`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-spec-2026-05-25.md` / 状態 `未実施`
   - `test`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-test-2026-05-25.md` / 状態 `未実施`
   - `documentation`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-doc-2026-05-25.md` / 状態 `未実施`
@@ -131,7 +131,7 @@
 - 追加保存コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
 - 追加保存コミット: `9ff38d7 refactor(secrets): 上書き可否規則をdomainへ移管`
 - 現行状態: `再レビュー待ち`
-- レビュー前提: セキュリティレビューは `判定: 合格` 済み。構造レビュー / 運用整合レビューの `判定: 要修正` 指摘は本追記以降の保存点で修正済みとして扱い、集約合格とは記録しない。
+- レビュー前提: この節は履歴サイクル（2026-05-26）専用記録であり、現行サイクル（2026-05-27）の reviewer 判定には使用しない。
 - `ad92152` 以降の変更ファイル集合:
   - `docs/task-governance/workflow.md`
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -224,6 +224,11 @@
 - 継続（次サイクル）: 未解決 10（最終集約判定の再更新）
 - 判定前提更新: `adapters` 配下にあること単独では違反根拠にせず、配置と責務を合わせて評価する。same-route 維持（別 binary / 別 CLI / command-scenario branching / port-boundary swap 禁止）を継続条件とする。
 
+### 履歴レビュー結果（現行サイクル判定対象外）
+
+- `review-security-2026-05-25.md`、`review-operational-2026-05-25.md`、`review-spec-2026-05-25.md`、`review-test-2026-05-25.md`、`review-doc-2026-05-25.md`、`structural-review.md` は履歴サイクル用 artifact として保持する。
+- 上記 artifact の判定結果は current-cycle（2026-05-27）の reviewer 状態を前進させる根拠として使用しない。
+
 ## 役割別レビュー
 
 ### 構造レビュー担当
@@ -242,10 +247,10 @@
 
 ### セキュリティレビュー担当
 
-- 判定: `合格`
-- 判定要約: `所見なし`
+- 判定: `要修正`
+- 判定要約: current-cycle の個別 security artifact が未生成のため、判定を保留する。
 - 根拠:
-  - 本スコープ更新は review artifact 整合修正であり、新規の秘密情報露出差分なし。
+  - `review-security-2026-05-25.md` は履歴専用であり、現行サイクルの判定根拠に使わない。
 
 ### 仕様適合レビュー担当
 

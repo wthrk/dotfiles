@@ -9,9 +9,9 @@
 - 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-5217c7f`
 - 確認基準: `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
 - current-cycle reviewer 判定追跡（2026-05-27時点）:
-  - `structural`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/structural-review.md` / 状態 `実施`
+  - `structural`: artifact `未生成（現行サイクル用 artifact 未確定。履歴専用 artifact は current-cycle 判定対象外）` / 状態 `未実施（再レビュー待ち）`
   - `operational`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-operational-2026-05-25.md` / 状態 `未実施（現行サイクル Fail 是正中）`
-  - `security`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-security-2026-05-25.md` / 状態 `未実施`
+  - `security`: artifact `未生成（現行サイクル用 artifact 未確定。review-security-2026-05-25.md は履歴専用）` / 状態 `未実施（再レビュー待ち）`
   - `specification-conformance`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-spec-2026-05-25.md` / 状態 `未実施`
   - `test`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-test-2026-05-25.md` / 状態 `未実施`
   - `documentation`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-doc-2026-05-25.md` / 状態 `未実施`
@@ -125,6 +125,8 @@
 - `direnv exec . cargo xtask check`
 - `direnv exec . cargo clippy --workspace --all-targets`
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`
 
 ## 結果要約
 
@@ -133,6 +135,8 @@
 - `cargo xtask check`: 実行済み（`5217c7f`）
 - `cargo clippy --workspace --all-targets`: 実行済み（`5217c7f`）
 - `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`5217c7f`）
+- `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（33 passed, 0 failed）
+- `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
 - 状態: `再レビュー待ち`
 
 ## 2026-05-26 ad92152 基準履歴追記
@@ -148,7 +152,7 @@
 - 追加保存コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
 - 追加保存コミット: `9ff38d7 refactor(secrets): 上書き可否規則をdomainへ移管`
 - 現行状態: `再レビュー待ち`
-- 確認前提: セキュリティレビューは `判定: 合格` 済み。構造レビュー / 運用整合レビューの `判定: 要修正` 指摘は本追記以降の保存点で反映済みであり、集約合格とは記録しない。
+- 確認前提: この節は履歴サイクル（2026-05-26）専用記録であり、現行サイクル（2026-05-27）の reviewer 判定には使用しない。
 - `ad92152` 以降の変更ファイル集合:
   - `docs/task-governance/workflow.md`
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -161,6 +165,11 @@
   - `docs/secret-recovery/yubikey-secret-storage-design.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
+
+## 履歴レビュー結果（現行サイクル判定対象外）
+
+- `review-security-2026-05-25.md`、`review-operational-2026-05-25.md`、`review-spec-2026-05-25.md`、`review-test-2026-05-25.md`、`review-doc-2026-05-25.md`、`structural-review.md` は履歴サイクル用 artifact として保持する。
+- 上記 artifact の判定結果は current-cycle（2026-05-27）の reviewer 状態を前進させる根拠として使用しない。
 
 ## 2026-05-27 e148c0d 検証追記
 
