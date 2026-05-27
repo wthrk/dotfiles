@@ -112,4 +112,9 @@ impl SecretStorageReadIntent {
         let encoded = inspection.encoded.ok_or_else(|| storage.missing_error())?;
         Ok(Self { storage, encoded })
     }
+
+    /// 復号処理の失敗を対象 secret の domain error へ変換する。
+    pub fn decode_error(&self, error: anyhow::Error) -> anyhow::Error {
+        self.storage.decode_error(error)
+    }
 }

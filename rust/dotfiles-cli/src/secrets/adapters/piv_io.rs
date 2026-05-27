@@ -224,6 +224,6 @@ impl SecretStoragePort for RealSecretsBoundary {
         }
         device
             .open_from_storage(intent.storage.clone(), &intent.encoded)
-            .map_err(|error| intent.storage.decode_error(error))
+            .map_err(|error| intent.decode_error(error))
     }
 }
