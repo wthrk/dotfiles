@@ -1,7 +1,7 @@
 //! 平文 bytes の生存期間に紐づける process / memory 保護。
 
 use std::{
-    io::Write,
+    collections::BTreeMap,
     sync::{
         Arc, LazyLock, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -9,10 +9,13 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use serde_json::Value;
 use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+pub(crate) mod secret_random;
+pub(crate) mod yubikey_crypto;
 
 use crate::Result;
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
@@ -113,6 +116,7 @@ pub(crate) struct SecretSession {
 
 /// secret 本文を session lifetime に閉じ込める保護済み所有値。
 ///
+/// ** メソッドを拡張してコピーのためのセキュリティホールを新築してはならない**
 /// 平文 bytes は `with_secret` / `with_secret_mut` の借用中だけ公開する。
 /// memory lock は入力 session から引き継いだ値、または clone/copy 用の locked destination
 /// として確保した値で保持し、Drop 時に zeroize を実行する。
@@ -137,9 +141,11 @@ impl ProtectedSecret {
         Self::allocate_locked_destination(len)
     }
 
-    /// 生 bytes から lock 済み destination buffer を確保して保護値を構築する。
-    pub(crate) fn copy_from_slice(source: &[u8]) -> Result<Self> {
-        Self::copy_into_new_locked_buffer(source)
+    /// 唯一許されたバッファコピー
+    pub(crate) fn try_clone(from: &Self) -> Result<Self> {
+        let mut this = Self::new(from.len())?;
+        this.with_secret_mut(|to| from.with_secret(|from| to.copy_from_slice(from)));
+        Ok(this)
     }
 
     /// 指定長の destination buffer を確保し、plaintext copy 前に memory lock を取得する。
@@ -155,30 +161,17 @@ impl ProtectedSecret {
         })
     }
 
-    /// source 長から destination buffer を確保し、lock 取得後に source bytes をコピーする。
-    ///
-    /// raw bytes を受け取るこの経路は protection 実装内部に閉じ、任意 caller 向けの
-    /// `ProtectedSecret` constructor として公開しない。
-    fn copy_into_new_locked_buffer(source: &[u8]) -> Result<Self> {
-        let mut destination = Self::allocate_locked_destination(source.len())?;
-        destination.value.as_mut_slice().copy_from_slice(source);
-        Ok(destination)
-    }
-
     /// 平文 bytes を closure の実行中だけ借用として公開する。
-    pub(crate) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+    ///
+    /// クロージャー内でデータを外部被保護バッファにコピーしてはならない
+    pub(super) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.value.as_slice())
     }
 
-    /// 既存呼び出し名互換のために `with_secret` へ委譲する。
-    ///
-    /// 借用生存期間は closure 実行中に限定され、呼び出し側は参照を外へ保持してはならない。
-    pub(crate) fn with_bytes<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
-        self.with_secret(borrow)
-    }
-
     /// 平文 bytes を closure の実行中だけ mutable 借用として公開する。
-    pub(crate) fn with_secret_mut<R>(&mut self, borrow: impl FnOnce(&mut [u8]) -> R) -> R {
+    ///
+    /// クロージャー内でデータを外部被保護バッファにコピーしてはならない
+    pub(super) fn with_secret_mut<R>(&mut self, borrow: impl FnOnce(&mut [u8]) -> R) -> R {
         borrow(self.value.as_mut_slice())
     }
 
@@ -188,21 +181,31 @@ impl ProtectedSecret {
     pub(crate) fn len(&self) -> usize {
         self.value.len()
     }
-}
 
-impl AsRef<[u8]> for ProtectedSecret {
-    fn as_ref(&self) -> &[u8] {
-        self.value.as_slice()
-    }
-}
+    /// JSON object を `String -> ProtectedSecret` へ変換する。
+    pub(crate) fn decode_json_string_map(
+        &self,
+        field_limit: usize,
+    ) -> Result<BTreeMap<String, Self>> {
+        let object = self.with_secret(|bytes| {
+            serde_json::from_slice::<serde_json::Map<String, Value>>(bytes)
+                .context("failed to decode bootstrap secret JSON")
+        })?;
 
-impl Write for ProtectedSecret {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.value.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.value.flush()
+        let mut fields = BTreeMap::new();
+        for (key, value) in object {
+            let Value::String(text) = value else {
+                bail!("JSON field `{key}` must be a string");
+            };
+            if text.len() > field_limit {
+                bail!("JSON field `{key}` exceeds maximum length");
+            }
+            let mut secret = Self::new(text.len())
+                .with_context(|| format!("failed to protect JSON field `{key}`"))?;
+            secret.with_secret_mut(|out| out.copy_from_slice(text.as_bytes()));
+            fields.insert(key, secret);
+        }
+        Ok(fields)
     }
 }
 

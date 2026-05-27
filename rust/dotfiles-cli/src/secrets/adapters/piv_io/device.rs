@@ -156,6 +156,28 @@ impl SecretDevice for SelectedSecretDevice {
             Self::Stub(device) => device.unwrap_key(wrapped_key),
         }
     }
+
+    fn seal_for_storage(
+        &mut self,
+        name: crate::secrets::domain::piv::SecretName,
+        plaintext: &crate::secrets::domain::material::SecretMaterial,
+    ) -> Result<Vec<u8>> {
+        match self {
+            Self::Real(device) => device.seal_for_storage(name, plaintext),
+            Self::Stub(device) => device.seal_for_storage(name, plaintext),
+        }
+    }
+
+    fn open_from_storage(
+        &mut self,
+        name: crate::secrets::domain::piv::SecretName,
+        encoded: &[u8],
+    ) -> Result<crate::secrets::domain::material::SecretMaterial> {
+        match self {
+            Self::Real(device) => device.open_from_storage(name, encoded),
+            Self::Stub(device) => device.open_from_storage(name, encoded),
+        }
+    }
 }
 
 impl SelectedDeviceAdapter {

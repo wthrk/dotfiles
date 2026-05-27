@@ -18,8 +18,8 @@ use crate::{
     },
     secrets::ports::{
         BootstrapSecretDocumentInputPort, DeviceCandidate, DevicePinPolicyPort,
-        DeviceSelectionPort, DeviceSerialPort, PinInputPort, RandomBytesPort, ReportPort,
-        SecretDevice, SecretInputPort, SecretOutputPort, SpareDeviceSerialPort,
+        DeviceSelectionPort, DeviceSerialPort, PinInputPort, ReportPort, SecretDevice,
+        SecretInputPort, SecretOutputPort, SpareDeviceSerialPort,
     },
 };
 
@@ -167,16 +167,5 @@ impl ReportPort for RealSecretsBoundary<SelectedDeviceAdapter> {
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         self.report
             .write_verify_report_for_route(summary, self.device.adapter_route_label())
-    }
-}
-
-impl<D> RandomBytesPort for RealSecretsBoundary<D>
-where
-    D: DeviceSelectionPort,
-{
-    fn fill_random_bytes(&self, out: &mut [u8]) -> Result<()> {
-        use rand::RngCore;
-        rand::rng().fill_bytes(out);
-        Ok(())
     }
 }

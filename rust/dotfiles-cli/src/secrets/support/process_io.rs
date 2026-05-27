@@ -109,6 +109,6 @@ pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
     if io::stdout().is_terminal() {
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
-    io::stdout().lock().write_all(secret.as_ref())?;
+    secret.with_secret(|bytes| io::stdout().lock().write_all(bytes))?;
     Ok(())
 }

@@ -2,8 +2,8 @@ use anyhow::Result;
 
 use super::{
     material::SecretMaterial,
-    piv::PivObjectId,
-    wire::{BootstrapSecretWire, ManifestWire, SensitiveBytes},
+    piv::{PivObjectId, SecretName},
+    wire::ManifestWire,
 };
 
 /// bootstrap secret JSON 各 field に許可する最大 byte 長。
@@ -128,72 +128,29 @@ impl SecretManifest {
 }
 
 impl BootstrapSecretDocument {
-    /// 対話入力で取得した bootstrap secret 値群を domain document へ復元する。
-    ///
-    /// 各 field は与えられた byte 列をそのまま `SecretMaterial` へ包み、UTF-8 前提を持ち込まない。
-    /// 呼び出し側は field と secret 名の対応を崩さず渡す責務を負う。
-    pub fn from_interactive_secrets(
-        bw_email: &[u8],
-        bw_password: &[u8],
-        bws_access_token: &[u8],
+    /// 既に取得済みの `SecretMaterial` 群から bootstrap document を構築する。
+    pub fn from_secret_materials(
+        bw_email: &SecretMaterial,
+        bw_password: &SecretMaterial,
+        bws_access_token: &SecretMaterial,
     ) -> Result<Self> {
         Ok(Self {
-            bw_email: SecretMaterial::copy_from_slice(bw_email)?,
-            bw_password: SecretMaterial::copy_from_slice(bw_password)?,
-            bws_access_token: SecretMaterial::copy_from_slice(bws_access_token)?,
+            bw_email: SecretMaterial::try_clone(bw_email)?,
+            bw_password: SecretMaterial::try_clone(bw_password)?,
+            bws_access_token: SecretMaterial::try_clone(bws_access_token)?,
         })
     }
 
-    /// stdin JSON document を bootstrap secret document として decode する。
-    ///
-    /// 現行 format では 3 field を必須とし、各 field は `field_limit` byte 以下の JSON string でなければ失敗する。
-    /// 呼び出し側は `field_limit` に area policy で定めた上限を渡す責務を負う。
-    pub fn decode_json(bytes: &[u8], field_limit: usize) -> Result<Self> {
-        let wire = BootstrapSecretWire::decode_json(bytes)?;
-
-        let to_secret = |field: &str, value: SensitiveBytes| -> Result<SecretMaterial> {
-            let value = value.into_secret_material();
-            if value.len() > field_limit {
-                return Err(
-                    invalid_data(format!("JSON field `{field}` exceeds maximum length")).into(),
-                );
-            }
-            Ok(value)
-        };
-
-        Ok(Self {
-            bw_email: to_secret("bw-email", wire.bw_email)?,
-            bw_password: to_secret("bw-password", wire.bw_password)?,
-            bws_access_token: to_secret("bws-access-token", wire.bws_access_token)?,
-        })
+    /// bootstrap document の 3 secrets を storage 固定順の `(SecretName, value)` で返す。
+    pub fn entries(&self) -> [(SecretName, &SecretMaterial); 3] {
+        [
+            (SecretName::BwEmail, &self.bw_email),
+            (SecretName::BwPassword, &self.bw_password),
+            (SecretName::BwsAccessToken, &self.bws_access_token),
+        ]
     }
 }
 
 fn invalid_data(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::BootstrapSecretDocument;
-
-    #[test]
-    fn decode_json_preserves_whitespace_in_values() {
-        let json = br#"{
-            "bw-email":"user@example.com",
-            "bw-password":"  leading and  internal\tspace  ",
-            "bws-access-token":"token value"
-        }"#;
-
-        let decoded = BootstrapSecretDocument::decode_json(json, 16 * 1024);
-        assert!(decoded.is_ok(), "bootstrap secret JSON should decode");
-        let doc = match decoded {
-            Ok(doc) => doc,
-            Err(error) => panic!("unexpected decode error: {error:?}"),
-        };
-
-        doc.bw_password.with_bytes(|bytes| {
-            assert_eq!(bytes, b"  leading and  internal\tspace  ");
-        });
-    }
 }

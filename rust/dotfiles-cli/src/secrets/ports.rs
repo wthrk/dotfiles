@@ -1,7 +1,6 @@
 //! `dotfiles secrets` application 層が外部境界へ要求する port 契約。
 //!
-//! この module は capability 契約のみを定義し、具体的な parser / 暗号処理 / 端末 I/O /
-//! device 操作手順は adapter 側の実装へ閉じ込める。
+//! この module は capability 契約と境界データのみを定義し、処理手順や変換規則は持たない。
 
 use super::domain::{
     manifest::BootstrapSecretDocument,
@@ -73,11 +72,6 @@ pub trait ReportPort {
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
 }
 
-/// use case が鍵素材生成に必要な乱数を要求する契約。
-pub trait RandomBytesPort {
-    fn fill_random_bytes(&self, out: &mut [u8]) -> Result<()>;
-}
-
 /// YubiKey device adapter が満たす低水準 device 操作契約。
 pub trait SecretDevice {
     /// 接続先 device serial を返す。
@@ -117,4 +111,9 @@ pub trait SecretDevice {
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
     /// `wrap_key` で得た wrapped bytes を復号する。
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial>;
+    /// plain secret を YubiKey 保存用 encrypted blob に変換する。
+    fn seal_for_storage(&mut self, name: SecretName, plaintext: &SecretMaterial)
+    -> Result<Vec<u8>>;
+    /// YubiKey 保存済み encrypted blob を復号して plain secret を返す。
+    fn open_from_storage(&mut self, name: SecretName, encoded: &[u8]) -> Result<SecretMaterial>;
 }

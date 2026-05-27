@@ -1,12 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::{
-        blob::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob},
-        manifest::SecretManifest,
-        material::SecretMaterial,
-        piv::PivObjectId,
-        values::PutCommand,
-    },
+    domain::{manifest::SecretManifest, piv::PivObjectId, values::PutCommand},
     ports::{self, SecretDevice},
 };
 
@@ -14,10 +8,7 @@ use crate::secrets::{
 ///
 /// 入力モードの可視/不可視判定は `SecretName` の domain 規則で決め、端末 I/O 実装詳細は adapter へ委譲する。
 pub(crate) fn run_put_with_prompt<
-    B: ports::DeviceSerialPort
-        + ports::SecretInputPort
-        + ports::DeviceSelectionPort
-        + ports::RandomBytesPort,
+    B: ports::DeviceSerialPort + ports::SecretInputPort + ports::DeviceSelectionPort,
 >(
     command: PutCommand,
     boundary: &mut B,
@@ -37,19 +28,6 @@ pub(crate) fn run_put_with_prompt<
             command.name
         );
     }
-    let mut content_key = SecretMaterial::new(CONTENT_KEY_LEN)?;
-    content_key.with_secret_mut(|value| boundary.fill_random_bytes(value))?;
-    let mut nonce = [0u8; NONCE_LEN];
-    boundary.fill_random_bytes(&mut nonce)?;
-    let wrapped_key = device.wrap_key(&content_key)?;
-    let blob = SecretBlob::encrypt_secret_for_storage(
-        command.name,
-        device.serial(),
-        nonce,
-        wrapped_key,
-        &secret,
-        &content_key,
-    )?;
-    let mut encoded = blob.encode()?;
+    let mut encoded = device.seal_for_storage(command.name, &secret)?;
     device.write_object(command.name.object_id(), &mut encoded)
 }

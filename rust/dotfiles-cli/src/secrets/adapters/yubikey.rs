@@ -1,9 +1,7 @@
 //! 実機 YubiKey PIV セッションを `SecretDevice` port へ接続する adapter。
 
 use anyhow::{Context, bail};
-use rand_core::OsRng;
-use rsa::{Oaep, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
-use sha2::Sha256;
+use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
 use yubikey::{
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
@@ -11,9 +9,12 @@ use yubikey::{
 
 use crate::Result;
 use crate::secrets::{
-    domain::{material::SecretMaterial, piv::PivObjectId},
+    domain::{
+        material::SecretMaterial,
+        piv::{PivObjectId, SecretName},
+    },
     ports::{DeviceCandidate, SecretDevice},
-    support::oaep::unwrap_oaep_sha256,
+    support::protection::{secret_random, yubikey_crypto},
 };
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
@@ -169,14 +170,14 @@ impl SecretDevice for YubikeySecretDevice {
             .context("YubiKey secret storage key has no public key metadata")?;
         let public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
             .context("failed to parse YubiKey secret storage public key")?;
-        key.with_bytes(|bytes| Ok(public.encrypt(&mut OsRng, Oaep::new::<Sha256>(), bytes)?))
+        secret_random::rsa_oaep_encrypt(&public, key)
     }
 
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
         if self.pin_verified {
             return Ok(());
         }
-        pin.with_bytes(|bytes| self.yubikey.verify_pin(bytes))?;
+        yubikey_crypto::verify_pin(&mut self.yubikey, pin)?;
         self.pin_verified = true;
         Ok(())
     }
@@ -195,6 +196,40 @@ impl SecretDevice for YubikeySecretDevice {
             AlgorithmId::Rsa2048,
             SECRET_SLOT,
         )?;
-        unwrap_oaep_sha256(&decrypted, 256)
+        yubikey_crypto::unwrap_content_key(&decrypted, 256)
+    }
+
+    fn seal_for_storage(
+        &mut self,
+        name: SecretName,
+        plaintext: &SecretMaterial,
+    ) -> Result<Vec<u8>> {
+        use rand::RngCore;
+        let content_key = secret_random::random_secret(yubikey_crypto::CONTENT_KEY_LEN)?;
+        let mut nonce = [0u8; yubikey_crypto::NONCE_LEN];
+        rand::rng().fill_bytes(&mut nonce);
+        let wrapped_key = self.wrap_key(&content_key)?;
+        yubikey_crypto::seal_for_storage(
+            name.secret_id(),
+            nonce,
+            wrapped_key,
+            plaintext,
+            &content_key,
+            &name.additional_data(self.serial()),
+            |bytes| name.ensure_value_non_empty(bytes),
+        )
+    }
+
+    fn open_from_storage(&mut self, name: SecretName, encoded: &[u8]) -> Result<SecretMaterial> {
+        let wrapped_key = yubikey_crypto::wrapped_key_from_blob(encoded, name.secret_id())?;
+        let content_key = self.unwrap_key(&wrapped_key)?;
+        let secret = yubikey_crypto::open_from_storage(
+            encoded,
+            name.secret_id(),
+            &content_key,
+            &name.additional_data(self.serial()),
+            |bytes| name.ensure_value_non_empty(bytes),
+        )?;
+        Ok(secret)
     }
 }

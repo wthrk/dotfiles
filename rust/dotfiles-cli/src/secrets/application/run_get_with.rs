@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::Result;
 use crate::secrets::{
-    domain::{blob::SecretBlob, manifest::SecretManifest, piv::PivObjectId, values::GetCommand},
+    domain::{manifest::SecretManifest, piv::PivObjectId, values::GetCommand},
     ports::{self, SecretDevice},
 };
 
@@ -36,8 +36,8 @@ pub(crate) fn run_get_with<
     let encoded = device
         .read_object(command.name.object_id())?
         .ok_or_else(|| anyhow::anyhow!("{} is not stored on this YubiKey", command.name))?;
-    let blob = SecretBlob::decode_for_name(&encoded, command.name)?;
-    let content_key = device.unwrap_key(&blob.wrapped_key)?;
-    let secret = blob.decrypt_secret(device.serial(), &content_key)?;
+    let secret = device
+        .open_from_storage(command.name, &encoded)
+        .map_err(|error| anyhow::anyhow!("failed to decode {}: {error}", command.name))?;
     boundary.write_secret(&secret)
 }

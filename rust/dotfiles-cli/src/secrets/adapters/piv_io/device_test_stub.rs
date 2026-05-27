@@ -4,15 +4,14 @@ use crate::{
     Result,
     secrets::{
         domain::{
-            blob::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob},
             manifest::SecretManifest,
             material::SecretMaterial,
             piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName},
         },
         ports::{DeviceCandidate, DeviceSelectionPort, SecretDevice},
+        support::protection::yubikey_crypto,
     },
 };
-use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit};
 use dotfiles_cli_secrets_test_contract::{
     CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
     SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_SERIAL,
@@ -20,29 +19,6 @@ use dotfiles_cli_secrets_test_contract::{
 };
 
 const REDACTED_WRITE_VALUE: &str = "<redacted>";
-const STUB_WRAP_PREFIX: &[u8] = b"dotfiles-stub-wrapped-v1:";
-
-fn wrap_stub_content_key(key: &SecretMaterial) -> Vec<u8> {
-    key.with_secret(|bytes| {
-        let mut wrapped = Vec::with_capacity(STUB_WRAP_PREFIX.len() + bytes.len());
-        wrapped.extend_from_slice(STUB_WRAP_PREFIX);
-        wrapped.extend(bytes.iter().map(|byte| byte ^ 0xa5));
-        wrapped
-    })
-}
-
-fn unwrap_stub_content_key(wrapped_key: &[u8]) -> Result<SecretMaterial> {
-    let Some(masked) = wrapped_key.strip_prefix(STUB_WRAP_PREFIX) else {
-        anyhow::bail!("invalid stub-wrapped content key");
-    };
-    let mut key = SecretMaterial::new(masked.len())?;
-    key.with_secret_mut(|bytes| {
-        for (dst, source) in bytes.iter_mut().zip(masked.iter()) {
-            *dst = *source ^ 0xa5;
-        }
-    });
-    Ok(key)
-}
 
 /// env 契約の state 文字列を `StubState` へ変換する。
 ///
@@ -65,36 +41,20 @@ fn default_state_for_serial(serial: u32) -> StubState {
 }
 
 fn make_seed_blob(name: SecretName, plaintext: &[u8]) -> Vec<u8> {
-    let nonce = [0u8; NONCE_LEN];
-    let Ok(content_key) = SecretMaterial::copy_from_slice(&[0u8; CONTENT_KEY_LEN]) else {
+    let nonce = [0u8; yubikey_crypto::NONCE_LEN];
+    let Ok(content_key) = yubikey_crypto::zero_content_key() else {
         return Vec::new();
     };
-    let Ok(mut ciphertext) = SecretMaterial::copy_from_slice(plaintext) else {
-        return Vec::new();
-    };
-    let Ok(cipher) = content_key.with_bytes(Aes256Gcm::new_from_slice) else {
-        return Vec::new();
-    };
-    let Ok(tag) = ciphertext.with_secret_mut(|bytes| {
-        cipher.encrypt_in_place_detached(
-            aes_gcm::Nonce::from_slice(&nonce),
-            &name.additional_data(PRIMARY_SERIAL),
-            bytes,
-        )
-    }) else {
-        return Vec::new();
-    };
-    let Ok(tag) = tag.as_slice().try_into() else {
-        return Vec::new();
-    };
-    let blob = SecretBlob {
-        name,
+    yubikey_crypto::seal_plaintext_bytes_for_test_storage(
+        name.secret_id(),
         nonce,
-        wrapped_key: wrap_stub_content_key(&content_key),
-        ciphertext,
-        tag,
-    };
-    blob.encode().unwrap_or_default()
+        yubikey_crypto::stub_wrap_content_key(&content_key),
+        plaintext,
+        &content_key,
+        &name.additional_data(PRIMARY_SERIAL),
+        |bytes| name.ensure_value_non_empty(bytes),
+    )
+    .unwrap_or_default()
 }
 
 /// `SecretDevice` 契約を in-memory 状態で実装する test 専用 adapter。
@@ -301,7 +261,7 @@ impl SecretDevice for TestStubSecretDevice {
     }
 
     fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
-        Ok(wrap_stub_content_key(key))
+        Ok(yubikey_crypto::stub_wrap_content_key(key))
     }
 
     fn requires_pin_input(&self) -> bool {
@@ -324,6 +284,38 @@ impl SecretDevice for TestStubSecretDevice {
         if self.read_pin_from_tty && !self.pin_verified {
             anyhow::bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        unwrap_stub_content_key(wrapped_key)
+        yubikey_crypto::stub_unwrap_content_key(wrapped_key)
+    }
+
+    fn seal_for_storage(
+        &mut self,
+        name: SecretName,
+        plaintext: &SecretMaterial,
+    ) -> Result<Vec<u8>> {
+        let content_key = yubikey_crypto::zero_content_key()?;
+        let nonce = [0u8; yubikey_crypto::NONCE_LEN];
+        let wrapped_key = self.wrap_key(&content_key)?;
+        yubikey_crypto::seal_for_storage(
+            name.secret_id(),
+            nonce,
+            wrapped_key,
+            plaintext,
+            &content_key,
+            &name.additional_data(self.serial()),
+            |bytes| name.ensure_value_non_empty(bytes),
+        )
+    }
+
+    fn open_from_storage(&mut self, name: SecretName, encoded: &[u8]) -> Result<SecretMaterial> {
+        let wrapped_key = yubikey_crypto::wrapped_key_from_blob(encoded, name.secret_id())?;
+        let content_key = self.unwrap_key(&wrapped_key)?;
+        let secret = yubikey_crypto::open_from_storage(
+            encoded,
+            name.secret_id(),
+            &content_key,
+            &name.additional_data(self.serial()),
+            |bytes| name.ensure_value_non_empty(bytes),
+        )?;
+        Ok(secret)
     }
 }

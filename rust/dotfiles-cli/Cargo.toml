@@ -27,6 +27,7 @@ secrets-test-stub = []
 [dependencies]
 aes-gcm.workspace = true
 anyhow.workspace = true
+bincode.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true

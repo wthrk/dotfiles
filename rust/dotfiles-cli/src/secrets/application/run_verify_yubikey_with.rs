@@ -3,7 +3,6 @@ use anyhow::bail;
 use crate::Result;
 use crate::secrets::{
     domain::{
-        blob::SecretBlob,
         manifest::SecretManifest,
         piv::{PivObjectId, SecretName},
         values::{VerifySummary, VerifyYubikeyCommand},
@@ -43,10 +42,9 @@ pub(crate) fn run_verify_yubikey_with<
         let encoded = device
             .read_object(name.object_id())?
             .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-        let wrapped_key = SecretBlob::decode_for_name(&encoded, name)?.wrapped_key;
-        let content_key = device.unwrap_key(&wrapped_key)?;
-        let _secret =
-            SecretBlob::decode_decrypt_and_validate(&encoded, name, device.serial(), &content_key)?;
+        let _secret = device
+            .open_from_storage(name, &encoded)
+            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
     }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(
@@ -84,7 +82,7 @@ mod tests {
     }
     impl ports::PinInputPort for FakeBoundary {
         fn read_pin(&self) -> Result<SecretMaterial> {
-            SecretMaterial::copy_from_slice(b"123456")
+            SecretMaterial::new(6)
         }
     }
     impl ports::DeviceSelectionPort for FakeBoundary {
@@ -138,26 +136,7 @@ mod tests {
             let name = SecretName::iter()
                 .find(|candidate| candidate.object_id() == object_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown object id"))?;
-            let nonce = [0u8; 12];
-            let key = SecretMaterial::copy_from_slice(&[0u8; 32])?;
-            let cipher = key.with_bytes(crate::secrets::support::aead::aes_256_gcm_from_key)?;
-            let mut ciphertext = SecretMaterial::copy_from_slice(b"value")?;
-            let tag = ciphertext.with_secret_mut(|bytes| {
-                crate::secrets::support::aead::encrypt_detached(
-                    &cipher,
-                    &nonce,
-                    &name.additional_data(2001),
-                    bytes,
-                )
-            })?;
-            let blob = crate::secrets::domain::blob::SecretBlob {
-                name,
-                nonce,
-                wrapped_key: vec![1u8; 32],
-                ciphertext,
-                tag,
-            };
-            Ok(Some(blob.encode()?))
+            Ok(Some(vec![name.secret_id()]))
         }
         fn write_object(&mut self, _object_id: PivObjectId, _value: &mut [u8]) -> Result<()> {
             Ok(())
@@ -172,7 +151,21 @@ mod tests {
             Ok(())
         }
         fn unwrap_key(&mut self, _wrapped_key: &[u8]) -> Result<SecretMaterial> {
-            SecretMaterial::copy_from_slice(&[0u8; 32])
+            SecretMaterial::new(32)
+        }
+        fn seal_for_storage(
+            &mut self,
+            _name: SecretName,
+            _plaintext: &SecretMaterial,
+        ) -> Result<Vec<u8>> {
+            Ok(vec![])
+        }
+        fn open_from_storage(
+            &mut self,
+            _name: SecretName,
+            _encoded: &[u8],
+        ) -> Result<SecretMaterial> {
+            SecretMaterial::new(1)
         }
     }
 

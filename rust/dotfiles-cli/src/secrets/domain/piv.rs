@@ -1,8 +1,7 @@
 use std::{fmt, str::FromStr};
 
 use anyhow::Result;
-
-use super::blob::BLOB_VERSION;
+const STORAGE_BLOB_VERSION: u8 = 1;
 
 /// YubiKey PIV PIN の最小 byte 長。
 pub const PIV_PIN_MIN_LEN: usize = 6;
@@ -108,23 +107,11 @@ impl SecretName {
     /// 呼び出し側は同じ blob を復号する際に同一 serial と secret 名を渡す責務を負う。
     pub fn additional_data(self, serial: u32) -> Vec<u8> {
         [
-            &[BLOB_VERSION, self.secret_id()][..],
+            &[STORAGE_BLOB_VERSION, self.secret_id()][..],
             &self.object_id().to_be_bytes(),
             &serial.to_be_bytes(),
         ]
         .concat()
-    }
-
-    /// binary blob の secret id を型付き secret 名へ戻す。
-    ///
-    /// 未知の id は version 非互換として失敗し、呼び出し側はそのエラーを invalid blob として扱う。
-    pub fn from_secret_id(secret_id: u8) -> Result<Self> {
-        match secret_id {
-            1 => Ok(Self::BwEmail),
-            2 => Ok(Self::BwPassword),
-            3 => Ok(Self::BwsAccessToken),
-            _ => Err(invalid_data(format!("unknown YubiKey secret id: {secret_id}")).into()),
-        }
     }
 
     /// 保存または検証対象 secret が空でないことを確認する。

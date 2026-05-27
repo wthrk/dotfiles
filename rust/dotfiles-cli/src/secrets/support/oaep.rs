@@ -3,7 +3,7 @@
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
 
-use crate::{Result, secrets::domain::material::SecretMaterial};
+use crate::Result;
 
 use super::protection::ProtectedSecret;
 
@@ -11,7 +11,7 @@ const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
 const HASH_LEN: usize = 32;
 
 /// raw RSA decrypt 出力から OAEP-SHA256 を除去して content key を復元する。
-pub(crate) fn unwrap_oaep_sha256(encoded: &[u8], key_len: usize) -> Result<SecretMaterial> {
+pub(crate) fn unwrap_oaep_sha256(encoded: &[u8], key_len: usize) -> Result<ProtectedSecret> {
     if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);
     }
@@ -36,7 +36,10 @@ pub(crate) fn unwrap_oaep_sha256(encoded: &[u8], key_len: usize) -> Result<Secre
             bail!(OAEP_UNPAD_ERROR);
         }
         let separator = separator.context(OAEP_UNPAD_ERROR)?;
-        SecretMaterial::copy_from_slice(&rest[separator + 1..])
+        let plain = &rest[separator + 1..];
+        let mut protected = ProtectedSecret::new(plain.len())?;
+        protected.with_secret_mut(|out| out.copy_from_slice(plain));
+        Ok(protected)
     })
 }
 
