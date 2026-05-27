@@ -1,4 +1,4 @@
-//! 実機 YubiKey PIV セッションを `SecretDevice` port へ接続する adapter。
+//! 実機 YubiKey PIV セッションを secrets adapter 内部の I/O 境界へ接続する。
 
 use anyhow::{Context, bail};
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
@@ -13,9 +13,11 @@ use crate::secrets::{
         material::SecretMaterial,
         piv::{PivObjectId, SecretStorageSpec},
     },
-    ports::{DeviceCandidate, SecretDevice},
+    ports::DeviceCandidate,
     support::protection::{sealed_blob, secret_random, yubikey_pin},
 };
+
+use super::{RealDeviceIo, SecretDeviceIo};
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
@@ -88,7 +90,7 @@ impl YubikeySecretDevice {
     }
 }
 
-/// 実機 YubiKey discovery/open を `DeviceSelectionPort` 契約へ接続する adapter。
+/// 実機 YubiKey discovery/open を担う adapter。
 pub(crate) struct RealDeviceAdapter;
 
 impl Default for RealDeviceAdapter {
@@ -97,9 +99,7 @@ impl Default for RealDeviceAdapter {
     }
 }
 
-impl crate::secrets::ports::DeviceSelectionPort for RealDeviceAdapter {
-    type Device = YubikeySecretDevice;
-
+impl RealDeviceIo for RealDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         let mut context = YubikeyContext::open()?;
         let mut devices = Vec::new();
@@ -114,12 +114,12 @@ impl crate::secrets::ports::DeviceSelectionPort for RealDeviceAdapter {
         Ok(devices)
     }
 
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device> {
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<YubikeySecretDevice> {
         YubikeySecretDevice::open_by_serial(serial)
     }
 }
 
-impl SecretDevice for YubikeySecretDevice {
+impl SecretDeviceIo for YubikeySecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
             Ok(_) => Ok(true),

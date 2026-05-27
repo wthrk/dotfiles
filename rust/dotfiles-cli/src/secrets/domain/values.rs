@@ -32,6 +32,12 @@ pub struct PutCommand {
 }
 
 impl PutCommand {
+    /// 非対話 put use case が要求する対象 serial を返す。
+    pub fn required_serial(&self) -> Result<u32> {
+        self.serial
+            .ok_or_else(|| invalid_input("pass --serial in non-interactive use").into())
+    }
+
     /// 指定 serial に対する put 対象の storage spec を返す。
     pub fn storage_spec(&self, serial: u32) -> SecretStorageSpec {
         self.name.storage_spec(serial)
@@ -108,6 +114,12 @@ pub struct RotateBwsTokenCommand {
 }
 
 impl RotateBwsTokenCommand {
+    /// rotate-bws-token が要求する対象 serial を返す。
+    pub fn required_serial(self) -> Result<u32> {
+        self.serial
+            .ok_or_else(|| invalid_input("pass --serial in non-interactive use").into())
+    }
+
     /// rotate 対象 secret 名を返す。
     pub fn target_secret(self) -> SecretName {
         SecretName::BwsAccessToken
@@ -159,6 +171,16 @@ impl VerifyYubikeyCommand {
                 ExternalCheck::BwLogin => CheckName::BwLogin,
             })
             .collect())
+    }
+
+    /// 現フェーズで未対応の external check 要求を domain error へ変換する。
+    pub fn external_checks_unavailable_error(&self, requested: &[CheckName]) -> anyhow::Error {
+        let requested_names = requested
+            .iter()
+            .map(|check| check.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::anyhow!("external checks are not implemented yet: {requested_names}")
     }
 }
 

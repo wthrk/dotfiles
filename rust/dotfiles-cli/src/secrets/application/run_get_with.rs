@@ -1,9 +1,7 @@
-use anyhow::bail;
-
 use crate::Result;
 use crate::secrets::{
-    domain::{manifest::SecretManifest, piv::PivObjectId, values::GetCommand},
-    ports::{self, SecretDevice},
+    domain::values::GetCommand,
+    ports::{self, SecretStoragePort},
 };
 
 /// 指定された secret を YubiKey storage から読み出し、出力 port へ受け渡す。
@@ -13,7 +11,7 @@ pub(crate) fn run_get_with<
     B: ports::DeviceSerialPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
-        + ports::DeviceSelectionPort
+        + SecretStoragePort
         + ports::SecretOutputPort,
 >(
     command: GetCommand,
@@ -25,20 +23,7 @@ pub(crate) fn run_get_with<
     } else {
         None
     };
-    let mut device = boundary.open_device_by_serial(serial)?;
-    if device.requires_pin_input() {
-        let Some(pin) = pin.as_ref() else {
-            bail!("PIN is required for this operation");
-        };
-        device.verify_pin(pin)?;
-    }
-    SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
     let storage = command.storage_spec(serial);
-    let encoded = device
-        .read_object(storage.object_id)?
-        .ok_or_else(|| storage.missing_error())?;
-    let secret = device
-        .open_from_storage(storage.clone(), &encoded)
-        .map_err(|error| storage.decode_error(error))?;
+    let secret = boundary.load_secret(serial, storage, pin.as_ref())?;
     boundary.write_secret(&secret)
 }

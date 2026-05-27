@@ -263,3 +263,43 @@ impl SecretMemoryGuard {
         region::lock(ptr, len).context("failed to lock input buffer memory")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn protected_from_test_bytes(bytes: &[u8]) -> Result<ProtectedSecret> {
+        let mut secret = ProtectedSecret::new(bytes.len())?;
+        secret.with_secret_mut(|out| out.copy_from_slice(bytes));
+        Ok(secret)
+    }
+
+    #[test]
+    fn try_clone_returns_independent_locked_copy() -> Result<()> {
+        let mut original = protected_from_test_bytes(b"abc")?;
+        let cloned = ProtectedSecret::try_clone(&original)?;
+
+        original.with_secret_mut(|bytes| bytes.copy_from_slice(b"xyz"));
+
+        cloned.with_secret(|bytes| {
+            assert_eq!(bytes, b"abc");
+        });
+        original.with_secret(|bytes| {
+            assert_eq!(bytes, b"xyz");
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn try_clone_copy_survives_source_drop() -> Result<()> {
+        let cloned = {
+            let original = protected_from_test_bytes(b"persist")?;
+            ProtectedSecret::try_clone(&original)?
+        };
+
+        cloned.with_secret(|bytes| {
+            assert_eq!(bytes, b"persist");
+        });
+        Ok(())
+    }
+}

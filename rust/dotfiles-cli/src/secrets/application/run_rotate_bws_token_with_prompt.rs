@@ -1,16 +1,8 @@
-use anyhow::bail;
-
 use crate::Result;
 use crate::secrets::{
-    domain::{
-        manifest::SecretManifest,
-        piv::{PivObjectId, SecretStorageSpec},
-        values::{RotateBwsTokenCommand, VerifySummary},
-    },
-    ports::{self, SecretDevice},
+    domain::values::{RotateBwsTokenCommand, VerifySummary},
+    ports::{self, SecretStoragePort},
 };
-
-const NONINTERACTIVE_SERIAL_ERROR: &str = "pass --serial in non-interactive use";
 
 /// prompt 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
@@ -20,48 +12,22 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     B: ports::SecretInputPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
-        + ports::DeviceSelectionPort
+        + SecretStoragePort
         + ports::ReportPort,
 >(
     command: RotateBwsTokenCommand,
     boundary: &mut B,
 ) -> Result<()> {
-    let Some(serial) = command.serial else {
-        bail!(NONINTERACTIVE_SERIAL_ERROR);
-    };
+    let serial = command.required_serial()?;
     let token = boundary.read_hidden_secret(command.target_secret())?;
-    let mut device = boundary.open_device_by_serial(serial)?;
-    SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
-    device.check_management_auth_preconditions()?;
     let storage = command.storage_spec(serial);
-    let mut encoded = device.seal_for_storage(storage.clone(), &token)?;
-    device.write_object(storage.object_id, &mut encoded)?;
+    boundary.store_secret(serial, storage, &token)?;
     let pin = if boundary.device_requires_pin(serial)? {
         Some(boundary.read_pin()?)
     } else {
         None
     };
-    let mut verify_device = boundary.open_device_by_serial(serial)?;
-    if verify_device.requires_pin_input() {
-        let Some(pin) = pin.as_ref() else {
-            bail!("PIN is required for this operation");
-        };
-        verify_device.verify_pin(pin)?;
-    }
-    let verify_result = (|| -> Result<()> {
-        SecretManifest::decode_initialized(
-            verify_device.read_object(PivObjectId::MANIFEST)?.as_deref(),
-        )?;
-        for storage in SecretStorageSpec::all_for_serial(serial) {
-            let encoded = verify_device
-                .read_object(storage.object_id)?
-                .ok_or_else(|| storage.missing_error())?;
-            let _secret = verify_device
-                .open_from_storage(storage.clone(), &encoded)
-                .map_err(|error| storage.decode_error(error))?;
-        }
-        Ok(())
-    })();
+    let verify_result = boundary.verify_local_storage(serial, pin.as_ref());
     match verify_result {
         Ok(()) => boundary.write_verify_report(&VerifySummary::local_storage_verified(serial)),
         Err(err) => boundary

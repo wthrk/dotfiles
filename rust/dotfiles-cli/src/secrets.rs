@@ -153,14 +153,14 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
 /// 1 箇所に明示することで、CLI 層から adapter 具体型依存が漏れることを防ぐ。
 fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
 where
-    B: ports::DeviceSelectionPort
-        + ports::DeviceSerialPort
+    B: ports::DeviceSerialPort
         + ports::DevicePinPolicyPort
         + ports::SpareDeviceSerialPort
         + ports::PinInputPort
         + ports::SecretInputPort
         + ports::BootstrapSecretDocumentInputPort
         + ports::SecretOutputPort
+        + ports::SecretStoragePort
         + ports::ReportPort,
 {
     match options.command {

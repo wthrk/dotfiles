@@ -9,14 +9,14 @@ use dotfiles_cli_secrets_test_contract::{
 
 #[cfg(feature = "secrets-test-stub")]
 use super::device_test_stub::{TestStubDeviceAdapter, TestStubSecretDevice};
-#[cfg(feature = "secrets-test-stub")]
-use crate::secrets::ports::SecretDevice;
 use crate::secrets::{
-    adapters::yubikey::RealDeviceAdapter,
-    ports::{DeviceCandidate, DeviceSelectionPort},
+    adapters::yubikey::{RealDeviceAdapter, YubikeySecretDevice},
+    domain::{material::SecretMaterial, piv::PivObjectId},
+    ports::DeviceCandidate,
 };
 
 use super::DeviceAdapterRouteLabel;
+use crate::secrets::adapters::{RealDeviceIo, SecretDeviceIo};
 
 #[cfg(not(feature = "secrets-test-stub"))]
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
@@ -59,17 +59,17 @@ enum DeviceSelectionInner {
     Stub(TestStubDeviceAdapter),
 }
 
-#[cfg(feature = "secrets-test-stub")]
 pub(crate) enum SelectedSecretDevice {
-    Real(<RealDeviceAdapter as DeviceSelectionPort>::Device),
+    Real(YubikeySecretDevice),
+    #[cfg(feature = "secrets-test-stub")]
     Stub(TestStubSecretDevice),
 }
 
-#[cfg(feature = "secrets-test-stub")]
-impl SecretDevice for SelectedSecretDevice {
+impl SecretDeviceIo for SelectedSecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         match self {
             Self::Real(device) => device.key_exists(),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.key_exists(),
         }
     }
@@ -77,6 +77,7 @@ impl SecretDevice for SelectedSecretDevice {
     fn check_key_generation_preconditions(&mut self) -> Result<()> {
         match self {
             Self::Real(device) => device.check_key_generation_preconditions(),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.check_key_generation_preconditions(),
         }
     }
@@ -84,6 +85,7 @@ impl SecretDevice for SelectedSecretDevice {
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
         match self {
             Self::Real(device) => device.check_management_auth_preconditions(),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.check_management_auth_preconditions(),
         }
     }
@@ -91,27 +93,23 @@ impl SecretDevice for SelectedSecretDevice {
     fn generate_key(&mut self) -> Result<()> {
         match self {
             Self::Real(device) => device.generate_key(),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.generate_key(),
         }
     }
 
-    fn read_object(
-        &mut self,
-        object_id: crate::secrets::domain::piv::PivObjectId,
-    ) -> Result<Option<Vec<u8>>> {
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
         match self {
             Self::Real(device) => device.read_object(object_id),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.read_object(object_id),
         }
     }
 
-    fn write_object(
-        &mut self,
-        object_id: crate::secrets::domain::piv::PivObjectId,
-        value: &mut [u8],
-    ) -> Result<()> {
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
         match self {
             Self::Real(device) => device.write_object(object_id, value),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.write_object(object_id, value),
         }
     }
@@ -119,13 +117,15 @@ impl SecretDevice for SelectedSecretDevice {
     fn requires_pin_input(&self) -> bool {
         match self {
             Self::Real(device) => device.requires_pin_input(),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.requires_pin_input(),
         }
     }
 
-    fn verify_pin(&mut self, pin: &crate::secrets::domain::material::SecretMaterial) -> Result<()> {
+    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
         match self {
             Self::Real(device) => device.verify_pin(pin),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.verify_pin(pin),
         }
     }
@@ -137,6 +137,7 @@ impl SecretDevice for SelectedSecretDevice {
     ) -> Result<Vec<u8>> {
         match self {
             Self::Real(device) => device.seal_for_storage(storage, plaintext),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.seal_for_storage(storage, plaintext),
         }
     }
@@ -148,6 +149,7 @@ impl SecretDevice for SelectedSecretDevice {
     ) -> Result<crate::secrets::domain::material::SecretMaterial> {
         match self {
             Self::Real(device) => device.open_from_storage(storage, encoded),
+            #[cfg(feature = "secrets-test-stub")]
             Self::Stub(device) => device.open_from_storage(storage, encoded),
         }
     }
@@ -190,32 +192,26 @@ impl DeviceAdapterRouteLabel for SelectedDeviceAdapter {
     }
 }
 
-impl DeviceSelectionPort for SelectedDeviceAdapter {
-    #[cfg(not(feature = "secrets-test-stub"))]
-    type Device = <RealDeviceAdapter as DeviceSelectionPort>::Device;
-    #[cfg(feature = "secrets-test-stub")]
-    type Device = SelectedSecretDevice;
-
+impl super::SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         match &mut self.inner {
-            DeviceSelectionInner::Real(inner) => inner.discover_devices(),
+            DeviceSelectionInner::Real(inner) => RealDeviceIo::discover_devices(inner),
             #[cfg(feature = "secrets-test-stub")]
-            DeviceSelectionInner::Stub(inner) => inner.discover_devices(),
+            DeviceSelectionInner::Stub(inner) => {
+                super::StubDeviceDiscoveryIo::discover_devices(inner)
+            }
         }
     }
 
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device> {
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
         match &mut self.inner {
-            #[cfg(not(feature = "secrets-test-stub"))]
-            DeviceSelectionInner::Real(inner) => inner.open_device_by_serial(serial),
+            DeviceSelectionInner::Real(inner) => {
+                RealDeviceIo::open_device_by_serial(inner, serial).map(SelectedSecretDevice::Real)
+            }
             #[cfg(feature = "secrets-test-stub")]
-            DeviceSelectionInner::Real(inner) => inner
-                .open_device_by_serial(serial)
-                .map(SelectedSecretDevice::Real),
-            #[cfg(feature = "secrets-test-stub")]
-            DeviceSelectionInner::Stub(inner) => inner
-                .open_device_by_serial(serial)
-                .map(SelectedSecretDevice::Stub),
+            DeviceSelectionInner::Stub(inner) => {
+                super::StubDeviceDiscoveryIo::open_device_by_serial(inner, serial)
+            }
         }
     }
 }

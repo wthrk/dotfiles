@@ -5,7 +5,7 @@
 use super::domain::{
     manifest::BootstrapSecretDocument,
     material::SecretMaterial,
-    piv::{PivObjectId, SecretName, SecretStorageSpec},
+    piv::{SecretName, SecretStorageSpec},
     values::{EnrollSummary, VerifySummary},
 };
 use anyhow::Result;
@@ -15,13 +15,6 @@ use anyhow::Result;
 pub struct DeviceCandidate {
     pub serial: u32,
     pub label: String,
-}
-
-/// use case が device 候補列挙と open を要求する capability 契約。
-pub trait DeviceSelectionPort {
-    type Device: SecretDevice;
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device>;
 }
 
 /// use case が primary 対象の serial を確定する capability 契約。
@@ -67,47 +60,32 @@ pub trait ReportPort {
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
 }
 
-/// YubiKey device adapter が満たす低水準 device 操作契約。
-pub trait SecretDevice {
-    /// 管理鍵スロットが初期化済みかを返す。
-    ///
-    /// implementor は外部 API 差異を吸収し、caller へは bool 契約だけを返す責務を負う。
-    fn key_exists(&mut self) -> Result<bool>;
-    /// 鍵生成前に必要なデバイス前提条件を検証する。
-    ///
-    /// caller は `generate_key` の前にこの検証を呼ぶ責務を負う。
-    fn check_key_generation_preconditions(&mut self) -> Result<()>;
-    /// 既存管理鍵を使う操作の前提条件を検証する。
-    ///
-    /// caller は write/load 前にこの検証が必要な実装かを考慮する責務を負う。
-    fn check_management_auth_preconditions(&mut self) -> Result<()>;
-    /// 管理鍵を生成してデバイスへ反映する。
-    fn generate_key(&mut self) -> Result<()>;
-    /// PIV object bytes を読み出す。
-    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
-    /// PIV object bytes を書き込む。
-    ///
-    /// value のゼロ化や一時バッファ管理は implementor 側の責務とする。
-    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
-    /// 現在の device state で PIN 入力が必要かどうかを返す。
-    ///
-    /// この値は `verify_pin` 呼び出し要否を判断するための signal であり、
-    /// PIN 入力手段（prompt / stdin）の選択責務は caller 側にある。
-    fn requires_pin_input(&self) -> bool;
-    /// PIN 検証を実行し、以後の復号操作に必要な認証状態へ遷移させる。
-    ///
-    /// 実装は PIN 値を保持し続けず、失敗時は認証状態を進めない責務を負う。
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
-    /// plain secret を YubiKey 保存用 encrypted blob に変換する。
-    fn seal_for_storage(
+/// use case が YubiKey secret storage へ要求する高水準 capability 契約。
+pub trait SecretStoragePort {
+    /// 対象 serial の secret storage を初期化する。
+    fn initialize_secret_storage(&mut self, serial: u32) -> Result<()>;
+    /// 対象 storage spec の secret を保存する。
+    fn store_secret(
         &mut self,
+        serial: u32,
         storage: SecretStorageSpec,
-        plaintext: &SecretMaterial,
-    ) -> Result<Vec<u8>>;
-    /// YubiKey 保存済み encrypted blob を復号して plain secret を返す。
-    fn open_from_storage(
+        secret: &SecretMaterial,
+    ) -> Result<()>;
+    /// 対象 storage spec の既存値ポリシーを確認したうえで secret を保存する。
+    fn put_secret(
         &mut self,
+        serial: u32,
         storage: SecretStorageSpec,
-        encoded: &[u8],
+        secret: &SecretMaterial,
+        force: bool,
+    ) -> Result<()>;
+    /// 対象 storage spec の secret を読み出す。
+    fn load_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial>;
+    /// local storage の manifest と全 secret を検証する。
+    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()>;
 }

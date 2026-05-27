@@ -282,6 +282,27 @@ fn verify_yubikey_requires_serial_in_non_interactive_use() -> TestResult<()> {
     Ok(())
 }
 
+/// stub env を設定しない場合でも同じ CLI 境界が real route を監査出力することを確認する。
+#[test]
+fn verify_yubikey_audits_real_route_when_stub_env_is_absent() -> TestResult<()> {
+    let run = run_pipe_without_stub(["verify-yubikey"], None)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=real")),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr
+            .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=stub")),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
 /// PIN 必須デバイスで PIN 未入力時に `verify-yubikey` が停止することを確認する。
 #[test]
 fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()> {
@@ -445,6 +466,38 @@ fn run_pipe_with_stub<const N: usize>(
     command.env(USE_TEST_STUB_ENV, "true");
     command.env(TEST_STUB_CONTEXT_ENV, TEST_STUB_CONTEXT_VALUE);
     apply_stub_fixtures(&mut command, fixtures);
+
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().context("failed to open child stdin")?;
+        stdin.write_all(input.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    Ok(CommandRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    })
+}
+
+fn run_pipe_without_stub<const N: usize>(
+    args: [&str; N],
+    input: Option<&str>,
+) -> TestResult<CommandRun> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command
+        .arg("secrets")
+        .args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.env_remove(USE_TEST_STUB_ENV);
+    command.env_remove(TEST_STUB_CONTEXT_ENV);
 
     let mut child = command.spawn()?;
     if let Some(input) = input {

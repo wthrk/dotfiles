@@ -11,16 +11,49 @@ use crate::{
         domain::{
             manifest::BootstrapSecretDocument,
             material::SecretMaterial,
-            piv::SecretName,
+            piv::{SecretName, SecretStorageSpec},
             values::{EnrollSummary, VerifySummary},
         },
         ports::{
-            BootstrapSecretDocumentInputPort, DeviceCandidate, DevicePinPolicyPort,
-            DeviceSelectionPort, DeviceSerialPort, PinInputPort, ReportPort, SecretInputPort,
-            SecretOutputPort, SpareDeviceSerialPort,
+            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
+            ReportPort, SecretInputPort, SecretOutputPort, SecretStoragePort,
+            SpareDeviceSerialPort,
         },
     },
 };
+
+trait RealDeviceIo {
+    fn discover_devices(&mut self) -> Result<Vec<crate::secrets::ports::DeviceCandidate>>;
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<yubikey::YubikeySecretDevice>;
+}
+
+trait SecretDeviceIo {
+    fn key_exists(&mut self) -> Result<bool>;
+    fn check_key_generation_preconditions(&mut self) -> Result<()>;
+    fn check_management_auth_preconditions(&mut self) -> Result<()>;
+    fn generate_key(&mut self) -> Result<()>;
+    fn read_object(
+        &mut self,
+        object_id: crate::secrets::domain::piv::PivObjectId,
+    ) -> Result<Option<Vec<u8>>>;
+    fn write_object(
+        &mut self,
+        object_id: crate::secrets::domain::piv::PivObjectId,
+        value: &mut [u8],
+    ) -> Result<()>;
+    fn requires_pin_input(&self) -> bool;
+    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
+    fn seal_for_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        plaintext: &SecretMaterial,
+    ) -> Result<Vec<u8>>;
+    fn open_from_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<SecretMaterial>;
+}
 
 /// CLI entrypoint が利用する secrets runtime adapter。
 ///
@@ -29,18 +62,6 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct SecretsAdapters {
     boundary: piv_io::RealSecretsBoundary,
-}
-
-impl DeviceSelectionPort for SecretsAdapters {
-    type Device = <piv_io::RealSecretsBoundary as DeviceSelectionPort>::Device;
-
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
-        self.boundary.discover_devices()
-    }
-
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device> {
-        self.boundary.open_device_by_serial(serial)
-    }
 }
 
 impl DeviceSerialPort for SecretsAdapters {
@@ -92,6 +113,44 @@ impl BootstrapSecretDocumentInputPort for SecretsAdapters {
 impl SecretOutputPort for SecretsAdapters {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
         self.boundary.write_secret(secret)
+    }
+}
+
+impl SecretStoragePort for SecretsAdapters {
+    fn initialize_secret_storage(&mut self, serial: u32) -> Result<()> {
+        self.boundary.initialize_secret_storage(serial)
+    }
+
+    fn store_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        secret: &SecretMaterial,
+    ) -> Result<()> {
+        self.boundary.store_secret(serial, storage, secret)
+    }
+
+    fn put_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        secret: &SecretMaterial,
+        force: bool,
+    ) -> Result<()> {
+        self.boundary.put_secret(serial, storage, secret, force)
+    }
+
+    fn load_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        pin: Option<&SecretMaterial>,
+    ) -> Result<SecretMaterial> {
+        self.boundary.load_secret(serial, storage, pin)
+    }
+
+    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()> {
+        self.boundary.verify_local_storage(serial, pin)
     }
 }
 

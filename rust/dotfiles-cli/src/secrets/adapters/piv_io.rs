@@ -11,16 +11,29 @@ use anyhow::bail;
 use crate::{
     Result,
     secrets::domain::{
-        manifest::BootstrapSecretDocument, material::SecretMaterial, piv::SecretName,
+        manifest::{BootstrapSecretDocument, SecretManifest},
+        material::SecretMaterial,
+        piv::{PivObjectId, SecretName, SecretStorageSpec, StorageObjectIds},
     },
     secrets::ports::{
-        BootstrapSecretDocumentInputPort, DeviceCandidate, DevicePinPolicyPort,
-        DeviceSelectionPort, DeviceSerialPort, PinInputPort, SecretDevice, SecretInputPort,
-        SecretOutputPort, SpareDeviceSerialPort,
+        BootstrapSecretDocumentInputPort, DeviceCandidate, DevicePinPolicyPort, DeviceSerialPort,
+        PinInputPort, SecretInputPort, SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort,
     },
 };
 
 use self::{device::SelectedDeviceAdapter, secret_io::RealSecretIoAdapter};
+use super::SecretDeviceIo;
+
+trait SelectedDeviceDiscoveryIo {
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<device::SelectedSecretDevice>;
+}
+
+#[cfg(feature = "secrets-test-stub")]
+trait StubDeviceDiscoveryIo {
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<device::SelectedSecretDevice>;
+}
 
 trait DeviceAdapterRouteLabel {
     fn adapter_route_label(&self) -> &'static str;
@@ -47,15 +60,13 @@ impl Default for RealSecretsBoundary {
     }
 }
 
-impl DeviceSelectionPort for RealSecretsBoundary {
-    type Device = <SelectedDeviceAdapter as DeviceSelectionPort>::Device;
-
+impl RealSecretsBoundary {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
-        self.device.discover_devices()
+        SelectedDeviceDiscoveryIo::discover_devices(&mut self.device)
     }
 
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device> {
-        self.device.open_device_by_serial(serial)
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<device::SelectedSecretDevice> {
+        SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
     }
 }
 
@@ -116,5 +127,101 @@ impl BootstrapSecretDocumentInputPort for RealSecretsBoundary {
 impl SecretOutputPort for RealSecretsBoundary {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
         self.secret_io.write_secret(secret)
+    }
+}
+
+impl SecretStoragePort for RealSecretsBoundary {
+    fn initialize_secret_storage(&mut self, serial: u32) -> Result<()> {
+        let mut device = self.open_device_by_serial(serial)?;
+        device.check_key_generation_preconditions()?;
+        device.check_management_auth_preconditions()?;
+        let key_exists = device.key_exists()?;
+        let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
+        let mut occupied_object_ids = Vec::new();
+        for object_id in StorageObjectIds::iter() {
+            if device.read_object(object_id)?.is_some() {
+                occupied_object_ids.push(object_id);
+            }
+        }
+        SecretManifest::ensure_setup_allowed(
+            key_exists,
+            manifest_bytes.as_deref(),
+            &occupied_object_ids,
+        )?;
+        device.generate_key()?;
+        let mut manifest = SecretManifest::expected().encode()?;
+        device.write_object(PivObjectId::MANIFEST, &mut manifest)
+    }
+
+    fn store_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        secret: &SecretMaterial,
+    ) -> Result<()> {
+        let mut device = self.open_device_by_serial(serial)?;
+        SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+        device.check_management_auth_preconditions()?;
+        let mut encoded = device.seal_for_storage(storage.clone(), secret)?;
+        device.write_object(storage.object_id, &mut encoded)
+    }
+
+    fn put_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        secret: &SecretMaterial,
+        force: bool,
+    ) -> Result<()> {
+        let mut device = self.open_device_by_serial(serial)?;
+        SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+        device.check_management_auth_preconditions()?;
+        storage
+            .name
+            .ensure_write_allowed(device.read_object(storage.object_id)?.is_some(), force)?;
+        let mut encoded = device.seal_for_storage(storage.clone(), secret)?;
+        device.write_object(storage.object_id, &mut encoded)
+    }
+
+    fn load_secret(
+        &mut self,
+        serial: u32,
+        storage: SecretStorageSpec,
+        pin: Option<&SecretMaterial>,
+    ) -> Result<SecretMaterial> {
+        let mut device = self.open_device_by_serial(serial)?;
+        if device.requires_pin_input() {
+            let Some(pin) = pin else {
+                bail!("PIN is required for this operation");
+            };
+            device.verify_pin(pin)?;
+        }
+        SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+        let encoded = device
+            .read_object(storage.object_id)?
+            .ok_or_else(|| storage.missing_error())?;
+        device
+            .open_from_storage(storage.clone(), &encoded)
+            .map_err(|error| storage.decode_error(error))
+    }
+
+    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()> {
+        let mut device = self.open_device_by_serial(serial)?;
+        if device.requires_pin_input() {
+            let Some(pin) = pin else {
+                bail!("PIN is required for this operation");
+            };
+            device.verify_pin(pin)?;
+        }
+        SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+        for storage in SecretStorageSpec::all_for_serial(serial) {
+            let encoded = device
+                .read_object(storage.object_id)?
+                .ok_or_else(|| storage.missing_error())?;
+            let _secret = device
+                .open_from_storage(storage.clone(), &encoded)
+                .map_err(|error| storage.decode_error(error))?;
+        }
+        Ok(())
     }
 }

@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::BTreeMap, env, rc::Rc};
 
+use crate::secrets::adapters::SecretDeviceIo;
 use crate::{
     Result,
     secrets::{
@@ -8,7 +9,7 @@ use crate::{
             material::SecretMaterial,
             piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName, SecretStorageSpec},
         },
-        ports::{DeviceCandidate, DeviceSelectionPort, SecretDevice},
+        ports::DeviceCandidate,
         support::protection::{sealed_blob, yubikey_stub_crypto},
     },
 };
@@ -101,8 +102,7 @@ impl Default for TestStubDeviceAdapter {
     }
 }
 
-impl DeviceSelectionPort for TestStubDeviceAdapter {
-    type Device = TestStubSecretDevice;
+impl super::StubDeviceDiscoveryIo for TestStubDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         Ok(self
             .devices
@@ -114,18 +114,23 @@ impl DeviceSelectionPort for TestStubDeviceAdapter {
             .collect())
     }
 
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<Self::Device> {
+    fn open_device_by_serial(
+        &mut self,
+        serial: u32,
+    ) -> Result<super::device::SelectedSecretDevice> {
         let state = self
             .devices
             .entry(serial)
             .or_insert_with(|| Rc::new(RefCell::new(TestStubDeviceState::fresh())))
             .clone();
-        Ok(TestStubSecretDevice {
-            serial,
-            state,
-            read_pin_from_tty: self.read_pin_from_tty,
-            pin_verified: false,
-        })
+        Ok(super::device::SelectedSecretDevice::Stub(
+            TestStubSecretDevice {
+                serial,
+                state,
+                read_pin_from_tty: self.read_pin_from_tty,
+                pin_verified: false,
+            },
+        ))
     }
 }
 
@@ -226,7 +231,7 @@ impl TestStubDeviceState {
     }
 }
 
-impl SecretDevice for TestStubSecretDevice {
+impl SecretDeviceIo for TestStubSecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         Ok(self.state.borrow().key_exists)
     }

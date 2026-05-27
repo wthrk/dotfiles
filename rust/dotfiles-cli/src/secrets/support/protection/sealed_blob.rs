@@ -221,3 +221,91 @@ fn ensure_minimum_plaintext_len(
 fn invalid_data(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SECRET_ID: u8 = 7;
+    const TEST_AAD: &[u8] = b"test-aad";
+    const TEST_LABEL: &str = "test secret";
+
+    fn protected_from_test_bytes(bytes: &[u8]) -> Result<ProtectedSecret> {
+        let mut secret = ProtectedSecret::new(bytes.len())?;
+        secret.with_secret_mut(|out| out.copy_from_slice(bytes));
+        Ok(secret)
+    }
+
+    fn test_content_key() -> Result<ProtectedSecret> {
+        let mut key = ProtectedSecret::new(CONTENT_KEY_LEN)?;
+        key.with_secret_mut(|bytes| {
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                *byte = index as u8;
+            }
+        });
+        Ok(key)
+    }
+
+    #[test]
+    fn sealed_blob_round_trips_without_aliasing_plaintext() -> Result<()> {
+        let mut plaintext = protected_from_test_bytes(b"secret-value")?;
+        let content_key = test_content_key()?;
+        let encoded = seal(SealRequest {
+            secret_id: TEST_SECRET_ID,
+            nonce: [3u8; NONCE_LEN],
+            wrapped_key: b"wrapped".to_vec(),
+            plaintext: &plaintext,
+            content_key: &content_key,
+            aad: TEST_AAD,
+            minimum_plaintext_len: 1,
+            label: TEST_LABEL,
+        })?;
+
+        plaintext.with_secret_mut(|bytes| bytes.fill(b'x'));
+
+        let opened = open_with_key_unwrap(
+            &encoded,
+            TEST_SECRET_ID,
+            |_| ProtectedSecret::try_clone(&content_key),
+            TEST_AAD,
+            1,
+            TEST_LABEL,
+        )?;
+        opened.with_secret(|bytes| {
+            assert_eq!(bytes, b"secret-value");
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_blob_rejects_corrupted_input() -> Result<()> {
+        let plaintext = protected_from_test_bytes(b"secret-value")?;
+        let content_key = test_content_key()?;
+        let mut encoded = seal(SealRequest {
+            secret_id: TEST_SECRET_ID,
+            nonce: [4u8; NONCE_LEN],
+            wrapped_key: b"wrapped".to_vec(),
+            plaintext: &plaintext,
+            content_key: &content_key,
+            aad: TEST_AAD,
+            minimum_plaintext_len: 1,
+            label: TEST_LABEL,
+        })?;
+        let last = encoded
+            .last_mut()
+            .expect("sealed blob test fixture must not be empty");
+        *last ^= 0x01;
+
+        let result = open_with_key_unwrap(
+            &encoded,
+            TEST_SECRET_ID,
+            |_| ProtectedSecret::try_clone(&content_key),
+            TEST_AAD,
+            1,
+            TEST_LABEL,
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
+}

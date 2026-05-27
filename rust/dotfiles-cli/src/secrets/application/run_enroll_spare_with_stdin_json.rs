@@ -1,11 +1,7 @@
 use crate::Result;
 use crate::secrets::{
-    domain::{
-        manifest::SecretManifest,
-        piv::{PivObjectId, SecretStorageSpec, StorageObjectIds},
-        values::{EnrollSpareCommand, EnrollSummary},
-    },
-    ports::{self, SecretDevice},
+    domain::values::{EnrollSpareCommand, EnrollSummary},
+    ports::{self, SecretStoragePort},
 };
 
 /// stdin JSON document で spare YubiKey に bootstrap secret 一式を登録する。
@@ -16,8 +12,8 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     B: ports::SpareDeviceSerialPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
-        + ports::DeviceSelectionPort
         + ports::BootstrapSecretDocumentInputPort
+        + SecretStoragePort
         + ports::ReportPort,
 >(
     command: EnrollSpareCommand,
@@ -25,55 +21,16 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
 ) -> Result<()> {
     let spare_serial = boundary.resolve_spare_device_serial(command.spare_serial)?;
     command.ensure_requested_primary_differs_from_spare(spare_serial)?;
-    let mut setup_device = boundary.open_device_by_serial(spare_serial)?;
-    setup_device.check_key_generation_preconditions()?;
-    setup_device.check_management_auth_preconditions()?;
-    let key_exists = setup_device.key_exists()?;
-    let manifest_bytes = setup_device.read_object(PivObjectId::MANIFEST)?;
-    let mut occupied_object_ids = Vec::new();
-    for object_id in StorageObjectIds::iter() {
-        if setup_device.read_object(object_id)?.is_some() {
-            occupied_object_ids.push(object_id);
-        }
-    }
-    SecretManifest::ensure_setup_allowed(
-        key_exists,
-        manifest_bytes.as_deref(),
-        &occupied_object_ids,
-    )?;
-    setup_device.generate_key()?;
-    let mut manifest = SecretManifest::expected().encode()?;
-    setup_device.write_object(PivObjectId::MANIFEST, &mut manifest)?;
+    boundary.initialize_secret_storage(spare_serial)?;
     let document = boundary.read_bootstrap_secret_document_noninteractive()?;
     for (storage, value) in document.storage_entries(spare_serial) {
-        let mut device = boundary.open_device_by_serial(spare_serial)?;
-        SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
-        device.check_management_auth_preconditions()?;
-        let mut encoded = device.seal_for_storage(storage.clone(), value)?;
-        device.write_object(storage.object_id, &mut encoded)?;
+        boundary.store_secret(spare_serial, storage, value)?;
     }
     let pin = if boundary.device_requires_pin(spare_serial)? {
         Some(boundary.read_pin()?)
     } else {
         None
     };
-    let mut verify_device = boundary.open_device_by_serial(spare_serial)?;
-    if verify_device.requires_pin_input() {
-        let Some(pin) = pin.as_ref() else {
-            anyhow::bail!("PIN is required for this operation");
-        };
-        verify_device.verify_pin(pin)?;
-    }
-    SecretManifest::decode_initialized(
-        verify_device.read_object(PivObjectId::MANIFEST)?.as_deref(),
-    )?;
-    for storage in SecretStorageSpec::all_for_serial(spare_serial) {
-        let encoded = verify_device
-            .read_object(storage.object_id)?
-            .ok_or_else(|| storage.missing_error())?;
-        let _secret = verify_device
-            .open_from_storage(storage.clone(), &encoded)
-            .map_err(|error| storage.decode_error(error))?;
-    }
+    boundary.verify_local_storage(spare_serial, pin.as_ref())?;
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }
