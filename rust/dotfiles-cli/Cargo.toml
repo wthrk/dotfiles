@@ -44,3 +44,4 @@ zeroize.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+portable-pty = { workspace = true }
