@@ -29,9 +29,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
 ) -> Result<()> {
     let primary_serial = boundary.resolve_device_serial(command.primary_serial)?;
     let spare_serial = boundary.resolve_spare_device_serial(command.spare_serial)?;
-    if primary_serial == spare_serial {
-        anyhow::bail!("primary and spare YubiKey serial must be different");
-    }
+    command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
     let mut setup_device = boundary.open_device_by_serial(spare_serial)?;
     setup_device.check_key_generation_preconditions()?;
     setup_device.check_management_auth_preconditions()?;

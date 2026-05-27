@@ -55,6 +55,34 @@ pub struct EnrollSpareCommand {
     pub spare_serial: Option<u32>,
 }
 
+impl EnrollSpareCommand {
+    /// 解決済み primary/spare serial が別 device を指すことを確認する。
+    ///
+    /// primary と spare は異なる recovery device role であり、同一 serial への登録は
+    /// device 選択手段に関係なく domain invariant として拒否する。
+    pub fn ensure_distinct_resolved_serials(
+        &self,
+        primary_serial: u32,
+        spare_serial: u32,
+    ) -> Result<()> {
+        if primary_serial == spare_serial {
+            return Err(invalid_input("primary and spare YubiKey serial must be different").into());
+        }
+        Ok(())
+    }
+
+    /// 非対話 spare 登録で明示 primary serial と spare serial が衝突しないことを確認する。
+    ///
+    /// primary device を開かない入力経路でも、利用者が指定した role 関係の不変条件は
+    /// command の domain rule として先に検証する。
+    pub fn ensure_requested_primary_differs_from_spare(&self, spare_serial: u32) -> Result<()> {
+        if self.primary_serial == Some(spare_serial) {
+            return Err(invalid_input("primary and spare YubiKey serial must be different").into());
+        }
+        Ok(())
+    }
+}
+
 /// rotate-bws-token use case の入力 command。
 ///
 /// token を更新する対象 device の serial 指定だけを保持する。
