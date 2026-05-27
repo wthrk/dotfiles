@@ -41,8 +41,8 @@
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [secret-recovery/review-artifacts/yubikey/review.md](secret-recovery/review-artifacts/yubikey/review.md#yubikey-レビュー記録)
-- 現行サイクル確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`（latest saved fix: `a910eca`）
-- 現行サイクル保存コミット終端: `HEAD`
+- 現行サイクル確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`（latest saved fix: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`）
+- 現行サイクル保存コミット終端: `38d3a09`
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### Bitwarden Secrets Manager

@@ -5,18 +5,18 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: current-cycle artifact が未生成の担当について、状態を `未実施（再レビュー待ち）` に統一し、判定ラベルは規約どおり `要修正` に統一した。現行サイクルは reviewer 再実施待ちのため、前進不可のまま維持する。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-HEAD-a910eca-saved`
+- 集約判定要約: 最新保存コミット `38d3a09` に対して、structural / security / specification-conformance / test / documentation / architectural-consistency / reference-integrity は合格済み。operational-consistency は `38d3a09` の hash 固定不足を理由に要修正であり、本修正後に再レビュー待ちとする。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-38d3a09-saved`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `structural`: artifact path `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` / 状態 `実施済み` / 判定 `合格`
+  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca` / 状態 `本修正で是正・再レビュー待ち` / 判定 `要修正`
+  - `security`: artifact path `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` / 状態 `実施済み` / 判定 `合格`
+  - `specification-conformance`: artifact path `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` / 状態 `実施済み` / 判定 `合格`
+  - `test`: artifact path `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` / 状態 `実施済み` / 判定 `合格`
+  - `documentation`: artifact path `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` / 状態 `実施済み` / 判定 `合格`
+  - `architectural-consistency`: artifact path `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` / 状態 `実施済み` / 判定 `合格`
+  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c` / 状態 `実施済み` / 判定 `合格`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -63,7 +63,7 @@
   - `d301035 fix(secrets): YubiKey直近レビューFailを解消`
   - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
   - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-  - `HEAD current-cycle evidence sync`
+  - `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
@@ -78,9 +78,10 @@
 - 追加修正コミット: `d301035 fix(secrets): YubiKey直近レビューFailを解消`
 - 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
 - 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-- 追加修正: `2bd7e0a..HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
-- 紐付け: current-cycle 保存コミット終端は `HEAD`。actual latest HEAD は `HEAD`。`2bd7e0a..HEAD` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
-- 実装差分集合: `6fd4014..HEAD` の変更ファイル集合:
+- 証跡同期コミット: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 追加修正: `2bd7e0a..38d3a09` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
+- 紐付け: current-cycle 保存コミット終端は `38d3a09`。actual latest HEAD は `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`。`2bd7e0a..38d3a09` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
+- 実装差分集合: `6fd4014..38d3a09` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -266,59 +267,66 @@
 
 ### 構造レビュー担当
 
-- 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する structural review は所見なし。
 - 根拠:
-  - work item の差し戻し状態に合わせ、完了判定へ前進させない。
+  - `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` が、test-only bridge の許可条件、adapter 公開面、`pub(super)` helper 残存なし、compile-time feature seam を確認した。
 
 ### 運用整合レビュー担当
 
 - 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定要約: `38d3a09` に対する operational-consistency review は、保存コミット列・対象差分識別子・actual latest HEAD の hash 固定不足を理由に不合格。本修正で当該証跡を `38d3a09` に固定し、再レビュー待ちとする。
 - 根拠:
-  - `confirmation.md` と同一 diff identifier に統一済み。
+  - `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca` の Fail 内容を本 current-cycle 記録へ反映した。
 
 ### セキュリティレビュー担当
 
-- 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する security review は所見なし。
 - 根拠:
-  - `review-security-2026-05-25.md` は履歴専用であり、現行サイクルの判定根拠に使わない。
+  - `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` が、mockito app support / internal stub の非 2xx error に response body を載せないこと、unauthorized write が domain intent 経由で制御されることを確認した。
 
 ### 仕様適合レビュー担当
 
-- 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する specification-conformance review は所見なし。
 - 根拠:
-  - `docs/tasks/secret-recovery/work-items/yubikey.md` の差し戻し前提に従う。
+  - `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` が、V1〜V16、mockito usecase test 復旧、feature-only stub injection、default management key 既知例外、ProtectedSecret/Zeroizing 境界を確認した。
 
 ### テストレビュー担当
 
-- 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する test review は所見なし。
 - 根拠:
-  - 本更新はレビュー証跡整合の是正であり、テスト観点の新規完了判定は未実施。
+  - `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` が、`secrets::application` 33 tests、CLI integration 22 tests、feature 無効 compile、app/usecase mockito 共通 mock 集約を確認した。
 
 ### ドキュメントレビュー担当
 
-- 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する documentation review は所見なし。
 - 根拠:
-  - `application/run_*.rs` の公開 entrypoint と core workflow 非自明 helper に対する doc comment coverage 欠落を合格扱いにできない運用へ是正した。
-  - `ports`/`adapters`/`support` の層責務境界を担う非自明要素で、`why`/責任分界説明の欠落を blocker 扱いに統一した。
+  - `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` が、test-only bridge、mockito support、internal-test-only feature seam、xtask 参照、default management key、ProtectedSecret/Zeroizing 境界コメントを確認した。
 
 ### アーキテクチャ整合レビュー担当
 
-- 判定: `要修正`
-- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する architectural-consistency review は所見なし。
 - 根拠:
-  - work item の差し戻しサイクルに整合させる。
+  - `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` が、`entrypoint -> application -> ports/domain <- adapters/support` の整合、domain object 操作の domain 側集約、test-only bridge の production 非混入を確認した。
+
+### 参照整合レビュー担当
+
+- 判定: `合格`
+- 判定要約: 最新保存コミット `38d3a09` に対する reference-integrity review は所見なし。
+- 根拠:
+  - `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c` が、current-cycle 文書、Markdown link、対象 path、test-only bridge 正本、xtask internal test 参照の解決可能性を確認した。
 
 ## 集約
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: required reviewers の current-cycle artifact が未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` を維持する。
+- 集約判定要約: required reviewers のうち structural / security / specification-conformance / test / documentation / architectural-consistency / reference-integrity は合格済み。operational-consistency は `38d3a09` hash 固定不足を理由に要修正で、本修正後に再レビュー待ちとする。
 - 集約根拠:
-  - `confirmation.md` と `review.md` の diff identifier を一致させた。
-  - stale file path 参照を現行存在パスへ更新した。
-  - 矛盾する「未実施/判定」混在を `未実施（再レビュー待ち）` / `判定: 要修正` に統一した。
+  - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-2bd7e0a-38d3a09-saved` に一致させた。
+  - 保存コミット列に `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期` を hash 付きで記録した。
+  - actual latest HEAD を `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期` に固定した。
+  - 直近 reviewer 判定を current-cycle reviewer 判定追跡と役割別レビューへ反映した。

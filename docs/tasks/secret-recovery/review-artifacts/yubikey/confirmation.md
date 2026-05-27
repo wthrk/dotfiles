@@ -6,17 +6,17 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-HEAD-a910eca-saved`
-- 確認基準: `2bd7e0a..HEAD current-cycle Fail remediation`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-2bd7e0a-38d3a09-saved`
+- 確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
-  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `structural`: artifact path `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` / 状態 `実施済み` / 判定 `合格`
+  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca` / 状態 `本修正で是正・再レビュー待ち` / 判定 `要修正`
+  - `security`: artifact path `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` / 状態 `実施済み` / 判定 `合格`
+  - `specification-conformance`: artifact path `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` / 状態 `実施済み` / 判定 `合格`
+  - `test`: artifact path `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` / 状態 `実施済み` / 判定 `合格`
+  - `documentation`: artifact path `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` / 状態 `実施済み` / 判定 `合格`
+  - `architectural-consistency`: artifact path `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` / 状態 `実施済み` / 判定 `合格`
+  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c` / 状態 `実施済み` / 判定 `合格`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -63,7 +63,7 @@
   - `d301035 fix(secrets): YubiKey直近レビューFailを解消`
   - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
   - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-  - `HEAD current-cycle evidence sync`
+  - `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
 
 ## 2026-05-28 current-cycle 証跡是正コミット
 
@@ -78,9 +78,10 @@
 - 追加修正コミット: `d301035 fix(secrets): YubiKey直近レビューFailを解消`
 - 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
 - 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-- 追加修正: `2bd7e0a..HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
-- 紐付け: current-cycle 保存コミット終端は `HEAD`。actual latest HEAD は `HEAD`。`2bd7e0a..HEAD` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
-- 実装差分集合: `6fd4014..HEAD` の変更ファイル集合:
+- 証跡同期コミット: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 追加修正: `2bd7e0a..38d3a09` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
+- 紐付け: current-cycle 保存コミット終端は `38d3a09`。actual latest HEAD は `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`。`2bd7e0a..38d3a09` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
+- 実装差分集合: `6fd4014..38d3a09` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
