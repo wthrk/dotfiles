@@ -6,6 +6,18 @@ const STORAGE_BLOB_VERSION: u8 = 1;
 pub const PIV_PIN_MIN_LEN: usize = 6;
 /// YubiKey PIV PIN の最大 byte 長。
 pub const PIV_PIN_MAX_LEN: usize = 8;
+
+/// YubiKey PIV PIN の長さ制約を検証する。
+///
+/// PIN 値そのものは受け取らず長さだけを使うことで、secret buffer の中身を
+/// domain 層へ露出させずに PIV PIN policy を domain rule として固定する。
+pub fn validate_piv_pin_len(len: usize) -> crate::Result<()> {
+    if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&len) {
+        anyhow::bail!("YubiKey PIN must be 6 to 8 bytes");
+    }
+    Ok(())
+}
+
 /// PIV data object ID を表す値オブジェクト。
 ///
 /// 値は常に 32-bit object ID として保持し、表示・AEAD additional data・PIV API 引数への変換規則を一元化する。

@@ -14,7 +14,7 @@ use crate::{
         domain::{
             manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument},
             material::SecretMaterial,
-            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretStorageSpec},
+            piv::{PIV_PIN_MAX_LEN, PivObjectId, SecretStorageSpec, validate_piv_pin_len},
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
@@ -91,9 +91,7 @@ impl PinInputPort for RealSecretIoAdapter {
             "YubiKey PIN is too long",
         )?;
         let pin = protected;
-        if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
-            bail!("YubiKey PIN must be 6 to 8 bytes");
-        }
+        validate_piv_pin_len(pin.len())?;
         Ok(pin)
     }
 }
