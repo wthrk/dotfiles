@@ -63,6 +63,8 @@ YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-emai
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 を reset しない。既存領域と衝突する場合は停止する。
 書き込みは management key 認証を前提にし、既定 management key のまま運用しない。既定 key のままでは想定外の上書きリスクを抑止できないため、専用領域を運用する前に非既定 management key への変更を必須にする。
 
+現行 YubiKey work item サイクルでは、実装完了判定上の既知例外として factory-default management key を暫定前提にする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱い、この暫定リスクは次フェーズで閉じる。
+
 詳細設計は [YubiKey 秘密情報保存設計](./yubikey-secret-storage-design.md) に置く。
 
 ### Bitwarden Secrets Manager

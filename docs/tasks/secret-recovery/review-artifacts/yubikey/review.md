@@ -46,6 +46,8 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/yubikey_pin.rs`
   - `docs/tasks/secret-recovery/tasks.md`
   - `docs/tasks/secret-recovery/work-items/yubikey.md`
+  - `docs/secret-recovery/secret-recovery-spec.md`
+  - `docs/secret-recovery/yubikey-secret-storage-design.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
 - structural 差し戻し修正:
@@ -82,6 +84,36 @@
 - 9ff38d7 検証結果:
   - `cargo check -p dotfiles-cli`: 成功
   - `git diff --check`: 成功
+
+### 2026-05-27 9352e14 基準 operational 追記
+
+- current-cycle 追加識別子: `yubikey-current-cycle-2026-05-27-base-9352e14`
+- current-cycle 基準コミット: `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
+- 追加保存コミット: `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
+- 追加保存コミット: `1cc9889 refactor(secrets): 保護secret操作をprotection内部へ閉じる`
+- 本 operational 修正文書コミット: `この追記を含む保存コミット`
+- レビュー前保存コミット扱い: 上記保存コミットは作業状態を失わないための中間保存点であり、レビュー合格、完了判定、または `S3 -> S4` の commit gate 充足根拠にはしない。
+- management key 前提: 現行 YubiKey work item サイクルでは factory-default management key を暫定前提にする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。
+- `9352e14` 以降の変更ファイル集合:
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
+  - `docs/tasks/secret-recovery/tasks.md`
+  - `docs/tasks/secret-recovery/work-items/yubikey.md`
+  - `docs/secret-recovery/secret-recovery-spec.md`
+  - `docs/secret-recovery/yubikey-secret-storage-design.md`
+  - `docs/tasks/tasks.md`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
+  - `rust/dotfiles-cli/src/secrets/support.rs`
+  - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
+- 確認結果:
+  - `9352e14` 保存点の後続で adapter 補助ファイル内包と protection 内部化の保存コミットを確認した。
+  - 本追記では operational 証跡整合のみを扱い、合格とは記録しない。
 
 ### 2026-05-26 追加実装サイクル追記
 

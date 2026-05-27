@@ -39,6 +39,7 @@
 - `put` は同名 secret が存在する場合、`--force` が指定されていなければ停止する。
 - `get` は復旧コマンド内部の利用を主用途とし、直接実行時は pipe または redirect された stdout にだけ secret 本文を出力する。
 - 書き込み操作は YubiKey の management key で認証する。既定 key のまま運用する YubiKey では、PIN と touch を通せなくても既知の management key でこの機能の PIV object を上書きできるため、非既定 management key を使う運用を前提にする。
+- 現行 YubiKey work item サイクルでは、実装完了判定上の既知例外として factory-default management key を暫定前提にする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱い、この暫定リスクは次フェーズで閉じる。
 
 ## 採用 crate
 
@@ -191,7 +192,7 @@ Envelope encryption は次の役割分担にする。
 - slot `82` に既存 key / certificate がないこと。
 - `0x005FFF16`、`0x005FFF17`、`0x005FFF18`、`0x005FFF19` に既存 data object がないこと。
 - PIN retries が 0 ではないこと。
-- management key authentication が可能なこと。
+- management key authentication が可能なこと。現行 YubiKey work item サイクルでは factory-default management key 認証を暫定前提にし、非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。
 
 確認後、slot `82` に専用鍵を生成し、manifest を保存する。既存の FIDO2 / OTP / OpenPGP / PIV credential は reset しない。衝突がある場合に自動削除や上書きはしない。
 
