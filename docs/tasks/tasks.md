@@ -4,13 +4,13 @@
 
 ## 現在の作業項目
 
-- `YubiKey`
+- `Bitwarden Secrets Manager`
 
 ## 作業項目一覧
 
 ### YubiKey
 
-- 状態: `進行中`
+- 状態: `完了`
 - GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:

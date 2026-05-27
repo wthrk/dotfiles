@@ -6,11 +6,11 @@
 
 ### YubiKey
 
-- 状態: `進行中`
-- 現行サイクル状態: `再レビュー待ち`
+- 状態: `完了`
+- 現行サイクル状態: `完了`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
-- レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)（現行サイクル状態: 再レビュー待ち）
+- レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)（現行サイクル状態: 完了）
 - 現行サイクル確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`
 - 実装/テスト差分の保存コミット終端: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
@@ -41,7 +41,7 @@
   - `rust/dotfiles-cli/src/secrets/support/version.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
-- 実装状態: `実装中`
+- 実装状態: `完了`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -57,9 +57,9 @@
 | 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 確認 | 再レビュー待ち | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 再レビュー待ち | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 修正済み | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 確認 | 完了 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 完了 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
 
 ### Bitwarden Secrets Manager
 
