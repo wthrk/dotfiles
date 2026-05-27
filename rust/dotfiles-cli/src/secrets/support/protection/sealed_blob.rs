@@ -159,9 +159,18 @@ fn invalid_data(message: impl Into<String>) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     const TEST_PAYLOAD_ID: u8 = 7;
     const TEST_AAD: &[u8] = b"test-aad";
+
+    fn assert_plaintext_bytes_eq(actual: &[u8], expected: &[u8]) {
+        let actual_digest: [u8; 32] = Sha256::digest(actual).into();
+        let expected_digest: [u8; 32] = Sha256::digest(expected).into();
+
+        assert_eq!(actual.len(), expected.len(), "plaintext length mismatch");
+        assert_eq!(actual_digest, expected_digest, "plaintext digest mismatch");
+    }
 
     fn protected_from_test_bytes(bytes: &[u8]) -> Result<ProtectedSecret> {
         let mut secret = ProtectedSecret::new(bytes.len())?;
@@ -275,7 +284,7 @@ mod tests {
             TEST_AAD,
         )?;
         opened.with_secret(|bytes| {
-            assert_eq!(bytes, b"secret-value");
+            assert_plaintext_bytes_eq(bytes, b"secret-value");
         });
         Ok(())
     }

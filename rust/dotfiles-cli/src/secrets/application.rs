@@ -38,6 +38,16 @@ mod tests {
         EnrollPrimaryCommand, EnrollSpareCommand, GetCommand, PutCommand, RotateBwsTokenCommand,
         SetupCommand,
     };
+    use sha2::{Digest, Sha256};
+
+    fn assert_secret_bytes_eq(actual: Option<&[u8]>, expected: &[u8], label: &str) {
+        let actual = actual.unwrap_or_else(|| panic!("{label} secret is missing"));
+        let actual_digest: [u8; 32] = Sha256::digest(actual).into();
+        let expected_digest: [u8; 32] = Sha256::digest(expected).into();
+
+        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+        assert_eq!(actual_digest, expected_digest, "{label} digest mismatch");
+    }
 
     #[test]
     fn enroll_spare_rejects_same_primary_and_spare_serial() -> Result<()> {
@@ -250,7 +260,9 @@ mod tests {
         boundary.mock.expect_event("setup");
         boundary.mock.set_primary_serial(10);
         boundary.mock.set_spare_serial(20);
-        boundary.mock.set_loaded_secret_value(SecretName::BwEmail, b"");
+        boundary
+            .mock
+            .set_loaded_secret_value(SecretName::BwEmail, b"");
         let command = EnrollSpareCommand {
             primary_serial: Some(10),
             spare_serial: Some(20),
@@ -326,9 +338,10 @@ mod tests {
             &mut boundary,
         )?;
 
-        assert_eq!(
+        assert_secret_bytes_eq(
             boundary.mock.output_secret_value().as_deref(),
-            Some(&b"user@example.com"[..])
+            b"user@example.com",
+            "bw-email output",
         );
         for name in SecretName::iter() {
             assert!(
@@ -362,9 +375,7 @@ mod tests {
 
     #[test]
     fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
-        let mut boundary = AppMockBoundary::new()
-            .expect_store_times(1)
-            .expect_report();
+        let mut boundary = AppMockBoundary::new().expect_store_times(1).expect_report();
         boundary.mock.set_primary_serial(10);
         boundary
             .mock
@@ -384,32 +395,36 @@ mod tests {
             &mut boundary,
         )?;
 
-        assert_eq!(
-            boundary.mock.stored_secret_value(SecretName::BwEmail).as_deref(),
-            Some(&b"user@example.com"[..])
+        assert_secret_bytes_eq(
+            boundary
+                .mock
+                .stored_secret_value(SecretName::BwEmail)
+                .as_deref(),
+            b"user@example.com",
+            "bw-email stored",
         );
-        assert_eq!(
+        assert_secret_bytes_eq(
             boundary
                 .mock
                 .stored_secret_value(SecretName::BwPassword)
                 .as_deref(),
-            Some(&b"password"[..])
+            b"password",
+            "bw-password stored",
         );
-        assert_eq!(
+        assert_secret_bytes_eq(
             boundary
                 .mock
                 .stored_secret_value(SecretName::BwsAccessToken)
                 .as_deref(),
-            Some(&b"new-token"[..])
+            b"new-token",
+            "bws-access-token stored",
         );
         Ok(())
     }
 
     #[test]
     fn rotate_uses_management_auth_for_token_replacement() -> Result<()> {
-        let mut boundary = AppMockBoundary::new()
-            .expect_store_times(1)
-            .expect_report();
+        let mut boundary = AppMockBoundary::new().expect_store_times(1).expect_report();
         boundary.mock.set_primary_serial(10);
 
         super::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
