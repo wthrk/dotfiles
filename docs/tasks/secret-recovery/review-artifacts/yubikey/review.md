@@ -34,9 +34,11 @@
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 確認証跡同期コミット: `734823d docs(secrets): record yubikey verification evidence`
+- 追加保存コミット: `e148c0d fix(secrets): YubiKey再レビュー指摘を修正`
 - 現行状態: `再レビュー待ち`
 - レビュー前提: security は pass 済み。structural / operational の Fail 指摘は本追記以降の保存点で修正済みとして扱い、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
+  - `docs/task-governance/workflow.md`
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
@@ -63,6 +65,10 @@
 - 追加 operational 差し戻し修正:
   - レビュー前保存コミットは `S3 -> S4` の終端コミットとは別の中間保存点であり、レビュー合格/完了コミット gate を満たさないことを workflow 正本へ明記した。
   - 今後の保存点コミットメッセージを `<type>(<scope>): <日本語説明>` に統一することを workflow 正本へ明記した。
+- e148c0d 検証結果:
+  - `direnv exec . cargo xtask check`: 成功
+  - `direnv exec . cargo clippy --workspace --all-targets`: 成功
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
 
 ### 2026-05-26 追加実装サイクル追記
 

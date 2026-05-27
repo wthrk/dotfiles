@@ -52,9 +52,11 @@
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 確認証跡同期コミット: `8740b1a docs(secrets): sync yubikey current cycle commit`
 - 確認証跡同期コミット: `734823d docs(secrets): record yubikey verification evidence`
+- 追加保存コミット: `e148c0d fix(secrets): YubiKey再レビュー指摘を修正`
 - 現行状態: `再レビュー待ち`
 - 確認前提: security は pass 済み。structural / operational Fail 修正は本追記以降の保存点で反映済みであり、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
+  - `docs/task-governance/workflow.md`
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
@@ -67,6 +69,14 @@
   - `docs/tasks/secret-recovery/work-items/yubikey.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
+
+## 2026-05-27 e148c0d 検証追記
+
+- 対象コミット: `e148c0d fix(secrets): YubiKey再レビュー指摘を修正`
+- `direnv exec . cargo xtask check`: 成功
+- `direnv exec . cargo clippy --workspace --all-targets`: 成功
+- `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
+- 判定: `再レビュー待ち`
 
 ## 2026-05-26 追加実装サイクル追記
 
