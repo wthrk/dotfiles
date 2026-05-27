@@ -44,9 +44,8 @@ struct SealedBlob {
 
 impl SealedBlob {
     fn encode(&self) -> Result<Vec<u8>> {
-        let payload = bincode::serde::encode_to_vec(self, config::standard()).map_err(|error| {
-            invalid_data(format!("failed to encode sealed blob: {error}"))
-        })?;
+        let payload = bincode::serde::encode_to_vec(self, config::standard())
+            .map_err(|error| invalid_data(format!("failed to encode sealed blob: {error}")))?;
         let mut encoded = Vec::with_capacity(BLOB_MAGIC.len() + payload.len());
         encoded.extend_from_slice(BLOB_MAGIC);
         encoded.extend_from_slice(&payload);
@@ -59,9 +58,8 @@ impl SealedBlob {
         }
         let payload = &input[BLOB_MAGIC.len()..];
         let (blob, read) =
-            bincode::serde::decode_from_slice::<Self, _>(payload, config::standard()).map_err(
-                |error| invalid_data(format!("failed to decode sealed blob: {error}")),
-            )?;
+            bincode::serde::decode_from_slice::<Self, _>(payload, config::standard())
+                .map_err(|error| invalid_data(format!("failed to decode sealed blob: {error}")))?;
         if read != payload.len() {
             return invalid_blob();
         }
