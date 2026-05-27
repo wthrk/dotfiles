@@ -121,6 +121,17 @@ impl SecretName {
         Self::iter().find(|name| name.object_id() == object_id)
     }
 
+    /// 既存 secret object への書き込みが許可されるかを確認する。
+    ///
+    /// `force` なしで既存値を置き換えない方針は secret storage の domain policy であり、
+    /// application は object の存在有無を渡してこの規則を適用する。
+    pub fn ensure_write_allowed(self, object_exists: bool, force: bool) -> crate::Result<()> {
+        if object_exists && !force {
+            anyhow::bail!("{self} already exists; pass --force to replace it");
+        }
+        Ok(())
+    }
+
     /// 対話入力時に可視入力を許可する secret かどうかを返す。
     ///
     /// 可視入力可否は secret の意味に依存する domain rule で、端末 I/O 実装の詳細は含まない。

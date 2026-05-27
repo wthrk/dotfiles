@@ -20,12 +20,10 @@ pub(crate) fn run_put_with_stdin<B: ports::SecretInputPort + ports::DeviceSelect
     let mut device = boundary.open_device_by_serial(serial)?;
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
     device.check_management_auth_preconditions()?;
-    if device.read_object(command.name.object_id())?.is_some() && !command.force {
-        anyhow::bail!(
-            "{} already exists; pass --force to replace it",
-            command.name
-        );
-    }
+    command.name.ensure_write_allowed(
+        device.read_object(command.name.object_id())?.is_some(),
+        command.force,
+    )?;
     let mut encoded = device.seal_for_storage(command.name.storage_spec(serial), &secret)?;
     device.write_object(command.name.object_id(), &mut encoded)
 }
