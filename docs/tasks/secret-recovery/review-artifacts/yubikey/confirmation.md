@@ -82,7 +82,7 @@
 - `cargo xtask check`: 実行済み（`8740b1a`）
 - `cargo clippy --workspace --all-targets`: 実行済み（`8740b1a`）
 - `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`8740b1a`）
-- 判定: `再レビュー待ち`
+- 状態: `再レビュー待ち`
 
 ## 2026-05-26 ad92152 基準履歴追記
 
@@ -117,7 +117,7 @@
 - `direnv exec . cargo xtask check`: 成功
 - `direnv exec . cargo clippy --workspace --all-targets`: 成功
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
-- 判定: `再レビュー待ち`
+- 状態: `再レビュー待ち`
 
 ## 2026-05-27 41084ae 検証追記
 
@@ -127,7 +127,7 @@
 - `direnv exec . cargo xtask check`: 成功
 - `direnv exec . cargo clippy --workspace --all-targets`: 成功
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
-- 判定: `再レビュー待ち`
+- 状態: `再レビュー待ち`
 
 ## 2026-05-27 78f10ac 検証追記
 
@@ -135,7 +135,7 @@
 - 修正内容: PIV object ID から `SecretName` への逆引き規則を adapter stub から `domain::piv::SecretName::from_object_id` へ移した。
 - `cargo check -p dotfiles-cli`: 成功
 - `git diff --check`: 成功
-- 判定: `再レビュー待ち`
+- 状態: `再レビュー待ち`
 
 ## 2026-05-27 9ff38d7 検証追記
 
@@ -143,7 +143,7 @@
 - 修正内容: `put` の既存 secret 上書き可否判定を `domain::piv::SecretName::ensure_write_allowed` へ移した。
 - `cargo check -p dotfiles-cli`: 成功
 - `git diff --check`: 成功
-- 判定: `再レビュー待ち`
+- 状態: `再レビュー待ち`
 
 ## 2026-05-27 adapter 構造説明同期
 
@@ -154,7 +154,7 @@
   - `adapters::real_secrets_boundary()` は存在しない。
   - `JsonReportAdapter` と公開 constructor は存在しない。
   - report 翻訳は `ReportPort for RealSecretsBoundary` の trait 実装境界に閉じている。
-- 判定: `再レビュー待ち`
+- 状態: `再レビュー待ち`
 
 ## 2026-05-27 9352e14 基準 operational 履歴追記
 
@@ -178,8 +178,7 @@
   - `docs/tasks/tasks.md`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
+  - 履歴注記: 旧補助ファイル群は現行 tree では削除済みで、現行参照 path は `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`。
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_put_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_prompt.rs`

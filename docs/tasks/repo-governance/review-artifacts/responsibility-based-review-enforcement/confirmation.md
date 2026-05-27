@@ -68,7 +68,7 @@
 ## 状態注記
 
 - inline unit test 非禁止確認: 3 文書すべてで「`#[test]` 関数や `#[cfg(test)]` ブロックの存在のみを理由に不合格にしない／禁止対象は double の定義に限る」を明記済み。
-- 既知の対象違反: `rust/dotfiles-cli/src/secrets/adapters/test_stub.rs`（`#[cfg(feature = "secrets-test-stub")]` gate・`SecretDevice` port 実装の device stub）は、本是正後の責務基準では `adapter` 層配置違反として検出されるべき対象。物理移動は secret-recovery 領域の実装作業項目の責務であり、本作業はその検出強制を文書へ与えることに限定する。
+- 履歴専用注記: 旧 production adapter 内 test stub は、当時の責務基準では `adapter` 層配置違反として検出されるべき対象だった。現行 tree では同 path は削除済みであり、本記録は責務基準レビュー強制の履歴証跡としてのみ扱う。
 - 全体整合の検出対象: 維持者が `application/` を「ぐちゃぐちゃ」と評した状態（各部分が個別ルールを通過しても全体として設計が破綻）は、本是正で導入した `アーキテクチャ整合レビュー担当` が全体整合判定で捉えるべき対象。`application/` 等の実コード再設計は secret-recovery 領域の実装作業項目の責務であり、本作業はその全体非整合を独立判定する役割と必須化を文書・スキルへ与えることに限定する。
 - 役割定義の方向性確認: 新規役割は個別チェック項目の追加ではなく全体整合判定を責務とする旨を、スキルファイルと implementation-review-judgement.md の職責の双方に明記済み（「チェックリスト項目を1つずつ照合する形に退化させてはならない」「部分の合格の総和では捉えられない全体の非整合を捉える」）。
 - 既存先行是正の非revert確認: prior step の責務基準判定編集（review-checklist.md の `責務基準の判定原則`・`adapters/` ステップ0・`tests/` セクション、test-review/SKILL.md の責務基準3規則、implementation-review-judgement.md テストレビュー担当職責）はいずれも保持しており revert していない。

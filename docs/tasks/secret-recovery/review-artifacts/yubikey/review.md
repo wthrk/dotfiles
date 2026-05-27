@@ -150,8 +150,7 @@
   - `docs/tasks/tasks.md`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
+  - 履歴注記: 旧補助ファイル群は現行 tree では削除済みで、現行参照 path は `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`。
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_put_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_prompt.rs`
