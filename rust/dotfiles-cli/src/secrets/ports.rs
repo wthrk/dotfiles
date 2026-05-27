@@ -89,8 +89,6 @@ pub trait SecretDevice {
     ///
     /// value のゼロ化や一時バッファ管理は implementor 側の責務とする。
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
-    /// content key を device の wrapping key でラップする。
-    fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>>;
     /// 現在の device state で PIN 入力が必要かどうかを返す。
     ///
     /// この値は `verify_pin` 呼び出し要否を判断するための signal であり、
@@ -100,8 +98,6 @@ pub trait SecretDevice {
     ///
     /// 実装は PIN 値を保持し続けず、失敗時は認証状態を進めない責務を負う。
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
-    /// `wrap_key` で得た wrapped bytes を復号する。
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial>;
     /// plain secret を YubiKey 保存用 encrypted blob に変換する。
     fn seal_for_storage(
         &mut self,

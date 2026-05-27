@@ -137,6 +137,15 @@ pub(crate) struct TestStubSecretDevice {
     pin_verified: bool,
 }
 
+impl TestStubSecretDevice {
+    fn unwrap_content_key(&self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
+        if self.read_pin_from_tty && !self.pin_verified {
+            anyhow::bail!("YubiKey PIN must be verified before reading stored secrets");
+        }
+        yubikey_stub_crypto::unwrap_content_key(wrapped_key)
+    }
+}
+
 /// serial ごとの object map と初期化状態を保持する stub 内部状態。
 #[derive(Clone)]
 struct TestStubDeviceState {
@@ -258,10 +267,6 @@ impl SecretDevice for TestStubSecretDevice {
         Ok(())
     }
 
-    fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
-        Ok(yubikey_stub_crypto::wrap_content_key(key))
-    }
-
     fn requires_pin_input(&self) -> bool {
         self.read_pin_from_tty
     }
@@ -278,31 +283,21 @@ impl SecretDevice for TestStubSecretDevice {
         Ok(())
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
-        if self.read_pin_from_tty && !self.pin_verified {
-            anyhow::bail!("YubiKey PIN must be verified before reading stored secrets");
-        }
-        yubikey_stub_crypto::unwrap_content_key(wrapped_key)
-    }
-
     fn seal_for_storage(
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &SecretMaterial,
     ) -> Result<Vec<u8>> {
-        let content_key = yubikey_stub_crypto::zero_content_key()?;
-        let nonce = [0u8; sealed_blob::NONCE_LEN];
-        let wrapped_key = self.wrap_key(&content_key)?;
-        sealed_blob::seal(sealed_blob::SealRequest {
-            secret_id: storage.secret_id,
-            nonce,
-            wrapped_key,
-            plaintext,
-            content_key: &content_key,
-            aad: &storage.additional_data,
-            minimum_plaintext_len: storage.minimum_plaintext_len,
-            label: &storage.label,
-        })
+        sealed_blob::seal_with_key_wrap(
+            sealed_blob::SealWithKeyWrapRequest {
+                secret_id: storage.secret_id,
+                plaintext,
+                aad: &storage.additional_data,
+                minimum_plaintext_len: storage.minimum_plaintext_len,
+                label: &storage.label,
+            },
+            |content_key| Ok(yubikey_stub_crypto::wrap_content_key(content_key)),
+        )
     }
 
     fn open_from_storage(
@@ -310,12 +305,10 @@ impl SecretDevice for TestStubSecretDevice {
         storage: SecretStorageSpec,
         encoded: &[u8],
     ) -> Result<SecretMaterial> {
-        let wrapped_key = sealed_blob::wrapped_key_from_blob(encoded, storage.secret_id)?;
-        let content_key = self.unwrap_key(&wrapped_key)?;
-        let secret = sealed_blob::open(
+        let secret = sealed_blob::open_with_key_unwrap(
             encoded,
             storage.secret_id,
-            &content_key,
+            |wrapped_key| self.unwrap_content_key(wrapped_key),
             &storage.additional_data,
             storage.minimum_plaintext_len,
             &storage.label,

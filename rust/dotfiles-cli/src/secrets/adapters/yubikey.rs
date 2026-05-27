@@ -63,6 +63,29 @@ impl YubikeySecretDevice {
             MIN_PIV_METADATA_VERSION.patch
         )
     }
+
+    fn wrap_content_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
+        let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
+        let public = metadata
+            .public
+            .context("YubiKey secret storage key has no public key metadata")?;
+        let public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
+            .context("failed to parse YubiKey secret storage public key")?;
+        secret_random::rsa_oaep_encrypt(&public, key)
+    }
+
+    fn unwrap_content_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
+        if !self.pin_verified {
+            bail!("YubiKey PIN must be verified before reading stored secrets");
+        }
+        let decrypted = piv::decrypt_data(
+            &mut self.yubikey,
+            wrapped_key,
+            AlgorithmId::Rsa2048,
+            SECRET_SLOT,
+        )?;
+        sealed_blob::unwrap_content_key(&decrypted, 256)
+    }
 }
 
 /// 実機 YubiKey discovery/open を `DeviceSelectionPort` 契約へ接続する adapter。
@@ -159,16 +182,6 @@ impl SecretDevice for YubikeySecretDevice {
         Ok(())
     }
 
-    fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
-        let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
-        let public = metadata
-            .public
-            .context("YubiKey secret storage key has no public key metadata")?;
-        let public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
-            .context("failed to parse YubiKey secret storage public key")?;
-        secret_random::rsa_oaep_encrypt(&public, key)
-    }
-
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
         if self.pin_verified {
             return Ok(());
@@ -182,39 +195,21 @@ impl SecretDevice for YubikeySecretDevice {
         !self.pin_verified
     }
 
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
-        if !self.pin_verified {
-            bail!("YubiKey PIN must be verified before reading stored secrets");
-        }
-        let decrypted = piv::decrypt_data(
-            &mut self.yubikey,
-            wrapped_key,
-            AlgorithmId::Rsa2048,
-            SECRET_SLOT,
-        )?;
-        sealed_blob::unwrap_content_key(&decrypted, 256)
-    }
-
     fn seal_for_storage(
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &SecretMaterial,
     ) -> Result<Vec<u8>> {
-        use rand::RngCore;
-        let content_key = secret_random::random_secret(sealed_blob::CONTENT_KEY_LEN)?;
-        let mut nonce = [0u8; sealed_blob::NONCE_LEN];
-        rand::rng().fill_bytes(&mut nonce);
-        let wrapped_key = self.wrap_key(&content_key)?;
-        sealed_blob::seal(sealed_blob::SealRequest {
-            secret_id: storage.secret_id,
-            nonce,
-            wrapped_key,
-            plaintext,
-            content_key: &content_key,
-            aad: &storage.additional_data,
-            minimum_plaintext_len: storage.minimum_plaintext_len,
-            label: &storage.label,
-        })
+        sealed_blob::seal_with_key_wrap(
+            sealed_blob::SealWithKeyWrapRequest {
+                secret_id: storage.secret_id,
+                plaintext,
+                aad: &storage.additional_data,
+                minimum_plaintext_len: storage.minimum_plaintext_len,
+                label: &storage.label,
+            },
+            |content_key| self.wrap_content_key(content_key),
+        )
     }
 
     fn open_from_storage(
@@ -222,12 +217,10 @@ impl SecretDevice for YubikeySecretDevice {
         storage: SecretStorageSpec,
         encoded: &[u8],
     ) -> Result<SecretMaterial> {
-        let wrapped_key = sealed_blob::wrapped_key_from_blob(encoded, storage.secret_id)?;
-        let content_key = self.unwrap_key(&wrapped_key)?;
-        let secret = sealed_blob::open(
+        let secret = sealed_blob::open_with_key_unwrap(
             encoded,
             storage.secret_id,
-            &content_key,
+            |wrapped_key| self.unwrap_content_key(wrapped_key),
             &storage.additional_data,
             storage.minimum_plaintext_len,
             &storage.label,

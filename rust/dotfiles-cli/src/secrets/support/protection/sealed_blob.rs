@@ -1,10 +1,11 @@
 use anyhow::Result;
 use bincode::config;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::secrets::support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached};
 use crate::secrets::support::oaep;
-use crate::secrets::support::protection::ProtectedSecret;
+use crate::secrets::support::protection::{ProtectedSecret, secret_random};
 
 pub(crate) const NONCE_LEN: usize = 12;
 pub(crate) const TAG_LEN: usize = 16;
@@ -20,6 +21,14 @@ pub(crate) struct SealRequest<'a> {
     pub wrapped_key: Vec<u8>,
     pub plaintext: &'a ProtectedSecret,
     pub content_key: &'a ProtectedSecret,
+    pub aad: &'a [u8],
+    pub minimum_plaintext_len: usize,
+    pub label: &'a str,
+}
+
+pub(crate) struct SealWithKeyWrapRequest<'a> {
+    pub secret_id: u8,
+    pub plaintext: &'a ProtectedSecret,
     pub aad: &'a [u8],
     pub minimum_plaintext_len: usize,
     pub label: &'a str,
@@ -85,10 +94,6 @@ impl SealedBlob {
         }
         Ok(blob)
     }
-
-    fn wrapped_key_for_secret_id(input: &[u8], expected_secret_id: u8) -> Result<Vec<u8>> {
-        Ok(Self::decode_for_secret_id(input, expected_secret_id)?.wrapped_key)
-    }
 }
 
 pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<ProtectedSecret> {
@@ -122,8 +127,24 @@ pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
     })
 }
 
-pub(crate) fn wrapped_key_from_blob(input: &[u8], expected_secret_id: u8) -> Result<Vec<u8>> {
-    SealedBlob::wrapped_key_for_secret_id(input, expected_secret_id)
+pub(crate) fn seal_with_key_wrap(
+    request: SealWithKeyWrapRequest<'_>,
+    mut wrap_key: impl FnMut(&ProtectedSecret) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let content_key = secret_random::random_secret(CONTENT_KEY_LEN)?;
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce);
+    let wrapped_key = wrap_key(&content_key)?;
+    seal(SealRequest {
+        secret_id: request.secret_id,
+        nonce,
+        wrapped_key,
+        plaintext: request.plaintext,
+        content_key: &content_key,
+        aad: request.aad,
+        minimum_plaintext_len: request.minimum_plaintext_len,
+        label: request.label,
+    })
 }
 
 #[cfg(feature = "secrets-test-stub")]
@@ -148,15 +169,26 @@ pub(crate) fn seal_plaintext_bytes_for_test(request: TestSealRequest<'_>) -> Res
     .encode()
 }
 
-pub(crate) fn open(
+pub(crate) fn open_with_key_unwrap(
     input: &[u8],
     expected_secret_id: u8,
-    content_key: &ProtectedSecret,
+    mut unwrap_key: impl FnMut(&[u8]) -> Result<ProtectedSecret>,
     aad: &[u8],
     minimum_plaintext_len: usize,
     label: &str,
 ) -> Result<ProtectedSecret> {
     let blob = SealedBlob::decode_for_secret_id(input, expected_secret_id)?;
+    let content_key = unwrap_key(&blob.wrapped_key)?;
+    open_decoded(blob, &content_key, aad, minimum_plaintext_len, label)
+}
+
+fn open_decoded(
+    blob: SealedBlob,
+    content_key: &ProtectedSecret,
+    aad: &[u8],
+    minimum_plaintext_len: usize,
+    label: &str,
+) -> Result<ProtectedSecret> {
     let cipher = content_key.with_secret(aes_256_gcm_from_key)?;
     let mut secret = ProtectedSecret::new(blob.ciphertext.len())?;
     secret.with_secret_mut(|out| out.copy_from_slice(&blob.ciphertext));

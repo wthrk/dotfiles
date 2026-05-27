@@ -116,16 +116,6 @@ impl SecretDevice for SelectedSecretDevice {
         }
     }
 
-    fn wrap_key(
-        &mut self,
-        key: &crate::secrets::domain::material::SecretMaterial,
-    ) -> Result<Vec<u8>> {
-        match self {
-            Self::Real(device) => device.wrap_key(key),
-            Self::Stub(device) => device.wrap_key(key),
-        }
-    }
-
     fn requires_pin_input(&self) -> bool {
         match self {
             Self::Real(device) => device.requires_pin_input(),
@@ -137,16 +127,6 @@ impl SecretDevice for SelectedSecretDevice {
         match self {
             Self::Real(device) => device.verify_pin(pin),
             Self::Stub(device) => device.verify_pin(pin),
-        }
-    }
-
-    fn unwrap_key(
-        &mut self,
-        wrapped_key: &[u8],
-    ) -> Result<crate::secrets::domain::material::SecretMaterial> {
-        match self {
-            Self::Real(device) => device.unwrap_key(wrapped_key),
-            Self::Stub(device) => device.unwrap_key(wrapped_key),
         }
     }
 
