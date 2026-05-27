@@ -273,6 +273,15 @@ impl SecretMemoryGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn assert_secret_bytes_eq(actual: &[u8], expected: &[u8], label: &str) {
+        let actual_digest: [u8; 32] = Sha256::digest(actual).into();
+        let expected_digest: [u8; 32] = Sha256::digest(expected).into();
+
+        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+        assert_eq!(actual_digest, expected_digest, "{label} digest mismatch");
+    }
 
     fn protected_from_test_bytes(bytes: &[u8]) -> Result<ProtectedSecret> {
         let mut secret = ProtectedSecret::new(bytes.len())?;
@@ -288,10 +297,10 @@ mod tests {
         original.with_secret_mut(|bytes| bytes.copy_from_slice(b"xyz"));
 
         cloned.with_secret(|bytes| {
-            assert_eq!(bytes, b"abc");
+            assert_secret_bytes_eq(bytes, b"abc", "cloned secret");
         });
         original.with_secret(|bytes| {
-            assert_eq!(bytes, b"xyz");
+            assert_secret_bytes_eq(bytes, b"xyz", "original secret");
         });
         Ok(())
     }
@@ -304,7 +313,7 @@ mod tests {
         };
 
         cloned.with_secret(|bytes| {
-            assert_eq!(bytes, b"persist");
+            assert_secret_bytes_eq(bytes, b"persist", "cloned secret");
         });
         Ok(())
     }

@@ -185,8 +185,17 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use crate::Result;
+    use sha2::{Digest, Sha256};
 
     use super::ProtectedInputBuffer;
+
+    fn assert_secret_bytes_eq(actual: &[u8], expected: &[u8], label: &str) {
+        let actual_digest: [u8; 32] = Sha256::digest(actual).into();
+        let expected_digest: [u8; 32] = Sha256::digest(expected).into();
+
+        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+        assert_eq!(actual_digest, expected_digest, "{label} digest mismatch");
+    }
 
     #[test]
     fn secret_line_accepts_exact_limit_with_lf() -> Result<()> {
@@ -194,7 +203,7 @@ mod tests {
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\n"), 3, &session)?;
         let secret = input.into_protected_secret_line(&session, 3, "too large")?;
 
-        secret.with_secret(|secret| assert_eq!(secret, b"abc"));
+        secret.with_secret(|secret| assert_secret_bytes_eq(secret, b"abc", "lf secret"));
         Ok(())
     }
 
@@ -204,7 +213,7 @@ mod tests {
         let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\r\n"), 3, &session)?;
         let secret = input.into_protected_secret_line(&session, 3, "too large")?;
 
-        secret.with_secret(|secret| assert_eq!(secret, b"abc"));
+        secret.with_secret(|secret| assert_secret_bytes_eq(secret, b"abc", "crlf secret"));
         Ok(())
     }
 
