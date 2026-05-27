@@ -1046,8 +1046,8 @@ mod tests {
     #[test]
     fn selected_device_adapter_route_is_compile_time_selected() {
         #[cfg(not(feature = "secrets-internal-test-stub"))]
-        assert_eq!(SELECTED_DEVICE_ROUTE_LABEL, "real");
+        assert_eq!(selected_device_route_label(), "real");
         #[cfg(feature = "secrets-internal-test-stub")]
-        assert_eq!(SELECTED_DEVICE_ROUTE_LABEL, "stub");
+        assert_eq!(selected_device_route_label(), "stub");
     }
 }
