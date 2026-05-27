@@ -4,19 +4,19 @@
 
 ## 現行サイクル（2026-05-27）
 
-- 集約後レビュー判定: `未確定（再レビュー待ち）`
-- 集約判定要約: current-cycle artifact が未生成の担当について、状態を `未実施（再レビュー待ち）` / `判定: 未確定` に統一した。現行サイクルは reviewer 再実施待ちのため、集約判定は確定しない。
+- 集約後レビュー判定: `要修正`
+- 集約判定要約: current-cycle artifact が未生成の担当について、状態を `未実施（再レビュー待ち）` に統一し、判定ラベルは規約どおり `要修正` に統一した。現行サイクルは reviewer 再実施待ちのため、前進不可のまま維持する。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-095ab3b`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -61,8 +61,8 @@
 - 是正コミット: `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
 - 是正コミット: `91e9fed fix(secrets): operational fail証跡を補正`
 - 是正コミット: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
-- 紐付け: latest HEAD `095ab3b` を current-cycle 記録の保存コミット終端として扱う。
-- `6fd4014..5217c7f` の変更ファイル集合:
+- 紐付け: current-cycle 保存コミット終端は `095ab3b`。actual latest HEAD は `c1cc107`（証跡是正コミット）として分離して記録する。
+- 実装差分集合: `6fd4014..095ab3b` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -101,6 +101,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/Cargo.toml`
+  - `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一` は実装差分集合には含めず、証跡是正コミットとして別管理する。
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
@@ -243,59 +244,59 @@
 
 ### 構造レビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - work item の差し戻し状態に合わせ、完了判定へ前進させない。
 
 ### 運用整合レビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - `confirmation.md` と同一 diff identifier に統一済み。
 
 ### セキュリティレビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - `review-security-2026-05-25.md` は履歴専用であり、現行サイクルの判定根拠に使わない。
 
 ### 仕様適合レビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - `docs/tasks/secret-recovery/work-items/yubikey.md` の差し戻し前提に従う。
 
 ### テストレビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - 本更新はレビュー証跡整合の是正であり、テスト観点の新規完了判定は未実施。
 
 ### ドキュメントレビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - `application/run_*.rs` の公開 entrypoint と core workflow 非自明 helper に対する doc comment coverage 欠落を合格扱いにできない運用へ是正した。
   - `ports`/`adapters`/`support` の層責務境界を担う非自明要素で、`why`/責任分界説明の欠落を blocker 扱いに統一した。
 
 ### アーキテクチャ整合レビュー担当
 
-- 判定: `未確定`
-- 判定要約: current-cycle artifact 未生成のため、判定を確定しない（再レビュー待ち）。
+- 判定: `要修正`
+- 判定要約: current-cycle artifact 未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` とする。
 - 根拠:
   - work item の差し戻しサイクルに整合させる。
 
 ## 集約
 
-- 集約後レビュー判定: `未確定（再レビュー待ち）`
-- 集約判定要約: required reviewers の current-cycle artifact が未生成のため、判定確定を行わない。
+- 集約後レビュー判定: `要修正`
+- 集約判定要約: required reviewers の current-cycle artifact が未生成のため、状態は `未実施（再レビュー待ち）` を維持し、判定ラベルは `要修正` を維持する。
 - 集約根拠:
   - `confirmation.md` と `review.md` の diff identifier を一致させた。
   - stale file path 参照を現行存在パスへ更新した。
-  - 矛盾する「未実施/要修正」混在を `未実施（再レビュー待ち）` / `判定: 未確定` に統一した。
+  - 矛盾する「未実施/判定」混在を `未実施（再レビュー待ち）` / `判定: 要修正` に統一した。

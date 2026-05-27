@@ -9,14 +9,14 @@
 - 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-095ab3b`
 - 確認基準: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
-  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `未確定`
+  - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `operational`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `security`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `specification-conformance`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `test`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `documentation`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `architectural-consistency`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
+  - `reference-integrity`（文書修正別枠）: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -61,8 +61,8 @@
 - 是正コミット: `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
 - 是正コミット: `91e9fed fix(secrets): operational fail証跡を補正`
 - 是正コミット: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
-- 紐付け: latest HEAD `095ab3b` を current-cycle 記録の保存コミット終端として扱う。
-- `6fd4014..5217c7f` の変更ファイル集合:
+- 紐付け: current-cycle 保存コミット終端は `095ab3b`。actual latest HEAD は `c1cc107`（証跡是正コミット）として分離して記録する。
+- 実装差分集合: `6fd4014..095ab3b` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -101,6 +101,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/Cargo.toml`
+  - `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一` は実装差分集合には含めず、証跡是正コミットとして別管理する。
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
