@@ -38,6 +38,7 @@
 - 追加保存コミット: `e06bf4d fix(secrets): adapter公開面をport実装型へ限定`
 - 追加保存コミット: `41084ae fix(secrets): adapter境界のclippy指摘を修正`
 - 追加保存コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
+- 追加保存コミット: `9ff38d7 refactor(secrets): 上書き可否規則をdomainへ移管`
 - 現行状態: `再レビュー待ち`
 - レビュー前提: security は pass 済み。structural / operational の Fail 指摘は本追記以降の保存点で修正済みとして扱い、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
@@ -83,6 +84,11 @@
 - 78f10ac 検証結果:
   - `cargo check -p dotfiles-cli`: 成功
   - `cargo check -p dotfiles-cli --features secrets-test-stub`: 成功
+  - `git diff --check`: 成功
+- 9ff38d7 修正内容:
+  - `put` の既存 secret 上書き可否判定を `domain::piv::SecretName::ensure_write_allowed` へ移した。
+- 9ff38d7 検証結果:
+  - `cargo check -p dotfiles-cli`: 成功
   - `git diff --check`: 成功
 
 ### 2026-05-26 追加実装サイクル追記
