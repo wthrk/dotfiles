@@ -354,6 +354,21 @@ fn put_stdin_requires_serial_before_reading_secret() -> TestResult<()> {
     Ok(())
 }
 
+/// stub env を設定しない場合でも同じ CLI 境界が real route を監査出力することを確認する。
+#[test]
+fn verify_yubikey_audits_real_route_when_stub_env_is_absent() -> TestResult<()> {
+    let run = run_pipe_without_stub(["verify-yubikey"], None)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=stub")),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
 /// PIN 必須デバイスで PIN 未入力時に `verify-yubikey` が停止することを確認する。
 #[test]
 fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()> {
@@ -369,6 +384,34 @@ fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()>
         "stderr: {}",
         run.stderr
     );
+    Ok(())
+}
+
+/// スタブで `put` 後に書き込み結果を `get` で検証する。
+#[test]
+fn put_emits_stored_secret_write_event_with_yubikey_path() -> TestResult<()> {
+    let stub = StubServer::new(&[StubFixture::State(StubState::WritableBwsAccessToken)]);
+    let put_run = run_pipe_with_stub(
+        [
+            "yubikey",
+            "put",
+            "bws-access-token",
+            "--serial",
+            "2001",
+            "--stdin",
+        ],
+        Some("new-token\r"),
+        &stub,
+    )?;
+    assert!(put_run.success, "stderr: {}", put_run.stderr);
+
+    let get_run = run_pipe_with_stub(
+        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        None,
+        &stub,
+    )?;
+    assert!(get_run.success, "stderr: {}", get_run.stderr);
+    assert_eq!(get_run.stdout.trim_end_matches('\r'), "new-token");
     Ok(())
 }
 
@@ -459,6 +502,36 @@ fn run_pipe_with_stub<const N: usize>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env(INTERNAL_STUB_ENDPOINT_ENV, stub.url());
+
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().context("failed to open child stdin")?;
+        stdin.write_all(input.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    Ok(CommandRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    })
+}
+
+fn run_pipe_without_stub<const N: usize>(
+    args: [&str; N],
+    input: Option<&str>,
+) -> TestResult<CommandRun> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command
+        .arg("secrets")
+        .args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let mut child = command.spawn()?;
     if let Some(input) = input {
