@@ -1,6 +1,10 @@
 use crate::Result;
 use crate::secrets::{
-    domain::values::{RotateBwsTokenCommand, VerifySummary},
+    domain::{
+        piv::SecretStorageSpec,
+        storage::{SecretStorageReadIntent, SecretStorageWriteIntent},
+        values::{RotateBwsTokenCommand, VerifySummary},
+    },
     ports::{self, SecretStoragePort},
 };
 
@@ -21,13 +25,22 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
     let serial = command.required_serial()?;
     let token = boundary.read_stdin_secret()?;
     let storage = command.storage_spec(serial);
-    boundary.store_secret(serial, storage, &token)?;
+    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    let intent = SecretStorageWriteIntent::store(storage, inspection)?;
+    boundary.store_secret(serial, intent, &token)?;
     let pin = if boundary.device_requires_pin(serial)? {
         Some(boundary.read_pin()?)
     } else {
         None
     };
-    let verify_result = boundary.verify_local_storage(serial, pin.as_ref());
+    let verify_result: Result<()> = (|| {
+        for storage in SecretStorageSpec::all_for_serial(serial) {
+            let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+            let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+            let _secret = boundary.load_secret(serial, intent, pin.as_ref())?;
+        }
+        Ok(())
+    })();
     match verify_result {
         Ok(()) => boundary.write_verify_report(&VerifySummary::local_storage_verified(serial)),
         Err(err) => boundary

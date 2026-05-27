@@ -12,6 +12,11 @@ use crate::{
             manifest::BootstrapSecretDocument,
             material::SecretMaterial,
             piv::{SecretName, SecretStorageSpec},
+            storage::{
+                SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
+                SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
+                SecretStorageWriteIntent,
+            },
             values::{EnrollSummary, VerifySummary},
         },
         ports::{
@@ -117,40 +122,54 @@ impl SecretOutputPort for SecretsAdapters {
 }
 
 impl SecretStoragePort for SecretsAdapters {
-    fn initialize_secret_storage(&mut self, serial: u32) -> Result<()> {
-        self.boundary.initialize_secret_storage(serial)
+    fn inspect_secret_storage_setup(
+        &mut self,
+        serial: u32,
+        probe: &SecretStorageSetupProbe,
+    ) -> Result<SecretStorageSetupInspection> {
+        self.boundary.inspect_secret_storage_setup(serial, probe)
+    }
+
+    fn initialize_secret_storage(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()> {
+        self.boundary.initialize_secret_storage(serial, intent)
+    }
+
+    fn inspect_secret_storage_write(
+        &mut self,
+        serial: u32,
+        storage: &crate::secrets::domain::piv::SecretStorageSpec,
+    ) -> Result<SecretStorageWriteInspection> {
+        self.boundary.inspect_secret_storage_write(serial, storage)
     }
 
     fn store_secret(
         &mut self,
         serial: u32,
-        storage: SecretStorageSpec,
+        intent: SecretStorageWriteIntent,
         secret: &SecretMaterial,
     ) -> Result<()> {
-        self.boundary.store_secret(serial, storage, secret)
+        self.boundary.store_secret(serial, intent, secret)
     }
 
-    fn put_secret(
+    fn inspect_secret_storage_read(
         &mut self,
         serial: u32,
-        storage: SecretStorageSpec,
-        secret: &SecretMaterial,
-        force: bool,
-    ) -> Result<()> {
-        self.boundary.put_secret(serial, storage, secret, force)
+        storage: &crate::secrets::domain::piv::SecretStorageSpec,
+    ) -> Result<SecretStorageReadInspection> {
+        self.boundary.inspect_secret_storage_read(serial, storage)
     }
 
     fn load_secret(
         &mut self,
         serial: u32,
-        storage: SecretStorageSpec,
+        intent: SecretStorageReadIntent,
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial> {
-        self.boundary.load_secret(serial, storage, pin)
-    }
-
-    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()> {
-        self.boundary.verify_local_storage(serial, pin)
+        self.boundary.load_secret(serial, intent, pin)
     }
 }
 

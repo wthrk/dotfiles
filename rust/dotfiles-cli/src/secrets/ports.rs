@@ -6,6 +6,11 @@ use super::domain::{
     manifest::BootstrapSecretDocument,
     material::SecretMaterial,
     piv::{SecretName, SecretStorageSpec},
+    storage::{
+        SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
+        SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
+        SecretStorageWriteIntent,
+    },
     values::{EnrollSummary, VerifySummary},
 };
 use anyhow::Result;
@@ -62,30 +67,42 @@ pub trait ReportPort {
 
 /// use case が YubiKey secret storage へ要求する高水準 capability 契約。
 pub trait SecretStoragePort {
-    /// 対象 serial の secret storage を初期化する。
-    fn initialize_secret_storage(&mut self, serial: u32) -> Result<()>;
-    /// 対象 storage spec の secret を保存する。
+    /// setup 判定に必要な storage 状態を取得する。
+    fn inspect_secret_storage_setup(
+        &mut self,
+        serial: u32,
+        probe: &SecretStorageSetupProbe,
+    ) -> Result<SecretStorageSetupInspection>;
+    /// 判定済み intent に従って対象 serial の secret storage を初期化する。
+    fn initialize_secret_storage(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()>;
+    /// 書き込み判定に必要な storage 状態を取得する。
+    fn inspect_secret_storage_write(
+        &mut self,
+        serial: u32,
+        storage: &SecretStorageSpec,
+    ) -> Result<SecretStorageWriteInspection>;
+    /// 判定済み intent に従って対象 storage spec の secret を保存する。
     fn store_secret(
         &mut self,
         serial: u32,
-        storage: SecretStorageSpec,
+        intent: SecretStorageWriteIntent,
         secret: &SecretMaterial,
     ) -> Result<()>;
-    /// 対象 storage spec の既存値ポリシーを確認したうえで secret を保存する。
-    fn put_secret(
+    /// 読み出し判定に必要な storage 状態を取得する。
+    fn inspect_secret_storage_read(
         &mut self,
         serial: u32,
-        storage: SecretStorageSpec,
-        secret: &SecretMaterial,
-        force: bool,
-    ) -> Result<()>;
-    /// 対象 storage spec の secret を読み出す。
+        storage: &SecretStorageSpec,
+    ) -> Result<SecretStorageReadInspection>;
+    /// 判定済み intent に従って対象 storage spec の secret を読み出す。
     fn load_secret(
         &mut self,
         serial: u32,
-        storage: SecretStorageSpec,
+        intent: SecretStorageReadIntent,
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial>;
-    /// local storage の manifest と全 secret を検証する。
-    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()>;
 }

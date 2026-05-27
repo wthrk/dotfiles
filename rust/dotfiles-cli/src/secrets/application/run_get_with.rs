@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::values::GetCommand,
+    domain::{storage::SecretStorageReadIntent, values::GetCommand},
     ports::{self, SecretStoragePort},
 };
 
@@ -24,6 +24,8 @@ pub(crate) fn run_get_with<
         None
     };
     let storage = command.storage_spec(serial);
-    let secret = boundary.load_secret(serial, storage, pin.as_ref())?;
+    let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+    let secret = boundary.load_secret(serial, intent, pin.as_ref())?;
     boundary.write_secret(&secret)
 }

@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::secrets::{
-    domain::values::PutCommand,
+    domain::{storage::SecretStorageWriteIntent, values::PutCommand},
     ports::{self, SecretStoragePort},
 };
 
@@ -14,5 +14,7 @@ pub(crate) fn run_put_with_stdin<B: ports::SecretInputPort + SecretStoragePort>(
     let serial = command.required_serial()?;
     let secret = boundary.read_stdin_secret()?;
     let storage = command.storage_spec(serial);
-    boundary.put_secret(serial, storage, &secret, command.force)
+    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    let intent = SecretStorageWriteIntent::put(storage, inspection, command.force)?;
+    boundary.store_secret(serial, intent, &secret)
 }

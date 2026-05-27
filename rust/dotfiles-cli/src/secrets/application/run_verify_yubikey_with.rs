@@ -1,6 +1,10 @@
 use crate::Result;
 use crate::secrets::{
-    domain::values::{VerifySummary, VerifyYubikeyCommand},
+    domain::{
+        piv::SecretStorageSpec,
+        storage::SecretStorageReadIntent,
+        values::{VerifySummary, VerifyYubikeyCommand},
+    },
     ports::{self, SecretStoragePort},
 };
 
@@ -21,7 +25,11 @@ pub(crate) fn run_verify_yubikey_with<
     } else {
         None
     };
-    boundary.verify_local_storage(serial, pin.as_ref())?;
+    for storage in SecretStorageSpec::all_for_serial(serial) {
+        let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+        let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+        let _secret = boundary.load_secret(serial, intent, pin.as_ref())?;
+    }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(
             serial,

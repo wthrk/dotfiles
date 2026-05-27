@@ -1,6 +1,13 @@
 use crate::Result;
 use crate::secrets::{
-    domain::values::{EnrollSpareCommand, EnrollSummary},
+    domain::{
+        piv::SecretStorageSpec,
+        storage::{
+            SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
+            SecretStorageWriteIntent,
+        },
+        values::{EnrollSpareCommand, EnrollSummary},
+    },
     ports::{self, SecretStoragePort},
 };
 
@@ -21,16 +28,25 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
 ) -> Result<()> {
     let spare_serial = boundary.resolve_spare_device_serial(command.spare_serial)?;
     command.ensure_requested_primary_differs_from_spare(spare_serial)?;
-    boundary.initialize_secret_storage(spare_serial)?;
+    let setup_probe = SecretStorageSetupProbe::expected();
+    let setup_inspection = boundary.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
+    let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
+    boundary.initialize_secret_storage(spare_serial, setup_intent)?;
     let document = boundary.read_bootstrap_secret_document_noninteractive()?;
     for (storage, value) in document.storage_entries(spare_serial) {
-        boundary.store_secret(spare_serial, storage, value)?;
+        let inspection = boundary.inspect_secret_storage_write(spare_serial, &storage)?;
+        let intent = SecretStorageWriteIntent::store(storage, inspection)?;
+        boundary.store_secret(spare_serial, intent, value)?;
     }
     let pin = if boundary.device_requires_pin(spare_serial)? {
         Some(boundary.read_pin()?)
     } else {
         None
     };
-    boundary.verify_local_storage(spare_serial, pin.as_ref())?;
+    for storage in SecretStorageSpec::all_for_serial(spare_serial) {
+        let inspection = boundary.inspect_secret_storage_read(spare_serial, &storage)?;
+        let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+        let _secret = boundary.load_secret(spare_serial, intent, pin.as_ref())?;
+    }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }

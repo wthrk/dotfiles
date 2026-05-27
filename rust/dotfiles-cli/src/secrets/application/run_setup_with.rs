@@ -1,6 +1,9 @@
 use crate::Result;
 use crate::secrets::{
-    domain::values::SetupCommand,
+    domain::{
+        storage::{SecretStorageSetupIntent, SecretStorageSetupProbe},
+        values::SetupCommand,
+    },
     ports::{self, SecretStoragePort},
 };
 
@@ -12,5 +15,8 @@ pub(crate) fn run_setup_with<B: ports::DeviceSerialPort + SecretStoragePort>(
     boundary: &mut B,
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
-    boundary.initialize_secret_storage(serial)
+    let probe = SecretStorageSetupProbe::expected();
+    let inspection = boundary.inspect_secret_storage_setup(serial, &probe)?;
+    let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
+    boundary.initialize_secret_storage(serial, intent)
 }

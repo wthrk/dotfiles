@@ -6,5 +6,6 @@
 pub mod manifest;
 pub mod material;
 pub mod piv;
+pub mod storage;
 pub mod values;
 pub(crate) mod wire;
