@@ -5,20 +5,20 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `4c82da8` は、security Fail の assertion output 秘匿化を追加したため security / operational / reference-integrity 再レビュー待ち。
+- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `4c82da8` は、security Fail の assertion output 秘匿化修正まで含む。security と reference-integrity は `4e00605` 対象で合格済みだが、structural / specification-conformance / test / documentation / architectural-consistency は `4c82da8` 追加差分に対する reviewer 再確認が未記録であり、operational は本記録修正後の再レビュー待ち。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-evidence-sync-head`
 - 実装/テスト差分の保存コミット終端: `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `実施済み` / 判定 `合格（02281d2 対象の既存 Pass を維持）`
-  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 + この文書-only HEAD 対象）`
-  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 対象）`
-  - `specification-conformance`: 状態 `実施済み` / 判定 `合格（02281d2 対象の既存 Pass を維持）`
-  - `test`: 状態 `実施済み` / 判定 `合格（02281d2 対象の既存 Pass を維持）`
-  - `documentation`: 状態 `実施済み` / 判定 `合格（02281d2 対象の既存 Pass を維持）`
-  - `architectural-consistency`: 状態 `実施済み` / 判定 `合格（02281d2 対象の既存 Pass を維持）`
-  - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（この文書-only HEAD 対象）`
+  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（本記録修正後の文書-only HEAD 対象）`
+  - `security`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
+  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `reference-integrity`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -68,14 +68,13 @@
   - `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
   - `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
   - `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
-  - `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
 
 ### 進捗台帳更新の扱い
 
 - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の `状態` / `現行サイクル状態` / `実装状態` の完了方向更新は、進捗判定担当または完了判定担当の職責である。
 - 本更新の実行者は implementation executor であり、`docs/secret-recovery/implementation-guidelines.md` の役割分離規則により、進捗判定担当の代替実行者として台帳状態を前進更新しない。
-- 本更新では、最新 completion judgement Fail のうち implementation executor が更新可能な reviewer 集約証跡だけを、operational-consistency / reference-integrity の合格結果と整合させる。
+- 本更新では、最新 operational Fail のうち implementation executor が更新可能な reviewer 集約証跡だけを、`4c82da8` の実装/テスト終端と文書-only HEAD の関係に整合させる。operational-consistency は本修正後の再レビュー待ちであり、合格結果として扱わない。reference-integrity は `4e00605` 対象の合格結果を記録済みとする。
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
@@ -93,10 +92,9 @@
 - 追加修正コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 追加修正コミット: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 追加修正コミット: `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
-- 証跡同期コミット: `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
 - 追加修正: `2bd7e0a..4c82da8` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` と `4c82da8` は security Fail の assertion output 秘匿化を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `4c82da8`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..4c82da8` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail を対象とする。
+- 紐付け: 実装/テスト差分の保存コミット終端は `4c82da8`。この文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..4c82da8` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
 - 実装差分集合: `6fd4014..4c82da8` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
@@ -282,21 +280,21 @@
 
 ## 役割別レビュー
 
-- `structural`: `02281d2` 対象の合格記録を維持。
-- `operational`: `4c82da8` とこの文書-only HEAD 対象の再レビュー待ち。
-- `security`: `4c82da8` 対象の再レビュー待ち。
-- `specification-conformance`: `02281d2` 対象の合格記録を維持。
-- `test`: `02281d2` 対象の合格記録を維持。
-- `documentation`: `02281d2` 対象の合格記録を維持。
-- `architectural-consistency`: `02281d2` 対象の合格記録を維持。
-- `reference-integrity`: この文書-only HEAD 対象の再レビュー待ち。
+- `structural`: `4c82da8` 追加差分対象の再レビュー待ち。`02281d2` 対象の合格記録は履歴として保持するが、current-cycle gate の合格根拠へ持ち越さない。
+- `operational`: 本記録修正後の文書-only HEAD 対象の再レビュー待ち。
+- `security`: `4e00605` 対象の合格記録を current-cycle の最新 security 判定として保持。
+- `specification-conformance`: `4c82da8` 追加差分対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
+- `test`: `4c82da8` 追加差分対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
+- `documentation`: `4c82da8` 追加差分対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
+- `architectural-consistency`: `4c82da8` 追加差分対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
+- `reference-integrity`: `4e00605` 対象の合格記録を current-cycle の最新 reference 判定として保持。
 
 ## 集約
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: `4c82da8` で support/protection test の secret assertion output 秘匿化を追加したため、security / operational / reference-integrity の再レビュー完了まで commit gate は未充足。
+- 集約判定要約: `4c82da8` で support/protection test の secret assertion output 秘匿化を追加した。security と reference-integrity は `4e00605` 対象で合格済みだが、structural / specification-conformance / test / documentation / architectural-consistency の `4c82da8` 追加差分再確認と、operational の本記録修正後再レビューが完了するまで commit gate は未充足。
 - 集約根拠:
   - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-evidence-sync-head` に一致させた。
   - 実装/テスト差分の保存コミット終端を `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` として記録した。
   - `secrets::application` は 43 tests へ増加し、履歴上の未復旧 test 名 12 件を現行責務層へ復旧済み。
-  - structural / specification-conformance / test / documentation / architectural-consistency の既存 Pass 記録は維持し、security / operational-consistency / reference-integrity は再レビュー待ち。
+  - structural / specification-conformance / test / documentation / architectural-consistency の過去 Pass 記録は履歴として保持するが、`4c82da8` 追加差分の current-cycle gate へ持ち越さない。security と reference-integrity は `4e00605` 対象で合格済み、operational は本記録修正後の再レビュー待ち。
