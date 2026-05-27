@@ -196,7 +196,7 @@ impl ProtectedSecret {
     ) -> Result<BTreeMap<String, Self>> {
         let object = self.with_secret(|bytes| {
             serde_json::from_slice::<BTreeMap<String, Zeroizing<String>>>(bytes)
-                .context("failed to decode bootstrap secret JSON")
+                .context("failed to decode protected JSON object")
         })?;
 
         let mut fields = BTreeMap::new();
