@@ -60,11 +60,19 @@ struct DeviceCandidate {
     label: String,
 }
 
+/// 実機 YubiKey backend と通信して device 候補列挙/選択を行う翻訳境界。
+///
+/// adapter 外へ実機型を漏らさないため、この trait は `SelectedSecretDevice` 構築に必要な
+/// 最小 capability だけを提供する。
 trait RealDeviceIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<YubikeySecretDevice>;
 }
 
+/// 選択済み device に対する PIV 操作を `SecretStoragePort` 契約へ写像する翻訳境界。
+///
+/// この境界は storage 操作に必要な capability のみを宣言し、use case 手順や
+/// domain policy の決定を持ち込まない。
 trait SecretDeviceIo {
     fn key_exists(&mut self) -> Result<bool>;
     fn piv_application_version(&self) -> PivApplicationVersion;
@@ -87,6 +95,10 @@ trait SecretDeviceIo {
     ) -> Result<SecretMaterial>;
 }
 
+/// `DeviceSelectionAdapter` が利用する device 発見/オープン境界。
+///
+/// compile-time seam の有無に関わらず同一 capability を維持し、application から見える
+/// production command path を単一路に固定する。
 trait SelectedDeviceDiscoveryIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice>;
@@ -449,14 +461,10 @@ fn report_check_status(value: CheckStatus) -> &'static str {
     }
 }
 
-// Internal test stub injection point.  This is the only compile-time seam that swaps
-// the PIV/YubiKey device backend.  The `secrets-internal-test-stub` feature is used
-// only by the internal mockito-backed tests wired from `rust/tests/checks/src/static_checks.rs`;
-// production builds compile the real backend and have no runtime route switch.
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-type SelectedDeviceAdapter = RealSelectedDeviceAdapter;
-#[cfg(feature = "secrets-internal-test-stub")]
-type SelectedDeviceAdapter = TestStubDeviceAdapter;
+// Internal test stub injection point.  This is the only compile-time seam for swapping
+// the PIV/YubiKey backend implementation. Production path keeps the same adapter type
+// and same port contract; only backend implementation changes at compile-time.
+struct SelectedDeviceAdapter;
 
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
 
@@ -467,19 +475,10 @@ fn selected_device_route_label() -> &'static str {
 
 #[cfg(feature = "secrets-internal-test-stub")]
 fn selected_device_route_label() -> &'static str {
-    if std::env::var_os(INTERNAL_STUB_ENDPOINT_ENV).is_some() {
-        "stub"
-    } else {
-        "real"
-    }
+    "stub"
 }
 
-/// 同一 production command path 上で device 選択 route を確定する実機 adapter。
-///
-/// production 経路は実機 `real` route 固定で、runtime feature/env 分岐を持たない。
-struct RealSelectedDeviceAdapter;
-
-impl Default for RealSelectedDeviceAdapter {
+impl Default for SelectedDeviceAdapter {
     fn default() -> Self {
         eprintln!(
             "{ADAPTER_ROUTE_AUDIT_PREFIX}={}",
@@ -555,7 +554,8 @@ impl SecretDeviceIo for SelectedSecretDevice {
     }
 }
 
-impl SelectedDeviceDiscoveryIo for RealSelectedDeviceAdapter {
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         RealDeviceIo::discover_devices(&mut RealDeviceAdapter)
     }
@@ -568,20 +568,6 @@ impl SelectedDeviceDiscoveryIo for RealSelectedDeviceAdapter {
 
 #[cfg(feature = "secrets-internal-test-stub")]
 const INTERNAL_STUB_ENDPOINT_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_MOCKITO_URL";
-
-#[cfg(feature = "secrets-internal-test-stub")]
-struct TestStubDeviceAdapter;
-
-#[cfg(feature = "secrets-internal-test-stub")]
-impl Default for TestStubDeviceAdapter {
-    fn default() -> Self {
-        eprintln!(
-            "{ADAPTER_ROUTE_AUDIT_PREFIX}={}",
-            selected_device_route_label()
-        );
-        Self
-    }
-}
 
 #[cfg(feature = "secrets-internal-test-stub")]
 struct TestStubSecretDevice {
@@ -617,7 +603,7 @@ struct PivVersionWire {
 }
 
 #[cfg(feature = "secrets-internal-test-stub")]
-impl TestStubDeviceAdapter {
+impl SelectedDeviceAdapter {
     fn endpoint() -> Result<String> {
         std::env::var(INTERNAL_STUB_ENDPOINT_ENV)
             .context("internal mockito YubiKey stub endpoint is not configured")
@@ -625,7 +611,7 @@ impl TestStubDeviceAdapter {
 }
 
 #[cfg(feature = "secrets-internal-test-stub")]
-impl SelectedDeviceDiscoveryIo for TestStubDeviceAdapter {
+impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         let response = stub_http_request("GET", "/devices", &[])?;
         let devices = serde_json::from_slice::<Vec<StubDeviceWire>>(&response)
@@ -823,7 +809,7 @@ fn stub_http_request(method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(feature = "secrets-internal-test-stub")]
 fn stub_http_request_with_status(method: &str, path: &str, body: &[u8]) -> Result<(u16, Vec<u8>)> {
-    let endpoint = TestStubDeviceAdapter::endpoint()?;
+    let endpoint = SelectedDeviceAdapter::endpoint()?;
     let target = endpoint
         .strip_prefix("http://")
         .ok_or_else(|| anyhow::anyhow!("internal stub endpoint must use http://"))?;

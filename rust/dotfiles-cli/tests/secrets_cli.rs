@@ -355,20 +355,14 @@ fn put_stdin_requires_serial_before_reading_secret() -> TestResult<()> {
     Ok(())
 }
 
-/// stub env を設定しない場合でも同じ CLI 境界が real route を監査出力することを確認する。
+/// internal stub feature build では route 監査ラベルが compile-time で `stub` 固定になることを確認する。
 #[test]
-fn verify_yubikey_audits_real_route_when_stub_env_is_absent() -> TestResult<()> {
+fn verify_yubikey_audits_stub_route_in_internal_stub_build() -> TestResult<()> {
     let run = run_pipe_without_stub(["verify-yubikey"], None)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
         run.stderr
-            .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=real")),
-        "stderr: {}",
-        run.stderr
-    );
-    assert!(
-        !run.stderr
             .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=stub")),
         "stderr: {}",
         run.stderr
