@@ -198,7 +198,15 @@ impl ProtectedSecret {
         self.value.len()
     }
 
-    /// JSON object を `String -> ProtectedSecret` へ変換する。
+    /// secret JSON bytes を field 単位の locked `ProtectedSecret` map へ復元する。
+    ///
+    /// 入力 JSON は `with_secret` の借用中だけ parse し、serde が作る平文 `String` は
+    /// `Zeroizing<String>` としてこの関数の stack frame 内に閉じる。各 field は
+    /// `field_limit` を超えた時点で `Err` にし、長すぎる平文を protected map へ格納しない。
+    ///
+    /// 成功時は各 field value を新しい locked `ProtectedSecret` へコピーして返す。返却後に
+    /// caller が保持するのは protection 境界内の値だけであり、一時 `String` は Drop 時に
+    /// zeroize される。
     pub(crate) fn decode_json_string_map(
         &self,
         field_limit: usize,

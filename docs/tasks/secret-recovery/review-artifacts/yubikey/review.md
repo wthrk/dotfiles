@@ -5,7 +5,7 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `この実装コメント補正 HEAD` は、security Fail の assertion output 秘匿化修正と documentation Fail の support 暗号境界 doc comment 補正まで含む。security と reference-integrity は `4e00605` 対象で合格済みだが、structural / specification-conformance / test / documentation / architectural-consistency は追加差分に対する reviewer 再確認が未記録であり、operational は本記録修正後の再レビュー待ち。
+- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `この実装コメント補正 HEAD` は、security Fail の assertion output 秘匿化修正と documentation Fail の support 暗号境界 doc comment 補正まで含む。security は `4e00605` 対象で合格済みだが、structural / specification-conformance / test / documentation / architectural-consistency は追加差分に対する reviewer 再確認が未記録であり、operational と reference-integrity は本記録修正後の再レビュー待ち。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
@@ -18,7 +18,7 @@
   - `test`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
   - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（documentation Fail の doc comment 補正 HEAD 対象。過去 Pass の持ち越しでは閉じない）`
   - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `reference-integrity`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
+  - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（本記録修正後の current-cycle 補正 HEAD 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -75,7 +75,7 @@
 
 - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の `状態` / `現行サイクル状態` / `実装状態` の完了方向更新は、進捗判定担当または完了判定担当の職責である。
 - 本更新の実行者は implementation executor であり、`docs/secret-recovery/implementation-guidelines.md` の役割分離規則により、進捗判定担当の代替実行者として台帳状態を前進更新しない。
-- 本更新では、最新 documentation Fail のうち implementation executor が更新可能な support 暗号境界 doc comment と確認証跡だけを、`この実装コメント補正 HEAD` を含む current-cycle 補正 HEAD として整合させる。documentation は本修正後の再レビュー待ちであり、合格結果として扱わない。security と reference-integrity は `4e00605` 対象の合格結果を記録済みとする。
+- 本更新では、最新 documentation Fail のうち implementation executor が更新可能な support 暗号境界 doc comment と確認証跡だけを、`この実装コメント補正 HEAD` を含む current-cycle 補正 HEAD として整合させる。documentation は本修正後の再レビュー待ちであり、合格結果として扱わない。security は `4e00605` 対象の合格結果を記録済みとし、reference-integrity は証跡文書更新後の current-cycle 補正 HEAD 対象の再レビュー待ちとする。
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
@@ -292,14 +292,14 @@
 - `test`: `この実装コメント補正 HEAD` 追加差分対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
 - `documentation`: documentation Fail の doc comment 補正 HEAD 対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
 - `architectural-consistency`: `この実装コメント補正 HEAD` 追加差分対象の再レビュー待ち。過去合格記録の持ち越しでは閉じない。
-- `reference-integrity`: `4e00605` 対象の合格記録を current-cycle の最新 reference 判定として保持。
+- `reference-integrity`: 本記録修正後の current-cycle 補正 HEAD 対象の再レビュー待ち。`4e00605` 対象の合格記録は履歴として保持するが、文書更新後の current-cycle gate へ持ち越さない。
 
 ## 集約
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `この実装コメント補正 HEAD` は、security Fail の assertion output 秘匿化修正と documentation Fail の support 暗号境界 doc comment 補正まで含む。security と reference-integrity は `4e00605` 対象で合格済みだが、structural / specification-conformance / test / documentation / architectural-consistency の追加差分再確認と、operational の本記録修正後再レビューが完了するまで commit gate は未充足。
+- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `この実装コメント補正 HEAD` は、security Fail の assertion output 秘匿化修正と documentation Fail の support 暗号境界 doc comment 補正まで含む。security は `4e00605` 対象で合格済みだが、structural / specification-conformance / test / documentation / architectural-consistency の追加差分再確認と、operational / reference-integrity の本記録修正後再レビューが完了するまで commit gate は未充足。
 - 集約根拠:
   - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head` に一致させた。
   - 実装/テスト差分の保存コミット終端を `この実装コメント補正 HEAD` として記録した。
   - `secrets::application` は 43 tests へ増加し、履歴上の未復旧 test 名 12 件を現行責務層へ復旧済み。
-  - structural / specification-conformance / test / documentation / architectural-consistency の過去 Pass 記録は履歴として保持するが、`この実装コメント補正 HEAD` 追加差分の current-cycle gate へ持ち越さない。security と reference-integrity は `4e00605` 対象で合格済み、operational は本記録修正後の再レビュー待ち。
+  - structural / specification-conformance / test / documentation / architectural-consistency の過去 Pass 記録は履歴として保持するが、`この実装コメント補正 HEAD` 追加差分の current-cycle gate へ持ち越さない。security は `4e00605` 対象で合格済み、operational と reference-integrity は本記録修正後の再レビュー待ち。

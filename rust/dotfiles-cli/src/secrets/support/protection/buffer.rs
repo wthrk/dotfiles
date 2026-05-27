@@ -119,6 +119,15 @@ impl ProtectedInputBuffer {
         }
     }
 
+    /// lock 済み入力 allocation を、末尾改行除去後の raw bytes と lock guard へ分解する。
+    ///
+    /// この関数は `Zeroizing<Vec<u8>>` の Drop 管理から一時的に raw `Vec<u8>` を取り出し、
+    /// 同じ allocation を保護している `LockGuard` と対で返す safety boundary である。
+    /// caller は返却された bytes と guard を分離して保持せず、直後に `ProtectedSecret` へ
+    /// 移して zeroize/lock ownership を再結合する責務を持つ。
+    ///
+    /// lock guard が欠落している場合は保護境界不成立として `Err` を返し、lock なしの raw
+    /// bytes だけを返さない。末尾改行の trim は ownership 移譲前に同一 allocation 上で完了する。
     fn into_trimmed_bytes_and_lock(self) -> Result<(Vec<u8>, region::LockGuard)> {
         let mut this = self;
         let mut wrapped = std::mem::take(&mut this.buffer);

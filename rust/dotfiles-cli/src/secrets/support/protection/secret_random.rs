@@ -9,7 +9,14 @@ use crate::Result;
 
 use super::ProtectedSecret;
 
-/// 指定長のランダム secret を生成する。
+/// `rand` の process-local CSPRNG で指定長の secret material を locked `ProtectedSecret` として生成する。
+///
+/// content key などの secret material は、生成先を先に `ProtectedSecret` として確保し、
+/// その mutable borrow 中に `rand` の thread-local RNG から bytes を埋める。caller へ
+/// raw buffer や `Vec<u8>` を返さず、生成後の所有権は protection 境界内に閉じる。
+///
+/// locked buffer の確保に失敗した場合は `Err` を返し、lock なしの乱数 bytes や途中状態の
+/// secret material を fallback として返さない。
 pub(crate) fn random_secret(len: usize) -> Result<ProtectedSecret> {
     let mut secret = ProtectedSecret::new(len)?;
     secret.with_secret_mut(|bytes| rand::rng().fill_bytes(bytes));
