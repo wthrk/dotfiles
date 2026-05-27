@@ -58,7 +58,6 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
                 .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
             let _secret = verify_device
                 .open_from_storage(name, &encoded)
-                .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))
                 .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
         }
         Ok(())
