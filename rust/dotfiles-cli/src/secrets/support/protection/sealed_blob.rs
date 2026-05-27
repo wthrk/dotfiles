@@ -172,6 +172,14 @@ pub(crate) fn open_with_key_unwrap(
     open_decoded(blob, &content_key, aad)
 }
 
+/// decoded blob を content key / AAD / tag で検証し、plaintext を protected buffer に復元する。
+///
+/// 復号先は ciphertext 長の locked `ProtectedSecret` として先に確保し、AEAD 検証はその
+/// buffer 上で in-place に行う。caller は `content_key` と `aad` が sealing 時の規則に
+/// 対応する値であることを保証する責務を負う。
+///
+/// tag 検証または復号に失敗した場合は plaintext として返さず、失敗を汎用 error に正規化する。
+/// 成功時に返す bytes は `ProtectedSecret` 内へ閉じられ、raw `Vec<u8>` ownership は外へ出さない。
 fn open_decoded(
     blob: SealedBlob,
     content_key: &ProtectedSecret,

@@ -248,7 +248,15 @@ impl SecretSession {
         self.memory.lock_transient_buffer(ptr, len)
     }
 
-    /// lock 済み allocation の所有権を、session lifetime に紐づく secret 値へ移す。
+    /// lock 済み allocation と対応する lock guard を `ProtectedSecret` へ再結合する。
+    ///
+    /// caller は `value` の allocation と `lock` が同じ memory range に対応していることを
+    /// 保証してから渡す責務を負う。この境界で raw `Vec<u8>` は `Zeroizing` 管理へ入り、
+    /// lock guard は `ProtectedSecret` の所有物として保持される。
+    ///
+    /// interrupt が既に通知されている場合は protected value を返さず `Err` にする。
+    /// その失敗経路では構築済みの `ProtectedSecret` が Drop され、`Zeroizing` と lock guard の
+    /// Drop によって平文 buffer の zeroize と unlock へ進む。
     pub(super) fn protect_locked_secret_value(
         &self,
         value: Vec<u8>,
