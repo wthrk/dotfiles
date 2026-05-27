@@ -54,10 +54,10 @@
   - `ports` が `support` に依存しない（V7 の解消）。
   - `domain` に port contract / I/O 型が存在せず、use case outcome 型は `domain` 側にのみ定義され presentation 仕様を含まない（V8, V9, V16 の解消）。
   - `support` に feature-specific な terminal I/O / prompt / orchestration が存在しない。`rust/dotfiles-cli/src/secrets/support/process_io.rs` のような process-generic 補助は許容するが、YubiKey-specific 文言、device 選択判断、use case 手順を含めない（V11 の解消）。
-  - `application/run_*.rs`・`adapters/yubikey.rs`・`domain/wire.rs` 間で、wire/crypto/device/use-case の責務境界が単一層原則に従って分離されている（V10 の解消）。
+  - `application/run_*.rs`・`adapters/piv_io.rs`・`domain/wire.rs` 間で、wire/crypto/device/use-case の責務境界が単一層原則に従って分離されている（V10 の解消）。
   - `SelectedDeviceAdapter` は same-route 原則を満たす単一 production command path を維持し、`--test-stub-yubikey` / `yubikey_runtime` / `secrets-test-stub` feature / env / 別 binary / 別 CLI / command-scenario branching / production command path を差し替える port-boundary swap を、product behavior 変形として導入しない（V14 の解消）。
   - same-route 判定では、同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection を禁止しない。これらは command path 変形や product behavior 変更を伴わない限り許可される。
-  - production adapter 面に `adapters/piv_io/device_test_stub.rs` のような test stub / fake device / fixture state を残さない（V15 の解消）。
+  - production adapter 面に test stub / fake device / fixture state を残さない（V15 の解消）。
   - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること（V12, V13 の解消）。
 - レビュー合格条件: `上記完了の判定条件を全て確認し、アーキテクチャ規約に厳密に適合し、責務境界、依存方向、公開インターフェース境界に違反が残らないこと。動作するが構造が規約に合わないと判定される実装は合格としない。`
   - `application/` と `adapters/` の private helper について、helper 単位で責務が層責務に一致することを説明できること。説明できない helper が1件でもあれば設計誤りとして不合格。
@@ -126,7 +126,7 @@
   - `rust/dotfiles-cli-secrets-test-stub/` を復活させない。
   - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/` と `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs` のモジュール説明コメントを現行実装の責務境界と一致させる。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` と `rust/dotfiles-cli/src/secrets/adapters/piv_io/` のモジュール説明コメントを現行実装の責務境界と一致させる。
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs` の公開 use-case entrypoint と非自明 helper、ならびに sibling `run_*.rs` を配線する `application.rs` に必要な doc comment coverage を付与し、`what` だけでなく `why` を明記する。
   - `application/run_*.rs` に限らず、`ports`/`adapters`/`support` の層境界説明が必要な非自明 type/function で doc comment 欠落を残さない。欠落はレビュー blocker として扱う。
 
@@ -142,7 +142,7 @@
 3. **V6, V7 を解消する**（port の DTO・parser・prompt・support 依存を除去）
    - V6：port contract を最小 capability 契約に縮小（`EnrollmentSecretSet` DTO 除去、`prompt_yes_no`/`stdin_is_terminal`/`stdout_is_terminal` を adapter 所有へ）
    - V7：V6 の整理に伴い `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去し `support::protection` 依存を断つ
-4. **V10 を解消する**（`application.rs` / `application/run_*.rs` / `adapters/yubikey.rs` / `domain/wire.rs` 間の責務再分離）
+4. **V10 を解消する**（`application.rs` / `application/run_*.rs` / `adapters/piv_io.rs` / `domain/wire.rs` 間の責務再分離）
    - wire format・AEAD・port 呼び出しを各層へ分離
 5. **V11, V12, V13 を解消する**（adapter 面の整理）
    - terminal I/O・prompt を support から adapter へ移設
@@ -183,7 +183,7 @@
 | V7 | `src/secrets/ports.rs` | `support::protection` への直接依存を除去する。V6（`SecretsBoundary` 整理）と連動しており、V6 で `InterruptGuard`/`ProtectedSecret`/`SecretSession` をシグネチャから除去するか domain 層へ移設することで解消する。ステップ1では V8/V16 のみ対象とし V7 はステップ3（V6 と同時）で解消する。 |
 | V8 | `src/secrets/domain/model.rs` | `SecretDevice` を ports 層へ移設。 |
 | V9 | `src/secrets/domain/model.rs`、`src/secrets/application/summary.rs`（存在する場合） | use case outcome 型（`EnrollSummary` 等）を domain 層へ統一し、application 独自型を残さない。 |
-| V10 | `src/secrets/application.rs`、`src/secrets/application/run_*.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/domain/wire.rs` | `application.rs` を sibling `run_*.rs` の module 配線専用に限定し、production use case entrypoint としての `application/` 直下 sibling `run_*.rs` ごとに単一 `run_*` 関数を維持する。use-case 手順、device 外部 API 変換、wire parser/serializer、protected-secret ownership の責務を層ごとに再分離し、use case-to-use case call と use case 層 commonization を禁止する。`#[cfg(test)] mod tests` と `*_tests.rs` はこの単一 `run_*` 制約の対象外。 |
+| V10 | `src/secrets/application.rs`、`src/secrets/application/run_*.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/domain/wire.rs` | `application.rs` を sibling `run_*.rs` の module 配線専用に限定し、production use case entrypoint としての `application/` 直下 sibling `run_*.rs` ごとに単一 `run_*` 関数を維持する。use-case 手順、device 外部 API 変換、wire parser/serializer、protected-secret ownership の責務を層ごとに再分離し、use case-to-use case call と use case 層 commonization を禁止する。`#[cfg(test)] mod tests` と `*_tests.rs` はこの単一 `run_*` 制約の対象外。 |
 | V11 | `src/secrets/support/` | feature-specific な terminal I/O / prompt / orchestration を support から除去する。`support/process_io.rs` のような process-generic 補助は残してよい。 |
 | V12 | `src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/ports.rs` | input modality を port 契約から除去し、adapter 側で実装詳細として閉じる。 |
 | V13 | `src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/report.rs` | device selection / input / report の責務境界を明示し、adapter seam を分離する。 |

@@ -3,7 +3,6 @@
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
 mod piv_io;
-mod yubikey;
 
 use crate::{
     Result,
@@ -11,7 +10,7 @@ use crate::{
         domain::{
             manifest::BootstrapSecretDocument,
             material::SecretMaterial,
-            piv::{SecretName, SecretStorageSpec},
+            piv::SecretName,
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
@@ -26,45 +25,6 @@ use crate::{
         },
     },
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DeviceCandidate {
-    serial: u32,
-    label: String,
-}
-
-trait RealDeviceIo {
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<yubikey::YubikeySecretDevice>;
-}
-
-trait SecretDeviceIo {
-    fn key_exists(&mut self) -> Result<bool>;
-    fn check_key_generation_preconditions(&mut self) -> Result<()>;
-    fn check_management_auth_preconditions(&mut self) -> Result<()>;
-    fn generate_key(&mut self) -> Result<()>;
-    fn read_object(
-        &mut self,
-        object_id: crate::secrets::domain::piv::PivObjectId,
-    ) -> Result<Option<Vec<u8>>>;
-    fn write_object(
-        &mut self,
-        object_id: crate::secrets::domain::piv::PivObjectId,
-        value: &mut [u8],
-    ) -> Result<()>;
-    fn requires_pin_input(&self) -> bool;
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
-    fn seal_for_storage(
-        &mut self,
-        storage: SecretStorageSpec,
-        plaintext: &SecretMaterial,
-    ) -> Result<Vec<u8>>;
-    fn open_from_storage(
-        &mut self,
-        storage: SecretStorageSpec,
-        encoded: &[u8],
-    ) -> Result<SecretMaterial>;
-}
 
 /// CLI entrypoint が利用する secrets runtime adapter。
 ///

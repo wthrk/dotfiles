@@ -24,7 +24,6 @@
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
   - `rust/dotfiles-cli/src/secrets/support/oaep.rs`
