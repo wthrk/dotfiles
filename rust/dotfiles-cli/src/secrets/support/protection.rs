@@ -9,13 +9,14 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use serde_json::Value;
 use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+pub(crate) mod sealed_blob;
 pub(crate) mod secret_random;
-pub(crate) mod yubikey_crypto;
+#[cfg(feature = "secrets-test-stub")]
+pub(crate) mod yubikey_stub_crypto;
 
 use crate::Result;
 static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
@@ -164,7 +165,7 @@ impl ProtectedSecret {
     /// 平文 bytes を closure の実行中だけ借用として公開する。
     ///
     /// クロージャー内でデータを外部被保護バッファにコピーしてはならない
-    pub(super) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
+    pub(in crate::secrets) fn with_secret<R>(&self, borrow: impl FnOnce(&[u8]) -> R) -> R {
         borrow(self.value.as_slice())
     }
 
@@ -188,15 +189,12 @@ impl ProtectedSecret {
         field_limit: usize,
     ) -> Result<BTreeMap<String, Self>> {
         let object = self.with_secret(|bytes| {
-            serde_json::from_slice::<serde_json::Map<String, Value>>(bytes)
+            serde_json::from_slice::<BTreeMap<String, Zeroizing<String>>>(bytes)
                 .context("failed to decode bootstrap secret JSON")
         })?;
 
         let mut fields = BTreeMap::new();
-        for (key, value) in object {
-            let Value::String(text) = value else {
-                bail!("JSON field `{key}` must be a string");
-            };
+        for (key, text) in object {
             if text.len() > field_limit {
                 bail!("JSON field `{key}` exceeds maximum length");
             }

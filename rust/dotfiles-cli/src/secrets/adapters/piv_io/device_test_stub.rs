@@ -6,10 +6,10 @@ use crate::{
         domain::{
             manifest::SecretManifest,
             material::SecretMaterial,
-            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName},
+            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName, SecretStorageSpec},
         },
         ports::{DeviceCandidate, DeviceSelectionPort, SecretDevice},
-        support::protection::yubikey_crypto,
+        support::protection::{sealed_blob, yubikey_stub_crypto},
     },
 };
 use dotfiles_cli_secrets_test_contract::{
@@ -41,19 +41,21 @@ fn default_state_for_serial(serial: u32) -> StubState {
 }
 
 fn make_seed_blob(name: SecretName, plaintext: &[u8]) -> Vec<u8> {
-    let nonce = [0u8; yubikey_crypto::NONCE_LEN];
-    let Ok(content_key) = yubikey_crypto::zero_content_key() else {
+    let storage = name.storage_spec(PRIMARY_SERIAL);
+    let nonce = [0u8; sealed_blob::NONCE_LEN];
+    let Ok(content_key) = yubikey_stub_crypto::zero_content_key() else {
         return Vec::new();
     };
-    yubikey_crypto::seal_plaintext_bytes_for_test_storage(
-        name.secret_id(),
+    sealed_blob::seal_plaintext_bytes_for_test(sealed_blob::TestSealRequest {
+        secret_id: storage.secret_id,
         nonce,
-        yubikey_crypto::stub_wrap_content_key(&content_key),
+        wrapped_key: yubikey_stub_crypto::wrap_content_key(&content_key),
         plaintext,
-        &content_key,
-        &name.additional_data(PRIMARY_SERIAL),
-        |bytes| name.ensure_value_non_empty(bytes),
-    )
+        content_key: &content_key,
+        aad: &storage.additional_data,
+        minimum_plaintext_len: storage.minimum_plaintext_len,
+        label: &storage.label,
+    })
     .unwrap_or_default()
 }
 
@@ -216,10 +218,6 @@ impl TestStubDeviceState {
 }
 
 impl SecretDevice for TestStubSecretDevice {
-    fn serial(&self) -> u32 {
-        self.serial
-    }
-
     fn key_exists(&mut self) -> Result<bool> {
         Ok(self.state.borrow().key_exists)
     }
@@ -261,7 +259,7 @@ impl SecretDevice for TestStubSecretDevice {
     }
 
     fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
-        Ok(yubikey_crypto::stub_wrap_content_key(key))
+        Ok(yubikey_stub_crypto::wrap_content_key(key))
     }
 
     fn requires_pin_input(&self) -> bool {
@@ -284,37 +282,43 @@ impl SecretDevice for TestStubSecretDevice {
         if self.read_pin_from_tty && !self.pin_verified {
             anyhow::bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        yubikey_crypto::stub_unwrap_content_key(wrapped_key)
+        yubikey_stub_crypto::unwrap_content_key(wrapped_key)
     }
 
     fn seal_for_storage(
         &mut self,
-        name: SecretName,
+        storage: SecretStorageSpec,
         plaintext: &SecretMaterial,
     ) -> Result<Vec<u8>> {
-        let content_key = yubikey_crypto::zero_content_key()?;
-        let nonce = [0u8; yubikey_crypto::NONCE_LEN];
+        let content_key = yubikey_stub_crypto::zero_content_key()?;
+        let nonce = [0u8; sealed_blob::NONCE_LEN];
         let wrapped_key = self.wrap_key(&content_key)?;
-        yubikey_crypto::seal_for_storage(
-            name.secret_id(),
+        sealed_blob::seal(sealed_blob::SealRequest {
+            secret_id: storage.secret_id,
             nonce,
             wrapped_key,
             plaintext,
-            &content_key,
-            &name.additional_data(self.serial()),
-            |bytes| name.ensure_value_non_empty(bytes),
-        )
+            content_key: &content_key,
+            aad: &storage.additional_data,
+            minimum_plaintext_len: storage.minimum_plaintext_len,
+            label: &storage.label,
+        })
     }
 
-    fn open_from_storage(&mut self, name: SecretName, encoded: &[u8]) -> Result<SecretMaterial> {
-        let wrapped_key = yubikey_crypto::wrapped_key_from_blob(encoded, name.secret_id())?;
+    fn open_from_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<SecretMaterial> {
+        let wrapped_key = sealed_blob::wrapped_key_from_blob(encoded, storage.secret_id)?;
         let content_key = self.unwrap_key(&wrapped_key)?;
-        let secret = yubikey_crypto::open_from_storage(
+        let secret = sealed_blob::open(
             encoded,
-            name.secret_id(),
+            storage.secret_id,
             &content_key,
-            &name.additional_data(self.serial()),
-            |bytes| name.ensure_value_non_empty(bytes),
+            &storage.additional_data,
+            storage.minimum_plaintext_len,
+            &storage.label,
         )?;
         Ok(secret)
     }

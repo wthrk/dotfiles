@@ -25,8 +25,10 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     command: EnrollSpareCommand,
     boundary: &mut B,
 ) -> Result<()> {
-    let spare_serial =
-        boundary.resolve_spare_device_serial(command.primary_serial, command.spare_serial)?;
+    let spare_serial = boundary.resolve_spare_device_serial(command.spare_serial)?;
+    if command.primary_serial == Some(spare_serial) {
+        anyhow::bail!("primary and spare YubiKey serial must be different");
+    }
     let mut setup_device = boundary.open_device_by_serial(spare_serial)?;
     setup_device.check_key_generation_preconditions()?;
     setup_device.check_management_auth_preconditions()?;
@@ -51,7 +53,7 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
         let mut device = boundary.open_device_by_serial(spare_serial)?;
         SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
         device.check_management_auth_preconditions()?;
-        let mut encoded = device.seal_for_storage(name, value)?;
+        let mut encoded = device.seal_for_storage(name.storage_spec(spare_serial), value)?;
         device.write_object(name.object_id(), &mut encoded)?;
     }
     let pin = if boundary.device_requires_pin(spare_serial)? {
@@ -74,7 +76,7 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
             .read_object(name.object_id())?
             .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
         let _secret = verify_device
-            .open_from_storage(name, &encoded)
+            .open_from_storage(name.storage_spec(spare_serial), &encoded)
             .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))

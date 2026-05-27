@@ -34,7 +34,8 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
     let mut device = boundary.open_device_by_serial(serial)?;
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
     device.check_management_auth_preconditions()?;
-    let mut encoded = device.seal_for_storage(SecretName::BwsAccessToken, &token)?;
+    let mut encoded =
+        device.seal_for_storage(SecretName::BwsAccessToken.storage_spec(serial), &token)?;
     device.write_object(SecretName::BwsAccessToken.object_id(), &mut encoded)?;
     let pin = if boundary.device_requires_pin(serial)? {
         Some(boundary.read_pin()?)
@@ -57,7 +58,7 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
                 .read_object(name.object_id())?
                 .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
             let _secret = verify_device
-                .open_from_storage(name, &encoded)
+                .open_from_storage(name.storage_spec(serial), &encoded)
                 .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
         }
         Ok(())

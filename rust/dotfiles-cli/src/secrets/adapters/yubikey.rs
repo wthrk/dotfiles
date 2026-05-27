@@ -11,10 +11,10 @@ use crate::Result;
 use crate::secrets::{
     domain::{
         material::SecretMaterial,
-        piv::{PivObjectId, SecretName},
+        piv::{PivObjectId, SecretStorageSpec},
     },
     ports::{DeviceCandidate, SecretDevice},
-    support::protection::{secret_random, yubikey_crypto},
+    support::protection::{sealed_blob, secret_random},
 };
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
@@ -97,10 +97,6 @@ impl crate::secrets::ports::DeviceSelectionPort for RealDeviceAdapter {
 }
 
 impl SecretDevice for YubikeySecretDevice {
-    fn serial(&self) -> u32 {
-        self.yubikey.serial().0
-    }
-
     fn key_exists(&mut self) -> Result<bool> {
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
             Ok(_) => Ok(true),
@@ -177,7 +173,11 @@ impl SecretDevice for YubikeySecretDevice {
         if self.pin_verified {
             return Ok(());
         }
-        yubikey_crypto::verify_pin(&mut self.yubikey, pin)?;
+        pin.with_secret(|pin_bytes| {
+            self.yubikey
+                .verify_pin(pin_bytes)
+                .map_err(anyhow::Error::new)
+        })?;
         self.pin_verified = true;
         Ok(())
     }
@@ -196,39 +196,45 @@ impl SecretDevice for YubikeySecretDevice {
             AlgorithmId::Rsa2048,
             SECRET_SLOT,
         )?;
-        yubikey_crypto::unwrap_content_key(&decrypted, 256)
+        sealed_blob::unwrap_content_key(&decrypted, 256)
     }
 
     fn seal_for_storage(
         &mut self,
-        name: SecretName,
+        storage: SecretStorageSpec,
         plaintext: &SecretMaterial,
     ) -> Result<Vec<u8>> {
         use rand::RngCore;
-        let content_key = secret_random::random_secret(yubikey_crypto::CONTENT_KEY_LEN)?;
-        let mut nonce = [0u8; yubikey_crypto::NONCE_LEN];
+        let content_key = secret_random::random_secret(sealed_blob::CONTENT_KEY_LEN)?;
+        let mut nonce = [0u8; sealed_blob::NONCE_LEN];
         rand::rng().fill_bytes(&mut nonce);
         let wrapped_key = self.wrap_key(&content_key)?;
-        yubikey_crypto::seal_for_storage(
-            name.secret_id(),
+        sealed_blob::seal(sealed_blob::SealRequest {
+            secret_id: storage.secret_id,
             nonce,
             wrapped_key,
             plaintext,
-            &content_key,
-            &name.additional_data(self.serial()),
-            |bytes| name.ensure_value_non_empty(bytes),
-        )
+            content_key: &content_key,
+            aad: &storage.additional_data,
+            minimum_plaintext_len: storage.minimum_plaintext_len,
+            label: &storage.label,
+        })
     }
 
-    fn open_from_storage(&mut self, name: SecretName, encoded: &[u8]) -> Result<SecretMaterial> {
-        let wrapped_key = yubikey_crypto::wrapped_key_from_blob(encoded, name.secret_id())?;
+    fn open_from_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<SecretMaterial> {
+        let wrapped_key = sealed_blob::wrapped_key_from_blob(encoded, storage.secret_id)?;
         let content_key = self.unwrap_key(&wrapped_key)?;
-        let secret = yubikey_crypto::open_from_storage(
+        let secret = sealed_blob::open(
             encoded,
-            name.secret_id(),
+            storage.secret_id,
             &content_key,
-            &name.additional_data(self.serial()),
-            |bytes| name.ensure_value_non_empty(bytes),
+            &storage.additional_data,
+            storage.minimum_plaintext_len,
+            &storage.label,
         )?;
         Ok(secret)
     }

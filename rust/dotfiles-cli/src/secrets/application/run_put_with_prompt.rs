@@ -28,6 +28,6 @@ pub(crate) fn run_put_with_prompt<
             command.name
         );
     }
-    let mut encoded = device.seal_for_storage(command.name, &secret)?;
+    let mut encoded = device.seal_for_storage(command.name.storage_spec(serial), &secret)?;
     device.write_object(command.name.object_id(), &mut encoded)
 }

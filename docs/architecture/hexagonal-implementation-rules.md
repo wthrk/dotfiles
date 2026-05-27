@@ -54,7 +54,7 @@
 
 `application` は use case の順序制御、停止条件、分岐だけを担う。許可する成果物は use case ごとの `run_*` 関数と、その関数内での port 呼び出し順序・停止条件・分岐制御である。use case 独自型、要約型、意味や方針の決定、service 組立、具体 I/O、parser 実装、端末文言、外部 SDK 型は置かない。
 
-`domain` は不変条件、状態遷移、wire format、値制約を担う。許可する成果物は enum/newtype、wire model、validation、domain error である。端末 I/O、プロセス制御、具体 adapter 呼び出しは置かない。
+`domain` はビジネスロジックを担う中核層である。ビジネス上の意味、判断、規則、失敗条件を最初に domain の責務として検討し、そのうち外部 I/O や use case 順序に属さないものを domain object / domain policy として表現する。許可する成果物は enum/newtype、wire model、validation、domain error、不変条件、状態遷移、値制約、オブジェクト間の関連・変換・整合判定である。端末 I/O、プロセス制御、具体 adapter 呼び出しは置かない。
 
 `port` は外部依存 contract only の層であり、「何を必要とするか」の最小定義だけを担う。許可する成果物は trait、request/response 境界、capability 契約である。parser、DTO、prompt、利用者向け文言、意味づけ済みの実装詳細は置かない。
 
@@ -70,6 +70,20 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 `support` は業務語彙を持たない共通技術部品を担う。許可する成果物は memory protection、clock、retry primitive、byte utility である。機能固有 vocabulary、command 名、role 名は置かない。
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
+
+## 責任分離の判断原則
+
+層の所属は、処理が低水準か高水準かではなく、その処理がどの責任を持つかで判断する。暗号、binary codec、SDK 呼び出し、JSON、端末 I/O のように技術的に見える処理であっても、業務上の意味、保存可能条件、オブジェクト間の整合、変換規則、状態遷移を決めているなら、その決定部分は domain または application の責務である。逆に、実行手段や外部 API への型変換だけであれば adapter / support の責務になりうる。
+
+`domain` に置くべきものは、まずビジネスロジックである。オブジェクト単体の値制約だけに限定してはならない。オブジェクト同士の関連づけ、保存 layout の対応、変換の正当性、整合判定、状態遷移、業務上の失敗条件、別の実装へ差し替えても変わらない規則は domain の内側に属する。これらを `application` の if 文や `adapter` の helper に散らすと、業務規則が手順や I/O 翻訳へ漏れ、次の差し替え時に同じ規則を再実装することになる。
+
+`application` に置くべきものは、domain 規則と port capability をどの順序で適用するかという use case の進行だけである。application は「manifest を検証してから保存する」「PIN が必要なら入力を要求してから復号する」のような順序・停止条件を持てるが、manifest の正しさ、blob の正当な構造、AAD の構築規則、secret 値の妥当性、上書き可否の意味そのものを独自に定義してはならない。application に同じ object 操作が反復している場合は、重複を helper 化する前に domain object として表現できないかを判断する。
+
+`port` は責務を実行しない。port は application/domain が外界へ要求する capability と境界型だけを宣言する層であり、manifest 検証、blob decode、nonce/AAD 構築、暗号方式の選択、上書き判定、device 選択方針のような処理を隠す fat port にしてはならない。port のメソッド名が「何を必要とするか」ではなく「どう実現するか」や「複数責務をまとめて済ませること」を表し始めた場合は、capability 分割または domain object の再設計が必要である。
+
+`adapter` は翻訳だけを行う。adapter は port で受け取った domain object / 境界型を外部 SDK、process I/O、filesystem、network、serialization API へ渡す形に変換し、外部 API から戻った値を port の返却型へ戻す。adapter 内で domain object の操作、業務判断、オブジェクト間の対応づけ、AAD/nonce/manifest/blob の意味づけ、保存可否判断、上書き判定を直接実行してはならない。adapter に許される private helper も同じ制約を受け、helper であれば business logic を持てるという例外はない。
+
+`support` はプロダクト非依存の技術 primitive だけを持つ。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置けるが、YubiKey、Bitwarden、enroll、verify、secret storage role などの業務語彙や product-specific error を持ってはならない。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。技術 primitive と機能固有 storage mechanism を分け、後者は adapter の裏側または domain/application の責務境界に合わせて配置する。
 
 ## secret-recovery の層別判断（具体化）
 

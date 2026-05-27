@@ -1,6 +1,5 @@
 use std::{fmt, str::FromStr};
 
-use anyhow::Result;
 const STORAGE_BLOB_VERSION: u8 = 1;
 
 /// YubiKey PIV PIN の最小 byte 長。
@@ -64,6 +63,25 @@ pub enum SecretName {
     BwsAccessToken,
 }
 
+/// secret blob と PIV object の対応規則を固定した storage domain object。
+///
+/// adapter はこの値を外部 I/O の指定として受け取り、secret id / AAD / plaintext 制約の組立を行わない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretStorageSpec {
+    /// 保存対象 secret の domain 名。
+    pub name: SecretName,
+    /// PIV data object ID。
+    pub object_id: PivObjectId,
+    /// encrypted blob header に保存する secret id。
+    pub secret_id: u8,
+    /// AEAD additional data。
+    pub additional_data: Vec<u8>,
+    /// 保存する plaintext secret の最小 byte 長。
+    pub minimum_plaintext_len: usize,
+    /// エラー表示で使う安定 secret 名。
+    pub label: String,
+}
+
 impl SecretName {
     /// summary と verify で使う secret 名を安定順で列挙する。
     ///
@@ -114,20 +132,17 @@ impl SecretName {
         .concat()
     }
 
-    /// 保存または検証対象 secret が空でないことを確認する。
-    ///
-    /// 空値は secret storage の不変条件に反するため失敗し、呼び出し側は保存前にこの検証を通す責務を負う。
-    pub fn ensure_value_non_empty(self, secret: &[u8]) -> Result<()> {
-        if secret.is_empty() {
-            return Err(invalid_data(format!("{self} must not be empty")).into());
+    /// 指定 device serial 上でこの secret を保存・復号するための規則を構築する。
+    pub fn storage_spec(self, serial: u32) -> SecretStorageSpec {
+        SecretStorageSpec {
+            name: self,
+            object_id: self.object_id(),
+            secret_id: self.secret_id(),
+            additional_data: self.additional_data(serial),
+            minimum_plaintext_len: 1,
+            label: self.to_string(),
         }
-
-        Ok(())
     }
-}
-
-fn invalid_data(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
 }
 
 impl fmt::Display for SecretName {

@@ -5,7 +5,7 @@
 use super::domain::{
     manifest::BootstrapSecretDocument,
     material::SecretMaterial,
-    piv::{PivObjectId, SecretName},
+    piv::{PivObjectId, SecretName, SecretStorageSpec},
     values::{EnrollSummary, VerifySummary},
 };
 use anyhow::Result;
@@ -36,12 +36,7 @@ pub trait DevicePinPolicyPort {
 
 /// use case が spare 対象の serial を確定する capability 契約。
 pub trait SpareDeviceSerialPort {
-    /// primary serial が指定された場合は primary と異なる spare serial を返さなければならない。
-    fn resolve_spare_device_serial(
-        &mut self,
-        primary_serial: Option<u32>,
-        requested_spare_serial: Option<u32>,
-    ) -> Result<u32>;
+    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32>;
 }
 
 /// use case が PIV PIN を取得するための capability 契約。
@@ -74,10 +69,6 @@ pub trait ReportPort {
 
 /// YubiKey device adapter が満たす低水準 device 操作契約。
 pub trait SecretDevice {
-    /// 接続先 device serial を返す。
-    ///
-    /// caller はこの値を監査表示・対象識別にのみ使い、device 選択ロジックへ逆流させない。
-    fn serial(&self) -> u32;
     /// 管理鍵スロットが初期化済みかを返す。
     ///
     /// implementor は外部 API 差異を吸収し、caller へは bool 契約だけを返す責務を負う。
@@ -112,8 +103,15 @@ pub trait SecretDevice {
     /// `wrap_key` で得た wrapped bytes を復号する。
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial>;
     /// plain secret を YubiKey 保存用 encrypted blob に変換する。
-    fn seal_for_storage(&mut self, name: SecretName, plaintext: &SecretMaterial)
-    -> Result<Vec<u8>>;
+    fn seal_for_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        plaintext: &SecretMaterial,
+    ) -> Result<Vec<u8>>;
     /// YubiKey 保存済み encrypted blob を復号して plain secret を返す。
-    fn open_from_storage(&mut self, name: SecretName, encoded: &[u8]) -> Result<SecretMaterial>;
+    fn open_from_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<SecretMaterial>;
 }

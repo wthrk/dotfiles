@@ -67,13 +67,6 @@ pub(crate) enum SelectedSecretDevice {
 
 #[cfg(feature = "secrets-test-stub")]
 impl SecretDevice for SelectedSecretDevice {
-    fn serial(&self) -> u32 {
-        match self {
-            Self::Real(device) => device.serial(),
-            Self::Stub(device) => device.serial(),
-        }
-    }
-
     fn key_exists(&mut self) -> Result<bool> {
         match self {
             Self::Real(device) => device.key_exists(),
@@ -159,23 +152,23 @@ impl SecretDevice for SelectedSecretDevice {
 
     fn seal_for_storage(
         &mut self,
-        name: crate::secrets::domain::piv::SecretName,
+        storage: crate::secrets::domain::piv::SecretStorageSpec,
         plaintext: &crate::secrets::domain::material::SecretMaterial,
     ) -> Result<Vec<u8>> {
         match self {
-            Self::Real(device) => device.seal_for_storage(name, plaintext),
-            Self::Stub(device) => device.seal_for_storage(name, plaintext),
+            Self::Real(device) => device.seal_for_storage(storage, plaintext),
+            Self::Stub(device) => device.seal_for_storage(storage, plaintext),
         }
     }
 
     fn open_from_storage(
         &mut self,
-        name: crate::secrets::domain::piv::SecretName,
+        storage: crate::secrets::domain::piv::SecretStorageSpec,
         encoded: &[u8],
     ) -> Result<crate::secrets::domain::material::SecretMaterial> {
         match self {
-            Self::Real(device) => device.open_from_storage(name, encoded),
-            Self::Stub(device) => device.open_from_storage(name, encoded),
+            Self::Real(device) => device.open_from_storage(storage, encoded),
+            Self::Stub(device) => device.open_from_storage(storage, encoded),
         }
     }
 }

@@ -37,7 +37,7 @@ pub(crate) fn run_get_with<
         .read_object(command.name.object_id())?
         .ok_or_else(|| anyhow::anyhow!("{} is not stored on this YubiKey", command.name))?;
     let secret = device
-        .open_from_storage(command.name, &encoded)
+        .open_from_storage(command.name.storage_spec(serial), &encoded)
         .map_err(|error| anyhow::anyhow!("failed to decode {}: {error}", command.name))?;
     boundary.write_secret(&secret)
 }

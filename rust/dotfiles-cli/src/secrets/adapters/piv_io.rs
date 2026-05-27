@@ -89,16 +89,8 @@ impl<D> SpareDeviceSerialPort for RealSecretsBoundary<D>
 where
     D: DeviceSelectionPort,
 {
-    fn resolve_spare_device_serial(
-        &mut self,
-        primary_serial: Option<u32>,
-        requested_spare_serial: Option<u32>,
-    ) -> Result<u32> {
-        let spare_serial = self.resolve_device_serial(requested_spare_serial)?;
-        if primary_serial == Some(spare_serial) {
-            bail!("primary and spare YubiKey serial must be different");
-        }
-        Ok(spare_serial)
+    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32> {
+        self.resolve_device_serial(requested_spare_serial)
     }
 }
 
