@@ -4,7 +4,7 @@
 
 ## 現行サイクル（2026-05-27）
 
-- 確認状態: `実施済み（再レビュー待ち）`
+- 確認状態: `実施済み（レビュー集約合格）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-38d3a09-plus-evidence-sync-head`
 - 確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`
@@ -12,13 +12,13 @@
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
   - `structural`: artifact path `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` / 状態 `実施済み` / 判定 `合格`
-  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca`, `019e6a60-dd96-7c51-9514-6280be99e060` / 状態 `self-hash 正本更新後に再レビュー待ち` / 判定 `要修正`
+  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca`, `019e6a60-dd96-7c51-9514-6280be99e060`, `019e6a67-d786-7c02-b40d-f6a254b7cbb9` / 状態 `実施済み` / 判定 `合格`
   - `security`: artifact path `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` / 状態 `実施済み` / 判定 `合格`
   - `specification-conformance`: artifact path `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` / 状態 `実施済み` / 判定 `合格`
   - `test`: artifact path `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` / 状態 `実施済み` / 判定 `合格`
   - `documentation`: artifact path `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` / 状態 `実施済み` / 判定 `合格`
   - `architectural-consistency`: artifact path `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` / 状態 `実施済み` / 判定 `合格`
-  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c`, `019e6a60-e035-7d71-a5d9-e76985757b0c` / 状態 `38d3a09 では合格、self-hash 正本更新後に再レビュー待ち` / 判定 `要修正`
+  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c`, `019e6a60-e035-7d71-a5d9-e76985757b0c`, `019e6a67-d9ed-7252-946b-f32e910dcb76` / 状態 `実施済み` / 判定 `合格`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`

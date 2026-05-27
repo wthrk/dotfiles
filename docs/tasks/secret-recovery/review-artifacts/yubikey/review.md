@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-27）
 
-- 集約後レビュー判定: `要修正`
-- 集約判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対して、structural / security / specification-conformance / test / documentation / architectural-consistency は合格済み。reference-integrity は `38d3a09` では合格済みだが、最新証跡同期の self-hash 要求で差し戻された。operational-consistency と reference-integrity は、証跡同期コミット自己 hash 非要求の正本更新後に再レビュー待ちとする。
+- 集約後レビュー判定: `合格`
+- 集約判定要約: 所見なし。実装/テスト差分の保存コミット終端 `38d3a09` に対して structural / security / specification-conformance / test / documentation / architectural-consistency は合格済み。証跡同期コミット自己 hash 非要求の正本更新後、最新 HEAD `97dae11` に対する operational-consistency / reference-integrity も合格済み。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-38d3a09-plus-evidence-sync-head`
 - 実装/テスト差分の保存コミット終端: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
   - `structural`: artifact path `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` / 状態 `実施済み` / 判定 `合格`
-  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca`, `019e6a60-dd96-7c51-9514-6280be99e060` / 状態 `self-hash 正本更新後に再レビュー待ち` / 判定 `要修正`
+  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca`, `019e6a60-dd96-7c51-9514-6280be99e060`, `019e6a67-d786-7c02-b40d-f6a254b7cbb9` / 状態 `実施済み` / 判定 `合格`
   - `security`: artifact path `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` / 状態 `実施済み` / 判定 `合格`
   - `specification-conformance`: artifact path `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` / 状態 `実施済み` / 判定 `合格`
   - `test`: artifact path `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` / 状態 `実施済み` / 判定 `合格`
   - `documentation`: artifact path `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` / 状態 `実施済み` / 判定 `合格`
   - `architectural-consistency`: artifact path `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` / 状態 `実施済み` / 判定 `合格`
-  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c`, `019e6a60-e035-7d71-a5d9-e76985757b0c` / 状態 `38d3a09 では合格、self-hash 正本更新後に再レビュー待ち` / 判定 `要修正`
+  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c`, `019e6a60-e035-7d71-a5d9-e76985757b0c`, `019e6a67-d9ed-7252-946b-f32e910dcb76` / 状態 `実施済み` / 判定 `合格`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -68,6 +68,12 @@
   - `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
   - `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
+
+### 進捗台帳更新の扱い
+
+- `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の `状態` / `現行サイクル状態` / `実装状態` の完了方向更新は、進捗判定担当または完了判定担当の職責である。
+- 本更新の実行者は implementation executor であり、`docs/secret-recovery/implementation-guidelines.md` の役割分離規則により、進捗判定担当の代替実行者として台帳状態を前進更新しない。
+- 本更新では、最新 completion judgement Fail のうち implementation executor が更新可能な reviewer 集約証跡だけを、operational-consistency / reference-integrity の合格結果と整合させる。
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
@@ -280,10 +286,11 @@
 
 ### 運用整合レビュー担当
 
-- 判定: `要修正`
-- 判定要約: `eab7e66` 時点の operational-consistency review は、証跡同期コミット自身の hash 固定を要求する自己参照ループを理由に不合格。本修正で、実装/テスト差分終端と文書-only 証跡同期コミットを分離し、再レビュー待ちとする。
+- 判定: `合格`
+- 判定要約: 所見なし。
 - 根拠:
   - `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca` の Fail 内容を本 current-cycle 記録へ反映した。
+  - `subagent notification 019e6a67-d786-7c02-b40d-f6a254b7cbb9` が、証跡同期コミット自身の hash を本文へ要求しない正本規則、実装/テスト差分終端 `38d3a09` と文書-only HEAD の分離、internal test 経路を確認した。
 
 ### セキュリティレビュー担当
 
@@ -322,18 +329,20 @@
 
 ### 参照整合レビュー担当
 
-- 判定: `要修正`
-- 判定要約: `38d3a09` に対する reference-integrity review は所見なし。`eab7e66` 時点の reference-integrity review は、証跡同期コミット自身の hash 固定を要求する自己参照ループを理由に不合格。本修正で、証跡同期コミット自身の hash を本文へ要求しない正本へ更新し、再レビュー待ちとする。
+- 判定: `合格`
+- 判定要約: 所見なし。
 - 根拠:
   - `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c` が、current-cycle 文書、Markdown link、対象 path、test-only bridge 正本、xtask internal test 参照の解決可能性を確認した。
   - `subagent notification 019e6a60-e035-7d71-a5d9-e76985757b0c` の Fail 内容を本 current-cycle 記録へ反映した。
+  - `subagent notification 019e6a67-d9ed-7252-946b-f32e910dcb76` が、証跡同期コミット自身の hash 非要求規則、`2bd7e0a..38d3a09` の実装/テスト差分終端、Markdown link、対象 path、test-only bridge 正本、xtask internal test 参照を確認した。
 
 ## 集約
 
-- 集約後レビュー判定: `要修正`
-- 集約判定要約: required reviewers のうち structural / security / specification-conformance / test / documentation / architectural-consistency は実装/テスト差分終端 `38d3a09` に対して合格済み。reference-integrity は `38d3a09` では合格済みだが、最新証跡同期の self-hash 要求で差し戻された。operational-consistency と reference-integrity は、証跡同期コミット自己 hash 非要求の正本更新後に再レビュー待ちとする。
+- 集約後レビュー判定: `合格`
+- 集約判定要約: 所見なし。
 - 集約根拠:
   - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-38d3a09-plus-evidence-sync-head` に一致させた。
   - 実装/テスト差分の保存コミット終端を `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期` として記録した。
   - 証跡同期コミットは `この文書-only HEAD` として扱い、自己 hash を本文へ埋め込まないことを正本・skill・current-cycle 証跡へ反映した。
   - 直近 reviewer 判定を current-cycle reviewer 判定追跡と役割別レビューへ反映した。
+  - structural / operational-consistency / security / specification-conformance / test / documentation / architectural-consistency / reference-integrity の全必須 reviewer が合格済みである。
