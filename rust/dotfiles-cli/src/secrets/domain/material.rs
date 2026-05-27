@@ -25,7 +25,7 @@ impl SecretMaterial {
     /// 保護実装を domain opaque value として受け取る。
     ///
     /// caller は raw bytes ではなく、secret storage に適した保護済み所有値だけを渡す。
-    pub(crate) fn from_backend<T: 'static>(
+    pub(in crate::secrets) fn from_backend<T: 'static>(
         value: T,
         len: fn(&T) -> usize,
         try_clone: fn(&T) -> crate::Result<T>,
@@ -55,7 +55,7 @@ impl SecretMaterial {
     ///
     /// raw bytes は返さず、具体型への参照だけを返す。具体型側の可視性により
     /// secret buffer access は protection 内部に閉じたまま維持される。
-    pub(crate) fn as_backend<T: 'static>(&self) -> Option<&T> {
+    pub(in crate::secrets) fn as_backend<T: 'static>(&self) -> Option<&T> {
         self.backend
             .as_any()
             .downcast_ref::<TypedSecretMaterialBackend<T>>()
