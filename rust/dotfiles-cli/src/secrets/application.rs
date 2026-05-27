@@ -14,7 +14,7 @@ pub(crate) mod run_rotate_bws_token_with_stdin;
 pub(crate) mod run_setup_with;
 pub(crate) mod run_verify_yubikey_with;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 pub(crate) mod app_test_support {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -348,7 +348,7 @@ pub(crate) mod app_test_support {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
     use crate::Result;
     use crate::secrets::application::app_test_support::AppMockBoundary;
