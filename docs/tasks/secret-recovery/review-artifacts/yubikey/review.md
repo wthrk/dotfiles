@@ -6,7 +6,7 @@
 
 - 集約後レビュー判定: `要修正`
 - 集約判定要約: current-cycle artifact が未生成の担当について、状態を `未実施（再レビュー待ち）` に統一し、判定ラベルは規約どおり `要修正` に統一した。現行サイクルは reviewer 再実施待ちのため、前進不可のまま維持する。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-095ab3b`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-9a87f46`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
   - `structural`: artifact path `未生成` / 状態 `未実施（再レビュー待ち）` / 判定 `要修正`
@@ -55,14 +55,20 @@
   - `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
   - `91e9fed fix(secrets): operational fail証跡を補正`
   - `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
+  - `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一`
+  - `1b47dd2 docs(secrets): current-cycle判定ラベルと差分基準を是正`
+  - `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
 - 是正コミット: `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
 - 是正コミット: `91e9fed fix(secrets): operational fail証跡を補正`
 - 是正コミット: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
-- 紐付け: current-cycle 保存コミット終端は `095ab3b`。actual latest HEAD は `c1cc107`（証跡是正コミット）として分離して記録する。
-- 実装差分集合: `6fd4014..095ab3b` の変更ファイル集合:
+- 是正コミット: `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一`
+- 是正コミット: `1b47dd2 docs(secrets): current-cycle判定ラベルと差分基準を是正`
+- 実装コミット: `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
+- 紐付け: current-cycle 保存コミット終端は `9a87f46`。actual latest HEAD は `9a87f46`。`c1cc107` / `1b47dd2` は証跡是正、`9a87f46` は実装差分として分離して記録する。
+- 実装差分集合: `6fd4014..9a87f46` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -101,7 +107,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/Cargo.toml`
-  - `c1cc107 docs(secrets): operational fail記録をcurrent-cycle未確定へ統一` は実装差分集合には含めず、証跡是正コミットとして別管理する。
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`

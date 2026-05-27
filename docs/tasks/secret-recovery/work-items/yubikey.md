@@ -13,8 +13,8 @@
 
 - 作業種別: `モジュール構造のゼロベース書き換えを含む規約適合リファクタリング`
 - 現行サイクル状態: `再レビュー待ち`
-- 現行サイクル確認基準: `095ab3b docs(secrets): current-cycle reviewer整合とinternal test証跡を是正`
-- 現行サイクル保存コミット終端: `095ab3b`
+- 現行サイクル確認基準: `9a87f46 fix(secrets): internal stub seamを単一路adapterへ統一`
+- 現行サイクル保存コミット終端: `9a87f46`
 - 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の動作有無ではなくアーキテクチャ規約への厳密適合を基準に作り直す。責務境界が崩れている箇所を読み直し、モジュール分割、依存方向、入出力境界を再構成すること自体が仕事である。
 - 現行サイクル既知例外: `MgmKey::get_default` による factory-default management key を暫定前提とする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。
 - 構造完了条件:
@@ -113,8 +113,8 @@
   - `application/use_case/` ディレクトリ、`mod.rs`、`#[path = "..."]` を導入しない。
   - 各 use case から blob / wire / 暗号 / manifest / 永続 I/O / protected-secret ownership を除去し、use case-to-use case call と logic commonization を持ち込まない。
 - **ステップ5 を再開する（V12, V13 再差戻し + adapter seam 不整合解消）**
-  - `adapters.rs` の公開面と `adapters/piv_io/` 配下の実装責務を一致させ、adapter 境界契約を単一の seam に統一する。
-  - `adapters/piv_io/` の分岐は same-route 原則に合わせ、command-scenario branching や port-boundary swap を持ち込まない形で整理する。
+  - `adapters.rs` の公開面と `adapters/piv_io.rs` の実装責務を一致させ、adapter 境界契約を単一の seam に統一する。
+  - `adapters/piv_io.rs` の分岐は same-route 原則に合わせ、command-scenario branching や port-boundary swap を持ち込まない形で整理する。
   - `adapters.rs` の公開面が port 実装以外に依存しないよう再設計し、adapter surface の責務を見直す。
 - **ステップ6 を再開する（V5 再差戻し）**
   - `application/run_*.rs` の helper 群から manifest JSON parse/serialize、blob decode、永続 I/O、summary 構築、AEAD 呼び出し順序、`SecretSession` / `ProtectedSecret` 所有の混在を除去する。
@@ -129,7 +129,7 @@
   - 旧 dedicated test-stub crate を復活させない。
   - `Cargo.toml` と test 実行経路の定義を一致させ、`direnv exec . cargo check -p dotfiles-cli` と `direnv exec . cargo test -p dotfiles-cli --test secrets_cli --no-run` がレビュー前提として成立する状態へ戻す。
 - **文書整合の是正**
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` と `rust/dotfiles-cli/src/secrets/adapters/piv_io/` のモジュール説明コメントを現行実装の責務境界と一致させる。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` のモジュール説明コメントを現行実装の責務境界と一致させる。
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs` の公開 use-case entrypoint と非自明 helper、ならびに sibling `run_*.rs` を配線する `application.rs` に必要な doc comment coverage を付与し、`what` だけでなく `why` を明記する。
   - `application/run_*.rs` に限らず、`ports`/`adapters`/`support` の層境界説明が必要な非自明 type/function で doc comment 欠落を残さない。欠落はレビュー blocker として扱う。
 
