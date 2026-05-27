@@ -354,7 +354,7 @@ pub(crate) struct JsonReportAdapter {
 impl Default for JsonReportAdapter {
     fn default() -> Self {
         Self {
-            route: SELECTED_DEVICE_ROUTE_LABEL,
+            route: selected_device_route_label(),
         }
     }
 }
@@ -458,12 +458,21 @@ type SelectedDeviceAdapter = RealSelectedDeviceAdapter;
 #[cfg(feature = "secrets-internal-test-stub")]
 type SelectedDeviceAdapter = TestStubDeviceAdapter;
 
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-const SELECTED_DEVICE_ROUTE_LABEL: &str = "real";
-#[cfg(feature = "secrets-internal-test-stub")]
-const SELECTED_DEVICE_ROUTE_LABEL: &str = "stub";
-
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn selected_device_route_label() -> &'static str {
+    "real"
+}
+
+#[cfg(feature = "secrets-internal-test-stub")]
+fn selected_device_route_label() -> &'static str {
+    if std::env::var_os(INTERNAL_STUB_ENDPOINT_ENV).is_some() {
+        "stub"
+    } else {
+        "real"
+    }
+}
 
 /// 同一 production command path 上で device 選択 route を確定する実機 adapter。
 ///
@@ -472,7 +481,10 @@ struct RealSelectedDeviceAdapter;
 
 impl Default for RealSelectedDeviceAdapter {
     fn default() -> Self {
-        eprintln!("{ADAPTER_ROUTE_AUDIT_PREFIX}={SELECTED_DEVICE_ROUTE_LABEL}");
+        eprintln!(
+            "{ADAPTER_ROUTE_AUDIT_PREFIX}={}",
+            selected_device_route_label()
+        );
         Self
     }
 }
@@ -563,7 +575,10 @@ struct TestStubDeviceAdapter;
 #[cfg(feature = "secrets-internal-test-stub")]
 impl Default for TestStubDeviceAdapter {
     fn default() -> Self {
-        eprintln!("{ADAPTER_ROUTE_AUDIT_PREFIX}={SELECTED_DEVICE_ROUTE_LABEL}");
+        eprintln!(
+            "{ADAPTER_ROUTE_AUDIT_PREFIX}={}",
+            selected_device_route_label()
+        );
         Self
     }
 }

@@ -80,6 +80,7 @@ struct StubDeviceState {
     plaintexts: BTreeMap<(u32, u8), Vec<u8>>,
     corrupt: BTreeSet<(u32, u8)>,
     requires_pin: bool,
+    write_events: Vec<String>,
 }
 
 /// `setup` が serial 指定の非TTY実行で成功することを確認する。
@@ -362,6 +363,12 @@ fn verify_yubikey_audits_real_route_when_stub_env_is_absent() -> TestResult<()> 
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
         run.stderr
+            .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=real")),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr
             .contains(&format!("{ADAPTER_ROUTE_AUDIT_PREFIX}=stub")),
         "stderr: {}",
         run.stderr
@@ -404,14 +411,7 @@ fn put_emits_stored_secret_write_event_with_yubikey_path() -> TestResult<()> {
         &stub,
     )?;
     assert!(put_run.success, "stderr: {}", put_run.stderr);
-
-    let get_run = run_pipe_with_stub(
-        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
-        None,
-        &stub,
-    )?;
-    assert!(get_run.success, "stderr: {}", get_run.stderr);
-    assert_eq!(get_run.stdout.trim_end_matches('\r'), "new-token");
+    stub.assert_write_event(PRIMARY_SERIAL, StubSecret::BwsAccessToken, "<redacted>")?;
     Ok(())
 }
 
@@ -693,6 +693,7 @@ impl StubDeviceState {
             plaintexts: BTreeMap::new(),
             corrupt: BTreeSet::new(),
             requires_pin: false,
+            write_events: Vec::new(),
         };
         state.apply_state(PRIMARY_SERIAL, StubState::Fresh);
         state.apply_state(SPARE_SERIAL, StubState::Fresh);
@@ -809,6 +810,10 @@ impl StubDeviceState {
         if let Some((serial, secret_id)) = parse_storage_suffix(path, "seal") {
             self.key_exists.insert(serial, true);
             self.plaintexts.insert((serial, secret_id), body.to_vec());
+            if let Some(secret) = StubSecret::from_secret_id(secret_id) {
+                self.write_events
+                    .push(format_write_event(serial, secret.name(), "<redacted>"));
+            }
             return encoded_object(secret_id);
         }
         if let Some((serial, secret_id)) = parse_storage_suffix(path, "open") {
@@ -915,10 +920,28 @@ impl StubServer {
         state.apply_state(serial, stub_state);
         Ok(())
     }
+
+    fn assert_write_event(&self, serial: u32, secret: StubSecret, value: &str) -> TestResult<()> {
+        let expected = format_write_event(serial, secret.name(), value);
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("failed to lock stub state"))?;
+        assert!(
+            state.write_events.iter().any(|event| event == &expected),
+            "missing write event: {expected}\nobserved: {:?}",
+            state.write_events
+        );
+        Ok(())
+    }
 }
 
 fn encoded_object(secret_id: u8) -> Vec<u8> {
     format!("encoded-secret-{secret_id}").into_bytes()
+}
+
+fn format_write_event(serial: u32, secret_name: &str, value: &str) -> String {
+    format!("DOTFILES_TEST_STUB_WRITE serial={serial} name={secret_name} value={value}")
 }
 
 fn parse_device_suffix(path: &str, suffix: &str) -> Option<u32> {
