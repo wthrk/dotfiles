@@ -1,3 +1,9 @@
+//! AEAD payload と wrapped content key を結合する汎用 sealed-blob wire 形式。
+//!
+//! この module は payload id、nonce、AAD、wrapped key、ciphertext、tag の技術的な
+//! 結合だけを扱う。payload id と AAD の値そのものの意味は呼び出し側が決め、この
+//! support 境界は与えられた識別子と AAD を AEAD 検証へ渡す責務に限定する。
+
 use anyhow::Result;
 use bincode::config;
 use rand::RngCore;
@@ -16,6 +22,11 @@ const BLOB_MAGIC: &[u8] = b"PROTECTED-SEALED-BLOB\0";
 const BLOB_VERSION: u8 = 1;
 const ALGORITHM_AES_256_GCM: u8 = 1;
 
+/// sealing に必要な content key、wrapped key、AAD、nonce を束ねる境界入力。
+///
+/// caller は payload id と AAD が保護対象 payload の識別規則に一致していること、
+/// nonce が同一 content key で再利用されないこと、wrapped key が `content_key` を
+/// 復元できる key-wrap 結果であることを保証する。
 pub(crate) struct SealRequest<'a> {
     pub payload_id: u8,
     pub nonce: [u8; NONCE_LEN],
@@ -25,12 +36,21 @@ pub(crate) struct SealRequest<'a> {
     pub aad: &'a [u8],
 }
 
+/// content key 生成と key-wrap をこの module 側で行う sealing 境界入力。
+///
+/// caller は payload id と AAD の意味だけを渡し、content key の生成、nonce 生成、
+/// key-wrap callback の適用順序は `seal_with_key_wrap` が一箇所で固定する。
 pub(crate) struct SealWithKeyWrapRequest<'a> {
     pub payload_id: u8,
     pub plaintext: &'a ProtectedSecret,
     pub aad: &'a [u8],
 }
 
+/// encoded blob 内に保存される AEAD wire record。
+///
+/// `ciphertext` は `nonce` と caller supplied AAD で AES-256-GCM sealing 済みの bytes、
+/// `wrapped_key` は復号時に content key を得るための opaque bytes として扱う。
+/// `payload_id` は decode 後に期待値と照合し、別 payload への blob replay を拒否する。
 #[derive(Serialize, Deserialize)]
 struct SealedBlob {
     version: u8,
@@ -83,6 +103,11 @@ pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<Pro
     oaep::unwrap_oaep_sha256(decrypted, key_len)
 }
 
+/// 既存 content key と wrapped key を使って plaintext を sealed blob へ変換する。
+///
+/// plaintext は clone 先の protected buffer 上で in-place 暗号化し、caller supplied AAD
+/// は AEAD 認証対象としてだけ使う。payload id は encoded blob に保存され、復号時の
+/// replay/swap 検出境界になる。
 pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
     let cipher = request.content_key.with_secret(aes_256_gcm_from_key)?;
     let mut ciphertext_secret = ProtectedSecret::try_clone(request.plaintext)?;
@@ -103,6 +128,10 @@ pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
     })
 }
 
+/// 新規 content key と nonce を生成し、caller supplied key-wrap callback 経由で sealing する。
+///
+/// key-wrap の具体方式は caller 側境界に残し、この関数は生成した protected content key を
+/// callback へ渡して得た opaque wrapped key と AEAD ciphertext を同一 blob に束ねる。
 pub(crate) fn seal_with_key_wrap(
     request: SealWithKeyWrapRequest<'_>,
     mut wrap_key: impl FnMut(&ProtectedSecret) -> Result<Vec<u8>>,
@@ -121,6 +150,10 @@ pub(crate) fn seal_with_key_wrap(
     })
 }
 
+/// encoded blob を payload id と AAD で検証し、key-unwrap callback 経由で plaintext を復元する。
+///
+/// caller は `expected_payload_id` と AAD を sealing 時と同じ規則で渡す責務を負う。
+/// payload id 不一致、AAD/tag 不一致、key unwrap 失敗はいずれも plaintext を返さない。
 pub(crate) fn open_with_key_unwrap(
     input: &[u8],
     expected_payload_id: u8,

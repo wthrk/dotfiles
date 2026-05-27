@@ -43,6 +43,11 @@ pub(crate) fn unwrap_oaep_sha256(encoded: &[u8], key_len: usize) -> Result<Prote
     })
 }
 
+/// MGF1-SHA256 mask を protected buffer として生成する。
+///
+/// seed は raw RSA-OAEP 復元処理中の中間値として参照だけを受け取り、生成済み mask は
+/// `ProtectedSecret` に閉じる。caller は OAEP 仕様上必要な長さを渡し、失敗時は
+/// padding 判定を継続せず上位の OAEP unpad error として扱う。
 fn mgf1_sha256(seed: &[u8], len: usize) -> Result<ProtectedSecret> {
     let mut out = ProtectedSecret::new(len)?;
     out.with_secret_mut(|out_bytes| {
@@ -62,6 +67,11 @@ fn mgf1_sha256(seed: &[u8], len: usize) -> Result<ProtectedSecret> {
     Ok(out)
 }
 
+/// masked bytes と protected mask を XOR し、復元結果を protected buffer に置く。
+///
+/// 平文化される seed / DB の中間表現を `Vec<u8>` として外へ出さないための境界である。
+/// 長さ一致は OAEP 構造を検証した caller の責務で、生成先 buffer はコピー前に
+/// `ProtectedSecret::new` で確保する。
 fn xor_with_mask(masked: &[u8], mask: &ProtectedSecret) -> Result<ProtectedSecret> {
     debug_assert_eq!(masked.len(), mask.len());
     let mut out = ProtectedSecret::new(masked.len())?;
@@ -79,6 +89,11 @@ fn xor_with_mask(masked: &[u8], mask: &ProtectedSecret) -> Result<ProtectedSecre
     Ok(out)
 }
 
+/// OAEP DB の PS || 0x01 || message 境界を探し、padding bytes の妥当性を返す。
+///
+/// separator より前はすべて 0 でなければならず、0x01 が存在しない場合も不正 padding とする。
+/// 返値は caller が label hash / leading byte 判定と合成し、失敗時に secret message slice を
+/// 取り出さないための padding 判定境界である。
 fn find_oaep_separator(rest: &[u8]) -> (Option<usize>, bool) {
     let mut separator = None;
     let mut padding_mismatch = 0u8;

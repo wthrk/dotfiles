@@ -6,9 +6,9 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-evidence-sync-head`
-- 確認基準: `2bd7e0a..4c82da8 current-cycle app regression test remediation`
-- 実装/テスト差分の保存コミット終端: `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
+- 確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`
+- 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
   - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
@@ -16,7 +16,7 @@
   - `security`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
   - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
   - `test`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
+  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（documentation Fail の doc comment 補正 HEAD 対象。過去 Pass の持ち越しでは閉じない）`
   - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（4c82da8 追加差分対象。過去 Pass の持ち越しでは閉じない）`
   - `reference-integrity`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
 - 保存コミット列:
@@ -68,6 +68,7 @@
   - `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
   - `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
   - `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
+  - `この実装コメント補正 HEAD`（documentation reviewer Fail の doc comment 補正 commit。自己 hash は本文へ埋め込まず git log で確認する）
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
 
 ## 2026-05-28 app 回帰テスト復旧追記
@@ -128,6 +129,19 @@
 - `git diff --check`: 成功
 - 状態: `security / operational / reference-integrity 再レビュー待ち`
 
+## 2026-05-28 documentation Fail コメント補正追記
+
+- 実装コメント補正コミット: `この実装コメント補正 HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
+- 修正対象:
+  - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`: file-level comment と、`SealRequest` / `SealWithKeyWrapRequest` / `SealedBlob` / `seal` / `seal_with_key_wrap` / `open_with_key_unwrap` の doc comment を追加し、AEAD・key wrap・AAD・payload id の責務境界を明記した。
+  - `rust/dotfiles-cli/src/secrets/support/aead.rs`: `aes_256_gcm_from_key` / `encrypt_detached` / `decrypt_detached` の doc comment を追加し、nonce/tag/AAD の扱いと caller responsibility を明記した。
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`: `mgf1_sha256` / `xor_with_mask` / `find_oaep_separator` の doc comment を追加し、OAEP 復元の失敗条件、padding 判定、secret buffer 境界を明記した。
+- 挙動変更: なし。doc comment / file-level comment の追加のみ。
+- `direnv exec . cargo fmt --check`: 成功
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::support::`: 成功（19 passed, 0 failed, 64 filtered out）
+- `git diff --check`: 成功
+- 状態: `documentation 再レビュー待ち`
+
 ## 2026-05-28 current-cycle 証跡是正コミット
 
 - 是正コミット: `7744b0b fix(secrets): current-cycle証跡とinternal test経路を同期`
@@ -144,10 +158,11 @@
 - 追加修正コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 追加修正コミット: `b0c5fd5 fix(secrets): secret assertion outputを秘匿化`
 - 追加修正コミット: `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
+- 追加修正コミット: `この実装コメント補正 HEAD`（documentation reviewer Fail の doc comment 補正。自己 hash は本文へ埋め込まず git log で確認する）
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 追加修正: `2bd7e0a..4c82da8` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` と `4c82da8` は security Fail の assertion output 秘匿化を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `4c82da8`。この文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..4c82da8` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
-- 実装差分集合: `6fd4014..4c82da8` の変更ファイル集合:
+- 追加修正: `2bd7e0a..この実装コメント補正 HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` と `4c82da8` は security Fail の assertion output 秘匿化を含み、この実装コメント補正 HEAD は documentation Fail の support 暗号境界 doc comment 補正を含む。
+- 紐付け: 実装/テスト差分の保存コミット終端は `この実装コメント補正 HEAD`。この文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..この実装コメント補正 HEAD` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail、documentation Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
+- 実装差分集合: `6fd4014..この実装コメント補正 HEAD` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -188,7 +203,9 @@
   - `rust/dotfiles-cli/src/secrets/domain/storage.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
+  - `rust/dotfiles-cli/src/secrets/support/aead.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/Cargo.toml`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
@@ -229,6 +246,8 @@
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`
 - `direnv exec . cargo test -p dotfiles-cli secrets::application:: --lib`
+- `direnv exec . cargo fmt --check`
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::support::`
 - `direnv exec . cargo clippy -p dotfiles-cli --all-targets`
 - `git diff --check`
 
@@ -242,6 +261,8 @@
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（43 passed, 0 failed）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
 - `cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 40 filtered out）
+- `cargo fmt --check`: 成功
+- `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::support::`: 成功（19 passed, 0 failed, 64 filtered out）
 - `cargo check -p dotfiles-cli`: 成功
 - `cargo clippy -p dotfiles-cli --all-targets`: 成功
 - `git diff --check`: 成功
