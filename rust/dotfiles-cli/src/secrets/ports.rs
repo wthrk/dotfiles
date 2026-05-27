@@ -2,8 +2,9 @@
 //!
 //! この module は capability 契約と境界データのみを定義し、処理手順や変換規則は持たない。
 
+use std::collections::BTreeMap;
+
 use super::domain::{
-    manifest::BootstrapSecretDocument,
     material::SecretMaterial,
     piv::SecretStorageSpec,
     storage::{
@@ -45,7 +46,7 @@ pub trait SecretInputPort {
 
 /// bootstrap secret 文書を取得する capability 契約。
 pub trait BootstrapSecretDocumentInputPort {
-    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument>;
+    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>>;
 }
 
 /// use case が復号済み secret を出力境界へ渡す契約。

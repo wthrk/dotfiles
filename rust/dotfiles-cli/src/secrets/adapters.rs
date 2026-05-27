@@ -4,11 +4,12 @@
 
 mod piv_io;
 
+use std::collections::BTreeMap;
+
 use crate::{
     Result,
     secrets::{
         domain::{
-            manifest::BootstrapSecretDocument,
             material::SecretMaterial,
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
@@ -81,8 +82,8 @@ impl SecretInputPort for SecretsAdapters {
 }
 
 impl BootstrapSecretDocumentInputPort for SecretsAdapters {
-    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
-        self.process_io.read_bootstrap_secret_document()
+    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>> {
+        self.process_io.read_bootstrap_secret_fields()
     }
 }
 

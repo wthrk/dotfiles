@@ -8,11 +8,13 @@ use yubikey::{
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 
+use std::collections::BTreeMap;
+
 use crate::{
     Result,
     secrets::{
         domain::{
-            manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument},
+            manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT,
             material::SecretMaterial,
             piv::{PIV_PIN_MAX_LEN, PivObjectId, SecretStorageSpec},
             storage::{
@@ -122,11 +124,10 @@ impl SecretInputPort for RealSecretIoAdapter {
 }
 
 impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
-    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
+    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>> {
         let protected =
             process_io::read_stdin_all(64 * 1024, "bootstrap secret JSON input is too large")?;
-        let fields = protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)?;
-        BootstrapSecretDocument::from_field_map(fields)
+        protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)
     }
 }
 
@@ -210,8 +211,8 @@ impl SecretInputPort for ProcessIoAdapter {
 }
 
 impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
-    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
-        self.secret_io.read_bootstrap_secret_document()
+    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>> {
+        self.secret_io.read_bootstrap_secret_fields()
     }
 }
 

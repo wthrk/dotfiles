@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        manifest::BootstrapSecretDocument,
         piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
@@ -31,7 +32,8 @@ pub(crate) fn run_enroll_primary_with_stdin_json<
     let setup_inspection = boundary.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
     boundary.initialize_secret_storage(serial, setup_intent)?;
-    let document = boundary.read_bootstrap_secret_document()?;
+    let fields = boundary.read_bootstrap_secret_fields()?;
+    let document = BootstrapSecretDocument::from_field_map(fields)?;
     for (storage, value) in document.storage_entries(serial) {
         let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
         let intent = SecretStorageWriteIntent::store(storage, inspection)?;
