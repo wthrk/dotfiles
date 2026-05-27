@@ -129,19 +129,8 @@ impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
     fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
         let protected =
             process_io::read_stdin_all(64 * 1024, "bootstrap secret JSON input is too large")?;
-        let mut fields = protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)?;
-        let missing = |field: &str| anyhow::anyhow!("JSON field `{field}` is missing");
-        let bw_email = fields
-            .remove("bw-email")
-            .ok_or_else(|| missing("bw-email"))?;
-        let bw_password = fields
-            .remove("bw-password")
-            .ok_or_else(|| missing("bw-password"))?;
-        let bws_access_token = fields
-            .remove("bws-access-token")
-            .ok_or_else(|| missing("bws-access-token"))?;
-
-        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)
+        let fields = protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)?;
+        BootstrapSecretDocument::from_field_map(fields)
     }
 }
 

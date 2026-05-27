@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 
 use super::{
@@ -128,6 +130,29 @@ impl SecretManifest {
 }
 
 impl BootstrapSecretDocument {
+    /// protected JSON field map から bootstrap document を構築する。
+    ///
+    /// JSON field 名と domain secret の対応は bootstrap document schema の業務規則であり、
+    /// adapter は JSON decode 後の map を渡すだけに限定する。
+    pub fn from_field_map(mut fields: BTreeMap<String, SecretMaterial>) -> Result<Self> {
+        let missing = |field: &str| anyhow::anyhow!("JSON field `{field}` is missing");
+        let bw_email = fields
+            .remove("bw-email")
+            .ok_or_else(|| missing("bw-email"))?;
+        let bw_password = fields
+            .remove("bw-password")
+            .ok_or_else(|| missing("bw-password"))?;
+        let bws_access_token = fields
+            .remove("bws-access-token")
+            .ok_or_else(|| missing("bws-access-token"))?;
+
+        Ok(Self {
+            bw_email,
+            bw_password,
+            bws_access_token,
+        })
+    }
+
     /// 既に取得済みの `SecretMaterial` 群から bootstrap document を構築する。
     pub fn from_secret_materials(
         bw_email: &SecretMaterial,
