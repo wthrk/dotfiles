@@ -17,7 +17,7 @@ const BLOB_VERSION: u8 = 1;
 const ALGORITHM_AES_256_GCM: u8 = 1;
 
 pub(crate) struct SealRequest<'a> {
-    pub secret_id: u8,
+    pub payload_id: u8,
     pub nonce: [u8; NONCE_LEN],
     pub wrapped_key: Vec<u8>,
     pub plaintext: &'a ProtectedSecret,
@@ -26,7 +26,7 @@ pub(crate) struct SealRequest<'a> {
 }
 
 pub(crate) struct SealWithKeyWrapRequest<'a> {
-    pub secret_id: u8,
+    pub payload_id: u8,
     pub plaintext: &'a ProtectedSecret,
     pub aad: &'a [u8],
 }
@@ -35,7 +35,7 @@ pub(crate) struct SealWithKeyWrapRequest<'a> {
 struct SealedBlob {
     version: u8,
     algorithm: u8,
-    secret_id: u8,
+    payload_id: u8,
     nonce: [u8; NONCE_LEN],
     wrapped_key: Vec<u8>,
     ciphertext: Vec<u8>,
@@ -45,7 +45,7 @@ struct SealedBlob {
 impl SealedBlob {
     fn encode(&self) -> Result<Vec<u8>> {
         let payload = bincode::serde::encode_to_vec(self, config::standard()).map_err(|error| {
-            invalid_data(format!("failed to encode sealed secret blob: {error}"))
+            invalid_data(format!("failed to encode sealed blob: {error}"))
         })?;
         let mut encoded = Vec::with_capacity(BLOB_MAGIC.len() + payload.len());
         encoded.extend_from_slice(BLOB_MAGIC);
@@ -60,7 +60,7 @@ impl SealedBlob {
         let payload = &input[BLOB_MAGIC.len()..];
         let (blob, read) =
             bincode::serde::decode_from_slice::<Self, _>(payload, config::standard()).map_err(
-                |error| invalid_data(format!("failed to decode sealed secret blob: {error}")),
+                |error| invalid_data(format!("failed to decode sealed blob: {error}")),
             )?;
         if read != payload.len() {
             return invalid_blob();
@@ -71,11 +71,11 @@ impl SealedBlob {
         Ok(blob)
     }
 
-    fn decode_for_secret_id(input: &[u8], expected_secret_id: u8) -> Result<Self> {
+    fn decode_for_payload_id(input: &[u8], expected_payload_id: u8) -> Result<Self> {
         let blob = Self::decode(input)
-            .map_err(|error| anyhow::anyhow!("failed to decode secret blob: {error}"))?;
-        if blob.secret_id != expected_secret_id {
-            anyhow::bail!("sealed secret blob id does not match requested secret id");
+            .map_err(|error| anyhow::anyhow!("failed to decode sealed blob: {error}"))?;
+        if blob.payload_id != expected_payload_id {
+            anyhow::bail!("sealed blob id does not match requested payload id");
         }
         Ok(blob)
     }
@@ -95,7 +95,7 @@ pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
         SealedBlob {
             version: BLOB_VERSION,
             algorithm: ALGORITHM_AES_256_GCM,
-            secret_id: request.secret_id,
+            payload_id: request.payload_id,
             nonce: request.nonce,
             wrapped_key: request.wrapped_key,
             ciphertext: ciphertext_bytes.to_vec(),
@@ -114,7 +114,7 @@ pub(crate) fn seal_with_key_wrap(
     rand::rng().fill_bytes(&mut nonce);
     let wrapped_key = wrap_key(&content_key)?;
     seal(SealRequest {
-        secret_id: request.secret_id,
+        payload_id: request.payload_id,
         nonce,
         wrapped_key,
         plaintext: request.plaintext,
@@ -125,11 +125,11 @@ pub(crate) fn seal_with_key_wrap(
 
 pub(crate) fn open_with_key_unwrap(
     input: &[u8],
-    expected_secret_id: u8,
+    expected_payload_id: u8,
     mut unwrap_key: impl FnMut(&[u8]) -> Result<ProtectedSecret>,
     aad: &[u8],
 ) -> Result<ProtectedSecret> {
-    let blob = SealedBlob::decode_for_secret_id(input, expected_secret_id)?;
+    let blob = SealedBlob::decode_for_payload_id(input, expected_payload_id)?;
     let content_key = unwrap_key(&blob.wrapped_key)?;
     open_decoded(blob, &content_key, aad)
 }
@@ -151,7 +151,7 @@ fn open_decoded(
 }
 
 fn invalid_blob<T>() -> Result<T> {
-    Err(invalid_data("invalid sealed secret blob").into())
+    Err(invalid_data("invalid sealed blob").into())
 }
 
 fn invalid_data(message: impl Into<String>) -> std::io::Error {
@@ -162,7 +162,7 @@ fn invalid_data(message: impl Into<String>) -> std::io::Error {
 mod tests {
     use super::*;
 
-    const TEST_SECRET_ID: u8 = 7;
+    const TEST_PAYLOAD_ID: u8 = 7;
     const TEST_AAD: &[u8] = b"test-aad";
 
     fn protected_from_test_bytes(bytes: &[u8]) -> Result<ProtectedSecret> {
@@ -186,7 +186,7 @@ mod tests {
         let mut plaintext = protected_from_test_bytes(b"secret-value")?;
         let content_key = test_content_key()?;
         let encoded = seal(SealRequest {
-            secret_id: TEST_SECRET_ID,
+            payload_id: TEST_PAYLOAD_ID,
             nonce: [3u8; NONCE_LEN],
             wrapped_key: b"wrapped".to_vec(),
             plaintext: &plaintext,
@@ -198,7 +198,7 @@ mod tests {
 
         let opened = open_with_key_unwrap(
             &encoded,
-            TEST_SECRET_ID,
+            TEST_PAYLOAD_ID,
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
         )?;
@@ -213,7 +213,7 @@ mod tests {
         let plaintext = protected_from_test_bytes(b"secret-value")?;
         let content_key = test_content_key()?;
         let mut encoded = seal(SealRequest {
-            secret_id: TEST_SECRET_ID,
+            payload_id: TEST_PAYLOAD_ID,
             nonce: [4u8; NONCE_LEN],
             wrapped_key: b"wrapped".to_vec(),
             plaintext: &plaintext,
@@ -228,7 +228,7 @@ mod tests {
 
         let result = open_with_key_unwrap(
             &encoded,
-            TEST_SECRET_ID,
+            TEST_PAYLOAD_ID,
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
         );
@@ -238,11 +238,11 @@ mod tests {
     }
 
     #[test]
-    fn sealed_blob_rejects_wrong_secret_id() -> Result<()> {
+    fn sealed_blob_rejects_wrong_payload_id() -> Result<()> {
         let plaintext = protected_from_test_bytes(b"secret-value")?;
         let content_key = test_content_key()?;
         let encoded = seal(SealRequest {
-            secret_id: TEST_SECRET_ID,
+            payload_id: TEST_PAYLOAD_ID,
             nonce: [5u8; NONCE_LEN],
             wrapped_key: b"wrapped".to_vec(),
             plaintext: &plaintext,
@@ -252,7 +252,7 @@ mod tests {
 
         let result = open_with_key_unwrap(
             &encoded,
-            TEST_SECRET_ID + 1,
+            TEST_PAYLOAD_ID + 1,
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
         );
@@ -266,7 +266,7 @@ mod tests {
         let plaintext = protected_from_test_bytes(b"secret-value")?;
         let content_key = test_content_key()?;
         let encoded = seal(SealRequest {
-            secret_id: TEST_SECRET_ID,
+            payload_id: TEST_PAYLOAD_ID,
             nonce: [6u8; NONCE_LEN],
             wrapped_key: b"wrapped".to_vec(),
             plaintext: &plaintext,
@@ -276,7 +276,7 @@ mod tests {
 
         let result = open_with_key_unwrap(
             &encoded,
-            TEST_SECRET_ID,
+            TEST_PAYLOAD_ID,
             |_| ProtectedSecret::try_clone(&content_key),
             b"wrong-aad",
         );

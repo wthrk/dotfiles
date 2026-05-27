@@ -702,7 +702,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
     ) -> Result<Vec<u8>> {
         sealed_blob::seal_with_key_wrap(
             sealed_blob::SealWithKeyWrapRequest {
-                secret_id: storage.secret_id,
+                payload_id: storage.secret_id,
                 plaintext,
                 aad: &storage.additional_data,
             },
