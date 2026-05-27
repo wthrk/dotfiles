@@ -21,6 +21,6 @@ pub(crate) fn run_put_with_prompt<
     )?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
-    let intent = SecretStorageWriteIntent::put(storage, inspection, command.force)?;
+    let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     boundary.store_secret(serial, intent, &secret)
 }

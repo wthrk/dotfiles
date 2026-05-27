@@ -720,7 +720,6 @@ impl SecretDeviceIo for YubikeySecretDevice {
                 plaintext,
                 aad: &storage.additional_data,
                 minimum_plaintext_len: storage.minimum_plaintext_len,
-                label: &storage.label,
             },
             |content_key| self.wrap_content_key(content_key),
         )
@@ -737,7 +736,6 @@ impl SecretDeviceIo for YubikeySecretDevice {
             |wrapped_key| self.unwrap_content_key(wrapped_key),
             &storage.additional_data,
             storage.minimum_plaintext_len,
-            &storage.label,
         )
     }
 }

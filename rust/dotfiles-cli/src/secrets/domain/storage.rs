@@ -101,25 +101,34 @@ impl SecretStorageSetupIntent {
 }
 
 impl SecretStorageWriteIntent {
-    /// manifest 初期化済み規則だけを適用する通常書き込み intent を作る。
+    /// manifest 初期化済み規則と secret 値制約を適用する通常書き込み intent を作る。
+    ///
+    /// `secret_len` は平文 bytes を domain へ露出させずに、保存対象 secret の値制約だけを
+    /// domain rule として判定するために渡す。
     pub fn store(
         storage: SecretStorageSpec,
         inspection: SecretStorageWriteInspection,
+        secret_len: usize,
     ) -> Result<Self> {
         SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        storage.ensure_plaintext_len(secret_len)?;
         Ok(Self { storage })
     }
 
-    /// manifest 初期化済み規則と上書き可否規則を適用する `put` intent を作る。
+    /// manifest 初期化済み規則、上書き可否規則、secret 値制約を適用する `put` intent を作る。
+    ///
+    /// `secret_len` は protected secret の長さだけを使い、平文 bytes の内容は domain へ渡さない。
     pub fn put(
         storage: SecretStorageSpec,
         inspection: SecretStorageWriteInspection,
         force: bool,
+        secret_len: usize,
     ) -> Result<Self> {
         SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
         storage
             .name
             .ensure_write_allowed(inspection.object_exists, force)?;
+        storage.ensure_plaintext_len(secret_len)?;
         Ok(Self { storage })
     }
 }

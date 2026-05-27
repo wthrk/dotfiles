@@ -28,7 +28,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     let token = boundary.read_bws_access_token_secret()?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
-    let intent = SecretStorageWriteIntent::store(storage, inspection)?;
+    let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
     boundary.store_secret(serial, intent, &token)?;
     let pin = if boundary.device_requires_pin(serial)? {
         let pin = boundary.read_pin()?;

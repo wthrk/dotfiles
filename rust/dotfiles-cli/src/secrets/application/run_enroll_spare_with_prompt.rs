@@ -64,7 +64,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
     ])?;
     for (storage, value) in document.storage_entries(spare_serial) {
         let inspection = boundary.inspect_secret_storage_write(spare_serial, &storage)?;
-        let intent = SecretStorageWriteIntent::store(storage, inspection)?;
+        let intent = SecretStorageWriteIntent::store(storage, inspection, value.len())?;
         boundary.store_secret(spare_serial, intent, value)?;
     }
     let spare_pin = if boundary.device_requires_pin(spare_serial)? {

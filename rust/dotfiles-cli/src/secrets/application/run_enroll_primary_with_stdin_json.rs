@@ -36,7 +36,7 @@ pub(crate) fn run_enroll_primary_with_stdin_json<
     let document = BootstrapSecretDocument::from_field_map(fields)?;
     for (storage, value) in document.storage_entries(serial) {
         let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
-        let intent = SecretStorageWriteIntent::store(storage, inspection)?;
+        let intent = SecretStorageWriteIntent::store(storage, inspection, value.len())?;
         boundary.store_secret(serial, intent, value)?;
     }
     let pin = if boundary.device_requires_pin(serial)? {

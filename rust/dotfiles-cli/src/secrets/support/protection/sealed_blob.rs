@@ -24,7 +24,6 @@ pub(crate) struct SealRequest<'a> {
     pub content_key: &'a ProtectedSecret,
     pub aad: &'a [u8],
     pub minimum_plaintext_len: usize,
-    pub label: &'a str,
 }
 
 pub(crate) struct SealWithKeyWrapRequest<'a> {
@@ -32,7 +31,6 @@ pub(crate) struct SealWithKeyWrapRequest<'a> {
     pub plaintext: &'a ProtectedSecret,
     pub aad: &'a [u8],
     pub minimum_plaintext_len: usize,
-    pub label: &'a str,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,11 +89,7 @@ pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<Pro
 
 pub(crate) fn seal(request: SealRequest<'_>) -> Result<Vec<u8>> {
     request.plaintext.with_secret(|plaintext_bytes| {
-        ensure_minimum_plaintext_len(
-            plaintext_bytes,
-            request.minimum_plaintext_len,
-            request.label,
-        )?;
+        ensure_minimum_plaintext_len(plaintext_bytes, request.minimum_plaintext_len)?;
         let cipher = request.content_key.with_secret(aes_256_gcm_from_key)?;
         let mut ciphertext_secret = ProtectedSecret::try_clone(request.plaintext)?;
         let tag = ciphertext_secret.with_secret_mut(|ciphertext_bytes| {
@@ -132,7 +126,6 @@ pub(crate) fn seal_with_key_wrap(
         content_key: &content_key,
         aad: request.aad,
         minimum_plaintext_len: request.minimum_plaintext_len,
-        label: request.label,
     })
 }
 
@@ -142,11 +135,10 @@ pub(crate) fn open_with_key_unwrap(
     mut unwrap_key: impl FnMut(&[u8]) -> Result<ProtectedSecret>,
     aad: &[u8],
     minimum_plaintext_len: usize,
-    label: &str,
 ) -> Result<ProtectedSecret> {
     let blob = SealedBlob::decode_for_secret_id(input, expected_secret_id)?;
     let content_key = unwrap_key(&blob.wrapped_key)?;
-    open_decoded(blob, &content_key, aad, minimum_plaintext_len, label)
+    open_decoded(blob, &content_key, aad, minimum_plaintext_len)
 }
 
 fn open_decoded(
@@ -154,7 +146,6 @@ fn open_decoded(
     content_key: &ProtectedSecret,
     aad: &[u8],
     minimum_plaintext_len: usize,
-    label: &str,
 ) -> Result<ProtectedSecret> {
     let cipher = content_key.with_secret(aes_256_gcm_from_key)?;
     let mut secret = ProtectedSecret::new(blob.ciphertext.len())?;
@@ -164,9 +155,8 @@ fn open_decoded(
             decrypt_detached(&cipher, &blob.nonce, aad, secret_bytes, &blob.tag)
         })
         .map_err(|_| anyhow::anyhow!("failed to decrypt payload"))?;
-    secret.with_secret(|plaintext| {
-        ensure_minimum_plaintext_len(plaintext, minimum_plaintext_len, label)
-    })?;
+    secret
+        .with_secret(|plaintext| ensure_minimum_plaintext_len(plaintext, minimum_plaintext_len))?;
     Ok(secret)
 }
 
@@ -174,13 +164,9 @@ fn invalid_blob<T>() -> Result<T> {
     Err(invalid_data("invalid sealed secret blob").into())
 }
 
-fn ensure_minimum_plaintext_len(
-    plaintext: &[u8],
-    minimum_plaintext_len: usize,
-    label: &str,
-) -> Result<()> {
+fn ensure_minimum_plaintext_len(plaintext: &[u8], minimum_plaintext_len: usize) -> Result<()> {
     if plaintext.len() < minimum_plaintext_len {
-        return Err(invalid_data(format!("{label} must not be empty")).into());
+        return Err(invalid_data("protected plaintext is shorter than required minimum").into());
     }
     Ok(())
 }
@@ -195,7 +181,6 @@ mod tests {
 
     const TEST_SECRET_ID: u8 = 7;
     const TEST_AAD: &[u8] = b"test-aad";
-    const TEST_LABEL: &str = "test secret";
 
     fn protected_from_test_bytes(bytes: &[u8]) -> Result<ProtectedSecret> {
         let mut secret = ProtectedSecret::new(bytes.len())?;
@@ -225,7 +210,6 @@ mod tests {
             content_key: &content_key,
             aad: TEST_AAD,
             minimum_plaintext_len: 1,
-            label: TEST_LABEL,
         })?;
 
         plaintext.with_secret_mut(|bytes| bytes.fill(b'x'));
@@ -236,7 +220,6 @@ mod tests {
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
             1,
-            TEST_LABEL,
         )?;
         opened.with_secret(|bytes| {
             assert_eq!(bytes, b"secret-value");
@@ -256,7 +239,6 @@ mod tests {
             content_key: &content_key,
             aad: TEST_AAD,
             minimum_plaintext_len: 1,
-            label: TEST_LABEL,
         })?;
         if let Some(last) = encoded.last_mut() {
             *last ^= 0x01;
@@ -270,7 +252,6 @@ mod tests {
             |_| ProtectedSecret::try_clone(&content_key),
             TEST_AAD,
             1,
-            TEST_LABEL,
         );
 
         assert!(result.is_err());

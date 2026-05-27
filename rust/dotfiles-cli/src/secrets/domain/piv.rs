@@ -90,8 +90,6 @@ pub struct SecretStorageSpec {
     pub additional_data: Vec<u8>,
     /// 保存する plaintext secret の最小 byte 長。
     pub minimum_plaintext_len: usize,
-    /// エラー表示で使う安定 secret 名。
-    pub label: String,
 }
 
 impl SecretName {
@@ -173,7 +171,6 @@ impl SecretName {
             secret_id: self.secret_id(),
             additional_data: self.additional_data(serial),
             minimum_plaintext_len: 1,
-            label: self.to_string(),
         }
     }
 }
@@ -189,6 +186,14 @@ impl SecretStorageSpec {
             SecretName::BwPassword.storage_spec(serial),
             SecretName::BwsAccessToken.storage_spec(serial),
         ]
+    }
+
+    /// 保存対象 plaintext がこの spec の値制約を満たすことを確認する。
+    pub fn ensure_plaintext_len(&self, len: usize) -> crate::Result<()> {
+        if len < self.minimum_plaintext_len {
+            anyhow::bail!("{} must not be empty", self.name);
+        }
+        Ok(())
     }
 
     /// この spec に対応する保存済み secret が欠落した domain error を返す。
