@@ -14,19 +14,29 @@
 - GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/manifest.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/material.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/piv.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/storage.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
+  - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
+  - `rust/dotfiles-cli/src/secrets/support/version.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
@@ -41,7 +51,7 @@
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)

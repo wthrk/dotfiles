@@ -2,31 +2,48 @@
 
 この文書は `docs/tasks/secret-recovery/work-items/yubikey.md` の現行サイクル集約レビュー正本である。
 
-## 現行サイクル（2026-05-26）
+## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: `ad92152` 基準の structural / operational 差し戻し修正を反映した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-26-base-ad92152`
+- 集約判定要約: `ce7dc31` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-ce7dc31`
 - 対象ブランチ: `feat/yubikey-secret-storage`
+- 保存コミット列:
+  - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
+  - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
+  - `1cc9889 refactor(secrets): 保護secret操作をprotection内部へ閉じる`
+  - `cc39c6b docs(secrets): YubiKey運用証跡を9352e14基準へ同期`
+  - `ce7dc31 refactor(secrets): secret入力規則をdomainへ寄せる`
 - 対象スコープ:
+  - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/model.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/manifest.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/material.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/piv.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/storage.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
+  - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
+  - `rust/dotfiles-cli/src/secrets/support/version.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
+  - `rust/dotfiles-cli/Cargo.toml`
 
-### 2026-05-26 ad92152 基準 current-cycle 追記
+### 2026-05-26 ad92152 基準履歴追記
 
-- current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
+- 履歴基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 確認証跡同期コミット: `734823d docs(secrets): record yubikey verification evidence`
@@ -36,14 +53,13 @@
 - 追加保存コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
 - 追加保存コミット: `9ff38d7 refactor(secrets): 上書き可否規則をdomainへ移管`
 - 現行状態: `再レビュー待ち`
-- レビュー前提: security は pass 済み。structural / operational の Fail 指摘は本追記以降の保存点で修正済みとして扱い、合格とは記録しない。
+- レビュー前提: セキュリティレビューは `判定: 合格` 済み。構造レビュー / 運用整合レビューの `判定: 要修正` 指摘は本追記以降の保存点で修正済みとして扱い、集約合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
   - `docs/task-governance/workflow.md`
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
-  - `rust/dotfiles-cli/src/secrets/support/protection/yubikey_pin.rs`
   - `docs/tasks/secret-recovery/tasks.md`
   - `docs/tasks/secret-recovery/work-items/yubikey.md`
   - `docs/secret-recovery/secret-recovery-spec.md`
@@ -58,7 +74,7 @@
   - `adapters.rs` の `piv_io` module 公開を廃止し、entrypoint は `SecretsAdapters::default()` だけを利用する。
   - `JsonReportAdapter` とその constructor を廃止し、report 翻訳は `ReportPort for RealSecretsBoundary` の trait 実装境界へ閉じる。
 - operational 差し戻し修正:
-  - current-cycle の基準を `ad92152` として明示し、変更ファイル集合を記録した。
+  - 履歴サイクルの基準を `ad92152` として明示し、変更ファイル集合を記録した。
   - `tasks.md` と `work-items/yubikey.md` を `再レビュー待ち` / `修正済み` 基準で同期した。
   - 保存コミット規定は既存コミットを書き換えず、現行サイクル追記として運用実態と整合させる。
 - 追加 operational 差し戻し修正:
@@ -85,12 +101,13 @@
   - `cargo check -p dotfiles-cli`: 成功
   - `git diff --check`: 成功
 
-### 2026-05-27 9352e14 基準 operational 追記
+### 2026-05-27 9352e14 基準 operational 履歴追記
 
-- current-cycle 追加識別子: `yubikey-current-cycle-2026-05-27-base-9352e14`
-- current-cycle 基準コミット: `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
+- 履歴サイクル識別子: `yubikey-history-2026-05-27-base-9352e14`
+- 履歴基準コミット: `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
 - 追加保存コミット: `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
 - 追加保存コミット: `1cc9889 refactor(secrets): 保護secret操作をprotection内部へ閉じる`
+- 追加保存コミット: `cc39c6b docs(secrets): YubiKey運用証跡を9352e14基準へ同期`
 - 本 operational 修正文書コミット: `この追記を含む保存コミット`
 - レビュー前保存コミット扱い: 上記保存コミットは作業状態を失わないための中間保存点であり、レビュー合格、完了判定、または `S3 -> S4` の commit gate 充足根拠にはしない。
 - management key 前提: 現行 YubiKey work item サイクルでは factory-default management key を暫定前提にする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。
@@ -103,8 +120,6 @@
   - `docs/secret-recovery/yubikey-secret-storage-design.md`
   - `docs/tasks/tasks.md`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/secret_io.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
@@ -112,7 +127,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
 - 確認結果:
-  - `9352e14` 保存点の後続で adapter 補助ファイル内包と protection 内部化の保存コミットを確認した。
+  - `9352e14` 保存点の後続で adapter 補助ファイル内包、protection 内部化、`cc39c6b` の operational 証跡同期コミットを確認した。
   - 本追記では operational 証跡整合のみを扱い、合格とは記録しない。
 
 ### 2026-05-26 追加実装サイクル追記
