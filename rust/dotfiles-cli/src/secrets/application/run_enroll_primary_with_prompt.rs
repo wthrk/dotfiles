@@ -52,7 +52,9 @@ pub(crate) fn run_enroll_primary_with_prompt<
     for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-        let secret = boundary.load_secret(serial, &intent, pin.as_ref())?;
+        let secret = boundary
+            .load_secret(serial, &intent, pin.as_ref())
+            .map_err(|error| intent.decode_error(error))?;
         intent.validate_loaded_secret(&secret)?;
     }
     boundary.write_enroll_report(&EnrollSummary::primary_completed(serial))

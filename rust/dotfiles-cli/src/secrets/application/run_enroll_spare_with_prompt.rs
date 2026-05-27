@@ -46,19 +46,25 @@ pub(crate) fn run_enroll_spare_with_prompt<
     let first_inspection = boundary.inspect_secret_storage_read(primary_serial, &first_storage)?;
     let first_intent = SecretStorageReadIntent::from_inspection(first_storage, first_inspection)?;
     let first_document_storage = first_intent.storage.clone();
-    let first = boundary.load_secret(primary_serial, &first_intent, primary_pin.as_ref())?;
+    let first = boundary
+        .load_secret(primary_serial, &first_intent, primary_pin.as_ref())
+        .map_err(|error| first_intent.decode_error(error))?;
     first_intent.validate_loaded_secret(&first)?;
     let second_inspection =
         boundary.inspect_secret_storage_read(primary_serial, &second_storage)?;
     let second_intent =
         SecretStorageReadIntent::from_inspection(second_storage, second_inspection)?;
     let second_document_storage = second_intent.storage.clone();
-    let second = boundary.load_secret(primary_serial, &second_intent, primary_pin.as_ref())?;
+    let second = boundary
+        .load_secret(primary_serial, &second_intent, primary_pin.as_ref())
+        .map_err(|error| second_intent.decode_error(error))?;
     second_intent.validate_loaded_secret(&second)?;
     let third_inspection = boundary.inspect_secret_storage_read(primary_serial, &third_storage)?;
     let third_intent = SecretStorageReadIntent::from_inspection(third_storage, third_inspection)?;
     let third_document_storage = third_intent.storage.clone();
-    let third = boundary.load_secret(primary_serial, &third_intent, primary_pin.as_ref())?;
+    let third = boundary
+        .load_secret(primary_serial, &third_intent, primary_pin.as_ref())
+        .map_err(|error| third_intent.decode_error(error))?;
     third_intent.validate_loaded_secret(&third)?;
     let document = BootstrapSecretDocument::from_storage_materials([
         (first_document_storage, first),
@@ -80,7 +86,9 @@ pub(crate) fn run_enroll_spare_with_prompt<
     for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-        let secret = boundary.load_secret(spare_serial, &intent, spare_pin.as_ref())?;
+        let secret = boundary
+            .load_secret(spare_serial, &intent, spare_pin.as_ref())
+            .map_err(|error| intent.decode_error(error))?;
         intent.validate_loaded_secret(&secret)?;
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))

@@ -319,9 +319,7 @@ impl SecretStoragePort for StorageAdapter {
             };
             device.verify_pin(pin)?;
         }
-        device
-            .open_from_storage(intent.storage.clone(), &intent.encoded)
-            .map_err(|error| intent.decode_error(error))
+        device.open_from_storage(intent.storage.clone(), &intent.encoded)
     }
 }
 
