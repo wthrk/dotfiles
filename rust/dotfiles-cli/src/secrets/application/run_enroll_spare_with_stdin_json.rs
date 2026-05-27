@@ -1,10 +1,9 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
-        piv::SecretStorageSpec,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
-            SecretStorageWriteIntent,
+            SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
         values::{EnrollSpareCommand, EnrollSummary},
     },
@@ -43,7 +42,7 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     } else {
         None
     };
-    for storage in SecretStorageSpec::all_for_serial(spare_serial) {
+    for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
         let _secret = boundary.load_secret(spare_serial, intent, pin.as_ref())?;

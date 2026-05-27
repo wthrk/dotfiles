@@ -2,10 +2,9 @@ use crate::Result;
 use crate::secrets::{
     domain::{
         manifest::BootstrapSecretDocument,
-        piv::SecretStorageSpec,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
-            SecretStorageWriteIntent,
+            SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
         values::{EnrollSpareCommand, EnrollSummary},
     },
@@ -43,7 +42,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
         bw_email_storage,
         bw_password_storage,
         bws_access_token_storage,
-    ] = SecretStorageSpec::all_for_serial(primary_serial);
+    ] = SecretStorageVerificationPlan::for_serial(primary_serial).into_targets();
     let bw_email_inspection =
         boundary.inspect_secret_storage_read(primary_serial, &bw_email_storage)?;
     let bw_email_intent =
@@ -77,7 +76,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
     } else {
         None
     };
-    for storage in SecretStorageSpec::all_for_serial(spare_serial) {
+    for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
         let _secret = boundary.load_secret(spare_serial, intent, spare_pin.as_ref())?;

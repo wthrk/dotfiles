@@ -50,6 +50,14 @@ pub struct SecretStorageReadIntent {
     pub encoded: Vec<u8>,
 }
 
+/// local storage 検証で読み出すべき secret 集合。
+///
+/// 「保存済み YubiKey storage が完了している」と判定するために必要な対象集合は
+/// domain rule であり、use case はこの plan を順序制御へ適用するだけに限定する。
+pub struct SecretStorageVerificationPlan {
+    targets: [SecretStorageSpec; 3],
+}
+
 impl SecretStorageSetupProbe {
     /// 現行 storage version が予約する object ID 集合を返す。
     pub fn expected() -> Self {
@@ -61,6 +69,20 @@ impl SecretStorageSetupProbe {
     /// adapter が占有状態を確認する object ID を返す。
     pub fn object_ids(&self) -> &[PivObjectId] {
         &self.object_ids
+    }
+}
+
+impl SecretStorageVerificationPlan {
+    /// 指定 serial の local storage 完了検証対象を構築する。
+    pub fn for_serial(serial: u32) -> Self {
+        Self {
+            targets: SecretStorageSpec::all_for_serial(serial),
+        }
+    }
+
+    /// 検証対象 storage spec を安定順で返す。
+    pub fn into_targets(self) -> [SecretStorageSpec; 3] {
+        self.targets
     }
 }
 

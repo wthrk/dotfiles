@@ -1,8 +1,9 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
-        piv::SecretStorageSpec,
-        storage::{SecretStorageReadIntent, SecretStorageWriteIntent},
+        storage::{
+            SecretStorageReadIntent, SecretStorageVerificationPlan, SecretStorageWriteIntent,
+        },
         values::{RotateBwsTokenCommand, VerifySummary},
     },
     ports::{self, SecretStoragePort},
@@ -34,7 +35,7 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
         None
     };
     let verify_result: Result<()> = (|| {
-        for storage in SecretStorageSpec::all_for_serial(serial) {
+        for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
             let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
             let _secret = boundary.load_secret(serial, intent, pin.as_ref())?;

@@ -4,7 +4,7 @@ use crate::secrets::{
         manifest::BootstrapSecretDocument,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
-            SecretStorageWriteIntent,
+            SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
         values::{EnrollPrimaryCommand, EnrollSummary},
     },
@@ -46,7 +46,7 @@ pub(crate) fn run_enroll_primary_with_prompt<
     } else {
         None
     };
-    for storage in crate::secrets::domain::piv::SecretStorageSpec::all_for_serial(serial) {
+    for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
         let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
         let _secret = boundary.load_secret(serial, intent, pin.as_ref())?;
