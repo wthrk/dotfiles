@@ -51,8 +51,9 @@
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
 - 確認証跡同期コミット: `8740b1a docs(secrets): sync yubikey current cycle commit`
+- 確認証跡同期コミット: `734823d docs(secrets): record yubikey verification evidence`
 - 現行状態: `再レビュー待ち`
-- 確認前提: security は pass 済み。structural / operational Fail 修正は `022c21b` で反映済みであり、合格とは記録しない。
+- 確認前提: security は pass 済み。structural / operational Fail 修正は本追記以降の保存点で反映済みであり、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`

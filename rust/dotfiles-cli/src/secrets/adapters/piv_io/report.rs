@@ -11,10 +11,14 @@ use crate::{
 
 /// application が渡す report 列挙値を CLI 向け JSON payload に整形する runtime adapter。
 pub(super) struct JsonReportAdapter {
-    pub(super) route: &'static str,
+    route: &'static str,
 }
 
 impl JsonReportAdapter {
+    pub(super) fn new(route: &'static str) -> Self {
+        Self { route }
+    }
+
     /// enroll 結果を route 監査情報つき JSON report へ翻訳して stdout へ出力する。
     ///
     /// この関数は adapter 翻訳境界として、domain/application 値を CLI 出力契約へ

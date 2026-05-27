@@ -2,5 +2,9 @@
 //!
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
-pub(crate) mod piv_io;
+mod piv_io;
 mod yubikey;
+
+pub(crate) fn real_secrets_boundary() -> piv_io::RealSecretsBoundary {
+    piv_io::RealSecretsBoundary::default()
+}

@@ -50,7 +50,7 @@ impl Default for RealSecretsBoundary<SelectedDeviceAdapter> {
         Self {
             device,
             secret_io: RealSecretIoAdapter,
-            report: JsonReportAdapter { route },
+            report: JsonReportAdapter::new(route),
         }
     }
 }

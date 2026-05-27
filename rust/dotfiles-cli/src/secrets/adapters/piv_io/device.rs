@@ -8,9 +8,7 @@ use dotfiles_cli_secrets_test_contract::{
 };
 
 #[cfg(feature = "secrets-test-stub")]
-use crate::secrets::adapters::piv_io::device_test_stub::{
-    TestStubDeviceAdapter, TestStubSecretDevice,
-};
+use super::device_test_stub::{TestStubDeviceAdapter, TestStubSecretDevice};
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::ports::SecretDevice;
 use crate::secrets::{

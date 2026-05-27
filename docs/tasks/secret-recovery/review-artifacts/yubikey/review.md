@@ -33,8 +33,9 @@
 - current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
+- 確認証跡同期コミット: `734823d docs(secrets): record yubikey verification evidence`
 - 現行状態: `再レビュー待ち`
-- レビュー前提: security は pass 済み。structural / operational の Fail 指摘は `022c21b` で修正済みとして扱い、合格とは記録しない。
+- レビュー前提: security は pass 済み。structural / operational の Fail 指摘は本追記以降の保存点で修正済みとして扱い、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
@@ -49,13 +50,19 @@
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
   - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
 - structural 差し戻し修正:
-  - `adapters.rs` の再エクスポート集約を廃止し、runtime adapter は翻訳実体を持つ `adapters::piv_io` module から参照する。
+  - `adapters.rs` の再エクスポート集約を廃止し、runtime adapter は `adapters::real_secrets_boundary()` で生成する。
   - `adapters/piv_io/device.rs` の route label helper を公開 helper から private trait 実装へ閉じる。
   - `adapters/piv_io/report.rs` の route 付き report helper 公開を廃止し、route は `JsonReportAdapter` の内部状態として `ReportPort` 実装内で使う。
+- 追加 structural 差し戻し修正:
+  - `adapters.rs` の `piv_io` module 公開を廃止し、entrypoint は adapters 内の `real_secrets_boundary()` だけを利用する。
+  - `JsonReportAdapter` の `route` field 公開を廃止し、同 module 内 constructor で初期化する。
 - operational 差し戻し修正:
   - current-cycle の基準を `ad92152` として明示し、変更ファイル集合を記録した。
   - `tasks.md` と `work-items/yubikey.md` を `再レビュー待ち` / `修正済み` 基準で同期した。
   - 保存コミット規定は既存コミットを書き換えず、現行サイクル追記として運用実態と整合させる。
+- 追加 operational 差し戻し修正:
+  - レビュー前保存コミットは `S3 -> S4` の終端コミットとは別の中間保存点であり、レビュー合格/完了コミット gate を満たさないことを workflow 正本へ明記した。
+  - 今後の保存点コミットメッセージを `<type>(<scope>): <日本語説明>` に統一することを workflow 正本へ明記した。
 
 ### 2026-05-26 追加実装サイクル追記
 
