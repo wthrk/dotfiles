@@ -1,5 +1,7 @@
 # 仕様適合レビュー記録 — YubiKey 秘密情報保存（2026-05-25）
 
+> 履歴専用・現行判定対象外: この記録は 2026-05-25 時点の旧 harness / 旧 path を含む履歴証跡であり、現行サイクルの判定正本ではない。現行判定は `review.md` と `confirmation.md` を正本として参照する。
+
 - レビュー担当: 仕様適合レビュー担当
 - 対象作業項目: `docs/tasks/secret-recovery/work-items/yubikey.md`
 - レビュー日: 2026-05-25

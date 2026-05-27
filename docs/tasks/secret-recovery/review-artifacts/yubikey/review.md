@@ -5,8 +5,8 @@
 ## 現行サイクル（2026-05-27）
 
 - 集約後レビュー判定: `要修正`
-- 集約判定要約: `6fd4014` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-head-6fd4014`
+- 集約判定要約: `ddf027e` 基準の current-cycle 保存コミット列と対象スコープを現行 tree に同期した。合格判定は未実施のため、現行サイクルは再レビュー待ちとして扱う。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-ddf027e`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
@@ -16,9 +16,31 @@
   - `ce7dc31 refactor(secrets): secret入力規則をdomainへ寄せる`
   - `01979bf docs(secrets): YubiKey現行サイクル参照を同期`
   - `6fd4014 refactor(secrets): storage復元規則をdomainへ移す`
-- `1db05bc..6fd4014` の変更ファイル集合:
+  - `ddf027e docs(secrets): YubiKey参照基準を6fd4014へ同期`
+- `6fd4014..ddf027e` の変更ファイル集合:
+  - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
+  - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
+  - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/review-reference-2026-05-25.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/confirmation.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review-doc-2026-05-25.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review-operational-2026-05-25.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review-test-2026-05-25.md`
+  - `docs/tasks/secret-recovery/review-artifacts/yubikey/review.md`
+  - `docs/tasks/secret-recovery/tasks.md`
+  - `docs/tasks/secret-recovery/work-items/yubikey.md`
+  - `docs/tasks/tasks.md`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_stdin_json.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_prompt.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/manifest.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_stdin_json.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_get_with.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_stdin.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_verify_yubikey_with.rs`
+  - `rust/dotfiles-cli/src/secrets/ports.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
