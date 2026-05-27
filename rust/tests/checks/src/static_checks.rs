@@ -40,6 +40,12 @@ fn rust(shell: &Shell) -> Result<()> {
         "cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli"
     )
     .run()?;
+    step("cargo test secrets application internal stub");
+    cmd!(
+        shell,
+        "cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application"
+    )
+    .run()?;
     Ok(())
 }
 

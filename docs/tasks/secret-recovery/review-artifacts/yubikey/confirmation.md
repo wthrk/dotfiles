@@ -6,8 +6,9 @@
 
 - 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-917cff4`
-- 確認基準: `917cff4 refactor(secrets): secret material backend境界を縮小`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-5217c7f`
+- 確認基準: `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
+- required reviewers 実施状態: `構造/運用/セキュリティの再レビューを現行サイクルで再実施中（未完了）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -33,7 +34,17 @@
   - `ca3d78c style(secrets): sealed blobを整形`
   - `8df2209 refactor(secrets): secret materialをdomain opaque化`
   - `917cff4 refactor(secrets): secret material backend境界を縮小`
-- `6fd4014..917cff4` の変更ファイル集合:
+  - `7e88a81 docs(secrets): YubiKey現行サイクルを917cff4へ同期`
+  - `7facae0 test(secrets): storage intent domain規則を検証`
+  - `913d857 test(secrets): device route internal検証を復旧`
+  - `c819fc0 test(secrets): mockito internal stubをfeature注入する`
+  - `b2871d8 test(secrets): usecase stubをmockitoで復旧する`
+  - `7bae68d test(secrets): usecaseテスト名とケースを復旧する`
+  - `1e770a0 test(secrets): real-route監査とwrite-event検証を復旧`
+  - `e619fba test(secrets): application internal testsを復旧`
+  - `850eb54 test(secrets): app usecaseテストをmockitoで復旧`
+  - `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
+- `6fd4014..5217c7f` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -47,6 +58,10 @@
   - `docs/tasks/secret-recovery/tasks.md`
   - `docs/tasks/secret-recovery/work-items/yubikey.md`
   - `docs/tasks/tasks.md`
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `rust/tests/checks/src/static_checks.rs`
+  - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
@@ -105,9 +120,9 @@
 
 - `cargo check`: 実行済み
 - `cargo test --no-run`: 実行済み
-- `cargo xtask check`: 実行済み（`917cff4`）
-- `cargo clippy --workspace --all-targets`: 実行済み（`917cff4`）
-- `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`917cff4`）
+- `cargo xtask check`: 実行済み（`5217c7f`）
+- `cargo clippy --workspace --all-targets`: 実行済み（`5217c7f`）
+- `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`5217c7f`）
 - 状態: `再レビュー待ち`
 
 ## 2026-05-26 ad92152 基準履歴追記
