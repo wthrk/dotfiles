@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-27）
 
-- 確認状態: `実施済み（再レビュー待ち）`
+- 確認状態: `実施済み（レビュー集約合格。完了判定待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（本記録修正後の current-cycle 補正 HEAD 対象）`
-  - `security`: 状態 `実施済み` / 判定 `合格（4e00605 対象）`
-  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（documentation Fail の doc comment 補正 HEAD 対象。過去 Pass の持ち越しでは閉じない）`
-  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（この実装コメント補正 HEAD 追加差分対象。過去 Pass の持ち越しでは閉じない）`
-  - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（本記録修正後の current-cycle 補正 HEAD 対象）`
+  - `structural`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
+  - `operational`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
+  - `security`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
+  - `specification-conformance`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
+  - `test`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
+  - `documentation`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
+  - `architectural-consistency`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
+  - `reference-integrity`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -277,7 +277,7 @@
 - `cargo check -p dotfiles-cli`: 成功
 - `cargo clippy -p dotfiles-cli --all-targets`: 成功
 - `git diff --check`: 成功
-- 状態: `再レビュー待ち`
+- 状態: `レビュー集約合格。完了判定待ち`
 
 ## 2026-05-26 ad92152 基準履歴追記
 
