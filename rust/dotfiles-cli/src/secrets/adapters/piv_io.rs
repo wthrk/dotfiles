@@ -474,7 +474,7 @@ fn selected_device_route_label() -> &'static str {
 
 #[cfg(feature = "secrets-internal-test-stub")]
 fn selected_device_route_label() -> &'static str {
-    internal_stub::selected_device_route_label()
+    SelectedDeviceAdapter::route_label()
 }
 
 impl Default for SelectedDeviceAdapter {
@@ -562,17 +562,6 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
         RealDeviceIo::open_device_by_serial(&mut RealDeviceAdapter, serial)
             .map(SelectedSecretDevice::new)
-    }
-}
-
-#[cfg(feature = "secrets-internal-test-stub")]
-impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
-        internal_stub::discover_devices()
-    }
-
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
-        internal_stub::open_device_by_serial(serial)
     }
 }
 

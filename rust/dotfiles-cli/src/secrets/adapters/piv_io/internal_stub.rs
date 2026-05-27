@@ -7,8 +7,8 @@ use anyhow::Context;
 
 use super::{
     DeviceCandidate, PivApplicationVersion, PivObjectId, Result, SecretDeviceIo, SecretMaterial,
-    SecretStorageSpec, SelectedSecretDevice, material_from_protected, protected_from_material,
-    secret_consumer,
+    SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
+    material_from_protected, protected_from_material, secret_consumer,
 };
 
 const INTERNAL_STUB_ENDPOINT_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_MOCKITO_URL";
@@ -51,11 +51,13 @@ struct StubSealConsumer {
     encoded: Option<Vec<u8>>,
 }
 
-pub(super) fn selected_device_route_label() -> &'static str {
+/// Internal stub backend が選択されたことを示す監査用 route 名を返す。
+fn selected_device_route_label() -> &'static str {
     "stub"
 }
 
-pub(super) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
+/// mockito 経由の internal stub から device 候補を取得し、adapter 境界型へ翻訳する。
+fn discover_devices() -> Result<Vec<DeviceCandidate>> {
     let response = stub_http_request("GET", "/devices", &[])?;
     let devices = serde_json::from_slice::<Vec<StubDeviceWire>>(&response)
         .context("failed to decode internal stub device list")?;
@@ -68,13 +70,30 @@ pub(super) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
         .collect())
 }
 
-pub(super) fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
+/// 指定 serial の stub device を開き、`SelectedSecretDevice` 境界へ包んで返す。
+fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
     let path = format!("/devices/{serial}/open");
     stub_http_request("POST", &path, &[])?;
     Ok(SelectedSecretDevice::new(TestStubSecretDevice {
         serial,
         pin_verified: false,
     }))
+}
+
+impl SelectedDeviceAdapter {
+    pub(super) fn route_label() -> &'static str {
+        selected_device_route_label()
+    }
+}
+
+impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
+        discover_devices()
+    }
+
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
+        open_device_by_serial(serial)
+    }
 }
 
 impl SecretDeviceIo for TestStubSecretDevice {
