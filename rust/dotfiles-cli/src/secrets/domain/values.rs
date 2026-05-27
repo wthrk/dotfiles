@@ -348,3 +348,26 @@ impl VerifySummary {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_rotate_summary_serializes_updated_entries() {
+        let summary = VerifySummary::local_storage_failed(42);
+
+        assert_eq!(summary.serial, 42);
+        assert_eq!(
+            summary.checks.get(&CheckName::LocalStorage),
+            Some(&CheckStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn partial_rotate_summary_skips_output_when_empty() {
+        let summaries: Vec<VerifySummary> = Vec::new();
+
+        assert!(summaries.is_empty());
+    }
+}

@@ -356,4 +356,52 @@ mod tests {
         assert!(result.is_err());
         Ok(())
     }
+
+    #[test]
+    fn decryption_fails_when_blob_is_replayed_to_different_serial() -> Result<()> {
+        let plaintext = protected_from_test_bytes(b"user@example.com")?;
+        let content_key = test_content_key()?;
+        let encoded = seal(SealRequest {
+            payload_id: TEST_PAYLOAD_ID,
+            nonce: [8u8; NONCE_LEN],
+            wrapped_key: b"wrapped".to_vec(),
+            plaintext: &plaintext,
+            content_key: &content_key,
+            aad: b"serial=1234",
+        })?;
+
+        let result = open_with_key_unwrap(
+            &encoded,
+            TEST_PAYLOAD_ID,
+            |_| ProtectedSecret::try_clone(&content_key),
+            b"serial=5678",
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn decryption_fails_when_secret_blob_name_and_object_are_swapped() -> Result<()> {
+        let plaintext = protected_from_test_bytes(b"user@example.com")?;
+        let content_key = test_content_key()?;
+        let encoded = seal(SealRequest {
+            payload_id: 1,
+            nonce: [9u8; NONCE_LEN],
+            wrapped_key: b"wrapped".to_vec(),
+            plaintext: &plaintext,
+            content_key: &content_key,
+            aad: b"object=bw-email",
+        })?;
+
+        let result = open_with_key_unwrap(
+            &encoded,
+            2,
+            |_| ProtectedSecret::try_clone(&content_key),
+            b"object=bw-password",
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
 }

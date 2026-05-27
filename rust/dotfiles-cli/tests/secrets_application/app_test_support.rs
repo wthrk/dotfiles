@@ -126,8 +126,16 @@ impl AppMock {
 
     pub(crate) fn set_loaded_secret_value(&self, secret: SecretName, value: &'static [u8]) {
         self.configure(|state| {
-            state.loaded_values.insert(secret, value);
+            state.loaded_values.insert(secret, value.to_vec());
         });
+    }
+
+    pub(crate) fn stored_secret_value(&self, secret: SecretName) -> Option<Vec<u8>> {
+        self.snapshot(|state| state.loaded_values.get(&secret).cloned())
+    }
+
+    pub(crate) fn output_secret_value(&self) -> Option<Vec<u8>> {
+        self.snapshot(|state| state.output_secret.clone())
     }
 
     pub(crate) fn set_setup_failure(&self, fail: bool) {
@@ -136,6 +144,13 @@ impl AppMock {
 
     pub(crate) fn set_store_failure(&self, secret: SecretName) {
         self.configure(|state| state.fail_on_store = Some(secret));
+    }
+
+    pub(crate) fn set_store_already_updated_failure(&self, secret: SecretName) {
+        self.configure(|state| {
+            state.fail_on_store = Some(secret);
+            state.store_failure_status = 409;
+        });
     }
 
     pub(crate) fn set_pin_error(&self, error: &'static str) {
@@ -152,7 +167,13 @@ impl AppMock {
 
     pub(crate) fn set_secret_value(&self, secret: SecretName, value: &'static [u8]) {
         self.configure(|state| {
-            state.secret_values.insert(secret, value);
+            state.secret_values.insert(secret, value.to_vec());
+        });
+    }
+
+    pub(crate) fn set_secret_error(&self, secret: SecretName, error: &'static str) {
+        self.configure(|state| {
+            state.secret_errors.insert(secret, error);
         });
     }
 
@@ -265,6 +286,11 @@ impl AppMockBoundary {
         self
     }
 
+    pub(crate) fn expect_setup_initialize(mut self) -> Self {
+        self.mock.expect_event("setup-initialize");
+        self
+    }
+
     pub(crate) fn expect_store_times(mut self, hits: usize) -> Self {
         self.mock.expect_event_times("store", hits);
         self
@@ -364,7 +390,10 @@ impl ports::BootstrapSecretDocumentInputPort for AppMockBoundary {
 
 impl ports::SecretOutputPort for AppMockBoundary {
     fn write_secret(&self, _secret: &SecretMaterial) -> Result<()> {
-        self.mock.request("POST", "/secret/output/write", &[]).map(drop)
+        let body = secret_bytes(_secret)?;
+        self.mock
+            .request("POST", "/secret/output/write", &body)
+            .map(drop)
     }
 }
 
@@ -430,14 +459,13 @@ impl SecretStoragePort for AppMockBoundary {
         &mut self,
         _serial: u32,
         intent: SecretStorageWriteIntent,
-        _secret: &SecretMaterial,
+        secret: &SecretMaterial,
     ) -> Result<()> {
+        let mut body = intent.storage.name.to_string().into_bytes();
+        body.push(b'\n');
+        body.extend_from_slice(&secret_bytes(secret)?);
         self.mock
-            .request(
-                "POST",
-                "/storage/store",
-                intent.storage.name.to_string().as_bytes(),
-            )
+            .request("POST", "/storage/store", &body)
             .map(drop)
     }
 
@@ -476,13 +504,16 @@ struct AppMockState {
     spare_requires_pin: bool,
     primary_available: bool,
     loaded_len: usize,
-    loaded_values: BTreeMap<SecretName, &'static [u8]>,
+    loaded_values: BTreeMap<SecretName, Vec<u8>>,
     fail_setup: bool,
     fail_on_store: Option<SecretName>,
+    store_failure_status: usize,
     pin_error: Option<&'static str>,
     stdin_json_error: Option<&'static str>,
     streamed_secret_error: Option<&'static str>,
-    secret_values: BTreeMap<SecretName, &'static [u8]>,
+    secret_values: BTreeMap<SecretName, Vec<u8>>,
+    secret_errors: BTreeMap<SecretName, &'static str>,
+    output_secret: Option<Vec<u8>>,
     stores: Vec<SecretName>,
     resolution_order: Vec<&'static str>,
     reports: Vec<(u32, CheckStatus)>,
@@ -502,16 +533,19 @@ impl Default for AppMockState {
             loaded_values: BTreeMap::new(),
             fail_setup: false,
             fail_on_store: None,
+            store_failure_status: 500,
             pin_error: None,
             stdin_json_error: None,
             streamed_secret_error: None,
             secret_values: [
-                (SecretName::BwEmail, &b"u@example.com"[..]),
-                (SecretName::BwPassword, &b"secret"[..]),
-                (SecretName::BwsAccessToken, &b"token"[..]),
+                (SecretName::BwEmail, b"u@example.com".to_vec()),
+                (SecretName::BwPassword, b"secret".to_vec()),
+                (SecretName::BwsAccessToken, b"token".to_vec()),
             ]
             .into_iter()
             .collect(),
+            secret_errors: BTreeMap::new(),
+            output_secret: None,
             stores: Vec::new(),
             resolution_order: Vec::new(),
             reports: Vec::new(),
@@ -572,18 +606,32 @@ impl AppMockState {
             }
             "/secret/streamed/read" => status_for_error(self.streamed_secret_error),
             "/bootstrap/read-fields" => status_for_error(self.stdin_json_error),
+            "/secret/bw-email/read" => status_for_error(
+                self.secret_errors.get(&SecretName::BwEmail).copied(),
+            ),
+            "/secret/bw-password/read" => status_for_error(
+                self.secret_errors.get(&SecretName::BwPassword).copied(),
+            ),
+            "/secret/bws-access-token/read" => status_for_error(
+                self.secret_errors.get(&SecretName::BwsAccessToken).copied(),
+            ),
             "/storage/setup/inspect" => {
                 self.hit_event("setup");
                 if self.fail_setup { 500 } else { 200 }
             }
+            "/storage/setup/initialize" => {
+                self.hit_event("setup-initialize");
+                200
+            }
             "/storage/store" => {
                 let secret = parse_secret_name(body);
                 if self.fail_on_store == secret {
-                    500
+                    self.store_failure_status
                 } else {
                     self.hit_event("store");
-                    if let Some(secret) = secret {
+                    if let Some((secret, value)) = parse_secret_store_body(body) {
                         self.stores.push(secret);
+                        self.loaded_values.insert(secret, value);
                     }
                     200
                 }
@@ -599,12 +647,11 @@ impl AppMockState {
                 }
                 200
             }
-            "/secret/bw-email/read"
-            | "/secret/bw-password/read"
-            | "/secret/bws-access-token/read"
-            | "/secret/output/write"
-            | "/storage/setup/initialize"
-            | "/storage/write/inspect"
+            "/secret/output/write" => {
+                self.output_secret = Some(body.to_vec());
+                200
+            }
+            "/storage/write/inspect"
             | "/storage/read/inspect"
             | "/storage/load" => 200,
             _ => 404,
@@ -625,21 +672,19 @@ impl AppMockState {
                 .to_string()
                 .into_bytes(),
             "/pin/read" => error_or_bytes(self.pin_error, b"123456"),
-            "/secret/bw-email/read" => self.secret_value(SecretName::BwEmail),
-            "/secret/bw-password/read" => self.secret_value(SecretName::BwPassword),
-            "/secret/bws-access-token/read" => self.secret_value(SecretName::BwsAccessToken),
+            "/secret/bw-email/read" => self.secret_or_error(SecretName::BwEmail),
+            "/secret/bw-password/read" => self.secret_or_error(SecretName::BwPassword),
+            "/secret/bws-access-token/read" => self.secret_or_error(SecretName::BwsAccessToken),
             "/secret/streamed/read" => error_or_bytes(self.streamed_secret_error, b"token"),
             "/bootstrap/read-fields" => error_or_bytes(
                 self.stdin_json_error,
                 b"bw-email=u@example.com\nbw-password=secret\nbws-access-token=secret\n",
             ),
             "/storage/setup/inspect" if self.fail_setup => b"setup failed".to_vec(),
-            "/storage/store" if self.fail_on_store == parse_secret_name(body) => {
-                b"store failed".to_vec()
-            }
+            "/storage/store" if self.fail_on_store == parse_secret_name(body) => b"store failed".to_vec(),
+            "/storage/load" if self.loaded_len == 0 => Vec::new(),
             "/storage/load" => parse_secret_name(body)
-                .and_then(|secret| self.loaded_values.get(&secret).copied())
-                .map(<[u8]>::to_vec)
+                .and_then(|secret| self.loaded_values.get(&secret).cloned())
                 .unwrap_or_else(|| vec![0; self.loaded_len]),
             _ => Vec::new(),
         }
@@ -650,14 +695,27 @@ impl AppMockState {
     fn secret_value(&self, secret: SecretName) -> Vec<u8> {
         self.secret_values
             .get(&secret)
-            .copied()
+            .cloned()
             .unwrap_or_default()
-            .to_vec()
+    }
+
+    fn secret_or_error(&self, secret: SecretName) -> Vec<u8> {
+        self.secret_errors
+            .get(&secret)
+            .map(|message| message.as_bytes().to_vec())
+            .unwrap_or_else(|| self.secret_value(secret))
     }
 }
 
 fn secret_material(bytes: Vec<u8>) -> SecretMaterial {
     SecretMaterial::from_backend(bytes, |secret| secret.len(), |secret| Ok(secret.clone()))
+}
+
+fn secret_bytes(secret: &SecretMaterial) -> Result<Vec<u8>> {
+    secret
+        .as_backend::<Vec<u8>>()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("mockito app secret backend is unavailable"))
 }
 
 fn verify_summary(serial: u32, local_storage: CheckStatus) -> VerifySummary {
@@ -705,12 +763,20 @@ fn parse_device_requires_pin_path(path: &str) -> Option<u32> {
 }
 
 fn parse_secret_name(body: &[u8]) -> Option<SecretName> {
-    match body {
+    let name = body.split(|byte| *byte == b'\n').next().unwrap_or(body);
+    match name {
         b"bw-email" => Some(SecretName::BwEmail),
         b"bw-password" => Some(SecretName::BwPassword),
         b"bws-access-token" => Some(SecretName::BwsAccessToken),
         _ => None,
     }
+}
+
+fn parse_secret_store_body(body: &[u8]) -> Option<(SecretName, Vec<u8>)> {
+    let split = body.iter().position(|byte| *byte == b'\n')?;
+    let (name, rest) = body.split_at(split);
+    let value = rest.get(1..)?;
+    Some((parse_secret_name(name)?, value.to_vec()))
 }
 
 fn parse_verify_report(body: &[u8]) -> Option<(u32, CheckStatus)> {
@@ -742,9 +808,13 @@ fn safe_error_message(path: &str, status: u16) -> String {
             "pass --serial in non-interactive use".to_string()
         }
         "/pin/read" => "pin verification failed".to_string(),
+        "/secret/bws-access-token/read" if status == 500 => {
+            "pass --stdin in non-interactive use".to_string()
+        }
         "/secret/streamed/read" => "--stdin requires pipe or redirect input".to_string(),
         "/bootstrap/read-fields" => "--stdin-json requires pipe or redirect input".to_string(),
         "/storage/setup/inspect" => "mockito app route failed: storage setup inspect".to_string(),
+        "/storage/store" if status == 409 => "selected YubiKey was already updated".to_string(),
         "/storage/store" => "mockito app route failed: storage store".to_string(),
         _ => format!("mockito app route failed: path={path} status={status}"),
     }

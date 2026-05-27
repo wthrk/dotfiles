@@ -35,7 +35,8 @@ mod tests {
     use crate::secrets::application::app_test_support::AppMockBoundary;
     use crate::secrets::domain::piv::SecretName;
     use crate::secrets::domain::values::{
-        EnrollPrimaryCommand, EnrollSpareCommand, PutCommand, RotateBwsTokenCommand, SetupCommand,
+        EnrollPrimaryCommand, EnrollSpareCommand, GetCommand, PutCommand, RotateBwsTokenCommand,
+        SetupCommand,
     };
 
     #[test]
@@ -102,6 +103,25 @@ mod tests {
     }
 
     #[test]
+    fn put_rejects_noninteractive_without_stdin_option() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_primary_serial(10);
+        boundary.mock.set_secret_error(
+            SecretName::BwsAccessToken,
+            "pass --stdin in non-interactive use",
+        );
+        let command = PutCommand {
+            name: SecretName::BwsAccessToken,
+            serial: Some(10),
+            force: true,
+        };
+        let err = super::run_put_with_prompt::run_put_with_prompt(command, &mut boundary)
+            .expect_err("put unexpectedly accepted missing --stdin");
+        assert_eq!(err.to_string(), "pass --stdin in non-interactive use");
+        Ok(())
+    }
+
+    #[test]
     fn rotate_bws_token_rejects_noninteractive_without_serial() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
         boundary.mock.set_primary_available(false);
@@ -111,6 +131,21 @@ mod tests {
         )
         .expect_err("rotate-bws-token unexpectedly succeeded");
         assert_eq!(err.to_string(), "pass --serial in non-interactive use");
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_bws_token_rejects_already_updated_serial() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        boundary
+            .mock
+            .set_store_already_updated_failure(SecretName::BwsAccessToken);
+        let err = super::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
+            RotateBwsTokenCommand { serial: Some(2001) },
+            &mut boundary,
+        )
+        .expect_err("rotate-bws-token accepted duplicate serial update");
+        assert_eq!(err.to_string(), "selected YubiKey was already updated");
         Ok(())
     }
 
@@ -229,5 +264,157 @@ mod tests {
         assert_eq!(err.to_string(), "bw-email must not be empty");
         assert!(boundary.mock.stores().is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn setup_stops_when_management_auth_precondition_fails() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_primary_serial(10);
+        boundary.mock.set_setup_failure(true);
+        boundary.mock.expect_event_times("setup-initialize", 0);
+
+        let err =
+            super::run_setup_with::run_setup_with(SetupCommand { serial: Some(10) }, &mut boundary)
+                .expect_err("setup unexpectedly ignored precondition failure");
+
+        assert_eq!(
+            err.to_string(),
+            "mockito app route failed: storage setup inspect"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn setup_uses_management_auth_for_precondition_and_manifest_write() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_setup()
+            .expect_setup_initialize();
+        boundary.mock.set_primary_serial(10);
+
+        super::run_setup_with::run_setup_with(SetupCommand { serial: Some(10) }, &mut boundary)
+    }
+
+    #[test]
+    fn put_get_and_verify_round_trip_through_device() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_store_times(3);
+        boundary.mock.set_primary_serial(10);
+        boundary
+            .mock
+            .set_secret_value(SecretName::BwEmail, b"user@example.com");
+        boundary
+            .mock
+            .set_secret_value(SecretName::BwPassword, b"password");
+        boundary
+            .mock
+            .set_secret_value(SecretName::BwsAccessToken, b"token");
+
+        for name in SecretName::iter() {
+            super::run_put_with_prompt::run_put_with_prompt(
+                PutCommand {
+                    name,
+                    serial: Some(10),
+                    force: false,
+                },
+                &mut boundary,
+            )?;
+        }
+        super::run_get_with::run_get_with(
+            GetCommand {
+                name: SecretName::BwEmail,
+                serial: Some(10),
+            },
+            &mut boundary,
+        )?;
+
+        assert_eq!(
+            boundary.mock.output_secret_value().as_deref(),
+            Some(&b"user@example.com"[..])
+        );
+        for name in SecretName::iter() {
+            assert!(
+                boundary
+                    .mock
+                    .stored_secret_value(name)
+                    .is_some_and(|secret| !secret.is_empty()),
+                "{name} should be stored"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn put_uses_management_auth_for_each_secret_write() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_store_times(2);
+        boundary.mock.set_primary_serial(10);
+
+        for name in [SecretName::BwEmail, SecretName::BwPassword] {
+            super::run_put_with_prompt::run_put_with_prompt(
+                PutCommand {
+                    name,
+                    serial: Some(10),
+                    force: false,
+                },
+                &mut boundary,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_bws_token_preserves_other_secrets() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_store_times(1)
+            .expect_report();
+        boundary.mock.set_primary_serial(10);
+        boundary
+            .mock
+            .set_loaded_secret_value(SecretName::BwEmail, b"user@example.com");
+        boundary
+            .mock
+            .set_loaded_secret_value(SecretName::BwPassword, b"password");
+        boundary
+            .mock
+            .set_loaded_secret_value(SecretName::BwsAccessToken, b"old-token");
+        boundary
+            .mock
+            .set_secret_value(SecretName::BwsAccessToken, b"new-token");
+
+        super::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
+            RotateBwsTokenCommand { serial: Some(10) },
+            &mut boundary,
+        )?;
+
+        assert_eq!(
+            boundary.mock.stored_secret_value(SecretName::BwEmail).as_deref(),
+            Some(&b"user@example.com"[..])
+        );
+        assert_eq!(
+            boundary
+                .mock
+                .stored_secret_value(SecretName::BwPassword)
+                .as_deref(),
+            Some(&b"password"[..])
+        );
+        assert_eq!(
+            boundary
+                .mock
+                .stored_secret_value(SecretName::BwsAccessToken)
+                .as_deref(),
+            Some(&b"new-token"[..])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_uses_management_auth_for_token_replacement() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_store_times(1)
+            .expect_report();
+        boundary.mock.set_primary_serial(10);
+
+        super::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
+            RotateBwsTokenCommand { serial: Some(10) },
+            &mut boundary,
+        )
     }
 }
