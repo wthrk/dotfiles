@@ -38,34 +38,27 @@ pub(crate) fn run_enroll_spare_with_prompt<
     } else {
         None
     };
-    let [
-        bw_email_storage,
-        bw_password_storage,
-        bws_access_token_storage,
-    ] = SecretStorageVerificationPlan::for_serial(primary_serial).into_targets();
-    let bw_email_inspection =
-        boundary.inspect_secret_storage_read(primary_serial, &bw_email_storage)?;
-    let bw_email_intent =
-        SecretStorageReadIntent::from_inspection(bw_email_storage, bw_email_inspection)?;
-    let bw_email = boundary.load_secret(primary_serial, bw_email_intent, primary_pin.as_ref())?;
-    let bw_password = boundary.inspect_secret_storage_read(primary_serial, &bw_password_storage)?;
-    let bw_password_intent =
-        SecretStorageReadIntent::from_inspection(bw_password_storage, bw_password)?;
-    let bw_password =
-        boundary.load_secret(primary_serial, bw_password_intent, primary_pin.as_ref())?;
-    let bws_access_token_inspection =
-        boundary.inspect_secret_storage_read(primary_serial, &bws_access_token_storage)?;
-    let bws_access_token_intent = SecretStorageReadIntent::from_inspection(
-        bws_access_token_storage,
-        bws_access_token_inspection,
-    )?;
-    let bws_access_token = boundary.load_secret(
-        primary_serial,
-        bws_access_token_intent,
-        primary_pin.as_ref(),
-    )?;
-    let document =
-        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
+    let [first_storage, second_storage, third_storage] =
+        SecretStorageVerificationPlan::for_serial(primary_serial).into_targets();
+    let first_inspection = boundary.inspect_secret_storage_read(primary_serial, &first_storage)?;
+    let first_intent = SecretStorageReadIntent::from_inspection(first_storage, first_inspection)?;
+    let first_document_storage = first_intent.storage.clone();
+    let first = boundary.load_secret(primary_serial, first_intent, primary_pin.as_ref())?;
+    let second_inspection =
+        boundary.inspect_secret_storage_read(primary_serial, &second_storage)?;
+    let second_intent =
+        SecretStorageReadIntent::from_inspection(second_storage, second_inspection)?;
+    let second_document_storage = second_intent.storage.clone();
+    let second = boundary.load_secret(primary_serial, second_intent, primary_pin.as_ref())?;
+    let third_inspection = boundary.inspect_secret_storage_read(primary_serial, &third_storage)?;
+    let third_intent = SecretStorageReadIntent::from_inspection(third_storage, third_inspection)?;
+    let third_document_storage = third_intent.storage.clone();
+    let third = boundary.load_secret(primary_serial, third_intent, primary_pin.as_ref())?;
+    let document = BootstrapSecretDocument::from_storage_materials([
+        (first_document_storage, first),
+        (second_document_storage, second),
+        (third_document_storage, third),
+    ])?;
     for (storage, value) in document.storage_entries(spare_serial) {
         let inspection = boundary.inspect_secret_storage_write(spare_serial, &storage)?;
         let intent = SecretStorageWriteIntent::store(storage, inspection)?;
