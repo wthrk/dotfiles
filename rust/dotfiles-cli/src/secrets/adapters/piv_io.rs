@@ -753,3 +753,15 @@ impl secret_consumer::SecretConsumer for YubikeyPinVerifier<'_> {
         self.0.verify_pin(bytes).map_err(anyhow::Error::new)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_device_adapter_uses_real_route_by_default() {
+        let adapter = SelectedDeviceAdapter::default();
+
+        assert!(matches!(adapter.inner, DeviceSelectionInner::Real(_)));
+    }
+}
