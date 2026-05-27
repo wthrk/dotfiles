@@ -143,6 +143,9 @@
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`: `protect_locked_secret_value` の doc comment を補正し、raw `Vec<u8>` と `LockGuard` が同一 allocation に対応する caller responsibility、`Zeroizing` 管理へ入る境界、interrupt 時に返さず Drop/zeroize へ進む失敗契約を明記した。
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`: `into_trimmed_bytes_and_lock` の doc comment を追加し、raw `Vec<u8>` と `LockGuard` への一時分離、zeroize 管理の一時的な外れ、失敗条件、caller が直後に `ProtectedSecret` へ移す責務を明記した。
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`: `open_decoded` の doc comment を追加し、content key / AAD / tag による検証済み復号境界、認証失敗時に plaintext として返さない失敗契約、返却値が `ProtectedSecret` に閉じることを明記した。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`: `wrap_content_key` の doc comment を追加し、YubiKey metadata public key の取得/parse 失敗、`ProtectedSecret` 借用境界、返値が opaque wrapped key であることを明記した。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`: `unwrap_content_key` の doc comment を追加し、PIN 検証済み前提、RSA decrypt 出力を support OAEP unwrap 境界へ渡す責務、失敗時に secret material を返さない契約を明記した。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`: `YubikeyPinVerifier` / `consume` の doc comment を追加し、PIN bytes を保持・複製せず SDK 呼び出し中だけ借用する secret 消費境界を明記した。
 - 挙動変更: なし。doc comment / file-level comment の追加のみ。
 - `direnv exec . cargo fmt --check`: 成功
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::support::`: 成功（19 passed, 0 failed, 64 filtered out）
@@ -167,8 +170,8 @@
 - 追加修正コミット: `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化`
 - 追加修正コミット: `この実装コメント補正 HEAD`（documentation reviewer Fail の doc comment 補正。自己 hash は本文へ埋め込まず git log で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 追加修正: `2bd7e0a..この実装コメント補正 HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` と `4c82da8` は security Fail の assertion output 秘匿化を含み、この実装コメント補正 HEAD は documentation Fail の support 暗号/安全境界 doc comment 補正を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `この実装コメント補正 HEAD`。この current-cycle 補正 HEAD は support 暗号/安全境界 doc comment 補正と review artifact / ledger 整合を同じ current-cycle 補正として保持する。補正 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..この実装コメント補正 HEAD` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail、documentation Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
+- 追加修正: `2bd7e0a..この実装コメント補正 HEAD` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含み、`b0c5fd5` と `4c82da8` は security Fail の assertion output 秘匿化を含み、この実装コメント補正 HEAD は documentation Fail の adapter/support 暗号・secret 消費境界 doc comment 補正を含む。
+- 紐付け: 実装/テスト差分の保存コミット終端は `この実装コメント補正 HEAD`。この current-cycle 補正 HEAD は adapter/support 暗号・secret 消費境界 doc comment 補正と review artifact / ledger 整合を同じ current-cycle 補正として保持する。補正 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..この実装コメント補正 HEAD` は直近レビュー Fail、app 回帰テスト未復旧 Fail、security Fail、documentation Fail を対象とする。`eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定` は `38d3a09` 基準の過去履歴 commit であり、`4c82da8` 後の current-cycle 証跡同期コミットとして扱わない。
 - 実装差分集合: `6fd4014..この実装コメント補正 HEAD` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`

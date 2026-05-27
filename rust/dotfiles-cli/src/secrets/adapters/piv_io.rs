@@ -612,6 +612,13 @@ impl YubikeySecretDevice {
         }
     }
 
+    /// YubiKey metadata の public key を support の RSA-OAEP key-wrap 境界へ接続する。
+    ///
+    /// adapter は `SECRET_SLOT` の public key metadata を取得し、取得失敗や parse 失敗を
+    /// 外部技術境界の失敗として返す。`key` は `ProtectedSecret` の借用として
+    /// `secret_random::rsa_oaep_encrypt` へ渡し、平文 key bytes を保持・複製しない。
+    /// 返値は YubiKey 公開鍵で wrap 済みの opaque bytes であり、domain/application が
+    /// content key の平文表現へ依存しないための adapter 暗号境界である。
     fn wrap_content_key(&mut self, key: &ProtectedSecret) -> Result<Vec<u8>> {
         let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
         let public = metadata
@@ -622,6 +629,13 @@ impl YubikeySecretDevice {
         secret_random::rsa_oaep_encrypt(&public, key)
     }
 
+    /// PIN 検証済み YubiKey で RSA decrypt し、content key を `ProtectedSecret` へ戻す。
+    ///
+    /// 呼び出し前に `verify_pin` が成功していることを前提にし、未検証状態では
+    /// secret material を返さず失敗する。adapter は YubiKey SDK の RSA decrypt 出力を
+    /// support の OAEP unwrap 境界へ渡すだけで、復元された key bytes を保持・複製しない。
+    /// decrypt または OAEP padding 検証に失敗した場合も `ProtectedSecret` を返さないため、
+    /// 実機 unwrap 境界の失敗が平文 key material の露出へつながらない。
     fn unwrap_content_key(&mut self, wrapped_key: &[u8]) -> Result<ProtectedSecret> {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
@@ -761,9 +775,14 @@ impl SecretDeviceIo for YubikeySecretDevice {
     }
 }
 
+/// `ProtectedSecret` の一時借用 bytes を YubiKey PIN verify へ消費させる境界。
+///
+/// この verifier は SDK 呼び出し中だけ borrowed bytes を渡し、PIN bytes を保持・複製しない。
+/// secret 消費の具体 SDK 呼び出しを `secret_consumer` 境界へ閉じ、adapter 外へ PIN 表現を出さない。
 struct YubikeyPinVerifier<'a>(&'a mut YubiKey);
 
 impl secret_consumer::SecretConsumer for YubikeyPinVerifier<'_> {
+    /// 借用中の PIN bytes を YubiKey SDK へ渡し、呼び出し完了後に参照を保持しない。
     fn consume(&mut self, bytes: &[u8]) -> Result<()> {
         self.0.verify_pin(bytes).map_err(anyhow::Error::new)
     }
