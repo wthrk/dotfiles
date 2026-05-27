@@ -32,11 +32,17 @@
 
 - `direnv exec . cargo check -p dotfiles-cli`
 - `direnv exec . cargo test -p dotfiles-cli --features secrets-test-stub --test secrets_cli --no-run`
+- `direnv exec . cargo xtask check`
+- `direnv exec . cargo clippy --workspace --all-targets`
+- `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`
 
 ## 結果要約
 
 - `cargo check`: 実行済み
 - `cargo test --no-run`: 実行済み
+- `cargo xtask check`: 実行済み（`8740b1a`）
+- `cargo clippy --workspace --all-targets`: 実行済み（`8740b1a`）
+- `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`8740b1a`）
 - 判定: `再レビュー待ち`
 
 ## 2026-05-26 ad92152 基準 current-cycle 追記
@@ -44,6 +50,7 @@
 - current-cycle 基準コミット: `ad92152 refactor(secrets): align yubikey storage boundaries`
 - 追加保存コミット: `f6d5d7c fix(secrets): keep pin secret access inside protection`
 - 追加保存コミット: `022c21b fix(secrets): resolve yubikey review blockers`
+- 確認証跡同期コミット: `8740b1a docs(secrets): sync yubikey current cycle commit`
 - 現行状態: `再レビュー待ち`
 - 確認前提: security は pass 済み。structural / operational Fail 修正は `022c21b` で反映済みであり、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
