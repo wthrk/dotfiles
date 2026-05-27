@@ -236,4 +236,52 @@ mod tests {
         assert!(result.is_err());
         Ok(())
     }
+
+    #[test]
+    fn sealed_blob_rejects_wrong_secret_id() -> Result<()> {
+        let plaintext = protected_from_test_bytes(b"secret-value")?;
+        let content_key = test_content_key()?;
+        let encoded = seal(SealRequest {
+            secret_id: TEST_SECRET_ID,
+            nonce: [5u8; NONCE_LEN],
+            wrapped_key: b"wrapped".to_vec(),
+            plaintext: &plaintext,
+            content_key: &content_key,
+            aad: TEST_AAD,
+        })?;
+
+        let result = open_with_key_unwrap(
+            &encoded,
+            TEST_SECRET_ID + 1,
+            |_| ProtectedSecret::try_clone(&content_key),
+            TEST_AAD,
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_blob_rejects_wrong_aad() -> Result<()> {
+        let plaintext = protected_from_test_bytes(b"secret-value")?;
+        let content_key = test_content_key()?;
+        let encoded = seal(SealRequest {
+            secret_id: TEST_SECRET_ID,
+            nonce: [6u8; NONCE_LEN],
+            wrapped_key: b"wrapped".to_vec(),
+            plaintext: &plaintext,
+            content_key: &content_key,
+            aad: TEST_AAD,
+        })?;
+
+        let result = open_with_key_unwrap(
+            &encoded,
+            TEST_SECRET_ID,
+            |_| ProtectedSecret::try_clone(&content_key),
+            b"wrong-aad",
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
 }
