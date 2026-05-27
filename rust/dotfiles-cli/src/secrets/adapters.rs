@@ -26,16 +26,9 @@ use crate::{
 ///
 /// 公開面は port trait 実装型としてのこの型に限定し、下位 adapter module や
 /// factory/helper 関数を crate 公開しない。
+#[derive(Default)]
 pub(crate) struct SecretsAdapters {
     boundary: piv_io::RealSecretsBoundary,
-}
-
-impl Default for SecretsAdapters {
-    fn default() -> Self {
-        Self {
-            boundary: piv_io::RealSecretsBoundary::default(),
-        }
-    }
 }
 
 impl DeviceSelectionPort for SecretsAdapters {
