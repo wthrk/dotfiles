@@ -11,7 +11,6 @@ use crate::secrets::{
         values::{EnrollSpareCommand, EnrollSummary},
     },
     ports::{self, SecretDevice},
-    support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
 };
 
 /// primary YubiKey から読み出した secret を prompt 運用の spare YubiKey へ複製する。
@@ -73,36 +72,9 @@ pub(crate) fn run_enroll_spare_with_prompt<
         let encoded = device
             .read_object(name.object_id())?
             .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-        let blob = SecretBlob::decode(&encoded)
-            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
-        if blob.name != name {
-            anyhow::bail!("YubiKey secret blob name does not match requested {}", name);
-        }
-        let SecretBlob {
-            name: blob_name,
-            nonce,
-            wrapped_key,
-            ciphertext,
-            tag,
-        } = blob;
-        let content_key = device.unwrap_key(&wrapped_key)?;
-        if content_key.len() != CONTENT_KEY_LEN {
-            anyhow::bail!("unwrapped YubiKey content key has invalid length");
-        }
-        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
-        let mut secret = ciphertext;
-        secret
-            .with_secret_mut(|secret_bytes| {
-                decrypt_detached(
-                    &cipher,
-                    &nonce,
-                    &blob_name.additional_data(device.serial()),
-                    secret_bytes,
-                    &tag,
-                )
-            })
-            .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob_name))?;
-        Ok(secret)
+        let blob = SecretBlob::decode_for_name(&encoded, name)?;
+        let content_key = device.unwrap_key(&blob.wrapped_key)?;
+        blob.decrypt_secret(device.serial(), &content_key)
     };
     let bw_email = read_secret(&mut primary_device, SecretName::BwEmail)?;
     let bw_password = read_secret(&mut primary_device, SecretName::BwPassword)?;
@@ -125,24 +97,15 @@ pub(crate) fn run_enroll_spare_with_prompt<
         content_key.with_secret_mut(|bytes| boundary.fill_random_bytes(bytes))?;
         let mut nonce = [0u8; NONCE_LEN];
         boundary.fill_random_bytes(&mut nonce)?;
-        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
-        let mut ciphertext = value.with_bytes(SecretMaterial::copy_from_slice)?;
-        let tag = ciphertext.with_secret_mut(|ciphertext_bytes| {
-            encrypt_detached(
-                &cipher,
-                &nonce,
-                &name.additional_data(device.serial()),
-                ciphertext_bytes,
-            )
-        })?;
         let wrapped_key = device.wrap_key(&content_key)?;
-        let blob = SecretBlob {
+        let blob = SecretBlob::encrypt_secret(
             name,
+            device.serial(),
             nonce,
             wrapped_key,
-            ciphertext,
-            tag,
-        };
+            value,
+            &content_key,
+        )?;
         let mut encoded = blob.encode()?;
         device.write_object(name.object_id(), &mut encoded)?;
     }
