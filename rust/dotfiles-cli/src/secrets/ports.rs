@@ -15,13 +15,6 @@ use super::domain::{
 };
 use anyhow::Result;
 
-/// 対話選択に提示する YubiKey 候補の port 境界データ。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceCandidate {
-    pub serial: u32,
-    pub label: String,
-}
-
 /// use case が primary 対象の serial を確定する capability 契約。
 pub trait DeviceSerialPort {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
@@ -44,14 +37,13 @@ pub trait PinInputPort {
 
 /// use case が必要とする secret 入力 capability 契約。
 pub trait SecretInputPort {
-    fn read_visible_secret(&self) -> Result<SecretMaterial>;
-    fn read_hidden_secret(&self, name: SecretName) -> Result<SecretMaterial>;
-    fn read_stdin_secret(&self) -> Result<SecretMaterial>;
+    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial>;
+    fn read_streamed_secret(&self) -> Result<SecretMaterial>;
 }
 
-/// stdin JSON から bootstrap secret 文書を取得する capability 契約。
+/// bootstrap secret 文書を取得する capability 契約。
 pub trait BootstrapSecretDocumentInputPort {
-    fn read_bootstrap_secret_document_noninteractive(&self) -> Result<BootstrapSecretDocument>;
+    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument>;
 }
 
 /// use case が復号済み secret を出力境界へ渡す契約。

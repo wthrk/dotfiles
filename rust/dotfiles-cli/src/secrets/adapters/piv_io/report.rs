@@ -9,9 +9,9 @@ use crate::{
     secrets::ports::ReportPort,
 };
 
-use super::RealSecretsBoundary;
+use super::JsonReportAdapter;
 
-impl ReportPort for RealSecretsBoundary {
+impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
         write_enroll_report_for_route(self.route, summary)
     }

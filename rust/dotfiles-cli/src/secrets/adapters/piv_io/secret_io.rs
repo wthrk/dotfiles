@@ -8,7 +8,7 @@ use crate::{
         domain::{
             manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument},
             material::SecretMaterial,
-            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN},
+            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, SecretName},
         },
         ports::{
             BootstrapSecretDocumentInputPort, PinInputPort, SecretInputPort, SecretOutputPort,
@@ -18,6 +18,7 @@ use crate::{
 };
 
 /// `dotfiles secrets` の標準入出力境界を担う runtime adapter。
+#[derive(Default)]
 pub(super) struct RealSecretIoAdapter;
 
 impl PinInputPort for RealSecretIoAdapter {
@@ -36,33 +37,26 @@ impl PinInputPort for RealSecretIoAdapter {
 }
 
 impl SecretInputPort for RealSecretIoAdapter {
-    fn read_visible_secret(&self) -> Result<SecretMaterial> {
-        let protected = process_io::read_visible_line(
-            "bw-email: ",
-            16 * 1024,
-            "visible secret input is too large",
-        )?;
-        Ok(protected)
-    }
-
-    fn read_hidden_secret(
-        &self,
-        name: crate::secrets::domain::piv::SecretName,
-    ) -> Result<SecretMaterial> {
+    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial> {
+        if name.uses_visible_input() {
+            return process_io::read_visible_line(
+                "bw-email: ",
+                16 * 1024,
+                "visible secret input is too large",
+            );
+        }
         let prompt = format!("{name}: ");
-        let protected =
-            process_io::read_hidden_line(&prompt, 16 * 1024, "hidden secret input is too large")?;
-        Ok(protected)
+        process_io::read_hidden_line(&prompt, 16 * 1024, "hidden secret input is too large")
     }
 
-    fn read_stdin_secret(&self) -> Result<SecretMaterial> {
+    fn read_streamed_secret(&self) -> Result<SecretMaterial> {
         let protected = process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")?;
         Ok(protected)
     }
 }
 
 impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
-    fn read_bootstrap_secret_document_noninteractive(&self) -> Result<BootstrapSecretDocument> {
+    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
         let protected =
             process_io::read_stdin_all(64 * 1024, "bootstrap secret JSON input is too large")?;
         let mut fields = protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)?;

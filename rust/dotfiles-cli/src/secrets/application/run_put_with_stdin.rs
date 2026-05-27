@@ -12,7 +12,7 @@ pub(crate) fn run_put_with_stdin<B: ports::SecretInputPort + SecretStoragePort>(
     boundary: &mut B,
 ) -> Result<()> {
     let serial = command.required_serial()?;
-    let secret = boundary.read_stdin_secret()?;
+    let secret = boundary.read_streamed_secret()?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force)?;

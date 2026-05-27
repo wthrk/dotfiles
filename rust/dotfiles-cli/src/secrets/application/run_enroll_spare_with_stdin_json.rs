@@ -32,7 +32,7 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     let setup_inspection = boundary.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
     boundary.initialize_secret_storage(spare_serial, setup_intent)?;
-    let document = boundary.read_bootstrap_secret_document_noninteractive()?;
+    let document = boundary.read_bootstrap_secret_document()?;
     for (storage, value) in document.storage_entries(spare_serial) {
         let inspection = boundary.inspect_secret_storage_write(spare_serial, &storage)?;
         let intent = SecretStorageWriteIntent::store(storage, inspection)?;

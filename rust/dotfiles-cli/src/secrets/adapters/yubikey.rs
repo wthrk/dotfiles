@@ -13,7 +13,7 @@ use crate::secrets::{
         material::SecretMaterial,
         piv::{PivObjectId, SecretStorageSpec},
     },
-    ports::DeviceCandidate,
+    adapters::DeviceCandidate,
     support::protection::{sealed_blob, secret_consumer, secret_random},
 };
 

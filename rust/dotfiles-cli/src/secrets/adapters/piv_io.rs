@@ -1,8 +1,5 @@
 //! YubiKey PIV discovery/selection と実プロセス I/O を port 契約へ接続する adapter。
 
-mod device;
-#[cfg(feature = "secrets-test-stub")]
-mod device_test_stub;
 mod report;
 mod secret_io;
 
@@ -21,61 +18,43 @@ use crate::{
         },
     },
     secrets::ports::{
-        BootstrapSecretDocumentInputPort, DeviceCandidate, DevicePinPolicyPort, DeviceSerialPort,
+        BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort,
         PinInputPort, SecretInputPort, SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort,
     },
 };
 
-use self::{device::SelectedDeviceAdapter, secret_io::RealSecretIoAdapter};
-use super::SecretDeviceIo;
+use self::secret_io::RealSecretIoAdapter;
+use super::{DeviceCandidate, RealDeviceIo, SecretDeviceIo};
 
 trait SelectedDeviceDiscoveryIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<device::SelectedSecretDevice>;
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice>;
 }
 
-#[cfg(feature = "secrets-test-stub")]
-trait StubDeviceDiscoveryIo {
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<device::SelectedSecretDevice>;
-}
-
-trait DeviceAdapterRouteLabel {
-    fn adapter_route_label(&self) -> &'static str;
-}
-
-/// 実機 device・実プロセス I/O・report 出力を束ねる runtime adapter。
-///
-/// この型は複数 port の実装を 1 箇所に集約し、application 層へ concrete I/O を漏らさない境界として機能する。
-pub(crate) struct RealSecretsBoundary {
+/// device serial 解決と PIN 要否判定を port 契約へ翻訳する adapter。
+pub(crate) struct DeviceSelectionAdapter {
     device: SelectedDeviceAdapter,
-    secret_io: RealSecretIoAdapter,
-    route: &'static str,
 }
 
-impl Default for RealSecretsBoundary {
+impl Default for DeviceSelectionAdapter {
     fn default() -> Self {
-        let device = SelectedDeviceAdapter::default();
-        let route = device.adapter_route_label();
         Self {
-            device,
-            secret_io: RealSecretIoAdapter,
-            route,
+            device: SelectedDeviceAdapter::default(),
         }
     }
 }
 
-impl RealSecretsBoundary {
+impl DeviceSelectionAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         SelectedDeviceDiscoveryIo::discover_devices(&mut self.device)
     }
 
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<device::SelectedSecretDevice> {
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
         SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
     }
 }
 
-impl DeviceSerialPort for RealSecretsBoundary {
+impl DeviceSerialPort for DeviceSelectionAdapter {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
         if let Some(serial) = requested {
             return Ok(serial);
@@ -89,53 +68,73 @@ impl DeviceSerialPort for RealSecretsBoundary {
     }
 }
 
-impl SpareDeviceSerialPort for RealSecretsBoundary {
+impl SpareDeviceSerialPort for DeviceSelectionAdapter {
     fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32> {
         self.resolve_device_serial(requested_spare_serial)
     }
 }
 
-impl DevicePinPolicyPort for RealSecretsBoundary {
+impl DevicePinPolicyPort for DeviceSelectionAdapter {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
         let device = self.open_device_by_serial(serial)?;
         Ok(device.requires_pin_input())
     }
 }
 
-impl PinInputPort for RealSecretsBoundary {
+/// process I/O を secret 入出力 port 契約へ翻訳する adapter。
+#[derive(Default)]
+pub(crate) struct ProcessIoAdapter {
+    secret_io: RealSecretIoAdapter,
+}
+
+impl PinInputPort for ProcessIoAdapter {
     fn read_pin(&self) -> Result<SecretMaterial> {
         self.secret_io.read_pin()
     }
 }
 
-impl SecretInputPort for RealSecretsBoundary {
-    fn read_visible_secret(&self) -> Result<SecretMaterial> {
-        self.secret_io.read_visible_secret()
+impl SecretInputPort for ProcessIoAdapter {
+    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial> {
+        self.secret_io.read_named_secret(name)
     }
 
-    fn read_hidden_secret(&self, name: SecretName) -> Result<SecretMaterial> {
-        self.secret_io.read_hidden_secret(name)
-    }
-
-    fn read_stdin_secret(&self) -> Result<SecretMaterial> {
-        self.secret_io.read_stdin_secret()
+    fn read_streamed_secret(&self) -> Result<SecretMaterial> {
+        self.secret_io.read_streamed_secret()
     }
 }
 
-impl BootstrapSecretDocumentInputPort for RealSecretsBoundary {
-    fn read_bootstrap_secret_document_noninteractive(&self) -> Result<BootstrapSecretDocument> {
-        self.secret_io
-            .read_bootstrap_secret_document_noninteractive()
+impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
+    fn read_bootstrap_secret_document(&self) -> Result<BootstrapSecretDocument> {
+        self.secret_io.read_bootstrap_secret_document()
     }
 }
 
-impl SecretOutputPort for RealSecretsBoundary {
+impl SecretOutputPort for ProcessIoAdapter {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
         self.secret_io.write_secret(secret)
     }
 }
 
-impl SecretStoragePort for RealSecretsBoundary {
+/// YubiKey object storage を secret storage port 契約へ翻訳する adapter。
+pub(crate) struct StorageAdapter {
+    device: SelectedDeviceAdapter,
+}
+
+impl Default for StorageAdapter {
+    fn default() -> Self {
+        Self {
+            device: SelectedDeviceAdapter::default(),
+        }
+    }
+}
+
+impl StorageAdapter {
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
+        SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
+    }
+}
+
+impl SecretStoragePort for StorageAdapter {
     fn inspect_secret_storage_setup(
         &mut self,
         serial: u32,
@@ -225,5 +224,141 @@ impl SecretStoragePort for RealSecretsBoundary {
         device
             .open_from_storage(intent.storage.clone(), &intent.encoded)
             .map_err(|error| intent.decode_error(error))
+    }
+}
+
+/// JSON report 出力を report port 契約へ翻訳する adapter。
+pub(crate) struct JsonReportAdapter {
+    route: &'static str,
+}
+
+impl Default for JsonReportAdapter {
+    fn default() -> Self {
+        Self { route: "real" }
+    }
+}
+
+// Device selection is kept inside this port-implementation file so adapters/ does not expose a helper module.
+use crate::secrets::adapters::yubikey::{RealDeviceAdapter, YubikeySecretDevice};
+
+
+const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
+
+/// 同一 production command path 上で device 選択 route を確定する adapter。
+///
+/// production 経路は実機 `real` route 固定で、feature/env による runtime 差し替えを持たない。
+pub(crate) struct SelectedDeviceAdapter {
+    inner: DeviceSelectionInner,
+}
+
+impl Default for SelectedDeviceAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+enum DeviceSelectionInner {
+    Real(RealDeviceAdapter),
+}
+
+pub(crate) enum SelectedSecretDevice {
+    Real(YubikeySecretDevice),
+}
+
+impl SecretDeviceIo for SelectedSecretDevice {
+    fn key_exists(&mut self) -> Result<bool> {
+        match self {
+            Self::Real(device) => device.key_exists(),
+        }
+    }
+
+    fn check_key_generation_preconditions(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.check_key_generation_preconditions(),
+        }
+    }
+
+    fn check_management_auth_preconditions(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.check_management_auth_preconditions(),
+        }
+    }
+
+    fn generate_key(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.generate_key(),
+        }
+    }
+
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Real(device) => device.read_object(object_id),
+        }
+    }
+
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_object(object_id, value),
+        }
+    }
+
+    fn requires_pin_input(&self) -> bool {
+        match self {
+            Self::Real(device) => device.requires_pin_input(),
+        }
+    }
+
+    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
+        match self {
+            Self::Real(device) => device.verify_pin(pin),
+        }
+    }
+
+    fn seal_for_storage(
+        &mut self,
+        storage: crate::secrets::domain::piv::SecretStorageSpec,
+        plaintext: &crate::secrets::domain::material::SecretMaterial,
+    ) -> Result<Vec<u8>> {
+        match self {
+            Self::Real(device) => device.seal_for_storage(storage, plaintext),
+        }
+    }
+
+    fn open_from_storage(
+        &mut self,
+        storage: crate::secrets::domain::piv::SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<crate::secrets::domain::material::SecretMaterial> {
+        match self {
+            Self::Real(device) => device.open_from_storage(storage, encoded),
+        }
+    }
+}
+
+impl SelectedDeviceAdapter {
+    /// production command path の device route を実機 `real` に固定する。
+    ///
+    /// テスト fixture は production route を差し替えず、別の harness 側で扱う。
+    fn new() -> Self {
+        eprintln!("{ADAPTER_ROUTE_AUDIT_PREFIX}=real");
+        Self {
+            inner: DeviceSelectionInner::Real(RealDeviceAdapter),
+        }
+    }
+}
+
+impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
+        match &mut self.inner {
+            DeviceSelectionInner::Real(inner) => RealDeviceIo::discover_devices(inner),
+        }
+    }
+
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
+        match &mut self.inner {
+            DeviceSelectionInner::Real(inner) => {
+                RealDeviceIo::open_device_by_serial(inner, serial).map(SelectedSecretDevice::Real)
+            }
+        }
     }
 }
