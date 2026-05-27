@@ -236,7 +236,7 @@ impl SecretDevice for TestStubSecretDevice {
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
-        if let Some(name) = SecretName::iter().find(|name| name.object_id() == object_id) {
+        if let Some(name) = SecretName::from_object_id(object_id) {
             if env::var(CORRUPT_SECRET_ENV).as_deref() == Ok(name.to_string().as_str()) {
                 return Ok(Some(b"not-json".to_vec()));
             }
@@ -249,7 +249,7 @@ impl SecretDevice for TestStubSecretDevice {
             .borrow_mut()
             .objects
             .insert(object_id, value.to_vec());
-        if let Some(name) = SecretName::iter().find(|name| name.object_id() == object_id) {
+        if let Some(name) = SecretName::from_object_id(object_id) {
             eprintln!(
                 "{}",
                 format_write_event(self.serial, &name.to_string(), REDACTED_WRITE_VALUE)

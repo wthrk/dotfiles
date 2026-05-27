@@ -112,6 +112,15 @@ impl SecretName {
         }
     }
 
+    /// PIV data object ID に対応する secret 名を返す。
+    ///
+    /// object ID と secret 名の逆引きも storage layout の一部なので、adapter は
+    /// 独自に `object_id` 対応を再実装せずこの domain 規則を使う。
+    #[cfg(feature = "secrets-test-stub")]
+    pub fn from_object_id(object_id: PivObjectId) -> Option<Self> {
+        Self::iter().find(|name| name.object_id() == object_id)
+    }
+
     /// 対話入力時に可視入力を許可する secret かどうかを返す。
     ///
     /// 可視入力可否は secret の意味に依存する domain rule で、端末 I/O 実装の詳細は含まない。
