@@ -4,21 +4,45 @@ use crate::{
     Result,
     secrets::{
         domain::{
-            blob::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob, TAG_LEN},
+            blob::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob},
             manifest::SecretManifest,
             material::SecretMaterial,
             piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName},
-            values::DeviceCandidate,
         },
-        ports::{DeviceSelectionPort, SecretDevice},
+        ports::{DeviceCandidate, DeviceSelectionPort, SecretDevice},
     },
 };
+use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit};
 use dotfiles_cli_secrets_test_contract::{
-    PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV, SPARE_SERIAL,
+    CORRUPT_SECRET_ENV, PRIMARY_SERIAL, PRIMARY_STUB_STATE_ENV, READ_PIN_FROM_TTY_ENV,
+    SEED_BW_EMAIL_ENV, SEED_BW_PASSWORD_ENV, SEED_BWS_ACCESS_TOKEN_ENV, SPARE_SERIAL,
     SPARE_STUB_STATE_ENV, STUB_STATE_ENV, StubState, format_write_event,
 };
 
 const REDACTED_WRITE_VALUE: &str = "<redacted>";
+const STUB_WRAP_PREFIX: &[u8] = b"dotfiles-stub-wrapped-v1:";
+
+fn wrap_stub_content_key(key: &SecretMaterial) -> Vec<u8> {
+    key.with_secret(|bytes| {
+        let mut wrapped = Vec::with_capacity(STUB_WRAP_PREFIX.len() + bytes.len());
+        wrapped.extend_from_slice(STUB_WRAP_PREFIX);
+        wrapped.extend(bytes.iter().map(|byte| byte ^ 0xa5));
+        wrapped
+    })
+}
+
+fn unwrap_stub_content_key(wrapped_key: &[u8]) -> Result<SecretMaterial> {
+    let Some(masked) = wrapped_key.strip_prefix(STUB_WRAP_PREFIX) else {
+        anyhow::bail!("invalid stub-wrapped content key");
+    };
+    let mut key = SecretMaterial::new(masked.len())?;
+    key.with_secret_mut(|bytes| {
+        for (dst, source) in bytes.iter_mut().zip(masked.iter()) {
+            *dst = *source ^ 0xa5;
+        }
+    });
+    Ok(key)
+}
 
 /// env 契約の state 文字列を `StubState` へ変換する。
 ///
@@ -41,12 +65,34 @@ fn default_state_for_serial(serial: u32) -> StubState {
 }
 
 fn make_seed_blob(name: SecretName, plaintext: &[u8]) -> Vec<u8> {
+    let nonce = [0u8; NONCE_LEN];
+    let Ok(content_key) = SecretMaterial::copy_from_slice(&[0u8; CONTENT_KEY_LEN]) else {
+        return Vec::new();
+    };
+    let Ok(mut ciphertext) = SecretMaterial::copy_from_slice(plaintext) else {
+        return Vec::new();
+    };
+    let Ok(cipher) = content_key.with_bytes(Aes256Gcm::new_from_slice) else {
+        return Vec::new();
+    };
+    let Ok(tag) = ciphertext.with_secret_mut(|bytes| {
+        cipher.encrypt_in_place_detached(
+            aes_gcm::Nonce::from_slice(&nonce),
+            &name.additional_data(PRIMARY_SERIAL),
+            bytes,
+        )
+    }) else {
+        return Vec::new();
+    };
+    let Ok(tag) = tag.as_slice().try_into() else {
+        return Vec::new();
+    };
     let blob = SecretBlob {
         name,
-        nonce: [0u8; NONCE_LEN],
-        wrapped_key: vec![0u8; CONTENT_KEY_LEN],
-        ciphertext: plaintext.to_vec(),
-        tag: [0u8; TAG_LEN],
+        nonce,
+        wrapped_key: wrap_stub_content_key(&content_key),
+        ciphertext,
+        tag,
     };
     blob.encode().unwrap_or_default()
 }
@@ -73,7 +119,9 @@ impl TestStubDeviceAdapter {
             devices: BTreeMap::from([
                 (
                     PRIMARY_SERIAL,
-                    Rc::new(RefCell::new(TestStubDeviceState::from_state(primary_state))),
+                    Rc::new(RefCell::new(
+                        TestStubDeviceState::from_state(primary_state).with_seed_env(),
+                    )),
                 ),
                 (
                     SPARE_SERIAL,
@@ -114,6 +162,7 @@ impl DeviceSelectionPort for TestStubDeviceAdapter {
             serial,
             state,
             read_pin_from_tty: self.read_pin_from_tty,
+            pin_verified: false,
         })
     }
 }
@@ -123,14 +172,7 @@ pub(crate) struct TestStubSecretDevice {
     serial: u32,
     state: Rc<RefCell<TestStubDeviceState>>,
     read_pin_from_tty: bool,
-}
-
-/// same-route 維持のため、real/stub を同一 `SecretDevice` 契約で包む合成デバイス。
-///
-/// caller はこの enum を分岐根拠に使わず、port 契約経由でのみ操作する責務を負う。
-pub(crate) enum SelectedSecretDevice {
-    Real(crate::secrets::adapters::yubikey::YubikeySecretDevice),
-    Stub(TestStubSecretDevice),
+    pin_verified: bool,
 }
 
 /// serial ごとの object map と初期化状態を保持する stub 内部状態。
@@ -190,6 +232,27 @@ impl TestStubDeviceState {
             .remove(&SecretName::BwsAccessToken.object_id());
         state
     }
+
+    fn with_seed_env(mut self) -> Self {
+        let seeds = [
+            (SecretName::BwEmail, SEED_BW_EMAIL_ENV),
+            (SecretName::BwPassword, SEED_BW_PASSWORD_ENV),
+            (SecretName::BwsAccessToken, SEED_BWS_ACCESS_TOKEN_ENV),
+        ];
+        for (name, env_key) in seeds {
+            if let Ok(value) = env::var(env_key) {
+                self.key_exists = true;
+                if !self.objects.contains_key(&PivObjectId::MANIFEST) {
+                    if let Ok(bytes) = SecretManifest::expected().encode() {
+                        self.objects.insert(PivObjectId::MANIFEST, bytes);
+                    }
+                }
+                self.objects
+                    .insert(name.object_id(), make_seed_blob(name, value.as_bytes()));
+            }
+        }
+        self
+    }
 }
 
 impl SecretDevice for TestStubSecretDevice {
@@ -215,6 +278,11 @@ impl SecretDevice for TestStubSecretDevice {
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
+        if let Some(name) = SecretName::iter().find(|name| name.object_id() == object_id) {
+            if env::var(CORRUPT_SECRET_ENV).as_deref() == Ok(name.to_string().as_str()) {
+                return Ok(Some(b"not-json".to_vec()));
+            }
+        }
         Ok(self.state.borrow().objects.get(&object_id).cloned())
     }
 
@@ -233,7 +301,7 @@ impl SecretDevice for TestStubSecretDevice {
     }
 
     fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
-        Ok(key.as_ref().to_vec())
+        Ok(wrap_stub_content_key(key))
     }
 
     fn requires_pin_input(&self) -> bool {
@@ -248,81 +316,14 @@ impl SecretDevice for TestStubSecretDevice {
         if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
             anyhow::bail!("YubiKey PIN must be 6 to 8 bytes");
         }
+        self.pin_verified = true;
         Ok(())
     }
 
     fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
-        Ok(SecretMaterial::from_vec(wrapped_key.to_vec()))
-    }
-}
-
-impl SecretDevice for SelectedSecretDevice {
-    /// same-route 検証で real/stub どちらでも同じ serial 契約を返す。
-    fn serial(&self) -> u32 {
-        match self {
-            Self::Real(device) => device.serial(),
-            Self::Stub(device) => device.serial(),
+        if self.read_pin_from_tty && !self.pin_verified {
+            anyhow::bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-    }
-    fn key_exists(&mut self) -> Result<bool> {
-        match self {
-            Self::Real(device) => device.key_exists(),
-            Self::Stub(device) => device.key_exists(),
-        }
-    }
-    fn check_key_generation_preconditions(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.check_key_generation_preconditions(),
-            Self::Stub(device) => device.check_key_generation_preconditions(),
-        }
-    }
-    fn check_management_auth_preconditions(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.check_management_auth_preconditions(),
-            Self::Stub(device) => device.check_management_auth_preconditions(),
-        }
-    }
-    fn generate_key(&mut self) -> Result<()> {
-        match self {
-            Self::Real(device) => device.generate_key(),
-            Self::Stub(device) => device.generate_key(),
-        }
-    }
-    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
-        match self {
-            Self::Real(device) => device.read_object(object_id),
-            Self::Stub(device) => device.read_object(object_id),
-        }
-    }
-    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
-        match self {
-            Self::Real(device) => device.write_object(object_id, value),
-            Self::Stub(device) => device.write_object(object_id, value),
-        }
-    }
-    fn wrap_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
-        match self {
-            Self::Real(device) => device.wrap_key(key),
-            Self::Stub(device) => device.wrap_key(key),
-        }
-    }
-    /// same-route 契約の要点として、呼び出し側は variant を意識せず PIN 要否だけを判定する。
-    fn requires_pin_input(&self) -> bool {
-        match self {
-            Self::Real(device) => device.requires_pin_input(),
-            Self::Stub(device) => device.requires_pin_input(),
-        }
-    }
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
-        match self {
-            Self::Real(device) => device.verify_pin(pin),
-            Self::Stub(device) => device.verify_pin(pin),
-        }
-    }
-    fn unwrap_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
-        match self {
-            Self::Real(device) => device.unwrap_key(wrapped_key),
-            Self::Stub(device) => device.unwrap_key(wrapped_key),
-        }
+        unwrap_stub_content_key(wrapped_key)
     }
 }

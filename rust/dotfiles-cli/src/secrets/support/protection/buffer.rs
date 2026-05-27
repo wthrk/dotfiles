@@ -2,7 +2,7 @@
 
 use std::io::{self, Read, Write};
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
@@ -60,7 +60,7 @@ impl ProtectedInputBuffer {
     ) -> Result<Self> {
         let read_limit = limit + 3;
         let mut buffer = Self::new(read_limit, session)?;
-        buffer.read_capped_from(&mut reader, read_limit)?;
+        buffer.read_line_capped_from(&mut reader, read_limit)?;
         Ok(buffer)
     }
 
@@ -72,6 +72,27 @@ impl ProtectedInputBuffer {
                 break;
             }
             self.len += read;
+        }
+        Ok(())
+    }
+
+    /// reader から 1 行ぶんだけ読み込み、最初の LF か `cap` 到達で停止する。
+    ///
+    /// この関数は停止地点より後ろの bytes を読み捨てず reader 側へ残す。caller は trailing bytes が
+    /// 未読のまま残り得る前提で、その後の再読込や追加 prompt の境界を管理する責務を持つ。
+    fn read_line_capped_from(&mut self, reader: &mut impl Read, cap: usize) -> io::Result<()> {
+        let target_len = cap.min(self.buffer.len());
+        let mut byte = [0u8; 1];
+        while self.len < target_len {
+            let read = reader.read(&mut byte)?;
+            if read == 0 {
+                break;
+            }
+            self.buffer[self.len] = byte[0];
+            self.len += 1;
+            if matches!(byte[0], b'\n') {
+                break;
+            }
         }
         Ok(())
     }
@@ -98,15 +119,15 @@ impl ProtectedInputBuffer {
         }
     }
 
-    fn into_trimmed_bytes_and_lock(self) -> (Vec<u8>, region::LockGuard) {
+    fn into_trimmed_bytes_and_lock(self) -> Result<(Vec<u8>, region::LockGuard)> {
         let mut this = self;
         let mut wrapped = std::mem::take(&mut this.buffer);
         let mut buffer = std::mem::take(&mut *wrapped);
         let len = this.len;
-        let lock = match this.lock.take() {
-            Some(lock) => lock,
-            None => panic!("protected input buffer lock must exist"),
-        };
+        let lock = this
+            .lock
+            .take()
+            .ok_or_else(|| anyhow!("protected input buffer lock missing"))?;
         let len = if buffer[..len].ends_with(b"\r\n") {
             len - 2
         } else if buffer[..len].ends_with(b"\n") {
@@ -116,7 +137,7 @@ impl ProtectedInputBuffer {
         };
         buffer.truncate(len);
 
-        (buffer, lock)
+        Ok((buffer, lock))
     }
 
     /// 行入力 bytes を、同じ memory lock guard を引き継ぐ保護済み値へ移す。
@@ -131,8 +152,8 @@ impl ProtectedInputBuffer {
         if self.trimmed_len() > limit {
             bail!(too_large_error);
         }
-        let (buffer, lock) = self.into_trimmed_bytes_and_lock();
-        session.protect_locked_secret_value(buffer, Some(lock))
+        let (buffer, lock) = self.into_trimmed_bytes_and_lock()?;
+        session.protect_locked_secret_value(buffer, lock)
     }
 }
 
@@ -194,6 +215,18 @@ mod tests {
         let err = input.into_protected_secret_line(&session, 3, "too large");
 
         assert!(err.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn read_line_from_stops_at_first_newline() -> Result<()> {
+        let session = crate::secrets::support::protection::SecretSession::start()?;
+        let mut cursor = Cursor::new(b"first\nsecond\n");
+        let first = ProtectedInputBuffer::read_line_from(&mut cursor, 16, &session)?;
+        let second = ProtectedInputBuffer::read_line_from(&mut cursor, 16, &session)?;
+
+        assert_eq!(first.as_slice(), b"first\n");
+        assert_eq!(second.as_slice(), b"second\n");
         Ok(())
     }
 

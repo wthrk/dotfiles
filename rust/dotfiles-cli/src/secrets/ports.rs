@@ -3,14 +3,20 @@
 //! この module は capability 契約のみを定義し、具体的な parser / 暗号処理 / 端末 I/O /
 //! device 操作手順は adapter 側の実装へ閉じ込める。
 
-use anyhow::Result;
-
 use super::domain::{
     manifest::BootstrapSecretDocument,
     material::SecretMaterial,
     piv::{PivObjectId, SecretName},
-    values::{DeviceCandidate, EnrollSummary, VerifySummary},
+    values::{EnrollSummary, VerifySummary},
 };
+use anyhow::Result;
+
+/// 対話選択に提示する YubiKey 候補の port 境界データ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCandidate {
+    pub serial: u32,
+    pub label: String,
+}
 
 /// use case が device 候補列挙と open を要求する capability 契約。
 pub trait DeviceSelectionPort {
@@ -59,37 +65,6 @@ pub trait BootstrapSecretDocumentInputPort {
 /// use case が復号済み secret を出力境界へ渡す契約。
 pub trait SecretOutputPort {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()>;
-}
-
-/// use case が保存済み secret を読み出すための契約。
-pub trait SecretLoadPort {
-    fn load_secret(
-        &mut self,
-        serial: u32,
-        name: SecretName,
-        pin: Option<&SecretMaterial>,
-    ) -> Result<SecretMaterial>;
-}
-
-/// use case が secret を保存するための契約。
-pub trait SecretStorePort {
-    fn store_secret(
-        &mut self,
-        serial: u32,
-        name: SecretName,
-        force: bool,
-        secret: &SecretMaterial,
-    ) -> Result<()>;
-}
-
-/// use case が YubiKey storage layout を初期化するための契約。
-pub trait StorageSetupPort {
-    fn setup_storage(&mut self, serial: u32) -> Result<()>;
-}
-
-/// use case が local storage の整合性を検証する契約。
-pub trait StorageVerifyPort {
-    fn verify_local_storage(&mut self, serial: u32, pin: Option<&SecretMaterial>) -> Result<()>;
 }
 
 /// use case が結果報告を出力境界へ渡すための契約。

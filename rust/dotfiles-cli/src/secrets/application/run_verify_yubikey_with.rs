@@ -2,8 +2,14 @@ use anyhow::bail;
 
 use crate::Result;
 use crate::secrets::{
-    domain::values::{VerifySummary, VerifyYubikeyCommand},
-    ports::{self},
+    domain::{
+        blob::{CONTENT_KEY_LEN, SecretBlob},
+        manifest::SecretManifest,
+        piv::{PivObjectId, SecretName},
+        values::{VerifySummary, VerifyYubikeyCommand},
+    },
+    ports::{self, SecretDevice},
+    support::aead::{aes_256_gcm_from_key, decrypt_detached},
 };
 
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
@@ -11,7 +17,10 @@ use crate::secrets::{
 /// local storage 検証を完了条件の先頭に固定し、未実装の外部確認は report 境界で通知して
 /// 明示的に停止することで、verify 結果の責任範囲を曖昧にしない。
 pub(crate) fn run_verify_yubikey_with<
-    B: ports::DevicePinPolicyPort + ports::PinInputPort + ports::StorageVerifyPort + ports::ReportPort,
+    B: ports::DevicePinPolicyPort
+        + ports::PinInputPort
+        + ports::DeviceSelectionPort
+        + ports::ReportPort,
 >(
     command: VerifyYubikeyCommand,
     boundary: &mut B,
@@ -23,7 +32,49 @@ pub(crate) fn run_verify_yubikey_with<
     } else {
         None
     };
-    boundary.verify_local_storage(serial, pin.as_ref())?;
+    let mut device = boundary.open_device_by_serial(serial)?;
+    if device.requires_pin_input() {
+        let Some(pin) = pin.as_ref() else {
+            bail!("PIN is required for this operation");
+        };
+        device.verify_pin(pin)?;
+    }
+    SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+    for name in SecretName::iter() {
+        let encoded = device
+            .read_object(name.object_id())?
+            .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
+        let blob = SecretBlob::decode(&encoded)
+            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
+        if blob.name != name {
+            bail!("YubiKey secret blob name does not match requested {}", name);
+        }
+        let SecretBlob {
+            name: blob_name,
+            nonce,
+            wrapped_key,
+            ciphertext,
+            tag,
+        } = blob;
+        let content_key = device.unwrap_key(&wrapped_key)?;
+        if content_key.len() != CONTENT_KEY_LEN {
+            bail!("unwrapped YubiKey content key has invalid length");
+        }
+        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
+        let mut secret = ciphertext;
+        secret
+            .with_secret_mut(|secret_bytes| {
+                decrypt_detached(
+                    &cipher,
+                    &nonce,
+                    &blob_name.additional_data(device.serial()),
+                    secret_bytes,
+                    &tag,
+                )
+            })
+            .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob_name))?;
+        secret.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+    }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(
             serial,
@@ -51,6 +102,8 @@ mod tests {
         verify_calls: usize,
     }
 
+    struct FakeDevice;
+
     impl ports::DevicePinPolicyPort for FakeBoundary {
         fn device_requires_pin(&mut self, _serial: u32) -> Result<bool> {
             Ok(self.requires_pin)
@@ -58,17 +111,20 @@ mod tests {
     }
     impl ports::PinInputPort for FakeBoundary {
         fn read_pin(&self) -> Result<SecretMaterial> {
-            Ok(SecretMaterial::from_vec(b"123456".to_vec()))
+            SecretMaterial::copy_from_slice(b"123456")
         }
     }
-    impl ports::StorageVerifyPort for FakeBoundary {
-        fn verify_local_storage(
-            &mut self,
-            _serial: u32,
-            _pin: Option<&SecretMaterial>,
-        ) -> Result<()> {
+    impl ports::DeviceSelectionPort for FakeBoundary {
+        type Device = FakeDevice;
+        fn discover_devices(&mut self) -> Result<Vec<ports::DeviceCandidate>> {
+            Ok(vec![ports::DeviceCandidate {
+                serial: 2001,
+                label: "fake".to_string(),
+            }])
+        }
+        fn open_device_by_serial(&mut self, _serial: u32) -> Result<Self::Device> {
             self.verify_calls += 1;
-            Ok(())
+            Ok(FakeDevice)
         }
     }
     impl ports::ReportPort for FakeBoundary {
@@ -81,6 +137,69 @@ mod tests {
         fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
             let _ = summary;
             Ok(())
+        }
+    }
+
+    impl SecretDevice for FakeDevice {
+        fn serial(&self) -> u32 {
+            2001
+        }
+        fn key_exists(&mut self) -> Result<bool> {
+            Ok(true)
+        }
+        fn check_key_generation_preconditions(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn check_management_auth_preconditions(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn generate_key(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
+            if object_id == PivObjectId::MANIFEST {
+                return Ok(Some(
+                    crate::secrets::domain::manifest::SecretManifest::expected().encode()?,
+                ));
+            }
+            let name = SecretName::iter()
+                .find(|candidate| candidate.object_id() == object_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown object id"))?;
+            let nonce = [0u8; 12];
+            let key = SecretMaterial::copy_from_slice(&[0u8; 32])?;
+            let cipher = key.with_bytes(crate::secrets::support::aead::aes_256_gcm_from_key)?;
+            let mut ciphertext = SecretMaterial::copy_from_slice(b"value")?;
+            let tag = ciphertext.with_secret_mut(|bytes| {
+                crate::secrets::support::aead::encrypt_detached(
+                    &cipher,
+                    &nonce,
+                    &name.additional_data(2001),
+                    bytes,
+                )
+            })?;
+            let blob = crate::secrets::domain::blob::SecretBlob {
+                name,
+                nonce,
+                wrapped_key: vec![1u8; 32],
+                ciphertext,
+                tag,
+            };
+            Ok(Some(blob.encode()?))
+        }
+        fn write_object(&mut self, _object_id: PivObjectId, _value: &mut [u8]) -> Result<()> {
+            Ok(())
+        }
+        fn wrap_key(&mut self, _key: &SecretMaterial) -> Result<Vec<u8>> {
+            Ok(vec![])
+        }
+        fn requires_pin_input(&self) -> bool {
+            false
+        }
+        fn verify_pin(&mut self, _pin: &SecretMaterial) -> Result<()> {
+            Ok(())
+        }
+        fn unwrap_key(&mut self, _wrapped_key: &[u8]) -> Result<SecretMaterial> {
+            SecretMaterial::copy_from_slice(&[0u8; 32])
         }
     }
 

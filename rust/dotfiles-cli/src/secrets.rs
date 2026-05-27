@@ -160,11 +160,7 @@ where
         + ports::PinInputPort
         + ports::SecretInputPort
         + ports::BootstrapSecretDocumentInputPort
-        + ports::SecretLoadPort
         + ports::SecretOutputPort
-        + ports::SecretStorePort
-        + ports::StorageSetupPort
-        + ports::StorageVerifyPort
         + ports::ReportPort
         + ports::RandomBytesPort,
 {

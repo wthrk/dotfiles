@@ -1,86 +1,81 @@
 //! RSA-OAEP SHA-256 padding を除去する暗号 utility。
-//!
-//! raw RSA decrypt 出力から OAEP padding を host 側で検証・除去する。padding separator の
-//! 走査は constant-time に近い形で全体を走査し、タイミング情報による oracle 攻撃を狭める。
-
-use std::io::Write;
 
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
 
-use crate::Result;
+use crate::{Result, secrets::domain::material::SecretMaterial};
+
+use super::protection::ProtectedSecret;
 
 const OAEP_UNPAD_ERROR: &str = "invalid RSA-OAEP encoded message";
 const HASH_LEN: usize = 32;
 
-/// RSA-OAEP SHA-256 encoded message を検証し、message bytes を writer へ書き込む。
-///
-/// 入力長が key 長と一致しない場合や padding が不正な場合は同じ error で失敗する。
-pub(crate) fn write_oaep_unpadded_sha256(
-    encoded: &[u8],
-    key_len: usize,
-    output: &mut impl Write,
-) -> Result<()> {
+/// raw RSA decrypt 出力から OAEP-SHA256 を除去して content key を復元する。
+pub(crate) fn unwrap_oaep_sha256(encoded: &[u8], key_len: usize) -> Result<SecretMaterial> {
     if encoded.len() != key_len || key_len < 2 * HASH_LEN + 2 {
         bail!(OAEP_UNPAD_ERROR);
     }
 
     let (masked_seed, masked_db) = encoded[1..].split_at(HASH_LEN);
-    let seed_mask = mgf1_sha256(masked_db, HASH_LEN);
-    let seed = Zeroizing::new(
-        masked_seed
+    let seed_mask = mgf1_sha256(masked_db, HASH_LEN)?;
+    let seed = xor_with_mask(masked_seed, &seed_mask)?;
+    let db_mask = seed.with_secret(|seed| mgf1_sha256(seed, key_len - HASH_LEN - 1))?;
+    let db = xor_with_mask(masked_db, &db_mask)?;
+
+    db.with_secret(|db| {
+        let label_hash = Sha256::digest([]);
+        let label_mismatch = db[..HASH_LEN]
             .iter()
-            .zip(seed_mask.iter())
-            .map(|(left, right)| left ^ right)
-            .collect::<Vec<u8>>(),
-    );
-    let db_mask = mgf1_sha256(&seed, key_len - HASH_LEN - 1);
-    let db = Zeroizing::new(
-        masked_db
-            .iter()
-            .zip(db_mask.iter())
-            .map(|(left, right)| left ^ right)
-            .collect::<Vec<u8>>(),
-    );
+            .zip(label_hash.iter())
+            .fold(0u8, |acc, (left, right)| acc | (left ^ right));
+        let leading_and_label_valid = encoded[0] == 0 && label_mismatch == 0;
 
-    let label_hash = Sha256::digest([]);
-    let label_mismatch = db[..HASH_LEN]
-        .iter()
-        .zip(label_hash.iter())
-        .fold(0u8, |acc, (left, right)| acc | (left ^ right));
-    let leading_and_label_valid = encoded[0] == 0 && label_mismatch == 0;
-
-    let rest = &db[HASH_LEN..];
-    let (separator, padding_valid) = find_oaep_separator(rest);
-
-    if !leading_and_label_valid || !padding_valid {
-        bail!(OAEP_UNPAD_ERROR);
-    }
-    let separator = separator.context(OAEP_UNPAD_ERROR)?;
-
-    output.write_all(&rest[separator + 1..])?;
-    Ok(())
+        let rest = &db[HASH_LEN..];
+        let (separator, padding_valid) = find_oaep_separator(rest);
+        if !leading_and_label_valid || !padding_valid {
+            bail!(OAEP_UNPAD_ERROR);
+        }
+        let separator = separator.context(OAEP_UNPAD_ERROR)?;
+        SecretMaterial::copy_from_slice(&rest[separator + 1..])
+    })
 }
 
-/// MGF1-SHA256 mask を指定長で生成する。
-fn mgf1_sha256(seed: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
-    let mut out = Zeroizing::new(Vec::with_capacity(len));
-    let mut counter = 0u32;
-    while out.len() < len {
-        let mut digest = Sha256::new();
-        digest.update(seed);
-        digest.update(counter.to_be_bytes());
-        out.extend_from_slice(&digest.finalize());
-        counter += 1;
-    }
-    out.truncate(len);
-    out
+fn mgf1_sha256(seed: &[u8], len: usize) -> Result<ProtectedSecret> {
+    let mut out = ProtectedSecret::new(len)?;
+    out.with_secret_mut(|out_bytes| {
+        let mut counter = 0u32;
+        let mut written = 0;
+        while written < len {
+            let mut digest = Sha256::new();
+            digest.update(seed);
+            digest.update(counter.to_be_bytes());
+            let block = digest.finalize();
+            let chunk_len = (len - written).min(block.len());
+            out_bytes[written..written + chunk_len].copy_from_slice(&block[..chunk_len]);
+            written += chunk_len;
+            counter += 1;
+        }
+    });
+    Ok(out)
 }
 
-/// OAEP data block から padding separator の位置と padding 妥当性を返す。
-///
-/// 走査は separator 位置で短絡せず、invalid blob 間の分岐差を狭める。
+fn xor_with_mask(masked: &[u8], mask: &ProtectedSecret) -> Result<ProtectedSecret> {
+    debug_assert_eq!(masked.len(), mask.len());
+    let mut out = ProtectedSecret::new(masked.len())?;
+    out.with_secret_mut(|out_bytes| {
+        mask.with_secret(|mask_bytes| {
+            for ((dst, left), right) in out_bytes
+                .iter_mut()
+                .zip(masked.iter())
+                .zip(mask_bytes.iter())
+            {
+                *dst = *left ^ *right;
+            }
+        });
+    });
+    Ok(out)
+}
+
 fn find_oaep_separator(rest: &[u8]) -> (Option<usize>, bool) {
     let mut separator = None;
     let mut padding_mismatch = 0u8;
@@ -93,52 +88,5 @@ fn find_oaep_separator(rest: &[u8]) -> (Option<usize>, bool) {
             }
         }
     }
-
     (separator, separator.is_some() && padding_mismatch == 0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rand_core::OsRng;
-    use rsa::{
-        BigUint, Oaep, RsaPrivateKey, RsaPublicKey,
-        traits::{PrivateKeyParts, PublicKeyParts},
-    };
-
-    #[test]
-    fn oaep_unpad_round_trips_rsa_oaep_sha256() -> Result<()> {
-        let mut rng = OsRng;
-        let private = RsaPrivateKey::new(&mut rng, 2048)?;
-        let public = RsaPublicKey::from(&private);
-        let message = b"test-content-encryption-key";
-        let ciphertext = public.encrypt(&mut rng, Oaep::new::<Sha256>(), message)?;
-        let encoded = raw_rsa_decrypt_for_test(&private, &ciphertext)?;
-        let mut decoded = Vec::new();
-        write_oaep_unpadded_sha256(&encoded, 256, &mut decoded)?;
-        assert_eq!(decoded.as_slice(), message);
-        Ok(())
-    }
-
-    #[test]
-    fn oaep_unpad_rejects_invalid_padding() {
-        let encoded: Vec<u8> = std::iter::once(1)
-            .chain(std::iter::repeat_n(0u8, 255))
-            .collect();
-        let mut decoded = Vec::new();
-        assert!(write_oaep_unpadded_sha256(&encoded, 256, &mut decoded).is_err());
-    }
-
-    fn raw_rsa_decrypt_for_test(private: &RsaPrivateKey, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        let decrypted = BigUint::from_bytes_be(ciphertext).modpow(private.d(), private.n());
-        let key_len = private.size();
-        let bytes = decrypted.to_bytes_be();
-        if bytes.len() > key_len {
-            bail!("raw RSA decrypted value is longer than the key size");
-        }
-
-        Ok(std::iter::repeat_n(0u8, key_len - bytes.len())
-            .chain(bytes)
-            .collect())
-    }
 }

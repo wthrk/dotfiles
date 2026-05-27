@@ -76,8 +76,11 @@ impl InterruptRegistration {
     /// 複数 use case が同一 process で連続実行されても handler の重複登録を避け、
     /// 途中失敗時に片側だけ残る状態を作らないことを安全境界として維持する。
     fn install_handlers(&mut self) -> Result<()> {
-        let sigint = register_interrupt(signal::SIGINT)?;
-        let sigterm = match register_interrupt(signal::SIGTERM) {
+        let sigint = signal_hook::flag::register(signal::SIGINT, Arc::clone(&INTERRUPTED))
+            .context("failed to install signal handler")?;
+        let sigterm = match signal_hook::flag::register(signal::SIGTERM, Arc::clone(&INTERRUPTED))
+            .context("failed to install signal handler")
+        {
             Ok(sigterm) => sigterm,
             Err(err) => {
                 signal_hook::low_level::unregister(sigint);
@@ -111,27 +114,55 @@ pub(crate) struct SecretSession {
 /// secret 本文を session lifetime に閉じ込める保護済み所有値。
 ///
 /// 平文 bytes は `with_secret` / `with_secret_mut` の借用中だけ公開する。
-/// memory lock は `SecretSession::protect_locked_secret_value` 経由で渡された場合のみ保持され、
-/// lock の有無に関わらず Drop 時に zeroize を実行する。
+/// memory lock は入力 session から引き継いだ値、または clone/copy 用の locked destination
+/// として確保した値で保持し、Drop 時に zeroize を実行する。
 pub struct ProtectedSecret {
     value: Zeroizing<Vec<u8>>,
-    _lock: Option<region::LockGuard>,
+    _lock: region::LockGuard,
 }
 
+impl PartialEq for ProtectedSecret {
+    fn eq(&self, other: &Self) -> bool {
+        self.with_secret(|left| other.with_secret(|right| left == right))
+    }
+}
+
+impl Eq for ProtectedSecret {}
+
 impl ProtectedSecret {
-    /// 既存呼び出し経路互換のために生 bytes から保護値を構築する。
+    /// zeroize 対象の locked buffer を指定長で新規確保する。
     ///
-    /// 新規コードでは `from_vec` を優先し、この関数は API 移行期間の薄い互換境界として使う。
-    pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        Self::from_vec(bytes)
+    /// 返値は全 byte が 0 で初期化され、plaintext 書き込み前に memory lock 済みである。
+    pub(crate) fn new(len: usize) -> Result<Self> {
+        Self::allocate_locked_destination(len)
     }
 
-    /// bytes 所有権を受け取り、保護済み secret として保持する。
-    pub(crate) fn from_vec(bytes: Vec<u8>) -> Self {
-        Self {
-            value: Zeroizing::new(bytes),
-            _lock: None,
-        }
+    /// 生 bytes から lock 済み destination buffer を確保して保護値を構築する。
+    pub(crate) fn copy_from_slice(source: &[u8]) -> Result<Self> {
+        Self::copy_into_new_locked_buffer(source)
+    }
+
+    /// 指定長の destination buffer を確保し、plaintext copy 前に memory lock を取得する。
+    fn allocate_locked_destination(len: usize) -> Result<Self> {
+        let lock_len = len.max(1);
+        let mut value = vec![0u8; lock_len];
+        let lock = region::lock(value.as_ptr(), lock_len)
+            .context("failed to lock protected secret memory")?;
+        value.truncate(len);
+        Ok(Self {
+            value: Zeroizing::new(value),
+            _lock: lock,
+        })
+    }
+
+    /// source 長から destination buffer を確保し、lock 取得後に source bytes をコピーする。
+    ///
+    /// raw bytes を受け取るこの経路は protection 実装内部に閉じ、任意 caller 向けの
+    /// `ProtectedSecret` constructor として公開しない。
+    fn copy_into_new_locked_buffer(source: &[u8]) -> Result<Self> {
+        let mut destination = Self::allocate_locked_destination(source.len())?;
+        destination.value.as_mut_slice().copy_from_slice(source);
+        Ok(destination)
     }
 
     /// 平文 bytes を closure の実行中だけ借用として公開する。
@@ -156,20 +187,6 @@ impl ProtectedSecret {
     /// 長さ情報のみを露出し、平文 bytes 本体は返さない境界を維持する。
     pub(crate) fn len(&self) -> usize {
         self.value.len()
-    }
-
-    /// 保護済み secret の所有権を Vec<u8> として取り出す。
-    ///
-    /// 呼び出し後に元の `ProtectedSecret` は残らないため、不要な平文複製を作らずに
-    /// domain 値へ所有権を移譲できる。
-    pub(crate) fn into_vec(self) -> Vec<u8> {
-        let mut wrapped = std::mem::ManuallyDrop::new(self);
-        let mut value = std::mem::take(&mut wrapped.value);
-        let vec = std::mem::take(&mut *value);
-        if let Some(lock) = wrapped._lock.take() {
-            drop(lock);
-        }
-        vec
     }
 }
 
@@ -211,13 +228,15 @@ impl SecretSession {
     pub(super) fn protect_locked_secret_value(
         &self,
         value: Vec<u8>,
-        lock: Option<region::LockGuard>,
+        lock: region::LockGuard,
     ) -> Result<ProtectedSecret> {
         let protected = ProtectedSecret {
             value: Zeroizing::new(value),
             _lock: lock,
         };
-        interrupted_result()?;
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            bail!("operation interrupted");
+        }
         Ok(protected)
     }
 }
@@ -239,41 +258,6 @@ impl SecretMemoryGuard {
 
     /// 一時入力 buffer の生メモリ範囲を lock し、swap 退避と core dump 露出を抑止する。
     fn lock_transient_buffer(&self, ptr: *const u8, len: usize) -> Result<region::LockGuard> {
-        lock_memory_range(ptr, len).context("failed to lock input buffer memory")
+        region::lock(ptr, len).context("failed to lock input buffer memory")
     }
-}
-
-/// signal hook crate への登録をこの境界に閉じ込める。
-///
-/// 外部 interaction（プロセス signal handler 登録）の失敗を `anyhow::Result` に正規化し、
-/// 呼び出し側が crate 固有 error 型へ依存しないようにする。
-/// signal-hook への具体登録をこの関数で閉じ込め、呼び出し側の責務を
-/// 「保護区間開始の可否判定」だけに固定する。
-///
-/// ここでの失敗は保護境界の不成立を意味するため、recover せず即座に
-/// `Result::Err` として上位へ返す。
-fn register_interrupt(signal: i32) -> Result<SigId> {
-    signal_hook::flag::register(signal, Arc::clone(&INTERRUPTED))
-        .context("failed to install signal handler")
-}
-
-/// support 層の停止条件境界。
-///
-/// signal handler が立てた中断フラグを集約判定し、true の場合は処理継続を禁止して
-/// `Err` を返す。caller は保護区間の主要ステップ境界ごとに本関数を呼び、以降の
-/// memory 処理や外部 I/O を続行しない責務を負う。
-fn interrupted_result() -> Result<()> {
-    if INTERRUPTED.load(Ordering::SeqCst) {
-        bail!("operation interrupted");
-    }
-
-    Ok(())
-}
-
-/// support 層の安全性境界として生メモリ範囲の lock を一元化する。
-///
-/// 呼び出し側は有効な pointer/length ペアのみを渡し、取得した guard を必要期間
-/// 保持する責務を負う。lock 失敗は保護境界不成立として扱い、recover せず上位へ返す。
-fn lock_memory_range(ptr: *const u8, len: usize) -> Result<region::LockGuard> {
-    region::lock(ptr, len).map_err(Into::into)
 }

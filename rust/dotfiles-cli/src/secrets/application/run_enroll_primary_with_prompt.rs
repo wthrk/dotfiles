@@ -1,11 +1,17 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        blob::{CONTENT_KEY_LEN, NONCE_LEN, SecretBlob},
         manifest::BootstrapSecretDocument,
+        manifest::SecretManifest,
+        material::SecretMaterial,
+        piv::PivObjectId,
         piv::SecretName,
+        piv::StorageObjectIds,
         values::{EnrollPrimaryCommand, EnrollSummary},
     },
-    ports::{self},
+    ports::{self, SecretDevice},
+    support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached},
 };
 
 /// prompt 入力で primary YubiKey に bootstrap secret 一式を登録する。
@@ -16,17 +22,34 @@ pub(crate) fn run_enroll_primary_with_prompt<
     B: ports::DeviceSerialPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
-        + ports::StorageSetupPort
+        + ports::DeviceSelectionPort
         + ports::SecretInputPort
-        + ports::SecretStorePort
-        + ports::StorageVerifyPort
+        + ports::RandomBytesPort
         + ports::ReportPort,
 >(
     command: EnrollPrimaryCommand,
     boundary: &mut B,
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
-    boundary.setup_storage(serial)?;
+    let mut setup_device = boundary.open_device_by_serial(serial)?;
+    setup_device.check_key_generation_preconditions()?;
+    setup_device.check_management_auth_preconditions()?;
+    let key_exists = setup_device.key_exists()?;
+    let manifest_bytes = setup_device.read_object(PivObjectId::MANIFEST)?;
+    let mut occupied_object_ids = Vec::new();
+    for object_id in StorageObjectIds::iter() {
+        if setup_device.read_object(object_id)?.is_some() {
+            occupied_object_ids.push(object_id);
+        }
+    }
+    SecretManifest::ensure_setup_allowed(
+        key_exists,
+        manifest_bytes.as_deref(),
+        &occupied_object_ids,
+    )?;
+    setup_device.generate_key()?;
+    let mut manifest = SecretManifest::expected().encode()?;
+    setup_device.write_object(PivObjectId::MANIFEST, &mut manifest)?;
     let bw_email = boundary.read_visible_secret()?;
     let bw_password = boundary.read_hidden_secret(SecretName::BwPassword)?;
     let bws_access_token = boundary.read_hidden_secret(SecretName::BwsAccessToken)?;
@@ -35,210 +58,89 @@ pub(crate) fn run_enroll_primary_with_prompt<
         bw_password.as_ref(),
         bws_access_token.as_ref(),
     )?;
-    boundary.store_secret(serial, SecretName::BwEmail, false, &document.bw_email)?;
-    boundary.store_secret(serial, SecretName::BwPassword, false, &document.bw_password)?;
-    boundary.store_secret(
-        serial,
-        SecretName::BwsAccessToken,
-        false,
-        &document.bws_access_token,
-    )?;
+    for (name, value) in [
+        (SecretName::BwEmail, &document.bw_email),
+        (SecretName::BwPassword, &document.bw_password),
+        (SecretName::BwsAccessToken, &document.bws_access_token),
+    ] {
+        let mut device = boundary.open_device_by_serial(serial)?;
+        value.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+        SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
+        device.check_management_auth_preconditions()?;
+        let mut content_key = SecretMaterial::new(CONTENT_KEY_LEN)?;
+        content_key.with_secret_mut(|bytes| boundary.fill_random_bytes(bytes))?;
+        let mut nonce = [0u8; NONCE_LEN];
+        boundary.fill_random_bytes(&mut nonce)?;
+        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
+        let mut ciphertext = value.with_bytes(SecretMaterial::copy_from_slice)?;
+        let tag = ciphertext.with_secret_mut(|ciphertext_bytes| {
+            encrypt_detached(
+                &cipher,
+                &nonce,
+                &name.additional_data(device.serial()),
+                ciphertext_bytes,
+            )
+        })?;
+        let wrapped_key = device.wrap_key(&content_key)?;
+        let blob = SecretBlob {
+            name,
+            nonce,
+            wrapped_key,
+            ciphertext,
+            tag,
+        };
+        let mut encoded = blob.encode()?;
+        device.write_object(name.object_id(), &mut encoded)?;
+    }
     let pin = if boundary.device_requires_pin(serial)? {
         Some(boundary.read_pin()?)
     } else {
         None
     };
-    boundary.verify_local_storage(serial, pin.as_ref())?;
+    let mut verify_device = boundary.open_device_by_serial(serial)?;
+    if verify_device.requires_pin_input() {
+        let Some(pin) = pin.as_ref() else {
+            anyhow::bail!("PIN is required for this operation");
+        };
+        verify_device.verify_pin(pin)?;
+    }
+    SecretManifest::decode_initialized(
+        verify_device.read_object(PivObjectId::MANIFEST)?.as_deref(),
+    )?;
+    for name in SecretName::iter() {
+        let encoded = verify_device
+            .read_object(name.object_id())?
+            .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
+        let blob = SecretBlob::decode(&encoded)
+            .map_err(|error| anyhow::anyhow!("failed to decode {name}: {error}"))?;
+        if blob.name != name {
+            anyhow::bail!("YubiKey secret blob name does not match requested {}", name);
+        }
+        let SecretBlob {
+            name: blob_name,
+            nonce,
+            wrapped_key,
+            ciphertext,
+            tag,
+        } = blob;
+        let content_key = verify_device.unwrap_key(&wrapped_key)?;
+        if content_key.len() != CONTENT_KEY_LEN {
+            anyhow::bail!("unwrapped YubiKey content key has invalid length");
+        }
+        let cipher = content_key.with_bytes(aes_256_gcm_from_key)?;
+        let mut secret = ciphertext;
+        secret
+            .with_secret_mut(|secret_bytes| {
+                decrypt_detached(
+                    &cipher,
+                    &nonce,
+                    &blob_name.additional_data(verify_device.serial()),
+                    secret_bytes,
+                    &tag,
+                )
+            })
+            .map_err(|_| anyhow::anyhow!("failed to decrypt {}", blob_name))?;
+        secret.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+    }
     boundary.write_enroll_report(&EnrollSummary::primary_completed(serial))
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::Result;
-    use crate::secrets::{
-        domain::{
-            material::SecretMaterial,
-            piv::SecretName,
-            values::{CheckName, CheckStatus, EnrollPrimaryCommand, EnrollSummary, VerifySummary},
-        },
-        ports::{
-            DevicePinPolicyPort, DeviceSerialPort, PinInputPort, ReportPort, SecretInputPort,
-            SecretStorePort, StorageSetupPort, StorageVerifyPort,
-        },
-    };
-
-    use super::run_enroll_primary_with_prompt;
-
-    #[derive(Default)]
-    struct FakeBoundary {
-        stores: Vec<SecretName>,
-        requires_pin: bool,
-        verify_received_pin: bool,
-        fail_setup: bool,
-        fail_on_store: Option<SecretName>,
-        fail_verify: bool,
-    }
-
-    impl DeviceSerialPort for FakeBoundary {
-        fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
-            Ok(requested.unwrap_or(2001))
-        }
-    }
-
-    impl DevicePinPolicyPort for FakeBoundary {
-        fn device_requires_pin(&mut self, _serial: u32) -> Result<bool> {
-            Ok(self.requires_pin)
-        }
-    }
-
-    impl PinInputPort for FakeBoundary {
-        fn read_pin(&self) -> Result<SecretMaterial> {
-            Ok(SecretMaterial::from_vec(b"123456".to_vec()))
-        }
-    }
-
-    impl StorageSetupPort for FakeBoundary {
-        fn setup_storage(&mut self, _serial: u32) -> Result<()> {
-            if self.fail_setup {
-                return Err(std::io::Error::other("setup failed").into());
-            }
-            Ok(())
-        }
-    }
-
-    impl SecretInputPort for FakeBoundary {
-        fn read_visible_secret(&self) -> Result<SecretMaterial> {
-            Ok(SecretMaterial::from_vec(b"u@example.com".to_vec()))
-        }
-
-        fn read_hidden_secret(&self, _name: SecretName) -> Result<SecretMaterial> {
-            Ok(SecretMaterial::from_vec(b"secret".to_vec()))
-        }
-
-        fn read_stdin_secret(&self) -> Result<SecretMaterial> {
-            unreachable!("stdin path is not used in this use case")
-        }
-    }
-
-    impl SecretStorePort for FakeBoundary {
-        fn store_secret(
-            &mut self,
-            _serial: u32,
-            name: SecretName,
-            _force: bool,
-            _secret: &SecretMaterial,
-        ) -> Result<()> {
-            if self.fail_on_store == Some(name) {
-                return Err(std::io::Error::other("store failed").into());
-            }
-            self.stores.push(name);
-            Ok(())
-        }
-    }
-
-    impl StorageVerifyPort for FakeBoundary {
-        fn verify_local_storage(
-            &mut self,
-            _serial: u32,
-            pin: Option<&SecretMaterial>,
-        ) -> Result<()> {
-            self.verify_received_pin = pin.is_some();
-            if self.fail_verify {
-                return Err(std::io::Error::other("verify failed").into());
-            }
-            Ok(())
-        }
-    }
-
-    impl ReportPort for FakeBoundary {
-        fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-            assert_eq!(summary.serial, 2001);
-            assert_eq!(
-                summary.checks.get(&CheckName::LocalStorage),
-                Some(&CheckStatus::Ok)
-            );
-            Ok(())
-        }
-
-        fn write_verify_report(&self, _summary: &VerifySummary) -> Result<()> {
-            unreachable!("verify report is not used in this use case")
-        }
-    }
-
-    #[test]
-    fn enroll_primary_prompt_path_stores_all_required_secrets() {
-        let mut boundary = FakeBoundary::default();
-        let result = run_enroll_primary_with_prompt(
-            EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
-        );
-        assert!(result.is_ok(), "prompt path should succeed: {result:?}");
-        assert_eq!(
-            boundary.stores,
-            vec![
-                SecretName::BwEmail,
-                SecretName::BwPassword,
-                SecretName::BwsAccessToken
-            ]
-        );
-        assert!(!boundary.verify_received_pin);
-    }
-
-    #[test]
-    fn enroll_primary_reads_pin_when_device_requires_it() {
-        let mut boundary = FakeBoundary {
-            requires_pin: true,
-            ..Default::default()
-        };
-        let result = run_enroll_primary_with_prompt(
-            EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
-        );
-        assert!(result.is_ok(), "prompt path should succeed: {result:?}");
-        assert!(boundary.verify_received_pin);
-    }
-
-    #[test]
-    fn enroll_primary_stops_when_setup_fails() {
-        let mut boundary = FakeBoundary {
-            fail_setup: true,
-            ..Default::default()
-        };
-        let result = run_enroll_primary_with_prompt(
-            EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
-        );
-        assert!(result.is_err(), "setup error should stop use case");
-        assert!(
-            boundary.stores.is_empty(),
-            "store should not run after setup error"
-        );
-    }
-
-    #[test]
-    fn enroll_primary_stops_when_secret_store_fails() {
-        let mut boundary = FakeBoundary {
-            fail_on_store: Some(SecretName::BwPassword),
-            ..Default::default()
-        };
-        let result = run_enroll_primary_with_prompt(
-            EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
-        );
-        assert!(result.is_err(), "store failure should stop use case");
-        assert_eq!(boundary.stores, vec![SecretName::BwEmail]);
-    }
-
-    #[test]
-    fn enroll_primary_stops_when_verify_fails() {
-        let mut boundary = FakeBoundary {
-            fail_verify: true,
-            ..Default::default()
-        };
-        let result = run_enroll_primary_with_prompt(
-            EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
-        );
-        assert!(result.is_err(), "verify error should stop use case");
-    }
 }

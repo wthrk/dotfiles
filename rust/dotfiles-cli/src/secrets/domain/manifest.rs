@@ -138,9 +138,9 @@ impl BootstrapSecretDocument {
         bws_access_token: &[u8],
     ) -> Result<Self> {
         Ok(Self {
-            bw_email: SecretMaterial::from_vec(bw_email.to_vec()),
-            bw_password: SecretMaterial::from_vec(bw_password.to_vec()),
-            bws_access_token: SecretMaterial::from_vec(bws_access_token.to_vec()),
+            bw_email: SecretMaterial::copy_from_slice(bw_email)?,
+            bw_password: SecretMaterial::copy_from_slice(bw_password)?,
+            bws_access_token: SecretMaterial::copy_from_slice(bws_access_token)?,
         })
     }
 

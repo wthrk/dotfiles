@@ -9,11 +9,13 @@ use dotfiles_cli_secrets_test_contract::{
 
 #[cfg(feature = "secrets-test-stub")]
 use crate::secrets::adapters::piv_io::device_test_stub::{
-    SelectedSecretDevice, TestStubDeviceAdapter,
+    TestStubDeviceAdapter, TestStubSecretDevice,
 };
+#[cfg(feature = "secrets-test-stub")]
+use crate::secrets::ports::SecretDevice;
 use crate::secrets::{
-    adapters::yubikey::RealDeviceAdapter, domain::values::DeviceCandidate,
-    ports::DeviceSelectionPort,
+    adapters::yubikey::RealDeviceAdapter,
+    ports::{DeviceCandidate, DeviceSelectionPort},
 };
 
 #[cfg(not(feature = "secrets-test-stub"))]
@@ -55,6 +57,105 @@ enum DeviceSelectionInner {
     Real(RealDeviceAdapter),
     #[cfg(feature = "secrets-test-stub")]
     Stub(TestStubDeviceAdapter),
+}
+
+#[cfg(feature = "secrets-test-stub")]
+pub(crate) enum SelectedSecretDevice {
+    Real(<RealDeviceAdapter as DeviceSelectionPort>::Device),
+    Stub(TestStubSecretDevice),
+}
+
+#[cfg(feature = "secrets-test-stub")]
+impl SecretDevice for SelectedSecretDevice {
+    fn serial(&self) -> u32 {
+        match self {
+            Self::Real(device) => device.serial(),
+            Self::Stub(device) => device.serial(),
+        }
+    }
+
+    fn key_exists(&mut self) -> Result<bool> {
+        match self {
+            Self::Real(device) => device.key_exists(),
+            Self::Stub(device) => device.key_exists(),
+        }
+    }
+
+    fn check_key_generation_preconditions(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.check_key_generation_preconditions(),
+            Self::Stub(device) => device.check_key_generation_preconditions(),
+        }
+    }
+
+    fn check_management_auth_preconditions(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.check_management_auth_preconditions(),
+            Self::Stub(device) => device.check_management_auth_preconditions(),
+        }
+    }
+
+    fn generate_key(&mut self) -> Result<()> {
+        match self {
+            Self::Real(device) => device.generate_key(),
+            Self::Stub(device) => device.generate_key(),
+        }
+    }
+
+    fn read_object(
+        &mut self,
+        object_id: crate::secrets::domain::piv::PivObjectId,
+    ) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Real(device) => device.read_object(object_id),
+            Self::Stub(device) => device.read_object(object_id),
+        }
+    }
+
+    fn write_object(
+        &mut self,
+        object_id: crate::secrets::domain::piv::PivObjectId,
+        value: &mut [u8],
+    ) -> Result<()> {
+        match self {
+            Self::Real(device) => device.write_object(object_id, value),
+            Self::Stub(device) => device.write_object(object_id, value),
+        }
+    }
+
+    fn wrap_key(
+        &mut self,
+        key: &crate::secrets::domain::material::SecretMaterial,
+    ) -> Result<Vec<u8>> {
+        match self {
+            Self::Real(device) => device.wrap_key(key),
+            Self::Stub(device) => device.wrap_key(key),
+        }
+    }
+
+    fn requires_pin_input(&self) -> bool {
+        match self {
+            Self::Real(device) => device.requires_pin_input(),
+            Self::Stub(device) => device.requires_pin_input(),
+        }
+    }
+
+    fn verify_pin(&mut self, pin: &crate::secrets::domain::material::SecretMaterial) -> Result<()> {
+        match self {
+            Self::Real(device) => device.verify_pin(pin),
+            Self::Stub(device) => device.verify_pin(pin),
+        }
+    }
+
+    fn unwrap_key(
+        &mut self,
+        wrapped_key: &[u8],
+    ) -> Result<crate::secrets::domain::material::SecretMaterial> {
+        match self {
+            Self::Real(device) => device.unwrap_key(wrapped_key),
+            Self::Stub(device) => device.unwrap_key(wrapped_key),
+        }
+    }
 }
 
 impl SelectedDeviceAdapter {

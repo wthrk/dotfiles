@@ -2,7 +2,7 @@ use std::fmt;
 
 use anyhow::Result;
 
-use super::piv::SecretName;
+use super::{material::SecretMaterial, piv::SecretName};
 
 /// secret blob の先頭で dotfiles wire format を識別する magic bytes。
 pub(crate) const BLOB_MAGIC: &[u8] = b"DOTFILES-YK-SECRET\0";
@@ -17,7 +17,7 @@ pub const TAG_LEN: usize = 16;
 /// per-secret content encryption key の byte 長。
 pub const CONTENT_KEY_LEN: usize = 32;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 /// YubiKey secret 1 件分の永続化単位を表す wire blob。
 ///
 /// `SecretBlob` は暗号化済み payload と復号検証に必要な metadata を
@@ -26,7 +26,7 @@ pub struct SecretBlob {
     pub name: SecretName,
     pub nonce: [u8; NONCE_LEN],
     pub wrapped_key: Vec<u8>,
-    pub ciphertext: Vec<u8>,
+    pub ciphertext: SecretMaterial,
     pub tag: [u8; TAG_LEN],
 }
 
@@ -80,7 +80,8 @@ impl SecretBlob {
         encoded.extend_from_slice(&wrapped_key_len.to_be_bytes());
         encoded.extend_from_slice(&self.wrapped_key);
         encoded.extend_from_slice(&ciphertext_len.to_be_bytes());
-        encoded.extend_from_slice(&self.ciphertext);
+        self.ciphertext
+            .with_bytes(|bytes| encoded.extend_from_slice(bytes));
         encoded.extend_from_slice(&self.tag);
         Ok(encoded)
     }
@@ -119,7 +120,8 @@ impl SecretBlob {
 
         let ciphertext_len = usize::try_from(take_u32(input, &mut cursor)?)
             .map_err(|_| invalid_data("invalid YubiKey secret blob"))?;
-        let ciphertext = take_exact(input, &mut cursor, ciphertext_len)?.to_vec();
+        let ciphertext =
+            SecretMaterial::copy_from_slice(take_exact(input, &mut cursor, ciphertext_len)?)?;
 
         let tag_bytes = take_exact(input, &mut cursor, TAG_LEN)?;
         let mut tag = [0u8; TAG_LEN];

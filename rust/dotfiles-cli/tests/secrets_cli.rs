@@ -150,7 +150,6 @@ fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()>
 
 /// `enroll-primary` がTTY promptで3つの secret を読み取り成功することを確認する。
 #[test]
-#[ignore = "PTY prompt path hangs intermittently in CI/local harness; use put/rotate PTY tests as operationally auditable prompt-path coverage"]
 fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
     let run = run_pty_with_stub(
         ["yubikey", "enroll-primary", "--serial", "2001"],

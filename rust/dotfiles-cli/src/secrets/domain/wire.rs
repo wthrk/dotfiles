@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
 use super::material::SecretMaterial;
 
@@ -58,8 +57,9 @@ impl<'de> Deserialize<'de> for SensitiveBytes {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut value = Zeroizing::new(String::deserialize(deserializer)?);
-        let bytes = std::mem::take(&mut *value).into_bytes();
-        Ok(Self(SecretMaterial::from_vec(bytes)))
+        let value = String::deserialize(deserializer)?;
+        let protected = SecretMaterial::copy_from_slice(value.as_bytes())
+            .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+        Ok(Self(protected))
     }
 }

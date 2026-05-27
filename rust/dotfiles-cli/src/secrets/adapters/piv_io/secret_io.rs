@@ -13,7 +13,7 @@ use crate::{
         ports::{
             BootstrapSecretDocumentInputPort, PinInputPort, SecretInputPort, SecretOutputPort,
         },
-        support::{process_io, protection::ProtectedSecret},
+        support::process_io,
     },
 };
 
@@ -27,7 +27,7 @@ impl PinInputPort for RealSecretIoAdapter {
             PIV_PIN_MAX_LEN,
             "YubiKey PIN is too long",
         )?;
-        let pin = SecretMaterial::from_vec(protected.into_vec());
+        let pin = protected;
         if !(PIV_PIN_MIN_LEN..=PIV_PIN_MAX_LEN).contains(&pin.len()) {
             bail!("YubiKey PIN must be 6 to 8 bytes");
         }
@@ -42,7 +42,7 @@ impl SecretInputPort for RealSecretIoAdapter {
             16 * 1024,
             "visible secret input is too large",
         )?;
-        Ok(SecretMaterial::from_vec(protected.into_vec()))
+        Ok(protected)
     }
 
     fn read_hidden_secret(
@@ -52,12 +52,12 @@ impl SecretInputPort for RealSecretIoAdapter {
         let prompt = format!("{name}: ");
         let protected =
             process_io::read_hidden_line(&prompt, 16 * 1024, "hidden secret input is too large")?;
-        Ok(SecretMaterial::from_vec(protected.into_vec()))
+        Ok(protected)
     }
 
     fn read_stdin_secret(&self) -> Result<SecretMaterial> {
         let protected = process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")?;
-        Ok(SecretMaterial::from_vec(protected.into_vec()))
+        Ok(protected)
     }
 }
 
@@ -73,7 +73,6 @@ impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
 
 impl SecretOutputPort for RealSecretIoAdapter {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
-        let protected = secret.with_bytes(|bytes| ProtectedSecret::from_vec(bytes.to_vec()));
-        process_io::write_secret_stdout(&protected)
+        process_io::write_secret_stdout(secret)
     }
 }

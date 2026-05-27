@@ -8,17 +8,12 @@ use yubikey::{
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, Version, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
-use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
 use crate::secrets::{
     domain::{material::SecretMaterial, piv::PivObjectId},
-    ports::SecretDevice,
-    support::{
-        oaep::write_oaep_unpadded_sha256,
-        protection::ProtectedSecret,
-        version::{format_semver, semver_lt},
-    },
+    ports::{DeviceCandidate, SecretDevice},
+    support::oaep::unwrap_oaep_sha256,
 };
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
@@ -28,25 +23,6 @@ const MIN_PIV_METADATA_VERSION: Version = Version {
     minor: 3,
     patch: 0,
 };
-const YUBIKEY_MANAGEMENT_KEY_ENV: &str = "DOTFILES_YUBIKEY_PIV_MANAGEMENT_KEY_HEX";
-
-/// 管理鍵 env を decode して `MgmKey` へ変換する。
-fn management_key_from_env() -> Result<MgmKey> {
-    let hex = Zeroizing::new(
-        std::env::var(YUBIKEY_MANAGEMENT_KEY_ENV)
-            .with_context(|| format!("{YUBIKEY_MANAGEMENT_KEY_ENV} is required"))?,
-    );
-    if hex.len() % 2 != 0 {
-        bail!("management key hex must have even length");
-    }
-    let mut bytes = Zeroizing::new(Vec::with_capacity(hex.len() / 2));
-    for i in (0..hex.len()).step_by(2) {
-        let byte =
-            u8::from_str_radix(&hex[i..i + 2], 16).context("failed to parse management key hex")?;
-        bytes.push(byte);
-    }
-    MgmKey::from_bytes(bytes.as_slice(), None).context("failed to parse management key bytes")
-}
 
 /// 開いた YubiKey PIV session と PIN 検証状態を保持する実機 adapter。
 pub struct YubikeySecretDevice {
@@ -60,6 +36,31 @@ impl YubikeySecretDevice {
             yubikey: YubiKey::open_by_serial(Serial(serial))?,
             pin_verified: false,
         })
+    }
+
+    fn default_management_key(&self) -> Result<MgmKey> {
+        // Current phase assumes the factory-default management key; repository-specific
+        // non-default management-key handling is deferred to a later phase.
+        MgmKey::get_default(&self.yubikey).context("failed to load default YubiKey management key")
+    }
+
+    fn is_version_below_minimum(&self) -> bool {
+        let version = self.yubikey.version();
+        (version.major, version.minor, version.patch)
+            < (
+                MIN_PIV_METADATA_VERSION.major,
+                MIN_PIV_METADATA_VERSION.minor,
+                MIN_PIV_METADATA_VERSION.patch,
+            )
+    }
+
+    fn minimum_version_string() -> String {
+        format!(
+            "{}.{}.{}",
+            MIN_PIV_METADATA_VERSION.major,
+            MIN_PIV_METADATA_VERSION.minor,
+            MIN_PIV_METADATA_VERSION.patch
+        )
     }
 }
 
@@ -75,13 +76,13 @@ impl Default for RealDeviceAdapter {
 impl crate::secrets::ports::DeviceSelectionPort for RealDeviceAdapter {
     type Device = YubikeySecretDevice;
 
-    fn discover_devices(&mut self) -> Result<Vec<crate::secrets::domain::values::DeviceCandidate>> {
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         let mut context = YubikeyContext::open()?;
         let mut devices = Vec::new();
         for reader in context.iter()? {
             let label = reader.name().into_owned();
             let yubikey = reader.open()?;
-            devices.push(crate::secrets::domain::values::DeviceCandidate {
+            devices.push(DeviceCandidate {
                 serial: yubikey.serial().0,
                 label,
             });
@@ -114,22 +115,10 @@ impl SecretDevice for YubikeySecretDevice {
     }
 
     fn check_key_generation_preconditions(&mut self) -> Result<()> {
-        let version = self.yubikey.version();
-        if semver_lt(
-            (version.major, version.minor, version.patch),
-            (
-                MIN_PIV_METADATA_VERSION.major,
-                MIN_PIV_METADATA_VERSION.minor,
-                MIN_PIV_METADATA_VERSION.patch,
-            ),
-        ) {
+        if self.is_version_below_minimum() {
             bail!(
                 "YubiKey PIV application version must be at least {}",
-                format_semver((
-                    MIN_PIV_METADATA_VERSION.major,
-                    MIN_PIV_METADATA_VERSION.minor,
-                    MIN_PIV_METADATA_VERSION.patch,
-                ))
+                Self::minimum_version_string()
             );
         }
         if self.yubikey.get_pin_retries()? == 0 {
@@ -139,14 +128,14 @@ impl SecretDevice for YubikeySecretDevice {
     }
 
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
-        let key = management_key_from_env()?;
+        let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
         Ok(())
     }
 
     fn generate_key(&mut self) -> Result<()> {
         self.check_key_generation_preconditions()?;
-        let key = management_key_from_env()?;
+        let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
         piv::generate(
             &mut self.yubikey,
@@ -167,7 +156,7 @@ impl SecretDevice for YubikeySecretDevice {
     }
 
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
-        let key = management_key_from_env()?;
+        let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
         self.yubikey.save_object(object_id.value(), value)?;
         Ok(())
@@ -200,15 +189,12 @@ impl SecretDevice for YubikeySecretDevice {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        let mut decrypted = piv::decrypt_data(
+        let decrypted = piv::decrypt_data(
             &mut self.yubikey,
             wrapped_key,
             AlgorithmId::Rsa2048,
             SECRET_SLOT,
         )?;
-        let mut output = ProtectedSecret::new(Vec::new());
-        write_oaep_unpadded_sha256(&decrypted, 256, &mut output)?;
-        decrypted.zeroize();
-        Ok(SecretMaterial::from_vec(output.into_vec()))
+        unwrap_oaep_sha256(&decrypted, 256)
     }
 }

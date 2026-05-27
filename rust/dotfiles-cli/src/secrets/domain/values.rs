@@ -2,15 +2,6 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 
-/// 対話選択に提示する YubiKey 候補の pure value。
-///
-/// 候補は serial と表示ラベルだけを持ち、実機ハンドルや discovery 実装詳細は含めない。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceCandidate {
-    pub serial: u32,
-    pub label: String,
-}
-
 /// verify-yubikey で要求できる外部検証種別。
 ///
 /// CLI 入力の閉じた集合を表し、domain check 名への写像元として使う。
