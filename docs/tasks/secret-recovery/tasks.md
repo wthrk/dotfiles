@@ -6,13 +6,13 @@
 
 ### YubiKey
 
-- 状態: `完了`
-- 現行サイクル状態: `完了`
+- 状態: `進行中`
+- 現行サイクル状態: `再レビュー待ち`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/yubikey.md](work-items/yubikey.md#12-yubikey-秘密情報保存)
-- レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)（現行サイクル状態: 完了）
-- 現行サイクル確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`
-- 実装/テスト差分の保存コミット終端: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- レビュー記録: [review-artifacts/yubikey/review.md](review-artifacts/yubikey/review.md#yubikey-レビュー記録)（現行サイクル状態: 再レビュー待ち）
+- 現行サイクル確認基準: `2bd7e0a..02281d2 current-cycle app regression test remediation`
+- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
@@ -39,9 +39,10 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/version.rs`
+  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
-- 実装状態: `完了`
+- 実装状態: `実装済み（再レビュー待ち）`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |

@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-27）
 
-- 確認状態: `実施済み（レビュー集約合格）`
+- 確認状態: `実施済み（再レビュー待ち）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-38d3a09-plus-evidence-sync-head`
-- 確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`
-- 実装/テスト差分の保存コミット終端: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-02281d2-plus-evidence-sync-head`
+- 確認基準: `2bd7e0a..02281d2 current-cycle app regression test remediation`
+- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: artifact path `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` / 状態 `実施済み` / 判定 `合格`
-  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca`, `019e6a60-dd96-7c51-9514-6280be99e060`, `019e6a67-d786-7c02-b40d-f6a254b7cbb9` / 状態 `実施済み` / 判定 `合格`
-  - `security`: artifact path `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` / 状態 `実施済み` / 判定 `合格`
-  - `specification-conformance`: artifact path `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` / 状態 `実施済み` / 判定 `合格`
-  - `test`: artifact path `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` / 状態 `実施済み` / 判定 `合格`
-  - `documentation`: artifact path `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` / 状態 `実施済み` / 判定 `合格`
-  - `architectural-consistency`: artifact path `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` / 状態 `実施済み` / 判定 `合格`
-  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c`, `019e6a60-e035-7d71-a5d9-e76985757b0c`, `019e6a67-d9ed-7252-946b-f32e910dcb76` / 状態 `実施済み` / 判定 `合格`
+  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（この文書-only HEAD 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -65,9 +65,39 @@
   - `d301035 fix(secrets): YubiKey直近レビューFailを解消`
   - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
   - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-  - `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+  - `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
   - `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
+
+## 2026-05-28 app 回帰テスト復旧追記
+
+- 実装コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
+- 履歴確認対象:
+  - `092cbbc:rust/dotfiles-cli/src/secrets/application.rs`
+  - `092cbbc:rust/dotfiles-cli/src/secrets/application/storage_service_tests.rs`
+- 復旧対象:
+  - `rotate_bws_token_rejects_already_updated_serial`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `partial_rotate_summary_serializes_updated_entries`: `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `partial_rotate_summary_skips_output_when_empty`: `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `put_rejects_noninteractive_without_stdin_option`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `setup_stops_when_management_auth_precondition_fails`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `setup_uses_management_auth_for_precondition_and_manifest_write`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `put_get_and_verify_round_trip_through_device`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `put_uses_management_auth_for_each_secret_write`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rotate_bws_token_preserves_other_secrets`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rotate_uses_management_auth_for_token_replacement`: `rust/dotfiles-cli/src/secrets/application.rs`
+  - `decryption_fails_when_blob_is_replayed_to_different_serial`: `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `decryption_fails_when_secret_blob_name_and_object_are_swapped`: `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+- mockito 共通 support: `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs` を拡張し、store/load/output を mockito route 経由の共有 state に集約した。app/usecase test 用の独自 fake/stub は追加していない。
+- 現行責務への写像: 旧 storage-service の manifest/storage policy は domain/support の inline unit test へ、usecase の実依存代替は app mockito support へ配置した。management key は現フェーズ default management key 前提のまま、旧 management-auth 系 test は「setup/store port 境界が precondition/write を呼ぶこと」の回帰として復旧した。
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application -- --list`: 成功（43 tests）
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（43 passed, 0 failed）
+- `direnv exec . cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 40 filtered out）
+- `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
+- `direnv exec . cargo check -p dotfiles-cli`: 成功
+- `direnv exec . cargo clippy -p dotfiles-cli --all-targets`: 成功
+- `git diff --check`: 成功
+- 状態: `再レビュー待ち`
 
 ## 2026-05-28 current-cycle 証跡是正コミット
 
@@ -82,12 +112,12 @@
 - 追加修正コミット: `d301035 fix(secrets): YubiKey直近レビューFailを解消`
 - 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
 - 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-- 証跡同期コミット: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 追加修正コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 証跡同期コミット: `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 追加修正: `2bd7e0a..38d3a09` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `38d3a09`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..38d3a09` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
-- 実装差分集合: `6fd4014..38d3a09` の変更ファイル集合:
+- 追加修正: `2bd7e0a..02281d2` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含む。
+- 紐付け: 実装/テスト差分の保存コミット終端は `02281d2`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..02281d2` は直近レビュー Fail と app 回帰テスト未復旧 Fail を対象とする。
+- 実装差分集合: `6fd4014..02281d2` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -156,6 +186,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/version.rs`
+  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 
@@ -178,7 +209,7 @@
 - `cargo xtask check`: 実行済み（`5217c7f`）
 - `cargo clippy --workspace --all-targets`: 実行済み（`5217c7f`）
 - `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`5217c7f`）
-- `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（33 passed, 0 failed）
+- `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（43 passed, 0 failed）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
 - `cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 24 filtered out）
 - `cargo check -p dotfiles-cli`: 成功

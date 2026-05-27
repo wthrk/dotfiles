@@ -4,13 +4,13 @@
 
 ## 現在の作業項目
 
-- `Bitwarden Secrets Manager`
+- `YubiKey`
 
 ## 作業項目一覧
 
 ### YubiKey
 
-- 状態: `完了`
+- 状態: `進行中`
 - GitHub issue: #12
 - 主成果物: `実コード差分`
 - 対象コードパス:
@@ -37,12 +37,13 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/version.rs`
+  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
 - レビュー記録: [secret-recovery/review-artifacts/yubikey/review.md](secret-recovery/review-artifacts/yubikey/review.md#yubikey-レビュー記録)
-- 現行サイクル確認基準: `2bd7e0a..38d3a09 current-cycle Fail remediation`
-- 実装/テスト差分の保存コミット終端: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 現行サイクル確認基準: `2bd7e0a..02281d2 current-cycle app regression test remediation`
+- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 

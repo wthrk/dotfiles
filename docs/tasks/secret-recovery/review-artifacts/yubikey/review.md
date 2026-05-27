@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-27）
 
-- 集約後レビュー判定: `合格`
-- 集約判定要約: 所見なし。実装/テスト差分の保存コミット終端 `38d3a09` に対して structural / security / specification-conformance / test / documentation / architectural-consistency は合格済み。証跡同期コミット自己 hash 非要求の正本更新後、最新 HEAD `97dae11` に対する operational-consistency / reference-integrity も合格済み。
-- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-38d3a09-plus-evidence-sync-head`
-- 実装/テスト差分の保存コミット終端: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 集約後レビュー判定: `要修正`
+- 集約判定要約: 最新実装/テスト差分の保存コミット終端 `02281d2` は、履歴上の旧 app/storage-service 回帰テスト復旧を追加したため再レビュー待ち。
+- 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-02281d2-plus-evidence-sync-head`
+- 実装/テスト差分の保存コミット終端: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 証跡同期コミット: `この文書-only HEAD`。証跡同期 commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: artifact path `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` / 状態 `実施済み` / 判定 `合格`
-  - `operational`: artifact path `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca`, `019e6a60-dd96-7c51-9514-6280be99e060`, `019e6a67-d786-7c02-b40d-f6a254b7cbb9` / 状態 `実施済み` / 判定 `合格`
-  - `security`: artifact path `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` / 状態 `実施済み` / 判定 `合格`
-  - `specification-conformance`: artifact path `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` / 状態 `実施済み` / 判定 `合格`
-  - `test`: artifact path `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` / 状態 `実施済み` / 判定 `合格`
-  - `documentation`: artifact path `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` / 状態 `実施済み` / 判定 `合格`
-  - `architectural-consistency`: artifact path `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` / 状態 `実施済み` / 判定 `合格`
-  - `reference-integrity`（文書修正別枠）: artifact path `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c`, `019e6a60-e035-7d71-a5d9-e76985757b0c`, `019e6a67-d9ed-7252-946b-f32e910dcb76` / 状態 `実施済み` / 判定 `合格`
+  - `structural`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `operational`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `security`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `specification-conformance`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `test`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `documentation`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `architectural-consistency`: 状態 `再レビュー待ち` / 判定 `未実施（02281d2 対象）`
+  - `reference-integrity`: 状態 `再レビュー待ち` / 判定 `未実施（この文書-only HEAD 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -65,7 +65,7 @@
   - `d301035 fix(secrets): YubiKey直近レビューFailを解消`
   - `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
   - `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-  - `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+  - `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
   - `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
   - `この文書-only HEAD`（証跡同期 commit。自己 hash は本文へ埋め込まず git log で確認する）
 
@@ -88,12 +88,12 @@
 - 追加修正コミット: `d301035 fix(secrets): YubiKey直近レビューFailを解消`
 - 追加修正コミット: `0f37005 test(secrets): appテストdoubleをmockitoへ集約`
 - 追加修正コミット: `a910eca fix(secrets): YubiKeyレビューFailを再修正`
-- 証跡同期コミット: `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期`
+- 追加修正コミット: `02281d2 test(secrets): 履歴上のapp回帰テストを復旧`
 - 証跡同期コミット: `eab7e66 docs(secrets): YubiKey運用証跡を38d3a09へ固定`
 - 証跡同期コミット: `この文書-only HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 追加修正: `2bd7e0a..38d3a09` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含む。
-- 紐付け: 実装/テスト差分の保存コミット終端は `38d3a09`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..38d3a09` は直近レビュー Fail（security / documentation / operational / reference / test）だけを対象とする。
-- 実装差分集合: `6fd4014..38d3a09` の変更ファイル集合:
+- 追加修正: `2bd7e0a..02281d2` の current-cycle Fail remediation。`a910eca` は structural/documentation の bridge 誤判定対策、internal stub helper private 化、app mockito response body 非露出化を含み、`02281d2` は git 履歴上の旧 app/storage-service 回帰テスト復旧を含む。
+- 紐付け: 実装/テスト差分の保存コミット終端は `02281d2`。`eab7e66` とこの文書-only HEAD は review artifact / ledger を整合させる証跡同期コミットであり、実装/テスト差分の検証終端を変更しない。証跡同期 commit 自身の hash は自己参照固定点にならないため本文へ埋め込まない。`2bd7e0a..02281d2` は直近レビュー Fail と app 回帰テスト未復旧 Fail を対象とする。
+- 実装差分集合: `6fd4014..02281d2` の変更ファイル集合:
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-minimal-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-reference-agents-overview-2026-05-26.md`
   - `docs/tasks/repo-governance/review-artifacts/responsibility-based-review-enforcement/confirmation.md`
@@ -162,6 +162,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/version.rs`
+  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 
@@ -277,72 +278,21 @@
 
 ## 役割別レビュー
 
-### 構造レビュー担当
-
-- 判定: `合格`
-- 判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対する structural review は所見なし。
-- 根拠:
-  - `subagent notification 019e6a59-fade-7a03-aebf-e81cb9da8bca` が、test-only bridge の許可条件、adapter 公開面、`pub(super)` helper 残存なし、compile-time feature seam を確認した。
-
-### 運用整合レビュー担当
-
-- 判定: `合格`
-- 判定要約: 所見なし。
-- 根拠:
-  - `subagent notification 019e6a5a-52de-7fe2-9c53-826808f359ca` の Fail 内容を本 current-cycle 記録へ反映した。
-  - `subagent notification 019e6a67-d786-7c02-b40d-f6a254b7cbb9` が、証跡同期コミット自身の hash を本文へ要求しない正本規則、実装/テスト差分終端 `38d3a09` と文書-only HEAD の分離、internal test 経路を確認した。
-
-### セキュリティレビュー担当
-
-- 判定: `合格`
-- 判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対する security review は所見なし。
-- 根拠:
-  - `subagent notification 019e6a59-fdf4-7fa1-8d2f-cc29ff09bb31` が、mockito app support / internal stub の非 2xx error に response body を載せないこと、unauthorized write が domain intent 経由で制御されることを確認した。
-
-### 仕様適合レビュー担当
-
-- 判定: `合格`
-- 判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対する specification-conformance review は所見なし。
-- 根拠:
-  - `subagent notification 019e6a5a-03de-71d3-9a71-18511d235540` が、V1〜V16、mockito usecase test 復旧、feature-only stub injection、default management key 既知例外、ProtectedSecret/Zeroizing 境界を確認した。
-
-### テストレビュー担当
-
-- 判定: `合格`
-- 判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対する test review は所見なし。
-- 根拠:
-  - `subagent notification 019e6a5a-00bb-75e0-a40c-eb30285a185f` が、`secrets::application` 33 tests、CLI integration 22 tests、feature 無効 compile、app/usecase mockito 共通 mock 集約を確認した。
-
-### ドキュメントレビュー担当
-
-- 判定: `合格`
-- 判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対する documentation review は所見なし。
-- 根拠:
-  - `subagent notification 019e6a5a-4cdd-7463-9531-ce68d64321cc` が、test-only bridge、mockito support、internal-test-only feature seam、xtask 参照、default management key、ProtectedSecret/Zeroizing 境界コメントを確認した。
-
-### アーキテクチャ整合レビュー担当
-
-- 判定: `合格`
-- 判定要約: 実装/テスト差分の保存コミット終端 `38d3a09` に対する architectural-consistency review は所見なし。
-- 根拠:
-  - `subagent notification 019e6a5a-4fc3-7953-b1c4-29a0cd330089` が、`entrypoint -> application -> ports/domain <- adapters/support` の整合、domain object 操作の domain 側集約、test-only bridge の production 非混入を確認した。
-
-### 参照整合レビュー担当
-
-- 判定: `合格`
-- 判定要約: 所見なし。
-- 根拠:
-  - `subagent notification 019e6a5a-5617-7230-83f2-8710c176200c` が、current-cycle 文書、Markdown link、対象 path、test-only bridge 正本、xtask internal test 参照の解決可能性を確認した。
-  - `subagent notification 019e6a60-e035-7d71-a5d9-e76985757b0c` の Fail 内容を本 current-cycle 記録へ反映した。
-  - `subagent notification 019e6a67-d9ed-7252-946b-f32e910dcb76` が、証跡同期コミット自身の hash 非要求規則、`2bd7e0a..38d3a09` の実装/テスト差分終端、Markdown link、対象 path、test-only bridge 正本、xtask internal test 参照を確認した。
+- `structural`: `02281d2` 対象の再レビュー待ち。
+- `operational`: `02281d2` とこの文書-only HEAD 対象の再レビュー待ち。
+- `security`: `02281d2` 対象の再レビュー待ち。
+- `specification-conformance`: `02281d2` 対象の再レビュー待ち。
+- `test`: `02281d2` 対象の再レビュー待ち。
+- `documentation`: `02281d2` 対象の再レビュー待ち。
+- `architectural-consistency`: `02281d2` 対象の再レビュー待ち。
+- `reference-integrity`: この文書-only HEAD 対象の再レビュー待ち。
 
 ## 集約
 
-- 集約後レビュー判定: `合格`
-- 集約判定要約: 所見なし。
+- 集約後レビュー判定: `要修正`
+- 集約判定要約: `02281d2` で履歴上の旧 app/storage-service 回帰テスト復旧を追加したため、必須 reviewer の再レビュー完了まで commit gate は未充足。
 - 集約根拠:
-  - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-38d3a09-plus-evidence-sync-head` に一致させた。
-  - 実装/テスト差分の保存コミット終端を `38d3a09 docs(secrets): YubiKey証跡をa910ecaへ同期` として記録した。
-  - 証跡同期コミットは `この文書-only HEAD` として扱い、自己 hash を本文へ埋め込まないことを正本・skill・current-cycle 証跡へ反映した。
-  - 直近 reviewer 判定を current-cycle reviewer 判定追跡と役割別レビューへ反映した。
-  - structural / operational-consistency / security / specification-conformance / test / documentation / architectural-consistency / reference-integrity の全必須 reviewer が合格済みである。
+  - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-02281d2-plus-evidence-sync-head` に一致させた。
+  - 実装/テスト差分の保存コミット終端を `02281d2 test(secrets): 履歴上のapp回帰テストを復旧` として記録した。
+  - `secrets::application` は 43 tests へ増加し、履歴上の未復旧 test 名 12 件を現行責務層へ復旧済み。
+  - structural / operational-consistency / security / specification-conformance / test / documentation / architectural-consistency / reference-integrity は再レビュー待ち。
