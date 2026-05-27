@@ -17,7 +17,6 @@
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device.rs`
@@ -43,13 +42,13 @@
 | 実装 ステップ1: V8,V16（domain SecretDevice→ports移設・io::Write除去） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ2: V9（use case outcome 型の domain 統一） | 完了 | 実コード差分 | [work-items/yubikey.md#実装順序ガイド推奨](work-items/yubikey.md#実装順序ガイド推奨) |
 | 実装 ステップ3: V6,V7（port DTO/parser/prompt除去・support依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ4: V10（責務再分離） | 未着手 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ5: V11,V12,V13（adapter面整理） | 未着手 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ6: V4,V5（application配下adapter移設） | 未着手 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 未着手 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 未着手 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 確認 | 未着手 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 実装 ステップ4: V10（責務再分離） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ5: V11,V12,V13（adapter面整理） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 完了 | 実コード差分 | [work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26](work-items/yubikey.md#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
+| 確認 | 進行中 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 進行中 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手 | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
 
 ### Bitwarden Secrets Manager

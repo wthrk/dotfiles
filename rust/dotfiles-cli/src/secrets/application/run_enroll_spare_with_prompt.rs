@@ -72,9 +72,9 @@ pub(crate) fn run_enroll_spare_with_prompt<
         let encoded = device
             .read_object(name.object_id())?
             .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-        let blob = SecretBlob::decode_for_name(&encoded, name)?;
-        let content_key = device.unwrap_key(&blob.wrapped_key)?;
-        blob.decrypt_secret(device.serial(), &content_key)
+        let wrapped_key = SecretBlob::decode_for_name(&encoded, name)?.wrapped_key;
+        let content_key = device.unwrap_key(&wrapped_key)?;
+        SecretBlob::decode_decrypt_and_validate(&encoded, name, device.serial(), &content_key)
     };
     let bw_email = read_secret(&mut primary_device, SecretName::BwEmail)?;
     let bw_password = read_secret(&mut primary_device, SecretName::BwPassword)?;
@@ -90,7 +90,6 @@ pub(crate) fn run_enroll_spare_with_prompt<
         (SecretName::BwsAccessToken, &document.bws_access_token),
     ] {
         let mut device = boundary.open_device_by_serial(spare_serial)?;
-        value.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
         SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
         device.check_management_auth_preconditions()?;
         let mut content_key = SecretMaterial::new(CONTENT_KEY_LEN)?;
@@ -98,7 +97,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
         let mut nonce = [0u8; NONCE_LEN];
         boundary.fill_random_bytes(&mut nonce)?;
         let wrapped_key = device.wrap_key(&content_key)?;
-        let blob = SecretBlob::encrypt_secret(
+        let blob = SecretBlob::encrypt_secret_for_storage(
             name,
             device.serial(),
             nonce,
@@ -125,8 +124,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
         verify_device.read_object(PivObjectId::MANIFEST)?.as_deref(),
     )?;
     for name in SecretName::iter() {
-        let secret = read_secret(&mut verify_device, name)?;
-        secret.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+        let _secret = read_secret(&mut verify_device, name)?;
     }
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }

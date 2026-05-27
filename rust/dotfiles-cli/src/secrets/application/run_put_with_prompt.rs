@@ -29,7 +29,6 @@ pub(crate) fn run_put_with_prompt<
         boundary.read_hidden_secret(command.name)?
     };
     let mut device = boundary.open_device_by_serial(serial)?;
-    secret.with_bytes(|bytes| command.name.ensure_value_non_empty(bytes))?;
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
     device.check_management_auth_preconditions()?;
     if device.read_object(command.name.object_id())?.is_some() && !command.force {
@@ -43,7 +42,7 @@ pub(crate) fn run_put_with_prompt<
     let mut nonce = [0u8; NONCE_LEN];
     boundary.fill_random_bytes(&mut nonce)?;
     let wrapped_key = device.wrap_key(&content_key)?;
-    let blob = SecretBlob::encrypt_secret(
+    let blob = SecretBlob::encrypt_secret_for_storage(
         command.name,
         device.serial(),
         nonce,

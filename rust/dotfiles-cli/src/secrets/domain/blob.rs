@@ -185,6 +185,19 @@ impl SecretBlob {
         Ok(ciphertext)
     }
 
+    /// 期待する secret 名の blob を decode し、復号して値制約まで検証する。
+    pub fn decode_decrypt_and_validate(
+        input: &[u8],
+        expected_name: SecretName,
+        serial: u32,
+        content_key: &SecretMaterial,
+    ) -> Result<SecretMaterial> {
+        let secret =
+            Self::decode_for_name(input, expected_name)?.decrypt_secret(serial, content_key)?;
+        secret.with_bytes(|bytes| expected_name.ensure_value_non_empty(bytes))?;
+        Ok(secret)
+    }
+
     /// 平文・content key・nonce・wrapped key から domain 規則付き blob を構築する。
     pub fn encrypt_secret(
         name: SecretName,
@@ -214,6 +227,19 @@ impl SecretBlob {
             ciphertext,
             tag,
         })
+    }
+
+    /// 値制約を満たす平文から、保存用 blob を構築する。
+    pub fn encrypt_secret_for_storage(
+        name: SecretName,
+        serial: u32,
+        nonce: [u8; NONCE_LEN],
+        wrapped_key: Vec<u8>,
+        plaintext: &SecretMaterial,
+        content_key: &SecretMaterial,
+    ) -> Result<Self> {
+        plaintext.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+        Self::encrypt_secret(name, serial, nonce, wrapped_key, plaintext, content_key)
     }
 }
 

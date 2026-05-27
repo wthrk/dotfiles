@@ -57,24 +57,24 @@ Actor binding: while this skill is active, the current actor is the orchestrator
 - If a fresh launch fails because of an agent/thread limit, first release completed subagents and retry with a fresh agent. Launch limits never justify reusing a subagent that is already assigned to another task item or role.
 - Fallback execution must be delegated to an executor other than the current orchestrator. The current orchestrator cannot serve as the fallback executor.
 - When delegating implementation work, the subagent prompt must instruct the subagent to read `.claude/skills/implementation-execution/SKILL.md` as its first action. Pass only the skill file path and the work-item path (`docs/tasks/<area>/work-items/<item>.md`). Do not inline work-item content, violation lists, checklist items, or any other content from governing sources into the prompt — the subagent must read those sources itself via the skill's Required Reading Order.
-- When delegating review work, first determine the change type (実装差分 or 文書是正・文書主成果物) from the work item, then consult the「必須レビュー担当」section of `docs/task-governance/implementation-review-judgement.md` to identify the required reviewer roles for that change type:
-  - 実装差分（executable behavior を含む変更）: 構造レビュー担当、運用整合レビュー担当、セキュリティレビュー担当、仕様適合レビュー担当、テストレビュー担当、ドキュメントレビュー担当、アーキテクチャ整合レビュー担当 の7担当
-  - 文書是正・文書主成果物: 運用整合レビュー担当、参照整合レビュー担当 の2担当
-  - 高リスク変更を含む場合は変更種別によらずセキュリティレビュー担当を追加する
+- When delegating review work, first determine the change type (implementation diffs or document remediations/document-primary deliverables) from the work item, then consult the "Required Reviewer Roles" section of `docs/task-governance/implementation-review-judgement.md` to identify required reviewer roles for that change type:
+  - Implementation diffs (changes including executable behavior): seven roles — structural, operational-consistency, security, specification-conformance, test, documentation, and architectural-consistency reviewers
+  - Document remediations/document-primary deliverables: two roles — operational-consistency and reference-integrity reviewers
+  - If high-risk changes are included, add the security reviewer regardless of change type
   Launch each required reviewer as a **separate independent subagent**. Do not consolidate multiple reviewer roles into a single subagent. Do not inline judgment conditions, verification procedures, output destinations, or any other content from governing sources into the prompt — each subagent must read those sources itself via its skill's Required Reading Order. Pass parameters to each reviewer as follows — do not pass parameters not listed for that role:
-  - **構造レビュー担当**: 対象コードが存在するリポジトリパス（例: `rust/dotfiles-cli/src/`）のみを渡す。作業定義文書パスを渡してはならない。
-  - **仕様適合レビュー担当**: 作業定義文書パス（`docs/tasks/<area>/work-items/<item>.md`）とレビュー対象コードパスの両方を渡す。
-  - **セキュリティレビュー担当**: レビュー対象コードパスのみを渡す。作業定義文書パスは渡してはならない。
-  - **運用整合レビュー担当**: 作業定義文書パスとレビュー対象コードパスの両方を渡す。
-  - **参照整合レビュー担当**: レビュー対象文書パスのみを渡す。
-  - **テストレビュー担当**: 作業定義文書パス（`docs/tasks/<area>/work-items/<item>.md`）とレビュー対象コードパスの両方を渡す。
-  - **ドキュメントレビュー担当**: レビュー対象コードパスのみを渡す。作業定義文書パスは渡してはならない。
-  - **アーキテクチャ整合レビュー担当**: レビュー対象モジュールのコードパス**全体**（例: `rust/dotfiles-cli/src/secrets/`）のみを渡す。差分や個別ファイルではなくモジュール全体のパスを渡すこと（全体としての設計整合を判定する役割であるため）。作業定義文書パスを渡してはならない。
+  - **Structural reviewer**: pass only the repository path that contains target code (example: `rust/dotfiles-cli/src/`). Do not pass a work-definition document path.
+  - **Specification-conformance reviewer**: pass both the work-definition document path (`docs/tasks/<area>/work-items/<item>.md`) and the review target code path.
+  - **Security reviewer**: pass only the review target code path. Do not pass a work-definition document path.
+  - **Operational-consistency reviewer**: pass both the work-definition document path and the review target code path.
+  - **Reference-integrity reviewer**: pass only the review target document path.
+  - **Test reviewer**: pass both the work-definition document path (`docs/tasks/<area>/work-items/<item>.md`) and the review target code path.
+  - **Documentation reviewer**: pass only the review target code path. Do not pass a work-definition document path.
+  - **Architectural-consistency reviewer**: pass only the **entire code path of the review-target module** (example: `rust/dotfiles-cli/src/secrets/`). Pass the module-wide path, not diffs or individual files, because this role judges whole-design coherence. Do not pass a work-definition document path.
 - The orchestrator must never edit files directly, read target code for implementation judgement, run tests, or perform any delegated role's work — even for "simple" fixes, even when blocked, even when asked by the user. The only response to a blocked state is to record the failure and stop.
 - When `secrets.rs` or any other source file has a compilation error introduced by a previous subagent, the fix must be delegated to a fresh implementation-executor subagent, not performed by the orchestrator directly.
-- The orchestrator must never initiate commit-related work (S3→S4 transition) unless all required review roles (structural, operational-consistency, security, specification-conformance, test, documentation, architectural-consistency) have returned a recorded `合格` verdict. 文書是正を含む場合は参照整合レビュー担当を追加する。変更種別による必須担当の詳細は `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」セクションに従う。Skipping any required review role and proceeding to commit is unconditionally forbidden, regardless of how simple or low-risk the change appears.
+- The orchestrator must never initiate commit-related work (S3->S4 transition) unless all required review roles (structural, operational-consistency, security, specification-conformance, test, documentation, architectural-consistency) have returned a recorded `Pass` verdict. When document remediation is included, add the reference-integrity reviewer. For change-type-specific required roles, follow the "Required Reviewer Roles" section in `docs/task-governance/implementation-review-judgement.md`. Skipping any required review role and proceeding to commit is unconditionally forbidden, regardless of how simple or low-risk the change appears.
 - If all required review roles have not yet been completed, the orchestrator must launch the missing review role subagents and wait for their verdicts before allowing commit-related work. The orchestrator must not substitute its own judgement for a missing reviewer's verdict.
-- When a subagent cannot commit due to sandbox constraints, the orchestrator may perform the commit on its behalf only after all required review roles have returned recorded `合格` verdicts. The inability of a subagent to commit is never a reason to bypass review gates.
+- When a subagent cannot commit due to sandbox constraints, the orchestrator may perform the commit on its behalf only after all required review roles have returned recorded `Pass` verdicts. The inability of a subagent to commit is never a reason to bypass review gates.
 - When a subagent's implementation contains compilation errors, the orchestrator must not fix the errors directly using Edit or Write tools. The fix must be delegated to a fresh implementation-executor subagent.
 - When `git restore`, `rm`, or other revert commands are blocked by permission constraints, the orchestrator must not attempt to recover by overwriting files with the Write tool. The orchestrator must report the blocked operation to the user and wait for explicit permission or alternative instruction before proceeding.
 - Do not accept a subagent's completion report as the final conclusion. After each subagent returns, verify the actual repository state (e.g., `git status`, `git diff HEAD`) before proceeding to the next task.

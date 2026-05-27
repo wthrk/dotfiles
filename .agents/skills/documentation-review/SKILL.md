@@ -12,7 +12,7 @@ While this skill is active, the current actor is the **documentation reviewer**.
 ## Governing Sources
 
 - `docs/task-governance/implementation-review-judgement.md` (section: documentation reviewer responsibilities)
-- `docs/architecture/hexagonal-implementation-rules.md` (section: document comment rules)
+- `docs/architecture/hexagonal-implementation-rules.md` (canonical source for doc-comment review rules)
 - `docs/docs-governance.md` (if present)
 
 ## Required Reading Order

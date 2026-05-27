@@ -43,10 +43,10 @@ pub(crate) fn run_verify_yubikey_with<
         let encoded = device
             .read_object(name.object_id())?
             .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-        let blob = SecretBlob::decode_for_name(&encoded, name)?;
-        let content_key = device.unwrap_key(&blob.wrapped_key)?;
-        let secret = blob.decrypt_secret(device.serial(), &content_key)?;
-        secret.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+        let wrapped_key = SecretBlob::decode_for_name(&encoded, name)?.wrapped_key;
+        let content_key = device.unwrap_key(&wrapped_key)?;
+        let _secret =
+            SecretBlob::decode_decrypt_and_validate(&encoded, name, device.serial(), &content_key)?;
     }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(

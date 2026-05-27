@@ -60,6 +60,8 @@
 
 `adapter` は port 実装、外部 API 変換、環境差異吸収という技術的な実行と翻訳だけを担う。許可する成果物は SDK bridge、terminal bridge、filesystem bridge、JSON decode bridge である。use case の順序制御、domain policy の決定、summary の意味づけは置かない。
 
+adapter 層で domain object のビジネスロジックを直接実行してはならない。具体的には、manifest/blob の整合判定、nonce/AAD の業務規則決定、`SecretName::additional_data` の業務意味適用、鍵生成可否などの業務判断は application/domain 側の責務であり、adapter はそれらを呼び出すための外部 I/O 翻訳に限定する。
+
 アダプター層に置いてよいファイルは「特定の port trait を実装するファイル」のみである。以下のファイルはシンボルの公開範囲に関わらずアダプター層に属してはならない。
 
 - 再エクスポート集約ファイル（`use` 宣言のみで構成されるファイル、または `pub(super) use` で他 adapter の関数・型を束ねるだけのファイル）はアダプター層に置いてはならない。

@@ -35,7 +35,6 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     };
     let token = boundary.read_hidden_secret(SecretName::BwsAccessToken)?;
     let mut device = boundary.open_device_by_serial(serial)?;
-    token.with_bytes(|bytes| SecretName::BwsAccessToken.ensure_value_non_empty(bytes))?;
     SecretManifest::decode_initialized(device.read_object(PivObjectId::MANIFEST)?.as_deref())?;
     device.check_management_auth_preconditions()?;
     let mut content_key = SecretMaterial::new(CONTENT_KEY_LEN)?;
@@ -43,7 +42,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     let mut nonce = [0u8; NONCE_LEN];
     boundary.fill_random_bytes(&mut nonce)?;
     let wrapped_key = device.wrap_key(&content_key)?;
-    let blob = SecretBlob::encrypt_secret(
+    let blob = SecretBlob::encrypt_secret_for_storage(
         SecretName::BwsAccessToken,
         device.serial(),
         nonce,
@@ -73,10 +72,14 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
             let encoded = verify_device
                 .read_object(name.object_id())?
                 .ok_or_else(|| anyhow::anyhow!("{name} is not stored on this YubiKey"))?;
-            let blob = SecretBlob::decode_for_name(&encoded, name)?;
-            let content_key = verify_device.unwrap_key(&blob.wrapped_key)?;
-            let secret = blob.decrypt_secret(verify_device.serial(), &content_key)?;
-            secret.with_bytes(|bytes| name.ensure_value_non_empty(bytes))?;
+            let wrapped_key = SecretBlob::decode_for_name(&encoded, name)?.wrapped_key;
+            let content_key = verify_device.unwrap_key(&wrapped_key)?;
+            let _secret = SecretBlob::decode_decrypt_and_validate(
+                &encoded,
+                name,
+                verify_device.serial(),
+                &content_key,
+            )?;
         }
         Ok(())
     })();

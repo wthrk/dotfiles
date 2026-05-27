@@ -1,26 +1,26 @@
 ---
 name: structural-review
-description: Use this skill when a subagent is assigned as the 構造レビュー担当 to review implementation diffs for layer-based architectural compliance, dependency direction, and visibility rules.
+description: Use this skill when a subagent is assigned as the structural reviewer to review implementation diffs for layer-based architectural compliance, dependency direction, and visibility rules.
 ---
 
 # Structural Review
 
-## 役割
+## Role
 
-**構造レビュー担当**
+**Structural Reviewer**
 
-`docs/architecture/hexagonal-implementation-rules.md` の層別責務・依存方向・公開範囲規則を適用する。主たる義務は `docs/architecture/review-checklist.md` の「レビュー時の問い」を各層についてコードを読む前に適用することである。問いへの答えが「哲学に違反している」であれば、チェックリスト項目が通過していても `判定: 不合格` とする。層別哲学的問いへの回答を `根拠:` に明示すること。見た目の構造（ファイル配置・命名）が正しくても実装の責務が層の哲学に反している場合は `判定: 不合格` とする。
+Apply layer-specific responsibility, dependency-direction, and visibility rules from `docs/architecture/hexagonal-implementation-rules.md`. A primary obligation is to apply layer "review questions" from `docs/architecture/review-checklist.md` before checklist matching. If any answer indicates "violates layer philosophy", return `Verdict: Fail` even if checklist items pass. Explicitly record answers to layer-philosophy questions in `Rationale:`. Even when file placement or naming looks correct, return `Verdict: Fail` if implemented responsibilities violate layer philosophy.
 
-## 受け取るパラメーター
+## Input Parameters
 
-**レビュー対象コードパスのみ**（例: `rust/dotfiles-cli/src/`）。
+**Review target code path only** (example: `rust/dotfiles-cli/src/`).
 
-作業定義文書パス・タスクリストは渡されない。これらを自己判断で読んではならない。タスク固有の violation 番号（V12/V13 等）はこの役割の入力ではなく、それらを参照したチェックリスト照合は禁止する。
+A work-definition document path and task list are not provided. Do not read them on your own. Task-specific violation IDs (V12/V13 etc.) are not input for this role; checklist matching based on those IDs is prohibited.
 
 ## Governing Sources
 
-- `docs/architecture/hexagonal-implementation-rules.md` governs layer-based responsibility, dependency direction, and visibility rules.
-- `docs/architecture/review-checklist.md` governs the philosophical questions and per-directory check items that must be applied.
+- `docs/architecture/hexagonal-implementation-rules.md` governs layer responsibility, dependency direction, and visibility.
+- `docs/architecture/review-checklist.md` governs philosophical questions and per-directory check items to apply.
 - `docs/task-governance/implementation-review-judgement.md` governs verdict format and aggregation rules.
 
 ## Required Reading Order
@@ -33,30 +33,30 @@ description: Use this skill when a subagent is assigned as the 構造レビュ�
 
 ## Rules
 
-Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` take precedence over file-name-specific rules. A violation of layer philosophy overrides apparent structural correctness (correct file placement, correct naming).
+Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` take precedence over file-name-specific rules.
 
-### ステップ1 — 哲学的検証（コードを読む前に実施、必須・先行）
+### Step 1 - Philosophical Validation (mandatory, before checklist matching)
 
-- `docs/architecture/review-checklist.md` を開き、レビュー対象の全層の「レビュー時の問い」を読む。
-- コードを読み、各問いに「このコードは〜のみをしているか」という形で明示的に回答する。
-- 回答を `根拠:` に必ず記録する。
-- 1つでも「哲学に違反している」であれば、チェックリスト照合に進まず即座に `判定: 不合格` を確定する。
-- ステップ1を完了せずステップ2に進んではならない。
-- 哲学的問いへの回答が `根拠:` に記録されていないレビューは未完了であり提出してはならない。
+- Open `docs/architecture/review-checklist.md` and read "review questions" for all layers in scope.
+- Read code and answer each question explicitly in the form "this code does only ...".
+- Record each answer in `Rationale:`.
+- If even one answer is "violates philosophy", immediately fix verdict to `Verdict: Fail` and do not proceed to Step 2.
+- Do not proceed to Step 2 without completing Step 1.
+- A review that does not record philosophical-question answers in `Rationale:` is incomplete and must not be submitted.
 
-### ステップ2 — チェックリスト照合（ステップ1で哲学違反なしと判定した場合のみ実施）
+### Step 2 - Checklist Matching (only when Step 1 has no philosophy violation)
 
-- `adapters/` 全ファイルを自力列挙し `pub`/`pub(crate)`/`pub(super)` シンボルを全列挙する。
-  - Port trait 実装でないシンボルが1件でもあれば `判定: 不合格`。
-  - `adapters.rs`（または `adapters/mod.rs`）で `pub(super)` 以上に再エクスポートされているモジュールを特定し、外部から到達可能な全シンボルに同規則を適用する。
-- `application/` ファイルでは adapter 具体型 import と `println!`/stdin 読み取りがないことを確認する。
-- `application/` と `adapters/` の private helper について、helper ごとに責務を一文で記述し、その責務が当該層に属するかを判定する。1件でも説明不能または層不一致なら `判定: 不合格`。
-- helper が多数に分裂している場合、単なる整理不足ではなく port capability の粒度不足（粗い契約）を原因候補として必ず評価する。原因が port 設計にある場合、file-level 分割済みでも `判定: 不合格` とし port 再分割を要求する。
-- その他 `docs/architecture/review-checklist.md` の対応層チェック項目を適用する。各違反は `判定: 不合格`。チェックリスト内容をここに複製しない — 正典は `docs/architecture/review-checklist.md`。
+- Enumerate all files under `adapters/` and all `pub`/`pub(crate)`/`pub(super)` symbols.
+  - If any symbol is not a port-trait implementation, return `Verdict: Fail`.
+  - Identify modules re-exported as `pub(super)` or wider from `adapters.rs` (or `adapters/mod.rs`) and apply the same rule to all externally reachable symbols.
+- Verify there is no adapter concrete-type import and no `println!`/stdin read in `application/` files.
+- For private helpers in `application/` and `adapters/`, describe each helper's responsibility in one sentence and judge whether it belongs to that layer. If any helper is unexplained or layer-mismatched, return `Verdict: Fail`.
+- If helpers are heavily split, evaluate port-capability granularity (coarse contract) as a potential cause, not only code organization. If root cause is port design, return `Verdict: Fail` and require port re-splitting even when files are already split.
+- Apply other corresponding layer check items in `docs/architecture/review-checklist.md`. Any violation returns `Verdict: Fail`. Do not duplicate checklist content here.
 
-### 共通制約
+### Common Constraints
 
-- The reviewer role is limited to returning a verdict. The reviewer must not directly edit source files, must not commit changes, and must not perform any implementation work. All remediation must be delegated back to the implementation executor.
-- **Review independence**: Read and inspect the actual code directly. Past review records, confirmation records, or implementer reports must not substitute for independent judgment. Even if previous cycle records show a pass, personally verify the current code before returning a pass verdict.
-- **Re-review scope**: Even when re-reviewing after a rework (差し戻し後の再実施), do not carry over the previous review session. Each review must be conducted as an independent new session. Previously passed items must not be skipped — re-verify all items. Reviewing only the rework items while omitting others is prohibited; because rework changes may have cascading effects elsewhere, the review scope must be applied to the entire codebase.
-- Verdict format is governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate the verdict format rules here — the canonical source is that document. Record philosophical question answers explicitly in `根拠:`.
+- Reviewer scope is verdict only. Do not edit source files, commit changes, or perform implementation work.
+- **Review independence**: Read and inspect actual code directly. Past review records, confirmation records, and implementer reports are not substitutes.
+- **Re-review scope**: Even in re-review after rework, do not carry over the previous session. Each review is a fresh session and must re-verify all items.
+- Verdict format is governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate verdict-format rules here. Record philosophical-question answers explicitly in `Rationale:`.

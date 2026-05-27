@@ -1,6 +1,6 @@
 ---
 name: task-completion-judgement
-description: Use this skill when a subagent must decide whether a work item can transition to 完了 based on completion criteria and required evidence.
+description: Use this skill when a subagent must decide whether a work item can transition to completed based on completion criteria and required evidence.
 ---
 
 # Task Completion Judgement
@@ -29,7 +29,7 @@ description: Use this skill when a subagent must decide whether a work item can 
 
 ## When To Use
 
-Use this skill for `完了` transition decisions after confirmation/review stages.
+Use this skill for `completed` transition decisions after confirmation/review stages.
 
 Actor binding: while this skill is active, the current actor is the task-completion-judgement role under the governing sources above.
 

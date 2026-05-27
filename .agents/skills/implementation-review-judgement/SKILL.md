@@ -5,22 +5,22 @@ description: Use this skill when a subagent must judge implementation review-sta
 
 > **Start here**: Read this entire file before taking any action. This file is your governing source — do not proceed until you have read every section.
 
-# Implementation Review Judgement (集約ロール)
+# Implementation Review Judgement (Aggregation Role)
 
-このスキルは **集約ロール** である。各担当スキルから返却された判定を受け取り、集約判定を発行することが唯一の責務である。各担当の個別判定は、対応する担当スキルを持つ独立したサブエージェントが実施する。集約ロールが担当判定を自分で実施してはならない。
+This skill is an **aggregation role**. Its only responsibility is to receive reviewer verdicts returned by each reviewer skill and emit an aggregated verdict. Individual reviewer verdicts must be performed by independent subagents using corresponding reviewer skills. The aggregation role must not perform those reviewer judgements itself.
 
-## 担当スキルファイル一覧
+## Reviewer Skill File List
 
-レビューを委譲する各担当とそのスキルファイルパスは以下のとおり。
+The delegated reviewer roles and their skill-file paths are as follows.
 
-- **構造レビュー担当**: `.agents/skills/structural-review/SKILL.md`
-- **仕様適合レビュー担当**: `.agents/skills/specification-conformance-review/SKILL.md`
-- **セキュリティレビュー担当**: `.agents/skills/security-review/SKILL.md`
-- **運用整合レビュー担当**: `.agents/skills/operational-consistency-review/SKILL.md`
-- **テストレビュー担当**: `.agents/skills/test-review/SKILL.md`
-- **ドキュメントレビュー担当**: `.agents/skills/documentation-review/SKILL.md`
-- **アーキテクチャ整合レビュー担当**: `.agents/skills/architectural-consistency-review/SKILL.md`
-- **参照整合レビュー担当**: `.agents/skills/reference-integrity-review/SKILL.md`
+- **Structural Reviewer**: `.agents/skills/structural-review/SKILL.md`
+- **Specification-Conformance Reviewer**: `.agents/skills/specification-conformance-review/SKILL.md`
+- **Security Reviewer**: `.agents/skills/security-review/SKILL.md`
+- **Operational-Consistency Reviewer**: `.agents/skills/operational-consistency-review/SKILL.md`
+- **Test Reviewer**: `.agents/skills/test-review/SKILL.md`
+- **Documentation Reviewer**: `.agents/skills/documentation-review/SKILL.md`
+- **Architectural-Consistency Reviewer**: `.agents/skills/architectural-consistency-review/SKILL.md`
+- **Reference-Integrity Reviewer**: `.agents/skills/reference-integrity-review/SKILL.md`
 
 ## Governing Sources
 
@@ -49,7 +49,7 @@ Actor binding: while this skill is active, the current actor is the implementati
 ## Rules
 
 - The aggregation role's sole responsibility is to receive verdicts from each required reviewer and issue the aggregate verdict. The aggregation role must not perform individual reviewer duties itself.
-- Determine which reviewer roles are required for the change type by reading `docs/task-governance/implementation-review-judgement.md` section 「必須レビュー担当」. Each required reviewer must be launched as a separate fresh subagent with its corresponding skill file path individually specified.
+- Determine which reviewer roles are required for the change type by reading the "Required Reviewer Roles" section in `docs/task-governance/implementation-review-judgement.md`. Each required reviewer must be launched as a separate fresh subagent with its corresponding skill file path individually specified.
 - Judge only review-start and aggregation conditions. Delegate completion judgement to `task-completion-judgement`.
 - Aggregation verdict format, label set, and rules are governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate those rules here.
 - When any required reviewer returns a verdict, record that verdict before proceeding to aggregation.
