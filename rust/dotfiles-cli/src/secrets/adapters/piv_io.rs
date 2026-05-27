@@ -31,13 +31,24 @@ use crate::{
         },
         support::{
             process_io,
-            protection::{sealed_blob, secret_consumer, secret_random},
+            protection::{ProtectedSecret, sealed_blob, secret_consumer, secret_random},
         },
     },
 };
 
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
+
+fn material_from_protected(protected: ProtectedSecret) -> SecretMaterial {
+    SecretMaterial::from_backend(protected, ProtectedSecret::len, ProtectedSecret::try_clone)
+}
+
+fn protected_from_material(secret: &SecretMaterial) -> Result<&ProtectedSecret> {
+    secret
+        .as_backend::<ProtectedSecret>()
+        .ok_or_else(|| anyhow::anyhow!("secret material backend is not protected memory"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeviceCandidate {
     serial: u32,
@@ -87,13 +98,14 @@ impl PinInputPort for RealSecretIoAdapter {
             PIV_PIN_MAX_LEN,
             "YubiKey PIN is too long",
         )?;
-        Ok(protected)
+        Ok(material_from_protected(protected))
     }
 }
 
 impl SecretInputPort for RealSecretIoAdapter {
     fn read_bw_email_secret(&self) -> Result<SecretMaterial> {
         process_io::read_visible_line("bw-email: ", 16 * 1024, "visible secret input is too large")
+            .map(material_from_protected)
     }
 
     fn read_bw_password_secret(&self) -> Result<SecretMaterial> {
@@ -102,6 +114,7 @@ impl SecretInputPort for RealSecretIoAdapter {
             16 * 1024,
             "hidden secret input is too large",
         )
+        .map(material_from_protected)
     }
 
     fn read_bws_access_token_secret(&self) -> Result<SecretMaterial> {
@@ -110,11 +123,12 @@ impl SecretInputPort for RealSecretIoAdapter {
             16 * 1024,
             "hidden secret input is too large",
         )
+        .map(material_from_protected)
     }
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {
         let protected = process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")?;
-        Ok(protected)
+        Ok(material_from_protected(protected))
     }
 }
 
@@ -122,13 +136,17 @@ impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
     fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>> {
         let protected =
             process_io::read_stdin_all(64 * 1024, "bootstrap secret JSON input is too large")?;
-        protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)
+        let fields = protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)?;
+        Ok(fields
+            .into_iter()
+            .map(|(name, secret)| (name, material_from_protected(secret)))
+            .collect())
     }
 }
 
 impl SecretOutputPort for RealSecretIoAdapter {
     fn write_secret(&self, secret: &SecretMaterial) -> Result<()> {
-        process_io::write_secret_stdout(secret)
+        process_io::write_secret_stdout(protected_from_material(secret)?)
     }
 }
 
@@ -579,7 +597,7 @@ impl YubikeySecretDevice {
         }
     }
 
-    fn wrap_content_key(&mut self, key: &SecretMaterial) -> Result<Vec<u8>> {
+    fn wrap_content_key(&mut self, key: &ProtectedSecret) -> Result<Vec<u8>> {
         let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
         let public = metadata
             .public
@@ -589,7 +607,7 @@ impl YubikeySecretDevice {
         secret_random::rsa_oaep_encrypt(&public, key)
     }
 
-    fn unwrap_content_key(&mut self, wrapped_key: &[u8]) -> Result<SecretMaterial> {
+    fn unwrap_content_key(&mut self, wrapped_key: &[u8]) -> Result<ProtectedSecret> {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
@@ -686,7 +704,10 @@ impl SecretDeviceIo for YubikeySecretDevice {
         if self.pin_verified {
             return Ok(());
         }
-        secret_consumer::consume(pin, &mut YubikeyPinVerifier(&mut self.yubikey))?;
+        secret_consumer::consume(
+            protected_from_material(pin)?,
+            &mut YubikeyPinVerifier(&mut self.yubikey),
+        )?;
         self.pin_verified = true;
         Ok(())
     }
@@ -703,7 +724,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
         sealed_blob::seal_with_key_wrap(
             sealed_blob::SealWithKeyWrapRequest {
                 payload_id: storage.secret_id,
-                plaintext,
+                plaintext: protected_from_material(plaintext)?,
                 aad: &storage.additional_data,
             },
             |content_key| self.wrap_content_key(content_key),
@@ -721,6 +742,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
             |wrapped_key| self.unwrap_content_key(wrapped_key),
             &storage.additional_data,
         )
+        .map(material_from_protected)
     }
 }
 
