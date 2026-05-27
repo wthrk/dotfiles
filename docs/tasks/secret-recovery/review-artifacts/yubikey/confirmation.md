@@ -8,7 +8,15 @@
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象差分識別子: `yubikey-current-cycle-2026-05-27-6fd4014-5217c7f`
 - 確認基準: `5217c7f fix(secrets): appテストのmockito依存をfeature有効時に限定`
-- required reviewers 実施状態: `構造/運用/セキュリティの再レビューを現行サイクルで再実施中（未完了）`
+- current-cycle reviewer 判定追跡（2026-05-27時点）:
+  - `structural`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/structural-review.md` / 状態 `実施`
+  - `operational`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-operational-2026-05-25.md` / 状態 `未実施（現行サイクル Fail 是正中）`
+  - `security`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-security-2026-05-25.md` / 状態 `未実施`
+  - `specification-conformance`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-spec-2026-05-25.md` / 状態 `未実施`
+  - `test`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-test-2026-05-25.md` / 状態 `未実施`
+  - `documentation`: artifact `docs/tasks/secret-recovery/review-artifacts/yubikey/review-doc-2026-05-25.md` / 状態 `未実施`
+  - `architectural-consistency`: artifact `未生成（current-cycle artifact path 未確定）` / 状態 `未実施`
+  - `reference-integrity`（文書修正別枠）: artifact `未生成（current-cycle artifact path 未確定）` / 状態 `未実施`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -82,6 +90,8 @@
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/Cargo.toml`
+  - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 対象スコープ:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
