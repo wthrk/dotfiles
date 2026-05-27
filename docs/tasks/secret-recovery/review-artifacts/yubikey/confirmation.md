@@ -55,6 +55,7 @@
 - 追加保存コミット: `e148c0d fix(secrets): YubiKey再レビュー指摘を修正`
 - 追加保存コミット: `e06bf4d fix(secrets): adapter公開面をport実装型へ限定`
 - 追加保存コミット: `41084ae fix(secrets): adapter境界のclippy指摘を修正`
+- 追加保存コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
 - 現行状態: `再レビュー待ち`
 - 確認前提: security は pass 済み。structural / operational Fail 修正は本追記以降の保存点で反映済みであり、合格とは記録しない。
 - `ad92152` 以降の変更ファイル集合:
@@ -88,6 +89,15 @@
 - `direnv exec . cargo xtask check`: 成功
 - `direnv exec . cargo clippy --workspace --all-targets`: 成功
 - `direnv exec . env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 成功
+- 判定: `再レビュー待ち`
+
+## 2026-05-27 78f10ac 検証追記
+
+- 対象コミット: `78f10ac refactor(secrets): object逆引き規則をdomainへ移管`
+- 修正内容: PIV object ID から `SecretName` への逆引き規則を adapter stub から `domain::piv::SecretName::from_object_id` へ移した。
+- `cargo check -p dotfiles-cli`: 成功
+- `cargo check -p dotfiles-cli --features secrets-test-stub`: 成功
+- `git diff --check`: 成功
 - 判定: `再レビュー待ち`
 
 ## 2026-05-27 adapter 構造説明同期
