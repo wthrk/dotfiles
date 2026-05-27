@@ -14,7 +14,11 @@ pub(crate) fn run_put_with_prompt<
     boundary: &mut B,
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
-    let secret = boundary.read_named_secret(command.name)?;
+    let secret = command.name.read_interactive_secret_with(
+        || boundary.read_bw_email_secret(),
+        || boundary.read_bw_password_secret(),
+        || boundary.read_bws_access_token_secret(),
+    )?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force)?;

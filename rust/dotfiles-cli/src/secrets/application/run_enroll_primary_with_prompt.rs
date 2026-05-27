@@ -2,7 +2,6 @@ use crate::Result;
 use crate::secrets::{
     domain::{
         manifest::BootstrapSecretDocument,
-        piv::SecretName,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
             SecretStorageWriteIntent,
@@ -32,9 +31,9 @@ pub(crate) fn run_enroll_primary_with_prompt<
     let setup_inspection = boundary.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
     boundary.initialize_secret_storage(serial, setup_intent)?;
-    let bw_email = boundary.read_named_secret(SecretName::BwEmail)?;
-    let bw_password = boundary.read_named_secret(SecretName::BwPassword)?;
-    let bws_access_token = boundary.read_named_secret(SecretName::BwsAccessToken)?;
+    let bw_email = boundary.read_bw_email_secret()?;
+    let bw_password = boundary.read_bw_password_secret()?;
+    let bws_access_token = boundary.read_bws_access_token_secret()?;
     let document =
         BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
     for (storage, value) in document.storage_entries(serial) {

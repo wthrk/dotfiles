@@ -23,7 +23,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     boundary: &mut B,
 ) -> Result<()> {
     let serial = command.required_serial()?;
-    let token = boundary.read_named_secret(command.target_secret())?;
+    let token = boundary.read_bws_access_token_secret()?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
     let intent = SecretStorageWriteIntent::store(storage, inspection)?;

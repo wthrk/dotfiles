@@ -14,7 +14,7 @@ use crate::{
         domain::{
             manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument},
             material::SecretMaterial,
-            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretName, SecretStorageSpec},
+            piv::{PIV_PIN_MAX_LEN, PIV_PIN_MIN_LEN, PivObjectId, SecretStorageSpec},
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
@@ -99,16 +99,24 @@ impl PinInputPort for RealSecretIoAdapter {
 }
 
 impl SecretInputPort for RealSecretIoAdapter {
-    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial> {
-        if name.uses_visible_input() {
-            return process_io::read_visible_line(
-                "bw-email: ",
-                16 * 1024,
-                "visible secret input is too large",
-            );
-        }
-        let prompt = format!("{name}: ");
-        process_io::read_hidden_line(&prompt, 16 * 1024, "hidden secret input is too large")
+    fn read_bw_email_secret(&self) -> Result<SecretMaterial> {
+        process_io::read_visible_line("bw-email: ", 16 * 1024, "visible secret input is too large")
+    }
+
+    fn read_bw_password_secret(&self) -> Result<SecretMaterial> {
+        process_io::read_hidden_line(
+            "bw-password: ",
+            16 * 1024,
+            "hidden secret input is too large",
+        )
+    }
+
+    fn read_bws_access_token_secret(&self) -> Result<SecretMaterial> {
+        process_io::read_hidden_line(
+            "bws-access-token: ",
+            16 * 1024,
+            "hidden secret input is too large",
+        )
     }
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {
@@ -199,8 +207,16 @@ impl PinInputPort for ProcessIoAdapter {
 }
 
 impl SecretInputPort for ProcessIoAdapter {
-    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial> {
-        self.secret_io.read_named_secret(name)
+    fn read_bw_email_secret(&self) -> Result<SecretMaterial> {
+        self.secret_io.read_bw_email_secret()
+    }
+
+    fn read_bw_password_secret(&self) -> Result<SecretMaterial> {
+        self.secret_io.read_bw_password_secret()
+    }
+
+    fn read_bws_access_token_secret(&self) -> Result<SecretMaterial> {
+        self.secret_io.read_bws_access_token_secret()
     }
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {

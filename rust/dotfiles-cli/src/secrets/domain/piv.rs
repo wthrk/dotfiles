@@ -123,11 +123,21 @@ impl SecretName {
         Ok(())
     }
 
-    /// 対話入力時に可視入力を許可する secret かどうかを返す。
+    /// secret 名ごとの入力取得 capability を選択する。
     ///
-    /// 可視入力可否は secret の意味に依存する domain rule で、端末 I/O 実装の詳細は含まない。
-    pub fn uses_visible_input(self) -> bool {
-        matches!(self, Self::BwEmail)
+    /// どの secret がどの入力 capability に対応するかは domain rule であり、
+    /// adapter はこの分岐を再実装せず、選ばれた capability の I/O 翻訳だけを担う。
+    pub fn read_interactive_secret_with<T>(
+        self,
+        read_bw_email: impl FnOnce() -> crate::Result<T>,
+        read_bw_password: impl FnOnce() -> crate::Result<T>,
+        read_bws_access_token: impl FnOnce() -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        match self {
+            Self::BwEmail => read_bw_email(),
+            Self::BwPassword => read_bw_password(),
+            Self::BwsAccessToken => read_bws_access_token(),
+        }
     }
 
     /// AEAD additional data に使う保存 context bytes を構築する。

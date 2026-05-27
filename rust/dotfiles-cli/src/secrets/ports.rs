@@ -5,7 +5,7 @@
 use super::domain::{
     manifest::BootstrapSecretDocument,
     material::SecretMaterial,
-    piv::{SecretName, SecretStorageSpec},
+    piv::SecretStorageSpec,
     storage::{
         SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
         SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
@@ -37,7 +37,9 @@ pub trait PinInputPort {
 
 /// use case が必要とする secret 入力 capability 契約。
 pub trait SecretInputPort {
-    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial>;
+    fn read_bw_email_secret(&self) -> Result<SecretMaterial>;
+    fn read_bw_password_secret(&self) -> Result<SecretMaterial>;
+    fn read_bws_access_token_secret(&self) -> Result<SecretMaterial>;
     fn read_streamed_secret(&self) -> Result<SecretMaterial>;
 }
 

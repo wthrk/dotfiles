@@ -10,7 +10,6 @@ use crate::{
         domain::{
             manifest::BootstrapSecretDocument,
             material::SecretMaterial,
-            piv::SecretName,
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
@@ -64,8 +63,16 @@ impl PinInputPort for SecretsAdapters {
 }
 
 impl SecretInputPort for SecretsAdapters {
-    fn read_named_secret(&self, name: SecretName) -> Result<SecretMaterial> {
-        self.process_io.read_named_secret(name)
+    fn read_bw_email_secret(&self) -> Result<SecretMaterial> {
+        self.process_io.read_bw_email_secret()
+    }
+
+    fn read_bw_password_secret(&self) -> Result<SecretMaterial> {
+        self.process_io.read_bw_password_secret()
+    }
+
+    fn read_bws_access_token_secret(&self) -> Result<SecretMaterial> {
+        self.process_io.read_bws_access_token_secret()
     }
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {
