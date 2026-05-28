@@ -18,7 +18,7 @@ pub(crate) mod run_verify_yubikey_with;
 pub(crate) mod app_test_support {
     // Rust private module の usecase を検査する test-only bridge。
     //
-    // mockito 共通 support の本体は `tests/secrets_application/` に置き、production build には
+    // mockall 共通 support の本体は `tests/secrets_application/` に置き、production build には
     // 含めない。bridge は port trait 契約で usecase を駆動し、runtime real/stub 分岐や
     // production command path の変更を作らない。
     include!(concat!(
@@ -287,10 +287,7 @@ mod tests {
             super::run_setup_with::run_setup_with(SetupCommand { serial: Some(10) }, &mut boundary)
                 .expect_err("setup unexpectedly ignored precondition failure");
 
-        assert_eq!(
-            err.to_string(),
-            "mockito app route failed: storage setup inspect"
-        );
+        assert_eq!(err.to_string(), "mockall app failed: storage setup inspect");
         Ok(())
     }
 
