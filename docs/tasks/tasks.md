@@ -4,7 +4,7 @@
 
 ## 現在の作業項目
 
-- `Bitwarden Secrets Manager`
+- `Bitwarden Password Manager`
 
 ## 作業項目一覧
 

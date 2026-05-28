@@ -150,7 +150,7 @@
 | --- | --- | --- | --- |
 | 規約計画 | 完了 | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/bitwarden-password-manager.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
-| 規約文書更新 | 進行中 | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
+| 規約文書更新 | 進行中 | `docs/secret-recovery/bitwarden-password-manager-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
 | 確認 | 未着手 | `review-artifacts/bitwarden-password-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 未着手 | `review-artifacts/bitwarden-password-manager/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手 | `review-artifacts/bitwarden-password-manager/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

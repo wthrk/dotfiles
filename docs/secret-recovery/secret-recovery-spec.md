@@ -81,6 +81,8 @@ Bitwarden Password Manager は Web service passwords、passkeys、TOTP、recover
 
 Bitwarden login email と master password は YubiKey から取得し、master password は `BW_PASSWORD` として子プロセスにだけ渡す。`BW_PASSWORD` は保存しない。Bitwarden account 自体の 2FA / passkey には primary と spare の両方を事前登録する。`BW_SESSION` の扱いは `bw-login` のコマンド仕様に従う。
 
+詳細設計は [Bitwarden Password Manager CLI login 設計](./bitwarden-password-manager-design.md) に置く。
+
 ### GnuPG / SSH
 
 GPG key は software key として運用する。GPG key material は YubiKey に入れない。GPG secret key backup は Bitwarden Secrets Manager に保存する。

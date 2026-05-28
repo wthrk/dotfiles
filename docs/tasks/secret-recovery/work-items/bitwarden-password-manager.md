@@ -11,4 +11,5 @@
   - process 実行の境界漏れ
   - secret 入出力境界の混在
   - use case 順序と外部 command 詳細の結合
+- 規約文書更新成果物: [docs/secret-recovery/bitwarden-password-manager-design.md](../../../secret-recovery/bitwarden-password-manager-design.md)
 - レビュー合格条件: `外部 command 依存が境界内へ閉じ、アーキテクチャ規約違反が残っていないこと。`
