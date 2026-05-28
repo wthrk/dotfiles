@@ -10,21 +10,24 @@ pub(crate) use report_adapter::JsonReportAdapter;
 pub(crate) use storage_adapter::StorageAdapter;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
+use rsa::{pkcs1::DecodeRsaPublicKey, RsaPublicKey};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
-    Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
+    Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
 };
 
 use crate::{
-    Result,
     secrets::{
-        domain::{material::SecretMaterial, piv::{PivApplicationVersion, PivObjectId, SecretStorageSpec}},
-        support::protection::{ProtectedSecret, secret_consumer},
+        domain::{
+            material::SecretMaterial,
+            piv::{PivApplicationVersion, PivObjectId, SecretStorageSpec},
+        },
+        support::protection::{secret_consumer, ProtectedSecret},
     },
+    Result,
 };
 
 #[cfg(feature = "secrets-internal-test-stub")]
@@ -143,17 +146,47 @@ impl SelectedSecretDevice {
 }
 
 impl SecretDeviceIo for SelectedSecretDevice {
-    fn key_exists(&mut self) -> Result<bool> { self.inner.key_exists() }
-    fn piv_application_version(&self) -> PivApplicationVersion { self.inner.piv_application_version() }
-    fn pin_retries(&mut self) -> Result<u8> { self.inner.pin_retries() }
-    fn check_management_auth_preconditions(&mut self) -> Result<()> { self.inner.check_management_auth_preconditions() }
-    fn generate_key(&mut self) -> Result<()> { self.inner.generate_key() }
-    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> { self.inner.read_object(object_id) }
-    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> { self.inner.write_object(object_id, value) }
-    fn requires_pin_input(&self) -> bool { self.inner.requires_pin_input() }
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> { self.inner.verify_pin(pin) }
-    fn seal_for_storage(&mut self, storage: SecretStorageSpec, plaintext: &SecretMaterial) -> Result<Vec<u8>> { self.inner.seal_for_storage(storage, plaintext) }
-    fn open_from_storage(&mut self, storage: SecretStorageSpec, encoded: &[u8]) -> Result<SecretMaterial> { self.inner.open_from_storage(storage, encoded) }
+    fn key_exists(&mut self) -> Result<bool> {
+        self.inner.key_exists()
+    }
+    fn piv_application_version(&self) -> PivApplicationVersion {
+        self.inner.piv_application_version()
+    }
+    fn pin_retries(&mut self) -> Result<u8> {
+        self.inner.pin_retries()
+    }
+    fn check_management_auth_preconditions(&mut self) -> Result<()> {
+        self.inner.check_management_auth_preconditions()
+    }
+    fn generate_key(&mut self) -> Result<()> {
+        self.inner.generate_key()
+    }
+    fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
+        self.inner.read_object(object_id)
+    }
+    fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
+        self.inner.write_object(object_id, value)
+    }
+    fn requires_pin_input(&self) -> bool {
+        self.inner.requires_pin_input()
+    }
+    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
+        self.inner.verify_pin(pin)
+    }
+    fn seal_for_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        plaintext: &SecretMaterial,
+    ) -> Result<Vec<u8>> {
+        self.inner.seal_for_storage(storage, plaintext)
+    }
+    fn open_from_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<SecretMaterial> {
+        self.inner.open_from_storage(storage, encoded)
+    }
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -194,13 +227,19 @@ impl YubikeySecretDevice {
     /// PIV application version を domain 境界型へ変換する。
     fn piv_application_version(&self) -> PivApplicationVersion {
         let version = self.yubikey.version();
-        PivApplicationVersion { major: version.major, minor: version.minor, patch: version.patch }
+        PivApplicationVersion {
+            major: version.major,
+            minor: version.minor,
+            patch: version.patch,
+        }
     }
 
     /// content key を YubiKey の公開鍵で wrap し、保存用 payload へ渡す。
     fn wrap_content_key(&mut self, key: &ProtectedSecret) -> Result<Vec<u8>> {
         let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
-        let public = metadata.public.context("YubiKey secret storage key has no public key metadata")?;
+        let public = metadata
+            .public
+            .context("YubiKey secret storage key has no public key metadata")?;
         let public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
             .context("failed to parse YubiKey secret storage public key")?;
         secret_random::rsa_oaep_encrypt(&public, key)
@@ -213,7 +252,12 @@ impl YubikeySecretDevice {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        let decrypted = piv::decrypt_data(&mut self.yubikey, wrapped_key, AlgorithmId::Rsa2048, SECRET_SLOT)?;
+        let decrypted = piv::decrypt_data(
+            &mut self.yubikey,
+            wrapped_key,
+            AlgorithmId::Rsa2048,
+            SECRET_SLOT,
+        )?;
         sealed_blob::unwrap_content_key(&decrypted, 256)
     }
 }
@@ -230,7 +274,10 @@ impl RealDeviceIo for RealDeviceAdapter {
         for reader in context.iter()? {
             let label = reader.name().into_owned();
             let yubikey = reader.open()?;
-            devices.push(DeviceCandidate { serial: yubikey.serial().0, label });
+            devices.push(DeviceCandidate {
+                serial: yubikey.serial().0,
+                label,
+            });
         }
         Ok(devices)
     }
@@ -245,17 +292,23 @@ impl SecretDeviceIo for YubikeySecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
             Ok(_) => Ok(true),
-            Err(yubikey::Error::NotFound) => match self.yubikey.fetch_object(SECRET_SLOT_CERT_OBJECT_ID) {
-                Ok(_) => Ok(true),
-                Err(yubikey::Error::NotFound) => Ok(false),
-                Err(err) => Err(err.into()),
-            },
+            Err(yubikey::Error::NotFound) => {
+                match self.yubikey.fetch_object(SECRET_SLOT_CERT_OBJECT_ID) {
+                    Ok(_) => Ok(true),
+                    Err(yubikey::Error::NotFound) => Ok(false),
+                    Err(err) => Err(err.into()),
+                }
+            }
             Err(err) => Err(err.into()),
         }
     }
 
-    fn piv_application_version(&self) -> PivApplicationVersion { self.piv_application_version() }
-    fn pin_retries(&mut self) -> Result<u8> { self.yubikey.get_pin_retries().map_err(anyhow::Error::new) }
+    fn piv_application_version(&self) -> PivApplicationVersion {
+        self.piv_application_version()
+    }
+    fn pin_retries(&mut self) -> Result<u8> {
+        self.yubikey.get_pin_retries().map_err(anyhow::Error::new)
+    }
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
         let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
@@ -264,7 +317,13 @@ impl SecretDeviceIo for YubikeySecretDevice {
     fn generate_key(&mut self) -> Result<()> {
         let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
-        piv::generate(&mut self.yubikey, SECRET_SLOT, AlgorithmId::Rsa2048, PinPolicy::Once, TouchPolicy::Always)?;
+        piv::generate(
+            &mut self.yubikey,
+            SECRET_SLOT,
+            AlgorithmId::Rsa2048,
+            PinPolicy::Once,
+            TouchPolicy::Always,
+        )?;
         Ok(())
     }
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
@@ -281,13 +340,24 @@ impl SecretDeviceIo for YubikeySecretDevice {
         Ok(())
     }
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
-        if self.pin_verified { return Ok(()); }
-        secret_consumer::consume(protected_from_material(pin)?, &mut YubikeyPinVerifier(&mut self.yubikey))?;
+        if self.pin_verified {
+            return Ok(());
+        }
+        secret_consumer::consume(
+            protected_from_material(pin)?,
+            &mut YubikeyPinVerifier(&mut self.yubikey),
+        )?;
         self.pin_verified = true;
         Ok(())
     }
-    fn requires_pin_input(&self) -> bool { !self.pin_verified }
-    fn seal_for_storage(&mut self, storage: SecretStorageSpec, plaintext: &SecretMaterial) -> Result<Vec<u8>> {
+    fn requires_pin_input(&self) -> bool {
+        !self.pin_verified
+    }
+    fn seal_for_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        plaintext: &SecretMaterial,
+    ) -> Result<Vec<u8>> {
         sealed_blob::seal_with_key_wrap(
             sealed_blob::SealWithKeyWrapRequest {
                 payload_id: storage.secret_id,
@@ -297,7 +367,11 @@ impl SecretDeviceIo for YubikeySecretDevice {
             |content_key| self.wrap_content_key(content_key),
         )
     }
-    fn open_from_storage(&mut self, storage: SecretStorageSpec, encoded: &[u8]) -> Result<SecretMaterial> {
+    fn open_from_storage(
+        &mut self,
+        storage: SecretStorageSpec,
+        encoded: &[u8],
+    ) -> Result<SecretMaterial> {
         sealed_blob::open_with_key_unwrap(
             encoded,
             storage.secret_id,
