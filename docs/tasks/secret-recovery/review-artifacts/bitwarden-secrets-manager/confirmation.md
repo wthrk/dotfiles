@@ -4,7 +4,7 @@
 
 ## 状態
 
-- 確認状態: `進行中`
+- 確認状態: `完了`
 - 対象差分識別子: `bws-design-pr-2026-05-28-5d6e495`
 - 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
 - 確認開始時 HEAD: `5d6e495`
