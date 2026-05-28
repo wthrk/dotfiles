@@ -360,23 +360,18 @@ fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
 #[test]
 fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
     let stub = StubServer::new(&[StubFixture::State(StubState::Provisioned)]);
-    let run = run_pipe_with_stub(
-        [
-            "verify-yubikey",
-            "--serial",
-            "2001",
-            "--all",
-            "--check",
-            "bws",
-        ],
-        None,
-        &stub,
-    )?;
+    let run = run_pipe_with_stub(["verify-yubikey", "--all", "--check", "bws"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
         run.stderr
             .contains("--all and --check cannot be used together")
+    );
+    assert!(
+        !run.stderr
+            .contains("multiple YubiKeys detected; pass --serial to select a device"),
+        "input precondition must fail before device resolution: {}",
+        run.stderr
     );
     Ok(())
 }
