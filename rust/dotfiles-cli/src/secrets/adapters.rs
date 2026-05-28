@@ -2,6 +2,7 @@
 //!
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
+mod gpg_io;
 mod piv_io;
 
 use std::collections::BTreeMap;
@@ -19,9 +20,9 @@ use crate::{
             values::{EnrollSummary, VerifySummary},
         },
         ports::{
-            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SecretStoragePort, SpareDeviceSerialPort,
+            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort,
+            GpgRecoveryPort, PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort,
+            SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort, SshPublicKeyOutputPort,
         },
     },
 };
@@ -36,6 +37,7 @@ pub(crate) struct SecretsAdapters {
     process_io: piv_io::ProcessIoAdapter,
     storage: piv_io::StorageAdapter,
     report: piv_io::JsonReportAdapter,
+    gpg: gpg_io::GpgRecoveryAdapter,
 }
 
 impl DeviceSerialPort for SecretsAdapters {
@@ -166,5 +168,29 @@ impl ReportPort for SecretsAdapters {
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         self.report.write_verify_report(summary)
+    }
+}
+
+impl GpgRecoveryPort for SecretsAdapters {
+    fn read_gpg_secret_key_backup(&self, bws_access_token: &SecretMaterial) -> Result<String> {
+        self.gpg.read_gpg_secret_key_backup(bws_access_token)
+    }
+
+    fn import_gpg_secret_key(&self, armored_secret_key: &str) -> Result<()> {
+        self.gpg.import_gpg_secret_key(armored_secret_key)
+    }
+
+    fn verify_gpg_restore_prerequisites(&self) -> Result<()> {
+        self.gpg.verify_gpg_restore_prerequisites()
+    }
+
+    fn export_ssh_public_key(&self) -> Result<String> {
+        self.gpg.export_ssh_public_key()
+    }
+}
+
+impl SshPublicKeyOutputPort for SecretsAdapters {
+    fn write_ssh_public_key(&self, public_key: &str) -> Result<()> {
+        self.gpg.write_ssh_public_key(public_key)
     }
 }

@@ -340,6 +340,21 @@ fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestRe
     Ok(())
 }
 
+/// `secrets --help` に GnuPG/SSH 復旧経路の command が露出していることを確認する。
+#[test]
+fn secrets_help_lists_gpg_recovery_commands() -> TestResult<()> {
+    let run = run_pipe_without_stub(["--help"], None)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("restore-gpg"), "stdout: {}", run.stdout);
+    assert!(
+        run.stdout.contains("export-ssh-public-key"),
+        "stdout: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
 /// `verify-yubikey` は serial 省略時に単一候補を自動選択して検証する。
 #[test]
 fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
