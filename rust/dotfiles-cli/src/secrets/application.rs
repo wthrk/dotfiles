@@ -9,8 +9,6 @@ pub(crate) mod run_enroll_spare_with_stdin_json;
 pub(crate) mod run_get_with;
 pub(crate) mod run_put_with_prompt;
 pub(crate) mod run_put_with_stdin;
-pub(crate) mod run_restore_gpg_with;
-pub(crate) mod run_restore_pass_with;
 pub(crate) mod run_rotate_bws_token_with_prompt;
 pub(crate) mod run_rotate_bws_token_with_stdin;
 pub(crate) mod run_setup_with;
