@@ -112,20 +112,3 @@ pub trait SecretStoragePort {
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial>;
 }
-
-/// restore-gpg / export-ssh-public-key が要求する GPG/SSH 境界契約。
-pub trait GpgRecoveryPort {
-    /// BWS access token で GPG secret key backup（ASCII armor）を取得する。
-    fn read_gpg_secret_key_backup(&self, bws_access_token: &SecretMaterial) -> Result<String>;
-    /// 取得済み backup を keyring へ import する。
-    fn import_gpg_secret_key(&self, armored_secret_key: &str) -> Result<()>;
-    /// import 後に復旧必須条件（subkey / agent SSH support）を検証する。
-    fn verify_gpg_restore_prerequisites(&self) -> Result<()>;
-    /// GPG authentication subkey 由来の SSH 公開鍵を出力用文字列として取得する。
-    fn export_ssh_public_key(&self) -> Result<String>;
-}
-
-/// export-ssh-public-key の公開鍵文字列を出力境界へ渡す契約。
-pub trait SshPublicKeyOutputPort {
-    fn write_ssh_public_key(&self, public_key: &str) -> Result<()>;
-}

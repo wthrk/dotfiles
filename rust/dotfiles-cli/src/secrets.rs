@@ -16,8 +16,8 @@ mod support;
 use clap::{Args, Subcommand, ValueEnum};
 use domain::piv::SecretName;
 use domain::values::{
-    EnrollPrimaryCommand, EnrollSpareCommand, ExportSshPublicKeyCommand, ExternalCheck, GetCommand,
-    PutCommand, RestoreGpgCommand, RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
+    EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, GetCommand, PutCommand,
+    RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
 };
 
 use crate::Result;
@@ -34,8 +34,6 @@ pub(crate) struct SecretsOptions {
 enum SecretsCommand {
     Yubikey(YubikeyOptions),
     VerifyYubikey(VerifyYubikeyOptions),
-    RestoreGpg(RestoreGpgOptions),
-    ExportSshPublicKey(ExportSshPublicKeyOptions),
 }
 
 #[derive(Args)]
@@ -125,17 +123,6 @@ struct VerifyYubikeyOptions {
     all: bool,
 }
 
-#[derive(Args)]
-/// Bitwarden Secrets Manager backup から GPG secret key を復元する option。
-struct RestoreGpgOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-}
-
-#[derive(Args)]
-/// GPG authentication subkey 由来の SSH 公開鍵を出力する option。
-struct ExportSshPublicKeyOptions {}
-
 #[derive(Debug, Clone, Copy, ValueEnum)]
 /// `verify-yubikey --check` で追加する外部確認項目。
 enum VerifyCheck {
@@ -175,9 +162,7 @@ where
         + ports::BootstrapSecretDocumentInputPort
         + ports::SecretOutputPort
         + ports::SecretStoragePort
-        + ports::ReportPort
-        + ports::GpgRecoveryPort
-        + ports::SshPublicKeyOutputPort,
+        + ports::ReportPort,
 {
     match options.command {
         SecretsCommand::Yubikey(options) => match options.command {
@@ -265,20 +250,6 @@ where
                         .collect(),
                     all: options.all,
                 },
-                boundary,
-            )
-        }
-        SecretsCommand::RestoreGpg(options) => {
-            application::run_restore_gpg_with::run_restore_gpg_with(
-                RestoreGpgCommand {
-                    serial: options.serial,
-                },
-                boundary,
-            )
-        }
-        SecretsCommand::ExportSshPublicKey(_options) => {
-            application::run_export_ssh_public_key_with::run_export_ssh_public_key_with(
-                ExportSshPublicKeyCommand,
                 boundary,
             )
         }

@@ -154,20 +154,6 @@ pub struct VerifyYubikeyCommand {
     pub all: bool,
 }
 
-/// restore-gpg use case の入力 command。
-///
-/// BWS access token を取り出す対象 YubiKey serial の指定有無だけを保持する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RestoreGpgCommand {
-    pub serial: Option<u32>,
-}
-
-/// export-ssh-public-key use case の入力 command。
-///
-/// 出力対象は現在の GPG keyring 状態から決まるため、入力パラメータを持たない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ExportSshPublicKeyCommand;
-
 impl VerifyYubikeyCommand {
     /// verify-yubikey が要求された external check 集合を domain check 名へ正規化する。
     ///
