@@ -4,11 +4,46 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lib]
+name = "dotfiles_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dotfiles"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
+[features]
+default = []
+secrets-internal-test-stub = ["dep:mockito"]
+
 [dependencies]
+aes-gcm.workspace = true
 anyhow.workspace = true
+bincode.workspace = true
 clap.workspace = true
+crossterm.workspace = true
 dotfiles-core.workspace = true
+filedescriptor.workspace = true
+mockito = { workspace = true, optional = true }
+nom.workspace = true
+rand.workspace = true
+region.workspace = true
+rand_core.workspace = true
+rlimit.workspace = true
+rsa.workspace = true
+scopeguard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+signal-hook.workspace = true
+strum.workspace = true
+yubikey.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+mockall.workspace = true
+portable-pty = { workspace = true }

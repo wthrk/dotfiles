@@ -101,12 +101,13 @@ fn append_guest_args(command: &mut Command, source_hash: Option<&str>) {
 }
 
 fn guest_args(source_hash: Option<&str>) -> Vec<String> {
-    let mut args = vec!["/tmp/dotfiles-integration-test-guest".to_string()];
-    if let Some(source_hash) = source_hash {
-        args.push("--source-hash".to_string());
-        args.push(source_hash.to_string());
-    }
-    args
+    std::iter::once("/tmp/dotfiles-integration-test-guest".to_string())
+        .chain(
+            source_hash
+                .into_iter()
+                .flat_map(|source_hash| ["--source-hash".to_string(), source_hash.to_string()]),
+        )
+        .collect()
 }
 
 /// Tart VM、共有ディレクトリ、SSH 制御接続の前提値をまとめて所有する。

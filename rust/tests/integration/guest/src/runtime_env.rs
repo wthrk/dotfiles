@@ -223,17 +223,17 @@ fn user_env(
     nix_config: &str,
     path: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
-    let mut env = vec![
+    let base_env = [
         ("HOME".to_string(), user_home(user)?.display().to_string()),
         ("USER".to_string(), user.to_string()),
         ("LOGNAME".to_string(), user.to_string()),
         ("SHELL".to_string(), shell.to_string()),
         ("NIX_CONFIG".to_string(), nix_config.to_string()),
     ];
-    if let Some(path) = path {
-        env.push(("PATH".to_string(), path.to_string()));
-    }
-    Ok(env)
+    Ok(base_env
+        .into_iter()
+        .chain(path.map(|path| ("PATH".to_string(), path.to_string())))
+        .collect())
 }
 
 /// `/Users/<name>` を仮定せず、macOS が持つユーザーレコードからホームを読む。

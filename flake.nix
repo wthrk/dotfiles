@@ -196,7 +196,11 @@
             "--package"
             "dotfiles-cli"
           ];
-          nativeBuildInputs = [ pkgs.makeWrapper ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+            pkgs.pkg-config
+          ];
           postInstall = ''
             wrapProgram $out/bin/dotfiles \
               --set-default DOTFILES_HOME_MANAGER ${
@@ -229,12 +233,16 @@
             pkgs.nil
             pkgs.nix
             pkgs.nixd
+            pkgs.pkg-config
             pkgs.ripgrep
             pkgs.rust-analyzer
             pkgs.rustc
             pkgs.rustfmt
             pkgs.shellcheck
             pkgs.zsh
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.pcsclite
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.ansible

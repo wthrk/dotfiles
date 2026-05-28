@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implementation Review Judgement"
+  short_description: "Judges review-start and aggregation gates"
+  default_prompt: "Use $implementation-review-judgement to decide whether implementation review-start and multi-reviewer aggregation gates can advance in this repository."

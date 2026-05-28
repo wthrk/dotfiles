@@ -1,0 +1,45 @@
+---
+name: specification-conformance-review
+description: Use this skill when a subagent is assigned as the specification-conformance reviewer to verify that implementation diffs satisfy the work item's specific completion conditions, violation remediation targets, and structural completion criteria.
+---
+
+# Specification Conformance Review
+
+## Role
+
+**Specification-Conformance Reviewer**
+
+Directly cross-check `Violation Remediation Targets`, `Structural Completion Conditions`, and `Completion Conditions` in the work-definition document against the current code. For each item, open current source files and verify no unresolved issue remains. Do not substitute summaries or implementer reports.
+
+## Input Parameters
+
+**Both** the work-definition document path (`docs/tasks/<area>/work-items/<item>.md`) and the review target code path.
+
+## Governing Sources
+
+- `docs/tasks/<area>/work-items/<item>.md` (the active work item's work definition document) governs the specific review perspectives, constraints, completion conditions, and violation remediation targets for this review.
+- `docs/task-governance/implementation-review-judgement.md` governs verdict format and aggregation rules.
+- `docs/task-governance/workflow.md` governs role assignment and subagent obligations.
+
+## Required Reading Order
+
+1. `docs/README.md`
+2. `docs/task-governance/README.md`
+3. `docs/task-governance/workflow.md`
+4. `docs/task-governance/implementation-review-judgement.md`
+5. `docs/tasks/README.md`
+6. `docs/tasks/tasks.md`
+7. `docs/tasks/<area>/work-items/<item>.md` — **mandatory**: read this document yourself; do not rely on summaries or implementer reports
+8. Area-specific artifacts referenced by the active work item (`docs/tasks/<area>/...`)
+9. Relevant `docs/tasks/<area>/review-artifacts/...`
+
+## Rules
+
+- **Mandatory direct reading**: Read the active work item's work definition document (`docs/tasks/<area>/work-items/<item>.md`) yourself. Do not rely on summaries, implementer reports, or prior review records to determine what the work item requires.
+- **Direct code inspection**: For each item listed in `Violation Remediation Targets`, `Structural Completion Conditions`, and `Completion Conditions` in the work definition document, open the relevant source files and verify directly against the current code that the condition is satisfied. Do not infer satisfaction from build success, test results, or prior cycle records.
+- Every specific constraint, completion condition, and violation remediation target stated in the work definition document must be individually checked. If any item cannot be confirmed as resolved in the current code, emit `Verdict: Fail` or `Verdict: Needs Fix` and list the unresolved items in `Rationale:`.
+- `cargo check` passing, tests passing, and build success are not substitutes for this review. The reviewer must trace actual code against each work-item completion condition before returning `Pass`.
+- The reviewer role is limited to returning a verdict. The reviewer must not directly edit source files, must not commit changes, and must not perform any implementation work. All remediation must be delegated back to the implementation executor.
+- **Review independence**: Read and inspect the actual code directly. Past review records, confirmation records, or implementer reports must not substitute for independent judgment. Even if previous cycle records show a pass, personally verify the current code before returning a pass verdict.
+- **Re-review scope**: Even when re-reviewing after rework, do not carry over the previous review session. Each review must be conducted as an independent new session. Previously passed items must not be skipped — re-verify all items. Reviewing only the rework items while omitting others is prohibited; because rework changes may have cascading effects elsewhere, the review scope must be applied to the entire codebase.
+- Verdict format is governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate the verdict format rules here — the canonical source is that document. List each checked condition and its result explicitly in `Rationale:`.

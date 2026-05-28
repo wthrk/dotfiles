@@ -1,0 +1,35 @@
+# 責務基準レビュー強制への是正
+
+- 作業種別: `恒久文書整理`
+- 作業目的: 自動マルチエージェントレビューサイクルの review-enforcement 文書が、形式（ファイル名パターン・`#[cfg(test)]` か `#[cfg(feature)]` か・port trait を実装しているか・公開面の有無）ではなく責務（そのコードの実際の責務が、置かれている層の責務に属すか）で判定するよう強制する。形式ベースのチェックが実在のアーキテクチャ違反（特に production 層に置かれた test double 定義）を見逃してきた欠陥を解消する。さらに、各レビュー担当が「部分を個別ルールに照らして合否判定する」だけで、誰もアーキテクチャ全体の一貫性を判定しないという構造的欠落を解消する。各部分が個別ルールにすべて合格していてもモジュール全体として設計が破綻している（`application/` が「ぐちゃぐちゃ」になっている等）状態を捉えるため、モジュール全体を独立に読んで設計整合を判定する役割を導入し、必須レビュー担当へ組み込む。
+- 構造完了条件:
+  - テストレビュー担当が `完了条件` を機械的な文字列一致で処理せず、各完了条件項目ごとに「テストで検証すべき項目」か「構造確認・文書確認で満たす項目」かを分類したうえで網羅判定する強制を含む。`テスト不要` と分類した項目は根拠（参照した完了条件項目と該当コード/文書）を `根拠:` に明示し、説明なしで `テスト網羅不足` 判定を返してはならない。
+  - review-enforcement 文書が、各シンボル・各ファイル・各 `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックについて「このコードの責務は何か」「その責務はこの層に属すか」を問い、責務が層に一致しない場合は形式が正しくても `判定: 不合格` とする強制を含む。
+  - test double（Fake/Stub/Mock — 実依存をテスト用に肩代わりする型の定義）の判定を、配置形式（production 層にあるか、`#[cfg(test)]`/`#[cfg(feature = "...")]`、port trait 実装）だけで機械的に不合格化せず、責務一致で判定する強制を含む。責務不一致が確認できる場合に限って `判定: 不合格` とする。
+  - production 層の `src/` における通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`、その module 自身の private 関数を検証するもの）は許可され、`#[test]` 関数や `#[cfg(test)]` ブロックの存在のみを理由に不合格としない。禁止対象は double の**定義**が production 層に置かれる場合に限定される（公開面最小化の哲学を損なう「全テストコード src/ 禁止」へ過剰修正しない）。
+  - secret-recovery の active item `YubiKey`（`docs/tasks/secret-recovery/work-items/yubikey.md`）では、次の2件を finding として返してはならないことを明記する。1) `完了条件に対するテスト網羅不足` を完了条件の構造項目・文書項目・責務項目へ機械適用すること。2) `責務基準での production 層 test double 混入` を `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` に generic 適用すること。YubiKey ではこの wording の finding を返却禁止とする。
+  - `adapters/` のレビュー確認手順が、port-trait 列挙の前に test double 混入検出を先行ステップとして含む。
+  - 上記強制が `docs/architecture/review-checklist.md`、`.agents/skills/test-review/SKILL.md`、`docs/task-governance/implementation-review-judgement.md` の間で一貫している。
+  - 部分ごとの個別ルール判定とは別に、モジュール（コードベース）全体を独立に読んで `docs/architecture/hexagonal-implementation-rules.md` の哲学との設計整合を判定する役割（`アーキテクチャ整合レビュー担当`）が存在する。この役割は、各部分が個別ルールにすべて合格していても全体として設計が一貫していなければ `判定: 不合格` とし、他担当の個別判定・過去のレビュー記録・実装担当の報告を全体整合判定の代替にしてはならない。チェックリスト項目の逐一照合に退化させない（個別ルールの追加ではなく全体整合判定を責務とする）旨が役割定義に明記されている。
+  - `アーキテクチャ整合レビュー担当` のスキルファイル（`.agents/skills/architectural-consistency-review/SKILL.md`）が存在し、frontmatter（name + description）・役割・受け取るパラメーター・Governing Sources・Required Reading Order・Rules（レビュー独立性・再レビュースコープ・判定フォーマットを `docs/task-governance/implementation-review-judgement.md` に委譲）を既存レビュアースキルの構造に揃えて含む。受け取るパラメーターは差分ではなくモジュール全体のコードパスである。
+  - `アーキテクチャ整合レビュー担当` が実装差分（executable behavior を含む変更）の必須レビュー担当集合へ組み込まれ、その集合を列挙する全箇所（`docs/task-governance/implementation-review-judgement.md` の `必須レビュー担当` セクションと `各レビュー担当の職責` サブセクション、`.agents/skills/orchestration/SKILL.md`、`.agents/skills/dotfiles-task-governance/SKILL.md` の実装差分必須レビュアー列挙と委譲パラメーター、`.agents/skills/implementation-review-judgement/SKILL.md` の `担当スキルファイル一覧`）で一貫して追加されている。
+  - 差し戻し時に、オーケストレータが新しい実装担当へ `current-cycle` の未解消レビュー内容を lossless に handoff できる規則が明記されている。少なくとも `reviewer role`、`verdict`、`file:line references`、`required fix`、`未解消 finding 本文`、`artifact path` を渡せること。
+  - 上記の詳細 handoff は、`current-cycle` review 後に新しい実装担当へ差し戻す remediation handoff に限定され、reviewer 委譲では最小パラメーターのみを渡す規則が明記されている（reviewer へ findings 詳細を渡さない）。
+  - 実装担当側規則が、上記 handoff を入力正本の一部として扱い、要約置換なしで必須再読することを明記している。
+- 正本参照方針: `docs/architecture/hexagonal-implementation-rules.md` を哲学の正本とし、review-checklist.md と各スキルはそこから導出する。矛盾する規則を再記述・複製しない。
+- 既存実装の流用方針: `既存の責務基準哲学（hexagonal-implementation-rules.md の「アダプターは翻訳者である」「visibility はそのコードが属すべき層の責務を変えない」）を正本として参照し、enforcement 文書はそこから導く。`
+- 規約違反の解消対象:
+  - `.agents/skills/test-review/SKILL.md` および `docs/task-governance/implementation-review-judgement.md` に、完了条件ごとの「テスト要否分類」と根拠記録を要求する明示規則がなく、`完了条件に対するテスト網羅不足` を機械的に誤判定しうる欠陥。
+  - `docs/architecture/review-checklist.md` の `adapters/` 確認手順が port-trait 状態のみを列挙し、ファイルが test double かを問わない欠陥。
+  - `docs/architecture/review-checklist.md` の `tests/` セクションに production 層へ誤配置された test double の検出手順がない欠陥。
+  - `.agents/skills/test-review/SKILL.md` の自己矛盾規則（`#[cfg(test)]` 内なら double を許可するとしつつ、`#[cfg(test)]` の production 残存を禁止する）と、`#[cfg(feature)]` gate・port-trait 実装 double を扱わない欠落。
+  - `docs/task-governance/implementation-review-judgement.md` テストレビュー担当 職責の同一 `#[cfg(test)]`-permits 抜け穴。
+  - 既存の必須レビュー担当が全員「部分を個別ルールに照らして合否判定する」ものに限られ、モジュール全体の設計整合を独立に判定する役割が存在しないという構造的欠落。集約ロールは各担当の個別判定を収集するのみで全体整合を判定しないため、各部分がルールを通過しても全体として設計が破綻した状態を捉える役割が必要。
+  - 差し戻し再実装の委譲で、`current-cycle` 未解消レビュー内容の lossless handoff（未解消 finding 本文を含む）が許可・強制されておらず、summary 圧縮で情報欠落が起きうる欠陥。
+- 同一変更セットで扱う文書カテゴリ:
+  - governing sources: `docs/tasks/tasks.md`, `docs/task-governance/*`, `docs/tasks/repo-governance/*`, `docs/architecture/hexagonal-implementation-rules.md`
+  - included documentation targets: `docs/architecture/review-checklist.md`, `.agents/skills/test-review/SKILL.md`, `docs/task-governance/implementation-review-judgement.md`, `.agents/skills/architectural-consistency-review/SKILL.md`, `.agents/skills/orchestration/SKILL.md`, `.agents/skills/dotfiles-task-governance/SKILL.md`, `.agents/skills/implementation-review-judgement/SKILL.md`
+- 境界条件: 本作業は review-enforcement 文書（markdown）とレビュアースキルファイル（`SKILL.md`）のみを対象とする。`rust/` 配下の source は変更しない。test double の物理的移動および `application/` 等の実コード再設計は実装担当による別作業項目（secret-recovery 領域）の責務であり、本作業はその違反・全体非整合を検出する強制と役割を文書・スキルへ与えることに限定する。
+- レビュー合格条件: `review-enforcement 文書が形式ではなく責務で判定するよう強制し、(1) 完了条件に対するテスト網羅判定を完了条件項目ごとのテスト要否分類と根拠記録付きで行えること、(2) test double を配置形式や gate 有無だけで不合格化せず、責務不一致を根拠に不合格判定できること（ただし YubiKey V15 例外は配置+責務で判定すること）、(3) 通常の inline unit test を禁止していないこと。加えて、モジュール全体の設計整合を独立に判定する アーキテクチャ整合レビュー担当 が、スキルファイルを持ち、実装差分の必須レビュー担当集合を列挙する全箇所へ一貫して組み込まれており、その役割定義が個別ルールの逐一照合ではなく全体整合判定（部分の合格の総和では捉えられない非整合の検出）を責務として明記していること。`
+- レビュー合格条件（YubiKey 誤判定防止の追記）: secret-recovery の active item `YubiKey` に対して、`完了条件に対するテスト網羅不足`（構造項目・文書項目・責務項目への機械適用）および `責務基準での production 層 test double 混入`（`rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` への generic 適用）の2文言を finding として返却しないことが、review-enforcement 文書群で明文化されていること。
+- レビュー合格条件（YubiKey 構造/全体整合 判定ルート封鎖の追記）: secret-recovery の active item `YubiKey` に対して、`rust/dotfiles-cli/src/secrets/adapters/piv_io/device_test_stub.rs` が PIV/YubiKey 固有 concrete 実装として same-route・配置+責務・単一 production command path を満たす限り、`runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一モジュール配下に stub があること自体`を構造レビュー/アーキテクチャ整合レビューの不合格根拠に使えないことが明文化されていること。これらを不合格根拠に使えるのは、same-route 不成立・配置+責務不一致・単一 production command path 不成立のいずれかを具体根拠付きで示せる場合に限る。

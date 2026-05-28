@@ -1,5 +1,9 @@
 /lsp
 /.direnv/
+/.worktrees/
 /.serena/
+/.claude/*
+!/.claude/settings.json
+!/.claude/skills
 /target/
 target/
