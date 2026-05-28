@@ -29,7 +29,7 @@
 - gpg-agent SSH support 利用可否の確認では、SSH agent socket が有効であり、authentication subkey を参照できることを確認する。
 - `~/.ssh/id_ed25519` の利用有無は判定条件に含めず、GPG authentication subkey 経由の経路だけを復旧対象にする。
 - Home Manager で `gpg-agent.conf` を生成し、`enable-ssh-support` を含む SSH support 設定を恒久的に管理する。
-- zsh 環境変数は `GPG_TTY` と `SSH_AUTH_SOCK` を必須とし、`SSH_AUTH_SOCK` は `gpgconf --list-dirs agent-ssh-socket` の結果を優先して設定する。
+- zsh 環境変数は `GPG_TTY` と `SSH_AUTH_SOCK` を必須とし、`SSH_AUTH_SOCK` は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合のみ上書きする。
 - 既存 key の扱いは「停止」を正とし、同一 primary fingerprint の secret key が既に鍵リングにある場合は import 前に停止する（既存 key 上書きは本 issue では扱わない）。
 
 ## GPG import API 決定
@@ -107,13 +107,15 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 `config/zsh/env.zsh` で次を定義する。
 
 - `GPG_TTY="$(tty)"`（TTY が取得できる対話シェル）
-- `SSH_AUTH_SOCK` は `gpgconf --list-dirs agent-ssh-socket` が非空の値を返した場合のみ上書きし、空または失敗時は既存値を保持する。設定例:
+- `SSH_AUTH_SOCK` は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合のみ上書きし、未存在時は既存値を保持する。設定例:
 
   ```zsh
-  _sock="$(gpgconf --list-dirs agent-ssh-socket 2>/dev/null)"
-  [[ -n "$_sock" ]] && export SSH_AUTH_SOCK="$_sock"
+  _sock="${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh"
+  [[ -S "$_sock" ]] && export SSH_AUTH_SOCK="$_sock"
   unset _sock
   ```
+
+`restore-gpg` / `restore-pass` の実装側でも SSH agent socket 解決は crate 側ロジックで完結させ、`gpgconf` CLI 呼び出しは採用しない。
 
 `restore-gpg` / `restore-pass` の実行前提はこの zsh 設定と Home Manager 側 `gpg-agent.conf` が一致していることとする。
 
