@@ -204,6 +204,23 @@ impl DeviceSelectionAdapter {
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
         SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
     }
+
+    fn select_device_interactively(&mut self, devices: &[DeviceCandidate]) -> Result<u32> {
+        eprintln!("multiple YubiKeys detected:");
+        for (index, device) in devices.iter().enumerate() {
+            let number = index + 1;
+            eprintln!("{number}: serial {} ({})", device.serial, device.label);
+        }
+        let selection = process_io::read_control_line("select YubiKey number: ")?;
+        let selection = selection
+            .trim()
+            .parse::<usize>()
+            .context("selected YubiKey number is invalid")?;
+        let Some(device) = devices.get(selection.saturating_sub(1)) else {
+            bail!("selected YubiKey number is out of range");
+        };
+        Ok(device.serial)
+    }
 }
 
 impl DeviceSerialPort for DeviceSelectionAdapter {
@@ -215,6 +232,7 @@ impl DeviceSerialPort for DeviceSelectionAdapter {
         match devices.as_slice() {
             [] => bail!("no YubiKey detected"),
             [device] => Ok(device.serial),
+            _ if process_io::stdin_is_terminal() => self.select_device_interactively(&devices),
             _ => bail!("multiple YubiKeys detected; pass --serial to select a device"),
         }
     }

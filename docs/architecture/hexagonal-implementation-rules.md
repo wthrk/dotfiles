@@ -102,6 +102,10 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 
 `support` はプロダクト非依存の技術 primitive だけを持つ。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置けるが、YubiKey、Bitwarden、enroll、verify、secret storage role などの業務語彙や product-specific error を持ってはならない。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。技術 primitive と機能固有 storage mechanism を分け、後者は adapter の裏側または domain/application の責務境界に合わせて配置する。
 
+`support` は「外部 I/O を一切持ってはいけない」層ではない。process/terminal I/O のうち、TTY を開く、echo/raw mode を制御する、標準入出力を byte stream として読む、signal/interrupt と blocking read の安全性を扱う、といった process-generic な低レベル実装支援は support に置ける。これは外部境界の use case 方針や device 選択を support が決めることを許すものではなく、adapter など外部境界実装が利用する技術 primitive を隔離するための配置である。
+
+domain/application は support の process/terminal I/O helper を直接呼んではならない。外部 interaction を必要とする use case は port capability を通じて adapter を呼び、adapter が必要な低レベル I/O helper として support を使う。support に業務判断、domain object 操作、prompt 文言、device 選択方針、use case 手順を入れてはならない。逆に、process-generic helper を support へ分離できる場面で adapter に端末制御や blocking read の補助実装を直詰めし、port 翻訳以外の技術補助で adapter を fat にしてはならない。
+
 ## secret-recovery の層別判断（具体化）
 
 以下は本 repository の `dotfiles secrets` で繰り返し誤配置が起きた論点を、allowed / forbidden / 典型誤配置 / 判定質問 / 具体例で固定する。
@@ -150,17 +154,17 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 - allowed:
   protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）
 - forbidden:
-  YubiKey、Bitwarden、stdin-json、enroll/verify など業務語彙を持つ error/message
+  YubiKey、Bitwarden、stdin-json、enroll/verify など業務語彙を持つ error/message、feature-specific な prompt 文言や device 選択方針
 - 典型的な誤配置:
-  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が terminal prompt を持つ
+  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ
 - 判定質問:
-  「この部品は別プロダクトへそのまま移せるか。機能名を知らずに成立するか」
+  「この部品は別プロダクトへそのまま移せるか。機能名を知らずに成立するか。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か」
 - この repo の具体例:
-  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない
+  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。
 
 ## 層ごとの禁止事項
 
-`port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に use case の順序制御を置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state を置いてはならない。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
+`port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に use case の順序制御を置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state を置いてはならない。`support` に process/terminal I/O があること自体を禁止根拠にしてはならず、禁止対象は feature-specific な interaction 方針、業務判断、domain object 操作、application からの直接利用である。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
 
 ## 標準モジュール構成とファイル構成
 

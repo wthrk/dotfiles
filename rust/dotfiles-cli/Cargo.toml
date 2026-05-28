@@ -26,6 +26,7 @@ bincode.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
+filedescriptor.workspace = true
 mockito = { workspace = true, optional = true }
 nom.workspace = true
 rand.workspace = true
