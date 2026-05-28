@@ -89,6 +89,8 @@ GPG key は software key として運用する。GPG key material は YubiKey �
 
 GPG 鍵リング 操作は `gpgme` を使う。OpenPGP（公開鍵規格） 公開鍵 操作が必要な場合は `sequoia-openpgp` を使う。`gpg` CLI は通常実装では使わない。
 
+詳細設計は [GnuPG 復元 / gpg-agent SSH support 設計](./gnupg-ssh-design.md) に置く。
+
 ### Git
 
 private `password-store` repository の clone は `git2` と SSH agent を使う。`git` CLI は復旧本線では使わない。SSH agent には gpg-agent の SSH support を使い、GPG authentication subkey 由来の identity を GitHub に提示する。
@@ -152,7 +154,13 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 ### `dotfiles secrets restore-gpg`
 
-YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。GPG secret key を import し、encryption / authentication / signing subkey の存在を検証する。最後に `gpg-agent` SSH support が使えることを確認する。
+1. YubiKey から `bws-access-token` を取得する。
+2. Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。
+3. import 前に primary fingerprint をインメモリ導出し、同一 primary fingerprint の secret key が既に鍵リングに存在する場合は停止する。
+4. GPG secret key を import する。
+5. encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
+6. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する。既登録の場合はその状態を維持する（冪等）。
+7. `gpg-agent` SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
 
 ### `dotfiles secrets restore-pass`
 
@@ -186,8 +194,10 @@ GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。G
 - `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。
 - `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
-- import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない。
+- import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない、またはいずれかが revoked / expired / disabled で利用不能である。
+- 同一 primary fingerprint の secret key が既に鍵リングへ存在する。
 - `gpg-agent` SSH support が利用できない。
+- authentication subkey 由来の SSH 公開鍵を解決できない。
 - `~/.password-store` が既に存在する。
 - `password-store-remote` が private repository の clone URL として妥当でない。
 - Bitwarden CLI login / unlock に必要な `bw` CLI、OTP、認証情報が揃っていない。
