@@ -4,10 +4,11 @@
 
 ## 実装担当からの引き継ぎ
 
-- レビュー状態: `未着手`
+- レビュー状態: `進行中（要修正）`
+- 判定位置づけ: `デザインPR段階の文書整合是正サイクル（作業項目全体の完了判定ではない）`
 - 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
-- 確認開始時 HEAD: `5d6e495`
-- 対象差分識別子: `bws-design-pr-2026-05-28-5d6e495`
+- 確認開始時点参照: `work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端`
+- 対象差分識別子: `bws-design-pr-current-cycle`
 - 実装側確認証跡: `./confirmation.md`
 
 ## レビュー担当チェック項目
@@ -59,74 +60,30 @@
 
 ## 役割別レビュー記録（レビュー担当記入）
 
-### 構造レビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
-
 ### 運用整合レビュー担当
 
-#### 是正確認レビュー (HEAD b6f301b — 文書是正サイクル 2026-05-28)
+#### 最新差戻し確認（文書整合是正サイクル 2026-05-28）
+
+- 判定: `要修正`
+- 判定要約: `work-item 完了条件と confirmation/review artifact の整合を優先して、確認単位の完了扱いを解除する必要がある`
+- 根拠:
+  - `../../work-items/bitwarden-secrets-manager.md` の完了条件は、`confirmation.md` に `verify-yubikey --check bws` を含む確認記録があることを要求しているが、現行 `confirmation.md` は `cargo check` / `cargo test -p dotfiles-cli` のみで当該証跡が未取得だった。
+  - 固定実装単位トラッカーの `確認` が `完了` となっていたため、完了条件未充足の状態で前進扱いになる監査不整合が発生していた。`tasks.md` と `confirmation.md` を `進行中` へ是正し、完了扱いを解除する。
+  - 差戻し条件: `confirmation.md` に `verify-yubikey --check bws` の追跡可能な実行証跡を追加し、必須レビュー担当の個別判定と集約判定を完了させるまで `確認`/`レビュー` を完了状態へ遷移させないこと。
+
+#### 是正確認レビュー（現行ブランチ文書是正サイクル）
 
 - 判定: `合格`
 - 判定要約: `所見なし`
 - 根拠:
-  - **[RESOLVED] root 台帳の状態不整合**: `docs/tasks/tasks.md` の Bitwarden Secrets Manager エントリが `状態: 進行中` に更新済みであることを独立確認済み（`git show b6f301b -- docs/tasks/tasks.md` で差分検証。`未開始` → `進行中` の変更が b6f301b に含まれる）。root active ledger 状態と `docs/tasks/secret-recovery/tasks.md` の状態が一致しており、監査可能性を回復している。
-  - **[RESOLVED] review.md 必須担当スロット不足**: `git show b6f301b -- .../review.md` で確認。`テストレビュー担当`・`ドキュメントレビュー担当`・`アーキテクチャ整合レビュー担当` の判定記録セクションが追加され、`実コード差分` に対する必須 7 役割（構造・運用整合・セキュリティ・仕様適合・テスト・ドキュメント・アーキテクチャ整合）のスロットがすべて揃っている。次の全コードレビューサイクルで集約判定の網羅性が構造上検証可能な状態になった。
-  - **[RESOLVED] 確認単位の状態が未確定**: `confirmation.md` の `確認状態` が `完了` に更新されていることを独立確認済み（`git show b6f301b -- .../confirmation.md` で差分検証）。`docs/tasks/secret-recovery/tasks.md` の固定実装単位トラッカー `確認` も `完了` となっており、証跡と tracker が一致している。
-  - **追加確認: 新規懸念なし**: b6f301b は文書専用コミット（4 ファイル変更、コードなし）。実装コミット終端 `5d6e495` に変更なし。`後続対応状態: 是正コミット済み・新規レビューサイクル待ち` の記載が是正完了状態を正確に表している。
-- 確認対象: branch `copilot/bitwarden-secrets-manager-client` HEAD `b6f301b`、是正コミット `b6f301b`（`git show --stat b6f301b` で文書専用コミットであることを独立確認済み）、実装コミット終端 `5d6e495`
-
-#### 前サイクル記録 (HEAD 6cd58c1 — 初回レビューサイクル)
-
-- 判定: `要修正`（差戻し事項は上記 b6f301b で全件解消）
-- 判定要約: `root 台帳状態が未更新で監査可能性に欠陥あり、review.md テンプレートに必須レビュー担当スロットが不足、確認単位状態が未確定`
-- 根拠:
-  - **[BLOCKING → RESOLVED] root 台帳の状態不整合**: `docs/tasks/tasks.md`（root active ledger）の Bitwarden Secrets Manager エントリが `状態: 未開始` のまま（HEAD `6cd58c1` 時点）。`docs/tasks/secret-recovery/tasks.md` は `状態: 進行中` と記録しており、2つの台帳の状態が乖離していた。証跡同期コミット `6cd58c1` が `docs/tasks/tasks.md` を更新していないことを `git show --stat 6cd58c1` で確認済み。
-  - **[BLOCKING → RESOLVED] review.md テンプレートの必須担当スロット不足**: `テストレビュー担当`・`ドキュメントレビュー担当`・`アーキテクチャ整合レビュー担当` のセクションが存在しなかった。
-  - **[NEEDS FIX → RESOLVED] 確認単位の状態が未確定**: `confirmation.md` の `確認状態: 進行中` が確認完了内容と矛盾していた。
-- 確認対象: branch `copilot/bitwarden-secrets-manager-client` HEAD `6cd58c1`、対象差分識別子 `bws-design-pr-2026-05-28-5d6e495`、実装コミット終端 `5d6e495`、証跡同期コミット `6cd58c1`（`git show --stat 6cd58c1` で文書専用コミットであることを独立確認済み）
-
-### セキュリティレビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
-
-### 仕様適合レビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
-
-### テストレビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
-
-### ドキュメントレビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
-
-### アーキテクチャ整合レビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
+  - root 台帳（`docs/tasks/tasks.md`）と領域台帳（`docs/tasks/secret-recovery/tasks.md`）の Bitwarden Secrets Manager 状態がともに `進行中` で一致していることを current-branch で確認済み。
+  - review / confirmation / tasks の現行サイクル記録で、`確認` および `レビュー` が完了扱いではなく `進行中` のまま維持されていることを確認済み。
+  - 現サイクルのレビュー要求を文書是正ゲート（運用整合 + 参照整合）として扱う構造へ正規化し、実装完了判定と混同しない状態であることを確認済み。
+- 確認対象: `copilot/bitwarden-secrets-manager-client` の current branch HEAD（文書是正差分）、`work-items/bitwarden-secrets-manager.md` 記載の実装/テスト差分終端
 
 ### 参照整合レビュー担当
 
-#### サイクル 1（差戻し — HEAD `6cd58c1` 時点）
+#### サイクル 1（差戻し — 初回文書是正サイクル時点）
 
 - 判定: `不合格`
 - 判定要約: `root tasks.md の作業状態が未更新であり、confirmation.md の更新完了宣言と矛盾する`
@@ -136,14 +93,14 @@
   - 差戻し条件: `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目 `状態` を `進行中` へ更新し、`confirmation.md` の更新完了宣言と一致させること。
   - その他のリンク・ファイルパス・アンカー参照はすべて解決可能であることを確認済み。
 
-#### サイクル 2（是正後再レビュー — HEAD `b6f301b` 時点）
+#### サイクル 2（是正後再レビュー — 現行ブランチで追跡可能な是正サイクル）
 
 - 判定: `合格`
 - 判定要約: `所見なし`
 - 根拠:
-  - 是正コミット `b6f301b` により `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目が `状態: 進行中` へ更新された。`confirmation.md` 行32の「`tasks.md` の作業状態を `進行中` へ更新済み」という記述と正本 root 台帳の状態が一致している。前サイクルの差戻し条件はすべて解消済み。
+  - root 台帳 `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目が `状態: 進行中` となっており、`confirmation.md` の状態記録と一致している。
   - `review.md` 内の全リンク・ファイルパスを独立確認済み: `../../../../architecture/review-checklist.md#レビュー観点チェックリスト構造` → `docs/architecture/review-checklist.md`（存在確認済み、見出し `# レビュー観点チェックリスト（構造）` に対応）、`./confirmation.md`（同ディレクトリ内存在確認済み）。
-  - `confirmation.md` の参照ファイルパスおよび宣言内容（確認状態 `完了`、 `docs/tasks/secret-recovery/tasks.md` の `確認 | 完了` トラッカー）はすべて現行ファイル内容と一致。
+  - `confirmation.md` の参照ファイルパスおよび宣言内容（現行は確認状態 `進行中`、 `docs/tasks/secret-recovery/tasks.md` の `確認 | 進行中` トラッカー）は一致。
   - 前サイクル未解消項目: なし。
 
 ### 起動不能役割がある場合の記録参照
@@ -152,11 +109,12 @@
 
 ## 集約判定
 
-- 集約後レビュー判定: `<合格|要修正|不合格>`
-- 集約判定要約: `<所見なし|主要論点要約>`
+- 集約後レビュー判定: `要修正`
+- 集約判定要約: `現サイクル必須の確認証跡不足（verify-yubikey --check bws）により、文書是正ゲートを合格にできない`
 - 集約根拠:
-  - `未記入`
-- 差戻し事項: `未記入`
-- 後続対応状態: `是正コミット済み・新規レビューサイクル待ち`
+  - `../../work-items/bitwarden-secrets-manager.md` の完了条件が要求する `verify-yubikey --check bws` の確認証跡が未取得。
+  - 現サイクル（デザインPR段階の文書是正）では `運用整合レビュー担当` と `参照整合レビュー担当` を必須判定としており、実装差分7役割レビューの完了を現サイクルの前提条件にはしていない。
+- 差戻し事項: `confirmation.md` へ required evidence（verify-yubikey --check bws）を追記し、現サイクル2役割の記録整合を維持したまま集約を再実施すること。
+- 後続対応状態: `確認証跡追加待ち・レビュー継続中`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
-- 後続対応メモ: `レビュー未開始のため未整理`
+- 後続対応メモ: `完了条件未充足のため、現サイクルは差戻し継続`
