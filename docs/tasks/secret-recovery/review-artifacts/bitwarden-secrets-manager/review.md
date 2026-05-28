@@ -96,10 +96,13 @@
 
 ### 参照整合レビュー担当
 
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
+- 判定: `不合格`
+- 判定要約: `root tasks.md の作業状態が未更新であり、confirmation.md の更新完了宣言と矛盾する`
 - 根拠:
-  - `未記入`
+  - `confirmation.md` 行32に「`tasks.md` の作業状態を `進行中` へ更新済み」と記載されているが、`docs/docs-governance.md` が active work item の選定正本と定める `docs/tasks/tasks.md` は `状態: 未開始` のまま更新されていない（git log で確認: 本ブランチで `docs/tasks/tasks.md` を変更したコミットなし）。
+  - `docs/tasks/secret-recovery/tasks.md`（補助台帳）は `状態: 進行中` へ更新済みだが、正本である root `docs/tasks/tasks.md` との定義矛盾が残る。
+  - 差戻し条件: `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目 `状態` を `進行中` へ更新し、`confirmation.md` の更新完了宣言と一致させること。
+  - その他のリンク・ファイルパス・アンカー参照はすべて解決可能であることを確認済み。
 
 ### 起動不能役割がある場合の記録参照
 
