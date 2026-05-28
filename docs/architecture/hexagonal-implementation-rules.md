@@ -259,7 +259,7 @@ use case 独自型は定義してはならない。`EnrollSummary`、`VerifySumm
 
 `domain` は外部 SDK 型・端末状態・プロセス状態へ依存してはならない。`domain` の外部 crate 利用可否は active work item の current-cycle 指示に従って判定し、`言語標準 library 以外に依存しない` という単独規則を機械適用してはならない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
 
-`application` で許容する外部クレート依存は、current worktree の use case 実装で実際に必要な次の2つに限定する: `anyhow`（エラー文脈付与）、`zeroize`（秘密値のゼロ化）。この2つ以外の外部クレートは `application` へ導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
+`application` で許容する外部クレート依存は `anyhow`（エラー文脈付与）に限定する。`zeroize::Zeroizing` は `support/protection` モジュール（およびその配下）以外で使用してはならない。`application` を含む他層へ `zeroize` を導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
 
 ## ドキュメントコメント規則
 

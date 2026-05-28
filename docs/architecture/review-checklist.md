@@ -72,7 +72,7 @@
 - **関数構成**: `rust/dotfiles-cli/src/secrets/application/` 配下では production use case entrypoint の sibling file ごとに `run_*` 関数を 1 つだけ持たせること。`application/use_case.rs` を再導入せず、`application/use_case/`・`mod.rs`・`#[path = \"...\"]` による疑似レイヤー配線を持ち込まないこと。`#[cfg(test)] mod tests` と `*_tests.rs` はこの単一 `run_*` 制約の対象外。
 - **責務**: use case の順序制御・分岐・停止条件に限定されていること。意味・方針・summary semantics の決定、`println!`、stdin 読み取り、concrete device handle 操作を含まないこと。
 - **依存取得**: 乱数生成は port 経由のみとし、`application` が直接 external crate や標準 API から乱数を取得していないこと。
-- **外部 crate 例外**: `application` で使う外部 crate は `anyhow` と `zeroize` のみに限定されていること。
+- **外部 crate 制約**: `application` で使う外部 crate は `anyhow` のみに限定されていること。`zeroize::Zeroizing` は `support/protection` モジュール（およびその配下）にのみ存在し、他層で使用されていないこと。
 - **共通化禁止**: use case-to-use case call と、use case 層での logic commonization を禁止する。共通 helper の抽出を完了条件にしてはならず、重複は許容される。
 - **配置**: adapter 実装ファイルを `application/` 配下に置かないこと。
 - **ドキュメントコメント（必須）**: use-case entrypoint と非自明な internal type/function に doc comment があり、主要契約の先頭文と `why`/責務境界（順序制御理由・停止条件・caller responsibility のいずれか）を示していること。欠落時は `判定: 不合格`。
