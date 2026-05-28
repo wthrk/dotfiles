@@ -134,6 +134,12 @@
   - `rust/dotfiles-cli/src/secrets/application/run_*.rs` の公開 use-case entrypoint と非自明 helper、ならびに sibling `run_*.rs` を配線する `application.rs` に必要な doc comment coverage を付与し、`what` だけでなく `why` を明記する。
   - `application/run_*.rs` に限らず、`ports`/`adapters`/`support` の層境界説明が必要な非自明 type/function で doc comment 欠落を残さない。欠落はレビュー blocker として扱う。
 
+## 2026-05-28 追加要件（current-cycle 再開）
+
+- 全 Rust source/test source は file-level のヘッダコメント（`//!` または等価 comment）を必須とする。YubiKey 対象コードパスは既存ファイルを含めてこの要件を満たすこと。
+- port 設計は「大まかな外部機能」ごとに 1 trait を基本とし、trait 境界と adapter module 分割を同じ外部機能単位へ揃えること。
+- 全 usecase は mockito 共通 support を使って YubiKey 機能だけを mock した app/usecase test を持つこと。独自 test double の追加は禁止する。
+
 ## 実装順序ガイド（推奨）
 
 規約違反 V1〜V16 の解消は、依存関係の順序を考慮して以下の順で着手することを推奨する。
@@ -206,6 +212,6 @@
 | 実装 ステップ6: V4,V5（application配下adapter移設） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ7: V1,V2,V3（application concrete I/O依存除去） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
 | 実装 ステップ8: V14,V15（same-route維持 + stub配置/責務整合） | 完了 | 実コード差分 | [#現行レビュー差し戻しに基づく追加是正項目2026-05-26](#現行レビュー差し戻しに基づく追加是正項目2026-05-26) |
-| 確認 | 完了 | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
+| 確認 | 再レビュー待ち | `review-artifacts/yubikey/confirmation.md` | [implementation-guidelines.md#確認](../../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 再レビュー待ち | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#レビュー](../../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 再レビュー待ち | `review-artifacts/yubikey/review.md` | [implementation-guidelines.md#必要時の後続対応](../../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

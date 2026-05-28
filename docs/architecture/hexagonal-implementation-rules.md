@@ -227,15 +227,13 @@ use case 独自型は定義してはならない。`EnrollSummary`、`VerifySumm
 
 ## port 契約の分割方針
 
-1 つの巨大 trait に device 取得・secret 入力・secret 出力・report 出力・端末制約を混在させてはならない。`port` は capability 単位に分割し、use case が必要な capability だけを型境界として要求する。
+1 つの巨大 trait に無関係な外部機能を混在させてはならない。`port` は「大まかな外部機能」単位で trait を切り、1 trait = 1 外部機能を基本原則とする。
 
-- `DeviceSelectionPort` のような device 取得 capability
-- `SecretInputPort` のような secret 入力 capability
-- `SecretOutputPort` のような secret 出力 capability
-- `ReportPort` のような報告提示 capability
+- 例: DB 接続系 capability は 1 trait に集約する。
+- 例: ファイルアクセス系 capability は 1 trait に集約する。
+- 例: CUI / 端末 I/O 系 capability は 1 trait に集約する。
 
-entrypoint や tests で扱いやすくするために、上記 capability を束ねる合成 trait（supertrait）を定義することは許可する。
-ただし合成 trait は「呼び出し都合の束ね」であり、境界設計上の最小契約は capability 分割側を正本とする。
+機能内で細分化が必要な場合でも、最終的な use case 境界は外部機能単位 trait（supertrait を含む）で表現し、adapter 実装と module 分割も同じ外部機能単位へ揃えること。
 
 ## 標準シンボル構成
 
@@ -264,7 +262,7 @@ entrypoint や tests で扱いやすくするために、上記 capability を�
 各層で次を必須とする。この comment / doc comment 規則はリポジトリ共通のコメント規約の正本であり、層をまたいで適用する。
 
 - **ヘッダコメント必須対象**: production code の非自明要素/境界要素（use-case entrypoint、core workflow の非自明な internal type/function、`port` trait の責任分界、`adapter` の翻訳境界、`support` の安全性境界）には、対象要素の直上に役割と責務境界を示すヘッダコメント（言語標準 doc comment を含む）を必須とする。
-- **テストケース除外**: `#[test]` 関数、`#[cfg(test)] mod tests`、`tests/` 配下、`*_tests.rs`、`test_*.rs` については、ヘッダコメントを機械的に必須化してはならない。テストコードは可読性のためのコメントを任意とし、本節の必須対象は production code の非自明要素/境界要素に限定する。
+- **テストケースを含めて必須**: `#[test]` 関数、`#[cfg(test)] mod tests`、`tests/` 配下、`*_tests.rs`、`test_*.rs` を含む repository-authored Rust source/test source の各ファイルは、file-level comment または doc comment によるヘッダコメントを必須とする。
 
 - 非自明な module、script、command entrypoint、use case、adapter、support utility、検証フロー定義ファイルには file-level comment または言語標準 doc comment を付け、役割を説明する。
 - repository-authored explanatory comment は日本語で書く。周辺文脈が英語で固定されている場合、上流引用、外部形式要件の場合のみ英語を許可する。

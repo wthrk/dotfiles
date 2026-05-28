@@ -1,3 +1,5 @@
+//! rotate-bws-token stdin use case の orchestration。
+
 use crate::Result;
 use crate::secrets::{
     domain::{

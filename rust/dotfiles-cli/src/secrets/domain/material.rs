@@ -1,3 +1,5 @@
+//! secret material の opaque domain model。
+
 use std::any::Any;
 
 /// Domain 境界で扱う秘密値の唯一許可表現。

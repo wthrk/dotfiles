@@ -1,15 +1,15 @@
+//! put prompt use case の orchestration。
+
 use crate::Result;
 use crate::secrets::{
     domain::{storage::SecretStorageWriteIntent, values::PutCommand},
-    ports::{self, SecretStoragePort},
+    ports,
 };
 
 /// 対話入力で取得した secret を対象 serial の YubiKey storage へ保存する。
 ///
 /// 入力モードの可視/不可視判定は `SecretName` の domain 規則で決め、端末 I/O 実装詳細は adapter へ委譲する。
-pub(crate) fn run_put_with_prompt<
-    B: ports::DeviceSerialPort + ports::SecretInputPort + SecretStoragePort,
->(
+pub(crate) fn run_put_with_prompt<B: ports::YubikeyPort + ports::SecretCliPort>(
     command: PutCommand,
     boundary: &mut B,
 ) -> Result<()> {
@@ -23,4 +23,47 @@ pub(crate) fn run_put_with_prompt<
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     boundary.store_secret(serial, intent, &secret)
+}
+
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+mod tests {
+    use crate::Result;
+    use crate::secrets::{
+        application::app_test_support::AppMockBoundary,
+        domain::{piv::SecretName, values::PutCommand},
+    };
+
+    use super::run_put_with_prompt;
+
+    #[test]
+    fn put_prompt_stores_requested_secret() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        run_put_with_prompt(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwEmail,
+                force: false,
+            },
+            &mut boundary,
+        )?;
+        assert_eq!(boundary.mock.stores(), vec![SecretName::BwEmail]);
+        Ok(())
+    }
+
+    #[test]
+    fn put_prompt_stops_when_secret_read_fails() {
+        let mut boundary = AppMockBoundary::new();
+        boundary
+            .mock
+            .set_secret_error(SecretName::BwEmail, "read failed");
+        let result = run_put_with_prompt(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwEmail,
+                force: false,
+            },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "secret read failure must stop put flow");
+    }
 }

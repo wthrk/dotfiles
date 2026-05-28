@@ -1,3 +1,5 @@
+//! enroll primary stdin-json use case の orchestration。
+
 use crate::Result;
 use crate::secrets::{
     domain::{

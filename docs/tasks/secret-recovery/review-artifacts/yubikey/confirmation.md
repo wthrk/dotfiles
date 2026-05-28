@@ -2,9 +2,9 @@
 
 この文書は `docs/tasks/secret-recovery/work-items/yubikey.md` の現行サイクル確認証跡（current worktree 基準）である。
 
-## 現行サイクル（2026-05-27）
+## 現行サイクル（2026-05-28）
 
-- 確認状態: `実施済み（レビュー集約合格。完了判定待ち）`
+- 確認状態: `再レビュー待ち（追加要件反映中）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`

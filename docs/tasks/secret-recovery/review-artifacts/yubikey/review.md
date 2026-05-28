@@ -2,10 +2,10 @@
 
 この文書は `docs/tasks/secret-recovery/work-items/yubikey.md` の現行サイクル集約レビュー正本である。
 
-## 現行サイクル（2026-05-27）
+## 現行サイクル（2026-05-28）
 
-- 集約後レビュー判定: `合格`
-- 集約判定要約: 対象 HEAD `38a4501 docs(secrets): adapter secret境界コメントを補正` について、必須 reviewer 8 件がすべて `合格` を返した。commit gate は review aggregation 上充足しており、完了判定そのものは task-completion-judgement へ引き渡す。
+- 集約後レビュー判定: `再レビュー待ち`
+- 集約判定要約: 新追加要件（全 source/test ヘッダコメント必須、外部機能単位 1 trait 方針、全 usecase の mockito app/usecase test 必須）を current-cycle に適用するため、既存 `合格` 集約は stale として取り下げた。再確認・再レビュー完了まで commit gate は未充足として扱う。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。

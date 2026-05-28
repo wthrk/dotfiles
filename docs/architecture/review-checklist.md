@@ -110,12 +110,14 @@
 - このファイル内の private な型・関数・ロジックを含む全コードについて：「ドメインが何を必要とするかの宣言のみ」という責務を満たしているか。parser・DTO・prompt・利用者向け文言が private コードとして潜り込んでいないか。private であることはこれらの禁止事項の免除理由にならない。
 - この trait が独立した capability として意味を持つか。「このファイルが宣言する capability とは何か」を一文で言えるか。答えられないなら分割の意義がない。
 - 1つの外部依存の契約を不必要に複数の trait に分割していないか。逆に無関係な複数の capability を1ファイルに混在させていないか。capability の境界と trait の境界が一致しているか確認せよ。
+- trait 境界は「大まかな外部機能」単位になっているか。DB 接続、ファイルアクセス、CUI など変更理由が異なる外部機能を 1 trait に混在させていないか。
 - device 取得・secret 入力・secret 出力・report 出力のように変更理由が異なる capability を 1 trait に押し込んでいないか。use case が必要とする capability だけを境界として要求できる構造になっているか。
 - `Summary` / `Report` の具体 DTO が ports に定義されていないか。ports に置けるのは report 出力 capability の宣言までであり、use case が扱う outcome の意味は domain、presentation DTO は adapter 側に置くこと。
 - この分割は「独立した capability の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
 
 - **依存方向**: `domain` にのみ依存していること。`support` の具体型（`ProtectedSecret` 等）へ直接依存していないこと。
 - **責務**: capability contract を表す trait・request/response の最小境界型に限定されていること。
+- **trait 粒度**: 1 trait = 1 外部機能を基本とし、外部機能単位 trait と adapter module 分割が対応していること。
 - **禁止成果物**: DTO・parser・prompt・利用者向け文言を含まないこと。
 
 ## support/ 配下

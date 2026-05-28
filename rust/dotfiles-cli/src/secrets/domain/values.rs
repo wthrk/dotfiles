@@ -1,3 +1,5 @@
+//! secrets use case 入出力を表す domain value 群。
+
 use std::collections::BTreeMap;
 
 use anyhow::Result;

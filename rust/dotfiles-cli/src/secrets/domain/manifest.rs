@@ -1,3 +1,5 @@
+//! secret storage manifest の domain model。
+
 use std::collections::BTreeMap;
 
 use anyhow::Result;

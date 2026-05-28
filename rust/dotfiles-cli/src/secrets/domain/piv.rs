@@ -1,3 +1,5 @@
+//! YubiKey PIV 制約と識別子を表す domain model。
+
 use std::{fmt, str::FromStr};
 
 const STORAGE_BLOB_VERSION: u8 = 1;
