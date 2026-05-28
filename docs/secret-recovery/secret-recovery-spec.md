@@ -89,6 +89,8 @@ GPG key は software key として運用する。GPG key material は YubiKey �
 
 GPG 鍵リング 操作は `gpgme` を使う。OpenPGP（公開鍵規格） 公開鍵 操作が必要な場合は `sequoia-openpgp` を使う。`gpg` CLI は通常実装では使わない。
 
+詳細設計は [GnuPG 復元 / gpg-agent SSH support 設計](./gnupg-ssh-design.md) に置く。
+
 ### Git
 
 private `password-store` repository の clone は `git2` と SSH agent を使う。`git` CLI は復旧本線では使わない。SSH agent には gpg-agent の SSH support を使い、GPG authentication subkey 由来の identity を GitHub に提示する。

@@ -7,6 +7,7 @@
 - [implementation-guidelines.md](implementation-guidelines.md#計画依頼の固定実装単位): secret-recovery 固有の固定実装単位、役割分担、実装方針を定義する。
 - [secret-recovery-spec.md](secret-recovery-spec.md): 秘密情報復旧機能の仕様を定義する。
 - [bitwarden-secrets-manager-design.md](bitwarden-secrets-manager-design.md): Bitwarden Secrets Manager 取得経路の設計を定義する。
+- [gnupg-ssh-design.md](gnupg-ssh-design.md): GPG 復元と gpg-agent SSH support 経路の設計を定義する。
 - [yubikey-secret-storage-design.md](yubikey-secret-storage-design.md): YubiKey 保存方式の設計を定義する。
 
 ## タスク文書
