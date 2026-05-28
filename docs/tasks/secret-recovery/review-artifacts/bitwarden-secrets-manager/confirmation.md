@@ -32,7 +32,7 @@
   - `rust/dotfiles-cli/src/secrets/application.rs` — 新規 module 宣言追加
   - `rust/dotfiles-cli/src/secrets.rs` — BWS 関連 command ルーティングと `BwsClientPort` bound 追加
   - `rust/dotfiles-cli/src/secrets/adapters.rs` — `BwsClientAdapter` フィールド、`BwsClientPort` impl 追加
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs` — `piv_io` の責務分割後の共通境界定義へ再構成
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` — `piv_io` の責務分割後の共通境界定義へ再構成
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_selection.rs` — device selection 責務を分離
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/process_io_adapter.rs` — process I/O port 翻訳責務を分離
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io/storage_adapter.rs` — storage port 翻訳責務を分離

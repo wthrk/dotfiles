@@ -12,10 +12,10 @@
 - 実装側確認証跡: `./confirmation.md`
 - 差戻し解消メモ（2026-05-28 実装担当追記）:
   - required evidence `verify-yubikey --check bws` を `confirmation.md` へ追記済み。
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs` の責務混在は、`device_selection.rs` + `process_io_adapter.rs` + `storage_adapter.rs` + `report_adapter.rs` へ分割して解消済み。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` の責務混在は、`device_selection.rs` + `process_io_adapter.rs` + `storage_adapter.rs` + `report_adapter.rs` へ分割して解消済み。
   - `BwsClientAdapter` は通常ビルドで `bws` CLI 実行経路を持つ実装へ更新し、`bws external check is not available in this build` 固定失敗を除去済み。
 - 差戻し解消メモ（2026-05-28 remediation 追記）:
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs` の `pub(crate) mod` を private `mod` 化し、adapter 公開面を縮小した。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` の `pub(crate) mod` を private `mod` 化し、adapter 公開面を縮小した。
   - 同ファイルの内部境界（`RealDeviceIo`、`YubikeySecretDevice`、`RealDeviceAdapter`、`YubikeyPinVerifier`、`open_by_serial`、`wrap_content_key`、`unwrap_content_key`）へ責務境界 doc comment を追加した。
   - `confirmation.md` 参照は行番号固定を廃止し、`確認手順と結果` 節のコマンド記録参照へ統一した。
 
@@ -84,7 +84,7 @@
 - 判定: `合格`
 - 判定要約: `所見なし`
 - 根拠:
-  - `piv_io/mod.rs` の公開面は private `mod` 化により是正され、port 実装型以外の露出を確認しない。
+  - `piv_io.rs` の公開面は private `mod` 化により是正され、port 実装型以外の露出を確認しない。
 
 ### 運用整合レビュー担当
 
@@ -121,7 +121,7 @@
 - 判定: `合格`
 - 判定要約: `所見なし`
 - 根拠:
-  - `piv_io/mod.rs` の内部境界に責務境界 doc comment が補完され、過去 finding の指摘点は解消済み。
+  - `piv_io.rs` の内部境界に責務境界 doc comment が補完され、過去 finding の指摘点は解消済み。
 
 ### アーキテクチャ整合レビュー担当
 
@@ -144,8 +144,8 @@
   - required evidence 不足（`verify-yubikey --check bws`）: `解消済み`
   - root/area 台帳状態不一致: `解消済み`
 - サイクル 2 未解消（現行）:
-  - 構造: `piv_io/mod.rs` 公開面是正差分を追加済み（再判定反映済み）
-  - ドキュメント: `piv_io/mod.rs` 境界コメント補完差分を追加済み（再判定反映済み）
+  - 構造: `piv_io.rs` 公開面是正差分を追加済み（再判定反映済み）
+  - ドキュメント: `piv_io.rs` 境界コメント補完差分を追加済み（再判定反映済み）
   - 運用/仕様/参照: 7役割ゲート整合と行番号固定参照修正を反映済み（再判定反映済み）
 
 ### 起動不能役割がある場合の記録参照

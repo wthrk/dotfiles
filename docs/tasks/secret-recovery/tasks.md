@@ -22,7 +22,7 @@
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
   - `rust/dotfiles-cli/src/secrets/domain/manifest.rs`
   - `rust/dotfiles-cli/src/secrets/domain/material.rs`
   - `rust/dotfiles-cli/src/secrets/domain/piv.rs`
