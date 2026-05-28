@@ -63,6 +63,7 @@ enum StubFixture {
     State(StubState),
     SeedSecret(StubSecret, &'static str),
     CorruptSecret(StubSecret),
+    PrimaryOnly,
     ReadPinFromTty,
 }
 
@@ -79,6 +80,7 @@ struct StubDeviceState {
     objects: BTreeMap<(u32, u32), Vec<u8>>,
     plaintexts: BTreeMap<(u32, u8), Vec<u8>>,
     corrupt: BTreeSet<(u32, u8)>,
+    include_spare: bool,
     requires_pin: bool,
     write_events: Vec<String>,
 }
@@ -304,14 +306,33 @@ fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {
     Ok(())
 }
 
-/// `verify-yubikey` は非対話実行で serial 省略時に device I/O へ進まず失敗する。
+/// `verify-yubikey` は serial 省略時に device 選択へ委譲し、複数候補では明示選択を要求する。
 #[test]
-fn verify_yubikey_requires_serial_in_non_interactive_use() -> TestResult<()> {
+fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestResult<()> {
     let stub = StubServer::new(&[StubFixture::State(StubState::Provisioned)]);
     let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(run.stderr.contains("pass --serial in non-interactive use"));
+    assert!(
+        run.stderr
+            .contains("multiple YubiKeys detected; pass --serial to select a device")
+    );
+    Ok(())
+}
+
+/// `verify-yubikey` は serial 省略時に単一候補を自動選択して検証する。
+#[test]
+fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
+    let stub = StubServer::new(&[
+        StubFixture::PrimaryOnly,
+        StubFixture::State(StubState::Provisioned),
+    ]);
+    let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("\"serial\": 2001"));
+    assert!(run.stdout.contains("\"name\": \"local-storage\""));
+    assert!(run.stdout.contains("\"status\": \"ok\""));
     Ok(())
 }
 
@@ -674,6 +695,7 @@ impl StubDeviceState {
                 StubFixture::CorruptSecret(secret) => {
                     state.corrupt.insert((PRIMARY_SERIAL, secret.secret_id()));
                 }
+                StubFixture::PrimaryOnly => state.include_spare = false,
                 StubFixture::ReadPinFromTty => state.requires_pin = true,
             }
         }
@@ -686,6 +708,7 @@ impl StubDeviceState {
             objects: BTreeMap::new(),
             plaintexts: BTreeMap::new(),
             corrupt: BTreeSet::new(),
+            include_spare: true,
             requires_pin: false,
             write_events: Vec::new(),
         };
@@ -756,10 +779,15 @@ impl StubDeviceState {
 
     fn get_body(&self, path: &str) -> Vec<u8> {
         if path == "/devices" {
-            return format!(
-                r#"[{{"serial":{PRIMARY_SERIAL},"label":"stub-yubikey-{PRIMARY_SERIAL}"}},{{"serial":{SPARE_SERIAL},"label":"stub-yubikey-{SPARE_SERIAL}"}}]"#
-            )
-            .into_bytes();
+            let primary =
+                format!(r#"{{"serial":{PRIMARY_SERIAL},"label":"stub-yubikey-{PRIMARY_SERIAL}"}}"#);
+            if self.include_spare {
+                return format!(
+                    r#"[{primary},{{"serial":{SPARE_SERIAL},"label":"stub-yubikey-{SPARE_SERIAL}"}}]"#
+                )
+                .into_bytes();
+            }
+            return format!("[{primary}]").into_bytes();
         }
         if let Some(serial) = parse_device_suffix(path, "key-exists") {
             return format!(
