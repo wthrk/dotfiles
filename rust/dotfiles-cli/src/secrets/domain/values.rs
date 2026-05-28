@@ -135,7 +135,7 @@ impl RotateBwsTokenCommand {
 
 /// verify-yubikey use case の入力 command。
 ///
-/// serial、要求 check、`--all` 指定を保持し、CLI option 解釈の domain 制約をメソッドで表す。
+/// serial 指定の有無、要求 check、`--all` 指定を保持し、device 選択手段は port 境界へ委譲する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyYubikeyCommand {
     pub serial: Option<u32>,
@@ -144,14 +144,6 @@ pub struct VerifyYubikeyCommand {
 }
 
 impl VerifyYubikeyCommand {
-    /// verify use case が要求する対象 serial を返す。
-    ///
-    /// 現在の verify-yubikey は非対話前提で、serial 未指定は command 不備として失敗する。
-    pub fn required_serial(&self) -> Result<u32> {
-        self.serial
-            .ok_or_else(|| invalid_input("pass --serial in non-interactive use").into())
-    }
-
     /// verify-yubikey が要求された external check 集合を domain check 名へ正規化する。
     ///
     /// `--all` と `--check` の併用は不変条件違反として失敗する。

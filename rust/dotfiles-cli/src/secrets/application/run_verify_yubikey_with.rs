@@ -1,4 +1,4 @@
-//! verify-yubikey の順序責務を固定し、未実装外部検証の停止境界を曖昧化しない。
+//! verify-yubikey の device 解決順序を固定し、未実装外部検証の停止境界を曖昧化しない。
 
 use crate::Result;
 use crate::secrets::{
@@ -12,15 +12,20 @@ use crate::secrets::{
 
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
 ///
-/// local storage 検証を完了条件の先頭に固定し、未実装の外部確認は report 境界で通知して
-/// 明示的に停止することで、verify 結果の責任範囲を曖昧にしない。
+/// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
+/// 先頭に固定する。未実装の外部確認は report 境界で通知して明示的に停止することで、
+/// verify 結果の責任範囲を曖昧にしない。
 pub(crate) fn run_verify_yubikey_with<
-    B: ports::DevicePinPolicyPort + ports::PinInputPort + SecretStoragePort + ports::ReportPort,
+    B: ports::DeviceSerialPort
+        + ports::DevicePinPolicyPort
+        + ports::PinInputPort
+        + SecretStoragePort
+        + ports::ReportPort,
 >(
     command: VerifyYubikeyCommand,
     boundary: &mut B,
 ) -> Result<()> {
-    let serial = command.required_serial()?;
+    let serial = boundary.resolve_device_serial(command.serial)?;
     let requested = command.requested_external_checks()?;
     let pin = if boundary.device_requires_pin(serial)? {
         let pin = boundary.read_pin()?;
@@ -64,7 +69,7 @@ mod tests {
         boundary.mock.set_primary_requires_pin(true);
         run_verify_yubikey_with(
             VerifyYubikeyCommand {
-                serial: Some(2001),
+                serial: None,
                 checks: Vec::new(),
                 all: false,
             },
