@@ -2,6 +2,7 @@
 //!
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
+mod bws_client;
 mod piv_io;
 
 use std::collections::BTreeMap;
@@ -16,11 +17,11 @@ use crate::{
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
                 SecretStorageWriteIntent,
             },
-            values::{EnrollSummary, VerifySummary},
+            values::{BwsSecretName, EnrollSummary, VerifySummary},
         },
         ports::{
-            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            BootstrapSecretDocumentInputPort, BwsClientPort, DevicePinPolicyPort, DeviceSerialPort,
+            PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
             SecretStoragePort, SpareDeviceSerialPort,
         },
     },
@@ -32,6 +33,7 @@ use crate::{
 /// factory/helper 関数を crate 公開しない。
 #[derive(Default)]
 pub(crate) struct SecretsAdapters {
+    bws_client: bws_client::BwsClientAdapter,
     device: piv_io::DeviceSelectionAdapter,
     process_io: piv_io::ProcessIoAdapter,
     storage: piv_io::StorageAdapter,
@@ -166,5 +168,15 @@ impl ReportPort for SecretsAdapters {
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         self.report.write_verify_report(summary)
+    }
+}
+
+impl BwsClientPort for SecretsAdapters {
+    fn fetch_bws_secret(
+        &mut self,
+        access_token: &SecretMaterial,
+        name: BwsSecretName,
+    ) -> Result<SecretMaterial> {
+        self.bws_client.fetch_bws_secret(access_token, name)
     }
 }

@@ -118,6 +118,41 @@ impl EnrollSpareCommand {
     }
 }
 
+/// Bitwarden Secrets Manager で管理する secret 名の閉じた集合。
+///
+/// BWS 上の secret key 名を domain 語彙で固定し、adapter が raw string を再構築しないようにする。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BwsSecretName {
+    /// GPG 秘密鍵バックアップ。BWS key: `gpg-secret-key-backup`。
+    GpgSecretKeyBackup,
+    /// password-store リモート URL。BWS key: `password-store-remote`。
+    PasswordStoreRemote,
+}
+
+impl BwsSecretName {
+    /// BWS 上の secret key 名を返す。
+    ///
+    /// 返値は BWS API へそのまま渡す安定 key で、version なしに変更してはならない。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GpgSecretKeyBackup => "gpg-secret-key-backup",
+            Self::PasswordStoreRemote => "password-store-remote",
+        }
+    }
+}
+
+/// restore-gpg use case の入力 command。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreGpgCommand {
+    pub serial: Option<u32>,
+}
+
+/// restore-pass use case の入力 command。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestorePassCommand {
+    pub serial: Option<u32>,
+}
+
 /// rotate-bws-token use case の入力 command。
 ///
 /// token を更新する対象 device の serial 指定だけを保持する。

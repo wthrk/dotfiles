@@ -17,9 +17,9 @@ use crate::secrets::{
             SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
             SecretStorageWriteIntent,
         },
-        values::{CheckName, CheckStatus, EnrollSummary, VerifySummary},
+        values::{BwsSecretName, CheckName, CheckStatus, EnrollSummary, VerifySummary},
     },
-    ports::{self, SecretStoragePort},
+    ports::{self, BwsClientPort, SecretStoragePort},
 };
 
 mockall::mock! {
@@ -131,6 +131,10 @@ impl AppMock {
 
     pub(crate) fn set_streamed_secret_error(&self, error: &'static str) {
         self.configure(|state| state.streamed_secret_error = Some(error));
+    }
+
+    pub(crate) fn set_bws_error(&self, error: &'static str) {
+        self.configure(|state| state.bws_error = Some(error));
     }
 
     pub(crate) fn set_write_object_exists(&self, object_exists: bool) {
@@ -423,6 +427,21 @@ impl ports::SecretOutputPort for AppMockBoundary {
     }
 }
 
+impl BwsClientPort for AppMockBoundary {
+    fn fetch_bws_secret(
+        &mut self,
+        _access_token: &SecretMaterial,
+        _name: BwsSecretName,
+    ) -> Result<SecretMaterial> {
+        self.mock.configure(|state| {
+            if let Some(error) = state.bws_error {
+                return Err(anyhow::anyhow!(error));
+            }
+            Ok(secret_material(vec![1]))
+        })
+    }
+}
+
 impl ports::ReportPort for AppMockBoundary {
     fn write_enroll_report(&self, _summary: &EnrollSummary) -> Result<()> {
         self.mock.hit_event("report");
@@ -575,6 +594,7 @@ struct AppMockState {
     secret_values: BTreeMap<SecretName, Vec<u8>>,
     secret_errors: BTreeMap<SecretName, &'static str>,
     output_secret: Option<Vec<u8>>,
+    bws_error: Option<&'static str>,
     stores: Vec<SecretName>,
     resolution_order: Vec<&'static str>,
     reports: Vec<(u32, CheckStatus)>,
@@ -612,6 +632,7 @@ impl Default for AppMockState {
             .collect(),
             secret_errors: BTreeMap::new(),
             output_secret: None,
+            bws_error: None,
             stores: Vec::new(),
             resolution_order: Vec::new(),
             reports: Vec::new(),

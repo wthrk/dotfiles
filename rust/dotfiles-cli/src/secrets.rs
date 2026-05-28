@@ -17,7 +17,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use domain::piv::SecretName;
 use domain::values::{
     EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, GetCommand, PutCommand,
-    RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
+    RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
+    VerifyYubikeyCommand,
 };
 
 use crate::Result;
@@ -34,6 +35,8 @@ pub(crate) struct SecretsOptions {
 enum SecretsCommand {
     Yubikey(YubikeyOptions),
     VerifyYubikey(VerifyYubikeyOptions),
+    RestoreGpg(SerialOptions),
+    RestorePass(SerialOptions),
 }
 
 #[derive(Args)]
@@ -162,6 +165,7 @@ where
         + ports::BootstrapSecretDocumentInputPort
         + ports::SecretOutputPort
         + ports::SecretStoragePort
+        + ports::BwsClientPort
         + ports::ReportPort,
 {
     match options.command {
@@ -249,6 +253,22 @@ where
                         })
                         .collect(),
                     all: options.all,
+                },
+                boundary,
+            )
+        }
+        SecretsCommand::RestoreGpg(options) => {
+            application::run_restore_gpg_with::run_restore_gpg_with(
+                RestoreGpgCommand {
+                    serial: options.serial,
+                },
+                boundary,
+            )
+        }
+        SecretsCommand::RestorePass(options) => {
+            application::run_restore_pass_with::run_restore_pass_with(
+                RestorePassCommand {
+                    serial: options.serial,
                 },
                 boundary,
             )

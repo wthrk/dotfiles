@@ -12,7 +12,7 @@ use super::domain::{
         SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
         SecretStorageWriteIntent,
     },
-    values::{EnrollSummary, VerifySummary},
+    values::{BwsSecretName, EnrollSummary, VerifySummary},
 };
 use crate::Result;
 
@@ -110,5 +110,17 @@ pub trait SecretStoragePort {
         serial: u32,
         intent: &SecretStorageReadIntent,
         pin: Option<&SecretMaterial>,
+    ) -> Result<SecretMaterial>;
+}
+
+/// Bitwarden Secrets Manager からの secret 取得 capability 契約。
+///
+/// アクセストークンの検証、SDK 初期化、secret fetch は実装者が担う。
+/// application 層はトークン値と secret 名だけを渡し、BWS の実装詳細を持たない。
+pub trait BwsClientPort {
+    fn fetch_bws_secret(
+        &mut self,
+        access_token: &SecretMaterial,
+        name: BwsSecretName,
     ) -> Result<SecretMaterial>;
 }
