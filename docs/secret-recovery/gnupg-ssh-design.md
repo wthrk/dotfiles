@@ -100,6 +100,8 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 - `enable-ssh-support`
 - `pinentry-program`（macOS で利用する pinentry 実体）
 
+authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する責務は `restore-gpg` が持つ。Home Manager 側は `gpg-agent.conf` の静的設定だけを管理し、鍵ごとの登録状態は管理しない。
+
 利用者が手動で `~/.gnupg/gpg-agent.conf` を編集して状態を分岐させる運用は採用しない。
 
 ### zsh 環境変数決定
@@ -126,6 +128,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 - `gpg-secret-key-backup` を取得し、import 前に primary fingerprint をインメモリー導出して既存の鍵リングの衝突を確認する。
 - 衝突がなければ GPG secret key を import する。
 - encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
+- authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録し、既登録ならその状態を維持する（冪等）。
 - gpg-agent SSH support 利用可否を確認する。
 
 ### `dotfiles gpg export-ssh-public-key`
