@@ -34,13 +34,21 @@ pub(crate) fn run_verify_yubikey_with<
     } else {
         None
     };
-    for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
-        let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
-        let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-        let secret = boundary
-            .load_secret(serial, &intent, pin.as_ref())
-            .map_err(|error| intent.decode_error(error))?;
-        intent.validate_loaded_secret(&secret)?;
+    let local_verify: Result<()> = (|| {
+        for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
+            let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+            let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+            let secret = boundary
+                .load_secret(serial, &intent, pin.as_ref())
+                .map_err(|error| intent.decode_error(error))?;
+            intent.validate_loaded_secret(&secret)?;
+        }
+        Ok(())
+    })();
+    if let Err(err) = local_verify {
+        return boundary
+            .write_verify_report(&VerifySummary::local_storage_failed(serial))
+            .and(Err(err));
     }
     if !requested.is_empty() {
         boundary.write_verify_report(&VerifySummary::external_checks_unavailable(
@@ -58,7 +66,7 @@ mod tests {
     use crate::Result;
     use crate::secrets::{
         application::app_test_support::AppMockBoundary,
-        domain::values::{ExternalCheck, VerifyYubikeyCommand},
+        domain::values::{CheckName, CheckStatus, ExternalCheck, VerifyYubikeyCommand},
     };
 
     use super::run_verify_yubikey_with;
@@ -95,5 +103,30 @@ mod tests {
                 .contains("external checks are not implemented yet")
         );
         Ok(())
+    }
+
+    #[test]
+    fn verify_reports_failed_summary_when_local_storage_is_invalid() {
+        let mut boundary = AppMockBoundary::new().expect_report();
+        boundary.mock.set_loaded_len(0);
+        let err = run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: Vec::new(),
+                all: false,
+            },
+            &mut boundary,
+        )
+        .expect_err("invalid storage should fail verify");
+
+        assert!(
+            err.to_string().contains("bw-email must not be empty"),
+            "unexpected error: {err:#}"
+        );
+        let reports = boundary.mock.reports();
+        assert_eq!(
+            reports[0].checks.get(&CheckName::LocalStorage),
+            Some(&CheckStatus::Failed)
+        );
     }
 }
