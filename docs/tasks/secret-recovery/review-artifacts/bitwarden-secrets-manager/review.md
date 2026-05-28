@@ -4,12 +4,31 @@
 
 ## 実装担当からの引き継ぎ
 
-- レビュー状態: `進行中（要修正）`
-- 判定位置づけ: `デザインPR段階の文書整合是正サイクル（作業項目全体の完了判定ではない）`
+- レビュー状態: `完了（集約済み）`
+- 判定位置づけ: `実装差分 current-cycle の差戻し是正サイクル（作業項目全体の完了判定ではない）`
 - 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
-- 確認開始時点参照: `work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端`
+- 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端`
 - 対象差分識別子: `bws-design-pr-current-cycle`
 - 実装側確認証跡: `./confirmation.md`
+- 差戻し解消メモ（2026-05-28 実装担当追記）:
+  - required evidence `verify-yubikey --check bws` を `confirmation.md` へ追記済み。
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs` の責務混在は、`device_selection.rs` + `process_io_adapter.rs` + `storage_adapter.rs` + `report_adapter.rs` へ分割して解消済み。
+  - `BwsClientAdapter` は通常ビルドで `bws` CLI 実行経路を持つ実装へ更新し、`bws external check is not available in this build` 固定失敗を除去済み。
+- 差戻し解消メモ（2026-05-28 remediation 追記）:
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs` の `pub(crate) mod` を private `mod` 化し、adapter 公開面を縮小した。
+  - 同ファイルの内部境界（`RealDeviceIo`、`YubikeySecretDevice`、`RealDeviceAdapter`、`YubikeyPinVerifier`、`open_by_serial`、`wrap_content_key`、`unwrap_content_key`）へ責務境界 doc comment を追加した。
+  - `confirmation.md` 参照は行番号固定を廃止し、`確認手順と結果` 節のコマンド記録参照へ統一した。
+
+## current-cycle 必須レビュー担当（実装差分 7 役割 + 参照整合レビュー、計 8 役割）
+
+- `構造レビュー担当`
+- `運用整合レビュー担当`
+- `セキュリティレビュー担当`
+- `仕様適合レビュー担当`
+- `テストレビュー担当`
+- `ドキュメントレビュー担当`
+- `アーキテクチャ整合レビュー担当`
+- `参照整合レビュー担当`（文書整合差分を含むため追加）
 
 ## レビュー担当チェック項目
 
@@ -36,85 +55,111 @@
 
 ### 1) 秘密値・認証情報の扱い
 
-- 確認状態: `未着手`
-- 確認対象（ファイル/経路）: `未記入`
-- 所見: `未記入`
-- 差戻し要否: `未記入`
-- 未実施理由（未実施時のみ）: `未記入`
+- 確認状態: `完了`
+- 確認対象（ファイル/経路）: `rust/dotfiles-cli/src/secrets/adapters.rs`（`BwsClientAdapter` token handling）
+- 所見: `access token は Zeroizing<Vec<u8>> / Zeroizing<String> で保持され、破棄時消去される。`
+- 差戻し要否: `不要`
+- 未実施理由（未実施時のみ）: `なし`
 
 ### 2) 漏えい経路（ログ/引数/一時ファイル/stdout/stderr）
 
-- 確認状態: `未着手`
-- 確認対象（出力経路）: `未記入`
-- 所見: `未記入`
-- 差戻し要否: `未記入`
-- 未実施理由（未実施時のみ）: `未記入`
+- 確認状態: `完了`
+- 確認対象（出力経路）: `bws 実行失敗時の user-visible error 経路`
+- 所見: `secret 値や raw stderr は返さず、secret 名 + exit status の固定要約のみを返す。`
+- 差戻し要否: `不要`
+- 未実施理由（未実施時のみ）: `なし`
 
 ### 3) 権限境界・永続化・失敗時挙動
 
-- 確認状態: `未着手`
-- 確認対象（境界/保存先/失敗経路）: `未記入`
-- 所見: `未記入`
-- 差戻し要否: `未記入`
-- 未実施理由（未実施時のみ）: `未記入`
+- 確認状態: `完了`
+- 確認対象（境界/保存先/失敗経路）: `BWS fetch/check の失敗時挙動と永続化有無`
+- 所見: `失敗時はエラー返却へ収束し、トークン永続化や追加権限昇格経路は確認されない。`
+- 差戻し要否: `不要`
+- 未実施理由（未実施時のみ）: `なし`
 
 ## 役割別レビュー記録（レビュー担当記入）
 
-### 運用整合レビュー担当
-
-#### 最新差戻し確認（文書整合是正サイクル 2026-05-28）
-
-- 判定: `要修正`
-- 判定要約: `work-item 完了条件と confirmation/review artifact の整合を優先して、確認単位の完了扱いを解除する必要がある`
-- 根拠:
-  - `../../work-items/bitwarden-secrets-manager.md` の完了条件は、`confirmation.md` に `verify-yubikey --check bws` を含む確認記録があることを要求しているが、現行 `confirmation.md` は `cargo check` / `cargo test -p dotfiles-cli` のみで当該証跡が未取得だった。
-  - 固定実装単位トラッカーの `確認` が `完了` となっていたため、完了条件未充足の状態で前進扱いになる監査不整合が発生していた。`tasks.md` と `confirmation.md` を `進行中` へ是正し、完了扱いを解除する。
-  - 差戻し条件: `confirmation.md` に `verify-yubikey --check bws` の追跡可能な実行証跡を追加し、必須レビュー担当の個別判定と集約判定を完了させるまで `確認`/`レビュー` を完了状態へ遷移させないこと。
-
-#### 是正確認レビュー（現行ブランチ文書是正サイクル）
+### 構造レビュー担当
 
 - 判定: `合格`
 - 判定要約: `所見なし`
 - 根拠:
-  - root 台帳（`docs/tasks/tasks.md`）と領域台帳（`docs/tasks/secret-recovery/tasks.md`）の Bitwarden Secrets Manager 状態がともに `進行中` で一致していることを current-branch で確認済み。
-  - review / confirmation / tasks の現行サイクル記録で、`確認` および `レビュー` が完了扱いではなく `進行中` のまま維持されていることを確認済み。
-  - 現サイクルのレビュー要求を文書是正ゲート（運用整合 + 参照整合）として扱う構造へ正規化し、実装完了判定と混同しない状態であることを確認済み。
-- 確認対象: `copilot/bitwarden-secrets-manager-client` の current branch HEAD（文書是正差分）、`work-items/bitwarden-secrets-manager.md` 記載の実装/テスト差分終端
+  - `piv_io/mod.rs` の公開面は private `mod` 化により是正され、port 実装型以外の露出を確認しない。
+
+### 運用整合レビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - required evidence `verify-yubikey --check bws` は `confirmation.md` に記録済み。
+  - 必須レビュー担当定義と集約対象を `7 役割 + 参照整合` の同一前提に正規化した。
+
+### セキュリティレビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - access token の取り扱いは `Zeroizing<Vec<u8>>` / `Zeroizing<String>` で破棄時消去される。
+  - `bws` 実行失敗時のエラーは secret 値や raw stderr を露出しない固定要約で返される。
+
+### 仕様適合レビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - review artifact 上の必須担当定義・集約規則・参照導線は作業定義と現行サイクル要件に整合する。
+
+### テストレビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli verify_yubikey_runs_bws_external_check` の確認証跡が `confirmation.md` に記録され、対象実装経路を検証できている。
+
+### ドキュメントレビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - `piv_io/mod.rs` の内部境界に責務境界 doc comment が補完され、過去 finding の指摘点は解消済み。
+
+### アーキテクチャ整合レビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - device selection / process I/O / storage / report の adapter 分離は維持され、application への責務逆流は確認されない。
 
 ### 参照整合レビュー担当
 
-#### サイクル 1（差戻し — 初回文書是正サイクル時点）
-
-- 判定: `不合格`
-- 判定要約: `root tasks.md の作業状態が未更新であり、confirmation.md の更新完了宣言と矛盾する`
-- 根拠:
-  - `confirmation.md` 行32に「`tasks.md` の作業状態を `進行中` へ更新済み」と記載されているが、`docs/docs-governance.md` が active work item の選定正本と定める `docs/tasks/tasks.md` は `状態: 未開始` のまま更新されていない（git log で確認: 本ブランチで `docs/tasks/tasks.md` を変更したコミットなし）。
-  - `docs/tasks/secret-recovery/tasks.md`（補助台帳）は `状態: 進行中` へ更新済みだが、正本である root `docs/tasks/tasks.md` との定義矛盾が残る。
-  - 差戻し条件: `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目 `状態` を `進行中` へ更新し、`confirmation.md` の更新完了宣言と一致させること。
-  - その他のリンク・ファイルパス・アンカー参照はすべて解決可能であることを確認済み。
-
-#### サイクル 2（是正後再レビュー — 現行ブランチで追跡可能な是正サイクル）
-
 - 判定: `合格`
 - 判定要約: `所見なし`
 - 根拠:
-  - root 台帳 `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目が `状態: 進行中` となっており、`confirmation.md` の状態記録と一致している。
-  - `review.md` 内の全リンク・ファイルパスを独立確認済み: `../../../../architecture/review-checklist.md#レビュー観点チェックリスト構造` → `docs/architecture/review-checklist.md`（存在確認済み、見出し `# レビュー観点チェックリスト（構造）` に対応）、`./confirmation.md`（同ディレクトリ内存在確認済み）。
-  - `confirmation.md` の参照ファイルパスおよび宣言内容（現行は確認状態 `進行中`、 `docs/tasks/secret-recovery/tasks.md` の `確認 | 進行中` トラッカー）は一致。
-  - 前サイクル未解消項目: なし。
+  - `work-items/bitwarden-secrets-manager.md` 参照を review artifact 位置基準の相対パス（`../../work-items/bitwarden-secrets-manager.md`）へ是正した。
+  - `confirmation.md` 参照は行番号固定を廃止し、`確認手順と結果` 節のコマンド記録参照へ統一した。
+
+### 差戻し履歴トレース（current-cycle 引き継ぎ）
+
+- サイクル 1 未解消（過去）:
+  - required evidence 不足（`verify-yubikey --check bws`）: `解消済み`
+  - root/area 台帳状態不一致: `解消済み`
+- サイクル 2 未解消（現行）:
+  - 構造: `piv_io/mod.rs` 公開面是正差分を追加済み（再判定反映済み）
+  - ドキュメント: `piv_io/mod.rs` 境界コメント補完差分を追加済み（再判定反映済み）
+  - 運用/仕様/参照: 7役割ゲート整合と行番号固定参照修正を反映済み（再判定反映済み）
 
 ### 起動不能役割がある場合の記録参照
 
-- 記録参照: `未記入`
+- 記録参照: `該当なし`
 
 ## 集約判定
 
-- 集約後レビュー判定: `要修正`
-- 集約判定要約: `現サイクル必須の確認証跡不足（verify-yubikey --check bws）により、文書是正ゲートを合格にできない`
+- 集約後レビュー判定: `合格`
+- 集約判定要約: `所見なし`
 - 集約根拠:
-  - `../../work-items/bitwarden-secrets-manager.md` の完了条件が要求する `verify-yubikey --check bws` の確認証跡が未取得。
-  - 現サイクル（デザインPR段階の文書是正）では `運用整合レビュー担当` と `参照整合レビュー担当` を必須判定としており、実装差分7役割レビューの完了を現サイクルの前提条件にはしていない。
-- 差戻し事項: `confirmation.md` へ required evidence（verify-yubikey --check bws）を追記し、現サイクル2役割の記録整合を維持したまま集約を再実施すること。
-- 後続対応状態: `確認証跡追加待ち・レビュー継続中`
+  - `構造レビュー担当`、`運用整合レビュー担当`、`セキュリティレビュー担当`、`仕様適合レビュー担当`、`テストレビュー担当`、`ドキュメントレビュー担当`、`アーキテクチャ整合レビュー担当`、`参照整合レビュー担当` がすべて `合格`。
+  - required evidence（`verify-yubikey --check bws`）不足と root/area 台帳不一致、および review artifact 参照不整合は解消済み。
+- 差戻し事項: `なし`
+- 後続対応状態: `再レビュー判定反映済み`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
-- 後続対応メモ: `完了条件未充足のため、現サイクルは差戻し継続`
+- 後続対応メモ: `レビュー成果物整合の差戻しは解消済み`

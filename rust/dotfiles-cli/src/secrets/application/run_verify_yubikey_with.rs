@@ -1,11 +1,11 @@
-//! verify-yubikey の device 解決順序を固定し、未実装外部検証の停止境界を曖昧化しない。
+//! verify-yubikey の device 解決順序を固定し、外部検証の責務境界を application に維持する。
 
 use crate::Result;
 use crate::secrets::{
     domain::{
         piv::validate_piv_pin_len,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
-        values::{VerifySummary, VerifyYubikeyCommand},
+        values::{BwsSecretName, CheckName, CheckStatus, VerifySummary, VerifyYubikeyCommand},
     },
     ports::{self, SecretStoragePort},
 };
@@ -13,14 +13,15 @@ use crate::secrets::{
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
 ///
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
-/// 先頭に固定する。未実装の外部確認は report 境界で通知して明示的に停止することで、
-/// verify 結果の責任範囲を曖昧にしない。
+/// 先頭に固定する。外部確認結果は report 境界へ明示的に反映し、verify 結果の責任範囲を
+/// 曖昧にしない。
 pub(crate) fn run_verify_yubikey_with<
     B: ports::DeviceSerialPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
         + SecretStoragePort
-        + ports::ReportPort,
+        + ports::ReportPort
+        + ports::BwsClientPort,
 >(
     command: VerifyYubikeyCommand,
     boundary: &mut B,
@@ -34,31 +35,69 @@ pub(crate) fn run_verify_yubikey_with<
     } else {
         None
     };
-    let local_verify: Result<()> = (|| {
+    let local_verify: Result<Option<crate::secrets::domain::material::SecretMaterial>> = (|| {
+        let mut bws_access_token = None;
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
+            let is_bws_access_token =
+                storage.name == crate::secrets::domain::piv::SecretName::BwsAccessToken;
             let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
             let secret = boundary
                 .load_secret(serial, &intent, pin.as_ref())
                 .map_err(|error| intent.decode_error(error))?;
             intent.validate_loaded_secret(&secret)?;
+            if is_bws_access_token {
+                bws_access_token = Some(secret);
+            }
         }
-        Ok(())
+        Ok(bws_access_token)
     })();
     if let Err(err) = local_verify {
         return boundary
             .write_verify_report(&VerifySummary::local_storage_failed(serial))
             .and(Err(err));
     }
-    if !requested.is_empty() {
-        boundary.write_verify_report(&VerifySummary::external_checks_unavailable(
-            serial,
-            requested.iter().copied(),
-        ))?;
-        return Err(command.external_checks_unavailable_error(&requested));
+    if requested.is_empty() {
+        return boundary.write_verify_report(&VerifySummary::local_storage_verified(serial));
     }
-
-    boundary.write_verify_report(&VerifySummary::local_storage_verified(serial))
+    let access_token = local_verify?.ok_or_else(|| anyhow::anyhow!("missing bws-access-token"))?;
+    let mut summary = VerifySummary::local_storage_verified(serial);
+    let mut first_error = None;
+    for check in requested {
+        match check {
+            CheckName::Bws => {
+                let result = boundary
+                    .fetch_bws_secret(&access_token, BwsSecretName::GpgSecretKeyBackup)
+                    .and_then(|_| {
+                        boundary.fetch_bws_secret(&access_token, BwsSecretName::PasswordStoreRemote)
+                    });
+                match result {
+                    Ok(_) => summary.mark_external_check(CheckName::Bws, CheckStatus::Ok),
+                    Err(error) => {
+                        summary.mark_external_check(CheckName::Bws, CheckStatus::Failed);
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+            }
+            CheckName::BwLogin => {
+                summary.mark_external_check(CheckName::BwLogin, CheckStatus::Failed);
+                if first_error.is_none() {
+                    first_error = Some(anyhow::anyhow!(
+                        "external checks are not implemented yet: {}",
+                        CheckName::BwLogin.as_str()
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    boundary.write_verify_report(&summary)?;
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -86,9 +125,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_stops_when_external_checks_requested() -> Result<()> {
+    fn verify_executes_bws_external_check_when_requested() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_report();
-        let err = run_verify_yubikey_with(
+        run_verify_yubikey_with(
             VerifyYubikeyCommand {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::Bws],
@@ -96,13 +135,6 @@ mod tests {
             },
             &mut boundary,
         )
-        .expect_err("external checks should fail in current phase");
-
-        assert!(
-            err.to_string()
-                .contains("external checks are not implemented yet")
-        );
-        Ok(())
     }
 
     #[test]

@@ -326,6 +326,23 @@ fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {
     Ok(())
 }
 
+/// `verify-yubikey --check bws` が external check を実行して成功することを確認する。
+#[test]
+fn verify_yubikey_runs_bws_external_check() -> TestResult<()> {
+    let stub = StubServer::new(&[StubFixture::State(StubState::Provisioned)]);
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bws"],
+        None,
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("\"name\": \"local-storage\""));
+    assert!(run.stdout.contains("\"name\": \"bws\""));
+    assert!(run.stdout.contains("\"status\": \"ok\""));
+    Ok(())
+}
+
 /// `verify-yubikey` は serial 省略時に device 選択へ委譲し、複数候補では明示選択を要求する。
 #[test]
 fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestResult<()> {

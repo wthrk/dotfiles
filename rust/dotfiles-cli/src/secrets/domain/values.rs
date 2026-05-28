@@ -15,6 +15,13 @@ pub enum ExternalCheck {
     BwLogin,
 }
 
+/// Bitwarden Secrets Manager から取得する secret 名の閉じた集合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BwsSecretName {
+    GpgSecretKeyBackup,
+    PasswordStoreRemote,
+}
+
 /// setup use case の入力 command。
 ///
 /// serial 指定の有無だけを保持し、選択手段や prompt 方針は含めない。
@@ -177,16 +184,6 @@ impl VerifyYubikeyCommand {
             })
             .collect())
     }
-
-    /// 現フェーズで未対応の external check 要求を domain error へ変換する。
-    pub fn external_checks_unavailable_error(&self, requested: &[CheckName]) -> anyhow::Error {
-        let requested_names = requested
-            .iter()
-            .map(|check| check.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::anyhow!("external checks are not implemented yet: {requested_names}")
-    }
 }
 
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
@@ -326,18 +323,9 @@ impl VerifySummary {
         Self::with_local_storage_status(serial, CheckStatus::Failed)
     }
 
-    /// 未実装の external check を失敗状態として示す summary を構築する。
-    ///
-    /// local storage は成功済み前提とし、指定された external check 群だけを `Failed` へ上書きする。
-    pub fn external_checks_unavailable(
-        serial: u32,
-        checks: impl IntoIterator<Item = CheckName>,
-    ) -> Self {
-        let mut summary = Self::local_storage_verified(serial);
-        for check in checks {
-            summary.checks.insert(check, CheckStatus::Failed);
-        }
-        summary
+    /// external check の実行結果を summary へ反映する。
+    pub fn mark_external_check(&mut self, check: CheckName, status: CheckStatus) {
+        self.checks.insert(check, status);
     }
 
     fn with_local_storage_status(serial: u32, local_storage: CheckStatus) -> Self {

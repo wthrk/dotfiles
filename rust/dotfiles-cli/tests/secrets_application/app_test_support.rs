@@ -17,7 +17,7 @@ use crate::secrets::{
             SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
             SecretStorageWriteIntent,
         },
-        values::{CheckName, CheckStatus, EnrollSummary, VerifySummary},
+        values::{BwsSecretName, CheckName, CheckStatus, EnrollSummary, VerifySummary},
     },
     ports::{self, SecretStoragePort},
 };
@@ -443,6 +443,23 @@ impl ports::ReportPort for AppMockBoundary {
     }
 }
 
+impl ports::BwsClientPort for AppMockBoundary {
+    fn fetch_bws_secret(
+        &self,
+        _access_token: &SecretMaterial,
+        secret_name: BwsSecretName,
+    ) -> Result<SecretMaterial> {
+        let value = match secret_name {
+            BwsSecretName::GpgSecretKeyBackup => {
+                b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nmock\n-----END PGP PRIVATE KEY BLOCK-----\n"
+                    .to_vec()
+            }
+            BwsSecretName::PasswordStoreRemote => b"git@github.com:example/password-store.git".to_vec(),
+        };
+        Ok(secret_material(value))
+    }
+}
+
 impl SecretStoragePort for AppMockBoundary {
     fn inspect_secret_storage_setup(
         &mut self,
@@ -651,7 +668,7 @@ fn verify_summary(serial: u32, local_storage: CheckStatus) -> VerifySummary {
     match local_storage {
         CheckStatus::Ok => VerifySummary::local_storage_verified(serial),
         CheckStatus::Failed => VerifySummary::local_storage_failed(serial),
-        CheckStatus::Skipped => VerifySummary::external_checks_unavailable(serial, []),
+        CheckStatus::Skipped => VerifySummary::local_storage_verified(serial),
     }
 }
 

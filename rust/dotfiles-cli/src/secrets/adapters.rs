@@ -5,6 +5,14 @@
 mod piv_io;
 
 use std::collections::BTreeMap;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use std::process::Command;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use std::io::Write;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use crate::secrets::support::protection::{ProtectedSecret, secret_consumer};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use zeroize::Zeroizing;
 
 use crate::{
     Result,
@@ -16,11 +24,11 @@ use crate::{
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
                 SecretStorageWriteIntent,
             },
-            values::{EnrollSummary, VerifySummary},
+            values::{BwsSecretName, EnrollSummary, VerifySummary},
         },
         ports::{
-            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            BootstrapSecretDocumentInputPort, BwsClientPort, DevicePinPolicyPort, DeviceSerialPort,
+            PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
             SecretStoragePort, SpareDeviceSerialPort,
         },
     },
@@ -36,6 +44,7 @@ pub(crate) struct SecretsAdapters {
     process_io: piv_io::ProcessIoAdapter,
     storage: piv_io::StorageAdapter,
     report: piv_io::JsonReportAdapter,
+    bws_client: BwsClientAdapter,
 }
 
 impl DeviceSerialPort for SecretsAdapters {
@@ -166,5 +175,108 @@ impl ReportPort for SecretsAdapters {
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         self.report.write_verify_report(summary)
+    }
+}
+
+impl BwsClientPort for SecretsAdapters {
+    fn fetch_bws_secret(
+        &self,
+        access_token: &SecretMaterial,
+        secret_name: BwsSecretName,
+    ) -> Result<SecretMaterial> {
+        self.bws_client.fetch_bws_secret(access_token, secret_name)
+    }
+}
+
+/// verify-yubikey の external check で使う BWS 境界 adapter。
+///
+/// access token は `SecretMaterial` の protection backend から必要最小限だけ展開し、
+/// CLI 引き渡し後は `Zeroizing` で破棄時消去する。adapter は `bws` 実行と
+/// JSON 変換のみを担当し、use case 手順や判定は application/domain に残す。
+#[derive(Default)]
+struct BwsClientAdapter;
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+struct ZeroizingVecWriter<'a>(&'a mut Zeroizing<Vec<u8>>);
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl Write for ZeroizingVecWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl BwsClientPort for BwsClientAdapter {
+    fn fetch_bws_secret(
+        &self,
+        access_token: &SecretMaterial,
+        secret_name: BwsSecretName,
+    ) -> Result<SecretMaterial> {
+        #[cfg(feature = "secrets-internal-test-stub")]
+        {
+            let _ = access_token;
+            let value = match secret_name {
+                BwsSecretName::GpgSecretKeyBackup => {
+                    b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nmock\n-----END PGP PRIVATE KEY BLOCK-----\n"
+                        .to_vec()
+                }
+                BwsSecretName::PasswordStoreRemote => {
+                    b"git@github.com:example/password-store.git".to_vec()
+                }
+            };
+            Ok(SecretMaterial::from_backend(
+                value,
+                |secret| secret.len(),
+                |secret| Ok(secret.clone()),
+            ))
+        }
+
+        #[cfg(not(feature = "secrets-internal-test-stub"))]
+        {
+            let protected = access_token
+                .as_backend::<ProtectedSecret>()
+                .ok_or_else(|| anyhow::anyhow!("bws access token backend is not protected memory"))?;
+            let mut token_bytes = Zeroizing::new(Vec::<u8>::new());
+            let mut writer = ZeroizingVecWriter(&mut token_bytes);
+            secret_consumer::write_to(protected, &mut writer)?;
+            let token = Zeroizing::new(
+                String::from_utf8(token_bytes.to_vec())
+                    .map_err(|_| anyhow::anyhow!("bws access token is not valid UTF-8"))?,
+            );
+            let key = match secret_name {
+                BwsSecretName::GpgSecretKeyBackup => "gpg-secret-key-backup",
+                BwsSecretName::PasswordStoreRemote => "password-store-remote",
+            };
+            let output = Command::new("bws")
+                .args(["secret", "get", key, "--access-token", "DOTFILES_BWS_ACCESS_TOKEN", "--output", "json"])
+                .env("DOTFILES_BWS_ACCESS_TOKEN", token.trim())
+                .output()
+                .map_err(|error| anyhow::anyhow!("failed to invoke bws CLI: {error}"))?;
+            if !output.status.success() {
+                let status = output
+                    .status
+                    .code()
+                    .map_or_else(|| "terminated by signal".to_string(), |code| code.to_string());
+                return Err(anyhow::anyhow!(
+                    "bws external check failed for {key} (exit status: {status})"
+                ));
+            }
+            let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .map_err(|error| anyhow::anyhow!("failed to decode bws secret JSON: {error}"))?;
+            let value = payload
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("bws secret response does not contain value"))?;
+            Ok(SecretMaterial::from_backend(
+                value.as_bytes().to_vec(),
+                |secret| secret.len(),
+                |secret| Ok(secret.clone()),
+            ))
+        }
     }
 }

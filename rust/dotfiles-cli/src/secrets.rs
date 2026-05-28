@@ -162,7 +162,8 @@ where
         + ports::BootstrapSecretDocumentInputPort
         + ports::SecretOutputPort
         + ports::SecretStoragePort
-        + ports::ReportPort,
+        + ports::ReportPort
+        + ports::BwsClientPort,
 {
     match options.command {
         SecretsCommand::Yubikey(options) => match options.command {

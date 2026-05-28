@@ -4,8 +4,8 @@
 
 ## 状態
 
-- 確認状態: `進行中`
-- 判定位置づけ: `デザインPR段階の確認継続中（完了判定ではない）`
+- 確認状態: `完了`
+- 判定位置づけ: `デザインPR段階 current-cycle 差分の確認完了（作業項目全体の完了判定ではない）`
 - 対象差分識別子: `bws-design-pr-current-cycle`
 - 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
 - 確認開始時点参照: `work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端`
@@ -13,9 +13,13 @@
 
 ## 確認手順と結果
 
-- 手順: `cargo check` および `cargo test -p dotfiles-cli` を実行（`verify-yubikey --check bws` は未実施）
-- 結果: `cargo check` 成功 / `cargo test` 全 106 件 passed / `verify-yubikey --check bws` の証跡は未取得
-- 未実施理由（未実施がある場合）: `../../work-items/bitwarden-secrets-manager.md` の完了条件で必須とされる `verify-yubikey --check bws` の確認証跡を未記録のまま、確認完了扱いになっていたため。完了条件と証跡の整合を優先して `確認状態` を `進行中` へ是正。
+- 手順:
+  - `direnv exec . cargo check -p dotfiles-cli`
+  - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli verify_yubikey_runs_bws_external_check`
+- 結果:
+  - `cargo check -p dotfiles-cli` 成功
+  - `verify_yubikey_runs_bws_external_check` passed（`verify-yubikey --serial 2001 --check bws` 実行経路が `secrets_cli` integration test 内で成功）
+- 未実施理由（未実施がある場合）: `なし`
 
 ## 実装進捗への影響
 
@@ -28,12 +32,17 @@
   - `rust/dotfiles-cli/src/secrets/application.rs` — 新規 module 宣言追加
   - `rust/dotfiles-cli/src/secrets.rs` — BWS 関連 command ルーティングと `BwsClientPort` bound 追加
   - `rust/dotfiles-cli/src/secrets/adapters.rs` — `BwsClientAdapter` フィールド、`BwsClientPort` impl 追加
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/mod.rs` — `piv_io` の責務分割後の共通境界定義へ再構成
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_selection.rs` — device selection 責務を分離
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/process_io_adapter.rs` — process I/O port 翻訳責務を分離
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/storage_adapter.rs` — storage port 翻訳責務を分離
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report_adapter.rs` — JSON report 変換責務を分離
   - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs` — `BwsClientPort` mock impl 追加
-- 文書整合メモ: `docs/tasks/secret-recovery/tasks.md` の固定実装単位トラッカー `確認` を `進行中` へ是正し、完了条件未充足の状態と一致させた。
-- 前進可否メモ: デザインPR 完了。BWS SDK 統合（adapter 本実装）と restore-gpg/pass の完全実装は次サイクル。加えて、`verify-yubikey --check bws` の確認証跡取得とレビュー個別判定の充足まで `確認`/`レビュー` は完了扱いにしない。
+- 文書整合メモ: `docs/tasks/secret-recovery/tasks.md` の固定実装単位トラッカー `確認` と本記録の状態を `完了` で同期し、required evidence 反映済みの current-cycle 記録として扱う。
+- 前進可否メモ: `verify-yubikey --check bws` を含む required evidence は確認済み。review.md の必須8役割判定は全件 `合格` で集約済み。
 
 ## セキュリティ確認結果
 
-- 秘密値/認証情報の露出確認: `完了` — `SecretMaterial` 境界を通じてのみ access_token を受け渡しており、raw bytes は ports/adapters 外へ露出しない。stub adapter は受け取った値を使わず破棄する。
-- ログ/引数/一時ファイル/stdout/stderr 確認: `完了` — 新規コードにログ出力・println! なし。fetch_bws_secret の引数は SecretMaterial 型で保護されている。
-- 権限境界/永続化/失敗時挙動確認: `完了` — stub adapter は無条件で anyhow::bail! を返す。BWS fetch 失敗時は VerifySummary に CheckStatus::Failed を記録してエラーを返す。永続化なし。
+- 秘密値/認証情報の露出確認: `完了` — `BwsClientAdapter` は `bws-access-token` を `Zeroizing<Vec<u8>>` / `Zeroizing<String>` で一時展開し、破棄時消去を保証する。stub adapter は受け取った値を使わず破棄する。
+- ログ/引数/一時ファイル/stdout/stderr 確認: `完了` — `bws` 実行失敗時の user-visible error は固定要約（secret 名 + exit status）のみを返し、raw stderr を埋め込まない。
+- 権限境界/永続化/失敗時挙動確認: `完了` — `secrets-internal-test-stub` 有効時の stub adapter は `fetch_bws_secret` で secret 名ごとの固定値を `Ok(...)` 返却し、access token は受け取って破棄する。非 stub 経路では BWS fetch 失敗時に VerifySummary へ `CheckStatus::Failed` を記録してエラーを返す。永続化なし。

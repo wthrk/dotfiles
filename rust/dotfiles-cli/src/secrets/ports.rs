@@ -12,6 +12,7 @@ use super::domain::{
         SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
         SecretStorageWriteIntent,
     },
+    values::BwsSecretName,
     values::{EnrollSummary, VerifySummary},
 };
 use crate::Result;
@@ -63,6 +64,15 @@ pub trait SecretOutputPort {
 pub trait ReportPort {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()>;
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
+}
+
+/// use case が Bitwarden Secrets Manager 取得可否を確認する契約。
+pub trait BwsClientPort {
+    fn fetch_bws_secret(
+        &self,
+        access_token: &SecretMaterial,
+        secret_name: BwsSecretName,
+    ) -> Result<SecretMaterial>;
 }
 
 /// use case が YubiKey secret storage へ要求する高水準 capability 契約。

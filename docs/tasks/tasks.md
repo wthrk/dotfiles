@@ -49,7 +49,7 @@
 
 ### Bitwarden Secrets Manager
 
-- 状態: `進行中`
+- 状態: `完了`
 - GitHub issue: #13
 - 主成果物: `実コード差分`
 - 対象コードパス:
