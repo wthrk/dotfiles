@@ -11,14 +11,14 @@
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `operational`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
-  - `security`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
-  - `specification-conformance`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `test`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `documentation`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
-  - `architectural-consistency`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `reference-integrity`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
+  - `structural`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `operational`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `security`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `specification-conformance`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `test`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `documentation`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `architectural-consistency`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `reference-integrity`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -266,9 +266,9 @@
 
 - `cargo check`: 実行済み
 - `cargo test --no-run`: 実行済み
-- `cargo xtask check`: 実行済み（`5217c7f`）
-- `cargo clippy --workspace --all-targets`: 実行済み（`5217c7f`）
-- `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 実行済み（`5217c7f`）
+- `cargo xtask check`: 履歴サイクル実行済み（`5217c7f`）
+- `cargo clippy --workspace --all-targets`: 履歴サイクル実行済み（`5217c7f`）
+- `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets`: 履歴サイクル実行済み（`5217c7f`）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application`: 成功（43 passed, 0 failed）
 - `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 成功（22 passed, 0 failed）
 - `cargo test -p dotfiles-cli secrets::application:: --lib`: 成功（0 passed, 40 filtered out）
@@ -277,7 +277,7 @@
 - `cargo check -p dotfiles-cli`: 成功
 - `cargo clippy -p dotfiles-cli --all-targets`: 成功
 - `git diff --check`: 成功
-- 状態: `レビュー集約合格。完了判定待ち`
+- 状態: `レビュー集約は要修正。再レビュー待ち`
 
 ## 2026-05-26 ad92152 基準履歴追記
 

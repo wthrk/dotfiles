@@ -101,29 +101,3 @@ pub trait SecretStoragePort {
         pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial>;
 }
-
-/// YubiKey device/PIV storage への外部機能境界をまとめた trait。
-pub trait YubikeyPort:
-    DeviceSerialPort + SpareDeviceSerialPort + DevicePinPolicyPort + PinInputPort + SecretStoragePort
-{
-}
-
-impl<T> YubikeyPort for T where
-    T: DeviceSerialPort
-        + SpareDeviceSerialPort
-        + DevicePinPolicyPort
-        + PinInputPort
-        + SecretStoragePort
-{
-}
-
-/// CUI 入出力と report 出力の外部機能境界をまとめた trait。
-pub trait SecretCliPort:
-    SecretInputPort + BootstrapSecretDocumentInputPort + SecretOutputPort + ReportPort
-{
-}
-
-impl<T> SecretCliPort for T where
-    T: SecretInputPort + BootstrapSecretDocumentInputPort + SecretOutputPort + ReportPort
-{
-}

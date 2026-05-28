@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-28）
 
-- 集約後レビュー判定: `再レビュー待ち`
+- 集約後レビュー判定: `要修正`
 - 集約判定要約: 新追加要件（全 source/test ヘッダコメント必須、外部機能単位 1 trait 方針、全 usecase の mockito app/usecase test 必須）を current-cycle に適用するため、既存 `合格` 集約は stale として取り下げた。再確認・再レビュー完了まで commit gate は未充足として扱う。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `operational`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
-  - `security`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
-  - `specification-conformance`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `test`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `documentation`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
-  - `architectural-consistency`: 状態 `実施済み` / 判定 `合格（da4accc 対象。以降の実コード変更は doc comment のみ）`
-  - `reference-integrity`: 状態 `実施済み` / 判定 `合格（38a4501 対象）`
+  - `structural`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `operational`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `security`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `specification-conformance`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `test`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `documentation`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `architectural-consistency`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+  - `reference-integrity`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -75,7 +75,7 @@
 
 - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の `状態` / `現行サイクル状態` / `実装状態` の完了方向更新は、進捗判定担当または完了判定担当の職責である。
 - 直前の実装コメント補正文書更新では、implementation executor は進捗判定担当の代替実行者として台帳状態を前進更新しなかった。
-- 本集約更新後、対象 HEAD `38a4501` について必須 reviewer 8 件がすべて `合格` を返した。implementation-review-judgement は review aggregation と commit gate 充足の記録までを扱い、完了判定そのものは task-completion-judgement へ引き渡す。
+- 対象 HEAD `41aac9f` の差戻し対応中で、必須 reviewer の現行サイクル再判定が未完了のため commit gate は未充足。
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
@@ -283,24 +283,13 @@
 - `review-security-2026-05-25.md`、`review-operational-2026-05-25.md`、`review-spec-2026-05-25.md`、`review-test-2026-05-25.md`、`review-doc-2026-05-25.md`、`structural-review.md` は履歴サイクル用 artifact として保持する。
 - 上記 artifact の判定結果は current-cycle（2026-05-27）の reviewer 状態を前進させる根拠として使用しない。
 
-## 役割別レビュー
+## 役割別レビュー（current-cycle）
 
-- `structural`: 合格（`da4accc` 対象。以降の実コード変更は doc comment のみ）。
-- `operational`: 合格（`38a4501` 対象）。
-- `security`: 合格（`38a4501` 対象）。
-- `specification-conformance`: 合格（`da4accc` 対象。以降の実コード変更は doc comment のみ）。
-- `test`: 合格（`da4accc` 対象。以降の実コード変更は doc comment のみ）。
-- `documentation`: 合格（`38a4501` 対象）。
-- `architectural-consistency`: 合格（`da4accc` 対象。以降の実コード変更は doc comment のみ）。
-- `reference-integrity`: 合格（`38a4501` 対象）。
-
-## 集約
-
-- 集約後レビュー判定: `合格`
-- 集約判定要約: 対象 HEAD `38a4501 docs(secrets): adapter secret境界コメントを補正` について、必須 reviewer 8 件がすべて `合格` を返した。commit gate は review aggregation 上充足しており、完了判定そのものは task-completion-judgement へ引き渡す。
-- 集約根拠:
-  - `confirmation.md` と `review.md` の diff identifier を `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head` に一致させた。
-  - 実装/テスト差分の保存コミット終端を `この実装コメント補正 HEAD` として記録した。
-  - `secrets::application` は 43 tests へ増加し、履歴上の未復旧 test 名 12 件を現行責務層へ復旧済み。
-  - structural / specification-conformance / test / architectural-consistency は `da4accc` 対象で合格済みであり、以降の実コード変更は doc comment のみであることを確認済み。documentation / security / operational / reference-integrity は `38a4501` 対象で合格済み。
-  - 必須 reviewer に `要修正` / `不合格` は残っていないため、review aggregation としての commit gate は充足した。完了判定そのものは task-completion-judgement へ引き渡す。
+- `structural`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `operational`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `security`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `specification-conformance`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `test`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `documentation`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `architectural-consistency`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `reference-integrity`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）

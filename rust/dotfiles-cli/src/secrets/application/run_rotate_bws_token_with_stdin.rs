@@ -1,4 +1,4 @@
-//! rotate-bws-token stdin use case の orchestration。
+//! rotate-bws-token(stdin) の順序を固定し、stdin 入力仕様変更を token 更新規則へ混在させない。
 
 use crate::Result;
 use crate::secrets::{

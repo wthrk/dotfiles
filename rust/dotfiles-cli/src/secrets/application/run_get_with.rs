@@ -1,4 +1,4 @@
-//! get use case の orchestration。
+//! get の順序責務だけを保持し、secret 復号・出力の実装詳細を port 境界の外へ固定する。
 
 use crate::Result;
 use crate::secrets::{
@@ -9,7 +9,13 @@ use crate::secrets::{
 /// 指定された secret を YubiKey storage から読み出し、出力 port へ受け渡す。
 ///
 /// 読み出し経路の secret 値を application 層で加工せず、復号と出力方針は adapter 側の責務境界へ固定する。
-pub(crate) fn run_get_with<B: ports::YubikeyPort + ports::SecretCliPort>(
+pub(crate) fn run_get_with<
+    B: ports::DeviceSerialPort
+        + ports::DevicePinPolicyPort
+        + ports::PinInputPort
+        + ports::SecretStoragePort
+        + ports::SecretOutputPort,
+>(
     command: GetCommand,
     boundary: &mut B,
 ) -> Result<()> {
@@ -33,6 +39,8 @@ pub(crate) fn run_get_with<B: ports::YubikeyPort + ports::SecretCliPort>(
 
 #[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use crate::Result;
     use crate::secrets::{
         application::app_test_support::AppMockBoundary,
@@ -54,10 +62,13 @@ mod tests {
             },
             &mut boundary,
         )?;
-        assert_eq!(
-            boundary.mock.output_secret_value(),
-            Some(b"user@example.com".to_vec())
-        );
+        let output = match boundary.mock.output_secret_value() {
+            Some(output) => output,
+            None => panic!("output secret should exist"),
+        };
+        let digest = Sha256::digest(&output);
+        assert_eq!(output.len(), b"user@example.com".len());
+        assert_eq!(digest[..], Sha256::digest(b"user@example.com")[..]);
         Ok(())
     }
 

@@ -1,4 +1,4 @@
-//! verify-yubikey use case の orchestration。
+//! verify-yubikey の順序責務を固定し、未実装外部検証の停止境界を曖昧化しない。
 
 use crate::Result;
 use crate::secrets::{

@@ -1,4 +1,4 @@
-//! enroll spare stdin-json use case の orchestration。
+//! enroll-spare(stdin-json) の順序を固定し、device 衝突停止条件を入力方式に依存させない。
 
 use crate::Result;
 use crate::secrets::{

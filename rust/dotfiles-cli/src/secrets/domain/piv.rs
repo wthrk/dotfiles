@@ -1,4 +1,4 @@
-//! YubiKey PIV 制約と識別子を表す domain model。
+//! PIV 制約と object 対応規則を domain で固定し、adapter ごとの差異で保存意味が変わることを防ぐ。
 
 use std::{fmt, str::FromStr};
 

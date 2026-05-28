@@ -1,4 +1,4 @@
-//! enroll primary prompt use case の orchestration。
+//! enroll-primary(prompt) の順序を固定し、入力 I/O 変更を storage 手順から分離して誤登録を防ぐ。
 
 use crate::Result;
 use crate::secrets::{

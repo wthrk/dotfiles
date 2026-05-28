@@ -1,4 +1,4 @@
-//! secret material の opaque domain model。
+//! secret 本文を opaque value へ閉じ込み、domain から保護メモリ実装依存を排除する。
 
 use std::any::Any;
 

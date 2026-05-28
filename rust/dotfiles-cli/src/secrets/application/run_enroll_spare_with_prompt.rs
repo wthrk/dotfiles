@@ -1,4 +1,4 @@
-//! enroll spare prompt use case の orchestration。
+//! enroll-spare(prompt) の順序を固定し、primary/spare 判定責務を I/O 実装から分離する。
 
 use crate::Result;
 use crate::secrets::{

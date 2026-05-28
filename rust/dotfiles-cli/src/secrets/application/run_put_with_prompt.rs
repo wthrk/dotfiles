@@ -1,4 +1,4 @@
-//! put prompt use case の orchestration。
+//! put(prompt) の順序責務を保持し、入力手段と保存実装の変更理由を usecase から分離する。
 
 use crate::Result;
 use crate::secrets::{
@@ -9,7 +9,9 @@ use crate::secrets::{
 /// 対話入力で取得した secret を対象 serial の YubiKey storage へ保存する。
 ///
 /// 入力モードの可視/不可視判定は `SecretName` の domain 規則で決め、端末 I/O 実装詳細は adapter へ委譲する。
-pub(crate) fn run_put_with_prompt<B: ports::YubikeyPort + ports::SecretCliPort>(
+pub(crate) fn run_put_with_prompt<
+    B: ports::DeviceSerialPort + ports::SecretInputPort + ports::SecretStoragePort,
+>(
     command: PutCommand,
     boundary: &mut B,
 ) -> Result<()> {

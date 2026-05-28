@@ -1,4 +1,4 @@
-//! enroll primary stdin-json use case の orchestration。
+//! enroll-primary(stdin-json) の順序を固定し、JSON 入力仕様変更を usecase 境界へ逆流させない。
 
 use crate::Result;
 use crate::secrets::{

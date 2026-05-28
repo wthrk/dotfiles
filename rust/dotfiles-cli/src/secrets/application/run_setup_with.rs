@@ -1,4 +1,4 @@
-//! setup use case の orchestration。
+//! setup の順序責務だけを保持し、device 選択と PIV 実行の変更理由を分離する。
 
 use crate::Result;
 use crate::secrets::{
@@ -12,7 +12,7 @@ use crate::secrets::{
 /// 対象 serial の YubiKey storage layout を初期化する。
 ///
 /// setup 可否判定は domain intent、PIV 操作詳細は adapter 側へ委譲し、application では順序制御だけを保持する。
-pub(crate) fn run_setup_with<B: ports::YubikeyPort>(
+pub(crate) fn run_setup_with<B: ports::DeviceSerialPort + ports::SecretStoragePort>(
     command: SetupCommand,
     boundary: &mut B,
 ) -> Result<()> {

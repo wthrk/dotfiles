@@ -1,4 +1,4 @@
-//! secrets use case 入出力を表す domain value 群。
+//! usecase 入出力の意味だけを保持し、CLI 表現や I/O 手段の変更理由を domain へ混在させない。
 
 use std::collections::BTreeMap;
 

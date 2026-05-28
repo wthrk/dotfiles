@@ -231,7 +231,7 @@ use case 独自型は定義してはならない。`EnrollSummary`、`VerifySumm
 
 - 例: DB 接続系 capability は 1 trait に集約する。
 - 例: ファイルアクセス系 capability は 1 trait に集約する。
-- 例: CUI / 端末 I/O 系 capability は 1 trait に集約する。
+- 例: CUI でも `入力`・`出力`・`報告` のように変更理由が異なる capability は分け、同じ変更理由を共有する機能だけを 1 trait にまとめる。
 
 機能内で細分化が必要な場合でも、最終的な use case 境界は外部機能単位 trait（supertrait を含む）で表現し、adapter 実装と module 分割も同じ外部機能単位へ揃えること。
 

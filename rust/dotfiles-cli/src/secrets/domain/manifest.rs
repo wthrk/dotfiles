@@ -1,4 +1,4 @@
-//! secret storage manifest の domain model。
+//! manifest の互換条件と bootstrap 文書対応を domain で固定し、storage 判定の揺れを防ぐ。
 
 use std::collections::BTreeMap;
 

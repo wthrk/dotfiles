@@ -1,4 +1,4 @@
-//! rotate-bws-token prompt use case の orchestration。
+//! rotate-bws-token(prompt) の順序を固定し、更新手順と検証手順の責任境界を崩さない。
 
 use crate::Result;
 use crate::secrets::{
