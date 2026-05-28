@@ -4,13 +4,13 @@
 
 mod piv_io;
 
-use std::collections::BTreeMap;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use std::process::Command;
+use crate::secrets::support::protection::{ProtectedSecret, secret_consumer};
+use std::collections::BTreeMap;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use std::io::Write;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use crate::secrets::support::protection::{ProtectedSecret, secret_consumer};
+use std::process::Command;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use zeroize::Zeroizing;
 
@@ -240,12 +240,14 @@ impl BwsClientPort for BwsClientAdapter {
         {
             let protected = access_token
                 .as_backend::<ProtectedSecret>()
-                .ok_or_else(|| anyhow::anyhow!("bws access token backend is not protected memory"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("bws access token backend is not protected memory")
+                })?;
             let mut token_bytes = Zeroizing::new(Vec::<u8>::new());
             let mut writer = ZeroizingVecWriter(&mut token_bytes);
             secret_consumer::write_to(protected, &mut writer)?;
             let token = Zeroizing::new(
-                String::from_utf8(token_bytes.to_vec())
+                String::from_utf8(std::mem::take(&mut *token_bytes))
                     .map_err(|_| anyhow::anyhow!("bws access token is not valid UTF-8"))?,
             );
             let key = match secret_name {
@@ -253,15 +255,22 @@ impl BwsClientPort for BwsClientAdapter {
                 BwsSecretName::PasswordStoreRemote => "password-store-remote",
             };
             let output = Command::new("bws")
-                .args(["secret", "get", key, "--access-token", "DOTFILES_BWS_ACCESS_TOKEN", "--output", "json"])
-                .env("DOTFILES_BWS_ACCESS_TOKEN", token.trim())
+                .args([
+                    "secret",
+                    "get",
+                    key,
+                    "--access-token",
+                    token.trim(),
+                    "--output",
+                    "json",
+                ])
                 .output()
                 .map_err(|error| anyhow::anyhow!("failed to invoke bws CLI: {error}"))?;
             if !output.status.success() {
-                let status = output
-                    .status
-                    .code()
-                    .map_or_else(|| "terminated by signal".to_string(), |code| code.to_string());
+                let status = output.status.code().map_or_else(
+                    || "terminated by signal".to_string(),
+                    |code| code.to_string(),
+                );
                 return Err(anyhow::anyhow!(
                     "bws external check failed for {key} (exit status: {status})"
                 ));
