@@ -112,9 +112,9 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 - `SSH_AUTH_SOCK` は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合のみ上書きし、未存在時は既存値を保持する。設定例:
 
   ```zsh
-  _sock="${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh"
-  [[ -S "$_sock" ]] && export SSH_AUTH_SOCK="$_sock"
-  unset _sock
+  _gpg_agent_sock="${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh"
+  [[ -S "$_gpg_agent_sock" ]] && export SSH_AUTH_SOCK="$_gpg_agent_sock"
+  unset _gpg_agent_sock
   ```
 
 `restore-gpg` / `restore-pass` の実装側でも SSH agent socket 解決は crate 側ロジックで完結させ、`gpgconf` CLI 呼び出しは採用しない。
