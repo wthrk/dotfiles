@@ -27,9 +27,10 @@ pub(crate) fn run_rotate_bws_token_with_stdin<
     boundary: &mut B,
 ) -> Result<()> {
     let serial = command.required_serial()?;
-    let token = boundary.read_streamed_secret()?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
+    let token = boundary.read_streamed_secret()?;
     let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
     boundary.store_secret(serial, intent, &token)?;
     let pin = if boundary.device_requires_pin(serial)? {
@@ -74,6 +75,25 @@ mod tests {
         let result =
             run_rotate_bws_token_with_stdin(RotateBwsTokenCommand { serial: None }, &mut boundary);
         assert!(result.is_err(), "serial is required for stdin rotation");
+    }
+
+    #[test]
+    fn rotate_stdin_checks_storage_before_reading_token() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_write_manifest_missing();
+        boundary
+            .mock
+            .set_streamed_secret_error("token should not be read before preflight");
+
+        let result = run_rotate_bws_token_with_stdin(
+            RotateBwsTokenCommand { serial: Some(2001) },
+            &mut boundary,
+        );
+
+        assert!(
+            result.is_err(),
+            "storage preflight should stop before stdin read"
+        );
     }
 
     #[test]

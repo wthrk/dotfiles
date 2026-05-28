@@ -111,6 +111,15 @@ impl SecretStorageSetupIntent {
 }
 
 impl SecretStorageWriteIntent {
+    /// secret 長に依存しない通常保存 preflight を実行する。
+    ///
+    /// rotate など入力取得前に拒否可能な storage 状態を確認したい use case は、本検査を
+    /// secret 入力より前に通し、token payload を不要に process へ取り込まない。
+    pub fn ensure_store_preconditions(inspection: &SecretStorageWriteInspection) -> Result<()> {
+        SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        Ok(())
+    }
+
     /// `put` のうち secret 長に依存しない manifest / object / force 規則を事前検査する。
     ///
     /// stdin など一度読むと戻せない secret 入力では、本検査を入力取得前に通して、
@@ -135,7 +144,7 @@ impl SecretStorageWriteIntent {
         inspection: SecretStorageWriteInspection,
         secret_len: usize,
     ) -> Result<Self> {
-        SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        Self::ensure_store_preconditions(&inspection)?;
         storage.ensure_plaintext_len(secret_len)?;
         Ok(Self { storage })
     }

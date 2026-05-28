@@ -13,9 +13,12 @@ use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 mod oaep;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod sealed_blob;
 pub(crate) mod secret_consumer;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;
 
 use crate::Result;

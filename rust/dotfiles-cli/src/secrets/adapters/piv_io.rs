@@ -1,8 +1,10 @@
 //! YubiKey PIV discovery/selection と実プロセス I/O を port 契約へ接続する adapter。
 
 use anyhow::{Context, bail};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
 use serde_json::json;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
@@ -46,12 +48,17 @@ use crate::{
         },
         support::{
             process_io,
-            protection::{ProtectedSecret, sealed_blob, secret_consumer, secret_random},
+            protection::{ProtectedSecret, secret_consumer},
         },
     },
 };
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use crate::secrets::support::protection::{sealed_blob, secret_random};
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
 
 /// `ProtectedSecret` backend を domain の secret 境界型へ移す adapter 内部変換。
@@ -80,6 +87,7 @@ struct DeviceCandidate {
 ///
 /// adapter 外へ実機型を漏らさないため、この trait は `SelectedSecretDevice` 構築に必要な
 /// 最小 capability だけを提供する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 trait RealDeviceIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<YubikeySecretDevice>;
@@ -584,11 +592,13 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
     }
 }
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
 }
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl YubikeySecretDevice {
     fn open_by_serial(serial: u32) -> Result<Self> {
         Ok(Self {
@@ -650,8 +660,10 @@ impl YubikeySecretDevice {
     }
 }
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 struct RealDeviceAdapter;
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl RealDeviceIo for RealDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         let mut context = YubikeyContext::open()?;
@@ -672,6 +684,7 @@ impl RealDeviceIo for RealDeviceAdapter {
     }
 }
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl SecretDeviceIo for YubikeySecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
@@ -779,8 +792,10 @@ impl SecretDeviceIo for YubikeySecretDevice {
 ///
 /// この verifier は SDK 呼び出し中だけ borrowed bytes を渡し、PIN bytes を保持・複製しない。
 /// secret 消費の具体 SDK 呼び出しを `secret_consumer` 境界へ閉じ、adapter 外へ PIN 表現を出さない。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 struct YubikeyPinVerifier<'a>(&'a mut YubiKey);
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl secret_consumer::SecretConsumer for YubikeyPinVerifier<'_> {
     /// 借用中の PIN bytes を YubiKey SDK へ渡し、呼び出し完了後に参照を保持しない。
     fn consume(&mut self, bytes: &[u8]) -> Result<()> {

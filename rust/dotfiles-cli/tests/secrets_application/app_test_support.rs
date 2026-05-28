@@ -129,6 +129,10 @@ impl AppMock {
         self.configure(|state| state.write_object_exists = object_exists);
     }
 
+    pub(crate) fn set_write_manifest_missing(&self) {
+        self.configure(|state| state.write_manifest_exists = false);
+    }
+
     pub(crate) fn set_secret_value(&self, secret: SecretName, value: &'static [u8]) {
         self.configure(|state| {
             state.secret_values.insert(secret, value.to_vec());
@@ -433,7 +437,11 @@ impl SecretStoragePort for AppMockBoundary {
         _storage: &SecretStorageSpec,
     ) -> Result<SecretStorageWriteInspection> {
         Ok(SecretStorageWriteInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode()?),
+            manifest_bytes: if self.mock.snapshot(|state| state.write_manifest_exists) {
+                Some(SecretManifest::expected().encode()?)
+            } else {
+                None
+            },
             object_exists: self.mock.snapshot(|state| state.write_object_exists),
         })
     }
@@ -508,6 +516,7 @@ struct AppMockState {
     fail_setup: bool,
     fail_on_store: Option<SecretName>,
     store_failure_status: usize,
+    write_manifest_exists: bool,
     write_object_exists: bool,
     pin_error: Option<&'static str>,
     stdin_json_error: Option<&'static str>,
@@ -536,6 +545,7 @@ impl Default for AppMockState {
             fail_setup: false,
             fail_on_store: None,
             store_failure_status: 500,
+            write_manifest_exists: true,
             write_object_exists: false,
             pin_error: None,
             stdin_json_error: None,

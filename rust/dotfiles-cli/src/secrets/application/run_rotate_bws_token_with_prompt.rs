@@ -14,10 +14,11 @@ use crate::secrets::{
 
 /// prompt 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
-/// serial 未指定時は非対話運用の誤書き込みを防ぐため停止し、保存失敗と検証失敗の責務は
-/// port 境界で保存と検証を接続する。
+/// serial 未指定時は port 境界で対象 device を解決し、token 入力前に storage preflight を通す。
+/// 保存失敗と検証失敗の責務は port 境界で保存と検証を接続する。
 pub(crate) fn run_rotate_bws_token_with_prompt<
-    B: ports::SecretInputPort
+    B: ports::DeviceSerialPort
+        + ports::SecretInputPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
         + SecretStoragePort
@@ -26,10 +27,11 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     command: RotateBwsTokenCommand,
     boundary: &mut B,
 ) -> Result<()> {
-    let serial = command.required_serial()?;
-    let token = boundary.read_bws_access_token_secret()?;
+    let serial = boundary.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
+    let token = boundary.read_bws_access_token_secret()?;
     let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
     boundary.store_secret(serial, intent, &token)?;
     let pin = if boundary.device_requires_pin(serial)? {
@@ -69,11 +71,31 @@ mod tests {
     use super::run_rotate_bws_token_with_prompt;
 
     #[test]
-    fn rotate_prompt_stops_without_serial() {
+    fn rotate_prompt_resolves_serial_when_omitted() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
-        let result =
-            run_rotate_bws_token_with_prompt(RotateBwsTokenCommand { serial: None }, &mut boundary);
-        assert!(result.is_err(), "serial is required for prompt rotation");
+        run_rotate_bws_token_with_prompt(RotateBwsTokenCommand { serial: None }, &mut boundary)?;
+        assert_eq!(boundary.mock.stores().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_prompt_checks_storage_before_reading_token() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_write_manifest_missing();
+        boundary.mock.set_secret_error(
+            crate::secrets::domain::piv::SecretName::BwsAccessToken,
+            "token should not be read before preflight",
+        );
+
+        let result = run_rotate_bws_token_with_prompt(
+            RotateBwsTokenCommand { serial: Some(2001) },
+            &mut boundary,
+        );
+
+        assert!(
+            result.is_err(),
+            "storage preflight should stop before token read"
+        );
     }
 
     #[test]

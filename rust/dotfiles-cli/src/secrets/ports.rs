@@ -14,7 +14,7 @@ use super::domain::{
     },
     values::{EnrollSummary, VerifySummary},
 };
-use anyhow::Result;
+use crate::Result;
 
 /// use case が primary 対象の serial を確定する capability 契約。
 pub trait DeviceSerialPort {

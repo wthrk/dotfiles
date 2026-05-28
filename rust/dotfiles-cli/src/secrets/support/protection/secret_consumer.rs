@@ -2,9 +2,8 @@
 
 use std::io::Write;
 
-use anyhow::Result;
-
 use super::ProtectedSecret;
+use crate::Result;
 
 /// `ProtectedSecret` の借用中だけ secret bytes を処理する consumer。
 ///

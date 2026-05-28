@@ -37,13 +37,13 @@ fn rust(shell: &Shell) -> Result<()> {
     step("cargo test secrets internal stub");
     cmd!(
         shell,
-        "cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli"
+        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli"
     )
     .run()?;
     step("cargo test secrets application internal stub");
     cmd!(
         shell,
-        "cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application"
+        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::application"
     )
     .run()?;
     Ok(())
