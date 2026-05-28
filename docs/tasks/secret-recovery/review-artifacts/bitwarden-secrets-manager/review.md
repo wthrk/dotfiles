@@ -117,6 +117,8 @@
 
 ### 参照整合レビュー担当
 
+#### サイクル 1（差戻し — HEAD `6cd58c1` 時点）
+
 - 判定: `不合格`
 - 判定要約: `root tasks.md の作業状態が未更新であり、confirmation.md の更新完了宣言と矛盾する`
 - 根拠:
@@ -124,6 +126,16 @@
   - `docs/tasks/secret-recovery/tasks.md`（補助台帳）は `状態: 進行中` へ更新済みだが、正本である root `docs/tasks/tasks.md` との定義矛盾が残る。
   - 差戻し条件: `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目 `状態` を `進行中` へ更新し、`confirmation.md` の更新完了宣言と一致させること。
   - その他のリンク・ファイルパス・アンカー参照はすべて解決可能であることを確認済み。
+
+#### サイクル 2（是正後再レビュー — HEAD `b6f301b` 時点）
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - 是正コミット `b6f301b` により `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目が `状態: 進行中` へ更新された。`confirmation.md` 行32の「`tasks.md` の作業状態を `進行中` へ更新済み」という記述と正本 root 台帳の状態が一致している。前サイクルの差戻し条件はすべて解消済み。
+  - `review.md` 内の全リンク・ファイルパスを独立確認済み: `../../../../architecture/review-checklist.md#レビュー観点チェックリスト構造` → `docs/architecture/review-checklist.md`（存在確認済み、見出し `# レビュー観点チェックリスト（構造）` に対応）、`./confirmation.md`（同ディレクトリ内存在確認済み）。
+  - `confirmation.md` の参照ファイルパスおよび宣言内容（確認状態 `完了`、 `docs/tasks/secret-recovery/tasks.md` の `確認 | 完了` トラッカー）はすべて現行ファイル内容と一致。
+  - 前サイクル未解消項目: なし。
 
 ### 起動不能役割がある場合の記録参照
 
