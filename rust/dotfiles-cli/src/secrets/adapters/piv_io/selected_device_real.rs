@@ -14,8 +14,6 @@ use super::{
 };
 use crate::secrets::support::protection::{sealed_blob, secret_random};
 
-pub(super) const ROUTE_LABEL: &str = "real";
-
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
 

@@ -33,9 +33,13 @@ use crate::{
 };
 
 const ADAPTER_ROUTE_AUDIT_PREFIX: &str = "DOTFILES_SECRETS_DEVICE_ADAPTER_ROUTE";
+#[cfg(feature = "secrets-internal-test-stub")]
+const SELECTED_DEVICE_ROUTE_LABEL: &str = "stub";
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+const SELECTED_DEVICE_ROUTE_LABEL: &str = "real";
 
-pub(super) fn selected_device_route_label() -> &'static str {
-    selected_device::ROUTE_LABEL
+fn selected_device_route_label() -> &'static str {
+    SELECTED_DEVICE_ROUTE_LABEL
 }
 
 fn material_from_protected(protected: ProtectedSecret) -> SecretMaterial {
@@ -87,7 +91,7 @@ impl Default for SelectedDeviceAdapter {
     fn default() -> Self {
         eprintln!(
             "{ADAPTER_ROUTE_AUDIT_PREFIX}={}",
-            selected_device::ROUTE_LABEL
+            selected_device_route_label()
         );
         Self
     }
@@ -165,6 +169,6 @@ mod tests {
 
     #[test]
     fn selected_device_adapter_route_is_compile_time_selected() {
-        assert!(matches!(selected_device::ROUTE_LABEL, "real" | "stub"));
+        assert!(matches!(selected_device_route_label(), "real" | "stub"));
     }
 }
