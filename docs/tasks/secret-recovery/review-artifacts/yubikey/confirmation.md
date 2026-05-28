@@ -4,7 +4,7 @@
 
 ## 現行サイクル（2026-05-28）
 
-- 確認状態: `レビュー集約完了（commit gate 充足）`
+- 確認状態: `完了`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`
@@ -278,6 +278,7 @@
 - `cargo clippy -p dotfiles-cli --all-targets`: 成功
 - `git diff --check`: 成功
 - 状態: `レビュー集約は合格。commit gate 充足`
+- 完了判定: `完了（2026-05-28）`
 
 ## 2026-05-26 ad92152 基準履歴追記
 
