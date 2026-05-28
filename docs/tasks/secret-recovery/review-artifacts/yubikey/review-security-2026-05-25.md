@@ -5,7 +5,7 @@
 - レビュー対象: 2026-05-25 時点の `feat/yubikey-secret-storage` ブランチ実装（履歴サイクル）
 - 参照確認記録: `review-artifacts/yubikey/confirmation.md`（存在確認のみ。独立判定の代替としていない）
 - 注記: 本レビューは独立した新規セッションとして全項目を直接コードから確認した。前サイクルの記録を引き継がない。
-- 注記: 本文書は履歴サイクル（2026-05-25）専用 artifact であり、現行 HEAD（`11c1a2a`）および current-cycle commit gate の判定対象ではない。
+- 注記: 本文書は履歴サイクル（2026-05-25）専用 artifact であり、current-cycle commit gate の判定対象ではない。
 
 ---
 
