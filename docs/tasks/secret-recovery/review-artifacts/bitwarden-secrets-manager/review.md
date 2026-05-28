@@ -5,9 +5,9 @@
 ## 実装担当からの引き継ぎ
 
 - レビュー状態: `未着手`
-- 対象ブランチ: `未記入`
-- 確認開始時 HEAD: `未記入`
-- 対象差分識別子: `未記入`
+- 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
+- 確認開始時 HEAD: `5d6e495`
+- 対象差分識別子: `bws-design-pr-2026-05-28-5d6e495`
 - 実装側確認証跡: `./confirmation.md`
 
 ## レビュー担当チェック項目

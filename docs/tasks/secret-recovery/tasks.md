@@ -64,17 +64,24 @@
 
 ### Bitwarden Secrets Manager
 
-- 状態: `未開始`
+- 状態: `進行中`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [review-artifacts/bitwarden-secrets-manager/review.md](review-artifacts/bitwarden-secrets-manager/review.md#bitwarden-secrets-manager-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
+  - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_verify_yubikey_with.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_restore_gpg_with.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_restore_pass_with.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/bws_client.rs`
+  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 実装状態: `未実装`
+- 実装状態: `デザインPR完了・レビュー待ち`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -82,7 +89,8 @@
 | 規約計画 | 完了 | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/bitwarden-secrets-manager.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 進行中 | `docs/secret-recovery/bitwarden-secrets-manager-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 確認 | 未着手 | `review-artifacts/bitwarden-secrets-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| 実装（デザインPR） | 完了 | 実コード差分 `5d6e495` | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
+| 確認 | 進行中 | `review-artifacts/bitwarden-secrets-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 未着手 | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手 | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
 
