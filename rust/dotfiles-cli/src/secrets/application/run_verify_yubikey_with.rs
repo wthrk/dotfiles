@@ -52,15 +52,18 @@ pub(crate) fn run_verify_yubikey_with<
         }
         Ok(bws_access_token)
     })();
-    if let Err(err) = local_verify {
-        return boundary
-            .write_verify_report(&VerifySummary::local_storage_failed(serial))
-            .and(Err(err));
-    }
+    let bws_access_token = match local_verify {
+        Ok(value) => value,
+        Err(err) => {
+            return boundary
+                .write_verify_report(&VerifySummary::local_storage_failed(serial))
+                .and(Err(err));
+        }
+    };
     if requested.is_empty() {
         return boundary.write_verify_report(&VerifySummary::local_storage_verified(serial));
     }
-    let access_token = local_verify?.ok_or_else(|| {
+    let access_token = bws_access_token.ok_or_else(|| {
         anyhow::anyhow!(
             "internal invariant violated: verification plan did not yield bws-access-token"
         )
