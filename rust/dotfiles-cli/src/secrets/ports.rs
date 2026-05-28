@@ -44,6 +44,11 @@ pub trait SecretInputPort {
     fn read_streamed_secret(&self) -> Result<SecretMaterial>;
 }
 
+/// use case が対話 rotate の継続可否を外部入力から取得する capability 契約。
+pub trait RotationContinuationPort {
+    fn continue_rotation(&self) -> Result<bool>;
+}
+
 /// bootstrap secret 文書を取得する capability 契約。
 pub trait BootstrapSecretDocumentInputPort {
     fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>>;

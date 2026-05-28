@@ -68,6 +68,14 @@ impl AppMock {
         self.configure(|state| state.spare_serial = serial);
     }
 
+    pub(crate) fn set_device_resolution_sequence(&self, serials: Vec<u32>) {
+        self.configure(|state| state.device_resolution_sequence = serials);
+    }
+
+    pub(crate) fn set_rotation_continuations(&self, continuations: Vec<bool>) {
+        self.configure(|state| state.rotation_continuations = continuations);
+    }
+
     pub(crate) fn set_primary_available(&self, available: bool) {
         self.configure(|state| state.primary_available = available);
     }
@@ -252,6 +260,11 @@ impl AppMockBoundary {
         self
     }
 
+    pub(crate) fn expect_report_times(mut self, hits: usize) -> Self {
+        self.mock.expect_event_times("report", hits);
+        self
+    }
+
     pub(crate) fn expect_pin(mut self) -> Self {
         self.mock.expect_event("pin");
         self
@@ -273,6 +286,12 @@ impl ports::DeviceSerialPort for AppMockBoundary {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
         self.mock.configure(|state| {
             state.resolution_order.push("primary");
+            if let Some(serial) = requested {
+                return Ok(serial);
+            }
+            if !state.device_resolution_sequence.is_empty() {
+                return Ok(state.device_resolution_sequence.remove(0));
+            }
             requested
                 .or(if state.primary_available {
                     Some(state.primary_serial)
@@ -353,6 +372,19 @@ impl AppMockBoundary {
                 .get(&secret)
                 .map(|message| Err(anyhow::anyhow!(*message)))
                 .unwrap_or_else(|| Ok(secret_material(state.secret_value(secret))))
+        })
+    }
+}
+
+impl ports::RotationContinuationPort for AppMockBoundary {
+    fn continue_rotation(&self) -> Result<bool> {
+        self.mock.configure(|state| {
+            state.hit_event("continue-rotation");
+            Ok(if state.rotation_continuations.is_empty() {
+                false
+            } else {
+                state.rotation_continuations.remove(0)
+            })
         })
     }
 }
@@ -528,6 +560,8 @@ struct AppMockState {
     primary_requires_pin: bool,
     spare_requires_pin: bool,
     primary_available: bool,
+    device_resolution_sequence: Vec<u32>,
+    rotation_continuations: Vec<bool>,
     loaded_len: usize,
     loaded_values: BTreeMap<SecretName, Vec<u8>>,
     fail_setup: bool,
@@ -557,6 +591,8 @@ impl Default for AppMockState {
             primary_requires_pin: false,
             spare_requires_pin: false,
             primary_available: true,
+            device_resolution_sequence: Vec::new(),
+            rotation_continuations: Vec::new(),
             loaded_len: 1,
             loaded_values: BTreeMap::new(),
             fail_setup: false,

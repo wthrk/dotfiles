@@ -292,6 +292,26 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     Ok(())
 }
 
+/// `rotate-bws-token` は対話TTYで更新後に別 YubiKey へ同じ token を継続適用できる。
+#[test]
+fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult<()> {
+    let stub = StubServer::new(&[StubFixture::State(StubState::Provisioned)]);
+    stub.set_serial_state(SPARE_SERIAL, StubState::Provisioned)?;
+    let run = run_pty_with_stub(
+        ["yubikey", "rotate-bws-token"],
+        Some("1\nnew-token\ny\n2\nn\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("rotate another YubiKey? [y/N]: "));
+    assert!(run.output.contains("\"serial\": 2001"));
+    assert!(run.output.contains("\"serial\": 2002"));
+    stub.assert_write_event(PRIMARY_SERIAL, StubSecret::BwsAccessToken, "<redacted>")?;
+    stub.assert_write_event(SPARE_SERIAL, StubSecret::BwsAccessToken, "<redacted>")?;
+    Ok(())
+}
+
 /// `verify-yubikey` の基本成功経路（local-storage ok / bws skipped）を確認する。
 #[test]
 fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {

@@ -1,5 +1,9 @@
 //! rotate-bws-token(prompt) の順序を固定し、更新手順と検証手順の責任境界を崩さない。
 
+use std::collections::BTreeSet;
+
+use anyhow::bail;
+
 use crate::Result;
 use crate::secrets::{
     domain::{
@@ -19,6 +23,7 @@ use crate::secrets::{
 pub(crate) fn run_rotate_bws_token_with_prompt<
     B: ports::DeviceSerialPort
         + ports::SecretInputPort
+        + ports::RotationContinuationPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
         + SecretStoragePort
@@ -27,52 +32,77 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     command: RotateBwsTokenCommand,
     boundary: &mut B,
 ) -> Result<()> {
-    let serial = boundary.resolve_device_serial(command.serial)?;
-    let storage = command.storage_spec(serial);
-    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
-    SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
-    let pin = if boundary.device_requires_pin(serial)? {
-        let pin = boundary.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
-    let pre_update_verify: Result<()> = (|| {
-        for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
-            let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
-            let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-            let secret = boundary
-                .load_secret(serial, &intent, pin.as_ref())
-                .map_err(|error| intent.decode_error(error))?;
-            intent.validate_loaded_secret(&secret)?;
+    let mut updated_serials = BTreeSet::new();
+    let mut next_requested_serial = command.serial;
+    let mut token = None;
+
+    loop {
+        let serial = boundary.resolve_device_serial(next_requested_serial)?;
+        if !updated_serials.insert(serial) {
+            bail!("selected YubiKey was already updated");
         }
-        Ok(())
-    })();
-    if let Err(err) = pre_update_verify {
-        return boundary
-            .write_verify_report(&VerifySummary::local_storage_failed(serial))
-            .and(Err(err));
-    }
-    let token = boundary.read_bws_access_token_secret()?;
-    let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
-    boundary.store_secret(serial, intent, &token)?;
-    let verify_result: Result<()> = (|| {
-        for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
-            let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
-            let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-            let secret = boundary
-                .load_secret(serial, &intent, pin.as_ref())
-                .map_err(|error| intent.decode_error(error))?;
-            intent.validate_loaded_secret(&secret)?;
+
+        let storage = command.storage_spec(serial);
+        let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+        SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
+        let pin = if boundary.device_requires_pin(serial)? {
+            let pin = boundary.read_pin()?;
+            validate_piv_pin_len(pin.len())?;
+            Some(pin)
+        } else {
+            None
+        };
+        let pre_update_verify: Result<()> = (|| {
+            for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
+                let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+                let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+                let secret = boundary
+                    .load_secret(serial, &intent, pin.as_ref())
+                    .map_err(|error| intent.decode_error(error))?;
+                intent.validate_loaded_secret(&secret)?;
+            }
+            Ok(())
+        })();
+        if let Err(err) = pre_update_verify {
+            return boundary
+                .write_verify_report(&VerifySummary::local_storage_failed(serial))
+                .and(Err(err));
         }
-        Ok(())
-    })();
-    match verify_result {
-        Ok(()) => boundary.write_verify_report(&VerifySummary::local_storage_verified(serial)),
-        Err(err) => boundary
-            .write_verify_report(&VerifySummary::local_storage_failed(serial))
-            .and(Err(err)),
+
+        if token.is_none() {
+            token = Some(boundary.read_bws_access_token_secret()?);
+        }
+        let Some(token) = token.as_ref() else {
+            bail!("rotate token is unavailable");
+        };
+        let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
+        boundary.store_secret(serial, intent, token)?;
+        let verify_result: Result<()> = (|| {
+            for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
+                let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+                let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+                let secret = boundary
+                    .load_secret(serial, &intent, pin.as_ref())
+                    .map_err(|error| intent.decode_error(error))?;
+                intent.validate_loaded_secret(&secret)?;
+            }
+            Ok(())
+        })();
+        match verify_result {
+            Ok(()) => {
+                boundary.write_verify_report(&VerifySummary::local_storage_verified(serial))?
+            }
+            Err(err) => {
+                return boundary
+                    .write_verify_report(&VerifySummary::local_storage_failed(serial))
+                    .and(Err(err));
+            }
+        }
+
+        if command.serial.is_some() || !boundary.continue_rotation()? {
+            return Ok(());
+        }
+        next_requested_serial = None;
     }
 }
 
@@ -172,5 +202,40 @@ mod tests {
 
         let mut no_pin = AppMockBoundary::new().expect_rotation_success();
         run_rotate_bws_token_with_prompt(RotateBwsTokenCommand { serial: Some(2001) }, &mut no_pin)
+    }
+
+    #[test]
+    fn rotate_prompt_can_continue_to_another_interactive_device() -> Result<()> {
+        let mut boundary = AppMockBoundary::new()
+            .expect_store_times(2)
+            .expect_report_times(2);
+        boundary
+            .mock
+            .set_device_resolution_sequence(vec![2001, 2002]);
+        boundary.mock.set_rotation_continuations(vec![true, false]);
+
+        run_rotate_bws_token_with_prompt(RotateBwsTokenCommand { serial: None }, &mut boundary)?;
+
+        assert_eq!(boundary.mock.reports()[0].serial, 2001);
+        assert_eq!(boundary.mock.reports()[1].serial, 2002);
+        assert_eq!(boundary.mock.stores().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_prompt_rejects_continued_selection_of_updated_device() -> Result<()> {
+        let mut boundary = AppMockBoundary::new().expect_store_times(1).expect_report();
+        boundary
+            .mock
+            .set_device_resolution_sequence(vec![2001, 2001]);
+        boundary.mock.set_rotation_continuations(vec![true]);
+
+        let err =
+            run_rotate_bws_token_with_prompt(RotateBwsTokenCommand { serial: None }, &mut boundary)
+                .expect_err("continued rotate accepted an already updated device");
+
+        assert_eq!(err.to_string(), "selected YubiKey was already updated");
+        assert_eq!(boundary.mock.stores().len(), 1);
+        Ok(())
     }
 }

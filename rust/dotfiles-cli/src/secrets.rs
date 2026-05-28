@@ -158,6 +158,7 @@ where
         + ports::SpareDeviceSerialPort
         + ports::PinInputPort
         + ports::SecretInputPort
+        + ports::RotationContinuationPort
         + ports::BootstrapSecretDocumentInputPort
         + ports::SecretOutputPort
         + ports::SecretStoragePort

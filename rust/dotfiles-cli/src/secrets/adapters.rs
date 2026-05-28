@@ -20,8 +20,8 @@ use crate::{
         },
         ports::{
             BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            ReportPort, SecretInputPort, SecretOutputPort, SecretStoragePort,
-            SpareDeviceSerialPort,
+            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            SecretStoragePort, SpareDeviceSerialPort,
         },
     },
 };
@@ -78,6 +78,12 @@ impl SecretInputPort for SecretsAdapters {
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {
         self.process_io.read_streamed_secret()
+    }
+}
+
+impl RotationContinuationPort for SecretsAdapters {
+    fn continue_rotation(&self) -> Result<bool> {
+        self.process_io.continue_rotation()
     }
 }
 

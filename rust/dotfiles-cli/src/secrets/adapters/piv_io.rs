@@ -43,8 +43,8 @@ use crate::{
         },
         ports::{
             BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            ReportPort, SecretInputPort, SecretOutputPort, SecretStoragePort,
-            SpareDeviceSerialPort,
+            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            SecretStoragePort, SpareDeviceSerialPort,
         },
         support::{
             process_io,
@@ -172,6 +172,16 @@ impl SecretInputPort for RealSecretIoAdapter {
     }
 }
 
+impl RotationContinuationPort for RealSecretIoAdapter {
+    fn continue_rotation(&self) -> Result<bool> {
+        if !process_io::stdin_is_terminal() {
+            return Ok(false);
+        }
+        let answer = process_io::read_control_line("rotate another YubiKey? [y/N]: ")?;
+        Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    }
+}
+
 impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
     fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, SecretMaterial>> {
         let protected =
@@ -278,6 +288,12 @@ impl SecretInputPort for ProcessIoAdapter {
 
     fn read_streamed_secret(&self) -> Result<SecretMaterial> {
         self.secret_io.read_streamed_secret()
+    }
+}
+
+impl RotationContinuationPort for ProcessIoAdapter {
+    fn continue_rotation(&self) -> Result<bool> {
+        self.secret_io.continue_rotation()
     }
 }
 
