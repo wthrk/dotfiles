@@ -37,9 +37,11 @@
 `restore-gpg` の import API は次の呼び出し契約に固定する。
 
 1. `gpgme` の OpenPGP context を生成する。
-2. BWS から取得した `gpg-secret-key-backup` をメモリ上の `gpgme::Data` として扱う。
-3. `Context::import` で鍵リングへ投入する。
-4. import result から対象 primary fingerprint を特定し、同一 fingerprint の key を再取得して subkey 検証へ渡す。
+2. BWS から取得した `gpg-secret-key-backup` をメモリ上のバイト列として保持する。
+3. `sequoia-openpgp` でバイト列をインメモリ解析し、import 前に primary fingerprint を導出する。
+4. 同一 primary fingerprint の secret key が既存鍵リングにある場合は停止する。
+5. バイト列を `gpgme::Data` に変換し、`Context::import` で鍵リングへ投入する。
+6. import result から対象 primary fingerprint を確認し、同一 fingerprint の key を再取得して subkey 検証へ渡す。
 
 この経路では secret key backup をプロセス引数や一時ファイルへ渡さない。`gpg --import` の外部プロセス起動は設計上の対象外とする。
 
@@ -105,7 +107,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 `config/zsh/env.zsh` で次を定義する。
 
 - `GPG_TTY="$(tty)"`（TTY が取得できる対話シェル）
-- `SSH_AUTH_SOCK="$(gpgconf --list-dirs agent-ssh-socket)"`（取得失敗時のみ既存値へフォールバック）
+- `SSH_AUTH_SOCK` は `gpgconf --list-dirs agent-ssh-socket` が非空の値を返した場合のみ上書きし、空または失敗時は既存値を保持する（例: `_sock="$(gpgconf --list-dirs agent-ssh-socket 2>/dev/null)"; [[ -n "$_sock" ]] && export SSH_AUTH_SOCK="$_sock"; unset _sock`）
 
 `restore-gpg` / `restore-pass` の実行前提はこの zsh 設定と Home Manager 側 `gpg-agent.conf` が一致していることとする。
 
@@ -113,8 +115,9 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 
 ### `dotfiles secrets restore-gpg`
 
-- `gpg-secret-key-backup` を取得し、GPG secret key を import する。
-- encryption / authentication / signing subkey の存在を検証する。
+- `gpg-secret-key-backup` を取得し、import 前に primary fingerprint をインメモリ導出して既存鍵リングの衝突を確認する。
+- 衝突がなければ GPG secret key を import する。
+- encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
 - gpg-agent SSH support 利用可否を確認する。
 
 ### `dotfiles gpg export-ssh-public-key`

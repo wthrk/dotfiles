@@ -154,7 +154,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 ### `dotfiles secrets restore-gpg`
 
-YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。GPG secret key を import し、encryption / authentication / signing subkey の存在を検証する。最後に `gpg-agent` SSH support が使えることを確認する。
+YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。import 前に primary fingerprint をインメモリ導出し、同一 primary fingerprint の secret key が既に鍵リングに存在する場合は停止する。GPG secret key を import し、encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。最後に `gpg-agent` SSH support が使えることを確認する。
 
 ### `dotfiles secrets restore-pass`
 
@@ -188,7 +188,8 @@ GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。G
 - `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。
 - `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
-- import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない。
+- import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない、またはいずれかが revoked / expired / disabled で利用不能である。
+- 同一 primary fingerprint の secret key が既に鍵リングへ存在する。
 - `gpg-agent` SSH support が利用できない。
 - `~/.password-store` が既に存在する。
 - `password-store-remote` が private repository の clone URL として妥当でない。
