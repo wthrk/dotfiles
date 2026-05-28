@@ -5,13 +5,14 @@
 mod piv_io;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use crate::secrets::support::protection::{ProtectedSecret, secret_consumer};
+use crate::secrets::support::protection::{secret_consumer, ProtectedSecret};
 use std::collections::BTreeMap;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use std::process::Command;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use zeroize::Zeroizing;
 
 use crate::{
-    Result,
     secrets::{
         domain::{
             material::SecretMaterial,
@@ -28,6 +29,7 @@ use crate::{
             SecretStoragePort, SpareDeviceSerialPort,
         },
     },
+    Result,
 };
 
 /// CLI entrypoint が利用する secrets runtime adapter。
@@ -229,16 +231,10 @@ impl BwsClientPort for BwsClientAdapter {
                 BwsSecretName::PasswordStoreRemote => "password-store-remote",
             };
             secret_consumer::with_utf8_secret(protected, |token| {
+                let secret_id = self.resolve_secret_id(token.trim(), key)?;
                 let output = Command::new("bws")
-                    .args([
-                        "secret",
-                        "get",
-                        key,
-                        "--access-token",
-                        token.trim(),
-                        "--output",
-                        "json",
-                    ])
+                    .args(["secret", "get", &secret_id, "--output", "json"])
+                    .env("BWS_ACCESS_TOKEN", token.trim())
                     .output()
                     .map_err(|error| anyhow::anyhow!("failed to invoke bws CLI: {error}"))?;
                 if !output.status.success() {
@@ -247,7 +243,7 @@ impl BwsClientPort for BwsClientAdapter {
                         |code| code.to_string(),
                     );
                     return Err(anyhow::anyhow!(
-                        "bws external check failed for {key} (exit status: {status})"
+                        "bws external check failed for {key}/{secret_id} (exit status: {status})"
                     ));
                 }
                 let payload: serde_json::Value =
@@ -259,11 +255,43 @@ impl BwsClientPort for BwsClientAdapter {
                     .and_then(serde_json::Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("bws secret response does not contain value"))?;
                 Ok(SecretMaterial::from_backend(
-                    value.as_bytes().to_vec(),
+                    Zeroizing::new(value.as_bytes().to_vec()),
                     |secret| secret.len(),
                     |secret| Ok(secret.clone()),
                 ))
             })
         }
+    }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl BwsClientAdapter {
+    fn resolve_secret_id(&self, token: &str, key: &str) -> Result<String> {
+        let output = Command::new("bws")
+            .args(["secret", "list", "--output", "json"])
+            .env("BWS_ACCESS_TOKEN", token)
+            .output()
+            .map_err(|error| anyhow::anyhow!("failed to invoke bws secret list: {error}"))?;
+        if !output.status.success() {
+            let status = output.status.code().map_or_else(
+                || "terminated by signal".to_string(),
+                |code| code.to_string(),
+            );
+            return Err(anyhow::anyhow!(
+                "bws secret list failed for key {key} (exit status: {status})"
+            ));
+        }
+        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| anyhow::anyhow!("failed to decode bws secret list JSON: {error}"))?;
+        payload
+            .as_array()
+            .and_then(|secrets| {
+                secrets.iter().find_map(|secret| {
+                    let candidate_key = secret.get("key").and_then(serde_json::Value::as_str)?;
+                    let candidate_id = secret.get("id").and_then(serde_json::Value::as_str)?;
+                    (candidate_key == key).then(|| candidate_id.to_string())
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("bws secret key not found: {key}"))
     }
 }
