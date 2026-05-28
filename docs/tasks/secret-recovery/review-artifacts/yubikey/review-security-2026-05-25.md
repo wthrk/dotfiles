@@ -2,25 +2,26 @@
 
 - レビュー実施日: 2026-05-25
 - レビュー担当: セキュリティレビュー担当（独立実施）
-- レビュー対象: `feat/yubikey-secret-storage` ブランチ現行コード全体
+- レビュー対象: 2026-05-25 時点の `feat/yubikey-secret-storage` ブランチ実装（履歴サイクル）
 - 参照確認記録: `review-artifacts/yubikey/confirmation.md`（存在確認のみ。独立判定の代替としていない）
 - 注記: 本レビューは独立した新規セッションとして全項目を直接コードから確認した。前サイクルの記録を引き継がない。
+- 注記: 本文書は履歴サイクル（2026-05-25）専用 artifact であり、現行 HEAD（`11c1a2a`）および current-cycle commit gate の判定対象ではない。
 
 ---
 
-判定: 合格
+判定: 合格（履歴サイクル判定）
 
 判定要約: 所見なし
 
 ## 根拠:
 
-`docs/task-governance/security-obligations.md` に定義された全義務項目を、現行コードを直接読んで独立に適用した。`rust/dotfiles-cli/src/secrets/` 配下の全ファイルを精査した結果を以下に記録する。
+`docs/task-governance/security-obligations.md` に定義された全義務項目を、2026-05-25 時点の対象コードへ独立に適用した。以下は当時の `rust/dotfiles-cli/src/secrets/` 配下に対する確認結果である。
 
 ---
 
 ### 義務1: 秘密情報・認証情報・鍵素材のコミットへの混入禁止
 
-確認対象: `src/secrets.rs`、`src/secrets/application.rs`、`src/secrets/application/storage_service.rs`、`src/secrets/application/summary.rs`、`src/secrets/ports.rs`、`src/secrets/domain/model.rs`、`src/secrets/domain/wire.rs`、`src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/console_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/adapters/piv_io/report.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/support.rs`、`src/secrets/support/aead.rs`、`src/secrets/support/console_io.rs`、`src/secrets/support/oaep.rs`、`src/secrets/support/protection.rs`、`src/secrets/support/protection/buffer.rs`、`tests/secrets_cli.rs`。
+確認対象（履歴時点のパス。現行 HEAD の実在パスとは一致しない場合がある）: `src/secrets.rs`、`src/secrets/application.rs`、`src/secrets/application/storage_service.rs`、`src/secrets/application/summary.rs`、`src/secrets/ports.rs`、`src/secrets/domain/model.rs`、`src/secrets/domain/wire.rs`、`src/secrets/adapters.rs`、`src/secrets/adapters/piv_io.rs`、`src/secrets/adapters/piv_io/console_io.rs`、`src/secrets/adapters/piv_io/device.rs`、`src/secrets/adapters/piv_io/report.rs`、`src/secrets/adapters/piv_io/secret_io.rs`、`src/secrets/adapters/yubikey.rs`、`src/secrets/support.rs`、`src/secrets/support/aead.rs`、`src/secrets/support/console_io.rs`、`src/secrets/support/oaep.rs`、`src/secrets/support/protection.rs`、`src/secrets/support/protection/buffer.rs`、`tests/secrets_cli.rs`。
 
 - production コード全体にハードコードされた実秘密値（パスワード・トークン・鍵マテリアル）は存在しない。
 - `tests/secrets_cli.rs` に現れる固定文字列（`"new-token"`・`"user@example.com"` 等）は integration test 専用の入力値であり、production ソースツリーではなくテストコード内のみに存在する。
@@ -168,4 +169,4 @@
 
 ---
 
-以上、`docs/task-governance/security-obligations.md` に定義されたセキュリティ義務を全項目独立に適用し、現行コードに対して違反・懸念は検出されなかった。
+以上、`docs/task-governance/security-obligations.md` に定義されたセキュリティ義務を全項目独立に適用し、2026-05-25 時点の対象コードに対して違反・懸念は検出されなかった（履歴記録）。
