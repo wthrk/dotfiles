@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-28）
 
-- 確認状態: `再レビュー待ち（追加要件反映中）`
+- 確認状態: `レビュー集約完了（commit gate 充足）`
 - 対象ブランチ: `feat/yubikey-secret-storage`
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
-- current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `operational`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `security`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `specification-conformance`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `test`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `documentation`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `architectural-consistency`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `reference-integrity`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+- current-cycle reviewer 判定追跡（2026-05-28 集約更新時点）:
+  - `structural`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `operational-consistency`: 状態 `実施済み` / 判定 `Pass（16cd76a 対象）`
+  - `security`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `specification-conformance`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `test`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `documentation`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `architectural-consistency`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `reference-integrity`: 状態 `実施済み` / 判定 `Pass（16cd76a 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -277,7 +277,7 @@
 - `cargo check -p dotfiles-cli`: 成功
 - `cargo clippy -p dotfiles-cli --all-targets`: 成功
 - `git diff --check`: 成功
-- 状態: `レビュー集約は要修正。再レビュー待ち`
+- 状態: `レビュー集約は合格。commit gate 充足`
 
 ## 2026-05-26 ad92152 基準履歴追記
 

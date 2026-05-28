@@ -4,21 +4,21 @@
 
 ## 現行サイクル（2026-05-28）
 
-- 集約後レビュー判定: `要修正`
-- 集約判定要約: 新追加要件（全 source/test ヘッダコメント必須、外部機能単位 1 trait 方針、全 usecase の mockito app/usecase test 必須）を current-cycle に適用するため、既存 `合格` 集約は stale として取り下げた。再確認・再レビュー完了まで commit gate は未充足として扱う。
+- 集約後レビュー判定: `合格`
+- 集約判定要約: スレッド上で報告済みの必須 reviewer verdict を current-cycle へ集約し、`16cd76a docs(secrets): 履歴security artifactのHEAD表現を時点非依存化` 時点で required reviewer 全員 `Pass` を確認したため commit gate は充足。
 - 対象差分識別子: `yubikey-current-cycle-2026-05-28-implementation-2bd7e0a-4c82da8-plus-documentation-comment-remediation-head`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`。この commit 自身の hash は本文へ埋め込まず、git log の HEAD で確認する。
 - 対象ブランチ: `feat/yubikey-secret-storage`
-- current-cycle reviewer 判定追跡（2026-05-28時点）:
-  - `structural`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `operational`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `security`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `specification-conformance`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `test`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `documentation`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `architectural-consistency`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
-  - `reference-integrity`: 状態 `実施済み` / 判定 `要修正（41aac9f 追加要件差戻し対応中）`
+- current-cycle reviewer 判定追跡（2026-05-28 集約更新時点）:
+  - `structural`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `operational-consistency`: 状態 `実施済み` / 判定 `Pass（16cd76a 対象）`
+  - `security`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `specification-conformance`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `test`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `documentation`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `architectural-consistency`: 状態 `実施済み` / 判定 `Pass（11c1a2a 対象）`
+  - `reference-integrity`: 状態 `実施済み` / 判定 `Pass（16cd76a 対象）`
 - 保存コミット列:
   - `9352e14 refactor(secrets): yubikey実機IOをport実装へ内包`
   - `e1a0a0a refactor(secrets): piv adapter補助ファイルを内包`
@@ -75,7 +75,7 @@
 
 - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の `状態` / `現行サイクル状態` / `実装状態` の完了方向更新は、進捗判定担当または完了判定担当の職責である。
 - 直前の実装コメント補正文書更新では、implementation executor は進捗判定担当の代替実行者として台帳状態を前進更新しなかった。
-- 対象 HEAD `41aac9f` の差戻し対応中で、必須 reviewer の現行サイクル再判定が未完了のため commit gate は未充足。
+- 対象 HEAD `16cd76a` で、required reviewer（実装差分 7 役割 + 文書是正 2 役割）の `Pass` 集約を確認したため commit gate は充足。
 
 ### 2026-05-28 current-cycle 証跡是正コミット
 
@@ -285,11 +285,11 @@
 
 ## 役割別レビュー（current-cycle）
 
-- `structural`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `operational`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `security`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `specification-conformance`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `test`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `documentation`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `architectural-consistency`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
-- `reference-integrity`: `要修正`（41aac9f 追加要件差戻しの再レビュー待ち）
+- `structural`: `Pass`（`11c1a2a` 対象）
+- `operational-consistency`: `Pass`（`16cd76a` 対象）
+- `security`: `Pass`（`11c1a2a` 対象）
+- `specification-conformance`: `Pass`（`11c1a2a` 対象）
+- `test`: `Pass`（`11c1a2a` 対象）
+- `documentation`: `Pass`（`11c1a2a` 対象）
+- `architectural-consistency`: `Pass`（`11c1a2a` 対象）
+- `reference-integrity`: `Pass`（`16cd76a` 対象）
