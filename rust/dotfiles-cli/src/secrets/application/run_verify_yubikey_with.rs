@@ -25,8 +25,8 @@ pub(crate) fn run_verify_yubikey_with<
     command: VerifyYubikeyCommand,
     boundary: &mut B,
 ) -> Result<()> {
-    let serial = boundary.resolve_device_serial(command.serial)?;
     let requested = command.requested_external_checks()?;
+    let serial = boundary.resolve_device_serial(command.serial)?;
     let pin = if boundary.device_requires_pin(serial)? {
         let pin = boundary.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -103,6 +103,27 @@ mod tests {
                 .contains("external checks are not implemented yet")
         );
         Ok(())
+    }
+
+    #[test]
+    fn verify_rejects_all_and_check_before_device_resolution() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_primary_available(false);
+        let err = run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: None,
+                checks: vec![ExternalCheck::Bws],
+                all: true,
+            },
+            &mut boundary,
+        )
+        .expect_err("verify-yubikey unexpectedly accepted --all with --check");
+
+        assert_eq!(err.to_string(), "--all and --check cannot be used together");
+        assert!(
+            boundary.mock.resolution_order().is_empty(),
+            "device resolution must not run before argument validation"
+        );
     }
 
     #[test]
