@@ -14,8 +14,8 @@ use crate::secrets::{
 
 /// prompt 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
-/// serial 未指定時は port 境界で対象 device を解決し、token 入力前に storage preflight を通す。
-/// 保存失敗と検証失敗の責務は port 境界で保存と検証を接続する。
+/// serial 未指定時は port 境界で対象 device を解決し、token 入力前に既存 local storage を
+/// read/validate する。更新不能な状態では new token を受け取らない。
 pub(crate) fn run_rotate_bws_token_with_prompt<
     B: ports::DeviceSerialPort
         + ports::SecretInputPort
@@ -31,9 +31,6 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
     SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
-    let token = boundary.read_bws_access_token_secret()?;
-    let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
-    boundary.store_secret(serial, intent, &token)?;
     let pin = if boundary.device_requires_pin(serial)? {
         let pin = boundary.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -41,6 +38,25 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     } else {
         None
     };
+    let pre_update_verify: Result<()> = (|| {
+        for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
+            let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+            let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+            let secret = boundary
+                .load_secret(serial, &intent, pin.as_ref())
+                .map_err(|error| intent.decode_error(error))?;
+            intent.validate_loaded_secret(&secret)?;
+        }
+        Ok(())
+    })();
+    if let Err(err) = pre_update_verify {
+        return boundary
+            .write_verify_report(&VerifySummary::local_storage_failed(serial))
+            .and(Err(err));
+    }
+    let token = boundary.read_bws_access_token_secret()?;
+    let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
+    boundary.store_secret(serial, intent, &token)?;
     let verify_result: Result<()> = (|| {
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
             let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
@@ -65,7 +81,10 @@ mod tests {
     use crate::Result;
     use crate::secrets::{
         application::app_test_support::AppMockBoundary,
-        domain::values::{CheckName, CheckStatus, RotateBwsTokenCommand},
+        domain::{
+            piv::SecretName,
+            values::{CheckName, CheckStatus, RotateBwsTokenCommand},
+        },
     };
 
     use super::run_rotate_bws_token_with_prompt;
@@ -83,7 +102,7 @@ mod tests {
         let mut boundary = AppMockBoundary::new();
         boundary.mock.set_write_manifest_missing();
         boundary.mock.set_secret_error(
-            crate::secrets::domain::piv::SecretName::BwsAccessToken,
+            SecretName::BwsAccessToken,
             "token should not be read before preflight",
         );
 
@@ -99,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn rotate_prompt_reports_verify_success_and_failure() -> Result<()> {
+    fn rotate_prompt_reports_verify_success() -> Result<()> {
         let mut success = AppMockBoundary::new().expect_rotation_success();
         run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: Some(2001) },
@@ -110,20 +129,34 @@ mod tests {
             success_reports[0].checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Ok)
         );
+        Ok(())
+    }
 
-        let mut failed = AppMockBoundary::new().expect_rotation_success();
+    #[test]
+    fn rotate_prompt_stops_before_token_when_existing_storage_is_invalid() {
+        let mut failed = AppMockBoundary::new().expect_report();
         failed.mock.set_loaded_len(0);
+        failed
+            .mock
+            .set_secret_error(SecretName::BwsAccessToken, "token must not be read");
         let result = run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: Some(2001) },
             &mut failed,
         );
-        assert!(result.is_err(), "verify failure should fail rotation");
+        let err = result.expect_err("invalid existing storage should fail before token read");
+        assert!(
+            err.to_string().contains("bw-email must not be empty"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            failed.mock.stores().is_empty(),
+            "invalid existing storage must stop before store"
+        );
         let failed_reports = failed.mock.reports();
         assert_eq!(
             failed_reports[0].checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Failed)
         );
-        Ok(())
     }
 
     #[test]

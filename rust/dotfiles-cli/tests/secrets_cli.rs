@@ -262,7 +262,7 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
 /// `rotate-bws-token --stdin` が非TTY入力で成功することを確認する。
 #[test]
 fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
-    let stub = StubServer::new(&[StubFixture::State(StubState::WritableBwsAccessToken)]);
+    let stub = StubServer::new(&[StubFixture::State(StubState::Provisioned)]);
     let run = run_pipe_with_stub(
         ["yubikey", "rotate-bws-token", "--serial", "2001", "--stdin"],
         Some("new-token\r"),
@@ -279,7 +279,7 @@ fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
 /// `rotate-bws-token` がTTY prompt入力で成功することを確認する。
 #[test]
 fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
-    let stub = StubServer::new(&[StubFixture::State(StubState::WritableBwsAccessToken)]);
+    let stub = StubServer::new(&[StubFixture::State(StubState::Provisioned)]);
     let run = run_pty_with_stub(
         ["yubikey", "rotate-bws-token", "--serial", "2001"],
         Some("new-token\n"),
