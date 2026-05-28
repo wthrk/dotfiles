@@ -7,7 +7,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -521,7 +521,7 @@ fn run_pipe_with_stub<const N: usize>(
     let mut child = command.spawn()?;
     if let Some(input) = input {
         let mut stdin = child.stdin.take().context("failed to open child stdin")?;
-        stdin.write_all(input.as_bytes())?;
+        write_child_stdin(&mut stdin, input)?;
     }
 
     let output = child.wait_with_output()?;
@@ -551,7 +551,7 @@ fn run_pipe_without_stub<const N: usize>(
     let mut child = command.spawn()?;
     if let Some(input) = input {
         let mut stdin = child.stdin.take().context("failed to open child stdin")?;
-        stdin.write_all(input.as_bytes())?;
+        write_child_stdin(&mut stdin, input)?;
     }
 
     let output = child.wait_with_output()?;
@@ -560,6 +560,14 @@ fn run_pipe_without_stub<const N: usize>(
         stdout: String::from_utf8(output.stdout)?,
         stderr: String::from_utf8(output.stderr)?,
     })
+}
+
+fn write_child_stdin(mut stdin: impl Write, input: &str) -> TestResult<()> {
+    match stdin.write_all(input.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn run_pty_with_stub<const N: usize>(
