@@ -38,7 +38,7 @@
 
 1. `gpgme` の OpenPGP context を生成する。
 2. BWS から取得した `gpg-secret-key-backup` をメモリ上のバイト列として保持する。
-3. `sequoia-openpgp` でバイト列をインメモリー解析し、import 前に primary fingerprint を導出する。
+3. `sequoia-openpgp` でバイト列をインメモリ解析し、import 前に primary fingerprint を導出する。比較に使う fingerprint は、後続の既存鍵照合と import 後再取得でそのまま使える canonical な 16 進文字列表現とする。
 4. 同一 primary fingerprint の secret key が既存の鍵リングにある場合は停止する。
 5. バイト列を `gpgme::Data` に変換し、`Context::import` で鍵リングへ投入する。
 6. import result から対象 primary fingerprint を確認し、同一 fingerprint の key を再取得して subkey 検証へ渡す。
@@ -65,7 +65,8 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 3. import 前に、同一 primary fingerprint の secret key が既存の鍵リングにあるか確認し、存在する場合は停止する。
 4. 取得値を import 入力として `gpgme` へ渡す。
 5. import 後に対象鍵の subkey 構成（encryption / authentication / signing）を検証する。
-6. gpg-agent SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
+6. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する（既登録の場合は冪等）。
+7. gpg-agent SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
 
 復元処理は以下を満たす。
 
@@ -117,7 +118,7 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
   unset _gpg_agent_sock
   ```
 
-`restore-gpg` / `restore-pass` の実装側でも SSH agent socket 解決は crate 側ロジックで完結させ、`gpgconf` CLI 呼び出しは採用しない。
+`restore-gpg` / `restore-pass` の実装側でも SSH agent socket 解決は crate 側ロジックで完結させ、`gpgconf` CLI 呼び出しは採用しない。crate 側は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として確認し、その path が socket でない場合のみ既存 `SSH_AUTH_SOCK` を維持する。
 
 `restore-gpg` / `restore-pass` の実行前提はこの zsh 設定と Home Manager 側 `gpg-agent.conf` が一致していることとする。
 
@@ -125,7 +126,7 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 
 ### `dotfiles secrets restore-gpg`
 
-- `gpg-secret-key-backup` を取得し、import 前に primary fingerprint をインメモリー導出して既存の鍵リングの衝突を確認する。
+- `gpg-secret-key-backup` を取得し、import 前に primary fingerprint をインメモリ導出して既存の鍵リングの衝突を確認する。
 - 衝突がなければ GPG secret key を import する。
 - encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
 - authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録し、既登録ならその状態を維持する（冪等）。
