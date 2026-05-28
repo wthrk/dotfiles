@@ -14,9 +14,10 @@ pub(crate) fn run_put_with_stdin<B: ports::SecretInputPort + ports::SecretStorag
     boundary: &mut B,
 ) -> Result<()> {
     let serial = command.required_serial()?;
-    let secret = boundary.read_streamed_secret()?;
     let storage = command.storage_spec(serial);
     let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
+    let secret = boundary.read_streamed_secret()?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     boundary.store_secret(serial, intent, &secret)
 }
@@ -58,5 +59,28 @@ mod tests {
             &mut boundary,
         );
         assert!(result.is_err(), "stdin path requires explicit serial");
+    }
+
+    #[test]
+    fn put_stdin_checks_storage_before_reading_secret() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_write_object_exists(true);
+        boundary
+            .mock
+            .set_streamed_secret_error("secret should not be read before preflight");
+
+        let result = run_put_with_stdin(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwsAccessToken,
+                force: false,
+            },
+            &mut boundary,
+        );
+
+        assert!(
+            result.is_err(),
+            "occupied storage should stop before stdin read"
+        );
     }
 }

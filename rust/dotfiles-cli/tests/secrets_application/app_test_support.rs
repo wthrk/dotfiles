@@ -125,6 +125,10 @@ impl AppMock {
         self.configure(|state| state.streamed_secret_error = Some(error));
     }
 
+    pub(crate) fn set_write_object_exists(&self, object_exists: bool) {
+        self.configure(|state| state.write_object_exists = object_exists);
+    }
+
     pub(crate) fn set_secret_value(&self, secret: SecretName, value: &'static [u8]) {
         self.configure(|state| {
             state.secret_values.insert(secret, value.to_vec());
@@ -143,6 +147,10 @@ impl AppMock {
 
     pub(crate) fn resolution_order(&self) -> Vec<&'static str> {
         self.snapshot(|state| state.resolution_order.clone())
+    }
+
+    pub(crate) fn event_order(&self) -> Vec<&'static str> {
+        self.snapshot(|state| state.event_order.clone())
     }
 
     pub(crate) fn reports(&self) -> Vec<VerifySummary> {
@@ -426,7 +434,7 @@ impl SecretStoragePort for AppMockBoundary {
     ) -> Result<SecretStorageWriteInspection> {
         Ok(SecretStorageWriteInspection {
             manifest_bytes: Some(SecretManifest::expected().encode()?),
-            object_exists: false,
+            object_exists: self.mock.snapshot(|state| state.write_object_exists),
         })
     }
 
@@ -471,6 +479,7 @@ impl SecretStoragePort for AppMockBoundary {
         intent: &SecretStorageReadIntent,
         _pin: Option<&SecretMaterial>,
     ) -> Result<SecretMaterial> {
+        self.mock.hit_event("load");
         let name = intent.storage.name;
         let bytes = self.mock.snapshot(|state| {
             if state.loaded_len == 0 {
@@ -499,6 +508,7 @@ struct AppMockState {
     fail_setup: bool,
     fail_on_store: Option<SecretName>,
     store_failure_status: usize,
+    write_object_exists: bool,
     pin_error: Option<&'static str>,
     stdin_json_error: Option<&'static str>,
     streamed_secret_error: Option<&'static str>,
@@ -510,6 +520,7 @@ struct AppMockState {
     reports: Vec<(u32, CheckStatus)>,
     expected_events: BTreeMap<&'static str, usize>,
     event_hits: BTreeMap<&'static str, usize>,
+    event_order: Vec<&'static str>,
 }
 
 impl Default for AppMockState {
@@ -525,6 +536,7 @@ impl Default for AppMockState {
             fail_setup: false,
             fail_on_store: None,
             store_failure_status: 500,
+            write_object_exists: false,
             pin_error: None,
             stdin_json_error: None,
             streamed_secret_error: None,
@@ -542,12 +554,14 @@ impl Default for AppMockState {
             reports: Vec::new(),
             expected_events: BTreeMap::new(),
             event_hits: BTreeMap::new(),
+            event_order: Vec::new(),
         }
     }
 }
 
 impl AppMockState {
     fn hit_event(&mut self, event: &'static str) {
+        self.event_order.push(event);
         *self.event_hits.entry(event).or_insert(0) += 1;
     }
 

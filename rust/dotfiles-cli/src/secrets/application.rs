@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn enroll_spare_rejects_empty_secret_before_setup() -> Result<()> {
         let mut boundary = AppMockBoundary::new();
-        boundary.mock.expect_event("setup");
+        boundary.mock.expect_event_times("setup", 0);
         boundary.mock.set_primary_serial(10);
         boundary.mock.set_spare_serial(20);
         boundary

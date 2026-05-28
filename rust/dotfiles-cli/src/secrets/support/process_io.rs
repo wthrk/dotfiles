@@ -93,7 +93,7 @@ pub(crate) fn read_stdin_line(
     input.into_protected_secret_line(&session, max_len, too_long_message)
 }
 
-/// stdin 全体を保護バッファへ読み取り、追加の平文複製なしで返す。
+/// stdin 全体を保護バッファへ読み取り、末尾改行を保持したまま追加の平文複製なしで返す。
 pub(crate) fn read_stdin_all(
     max_len: usize,
     too_long_message: &'static str,
@@ -103,7 +103,7 @@ pub(crate) fn read_stdin_all(
     }
     let session = SecretSession::start()?;
     let input = ProtectedInputBuffer::read_from(io::stdin(), max_len, too_long_message, &session)?;
-    input.into_protected_secret_line(&session, max_len, too_long_message)
+    input.into_protected_secret(&session, max_len, too_long_message)
 }
 
 /// terminal 直書きを拒否し、secret 出力経路を pipe / redirect に限定する。

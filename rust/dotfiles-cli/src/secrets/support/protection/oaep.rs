@@ -99,19 +99,33 @@ fn xor_with_mask(masked: &[u8], mask: &ProtectedSecret) -> Result<ProtectedSecre
 /// OAEP DB の PS || 0x01 || message 境界を探し、padding bytes の妥当性を返す。
 ///
 /// separator より前はすべて 0 でなければならず、0x01 が存在しない場合も不正 padding とする。
+/// scan 中は separator 発見後も同じ畳み込みを継続し、padding 内容による分岐を増やさない。
 /// 返値は caller が label hash / leading byte 判定と合成し、失敗時に secret message slice を
 /// 取り出さないための padding 判定境界である。
 fn find_oaep_separator(rest: &[u8]) -> (Option<usize>, bool) {
-    let mut separator = None;
+    let mut separator = 0usize;
+    let mut before_separator = 1u8;
+    let mut seen_separator = 0u8;
     let mut padding_mismatch = 0u8;
     for (index, byte) in rest.iter().copied().enumerate() {
-        if separator.is_none() {
-            if byte == 1 {
-                separator = Some(index);
-            } else {
-                padding_mismatch |= byte;
-            }
-        }
+        let is_zero = byte_eq(byte, 0);
+        let is_one = byte_eq(byte, 1);
+        let first_separator = before_separator & is_one;
+        let invalid_padding = before_separator & (1 ^ is_zero) & (1 ^ is_one);
+        let separator_mask = 0usize.wrapping_sub(first_separator as usize);
+
+        padding_mismatch |= invalid_padding;
+        separator = (separator & !separator_mask) | (index & separator_mask);
+        seen_separator |= first_separator;
+        before_separator &= 1 ^ first_separator;
     }
-    (separator, separator.is_some() && padding_mismatch == 0)
+    (
+        (seen_separator == 1).then_some(separator),
+        seen_separator == 1 && padding_mismatch == 0,
+    )
+}
+
+fn byte_eq(left: u8, right: u8) -> u8 {
+    let diff = left ^ right;
+    (((diff as u16).wrapping_sub(1) >> 8) & 1) as u8
 }

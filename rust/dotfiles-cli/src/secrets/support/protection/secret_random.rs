@@ -1,7 +1,6 @@
 //! 保護済み secret 向けの乱数生成 utility。
 
-use rand::RngCore;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use rsa::{Oaep, RsaPublicKey};
 use sha2::Sha256;
 
@@ -9,17 +8,17 @@ use crate::Result;
 
 use super::ProtectedSecret;
 
-/// `rand` の process-local CSPRNG で指定長の secret material を locked `ProtectedSecret` として生成する。
+/// OS CSPRNG で指定長の secret material を locked `ProtectedSecret` として生成する。
 ///
 /// content key などの secret material は、生成先を先に `ProtectedSecret` として確保し、
-/// その mutable borrow 中に `rand` の thread-local RNG から bytes を埋める。caller へ
+/// その mutable borrow 中に `OsRng` から bytes を埋める。caller へ
 /// raw buffer や `Vec<u8>` を返さず、生成後の所有権は protection 境界内に閉じる。
 ///
 /// locked buffer の確保に失敗した場合は `Err` を返し、lock なしの乱数 bytes や途中状態の
 /// secret material を fallback として返さない。
 pub(crate) fn random_secret(len: usize) -> Result<ProtectedSecret> {
     let mut secret = ProtectedSecret::new(len)?;
-    secret.with_secret_mut(|bytes| rand::rng().fill_bytes(bytes));
+    secret.with_secret_mut(|bytes| OsRng.fill_bytes(bytes));
     Ok(secret)
 }
 

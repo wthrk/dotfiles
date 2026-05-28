@@ -16,13 +16,14 @@ pub(crate) fn run_put_with_prompt<
     boundary: &mut B,
 ) -> Result<()> {
     let serial = boundary.resolve_device_serial(command.serial)?;
+    let storage = command.storage_spec(serial);
+    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
     let secret = command.name.read_interactive_secret_with(
         || boundary.read_bw_email_secret(),
         || boundary.read_bw_password_secret(),
         || boundary.read_bws_access_token_secret(),
     )?;
-    let storage = command.storage_spec(serial);
-    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     boundary.store_secret(serial, intent, &secret)
 }
@@ -67,5 +68,29 @@ mod tests {
             &mut boundary,
         );
         assert!(result.is_err(), "secret read failure must stop put flow");
+    }
+
+    #[test]
+    fn put_prompt_checks_storage_before_reading_secret() {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.set_write_object_exists(true);
+        boundary.mock.set_secret_error(
+            SecretName::BwEmail,
+            "secret should not be read before preflight",
+        );
+
+        let result = run_put_with_prompt(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwEmail,
+                force: false,
+            },
+            &mut boundary,
+        );
+
+        assert!(
+            result.is_err(),
+            "occupied storage should stop before prompt read"
+        );
     }
 }

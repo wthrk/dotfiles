@@ -16,8 +16,8 @@ use crate::secrets::{
 
 /// primary YubiKey から読み出した secret を prompt 運用の spare YubiKey へ複製する。
 ///
-/// primary/spare 解決順序を固定して同一 serial への誤登録を防ぎ、secret 転送手段の詳細は
-/// port 境界で読み出しと保存を接続する。
+/// primary 読み出し後に spare 解決へ進む順序を固定し、1 reader で primary から spare へ
+/// 差し替える運用を保つ。secret 転送手段の詳細は port 境界で読み出しと保存を接続する。
 pub(crate) fn run_enroll_spare_with_prompt<
     B: ports::DeviceSerialPort
         + ports::SpareDeviceSerialPort
@@ -30,12 +30,6 @@ pub(crate) fn run_enroll_spare_with_prompt<
     boundary: &mut B,
 ) -> Result<()> {
     let primary_serial = boundary.resolve_device_serial(command.primary_serial)?;
-    let spare_serial = boundary.resolve_spare_device_serial(command.spare_serial)?;
-    command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
-    let setup_probe = SecretStorageSetupProbe::expected();
-    let setup_inspection = boundary.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
-    let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    boundary.initialize_secret_storage(spare_serial, setup_intent)?;
     let primary_pin = if boundary.device_requires_pin(primary_serial)? {
         let pin = boundary.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -73,6 +67,12 @@ pub(crate) fn run_enroll_spare_with_prompt<
         (second_document_storage, second),
         (third_document_storage, third),
     ])?;
+    let spare_serial = boundary.resolve_spare_device_serial(command.spare_serial)?;
+    command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
+    let setup_probe = SecretStorageSetupProbe::expected();
+    let setup_inspection = boundary.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
+    let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
+    boundary.initialize_secret_storage(spare_serial, setup_intent)?;
     for (storage, value) in document.storage_entries(spare_serial) {
         let inspection = boundary.inspect_secret_storage_write(spare_serial, &storage)?;
         let intent = SecretStorageWriteIntent::store(storage, inspection, value.len())?;
@@ -120,6 +120,43 @@ mod tests {
     }
 
     #[test]
+    fn enroll_spare_prompt_reads_primary_before_spare_setup() -> Result<()> {
+        let mut boundary = AppMockBoundary::new();
+        boundary.mock.expect_event_times("load", 6);
+        boundary.mock.expect_event("setup");
+        boundary.mock.expect_event("setup-initialize");
+        boundary.mock.expect_event_times("store", 3);
+        boundary.mock.expect_event("report");
+
+        run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut boundary,
+        )?;
+
+        assert_eq!(
+            boundary.mock.event_order(),
+            vec![
+                "load",
+                "load",
+                "load",
+                "setup",
+                "setup-initialize",
+                "store",
+                "store",
+                "store",
+                "load",
+                "load",
+                "load",
+                "report",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn enroll_spare_prompt_reads_pin_for_spare_verify_when_required() -> Result<()> {
         let mut boundary = AppMockBoundary::new()
             .expect_enrollment_success()
@@ -152,7 +189,6 @@ mod tests {
     #[test]
     fn enroll_spare_prompt_stops_when_verify_fails() {
         let mut boundary = AppMockBoundary::new();
-        boundary.mock.expect_event("setup");
         boundary.mock.set_loaded_len(0);
         let result = run_enroll_spare_with_prompt(
             EnrollSpareCommand {

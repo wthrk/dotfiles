@@ -111,6 +111,21 @@ impl SecretStorageSetupIntent {
 }
 
 impl SecretStorageWriteIntent {
+    /// `put` のうち secret 長に依存しない manifest / object / force 規則を事前検査する。
+    ///
+    /// stdin など一度読むと戻せない secret 入力では、本検査を入力取得前に通して、
+    /// 拒否可能な storage 状態で secret payload を process へ取り込まない。
+    pub fn ensure_put_preconditions(
+        storage: &SecretStorageSpec,
+        inspection: &SecretStorageWriteInspection,
+        force: bool,
+    ) -> Result<()> {
+        SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        storage
+            .name
+            .ensure_write_allowed(inspection.object_exists, force)
+    }
+
     /// manifest 初期化済み規則と secret 値制約を適用する通常書き込み intent を作る。
     ///
     /// `secret_len` は平文 bytes を domain へ露出させずに、保存対象 secret の値制約だけを
@@ -134,10 +149,7 @@ impl SecretStorageWriteIntent {
         force: bool,
         secret_len: usize,
     ) -> Result<Self> {
-        SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
-        storage
-            .name
-            .ensure_write_allowed(inspection.object_exists, force)?;
+        Self::ensure_put_preconditions(&storage, &inspection, force)?;
         storage.ensure_plaintext_len(secret_len)?;
         Ok(Self { storage })
     }
