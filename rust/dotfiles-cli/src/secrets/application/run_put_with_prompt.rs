@@ -27,7 +27,7 @@ pub(crate) fn run_put_with_prompt<
     boundary.store_secret(serial, intent, &secret)
 }
 
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(test)]
 mod tests {
     use crate::Result;
     use crate::secrets::{

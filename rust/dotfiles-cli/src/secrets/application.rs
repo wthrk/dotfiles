@@ -14,22 +14,20 @@ pub(crate) mod run_rotate_bws_token_with_stdin;
 pub(crate) mod run_setup_with;
 pub(crate) mod run_verify_yubikey_with;
 
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(test)]
 pub(crate) mod app_test_support {
     // Rust private module の usecase を検査する test-only bridge。
     //
     // mockito 共通 support の本体は `tests/secrets_application/` に置き、production build には
-    // 含めない。`secrets-internal-test-stub` は internal test 専用 feature であり、xtask 側の
-    // 実行経路は `rust/tests/checks/src/static_checks.rs` の `secrets::application` test command。
-    // bridge は port trait 契約で usecase を駆動し、runtime real/stub 分岐や production
-    // command path の変更を作らない。
+    // 含めない。bridge は port trait 契約で usecase を駆動し、runtime real/stub 分岐や
+    // production command path の変更を作らない。
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/secrets_application/app_test_support.rs"
     ));
 }
 
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(test)]
 mod tests {
     use crate::Result;
     use crate::secrets::application::app_test_support::AppMockBoundary;

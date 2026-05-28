@@ -1,9 +1,7 @@
 // application usecase test の port 実行を mockito HTTP route へ集約する共通 support。
 //
-// この file は `secrets-internal-test-stub` feature の test-only bridge から
-// module context へ読み込まれる。mock/fake 本体は `tests/` 配下に置き、production
-// build と production command path には含めない。internal test の実行経路は
-// `rust/tests/checks/src/static_checks.rs` の `secrets::application` test command に固定する。
+// この file は `#[cfg(test)]` の test-only bridge から module context へ読み込まれる。
+// mock/fake 本体は `tests/` 配下に置き、production build と production command path には含めない。
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};

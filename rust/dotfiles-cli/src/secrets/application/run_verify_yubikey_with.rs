@@ -53,7 +53,7 @@ pub(crate) fn run_verify_yubikey_with<
     boundary.write_verify_report(&VerifySummary::local_storage_verified(serial))
 }
 
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(test)]
 mod tests {
     use crate::Result;
     use crate::secrets::{

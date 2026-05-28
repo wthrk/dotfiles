@@ -23,7 +23,7 @@ pub(crate) fn run_setup_with<B: ports::DeviceSerialPort + ports::SecretStoragePo
     boundary.initialize_secret_storage(serial, intent)
 }
 
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(test)]
 mod tests {
     use crate::Result;
     use crate::secrets::{

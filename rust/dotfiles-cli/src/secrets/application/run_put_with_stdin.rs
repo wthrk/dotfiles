@@ -21,7 +21,7 @@ pub(crate) fn run_put_with_stdin<B: ports::SecretInputPort + ports::SecretStorag
     boundary.store_secret(serial, intent, &secret)
 }
 
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(test)]
 mod tests {
     use crate::Result;
     use crate::secrets::{

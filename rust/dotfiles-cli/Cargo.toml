@@ -44,4 +44,5 @@ zeroize.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+mockito.workspace = true
 portable-pty = { workspace = true }
