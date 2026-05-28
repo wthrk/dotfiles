@@ -68,16 +68,25 @@
 
 ### 運用整合レビュー担当
 
-- 判定: `要修正`
+#### 是正確認レビュー (HEAD b6f301b — 文書是正サイクル 2026-05-28)
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - **[RESOLVED] root 台帳の状態不整合**: `docs/tasks/tasks.md` の Bitwarden Secrets Manager エントリが `状態: 進行中` に更新済みであることを独立確認済み（`git show b6f301b -- docs/tasks/tasks.md` で差分検証。`未開始` → `進行中` の変更が b6f301b に含まれる）。root active ledger 状態と `docs/tasks/secret-recovery/tasks.md` の状態が一致しており、監査可能性を回復している。
+  - **[RESOLVED] review.md 必須担当スロット不足**: `git show b6f301b -- .../review.md` で確認。`テストレビュー担当`・`ドキュメントレビュー担当`・`アーキテクチャ整合レビュー担当` の判定記録セクションが追加され、`実コード差分` に対する必須 7 役割（構造・運用整合・セキュリティ・仕様適合・テスト・ドキュメント・アーキテクチャ整合）のスロットがすべて揃っている。次の全コードレビューサイクルで集約判定の網羅性が構造上検証可能な状態になった。
+  - **[RESOLVED] 確認単位の状態が未確定**: `confirmation.md` の `確認状態` が `完了` に更新されていることを独立確認済み（`git show b6f301b -- .../confirmation.md` で差分検証）。`docs/tasks/secret-recovery/tasks.md` の固定実装単位トラッカー `確認` も `完了` となっており、証跡と tracker が一致している。
+  - **追加確認: 新規懸念なし**: b6f301b は文書専用コミット（4 ファイル変更、コードなし）。実装コミット終端 `5d6e495` に変更なし。`後続対応状態: 是正コミット済み・新規レビューサイクル待ち` の記載が是正完了状態を正確に表している。
+- 確認対象: branch `copilot/bitwarden-secrets-manager-client` HEAD `b6f301b`、是正コミット `b6f301b`（`git show --stat b6f301b` で文書専用コミットであることを独立確認済み）、実装コミット終端 `5d6e495`
+
+#### 前サイクル記録 (HEAD 6cd58c1 — 初回レビューサイクル)
+
+- 判定: `要修正`（差戻し事項は上記 b6f301b で全件解消）
 - 判定要約: `root 台帳状態が未更新で監査可能性に欠陥あり、review.md テンプレートに必須レビュー担当スロットが不足、確認単位状態が未確定`
 - 根拠:
-  - **[BLOCKING] root 台帳の状態不整合**: `docs/tasks/tasks.md`（root active ledger）の Bitwarden Secrets Manager エントリが `状態: 未開始` のまま（HEAD `6cd58c1` 時点）。`docs/tasks/secret-recovery/tasks.md` は `状態: 進行中` と記録しており、2つの台帳の状態が乖離している。`docs/tasks/tasks.md` はオーケストレーターが active work item を選定する唯一の正本であり（workflow.md §4.1）、ここが `未開始` のままでは実施中の実装進捗が root 台帳から不可視となり、監査可能性を欠く。証跡同期コミット `6cd58c1` が `docs/tasks/tasks.md` を更新していないことを `git show --stat 6cd58c1` で確認済み。
-  - **[BLOCKING] review.md テンプレートの必須担当スロット不足**: 作業項目の主成果物は `実コード差分` であり、`implementation-review-judgement.md` が定める必須レビュー役割（7 役割: 構造・運用整合・セキュリティ・仕様適合・テスト・ドキュメント・アーキテクチャ整合）のうち、現行 `review.md` テンプレートには `テストレビュー担当`・`ドキュメントレビュー担当`・`アーキテクチャ整合レビュー担当` のセクションが存在しない。このままコードレビューフェーズへ進むと、集約判定の網羅性が構造上検証できなくなる。なお `参照整合レビュー担当` のスロットは追加されているが、本役割は文書是正専用であり `実コード差分` のレビュー時には必須外である。`起動不能役割がある場合の記録参照: 未記入` のため、欠落役割の意図的除外記録も存在しない。
-  - **[NEEDS FIX] 確認単位の状態が未確定**: `review-artifacts/bitwarden-secrets-manager/confirmation.md` の `確認状態: 進行中`、および `docs/tasks/secret-recovery/tasks.md` の固定実装単位トラッカー `確認 | 進行中` が、確認内容（`cargo check` 成功・`cargo test` 106 件 passed・セキュリティ 3 項目 complete）と矛盾している。確認が実質完了しているならば `完了` へ更新しなければ、証跡が途中状態のまま凍結しており、後続レビューゲートの前進可否が不明瞭になる。
-- 差戻し事項:
-  1. `docs/tasks/tasks.md` の Bitwarden Secrets Manager エントリを `状態: 進行中` へ更新し、証跡同期コミットとして記録すること。
-  2. `review.md` に `テストレビュー担当`・`ドキュメントレビュー担当`・`アーキテクチャ整合レビュー担当` の判定記録セクションを追加し、全 7 必須役割のスロットを揃えること（または意図的除外がある場合は `起動不能役割がある場合の記録参照` に事由と根拠を明記すること）。
-  3. 確認内容が実質完了しているなら `confirmation.md` の `確認状態` を `完了` へ更新し、`docs/tasks/secret-recovery/tasks.md` の `確認 | 進行中` を `確認 | 完了` へ更新すること。
+  - **[BLOCKING → RESOLVED] root 台帳の状態不整合**: `docs/tasks/tasks.md`（root active ledger）の Bitwarden Secrets Manager エントリが `状態: 未開始` のまま（HEAD `6cd58c1` 時点）。`docs/tasks/secret-recovery/tasks.md` は `状態: 進行中` と記録しており、2つの台帳の状態が乖離していた。証跡同期コミット `6cd58c1` が `docs/tasks/tasks.md` を更新していないことを `git show --stat 6cd58c1` で確認済み。
+  - **[BLOCKING → RESOLVED] review.md テンプレートの必須担当スロット不足**: `テストレビュー担当`・`ドキュメントレビュー担当`・`アーキテクチャ整合レビュー担当` のセクションが存在しなかった。
+  - **[NEEDS FIX → RESOLVED] 確認単位の状態が未確定**: `confirmation.md` の `確認状態: 進行中` が確認完了内容と矛盾していた。
 - 確認対象: branch `copilot/bitwarden-secrets-manager-client` HEAD `6cd58c1`、対象差分識別子 `bws-design-pr-2026-05-28-5d6e495`、実装コミット終端 `5d6e495`、証跡同期コミット `6cd58c1`（`git show --stat 6cd58c1` で文書専用コミットであることを独立確認済み）
 
 ### セキュリティレビュー担当
