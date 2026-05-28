@@ -29,6 +29,7 @@ pub(crate) fn run_enroll_spare_with_prompt<
     command: EnrollSpareCommand,
     boundary: &mut B,
 ) -> Result<()> {
+    command.ensure_requested_serials_distinct()?;
     let primary_serial = boundary.resolve_device_serial(command.primary_serial)?;
     let primary_pin = if boundary.device_requires_pin(primary_serial)? {
         let pin = boundary.read_pin()?;
@@ -72,12 +73,12 @@ pub(crate) fn run_enroll_spare_with_prompt<
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = boundary.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    boundary.initialize_secret_storage(spare_serial, setup_intent)?;
+    boundary.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     for (storage, value) in document.storage_entries(spare_serial) {
-        let inspection = boundary.inspect_secret_storage_write(spare_serial, &storage)?;
-        let intent = SecretStorageWriteIntent::store(storage, inspection, value.len())?;
+        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
         boundary.store_secret(spare_serial, intent, value)?;
     }
+    boundary.finalize_secret_storage_setup(spare_serial, setup_intent)?;
     let spare_pin = if boundary.device_requires_pin(spare_serial)? {
         let pin = boundary.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -106,6 +107,23 @@ mod tests {
     use super::run_enroll_spare_with_prompt;
 
     #[test]
+    fn enroll_spare_prompt_rejects_same_requested_serial_before_device_resolution() {
+        let mut boundary = AppMockBoundary::new();
+        let result = run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2001),
+            },
+            &mut boundary,
+        );
+        assert!(result.is_err(), "same requested serial should stop");
+        assert!(
+            boundary.mock.resolution_order().is_empty(),
+            "requested serial conflict must stop before device resolution"
+        );
+    }
+
+    #[test]
     fn enroll_spare_prompt_resolves_primary_then_spare() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_enrollment_success();
         run_enroll_spare_with_prompt(
@@ -126,6 +144,7 @@ mod tests {
         boundary.mock.expect_event("setup");
         boundary.mock.expect_event("setup-initialize");
         boundary.mock.expect_event_times("store", 3);
+        boundary.mock.expect_event("setup-finalize");
         boundary.mock.expect_event("report");
 
         run_enroll_spare_with_prompt(
@@ -147,6 +166,7 @@ mod tests {
                 "store",
                 "store",
                 "store",
+                "setup-finalize",
                 "load",
                 "load",
                 "load",

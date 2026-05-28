@@ -74,6 +74,12 @@ pub trait SecretStoragePort {
         serial: u32,
         intent: SecretStorageSetupIntent,
     ) -> Result<()>;
+    /// 判定済み intent に従って対象 serial の manifest を確定する。
+    fn finalize_secret_storage_setup(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()>;
     /// 書き込み判定に必要な storage 状態を取得する。
     fn inspect_secret_storage_write(
         &mut self,

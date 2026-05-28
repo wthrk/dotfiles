@@ -29,8 +29,10 @@ pub struct SecretStorageSetupInspection {
 }
 
 /// domain rule を通過した storage 初期化 intent。
+#[derive(Clone)]
 pub struct SecretStorageSetupIntent {
     pub manifest_bytes: Vec<u8>,
+    pub key_generation_required: bool,
 }
 
 /// secret 書き込み前の storage 観測値。
@@ -106,6 +108,7 @@ impl SecretStorageSetupIntent {
         )?;
         Ok(Self {
             manifest_bytes: SecretManifest::expected().encode()?,
+            key_generation_required: !inspection.key_exists,
         })
     }
 }
@@ -145,6 +148,15 @@ impl SecretStorageWriteIntent {
         secret_len: usize,
     ) -> Result<Self> {
         Self::ensure_store_preconditions(&inspection)?;
+        storage.ensure_plaintext_len(secret_len)?;
+        Ok(Self { storage })
+    }
+
+    /// manifest 確定前の enrollment object 書き込み intent を作る。
+    ///
+    /// 高水準 enroll は全 secret object を上書き可能な初期書き込みとして保存してから manifest を
+    /// 確定する。これにより、manifest なし partial state は同じ enroll 再実行で再開できる。
+    pub fn initial_enroll_store(storage: SecretStorageSpec, secret_len: usize) -> Result<Self> {
         storage.ensure_plaintext_len(secret_len)?;
         Ok(Self { storage })
     }
@@ -255,6 +267,7 @@ mod tests {
         let manifest = SecretManifest::decode(&intent.manifest_bytes)?;
 
         assert_eq!(manifest, SecretManifest::expected());
+        assert!(intent.key_generation_required);
         Ok(())
     }
 
@@ -292,17 +305,18 @@ mod tests {
     }
 
     #[test]
-    fn setup_stops_when_key_exists_without_manifest() -> Result<()> {
+    fn setup_resumes_when_key_exists_without_manifest() -> Result<()> {
         let key_exists_without_manifest = SecretStorageSetupInspection {
             key_exists: true,
             ..clean_setup_inspection()
         };
 
-        let error = error_message(SecretStorageSetupIntent::from_inspection(
-            key_exists_without_manifest,
-        ))?;
+        let intent = SecretStorageSetupIntent::from_inspection(key_exists_without_manifest)?;
 
-        assert!(error.contains("PIV slot is already initialized"));
+        assert!(
+            !intent.key_generation_required,
+            "key-only partial enrollment should resume without regenerating key"
+        );
         Ok(())
     }
 
@@ -328,6 +342,18 @@ mod tests {
             write_inspection(Some(expected_manifest_bytes()?)),
             0,
         ))?;
+        assert!(empty_secret_error.contains("must not be empty"));
+        Ok(())
+    }
+
+    #[test]
+    fn initial_enroll_store_allows_manifestless_retry_but_keeps_secret_length_rule() -> Result<()> {
+        let storage = storage();
+        let intent = SecretStorageWriteIntent::initial_enroll_store(storage.clone(), 1)?;
+        assert_eq!(intent.storage, storage);
+
+        let empty_secret_error =
+            error_message(SecretStorageWriteIntent::initial_enroll_store(storage, 0))?;
         assert!(empty_secret_error.contains("must not be empty"));
         Ok(())
     }

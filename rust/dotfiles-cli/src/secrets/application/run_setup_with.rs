@@ -20,7 +20,8 @@ pub(crate) fn run_setup_with<B: ports::DeviceSerialPort + ports::SecretStoragePo
     let probe = SecretStorageSetupProbe::expected();
     let inspection = boundary.inspect_secret_storage_setup(serial, &probe)?;
     let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
-    boundary.initialize_secret_storage(serial, intent)
+    boundary.initialize_secret_storage(serial, intent.clone())?;
+    boundary.finalize_secret_storage_setup(serial, intent)
 }
 
 #[cfg(test)]
@@ -36,7 +37,8 @@ mod tests {
     fn setup_initializes_storage_after_serial_resolution() -> Result<()> {
         let mut boundary = AppMockBoundary::new()
             .expect_setup()
-            .expect_setup_initialize();
+            .expect_setup_initialize()
+            .expect_setup_finalize();
         run_setup_with(SetupCommand { serial: Some(2001) }, &mut boundary)
     }
 

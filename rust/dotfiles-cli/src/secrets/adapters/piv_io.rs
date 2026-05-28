@@ -60,7 +60,6 @@ use crate::secrets::support::protection::{sealed_blob, secret_random};
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
-
 /// `ProtectedSecret` backend を domain の secret 境界型へ移す adapter 内部変換。
 ///
 /// `Zeroizing` は protection 内部実装詳細として閉じ、adapter 外へ露出させない。
@@ -317,11 +316,23 @@ impl SecretStoragePort for StorageAdapter {
     fn initialize_secret_storage(
         &mut self,
         serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()> {
+        let mut device = self.open_device_by_serial(serial)?;
+        device.check_management_auth_preconditions()?;
+        if intent.key_generation_required {
+            device.generate_key()?;
+        }
+        Ok(())
+    }
+
+    fn finalize_secret_storage_setup(
+        &mut self,
+        serial: u32,
         mut intent: SecretStorageSetupIntent,
     ) -> Result<()> {
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
-        device.generate_key()?;
         device.write_object(PivObjectId::MANIFEST, &mut intent.manifest_bytes)
     }
 

@@ -237,6 +237,11 @@ impl AppMockBoundary {
         self
     }
 
+    pub(crate) fn expect_setup_finalize(mut self) -> Self {
+        self.mock.expect_event("setup-finalize");
+        self
+    }
+
     pub(crate) fn expect_store_times(mut self, hits: usize) -> Self {
         self.mock.expect_event_times("store", hits);
         self
@@ -253,7 +258,10 @@ impl AppMockBoundary {
     }
 
     pub(crate) fn expect_enrollment_success(self) -> Self {
-        self.expect_setup().expect_store_times(3).expect_report()
+        self.expect_setup()
+            .expect_setup_finalize()
+            .expect_store_times(3)
+            .expect_report()
     }
 
     pub(crate) fn expect_rotation_success(self) -> Self {
@@ -428,6 +436,15 @@ impl SecretStoragePort for AppMockBoundary {
         _intent: SecretStorageSetupIntent,
     ) -> Result<()> {
         self.mock.hit_event("setup-initialize");
+        Ok(())
+    }
+
+    fn finalize_secret_storage_setup(
+        &mut self,
+        _serial: u32,
+        _intent: SecretStorageSetupIntent,
+    ) -> Result<()> {
+        self.mock.hit_event("setup-finalize");
         Ok(())
     }
 

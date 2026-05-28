@@ -80,6 +80,17 @@ pub struct EnrollSpareCommand {
 }
 
 impl EnrollSpareCommand {
+    /// 明示指定された primary/spare serial が同一でないことを事前確認する。
+    ///
+    /// 両方の serial が利用者入力で既に確定している場合、device open や secret 読み出しの前に
+    /// domain invariant として拒否し、同一 device を spare として登録する経路を作らない。
+    pub fn ensure_requested_serials_distinct(&self) -> Result<()> {
+        if self.primary_serial.is_some() && self.primary_serial == self.spare_serial {
+            return Err(invalid_input("primary and spare YubiKey serial must be different").into());
+        }
+        Ok(())
+    }
+
     /// 解決済み primary/spare serial が別 device を指すことを確認する。
     ///
     /// primary と spare は異なる recovery device role であり、同一 serial への登録は

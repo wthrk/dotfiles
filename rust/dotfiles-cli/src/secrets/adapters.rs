@@ -110,6 +110,14 @@ impl SecretStoragePort for SecretsAdapters {
         self.storage.initialize_secret_storage(serial, intent)
     }
 
+    fn finalize_secret_storage_setup(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()> {
+        self.storage.finalize_secret_storage_setup(serial, intent)
+    }
+
     fn inspect_secret_storage_write(
         &mut self,
         serial: u32,

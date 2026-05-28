@@ -77,7 +77,7 @@ impl SecretManifest {
                 manifest.validate_expected()?;
                 return Err(invalid_data("YubiKey secret storage is already initialized").into());
             }
-            return Err(invalid_data("YubiKey PIV slot is already initialized").into());
+            return Ok(());
         }
 
         if let Some(object_id) = occupied_object_ids.first() {

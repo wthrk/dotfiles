@@ -33,14 +33,14 @@ pub(crate) fn run_enroll_primary_with_stdin_json<
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = boundary.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    boundary.initialize_secret_storage(serial, setup_intent)?;
     let fields = boundary.read_bootstrap_secret_fields()?;
     let document = BootstrapSecretDocument::from_field_map(fields)?;
+    boundary.initialize_secret_storage(serial, setup_intent.clone())?;
     for (storage, value) in document.storage_entries(serial) {
-        let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
-        let intent = SecretStorageWriteIntent::store(storage, inspection, value.len())?;
+        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
         boundary.store_secret(serial, intent, value)?;
     }
+    boundary.finalize_secret_storage_setup(serial, setup_intent)?;
     let pin = if boundary.device_requires_pin(serial)? {
         let pin = boundary.read_pin()?;
         validate_piv_pin_len(pin.len())?;
