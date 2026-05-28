@@ -71,7 +71,7 @@ mod tests {
     use super::run_enroll_spare_with_stdin_json;
 
     #[test]
-    fn enroll_spare_stdin_json_passes_primary_serial_to_spare_resolution() {
+    fn enroll_spare_stdin_json_rejects_same_requested_serial_before_device_resolution() {
         let mut boundary = AppMockBoundary::new();
         let result = run_enroll_spare_with_stdin_json(
             EnrollSpareCommand {
