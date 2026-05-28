@@ -4,10 +4,11 @@
 
 ## 実装担当からの引き継ぎ
 
-- レビュー状態: `未着手`
-- 対象ブランチ: `未記入`
-- 確認開始時 HEAD: `未記入`
-- 対象差分識別子: `未記入`
+- レビュー状態: `進行中（要修正）`
+- 判定位置づけ: `デザインPR段階の文書整合是正サイクル（作業項目全体の完了判定ではない）`
+- 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
+- 確認開始時点参照: `work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端`
+- 対象差分識別子: `bws-design-pr-current-cycle`
 - 実装側確認証跡: `./confirmation.md`
 
 ## レビュー担当チェック項目
@@ -59,40 +60,48 @@
 
 ## 役割別レビュー記録（レビュー担当記入）
 
-### 構造レビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
-
 ### 運用整合レビュー担当
 
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
+#### 最新差戻し確認（文書整合是正サイクル 2026-05-28）
+
+- 判定: `要修正`
+- 判定要約: `work-item 完了条件と confirmation/review artifact の整合を優先して、確認単位の完了扱いを解除する必要がある`
 - 根拠:
-  - `未記入`
+  - `../../work-items/bitwarden-secrets-manager.md` の完了条件は、`confirmation.md` に `verify-yubikey --check bws` を含む確認記録があることを要求しているが、現行 `confirmation.md` は `cargo check` / `cargo test -p dotfiles-cli` のみで当該証跡が未取得だった。
+  - 固定実装単位トラッカーの `確認` が `完了` となっていたため、完了条件未充足の状態で前進扱いになる監査不整合が発生していた。`tasks.md` と `confirmation.md` を `進行中` へ是正し、完了扱いを解除する。
+  - 差戻し条件: `confirmation.md` に `verify-yubikey --check bws` の追跡可能な実行証跡を追加し、必須レビュー担当の個別判定と集約判定を完了させるまで `確認`/`レビュー` を完了状態へ遷移させないこと。
 
-### セキュリティレビュー担当
+#### 是正確認レビュー（現行ブランチ文書是正サイクル）
 
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
+- 判定: `合格`
+- 判定要約: `所見なし`
 - 根拠:
-  - `未記入`
-
-### 仕様適合レビュー担当
-
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
-- 根拠:
-  - `未記入`
+  - root 台帳（`docs/tasks/tasks.md`）と領域台帳（`docs/tasks/secret-recovery/tasks.md`）の Bitwarden Secrets Manager 状態がともに `進行中` で一致していることを current-branch で確認済み。
+  - review / confirmation / tasks の現行サイクル記録で、`確認` および `レビュー` が完了扱いではなく `進行中` のまま維持されていることを確認済み。
+  - 現サイクルのレビュー要求を文書是正ゲート（運用整合 + 参照整合）として扱う構造へ正規化し、実装完了判定と混同しない状態であることを確認済み。
+- 確認対象: `copilot/bitwarden-secrets-manager-client` の current branch HEAD（文書是正差分）、`work-items/bitwarden-secrets-manager.md` 記載の実装/テスト差分終端
 
 ### 参照整合レビュー担当
 
-- 判定: `<合格|要修正|不合格>`
-- 判定要約: `<所見なし|主要論点要約>`
+#### サイクル 1（差戻し — 初回文書是正サイクル時点）
+
+- 判定: `不合格`
+- 判定要約: `root tasks.md の作業状態が未更新であり、confirmation.md の更新完了宣言と矛盾する`
 - 根拠:
-  - `未記入`
+  - `confirmation.md` 行32に「`tasks.md` の作業状態を `進行中` へ更新済み」と記載されているが、`docs/docs-governance.md` が active work item の選定正本と定める `docs/tasks/tasks.md` は `状態: 未開始` のまま更新されていない（git log で確認: 本ブランチで `docs/tasks/tasks.md` を変更したコミットなし）。
+  - `docs/tasks/secret-recovery/tasks.md`（補助台帳）は `状態: 進行中` へ更新済みだが、正本である root `docs/tasks/tasks.md` との定義矛盾が残る。
+  - 差戻し条件: `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目 `状態` を `進行中` へ更新し、`confirmation.md` の更新完了宣言と一致させること。
+  - その他のリンク・ファイルパス・アンカー参照はすべて解決可能であることを確認済み。
+
+#### サイクル 2（是正後再レビュー — 現行ブランチで追跡可能な是正サイクル）
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - root 台帳 `docs/tasks/tasks.md` の Bitwarden Secrets Manager 項目が `状態: 進行中` となっており、`confirmation.md` の状態記録と一致している。
+  - `review.md` 内の全リンク・ファイルパスを独立確認済み: `../../../../architecture/review-checklist.md#レビュー観点チェックリスト構造` → `docs/architecture/review-checklist.md`（存在確認済み、見出し `# レビュー観点チェックリスト（構造）` に対応）、`./confirmation.md`（同ディレクトリ内存在確認済み）。
+  - `confirmation.md` の参照ファイルパスおよび宣言内容（現行は確認状態 `進行中`、 `docs/tasks/secret-recovery/tasks.md` の `確認 | 進行中` トラッカー）は一致。
+  - 前サイクル未解消項目: なし。
 
 ### 起動不能役割がある場合の記録参照
 
@@ -100,11 +109,12 @@
 
 ## 集約判定
 
-- 集約後レビュー判定: `<合格|要修正|不合格>`
-- 集約判定要約: `<所見なし|主要論点要約>`
+- 集約後レビュー判定: `要修正`
+- 集約判定要約: `現サイクル必須の確認証跡不足（verify-yubikey --check bws）により、文書是正ゲートを合格にできない`
 - 集約根拠:
-  - `未記入`
-- 差戻し事項: `未記入`
-- 後続対応状態: `未着手`
+  - `../../work-items/bitwarden-secrets-manager.md` の完了条件が要求する `verify-yubikey --check bws` の確認証跡が未取得。
+  - 現サイクル（デザインPR段階の文書是正）では `運用整合レビュー担当` と `参照整合レビュー担当` を必須判定としており、実装差分7役割レビューの完了を現サイクルの前提条件にはしていない。
+- 差戻し事項: `confirmation.md` へ required evidence（verify-yubikey --check bws）を追記し、現サイクル2役割の記録整合を維持したまま集約を再実施すること。
+- 後続対応状態: `確認証跡追加待ち・レビュー継続中`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
-- 後続対応メモ: `レビュー未開始のため未整理`
+- 後続対応メモ: `完了条件未充足のため、現サイクルは差戻し継続`
