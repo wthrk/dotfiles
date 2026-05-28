@@ -156,7 +156,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 1. YubiKey から `bws-access-token` を取得する。
 2. Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。
-3. import 前に primary fingerprint をインメモリ導出し、同一 primary fingerprint の secret key が既に鍵リングに存在する場合は停止する。
+3. import 前に primary fingerprint をインメモリー導出し、同一 primary fingerprint の secret key が既に鍵リングに存在する場合は停止する。
 4. GPG secret key を import する。
 5. encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
 6. `gpg-agent` SSH support が使えることを確認する。
