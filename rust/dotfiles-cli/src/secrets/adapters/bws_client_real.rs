@@ -1,6 +1,6 @@
 //! 実環境の BWS CLI 呼び出し実装。
 
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::{
     Result,
@@ -11,8 +11,16 @@ use crate::{
     },
 };
 
+const MAX_BWS_SECRET_FIELD_LEN: usize = 1024 * 1024;
+
 #[derive(Default)]
 pub(crate) struct BwsClientAdapter;
+
+#[derive(serde::Deserialize)]
+struct BwsSecretListEntry<'a> {
+    id: &'a str,
+    key: &'a str,
+}
 
 impl BwsClientPort for BwsClientAdapter {
     fn fetch_bws_secret(
@@ -43,16 +51,15 @@ impl BwsClientPort for BwsClientAdapter {
                     "bws external check failed for {key}/{secret_id} (exit status: {status})"
                 ));
             }
-            let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
-                .map_err(|error| anyhow::anyhow!("failed to decode bws secret JSON: {error}"))?;
-            let value = payload
-                .get("value")
-                .and_then(serde_json::Value::as_str)
+            let protected_output = protected_stdout(output)?;
+            let mut fields = protected_output.decode_json_string_map(MAX_BWS_SECRET_FIELD_LEN)?;
+            let value = fields
+                .remove("value")
                 .ok_or_else(|| anyhow::anyhow!("bws secret response does not contain value"))?;
             Ok(SecretMaterial::from_backend(
-                value.as_bytes().to_vec(),
-                |secret| secret.len(),
-                |secret| Ok(secret.clone()),
+                value,
+                ProtectedSecret::len,
+                ProtectedSecret::try_clone,
             ))
         })
     }
@@ -74,17 +81,20 @@ impl BwsClientAdapter {
                 "bws secret list failed for key {key} (exit status: {status})"
             ));
         }
-        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| anyhow::anyhow!("failed to decode bws secret list JSON: {error}"))?;
-        payload
-            .as_array()
-            .and_then(|secrets| {
-                secrets.iter().find_map(|secret| {
-                    let candidate_key = secret.get("key").and_then(serde_json::Value::as_str)?;
-                    let candidate_id = secret.get("id").and_then(serde_json::Value::as_str)?;
-                    (candidate_key == key).then(|| candidate_id.to_string())
-                })
-            })
-            .ok_or_else(|| anyhow::anyhow!("bws secret key not found: {key}"))
+        let protected_output = protected_stdout(output)?;
+        secret_consumer::with_secret_bytes(&protected_output, |bytes| {
+            let secrets: Vec<BwsSecretListEntry<'_>> =
+                serde_json::from_slice(bytes).map_err(|error| {
+                    anyhow::anyhow!("failed to decode bws secret list JSON: {error}")
+                })?;
+            secrets
+                .into_iter()
+                .find_map(|secret| (secret.key == key).then(|| secret.id.to_string()))
+                .ok_or_else(|| anyhow::anyhow!("bws secret key not found: {key}"))
+        })
     }
+}
+
+fn protected_stdout(output: Output) -> Result<ProtectedSecret> {
+    ProtectedSecret::from_vec(output.stdout)
 }

@@ -17,7 +17,7 @@ use crate::secrets::{
             SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
             SecretStorageWriteIntent,
         },
-        values::{BwsSecretName, CheckName, CheckStatus, EnrollSummary, VerifySummary},
+        values::{BwsSecretName, EnrollSummary, VerifySummary},
     },
     ports::{self, SecretStoragePort},
 };
@@ -166,13 +166,11 @@ impl AppMock {
     }
 
     pub(crate) fn reports(&self) -> Vec<VerifySummary> {
-        self.snapshot(|state| {
-            state
-                .reports
-                .iter()
-                .map(|(serial, status)| verify_summary(*serial, *status))
-                .collect()
-        })
+        self.snapshot(|state| state.reports.clone())
+    }
+
+    pub(crate) fn bws_fetches(&self) -> Vec<BwsSecretName> {
+        self.snapshot(|state| state.bws_fetches.clone())
     }
 
     fn hit_event(&self, event: &'static str) {
@@ -431,13 +429,8 @@ impl ports::ReportPort for AppMockBoundary {
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         self.mock.hit_event("report");
-        let local_storage = summary
-            .checks
-            .get(&CheckName::LocalStorage)
-            .copied()
-            .unwrap_or(CheckStatus::Skipped);
         self.mock.configure(|state| {
-            state.reports.push((summary.serial, local_storage));
+            state.reports.push(summary.clone());
         });
         Ok(())
     }
@@ -449,6 +442,9 @@ impl ports::BwsClientPort for AppMockBoundary {
         _access_token: &SecretMaterial,
         secret_name: BwsSecretName,
     ) -> Result<SecretMaterial> {
+        self.mock.configure(|state| {
+            state.bws_fetches.push(secret_name);
+        });
         let value = match secret_name {
             BwsSecretName::GpgSecretKeyBackup => {
                 b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nmock\n-----END PGP PRIVATE KEY BLOCK-----\n"
@@ -593,8 +589,9 @@ struct AppMockState {
     secret_errors: BTreeMap<SecretName, &'static str>,
     output_secret: Option<Vec<u8>>,
     stores: Vec<SecretName>,
+    bws_fetches: Vec<BwsSecretName>,
     resolution_order: Vec<&'static str>,
-    reports: Vec<(u32, CheckStatus)>,
+    reports: Vec<VerifySummary>,
     expected_events: BTreeMap<&'static str, usize>,
     event_hits: BTreeMap<&'static str, usize>,
     event_order: Vec<&'static str>,
@@ -630,6 +627,7 @@ impl Default for AppMockState {
             secret_errors: BTreeMap::new(),
             output_secret: None,
             stores: Vec::new(),
+            bws_fetches: Vec::new(),
             resolution_order: Vec::new(),
             reports: Vec::new(),
             expected_events: BTreeMap::new(),
@@ -662,14 +660,6 @@ fn secret_bytes(secret: &SecretMaterial) -> Result<Vec<u8>> {
         .as_backend::<Vec<u8>>()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("mockall app secret backend is unavailable"))
-}
-
-fn verify_summary(serial: u32, local_storage: CheckStatus) -> VerifySummary {
-    match local_storage {
-        CheckStatus::Ok => VerifySummary::local_storage_verified(serial),
-        CheckStatus::Failed => VerifySummary::local_storage_failed(serial),
-        CheckStatus::Skipped => VerifySummary::local_storage_verified(serial),
-    }
 }
 
 fn invalid_input(message: impl Into<String>) -> std::io::Error {

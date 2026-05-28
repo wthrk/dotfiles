@@ -174,6 +174,23 @@ impl ProtectedSecret {
         })
     }
 
+    /// 外部境界が返した byte buffer を protection 所有へ移す。
+    ///
+    /// `Command::output` のように外部 API が `Vec<u8>` を所有して返す場合の採用境界であり、
+    /// 呼び出し直後にこの関数へ渡して以後の Drop zeroize と memory lock の所有権を確立する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    pub(crate) fn from_vec(value: Vec<u8>) -> Result<Self> {
+        if value.is_empty() {
+            return Self::new(0);
+        }
+        let lock = region::lock(value.as_ptr(), value.len())
+            .context("failed to lock protected secret memory")?;
+        Ok(Self {
+            value: Zeroizing::new(value),
+            _lock: lock,
+        })
+    }
+
     /// 平文 bytes を closure の実行中だけ借用として公開する。
     ///
     /// クロージャー内でデータを外部被保護バッファにコピーしてはならない

@@ -12,8 +12,7 @@ use super::domain::{
         SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
         SecretStorageWriteIntent,
     },
-    values::BwsSecretName,
-    values::{EnrollSummary, VerifySummary},
+    values::{BwsSecretName, EnrollSummary, VerifySummary},
 };
 use crate::Result;
 

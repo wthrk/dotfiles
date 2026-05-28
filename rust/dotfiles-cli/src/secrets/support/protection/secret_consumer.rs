@@ -24,6 +24,15 @@ pub(crate) fn write_to(secret: &ProtectedSecret, writer: &mut impl Write) -> Res
     Ok(())
 }
 
+/// secret bytes を一時借用し、closure 実行中だけ利用する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(crate) fn with_secret_bytes<R>(
+    secret: &ProtectedSecret,
+    borrow: impl FnOnce(&[u8]) -> Result<R>,
+) -> Result<R> {
+    secret.with_secret(borrow)
+}
+
 /// secret bytes を UTF-8 文字列として一時借用し、closure 実行中だけ利用する。
 pub(crate) fn with_utf8_secret<R>(
     secret: &ProtectedSecret,

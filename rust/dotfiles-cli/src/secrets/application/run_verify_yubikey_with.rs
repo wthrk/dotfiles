@@ -60,7 +60,11 @@ pub(crate) fn run_verify_yubikey_with<
     if requested.is_empty() {
         return boundary.write_verify_report(&VerifySummary::local_storage_verified(serial));
     }
-    let access_token = local_verify?.ok_or_else(|| anyhow::anyhow!("missing bws-access-token"))?;
+    let access_token = local_verify?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "internal invariant violated: verification plan did not yield bws-access-token"
+        )
+    })?;
     let mut summary = VerifySummary::local_storage_verified(serial);
     let mut first_error = None;
     for check in requested {
@@ -90,7 +94,13 @@ pub(crate) fn run_verify_yubikey_with<
                     ));
                 }
             }
-            _ => {}
+            CheckName::Setup
+            | CheckName::BwEmail
+            | CheckName::BwPassword
+            | CheckName::BwsAccessToken
+            | CheckName::LocalStorage => {
+                unreachable!("requested_external_checks returned a non-external verification check")
+            }
         }
     }
     boundary.write_verify_report(&summary)?;
@@ -134,7 +144,21 @@ mod tests {
                 all: false,
             },
             &mut boundary,
-        )
+        )?;
+
+        assert_eq!(
+            boundary.mock.bws_fetches(),
+            vec![
+                crate::secrets::domain::values::BwsSecretName::GpgSecretKeyBackup,
+                crate::secrets::domain::values::BwsSecretName::PasswordStoreRemote
+            ]
+        );
+        let reports = boundary.mock.reports();
+        assert_eq!(
+            reports[0].checks.get(&CheckName::Bws),
+            Some(&CheckStatus::Ok)
+        );
+        Ok(())
     }
 
     #[test]
