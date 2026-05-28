@@ -21,15 +21,15 @@
 
 ## 決定事項
 
-- 復旧本線の取得経路は公式 `bitwarden` Rust SDK を使う。
-- `bw` CLI は Bitwarden Secrets Manager 取得経路では使わない。
+- 復旧本線の取得経路は `BwsClientPort` 境界を通し、実 adapter は公式 `bws` CLI を子プロセスとして呼び出す。
+- `bw` CLI は Bitwarden Password Manager 用であり、Bitwarden Secrets Manager 取得経路では使わない。
 - `bws-access-token` は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。
 - `bws-access-token`、`gpg-secret-key-backup`、`password-store-remote` はログ、エラー本文、診断出力に含めない。
 - Bitwarden Secrets Manager 側の保存先 project は `dotfiles-secret-recovery` に固定する。
 - `bws-access-token` は machine account `dotfiles-secret-recovery-reader` の token とし、`dotfiles-secret-recovery` project への読み取りだけを許可する。
 - Bitwarden Secrets Manager で扱う secret name は `gpg-secret-key-backup` と `password-store-remote` に固定する。
 - Bitwarden Secrets Manager の secret 値は JSON envelope や独自 metadata を持たず、下記の値形式をそのまま保存する。
-- Bitwarden Secrets Manager 側の project / secret 作成・更新・一覧取得は、復旧本線と同じ公式 `bitwarden` Rust SDK の Secrets Manager API で実装してよい。`bws` CLI は手動代替手段としてだけ扱う。
+- Bitwarden Secrets Manager 側の project / secret 作成・更新・一覧取得は、復旧本線と同じ `BwsClientPort` 境界の内側で扱う。公式 Rust SDK へ移行する場合も application/domain/port 契約は変更せず、adapter 内部実装だけを差し替える。
 - `verify-yubikey --check bws` は、上記 2 secret を取得できることを外部確認として検証する。
 
 ## Bitwarden Secrets Manager 配置

@@ -1,16 +1,19 @@
 //! 実環境の BWS CLI 呼び出し実装。
 
-use std::process::{Command, Output};
+use std::process::{Command, Stdio};
 
 use crate::{
     Result,
     secrets::{
         domain::{material::SecretMaterial, values::BwsSecretName},
         ports::BwsClientPort,
-        support::protection::{ProtectedSecret, secret_consumer},
+        support::protection::{
+            ProtectedSecret, SecretSession, buffer::ProtectedInputBuffer, secret_consumer,
+        },
     },
 };
 
+const MAX_BWS_CLI_JSON_LEN: usize = 8 * 1024 * 1024;
 const MAX_BWS_SECRET_FIELD_LEN: usize = 1024 * 1024;
 
 #[derive(Default)]
@@ -37,21 +40,11 @@ impl BwsClientPort for BwsClientAdapter {
         };
         secret_consumer::with_utf8_secret(protected, |token| {
             let secret_id = self.resolve_secret_id(token.trim(), key)?;
-            let output = Command::new("bws")
-                .args(["secret", "get", &secret_id, "--output", "json"])
-                .env("BWS_ACCESS_TOKEN", token.trim())
-                .output()
-                .map_err(|error| anyhow::anyhow!("failed to invoke bws CLI: {error}"))?;
-            if !output.status.success() {
-                let status = output.status.code().map_or_else(
-                    || "terminated by signal".to_string(),
-                    |code| code.to_string(),
-                );
-                return Err(anyhow::anyhow!(
-                    "bws external check failed for {key}/{secret_id} (exit status: {status})"
-                ));
-            }
-            let protected_output = protected_stdout(output)?;
+            let protected_output = run_bws_json(
+                token.trim(),
+                ["secret", "get", &secret_id, "--output", "json"],
+                &format!("bws external check failed for {key}/{secret_id}"),
+            )?;
             let mut fields = protected_output.decode_json_string_map(MAX_BWS_SECRET_FIELD_LEN)?;
             let value = fields
                 .remove("value")
@@ -67,21 +60,11 @@ impl BwsClientPort for BwsClientAdapter {
 
 impl BwsClientAdapter {
     fn resolve_secret_id(&self, token: &str, key: &str) -> Result<String> {
-        let output = Command::new("bws")
-            .args(["secret", "list", "--output", "json"])
-            .env("BWS_ACCESS_TOKEN", token)
-            .output()
-            .map_err(|error| anyhow::anyhow!("failed to invoke bws secret list: {error}"))?;
-        if !output.status.success() {
-            let status = output.status.code().map_or_else(
-                || "terminated by signal".to_string(),
-                |code| code.to_string(),
-            );
-            return Err(anyhow::anyhow!(
-                "bws secret list failed for key {key} (exit status: {status})"
-            ));
-        }
-        let protected_output = protected_stdout(output)?;
+        let protected_output = run_bws_json(
+            token,
+            ["secret", "list", "--output", "json"],
+            &format!("bws secret list failed for key {key}"),
+        )?;
         secret_consumer::with_secret_bytes(&protected_output, |bytes| {
             let secrets: Vec<BwsSecretListEntry<'_>> =
                 serde_json::from_slice(bytes).map_err(|error| {
@@ -95,6 +78,43 @@ impl BwsClientAdapter {
     }
 }
 
-fn protected_stdout(output: Output) -> Result<ProtectedSecret> {
-    ProtectedSecret::from_vec(output.stdout)
+fn run_bws_json<const N: usize>(
+    token: &str,
+    args: [&str; N],
+    failure_context: &str,
+) -> Result<ProtectedSecret> {
+    let session = SecretSession::start()?;
+    let mut child = Command::new("bws")
+        .args(args)
+        .env("BWS_ACCESS_TOKEN", token)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("failed to invoke bws CLI: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture bws stdout"))?;
+    let buffer = ProtectedInputBuffer::read_from(
+        stdout,
+        MAX_BWS_CLI_JSON_LEN,
+        "bws JSON response exceeds maximum length",
+        &session,
+    )?;
+    let status = child
+        .wait()
+        .map_err(|error| anyhow::anyhow!("failed to wait for bws CLI: {error}"))?;
+    if !status.success() {
+        let status = status.code().map_or_else(
+            || "terminated by signal".to_string(),
+            |code| code.to_string(),
+        );
+        return Err(anyhow::anyhow!("{failure_context} (exit status: {status})"));
+    }
+    buffer.into_protected_secret(
+        &session,
+        MAX_BWS_CLI_JSON_LEN,
+        "bws JSON response exceeds maximum length",
+    )
 }
