@@ -2,17 +2,18 @@
 //!
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
+#[cfg(feature = "secrets-internal-test-stub")]
+#[path = "adapters/bws_client_stub.rs"]
+mod bws_client;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+#[path = "adapters/bws_client_real.rs"]
+mod bws_client;
 mod piv_io;
 
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-use crate::secrets::support::protection::{secret_consumer, ProtectedSecret};
 use std::collections::BTreeMap;
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-use std::process::Command;
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-use zeroize::Zeroizing;
 
 use crate::{
+    Result,
     secrets::{
         domain::{
             material::SecretMaterial,
@@ -29,20 +30,15 @@ use crate::{
             SecretStoragePort, SpareDeviceSerialPort,
         },
     },
-    Result,
 };
 
-/// CLI entrypoint が利用する secrets runtime adapter。
-///
-/// 公開面は port trait 実装型としてのこの型に限定し、下位 adapter module や
-/// factory/helper 関数を crate 公開しない。
 #[derive(Default)]
 pub(crate) struct SecretsAdapters {
     device: piv_io::DeviceSelectionAdapter,
     process_io: piv_io::ProcessIoAdapter,
     storage: piv_io::StorageAdapter,
     report: piv_io::JsonReportAdapter,
-    bws_client: BwsClientAdapter,
+    bws_client: bws_client::BwsClientAdapter,
 }
 
 impl DeviceSerialPort for SecretsAdapters {
@@ -183,115 +179,5 @@ impl BwsClientPort for SecretsAdapters {
         secret_name: BwsSecretName,
     ) -> Result<SecretMaterial> {
         self.bws_client.fetch_bws_secret(access_token, secret_name)
-    }
-}
-
-/// verify-yubikey の external check で使う BWS 境界 adapter。
-///
-/// access token は `SecretMaterial` の protection backend から必要最小限だけ展開し、
-/// `bws` 実行時にだけ UTF-8 借用する。adapter は `bws` 実行と
-/// JSON 変換のみを担当し、use case 手順や判定は application/domain に残す。
-#[derive(Default)]
-struct BwsClientAdapter;
-
-impl BwsClientPort for BwsClientAdapter {
-    fn fetch_bws_secret(
-        &self,
-        access_token: &SecretMaterial,
-        secret_name: BwsSecretName,
-    ) -> Result<SecretMaterial> {
-        #[cfg(feature = "secrets-internal-test-stub")]
-        {
-            let _ = access_token;
-            let value = match secret_name {
-                BwsSecretName::GpgSecretKeyBackup => {
-                    b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nmock\n-----END PGP PRIVATE KEY BLOCK-----\n"
-                        .to_vec()
-                }
-                BwsSecretName::PasswordStoreRemote => {
-                    b"git@github.com:example/password-store.git".to_vec()
-                }
-            };
-            Ok(SecretMaterial::from_backend(
-                value,
-                |secret| secret.len(),
-                |secret| Ok(secret.clone()),
-            ))
-        }
-
-        #[cfg(not(feature = "secrets-internal-test-stub"))]
-        {
-            let protected = access_token
-                .as_backend::<ProtectedSecret>()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("bws access token backend is not protected memory")
-                })?;
-            let key = match secret_name {
-                BwsSecretName::GpgSecretKeyBackup => "gpg-secret-key-backup",
-                BwsSecretName::PasswordStoreRemote => "password-store-remote",
-            };
-            secret_consumer::with_utf8_secret(protected, |token| {
-                let secret_id = self.resolve_secret_id(token.trim(), key)?;
-                let output = Command::new("bws")
-                    .args(["secret", "get", &secret_id, "--output", "json"])
-                    .env("BWS_ACCESS_TOKEN", token.trim())
-                    .output()
-                    .map_err(|error| anyhow::anyhow!("failed to invoke bws CLI: {error}"))?;
-                if !output.status.success() {
-                    let status = output.status.code().map_or_else(
-                        || "terminated by signal".to_string(),
-                        |code| code.to_string(),
-                    );
-                    return Err(anyhow::anyhow!(
-                        "bws external check failed for {key}/{secret_id} (exit status: {status})"
-                    ));
-                }
-                let payload: serde_json::Value =
-                    serde_json::from_slice(&output.stdout).map_err(|error| {
-                        anyhow::anyhow!("failed to decode bws secret JSON: {error}")
-                    })?;
-                let value = payload
-                    .get("value")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("bws secret response does not contain value"))?;
-                Ok(SecretMaterial::from_backend(
-                    Zeroizing::new(value.as_bytes().to_vec()),
-                    |secret| secret.len(),
-                    |secret| Ok(secret.clone()),
-                ))
-            })
-        }
-    }
-}
-
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-impl BwsClientAdapter {
-    fn resolve_secret_id(&self, token: &str, key: &str) -> Result<String> {
-        let output = Command::new("bws")
-            .args(["secret", "list", "--output", "json"])
-            .env("BWS_ACCESS_TOKEN", token)
-            .output()
-            .map_err(|error| anyhow::anyhow!("failed to invoke bws secret list: {error}"))?;
-        if !output.status.success() {
-            let status = output.status.code().map_or_else(
-                || "terminated by signal".to_string(),
-                |code| code.to_string(),
-            );
-            return Err(anyhow::anyhow!(
-                "bws secret list failed for key {key} (exit status: {status})"
-            ));
-        }
-        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| anyhow::anyhow!("failed to decode bws secret list JSON: {error}"))?;
-        payload
-            .as_array()
-            .and_then(|secrets| {
-                secrets.iter().find_map(|secret| {
-                    let candidate_key = secret.get("key").and_then(serde_json::Value::as_str)?;
-                    let candidate_id = secret.get("id").and_then(serde_json::Value::as_str)?;
-                    (candidate_key == key).then(|| candidate_id.to_string())
-                })
-            })
-            .ok_or_else(|| anyhow::anyhow!("bws secret key not found: {key}"))
     }
 }

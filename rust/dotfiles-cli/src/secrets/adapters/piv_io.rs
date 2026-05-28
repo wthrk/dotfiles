@@ -10,24 +10,24 @@ pub(crate) use report_adapter::JsonReportAdapter;
 pub(crate) use storage_adapter::StorageAdapter;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use rsa::{pkcs1::DecodeRsaPublicKey, RsaPublicKey};
+use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
-    piv::{self, AlgorithmId, RetiredSlotId, SlotId},
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
+    piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 
 use crate::{
+    Result,
     secrets::{
         domain::{
             material::SecretMaterial,
             piv::{PivApplicationVersion, PivObjectId, SecretStorageSpec},
         },
-        support::protection::{secret_consumer, ProtectedSecret},
+        support::protection::{ProtectedSecret, secret_consumer},
     },
-    Result,
 };
 
 #[cfg(feature = "secrets-internal-test-stub")]
