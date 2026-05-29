@@ -130,7 +130,7 @@ impl ProtectedSecret {
     /// `#[cfg(test)]` だけで使う secret 観測口として、test bytes から保護値を作る。
     ///
     /// production build では公開されず、通常経路の plaintext 取り出し API として扱わない。
-    #[cfg(any(test, feature = "secrets-internal-test-stub"))]
+    #[cfg(test)]
     pub(crate) fn from_test_bytes(bytes: &[u8]) -> Result<Self> {
         let mut secret = Self::new(bytes.len())?;
         secret.with_secret_mut(|out| out.copy_from_slice(bytes));

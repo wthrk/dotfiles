@@ -30,6 +30,14 @@ struct StubState {
     include_spare: bool,
     requires_pin: bool,
     write_events: Vec<String>,
+    #[serde(default)]
+    bws_projects: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    bws_project_secrets: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    bws_secret_values: std::collections::BTreeMap<String, Vec<u8>>,
+    #[serde(default)]
+    bws_fetch_events: Vec<String>,
 }
 
 struct TestStubSecretDevice {
