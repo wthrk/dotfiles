@@ -6,7 +6,6 @@ use crate::{
     Result,
     secrets::{
         domain::{
-            material::SecretMaterial,
             piv::{PivObjectId, SecretStorageSpec},
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
@@ -15,6 +14,7 @@ use crate::{
             },
         },
         ports::SecretStoragePort,
+        support::protection::{ProtectedSecret, SecretSession},
     },
 };
 
@@ -22,8 +22,12 @@ use super::{
     SecretDeviceIo, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
 };
 
+/// YubiKey PIV object I/O を `SecretStoragePort` の inspection/intent 契約へ翻訳する adapter。
+///
+/// caller は domain が判定した intent を渡す。adapter は device API、object 読み書き、
+/// protection 操作の接続だけを担い、storage plan や上書き可否を再判定しない。
 #[derive(Default)]
-pub(crate) struct StorageAdapter {
+pub(super) struct StorageAdapter {
     device: SelectedDeviceAdapter,
 }
 
@@ -100,7 +104,7 @@ impl SecretStoragePort for StorageAdapter {
         &mut self,
         serial: u32,
         intent: SecretStorageWriteIntent,
-        secret: &SecretMaterial,
+        secret: &ProtectedSecret,
     ) -> Result<()> {
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
@@ -113,6 +117,7 @@ impl SecretStoragePort for StorageAdapter {
         serial: u32,
         storage: &SecretStorageSpec,
     ) -> Result<SecretStorageReadInspection> {
+        let _session = SecretSession::start()?;
         let mut device = self.open_device_by_serial(serial)?;
         let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
         let encoded = device.read_object(storage.object_id)?;
@@ -126,8 +131,9 @@ impl SecretStoragePort for StorageAdapter {
         &mut self,
         serial: u32,
         intent: &SecretStorageReadIntent,
-        pin: Option<&SecretMaterial>,
-    ) -> Result<SecretMaterial> {
+        pin: Option<&ProtectedSecret>,
+    ) -> Result<ProtectedSecret> {
+        let _session = SecretSession::start()?;
         let mut device = self.open_device_by_serial(serial)?;
         if device.requires_pin_input() {
             let Some(pin) = pin else {

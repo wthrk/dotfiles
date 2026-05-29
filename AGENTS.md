@@ -4,7 +4,9 @@ This is the minimal session-entry document for this repository. It holds only th
 
 ## Default Skills — Role-to-Skill Binding
 
-At the start of every session and every request in this repository, invoke the `/orchestration` skill before taking any other action. Do not begin active-item selection, delegation, reading, or file operations until the skill is active.
+At the start of every top-level task-execution request in this repository, the main agent invokes the `/orchestration` skill before taking any other action. Do not begin active-item selection, delegation, reading, or file operations until the main agent's orchestration skill is active.
+
+Delegated role agents do not become the main agent. A delegated implementation executor starts with `/implementation-execution`, does not invoke `/orchestration` for the same delegated task, and does not launch further subagents for that delegated implementation assignment.
 
 Every role must invoke its designated skill before performing any work:
 
@@ -16,11 +18,11 @@ Every role must invoke its designated skill before performing any work:
 | Review (required reviewer set per `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」) | `/implementation-review-judgement` |
 | Completion judgement | `/task-completion-judgement` |
 
-A role must not begin active-item selection, file reads, file edits, subagent delegation, or any judgement before its designated skill is active.
+A role must not begin active-item selection, file reads, file edits, subagent delegation, or any judgement before its designated skill is active. Prohibitions defined by a role skill apply only while acting in that role; orchestrator prohibitions bind the main agent acting as orchestrator, not a delegated implementation executor acting under `/implementation-execution`.
 
 ## Orchestrator Role — Absolute Prohibitions
 
-The main agent acts as the orchestrator for all task-execution requests in this repository. While acting as orchestrator, the following are absolutely prohibited — no exception for urgency, simplicity, or user instruction:
+Only the main agent acts as the orchestrator for task-execution requests in this repository. While acting as orchestrator, the following are absolutely prohibited — no exception for urgency, simplicity, or user instruction:
 
 - Directly editing any file (Edit tool, Write tool, or any file-write operation)
 - Reading target implementation code, specs, tests, or review artifacts for implementation judgement
@@ -28,10 +30,7 @@ The main agent acts as the orchestrator for all task-execution requests in this 
 - Performing implementation, review judgement, progress judgement, or completion judgement directly
 - Asking the user for additional delegation permission when the request is already a task-execution command
 
-The only permitted orchestrator actions are:
-1. Read `docs/tasks/tasks.md` to select the single active work item
-2. Launch fresh subagent(s) for required delegated roles
-3. Record role launch/use failure in the governing record if launch fails
+The only permitted orchestrator actions are the entry, active-item selection, delegation-parameter extraction, role launch, and launch/use-failure recording actions defined by `docs/task-governance/workflow.md`. This includes reading only the workflow-defined entry references needed to select the single active work item and prepare delegation, then launching the required fresh subagent(s) or recording launch/use failure in the governing record.
 
 These prohibitions apply to all task types (secret-recovery implementation, documentation remediation, refactoring, and any other work). There is no "simple fix" exception. The detailed role-separation philosophy, delegation obligations, transport-agnostic role rule, and failure-handling rules are owned by `docs/task-governance/workflow.md` (`2. 役割`, `7. 役割分離`); follow that document.
 
@@ -67,7 +66,7 @@ This section is high-level orientation only. It points to owning documents for d
 
 ## Required References and Canonical Sources
 
-Before work, read `docs/README.md` first, then read `docs/tasks/README.md` and `docs/tasks/tasks.md` to select the single active work item, then follow the references that item requires (including `docs/tasks/<area>/...`). On any resumed session, cleared context, or continuation request, repeat this entry sequence first.
+Before work, follow the entry and active-item selection sequence defined by `docs/task-governance/workflow.md`: start from `docs/README.md`, `docs/tasks/README.md`, and `docs/tasks/tasks.md`, select the single active work item, then follow only the references that workflow and that item require for the current role. On any resumed session, cleared context, or continuation request, repeat this entry sequence first.
 
 Read the canonical source before acting in its area — do not rely on a restatement here:
 

@@ -12,36 +12,31 @@ use crate::{
     },
 };
 
+/// verify/enroll summary を `ReportPort` の CLI JSON 出力へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct JsonReportAdapter;
+pub(super) struct JsonReportAdapter;
 
 impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-        write_enroll_report(summary)
+        let payload = json!({
+            "serial": summary.serial,
+            "role": report_role(summary.role),
+            "checks": report_checks(&summary.checks),
+        });
+        write_json_report(&payload)
     }
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        write_verify_report(summary)
+        let payload = json!({
+            "serial": summary.serial,
+            "checks": report_checks(&summary.checks),
+        });
+        write_json_report(&payload)
     }
 }
 
-fn write_enroll_report(summary: &EnrollSummary) -> Result<()> {
-    let payload = json!({
-        "serial": summary.serial,
-        "role": report_role(summary.role),
-        "checks": report_checks(&summary.checks),
-    });
-    let rendered = serde_json::to_string_pretty(&payload).map_err(anyhow::Error::new)?;
-    println!("{rendered}");
-    Ok(())
-}
-
-fn write_verify_report(summary: &VerifySummary) -> Result<()> {
-    let payload = json!({
-        "serial": summary.serial,
-        "checks": report_checks(&summary.checks),
-    });
-    let rendered = serde_json::to_string_pretty(&payload).map_err(anyhow::Error::new)?;
+fn write_json_report(value: &serde_json::Value) -> Result<()> {
+    let rendered = serde_json::to_string_pretty(value).map_err(anyhow::Error::new)?;
     println!("{rendered}");
     Ok(())
 }
@@ -53,7 +48,7 @@ fn report_checks(
         .iter()
         .map(|(name, status)| {
             json!({
-                "name": report_check(*name),
+                "name": name.as_str(),
                 "status": report_check_status(*status),
             })
         })
@@ -64,18 +59,6 @@ fn report_role(value: YubikeyRole) -> &'static str {
     match value {
         YubikeyRole::Primary => "primary",
         YubikeyRole::Spare => "spare",
-    }
-}
-
-fn report_check(value: CheckName) -> &'static str {
-    match value {
-        CheckName::Setup => "setup",
-        CheckName::BwEmail => "bw-email",
-        CheckName::BwPassword => "bw-password",
-        CheckName::BwsAccessToken => "bws-access-token",
-        CheckName::LocalStorage => "local-storage",
-        CheckName::Bws => "bws",
-        CheckName::BwLogin => "bw-login",
     }
 }
 

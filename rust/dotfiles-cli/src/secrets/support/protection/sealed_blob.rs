@@ -8,6 +8,7 @@ use anyhow::Result;
 use bincode::config;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::secrets::support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached};
 use crate::secrets::support::protection::{ProtectedSecret, secret_random};
@@ -110,6 +111,19 @@ pub(crate) fn unwrap_content_key(decrypted: &[u8], key_len: usize) -> Result<Pro
     oaep::unwrap_oaep_sha256(decrypted, key_len)
 }
 
+/// RSA 復号結果の所有 buffer を zeroize 対象に閉じたまま content key を復元する。
+///
+/// caller は device/API 呼び出しだけを callback に閉じ込める。callback が返した
+/// `Zeroizing<Vec<u8>>` はこの support/protection 境界で保持し、content key 復元後の
+/// drop で repository 所有の中間 bytes を破棄する。
+pub(crate) fn unwrap_content_key_from_decrypt(
+    decrypt: impl FnOnce() -> Result<Zeroizing<Vec<u8>>>,
+    key_len: usize,
+) -> Result<ProtectedSecret> {
+    let decrypted = decrypt()?;
+    unwrap_content_key(&decrypted, key_len)
+}
+
 /// 既存 content key と wrapped key を使って plaintext を sealed blob へ変換する。
 ///
 /// plaintext は clone 先の protected buffer 上で in-place 暗号化し、caller supplied AAD
@@ -157,6 +171,26 @@ pub(crate) fn seal_with_key_wrap(
     })
 }
 
+/// `ProtectedSecret` の plaintext を sealed blob へ変換する専用操作。
+///
+/// caller は storage が定めた payload id / AAD と key-wrap callback だけを渡し、保護 backend の
+/// 汎用抽出や平文 borrow はこの module の外へ出さない。
+pub(crate) fn seal_material_with_key_wrap(
+    payload_id: u8,
+    plaintext: &ProtectedSecret,
+    aad: &[u8],
+    wrap_key: impl FnMut(&ProtectedSecret) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    seal_with_key_wrap(
+        SealWithKeyWrapRequest {
+            payload_id,
+            plaintext,
+            aad,
+        },
+        wrap_key,
+    )
+}
+
 /// encoded blob を payload id と AAD で検証し、key-unwrap callback 経由で plaintext を復元する。
 ///
 /// caller は `expected_payload_id` と AAD を sealing 時と同じ規則で渡す責務を負う。
@@ -170,6 +204,16 @@ pub(crate) fn open_with_key_unwrap(
     let blob = SealedBlob::decode_for_payload_id(input, expected_payload_id)?;
     let content_key = unwrap_key(&blob.wrapped_key)?;
     open_decoded(blob, &content_key, aad)
+}
+
+/// sealed blob の復号結果を `ProtectedSecret` として返す専用操作。
+pub(crate) fn open_material_with_key_unwrap(
+    input: &[u8],
+    expected_payload_id: u8,
+    unwrap_key: impl FnMut(&[u8]) -> Result<ProtectedSecret>,
+    aad: &[u8],
+) -> Result<ProtectedSecret> {
+    open_with_key_unwrap(input, expected_payload_id, unwrap_key, aad)
 }
 
 /// decoded blob を content key / AAD / tag で検証し、plaintext を protected buffer に復元する。

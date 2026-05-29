@@ -2,7 +2,7 @@
 //!
 //! process / memory 保護、暗号 primitive 補助、secret を扱う外部処理の保護境界をここに置く。
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod aead;
 pub(crate) mod process_io;
 pub(crate) mod protection;

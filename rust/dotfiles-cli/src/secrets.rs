@@ -10,15 +10,12 @@
 mod adapters;
 mod application;
 pub mod domain;
+mod entrypoint;
 pub mod ports;
 mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
 use domain::piv::SecretName;
-use domain::values::{
-    EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, GetCommand, PutCommand,
-    RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
-};
 
 use crate::Result;
 
@@ -130,14 +127,12 @@ enum VerifyCheck {
     BwLogin,
 }
 
-/// CLI で parse 済みの `dotfiles secrets` command を実機 YubiKey 境界で実行する。
+/// CLI で parse 済みの `dotfiles secrets` command を entrypoint 境界へ渡す。
 ///
-/// CLI 入口は解析済み command を dispatch し、crate 内に閉じた実プロセス境界を与える。
-///
-/// adapter concrete は `secrets` module 内だけに閉じ、crate 公開や adapter surface 化はしない。
+/// CLI 入口は command 定義と option 変換だけを担い、adapter concrete 生成と port 束ねは
+/// entrypoint 配線 module へ閉じる。
 pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
-    let mut boundary = adapters::SecretsAdapters::default();
-    dispatch(options, &mut boundary).await
+    entrypoint::run(options).await
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。
@@ -145,115 +140,4 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
     value
         .parse()
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
-}
-
-/// parse 済み command を use case に橋渡しする。
-///
-/// command ごとに分岐順序をここへ固定し、各 use case が必要とする境界 trait 集合を
-/// 1 箇所に明示することで、CLI 層から adapter 具体型依存が漏れることを防ぐ。
-async fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
-where
-    B: ports::DeviceSerialPort
-        + ports::DevicePinPolicyPort
-        + ports::SpareDeviceSerialPort
-        + ports::PinInputPort
-        + ports::SecretInputPort
-        + ports::RotationContinuationPort
-        + ports::BootstrapSecretDocumentInputPort
-        + ports::SecretOutputPort
-        + ports::SecretStoragePort
-        + ports::ReportPort
-        + ports::BwsClientPort,
-{
-    match options.command {
-        SecretsCommand::Yubikey(options) => match options.command {
-            YubikeyCommand::Setup(options) => application::run_setup_with::run_setup_with(
-                SetupCommand {
-                    serial: options.serial,
-                },
-                boundary,
-            ),
-            YubikeyCommand::Put(options) => {
-                let command = PutCommand {
-                    name: options.name,
-                    serial: options.serial,
-                    force: options.force,
-                };
-                if options.stdin {
-                    application::run_put_with_stdin::run_put_with_stdin(command, boundary)
-                } else {
-                    application::run_put_with_prompt::run_put_with_prompt(command, boundary)
-                }
-            }
-            YubikeyCommand::Get(options) => application::run_get_with::run_get_with(
-                GetCommand {
-                    name: options.name,
-                    serial: options.serial,
-                },
-                boundary,
-            ),
-            YubikeyCommand::EnrollPrimary(options) => {
-                let command = EnrollPrimaryCommand {
-                    serial: options.serial,
-                };
-                if options.stdin_json {
-                    application::run_enroll_primary_with_stdin_json::run_enroll_primary_with_stdin_json(
-                        command,
-                        boundary,
-                    )
-                } else {
-                    application::run_enroll_primary_with_prompt::run_enroll_primary_with_prompt(
-                        command, boundary,
-                    )
-                }
-            }
-            YubikeyCommand::EnrollSpare(options) => {
-                let command = EnrollSpareCommand {
-                    primary_serial: options.primary_serial,
-                    spare_serial: options.spare_serial,
-                };
-                if options.stdin_json {
-                    application::run_enroll_spare_with_stdin_json::run_enroll_spare_with_stdin_json(
-                        command, boundary,
-                    )
-                } else {
-                    application::run_enroll_spare_with_prompt::run_enroll_spare_with_prompt(
-                        command, boundary,
-                    )
-                }
-            }
-            YubikeyCommand::RotateBwsToken(options) => {
-                let command = RotateBwsTokenCommand {
-                    serial: options.serial,
-                };
-                if options.stdin {
-                    application::run_rotate_bws_token_with_stdin::run_rotate_bws_token_with_stdin(
-                        command, boundary,
-                    )
-                } else {
-                    application::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
-                        command, boundary,
-                    )
-                }
-            }
-        },
-        SecretsCommand::VerifyYubikey(options) => {
-            application::run_verify_yubikey_with::run_verify_yubikey_with(
-                VerifyYubikeyCommand {
-                    serial: options.serial,
-                    checks: options
-                        .check
-                        .into_iter()
-                        .map(|check| match check {
-                            VerifyCheck::Bws => ExternalCheck::Bws,
-                            VerifyCheck::BwLogin => ExternalCheck::BwLogin,
-                        })
-                        .collect(),
-                    all: options.all,
-                },
-                boundary,
-            )
-            .await
-        }
-    }
 }

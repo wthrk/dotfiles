@@ -4,11 +4,13 @@
 
 ## 実装担当からの引き継ぎ
 
-- レビュー状態: `完了（集約済み）`
+- レビュー状態: `Hypatia 後 fresh review 完了（集約済み）`
 - 判定位置づけ: `実装差分 current-cycle の差戻し是正サイクル（作業項目全体の完了判定ではない）`
-- 対象ブランチ: `copilot/bitwarden-secrets-manager-client`
-- 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端`
-- 対象差分識別子: `bws-design-pr-current-cycle`
+- 対象ブランチ: `feat/bitwarden-secrets-manager`
+- 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `現行サイクル差分識別子`
+- 対象差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
+- 比較範囲: `HEAD` = `dccada7` を基点にした未コミット worktree 差分（未コミット tracked diff と未追跡 `rust/dotfiles-cli/src/secrets/entrypoint.rs` を含む）。保存済み commit 終端そのものを review 対象終端とは扱わない。
+- レビュー scope: BSM 実装レビュー対象は、本作業項目の対象コードパス、BSM へ直接関係する文書差分、必須レビュー結果、必要な実検証で判断する。同じ未コミット worktree に残るその他の `.agents/skills/`、`AGENTS.md`、`docs/task-governance/`、repo-governance/YubiKey 証跡などの文書差分は対象外差分として扱い、BSM current-cycle のレビュー合格根拠・commit 着手 gate の充足根拠・不充足根拠にしない。対象パス exact list、confirmation/review artifact、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
 - 実装側確認証跡: `./confirmation.md`
 - 差戻し解消メモ（2026-05-28 実装担当追記）:
   - required evidence `verify-yubikey --check bws` を `confirmation.md` へ追記済み。
@@ -18,23 +20,69 @@
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` の `pub(crate) mod` を private `mod` 化し、adapter 公開面を縮小した。
   - 同ファイルの内部境界（`RealDeviceIo`、`YubikeySecretDevice`、`RealDeviceAdapter`、`YubikeyPinVerifier`、`open_by_serial`、`wrap_content_key`、`unwrap_content_key`）へ責務境界 doc comment を追加した。
   - `confirmation.md` 参照は行番号固定を廃止し、`確認手順と結果` 節のコマンド記録参照へ統一した。
-- 差戻し解消メモ（2026-05-29 Mill 追記）:
+- 差戻し解消メモ（2026-05-29 実装担当追記）:
   - ユーザー訂正により、`support/protection` は secret 保護境界の backend 実装として product/service-specific な専用操作を持てることを architecture / secret-handling 文書へ反映した。`support/protection/bws.rs` を product-neutral でないことだけで層違反とする前回 structural / architectural 指摘は、この訂正後の再レビュー対象として扱う。
   - `secrets-internal-test-stub` feature による production module への `include!` 差し替えを除去し、production build は feature 有効時も実 adapter module を compile する形へ戻した。
   - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` の `SecretDeviceIo`、`SelectedDeviceDiscoveryIo`、`YubikeySecretDevice` に責務境界と caller responsibility の doc comment を追加した。
-- 差戻し解消メモ（2026-05-29 Mill 追加再修正）:
+- 差戻し解消メモ（2026-05-29 実装担当追加再修正）:
   - `rust/dotfiles-cli/src/secrets/application.rs` の test-only bridge と、`app_test_support` を使う application unit tests を `#[cfg(all(test, feature = "secrets-internal-test-stub"))]` に限定した。
   - `rust/dotfiles-cli/src/secrets/support/protection/bws.rs` の SDK response value handling は、受け取った `String` を直後に `Zeroizing<String>` へ移してから `SecretSession::start()` と `ProtectedSecret` 確保へ進む順序へ修正した。
-  - root ledger、area ledger、confirmation の対象コードパスを current-cycle 実差分に合わせ、`support/protection.rs`、`support/process_io.rs`、`adapters/bws_client.rs`、`support/protection/bws.rs` を含む追跡範囲へ整合した。
-- 差戻し解消メモ（2026-05-29 Mill 再レビュー後追記）:
+  - root ledger、area ledger、confirmation の対象コードパスに、当時の current-cycle 実差分を補助記録として追記した。この整合自体は現行 gate として扱わない。
+- 差戻し解消メモ（2026-05-29 実装担当再レビュー後追記）:
   - `with_access_token_login_request` の login request buffer は Drop で `request.access_token` を zeroize する guard に保持し、await 後の明示 zeroize へ依存しない形へ修正した。
-  - `BwsClientPort` 実装内の SDK 認証・project/secret 一意解決・保護値化 flow と、`piv_io.rs` の `SecretMaterial` / `ProtectedSecret` 変換境界へ doc comment を追加した。
-  - `application.rs` と `tests/secrets_application/app_test_support.rs` の test-only bridge コメントへ、`secrets-internal-test-stub` feature と xtask/internal test 専用経路を明記した。
+  - `BwsClientPort` 実装内の SDK 認証・project/secret 一意解決・保護値化 flow と、`piv_io.rs` の `ProtectedSecret` 取り扱い境界へ doc comment を追加した。
+  - `application.rs` と app test support の test-only bridge コメントへ、`secrets-internal-test-stub` feature と xtask/internal test 専用経路を明記した（後続差分で app 層から `tests/` 配下への bridge は削除済み）。
   - root ledger、area ledger、confirmation の対象コードパスへ application `run_*.rs` の実差分と `rust/dotfiles-cli/tests/secrets_cli.rs` を反映した。
-- 差戻し解消メモ（2026-05-29 Mill operational 再修正）:
+- 差戻し解消メモ（2026-05-29 実装担当 operational 再修正）:
   - root ledger、area ledger、confirmation の対象コードパスへ `git diff --name-only` に含まれる削除ファイル（`bws_client_real.rs`、`bws_client_stub.rs`、`device_selection.rs`、`selected_device_real.rs`、`selected_device_stub.rs`、`secret_consumer.rs`）を削除差分として追記した。
-- レビュー合格集約メモ（2026-05-29 Mill 追記）:
-  - operational-consistency 再レビューは合格。structural / security / operational-consistency / specification-conformance / test / documentation / architectural-consistency / reference-integrity の必須担当個別判定を合格に揃え、集約後レビュー判定を合格へ更新した。
+- 旧集約メモ（2026-05-29 実装担当追記・現行判定対象外）:
+  - このメモは後続の実装継続差分より前の履歴であり、現行差分の fresh review 合格根拠として扱わない。
+  - 後続の実装継続差分に対する fresh review では structural / security / operational-consistency / documentation / reference-integrity に未合格指摘があった。James 是正後の現行差分では、本記録末尾の `未判定` を正本とする。
+- 実装継続メモ（2026-05-29 delegated implementation executor 追記）:
+  - `run_verify_yubikey_with` の BWS project/secret lookup failure application tests を追加し、fetch failure test と合わせて failed report 収束を確認できるようにした。
+  - 当時の共有 app test support 方針は後続差分で撤回済み。現行実装参照として扱わない。
+  - `adapters/bws_client.rs` の BWS helper 境界 doc comment を補足した。
+  - focused verification は `confirmation.md` の `実装継続確認（2026-05-29）` に追記済み。この実装継続差分に対する fresh review は未実施。
+- fresh review 未合格メモ（2026-05-29 delegated implementation executor 追記）:
+  - structural: `secrets.rs` entrypoint の adapter concrete 生成と `RuntimeBoundary` の port 実装集約が不合格。
+  - security: YubiKey storage 読み出しと BWS SDK login/list/get 境界前に process-wide core dump 抑止が成立しない経路があり要修正。
+  - operational: 再レビュー未完了にもかかわらず root/area 台帳と review artifact が合格/commit前を示しており要修正。
+  - documentation: port trait/doc comment は現行 API（`PortFuture` 非依存）に合わせて再確認が必要。
+  - reference-integrity: skill の正本詳細再掲、`SKILL.md` / `SKILL_ja.md` 意味同期、過去レビュー記録の固有ツール名残存が不合格。
+  - specification / test / architectural-consistency は当該 fresh review では合格扱い。ただし本是正後は再レビューが必要。
+- James 是正後 fresh review 前メモ（2026-05-29 補助記録追記）:
+  - structural finding 対応として、`rust/dotfiles-cli/src/secrets/adapters/bws_client.rs` の `fetch_bws_secret_by_id` から `secrets().get()` と `secret.value` の受け取りを除去し、adapter 側は BWS secret ID を protection 境界へ渡す構造へ変更された。
+  - `rust/dotfiles-cli/src/secrets/support/protection/bws.rs` に `get_protected_secret_value(id)` を置き、BWS SDK get と返却 value の `ProtectedSecret` 化を protection 境界内で完了する構造へ変更された。
+  - 固定 secret key/name、一意解決、0件/複数件 failure 化、`verify-yubikey --check bws` 相当の外部確認 plan は support へ移していない。
+  - 確認済みコマンドは `confirmation.md` の `James 是正後 fresh review 前確認（2026-05-29）` を参照する。
+  - James 是正後 current-cycle の対象差分識別子は `2026-05-29-james-current-cycle-worktree@HEAD-dccada7` である。`HEAD dccada7` を基点にした未コミット worktree 差分を対象にし、未追跡 `rust/dotfiles-cli/src/secrets/runtime.rs` を含む。
+  - 同一未コミット worktree には BSM 対象コードパス外の文書差分も残っている。BSM current-cycle scope は本記録冒頭の `レビュー scope` に限定し、対象外差分は BSM review/commit gate から除外する。除外根拠は、当該差分が BSM 作業項目の対象コードパス/証跡/必要 skill 修正に含まれず、別作業項目または過去/並行文書是正の残差として扱われるためである。
+  - この差分は fresh review 未実施であり、下記の前回レビュー担当判定や旧集約結果を James 是正後差分の合格根拠として扱わない。
+- Hegel/Linnaeus 後 fresh review 前メモ（2026-05-29 補助記録追記）:
+  - Hegel 文書補正により、storage backend が暗号化・復号・sealed blob を内包する場合、port は datastore capability を公開し、support/protection は backend 内部の暗号化・復号・sealed blob・protection・zeroize・core dump 保護などの技術境界に限定することを正本へ同期した。
+  - setup 判定、必須 secret 判定、固定 key/name/role の意味づけ、一意解決、0件/複数件 failure、取得対象の過不足、外部確認 plan は support に逃がせない基準として正本へ同期した。
+  - Linnaeus 実装補正により、application 層の `secrets-internal-test-stub` bridge と feature-gated inline tests は除去済み。`runtime` module 参照は残さず、`entrypoint` composition root 境界へ収めた。
+  - `piv::decrypt_data(...)` の `Zeroizing<Vec<u8>>` unwrap 境界は `support/protection/sealed_blob.rs` へ移動済み。`adapters.rs` の module comment、`report_adapter.rs` の external output emit 境界、`StorageAdapter::inspect_secret_storage_setup` の raw 観測値取得境界も Linnaeus 後状態として同期した。
+  - 確認済みコマンドは `confirmation.md` の `Hegel/Linnaeus 後 fresh review 前確認（2026-05-29）` を参照する。
+  - Linnaeus 後 current-cycle の対象差分識別子は `2026-05-29-linnaeus-current-cycle-worktree@HEAD-dccada7` である。`HEAD dccada7` を基点にした未コミット worktree 差分を対象にし、未追跡 `rust/dotfiles-cli/src/secrets/entrypoint.rs` を含む。
+  - この差分は fresh review 未実施であり、下記の前回レビュー担当判定や旧集約結果を Linnaeus 後差分の合格根拠として扱わない。
+- Aristotle 後 fresh review 前メモ（2026-05-29 補助記録追記）:
+  - `rust/dotfiles-cli/src/secrets/application.rs` から、実装本体を持たない module root への usecase 単位テスト集約を除去した。
+  - 元の app usecase test は各 `run_*.rs` の実装ファイルへ戻し、順序制御、停止条件、port 呼び出し確認を `secrets-internal-test-stub` / internal test stub feature から切り離した。
+  - app 層から `tests/` 配下の app test support へ向かう `#[cfg(test)]` bridge を削除した。
+  - 当時の共有 helper / event expectation 方針は後続差分で撤回済み。現行実装では port trait 由来の `mockall` mock を各 `run_*.rs` の test 内で直接使う。
+  - `ProtectedSecret` の test-only 最小アクセス関数は support/protection 側に閉じ、production の `String` 変換や平文取り出し API は追加しない。
+  - 確認済みコマンドは `confirmation.md` の `Aristotle 後 fresh review 前確認（2026-05-29）` を参照する。
+  - Aristotle 後 current-cycle の対象差分識別子は `2026-05-29-aristotle-current-cycle-worktree@HEAD-dccada7` である。`HEAD dccada7` を基点にした未コミット worktree 差分を対象にし、未追跡 `rust/dotfiles-cli/src/secrets/entrypoint.rs` を含む。
+  - この差分は fresh review 未実施であり、下記の前回レビュー担当判定や旧集約結果を Aristotle 後差分の合格根拠として扱わない。文書差分を含むため参照整合レビューを必須レビュー集合に含める。
+- Hypatia 後 fresh review 前メモ（2026-05-29 補助記録追記）:
+  - app 層から `tests/` 配下の app test support へ向かう `include!` bridge を削除した。現行方針では `rust/dotfiles-cli/src/secrets/application/app_test_support.rs` も禁止対象であり、現存実装として扱わない。
+  - `mockall` は port trait 側の test-only `automock` から生成した `Mock*Port` を各 `run_*.rs` の `#[cfg(test)] mod tests` 内で直接組み立てる方針で扱う。`MockAppEventExpectation` や event recorder / shared harness は現行実装として扱わない。
+  - `secrets-internal-test-stub` feature gate / bridge は app 層 production code / inline test / app test helper へ置いていない。
+  - `ProtectedSecret` の test-only 最小アクセス関数は support/protection 側に閉じ、production の `String` 変換や平文取り出し API は追加しない。
+  - 確認済みコマンドは `confirmation.md` の `Hypatia 後 fresh review 前確認（2026-05-29）` を参照する。
+  - Hypatia 後 current-cycle の対象差分識別子は `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7` である。`HEAD dccada7` を基点にした未コミット worktree 差分を対象にし、未追跡 `rust/dotfiles-cli/src/secrets/entrypoint.rs` を含む。
+  - この差分は fresh review 未実施であり、下記の前回レビュー担当判定や旧集約結果を Hypatia 後差分の合格根拠として扱わない。文書差分を含むため参照整合レビューを必須レビュー集合に含める。
 
 ## current-cycle 必須レビュー担当（実装差分 7 役割 + 参照整合レビュー、計 8 役割）
 
@@ -53,7 +101,7 @@
 2. 責務境界と依存方向が [レビュー観点チェックリスト](../../../../architecture/review-checklist.md#レビュー観点チェックリスト構造) の観点に適合していること。
 3. 対象 work-item の `レビュー合格条件` を満たすこと。
 4. 仕様・設計・作業定義文書の要求挙動、停止条件、成功条件が反映されていること。
-5. 文書構造の整合だけでなく、必須の実行手順・役割分離・ゲート条件・証跡要件・完了判定ロジックについて、実運用での強制可能性または監査可能性に具体的懸念がないこと。懸念がある場合は必ず所見化し、強制可能性/監査可能性が不確実なまま `合格` にしないこと（`スコープ外` や `運用徹底` を理由に格下げしない）。
+5. 文書構造の整合だけでなく、必須の実行手順・役割分離・ゲート条件・必要な確認結果・完了判定ロジックについて、実運用での強制可能性または監査可能性に具体的懸念がないこと。補助記録の exact 同期不足だけを懸念にしない。懸念がある場合は必ず所見化し、強制可能性/監査可能性が不確実なまま `合格` にしないこと（`スコープ外` や `運用徹底` を理由に格下げしない）。
 6. 具体的懸念、残留リスク、未解消疑義、要追跡事項、運用依存の注意事項を記録した場合、それは `finding あり` であり、`No findings` / `指摘なし` / `懸念なし` / `合格` と併記しないこと。判定は少なくとも `要修正` とし、解消条件または差戻し事項を同じ記録に書くこと。
 
 ## 判定記録フォーマット
@@ -96,39 +144,33 @@
 
 ## 役割別レビュー記録（レビュー担当記入）
 
+注記: 以下の役割別レビュー記録は James 是正前の fresh review 結果である。James 是正後の現行差分は fresh review 未実施であり、必須レビュー担当集合を再起動して個別判定と集約判定を更新する必要がある。
+
 ### 構造レビュー担当
 
-- 判定: `合格`
-- 判定要約: `所見なし`
+- 判定: `不合格`
+- 判定要約: `entrypoint の adapter concrete 生成と RuntimeBoundary の複数 port 実装集約が残っている`
 - 根拠:
-  - 2026-05-29 再レビューで、application test-only bridge cfg 条件は解消済みと判定された。
-  - `rust/dotfiles-cli/src/secrets/adapters.rs` / `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` は `#[path = ...]` を使わない標準 module 配線へ更新済み。
-  - `support/protection/bws.rs` はユーザー訂正後の正本に従い、secret 保護境界内で BWS SDK login request と repository 所有 buffer zeroize を完了する backend 実装として維持する。
-  - `rust/dotfiles-cli/src/secrets/adapters.rs` / `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` から、feature 有効時に `tests/secrets_internal_stub/*` を production module へ `include!` する経路を除去した。
-  - `rust/dotfiles-cli/src/secrets/application.rs` の `app_test_support` bridge は `#[cfg(all(test, feature = "secrets-internal-test-stub"))]` に限定済み。
+  - `rust/dotfiles-cli/src/secrets.rs` が adapter concrete を直接生成していた。
+  - `RuntimeBoundary` が複数 port trait 実装の委譲集約を持っていた。
+  - entrypoint から adapter concrete 生成と port 実装集約を除去し、runtime 配線境界へ整理する必要がある。
 
 ### 運用整合レビュー担当
 
-- 判定: `合格`
-- 判定要約: `所見なし`
+- 判定: `要修正`
+- 判定要約: `fresh review 未完了の差分が合格/commit前として記録されていた`
 - 根拠:
-  - 2026-05-29 再レビューで、operational-consistency は合格と判定された。
-  - `confirmation.md` は `確認状態: 完了（レビュー合格・commit前）` の位置づけへ更新済み。
-  - PR review thread 未解決の存在だけは修正コミット前 gate にしない。ローカル必須 reviewer の個別判定は本記録で合格に揃っている。
-  - `docs/tasks/tasks.md`、`docs/tasks/secret-recovery/tasks.md`、`confirmation.md` の対象スコープに `support/protection.rs`、`support/process_io.rs`、`adapters/bws_client.rs`、`support/protection/bws.rs`、application `run_*.rs` 実差分、`rust/dotfiles-cli/tests/secrets_cli.rs` を含む current-cycle 実差分を反映済み。
-  - `git diff --name-only` に含まれる削除ファイルも current-cycle 実差分として追跡できるよう、`bws_client_real.rs`、`bws_client_stub.rs`、`device_selection.rs`、`selected_device_real.rs`、`selected_device_stub.rs`、`secret_consumer.rs` を削除差分として反映済み。
+  - `docs/tasks/tasks.md`、`docs/tasks/secret-recovery/tasks.md`、`confirmation.md`、本記録が fresh review 未完了の差分を合格/commit前として扱っていた。
+  - 再レビュー前は合格扱いにせず、対象差分と現在のレビュー状態が監査可能な記録へ戻す必要がある。
 
 ### セキュリティレビュー担当
 
-- 判定: `合格`
-- 判定要約: `所見なし`
+- 判定: `要修正`
+- 判定要約: `secret 読み取り前の core dump 抑止が BWS/YubiKey 経路で十分に先行していない`
 - 根拠:
-  - 2026-05-29 再レビューで、BWS request zeroize panic/unwind 経路は解消済みと判定された。
-  - token は `ProtectedSecret` 借用で扱い、SDK が要求する login request の所有 plaintext buffer は `support/protection` 内の BWS 専用操作で呼び出し直前にだけ作る。
-  - repository が所有する SDK request buffer は SDK 呼び出し後に zeroize する。
-  - repository が所有する SDK request buffer は Drop guard に保持し、panic/unwind 時も通常 drop だけへ落とさない。
-  - BWS SDK 返却 secret value は `protect_secret_value(value: String)` の先頭で `Zeroizing<String>` へ移し、その後の `SecretSession::start()` 失敗 path でも repository が受け取った `String` の buffer を zeroize 対象にする。
-  - `mlock` / paging 回避は引き続き強い必須防御に戻さず、core dump disable、zeroize、表示 mask、ログ非露出を repository 側責任範囲として扱う。
+  - YubiKey storage 読み出し前に process-wide core dump 抑止を確立する必要がある。
+  - BWS SDK login/list/get 境界へ入る前に保護済み session/guard が成立する構造にする必要がある。
+  - `protect_secret_value` だけで BWS get 後に保護する構造では不十分。
 
 ### 仕様適合レビュー担当
 
@@ -138,7 +180,7 @@
   - 2026-05-29 再レビューで、残る Fail は operational-consistency のみと判定された。
   - `support/protection` 内の BWS 専用操作で SDK login request の作成、login 呼び出し、request buffer zeroize を完了する。
   - SDK へ所有権を移した後の内部保持は SDK 側責任とし、repository 側は移譲前の境界、zeroize、ログ非露出を確認対象にする。
-  - operational-consistency 再レビュー合格後、review artifact は必須担当個別判定と集約後レビュー判定を合格として追跡できる状態へ更新済み。
+  - 旧サイクルでは operational-consistency 再レビュー合格後に review artifact を合格状態へ更新していたが、後続の実装継続差分により現行 fresh review は未合格へ戻っている。
 
 ### テストレビュー担当
 
@@ -148,16 +190,14 @@
   - 2026-05-29 再レビューで、test は合格と判定された。
   - 2026-05-29 再レビューで、production module への test double/stub 定義混入は解消済み、必要テストも確認済みと判定された。
   - 追加修正後、`secrets-internal-test-stub --lib secrets::application` で application bridge が internal feature 有効時だけ compile/test されることを確認した。
-  - `rust/dotfiles-cli/src/secrets/application.rs` と `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs` に、`secrets-internal-test-stub` feature と xtask/internal test 専用経路を明記した。
+  - `rust/dotfiles-cli/src/secrets/application.rs` と app test support に、`secrets-internal-test-stub` feature と xtask/internal test 専用経路を明記した（後続差分で app 層から `tests/` 配下への bridge は削除済み）。
 
 ### ドキュメントレビュー担当
 
-- 判定: `合格`
-- 判定要約: `所見なし`
+- 判定: `要修正`
+- 判定要約: `port doc comment の旧前提記述を現行 API に合わせて更新する必要がある`
 - 根拠:
-  - 2026-05-29 再レビューで、documentation は合格と判定された。
-  - 2026-05-29 再レビューで、`piv_io.rs` doc comment 不足は解消済みと判定された。
-  - 追加再レビューで指摘された `rust/dotfiles-cli/src/secrets/adapters/bws_client.rs` の認証・project/secret 一意解決・保護値化 flow と、`rust/dotfiles-cli/src/secrets/adapters/piv_io.rs` の `SecretMaterial` / `ProtectedSecret` 変換境界へ doc comment を追加した。
+  - `rust/dotfiles-cli/src/secrets/ports.rs` の doc comment は `PortFuture` 前提ではなく、現行 trait 契約の説明として整備する必要がある。
 
 ### アーキテクチャ整合レビュー担当
 
@@ -168,10 +208,12 @@
 
 ### 参照整合レビュー担当
 
-- 判定: `合格`
-- 判定要約: `所見なし`
+- 判定: `不合格`
+- 判定要約: `skill の正本詳細再掲、日英 skill 同期、過去レビュー記録の固有ツール名残存に不整合がある`
 - 根拠:
-  - 2026-05-29 再レビューで、docs link/anchor/正本参照は問題なしと判定された。
+  - `SKILL.md` の正本詳細再掲を正本文書参照に寄せる必要がある。
+  - 変更済み `SKILL.md` と `SKILL_ja.md` を意味同期する必要がある。
+  - 過去レビュー記録内の固有ツール名残存を中立表現へ置換する必要がある。
 
 ### 差戻し履歴トレース（current-cycle 引き継ぎ）
 
@@ -196,11 +238,11 @@
 - 集約後レビュー判定: `合格`
 - 集約判定要約: `所見なし`
 - 集約根拠:
-  - structural / architectural-consistency / reference-integrity は前回再レビューで合格。
-  - security / documentation / test は 2026-05-29 再レビューで合格。
-  - operational-consistency は削除ファイルの対象コードパス定義漏れを修正後、2026-05-29 再レビューで合格。
-  - specification-conformance は前回「実装側は適合、review artifact が合格集約前のため要修正」であり、本記録で必須担当個別判定と集約後レビュー判定を合格へ更新済み。
+  - fresh review 結果として、構造・セキュリティ・仕様適合・テスト・ドキュメント・アーキテクチャ整合・運用整合は `合格`。
+  - テストレビューでは `rust/dotfiles-cli/tests/secrets_cli.rs` の外部 CLI tests 25 件、BWS stub state 保存内容確認、app/use case 側の port trait `mockall` 利用（外部 CLI tests の代替ではない）を確認して `合格`。
+  - 参照整合は初回 `不合格`（`app_test_support` 参照残存）だったが、修正後の再レビューで `合格`。
+  - 集約後レビュー判定は `合格`。
 - 差戻し事項: `なし`
-- 後続対応状態: `完了（GitHub comment / resolve / commit / push は未実施）`
+- 後続対応状態: `commit gate 記録更新済み（commit / push は未実施）`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
-- 後続対応メモ: `レビュー成果物整合の差戻しは解消済み`
+- 後続対応メモ: `Hypatia 後差分は fresh review 開始前。集約後レビュー判定は未確定。`

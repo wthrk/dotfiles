@@ -23,7 +23,8 @@
 - README は導線のみを記載し、本文規約を再掲しない。
 - 仕様・設計・運用規約・証跡の責務を混在させない。
 - 文書是正では、無関係文書への同期更新を必須にしない。
-- 文書規約は、後付けの文書書換えだけで充足できる形式要件を gate にしてはならない。実行、レビュー品質、検証正確性のいずれも実質的に改善しない exact file-set/file-count 台帳、重複 scope 台帳、actor/run bookkeeping などは必須化しない。
+- 文書規約は、後付けの文書書換えだけで充足できる形式要件を gate にしてはならない。実行、レビュー品質、検証正確性のいずれも実質的に改善しない exact file-set/file-count 台帳、重複 scope 台帳、actor/run bookkeeping、current-cycle 文言の完全一致、confirmation/review artifact の exact 同期などは必須化しない。
+- review artifact / confirmation / 台帳は補助記録であり、実装・レビュー・commit gate・PR review 対応の代替ではない。修正済み PR コメントへの返信/resolve と誤検出コメントへの説明返信は維持するが、補助記録の同期そのものを目的化しない。
 
 ## 参照規則
 

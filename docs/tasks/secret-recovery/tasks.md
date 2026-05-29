@@ -37,7 +37,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
-  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 実装状態: `完了`
@@ -62,10 +61,11 @@
 
 ### Bitwarden Secrets Manager
 
-- 状態: `進行中（レビュー合格・commit前）`
+- 状態: `進行中（Hypatia 後 fresh review 待ち）`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [review-artifacts/bitwarden-secrets-manager/review.md](review-artifacts/bitwarden-secrets-manager/review.md#bitwarden-secrets-manager-レビュー記録)
+- 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `Cargo.toml`
@@ -75,6 +75,7 @@
   - `rust/dotfiles-cli/src/lib.rs`
   - `rust/dotfiles-cli/src/cli.rs`
   - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_stdin_json.rs`
@@ -110,10 +111,9 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
-  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_internal_stub/piv_io_internal_stub.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 実装状態: `レビュー合格・commit前`
+- 実装状態: `Hypatia 後 fresh review 待ち`
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -121,10 +121,10 @@
 | 規約計画 | 完了 | `../../secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/bitwarden-secrets-manager.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 完了 | `../../secret-recovery/bitwarden-secrets-manager-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 実装（デザインPR） | 完了 | 実コード差分（`work-items/bitwarden-secrets-manager.md` 記載の `実装/テスト差分の保存コミット終端` を参照） | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
-| 確認 | 完了 | `review-artifacts/bitwarden-secrets-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 完了（合格集約済み） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 完了（GitHub 操作・commit/push は未実施） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 実装（デザインPR） | fresh review 待ち | 実コード差分（`2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`。`HEAD dccada7` を基点にした未コミット worktree 差分として参照） | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
+| 確認 | fresh review 前確認済み | `review-artifacts/bitwarden-secrets-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 未実施（Hypatia 後 fresh review 必須） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 未着手（fresh review 合格後に判定） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
 
 ### GnuPG / SSH
 

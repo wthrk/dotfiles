@@ -4,7 +4,7 @@
 
 ## タスクファイルの責務
 
-- タスク台帳は「何を、どこまで、どの証跡で確認できるか」を保持する。
+- タスク台帳は「何を、どこまで、どのレビュー/確認結果で追えるか」を保持する。
 - 詳細手順や重複説明は持たない。
 
 ## タスクファイルに必須の項目（最小）
@@ -62,4 +62,4 @@ active work item が完了したら、次回実行前に `docs/tasks/tasks.md` �
 - 同じ判定事実を複数文書へ必須重複させない。
 - レビュー結果はレビュー記録を正本とする。
 - 台帳はレビュー証跡への参照を保持すれば足りる。
-- 台帳契約は、後付けの文書書換えだけで満たせる形式条件を要求してはならない。exact file-set/file-count ledger、重複 scope ledger、actor/run bookkeeping などは、実行境界、レビュー品質、検証正確性を具体的に改善する場合に限って要求できる。
+- 台帳契約は、後付けの文書書換えだけで満たせる形式条件を要求してはならない。exact file-set/file-count ledger、重複 scope ledger、actor/run bookkeeping、current-cycle 文言の完全一致、confirmation/review artifact の exact 同期などは、実行境界、レビュー品質、検証正確性を具体的に改善する場合に限って補助記録として扱えるが、gate 条件にはしない。

@@ -35,7 +35,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
-  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
@@ -47,7 +46,7 @@
 
 ### Bitwarden Secrets Manager
 
-- 状態: `進行中（レビュー合格・commit前）`
+- 状態: `進行中（Hypatia 後 fresh review 待ち）`
 - GitHub issue: #13
 - 主成果物: `実コード差分`
 - 対象コードパス:
@@ -58,6 +57,7 @@
   - `rust/dotfiles-cli/src/lib.rs`
   - `rust/dotfiles-cli/src/cli.rs`
   - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_stdin_json.rs`
@@ -94,10 +94,10 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_internal_stub/piv_io_internal_stub.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)
+- 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### GnuPG / SSH

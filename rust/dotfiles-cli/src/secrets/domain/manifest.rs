@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 
+use crate::secrets::support::protection::ProtectedSecret;
+
 use super::{
-    material::SecretMaterial,
     piv::{PivObjectId, SecretName, SecretStorageSpec},
     wire::ManifestWire,
 };
@@ -29,11 +30,11 @@ pub struct SecretManifest {
 
 /// bootstrap enrollment で受け取る secret document の純粋な domain 表現。
 ///
-/// 各 field は常に `SecretMaterial` として保持し、平文文字列化は domain の責務に含めない。
+/// 各 field は `ProtectedSecret` として保持し、平文文字列化は domain の責務に含めない。
 pub struct BootstrapSecretDocument {
-    pub bw_email: SecretMaterial,
-    pub bw_password: SecretMaterial,
-    pub bws_access_token: SecretMaterial,
+    pub bw_email: ProtectedSecret,
+    pub bw_password: ProtectedSecret,
+    pub bws_access_token: ProtectedSecret,
 }
 
 impl SecretManifest {
@@ -136,7 +137,7 @@ impl BootstrapSecretDocument {
     ///
     /// JSON field 名と domain secret の対応は bootstrap document schema の業務規則であり、
     /// adapter は JSON decode 後の map を渡すだけに限定する。
-    pub fn from_field_map(mut fields: BTreeMap<String, SecretMaterial>) -> Result<Self> {
+    pub fn from_field_map(mut fields: BTreeMap<String, ProtectedSecret>) -> Result<Self> {
         let missing = |field: &str| anyhow::anyhow!("JSON field `{field}` is missing");
         let bw_email = fields
             .remove("bw-email")
@@ -155,16 +156,16 @@ impl BootstrapSecretDocument {
         })
     }
 
-    /// 既に取得済みの `SecretMaterial` 群から bootstrap document を構築する。
+    /// 既に取得済みの `ProtectedSecret` 群から bootstrap document を構築する。
     pub fn from_secret_materials(
-        bw_email: &SecretMaterial,
-        bw_password: &SecretMaterial,
-        bws_access_token: &SecretMaterial,
+        bw_email: &ProtectedSecret,
+        bw_password: &ProtectedSecret,
+        bws_access_token: &ProtectedSecret,
     ) -> Result<Self> {
         Ok(Self {
-            bw_email: SecretMaterial::try_clone(bw_email)?,
-            bw_password: SecretMaterial::try_clone(bw_password)?,
-            bws_access_token: SecretMaterial::try_clone(bws_access_token)?,
+            bw_email: ProtectedSecret::try_clone(bw_email)?,
+            bw_password: ProtectedSecret::try_clone(bw_password)?,
+            bws_access_token: ProtectedSecret::try_clone(bws_access_token)?,
         })
     }
 
@@ -173,7 +174,7 @@ impl BootstrapSecretDocument {
     /// PIV object の読み出し順や変数名ではなく、`SecretStorageSpec::name` が持つ
     /// domain 対応を正本にして document field へ戻す。
     pub fn from_storage_materials(
-        entries: [(SecretStorageSpec, SecretMaterial); 3],
+        entries: [(SecretStorageSpec, ProtectedSecret); 3],
     ) -> Result<Self> {
         let mut bw_email = None;
         let mut bw_password = None;
@@ -211,7 +212,7 @@ impl BootstrapSecretDocument {
     ///
     /// document field と YubiKey storage object の対応は domain rule なので、use case は
     /// field 名から object id / AAD 規則を再構築せず、この対応を保存手順へ適用する。
-    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &SecretMaterial); 3] {
+    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &ProtectedSecret); 3] {
         [
             (SecretName::BwEmail.storage_spec(serial), &self.bw_email),
             (

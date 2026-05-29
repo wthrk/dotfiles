@@ -49,7 +49,7 @@ Actor binding: while this skill is active, the current actor is the implementati
 ## Rules
 
 - The aggregation role's sole responsibility is to receive verdicts from each required reviewer and issue the aggregate verdict. The aggregation role must not perform individual reviewer duties itself.
-- Determine which reviewer roles are required for the change type by reading the "Required Reviewer Roles" section in `docs/task-governance/implementation-review-judgement.md`. Each required reviewer must be launched as a separate fresh subagent with its corresponding skill file path individually specified.
+- Determine which reviewer roles are required for the change type by reading the `必須レビュー担当` section in `docs/task-governance/implementation-review-judgement.md`. Each required reviewer must be launched as a separate fresh subagent with its corresponding skill file path individually specified.
 - Judge only review-start and aggregation conditions. Delegate completion judgement to `task-completion-judgement`.
 - Aggregation verdict format, label set, and rules are governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate those rules here.
 - When any required reviewer returns a verdict, record that verdict before proceeding to aggregation.

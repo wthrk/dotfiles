@@ -17,8 +17,9 @@ Verify consistency of links, reference targets, file paths, and definitions with
 
 ## Governing Sources
 
-- `docs/task-governance/implementation-review-judgement.md` governs verdict format, aggregation rules, and the applicable review targets (document remediation and document-primary deliverables).
-- `docs/task-governance/workflow.md` governs role assignment and subagent obligations.
+- `docs/task-governance/implementation-review-judgement.md`
+- `docs/task-governance/workflow.md`
+- `docs/docs-governance.md`
 
 ## Required Reading Order
 
@@ -36,11 +37,11 @@ Verify consistency of links, reference targets, file paths, and definitions with
 - This role applies to document remediation and document-primary deliverable reviews only. It is not a required reviewer for implementation diffs unless those diffs also include document changes.
 - For each document in the review target, verify: all links and file path references resolve to existing files; all cross-references and defined terms are used consistently; no definition appears in one place and contradicts its usage elsewhere.
 - If any reference target does not exist, or if a definition and its usage are inconsistent, emit `Verdict: Fail` and list the specific broken references or inconsistencies in `Rationale:`.
-- If `docs/docs-governance.md` exists, verify that each target document conforms to the document conventions defined there.
-- When document-only evidence-sync records intentionally refer to `this evidence-sync commit`, `document-only HEAD`, or `git log` / current HEAD instead of embedding their own commit hash, do not treat that as an unresolved reference. Git commit hashes include the commit body, so self-hash fixation is impossible and must not be required for reference integrity. Continue to verify that separately listed historical commits, implementation/test terminal commits, file paths, and links resolve.
-- If the target is a skill file (`SKILL.md`), additionally verify: (1) the frontmatter contains both `name` and `description` fields and their content is consistent with what the skill actually does; (2) a `Required Reading Order` section exists and all references necessary for skill execution are listed without omission; (3) the file conforms to the prohibition on duplicating canonical-source content (governing source content must not be reproduced inside the skill file).
-- Do not apply exact tracked-file counts or exact file-set enumeration as a review gate condition. The minimum record is: what changes were reviewed, what references were checked, and what verdict was returned.
-- The reviewer role is limited to returning a verdict. The reviewer must not directly edit source files, must not commit changes, and must not perform any implementation work. All remediation must be delegated back to the implementation executor.
+- Verify conformance to `docs/docs-governance.md` for target documents, including canonical-source and duplication rules.
+- Treat document-only supplemental-record references according to `docs/task-governance/workflow.md`; do not add stricter self-hash, exact file-set, ledger-sync, or current-cycle wording requirements in this skill.
+- If the target is a skill file (`SKILL.md`), additionally verify frontmatter, required-reading coverage, and canonical-source duplication rules.
+- Do not apply exact tracked-file counts, exact file-set enumeration, ledger synchronization, confirmation/review artifact synchronization, or current-cycle wording equality as a review gate condition.
+- The reviewer role is limited to returning a verdict. The reviewer must not directly edit source files, commit changes, or perform implementation work.
 - **Review independence**: Read and inspect the actual documents directly. Past review records, confirmation records, or implementer reports must not substitute for independent judgment. Even if previous cycle records show a pass, personally verify before returning a pass verdict.
-- **Re-review scope**: Even when re-reviewing after rework, do not carry over the previous review session. Each review must be conducted as an independent new session. Previously passed items must not be skipped — re-verify all items. Reviewing only the rework items while omitting others is prohibited; because rework changes may have cascading effects elsewhere, the review scope must be applied to the entire codebase.
+- **Re-review scope**: Even when re-reviewing after rework, do not carry over the previous review session. Each review must be conducted as an independent new session. Previously passed items must not be skipped; apply the target scope defined by the governing sources.
 - Verdict format is governed by `docs/task-governance/implementation-review-judgement.md`. Do not duplicate the verdict format rules here — the canonical source is that document.

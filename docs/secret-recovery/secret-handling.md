@@ -33,13 +33,17 @@ signal trap による cleanup も強い必須防御として扱わない。通�
 
 ## Protection 型
 
-`SecretMaterial` は application / port 境界で secret を運ぶ opaque container である。application と domain は secret の意味、順序、検証だけを扱い、平文 bytes や所有 plaintext buffer を取り出して保持しない。
-
-`ProtectedSecret` は repository が所有する平文 secret の保護型である。Drop 時に zeroize される buffer を所有し、平文 bytes は `support/protection` 内の借用境界でだけ扱う。
+`ProtectedSecret` は repository が所有する平文 secret の保護型であり、domain object が secret を直接保持する場合の carrier でもある。Drop 時に zeroize される buffer を所有し、domain/application は長さなどの opaque 操作だけを使う。平文 bytes、backend 抽出、downcast、所有 plaintext buffer、汎用出力口を取り出して保持しない。
 
 `with_secret` 系操作は `support/protection` 内の実装詳細である。借用 closure の外へ slice、参照、iterator、`Vec<u8>`、`String`、その他の所有 plaintext buffer を返してはならない。所有 plaintext buffer へ変換する public API を作ってはならない。
 
+`ProtectedSecret` の secret 生値アクセスは production API にしない。ただし `#[cfg(test)]` または `#[test]` に閉じた最小アクセス関数は、unit test / application orchestration test が secret 値を観測するために限って許可する。この許可は secret protection の公開解除ではなく test-only の最小観測口であり、`String` 変換公開、production 経路での取り出し、外部処理ごとの protection 内操作を迂回する汎用 plaintext consumer API として解釈してはならない。
+
 `support/protection` は secret 保護の backend 実装境界でもある。外部 SDK、暗号処理、device API が secret を必要とする場合、その外部処理名に対応する専用操作をここへ置ける。これは support を product-neutral utility だけに限定するものではなく、secret の借用、所有 plaintext buffer の作成、外部処理呼び出し、repository 所有 buffer の zeroize を同じ保護境界内で完了させるための配置である。application/domain/ports へ SDK 型や平文 buffer API を漏らしたり、汎用 plaintext consumer API を作ったりしてはならない。
+
+storage backend が暗号化された永続化を内包する場合、暗号化・復号・sealed blob encode/decode は backend 内部機能として `support/protection` に置ける。port は sealed blob 形式や暗号操作ではなく、secret datastore の保存・取得・状態確認 capability を公開する。application/domain は secret の意味、必須性、順序、検証を扱い、sealed blob の内部形式や復号手順を直接扱わない。
+
+この許可は backend 実装依存の技術補助、SDK 呼び出しの安全な補助、暗号化 / 復号 / sealed blob / protection / zeroize / core dump 保護などの技術境界、業務判断を含まない変換に限る。固定 secret key の意味づけ、setup 済み判定、不足項目の決定、必須 secret の決定、一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、BWS check の外部検証 plan などを `support/protection` に移してはならない。これらは処理ごとに既存規定上の責務境界を判定し、規定済みの境界に置く。
 
 ## 外部処理境界
 
@@ -47,13 +51,13 @@ signal trap による cleanup も強い必須防御として扱わない。通�
 
 実装手順は次の順にする。
 
-1. caller は `SecretMaterial` から `ProtectedSecret` backend を確認する。
-2. caller は `support/protection` 内の専用操作を呼ぶ。
+1. caller は外部処理ごとの `support/protection` 専用操作へ `ProtectedSecret` を渡す。
+2. 専用操作の内部だけで protected value を借用し、必要な外部処理を選ぶ。
 3. 専用操作は `with_secret` 系借用境界を開始する。
 4. 外部処理が所有 plaintext buffer の move を要求する場合、借用 closure 内で、呼び出し直前にだけその buffer を作る。
 5. 外部処理の呼び出しを同じ借用 closure 内で完了する。
 6. repository が所有し続ける一時 buffer は zeroize する。
-7. 外部処理から返った secret は直ちに `ProtectedSecret` へ移し、以後は `SecretMaterial` として扱う。
+7. 外部処理から返った secret は直ちに `ProtectedSecret` へ移し、以後も `ProtectedSecret` として保持する。
 
 所有 plaintext buffer を作る汎用 public API は作らない。外部処理ごとに、必要な責務だけを持つ protection 内操作を作る。
 
@@ -63,9 +67,11 @@ signal trap による cleanup も強い必須防御として扱わない。通�
 
 レビューでは次を確認する。
 
-- secret が `SecretMaterial` / `ProtectedSecret` / protection 内操作の境界から漏れていない。
+- secret が `ProtectedSecret` / protection 内操作の境界から漏れていない。
 - 平文 secret や所有 plaintext buffer を返す public API がない。
 - 外部処理呼び出しは protection 内の専用操作で完了している。
+- storage backend 内部の暗号化・復号・sealed blob 操作が application/domain/ports へ漏れていない。
+- `support/protection` 内の storage backend 操作が setup 判定、必須 secret 判定、一意解決、0件/複数件 failure 化、外部検証 plan を決めていない。
 - 所有 plaintext buffer が必要な場合、作成は借用 closure 内かつ呼び出し直前に限られている。
 - repository 所有の一時 buffer は zeroize される。
 - secret が CLI 引数、環境変数、ログ、エラー、stdout/stderr、一時ファイル、診断、レビュー証跡へ出ない。

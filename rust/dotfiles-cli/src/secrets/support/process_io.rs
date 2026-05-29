@@ -155,11 +155,12 @@ pub(crate) fn read_stdin_all(
     input.into_protected_secret(&session, max_len, too_long_message)
 }
 
-/// terminal 直書きを拒否し、secret 出力経路を pipe / redirect に限定する。
-pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
+/// terminal 直書きを拒否し、caller supplied secret writer を stdout redirect 境界で実行する。
+pub(crate) fn write_secret_stdout_with(
+    write_secret: impl FnOnce(&mut std::io::StdoutLock<'_>) -> Result<()>,
+) -> Result<()> {
     if io::stdout().is_terminal() {
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
-    secret.write_to(&mut io::stdout().lock())?;
-    Ok(())
+    write_secret(&mut io::stdout().lock())
 }

@@ -17,8 +17,12 @@ use super::{
     SelectedSecretDevice,
 };
 
+/// YubiKey discovery と serial 解決 port を実 device enumeration へ翻訳する adapter。
+///
+/// caller は serial 指定有無だけを渡す。adapter は対話選択と非対話拒否をこの境界に閉じ、
+/// storage intent や secret 読み書きの業務判断を持たない。
 #[derive(Default)]
-pub(crate) struct DeviceSelectionAdapter {
+pub(super) struct DeviceSelectionAdapter {
     device: SelectedDeviceAdapter,
 }
 

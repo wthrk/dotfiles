@@ -16,6 +16,8 @@ The role's questions are not a step-by-step checklist walk. Ask and answer whole
 - Does the module structure express one coherent design, or is it a pile of files that only passed individual rules?
 - Are responsibilities distributed consistently across layers, without scattering the same kind of responsibility across multiple layers/files, and without loading unrelated responsibilities into one file/layer?
 - Do layer relations (entrypoint -> application -> domain / port / adapter / support dependency direction and responsibility boundaries) hold as a whole in a way that matches the philosophy in `hexagonal-implementation-rules.md`?
+- Is the module relying on mechanical separation instead of placing each processing unit in the responsibility boundary prescribed by the canonical architecture documents?
+- Are thin ports or thin adapters being achieved by moving responsibilities into a layer that the canonical architecture documents reserve for other work?
 - If a capable architect reads the whole module, would they call it "coherent design" or "disorganized"?
 - When adding one new use case or adapter, does the current structure naturally accept it, or is the structure too inconsistent to decide where it belongs?
 
@@ -49,6 +51,7 @@ This role's defining responsibility is holistic design-coherence judgment, not p
 
 - Read all files in the review-target module as **one module**, not only per layer. Do not inspect files or symbols in isolation; understand relations between files and how responsibilities are distributed.
 - Judge whether module-level structure embodies the philosophy in `docs/architecture/hexagonal-implementation-rules.md` ("domain does not know technology", "ports declare intent", "adapters are translators", "minimizing the public surface is a structural constraint").
+- For support-heavy designs, use the canonical architecture documents to distinguish support-owned technical assistance from responsibilities assigned to other layers. A module is not coherent if support acts as an escape hatch for responsibilities that the canonical architecture assigns elsewhere.
 
 ### Step 2 - Answer Whole-Coherence Questions (mandatory)
 

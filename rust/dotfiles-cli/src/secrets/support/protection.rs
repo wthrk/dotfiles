@@ -1,22 +1,23 @@
 //! 平文 bytes の生存期間に紐づける process 保護と zeroize 境界。
 
-use std::{collections::BTreeMap, io::Write};
+use std::{collections::BTreeMap, future::Future, io::Write, pin::Pin};
 
 use anyhow::{Context, bail};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
 pub(crate) mod bws;
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 mod oaep;
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod piv_pin;
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod sealed_blob;
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;
 
 use crate::Result;
+use crate::secrets::support::process_io;
 
 /// core dump 抑止を secret 入力前に確立する process guard。
 struct SecretProcessGuard;
@@ -100,17 +101,17 @@ impl ProtectedSecret {
         borrow(self.value.as_mut_slice())
     }
 
-    /// UTF-8 secret text を closure の実行中だけ借用として公開する。
+    /// UTF-8 secret text を async 外部処理の完了まで借用境界内へ閉じる。
     ///
-    /// text buffer の所有権は渡さない。外部処理が所有 buffer の move を要求する場合も、
-    /// 所有 buffer の作成と外部処理呼び出しをこの借用中の局所 scope に閉じる。
-    pub(in crate::secrets::support::protection) fn with_secret_utf8<R>(
+    /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
+    /// `.await` まで完了させ、repository 側の所有 buffer を closure 外へ持ち出さない。
+    pub(in crate::secrets::support::protection) async fn with_secret_utf8_async<R>(
         &self,
-        borrow: impl FnOnce(&str) -> Result<R>,
+        borrow: impl for<'a> FnOnce(&'a str) -> Pin<Box<dyn Future<Output = Result<R>> + 'a>>,
     ) -> Result<R> {
         let text =
             std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
-        borrow(text)
+        borrow(text).await
     }
 
     /// 保持中 secret の byte 長を返す。
@@ -121,9 +122,28 @@ impl ProtectedSecret {
     }
 
     /// secret を writer へ書き込む既存の明示出力境界。
-    pub(crate) fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         self.with_secret(|bytes| writer.write_all(bytes))
             .map_err(Into::into)
+    }
+
+    /// `#[cfg(test)]` だけで使う secret 観測口として、test bytes から保護値を作る。
+    ///
+    /// production build では公開されず、通常経路の plaintext 取り出し API として扱わない。
+    #[cfg(any(test, feature = "secrets-internal-test-stub"))]
+    pub(crate) fn from_test_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut secret = Self::new(bytes.len())?;
+        secret.with_secret_mut(|out| out.copy_from_slice(bytes));
+        Ok(secret)
+    }
+
+    /// `#[cfg(test)]` だけで使う secret 観測口として、保持 bytes を test 側へ複製する。
+    ///
+    /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
+    #[cfg(any(test, feature = "secrets-internal-test-stub"))]
+    #[allow(dead_code)]
+    pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
+        self.with_secret(|bytes| bytes.to_vec())
     }
 
     /// secret JSON bytes を field 単位の locked `ProtectedSecret` map へ復元する。
@@ -156,6 +176,11 @@ impl ProtectedSecret {
         }
         Ok(fields)
     }
+}
+
+/// `ProtectedSecret` を stdout の secret 出力境界へ渡す用途別操作。
+pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
+    process_io::write_secret_stdout_with(|writer| secret.write_to(writer))
 }
 
 impl SecretSession {

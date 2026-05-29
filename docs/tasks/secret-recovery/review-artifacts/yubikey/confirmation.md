@@ -243,7 +243,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
-  - `rust/dotfiles-cli/src/secrets/support/version.rs`
   - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`

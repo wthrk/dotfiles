@@ -6,6 +6,8 @@
 
 secret の保護境界、core dump 無効化、paging / memory lock / signal trap の扱い、外部処理が secret の借用または所有 plaintext buffer の move を要求する場合の実装方針は [Secret handling policy](./secret-handling.md) を正本とする。この文書では Bitwarden Secrets Manager の project / secret / API 境界だけを定義する。
 
+application 層の use case orchestration test は `secrets-internal-test-stub` feature から切り離し、port trait 契約で駆動する。secret 値の test-only 観測が必要な場合は [Secret handling policy](./secret-handling.md) の `ProtectedSecret` test-only 最小アクセス許可に従い、production 経路の plaintext 取り出し API として扱わない。
+
 ## 目的と保護境界
 
 この機能の目的は、新規マシン復旧で必要な機械向け secret を Bitwarden Secrets Manager から取得し、必要な復旧処理にだけ受け渡すことである。
@@ -42,6 +44,12 @@ Bitwarden Secrets Manager には、この機能専用の project `dotfiles-secre
 machine account は `dotfiles-secret-recovery-reader` を使う。この machine account は `dotfiles-secret-recovery` project の secret 読み取りだけを許可し、secret 作成、更新、削除、他 project 参照、organization 全体参照を許可しない。YubiKey に保存する `bws-access-token` は、この machine account の access token だけである。
 
 取得時の lookup は project ID を基準にする。実装は access token で見える project 一覧から name `dotfiles-secret-recovery` を exact match し、対応する project ID を 1 つに解決する。その project ID に属する secret だけを列挙し、secret name `gpg-secret-key-backup` と `password-store-remote` を exact match する。project name は利用者向けの固定名だが、secret 所属判定と取得対象の同一性確認では project ID を正本として扱う。
+
+上記 lookup の責務境界は、処理内容で判定する。固定 project / secret name の意味づけ、secret ID の一意解決、0件/複数件の failure 化、取得対象の過不足判定、setup 済みか何が不足しているかの判断、どの secret を必須とするか、`verify-yubikey --check bws` の外部確認 plan は、単に `support` へ移すだけでは規約適合にならない。実装は、各処理が既存規定上どの境界の責務かを判定し、規定済みの境界に置くこと。
+
+`support/protection` に置けるのは、access token の平文借用、SDK 呼び出し直前の owned plaintext buffer 作成、SDK 呼び出しを安全に完了させる backend 実装依存の技術補助、repository 所有 buffer の zeroize、業務判断を含まない外部 API 型変換に限る。薄い port を保つために lookup 規則を adapter/support へ押し込むこと、adapter を薄くするために support へ逃がすことは禁止する。
+
+BWS 取得経路とは別に、storage backend が暗号化された datastore を内包する場合、port は sealed blob や暗号方式ではなく datastore の保存・取得・状態確認 capability を公開する。暗号化・復号・sealed blob encode/decode・protection・zeroize・core dump 保護は storage backend 内部機能として `support/protection` に閉じてよい。ただし、その内部機能が BWS の固定 project / secret name、必須 secret、setup 状態、取得対象の一意性、0件/複数件 failure、`verify-yubikey --check bws` の検証計画を決める場合は不合格とする。
 
 実装は次の場合に停止する。
 

@@ -4,61 +4,196 @@ mod device_serial_adapter;
 mod process_io_adapter;
 mod report_adapter;
 mod storage_adapter;
-#[cfg(all(test, feature = "secrets-internal-test-stub"))]
+#[cfg(feature = "secrets-internal-test-stub")]
 mod selected_device {
     // `secrets-internal-test-stub` は xtask の internal test 専用経路。
-    // mockito-backed test double 本体は `tests/` 配下に置き、production build には含めない。
+    // test double 本体は `tests/` 配下に置き、production build には含めない。
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/secrets_internal_stub/piv_io_internal_stub.rs"
     ));
 }
 
-pub(crate) use device_serial_adapter::DeviceSelectionAdapter;
-pub(crate) use process_io_adapter::ProcessIoAdapter;
-pub(crate) use report_adapter::JsonReportAdapter;
-pub(crate) use storage_adapter::StorageAdapter;
-
 use crate::{
     Result,
     secrets::{
         domain::{
-            material::SecretMaterial,
             piv::{PivApplicationVersion, PivObjectId, SecretStorageSpec},
+            storage::{
+                SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
+                SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
+                SecretStorageWriteIntent,
+            },
+            values::{EnrollSummary, VerifySummary},
+        },
+        ports::{
+            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
+            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            SecretStoragePort, SpareDeviceSerialPort,
         },
         support::protection::ProtectedSecret,
     },
 };
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+/// YubiKey discovery と PIN 要否判定を port 契約へ翻訳する adapter。
+#[derive(Default)]
+pub(super) struct DeviceSelectionAdapter(device_serial_adapter::DeviceSelectionAdapter);
+
+impl DeviceSerialPort for DeviceSelectionAdapter {
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
+        self.0.resolve_device_serial(requested)
+    }
+}
+
+impl SpareDeviceSerialPort for DeviceSelectionAdapter {
+    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32> {
+        self.0.resolve_spare_device_serial(requested_spare_serial)
+    }
+}
+
+impl DevicePinPolicyPort for DeviceSelectionAdapter {
+    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
+        self.0.device_requires_pin(serial)
+    }
+}
+
+/// process I/O と secret 入出力を port 契約へ翻訳する adapter。
+#[derive(Default)]
+pub(super) struct ProcessIoAdapter(process_io_adapter::ProcessIoAdapter);
+
+impl PinInputPort for ProcessIoAdapter {
+    fn read_pin(&self) -> Result<ProtectedSecret> {
+        self.0.read_pin()
+    }
+}
+
+impl SecretInputPort for ProcessIoAdapter {
+    fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_bw_email_secret()
+    }
+
+    fn read_bw_password_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_bw_password_secret()
+    }
+
+    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_bws_access_token_secret()
+    }
+
+    fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_streamed_secret()
+    }
+}
+
+impl RotationContinuationPort for ProcessIoAdapter {
+    fn continue_rotation(&self) -> Result<bool> {
+        self.0.continue_rotation()
+    }
+}
+
+impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
+    fn read_bootstrap_secret_fields(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, ProtectedSecret>> {
+        self.0.read_bootstrap_secret_fields()
+    }
+}
+
+impl SecretOutputPort for ProcessIoAdapter {
+    fn write_secret(&self, secret: &ProtectedSecret) -> Result<()> {
+        self.0.write_secret(secret)
+    }
+}
+
+/// YubiKey storage I/O を port 契約へ翻訳する adapter。
+#[derive(Default)]
+pub(super) struct StorageAdapter(storage_adapter::StorageAdapter);
+
+impl SecretStoragePort for StorageAdapter {
+    fn inspect_secret_storage_setup(
+        &mut self,
+        serial: u32,
+        probe: &SecretStorageSetupProbe,
+    ) -> Result<SecretStorageSetupInspection> {
+        self.0.inspect_secret_storage_setup(serial, probe)
+    }
+
+    fn initialize_secret_storage(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()> {
+        self.0.initialize_secret_storage(serial, intent)
+    }
+
+    fn finalize_secret_storage_setup(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageSetupIntent,
+    ) -> Result<()> {
+        self.0.finalize_secret_storage_setup(serial, intent)
+    }
+
+    fn inspect_secret_storage_write(
+        &mut self,
+        serial: u32,
+        storage: &SecretStorageSpec,
+    ) -> Result<SecretStorageWriteInspection> {
+        self.0.inspect_secret_storage_write(serial, storage)
+    }
+
+    fn store_secret(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageWriteIntent,
+        secret: &ProtectedSecret,
+    ) -> Result<()> {
+        self.0.store_secret(serial, intent, secret)
+    }
+
+    fn inspect_secret_storage_read(
+        &mut self,
+        serial: u32,
+        storage: &SecretStorageSpec,
+    ) -> Result<SecretStorageReadInspection> {
+        self.0.inspect_secret_storage_read(serial, storage)
+    }
+
+    fn load_secret(
+        &mut self,
+        serial: u32,
+        intent: &SecretStorageReadIntent,
+        pin: Option<&ProtectedSecret>,
+    ) -> Result<ProtectedSecret> {
+        self.0.load_secret(serial, intent, pin)
+    }
+}
+
+/// CLI JSON report 出力を port 契約へ翻訳する adapter。
+#[derive(Default)]
+pub(super) struct JsonReportAdapter(report_adapter::JsonReportAdapter);
+
+impl ReportPort for JsonReportAdapter {
+    fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
+        self.0.write_enroll_report(summary)
+    }
+
+    fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
+        self.0.write_verify_report(summary)
+    }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::support::protection::{piv_pin, sealed_blob, secret_random};
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use anyhow::{Context, bail};
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
-
-/// `ProtectedSecret` ownership を `SecretMaterial` の opaque backend へ戻す。
-///
-/// caller は secret が既に protection 境界内で作られていることを保証する。この変換は
-/// plaintext bytes を露出せず、後続 caller には backend contract だけを渡す。
-fn material_from_protected(protected: ProtectedSecret) -> SecretMaterial {
-    SecretMaterial::from_backend(protected, ProtectedSecret::len, ProtectedSecret::try_clone)
-}
-
-/// `SecretMaterial` が `ProtectedSecret` backend であることを検証して借用する。
-///
-/// caller は device/protection 操作へ進む前にこの関数で backend を確認する。未保護 backend は
-/// device API へ渡さず、固定 error として停止する。
-fn protected_from_material(secret: &SecretMaterial) -> Result<&ProtectedSecret> {
-    secret
-        .as_backend::<ProtectedSecret>()
-        .ok_or_else(|| anyhow::anyhow!("secret material backend is not protected memory"))
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeviceCandidate {
@@ -80,17 +215,17 @@ trait SecretDeviceIo {
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
     fn requires_pin_input(&self) -> bool;
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()>;
+    fn verify_pin(&mut self, pin: &ProtectedSecret) -> Result<()>;
     fn seal_for_storage(
         &mut self,
         storage: SecretStorageSpec,
-        plaintext: &SecretMaterial,
+        plaintext: &ProtectedSecret,
     ) -> Result<Vec<u8>>;
     fn open_from_storage(
         &mut self,
         storage: SecretStorageSpec,
         encoded: &[u8],
-    ) -> Result<SecretMaterial>;
+    ) -> Result<ProtectedSecret>;
 }
 
 /// device discovery と serial 指定 open を adapter 内部で抽象化する境界。
@@ -102,11 +237,15 @@ trait SelectedDeviceDiscoveryIo {
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice>;
 }
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 const SECRET_SLOT: SlotId = SlotId::Retired(RetiredSlotId::R1);
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
 
+/// 実行時の YubiKey discovery backend を選択する adapter 内部境界。
+///
+/// production build では実 YubiKey API に接続し、internal test feature では tests 配下の double を
+/// include する。caller は discovery/open の結果だけを使い、backend の実体へ依存しない。
 struct SelectedDeviceAdapter;
 
 impl Default for SelectedDeviceAdapter {
@@ -115,6 +254,10 @@ impl Default for SelectedDeviceAdapter {
     }
 }
 
+/// 選択済み device handle を type-erased PIV I/O 境界として保持する adapter 内部型。
+///
+/// caller は `SecretDeviceIo` 契約だけを通じて操作し、実 YubiKey handle や test double の型を
+/// storage/device selection adapter の外へ漏らさない。
 struct SelectedSecretDevice {
     inner: Box<dyn SecretDeviceIo>,
 }
@@ -160,14 +303,14 @@ impl SecretDeviceIo for SelectedSecretDevice {
         self.inner.requires_pin_input()
     }
 
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
+    fn verify_pin(&mut self, pin: &ProtectedSecret) -> Result<()> {
         self.inner.verify_pin(pin)
     }
 
     fn seal_for_storage(
         &mut self,
         storage: SecretStorageSpec,
-        plaintext: &SecretMaterial,
+        plaintext: &ProtectedSecret,
     ) -> Result<Vec<u8>> {
         self.inner.seal_for_storage(storage, plaintext)
     }
@@ -176,12 +319,12 @@ impl SecretDeviceIo for SelectedSecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         encoded: &[u8],
-    ) -> Result<SecretMaterial> {
+    ) -> Result<ProtectedSecret> {
         self.inner.open_from_storage(storage, encoded)
     }
 }
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         let mut context = YubikeyContext::open()?;
@@ -210,13 +353,13 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
 /// private key は YubiKey から取り出さず、content key unwrap は PIN 検証済み状態で
 /// hardware operation として実行する。caller は secret 読み出し前に `verify_pin` を
 /// 通して PIN 検証状態を確立する責任を持つ。
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
 }
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl YubikeySecretDevice {
     fn default_management_key(&self) -> Result<MgmKey> {
         MgmKey::get_default(&self.yubikey).context("failed to load default YubiKey management key")
@@ -231,10 +374,7 @@ impl YubikeySecretDevice {
         }
     }
 
-    fn wrap_content_key(
-        &mut self,
-        key: &crate::secrets::support::protection::ProtectedSecret,
-    ) -> Result<Vec<u8>> {
+    fn wrap_content_key(&mut self, key: &ProtectedSecret) -> Result<Vec<u8>> {
         let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
         let public = metadata
             .public
@@ -244,24 +384,26 @@ impl YubikeySecretDevice {
         secret_random::rsa_oaep_encrypt(&public, key)
     }
 
-    fn unwrap_content_key(
-        &mut self,
-        wrapped_key: &[u8],
-    ) -> Result<crate::secrets::support::protection::ProtectedSecret> {
+    fn unwrap_content_key(&mut self, wrapped_key: &[u8]) -> Result<ProtectedSecret> {
         if !self.pin_verified {
             bail!("YubiKey PIN must be verified before reading stored secrets");
         }
-        let decrypted = piv::decrypt_data(
-            &mut self.yubikey,
-            wrapped_key,
-            AlgorithmId::Rsa2048,
-            SECRET_SLOT,
-        )?;
-        sealed_blob::unwrap_content_key(&decrypted, 256)
+        sealed_blob::unwrap_content_key_from_decrypt(
+            || {
+                piv::decrypt_data(
+                    &mut self.yubikey,
+                    wrapped_key,
+                    AlgorithmId::Rsa2048,
+                    SECRET_SLOT,
+                )
+                .map_err(anyhow::Error::new)
+            },
+            256,
+        )
     }
 }
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl SecretDeviceIo for YubikeySecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
@@ -323,14 +465,11 @@ impl SecretDeviceIo for YubikeySecretDevice {
         !self.pin_verified
     }
 
-    fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
+    fn verify_pin(&mut self, pin: &ProtectedSecret) -> Result<()> {
         if self.pin_verified {
             return Ok(());
         }
-        piv_pin::verify_pin(
-            protected_from_material(pin)?,
-            &mut YubikeyPinVerifier(&mut self.yubikey),
-        )?;
+        piv_pin::verify_pin(pin, &mut YubikeyPinVerifier(&mut self.yubikey))?;
         self.pin_verified = true;
         Ok(())
     }
@@ -338,14 +477,12 @@ impl SecretDeviceIo for YubikeySecretDevice {
     fn seal_for_storage(
         &mut self,
         storage: SecretStorageSpec,
-        plaintext: &SecretMaterial,
+        plaintext: &ProtectedSecret,
     ) -> Result<Vec<u8>> {
-        sealed_blob::seal_with_key_wrap(
-            sealed_blob::SealWithKeyWrapRequest {
-                payload_id: storage.secret_id,
-                plaintext: protected_from_material(plaintext)?,
-                aad: &storage.additional_data,
-            },
+        sealed_blob::seal_material_with_key_wrap(
+            storage.secret_id,
+            plaintext,
+            &storage.additional_data,
             |content_key| self.wrap_content_key(content_key),
         )
     }
@@ -354,21 +491,24 @@ impl SecretDeviceIo for YubikeySecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         encoded: &[u8],
-    ) -> Result<SecretMaterial> {
-        sealed_blob::open_with_key_unwrap(
+    ) -> Result<ProtectedSecret> {
+        sealed_blob::open_material_with_key_unwrap(
             encoded,
             storage.secret_id,
             |wrapped_key| self.unwrap_content_key(wrapped_key),
             &storage.additional_data,
         )
-        .map(material_from_protected)
     }
 }
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+/// YubiKey crate の PIN 検証 API を protection 境界の verifier contract へ接続する。
+///
+/// PIN bytes は `piv_pin::verify_pin` の借用中だけこの adapter へ渡され、adapter は値を
+/// 保持・表示・エラー文脈化しない。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 struct YubikeyPinVerifier<'a>(&'a mut YubiKey);
 
-#[cfg(not(all(test, feature = "secrets-internal-test-stub")))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl piv_pin::PivPinVerifier for YubikeyPinVerifier<'_> {
     fn verify(&mut self, bytes: &[u8]) -> Result<()> {
         self.0.verify_pin(bytes).map_err(anyhow::Error::new)

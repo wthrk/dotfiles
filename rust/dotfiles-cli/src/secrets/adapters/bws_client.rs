@@ -1,177 +1,110 @@
 //! `BwsClientPort` を Bitwarden Secrets Manager 取得境界へ接続する adapter。
 //!
-//! application は「BWS secret を取得する capability」だけを要求する。secret を扱う SDK 呼び出しは
-//! support/protection 側の BWS 専用操作で完了させる。
+//! application は BWS lookup plan と domain の一意解決規則を保持する。adapter は SDK API の
+//! project/secret/list/get 境界を port の ID 候補と保護済み secret へ翻訳する。
 
-use bitwarden::{
-    Client,
-    secrets_manager::{
-        projects::ProjectsListRequest,
-        secrets::{SecretGetRequest, SecretIdentifiersByProjectRequest},
-    },
+use bitwarden::secrets_manager::{
+    projects::ProjectsListRequest, secrets::SecretIdentifiersByProjectRequest,
 };
 use uuid::Uuid;
 
-use crate::{
-    Result,
-    secrets::{
-        domain::{material::SecretMaterial, values::BwsSecretName},
-        ports::{BwsClientPort, PortFuture},
-        support::protection::{ProtectedSecret, bws},
-    },
+use crate::secrets::{
+    domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    ports::BwsClientPort,
+    support::protection::{ProtectedSecret, bws},
 };
 
-const BWS_PROJECT_NAME: &str = "dotfiles-secret-recovery";
-
+/// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct BwsClientAdapter;
+pub(super) struct BwsClientAdapter;
 
 impl BwsClientPort for BwsClientAdapter {
-    /// access token の生値を application 層へ返さず、protection 側の BWS 操作へ委譲する。
-    fn fetch_bws_secret<'a>(
-        &'a self,
-        access_token: &'a SecretMaterial,
-        secret_name: BwsSecretName,
-    ) -> PortFuture<'a, SecretMaterial> {
-        let protected = match access_token
-            .as_backend::<ProtectedSecret>()
-            .ok_or_else(|| anyhow::anyhow!("bws access token backend is not protected memory"))
-        {
-            Ok(protected) => protected,
-            Err(error) => return Box::pin(async move { Err(error) }),
-        };
-        Box::pin(async move {
-            let protected_value =
-                fetch_secret_with_sdk(protected, BWS_PROJECT_NAME, bws_secret_key(secret_name))
-                    .await?;
-            Ok(SecretMaterial::from_backend(
-                protected_value,
-                ProtectedSecret::len,
-                ProtectedSecret::try_clone,
-            ))
-        })
+    /// SDK project 一覧を port 境界の lookup 候補へ変換する。
+    async fn list_bws_projects(
+        &self,
+        access_token: &ProtectedSecret,
+    ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let organization_id = session
+            .client()
+            .get_access_token_organization()
+            .ok_or_else(|| anyhow::anyhow!("bitwarden organization is missing in access token"))?
+            .into();
+        let projects = session
+            .client()
+            .projects()
+            .list(&ProjectsListRequest { organization_id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden project list failed"))?;
+        Ok(projects
+            .data
+            .into_iter()
+            .map(|project| BwsLookupCandidate {
+                id: BwsProjectId::new(project.id.to_string()),
+                name: project.name,
+            })
+            .collect())
+    }
+
+    /// SDK secret 一覧を指定 project 内の port 境界 lookup 候補へ変換する。
+    async fn list_bws_secrets(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+    ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let project_id = parse_uuid(project_id.as_str(), "bws project id")?;
+        let secrets = session
+            .client()
+            .secrets()
+            .list_by_project(&SecretIdentifiersByProjectRequest { project_id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret list failed"))?;
+        Ok(secrets
+            .data
+            .into_iter()
+            .map(|secret| BwsLookupCandidate {
+                id: BwsSecretId::new(secret.id.to_string()),
+                name: secret.key,
+            })
+            .collect())
+    }
+
+    /// port 境界の secret ID を SDK UUID へ変換し、保護済み secret として application へ戻す。
+    async fn fetch_bws_secret_by_id(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<ProtectedSecret> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        session.get_protected_secret_value(id).await
     }
 }
 
-/// BWS 認証、一意な project/secret 解決、取得値の保護値化を adapter 境界で完了する。
+/// port 境界の opaque ID を Bitwarden SDK が要求する UUID 型へ翻訳する。
 ///
-/// caller は `access_token` が `ProtectedSecret` backend であることを検証してから渡す。
-/// SDK error と曖昧な project/secret 解決は固定要約の error へ変換し、SDK から返った
-/// secret value はこの関数内で直ちに protection 側へ渡す。
-async fn fetch_secret_with_sdk(
-    access_token: &ProtectedSecret,
-    project_name: &'static str,
-    secret_key: &'static str,
-) -> Result<ProtectedSecret> {
-    let client = Client::new(None);
-    bws::with_access_token_login_request(access_token, |request| {
-        Box::pin(async move {
-            client
-                .auth()
-                .login_access_token(request)
-                .await
-                .map_err(|_| anyhow::anyhow!("bitwarden login failed"))?;
-            let organization_id = client
-                .get_access_token_organization()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("bitwarden organization is missing in access token")
-                })?
-                .into();
-            let project_id = resolve_project_id(&client, organization_id, project_name).await?;
-            let secret_id = resolve_secret_id(&client, &project_id, secret_key).await?;
-            let secret = client
-                .secrets()
-                .get(&SecretGetRequest { id: secret_id })
-                .await
-                .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
-            bws::protect_secret_value(secret.value)
-        })
-    })
-    .await
-}
-
-/// 認証済み BWS client から固定 project 名に一致する project ID を一意に解決する。
-///
-/// caller は login 済み client と access token organization ID を渡す。project が存在しない場合、
-/// または同名 project が複数ある場合は SDK ID を返さず error にする。
-async fn resolve_project_id(
-    client: &Client,
-    organization_id: Uuid,
-    project_name: &'static str,
-) -> Result<Uuid> {
-    let projects = client
-        .projects()
-        .list(&ProjectsListRequest { organization_id })
-        .await
-        .map_err(|_| anyhow::anyhow!("bitwarden project list failed"))?;
-    let mut matches = projects
-        .data
-        .into_iter()
-        .filter(|project| project.name == project_name);
-    let Some(project) = matches.next() else {
-        return Err(anyhow::anyhow!("bws project not found: {project_name}"));
-    };
-    if matches.next().is_some() {
-        return Err(anyhow::anyhow!(
-            "multiple bws projects matched: {project_name}"
-        ));
-    }
-    Ok(project.id)
-}
-
-/// 解決済み project 内で固定 secret key に一致する secret ID を一意に解決する。
-///
-/// caller は project ID の一意解決を先に完了してから呼ぶ。secret が存在しない場合、
-/// または同名 key が複数ある場合は取得呼び出しへ進まず error にする。
-async fn resolve_secret_id(
-    client: &Client,
-    project_id: &Uuid,
-    secret_key: &'static str,
-) -> Result<Uuid> {
-    let secrets = client
-        .secrets()
-        .list_by_project(&SecretIdentifiersByProjectRequest {
-            project_id: *project_id,
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("bitwarden secret list failed"))?;
-    let mut matches = secrets
-        .data
-        .into_iter()
-        .filter(|secret| secret.key == secret_key);
-    let Some(secret) = matches.next() else {
-        return Err(anyhow::anyhow!(
-            "bws secret key not found in project {project_id}: {secret_key}"
-        ));
-    };
-    if matches.next().is_some() {
-        return Err(anyhow::anyhow!(
-            "multiple bws secret keys matched in project {project_id}: {secret_key}"
-        ));
-    }
-    Ok(secret.id)
-}
-
-fn bws_secret_key(secret_name: BwsSecretName) -> &'static str {
-    match secret_name {
-        BwsSecretName::GpgSecretKeyBackup => "gpg-secret-key-backup",
-        BwsSecretName::PasswordStoreRemote => "password-store-remote",
-    }
+/// ID の一意性や対象同一性は domain で判定済みとし、ここでは SDK 型変換の失敗だけを扱う。
+fn parse_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
+    value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{label} is not a valid UUID"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::domain::values::BwsSecretName;
 
     /// BWS secret の domain 名を Bitwarden Secrets Manager の固定 key へ翻訳する。
     #[test]
     fn bws_secret_name_maps_to_stable_key() {
         assert_eq!(
-            bws_secret_key(BwsSecretName::GpgSecretKeyBackup),
+            BwsSecretName::GpgSecretKeyBackup.key(),
             "gpg-secret-key-backup"
         );
         assert_eq!(
-            bws_secret_key(BwsSecretName::PasswordStoreRemote),
+            BwsSecretName::PasswordStoreRemote.key(),
             "password-store-remote"
         );
     }
@@ -180,22 +113,5 @@ mod tests {
     #[test]
     fn adapter_constructs_with_default() {
         let _ = BwsClientAdapter;
-    }
-
-    #[tokio::test]
-    async fn rejects_unprotected_access_token_backend_before_sdk_call() {
-        let token = SecretMaterial::from_backend((), |_| 0, |_| Ok(()));
-        let adapter = BwsClientAdapter;
-        let result = adapter
-            .fetch_bws_secret(&token, BwsSecretName::GpgSecretKeyBackup)
-            .await;
-
-        match result {
-            Ok(_) => panic!("unprotected bws access token unexpectedly accepted"),
-            Err(error) => assert_eq!(
-                error.to_string(),
-                "bws access token backend is not protected memory"
-            ),
-        }
     }
 }

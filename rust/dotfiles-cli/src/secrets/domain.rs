@@ -4,7 +4,6 @@
 //! 端末 I/O、process 保護、実機 YubiKey discovery は外側の責務とする。
 
 pub mod manifest;
-pub mod material;
 pub mod piv;
 pub mod storage;
 pub mod values;
