@@ -21,6 +21,9 @@ pub fn run(target: Option<CheckTarget>) -> Result<()> {
         Some(CheckTarget::Static) => {
             command.arg("static");
         }
+        Some(CheckTarget::Ci) => {
+            command.arg("static");
+        }
         Some(CheckTarget::Zsh) => {
             command.arg("zsh");
         }

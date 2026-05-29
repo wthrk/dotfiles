@@ -42,6 +42,8 @@ pub(crate) enum RuntimeScenario {
 /// `dotfiles-checks` へ渡す検証対象。runtime は VM が必要なため明示選択にする。
 pub(crate) enum CheckTarget {
     Static,
+    /// 互換用: 旧 CI 呼び出し (`cargo xtask check ci`)
+    Ci,
     Zsh,
     Runtime {
         #[arg(value_enum)]
