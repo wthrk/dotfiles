@@ -2,11 +2,6 @@
 //!
 //! adapter 下位 module をそのまま露出せず、entrypoint が使う runtime adapter 生成だけを提供する。
 
-#[cfg(feature = "secrets-internal-test-stub")]
-#[path = "adapters/bws_client_stub.rs"]
-mod bws_client;
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-#[path = "adapters/bws_client_real.rs"]
 mod bws_client;
 mod piv_io;
 
@@ -26,8 +21,8 @@ use crate::{
         },
         ports::{
             BootstrapSecretDocumentInputPort, BwsClientPort, DevicePinPolicyPort, DeviceSerialPort,
-            PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SecretStoragePort, SpareDeviceSerialPort,
+            PinInputPort, PortFuture, ReportPort, RotationContinuationPort, SecretInputPort,
+            SecretOutputPort, SecretStoragePort, SpareDeviceSerialPort,
         },
     },
 };
@@ -173,11 +168,11 @@ impl ReportPort for SecretsAdapters {
 }
 
 impl BwsClientPort for SecretsAdapters {
-    fn fetch_bws_secret(
-        &self,
-        access_token: &SecretMaterial,
+    fn fetch_bws_secret<'a>(
+        &'a self,
+        access_token: &'a SecretMaterial,
         secret_name: BwsSecretName,
-    ) -> Result<SecretMaterial> {
+    ) -> PortFuture<'a, SecretMaterial> {
         self.bws_client.fetch_bws_secret(access_token, secret_name)
     }
 }

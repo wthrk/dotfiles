@@ -1,7 +1,8 @@
-// application usecase test の port double を集約する共通 support。
+// `secrets-internal-test-stub` feature を有効にした xtask/internal test 専用 support。
 //
-// この file は `#[cfg(test)]` の test-only bridge から module context へ読み込まれる。
-// mock/fake 本体は `tests/` 配下に置き、production build と production command path には含めない。
+// この file は `#[cfg(all(test, feature = "secrets-internal-test-stub"))]` の test-only bridge から
+// module context へ読み込まれる。mock/fake 本体は `tests/` 配下に置き、production build と
+// production command path には含めない。
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -437,11 +438,11 @@ impl ports::ReportPort for AppMockBoundary {
 }
 
 impl ports::BwsClientPort for AppMockBoundary {
-    fn fetch_bws_secret(
-        &self,
-        _access_token: &SecretMaterial,
+    fn fetch_bws_secret<'a>(
+        &'a self,
+        _access_token: &'a SecretMaterial,
         secret_name: BwsSecretName,
-    ) -> Result<SecretMaterial> {
+    ) -> ports::PortFuture<'a, SecretMaterial> {
         self.mock.configure(|state| {
             state.bws_fetches.push(secret_name);
         });
@@ -452,7 +453,8 @@ impl ports::BwsClientPort for AppMockBoundary {
             }
             BwsSecretName::PasswordStoreRemote => b"git@github.com:example/password-store.git".to_vec(),
         };
-        Ok(secret_material(value))
+        let secret = secret_material(value);
+        Box::pin(async move { Ok(secret) })
     }
 }
 

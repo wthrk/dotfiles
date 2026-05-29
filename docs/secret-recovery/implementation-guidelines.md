@@ -15,7 +15,8 @@
 - 粗粒度進捗の扱い: [../task-governance/legacy-issue-tracking.md](../task-governance/legacy-issue-tracking.md#復元規則)
 - secret-recovery 領域文書の参照入口（active work item が要求した場合）: [../tasks/secret-recovery/README.md](../tasks/secret-recovery/README.md)
 - 一般構造の判断: [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md#hexagonal-implementation-rules)
-- 機能仕様と保存仕様: [secret-recovery-spec.md](secret-recovery-spec.md#新規マシン秘密情報復旧基盤)、[yubikey-secret-storage-design.md](yubikey-secret-storage-design.md#yubikey-秘密情報保存設計)
+- 機能仕様と secret handling: [secret-recovery-spec.md](secret-recovery-spec.md#新規マシン秘密情報復旧基盤)、[secret-handling.md](secret-handling.md#secret-handling-policy)
+- 保存仕様: [yubikey-secret-storage-design.md](yubikey-secret-storage-design.md#yubikey-秘密情報保存設計)
 
 ## 計画依頼の固定実装単位
 
@@ -61,6 +62,8 @@ secret-recovery の計画、実装、確認、レビューで扱う実装単位�
 ## 実装方針
 
 - 実装担当はアーキテクチャ規約と領域固有規約へ厳密に適合させなければならない。
+- secret の保護境界、protection 内操作、外部処理境界は [secret-handling.md](secret-handling.md#secret-handling-policy) を正本とし、個別設計文書へ同じ判断を重複定義しない。
+- `support/protection` は secret 保護境界の backend 実装を持てる。外部 SDK、暗号処理、device API が secret の借用または所有 plaintext buffer の move を要求する場合は、専用の protection 内操作で外部処理を完了させる。これは汎用 plaintext consumer API や application/domain/ports への SDK 型露出を許可しない。
 - 最小構成で済まそうとしてはならない。
 - 最小差分化や継承された既存構造の温存は目的ではなく、それらが既存のアーキテクチャ、仕様、作業定義への厳密適合を阻害する場合は適合構造への再設計を優先し、当該適合が満たされるまで修正対象から外してはならない。
 - 作業定義文書の `完了の判定条件` に列挙された違反が 1 件でも残っている場合、実装担当は「ブロッカーなし」「完了」「動作確認済み」を報告してはならない。部分完了は `残留違反リスト` を明示した上で「部分進捗」として報告し、全件解消後に完了報告を行う。

@@ -12,47 +12,34 @@ use crate::{
     },
 };
 
-use super::selected_device_route_label;
-
-pub(crate) struct JsonReportAdapter {
-    route: &'static str,
-}
-
-impl Default for JsonReportAdapter {
-    fn default() -> Self {
-        Self {
-            route: selected_device_route_label(),
-        }
-    }
-}
+#[derive(Default)]
+pub(crate) struct JsonReportAdapter;
 
 impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-        write_enroll_report_for_route(self.route, summary)
+        write_enroll_report(summary)
     }
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        write_verify_report_for_route(self.route, summary)
+        write_verify_report(summary)
     }
 }
 
-fn write_enroll_report_for_route(route: &'static str, summary: &EnrollSummary) -> Result<()> {
+fn write_enroll_report(summary: &EnrollSummary) -> Result<()> {
     let payload = json!({
         "serial": summary.serial,
         "role": report_role(summary.role),
         "checks": report_checks(&summary.checks),
-        "device-adapter-route": route,
     });
     let rendered = serde_json::to_string_pretty(&payload).map_err(anyhow::Error::new)?;
     println!("{rendered}");
     Ok(())
 }
 
-fn write_verify_report_for_route(route: &'static str, summary: &VerifySummary) -> Result<()> {
+fn write_verify_report(summary: &VerifySummary) -> Result<()> {
     let payload = json!({
         "serial": summary.serial,
         "checks": report_checks(&summary.checks),
-        "device-adapter-route": route,
     });
     let rendered = serde_json::to_string_pretty(&payload).map_err(anyhow::Error::new)?;
     println!("{rendered}");

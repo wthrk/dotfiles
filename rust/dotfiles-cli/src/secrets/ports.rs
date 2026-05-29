@@ -2,7 +2,7 @@
 //!
 //! この module は capability 契約と境界データのみを定義し、処理手順や変換規則は持たない。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use super::domain::{
     material::SecretMaterial,
@@ -15,6 +15,8 @@ use super::domain::{
     values::{BwsSecretName, EnrollSummary, VerifySummary},
 };
 use crate::Result;
+
+pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 
 /// use case が primary 対象の serial を確定する capability 契約。
 pub trait DeviceSerialPort {
@@ -67,11 +69,11 @@ pub trait ReportPort {
 
 /// use case が Bitwarden Secrets Manager 取得可否を確認する契約。
 pub trait BwsClientPort {
-    fn fetch_bws_secret(
-        &self,
-        access_token: &SecretMaterial,
+    fn fetch_bws_secret<'a>(
+        &'a self,
+        access_token: &'a SecretMaterial,
         secret_name: BwsSecretName,
-    ) -> Result<SecretMaterial>;
+    ) -> PortFuture<'a, SecretMaterial>;
 }
 
 /// use case が YubiKey secret storage へ要求する高水準 capability 契約。

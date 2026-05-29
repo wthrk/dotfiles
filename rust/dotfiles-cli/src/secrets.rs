@@ -135,9 +135,9 @@ enum VerifyCheck {
 /// CLI 入口は解析済み command を dispatch し、crate 内に閉じた実プロセス境界を与える。
 ///
 /// adapter concrete は `secrets` module 内だけに閉じ、crate 公開や adapter surface 化はしない。
-pub(crate) fn run(options: SecretsOptions) -> Result<()> {
+pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
     let mut boundary = adapters::SecretsAdapters::default();
-    dispatch(options, &mut boundary)
+    dispatch(options, &mut boundary).await
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。
@@ -151,7 +151,7 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
 ///
 /// command ごとに分岐順序をここへ固定し、各 use case が必要とする境界 trait 集合を
 /// 1 箇所に明示することで、CLI 層から adapter 具体型依存が漏れることを防ぐ。
-fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
+async fn dispatch<B>(options: SecretsOptions, boundary: &mut B) -> Result<()>
 where
     B: ports::DeviceSerialPort
         + ports::DevicePinPolicyPort
@@ -253,6 +253,7 @@ where
                 },
                 boundary,
             )
+            .await
         }
     }
 }

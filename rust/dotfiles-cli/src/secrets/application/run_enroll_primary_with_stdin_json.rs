@@ -59,7 +59,7 @@ pub(crate) fn run_enroll_primary_with_stdin_json<
     boundary.write_enroll_report(&EnrollSummary::primary_completed(serial))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
     use crate::Result;
     use crate::secrets::{

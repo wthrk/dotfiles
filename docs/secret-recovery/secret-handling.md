@@ -1,0 +1,73 @@
+# Secret handling policy
+
+この文書は、secret-recovery で secret を扱う実装の正本である。個別機能の設計書は、この文書の方針を重複定義せず参照する。
+
+## Secret の判断基準
+
+この repository では、認証、復号、署名、復旧、外部サービスアクセス、またはそれらの再生成に使える値を secret として扱う。平文そのものだけでなく、復号直後の値、外部 API から返った復旧用値、復旧に必要な credential、key material、token、passphrase も secret である。
+
+公開鍵、識別子、slot 番号、object ID、project 名、secret 名、serial、固定のコマンド名は、それ単体で上記の能力を与えない限り secret ではない。ただし、ログや診断で secret と同じ構造体に同居する場合は redaction の対象にする。
+
+## 守る対象
+
+実装は、repository が所有している間の secret を守る。具体的には次を守る。
+
+- 平文 secret を public API として返さない。
+- 平文 secret を CLI 引数、環境変数、ログ、エラー文脈、stdout/stderr、診断出力、レビュー証跡、一時ファイルに出さない。
+- repository 所有の平文 buffer は `ProtectedSecret` または zeroize 対象 buffer に置く。
+- secret を必要とする外部処理は、protection 内操作の借用境界で完了させる。
+
+守らない対象は、実行中 host が侵害された状態での process memory 全体、外部 SDK・外部 command・OS・デバイス vendor 実装に所有権を移した後の内部状態である。これらを repository の防御境界として主張しない。
+
+## Core Dump
+
+core dump 無効化は残す。理由は、process crash 時に repository が所有している secret が dump file として永続化される経路を閉じるためである。
+
+core dump 無効化は、secret を読み始める前に実行する。これは永続化経路の削減であり、実行中 memory compromise への防御ではない。core dump 無効化があることを理由に、平文 secret の public API 化、ログ混入、argv/env 露出、エラー文脈混入を許可しない。
+
+## Paging / Memory Lock / Signal Trap
+
+paging 回避、`mlock`、memory lock は強い必須防御として扱わない。これらは platform、権限、resource limit に依存し、repository の監査可能な安全境界にできない。実装が best-effort の補助として memory lock を使ってもよいが、成功を仕様、完了条件、レビュー合格条件にしない。
+
+signal trap による cleanup も強い必須防御として扱わない。通常の所有権、Drop、zeroize を破棄境界にする。SIGINT/SIGTERM handler による特別 cleanup を仕様、完了条件、レビュー合格条件にしない。
+
+## Protection 型
+
+`SecretMaterial` は application / port 境界で secret を運ぶ opaque container である。application と domain は secret の意味、順序、検証だけを扱い、平文 bytes や所有 plaintext buffer を取り出して保持しない。
+
+`ProtectedSecret` は repository が所有する平文 secret の保護型である。Drop 時に zeroize される buffer を所有し、平文 bytes は `support/protection` 内の借用境界でだけ扱う。
+
+`with_secret` 系操作は `support/protection` 内の実装詳細である。借用 closure の外へ slice、参照、iterator、`Vec<u8>`、`String`、その他の所有 plaintext buffer を返してはならない。所有 plaintext buffer へ変換する public API を作ってはならない。
+
+`support/protection` は secret 保護の backend 実装境界でもある。外部 SDK、暗号処理、device API が secret を必要とする場合、その外部処理名に対応する専用操作をここへ置ける。これは support を product-neutral utility だけに限定するものではなく、secret の借用、所有 plaintext buffer の作成、外部処理呼び出し、repository 所有 buffer の zeroize を同じ保護境界内で完了させるための配置である。application/domain/ports へ SDK 型や平文 buffer API を漏らしたり、汎用 plaintext consumer API を作ったりしてはならない。
+
+## 外部処理境界
+
+外部 SDK、外部 command、暗号処理、デバイス API が secret の借用または所有 plaintext buffer の move を要求する場合、その呼び出しは `support/protection` 内の専用操作に閉じる。
+
+実装手順は次の順にする。
+
+1. caller は `SecretMaterial` から `ProtectedSecret` backend を確認する。
+2. caller は `support/protection` 内の専用操作を呼ぶ。
+3. 専用操作は `with_secret` 系借用境界を開始する。
+4. 外部処理が所有 plaintext buffer の move を要求する場合、借用 closure 内で、呼び出し直前にだけその buffer を作る。
+5. 外部処理の呼び出しを同じ借用 closure 内で完了する。
+6. repository が所有し続ける一時 buffer は zeroize する。
+7. 外部処理から返った secret は直ちに `ProtectedSecret` へ移し、以後は `SecretMaterial` として扱う。
+
+所有 plaintext buffer を作る汎用 public API は作らない。外部処理ごとに、必要な責務だけを持つ protection 内操作を作る。
+
+外部処理へ所有権を移した後の buffer、外部 SDK 内部の複製、外部 command 内部の保持は、その外部処理側の責任範囲である。repository 側の責任範囲は、移す前の secret を protection 境界に閉じること、repository 所有 buffer を zeroize すること、表示を mask / redaction すること、ログへ出さないことである。
+
+## 実装レビュー観点
+
+レビューでは次を確認する。
+
+- secret が `SecretMaterial` / `ProtectedSecret` / protection 内操作の境界から漏れていない。
+- 平文 secret や所有 plaintext buffer を返す public API がない。
+- 外部処理呼び出しは protection 内の専用操作で完了している。
+- 所有 plaintext buffer が必要な場合、作成は借用 closure 内かつ呼び出し直前に限られている。
+- repository 所有の一時 buffer は zeroize される。
+- secret が CLI 引数、環境変数、ログ、エラー、stdout/stderr、一時ファイル、診断、レビュー証跡へ出ない。
+- core dump 無効化は残っている。
+- paging 回避、`mlock`、memory lock、signal trap cleanup を強い必須防御として要求していない。

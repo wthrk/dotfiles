@@ -14,7 +14,7 @@ use anyhow::Context;
 use super::{
     DeviceCandidate, PivApplicationVersion, PivObjectId, Result, SecretDeviceIo, SecretMaterial,
     SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
-    material_from_protected, protected_from_material, secret_consumer,
+    material_from_protected, protected_from_material,
 };
 
 const INTERNAL_STUB_ENDPOINT_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_MOCKITO_URL";
@@ -45,16 +45,6 @@ struct PivVersionWire {
 struct TestStubSecretDevice {
     serial: u32,
     pin_verified: bool,
-}
-
-struct StubPinVerifier {
-    serial: u32,
-}
-
-struct StubSealConsumer {
-    serial: u32,
-    storage: SecretStorageSpec,
-    encoded: Option<Vec<u8>>,
 }
 
 /// mockito 経由の internal stub から device 候補を取得し、adapter 境界型へ翻訳する。
@@ -148,12 +138,10 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 
     fn verify_pin(&mut self, pin: &SecretMaterial) -> Result<()> {
-        secret_consumer::consume(
-            protected_from_material(pin)?,
-            &mut StubPinVerifier {
-                serial: self.serial,
-            },
-        )?;
+        let mut bytes = Vec::new();
+        protected_from_material(pin)?.write_to(&mut bytes)?;
+        stub_http_request("POST", &format!("/devices/{}/verify-pin", self.serial), &bytes)
+            .map(drop)?;
         self.pin_verified = true;
         Ok(())
     }
@@ -163,15 +151,10 @@ impl SecretDeviceIo for TestStubSecretDevice {
         storage: SecretStorageSpec,
         plaintext: &SecretMaterial,
     ) -> Result<Vec<u8>> {
-        let mut consumer = StubSealConsumer {
-            serial: self.serial,
-            storage,
-            encoded: None,
-        };
-        secret_consumer::consume(protected_from_material(plaintext)?, &mut consumer)?;
-        consumer
-            .encoded
-            .context("internal stub seal response missing")
+        let mut bytes = Vec::new();
+        protected_from_material(plaintext)?.write_to(&mut bytes)?;
+        let path = format!("/devices/{}/storage/{}/seal", self.serial, storage.secret_id);
+        stub_http_request("POST", &path, &bytes)
     }
 
     fn open_from_storage(
@@ -197,22 +180,6 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 }
 
-impl secret_consumer::SecretConsumer for StubPinVerifier {
-    fn consume(&mut self, bytes: &[u8]) -> Result<()> {
-        stub_http_request("POST", &format!("/devices/{}/verify-pin", self.serial), bytes).map(drop)
-    }
-}
-
-impl secret_consumer::SecretConsumer for StubSealConsumer {
-    fn consume(&mut self, bytes: &[u8]) -> Result<()> {
-        let path = format!(
-            "/devices/{}/storage/{}/seal",
-            self.serial, self.storage.secret_id
-        );
-        self.encoded = Some(stub_http_request("POST", &path, bytes)?);
-        Ok(())
-    }
-}
 
 fn endpoint() -> Result<String> {
     std::env::var(INTERNAL_STUB_ENDPOINT_ENV)

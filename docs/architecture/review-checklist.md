@@ -125,20 +125,20 @@
 
 ### レビュー時の問い
 
-- このコードに業務語彙が含まれていないか。機能固有の名前（特定のサービス名・コマンド名・ロール名）が現れていたら support に置くべきではない。
-- support に product-specific storage mechanism を置いていないか。暗号や binary codec を使っていても、YubiKey/Bitwarden/enroll/verify/secret storage role の語彙や保存 format の業務意味を持つなら support ではない。
-- support の関数が特定機能の domain object や adapter SDK 型を受け取っていないか。汎用 primitive と機能固有 wrapper を分離し、support は前者に限定すること。
+- このコードは共通技術 primitive か、secret 保護境界を閉じる backend 操作か。どちらでもない機能固有の名前（特定のコマンド名・ロール名）が現れていたら support に置くべきではない。
+- support に product-specific storage mechanism を置いていないか。暗号や binary codec を使っていても、enroll/verify/secret storage role の語彙や保存 format の業務意味を持つなら support ではない。secret 保護境界の dedicated backend 操作として YubiKey/Bitwarden などの外部処理名が現れること自体は不合格理由にしない。
+- support の関数が特定機能の domain object や adapter SDK 型を不用意に受け取っていないか。汎用 primitive と secret 保護境界の dedicated backend 操作を分離し、後者は平文 buffer の作成、外部処理呼び出し、repository 所有 buffer の zeroize を同じ protection 境界内で完了する場合に限る。
 - terminal I/O・prompt 周辺のコードがここにある場合は、その責務が process-generic な補助か、feature-specific な interaction 方針かを区別せよ。TTY open、echo/raw mode 制御、blocking read、interrupt-aware read、byte stream としての stdin/stdout 処理のような前者は support に置ける。specific command の prompt 文言、device 選択判断、use case 手順のような後者は support に属さない。「共通部品だから support」という判断だけで正当化してはならない。
-- このコードの名前からプロダクトの機能・ドメインを推測できるか。推測できるなら support に属さない — それは業務語彙を持っている。
-- このコードを別のまったく異なるプロダクトにそのままコピーして使えるか。使えないなら、プロダクト固有の知識が混入している。
-- このファイル内の private な関数・ロジックを含む全コードについて：業務語彙を持たない共通技術部品のみという責務を満たしているか。機能固有の名称（特定のサービス名・コマンド名・ロール名）・feature-specific な prompt 文言・device 選択判断・use case 手順が private コードとして潜り込んでいないか。private であることはこれらの禁止事項の免除理由にならない。
+- このコードの名前から command 手順や domain policy を推測できるか。推測できるなら support に属さない。secret 保護境界の専用 backend 操作から外部 SDK/device 名を推測できることだけを不合格理由にしない。
+- このコードを別のまったく異なるプロダクトにそのままコピーして使えるか。使えない場合、それは secret 保護境界の dedicated backend 操作として必要な product/service-specific 処理か、単なる配置違反かを判定する。
+- このファイル内の private な関数・ロジックを含む全コードについて：共通技術部品または secret 保護境界の dedicated backend 操作という責務を満たしているか。feature-specific な prompt 文言・device 選択判断・use case 手順が private コードとして潜り込んでいないか。private であることはこれらの禁止事項の免除理由にならない。
 - この部品が汎用的な技術部品として独立した意味を持つか。「このファイルが提供する技術部品とは何か」を一文で言えるか。答えられないなら分割の意義がない。
 - 特定機能に依存した「共通っぽいもの」になっていないか。support にあるが特定の機能でしか使われない部品は、その機能への依存が混入していないか確認せよ。
 - この分割は「独立した技術部品の責務境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
 
 - **依存方向**: 言語標準ライブラリと外部技術 crate にのみ依存していること。他層の業務語彙へ依存しないこと。
-- **責務**: 業務語彙を持たない共通技術部品（保護メモリ・暗号プリミティブ・byte utility・process-generic な標準入出力補助）に限定されていること。
-- **禁止成果物**: feature-specific な terminal I/O 方針、prompt 文言、device 選択判断、機能固有 vocabulary・command 名・role 名を含まないこと。
+- **責務**: 共通技術部品（保護メモリ・暗号プリミティブ・byte utility・process-generic な標準入出力補助）または secret 保護境界の dedicated backend 操作に限定されていること。
+- **禁止成果物**: feature-specific な terminal I/O 方針、prompt 文言、device 選択判断、command 名、role 名、汎用 plaintext consumer API、平文 buffer を返す public API を含まないこと。
 - **レビュー禁止**: `support` に process/terminal I/O が存在することだけを理由に `判定: 不合格` としてはならない。不合格にする場合は、業務語彙、feature-specific な interaction 方針、domain object 操作、domain/application からの直接利用、または support ではなく別層に属する責務を具体的に示すこと。
 
 ## secret-recovery 判定クイックガイド（application / ports / adapters / support）
@@ -152,7 +152,7 @@
 - adapters:
   `application::...` 型へ直接依存せず、port 契約へ変換しているか。device selection と report 出力は adapter が担い、技術的な実行/翻訳以外の意味づけや use case 順序は持ち込んでいないか。
 - support:
-  protected buffer / zeroization / crypto helper / process-generic な標準入出力補助に限定され、YubiKey など業務語彙の error 文言、device 選択判断、use case 手順を持っていないか。
+  protected buffer / zeroization / crypto helper / process-generic な標準入出力補助、または secret 保護境界の dedicated backend 操作に限定されているか。device 選択判断、use case 手順、汎用 plaintext consumer API を持っていないか。
 
 上記は形式チェックではなく責務判定である。`pub` 範囲や feature gate の有無は免除理由にならない。
 

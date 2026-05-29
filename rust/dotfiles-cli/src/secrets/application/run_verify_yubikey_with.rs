@@ -15,7 +15,7 @@ use crate::secrets::{
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
 /// 先頭に固定する。外部確認結果は report 境界へ明示的に反映し、verify 結果の責任範囲を
 /// 曖昧にしない。
-pub(crate) fn run_verify_yubikey_with<
+pub(crate) async fn run_verify_yubikey_with<
     B: ports::DeviceSerialPort
         + ports::DevicePinPolicyPort
         + ports::PinInputPort
@@ -73,11 +73,17 @@ pub(crate) fn run_verify_yubikey_with<
     for check in requested {
         match check {
             CheckName::Bws => {
-                let result = boundary
+                let result = match boundary
                     .fetch_bws_secret(&access_token, BwsSecretName::GpgSecretKeyBackup)
-                    .and_then(|_| {
-                        boundary.fetch_bws_secret(&access_token, BwsSecretName::PasswordStoreRemote)
-                    });
+                    .await
+                {
+                    Ok(_) => {
+                        boundary
+                            .fetch_bws_secret(&access_token, BwsSecretName::PasswordStoreRemote)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
                 match result {
                     Ok(_) => summary.mark_external_check(CheckName::Bws, CheckStatus::Ok),
                     Err(error) => {
@@ -113,7 +119,7 @@ pub(crate) fn run_verify_yubikey_with<
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
     use crate::Result;
     use crate::secrets::{
@@ -123,8 +129,8 @@ mod tests {
 
     use super::run_verify_yubikey_with;
 
-    #[test]
-    fn verify_requests_pin_when_required() -> Result<()> {
+    #[tokio::test]
+    async fn verify_requests_pin_when_required() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_report().expect_pin();
         boundary.mock.set_primary_requires_pin(true);
         run_verify_yubikey_with(
@@ -135,10 +141,11 @@ mod tests {
             },
             &mut boundary,
         )
+        .await
     }
 
-    #[test]
-    fn verify_executes_bws_external_check_when_requested() -> Result<()> {
+    #[tokio::test]
+    async fn verify_executes_bws_external_check_when_requested() -> Result<()> {
         let mut boundary = AppMockBoundary::new().expect_report();
         run_verify_yubikey_with(
             VerifyYubikeyCommand {
@@ -147,7 +154,8 @@ mod tests {
                 all: false,
             },
             &mut boundary,
-        )?;
+        )
+        .await?;
 
         assert_eq!(
             boundary.mock.bws_fetches(),
@@ -164,8 +172,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn verify_rejects_conflicting_external_checks_before_device_resolution() {
+    #[tokio::test]
+    async fn verify_rejects_conflicting_external_checks_before_device_resolution() {
         let mut boundary = AppMockBoundary::new();
         boundary.mock.set_primary_available(false);
         let err = run_verify_yubikey_with(
@@ -176,6 +184,7 @@ mod tests {
             },
             &mut boundary,
         )
+        .await
         .expect_err("conflicting check options should fail before device resolution");
 
         assert!(
@@ -189,8 +198,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn verify_reports_failed_summary_when_local_storage_is_invalid() {
+    #[tokio::test]
+    async fn verify_reports_failed_summary_when_local_storage_is_invalid() {
         let mut boundary = AppMockBoundary::new().expect_report();
         boundary.mock.set_loaded_len(0);
         let err = run_verify_yubikey_with(
@@ -201,6 +210,7 @@ mod tests {
             },
             &mut boundary,
         )
+        .await
         .expect_err("invalid storage should fail verify");
 
         assert!(

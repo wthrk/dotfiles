@@ -61,7 +61,7 @@ pub(crate) fn run_enroll_spare_with_stdin_json<
     boundary.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
     use crate::Result;
     use crate::secrets::{

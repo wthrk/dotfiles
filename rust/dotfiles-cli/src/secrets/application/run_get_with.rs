@@ -37,7 +37,7 @@ pub(crate) fn run_get_with<
     boundary.write_secret(&secret)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
     use sha2::{Digest, Sha256};
 

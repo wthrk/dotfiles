@@ -106,7 +106,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt<
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "secrets-internal-test-stub"))]
 mod tests {
     use crate::Result;
     use crate::secrets::{

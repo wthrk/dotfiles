@@ -22,7 +22,7 @@
 
 この制約は公開シンボルに限らない。private な関数・ロジックであっても、その内容が翻訳（外部技術の型をポートの型に変換すること）以外の責務——use case の順序制御、domain policy の決定、ビジネスロジックの判断——を含む場合、それはアダプターに属さない。public/private の区別はこの制約に影響しない。
 
-この原則はすべての層に共通する。port 層であれば「ドメインが何を必要とするかの宣言のみ」という責務制約は private な型・関数にも適用される。support 層であれば「業務語彙を持たない共通技術部品のみ」という責務制約は private な実装にも適用される。visibility はシンボルの見え方を制御するが、そのコードが属すべき層の責務を変えない。
+この原則はすべての層に共通する。port 層であれば「ドメインが何を必要とするかの宣言のみ」という責務制約は private な型・関数にも適用される。support 層であれば「共通技術部品または secret 保護の backend 境界実装」という責務制約は private な実装にも適用される。visibility はシンボルの見え方を制御するが、そのコードが属すべき層の責務を変えない。
 
 ### 公開面最小化は構造的制約である
 
@@ -45,7 +45,7 @@
 - `domain`: 不変条件と wire format を扱う。
 - `port`: 外部依存 contract を扱う。
 - `adapter`: 外部 I/O 接続を扱う。
-- `support`: 業務語彙を持たない共通技術部品を扱う。
+- `support`: 共通技術部品と、secret 保護境界の backend 実装を扱う。
 - `tests`: 層ごとの契約確認を扱う。
 
 ## 層ごとの責務と成果物
@@ -67,7 +67,7 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 - 再エクスポート集約ファイル（`use` 宣言のみで構成されるファイル、または `pub(super) use` で他 adapter の関数・型を束ねるだけのファイル）はアダプター層に置いてはならない。
 - JSON パーサー・デコーダー・ファイル読み取り関数群等、port trait を実装しない純粋なユーティリティファイルはアダプター層に置いてはならない。これらは `support/` 層（業務語彙を持たない場合）または他の適切な層に属する。
 
-`support` は業務語彙を持たない共通技術部品を担う。許可する成果物は memory protection、clock、retry primitive、byte utility である。機能固有 vocabulary、command 名、role 名は置かない。
+`support` は共通技術部品と、secret 保護境界の backend 実装を担う。許可する成果物は memory protection、clock、retry primitive、byte utility、protected secret 操作である。一般の support utility には command 名や role 名を置かない。secret 保護境界では、外部 SDK、暗号処理、device API が secret の借用または所有 plaintext buffer の move を要求する場合に限り、専用の backend 操作として product/service-specific な request 組み立てと呼び出し境界を持てる。
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
@@ -100,7 +100,9 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 
 `adapter` は翻訳だけを行う。adapter は port で受け取った domain object / 境界型を外部 SDK、process I/O、filesystem、network、serialization API へ渡す形に変換し、外部 API から戻った値を port の返却型へ戻す。adapter 内で domain object の操作、業務判断、オブジェクト間の対応づけ、AAD/nonce/manifest/blob の意味づけ、保存可否判断、上書き判定を直接実行してはならない。adapter に許される private helper も同じ制約を受け、helper であれば business logic を持てるという例外はない。
 
-`support` はプロダクト非依存の技術 primitive だけを持つ。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置けるが、YubiKey、Bitwarden、enroll、verify、secret storage role などの業務語彙や product-specific error を持ってはならない。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。技術 primitive と機能固有 storage mechanism を分け、後者は adapter の裏側または domain/application の責務境界に合わせて配置する。
+`support` の一般 utility はプロダクト非依存の技術 primitive を基本にする。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置ける。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。技術 primitive と機能固有 storage mechanism を分け、後者は adapter の裏側または domain/application の責務境界に合わせて配置する。
+
+secret-recovery の `support/protection` は、この一般 utility とは別に secret 保護の backend 境界実装を持てる。ここでは product/service-specific な名前が現れること自体を層違反にしない。判定基準は、その操作が secret の借用、所有 plaintext buffer の作成、外部 SDK/暗号/device API 呼び出し、repository 所有 buffer の zeroize を同じ protection 境界内で完了させるための専用 backend 操作かどうかである。application/domain/ports へ SDK 型や平文 buffer API を漏らすこと、汎用の plaintext consumer API を作ること、use case 手順や domain policy を support に移すことは引き続き禁止する。
 
 `support` は「外部 I/O を一切持ってはいけない」層ではない。process/terminal I/O のうち、TTY を開く、echo/raw mode を制御する、標準入出力を byte stream として読む、signal/interrupt と blocking read の安全性を扱う、といった process-generic な低レベル実装支援は support に置ける。これは外部境界の use case 方針や device 選択を support が決めることを許すものではなく、adapter など外部境界実装が利用する技術 primitive を隔離するための配置である。
 
@@ -152,13 +154,13 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 ### support
 
 - allowed:
-  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）
+  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）、secret 保護境界内で完了する外部処理向け backend 操作
 - forbidden:
-  YubiKey、Bitwarden、stdin-json、enroll/verify など業務語彙を持つ error/message、feature-specific な prompt 文言や device 選択方針
+  stdin-json、enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
 - 典型的な誤配置:
   `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ
 - 判定質問:
-  「この部品は別プロダクトへそのまま移せるか。機能名を知らずに成立するか。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か」
+  「この部品は共通技術 primitive か、secret 保護境界を閉じる backend 操作か。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か」
 - この repo の具体例:
   `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。
 
