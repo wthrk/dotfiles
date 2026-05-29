@@ -4,6 +4,8 @@
 
 この文書は完成形の設計だけを扱う。
 
+secret の保護境界、core dump 無効化、paging / memory lock / signal trap の扱い、外部処理が secret の借用または所有 plaintext buffer の move を要求する場合の実装方針は [Secret handling policy](./secret-handling.md) を正本とする。この文書では YubiKey PIV 保存形式とコマンド契約だけを定義する。
+
 ## 目的と保護境界
 
 この機能の目的は、新規マシン復旧に必要な bootstrap secret を、YubiKey がなければ復号できない形で保存することである。PIV data object は読み出し自体を secret 保護境界にしない。今回使う custom data object は PIN なしで読めるものとして扱い、そこには平文 secret も平文 content encryption key も置かない。
@@ -25,7 +27,7 @@
 ## 決定事項
 
 - PIV 操作には Rust crate `yubikey` を使う。
-- bootstrap secret 本文は `ProtectedSecret` で保持し、`SecretSession` の memory lock と zeroize の所有境界から外へ出さない。
+- bootstrap secret 本文は `ProtectedSecret` で保持し、zeroize と protection 内借用の所有境界から外へ出さない。
 - 平文 secret は PIV data object に保存しない。
 - 平文 content encryption key も PIV data object に保存しない。
 - YubiKey 上に専用の PIV 鍵を生成し、secret はローカルで envelope encryption した blob として custom PIV data object に保存する。
@@ -49,7 +51,6 @@ secret memory handling は役割ごとに crate を分ける。
 
 - `zeroize`: bootstrap secret 本文、content encryption key、復号済み secret buffer など、平文 secret material を保持する byte buffer の zeroize。
 - `rlimit`: `enroll-spare` で secret を読む前に core dump を無効化する。
-- `region`: `enroll-spare` で primary から読んだ 3 secret、または `--stdin-json` 由来の 3 secret を memory lock する。
 
 YubiKey adapter は次を満たす。
 
@@ -108,7 +109,7 @@ secret はプロセスメモリ上の `ProtectedSecret` にだけ保持し、CLI
 
 spare に保存する blob は primary の ciphertext、nonce、wrapped key を流用しない。spare の PIV public key に対して新しい content encryption key を wrap し、AEAD additional data には spare の serial と保存先 object ID を使う。これにより、primary 由来の serial や blob を spare 側に持ち込まない。
 
-primary 読み出し後に spare へ差し替える間も、平文 secret は `ProtectedSecret` と memory guard の内側だけに置く。正常終了、エラー、timeout、Ctrl-C などの interrupt path では必ず zeroize する。panic message、debug 表示、エラー context には secret 本文を含めない。`enroll-spare` は secret を読む前に core dump を無効化し、`mlock` 相当の memory lock が使えることを確認する。準備に失敗した場合は、primary YubiKey や stdin から secret を読み始める前に停止する。
+primary 読み出し後に spare へ差し替える間も、平文 secret は `ProtectedSecret` の内側だけに置く。正常終了、エラー、timeout、Ctrl-C などの path では所有値の Drop と zeroize によって破棄へ進める。panic message、debug 表示、エラー context には secret 本文を含めない。`enroll-spare` は secret を読む前に core dump を無効化する。
 
 YubiKey の選択は対話を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示する。
 
@@ -324,7 +325,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - `enroll-primary` / `enroll-spare` の途中失敗で setup 済みの部分状態（manifest または一部 secret object）が残ることがある。この状態は回復可能で、同一 YubiKey では `put --force` で不足分を埋めるか、運用手順として専用領域を初期化して再 enroll する。
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
-- `enroll-spare` で平文 secret を読む前に core dump 無効化または memory lock の準備に失敗した。
+- `enroll-spare` で平文 secret を読む前に core dump 無効化に失敗した。
 - `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
 - `rotate-bws-token` 後の ローカル確認 に失敗した。
@@ -352,8 +353,8 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - `enroll-primary` が setup、3 secret 保存、ローカル確認 を順に実行すること。
 - `enroll-spare` が primary 読み出し、spare setup、spare への再暗号化保存、ローカル確認 を順に実行すること。
 - `enroll-spare` が primary / spare 同一 serial と spare 待ち timeout を拒否すること。
-- `enroll-spare` が secret 読み込み前に core dump 無効化と memory lock probe を実行すること。
-- `enroll-spare` の エラー / interrupt path で `ProtectedSecret` が zeroize されること。
+- `enroll-spare` が secret 読み込み前に core dump 無効化を実行すること。
+- `enroll-spare` の エラー path で `ProtectedSecret` が zeroize されること。
 - `rotate-bws-token` が `bws-access-token` だけを更新し、`bw-email` と `bw-password` を変更しないこと。
 - `verify-yubikey` ローカル保管確認 の正常系と missing manifest / missing blob / decrypt failure。
 - empty secret の拒否。

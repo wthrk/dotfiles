@@ -9,88 +9,170 @@ use crate::secrets::{
 /// 対話入力で取得した secret を対象 serial の YubiKey storage へ保存する。
 ///
 /// 入力モードの可視/不可視判定は `SecretName` の domain 規則で決め、端末 I/O 実装詳細は adapter へ委譲する。
-pub(crate) fn run_put_with_prompt<
-    B: ports::DeviceSerialPort + ports::SecretInputPort + ports::SecretStoragePort,
->(
+pub(crate) fn run_put_with_prompt<D, P, S>(
     command: PutCommand,
-    boundary: &mut B,
-) -> Result<()> {
-    let serial = boundary.resolve_device_serial(command.serial)?;
+    device: &mut D,
+    process: &P,
+    storage_port: &mut S,
+) -> Result<()>
+where
+    D: ports::DeviceSerialPort,
+    P: ports::SecretInputPort,
+    S: ports::SecretStoragePort,
+{
+    let serial = device.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);
-    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
     SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
     let secret = command.name.read_interactive_secret_with(
-        || boundary.read_bw_email_secret(),
-        || boundary.read_bw_password_secret(),
-        || boundary.read_bws_access_token_secret(),
+        || process.read_bw_email_secret(),
+        || process.read_bw_password_secret(),
+        || process.read_bws_access_token_secret(),
     )?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
-    boundary.store_secret(serial, intent, &secret)
+    storage_port.store_secret(serial, intent, &secret)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::Result;
     use crate::secrets::{
-        application::app_test_support::AppMockBoundary,
-        domain::{piv::SecretName, values::PutCommand},
+        domain::{
+            manifest::SecretManifest, piv::SecretName, storage::SecretStorageWriteInspection,
+            values::PutCommand,
+        },
+        ports,
+        support::protection::ProtectedSecret,
     };
 
     use super::run_put_with_prompt;
 
-    #[test]
-    fn put_prompt_stores_requested_secret() -> Result<()> {
-        let mut boundary = AppMockBoundary::new();
-        run_put_with_prompt(
-            PutCommand {
-                serial: Some(2001),
-                name: SecretName::BwEmail,
-                force: false,
-            },
-            &mut boundary,
-        )?;
-        assert_eq!(boundary.mock.stores(), vec![SecretName::BwEmail]);
-        Ok(())
+    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+        ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    #[test]
-    fn put_prompt_stops_when_secret_read_fails() {
-        let mut boundary = AppMockBoundary::new();
-        boundary
-            .mock
-            .set_secret_error(SecretName::BwEmail, "read failed");
-        let result = run_put_with_prompt(
-            PutCommand {
-                serial: Some(2001),
-                name: SecretName::BwEmail,
-                force: false,
-            },
-            &mut boundary,
-        );
-        assert!(result.is_err(), "secret read failure must stop put flow");
+    fn write_inspection(object_exists: bool) -> SecretStorageWriteInspection {
+        SecretStorageWriteInspection {
+            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            object_exists,
+        }
     }
 
     #[test]
     fn put_prompt_checks_storage_before_reading_secret() {
-        let mut boundary = AppMockBoundary::new();
-        boundary.mock.set_write_object_exists(true);
-        boundary.mock.set_secret_error(
-            SecretName::BwEmail,
-            "secret should not be read before preflight",
-        );
+        let mut sequence = mockall::Sequence::new();
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        let mut process = ports::MockSecretInputPort::new();
+        process.expect_read_bws_access_token_secret().times(0);
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(write_inspection(true)));
+        storage.expect_store_secret().times(0);
 
         let result = run_put_with_prompt(
             PutCommand {
                 serial: Some(2001),
-                name: SecretName::BwEmail,
+                name: SecretName::BwsAccessToken,
                 force: false,
             },
-            &mut boundary,
+            &mut device,
+            &process,
+            &mut storage,
         );
 
         assert!(
             result.is_err(),
-            "occupied storage should stop before prompt read"
+            "storage precondition failure must stop before prompt input"
         );
+    }
+
+    #[test]
+    fn put_prompt_stores_requested_secret() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        let mut process = ports::MockSecretInputPort::new();
+        process.expect_read_bw_email_secret().times(0);
+        process.expect_read_bw_password_secret().times(0);
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(write_inspection(false)));
+        process
+            .expect_read_bws_access_token_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(material(b"token")));
+        storage
+            .expect_store_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|serial, intent, secret| {
+                *serial == 2001
+                    && intent.storage.name == SecretName::BwsAccessToken
+                    && secret.len() == b"token".len()
+            })
+            .returning(|_, _, _| Ok(()));
+
+        run_put_with_prompt(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwsAccessToken,
+                force: false,
+            },
+            &mut device,
+            &process,
+            &mut storage,
+        )
+    }
+
+    #[test]
+    fn put_prompt_stops_when_secret_read_fails() {
+        let mut sequence = mockall::Sequence::new();
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(write_inspection(false)));
+        storage.expect_store_secret().times(0);
+        let mut process = ports::MockSecretInputPort::new();
+        process
+            .expect_read_bws_access_token_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Err(anyhow::anyhow!("prompt failed")));
+
+        let result = run_put_with_prompt(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwsAccessToken,
+                force: false,
+            },
+            &mut device,
+            &process,
+            &mut storage,
+        );
+
+        assert!(result.is_err(), "prompt failure must stop before store");
     }
 }

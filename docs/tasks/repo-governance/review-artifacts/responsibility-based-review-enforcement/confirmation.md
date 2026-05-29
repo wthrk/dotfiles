@@ -16,7 +16,7 @@
   - `チェックの進め方` に `責務基準の判定原則（形式より責務）` を追加。各シンボル・各ファイル・各 `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックに問1（責務）・問2（その責務はこの層か）を立て、責務不一致なら形式が正しくても `不合格` とする強制を明記。port trait 実装・feature gate・cfg(test) ラップを免除理由から明示的に除外。
   - `adapters/` `レビュー時の問い` に test double 判定の問いを追加。`確認手順` に先行ステップ0（test double 混入検出）を追加し、手順3/4 を「port trait 実装でも test double なら不合格」へ強化。
   - `tests/` セクションに `レビュー時の問い`・`許可される in, 禁止される out`・`確認手順` を新設。double 定義の production 層配置を禁止しつつ、inline unit test（`#[test]`）を明示的に許可。
-- `.agents/skills/test-review/SKILL.md`（`.claude/skills/test-review/SKILL.md` は同一実体・symlink）:
+- `.agents/skills/test-review/SKILL.md`:
   - 自己矛盾していた `#[cfg(test)] 残存禁止` 規則を削除し、責務基準の判定・double 定義 production 層混入禁止（cfg(test)/cfg(feature)/port-trait 実装は免除理由でない）・inline unit test 許可の3規則へ置換。判定基準正本は review-checklist.md を参照し複製しない。
 - `docs/task-governance/implementation-review-judgement.md`:
   - テストレビュー担当 職責の `#[cfg(test)]`-permits 抜け穴を責務基準の判定へ書き換え。inline unit test 許可を明記。
@@ -26,7 +26,7 @@
 
 部分ごとの個別ルール判定だけで、誰もアーキテクチャ全体の一貫性を判定しないという構造的欠落（各部分がルールを通過しても全体として設計が破綻する）を埋めるため、全体設計整合を独立に判定する役割を導入し必須レビュー担当へ組み込んだ。
 
-- 新規スキルファイル `.agents/skills/architectural-consistency-review/SKILL.md`（`.claude/skills/` は同一実体・symlink）:
+- 新規スキルファイル `.agents/skills/architectural-consistency-review/SKILL.md`:
   - 役割名 `アーキテクチャ整合レビュー担当`。frontmatter（name + description）・役割・受け取るパラメーター・Governing Sources・Required Reading Order・Rules を既存レビュアースキル（structural-review 等）の構造に揃えて作成。
   - 責務をモジュール（コードベース）**全体**の設計整合判定とし、個別ルールの逐一照合（公開面・依存方向・test double・命名・配置・完了条件・コメント）に退化させない旨を明記。全体への問い（一貫した1つの設計か／責務が層をまたいで一貫して分配されているか／層関係が全体として意味をなすか／有能なアーキテクトが一貫した設計と呼ぶか部品の山と呼ぶか）で判定し、各部分が個別ルールにすべて合格していても全体非整合なら `判定: 不合格` とする。
   - 受け取るパラメーターは差分ではなくモジュール全体のコードパス。レビュー独立性（他担当の個別判定・過去記録・実装担当報告を代替にしない）と再レビュースコープを規定。判定フォーマットは `docs/task-governance/implementation-review-judgement.md` へ委譲し複製しない。
@@ -99,9 +99,9 @@
 - `docs/task-governance/workflow.md`（7節 コミットゲート行 = 116行付近、PRIMARY/正本）:
   - before: `…全必須レビュー役割（構造レビュー・仕様適合レビュー・セキュリティレビュー・運用整合レビュー）の全員合格を集約済みでなければならない。`（閉じた4担当、委譲節なし）
   - after: 列挙を正本の7担当（構造レビュー担当・運用整合レビュー担当・セキュリティレビュー担当・仕様適合レビュー担当・テストレビュー担当・ドキュメントレビュー担当・アーキテクチャ整合レビュー担当）へ更新し、委譲節「文書是正を含む場合は参照整合レビュー担当を追加する。変更種別による必須担当の詳細は `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」セクションに従う。」を付与。
-- `.agents/skills/orchestration/SKILL.md`（コミットゲート行 = 51行付近。`.claude/skills/` は同一 inode のハードリンクで同時反映、SECONDARY）:
+- `.agents/skills/orchestration/SKILL.md`（コミットゲート行 = 51行付近）:
   - before の inline 列挙 `structural review, specification-conformance review, security review, and operational-consistency review`（閉じた4担当）を正本7担当 `structural review, operational-consistency review, security review, specification-conformance review, test review, documentation review, and architectural-consistency review` へ更新。既存の委譲節は削除せず保持。
-- `.agents/skills/dotfiles-task-governance/SKILL.md`（コミットゲート行 = S3→S4 遷移行 = 75行付近。`.claude/skills/` は同一 inode のハードリンクで同時反映、SECONDARY）:
+- `.agents/skills/dotfiles-task-governance/SKILL.md`（コミットゲート行 = S3→S4 遷移行 = 75行付近）:
   - before の inline 列挙 `(structural, specification-conformance, security, operational)`（閉じた4担当）を正本7担当 `(structural, operational-consistency, security, specification-conformance, test, documentation, architectural-consistency)` へ更新。既存の委譲節は削除せず保持。
 
 ### 正本コミットゲート是正の最終スイープと確認手順・結果

@@ -22,7 +22,7 @@
 
 この制約は公開シンボルに限らない。private な関数・ロジックであっても、その内容が翻訳（外部技術の型をポートの型に変換すること）以外の責務——use case の順序制御、domain policy の決定、ビジネスロジックの判断——を含む場合、それはアダプターに属さない。public/private の区別はこの制約に影響しない。
 
-この原則はすべての層に共通する。port 層であれば「ドメインが何を必要とするかの宣言のみ」という責務制約は private な型・関数にも適用される。support 層であれば「業務語彙を持たない共通技術部品のみ」という責務制約は private な実装にも適用される。visibility はシンボルの見え方を制御するが、そのコードが属すべき層の責務を変えない。
+この原則はすべての層に共通する。port 層であれば「ドメインが何を必要とするかの宣言のみ」という責務制約は private な型・関数にも適用される。support 層であれば「共通技術部品または secret 保護の backend 境界実装」という責務制約は private な実装にも適用される。visibility はシンボルの見え方を制御するが、そのコードが属すべき層の責務を変えない。
 
 ### 公開面最小化は構造的制約である
 
@@ -45,7 +45,7 @@
 - `domain`: 不変条件と wire format を扱う。
 - `port`: 外部依存 contract を扱う。
 - `adapter`: 外部 I/O 接続を扱う。
-- `support`: 業務語彙を持たない共通技術部品を扱う。
+- `support`: 共通技術部品と、secret 保護境界の backend 実装を扱う。
 - `tests`: 層ごとの契約確認を扱う。
 
 ## 層ごとの責務と成果物
@@ -67,7 +67,7 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 - 再エクスポート集約ファイル（`use` 宣言のみで構成されるファイル、または `pub(super) use` で他 adapter の関数・型を束ねるだけのファイル）はアダプター層に置いてはならない。
 - JSON パーサー・デコーダー・ファイル読み取り関数群等、port trait を実装しない純粋なユーティリティファイルはアダプター層に置いてはならない。これらは `support/` 層（業務語彙を持たない場合）または他の適切な層に属する。
 
-`support` は業務語彙を持たない共通技術部品を担う。許可する成果物は memory protection、clock、retry primitive、byte utility である。機能固有 vocabulary、command 名、role 名は置かない。
+`support` は共通技術部品と、secret 保護境界の backend 実装を担う。許可する成果物は memory protection、clock、retry primitive、byte utility、protected secret 操作である。一般の support utility には command 名や role 名を置かない。secret 保護境界では、外部 SDK、暗号処理、device API が secret の借用または所有 plaintext buffer の move を要求する場合に限り、専用の backend 操作として product/service-specific な request 組み立てと呼び出し境界を持てる。
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
@@ -88,9 +88,25 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 
 この許可は test-only bridge の配置に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の test support への移動、production command path の差し替えは、この bridge 条件を満たさないため引き続き禁止する。
 
+application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
+
+secret 値の test-only 観測は `support/protection::ProtectedSecret` の `#[cfg(test)]` 最小関数へ閉じる。domain value や application code に secret 生値取り出し API を増やしてはならない。この許可は `String` 変換公開、production 経路での取り出し、汎用 plaintext consumer API、または外部 SDK/API 呼び出しを protection 境界外へ移す根拠にしてはならない。
+
+secret-recovery では domain object / port 境界が repository 所有 secret を値として運ぶ必要がある場合、`ProtectedSecret` をその carrier として直接保持・受け渡ししてよい。これは secret 生値取り出し、backend 抽出、downcast、汎用 writer、汎用 plaintext consumer API を許可しない。外部 SDK、PIV、sealed blob、stdout などで平文 borrow または owned plaintext buffer が必要な処理は、用途別の `support/protection` 操作内で完了させる。
+
 ## 責任分離の判断原則
 
 層の所属は、処理が低水準か高水準かではなく、その処理がどの責任を持つかで判断する。暗号、binary codec、SDK 呼び出し、JSON、端末 I/O のように技術的に見える処理であっても、業務上の意味、保存可能条件、オブジェクト間の整合、変換規則、状態遷移を決めているなら、その決定部分は domain または application の責務である。逆に、実行手段や外部 API への型変換だけであれば adapter / support の責務になりうる。
+
+実装・レビューでは、移動や分割の前に各処理を次のいずれかへ分類しなければならない。
+
+- `domain rule`: 外部実装を差し替えても変わらない業務上の意味、不変条件、整合判定、失敗条件、対象同一性、値制約。
+- `application orchestration`: domain rule と port capability を適用する順序、停止条件、分岐、外部確認 plan の進行。
+- `port contract`: application/domain が外部境界へ要求する capability と最小境界型。
+- `adapter translation`: port 境界型と外部 SDK / process / filesystem / serialization API の相互変換。
+- `support technical primitive`: product 非依存の技術 primitive、または secret 保護境界内で平文借用・外部処理呼び出し・暗号化/復号・sealed blob 操作・zeroize を閉じる専用 backend 操作。
+
+分類できない処理は、どの層へ移しても合格にしてはならない。処理を移動する前に、その処理が既存規定上どの境界の責務かを判定し、規定済みの境界に置くこと。`adapter` から `support` へ移す、ファイルを細分化する、private helper を消す、といった機械的分離は責務分離の十分条件ではない。レビューは「どの層へ移したか」ではなく、「その処理がなぜその規定済み境界の責務なのか」を根拠として要求する。
 
 `domain` に置くべきものは、まずビジネスロジックである。オブジェクト単体の値制約だけに限定してはならない。オブジェクト同士の関連づけ、保存 layout の対応、変換の正当性、整合判定、状態遷移、業務上の失敗条件、別の実装へ差し替えても変わらない規則は domain の内側に属する。これらを `application` の if 文や `adapter` の helper に散らすと、業務規則が手順や I/O 翻訳へ漏れ、次の差し替え時に同じ規則を再実装することになる。
 
@@ -98,9 +114,15 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 
 `port` は責務を実行しない。port は application/domain が外界へ要求する capability と境界型だけを宣言する層であり、manifest 検証、blob decode、nonce/AAD 構築、暗号方式の選択、上書き判定、device 選択方針のような処理を隠す fat port にしてはならない。port のメソッド名が「何を必要とするか」ではなく「どう実現するか」や「複数責務をまとめて済ませること」を表し始めた場合は、capability 分割または domain object の再設計が必要である。
 
+storage backend が暗号化された永続化機構を内包する場合、port は暗号方式や sealed blob 形式ではなくデータストアの capability を公開する。application/domain から見える契約は「対象 secret を保存する」「保存済み secret を取得する」「必要な datastore 状態を確認する」といった外部依存要求に限定し、暗号化・復号・sealed blob encode/decode・repository 所有 buffer の zeroize は backend 内部機能として隠蔽する。これは crypto/blob 処理を port へ露出しないための責務分離であり、setup 済みか、何が不足しているか、どの secret を必須とするか、固定 key/name/role の意味、一意解決、0件/複数件の failure 化、外部確認 plan の進行を backend/support へ移す許可ではない。
+
 `adapter` は翻訳だけを行う。adapter は port で受け取った domain object / 境界型を外部 SDK、process I/O、filesystem、network、serialization API へ渡す形に変換し、外部 API から戻った値を port の返却型へ戻す。adapter 内で domain object の操作、業務判断、オブジェクト間の対応づけ、AAD/nonce/manifest/blob の意味づけ、保存可否判断、上書き判定を直接実行してはならない。adapter に許される private helper も同じ制約を受け、helper であれば business logic を持てるという例外はない。
 
-`support` はプロダクト非依存の技術 primitive だけを持つ。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置けるが、YubiKey、Bitwarden、enroll、verify、secret storage role などの業務語彙や product-specific error を持ってはならない。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。技術 primitive と機能固有 storage mechanism を分け、後者は adapter の裏側または domain/application の責務境界に合わせて配置する。
+`support` の一般 utility はプロダクト非依存の技術 primitive を基本にする。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置ける。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。例外として、storage backend が暗号化・復号・sealed blob を内部機能として隠蔽する場合、その backend 実装依存の暗号処理、sealed blob encode/decode、protection/zeroize/core dump 保護は support/protection の専用 backend 操作として置ける。技術 primitive と機能固有 storage mechanism を分け、後者が backend 内部機能を越えて業務判断を持つなら既存規定上の責務境界に合わせて配置する。
+
+secret-recovery の `support/protection` は、この一般 utility とは別に secret 保護の backend 境界実装を持てる。ここでは product/service-specific な名前が現れること自体を層違反にしない。判定基準は、その操作が secret の借用、所有 plaintext buffer の作成、外部 SDK/暗号/device API 呼び出し、repository 所有 buffer の zeroize を同じ protection 境界内で完了させるための専用 backend 操作かどうかである。application/domain/ports へ SDK 型や平文 buffer API を漏らすこと、汎用の plaintext consumer API を作ること、use case 手順や domain policy を support に移すことは引き続き禁止する。
+
+`support` は逃げ場ではない。処理が `support` 配下にあること、product/service-specific な SDK 呼び出しを protection 境界内で完了していること、または private helper になっていることは、domain/usecase logic 混入の免除理由にならない。薄い port を保つために adapter/support へ業務判断を押し込むこと、adapter を薄くするために support へ逃がすことは禁止する。ただし、backend 実装依存の技術補助、SDK 呼び出しの安全な補助、暗号化/復号/sealed blob/protection/zeroize/core dump 保護などの storage backend 内部機能、業務判断を含まない変換は support に置ける。固定 key / name / role に基づく意味づけ、一意解決の業務規則、0件/複数件の domain failure 化、外部確認の実行 plan、取得対象の過不足判定、業務上の停止条件は `support technical primitive` ではない。これらは既存規定上の該当境界に置き、support は必要な技術補助と平文保護境界だけを担う。
 
 `support` は「外部 I/O を一切持ってはいけない」層ではない。process/terminal I/O のうち、TTY を開く、echo/raw mode を制御する、標準入出力を byte stream として読む、signal/interrupt と blocking read の安全性を扱う、といった process-generic な低レベル実装支援は support に置ける。これは外部境界の use case 方針や device 選択を support が決めることを許すものではなく、adapter など外部境界実装が利用する技術 primitive を隔離するための配置である。
 
@@ -152,19 +174,19 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 ### support
 
 - allowed:
-  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）
+  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）、secret 保護境界内で完了する外部処理向け backend 操作、storage backend 内部の暗号化・復号・sealed blob 操作
 - forbidden:
-  YubiKey、Bitwarden、stdin-json、enroll/verify など業務語彙を持つ error/message、feature-specific な prompt 文言や device 選択方針
+  stdin-json、enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針、固定 secret key/name/role に基づく一意解決や 0件/複数件の業務判断、外部確認 plan。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
 - 典型的な誤配置:
-  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ
+  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ、`support/protection/bws.rs` が固定 BWS secret name の一意解決や `verify-yubikey --check bws` の成功条件を決める、storage backend の sealed blob helper が setup 済み判定や必須 secret の過不足判定を決める
 - 判定質問:
-  「この部品は別プロダクトへそのまま移せるか。機能名を知らずに成立するか。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か」
+  「この部品は共通技術 primitive か、secret 保護境界を閉じる backend 操作か。storage backend 内部機能であれば暗号化・復号・sealed blob・protection・zeroize・core dump 保護に限定されているか。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か。対象同一性・一意性・0件/複数件・外部確認 plan を決めていないか」
 - この repo の具体例:
-  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。
+  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。BWS SDK が access token の owned plaintext を要求する呼び出し境界は `support/protection` に置ける。storage backend が sealed blob を内部保存形式として使う場合、その暗号化・復号・sealed blob 操作は `support/protection` に置けるが、`gpg-secret-key-backup` / `password-store-remote` を固定取得対象として一意解決する規則、0件/複数件の扱い、`verify-yubikey --check bws` の外部確認 plan は既存規定上の該当境界に置く。
 
 ## 層ごとの禁止事項
 
-`port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に use case の順序制御を置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state を置いてはならない。`support` に process/terminal I/O があること自体を禁止根拠にしてはならず、禁止対象は feature-specific な interaction 方針、業務判断、domain object 操作、application からの直接利用である。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
+`port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に use case の順序制御を置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state、固定 secret key/name/role に基づく対象同一性・一意性・0件/複数件の業務判断、外部確認 plan を置いてはならない。`support` に process/terminal I/O があること自体を禁止根拠にしてはならず、禁止対象は feature-specific な interaction 方針、業務判断、domain object 操作、application からの直接利用である。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
 
 ## 標準モジュール構成とファイル構成
 
@@ -259,7 +281,7 @@ use case 独自型は定義してはならない。`EnrollSummary`、`VerifySumm
 
 `domain` は外部 SDK 型・端末状態・プロセス状態へ依存してはならない。`domain` の外部 crate 利用可否は active work item の current-cycle 指示に従って判定し、`言語標準 library 以外に依存しない` という単独規則を機械適用してはならない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
 
-`application` で許容する外部クレート依存は、current worktree の use case 実装で実際に必要な次の2つに限定する: `anyhow`（エラー文脈付与）、`zeroize`（秘密値のゼロ化）。この2つ以外の外部クレートは `application` へ導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
+`application` で許容する外部クレート依存は `anyhow`（エラー文脈付与）に限定する。`zeroize::Zeroizing` は `support/protection` モジュール（およびその配下）以外で使用してはならない。`application` を含む他層へ `zeroize` を導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
 
 ## ドキュメントコメント規則
 

@@ -4,6 +4,8 @@
 
 復旧の入口には YubiKey を使う。YubiKey には Bitwarden master password と Bitwarden Secrets Manager access token を保存する。Bitwarden Secrets Manager には GPG secret key backup と `password-store` の remote URL を保存する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
 
+secret の保護境界、core dump 無効化、paging / memory lock / signal trap の扱い、外部処理が secret の借用または所有 plaintext buffer の move を要求する場合の実装方針は [Secret handling policy](./secret-handling.md) を正本とする。この仕様文書では復旧対象とコマンド契約だけを定義し、secret handling の詳細を再掲しない。
+
 ## 目的
 
 - 新規マシンで秘密情報基盤を再構築する手順を `dotfiles` CLI に集約する。

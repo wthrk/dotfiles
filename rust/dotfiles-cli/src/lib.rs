@@ -16,6 +16,6 @@ mod update;
 pub type Result<T> = dotfiles_core::Result<T>;
 
 /// crate 公開の CLI 実行 entrypoint。
-pub fn dispatch() -> Result<()> {
-    cli::dispatch()
+pub async fn dispatch() -> Result<()> {
+    cli::dispatch().await
 }

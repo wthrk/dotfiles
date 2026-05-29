@@ -1,15 +1,15 @@
-//! 入力 bytes の読み込み容量と memory lock 範囲を同じ所有値で管理する buffer。
+//! 入力 bytes の読み込み容量と zeroize 対象 allocation を同じ所有値で管理する buffer。
 
 use std::io::{self, Read, Write};
 
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::Result;
 
 use super::{ProtectedSecret, SecretSession};
 
-/// 読み込み済み bytes と、その allocation に対応する memory lock guard を所有する。
+/// 読み込み済み bytes と、その allocation に対応する任意の memory lock guard を所有する。
 ///
 /// 上限超過判定に使う余剰 bytes も同じ allocation に含める。
 pub(crate) struct ProtectedInputBuffer {
@@ -21,14 +21,14 @@ pub(crate) struct ProtectedInputBuffer {
 impl ProtectedInputBuffer {
     /// 指定容量の読み込み先 allocation を作る。
     ///
-    /// allocation 全体を現在の session の memory lock 範囲へ入れる。
+    /// allocation 全体を zeroize 管理へ入れ、memory lock は可能な場合だけ保持する。
     pub(crate) fn new(capacity: usize, session: &SecretSession) -> Result<Self> {
         let buffer = Zeroizing::new(vec![0; capacity]);
-        let lock = session.lock_transient_buffer(buffer.as_ptr(), capacity)?;
+        let lock = session.lock_transient_buffer(buffer.as_ptr(), capacity);
         Ok(Self {
             buffer,
             len: 0,
-            lock: Some(lock),
+            lock,
         })
     }
 
@@ -120,24 +120,17 @@ impl ProtectedInputBuffer {
         }
     }
 
-    /// lock 済み入力 allocation を、末尾改行除去後の raw bytes と lock guard へ分解する。
+    /// 入力 allocation を、末尾改行除去後の raw bytes と任意の lock guard へ分解する。
     ///
     /// この関数は `Zeroizing<Vec<u8>>` の Drop 管理から一時的に raw `Vec<u8>` を取り出し、
-    /// 同じ allocation を保護している `LockGuard` と対で返す safety boundary である。
     /// caller は返却された bytes と guard を分離して保持せず、直後に `ProtectedSecret` へ
-    /// 移して zeroize/lock ownership を再結合する責務を持つ。
-    ///
-    /// lock guard が欠落している場合は保護境界不成立として `Err` を返し、lock なしの raw
-    /// bytes だけを返さない。末尾改行の trim は ownership 移譲前に同一 allocation 上で完了する。
-    fn into_trimmed_bytes_and_lock(self) -> Result<(Vec<u8>, region::LockGuard)> {
+    /// 移して zeroize ownership を再結合する責務を持つ。
+    fn into_trimmed_bytes_and_lock(self) -> (Vec<u8>, Option<region::LockGuard>) {
         let mut this = self;
         let mut wrapped = std::mem::take(&mut this.buffer);
         let mut buffer = std::mem::take(&mut *wrapped);
         let len = this.len;
-        let lock = this
-            .lock
-            .take()
-            .ok_or_else(|| anyhow!("protected input buffer lock missing"))?;
+        let lock = this.lock.take();
         let len = if buffer[..len].ends_with(b"\r\n") {
             len - 2
         } else if buffer[..len].ends_with(b"\n") {
@@ -147,27 +140,24 @@ impl ProtectedInputBuffer {
         };
         buffer.truncate(len);
 
-        Ok((buffer, lock))
+        (buffer, lock)
     }
 
-    /// lock 済み入力 allocation を、読み取り済み raw bytes と lock guard へ分解する。
+    /// 入力 allocation を、読み取り済み raw bytes と任意の lock guard へ分解する。
     ///
     /// stdin document など末尾改行も payload の一部として扱う入力境界で使う。caller は返却された
-    /// bytes と guard を直後に `ProtectedSecret` へ移し、zeroize/lock ownership を再結合する。
-    fn into_bytes_and_lock(self) -> Result<(Vec<u8>, region::LockGuard)> {
+    /// bytes と guard を直後に `ProtectedSecret` へ移し、zeroize ownership を再結合する。
+    fn into_bytes_and_lock(self) -> (Vec<u8>, Option<region::LockGuard>) {
         let mut this = self;
         let mut wrapped = std::mem::take(&mut this.buffer);
         let mut buffer = std::mem::take(&mut *wrapped);
-        let lock = this
-            .lock
-            .take()
-            .ok_or_else(|| anyhow!("protected input buffer lock missing"))?;
+        let lock = this.lock.take();
         buffer.truncate(this.len);
 
-        Ok((buffer, lock))
+        (buffer, lock)
     }
 
-    /// 行入力 bytes を、同じ memory lock guard を引き継ぐ保護済み値へ移す。
+    /// 行入力 bytes を、保護済み値へ移す。
     ///
     /// 上限は末尾改行を除いた bytes に適用し、超過時は指定 error で失敗する。
     pub(crate) fn into_protected_secret_line(
@@ -179,11 +169,11 @@ impl ProtectedInputBuffer {
         if self.trimmed_len() > limit {
             bail!(too_large_error);
         }
-        let (buffer, lock) = self.into_trimmed_bytes_and_lock()?;
-        session.protect_locked_secret_value(buffer, lock)
+        let (buffer, lock) = self.into_trimmed_bytes_and_lock();
+        Ok(session.protect_locked_secret_value(buffer, lock))
     }
 
-    /// 入力 bytes を、末尾改行を保持したまま同じ memory lock guard を引き継ぐ保護済み値へ移す。
+    /// 入力 bytes を、末尾改行を保持したまま保護済み値へ移す。
     pub(crate) fn into_protected_secret(
         self,
         session: &SecretSession,
@@ -193,8 +183,8 @@ impl ProtectedInputBuffer {
         if self.len > limit {
             bail!(too_large_error);
         }
-        let (buffer, lock) = self.into_bytes_and_lock()?;
-        session.protect_locked_secret_value(buffer, lock)
+        let (buffer, lock) = self.into_bytes_and_lock();
+        Ok(session.protect_locked_secret_value(buffer, lock))
     }
 }
 

@@ -11,94 +11,262 @@ use crate::secrets::{
         },
         values::{EnrollPrimaryCommand, EnrollSummary},
     },
-    ports::{self, SecretStoragePort},
+    ports,
 };
 
 /// stdin JSON document で primary YubiKey に bootstrap secret 一式を登録する。
 ///
 /// JSON parse を use case へ持ち込まず `BootstrapSecretDocumentInputPort` へ委譲し、
 /// enrollment 手順のみを application 層で固定する。
-pub(crate) fn run_enroll_primary_with_stdin_json<
-    B: ports::DeviceSerialPort
-        + ports::DevicePinPolicyPort
-        + ports::PinInputPort
-        + ports::BootstrapSecretDocumentInputPort
-        + SecretStoragePort
-        + ports::ReportPort,
->(
+pub(crate) fn run_enroll_primary_with_stdin_json<D, I, P, S, R>(
     command: EnrollPrimaryCommand,
-    boundary: &mut B,
-) -> Result<()> {
-    let serial = boundary.resolve_device_serial(command.serial)?;
+    device_serial: &mut D,
+    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    document_input: &I,
+    pin_input: &P,
+    storage_port: &mut S,
+    report: &R,
+) -> Result<()>
+where
+    D: ports::DeviceSerialPort,
+    I: ports::BootstrapSecretDocumentInputPort,
+    P: ports::PinInputPort,
+    S: ports::SecretStoragePort,
+    R: ports::ReportPort,
+{
+    let serial = device_serial.resolve_device_serial(command.serial)?;
     let setup_probe = SecretStorageSetupProbe::expected();
-    let setup_inspection = boundary.inspect_secret_storage_setup(serial, &setup_probe)?;
+    let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    let fields = boundary.read_bootstrap_secret_fields()?;
+    let fields = document_input.read_bootstrap_secret_fields()?;
     let document = BootstrapSecretDocument::from_field_map(fields)?;
-    boundary.initialize_secret_storage(serial, setup_intent.clone())?;
+    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
     for (storage, value) in document.storage_entries(serial) {
         let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
-        boundary.store_secret(serial, intent, value)?;
+        storage_port.store_secret(serial, intent, value)?;
     }
-    boundary.finalize_secret_storage_setup(serial, setup_intent)?;
-    let pin = if boundary.device_requires_pin(serial)? {
-        let pin = boundary.read_pin()?;
+    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
+    let pin = if pin_policy.device_requires_pin(serial)? {
+        let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
     } else {
         None
     };
     for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
-        let inspection = boundary.inspect_secret_storage_read(serial, &storage)?;
+        let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-        let secret = boundary
+        let secret = storage_port
             .load_secret(serial, &intent, pin.as_ref())
             .map_err(|error| intent.decode_error(error))?;
         intent.validate_loaded_secret(&secret)?;
     }
-    boundary.write_enroll_report(&EnrollSummary::primary_completed(serial))
+    report.write_enroll_report(&EnrollSummary::primary_completed(serial))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::Result;
+    use std::collections::BTreeMap;
+
     use crate::secrets::{
-        application::app_test_support::AppMockBoundary, domain::values::EnrollPrimaryCommand,
+        domain::{
+            manifest::SecretManifest,
+            piv::{PivApplicationVersion, SecretName},
+            storage::{SecretStorageReadInspection, SecretStorageSetupInspection},
+            values::EnrollPrimaryCommand,
+        },
+        ports,
+        support::protection::ProtectedSecret,
     };
 
     use super::run_enroll_primary_with_stdin_json;
 
+    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+        ProtectedSecret::from_test_bytes(bytes).expect("test secret")
+    }
+
+    fn fields() -> BTreeMap<String, ProtectedSecret> {
+        [
+            ("bw-email".to_owned(), material(b"email")),
+            ("bw-password".to_owned(), material(b"password")),
+            ("bws-access-token".to_owned(), material(b"token")),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn setup_inspection() -> SecretStorageSetupInspection {
+        SecretStorageSetupInspection {
+            key_exists: false,
+            piv_version: PivApplicationVersion::minimum_for_secret_storage(),
+            pin_retries: 3,
+            manifest_bytes: None,
+            occupied_object_ids: Vec::new(),
+        }
+    }
+
+    fn read_inspection() -> SecretStorageReadInspection {
+        SecretStorageReadInspection {
+            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            encoded: Some(vec![1]),
+        }
+    }
+
     #[test]
-    fn enroll_primary_stdin_json_reads_pin_only_when_required() -> Result<()> {
-        let mut boundary = AppMockBoundary::new()
-            .expect_enrollment_success()
-            .expect_pin();
-        boundary.mock.set_primary_requires_pin(true);
+    fn enroll_primary_stdin_json_reads_pin_only_when_required() -> crate::Result<()> {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(true));
+        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        document_input
+            .expect_read_bootstrap_secret_fields()
+            .times(1)
+            .returning(|| Ok(fields()));
+        let mut pin_input = ports::MockPinInputPort::new();
+        pin_input
+            .expect_read_pin()
+            .times(1)
+            .returning(|| Ok(material(b"123456")));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| Ok(setup_inspection()));
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        storage
+            .expect_store_secret()
+            .times(3)
+            .returning(|_, _, _| Ok(()));
+        storage
+            .expect_finalize_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        for name in [
+            SecretName::BwEmail,
+            SecretName::BwPassword,
+            SecretName::BwsAccessToken,
+        ] {
+            storage
+                .expect_inspect_secret_storage_read()
+                .times(1)
+                .withf(move |serial, storage| *serial == 2001 && storage.name == name)
+                .returning(|_, _| Ok(read_inspection()));
+            storage
+                .expect_load_secret()
+                .times(1)
+                .withf(move |_, intent, pin| intent.storage.name == name && pin.is_some())
+                .returning(|_, intent, _| {
+                    Ok(match intent.storage.name {
+                        SecretName::BwEmail => material(b"email"),
+                        SecretName::BwPassword => material(b"password"),
+                        SecretName::BwsAccessToken => material(b"token"),
+                    })
+                });
+        }
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_enroll_report()
+            .times(1)
+            .returning(|_| Ok(()));
+
         run_enroll_primary_with_stdin_json(
             EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
+            &mut device_serial,
+            &mut pin_policy,
+            &document_input,
+            &pin_input,
+            &mut storage,
+            &report,
         )
     }
 
     #[test]
-    fn enroll_primary_stdin_json_skips_pin_when_not_required() -> Result<()> {
-        let mut boundary = AppMockBoundary::new().expect_enrollment_success();
-        run_enroll_primary_with_stdin_json(
-            EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
-        )
-    }
+    fn enroll_primary_stdin_json_stops_before_document_input_when_setup_inspection_fails() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy.expect_device_requires_pin().times(0);
+        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        document_input
+            .expect_read_bootstrap_secret_fields()
+            .times(0);
+        let pin_input = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| Err(anyhow::anyhow!("setup inspect failed")));
+        storage.expect_initialize_secret_storage().times(0);
+        storage.expect_store_secret().times(0);
+        let report = ports::MockReportPort::new();
 
-    #[test]
-    fn enroll_primary_stdin_json_stops_when_verify_fails() {
-        let mut boundary = AppMockBoundary::new();
-        boundary.mock.expect_event("setup");
-        boundary.mock.expect_event_times("store", 3);
-        boundary.mock.set_loaded_len(0);
         let result = run_enroll_primary_with_stdin_json(
             EnrollPrimaryCommand { serial: Some(2001) },
-            &mut boundary,
+            &mut device_serial,
+            &mut pin_policy,
+            &document_input,
+            &pin_input,
+            &mut storage,
+            &report,
         );
-        assert!(result.is_err(), "verify error should stop use case");
+
+        assert!(
+            result.is_err(),
+            "setup inspection failure must stop before document input"
+        );
+    }
+
+    #[test]
+    fn enroll_primary_stdin_json_stops_when_setup_initialization_fails() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy.expect_device_requires_pin().times(0);
+        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        document_input
+            .expect_read_bootstrap_secret_fields()
+            .times(1)
+            .returning(|| Ok(fields()));
+        let pin_input = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| Ok(setup_inspection()));
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .returning(|_, _| Err(anyhow::anyhow!("setup failed")));
+        storage.expect_store_secret().times(0);
+        storage.expect_finalize_secret_storage_setup().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_enroll_primary_with_stdin_json(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut device_serial,
+            &mut pin_policy,
+            &document_input,
+            &pin_input,
+            &mut storage,
+            &report,
+        );
+
+        assert!(result.is_err(), "setup failure must stop before store");
     }
 }

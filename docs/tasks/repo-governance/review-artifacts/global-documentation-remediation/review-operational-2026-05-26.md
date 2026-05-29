@@ -12,7 +12,7 @@
   - これら 3 文書に触れた直近コミットは `8b7c769`（YubiKey 系コミット群より前）であり、本サイクルで主張される是正コミットも存在しない。確認記録が掲げる差分識別子 `working-tree-current-2026-05-26` に対応する実差分が存在しない。
 - 欠陥1（機構が役割を決める欠陥）が未解消（exec-bypass loophole が残存）:
   - `AGENTS.md:133`「Orchestrator constraints (no self-execution, must delegate) do not apply to Codex sessions invoked via `exec`.」が現存する。`AGENTS_ja.md:133` も対応文「オーケストレーター制約（自己実行禁止・サブエージェント委譲必須）は `exec` 経由で起動した Codex セッションには適用されない。」が現存する。
-  - `AGENTS.md:84` / `AGENTS_ja.md:84` も「exec で起動されたエージェントはオーケストレーターではなく実装担当として動作し、委譲規則は Claude Code セッションにのみ適用される」と機構（exec）で役割を確定する記述のまま。
+  - `AGENTS.md:84` / `AGENTS_ja.md:84` も「exec で起動されたエージェントはオーケストレーターではなく実装担当として動作し、委譲規則は特定の対話セッションにのみ適用される」と機構（exec）で役割を確定する記述のまま。
   - これにより、オーケストレーション/継続/進行/完了系コマンドを exec 経由のエージェントが受領した場合に、active-item 選定・委譲・レビューゲートを構造的にバイパスできる。役割-by-委譲（role-by-delegation）は強制不能なまま残っている。
 - 欠陥2（肥大化・正本移管）が未解消:
   - `## Critical Planning Gate`（AGENTS.md:36-43）/ `## 重要な計画ゲート`（AGENTS_ja.md:36-43）が現存し、計画ゲートは削除されていない。

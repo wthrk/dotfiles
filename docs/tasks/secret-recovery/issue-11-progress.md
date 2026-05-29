@@ -51,7 +51,7 @@
 | Issue | 名称 | 現在状態 | 根拠 |
 | --- | --- | --- | --- |
 | `#12` | YubiKey 秘密情報保存 | `完了` | `#21` merge、現行 tasks で `完了`、review 正本は `review-artifacts/yubikey/review.md` |
-| `#13` | Bitwarden Secrets Manager クライアント | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
+| `#13` | Bitwarden Secrets Manager クライアント | `進行中（Mendel再レビュー Fail 対応中）` | root/area ledger は進行中へ更新、`review-artifacts/bitwarden-secrets-manager/review.md` は `集約後レビュー判定: 要修正`、未解決 thread のローカル是正を継続 |
 | `#14` | GPG 復元 / gpg-agent SSH 対応 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#15` | password-store 復元 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#16` | Bitwarden Password Manager CLI ログイン | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |

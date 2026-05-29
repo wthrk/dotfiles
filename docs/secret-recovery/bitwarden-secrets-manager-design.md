@@ -4,6 +4,10 @@
 
 この文書は完成形の設計だけを扱う。
 
+secret の保護境界、core dump 無効化、paging / memory lock / signal trap の扱い、外部処理が secret の借用または所有 plaintext buffer の move を要求する場合の実装方針は [Secret handling policy](./secret-handling.md) を正本とする。この文書では Bitwarden Secrets Manager の project / secret / API 境界だけを定義する。
+
+application 層の use case orchestration test は `secrets-internal-test-stub` feature から切り離し、port trait 契約で駆動する。secret 値の test-only 観測が必要な場合は [Secret handling policy](./secret-handling.md) の `ProtectedSecret` test-only 最小アクセス許可に従い、production 経路の plaintext 取り出し API として扱わない。
+
 ## 目的と保護境界
 
 この機能の目的は、新規マシン復旧で必要な機械向け secret を Bitwarden Secrets Manager から取得し、必要な復旧処理にだけ受け渡すことである。
@@ -21,15 +25,16 @@
 
 ## 決定事項
 
-- 復旧本線の取得経路は公式 `bitwarden` Rust SDK を使う。
-- `bw` CLI は Bitwarden Secrets Manager 取得経路では使わない。
+- 復旧本線の取得経路は `BwsClientPort` 境界を通し、実 adapter は Bitwarden Secrets Manager Rust SDK（`bitwarden` crate）を呼び出す。
+- `bw` CLI と `bws` CLI は Bitwarden Secrets Manager 取得経路では使わない。
 - `bws-access-token` は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。
+- SDK 呼び出しで access token の所有 plaintext buffer が必要になる境界は、`support/protection` 内の BWS 専用操作で完了させる。所有 plaintext buffer は `with_secret` 系借用境界内で SDK 呼び出し直前にだけ作り、public API として公開しない。
 - `bws-access-token`、`gpg-secret-key-backup`、`password-store-remote` はログ、エラー本文、診断出力に含めない。
 - Bitwarden Secrets Manager 側の保存先 project は `dotfiles-secret-recovery` に固定する。
 - `bws-access-token` は machine account `dotfiles-secret-recovery-reader` の token とし、`dotfiles-secret-recovery` project への読み取りだけを許可する。
 - Bitwarden Secrets Manager で扱う secret name は `gpg-secret-key-backup` と `password-store-remote` に固定する。
 - Bitwarden Secrets Manager の secret 値は JSON envelope や独自 metadata を持たず、下記の値形式をそのまま保存する。
-- Bitwarden Secrets Manager 側の project / secret 作成・更新・一覧取得は、復旧本線と同じ公式 `bitwarden` Rust SDK の Secrets Manager API で実装してよい。`bws` CLI は手動代替手段としてだけ扱う。
+- Bitwarden Secrets Manager 側の project / secret 作成・更新・一覧取得は、復旧本線と同じ `BwsClientPort` 境界の内側で扱う。application/domain/port 契約は変更せず、secret を扱う SDK API 呼び出しは `support/protection` 内の専用操作で完了させる。
 - `verify-yubikey --check bws` は、上記 2 secret を取得できることを外部確認として検証する。
 
 ## Bitwarden Secrets Manager 配置
@@ -39,6 +44,12 @@ Bitwarden Secrets Manager には、この機能専用の project `dotfiles-secre
 machine account は `dotfiles-secret-recovery-reader` を使う。この machine account は `dotfiles-secret-recovery` project の secret 読み取りだけを許可し、secret 作成、更新、削除、他 project 参照、organization 全体参照を許可しない。YubiKey に保存する `bws-access-token` は、この machine account の access token だけである。
 
 取得時の lookup は project ID を基準にする。実装は access token で見える project 一覧から name `dotfiles-secret-recovery` を exact match し、対応する project ID を 1 つに解決する。その project ID に属する secret だけを列挙し、secret name `gpg-secret-key-backup` と `password-store-remote` を exact match する。project name は利用者向けの固定名だが、secret 所属判定と取得対象の同一性確認では project ID を正本として扱う。
+
+上記 lookup の責務境界は、処理内容で判定する。固定 project / secret name の意味づけ、secret ID の一意解決、0件/複数件の failure 化、取得対象の過不足判定、setup 済みか何が不足しているかの判断、どの secret を必須とするか、`verify-yubikey --check bws` の外部確認 plan は、単に `support` へ移すだけでは規約適合にならない。実装は、各処理が既存規定上どの境界の責務かを判定し、規定済みの境界に置くこと。
+
+`support/protection` に置けるのは、access token の平文借用、SDK 呼び出し直前の owned plaintext buffer 作成、SDK 呼び出しを安全に完了させる backend 実装依存の技術補助、repository 所有 buffer の zeroize、業務判断を含まない外部 API 型変換に限る。薄い port を保つために lookup 規則を adapter/support へ押し込むこと、adapter を薄くするために support へ逃がすことは禁止する。
+
+BWS 取得経路とは別に、storage backend が暗号化された datastore を内包する場合、port は sealed blob や暗号方式ではなく datastore の保存・取得・状態確認 capability を公開する。暗号化・復号・sealed blob encode/decode・protection・zeroize・core dump 保護は storage backend 内部機能として `support/protection` に閉じてよい。ただし、その内部機能が BWS の固定 project / secret name、必須 secret、setup 状態、取得対象の一意性、0件/複数件 failure、`verify-yubikey --check bws` の検証計画を決める場合は不合格とする。
 
 実装は次の場合に停止する。
 
@@ -78,7 +89,7 @@ Bitwarden Secrets Manager で取得する対象と利用先は次のとおり。
 
 ## 初期登録手順
 
-Bitwarden Secrets Manager 側の project / secret 初期登録は、`dotfiles` の BWS provisioning 経路で自動化してよい。この経路は復旧本線ではなく管理 plane の bootstrap であり、公式 `bitwarden` Rust SDK の project / secret create・update・list API を使う。`bws` CLI または Bitwarden 管理画面は手動代替手段として残す。provisioning 用 access token は初期登録後に失効させる。復旧本線で YubiKey に保存する token は、読み取り専用の `dotfiles-secret-recovery-reader` token だけである。
+Bitwarden Secrets Manager 側の project / secret 初期登録は、`dotfiles` の BWS provisioning 経路で自動化してよい。この経路は復旧本線ではなく管理 plane の bootstrap であり、公式 `bitwarden` Rust SDK の project / secret create・update・list API を使う。`bws` CLI は復旧本線・provisioning のどちらでも利用しない。provisioning 用 access token は初期登録後に失効させる。復旧本線で YubiKey に保存する token は、読み取り専用の `dotfiles-secret-recovery-reader` token だけである。
 
 machine account `dotfiles-secret-recovery-reader` の作成、project `dotfiles-secret-recovery` への read-only 割当、reader access token の発行は `dotfiles` provisioning の自動化対象外とする。これらは Bitwarden 管理画面または Bitwarden が公式に提供する machine account / access token 管理 API で行う。`dotfiles` provisioning は、発行済み reader token を YubiKey へ保存し、その token で BWS secret を取得できることを検証するだけである。
 
@@ -90,7 +101,7 @@ machine account `dotfiles-secret-recovery-reader` の作成、project `dotfiles-
 6. provisioning 用 access token を失効させる。
 7. `dotfiles secrets verify-yubikey --check bws` を実行し、`dotfiles-secret-recovery-reader` token で `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
 
-provisioning 経路は実 secret を CLI 引数、shell history、ログ、共有 terminal、永続一時ファイルへ残してはならない。`gpg-secret-key-backup` と `password-store-remote` の入力は hidden prompt、pipe、または保護済み buffer へ直接読み込む。`bws secret create <KEY> <VALUE> <PROJECT_ID>` のように値を argv へ載せる形式は、手動代替手段としても推奨しない。
+provisioning 経路は実 secret を CLI 引数、shell history、ログ、共有 terminal、永続一時ファイルへ残してはならない。`gpg-secret-key-backup` と `password-store-remote` の入力は hidden prompt、pipe、または保護済み buffer へ直接読み込む。値を argv へ載せる CLI 形式は採用しない。
 
 既存 secret を更新する場合、provisioning 経路は更新前に以下を検証し、満たせない場合は停止する。
 

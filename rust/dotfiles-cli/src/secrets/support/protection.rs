@@ -1,121 +1,30 @@
-//! 平文 bytes の生存期間に紐づける process / memory 保護。
+//! 平文 bytes の生存期間に紐づける process 保護と zeroize 境界。
 
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc, LazyLock, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{collections::BTreeMap, future::Future, io::Write, pin::Pin};
 
 use anyhow::{Context, bail};
-use signal_hook::{SigId, consts::signal};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+pub(crate) mod bws;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 mod oaep;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(crate) mod piv_pin;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod sealed_blob;
-pub(crate) mod secret_consumer;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;
 
 use crate::Result;
-static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
-static INTERRUPT_REGISTRATION: LazyLock<Mutex<InterruptRegistration>> =
-    LazyLock::new(|| Mutex::new(InterruptRegistration::default()));
-const MEMORY_LOCK_PROBE_LEN: usize = 256 * 1024;
+use crate::secrets::support::process_io;
 
-/// SIGINT/SIGTERM を flag として記録する保護区間 guard。
-pub(crate) struct InterruptGuard;
+/// core dump 抑止を secret 入力前に確立する process guard。
+struct SecretProcessGuard;
 
-#[derive(Default)]
-struct InterruptRegistration {
-    depth: usize,
-    sigint: Option<SigId>,
-    sigterm: Option<SigId>,
-}
-
-impl InterruptGuard {
-    /// SIGINT/SIGTERM handler を登録した保護区間を開始する。
-    ///
-    /// ネスト時は最外側の guard が handler を登録し、最後の guard の Drop で解除する。
-    pub(crate) fn install() -> Result<Self> {
-        let mut registration = interrupt_registration();
-        if registration.depth == 0 {
-            INTERRUPTED.store(false, Ordering::SeqCst);
-            registration.install_handlers()?;
-        }
-        registration.depth += 1;
-        Ok(Self)
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        let mut registration = interrupt_registration();
-        if registration.depth == 0 {
-            return;
-        }
-        registration.depth -= 1;
-        if registration.depth == 0 {
-            registration.unregister_handlers();
-            INTERRUPTED.store(false, Ordering::SeqCst);
-        }
-    }
-}
-
-fn interrupt_registration() -> MutexGuard<'static, InterruptRegistration> {
-    match INTERRUPT_REGISTRATION.lock() {
-        Ok(registration) => registration,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-impl InterruptRegistration {
-    /// 2 種類の signal handler を同一トランザクションで登録する。
-    ///
-    /// `SIGTERM` 登録が失敗した場合は `SIGINT` だけが残らないよう巻き戻し、
-    /// 「両方登録できた時だけ保護区間を開始する」停止条件を維持する。
-    /// process 全体に signal handler を入れる副作用を、この registration 管理下に限定する。
-    ///
-    /// 複数 use case が同一 process で連続実行されても handler の重複登録を避け、
-    /// 途中失敗時に片側だけ残る状態を作らないことを安全境界として維持する。
-    fn install_handlers(&mut self) -> Result<()> {
-        let sigint = signal_hook::flag::register(signal::SIGINT, Arc::clone(&INTERRUPTED))
-            .context("failed to install signal handler")?;
-        let sigterm = match signal_hook::flag::register(signal::SIGTERM, Arc::clone(&INTERRUPTED))
-            .context("failed to install signal handler")
-        {
-            Ok(sigterm) => sigterm,
-            Err(err) => {
-                signal_hook::low_level::unregister(sigint);
-                return Err(err);
-            }
-        };
-        self.sigint = Some(sigint);
-        self.sigterm = Some(sigterm);
-        Ok(())
-    }
-
-    fn unregister_handlers(&mut self) {
-        if let Some(sigint) = self.sigint.take() {
-            signal_hook::low_level::unregister(sigint);
-        }
-        if let Some(sigterm) = self.sigterm.take() {
-            signal_hook::low_level::unregister(sigterm);
-        }
-    }
-}
-
-/// core dump 抑止と mlock 利用可否を保持する memory guard。
-struct SecretMemoryGuard;
-
-/// 平文 bytes を読む use case 全体の signal / memory 保護境界。
+/// 平文 bytes を読む use case 全体の process 保護境界。
 pub(crate) struct SecretSession {
-    _interrupt: InterruptGuard,
-    memory: SecretMemoryGuard,
+    process: SecretProcessGuard,
 }
 
 /// secret 本文を session lifetime に閉じ込める保護済み所有値。
@@ -123,11 +32,11 @@ pub(crate) struct SecretSession {
 /// ** メソッドを拡張してコピーのためのセキュリティホールを新築してはならない**
 /// 平文 bytes は `with_secret` / `with_secret_mut` の借用中だけ公開する。
 /// `Zeroizing` はこの protection 境界の内部実装詳細であり、外部層へ所有権や型を露出しない。
-/// memory lock は入力 session から引き継いだ値、または clone/copy 用の locked destination
-/// として確保した値で保持し、Drop 時に zeroize を実行する。
+/// Drop 時の zeroize はこの所有型の責務である。memory lock は成功時だけ保持する補助であり、
+/// secret 保護成立の必須条件として扱わない。
 pub struct ProtectedSecret {
     value: Zeroizing<Vec<u8>>,
-    _lock: region::LockGuard,
+    _lock: Option<region::LockGuard>,
 }
 
 impl PartialEq for ProtectedSecret {
@@ -139,34 +48,32 @@ impl PartialEq for ProtectedSecret {
 impl Eq for ProtectedSecret {}
 
 impl ProtectedSecret {
-    /// zeroize 対象の locked buffer を指定長で新規確保する。
+    /// zeroize 対象 buffer を指定長で新規確保する。
     ///
-    /// 返値は全 byte が 0 で初期化され、plaintext 書き込み前に memory lock 済みである。
+    /// 返値は全 byte が 0 で初期化される。
     pub(crate) fn new(len: usize) -> Result<Self> {
-        Self::allocate_locked_destination(len)
+        Self::allocate_destination(len)
     }
 
-    /// locked destination へ secret bytes を複製する唯一のコピー境界。
+    /// destination へ secret bytes を複製する唯一のコピー境界。
     ///
-    /// `ProtectedSecret` の複製は、コピー先を確保して memory lock を取得してから平文 bytes を
-    /// 借用中だけ書き込むこの経路に限定する。確保または lock に失敗した場合は `Err` を返し、
-    /// unlocked copy や途中状態の protected value を返さない。
+    /// `ProtectedSecret` の複製は、コピー先を確保してから平文 bytes を借用中だけ書き込む
+    /// この経路に限定する。確保に失敗した場合は `Err` を返し、途中状態の protected value を
+    /// 返さない。
     ///
-    /// caller が `with_secret` から直接コピー経路を作ると、lock 前の平文複製や zeroize 管理外の
-    /// buffer を作れるため禁止する。新しい複製 API が必要な場合も、この関数を経由して
-    /// lock-before-copy の順序を維持する。
+    /// caller が `with_secret` から直接コピー経路を作ると、zeroize 管理外の buffer を作れるため
+    /// 禁止する。新しい複製 API が必要な場合も、この関数を経由して所有境界を維持する。
     pub(crate) fn try_clone(from: &Self) -> Result<Self> {
         let mut this = Self::new(from.len())?;
         this.with_secret_mut(|to| from.with_secret(|from| to.copy_from_slice(from)));
         Ok(this)
     }
 
-    /// 指定長の destination buffer を確保し、plaintext copy 前に memory lock を取得する。
-    fn allocate_locked_destination(len: usize) -> Result<Self> {
+    /// 指定長の destination buffer を確保する。
+    fn allocate_destination(len: usize) -> Result<Self> {
         let lock_len = len.max(1);
         let mut value = vec![0u8; lock_len];
-        let lock = region::lock(value.as_ptr(), lock_len)
-            .context("failed to lock protected secret memory")?;
+        let lock = try_lock(value.as_ptr(), lock_len);
         value.truncate(len);
         Ok(Self {
             value: Zeroizing::new(value),
@@ -194,11 +101,52 @@ impl ProtectedSecret {
         borrow(self.value.as_mut_slice())
     }
 
+    /// UTF-8 secret text を async 外部処理の完了まで借用境界内へ閉じる。
+    ///
+    /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
+    /// `.await` まで完了させ、repository 側の所有 buffer を closure 外へ持ち出さない。
+    #[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
+    pub(in crate::secrets::support::protection) async fn with_secret_utf8_async<R>(
+        &self,
+        borrow: impl for<'a> FnOnce(&'a str) -> Pin<Box<dyn Future<Output = Result<R>> + 'a>>,
+    ) -> Result<R> {
+        let text =
+            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
+        borrow(text).await
+    }
+
     /// 保持中 secret の byte 長を返す。
     ///
     /// 長さ情報のみを露出し、平文 bytes 本体は返さない境界を維持する。
     pub(crate) fn len(&self) -> usize {
         self.value.len()
+    }
+
+    /// secret を writer へ書き込む既存の明示出力境界。
+    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        self.with_secret(|bytes| writer.write_all(bytes))
+            .map_err(Into::into)
+    }
+
+    /// `#[cfg(test)]` だけで使う secret 観測口として、test bytes から保護値を作る。
+    ///
+    /// production build では公開されず、通常経路の plaintext 取り出し API として扱わない。
+    #[cfg(test)]
+    pub(crate) fn from_test_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut secret = Self::new(bytes.len())?;
+        secret.with_secret_mut(|out| out.copy_from_slice(bytes));
+        Ok(secret)
+    }
+
+    /// `#[cfg(test)]` または `secrets-internal-test-stub` で使う secret 観測口として、
+    /// 保持 bytes を test/stub 側へ複製する。
+    ///
+    /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
+    #[cfg(any(test, feature = "secrets-internal-test-stub"))]
+    #[cfg_attr(not(feature = "secrets-internal-test-stub"), expect(dead_code))]
+    #[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
+    pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
+        self.with_secret(|bytes| bytes.to_vec())
     }
 
     /// secret JSON bytes を field 単位の locked `ProtectedSecret` map へ復元する。
@@ -233,68 +181,59 @@ impl ProtectedSecret {
     }
 }
 
+/// `ProtectedSecret` を stdout の secret 出力境界へ渡す用途別操作。
+pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
+    process_io::write_secret_stdout_with(|writer| secret.write_to(writer))
+}
+
 impl SecretSession {
-    /// signal handler、core dump 抑止、mlock probe を同じ保護境界で確立する。
+    /// secret 入力前に core dump 抑止を確立する。
     pub(crate) fn start() -> Result<Self> {
         Ok(Self {
-            _interrupt: InterruptGuard::install()?,
-            memory: SecretMemoryGuard::prepare()?,
+            process: SecretProcessGuard::prepare()?,
         })
     }
 
-    /// 一時入力 buffer の memory range を現在の session で lock する。
+    /// 一時入力 buffer の memory range を best-effort で lock する。
     pub(super) fn lock_transient_buffer(
         &self,
         ptr: *const u8,
         len: usize,
-    ) -> Result<region::LockGuard> {
-        self.memory.lock_transient_buffer(ptr, len)
+    ) -> Option<region::LockGuard> {
+        self.process.lock_transient_buffer(ptr, len)
     }
 
-    /// lock 済み allocation と対応する lock guard を `ProtectedSecret` へ再結合する。
+    /// allocation と任意の lock guard を `ProtectedSecret` へ再結合する。
     ///
-    /// caller は `value` の allocation と `lock` が同じ memory range に対応していることを
-    /// 保証してから渡す責務を負う。この境界で raw `Vec<u8>` は `Zeroizing` 管理へ入り、
-    /// lock guard は `ProtectedSecret` の所有物として保持される。
-    ///
-    /// interrupt が既に通知されている場合は protected value を返さず `Err` にする。
-    /// その失敗経路では構築済みの `ProtectedSecret` が Drop され、`Zeroizing` と lock guard の
-    /// Drop によって平文 buffer の zeroize と unlock へ進む。
+    /// この境界で raw `Vec<u8>` は `Zeroizing` 管理へ入り、lock guard がある場合は
+    /// `ProtectedSecret` の所有物として保持される。
     pub(super) fn protect_locked_secret_value(
         &self,
         value: Vec<u8>,
-        lock: region::LockGuard,
-    ) -> Result<ProtectedSecret> {
-        let protected = ProtectedSecret {
+        lock: Option<region::LockGuard>,
+    ) -> ProtectedSecret {
+        ProtectedSecret {
             value: Zeroizing::new(value),
             _lock: lock,
-        };
-        if INTERRUPTED.load(Ordering::SeqCst) {
-            bail!("operation interrupted");
         }
-        Ok(protected)
     }
 }
 
-impl SecretMemoryGuard {
-    /// core dump 抑止と mlock probe をまとめて初期化し、以後の秘密入力保護を成立させる。
-    ///
-    /// この境界で失敗した場合は保護前提が崩れるため、secret 入力処理へ進ませない。
+impl SecretProcessGuard {
+    /// core dump 抑止を初期化し、secret の crash dump 永続化経路を閉じる。
     fn prepare() -> Result<Self> {
         rlimit::setrlimit(rlimit::Resource::CORE, 0, 0).context("failed to disable core dumps")?;
-
-        let probe = Zeroizing::new(vec![0u8; MEMORY_LOCK_PROBE_LEN]);
-        let probe_guard =
-            region::lock(probe.as_ptr(), probe.len()).context("failed to lock process memory")?;
-        drop(probe_guard);
-
         Ok(Self)
     }
 
-    /// 一時入力 buffer の生メモリ範囲を lock し、swap 退避と core dump 露出を抑止する。
-    fn lock_transient_buffer(&self, ptr: *const u8, len: usize) -> Result<region::LockGuard> {
-        region::lock(ptr, len).context("failed to lock input buffer memory")
+    /// 一時入力 buffer の生メモリ範囲を best-effort で lock する。
+    fn lock_transient_buffer(&self, ptr: *const u8, len: usize) -> Option<region::LockGuard> {
+        try_lock(ptr, len)
     }
+}
+
+fn try_lock(ptr: *const u8, len: usize) -> Option<region::LockGuard> {
+    region::lock(ptr, len).ok()
 }
 
 #[cfg(test)]

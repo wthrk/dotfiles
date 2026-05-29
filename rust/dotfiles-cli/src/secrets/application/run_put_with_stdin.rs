@@ -9,78 +9,100 @@ use crate::secrets::{
 /// 非対話 stdin から受け取った secret を対象 serial の YubiKey storage へ保存する。
 ///
 /// use case は入力取得と保存順序のみを担い、stdin 条件やサイズ制約は adapter 実装側へ閉じ込める。
-pub(crate) fn run_put_with_stdin<B: ports::SecretInputPort + ports::SecretStoragePort>(
+pub(crate) fn run_put_with_stdin<P, S>(
     command: PutCommand,
-    boundary: &mut B,
-) -> Result<()> {
+    process: &P,
+    storage_port: &mut S,
+) -> Result<()>
+where
+    P: ports::SecretInputPort,
+    S: ports::SecretStoragePort,
+{
     let serial = command.required_serial()?;
     let storage = command.storage_spec(serial);
-    let inspection = boundary.inspect_secret_storage_write(serial, &storage)?;
+    let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
     SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
-    let secret = boundary.read_streamed_secret()?;
+    let secret = process.read_streamed_secret()?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
-    boundary.store_secret(serial, intent, &secret)
+    storage_port.store_secret(serial, intent, &secret)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::Result;
     use crate::secrets::{
-        application::app_test_support::AppMockBoundary,
-        domain::{piv::SecretName, values::PutCommand},
+        domain::{
+            manifest::SecretManifest, piv::SecretName, storage::SecretStorageWriteInspection,
+            values::PutCommand,
+        },
+        ports,
+        support::protection::ProtectedSecret,
     };
 
     use super::run_put_with_stdin;
 
+    fn write_inspection(object_exists: bool) -> SecretStorageWriteInspection {
+        SecretStorageWriteInspection {
+            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            object_exists,
+        }
+    }
+
     #[test]
-    fn put_stdin_stores_requested_secret() -> Result<()> {
-        let mut boundary = AppMockBoundary::new();
+    fn put_stdin_checks_storage_before_reading_secret() {
+        let process = ports::MockSecretInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        let mut sequence = mockall::Sequence::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(write_inspection(true)));
+        storage.expect_store_secret().times(0);
+
+        let result = run_put_with_stdin(
+            PutCommand {
+                serial: Some(2001),
+                name: SecretName::BwsAccessToken,
+                force: false,
+            },
+            &process,
+            &mut storage,
+        );
+
+        assert!(
+            result.is_err(),
+            "preflight failure must stop before stdin read"
+        );
+    }
+
+    #[test]
+    fn put_stdin_stores_requested_secret() -> crate::Result<()> {
+        let mut process = ports::MockSecretInputPort::new();
+        process
+            .expect_read_streamed_secret()
+            .times(1)
+            .returning(|| Ok(ProtectedSecret::from_test_bytes(b"token").expect("test secret")));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .returning(|_, _| Ok(write_inspection(false)));
+        storage
+            .expect_store_secret()
+            .times(1)
+            .withf(|serial, intent, _| {
+                *serial == 2001 && intent.storage.name == SecretName::BwsAccessToken
+            })
+            .returning(|_, _, _| Ok(()));
+
         run_put_with_stdin(
             PutCommand {
                 serial: Some(2001),
                 name: SecretName::BwsAccessToken,
                 force: false,
             },
-            &mut boundary,
-        )?;
-        assert_eq!(boundary.mock.stores(), vec![SecretName::BwsAccessToken]);
-        Ok(())
-    }
-
-    #[test]
-    fn put_stdin_requires_serial() {
-        let mut boundary = AppMockBoundary::new();
-        let result = run_put_with_stdin(
-            PutCommand {
-                serial: None,
-                name: SecretName::BwsAccessToken,
-                force: false,
-            },
-            &mut boundary,
-        );
-        assert!(result.is_err(), "stdin path requires explicit serial");
-    }
-
-    #[test]
-    fn put_stdin_checks_storage_before_reading_secret() {
-        let mut boundary = AppMockBoundary::new();
-        boundary.mock.set_write_object_exists(true);
-        boundary
-            .mock
-            .set_streamed_secret_error("secret should not be read before preflight");
-
-        let result = run_put_with_stdin(
-            PutCommand {
-                serial: Some(2001),
-                name: SecretName::BwsAccessToken,
-                force: false,
-            },
-            &mut boundary,
-        );
-
-        assert!(
-            result.is_err(),
-            "occupied storage should stop before stdin read"
-        );
+            &process,
+            &mut storage,
+        )
     }
 }

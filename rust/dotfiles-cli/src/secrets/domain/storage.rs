@@ -4,10 +4,10 @@
 //! object 占有判定、上書き可否、欠落判定を再実装しない。
 
 use crate::Result;
+use crate::secrets::support::protection::ProtectedSecret;
 
 use super::{
     manifest::SecretManifest,
-    material::SecretMaterial,
     piv::{
         PivApplicationVersion, PivObjectId, SecretStorageSpec, StorageObjectIds,
         validate_secret_storage_setup_preconditions,
@@ -193,7 +193,7 @@ impl SecretStorageReadIntent {
     }
 
     /// 復号済み secret が対象 storage の値制約を満たすことを確認する。
-    pub fn validate_loaded_secret(&self, secret: &SecretMaterial) -> Result<()> {
+    pub fn validate_loaded_secret(&self, secret: &ProtectedSecret) -> Result<()> {
         self.storage.ensure_plaintext_len(secret.len())
     }
 }
@@ -203,16 +203,8 @@ mod tests {
     use super::*;
     use crate::secrets::domain::piv::SecretName;
 
-    struct TestSecret {
-        len: usize,
-    }
-
-    fn secret_with_len(len: usize) -> SecretMaterial {
-        SecretMaterial::from_backend(
-            TestSecret { len },
-            |secret| secret.len,
-            |secret| Ok(TestSecret { len: secret.len }),
-        )
+    fn secret_with_len(len: usize) -> ProtectedSecret {
+        ProtectedSecret::from_test_bytes(&vec![0; len]).expect("test secret")
     }
 
     fn expected_manifest_bytes() -> Result<Vec<u8>> {

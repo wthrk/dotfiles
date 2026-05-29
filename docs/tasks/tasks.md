@@ -34,10 +34,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/oaep.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
-  - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
-  - `rust/dotfiles-cli/src/secrets/support/version.rs`
-  - `rust/dotfiles-cli/tests/secrets_application/app_test_support.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
   - `rust/dotfiles-cli/Cargo.toml`
 - 作業定義文書: [secret-recovery/work-items/yubikey.md](secret-recovery/work-items/yubikey.md#12-yubikey-秘密情報保存)
@@ -49,16 +46,58 @@
 
 ### Bitwarden Secrets Manager
 
-- 状態: `進行中`
+- 状態: `進行中（Hypatia 後 fresh review 待ち）`
 - GitHub issue: #13
 - 主成果物: `実コード差分`
 - 対象コードパス:
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `rust/dotfiles-cli/Cargo.toml`
+  - `rust/dotfiles-cli/src/main.rs`
+  - `rust/dotfiles-cli/src/lib.rs`
+  - `rust/dotfiles-cli/src/cli.rs`
+  - `rust/dotfiles-cli/src/secrets.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_primary_with_stdin_json.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_enroll_spare_with_stdin_json.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_get_with.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_put_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_put_with_stdin.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_verify_yubikey_with.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_prompt.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_stdin.rs`
+  - `rust/dotfiles-cli/src/secrets/application/run_setup_with.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
   - `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/bws_client.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/bws_client_real.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters/bws_client_stub.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_selection.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_serial_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/process_io_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/storage_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/selected_device_real.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/selected_device_stub.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/support.rs`
+  - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/buffer.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/bws.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/piv_pin.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
+  - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
+  - `rust/dotfiles-cli/tests/secrets_internal_stub/piv_io_internal_stub.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)
+- 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### GnuPG / SSH

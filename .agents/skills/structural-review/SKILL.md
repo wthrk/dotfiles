@@ -11,6 +11,8 @@ description: Use this skill when a subagent is assigned as the structural review
 
 Apply layer-specific responsibility, dependency-direction, and visibility rules from `docs/architecture/hexagonal-implementation-rules.md`. A primary obligation is to apply layer "review questions" from `docs/architecture/review-checklist.md` before checklist matching. If any answer indicates "violates layer philosophy", return `Verdict: Fail` even if checklist items pass. Explicitly record answers to layer-philosophy questions in `Rationale:`. Even when file placement or naming looks correct, return `Verdict: Fail` if implemented responsibilities violate layer philosophy.
 
+Do not accept mechanical separation as architectural compliance. Classify meaningful processing units using the responsibility boundaries defined in `docs/architecture/hexagonal-implementation-rules.md` and verify that each unit is placed in its prescribed boundary. Thin ports or adapters must not be preserved by moving responsibilities into layers that the canonical architecture assigns elsewhere.
+
 ## Input Parameters
 
 **Review target code path only** (example: `rust/dotfiles-cli/src/`).
@@ -39,6 +41,9 @@ Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` tak
 
 - Open `docs/architecture/review-checklist.md` and read "review questions" for all layers in scope.
 - Read code and answer each question explicitly in the form "this code does only ...".
+- Before accepting placement, classify meaningful processing units by the canonical responsibility boundaries and record why the chosen layer is the prescribed boundary, not merely where the code was moved.
+- For `support`, distinguish responsibilities assigned to support from responsibilities assigned to other layers by the canonical architecture documents.
+- For Bitwarden Secrets Manager paths, apply the responsibility allocation defined by the canonical architecture and secret-recovery design documents; do not restate those detailed rules here.
 - Record each answer in `Rationale:`.
 - If even one answer is "violates philosophy", immediately fix verdict to `Verdict: Fail` and do not proceed to Step 2.
 - Do not proceed to Step 2 without completing Step 1.
@@ -49,7 +54,7 @@ Layer-based rules from `docs/architecture/hexagonal-implementation-rules.md` tak
 - Enumerate all files under `adapters/` and all `pub`/`pub(crate)`/`pub(super)` symbols.
   - If any symbol is not a port-trait implementation, return `Verdict: Fail`.
   - Identify modules re-exported as `pub(super)` or wider from `adapters.rs` (or `adapters/mod.rs`) and apply the same rule to all externally reachable symbols.
-- For `#[cfg(all(test, feature = "..."))]` blocks that `include!` test support from `tests/`, apply `docs/architecture/hexagonal-implementation-rules.md` の `Rust private module 用 test-only bridge` 条件 before treating them as production-source test double mixing. If all conditions are met, do not fail solely because the bridge exists. This does not relax adapter visibility: unnecessary `pub(super)` helpers still fail.
+- For `#[cfg(all(test, feature = "..."))]` blocks that `include!` test support from `tests/`, apply the `Rust private-module test-only bridge` conditions in `docs/architecture/hexagonal-implementation-rules.md` before treating them as production-source test double mixing. If all conditions are met, do not fail solely because the bridge exists. This does not relax adapter visibility: unnecessary `pub(super)` helpers still fail.
 - Verify there is no adapter concrete-type import and no `println!`/stdin read in `application/` files.
 - For private helpers in `application/` and `adapters/`, describe each helper's responsibility in one sentence and judge whether it belongs to that layer. If any helper is unexplained or layer-mismatched, return `Verdict: Fail`.
 - If helpers are heavily split, evaluate port-capability granularity (coarse contract) as a potential cause, not only code organization. If root cause is port design, return `Verdict: Fail` and require port re-splitting even when files are already split.
