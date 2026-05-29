@@ -14,7 +14,7 @@ use anyhow::Context;
 
 use crate::secrets::{
     domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-    ports::BwsClientPort,
+    ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
 };
 

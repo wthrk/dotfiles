@@ -22,18 +22,18 @@ use crate::secrets::{
 pub(crate) fn run_enroll_spare_with_stdin_json<D, I, P, S, R>(
     command: EnrollSpareCommand,
     spare_device: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     document_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::SpareDeviceSerialPort,
-    I: ports::BootstrapSecretDocumentInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::SpareDeviceSerialPort,
+    I: ports::io::BootstrapSecretDocumentInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     command.ensure_requested_serials_distinct()?;
     let spare_serial = spare_device.resolve_spare_device_serial(command.spare_serial)?;
@@ -117,27 +117,27 @@ mod tests {
 
     #[test]
     fn enroll_spare_stdin_json_reads_pin_only_when_required() -> crate::Result<()> {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device
             .expect_resolve_spare_device_serial()
             .times(1)
             .returning(|_| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(true));
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        let mut document_input = ports::io::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(1)
             .returning(|| Ok(fields()));
-        let mut pin_input = ports::MockPinInputPort::new();
+        let mut pin_input = ports::io::MockPinInputPort::new();
         pin_input
             .expect_read_pin()
             .times(1)
             .returning(|| Ok(material(b"123456")));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -176,7 +176,7 @@ mod tests {
                     })
                 });
         }
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_enroll_report()
             .times(1)
@@ -198,18 +198,18 @@ mod tests {
 
     #[test]
     fn enroll_spare_stdin_json_rejects_same_requested_serials_before_ports() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device.expect_resolve_spare_device_serial().times(0);
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy.expect_device_requires_pin().times(0);
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        let mut document_input = ports::io::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(0);
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_setup().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_enroll_spare_with_stdin_json(
             EnrollSpareCommand {
@@ -232,21 +232,21 @@ mod tests {
 
     #[test]
     fn enroll_spare_stdin_json_rejects_resolved_spare_collision_before_setup() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device
             .expect_resolve_spare_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy.expect_device_requires_pin().times(0);
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        let mut document_input = ports::io::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(0);
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_setup().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_enroll_spare_with_stdin_json(
             EnrollSpareCommand {
@@ -269,20 +269,20 @@ mod tests {
 
     #[test]
     fn enroll_spare_stdin_json_stops_when_setup_initialization_fails() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device
             .expect_resolve_spare_device_serial()
             .times(1)
             .returning(|_| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy.expect_device_requires_pin().times(0);
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        let mut document_input = ports::io::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(1)
             .returning(|| Ok(fields()));
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -293,7 +293,7 @@ mod tests {
             .returning(|_, _| Err(anyhow::anyhow!("setup failed")));
         storage.expect_store_secret().times(0);
         storage.expect_finalize_secret_storage_setup().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_enroll_spare_with_stdin_json(
             EnrollSpareCommand {

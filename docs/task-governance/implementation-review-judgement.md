@@ -45,7 +45,7 @@
 
 Bitwarden Secrets Manager 経路では、固定 secret key/name の意味づけ、secret ID の一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、`verify-yubikey --check bws` の外部検証 plan が support に置かれていないかを確認する。これらを support に置いたまま `判定: 合格` としてはならない。
 
-secret-recovery の adapter 配下 `secrets-internal-test-stub` backend stub について、同一 production command path、同一 port 契約、adapter 層責務（port 契約と外部技術の翻訳）、production build 非混入、runtime real/stub 分岐なし、integration test からの adapter stub module 非 import、fixture/state helper と backend stub 実装の責務分離を満たす場合、`runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一 adapter module 配下にあること自体` は構造レビューの不合格根拠に使用してはならない。不合格根拠にできるのは、これらの条件のいずれかが不成立であることをコード根拠付きで示せる場合のみとする。
+secret-recovery の adapter 配下 `secrets-internal-test-stub` backend stub について、`docs/architecture/hexagonal-implementation-rules.md` の `internal backend stub の配置` 節が定義する canonical conditions を満たす場合、`runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一 adapter module 配下にあること自体` は構造レビューの不合格根拠に使用してはならない。不合格根拠にできるのは、同節の条件のいずれかが不成立であることをコード根拠付きで示せる場合のみとする。
 
 ### 仕様適合レビュー担当
 
@@ -93,7 +93,7 @@ same-route を判定するときは、禁止対象と許可対象を次のよう
 
 アーキテクチャ整合レビュー担当は、ファイル分割後の全体が「規定済み境界に責務が置かれた設計」になっているかを判定する。薄い port や薄い adapter を見かけ上作るために、業務判断・usecase 手順・固定 secret key の意味づけ・一意解決の業務規則・0件/複数件の domain failure 化・BWS check の外部検証 plan が support へ寄せられている場合、個別ファイルが整理されていても `判定: 不合格` とする。
 
-secret-recovery の adapter 配下 `secrets-internal-test-stub` backend stub が同一 production command path、同一 port 契約、adapter 層責務、production build 非混入、runtime real/stub 分岐なし、integration test からの adapter stub module 非 import、fixture/state helper と backend stub 実装の責務分離を満たす場合、アーキテクチャ整合レビューは `runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一 adapter module 配下にあること自体` を全体非整合の根拠として使用してはならない。全体非整合として不合格にするには、same-route 不成立、配置+責務不一致、単一 production command path の破綻、または tests 側 fixture 責務の adapter 側混入を、モジュール全体文脈で具体的に示すことを必須とする。
+secret-recovery の adapter 配下 `secrets-internal-test-stub` backend stub が `docs/architecture/hexagonal-implementation-rules.md` の `internal backend stub の配置` 節が定義する canonical conditions を満たす場合、アーキテクチャ整合レビューは `runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一 adapter module 配下にあること自体` を全体非整合の根拠として使用してはならない。全体非整合として不合格にするには、同節の条件不成立または責務漏れを、モジュール全体文脈で具体的に示すことを必須とする。
 
 ### 参照整合レビュー担当（文書是正専用）
 

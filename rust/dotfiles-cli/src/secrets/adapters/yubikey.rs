@@ -22,7 +22,9 @@ use crate::{
                 SecretStorageWriteIntent,
             },
         },
-        ports::{DevicePinPolicyPort, DeviceSerialPort, SecretStoragePort, SpareDeviceSerialPort},
+        ports::yubikey::{
+            DevicePinPolicyPort, DeviceSerialPort, SecretStoragePort, SpareDeviceSerialPort,
+        },
         support::protection::ProtectedSecret,
     },
 };

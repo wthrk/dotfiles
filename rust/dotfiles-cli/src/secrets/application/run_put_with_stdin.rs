@@ -15,8 +15,8 @@ pub(crate) fn run_put_with_stdin<P, S>(
     storage_port: &mut S,
 ) -> Result<()>
 where
-    P: ports::SecretInputPort,
-    S: ports::SecretStoragePort,
+    P: ports::io::SecretInputPort,
+    S: ports::yubikey::SecretStoragePort,
 {
     let serial = command.required_serial()?;
     let storage = command.storage_spec(serial);
@@ -49,8 +49,8 @@ mod tests {
 
     #[test]
     fn put_stdin_checks_storage_before_reading_secret() {
-        let process = ports::MockSecretInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockSecretInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         let mut sequence = mockall::Sequence::new();
         storage
             .expect_inspect_secret_storage_write()
@@ -77,12 +77,12 @@ mod tests {
 
     #[test]
     fn put_stdin_stores_requested_secret() -> crate::Result<()> {
-        let mut process = ports::MockSecretInputPort::new();
+        let mut process = ports::io::MockSecretInputPort::new();
         process
             .expect_read_streamed_secret()
             .times(1)
             .returning(|| Ok(ProtectedSecret::from_test_bytes(b"token").expect("test secret")));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)

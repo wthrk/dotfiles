@@ -59,7 +59,7 @@ This role's defining responsibility is holistic design-coherence judgment, not p
 - Ask each whole-module question listed in the Role section and answer it explicitly in `Rationale:`.
 - State answers in the form "whether this module as a whole expresses a coherent design", citing concrete file names, layers, and responsibility distribution.
 - If even one answer is "not coherent as a whole", immediately fix verdict to `Verdict: Fail` even if all individual rules pass, and explain which structural unit (module boundary, responsibility distribution, layer relation) causes incoherence in `Rationale:`.
-- An adapter `secrets-internal-test-stub` backend stub that satisfies the canonical conditions (same production command path, same port contract, compile-time selection, no runtime branch, production build non-inclusion, tests do not import adapter stub modules, fixture/state helpers remain in `tests/`) is not a whole-module incoherence by itself. Fail only when the whole-module context shows same-route breakage, responsibility leakage, or fixture/state helper responsibilities moved into the adapter backend stub.
+- An adapter `secrets-internal-test-stub` backend stub that satisfies the canonical conditions in `docs/architecture/hexagonal-implementation-rules.md` の `internal backend stub の配置` 節 is not a whole-module incoherence by itself. Fail only when the whole-module context shows same-route breakage, responsibility leakage, or fixture/state helper responsibilities moved into the adapter backend stub.
 - A review that does not record answers to whole-coherence questions in `Rationale:` is incomplete and must not be submitted.
 
 ### Independence and Scope

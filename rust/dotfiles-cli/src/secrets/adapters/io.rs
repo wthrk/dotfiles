@@ -10,7 +10,7 @@ use crate::{
     Result,
     secrets::{
         domain::summary::{EnrollSummary, VerifySummary},
-        ports::{
+        ports::io::{
             BootstrapSecretDocumentInputPort, PinInputPort, ReportPort, RotationContinuationPort,
             SecretInputPort, SecretOutputPort,
         },

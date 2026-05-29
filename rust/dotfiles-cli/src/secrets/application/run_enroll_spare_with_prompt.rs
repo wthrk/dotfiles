@@ -22,17 +22,17 @@ use crate::secrets::{
 pub(crate) fn run_enroll_spare_with_prompt<D, P, S, R>(
     command: EnrollSpareCommand,
     primary_device: &mut D,
-    spare_device: &mut impl ports::SpareDeviceSerialPort,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    spare_device: &mut impl ports::yubikey::SpareDeviceSerialPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     command.ensure_requested_serials_distinct()?;
     let primary_serial = primary_device.resolve_device_serial(command.primary_serial)?;
@@ -142,16 +142,16 @@ mod tests {
 
     #[test]
     fn enroll_spare_prompt_rejects_same_requested_serials_before_ports() {
-        let mut primary_device = ports::MockDeviceSerialPort::new();
+        let mut primary_device = ports::yubikey::MockDeviceSerialPort::new();
         primary_device.expect_resolve_device_serial().times(0);
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device.expect_resolve_spare_device_serial().times(0);
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy.expect_device_requires_pin().times(0);
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_read().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_enroll_spare_with_prompt(
             EnrollSpareCommand {
@@ -175,19 +175,19 @@ mod tests {
     #[test]
     fn enroll_spare_prompt_reads_primary_before_spare_setup() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut primary_device = ports::MockDeviceSerialPort::new();
+        let mut primary_device = ports::yubikey::MockDeviceSerialPort::new();
         primary_device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(2)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
@@ -211,7 +211,7 @@ mod tests {
                     })
                 });
         }
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device
             .expect_resolve_spare_device_serial()
             .times(1)
@@ -255,7 +255,7 @@ mod tests {
                     })
                 });
         }
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_enroll_report()
             .times(1)
@@ -277,18 +277,18 @@ mod tests {
 
     #[test]
     fn enroll_spare_prompt_stops_when_spare_setup_initialization_fails() {
-        let mut primary_device = ports::MockDeviceSerialPort::new();
+        let mut primary_device = ports::yubikey::MockDeviceSerialPort::new();
         primary_device
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
@@ -310,7 +310,7 @@ mod tests {
                     })
                 });
         }
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::yubikey::MockSpareDeviceSerialPort::new();
         spare_device
             .expect_resolve_spare_device_serial()
             .times(1)
@@ -325,7 +325,7 @@ mod tests {
             .returning(|_, _| Err(anyhow::anyhow!("setup failed")));
         storage.expect_store_secret().times(0);
         storage.expect_finalize_secret_storage_setup().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_enroll_spare_with_prompt(
             EnrollSpareCommand {

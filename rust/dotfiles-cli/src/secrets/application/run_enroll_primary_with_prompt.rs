@@ -22,18 +22,18 @@ use crate::secrets::{
 pub(crate) fn run_enroll_primary_with_prompt<D, I, P, S, R>(
     command: EnrollPrimaryCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     secret_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    I: ports::SecretInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DeviceSerialPort,
+    I: ports::io::SecretInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let setup_probe = SecretStorageSetupProbe::expected();
@@ -108,19 +108,19 @@ mod tests {
     #[test]
     fn enroll_primary_prompt_stores_verifies_and_reports() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
             .times(1)
@@ -151,12 +151,12 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let pin_input = ports::MockPinInputPort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
@@ -179,7 +179,7 @@ mod tests {
                     })
                 });
         }
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_enroll_report()
             .times(1)
@@ -202,23 +202,23 @@ mod tests {
 
     #[test]
     fn enroll_primary_prompt_stops_when_setup_inspection_fails() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy.expect_device_requires_pin().times(0);
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input.expect_read_bw_email_secret().times(0);
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
             .returning(|_, _| Err(anyhow::anyhow!("setup inspect failed")));
         storage.expect_initialize_secret_storage().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_enroll_primary_with_prompt(
             EnrollPrimaryCommand { serial: Some(2001) },
@@ -235,12 +235,12 @@ mod tests {
 
     #[test]
     fn enroll_primary_prompt_reads_pin_when_required() -> crate::Result<()> {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -279,12 +279,12 @@ mod tests {
                     })
                 });
         }
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(true));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
             .times(1)
@@ -297,12 +297,12 @@ mod tests {
             .expect_read_bws_access_token_secret()
             .times(1)
             .returning(|| Ok(material(b"token")));
-        let mut pin_input = ports::MockPinInputPort::new();
+        let mut pin_input = ports::io::MockPinInputPort::new();
         pin_input
             .expect_read_pin()
             .times(1)
             .returning(|| Ok(material(b"123456")));
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_enroll_report()
             .times(1)
@@ -321,12 +321,12 @@ mod tests {
 
     #[test]
     fn enroll_primary_prompt_stops_when_store_fails() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -341,9 +341,9 @@ mod tests {
             .returning(|_, _, _| Err(anyhow::anyhow!("store failed")));
         storage.expect_finalize_secret_storage_setup().times(0);
         storage.expect_inspect_secret_storage_read().times(0);
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy.expect_device_requires_pin().times(0);
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
             .times(1)
@@ -356,8 +356,8 @@ mod tests {
             .expect_read_bws_access_token_secret()
             .times(1)
             .returning(|| Ok(material(b"token")));
-        let pin_input = ports::MockPinInputPort::new();
-        let mut report = ports::MockReportPort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report.expect_write_enroll_report().times(0);
 
         let result = run_enroll_primary_with_prompt(
@@ -375,12 +375,12 @@ mod tests {
 
     #[test]
     fn enroll_primary_prompt_stops_when_verify_load_fails() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -405,12 +405,12 @@ mod tests {
             .expect_load_secret()
             .times(1)
             .returning(|_, _, _| Err(anyhow::anyhow!("verify failed")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
             .times(1)
@@ -423,8 +423,8 @@ mod tests {
             .expect_read_bws_access_token_secret()
             .times(1)
             .returning(|| Ok(material(b"token")));
-        let pin_input = ports::MockPinInputPort::new();
-        let mut report = ports::MockReportPort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report.expect_write_enroll_report().times(0);
 
         let result = run_enroll_primary_with_prompt(

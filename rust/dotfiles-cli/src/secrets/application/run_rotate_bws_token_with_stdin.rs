@@ -26,11 +26,11 @@ pub(crate) fn run_rotate_bws_token_with_stdin<D, I, P, S, R>(
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DevicePinPolicyPort,
-    I: ports::SecretInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DevicePinPolicyPort,
+    I: ports::io::SecretInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     let serial = command.required_serial()?;
     let storage = command.storage_spec(serial);
@@ -120,7 +120,7 @@ mod tests {
     }
 
     fn expect_local_verify_ok(
-        storage: &mut ports::MockSecretStoragePort,
+        storage: &mut ports::yubikey::MockSecretStoragePort,
         sequence: &mut mockall::Sequence,
         serial: u32,
     ) {
@@ -156,13 +156,13 @@ mod tests {
 
     #[test]
     fn rotate_stdin_requires_serial_before_ports() {
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::yubikey::MockDevicePinPolicyPort::new();
         device.expect_device_requires_pin().times(0);
-        let secret_input = ports::MockSecretInputPort::new();
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let secret_input = ports::io::MockSecretInputPort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_write().times(0);
-        let report = ports::MockReportPort::new();
+        let report = ports::io::MockReportPort::new();
 
         let result = run_rotate_bws_token_with_stdin(
             RotateBwsTokenCommand { serial: None },
@@ -179,16 +179,16 @@ mod tests {
     #[test]
     fn rotate_stdin_checks_storage_before_reading_token_and_reports() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::yubikey::MockDevicePinPolicyPort::new();
         device
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let mut secret_input = ports::MockSecretInputPort::new();
-        let mut pin_input = ports::MockPinInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
+        let mut pin_input = ports::io::MockPinInputPort::new();
         pin_input.expect_read_pin().times(0);
 
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -213,7 +213,7 @@ mod tests {
             .returning(|_, _, _| Ok(()));
         expect_local_verify_ok(&mut storage, &mut sequence, 2001);
 
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)
@@ -236,16 +236,16 @@ mod tests {
     #[test]
     fn rotate_stdin_stops_before_token_read_when_existing_storage_invalid() {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::yubikey::MockDevicePinPolicyPort::new();
         device
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let mut secret_input = ports::MockSecretInputPort::new();
-        let pin_input = ports::MockPinInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
         secret_input.expect_read_streamed_secret().times(0);
 
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -259,7 +259,7 @@ mod tests {
         storage.expect_load_secret().times(0);
         storage.expect_store_secret().times(0);
 
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)
@@ -287,22 +287,22 @@ mod tests {
     #[test]
     fn rotate_stdin_reads_pin_when_device_requires_it() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::yubikey::MockDevicePinPolicyPort::new();
         device
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(true));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input
             .expect_read_streamed_secret()
             .times(1)
             .returning(|| Ok(material(b"new-token")));
-        let mut pin_input = ports::MockPinInputPort::new();
+        let mut pin_input = ports::io::MockPinInputPort::new();
         pin_input
             .expect_read_pin()
             .times(1)
             .returning(|| Ok(material(b"123456")));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -314,7 +314,7 @@ mod tests {
             .withf(|_, _, secret| secret.len() == b"new-token".len())
             .returning(|_, _, _| Ok(()));
         expect_local_verify_ok(&mut storage, &mut sequence, 2001);
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)

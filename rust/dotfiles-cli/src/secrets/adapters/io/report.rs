@@ -8,7 +8,7 @@ use crate::{
     Result,
     secrets::{
         domain::summary::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole},
-        ports::ReportPort,
+        ports::io::ReportPort,
     },
 };
 

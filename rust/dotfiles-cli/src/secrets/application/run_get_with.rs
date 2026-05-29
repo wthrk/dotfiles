@@ -12,16 +12,16 @@ use crate::secrets::{
 pub(crate) fn run_get_with<D, P, S, O>(
     command: GetCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     output: &O,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    O: ports::SecretOutputPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    O: ports::io::SecretOutputPort,
 {
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let pin = if pin_policy.device_requires_pin(serial)? {
@@ -68,19 +68,19 @@ mod tests {
     #[test]
     fn get_loads_secret_and_writes_output() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .times(1)
@@ -92,7 +92,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _, _| Ok(material(b"token")));
-        let mut output = ports::MockSecretOutputPort::new();
+        let mut output = ports::io::MockSecretOutputPort::new();
         output
             .expect_write_secret()
             .times(1)
@@ -115,22 +115,22 @@ mod tests {
 
     #[test]
     fn get_reads_pin_only_when_device_requires_it() -> crate::Result<()> {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(true));
-        let mut process = ports::MockPinInputPort::new();
+        let mut process = ports::io::MockPinInputPort::new();
         process
             .expect_read_pin()
             .times(1)
             .returning(|| Ok(material(b"123456")));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .times(1)
@@ -140,7 +140,7 @@ mod tests {
             .times(1)
             .withf(|_, _, pin| pin.is_some())
             .returning(|_, _, _| Ok(material(b"token")));
-        let mut output = ports::MockSecretOutputPort::new();
+        let mut output = ports::io::MockSecretOutputPort::new();
         output.expect_write_secret().times(1).returning(|_| Ok(()));
 
         run_get_with(

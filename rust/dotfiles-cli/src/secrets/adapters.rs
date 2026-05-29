@@ -1,12 +1,8 @@
-//! secrets adapter 層の公開境界。
+//! secrets adapter 層の責務別 module tree。
 //!
-//! backend grouping に対応した adapter module だけを宣言し、entrypoint へは port trait を実装する
-//! adapter 型のみを公開する。stub backend は compile-time feature でのみ接続される。
+//! 各 child module が特定の port 契約と外部技術の翻訳を所有する。concrete adapter 型は
+//! 責務別 module path から参照し、adapter root では convenience re-export を作らない。
 
-mod bw;
-mod io;
-mod yubikey;
-
-pub(crate) use bw::BwsClientAdapter;
-pub(crate) use io::{JsonReportAdapter, ProcessIoAdapter};
-pub(crate) use yubikey::{DeviceSelectionAdapter, StorageAdapter};
+pub(crate) mod bw;
+pub(crate) mod io;
+pub(crate) mod yubikey;

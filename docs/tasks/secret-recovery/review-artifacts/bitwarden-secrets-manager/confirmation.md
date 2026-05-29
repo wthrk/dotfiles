@@ -218,9 +218,24 @@
   - `test ! -e rust/dotfiles-cli/src/secrets/application/app_test_support.rs` 成功。
   - `rg -n 'app_test_support|tests/secrets_application|secrets_application/app_test_support|/tests/|#\\[path\\s*=|include!\\(|secrets-internal-test-stub' rust/dotfiles-cli/src/secrets/application.rs rust/dotfiles-cli/src/secrets/application -S` は該当なし。
   - `rg -n 'UnusedBwsClient|MockApp|MockAppEventExpectation|expect_hit_event|expect_event_times|mockall::mock!|PortFuture' rust/dotfiles-cli/src/secrets/application.rs rust/dotfiles-cli/src/secrets/application rust/dotfiles-cli/src/secrets/ports.rs -S` は該当なし。
-  - `direnv exec . cargo fmt -p dotfiles-cli -- --check` 成功。
+
+## PR #32 current-cycle 差戻し補正確認（2026-05-30）
+
+- 対象ブランチ: `feat/secrets-structure-issue-30`
+- 補正開始時点 HEAD: `e2e496e`
+- 差戻し入力:
+  - ドキュメントレビュー担当: skill / review judgement 文書内の governing source 条件再掲を削り、canonical docs 参照へ寄せる。
+  - 構造レビュー担当: `adapters.rs` / `ports.rs` を re-export 集約として残さず、責務別 module path へ import を更新する。
+  - アーキテクチャ整合レビュー担当: `entrypoint.rs` が concrete adapter/support を所有・生成する構造を解消し、entrypoint を CLI 入力変換へ限定する。
+- 実装補正:
+  - `rust/dotfiles-cli/src/secrets/entrypoint.rs` — CLI option から domain command / use case 選択 enum への変換境界へ縮小し、adapter concrete と `SecretSession` への直接依存を削除した。
+  - `rust/dotfiles-cli/src/secrets.rs` — adapter concrete 生成、`SecretSession` 開始、application use case への port 注入を entrypoint 外側の起動配線へ移した。
+  - `rust/dotfiles-cli/src/secrets/adapters.rs` / `rust/dotfiles-cli/src/secrets/ports.rs` — convenience re-export を削除し、利用側を `adapters::{bw,io,yubikey}` / `ports::{bw,io,yubikey}` の責務別 path へ更新した。
+  - `.agents/skills/*review/SKILL.md` と `docs/task-governance/implementation-review-judgement.md` — internal backend stub の canonical 条件列挙を削り、`docs/architecture/hexagonal-implementation-rules.md` の `internal backend stub の配置` 節への参照に置換した。
+- 確認手順と結果:
+  - `direnv exec . cargo fmt --all` 成功。
   - `direnv exec . cargo check -p dotfiles-cli` 成功。
-  - `direnv exec . cargo test -p dotfiles-cli --lib` 成功（65 passed）。
-  - `direnv exec . cargo test -p dotfiles-cli --lib bws` 成功（17 passed）。
+  - `direnv exec . cargo check -p dotfiles-cli --features secrets-internal-test-stub` 成功。
   - `git diff --check` 成功。
-- レビュー状態: `未実施` — この差し戻し後差分は fresh review 開始前であり、集約判定は未確定。
+  - `direnv exec . cargo xtask check` 成功。
+- レビュー状態: `未実施` — この PR #32 current-cycle 差戻し補正後の fresh review は次工程で必須。

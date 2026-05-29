@@ -16,9 +16,9 @@ pub(crate) fn run_put_with_prompt<D, P, S>(
     storage_port: &mut S,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::SecretInputPort,
-    S: ports::SecretStoragePort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::SecretInputPort,
+    S: ports::yubikey::SecretStoragePort,
 {
     let serial = device.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);
@@ -60,15 +60,15 @@ mod tests {
     #[test]
     fn put_prompt_checks_storage_before_reading_secret() {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDeviceSerialPort::new();
+        let mut device = ports::yubikey::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut process = ports::MockSecretInputPort::new();
+        let mut process = ports::io::MockSecretInputPort::new();
         process.expect_read_bws_access_token_secret().times(0);
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -96,16 +96,16 @@ mod tests {
     #[test]
     fn put_prompt_stores_requested_secret() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDeviceSerialPort::new();
+        let mut device = ports::yubikey::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut process = ports::MockSecretInputPort::new();
+        let mut process = ports::io::MockSecretInputPort::new();
         process.expect_read_bw_email_secret().times(0);
         process.expect_read_bw_password_secret().times(0);
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -142,20 +142,20 @@ mod tests {
     #[test]
     fn put_prompt_stops_when_secret_read_fails() {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDeviceSerialPort::new();
+        let mut device = ports::yubikey::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(write_inspection(false)));
         storage.expect_store_secret().times(0);
-        let mut process = ports::MockSecretInputPort::new();
+        let mut process = ports::io::MockSecretInputPort::new();
         process
             .expect_read_bws_access_token_secret()
             .times(1)

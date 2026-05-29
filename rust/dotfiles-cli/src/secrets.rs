@@ -16,8 +16,23 @@ mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
 use domain::piv::SecretName;
+use entrypoint::EntrypointCommand;
 
 use crate::Result;
+
+/// 実 adapter 群を所有し、use case ごとに必要な port 引数へ分配する配線境界。
+///
+/// 各 field は責務別 adapter module に閉じた concrete 型であり、entrypoint/application へ
+/// adapter catalog を公開しない。application には個別 port trait としてのみ渡す。
+struct SecretsRuntimePorts {
+    device: adapters::yubikey::DeviceSelectionAdapter,
+    spare_device: adapters::yubikey::DeviceSelectionAdapter,
+    device_pin_policy: adapters::yubikey::DeviceSelectionAdapter,
+    process_io: adapters::io::ProcessIoAdapter,
+    storage: adapters::yubikey::StorageAdapter,
+    report: adapters::io::JsonReportAdapter,
+    bws_client: adapters::bw::BwsClientAdapter,
+}
 
 #[derive(Args)]
 /// 復旧用 secret の保存先と検証手段を選ぶ最上位 command。
@@ -129,10 +144,21 @@ enum VerifyCheck {
 
 /// CLI で parse 済みの `dotfiles secrets` command を entrypoint 境界へ渡す。
 ///
-/// CLI 入口は command 定義と option 変換だけを担い、adapter concrete 生成と port 束ねは
-/// entrypoint 配線 module へ閉じる。
+/// CLI 入口は command 定義と option 変換だけを担う。adapter concrete 生成と port 束ねは
+/// entrypoint の外側の起動配線に閉じ、application へは port trait として渡す。
 pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
-    entrypoint::run(options).await
+    let command = entrypoint::command_from_options(options)?;
+    let _session = support::protection::SecretSession::start()?;
+    let mut ports = SecretsRuntimePorts {
+        device: adapters::yubikey::DeviceSelectionAdapter::default(),
+        spare_device: adapters::yubikey::DeviceSelectionAdapter::default(),
+        device_pin_policy: adapters::yubikey::DeviceSelectionAdapter::default(),
+        process_io: adapters::io::ProcessIoAdapter::default(),
+        storage: adapters::yubikey::StorageAdapter::default(),
+        report: adapters::io::JsonReportAdapter::default(),
+        bws_client: adapters::bw::BwsClientAdapter,
+    };
+    dispatch(command, &mut ports).await
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。
@@ -140,4 +166,119 @@ fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
     value
         .parse()
         .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
+}
+
+/// entrypoint で選択済みの command を application use case へ委譲する。
+///
+/// この配線は adapter concrete を起動境界でだけ所有し、application には port trait として渡す。
+/// entrypoint は CLI 入力変換に限定し、adapter/support の concrete 型を知らない。
+async fn dispatch(command: EntrypointCommand, ports: &mut SecretsRuntimePorts) -> Result<()> {
+    match command {
+        EntrypointCommand::Setup(command) => application::run_setup_with::run_setup_with(
+            command,
+            &mut ports.device,
+            &mut ports.storage,
+        ),
+        EntrypointCommand::PutPrompt(command) => {
+            application::run_put_with_prompt::run_put_with_prompt(
+                command,
+                &mut ports.device,
+                &ports.process_io,
+                &mut ports.storage,
+            )
+        }
+        EntrypointCommand::PutStdin(command) => {
+            application::run_put_with_stdin::run_put_with_stdin(
+                command,
+                &ports.process_io,
+                &mut ports.storage,
+            )
+        }
+        EntrypointCommand::Get(command) => application::run_get_with::run_get_with(
+            command,
+            &mut ports.device,
+            &mut ports.device_pin_policy,
+            &ports.process_io,
+            &mut ports.storage,
+            &ports.process_io,
+        ),
+        EntrypointCommand::EnrollPrimaryPrompt(command) => {
+            application::run_enroll_primary_with_prompt::run_enroll_primary_with_prompt(
+                command,
+                &mut ports.device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+            )
+        }
+        EntrypointCommand::EnrollPrimaryStdinJson(command) => {
+            application::run_enroll_primary_with_stdin_json::run_enroll_primary_with_stdin_json(
+                command,
+                &mut ports.device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+            )
+        }
+        EntrypointCommand::EnrollSparePrompt(command) => {
+            application::run_enroll_spare_with_prompt::run_enroll_spare_with_prompt(
+                command,
+                &mut ports.device,
+                &mut ports.spare_device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+            )
+        }
+        EntrypointCommand::EnrollSpareStdinJson(command) => {
+            application::run_enroll_spare_with_stdin_json::run_enroll_spare_with_stdin_json(
+                command,
+                &mut ports.spare_device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+            )
+        }
+        EntrypointCommand::RotateBwsTokenPrompt(command) => {
+            application::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
+                command,
+                &mut ports.device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &ports.process_io,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+            )
+        }
+        EntrypointCommand::RotateBwsTokenStdin(command) => {
+            application::run_rotate_bws_token_with_stdin::run_rotate_bws_token_with_stdin(
+                command,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+            )
+        }
+        EntrypointCommand::VerifyYubikey(command) => {
+            application::run_verify_yubikey_with::run_verify_yubikey_with(
+                command,
+                &mut ports.device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.report,
+                &ports.bws_client,
+            )
+            .await
+        }
+    }
 }

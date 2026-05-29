@@ -18,8 +18,8 @@ pub(crate) fn run_setup_with<D, S>(
     storage: &mut S,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    S: ports::SecretStoragePort,
+    D: ports::yubikey::DeviceSerialPort,
+    S: ports::yubikey::SecretStoragePort,
 {
     let serial = device.resolve_device_serial(command.serial)?;
     let probe = SecretStorageSetupProbe::expected();
@@ -53,8 +53,8 @@ mod tests {
 
     #[test]
     fn setup_initializes_storage_after_serial_resolution() -> crate::Result<()> {
-        let mut device = ports::MockDeviceSerialPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut device = ports::yubikey::MockDeviceSerialPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         let mut sequence = mockall::Sequence::new();
         device
             .expect_resolve_device_serial()

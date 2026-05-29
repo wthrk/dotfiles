@@ -17,7 +17,7 @@ use uuid::Uuid;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::{
     domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-    ports::BwsClientPort,
+    ports::bw::BwsClientPort,
     support::protection::{ProtectedSecret, bws},
 };
 

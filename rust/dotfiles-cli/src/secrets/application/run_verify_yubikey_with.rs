@@ -19,18 +19,18 @@ use crate::secrets::{
 pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B>(
     command: VerifyYubikeyCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     report: &R,
     bws_client: &B,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
-    B: ports::BwsClientPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
+    B: ports::bw::BwsClientPort,
 {
     let requested = command.requested_external_checks()?;
     let serial = device_serial.resolve_device_serial(command.serial)?;
@@ -196,7 +196,7 @@ mod tests {
     }
 
     fn expect_local_storage_ok(
-        storage: &mut ports::MockSecretStoragePort,
+        storage: &mut ports::yubikey::MockSecretStoragePort,
         sequence: &mut mockall::Sequence,
         serial: u32,
     ) {
@@ -232,14 +232,14 @@ mod tests {
 
     #[tokio::test]
     async fn verify_rejects_conflicting_external_check_flags_before_ports() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         device_serial.expect_resolve_device_serial().times(0);
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_read().times(0);
-        let report = ports::MockReportPort::new();
-        let bws = ports::MockBwsClientPort::new();
+        let report = ports::io::MockReportPort::new();
+        let bws = ports::bw::MockBwsClientPort::new();
 
         let result = run_verify_yubikey_with(
             VerifyYubikeyCommand {
@@ -261,8 +261,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_bws_check_fetches_required_secrets_and_reports_ok() -> crate::Result<()> {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
@@ -275,11 +275,11 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
 
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
 
-        let mut bws = ports::MockBwsClientPort::new();
+        let mut bws = ports::bw::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -316,7 +316,7 @@ mod tests {
             .withf(|_, secret_id| secret_id.as_str() == "pass-id")
             .returning(|_, _| Ok(material(b"pass")));
 
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)
@@ -345,8 +345,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_bws_check_reports_project_lookup_failure() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
@@ -358,17 +358,17 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        let mut bws = ports::MockBwsClientPort::new();
+        let mut bws = ports::bw::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(Vec::new()));
         bws.expect_list_bws_secrets().times(0);
         bws.expect_fetch_bws_secret_by_id().times(0);
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)
@@ -395,8 +395,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_bws_check_reports_secret_lookup_failure() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
@@ -408,10 +408,10 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        let mut bws = ports::MockBwsClientPort::new();
+        let mut bws = ports::bw::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -426,7 +426,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(Vec::new()));
         bws.expect_fetch_bws_secret_by_id().times(0);
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)
@@ -453,8 +453,8 @@ mod tests {
 
     #[tokio::test]
     async fn verify_bws_check_reports_fetch_failure() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
@@ -466,10 +466,10 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        let mut bws = ports::MockBwsClientPort::new();
+        let mut bws = ports::bw::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -498,7 +498,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Err(anyhow::anyhow!("fetch failed")));
-        let mut report = ports::MockReportPort::new();
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_verify_report()
             .times(1)
