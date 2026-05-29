@@ -20,6 +20,10 @@ use crate::secrets::{
 ///
 /// serial 未指定時は port 境界で対象 device を解決し、token 入力前に既存 local storage を
 /// read/validate する。更新不能な状態では new token を受け取らない。
+#[expect(
+    clippy::too_many_arguments,
+    reason = "各 port を個別注入して use case の境界を明示するため"
+)]
 pub(crate) fn run_rotate_bws_token_with_prompt<D, I, C, P, S, R>(
     command: RotateBwsTokenCommand,
     device_serial: &mut D,

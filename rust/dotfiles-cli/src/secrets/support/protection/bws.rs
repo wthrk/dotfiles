@@ -1,4 +1,5 @@
 //! BWS SDK が要求する所有 plaintext buffer と secret 返却値を protection 境界内で扱う操作。
+#![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
 use bitwarden::{
     Client, auth::login::AccessTokenLoginRequest, secrets_manager::secrets::SecretGetRequest,

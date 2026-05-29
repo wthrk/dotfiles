@@ -170,6 +170,10 @@ pub trait SecretStoragePort {
         storage: &SecretStorageSpec,
     ) -> Result<SecretStorageReadInspection>;
     /// 判定済み intent に従って対象 storage spec の secret を読み出す。
+    #[expect(
+        clippy::needless_lifetimes,
+        reason = "mockall::automock 展開のため named lifetime が必要"
+    )]
     fn load_secret<'a>(
         &mut self,
         serial: u32,

@@ -105,6 +105,7 @@ impl ProtectedSecret {
     ///
     /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
     /// `.await` まで完了させ、repository 側の所有 buffer を closure 外へ持ち出さない。
+    #[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
     pub(in crate::secrets::support::protection) async fn with_secret_utf8_async<R>(
         &self,
         borrow: impl for<'a> FnOnce(&'a str) -> Pin<Box<dyn Future<Output = Result<R>> + 'a>>,
@@ -137,11 +138,13 @@ impl ProtectedSecret {
         Ok(secret)
     }
 
-    /// `#[cfg(test)]` だけで使う secret 観測口として、保持 bytes を test 側へ複製する。
+    /// `#[cfg(test)]` または `secrets-internal-test-stub` で使う secret 観測口として、
+    /// 保持 bytes を test/stub 側へ複製する。
     ///
     /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
     #[cfg(any(test, feature = "secrets-internal-test-stub"))]
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "secrets-internal-test-stub"), expect(dead_code))]
+    #[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
     pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
         self.with_secret(|bytes| bytes.to_vec())
     }
