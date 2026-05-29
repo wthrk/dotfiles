@@ -4,12 +4,10 @@
 //! project/secret/list/get 境界を port の ID 候補と保護済み secret へ翻訳する。
 
 #[cfg(feature = "secrets-internal-test-stub")]
-mod internal_stub {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/secrets_internal_stub/bws_client_internal_stub.rs"
-    ));
-}
+// `secrets-internal-test-stub` feature build だけで adapter 側 stub backend を接続する。
+// production build には含めず、production command path は維持したまま、
+// real/stub 切替は runtime 分岐ではなく compile-time selection。
+use crate::secrets::adapters::stub;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden::secrets_manager::{
@@ -21,19 +19,19 @@ use uuid::Uuid;
 #[cfg(feature = "secrets-internal-test-stub")]
 use crate::secrets::{
     domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-    ports::BwsClientPort,
+    ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
 };
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::{
     domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-    ports::BwsClientPort,
+    ports::bw::BwsClientPort,
     support::protection::{ProtectedSecret, bws},
 };
 
 /// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
 #[derive(Default)]
-pub(super) struct BwsClientAdapter;
+pub(crate) struct BwsClientAdapter;
 
 #[cfg(feature = "secrets-internal-test-stub")]
 impl BwsClientPort for BwsClientAdapter {
@@ -41,7 +39,7 @@ impl BwsClientPort for BwsClientAdapter {
         &self,
         access_token: &ProtectedSecret,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-        internal_stub::list_bws_projects(access_token)
+        stub::bw::list_bws_projects(access_token)
     }
 
     async fn list_bws_secrets(
@@ -49,7 +47,7 @@ impl BwsClientPort for BwsClientAdapter {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-        internal_stub::list_bws_secrets(access_token, project_id)
+        stub::bw::list_bws_secrets(access_token, project_id)
     }
 
     async fn fetch_bws_secret_by_id(
@@ -57,7 +55,7 @@ impl BwsClientPort for BwsClientAdapter {
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
     ) -> crate::Result<ProtectedSecret> {
-        internal_stub::fetch_bws_secret_by_id(access_token, secret_id)
+        stub::bw::fetch_bws_secret_by_id(access_token, secret_id)
     }
 }
 

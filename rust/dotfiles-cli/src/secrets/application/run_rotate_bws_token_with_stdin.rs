@@ -25,11 +25,11 @@ pub(crate) fn run_rotate_bws_token_with_stdin<D, I, P, S, R>(
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DevicePinPolicyPort,
-    I: ports::SecretInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DevicePinPolicyPort,
+    I: ports::io::SecretInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     let serial = command.required_serial()?;
     let storage = command.storage_spec(serial);

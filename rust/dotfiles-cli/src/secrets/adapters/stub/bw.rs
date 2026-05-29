@@ -1,37 +1,12 @@
-// `secrets-internal-test-stub` feature 専用の file-backed BWS client stub。
-//
-// verify-yubikey --check bws の external check をネットワークへ接続せず再現し、
-// BWS 側 state に保存された project/secret/value と fetch 監査イベントを共有 state へ記録する。
-
-use std::{collections::BTreeMap, fs};
-
-use anyhow::Context;
+//! `secrets-internal-test-stub` feature 専用の file-backed BWS backend。
+//! production build には含めず、state file を通じて integration test から観測する。
 
 use crate::secrets::{
     domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
     support::protection::ProtectedSecret,
 };
 
-const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
-
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct StubState {
-    key_exists: std::collections::BTreeMap<u32, bool>,
-    objects: std::collections::BTreeMap<(u32, u32), Vec<u8>>,
-    plaintexts: std::collections::BTreeMap<(u32, u8), Vec<u8>>,
-    corrupt: std::collections::BTreeSet<(u32, u8)>,
-    include_spare: bool,
-    requires_pin: bool,
-    write_events: Vec<String>,
-    #[serde(default)]
-    bws_projects: BTreeMap<String, String>,
-    #[serde(default)]
-    bws_project_secrets: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default)]
-    bws_secret_values: BTreeMap<String, Vec<u8>>,
-    #[serde(default)]
-    bws_fetch_events: Vec<String>,
-}
+use super::state::{StubState, with_state};
 
 pub(super) fn list_bws_projects(
     access_token: &ProtectedSecret,
@@ -113,26 +88,4 @@ fn ensure_access_token_matches_state(
     } else {
         anyhow::bail!("bitwarden login failed")
     }
-}
-
-fn with_state<T>(f: impl FnOnce(&mut StubState) -> crate::Result<T>) -> crate::Result<T> {
-    let path = endpoint()?;
-    let mut state = if path.exists() {
-        let body = fs::read(&path)?;
-        bincode::serde::decode_from_slice::<StubState, _>(&body, bincode::config::standard())
-            .map(|(state, _)| state)
-            .with_context(|| format!("failed to decode internal stub state: {}", path.display()))?
-    } else {
-        StubState::default()
-    };
-    let out = f(&mut state)?;
-    let encoded = bincode::serde::encode_to_vec(&state, bincode::config::standard())?;
-    fs::write(&path, encoded)?;
-    Ok(out)
-}
-
-fn endpoint() -> crate::Result<std::path::PathBuf> {
-    let path = std::env::var(INTERNAL_STUB_STATE_ENV)
-        .context("internal stub state path is not configured")?;
-    Ok(std::path::PathBuf::from(path))
 }

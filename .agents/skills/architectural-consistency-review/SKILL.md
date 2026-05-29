@@ -50,7 +50,7 @@ This role's defining responsibility is holistic design-coherence judgment, not p
 ### Step 1 - Whole-Module Reading (mandatory, first)
 
 - Read all files in the review-target module as **one module**, not only per layer. Do not inspect files or symbols in isolation; understand relations between files and how responsibilities are distributed.
-- Judge whether module-level structure embodies the philosophy in `docs/architecture/hexagonal-implementation-rules.md` ("domain does not know technology", "ports declare intent", "adapters are translators", "minimizing the public surface is a structural constraint").
+- Judge whether module-level structure embodies the philosophy in `docs/architecture/hexagonal-implementation-rules.md` ("domain does not know technology", "ports declare intent", "adapters are translators", "minimizing the public surface is a structural constraint"). Feature-gated adapter stubs are not standalone incoherence evidence when same production command path, same port contracts, and compile-time test backend selection are preserved.
 - For support-heavy designs, use the canonical architecture documents to distinguish support-owned technical assistance from responsibilities assigned to other layers. A module is not coherent if support acts as an escape hatch for responsibilities that the canonical architecture assigns elsewhere.
 
 ### Step 2 - Answer Whole-Coherence Questions (mandatory)

@@ -21,18 +21,18 @@ use crate::secrets::{
 pub(crate) fn run_enroll_spare_with_stdin_json<D, I, P, S, R>(
     command: EnrollSpareCommand,
     spare_device: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     document_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::SpareDeviceSerialPort,
-    I: ports::BootstrapSecretDocumentInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::SpareDeviceSerialPort,
+    I: ports::io::BootstrapSecretDocumentInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     command.ensure_requested_serials_distinct()?;
     let spare_serial = spare_device.resolve_spare_device_serial(command.spare_serial)?;

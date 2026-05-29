@@ -1,7 +1,9 @@
 //! `secrets_cli` から利用する internal file-backed stub state helper。
 //!
-//! `secrets-internal-test-stub` の adapter と同じ state 形式を使い、CLI test 側の責務を
-//! シナリオ定義と実行補助に限定する。
+//! `secrets-internal-test-stub` の adapter backend stub と同じ state 形式を使うが、
+//! この helper 自体は integration test 側の fixture/state 準備責務に限定する。
+//! integration test は adapter stub module を import せず、feature 有効でビルドされた
+//! `dotfiles` binary に `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` を渡して実行する。
 
 use std::{
     collections::{BTreeMap, BTreeSet},

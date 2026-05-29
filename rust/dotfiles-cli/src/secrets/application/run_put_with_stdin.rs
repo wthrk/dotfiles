@@ -15,8 +15,8 @@ pub(crate) fn run_put_with_stdin<P, S>(
     storage_port: &mut S,
 ) -> Result<()>
 where
-    P: ports::SecretInputPort,
-    S: ports::SecretStoragePort,
+    P: ports::io::SecretInputPort,
+    S: ports::yubikey::SecretStoragePort,
 {
     let serial = command.required_serial()?;
     let storage = command.storage_spec(serial);

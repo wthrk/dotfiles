@@ -1,18 +1,7 @@
-//! YubiKey PIV discovery/selection と実プロセス I/O を port 契約へ接続する adapter。
+//! YubiKey backend を port 契約へ接続する adapter。
 
 mod device_serial_adapter;
-mod process_io_adapter;
-mod report_adapter;
 mod storage_adapter;
-#[cfg(feature = "secrets-internal-test-stub")]
-mod selected_device {
-    // `secrets-internal-test-stub` は xtask の internal test 専用経路。
-    // test double 本体は `tests/` 配下に置き、production build には含めない。
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/secrets_internal_stub/piv_io_internal_stub.rs"
-    ));
-}
 
 use crate::{
     Result,
@@ -24,12 +13,9 @@ use crate::{
                 SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
                 SecretStorageWriteIntent,
             },
-            values::{EnrollSummary, VerifySummary},
         },
-        ports::{
-            BootstrapSecretDocumentInputPort, DevicePinPolicyPort, DeviceSerialPort, PinInputPort,
-            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SecretStoragePort, SpareDeviceSerialPort,
+        ports::yubikey::{
+            DevicePinPolicyPort, DeviceSerialPort, SecretStoragePort, SpareDeviceSerialPort,
         },
         support::protection::ProtectedSecret,
     },
@@ -37,7 +23,7 @@ use crate::{
 
 /// YubiKey discovery と PIN 要否判定を port 契約へ翻訳する adapter。
 #[derive(Default)]
-pub(super) struct DeviceSelectionAdapter(device_serial_adapter::DeviceSelectionAdapter);
+pub(crate) struct DeviceSelectionAdapter(device_serial_adapter::DeviceSelectionAdapter);
 
 impl DeviceSerialPort for DeviceSelectionAdapter {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
@@ -57,57 +43,9 @@ impl DevicePinPolicyPort for DeviceSelectionAdapter {
     }
 }
 
-/// process I/O と secret 入出力を port 契約へ翻訳する adapter。
-#[derive(Default)]
-pub(super) struct ProcessIoAdapter(process_io_adapter::ProcessIoAdapter);
-
-impl PinInputPort for ProcessIoAdapter {
-    fn read_pin(&self) -> Result<ProtectedSecret> {
-        self.0.read_pin()
-    }
-}
-
-impl SecretInputPort for ProcessIoAdapter {
-    fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {
-        self.0.read_bw_email_secret()
-    }
-
-    fn read_bw_password_secret(&self) -> Result<ProtectedSecret> {
-        self.0.read_bw_password_secret()
-    }
-
-    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
-        self.0.read_bws_access_token_secret()
-    }
-
-    fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
-        self.0.read_streamed_secret()
-    }
-}
-
-impl RotationContinuationPort for ProcessIoAdapter {
-    fn continue_rotation(&self) -> Result<bool> {
-        self.0.continue_rotation()
-    }
-}
-
-impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
-    fn read_bootstrap_secret_fields(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, ProtectedSecret>> {
-        self.0.read_bootstrap_secret_fields()
-    }
-}
-
-impl SecretOutputPort for ProcessIoAdapter {
-    fn write_secret(&self, secret: &ProtectedSecret) -> Result<()> {
-        self.0.write_secret(secret)
-    }
-}
-
 /// YubiKey storage I/O を port 契約へ翻訳する adapter。
 #[derive(Default)]
-pub(super) struct StorageAdapter(storage_adapter::StorageAdapter);
+pub(crate) struct StorageAdapter(storage_adapter::StorageAdapter);
 
 impl SecretStoragePort for StorageAdapter {
     fn inspect_secret_storage_setup(
@@ -169,19 +107,11 @@ impl SecretStoragePort for StorageAdapter {
     }
 }
 
-/// CLI JSON report 出力を port 契約へ翻訳する adapter。
-#[derive(Default)]
-pub(super) struct JsonReportAdapter(report_adapter::JsonReportAdapter);
-
-impl ReportPort for JsonReportAdapter {
-    fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
-        self.0.write_enroll_report(summary)
-    }
-
-    fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
-        self.0.write_verify_report(summary)
-    }
-}
+#[cfg(feature = "secrets-internal-test-stub")]
+// `secrets-internal-test-stub` feature でだけ adapter 側 stub backend を接続する。
+// production build には stub backend を含めず、production command path はそのまま維持し、
+// 切替は runtime 分岐ではなく compile-time feature selection。
+use super::stub;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::support::protection::{piv_pin, sealed_blob, secret_random};
@@ -196,9 +126,9 @@ use yubikey::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DeviceCandidate {
-    serial: u32,
-    label: String,
+pub(super) struct DeviceCandidate {
+    pub(super) serial: u32,
+    pub(super) label: String,
 }
 
 /// 選択済み secret device に対する PIV storage 操作を adapter 内部の境界へ揃える。
@@ -206,7 +136,7 @@ struct DeviceCandidate {
 /// caller は application/domain 側で決まった intent だけを渡し、この trait 実装は
 /// device API と protection 操作の境界を処理する。実装は PIN や secret の平文値を
 /// ログ、エラー文脈、表示出力へ露出してはならない。
-trait SecretDeviceIo {
+pub(super) trait SecretDeviceIo {
     fn key_exists(&mut self) -> Result<bool>;
     fn piv_application_version(&self) -> PivApplicationVersion;
     fn pin_retries(&mut self) -> Result<u8>;
@@ -232,7 +162,7 @@ trait SecretDeviceIo {
 ///
 /// この trait は候補列挙と選択済み device handle の生成だけを担う。複数候補時の
 /// 選択方針や use case 停止条件は caller 側が決め、実装はその判断を持ち込まない。
-trait SelectedDeviceDiscoveryIo {
+pub(super) trait SelectedDeviceDiscoveryIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice>;
 }
@@ -244,9 +174,9 @@ const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
 
 /// 実行時の YubiKey discovery backend を選択する adapter 内部境界。
 ///
-/// production build では実 YubiKey API に接続し、internal test feature では tests 配下の double を
-/// include する。caller は discovery/open の結果だけを使い、backend の実体へ依存しない。
-struct SelectedDeviceAdapter;
+/// production build では実 YubiKey API に接続し、`secrets-internal-test-stub` feature build では
+/// adapter 配下 stub backend を compile-time で接続する。caller は discovery/open の結果だけを使う。
+pub(super) struct SelectedDeviceAdapter;
 
 impl Default for SelectedDeviceAdapter {
     fn default() -> Self {
@@ -258,12 +188,12 @@ impl Default for SelectedDeviceAdapter {
 ///
 /// caller は `SecretDeviceIo` 契約だけを通じて操作し、実 YubiKey handle や test double の型を
 /// storage/device selection adapter の外へ漏らさない。
-struct SelectedSecretDevice {
+pub(super) struct SelectedSecretDevice {
     inner: Box<dyn SecretDeviceIo>,
 }
 
 impl SelectedSecretDevice {
-    fn new(device: impl SecretDeviceIo + 'static) -> Self {
+    pub(super) fn new(device: impl SecretDeviceIo + 'static) -> Self {
         Self {
             inner: Box::new(device),
         }
@@ -321,6 +251,17 @@ impl SecretDeviceIo for SelectedSecretDevice {
         encoded: &[u8],
     ) -> Result<ProtectedSecret> {
         self.inner.open_from_storage(storage, encoded)
+    }
+}
+
+#[cfg(feature = "secrets-internal-test-stub")]
+impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
+    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
+        stub::yubikey::discover_devices()
+    }
+
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
+        stub::yubikey::open_device_by_serial(serial)
     }
 }
 

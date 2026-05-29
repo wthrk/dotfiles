@@ -21,17 +21,17 @@ use crate::secrets::{
 pub(crate) fn run_enroll_spare_with_prompt<D, P, S, R>(
     command: EnrollSpareCommand,
     primary_device: &mut D,
-    spare_device: &mut impl ports::SpareDeviceSerialPort,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    spare_device: &mut impl ports::yubikey::SpareDeviceSerialPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     command.ensure_requested_serials_distinct()?;
     let primary_serial = primary_device.resolve_device_serial(command.primary_serial)?;

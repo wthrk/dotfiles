@@ -16,9 +16,9 @@ pub(crate) fn run_put_with_prompt<D, P, S>(
     storage_port: &mut S,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::SecretInputPort,
-    S: ports::SecretStoragePort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::SecretInputPort,
+    S: ports::yubikey::SecretStoragePort,
 {
     let serial = device.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);

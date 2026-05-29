@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 use crate::{
     Result,
     secrets::{
-        ports::{DevicePinPolicyPort, DeviceSerialPort, SpareDeviceSerialPort},
+        ports::yubikey::{DevicePinPolicyPort, DeviceSerialPort, SpareDeviceSerialPort},
         support::process_io,
     },
 };

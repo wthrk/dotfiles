@@ -12,16 +12,16 @@ use crate::secrets::{
 pub(crate) fn run_get_with<D, P, S, O>(
     command: GetCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     output: &O,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    O: ports::SecretOutputPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    O: ports::io::SecretOutputPort,
 {
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let pin = if pin_policy.device_requires_pin(serial)? {

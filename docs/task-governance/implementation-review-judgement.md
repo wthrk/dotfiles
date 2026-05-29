@@ -67,7 +67,7 @@ secret-recovery の `YubiKey` 作業項目（`docs/tasks/secret-recovery/work-it
 
 secret-recovery の active item `YubiKey` に対しては、次の文言を finding として返してはならない。1) `完了条件に対するテスト網羅不足` を完了条件の構造項目・文書項目・責務項目へ機械的に適用すること。2) `責務基準での production 層 test double 混入` を、同一 production command path と adapter 層責務を満たす dependency / fixture selection に generic 適用すること。これら2件は YubiKey では誤判定として扱い、`判定: 要修正` または `判定: 不合格` の根拠に使用してはならない。
 
-secret-recovery の `YubiKey` 作業項目で V14（same-route）を判定するときは、禁止対象と許可対象を次のように分ける。禁止対象は、利用者向け別 CLI/別 binary、`--test-stub-yubikey`・`yubikey_runtime`・`secrets-test-stub` feature / env などを使った command-scenario branching により production behavior を変形すること、production command path 自体を差し替える port-boundary swap である。feature / env の存在自体は不合格根拠にしてはならない。許可対象は、同一 production command path と同一 port 契約を維持した test 時の dependency selection / fixture selection であり、これを単独理由に `判定: 要修正` または `判定: 不合格` としてはならない。
+secret-recovery の `YubiKey`/`Bitwarden Secrets Manager` 作業項目で same-route を判定するときは、adapter 配下 `stub` module を存在だけで不合格にしてはならない。`secrets-internal-test-stub` feature 専用・production build 非混入・runtime real/stub 分岐なし・production command path 不変・同一 port 契約維持・integration test が feature 有効ビルド binary 実行のみ（stub module 非 import）・fixture/state helper と backend stub 実装の責務分離、を確認して判定する。
 
 同じく secret-recovery の `YubiKey` 作業項目に対しては、`rust/dotfiles-cli/src/secrets/support/process_io.rs` の残存だけを理由に V11 未解消としてはならない。判定は「process-generic な標準入出力補助か」「YubiKey-specific な prompt 方針、device 選択判断、use case 手順を持っているか」で行う。
 

@@ -27,7 +27,7 @@ use crate::secrets::{
 pub(crate) fn run_rotate_bws_token_with_prompt<D, I, C, P, S, R>(
     command: RotateBwsTokenCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     secret_input: &I,
     continuation: &C,
     pin_input: &P,
@@ -35,12 +35,12 @@ pub(crate) fn run_rotate_bws_token_with_prompt<D, I, C, P, S, R>(
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    I: ports::SecretInputPort,
-    C: ports::RotationContinuationPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DeviceSerialPort,
+    I: ports::io::SecretInputPort,
+    C: ports::io::RotationContinuationPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     let mut updated_serials = BTreeSet::new();
     let mut next_requested_serial = command.serial;

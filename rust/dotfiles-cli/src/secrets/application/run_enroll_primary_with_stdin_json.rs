@@ -21,18 +21,18 @@ use crate::secrets::{
 pub(crate) fn run_enroll_primary_with_stdin_json<D, I, P, S, R>(
     command: EnrollPrimaryCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     document_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    I: ports::BootstrapSecretDocumentInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    D: ports::yubikey::DeviceSerialPort,
+    I: ports::io::BootstrapSecretDocumentInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let setup_probe = SecretStorageSetupProbe::expected();

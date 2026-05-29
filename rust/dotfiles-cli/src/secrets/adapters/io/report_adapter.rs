@@ -8,13 +8,13 @@ use crate::{
     Result,
     secrets::{
         domain::values::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole},
-        ports::ReportPort,
+        ports::io::ReportPort,
     },
 };
 
 /// verify/enroll summary を `ReportPort` の CLI JSON 出力へ翻訳する adapter。
 #[derive(Default)]
-pub(super) struct JsonReportAdapter;
+pub(crate) struct JsonReportAdapter;
 
 impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {

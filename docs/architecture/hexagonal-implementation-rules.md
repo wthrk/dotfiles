@@ -73,7 +73,7 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 
 ### Rust private module 用 test-only bridge
 
-test double / fixture の本体は原則として `tests/` 配下に置く。Rust の private module / private usecase を同一 module context で検査する必要がある場合に限り、`#[cfg(all(test, feature = "..."))]` で `tests/` 配下の test support を対象 module へ `include!` する bridge を許可する。
+integration test fixture/state helper は `tests/` 配下に置く。`secrets-internal-test-stub` の backend stub 実装は adapter 配下 `stub` module に置き、`#[cfg(feature = "secrets-internal-test-stub")]` で test 時のみ compile する。`tests/` から production source への `include!` bridge は許可対象の正本ではない。
 
 この bridge は次の条件をすべて満たす場合に限り、production source tree への test double 混入とは扱わない。
 
@@ -83,10 +83,10 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 - production command path を変更しない。
 - port trait 契約で usecase を駆動する。
 - domain/business logic を test support 側へ移さない。
-- mock/fake 本体は `tests/` 配下に置く。
+- backend stub が `secrets-internal-test-stub` feature 専用で production build 非混入であること。
 - module/comment で test-only bridge であることと xtask/internal test 経路を明記する。
 
-この許可は test-only bridge の配置に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の test support への移動、production command path の差し替えは、この bridge 条件を満たさないため引き続き禁止する。
+この許可は compile-time feature selection で adapter backend を差し替える条件に限る。runtime real/stub 分岐、production command path の差し替え、domain/business logic の stub 側移動、integration test から adapter stub module の import は引き続き禁止する。
 
 application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
 

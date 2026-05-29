@@ -1,19 +1,19 @@
-// `secrets-internal-test-stub` feature 専用の file-backed stub adapter。
-//
-// この file は `src/secrets/adapters/piv_io.rs` の test-only bridge からのみ読み込まれる。
-// production command path は `SelectedDeviceAdapter` の同一 port 契約を通し、fixture の選択だけを
-// xtask internal test 経路（`rust/tests/checks/src/static_checks.rs`）から注入する。
+//! `secrets-internal-test-stub` feature 専用の file-backed YubiKey backend。
+//! production build には含めず、state file を backend として読む。
 
-use std::fs;
-
-use anyhow::Context;
-
-use super::{
-    DeviceCandidate, PivApplicationVersion, PivObjectId, ProtectedSecret, Result, SecretDeviceIo,
-    SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
+use crate::{
+    Result,
+    secrets::{
+        adapters::yubikey::{
+            DeviceCandidate, PivApplicationVersion, PivObjectId, SecretDeviceIo, SecretStorageSpec,
+            SelectedSecretDevice,
+        },
+        support::protection::ProtectedSecret,
+    },
 };
 
-const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
+use super::state::with_state;
+
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
 const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
 const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
@@ -21,48 +21,12 @@ const BWS_ACCESS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
 const PRIMARY_SERIAL: u32 = 2001;
 const SPARE_SERIAL: u32 = 2002;
 
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct StubState {
-    key_exists: std::collections::BTreeMap<u32, bool>,
-    objects: std::collections::BTreeMap<(u32, u32), Vec<u8>>,
-    plaintexts: std::collections::BTreeMap<(u32, u8), Vec<u8>>,
-    corrupt: std::collections::BTreeSet<(u32, u8)>,
-    include_spare: bool,
-    requires_pin: bool,
-    write_events: Vec<String>,
-    #[serde(default)]
-    bws_projects: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    bws_project_secrets: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
-    #[serde(default)]
-    bws_secret_values: std::collections::BTreeMap<String, Vec<u8>>,
-    #[serde(default)]
-    bws_fetch_events: Vec<String>,
-}
-
 struct TestStubSecretDevice {
     serial: u32,
     pin_verified: bool,
 }
 
-fn with_state<T>(f: impl FnOnce(&mut StubState) -> Result<T>) -> Result<T> {
-    let path = endpoint()?;
-    let mut state = if path.exists() {
-        let body = fs::read(&path)?;
-        bincode::serde::decode_from_slice::<StubState, _>(&body, bincode::config::standard())
-            .map(|(state, _)| state)
-            .with_context(|| format!("failed to decode internal stub state: {}", path.display()))?
-    } else {
-        StubState::default()
-    };
-    let out = f(&mut state)?;
-    let encoded = bincode::serde::encode_to_vec(&state, bincode::config::standard())?;
-    fs::write(&path, encoded)?;
-    Ok(out)
-}
-
-/// file-backed internal stub から device 候補を取得し、adapter 境界型へ翻訳する。
-fn discover_devices() -> Result<Vec<DeviceCandidate>> {
+pub(super) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
     with_state(|state| {
         let mut out = vec![DeviceCandidate {
             serial: PRIMARY_SERIAL,
@@ -78,22 +42,11 @@ fn discover_devices() -> Result<Vec<DeviceCandidate>> {
     })
 }
 
-/// 指定 serial の stub device を開き、`SelectedSecretDevice` 境界へ包んで返す。
-fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
+pub(super) fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
     Ok(SelectedSecretDevice::new(TestStubSecretDevice {
         serial,
         pin_verified: false,
     }))
-}
-
-impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
-        discover_devices()
-    }
-
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
-        open_device_by_serial(serial)
-    }
 }
 
 impl SecretDeviceIo for TestStubSecretDevice {
@@ -125,12 +78,19 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
-        with_state(|state| Ok(state.objects.get(&(self.serial, object_id.value())).cloned()))
+        with_state(|state| {
+            Ok(state
+                .objects
+                .get(&(self.serial, object_id.value()))
+                .cloned())
+        })
     }
 
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
         with_state(|state| {
-            state.objects.insert((self.serial, object_id.value()), value.to_vec());
+            state
+                .objects
+                .insert((self.serial, object_id.value()), value.to_vec());
             Ok(())
         })
     }
@@ -152,7 +112,9 @@ impl SecretDeviceIo for TestStubSecretDevice {
         let bytes = plaintext.to_test_bytes();
         with_state(|state| {
             state.key_exists.insert(self.serial, true);
-            state.plaintexts.insert((self.serial, storage.secret_id), bytes);
+            state
+                .plaintexts
+                .insert((self.serial, storage.secret_id), bytes);
             if let Some(secret_name) = secret_name(storage.secret_id) {
                 state.write_events.push(format!(
                     "DOTFILES_TEST_STUB_WRITE serial={} name={} value=<redacted>",
@@ -187,15 +149,8 @@ impl SecretDeviceIo for TestStubSecretDevice {
                 16 * 1024,
                 &session,
             )?;
-        buffer
-            .into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
+        buffer.into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
     }
-}
-
-fn endpoint() -> Result<std::path::PathBuf> {
-    let path = std::env::var(INTERNAL_STUB_STATE_ENV)
-        .context("internal stub state path is not configured")?;
-    Ok(std::path::PathBuf::from(path))
 }
 
 fn secret_name(secret_id: u8) -> Option<&'static str> {

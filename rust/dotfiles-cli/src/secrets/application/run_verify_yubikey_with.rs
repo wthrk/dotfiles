@@ -18,18 +18,18 @@ use crate::secrets::{
 pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B>(
     command: VerifyYubikeyCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     report: &R,
     bws_client: &B,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
-    B: ports::BwsClientPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
+    B: ports::bw::BwsClientPort,
 {
     let requested = command.requested_external_checks()?;
     let serial = device_serial.resolve_device_serial(command.serial)?;

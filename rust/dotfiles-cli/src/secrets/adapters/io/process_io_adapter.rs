@@ -8,7 +8,7 @@ use crate::{
     Result,
     secrets::{
         domain::manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT,
-        ports::{
+        ports::io::{
             BootstrapSecretDocumentInputPort, PinInputPort, RotationContinuationPort,
             SecretInputPort, SecretOutputPort,
         },
@@ -91,7 +91,7 @@ impl SecretOutputPort for RealSecretIoAdapter {
 /// caller は必要な入力・出力 capability だけを呼ぶ。adapter は prompt/stdin/stdout の技術制約を
 /// 吸収し、use case の順序や secret の業務意味を決めない。
 #[derive(Default)]
-pub(super) struct ProcessIoAdapter {
+pub(crate) struct ProcessIoAdapter {
     secret_io: RealSecretIoAdapter,
 }
 
