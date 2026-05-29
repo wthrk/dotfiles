@@ -1,4 +1,9 @@
-// `secrets-internal-test-stub` feature 専用の file-backed BWS client stub。
+//! `secrets-internal-test-stub` feature 専用の file-backed BWS client stub。
+//!
+//! production build には compile されない adapter 配下 backend stub であり、integration test は
+//! この module を import せず feature 有効でビルドされた同じ `dotfiles` binary を実行する。
+//! `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を backend として読み、real/stub の
+//! 切替は runtime 分岐ではなく compile-time feature selection で行う。
 //
 // verify-yubikey --check bws の external check をネットワークへ接続せず再現し、
 // BWS 側 state に保存された project/secret/value と fetch 監査イベントを共有 state へ記録する。
@@ -8,9 +13,12 @@ use std::{collections::BTreeMap, fs};
 use anyhow::Context;
 
 use crate::secrets::{
-    domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    ports::BwsClientPort,
     support::protection::ProtectedSecret,
 };
+
+use super::BwsClientAdapter;
 
 const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
 
@@ -33,7 +41,32 @@ struct StubState {
     bws_fetch_events: Vec<String>,
 }
 
-pub(super) fn list_bws_projects(
+impl BwsClientPort for BwsClientAdapter {
+    async fn list_bws_projects(
+        &self,
+        access_token: &ProtectedSecret,
+    ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
+        list_bws_projects(access_token)
+    }
+
+    async fn list_bws_secrets(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+    ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
+        list_bws_secrets(access_token, project_id)
+    }
+
+    async fn fetch_bws_secret_by_id(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<ProtectedSecret> {
+        fetch_bws_secret_by_id(access_token, secret_id)
+    }
+}
+
+fn list_bws_projects(
     access_token: &ProtectedSecret,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
     with_state(|state| {
@@ -49,7 +82,7 @@ pub(super) fn list_bws_projects(
     })
 }
 
-pub(super) fn list_bws_secrets(
+fn list_bws_secrets(
     access_token: &ProtectedSecret,
     project_id: &BwsProjectId,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
@@ -70,7 +103,7 @@ pub(super) fn list_bws_secrets(
     })
 }
 
-pub(super) fn fetch_bws_secret_by_id(
+fn fetch_bws_secret_by_id(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
 ) -> crate::Result<ProtectedSecret> {

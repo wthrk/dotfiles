@@ -18,6 +18,7 @@ The role's questions are not a step-by-step checklist walk. Ask and answer whole
 - Do layer relations (entrypoint -> application -> domain / port / adapter / support dependency direction and responsibility boundaries) hold as a whole in a way that matches the philosophy in `hexagonal-implementation-rules.md`?
 - Is the module relying on mechanical separation instead of placing each processing unit in the responsibility boundary prescribed by the canonical architecture documents?
 - Are thin ports or thin adapters being achieved by moving responsibilities into a layer that the canonical architecture documents reserve for other work?
+- Does any adapter internal backend stub preserve one production command path, one port contract, and compile-time test backend selection without importing test fixture/state helper responsibilities into the adapter?
 - If a capable architect reads the whole module, would they call it "coherent design" or "disorganized"?
 - When adding one new use case or adapter, does the current structure naturally accept it, or is the structure too inconsistent to decide where it belongs?
 
@@ -58,6 +59,7 @@ This role's defining responsibility is holistic design-coherence judgment, not p
 - Ask each whole-module question listed in the Role section and answer it explicitly in `Rationale:`.
 - State answers in the form "whether this module as a whole expresses a coherent design", citing concrete file names, layers, and responsibility distribution.
 - If even one answer is "not coherent as a whole", immediately fix verdict to `Verdict: Fail` even if all individual rules pass, and explain which structural unit (module boundary, responsibility distribution, layer relation) causes incoherence in `Rationale:`.
+- An adapter `secrets-internal-test-stub` backend stub that satisfies the canonical conditions (same production command path, same port contract, compile-time selection, no runtime branch, production build non-inclusion, tests do not import adapter stub modules, fixture/state helpers remain in `tests/`) is not a whole-module incoherence by itself. Fail only when the whole-module context shows same-route breakage, responsibility leakage, or fixture/state helper responsibilities moved into the adapter backend stub.
 - A review that does not record answers to whole-coherence questions in `Rationale:` is incomplete and must not be submitted.
 
 ### Independence and Scope

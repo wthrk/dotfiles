@@ -71,11 +71,11 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
-### Rust private module 用 test-only bridge
+### internal backend stub の配置
 
-test double / fixture の本体は原則として `tests/` 配下に置く。Rust の private module / private usecase を同一 module context で検査する必要がある場合に限り、`#[cfg(all(test, feature = "..."))]` で `tests/` 配下の test support を対象 module へ `include!` する bridge を許可する。
+test double / fixture の本体は原則として `tests/` 配下に置く。ただし、CLI integration test が同一 `dotfiles` binary と同一 production command path を通り、外部 backend だけを compile-time で差し替える必要がある場合、adapter 配下に internal backend stub を置ける。
 
-この bridge は次の条件をすべて満たす場合に限り、production source tree への test double 混入とは扱わない。
+この adapter 配下 stub は次の条件をすべて満たす場合に限り、production source tree への test double 混入とは扱わない。
 
 - production build に含まれない。
 - internal test 専用 feature に限定される。
@@ -83,10 +83,11 @@ test double / fixture の本体は原則として `tests/` 配下に置く。Rus
 - production command path を変更しない。
 - port trait 契約で usecase を駆動する。
 - domain/business logic を test support 側へ移さない。
-- mock/fake 本体は `tests/` 配下に置く。
-- module/comment で test-only bridge であることと xtask/internal test 経路を明記する。
+- integration test は adapter stub module を import せず、feature 有効でビルドされた `dotfiles` binary を実行する。
+- fixture/state helper は `tests/` 側責務、backend stub 実装は adapter 側責務として分ける。
+- module/comment で internal test 専用 feature、production build 非混入、state file 境界、compile-time selection を明記する。
 
-この許可は test-only bridge の配置に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の test support への移動、production command path の差し替えは、この bridge 条件を満たさないため引き続き禁止する。
+この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入は、この条件を満たさないため引き続き禁止する。
 
 application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
 
@@ -169,7 +170,7 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - 判定質問:
   「このコードは port 契約と外部技術の翻訳だけか。手順そのものを決めていないか」
 - この repo の具体例:
-  `adapters/piv_io.rs` は `ReportPort` の出力契約を実装し、summary の表示形式・シリアライズ形式だけを adapter 側で決める。summary 自体の意味は domain 型として保持する
+  `adapters/io/report.rs` は `ReportPort` の出力契約を実装し、summary の表示形式・シリアライズ形式だけを adapter 側で決める。summary 自体の意味は domain 型として保持する
 
 ### support
 

@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::{
     Result,
     secrets::{
-        domain::values::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole},
+        domain::summary::{CheckName, CheckStatus, EnrollSummary, VerifySummary, YubikeyRole},
         ports::ReportPort,
     },
 };

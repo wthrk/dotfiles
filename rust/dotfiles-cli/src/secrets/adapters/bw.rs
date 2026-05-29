@@ -4,12 +4,8 @@
 //! project/secret/list/get 境界を port の ID 候補と保護済み secret へ翻訳する。
 
 #[cfg(feature = "secrets-internal-test-stub")]
-mod internal_stub {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/secrets_internal_stub/bws_client_internal_stub.rs"
-    ));
-}
+#[path = "stub/bw.rs"]
+mod internal_stub;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden::secrets_manager::{
@@ -18,48 +14,16 @@ use bitwarden::secrets_manager::{
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use uuid::Uuid;
 
-#[cfg(feature = "secrets-internal-test-stub")]
-use crate::secrets::{
-    domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-    ports::BwsClientPort,
-    support::protection::ProtectedSecret,
-};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::{
-    domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
     ports::BwsClientPort,
     support::protection::{ProtectedSecret, bws},
 };
 
 /// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
 #[derive(Default)]
-pub(super) struct BwsClientAdapter;
-
-#[cfg(feature = "secrets-internal-test-stub")]
-impl BwsClientPort for BwsClientAdapter {
-    async fn list_bws_projects(
-        &self,
-        access_token: &ProtectedSecret,
-    ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-        internal_stub::list_bws_projects(access_token)
-    }
-
-    async fn list_bws_secrets(
-        &self,
-        access_token: &ProtectedSecret,
-        project_id: &BwsProjectId,
-    ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-        internal_stub::list_bws_secrets(access_token, project_id)
-    }
-
-    async fn fetch_bws_secret_by_id(
-        &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<ProtectedSecret> {
-        internal_stub::fetch_bws_secret_by_id(access_token, secret_id)
-    }
-}
+pub(crate) struct BwsClientAdapter;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 impl BwsClientPort for BwsClientAdapter {
@@ -139,7 +103,7 @@ fn parse_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::domain::values::BwsSecretName;
+    use crate::secrets::domain::bws::BwsSecretName;
 
     /// BWS secret の domain 名を Bitwarden Secrets Manager の固定 key へ翻訳する。
     #[test]

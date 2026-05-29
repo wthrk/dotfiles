@@ -12,6 +12,16 @@
 - レビュー記録の保存先:
 - 備考（任意）:
 
+## 2026-05-30 Issue #30 secrets port/domain/adapter/stub 構造整理
+
+- 実施日: `2026-05-30`
+- 対象依頼: `https://github.com/wthrk/dotfiles/issues/30 の実装と PR、push 後の AI レビュー対応`
+- 分類 (`task-list-outside` 固定): `task-list-outside`
+- 責任境界: `rust/dotfiles-cli/src/secrets/` の port/domain/adapter/internal stub 構造整理と、Issue #30 が指定する architecture/review/skill 文書更新に限定する。利用者可視挙動、CLI option、stdout/stderr、JSON output、エラー文言、エラー条件、YubiKey/BWS/process I/O の呼び出し順、停止条件、retry/PIN/secret handling/verification plan、暗号処理、sealed blob、PIV object ID、manifest format、BWS lookup key、secret ID/object ID mapping は変更しない。
+- 対象差分識別子（着手時に未確定なら `未確定`）: `feat/secrets-structure-issue-30`
+- レビュー記録の保存先: `docs/task-governance/review-artifacts/outside-ledger-intake.md`（本記録および後続 PR review 対応）
+- 備考（任意）: `root active ledger の現在項目は #13 であり、#30 は ledger 外。backend stub 実装は adapter 配下 feature-gated module へ移し、tests 側の cli_stub_state fixture/state helper は tests 側責務として維持する。`
+
 ## 2026-05-22 task-governance / secret-recovery docs simplification
 
 - 実施日: `2026-05-22`

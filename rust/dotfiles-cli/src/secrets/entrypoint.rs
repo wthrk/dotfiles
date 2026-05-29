@@ -7,7 +7,7 @@ use crate::{
     Result,
     secrets::{
         adapters, application,
-        domain::values::{
+        domain::command::{
             EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, GetCommand, PutCommand,
             RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
         },
@@ -39,7 +39,7 @@ pub(super) async fn run(options: super::SecretsOptions) -> Result<()> {
         process_io: adapters::ProcessIoAdapter::default(),
         storage: adapters::StorageAdapter::default(),
         report: adapters::JsonReportAdapter::default(),
-        bws_client: adapters::BwsClientAdapter::default(),
+        bws_client: adapters::BwsClientAdapter,
     };
     dispatch(options, &mut ports).await
 }

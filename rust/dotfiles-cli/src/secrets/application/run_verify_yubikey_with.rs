@@ -3,9 +3,10 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        command::VerifyYubikeyCommand,
         piv::validate_piv_pin_len,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
-        values::{CheckName, CheckStatus, VerifySummary, VerifyYubikeyCommand},
+        summary::{CheckName, CheckStatus, VerifySummary},
     },
     ports,
 };
@@ -84,7 +85,7 @@ where
                         .list_bws_projects(&access_token)
                         .await
                         .and_then(|projects| {
-                            crate::secrets::domain::values::BwsProjectName::DOTFILES_SECRET_RECOVERY
+                            crate::secrets::domain::bws::BwsProjectName::DOTFILES_SECRET_RECOVERY
                                 .resolve_id(projects)
                         }) {
                         Ok(project_id) => project_id,
@@ -170,13 +171,12 @@ where
 mod tests {
     use crate::secrets::{
         domain::{
+            bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+            command::{ExternalCheck, VerifyYubikeyCommand},
             manifest::SecretManifest,
             piv::SecretName,
             storage::SecretStorageReadInspection,
-            values::{
-                BwsLookupCandidate, BwsProjectId, BwsSecretId, CheckName, CheckStatus,
-                ExternalCheck, VerifyYubikeyCommand,
-            },
+            summary::{CheckName, CheckStatus},
         },
         ports,
         support::protection::ProtectedSecret,

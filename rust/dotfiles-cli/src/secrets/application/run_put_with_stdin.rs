@@ -2,7 +2,7 @@
 
 use crate::Result;
 use crate::secrets::{
-    domain::{storage::SecretStorageWriteIntent, values::PutCommand},
+    domain::{command::PutCommand, storage::SecretStorageWriteIntent},
     ports,
 };
 
@@ -31,8 +31,8 @@ where
 mod tests {
     use crate::secrets::{
         domain::{
-            manifest::SecretManifest, piv::SecretName, storage::SecretStorageWriteInspection,
-            values::PutCommand,
+            command::PutCommand, manifest::SecretManifest, piv::SecretName,
+            storage::SecretStorageWriteInspection,
         },
         ports,
         support::protection::ProtectedSecret,

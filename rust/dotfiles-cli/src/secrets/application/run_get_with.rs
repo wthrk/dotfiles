@@ -2,7 +2,7 @@
 
 use crate::Result;
 use crate::secrets::{
-    domain::{piv::validate_piv_pin_len, storage::SecretStorageReadIntent, values::GetCommand},
+    domain::{command::GetCommand, piv::validate_piv_pin_len, storage::SecretStorageReadIntent},
     ports,
 };
 
@@ -45,8 +45,8 @@ where
 mod tests {
     use crate::secrets::{
         domain::{
-            manifest::SecretManifest, piv::SecretName, storage::SecretStorageReadInspection,
-            values::GetCommand,
+            command::GetCommand, manifest::SecretManifest, piv::SecretName,
+            storage::SecretStorageReadInspection,
         },
         ports,
         support::protection::ProtectedSecret,
