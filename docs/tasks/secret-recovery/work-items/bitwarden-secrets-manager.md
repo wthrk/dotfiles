@@ -2,11 +2,11 @@
 
 - 作業種別: `規約適合リファクタリングを伴う機能実装`
 - 作業目的: `Bitwarden Secrets Manager` 取得経路を、secret-recovery の層分割と外部境界規約に沿って実装する。
-- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD 97748c4 / diff range 5ff5e54..97748c4`
-- 現行サイクル確認基準: `5ff5e54..97748c4`（PR #33 作り直し commit `2ececf1` と、補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4` を対象にする。`97748c4` は最新 AI review コメントの対象コードパス漏れ指摘への対応）
+- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD f2f2f20 / diff range 5ff5e54..f2f2f20`
+- 現行サイクル確認基準: `5ff5e54..f2f2f20`（PR #33 作り直し commit `2ececf1` と、補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20` を対象にする。`97748c4` は BSM 対象コードパス漏れ指摘への対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`f2f2f20` は削除済み adapter root を現行対象パス扱いしない台帳補正）
 - 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
 - 現行サイクルレビュー scope: BSM 実装レビュー対象は、本作業項目の対象コードパス、BSM へ直接関係する文書差分、必須レビュー結果、必要な実検証で判断する。旧 Hypatia サイクルや BSM scope 外の `.agents/skills/`、`AGENTS.md`、`docs/task-governance/`、repo-governance/YubiKey 証跡などの文書差分を、BSM current-cycle のレビュー合格根拠・commit 着手 gate の充足根拠・不充足根拠にしない。対象パス exact list、confirmation/review artifact、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
-- 実装/テスト差分の保存コミット終端: `HEAD 97748c4`（PR #33 の現行保存済み commit 終端。fresh review 未実施・集約未確定であり、保存済み commit 終端だけをレビュー合格や commit gate 充足の根拠として扱わない）
+- 実装/テスト差分の保存コミット終端: `HEAD f2f2f20`（PR #33 の現行保存済み commit 終端。fresh review 未実施・集約未確定であり、保存済み commit 終端だけをレビュー合格や commit gate 充足の根拠として扱わない）
 - 構造完了条件:
   - SDK 呼び出しは adapter / port 境界へ隔離する。
   - secret の保護境界、protection 内操作、BWS SDK 呼び出し境界は [`docs/secret-recovery/secret-handling.md`](../../../secret-recovery/secret-handling.md) に適合させる。
@@ -30,3 +30,4 @@
 - BWS 外部確認経路（`verify-yubikey --check bws` 相当の application 経路を含む）、application 層の `secrets-internal-test-stub` bridge 除去、app 層残存検索など、作業項目の実質条件に対応する確認結果があること。
 - 実装差分の必須レビュー担当集合（構造、運用整合、セキュリティ、仕様適合、テスト、ドキュメント、アーキテクチャ整合。文書整合差分を含む場合は参照整合を追加）の個別判定および `集約後レビュー判定: 合格` が揃うこと。
 - 修正済み PR review comment は、fresh review 全員合格、集約合格、commit gate 充足、commit/push 完了後にだけ返信して resolve/close する。誤検出と判断した comment は説明返信し close しない。これは PR 運用上の実作業であり、補助記録同期で代替しない。
+- PR #33 現行サイクルでは、ユーザー依頼の PR AI review 対応として fresh review/集約/commit gate 確定前に一部 PR review comment への返信または resolve を先行実施した。この先行実施は PR 運用記録として追跡し、repository governance 上の fresh review 全員合格、集約合格、commit gate 充足、最終完了扱いの根拠にはしない。
