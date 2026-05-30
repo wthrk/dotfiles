@@ -22,7 +22,10 @@
 ## 決定事項
 
 - `gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope で保持し、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
-- encrypted envelope は version / metadata / recipient（YubiKey serial と PIV slot public key fingerprint）を持ち、primary / spare YubiKey の recipient 追加と再暗号化を扱える形式に固定する。
+- encrypted envelope は UTF-8 JSON で保存し、`version: 1` を固定する。top-level は `version` / `metadata` / `ciphertext` / `recipients` の 4 要素とする。
+- `metadata` は `primary_fingerprint`（40 桁 16 進）、`exported_at`（UTC RFC3339）、`dek_alg`（`aes-256-gcm` 固定）、`recipient_kek_alg`（`rsa-oaep-sha256` 固定）を必須とする。
+- `ciphertext` は `nonce` と `body` を base64 文字列で保持し、`body` は DEK で暗号化した OpenPGP backup bytes とする。
+- `recipients` は 1 件以上必須とし、要素は `yubikey_serial`（10 進文字列）、`piv_slot`（`9d` 固定）、`public_key_fingerprint`（PIV slot 公開鍵 fingerprint）、`wrapped_dek`（base64）を必須とする。
 - `restore-gpg` は YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
 - `restore-gpg` は接続中 YubiKey と envelope recipient の照合に成功した場合のみ data encryption key を unwrap し、復号した backup を import へ渡す。
 - GPG 鍵リングの import API は `gpgme` に固定し、通常実装で `gpg` CLI は使わない。
@@ -34,6 +37,14 @@
 - Home Manager で `gpg-agent.conf` を生成し、`enable-ssh-support` を含む SSH support 設定を恒久的に管理する。
 - zsh 環境変数は `GPG_TTY` と `SSH_AUTH_SOCK` を必須とし、`SSH_AUTH_SOCK` は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合のみ上書きする。
 - 既存 key の扱いは「停止」を正とし、同一 primary fingerprint の secret key が既に鍵リングにある場合は import 前に停止する（既存 key 上書きは本 issue では扱わない）。
+
+## recipient 運用 / BWS 更新契約
+
+- primary 登録時は接続中 YubiKey の recipient を 1 件作成し、`recipients` 初期値として保存する。
+- spare 追加時は既存 envelope を復号し、spare recipient の `wrapped_dek` を追加したうえで `ciphertext` を再生成して同一 secret name を更新する。
+- recipient 照合は `yubikey_serial` と `public_key_fingerprint` の両方一致を必須とし、片方のみ一致は不正扱いで停止する。
+- reencrypt 実行時は更新前 envelope の `version` / `metadata.primary_fingerprint` が既知値と一致することを確認し、一致しない場合は上書きせず停止する。
+- BWS 更新は対話実行では project/secret 名と envelope `metadata.primary_fingerprint` を表示して明示確認後に実行し、非対話実行では明示的上書き許可 option がある場合だけ更新する。
 
 ## GPG import API 決定
 
@@ -134,8 +145,9 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 
 ### `dotfiles secrets restore-gpg`
 
-- `gpg-secret-key-backup` を取得し、import 前に primary fingerprint をインメモリ導出して既存の鍵リングの衝突を確認する。
-- 衝突がなければ GPG secret key を import する。
+- `gpg-secret-key-backup` encrypted envelope を取得し、`version` / `metadata` / `recipients` / `ciphertext` を検証する。
+- 接続中 YubiKey と一致する recipient を解決し、data encryption key unwrap と backup 復号を完了してから import 前に primary fingerprint をインメモリ導出する。
+- 同一 primary fingerprint の既存鍵リング衝突を確認し、衝突がなければ復号済み backup を GPG secret key として import する。
 - encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
 - authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録し、既登録ならその状態を維持する（冪等）。
 - gpg-agent SSH support 利用可否を確認する。

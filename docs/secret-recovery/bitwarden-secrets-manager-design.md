@@ -33,7 +33,7 @@ application 層の use case orchestration test は `secrets-internal-test-stub` 
 - Bitwarden Secrets Manager 側の保存先 project は `dotfiles-secret-recovery` に固定する。
 - `bws-access-token` は machine account `dotfiles-secret-recovery-reader` の token とし、`dotfiles-secret-recovery` project への読み取りだけを許可する。
 - Bitwarden Secrets Manager で扱う secret name は `gpg-secret-key-backup` と `password-store-remote` に固定する。
-- Bitwarden Secrets Manager の secret 値は JSON envelope や独自 metadata を持たず、下記の値形式をそのまま保存する。
+- Bitwarden Secrets Manager の secret 値形式は secret ごとに固定し、`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope（UTF-8 JSON）として保存する。
 - Bitwarden Secrets Manager 側の project / secret 作成・更新・一覧取得は、復旧本線と同じ `BwsClientPort` 境界の内側で扱う。application/domain/port 契約は変更せず、secret を扱う SDK API 呼び出しは `support/protection` 内の専用操作で完了させる。
 - `verify-yubikey --check bws` は、上記 2 secret を取得できることを外部確認として検証する。
 
@@ -77,9 +77,9 @@ Bitwarden Secrets Manager で取得する対象と利用先は次のとおり。
 
 ### `gpg-secret-key-backup`
 
-値は UTF-8 の ASCII-armored OpenPGP secret key block とする。値全体が `gpg --export-secret-keys --armor` 相当の出力であり、先頭に `-----BEGIN PGP PRIVATE KEY BLOCK-----`、末尾に `-----END PGP PRIVATE KEY BLOCK-----` を含む。base64 で再包装しない。JSON、TOML、YAML、複数 field を持つ wrapper、圧縮 archive、暗号化済み archive は使わない。
+値は UTF-8 JSON の encrypted envelope とする。`version: 1` を固定し、top-level は `version` / `metadata` / `ciphertext` / `recipients` を必須とする。`metadata` は `primary_fingerprint`（40 桁 16 進）/ `exported_at`（UTC RFC3339）/ `dek_alg`（`aes-256-gcm`）/ `recipient_kek_alg`（`rsa-oaep-sha256`）を持つ。`ciphertext` は `nonce` と `body` の base64 文字列、`recipients` は 1 件以上で `yubikey_serial` / `piv_slot`（`9d`）/ `public_key_fingerprint` / `wrapped_dek`（base64）を持つ。
 
-復旧処理はこの値を GPG import 入力としてそのまま渡す。値は 1 つの primary key を持つ OpenPGP transferable secret key を表し、その primary key に紐づく encryption / authentication / signing subkey を含む。複数 primary key を同じ secret に連結して保存しない。複数 primary key が必要になった場合は、この設計を更新して secret name と検証条件を追加する。
+復旧処理は envelope 形式を検証し、接続中 YubiKey と一致する recipient で data encryption key を unwrap して復号済み backup を得た場合だけ GPG import へ進む。復号済み backup は 1 つの primary key を持つ OpenPGP transferable secret key を表し、その primary key に紐づく encryption / authentication / signing subkey を含む。複数 primary key を同じ secret に連結して保存しない。複数 primary key が必要になった場合は、この設計を更新して secret name と検証条件を追加する。
 
 ### `password-store-remote`
 
@@ -94,7 +94,7 @@ Bitwarden Secrets Manager 側の project / secret 初期登録は、`dotfiles` �
 machine account `dotfiles-secret-recovery-reader` の作成、project `dotfiles-secret-recovery` への read-only 割当、reader access token の発行は `dotfiles` provisioning の自動化対象外とする。これらは Bitwarden 管理画面または Bitwarden が公式に提供する machine account / access token 管理 API で行う。`dotfiles` provisioning は、発行済み reader token を YubiKey へ保存し、その token で BWS secret を取得できることを検証するだけである。
 
 1. provisioning 用 access token を使い、公式 `bitwarden` Rust SDK で organization ID を 1 つ指定し、その organization 内の project 一覧を取得する。name `dotfiles-secret-recovery` が存在しなければ、その organization ID の project として作る。既に存在する場合は project ID を確認し、同一 organization 内に同名 project が複数ないことを確認する。
-2. provisioning 用 access token を使い、公式 `bitwarden` Rust SDK で secret `gpg-secret-key-backup` を作成または更新し、ASCII-armored OpenPGP secret key block を値として保存する。
+2. provisioning 用 access token を使い、公式 `bitwarden` Rust SDK で secret `gpg-secret-key-backup` を作成または更新し、export 済み OpenPGP backup を YubiKey recipient 付き encrypted envelope（本書 `gpg-secret-key-backup` 値形式）へ変換した値を保存する。
 3. provisioning 用 access token を使い、公式 `bitwarden` Rust SDK で secret `password-store-remote` を作成または更新し、`git@github.com:<owner>/<repo>.git` 形式の private `password-store` repository URL を値として保存する。
 4. 手動または公式管理 API で machine account `dotfiles-secret-recovery-reader` を作り、project `dotfiles-secret-recovery` への読み取りだけを許可する。
 5. 手動または公式管理 API で `dotfiles-secret-recovery-reader` の access token を発行する。この token は発行時にだけ表示され、後から再取得できないため、直後に `dotfiles secrets yubikey enroll-primary` / `enroll-spare` の `bws-access-token` として YubiKey に保存する。
@@ -118,8 +118,9 @@ access token を rotate した場合は、Bitwarden Secrets Manager 側で新 to
 ### `dotfiles secrets restore-gpg`
 
 - YubiKey から `bws-access-token` を取得する。
-- Bitwarden Secrets Manager から `gpg-secret-key-backup` を取得する。
-- 取得値を GPG import 処理へ渡し、subkey 検証へ進む。
+- Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得する。
+- envelope 形式（`version` / `metadata` / `ciphertext` / `recipients`）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。
+- 接続中 YubiKey で data encryption key を unwrap し、復号済み backup を GPG import 処理へ渡して subkey 検証へ進む。
 
 ### `dotfiles secrets restore-pass`
 
