@@ -246,3 +246,31 @@
 - 後続対応状態: `commit gate 記録更新済み（commit / push は未実施）`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
 - 後続対応メモ: `Hypatia 後差分は fresh review 開始前。集約後レビュー判定は未確定。`
+
+## PR #33 / Issue #30 task-list-outside レビュー追跡（2026-05-30）
+
+- 対象位置づけ: `PR #33 / branch refactor/secrets-structure-issue-30-main / Issue #30 の構造整理差分に対する task-list-outside 追跡。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle レビュー記録とは別に扱い、既存の合格集約を PR #33 の合格根拠として再利用しない。`
+- 固定対象差分: `base 5ff5e54..head 2ececf1`
+- 保存済み head: `2ececf1 refactor(secrets): port/domain/adapter構造を整理`
+- 補正対象: `2ececf1..この補正 HEAD`
+- 対象ブランチ: `refactor/secrets-structure-issue-30-main`
+- 確認証跡: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
+- outside-ledger 分類記録: `docs/task-governance/review-artifacts/outside-ledger-intake.md` の `2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録`
+
+### current-cycle 差戻し handoff
+
+- 構造レビュー担当: `判定: 不合格`
+  - required fix: `adapters.rs` の `pub(crate) use` による実装型再公開を解消し、adapter root が公開面集約にならない構造へ変更する。
+- ドキュメントレビュー担当: `判定: 要修正`
+  - required fix: adapter-local `#[path = "stub/yubikey.rs"]` 構造に doc comment を整合し、`TestStubSecretDevice` の責務境界 comment を追加し、test-review skill の internal backend stub 条件列挙を正本参照へ寄せる。
+- 運用整合レビュー担当: `判定: 要修正`
+  - required fix: PR #33 / commit `2ececf1` / diff range `5ff5e54..2ececf1` の対象差分、確認結果、レビュー/集約状況、PR #32 close から PR #33 作り直しへの分類・責任境界を repository 内の証跡へ記録する。
+
+### 補正後レビュー状況
+
+- 実装担当補正: `実施済み`
+- 実装担当確認: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）` に記録。
+- 必須レビュー担当の fresh review: `未実施`
+- 集約後レビュー判定: `未確定`
+- 集約判定要約: `current-cycle finding 補正後の fresh review が未実施のため、合格/commit gate 充足とは扱わない`
+- 集約根拠: `本節は対象差分・確認結果・差戻し状況・commit linkage の追跡記録であり、必須レビュー担当の合格判定を代替しない。`

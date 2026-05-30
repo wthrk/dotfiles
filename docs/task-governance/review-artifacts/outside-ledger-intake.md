@@ -83,3 +83,13 @@
 - 参照整合レビュー担当（再レビュー）: `判定: 合格` / 判定要約: 所見なし
 - 集約後レビュー判定: `合格`
 - 集約根拠: 必須レビュー担当（運用整合・参照整合）全員が合格。差戻し修正後に再レビュー実施済み。
+
+## 2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録
+
+- 実施日: `2026-05-30`
+- 対象依頼: `PR #32 を close し、origin/main 先頭から PR #33 / branch refactor/secrets-structure-issue-30-main として secrets structure 整理差分を作り直した状態の監査証跡を固定する`
+- 分類 (`task-list-outside` 固定): `task-list-outside`
+- 責任境界: `PR #33 / Issue #30 の branch 作り直し、対象差分、確認結果、レビュー状況、commit linkage の追跡記録に限定する。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 記録を PR #33 の合格根拠として再利用せず、root/area ledger の active item 選定や完了状態は変更しない。`
+- 対象差分識別子（着手時に未確定なら `未確定`）: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / head 2ececf1 / diff range 5ff5e54..2ececf1`
+- レビュー記録の保存先: `docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md`（PR #33 / Issue #30 task-list-outside 追跡節）
+- 備考（任意）: `PR #32 は closed、PR #33 は open として作り直された前提の記録。PR #33 head 2ececf1 は origin/main 先頭 5ff5e54 からの単一コミットで、作り直しの Git 形状と対象差分は git log / git diff で確認した。`

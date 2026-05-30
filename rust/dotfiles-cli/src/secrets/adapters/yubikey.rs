@@ -180,8 +180,9 @@ const SECRET_SLOT_CERT_OBJECT_ID: u32 = 0x005f_c10d;
 
 /// 実行時の YubiKey discovery backend を選択する adapter 内部境界。
 ///
-/// production build では実 YubiKey API に接続し、internal test feature では tests 配下の double を
-/// include する。caller は discovery/open の結果だけを使い、backend の実体へ依存しない。
+/// production build では実 YubiKey API に接続し、internal test feature では adapter-local の
+/// `stub/yubikey.rs` backend を compile-time selection で選ぶ。caller は discovery/open の結果だけを
+/// 使い、backend の実体へ依存しない。
 struct SelectedDeviceAdapter;
 
 impl Default for SelectedDeviceAdapter {

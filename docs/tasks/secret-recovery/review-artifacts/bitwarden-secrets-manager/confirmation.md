@@ -224,3 +224,26 @@
   - `direnv exec . cargo test -p dotfiles-cli --lib bws` 成功（17 passed）。
   - `git diff --check` 成功。
 - レビュー状態: `未実施` — この差し戻し後差分は fresh review 開始前であり、集約判定は未確定。
+
+## PR #33 / Issue #30 task-list-outside 確認（2026-05-30）
+
+- 対象位置づけ: `PR #33 / Issue #30 の branch 作り直しおよび構造レビュー・ドキュメントレビュー・運用整合レビュー差戻し補正の確認。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 確認とは別の task-list-outside 記録として扱う。`
+- 固定対象差分: `base 5ff5e54..head 2ececf1`（PR #33 作り直し時点の保存済み commit 差分）
+- 補正対象差分: `2ececf1..この補正 HEAD`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、PR #33 task-list-outside 証跡追加）
+- 対象ブランチ: `refactor/secrets-structure-issue-30-main`
+- 確認した commit linkage:
+  - `git rev-parse --short HEAD` は着手時 `2ececf1`。
+  - `git branch --show-current` は `refactor/secrets-structure-issue-30-main`。
+  - `git diff --name-only 5ff5e54..2ececf1` により、PR #33 の保存済み対象差分を再特定した。
+- 確認手順と結果:
+  - `cargo fmt --all` 成功。
+  - `rg -n "pub\\(crate\\) use|pub\\(super\\) use|adapters::(DeviceSelectionAdapter|StorageAdapter|ProcessIoAdapter|JsonReportAdapter|BwsClientAdapter)|tests 配下の double|include する" rust/dotfiles-cli/src/secrets .agents/skills/test-review -S` 実行。adapter root の再公開、旧 `tests 配下の double を include` 文言、呼び出し側の `adapters::Type` 依存は残存なし。`ports.rs` の port 契約再公開だけが別層の既存一致として残る。
+  - `rg -n "secrets-internal-test-stub|#\\[path\\s*=|include!\\(|tests/secrets_application|app_test_support|mockall::mock!|UnusedBwsClient|PortFuture" rust/dotfiles-cli/src/secrets/application.rs rust/dotfiles-cli/src/secrets/application rust/dotfiles-cli/src/secrets/ports.rs -S` 実行。application 層の internal stub bridge / tests 配下依存 / 手書き mock 残存なし。
+  - `rg -n "canonical internal backend stub|production build exclusion|production build 非混入|fixture/state helper|runtime 分岐なし|unchanged production command path" .agents/skills/test-review/SKILL.md .agents/skills/test-review/SKILL_ja.md -S` 実行。skill 側は正本参照文言のみで、詳細条件列挙の残存なし。
+  - `direnv exec . cargo check -p dotfiles-cli` 成功。
+  - `direnv exec . cargo check -p dotfiles-cli --features secrets-internal-test-stub` 成功。
+  - `direnv exec . cargo test -p dotfiles-cli --lib secrets::adapters` 成功（2 passed）。
+  - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::adapters` 成功（2 passed）。
+  - `git diff --check` 成功。
+- レビュー状態: `差戻し補正後 fresh review 未実施`。この確認記録は対象差分と実行確認を追跡可能にする補助記録であり、必須レビュー担当の合格や集約判定を代替しない。
+- 未実施理由（未実施がある場合）: `なし`

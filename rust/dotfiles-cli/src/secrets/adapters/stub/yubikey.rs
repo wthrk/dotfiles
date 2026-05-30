@@ -46,6 +46,12 @@ struct StubState {
     bws_fetch_events: Vec<String>,
 }
 
+/// file-backed internal stub の選択済み YubiKey device state を保持する adapter backend。
+///
+/// この型は production build に含まれず、`secrets-internal-test-stub` feature の compile-time
+/// selection で実 device backend と差し替わる。device state は
+/// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file に閉じ、PIN verified state だけを
+/// opened device handle の一時状態として保持する。
 struct TestStubSecretDevice {
     serial: u32,
     pin_verified: bool,
