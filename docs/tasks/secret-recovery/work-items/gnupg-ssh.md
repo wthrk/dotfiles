@@ -31,6 +31,6 @@
 
 ## 完了の判定条件（Design PR）
 
-- `docs/secret-recovery/gnupg-ssh-design.md` に上記 11 項目すべての決定が記載されている。
+- `docs/secret-recovery/gnupg-ssh-design.md` に上記すべての項目の決定が記載されている。
 - 決定事項が `restore-gpg` / `export-ssh-public-key` / `restore-pass` の境界へ矛盾なく接続されている。
 - 停止条件に envelope / recipient 検証失敗、subkey 検証失敗、gpg-agent SSH support 不可、existing-key stop condition が反映されている。
