@@ -105,15 +105,14 @@
   - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/bw.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/io.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/io/process.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/io/report.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/stub/bw.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/stub/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/yubikey/device_serial_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/yubikey/storage_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/entrypoint/adapter_catalog.rs`
   - `rust/dotfiles-cli/src/secrets/entrypoint/dispatch.rs`
   - `rust/dotfiles-cli/src/secrets/entrypoint/runtime.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
