@@ -72,7 +72,7 @@
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [review-artifacts/bitwarden-secrets-manager/review.md](review-artifacts/bitwarden-secrets-manager/review.md#bitwarden-secrets-manager-レビュー記録)
-- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 11ff088 / diff range 5ff5e54..11ff088`
+- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`
 - 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
@@ -137,7 +137,7 @@
 | 規約計画 | 完了 | `../../secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/bitwarden-secrets-manager.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 完了 | `../../secret-recovery/bitwarden-secrets-manager-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 実装（PR #33 / Issue #30） | fresh review 待ち | 実コード差分（`PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 11ff088 / diff range 5ff5e54..11ff088`。`ae1b917` は PR #33 証跡同期、`97748c4` は BSM 対象コードパス漏れ指摘への対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`4cd47d4` は削除済み adapter root を現行対象パス扱いしない台帳補正） | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
+| 実装（PR #33 / Issue #30） | fresh review 待ち | 実コード差分（`PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`。`11ff088` は直前 P1 対応 commit、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応 commit。`ae1b917` は PR #33 証跡同期、`97748c4` は BSM 対象コードパス漏れ指摘への対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`4cd47d4` は削除済み adapter root を現行対象パス扱いしない台帳補正） | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
 | 確認 | fresh review 前確認済み | `review-artifacts/bitwarden-secrets-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 未実施（Hypatia 後 fresh review 必須） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手（fresh review 合格後に判定） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
