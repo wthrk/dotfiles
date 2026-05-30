@@ -3,13 +3,14 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        commands::EnrollPrimaryCommand,
+        enrollment::EnrollSummary,
         manifest::BootstrapSecretDocument,
         piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
             SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
-        values::{EnrollPrimaryCommand, EnrollSummary},
     },
     ports,
 };
@@ -71,10 +72,11 @@ where
 mod tests {
     use crate::secrets::{
         domain::{
+            commands::EnrollPrimaryCommand,
             manifest::SecretManifest,
             piv::{PivApplicationVersion, SecretName},
             storage::{SecretStorageReadInspection, SecretStorageSetupInspection},
-            values::{CheckName, CheckStatus, EnrollPrimaryCommand},
+            verification::{CheckName, CheckStatus},
         },
         ports,
         support::protection::ProtectedSecret,

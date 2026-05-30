@@ -174,14 +174,14 @@
 ### レビュー時の問い
 
 - production 層（`adapters/`・`application/`・`domain/`・`ports/`・`support/`）の各ファイルに、実依存を肩代わりする責務を持つ型（Fake/Stub/Mock）が定義されていないか。その型は、テストのためだけに存在し本番経路では使われないか。そうであれば配置違反である。
-- `#[cfg(all(test, feature = "..."))]` で `tests/` 配下の test support を module context へ `include!` する箇所について、それが [Rust private module 用 test-only bridge](hexagonal-implementation-rules.md#rust-private-module-用-test-only-bridge) の条件をすべて満たしているか。満たす場合は production source tree への test double 混入として扱ってはならない。
+- adapter 配下の `#[cfg(feature = "secrets-internal-test-stub")]` backend stub について、それが [internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) の条件をすべて満たしているか。満たす場合は production source tree への test double 混入として扱ってはならない。
 - production 層に置かれた `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックの中身は、(a) その module 自身の private 関数を検証する `#[test]` 関数か、(b) 実依存を肩代わりする double の**定義**か。(b) であれば配置違反である。(a) は許可される（後述）。
 - ある double の責務は「テスト時に実依存を substitute すること」か。そうであれば、それが port trait を実装していても・feature gate されていても、production 層ではなく `tests/` 層または専用 test-support crate に属する。
 
 ### 許可される in, 禁止される out（責務で区別する）
 
 - **許可**: production 層の `src/` ファイル内に置かれた通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`）。これはその module 自身の private 関数を検証する標準的かつ idiomatic な Rust であり、削除を要求してはならない。inline unit test を一律禁止すると、本番関数をテストのためだけに `pub` 化する圧力が生じ、公開面最小化の哲学に反する。`#[test]` 関数の存在のみを理由に `判定: 不合格` としてはならない。
-- **許可**: Rust private module / private usecase を検査するため、`#[cfg(all(test, feature = "..."))]` で `tests/` 配下の test support を module context へ `include!` する test-only bridge。許可条件は `hexagonal-implementation-rules.md` の同節を正本とし、production build 非混入、internal test 専用 feature、runtime real/stub 分岐なし、production command path 変更なし、port trait 契約での駆動、domain/business logic 非移動、mock/fake 本体の `tests/` 配置、module/comment による xtask/internal test 経路明記をすべて確認する。
+- **許可**: CLI integration test が同一 `dotfiles` binary と同一 production command path を通るため、adapter 配下に `#[cfg(feature = "secrets-internal-test-stub")]` で compile される internal backend stub を置くこと。許可条件は `hexagonal-implementation-rules.md` の同節を正本とし、production build 非混入、internal test 専用 feature、runtime real/stub 分岐なし、production command path 変更なし、port trait 契約での駆動、domain/business logic 非移動、integration test が adapter stub module を import しないこと、fixture/state helper と backend stub 実装の責務分離、module/comment による state file 境界と compile-time selection 明記をすべて確認する。
 - **許可**: application 層の use case orchestration test を internal test stub feature から切り離し、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で port trait 契約を駆動すること。port double は port trait 側から生成した test-only `mockall` mock を各テストで直接組み立てる。app 層 inline/unit test から `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照することは不許可である。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file、event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装、既存 trait method を `mock!` macro へ手で書き写す二重管理は不許可である。
 - **許可**: `ProtectedSecret` の secret 生値アクセスを `#[cfg(test)]` または `#[test]` に閉じた最小関数として用意し、unit test が値を観測すること。これは test-only の最小観測口であり、domain/application への取り出し API 追加、production 経路での plaintext 取り出し、`String` 変換公開、汎用 plaintext consumer API は引き続き不許可である。
 - **不許可**: production 層に置かれた型の責務が「テスト専用の実依存肩代わり」であり、かつ当該層の責務と一致しない場合。`#[cfg(test)]` / `#[cfg(feature = "...")]` / port trait 実装の有無だけで機械的に判定してはならない。責務の不一致を根拠として不合格にする。

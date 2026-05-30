@@ -23,10 +23,17 @@
   - `rust/dotfiles-cli/src/secrets/domain/material.rs`
   - `rust/dotfiles-cli/src/secrets/domain/piv.rs`
   - `rust/dotfiles-cli/src/secrets/domain/storage.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/commands.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/process.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/device_serial_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/storage_adapter.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
   - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
@@ -71,19 +78,26 @@
   - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_stdin.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_setup_with.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `rust/dotfiles-cli/src/secrets/ports/bw.rs`
+  - `rust/dotfiles-cli/src/secrets/ports/io.rs`
+  - `rust/dotfiles-cli/src/secrets/ports/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/bws.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/commands.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
   - `rust/dotfiles-cli/src/secrets/adapters.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/bws_client.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/bws_client_real.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/bws_client_stub.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_selection.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_serial_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/process_io_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/storage_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/selected_device_real.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/selected_device_stub.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters/bw.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/process.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/stub/bw.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/stub/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/device_serial_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/storage_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint/adapter_catalog.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint/dispatch.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint/runtime.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
@@ -94,7 +108,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/dotfiles-cli/tests/secrets_internal_stub/piv_io_internal_stub.rs`
+  - `rust/dotfiles-cli/tests/secrets_internal_stub/cli_stub_state.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)
 - 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`

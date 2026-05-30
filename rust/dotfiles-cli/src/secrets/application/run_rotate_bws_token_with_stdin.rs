@@ -3,11 +3,12 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        commands::RotateBwsTokenCommand,
         piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
-        values::{RotateBwsTokenCommand, VerifySummary},
+        verification::VerifySummary,
     },
     ports,
 };
@@ -84,10 +85,11 @@ where
 mod tests {
     use crate::secrets::{
         domain::{
+            commands::RotateBwsTokenCommand,
             manifest::SecretManifest,
             piv::SecretName,
             storage::{SecretStorageReadInspection, SecretStorageWriteInspection},
-            values::{CheckName, CheckStatus, RotateBwsTokenCommand},
+            verification::{CheckName, CheckStatus},
         },
         ports,
         support::protection::ProtectedSecret,

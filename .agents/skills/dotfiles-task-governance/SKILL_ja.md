@@ -31,6 +31,8 @@ description: dotfiles リポジトリ固有または secret-recovery 固有の�
 
 このスキルは、適用される役割スキルによって役割が確定済みの実行者が、リポジトリ固有の統治補助を必要とする場合にだけ使う。
 
+このスキルは現在の実行者の役割を確立・変更しない。現在の実行者は、すでに起動済みの `/orchestration`、`/implementation-execution`、レビュー系スキル、判定系スキルなどの役割スキルに拘束され続ける。
+
 このスキルは `/orchestration`、`/implementation-execution`、レビュー系スキル、判定系スキルを置き換えない。委譲された役割エージェントは、このスキルを使って同じ delegated task のオーケストレーターへ自己切替してはならない。
 
 ## 規則

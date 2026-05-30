@@ -31,6 +31,8 @@ Use this order as navigation pointers only; role skills and canonical documents 
 
 Use this skill only as repository-specific governance support for an actor whose role has already been established by the applicable role skill.
 
+This skill does not establish or change the current actor's role. The actor remains bound to the role skill that was already invoked, such as `/orchestration`, `/implementation-execution`, a review skill, or a judgement skill.
+
 This skill does not replace `/orchestration`, `/implementation-execution`, review skills, or judgement skills. Delegated role actors must not use this skill to switch themselves into an orchestrator role for the same delegated task.
 
 ## Rule

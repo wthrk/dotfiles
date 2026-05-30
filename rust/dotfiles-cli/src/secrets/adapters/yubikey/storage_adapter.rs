@@ -13,7 +13,7 @@ use crate::{
                 SecretStorageWriteIntent,
             },
         },
-        ports::SecretStoragePort,
+        ports::yubikey::SecretStoragePort,
         support::protection::{ProtectedSecret, SecretSession},
     },
 };

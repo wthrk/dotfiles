@@ -1,20 +1,26 @@
-// `secrets-internal-test-stub` feature 専用の file-backed BWS client stub。
-//
-// verify-yubikey --check bws の external check をネットワークへ接続せず再現し、
-// BWS 側 state に保存された project/secret/value と fetch 監査イベントを共有 state へ記録する。
+//! `secrets-internal-test-stub` feature 専用の file-backed BWS adapter backend stub。
+//!
+//! production build には compile されず、runtime flag ではなく compile-time feature selection で
+//! real BWS SDK backend と差し替わる。integration test はこの module を import せず、同じ
+//! `dotfiles` binary を実行し、fixture が作る `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の
+//! state file を backend として共有する。
 
 use std::{collections::BTreeMap, fs};
 
 use anyhow::Context;
 
 use crate::secrets::{
-    domain::values::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
     support::protection::ProtectedSecret,
 };
 
 const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
+/// adapter stub が state file から読む最小 schema。
+///
+/// fixture builder や assertion helper は tests 側に残し、この型は backend が port 契約を
+/// 再現するために必要な永続 state だけを持つ。
 struct StubState {
     key_exists: std::collections::BTreeMap<u32, bool>,
     objects: std::collections::BTreeMap<(u32, u32), Vec<u8>>,
@@ -33,6 +39,7 @@ struct StubState {
     bws_fetch_events: Vec<String>,
 }
 
+/// state file の project 一覧を `BwsClientPort` の lookup 候補へ翻訳する。
 pub(super) fn list_bws_projects(
     access_token: &ProtectedSecret,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
@@ -49,6 +56,7 @@ pub(super) fn list_bws_projects(
     })
 }
 
+/// state file の project secret 一覧を `BwsClientPort` の lookup 候補へ翻訳する。
 pub(super) fn list_bws_secrets(
     access_token: &ProtectedSecret,
     project_id: &BwsProjectId,
@@ -70,6 +78,7 @@ pub(super) fn list_bws_secrets(
     })
 }
 
+/// state file の secret value を保護済み secret として返し、fetch 監査イベントを記録する。
 pub(super) fn fetch_bws_secret_by_id(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
@@ -115,6 +124,10 @@ fn ensure_access_token_matches_state(
     }
 }
 
+/// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を読み書きする境界。
+///
+/// backend stub はこの関数だけを通じて tests 側 fixture state と接続し、fixture 生成や
+/// assertion helper の責務を adapter 配下へ持ち込まない。
 fn with_state<T>(f: impl FnOnce(&mut StubState) -> crate::Result<T>) -> crate::Result<T> {
     let path = endpoint()?;
     let mut state = if path.exists() {
