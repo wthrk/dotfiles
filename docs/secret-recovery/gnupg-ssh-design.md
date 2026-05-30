@@ -6,7 +6,7 @@
 
 ## 目的と保護境界
 
-この機能の目的は、Bitwarden Secrets Manager から取得した `gpg-secret-key-backup` を安全に鍵リングへ復元し、GPG authentication subkey 由来の SSH 公開鍵を GitHub 登録可能な形式で出力できる状態を作ることである。
+この機能の目的は、Bitwarden Secrets Manager から取得した `gpg-secret-key-backup` encrypted envelope を、接続中 YubiKey に一致する recipient で復号して安全に鍵リングへ復元し、GPG authentication subkey 由来の SSH 公開鍵を GitHub 登録可能な形式で出力できる状態を作ることである。
 
 保護するもの:
 
@@ -21,7 +21,10 @@
 
 ## 決定事項
 
-- `restore-gpg` は YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。
+- `gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope で保持し、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
+- encrypted envelope は version / metadata / recipient（YubiKey serial と PIV slot public key fingerprint）を持ち、primary / spare YubiKey の recipient 追加と再暗号化を扱える形式に固定する。
+- `restore-gpg` は YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
+- `restore-gpg` は接続中 YubiKey と envelope recipient の照合に成功した場合のみ data encryption key を unwrap し、復号した backup を import へ渡す。
 - GPG 鍵リングの import API は `gpgme` に固定し、通常実装で `gpg` CLI は使わない。
 - import 対象は 1 つの primary key と、encryption / authentication / signing subkey を含む OpenPGP transferable secret key であることを検証する。
 - `export-ssh-public-key` は authentication subkey 由来の公開鍵を OpenSSH 形式で stdout に出力し、秘密鍵素材は出力しない。
@@ -37,11 +40,12 @@
 `restore-gpg` の import API は次の呼び出し契約に固定する。
 
 1. `gpgme` の OpenPGP context を生成する。
-2. BWS から取得した `gpg-secret-key-backup` をメモリ上のバイト列として保持する。
-3. `sequoia-openpgp` でバイト列をインメモリ解析し、import 前に primary fingerprint を導出する。比較に使う fingerprint は、後続の既存鍵照合と import 後再取得でそのまま使える canonical な 16 進文字列表現とする。
-4. 同一 primary fingerprint の secret key が既存の鍵リングにある場合は停止する。
-5. バイト列を `gpgme::Data` に変換し、`Context::import` で鍵リングへ投入する。
-6. import result から対象 primary fingerprint を確認し、同一 fingerprint の key を再取得して subkey 検証へ渡す。
+2. BWS から取得した `gpg-secret-key-backup` encrypted envelope をメモリ上で検証する（version / metadata / recipient）。
+3. 接続中 YubiKey と一致する recipient で data encryption key を unwrap し、復号した backup バイト列を得る。
+4. `sequoia-openpgp` で復号済みバイト列をインメモリ解析し、import 前に primary fingerprint を導出する。比較に使う fingerprint は、後続の既存鍵照合と import 後再取得でそのまま使える canonical な 16 進文字列表現とする。
+5. 同一 primary fingerprint の secret key が既存の鍵リングにある場合は停止する。
+6. 復号済みバイト列を `gpgme::Data` に変換し、`Context::import` で鍵リングへ投入する。
+7. import result から対象 primary fingerprint を確認し、同一 fingerprint の key を再取得して subkey 検証へ渡す。
 
 この経路では secret key backup をプロセス引数や一時ファイルへ渡さない。`gpg --import` の外部プロセス起動は設計上の対象外とする。
 
@@ -61,12 +65,14 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 `restore-gpg` は次の順序で処理する。
 
 1. YubiKey から `bws-access-token` を取得する。
-2. Bitwarden Secrets Manager から `gpg-secret-key-backup` を取得する。
-3. import 前に、同一 primary fingerprint の secret key が既存の鍵リングにあるか確認し、存在する場合は停止する。
-4. 取得値を import 入力として `gpgme` へ渡す。
-5. import 後に対象鍵の subkey 構成（encryption / authentication / signing）を検証する。
-6. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する（既登録の場合は冪等）。
-7. gpg-agent SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
+2. Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得する。
+3. 取得値の envelope 形式（version / metadata / recipient）を検証し、接続中 YubiKey と一致する recipient がない場合は停止する。
+4. 接続中 YubiKey で data encryption key を unwrap して復号済み backup を得る。
+5. import 前に、同一 primary fingerprint の secret key が既存の鍵リングにあるか確認し、存在する場合は停止する。
+6. 復号済み backup を import 入力として `gpgme` へ渡す。
+7. import 後に対象鍵の subkey 構成（encryption / authentication / signing）を検証する。
+8. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する（既登録の場合は冪等）。
+9. gpg-agent SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
 
 復元処理は以下を満たす。
 
@@ -140,7 +146,10 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 ## 停止条件
 
 - `bws-access-token` が取得できない。
-- Bitwarden Secrets Manager から `gpg-secret-key-backup` を取得できない。
+- Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得できない。
+- backup envelope の形式検証（version / metadata / recipient）に失敗する。
+- 接続中 YubiKey と一致する recipient が存在しない。
+- data encryption key の unwrap または backup 復号に失敗する。
 - import 処理が失敗する。
 - 同一 primary fingerprint の secret key が既に鍵リングへ存在する。
 - import 後の鍵に encryption / authentication / signing subkey が揃っていない。

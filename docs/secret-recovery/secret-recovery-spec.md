@@ -50,7 +50,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 - `YubiKey`: `bw-email` を保存し、Bitwarden Password Manager の CLI login / unlock に使う。
 - `YubiKey`: `bw-password` を保存し、Bitwarden Password Manager の CLI login / unlock に使う。
 - `YubiKey`: `bws-access-token` を保存し、Bitwarden Secrets Manager から復旧情報を取得する。
-- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` を保存し、GPG secret key 復元に使う。値は ASCII-armored OpenPGP secret key block とする。
+- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` を保存し、GPG secret key 復元に使う。値は YubiKey recipient 付き encrypted envelope とし、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
 - `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `password-store-remote` を保存し、private `password-store` repository の clone URL として使う。値は `git@github.com:<owner>/<repo>.git` 形式に限定する。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
@@ -71,7 +71,7 @@ YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV �
 
 ### Bitwarden Secrets Manager
 
-Bitwarden Secrets Manager は復旧に必要な機械向け secret を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup` と `password-store-remote` である。
+Bitwarden Secrets Manager は復旧に必要な機械向け secret を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope）と `password-store-remote` である。
 
 復旧本線では公式 `bitwarden` Rust SDK を使う。`bw` CLI は Bitwarden Secrets Manager からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。YubiKey に保存する token は machine account `dotfiles-secret-recovery-reader` の token とし、project `dotfiles-secret-recovery` の読み取りだけを許可する。
 
@@ -157,12 +157,14 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 ### `dotfiles secrets restore-gpg`
 
 1. YubiKey から `bws-access-token` を取得する。
-2. Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` を取得する。
-3. import 前に primary fingerprint をインメモリ導出し、同一 primary fingerprint の secret key が既に鍵リングに存在する場合は停止する。
-4. GPG secret key を import する。
-5. encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
-6. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する。既登録の場合はその状態を維持する（冪等）。
-7. `gpg-agent` SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
+2. Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
+3. envelope 形式（version / metadata / recipient）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。
+4. 接続中 YubiKey で data encryption key を unwrap し、復号済み backup を得る。
+5. import 前に primary fingerprint をインメモリ導出し、同一 primary fingerprint の secret key が既に鍵リングに存在する場合は停止する。
+6. 復号済み backup を GPG secret key として import する。
+7. encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
+8. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する。既登録の場合はその状態を維持する（冪等）。
+9. `gpg-agent` SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
 
 ### `dotfiles secrets restore-pass`
 
@@ -196,6 +198,9 @@ GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。G
 - `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。
 - `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
+- `gpg-secret-key-backup` の envelope 形式検証（version / metadata / recipient）に失敗する。
+- 接続中 YubiKey と一致する recipient が存在しない。
+- data encryption key の unwrap または backup 復号に失敗する。
 - import 対象の GPG secret key に encryption / authentication / signing subkey が揃っていない、またはいずれかが revoked / expired / disabled で利用不能である。
 - 同一 primary fingerprint の secret key が既に鍵リングへ存在する。
 - `gpg-agent` SSH support が利用できない。

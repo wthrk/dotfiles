@@ -17,14 +17,20 @@
 
 現サイクルは issue #14 の設計仕様確定を扱う。実装着手前に、次の事項を `docs/secret-recovery/gnupg-ssh-design.md` へ明文化し、未決定項目を残さない。
 
-1. **GPG import API**: `restore-gpg` が採用する import API と禁止 API（`gpg` CLI 非採用）を決定する。
-2. **subkey 検証契約**: encryption / authentication / signing subkey の検証条件（利用可能状態を含む）を決定する。
-3. **Home Manager gpg-agent.conf**: `gpg-agent` SSH support を Home Manager で管理する設定方針と設定項目を決定する。
-4. **zsh 環境変数**: `GPG_TTY` と `SSH_AUTH_SOCK` の設定責務、設定値解決規則、フォールバック方針を決定する。
-5. **existing-key stop condition**: 既存鍵リングに同一 key がある場合の停止条件と非対応範囲（上書き非対応）を決定する。
+1. **backup export 入力**: 既存環境の GPG secret key を `gpg-secret-key-backup` 入力として export する方法を決定する。
+2. **envelope 化契約**: export 入力を YubiKey recipient 付き encrypted envelope に変換する方式（暗号方式、version、metadata、recipient 形式、YubiKey serial / PIV slot public key fingerprint の扱い）を決定する。
+3. **recipient 運用契約**: primary / spare YubiKey の recipient 登録、追加、照合、再暗号化の扱いを決定する。
+4. **BWS 登録契約**: encrypted backup envelope の Bitwarden Secrets Manager 登録 / 更新方法と、上書き時の確認・停止条件を決定する。
+5. **入出力境界**: export / 暗号化 / 登録 / 復号 / import の各段で、secret key material・data encryption key・復号済み backup を argv / shell history / ログ / 永続一時ファイルへ残さない契約を決定する。
+6. **GPG import API**: `restore-gpg` が採用する import API と禁止 API（`gpg` CLI 非採用）を決定する。
+7. **復号 + import 契約**: `restore-gpg` が encrypted envelope を取得後、接続中 YubiKey で data encryption key を unwrap して復号済み backup を import へ渡す手順を決定する。
+8. **subkey 検証契約**: encryption / authentication / signing subkey の検証条件（利用可能状態を含む）を決定する。
+9. **Home Manager gpg-agent.conf**: `gpg-agent` SSH support を Home Manager で管理する設定方針と設定項目を決定する。
+10. **zsh 環境変数**: `GPG_TTY` と `SSH_AUTH_SOCK` の設定責務、設定値解決規則、フォールバック方針を決定する。
+11. **existing-key stop condition**: 既存鍵リングに同一 key がある場合の停止条件と非対応範囲（上書き非対応）を決定する。
 
 ## 完了の判定条件（Design PR）
 
-- `docs/secret-recovery/gnupg-ssh-design.md` に上記 5 項目すべての決定が記載されている。
+- `docs/secret-recovery/gnupg-ssh-design.md` に上記 11 項目すべての決定が記載されている。
 - 決定事項が `restore-gpg` / `export-ssh-public-key` / `restore-pass` の境界へ矛盾なく接続されている。
-- 停止条件に subkey 検証失敗、gpg-agent SSH support 不可、existing-key stop condition が反映されている。
+- 停止条件に envelope / recipient 検証失敗、subkey 検証失敗、gpg-agent SSH support 不可、existing-key stop condition が反映されている。
