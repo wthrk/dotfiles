@@ -89,7 +89,7 @@ test double / fixture の本体は原則として `tests/` 配下に置く。た
 - hidden temp file、output path file、共有 state file に secret 値を残してはならない。
 - backend state/schema/helper は adapter 側 internal backend stub の責務とし、`tests/` 側へ複製してはならない。
 - BWS port stub と YubiKey port stub は独立させ、共通の巨大 StubState や共有 state file で結合してはならない。port 間の結合は application/domain の通常経路でのみ発生させる。
-- module/comment で internal test 専用 feature、production build 非混入、state file 境界、compile-time selection を明記する。
+- module/comment で internal test 専用 feature、production build 非混入、stdout observation 境界、compile-time selection を明記する。
 
 この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入、`tests/` 側での backend state/schema/helper 保持は、この条件を満たさないため引き続き禁止する。
 
