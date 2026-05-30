@@ -47,6 +47,8 @@
 6. 復号済みバイト列を `gpgme::Data` に変換し、`Context::import` で鍵リングへ投入する。
 7. import result から対象 primary fingerprint を確認し、同一 fingerprint の key を再取得して subkey 検証へ渡す。
 
+手順 2 または 3 の検証に失敗した場合は、import 処理へ進まず停止する。
+
 この経路では secret key backup をプロセス引数や一時ファイルへ渡さない。`gpg --import` の外部プロセス起動は設計上の対象外とする。
 
 ## subkey 検証決定
