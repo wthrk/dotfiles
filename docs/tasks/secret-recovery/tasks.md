@@ -81,6 +81,7 @@
   - `rust/dotfiles-cli/Cargo.toml`
   - `rust/dotfiles-cli/src/main.rs`
   - `rust/dotfiles-cli/src/lib.rs`
+  - `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs`
   - `rust/dotfiles-cli/src/cli.rs`
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/entrypoint.rs`
@@ -127,8 +128,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
-  - `rust/dotfiles-cli/tests/secrets_internal_stub/mod.rs`（削除予定/是正対象）
-  - `rust/dotfiles-cli/tests/secrets_internal_stub/cli_stub_state.rs`（削除予定/是正対象）
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `Hypatia 後 fresh review 待ち`
 - 固定実装単位トラッカー:

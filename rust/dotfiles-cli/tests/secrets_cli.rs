@@ -2,8 +2,8 @@
 //! `dotfiles secrets` の CLI 境界を feature-gated internal backend stub で検証する。
 //!
 //! Production command path は runtime env による real/stub 選択を持たない。この test target は
-//! port ごとの初期 datastore JSON を env で渡し、CLI 実行後に port ごとの最終 datastore JSON だけを
-//! 観測する。
+//! port ごとの初期条件 spec JSON を env で渡し、CLI 実行後に port ごとの最終状態観測 JSON だけを
+//! 検証する。
 
 use std::{
     fs,
@@ -16,19 +16,15 @@ use std::{
 };
 
 use anyhow::Context;
+use dotfiles_cli::secrets_internal_test_stub_contract::{
+    BWS_STUB_OUTPUT_ENV, BWS_STUB_SPEC_ENV, YUBIKEY_STUB_OUTPUT_ENV, YUBIKEY_STUB_SPEC_ENV,
+};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 const PRIMARY_SERIAL: u32 = 2001;
 const SPARE_SERIAL: u32 = 2002;
-const MANIFEST_OBJECT_ID: &str = "6291222";
-
-const YUBIKEY_STUB_DATASTORE_ENV: &str = "DOTFILES_SECRETS_YUBIKEY_STUB_DATASTORE_JSON";
-const YUBIKEY_STUB_OUTPUT_ENV: &str = "DOTFILES_SECRETS_YUBIKEY_STUB_OUTPUT_PATH";
-const BWS_STUB_DATASTORE_ENV: &str = "DOTFILES_SECRETS_BWS_STUB_DATASTORE_JSON";
-const BWS_STUB_OUTPUT_ENV: &str = "DOTFILES_SECRETS_BWS_STUB_OUTPUT_PATH";
-static STUB_DATASTORE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 type TestResult<T> = anyhow::Result<T>;
 
@@ -43,30 +39,21 @@ struct PtyRun {
     output: String,
 }
 
-struct StubDatastores {
-    yubikey_initial: Value,
-    bws_initial: Value,
+struct StubPorts {
+    yubikey_spec: Value,
+    bws_spec_value: Value,
     yubikey_output_path: PathBuf,
     bws_output_path: PathBuf,
 }
 
-impl StubDatastores {
-    fn new(yubikey_initial: Value, bws_initial: Value) -> Self {
-        let unique = format!(
-            "dotfiles-secrets-stub-{}-{}-{}",
-            std::process::id(),
-            STUB_DATASTORE_SEQ.fetch_add(1, Ordering::Relaxed),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        );
-        let dir = std::env::temp_dir();
+impl StubPorts {
+    fn new(yubikey_spec: Value, bws_spec_value: Value) -> Self {
+        let (yubikey_output_path, bws_output_path) = Self::unique_output_paths();
         Self {
-            yubikey_initial,
-            bws_initial,
-            yubikey_output_path: dir.join(format!("{unique}-yubikey.json")),
-            bws_output_path: dir.join(format!("{unique}-bws.json")),
+            yubikey_spec,
+            bws_spec_value,
+            yubikey_output_path,
+            bws_output_path,
         }
     }
 
@@ -77,13 +64,67 @@ impl StubDatastores {
     fn final_bws(&self) -> TestResult<Value> {
         read_json_file(&self.bws_output_path)
     }
+
+    fn unique_output_paths() -> (PathBuf, PathBuf) {
+        static SEQ: AtomicU64 = AtomicU64::new(1);
+
+        let unique = format!(
+            "dotfiles-secrets-stub-{}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        let dir = std::env::temp_dir();
+        (
+            dir.join(format!("{unique}-yubikey.json")),
+            dir.join(format!("{unique}-bws.json")),
+        )
+    }
+
+    fn apply_to_command(&self, command: &mut Command) -> TestResult<()> {
+        command
+            .env(
+                YUBIKEY_STUB_SPEC_ENV,
+                serde_json::to_string(&self.yubikey_spec)?,
+            )
+            .env(YUBIKEY_STUB_OUTPUT_ENV, &self.yubikey_output_path)
+            .env(
+                BWS_STUB_SPEC_ENV,
+                serde_json::to_string(&self.bws_spec_value)?,
+            )
+            .env(BWS_STUB_OUTPUT_ENV, &self.bws_output_path);
+        Ok(())
+    }
+
+    fn apply_to_pty_command(&self, command: &mut CommandBuilder) -> TestResult<()> {
+        command.env(
+            YUBIKEY_STUB_SPEC_ENV,
+            serde_json::to_string(&self.yubikey_spec)?,
+        );
+        command.env(
+            YUBIKEY_STUB_OUTPUT_ENV,
+            self.yubikey_output_path.to_string_lossy().as_ref(),
+        );
+        command.env(
+            BWS_STUB_SPEC_ENV,
+            serde_json::to_string(&self.bws_spec_value)?,
+        );
+        command.env(
+            BWS_STUB_OUTPUT_ENV,
+            self.bws_output_path.to_string_lossy().as_ref(),
+        );
+        Ok(())
+    }
 }
 
 #[test]
 fn setup_runs_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([fresh_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(["yubikey", "setup", "--serial", "2001"], None, &stub)?;
 
@@ -93,9 +134,9 @@ fn setup_runs_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([writable_bws_access_token_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         [
@@ -122,9 +163,9 @@ fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([writable_bws_access_token_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pty_with_stub(
         ["yubikey", "put", "bws-access-token", "--serial", "2001"],
@@ -145,9 +186,9 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         ["yubikey", "get", "bws-access-token", "--serial", "2001"],
@@ -162,9 +203,9 @@ fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn get_refuses_secret_output_to_tty_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pty_with_stub(
         ["yubikey", "get", "bws-access-token", "--serial", "2001"],
@@ -179,9 +220,9 @@ fn get_refuses_secret_output_to_tty_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([fresh_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         [
@@ -208,9 +249,9 @@ fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()>
 
 #[test]
 fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([fresh_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pty_with_stub(
         ["yubikey", "enroll-primary", "--serial", "2001"],
@@ -232,9 +273,12 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn enroll_spare_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([fresh_device(PRIMARY_SERIAL), fresh_device(SPARE_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([
+            fresh_device_spec(PRIMARY_SERIAL),
+            fresh_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         [
@@ -262,12 +306,12 @@ fn enroll_spare_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn enroll_spare_without_secret_reentry() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([
-            provisioned_device(PRIMARY_SERIAL),
-            fresh_device(SPARE_SERIAL),
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            fresh_device_spec(SPARE_SERIAL),
         ]),
-        bws_datastore(),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         [
@@ -293,9 +337,9 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
 
 #[test]
 fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         ["yubikey", "rotate-bws-token", "--serial", "2001", "--stdin"],
@@ -318,9 +362,9 @@ fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pty_with_stub(
         ["yubikey", "rotate-bws-token", "--serial", "2001"],
@@ -342,12 +386,12 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([
-            provisioned_device(PRIMARY_SERIAL),
-            provisioned_device(SPARE_SERIAL),
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
         ]),
-        bws_datastore(),
+        bws_spec(),
     );
     let run = run_pty_with_stub(
         ["yubikey", "rotate-bws-token"],
@@ -377,9 +421,9 @@ fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult
 
 #[test]
 fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
 
@@ -394,9 +438,9 @@ fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn verify_yubikey_runs_bws_external_check() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         ["verify-yubikey", "--serial", "2001", "--check", "bws"],
@@ -410,11 +454,11 @@ fn verify_yubikey_runs_bws_external_check() -> TestResult<()> {
     assert!(run.stdout.contains("\"status\": \"ok\""));
     let final_bws = stub.final_bws()?;
     assert_eq!(
-        final_bws["secret_values"]["bws-secret-id-gpg"],
+        final_bws["resolved_secrets"]["gpg-secret-key-backup"],
         json!("gpg-secret")
     );
     assert_eq!(
-        final_bws["secret_values"]["bws-secret-id-pass"],
+        final_bws["resolved_secrets"]["password-store-remote"],
         json!("https://example.invalid/repo.git")
     );
     Ok(())
@@ -422,12 +466,12 @@ fn verify_yubikey_runs_bws_external_check() -> TestResult<()> {
 
 #[test]
 fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([
-            provisioned_device(PRIMARY_SERIAL),
-            provisioned_device(SPARE_SERIAL),
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
         ]),
-        bws_datastore(),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
 
@@ -441,9 +485,9 @@ fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestRe
 
 #[test]
 fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
 
@@ -456,12 +500,12 @@ fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
 
 #[test]
 fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([
-            provisioned_device(PRIMARY_SERIAL),
-            provisioned_device(SPARE_SERIAL),
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
         ]),
-        bws_datastore(),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(["verify-yubikey", "--all", "--check", "bws"], None, &stub)?;
 
@@ -481,9 +525,9 @@ fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
 
 #[test]
 fn put_stdin_requires_serial_before_reading_secret() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let run = run_pipe_with_stub(
         ["yubikey", "put", "bws-access-token", "--stdin"],
@@ -512,9 +556,8 @@ fn verify_yubikey_audits_stub_route_in_internal_stub_build() -> TestResult<()> {
 
 #[test]
 fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()> {
-    let mut initial = yubikey_datastore([provisioned_device(PRIMARY_SERIAL)]);
-    initial["requires_pin"] = json!(true);
-    let stub = StubDatastores::new(initial, bws_datastore());
+    let initial = yubikey_spec_requiring_pin([provisioned_device_spec(PRIMARY_SERIAL)]);
+    let stub = StubPorts::new(initial, bws_spec());
     let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
@@ -527,10 +570,10 @@ fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()>
 }
 
 #[test]
-fn put_updates_final_yubikey_datastore_with_yubikey_path() -> TestResult<()> {
-    let stub = StubDatastores::new(
-        yubikey_datastore([writable_bws_access_token_device(PRIMARY_SERIAL)]),
-        bws_datastore(),
+fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
     let put_run = run_pipe_with_stub(
         [
@@ -556,15 +599,9 @@ fn put_updates_final_yubikey_datastore_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
-    let mut initial_device = fresh_device(PRIMARY_SERIAL);
-    initial_device["key_exists"] = json!(true);
-    initial_device["objects"][MANIFEST_OBJECT_ID] = manifest_bytes_json();
-    initial_device["secrets"] = json!({
-        "bw-email": "seed@example.com",
-        "bw-password": "seed-pw",
-        "bws-access-token": "seed-token"
-    });
-    let stub = StubDatastores::new(yubikey_datastore([initial_device]), bws_datastore());
+    let initial_device =
+        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-token");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
         ["yubikey", "get", "bws-access-token", "--serial", "2001"],
         None,
@@ -578,9 +615,11 @@ fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn get_fails_when_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
-    let mut initial_device = provisioned_device(PRIMARY_SERIAL);
-    initial_device["corrupt"] = json!(["bws-access-token"]);
-    let stub = StubDatastores::new(yubikey_datastore([initial_device]), bws_datastore());
+    let initial_device = storage_decode_error_device_spec(
+        provisioned_device_spec(PRIMARY_SERIAL),
+        "bws-access-token",
+    );
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
         ["yubikey", "get", "bws-access-token", "--serial", "2001"],
         None,
@@ -594,9 +633,9 @@ fn get_fails_when_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn rotate_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
-    let mut initial_device = provisioned_device(PRIMARY_SERIAL);
-    initial_device["corrupt"] = json!(["bw-password"]);
-    let stub = StubDatastores::new(yubikey_datastore([initial_device]), bws_datastore());
+    let initial_device =
+        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-password");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
         ["yubikey", "rotate-bws-token", "--serial", "2001", "--stdin"],
         Some("new-token\r"),
@@ -610,9 +649,9 @@ fn rotate_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult
 
 #[test]
 fn verify_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
-    let mut initial_device = provisioned_device(PRIMARY_SERIAL);
-    initial_device["corrupt"] = json!(["bw-email"]);
-    let stub = StubDatastores::new(yubikey_datastore([initial_device]), bws_datastore());
+    let initial_device =
+        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-email");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
@@ -623,7 +662,7 @@ fn verify_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult
 fn run_pipe_with_stub<const N: usize>(
     args: [&str; N],
     input: Option<&str>,
-    stub: &StubDatastores,
+    stub: &StubPorts,
 ) -> TestResult<CommandRun> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
     command
@@ -636,7 +675,7 @@ fn run_pipe_with_stub<const N: usize>(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    apply_stub_env(&mut command, stub)?;
+    stub.apply_to_command(&mut command)?;
 
     let mut child = command.spawn()?;
     if let Some(input) = input {
@@ -685,7 +724,7 @@ fn run_pipe_without_stub<const N: usize>(
 fn run_pty_with_stub<const N: usize>(
     args: [&str; N],
     input: Option<&str>,
-    stub: &StubDatastores,
+    stub: &StubPorts,
 ) -> TestResult<PtyRun> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -697,22 +736,7 @@ fn run_pty_with_stub<const N: usize>(
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_dotfiles"));
     command.arg("secrets");
     command.args(args);
-    command.env(
-        YUBIKEY_STUB_DATASTORE_ENV,
-        serde_json::to_string(&stub.yubikey_initial)?,
-    );
-    command.env(
-        YUBIKEY_STUB_OUTPUT_ENV,
-        stub.yubikey_output_path.to_string_lossy().as_ref(),
-    );
-    command.env(
-        BWS_STUB_DATASTORE_ENV,
-        serde_json::to_string(&stub.bws_initial)?,
-    );
-    command.env(
-        BWS_STUB_OUTPUT_ENV,
-        stub.bws_output_path.to_string_lossy().as_ref(),
-    );
+    stub.apply_to_pty_command(&mut command)?;
     let mut child = pair.slave.spawn_command(command)?;
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader()?;
@@ -736,21 +760,6 @@ fn run_pty_with_stub<const N: usize>(
         success: status.success(),
         output,
     })
-}
-
-fn apply_stub_env(command: &mut Command, stub: &StubDatastores) -> TestResult<()> {
-    command
-        .env(
-            YUBIKEY_STUB_DATASTORE_ENV,
-            serde_json::to_string(&stub.yubikey_initial)?,
-        )
-        .env(YUBIKEY_STUB_OUTPUT_ENV, &stub.yubikey_output_path)
-        .env(
-            BWS_STUB_DATASTORE_ENV,
-            serde_json::to_string(&stub.bws_initial)?,
-        )
-        .env(BWS_STUB_OUTPUT_ENV, &stub.bws_output_path);
-    Ok(())
 }
 
 fn write_child_stdin(mut stdin: impl Write, input: &str) -> TestResult<()> {
@@ -778,100 +787,80 @@ fn wait_pty_child(
     }
 }
 
-fn yubikey_datastore<const N: usize>(devices: [Value; N]) -> Value {
-    let mut map = serde_json::Map::new();
-    for device in devices {
-        let serial = device["serial"]
-            .as_u64()
-            .expect("stub datastore serial must be u64");
-        let mut device = device;
-        device
-            .as_object_mut()
-            .expect("stub device must be object")
-            .remove("serial");
-        map.insert(serial.to_string(), device);
-    }
+fn yubikey_spec<const N: usize>(yubikeys: [Value; N]) -> Value {
+    let yubikeys = Vec::from(yubikeys);
     json!({
-        "devices": map,
+        "yubikeys": yubikeys,
         "requires_pin": false
     })
 }
 
-fn fresh_device(serial: u32) -> Value {
+fn yubikey_spec_requiring_pin<const N: usize>(yubikeys: [Value; N]) -> Value {
+    let yubikeys = Vec::from(yubikeys);
     json!({
-        "serial": serial,
-        "key_exists": false,
-        "objects": {},
-        "secrets": {},
-        "corrupt": []
+        "yubikeys": yubikeys,
+        "requires_pin": true
     })
 }
 
-fn provisioned_device(serial: u32) -> Value {
+fn fresh_device_spec(serial: u32) -> Value {
     json!({
         "serial": serial,
-        "key_exists": true,
-        "objects": {
-            "6291222": manifest_bytes_json()
-        },
-        "secrets": {
-            "bw-email": "u@example.com",
-            "bw-password": "pw",
-            "bws-access-token": "token"
-        },
-        "corrupt": []
+        "fixture": "fresh"
     })
 }
 
-fn writable_bws_access_token_device(serial: u32) -> Value {
+fn provisioned_device_spec(serial: u32) -> Value {
     json!({
         "serial": serial,
-        "key_exists": true,
-        "objects": {
-            "6291222": manifest_bytes_json()
-        },
-        "secrets": {
-            "bw-email": "u@example.com",
-            "bw-password": "pw"
-        },
-        "corrupt": []
+        "fixture": "provisioned"
     })
 }
 
-fn bws_datastore() -> Value {
+fn writable_bws_access_token_device_spec(serial: u32) -> Value {
     json!({
-        "projects": {
-            "bws-project-id-dotfiles": "dotfiles-secret-recovery"
-        },
-        "project_secrets": {
-            "bws-project-id-dotfiles": {
-                "bws-secret-id-gpg": "gpg-secret-key-backup",
-                "bws-secret-id-pass": "password-store-remote"
-            }
-        },
-        "secret_values": {
-            "bws-secret-id-access-token": "token",
-            "bws-secret-id-gpg": "gpg-secret",
-            "bws-secret-id-pass": "https://example.invalid/repo.git"
-        }
+        "serial": serial,
+        "fixture": "writable-bws-access-token"
+    })
+}
+
+fn seeded_device_spec(
+    serial: u32,
+    bw_email: &str,
+    bw_password: &str,
+    bws_access_token: &str,
+) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "seeded",
+        "bw-email": bw_email,
+        "bw-password": bw_password,
+        "bws-access-token": bws_access_token
+    })
+}
+
+fn storage_decode_error_device_spec(mut device: Value, secret_name: &str) -> Value {
+    device["storage_decode_errors"] = json!([secret_name]);
+    device
+}
+
+fn bws_spec() -> Value {
+    json!({
+        "fixture": "default-recovery-project"
     })
 }
 
 fn assert_stored_secret(store: &Value, serial: u32, secret_name: &str, expected: &str) {
     assert_eq!(
-        store["devices"][serial.to_string()]["secrets"][secret_name],
+        store["yubikeys"][serial.to_string()]["stored_secrets"][secret_name],
         json!(expected),
-        "unexpected final YubiKey datastore secret: serial={serial} name={secret_name}"
+        "unexpected final YubiKey observed secret: serial={serial} name={secret_name}"
     );
 }
 
 fn read_json_file(path: &PathBuf) -> TestResult<Value> {
     let body = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(serde_json::from_slice(&body)?)
-}
-
-fn manifest_bytes_json() -> Value {
-    json!(br#"{"version":1,"app":"dotfiles.secret-recovery"}"#.to_vec())
 }
 
 fn bootstrap_json() -> &'static str {

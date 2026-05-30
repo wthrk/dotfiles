@@ -9,6 +9,8 @@ mod init;
 mod local_flake;
 mod process;
 mod secrets;
+#[cfg(feature = "secrets-internal-test-stub")]
+pub mod secrets_internal_test_stub_contract;
 mod switch;
 mod update;
 

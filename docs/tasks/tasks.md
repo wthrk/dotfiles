@@ -62,6 +62,7 @@
   - `rust/dotfiles-cli/Cargo.toml`
   - `rust/dotfiles-cli/src/main.rs`
   - `rust/dotfiles-cli/src/lib.rs`
+  - `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs`
   - `rust/dotfiles-cli/src/cli.rs`
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/entrypoint.rs`
@@ -109,8 +110,6 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/dotfiles-cli/tests/secrets_internal_stub/mod.rs`（削除予定/是正対象）
-  - `rust/dotfiles-cli/tests/secrets_internal_stub/cli_stub_state.rs`（削除予定/是正対象）
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)
 - 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`

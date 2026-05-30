@@ -4,10 +4,10 @@
 //! real BWS SDK backend と差し替わる。integration test はこの module を import せず、同じ
 //! `dotfiles` binary を実行する。
 //!
-//! この stub は BWS port の datastore 境界だけを受け持つ。初期 datastore は
-//! `DOTFILES_SECRETS_BWS_STUB_DATASTORE_JSON` から読み、最終 datastore は
-//! `DOTFILES_SECRETS_BWS_STUB_OUTPUT_PATH` へ JSON として書き出す。YubiKey port stub とは
-//! state/schema/file を共有しない。
+//! この stub は BWS port の datastore 境界だけを受け持つ。初期条件は
+//! `secrets_internal_test_stub_contract::BWS_STUB_SPEC_ENV` の BWS 専用 spec から private datastore
+//! へ展開し、最終状態は `secrets_internal_test_stub_contract::BWS_STUB_OUTPUT_ENV` へ観測用 JSON として書き出す。
+//! YubiKey port stub とは state/schema/file を共有しない。
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
@@ -18,15 +18,29 @@ use crate::secrets::{
     ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
 };
+use crate::secrets_internal_test_stub_contract::{BWS_STUB_OUTPUT_ENV, BWS_STUB_SPEC_ENV};
 
-const BWS_STUB_DATASTORE_ENV: &str = "DOTFILES_SECRETS_BWS_STUB_DATASTORE_JSON";
-const BWS_STUB_OUTPUT_ENV: &str = "DOTFILES_SECRETS_BWS_STUB_OUTPUT_PATH";
+#[derive(serde::Deserialize)]
+struct BwsStubSpec {
+    fixture: BwsFixture,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum BwsFixture {
+    DefaultRecoveryProject,
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct BwsDatastore {
     projects: BTreeMap<String, String>,
     project_secrets: BTreeMap<String, BTreeMap<String, String>>,
     secret_values: BTreeMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct BwsObservation {
+    resolved_secrets: BTreeMap<String, String>,
 }
 
 impl BwsClientPort for super::BwsClientAdapter {
@@ -140,21 +154,25 @@ fn with_datastore<T>(f: impl FnOnce(&mut BwsDatastore) -> crate::Result<T>) -> c
 }
 
 fn load_datastore() -> crate::Result<BwsDatastore> {
-    let path = output_path()?;
+    let path = datastore_path()?;
     if path.exists() {
         let body = fs::read(&path)?;
         return serde_json::from_slice(&body)
             .context("failed to decode observed BWS internal stub datastore JSON");
     }
-    let body = std::env::var(BWS_STUB_DATASTORE_ENV)
-        .context("BWS internal stub datastore JSON is not configured")?;
-    serde_json::from_str(&body).context("failed to decode BWS internal stub datastore JSON")
+    let body = std::env::var(BWS_STUB_SPEC_ENV)
+        .context("BWS internal stub spec JSON is not configured")?;
+    let spec: BwsStubSpec =
+        serde_json::from_str(&body).context("failed to decode BWS internal stub spec JSON")?;
+    Ok(datastore_from_spec(spec))
 }
 
 fn write_observed_datastore(store: &BwsDatastore) -> crate::Result<()> {
-    let path = output_path()?;
-    let body = serde_json::to_vec_pretty(store)?;
-    fs::write(path, body)?;
+    let datastore_body = serde_json::to_vec_pretty(store)?;
+    fs::write(datastore_path()?, datastore_body)?;
+
+    let observation_body = serde_json::to_vec_pretty(&observation_from_datastore(store))?;
+    fs::write(output_path()?, observation_body)?;
     Ok(())
 }
 
@@ -162,4 +180,63 @@ fn output_path() -> crate::Result<PathBuf> {
     let path = std::env::var(BWS_STUB_OUTPUT_ENV)
         .context("BWS internal stub output path is not configured")?;
     Ok(PathBuf::from(path))
+}
+
+fn datastore_path() -> crate::Result<PathBuf> {
+    let mut path = output_path()?;
+    path.set_extension("datastore.json");
+    Ok(path)
+}
+
+fn datastore_from_spec(spec: BwsStubSpec) -> BwsDatastore {
+    match spec.fixture {
+        BwsFixture::DefaultRecoveryProject => default_recovery_project_datastore(),
+    }
+}
+
+fn default_recovery_project_datastore() -> BwsDatastore {
+    let mut projects = BTreeMap::new();
+    projects.insert(
+        "bws-project-id-dotfiles".to_owned(),
+        "dotfiles-secret-recovery".to_owned(),
+    );
+
+    let mut recovery_secrets = BTreeMap::new();
+    recovery_secrets.insert(
+        "bws-secret-id-gpg".to_owned(),
+        "gpg-secret-key-backup".to_owned(),
+    );
+    recovery_secrets.insert(
+        "bws-secret-id-pass".to_owned(),
+        "password-store-remote".to_owned(),
+    );
+
+    let mut project_secrets = BTreeMap::new();
+    project_secrets.insert("bws-project-id-dotfiles".to_owned(), recovery_secrets);
+
+    let mut secret_values = BTreeMap::new();
+    secret_values.insert("bws-secret-id-access-token".to_owned(), "token".to_owned());
+    secret_values.insert("bws-secret-id-gpg".to_owned(), "gpg-secret".to_owned());
+    secret_values.insert(
+        "bws-secret-id-pass".to_owned(),
+        "https://example.invalid/repo.git".to_owned(),
+    );
+
+    BwsDatastore {
+        projects,
+        project_secrets,
+        secret_values,
+    }
+}
+
+fn observation_from_datastore(store: &BwsDatastore) -> BwsObservation {
+    let mut resolved_secrets = BTreeMap::new();
+    for project_secrets in store.project_secrets.values() {
+        for (secret_id, secret_name) in project_secrets {
+            if let Some(value) = store.secret_values.get(secret_id) {
+                resolved_secrets.insert(secret_name.clone(), value.clone());
+            }
+        }
+    }
+    BwsObservation { resolved_secrets }
 }

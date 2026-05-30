@@ -9,7 +9,7 @@ mod internal_stub;
 //
 // production build には含めず、runtime real/stub 分岐は作らない。integration test は adapter
 // stub module を import せず、feature 有効でビルドされた同じ `dotfiles` binary を実行し、
-// BWS port 専用の初期 datastore JSON と最終 datastore 出力だけを外部観測面として扱う。
+// BWS port 専用の初期条件 spec JSON と最終状態観測 JSON だけを外部観測面として扱う。
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden::secrets_manager::{

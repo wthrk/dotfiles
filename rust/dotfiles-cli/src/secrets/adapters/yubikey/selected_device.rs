@@ -4,10 +4,10 @@
 //! real YubiKey backend と差し替わる。integration test はこの module を import せず、同じ
 //! `dotfiles` binary を実行する。
 //!
-//! この stub は YubiKey port の datastore 境界だけを受け持つ。初期 datastore は
-//! `DOTFILES_SECRETS_YUBIKEY_STUB_DATASTORE_JSON` から読み、最終 datastore は
-//! `DOTFILES_SECRETS_YUBIKEY_STUB_OUTPUT_PATH` へ JSON として書き出す。BWS port stub とは
-//! state/schema/file を共有しない。
+//! この stub は YubiKey port の datastore 境界だけを受け持つ。初期条件は
+//! `secrets_internal_test_stub_contract::YUBIKEY_STUB_SPEC_ENV` の YubiKey 専用 spec から private datastore
+//! へ展開し、最終状態は `secrets_internal_test_stub_contract::YUBIKEY_STUB_OUTPUT_ENV` へ観測用 JSON として書き出す。
+//! BWS port stub とは state/schema/file を共有しない。
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
@@ -17,13 +17,44 @@ use super::{
     DeviceCandidate, PivApplicationVersion, PivObjectId, ProtectedSecret, Result, SecretDeviceIo,
     SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
 };
+use crate::secrets_internal_test_stub_contract::{YUBIKEY_STUB_OUTPUT_ENV, YUBIKEY_STUB_SPEC_ENV};
 
-const YUBIKEY_STUB_DATASTORE_ENV: &str = "DOTFILES_SECRETS_YUBIKEY_STUB_DATASTORE_JSON";
-const YUBIKEY_STUB_OUTPUT_ENV: &str = "DOTFILES_SECRETS_YUBIKEY_STUB_OUTPUT_PATH";
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
 const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
 const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
 const BWS_ACCESS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
+
+#[derive(serde::Deserialize)]
+struct YubiKeyStubSpec {
+    yubikeys: Vec<YubiKeyDeviceSpec>,
+    #[serde(default)]
+    requires_pin: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct YubiKeyDeviceSpec {
+    serial: u32,
+    #[serde(flatten)]
+    fixture: YubiKeyDeviceFixture,
+    #[serde(default, rename = "storage_decode_errors")]
+    storage_decode_errors: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "fixture", rename_all = "kebab-case")]
+enum YubiKeyDeviceFixture {
+    Fresh,
+    Provisioned,
+    WritableBwsAccessToken,
+    Seeded {
+        #[serde(rename = "bw-email")]
+        bw_email: String,
+        #[serde(rename = "bw-password")]
+        bw_password: String,
+        #[serde(rename = "bws-access-token")]
+        bws_access_token: String,
+    },
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct YubiKeyDatastore {
@@ -37,6 +68,17 @@ struct StubDeviceDatastore {
     objects: BTreeMap<String, Vec<u8>>,
     secrets: BTreeMap<String, String>,
     corrupt: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct YubiKeyObservation {
+    yubikeys: BTreeMap<String, StubDeviceObservation>,
+}
+
+#[derive(serde::Serialize)]
+struct StubDeviceObservation {
+    key_exists: bool,
+    stored_secrets: BTreeMap<String, String>,
 }
 
 struct TestStubSecretDevice {
@@ -194,21 +236,25 @@ fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Resu
 }
 
 fn load_datastore() -> Result<YubiKeyDatastore> {
-    let path = output_path()?;
+    let path = datastore_path()?;
     if path.exists() {
         let body = fs::read(&path)?;
         return serde_json::from_slice(&body)
             .context("failed to decode observed YubiKey internal stub datastore JSON");
     }
-    let body = std::env::var(YUBIKEY_STUB_DATASTORE_ENV)
-        .context("YubiKey internal stub datastore JSON is not configured")?;
-    serde_json::from_str(&body).context("failed to decode YubiKey internal stub datastore JSON")
+    let body = std::env::var(YUBIKEY_STUB_SPEC_ENV)
+        .context("YubiKey internal stub spec JSON is not configured")?;
+    let spec: YubiKeyStubSpec =
+        serde_json::from_str(&body).context("failed to decode YubiKey internal stub spec JSON")?;
+    Ok(datastore_from_spec(spec))
 }
 
 fn write_observed_datastore(store: &YubiKeyDatastore) -> Result<()> {
-    let path = output_path()?;
-    let body = serde_json::to_vec_pretty(store)?;
-    fs::write(path, body)?;
+    let datastore_body = serde_json::to_vec_pretty(store)?;
+    fs::write(datastore_path()?, datastore_body)?;
+
+    let observation_body = serde_json::to_vec_pretty(&observation_from_datastore(store))?;
+    fs::write(output_path()?, observation_body)?;
     Ok(())
 }
 
@@ -216,6 +262,100 @@ fn output_path() -> Result<PathBuf> {
     let path = std::env::var(YUBIKEY_STUB_OUTPUT_ENV)
         .context("YubiKey internal stub output path is not configured")?;
     Ok(PathBuf::from(path))
+}
+
+fn datastore_path() -> Result<PathBuf> {
+    let mut path = output_path()?;
+    path.set_extension("datastore.json");
+    Ok(path)
+}
+
+fn datastore_from_spec(spec: YubiKeyStubSpec) -> YubiKeyDatastore {
+    let devices = spec
+        .yubikeys
+        .into_iter()
+        .map(|device| {
+            (
+                device.serial.to_string(),
+                device_datastore_from_spec(device),
+            )
+        })
+        .collect();
+    YubiKeyDatastore {
+        devices,
+        requires_pin: spec.requires_pin,
+    }
+}
+
+fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
+    let mut device = match spec.fixture {
+        YubiKeyDeviceFixture::Fresh => StubDeviceDatastore::default(),
+        YubiKeyDeviceFixture::Provisioned => provisioned_device_datastore(default_secrets()),
+        YubiKeyDeviceFixture::WritableBwsAccessToken => {
+            let mut secrets = BTreeMap::new();
+            secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
+            secrets.insert("bw-password".to_owned(), "pw".to_owned());
+            provisioned_device_datastore(secrets)
+        }
+        YubiKeyDeviceFixture::Seeded {
+            bw_email,
+            bw_password,
+            bws_access_token,
+        } => provisioned_device_datastore(seeded_secrets(bw_email, bw_password, bws_access_token)),
+    };
+    device.corrupt = spec.storage_decode_errors;
+    device
+}
+
+fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDeviceDatastore {
+    let mut objects = BTreeMap::new();
+    objects.insert(
+        object_key(MANIFEST_OBJECT_ID),
+        br#"{"version":1,"app":"dotfiles.secret-recovery"}"#.to_vec(),
+    );
+    StubDeviceDatastore {
+        key_exists: true,
+        objects,
+        secrets,
+        corrupt: Vec::new(),
+    }
+}
+
+fn default_secrets() -> BTreeMap<String, String> {
+    let mut secrets = BTreeMap::new();
+    secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
+    secrets.insert("bw-password".to_owned(), "pw".to_owned());
+    secrets.insert("bws-access-token".to_owned(), "token".to_owned());
+    secrets
+}
+
+fn seeded_secrets(
+    bw_email: String,
+    bw_password: String,
+    bws_access_token: String,
+) -> BTreeMap<String, String> {
+    let mut seeded = BTreeMap::new();
+    seeded.insert("bw-email".to_owned(), bw_email);
+    seeded.insert("bw-password".to_owned(), bw_password);
+    seeded.insert("bws-access-token".to_owned(), bws_access_token);
+    seeded
+}
+
+fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
+    let yubikeys = store
+        .devices
+        .iter()
+        .map(|(serial, device)| {
+            (
+                serial.clone(),
+                StubDeviceObservation {
+                    key_exists: device.key_exists,
+                    stored_secrets: device.secrets.clone(),
+                },
+            )
+        })
+        .collect();
+    YubiKeyObservation { yubikeys }
 }
 
 fn device_store(store: &YubiKeyDatastore, serial: u32) -> Result<&StubDeviceDatastore> {
