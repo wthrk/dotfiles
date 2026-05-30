@@ -79,12 +79,12 @@ Bitwarden Secrets Manager で取得する対象と利用先は次のとおり。
 
 値は UTF-8 JSON の encrypted envelope とする。`version: 1` を固定し、次の schema を必須とする。
 
-- top-level: `version`（number, `1` 固定）/ `metadata` / `ciphertext` / `recipients`
+- top-level: `version`（number, `1` 固定）/ `metadata` / `recipients` / `ciphertext`
 - `metadata`: `primary_fingerprint`（40 桁 16 進）/ `exported_at`（UTC RFC3339）/ `dek_alg`（`aes-256-gcm`）/ `recipient_kek_alg`（`rsa-oaep-sha256`）
-- `ciphertext`: `nonce` と `body` の base64 文字列
-- `recipients`: 1 件以上。各要素は `yubikey_serial`（string, 10 進）/ `piv_slot`（string, `9d` 固定）/ `public_key_fingerprint` / `wrapped_dek`（base64）
+- `ciphertext`: `nonce` / `body` / `tag` の base64 文字列。`nonce` は AES-GCM nonce 12 bytes、`body` は DEK で暗号化した OpenPGP backup bytes、`tag` は AES-GCM authentication tag 16 bytes とし、`tag` を `body` へ連結しない。
+- `recipients`: 1 件以上。各要素は `yubikey_serial`（string, 10 進）/ `piv_slot`（string, `82` 固定）/ `public_key_fingerprint`（slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 で digest した lowercase hex 64 文字、区切りなし）/ `wrapped_dek`（base64）
 
-復旧処理は envelope 形式を検証し、接続中 YubiKey と一致する recipient で data encryption key を unwrap して復号済み backup を得た場合だけ GPG import へ進む。復号済み backup は 1 つの primary key を持つ OpenPGP transferable secret key を表し、その primary key に紐づく encryption / authentication / signing subkey を含む。複数 primary key を同じ secret に連結して保存しない。複数 primary key が必要になった場合は、この設計を更新して secret name と検証条件を追加する。
+復旧処理は envelope 形式を検証し、接続中 YubiKey と一致する recipient で data encryption key を unwrap して復号済み backup を得た場合だけ GPG import へ進む。復号済み backup は 1 つの primary key を持つ OpenPGP transferable secret key を表し、その primary key に紐づく encryption / authentication / signing subkey を含む。復号済み backup から導出した primary fingerprint が `metadata.primary_fingerprint` と一致しない場合は停止する。複数 primary key を同じ secret に連結して保存しない。複数 primary key が必要になった場合は、この設計を更新して secret name と検証条件を追加する。
 
 ### `password-store-remote`
 
@@ -113,6 +113,7 @@ provisioning 経路は実 secret を CLI 引数、shell history、ログ、共�
 - 更新対象 secret が project name `dotfiles-secret-recovery` から解決した project ID に属している。
 - 同じ secret name が同一 project 内に複数存在しない。
 - 更新後の値が本設計の値形式を満たす。
+- 更新前に読み出した BWS secret の revision / updatedAt / ETag 相当の更新識別子を保持し、更新直前に再取得した現行 secret の更新識別子と一致する場合だけ更新する。SDK で更新識別子を取得できない場合は、最初に読み出した exact UTF-8 secret value bytes の SHA-256 digest と、更新直前に再取得した exact value bytes の digest が一致する場合だけ更新する。
 - 対話実行では上書き対象 secret name と project name を表示し、利用者の明示確認を得てから更新する。
 - 非対話実行では明示的な上書き許可 option が指定されている場合だけ更新する。
 
@@ -124,8 +125,9 @@ access token を rotate した場合は、Bitwarden Secrets Manager 側で新 to
 
 - YubiKey から `bws-access-token` を取得する。
 - Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得する。
-- envelope 形式（`version` / `metadata` / `ciphertext` / `recipients`）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。
-- 接続中 YubiKey で data encryption key を unwrap し、復号済み backup を GPG import 処理へ渡して subkey 検証へ進む。
+- envelope 形式（`version` / `metadata` / `recipients` / `ciphertext`）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。
+- 接続中 YubiKey で data encryption key を unwrap して backup を復号し、復号済み backup から導出した primary fingerprint が envelope `metadata.primary_fingerprint` と一致することを確認する。
+- primary fingerprint 一致を確認した場合のみ、復号済み backup を GPG import 処理へ渡して subkey 検証へ進む。
 
 ### `dotfiles secrets restore-pass`
 
