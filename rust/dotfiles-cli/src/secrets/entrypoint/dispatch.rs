@@ -6,7 +6,6 @@
 use crate::{
     Result,
     secrets::{
-        adapters::EntrypointPorts,
         application,
         domain::{
             commands::{
@@ -21,7 +20,7 @@ use crate::{
 /// parse 済み command を use case に橋渡しする。
 pub(super) async fn dispatch(
     options: super::super::SecretsOptions,
-    ports: &mut EntrypointPorts,
+    ports: &mut super::runtime::RuntimePorts,
 ) -> Result<()> {
     match options.command {
         super::super::SecretsCommand::Yubikey(options) => match options.command {

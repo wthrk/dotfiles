@@ -14,37 +14,9 @@ mod adapters {
     mod io;
     mod yubikey;
 
-    /// 実 adapter 群を所有し、use case ごとに必要な port 引数へ分配する composition root。
-    ///
-    /// adapter concrete への到達はこの module に閉じる。entrypoint は catalog の field を
-    /// port 引数として渡すだけで、adapter concrete module の公開導線には依存しない。
-    pub(super) struct EntrypointPorts {
-        pub(super) device: yubikey::DeviceSelectionAdapter,
-        pub(super) spare_device: yubikey::DeviceSelectionAdapter,
-        pub(super) device_pin_policy: yubikey::DeviceSelectionAdapter,
-        pub(super) process_io: io::ProcessIoAdapter,
-        pub(super) storage: yubikey::StorageAdapter,
-        pub(super) report: io::JsonReportAdapter,
-        pub(super) bws_client: bw::BwsClientAdapter,
-    }
-
-    impl EntrypointPorts {
-        /// production command path 用の実 adapter catalog を構築する。
-        ///
-        /// stub backend が有効な integration test でも runtime flag は使わず、adapter 内部の
-        /// compile-time feature selection によって同じ catalog 型が port 契約を満たす。
-        pub(super) fn production() -> Self {
-            Self {
-                device: yubikey::DeviceSelectionAdapter::default(),
-                spare_device: yubikey::DeviceSelectionAdapter::default(),
-                device_pin_policy: yubikey::DeviceSelectionAdapter::default(),
-                process_io: io::ProcessIoAdapter::default(),
-                storage: yubikey::StorageAdapter::default(),
-                report: io::JsonReportAdapter::default(),
-                bws_client: bw::BwsClientAdapter,
-            }
-        }
-    }
+    pub(in crate::secrets) use bw::BwsClientAdapter;
+    pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
+    pub(in crate::secrets) use yubikey::{DeviceSelectionAdapter, StorageAdapter};
 }
 mod application;
 pub mod domain;
