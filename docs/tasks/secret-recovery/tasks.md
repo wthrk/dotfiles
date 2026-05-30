@@ -105,6 +105,7 @@
   - `rust/dotfiles-cli/src/secrets/domain/commands.rs`
   - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
   - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/values.rs`（削除）
   - `rust/dotfiles-cli/src/secrets/adapters.rs`（削除）
   - `rust/dotfiles-cli/src/secrets/adapters/bw.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs`
