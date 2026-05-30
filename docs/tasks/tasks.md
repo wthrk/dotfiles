@@ -27,7 +27,7 @@
   - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
   - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters.rs`（YubiKey 当時の対象。現行 `f2f2f20` tree では削除済みであり、現行実装パスとして扱わない）
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`（YubiKey 当時の対象。現行 `4cd47d4` tree では削除済みであり、現行実装パスとして扱わない）
   - `rust/dotfiles-cli/src/secrets/adapters/io.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/io/process.rs`
   - `rust/dotfiles-cli/src/secrets/adapters/io/report.rs`
@@ -112,7 +112,7 @@
   - `rust/dotfiles-cli/tests/secrets_internal_stub/cli_stub_state.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)
-- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD f2f2f20 / diff range 5ff5e54..f2f2f20`
+- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 4cd47d4 / diff range 5ff5e54..4cd47d4`
 - 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
