@@ -9,7 +9,10 @@ mod runtime;
 
 use crate::Result;
 
-/// 実 adapter を生成し、parse 済み command を application use case へ渡す。
-pub(super) async fn run(options: super::SecretsOptions) -> Result<()> {
-    runtime::run(options).await
+/// composition root が用意した runtime ports で parse 済み command を application へ渡す。
+pub(super) async fn run(
+    options: super::SecretsOptions,
+    ports: &mut super::RuntimePorts,
+) -> Result<()> {
+    runtime::run(options, ports).await
 }

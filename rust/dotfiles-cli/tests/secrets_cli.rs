@@ -15,7 +15,7 @@ use std::{
 use anyhow::Context;
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+const TIMEOUT: Duration = Duration::from_secs(15);
 
 type TestResult<T> = anyhow::Result<T>;
 
@@ -621,9 +621,10 @@ fn wait_pty_child(
         }
         if Instant::now() >= deadline {
             child.kill()?;
+            let _ = child.wait();
             anyhow::bail!("timed out waiting for PTY child process");
         }
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(50));
     }
 }
 

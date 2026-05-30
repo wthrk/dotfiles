@@ -11,6 +11,7 @@ use anyhow::Context;
 
 use crate::secrets::{
     domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
 };
 
@@ -39,8 +40,33 @@ struct StubState {
     bws_fetch_events: Vec<String>,
 }
 
+impl BwsClientPort for super::BwsClientAdapter {
+    async fn list_bws_projects(
+        &self,
+        access_token: &ProtectedSecret,
+    ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
+        read_bws_projects(access_token)
+    }
+
+    async fn list_bws_secrets(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+    ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
+        read_bws_secrets(access_token, project_id)
+    }
+
+    async fn fetch_bws_secret_by_id(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<ProtectedSecret> {
+        read_bws_secret_by_id(access_token, secret_id)
+    }
+}
+
 /// state file の project 一覧を `BwsClientPort` の lookup 候補へ翻訳する。
-pub(super) fn list_bws_projects(
+fn read_bws_projects(
     access_token: &ProtectedSecret,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
     with_state(|state| {
@@ -57,7 +83,7 @@ pub(super) fn list_bws_projects(
 }
 
 /// state file の project secret 一覧を `BwsClientPort` の lookup 候補へ翻訳する。
-pub(super) fn list_bws_secrets(
+fn read_bws_secrets(
     access_token: &ProtectedSecret,
     project_id: &BwsProjectId,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
@@ -79,7 +105,7 @@ pub(super) fn list_bws_secrets(
 }
 
 /// state file の secret value を保護済み secret として返し、fetch 監査イベントを記録する。
-pub(super) fn fetch_bws_secret_by_id(
+fn read_bws_secret_by_id(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
 ) -> crate::Result<ProtectedSecret> {

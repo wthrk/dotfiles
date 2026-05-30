@@ -20,7 +20,7 @@ use crate::{
 /// parse 済み command を use case に橋渡しする。
 pub(super) async fn dispatch(
     options: super::super::SecretsOptions,
-    ports: &mut super::runtime::RuntimePorts,
+    ports: &mut super::super::RuntimePorts,
 ) -> Result<()> {
     match options.command {
         super::super::SecretsCommand::Yubikey(options) => match options.command {

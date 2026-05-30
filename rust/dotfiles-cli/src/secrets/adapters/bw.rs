@@ -18,12 +18,6 @@ use bitwarden::secrets_manager::{
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use uuid::Uuid;
 
-#[cfg(feature = "secrets-internal-test-stub")]
-use crate::secrets::{
-    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-    ports::bw::BwsClientPort,
-    support::protection::ProtectedSecret,
-};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::{
     domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
@@ -34,32 +28,6 @@ use crate::secrets::{
 /// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
 #[derive(Default)]
 pub(in crate::secrets) struct BwsClientAdapter;
-
-#[cfg(feature = "secrets-internal-test-stub")]
-impl BwsClientPort for BwsClientAdapter {
-    async fn list_bws_projects(
-        &self,
-        access_token: &ProtectedSecret,
-    ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-        internal_stub::list_bws_projects(access_token)
-    }
-
-    async fn list_bws_secrets(
-        &self,
-        access_token: &ProtectedSecret,
-        project_id: &BwsProjectId,
-    ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-        internal_stub::list_bws_secrets(access_token, project_id)
-    }
-
-    async fn fetch_bws_secret_by_id(
-        &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<ProtectedSecret> {
-        internal_stub::fetch_bws_secret_by_id(access_token, secret_id)
-    }
-}
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 impl BwsClientPort for BwsClientAdapter {

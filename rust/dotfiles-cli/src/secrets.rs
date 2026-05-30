@@ -26,6 +26,7 @@ mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
 use domain::piv::SecretName;
+use support::protection::SecretSession;
 
 use crate::Result;
 
@@ -142,7 +143,35 @@ enum VerifyCheck {
 /// CLI 入口は command 定義と option 変換だけを担い、adapter concrete 生成と port 束ねは
 /// composition root へ閉じる。
 pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
-    entrypoint::run(options).await
+    let _session = SecretSession::start()?;
+    let mut ports = RuntimePorts::production();
+    entrypoint::run(options, &mut ports).await
+}
+
+/// production command path の composition root が所有する実 adapter 群。
+pub(in crate::secrets) struct RuntimePorts {
+    pub(in crate::secrets) device: adapters::DeviceSelectionAdapter,
+    pub(in crate::secrets) spare_device: adapters::DeviceSelectionAdapter,
+    pub(in crate::secrets) device_pin_policy: adapters::DeviceSelectionAdapter,
+    pub(in crate::secrets) process_io: adapters::ProcessIoAdapter,
+    pub(in crate::secrets) storage: adapters::StorageAdapter,
+    pub(in crate::secrets) report: adapters::JsonReportAdapter,
+    pub(in crate::secrets) bws_client: adapters::BwsClientAdapter,
+}
+
+impl RuntimePorts {
+    /// production 用の adapter concrete 群を構築する。
+    fn production() -> Self {
+        Self {
+            device: adapters::DeviceSelectionAdapter::default(),
+            spare_device: adapters::DeviceSelectionAdapter::default(),
+            device_pin_policy: adapters::DeviceSelectionAdapter::default(),
+            process_io: adapters::ProcessIoAdapter::default(),
+            storage: adapters::StorageAdapter::default(),
+            report: adapters::JsonReportAdapter::default(),
+            bws_client: adapters::BwsClientAdapter,
+        }
+    }
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。

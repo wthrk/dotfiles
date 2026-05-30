@@ -121,7 +121,7 @@
 ### 1) 秘密値・認証情報の扱い
 
 - 確認状態: `完了`
-- 確認対象（ファイル/経路）: `rust/dotfiles-cli/src/secrets/adapters/bw.rs`（`BwsClientAdapter` token handling。旧 `rust/dotfiles-cli/src/secrets/adapters.rs` は現行 `4cd47d4` tree では削除済み）
+- 確認対象（ファイル/経路）: `rust/dotfiles-cli/src/secrets/adapters/bw.rs`（`BwsClientAdapter` token handling。旧 `rust/dotfiles-cli/src/secrets/adapters.rs` は現行 `11ff088` tree では削除済み）
 - 所見: `token は `ProtectedSecret` 借用で扱い、BWS SDK login request は `support/protection` 内の BWS 専用操作で作成・zeroize する。SDK が所有 plaintext buffer の move を要求する箇所は、借用境界内の呼び出し直前にだけ buffer を作る。`
 - 差戻し要否: `不要`
 - 未実施理由（未実施時のみ）: `なし`
@@ -235,13 +235,11 @@
 
 ## 集約判定
 
-- 集約後レビュー判定: `合格`
-- 集約判定要約: `所見なし`
+- 集約後レビュー判定: `未確定`
+- 集約判定要約: `fresh review 未実施のため未確定`
 - 集約根拠:
-  - fresh review 結果として、構造・セキュリティ・仕様適合・テスト・ドキュメント・アーキテクチャ整合・運用整合は `合格`。
-  - テストレビューでは `rust/dotfiles-cli/tests/secrets_cli.rs` の外部 CLI tests 25 件、BWS stub state 保存内容確認、app/use case 側の port trait `mockall` 利用（外部 CLI tests の代替ではない）を確認して `合格`。
-  - 参照整合は初回 `不合格`（`app_test_support` 参照残存）だったが、修正後の再レビューで `合格`。
-  - 集約後レビュー判定は `合格`。
+  - 現行差分（`5ff5e54..11ff088`）に対する必須レビュー担当の fresh review は未実施である。
+  - 旧サイクルの個別合格・集約合格は履歴情報であり、現行サイクルの合格根拠として再利用しない。
 - 差戻し事項: `なし`
 - 後続対応状態: `commit gate 記録更新済み（commit / push は未実施）`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
@@ -250,9 +248,9 @@
 ## PR #33 / Issue #30 task-list-outside レビュー追跡（2026-05-30）
 
 - 対象位置づけ: `PR #33 / branch refactor/secrets-structure-issue-30-main / Issue #30 の構造整理差分に対する task-list-outside 追跡。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle レビュー記録とは別に扱い、既存の合格集約を PR #33 の合格根拠として再利用しない。`
-- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 4cd47d4`（この文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
-- 現行 HEAD 内訳: `2ececf1 refactor(secrets): port/domain/adapter構造を整理` に、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む。
-- 補正対象: `2ececf1..4cd47d4`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、internal stub module tree 補正、BSM 対象コードパス同期、PR #33 task-list-outside 証跡追加、PR #33 証跡同期、AI review コメントの対象コードパス漏れ指摘への対応、PR #33 現行 HEAD 証跡更新、削除済み adapter root を現行対象パス扱いしない台帳補正）
+- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 11ff088`（この文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 現行 HEAD 内訳: `2ececf1 refactor(secrets): port/domain/adapter構造を整理` に、差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む）と現行終端 `11ff088` を含む。
+- 補正対象: `2ececf1..11ff088`（`4cd47d4` は過去補正時点として履歴保持し、現行対象終端は `11ff088` とする）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認証跡: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
 - outside-ledger 分類記録: `docs/task-governance/review-artifacts/outside-ledger-intake.md` の `2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録`
@@ -266,20 +264,20 @@
 - ドキュメントレビュー担当: `判定: 要修正`
   - required fix: adapter-local `#[path = "stub/yubikey.rs"]` 構造に doc comment を整合し、`TestStubSecretDevice` の責務境界 comment を追加し、test-review skill の internal backend stub 条件列挙を正本参照へ寄せる。
 - 運用整合レビュー担当: `判定: 要修正`
-  - required fix: PR #33 / commit `2ececf1` 起点の作り直し記録に加え、HEAD `4cd47d4` までの diff range `5ff5e54..4cd47d4` に含まれる補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4`）の対象差分、確認結果、レビュー/集約状況、PR #32 close から PR #33 作り直しへの分類・責任境界を repository 内の証跡へ記録する。
+  - required fix: PR #33 / commit `2ececf1` 起点の作り直し記録に加え、diff range `5ff5e54..11ff088` に含まれる補正 commit 群（`4cd47d4` を含む履歴）と現行終端 `11ff088` の対象差分、確認結果、レビュー/集約状況、PR #32 close から PR #33 作り直しへの分類・責任境界を repository 内の証跡へ記録する。
 - 運用整合レビュー担当（追加 current-cycle finding）: `判定: 要修正`
-  - required fix: PR #33 / branch HEAD `4cd47d4`、base `5ff5e54`、diff range `5ff5e54..4cd47d4` を現行対象として追跡できるようにし、補正 commit `ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を PR #33 の補正 commit として含める。`5e21afb` と `4cd47d4` は現行 HEAD 証跡更新と削除済み adapter root 対象パス扱い補正として repository 内証跡へ記録する。
+  - required fix: PR #33 / branch HEAD `11ff088`、base `5ff5e54`、diff range `5ff5e54..11ff088` を現行対象として追跡できるようにし、補正 commit `ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を PR #33 の補正履歴として保持する。`4cd47d4` は過去補正時点、現行終端は `11ff088` として repository 内証跡へ記録する。
 - 運用整合レビュー担当（最新 current-cycle finding）: `判定: 要修正`
-  - required fix: `5ff5e54..4cd47d4` / HEAD `4cd47d4` を PR #33 現行対象差分として固定し、`5e21afb` と `4cd47d4` を含む確認結果・AI review 対応記録・fresh review/集約未確定状態を更新する。fresh review/集約/commit gate 前に実施した PR comment 返信または resolve は、ユーザー依頼の PR AI review 対応として先行実施した PR 運用記録であり、repository governance 上の fresh review 合格、集約合格、commit gate 充足、最終完了扱いの根拠にしない。PR #32 close から PR #33 作り直しへの責任境界も HEAD `4cd47d4` まで追跡可能にする。
+  - required fix: `5ff5e54..11ff088` / HEAD `11ff088` を PR #33 現行対象差分として固定し、`5e21afb` と `4cd47d4` を含む確認結果・AI review 対応記録・fresh review/集約未確定状態を更新する。fresh review/集約/commit gate 前に実施した PR comment 返信または resolve は、ユーザー依頼の PR AI review 対応として先行実施した PR 運用記録であり、repository governance 上の fresh review 合格、集約合格、commit gate 充足、最終完了扱いの根拠にしない。PR #32 close から PR #33 作り直しへの責任境界は `11ff088` 現在地まで追跡可能にする。
 - ドキュメントレビュー担当（追加 current-cycle finding）: `判定: 要修正`
   - required fix: review/confirmation/outside-ledger と root/area ledger の現行欄を PR #33 / Issue #30 現行サイクルとして追跡可能にし、旧 Hypatia サイクルを現行状態に見せない。confirmation の旧パス説明は履歴として明確化し、`review-checklist.md` の internal backend stub 許可条件列挙は `hexagonal-implementation-rules.md` 正本参照へ寄せ、`verification.rs` の stale test doc comment / function name を現行の `VerifySummary` 確認内容に合わせる。
 - ドキュメントレビュー担当（最新 current-cycle finding）: `判定: 要修正`
-  - required fix: `4cd47d4` / `5ff5e54..4cd47d4` への証跡更新に加え、YubiKey 完了項目で `rust/dotfiles-cli/src/secrets/adapters.rs` を現行実在ファイルとして読ませない。YubiKey 欄では当時の対象かつ現行 `4cd47d4` tree では削除済みであることを明記し、BSM 欄の削除対象表記と矛盾させない。
+  - required fix: `4cd47d4` / `5ff5e54..11ff088` への証跡更新に加え、YubiKey 完了項目で `rust/dotfiles-cli/src/secrets/adapters.rs` を現行実在ファイルとして読ませない。YubiKey 欄では当時の対象かつ現行 `11ff088` tree では削除済みであることを明記し、BSM 欄の削除対象表記と矛盾させない。
 
 ### 補正後レビュー状況
 
 - 実装担当補正: `実施済み`
-- 実装担当確認: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）` に、HEAD `4cd47d4` / diff range `5ff5e54..4cd47d4` として記録。
+- 実装担当確認: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）` に、HEAD `11ff088` / diff range `5ff5e54..11ff088` として記録。
 - 必須レビュー担当の fresh review: `未実施`
 - 集約後レビュー判定: `未確定`
 - 集約判定要約: `current-cycle finding 補正後の fresh review が未実施のため、合格/commit gate 充足とは扱わない`

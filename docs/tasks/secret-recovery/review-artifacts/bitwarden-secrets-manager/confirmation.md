@@ -6,11 +6,11 @@
 
 - 確認状態: `PR #33 / Issue #30 現行差分の fresh review 前確認済み`
 - 判定位置づけ: `PR #33 task-list-outside current-cycle 差分の fresh review 前確認（作業項目全体の完了判定ではない）`
-- 対象差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 4cd47d4 / diff range 5ff5e54..4cd47d4`
+- 対象差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 11ff088 / diff range 5ff5e54..11ff088`
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認開始時点参照: `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
 - 差分区分: `実装`
-- 確認 scope: PR #33 の確認対象は `5ff5e54..4cd47d4` に含まれる secrets structure 整理差分、PR #33 補正 commit、BSM へ直接関係する文書差分、必要な実検証に限定する。旧 Hypatia サイクルの確認記録は履歴であり、PR #33 current-cycle の確認結果、レビュー合格根拠、commit 着手 gate の根拠として扱わない。対象パス exact list、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
+- 確認 scope: PR #33 の確認対象は `5ff5e54..11ff088` に含まれる secrets structure 整理差分、PR #33 補正 commit、BSM へ直接関係する文書差分、必要な実検証に限定する。旧 Hypatia サイクルの確認記録は履歴であり、PR #33 current-cycle の確認結果、レビュー合格根拠、commit 着手 gate の根拠として扱わない。対象パス exact list、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
 
 ## 旧 BSM Hypatia 確認手順と結果（PR #33 現行対象外）
 
@@ -32,7 +32,7 @@
 
 ## 旧 BSM Hypatia サイクル履歴（PR #33 現行対象外）
 
-この節は `feat/bitwarden-secrets-manager` / `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7` 以前の履歴であり、PR #33 / Issue #30 の現行対象差分 `5ff5e54..4cd47d4` の current-cycle 証跡ではない。ここに含まれる旧パス説明は当時の記録として残し、現行 tree の対象コードパスや fresh review 合格根拠として扱わない。
+この節は `feat/bitwarden-secrets-manager` / `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7` 以前の履歴であり、PR #33 / Issue #30 の現行対象差分 `5ff5e54..11ff088` の current-cycle 証跡ではない。ここに含まれる旧パス説明は当時の記録として残し、現行 tree の対象コードパスや fresh review 合格根拠として扱わない。
 
 - 対象コードパス差分:
   - `rust/dotfiles-cli/src/secrets/domain/values.rs` — `BwsSecretName`、`RestoreGpgCommand`、`RestorePassCommand` 追加
@@ -230,18 +230,18 @@
 ## PR #33 / Issue #30 task-list-outside 確認（2026-05-30）
 
 - 対象位置づけ: `PR #33 / Issue #30 の branch 作り直しおよび構造レビュー・ドキュメントレビュー・運用整合レビュー差戻し補正の確認。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 確認とは別の task-list-outside 記録として扱う。`
-- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 4cd47d4`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
-- 補正対象差分: `2ececf1..4cd47d4`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、internal stub module tree 補正、BSM 対象コードパス同期、PR #33 task-list-outside 証跡追加、PR #33 証跡同期、AI review コメントの対象コードパス漏れ指摘への対応、PR #33 現行 HEAD 証跡更新、削除済み adapter root を現行対象パス扱いしない台帳補正）
+- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 11ff088`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 補正対象差分: `2ececf1..11ff088`（`4cd47d4` は削除済み adapter root を現行対象パス扱いしない台帳補正の過去時点。現行差分は 11ff088 まで追跡する）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認した commit linkage:
-  - `git rev-parse --short HEAD` はこの文書補正前に `4cd47d4`。
+  - `git rev-parse --short HEAD` は現行確認時点で `11ff088`。
   - `git branch --show-current` は `refactor/secrets-structure-issue-30-main`。
-  - `git log --oneline 5ff5e54..4cd47d4` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を確認した。
-  - `ae1b917` は PR #33 証跡同期、`97748c4` は BSM 対象コードパス漏れへの対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`4cd47d4` は削除済み adapter root を現行対象パス扱いしない台帳補正として確認した。
-  - `git diff --name-only 5ff5e54..4cd47d4` により、PR #33 の現行対象差分を再特定した。
+  - `git log --oneline 5ff5e54..11ff088` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む）および現行終端 `11ff088` を確認した。
+  - `4cd47d4` は過去の台帳補正時点、`11ff088` は現行実装/レビュー対象終端として記録する。
+  - `git diff --name-only 5ff5e54..11ff088` により、PR #33 の現行対象差分を再特定した。
 - 確認手順と結果:
-  - stale な旧 HEAD / 旧 diff range の `rg` 検索は該当なし。PR #33 current-cycle の現行対象差分は `4cd47d4` / `5ff5e54..4cd47d4` として固定済み。
-  - `rg -n 'rust/dotfiles-cli/src/secrets/adapters\\.rs' docs/tasks/tasks.md docs/tasks/secret-recovery/tasks.md docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/confirmation.md` を実行。root/area の YubiKey 欄は当時対象かつ現行 `4cd47d4` tree では削除済みと注記済み、BSM 欄は削除対象、旧 Hypatia 記録は履歴として扱うため、現行実在ファイルとしての未注記列挙は残存なし。
+  - stale な旧 HEAD / 旧 diff range の `rg` 検索は該当なし。PR #33 current-cycle の現行対象差分は `11ff088` / `5ff5e54..11ff088` として固定済み。
+  - `rg -n 'rust/dotfiles-cli/src/secrets/adapters\\.rs' docs/tasks/tasks.md docs/tasks/secret-recovery/tasks.md docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/confirmation.md` を実行。root/area の YubiKey 欄は当時対象かつ現行 `11ff088` tree では削除済みと注記済み、BSM 欄は削除対象、旧 Hypatia 記録は履歴として扱うため、現行実在ファイルとしての未注記列挙は残存なし。
   - `cargo fmt --all` 成功。
   - `rg -n "pub\\(crate\\) use|pub\\(super\\) use|adapters::(DeviceSelectionAdapter|StorageAdapter|ProcessIoAdapter|JsonReportAdapter|BwsClientAdapter)|tests 配下の double|include する" rust/dotfiles-cli/src/secrets .agents/skills/test-review -S` 実行。adapter root の再公開、旧 `tests 配下の double を include` 文言、呼び出し側の `adapters::Type` 依存は残存なし。`ports.rs` の port 契約再公開だけが別層の既存一致として残る。
   - `rg -n "secrets-internal-test-stub|#\\[path\\s*=|include!\\(|tests/secrets_application|app_test_support|mockall::mock!|UnusedBwsClient|PortFuture" rust/dotfiles-cli/src/secrets/application.rs rust/dotfiles-cli/src/secrets/application rust/dotfiles-cli/src/secrets/ports.rs -S` 実行。application 層の internal stub bridge / tests 配下依存 / 手書き mock 残存なし。
