@@ -94,8 +94,8 @@
 - 比較範囲: `HEAD` = `6c32327` を基点にした未コミット worktree 差分。
 - 実装補正:
   - `rust/dotfiles-cli/tests/secrets_internal_stub/` を削除し、CLI integration test 側の backend state schema / bincode schema / 状態遷移 helper / write event helper を除去した。
-  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は BWS port 専用の初期条件 spec JSON と最終状態観測 JSON だけを外部 contract とし、private datastore へ展開する構造へ変更した。
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は YubiKey port 専用の初期条件 spec JSON と最終状態観測 JSON だけを外部 contract とし、private datastore へ展開する構造へ変更した。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は BWS port 専用の初期条件 spec JSON と、stdout sentinel line の最終状態観測だけを外部 contract とし、private datastore へ展開する構造へ変更した。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は YubiKey port 専用の初期条件 spec JSON と、stdout sentinel line の最終状態観測だけを外部 contract とし、private datastore へ展開する構造へ変更した。
   - BWS/YubiKey stub は state/schema/file を共有せず、port 間の作用は CLI の production command path と application/domain 経路を通じてのみ発生する。
   - `rust/dotfiles-cli/tests/secrets_cli.rs` は CLI binary 実行前の初期条件 spec 投入と CLI 実行後の最終状態観測だけを assertion 対象にし、stub 内部イベントや内部状態遷移の assertion を削除した。
 - 確認手順と結果:
@@ -105,7 +105,7 @@
   - `git diff --check` 成功。
 - セキュリティ確認:
   - test 用 spec 値は fixture 値のみで、実 secret / 認証情報を追加していない。
-  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、最終状態観測は port ごとの一時 JSON 出力へ分離した。
+  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、stub 最終状態観測は feature build 専用 stdout sentinel line として出力する。観測 payload は fixture/spec のダミー secret 値を含み得るが、production build/runtime の本物 secret 出力経路ではない。
 - レビュー状態: `未実施` — この差分は fresh review 開始前であり、集約判定は未確定。
 - 未実施理由（未実施がある場合）: `fresh review は次工程で必須。確認コマンドの未実施はなし。`
 
@@ -114,8 +114,8 @@
 - 対象差分識別子: `PR #33 Codex review comments 3328297877 / 3328297878 remediation worktree`
 - 実装補正:
   - `rust/dotfiles-cli/tests/secrets_cli.rs` は backend datastore schema を直接組み立てず、BWS/YubiKey port 別の初期条件 spec JSON を CLI binary へ env で渡す構造へ変更した。
-  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は `DOTFILES_SECRETS_BWS_STUB_SPEC_JSON` を BWS 専用 private datastore へ展開し、最終状態を BWS 観測用 JSON へ出力する。
-  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は `DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON` を YubiKey 専用 private datastore へ展開し、最終状態を YubiKey 観測用 JSON へ出力する。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は `DOTFILES_SECRETS_BWS_STUB_SPEC_JSON` を BWS 専用 private datastore へ展開し、最終状態を BWS stdout observation frame へ出力する。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は `DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON` を YubiKey 専用 private datastore へ展開し、最終状態を YubiKey stdout observation frame へ出力する。
   - BWS/YubiKey stub は spec/env/output/datastore 型を共有せず、port 間の作用は CLI の production command path と application/domain 経路を通じてのみ発生する。
   - stub process wiring 用 env 名は feature-gated な `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs` を単一正本とし、tests と adapter stub が同じ定数を参照する構造へ変更した。後続の stdout observation remediation で output path env は削除した。
   - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の現行対象コードパスから、削除済み `rust/dotfiles-cli/tests/secrets_internal_stub/{mod.rs,cli_stub_state.rs}` を外した。
@@ -125,7 +125,7 @@
   - `git diff --check` 成功。
 - セキュリティ確認:
   - test 用 spec 値は fixture 値のみで、実 secret / 認証情報を追加していない。
-  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、stub 最終状態観測は port ごとの一時 JSON 出力へ分離した。
+  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、stub 最終状態観測は feature build 専用 stdout sentinel line として出力する。観測 payload は fixture/spec のダミー secret 値を含み得るが、production build/runtime の本物 secret 出力経路ではない。
 
 ## PR #33 stdout observation remediation 確認（2026-05-30）
 
@@ -144,6 +144,19 @@
   - internal stub の mutable private datastore は BWS/YubiKey それぞれの process memory に閉じ、port 間で共有しない。
   - stdout observation は feature `secrets-internal-test-stub` 有効時の sentinel line に限定し、tests はその frame を final observation として扱う。
   - hidden `*.datastore.json`、per-test output file、共有 state file は作成しない。
+
+## PR #33 stdout observation policy clarification 確認（2026-05-30）
+
+- 対象差分識別子: `PR #33 stdout observation policy clarification worktree`
+- 文書補正:
+  - 正本文書に、`secrets-internal-test-stub` feature の stdout observation は test-only の明示観測面であり、fixture/spec のダミー secret 値を含めてよいことを明記した。
+  - これは integration test が secret として保存した値の最終 datastore 反映を検証するための例外であり、production build/runtime の本物 secret 出力経路ではないことを明記した。
+  - hidden temp file / output path file / shared state file に secret 値を残すことは禁止のまま維持した。
+  - test 側 backend datastore schema/helper を持たず、前提条件 fixture/spec 入力と stdout final observation で検証する方針を維持した。
+- 確認手順と結果:
+  - `git diff --check`
+- セキュリティ確認:
+  - 旧 output path / 一時 JSON 出力前提は文書から除去した。stdout observation は feature build 専用の test-only 観測面として扱う。
 
 ## 実装継続確認（2026-05-29）
 

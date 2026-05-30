@@ -11,7 +11,9 @@ application 層の use case orchestration test は `secrets-internal-test-stub` 
 internal backend stub を使う integration test の詳細規則は [Hexagonal Implementation Rules の internal backend stub の配置](../architecture/hexagonal-implementation-rules.md#internal-backend-stub-の配置) を正本とする。本設計で追加する方針は次の最小要件のみとする。
 
 - `bitwarden` SDK と YubiKey SDK は datastore API として扱う。
-- test 側は初期 datastore 定義だけを入力し、CLI 実行後は port ごとの最終 datastore 内容のみを外部観測面（stdout または必要最小限の一時ファイル）で検証する。
+- test 側は初期 datastore 定義だけを入力し、CLI 実行後は port ごとの最終 datastore 内容のみを `secrets-internal-test-stub` feature 専用の stdout sentinel observation で検証する。
+- stdout observation は test-only の明示観測面であり、fixture/spec で与えたダミー secret 値を含めてよい。これは integration test が secret として保存した値の最終 datastore 反映を検証するためであり、production build/runtime の本物 secret 出力経路ではない。
+- hidden temp file、output path file、共有 state file に secret 値を残してはならない。
 - test 側は stub 内部 state schema や遷移 helper を持たない。BWS/YubiKey の port stub は独立させる。
 
 ## 目的と保護境界
