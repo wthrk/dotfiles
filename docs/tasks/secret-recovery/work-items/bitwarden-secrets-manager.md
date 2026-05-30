@@ -5,6 +5,7 @@
 - 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
 - 現行サイクル確認基準: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（`HEAD` = `dccada7` を基点に、未コミット tracked diff と未追跡 `rust/dotfiles-cli/src/secrets/entrypoint.rs` を含む worktree 差分を対象にする）
 - 現行サイクルレビュー scope: BSM 実装レビュー対象は、本作業項目の対象コードパス、BSM へ直接関係する文書差分、必須レビュー結果、必要な実検証で判断する。BSM scope 外の `.agents/skills/`、`AGENTS.md`、`docs/task-governance/`、repo-governance/YubiKey 証跡などの文書差分を、BSM current-cycle のレビュー合格根拠・commit 着手 gate の充足根拠・不充足根拠にしない。対象パス exact list、confirmation/review artifact、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
+- Design PR 注記: PR #35 で追加・強化した契約文言は設計契約の確定であり、現行 Rust 実装完了を意味しない。後続の BSM 実装/テストで未充足項目が残る場合は、本作業項目の実装対象として必ず解消する。
 - 実装/テスト差分の保存コミット終端: `HEAD dccada7`（保存済み commit 終端。current-cycle review 対象は上記差分識別子で固定した未コミット worktree 差分であり、保存済み commit 終端だけの差分とは扱わない）
 - 構造完了条件:
   - SDK 呼び出しは adapter / port 境界へ隔離する。
@@ -21,11 +22,21 @@
   - application と domain の責務混在
   - entrypoint / adapter / domain の直接結合
 - レビュー合格条件: `Bitwarden SDK 依存が境界内へ閉じ、アーキテクチャ規約違反が残っていないこと。`
+- BSM 実装義務（未充足なら未完了）:
+  - `verify-yubikey --check bws` は `gpg-secret-key-backup` envelope schema を検証すること。
+  - `metadata.primary_fingerprint` を lowercase hex 40 文字（separator なし）へ正規化し、実装とテストで検証すること。
+  - 接続中 YubiKey recipient matching（`yubikey_serial` と `public_key_fingerprint`）を検証すること。
+  - unwrap-free recoverability check を検証すること。
+  - BWS secret の取得成功のみでは完了扱いにしないこと。
+- BSM 更新系実装義務（`gpg-secret-key-backup` 更新 path）:
+  - spare recipient 追加を含む update path で stale overwrite prevention を必須とする。
+  - 防止手段は `revision` / `updatedAt` / `ETag` 相当、または取得値 bytes の SHA-256 digest のいずれか（または同等以上）で満たすこと。
 
 ## 完了の判定条件（監査再現）
 
 - 注記: 本節は完了判定時に満たすべき実質条件を定義する。confirmation/review artifact の整合や current-cycle 文言同期そのものを完了条件にしない。
 - 未コミット worktree を含む対象差分を再特定できること。
 - BWS 外部確認経路（`verify-yubikey --check bws` 相当の application 経路を含む）、application 層の `secrets-internal-test-stub` bridge 除去、app 層残存検索など、作業項目の実質条件に対応する確認結果があること。
+- 上記「BSM 実装義務」「BSM 更新系実装義務」を満たす実装差分と確認結果があり、未充足項目を残していないこと。
 - 実装差分の必須レビュー担当集合（構造、運用整合、セキュリティ、仕様適合、テスト、ドキュメント、アーキテクチャ整合。文書整合差分を含む場合は参照整合を追加）の個別判定および `集約後レビュー判定: 合格` が揃うこと。
 - 修正済み PR review comment は、fresh review 全員合格、集約合格、commit gate 充足、commit/push 完了後にだけ返信して resolve/close する。誤検出と判断した comment は説明返信し close しない。これは PR 運用上の実作業であり、補助記録同期で代替しない。

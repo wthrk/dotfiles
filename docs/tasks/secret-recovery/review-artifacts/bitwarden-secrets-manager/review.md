@@ -246,3 +246,53 @@
 - 後続対応状態: `commit gate 記録更新済み（commit / push は未実施）`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
 - 後続対応メモ: `Hypatia 後差分は fresh review 開始前。集約後レビュー判定は未確定。`
+
+## 文書-only追跡補正レビュー（2026-05-30）
+
+- 対象差分: `docs/tasks/secret-recovery/tasks.md`、`docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md`、`docs/tasks/secret-recovery/work-items/gnupg-ssh.md` の未コミット文書差分
+- 変更種別: `文書是正・文書主成果物`
+- 実施担当: `運用整合レビュー担当`、`参照整合レビュー担当`、`仕様適合レビュー担当`、`セキュリティレビュー担当`
+
+### 運用整合レビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - PR #35 の設計契約が Rust 実装完了ではないことを #13/#14 work item に明示し、未充足契約の後続実装での解消必須を定義している。
+  - BSM verify/check、fingerprint、recipient matching、recoverability、stale overwrite を完了判定条件へ具体化している。
+  - `tasks.md` の固定実装単位トラッカーへ未完了/未着手行を追加し、未実装を完了扱いしない追跡状態を維持している。
+
+### 参照整合レビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - `tasks.md` 追加リンクは `work-items/bitwarden-secrets-manager.md` と `work-items/gnupg-ssh.md` の該当見出しへ解決可能である。
+  - 追加用語は `bitwarden-secrets-manager-design.md` / `gnupg-ssh-design.md` と整合している。
+  - `docs-governance` / `workflow` と矛盾する参照・定義不整合はない。
+
+### 仕様適合レビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - PR #35 が設計確定であり Rust 実装完了ではない旨の注記が BSM/GnuPG 両 work item に反映され、誤認誘導がない。
+  - BSM 契約（`verify-yubikey --check bws`、envelope schema、`metadata.primary_fingerprint` lowercase hex 40 文字・separator なし、recipient matching、unwrap-free recoverability、取得成功のみ完了不可、stale overwrite prevention）が実装義務と完了条件から追跡可能である。
+  - GnuPG/SSH 側も後続 Rust 実装義務と完了判定条件に反映されている。
+
+### セキュリティレビュー担当
+
+- 判定: `合格`
+- 判定要約: `所見なし`
+- 根拠:
+  - 文書差分のみで、機密値露出や秘密情報の新規記載はない。
+  - BSM/GnuPG の安全追跡項目は設計正本と整合し、要件緩和はない。
+  - `tasks.md` に未完了/未着手追跡行があり、未実装の完了扱いを防止する状態管理になっている。
+
+## 集約判定（文書-only追跡補正レビュー）
+
+- 集約後レビュー判定: `合格`
+- 集約判定要約: `所見なし`
+- 集約根拠:
+  - 文書是正・文書主成果物に対する必須4担当（運用整合・参照整合・仕様適合・セキュリティ）の個別判定がすべて `合格` である。
+  - 各担当の根拠に `要修正` または `不合格` へ該当する未解消事項は記録されていない。

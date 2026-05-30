@@ -2,6 +2,7 @@
 
 - 作業種別: `規約適合リファクタリングを伴う機能実装`
 - 作業目的: `restore-gpg` と `export-ssh-public-key` の経路を、GPG / SSH の外部依存を境界化した形で実装する。
+- Design PR 注記: PR #35 は #14 の設計確定であり、Rust 実装完了を意味しない。`restore-gpg` / `export-ssh-public-key` / provisioning の後続実装で未充足契約が残る場合は、本作業項目の実装対象として解消する。
 - 構造完了条件:
   - GPG / SSH の実体依存は adapter / port へ閉じる。
   - `application` は復旧順序だけを持つ。
@@ -12,6 +13,11 @@
   - use case 順序と low-level 操作の結合
   - domain のインフラ依存
 - レビュー合格条件: `GnuPG / SSH のインフラ依存が隔離され、アーキテクチャ規約違反が残っていないこと。`
+- 実装契約（後続 Rust 実装で必須）:
+  - `gpg-secret-key-backup` envelope schema 契約を満たすこと。
+  - recipient matching（接続中 YubiKey の `yubikey_serial` + `public_key_fingerprint`）を満たすこと。
+  - `metadata.primary_fingerprint` は lowercase hex 40 文字（separator なし）として正規化/照合し、実装とテストで検証すること。
+  - `verify-yubikey --check bws` の BWS check contract と整合すること（BWS secret 取得可否のみで成功扱いにしない）。
 
 ## 現サイクル（Design PR）で確定する必須事項
 
@@ -34,3 +40,8 @@
 - `docs/secret-recovery/gnupg-ssh-design.md` に上記すべての項目の決定が記載されている。
 - 決定事項が `restore-gpg` / `export-ssh-public-key` / `restore-pass` の境界へ矛盾なく接続されている。
 - 停止条件に envelope / recipient 検証失敗、subkey 検証失敗、gpg-agent SSH support 不可、existing-key stop condition が反映されている。
+
+## 後続実装の完了判定条件（#14 Rust 実装）
+
+- Design PR で確定した契約を `restore-gpg` / `export-ssh-public-key` / provisioning 実装へ反映し、未充足項目を残していない。
+- envelope schema、recipient matching、primary fingerprint normalization/match、BWS check contract を実装差分とテストで追跡可能に示せる。
