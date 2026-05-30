@@ -1,16 +1,15 @@
-//! `secrets-internal-test-stub` feature 専用の file-backed YubiKey adapter backend stub。
+//! `secrets-internal-test-stub` feature 専用の YubiKey adapter backend stub。
 //!
 //! production build には compile されず、runtime flag ではなく compile-time feature selection で
 //! real YubiKey backend と差し替わる。integration test はこの module を import せず、同じ
 //! `dotfiles` binary を実行する。
 //!
-//! 現行実装は `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` を介した shared state file を暫定的に
-//! 利用しているが、これは是正対象である。到達設計は
-//! `docs/architecture/hexagonal-implementation-rules.md` と
-//! `docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md` の規約に従い、tests 側で
-//! backend state/schema/helper を保持しない構成を前提とする。
+//! この stub は YubiKey port の datastore 境界だけを受け持つ。初期 datastore は
+//! `DOTFILES_SECRETS_YUBIKEY_STUB_DATASTORE_JSON` から読み、最終 datastore は
+//! `DOTFILES_SECRETS_YUBIKEY_STUB_OUTPUT_PATH` へ JSON として書き出す。BWS port stub とは
+//! state/schema/file を共有しない。
 
-use std::fs;
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::Context;
 
@@ -19,92 +18,30 @@ use super::{
     SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
 };
 
-const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
+const YUBIKEY_STUB_DATASTORE_ENV: &str = "DOTFILES_SECRETS_YUBIKEY_STUB_DATASTORE_JSON";
+const YUBIKEY_STUB_OUTPUT_ENV: &str = "DOTFILES_SECRETS_YUBIKEY_STUB_OUTPUT_PATH";
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
 const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
 const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
 const BWS_ACCESS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
-const PRIMARY_SERIAL: u32 = 2001;
-const SPARE_SERIAL: u32 = 2002;
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
-/// adapter stub が state file から読む最小 schema。
-///
-/// 現行は互換維持のため file format を読めるようにしているが、shared schema 依存は是正対象。
-/// この型は YubiKey backend 側の暫定互換境界であり、到達設計では tests 側 state/schema/helper を持たない。
-struct StubState {
-    key_exists: std::collections::BTreeMap<u32, bool>,
-    objects: std::collections::BTreeMap<(u32, u32), Vec<u8>>,
-    plaintexts: std::collections::BTreeMap<(u32, u8), Vec<u8>>,
-    corrupt: std::collections::BTreeSet<(u32, u8)>,
-    include_spare: bool,
+struct YubiKeyDatastore {
+    devices: BTreeMap<String, StubDeviceDatastore>,
     requires_pin: bool,
-    write_events: Vec<String>,
-    #[serde(default)]
-    bws_projects: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    bws_project_secrets:
-        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
-    #[serde(default)]
-    bws_secret_values: std::collections::BTreeMap<String, Vec<u8>>,
-    #[serde(default)]
-    bws_fetch_events: Vec<String>,
 }
 
-/// file-backed internal stub の選択済み YubiKey device state を保持する adapter backend。
-///
-/// この型は production build に含まれず、`secrets-internal-test-stub` feature の compile-time
-/// selection で実 device backend と差し替わる。device state は
-/// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file に閉じ、PIN verified state だけを
-/// opened device handle の一時状態として保持する。
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct StubDeviceDatastore {
+    key_exists: bool,
+    objects: BTreeMap<String, Vec<u8>>,
+    secrets: BTreeMap<String, String>,
+    corrupt: Vec<String>,
+}
+
 struct TestStubSecretDevice {
     serial: u32,
     pin_verified: bool,
-}
-
-/// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を読み書きする境界。
-///
-/// shared state file 経由の接続は現行暫定実装であり、是正対象。
-/// 到達設計では BWS/YubiKey stub の分離と tests 側 state/schema/helper 非保持を満たす構造へ移行する。
-fn with_state<T>(f: impl FnOnce(&mut StubState) -> Result<T>) -> Result<T> {
-    let path = endpoint()?;
-    let mut state = if path.exists() {
-        let body = fs::read(&path)?;
-        bincode::serde::decode_from_slice::<StubState, _>(&body, bincode::config::standard())
-            .map(|(state, _)| state)
-            .with_context(|| format!("failed to decode internal stub state: {}", path.display()))?
-    } else {
-        StubState::default()
-    };
-    let out = f(&mut state)?;
-    let encoded = bincode::serde::encode_to_vec(&state, bincode::config::standard())?;
-    fs::write(&path, encoded)?;
-    Ok(out)
-}
-
-/// file-backed internal stub から device 候補を取得し、adapter 境界型へ翻訳する。
-fn discover_devices() -> Result<Vec<DeviceCandidate>> {
-    with_state(|state| {
-        let mut out = vec![DeviceCandidate {
-            serial: PRIMARY_SERIAL,
-            label: format!("stub-yubikey-{PRIMARY_SERIAL}"),
-        }];
-        if state.include_spare {
-            out.push(DeviceCandidate {
-                serial: SPARE_SERIAL,
-                label: format!("stub-yubikey-{SPARE_SERIAL}"),
-            });
-        }
-        Ok(out)
-    })
-}
-
-/// 指定 serial の stub device を開き、`SelectedSecretDevice` 境界へ包んで返す。
-fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
-    Ok(SelectedSecretDevice::new(TestStubSecretDevice {
-        serial,
-        pin_verified: false,
-    }))
 }
 
 impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
@@ -119,7 +56,10 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
 
 impl SecretDeviceIo for TestStubSecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
-        with_state(|state| Ok(state.key_exists.get(&self.serial).copied().unwrap_or(false)))
+        with_datastore(|store| {
+            let device = device_store(store, self.serial)?;
+            Ok(device.key_exists)
+        })
     }
 
     fn piv_application_version(&self) -> PivApplicationVersion {
@@ -139,32 +79,39 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 
     fn generate_key(&mut self) -> Result<()> {
-        with_state(|state| {
-            state.key_exists.insert(self.serial, true);
+        with_datastore(|store| {
+            let device = device_store_mut(store, self.serial)?;
+            device.key_exists = true;
             Ok(())
         })
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
-        with_state(|state| {
-            Ok(state
-                .objects
-                .get(&(self.serial, object_id.value()))
-                .cloned())
+        with_datastore(|store| {
+            let device = device_store(store, self.serial)?;
+            let key = object_key(object_id.value());
+            if device
+                .secrets
+                .contains_key(secret_key_for_object(object_id.value()))
+            {
+                return Ok(Some(encoded_object(object_id.value())));
+            }
+            Ok(device.objects.get(&key).cloned())
         })
     }
 
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
-        with_state(|state| {
-            state
+        with_datastore(|store| {
+            let device = device_store_mut(store, self.serial)?;
+            device
                 .objects
-                .insert((self.serial, object_id.value()), value.to_vec());
+                .insert(object_key(object_id.value()), value.to_vec());
             Ok(())
         })
     }
 
     fn requires_pin_input(&self) -> bool {
-        with_state(|state| Ok(state.requires_pin)).unwrap_or(false)
+        with_datastore(|store| Ok(store.requires_pin)).unwrap_or(false)
     }
 
     fn verify_pin(&mut self, _pin: &ProtectedSecret) -> Result<()> {
@@ -177,19 +124,15 @@ impl SecretDeviceIo for TestStubSecretDevice {
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
     ) -> Result<Vec<u8>> {
-        let bytes = plaintext.to_test_bytes();
-        with_state(|state| {
-            state.key_exists.insert(self.serial, true);
-            state
-                .plaintexts
-                .insert((self.serial, storage.secret_id), bytes);
-            if let Some(secret_name) = secret_name(storage.secret_id) {
-                state.write_events.push(format!(
-                    "DOTFILES_TEST_STUB_WRITE serial={} name={} value=<redacted>",
-                    self.serial, secret_name
-                ));
-            }
-            Ok(encoded_object(storage.secret_id))
+        let value = String::from_utf8(plaintext.to_test_bytes())
+            .context("internal stub secret is not valid UTF-8")?;
+        with_datastore(|store| {
+            let device = device_store_mut(store, self.serial)?;
+            device.key_exists = true;
+            device
+                .secrets
+                .insert(secret_key(storage.secret_id).to_owned(), value);
+            Ok(encoded_object(storage_object_id(storage.secret_id)))
         })
     }
 
@@ -198,14 +141,15 @@ impl SecretDeviceIo for TestStubSecretDevice {
         storage: SecretStorageSpec,
         _encoded: &[u8],
     ) -> Result<ProtectedSecret> {
-        let plaintext = with_state(|state| {
-            if state.corrupt.contains(&(self.serial, storage.secret_id)) {
-                let name = secret_name(storage.secret_id).unwrap_or("unknown");
-                anyhow::bail!("corrupt {name}");
+        let value = with_datastore(|store| {
+            let device = device_store(store, self.serial)?;
+            let key = secret_key(storage.secret_id);
+            if device.corrupt.iter().any(|stored| stored == key) {
+                anyhow::bail!("corrupt {key}");
             }
-            state
-                .plaintexts
-                .get(&(self.serial, storage.secret_id))
+            device
+                .secrets
+                .get(key)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("missing secret"))
         })?;
@@ -213,7 +157,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
         let session = crate::secrets::support::protection::SecretSession::start()?;
         let buffer =
             crate::secrets::support::protection::buffer::ProtectedInputBuffer::read_line_from(
-                std::io::Cursor::new(plaintext),
+                std::io::Cursor::new(value.into_bytes()),
                 16 * 1024,
                 &session,
             )?;
@@ -221,27 +165,104 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 }
 
-fn endpoint() -> Result<std::path::PathBuf> {
-    let path = std::env::var(INTERNAL_STUB_STATE_ENV)
-        .context("internal stub state path is not configured")?;
-    Ok(std::path::PathBuf::from(path))
+fn discover_devices() -> Result<Vec<DeviceCandidate>> {
+    with_datastore(|store| {
+        Ok(store
+            .devices
+            .keys()
+            .filter_map(|serial| serial.parse::<u32>().ok())
+            .map(|serial| DeviceCandidate {
+                serial,
+                label: format!("stub-yubikey-{serial}"),
+            })
+            .collect())
+    })
 }
 
-fn secret_name(secret_id: u8) -> Option<&'static str> {
-    match secret_id {
-        1 => Some("bw-email"),
-        2 => Some("bw-password"),
-        3 => Some("bws-access-token"),
-        _ => None,
+fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
+    Ok(SelectedSecretDevice::new(TestStubSecretDevice {
+        serial,
+        pin_verified: false,
+    }))
+}
+
+fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
+    let mut store = load_datastore()?;
+    let out = f(&mut store)?;
+    write_observed_datastore(&store)?;
+    Ok(out)
+}
+
+fn load_datastore() -> Result<YubiKeyDatastore> {
+    let path = output_path()?;
+    if path.exists() {
+        let body = fs::read(&path)?;
+        return serde_json::from_slice(&body)
+            .context("failed to decode observed YubiKey internal stub datastore JSON");
+    }
+    let body = std::env::var(YUBIKEY_STUB_DATASTORE_ENV)
+        .context("YubiKey internal stub datastore JSON is not configured")?;
+    serde_json::from_str(&body).context("failed to decode YubiKey internal stub datastore JSON")
+}
+
+fn write_observed_datastore(store: &YubiKeyDatastore) -> Result<()> {
+    let path = output_path()?;
+    let body = serde_json::to_vec_pretty(store)?;
+    fs::write(path, body)?;
+    Ok(())
+}
+
+fn output_path() -> Result<PathBuf> {
+    let path = std::env::var(YUBIKEY_STUB_OUTPUT_ENV)
+        .context("YubiKey internal stub output path is not configured")?;
+    Ok(PathBuf::from(path))
+}
+
+fn device_store(store: &YubiKeyDatastore, serial: u32) -> Result<&StubDeviceDatastore> {
+    store
+        .devices
+        .get(&serial.to_string())
+        .ok_or_else(|| anyhow::anyhow!("stub YubiKey device not found: {serial}"))
+}
+
+fn device_store_mut(store: &mut YubiKeyDatastore, serial: u32) -> Result<&mut StubDeviceDatastore> {
+    store
+        .devices
+        .get_mut(&serial.to_string())
+        .ok_or_else(|| anyhow::anyhow!("stub YubiKey device not found: {serial}"))
+}
+
+fn secret_key_for_object(object_id: u32) -> &'static str {
+    match object_id {
+        BW_EMAIL_OBJECT_ID => "bw-email",
+        BW_PASSWORD_OBJECT_ID => "bw-password",
+        BWS_ACCESS_TOKEN_OBJECT_ID => "bws-access-token",
+        _ => "",
     }
 }
 
-fn encoded_object(secret_id: u8) -> Vec<u8> {
-    let object_id = match secret_id {
+fn secret_key(secret_id: u8) -> &'static str {
+    match secret_id {
+        1 => "bw-email",
+        2 => "bw-password",
+        3 => "bws-access-token",
+        _ => "unknown",
+    }
+}
+
+fn storage_object_id(secret_id: u8) -> u32 {
+    match secret_id {
         1 => BW_EMAIL_OBJECT_ID,
         2 => BW_PASSWORD_OBJECT_ID,
         3 => BWS_ACCESS_TOKEN_OBJECT_ID,
         _ => MANIFEST_OBJECT_ID,
-    };
+    }
+}
+
+fn object_key(object_id: u32) -> String {
+    object_id.to_string()
+}
+
+fn encoded_object(object_id: u32) -> Vec<u8> {
     format!("encoded-object-{object_id}").into_bytes()
 }

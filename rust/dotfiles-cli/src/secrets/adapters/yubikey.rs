@@ -10,7 +10,7 @@ mod storage_adapter;
 // この module は production build には含めず、runtime 分岐ではなく compile-time feature
 // selection で実 YubiKey backend と差し替える。integration test は adapter stub module を
 // import せず、feature 有効でビルドされた同じ `dotfiles` binary を実行し、
-// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を backend として共有する。
+// YubiKey port 専用の初期 datastore JSON と最終 datastore 出力だけを外部観測面として扱う。
 #[cfg(feature = "secrets-internal-test-stub")]
 mod selected_device;
 

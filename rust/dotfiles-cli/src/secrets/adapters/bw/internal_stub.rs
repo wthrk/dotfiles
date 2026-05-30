@@ -1,16 +1,15 @@
-//! `secrets-internal-test-stub` feature 専用の file-backed BWS adapter backend stub。
+//! `secrets-internal-test-stub` feature 専用の BWS adapter backend stub。
 //!
 //! production build には compile されず、runtime flag ではなく compile-time feature selection で
 //! real BWS SDK backend と差し替わる。integration test はこの module を import せず、同じ
 //! `dotfiles` binary を実行する。
 //!
-//! 現行実装は `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` を介した shared state file を暫定的に
-//! 利用しているが、これは是正対象である。到達設計は
-//! `docs/architecture/hexagonal-implementation-rules.md` と
-//! `docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md` の規約に従い、tests 側で
-//! backend state/schema/helper を保持しない構成を前提とする。
+//! この stub は BWS port の datastore 境界だけを受け持つ。初期 datastore は
+//! `DOTFILES_SECRETS_BWS_STUB_DATASTORE_JSON` から読み、最終 datastore は
+//! `DOTFILES_SECRETS_BWS_STUB_OUTPUT_PATH` へ JSON として書き出す。YubiKey port stub とは
+//! state/schema/file を共有しない。
 
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::Context;
 
@@ -20,29 +19,14 @@ use crate::secrets::{
     support::protection::ProtectedSecret,
 };
 
-const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
+const BWS_STUB_DATASTORE_ENV: &str = "DOTFILES_SECRETS_BWS_STUB_DATASTORE_JSON";
+const BWS_STUB_OUTPUT_ENV: &str = "DOTFILES_SECRETS_BWS_STUB_OUTPUT_PATH";
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
-/// adapter stub が state file から読む最小 schema。
-///
-/// 現行は互換維持のため file format を読めるようにしているが、shared schema 依存は是正対象。
-/// この型は backend 側の暫定互換境界であり、到達設計では tests 側 state/schema/helper を持たない。
-struct StubState {
-    key_exists: std::collections::BTreeMap<u32, bool>,
-    objects: std::collections::BTreeMap<(u32, u32), Vec<u8>>,
-    plaintexts: std::collections::BTreeMap<(u32, u8), Vec<u8>>,
-    corrupt: std::collections::BTreeSet<(u32, u8)>,
-    include_spare: bool,
-    requires_pin: bool,
-    write_events: Vec<String>,
-    #[serde(default)]
-    bws_projects: BTreeMap<String, String>,
-    #[serde(default)]
-    bws_project_secrets: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default)]
-    bws_secret_values: BTreeMap<String, Vec<u8>>,
-    #[serde(default)]
-    bws_fetch_events: Vec<String>,
+struct BwsDatastore {
+    projects: BTreeMap<String, String>,
+    project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    secret_values: BTreeMap<String, String>,
 }
 
 impl BwsClientPort for super::BwsClientAdapter {
@@ -70,113 +54,112 @@ impl BwsClientPort for super::BwsClientAdapter {
     }
 }
 
-/// state file の project 一覧を `BwsClientPort` の lookup 候補へ翻訳する。
 fn read_bws_projects(
     access_token: &ProtectedSecret,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-    with_state(|state| {
-        ensure_access_token_matches_state(access_token, state)?;
-        let mut out = Vec::with_capacity(state.bws_projects.len());
-        for (project_id, project_name) in &state.bws_projects {
-            out.push(BwsLookupCandidate {
+    with_datastore(|store| {
+        ensure_access_token_matches_datastore(access_token, store)?;
+        Ok(store
+            .projects
+            .iter()
+            .map(|(project_id, project_name)| BwsLookupCandidate {
                 id: BwsProjectId::new(project_id.clone()),
                 name: project_name.clone(),
-            });
-        }
-        Ok(out)
+            })
+            .collect())
     })
 }
 
-/// state file の project secret 一覧を `BwsClientPort` の lookup 候補へ翻訳する。
 fn read_bws_secrets(
     access_token: &ProtectedSecret,
     project_id: &BwsProjectId,
 ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-    with_state(|state| {
-        ensure_access_token_matches_state(access_token, state)?;
-        let candidates = state
-            .bws_project_secrets
+    with_datastore(|store| {
+        ensure_access_token_matches_datastore(access_token, store)?;
+        let candidates = store
+            .project_secrets
             .get(project_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("bitwarden project not found"))?;
-        let mut out = Vec::with_capacity(candidates.len());
-        for (secret_id, secret_name) in candidates {
-            out.push(BwsLookupCandidate {
+        Ok(candidates
+            .iter()
+            .map(|(secret_id, secret_name)| BwsLookupCandidate {
                 id: BwsSecretId::new(secret_id.clone()),
                 name: secret_name.clone(),
-            });
-        }
-        Ok(out)
+            })
+            .collect())
     })
 }
 
-/// state file の secret value を保護済み secret として返し、fetch 監査イベントを記録する。
 fn read_bws_secret_by_id(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
 ) -> crate::Result<ProtectedSecret> {
-    with_state(|state| {
-        ensure_access_token_matches_state(access_token, state)?;
-        let bytes = state
-            .bws_secret_values
+    with_datastore(|store| {
+        ensure_access_token_matches_datastore(access_token, store)?;
+        let value = store
+            .secret_values
             .get(secret_id.as_str())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
-        state.bws_fetch_events.push(format!(
-            "DOTFILES_TEST_BWS_FETCH id={} bytes={}",
-            secret_id.as_str(),
-            bytes.len()
-        ));
-        let session = crate::secrets::support::protection::SecretSession::start()?;
-        let buffer =
-            crate::secrets::support::protection::buffer::ProtectedInputBuffer::read_line_from(
-                std::io::Cursor::new(bytes),
-                16 * 1024,
-                &session,
-            )?;
-        buffer
-            .into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
-            .map_err(Into::into)
+        protected_secret_from_string(value)
     })
 }
 
-fn ensure_access_token_matches_state(
+fn ensure_access_token_matches_datastore(
     access_token: &ProtectedSecret,
-    state: &StubState,
+    store: &BwsDatastore,
 ) -> crate::Result<()> {
-    let configured = state
-        .bws_secret_values
+    let configured = store
+        .secret_values
         .get("bws-secret-id-access-token")
-        .cloned()
         .ok_or_else(|| anyhow::anyhow!("bws access token stub secret is not configured"))?;
-    if access_token.to_test_bytes() == configured {
+    if access_token.to_test_bytes() == configured.as_bytes() {
         Ok(())
     } else {
         anyhow::bail!("bitwarden login failed")
     }
 }
 
-/// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を読み書きする境界。
-///
-/// shared state file 経由の接続は現行暫定実装であり、是正対象。
-/// 到達設計では BWS/YubiKey stub の分離と tests 側 state/schema/helper 非保持を満たす構造へ移行する。
-fn with_state<T>(f: impl FnOnce(&mut StubState) -> crate::Result<T>) -> crate::Result<T> {
-    let path = endpoint()?;
-    let mut state = if path.exists() {
-        let body = fs::read(&path)?;
-        bincode::serde::decode_from_slice::<StubState, _>(&body, bincode::config::standard())
-            .map(|(state, _)| state)
-            .with_context(|| format!("failed to decode internal stub state: {}", path.display()))?
-    } else {
-        StubState::default()
-    };
-    let out = f(&mut state)?;
-    let encoded = bincode::serde::encode_to_vec(&state, bincode::config::standard())?;
-    fs::write(&path, encoded)?;
+fn protected_secret_from_string(value: String) -> crate::Result<ProtectedSecret> {
+    let session = crate::secrets::support::protection::SecretSession::start()?;
+    let buffer = crate::secrets::support::protection::buffer::ProtectedInputBuffer::read_line_from(
+        std::io::Cursor::new(value.into_bytes()),
+        16 * 1024,
+        &session,
+    )?;
+    buffer
+        .into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
+        .map_err(Into::into)
+}
+
+fn with_datastore<T>(f: impl FnOnce(&mut BwsDatastore) -> crate::Result<T>) -> crate::Result<T> {
+    let mut store = load_datastore()?;
+    let out = f(&mut store)?;
+    write_observed_datastore(&store)?;
     Ok(out)
 }
 
-fn endpoint() -> crate::Result<std::path::PathBuf> {
-    let path = std::env::var(INTERNAL_STUB_STATE_ENV)
-        .context("internal stub state path is not configured")?;
-    Ok(std::path::PathBuf::from(path))
+fn load_datastore() -> crate::Result<BwsDatastore> {
+    let path = output_path()?;
+    if path.exists() {
+        let body = fs::read(&path)?;
+        return serde_json::from_slice(&body)
+            .context("failed to decode observed BWS internal stub datastore JSON");
+    }
+    let body = std::env::var(BWS_STUB_DATASTORE_ENV)
+        .context("BWS internal stub datastore JSON is not configured")?;
+    serde_json::from_str(&body).context("failed to decode BWS internal stub datastore JSON")
+}
+
+fn write_observed_datastore(store: &BwsDatastore) -> crate::Result<()> {
+    let path = output_path()?;
+    let body = serde_json::to_vec_pretty(store)?;
+    fs::write(path, body)?;
+    Ok(())
+}
+
+fn output_path() -> crate::Result<PathBuf> {
+    let path = std::env::var(BWS_STUB_OUTPUT_ENV)
+        .context("BWS internal stub output path is not configured")?;
+    Ok(PathBuf::from(path))
 }

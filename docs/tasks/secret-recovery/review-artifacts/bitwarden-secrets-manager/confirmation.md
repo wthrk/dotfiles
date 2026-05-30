@@ -88,6 +88,27 @@
 - ログ/引数/一時ファイル/stdout/stderr 確認: `完了` — SDK 呼び出し失敗時の user-visible error は固定要約のみを返し、secret 値や raw API 応答本文を埋め込まない。
 - 権限境界/永続化/失敗時挙動確認: `fresh review 前確認済み` — 通常ビルドの `BwsClientAdapter` は SDK 経路のみを持つ。token は `ProtectedSecret` 借用境界内で処理し、SDK が所有 plaintext buffer の move を要求する login request と secret value 取得後の保護値化は `support/protection` 内の BWS 専用操作で完了する。永続化なし。
 
+## internal backend stub 独立化確認（2026-05-30）
+
+- 対象差分識別子: `2026-05-30-port-stub-independent-datastore-worktree`
+- 比較範囲: `HEAD` = `6c32327` を基点にした未コミット worktree 差分。
+- 実装補正:
+  - `rust/dotfiles-cli/tests/secrets_internal_stub/` を削除し、CLI integration test 側の backend state schema / bincode schema / 状態遷移 helper / write event helper を除去した。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は BWS port 専用の初期 datastore JSON（`DOTFILES_SECRETS_BWS_STUB_DATASTORE_JSON`）と最終 datastore 出力（`DOTFILES_SECRETS_BWS_STUB_OUTPUT_PATH`）だけを扱う構造へ変更した。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は YubiKey port 専用の初期 datastore JSON（`DOTFILES_SECRETS_YUBIKEY_STUB_DATASTORE_JSON`）と最終 datastore 出力（`DOTFILES_SECRETS_YUBIKEY_STUB_OUTPUT_PATH`）だけを扱う構造へ変更した。
+  - BWS/YubiKey stub は state/schema/file を共有せず、port 間の作用は CLI の production command path と application/domain 経路を通じてのみ発生する。
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` は CLI binary 実行前の初期 datastore 投入と CLI 実行後の最終 datastore 観測だけを assertion 対象にし、stub 内部イベントや内部状態遷移の assertion を削除した。
+- 確認手順と結果:
+  - `rg -n "secrets_internal_stub|DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH|StubState|CliStubFixture|write_events|bws_fetch_events|shared state file|bincode schema|state file を backend" rust/dotfiles-cli/src/secrets rust/dotfiles-cli/tests -S` は該当なし。
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli` 成功（25 passed）。
+  - `direnv exec . cargo xtask check` 成功（all checks passed）。
+  - `git diff --check` 成功。
+- セキュリティ確認:
+  - test 用 datastore 値は fixture 値のみで、実 secret / 認証情報を追加していない。
+  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、最終 datastore 観測は port ごとの一時 JSON 出力へ分離した。
+- レビュー状態: `未実施` — この差分は fresh review 開始前であり、集約判定は未確定。
+- 未実施理由（未実施がある場合）: `fresh review は次工程で必須。確認コマンドの未実施はなし。`
+
 ## 実装継続確認（2026-05-29）
 
 - 対象差分識別子: `2026-05-29-uncommitted-current-worktree`
