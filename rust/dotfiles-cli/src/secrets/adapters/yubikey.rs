@@ -12,7 +12,6 @@ mod storage_adapter;
 // import せず、feature 有効でビルドされた同じ `dotfiles` binary を実行し、
 // `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を backend として共有する。
 #[cfg(feature = "secrets-internal-test-stub")]
-#[path = "stub/yubikey.rs"]
 mod selected_device;
 
 use crate::{
@@ -35,7 +34,7 @@ use crate::{
 
 /// YubiKey discovery と PIN 要否判定を port 契約へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct DeviceSelectionAdapter(device_serial_adapter::DeviceSelectionAdapter);
+pub(in crate::secrets) struct DeviceSelectionAdapter(device_serial_adapter::DeviceSelectionAdapter);
 
 impl DeviceSerialPort for DeviceSelectionAdapter {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
@@ -57,7 +56,7 @@ impl DevicePinPolicyPort for DeviceSelectionAdapter {
 
 /// YubiKey storage I/O を port 契約へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct StorageAdapter(storage_adapter::StorageAdapter);
+pub(in crate::secrets) struct StorageAdapter(storage_adapter::StorageAdapter);
 
 impl SecretStoragePort for StorageAdapter {
     fn inspect_secret_storage_setup(

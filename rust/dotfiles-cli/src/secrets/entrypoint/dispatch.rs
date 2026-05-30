@@ -1,11 +1,12 @@
 //! parse 済み CLI command を application use case へ橋渡しする dispatch 境界。
 //!
-//! command ごとの application 呼び出し順序だけを担い、adapter 生成、support session、
-//! 外部 API 翻訳は別 module へ分離する。
+//! command ごとの application 呼び出し順序だけを担い、adapter 生成と support session は
+//! composition / runtime 境界へ分離する。外部 API 翻訳は adapter 側へ閉じる。
 
 use crate::{
     Result,
     secrets::{
+        adapters::EntrypointPorts,
         application,
         domain::{
             commands::{
@@ -16,8 +17,6 @@ use crate::{
         },
     },
 };
-
-use super::adapter_catalog::EntrypointPorts;
 
 /// parse 済み command を use case に橋渡しする。
 pub(super) async fn dispatch(

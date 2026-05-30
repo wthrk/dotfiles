@@ -1,13 +1,51 @@
 //! `dotfiles secrets` の CLI orchestration 層。
 //!
 //! この機能は CLI、application、domain、adapter、support の責務に分ける。
-//! CLI 入口は clap option の型付けと公開 command 名を固定し、secret の取得順序や
-//! device 操作の失敗契約は application 以下へ閉じ込める。
+//! CLI 入口は clap option の型付けと公開 command 名を固定し、composition root は
+//! adapter concrete の所有関係だけを確定する。secret の取得順序や device 操作の
+//! 失敗契約は application 以下へ閉じ込める。
 //!
 //! domain は command 入力、process 保護、実機 discovery に依存しない。保護メモリや
 //! 端末 I/O の業務語彙を持たない部品は support として扱い、use case の順序は application に置く。
 
-mod adapters;
+/// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
+mod adapters {
+    mod bw;
+    mod io;
+    mod yubikey;
+
+    /// 実 adapter 群を所有し、use case ごとに必要な port 引数へ分配する composition root。
+    ///
+    /// adapter concrete への到達はこの module に閉じる。entrypoint は catalog の field を
+    /// port 引数として渡すだけで、adapter concrete module の公開導線には依存しない。
+    pub(super) struct EntrypointPorts {
+        pub(super) device: yubikey::DeviceSelectionAdapter,
+        pub(super) spare_device: yubikey::DeviceSelectionAdapter,
+        pub(super) device_pin_policy: yubikey::DeviceSelectionAdapter,
+        pub(super) process_io: io::ProcessIoAdapter,
+        pub(super) storage: yubikey::StorageAdapter,
+        pub(super) report: io::JsonReportAdapter,
+        pub(super) bws_client: bw::BwsClientAdapter,
+    }
+
+    impl EntrypointPorts {
+        /// production command path 用の実 adapter catalog を構築する。
+        ///
+        /// stub backend が有効な integration test でも runtime flag は使わず、adapter 内部の
+        /// compile-time feature selection によって同じ catalog 型が port 契約を満たす。
+        pub(super) fn production() -> Self {
+            Self {
+                device: yubikey::DeviceSelectionAdapter::default(),
+                spare_device: yubikey::DeviceSelectionAdapter::default(),
+                device_pin_policy: yubikey::DeviceSelectionAdapter::default(),
+                process_io: io::ProcessIoAdapter::default(),
+                storage: yubikey::StorageAdapter::default(),
+                report: io::JsonReportAdapter::default(),
+                bws_client: bw::BwsClientAdapter,
+            }
+        }
+    }
+}
 mod application;
 pub mod domain;
 mod entrypoint;
@@ -130,7 +168,7 @@ enum VerifyCheck {
 /// CLI で parse 済みの `dotfiles secrets` command を entrypoint 境界へ渡す。
 ///
 /// CLI 入口は command 定義と option 変換だけを担い、adapter concrete 生成と port 束ねは
-/// entrypoint 配線 module へ閉じる。
+/// composition root へ閉じる。
 pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
     entrypoint::run(options).await
 }

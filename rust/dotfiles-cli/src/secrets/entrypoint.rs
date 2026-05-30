@@ -1,9 +1,9 @@
 //! `dotfiles secrets` の entrypoint 配線境界。
 //!
-//! CLI command 定義で parse 済みの入力を application use case へ橋渡しし、起動時に
-//! 必要な adapter 所有関係を確定する。domain rule と外部 API 翻訳は持たない。
+//! CLI command 定義で parse 済みの入力を application use case へ橋渡しし、
+//! composition root が所有する adapter catalog を command ごとの port 引数へ分配する。
+//! domain rule と外部 API 翻訳は持たない。
 
-mod adapter_catalog;
 mod dispatch;
 mod runtime;
 

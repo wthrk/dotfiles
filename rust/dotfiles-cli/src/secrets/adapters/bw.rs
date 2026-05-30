@@ -4,7 +4,6 @@
 //! project/secret/list/get 境界を port の ID 候補と保護済み secret へ翻訳する。
 
 #[cfg(feature = "secrets-internal-test-stub")]
-#[path = "stub/bw.rs"]
 mod internal_stub;
 // `secrets-internal-test-stub` feature 専用の BWS adapter backend stub。
 //
@@ -34,7 +33,7 @@ use crate::secrets::{
 
 /// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct BwsClientAdapter;
+pub(in crate::secrets) struct BwsClientAdapter;
 
 #[cfg(feature = "secrets-internal-test-stub")]
 impl BwsClientPort for BwsClientAdapter {

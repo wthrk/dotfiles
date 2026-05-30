@@ -20,7 +20,7 @@ use crate::{
 
 /// process I/O と secret 入出力を port 契約へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct ProcessIoAdapter(process::ProcessIoAdapter);
+pub(in crate::secrets) struct ProcessIoAdapter(process::ProcessIoAdapter);
 
 impl PinInputPort for ProcessIoAdapter {
     fn read_pin(&self) -> Result<ProtectedSecret> {
@@ -68,7 +68,7 @@ impl SecretOutputPort for ProcessIoAdapter {
 
 /// CLI JSON report 出力を port 契約へ翻訳する adapter。
 #[derive(Default)]
-pub(crate) struct JsonReportAdapter(report::JsonReportAdapter);
+pub(in crate::secrets) struct JsonReportAdapter(report::JsonReportAdapter);
 
 impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
