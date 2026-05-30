@@ -14,6 +14,9 @@
 - BWS 更新の stale overwrite 防止条件を revision / updatedAt / ETag 相当、または exact secret value bytes の SHA-256 digest に変更した。
 - 復号済み backup から導出した primary fingerprint と envelope `metadata.primary_fingerprint` の一致検証を restore / BWS / spec の各境界へ同期した。
 - `dotfiles secrets restore-gpg` の手順順序を「envelope 検証 → unwrap/復号 → primary fingerprint 導出と `metadata.primary_fingerprint` 一致検証 → import」に修正し、関連正本（`gnupg-ssh-design.md` / `secret-recovery-spec.md`）と整列させた。
+- spare recipient 追加を含む envelope 更新を stale overwrite 防止の必須対象に拡張し、revision / updatedAt / ETag 相当または exact value bytes digest による照合を必須化した。
+- `metadata.primary_fingerprint` 形式を lowercase hex 40 文字・区切りなしに固定し、GnuPG / BWS / spec の各文書で同期した。
+- `verify-yubikey --check bws` の確認契約を 2 secret 取得可否のみから、`gpg-secret-key-backup` envelope schema 検証、接続中 YubiKey recipient 照合、unwrap なしでの復旧可能性確認まで拡張した。
 
 ## 確認
 

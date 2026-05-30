@@ -35,7 +35,7 @@ application 層の use case orchestration test は `secrets-internal-test-stub` 
 - Bitwarden Secrets Manager で扱う secret name は `gpg-secret-key-backup` と `password-store-remote` に固定する。
 - Bitwarden Secrets Manager の secret 値形式は secret ごとに固定し、`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope（UTF-8 JSON）として保存する。
 - Bitwarden Secrets Manager 側の project / secret 作成・更新・一覧取得は、復旧本線と同じ `BwsClientPort` 境界の内側で扱う。application/domain/port 契約は変更せず、secret を扱う SDK API 呼び出しは `support/protection` 内の専用操作で完了させる。
-- `verify-yubikey --check bws` は、上記 2 secret を取得できることを外部確認として検証する。
+- `verify-yubikey --check bws` は、上記 2 secret の取得可否に加え、`gpg-secret-key-backup` envelope schema（`version` / `metadata` / `recipients` / `ciphertext`）の検証、接続中 YubiKey に一致する recipient 照合、unwrap を伴わずに判定できる復旧可能性（少なくとも「この YubiKey で unwrap 候補が存在すること」）を外部確認として検証する。
 
 ## Bitwarden Secrets Manager 配置
 
@@ -80,11 +80,13 @@ Bitwarden Secrets Manager で取得する対象と利用先は次のとおり。
 値は UTF-8 JSON の encrypted envelope とする。`version: 1` を固定し、次の schema を必須とする。
 
 - top-level: `version`（number, `1` 固定）/ `metadata` / `recipients` / `ciphertext`
-- `metadata`: `primary_fingerprint`（40 桁 16 進）/ `exported_at`（UTC RFC3339）/ `dek_alg`（`aes-256-gcm`）/ `recipient_kek_alg`（`rsa-oaep-sha256`）
+- `metadata`: `primary_fingerprint`（lowercase hex 40 文字、区切りなし）/ `exported_at`（UTC RFC3339）/ `dek_alg`（`aes-256-gcm`）/ `recipient_kek_alg`（`rsa-oaep-sha256`）
 - `ciphertext`: `nonce` / `body` / `tag` の base64 文字列。`nonce` は AES-GCM nonce 12 bytes、`body` は DEK で暗号化した OpenPGP backup bytes、`tag` は AES-GCM authentication tag 16 bytes とし、`tag` を `body` へ連結しない。
 - `recipients`: 1 件以上。各要素は `yubikey_serial`（string, 10 進）/ `piv_slot`（string, `82` 固定）/ `public_key_fingerprint`（slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 で digest した lowercase hex 64 文字、区切りなし）/ `wrapped_dek`（base64）
 
 復旧処理は envelope 形式を検証し、接続中 YubiKey と一致する recipient で data encryption key を unwrap して復号済み backup を得た場合だけ GPG import へ進む。復号済み backup は 1 つの primary key を持つ OpenPGP transferable secret key を表し、その primary key に紐づく encryption / authentication / signing subkey を含む。復号済み backup から導出した primary fingerprint が `metadata.primary_fingerprint` と一致しない場合は停止する。複数 primary key を同じ secret に連結して保存しない。複数 primary key が必要になった場合は、この設計を更新して secret name と検証条件を追加する。
+
+`gpg-secret-key-backup` を更新する read-modify-write（recipient 追加、reencrypt、値置換）は stale overwrite 防止を必須とする。更新前に読み出した revision / updatedAt / ETag 相当の更新識別子、または SDK で取得不可の場合は exact UTF-8 secret value bytes の SHA-256 digest を保持し、更新直前に再取得した現行値と一致する場合だけ更新する。
 
 ### `password-store-remote`
 
@@ -139,6 +141,8 @@ access token を rotate した場合は、Bitwarden Secrets Manager 側で新 to
 
 - YubiKey から `bws-access-token` を取得する。
 - Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` の取得可否を確認する。
+- `gpg-secret-key-backup` は envelope schema（`version` / `metadata` / `recipients` / `ciphertext`）を検証し、`metadata.primary_fingerprint` 形式（lowercase hex 40 文字、区切りなし）を満たすことを確認する。
+- `gpg-secret-key-backup` は接続中 YubiKey と一致する recipient（`yubikey_serial` と `public_key_fingerprint` の両一致）を確認し、unwrap なしで判定できる復旧可能性がある場合だけ `ok` とする。secret 本文の露出や平文化は行わない。
 - 引数なし `verify-yubikey` ではこの外部確認を自動実行せず、状態値 `skipped` を返す。
 
 ## 停止条件

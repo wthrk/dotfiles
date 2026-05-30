@@ -23,7 +23,7 @@
 
 - `gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope で保持し、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
 - encrypted envelope は UTF-8 JSON で保存し、`version: 1` を固定する。top-level は `version` / `metadata` / `recipients` / `ciphertext` の 4 要素とする。
-- `metadata` は `primary_fingerprint`（40 桁 16 進）、`exported_at`（UTC RFC3339）、`dek_alg`（`aes-256-gcm` 固定）、`recipient_kek_alg`（`rsa-oaep-sha256` 固定）を必須とする。
+- `metadata` は `primary_fingerprint`（lowercase hex 40 文字、区切りなし）、`exported_at`（UTC RFC3339）、`dek_alg`（`aes-256-gcm` 固定）、`recipient_kek_alg`（`rsa-oaep-sha256` 固定）を必須とする。
 - `ciphertext` は `nonce`、`body`、`tag` を base64 文字列で保持する。`nonce` は AES-GCM nonce 12 bytes、`body` は DEK で暗号化した OpenPGP backup bytes、`tag` は AES-GCM authentication tag 16 bytes とする。`tag` を `body` へ連結しない。
 - `recipients` は 1 件以上必須とし、要素は `yubikey_serial`（10 進文字列）、`piv_slot`（`82` 固定）、`public_key_fingerprint`（PIV slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 で digest した lowercase hex 64 文字、区切りなし）、`wrapped_dek`（base64）を必須とする。
 - `restore-gpg` は YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
@@ -49,9 +49,9 @@ envelope 化では、export bytes をそのまま ASCII armor へ変換せず、
 ## recipient 運用 / BWS 更新契約
 
 - primary 登録時は接続中 YubiKey の recipient を 1 件作成し、`recipients` 初期値として保存する。
-- spare 追加時は既存 envelope を復号して同一 DEK を使い、spare recipient の `wrapped_dek` を `recipients` へ追加して同一 secret name を更新する（`ciphertext` は変更しない）。
+- spare 追加時は既存 envelope を復号して同一 DEK を使い、spare recipient の `wrapped_dek` を `recipients` へ追加して同一 secret name を更新する（`ciphertext` は変更しない）。この更新も BWS secret の read-modify-write として扱い、更新前に読み出した revision / updatedAt / ETag 相当の更新識別子（取得不可の場合は exact UTF-8 secret value bytes の SHA-256 digest）を保持し、更新直前に再取得した現行値と一致する場合だけ上書きする。
 - recipient 照合は `yubikey_serial` と `public_key_fingerprint` の両方一致を必須とし、片方のみ一致は不正扱いで停止する。
-- reencrypt 実行時は、更新前に BWS から読み出した現行 secret の revision / updatedAt / ETag 相当の更新識別子を既知値として保持し、更新直前に再取得した現行 secret の更新識別子が一致することを確認する。SDK で更新識別子を取得できない場合は、最初に読み出した exact UTF-8 secret value bytes の SHA-256 digest を保持し、更新直前に再取得した exact value bytes の digest と一致する場合だけ上書きする。`version` と `metadata.primary_fingerprint` だけを stale overwrite 防止条件に使わない。
+- recipient 追加を含む envelope 更新（spare 追加、reencrypt、置換更新）では、更新前に BWS から読み出した現行 secret の revision / updatedAt / ETag 相当の更新識別子を既知値として保持し、更新直前に再取得した現行 secret の更新識別子が一致することを確認する。SDK で更新識別子を取得できない場合は、最初に読み出した exact UTF-8 secret value bytes の SHA-256 digest を保持し、更新直前に再取得した exact value bytes の digest と一致する場合だけ上書きする。`version` と `metadata.primary_fingerprint` だけを stale overwrite 防止条件に使わない。
 - BWS 更新は対話実行では project/secret 名と envelope `metadata.primary_fingerprint` を表示して明示確認後に実行し、非対話実行では明示的上書き許可 option がある場合だけ更新する。
 
 ## GPG import API 決定

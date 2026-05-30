@@ -282,7 +282,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 引数:
 
 - `--serial <serial>`: 非対話実行時に対象 YubiKey を指定する。対話実行では、1 本だけ接続されていれば自動選択し、複数本接続時は一覧から選択させる。
-- `--check bws`: `bws-access-token` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する外部確認項目。利用できない場合は失敗する。
+- `--check bws`: `bws-access-token` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることに加え、`gpg-secret-key-backup` envelope schema（`version` / `metadata` / `recipients` / `ciphertext`）と `metadata.primary_fingerprint` 形式（lowercase hex 40 文字、区切りなし）を検証し、接続中 YubiKey に一致する recipient（`yubikey_serial` と `public_key_fingerprint` の両一致）を照合して、unwrap なしで判定できる復旧可能性（少なくとも一致 recipient の存在）を確認する外部確認項目。secret 本文の平文化や unwrap は行わず、利用できない場合は失敗する。
 - `--check bw-login`: `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができることを確認する外部確認項目。email override が必要な場合は `--email <email>` を使う。
 - `--all`: ローカル保管確認と外部確認を含む全確認項目を実行する。指定した確認項目のいずれかが利用できない場合は失敗する。
 

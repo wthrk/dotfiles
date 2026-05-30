@@ -4,6 +4,8 @@
 
 復旧の入口には YubiKey を使う。YubiKey には Bitwarden master password と Bitwarden Secrets Manager access token を保存する。Bitwarden Secrets Manager には GPG secret key backup と `password-store` の remote URL を保存する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
 
+この文書で強化する要件は設計/仕様契約であり、現行 Rust 実装およびテストが本書の全要件を満たしたことを示すものではない。実装・テストでの充足は、`Bitwarden Secrets Manager` および `GnuPG / SSH` の後続実装作業（`docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md`、`docs/tasks/secret-recovery/work-items/gnupg-ssh.md`）で段階的に反映する。
+
 secret の保護境界、core dump 無効化、paging / memory lock / signal trap の扱い、外部処理が secret の借用または所有 plaintext buffer の move を要求する場合の実装方針は [Secret handling policy](./secret-handling.md) を正本とする。この仕様文書では復旧対象とコマンド契約だけを定義し、secret handling の詳細を再掲しない。
 
 ## 目的
