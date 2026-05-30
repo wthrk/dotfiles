@@ -14,6 +14,8 @@
   - app 層の use case orchestration test は `secrets-internal-test-stub` / internal test stub feature と切り離す。app 層 production code や app 層 inline test に internal stub feature gate / bridge を置かず、`tests/` 配下の app test support も参照しない。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file は禁止する。必要な app 層テストは各 `run_*.rs` の `#[cfg(test)] mod tests` 内で port trait から生成した `mockall` mock を直接組み、event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作らない。既存 port trait の method を `mock!` macro へ手で書き写して二重管理してはならない。
   - `ProtectedSecret` の secret 生値アクセスは公開 API にしない。ただし `#[cfg(test)]` / `#[test]` に閉じた最小アクセス関数は test-only 観測口として許可する。この許可を `String` 変換公開や production 経路での取り出し許可に拡大しない。
   - storage backend が暗号化・復号・sealed blob を内包する場合、port は datastore capability を公開し、暗号化・復号・sealed blob 操作は backend 内部機能として隠蔽する。support に置けるのはその技術境界に限り、setup 判定、必須 secret 判定、一意解決、0件/複数件 failure、外部確認 plan は support へ移さない。
+  - integration test は internal stub の内部遷移を検証せず、初期 datastore 定義の投入と CLI 実行後の最終 datastore 観測のみを検証する。test 側に backend state schema・状態遷移 helper・write event helper・bincode schema・backend 内部保存形式を残してはならない。
+  - BWS port stub と YubiKey port stub は独立させ、共通巨大 StubState や共有 state file で結合しない。port 間の結合は application/domain の通常経路でのみ発生させる。
   - 固定 project / secret name の意味づけ、secret ID の一意解決、0件/複数件の failure 化、取得対象の過不足判定、`verify-yubikey --check bws` の外部検証 plan は、[`docs/architecture/hexagonal-implementation-rules.md`](../../../architecture/hexagonal-implementation-rules.md) と [`docs/secret-recovery/bitwarden-secrets-manager-design.md`](../../../secret-recovery/bitwarden-secrets-manager-design.md) が規定する責務境界に置く。`support` への移動、ファイル分割、private helper 削除だけで解消扱いにしない。
   - `application` は secret recovery の順序制御だけを持つ。
   - `domain` は Bitwarden SDK 型と I/O 型へ依存しない。

@@ -84,10 +84,12 @@ test double / fixture の本体は原則として `tests/` 配下に置く。た
 - port trait 契約で usecase を駆動する。
 - domain/business logic を test stub 側へ移さない。
 - integration test は adapter stub module を import せず、feature 有効でビルドされた `dotfiles` binary を実行する。
-- fixture/state helper は `tests/` 側責務、backend stub 実装は adapter 側責務として分ける。
+- test 側は「初期 datastore 定義」と「CLI 実行後の最終 datastore 観測」だけを扱い、backend state schema・状態遷移 helper・write event helper・bincode schema・backend 内部保存形式を保持してはならない。
+- backend state/schema/helper は adapter 側 internal backend stub の責務とし、`tests/` 側へ複製してはならない。
+- BWS port stub と YubiKey port stub は独立させ、共通の巨大 StubState や共有 state file で結合してはならない。port 間の結合は application/domain の通常経路でのみ発生させる。
 - module/comment で internal test 専用 feature、production build 非混入、state file 境界、compile-time selection を明記する。
 
-この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入は、この条件を満たさないため引き続き禁止する。
+この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入、`tests/` 側での backend state/schema/helper 保持は、この条件を満たさないため引き続き禁止する。
 
 application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
 
