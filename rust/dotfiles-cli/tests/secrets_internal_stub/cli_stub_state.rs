@@ -1,7 +1,9 @@
 //! `secrets_cli` から利用する internal file-backed stub state helper。
 //!
-//! `secrets-internal-test-stub` の adapter と同じ state 形式を使い、CLI test 側の責務を
-//! シナリオ定義と実行補助に限定する。
+//! この helper は現行暫定実装の shared state file 互換を維持するために残っている是正対象である。
+//! 到達設計は `docs/architecture/hexagonal-implementation-rules.md` と
+//! `docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md` の規約に従い、tests 側で
+//! backend state/schema/helper を保持しない。
 
 use std::{
     collections::{BTreeMap, BTreeSet},

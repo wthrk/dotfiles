@@ -2,8 +2,13 @@
 //!
 //! production build には compile されず、runtime flag ではなく compile-time feature selection で
 //! real YubiKey backend と差し替わる。integration test はこの module を import せず、同じ
-//! `dotfiles` binary を実行し、fixture が作る `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の
-//! state file を backend として共有する。
+//! `dotfiles` binary を実行する。
+//!
+//! 現行実装は `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` を介した shared state file を暫定的に
+//! 利用しているが、これは是正対象である。到達設計は
+//! `docs/architecture/hexagonal-implementation-rules.md` と
+//! `docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md` の規約に従い、tests 側で
+//! backend state/schema/helper を保持しない構成を前提とする。
 
 use std::fs;
 
@@ -25,8 +30,8 @@ const SPARE_SERIAL: u32 = 2002;
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 /// adapter stub が state file から読む最小 schema。
 ///
-/// tests 側の `cli_stub_state` は fixture 生成と assertion を担い、この型は YubiKey backend
-/// port 実装に必要な device/object/plaintext state だけを保持する。
+/// 現行は互換維持のため file format を読めるようにしているが、shared schema 依存は是正対象。
+/// この型は YubiKey backend 側の暫定互換境界であり、到達設計では tests 側 state/schema/helper を持たない。
 struct StubState {
     key_exists: std::collections::BTreeMap<u32, bool>,
     objects: std::collections::BTreeMap<(u32, u32), Vec<u8>>,
@@ -59,8 +64,8 @@ struct TestStubSecretDevice {
 
 /// `DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH` の state file を読み書きする境界。
 ///
-/// backend stub はこの関数だけを通じて tests 側 fixture state と接続し、fixture 生成や
-/// assertion helper の責務を adapter 配下へ持ち込まない。
+/// shared state file 経由の接続は現行暫定実装であり、是正対象。
+/// 到達設計では BWS/YubiKey stub の分離と tests 側 state/schema/helper 非保持を満たす構造へ移行する。
 fn with_state<T>(f: impl FnOnce(&mut StubState) -> Result<T>) -> Result<T> {
     let path = endpoint()?;
     let mut state = if path.exists() {
