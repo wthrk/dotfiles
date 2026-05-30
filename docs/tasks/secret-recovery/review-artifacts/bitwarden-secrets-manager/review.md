@@ -2,10 +2,10 @@
 
 この文書は `docs/tasks/secret-recovery/tasks.md` の作業項目 `Bitwarden Secrets Manager` に対する固定実装単位 `レビュー` の記録先である。
 
-## 実装担当からの引き継ぎ
+## BSM 作業項目履歴からの引き継ぎ（PR #33 現行サイクル対象外）
 
-- レビュー状態: `Hypatia 後 fresh review 完了（集約済み）`
-- 判定位置づけ: `実装差分 current-cycle の差戻し是正サイクル（作業項目全体の完了判定ではない）`
+- レビュー状態: `旧 BSM Hypatia サイクル履歴（fresh review 完了・集約済み）`
+- 判定位置づけ: `PR #33 / Issue #30 task-list-outside 現行サイクルとは別の旧 BSM 実装差分サイクル履歴。PR #33 の合格根拠、fresh review 完了、集約済み判定として再利用しない。`
 - 対象ブランチ: `feat/bitwarden-secrets-manager`
 - 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `現行サイクル差分識別子`
 - 対象差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
@@ -250,9 +250,9 @@
 ## PR #33 / Issue #30 task-list-outside レビュー追跡（2026-05-30）
 
 - 対象位置づけ: `PR #33 / branch refactor/secrets-structure-issue-30-main / Issue #30 の構造整理差分に対する task-list-outside 追跡。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle レビュー記録とは別に扱い、既存の合格集約を PR #33 の合格根拠として再利用しない。`
-- 固定対象差分: `base 5ff5e54..head 2ececf1`
-- 保存済み head: `2ececf1 refactor(secrets): port/domain/adapter構造を整理`
-- 補正対象: `2ececf1..この補正 HEAD`
+- PR #33 現行対象差分: `base 5ff5e54..この文書補正前 HEAD fa396f3`（この文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 現行 HEAD 内訳: `2ececf1 refactor(secrets): port/domain/adapter構造を整理` に、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3` を含む。
+- 補正対象: `2ececf1..fa396f3`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、internal stub module tree 補正、BSM 対象コードパス同期、PR #33 task-list-outside 証跡追加）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認証跡: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
 - outside-ledger 分類記録: `docs/task-governance/review-artifacts/outside-ledger-intake.md` の `2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録`
@@ -264,7 +264,7 @@
 - ドキュメントレビュー担当: `判定: 要修正`
   - required fix: adapter-local `#[path = "stub/yubikey.rs"]` 構造に doc comment を整合し、`TestStubSecretDevice` の責務境界 comment を追加し、test-review skill の internal backend stub 条件列挙を正本参照へ寄せる。
 - 運用整合レビュー担当: `判定: 要修正`
-  - required fix: PR #33 / commit `2ececf1` / diff range `5ff5e54..2ececf1` の対象差分、確認結果、レビュー/集約状況、PR #32 close から PR #33 作り直しへの分類・責任境界を repository 内の証跡へ記録する。
+  - required fix: PR #33 / commit `2ececf1` 起点の作り直し記録に加え、文書補正前 HEAD `fa396f3` までの diff range `5ff5e54..fa396f3` に含まれる補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`）の対象差分、確認結果、レビュー/集約状況、PR #32 close から PR #33 作り直しへの分類・責任境界を repository 内の証跡へ記録する。
 
 ### 補正後レビュー状況
 

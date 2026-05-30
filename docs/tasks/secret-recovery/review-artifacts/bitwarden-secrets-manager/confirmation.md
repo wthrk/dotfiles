@@ -228,13 +228,14 @@
 ## PR #33 / Issue #30 task-list-outside 確認（2026-05-30）
 
 - 対象位置づけ: `PR #33 / Issue #30 の branch 作り直しおよび構造レビュー・ドキュメントレビュー・運用整合レビュー差戻し補正の確認。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 確認とは別の task-list-outside 記録として扱う。`
-- 固定対象差分: `base 5ff5e54..head 2ececf1`（PR #33 作り直し時点の保存済み commit 差分）
-- 補正対象差分: `2ececf1..この補正 HEAD`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、PR #33 task-list-outside 証跡追加）
+- PR #33 現行対象差分: `base 5ff5e54..この文書補正前 HEAD fa396f3`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 補正対象差分: `2ececf1..fa396f3`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、internal stub module tree 補正、BSM 対象コードパス同期、PR #33 task-list-outside 証跡追加）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認した commit linkage:
-  - `git rev-parse --short HEAD` は着手時 `2ececf1`。
+  - `git rev-parse --short HEAD` はこの文書補正前に `fa396f3`。
   - `git branch --show-current` は `refactor/secrets-structure-issue-30-main`。
-  - `git diff --name-only 5ff5e54..2ececf1` により、PR #33 の保存済み対象差分を再特定した。
+  - `git log --oneline 5ff5e54..fa396f3` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3` を確認した。
+  - `git diff --name-only 5ff5e54..fa396f3` により、PR #33 の現行対象差分を再特定した。
 - 確認手順と結果:
   - `cargo fmt --all` 成功。
   - `rg -n "pub\\(crate\\) use|pub\\(super\\) use|adapters::(DeviceSelectionAdapter|StorageAdapter|ProcessIoAdapter|JsonReportAdapter|BwsClientAdapter)|tests 配下の double|include する" rust/dotfiles-cli/src/secrets .agents/skills/test-review -S` 実行。adapter root の再公開、旧 `tests 配下の double を include` 文言、呼び出し側の `adapters::Type` 依存は残存なし。`ports.rs` の port 契約再公開だけが別層の既存一致として残る。
