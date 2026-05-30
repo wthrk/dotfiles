@@ -41,6 +41,7 @@ description: このスキルは、サブエージェントがテストレビュ�
 - **完了条件とテスト網羅**: 作業定義文書の `Completion Conditions` 各項目を検証するテストがあるか確認する。欠けがあれば `Verdict: Fail`。
 - **責務基準判定**: test double 混入判定は、ファイル名や `#[cfg(test)]` / `#[cfg(feature = "...")]` / port trait 実装有無といった形式ではなく責務で行う。責務が当該層に属さなければ `Verdict: Fail`。
 - **production 層への double 定義混入禁止**: 実依存の肩代わり型（Fake/Stub/Mock の定義）が `adapters/`・`application/`・`domain/`・`ports/`・`support/` など production 層にある場合は `Verdict: Fail`。`#[cfg(test)]`、feature gate、port trait 実装は免除にならない。`tests/` 層または test-support 専用 crate へ移す。
+- **internal backend stub の例外**: adapter 配下の `secrets-internal-test-stub` feature 専用 backend stub は、`docs/architecture/hexagonal-implementation-rules.md` の canonical internal backend stub 条件と `docs/architecture/review-checklist.md` の責務チェックを満たす場合に限り許可する。条件をここで重複定義せず、正本を直接読んで満たしていなければ `Verdict: Fail`。
 - **inline unit test は禁止対象外**: production 層 `src/` の通常の inline unit test は許可される。`#[test]` や `#[cfg(test)]` の存在だけで `Verdict: Fail` にしない。
 - **直接コード確認**: 実ファイルを開いてテスト存在・配置を確認する。サマリーや報告で代替しない。
 - **レビュー独立性**: 過去記録や報告で代替しない。対象コードを直接読んで独立判定する。

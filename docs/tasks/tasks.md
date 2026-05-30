@@ -23,10 +23,17 @@
   - `rust/dotfiles-cli/src/secrets/domain/material.rs`
   - `rust/dotfiles-cli/src/secrets/domain/piv.rs`
   - `rust/dotfiles-cli/src/secrets/domain/storage.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/commands.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
   - `rust/dotfiles-cli/src/secrets/domain/wire.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`（YubiKey 当時の対象。現行 `11ff088` tree では削除済みであり、現行実装パスとして扱わない）
+  - `rust/dotfiles-cli/src/secrets/adapters/io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/process.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/device_serial_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/storage_adapter.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/aead.rs`
   - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
@@ -55,6 +62,7 @@
   - `rust/dotfiles-cli/Cargo.toml`
   - `rust/dotfiles-cli/src/main.rs`
   - `rust/dotfiles-cli/src/lib.rs`
+  - `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs`
   - `rust/dotfiles-cli/src/cli.rs`
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/entrypoint.rs`
@@ -71,19 +79,27 @@
   - `rust/dotfiles-cli/src/secrets/application/run_rotate_bws_token_with_stdin.rs`
   - `rust/dotfiles-cli/src/secrets/application/run_setup_with.rs`
   - `rust/dotfiles-cli/src/secrets/ports.rs`
-  - `rust/dotfiles-cli/src/secrets/domain/values.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/bws_client.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/bws_client_real.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/bws_client_stub.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_selection.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/device_serial_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/process_io_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/storage_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/report_adapter.rs`
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/selected_device_real.rs`（削除）
-  - `rust/dotfiles-cli/src/secrets/adapters/piv_io/selected_device_stub.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/ports/bw.rs`
+  - `rust/dotfiles-cli/src/secrets/ports/io.rs`
+  - `rust/dotfiles-cli/src/secrets/ports/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/domain.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/bws.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/commands.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/verification.rs`
+  - `rust/dotfiles-cli/src/secrets/domain/values.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters.rs`（削除）
+  - `rust/dotfiles-cli/src/secrets/adapters/bw.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/process.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/io/report.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/device_serial_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs`
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/storage_adapter.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint/dispatch.rs`
+  - `rust/dotfiles-cli/src/secrets/entrypoint/runtime.rs`
   - `rust/dotfiles-cli/src/secrets/support.rs`
   - `rust/dotfiles-cli/src/secrets/support/process_io.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection.rs`
@@ -94,10 +110,11 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-  - `rust/dotfiles-cli/tests/secrets_internal_stub/piv_io_internal_stub.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-secrets-manager.md](secret-recovery/work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md](secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md)
-- 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
+- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`
+- 履歴内訳（PR #33 current-cycle）: `11ff088` は直前 P1 対応 commit、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応 commit
+- 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### GnuPG / SSH

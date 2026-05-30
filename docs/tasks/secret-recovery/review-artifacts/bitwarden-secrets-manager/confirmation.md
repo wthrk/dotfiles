@@ -4,15 +4,15 @@
 
 ## 状態
 
-- 確認状態: `Hypatia 後 fresh review 前確認済み`
-- 判定位置づけ: `デザインPR段階 current-cycle 差分の fresh review 前確認（作業項目全体の完了判定ではない）`
-- 対象差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
-- 対象ブランチ: `feat/bitwarden-secrets-manager`
-- 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `現行サイクル差分識別子`
+- 確認状態: `PR #33 / Issue #30 現行差分の fresh review 前確認済み`
+- 判定位置づけ: `PR #33 task-list-outside current-cycle 差分の fresh review 前確認（作業項目全体の完了判定ではない）`
+- 対象差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`
+- 対象ブランチ: `refactor/secrets-structure-issue-30-main`
+- 確認開始時点参照: `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
 - 差分区分: `実装`
-- 確認 scope: BSM 実装確認対象は本作業項目の対象コードパス、BSM へ直接関係する文書差分、必要な実検証に限定する。同一未コミット worktree に残るその他の文書差分は対象外差分であり、BSM current-cycle の確認結果、レビュー合格根拠、commit 着手 gate の根拠として扱わない。対象パス exact list、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
+- 確認 scope: PR #33 の確認対象は `5ff5e54..77dc03c` に含まれる secrets structure 整理差分、PR #33 補正 commit、BSM へ直接関係する文書差分、必要な実検証に限定する。旧 Hypatia サイクルの確認記録は履歴であり、PR #33 current-cycle の確認結果、レビュー合格根拠、commit 着手 gate の根拠として扱わない。対象パス exact list、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
 
-## 確認手順と結果
+## 旧 BSM Hypatia 確認手順と結果（PR #33 現行対象外）
 
 - 手順:
   - `direnv exec . cargo fmt -p dotfiles-cli -- --check`
@@ -30,7 +30,9 @@
   - app 層 `secrets-internal-test-stub` 残存検索は該当なし
 - 未実施理由（未実施がある場合）: `なし`
 
-## 実装進捗への影響
+## 旧 BSM Hypatia サイクル履歴（PR #33 現行対象外）
+
+この節は `feat/bitwarden-secrets-manager` / `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7` 以前の履歴であり、PR #33 / Issue #30 の現行対象差分 `5ff5e54..77dc03c` の current-cycle 証跡ではない。ここに含まれる旧パス説明は当時の記録として残し、現行 tree の対象コードパスや fresh review 合格根拠として扱わない。
 
 - 対象コードパス差分:
   - `rust/dotfiles-cli/src/secrets/domain/values.rs` — `BwsSecretName`、`RestoreGpgCommand`、`RestorePassCommand` 追加
@@ -85,6 +87,76 @@
 - 秘密値/認証情報の露出確認: `fresh review 前確認済み` — `BwsClientAdapter` は `support/protection/bws.rs` の BWS 専用操作へ SDK get と返却 value の `ProtectedSecret` 化を委譲し、adapter 側で `secret.value` の平文受け取りを行わない。固定 secret key/name、一意解決、0件/複数件 failure 化、外部確認 plan は support へ移していない。secret 値をログ/エラー本文へ出力しない方針は維持する。
 - ログ/引数/一時ファイル/stdout/stderr 確認: `完了` — SDK 呼び出し失敗時の user-visible error は固定要約のみを返し、secret 値や raw API 応答本文を埋め込まない。
 - 権限境界/永続化/失敗時挙動確認: `fresh review 前確認済み` — 通常ビルドの `BwsClientAdapter` は SDK 経路のみを持つ。token は `ProtectedSecret` 借用境界内で処理し、SDK が所有 plaintext buffer の move を要求する login request と secret value 取得後の保護値化は `support/protection` 内の BWS 専用操作で完了する。永続化なし。
+
+## internal backend stub 独立化確認（2026-05-30）
+
+- 対象差分識別子: `2026-05-30-port-stub-independent-datastore-worktree`
+- 比較範囲: `HEAD` = `6c32327` を基点にした未コミット worktree 差分。
+- 実装補正:
+  - `rust/dotfiles-cli/tests/secrets_internal_stub/` を削除し、CLI integration test 側の backend state schema / bincode schema / 状態遷移 helper / write event helper を除去した。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は BWS port 専用の初期条件 spec JSON と、stdout sentinel line の最終状態観測だけを外部 contract とし、private datastore へ展開する構造へ変更した。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は YubiKey port 専用の初期条件 spec JSON と、stdout sentinel line の最終状態観測だけを外部 contract とし、private datastore へ展開する構造へ変更した。
+  - BWS/YubiKey stub は state/schema/file を共有せず、port 間の作用は CLI の production command path と application/domain 経路を通じてのみ発生する。
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` は CLI binary 実行前の初期条件 spec 投入と CLI 実行後の最終状態観測だけを assertion 対象にし、stub 内部イベントや内部状態遷移の assertion を削除した。
+- 確認手順と結果:
+  - `rg -n "secrets_internal_stub|DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH|StubState|CliStubFixture|write_events|bws_fetch_events|shared state file|bincode schema|state file を backend" rust/dotfiles-cli/src/secrets rust/dotfiles-cli/tests -S` は該当なし。
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli` 成功（25 passed）。
+  - `direnv exec . cargo xtask check` 成功（all checks passed）。
+  - `git diff --check` 成功。
+- セキュリティ確認:
+  - test 用 spec 値は fixture 値のみで、実 secret / 認証情報を追加していない。
+  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、stub 最終状態観測は feature build 専用 stdout sentinel line として出力する。観測 payload は fixture/spec のダミー secret 値を含み得るが、production build/runtime の本物 secret 出力経路ではない。
+- レビュー状態: `未実施` — この差分は fresh review 開始前であり、集約判定は未確定。
+- 未実施理由（未実施がある場合）: `fresh review は次工程で必須。確認コマンドの未実施はなし。`
+
+## PR #33 Codex review remediation 確認（2026-05-30）
+
+- 対象差分識別子: `PR #33 Codex review comments 3328297877 / 3328297878 remediation worktree`
+- 実装補正:
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` は backend datastore schema を直接組み立てず、BWS/YubiKey port 別の初期条件 spec JSON を CLI binary へ env で渡す構造へ変更した。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は `DOTFILES_SECRETS_BWS_STUB_SPEC_JSON` を BWS 専用 private datastore へ展開し、最終状態を BWS stdout observation frame へ出力する。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は `DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON` を YubiKey 専用 private datastore へ展開し、最終状態を YubiKey stdout observation frame へ出力する。
+  - BWS/YubiKey stub は spec/env/output/datastore 型を共有せず、port 間の作用は CLI の production command path と application/domain 経路を通じてのみ発生する。
+  - stub process wiring 用 env 名は feature-gated な `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs` を単一正本とし、tests と adapter stub が同じ定数を参照する構造へ変更した。後続の stdout observation remediation で output path env は削除した。
+  - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の現行対象コードパスから、削除済み `rust/dotfiles-cli/tests/secrets_internal_stub/{mod.rs,cli_stub_state.rs}` を外した。
+- 確認手順と結果:
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli` 成功（25 passed）。
+  - `direnv exec . cargo xtask check` 成功（all checks passed）。
+  - `git diff --check` 成功。
+- セキュリティ確認:
+  - test 用 spec 値は fixture 値のみで、実 secret / 認証情報を追加していない。
+  - CLI stdout は既存コマンド出力・secret 出力境界を維持し、stub 最終状態観測は feature build 専用 stdout sentinel line として出力する。観測 payload は fixture/spec のダミー secret 値を含み得るが、production build/runtime の本物 secret 出力経路ではない。
+
+## PR #33 stdout observation remediation 確認（2026-05-30）
+
+- 対象差分識別子: `PR #33 stdout observation remediation worktree`
+- 実装補正:
+  - `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs` は fixture/spec env 名と stdout observation framing のみを共有し、`*_STUB_OUTPUT_ENV` を削除した。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は BWS private datastore を process memory 内に保持し、BWS final observation frame を stdout sentinel line として出力する。hidden datastore file と output path file は作らない。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は YubiKey private datastore を process memory 内に保持し、YubiKey final observation frame を stdout sentinel line として出力する。hidden datastore file と output path file は作らない。
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` は別プロセス CLI の stdout から `__DOTFILES_SECRETS_STUB_OBSERVATION__` frame を parse し、通常 stdout 比較時は observation frame を除去する。output path env / temp output file には依存しない。
+- 確認手順と結果:
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli` 成功（25 passed）。
+  - `rg -n "STUB_OUTPUT|OUTPUT_ENV|output path|datastore_path|write_observed_datastore|\\.datastore\\.json|bws_output_path|yubikey_output_path|DOTFILES_SECRETS_.*OUTPUT|hidden_datastore" rust/dotfiles-cli/src rust/dotfiles-cli/tests` は該当なし。
+  - `direnv exec . cargo xtask check` 成功（all checks passed）。
+  - `git diff --check` 成功。
+- セキュリティ確認:
+  - internal stub の mutable private datastore は BWS/YubiKey それぞれの process memory に閉じ、port 間で共有しない。
+  - stdout observation は feature `secrets-internal-test-stub` 有効時の sentinel line に限定し、tests はその frame を final observation として扱う。
+  - hidden `*.datastore.json`、per-test output file、共有 state file は作成しない。
+
+## PR #33 stdout observation policy clarification 確認（2026-05-30）
+
+- 対象差分識別子: `PR #33 stdout observation policy clarification worktree`
+- 文書補正:
+  - 正本文書に、`secrets-internal-test-stub` feature の stdout observation は test-only の明示観測面であり、fixture/spec のダミー secret 値を含めてよいことを明記した。
+  - これは integration test が secret として保存した値の最終 datastore 反映を検証するための例外であり、production build/runtime の本物 secret 出力経路ではないことを明記した。
+  - hidden temp file / output path file / shared state file に secret 値を残すことは禁止のまま維持した。
+  - test 側 backend datastore schema/helper を持たず、前提条件 fixture/spec 入力と stdout final observation で検証する方針を維持した。
+- 確認手順と結果:
+  - `git diff --check`
+- セキュリティ確認:
+  - 旧 output path / 一時 JSON 出力前提は文書から除去した。stdout observation は feature build 専用の test-only 観測面として扱う。
 
 ## 実装継続確認（2026-05-29）
 
@@ -224,3 +296,31 @@
   - `direnv exec . cargo test -p dotfiles-cli --lib bws` 成功（17 passed）。
   - `git diff --check` 成功。
 - レビュー状態: `未実施` — この差し戻し後差分は fresh review 開始前であり、集約判定は未確定。
+
+## PR #33 / Issue #30 task-list-outside 確認（2026-05-30）
+
+- 対象位置づけ: `PR #33 / Issue #30 の branch 作り直しおよび構造レビュー・ドキュメントレビュー・運用整合レビュー差戻し補正の確認。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 確認とは別の task-list-outside 記録として扱う。`
+- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 77dc03c`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86`、`11ff088`、`77dc03c` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 補正対象差分: `2ececf1..77dc03c`（`11ff088` は直前 P1 対応 commit、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応 commit）
+- 対象ブランチ: `refactor/secrets-structure-issue-30-main`
+- 確認した commit linkage:
+  - `git rev-parse --short HEAD` は現行確認時点で `77dc03c`。
+  - `git branch --show-current` は `refactor/secrets-structure-issue-30-main`。
+- `git log --oneline 5ff5e54..77dc03c` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86` を含む）、直前 P1 対応 `11ff088`、fresh review 差し戻し対応 `77dc03c` を確認した。
+- `f2f2f20` は削除済み adapter root の台帳表記補正、`4cd47d4` は PR #33 現行 HEAD 証跡補正、`4092a86` は PR #33 差分終端補正、`11ff088` は直前 P1 対応 commit、`77dc03c` は現行実装/レビュー対象終端として記録する。
+  - `git diff --name-only 5ff5e54..77dc03c` により、PR #33 の現行対象差分を再特定した。
+- 確認手順と結果:
+  - stale な旧 HEAD / 旧 diff range の `rg` 検索は該当なし。PR #33 current-cycle の現行対象差分は `77dc03c` / `5ff5e54..77dc03c` として固定済み。
+  - `rg -n 'rust/dotfiles-cli/src/secrets/adapters\\.rs' docs/tasks/tasks.md docs/tasks/secret-recovery/tasks.md docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/confirmation.md` を実行。root/area の YubiKey 欄は当時対象かつ現行 `11ff088` tree では削除済みと注記済み、BSM 欄は削除対象、旧 Hypatia 記録は履歴として扱うため、現行実在ファイルとしての未注記列挙は残存なし。
+  - `cargo fmt --all` 成功。
+  - `rg -n "pub\\(crate\\) use|pub\\(super\\) use|adapters::(DeviceSelectionAdapter|StorageAdapter|ProcessIoAdapter|JsonReportAdapter|BwsClientAdapter)|tests 配下の double|include する" rust/dotfiles-cli/src/secrets .agents/skills/test-review -S` 実行。adapter root の再公開、旧 `tests 配下の double を include` 文言、呼び出し側の `adapters::Type` 依存は残存なし。`ports.rs` の port 契約再公開だけが別層の既存一致として残る。
+  - `rg -n "secrets-internal-test-stub|#\\[path\\s*=|include!\\(|tests/secrets_application|app_test_support|mockall::mock!|UnusedBwsClient|PortFuture" rust/dotfiles-cli/src/secrets/application.rs rust/dotfiles-cli/src/secrets/application rust/dotfiles-cli/src/secrets/ports.rs -S` 実行。application 層の internal stub bridge / tests 配下依存 / 手書き mock 残存なし。
+  - `rg -n "canonical internal backend stub|production build exclusion|production build 非混入|fixture/state helper|runtime 分岐なし|unchanged production command path" .agents/skills/test-review/SKILL.md .agents/skills/test-review/SKILL_ja.md -S` 実行。skill 側は正本参照文言のみで、詳細条件列挙の残存なし。
+  - `direnv exec . cargo check -p dotfiles-cli` 成功。
+  - `direnv exec . cargo check -p dotfiles-cli --features secrets-internal-test-stub` 成功。
+  - `direnv exec . cargo test -p dotfiles-cli --lib secrets::adapters` 成功（2 passed）。
+  - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::adapters` 成功（2 passed）。
+  - `git diff --check` 成功。
+- PR comment 対応状態: `fresh review/集約/commit gate 確定前に、ユーザー依頼の PR AI review 対応として一部 comment への返信または resolve を先行実施済み`。これは PR 運用上の先行実作業として記録し、repository governance 上の fresh review 合格、集約合格、commit gate 充足、最終完了扱いの根拠にはしない。
+- レビュー状態: `差戻し補正後 fresh review 未実施`。この確認記録は対象差分と実行確認を追跡可能にする補助記録であり、必須レビュー担当の合格、集約判定、commit gate 充足を代替しない。
+- 未実施理由（未実施がある場合）: `なし`

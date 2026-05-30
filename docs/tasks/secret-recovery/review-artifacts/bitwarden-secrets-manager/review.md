@@ -2,10 +2,10 @@
 
 この文書は `docs/tasks/secret-recovery/tasks.md` の作業項目 `Bitwarden Secrets Manager` に対する固定実装単位 `レビュー` の記録先である。
 
-## 実装担当からの引き継ぎ
+## BSM 作業項目履歴からの引き継ぎ（PR #33 現行サイクル対象外）
 
-- レビュー状態: `Hypatia 後 fresh review 完了（集約済み）`
-- 判定位置づけ: `実装差分 current-cycle の差戻し是正サイクル（作業項目全体の完了判定ではない）`
+- レビュー状態: `旧 BSM Hypatia サイクル履歴（fresh review 完了・集約済み）`
+- 判定位置づけ: `PR #33 / Issue #30 task-list-outside 現行サイクルとは別の旧 BSM 実装差分サイクル履歴。PR #33 の合格根拠、fresh review 完了、集約済み判定として再利用しない。`
 - 対象ブランチ: `feat/bitwarden-secrets-manager`
 - 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `現行サイクル差分識別子`
 - 対象差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
@@ -121,7 +121,7 @@
 ### 1) 秘密値・認証情報の扱い
 
 - 確認状態: `完了`
-- 確認対象（ファイル/経路）: `rust/dotfiles-cli/src/secrets/adapters.rs`（`BwsClientAdapter` token handling）
+- 確認対象（ファイル/経路）: `rust/dotfiles-cli/src/secrets/adapters/bw.rs`（`BwsClientAdapter` token handling。旧 `rust/dotfiles-cli/src/secrets/adapters.rs` は現行 `11ff088` tree では削除済み）
 - 所見: `token は `ProtectedSecret` 借用で扱い、BWS SDK login request は `support/protection` 内の BWS 専用操作で作成・zeroize する。SDK が所有 plaintext buffer の move を要求する箇所は、借用境界内の呼び出し直前にだけ buffer を作る。`
 - 差戻し要否: `不要`
 - 未実施理由（未実施時のみ）: `なし`
@@ -235,14 +235,50 @@
 
 ## 集約判定
 
-- 集約後レビュー判定: `合格`
-- 集約判定要約: `所見なし`
+- 集約後レビュー判定: `未確定`
+- 集約判定要約: `fresh review 未実施のため未確定`
 - 集約根拠:
-  - fresh review 結果として、構造・セキュリティ・仕様適合・テスト・ドキュメント・アーキテクチャ整合・運用整合は `合格`。
-  - テストレビューでは `rust/dotfiles-cli/tests/secrets_cli.rs` の外部 CLI tests 25 件、BWS stub state 保存内容確認、app/use case 側の port trait `mockall` 利用（外部 CLI tests の代替ではない）を確認して `合格`。
-  - 参照整合は初回 `不合格`（`app_test_support` 参照残存）だったが、修正後の再レビューで `合格`。
-  - 集約後レビュー判定は `合格`。
+  - 現行差分（`5ff5e54..77dc03c`）に対する必須レビュー担当の fresh review は未実施である。
+  - 旧サイクルの個別合格・集約合格は履歴情報であり、現行サイクルの合格根拠として再利用しない。
 - 差戻し事項: `なし`
 - 後続対応状態: `commit gate 記録更新済み（commit / push は未実施）`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
 - 後続対応メモ: `Hypatia 後差分は fresh review 開始前。集約後レビュー判定は未確定。`
+
+## PR #33 / Issue #30 task-list-outside レビュー追跡（2026-05-30）
+
+- 対象位置づけ: `PR #33 / branch refactor/secrets-structure-issue-30-main / Issue #30 の構造整理差分に対する task-list-outside 追跡。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle レビュー記録とは別に扱い、既存の合格集約を PR #33 の合格根拠として再利用しない。`
+- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 77dc03c`（この文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 現行 HEAD 内訳: `2ececf1 refactor(secrets): port/domain/adapter構造を整理` に、差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86` を含む）、直前 P1 対応 `11ff088`、fresh review 差し戻し（構造・PTY・追跡更新）対応 `77dc03c` を含む。
+- 補正対象: `2ececf1..77dc03c`（`4cd47d4` は過去補正時点として履歴保持、`11ff088` は直前 P1 対応 commit、現行対象終端は `77dc03c`）
+- 対象ブランチ: `refactor/secrets-structure-issue-30-main`
+- 確認証跡: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
+- outside-ledger 分類記録: `docs/task-governance/review-artifacts/outside-ledger-intake.md` の `2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録`
+- 最新 AI review 対応記録: `5e21afb docs(secrets): PR33証跡を現行HEADへ補正` と `4cd47d4 docs(secrets): PR33現行HEAD証跡を補正` は、PR #33 の AI review コメントで指摘された現行 HEAD 証跡不足への対応 commit として扱う。削除済み adapter root の対象パス扱い補正は `f2f2f20 docs(secrets): adapters削除対象の台帳表記を補正` として保持する。`4092a86 docs(secrets): PR33差分終端を4cd47d4基準へ補正`、`97748c4 docs(secrets): BSM対象コードパスを補正` は補正履歴として保持する。
+- PR comment 対応記録: fresh review/集約/commit gate 確定前に、ユーザー依頼の PR AI review 対応として一部 PR review comment への返信または resolve を先行実施済み。この先行実施は PR 運用記録として扱い、repository governance 上の fresh review 合格、集約合格、commit gate 充足、最終完了扱いの根拠にはしない。
+
+### current-cycle 差戻し handoff
+
+- 構造レビュー担当: `判定: 不合格`
+  - required fix: `adapters.rs` の `pub(crate) use` による実装型再公開を解消し、adapter root が公開面集約にならない構造へ変更する。
+- ドキュメントレビュー担当: `判定: 要修正`
+  - required fix: adapter-local `#[path = "stub/yubikey.rs"]` 構造に doc comment を整合し、`TestStubSecretDevice` の責務境界 comment を追加し、test-review skill の internal backend stub 条件列挙を正本参照へ寄せる。
+- 運用整合レビュー担当: `判定: 要修正`
+  - required fix: PR #33 / commit `2ececf1` 起点の作り直し記録に加え、diff range `5ff5e54..77dc03c` に含まれる補正 commit 群（`4cd47d4` を含む履歴）と現行終端 `77dc03c` の対象差分、確認結果、レビュー/集約状況、PR #32 close から PR #33 作り直しへの分類・責任境界を repository 内の証跡へ記録する。
+- 運用整合レビュー担当（追加 current-cycle finding）: `判定: 要修正`
+  - required fix: PR #33 / branch HEAD `77dc03c`、base `5ff5e54`、diff range `5ff5e54..77dc03c` を現行対象として追跡できるようにし、補正 commit `ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を PR #33 の補正履歴として保持する。`4cd47d4` は過去補正時点、`11ff088` は直前 P1 対応 commit、現行終端は `77dc03c` として repository 内証跡へ記録する。
+- 運用整合レビュー担当（最新 current-cycle finding）: `判定: 要修正`
+  - required fix: `5ff5e54..77dc03c` / HEAD `77dc03c` を PR #33 現行対象差分として固定し、`5e21afb` と `4cd47d4` を含む確認結果・AI review 対応記録・fresh review/集約未確定状態を更新する。fresh review/集約/commit gate 前に実施した PR comment 返信または resolve は、ユーザー依頼の PR AI review 対応として先行実施した PR 運用記録であり、repository governance 上の fresh review 合格、集約合格、commit gate 充足、最終完了扱いの根拠にしない。PR #32 close から PR #33 作り直しへの責任境界は `77dc03c` 現在地まで追跡可能にする。
+- ドキュメントレビュー担当（追加 current-cycle finding）: `判定: 要修正`
+  - required fix: review/confirmation/outside-ledger と root/area ledger の現行欄を PR #33 / Issue #30 現行サイクルとして追跡可能にし、旧 Hypatia サイクルを現行状態に見せない。confirmation の旧パス説明は履歴として明確化し、`review-checklist.md` の internal backend stub 許可条件列挙は `hexagonal-implementation-rules.md` 正本参照へ寄せ、`verification.rs` の stale test doc comment / function name を現行の `VerifySummary` 確認内容に合わせる。
+- ドキュメントレビュー担当（最新 current-cycle finding）: `判定: 要修正`
+  - required fix: `4cd47d4` / `5ff5e54..77dc03c` への証跡更新に加え、YubiKey 完了項目で `rust/dotfiles-cli/src/secrets/adapters.rs` を現行実在ファイルとして読ませない。YubiKey 欄では当時の対象かつ現行 `11ff088` tree では削除済みであることを明記し、BSM 欄の削除対象表記と矛盾させない。
+
+### 補正後レビュー状況
+
+- 実装担当補正: `実施済み`
+- 実装担当確認: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）` に、HEAD `77dc03c` / diff range `5ff5e54..77dc03c` として記録。
+- 必須レビュー担当の fresh review: `未実施`
+- 集約後レビュー判定: `未確定`
+- 集約判定要約: `current-cycle finding 補正後の fresh review が未実施のため、合格/commit gate 充足とは扱わない`
+- 集約根拠: `本節は対象差分・確認結果・差戻し状況・commit linkage の追跡記録であり、必須レビュー担当の合格判定、集約判定、commit gate 充足を代替しない。`
