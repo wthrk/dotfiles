@@ -6,10 +6,13 @@
 //!
 //! この stub は BWS port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::BWS_STUB_SPEC_ENV` の BWS 専用 spec から private datastore
-//! へ展開し、最終状態は `secrets_internal_test_stub_contract::BWS_STUB_OUTPUT_ENV` へ観測用 JSON として書き出す。
+//! へ展開し、最終観測 JSON は stdout の sentinel line として書き出す。
 //! YubiKey port stub とは state/schema/file を共有しない。
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, OnceLock},
+};
 
 use anyhow::Context;
 
@@ -18,7 +21,7 @@ use crate::secrets::{
     ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
 };
-use crate::secrets_internal_test_stub_contract::{BWS_STUB_OUTPUT_ENV, BWS_STUB_SPEC_ENV};
+use crate::secrets_internal_test_stub_contract::{BWS_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX};
 
 #[derive(serde::Deserialize)]
 struct BwsStubSpec {
@@ -42,6 +45,14 @@ struct BwsDatastore {
 struct BwsObservation {
     resolved_secrets: BTreeMap<String, String>,
 }
+
+#[derive(serde::Serialize)]
+struct BwsObservationFrame<'a> {
+    port: &'static str,
+    observation: &'a BwsObservation,
+}
+
+static BWS_DATASTORE: OnceLock<Mutex<Option<BwsDatastore>>> = OnceLock::new();
 
 impl BwsClientPort for super::BwsClientAdapter {
     async fn list_bws_projects(
@@ -147,19 +158,22 @@ fn protected_secret_from_string(value: String) -> crate::Result<ProtectedSecret>
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut BwsDatastore) -> crate::Result<T>) -> crate::Result<T> {
-    let mut store = load_datastore()?;
-    let out = f(&mut store)?;
-    write_observed_datastore(&store)?;
+    let datastore = BWS_DATASTORE.get_or_init(|| Mutex::new(None));
+    let mut state = datastore
+        .lock()
+        .map_err(|_| anyhow::anyhow!("BWS internal stub datastore lock is poisoned"))?;
+    if state.is_none() {
+        *state = Some(load_datastore()?);
+    }
+    let store = state
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("BWS internal stub datastore is not initialized"))?;
+    let out = f(store)?;
+    write_observation(store)?;
     Ok(out)
 }
 
 fn load_datastore() -> crate::Result<BwsDatastore> {
-    let path = datastore_path()?;
-    if path.exists() {
-        let body = fs::read(&path)?;
-        return serde_json::from_slice(&body)
-            .context("failed to decode observed BWS internal stub datastore JSON");
-    }
     let body = std::env::var(BWS_STUB_SPEC_ENV)
         .context("BWS internal stub spec JSON is not configured")?;
     let spec: BwsStubSpec =
@@ -167,25 +181,17 @@ fn load_datastore() -> crate::Result<BwsDatastore> {
     Ok(datastore_from_spec(spec))
 }
 
-fn write_observed_datastore(store: &BwsDatastore) -> crate::Result<()> {
-    let datastore_body = serde_json::to_vec_pretty(store)?;
-    fs::write(datastore_path()?, datastore_body)?;
-
-    let observation_body = serde_json::to_vec_pretty(&observation_from_datastore(store))?;
-    fs::write(output_path()?, observation_body)?;
+fn write_observation(store: &BwsDatastore) -> crate::Result<()> {
+    let observation = observation_from_datastore(store);
+    let frame = BwsObservationFrame {
+        port: "bws",
+        observation: &observation,
+    };
+    println!(
+        "{STUB_OBSERVATION_PREFIX}{}",
+        serde_json::to_string(&frame)?
+    );
     Ok(())
-}
-
-fn output_path() -> crate::Result<PathBuf> {
-    let path = std::env::var(BWS_STUB_OUTPUT_ENV)
-        .context("BWS internal stub output path is not configured")?;
-    Ok(PathBuf::from(path))
-}
-
-fn datastore_path() -> crate::Result<PathBuf> {
-    let mut path = output_path()?;
-    path.set_extension("datastore.json");
-    Ok(path)
 }
 
 fn datastore_from_spec(spec: BwsStubSpec) -> BwsDatastore {

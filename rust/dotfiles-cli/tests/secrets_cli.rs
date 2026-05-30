@@ -6,18 +6,15 @@
 //! 検証する。
 
 use std::{
-    fs,
     io::{ErrorKind, Read, Write},
-    path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::Context;
 use dotfiles_cli::secrets_internal_test_stub_contract::{
-    BWS_STUB_OUTPUT_ENV, BWS_STUB_SPEC_ENV, YUBIKEY_STUB_OUTPUT_ENV, YUBIKEY_STUB_SPEC_ENV,
+    BWS_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
 };
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
@@ -34,54 +31,46 @@ struct CommandRun {
     stderr: String,
 }
 
+impl CommandRun {
+    fn user_stdout(&self) -> String {
+        strip_observation_lines(&self.stdout)
+    }
+
+    fn final_yubikey(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "yubikey")
+    }
+
+    fn final_bws(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "bws")
+    }
+
+    fn has_bws_observation(&self) -> bool {
+        has_observation(&self.stdout, "bws")
+    }
+}
+
 struct PtyRun {
     success: bool,
     output: String,
 }
 
+impl PtyRun {
+    fn final_yubikey(&self) -> TestResult<Value> {
+        final_observation(&self.output, "yubikey")
+    }
+}
+
 struct StubPorts {
     yubikey_spec: Value,
     bws_spec_value: Value,
-    yubikey_output_path: PathBuf,
-    bws_output_path: PathBuf,
 }
 
 impl StubPorts {
     fn new(yubikey_spec: Value, bws_spec_value: Value) -> Self {
-        let (yubikey_output_path, bws_output_path) = Self::unique_output_paths();
         Self {
             yubikey_spec,
             bws_spec_value,
-            yubikey_output_path,
-            bws_output_path,
         }
-    }
-
-    fn final_yubikey(&self) -> TestResult<Value> {
-        read_json_file(&self.yubikey_output_path)
-    }
-
-    fn final_bws(&self) -> TestResult<Value> {
-        read_json_file(&self.bws_output_path)
-    }
-
-    fn unique_output_paths() -> (PathBuf, PathBuf) {
-        static SEQ: AtomicU64 = AtomicU64::new(1);
-
-        let unique = format!(
-            "dotfiles-secrets-stub-{}-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        );
-        let dir = std::env::temp_dir();
-        (
-            dir.join(format!("{unique}-yubikey.json")),
-            dir.join(format!("{unique}-bws.json")),
-        )
     }
 
     fn apply_to_command(&self, command: &mut Command) -> TestResult<()> {
@@ -90,12 +79,10 @@ impl StubPorts {
                 YUBIKEY_STUB_SPEC_ENV,
                 serde_json::to_string(&self.yubikey_spec)?,
             )
-            .env(YUBIKEY_STUB_OUTPUT_ENV, &self.yubikey_output_path)
             .env(
                 BWS_STUB_SPEC_ENV,
                 serde_json::to_string(&self.bws_spec_value)?,
-            )
-            .env(BWS_STUB_OUTPUT_ENV, &self.bws_output_path);
+            );
         Ok(())
     }
 
@@ -105,16 +92,8 @@ impl StubPorts {
             serde_json::to_string(&self.yubikey_spec)?,
         );
         command.env(
-            YUBIKEY_STUB_OUTPUT_ENV,
-            self.yubikey_output_path.to_string_lossy().as_ref(),
-        );
-        command.env(
             BWS_STUB_SPEC_ENV,
             serde_json::to_string(&self.bws_spec_value)?,
-        );
-        command.env(
-            BWS_STUB_OUTPUT_ENV,
-            self.bws_output_path.to_string_lossy().as_ref(),
         );
         Ok(())
     }
@@ -153,7 +132,7 @@ fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
 
     assert!(run.success, "stderr: {}", run.stderr);
     assert_stored_secret(
-        &stub.final_yubikey()?,
+        &run.final_yubikey()?,
         PRIMARY_SERIAL,
         "bws-access-token",
         "new-token\r",
@@ -176,7 +155,7 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("bws-access-token: "));
     assert_stored_secret(
-        &stub.final_yubikey()?,
+        &run.final_yubikey()?,
         PRIMARY_SERIAL,
         "bws-access-token",
         "new-token",
@@ -197,7 +176,7 @@ fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert_eq!(run.stdout, "token");
+    assert_eq!(run.user_stdout(), "token");
     Ok(())
 }
 
@@ -237,10 +216,11 @@ fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()>
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"role\": \"primary\""));
-    assert!(run.stdout.contains("\"name\": \"local-storage\""));
-    assert!(run.stdout.contains("\"status\": \"ok\""));
-    let final_yubikey = stub.final_yubikey()?;
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"role\": \"primary\""));
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bws-access-token", "token");
@@ -264,7 +244,7 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
     assert!(run.output.contains("bw-password: "));
     assert!(run.output.contains("bws-access-token: "));
     assert!(run.output.contains("\"role\": \"primary\""));
-    let final_yubikey = stub.final_yubikey()?;
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bws-access-token", "token");
@@ -295,9 +275,10 @@ fn enroll_spare_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"role\": \"spare\""));
-    assert!(run.stdout.contains("\"serial\": 2002"));
-    let final_yubikey = stub.final_yubikey()?;
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"role\": \"spare\""));
+    assert!(stdout.contains("\"serial\": 2002"));
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bws-access-token", "token");
@@ -327,8 +308,8 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"role\": \"spare\""));
-    let final_yubikey = stub.final_yubikey()?;
+    assert!(run.user_stdout().contains("\"role\": \"spare\""));
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bws-access-token", "token");
@@ -348,11 +329,12 @@ fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"serial\": 2001"));
-    assert!(run.stdout.contains("\"name\": \"local-storage\""));
-    assert!(run.stdout.contains("\"status\": \"ok\""));
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"serial\": 2001"));
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
     assert_stored_secret(
-        &stub.final_yubikey()?,
+        &run.final_yubikey()?,
         PRIMARY_SERIAL,
         "bws-access-token",
         "new-token\r",
@@ -376,7 +358,7 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     assert!(run.output.contains("bws-access-token: "));
     assert!(run.output.contains("\"serial\": 2001"));
     assert_stored_secret(
-        &stub.final_yubikey()?,
+        &run.final_yubikey()?,
         PRIMARY_SERIAL,
         "bws-access-token",
         "new-token",
@@ -403,7 +385,7 @@ fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult
     assert!(run.output.contains("rotate another YubiKey? [y/N]: "));
     assert!(run.output.contains("\"serial\": 2001"));
     assert!(run.output.contains("\"serial\": 2002"));
-    let final_yubikey = stub.final_yubikey()?;
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(
         &final_yubikey,
         PRIMARY_SERIAL,
@@ -428,11 +410,12 @@ fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {
     let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"name\": \"local-storage\""));
-    assert!(run.stdout.contains("\"status\": \"ok\""));
-    assert!(run.stdout.contains("\"name\": \"bws\""));
-    assert!(run.stdout.contains("\"status\": \"skipped\""));
-    assert!(!stub.bws_output_path.exists());
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"skipped\""));
+    assert!(!run.has_bws_observation());
     Ok(())
 }
 
@@ -449,10 +432,11 @@ fn verify_yubikey_runs_bws_external_check() -> TestResult<()> {
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"name\": \"local-storage\""));
-    assert!(run.stdout.contains("\"name\": \"bws\""));
-    assert!(run.stdout.contains("\"status\": \"ok\""));
-    let final_bws = stub.final_bws()?;
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_bws = run.final_bws()?;
     assert_eq!(
         final_bws["resolved_secrets"]["gpg-secret-key-backup"],
         json!("gpg-secret")
@@ -492,9 +476,10 @@ fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
     let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("\"serial\": 2001"));
-    assert!(run.stdout.contains("\"name\": \"local-storage\""));
-    assert!(run.stdout.contains("\"status\": \"ok\""));
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"serial\": 2001"));
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
     Ok(())
 }
 
@@ -547,7 +532,7 @@ fn verify_yubikey_audits_stub_route_in_internal_stub_build() -> TestResult<()> {
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
         run.stderr
-            .contains("YubiKey internal stub output path is not configured"),
+            .contains("YubiKey internal stub spec JSON is not configured"),
         "stderr: {}",
         run.stderr
     );
@@ -589,7 +574,7 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
     )?;
     assert!(put_run.success, "stderr: {}", put_run.stderr);
     assert_stored_secret(
-        &stub.final_yubikey()?,
+        &put_run.final_yubikey()?,
         PRIMARY_SERIAL,
         "bws-access-token",
         "new-token\r",
@@ -609,7 +594,7 @@ fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
     )?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert_eq!(run.stdout, "seed-token");
+    assert_eq!(run.user_stdout(), "seed-token");
     Ok(())
 }
 
@@ -858,9 +843,35 @@ fn assert_stored_secret(store: &Value, serial: u32, secret_name: &str, expected:
     );
 }
 
-fn read_json_file(path: &PathBuf) -> TestResult<Value> {
-    let body = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(serde_json::from_slice(&body)?)
+fn strip_observation_lines(output: &str) -> String {
+    let mut visible = String::new();
+    for segment in output.split_inclusive('\n') {
+        if !segment.starts_with(STUB_OBSERVATION_PREFIX) {
+            visible.push_str(segment);
+        }
+    }
+    visible
+}
+
+fn final_observation(output: &str, port: &str) -> TestResult<Value> {
+    observation_frames(output)
+        .filter(|frame| frame["port"] == json!(port))
+        .filter_map(|frame| frame.get("observation").cloned())
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("missing final {port} observation"))
+}
+
+fn has_observation(output: &str, port: &str) -> bool {
+    observation_frames(output).any(|frame| frame["port"] == json!(port))
+}
+
+fn observation_frames(output: &str) -> impl Iterator<Item = Value> + '_ {
+    output.lines().filter_map(|line| {
+        let body = line
+            .trim_end_matches('\r')
+            .strip_prefix(STUB_OBSERVATION_PREFIX)?;
+        serde_json::from_str(body).ok()
+    })
 }
 
 fn bootstrap_json() -> &'static str {

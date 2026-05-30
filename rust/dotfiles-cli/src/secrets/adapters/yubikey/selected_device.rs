@@ -6,10 +6,13 @@
 //!
 //! この stub は YubiKey port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::YUBIKEY_STUB_SPEC_ENV` の YubiKey 専用 spec から private datastore
-//! へ展開し、最終状態は `secrets_internal_test_stub_contract::YUBIKEY_STUB_OUTPUT_ENV` へ観測用 JSON として書き出す。
+//! へ展開し、最終観測 JSON は stdout の sentinel line として書き出す。
 //! BWS port stub とは state/schema/file を共有しない。
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, OnceLock},
+};
 
 use anyhow::Context;
 
@@ -17,7 +20,7 @@ use super::{
     DeviceCandidate, PivApplicationVersion, PivObjectId, ProtectedSecret, Result, SecretDeviceIo,
     SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
 };
-use crate::secrets_internal_test_stub_contract::{YUBIKEY_STUB_OUTPUT_ENV, YUBIKEY_STUB_SPEC_ENV};
+use crate::secrets_internal_test_stub_contract::{STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV};
 
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
 const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
@@ -80,6 +83,14 @@ struct StubDeviceObservation {
     key_exists: bool,
     stored_secrets: BTreeMap<String, String>,
 }
+
+#[derive(serde::Serialize)]
+struct YubiKeyObservationFrame<'a> {
+    port: &'static str,
+    observation: &'a YubiKeyObservation,
+}
+
+static YUBIKEY_DATASTORE: OnceLock<Mutex<Option<YubiKeyDatastore>>> = OnceLock::new();
 
 struct TestStubSecretDevice {
     serial: u32,
@@ -229,19 +240,22 @@ fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
-    let mut store = load_datastore()?;
-    let out = f(&mut store)?;
-    write_observed_datastore(&store)?;
+    let datastore = YUBIKEY_DATASTORE.get_or_init(|| Mutex::new(None));
+    let mut state = datastore
+        .lock()
+        .map_err(|_| anyhow::anyhow!("YubiKey internal stub datastore lock is poisoned"))?;
+    if state.is_none() {
+        *state = Some(load_datastore()?);
+    }
+    let store = state
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("YubiKey internal stub datastore is not initialized"))?;
+    let out = f(store)?;
+    write_observation(store)?;
     Ok(out)
 }
 
 fn load_datastore() -> Result<YubiKeyDatastore> {
-    let path = datastore_path()?;
-    if path.exists() {
-        let body = fs::read(&path)?;
-        return serde_json::from_slice(&body)
-            .context("failed to decode observed YubiKey internal stub datastore JSON");
-    }
     let body = std::env::var(YUBIKEY_STUB_SPEC_ENV)
         .context("YubiKey internal stub spec JSON is not configured")?;
     let spec: YubiKeyStubSpec =
@@ -249,25 +263,17 @@ fn load_datastore() -> Result<YubiKeyDatastore> {
     Ok(datastore_from_spec(spec))
 }
 
-fn write_observed_datastore(store: &YubiKeyDatastore) -> Result<()> {
-    let datastore_body = serde_json::to_vec_pretty(store)?;
-    fs::write(datastore_path()?, datastore_body)?;
-
-    let observation_body = serde_json::to_vec_pretty(&observation_from_datastore(store))?;
-    fs::write(output_path()?, observation_body)?;
+fn write_observation(store: &YubiKeyDatastore) -> Result<()> {
+    let observation = observation_from_datastore(store);
+    let frame = YubiKeyObservationFrame {
+        port: "yubikey",
+        observation: &observation,
+    };
+    println!(
+        "{STUB_OBSERVATION_PREFIX}{}",
+        serde_json::to_string(&frame)?
+    );
     Ok(())
-}
-
-fn output_path() -> Result<PathBuf> {
-    let path = std::env::var(YUBIKEY_STUB_OUTPUT_ENV)
-        .context("YubiKey internal stub output path is not configured")?;
-    Ok(PathBuf::from(path))
-}
-
-fn datastore_path() -> Result<PathBuf> {
-    let mut path = output_path()?;
-    path.set_extension("datastore.json");
-    Ok(path)
 }
 
 fn datastore_from_spec(spec: YubiKeyStubSpec) -> YubiKeyDatastore {

@@ -117,7 +117,7 @@
   - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は `DOTFILES_SECRETS_BWS_STUB_SPEC_JSON` を BWS 専用 private datastore へ展開し、最終状態を BWS 観測用 JSON へ出力する。
   - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は `DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON` を YubiKey 専用 private datastore へ展開し、最終状態を YubiKey 観測用 JSON へ出力する。
   - BWS/YubiKey stub は spec/env/output/datastore 型を共有せず、port 間の作用は CLI の production command path と application/domain 経路を通じてのみ発生する。
-  - stub process wiring 用 env 名 / output env 名は feature-gated な `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs` を単一正本とし、tests と adapter stub が同じ定数を参照する構造へ変更した。一意 output path 生成と `Command` / PTY `CommandBuilder` への env 注入は tests 側 helper に閉じている。
+  - stub process wiring 用 env 名は feature-gated な `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs` を単一正本とし、tests と adapter stub が同じ定数を参照する構造へ変更した。後続の stdout observation remediation で output path env は削除した。
   - `docs/tasks/tasks.md` と `docs/tasks/secret-recovery/tasks.md` の現行対象コードパスから、削除済み `rust/dotfiles-cli/tests/secrets_internal_stub/{mod.rs,cli_stub_state.rs}` を外した。
 - 確認手順と結果:
   - `direnv exec . env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli` 成功（25 passed）。
@@ -126,6 +126,24 @@
 - セキュリティ確認:
   - test 用 spec 値は fixture 値のみで、実 secret / 認証情報を追加していない。
   - CLI stdout は既存コマンド出力・secret 出力境界を維持し、stub 最終状態観測は port ごとの一時 JSON 出力へ分離した。
+
+## PR #33 stdout observation remediation 確認（2026-05-30）
+
+- 対象差分識別子: `PR #33 stdout observation remediation worktree`
+- 実装補正:
+  - `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs` は fixture/spec env 名と stdout observation framing のみを共有し、`*_STUB_OUTPUT_ENV` を削除した。
+  - `rust/dotfiles-cli/src/secrets/adapters/bw/internal_stub.rs` は BWS private datastore を process memory 内に保持し、BWS final observation frame を stdout sentinel line として出力する。hidden datastore file と output path file は作らない。
+  - `rust/dotfiles-cli/src/secrets/adapters/yubikey/selected_device.rs` は YubiKey private datastore を process memory 内に保持し、YubiKey final observation frame を stdout sentinel line として出力する。hidden datastore file と output path file は作らない。
+  - `rust/dotfiles-cli/tests/secrets_cli.rs` は別プロセス CLI の stdout から `__DOTFILES_SECRETS_STUB_OBSERVATION__` frame を parse し、通常 stdout 比較時は observation frame を除去する。output path env / temp output file には依存しない。
+- 確認手順と結果:
+  - `direnv exec . env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli` 成功（25 passed）。
+  - `rg -n "STUB_OUTPUT|OUTPUT_ENV|output path|datastore_path|write_observed_datastore|\\.datastore\\.json|bws_output_path|yubikey_output_path|DOTFILES_SECRETS_.*OUTPUT|hidden_datastore" rust/dotfiles-cli/src rust/dotfiles-cli/tests` は該当なし。
+  - `direnv exec . cargo xtask check` 成功（all checks passed）。
+  - `git diff --check` 成功。
+- セキュリティ確認:
+  - internal stub の mutable private datastore は BWS/YubiKey それぞれの process memory に閉じ、port 間で共有しない。
+  - stdout observation は feature `secrets-internal-test-stub` 有効時の sentinel line に限定し、tests はその frame を final observation として扱う。
+  - hidden `*.datastore.json`、per-test output file、共有 state file は作成しない。
 
 ## 実装継続確認（2026-05-29）
 
