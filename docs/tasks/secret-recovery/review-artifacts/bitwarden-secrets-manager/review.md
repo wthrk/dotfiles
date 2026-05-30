@@ -249,12 +249,12 @@
 
 - 対象位置づけ: `PR #33 / branch refactor/secrets-structure-issue-30-main / Issue #30 の構造整理差分に対する task-list-outside 追跡。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle レビュー記録とは別に扱い、既存の合格集約を PR #33 の合格根拠として再利用しない。`
 - PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 77dc03c`（この文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
-- 現行 HEAD 内訳: `2ececf1 refactor(secrets): port/domain/adapter構造を整理` に、差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む）、直前 P1 対応 `11ff088`、fresh review 差し戻し（構造・PTY・追跡更新）対応 `77dc03c` を含む。
+- 現行 HEAD 内訳: `2ececf1 refactor(secrets): port/domain/adapter構造を整理` に、差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86` を含む）、直前 P1 対応 `11ff088`、fresh review 差し戻し（構造・PTY・追跡更新）対応 `77dc03c` を含む。
 - 補正対象: `2ececf1..77dc03c`（`4cd47d4` は過去補正時点として履歴保持、`11ff088` は直前 P1 対応 commit、現行対象終端は `77dc03c`）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認証跡: `confirmation.md` の `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
 - outside-ledger 分類記録: `docs/task-governance/review-artifacts/outside-ledger-intake.md` の `2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録`
-- 最新 AI review 対応記録: `5e21afb docs(secrets): PR33証跡を現行HEADへ補正` と `4cd47d4 docs(secrets): adapters削除対象の台帳表記を補正` は、PR #33 の AI review コメントで指摘された現行 HEAD 証跡不足と削除済み adapter root の対象パス扱いへの対応 commit として扱う。`97748c4 docs(secrets): BSM対象コードパスを補正` は先行する BSM 対象コードパス漏れ指摘への対応 commit として保持する。
+- 最新 AI review 対応記録: `5e21afb docs(secrets): PR33証跡を現行HEADへ補正` と `4cd47d4 docs(secrets): PR33現行HEAD証跡を補正` は、PR #33 の AI review コメントで指摘された現行 HEAD 証跡不足への対応 commit として扱う。削除済み adapter root の対象パス扱い補正は `f2f2f20 docs(secrets): adapters削除対象の台帳表記を補正` として保持する。`4092a86 docs(secrets): PR33差分終端を4cd47d4基準へ補正`、`97748c4 docs(secrets): BSM対象コードパスを補正` は補正履歴として保持する。
 - PR comment 対応記録: fresh review/集約/commit gate 確定前に、ユーザー依頼の PR AI review 対応として一部 PR review comment への返信または resolve を先行実施済み。この先行実施は PR 運用記録として扱い、repository governance 上の fresh review 合格、集約合格、commit gate 充足、最終完了扱いの根拠にはしない。
 
 ### current-cycle 差戻し handoff

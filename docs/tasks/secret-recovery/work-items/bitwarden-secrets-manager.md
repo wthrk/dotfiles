@@ -3,7 +3,7 @@
 - 作業種別: `規約適合リファクタリングを伴う機能実装`
 - 作業目的: `Bitwarden Secrets Manager` 取得経路を、secret-recovery の層分割と外部境界規約に沿って実装する。
 - 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`
-- 現行サイクル確認基準: `5ff5e54..77dc03c`（PR #33 作り直し commit `2ececf1` と、補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4`、`11ff088`、`77dc03c` を対象にする。`97748c4` は BSM 対象コードパス漏れ指摘への対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`4cd47d4` は削除済み adapter root を現行対象パス扱いしない台帳補正、`11ff088` は直前 P1 対応、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応）
+- 現行サイクル確認基準: `5ff5e54..77dc03c`（PR #33 作り直し commit `2ececf1` と、補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86`、`11ff088`、`77dc03c` を対象にする。`97748c4` は BSM 対象コードパス漏れ指摘への対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`f2f2f20` は削除済み adapter root を現行対象パス扱いしない台帳補正、`4cd47d4` は PR #33 現行 HEAD 証跡補正、`4092a86` は PR #33 差分終端補正、`11ff088` は直前 P1 対応、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応）
 - 履歴内訳（PR #33 current-cycle）: `11ff088` は直前 P1 対応 commit、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応 commit
 - 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
 - 現行サイクルレビュー scope: BSM 実装レビュー対象は、本作業項目の対象コードパス、BSM へ直接関係する文書差分、必須レビュー結果、必要な実検証で判断する。旧 Hypatia サイクルや BSM scope 外の `.agents/skills/`、`AGENTS.md`、`docs/task-governance/`、repo-governance/YubiKey 証跡などの文書差分を、BSM current-cycle のレビュー合格根拠・commit 着手 gate の充足根拠・不充足根拠にしない。対象パス exact list、confirmation/review artifact、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。

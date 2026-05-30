@@ -230,14 +230,14 @@
 ## PR #33 / Issue #30 task-list-outside 確認（2026-05-30）
 
 - 対象位置づけ: `PR #33 / Issue #30 の branch 作り直しおよび構造レビュー・ドキュメントレビュー・運用整合レビュー差戻し補正の確認。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 確認とは別の task-list-outside 記録として扱う。`
-- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 77dc03c`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4`、`11ff088`、`77dc03c` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- PR #33 現行対象差分: `base 5ff5e54..実装/レビュー対象終端 77dc03c`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86`、`11ff088`、`77dc03c` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
 - 補正対象差分: `2ececf1..77dc03c`（`11ff088` は直前 P1 対応 commit、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応 commit）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認した commit linkage:
   - `git rev-parse --short HEAD` は現行確認時点で `77dc03c`。
   - `git branch --show-current` は `refactor/secrets-structure-issue-30-main`。
-  - `git log --oneline 5ff5e54..77dc03c` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`4cd47d4` を含む）、直前 P1 対応 `11ff088`、fresh review 差し戻し対応 `77dc03c` を確認した。
-  - `4cd47d4` は過去の台帳補正時点、`11ff088` は直前 P1 対応 commit、`77dc03c` は現行実装/レビュー対象終端として記録する。
+- `git log --oneline 5ff5e54..77dc03c` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit 群（`ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86` を含む）、直前 P1 対応 `11ff088`、fresh review 差し戻し対応 `77dc03c` を確認した。
+- `f2f2f20` は削除済み adapter root の台帳表記補正、`4cd47d4` は PR #33 現行 HEAD 証跡補正、`4092a86` は PR #33 差分終端補正、`11ff088` は直前 P1 対応 commit、`77dc03c` は現行実装/レビュー対象終端として記録する。
   - `git diff --name-only 5ff5e54..77dc03c` により、PR #33 の現行対象差分を再特定した。
 - 確認手順と結果:
   - stale な旧 HEAD / 旧 diff range の `rg` 検索は該当なし。PR #33 current-cycle の現行対象差分は `77dc03c` / `5ff5e54..77dc03c` として固定済み。
