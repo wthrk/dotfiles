@@ -8,7 +8,7 @@ use crate::{
     Result,
     secrets::{
         domain::manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT,
-        ports::{
+        ports::io::{
             BootstrapSecretDocumentInputPort, PinInputPort, RotationContinuationPort,
             SecretInputPort, SecretOutputPort,
         },

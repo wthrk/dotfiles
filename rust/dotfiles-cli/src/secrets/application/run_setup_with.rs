@@ -3,8 +3,8 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        commands::SetupCommand,
         storage::{SecretStorageSetupIntent, SecretStorageSetupProbe},
-        values::SetupCommand,
     },
     ports,
 };
@@ -33,7 +33,8 @@ where
 mod tests {
     use crate::secrets::{
         domain::{
-            piv::PivApplicationVersion, storage::SecretStorageSetupInspection, values::SetupCommand,
+            commands::SetupCommand, piv::PivApplicationVersion,
+            storage::SecretStorageSetupInspection,
         },
         ports,
     };

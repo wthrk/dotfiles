@@ -1,13 +1,23 @@
 //! `dotfiles secrets` の CLI orchestration 層。
 //!
 //! この機能は CLI、application、domain、adapter、support の責務に分ける。
-//! CLI 入口は clap option の型付けと公開 command 名を固定し、secret の取得順序や
-//! device 操作の失敗契約は application 以下へ閉じ込める。
+//! CLI 入口は clap option の型付けと公開 command 名を固定し、composition root は
+//! adapter concrete の所有関係だけを確定する。secret の取得順序や device 操作の
+//! 失敗契約は application 以下へ閉じ込める。
 //!
 //! domain は command 入力、process 保護、実機 discovery に依存しない。保護メモリや
 //! 端末 I/O の業務語彙を持たない部品は support として扱い、use case の順序は application に置く。
 
-mod adapters;
+/// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
+mod adapters {
+    mod bw;
+    mod io;
+    mod yubikey;
+
+    pub(in crate::secrets) use bw::BwsClientAdapter;
+    pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
+    pub(in crate::secrets) use yubikey::{DeviceSelectionAdapter, StorageAdapter};
+}
 mod application;
 pub mod domain;
 mod entrypoint;
@@ -16,6 +26,7 @@ mod support;
 
 use clap::{Args, Subcommand, ValueEnum};
 use domain::piv::SecretName;
+use support::protection::SecretSession;
 
 use crate::Result;
 
@@ -130,9 +141,37 @@ enum VerifyCheck {
 /// CLI で parse 済みの `dotfiles secrets` command を entrypoint 境界へ渡す。
 ///
 /// CLI 入口は command 定義と option 変換だけを担い、adapter concrete 生成と port 束ねは
-/// entrypoint 配線 module へ閉じる。
+/// composition root へ閉じる。
 pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
-    entrypoint::run(options).await
+    let _session = SecretSession::start()?;
+    let mut ports = RuntimePorts::production();
+    entrypoint::run(options, &mut ports).await
+}
+
+/// production command path の composition root が所有する実 adapter 群。
+pub(in crate::secrets) struct RuntimePorts {
+    pub(in crate::secrets) device: adapters::DeviceSelectionAdapter,
+    pub(in crate::secrets) spare_device: adapters::DeviceSelectionAdapter,
+    pub(in crate::secrets) device_pin_policy: adapters::DeviceSelectionAdapter,
+    pub(in crate::secrets) process_io: adapters::ProcessIoAdapter,
+    pub(in crate::secrets) storage: adapters::StorageAdapter,
+    pub(in crate::secrets) report: adapters::JsonReportAdapter,
+    pub(in crate::secrets) bws_client: adapters::BwsClientAdapter,
+}
+
+impl RuntimePorts {
+    /// production 用の adapter concrete 群を構築する。
+    fn production() -> Self {
+        Self {
+            device: adapters::DeviceSelectionAdapter::default(),
+            spare_device: adapters::DeviceSelectionAdapter::default(),
+            device_pin_policy: adapters::DeviceSelectionAdapter::default(),
+            process_io: adapters::ProcessIoAdapter::default(),
+            storage: adapters::StorageAdapter::default(),
+            report: adapters::JsonReportAdapter::default(),
+            bws_client: adapters::BwsClientAdapter,
+        }
+    }
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。

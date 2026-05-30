@@ -8,6 +8,14 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 
 application 層の use case orchestration test は `secrets-internal-test-stub` feature から切り離し、port trait 契約で駆動する。secret 値の test-only 観測が必要な場合は [Secret handling policy](./secret-handling.md) の `ProtectedSecret` test-only 最小アクセス許可に従い、production 経路の plaintext 取り出し API として扱わない。
 
+internal backend stub を使う integration test の詳細規則は [Hexagonal Implementation Rules の internal backend stub の配置](../architecture/hexagonal-implementation-rules.md#internal-backend-stub-の配置) を正本とする。本設計で追加する方針は次の最小要件のみとする。
+
+- `bitwarden` SDK と YubiKey SDK は datastore API として扱う。
+- test 側は初期 datastore 定義だけを入力し、CLI 実行後は port ごとの最終 datastore 内容のみを `secrets-internal-test-stub` feature 専用の stdout sentinel observation で検証する。
+- stdout observation は test-only の明示観測面であり、fixture/spec で与えたダミー secret 値を含めてよい。これは integration test が secret として保存した値の最終 datastore 反映を検証するためであり、production build/runtime の本物 secret 出力経路ではない。
+- hidden temp file、output path file、共有 state file に secret 値を残してはならない。
+- test 側は stub 内部 state schema や遷移 helper を持たない。BWS/YubiKey の port stub は独立させる。
+
 ## 目的と保護境界
 
 この機能の目的は、新規マシン復旧で必要な機械向け secret を Bitwarden Secrets Manager から取得し、必要な復旧処理にだけ受け渡すことである。

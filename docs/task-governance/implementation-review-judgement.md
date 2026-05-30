@@ -45,7 +45,7 @@
 
 Bitwarden Secrets Manager 経路では、固定 secret key/name の意味づけ、secret ID の一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、`verify-yubikey --check bws` の外部検証 plan が support に置かれていないかを確認する。これらを support に置いたまま `判定: 合格` としてはならない。
 
-secret-recovery の active item `YubiKey` において、テスト用の dependency / fixture selection が同一 production command path、同一 port 契約、adapter 層責務（port 契約と外部技術の翻訳）を満たす場合、`runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一 adapter module 配下にあること自体` は構造レビューの不合格根拠に使用してはならない。不合格根拠にできるのは、同一 production command path、配置+責務、または port 契約維持のいずれかが不成立であることをコード根拠付きで示せる場合のみとする。
+secret-recovery の internal backend stub において、`secrets-internal-test-stub` feature 専用で production build に含まれず、runtime real/stub 分岐を作らず、同一 production command path と同一 port 契約を維持し、integration test が adapter stub module を import せず feature 有効の `dotfiles` binary を実行し、test 側が初期/最終 datastore 観測のみに限定されている場合、`adapter 配下に test 専用 backend stub があること自体` は構造レビューの不合格根拠に使用してはならない。不合格根拠にできるのは、同一 production command path、配置+責務、port 契約維持、compile-time selection、test 側責務逸脱（backend state/schema/helper 保持、port stub 非独立）のいずれかが不成立であることをコード根拠付きで示せる場合のみとする。
 
 ### 仕様適合レビュー担当
 
@@ -63,7 +63,7 @@ secret-recovery の active item `YubiKey` において、テスト用の depende
 
 テストコードが仕様（作業定義文書の完了条件）を実際に検証しているかを確認する。完了条件は項目ごとに `テストで検証すべき項目` と `構造確認・文書確認で満たす項目` を分類し、前者に対してのみテスト網羅を要求する。後者を機械的に `テスト網羅不足` と判定してはならず、`根拠:` にテスト不要の理由と参照した完了条件項目を明記すること。test double 判定は形式（`#[cfg(test)]` か `#[cfg(feature = "...")]` か・port trait を実装しているか・配置場所）ではなく責務で行う。各シンボル・各ファイル・各 gate ブロックについて「責務は何か」「その責務はこの層に属すか」を問い、責務が層に属さなければ形式が正しくても `判定: 不合格` とする。`#[cfg(test)]` ラップ・`#[cfg(feature = "...")]` gate・port trait 実装・production source tree への配置だけを理由に機械的に `判定: 不合格` としてはならない。責務不一致が確認できる場合に限って不合格とする。production 層の `src/` における通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`、その module 自身の private 関数を検証するもの）は許可され、`#[test]` 関数や `#[cfg(test)]` ブロックの存在のみを理由に `判定: 不合格` としてはならない。判定基準の正本は `docs/architecture/review-checklist.md` の `tests/` 配下セクションとする。テストが存在しない完了条件項目（テストで検証すべき項目に分類されたもの）があれば `判定: 不合格` とする。
 
-secret-recovery の `YubiKey` 作業項目（`docs/tasks/secret-recovery/work-items/yubikey.md`）に対しては、V15 の定義を優先し、test fixture / dependency selection を generic test double として機械的に不合格判定してはならない。判定は配置の形式ではなく、対象コードの責務が adapter 層責務（port 契約と外部技術の翻訳）に一致するか、production command path を変形していないかで行う。
+secret-recovery の internal backend stub に対しては、test fixture / dependency selection を generic test double として機械的に不合格判定してはならない。判定は配置の形式ではなく、対象コードの責務が adapter 層責務（port 契約と外部技術の翻訳）に一致するか、production command path を変形していないか、test 側が backend state/schema/helper を持たず初期/最終 datastore 観測のみに限定されているか、BWS/YubiKey の port stub が独立しているかで行う。tests 側に backend state/schema/helper が残る場合は `判定: 不合格` とする。
 
 secret-recovery の active item `YubiKey` に対しては、次の文言を finding として返してはならない。1) `完了条件に対するテスト網羅不足` を完了条件の構造項目・文書項目・責務項目へ機械的に適用すること。2) `責務基準での production 層 test double 混入` を、同一 production command path と adapter 層責務を満たす dependency / fixture selection に generic 適用すること。これら2件は YubiKey では誤判定として扱い、`判定: 要修正` または `判定: 不合格` の根拠に使用してはならない。
 
@@ -93,7 +93,7 @@ secret-recovery の `YubiKey` 作業項目で V14（same-route）を判定する
 
 アーキテクチャ整合レビュー担当は、ファイル分割後の全体が「規定済み境界に責務が置かれた設計」になっているかを判定する。薄い port や薄い adapter を見かけ上作るために、業務判断・usecase 手順・固定 secret key の意味づけ・一意解決の業務規則・0件/複数件の domain failure 化・BWS check の外部検証 plan が support へ寄せられている場合、個別ファイルが整理されていても `判定: 不合格` とする。
 
-secret-recovery の active item `YubiKey` において、テスト用の dependency / fixture selection が同一 production command path、同一 port 契約、adapter 層責務を満たす場合、アーキテクチャ整合レビューは `runtime adapter と test 用代替実行責務の混在`、`test 専用責務の混入`、`同一 adapter module 配下にあること自体` を全体非整合の根拠として使用してはならない。全体非整合として不合格にするには、same-route 不成立、配置+責務不一致、または単一 production command path の破綻を、モジュール全体文脈で具体的に示すことを必須とする。
+secret-recovery の internal backend stub が、同一 production command path、同一 port 契約、adapter 層責務、compile-time feature selection、test 側の初期/最終 datastore 観測限定、BWS/YubiKey port stub 独立を満たす場合、アーキテクチャ整合レビューは `adapter 配下に test 専用 backend stub があること自体` を全体非整合の根拠として使用してはならない。全体非整合として不合格にするには、same-route 不成立、配置+責務不一致、単一 production command path の破綻、runtime 分岐導入、test 側の backend state/schema/helper 保持、または port stub 結合を、モジュール全体文脈で具体的に示すことを必須とする。
 
 ### 参照整合レビュー担当（文書是正専用）
 
