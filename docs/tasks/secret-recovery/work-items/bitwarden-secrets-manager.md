@@ -2,10 +2,11 @@
 
 - 作業種別: `規約適合リファクタリングを伴う機能実装`
 - 作業目的: `Bitwarden Secrets Manager` 取得経路を、secret-recovery の層分割と外部境界規約に沿って実装する。
-- 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
-- 現行サイクル確認基準: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（`HEAD` = `dccada7` を基点に、未コミット tracked diff と未追跡 `rust/dotfiles-cli/src/secrets/entrypoint.rs` を含む worktree 差分を対象にする）
-- 現行サイクルレビュー scope: BSM 実装レビュー対象は、本作業項目の対象コードパス、BSM へ直接関係する文書差分、必須レビュー結果、必要な実検証で判断する。BSM scope 外の `.agents/skills/`、`AGENTS.md`、`docs/task-governance/`、repo-governance/YubiKey 証跡などの文書差分を、BSM current-cycle のレビュー合格根拠・commit 着手 gate の充足根拠・不充足根拠にしない。対象パス exact list、confirmation/review artifact、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
-- 実装/テスト差分の保存コミット終端: `HEAD dccada7`（保存済み commit 終端。current-cycle review 対象は上記差分識別子で固定した未コミット worktree 差分であり、保存済み commit 終端だけの差分とは扱わない）
+- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD 97748c4 / diff range 5ff5e54..97748c4`
+- 現行サイクル確認基準: `5ff5e54..97748c4`（PR #33 作り直し commit `2ececf1` と、補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4` を対象にする。`97748c4` は最新 AI review コメントの対象コードパス漏れ指摘への対応）
+- 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
+- 現行サイクルレビュー scope: BSM 実装レビュー対象は、本作業項目の対象コードパス、BSM へ直接関係する文書差分、必須レビュー結果、必要な実検証で判断する。旧 Hypatia サイクルや BSM scope 外の `.agents/skills/`、`AGENTS.md`、`docs/task-governance/`、repo-governance/YubiKey 証跡などの文書差分を、BSM current-cycle のレビュー合格根拠・commit 着手 gate の充足根拠・不充足根拠にしない。対象パス exact list、confirmation/review artifact、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
+- 実装/テスト差分の保存コミット終端: `HEAD 97748c4`（PR #33 の現行保存済み commit 終端。fresh review 未実施・集約未確定であり、保存済み commit 終端だけをレビュー合格や commit gate 充足の根拠として扱わない）
 - 構造完了条件:
   - SDK 呼び出しは adapter / port 境界へ隔離する。
   - secret の保護境界、protection 内操作、BWS SDK 呼び出し境界は [`docs/secret-recovery/secret-handling.md`](../../../secret-recovery/secret-handling.md) に適合させる。

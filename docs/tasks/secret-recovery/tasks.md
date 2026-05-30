@@ -72,7 +72,8 @@
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md#13-bitwarden-secrets-manager-クライアント)
 - レビュー記録: [review-artifacts/bitwarden-secrets-manager/review.md](review-artifacts/bitwarden-secrets-manager/review.md#bitwarden-secrets-manager-レビュー記録)
-- 現行サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
+- 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD 97748c4 / diff range 5ff5e54..97748c4`
+- 履歴サイクル差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`（旧 BSM Hypatia サイクル。PR #33 / Issue #30 現行サイクルの合格根拠として扱わない）
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `Cargo.toml`
@@ -136,7 +137,7 @@
 | 規約計画 | 完了 | `../../secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/bitwarden-secrets-manager.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 完了 | `../../secret-recovery/bitwarden-secrets-manager-design.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 実装（デザインPR） | fresh review 待ち | 実コード差分（`2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`。`HEAD dccada7` を基点にした未コミット worktree 差分として参照） | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
+| 実装（PR #33 / Issue #30） | fresh review 待ち | 実コード差分（`PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD 97748c4 / diff range 5ff5e54..97748c4`。`ae1b917` は PR #33 証跡同期、`97748c4` は最新 AI review コメントの対象コードパス漏れ指摘への対応） | [work-items/bitwarden-secrets-manager.md](work-items/bitwarden-secrets-manager.md) |
 | 確認 | fresh review 前確認済み | `review-artifacts/bitwarden-secrets-manager/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 未実施（Hypatia 後 fresh review 必須） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 未着手（fresh review 合格後に判定） | `review-artifacts/bitwarden-secrets-manager/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

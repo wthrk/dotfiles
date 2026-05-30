@@ -90,6 +90,6 @@
 - 対象依頼: `PR #32 を close し、origin/main 先頭から PR #33 / branch refactor/secrets-structure-issue-30-main として secrets structure 整理差分を作り直した状態の監査証跡を固定する`
 - 分類 (`task-list-outside` 固定): `task-list-outside`
 - 責任境界: `PR #33 / Issue #30 の branch 作り直し、対象差分、確認結果、レビュー状況、commit linkage の追跡記録に限定する。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 記録を PR #33 の合格根拠として再利用せず、root/area ledger の active item 選定や完了状態は変更しない。`
-- 対象差分識別子（着手時に未確定なら `未確定`）: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / この文書補正前 head fa396f3 / diff range 5ff5e54..fa396f3`（文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 対象差分識別子（着手時に未確定なら `未確定`）: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD 97748c4 / diff range 5ff5e54..97748c4`（文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
 - レビュー記録の保存先: `docs/tasks/secret-recovery/review-artifacts/bitwarden-secrets-manager/review.md`（PR #33 / Issue #30 task-list-outside 追跡節）
-- 備考（任意）: `PR #32 は closed、PR #33 は open として作り直された前提の記録。PR #33 は origin/main 先頭 5ff5e54 からの作り直し commit 2ececf1 に、差戻し補正 commit ffe9880 / 7320c55 / fbc5096 / fa396f3 を重ねた状態として git log / git diff で確認した。`
+- 備考（任意）: `PR #32 は closed、PR #33 は open として作り直された前提の記録。PR #33 は origin/main 先頭 5ff5e54 からの作り直し commit 2ececf1 に、差戻し補正 commit ffe9880 / 7320c55 / fbc5096 / fa396f3 / ae1b917 / 97748c4 を重ねた状態として git log / git diff で確認した。ae1b917 は PR #33 証跡同期、97748c4 は最新 AI review コメントの対象コードパス漏れ指摘への対応。fresh review 未実施・集約未確定の状態は維持し、本記録はレビュー合格や commit gate 充足の代替ではない。`

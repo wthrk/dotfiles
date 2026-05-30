@@ -122,9 +122,9 @@ impl VerifySummary {
 mod tests {
     use super::*;
 
-    /// verify summary は local storage failure と external skipped 状態を保持する。
+    /// verify summary は local storage failure 状態を保持する。
     #[test]
-    fn partial_rotate_summary_serializes_updated_entries() {
+    fn verify_summary_records_local_storage_failure() {
         let summary = VerifySummary::local_storage_failed(42);
 
         assert_eq!(summary.serial, 42);
@@ -134,9 +134,9 @@ mod tests {
         );
     }
 
-    /// 空 summary list は report 対象を持たない。
+    /// 空の verify summary list は表示対象を持たない。
     #[test]
-    fn partial_rotate_summary_skips_output_when_empty() {
+    fn empty_verify_summary_list_has_no_report_targets() {
         let summaries: Vec<VerifySummary> = Vec::new();
 
         assert!(summaries.is_empty());

@@ -4,15 +4,15 @@
 
 ## 状態
 
-- 確認状態: `Hypatia 後 fresh review 前確認済み`
-- 判定位置づけ: `デザインPR段階 current-cycle 差分の fresh review 前確認（作業項目全体の完了判定ではない）`
-- 対象差分識別子: `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7`
-- 対象ブランチ: `feat/bitwarden-secrets-manager`
-- 確認開始時点参照: `../../work-items/bitwarden-secrets-manager.md` 記載の `現行サイクル差分識別子`
+- 確認状態: `PR #33 / Issue #30 現行差分の fresh review 前確認済み`
+- 判定位置づけ: `PR #33 task-list-outside current-cycle 差分の fresh review 前確認（作業項目全体の完了判定ではない）`
+- 対象差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / HEAD 97748c4 / diff range 5ff5e54..97748c4`
+- 対象ブランチ: `refactor/secrets-structure-issue-30-main`
+- 確認開始時点参照: `PR #33 / Issue #30 task-list-outside 確認（2026-05-30）`
 - 差分区分: `実装`
-- 確認 scope: BSM 実装確認対象は本作業項目の対象コードパス、BSM へ直接関係する文書差分、必要な実検証に限定する。同一未コミット worktree に残るその他の文書差分は対象外差分であり、BSM current-cycle の確認結果、レビュー合格根拠、commit 着手 gate の根拠として扱わない。対象パス exact list、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
+- 確認 scope: PR #33 の確認対象は `5ff5e54..97748c4` に含まれる secrets structure 整理差分、PR #33 補正 commit、BSM へ直接関係する文書差分、必要な実検証に限定する。旧 Hypatia サイクルの確認記録は履歴であり、PR #33 current-cycle の確認結果、レビュー合格根拠、commit 着手 gate の根拠として扱わない。対象パス exact list、root/area 台帳、current-cycle 文言の完全同期は補助記録であり gate ではない。
 
-## 確認手順と結果
+## 旧 BSM Hypatia 確認手順と結果（PR #33 現行対象外）
 
 - 手順:
   - `direnv exec . cargo fmt -p dotfiles-cli -- --check`
@@ -30,7 +30,9 @@
   - app 層 `secrets-internal-test-stub` 残存検索は該当なし
 - 未実施理由（未実施がある場合）: `なし`
 
-## 実装進捗への影響
+## 旧 BSM Hypatia サイクル履歴（PR #33 現行対象外）
+
+この節は `feat/bitwarden-secrets-manager` / `2026-05-29-hypatia-current-cycle-worktree@HEAD-dccada7` 以前の履歴であり、PR #33 / Issue #30 の現行対象差分 `5ff5e54..97748c4` の current-cycle 証跡ではない。ここに含まれる旧パス説明は当時の記録として残し、現行 tree の対象コードパスや fresh review 合格根拠として扱わない。
 
 - 対象コードパス差分:
   - `rust/dotfiles-cli/src/secrets/domain/values.rs` — `BwsSecretName`、`RestoreGpgCommand`、`RestorePassCommand` 追加
@@ -228,14 +230,15 @@
 ## PR #33 / Issue #30 task-list-outside 確認（2026-05-30）
 
 - 対象位置づけ: `PR #33 / Issue #30 の branch 作り直しおよび構造レビュー・ドキュメントレビュー・運用整合レビュー差戻し補正の確認。Bitwarden Secrets Manager 作業項目の Hypatia 以前の current-cycle 確認とは別の task-list-outside 記録として扱う。`
-- PR #33 現行対象差分: `base 5ff5e54..この文書補正前 HEAD fa396f3`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
-- 補正対象差分: `2ececf1..fa396f3`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、internal stub module tree 補正、BSM 対象コードパス同期、PR #33 task-list-outside 証跡追加）
+- PR #33 現行対象差分: `base 5ff5e54..HEAD 97748c4`（PR #33 作り直し commit `2ececf1` と、差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4` を含む。文書-only 補正後の実際の HEAD は `git log` の HEAD で確認する）
+- 補正対象差分: `2ececf1..97748c4`（adapter root 再公開除去、adapter-local stub doc comment 補正、test-review skill 正本参照化、internal stub module tree 補正、BSM 対象コードパス同期、PR #33 task-list-outside 証跡追加、PR #33 証跡同期、最新 AI review コメントの対象コードパス漏れ指摘への対応）
 - 対象ブランチ: `refactor/secrets-structure-issue-30-main`
 - 確認した commit linkage:
-  - `git rev-parse --short HEAD` はこの文書補正前に `fa396f3`。
+  - `git rev-parse --short HEAD` はこの文書補正前に `97748c4`。
   - `git branch --show-current` は `refactor/secrets-structure-issue-30-main`。
-  - `git log --oneline 5ff5e54..fa396f3` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3` を確認した。
-  - `git diff --name-only 5ff5e54..fa396f3` により、PR #33 の現行対象差分を再特定した。
+  - `git log --oneline 5ff5e54..97748c4` により、PR #33 作り直し commit `2ececf1` と差戻し補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4` を確認した。
+  - `ae1b917` は PR #33 証跡同期、`97748c4` は最新 AI review コメントで指摘された BSM 対象コードパス漏れへの対応として確認した。
+  - `git diff --name-only 5ff5e54..97748c4` により、PR #33 の現行対象差分を再特定した。
 - 確認手順と結果:
   - `cargo fmt --all` 成功。
   - `rg -n "pub\\(crate\\) use|pub\\(super\\) use|adapters::(DeviceSelectionAdapter|StorageAdapter|ProcessIoAdapter|JsonReportAdapter|BwsClientAdapter)|tests 配下の double|include する" rust/dotfiles-cli/src/secrets .agents/skills/test-review -S` 実行。adapter root の再公開、旧 `tests 配下の double を include` 文言、呼び出し側の `adapters::Type` 依存は残存なし。`ports.rs` の port 契約再公開だけが別層の既存一致として残る。
@@ -246,5 +249,5 @@
   - `direnv exec . cargo test -p dotfiles-cli --lib secrets::adapters` 成功（2 passed）。
   - `direnv exec . cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib secrets::adapters` 成功（2 passed）。
   - `git diff --check` 成功。
-- レビュー状態: `差戻し補正後 fresh review 未実施`。この確認記録は対象差分と実行確認を追跡可能にする補助記録であり、必須レビュー担当の合格や集約判定を代替しない。
+- レビュー状態: `差戻し補正後 fresh review 未実施`。この確認記録は対象差分と実行確認を追跡可能にする補助記録であり、必須レビュー担当の合格、集約判定、commit gate 充足を代替しない。
 - 未実施理由（未実施がある場合）: `なし`
