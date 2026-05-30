@@ -99,6 +99,7 @@
   - `rust/dotfiles-cli/src/secrets/ports/bw.rs`
   - `rust/dotfiles-cli/src/secrets/ports/io.rs`
   - `rust/dotfiles-cli/src/secrets/ports/yubikey.rs`
+  - `rust/dotfiles-cli/src/secrets/domain.rs`
   - `rust/dotfiles-cli/src/secrets/domain/bws.rs`
   - `rust/dotfiles-cli/src/secrets/domain/commands.rs`
   - `rust/dotfiles-cli/src/secrets/domain/enrollment.rs`
@@ -124,6 +125,7 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_random.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/sealed_blob.rs`
   - `rust/dotfiles-cli/src/secrets/support/protection/secret_consumer.rs`（削除）
+  - `rust/dotfiles-cli/tests/secrets_internal_stub/mod.rs`
   - `rust/dotfiles-cli/tests/secrets_internal_stub/cli_stub_state.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `Hypatia 後 fresh review 待ち`
