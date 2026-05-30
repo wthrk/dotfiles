@@ -20,10 +20,9 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 type TestResult<T> = anyhow::Result<T>;
 
 const INTERNAL_STUB_STATE_ENV: &str = "DOTFILES_SECRETS_INTERNAL_STUB_STATE_PATH";
-#[path = "secrets_internal_stub/cli_stub_state.rs"]
-mod cli_stub_state;
+mod secrets_internal_stub;
 
-use cli_stub_state::{
+use secrets_internal_stub::cli_stub_state::{
     CliStubFixture, PRIMARY_SERIAL, SPARE_SERIAL, StubFixture, StubSecret, StubState,
 };
 
