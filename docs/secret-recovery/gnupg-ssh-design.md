@@ -41,9 +41,9 @@
 ## recipient 運用 / BWS 更新契約
 
 - primary 登録時は接続中 YubiKey の recipient を 1 件作成し、`recipients` 初期値として保存する。
-- spare 追加時は既存 envelope を復号し、spare recipient の `wrapped_dek` を追加したうえで `ciphertext` を再生成して同一 secret name を更新する。
+- spare 追加時は既存 envelope を復号して同一 DEK を使い、spare recipient の `wrapped_dek` を `recipients` へ追加して同一 secret name を更新する（`ciphertext` は変更しない）。
 - recipient 照合は `yubikey_serial` と `public_key_fingerprint` の両方一致を必須とし、片方のみ一致は不正扱いで停止する。
-- reencrypt 実行時は更新前 envelope の `version` / `metadata.primary_fingerprint` が既知値と一致することを確認し、一致しない場合は上書きせず停止する。
+- reencrypt 実行時は、更新直前に BWS から読み出した現行 envelope の `version`（`1`）と `metadata.primary_fingerprint` を既知値として保持し、これから上書きする BWS secret `gpg-secret-key-backup` の現行値がこの既知値と一致することを確認する。一致しない場合は上書きせず停止する。
 - BWS 更新は対話実行では project/secret 名と envelope `metadata.primary_fingerprint` を表示して明示確認後に実行し、非対話実行では明示的上書き許可 option がある場合だけ更新する。
 
 ## GPG import API 決定

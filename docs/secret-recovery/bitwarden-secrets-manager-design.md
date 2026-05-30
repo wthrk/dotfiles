@@ -77,7 +77,12 @@ Bitwarden Secrets Manager で取得する対象と利用先は次のとおり。
 
 ### `gpg-secret-key-backup`
 
-値は UTF-8 JSON の encrypted envelope とする。`version: 1` を固定し、top-level は `version` / `metadata` / `ciphertext` / `recipients` を必須とする。`metadata` は `primary_fingerprint`（40 桁 16 進）/ `exported_at`（UTC RFC3339）/ `dek_alg`（`aes-256-gcm`）/ `recipient_kek_alg`（`rsa-oaep-sha256`）を持つ。`ciphertext` は `nonce` と `body` の base64 文字列、`recipients` は 1 件以上で `yubikey_serial` / `piv_slot`（`9d`）/ `public_key_fingerprint` / `wrapped_dek`（base64）を持つ。
+値は UTF-8 JSON の encrypted envelope とする。`version: 1` を固定し、次の schema を必須とする。
+
+- top-level: `version`（number, `1` 固定）/ `metadata` / `ciphertext` / `recipients`
+- `metadata`: `primary_fingerprint`（40 桁 16 進）/ `exported_at`（UTC RFC3339）/ `dek_alg`（`aes-256-gcm`）/ `recipient_kek_alg`（`rsa-oaep-sha256`）
+- `ciphertext`: `nonce` と `body` の base64 文字列
+- `recipients`: 1 件以上。各要素は `yubikey_serial`（string, 10 進）/ `piv_slot`（string, `9d` 固定）/ `public_key_fingerprint` / `wrapped_dek`（base64）
 
 復旧処理は envelope 形式を検証し、接続中 YubiKey と一致する recipient で data encryption key を unwrap して復号済み backup を得た場合だけ GPG import へ進む。復号済み backup は 1 つの primary key を持つ OpenPGP transferable secret key を表し、その primary key に紐づく encryption / authentication / signing subkey を含む。複数 primary key を同じ secret に連結して保存しない。複数 primary key が必要になった場合は、この設計を更新して secret name と検証条件を追加する。
 
