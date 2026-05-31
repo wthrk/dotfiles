@@ -548,6 +548,8 @@ fn normalize_fingerprint(value: &str, expected_len: usize, field: &str) -> Resul
 ///
 /// この domain は外部 base64 crate に依存しないため、保存可能条件の検証に必要な最小 decoder を
 /// 純粋関数として持つ。padding・alphabet・長さの妥当性違反は domain error として停止する。
+/// padding を含む最終 quantum では canonical 性（RFC 4648 §3.5）も検証し、出力に使われない
+/// 余剰 sextet bit が 0 でない非 canonical 入力（`AB==` / `AAB=` 等）も停止させる。
 fn base64_decode(input: &str, field: &str) -> Result<Vec<u8>> {
     let bytes = input.as_bytes();
     if !bytes.len().is_multiple_of(4) {
@@ -582,6 +584,16 @@ fn base64_decode(input: &str, field: &str) -> Result<Vec<u8>> {
             accumulator = (accumulator << 6) | u32::from(sextet);
         }
         let bytes_in_chunk = 3 - chunk_padding;
+        // padding を含む最終 quantum では、出力に使われない余剰 sextet bit（RFC 4648 §3.5
+        // が 0 を要求する canonical bit）が 0 でなければ拒否する。出力は 24-bit 値の上位
+        // `bytes_in_chunk` byte で、捨てられる下位 `(3 - bytes_in_chunk) * 8` bit が
+        // すべて 0 であることを確認する（2 padding なら下位 16 bit ＝ 2 番目 sextet の
+        // 下位 4 bit、1 padding なら下位 8 bit ＝ 3 番目 sextet の下位 2 bit）。これにより
+        // `AB==` / `AAB=` のような非 canonical base64 を schema 検証失敗として停止させる。
+        let discarded_bits = (3 - bytes_in_chunk) * 8;
+        if discarded_bits != 0 && accumulator & ((1u32 << discarded_bits) - 1) != 0 {
+            return Err(invalid_base64(field));
+        }
         let chunk_bytes = accumulator.to_be_bytes();
         // accumulator は 24-bit 値で、上位 byte（index 0）は常に 0。
         output.extend_from_slice(&chunk_bytes[1..=bytes_in_chunk]);
@@ -871,6 +883,29 @@ mod tests {
         assert!(base64_decode("AAAAAA==", "field").is_ok());
         // 非末尾 chunk への padding は拒否する。
         assert!(base64_decode("AA==AAAA", "field").is_err());
+    }
+
+    /// padding を含む最終 quantum の余剰 sextet bit が 0 でない非 canonical base64
+    /// （RFC 4648 §3.5 違反）を拒否し、canonical な値は受理する。
+    #[test]
+    fn base64_decode_rejects_non_canonical_padding_bits() {
+        // 2 padding（1 byte 出力）: 2 番目 sextet の下位 4 bit が非 0 なら拒否。
+        // `A`=0b000000, `B`=0b000001（下位 4 bit に 1 が立つ）。`AA==` は canonical。
+        assert!(base64_decode("AB==", "field").is_err());
+        assert!(base64_decode("AP==", "field").is_err());
+        assert!(base64_decode("AA==", "field").is_ok());
+        // 1 padding（2 byte 出力）: 3 番目 sextet の下位 2 bit が非 0 なら拒否。
+        // `B`=0b000001（下位 2 bit に 1 が立つ）、`C`=0b000010 も同様。`AAA=` は canonical。
+        assert!(base64_decode("AAB=", "field").is_err());
+        assert!(base64_decode("AAC=", "field").is_err());
+        assert!(base64_decode("AAA=", "field").is_ok());
+        // 下位 bit が 0 の sextet を末尾に持つ canonical な padding は受理する。
+        // `Q`=0b010000（下位 4 bit 0）→ `AQ==` は 2 padding canonical。
+        assert!(base64_decode("AQ==", "field").is_ok());
+        // `E`=0b000100（下位 2 bit 0）→ `AAE=` は 1 padding canonical。
+        assert!(base64_decode("AAE=", "field").is_ok());
+        // padding なしの通常データは canonical 検証の対象外で受理する。
+        assert!(base64_decode("AAAA", "field").is_ok());
     }
 
     /// 未知の top-level field を持つ envelope は拒否する。
