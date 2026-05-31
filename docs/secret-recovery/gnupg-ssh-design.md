@@ -51,7 +51,12 @@ envelope 化では、export bytes をそのまま ASCII armor へ変換せず、
 - primary 登録時は接続中 YubiKey の recipient を 1 件作成し、`recipients` 初期値として保存する。
 - spare 追加時は既存 envelope を復号して同一 DEK を使い、spare recipient の `wrapped_dek` を `recipients` へ追加して同一 secret name を更新する（`ciphertext` は変更しない）。この更新も BWS secret の read-modify-write として扱い、更新前に読み出した revision / updatedAt / ETag 相当の更新識別子（取得不可の場合は exact UTF-8 secret value bytes の SHA-256 digest）を保持し、更新直前に再取得した現行値と一致する場合だけ上書きする。
 - recipient 照合は `yubikey_serial` と `public_key_fingerprint` の両方一致を必須とし、片方のみ一致は不正扱いで停止する。
-- recipient 追加を含む envelope 更新（spare 追加、reencrypt、置換更新）では、更新前に BWS から読み出した現行 secret の revision / updatedAt / ETag 相当の更新識別子を既知値として保持し、更新直前に再取得した現行 secret の更新識別子が一致することを確認する。SDK で更新識別子を取得できない場合は、最初に読み出した exact UTF-8 secret value bytes の SHA-256 digest を保持し、更新直前に再取得した exact value bytes の digest と一致する場合だけ上書きする。`version` と `metadata.primary_fingerprint` だけを stale overwrite 防止条件に使わない。
+- slot key 再生成時（PIV slot `82` の鍵を作り直した場合）は、再生成後の `public_key_fingerprint` が変わり旧 recipient の `wrapped_dek` を復号に使えなくなるため、別の有効な recipient を持つ YubiKey で既存 envelope を復号して DEK を取り出し、再生成後の slot `82` 公開鍵に対する新 recipient を `recipients` へ追加し、旧 `yubikey_serial` / 旧 `public_key_fingerprint` の recipient を `recipients` から除外して同一 secret name を更新する。
+- 紛失 / 盗難 YubiKey の recipient 除外は、該当する `yubikey_serial` と `public_key_fingerprint` に一致する要素を `recipients` から取り除いて更新する。除外だけでは旧 envelope を入手した紛失 YubiKey が DEK を unwrap できる余地が残るため、漏えいを前提とする紛失 / 盗難の除外では backup 再暗号化を併せて必須とする。
+- backup 再暗号化（DEK rotation）は、接続中の有効な recipient で既存 envelope を復号して backup bytes を取り出し、新しい DEK を生成して `ciphertext`（`nonce` / `body` / `tag`）を作り直し、除外後に残す全 recipient へ新 DEK を RSA-OAEP-SHA256 で wrap し直して `wrapped_dek` を更新する。除外済み recipient の旧 `wrapped_dek` は保持せず、`metadata.primary_fingerprint` と backup 内容は変更しない。
+- slot key 再生成・紛失除外・再暗号化で DEK、復号済み backup、export bytes を保護境界内の一時値として扱い、argv / shell history / ログ / 永続一時ファイルへ残さない。
+- これらの更新は、接続中 YubiKey と一致する有効な recipient で既存 envelope を復号できる場合だけ実行する。唯一の recipient を再生成・除外して有効な recipient が 1 件も残らない場合は既存 envelope を復号できないため停止し、envelope を変更せず primary 登録（再 export）からやり直す。
+- recipient 追加を含む envelope 更新（spare 追加、slot key 再生成、紛失除外、reencrypt、置換更新）では、更新前に BWS から読み出した現行 secret の revision / updatedAt / ETag 相当の更新識別子を既知値として保持し、更新直前に再取得した現行 secret の更新識別子が一致することを確認する。SDK で更新識別子を取得できない場合は、最初に読み出した exact UTF-8 secret value bytes の SHA-256 digest を保持し、更新直前に再取得した exact value bytes の digest と一致する場合だけ上書きする。`version` と `metadata.primary_fingerprint` だけを stale overwrite 防止条件に使わない。
 - BWS 更新は対話実行では project/secret 名と envelope `metadata.primary_fingerprint` を表示して明示確認後に実行し、非対話実行では明示的上書き許可 option がある場合だけ更新する。
 
 ## GPG import API 決定
