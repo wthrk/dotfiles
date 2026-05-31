@@ -7,6 +7,7 @@
 pub(crate) mod bws;
 pub(crate) mod commands;
 pub(crate) mod enrollment;
+pub mod gpg_backup;
 pub mod manifest;
 pub mod piv;
 pub mod storage;
