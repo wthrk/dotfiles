@@ -152,8 +152,9 @@ impl GpgBackupEnvelope {
 
     /// 検証済み envelope を UTF-8 JSON bytes へ serialize する。
     ///
-    /// 出力は `version` 固定・固定アルゴリズム・正規化済み fingerprint・base64 ciphertext を持つ
-    /// canonical な envelope である。
+    /// 出力は `version` 固定・固定アルゴリズム・canonical fingerprint・base64 ciphertext を持つ
+    /// canonical な envelope である。fingerprint は構築時に canonical 検証済みの保存値を
+    /// 無変換でそのまま出力し、書き換えない。
     pub fn to_json(&self) -> Result<Vec<u8>> {
         let wire = EnvelopeWire {
             version: ENVELOPE_VERSION,
@@ -242,8 +243,9 @@ impl GpgBackupEnvelope {
 }
 
 impl EnvelopeMetadata {
-    /// `metadata` wire を検証する。固定アルゴリズム・fingerprint 形式・`exported_at` の
-    /// UTC RFC3339 形式を強制する。
+    /// `metadata` wire を検証する。固定アルゴリズム・`exported_at` の UTC RFC3339 形式、
+    /// および `primary_fingerprint` が既に canonical（lowercase hex 40, 区切り・空白なし）で
+    /// あることを強制する。保存値は正規化せず、非 canonical なら停止する。
     fn from_wire(wire: MetadataWire) -> Result<Self> {
         if wire.dek_alg != DEK_ALG {
             return Err(invalid_data(format!(
@@ -258,7 +260,7 @@ impl EnvelopeMetadata {
         validate_rfc3339_utc(&wire.exported_at)?;
 
         Ok(Self {
-            primary_fingerprint: PrimaryFingerprint::parse(&wire.primary_fingerprint)?,
+            primary_fingerprint: PrimaryFingerprint::from_wire(&wire.primary_fingerprint)?,
             exported_at: wire.exported_at,
         })
     }
@@ -318,7 +320,9 @@ impl EnvelopeCiphertext {
 }
 
 impl EnvelopeRecipient {
-    /// `recipients` 要素 wire を検証する。PIV slot 固定値・fingerprint 形式・base64 妥当性を強制する。
+    /// `recipients` 要素 wire を検証する。PIV slot 固定値・base64 妥当性に加え、
+    /// `public_key_fingerprint` が既に canonical（lowercase hex 64, 区切り・空白なし）で
+    /// あることを強制する。保存値は正規化せず、非 canonical なら停止する。
     fn from_wire(wire: RecipientWire) -> Result<Self> {
         if wire.piv_slot != RECIPIENT_PIV_SLOT {
             return Err(invalid_data(format!(
@@ -344,7 +348,7 @@ impl EnvelopeRecipient {
 
         Ok(Self {
             yubikey_serial: wire.yubikey_serial,
-            public_key_fingerprint: PublicKeyFingerprint::parse(&wire.public_key_fingerprint)?,
+            public_key_fingerprint: PublicKeyFingerprint::from_wire(&wire.public_key_fingerprint)?,
             wrapped_dek,
         })
     }
@@ -392,11 +396,23 @@ impl ConnectedYubiKey {
 
 impl PrimaryFingerprint {
     /// 大文字小文字・区切り混在入力を lowercase hex 40 文字へ正規化し、長さと文字種を検証する。
+    ///
+    /// runtime 由来の入力向け。wire（envelope JSON 由来の保存値）には [`Self::from_wire`] を使う。
     pub fn parse(value: &str) -> Result<Self> {
         Ok(Self(normalize_fingerprint(
             value,
             PRIMARY_FINGERPRINT_HEX_LEN,
             "primary_fingerprint",
+        )?))
+    }
+
+    /// wire（envelope JSON 由来の保存値）が既に canonical（lowercase hex 40, 区切り・空白なし）
+    /// であることを厳格検証して構築する。非 canonical は正規化せず停止する。
+    fn from_wire(value: &str) -> Result<Self> {
+        Ok(Self(validate_canonical_wire_fingerprint(
+            value,
+            PRIMARY_FINGERPRINT_HEX_LEN,
+            "metadata.primary_fingerprint",
         )?))
     }
 
@@ -408,11 +424,23 @@ impl PrimaryFingerprint {
 
 impl PublicKeyFingerprint {
     /// 大文字小文字・区切り混在入力を lowercase hex 64 文字へ正規化し、長さと文字種を検証する。
+    ///
+    /// runtime 由来の入力向け。wire（envelope JSON 由来の保存値）には [`Self::from_wire`] を使う。
     pub fn parse(value: &str) -> Result<Self> {
         Ok(Self(normalize_fingerprint(
             value,
             PUBLIC_KEY_FINGERPRINT_HEX_LEN,
             "public_key_fingerprint",
+        )?))
+    }
+
+    /// wire（envelope JSON 由来の保存値）が既に canonical（lowercase hex 64, 区切り・空白なし）
+    /// であることを厳格検証して構築する。非 canonical は正規化せず停止する。
+    fn from_wire(value: &str) -> Result<Self> {
+        Ok(Self(validate_canonical_wire_fingerprint(
+            value,
+            PUBLIC_KEY_FINGERPRINT_HEX_LEN,
+            "recipient.public_key_fingerprint",
         )?))
     }
 
@@ -429,8 +457,9 @@ impl PublicKeyFingerprint {
 /// 各フィールドの数値範囲（full-date は月別日数と閏年判定を含む暦日妥当性）、および UTC を表す
 /// time-offset（`Z` または `+00:00`）だけを検証する。
 /// `Z` は RFC3339 に従い大文字小文字を問わず受理し、UTC 以外の offset は拒否する。秒小数部
-/// （`.` 以降）は 1 桁以上の数字を許容する。形式違反は domain error として停止し、message に
-/// 入力本文は含めない。
+/// （`.` 以降）は 1 桁以上の数字を許容する。秒は通常 `0..=59` を許可し、leap second（`60`）は
+/// RFC3339 §5.7 に従い UTC 月末日の `23:59:60` 位置でのみ許可する。形式違反は domain error
+/// として停止し、message に入力本文は含めない。
 fn validate_rfc3339_utc(value: &str) -> Result<()> {
     let invalid =
         || invalid_data("gpg backup metadata.exported_at must be a UTC RFC3339 timestamp");
@@ -481,9 +510,18 @@ fn validate_rfc3339_utc(value: &str) -> Result<()> {
     let hour = parse_fixed_width_number(hour, 2).ok_or_else(invalid)?;
     let minute = parse_fixed_width_number(minute, 2).ok_or_else(invalid)?;
     let second = parse_fixed_width_number(second, 2).ok_or_else(invalid)?;
-    // second の 60 は leap second の正当表現として許容する（RFC3339 §5.6）。
-    if hour > 23 || minute > 59 || second > 60 {
+    if hour > 23 || minute > 59 {
         return Err(invalid());
+    }
+    // second `0..=59` は通常秒として許可する。RFC3339 §5.7 は leap second（`60`）を
+    // leap second が挿入される UTC 月末日の `23:59:60` に限定するため、`60` はその位置
+    // （`hour == 23 && minute == 59 && day == days_in_month`）のときだけ許可し、それ以外の
+    // 位置の `60` と `>= 61` は拒否する。位置無制限の `60` 受理（`2026-05-31T00:00:60Z` 等）は
+    // 「UTC RFC3339 検証済み」表明に反するため停止させる。
+    match second {
+        0..=59 => {}
+        60 if hour == 23 && minute == 59 && day == days_in_month(year, month) => {}
+        _ => return Err(invalid()),
     }
 
     Ok(())
@@ -519,10 +557,39 @@ fn parse_fixed_width_number(field: &str, width: usize) -> Option<u32> {
     Some(value)
 }
 
+/// wire（envelope JSON 由来の保存値）の fingerprint が既に canonical であることを厳格検証する。
+///
+/// BWS から取得した envelope の `metadata.primary_fingerprint` / recipient
+/// `public_key_fingerprint` は設計上「lowercase hex、指定長ちょうど、区切り・空白なし」の
+/// schema 値である。保存値の正規化（書き換え）は破損を隠すため、この関数は [`normalize_fingerprint`]
+/// と異なり大文字小文字変換・区切り除去を一切行わず、uppercase・`:` 等の区切り・空白・長さ
+/// 不一致・非 hex を非 canonical として停止させる。`to_json` は保存値をそのまま（無変換で）
+/// 出力するため、wire 値はこの関数を通った canonical 値だけを保持する。runtime 由来の照合入力
+/// （[`ConnectedYubiKey`]）には適用せず、そちらは [`normalize_fingerprint`] を使う。
+fn validate_canonical_wire_fingerprint(
+    value: &str,
+    expected_len: usize,
+    field: &str,
+) -> Result<String> {
+    let is_canonical = value.len() == expected_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !is_canonical {
+        return Err(invalid_data(format!(
+            "gpg backup {field} must be stored as exactly {expected_len} lowercase hex \
+             characters with no separators"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
 /// fingerprint 入力を lowercase hex（区切りなし）へ正規化し、長さと文字種を検証する。
 ///
 /// 区切り（空白・コロン）を除去し、hex 桁だけを lowercase 化して保持する。期待文字数と
-/// 不一致、または hex 以外の文字が残る場合は domain error として停止する。
+/// 不一致、または hex 以外の文字が残る場合は domain error として停止する。runtime 由来の照合
+/// 入力（[`ConnectedYubiKey`]）向けであり、wire 保存値の検証には
+/// [`validate_canonical_wire_fingerprint`] を使う。
 fn normalize_fingerprint(value: &str, expected_len: usize, field: &str) -> Result<String> {
     let mut normalized = String::with_capacity(expected_len);
     for ch in value.chars() {
@@ -1151,5 +1218,113 @@ mod tests {
             let envelope = ok(GpgBackupEnvelope::parse(&json), "parse");
             assert_eq!(envelope.metadata().exported_at(), value);
         }
+    }
+
+    /// leap second（秒 `60`）を RFC3339 §5.7 通り UTC 月末日の `23:59:60` 位置でのみ受理する。
+    /// 月末日（5/31・12/31 は月末）の `23:59:60` は許可し、位置不正（`00:00:60`）や
+    /// 月末でない日（5/30）の `23:59:60` は拒否する。
+    #[test]
+    fn accepts_leap_second_only_at_utc_month_end_2359() {
+        // 月末日 23:59:60 は許可（5/31・12/31 とも月末）。
+        for value in ["2026-05-31T23:59:60Z", "2026-12-31T23:59:60Z"] {
+            let json = envelope_json_with_exported_at(value);
+            let envelope = ok(GpgBackupEnvelope::parse(&json), "parse");
+            assert_eq!(envelope.metadata().exported_at(), value);
+        }
+        // 位置不正の秒 `60`（月末日でも 23:59 以外）と、月末でない日の 23:59:60 は拒否。
+        for value in [
+            "2026-05-31T00:00:60Z",
+            "2026-05-30T23:59:60Z",
+            "2026-05-31T23:58:60Z",
+            "2026-05-31T22:59:60Z",
+        ] {
+            let json = envelope_json_with_exported_at(value);
+            assert!(
+                GpgBackupEnvelope::parse(&json).is_err(),
+                "expected {value} to be rejected"
+            );
+        }
+    }
+
+    /// wire（envelope JSON 由来の保存値）の primary_fingerprint は canonical
+    /// （lowercase hex 40, 区切り・空白なし）のみ受理し、非 canonical を正規化せず拒否する。
+    #[test]
+    fn rejects_non_canonical_wire_primary_fingerprint() {
+        // canonical（既定 fixture）は受理する。
+        let canonical = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
+        assert_eq!(
+            canonical.metadata().primary_fingerprint().as_str(),
+            PRIMARY_FP
+        );
+
+        let uppercase = "0123456789ABCDEF0123456789abcdef01234567";
+        let colon_separated = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67";
+        let with_space = "0123456789abcdef0123456789abcdef0123456 ";
+        let too_short = "0123456789abcdef0123456789abcdef0123456";
+        let too_long = "0123456789abcdef0123456789abcdef012345670";
+        let non_hex = "0123456789abcdef0123456789abcdef0123456g";
+        for invalid in [
+            uppercase,
+            colon_separated,
+            with_space,
+            too_short,
+            too_long,
+            non_hex,
+        ] {
+            let json = valid_envelope_json().replace(PRIMARY_FP, invalid);
+            assert!(
+                GpgBackupEnvelope::parse(&json).is_err(),
+                "expected wire primary_fingerprint {invalid:?} to be rejected"
+            );
+        }
+    }
+
+    /// wire（envelope JSON 由来の保存値）の recipient public_key_fingerprint は canonical
+    /// （lowercase hex 64, 区切り・空白なし）のみ受理し、非 canonical を正規化せず拒否する。
+    #[test]
+    fn rejects_non_canonical_wire_public_key_fingerprint() {
+        let uppercase = "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef";
+        let colon_separated = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:\
+             01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        let with_space = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde ";
+        let too_short = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
+        let too_long = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0";
+        let non_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg";
+        for invalid in [
+            uppercase,
+            colon_separated,
+            with_space,
+            too_short,
+            too_long,
+            non_hex,
+        ] {
+            let json = valid_envelope_json().replace(PUBKEY_FP, invalid);
+            assert!(
+                GpgBackupEnvelope::parse(&json).is_err(),
+                "expected wire public_key_fingerprint {invalid:?} to be rejected"
+            );
+        }
+    }
+
+    /// canonical な wire fingerprint は `to_json` round-trip で書き換えられず保存値のまま出力される。
+    #[test]
+    fn wire_fingerprints_round_trip_without_rewrite() {
+        let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
+        let json = ok(envelope.to_json(), "serialize");
+        let text = ok(
+            String::from_utf8(json).map_err(anyhow::Error::from),
+            "utf8 json",
+        );
+
+        assert!(
+            text.contains(PRIMARY_FP),
+            "to_json must emit primary_fingerprint unchanged: {text}"
+        );
+        assert!(
+            text.contains(PUBKEY_FP),
+            "to_json must emit public_key_fingerprint unchanged: {text}"
+        );
+        let reparsed = ok(GpgBackupEnvelope::parse(&text), "reparse");
+        assert_eq!(envelope, reparsed);
     }
 }
