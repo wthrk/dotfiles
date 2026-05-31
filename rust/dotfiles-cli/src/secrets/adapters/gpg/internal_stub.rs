@@ -239,12 +239,24 @@ impl SshAgentPort for SshAgentStub {
         })
     }
 
-    fn inspect_ssh_agent(&mut self, keygrip: &Keygrip) -> Result<SshAgentReadiness> {
+    fn inspect_ssh_agent(
+        &mut self,
+        expected_public_key: &OpenSshPublicKey,
+    ) -> Result<SshAgentReadiness> {
+        // real adapter は agent identity の key blob を期待公開鍵の key blob と byte 一致で照合する。stub は
+        // 「期待公開鍵と同一 key blob を持つ鍵の keygrip が SSH key list へ登録済みなら identity を識別できる」
+        // という register→identify の linkage を、同じ domain 照合（`matches_agent_key_blob`）で再現する。
         let present = with_datastore(|store| {
-            Ok(store
-                .registered_keygrips
-                .iter()
-                .any(|registered| registered == keygrip.as_str()))
+            Ok(store.keys.values().any(|key| {
+                OpenSshPublicKey::parse(&key.ssh_public_key)
+                    .ok()
+                    .and_then(|stored| stored.key_blob())
+                    .is_some_and(|blob| expected_public_key.matches_agent_key_blob(&blob))
+                    && store
+                        .registered_keygrips
+                        .iter()
+                        .any(|registered| registered == &key.keygrip)
+            }))
         })?;
         Ok(SshAgentReadiness {
             socket_resolved: true,

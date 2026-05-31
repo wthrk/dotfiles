@@ -189,6 +189,80 @@ impl OpenSshPublicKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// この公開鍵の wire-format key blob bytes を返す。
+    ///
+    /// OpenSSH 公開鍵行の 2 番目フィールド（base64 本体）は SSH agent protocol の identity key blob を
+    /// base64 化したものであり、decode すると同一の wire-format key blob になる。base64 本体が decode
+    /// できない場合は `None` を返す。
+    pub fn key_blob(&self) -> Option<Vec<u8>> {
+        // 構築時に検証済みの `type base64 [comment]` から base64 本体（2 番目フィールド）を取り出す。
+        let body = self.0.split_whitespace().nth(1)?;
+        openssh_base64_decode(body)
+    }
+
+    /// SSH agent が `REQUEST_IDENTITIES` 応答で返す key blob とこの公開鍵が同一鍵かを判定する。
+    ///
+    /// gpg-agent が identity comment へ載せる値（`cardno:` / `openpgp:` / keygrip 等）は鍵同一性の判定に
+    /// 使えないため、識別は key blob の byte 一致で行う。base64 本体が decode できない場合は一致しないものと
+    /// して扱う（停止条件を弱めない）。
+    pub fn matches_agent_key_blob(&self, agent_key_blob: &[u8]) -> bool {
+        match self.key_blob() {
+            Some(blob) => blob == agent_key_blob,
+            None => false,
+        }
+    }
+}
+
+/// OpenSSH 公開鍵本体の standard base64（padding 必須）を key blob bytes へ decode する。
+///
+/// この domain は外部 base64 crate に依存しないため、SSH agent identity との key blob 照合に必要な
+/// 最小 decoder を純粋関数として持つ。padding・alphabet・長さの妥当性違反は `None` を返し、照合側で
+/// 「一致しない」へ倒す。
+fn openssh_base64_decode(input: &str) -> Option<Vec<u8>> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunk_count = bytes.len() / 4;
+    for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
+        let is_last_chunk = chunk_index + 1 == chunk_count;
+        let mut accumulator = 0u32;
+        let mut chunk_padding = 0usize;
+        for (index, &symbol) in chunk.iter().enumerate() {
+            if symbol == b'=' {
+                // padding は末尾 chunk の末尾位置にだけ許可する。
+                if !is_last_chunk || index < 2 {
+                    return None;
+                }
+                chunk_padding += 1;
+                accumulator <<= 6;
+                continue;
+            }
+            if chunk_padding != 0 {
+                return None;
+            }
+            let sextet = openssh_base64_symbol_value(symbol)?;
+            accumulator = (accumulator << 6) | u32::from(sextet);
+        }
+        let bytes_in_chunk = 3 - chunk_padding;
+        let chunk_bytes = accumulator.to_be_bytes();
+        output.extend_from_slice(&chunk_bytes[1..=bytes_in_chunk]);
+    }
+    Some(output)
+}
+
+/// standard base64 alphabet の 1 文字を 6-bit 値へ変換する。
+fn openssh_base64_symbol_value(symbol: u8) -> Option<u8> {
+    match symbol {
+        b'A'..=b'Z' => Some(symbol - b'A'),
+        b'a'..=b'z' => Some(symbol - b'a' + 26),
+        b'0'..=b'9' => Some(symbol - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 
 /// gpg-agent SSH support が利用可能であることを adapter が報告した観測結果。
@@ -346,6 +420,16 @@ mod tests {
     #[test]
     fn openssh_public_key_rejects_missing_body() {
         assert!(OpenSshPublicKey::parse("ssh-ed25519").is_err());
+    }
+
+    #[test]
+    fn matches_agent_key_blob_by_decoded_body() {
+        // `type base64 [comment]` の base64 本体は agent identity の key blob を base64 化したもの。
+        // base64("blob") == "YmxvYg==" を本体に持つ公開鍵は、raw key blob `b"blob"` と一致する。
+        let key = OpenSshPublicKey::parse("ssh-ed25519 YmxvYg== cardno:0006").expect("valid key");
+        assert!(key.matches_agent_key_blob(b"blob"));
+        // 同一 type でも別 blob は一致しない（comment ではなく blob で識別する）。
+        assert!(!key.matches_agent_key_blob(b"other"));
     }
 
     #[test]

@@ -106,5 +106,12 @@ pub trait SshAgentPort {
     fn register_authentication_subkey(&mut self, keygrip: &Keygrip) -> Result<()>;
 
     /// gpg-agent SSH support 利用可否を、socket 解決可否と authentication subkey 識別可否として観測する。
-    fn inspect_ssh_agent(&mut self, keygrip: &Keygrip) -> Result<SshAgentReadiness>;
+    ///
+    /// authentication subkey の識別は、agent が列挙する identity の key blob を期待公開鍵
+    /// （`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）の key blob と byte 一致で
+    /// 照合して判定する。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
+    fn inspect_ssh_agent(
+        &mut self,
+        expected_public_key: &OpenSshPublicKey,
+    ) -> Result<SshAgentReadiness>;
 }

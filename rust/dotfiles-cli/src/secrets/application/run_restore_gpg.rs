@@ -94,29 +94,50 @@ where
         );
     }
 
-    // 7-8. import し、import 後鍵の subkey 構成を検証する。検証失敗時は不完全鍵を残さないよう
-    // best-effort で削除してから元エラーを返す（残置すると次回 restore が衝突で復旧不能になる）。
+    // 7. import する。import 後の手順 8-10 のいずれかで失敗した場合は、不完全な状態の secret key を
+    // 鍵リングに残さないよう best-effort で削除してから元エラーを返す。残置すると次回 restore が手順 6 の
+    // 既存鍵衝突で止まり復旧不能になるため、import 後の復元処理全体を atomic に扱う。
     let imported = keyring.import_secret_key(&backup)?;
-    if let Err(error) = keyring
-        .inspect_imported_key(&imported)
-        .and_then(|composition| composition.ensure_usable())
-    {
-        let _ = keyring.delete_secret_key(&imported);
-        return Err(error);
+    match restore_imported_key(&imported, keyring, ssh_agent) {
+        Ok(()) => report.write_restore_gpg_report(&RestoreGpgSummary {
+            primary_fingerprint: imported.as_str().to_owned(),
+            ssh_key_registered: true,
+            ssh_support_ready: true,
+        }),
+        Err(error) => {
+            let _ = keyring.delete_secret_key(&imported);
+            Err(error)
+        }
     }
+}
+
+/// import 後の subkey 検証・keygrip 登録・SSH support 確認（手順 8-10）を順に実行する。
+///
+/// import 自体は成功した前提で呼ばれ、ここで返す失敗はすべて呼び出し側で `delete_secret_key` による
+/// ロールバック対象になる。手順 8 の subkey 検証に失敗した場合は後続の SSH 経路へ進ませず、手順 9-10 の
+/// keygrip 解決 / `sshcontrol` 登録 / SSH support 確認のいずれの失敗も呼び出し側の rollback で原子化する。
+fn restore_imported_key<K, A>(
+    imported: &crate::secrets::domain::gpg_backup::PrimaryFingerprint,
+    keyring: &mut K,
+    ssh_agent: &mut A,
+) -> Result<()>
+where
+    K: ports::GpgKeyringPort,
+    A: ports::SshAgentPort,
+{
+    // 8. import 後鍵の subkey 構成（encryption / authentication / signing）を検証する。
+    keyring
+        .inspect_imported_key(imported)
+        .and_then(|composition| composition.ensure_usable())?;
 
     // 9. authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（冪等）。
-    let keygrip = keyring.authentication_subkey_keygrip(&imported)?;
+    let keygrip = keyring.authentication_subkey_keygrip(imported)?;
     ssh_agent.register_authentication_subkey(&keygrip)?;
 
-    // 10. gpg-agent SSH support 利用可否を確認する。
-    ssh_agent.inspect_ssh_agent(&keygrip)?.ensure_ready()?;
-
-    report.write_restore_gpg_report(&RestoreGpgSummary {
-        primary_fingerprint: imported.as_str().to_owned(),
-        ssh_key_registered: true,
-        ssh_support_ready: true,
-    })
+    // 10. gpg-agent SSH support 利用可否を確認する。identity 識別は authentication subkey 由来の
+    // OpenSSH 公開鍵 key blob を期待値として照合するため、公開鍵を解決して渡す。
+    let public_key = keyring.authentication_subkey_ssh_public_key(imported)?;
+    ssh_agent.inspect_ssh_agent(&public_key)?.ensure_ready()
 }
 
 /// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
@@ -151,8 +172,8 @@ mod tests {
             commands::RestoreGpgCommand,
             gpg_backup::{BackupUpdateGuard, ConnectedYubiKey, GpgBackupEnvelope},
             gpg_restore::{
-                ImportedKeyComposition, Keygrip, ResolvedSubkey, SshAgentReadiness,
-                SubkeyCapability,
+                ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey,
+                SshAgentReadiness, SubkeyCapability,
             },
             manifest::SecretManifest,
             storage::SecretStorageReadInspection,
@@ -165,6 +186,7 @@ mod tests {
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
     const KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
+    const SSH_PUBLIC_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTBODY restore";
 
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -326,6 +348,10 @@ mod tests {
             .expect_authentication_subkey_keygrip()
             .times(1)
             .returning(|_| Keygrip::parse(KEYGRIP));
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .returning(|_| OpenSshPublicKey::parse(SSH_PUBLIC_KEY));
 
         let mut ssh_agent = ports::MockSshAgentPort::new();
         ssh_agent
@@ -552,6 +578,123 @@ mod tests {
         assert!(
             result.is_err(),
             "incomplete subkey verification must fail restore after rollback"
+        );
+    }
+
+    /// import と subkey 検証は成功したが、手順 9-10（keygrip 登録後の SSH support 確認）で停止する場合、
+    /// import 済み secret key を `delete_secret_key` で best-effort 削除してから元エラーを返すことを検証する。
+    /// これにより設定修正後の再実行が手順 6 の既存鍵衝突で止まらず再 import できる（復元処理の原子化）。
+    #[tokio::test]
+    async fn restore_gpg_rolls_back_when_ssh_support_fails_after_import() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsSecretId::new("gpg-id"),
+                name: "gpg-secret-key-backup".to_owned(),
+            }])
+        });
+        bws.expect_fetch_gpg_backup_envelope()
+            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .returning(|_| Ok(connected()));
+        recipient
+            .expect_unwrap_dek()
+            .returning(|_, _, _| Ok(material(b"dek")));
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_decrypt_backup()
+            .returning(|_, _| Ok(material(b"backup")));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .returning(|_| {
+                crate::secrets::domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+            });
+        keyring.expect_secret_key_exists().returning(|_| Ok(false));
+        keyring.expect_import_secret_key().times(1).returning(|_| {
+            crate::secrets::domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+        });
+        // subkey 検証は成功する。
+        keyring
+            .expect_inspect_imported_key()
+            .times(1)
+            .returning(|_| Ok(all_usable_composition()));
+        keyring
+            .expect_authentication_subkey_keygrip()
+            .times(1)
+            .returning(|_| Keygrip::parse(KEYGRIP));
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .returning(|_| OpenSshPublicKey::parse(SSH_PUBLIC_KEY));
+        // import 後の手順 9-10 失敗でも import 済み鍵をロールバック削除する。
+        keyring
+            .expect_delete_secret_key()
+            .times(1)
+            .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
+            .returning(|_| Ok(()));
+
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent
+            .expect_register_authentication_subkey()
+            .times(1)
+            .returning(|_| Ok(()));
+        // SSH support が利用不能（authentication identity を識別できない）で停止する。
+        ssh_agent
+            .expect_inspect_ssh_agent()
+            .times(1)
+            .returning(|_| {
+                Ok(SshAgentReadiness {
+                    socket_resolved: true,
+                    authentication_identity_present: false,
+                })
+            });
+        // 停止するため report は書かない。
+        let report = ports::MockReportPort::new();
+
+        let result = run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            &mut keyring,
+            &mut ssh_agent,
+            &report,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "ssh support failure after import must fail restore after rollback"
         );
     }
 }

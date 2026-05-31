@@ -6,9 +6,11 @@
 //! する。`gpgconf` CLI は使わず、socket は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として
 //! 確認し、その path が socket でない場合だけ既存環境変数 `SSH_AUTH_SOCK` が指す socket へ fallback する
 //! （`config/zsh/env.zsh` の上書き条件と同じ前提）。identity の識別は、解決した socket へ接続して SSH agent
-//! protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵 identity を列挙し、その comment が authentication
-//! subkey の keygrip（gpg-agent が SSH identity comment へ載せる値）と一致するかで判定する。SSH support 充足
-//! の業務判定そのものは domain（`SshAgentReadiness::ensure_ready`）へ残す。
+//! protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵 identity を列挙し、各 identity の key blob を期待
+//! 公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合して判定する。identity comment（gpg-agent は
+//! `cardno:` / `openpgp:` 等を載せ keygrip とは限らない）は鍵同一性に使えないため照合に用いない。SSH support
+//! 充足の業務判定そのものは domain（`SshAgentReadiness::ensure_ready` / `OpenSshPublicKey::matches_agent_key_blob`）
+//! へ残す。
 
 use std::{
     fs::OpenOptions,
@@ -24,7 +26,7 @@ use anyhow::Context;
 use crate::{
     Result,
     secrets::{
-        domain::gpg_restore::{Keygrip, SshAgentReadiness},
+        domain::gpg_restore::{Keygrip, OpenSshPublicKey, SshAgentReadiness},
         ports::gpg::SshAgentPort,
     },
 };
@@ -54,15 +56,18 @@ impl SshAgentPort for SshAgentAdapter {
         Ok(())
     }
 
-    fn inspect_ssh_agent(&mut self, keygrip: &Keygrip) -> Result<SshAgentReadiness> {
+    fn inspect_ssh_agent(
+        &mut self,
+        expected_public_key: &OpenSshPublicKey,
+    ) -> Result<SshAgentReadiness> {
         // 固定 path が socket ならそれ、socket でなければ既存 `SSH_AUTH_SOCK` が socket ならそれを使う。
         let socket = resolve_ssh_agent_socket();
         let socket_resolved = socket.is_some();
         // identity の識別は、解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、
-        // その comment が authentication subkey の keygrip と一致するかで判定する。socket が解決できない、
+        // 各 identity の key blob が期待公開鍵の key blob と byte 一致するかで判定する。socket が解決できない、
         // または接続/列挙に失敗した場合は識別不能（false）として停止条件を弱めない。
         let authentication_identity_present = match socket {
-            Some(path) => agent_identifies_keygrip(&path, keygrip).unwrap_or(false),
+            Some(path) => agent_identifies_public_key(&path, expected_public_key).unwrap_or(false),
             None => false,
         };
         Ok(SshAgentReadiness {
@@ -92,34 +97,31 @@ fn resolve_ssh_agent_socket() -> Option<PathBuf> {
     None
 }
 
-/// SSH agent protocol で identity を列挙し、対象 keygrip を comment に持つ identity が存在するかを返す。
+/// SSH agent protocol で identity を列挙し、期待公開鍵と同一 key blob の identity が存在するかを返す。
 ///
 /// 解決済み socket へ接続し、`SSH_AGENTC_REQUEST_IDENTITIES` を送って `SSH_AGENT_IDENTITIES_ANSWER` を
-/// 解析する。gpg-agent は sshcontrol 由来 identity の comment へ keygrip（uppercase hex 40）を載せるため、
-/// comment に対象 keygrip が含まれる identity を「authentication subkey が SSH identity として識別可能」と
-/// 判定する。接続/送受信/解析に失敗した場合は、socket への接続可否を最低限の identity 観測代替とせず、
-/// 停止条件を弱めないため `Err` を返して呼び出し側で false に倒す。
+/// 解析する。各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合し、
+/// 一致する identity があれば「authentication subkey が SSH identity として識別可能」と判定する。gpg-agent の
+/// identity comment は keygrip とは限らない（`cardno:` / `openpgp:` 等）ため照合に用いない。接続/送受信/解析に
+/// 失敗した場合は、socket への接続可否を最低限の identity 観測代替とせず、停止条件を弱めないため `Err` を返して
+/// 呼び出し側で false に倒す。
 #[cfg(unix)]
-fn agent_identifies_keygrip(socket: &Path, keygrip: &Keygrip) -> Result<bool> {
-    let comments = request_ssh_identities(socket)?;
-    Ok(comments
+fn agent_identifies_public_key(
+    socket: &Path,
+    expected_public_key: &OpenSshPublicKey,
+) -> Result<bool> {
+    let key_blobs = request_ssh_identities(socket)?;
+    Ok(key_blobs
         .iter()
-        .any(|comment| comment_contains_keygrip(comment, keygrip)))
+        .any(|key_blob| expected_public_key.matches_agent_key_blob(key_blob)))
 }
 
 #[cfg(not(unix))]
-fn agent_identifies_keygrip(_socket: &Path, _keygrip: &Keygrip) -> Result<bool> {
+fn agent_identifies_public_key(
+    _socket: &Path,
+    _expected_public_key: &OpenSshPublicKey,
+) -> Result<bool> {
     Ok(false)
-}
-
-/// SSH identity の comment が対象 keygrip を識別できるかを照合する。
-///
-/// gpg-agent は comment へ keygrip を載せるため、空白区切りトークンのいずれかが keygrip と
-/// 大文字小文字を無視して一致する場合に識別可能とみなす。
-fn comment_contains_keygrip(comment: &str, keygrip: &Keygrip) -> bool {
-    comment
-        .split_whitespace()
-        .any(|token| token.eq_ignore_ascii_case(keygrip.as_str()))
 }
 
 /// SSH agent protocol の message 種別（必要な値のみ）。
@@ -128,13 +130,14 @@ const SSH_AGENTC_REQUEST_IDENTITIES: u8 = 11;
 #[cfg(unix)]
 const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
 
-/// 解決済み socket へ接続し、列挙された identity の comment 文字列を返す。
+/// 解決済み socket へ接続し、列挙された identity の key blob bytes を返す。
 ///
 /// SSH agent protocol は length-prefixed frame（先頭 4 byte の big-endian length に payload が続く）で、
 /// `SSH_AGENT_IDENTITIES_ANSWER` の payload は `count`（u32）に続いて `(key_blob string, comment string)`
-/// が count 回並ぶ。各 string は 4 byte 長 prefix 付きである。secret material は要求・受信しない。
+/// が count 回並ぶ。各 string は 4 byte 長 prefix 付きである。鍵同一性照合に使う key blob だけを取り出し、
+/// secret material は要求・受信しない。
 #[cfg(unix)]
-fn request_ssh_identities(socket: &Path) -> Result<Vec<String>> {
+fn request_ssh_identities(socket: &Path) -> Result<Vec<Vec<u8>>> {
     let mut stream =
         UnixStream::connect(socket).context("failed to connect to SSH agent socket")?;
     // request payload は message 種別 1 byte のみ。frame は 4 byte length prefix を付ける。
@@ -169,23 +172,23 @@ fn read_agent_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
     Ok(payload)
 }
 
-/// `SSH_AGENT_IDENTITIES_ANSWER` payload を解析し、各 identity の comment を返す。
+/// `SSH_AGENT_IDENTITIES_ANSWER` payload を解析し、各 identity の key blob bytes を返す。
 #[cfg(unix)]
-fn parse_identities_answer(payload: &[u8]) -> Result<Vec<String>> {
+fn parse_identities_answer(payload: &[u8]) -> Result<Vec<Vec<u8>>> {
     let mut cursor = ByteCursor::new(payload);
     let message_type = cursor.take_u8()?;
     if message_type != SSH_AGENT_IDENTITIES_ANSWER {
         anyhow::bail!("unexpected SSH agent response message type");
     }
     let count = cursor.take_u32()?;
-    let mut comments = Vec::with_capacity(count as usize);
+    let mut key_blobs = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        // key blob は識別に使わないため読み飛ばし、comment 文字列だけを取り出す。
-        let _key_blob = cursor.take_string()?;
-        let comment = cursor.take_string()?;
-        comments.push(String::from_utf8_lossy(comment).into_owned());
+        // 鍵同一性照合に使う key blob を取り出し、comment は識別に使わないため読み飛ばす。
+        let key_blob = cursor.take_string()?;
+        let _comment = cursor.take_string()?;
+        key_blobs.push(key_blob.to_vec());
     }
-    Ok(comments)
+    Ok(key_blobs)
 }
 
 /// SSH agent protocol payload を big-endian で順次読む内部カーソル。
@@ -301,16 +304,13 @@ fn sshcontrol_contains(path: &PathBuf, keygrip: &Keygrip) -> Result<bool> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    //! SSH agent protocol の identity 応答解析と keygrip 識別という adapter 翻訳ロジックの単体テスト。
+    //! SSH agent protocol の identity 応答解析と key blob 照合という adapter 翻訳ロジックの単体テスト。
     //!
-    //! socket 接続を伴わない純粋な byte decode と comment 照合だけを検証し、外部 agent は呼ばない。
+    //! socket 接続を伴わない純粋な byte decode と key blob 照合だけを検証し、外部 agent は呼ばない。
+    //! 期待公開鍵は base64 本体が agent key blob を base64 化したものである関係を使い、blob 一致/不一致を確認する。
 
-    use super::{
-        ByteCursor, SSH_AGENT_IDENTITIES_ANSWER, comment_contains_keygrip, parse_identities_answer,
-    };
-    use crate::secrets::domain::gpg_restore::Keygrip;
-
-    const KEYGRIP: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+    use super::{ByteCursor, SSH_AGENT_IDENTITIES_ANSWER, parse_identities_answer};
+    use crate::secrets::domain::gpg_restore::OpenSshPublicKey;
 
     /// 長さ prefix 付き string を big-endian frame として連結する補助。
     fn push_string(buffer: &mut Vec<u8>, value: &[u8]) {
@@ -330,13 +330,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_identity_comments_in_order() -> crate::Result<()> {
+    fn parses_identity_key_blobs_in_order() -> crate::Result<()> {
         let payload = identities_answer(&[(b"blob-a", b"comment-a"), (b"blob-b", b"comment-b")]);
-        let comments = parse_identities_answer(&payload)?;
-        assert_eq!(
-            comments,
-            vec!["comment-a".to_owned(), "comment-b".to_owned()]
-        );
+        let key_blobs = parse_identities_answer(&payload)?;
+        assert_eq!(key_blobs, vec![b"blob-a".to_vec(), b"blob-b".to_vec()]);
         Ok(())
     }
 
@@ -359,21 +356,25 @@ mod tests {
     }
 
     #[test]
-    fn matches_keygrip_in_comment_case_insensitively() -> crate::Result<()> {
-        let keygrip = Keygrip::parse(KEYGRIP)?;
-        // gpg-agent は comment に keygrip を載せる。大文字小文字を無視して識別する。
-        assert!(comment_contains_keygrip(&KEYGRIP.to_lowercase(), &keygrip));
-        // keygrip が空白区切りトークンとして現れる comment（例: keygrip にラベルが続く）も識別する。
-        assert!(comment_contains_keygrip(
-            &format!("{KEYGRIP} cardno:0006"),
-            &keygrip
-        ));
-        // keygrip を部分文字列として含むだけの別トークンは識別しない（false positive を作らない）。
-        assert!(!comment_contains_keygrip(
-            &format!("ssh:{KEYGRIP}"),
-            &keygrip
-        ));
-        assert!(!comment_contains_keygrip("unrelated identity", &keygrip));
+    fn identifies_public_key_by_parsed_key_blob() -> crate::Result<()> {
+        // base64("blob") == "YmxvYg=="。期待公開鍵の key blob と一致する identity だけを識別する。
+        let expected =
+            OpenSshPublicKey::parse("ssh-ed25519 YmxvYg== cardno:0006").expect("valid key");
+        let payload = identities_answer(&[(b"other", b"x"), (b"blob", b"cardno:0006")]);
+        let key_blobs = parse_identities_answer(&payload)?;
+        assert!(
+            key_blobs
+                .iter()
+                .any(|key_blob| expected.matches_agent_key_blob(key_blob))
+        );
+        // 期待 blob を含まない応答は識別しない（comment ではなく blob で照合する）。
+        let payload = identities_answer(&[(b"other", b"YmxvYg==")]);
+        let key_blobs = parse_identities_answer(&payload)?;
+        assert!(
+            !key_blobs
+                .iter()
+                .any(|key_blob| expected.matches_agent_key_blob(key_blob))
+        );
         Ok(())
     }
 

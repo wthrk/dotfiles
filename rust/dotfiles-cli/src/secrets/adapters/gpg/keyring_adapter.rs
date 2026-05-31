@@ -133,21 +133,12 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         let key = context
             .get_secret_key(primary_fingerprint.as_str())
             .context("failed to resolve imported GPG key")?;
-        // `subkeys()` 先頭の primary key を除外し、authentication 能力を持つ subkey の keygrip だけを解決する。
-        let primary_fp = key.fingerprint().ok().map(str::to_owned);
-        let keygrip = key
-            .subkeys()
-            .filter(|subkey| !is_primary_subkey(subkey, primary_fp.as_deref()))
-            .find(|subkey| {
-                subkey.can_authenticate()
-                    && subkey.is_secret()
-                    && !subkey.is_revoked()
-                    && !subkey.is_expired()
-                    && !subkey.is_disabled()
-            })
-            .and_then(|subkey| subkey.keygrip().ok().map(str::to_owned))
+        let selected = select_authentication_subkey(&key)?;
+        let keygrip = selected
+            .keygrip()
+            .ok()
             .context("GPG authentication subkey keygrip could not be resolved")?;
-        Keygrip::parse(&keygrip)
+        Keygrip::parse(keygrip)
     }
 
     fn authentication_subkey_ssh_public_key(
@@ -155,9 +146,28 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         primary_fingerprint: &PrimaryFingerprint,
     ) -> Result<OpenSshPublicKey> {
         let mut context = Self::context()?;
+        // keygrip 解決と同一の選択述語で authentication subkey を特定し、その subkey の fingerprint を
+        // export pattern にする。fingerprint へ末尾 `!` を付けて「その subkey 自身」を export 対象に固定し、
+        // gpgme/gpg が列挙順で別の authentication subkey を選んでしまう不一致を防ぐ（keygrip と公開鍵が
+        // 同一 subkey を指すことを保証する）。
+        let subkey_fingerprint = {
+            let key = context
+                .get_secret_key(primary_fingerprint.as_str())
+                .context("failed to resolve imported GPG key")?;
+            let selected = select_authentication_subkey(&key)?;
+            selected
+                .fingerprint()
+                .ok()
+                .context("GPG authentication subkey fingerprint could not be resolved")?
+                .to_owned()
+        };
         let mut data = gpgme::Data::new().context("failed to allocate gpgme ssh export buffer")?;
         context
-            .export([primary_fingerprint.as_str()], ExportMode::SSH, &mut data)
+            .export(
+                [format!("{subkey_fingerprint}!")],
+                ExportMode::SSH,
+                &mut data,
+            )
             .context("failed to export GPG authentication subkey as OpenSSH public key")?;
         let bytes = data
             .try_into_bytes()
@@ -171,6 +181,27 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             .context("exported OpenSSH public key is empty")?;
         OpenSshPublicKey::parse(line)
     }
+}
+
+/// import 後鍵から「登録・公開鍵出力の対象とする」authentication subkey を単一の述語で特定する。
+///
+/// keygrip 解決と OpenSSH 公開鍵 export が同一 subkey を選ぶよう、両者はこの選択結果を共有する。選択述語は
+/// 「primary key でない」「authentication 能力を持つ」「secret material を保持する」「revoked/expired/disabled
+/// でない」を満たす最初の subkey とする。`subkeys()` の列挙順を唯一の決定基準として両経路で一致させるため、
+/// 同一基準の `find` を 1 箇所に集約する。複数の有効 authentication subkey がある場合でも、両経路が同じ
+/// subkey（列挙順で最初の有効鍵）を指すことを保証する。
+fn select_authentication_subkey<'key>(key: &'key gpgme::Key) -> Result<gpgme::Subkey<'key>> {
+    let primary_fp = key.fingerprint().ok().map(str::to_owned);
+    key.subkeys()
+        .filter(|subkey| !is_primary_subkey(subkey, primary_fp.as_deref()))
+        .find(|subkey| {
+            subkey.can_authenticate()
+                && subkey.is_secret()
+                && !subkey.is_revoked()
+                && !subkey.is_expired()
+                && !subkey.is_disabled()
+        })
+        .context("GPG authentication subkey could not be resolved")
 }
 
 /// gpgme の `subkeys()` 列挙要素が primary key かどうかを fingerprint 一致で判定する。

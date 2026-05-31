@@ -853,7 +853,10 @@ const RESTORE_PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 /// restore-gpg integration 用の authentication subkey keygrip（uppercase hex 40）。
 const RESTORE_KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
 /// restore-gpg integration 用の OpenSSH 公開鍵 1 行。
-const RESTORE_SSH_LINE: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTBODY restore@example";
+///
+/// base64 本体は real adapter 同様に key blob として decode できる必要があるため、padding 込みで
+/// 4 の倍数長の妥当な standard base64 を使う。
+const RESTORE_SSH_LINE: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGdvb2RrZXlibG9iZ29vZGtleWJsb2Jnb29ka2V5MDE= restore@example";
 
 /// serial を stub recipient fingerprint（lowercase hex 64）へ写像する（adapter stub と同じ規約）。
 fn stub_recipient_fingerprint(serial: u32) -> String {

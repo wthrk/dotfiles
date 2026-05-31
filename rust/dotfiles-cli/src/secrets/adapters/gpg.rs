@@ -132,7 +132,10 @@ impl SshAgentPort for SshAgentAdapter {
         self.0.register_authentication_subkey(keygrip)
     }
 
-    fn inspect_ssh_agent(&mut self, keygrip: &Keygrip) -> Result<SshAgentReadiness> {
-        self.0.inspect_ssh_agent(keygrip)
+    fn inspect_ssh_agent(
+        &mut self,
+        expected_public_key: &OpenSshPublicKey,
+    ) -> Result<SshAgentReadiness> {
+        self.0.inspect_ssh_agent(expected_public_key)
     }
 }
