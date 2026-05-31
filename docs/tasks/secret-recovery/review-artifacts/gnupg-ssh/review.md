@@ -182,3 +182,15 @@
 - 集約後レビュー判定: `合格`
 - 集約根拠: (A)(B) とも設計（exported_at UTC RFC3339・fingerprint は canonical lowercase hex 保存値）へ整合、非空虚テストで網羅、既存 schema 検証の退行なし。wire厳格×runtime正規化の照合一致を確認。malformed 保存値の停止が後続 restore/verify の前提を強化。
 - 後続対応状態: コミット・push 後に PR #37 の新規スレッド（id 3330184006 / 3330184007）へ回答・resolve。
+
+### サイクル6（PR #37 Codex 再レビュー指摘の是正）
+
+- 契機: `@codex review`（head `6108173`）で新規指摘1件（id 3330204008）。
+- 指摘: 秒60を任意の月末日（例 `2026-05-31T23:59:60Z`）で受理する。RFC3339 §5.7 は秒60を leap second が発生する月末に限るとし、許可月（June/December 等）まで絞るべき。
+- 判断（実施・確定的厳格化）: bot 提案の「June/December 限定」は RFC3339 上不正確（leap second は原理上どの月末にも起こり得る）。完全な検証には可変な leap-second テーブルが必要で domain 検証に不適切。`exported_at` は本ツールが export 時刻に生成する wall-clock UTC timestamp であり leap second は正当に発生しない。→ **秒60を一律拒否（秒 0..=59 のみ許可）** する確定的厳格化を採用。
+- 是正対象差分: `rust/dotfiles-cli/src/secrets/domain/gpg_backup.rs`（+21/-25）。前サイクルの月末 23:59:60 許可分岐を除去し `if second > 59 { Err }` に。`days_in_month` は暦日妥当性検証で継続使用。
+- 実検証: `cargo test -p dotfiles-cli --lib secrets::domain::gpg_backup` = 35 passed / 0 failed（親独立実行で確認）。`clippy`/`fmt`（`-D warnings`）通過。
+- 必須7レビュー担当: 全員 `判定: 合格` / 所見なし。
+- 集約後レビュー判定: `合格`
+- 集約根拠: 秒60拒否は設計（exported_at UTC RFC3339）と矛盾せず受理域を縮小するのみ、非空虚テストで網羅、暦日/offset/fraction/他 schema 検証の退行なし。停止条件は識別可能な domain error。
+- 後続対応状態: コミット・push 後に PR #37 の新規スレッド（id 3330204008）へ判断根拠付きで回答・resolve。
