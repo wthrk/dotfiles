@@ -25,8 +25,8 @@ const ENVELOPE_VERSION: u8 = 1;
 const DEK_ALG: &str = "aes-256-gcm";
 /// `metadata.recipient_kek_alg` の固定値。
 const RECIPIENT_KEK_ALG: &str = "rsa-oaep-sha256";
-/// recipient の固定 PIV slot。
-const RECIPIENT_PIV_SLOT: u8 = 82;
+/// recipient の固定 PIV slot（正本 BWS schema に合わせ文字列固定）。
+const RECIPIENT_PIV_SLOT: &str = "82";
 /// `metadata.primary_fingerprint` の lowercase hex 文字数（区切りなし）。
 const PRIMARY_FINGERPRINT_HEX_LEN: usize = 40;
 /// recipient `public_key_fingerprint` の lowercase hex 文字数（区切りなし）。
@@ -94,7 +94,11 @@ pub struct ConnectedYubiKey {
 }
 
 /// envelope JSON の wire 表現。検証前の raw 文字列をそのまま受け取る。
+///
+/// `deny_unknown_fields` により、設計が定める top-level/ネスト field 以外が混入した
+/// envelope を deserialize 段階で拒否し、domain 検証失敗として停止させる。
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EnvelopeWire {
     version: u8,
     metadata: MetadataWire,
@@ -103,6 +107,7 @@ struct EnvelopeWire {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MetadataWire {
     primary_fingerprint: String,
     exported_at: String,
@@ -111,6 +116,7 @@ struct MetadataWire {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CiphertextWire {
     nonce: String,
     body: String,
@@ -118,9 +124,10 @@ struct CiphertextWire {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecipientWire {
     yubikey_serial: String,
-    piv_slot: u8,
+    piv_slot: String,
     public_key_fingerprint: String,
     wrapped_dek: String,
 }
@@ -161,7 +168,7 @@ impl GpgBackupEnvelope {
                 .iter()
                 .map(|recipient| RecipientWire {
                     yubikey_serial: recipient.yubikey_serial.clone(),
-                    piv_slot: RECIPIENT_PIV_SLOT,
+                    piv_slot: RECIPIENT_PIV_SLOT.to_owned(),
                     public_key_fingerprint: recipient.public_key_fingerprint.0.clone(),
                     wrapped_dek: base64_encode(&recipient.wrapped_dek),
                 })
@@ -264,7 +271,8 @@ impl EnvelopeMetadata {
     /// 検証済みの `exported_at`（UTC RFC3339 文字列）を借用する。
     ///
     /// 構築時に [`validate_rfc3339_utc`] を通っているため、`YYYY-MM-DDThh:mm:ss[.fff]Z`
-    /// 形式で各フィールドが数値範囲内かつ UTC（`Z` または `+00:00`）であることが保証される。
+    /// 形式で各フィールドが数値範囲内（full-date は暦日として存在する日付）かつ
+    /// UTC（`Z` または `+00:00`）であることが保証される。
     pub fn exported_at(&self) -> &str {
         &self.exported_at
     }
@@ -314,7 +322,7 @@ impl EnvelopeRecipient {
     fn from_wire(wire: RecipientWire) -> Result<Self> {
         if wire.piv_slot != RECIPIENT_PIV_SLOT {
             return Err(invalid_data(format!(
-                "gpg backup recipient piv_slot must be {RECIPIENT_PIV_SLOT}"
+                "gpg backup recipient piv_slot must be the string {RECIPIENT_PIV_SLOT:?}"
             )));
         }
         if wire.yubikey_serial.is_empty()
@@ -418,7 +426,8 @@ impl PublicKeyFingerprint {
 ///
 /// 設計「決定事項」は `exported_at` を UTC RFC3339 の必須 metadata と規定する。実時刻取得や
 /// timezone DB は不要なため、外部 crate に依存せず純粋関数で形式（`YYYY-MM-DDThh:mm:ss[.fff]`）と
-/// 各フィールドの数値範囲、および UTC を表す time-offset（`Z` または `+00:00`）だけを検証する。
+/// 各フィールドの数値範囲（full-date は月別日数と閏年判定を含む暦日妥当性）、および UTC を表す
+/// time-offset（`Z` または `+00:00`）だけを検証する。
 /// `Z` は RFC3339 に従い大文字小文字を問わず受理し、UTC 以外の offset は拒否する。秒小数部
 /// （`.` 以降）は 1 桁以上の数字を許容する。形式違反は domain error として停止し、message に
 /// 入力本文は含めない。
@@ -437,7 +446,12 @@ fn validate_rfc3339_utc(value: &str) -> Result<()> {
     let year = parse_fixed_width_number(year, 4).ok_or_else(invalid)?;
     let month = parse_fixed_width_number(month, 2).ok_or_else(invalid)?;
     let day = parse_fixed_width_number(day, 2).ok_or_else(invalid)?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1 {
+    if !(1..=12).contains(&month) || year < 1 {
+        return Err(invalid());
+    }
+    // 月別日数と 2 月の閏年判定で暦日として存在しない日付（`2026-02-31` /
+    // `2026-04-31` / 平年 `2025-02-29` 等）を拒否する。
+    if day < 1 || day > days_in_month(year, month) {
         return Err(invalid());
     }
 
@@ -473,6 +487,24 @@ fn validate_rfc3339_utc(value: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 指定した年月の暦日上の日数を返す。
+///
+/// 2 月は Gregorian の閏年判定（4 で割り切れ、かつ 100 で割り切れない、または 400 で
+/// 割り切れる）で 28/29 を返す。`month` は呼び出し側で `1..=12` を保証済みとし、それ以外は
+/// 安全側の最小日数（28）を返す。
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let is_leap =
+                year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+            if is_leap { 29 } else { 28 }
+        }
+        _ => 28,
+    }
 }
 
 /// 固定桁数の 10 進フィールドを数値へ変換する。桁数不一致・非数字・空は `None` を返す。
@@ -526,13 +558,17 @@ fn base64_decode(input: &str, field: &str) -> Result<Vec<u8>> {
     }
 
     let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks(4) {
+    let chunk_count = bytes.len() / 4;
+    for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
+        let is_last_chunk = chunk_index + 1 == chunk_count;
         let mut accumulator = 0u32;
         let mut chunk_padding = 0usize;
         for (index, &symbol) in chunk.iter().enumerate() {
             if symbol == b'=' {
-                // padding は末尾 chunk の末尾だけに許可する。
-                if index < 2 {
+                // padding（`=`）は入力末尾の 4 文字 chunk の末尾位置にだけ許可する。
+                // 末尾以外の chunk に padding が現れる入力（`AA==AAAA` 等、padding 後に
+                // さらにデータが続く値）は壊れた envelope として停止する。
+                if !is_last_chunk || index < 2 {
                     return Err(invalid_base64(field));
                 }
                 chunk_padding += 1;
@@ -629,6 +665,26 @@ mod tests {
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
     const PUBKEY_FP: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+    /// 12-byte nonce fixture。tag/wrapped_dek の base64 と一意に区別できる連番 byte 列を使い、
+    /// `String::replace` が `ciphertext.nonce` だけを対象にできるようにする（全 0 だと nonce と
+    /// tag の base64 が先頭一致して取り違える）。
+    fn nonce_bytes() -> [u8; NONCE_LEN] {
+        let mut bytes = [0u8; NONCE_LEN];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = 0x10 + index as u8;
+        }
+        bytes
+    }
+
+    /// 16-byte tag fixture。nonce/wrapped_dek の base64 と一意に区別できる連番 byte 列を使う。
+    fn tag_bytes() -> [u8; TAG_LEN] {
+        let mut bytes = [0u8; TAG_LEN];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = 0x80 + index as u8;
+        }
+        bytes
+    }
+
     /// `Result::Ok` を取り出す。workspace lint で禁止された `unwrap`/`expect` を使わずに、
     /// 失敗時は `panic!` でテストを停止する。
     fn ok<T>(result: Result<T>, context: &str) -> T {
@@ -640,9 +696,9 @@ mod tests {
 
     /// 12-byte / 16-byte / 非空 body を base64 化した有効 ciphertext field を返す。
     fn valid_envelope_json() -> String {
-        let nonce = base64_encode(&[0u8; NONCE_LEN]);
+        let nonce = base64_encode(&nonce_bytes());
         let body = base64_encode(b"encrypted-backup-bytes");
-        let tag = base64_encode(&[0u8; TAG_LEN]);
+        let tag = base64_encode(&tag_bytes());
         let wrapped = base64_encode(b"wrapped-dek-bytes");
         format!(
             r#"{{
@@ -656,7 +712,7 @@ mod tests {
               "recipients": [
                 {{
                   "yubikey_serial": "12345678",
-                  "piv_slot": 82,
+                  "piv_slot": "82",
                   "public_key_fingerprint": "{PUBKEY_FP}",
                   "wrapped_dek": "{wrapped}"
                 }}
@@ -711,9 +767,9 @@ mod tests {
     /// recipients が 0 件の envelope は停止条件として拒否する。
     #[test]
     fn rejects_empty_recipients() {
-        let nonce = base64_encode(&[0u8; NONCE_LEN]);
+        let nonce = base64_encode(&nonce_bytes());
         let body = base64_encode(b"encrypted-backup-bytes");
-        let tag = base64_encode(&[0u8; TAG_LEN]);
+        let tag = base64_encode(&tag_bytes());
         let json = format!(
             r#"{{
               "version": 1,
@@ -767,8 +823,8 @@ mod tests {
     /// nonce の byte 長が 12 でない場合は拒否する。
     #[test]
     fn rejects_wrong_nonce_length() {
-        let short_nonce = base64_encode(&[0u8; NONCE_LEN - 1]);
-        let valid_nonce = base64_encode(&[0u8; NONCE_LEN]);
+        let valid_nonce = base64_encode(&nonce_bytes());
+        let short_nonce = base64_encode(&nonce_bytes()[..NONCE_LEN - 1]);
         let json = valid_envelope_json().replace(&valid_nonce, &short_nonce);
 
         assert!(GpgBackupEnvelope::parse(&json).is_err());
@@ -777,8 +833,8 @@ mod tests {
     /// tag の byte 長が 16 でない場合は拒否する。
     #[test]
     fn rejects_wrong_tag_length() {
-        let valid_tag = base64_encode(&[0u8; TAG_LEN]);
-        let short_tag = base64_encode(&[0u8; TAG_LEN - 1]);
+        let valid_tag = base64_encode(&tag_bytes());
+        let short_tag = base64_encode(&tag_bytes()[..TAG_LEN - 1]);
         let json = valid_envelope_json().replace(&valid_tag, &short_tag);
 
         assert!(GpgBackupEnvelope::parse(&json).is_err());
@@ -793,12 +849,102 @@ mod tests {
         assert!(GpgBackupEnvelope::parse(&json).is_err());
     }
 
-    /// piv_slot が 82 以外の recipient は拒否する。
+    /// padding（`=`）後にさらにデータが続く base64 は壊れた値として拒否する。
+    /// `AA==AAAA` / `AB==CDEF` のように非末尾 chunk へ padding が現れる入力を弾く。
     #[test]
-    fn rejects_wrong_piv_slot() {
-        let json = valid_envelope_json().replace("\"piv_slot\": 82", "\"piv_slot\": 83");
+    fn rejects_base64_with_padding_before_end() {
+        for invalid in ["AA==AAAA", "AB==CDEF", "AAAA====", "====AAAA"] {
+            let json = valid_envelope_json().replace(&base64_encode(b"wrapped-dek-bytes"), invalid);
+            assert!(
+                GpgBackupEnvelope::parse(&json).is_err(),
+                "expected {invalid} to be rejected"
+            );
+        }
+    }
+
+    /// 末尾 chunk の padding（`=`/`==`）を持つ正当な base64 は受理する。
+    #[test]
+    fn base64_decode_accepts_trailing_padding() {
+        // `AAAA` (no padding) / `AAA=` (1 byte tail) / `AA==` (2 bytes tail) を直接検証する。
+        assert!(base64_decode("AAAA", "field").is_ok());
+        assert!(base64_decode("AAAAAAA=", "field").is_ok());
+        assert!(base64_decode("AAAAAA==", "field").is_ok());
+        // 非末尾 chunk への padding は拒否する。
+        assert!(base64_decode("AA==AAAA", "field").is_err());
+    }
+
+    /// 未知の top-level field を持つ envelope は拒否する。
+    #[test]
+    fn rejects_unknown_top_level_field() {
+        let json = valid_envelope_json().replace(
+            "\"version\": 1,",
+            "\"version\": 1,\n              \"extra\": \"x\",",
+        );
 
         assert!(GpgBackupEnvelope::parse(&json).is_err());
+    }
+
+    /// 未知のネスト field（metadata / recipient / ciphertext）を持つ envelope は拒否する。
+    #[test]
+    fn rejects_unknown_nested_field() {
+        let metadata = valid_envelope_json().replace(
+            "\"dek_alg\": \"aes-256-gcm\",",
+            "\"dek_alg\": \"aes-256-gcm\",\n                \"extra\": \"x\",",
+        );
+        assert!(
+            GpgBackupEnvelope::parse(&metadata).is_err(),
+            "unknown metadata field must be rejected"
+        );
+
+        let recipient = valid_envelope_json().replace(
+            "\"piv_slot\": \"82\",",
+            "\"piv_slot\": \"82\",\n                  \"extra\": \"x\",",
+        );
+        assert!(
+            GpgBackupEnvelope::parse(&recipient).is_err(),
+            "unknown recipient field must be rejected"
+        );
+
+        let ciphertext = valid_envelope_json()
+            .replace("\"ciphertext\": {", "\"ciphertext\": { \"extra\": \"x\",");
+        assert!(
+            GpgBackupEnvelope::parse(&ciphertext).is_err(),
+            "unknown ciphertext field must be rejected"
+        );
+    }
+
+    /// piv_slot が文字列 "82" 以外の recipient は拒否する。
+    #[test]
+    fn rejects_wrong_piv_slot() {
+        let json = valid_envelope_json().replace("\"piv_slot\": \"82\"", "\"piv_slot\": \"83\"");
+
+        assert!(GpgBackupEnvelope::parse(&json).is_err());
+    }
+
+    /// piv_slot が数値（正本 schema は文字列固定）の recipient は拒否する。
+    #[test]
+    fn rejects_numeric_piv_slot() {
+        let json = valid_envelope_json().replace("\"piv_slot\": \"82\"", "\"piv_slot\": 82");
+
+        assert!(GpgBackupEnvelope::parse(&json).is_err());
+    }
+
+    /// piv_slot は文字列 "82" のときに受理し、`to_json` も文字列で出力する。
+    #[test]
+    fn accepts_string_piv_slot_and_round_trips() {
+        let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
+        let json = ok(envelope.to_json(), "serialize");
+        let text = ok(
+            String::from_utf8(json).map_err(anyhow::Error::from),
+            "utf8 json",
+        );
+
+        assert!(
+            text.contains("\"piv_slot\":\"82\""),
+            "to_json must emit piv_slot as the string \"82\": {text}"
+        );
+        let reparsed = ok(GpgBackupEnvelope::parse(&text), "reparse");
+        assert_eq!(envelope, reparsed);
     }
 
     /// serial だけ一致し fingerprint が異なる場合は recipient を解決しない。
@@ -897,6 +1043,45 @@ mod tests {
                 GpgBackupEnvelope::parse(&json).is_err(),
                 "expected {value} to be rejected"
             );
+        }
+    }
+
+    /// 暦日として存在しない full-date の `exported_at` は拒否する。
+    /// 月別日数（31/30）と 2 月の閏年判定（平年 29 日不在）を検証する。
+    #[test]
+    fn rejects_nonexistent_calendar_dates() {
+        for value in [
+            "2026-02-31T00:00:00Z",
+            "2026-02-30T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-06-31T00:00:00Z",
+            "2026-09-31T00:00:00Z",
+            "2026-11-31T00:00:00Z",
+            "2025-02-29T00:00:00Z",
+            "2100-02-29T00:00:00Z",
+            "2026-01-00T00:00:00Z",
+        ] {
+            let json = envelope_json_with_exported_at(value);
+            assert!(
+                GpgBackupEnvelope::parse(&json).is_err(),
+                "expected {value} to be rejected"
+            );
+        }
+    }
+
+    /// 閏年・各月末の正当な full-date の `exported_at` を受理する。
+    #[test]
+    fn accepts_valid_calendar_dates() {
+        for value in [
+            "2024-02-29T00:00:00Z",
+            "2000-02-29T00:00:00Z",
+            "2026-01-31T00:00:00Z",
+            "2026-04-30T00:00:00Z",
+            "2025-02-28T00:00:00Z",
+        ] {
+            let json = envelope_json_with_exported_at(value);
+            let envelope = ok(GpgBackupEnvelope::parse(&json), "parse");
+            assert_eq!(envelope.metadata().exported_at(), value);
         }
     }
 
