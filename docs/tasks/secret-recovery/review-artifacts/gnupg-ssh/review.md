@@ -166,3 +166,19 @@
 - 集約後レビュー判定: `合格`
 - 集約根拠: canonical 検証の bit 算術が RFC 4648 §3.5 と一致し、非 canonical 拒否・canonical 受理を非空虚テストで網羅。既存 envelope schema 検証の退行なし。domain 純粋性・secret 非露出維持。
 - 後続対応状態: コミット・push 後に PR #37 の新規スレッド（id 3330152377）へ回答・resolve。
+
+### サイクル5（PR #37 Codex 再レビュー指摘の是正）
+
+- 契機: `@codex review` で `3de62a7` を明示再レビューし、新規指摘2件（id 3330184006 / 3330184007）。
+- 指摘:
+  - (A) `exported_at` の秒60を位置無制限で受理（RFC3339 §5.7 は leap second 60 を UTC 月末 23:59:60 に限定）。
+  - (B) wire（保存値）の fingerprint をユーザー入力向け正規化 parser に通すため非 canonical（uppercase/区切り/空白）を受理し、`to_json` で書き換えて破損を隠す。設計上は保存値が既に canonical（lowercase hex・区切りなし）であるべき。
+- 是正対象差分: `rust/dotfiles-cli/src/secrets/domain/gpg_backup.rs`（+187/-12）。
+- 是正:
+  - (A) 秒60を `hour==23 && minute==59 && day==days_in_month(year,month)`（UTC 月末日 23:59:60）のときのみ許可、他位置の60と≥61を停止。
+  - (B) wire 保存値 fingerprint 用の厳格 canonical 検証 `validate_canonical_wire_fingerprint`（正規化せず非 canonical を停止）を追加し `*::from_wire` で使用。runtime 照合入力（`ConnectedYubiKey`）は従来の `normalize_fingerprint` を維持し、二経路を doc で分離。`to_json` は保存値を無変換出力。
+- 実検証: `cargo test -p dotfiles-cli --lib secrets::domain::gpg_backup` = 35 passed / 0 failed（親独立実行で確認）。`clippy`/`fmt`（`-D warnings`）通過。
+- 必須7レビュー担当: 全員 `判定: 合格` / 所見なし（テスト担当は新規テストの非空虚性を確認）。
+- 集約後レビュー判定: `合格`
+- 集約根拠: (A)(B) とも設計（exported_at UTC RFC3339・fingerprint は canonical lowercase hex 保存値）へ整合、非空虚テストで網羅、既存 schema 検証の退行なし。wire厳格×runtime正規化の照合一致を確認。malformed 保存値の停止が後続 restore/verify の前提を強化。
+- 後続対応状態: コミット・push 後に PR #37 の新規スレッド（id 3330184006 / 3330184007）へ回答・resolve。
