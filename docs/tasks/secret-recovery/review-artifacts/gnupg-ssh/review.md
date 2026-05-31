@@ -154,3 +154,15 @@
 - 集約後レビュー判定: `合格`
 - 集約根拠: 是正5件すべて非空虚なテストで検証され、設計（envelope schema・piv_slot 文字列正本・base64 妥当性・暦日 RFC3339・未知 field 拒否）へ直接照合し未解消なし。domain 純粋性・secret 非露出維持。各担当が対象コードを独立に直接読んで判定。
 - 後続対応状態: コミット・push 後に PR #37 レビュースレッドへ回答・resolve。
+
+### サイクル4（PR #37 Codex 再レビュー指摘の是正）
+
+- 契機: push（`df83d42`/`e5dc241`）後の Codex 再レビュー（コミット `e5dc24`）で新規指摘1件（id 3330152377、line 587）。
+- 指摘: `base64_decode` が padding で捨てる sextet の下位 bit が 0 か検証せず、非 canonical な base64（`AB==`/`AAB=`）を受理する。
+- 是正対象差分: `rust/dotfiles-cli/src/secrets/domain/gpg_backup.rs`（`base64_decode` のみ、+35行）。
+- 是正: RFC 4648 §3.5 の canonical 性検証を追加（2 padding=2番目 sextet 下位4bit、1 padding=3番目 sextet 下位2bit が非0なら `invalid_base64` で停止）。既存の padding 位置・最終chunk限定検証は退行なし。
+- 実検証: `cargo test -p dotfiles-cli --lib secrets::domain::gpg_backup` = 31 passed / 0 failed（親独立実行で確認）。`clippy`/`fmt`（`-D warnings`）通過。
+- 必須7レビュー担当: 全員 `判定: 合格` / 所見なし（テスト担当は mutation test で新規テストの非空虚性を実証）。
+- 集約後レビュー判定: `合格`
+- 集約根拠: canonical 検証の bit 算術が RFC 4648 §3.5 と一致し、非 canonical 拒否・canonical 受理を非空虚テストで網羅。既存 envelope schema 検証の退行なし。domain 純粋性・secret 非露出維持。
+- 後続対応状態: コミット・push 後に PR #37 の新規スレッド（id 3330152377）へ回答・resolve。
