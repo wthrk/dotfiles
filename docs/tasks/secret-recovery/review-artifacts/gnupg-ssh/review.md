@@ -138,3 +138,19 @@
 - 集約判定要約: 所見なし
 - 集約根拠: 実コード差分の必須7レビュー担当が再レビューで全員合格。envelope schema 全項目（version/metadata/recipients/ciphertext・固定値・byte長・fingerprint 正規化・recipient 両一致照合・exported_at UTC RFC3339）を設計へ直接照合し未解消なし。domain は鍵リング/process I/O 非依存（構造完了条件）。secret 露出経路・test double 混入なし。各担当は対象コードを独立に直接読んで判定。
 - 後続対応状態: コミット着手可（増分1）。後続増分（port/adapter/application/command/Home Manager/zsh）は別サイクルで継続。
+
+### サイクル3（PR #37 Codex Review 指摘の是正）
+
+- 契機: PR #37（コミット `67f11e0` 時点）に対する GitHub Codex Review bot の inline 指摘5件（いずれも P2、重複除外後）。
+- 是正対象差分: `rust/dotfiles-cli/src/secrets/domain/gpg_backup.rs` ＋ `docs/secret-recovery/gnupg-ssh-design.md`（piv_slot 型1行）。
+- 是正した指摘:
+  1. `base64_decode` の padding を最終 chunk 末尾位置に限定（`AA==AAAA` 等の非末尾 padding を停止）。
+  2. `exported_at` の暦日妥当性検証（`days_in_month` + 閏年判定で `2026-02-31`/平年 `2025-02-29` 等を停止）。
+  3. wire 構造体4種へ `#[serde(deny_unknown_fields)]`（未知 field を停止）。
+  4. `piv_slot` を正本 `bitwarden-secrets-manager-design.md:93` の文字列 `"82"` 固定へ統一（wire `String` 化・`to_json` 文字列・`gnupg-ssh-design.md:28` を string 明示で docs 整合）。
+  5. テスト fixture の nonce/tag を一意 byte 列化し `String::replace` の取り違えを解消。
+- 実検証: `cargo test -p dotfiles-cli --lib secrets::domain::gpg_backup` = 30 passed / 0 failed（親オーケストレーター独立実行で確認）。`clippy`/`fmt --check`（`-D warnings`）通過。
+- 必須7レビュー担当（構造・アーキテクチャ整合・セキュリティ・仕様適合・テスト・ドキュメント・運用整合）: 全員 `判定: 合格` / 所見なし。
+- 集約後レビュー判定: `合格`
+- 集約根拠: 是正5件すべて非空虚なテストで検証され、設計（envelope schema・piv_slot 文字列正本・base64 妥当性・暦日 RFC3339・未知 field 拒否）へ直接照合し未解消なし。domain 純粋性・secret 非露出維持。各担当が対象コードを独立に直接読んで判定。
+- 後続対応状態: コミット・push 後に PR #37 レビュースレッドへ回答・resolve。
