@@ -1,6 +1,6 @@
 # #13 Bitwarden Secrets Manager クライアント
 
-- 作業種別: `規約適合リファクタリングを伴う機能実装`
+- 作業種別: `機能実装`
 - 作業目的: `Bitwarden Secrets Manager` 取得経路を、secret-recovery の層分割と外部境界規約に沿って実装する。
 - 現行サイクル差分識別子: `PR #33 / branch refactor/secrets-structure-issue-30-main / base 5ff5e54 / 実装/レビュー対象終端 77dc03c / diff range 5ff5e54..77dc03c`
 - 現行サイクル確認基準: `5ff5e54..77dc03c`（PR #33 作り直し commit `2ececf1` と、補正 commit `ffe9880`、`7320c55`、`fbc5096`、`fa396f3`、`ae1b917`、`97748c4`、`5e21afb`、`f2f2f20`、`4cd47d4`、`4092a86`、`11ff088`、`77dc03c` を対象にする。`97748c4` は BSM 対象コードパス漏れ指摘への対応、`5e21afb` は PR #33 現行 HEAD 証跡更新、`f2f2f20` は削除済み adapter root を現行対象パス扱いしない台帳補正、`4cd47d4` は PR #33 現行 HEAD 証跡補正、`4092a86` は PR #33 差分終端補正、`11ff088` は直前 P1 対応、`77dc03c` は fresh review 差し戻し（構造・PTY・追跡更新）対応）
@@ -21,12 +21,12 @@
   - 固定 project / secret name の意味づけ、secret ID の一意解決、0件/複数件の failure 化、取得対象の過不足判定、`verify-yubikey --check bws` の外部検証 plan は、[`docs/architecture/hexagonal-implementation-rules.md`](../../../architecture/hexagonal-implementation-rules.md) と [`docs/secret-recovery/bitwarden-secrets-manager-design.md`](../../../secret-recovery/bitwarden-secrets-manager-design.md) が規定する責務境界に置く。`support` への移動、ファイル分割、private helper 削除だけで解消扱いにしない。
   - `application` は secret recovery の順序制御だけを持つ。
   - `domain` は Bitwarden SDK 型と I/O 型へ依存しない。
-- 既存実装の流用方針: `規約に合う部分だけを流用し、境界違反が残る場合は再分割を優先する。`
-- 規約違反の解消対象:
+- 既存実装の流用方針: `現行の構成・アーキテクチャを固定の前提とし、既存コードを優先的に流用する。取得経路を現行の層境界へ収める範囲で実装し、現行コード構造の大幅な作り替えは前提にしない。`
+- 境界維持の観点（新規実装が持ち込んではならない結合）:
   - SDK 依存の境界漏れ
   - application と domain の責務混在
   - entrypoint / adapter / domain の直接結合
-- レビュー合格条件: `Bitwarden SDK 依存が境界内へ閉じ、アーキテクチャ規約違反が残っていないこと。`
+- レビュー合格条件: `Bitwarden SDK 依存が現行の層境界内に収まり、新規実装がアーキテクチャ規約違反を持ち込まないこと。`
 - BSM 実装義務（未充足なら未完了）:
   - `verify-yubikey --check bws` は `gpg-secret-key-backup` envelope schema を検証すること。
   - `metadata.primary_fingerprint` を lowercase hex 40 文字（separator なし）へ正規化し、実装とテストで検証すること。

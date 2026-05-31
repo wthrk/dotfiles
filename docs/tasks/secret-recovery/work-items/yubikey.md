@@ -1,22 +1,13 @@
 # #12 YubiKey 秘密情報保存
 
-## 着手前要件: アーキテクチャレビューと計画
+> 注記（2026-05-31 現行アーキテクチャ固定）: 現在の構成・アーキテクチャ（現行のコード構造そのもの）を固定の前提とする。本作業項目はこのサイクルで `完了` であり、以降は現行構造を別構造へ作り替える大幅リファクタリングを前提にしない。以下の V1〜V16 と各完了条件は、本サイクルで現行構造へ収束させた際の到達点・境界維持の観点として残す記録であり、現行コードを更に再構築せよという指示として読まない。新規機能を追加する場合は、現行の層境界へ収める範囲で実装し、既存コードを優先的に流用する。
 
-実装を開始する前に、以下を完了しなければならない。
-
-1. **アーキテクチャレビュー**: 現行コード全体を対象に、V1〜V16 の各違反について「どの層から何を取り出してどこへ移設するか」を具体的に確認する。依存関係の連鎖（例: V8解消がV7の前提になる）を明確にする。
-2. **リファクタリング計画の策定**: アーキテクチャレビューの結果を受けて、各ステップで行う変更の粒度・順序・完了条件を実装単位トラッカーに反映する。特に、複数の違反が同一ファイルに混在している場合の分割方針と新規ファイルの配置先を決定する。
-
-アーキテクチャレビューと計画が完了してから「実装順序ガイド」および「固定実装単位トラッカー」の各ステップへ進む。
-
----
-
-- 作業種別: `モジュール構造のゼロベース書き換えを含む規約適合リファクタリング`
+- 作業種別: `機能実装（現行アーキテクチャ固定）`
 - 現行サイクル状態: `完了`
 - 現行サイクル確認基準: `2bd7e0a..この実装コメント補正 HEAD current-cycle app regression test and documentation remediation`
 - 実装/テスト差分の保存コミット終端: `この実装コメント補正 HEAD`（直前実コード終端 `4c82da8 fix(secrets): protectionテストのsecret assertionを秘匿化` に documentation reviewer Fail の doc comment 補正を加えたもの。自己 hash は本文へ埋め込まず git log の HEAD で確認する）
 - 現行補正コミット: `この current-cycle 補正 HEAD`（自己 hash は本文へ埋め込まず、git log の HEAD で確認する）
-- 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の動作有無ではなくアーキテクチャ規約への厳密適合を基準に作り直す。責務境界が崩れている箇所を読み直し、モジュール分割、依存方向、入出力境界を再構成すること自体が仕事である。
+- 作業目的: `dotfiles secrets yubikey*` と `verify-yubikey` を、現行の層境界（モジュール分割、依存方向、入出力境界）の内側に収めて実装・維持する。現行の構成・アーキテクチャは固定の前提とし、本サイクルで到達した構造を別構造へ作り替えることは目的にしない。
 - 現行サイクル既知例外: `MgmKey::get_default` による factory-default management key を暫定前提とする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱う。これは完了判定上の既知例外であり、リスクは次フェーズで閉じる。
 - 構造完了条件:
   - `CLI` は clap option の型付けと公開 command 名だけを持つ。
@@ -29,10 +20,10 @@
   - `adapters` は実機 YubiKey と process I/O の接続に限定し、業務判断や use case 順序を持たない。
   - `adapters/` 配下に存在してよいファイルは「特定の port trait を実装するファイル」のみ。port trait を実装しないファイル（backend.rs・enrollment_json.rs・prompt.rs・stdin.rs・stdout.rs・terminal.rs・device_prompt.rs 等）は adapters/ から除去し、support/ 層（業務語彙を持たない場合）または port 実装ファイル内にインライン化すること。
   - `support` は保護メモリ、補助暗号、割り込み制御などの横断補助を主に担う。`rust/dotfiles-cli/src/secrets/support/process_io.rs` のような process-generic な標準入出力補助は残してよいが、YubiKey-specific な prompt 方針、use case 手順、device 選択判断を `support` に持ち込んではならない。
-- 既存実装の流用方針: `既存コードは参照してよいが、責務境界が規約に合わない場合は大幅な再分割、再配置、削除を前提とする。`
-- 規約違反の解消対象:
+- 既存実装の流用方針: `現行の構成・アーキテクチャを固定の前提とし、既存コードを優先的に流用する。新規機能は現行の層境界へ収める範囲で実装し、現行コード構造の大幅な再分割・再配置・削除を前提にしない。`
+- 境界維持の観点（本サイクルで現行構造へ収束させた到達点の記録 / 新規実装が持ち込んではならない結合）:
 
-  この違反リストの判定基準は `docs/architecture/hexagonal-implementation-rules.md` の層ごとの責務と禁止事項に基づく。ファイル名は参考であり、判定は層への所属で行う。
+  以下の V1〜V16 は、本サイクルで現行構造へ収束させた際に解消済みの観点を記録したものである（`現行サイクル状態: 完了`）。判定基準は `docs/architecture/hexagonal-implementation-rules.md` の層ごとの責務と禁止事項に基づく。ファイル名は参考であり、判定は層への所属で行う。新規実装はこれらの境界を逸脱しないことを維持の指針とし、現行コードを更に再構築せよという指示としては読まない。
 
   - **[層違反: application → adapter具体型への依存禁止]** **V1** `application.rs` が `adapters` / `adapters::input` を直接 import し、`DeviceBackend` / `RealSecretsBoundary` を直接組み立てている（`application` から `adapter` への依存禁止違反）。
   - **[層違反: application → concrete I/O・stdin・stdout policy は adapter 所有]** **V2** `application.rs` が `read_hidden_secret` / `read_visible_secret_line` / `read_protected_enrollment_secret_set` / `write_secret_to_stdout` を直接呼び、`println!` による report 出力を行っている（concrete I/O / stdin / stdout policy は `adapter` 所有規則違反）。
@@ -182,7 +173,7 @@
 
 ## 違反ファイルマップ（実装担当参照用）
 
-作業定義の `規約違反の解消対象` V1〜V16 と対象ファイルの対応を示す。
+作業定義の `境界維持の観点`（V1〜V16）と対象ファイルの対応を示す。本サイクルで現行構造へ収束させた際の到達点の記録であり、現行コードの再構築指示ではない。
 
 | 違反 | 対象ファイル | 解消操作の方向 |
 |------|------------|--------------|
