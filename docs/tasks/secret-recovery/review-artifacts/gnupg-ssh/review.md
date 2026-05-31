@@ -108,3 +108,33 @@
 - 後続対応状態: `未着手`
 - 懸念/残留リスク/未解消疑義/要追跡事項/運用依存の注意事項が1件でも残る場合は `合格` を記録しない。
 - 後続対応メモ: `レビュー未開始のため未整理`
+
+## 現行サイクル（2026-05-31 / 増分1: encrypted envelope domain 層）
+
+- GitHub: 実装サブ issue #36（親 #14）
+- 対象ブランチ: `feat/secrets-restore-gpg-issue-14`（origin/main ベース）
+- 確認開始時 HEAD: `ca7c9ca`（直前は現行アーキ固定の文書是正コミット）
+- 対象差分識別子: 増分1 = `rust/dotfiles-cli/src/secrets/domain/gpg_backup.rs`（新規）＋ `rust/dotfiles-cli/src/secrets/domain.rs`（`pub mod gpg_backup;` 追加）。`git --no-pager diff HEAD` ＋ 新規 untracked ファイル。
+- スコープ: encrypted envelope の domain 層のみ（型・JSON (de)serialize・schema 検証・fingerprint 正規化・recipient 照合・`exported_at` UTC RFC3339 検証・単体テスト）。port/adapter（gpgme/YubiKey/BWS）・application・command は後続増分。
+- 実検証: `cargo test -p dotfiles-cli --lib secrets::domain::gpg_backup` = 22 passed / 0 failed（親オーケストレーターが独立実行で確認）。`clippy`/`fmt --check`（`-D warnings`）通過。
+
+### サイクル1（差し戻し）
+
+- 構造 / アーキテクチャ整合 / セキュリティ / テスト / ドキュメント / 運用整合: `判定: 合格`
+- 仕様適合レビュー担当: `判定: 要修正` / 判定要約: `metadata.exported_at` が設計「決定事項」の UTC RFC3339 形式として未検証（非空のみ）、doc は RFC3339 と表明。
+- 集約後レビュー判定: `要修正` → `S1` 差し戻し。
+- 是正: `validate_rfc3339_utc`（形式・数値範囲・UTC offset 検証）を `EnvelopeMetadata::from_wire` に配線、異常系/正常系テスト6件追加、doc を実装保証内容へ整合。
+
+### サイクル2（再レビュー / 是正後）
+
+- 構造レビュー担当: `判定: 合格` / 所見なし
+- アーキテクチャ整合レビュー担当: `判定: 合格` / 所見なし
+- セキュリティレビュー担当: `判定: 合格` / 所見なし
+- 仕様適合レビュー担当: `判定: 合格` / 所見なし（前サイクル finding 解消を直接照合で確認）
+- テストレビュー担当: `判定: 合格` / 所見なし
+- ドキュメントレビュー担当: `判定: 合格` / 所見なし
+- 運用整合レビュー担当: `判定: 合格` / 所見なし
+- 集約後レビュー判定: `合格`
+- 集約判定要約: 所見なし
+- 集約根拠: 実コード差分の必須7レビュー担当が再レビューで全員合格。envelope schema 全項目（version/metadata/recipients/ciphertext・固定値・byte長・fingerprint 正規化・recipient 両一致照合・exported_at UTC RFC3339）を設計へ直接照合し未解消なし。domain は鍵リング/process I/O 非依存（構造完了条件）。secret 露出経路・test double 混入なし。各担当は対象コードを独立に直接読んで判定。
+- 後続対応状態: コミット着手可（増分1）。後続増分（port/adapter/application/command/Home Manager/zsh）は別サイクルで継続。
