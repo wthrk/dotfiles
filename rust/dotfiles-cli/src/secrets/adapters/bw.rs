@@ -180,6 +180,8 @@ impl BwsClientPort for BwsClientAdapter {
             .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(current.value.as_bytes()));
         expected_guard.ensure_matches(&current_guard)?;
         let value = envelope_value(envelope)?;
+        // 利用者が設定した note / project を消さないよう、直前取得した現行値を保持して上書きする。
+        // project が未設定の現行値では、解決済みの復旧 project を fallback に使う。
         session
             .client()
             .secrets()
@@ -188,8 +190,8 @@ impl BwsClientPort for BwsClientAdapter {
                 organization_id,
                 key: key.to_owned(),
                 value,
-                note: String::new(),
-                project_ids: Some(vec![project_uuid]),
+                note: current.note.clone(),
+                project_ids: Some(vec![current.project_id.unwrap_or(project_uuid)]),
             })
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden secret update failed"))?;

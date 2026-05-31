@@ -109,8 +109,10 @@ fn sshcontrol_contains(path: &PathBuf, keygrip: &Keygrip) -> Result<bool> {
         if entry.is_empty() || entry.starts_with('#') {
             continue;
         }
-        // sshcontrol の各行は keygrip（uppercase hex）で始まる。大文字小文字を無視して照合する。
-        if entry.eq_ignore_ascii_case(keygrip.as_str()) {
+        // sshcontrol の各行は keygrip（uppercase hex）で始まり、`KEYGRIP 0 confirm` のように
+        // オプションが続く場合がある。行全体一致ではなく先頭空白区切りトークンを keygrip と照合する。
+        let token = entry.split_whitespace().next().unwrap_or(entry);
+        if token.eq_ignore_ascii_case(keygrip.as_str()) {
             return Ok(true);
         }
     }

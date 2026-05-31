@@ -60,6 +60,10 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         self.0.import_secret_key(backup)
     }
 
+    fn delete_secret_key(&mut self, primary_fingerprint: &PrimaryFingerprint) -> Result<()> {
+        self.0.delete_secret_key(primary_fingerprint)
+    }
+
     fn inspect_imported_key(
         &mut self,
         primary_fingerprint: &PrimaryFingerprint,

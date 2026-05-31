@@ -94,9 +94,16 @@ where
         );
     }
 
-    // 7-8. import し、import 後鍵の subkey 構成を検証する。
+    // 7-8. import し、import 後鍵の subkey 構成を検証する。検証失敗時は不完全鍵を残さないよう
+    // best-effort で削除してから元エラーを返す（残置すると次回 restore が衝突で復旧不能になる）。
     let imported = keyring.import_secret_key(&backup)?;
-    keyring.inspect_imported_key(&imported)?.ensure_usable()?;
+    if let Err(error) = keyring
+        .inspect_imported_key(&imported)
+        .and_then(|composition| composition.ensure_usable())
+    {
+        let _ = keyring.delete_secret_key(&imported);
+        return Err(error);
+    }
 
     // 9. authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（冪等）。
     let keygrip = keyring.authentication_subkey_keygrip(&imported)?;
@@ -435,5 +442,116 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "existing key collision must stop import");
+    }
+
+    /// import 後の subkey 検証に失敗した場合、不完全鍵を残さないよう `delete_secret_key` を呼んで
+    /// ロールバックし、元の検証エラーを返すことを検証する（次回 restore の衝突復旧不能を防ぐ）。
+    #[tokio::test]
+    async fn restore_gpg_rolls_back_when_verification_fails() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsSecretId::new("gpg-id"),
+                name: "gpg-secret-key-backup".to_owned(),
+            }])
+        });
+        bws.expect_fetch_gpg_backup_envelope()
+            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .returning(|_| Ok(connected()));
+        recipient
+            .expect_unwrap_dek()
+            .returning(|_, _, _| Ok(material(b"dek")));
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_decrypt_backup()
+            .returning(|_, _| Ok(material(b"backup")));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .returning(|_| {
+                crate::secrets::domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+            });
+        keyring.expect_secret_key_exists().returning(|_| Ok(false));
+        keyring.expect_import_secret_key().times(1).returning(|_| {
+            crate::secrets::domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+        });
+        // subkey 検証が不完全（signing subkey 不在）で失敗する構成を返す。
+        keyring
+            .expect_inspect_imported_key()
+            .times(1)
+            .returning(|_| {
+                Ok(ImportedKeyComposition::new(
+                    true,
+                    vec![
+                        ResolvedSubkey {
+                            capability: SubkeyCapability::Encryption,
+                            usable: true,
+                        },
+                        ResolvedSubkey {
+                            capability: SubkeyCapability::Authentication,
+                            usable: true,
+                        },
+                    ],
+                ))
+            });
+        // 検証失敗で不完全鍵をロールバック削除する。
+        keyring
+            .expect_delete_secret_key()
+            .times(1)
+            .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
+            .returning(|_| Ok(()));
+        // keygrip 登録・SSH support 確認へは進ませない。
+        keyring.expect_authentication_subkey_keygrip().times(0);
+
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_register_authentication_subkey().times(0);
+        ssh_agent.expect_inspect_ssh_agent().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            &mut keyring,
+            &mut ssh_agent,
+            &report,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "incomplete subkey verification must fail restore after rollback"
+        );
     }
 }

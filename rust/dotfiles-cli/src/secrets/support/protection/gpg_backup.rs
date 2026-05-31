@@ -11,6 +11,7 @@ use anyhow::{Context, bail};
 use gpgme::{ExportMode, Protocol};
 use rand::RngCore;
 use sequoia_openpgp::{Cert, parse::Parse};
+use zeroize::Zeroize;
 
 use crate::Result;
 use crate::secrets::support::aead::{
@@ -32,14 +33,26 @@ pub(crate) fn export_secret_key(fingerprint: &str) -> Result<ProtectedSecret> {
     context
         .export([fingerprint], ExportMode::SECRET, &mut data)
         .context("failed to export GPG secret key")?;
-    let bytes = data
+    // `try_into_bytes` が返す `Vec<u8>` は secret key material を保持する。`ProtectedSecret` へ複製した
+    // 後に必ず zeroize し、empty / alloc 失敗の早期 return 経路でも平文 buffer を drop 前に消す。
+    let mut bytes = data
         .try_into_bytes()
         .context("failed to read exported GPG secret key bytes")?;
     if bytes.is_empty() {
+        bytes.zeroize();
         bail!("exported GPG secret key is empty");
     }
-    let mut secret = ProtectedSecret::new(bytes.len())?;
-    secret.with_secret_mut(|out| out.copy_from_slice(&bytes));
+    let secret = match ProtectedSecret::new(bytes.len()) {
+        Ok(mut secret) => {
+            secret.with_secret_mut(|out| out.copy_from_slice(&bytes));
+            secret
+        }
+        Err(error) => {
+            bytes.zeroize();
+            return Err(error);
+        }
+    };
+    bytes.zeroize();
     Ok(secret)
 }
 

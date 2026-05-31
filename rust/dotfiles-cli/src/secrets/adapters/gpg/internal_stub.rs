@@ -154,6 +154,15 @@ impl GpgKeyringPort for GpgKeyringStub {
         Ok(fingerprint)
     }
 
+    fn delete_secret_key(&mut self, primary_fingerprint: &PrimaryFingerprint) -> Result<()> {
+        with_datastore(|store| {
+            store
+                .imported
+                .retain(|fingerprint| fingerprint != primary_fingerprint.as_str());
+            Ok(())
+        })
+    }
+
     fn inspect_imported_key(
         &mut self,
         primary_fingerprint: &PrimaryFingerprint,

@@ -82,14 +82,16 @@ where
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
     // 同名 backup が既にある場合は重複登録を停止条件にする。未登録のときだけ新規作成する。
+    // `resolve_id` は 0 件と複数件をどちらも `Err` にするため、既存重複 project を「未登録」と
+    // 誤認しないよう、同名候補（`name == key`）の件数を直接数えて 1 件以上で停止する。
     let key = BwsSecretName::GpgSecretKeyBackup.key();
-    let existing = BwsSecretName::GpgSecretKeyBackup.resolve_id(
-        bws_client
-            .list_bws_secrets(&access_token, &project_id)
-            .await?,
-        &project_id,
-    );
-    if existing.is_ok() {
+    let existing_count = bws_client
+        .list_bws_secrets(&access_token, &project_id)
+        .await?
+        .into_iter()
+        .filter(|candidate| candidate.name == key)
+        .count();
+    if existing_count >= 1 {
         anyhow::bail!(
             "a gpg-secret-key-backup secret already exists; refusing to overwrite on primary registration"
         );
@@ -279,5 +281,101 @@ mod tests {
             &bws,
         )
         .await
+    }
+
+    /// 同名 backup が複数 project に重複して存在する場合は、`resolve_id` の複数件 `Err` を
+    /// 「未登録」と誤認せず、create を呼ばずに重複登録を停止することを検証する。
+    #[tokio::test]
+    async fn register_primary_stops_when_duplicate_secrets_exist() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|requested| Ok(requested.expect("serial")));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_inspect_imported_key()
+            .returning(|_| Ok(all_usable()));
+        keyring
+            .expect_export_secret_key()
+            .returning(|_| Ok(material(b"backup")));
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
+
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_generate_dek()
+            .returning(|| Ok(material(b"dek")));
+        cipher
+            .expect_encrypt_backup()
+            .returning(|_, _| Ok(ciphertext()));
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_wrap_dek_for_recipient()
+            .returning(|_, _| Ok(recipient_entry()));
+
+        let mut clock = ports::MockClockPort::new();
+        clock
+            .expect_now_rfc3339_utc()
+            .returning(|| Ok("2026-05-31T00:00:00Z".to_owned()));
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        // 同名 backup が複数件存在する（resolve_id だと複数件 Err になり誤認しうるケース）。
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![
+                crate::secrets::domain::bws::BwsLookupCandidate {
+                    id: crate::secrets::domain::bws::BwsSecretId::new("dup-1"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                },
+                crate::secrets::domain::bws::BwsLookupCandidate {
+                    id: crate::secrets::domain::bws::BwsSecretId::new("dup-2"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                },
+            ])
+        });
+        // 重複検出で create へ進ませない。
+        bws.expect_create_gpg_backup_envelope().times(0);
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand {
+                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
+                serial: Some(2001),
+            },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &mut keyring,
+            &mut cipher,
+            &mut recipient,
+            &clock,
+            &bws,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "duplicate gpg-secret-key-backup secrets must stop primary registration"
+        );
     }
 }

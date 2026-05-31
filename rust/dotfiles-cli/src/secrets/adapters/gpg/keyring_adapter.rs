@@ -70,6 +70,16 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         PrimaryFingerprint::parse(&hex)
     }
 
+    fn delete_secret_key(&mut self, primary_fingerprint: &PrimaryFingerprint) -> Result<()> {
+        let mut context = Self::context()?;
+        let key = context
+            .get_secret_key(primary_fingerprint.as_str())
+            .context("failed to resolve GPG secret key for rollback deletion")?;
+        context
+            .delete_secret_key(&key)
+            .context("failed to delete GPG secret key during rollback")
+    }
+
     fn inspect_imported_key(
         &mut self,
         primary_fingerprint: &PrimaryFingerprint,
@@ -78,8 +88,15 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         let key = context
             .get_secret_key(primary_fingerprint.as_str())
             .context("failed to resolve imported GPG key")?;
+        // gpgme の `subkeys()` は先頭に primary key を含む。primary が signing 能力を持つ場合に
+        // signing subkey 不在でも検証通過してしまわないよう、primary fingerprint と一致する要素を
+        // subkey 走査から除外する。
+        let primary_fp = key.fingerprint().ok().map(str::to_owned);
         let mut subkeys = Vec::new();
         for subkey in key.subkeys() {
+            if is_primary_subkey(&subkey, primary_fp.as_deref()) {
+                continue;
+            }
             let usable = !subkey.is_revoked() && !subkey.is_expired() && !subkey.is_disabled();
             if subkey.can_encrypt() {
                 subkeys.push(ResolvedSubkey {
@@ -111,8 +128,11 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         let key = context
             .get_secret_key(primary_fingerprint.as_str())
             .context("failed to resolve imported GPG key")?;
+        // `subkeys()` 先頭の primary key を除外し、authentication 能力を持つ subkey の keygrip だけを解決する。
+        let primary_fp = key.fingerprint().ok().map(str::to_owned);
         let keygrip = key
             .subkeys()
+            .filter(|subkey| !is_primary_subkey(subkey, primary_fp.as_deref()))
             .find(|subkey| {
                 subkey.can_authenticate()
                     && !subkey.is_revoked()
@@ -144,5 +164,16 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             .find(|line| !line.trim().is_empty())
             .context("exported OpenSSH public key is empty")?;
         OpenSshPublicKey::parse(line)
+    }
+}
+
+/// gpgme の `subkeys()` 列挙要素が primary key かどうかを fingerprint 一致で判定する。
+///
+/// `subkeys()` は先頭に primary key を含むため、subkey 構成検証や authentication subkey 解決で
+/// primary を subkey と数えないようにこの判定で除外する。fingerprint は大文字小文字を無視して照合する。
+fn is_primary_subkey(subkey: &gpgme::Subkey<'_>, primary_fingerprint: Option<&str>) -> bool {
+    match (subkey.fingerprint().ok(), primary_fingerprint) {
+        (Some(subkey_fp), Some(primary_fp)) => subkey_fp.eq_ignore_ascii_case(primary_fp),
+        _ => false,
     }
 }

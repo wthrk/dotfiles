@@ -50,6 +50,12 @@ pub trait GpgKeyringPort {
         primary_fingerprint: &PrimaryFingerprint,
     ) -> Result<ImportedKeyComposition>;
 
+    /// import 後の検証失敗時に、不完全な状態で取り込んだ secret key を鍵リングから削除する。
+    ///
+    /// import 直後の subkey 検証が失敗した場合のロールバックに使い、不完全鍵を残して次回 restore を
+    /// 衝突で復旧不能にしないための best-effort 削除を担う。
+    fn delete_secret_key(&mut self, primary_fingerprint: &PrimaryFingerprint) -> Result<()>;
+
     /// import 後鍵の authentication subkey の keygrip を解決する。
     fn authentication_subkey_keygrip(
         &mut self,
