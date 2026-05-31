@@ -62,8 +62,8 @@
   - `.agents/skills/implementation-review-judgement/SKILL.md`（Governing Sources 1件追加、Required Reading Order #6 追加、Rules 3件追加）
   - `AGENTS.md`（Architecture Constraints セクション追加）
   - `AGENTS_ja.md`（アーキテクチャ制約セクション追加）
-- 確認コマンド: `find /Users/ya/works/dotfiles/docs -name "*.md" | xargs grep -l "adapters.*port" | head -20`
-- 結果: `/Users/ya/works/dotfiles/docs/tasks/secret-recovery/work-items/yubikey.md`、`/Users/ya/works/dotfiles/docs/architecture/hexagonal-implementation-rules.md`、`/Users/ya/works/dotfiles/docs/task-governance/review-artifacts/outside-ledger-intake.md`
+- 確認コマンド: `find docs -name "*.md" | xargs grep -l "adapters.*port" | head -20`
+- 結果: `docs/tasks/secret-recovery/work-items/yubikey.md`、`docs/architecture/hexagonal-implementation-rules.md`、`docs/task-governance/review-artifacts/outside-ledger-intake.md`
 - 差戻し修正: `.agents/skills/dotfiles-task-governance/SKILL.md` L29 の日本語括弧注釈を英語に修正（参照整合レビュー担当の指摘による）
 
 ## 2026-05-25 ドキュメント遵守失敗分析と文書整備

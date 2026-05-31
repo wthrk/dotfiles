@@ -22,19 +22,19 @@
 
 - `git diff --check`
   - 結果: 成功
-- `rg -n 'version / metadata / ciphertext / recipients' /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/bitwarden-secrets-manager-design.md /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/secret-recovery-spec.md`
+- `rg -n 'version / metadata / ciphertext / recipients' docs/secret-recovery/bitwarden-secrets-manager-design.md docs/secret-recovery/gnupg-ssh-design.md docs/secret-recovery/secret-recovery-spec.md`
   - 結果: no-hit（終了コード 1）
-- `rg -n 'version / metadata / recipients / ciphertext' /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/bitwarden-secrets-manager-design.md /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/secret-recovery-spec.md`
+- `rg -n 'version / metadata / recipients / ciphertext' docs/secret-recovery/bitwarden-secrets-manager-design.md docs/secret-recovery/gnupg-ssh-design.md docs/secret-recovery/secret-recovery-spec.md`
   - 実出力:
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md:62:2. BWS から取得した `gpg-secret-key-backup` encrypted envelope をメモリ上で検証する（version / metadata / recipients / ciphertext）。`
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md:91:3. 取得値の envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient がない場合は停止する。`
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md:175:- backup envelope の形式検証（version / metadata / recipients / ciphertext）に失敗する。`
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/secret-recovery-spec.md:161:3. envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。`
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/secret-recovery-spec.md:202:- `gpg-secret-key-backup` の envelope 形式検証（version / metadata / recipients / ciphertext）に失敗する。`
-- `rg -n 'top-level:|top-level は' /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/bitwarden-secrets-manager-design.md /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md /Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/secret-recovery-spec.md`
+    - `docs/secret-recovery/gnupg-ssh-design.md:62:2. BWS から取得した `gpg-secret-key-backup` encrypted envelope をメモリ上で検証する（version / metadata / recipients / ciphertext）。`
+    - `docs/secret-recovery/gnupg-ssh-design.md:91:3. 取得値の envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient がない場合は停止する。`
+    - `docs/secret-recovery/gnupg-ssh-design.md:175:- backup envelope の形式検証（version / metadata / recipients / ciphertext）に失敗する。`
+    - `docs/secret-recovery/secret-recovery-spec.md:161:3. envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。`
+    - `docs/secret-recovery/secret-recovery-spec.md:202:- `gpg-secret-key-backup` の envelope 形式検証（version / metadata / recipients / ciphertext）に失敗する。`
+- `rg -n 'top-level:|top-level は' docs/secret-recovery/bitwarden-secrets-manager-design.md docs/secret-recovery/gnupg-ssh-design.md docs/secret-recovery/secret-recovery-spec.md`
   - 実出力:
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/bitwarden-secrets-manager-design.md:82:- top-level: `version`（number, `1` 固定）/ `metadata` / `recipients` / `ciphertext``
-    - `/Users/ya/works/dotfiles/.worktrees/pr-35-copilot-review-fix/docs/secret-recovery/gnupg-ssh-design.md:25:- encrypted envelope は UTF-8 JSON で保存し、`version: 1` を固定する。top-level は `version` / `metadata` / `recipients` / `ciphertext` の 4 要素とする。`
+    - `docs/secret-recovery/bitwarden-secrets-manager-design.md:82:- top-level: `version`（number, `1` 固定）/ `metadata` / `recipients` / `ciphertext``
+    - `docs/secret-recovery/gnupg-ssh-design.md:25:- encrypted envelope は UTF-8 JSON で保存し、`version: 1` を固定する。top-level は `version` / `metadata` / `recipients` / `ciphertext` の 4 要素とする。`
 
 ## 未実施
 
