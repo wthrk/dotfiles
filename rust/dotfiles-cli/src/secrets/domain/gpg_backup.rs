@@ -457,9 +457,11 @@ impl PublicKeyFingerprint {
 /// 各フィールドの数値範囲（full-date は月別日数と閏年判定を含む暦日妥当性）、および UTC を表す
 /// time-offset（`Z` または `+00:00`）だけを検証する。
 /// `Z` は RFC3339 に従い大文字小文字を問わず受理し、UTC 以外の offset は拒否する。秒小数部
-/// （`.` 以降）は 1 桁以上の数字を許容する。秒は通常 `0..=59` を許可し、leap second（`60`）は
-/// RFC3339 §5.7 に従い UTC 月末日の `23:59:60` 位置でのみ許可する。形式違反は domain error
-/// として停止し、message に入力本文は含めない。
+/// （`.` 以降）は 1 桁以上の数字を許容する。秒は `0..=59` のみ許可し、leap second（秒 `60`）は
+/// 受理しない。RFC3339 §5.7 は leap second の表現として秒 `60` を許すが、`exported_at` は本ツールが
+/// export 時刻に生成する wall-clock UTC timestamp であり、生成 timestamp に leap second を適用しない
+/// 原則のため、秒 `60`（および `>= 61`）は一律停止する（可変な leap-second テーブルを domain 検証へ
+/// 持ち込まない確定的厳格化）。形式違反は domain error として停止し、message に入力本文は含めない。
 fn validate_rfc3339_utc(value: &str) -> Result<()> {
     let invalid =
         || invalid_data("gpg backup metadata.exported_at must be a UTC RFC3339 timestamp");
@@ -513,15 +515,13 @@ fn validate_rfc3339_utc(value: &str) -> Result<()> {
     if hour > 23 || minute > 59 {
         return Err(invalid());
     }
-    // second `0..=59` は通常秒として許可する。RFC3339 §5.7 は leap second（`60`）を
-    // leap second が挿入される UTC 月末日の `23:59:60` に限定するため、`60` はその位置
-    // （`hour == 23 && minute == 59 && day == days_in_month`）のときだけ許可し、それ以外の
-    // 位置の `60` と `>= 61` は拒否する。位置無制限の `60` 受理（`2026-05-31T00:00:60Z` 等）は
-    // 「UTC RFC3339 検証済み」表明に反するため停止させる。
-    match second {
-        0..=59 => {}
-        60 if hour == 23 && minute == 59 && day == days_in_month(year, month) => {}
-        _ => return Err(invalid()),
+    // 秒は `0..=59` のみ許可する。RFC3339 §5.7 は leap second の表現として秒 `60` を許すが、
+    // `exported_at` は本ツールが export 時刻に生成する wall-clock UTC timestamp であり、生成
+    // timestamp に leap second を適用しないため、`60`（および `>= 61`）は一律停止する。これにより
+    // 通常月・月末を問わず leap second 値の混入（`2026-05-31T23:59:60Z` /
+    // `2026-12-31T23:59:60Z` / `2026-05-31T00:00:60Z` 等）を「UTC RFC3339 検証済み」表明から排除する。
+    if second > 59 {
+        return Err(invalid());
     }
 
     Ok(())
@@ -1204,7 +1204,8 @@ mod tests {
         }
     }
 
-    /// UTC RFC3339 として正当な `exported_at`（`Z` 小文字・`+00:00`・秒小数部・leap second）を受理する。
+    /// UTC RFC3339 として正当な `exported_at`（`Z` 小文字・`+00:00`・秒小数部）を受理する。
+    /// 秒は `0..=59` のみ許可するため leap second（秒 `60`）の許可ケースは含めない。
     #[test]
     fn accepts_valid_utc_rfc3339_exported_at() {
         for value in [
@@ -1212,7 +1213,7 @@ mod tests {
             "2026-05-31t12:34:56z",
             "2026-05-31T00:00:00+00:00",
             "2026-05-31T00:00:00.123Z",
-            "2026-12-31T23:59:60Z",
+            "2026-05-31T23:59:59Z",
         ] {
             let json = envelope_json_with_exported_at(value);
             let envelope = ok(GpgBackupEnvelope::parse(&json), "parse");
@@ -1220,19 +1221,14 @@ mod tests {
         }
     }
 
-    /// leap second（秒 `60`）を RFC3339 §5.7 通り UTC 月末日の `23:59:60` 位置でのみ受理する。
-    /// 月末日（5/31・12/31 は月末）の `23:59:60` は許可し、位置不正（`00:00:60`）や
-    /// 月末でない日（5/30）の `23:59:60` は拒否する。
+    /// leap second（秒 `60`）は位置を問わず拒否する。`exported_at` は生成 timestamp として
+    /// 秒 `0..=59` のみ許可し、leap second を適用しないため、月末日の `23:59:60`（5/31・12/31）も
+    /// 月初の `00:00:60` も、すべて「UTC RFC3339 検証済み」表明から排除する。
     #[test]
-    fn accepts_leap_second_only_at_utc_month_end_2359() {
-        // 月末日 23:59:60 は許可（5/31・12/31 とも月末）。
-        for value in ["2026-05-31T23:59:60Z", "2026-12-31T23:59:60Z"] {
-            let json = envelope_json_with_exported_at(value);
-            let envelope = ok(GpgBackupEnvelope::parse(&json), "parse");
-            assert_eq!(envelope.metadata().exported_at(), value);
-        }
-        // 位置不正の秒 `60`（月末日でも 23:59 以外）と、月末でない日の 23:59:60 は拒否。
+    fn rejects_leap_second_at_any_position() {
         for value in [
+            "2026-12-31T23:59:60Z",
+            "2026-05-31T23:59:60Z",
             "2026-05-31T00:00:60Z",
             "2026-05-30T23:59:60Z",
             "2026-05-31T23:58:60Z",
