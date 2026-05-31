@@ -97,7 +97,12 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             if is_primary_subkey(&subkey, primary_fp.as_deref()) {
                 continue;
             }
-            let usable = !subkey.is_revoked() && !subkey.is_expired() && !subkey.is_disabled();
+            // public-only subkey（secret material 不保持）は import 後も E/A/S を復元できないため、
+            // revoked/expired/disabled に加えて `is_secret()` を usable 判定に含める。
+            let usable = subkey.is_secret()
+                && !subkey.is_revoked()
+                && !subkey.is_expired()
+                && !subkey.is_disabled();
             if subkey.can_encrypt() {
                 subkeys.push(ResolvedSubkey {
                     capability: SubkeyCapability::Encryption,
@@ -135,6 +140,7 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             .filter(|subkey| !is_primary_subkey(subkey, primary_fp.as_deref()))
             .find(|subkey| {
                 subkey.can_authenticate()
+                    && subkey.is_secret()
                     && !subkey.is_revoked()
                     && !subkey.is_expired()
                     && !subkey.is_disabled()

@@ -15,12 +15,14 @@ use crate::secrets::{
 /// 既存環境の GPG secret key を encrypted envelope 化し、Bitwarden Secrets Manager へ primary 登録する。
 ///
 /// 設計「backup export 入力契約」「recipient 運用 / BWS 更新契約」の primary 登録経路を順序制御として
-/// 固定する。export 前に subkey 構成を検証し、export 直後の bytes を再解析して fingerprint 一致を確認した
-/// うえで envelope 化し、接続中 YubiKey の recipient を 1 件作って BWS へ登録する。secret key material と
-/// DEK は port 境界の保護値として扱い、argv/log/永続ファイルへ出さない。BWS access token は restore 系と
-/// 同じく接続中 YubiKey storage から読み出す。順序を application に固定するのは「subkey 検証と fingerprint
-/// 一致を満たすまで envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名
-/// backup がある場合は重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
+/// 固定する。BWS の同名 backup 重複確認を secret key export より前に行い、上書きしないと決まっている
+/// シナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない場合だけ subkey 構成を検証
+/// し、export 直後の bytes を再解析して fingerprint 一致を確認したうえで envelope 化し、接続中 YubiKey の
+/// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
+/// argv/log/永続ファイルへ出さない。BWS access token は restore 系と同じく接続中 YubiKey storage から
+/// 読み出す。順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで
+/// export・envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup が
+/// ある場合は重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
 #[expect(
     clippy::too_many_arguments,
     reason = "primary 登録は device/pin/storage/keyring/cipher/recipient/clock/bws の port を順序適用する単一 use case"
@@ -56,6 +58,28 @@ where
         None
     };
 
+    // BWS access token を YubiKey storage から読み出し、復旧 project を解決する。
+    let access_token = load_bws_access_token(serial, storage_port, pin.as_ref())?;
+    let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
+        .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
+
+    // 同名 backup が既にある場合は重複登録を停止条件にする。上書きしないと決まっているシナリオで
+    // secret key export・DEK 暗号化・recipient wrap を発生させないよう、export より前に重複確認する。
+    // `resolve_id` は 0 件と複数件をどちらも `Err` にするため、既存重複 project を「未登録」と
+    // 誤認しないよう、同名候補（`name == key`）の件数を直接数えて 1 件以上で停止する。
+    let key = BwsSecretName::GpgSecretKeyBackup.key();
+    let existing_count = bws_client
+        .list_bws_secrets(&access_token, &project_id)
+        .await?
+        .into_iter()
+        .filter(|candidate| candidate.name == key)
+        .count();
+    if existing_count >= 1 {
+        anyhow::bail!(
+            "a gpg-secret-key-backup secret already exists; refusing to overwrite on primary registration"
+        );
+    }
+
     // export 前に encryption / authentication / signing subkey の利用可能状態を検証する。
     keyring
         .inspect_imported_key(&command.primary_fingerprint)?
@@ -76,26 +100,6 @@ where
     let metadata = EnvelopeMetadata::new(parsed, clock.now_rfc3339_utc()?)?;
     let envelope = GpgBackupEnvelope::assemble(metadata, vec![recipient_entry], ciphertext)?;
 
-    // BWS access token を YubiKey storage から読み出し、復旧 project を解決する。
-    let access_token = load_bws_access_token(serial, storage_port, pin.as_ref())?;
-    let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
-        .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
-
-    // 同名 backup が既にある場合は重複登録を停止条件にする。未登録のときだけ新規作成する。
-    // `resolve_id` は 0 件と複数件をどちらも `Err` にするため、既存重複 project を「未登録」と
-    // 誤認しないよう、同名候補（`name == key`）の件数を直接数えて 1 件以上で停止する。
-    let key = BwsSecretName::GpgSecretKeyBackup.key();
-    let existing_count = bws_client
-        .list_bws_secrets(&access_token, &project_id)
-        .await?
-        .into_iter()
-        .filter(|candidate| candidate.name == key)
-        .count();
-    if existing_count >= 1 {
-        anyhow::bail!(
-            "a gpg-secret-key-backup secret already exists; refusing to overwrite on primary registration"
-        );
-    }
     bws_client
         .create_gpg_backup_envelope(&access_token, &project_id, key, &envelope)
         .await
@@ -123,11 +127,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! primary 登録の順序（subkey 検証→export→fingerprint 照合→暗号化→recipient wrap→envelope→BWS 作成）を
-    //! mockall + Sequence で検証する単体テスト。
+    //! primary 登録の順序（重複確認→subkey 検証→export→fingerprint 照合→暗号化→recipient wrap→
+    //! envelope→BWS 作成）を mockall + Sequence で検証する単体テスト。
     //!
-    //! keyring / cipher / recipient / clock / bws backend を port mock で差し替え、subkey 検証成功と
-    //! fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき create が呼ばれることを確認する。
+    //! keyring / cipher / recipient / clock / bws backend を port mock で差し替え、重複確認が export より
+    //! 前に行われること、subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき
+    //! create が呼ばれること、重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
 
     use crate::secrets::{
         domain::{
@@ -215,14 +220,29 @@ mod tests {
             .expect_load_secret()
             .returning(|_, _, _| Ok(material(b"access-token")));
 
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        // 同名 backup は未登録（list は空）。重複確認は export より前に行う。
+        bws.expect_list_bws_secrets()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(Vec::new()));
+
         let mut keyring = ports::MockGpgKeyringPort::new();
         keyring
             .expect_inspect_imported_key()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_| Ok(all_usable()));
         keyring
             .expect_export_secret_key()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_| Ok(material(b"backup")));
         keyring
             .expect_parse_backup_primary_fingerprint()
@@ -251,18 +271,9 @@ mod tests {
             .times(1)
             .returning(|| Ok("2026-05-31T00:00:00Z".to_owned()));
 
-        let mut bws = ports::MockBwsClientPort::new();
-        bws.expect_list_bws_projects().returning(|_| {
-            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
-                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
-                name: "dotfiles-secret-recovery".to_owned(),
-            }])
-        });
-        // 同名 backup は未登録（list は空）。
-        bws.expect_list_bws_secrets()
-            .returning(|_, _| Ok(Vec::new()));
         bws.expect_create_gpg_backup_envelope()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_, _, _, _| Ok(crate::secrets::domain::bws::BwsSecretId::new("new-id")));
 
         run_register_gpg_backup_primary(
@@ -304,34 +315,21 @@ mod tests {
             .expect_load_secret()
             .returning(|_, _, _| Ok(material(b"access-token")));
 
+        // 重複検出で export・暗号化・wrap のいずれにも進ませず、鍵素材を不要にメモリへ載せない。
         let mut keyring = ports::MockGpgKeyringPort::new();
-        keyring
-            .expect_inspect_imported_key()
-            .returning(|_| Ok(all_usable()));
-        keyring
-            .expect_export_secret_key()
-            .returning(|_| Ok(material(b"backup")));
-        keyring
-            .expect_parse_backup_primary_fingerprint()
-            .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
+        keyring.expect_inspect_imported_key().times(0);
+        keyring.expect_export_secret_key().times(0);
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
 
         let mut cipher = ports::MockBackupCipherPort::new();
-        cipher
-            .expect_generate_dek()
-            .returning(|| Ok(material(b"dek")));
-        cipher
-            .expect_encrypt_backup()
-            .returning(|_, _| Ok(ciphertext()));
+        cipher.expect_generate_dek().times(0);
+        cipher.expect_encrypt_backup().times(0);
 
         let mut recipient = ports::MockGpgRecipientPort::new();
-        recipient
-            .expect_wrap_dek_for_recipient()
-            .returning(|_, _| Ok(recipient_entry()));
+        recipient.expect_wrap_dek_for_recipient().times(0);
 
         let mut clock = ports::MockClockPort::new();
-        clock
-            .expect_now_rfc3339_utc()
-            .returning(|| Ok("2026-05-31T00:00:00Z".to_owned()));
+        clock.expect_now_rfc3339_utc().times(0);
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {

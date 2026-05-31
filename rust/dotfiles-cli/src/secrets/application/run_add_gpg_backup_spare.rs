@@ -19,8 +19,10 @@ use crate::secrets::{
 /// recipient を追加する。`ciphertext` と `metadata` は変更しない。更新は read-modify-write として扱い、
 /// 更新前に取得した stale overwrite 防止 guard が更新直前の現行値と一致する場合だけ上書きする。対話実行は
 /// 明示確認後、非対話実行は明示的上書き許可がある場合だけ更新する。順序を application に固定するのは
-/// 「DEK を unwrap し新 recipient を追加してから guard 一致を確認して更新する」停止条件の責務境界を保護
-/// するためである。DEK は port 境界の保護値として扱い、application 層では加工しない。
+/// 「envelope 取得後に更新確認を済ませてから DEK unwrap と spare wrap を行い、guard 一致を条件に更新する」
+/// 停止条件の責務境界を保護するためである。更新確認を unwrap/wrap より前へ置くのは、拒否される更新で
+/// YubiKey の PIN/touch と DEK 復号を発生させないためである。DEK は port 境界の保護値として扱い、
+/// application 層では加工しない。
 #[expect(
     clippy::too_many_arguments,
     reason = "spare 追加は device/spare-device/pin/storage/bws/recipient/confirm の port を順序適用する単一 use case"
@@ -75,6 +77,19 @@ where
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
 
+    // unwrap/wrap で PIN/touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
+    // envelope 取得後に判明しているため、拒否される更新で YubiKey の DEK unwrap や spare wrap を実行
+    // しないよう、確認を unwrap/wrap より前へ置く。
+    let confirmed = confirmation.confirm_backup_update(
+        BwsProjectName::DOTFILES_SECRET_RECOVERY.as_str(),
+        key,
+        envelope.metadata().primary_fingerprint().as_str(),
+        command.assume_overwrite,
+    )?;
+    if !confirmed {
+        anyhow::bail!("gpg backup spare recipient update was not confirmed");
+    }
+
     // unwrap 機が既存 recipient に一致することを確認し、DEK を unwrap する。
     let connected = recipient.resolve_connected_recipient(unwrap_serial)?;
     let matched = envelope.resolve_recipient(&connected)?;
@@ -85,16 +100,6 @@ where
         recipient.wrap_dek_for_recipient(spare_serial, &dek)?;
     let updated = envelope.with_added_recipient(spare_recipient)?;
 
-    // 対話確認（非対話は明示許可）を通った場合だけ guard 一致を条件に上書きする。
-    let confirmed = confirmation.confirm_backup_update(
-        BwsProjectName::DOTFILES_SECRET_RECOVERY.as_str(),
-        key,
-        envelope.metadata().primary_fingerprint().as_str(),
-        command.assume_overwrite,
-    )?;
-    if !confirmed {
-        anyhow::bail!("gpg backup spare recipient update was not confirmed");
-    }
     bws_client
         .update_gpg_backup_envelope_if_unchanged(
             &access_token,
@@ -128,11 +133,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! spare 追加の順序（device 解決→token 取得→envelope 取得→unwrap→再 wrap→確認→guard 更新）を
+    //! spare 追加の順序（device 解決→token 取得→envelope 取得→確認→unwrap→再 wrap→guard 更新）を
     //! mockall + Sequence で検証する単体テスト。
     //!
-    //! recipient / bws / confirmation backend を port mock で差し替え、確認を通過した場合だけ guard 付き
-    //! 更新が呼ばれること、確認拒否時に更新へ進ませないことを確認する。
+    //! recipient / bws / confirmation backend を port mock で差し替え、確認が unwrap/wrap より前に呼ばれ、
+    //! 確認を通過した場合だけ guard 付き更新が呼ばれること、確認拒否時に DEK unwrap・spare wrap・更新の
+    //! いずれにも進ませないことを確認する。
 
     use crate::secrets::{
         domain::{
@@ -211,6 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_spare_updates_with_guard_after_confirmation() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -247,30 +254,40 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope()
             .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("rev".to_owned()))));
+
+        // 確認は unwrap/wrap より前に呼ばれる。
+        let mut confirmation = ports::MockBackupUpdateConfirmationPort::new();
+        confirmation
+            .expect_confirm_backup_update()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _, _| Ok(true));
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(connected_unwrap()));
+        recipient
+            .expect_unwrap_dek()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Ok(material(b"dek")));
+        recipient
+            .expect_wrap_dek_for_recipient()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(spare_recipient()));
+
         bws.expect_update_gpg_backup_envelope_if_unchanged()
             .times(1)
+            .in_sequence(&mut sequence)
             .withf(|_, _, _, _, envelope, guard| {
                 envelope.recipients().len() == 2
                     && *guard == BackupUpdateGuard::ValueDigest("rev".to_owned())
             })
             .returning(|_, _, _, _, _, _| Ok(()));
-
-        let mut recipient = ports::MockGpgRecipientPort::new();
-        recipient
-            .expect_resolve_connected_recipient()
-            .returning(|_| Ok(connected_unwrap()));
-        recipient
-            .expect_unwrap_dek()
-            .returning(|_, _, _| Ok(material(b"dek")));
-        recipient
-            .expect_wrap_dek_for_recipient()
-            .returning(|_, _| Ok(spare_recipient()));
-
-        let mut confirmation = ports::MockBackupUpdateConfirmationPort::new();
-        confirmation
-            .expect_confirm_backup_update()
-            .times(1)
-            .returning(|_, _, _, _| Ok(true));
 
         run_add_gpg_backup_spare(
             AddGpgBackupSpareCommand {
@@ -288,5 +305,84 @@ mod tests {
             &confirmation,
         )
         .await
+    }
+
+    /// 確認が拒否された場合、DEK unwrap・spare wrap・guard 更新のいずれにも進ませず、PIN/touch と
+    /// DEK 復号を発生させないことを検証する。
+    #[tokio::test]
+    async fn add_spare_rejection_skips_unwrap_and_update() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut spare = ports::MockSpareDeviceSerialPort::new();
+        spare
+            .expect_resolve_spare_device_serial()
+            .returning(|_| Ok(2002));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsSecretId::new("gpg-id"),
+                name: "gpg-secret-key-backup".to_owned(),
+            }])
+        });
+        bws.expect_fetch_gpg_backup_envelope()
+            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("rev".to_owned()))));
+        // 拒否時は更新へ進ませない。
+        bws.expect_update_gpg_backup_envelope_if_unchanged()
+            .times(0);
+
+        // 拒否時は DEK unwrap も spare wrap も発生させない。
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient.expect_resolve_connected_recipient().times(0);
+        recipient.expect_unwrap_dek().times(0);
+        recipient.expect_wrap_dek_for_recipient().times(0);
+
+        let mut confirmation = ports::MockBackupUpdateConfirmationPort::new();
+        confirmation
+            .expect_confirm_backup_update()
+            .times(1)
+            .returning(|_, _, _, _| Ok(false));
+
+        let result = run_add_gpg_backup_spare(
+            AddGpgBackupSpareCommand {
+                unwrap_serial: Some(2001),
+                spare_serial: Some(2002),
+                assume_overwrite: false,
+            },
+            &mut device,
+            &mut spare,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut recipient,
+            &confirmation,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "rejected spare update must stop before unwrap and update"
+        );
     }
 }
