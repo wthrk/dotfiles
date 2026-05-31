@@ -9,9 +9,11 @@ use crate::{
         application,
         domain::{
             commands::{
-                EnrollPrimaryCommand, EnrollSpareCommand, GetCommand, PutCommand,
-                RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
+                AddGpgBackupSpareCommand, EnrollPrimaryCommand, EnrollSpareCommand, GetCommand,
+                PutCommand, RegisterGpgBackupCommand, RestoreGpgCommand, RotateBwsTokenCommand,
+                SetupCommand, VerifyYubikeyCommand,
             },
+            gpg_backup::PrimaryFingerprint,
             verification::ExternalCheck,
         },
     },
@@ -168,5 +170,62 @@ pub(super) async fn dispatch(
             )
             .await
         }
+        super::super::SecretsCommand::RestoreGpg(options) => {
+            application::run_restore_gpg::run_restore_gpg(
+                RestoreGpgCommand {
+                    serial: options.serial,
+                },
+                &mut ports.device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.bws_client,
+                &mut ports.gpg_recipient,
+                &mut ports.backup_cipher,
+                &mut ports.gpg_keyring,
+                &mut ports.ssh_agent,
+                &ports.report,
+            )
+            .await
+        }
+        super::super::SecretsCommand::GpgBackup(options) => match options.command {
+            super::super::GpgBackupCommand::Register(options) => {
+                let primary_fingerprint = PrimaryFingerprint::parse(&options.primary_fingerprint)?;
+                application::run_register_gpg_backup_primary::run_register_gpg_backup_primary(
+                    RegisterGpgBackupCommand {
+                        primary_fingerprint,
+                        serial: options.serial,
+                    },
+                    &mut ports.device,
+                    &mut ports.device_pin_policy,
+                    &ports.process_io,
+                    &mut ports.storage,
+                    &mut ports.gpg_keyring,
+                    &mut ports.backup_cipher,
+                    &mut ports.gpg_recipient,
+                    &ports.process_io,
+                    &ports.bws_client,
+                )
+                .await
+            }
+            super::super::GpgBackupCommand::AddSpare(options) => {
+                application::run_add_gpg_backup_spare::run_add_gpg_backup_spare(
+                    AddGpgBackupSpareCommand {
+                        unwrap_serial: options.unwrap_serial,
+                        spare_serial: options.spare_serial,
+                        assume_overwrite: options.yes,
+                    },
+                    &mut ports.device,
+                    &mut ports.spare_device,
+                    &mut ports.device_pin_policy,
+                    &ports.process_io,
+                    &mut ports.storage,
+                    &ports.bws_client,
+                    &mut ports.gpg_recipient,
+                    &ports.process_io,
+                )
+                .await
+            }
+        },
     }
 }

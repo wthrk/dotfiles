@@ -9,10 +9,15 @@ mod report;
 use crate::{
     Result,
     secrets::{
-        domain::{enrollment::EnrollSummary, verification::VerifySummary},
+        domain::{
+            enrollment::EnrollSummary,
+            gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
+            verification::VerifySummary,
+        },
         ports::io::{
-            BootstrapSecretDocumentInputPort, PinInputPort, ReportPort, RotationContinuationPort,
-            SecretInputPort, SecretOutputPort,
+            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
+            PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            SshPublicKeyOutputPort,
         },
         support::protection::ProtectedSecret,
     },
@@ -66,6 +71,35 @@ impl SecretOutputPort for ProcessIoAdapter {
     }
 }
 
+impl SshPublicKeyOutputPort for ProcessIoAdapter {
+    fn write_ssh_public_key(&self, public_key: &OpenSshPublicKey) -> Result<()> {
+        self.0.write_ssh_public_key(public_key)
+    }
+}
+
+impl ClockPort for ProcessIoAdapter {
+    fn now_rfc3339_utc(&self) -> Result<String> {
+        self.0.now_rfc3339_utc()
+    }
+}
+
+impl BackupUpdateConfirmationPort for ProcessIoAdapter {
+    fn confirm_backup_update(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        primary_fingerprint: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        self.0.confirm_backup_update(
+            project_name,
+            secret_name,
+            primary_fingerprint,
+            assume_overwrite,
+        )
+    }
+}
+
 /// CLI JSON report 出力を port 契約へ翻訳する adapter。
 #[derive(Default)]
 pub(in crate::secrets) struct JsonReportAdapter(report::JsonReportAdapter);
@@ -77,5 +111,9 @@ impl ReportPort for JsonReportAdapter {
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         self.0.write_verify_report(summary)
+    }
+
+    fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()> {
+        self.0.write_restore_gpg_report(summary)
     }
 }

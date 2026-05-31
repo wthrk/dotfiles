@@ -20,6 +20,7 @@ pub(crate) struct Cli {
 enum Command {
     Init(crate::init::InitOptions),
     Secrets(crate::secrets::SecretsOptions),
+    Gpg(crate::secrets::GpgOptions),
     Switch(crate::switch::SwitchOptions),
     Update(crate::update::UpdateOptions),
 }
@@ -29,6 +30,7 @@ pub(crate) async fn dispatch() -> Result<()> {
     match Cli::parse().command {
         Command::Init(options) => crate::init::run(options),
         Command::Secrets(options) => crate::secrets::run(options).await,
+        Command::Gpg(options) => crate::secrets::run_gpg(options),
         Command::Switch(options) => crate::switch::run(options),
         Command::Update(options) => crate::update::run(options),
     }

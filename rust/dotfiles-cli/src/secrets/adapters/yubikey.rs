@@ -18,6 +18,7 @@ use crate::{
     Result,
     secrets::{
         domain::{
+            gpg_backup::{ConnectedYubiKey, EnvelopeRecipient},
             piv::{PivApplicationVersion, PivObjectId, SecretStorageSpec},
             storage::{
                 SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
@@ -26,9 +27,10 @@ use crate::{
             },
         },
         ports::yubikey::{
-            DevicePinPolicyPort, DeviceSerialPort, SecretStoragePort, SpareDeviceSerialPort,
+            DevicePinPolicyPort, DeviceSerialPort, GpgRecipientPort, SecretStoragePort,
+            SpareDeviceSerialPort,
         },
-        support::protection::ProtectedSecret,
+        support::protection::{ProtectedSecret, SecretSession},
     },
 };
 
@@ -118,12 +120,63 @@ impl SecretStoragePort for StorageAdapter {
     }
 }
 
+/// `gpg-secret-key-backup` recipient 運用（PIV slot 82 公開鍵）を port 契約へ翻訳する adapter。
+#[derive(Default)]
+pub(in crate::secrets) struct GpgRecipientAdapter {
+    device: SelectedDeviceAdapter,
+}
+
+impl GpgRecipientAdapter {
+    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
+        SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
+    }
+}
+
+impl GpgRecipientPort for GpgRecipientAdapter {
+    fn resolve_connected_recipient(&mut self, serial: u32) -> Result<ConnectedYubiKey> {
+        let mut device = self.open_device_by_serial(serial)?;
+        let fingerprint = device.recipient_public_key_fingerprint()?;
+        ConnectedYubiKey::new(serial.to_string(), &fingerprint)
+    }
+
+    fn wrap_dek_for_recipient(
+        &mut self,
+        serial: u32,
+        dek: &ProtectedSecret,
+    ) -> Result<EnvelopeRecipient> {
+        let mut device = self.open_device_by_serial(serial)?;
+        let fingerprint = device.recipient_public_key_fingerprint()?;
+        let connected = ConnectedYubiKey::new(serial.to_string(), &fingerprint)?;
+        let wrapped_dek = device.wrap_dek(dek)?;
+        EnvelopeRecipient::new(&connected, wrapped_dek)
+    }
+
+    fn unwrap_dek(
+        &mut self,
+        serial: u32,
+        recipient: &EnvelopeRecipient,
+        pin: Option<&ProtectedSecret>,
+    ) -> Result<ProtectedSecret> {
+        let _session = SecretSession::start()?;
+        let mut device = self.open_device_by_serial(serial)?;
+        if device.requires_pin_input() {
+            let Some(pin) = pin else {
+                anyhow::bail!("PIN is required to unwrap the gpg backup DEK");
+            };
+            device.verify_pin(pin)?;
+        }
+        device.unwrap_dek(recipient.wrapped_dek())
+    }
+}
+
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::support::protection::{piv_pin, sealed_blob, secret_random};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use anyhow::{Context, bail};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey};
+use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::EncodePublicKey};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use sha2::{Digest, Sha256};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
     Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
@@ -161,6 +214,14 @@ trait SecretDeviceIo {
         storage: SecretStorageSpec,
         encoded: &[u8],
     ) -> Result<ProtectedSecret>;
+    /// PIV slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 した lowercase hex（64 文字）を返す。
+    ///
+    /// `gpg-secret-key-backup` recipient の `public_key_fingerprint` に対応する。公開鍵は秘密情報ではない。
+    fn recipient_public_key_fingerprint(&mut self) -> Result<String>;
+    /// PIV slot `82` 公開鍵で DEK を RSA-OAEP-SHA256 wrap した不透明 bytes を返す。
+    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>>;
+    /// PIV slot `82` 秘密鍵で wrapped DEK を device 内 RSA decrypt + OAEP unwrap して DEK を復元する。
+    fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret>;
 }
 
 /// device discovery と serial 指定 open を adapter 内部で抽象化する境界。
@@ -257,6 +318,18 @@ impl SecretDeviceIo for SelectedSecretDevice {
         encoded: &[u8],
     ) -> Result<ProtectedSecret> {
         self.inner.open_from_storage(storage, encoded)
+    }
+
+    fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
+        self.inner.recipient_public_key_fingerprint()
+    }
+
+    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
+        self.inner.wrap_dek(dek)
+    }
+
+    fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
+        self.inner.unwrap_dek(wrapped_dek)
     }
 }
 
@@ -435,6 +508,29 @@ impl SecretDeviceIo for YubikeySecretDevice {
             &storage.additional_data,
         )
     }
+
+    fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
+        let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
+        let public = metadata
+            .public
+            .context("YubiKey secret storage key has no public key metadata")?;
+        // 設計: recipient `public_key_fingerprint` は DER-encoded SubjectPublicKeyInfo の SHA-256。
+        // slot 82 の RSA 公開鍵を SubjectPublicKeyInfo DER として再エンコードし、その digest を取る。
+        let rsa_public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
+            .context("failed to parse YubiKey slot 82 public key")?;
+        let der = rsa_public
+            .to_public_key_der()
+            .context("failed to DER-encode YubiKey slot 82 public key")?;
+        Ok(sha256_lowercase_hex(der.as_bytes()))
+    }
+
+    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
+        self.wrap_content_key(dek)
+    }
+
+    fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
+        self.unwrap_content_key(wrapped_dek)
+    }
 }
 
 /// YubiKey crate の PIN 検証 API を protection 境界の verifier contract へ接続する。
@@ -449,4 +545,16 @@ impl piv_pin::PivPinVerifier for YubikeyPinVerifier<'_> {
     fn verify(&mut self, bytes: &[u8]) -> Result<()> {
         self.0.verify_pin(bytes).map_err(anyhow::Error::new)
     }
+}
+
+/// bytes の SHA-256 digest を lowercase hex 文字列へ整形する（公開鍵 fingerprint 用、秘密情報ではない）。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn sha256_lowercase_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }

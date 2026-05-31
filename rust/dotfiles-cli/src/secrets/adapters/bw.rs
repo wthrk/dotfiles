@@ -13,14 +13,20 @@ mod internal_stub;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden::secrets_manager::{
-    projects::ProjectsListRequest, secrets::SecretIdentifiersByProjectRequest,
+    projects::ProjectsListRequest,
+    secrets::{
+        SecretCreateRequest, SecretGetRequest, SecretIdentifiersByProjectRequest, SecretPutRequest,
+    },
 };
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use uuid::Uuid;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::secrets::{
-    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    domain::{
+        bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+    },
     ports::bw::BwsClientPort,
     support::protection::{ProtectedSecret, bws},
 };
@@ -92,6 +98,110 @@ impl BwsClientPort for BwsClientAdapter {
         let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
         session.get_protected_secret_value(id).await
     }
+
+    /// secret value（encrypted envelope JSON）と SDK revision を取得し、domain envelope + guard へ翻訳する。
+    async fn fetch_gpg_backup_envelope(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        let secret = session
+            .client()
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let envelope = GpgBackupEnvelope::from_json(secret.value.as_bytes())?;
+        // SDK revision（updatedAt 相当）を更新識別子として guard 化する。取得できない場合は value digest。
+        let guard = BackupUpdateGuard::from_revision(secret.revision_date.to_rfc3339())
+            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(secret.value.as_bytes()));
+        Ok((envelope, guard))
+    }
+
+    /// 指定 project に新しい envelope secret を作成し、その ID を port 境界の opaque 値として返す。
+    async fn create_gpg_backup_envelope(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        key: &str,
+        envelope: &GpgBackupEnvelope,
+    ) -> crate::Result<BwsSecretId> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let organization_id = session
+            .client()
+            .get_access_token_organization()
+            .ok_or_else(|| anyhow::anyhow!("bitwarden organization is missing in access token"))?
+            .into();
+        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
+        let value = envelope_value(envelope)?;
+        let created = session
+            .client()
+            .secrets()
+            .create(&SecretCreateRequest {
+                organization_id,
+                key: key.to_owned(),
+                value,
+                note: String::new(),
+                project_ids: Some(vec![project_uuid]),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret create failed"))?;
+        Ok(BwsSecretId::new(created.id.to_string()))
+    }
+
+    /// 更新直前に現行 revision を再取得し、guard 一致を確認した場合だけ envelope を上書き更新する。
+    async fn update_gpg_backup_envelope_if_unchanged(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        secret_id: &BwsSecretId,
+        key: &str,
+        envelope: &GpgBackupEnvelope,
+        expected_guard: &BackupUpdateGuard,
+    ) -> crate::Result<()> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let organization_id = session
+            .client()
+            .get_access_token_organization()
+            .ok_or_else(|| anyhow::anyhow!("bitwarden organization is missing in access token"))?
+            .into();
+        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
+        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        // 更新直前に現行値を再取得し、guard 一致を stale overwrite 防止条件として確認する。
+        let current = session
+            .client()
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let current_guard = BackupUpdateGuard::from_revision(current.revision_date.to_rfc3339())
+            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(current.value.as_bytes()));
+        expected_guard.ensure_matches(&current_guard)?;
+        let value = envelope_value(envelope)?;
+        session
+            .client()
+            .secrets()
+            .update(&SecretPutRequest {
+                id,
+                organization_id,
+                key: key.to_owned(),
+                value,
+                note: String::new(),
+                project_ids: Some(vec![project_uuid]),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret update failed"))?;
+        Ok(())
+    }
+}
+
+/// 検証済み envelope を canonical UTF-8 JSON 文字列へ serialize する。encrypted envelope であり平文鍵素材を含まない。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn envelope_value(envelope: &GpgBackupEnvelope) -> crate::Result<String> {
+    String::from_utf8(envelope.to_json()?)
+        .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))
 }
 
 /// port 境界の opaque ID を Bitwarden SDK が要求する UUID 型へ翻訳する。

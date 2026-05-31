@@ -11,12 +11,16 @@
 /// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
 mod adapters {
     mod bw;
+    mod gpg;
     mod io;
     mod yubikey;
 
     pub(in crate::secrets) use bw::BwsClientAdapter;
+    pub(in crate::secrets) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
     pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
-    pub(in crate::secrets) use yubikey::{DeviceSelectionAdapter, StorageAdapter};
+    pub(in crate::secrets) use yubikey::{
+        DeviceSelectionAdapter, GpgRecipientAdapter, StorageAdapter,
+    };
 }
 mod application;
 pub mod domain;
@@ -42,6 +46,8 @@ pub(crate) struct SecretsOptions {
 enum SecretsCommand {
     Yubikey(YubikeyOptions),
     VerifyYubikey(VerifyYubikeyOptions),
+    RestoreGpg(RestoreGpgOptions),
+    GpgBackup(GpgBackupOptions),
 }
 
 #[derive(Args)]
@@ -138,6 +144,68 @@ enum VerifyCheck {
     BwLogin,
 }
 
+#[derive(Args)]
+/// `gpg-secret-key-backup` envelope を接続中 YubiKey で復号して鍵リングへ復元する option。
+struct RestoreGpgOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+}
+
+#[derive(Args)]
+/// `gpg-secret-key-backup` の registration / recipient 追加を公開する option。
+struct GpgBackupOptions {
+    #[command(subcommand)]
+    command: GpgBackupCommand,
+}
+
+#[derive(Subcommand)]
+/// `gpg-secret-key-backup` envelope の primary 登録と spare recipient 追加。
+enum GpgBackupCommand {
+    Register(GpgBackupRegisterOptions),
+    AddSpare(GpgBackupAddSpareOptions),
+}
+
+#[derive(Args)]
+/// 既存環境の GPG secret key を encrypted envelope 化して primary 登録する option。
+struct GpgBackupRegisterOptions {
+    #[arg(long)]
+    primary_fingerprint: String,
+    #[arg(long)]
+    serial: Option<u32>,
+}
+
+#[derive(Args)]
+/// 既存 envelope を復号して spare YubiKey の recipient を追加する option。
+struct GpgBackupAddSpareOptions {
+    #[arg(long)]
+    unwrap_serial: Option<u32>,
+    #[arg(long)]
+    spare_serial: Option<u32>,
+    /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args)]
+/// GPG authentication subkey 由来の SSH 公開鍵を扱う最上位 command。
+pub(crate) struct GpgOptions {
+    #[command(subcommand)]
+    command: GpgCommand,
+}
+
+#[derive(Subcommand)]
+/// GitHub SSH keys 登録向けの GPG SSH 公開鍵出力 command。
+enum GpgCommand {
+    ExportSshPublicKey(GpgExportSshPublicKeyOptions),
+}
+
+#[derive(Args)]
+/// authentication subkey 由来の OpenSSH 公開鍵を出力する option。
+struct GpgExportSshPublicKeyOptions {
+    #[arg(long)]
+    primary_fingerprint: String,
+}
+
 /// CLI で parse 済みの `dotfiles secrets` command を entrypoint 境界へ渡す。
 ///
 /// CLI 入口は command 定義と option 変換だけを担い、adapter concrete 生成と port 束ねは
@@ -146,6 +214,28 @@ pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
     let _session = SecretSession::start()?;
     let mut ports = RuntimePorts::production();
     entrypoint::run(options, &mut ports).await
+}
+
+/// CLI で parse 済みの `dotfiles gpg` command を application use case へ渡す。
+///
+/// secret material を扱わない公開鍵出力経路であり、composition root は keyring/ssh-output adapter だけを
+/// 束ねる。command 定義と option 変換だけをここで行い、鍵リング解決と出力翻訳は adapter へ閉じる。
+pub(crate) fn run_gpg(options: GpgOptions) -> Result<()> {
+    let mut keyring = adapters::GpgKeyringAdapter::default();
+    let output = adapters::ProcessIoAdapter::default();
+    match options.command {
+        GpgCommand::ExportSshPublicKey(options) => {
+            let primary_fingerprint =
+                domain::gpg_backup::PrimaryFingerprint::parse(&options.primary_fingerprint)?;
+            application::run_export_ssh_public_key::run_export_ssh_public_key(
+                domain::commands::ExportSshPublicKeyCommand {
+                    primary_fingerprint,
+                },
+                &mut keyring,
+                &output,
+            )
+        }
+    }
 }
 
 /// production command path の composition root が所有する実 adapter 群。
@@ -157,6 +247,10 @@ pub(in crate::secrets) struct RuntimePorts {
     pub(in crate::secrets) storage: adapters::StorageAdapter,
     pub(in crate::secrets) report: adapters::JsonReportAdapter,
     pub(in crate::secrets) bws_client: adapters::BwsClientAdapter,
+    pub(in crate::secrets) gpg_recipient: adapters::GpgRecipientAdapter,
+    pub(in crate::secrets) backup_cipher: adapters::BackupCipherAdapter,
+    pub(in crate::secrets) gpg_keyring: adapters::GpgKeyringAdapter,
+    pub(in crate::secrets) ssh_agent: adapters::SshAgentAdapter,
 }
 
 impl RuntimePorts {
@@ -170,6 +264,10 @@ impl RuntimePorts {
             storage: adapters::StorageAdapter::default(),
             report: adapters::JsonReportAdapter::default(),
             bws_client: adapters::BwsClientAdapter,
+            gpg_recipient: adapters::GpgRecipientAdapter::default(),
+            backup_cipher: adapters::BackupCipherAdapter::default(),
+            gpg_keyring: adapters::GpgKeyringAdapter::default(),
+            ssh_agent: adapters::SshAgentAdapter::default(),
         }
     }
 }

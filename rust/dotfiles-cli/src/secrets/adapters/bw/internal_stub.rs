@@ -17,7 +17,10 @@ use std::{
 use anyhow::Context;
 
 use crate::secrets::{
-    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    domain::{
+        bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+    },
     ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
 };
@@ -26,6 +29,12 @@ use crate::secrets_internal_test_stub_contract::{BWS_STUB_SPEC_ENV, STUB_OBSERVA
 #[derive(serde::Deserialize)]
 struct BwsStubSpec {
     fixture: BwsFixture,
+    /// `gpg-secret-key-backup` secret value を override する任意の encrypted envelope JSON。
+    ///
+    /// restore-gpg / spare 追加の integration test が、stub recipient と整合した envelope を初期 datastore
+    /// として投入するために使う。未指定時は fixture 既定の "gpg-secret" 値を維持する。
+    #[serde(default)]
+    gpg_secret_key_backup: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -76,6 +85,72 @@ impl BwsClientPort for super::BwsClientAdapter {
         secret_id: &BwsSecretId,
     ) -> crate::Result<ProtectedSecret> {
         read_bws_secret_by_id(access_token, secret_id)
+    }
+
+    async fn fetch_gpg_backup_envelope(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let value = store
+                .secret_values
+                .get(secret_id.as_str())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
+            let envelope = GpgBackupEnvelope::from_json(value.as_bytes())?;
+            let guard = BackupUpdateGuard::from_value_bytes(value.as_bytes());
+            Ok((envelope, guard))
+        })
+    }
+
+    async fn create_gpg_backup_envelope(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        key: &str,
+        envelope: &GpgBackupEnvelope,
+    ) -> crate::Result<BwsSecretId> {
+        let value = String::from_utf8(envelope.to_json()?)
+            .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let secret_id = format!("bws-secret-id-{key}");
+            store
+                .project_secrets
+                .entry(project_id.as_str().to_owned())
+                .or_default()
+                .insert(secret_id.clone(), key.to_owned());
+            store.secret_values.insert(secret_id.clone(), value);
+            Ok(BwsSecretId::new(secret_id))
+        })
+    }
+
+    async fn update_gpg_backup_envelope_if_unchanged(
+        &self,
+        access_token: &ProtectedSecret,
+        _project_id: &BwsProjectId,
+        secret_id: &BwsSecretId,
+        _key: &str,
+        envelope: &GpgBackupEnvelope,
+        expected_guard: &BackupUpdateGuard,
+    ) -> crate::Result<()> {
+        let value = String::from_utf8(envelope.to_json()?)
+            .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let current = store
+                .secret_values
+                .get(secret_id.as_str())
+                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
+            let current_guard = BackupUpdateGuard::from_value_bytes(current.as_bytes());
+            expected_guard.ensure_matches(&current_guard)?;
+            store
+                .secret_values
+                .insert(secret_id.as_str().to_owned(), value);
+            Ok(())
+        })
     }
 }
 
@@ -152,9 +227,7 @@ fn protected_secret_from_string(value: String) -> crate::Result<ProtectedSecret>
         16 * 1024,
         &session,
     )?;
-    buffer
-        .into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
-        .map_err(Into::into)
+    buffer.into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut BwsDatastore) -> crate::Result<T>) -> crate::Result<T> {
@@ -195,9 +268,15 @@ fn write_observation(store: &BwsDatastore) -> crate::Result<()> {
 }
 
 fn datastore_from_spec(spec: BwsStubSpec) -> BwsDatastore {
-    match spec.fixture {
+    let mut datastore = match spec.fixture {
         BwsFixture::DefaultRecoveryProject => default_recovery_project_datastore(),
+    };
+    if let Some(envelope) = spec.gpg_secret_key_backup {
+        datastore
+            .secret_values
+            .insert("bws-secret-id-gpg".to_owned(), envelope);
     }
+    datastore
 }
 
 fn default_recovery_project_datastore() -> BwsDatastore {

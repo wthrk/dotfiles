@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::Context;
 use dotfiles_cli::secrets_internal_test_stub_contract::{
-    BWS_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
+    BWS_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
 };
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
@@ -47,6 +47,10 @@ impl CommandRun {
     fn has_bws_observation(&self) -> bool {
         has_observation(&self.stdout, "bws")
     }
+
+    fn final_gpg(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "gpg")
+    }
 }
 
 struct PtyRun {
@@ -63,6 +67,7 @@ impl PtyRun {
 struct StubPorts {
     yubikey_spec: Value,
     bws_spec_value: Value,
+    gpg_spec: Value,
 }
 
 impl StubPorts {
@@ -70,7 +75,13 @@ impl StubPorts {
         Self {
             yubikey_spec,
             bws_spec_value,
+            gpg_spec: empty_gpg_spec(),
         }
+    }
+
+    fn with_gpg(mut self, gpg_spec: Value) -> Self {
+        self.gpg_spec = gpg_spec;
+        self
     }
 
     fn apply_to_command(&self, command: &mut Command) -> TestResult<()> {
@@ -82,7 +93,8 @@ impl StubPorts {
             .env(
                 BWS_STUB_SPEC_ENV,
                 serde_json::to_string(&self.bws_spec_value)?,
-            );
+            )
+            .env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?);
         Ok(())
     }
 
@@ -95,6 +107,7 @@ impl StubPorts {
             BWS_STUB_SPEC_ENV,
             serde_json::to_string(&self.bws_spec_value)?,
         );
+        command.env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?);
         Ok(())
     }
 }
@@ -833,6 +846,175 @@ fn bws_spec() -> Value {
     json!({
         "fixture": "default-recovery-project"
     })
+}
+
+/// restore-gpg integration 用の primary fingerprint（lowercase hex 40）。
+const RESTORE_PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
+/// restore-gpg integration 用の authentication subkey keygrip（uppercase hex 40）。
+const RESTORE_KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
+/// restore-gpg integration 用の OpenSSH 公開鍵 1 行。
+const RESTORE_SSH_LINE: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTBODY restore@example";
+
+/// serial を stub recipient fingerprint（lowercase hex 64）へ写像する（adapter stub と同じ規約）。
+fn stub_recipient_fingerprint(serial: u32) -> String {
+    let prefix = format!("{serial:08x}");
+    let mut fingerprint = prefix.repeat(8);
+    fingerprint.truncate(64);
+    fingerprint
+}
+
+/// GPG stub が空でも spec 未設定にしない既定値（鍵なし）。
+fn empty_gpg_spec() -> Value {
+    json!({ "existing_keys": [], "keys": {} })
+}
+
+/// import 後の鍵を解決できる GPG stub spec を作る。
+fn gpg_spec_with_importable_key() -> Value {
+    json!({
+        "existing_keys": [],
+        "keys": {
+            RESTORE_PRIMARY_FP: {
+                "capabilities": ["encryption", "authentication", "signing"],
+                "keygrip": RESTORE_KEYGRIP,
+                "ssh_public_key": RESTORE_SSH_LINE
+            }
+        }
+    })
+}
+
+/// 同一 primary fingerprint の鍵が既存する GPG stub spec を作る。
+fn gpg_spec_with_existing_key() -> Value {
+    json!({
+        "existing_keys": [RESTORE_PRIMARY_FP],
+        "keys": {
+            RESTORE_PRIMARY_FP: {
+                "capabilities": ["encryption", "authentication", "signing"],
+                "keygrip": RESTORE_KEYGRIP,
+                "ssh_public_key": RESTORE_SSH_LINE
+            }
+        }
+    })
+}
+
+/// 接続中 serial の stub recipient に一致する encrypted envelope JSON を作る。
+///
+/// cipher stub は envelope body をそのまま復号済み backup として返すため、body は primary fingerprint
+/// hex 文字列の base64（`MDEy...Nw==`）とし、keyring stub がそこから fingerprint を解決できるようにする。
+fn restore_envelope_json(serial: u32) -> String {
+    let pubkey = stub_recipient_fingerprint(serial);
+    json!({
+        "version": 1,
+        "metadata": {
+            "primary_fingerprint": RESTORE_PRIMARY_FP,
+            "exported_at": "2026-05-31T00:00:00Z",
+            "dek_alg": "aes-256-gcm",
+            "recipient_kek_alg": "rsa-oaep-sha256"
+        },
+        "recipients": [
+            {
+                "yubikey_serial": serial.to_string(),
+                "piv_slot": "82",
+                "public_key_fingerprint": pubkey,
+                "wrapped_dek": "d3JhcHBlZA=="
+            }
+        ],
+        "ciphertext": {
+            "nonce": "EBESExQVFhcYGRob",
+            "body": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nw==",
+            "tag": "gIGCg4SFhoeIiYqLjI2Ojw=="
+        }
+    })
+    .to_string()
+}
+
+/// gpg-secret-key-backup envelope を override した BWS spec を作る。
+fn bws_spec_with_backup(envelope_json: &str) -> Value {
+    json!({
+        "fixture": "default-recovery-project",
+        "gpg_secret_key_backup": envelope_json
+    })
+}
+
+#[test]
+fn restore_gpg_imports_key_and_registers_ssh_with_stub_paths() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup(&envelope),
+    )
+    .with_gpg(gpg_spec_with_importable_key());
+    let run = run_pipe_with_stub(["restore-gpg", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains(&format!(
+        "\"primary_fingerprint\": \"{RESTORE_PRIMARY_FP}\""
+    )));
+    assert!(stdout.contains("\"ssh_support_ready\": true"));
+    let final_gpg = run.final_gpg()?;
+    assert_eq!(
+        final_gpg["imported_keys"],
+        json!([RESTORE_PRIMARY_FP]),
+        "imported key must be observed"
+    );
+    assert_eq!(
+        final_gpg["registered_keygrips"],
+        json!([RESTORE_KEYGRIP]),
+        "authentication subkey keygrip must be registered"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_gpg_stops_when_existing_key_collides_with_stub_paths() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup(&envelope),
+    )
+    .with_gpg(gpg_spec_with_existing_key());
+    let run = run_pipe_with_stub(["restore-gpg", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("already exists"),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn export_ssh_public_key_writes_openssh_line_with_stub_paths() -> TestResult<()> {
+    let stub =
+        StubPorts::new(yubikey_spec([]), bws_spec()).with_gpg(gpg_spec_with_importable_key());
+    // `dotfiles gpg export-ssh-public-key` は top-level command なので secrets 経由ではない。
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command
+        .arg("gpg")
+        .args([
+            "export-ssh-public-key",
+            "--primary-fingerprint",
+            RESTORE_PRIMARY_FP,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    stub.apply_to_command(&mut command)?;
+    let output = command.spawn()?.wait_with_output()?;
+    let run = CommandRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    };
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(
+        run.user_stdout().contains(RESTORE_SSH_LINE),
+        "stdout: {}",
+        run.stdout
+    );
+    Ok(())
 }
 
 fn assert_stored_secret(store: &Value, serial: u32, secret_name: &str, expected: &str) {

@@ -4,7 +4,10 @@
 //! SDK 認証や UUID 型変換の詳細を adapter 側へ閉じる。
 
 use super::super::{
-    domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+    domain::{
+        bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+    },
     support::protection::ProtectedSecret,
 };
 use crate::Result;
@@ -32,4 +35,44 @@ pub trait BwsClientPort {
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
     ) -> Result<ProtectedSecret>;
+
+    /// `gpg-secret-key-backup` の encrypted envelope と、その stale overwrite 防止 guard を取得する。
+    ///
+    /// implementor は取得した secret value bytes を [`GpgBackupEnvelope::from_json`] で domain 値へ
+    /// 翻訳し、SDK の revision / updatedAt / ETag 相当を [`BackupUpdateGuard::from_revision`] で、取得
+    /// できなければ exact value bytes から [`BackupUpdateGuard::from_value_bytes`] で fallback guard を作る。
+    /// secret 値は encrypted envelope であり平文鍵素材を含まない。
+    async fn fetch_gpg_backup_envelope(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)>;
+
+    /// 指定 project に新しい `gpg-secret-key-backup` envelope を作成し、その ID を返す。
+    ///
+    /// 実装は envelope を canonical JSON へ serialize して SDK の create 境界へ翻訳するだけで、登録対象の
+    /// 同一性判断や上書き可否の業務判断は持たない。serialize 結果は暗号化済み envelope であり平文鍵素材を
+    /// 含まない。`key` は登録する BWS secret 名（`gpg-secret-key-backup`）を渡す。
+    async fn create_gpg_backup_envelope(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        key: &str,
+        envelope: &GpgBackupEnvelope,
+    ) -> Result<BwsSecretId>;
+
+    /// stale overwrite 防止 guard が現行値と一致する場合だけ、既存 envelope を新しい envelope へ更新する。
+    ///
+    /// implementor は更新直前に現行値を再取得し、その guard が `expected_guard` と一致する場合だけ SDK の
+    /// update 境界へ進む。一致しなければ stale overwrite として停止する。`version` と
+    /// `metadata.primary_fingerprint` だけを判定条件にしてはならない。
+    async fn update_gpg_backup_envelope_if_unchanged(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        secret_id: &BwsSecretId,
+        key: &str,
+        envelope: &GpgBackupEnvelope,
+        expected_guard: &BackupUpdateGuard,
+    ) -> Result<()>;
 }

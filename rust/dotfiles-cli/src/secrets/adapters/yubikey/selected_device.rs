@@ -216,6 +216,28 @@ impl SecretDeviceIo for TestStubSecretDevice {
             )?;
         buffer.into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
     }
+
+    fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
+        // serial ごとに決定的な lowercase hex 64 文字を返し、envelope recipient fixture と照合できるようにする。
+        Ok(stub_recipient_fingerprint(self.serial))
+    }
+
+    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
+        // stub では DEK を平文 bytes としてそのまま wrapped value に保持し、round-trip を観測可能にする。
+        Ok(dek.to_test_bytes())
+    }
+
+    fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
+        ProtectedSecret::from_test_bytes(wrapped_dek)
+    }
+}
+
+/// serial を 64 文字 lowercase hex（recipient `public_key_fingerprint` 相当）へ決定的に写像する。
+fn stub_recipient_fingerprint(serial: u32) -> String {
+    let prefix = format!("{serial:08x}");
+    let mut fingerprint = prefix.repeat(8);
+    fingerprint.truncate(64);
+    fingerprint
 }
 
 fn discover_devices() -> Result<Vec<DeviceCandidate>> {

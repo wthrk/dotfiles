@@ -10,12 +10,14 @@
 //! この型群は domain 層のみを実装する増分で追加されており、`restore-gpg` / BWS recipient
 //! 更新などの consumer 配線は後続増分で行う。それまでは domain value の検証済み読み取り面が
 //! 未使用となるため、module 単位で `dead_code` を許容する（consumer 配線時に解消する）。
-#![expect(
+#![allow(
     dead_code,
-    reason = "domain-only increment; restore-gpg/BWS recipient consumers are wired in a later increment"
+    reason = "restore-gpg / BWS recipient consumers wire a subset of these validated read accessors; \
+              the remainder stay as domain read surface for the export / spare-update paths"
 )]
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::Result;
 
@@ -240,6 +242,52 @@ impl GpgBackupEnvelope {
             .find(|recipient| recipient.matches(connected))
             .ok_or_else(|| invalid_data("no gpg backup recipient matches the connected YubiKey"))
     }
+
+    /// 検証済みの構成要素から envelope を直接組み立てる。
+    ///
+    /// backup export + envelope 化（primary 登録）で使う。`metadata` / `ciphertext` / `recipients`
+    /// は構築済み domain 値であり、recipients が空でないことだけをここで再確認する。schema 検証は
+    /// 各構成要素の構築時に完了している。
+    pub fn assemble(
+        metadata: EnvelopeMetadata,
+        recipients: Vec<EnvelopeRecipient>,
+        ciphertext: EnvelopeCiphertext,
+    ) -> Result<Self> {
+        if recipients.is_empty() {
+            return Err(invalid_data(
+                "gpg backup envelope must have at least one recipient",
+            ));
+        }
+        Ok(Self {
+            metadata,
+            recipients,
+            ciphertext,
+        })
+    }
+
+    /// 既存 envelope へ spare recipient を追加した新しい envelope を返す。
+    ///
+    /// 設計「recipient 運用 / BWS 更新契約」の spare 追加に対応する。`ciphertext` と `metadata` は
+    /// 変更せず、同一 serial の recipient が既にある場合は重複登録を停止条件として拒否する。
+    /// caller は同一 DEK を spare recipient 公開鍵で wrap した `wrapped_dek` を渡す責務を負う。
+    pub fn with_added_recipient(&self, recipient: EnvelopeRecipient) -> Result<Self> {
+        if self
+            .recipients
+            .iter()
+            .any(|existing| existing.yubikey_serial == recipient.yubikey_serial)
+        {
+            return Err(invalid_data(
+                "gpg backup envelope already has a recipient for this YubiKey serial",
+            ));
+        }
+        let mut recipients = self.recipients.clone();
+        recipients.push(recipient);
+        Ok(Self {
+            metadata: self.metadata.clone(),
+            recipients,
+            ciphertext: self.ciphertext.clone(),
+        })
+    }
 }
 
 impl EnvelopeMetadata {
@@ -262,6 +310,23 @@ impl EnvelopeMetadata {
         Ok(Self {
             primary_fingerprint: PrimaryFingerprint::from_wire(&wire.primary_fingerprint)?,
             exported_at: wire.exported_at,
+        })
+    }
+
+    /// 検証済みの primary fingerprint と `exported_at` から metadata を構築する。
+    ///
+    /// `exported_at` は UTC RFC3339 形式（[`validate_rfc3339_utc`]）を満たす場合だけ受理する。
+    /// 固定アルゴリズム（`dek_alg` / `recipient_kek_alg`）は serialize 時に付与するため、
+    /// この型は不変な意味（どの primary key の、いつ時点の backup か）だけを保持する。
+    pub fn new(
+        primary_fingerprint: PrimaryFingerprint,
+        exported_at: impl Into<String>,
+    ) -> Result<Self> {
+        let exported_at = exported_at.into();
+        validate_rfc3339_utc(&exported_at)?;
+        Ok(Self {
+            primary_fingerprint,
+            exported_at,
         })
     }
 
@@ -300,6 +365,28 @@ impl EnvelopeCiphertext {
             )));
         }
 
+        Ok(Self { nonce, body, tag })
+    }
+
+    /// 暗号化済み構成要素から ciphertext を構築する。
+    ///
+    /// nonce 12 bytes / tag 16 bytes / 非空 body という保存可能条件を構築時に強制し、
+    /// 不正長は domain failure として停止する。`body` は DEK で暗号化済みの backup bytes、
+    /// `tag` は `body` へ連結しない detached tag とする。
+    pub fn new(nonce: Vec<u8>, body: Vec<u8>, tag: Vec<u8>) -> Result<Self> {
+        if nonce.len() != NONCE_LEN {
+            return Err(invalid_data(format!(
+                "gpg backup ciphertext.nonce must be {NONCE_LEN} bytes"
+            )));
+        }
+        if body.is_empty() {
+            return Err(invalid_data("gpg backup ciphertext.body must not be empty"));
+        }
+        if tag.len() != TAG_LEN {
+            return Err(invalid_data(format!(
+                "gpg backup ciphertext.tag must be {TAG_LEN} bytes"
+            )));
+        }
         Ok(Self { nonce, body, tag })
     }
 
@@ -353,6 +440,25 @@ impl EnvelopeRecipient {
         })
     }
 
+    /// 接続中 YubiKey の照合値と wrap 済み DEK から recipient を構築する。
+    ///
+    /// backup export（primary 登録）と spare 追加で使う。`serial` は 10 進文字列、
+    /// `public_key_fingerprint` は既に lowercase hex 64 文字へ正規化済みの domain 値、
+    /// `wrapped_dek` は RSA-OAEP-SHA256 で wrap した非空 bytes でなければならない。
+    /// 値そのものは構築時にこの module の保存可能条件で再検証する。
+    pub fn new(connected: &ConnectedYubiKey, wrapped_dek: Vec<u8>) -> Result<Self> {
+        if wrapped_dek.is_empty() {
+            return Err(invalid_data(
+                "gpg backup recipient wrapped_dek must not be empty",
+            ));
+        }
+        Ok(Self {
+            yubikey_serial: connected.serial.clone(),
+            public_key_fingerprint: connected.public_key_fingerprint.clone(),
+            wrapped_dek,
+        })
+    }
+
     /// recipient の `yubikey_serial`（10 進文字列）を借用する。
     pub fn yubikey_serial(&self) -> &str {
         &self.yubikey_serial
@@ -391,6 +497,59 @@ impl ConnectedYubiKey {
             serial,
             public_key_fingerprint: PublicKeyFingerprint::parse(public_key_fingerprint)?,
         })
+    }
+}
+
+/// BWS の `gpg-secret-key-backup` secret を read-modify-write で更新するときに、
+/// 更新前後の現行値が変化していないことを確認する stale overwrite 防止 guard。
+///
+/// 設計「recipient 運用 / BWS 更新契約」は、更新識別子（revision / updatedAt / ETag 相当）が
+/// 取得できればそれを、取得できなければ最初に読み出した exact UTF-8 secret value bytes の
+/// SHA-256 digest を既知値として保持し、更新直前に再取得した現行値の更新識別子（または digest）が
+/// 一致する場合だけ上書きすることを要求する。`version` と `metadata.primary_fingerprint` だけを
+/// 防止条件に使ってはならない。この判定は SDK 実装を差し替えても変わらない業務規則であるため
+/// domain に閉じる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupUpdateGuard {
+    /// SDK が提供する更新識別子（revision / updatedAt / ETag 相当）。
+    Revision(String),
+    /// 更新識別子を取得できない場合の、exact secret value bytes の SHA-256 digest（lowercase hex）。
+    ValueDigest(String),
+}
+
+impl BackupUpdateGuard {
+    /// SDK 更新識別子から guard を作る。空文字列は識別子として扱わず digest fallback を促す。
+    pub fn from_revision(revision: impl Into<String>) -> Option<Self> {
+        let revision = revision.into();
+        if revision.is_empty() {
+            None
+        } else {
+            Some(Self::Revision(revision))
+        }
+    }
+
+    /// exact secret value bytes の SHA-256 digest から guard を作る（更新識別子 fallback）。
+    pub fn from_value_bytes(bytes: &[u8]) -> Self {
+        let digest = Sha256::digest(bytes);
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        Self::ValueDigest(hex)
+    }
+
+    /// 更新直前に再取得した現行 guard と一致する場合だけ上書きを許可する。
+    ///
+    /// 一致しない場合は stale overwrite として停止条件にする。識別子の種類（revision / digest）が
+    /// 異なる場合も不一致として扱い、`version` / `primary_fingerprint` だけで判断させない。
+    pub fn ensure_matches(&self, current: &Self) -> Result<()> {
+        if self == current {
+            Ok(())
+        } else {
+            Err(invalid_data(
+                "gpg backup secret changed since it was read; refusing to overwrite (stale update)",
+            ))
+        }
     }
 }
 

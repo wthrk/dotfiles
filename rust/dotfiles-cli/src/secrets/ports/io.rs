@@ -6,7 +6,11 @@
 use std::collections::BTreeMap;
 
 use super::super::{
-    domain::{enrollment::EnrollSummary, verification::VerifySummary},
+    domain::{
+        enrollment::EnrollSummary,
+        gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
+        verification::VerifySummary,
+    },
     support::protection::ProtectedSecret,
 };
 use crate::Result;
@@ -67,4 +71,42 @@ pub trait SecretOutputPort {
 pub trait ReportPort {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()>;
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
+    fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()>;
+}
+
+/// use case が gpg-secret-key-backup の上書き更新を明示確認する契約。
+///
+/// 設計「recipient 運用 / BWS 更新契約」は、recipient 追加を含む envelope 更新を対話実行では明示確認後に、
+/// 非対話実行では明示的上書き許可 option がある場合だけ実行することを要求する。caller は確認に必要な
+/// project/secret 名と primary fingerprint を渡し、`assume_overwrite` で非対話の明示許可有無を伝える。
+/// implementor は TTY 可否を判定し、対話時は表示と回答取得を、非対話時は `assume_overwrite` の評価を担う。
+#[cfg_attr(test, mockall::automock)]
+pub trait BackupUpdateConfirmationPort {
+    fn confirm_backup_update(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        primary_fingerprint: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool>;
+}
+
+/// use case が backup envelope の `exported_at` 用に現在時刻を取得する契約。
+///
+/// 乱数と同様に時刻取得も外部依存であり、application が直接 system clock を読まないために port 化する。
+/// caller は UTC RFC3339 timestamp を必要とするだけで、clock 実装や timezone を知らない。implementor は
+/// wall-clock UTC を `YYYY-MM-DDThh:mm:ssZ` 形式の文字列として返す。
+#[cfg_attr(test, mockall::automock)]
+pub trait ClockPort {
+    fn now_rfc3339_utc(&self) -> Result<String>;
+}
+
+/// use case が authentication subkey 由来の OpenSSH 公開鍵を出力境界へ渡す契約。
+///
+/// 公開鍵は秘密情報ではないため、`SecretOutputPort` とは別 capability として stdout へ機械可読な
+/// 1 行を出力する。caller は domain 検証済みの公開鍵行を渡すだけで、書き込み方式を知らない。
+/// implementor は terminal でも出力を許可し、GitHub API 呼び出しや鍵サーバー参照を内部で行わない。
+#[cfg_attr(test, mockall::automock)]
+pub trait SshPublicKeyOutputPort {
+    fn write_ssh_public_key(&self, public_key: &OpenSshPublicKey) -> Result<()>;
 }
