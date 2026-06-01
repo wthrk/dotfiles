@@ -326,7 +326,7 @@ impl SshAgentReadiness {
         }
         if !self.recovery_identity_present {
             anyhow::bail!(
-                "gpg-agent does not offer the recovery GPG authentication subkey as an SSH identity; cannot clone"
+                "gpg-agent does not offer the recovery GPG authentication subkey as an SSH identity"
             );
         }
         Ok(())
