@@ -19,9 +19,8 @@ use crate::secrets::{
 /// 設計（spec L172-174）の手順を順序制御として固定する。token 取得 → `password-store-remote` 取得（URL
 /// 妥当性は domain 検証で確定）→ `~/.password-store` 不存在確認 → GPG authentication subkey 経由の SSH で
 /// clone → clone 後 store 可読性確認
-/// （サンプル entry の実復号を最終判定とし、空 store のみ recipient のいずれか 1 つの秘密鍵保持で代替）→
-/// 失敗時の後処理（clone 失敗は adapter の原子的 temp 経路に委ね、可読性確認失敗時のみ rename 済み store を
-/// ロールバック削除）、という順序を application に固定するのは、次の停止条件の責務境界を保護するためである。
+/// （サンプル entry の実復号を最終判定とし、空 store のみ recipient のいずれか 1 つの秘密鍵保持で代替）、
+/// という順序を application に固定するのは、次の停止条件の責務境界を保護するためである。
 ///
 /// gpg-agent SSH support が利用可能（socket 解決 + authentication subkey 識別可能）であることの確認は
 /// `restore-gpg` の責務であり（設計 L116-124）、`restore-gpg` がその要件を満たさない場合に停止して
@@ -32,15 +31,16 @@ use crate::secrets::{
 /// - clone 後 store が `pass` から読める（`.gpg-id` が非空で、サンプル entry が復元済み秘密鍵で復号できる。
 ///   空 store では recipient のいずれか 1 つの秘密鍵を保持する）まで完了とみなさない。複数 recipient や
 ///   email・user-id 形式の `.gpg-id` を誤って拒否しない。
-/// - clone は adapter が temp directory 経由で原子的に行い、失敗時は destination を残さず、成功時のみ
-///   `~/.password-store` へ rename する（既存 store は決して上書き・削除しない）。そのため clone 失敗時は
+/// - clone は adapter が `create_dir` で `~/.password-store` を原子的に確保してから clone し、失敗時は自分が
+///   作成した destination を削除して残さない（既存 store は決して上書き・削除しない）。そのため clone 失敗時は
 ///   application 側で rollback せず error を伝播する（手順 3 の不存在確認後に別 process が作った既存 store を
-///   誤削除しないため）。clone 後の可読性確認で失敗した場合のみ、rename 済みで確実に我々の store である
-///   `~/.password-store` を best-effort で削除し、次回実行が既存 store ガードで復旧不能にならないようにする
-///   （restore-gpg の import 後 rollback と同じ原子化）。
+///   誤削除しないため）。clone 後の可読性確認で失敗した場合は、clone 済み store を application からは削除せず
+///   そのまま残してエラーを返す。設計（spec L174）に可読性失敗時の自動削除は無く、削除は手順 3 の不存在確認後に
+///   別 process が差し替えた store を誤削除しうる TOCTOU を持つ。再実行の安全性は既存 store 停止条件
+///   （spec L212: `~/.password-store` が既に存在する → 停止）に委ね、再試行のため store は手動で削除させる。
 ///
 /// 各停止条件で停止し、後続処理へ進ませない。clone URL / recipient / 可読性の業務判断は domain rule、clone /
-/// filesystem 走査 / 鍵リング照合は adapter が担い、application は順序・停止条件・rollback だけを持つ。
+/// filesystem 走査 / 鍵リング照合は adapter が担い、application は順序と停止条件だけを持つ。
 #[expect(
     clippy::too_many_arguments,
     reason = "restore-pass は device/pin/storage/bws/keyring/store/git-clone/report の port を順序適用する単一 use case"
@@ -100,24 +100,24 @@ where
     // 4. GPG authentication subkey 経由の SSH agent 認証で `~/.password-store` へ clone する。gpg-agent SSH support
     //    が利用可能（socket 解決 + authentication subkey 識別可能）であることは restore-gpg が確認済みであり
     //    （設計 L116-124）、restore-pass はその setup を信頼して identity を再検査せずに clone する。clone は adapter が
-    //    temp directory 経由で原子的に行い、失敗時は destination を残さず、成功時のみ `~/.password-store` へ
-    //    rename する（既存 store は決して上書き・削除しない）。そのため clone 失敗時の application 側 rollback は
-    //    行わない。仮にここで `remove_password_store` すると、手順 3 の不存在確認後に別 process が作った既存 store を
-    //    誤削除しうる（TOCTOU）ため、原子性は adapter に委ね、ここでは error をそのまま伝播する。
+    //    `create_dir` で `~/.password-store` を原子的に確保してから clone し、失敗時は自分が作成した destination を
+    //    削除して残さない（既存 store は決して上書き・削除しない）。そのため clone 失敗時の application 側 rollback は
+    //    行わず、error をそのまま伝播する（手順 3 の不存在確認後に別 process が作った既存 store を誤削除しうる
+    //    TOCTOU を避けるため）。
     git_clone.clone_password_store(&remote)?;
 
-    // 5. clone 後 store が `pass` から実際に読めることを確認する。rename 成功後の `~/.password-store` は確実に
-    //    今 clone した我々の store なので、可読性確認で失敗した場合は clone 済み store を best-effort で削除
-    //    （rollback）してから元エラーを返し、次回実行を既存 store ガードで止めない。
+    // 5. clone 後 store が `pass` から実際に読めることを確認する。可読性確認で失敗した場合は clone 済み store を
+    //    application からは削除せず、そのまま残してエラーを返す。設計（spec L174）に可読性失敗時の自動削除は無く、
+    //    削除は手順 3 の不存在確認後に別 process が差し替えた store を誤削除しうる TOCTOU を持つ。再実行の安全性は
+    //    既存 store 停止条件（手順 3 / spec L212）に委ね、再試行のため store は手動で削除させる。
     match confirm_cloned_store_readable(keyring, store) {
         Ok(()) => report.write_restore_pass_report(&RestorePassSummary {
             store_path: format!("~/{PASSWORD_STORE_DIR_NAME}"),
             store_readable: true,
         }),
-        Err(error) => {
-            let _ = store.remove_password_store();
-            Err(error)
-        }
+        Err(error) => Err(anyhow::anyhow!(
+            "cloned ~/{PASSWORD_STORE_DIR_NAME} but could not read it with the available GPG key ({error:#}); the cloned store was left in place and must be removed manually before retrying"
+        )),
     }
 }
 
@@ -128,7 +128,8 @@ where
 /// 判定であり、recipient の数・形式（複数 recipient / email・user-id）には依存しない。entry が無い空 store では
 /// 復号確認ができないため、`.gpg-id` recipient のうち少なくとも 1 つに対応する復元済み秘密鍵を保持していることを
 /// 最小条件とする（全 recipient ではなく 1 つで可。`pass` は複数 recipient のいずれか 1 つの秘密鍵で復号できる）。
-/// ここで返す失敗はすべて呼び出し側の rollback 削除対象になり、`pass` CLI への無条件シェルアウトはしない。
+/// ここで返す失敗は呼び出し側でそのまま error として伝播し（clone 済み store は削除せず残す）、`pass` CLI への
+/// 無条件シェルアウトはしない。
 fn confirm_cloned_store_readable<K, G>(keyring: &mut K, store: &G) -> Result<()>
 where
     K: ports::GpgKeyringPort,
@@ -188,10 +189,11 @@ mod tests {
     //!
     //! storage / BWS / keyring / filesystem / git clone backend を port mock で差し替え、
     //! token 取得→remote 取得→`~/.password-store` 不存在確認→clone→store
-    //! 可読性確認（サンプル entry の実復号 / 空 store は recipient 1 つの秘密鍵保持）→可読性確認失敗時のみ rollback
-    //! という順序と、各停止条件（既存 store / store 可読性不足 / clone 失敗時は adapter の原子的 temp 経路に委ね
-    //! application 側で rollback しないこと）を検証する。gpg-agent SSH support の確認は restore-gpg の責務であり
-    //! restore-pass は ssh-agent を検査しない（設計 L116-124）。test double は持ち込まない。
+    //! 可読性確認（サンプル entry の実復号 / 空 store は recipient 1 つの秘密鍵保持）
+    //! という順序と、各停止条件（既存 store / store 可読性不足 / clone 失敗）で停止することを検証する。
+    //! 可読性確認失敗時も clone 失敗時も application は store を削除せず error を伝播し、再実行の安全性は
+    //! 既存 store 停止条件に委ねる（設計 spec L174 に自動削除は無い）。gpg-agent SSH support の確認は
+    //! restore-gpg の責務であり restore-pass は ssh-agent を検査しない（設計 L116-124）。test double は持ち込まない。
 
     use crate::secrets::{
         domain::{
@@ -360,9 +362,8 @@ mod tests {
 
         let mut store = ports::MockPasswordStorePort::new();
         store.expect_password_store_exists().returning(|| Ok(true));
-        // 既存 store では clone・可読性確認・rollback を行わない。
+        // 既存 store では clone・可読性確認を行わない。
         store.expect_inspect_password_store().times(0);
-        store.expect_remove_password_store().times(0);
         let mut keyring = ports::MockGpgKeyringPort::new();
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone.expect_clone_password_store().times(0);
@@ -389,10 +390,11 @@ mod tests {
         );
     }
 
-    /// clone は成功したが clone 後の可読性確認（`.gpg-id` 不在）で失敗した場合、clone 済み store を
-    /// `remove_password_store` で rollback 削除してから元エラーを返すことを検証する。
+    /// clone は成功したが clone 後の可読性確認（`.gpg-id` 不在）で失敗した場合、clone 済み store を削除せず
+    /// （application からは store を消さない）元エラーを伝播することを検証する。再実行の安全性は既存 store
+    /// 停止条件に委ね、store は手動削除させる。
     #[tokio::test]
-    async fn restore_pass_rolls_back_when_cloned_store_is_unreadable() {
+    async fn restore_pass_errors_when_cloned_store_is_unreadable() {
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -426,11 +428,6 @@ mod tests {
                     sample_entry: None,
                 })
             });
-        // 検証失敗で clone 済み store を rollback 削除する。
-        store
-            .expect_remove_password_store()
-            .times(1)
-            .returning(|| Ok(()));
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone
             .expect_clone_password_store()
@@ -456,13 +453,13 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "unreadable cloned store must fail restore-pass after rollback"
+            "unreadable cloned store must fail restore-pass without deleting the store"
         );
     }
 
-    /// clone が失敗した場合、application 側では rollback 削除を行わず（原子的 temp 経路で destination を残さない
-    /// のは adapter の責務）、元エラーを返して clone 後の手順（可読性確認）へ進まないことを検証する。手順 3 の
-    /// 不存在確認後に別 process が作った既存 store を誤削除しないため、`remove_password_store` は呼ばない。
+    /// clone が失敗した場合、application 側では store 削除を行わず（自分が `create_dir` で作成した destination を
+    /// 掃除するのは adapter の責務）、元エラーを返して clone 後の手順（可読性確認）へ進まないことを検証する。手順 3 の
+    /// 不存在確認後に別 process が作った既存 store を誤削除しないため、application は store を削除しない。
     #[tokio::test]
     async fn restore_pass_returns_error_without_rollback_when_clone_fails() {
         let mut device = ports::MockDeviceSerialPort::new();
@@ -487,15 +484,14 @@ mod tests {
         let mut store = ports::MockPasswordStorePort::new();
         store.expect_password_store_exists().returning(|| Ok(false));
         let mut keyring = ports::MockGpgKeyringPort::new();
-        // clone が失敗する（adapter が原子的 temp 経路で destination を残さない前提）。
+        // clone が失敗する（adapter が自分の作った destination を掃除し残さない前提）。
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone
             .expect_clone_password_store()
             .times(1)
             .returning(|_| anyhow::bail!("network drop during clone"));
-        // clone 失敗時 application は rollback しない（adapter が temp を掃除し destination を残さないため。
+        // clone 失敗時 application は store を削除しない（adapter が自分の作った destination を掃除する。
         // ここで削除すると TOCTOU で別 process の既存 store を誤削除しうる）。
-        store.expect_remove_password_store().times(0);
         // clone 失敗後は clone 後の手順（可読性確認・実復号）へ進まない。
         store.expect_inspect_password_store().times(0);
         keyring.expect_can_decrypt_store_entry().times(0);
@@ -524,9 +520,9 @@ mod tests {
     }
 
     /// entry が無い空 store で、`.gpg-id` recipient のいずれにも対応する復元済み秘密鍵が無い場合、
-    /// 可読性確認で停止し clone 済み store を rollback 削除することを検証する（空 store フォールバック）。
+    /// 可読性確認で停止し error を伝播すること（clone 済み store は削除しない）を検証する（空 store フォールバック）。
     #[tokio::test]
-    async fn restore_pass_rolls_back_when_no_recipient_secret_key_for_empty_store() {
+    async fn restore_pass_errors_when_no_recipient_secret_key_for_empty_store() {
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -567,10 +563,6 @@ mod tests {
             .returning(|_| Ok(false));
         // 空 store では復号確認は行わない。
         keyring.expect_can_decrypt_store_entry().times(0);
-        store
-            .expect_remove_password_store()
-            .times(1)
-            .returning(|| Ok(()));
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone
             .expect_clone_password_store()
@@ -595,14 +587,14 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "empty store with no held recipient secret key must fail restore-pass after rollback"
+            "empty store with no held recipient secret key must fail restore-pass without deleting the store"
         );
     }
 
     /// サンプル entry が存在するのに復号できない場合、recipient 保持の有無に関わらず可読性確認で停止し
-    /// clone 済み store を rollback 削除することを検証する（実復号が最終判定であることの証明）。
+    /// error を伝播すること（clone 済み store は削除しない）を検証する（実復号が最終判定であることの証明）。
     #[tokio::test]
-    async fn restore_pass_rolls_back_when_sample_entry_cannot_decrypt() {
+    async fn restore_pass_errors_when_sample_entry_cannot_decrypt() {
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -635,10 +627,6 @@ mod tests {
             .expect_can_decrypt_store_entry()
             .times(1)
             .returning(|_| anyhow::bail!("entry cannot be decrypted with restored key"));
-        store
-            .expect_remove_password_store()
-            .times(1)
-            .returning(|| Ok(()));
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone
             .expect_clone_password_store()
@@ -663,7 +651,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "a sample entry that cannot be decrypted must fail restore-pass after rollback"
+            "a sample entry that cannot be decrypted must fail restore-pass without deleting the store"
         );
     }
 
@@ -711,7 +699,6 @@ mod tests {
             .expect_can_decrypt_store_entry()
             .times(1)
             .returning(|_| Ok(()));
-        store.expect_remove_password_store().times(0);
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone
             .expect_clone_password_store()

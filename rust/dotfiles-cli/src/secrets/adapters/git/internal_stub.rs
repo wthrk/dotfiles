@@ -98,15 +98,6 @@ impl PasswordStorePort for PasswordStoreStub {
             })
         })
     }
-
-    fn remove_password_store(&mut self) -> Result<()> {
-        with_datastore(|store| {
-            // 実 filesystem は削除しないが、rollback で store が消えた状態を datastore へ反映する。
-            store.store_exists = false;
-            store.cloned_remotes.clear();
-            Ok(())
-        })
-    }
 }
 
 impl GitClonePort for GitCloneStub {

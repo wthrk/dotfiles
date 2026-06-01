@@ -2,10 +2,13 @@
 //!
 //! `$HOME` を解決して `~/.password-store` の存在確認と、clone 後 store root の識別ファイル
 //! （`.gpg-id`）の有無・recipient 行・復号確認用サンプル `*.gpg` entry を観測し、domain 値
-//! （`PasswordStoreReadiness`）へ翻訳する。検証失敗時のロールバック削除も filesystem 操作として担う。
+//! （`PasswordStoreReadiness`）へ翻訳する。`.gpg-id` は regular file のときだけ有効な識別ファイルとして
+//! 扱い、symlink・directory・special file は `.gpg-id` として認めない（link を辿らない）。symlink の
+//! `.gpg-id` を辿ると store 外の path（例: `/dev/zero` で hang/OOM、外部の復号可能ファイルで偽の可読性成功）
+//! へ抜けるため、symlinked `.gpg-id` は「有効な `.gpg-id` 不在」として可読性確認を失敗させる。
 //! recipient 形式妥当性・復号可否・store 既存時の停止可否といった業務規則は domain
-//! （`PasswordStoreReadiness::parse_recipients` ほか）と keyring 照合へ残す。ここでは filesystem 走査と
-//! best-effort 削除だけを担い、`.gpg-id` の中身解釈や `pass` CLI への無条件シェルアウトはしない。
+//! （`PasswordStoreReadiness::parse_recipients` ほか）と keyring 照合へ残す。ここでは filesystem 走査だけを
+//! 担い、`.gpg-id` の中身解釈や `pass` CLI への無条件シェルアウトはしない。
 
 use std::path::{Path, PathBuf};
 
@@ -37,13 +40,17 @@ impl PasswordStoreAdapter {
     /// clone 先 store root を走査し、`.gpg-id` の有無・recipient 行・サンプル entry を
     /// `PasswordStoreReadiness` へ翻訳する。
     ///
-    /// `.gpg-id` の各行は空行・`#` コメントを除いて未 trim のまま recipient 候補として渡し、形式妥当性の
-    /// 判定は domain へ委ねる。サンプル entry は store 内の最初に見つかった `*.gpg` を 1 件だけ返し、復号
-    /// 確認（keyring 照合）の対象にする。entry が 1 件も無い store でも `.gpg-id` 妥当性までは検証できる。
+    /// `.gpg-id` は regular file のときだけ「存在」と判定する。`symlink_metadata`（link を辿らない）で
+    /// metadata を取り、`file_type().is_file()` が真の場合だけ有効な `.gpg-id` として扱い、symlink・
+    /// directory・special file は `.gpg-id` 不在とみなす（link を辿らない）。これにより symlinked `.gpg-id`
+    /// は可読性確認を「有効な `.gpg-id` 不在」で失敗させ、store 外の path へ抜けない。`.gpg-id` の各行は
+    /// 空行・`#` コメントを除いて未 trim のまま recipient 候補として渡し、形式妥当性の判定は domain へ委ねる。
+    /// サンプル entry は store 内の最初に見つかった regular file の `*.gpg` を 1 件だけ返し、復号確認
+    /// （keyring 照合）の対象にする。entry が 1 件も無い store でも `.gpg-id` 妥当性までは検証できる。
     pub(super) fn inspect_password_store(&self) -> Result<PasswordStoreReadiness> {
         let store_root = password_store_path()?;
         let gpg_id_path = store_root.join(PASSWORD_STORE_GPG_ID);
-        let gpg_id_present = gpg_id_path.is_file();
+        let gpg_id_present = is_regular_file(&gpg_id_path);
         let gpg_id_recipients = if gpg_id_present {
             read_gpg_id_recipients(&gpg_id_path)?
         } else {
@@ -56,17 +63,19 @@ impl PasswordStoreAdapter {
             sample_entry,
         })
     }
+}
 
-    /// clone で作成した `~/.password-store` を best-effort で削除する（不在なら成功扱い）。
-    pub(super) fn remove_password_store(&mut self) -> Result<()> {
-        let store_root = password_store_path()?;
-        match std::fs::remove_dir_all(&store_root) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(anyhow::Error::new(error)
-                .context("failed to remove ~/.password-store during restore-pass rollback")),
-        }
-    }
+/// `.gpg-id` の読み取り上限（byte）。`.gpg-id` は recipient fingerprint/user-id を数行持つだけの小さな
+/// テキストであり、これを超える入力は異常（巨大ファイルや symlink 経由で差し替わった endless file）として
+/// 拒否する。link を辿らない `is_regular_file` 判定と併せ、`/dev/zero` のような無限長 source の読み込みで
+/// hang/OOM する経路を断つ。
+const GPG_ID_MAX_BYTES: u64 = 64 * 1024;
+
+/// path が regular file か（symlink を辿らずに）を判定する。`symlink_metadata` は link を辿らないため、
+/// symlink・directory・special file はいずれも `file_type().is_file()` が偽になり、regular file だけを真とする。
+fn is_regular_file(path: &Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
 /// path が存在するか（壊れた symlink も含めて）を判定する。`symlink_metadata` は link を辿らないため、
@@ -76,9 +85,37 @@ fn path_exists_including_broken_symlink(path: &Path) -> bool {
 }
 
 /// `.gpg-id` の各行を読み、空行と `#` コメントを除いた行（未 trim）を recipient 候補として返す。
+///
+/// 読む前に再度 `symlink_metadata` で regular file であることを確認し（symlink/special file は link を辿らず
+/// に拒否する）、さらに `metadata().len()` が [`GPG_ID_MAX_BYTES`] を超える場合は読まずに拒否する。これにより
+/// symlink 経由で `/dev/zero` のような無限長 source へ抜けて hang/OOM する経路と、巨大ファイルの読み込みを断つ。
 fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
-    let contents =
-        std::fs::read_to_string(gpg_id_path).context("failed to read password-store .gpg-id")?;
+    use std::io::Read;
+
+    let file = std::fs::File::open(gpg_id_path).context("failed to open password-store .gpg-id")?;
+    let metadata = file
+        .metadata()
+        .context("failed to stat password-store .gpg-id")?;
+    if !metadata.file_type().is_file() {
+        anyhow::bail!("password-store .gpg-id is not a regular file; refusing to follow it");
+    }
+    if metadata.len() > GPG_ID_MAX_BYTES {
+        anyhow::bail!(
+            "password-store .gpg-id is unexpectedly large (> {GPG_ID_MAX_BYTES} bytes); refusing to read it"
+        );
+    }
+    // size cap を `metadata().len()` だけに頼らず、read 自体も上限 + 1 byte で打ち切る（special file 等で
+    // len が 0 報告でも endless に読めない）。上限を超えたら異常として拒否する。
+    let mut contents = String::new();
+    let read = file
+        .take(GPG_ID_MAX_BYTES + 1)
+        .read_to_string(&mut contents)
+        .context("failed to read password-store .gpg-id")?;
+    if read as u64 > GPG_ID_MAX_BYTES {
+        anyhow::bail!(
+            "password-store .gpg-id is unexpectedly large (> {GPG_ID_MAX_BYTES} bytes); refusing to read it"
+        );
+    }
     Ok(contents
         .lines()
         .filter(|line| {

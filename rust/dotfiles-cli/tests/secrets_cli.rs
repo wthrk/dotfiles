@@ -1078,20 +1078,21 @@ fn restore_pass_fails_when_cloned_store_is_unreadable_with_stub_paths() -> TestR
         "stderr: {}",
         run.stderr
     );
-    // clone は成功するが可読性確認で失敗 → rollback で store が削除され clone 観測が消える。
+    // clone は成功するが可読性確認で失敗 → application は store を削除せず残す。再実行の安全性は既存 store
+    // 停止条件に委ねる（spec L174 に自動削除は無い）ので、clone 観測は残ったまま。
     let final_git = run.final_git()?;
     assert_eq!(
         final_git["cloned_remotes"],
-        json!([]),
-        "unreadable cloned store must be rolled back"
+        json!([RESTORE_PASS_REMOTE]),
+        "unreadable cloned store must be left in place (not rolled back)"
     );
     Ok(())
 }
 
 #[test]
-fn restore_pass_rolls_back_when_recipient_secret_key_is_absent_with_stub_paths() -> TestResult<()> {
+fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> TestResult<()> {
     // entry が無い空 store で、`.gpg-id` recipient のいずれにも秘密鍵が無い（held_recipients を空にする）
-    // → 可読性を確定できず rollback（空 store フォールバック）。
+    // → 可読性を確定できず error（空 store フォールバック）。store は削除せず残す。
     let mut gpg = gpg_spec_for_restore_pass();
     gpg["held_recipients"] = json!([]);
     let stub = StubPorts::new(
@@ -1113,8 +1114,8 @@ fn restore_pass_rolls_back_when_recipient_secret_key_is_absent_with_stub_paths()
     let final_git = run.final_git()?;
     assert_eq!(
         final_git["cloned_remotes"],
-        json!([]),
-        "empty store with no held recipient secret key must be rolled back"
+        json!([RESTORE_PASS_REMOTE]),
+        "empty store with no held recipient secret key must be left in place (not rolled back)"
     );
     Ok(())
 }
