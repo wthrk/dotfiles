@@ -3,7 +3,9 @@
 //! ここに置くのは、git2 / SSH agent / filesystem などの外部実装を差し替えても変わらない
 //! 業務規則だけである。具体的には `password-store-remote` が満たすべき clone URL 形式
 //! （`git@github.com:<owner>/<repo>.git`）の妥当性、clone 後 store が `pass` から読める状態の
-//! 充足条件（`.gpg-id` の存在）、`restore-pass` の完了状態の意味である。clone そのもの・
+//! 充足条件（`.gpg-id` の存在・非空・recipient が妥当な GPG 鍵 id 形式であること。復元済み秘密鍵での
+//! 復号可否は keyring 照合で確定する）、`.gpg-id` recipient（`GpgRecipientId`）の妥当性、`restore-pass`
+//! の完了状態の意味である。clone そのもの・
 //! `~/.password-store` の存在確認・store の filesystem 走査は port/adapter 側で行い、この層は
 //! それらの結果値の検証・整合判定に限定する。secret 値はこの層へ載せない。
 
@@ -19,8 +21,10 @@ pub const PASSWORD_STORE_DIR_NAME: &str = ".password-store";
 /// `pass` が store を読めることの判定に使う store 識別ファイル名。
 ///
 /// `pass` の store は root に GPG recipient を記す `.gpg-id` を持つ。clone した directory が
-/// この識別ファイルを持つことを「store として読める」最小条件とし、`pass` CLI への無条件
-/// シェルアウトに依存しない。
+/// この識別ファイルを持つことだけでは「store として読める」最小条件にならない。`.gpg-id` が
+/// 空・不正、または手元に秘密鍵を持たない別 GPG 鍵宛ての場合は `pass` が復号できないため、
+/// 識別ファイルの存在に加えて recipient 形式の妥当性と、復元済み秘密鍵での復号可否まで検証する。
+/// `pass` CLI への無条件シェルアウトには依存しない。
 pub const PASSWORD_STORE_GPG_ID: &str = ".gpg-id";
 
 /// `password-store-remote` が満たすべき GitHub SSH clone URL を表す検証済み値。
@@ -120,29 +124,91 @@ fn is_valid_repository(value: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+/// `.gpg-id` に記された GPG recipient（fingerprint / long key id）を表す検証済み値。
+///
+/// `pass` の `.gpg-id` は 1 行 1 recipient で、GPG 鍵を fingerprint（40 hex）または long key id
+/// （16 hex、任意で `0x` prefix）で指す。空・不正・短縮 key id（衝突しうる 8 hex の short id）は
+/// 「どの鍵宛てか一意に確定できない」ため停止条件として拒否し、妥当な recipient だけがこの型になる。
+/// 値そのものは秘密情報ではないが、keyring 照合（復元済み秘密鍵を持つか）へ渡す対象を限定する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpgRecipientId(String);
+
+impl GpgRecipientId {
+    /// `.gpg-id` の 1 行を GPG recipient として検証して構築する。
+    ///
+    /// 前後空白を除いた本体が long key id（16 hex）または fingerprint（40 hex）に一致する場合だけ
+    /// 受け付け、`0x` prefix は許容する。空・hex 以外・桁数不一致（short id を含む）は domain failure と
+    /// して停止する。これにより `.gpg-id` が空や別形式のときに「読める」と誤判定しない。
+    pub fn parse(line: &str) -> Result<Self> {
+        let trimmed = line.trim();
+        let body = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+            .unwrap_or(trimmed);
+        if body.is_empty() {
+            anyhow::bail!("password-store .gpg-id recipient is empty");
+        }
+        if !body.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            anyhow::bail!("password-store .gpg-id recipient is not a GPG key id");
+        }
+        if body.len() != 16 && body.len() != 40 {
+            anyhow::bail!(
+                "password-store .gpg-id recipient must be a long key id or fingerprint (16 or 40 hex)"
+            );
+        }
+        Ok(Self(body.to_ascii_uppercase()))
+    }
+
+    /// 正規化済み recipient（uppercase hex、`0x` prefix なし）を keyring 照合へ渡すために借用する。
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// clone 後 store が `pass` から読める構成であることを adapter が観測した結果。
 ///
 /// 設計（spec L174）は clone 後に「`pass` が store を読めること」の確認を要求する。adapter は
-/// clone 先 directory を走査して store 識別ファイル（`.gpg-id`）の有無を観測してこの値へ翻訳し、
-/// 業務上の充足判定はこの module で行う。`pass` CLI への無条件シェルアウトはしない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// clone 先 directory を走査し、store 識別ファイル（`.gpg-id`）の有無・recipient 行・復号確認に使う
+/// サンプル entry path を観測してこの値へ翻訳する。recipient 形式の妥当性と、`.gpg-id` が手元の復元済み
+/// 秘密鍵宛てで復号できることの業務判定はこの module（と keyring 照合）で行い、`pass` CLI への無条件
+/// シェルアウトはしない。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordStoreReadiness {
     /// clone 先 store root に `.gpg-id` が存在したか。
     pub gpg_id_present: bool,
+    /// `.gpg-id` の各行から読み取った recipient 候補（空行・コメントは除外、未 trim の生文字列）。
+    /// adapter は filesystem 走査だけを担い、形式妥当性は domain で判定する。
+    pub gpg_id_recipients: Vec<String>,
+    /// 復号可否確認に使う store 内サンプル entry（`*.gpg`）の path。1 件も無ければ `None`。
+    pub sample_entry: Option<std::path::PathBuf>,
 }
 
 impl PasswordStoreReadiness {
-    /// clone した store が `pass` から読める構成を満たすことを検証する。
+    /// `.gpg-id` の recipient 行を検証済み [`GpgRecipientId`] の集合へ変換する。
     ///
-    /// store 識別ファイルが存在しない場合は、clone は成功しても `pass` store として不完全である
-    /// として停止条件で失敗する。
-    pub fn ensure_readable(self) -> Result<()> {
+    /// 識別ファイルが存在しない、recipient が 1 件も無い、いずれかの行が GPG key id 形式でない場合は、
+    /// clone が成功しても `pass` store として不完全・不正であるとして停止条件で失敗する。返す recipient は
+    /// keyring 照合（復元済み秘密鍵を持つか・復号できるか）へ渡す対象であり、ここでは形式妥当性だけを確定する。
+    pub fn parse_recipients(&self) -> Result<Vec<GpgRecipientId>> {
         if !self.gpg_id_present {
             anyhow::bail!(
                 "cloned password-store is missing its {PASSWORD_STORE_GPG_ID}; pass cannot read the store"
             );
         }
-        Ok(())
+        if self.gpg_id_recipients.is_empty() {
+            anyhow::bail!(
+                "cloned password-store {PASSWORD_STORE_GPG_ID} is empty; pass cannot determine its recipients"
+            );
+        }
+        self.gpg_id_recipients
+            .iter()
+            .map(|line| GpgRecipientId::parse(line))
+            .collect()
+    }
+
+    /// 復号確認に使う store 内サンプル entry path を借用する（存在しなければ `None`）。
+    pub fn sample_entry(&self) -> Option<&std::path::Path> {
+        self.sample_entry.as_deref()
     }
 }
 
@@ -285,21 +351,83 @@ mod tests {
         assert!(PasswordStoreRemote::parse("git@github.com:owner/repo.git\nextra").is_err());
     }
 
+    fn readiness(
+        gpg_id_present: bool,
+        recipients: &[&str],
+        sample: Option<&str>,
+    ) -> PasswordStoreReadiness {
+        PasswordStoreReadiness {
+            gpg_id_present,
+            gpg_id_recipients: recipients.iter().map(|line| (*line).to_owned()).collect(),
+            sample_entry: sample.map(std::path::PathBuf::from),
+        }
+    }
+
     #[test]
-    fn readable_store_requires_gpg_id() {
+    fn parses_recipients_for_readable_store() -> Result<()> {
+        // 妥当な fingerprint/long key id 行は recipient として受理し、正規化する。
+        let recipients = readiness(
+            true,
+            &[
+                "0123456789ABCDEF",
+                "0x0123456789abcdef0123456789abcdef01234567",
+            ],
+            None,
+        )
+        .parse_recipients()?;
+        assert_eq!(recipients.len(), 2);
+        assert_eq!(recipients[0].as_str(), "0123456789ABCDEF");
+        assert_eq!(
+            recipients[1].as_str(),
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_recipients_requires_gpg_id_file() {
+        // `.gpg-id` 不在は停止条件。
+        assert!(readiness(false, &[], None).parse_recipients().is_err());
+    }
+
+    #[test]
+    fn parse_recipients_rejects_empty_gpg_id() {
+        // 識別ファイルはあるが recipient が 1 件も無い（空 `.gpg-id`）は停止条件。
+        assert!(readiness(true, &[], None).parse_recipients().is_err());
+    }
+
+    #[test]
+    fn parse_recipients_rejects_invalid_recipient_line() {
+        // hex 以外・short id（8 hex）・桁数不一致は一意に鍵を確定できないため拒否する。
         assert!(
-            PasswordStoreReadiness {
-                gpg_id_present: true
-            }
-            .ensure_readable()
-            .is_ok()
+            readiness(true, &["not-a-key-id"], None)
+                .parse_recipients()
+                .is_err()
         );
         assert!(
-            PasswordStoreReadiness {
-                gpg_id_present: false
-            }
-            .ensure_readable()
-            .is_err()
+            readiness(true, &["DEADBEEF"], None)
+                .parse_recipients()
+                .is_err()
         );
+    }
+
+    #[test]
+    fn gpg_recipient_id_accepts_long_id_and_fingerprint() -> Result<()> {
+        assert_eq!(
+            GpgRecipientId::parse("  0123456789abcdef \n")?.as_str(),
+            "0123456789ABCDEF"
+        );
+        assert_eq!(
+            GpgRecipientId::parse("0123456789ABCDEF0123456789ABCDEF01234567")?.as_str(),
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gpg_recipient_id_rejects_short_and_nonhex() {
+        assert!(GpgRecipientId::parse("DEADBEEF").is_err());
+        assert!(GpgRecipientId::parse("").is_err());
+        assert!(GpgRecipientId::parse("0xZZZZ").is_err());
     }
 }

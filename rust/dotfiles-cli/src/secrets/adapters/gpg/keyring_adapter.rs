@@ -18,6 +18,7 @@ use crate::{
             gpg_restore::{
                 ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
             },
+            pass_restore::GpgRecipientId,
         },
         ports::gpg::GpgKeyringPort,
         support::protection::{ProtectedSecret, gpg_backup as backup_protection},
@@ -181,6 +182,80 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             .context("exported OpenSSH public key is empty")?;
         OpenSshPublicKey::parse(line)
     }
+
+    fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey> {
+        // restore-gpg が直前に import した recovery 鍵を一意に特定する。鍵リングの秘密鍵を走査し、
+        // 利用可能な authentication subkey を持つ鍵がちょうど 1 件であることを要求する。0 件・複数件は
+        // 提示すべき identity を一意に確定できないため停止する。
+        let mut context = Self::context()?;
+        context
+            .set_key_list_mode(gpgme::KeyListMode::WITH_KEYGRIP)
+            .context("failed to configure gpgme key list mode")?;
+        let mut recovery_fingerprint: Option<String> = None;
+        let secret_keys = context
+            .secret_keys()
+            .context("failed to list GPG secret keys for recovery identity")?;
+        for key in secret_keys {
+            let key = key.context("failed to read a GPG secret key entry")?;
+            if !has_usable_authentication_subkey(&key) {
+                continue;
+            }
+            let fingerprint = key
+                .fingerprint()
+                .ok()
+                .context("recovery GPG key fingerprint could not be resolved")?
+                .to_owned();
+            if recovery_fingerprint.is_some() {
+                anyhow::bail!(
+                    "multiple GPG secret keys with a usable authentication subkey were found; cannot pick a single SSH identity"
+                );
+            }
+            recovery_fingerprint = Some(fingerprint);
+        }
+        let fingerprint = recovery_fingerprint.context(
+            "no GPG secret key with a usable authentication subkey was found; run restore-gpg first",
+        )?;
+        let parsed = PrimaryFingerprint::parse(&fingerprint)?;
+        self.authentication_subkey_ssh_public_key(&parsed)
+    }
+
+    fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
+        let mut context = Self::context()?;
+        match context.get_secret_key(recipient.as_str()) {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error.code() == gpgme::Error::NO_SECKEY.code()
+                    || error.code() == gpgme::Error::EOF.code() =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(anyhow::Error::new(error)
+                .context("failed to query GPG secret key for password-store recipient")),
+        }
+    }
+
+    fn can_decrypt_store_entry(&mut self, entry_path: &std::path::Path) -> Result<()> {
+        // store 内サンプル entry を gpgme で復号し、復元済み秘密鍵で読めることを確認する。復号した平文は
+        // この scope 内で破棄し、stdout / log / 一時ファイルへ出さない（保護境界内で完了させる）。
+        backup_protection::verify_can_decrypt(entry_path)
+    }
+}
+
+/// 鍵が「利用可能な authentication subkey」を 1 つ以上持つかを判定する。
+///
+/// recovery 鍵の一意特定に使い、`select_authentication_subkey` と同じ「primary でない・authentication 能力・
+/// secret material 保持・revoked/expired/disabled でない」述語で判定する。
+fn has_usable_authentication_subkey(key: &gpgme::Key) -> bool {
+    let primary_fp = key.fingerprint().ok().map(str::to_owned);
+    key.subkeys()
+        .filter(|subkey| !is_primary_subkey(subkey, primary_fp.as_deref()))
+        .any(|subkey| {
+            subkey.can_authenticate()
+                && subkey.is_secret()
+                && !subkey.is_revoked()
+                && !subkey.is_expired()
+                && !subkey.is_disabled()
+        })
 }
 
 /// import 後鍵から「登録・公開鍵出力の対象とする」authentication subkey を単一の述語で特定する。

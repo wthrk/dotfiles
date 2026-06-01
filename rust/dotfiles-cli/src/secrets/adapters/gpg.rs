@@ -22,6 +22,7 @@ use crate::{
         domain::{
             gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
             gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
+            pass_restore::GpgRecipientId,
         },
         ports::gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort},
         support::protection::ProtectedSecret,
@@ -84,6 +85,18 @@ impl GpgKeyringPort for GpgKeyringAdapter {
     ) -> Result<OpenSshPublicKey> {
         self.0
             .authentication_subkey_ssh_public_key(primary_fingerprint)
+    }
+
+    fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey> {
+        self.0.resolve_recovery_authentication_ssh_public_key()
+    }
+
+    fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
+        self.0.secret_key_available_for_recipient(recipient)
+    }
+
+    fn can_decrypt_store_entry(&mut self, entry_path: &std::path::Path) -> Result<()> {
+        self.0.can_decrypt_store_entry(entry_path)
     }
 }
 

@@ -198,7 +198,9 @@ pub(super) async fn dispatch(
                 &ports.process_io,
                 &mut ports.storage,
                 &ports.bws_client,
-                &ports.password_store,
+                &mut ports.gpg_keyring,
+                &mut ports.ssh_agent,
+                &mut ports.password_store,
                 &mut ports.git_clone,
                 &ports.report,
             )

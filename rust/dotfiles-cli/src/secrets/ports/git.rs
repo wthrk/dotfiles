@@ -23,11 +23,20 @@ pub trait PasswordStorePort {
     /// implementor は path の存在有無だけを返し、停止判断は caller（application）が行う。
     fn password_store_exists(&self) -> Result<bool>;
 
-    /// clone 先 store directory を走査し、`pass` 可読性の観測結果（`.gpg-id` 存在）を返す。
+    /// clone 先 store directory を走査し、`pass` 可読性の観測結果（`.gpg-id` 存在・recipient 行・
+    /// 復号確認用サンプル entry）を返す。
     ///
-    /// implementor は store root の識別ファイル有無だけを観測して [`PasswordStoreReadiness`] へ翻訳し、
-    /// 可読性の充足判定は domain rule に委ねる。`pass` CLI への無条件シェルアウトはしない。
+    /// implementor は store root の識別ファイル有無・`.gpg-id` 各行・サンプル `*.gpg` entry path だけを
+    /// 観測して [`PasswordStoreReadiness`] へ翻訳し、recipient 形式妥当性や復号可否の充足判定は domain rule /
+    /// keyring 照合へ委ねる。`pass` CLI への無条件シェルアウトはしない。
     fn inspect_password_store(&self) -> Result<PasswordStoreReadiness>;
+
+    /// 検証失敗時のロールバックとして、clone で作成した `~/.password-store` を best-effort で削除する。
+    ///
+    /// clone は成功したが clone 後の可読性確認で失敗した場合、残置した store が次回 restore-pass を既存
+    /// store ガード（`password_store_exists`）で停止させ復旧不能にする。implementor は `~/.password-store`
+    /// directory tree を best-effort で削除し、不在なら成功扱いとする。停止判断と呼び出し順序は caller が持つ。
+    fn remove_password_store(&mut self) -> Result<()>;
 }
 
 /// use case が private `password-store` repository の Git clone へ要求する capability 契約。

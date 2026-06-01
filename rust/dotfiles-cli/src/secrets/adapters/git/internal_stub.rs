@@ -31,16 +31,32 @@ struct GitStubSpec {
     /// clone 後に store root へ `.gpg-id` が観測されるか（`pass` 可読性の模擬）。
     #[serde(default = "default_true")]
     gpg_id_present: bool,
+    /// clone 後に観測される `.gpg-id` recipient 行（未指定なら既定 recipient 1 件）。
+    #[serde(default = "default_recipients")]
+    gpg_id_recipients: Vec<String>,
+    /// clone 後に store 内へサンプル `*.gpg` entry が観測されるか（復号確認対象の有無）。
+    #[serde(default = "default_true")]
+    sample_entry_present: bool,
 }
 
 fn default_true() -> bool {
     true
 }
 
+/// 既定の `.gpg-id` recipient（GPG stub 既定 fingerprint と整合する fingerprint）。
+fn default_recipients() -> Vec<String> {
+    vec!["0123456789ABCDEF0123456789ABCDEF01234567".to_owned()]
+}
+
+/// stub が観測として返すサンプル entry の固定 path（real filesystem は走査するが stub は固定）。
+const STUB_SAMPLE_ENTRY: &str = "~/.password-store/sample.gpg";
+
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct GitDatastore {
     store_exists: bool,
     gpg_id_present: bool,
+    gpg_id_recipients: Vec<String>,
+    sample_entry_present: bool,
     cloned_remotes: Vec<String>,
 }
 
@@ -75,7 +91,20 @@ impl PasswordStorePort for PasswordStoreStub {
         with_datastore(|store| {
             Ok(PasswordStoreReadiness {
                 gpg_id_present: store.gpg_id_present,
+                gpg_id_recipients: store.gpg_id_recipients.clone(),
+                sample_entry: store
+                    .sample_entry_present
+                    .then(|| std::path::PathBuf::from(STUB_SAMPLE_ENTRY)),
             })
+        })
+    }
+
+    fn remove_password_store(&mut self) -> Result<()> {
+        with_datastore(|store| {
+            // 実 filesystem は削除しないが、rollback で store が消えた状態を datastore へ反映する。
+            store.store_exists = false;
+            store.cloned_remotes.clear();
+            Ok(())
         })
     }
 }
@@ -115,6 +144,8 @@ fn load_datastore() -> Result<GitDatastore> {
     Ok(GitDatastore {
         store_exists: spec.store_exists,
         gpg_id_present: spec.gpg_id_present,
+        gpg_id_recipients: spec.gpg_id_recipients,
+        sample_entry_present: spec.sample_entry_present,
         cloned_remotes: Vec::new(),
     })
 }

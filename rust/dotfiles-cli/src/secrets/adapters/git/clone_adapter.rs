@@ -6,8 +6,16 @@
 //! clone は提示する SSH identity を選べないため、socket 解決は gpg-agent socket
 //! （`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に使う `resolve_gpg_agent_socket` を用い、通常の
 //! `ssh-agent` を指しうる既存 `SSH_AUTH_SOCK` へは fallback しない。既存 `~/.ssh/id_ed25519` を新規運用で使わ
-//! ない仕様（spec L92 / L100 / L210）を守るためであり、gpg-agent socket が無ければ clone を停止する。clone URL の
-//! 妥当性判断は domain（`PasswordStoreRemote`）に委ね、ここでは git2 への翻訳だけを担う。
+//! ない仕様（spec L92 / L100 / L210）を守るためであり、gpg-agent socket が無ければ clone を停止する。
+//!
+//! `Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の特定 identity を選んで提示する API を
+//! 持たない。gpg-agent の SSH socket は `sshcontrol` に登録された keygrip（= GPG authentication subkey 由来
+//! identity）だけを露出するため、strict gpg-agent socket を使えば通常の `ssh-agent` 鍵は提示されない。ただし
+//! `sshcontrol` に複数 identity が登録されていれば agent 側で別 identity を提示しうるため、単一鍵限定はこの
+//! adapter だけでは担保できない。そこで application 側が clone 前に「この gpg-agent socket が復元した GPG
+//! authentication subkey の identity を提示している」ことを #14 の key blob 照合で確定し、満たさなければ clone
+//! へ進ませない。本 adapter は strict gpg-agent socket への固定と clone 翻訳だけを担い、identity 照合は
+//! application + `SshAgentPort` 側で担保する。clone URL の妥当性判断は domain（`PasswordStoreRemote`）に委ねる。
 
 use anyhow::Context;
 use git2::{Cred, CredentialType, FetchOptions, RemoteCallbacks, build::RepoBuilder};

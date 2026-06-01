@@ -39,6 +39,10 @@ impl PasswordStorePort for PasswordStoreAdapter {
     fn inspect_password_store(&self) -> Result<PasswordStoreReadiness> {
         self.0.inspect_password_store()
     }
+
+    fn remove_password_store(&mut self) -> Result<()> {
+        self.0.remove_password_store()
+    }
 }
 
 /// Git clone backend（git2 + libssh2 / internal stub）を `GitClonePort` 契約へ翻訳する adapter。

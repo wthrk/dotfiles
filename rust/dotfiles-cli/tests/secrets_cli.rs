@@ -899,6 +899,23 @@ fn gpg_spec_with_importable_key() -> Value {
     })
 }
 
+/// restore-pass integration 用の `.gpg-id` recipient（Git stub 既定 recipient と整合する fingerprint）。
+const RESTORE_PASS_RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+
+/// restore-pass の clone 前 identity 照合と clone 後可読性確認が成功する GPG stub spec を作る。
+///
+/// `recovery_ssh_public_key` で recovery 鍵 identity を解決でき、`held_recipients` に `.gpg-id` recipient を
+/// 含み、`store_entry_decryptable` でサンプル entry の復号可否も成功させる。
+fn gpg_spec_for_restore_pass() -> Value {
+    json!({
+        "existing_keys": [],
+        "keys": {},
+        "recovery_ssh_public_key": RESTORE_SSH_LINE,
+        "held_recipients": [RESTORE_PASS_RECIPIENT],
+        "store_entry_decryptable": true
+    })
+}
+
 /// 同一 primary fingerprint の鍵が既存する GPG stub spec を作る。
 fn gpg_spec_with_existing_key() -> Value {
     json!({
@@ -983,7 +1000,8 @@ fn restore_pass_clones_store_and_confirms_readability_with_stub_paths() -> TestR
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
-    );
+    )
+    .with_gpg(gpg_spec_for_restore_pass());
     let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
@@ -998,6 +1016,31 @@ fn restore_pass_clones_store_and_confirms_readability_with_stub_paths() -> TestR
         final_git["cloned_remotes"],
         json!([RESTORE_PASS_REMOTE]),
         "cloned remote must be observed"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_stops_when_agent_identity_mismatches_with_stub_paths() -> TestResult<()> {
+    // recovery 鍵 identity は解決できるが、agent は別 key blob の identity を提示する（別 SSH key が
+    // repo access を持つ状況）。期待 recovery 公開鍵と一致しないため clone 前に停止する。
+    let mut gpg = gpg_spec_for_restore_pass();
+    gpg["agent_identity_ssh_public_key"] = json!(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVya2V5YmxvYm90aGVya2V5YmxvYm90aGVyMDEy other@example"
+    );
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg);
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([]),
+        "agent identity mismatch must stop before clone"
     );
     Ok(())
 }
@@ -1050,6 +1093,7 @@ fn restore_pass_fails_when_cloned_store_is_unreadable_with_stub_paths() -> TestR
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
     )
+    .with_gpg(gpg_spec_for_restore_pass())
     .with_git(git_spec_with_unreadable_store());
     let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
 
@@ -1058,6 +1102,40 @@ fn restore_pass_fails_when_cloned_store_is_unreadable_with_stub_paths() -> TestR
         run.stderr.contains("pass cannot read the store"),
         "stderr: {}",
         run.stderr
+    );
+    // clone は成功するが可読性確認で失敗 → rollback で store が削除され clone 観測が消える。
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([]),
+        "unreadable cloned store must be rolled back"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_rolls_back_when_recipient_secret_key_is_absent_with_stub_paths() -> TestResult<()> {
+    // `.gpg-id` は妥当だが、手元に対応する秘密鍵が無い（held_recipients を空にする）→ 復号できず rollback。
+    let mut gpg = gpg_spec_for_restore_pass();
+    gpg["held_recipients"] = json!([]);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg);
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("secret key is not in the keyring"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([]),
+        "cloned store with unheld recipient must be rolled back"
     );
     Ok(())
 }

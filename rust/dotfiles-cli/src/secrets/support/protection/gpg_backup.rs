@@ -86,6 +86,30 @@ pub(crate) fn import_secret_key(backup: &ProtectedSecret) -> Result<String> {
     })
 }
 
+/// store 内 `pass` entry（OpenPGP message）を gpgme で復号できることを protection 境界内で確認する。
+///
+/// 復号した平文（`pass` entry の中身）は locked buffer 上でだけ扱い、zeroize して破棄する。stdout・log・
+/// 一時ファイル・caller のいずれへも平文を返さない。復号に成功すれば `Ok(())`、復号できなければ context
+/// 付き `Err` を返す。entry の業務的意味（recipient 妥当性・store 構造）はこの module で判定しない。
+pub(crate) fn verify_can_decrypt(entry_path: &std::path::Path) -> Result<()> {
+    let mut context = open_context()?;
+    let ciphertext = std::fs::read(entry_path)
+        .context("failed to read password-store entry for decryption check")?;
+    let mut input = gpgme::Data::from_bytes(&ciphertext)
+        .context("failed to wrap password-store entry bytes")?;
+    let mut output = gpgme::Data::new()
+        .context("failed to allocate gpgme buffer for password-store decryption check")?;
+    context
+        .decrypt(&mut input, &mut output)
+        .context("failed to decrypt password-store entry with the restored GPG key")?;
+    // 復号できた平文は確認以外に使わない。buffer へ取り出した後に必ず zeroize する。
+    let mut plaintext = output
+        .try_into_bytes()
+        .context("failed to read decrypted password-store entry bytes")?;
+    plaintext.zeroize();
+    Ok(())
+}
+
 /// OpenPGP protocol の gpgme context を生成する。
 fn open_context() -> Result<gpgme::Context> {
     gpgme::Context::from_protocol(Protocol::OpenPgp).context("failed to create gpgme context")

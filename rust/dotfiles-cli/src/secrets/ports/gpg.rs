@@ -11,6 +11,7 @@ use super::super::{
     domain::{
         gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
         gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
+        pass_restore::GpgRecipientId,
     },
     support::protection::ProtectedSecret,
 };
@@ -67,6 +68,29 @@ pub trait GpgKeyringPort {
         &mut self,
         primary_fingerprint: &PrimaryFingerprint,
     ) -> Result<OpenSshPublicKey>;
+
+    /// restore-pass 向けに、復元済み鍵リングが持つ唯一の「利用可能 authentication subkey を持つ
+    /// 秘密鍵」の authentication subkey 由来 OpenSSH 公開鍵を、primary fingerprint 指定なしで解決する。
+    ///
+    /// restore-pass は restore-gpg が直前に import した recovery 鍵だけを使うため、その鍵の
+    /// authentication subkey identity を期待公開鍵として返す。利用可能 authentication subkey を持つ秘密鍵が
+    /// 0 件または複数件ある場合は、提示すべき identity を一意に確定できないため失敗する。caller はこの
+    /// 期待公開鍵を gpg-agent SSH socket の identity 照合（clone 前）に使う。
+    fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey>;
+
+    /// `.gpg-id` recipient 宛ての復号に使える秘密鍵を鍵リングが保持しているかを確認する。
+    ///
+    /// `pass` は `.gpg-id` recipient の公開鍵で各 entry を暗号化する。その recipient に対応する秘密鍵を
+    /// 手元に持たない場合、clone は成功しても `pass` は復号できない。implementor は recipient（long key id /
+    /// fingerprint）で秘密鍵を解決できるかだけを返し、復号可否の最終判定は caller（application）が行う。
+    fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool>;
+
+    /// store 内サンプル entry（`*.gpg`）を gpgme で復号できることを確認する。
+    ///
+    /// `.gpg-id` recipient と手元秘密鍵の整合だけでなく、実際に store entry を復号できることまで確認する
+    /// ための capability である。entry が暗号化された `pass` 形式であり、復元済み秘密鍵で復号できれば成功する。
+    /// 復号した平文は保護境界内で破棄し、argv / log / 永続ファイル・stdout へ出さない。
+    fn can_decrypt_store_entry(&mut self, entry_path: &std::path::Path) -> Result<()>;
 }
 
 /// use case が backup envelope の DEK 暗復号のために要求する capability 契約。
