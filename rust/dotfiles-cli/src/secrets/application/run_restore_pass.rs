@@ -19,15 +19,17 @@ use crate::secrets::{
 /// 設計（spec L172-174、L92/L100/L210）の手順を順序制御として固定する。token 取得 →
 /// `password-store-remote` 取得（URL 妥当性は domain 検証で確定）→ `~/.password-store` 不存在確認 →
 /// **clone 前に gpg-agent SSH socket が復元した GPG authentication subkey の identity を提示していることを
-/// 照合（#14 の key blob 照合）** → GPG authentication subkey 経由の SSH で clone → clone 後 store 可読性確認
+/// 照合（#14 の key blob 照合）し、さらに `sshcontrol` が復元鍵の keygrip だけを持つことを確認** → GPG
+/// authentication subkey 経由の SSH で clone → clone 後 store 可読性確認
 /// （`.gpg-id` recipient 妥当性 + 復元済み秘密鍵での復号可否）→ 失敗時は clone 済み store をロールバック削除、
 /// という順序を application に固定するのは、次の停止条件の責務境界を保護するためである。
 ///
 /// - clone 前に既存 store を破壊しない（不存在確認を先に止める）。
 /// - 別 SSH key が repo access を持つ場合に restore-pass を成功させない。`Cred::ssh_key_from_agent` は agent 内
 ///   の任意 identity を提示しうるため、clone 前に期待 authentication subkey identity を agent が提示している
-///   ことを `SshAgentReadiness::ensure_ready` で確定してから clone へ進む（adapter 側は strict gpg-agent socket
-///   を併用）。
+///   ことを `SshAgentReadiness::ensure_ready` で確定し、加えて `sshcontrol` が復元鍵の keygrip だけを持つ
+///   ことを `SshControlRegistration::ensure_only` で確定してから clone へ進む（agent の単一鍵限定が API 上
+///   不可能なための追加ガード。adapter 側は strict gpg-agent socket を併用）。
 /// - clone 後 store が `pass` から読める（`.gpg-id` が非空で妥当な GPG 鍵宛てかつ復元済み秘密鍵で復号できる）
 ///   まで完了とみなさない。
 /// - clone 後の検証失敗時は clone 済み `~/.password-store` を best-effort で削除し、次回実行が既存 store ガードで
@@ -102,10 +104,20 @@ where
         .inspect_ssh_agent(&expected_public_key)?
         .ensure_ready()?;
 
-    // 5. GPG authentication subkey 経由の SSH agent 認証で `~/.password-store` へ clone する。
+    // 5. clone 直前に、gpg-agent の `sshcontrol` が復元鍵の keygrip だけを持つことを確認する。
+    //    `Cred::ssh_key_from_agent` は agent が露出する任意 identity を提示しうるため、識別子照合（手順 4）だけ
+    //    では別の登録済み identity 経由の clone を防げない。`sshcontrol` に復元鍵以外の authentication subkey が
+    //    登録されている／復元鍵が未登録の場合はここで停止し、復元鍵以外の identity で clone が成立しないようにする
+    //    （API 上 agent の単一鍵限定が不可能なための層境界内追加ガード。spec L92/L100/L210）。
+    let recovery_keygrip = keyring.resolve_recovery_authentication_keygrip()?;
+    ssh_agent
+        .inspect_registered_keygrips()?
+        .ensure_only(&recovery_keygrip)?;
+
+    // 6. GPG authentication subkey 経由の SSH agent 認証で `~/.password-store` へ clone する。
     git_clone.clone_password_store(&remote)?;
 
-    // 6. clone 後 store が `pass` から実際に読めることを確認する。失敗した場合は clone 済み store を
+    // 7. clone 後 store が `pass` から実際に読めることを確認する。失敗した場合は clone 済み store を
     //    best-effort で削除（rollback）してから元エラーを返し、次回実行を既存 store ガードで止めない。
     match confirm_cloned_store_readable(keyring, store) {
         Ok(()) => report.write_restore_pass_report(&RestorePassSummary {
@@ -178,7 +190,7 @@ mod tests {
     use crate::secrets::{
         domain::{
             commands::RestorePassCommand,
-            gpg_restore::{OpenSshPublicKey, SshAgentReadiness},
+            gpg_restore::{Keygrip, OpenSshPublicKey, SshAgentReadiness, SshControlRegistration},
             manifest::SecretManifest,
             pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
             storage::SecretStorageReadInspection,
@@ -192,6 +204,8 @@ mod tests {
     const REMOTE_URL: &str = "git@github.com:owner/password-store.git";
     const RECOVERY_SSH_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTBODY recovery";
     const RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+    const RECOVERY_KEYGRIP: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+    const OTHER_KEYGRIP: &str = "FEDCBA9876543210FEDCBA9876543210FEDCBA98";
 
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -293,6 +307,20 @@ mod tests {
                     socket_resolved: true,
                     authentication_identity_present: true,
                 })
+            });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                ]))
             });
         let mut git_clone = ports::MockGitClonePort::new();
         git_clone
@@ -470,6 +498,82 @@ mod tests {
         );
     }
 
+    /// clone 前の sshcontrol single-key 照合で、復元鍵以外の keygrip が gpg-agent に登録されている場合は
+    /// clone へ進ませず停止することを検証する（別の登録済み identity 経由の clone 成立を防ぐ）。
+    #[tokio::test]
+    async fn restore_pass_stops_when_sshcontrol_has_other_keygrip() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_remote_ok(&mut bws);
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store.expect_password_store_exists().returning(|| Ok(false));
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_resolve_recovery_authentication_ssh_public_key()
+            .returning(|| OpenSshPublicKey::parse(RECOVERY_SSH_KEY));
+        // identity 照合は通るが、sshcontrol に復元鍵以外の keygrip も登録されている。
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_inspect_ssh_agent().returning(|_| {
+            Ok(SshAgentReadiness {
+                socket_resolved: true,
+                authentication_identity_present: true,
+            })
+        });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                    Keygrip::parse(OTHER_KEYGRIP).expect("keygrip"),
+                ]))
+            });
+        // 復元鍵以外の identity が登録されているため clone へ進ませず、rollback も不要。
+        let mut git_clone = ports::MockGitClonePort::new();
+        git_clone.expect_clone_password_store().times(0);
+        store.expect_remove_password_store().times(0);
+        let mut report = ports::MockReportPort::new();
+        report.expect_write_restore_pass_report().times(0);
+
+        let result = run_restore_pass(
+            RestorePassCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut keyring,
+            &mut ssh_agent,
+            &mut store,
+            &mut git_clone,
+            &report,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a non-recovery keygrip in sshcontrol must stop before clone"
+        );
+    }
+
     /// clone は成功したが clone 後の可読性確認（`.gpg-id` 不在）で失敗した場合、clone 済み store を
     /// `remove_password_store` で rollback 削除してから元エラーを返すことを検証する。
     #[tokio::test]
@@ -506,6 +610,16 @@ mod tests {
                 authentication_identity_present: true,
             })
         });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                ]))
+            });
         // clone は成功するが、store に `.gpg-id` がなく可読性確認で失敗する。
         store
             .expect_inspect_password_store()
@@ -588,6 +702,16 @@ mod tests {
                 authentication_identity_present: true,
             })
         });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                ]))
+            });
         store
             .expect_inspect_password_store()
             .times(1)

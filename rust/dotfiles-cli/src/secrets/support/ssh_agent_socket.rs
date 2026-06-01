@@ -11,6 +11,11 @@
 //! - [`resolve_ssh_agent_socket`]: 上記を優先しつつ、socket でない場合だけ既存 `SSH_AUTH_SOCK` が指す socket へ
 //!   fallback する。#14 の readiness 観測は対象 authentication subkey の key blob 一致で identity を照合する
 //!   ため、fallback socket でも任意鍵を受け入れない。clone のように任意鍵を提示しうる経路はこちらを使わない。
+//!
+//! いずれも戻り値は `Result<Option<PathBuf>>` とする。`Ok(None)` は「GnuPG home は解決できたが socket が
+//! 存在しない」という観測結果（停止条件へ翻訳できる正常系）を表し、`Err` は `gnupg_home()` の解決失敗
+//! （例: `HOME` 未設定）という実原因を理由付きで呼び出し側へ伝播する。socket 無しと環境解決失敗を呼び出し
+//! 側で区別できるよう、後者を `Ok(None)` へ握り潰さない。
 
 use std::path::{Path, PathBuf};
 
@@ -31,32 +36,35 @@ pub(crate) fn gnupg_home() -> Result<PathBuf> {
 
 /// gpg-agent の SSH support socket を strict に解決する（fallback なし）。
 ///
-/// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket ならそれを返し、socket でなければ `None` を返す。
-/// 通常の `ssh-agent` を指しうる `SSH_AUTH_SOCK` へは fallback しない。提示する SSH identity を選べない経路
-/// （#15 の password-store clone）は、GPG authentication subkey 由来 identity だけを使うためこの strict 解決を
-/// 用い、任意鍵を提示しうる `ssh-agent` への fallback を作らない。`gpgconf` CLI は使わない。
-pub(crate) fn resolve_gpg_agent_socket() -> Option<PathBuf> {
-    let fixed = gnupg_home().ok()?.join("S.gpg-agent.ssh");
-    is_socket(&fixed).then_some(fixed)
+/// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket なら `Ok(Some(path))`、socket でなければ
+/// `Ok(None)` を返す。通常の `ssh-agent` を指しうる `SSH_AUTH_SOCK` へは fallback しない。提示する SSH
+/// identity を選べない経路（#15 の password-store clone）は、GPG authentication subkey 由来 identity だけを
+/// 使うためこの strict 解決を用い、任意鍵を提示しうる `ssh-agent` への fallback を作らない。`gpgconf` CLI は
+/// 使わない。`gnupg_home()` の解決に失敗した場合（例: `HOME` 未設定）は、socket 無し（`Ok(None)`）へ握り
+/// 潰さず、その実原因を理由付き `Err` として呼び出し側へ伝播する。
+pub(crate) fn resolve_gpg_agent_socket() -> Result<Option<PathBuf>> {
+    let fixed = gnupg_home()?.join("S.gpg-agent.ssh");
+    Ok(is_socket(&fixed).then_some(fixed))
 }
 
 /// SSH agent socket を fallback 付きで解決する。
 ///
 /// [`resolve_gpg_agent_socket`] の gpg-agent socket を優先し、それが socket でない場合だけ既存環境変数
-/// `SSH_AUTH_SOCK` が指す path が socket ならそれへ fallback する。どちらも socket でなければ `None` を返し、
-/// 呼び出し側は socket 未解決として停止条件へ反映する。#14 の readiness 観測は key blob 一致で identity を
-/// 照合するため fallback socket でも安全だが、提示鍵を選べない経路はこの fallback 付き解決を使わない。
-pub(crate) fn resolve_ssh_agent_socket() -> Option<PathBuf> {
-    if let Some(gpg_agent) = resolve_gpg_agent_socket() {
-        return Some(gpg_agent);
+/// `SSH_AUTH_SOCK` が指す path が socket ならそれへ fallback する。どちらも socket でなければ `Ok(None)` を
+/// 返し、呼び出し側は socket 未解決として停止条件へ反映する。#14 の readiness 観測は key blob 一致で
+/// identity を照合するため fallback socket でも安全だが、提示鍵を選べない経路はこの fallback 付き解決を
+/// 使わない。`gnupg_home()` の解決に失敗した場合は `Err` を伝播し、socket 無しと環境解決失敗を区別する。
+pub(crate) fn resolve_ssh_agent_socket() -> Result<Option<PathBuf>> {
+    if let Some(gpg_agent) = resolve_gpg_agent_socket()? {
+        return Ok(Some(gpg_agent));
     }
     if let Some(env) = std::env::var_os("SSH_AUTH_SOCK") {
         let env = PathBuf::from(env);
         if is_socket(&env) {
-            return Some(env);
+            return Ok(Some(env));
         }
     }
-    None
+    Ok(None)
 }
 
 /// 指定 path が socket として存在するかを返す。

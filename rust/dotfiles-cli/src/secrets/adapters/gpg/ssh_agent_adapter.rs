@@ -26,7 +26,9 @@ use anyhow::Context;
 use crate::{
     Result,
     secrets::{
-        domain::gpg_restore::{Keygrip, OpenSshPublicKey, SshAgentReadiness},
+        domain::gpg_restore::{
+            Keygrip, OpenSshPublicKey, SshAgentReadiness, SshControlRegistration,
+        },
         ports::gpg::SshAgentPort,
         support::ssh_agent_socket::{gnupg_home, resolve_ssh_agent_socket},
     },
@@ -57,12 +59,19 @@ impl SshAgentPort for SshAgentAdapter {
         Ok(())
     }
 
+    fn inspect_registered_keygrips(&mut self) -> Result<SshControlRegistration> {
+        let path = sshcontrol_path()?;
+        let keygrips = read_sshcontrol_keygrips(&path)?;
+        Ok(SshControlRegistration::new(keygrips))
+    }
+
     fn inspect_ssh_agent(
         &mut self,
         expected_public_key: &OpenSshPublicKey,
     ) -> Result<SshAgentReadiness> {
         // 固定 path が socket ならそれ、socket でなければ既存 `SSH_AUTH_SOCK` が socket ならそれを使う。
-        let socket = resolve_ssh_agent_socket();
+        // `gnupg_home()` 解決失敗（例: `HOME` 未設定）は socket 無しへ握り潰さず、その実原因を `?` で伝播する。
+        let socket = resolve_ssh_agent_socket()?;
         let socket_resolved = socket.is_some();
         // identity の識別は、解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、
         // 各 identity の key blob が期待公開鍵の key blob と byte 一致するかで判定する。socket が解決できない、
@@ -226,6 +235,32 @@ impl<'a> ByteCursor<'a> {
 /// gpg-agent の SSH key list（`sshcontrol`）の path を返す。
 fn sshcontrol_path() -> Result<PathBuf> {
     Ok(gnupg_home()?.join("sshcontrol"))
+}
+
+/// `sshcontrol` に登録されている keygrip を正規化して列挙する。
+///
+/// 各行は keygrip（uppercase hex）で始まり `KEYGRIP 0 confirm` のようにオプションが続く場合がある。空行・
+/// `#` コメントを除き、先頭空白区切りトークンを keygrip として `Keygrip::parse` で正規化する。ファイルが存在
+/// しない場合は空集合を返す。keygrip として parse できないトークンは登録 identity として扱えないため停止する。
+fn read_sshcontrol_keygrips(path: &Path) -> Result<Vec<Keygrip>> {
+    let file = match OpenOptions::new().read(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context("failed to read gpg-agent sshcontrol"));
+        }
+    };
+    let mut keygrips = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.context("failed to read gpg-agent sshcontrol line")?;
+        let entry = line.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        let token = entry.split_whitespace().next().unwrap_or(entry);
+        keygrips.push(Keygrip::parse(token)?);
+    }
+    Ok(keygrips)
 }
 
 /// `sshcontrol` に keygrip（uppercase hex 40）が既に登録されているかを返す。

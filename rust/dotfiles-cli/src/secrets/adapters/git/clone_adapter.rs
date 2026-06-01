@@ -13,12 +13,23 @@
 //! identity）だけを露出するため、strict gpg-agent socket を使えば通常の `ssh-agent` 鍵は提示されない。ただし
 //! `sshcontrol` に複数 identity が登録されていれば agent 側で別 identity を提示しうるため、単一鍵限定はこの
 //! adapter だけでは担保できない。そこで application 側が clone 前に「この gpg-agent socket が復元した GPG
-//! authentication subkey の identity を提示している」ことを #14 の key blob 照合で確定し、満たさなければ clone
-//! へ進ませない。本 adapter は strict gpg-agent socket への固定と clone 翻訳だけを担い、identity 照合は
-//! application + `SshAgentPort` 側で担保する。clone URL の妥当性判断は domain（`PasswordStoreRemote`）に委ねる。
+//! authentication subkey の identity を提示している」ことを #14 の key blob 照合で確定し、さらに `sshcontrol`
+//! が復元鍵の keygrip だけを持つ（別 authentication subkey が登録されていない）ことを `SshAgentPort` 経由で
+//! 確定してから clone へ進ませる。本 adapter は strict gpg-agent socket への固定と clone 翻訳だけを担い、
+//! identity 照合と single-key 担保は application + `SshAgentPort` 側で行う。clone URL の妥当性判断は domain
+//! （`PasswordStoreRemote`）に委ねる。
+//!
+//! host key 検証: 新規マシンでは `~/.ssh/known_hosts` に `github.com` の host key が無いのが通常であり、
+//! credentials だけでは MITM を防げない。`RemoteCallbacks::certificate_check` で、接続先 hostname が
+//! `github.com` であり、libssh2 が提示する SSH host key の raw bytes が GitHub 公表の既知 host key
+//! （Ed25519 / ECDSA / RSA の公開鍵）と byte 一致することを検証し、一致しなければ clone を停止する。
+//! GitHub 公表鍵は出典コメント付きの定数 [`GITHUB_SSH_HOST_KEYS`] として pin する。
 
 use anyhow::Context;
-use git2::{Cred, CredentialType, FetchOptions, RemoteCallbacks, build::RepoBuilder};
+use git2::{
+    CertificateCheckStatus, Cred, CredentialType, FetchOptions, RemoteCallbacks,
+    build::RepoBuilder, cert::Cert,
+};
 
 use crate::{
     Result,
@@ -27,6 +38,26 @@ use crate::{
         support::ssh_agent_socket::resolve_gpg_agent_socket,
     },
 };
+
+/// 接続を許可する GitHub の hostname。`PasswordStoreRemote` は `git@github.com:` 固定形式だけを許可する
+/// ため、clone 先 host は常に `github.com` であり、それ以外の host へ提示された証明書は検証対象外として停止する。
+const GITHUB_HOST: &str = "github.com";
+
+/// GitHub が公表する SSH host key（OpenSSH 公開鍵本体の base64）と key type 名の pin。
+///
+/// 出典: GitHub `https://api.github.com/meta` の `ssh_keys`（および GitHub docs
+/// "GitHub's SSH key fingerprints"）。2026-06-01 時点の公表値。各要素の 2 番目フィールド（base64 本体）は
+/// libssh2 が `CertHostkey::hostkey()` で返す raw host key bytes を base64 化したものと一致する。新規マシンで
+/// `known_hosts` に依存せず host を pin するためにこの定数で照合し、一致しなければ clone を停止する（MITM 防止）。
+/// `hostkey_type()` の OpenSSH 名（`name()`）と本 base64 の type prefix を併せて照合し、type と鍵の両方一致を要求する。
+const GITHUB_SSH_HOST_KEYS: [&str; 3] = [
+    // ssh-ed25519
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+    // ecdsa-sha2-nistp256
+    "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=",
+    // ssh-rsa
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=",
+];
 
 /// git2 の SSH agent 認証 clone を `GitClonePort` 契約へ翻訳する adapter。
 #[derive(Default)]
@@ -38,7 +69,7 @@ impl GitCloneAdapter {
         // clone は提示する SSH identity を選べないため、gpg-agent socket を strict に解決する。通常の `ssh-agent`
         // を指しうる `SSH_AUTH_SOCK` へは fallback せず、gpg-agent socket が無ければ clone を試みず停止する
         // （既存 `~/.ssh` 鍵での clone を防ぐ。spec L92 / L100 / L210）。
-        let socket = resolve_gpg_agent_socket()
+        let socket = resolve_gpg_agent_socket()?
             .context("could not resolve the gpg-agent SSH agent socket for password-store clone")?;
         // libssh2 は credentials callback で SSH agent を使う前に `SSH_AUTH_SOCK` を参照する。strict に解決した
         // gpg-agent socket へ環境変数を合わせ、`git2` が gpg-agent SSH 経路を使うようにする。clone は process-global
@@ -74,6 +105,16 @@ impl GitCloneAdapter {
                 ))
             }
         });
+        // host key 検証: 新規マシンでは `known_hosts` に github.com が無いのが通常のため、GitHub 公表 host key
+        // との byte 一致で host を pin する。hostname が github.com でない、host key を取得できない、または
+        // pin 鍵と一致しない場合は MITM の可能性として clone を停止する（`CertificatePassthrough` で
+        // known_hosts へ委譲しない）。
+        callbacks.certificate_check(|cert, hostname| {
+            match verify_github_host_key(cert, hostname) {
+                Ok(()) => Ok(CertificateCheckStatus::CertificateOk),
+                Err(message) => Err(git2::Error::from_str(&message)),
+            }
+        });
 
         let mut fetch_options = FetchOptions::new();
         fetch_options.remote_callbacks(callbacks);
@@ -86,5 +127,135 @@ impl GitCloneAdapter {
                 anyhow::anyhow!("failed to clone private password-store over SSH: {error}")
             })?;
         Ok(())
+    }
+}
+
+/// 接続先 host が `github.com` であり、提示された SSH host key が GitHub 公表の pin 鍵と一致するかを検証する。
+///
+/// hostname が `github.com` でない、提示された証明書が SSH host key でない、libssh2 が raw host key を返さない、
+/// または key type / raw bytes が pin（[`GITHUB_SSH_HOST_KEYS`]）のいずれとも一致しない場合は、MITM の可能性
+/// として `Err(message)` を返し clone を停止させる。一致した場合だけ `Ok(())` を返す。`known_hosts` へは委譲しない。
+fn verify_github_host_key(cert: &Cert<'_>, hostname: &str) -> std::result::Result<(), String> {
+    if hostname != GITHUB_HOST {
+        return Err(format!(
+            "refusing to clone: unexpected SSH host '{hostname}', only {GITHUB_HOST} is allowed"
+        ));
+    }
+    let hostkey = cert
+        .as_hostkey()
+        .ok_or_else(|| "refusing to clone: server did not present an SSH host key".to_owned())?;
+    let raw = hostkey
+        .hostkey()
+        .ok_or_else(|| "refusing to clone: SSH host key is unavailable for pinning".to_owned())?;
+    let type_name = hostkey
+        .hostkey_type()
+        .ok_or_else(|| "refusing to clone: SSH host key type is unknown".to_owned())?
+        .name();
+    // key type 名と raw bytes の両方一致を要求する。type prefix が一致しても raw bytes が pin と異なる host は拒否する。
+    let matches_pinned = GITHUB_SSH_HOST_KEYS.iter().any(|pinned| {
+        let mut fields = pinned.split_whitespace();
+        let pinned_type = fields.next();
+        let pinned_body = fields.next();
+        match (pinned_type, pinned_body) {
+            (Some(pinned_type), Some(pinned_body)) => {
+                pinned_type == type_name
+                    && standard_base64_decode(pinned_body).is_some_and(|decoded| decoded == raw)
+            }
+            _ => false,
+        }
+    });
+    if matches_pinned {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to clone: {GITHUB_HOST} SSH host key did not match GitHub's published host keys (possible MITM)"
+        ))
+    }
+}
+
+/// standard base64（padding 必須）文字列を bytes へ decode する。pin した GitHub host key body の照合専用。
+///
+/// この adapter は base64 crate へ依存しないため、pin 値の decode に必要な最小 decoder を持つ。alphabet /
+/// padding / 長さの妥当性違反は `None` を返し、照合側で「一致しない」へ倒す。
+fn standard_base64_decode(input: &str) -> Option<Vec<u8>> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunk_count = bytes.len() / 4;
+    for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
+        let is_last_chunk = chunk_index + 1 == chunk_count;
+        let mut accumulator = 0u32;
+        let mut chunk_padding = 0usize;
+        for (index, &symbol) in chunk.iter().enumerate() {
+            if symbol == b'=' {
+                // padding は末尾 chunk の末尾位置にだけ許可する。
+                if !is_last_chunk || index < 2 {
+                    return None;
+                }
+                chunk_padding += 1;
+                accumulator <<= 6;
+                continue;
+            }
+            if chunk_padding != 0 {
+                return None;
+            }
+            let sextet = standard_base64_symbol_value(symbol)?;
+            accumulator = (accumulator << 6) | u32::from(sextet);
+        }
+        let bytes_in_chunk = 3 - chunk_padding;
+        let chunk_bytes = accumulator.to_be_bytes();
+        output.extend_from_slice(&chunk_bytes[1..=bytes_in_chunk]);
+    }
+    Some(output)
+}
+
+/// standard base64 alphabet の 1 文字を 6-bit 値へ変換する。
+fn standard_base64_symbol_value(symbol: u8) -> Option<u8> {
+    match symbol {
+        b'A'..=b'Z' => Some(symbol - b'A'),
+        b'a'..=b'z' => Some(symbol - b'a' + 26),
+        b'0'..=b'9' => Some(symbol - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! host key pin 照合（base64 decode と type/bytes 一致判定）という adapter 翻訳ロジックの単体テスト。
+    //!
+    //! libssh2 host key 提示を伴わない純粋な decode と pin 突合だけを検証し、外部 network/git は呼ばない。
+    //! `Cert` は実 git 接続なしに構築できないため、pin 突合に使う decode 関数と pin 定数の整合だけを直接検証する。
+
+    use super::{GITHUB_SSH_HOST_KEYS, standard_base64_decode};
+
+    /// pin した各 GitHub host key の base64 本体が decode でき、type prefix を持つことを確認する。
+    #[test]
+    fn pinned_github_host_keys_decode() {
+        for pinned in GITHUB_SSH_HOST_KEYS {
+            let mut fields = pinned.split_whitespace();
+            let key_type = fields.next().expect("pinned key has a type prefix");
+            let body = fields.next().expect("pinned key has a base64 body");
+            assert!(key_type.starts_with("ssh-") || key_type.starts_with("ecdsa-"));
+            let decoded = standard_base64_decode(body).expect("pinned key body decodes");
+            assert!(!decoded.is_empty());
+        }
+    }
+
+    /// base64 decode の padding / alphabet 妥当性検証（不正値は `None`）を確認する。
+    #[test]
+    fn standard_base64_decode_rejects_invalid_input() {
+        // 長さが 4 の倍数でない。
+        assert!(standard_base64_decode("AAA").is_none());
+        // alphabet 外の文字。
+        assert!(standard_base64_decode("AA*A").is_none());
+        // 不正 padding 位置。
+        assert!(standard_base64_decode("A=AA").is_none());
+        // 妥当な padding 付き値は decode できる（"Zm9v" == "foo"）。
+        assert_eq!(standard_base64_decode("Zm9v"), Some(b"foo".to_vec()));
+        assert_eq!(standard_base64_decode("Zg=="), Some(b"f".to_vec()));
     }
 }

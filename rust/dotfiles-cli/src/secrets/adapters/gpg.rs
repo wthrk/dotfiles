@@ -21,7 +21,10 @@ use crate::{
     secrets::{
         domain::{
             gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
-            gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
+            gpg_restore::{
+                ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness,
+                SshControlRegistration,
+            },
             pass_restore::GpgRecipientId,
         },
         ports::gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort},
@@ -91,6 +94,10 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         self.0.resolve_recovery_authentication_ssh_public_key()
     }
 
+    fn resolve_recovery_authentication_keygrip(&mut self) -> Result<Keygrip> {
+        self.0.resolve_recovery_authentication_keygrip()
+    }
+
     fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
         self.0.secret_key_available_for_recipient(recipient)
     }
@@ -143,6 +150,10 @@ type SshAgentInner = internal_stub::SshAgentStub;
 impl SshAgentPort for SshAgentAdapter {
     fn register_authentication_subkey(&mut self, keygrip: &Keygrip) -> Result<()> {
         self.0.register_authentication_subkey(keygrip)
+    }
+
+    fn inspect_registered_keygrips(&mut self) -> Result<SshControlRegistration> {
+        self.0.inspect_registered_keygrips()
     }
 
     fn inspect_ssh_agent(

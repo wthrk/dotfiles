@@ -34,6 +34,43 @@ impl GpgKeyringAdapter {
     fn context() -> Result<gpgme::Context> {
         gpgme::Context::from_protocol(Protocol::OpenPgp).context("failed to create gpgme context")
     }
+
+    /// restore-gpg が直前に import した recovery 鍵の primary fingerprint を一意に特定する。
+    ///
+    /// 鍵リングの秘密鍵を走査し、利用可能な authentication subkey を持つ鍵がちょうど 1 件であることを
+    /// 要求する。0 件・複数件は提示すべき identity を一意に確定できないため停止する。recovery 鍵の
+    /// SSH 公開鍵 / keygrip いずれの解決もこの同一特定述語を共有し、別 subkey の混在を避ける。
+    fn resolve_recovery_primary_fingerprint(&self) -> Result<PrimaryFingerprint> {
+        let mut context = Self::context()?;
+        context
+            .set_key_list_mode(gpgme::KeyListMode::WITH_KEYGRIP)
+            .context("failed to configure gpgme key list mode")?;
+        let mut recovery_fingerprint: Option<String> = None;
+        let secret_keys = context
+            .secret_keys()
+            .context("failed to list GPG secret keys for recovery identity")?;
+        for key in secret_keys {
+            let key = key.context("failed to read a GPG secret key entry")?;
+            if !has_usable_authentication_subkey(&key) {
+                continue;
+            }
+            let fingerprint = key
+                .fingerprint()
+                .ok()
+                .context("recovery GPG key fingerprint could not be resolved")?
+                .to_owned();
+            if recovery_fingerprint.is_some() {
+                anyhow::bail!(
+                    "multiple GPG secret keys with a usable authentication subkey were found; cannot pick a single SSH identity"
+                );
+            }
+            recovery_fingerprint = Some(fingerprint);
+        }
+        let fingerprint = recovery_fingerprint.context(
+            "no GPG secret key with a usable authentication subkey was found; run restore-gpg first",
+        )?;
+        PrimaryFingerprint::parse(&fingerprint)
+    }
 }
 
 impl GpgKeyringPort for GpgKeyringAdapter {
@@ -184,39 +221,13 @@ impl GpgKeyringPort for GpgKeyringAdapter {
     }
 
     fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey> {
-        // restore-gpg が直前に import した recovery 鍵を一意に特定する。鍵リングの秘密鍵を走査し、
-        // 利用可能な authentication subkey を持つ鍵がちょうど 1 件であることを要求する。0 件・複数件は
-        // 提示すべき identity を一意に確定できないため停止する。
-        let mut context = Self::context()?;
-        context
-            .set_key_list_mode(gpgme::KeyListMode::WITH_KEYGRIP)
-            .context("failed to configure gpgme key list mode")?;
-        let mut recovery_fingerprint: Option<String> = None;
-        let secret_keys = context
-            .secret_keys()
-            .context("failed to list GPG secret keys for recovery identity")?;
-        for key in secret_keys {
-            let key = key.context("failed to read a GPG secret key entry")?;
-            if !has_usable_authentication_subkey(&key) {
-                continue;
-            }
-            let fingerprint = key
-                .fingerprint()
-                .ok()
-                .context("recovery GPG key fingerprint could not be resolved")?
-                .to_owned();
-            if recovery_fingerprint.is_some() {
-                anyhow::bail!(
-                    "multiple GPG secret keys with a usable authentication subkey were found; cannot pick a single SSH identity"
-                );
-            }
-            recovery_fingerprint = Some(fingerprint);
-        }
-        let fingerprint = recovery_fingerprint.context(
-            "no GPG secret key with a usable authentication subkey was found; run restore-gpg first",
-        )?;
-        let parsed = PrimaryFingerprint::parse(&fingerprint)?;
-        self.authentication_subkey_ssh_public_key(&parsed)
+        let fingerprint = self.resolve_recovery_primary_fingerprint()?;
+        self.authentication_subkey_ssh_public_key(&fingerprint)
+    }
+
+    fn resolve_recovery_authentication_keygrip(&mut self) -> Result<Keygrip> {
+        let fingerprint = self.resolve_recovery_primary_fingerprint()?;
+        self.authentication_subkey_keygrip(&fingerprint)
     }
 
     fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {

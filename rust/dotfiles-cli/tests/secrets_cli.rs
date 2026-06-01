@@ -904,13 +904,16 @@ const RESTORE_PASS_RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 
 /// restore-pass の clone 前 identity 照合と clone 後可読性確認が成功する GPG stub spec を作る。
 ///
-/// `recovery_ssh_public_key` で recovery 鍵 identity を解決でき、`held_recipients` に `.gpg-id` recipient を
-/// 含み、`store_entry_decryptable` でサンプル entry の復号可否も成功させる。
+/// `recovery_ssh_public_key` で recovery 鍵 identity を解決でき、`recovery_keygrip` と `registered_keygrips`
+/// で clone 前の sshcontrol single-key 照合（復元鍵の keygrip だけが登録済み）を成功させ、`held_recipients` に
+/// `.gpg-id` recipient を含み、`store_entry_decryptable` でサンプル entry の復号可否も成功させる。
 fn gpg_spec_for_restore_pass() -> Value {
     json!({
         "existing_keys": [],
         "keys": {},
         "recovery_ssh_public_key": RESTORE_SSH_LINE,
+        "recovery_keygrip": RESTORE_KEYGRIP,
+        "registered_keygrips": [RESTORE_KEYGRIP],
         "held_recipients": [RESTORE_PASS_RECIPIENT],
         "store_entry_decryptable": true
     })
@@ -1041,6 +1044,30 @@ fn restore_pass_stops_when_agent_identity_mismatches_with_stub_paths() -> TestRe
         final_git["cloned_remotes"],
         json!([]),
         "agent identity mismatch must stop before clone"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_stops_when_sshcontrol_has_other_keygrip_with_stub_paths() -> TestResult<()> {
+    // recovery 鍵 identity は提示されるが、sshcontrol に復元鍵以外の keygrip も登録されている（別の
+    // 登録済み GitHub identity が agent から提示されうる状況）。clone 前の single-key 照合で停止する。
+    let mut gpg = gpg_spec_for_restore_pass();
+    gpg["registered_keygrips"] =
+        json!([RESTORE_KEYGRIP, "FFEEDDCCBBAA99887766554433221100FFEEDDCC"]);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg);
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([]),
+        "a non-recovery keygrip in sshcontrol must stop before clone"
     );
     Ok(())
 }

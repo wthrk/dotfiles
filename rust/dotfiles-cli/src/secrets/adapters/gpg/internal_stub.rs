@@ -27,7 +27,8 @@ use crate::{
         domain::{
             gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
             gpg_restore::{
-                ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
+                ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey,
+                SshControlRegistration, SubkeyCapability,
             },
             pass_restore::GpgRecipientId,
         },
@@ -55,6 +56,15 @@ struct GpgStubSpec {
     /// 未指定なら recovery 鍵を解決できない（restore-gpg 未実行）状態を模す。
     #[serde(default)]
     recovery_ssh_public_key: Option<String>,
+    /// restore-pass の recovery 鍵 identity として解決する authentication subkey の keygrip（uppercase hex 40）。
+    /// 未指定なら recovery keygrip を解決できない（restore-gpg 未実行）状態を模す。clone 前の sshcontrol
+    /// single-key 照合に使う。
+    #[serde(default)]
+    recovery_keygrip: Option<String>,
+    /// gpg-agent `sshcontrol` に事前登録済みとみなす keygrip（uppercase hex 40）の一覧。restore-pass は
+    /// restore-gpg と別 process で動くため、clone 前 single-key 照合の初期登録状態をこの spec で与える。
+    #[serde(default)]
+    registered_keygrips: Vec<String>,
     /// gpg-agent socket が提示する identity の OpenSSH 公開鍵。未指定なら `recovery_ssh_public_key` を提示する。
     /// recovery 鍵と異なる値を指定すると、別 SSH key だけを提示する agent（identity 不一致）を模す。
     #[serde(default)]
@@ -102,6 +112,7 @@ struct GpgDatastore {
     imported: Vec<String>,
     registered_keygrips: Vec<String>,
     recovery_ssh_public_key: Option<String>,
+    recovery_keygrip: Option<String>,
     agent_identity_ssh_public_key: Option<String>,
     held_recipients: Vec<String>,
     store_entry_decryptable: bool,
@@ -234,6 +245,16 @@ impl GpgKeyringPort for GpgKeyringStub {
         OpenSshPublicKey::parse(&line)
     }
 
+    fn resolve_recovery_authentication_keygrip(&mut self) -> Result<Keygrip> {
+        let keygrip = with_datastore(|store| {
+            store
+                .recovery_keygrip
+                .clone()
+                .context("stub recovery GPG keygrip is not configured (run restore-gpg first)")
+        })?;
+        Keygrip::parse(&keygrip)
+    }
+
     fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
         with_datastore(|store| {
             Ok(store
@@ -290,6 +311,17 @@ impl SshAgentPort for SshAgentStub {
             }
             Ok(())
         })
+    }
+
+    fn inspect_registered_keygrips(&mut self) -> Result<SshControlRegistration> {
+        let keygrips = with_datastore(|store| {
+            store
+                .registered_keygrips
+                .iter()
+                .map(|keygrip| Keygrip::parse(keygrip))
+                .collect::<Result<Vec<_>>>()
+        })?;
+        Ok(SshControlRegistration::new(keygrips))
     }
 
     fn inspect_ssh_agent(
@@ -393,8 +425,9 @@ fn load_datastore() -> Result<GpgDatastore> {
             })
             .collect(),
         imported: Vec::new(),
-        registered_keygrips: Vec::new(),
+        registered_keygrips: spec.registered_keygrips,
         recovery_ssh_public_key: spec.recovery_ssh_public_key,
+        recovery_keygrip: spec.recovery_keygrip,
         agent_identity_ssh_public_key: spec.agent_identity_ssh_public_key,
         held_recipients: spec.held_recipients,
         store_entry_decryptable: spec.store_entry_decryptable,

@@ -10,7 +10,10 @@
 use super::super::{
     domain::{
         gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
-        gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
+        gpg_restore::{
+            ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness,
+            SshControlRegistration,
+        },
         pass_restore::GpgRecipientId,
     },
     support::protection::ProtectedSecret,
@@ -78,6 +81,14 @@ pub trait GpgKeyringPort {
     /// 期待公開鍵を gpg-agent SSH socket の identity 照合（clone 前）に使う。
     fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey>;
 
+    /// restore-pass 向けに、復元済み鍵リングが持つ唯一の「利用可能 authentication subkey を持つ秘密鍵」の
+    /// authentication subkey keygrip を、primary fingerprint 指定なしで解決する。
+    ///
+    /// caller はこの keygrip を、clone 直前に gpg-agent `sshcontrol` が復元鍵の keygrip だけを持つことの確認
+    /// （[`SshAgentPort::inspect_registered_keygrips`] の結果との照合）に使う。利用可能 authentication subkey を
+    /// 持つ秘密鍵が 0 件または複数件ある場合は、対象 identity を一意に確定できないため失敗する。
+    fn resolve_recovery_authentication_keygrip(&mut self) -> Result<Keygrip>;
+
     /// `.gpg-id` recipient 宛ての復号に使える秘密鍵を鍵リングが保持しているかを確認する。
     ///
     /// `pass` は `.gpg-id` recipient の公開鍵で各 entry を暗号化する。その recipient に対応する秘密鍵を
@@ -128,6 +139,13 @@ pub trait BackupCipherPort {
 pub trait SshAgentPort {
     /// authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（既登録は冪等）。
     fn register_authentication_subkey(&mut self, keygrip: &Keygrip) -> Result<()>;
+
+    /// gpg-agent の SSH key list（`sshcontrol`）に登録されている keygrip 集合を観測して返す。
+    ///
+    /// caller は clone 直前にこの登録集合が復元鍵の keygrip だけを持つことを
+    /// [`SshControlRegistration::ensure_only`] で確認する。implementor は `sshcontrol` の登録 keygrip を正規化
+    /// して観測するだけで、single-key 充足判定そのものの業務規則は再定義しない。
+    fn inspect_registered_keygrips(&mut self) -> Result<SshControlRegistration>;
 
     /// gpg-agent SSH support 利用可否を、socket 解決可否と authentication subkey 識別可否として観測する。
     ///

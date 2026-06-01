@@ -137,6 +137,49 @@ impl Keygrip {
     }
 }
 
+/// gpg-agent の SSH key list（`sshcontrol`）に登録されている keygrip 集合の観測値。
+///
+/// `Cred::ssh_key_from_agent` は agent が露出する任意 identity を提示しうるため、`sshcontrol` に復元鍵
+/// 以外の authentication subkey が登録されていると、別 identity で clone が成立しうる。adapter は
+/// `sshcontrol` の登録 keygrip を正規化して観測し、この値へ翻訳する。「復元鍵の keygrip だけが登録されて
+/// いる」という single-key 業務規則の判定は [`SshControlRegistration::ensure_only`] で行う。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshControlRegistration {
+    registered_keygrips: Vec<Keygrip>,
+}
+
+impl SshControlRegistration {
+    /// 観測した登録 keygrip 集合から登録状態値を構築する。
+    pub fn new(registered_keygrips: Vec<Keygrip>) -> Self {
+        Self {
+            registered_keygrips,
+        }
+    }
+
+    /// `sshcontrol` が復元鍵の keygrip だけを持つ（別 authentication subkey が登録されていない）ことを検証する。
+    ///
+    /// clone 直前に呼び、復元鍵が未登録、または復元鍵以外の keygrip が 1 件でも登録されている場合は停止条件
+    /// として失敗する。これは agent が別 identity を提示して別鍵経由で clone が成立することを防ぐためであり、
+    /// `Cred::ssh_key_from_agent` で単一鍵を選べない API 制約を層境界内で補う追加ガードである。
+    pub fn ensure_only(&self, recovery_keygrip: &Keygrip) -> Result<()> {
+        if !self.registered_keygrips.contains(recovery_keygrip) {
+            anyhow::bail!(
+                "the recovery GPG authentication subkey is not registered in gpg-agent sshcontrol; cannot clone"
+            );
+        }
+        if self
+            .registered_keygrips
+            .iter()
+            .any(|keygrip| keygrip != recovery_keygrip)
+        {
+            anyhow::bail!(
+                "gpg-agent sshcontrol registers an SSH identity other than the recovery GPG authentication subkey; refusing to clone to avoid using a non-recovery identity"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// authentication subkey 由来の OpenSSH 公開鍵 1 行を表す検証済み値。
 ///
 /// 設計「公開鍵出力契約」は「OpenSSH 公開鍵 1 行のみ、機械可読、秘密鍵素材を含めない」を
@@ -457,6 +500,40 @@ mod tests {
             }
             .ensure_ready()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn sshcontrol_registration_accepts_only_recovery_keygrip() {
+        let recovery = Keygrip::parse("0123456789ABCDEF0123456789ABCDEF01234567").expect("keygrip");
+        // 復元鍵だけが登録されている場合は許可する。
+        assert!(
+            SshControlRegistration::new(vec![recovery.clone()])
+                .ensure_only(&recovery)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn sshcontrol_registration_rejects_missing_recovery_keygrip() {
+        let recovery = Keygrip::parse("0123456789ABCDEF0123456789ABCDEF01234567").expect("keygrip");
+        // 復元鍵が未登録なら停止する。
+        assert!(
+            SshControlRegistration::new(Vec::new())
+                .ensure_only(&recovery)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn sshcontrol_registration_rejects_additional_keygrip() {
+        let recovery = Keygrip::parse("0123456789ABCDEF0123456789ABCDEF01234567").expect("keygrip");
+        let other = Keygrip::parse("FEDCBA9876543210FEDCBA9876543210FEDCBA98").expect("keygrip");
+        // 復元鍵に加えて別 identity が登録されていれば、別鍵経由の clone 成立を防ぐため停止する。
+        assert!(
+            SshControlRegistration::new(vec![recovery.clone(), other])
+                .ensure_only(&recovery)
+                .is_err()
         );
     }
 }
