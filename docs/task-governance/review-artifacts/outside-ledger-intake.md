@@ -84,6 +84,30 @@
 - 集約後レビュー判定: `合格`
 - 集約根拠: 必須レビュー担当（運用整合・参照整合）全員が合格。差戻し修正後に再レビュー実施済み。
 
+## 2026-05-31 現行アーキテクチャ固定・大幅リファクタリング推奨記述の除去
+
+- 実施日: `2026-05-31`
+- 対象依頼: `現在の構成とアーキテクチャを固定するので、大幅なリファクタリングを勧める記述をドキュメントから削除する（その後 issue #14 の実装サブ issue 作成・実装・PR・AI レビュー対応へ進む）`
+- 分類 (`task-list-outside` 固定): `task-list-outside`
+- 責任境界: `docs/ 配下（secret-recovery work-item 群・implementation-guidelines.md・secret-recovery-spec.md、および現行実装コードの大幅な再構築/再分割を強制するアーキテクチャ/レビュー記述）から、現行コード構造を別構造へ作り替える大幅リファクタリングを推奨/強制する記述を除去し、現行アーキテクチャを固定する文書是正に限定する。実コード差分は変更しない。root/area ledger の active item 選定や作業項目の完了状態は変更しない。`
+- 対象差分識別子（着手時に未確定なら `未確定`）: `2026-05-31-freeze-current-architecture-doc-remediation`
+- レビュー記録の保存先: `docs/task-governance/review-artifacts/outside-ledger-intake.md`（本記録および後続レビュー集約記録）
+- 備考（任意）: `2026-05-24 のゼロベース再設計（2026-05-24-doc-zero-base-redesign）で追加された「完全なリファクタリング」「adapters 層の port 実装以外の公開禁止」等の大幅再構築強制を、現行構造固定の方針へ反転させる是正。固定対象は現行のコード構造そのもの。必須レビュー担当は文書是正区分（運用整合レビュー担当・参照整合レビュー担当）。`
+
+### 2026-05-31 レビュー集約（2026-05-31-freeze-current-architecture-doc-remediation）
+
+- 対象差分: ブランチ `refactor/secrets-structure-issue-30-main` の未コミット作業ツリー差分（base = HEAD `a1a36cc`）。secret-recovery work-item 群・implementation-guidelines・spec・architecture（Lua節）・implementation-execution・skill から大幅リファクタリング推奨/強制記述を除去/中立化し、見出しリネーム（`規約違反の解消対象`→`境界維持の観点`）に伴う統治ゲート参照を併記方式で橋渡し。実コード変更なし。
+- 第1サイクル:
+  - 運用整合レビュー担当: `判定: 要修正` / 判定要約: 見出しリネーム後の統治ゲート（`合格`/`完了`/仕様適合照合）参照が旧名のまま宙に浮く。
+  - 参照整合レビュー担当: `判定: 要修正` / 判定要約: 同上（定義/参照不一致、active 未完了の #13 に影響）。
+  - 集約後レビュー判定: `要修正` → `S1` 差し戻し。
+- 差し戻し是正: 統治ゲート参照6箇所（`implementation-review-judgement.md:52,158`・`task-completion-judgement.md:17`・`implementation-execution.md:42,43,56`）を `規約違反の解消対象`（secret-recovery work-item では `境界維持の観点`）併記へ補正。
+- 第2サイクル（再レビュー）:
+  - 運用整合レビュー担当: `判定: 合格` / 判定要約: 所見なし
+  - 参照整合レビュー担当: `判定: 合格` / 判定要約: 所見なし
+- 集約後レビュー判定: `合格`
+- 集約根拠: 文書是正区分の必須レビュー担当（運用整合・参照整合）が再レビューで全員合格。新旧見出しでゲートが一意解決可能であることを双方が独立確認。補助記録の exact 同期不足は判定根拠に用いていない。
+
 ## 2026-05-30 PR #33 / Issue #30 secrets structure branch 作り直し記録
 
 - 実施日: `2026-05-30`

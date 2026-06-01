@@ -1,18 +1,18 @@
 # #14 GPG 復元 / gpg-agent SSH 対応
 
-- 作業種別: `規約適合リファクタリングを伴う機能実装`
+- 作業種別: `機能実装`
 - 作業目的: `restore-gpg` と `export-ssh-public-key` の経路を、GPG / SSH の外部依存を境界化した形で実装する。
 - Design PR 注記: PR #35 は #14 の設計確定であり、Rust 実装完了を意味しない。`restore-gpg` / `export-ssh-public-key` / provisioning の後続実装で未充足契約が残る場合は、本作業項目の実装対象として解消する。
 - 構造完了条件:
   - GPG / SSH の実体依存は adapter / port へ閉じる。
   - `application` は復旧順序だけを持つ。
   - `domain` は鍵リング実装や process I/O へ依存しない。
-- 既存実装の流用方針: `外部依存の境界が曖昧な箇所は流用せず再分割する。`
-- 規約違反の解消対象:
+- 既存実装の流用方針: `現行の構成・アーキテクチャを固定の前提とし、既存コードを優先的に流用する。新規追加経路を現行の層境界へ収める範囲で実装し、現行コード構造の大幅な作り替えは前提にしない。`
+- 境界維持の観点（新規実装が持ち込んではならない結合）:
   - 外部 crypto / SSH 依存の境界漏れ
   - use case 順序と low-level 操作の結合
   - domain のインフラ依存
-- レビュー合格条件: `GnuPG / SSH のインフラ依存が隔離され、アーキテクチャ規約違反が残っていないこと。`
+- レビュー合格条件: `GnuPG / SSH のインフラ依存が現行の層境界内に収まり、新規実装がアーキテクチャ規約違反を持ち込まないこと。`
 - 実装契約（後続 Rust 実装で必須）:
   - `gpg-secret-key-backup` envelope schema 契約を満たすこと。
   - recipient matching（接続中 YubiKey の `yubikey_serial` + `public_key_fingerprint`）を満たすこと。

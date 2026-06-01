@@ -28,3 +28,14 @@ path=(${path:#$HOME/.pyenv/bin})
 path=(${path:#$HOME/.rbenv/bin})
 
 export PATH
+
+# GPG / gpg-agent SSH support の前提環境変数。
+# pinentry が制御端末を解決できるよう、対話シェルで GPG_TTY を設定する。
+export GPG_TTY="$(tty)"
+
+# gpg-agent SSH support 経路を使う場合だけ SSH_AUTH_SOCK を上書きする。
+# `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在するときだけ上書きし、
+# 未存在時は既存の SSH_AUTH_SOCK を保持する（GPG authentication subkey 経由の SSH 経路）。
+_gpg_agent_sock="${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh"
+[[ -S "$_gpg_agent_sock" ]] && export SSH_AUTH_SOCK="$_gpg_agent_sock"
+unset _gpg_agent_sock

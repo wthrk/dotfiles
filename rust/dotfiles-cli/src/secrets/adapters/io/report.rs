@@ -9,6 +9,7 @@ use crate::{
     secrets::{
         domain::{
             enrollment::{EnrollSummary, YubikeyRole},
+            gpg_restore::RestoreGpgSummary,
             verification::{CheckName, CheckStatus, VerifySummary},
         },
         ports::io::ReportPort,
@@ -33,6 +34,15 @@ impl ReportPort for JsonReportAdapter {
         let payload = json!({
             "serial": summary.serial,
             "checks": report_checks(&summary.checks),
+        });
+        write_json_report(&payload)
+    }
+
+    fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()> {
+        let payload = json!({
+            "primary_fingerprint": summary.primary_fingerprint,
+            "ssh_key_registered": summary.ssh_key_registered,
+            "ssh_support_ready": summary.ssh_support_ready,
         });
         write_json_report(&payload)
     }

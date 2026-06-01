@@ -6,6 +6,7 @@
 use anyhow::Result;
 
 use super::{
+    gpg_backup::PrimaryFingerprint,
     piv::{SecretName, SecretStorageSpec},
     verification::{CheckName, ExternalCheck},
 };
@@ -171,6 +172,75 @@ impl VerifyYubikeyCommand {
                 ExternalCheck::BwLogin => CheckName::BwLogin,
             })
             .collect())
+    }
+}
+
+/// restore-gpg use case の入力 command。
+///
+/// `bws-access-token` を読み出す対象 YubiKey の serial 指定有無だけを保持し、device 選択手段や
+/// envelope 取得手段は port 境界へ委譲する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreGpgCommand {
+    pub serial: Option<u32>,
+}
+
+/// export-ssh-public-key use case の入力 command。
+///
+/// 出力対象の primary fingerprint だけを保持する。GitHub 登録用の OpenSSH 公開鍵出力以外の手段は持たない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportSshPublicKeyCommand {
+    pub primary_fingerprint: PrimaryFingerprint,
+}
+
+/// gpg-secret-key-backup の primary 登録 use case の入力 command。
+///
+/// export 対象の primary fingerprint と、recipient を作る対象 YubiKey の serial 指定有無を保持する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisterGpgBackupCommand {
+    pub primary_fingerprint: PrimaryFingerprint,
+    pub serial: Option<u32>,
+}
+
+/// gpg-secret-key-backup への spare recipient 追加 use case の入力 command。
+///
+/// envelope を復号して同一 DEK を得るために使う「既存 recipient 機（unwrap 機）」の serial 指定有無、
+/// 追加対象 spare YubiKey の serial 指定有無、非対話実行での明示上書き許可を保持する。対話実行では
+/// project/secret 名と primary fingerprint を表示して明示確認する責務を port 側へ委譲する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddGpgBackupSpareCommand {
+    pub unwrap_serial: Option<u32>,
+    pub spare_serial: Option<u32>,
+    pub assume_overwrite: bool,
+}
+
+impl AddGpgBackupSpareCommand {
+    /// 明示指定された unwrap 機と spare 機が同一でないことを事前確認する。
+    ///
+    /// 両 serial が利用者入力で既に確定している場合、device open の前に domain invariant として拒否し、
+    /// 同一 device の recipient を二重登録する経路を作らない。
+    pub fn ensure_requested_serials_distinct(&self) -> Result<()> {
+        if self.unwrap_serial.is_some() && self.unwrap_serial == self.spare_serial {
+            return Err(invalid_input(
+                "unwrap YubiKey serial and spare YubiKey serial must be different",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// 解決済み unwrap 機と spare 機が別 device を指すことを確認する。
+    pub fn ensure_distinct_resolved_serials(
+        &self,
+        unwrap_serial: u32,
+        spare_serial: u32,
+    ) -> Result<()> {
+        if unwrap_serial == spare_serial {
+            return Err(invalid_input(
+                "unwrap YubiKey serial and spare YubiKey serial must be different",
+            )
+            .into());
+        }
+        Ok(())
     }
 }
 

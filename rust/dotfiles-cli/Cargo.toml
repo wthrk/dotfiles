@@ -16,7 +16,11 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = []
+# 既定の production build では GPG keyring backend（gpgme + sequoia-openpgp）を含める。
+default = ["gpg-backend"]
+# `gpgme` / `sequoia-openpgp` の実 keyring backend を有効にする。internal stub build は
+# 外部 GPG backend を要求しないため、この feature を外して compile-time で除外する。
+gpg-backend = ["dep:gpgme", "dep:sequoia-openpgp"]
 secrets-internal-test-stub = []
 
 [dependencies]
@@ -28,6 +32,7 @@ clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
 filedescriptor.workspace = true
+gpgme = { workspace = true, optional = true }
 nom.workspace = true
 rand.workspace = true
 region.workspace = true
@@ -35,6 +40,7 @@ rand_core.workspace = true
 rlimit.workspace = true
 rsa.workspace = true
 scopeguard.workspace = true
+sequoia-openpgp = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

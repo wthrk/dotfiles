@@ -7,6 +7,8 @@ use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
 pub(crate) mod bws;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+pub(crate) mod gpg_backup;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 mod oaep;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -105,7 +107,6 @@ impl ProtectedSecret {
     ///
     /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
     /// `.await` まで完了させ、repository 側の所有 buffer を closure 外へ持ち出さない。
-    #[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
     pub(in crate::secrets::support::protection) async fn with_secret_utf8_async<R>(
         &self,
         borrow: impl for<'a> FnOnce(&'a str) -> Pin<Box<dyn Future<Output = Result<R>> + 'a>>,
@@ -128,10 +129,12 @@ impl ProtectedSecret {
             .map_err(Into::into)
     }
 
-    /// `#[cfg(test)]` だけで使う secret 観測口として、test bytes から保護値を作る。
+    /// `#[cfg(test)]` または `secrets-internal-test-stub` で使う secret 観測口として、test bytes から
+    /// 保護値を作る。
     ///
-    /// production build では公開されず、通常経路の plaintext 取り出し API として扱わない。
-    #[cfg(test)]
+    /// production build では公開されず、通常経路の plaintext 取り出し / 投入 API として扱わない。
+    /// stub build では internal backend stub が DEK round-trip 等の test 観測のためにだけ使う。
+    #[cfg(any(test, feature = "secrets-internal-test-stub"))]
     pub(crate) fn from_test_bytes(bytes: &[u8]) -> Result<Self> {
         let mut secret = Self::new(bytes.len())?;
         secret.with_secret_mut(|out| out.copy_from_slice(bytes));
@@ -143,8 +146,10 @@ impl ProtectedSecret {
     ///
     /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
     #[cfg(any(test, feature = "secrets-internal-test-stub"))]
-    #[cfg_attr(not(feature = "secrets-internal-test-stub"), expect(dead_code))]
-    #[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
+    #[cfg_attr(
+        all(test, not(feature = "secrets-internal-test-stub")),
+        expect(dead_code)
+    )]
     pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
         self.with_secret(|bytes| bytes.to_vec())
     }

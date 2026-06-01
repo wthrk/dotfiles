@@ -79,6 +79,28 @@ dotfiles secrets yubikey rotate-bws-token
 
 `setup`、`put`、`get` は低水準コマンドです。直接使う場合でも secret 本文は CLI 引数では受け取らず、prompt または stdin から読みます。`get` は stdout が terminal の場合は平文出力を拒否するため、pipe または redirect 先を明示します。
 
+### GPG 鍵リング復元と SSH 公開鍵
+
+新規マシンでは `restore-gpg` で `gpg-secret-key-backup` encrypted envelope を取得し、接続中 YubiKey で復号して GPG 鍵リングへ復元します。import 後に authentication subkey の keygrip を gpg-agent の SSH key list へ登録し、gpg-agent SSH support が利用可能であることを確認します。
+
+```sh
+dotfiles secrets restore-gpg
+dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>
+```
+
+`export-ssh-public-key` は GPG authentication subkey 由来の OpenSSH 公開鍵 1 行を stdout に出力します。秘密鍵素材は出力せず、GitHub SSH keys 登録用途に使います。
+
+backup envelope の登録・recipient 追加は provisioning 経路で行います。
+
+```sh
+dotfiles secrets gpg-backup register --primary-fingerprint <40-hex-fingerprint>
+dotfiles secrets gpg-backup add-spare --spare-serial <serial>
+```
+
+`register` は既存環境の GPG secret key を encrypted envelope 化し、接続中 YubiKey の recipient を 1 件作って Bitwarden Secrets Manager へ登録します。`add-spare` は既存 envelope を復号して同一 DEK を spare YubiKey の recipient へ追加し、stale overwrite 防止の更新識別子が一致する場合だけ更新します。非対話実行で上書き更新する場合は `--yes` を指定します。
+
+gpg-agent の SSH support 設定（`gpg-agent.conf` の `enable-ssh-support` と `pinentry-program`）は Home Manager 管理です。`config/zsh/env.zsh` は `GPG_TTY` を設定し、`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合だけ `SSH_AUTH_SOCK` を上書きします。
+
 ## ロールバック
 
 `nix-darwin`:

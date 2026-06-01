@@ -196,7 +196,11 @@
             "--package"
             "dotfiles-cli"
           ];
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
+          buildInputs = [
+            # GPG keyring backend（`gpgme` crate）が link する libgpgme / libgpg-error。
+            pkgs.gpgme
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
           nativeBuildInputs = [
             pkgs.makeWrapper
             pkgs.pkg-config
@@ -228,7 +232,10 @@
             pkgs.coreutils
             pkgs.git
             pkgs.gnugrep
+            pkgs.gnupg
             pkgs.gnused
+            # GPG keyring backend（`gpgme` crate）の link / pkg-config 解決に必要。
+            pkgs.gpgme
             pkgs.jq
             pkgs.nil
             pkgs.nix

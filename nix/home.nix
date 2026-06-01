@@ -10,6 +10,7 @@
     ./modules/cli.nix
     ./modules/languages.nix
     ./modules/zsh.nix
+    ./modules/gpg.nix
     ./modules/git.nix
     ./modules/neovim.nix
     ./modules/editor-apps.nix
