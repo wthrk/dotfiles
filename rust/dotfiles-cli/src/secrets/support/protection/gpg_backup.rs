@@ -94,12 +94,11 @@ const STORE_ENTRY_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// store 内 `pass` entry（OpenPGP message）を gpgme で復号できることを protection 境界内で確認する。
 ///
-/// entry は `O_NOFOLLOW` 付きで open し（final component が symlink なら open 自体を拒否する）、開いた fd の
-/// `metadata().file_type().is_file()` で regular file であることを fd 経由で再確認してから、その fd を size cap
-/// 付きで読む。これにより、store 走査（regular file 判定）から読取りまでの間に同一 path が symlink へ差し替え
-/// られても、`std::fs::read` のような path 再 open で store 外（例: `/dev/zero` で hang/OOM、外部の復号可能
-/// ファイルで偽の可読性成功）へ抜ける TOCTOU を閉じる。symlink・special file・上限超過は読まずに拒否し、
-/// 可読性確認を失敗（= store を「読めない」）と判定させる。
+/// entry は `symlink_metadata`（link を辿らない）で regular file と dev/ino を確認してから `File::open` し、
+/// 開いた fd の fstat の dev/ino 一致を照合して読む。これにより、store 走査（regular file 判定）から読取りまで
+/// の間に同一 path が symlink へ差し替えられても、`std::fs::read` のような path 再 open で store 外（例:
+/// `/dev/zero` で hang/OOM、外部の復号可能ファイルで偽の可読性成功）へ抜ける TOCTOU を閉じる。symlink・
+/// special file・上限超過は読まずに拒否し、可読性確認を失敗（= store を「読めない」）と判定させる。
 /// 復号した平文（`pass` entry の中身）は locked buffer 上でだけ扱い、zeroize して破棄する。stdout・log・
 /// 一時ファイル・caller のいずれへも平文を返さない。復号に成功すれば `Ok(())`、復号できなければ context
 /// 付き `Err` を返す。entry の業務的意味（recipient 妥当性・store 構造）はこの module で判定しない。
@@ -122,37 +121,44 @@ pub(crate) fn verify_can_decrypt(entry_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// final component が symlink でない regular file を `O_NOFOLLOW` 付き open + fd 経由の type 再確認 +
-/// size cap で読み、bytes を返す。
+/// final component が symlink でない regular file を、dev/ino 照合 + size cap で安全に読み、bytes を返す。
 ///
-/// `O_NOFOLLOW`（darwin: `0x100`）で open することで、open 時点で final component が symlink なら拒否し、
-/// path 再 open による symlink 追従の TOCTOU を閉じる。開いた fd の `metadata().file_type().is_file()` を
-/// 確認して regular file 以外（symlink を辿らない directory / special file）を拒否し、`metadata().len()` と
-/// 読取り長の双方を [`STORE_ENTRY_MAX_BYTES`] で上限化して、len を 0 報告する special file 経由の endless
-/// read（hang/OOM）も断つ。`libc` を直接の依存に持たないため `O_NOFOLLOW` は数値値を用いる（darwin 専用運用）。
+/// 走査時点で `symlink_metadata`（link を辿らない）を取り、final component が regular file であること・
+/// size が [`STORE_ENTRY_MAX_BYTES`] 以内であることを確認してから `File::open` し、開いた fd の fstat の
+/// `dev`/`ino` が走査時点と一致することを照合する。走査↔open の間に final component が別 inode（store 外を
+/// 指す symlink や special file）へ差し替えられていれば、`File::open` がその symlink を辿り fd の dev/ino が
+/// 走査時点と一致しない（または special file で `is_file` が偽になる）ため検出して停止し、path 再 open による
+/// symlink 追従の TOCTOU を閉じる。これは `O_NOFOLLOW`（final component のみ保護）と同等の保護範囲を
+/// `std::os::unix::fs::MetadataExt` だけで達成し、libc/OS 数値ハードコードへ依存しない。
+///
+/// 照合済みの fd からだけ読み、path を再 open しない。`metadata().len()` と読取り長の双方を
+/// [`STORE_ENTRY_MAX_BYTES`] で上限化して、`len` を 0 と詐称する special file（`/dev/zero` 等）経由の
+/// endless read（hang/OOM）も断つ。
 fn read_regular_file_nofollow(path: &std::path::Path) -> Result<Vec<u8>> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::MetadataExt;
 
-    /// `O_NOFOLLOW`（don't follow symlinks）の darwin での数値値（`<sys/fcntl.h>`）。
-    const O_NOFOLLOW: i32 = 0x100;
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW)
-        .open(path)
-        .context("failed to open file (refusing to follow a symlink)")?;
-    let metadata = file.metadata().context("failed to stat file")?;
-    if !metadata.file_type().is_file() {
+    // 走査時点の metadata は link を辿らずに取得する。final component が regular file 以外なら停止する。
+    let pre = path
+        .symlink_metadata()
+        .context("failed to stat file (refusing to follow a symlink)")?;
+    if !pre.file_type().is_file() {
         bail!("path is not a regular file; refusing to follow it");
     }
-    if metadata.len() > STORE_ENTRY_MAX_BYTES {
+    if pre.len() > STORE_ENTRY_MAX_BYTES {
         bail!("file is unexpectedly large (> {STORE_ENTRY_MAX_BYTES} bytes); refusing to read it");
+    }
+    // open は final component が走査後に symlink へ差し替えられていればそれを辿る。直後に fd の fstat を取り、
+    // 走査時点の dev/ino と一致しなければ TOCTOU として停止する（読まない）。
+    let file = std::fs::File::open(path).context("failed to open file")?;
+    let post = file.metadata().context("failed to stat file")?;
+    if !post.file_type().is_file() || pre.dev() != post.dev() || pre.ino() != post.ino() {
+        bail!("file changed between stat and open (possible symlink swap); refusing to read it");
     }
     // size cap を `metadata().len()` だけに頼らず、read 自体も上限 + 1 byte で打ち切る（special file 等で
     // len が 0 報告でも endless に読めない）。上限を超えたら異常として拒否する。
     let mut bytes = Vec::new();
-    let read = file
+    let read = (&file)
         .take(STORE_ENTRY_MAX_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("failed to read file")?;

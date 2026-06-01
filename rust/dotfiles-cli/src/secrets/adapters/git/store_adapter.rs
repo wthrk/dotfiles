@@ -10,7 +10,7 @@
 //! （`PasswordStoreReadiness::parse_recipients` ほか）と keyring 照合へ残す。ここでは filesystem 走査だけを
 //! 担い、`.gpg-id` の中身解釈や `pass` CLI への無条件シェルアウトはしない。
 
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -22,12 +22,6 @@ use crate::{
         domain::pass_restore::{PASSWORD_STORE_GPG_ID, PasswordStoreReadiness},
     },
 };
-
-/// final component が symlink のとき open を拒否する `O_NOFOLLOW`（darwin の数値値）。`store_adapter` /
-/// `gpg_backup` は `libc` を直接の依存に持たないため、走査時点で regular file と判定した path を読む段で
-/// symlink へ差し替えられる TOCTOU を、path を再 open せず fd 経由で閉じるために `OpenOptionsExt::custom_flags`
-/// へこの値を渡す。darwin（macOS）専用運用のため `<sys/fcntl.h>` の `O_NOFOLLOW = 0x100` を用いる。
-const O_NOFOLLOW: i32 = 0x100;
 
 /// `~/.password-store` の filesystem 観測を `PasswordStorePort` 契約へ翻訳する adapter。
 #[derive(Default)]
@@ -73,8 +67,8 @@ impl PasswordStoreAdapter {
 }
 
 /// `.gpg-id` の読み取り上限（byte）。`.gpg-id` は recipient fingerprint/user-id を数行持つだけの小さな
-/// テキストであり、これを超える入力は異常（巨大ファイルや symlink 経由で差し替わった endless file）として
-/// 拒否する。link を辿らない `is_regular_file` 判定と併せ、`/dev/zero` のような無限長 source の読み込みで
+/// テキストであり、これを超える入力は異常（巨大ファイルや、走査後に差し替わった endless file）として
+/// 拒否する。dev/ino 照合の安全読取りと併せ、`/dev/zero` のような無限長 source の読み込みで
 /// hang/OOM する経路を断つ。
 const GPG_ID_MAX_BYTES: u64 = 64 * 1024;
 
@@ -93,35 +87,48 @@ fn path_exists_including_broken_symlink(path: &Path) -> bool {
 
 /// `.gpg-id` の各行を読み、空行と `#` コメントを除いた行（未 trim）を recipient 候補として返す。
 ///
-/// `O_NOFOLLOW` 付きで open し（final component が symlink なら open 自体を拒否する）、開いた fd の
-/// `metadata().file_type().is_file()` で regular file であることを fd 経由で再確認する。これにより、
-/// `is_regular_file` 判定（走査時点）から読取り時点までに同一 path が symlink へ差し替えられても、`std::fs::read`
-/// のような path 再 open で link を辿る TOCTOU を閉じる（symlink/special file は読まずに拒否する）。さらに
-/// `metadata().len()` が [`GPG_ID_MAX_BYTES`] を超える場合は読まずに拒否し、読取り自体も上限 + 1 byte で打ち切る
-/// ことで、symlink 経由で `/dev/zero` のような無限長 source へ抜けて hang/OOM する経路と巨大ファイルの読み込みを断つ。
+/// 走査時点で `symlink_metadata`（link を辿らない）を取り、final component が regular file であること・
+/// size が [`GPG_ID_MAX_BYTES`] 以内であることを確認してから `File::open` し、開いた fd の fstat
+/// （`metadata()`）の `dev`/`ino` が走査時点と一致することを照合する。走査↔open の間に final component が
+/// 別 inode（store 外を指す symlink や special file）へ差し替えられていれば、`File::open` がその symlink を辿り
+/// fd の dev/ino が走査時点と一致しない（または special file で `is_file` が偽になる）ため検出して停止する。
+/// これは `O_NOFOLLOW`（final component のみ保護）と同等の保護範囲を `std::os::unix::fs::MetadataExt` だけで
+/// 達成し、libc/OS 数値ハードコードへ依存しない。
+///
+/// 照合済みの fd からだけ読み、path を再 open しない。さらに `metadata().len()` が [`GPG_ID_MAX_BYTES`] を
+/// 超える場合は読まずに拒否し、読取り自体も上限 + 1 byte で打ち切ることで、`len` を 0 と詐称する special file
+/// （`/dev/zero` 等）経由の endless read（hang/OOM）と巨大ファイルの読み込みを断つ。
 fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
     use std::io::Read;
 
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW)
-        .open(gpg_id_path)
-        .context("failed to open password-store .gpg-id (refusing to follow a symlink)")?;
-    let metadata = file
-        .metadata()
-        .context("failed to stat password-store .gpg-id")?;
-    if !metadata.file_type().is_file() {
+    // 走査時点の metadata は link を辿らずに取得する。final component が regular file 以外（symlink/dir/
+    // special file）なら、その時点で停止する。
+    let pre = gpg_id_path
+        .symlink_metadata()
+        .context("failed to stat password-store .gpg-id (refusing to follow a symlink)")?;
+    if !pre.file_type().is_file() {
         anyhow::bail!("password-store .gpg-id is not a regular file; refusing to follow it");
     }
-    if metadata.len() > GPG_ID_MAX_BYTES {
+    if pre.len() > GPG_ID_MAX_BYTES {
         anyhow::bail!(
             "password-store .gpg-id is unexpectedly large (> {GPG_ID_MAX_BYTES} bytes); refusing to read it"
+        );
+    }
+    // open は final component が走査後に symlink へ差し替えられていればそれを辿る。直後に fd の fstat を取り、
+    // 走査時点の dev/ino と一致しなければ TOCTOU として停止する（読まない）。
+    let file = std::fs::File::open(gpg_id_path).context("failed to open password-store .gpg-id")?;
+    let post = file
+        .metadata()
+        .context("failed to stat password-store .gpg-id")?;
+    if !post.file_type().is_file() || pre.dev() != post.dev() || pre.ino() != post.ino() {
+        anyhow::bail!(
+            "password-store .gpg-id changed between stat and open (possible symlink swap); refusing to read it"
         );
     }
     // size cap を `metadata().len()` だけに頼らず、read 自体も上限 + 1 byte で打ち切る（special file 等で
     // len が 0 報告でも endless に読めない）。上限を超えたら異常として拒否する。
     let mut contents = String::new();
-    let read = file
+    let read = (&file)
         .take(GPG_ID_MAX_BYTES + 1)
         .read_to_string(&mut contents)
         .context("failed to read password-store .gpg-id")?;
@@ -177,8 +184,9 @@ fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
                 && path.extension().and_then(|ext| ext.to_str()) == Some("gpg")
             {
                 // regular file の `*.gpg` だけをサンプルにする。`file_type.is_file()` は symlink で偽になるため、
-                // symlink の `*.gpg` は選ばない。後段の復号確認（`verify_can_decrypt`）も `O_NOFOLLOW` open +
-                // fd 経由の regular-file 再確認で読むため、走査〜読取り間の symlink 差し替えで store 外へ抜けない。
+                // symlink の `*.gpg` は選ばない。後段の復号確認（`verify_can_decrypt`）も symlink_metadata で
+                // regular file と dev/ino を確認してから `File::open` し fd の dev/ino 一致を照合して読むため、
+                // 走査〜読取り間の symlink 差し替えで store 外へ抜けない。
                 return Some(path);
             }
         }
@@ -188,9 +196,9 @@ fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    //! filesystem adapter の安全読取り（`O_NOFOLLOW` open + fd 経由の regular-file 再確認 + size cap）の単体
-    //! テスト。temp-dir dev 依存を増やさないため、`std::env::temp_dir()` 配下に一意 directory を std だけで
-    //! 作成し、test 終了時に削除する。
+    //! filesystem adapter の安全読取り（symlink_metadata で regular file と dev/ino を確認 → `File::open` →
+    //! fd の dev/ino 一致照合 + size cap）の単体テスト。temp-dir dev 依存を増やさないため、
+    //! `std::env::temp_dir()` 配下に一意 directory を std だけで作成し、test 終了時に削除する。
 
     use std::path::PathBuf;
 
@@ -239,7 +247,8 @@ mod tests {
         assert_eq!(recipients, vec!["ABCDEF0123", "  Trailing Spaces  "]);
     }
 
-    /// final component が symlink の `.gpg-id` は `O_NOFOLLOW` open が拒否し、link 先を読まずに失敗する。
+    /// final component が symlink の `.gpg-id` は `symlink_metadata` の `is_file()` 判定が偽になるため、
+    /// link 先を読まずに失敗する。
     #[test]
     fn read_gpg_id_recipients_rejects_symlink() {
         use std::os::unix::fs::symlink;
