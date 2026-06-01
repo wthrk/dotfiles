@@ -9,6 +9,7 @@ use super::super::{
     domain::{
         enrollment::EnrollSummary,
         gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
+        pass_restore::RestorePassSummary,
         verification::VerifySummary,
     },
     support::protection::ProtectedSecret,
@@ -72,6 +73,7 @@ pub trait ReportPort {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()>;
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
     fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()>;
+    fn write_restore_pass_report(&self, summary: &RestorePassSummary) -> Result<()>;
 }
 
 /// use case が gpg-secret-key-backup の上書き更新を明示確認する契約。

@@ -184,6 +184,15 @@ pub struct RestoreGpgCommand {
     pub serial: Option<u32>,
 }
 
+/// restore-pass use case の入力 command。
+///
+/// `bws-access-token` を読み出す対象 YubiKey の serial 指定有無だけを保持し、device 選択手段や
+/// remote URL 取得手段、clone 手段は port 境界へ委譲する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestorePassCommand {
+    pub serial: Option<u32>,
+}
+
 /// export-ssh-public-key use case の入力 command。
 ///
 /// 出力対象の primary fingerprint だけを保持する。GitHub 登録用の OpenSSH 公開鍵出力以外の手段は持たない。

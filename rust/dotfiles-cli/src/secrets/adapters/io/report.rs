@@ -10,6 +10,7 @@ use crate::{
         domain::{
             enrollment::{EnrollSummary, YubikeyRole},
             gpg_restore::RestoreGpgSummary,
+            pass_restore::RestorePassSummary,
             verification::{CheckName, CheckStatus, VerifySummary},
         },
         ports::io::ReportPort,
@@ -43,6 +44,14 @@ impl ReportPort for JsonReportAdapter {
             "primary_fingerprint": summary.primary_fingerprint,
             "ssh_key_registered": summary.ssh_key_registered,
             "ssh_support_ready": summary.ssh_support_ready,
+        });
+        write_json_report(&payload)
+    }
+
+    fn write_restore_pass_report(&self, summary: &RestorePassSummary) -> Result<()> {
+        let payload = json!({
+            "store_path": summary.store_path,
+            "store_readable": summary.store_readable,
         });
         write_json_report(&payload)
     }

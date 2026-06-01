@@ -7,6 +7,7 @@ use super::super::{
     domain::{
         bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
         gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+        pass_restore::PasswordStoreRemote,
     },
     support::protection::ProtectedSecret,
 };
@@ -47,6 +48,17 @@ pub trait BwsClientPort {
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
     ) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)>;
+
+    /// `password-store-remote` secret value を取得し、GitHub SSH clone URL として domain 検証した値を返す。
+    ///
+    /// implementor は取得した secret value 文字列を [`PasswordStoreRemote::parse`] で domain 値へ翻訳する。
+    /// clone URL は秘密情報ではないため `ProtectedSecret` ではなく検証済み domain 値として返し、URL 形式の
+    /// 妥当性判断（`git@github.com:<owner>/<repo>.git`）は domain rule に委ねて adapter で再定義しない。
+    async fn fetch_password_store_remote(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> Result<PasswordStoreRemote>;
 
     /// 指定 project に新しい `gpg-secret-key-backup` envelope を作成し、その ID を返す。
     ///

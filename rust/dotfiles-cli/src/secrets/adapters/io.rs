@@ -12,6 +12,7 @@ use crate::{
         domain::{
             enrollment::EnrollSummary,
             gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
+            pass_restore::RestorePassSummary,
             verification::VerifySummary,
         },
         ports::io::{
@@ -115,5 +116,9 @@ impl ReportPort for JsonReportAdapter {
 
     fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()> {
         self.0.write_restore_gpg_report(summary)
+    }
+
+    fn write_restore_pass_report(&self, summary: &RestorePassSummary) -> Result<()> {
+        self.0.write_restore_pass_report(summary)
     }
 }

@@ -90,6 +90,16 @@ dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>
 
 `export-ssh-public-key` は GPG authentication subkey 由来の OpenSSH 公開鍵 1 行を stdout に出力します。秘密鍵素材は出力せず、GitHub SSH keys 登録用途に使います。
 
+### password-store 復元
+
+GPG 鍵リング復元と SSH 公開鍵の GitHub 登録が済んだら、`restore-pass` で private `password-store` repository を復元します。Bitwarden Secrets Manager から `password-store-remote`（`git@github.com:<owner>/<repo>.git` 形式）を取得し、`~/.password-store` が存在しないことを確認してから、GPG authentication subkey 経由の SSH agent 認証で clone します。clone 後に store が `pass` から読めること（`.gpg-id` の存在）を確認します。
+
+```sh
+dotfiles secrets restore-pass
+```
+
+clone は `git2` と SSH agent だけを使い、`git` CLI と GitHub API は使いません。`~/.password-store` が既に存在する場合、remote URL が GitHub SSH clone URL でない場合、clone 後 store を `pass` が読めない場合は停止します。
+
 backup envelope の登録・recipient 追加は provisioning 経路で行います。
 
 ```sh

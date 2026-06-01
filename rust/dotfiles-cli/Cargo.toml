@@ -18,9 +18,10 @@ workspace = true
 [features]
 # 既定の production build では GPG keyring backend（gpgme + sequoia-openpgp）を含める。
 default = ["gpg-backend"]
-# `gpgme` / `sequoia-openpgp` の実 keyring backend を有効にする。internal stub build は
-# 外部 GPG backend を要求しないため、この feature を外して compile-time で除外する。
-gpg-backend = ["dep:gpgme", "dep:sequoia-openpgp"]
+# `gpgme` / `sequoia-openpgp` の実 keyring backend と、`git2` の実 password-store clone backend を
+# 有効にする。internal stub build は外部 GPG / Git backend を要求しないため、この feature を外して
+# compile-time で除外する。
+gpg-backend = ["dep:gpgme", "dep:sequoia-openpgp", "dep:git2"]
 secrets-internal-test-stub = []
 
 [dependencies]
@@ -32,6 +33,7 @@ clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
 filedescriptor.workspace = true
+git2 = { workspace = true, optional = true }
 gpgme = { workspace = true, optional = true }
 nom.workspace = true
 rand.workspace = true
