@@ -25,8 +25,13 @@ pub(super) struct PasswordStoreAdapter;
 
 impl PasswordStoreAdapter {
     /// `~/.password-store` が既に存在するか（path として存在するか）を確認する。
+    ///
+    /// `Path::exists` は symlink を辿るため壊れた（dangling）symlink を「不在」と誤判定する。ここでは
+    /// `symlink_metadata`（link を辿らない）で判定し、壊れた可能性のある symlink として存在する path も
+    /// 「存在」とみなす。これにより、dangling symlink になった `~/.password-store` を既存 store ガードが
+    /// 見落として上書き clone しないようにする。
     pub(super) fn password_store_exists(&self) -> Result<bool> {
-        Ok(password_store_path()?.exists())
+        Ok(path_exists_including_broken_symlink(&password_store_path()?))
     }
 
     /// clone 先 store root を走査し、`.gpg-id` の有無・recipient 行・サンプル entry を
@@ -64,6 +69,12 @@ impl PasswordStoreAdapter {
     }
 }
 
+/// path が存在するか（壊れた symlink も含めて）を判定する。`symlink_metadata` は link を辿らないため、
+/// dangling symlink でも metadata 取得に成功し、その path を「存在」とみなせる。
+fn path_exists_including_broken_symlink(path: &Path) -> bool {
+    path.symlink_metadata().is_ok()
+}
+
 /// `.gpg-id` の各行を読み、空行と `#` コメントを除いた行（未 trim）を recipient 候補として返す。
 fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
     let contents =
@@ -81,11 +92,15 @@ fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
 /// store tree から最初に見つかった `*.gpg` entry の path を 1 件だけ返す（無ければ `None`）。
 ///
 /// `.git` などの隠しディレクトリは pass entry を含まないため走査から除外する。復号確認に使う
-/// サンプルを 1 件得るための浅い走査であり、全 entry の列挙はしない。
+/// サンプルを 1 件得るための浅い走査であり、全 entry の列挙はしない。`read_dir` が失敗した
+/// ディレクトリは（探索全体を中断せず）読み飛ばして走査を継続する。これにより、一過性の I/O
+/// 失敗で「サンプル entry なし」と誤判定し、authoritative な復号確認を取りこぼすことを防ぐ。
 fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
     let mut stack = vec![store_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).ok()?;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let file_type = match entry.file_type() {

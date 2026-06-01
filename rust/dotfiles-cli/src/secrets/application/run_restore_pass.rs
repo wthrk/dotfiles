@@ -34,8 +34,9 @@ use crate::secrets::{
 /// - clone 後 store が `pass` から読める（`.gpg-id` が非空で、サンプル entry が復元済み秘密鍵で復号できる。
 ///   空 store では recipient のいずれか 1 つの秘密鍵を保持する）まで完了とみなさない。複数 recipient や
 ///   email・user-id 形式の `.gpg-id` を誤って拒否しない。
-/// - clone 後の検証失敗時は clone 済み `~/.password-store` を best-effort で削除し、次回実行が既存 store ガードで
-///   復旧不能にならないようにする（restore-gpg の import 後 rollback と同じ原子化）。
+/// - clone が `~/.password-store` を部分的に作成して失敗した場合、および clone 後の検証失敗時は、いずれも clone
+///   済み `~/.password-store` を best-effort で削除し、次回実行が既存 store ガードで復旧不能にならないようにする
+///   （restore-gpg の import 後 rollback と同じ原子化）。
 ///
 /// 各停止条件で停止し、後続処理へ進ませない。clone URL / recipient / 可読性の業務判断は domain rule、clone /
 /// filesystem 走査 / 鍵リング照合は adapter が担い、application は順序・停止条件・rollback だけを持つ。
@@ -116,8 +117,13 @@ where
         .inspect_registered_keygrips()?
         .ensure_only(&recovery_keygrip)?;
 
-    // 6. GPG authentication subkey 経由の SSH agent 認証で `~/.password-store` へ clone する。
-    git_clone.clone_password_store(&remote)?;
+    // 6. GPG authentication subkey 経由の SSH agent 認証で `~/.password-store` へ clone する。clone が store を
+    //    部分的に作成して失敗した場合は、手順 7 の可読性確認失敗時と同様に clone 済み store を best-effort で削除
+    //    （rollback）してから元エラーを返し、次回実行を既存 store ガードで復旧不能にしない。
+    if let Err(error) = git_clone.clone_password_store(&remote) {
+        let _ = store.remove_password_store();
+        return Err(error);
+    }
 
     // 7. clone 後 store が `pass` から実際に読めることを確認する。失敗した場合は clone 済み store を
     //    best-effort で削除（rollback）してから元エラーを返し、次回実行を既存 store ガードで止めない。
@@ -675,6 +681,91 @@ mod tests {
         assert!(
             result.is_err(),
             "unreadable cloned store must fail restore-pass after rollback"
+        );
+    }
+
+    /// clone が `~/.password-store` を部分的に作成して失敗した場合、clone 済み store を `remove_password_store`
+    /// で rollback 削除してから元エラーを返し、clone 後の手順（可読性確認）へ進まないことを検証する。
+    #[tokio::test]
+    async fn restore_pass_rolls_back_when_clone_fails() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_remote_ok(&mut bws);
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store.expect_password_store_exists().returning(|| Ok(false));
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_resolve_recovery_authentication_ssh_public_key()
+            .returning(|| OpenSshPublicKey::parse(RECOVERY_SSH_KEY));
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_inspect_ssh_agent().returning(|_| {
+            Ok(SshAgentReadiness {
+                socket_resolved: true,
+                authentication_identity_present: true,
+            })
+        });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                ]))
+            });
+        // clone が store を部分的に作成して失敗する。
+        let mut git_clone = ports::MockGitClonePort::new();
+        git_clone
+            .expect_clone_password_store()
+            .times(1)
+            .returning(|_| anyhow::bail!("network drop during clone left a partial store"));
+        // clone 失敗で clone 済み（部分作成）store を rollback 削除する。
+        store
+            .expect_remove_password_store()
+            .times(1)
+            .returning(|| Ok(()));
+        // clone 失敗後は clone 後の手順（可読性確認・実復号）へ進まない。
+        store.expect_inspect_password_store().times(0);
+        keyring.expect_can_decrypt_store_entry().times(0);
+        keyring.expect_secret_key_available_for_recipient().times(0);
+        let mut report = ports::MockReportPort::new();
+        report.expect_write_restore_pass_report().times(0);
+
+        let result = run_restore_pass(
+            RestorePassCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut keyring,
+            &mut ssh_agent,
+            &mut store,
+            &mut git_clone,
+            &report,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a clone failure that partially created the store must fail restore-pass after rollback"
         );
     }
 
