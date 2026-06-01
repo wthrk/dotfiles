@@ -3,8 +3,8 @@
 //! ここに置くのは、git2 / SSH agent / filesystem などの外部実装を差し替えても変わらない
 //! 業務規則だけである。具体的には `password-store-remote` が満たすべき clone URL 形式
 //! （`git@github.com:<owner>/<repo>.git`）の妥当性、clone 後 store が `pass` から読める状態の
-//! 充足条件（`.gpg-id` の存在・非空・recipient が妥当な GPG 鍵 id 形式であること。復元済み秘密鍵での
-//! 復号可否は keyring 照合で確定する）、`.gpg-id` recipient（`GpgRecipientId`）の妥当性、`restore-pass`
+//! 充足条件（`.gpg-id` の存在・非空・各 recipient が非空 token であること。store entry の復号可否は
+//! keyring 照合で確定し、これが可読性の最終判定となる）、`.gpg-id` recipient（`GpgRecipientId`）の妥当性、`restore-pass`
 //! の完了状態の意味である。clone そのもの・
 //! `~/.password-store` の存在確認・store の filesystem 走査は port/adapter 側で行い、この層は
 //! それらの結果値の検証・整合判定に限定する。secret 値はこの層へ載せない。
@@ -22,9 +22,9 @@ pub const PASSWORD_STORE_DIR_NAME: &str = ".password-store";
 ///
 /// `pass` の store は root に GPG recipient を記す `.gpg-id` を持つ。clone した directory が
 /// この識別ファイルを持つことだけでは「store として読める」最小条件にならない。`.gpg-id` が
-/// 空・不正、または手元に秘密鍵を持たない別 GPG 鍵宛ての場合は `pass` が復号できないため、
-/// 識別ファイルの存在に加えて recipient 形式の妥当性と、復元済み秘密鍵での復号可否まで検証する。
-/// `pass` CLI への無条件シェルアウトには依存しない。
+/// 空・不正、または手元に秘密鍵を持たない別 GPG 鍵宛てだけの場合は `pass` が復号できないため、
+/// 識別ファイルの存在・非空 recipient に加えて、store entry の実復号可否（entry が無い空 store では
+/// recipient のいずれか 1 つに対応する秘密鍵の保持）まで検証する。`pass` CLI への無条件シェルアウトには依存しない。
 pub const PASSWORD_STORE_GPG_ID: &str = ".gpg-id";
 
 /// `password-store-remote` が満たすべき GitHub SSH clone URL を表す検証済み値。
@@ -124,42 +124,36 @@ fn is_valid_repository(value: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-/// `.gpg-id` に記された GPG recipient（fingerprint / long key id）を表す検証済み値。
+/// `.gpg-id` に記された GPG recipient（key id / fingerprint / email・user-id）を表す検証済み値。
 ///
-/// `pass` の `.gpg-id` は 1 行 1 recipient で、GPG 鍵を fingerprint（40 hex）または long key id
-/// （16 hex、任意で `0x` prefix）で指す。空・不正・短縮 key id（衝突しうる 8 hex の short id）は
-/// 「どの鍵宛てか一意に確定できない」ため停止条件として拒否し、妥当な recipient だけがこの型になる。
-/// 値そのものは秘密情報ではないが、keyring 照合（復元済み秘密鍵を持つか）へ渡す対象を限定する。
+/// この型が保証するのは「keyring 照合へ渡せる非空の recipient token であること」だけである。`pass init`
+/// は long key id・fingerprint だけでなく email / user-id も recipient として受け付けるため、`.gpg-id` は
+/// hex とは限らない。recipient の解決は gpgme（`get_secret_key`）が担い、hex key id・fingerprint・
+/// user-id/email のいずれも同じ API で解決できる。store が実際に読めるかの最終判定は store entry の復号
+/// （`can_decrypt_store_entry`）で行うため、この層は recipient を hex へ制約しない。別鍵宛て・短縮・曖昧な
+/// id は keyring 照合で単に「秘密鍵なし」と評価され、上流で安全に扱われる。値そのものは秘密情報ではない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpgRecipientId(String);
 
 impl GpgRecipientId {
-    /// `.gpg-id` の 1 行を GPG recipient として検証して構築する。
+    /// `.gpg-id` の 1 行を GPG recipient token として検証して構築する。
     ///
-    /// 前後空白を除いた本体が long key id（16 hex）または fingerprint（40 hex）に一致する場合だけ
-    /// 受け付け、`0x` prefix は許容する。空・hex 以外・桁数不一致（short id を含む）は domain failure と
-    /// して停止する。これにより `.gpg-id` が空や別形式のときに「読める」と誤判定しない。
+    /// 前後空白を除いた本体が非空であれば、`pass` が受け付ける recipient（hex key id・fingerprint・
+    /// email・user-id）として trim 済みの文字列をそのまま保持する（hex 以外がありうるため大文字化しない）。
+    /// 空・空白のみ、または ASCII 制御文字を含む行だけを domain failure として停止する。recipient の鍵解決は
+    /// gpgme に委ね、可読性の最終判定は store entry の復号で行う。
     pub fn parse(line: &str) -> Result<Self> {
         let trimmed = line.trim();
-        let body = trimmed
-            .strip_prefix("0x")
-            .or_else(|| trimmed.strip_prefix("0X"))
-            .unwrap_or(trimmed);
-        if body.is_empty() {
+        if trimmed.is_empty() {
             anyhow::bail!("password-store .gpg-id recipient is empty");
         }
-        if !body.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            anyhow::bail!("password-store .gpg-id recipient is not a GPG key id");
+        if trimmed.chars().any(|ch| ch.is_ascii_control()) {
+            anyhow::bail!("password-store .gpg-id recipient contains control characters");
         }
-        if body.len() != 16 && body.len() != 40 {
-            anyhow::bail!(
-                "password-store .gpg-id recipient must be a long key id or fingerprint (16 or 40 hex)"
-            );
-        }
-        Ok(Self(body.to_ascii_uppercase()))
+        Ok(Self(trimmed.to_owned()))
     }
 
-    /// 正規化済み recipient（uppercase hex、`0x` prefix なし）を keyring 照合へ渡すために借用する。
+    /// trim 済み recipient token を keyring 照合（gpgme `get_secret_key`）へ渡すために借用する。
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -169,9 +163,9 @@ impl GpgRecipientId {
 ///
 /// 設計（spec L174）は clone 後に「`pass` が store を読めること」の確認を要求する。adapter は
 /// clone 先 directory を走査し、store 識別ファイル（`.gpg-id`）の有無・recipient 行・復号確認に使う
-/// サンプル entry path を観測してこの値へ翻訳する。recipient 形式の妥当性と、`.gpg-id` が手元の復元済み
-/// 秘密鍵宛てで復号できることの業務判定はこの module（と keyring 照合）で行い、`pass` CLI への無条件
-/// シェルアウトはしない。
+/// サンプル entry path を観測してこの値へ翻訳する。recipient が非空 token であることと、サンプル entry を
+/// 手元の復元済み秘密鍵で復号できることの業務判定はこの module（と keyring 照合）で行い、`pass` CLI への
+/// 無条件シェルアウトはしない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordStoreReadiness {
     /// clone 先 store root に `.gpg-id` が存在したか。
@@ -186,9 +180,9 @@ pub struct PasswordStoreReadiness {
 impl PasswordStoreReadiness {
     /// `.gpg-id` の recipient 行を検証済み [`GpgRecipientId`] の集合へ変換する。
     ///
-    /// 識別ファイルが存在しない、recipient が 1 件も無い、いずれかの行が GPG key id 形式でない場合は、
+    /// 識別ファイルが存在しない、recipient が 1 件も無い、いずれかの行が空・制御文字を含む場合は、
     /// clone が成功しても `pass` store として不完全・不正であるとして停止条件で失敗する。返す recipient は
-    /// keyring 照合（復元済み秘密鍵を持つか・復号できるか）へ渡す対象であり、ここでは形式妥当性だけを確定する。
+    /// keyring 照合（復元済み秘密鍵を持つか・復号できるか）へ渡す対象であり、ここでは非空 token であることだけを確定する。
     pub fn parse_recipients(&self) -> Result<Vec<GpgRecipientId>> {
         if !self.gpg_id_present {
             anyhow::bail!(
@@ -365,22 +359,24 @@ mod tests {
 
     #[test]
     fn parses_recipients_for_readable_store() -> Result<()> {
-        // 妥当な fingerprint/long key id 行は recipient として受理し、正規化する。
+        // recipient 行は trim 済みの token としてそのまま受理する（hex の大文字化はしない）。
         let recipients = readiness(
             true,
             &[
-                "0123456789ABCDEF",
+                "0123456789abcdef",
                 "0x0123456789abcdef0123456789abcdef01234567",
+                "alice@example.com",
             ],
             None,
         )
         .parse_recipients()?;
-        assert_eq!(recipients.len(), 2);
-        assert_eq!(recipients[0].as_str(), "0123456789ABCDEF");
+        assert_eq!(recipients.len(), 3);
+        assert_eq!(recipients[0].as_str(), "0123456789abcdef");
         assert_eq!(
             recipients[1].as_str(),
-            "0123456789ABCDEF0123456789ABCDEF01234567"
+            "0x0123456789abcdef0123456789abcdef01234567"
         );
+        assert_eq!(recipients[2].as_str(), "alice@example.com");
         Ok(())
     }
 
@@ -397,37 +393,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_recipients_rejects_invalid_recipient_line() {
-        // hex 以外・short id（8 hex）・桁数不一致は一意に鍵を確定できないため拒否する。
-        assert!(
-            readiness(true, &["not-a-key-id"], None)
-                .parse_recipients()
-                .is_err()
-        );
-        assert!(
-            readiness(true, &["DEADBEEF"], None)
-                .parse_recipients()
-                .is_err()
-        );
+    fn parse_recipients_rejects_empty_recipient_line() {
+        // recipient 行が空・空白のみだけの `.gpg-id` は `GpgRecipientId::parse` 経由で拒否する。
+        assert!(readiness(true, &[""], None).parse_recipients().is_err());
+        assert!(readiness(true, &["   "], None).parse_recipients().is_err());
     }
 
     #[test]
     fn gpg_recipient_id_accepts_long_id_and_fingerprint() -> Result<()> {
+        // trim 済み token をそのまま保持する（hex でも大文字化しない）。
         assert_eq!(
             GpgRecipientId::parse("  0123456789abcdef \n")?.as_str(),
-            "0123456789ABCDEF"
+            "0123456789abcdef"
         );
         assert_eq!(
             GpgRecipientId::parse("0123456789ABCDEF0123456789ABCDEF01234567")?.as_str(),
             "0123456789ABCDEF0123456789ABCDEF01234567"
         );
+        // email / user-id も `pass` が受け付ける recipient なので受理する。
+        assert_eq!(
+            GpgRecipientId::parse("alice@example.com")?.as_str(),
+            "alice@example.com"
+        );
+        // short id・`0x` 付き非 hex も opaque token として受理する（解決は gpgme が担う）。
+        assert_eq!(GpgRecipientId::parse("DEADBEEF")?.as_str(), "DEADBEEF");
         Ok(())
     }
 
     #[test]
-    fn gpg_recipient_id_rejects_short_and_nonhex() {
-        assert!(GpgRecipientId::parse("DEADBEEF").is_err());
+    fn gpg_recipient_id_rejects_empty_and_control() {
+        // 空・空白のみ・制御文字を含む行だけを停止条件として拒否する。
         assert!(GpgRecipientId::parse("").is_err());
-        assert!(GpgRecipientId::parse("0xZZZZ").is_err());
+        assert!(GpgRecipientId::parse("   ").is_err());
+        assert!(GpgRecipientId::parse("alice\u{0007}@example.com").is_err());
     }
 }

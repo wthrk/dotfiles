@@ -21,8 +21,9 @@ use crate::secrets::{
 /// **clone 前に gpg-agent SSH socket が復元した GPG authentication subkey の identity を提示していることを
 /// 照合（#14 の key blob 照合）し、さらに `sshcontrol` が復元鍵の keygrip だけを持つことを確認** → GPG
 /// authentication subkey 経由の SSH で clone → clone 後 store 可読性確認
-/// （`.gpg-id` recipient 妥当性 + 復元済み秘密鍵での復号可否）→ 失敗時は clone 済み store をロールバック削除、
-/// という順序を application に固定するのは、次の停止条件の責務境界を保護するためである。
+/// （サンプル entry の実復号を最終判定とし、空 store のみ recipient のいずれか 1 つの秘密鍵保持で代替）→
+/// 失敗時は clone 済み store をロールバック削除、という順序を application に固定するのは、次の停止条件の
+/// 責務境界を保護するためである。
 ///
 /// - clone 前に既存 store を破壊しない（不存在確認を先に止める）。
 /// - 別 SSH key が repo access を持つ場合に restore-pass を成功させない。`Cred::ssh_key_from_agent` は agent 内
@@ -30,8 +31,9 @@ use crate::secrets::{
 ///   ことを `SshAgentReadiness::ensure_ready` で確定し、加えて `sshcontrol` が復元鍵の keygrip だけを持つ
 ///   ことを `SshControlRegistration::ensure_only` で確定してから clone へ進む（agent の単一鍵限定が API 上
 ///   不可能なための追加ガード。adapter 側は strict gpg-agent socket を併用）。
-/// - clone 後 store が `pass` から読める（`.gpg-id` が非空で妥当な GPG 鍵宛てかつ復元済み秘密鍵で復号できる）
-///   まで完了とみなさない。
+/// - clone 後 store が `pass` から読める（`.gpg-id` が非空で、サンプル entry が復元済み秘密鍵で復号できる。
+///   空 store では recipient のいずれか 1 つの秘密鍵を保持する）まで完了とみなさない。複数 recipient や
+///   email・user-id 形式の `.gpg-id` を誤って拒否しない。
 /// - clone 後の検証失敗時は clone 済み `~/.password-store` を best-effort で削除し、次回実行が既存 store ガードで
 ///   復旧不能にならないようにする（restore-gpg の import 後 rollback と同じ原子化）。
 ///
@@ -131,13 +133,14 @@ where
     }
 }
 
-/// clone 後 store が `pass` から読めること（`.gpg-id` recipient 妥当性 + 復元済み秘密鍵での復号可否）を確認する。
+/// clone 後 store が `pass` から読めることを確認する（実復号を最終判定とし、空 store のみ recipient 保持で代替）。
 ///
-/// store 観測（`.gpg-id` 有無・recipient 行・サンプル entry）を取得し、domain で recipient 形式を検証したうえで、
-/// 各 recipient が手元の復元済み秘密鍵を持つことを keyring で確認する。さらに store 内にサンプル entry があれば
-/// gpgme で復号できることまで確認する。ここで返す失敗はすべて呼び出し側の rollback 削除対象になる。確認方法は
-/// 「`.gpg-id` の存在 → 非空 → 妥当な GPG 鍵 id 形式 → 復元済み秘密鍵宛て → サンプル entry の復号可否（存在時）」
-/// であり、`pass` CLI への無条件シェルアウトはしない。
+/// store 観測（`.gpg-id` 有無・recipient 行・サンプル entry）を取得し、domain で `.gpg-id` の存在・非空という
+/// 構造的最小条件を確認する。サンプル entry があれば、それを復元済み秘密鍵で実際に復号できることが可読性の最終
+/// 判定であり、recipient の数・形式（複数 recipient / email・user-id）には依存しない。entry が無い空 store では
+/// 復号確認ができないため、`.gpg-id` recipient のうち少なくとも 1 つに対応する復元済み秘密鍵を保持していることを
+/// 最小条件とする（全 recipient ではなく 1 つで可。`pass` は複数 recipient のいずれか 1 つの秘密鍵で復号できる）。
+/// ここで返す失敗はすべて呼び出し側の rollback 削除対象になり、`pass` CLI への無条件シェルアウトはしない。
 fn confirm_cloned_store_readable<K, G>(keyring: &mut K, store: &G) -> Result<()>
 where
     K: ports::GpgKeyringPort,
@@ -145,16 +148,29 @@ where
 {
     let readiness = store.inspect_password_store()?;
     let recipients = readiness.parse_recipients()?;
-    for recipient in &recipients {
-        if !keyring.secret_key_available_for_recipient(recipient)? {
-            anyhow::bail!(
-                "cloned password-store is encrypted to a GPG key whose secret key is not in the keyring; pass cannot decrypt it"
-            );
+    match readiness.sample_entry() {
+        Some(entry) => {
+            // store に entry があれば、実際に復元済み秘密鍵で復号できることが可読性の最終判定。
+            // recipient の数・形式（複数 recipient / email・user-id）に依存しない ground truth。
+            keyring.can_decrypt_store_entry(entry)?;
         }
-    }
-    // store にサンプル entry があれば、実際に復元済み秘密鍵で復号できることまで確認する。
-    if let Some(entry) = readiness.sample_entry() {
-        keyring.can_decrypt_store_entry(entry)?;
+        None => {
+            // entry が無い空 store では復号確認ができないため、`.gpg-id` recipient のうち
+            // 少なくとも 1 つに対応する復元済み秘密鍵を保持していることを最小条件とする
+            // （全 recipient ではなく 1 つで可。pass は複数 recipient のいずれか 1 つの秘密鍵で復号できる）。
+            let mut any_available = false;
+            for recipient in &recipients {
+                if keyring.secret_key_available_for_recipient(recipient)? {
+                    any_available = true;
+                    break;
+                }
+            }
+            if !any_available {
+                anyhow::bail!(
+                    "cloned password-store is encrypted only to GPG keys whose secret keys are not in the keyring; pass cannot decrypt it"
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -184,8 +200,8 @@ mod tests {
     //!
     //! storage / BWS / keyring / ssh-agent / filesystem / git clone backend を port mock で差し替え、
     //! token 取得→remote 取得→`~/.password-store` 不存在確認→clone 前 identity 照合→clone→store 可読性確認
-    //! （recipient 妥当性 + 復号可否）→失敗時 rollback という順序と、各停止条件（既存 store / identity 不一致 /
-    //! store 可読性不足）を検証する。test double は持ち込まない。
+    //! （サンプル entry の実復号 / 空 store は recipient 1 つの秘密鍵保持）→失敗時 rollback という順序と、各停止
+    //! 条件（既存 store / identity 不一致 / store 可読性不足）を検証する。test double は持ち込まない。
 
     use crate::secrets::{
         domain::{
@@ -334,12 +350,8 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Ok(readable_readiness()));
-        keyring
-            .expect_secret_key_available_for_recipient()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .withf(|recipient| recipient.as_str() == RECIPIENT)
-            .returning(|_| Ok(true));
+        // サンプル entry があるので、可読性は実復号で判定する（recipient 保持確認は呼ばない）。
+        keyring.expect_secret_key_available_for_recipient().times(0);
         keyring
             .expect_can_decrypt_store_entry()
             .times(1)
@@ -666,10 +678,107 @@ mod tests {
         );
     }
 
-    /// `.gpg-id` は妥当だが手元に対応する秘密鍵が無い（別 GPG 鍵宛て）場合、可読性確認で停止し
-    /// clone 済み store を rollback 削除することを検証する。
+    /// entry が無い空 store で、`.gpg-id` recipient のいずれにも対応する復元済み秘密鍵が無い場合、
+    /// 可読性確認で停止し clone 済み store を rollback 削除することを検証する（空 store フォールバック）。
     #[tokio::test]
-    async fn restore_pass_rolls_back_when_recipient_secret_key_is_absent() {
+    async fn restore_pass_rolls_back_when_no_recipient_secret_key_for_empty_store() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_remote_ok(&mut bws);
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store.expect_password_store_exists().returning(|| Ok(false));
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_resolve_recovery_authentication_ssh_public_key()
+            .returning(|| OpenSshPublicKey::parse(RECOVERY_SSH_KEY));
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_inspect_ssh_agent().returning(|_| {
+            Ok(SshAgentReadiness {
+                socket_resolved: true,
+                authentication_identity_present: true,
+            })
+        });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                ]))
+            });
+        // entry が無い空 store。フォールバックで recipient 1 つの秘密鍵保持を確認する。
+        store
+            .expect_inspect_password_store()
+            .times(1)
+            .returning(|| {
+                Ok(PasswordStoreReadiness {
+                    gpg_id_present: true,
+                    gpg_id_recipients: vec![RECIPIENT.to_owned()],
+                    sample_entry: None,
+                })
+            });
+        // recipient は妥当だが秘密鍵を保持しない → 空 store なので可読性を確定できず停止。
+        keyring
+            .expect_secret_key_available_for_recipient()
+            .times(1)
+            .returning(|_| Ok(false));
+        // 空 store では復号確認は行わない。
+        keyring.expect_can_decrypt_store_entry().times(0);
+        store
+            .expect_remove_password_store()
+            .times(1)
+            .returning(|| Ok(()));
+        let mut git_clone = ports::MockGitClonePort::new();
+        git_clone
+            .expect_clone_password_store()
+            .times(1)
+            .returning(|_| Ok(()));
+        let mut report = ports::MockReportPort::new();
+        report.expect_write_restore_pass_report().times(0);
+
+        let result = run_restore_pass(
+            RestorePassCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut keyring,
+            &mut ssh_agent,
+            &mut store,
+            &mut git_clone,
+            &report,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "empty store with no held recipient secret key must fail restore-pass after rollback"
+        );
+    }
+
+    /// サンプル entry が存在するのに復号できない場合、recipient 保持の有無に関わらず可読性確認で停止し
+    /// clone 済み store を rollback 削除することを検証する（実復号が最終判定であることの証明）。
+    #[tokio::test]
+    async fn restore_pass_rolls_back_when_sample_entry_cannot_decrypt() {
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -716,13 +825,12 @@ mod tests {
             .expect_inspect_password_store()
             .times(1)
             .returning(|| Ok(readable_readiness()));
-        // recipient は妥当だが秘密鍵を保持しない → 復号できないため停止。
+        // サンプル entry があれば実復号が最終判定。recipient 保持確認は呼ばない。
+        keyring.expect_secret_key_available_for_recipient().times(0);
         keyring
-            .expect_secret_key_available_for_recipient()
+            .expect_can_decrypt_store_entry()
             .times(1)
-            .returning(|_| Ok(false));
-        // 復号確認まで進まない。
-        keyring.expect_can_decrypt_store_entry().times(0);
+            .returning(|_| anyhow::bail!("entry cannot be decrypted with restored key"));
         store
             .expect_remove_password_store()
             .times(1)
@@ -752,7 +860,100 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "missing recipient secret key must fail restore-pass after rollback"
+            "a sample entry that cannot be decrypted must fail restore-pass after rollback"
         );
+    }
+
+    /// `.gpg-id` に複数 recipient があり全 recipient の秘密鍵は手元に無くても、サンプル entry が復号できれば
+    /// restore-pass が成功することを検証する（全 recipient 保持を要求しないことの証明）。
+    #[tokio::test]
+    async fn restore_pass_succeeds_for_multi_recipient_store_when_entry_decrypts()
+    -> crate::Result<()> {
+        const SECOND_RECIPIENT: &str = "FEDCBA9876543210FEDCBA9876543210FEDCBA98";
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_remote_ok(&mut bws);
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store.expect_password_store_exists().returning(|| Ok(false));
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_resolve_recovery_authentication_ssh_public_key()
+            .returning(|| OpenSshPublicKey::parse(RECOVERY_SSH_KEY));
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_inspect_ssh_agent().returning(|_| {
+            Ok(SshAgentReadiness {
+                socket_resolved: true,
+                authentication_identity_present: true,
+            })
+        });
+        keyring
+            .expect_resolve_recovery_authentication_keygrip()
+            .returning(|| Keygrip::parse(RECOVERY_KEYGRIP));
+        ssh_agent
+            .expect_inspect_registered_keygrips()
+            .returning(|| {
+                Ok(SshControlRegistration::new(vec![
+                    Keygrip::parse(RECOVERY_KEYGRIP).expect("keygrip"),
+                ]))
+            });
+        // 2 recipient（spare/共有 store）。サンプル entry が復号できれば全 recipient 保持は不要。
+        store
+            .expect_inspect_password_store()
+            .times(1)
+            .returning(|| {
+                Ok(PasswordStoreReadiness {
+                    gpg_id_present: true,
+                    gpg_id_recipients: vec![RECIPIENT.to_owned(), SECOND_RECIPIENT.to_owned()],
+                    sample_entry: Some(std::path::PathBuf::from("/store/sample.gpg")),
+                })
+            });
+        keyring.expect_secret_key_available_for_recipient().times(0);
+        keyring
+            .expect_can_decrypt_store_entry()
+            .times(1)
+            .returning(|_| Ok(()));
+        store.expect_remove_password_store().times(0);
+        let mut git_clone = ports::MockGitClonePort::new();
+        git_clone
+            .expect_clone_password_store()
+            .times(1)
+            .returning(|_| Ok(()));
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_restore_pass_report()
+            .times(1)
+            .withf(|summary| summary.store_readable)
+            .returning(|_| Ok(()));
+
+        run_restore_pass(
+            RestorePassCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &bws,
+            &mut keyring,
+            &mut ssh_agent,
+            &mut store,
+            &mut git_clone,
+            &report,
+        )
+        .await
     }
 }

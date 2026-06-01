@@ -1142,19 +1142,23 @@ fn restore_pass_fails_when_cloned_store_is_unreadable_with_stub_paths() -> TestR
 
 #[test]
 fn restore_pass_rolls_back_when_recipient_secret_key_is_absent_with_stub_paths() -> TestResult<()> {
-    // `.gpg-id` は妥当だが、手元に対応する秘密鍵が無い（held_recipients を空にする）→ 復号できず rollback。
+    // entry が無い空 store で、`.gpg-id` recipient のいずれにも秘密鍵が無い（held_recipients を空にする）
+    // → 可読性を確定できず rollback（空 store フォールバック）。
     let mut gpg = gpg_spec_for_restore_pass();
     gpg["held_recipients"] = json!([]);
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
     )
-    .with_gpg(gpg);
+    .with_gpg(gpg)
+    .with_git(
+        json!({ "store_exists": false, "gpg_id_present": true, "sample_entry_present": false }),
+    );
     let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
-        run.stderr.contains("secret key is not in the keyring"),
+        run.stderr.contains("secret keys are not in the keyring"),
         "stderr: {}",
         run.stderr
     );
@@ -1162,7 +1166,7 @@ fn restore_pass_rolls_back_when_recipient_secret_key_is_absent_with_stub_paths()
     assert_eq!(
         final_git["cloned_remotes"],
         json!([]),
-        "cloned store with unheld recipient must be rolled back"
+        "empty store with no held recipient secret key must be rolled back"
     );
     Ok(())
 }

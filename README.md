@@ -92,13 +92,13 @@ dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>
 
 ### password-store 復元
 
-GPG 鍵リング復元と SSH 公開鍵の GitHub 登録が済んだら、`restore-pass` で private `password-store` repository を復元します。Bitwarden Secrets Manager から `password-store-remote`（`git@github.com:<owner>/<repo>.git` 形式）を取得し、`~/.password-store` が存在しないことを確認してから、GPG authentication subkey 経由の SSH agent 認証で clone します。clone 後に store が `pass` から読めること（`.gpg-id` の存在）を確認します。
+GPG 鍵リング復元と SSH 公開鍵の GitHub 登録が済んだら、`restore-pass` で private `password-store` repository を復元します。Bitwarden Secrets Manager から `password-store-remote`（`git@github.com:<owner>/<repo>.git` 形式）を取得し、`~/.password-store` が存在しないことを確認してから、GPG authentication subkey 経由の SSH agent 認証で clone します。clone 後に store が `pass` から読めること（`.gpg-id` が存在し、store entry を復元済み秘密鍵で実際に復号できること）を確認します。`.gpg-id` の複数 recipient（共有・予備鍵）や email・user-id 形式の recipient も対応し、entry が無い空 store ではいずれか 1 つの recipient の秘密鍵を保持していれば読めるとみなします。
 
 ```sh
 dotfiles secrets restore-pass
 ```
 
-clone は `git2` と SSH agent だけを使い、`git` CLI と GitHub API は使いません。`~/.password-store` が既に存在する場合、remote URL が GitHub SSH clone URL でない場合、gpg-agent の SSH agent socket（`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に解決できない（通常の `ssh-agent` へ fallback せず、GPG authentication subkey 由来 identity を使えない）場合、clone 前の identity 照合で gpg-agent が復元鍵の identity を提示しない、または `sshcontrol` が復元鍵以外の identity を登録している場合、接続先 `github.com` の SSH host key が GitHub 公表の host key と一致しない場合、clone 後 store を `pass` が読めない場合は停止します。
+clone は `git2` と SSH agent だけを使い、`git` CLI と GitHub API は使いません。`~/.password-store` が既に存在する場合、remote URL が GitHub SSH clone URL でない場合、gpg-agent の SSH agent socket（`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に解決できない（通常の `ssh-agent` へ fallback せず、GPG authentication subkey 由来 identity を使えない）場合、clone 前の identity 照合で gpg-agent が復元鍵の identity を提示しない、または `sshcontrol` が復元鍵以外の identity を登録している場合、接続先 `github.com` の SSH host key が GitHub 公表の host key と一致しない場合、clone 後 store を `pass` が読めない場合（store entry を復号できない、または空 store でいずれの recipient の秘密鍵も持たない場合）は停止します。
 
 backup envelope の登録・recipient 追加は provisioning 経路で行います。
 
