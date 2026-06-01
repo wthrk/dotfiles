@@ -11,6 +11,7 @@ use super::super::{
     domain::{
         gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
         gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
+        pass_restore::GpgRecipientId,
     },
     support::protection::ProtectedSecret,
 };
@@ -67,6 +68,20 @@ pub trait GpgKeyringPort {
         &mut self,
         primary_fingerprint: &PrimaryFingerprint,
     ) -> Result<OpenSshPublicKey>;
+
+    /// `.gpg-id` recipient 宛ての復号に使える秘密鍵を鍵リングが保持しているかを確認する。
+    ///
+    /// `pass` は `.gpg-id` recipient の公開鍵で各 entry を暗号化する。その recipient に対応する秘密鍵を
+    /// 手元に持たない場合、clone は成功しても `pass` は復号できない。implementor は recipient（long key id /
+    /// fingerprint）で秘密鍵を解決できるかだけを返し、復号可否の最終判定は caller（application）が行う。
+    fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool>;
+
+    /// store 内サンプル entry（`*.gpg`）を gpgme で復号できることを確認する。
+    ///
+    /// `.gpg-id` recipient と手元秘密鍵の整合だけでなく、実際に store entry を復号できることまで確認する
+    /// ための capability である。entry が暗号化された `pass` 形式であり、復元済み秘密鍵で復号できれば成功する。
+    /// 復号した平文は保護境界内で破棄し、argv / log / 永続ファイル・stdout へ出さない。
+    fn can_decrypt_store_entry(&mut self, entry_path: &std::path::Path) -> Result<()>;
 }
 
 /// use case が backup envelope の DEK 暗復号のために要求する capability 契約。
@@ -98,18 +113,20 @@ pub trait BackupCipherPort {
 /// use case が gpg-agent の SSH support backend へ要求する capability 契約。
 ///
 /// caller は keygrip の登録順序と SSH support 充足判定を application/domain 側で決める。implementor は
-/// gpg-agent の SSH key list（`sshcontrol` 相当）登録と SSH agent socket 観測だけを担い、`gpgconf` CLI は
-/// 使わず `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として解決する。
+/// gpg-agent の SSH key list（`sshcontrol` 相当）登録と SSH agent socket 上の identity 列挙観測だけを担い、
+/// `gpgconf` CLI は使わず `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として解決する。
 #[cfg_attr(test, mockall::automock)]
 pub trait SshAgentPort {
     /// authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（既登録は冪等）。
     fn register_authentication_subkey(&mut self, keygrip: &Keygrip) -> Result<()>;
 
-    /// gpg-agent SSH support 利用可否を、socket 解決可否と authentication subkey 識別可否として観測する。
+    /// gpg-agent SSH support 利用可否と、agent が復元鍵の authentication subkey identity を識別可能かを観測する。
     ///
-    /// authentication subkey の識別は、agent が列挙する identity の key blob を期待公開鍵
-    /// （`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）の key blob と byte 一致で
-    /// 照合して判定する。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
+    /// agent が SSH agent protocol で列挙する identity を取得し、socket 解決可否（`socket_resolved`）に加えて、
+    /// 期待公開鍵（`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）と key blob が byte 一致する
+    /// identity が含まれるか（`recovery_identity_present`）を `SshAgentReadiness` へ翻訳する。caller は復元鍵提示の
+    /// 確認を `SshAgentReadiness::ensure_ready` で行う。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は
+    /// 観測しない。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
     fn inspect_ssh_agent(
         &mut self,
         expected_public_key: &OpenSshPublicKey,

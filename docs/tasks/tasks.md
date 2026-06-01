@@ -132,7 +132,7 @@
 
 ### Git
 
-- 状態: `未開始`
+- 状態: `実装済み（現行サイクル集約レビュー合格）`
 - GitHub issue: #15
 - 主成果物: `実コード差分`
 - 対象コードパス:
@@ -140,7 +140,8 @@
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 作業定義文書: [secret-recovery/work-items/git.md](secret-recovery/work-items/git.md#15-password-store-復元)
-- レビュー記録: [secret-recovery/review-artifacts/git/review.md](secret-recovery/review-artifacts/git/review.md)
+- レビュー記録: [secret-recovery/review-artifacts/git/review.md](secret-recovery/review-artifacts/git/review.md)（集約後レビュー判定: 合格）
+- 現行サイクル差分識別子: `a188d3d..35232c8`（branch `feat/secrets-restore-pass-issue-15`。base `a188d3d` は #14 統合後、HEAD `35232c8`）
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### Bitwarden Password Manager

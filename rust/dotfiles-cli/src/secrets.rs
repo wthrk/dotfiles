@@ -11,11 +11,13 @@
 /// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
 mod adapters {
     mod bw;
+    mod git;
     mod gpg;
     mod io;
     mod yubikey;
 
     pub(in crate::secrets) use bw::BwsClientAdapter;
+    pub(in crate::secrets) use git::{GitCloneAdapter, PasswordStoreAdapter};
     pub(in crate::secrets) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
     pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
     pub(in crate::secrets) use yubikey::{
@@ -47,6 +49,7 @@ enum SecretsCommand {
     Yubikey(YubikeyOptions),
     VerifyYubikey(VerifyYubikeyOptions),
     RestoreGpg(RestoreGpgOptions),
+    RestorePass(RestorePassOptions),
     GpgBackup(GpgBackupOptions),
 }
 
@@ -152,6 +155,13 @@ struct RestoreGpgOptions {
 }
 
 #[derive(Args)]
+/// `password-store-remote` を取得し private `password-store` を SSH clone する option。
+struct RestorePassOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+}
+
+#[derive(Args)]
 /// `gpg-secret-key-backup` の registration / recipient 追加を公開する option。
 struct GpgBackupOptions {
     #[command(subcommand)]
@@ -251,6 +261,8 @@ pub(in crate::secrets) struct RuntimePorts {
     pub(in crate::secrets) backup_cipher: adapters::BackupCipherAdapter,
     pub(in crate::secrets) gpg_keyring: adapters::GpgKeyringAdapter,
     pub(in crate::secrets) ssh_agent: adapters::SshAgentAdapter,
+    pub(in crate::secrets) password_store: adapters::PasswordStoreAdapter,
+    pub(in crate::secrets) git_clone: adapters::GitCloneAdapter,
 }
 
 impl RuntimePorts {
@@ -268,6 +280,8 @@ impl RuntimePorts {
             backup_cipher: adapters::BackupCipherAdapter::default(),
             gpg_keyring: adapters::GpgKeyringAdapter::default(),
             ssh_agent: adapters::SshAgentAdapter::default(),
+            password_store: adapters::PasswordStoreAdapter::default(),
+            git_clone: adapters::GitCloneAdapter::default(),
         }
     }
 }

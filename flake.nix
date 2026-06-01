@@ -199,9 +199,16 @@
           buildInputs = [
             # GPG keyring backend（`gpgme` crate）が link する libgpgme / libgpg-error。
             pkgs.gpgme
+            # password-store clone backend（`git2` crate）が link する libgit2 / libssh2 と、
+            # libssh2 / libgit2 が要求する OpenSSL / zlib。
+            pkgs.libgit2
+            pkgs.libssh2
+            pkgs.openssl
+            pkgs.zlib
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
           nativeBuildInputs = [
+            pkgs.cmake
             pkgs.makeWrapper
             pkgs.pkg-config
           ];
@@ -236,6 +243,13 @@
             pkgs.gnused
             # GPG keyring backend（`gpgme` crate）の link / pkg-config 解決に必要。
             pkgs.gpgme
+            # password-store clone backend（`git2` crate）の libgit2 / libssh2 link と、
+            # vendored libgit2 / libssh2 build が要求する cmake / OpenSSL / zlib。
+            pkgs.cmake
+            pkgs.libgit2
+            pkgs.libssh2
+            pkgs.openssl
+            pkgs.zlib
             pkgs.jq
             pkgs.nil
             pkgs.nix

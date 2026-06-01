@@ -10,6 +10,7 @@ pub(crate) mod enrollment;
 pub mod gpg_backup;
 pub mod gpg_restore;
 pub mod manifest;
+pub mod pass_restore;
 pub mod piv;
 pub mod storage;
 pub(crate) mod verification;

@@ -169,16 +169,18 @@
 
 ### Git
 
-- 状態: `未開始`
+- 状態: `実装済み（現行サイクル集約レビュー合格）`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/git.md](work-items/git.md#15-password-store-復元)
-- レビュー記録: [review-artifacts/git/review.md](review-artifacts/git/review.md#git-レビュー記録)
+- レビュー記録: [review-artifacts/git/review.md](review-artifacts/git/review.md#git-レビュー記録)（集約後レビュー判定: 合格）
+- 現行サイクル差分識別子: `a188d3d..35232c8`（branch `feat/secrets-restore-pass-issue-15`。base `a188d3d` は #14 統合後、HEAD `35232c8`）
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
   - `rust/dotfiles-cli/src/secrets.rs`
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
-- 実装状態: `未実装`
+- 実装状態: `実装済み（現行サイクル集約レビュー合格）`
+- 確認・レビュー: 確認通過（`cargo build`/`test`(186 unit + 33 stub integration)/`clippy -D warnings`/`fmt --check`/`xtask check`、restore-gpg(#14) 退行なし）。必須7担当全員合格・集約後レビュー判定 `合格`（`review-artifacts/git/review.md`）。
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
@@ -186,9 +188,10 @@
 | 規約計画 | 完了 | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/git.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
 | 規約文書更新 | 進行中 | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 確認 | 未着手 | `review-artifacts/git/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
-| レビュー | 未着手 | `review-artifacts/git/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
-| 必要時の後続対応 | 未着手 | `review-artifacts/git/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
+| 実装（restore-pass: spec L174 手順の Rust 反映） | 実装済み（集約レビュー合格） | 実コード差分＋テスト（`a188d3d..35232c8`） | [work-items/git.md](work-items/git.md#15-password-store-復元) |
+| 確認 | 完了 | `review-artifacts/git/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
+| レビュー | 完了（集約後レビュー判定: 合格） | `review-artifacts/git/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
+| 必要時の後続対応 | 完了（不要・未解消 finding なし） | `review-artifacts/git/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |
 
 ### Bitwarden Password Manager
 

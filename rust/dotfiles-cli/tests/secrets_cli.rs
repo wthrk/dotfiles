@@ -14,7 +14,8 @@ use std::{
 
 use anyhow::Context;
 use dotfiles_cli::secrets_internal_test_stub_contract::{
-    BWS_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
+    BWS_STUB_SPEC_ENV, GIT_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX,
+    YUBIKEY_STUB_SPEC_ENV,
 };
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
@@ -51,6 +52,10 @@ impl CommandRun {
     fn final_gpg(&self) -> TestResult<Value> {
         final_observation(&self.stdout, "gpg")
     }
+
+    fn final_git(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "git")
+    }
 }
 
 struct PtyRun {
@@ -68,6 +73,7 @@ struct StubPorts {
     yubikey_spec: Value,
     bws_spec_value: Value,
     gpg_spec: Value,
+    git_spec: Value,
 }
 
 impl StubPorts {
@@ -76,11 +82,17 @@ impl StubPorts {
             yubikey_spec,
             bws_spec_value,
             gpg_spec: empty_gpg_spec(),
+            git_spec: empty_git_spec(),
         }
     }
 
     fn with_gpg(mut self, gpg_spec: Value) -> Self {
         self.gpg_spec = gpg_spec;
+        self
+    }
+
+    fn with_git(mut self, git_spec: Value) -> Self {
+        self.git_spec = git_spec;
         self
     }
 
@@ -94,7 +106,8 @@ impl StubPorts {
                 BWS_STUB_SPEC_ENV,
                 serde_json::to_string(&self.bws_spec_value)?,
             )
-            .env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?);
+            .env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?)
+            .env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?);
         Ok(())
     }
 
@@ -108,6 +121,7 @@ impl StubPorts {
             serde_json::to_string(&self.bws_spec_value)?,
         );
         command.env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?);
+        command.env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?);
         Ok(())
     }
 }
@@ -885,6 +899,23 @@ fn gpg_spec_with_importable_key() -> Value {
     })
 }
 
+/// restore-pass integration 用の `.gpg-id` recipient（Git stub 既定 recipient と整合する fingerprint）。
+const RESTORE_PASS_RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+
+/// restore-pass の clone 後可読性確認が成功する GPG stub spec を作る。
+///
+/// restore-pass は ssh-agent を検査しない（gpg-agent SSH support の確認は restore-gpg の責務。設計 L116-124）
+/// ため、agent identity 系の設定は持たない。`held_recipients` に `.gpg-id` recipient を含み、
+/// `store_entry_decryptable` でサンプル entry の復号可否も成功させる。
+fn gpg_spec_for_restore_pass() -> Value {
+    json!({
+        "existing_keys": [],
+        "keys": {},
+        "held_recipients": [RESTORE_PASS_RECIPIENT],
+        "store_entry_decryptable": true
+    })
+}
+
 /// 同一 primary fingerprint の鍵が既存する GPG stub spec を作る。
 fn gpg_spec_with_existing_key() -> Value {
     json!({
@@ -936,6 +967,157 @@ fn bws_spec_with_backup(envelope_json: &str) -> Value {
         "fixture": "default-recovery-project",
         "gpg_secret_key_backup": envelope_json
     })
+}
+
+/// restore-pass integration 用の妥当な GitHub SSH clone URL。
+const RESTORE_PASS_REMOTE: &str = "git@github.com:owner/password-store.git";
+
+/// password-store-remote を妥当な clone URL へ override した BWS spec を作る。
+fn bws_spec_with_pass_remote(remote: &str) -> Value {
+    json!({
+        "fixture": "default-recovery-project",
+        "password_store_remote": remote
+    })
+}
+
+/// Git stub が空でも spec 未設定にしない既定値（store なし・clone 後 `.gpg-id` あり）。
+fn empty_git_spec() -> Value {
+    json!({ "store_exists": false, "gpg_id_present": true })
+}
+
+/// clone 前から `~/.password-store` が存在する Git stub spec を作る。
+fn git_spec_with_existing_store() -> Value {
+    json!({ "store_exists": true, "gpg_id_present": true })
+}
+
+/// clone 後 store に `.gpg-id` が無い（`pass` から読めない）Git stub spec を作る。
+fn git_spec_with_unreadable_store() -> Value {
+    json!({ "store_exists": false, "gpg_id_present": false })
+}
+
+#[test]
+fn restore_pass_clones_store_and_confirms_readability_with_stub_paths() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg_spec_for_restore_pass());
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(
+        stdout.contains("\"store_readable\": true"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains(".password-store"), "stdout: {stdout}");
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([RESTORE_PASS_REMOTE]),
+        "cloned remote must be observed"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_stops_when_store_already_exists_with_stub_paths() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_git(git_spec_with_existing_store());
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("already exists"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([]),
+        "existing store must stop before clone"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_fails_when_remote_url_is_invalid_with_stub_paths() -> TestResult<()> {
+    // 既定 fixture の password-store-remote は `https://example.invalid/repo.git` で domain 妥当でない。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("password-store-remote"),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_fails_when_cloned_store_is_unreadable_with_stub_paths() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg_spec_for_restore_pass())
+    .with_git(git_spec_with_unreadable_store());
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("pass cannot read the store"),
+        "stderr: {}",
+        run.stderr
+    );
+    // clone は成功するが可読性確認で失敗 → application は store を削除せず残す。再実行の安全性は既存 store
+    // 停止条件に委ねる（spec L174 に自動削除は無い）ので、clone 観測は残ったまま。
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([RESTORE_PASS_REMOTE]),
+        "unreadable cloned store must be left in place (not rolled back)"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> TestResult<()> {
+    // entry が無い空 store で、`.gpg-id` recipient のいずれにも秘密鍵が無い（held_recipients を空にする）
+    // → 可読性を確定できず error（空 store フォールバック）。store は削除せず残す。
+    let mut gpg = gpg_spec_for_restore_pass();
+    gpg["held_recipients"] = json!([]);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg)
+    .with_git(
+        json!({ "store_exists": false, "gpg_id_present": true, "sample_entry_present": false }),
+    );
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("secret keys are not in the keyring"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([RESTORE_PASS_REMOTE]),
+        "empty store with no held recipient secret key must be left in place (not rolled back)"
+    );
+    Ok(())
 }
 
 #[test]

@@ -8,7 +8,10 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::SecretSession;
-use crate::{Result, secrets::support::protection::ProtectedSecret};
+use crate::{
+    Result,
+    secrets::{domain::pass_restore::PasswordStoreRemote, support::protection::ProtectedSecret},
+};
 
 /// SDK login request の repository 所有 access token buffer を Drop で zeroize する guard。
 ///
@@ -66,6 +69,22 @@ impl BwsClientSession {
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
         protect_secret_value(secret.value)
+    }
+
+    /// SDK get で取得した `password-store-remote` secret value を、protection 境界内で domain 値へ翻訳する。
+    ///
+    /// clone URL は秘密情報ではないが、SDK 返却 value は一旦 `Zeroizing` 管理へ入れてから
+    /// [`PasswordStoreRemote::parse`] で検証する。検証済みの URL 文字列だけを domain 値として返し、
+    /// SDK 返却 buffer は Drop で zeroize する。URL 形式の妥当性判断は domain rule に委ねる。
+    pub(crate) async fn get_password_store_remote(&self, id: Uuid) -> Result<PasswordStoreRemote> {
+        let secret = self
+            .client
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let value = Zeroizing::new(secret.value);
+        PasswordStoreRemote::parse(value.as_str())
     }
 }
 

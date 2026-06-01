@@ -4,11 +4,13 @@
 //! 既存 application の trait import を安定させる再公開だけを担い、契約本文は各 backend module に置く。
 
 pub(crate) mod bw;
+pub(crate) mod git;
 pub(crate) mod gpg;
 pub(crate) mod io;
 pub(crate) mod yubikey;
 
 pub(crate) use bw::BwsClientPort;
+pub(crate) use git::{GitClonePort, PasswordStorePort};
 pub(crate) use gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort};
 pub(crate) use io::{
     BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort, PinInputPort,
@@ -22,6 +24,8 @@ pub(crate) use yubikey::{
 
 #[cfg(test)]
 pub(crate) use bw::MockBwsClientPort;
+#[cfg(test)]
+pub(crate) use git::{MockGitClonePort, MockPasswordStorePort};
 #[cfg(test)]
 pub(crate) use gpg::{MockBackupCipherPort, MockGpgKeyringPort, MockSshAgentPort};
 #[cfg(test)]

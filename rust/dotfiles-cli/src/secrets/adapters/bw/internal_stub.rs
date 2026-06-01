@@ -20,6 +20,7 @@ use crate::secrets::{
     domain::{
         bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
         gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+        pass_restore::PasswordStoreRemote,
     },
     ports::bw::BwsClientPort,
     support::protection::ProtectedSecret,
@@ -35,6 +36,12 @@ struct BwsStubSpec {
     /// として投入するために使う。未指定時は fixture 既定の "gpg-secret" 値を維持する。
     #[serde(default)]
     gpg_secret_key_backup: Option<String>,
+    /// `password-store-remote` secret value を override する任意の clone URL。
+    ///
+    /// restore-pass の integration test が、domain で妥当な `git@github.com:<owner>/<repo>.git` を初期
+    /// datastore として投入するために使う。未指定時は fixture 既定値を維持する。
+    #[serde(default)]
+    password_store_remote: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -102,6 +109,22 @@ impl BwsClientPort for super::BwsClientAdapter {
             let envelope = GpgBackupEnvelope::from_json(value.as_bytes())?;
             let guard = BackupUpdateGuard::from_value_bytes(value.as_bytes());
             Ok((envelope, guard))
+        })
+    }
+
+    async fn fetch_password_store_remote(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<PasswordStoreRemote> {
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let value = store
+                .secret_values
+                .get(secret_id.as_str())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
+            PasswordStoreRemote::parse(&value)
         })
     }
 
@@ -275,6 +298,11 @@ fn datastore_from_spec(spec: BwsStubSpec) -> BwsDatastore {
         datastore
             .secret_values
             .insert("bws-secret-id-gpg".to_owned(), envelope);
+    }
+    if let Some(remote) = spec.password_store_remote {
+        datastore
+            .secret_values
+            .insert("bws-secret-id-pass".to_owned(), remote);
     }
     datastore
 }

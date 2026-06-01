@@ -26,6 +26,7 @@ use crate::secrets::{
     domain::{
         bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
         gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+        pass_restore::PasswordStoreRemote,
     },
     ports::bw::BwsClientPort,
     support::protection::{ProtectedSecret, bws},
@@ -118,6 +119,17 @@ impl BwsClientPort for BwsClientAdapter {
         let guard = BackupUpdateGuard::from_revision(secret.revision_date.to_rfc3339())
             .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(secret.value.as_bytes()));
         Ok((envelope, guard))
+    }
+
+    /// `password-store-remote` secret value を取得し、protection 境界内で domain 検証した clone URL を返す。
+    async fn fetch_password_store_remote(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<PasswordStoreRemote> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        session.get_password_store_remote(id).await
     }
 
     /// 指定 project に新しい envelope secret を作成し、その ID を port 境界の opaque 値として返す。

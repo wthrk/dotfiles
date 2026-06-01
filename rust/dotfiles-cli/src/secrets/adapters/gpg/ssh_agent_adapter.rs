@@ -1,16 +1,16 @@
 //! `SshAgentPort` を gpg-agent の SSH key list（`sshcontrol`）と SSH agent socket 観測へ接続する adapter。
 //!
 //! authentication subkey の keygrip を `${GNUPGHOME:-$HOME/.gnupg}/sshcontrol` へ冪等に登録し、SSH support
-//! 利用可否を「SSH agent socket（`S.gpg-agent.ssh`）が解決でき、その socket 経路で authentication subkey の
-//! identity を SSH agent protocol で識別できる」状態として観測して domain 値（`SshAgentReadiness`）へ翻訳
-//! する。`gpgconf` CLI は使わず、socket は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として
-//! 確認し、その path が socket でない場合だけ既存環境変数 `SSH_AUTH_SOCK` が指す socket へ fallback する
-//! （`config/zsh/env.zsh` の上書き条件と同じ前提）。identity の識別は、解決した socket へ接続して SSH agent
-//! protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵 identity を列挙し、各 identity の key blob を期待
-//! 公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合して判定する。identity comment（gpg-agent は
-//! `cardno:` / `openpgp:` 等を載せ keygrip とは限らない）は鍵同一性に使えないため照合に用いない。SSH support
-//! 充足の業務判定そのものは domain（`SshAgentReadiness::ensure_ready` / `OpenSshPublicKey::matches_agent_key_blob`）
-//! へ残す。
+//! 利用可否を「SSH agent socket（`S.gpg-agent.ssh`）が解決でき、その socket 経路で agent が列挙する identity に
+//! 復元鍵が含まれる」状態として観測して domain 値（`SshAgentReadiness`）へ翻訳する。`gpgconf` CLI は使わず、
+//! socket は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として確認し、その path が socket でない場合
+//! だけ既存環境変数 `SSH_AUTH_SOCK` が指す socket へ fallback する（`config/zsh/env.zsh` の上書き条件と同じ前提）。
+//! identity の列挙は、解決した socket へ接続して SSH agent protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵
+//! identity を列挙し、各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合して、
+//! 復元鍵 identity が識別可能かを判定する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は観測しない。
+//! identity comment（gpg-agent は `cardno:` / `openpgp:` 等を載せ keygrip とは限らない）は鍵同一性に使えないため
+//! 照合に用いない。SSH support 充足の業務判定そのものは domain（`SshAgentReadiness::ensure_ready` /
+//! `OpenSshPublicKey::matches_agent_key_blob`）へ残す。
 
 use std::{
     fs::OpenOptions,
@@ -28,6 +28,7 @@ use crate::{
     secrets::{
         domain::gpg_restore::{Keygrip, OpenSshPublicKey, SshAgentReadiness},
         ports::gpg::SshAgentPort,
+        support::ssh_agent_socket::{gnupg_home, resolve_ssh_agent_socket},
     },
 };
 
@@ -61,55 +62,35 @@ impl SshAgentPort for SshAgentAdapter {
         expected_public_key: &OpenSshPublicKey,
     ) -> Result<SshAgentReadiness> {
         // 固定 path が socket ならそれ、socket でなければ既存 `SSH_AUTH_SOCK` が socket ならそれを使う。
-        let socket = resolve_ssh_agent_socket();
+        // `gnupg_home()` 解決失敗（例: `HOME` 未設定）は socket 無しへ握り潰さず、その実原因を `?` で伝播する。
+        let socket = resolve_ssh_agent_socket()?;
         let socket_resolved = socket.is_some();
-        // identity の識別は、解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、
-        // 各 identity の key blob が期待公開鍵の key blob と byte 一致するかで判定する。socket が解決できない、
-        // または接続/列挙に失敗した場合は識別不能（false）として停止条件を弱めない。
-        let authentication_identity_present = match socket {
-            Some(path) => agent_identifies_public_key(&path, expected_public_key).unwrap_or(false),
+        // 解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、各 identity の key blob を
+        // 期待公開鍵の key blob と byte 一致で照合する。一致する identity があれば復元鍵が識別可能であり、
+        // socket が解決できない、または接続/列挙に失敗した場合は false とし、復元鍵を識別できないことで
+        // 停止させる（識別不能を「識別可能」へ倒さない）。設計 L83 に従い、復元鍵と無関係な既存 identity の
+        // 有無は観測しない。
+        let recovery_identity_present = match socket {
+            Some(path) => inspect_agent_identities(&path, expected_public_key).unwrap_or(false),
             None => false,
         };
         Ok(SshAgentReadiness {
             socket_resolved,
-            authentication_identity_present,
+            recovery_identity_present,
         })
     }
 }
 
-/// SSH agent socket を解決する。
-///
-/// 設計「zsh 環境変数決定」と `config/zsh/env.zsh` の上書き条件に合わせ、`${GNUPGHOME:-$HOME/.gnupg}/
-/// S.gpg-agent.ssh` が socket ならそれを優先し、socket でない場合だけ既存環境変数 `SSH_AUTH_SOCK` が
-/// 指す path が socket ならそれへ fallback する。`gpgconf` CLI は使わない。
-fn resolve_ssh_agent_socket() -> Option<PathBuf> {
-    if let Ok(Some(fixed)) = ssh_agent_socket_path()
-        && is_socket(&fixed)
-    {
-        return Some(fixed);
-    }
-    if let Some(env) = std::env::var_os("SSH_AUTH_SOCK") {
-        let env = PathBuf::from(env);
-        if is_socket(&env) {
-            return Some(env);
-        }
-    }
-    None
-}
-
-/// SSH agent protocol で identity を列挙し、期待公開鍵と同一 key blob の identity が存在するかを返す。
+/// SSH agent protocol で identity を列挙し、復元鍵 identity が識別可能かを返す。
 ///
 /// 解決済み socket へ接続し、`SSH_AGENTC_REQUEST_IDENTITIES` を送って `SSH_AGENT_IDENTITIES_ANSWER` を
 /// 解析する。各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合し、
-/// 一致する identity があれば「authentication subkey が SSH identity として識別可能」と判定する。gpg-agent の
-/// identity comment は keygrip とは限らない（`cardno:` / `openpgp:` 等）ため照合に用いない。接続/送受信/解析に
-/// 失敗した場合は、socket への接続可否を最低限の identity 観測代替とせず、停止条件を弱めないため `Err` を返して
-/// 呼び出し側で false に倒す。
+/// 一致する identity があれば復元鍵が識別可能と判定する。設計 L83 に従い、復元鍵と無関係な既存 identity の
+/// 有無は観測しない。gpg-agent の identity comment は keygrip とは限らない（`cardno:` / `openpgp:` 等）ため
+/// 照合に用いない。接続/送受信/解析に失敗した場合は、socket への接続可否を最低限の観測代替とせず、停止条件を
+/// 弱めないため `Err` を返して呼び出し側で false に倒す。
 #[cfg(unix)]
-fn agent_identifies_public_key(
-    socket: &Path,
-    expected_public_key: &OpenSshPublicKey,
-) -> Result<bool> {
+fn inspect_agent_identities(socket: &Path, expected_public_key: &OpenSshPublicKey) -> Result<bool> {
     let key_blobs = request_ssh_identities(socket)?;
     Ok(key_blobs
         .iter()
@@ -117,7 +98,7 @@ fn agent_identifies_public_key(
 }
 
 #[cfg(not(unix))]
-fn agent_identifies_public_key(
+fn inspect_agent_identities(
     _socket: &Path,
     _expected_public_key: &OpenSshPublicKey,
 ) -> Result<bool> {
@@ -242,39 +223,9 @@ impl<'a> ByteCursor<'a> {
     }
 }
 
-/// `${GNUPGHOME:-$HOME/.gnupg}` を解決する。
-fn gnupg_home() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("GNUPGHOME") {
-        return Ok(PathBuf::from(home));
-    }
-    let home = std::env::var_os("HOME").context("HOME is not set; cannot resolve GnuPG home")?;
-    Ok(PathBuf::from(home).join(".gnupg"))
-}
-
 /// gpg-agent の SSH key list（`sshcontrol`）の path を返す。
 fn sshcontrol_path() -> Result<PathBuf> {
     Ok(gnupg_home()?.join("sshcontrol"))
-}
-
-/// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を SSH agent socket の優先候補として返す。
-fn ssh_agent_socket_path() -> Result<Option<PathBuf>> {
-    Ok(Some(gnupg_home()?.join("S.gpg-agent.ssh")))
-}
-
-/// 指定 path が socket として存在するかを返す。
-fn is_socket(path: &PathBuf) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        std::fs::metadata(path)
-            .map(|metadata| metadata.file_type().is_socket())
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
-    }
 }
 
 /// `sshcontrol` に keygrip（uppercase hex 40）が既に登録されているかを返す。

@@ -18,6 +18,7 @@ use crate::{
             gpg_restore::{
                 ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
             },
+            pass_restore::GpgRecipientId,
         },
         ports::gpg::GpgKeyringPort,
         support::protection::{ProtectedSecret, gpg_backup as backup_protection},
@@ -180,6 +181,27 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             .find(|line| !line.trim().is_empty())
             .context("exported OpenSSH public key is empty")?;
         OpenSshPublicKey::parse(line)
+    }
+
+    fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
+        let mut context = Self::context()?;
+        match context.get_secret_key(recipient.as_str()) {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error.code() == gpgme::Error::NO_SECKEY.code()
+                    || error.code() == gpgme::Error::EOF.code() =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(anyhow::Error::new(error)
+                .context("failed to query GPG secret key for password-store recipient")),
+        }
+    }
+
+    fn can_decrypt_store_entry(&mut self, entry_path: &std::path::Path) -> Result<()> {
+        // store 内サンプル entry を gpgme で復号し、復元済み秘密鍵で読めることを確認する。復号した平文は
+        // この scope 内で破棄し、stdout / log / 一時ファイルへ出さない（保護境界内で完了させる）。
+        backup_protection::verify_can_decrypt(entry_path)
     }
 }
 

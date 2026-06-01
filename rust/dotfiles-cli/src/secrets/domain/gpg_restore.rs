@@ -267,28 +267,33 @@ fn openssh_base64_symbol_value(symbol: u8) -> Option<u8> {
 
 /// gpg-agent SSH support が利用可能であることを adapter が報告した観測結果。
 ///
-/// 設計「gpg-agent SSH support 境界」は「SSH agent socket 参照先が解決でき、その socket 経路で
-/// authentication subkey が識別可能」を同時に満たす状態を「利用可」とする。adapter は socket 解決
-/// 可否と authentication subkey 識別可否を観測してこの値へ翻訳し、業務上の充足判定はこの module で行う。
+/// 設計「gpg-agent SSH support 境界」（L116-124）は「SSH agent socket 参照先が解決でき、その socket 経路で
+/// authentication subkey が識別可能」を満たす状態を「利用可」とする。adapter は agent が列挙する identity を
+/// 観測し、socket 解決可否（`socket_resolved`）と、復元鍵の identity が含まれるか（`recovery_identity_present`）を
+/// この値へ翻訳する。この充足判定は `restore-gpg` が行い（設計 L34-35/L116-124）、`restore-pass` へ進ませる
+/// gate になる。業務上の充足判定はこの module で行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SshAgentReadiness {
     /// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として解決できたか。
     pub socket_resolved: bool,
-    /// その SSH agent 経路で authentication subkey を identity として識別できたか。
-    pub authentication_identity_present: bool,
+    /// agent が列挙する identity の中に、復元鍵の key blob と一致する identity が存在したか。
+    pub recovery_identity_present: bool,
 }
 
 impl SshAgentReadiness {
-    /// gpg-agent SSH support が `restore-pass` へ引き渡せる前提を満たすことを検証する。
+    /// agent socket が解決でき、復元鍵の authentication subkey identity が agent から識別可能であることを
+    /// 確認する（restore-gpg の SSH support 確認用）。
     ///
-    /// socket 未解決、または authentication subkey が識別できない場合は停止条件として失敗する。
+    /// 設計「gpg-agent SSH support 境界」（L116-124）に従い、(1) socket が解決でき、(2) 復元鍵の identity が
+    /// agent から識別可能、の 2 条件を要求する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は判定
+    /// 条件に含めない。各条件の失敗は別個の停止条件として、原因の区別できる message で失敗する。
     pub fn ensure_ready(self) -> Result<()> {
         if !self.socket_resolved {
             anyhow::bail!("gpg-agent SSH agent socket could not be resolved");
         }
-        if !self.authentication_identity_present {
+        if !self.recovery_identity_present {
             anyhow::bail!(
-                "gpg-agent SSH support cannot use the GPG authentication subkey as an identity"
+                "gpg-agent does not offer the recovery GPG authentication subkey as an SSH identity"
             );
         }
         Ok(())
@@ -433,27 +438,31 @@ mod tests {
     }
 
     #[test]
-    fn ssh_agent_readiness_requires_both_conditions() {
+    fn ssh_agent_readiness_ready_requires_socket_and_recovery_identity() {
+        // restore-gpg の SSH support 確認は socket 解決 + 復元鍵識別の 2 条件で成立する。
+        // 設計 L83 に従い、復元鍵と無関係な既存 identity の有無は判定条件に含めない。
         assert!(
             SshAgentReadiness {
                 socket_resolved: true,
-                authentication_identity_present: true,
+                recovery_identity_present: true,
             }
             .ensure_ready()
             .is_ok()
         );
+        // socket 未解決は ensure_ready で停止する。
         assert!(
             SshAgentReadiness {
                 socket_resolved: false,
-                authentication_identity_present: true,
+                recovery_identity_present: true,
             }
             .ensure_ready()
             .is_err()
         );
+        // 復元鍵が提示されない場合は ensure_ready で停止する。
         assert!(
             SshAgentReadiness {
                 socket_resolved: true,
-                authentication_identity_present: false,
+                recovery_identity_present: false,
             }
             .ensure_ready()
             .is_err()

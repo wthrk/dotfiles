@@ -29,6 +29,7 @@ use crate::{
             gpg_restore::{
                 ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
             },
+            pass_restore::GpgRecipientId,
         },
         ports::gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort},
         support::protection::ProtectedSecret,
@@ -50,6 +51,22 @@ struct GpgStubSpec {
     /// import 後に解決できる鍵の構成（fingerprint -> capability/keygrip/ssh）。
     #[serde(default)]
     keys: BTreeMap<String, GpgKeySpec>,
+    /// gpg-agent `sshcontrol` に事前登録済みとみなす keygrip（uppercase hex 40）の一覧。restore-gpg の登録
+    /// 経路（`register_authentication_subkey`）の初期状態と観測のために保持する。
+    #[serde(default)]
+    registered_keygrips: Vec<String>,
+    /// `.gpg-id` recipient のうち、手元秘密鍵で復号可能（= 秘密鍵を保持）とみなす recipient（uppercase hex）。
+    /// 未指定なら既定 recipient だけを保持しているとみなす。
+    #[serde(default = "default_held_recipients")]
+    held_recipients: Vec<String>,
+    /// store サンプル entry を復元済み秘密鍵で復号できるか（`can_decrypt_store_entry` の結果）。
+    #[serde(default = "default_true")]
+    store_entry_decryptable: bool,
+}
+
+/// 既定で手元に保持しているとみなす recipient（Git stub の既定 `.gpg-id` recipient と整合）。
+fn default_held_recipients() -> Vec<String> {
+    vec!["0123456789ABCDEF0123456789ABCDEF01234567".to_owned()]
 }
 
 #[derive(serde::Deserialize, Clone)]
@@ -80,6 +97,8 @@ struct GpgDatastore {
     keys: BTreeMap<String, StoredKey>,
     imported: Vec<String>,
     registered_keygrips: Vec<String>,
+    held_recipients: Vec<String>,
+    store_entry_decryptable: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -198,6 +217,24 @@ impl GpgKeyringPort for GpgKeyringStub {
         let key = stored_key(primary_fingerprint)?;
         OpenSshPublicKey::parse(&key.ssh_public_key)
     }
+
+    fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
+        with_datastore(|store| {
+            Ok(store
+                .held_recipients
+                .iter()
+                .any(|held| held.eq_ignore_ascii_case(recipient.as_str())))
+        })
+    }
+
+    fn can_decrypt_store_entry(&mut self, _entry_path: &std::path::Path) -> Result<()> {
+        let decryptable = with_datastore(|store| Ok(store.store_entry_decryptable))?;
+        if decryptable {
+            Ok(())
+        } else {
+            anyhow::bail!("stub password-store entry cannot be decrypted with the restored GPG key")
+        }
+    }
 }
 
 impl BackupCipherPort for BackupCipherStub {
@@ -243,24 +280,32 @@ impl SshAgentPort for SshAgentStub {
         &mut self,
         expected_public_key: &OpenSshPublicKey,
     ) -> Result<SshAgentReadiness> {
-        // real adapter は agent identity の key blob を期待公開鍵の key blob と byte 一致で照合する。stub は
-        // 「期待公開鍵と同一 key blob を持つ鍵の keygrip が SSH key list へ登録済みなら identity を識別できる」
-        // という register→identify の linkage を、同じ domain 照合（`matches_agent_key_blob`）で再現する。
-        let present = with_datastore(|store| {
-            Ok(store.keys.values().any(|key| {
-                OpenSshPublicKey::parse(&key.ssh_public_key)
-                    .ok()
-                    .and_then(|stored| stored.key_blob())
-                    .is_some_and(|blob| expected_public_key.matches_agent_key_blob(&blob))
-                    && store
+        // real adapter は agent が列挙する identity の key blob を期待公開鍵の key blob と byte 一致で照合し、
+        // 復元鍵 identity が識別可能かを観測する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は観測
+        // しない。stub は restore-gpg の register→identify linkage（「期待公開鍵と同一 key blob を持つ鍵の keygrip が
+        // SSH key list へ登録済み」なら、その鍵を agent 列挙 identity の 1 つとみなす）を再現し、同じ domain 照合
+        // （`matches_agent_key_blob`）で復元鍵の識別可否を判定する。
+        let recovery_present = with_datastore(|store| {
+            let recovery_present = store
+                .keys
+                .values()
+                .filter(|key| {
+                    store
                         .registered_keygrips
                         .iter()
                         .any(|registered| registered == &key.keygrip)
-            }))
+                })
+                .filter_map(|key| {
+                    OpenSshPublicKey::parse(&key.ssh_public_key)
+                        .ok()
+                        .and_then(|parsed| parsed.key_blob())
+                })
+                .any(|blob| expected_public_key.matches_agent_key_blob(&blob));
+            Ok(recovery_present)
         })?;
         Ok(SshAgentReadiness {
             socket_resolved: true,
-            authentication_identity_present: present,
+            recovery_identity_present: recovery_present,
         })
     }
 }
@@ -327,7 +372,9 @@ fn load_datastore() -> Result<GpgDatastore> {
             })
             .collect(),
         imported: Vec::new(),
-        registered_keygrips: Vec::new(),
+        registered_keygrips: spec.registered_keygrips,
+        held_recipients: spec.held_recipients,
+        store_entry_decryptable: spec.store_entry_decryptable,
     })
 }
 
