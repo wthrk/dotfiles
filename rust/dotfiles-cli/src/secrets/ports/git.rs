@@ -52,9 +52,9 @@ pub trait GitClonePort {
     ///
     /// implementor は SSH agent から GPG authentication subkey 由来 identity を提示して clone を行い、
     /// 既存 directory への上書きはしない（不存在確認は caller の責務）。URL は domain で検証済みの
-    /// `PasswordStoreRemote` を受け取り、adapter で再検証しない。clone は temp directory 経由で原子的に行い、
-    /// 失敗時は destination を残さず、成功時のみ `~/.password-store` へ rename する（既存 store は決して
-    /// 上書き・削除しない）。したがって caller は clone 失敗時に destination の rollback 削除を行ってはならない
-    /// （TOCTOU で他 process の store を誤削除しうるため）。
+    /// `PasswordStoreRemote` を受け取り、adapter で再検証しない。destination を `create_dir` で原子的に確保
+    /// （既存 path があれば上書きせず停止）し、その空 directory へ clone する。clone 失敗時は自分が作成した
+    /// destination を削除して残さない。既存 store は決して上書き・削除しない。したがって caller は clone
+    /// 失敗時に destination の rollback 削除を行ってはならない（TOCTOU で他 process の store を誤削除しうるため）。
     fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()>;
 }

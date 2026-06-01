@@ -89,14 +89,18 @@ fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// store tree から最初に見つかった `*.gpg` entry の path を 1 件だけ返す（無ければ `None`）。
+/// store tree から最初に見つかった regular file の `*.gpg` entry の path を 1 件だけ返す（無ければ `None`）。
 ///
-/// 除外するのは Git 管理ディレクトリ `.git` だけであり、それ以外の dot-directory（例: `.aws/credentials.gpg`）は
-/// 走査対象に含める。pass entry が dot-directory 配下にしか無い store でもサンプル entry を取りこぼさず、
-/// authoritative な復号確認を確実に行うためである。復号確認に使うサンプルを 1 件得るための浅い走査であり、
-/// 全 entry の列挙はしない。`read_dir` が失敗したディレクトリは（探索全体を中断せず）読み飛ばして走査を
-/// 継続する。これにより、一過性の I/O 失敗で「サンプル entry なし」と誤判定し、authoritative な復号確認を
-/// 取りこぼすことを防ぐ。
+/// サンプルにするのは `file_type.is_file()` が真（= regular file）の `*.gpg` だけであり、symlink の `*.gpg` は
+/// 選ばない。`DirEntry::file_type()` は link を辿らないため symlink は dir でも file でもなく、後段の
+/// `std::fs::read` が link を辿って cloned store の外（例: `/dev/zero` で hang/OOM、外部の復号可能ファイルで
+/// 偽の可読性成功）へ抜ける経路を断つ。directory branch も `file_type.is_dir()` が symlinked dir で偽になるため
+/// symlinked directory を辿らない。除外するのは Git 管理ディレクトリ `.git` だけであり、それ以外の
+/// dot-directory（例: `.aws/credentials.gpg`）は走査対象に含める。pass entry が dot-directory 配下にしか無い
+/// store でもサンプル entry を取りこぼさず、authoritative な復号確認を確実に行うためである。復号確認に使う
+/// サンプルを 1 件得るための浅い走査であり、全 entry の列挙はしない。`read_dir` が失敗したディレクトリは
+/// （探索全体を中断せず）読み飛ばして走査を継続する。これにより、一過性の I/O 失敗で「サンプル entry なし」と
+/// 誤判定し、authoritative な復号確認を取りこぼすことを防ぐ。
 fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
     let mut stack = vec![store_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -118,7 +122,11 @@ fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
                 if !is_git_dir {
                     stack.push(path);
                 }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("gpg") {
+            } else if file_type.is_file()
+                && path.extension().and_then(|ext| ext.to_str()) == Some("gpg")
+            {
+                // regular file の `*.gpg` だけをサンプルにする。`file_type.is_file()` は symlink で偽になるため、
+                // symlink の `*.gpg` は選ばず、後段の `std::fs::read` が link を辿って store 外へ抜けるのを防ぐ。
                 return Some(path);
             }
         }

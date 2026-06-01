@@ -66,13 +66,15 @@ pub(super) struct GitCloneAdapter;
 impl GitCloneAdapter {
     /// 検証済み clone URL を `~/.password-store` へ SSH agent 認証で clone する。
     ///
-    /// clone は `~/.password-store` の sibling（同一 parent dir = 同一 filesystem）に作る一意な temp
-    /// directory 経由で原子的に行う。成功時のみ `~/.password-store` がまだ不在であることを再確認して
-    /// `std::fs::rename` で temp を昇格させ、失敗時は temp を best-effort で削除して destination を残さない。
-    /// 別 process が手順 3 の不存在確認後に `~/.password-store` を作っていた場合（TOCTOU）でも、その既存
-    /// store は決して上書き・削除せず、temp を削除して error を返す。これにより本 adapter は「Err なら
-    /// destination に何も残さない／Ok なら destination は今 clone した store だけ」を保証し、application 側の
-    /// clone 失敗時 rollback（既存 store を誤削除しうる）を不要にする。
+    /// destination を `std::fs::create_dir` で原子的に確保（既存 path があれば上書きせず停止）し、その空
+    /// directory へ clone する。`create_dir` は atomic であり、`~/.password-store` が既に存在する場合
+    /// （実 dir・別 process が race で作った空 dir・dangling symlink いずれも EEXIST）は
+    /// `ErrorKind::AlreadyExists` で失敗するため、`rename` の「空の既存 dir を atomic に置換する」挙動による
+    /// TOCTOU での既存 store 上書きが起きない。clone 失敗時は自分が作成した destination
+    /// （`create_dir` 成功により事前不在が確定している）を best-effort で削除して残さない。既存 store は
+    /// 決して上書き・削除しない。これにより本 adapter は「Err なら destination に何も残さない／Ok なら
+    /// destination は今 clone した store だけ」を保証し、application 側の clone 失敗時 rollback（既存 store を
+    /// 誤削除しうる）を不要にする。
     pub(super) fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
         // clone は提示する SSH identity を選べないため、gpg-agent socket を strict に解決する。通常の `ssh-agent`
         // を指しうる `SSH_AUTH_SOCK` へは fallback せず、gpg-agent socket が無ければ clone を試みず停止する
@@ -128,53 +130,36 @@ impl GitCloneAdapter {
         fetch_options.remote_callbacks(callbacks);
 
         let destination = password_store_path()?;
-        // destination の sibling（同一 parent = 同一 filesystem）に一意な temp directory を構える。system
-        // temp dir は別 filesystem になりうり `rename` が原子的でなくなるため使わない。process id を含めた
-        // 名前で他 process との衝突を避け、過去の異常終了で残った同名 temp があれば先に掃除する。
-        let parent = destination.parent().ok_or_else(|| {
-            anyhow::anyhow!("could not resolve the parent directory of ~/.password-store")
-        })?;
-        let temp_dir = parent.join(format!(".password-store.clone.{}.tmp", std::process::id()));
-        if let Err(error) = remove_dir_all_if_present(&temp_dir) {
-            return Err(error
-                .context("failed to clean up a stale temporary password-store clone directory"));
+        // destination を `create_dir` で原子的に確保する。`create_dir` は atomic であり、`~/.password-store`
+        // が既に存在する場合（実 dir・別 process が race で作った空 dir・dangling symlink いずれも EEXIST）は
+        // `ErrorKind::AlreadyExists` で失敗する。これにより、`rename` が空の既存 dir を atomic に置換する挙動を
+        // 突いて TOCTOU で既存 store を上書きする経路を排除し、「既存 store は決して上書きしない」契約を守る。
+        match std::fs::create_dir(&destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::bail!("refusing to clone over an existing ~/.password-store");
+            }
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context("failed to claim ~/.password-store before cloning"));
+            }
         }
 
-        // temp directory へ clone する。失敗時は temp を best-effort で削除し、destination には何も残さない。
+        // 確保した空の destination directory へ直接 clone する（libssh2/`RepoBuilder` は既存 EMPTY dir へ
+        // clone できる）。失敗時は自分が `create_dir` で作成した（= 事前不在が確定している）destination を
+        // best-effort で削除し、既存 store を誤削除することなく元の clone error を返す。
         if let Err(error) = RepoBuilder::new()
             .fetch_options(fetch_options)
-            .clone(remote.as_str(), &temp_dir)
+            .clone(remote.as_str(), &destination)
         {
-            let _ = std::fs::remove_dir_all(&temp_dir);
+            let _ = std::fs::remove_dir_all(&destination);
             return Err(anyhow::anyhow!(
                 "failed to clone private password-store over SSH: {error}"
             ));
         }
 
-        // clone 成功後、destination がまだ不在であることを再確認してから temp を rename で昇格させる。手順 3 の
-        // 不存在確認後に別 process が `~/.password-store` を作っていた場合（TOCTOU）は、その既存 store を決して
-        // 上書きせず temp を削除して停止する。
-        if destination.symlink_metadata().is_ok() {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            anyhow::bail!(
-                "~/.password-store appeared during clone; refusing to overwrite a store created by another process"
-            );
-        }
-        if let Err(error) = std::fs::rename(&temp_dir, &destination) {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(anyhow::Error::new(error)
-                .context("failed to move the cloned password-store into ~/.password-store"));
-        }
+        // clone 成功時 destination は既に `~/.password-store` にあり、rename は不要。
         Ok(())
-    }
-}
-
-/// path（directory）が存在すれば削除し、不在なら成功扱いにする。temp clone directory の事前掃除に使う。
-fn remove_dir_all_if_present(path: &std::path::Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(anyhow::Error::new(error)),
     }
 }
 
