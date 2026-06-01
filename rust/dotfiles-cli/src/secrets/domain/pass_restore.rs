@@ -51,8 +51,9 @@ impl PasswordStoreRemote {
     /// `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?`、`<repo>` は `[A-Za-z0-9._-]+`（`.`/`..` を除く）に
     /// 一致する値だけを許可し、path traversal や追加 segment（`/` を 1 つだけ含む）を作らせない。
     pub fn parse(value: &str) -> Result<Self> {
-        // trim せず、空白・制御文字を含む値は前後・内部いずれでも拒否する（設計 L101）。
-        if value.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        // trim せず、空白・制御文字を含む値は前後・内部いずれでも拒否する（設計 L101）。空白は ASCII に
+        // 限らず、U+2000 などの非 ASCII 空白も `char::is_whitespace` で一律に拒否する。
+        if value.chars().any(|ch| ch.is_whitespace()) {
             anyhow::bail!("password-store-remote must not contain whitespace");
         }
         if value.chars().any(|ch| ch.is_control()) {
@@ -264,6 +265,12 @@ mod tests {
         // 内部の空白も拒否する（設計 L101 / L103 の空白禁止）。
         assert!(PasswordStoreRemote::parse("git@github.com:o w/r.git").is_err());
         assert!(PasswordStoreRemote::parse("git@github.com:o/r\t.git").is_err());
+    }
+
+    #[test]
+    fn rejects_non_ascii_whitespace() {
+        // ASCII 以外の空白（U+2000 EN QUAD など）も `char::is_whitespace` で一律に拒否する。
+        assert!(PasswordStoreRemote::parse("git@github.com:owner/re\u{2000}po.git").is_err());
     }
 
     #[test]

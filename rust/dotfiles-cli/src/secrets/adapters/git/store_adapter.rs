@@ -91,10 +91,12 @@ fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
 
 /// store tree から最初に見つかった `*.gpg` entry の path を 1 件だけ返す（無ければ `None`）。
 ///
-/// `.git` などの隠しディレクトリは pass entry を含まないため走査から除外する。復号確認に使う
-/// サンプルを 1 件得るための浅い走査であり、全 entry の列挙はしない。`read_dir` が失敗した
-/// ディレクトリは（探索全体を中断せず）読み飛ばして走査を継続する。これにより、一過性の I/O
-/// 失敗で「サンプル entry なし」と誤判定し、authoritative な復号確認を取りこぼすことを防ぐ。
+/// 除外するのは Git 管理ディレクトリ `.git` だけであり、それ以外の dot-directory（例: `.aws/credentials.gpg`）は
+/// 走査対象に含める。pass entry が dot-directory 配下にしか無い store でもサンプル entry を取りこぼさず、
+/// authoritative な復号確認を確実に行うためである。復号確認に使うサンプルを 1 件得るための浅い走査であり、
+/// 全 entry の列挙はしない。`read_dir` が失敗したディレクトリは（探索全体を中断せず）読み飛ばして走査を
+/// 継続する。これにより、一過性の I/O 失敗で「サンプル entry なし」と誤判定し、authoritative な復号確認を
+/// 取りこぼすことを防ぐ。
 fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
     let mut stack = vec![store_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -108,11 +110,12 @@ fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
                 Err(_) => continue,
             };
             if file_type.is_dir() {
-                let is_hidden = path
+                // 除外するのは `.git` のみ。他の dot-directory（`.aws` など）は pass entry を含みうるため走査する。
+                let is_git_dir = path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with('.'));
-                if !is_hidden {
+                    .is_some_and(|name| name == ".git");
+                if !is_git_dir {
                     stack.push(path);
                 }
             } else if path.extension().and_then(|ext| ext.to_str()) == Some("gpg") {

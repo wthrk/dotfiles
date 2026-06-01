@@ -65,6 +65,14 @@ pub(super) struct GitCloneAdapter;
 
 impl GitCloneAdapter {
     /// 検証済み clone URL を `~/.password-store` へ SSH agent 認証で clone する。
+    ///
+    /// clone は `~/.password-store` の sibling（同一 parent dir = 同一 filesystem）に作る一意な temp
+    /// directory 経由で原子的に行う。成功時のみ `~/.password-store` がまだ不在であることを再確認して
+    /// `std::fs::rename` で temp を昇格させ、失敗時は temp を best-effort で削除して destination を残さない。
+    /// 別 process が手順 3 の不存在確認後に `~/.password-store` を作っていた場合（TOCTOU）でも、その既存
+    /// store は決して上書き・削除せず、temp を削除して error を返す。これにより本 adapter は「Err なら
+    /// destination に何も残さない／Ok なら destination は今 clone した store だけ」を保証し、application 側の
+    /// clone 失敗時 rollback（既存 store を誤削除しうる）を不要にする。
     pub(super) fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
         // clone は提示する SSH identity を選べないため、gpg-agent socket を strict に解決する。通常の `ssh-agent`
         // を指しうる `SSH_AUTH_SOCK` へは fallback せず、gpg-agent socket が無ければ clone を試みず停止する
@@ -120,13 +128,53 @@ impl GitCloneAdapter {
         fetch_options.remote_callbacks(callbacks);
 
         let destination = password_store_path()?;
-        RepoBuilder::new()
+        // destination の sibling（同一 parent = 同一 filesystem）に一意な temp directory を構える。system
+        // temp dir は別 filesystem になりうり `rename` が原子的でなくなるため使わない。process id を含めた
+        // 名前で他 process との衝突を避け、過去の異常終了で残った同名 temp があれば先に掃除する。
+        let parent = destination.parent().ok_or_else(|| {
+            anyhow::anyhow!("could not resolve the parent directory of ~/.password-store")
+        })?;
+        let temp_dir = parent.join(format!(".password-store.clone.{}.tmp", std::process::id()));
+        if let Err(error) = remove_dir_all_if_present(&temp_dir) {
+            return Err(error
+                .context("failed to clean up a stale temporary password-store clone directory"));
+        }
+
+        // temp directory へ clone する。失敗時は temp を best-effort で削除し、destination には何も残さない。
+        if let Err(error) = RepoBuilder::new()
             .fetch_options(fetch_options)
-            .clone(remote.as_str(), &destination)
-            .map_err(|error| {
-                anyhow::anyhow!("failed to clone private password-store over SSH: {error}")
-            })?;
+            .clone(remote.as_str(), &temp_dir)
+        {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(anyhow::anyhow!(
+                "failed to clone private password-store over SSH: {error}"
+            ));
+        }
+
+        // clone 成功後、destination がまだ不在であることを再確認してから temp を rename で昇格させる。手順 3 の
+        // 不存在確認後に別 process が `~/.password-store` を作っていた場合（TOCTOU）は、その既存 store を決して
+        // 上書きせず temp を削除して停止する。
+        if destination.symlink_metadata().is_ok() {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            anyhow::bail!(
+                "~/.password-store appeared during clone; refusing to overwrite a store created by another process"
+            );
+        }
+        if let Err(error) = std::fs::rename(&temp_dir, &destination) {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(anyhow::Error::new(error)
+                .context("failed to move the cloned password-store into ~/.password-store"));
+        }
         Ok(())
+    }
+}
+
+/// path（directory）が存在すれば削除し、不在なら成功扱いにする。temp clone directory の事前掃除に使う。
+fn remove_dir_all_if_present(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(anyhow::Error::new(error)),
     }
 }
 
@@ -173,10 +221,13 @@ fn verify_github_host_key(cert: &Cert<'_>, hostname: &str) -> std::result::Resul
     }
 }
 
-/// standard base64（padding 必須）文字列を bytes へ decode する。pin した GitHub host key body の照合専用。
+/// standard base64 文字列を bytes へ decode する。pin した GitHub host key body の照合専用。
 ///
-/// この adapter は base64 crate へ依存しないため、pin 値の decode に必要な最小 decoder を持つ。alphabet /
-/// padding / 長さの妥当性違反は `None` を返し、照合側で「一致しない」へ倒す。
+/// この adapter は base64 crate へ依存しないため、pin 値の decode に必要な最小 decoder を持つ。入力長は 4 の
+/// 倍数でなければならず（canonical 長）、末尾以外の chunk に `=` を含めることはできない。末尾 chunk が満たない
+/// 場合は `=` による canonical padding（`==` で 1 byte / `=` で 2 byte）を要求し、padding 位置・桁数が不正な
+/// 値は拒否する。長さが 4 の倍数で末尾が完全な 4 文字 chunk なら padding は不要であり、その場合 `=` は現れない。
+/// alphabet / padding / 長さのいずれの妥当性違反も `None` を返し、照合側で「一致しない」へ倒す。
 fn standard_base64_decode(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
@@ -248,7 +299,7 @@ mod tests {
     /// base64 decode の padding / alphabet 妥当性検証（不正値は `None`）を確認する。
     #[test]
     fn standard_base64_decode_rejects_invalid_input() {
-        // 長さが 4 の倍数でない。
+        // 長さが 4 の倍数でない（canonical padding を欠いた truncated 入力）。
         assert!(standard_base64_decode("AAA").is_none());
         // alphabet 外の文字。
         assert!(standard_base64_decode("AA*A").is_none());
@@ -257,5 +308,27 @@ mod tests {
         // 妥当な padding 付き値は decode できる（"Zm9v" == "foo"）。
         assert_eq!(standard_base64_decode("Zm9v"), Some(b"foo".to_vec()));
         assert_eq!(standard_base64_decode("Zg=="), Some(b"f".to_vec()));
+    }
+
+    /// canonical padding を持つ GitHub 形式の host key body は decode でき、その body から `=` を 1 文字
+    /// 削った（4 の倍数でない truncated / 不正 padding）入力は契約どおり拒否することを確認する。
+    #[test]
+    fn standard_base64_decode_accepts_padded_github_key_and_rejects_truncated() {
+        // ssh-ed25519 host key body は標準 base64 で末尾に `=` padding を持たない（長さが 4 の倍数）。
+        let ed25519_body = GITHUB_SSH_HOST_KEYS[0]
+            .split_whitespace()
+            .nth(1)
+            .expect("ed25519 pin has a base64 body");
+        assert!(standard_base64_decode(ed25519_body).is_some());
+        // ecdsa host key body は末尾に `=` padding を持つ canonical 標準 base64。
+        let ecdsa_body = GITHUB_SSH_HOST_KEYS[1]
+            .split_whitespace()
+            .nth(1)
+            .expect("ecdsa pin has a base64 body");
+        assert!(ecdsa_body.ends_with('='), "ecdsa pin body is padded");
+        assert!(standard_base64_decode(ecdsa_body).is_some());
+        // padding を 1 文字削ると長さが 4 の倍数でなくなり、契約どおり拒否される。
+        let truncated = &ecdsa_body[..ecdsa_body.len() - 1];
+        assert!(standard_base64_decode(truncated).is_none());
     }
 }
