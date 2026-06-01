@@ -2,10 +2,12 @@
 //!
 //! private `password-store` repository を `~/.password-store` へ clone する。認証は git2 の credentials
 //! callback で libssh2 の SSH agent 経路（`Cred::ssh_key_from_agent`）を使い、gpg-agent の SSH support
-//! が提示する GPG authentication subkey 由来の identity を利用する。`git` CLI と GitHub API は使わず、
-//! SSH agent socket は #14 と同じく `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として解決し、
-//! socket でなければ既存 `SSH_AUTH_SOCK` を維持する（`config/zsh/env.zsh` の上書き条件と同じ前提）。
-//! clone URL の妥当性判断は domain（`PasswordStoreRemote`）に委ね、ここでは git2 への翻訳だけを担う。
+//! が提示する GPG authentication subkey 由来の identity だけを利用する。`git` CLI と GitHub API は使わない。
+//! clone は提示する SSH identity を選べないため、socket 解決は gpg-agent socket
+//! （`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に使う `resolve_gpg_agent_socket` を用い、通常の
+//! `ssh-agent` を指しうる既存 `SSH_AUTH_SOCK` へは fallback しない。既存 `~/.ssh/id_ed25519` を新規運用で使わ
+//! ない仕様（spec L92 / L100 / L210）を守るためであり、gpg-agent socket が無ければ clone を停止する。clone URL の
+//! 妥当性判断は domain（`PasswordStoreRemote`）に委ね、ここでは git2 への翻訳だけを担う。
 
 use anyhow::Context;
 use git2::{Cred, CredentialType, FetchOptions, RemoteCallbacks, build::RepoBuilder};
@@ -14,7 +16,7 @@ use crate::{
     Result,
     secrets::{
         adapters::git::password_store_path, domain::pass_restore::PasswordStoreRemote,
-        support::ssh_agent_socket::resolve_ssh_agent_socket,
+        support::ssh_agent_socket::resolve_gpg_agent_socket,
     },
 };
 
@@ -25,17 +27,19 @@ pub(super) struct GitCloneAdapter;
 impl GitCloneAdapter {
     /// 検証済み clone URL を `~/.password-store` へ SSH agent 認証で clone する。
     pub(super) fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
-        // SSH agent 経路の利用には socket が解決できる必要がある。解決できなければ clone を試みず停止する。
-        let socket = resolve_ssh_agent_socket()
-            .context("could not resolve a gpg-agent SSH agent socket for password-store clone")?;
-        // libssh2 は credentials callback で SSH agent を使う前に `SSH_AUTH_SOCK` を参照する。#14 と同じ
-        // socket 解決結果へ環境変数を合わせ、`git2` が同じ SSH agent 経路を使うようにする。clone は process-global
+        // clone は提示する SSH identity を選べないため、gpg-agent socket を strict に解決する。通常の `ssh-agent`
+        // を指しうる `SSH_AUTH_SOCK` へは fallback せず、gpg-agent socket が無ければ clone を試みず停止する
+        // （既存 `~/.ssh` 鍵での clone を防ぐ。spec L92 / L100 / L210）。
+        let socket = resolve_gpg_agent_socket()
+            .context("could not resolve the gpg-agent SSH agent socket for password-store clone")?;
+        // libssh2 は credentials callback で SSH agent を使う前に `SSH_AUTH_SOCK` を参照する。strict に解決した
+        // gpg-agent socket へ環境変数を合わせ、`git2` が gpg-agent SSH 経路を使うようにする。clone は process-global
         // な `SSH_AUTH_SOCK` を一時的に上書きするだけであり、後続の同一 `dotfiles` process 操作へ副作用を残さない
         // よう、旧値を保存して clone の成功/失敗いずれでも scope 離脱時に必ず復元する。
         let previous_sock = std::env::var_os("SSH_AUTH_SOCK");
         // SAFETY: clone 実行は単一スレッドの use case 経路であり、set/restore はいずれも非 secret な socket path
-        // （`SSH_AUTH_SOCK`）だけを扱う。本 process の SSH agent 接続先を #14 の解決結果へ一時固定し、scope 離脱で
-        // 旧値（未設定なら除去）へ戻すためだけに行う。
+        // （`SSH_AUTH_SOCK`）だけを扱う。本 process の SSH agent 接続先を strict 解決した gpg-agent socket へ一時
+        // 固定し、scope 離脱で旧値（未設定なら除去）へ戻すためだけに行う。
         unsafe {
             std::env::set_var("SSH_AUTH_SOCK", &socket);
         }

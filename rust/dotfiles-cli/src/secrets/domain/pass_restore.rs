@@ -40,16 +40,21 @@ const GIT_SUFFIX: &str = ".git";
 impl PasswordStoreRemote {
     /// BWS 由来の `password-store-remote` 文字列を GitHub SSH clone URL として検証して構築する。
     ///
-    /// `git@github.com:<owner>/<repo>.git` の固定形式だけを許可する。前後空白は除去し、改行を含む
-    /// 値、prefix/suffix 不一致、`<owner>`/`<repo>` の欠落・空・余剰 path segment は domain failure
-    /// として停止する。`<owner>` と `<repo>` は GitHub の識別子に許される文字（英数・`-`・`_`・`.`）
-    /// だけを許可し、path traversal や追加 segment（`/` を 1 つだけ含む）を作らせない。
+    /// `git@github.com:<owner>/<repo>.git` の固定形式だけを許可する。設計
+    /// （bitwarden-secrets-manager-design.md L101）は前後空白・改行を許可しないため trim せず、前後・内部の
+    /// いずれであれ空白や制御文字を含む値は停止条件で拒否する。prefix/suffix 不一致、`<owner>`/`<repo>` の
+    /// 欠落・空・余剰 path segment も domain failure として停止する。`<owner>` は同 L103 の
+    /// `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?`、`<repo>` は `[A-Za-z0-9._-]+`（`.`/`..` を除く）に
+    /// 一致する値だけを許可し、path traversal や追加 segment（`/` を 1 つだけ含む）を作らせない。
     pub fn parse(value: &str) -> Result<Self> {
-        if value.contains('\n') || value.contains('\r') {
-            anyhow::bail!("password-store-remote must be a single line");
+        // trim せず、空白・制御文字を含む値は前後・内部いずれでも拒否する（設計 L101）。
+        if value.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            anyhow::bail!("password-store-remote must not contain whitespace");
         }
-        let trimmed = value.trim();
-        let Some(without_prefix) = trimmed.strip_prefix(GITHUB_SSH_PREFIX) else {
+        if value.chars().any(|ch| ch.is_control()) {
+            anyhow::bail!("password-store-remote must not contain control characters");
+        }
+        let Some(without_prefix) = value.strip_prefix(GITHUB_SSH_PREFIX) else {
             anyhow::bail!("password-store-remote must be a git@github.com SSH clone URL");
         };
         let Some(owner_repo) = without_prefix.strip_suffix(GIT_SUFFIX) else {
@@ -58,11 +63,11 @@ impl PasswordStoreRemote {
         let mut segments = owner_repo.split('/');
         let owner = segments
             .next()
-            .filter(|owner| is_valid_path_component(owner))
+            .filter(|owner| is_valid_owner(owner))
             .ok_or_else(|| anyhow::anyhow!("password-store-remote owner is invalid"))?;
         let repo = segments
             .next()
-            .filter(|repo| is_valid_path_component(repo))
+            .filter(|repo| is_valid_repository(repo))
             .ok_or_else(|| anyhow::anyhow!("password-store-remote repository is invalid"))?;
         if segments.next().is_some() {
             anyhow::bail!("password-store-remote must be exactly owner/repository");
@@ -79,10 +84,34 @@ impl PasswordStoreRemote {
     }
 }
 
-/// GitHub の owner / repository 識別子に許す文字だけで構成されるかを判定する。
+/// GitHub `<owner>` 識別子の妥当性を判定する。
 ///
-/// 空、`.`/`..` のみ、`/` や path traversal 文字を許さず、英数・`-`・`_`・`.` だけを許可する。
-fn is_valid_path_component(value: &str) -> bool {
+/// 設計（bitwarden-secrets-manager-design.md L103）の `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?` に
+/// 一致する値だけを許可する。先頭末尾は英数字、中間は英数字とハイフン、全体は 1〜39 文字（先頭 1 + 中間
+/// 0〜37 + 末尾 1、1 文字 owner も許可）に限定し、先頭/末尾ハイフン、`_`、`.`、39 文字超は拒否する。
+fn is_valid_owner(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    match bytes {
+        // 1 文字 owner は英数字 1 文字のみ。
+        [only] => only.is_ascii_alphanumeric(),
+        // 2 文字以上は先頭末尾が英数字、中間は英数字とハイフン、全体 39 文字以内。
+        [first, middle @ .., last] if value.len() <= 39 => {
+            first.is_ascii_alphanumeric()
+                && last.is_ascii_alphanumeric()
+                && middle
+                    .iter()
+                    .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+        }
+        _ => false,
+    }
+}
+
+/// GitHub `<repo>` 識別子の妥当性を判定する。
+///
+/// 設計（bitwarden-secrets-manager-design.md L103）の `[A-Za-z0-9._-]+`（ただし `.`/`..` を除く）に
+/// 一致する値だけを許可する。空、`.`/`..` のみ、`/` や制御文字・空白は parse 段階で拒否済みだが、ここでも
+/// 英数・`-`・`_`・`.` 以外の混入と空・`.`/`..` を拒否する。
+fn is_valid_repository(value: &str) -> bool {
     if value.is_empty() || value == "." || value == ".." {
         return false;
     }
@@ -146,9 +175,77 @@ mod tests {
     }
 
     #[test]
-    fn trims_surrounding_whitespace() -> Result<()> {
-        let remote = PasswordStoreRemote::parse("  git@github.com:o/r.git\t")?;
+    fn parses_single_character_owner() -> Result<()> {
+        // owner は 1 文字英数字も許可する（設計 L103 の先頭 1 文字 + 中間 0 + 末尾省略）。
+        let remote = PasswordStoreRemote::parse("git@github.com:o/r.git")?;
         assert_eq!(remote.as_str(), "git@github.com:o/r.git");
+        Ok(())
+    }
+
+    #[test]
+    fn parses_max_length_owner() -> Result<()> {
+        // 39 文字 owner は許可する（先頭 1 + 中間 37 + 末尾 1）。
+        let owner = "a".repeat(39);
+        let remote = PasswordStoreRemote::parse(&format!("git@github.com:{owner}/repo.git"))?;
+        assert_eq!(remote.as_str(), format!("git@github.com:{owner}/repo.git"));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_surrounding_whitespace() {
+        // 設計 L101 は前後空白を許可しない。trim せず停止する。
+        assert!(PasswordStoreRemote::parse("  git@github.com:o/r.git\t").is_err());
+        assert!(PasswordStoreRemote::parse("git@github.com:o/r.git ").is_err());
+        assert!(PasswordStoreRemote::parse(" git@github.com:o/r.git").is_err());
+    }
+
+    #[test]
+    fn rejects_internal_whitespace() {
+        // 内部の空白も拒否する（設計 L101 / L103 の空白禁止）。
+        assert!(PasswordStoreRemote::parse("git@github.com:o w/r.git").is_err());
+        assert!(PasswordStoreRemote::parse("git@github.com:o/r\t.git").is_err());
+    }
+
+    #[test]
+    fn rejects_control_characters() {
+        // 制御文字を含む値は拒否する。
+        assert!(PasswordStoreRemote::parse("git@github.com:o/r.git\u{0007}").is_err());
+    }
+
+    #[test]
+    fn rejects_owner_with_underscore() {
+        // owner に `_` は許可しない（設計 L103 の owner 正規表現）。
+        assert!(PasswordStoreRemote::parse("git@github.com:bad_owner/repo.git").is_err());
+    }
+
+    #[test]
+    fn rejects_owner_with_dot() {
+        // owner に `.` は許可しない。
+        assert!(PasswordStoreRemote::parse("git@github.com:bad.owner/repo.git").is_err());
+    }
+
+    #[test]
+    fn rejects_owner_with_leading_or_trailing_hyphen() {
+        // owner の先頭/末尾ハイフンは許可しない。
+        assert!(PasswordStoreRemote::parse("git@github.com:-owner/repo.git").is_err());
+        assert!(PasswordStoreRemote::parse("git@github.com:owner-/repo.git").is_err());
+    }
+
+    #[test]
+    fn rejects_owner_over_max_length() {
+        // 40 文字 owner は許可しない（全体 1〜39 文字）。
+        let owner = "a".repeat(40);
+        assert!(PasswordStoreRemote::parse(&format!("git@github.com:{owner}/repo.git")).is_err());
+    }
+
+    #[test]
+    fn accepts_repository_with_dot_underscore_hyphen() -> Result<()> {
+        // repo は `[A-Za-z0-9._-]+` を許可する（owner と異なり `.`/`_` を含める）。
+        let remote = PasswordStoreRemote::parse("git@github.com:owner/my.password_store-1.git")?;
+        assert_eq!(
+            remote.as_str(),
+            "git@github.com:owner/my.password_store-1.git"
+        );
         Ok(())
     }
 
