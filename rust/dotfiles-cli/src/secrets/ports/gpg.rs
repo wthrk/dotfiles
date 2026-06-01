@@ -69,15 +69,6 @@ pub trait GpgKeyringPort {
         primary_fingerprint: &PrimaryFingerprint,
     ) -> Result<OpenSshPublicKey>;
 
-    /// restore-pass 向けに、復元済み鍵リングが持つ唯一の「利用可能 authentication subkey を持つ
-    /// 秘密鍵」の authentication subkey 由来 OpenSSH 公開鍵を、primary fingerprint 指定なしで解決する。
-    ///
-    /// restore-pass は restore-gpg が直前に import した recovery 鍵だけを使うため、その鍵の
-    /// authentication subkey identity を期待公開鍵として返す。利用可能 authentication subkey を持つ秘密鍵が
-    /// 0 件または複数件ある場合は、提示すべき identity を一意に確定できないため失敗する。caller はこの
-    /// 期待公開鍵を gpg-agent SSH socket の identity 照合（clone 前）に使う。
-    fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey>;
-
     /// `.gpg-id` recipient 宛ての復号に使える秘密鍵を鍵リングが保持しているかを確認する。
     ///
     /// `pass` は `.gpg-id` recipient の公開鍵で各 entry を暗号化する。その recipient に対応する秘密鍵を
@@ -129,16 +120,13 @@ pub trait SshAgentPort {
     /// authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（既登録は冪等）。
     fn register_authentication_subkey(&mut self, keygrip: &Keygrip) -> Result<()>;
 
-    /// gpg-agent SSH support 利用可否と、agent が提示する identity が復元鍵単一かを観測する。
+    /// gpg-agent SSH support 利用可否と、agent が復元鍵の authentication subkey identity を識別可能かを観測する。
     ///
-    /// agent が SSH agent protocol で列挙する identity 全体を取得し、socket 解決可否に加えて、(1) 期待公開鍵
-    /// （`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）と key blob が byte 一致する identity が
-    /// 含まれるか（`recovery_identity_present`）と、(2) 期待公開鍵と一致しない identity が 1 つでも含まれるか
-    /// （`other_identity_present`）を `SshAgentReadiness` へ翻訳する。caller はこの観測から復元鍵単一を
-    /// `SshAgentReadiness::ensure_sole_recovery_identity` で強制でき、復元鍵提示のみの確認は
-    /// `SshAgentReadiness::ensure_ready` で行える。`sshcontrol` 登録鍵だけでなく、挿入済み smartcard の
-    /// authentication 鍵や `Use-for-ssh` 属性鍵も agent の identity 列挙に現れるため、この観測は `sshcontrol` の
-    /// 個別検査を包含する。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
+    /// agent が SSH agent protocol で列挙する identity を取得し、socket 解決可否（`socket_resolved`）に加えて、
+    /// 期待公開鍵（`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）と key blob が byte 一致する
+    /// identity が含まれるか（`recovery_identity_present`）を `SshAgentReadiness` へ翻訳する。caller は復元鍵提示の
+    /// 確認を `SshAgentReadiness::ensure_ready` で行う。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は
+    /// 観測しない。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
     fn inspect_ssh_agent(
         &mut self,
         expected_public_key: &OpenSshPublicKey,

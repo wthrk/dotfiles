@@ -365,7 +365,6 @@ mod tests {
                 Ok(SshAgentReadiness {
                     socket_resolved: true,
                     recovery_identity_present: true,
-                    other_identity_present: false,
                 })
             });
 
@@ -673,7 +672,6 @@ mod tests {
                 Ok(SshAgentReadiness {
                     socket_resolved: true,
                     recovery_identity_present: false,
-                    other_identity_present: false,
                 })
             });
         // 停止するため report は書かない。

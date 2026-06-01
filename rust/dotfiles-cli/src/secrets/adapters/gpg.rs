@@ -87,10 +87,6 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             .authentication_subkey_ssh_public_key(primary_fingerprint)
     }
 
-    fn resolve_recovery_authentication_ssh_public_key(&mut self) -> Result<OpenSshPublicKey> {
-        self.0.resolve_recovery_authentication_ssh_public_key()
-    }
-
     fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
         self.0.secret_key_available_for_recipient(recipient)
     }

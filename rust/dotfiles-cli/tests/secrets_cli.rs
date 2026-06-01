@@ -902,17 +902,15 @@ fn gpg_spec_with_importable_key() -> Value {
 /// restore-pass integration 用の `.gpg-id` recipient（Git stub 既定 recipient と整合する fingerprint）。
 const RESTORE_PASS_RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 
-/// restore-pass の clone 前 agent identity 単一性照合と clone 後可読性確認が成功する GPG stub spec を作る。
+/// restore-pass の clone 後可読性確認が成功する GPG stub spec を作る。
 ///
-/// `recovery_ssh_public_key` で recovery 鍵 identity を解決でき、agent はその recovery identity だけを列挙する
-/// （`agent_extra_identities` を指定しないため非 recovery identity を提示しない）状態で clone 前の単一鍵照合を
-/// 成功させ、`held_recipients` に `.gpg-id` recipient を含み、`store_entry_decryptable` でサンプル entry の
-/// 復号可否も成功させる。
+/// restore-pass は ssh-agent を検査しない（gpg-agent SSH support の確認は restore-gpg の責務。設計 L116-124）
+/// ため、agent identity 系の設定は持たない。`held_recipients` に `.gpg-id` recipient を含み、
+/// `store_entry_decryptable` でサンプル entry の復号可否も成功させる。
 fn gpg_spec_for_restore_pass() -> Value {
     json!({
         "existing_keys": [],
         "keys": {},
-        "recovery_ssh_public_key": RESTORE_SSH_LINE,
         "held_recipients": [RESTORE_PASS_RECIPIENT],
         "store_entry_decryptable": true
     })
@@ -1018,56 +1016,6 @@ fn restore_pass_clones_store_and_confirms_readability_with_stub_paths() -> TestR
         final_git["cloned_remotes"],
         json!([RESTORE_PASS_REMOTE]),
         "cloned remote must be observed"
-    );
-    Ok(())
-}
-
-#[test]
-fn restore_pass_stops_when_agent_identity_mismatches_with_stub_paths() -> TestResult<()> {
-    // recovery 鍵 identity は解決できるが、agent は別 key blob の identity を提示する（別 SSH key が
-    // repo access を持つ状況）。期待 recovery 公開鍵と一致しないため clone 前に停止する。
-    let mut gpg = gpg_spec_for_restore_pass();
-    gpg["agent_identity_ssh_public_key"] = json!(
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVya2V5YmxvYm90aGVya2V5YmxvYm90aGVyMDEy other@example"
-    );
-    let stub = StubPorts::new(
-        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
-        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
-    )
-    .with_gpg(gpg);
-    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
-
-    assert!(!run.success, "stdout: {}", run.stdout);
-    let final_git = run.final_git()?;
-    assert_eq!(
-        final_git["cloned_remotes"],
-        json!([]),
-        "agent identity mismatch must stop before clone"
-    );
-    Ok(())
-}
-
-#[test]
-fn restore_pass_stops_when_agent_exposes_other_identity_with_stub_paths() -> TestResult<()> {
-    // recovery 鍵 identity は提示されるが、agent は復元鍵以外の identity（active smartcard / Use-for-ssh 由来鍵
-    // など）も列挙する。`Cred::ssh_key_from_agent` がその別鍵で clone しうるため、clone 前の単一鍵照合で停止する。
-    let mut gpg = gpg_spec_for_restore_pass();
-    gpg["agent_extra_identities"] = json!([
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVya2V5YmxvYm90aGVya2V5YmxvYm90aGVyMDEy smartcard"
-    ]);
-    let stub = StubPorts::new(
-        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
-        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
-    )
-    .with_gpg(gpg);
-    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
-
-    assert!(!run.success, "stdout: {}", run.stdout);
-    let final_git = run.final_git()?;
-    assert_eq!(
-        final_git["cloned_remotes"],
-        json!([]),
-        "a non-recovery SSH identity exposed by the agent must stop before clone"
     );
     Ok(())
 }
