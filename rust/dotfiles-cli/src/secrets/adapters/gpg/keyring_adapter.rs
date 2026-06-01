@@ -225,11 +225,6 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         self.authentication_subkey_ssh_public_key(&fingerprint)
     }
 
-    fn resolve_recovery_authentication_keygrip(&mut self) -> Result<Keygrip> {
-        let fingerprint = self.resolve_recovery_primary_fingerprint()?;
-        self.authentication_subkey_keygrip(&fingerprint)
-    }
-
     fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool> {
         let mut context = Self::context()?;
         match context.get_secret_key(recipient.as_str()) {

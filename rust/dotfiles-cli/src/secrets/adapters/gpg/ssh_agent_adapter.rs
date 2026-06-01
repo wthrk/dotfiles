@@ -1,16 +1,19 @@
 //! `SshAgentPort` を gpg-agent の SSH key list（`sshcontrol`）と SSH agent socket 観測へ接続する adapter。
 //!
 //! authentication subkey の keygrip を `${GNUPGHOME:-$HOME/.gnupg}/sshcontrol` へ冪等に登録し、SSH support
-//! 利用可否を「SSH agent socket（`S.gpg-agent.ssh`）が解決でき、その socket 経路で authentication subkey の
-//! identity を SSH agent protocol で識別できる」状態として観測して domain 値（`SshAgentReadiness`）へ翻訳
-//! する。`gpgconf` CLI は使わず、socket は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として
-//! 確認し、その path が socket でない場合だけ既存環境変数 `SSH_AUTH_SOCK` が指す socket へ fallback する
-//! （`config/zsh/env.zsh` の上書き条件と同じ前提）。identity の識別は、解決した socket へ接続して SSH agent
-//! protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵 identity を列挙し、各 identity の key blob を期待
-//! 公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合して判定する。identity comment（gpg-agent は
-//! `cardno:` / `openpgp:` 等を載せ keygrip とは限らない）は鍵同一性に使えないため照合に用いない。SSH support
-//! 充足の業務判定そのものは domain（`SshAgentReadiness::ensure_ready` / `OpenSshPublicKey::matches_agent_key_blob`）
-//! へ残す。
+//! 利用可否と提示 identity の単一性を「SSH agent socket（`S.gpg-agent.ssh`）が解決でき、その socket 経路で
+//! agent が列挙する identity に復元鍵が含まれ、かつ復元鍵以外の identity を含まない」状態として観測して
+//! domain 値（`SshAgentReadiness`）へ翻訳する。`gpgconf` CLI は使わず、socket は
+//! `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を優先候補として確認し、その path が socket でない場合だけ既存
+//! 環境変数 `SSH_AUTH_SOCK` が指す socket へ fallback する（`config/zsh/env.zsh` の上書き条件と同じ前提）。identity
+//! の列挙は、解決した socket へ接続して SSH agent protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵 identity を
+//! 列挙し、各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合して、復元鍵
+//! identity の有無と復元鍵以外 identity の有無を判定する。`sshcontrol` 登録鍵だけでなく挿入済み smartcard の
+//! authentication 鍵や `Use-for-ssh` 属性鍵も agent の列挙に現れるため、この観測は `sshcontrol` の個別検査を包含し、
+//! 単一鍵判定を agent 列挙一本で統一的に行える。identity comment（gpg-agent は `cardno:` / `openpgp:` 等を載せ
+//! keygrip とは限らない）は鍵同一性に使えないため照合に用いない。単一鍵充足の業務判定そのものは domain
+//! （`SshAgentReadiness::ensure_sole_recovery_identity` / `SshAgentReadiness::ensure_ready` /
+//! `OpenSshPublicKey::matches_agent_key_blob`）へ残す。
 
 use std::{
     fs::OpenOptions,
@@ -26,9 +29,7 @@ use anyhow::Context;
 use crate::{
     Result,
     secrets::{
-        domain::gpg_restore::{
-            Keygrip, OpenSshPublicKey, SshAgentReadiness, SshControlRegistration,
-        },
+        domain::gpg_restore::{Keygrip, OpenSshPublicKey, SshAgentReadiness},
         ports::gpg::SshAgentPort,
         support::ssh_agent_socket::{gnupg_home, resolve_ssh_agent_socket},
     },
@@ -59,12 +60,6 @@ impl SshAgentPort for SshAgentAdapter {
         Ok(())
     }
 
-    fn inspect_registered_keygrips(&mut self) -> Result<SshControlRegistration> {
-        let path = sshcontrol_path()?;
-        let keygrips = read_sshcontrol_keygrips(&path)?;
-        Ok(SshControlRegistration::new(keygrips))
-    }
-
     fn inspect_ssh_agent(
         &mut self,
         expected_public_key: &OpenSshPublicKey,
@@ -73,45 +68,57 @@ impl SshAgentPort for SshAgentAdapter {
         // `gnupg_home()` 解決失敗（例: `HOME` 未設定）は socket 無しへ握り潰さず、その実原因を `?` で伝播する。
         let socket = resolve_ssh_agent_socket()?;
         let socket_resolved = socket.is_some();
-        // identity の識別は、解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、
-        // 各 identity の key blob が期待公開鍵の key blob と byte 一致するかで判定する。socket が解決できない、
-        // または接続/列挙に失敗した場合は識別不能（false）として停止条件を弱めない。
-        let authentication_identity_present = match socket {
-            Some(path) => agent_identifies_public_key(&path, expected_public_key).unwrap_or(false),
-            None => false,
+        // 解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、各 identity の key blob を
+        // 期待公開鍵の key blob と byte 一致で照合する。一致する identity が復元鍵の提示、一致しない identity が
+        // 「復元鍵以外の identity」の提示であり、後者には sshcontrol 登録鍵に加え挿入済み smartcard / `Use-for-ssh`
+        // 由来鍵も含まれる（いずれも agent の列挙に現れる）。socket が解決できない、または接続/列挙に失敗した場合は
+        // 双方 false とし、復元鍵を識別できないことで停止させる（識別不能を「単一鍵」へ倒さない）。
+        let (recovery_identity_present, other_identity_present) = match socket {
+            Some(path) => {
+                inspect_agent_identities(&path, expected_public_key).unwrap_or((false, false))
+            }
+            None => (false, false),
         };
         Ok(SshAgentReadiness {
             socket_resolved,
-            authentication_identity_present,
+            recovery_identity_present,
+            other_identity_present,
         })
     }
 }
 
-/// SSH agent protocol で identity を列挙し、期待公開鍵と同一 key blob の identity が存在するかを返す。
+/// SSH agent protocol で identity を列挙し、(復元鍵 identity の存在, 復元鍵以外の identity の存在) を返す。
 ///
 /// 解決済み socket へ接続し、`SSH_AGENTC_REQUEST_IDENTITIES` を送って `SSH_AGENT_IDENTITIES_ANSWER` を
 /// 解析する。各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合し、
-/// 一致する identity があれば「authentication subkey が SSH identity として識別可能」と判定する。gpg-agent の
-/// identity comment は keygrip とは限らない（`cardno:` / `openpgp:` 等）ため照合に用いない。接続/送受信/解析に
-/// 失敗した場合は、socket への接続可否を最低限の identity 観測代替とせず、停止条件を弱めないため `Err` を返して
-/// 呼び出し側で false に倒す。
+/// 一致する identity があれば復元鍵の提示、一致しない identity があれば「復元鍵以外の identity」の提示と判定する。
+/// gpg-agent の identity comment は keygrip とは限らない（`cardno:` / `openpgp:` 等）ため照合に用いない。
+/// 接続/送受信/解析に失敗した場合は、socket への接続可否を最低限の観測代替とせず、停止条件を弱めないため
+/// `Err` を返して呼び出し側で双方 false に倒す。
 #[cfg(unix)]
-fn agent_identifies_public_key(
+fn inspect_agent_identities(
     socket: &Path,
     expected_public_key: &OpenSshPublicKey,
-) -> Result<bool> {
+) -> Result<(bool, bool)> {
     let key_blobs = request_ssh_identities(socket)?;
-    Ok(key_blobs
-        .iter()
-        .any(|key_blob| expected_public_key.matches_agent_key_blob(key_blob)))
+    let mut recovery_present = false;
+    let mut other_present = false;
+    for key_blob in &key_blobs {
+        if expected_public_key.matches_agent_key_blob(key_blob) {
+            recovery_present = true;
+        } else {
+            other_present = true;
+        }
+    }
+    Ok((recovery_present, other_present))
 }
 
 #[cfg(not(unix))]
-fn agent_identifies_public_key(
+fn inspect_agent_identities(
     _socket: &Path,
     _expected_public_key: &OpenSshPublicKey,
-) -> Result<bool> {
-    Ok(false)
+) -> Result<(bool, bool)> {
+    Ok((false, false))
 }
 
 /// SSH agent protocol の message 種別（必要な値のみ）。
@@ -235,32 +242,6 @@ impl<'a> ByteCursor<'a> {
 /// gpg-agent の SSH key list（`sshcontrol`）の path を返す。
 fn sshcontrol_path() -> Result<PathBuf> {
     Ok(gnupg_home()?.join("sshcontrol"))
-}
-
-/// `sshcontrol` に登録されている keygrip を正規化して列挙する。
-///
-/// 各行は keygrip（uppercase hex）で始まり `KEYGRIP 0 confirm` のようにオプションが続く場合がある。空行・
-/// `#` コメントを除き、先頭空白区切りトークンを keygrip として `Keygrip::parse` で正規化する。ファイルが存在
-/// しない場合は空集合を返す。keygrip として parse できないトークンは登録 identity として扱えないため停止する。
-fn read_sshcontrol_keygrips(path: &Path) -> Result<Vec<Keygrip>> {
-    let file = match OpenOptions::new().read(true).open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(anyhow::Error::new(error).context("failed to read gpg-agent sshcontrol"));
-        }
-    };
-    let mut keygrips = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line.context("failed to read gpg-agent sshcontrol line")?;
-        let entry = line.trim();
-        if entry.is_empty() || entry.starts_with('#') {
-            continue;
-        }
-        let token = entry.split_whitespace().next().unwrap_or(entry);
-        keygrips.push(Keygrip::parse(token)?);
-    }
-    Ok(keygrips)
 }
 
 /// `sshcontrol` に keygrip（uppercase hex 40）が既に登録されているかを返す。

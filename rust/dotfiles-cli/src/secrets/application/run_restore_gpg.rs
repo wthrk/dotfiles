@@ -364,7 +364,8 @@ mod tests {
             .returning(|_| {
                 Ok(SshAgentReadiness {
                     socket_resolved: true,
-                    authentication_identity_present: true,
+                    recovery_identity_present: true,
+                    other_identity_present: false,
                 })
             });
 
@@ -664,14 +665,15 @@ mod tests {
             .expect_register_authentication_subkey()
             .times(1)
             .returning(|_| Ok(()));
-        // SSH support が利用不能（authentication identity を識別できない）で停止する。
+        // SSH support が利用不能（recovery identity を識別できない）で停止する。
         ssh_agent
             .expect_inspect_ssh_agent()
             .times(1)
             .returning(|_| {
                 Ok(SshAgentReadiness {
                     socket_resolved: true,
-                    authentication_identity_present: false,
+                    recovery_identity_present: false,
+                    other_identity_present: false,
                 })
             });
         // 停止するため report は書かない。

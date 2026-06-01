@@ -137,49 +137,6 @@ impl Keygrip {
     }
 }
 
-/// gpg-agent の SSH key list（`sshcontrol`）に登録されている keygrip 集合の観測値。
-///
-/// `Cred::ssh_key_from_agent` は agent が露出する任意 identity を提示しうるため、`sshcontrol` に復元鍵
-/// 以外の authentication subkey が登録されていると、別 identity で clone が成立しうる。adapter は
-/// `sshcontrol` の登録 keygrip を正規化して観測し、この値へ翻訳する。「復元鍵の keygrip だけが登録されて
-/// いる」という single-key 業務規則の判定は [`SshControlRegistration::ensure_only`] で行う。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SshControlRegistration {
-    registered_keygrips: Vec<Keygrip>,
-}
-
-impl SshControlRegistration {
-    /// 観測した登録 keygrip 集合から登録状態値を構築する。
-    pub fn new(registered_keygrips: Vec<Keygrip>) -> Self {
-        Self {
-            registered_keygrips,
-        }
-    }
-
-    /// `sshcontrol` が復元鍵の keygrip だけを持つ（別 authentication subkey が登録されていない）ことを検証する。
-    ///
-    /// clone 直前に呼び、復元鍵が未登録、または復元鍵以外の keygrip が 1 件でも登録されている場合は停止条件
-    /// として失敗する。これは agent が別 identity を提示して別鍵経由で clone が成立することを防ぐためであり、
-    /// `Cred::ssh_key_from_agent` で単一鍵を選べない API 制約を層境界内で補う追加ガードである。
-    pub fn ensure_only(&self, recovery_keygrip: &Keygrip) -> Result<()> {
-        if !self.registered_keygrips.contains(recovery_keygrip) {
-            anyhow::bail!(
-                "the recovery GPG authentication subkey is not registered in gpg-agent sshcontrol; cannot clone"
-            );
-        }
-        if self
-            .registered_keygrips
-            .iter()
-            .any(|keygrip| keygrip != recovery_keygrip)
-        {
-            anyhow::bail!(
-                "gpg-agent sshcontrol registers an SSH identity other than the recovery GPG authentication subkey; refusing to clone to avoid using a non-recovery identity"
-            );
-        }
-        Ok(())
-    }
-}
-
 /// authentication subkey 由来の OpenSSH 公開鍵 1 行を表す検証済み値。
 ///
 /// 設計「公開鍵出力契約」は「OpenSSH 公開鍵 1 行のみ、機械可読、秘密鍵素材を含めない」を
@@ -308,30 +265,68 @@ fn openssh_base64_symbol_value(symbol: u8) -> Option<u8> {
     }
 }
 
-/// gpg-agent SSH support が利用可能であることを adapter が報告した観測結果。
+/// gpg-agent SSH support が利用可能であり、かつ提示 identity が復元鍵ただ 1 つであることを adapter が
+/// 報告した観測結果。
 ///
 /// 設計「gpg-agent SSH support 境界」は「SSH agent socket 参照先が解決でき、その socket 経路で
-/// authentication subkey が識別可能」を同時に満たす状態を「利用可」とする。adapter は socket 解決
-/// 可否と authentication subkey 識別可否を観測してこの値へ翻訳し、業務上の充足判定はこの module で行う。
+/// authentication subkey が識別可能」を満たす状態を「利用可」とする。さらに restore-pass の clone は
+/// `Cred::ssh_key_from_agent` 経由であり、この API は agent が列挙する任意 identity を提示しうるため、
+/// 復元鍵以外の identity が clone に使われないことを保証する必要がある。gpg-agent の SSH support は
+/// `sshcontrol` 登録鍵だけでなく、挿入済み OpenPGP smartcard の authentication 鍵や `Use-for-ssh` 属性鍵も
+/// identity として列挙するため、`sshcontrol` の登録内容だけを見ても単一鍵を保証できない。そこで adapter は
+/// agent が実際に列挙する identity 全体を観測し、復元鍵の identity が含まれるか（`recovery_identity_present`）と、
+/// 復元鍵と異なる identity が含まれるか（`other_identity_present`）をこの値へ翻訳する。これにより smartcard /
+/// `Use-for-ssh` 由来鍵も含め、単一鍵判定を agent の列挙結果一本で統一的に行える。業務上の充足判定はこの
+/// module で行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SshAgentReadiness {
     /// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として解決できたか。
     pub socket_resolved: bool,
-    /// その SSH agent 経路で authentication subkey を identity として識別できたか。
-    pub authentication_identity_present: bool,
+    /// agent が列挙する identity の中に、復元鍵の key blob と一致する identity が存在したか。
+    pub recovery_identity_present: bool,
+    /// agent が列挙する identity の中に、復元鍵の key blob と一致しない identity が 1 つでも存在したか
+    /// （smartcard / `Use-for-ssh` 由来鍵を含む）。
+    pub other_identity_present: bool,
 }
 
 impl SshAgentReadiness {
-    /// gpg-agent SSH support が `restore-pass` へ引き渡せる前提を満たすことを検証する。
+    /// agent socket が解決でき、復元鍵の authentication subkey identity が agent から提示されていることを
+    /// 確認する（他 identity の有無は問わない。restore-gpg の SSH support 確認用）。
     ///
-    /// socket 未解決、または authentication subkey が識別できない場合は停止条件として失敗する。
+    /// restore-gpg は clone を行わず、復元鍵を SSH identity として提示できることだけを検証すればよいため、
+    /// (1) socket が解決でき、(2) 復元鍵の identity が agent に提示される、の 2 条件のみを要求する。各条件の
+    /// 失敗は別個の停止条件として、原因の区別できる message で失敗する。
     pub fn ensure_ready(self) -> Result<()> {
+        self.ensure_recovery_offered()
+    }
+
+    /// clone 前に、agent が提示する SSH identity が復元鍵ただ 1 つであること（smartcard / Use-for-ssh 由来の
+    /// 別鍵を含め非 recovery identity を提示しないこと）を確認する（restore-pass の clone 安全性用）。
+    ///
+    /// clone は `Cred::ssh_key_from_agent` で agent の任意 identity を提示しうるため、(1) socket が解決でき、
+    /// (2) 復元鍵の identity が agent に提示され、(3) 復元鍵以外の identity を agent が一切提示しない、の 3 条件を
+    /// 同時に満たすことを要求する。`sshcontrol` 登録鍵・挿入済み smartcard の authentication 鍵・`Use-for-ssh`
+    /// 属性鍵はいずれも agent の identity 列挙に現れるため、この単一鍵判定は agent の列挙結果一本で統一的に
+    /// それらを覆う。各条件の失敗は別個の停止条件として、原因の区別できる message で失敗する。
+    pub fn ensure_sole_recovery_identity(self) -> Result<()> {
+        self.ensure_recovery_offered()?;
+        if self.other_identity_present {
+            anyhow::bail!(
+                "gpg-agent offers a non-recovery SSH identity (e.g. an active smartcard or a Use-for-ssh key); refusing to clone to avoid using a non-recovery identity"
+            );
+        }
+        Ok(())
+    }
+
+    /// socket が解決でき、復元鍵の identity が agent に提示されている、という両 public method 共通の前提を
+    /// 確認する。
+    fn ensure_recovery_offered(&self) -> Result<()> {
         if !self.socket_resolved {
             anyhow::bail!("gpg-agent SSH agent socket could not be resolved");
         }
-        if !self.authentication_identity_present {
+        if !self.recovery_identity_present {
             anyhow::bail!(
-                "gpg-agent SSH support cannot use the GPG authentication subkey as an identity"
+                "gpg-agent does not offer the recovery GPG authentication subkey as an SSH identity; cannot clone"
             );
         }
         Ok(())
@@ -476,64 +471,101 @@ mod tests {
     }
 
     #[test]
-    fn ssh_agent_readiness_requires_both_conditions() {
+    fn ssh_agent_readiness_requires_sole_recovery_identity() {
+        // socket 解決 + 復元鍵提示 + 他 identity 非提示 の 3 条件を同時に満たすときだけ許可する。
         assert!(
             SshAgentReadiness {
                 socket_resolved: true,
-                authentication_identity_present: true,
+                recovery_identity_present: true,
+                other_identity_present: false,
+            }
+            .ensure_sole_recovery_identity()
+            .is_ok()
+        );
+        // socket 未解決は停止する。
+        assert!(
+            SshAgentReadiness {
+                socket_resolved: false,
+                recovery_identity_present: true,
+                other_identity_present: false,
+            }
+            .ensure_sole_recovery_identity()
+            .is_err()
+        );
+        // 復元鍵が agent に提示されない場合は停止する。
+        assert!(
+            SshAgentReadiness {
+                socket_resolved: true,
+                recovery_identity_present: false,
+                other_identity_present: false,
+            }
+            .ensure_sole_recovery_identity()
+            .is_err()
+        );
+        // 復元鍵以外の identity（smartcard / Use-for-ssh 由来鍵を含む）を agent が提示する場合は停止する。
+        assert!(
+            SshAgentReadiness {
+                socket_resolved: true,
+                recovery_identity_present: true,
+                other_identity_present: true,
+            }
+            .ensure_sole_recovery_identity()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ssh_agent_readiness_ready_ignores_other_identities() {
+        // restore-gpg の SSH support 確認は clone を伴わないため、socket 解決 + 復元鍵提示を満たせば
+        // 他 identity の有無に関わらず ensure_ready は成功する。
+        assert!(
+            SshAgentReadiness {
+                socket_resolved: true,
+                recovery_identity_present: true,
+                other_identity_present: true,
             }
             .ensure_ready()
             .is_ok()
         );
-        assert!(
-            SshAgentReadiness {
-                socket_resolved: false,
-                authentication_identity_present: true,
-            }
-            .ensure_ready()
-            .is_err()
-        );
+        // 同じ観測値（他 identity 提示）でも、clone 安全性ガードである ensure_sole_recovery_identity は停止する。
         assert!(
             SshAgentReadiness {
                 socket_resolved: true,
-                authentication_identity_present: false,
+                recovery_identity_present: true,
+                other_identity_present: true,
+            }
+            .ensure_sole_recovery_identity()
+            .is_err()
+        );
+        // 他 identity 非提示なら ensure_ready も当然成功する。
+        assert!(
+            SshAgentReadiness {
+                socket_resolved: true,
+                recovery_identity_present: true,
+                other_identity_present: false,
+            }
+            .ensure_ready()
+            .is_ok()
+        );
+        // socket 未解決は ensure_ready でも停止する。
+        assert!(
+            SshAgentReadiness {
+                socket_resolved: false,
+                recovery_identity_present: true,
+                other_identity_present: false,
             }
             .ensure_ready()
             .is_err()
         );
-    }
-
-    #[test]
-    fn sshcontrol_registration_accepts_only_recovery_keygrip() {
-        let recovery = Keygrip::parse("0123456789ABCDEF0123456789ABCDEF01234567").expect("keygrip");
-        // 復元鍵だけが登録されている場合は許可する。
+        // 復元鍵が提示されない場合は ensure_ready でも停止する。
         assert!(
-            SshControlRegistration::new(vec![recovery.clone()])
-                .ensure_only(&recovery)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn sshcontrol_registration_rejects_missing_recovery_keygrip() {
-        let recovery = Keygrip::parse("0123456789ABCDEF0123456789ABCDEF01234567").expect("keygrip");
-        // 復元鍵が未登録なら停止する。
-        assert!(
-            SshControlRegistration::new(Vec::new())
-                .ensure_only(&recovery)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn sshcontrol_registration_rejects_additional_keygrip() {
-        let recovery = Keygrip::parse("0123456789ABCDEF0123456789ABCDEF01234567").expect("keygrip");
-        let other = Keygrip::parse("FEDCBA9876543210FEDCBA9876543210FEDCBA98").expect("keygrip");
-        // 復元鍵に加えて別 identity が登録されていれば、別鍵経由の clone 成立を防ぐため停止する。
-        assert!(
-            SshControlRegistration::new(vec![recovery.clone(), other])
-                .ensure_only(&recovery)
-                .is_err()
+            SshAgentReadiness {
+                socket_resolved: true,
+                recovery_identity_present: false,
+                other_identity_present: false,
+            }
+            .ensure_ready()
+            .is_err()
         );
     }
 }

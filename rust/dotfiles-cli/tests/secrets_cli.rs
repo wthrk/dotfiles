@@ -902,18 +902,17 @@ fn gpg_spec_with_importable_key() -> Value {
 /// restore-pass integration 用の `.gpg-id` recipient（Git stub 既定 recipient と整合する fingerprint）。
 const RESTORE_PASS_RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 
-/// restore-pass の clone 前 identity 照合と clone 後可読性確認が成功する GPG stub spec を作る。
+/// restore-pass の clone 前 agent identity 単一性照合と clone 後可読性確認が成功する GPG stub spec を作る。
 ///
-/// `recovery_ssh_public_key` で recovery 鍵 identity を解決でき、`recovery_keygrip` と `registered_keygrips`
-/// で clone 前の sshcontrol single-key 照合（復元鍵の keygrip だけが登録済み）を成功させ、`held_recipients` に
-/// `.gpg-id` recipient を含み、`store_entry_decryptable` でサンプル entry の復号可否も成功させる。
+/// `recovery_ssh_public_key` で recovery 鍵 identity を解決でき、agent はその recovery identity だけを列挙する
+/// （`agent_extra_identities` を指定しないため非 recovery identity を提示しない）状態で clone 前の単一鍵照合を
+/// 成功させ、`held_recipients` に `.gpg-id` recipient を含み、`store_entry_decryptable` でサンプル entry の
+/// 復号可否も成功させる。
 fn gpg_spec_for_restore_pass() -> Value {
     json!({
         "existing_keys": [],
         "keys": {},
         "recovery_ssh_public_key": RESTORE_SSH_LINE,
-        "recovery_keygrip": RESTORE_KEYGRIP,
-        "registered_keygrips": [RESTORE_KEYGRIP],
         "held_recipients": [RESTORE_PASS_RECIPIENT],
         "store_entry_decryptable": true
     })
@@ -1049,12 +1048,13 @@ fn restore_pass_stops_when_agent_identity_mismatches_with_stub_paths() -> TestRe
 }
 
 #[test]
-fn restore_pass_stops_when_sshcontrol_has_other_keygrip_with_stub_paths() -> TestResult<()> {
-    // recovery 鍵 identity は提示されるが、sshcontrol に復元鍵以外の keygrip も登録されている（別の
-    // 登録済み GitHub identity が agent から提示されうる状況）。clone 前の single-key 照合で停止する。
+fn restore_pass_stops_when_agent_exposes_other_identity_with_stub_paths() -> TestResult<()> {
+    // recovery 鍵 identity は提示されるが、agent は復元鍵以外の identity（active smartcard / Use-for-ssh 由来鍵
+    // など）も列挙する。`Cred::ssh_key_from_agent` がその別鍵で clone しうるため、clone 前の単一鍵照合で停止する。
     let mut gpg = gpg_spec_for_restore_pass();
-    gpg["registered_keygrips"] =
-        json!([RESTORE_KEYGRIP, "FFEEDDCCBBAA99887766554433221100FFEEDDCC"]);
+    gpg["agent_extra_identities"] = json!([
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVya2V5YmxvYm90aGVya2V5YmxvYm90aGVyMDEy smartcard"
+    ]);
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
@@ -1067,7 +1067,7 @@ fn restore_pass_stops_when_sshcontrol_has_other_keygrip_with_stub_paths() -> Tes
     assert_eq!(
         final_git["cloned_remotes"],
         json!([]),
-        "a non-recovery keygrip in sshcontrol must stop before clone"
+        "a non-recovery SSH identity exposed by the agent must stop before clone"
     );
     Ok(())
 }

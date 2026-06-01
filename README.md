@@ -98,7 +98,7 @@ GPG 鍵リング復元と SSH 公開鍵の GitHub 登録が済んだら、`resto
 dotfiles secrets restore-pass
 ```
 
-clone は `git2` と SSH agent だけを使い、`git` CLI と GitHub API は使いません。`~/.password-store` が既に存在する場合、remote URL が GitHub SSH clone URL でない場合、gpg-agent の SSH agent socket（`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に解決できない（通常の `ssh-agent` へ fallback せず、GPG authentication subkey 由来 identity を使えない）場合、clone 前の identity 照合で gpg-agent が復元鍵の identity を提示しない、または `sshcontrol` が復元鍵以外の identity を登録している場合、接続先 `github.com` の SSH host key が GitHub 公表の host key と一致しない場合、clone 後 store を `pass` が読めない場合（store entry を復号できない、または空 store でいずれの recipient の秘密鍵も持たない場合）は停止します。
+clone は `git2` と SSH agent だけを使い、`git` CLI と GitHub API は使いません。`~/.password-store` が既に存在する場合、remote URL が GitHub SSH clone URL でない場合、gpg-agent の SSH agent socket（`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に解決できない（通常の `ssh-agent` へ fallback せず、GPG authentication subkey 由来 identity を使えない）場合、clone 前の identity 照合で gpg-agent が復元鍵の identity を提示しない、または gpg-agent が復元鍵以外の SSH identity を列挙（active smartcard / Use-for-ssh 由来鍵を含む）した場合、接続先 `github.com` の SSH host key が GitHub 公表の host key と一致しない場合、clone 後 store を `pass` が読めない場合（store entry を復号できない、または空 store でいずれの recipient の秘密鍵も持たない場合）は停止します。
 
 backup envelope の登録・recipient 追加は provisioning 経路で行います。
 
