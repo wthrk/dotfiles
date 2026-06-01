@@ -86,14 +86,26 @@ pub(crate) fn import_secret_key(backup: &ProtectedSecret) -> Result<String> {
     })
 }
 
+/// store 内 sample entry（`*.gpg`）の読み取り上限（byte）。`pass` entry は OpenPGP message であり数 KB
+/// 程度に収まる。これを大きく超える入力は異常（巨大ファイルや symlink 経由で差し替わった endless file）と
+/// して拒否し、`/dev/zero` のような無限長 source での hang/OOM を断つ。store 内の現実的な entry を誤って
+/// 拒否しないよう余裕を持った上限とする。
+const STORE_ENTRY_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
 /// store 内 `pass` entry（OpenPGP message）を gpgme で復号できることを protection 境界内で確認する。
 ///
+/// entry は `O_NOFOLLOW` 付きで open し（final component が symlink なら open 自体を拒否する）、開いた fd の
+/// `metadata().file_type().is_file()` で regular file であることを fd 経由で再確認してから、その fd を size cap
+/// 付きで読む。これにより、store 走査（regular file 判定）から読取りまでの間に同一 path が symlink へ差し替え
+/// られても、`std::fs::read` のような path 再 open で store 外（例: `/dev/zero` で hang/OOM、外部の復号可能
+/// ファイルで偽の可読性成功）へ抜ける TOCTOU を閉じる。symlink・special file・上限超過は読まずに拒否し、
+/// 可読性確認を失敗（= store を「読めない」）と判定させる。
 /// 復号した平文（`pass` entry の中身）は locked buffer 上でだけ扱い、zeroize して破棄する。stdout・log・
 /// 一時ファイル・caller のいずれへも平文を返さない。復号に成功すれば `Ok(())`、復号できなければ context
 /// 付き `Err` を返す。entry の業務的意味（recipient 妥当性・store 構造）はこの module で判定しない。
 pub(crate) fn verify_can_decrypt(entry_path: &std::path::Path) -> Result<()> {
     let mut context = open_context()?;
-    let ciphertext = std::fs::read(entry_path)
+    let ciphertext = read_regular_file_nofollow(entry_path)
         .context("failed to read password-store entry for decryption check")?;
     let mut input = gpgme::Data::from_bytes(&ciphertext)
         .context("failed to wrap password-store entry bytes")?;
@@ -108,6 +120,46 @@ pub(crate) fn verify_can_decrypt(entry_path: &std::path::Path) -> Result<()> {
         .context("failed to read decrypted password-store entry bytes")?;
     plaintext.zeroize();
     Ok(())
+}
+
+/// final component が symlink でない regular file を `O_NOFOLLOW` 付き open + fd 経由の type 再確認 +
+/// size cap で読み、bytes を返す。
+///
+/// `O_NOFOLLOW`（darwin: `0x100`）で open することで、open 時点で final component が symlink なら拒否し、
+/// path 再 open による symlink 追従の TOCTOU を閉じる。開いた fd の `metadata().file_type().is_file()` を
+/// 確認して regular file 以外（symlink を辿らない directory / special file）を拒否し、`metadata().len()` と
+/// 読取り長の双方を [`STORE_ENTRY_MAX_BYTES`] で上限化して、len を 0 報告する special file 経由の endless
+/// read（hang/OOM）も断つ。`libc` を直接の依存に持たないため `O_NOFOLLOW` は数値値を用いる（darwin 専用運用）。
+fn read_regular_file_nofollow(path: &std::path::Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    /// `O_NOFOLLOW`（don't follow symlinks）の darwin での数値値（`<sys/fcntl.h>`）。
+    const O_NOFOLLOW: i32 = 0x100;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+        .context("failed to open file (refusing to follow a symlink)")?;
+    let metadata = file.metadata().context("failed to stat file")?;
+    if !metadata.file_type().is_file() {
+        bail!("path is not a regular file; refusing to follow it");
+    }
+    if metadata.len() > STORE_ENTRY_MAX_BYTES {
+        bail!("file is unexpectedly large (> {STORE_ENTRY_MAX_BYTES} bytes); refusing to read it");
+    }
+    // size cap を `metadata().len()` だけに頼らず、read 自体も上限 + 1 byte で打ち切る（special file 等で
+    // len が 0 報告でも endless に読めない）。上限を超えたら異常として拒否する。
+    let mut bytes = Vec::new();
+    let read = file
+        .take(STORE_ENTRY_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("failed to read file")?;
+    if read as u64 > STORE_ENTRY_MAX_BYTES {
+        bail!("file is unexpectedly large (> {STORE_ENTRY_MAX_BYTES} bytes); refusing to read it");
+    }
+    Ok(bytes)
 }
 
 /// OpenPGP protocol の gpgme context を生成する。

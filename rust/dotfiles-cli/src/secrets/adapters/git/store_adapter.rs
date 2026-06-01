@@ -10,6 +10,7 @@
 //! （`PasswordStoreReadiness::parse_recipients` ほか）と keyring 照合へ残す。ここでは filesystem 走査だけを
 //! 担い、`.gpg-id` の中身解釈や `pass` CLI への無条件シェルアウトはしない。
 
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -21,6 +22,12 @@ use crate::{
         domain::pass_restore::{PASSWORD_STORE_GPG_ID, PasswordStoreReadiness},
     },
 };
+
+/// final component が symlink のとき open を拒否する `O_NOFOLLOW`（darwin の数値値）。`store_adapter` /
+/// `gpg_backup` は `libc` を直接の依存に持たないため、走査時点で regular file と判定した path を読む段で
+/// symlink へ差し替えられる TOCTOU を、path を再 open せず fd 経由で閉じるために `OpenOptionsExt::custom_flags`
+/// へこの値を渡す。darwin（macOS）専用運用のため `<sys/fcntl.h>` の `O_NOFOLLOW = 0x100` を用いる。
+const O_NOFOLLOW: i32 = 0x100;
 
 /// `~/.password-store` の filesystem 観測を `PasswordStorePort` 契約へ翻訳する adapter。
 #[derive(Default)]
@@ -86,13 +93,20 @@ fn path_exists_including_broken_symlink(path: &Path) -> bool {
 
 /// `.gpg-id` の各行を読み、空行と `#` コメントを除いた行（未 trim）を recipient 候補として返す。
 ///
-/// 読む前に再度 `symlink_metadata` で regular file であることを確認し（symlink/special file は link を辿らず
-/// に拒否する）、さらに `metadata().len()` が [`GPG_ID_MAX_BYTES`] を超える場合は読まずに拒否する。これにより
-/// symlink 経由で `/dev/zero` のような無限長 source へ抜けて hang/OOM する経路と、巨大ファイルの読み込みを断つ。
+/// `O_NOFOLLOW` 付きで open し（final component が symlink なら open 自体を拒否する）、開いた fd の
+/// `metadata().file_type().is_file()` で regular file であることを fd 経由で再確認する。これにより、
+/// `is_regular_file` 判定（走査時点）から読取り時点までに同一 path が symlink へ差し替えられても、`std::fs::read`
+/// のような path 再 open で link を辿る TOCTOU を閉じる（symlink/special file は読まずに拒否する）。さらに
+/// `metadata().len()` が [`GPG_ID_MAX_BYTES`] を超える場合は読まずに拒否し、読取り自体も上限 + 1 byte で打ち切る
+/// ことで、symlink 経由で `/dev/zero` のような無限長 source へ抜けて hang/OOM する経路と巨大ファイルの読み込みを断つ。
 fn read_gpg_id_recipients(gpg_id_path: &Path) -> Result<Vec<String>> {
     use std::io::Read;
 
-    let file = std::fs::File::open(gpg_id_path).context("failed to open password-store .gpg-id")?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(gpg_id_path)
+        .context("failed to open password-store .gpg-id (refusing to follow a symlink)")?;
     let metadata = file
         .metadata()
         .context("failed to stat password-store .gpg-id")?;
@@ -163,10 +177,95 @@ fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
                 && path.extension().and_then(|ext| ext.to_str()) == Some("gpg")
             {
                 // regular file の `*.gpg` だけをサンプルにする。`file_type.is_file()` は symlink で偽になるため、
-                // symlink の `*.gpg` は選ばず、後段の `std::fs::read` が link を辿って store 外へ抜けるのを防ぐ。
+                // symlink の `*.gpg` は選ばない。後段の復号確認（`verify_can_decrypt`）も `O_NOFOLLOW` open +
+                // fd 経由の regular-file 再確認で読むため、走査〜読取り間の symlink 差し替えで store 外へ抜けない。
                 return Some(path);
             }
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    //! filesystem adapter の安全読取り（`O_NOFOLLOW` open + fd 経由の regular-file 再確認 + size cap）の単体
+    //! テスト。temp-dir dev 依存を増やさないため、`std::env::temp_dir()` 配下に一意 directory を std だけで
+    //! 作成し、test 終了時に削除する。
+
+    use std::path::PathBuf;
+
+    use super::{GPG_ID_MAX_BYTES, read_gpg_id_recipients};
+
+    /// test 専用の一意 temp directory（drop 時に再帰削除）。
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let unique = format!(
+                "dotfiles-store-adapter-{tag}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_nanos()
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::create_dir(&path).expect("create unique temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// regular file の `.gpg-id` は空行・`#` コメントを除いた recipient 行を未 trim で返す。
+    #[test]
+    fn read_gpg_id_recipients_reads_regular_file() {
+        let dir = TempDir::new("regular");
+        let gpg_id = dir.path().join(".gpg-id");
+        std::fs::write(&gpg_id, "# comment\n\nABCDEF0123\n  Trailing Spaces  \n")
+            .expect("write .gpg-id");
+
+        let recipients = read_gpg_id_recipients(&gpg_id).expect("read recipients");
+        assert_eq!(recipients, vec!["ABCDEF0123", "  Trailing Spaces  "]);
+    }
+
+    /// final component が symlink の `.gpg-id` は `O_NOFOLLOW` open が拒否し、link 先を読まずに失敗する。
+    #[test]
+    fn read_gpg_id_recipients_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new("symlink");
+        let target = dir.path().join("real-recipients");
+        std::fs::write(&target, "ABCDEF0123\n").expect("write symlink target");
+        let gpg_id = dir.path().join(".gpg-id");
+        symlink(&target, &gpg_id).expect("create symlink .gpg-id");
+
+        let result = read_gpg_id_recipients(&gpg_id);
+        assert!(
+            result.is_err(),
+            "symlinked .gpg-id must be refused, not followed"
+        );
+    }
+
+    /// `GPG_ID_MAX_BYTES` を超える `.gpg-id` は読まずに拒否する。
+    #[test]
+    fn read_gpg_id_recipients_rejects_oversize_file() {
+        let dir = TempDir::new("oversize");
+        let gpg_id = dir.path().join(".gpg-id");
+        let oversized = vec![b'A'; (GPG_ID_MAX_BYTES as usize) + 16];
+        std::fs::write(&gpg_id, oversized).expect("write oversize .gpg-id");
+
+        let result = read_gpg_id_recipients(&gpg_id);
+        assert!(result.is_err(), "oversize .gpg-id must be refused");
+    }
 }

@@ -8,16 +8,16 @@
 //! `ssh-agent` を指しうる既存 `SSH_AUTH_SOCK` へは fallback しない。既存 `~/.ssh/id_ed25519` を新規運用で使わ
 //! ない仕様（spec L92 / L100 / L210）を守るためであり、gpg-agent socket が無ければ clone を停止する。
 //!
-//! `Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の特定 identity を選んで提示する API を
-//! 持たない。gpg-agent の SSH socket は `sshcontrol` に登録された keygrip（= GPG authentication subkey 由来
-//! identity）だけを露出するため、strict gpg-agent socket を使えば通常の `ssh-agent` 鍵は提示されない。ただし
-//! `sshcontrol` に複数 identity が登録されていれば agent 側で別 identity を提示しうるため、単一鍵限定はこの
-//! adapter だけでは担保できない。そこで application 側が clone 前に「この gpg-agent socket が復元した GPG
-//! authentication subkey の identity を提示している」ことを #14 の key blob 照合で確定し、さらに `sshcontrol`
-//! が復元鍵の keygrip だけを持つ（別 authentication subkey が登録されていない）ことを `SshAgentPort` 経由で
-//! 確定してから clone へ進ませる。本 adapter は strict gpg-agent socket への固定と clone 翻訳だけを担い、
-//! identity 照合と single-key 担保は application + `SshAgentPort` 側で行う。clone URL の妥当性判断は domain
-//! （`PasswordStoreRemote`）に委ねる。
+//! gpg-agent SSH support の確立（SSH agent socket の有効化）・authentication subkey の `sshcontrol` 相当への
+//! 登録・利用可否確認は `restore-gpg` の責務である（design L116-124）。本 adapter は `restore-gpg` が整えた
+//! gpg-agent の SSH agent 経由で `Cred::ssh_key_from_agent` により clone するだけであり、clone 前に agent の
+//! identity を列挙・照合・排除しない（application も同様に再検査しない。spec L174 / entrypoint doc
+//! `application/run_restore_pass.rs` 参照）。`Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の
+//! 特定 identity を選んで提示する API を持たないが、本 adapter の安全境界は (1) strict な gpg-agent socket 解決
+//! （`resolve_gpg_agent_socket`。通常の `ssh-agent` や `~/.ssh/id_ed25519` 等へ fallback しない）で提示元を
+//! gpg-agent の SSH socket に限定すること、(2) `certificate_check` による GitHub host key の pin 照合で接続先を
+//! `github.com` に固定すること、の 2 点に閉じる。identity 事前検証や single-key 担保はここでは行わない。clone URL
+//! の妥当性判断は domain（`PasswordStoreRemote`）に委ねる。
 //!
 //! host key 検証: 新規マシンでは `~/.ssh/known_hosts` に `github.com` の host key が無いのが通常であり、
 //! credentials だけでは MITM を防げない。`RemoteCallbacks::certificate_check` で、接続先 hostname が
