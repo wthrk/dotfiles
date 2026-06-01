@@ -963,7 +963,7 @@ fn bws_spec_with_pass_remote(remote: &str) -> Value {
     })
 }
 
-/// GPG stub が空でも spec 未設定にしない既定値（store なし・clone 後 `.gpg-id` あり）。
+/// Git stub が空でも spec 未設定にしない既定値（store なし・clone 後 `.gpg-id` あり）。
 fn empty_git_spec() -> Value {
     json!({ "store_exists": false, "gpg_id_present": true })
 }

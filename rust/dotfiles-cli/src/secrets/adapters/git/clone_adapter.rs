@@ -7,14 +7,15 @@
 //! socket でなければ既存 `SSH_AUTH_SOCK` を維持する（`config/zsh/env.zsh` の上書き条件と同じ前提）。
 //! clone URL の妥当性判断は domain（`PasswordStoreRemote`）に委ね、ここでは git2 への翻訳だけを担う。
 
-use std::path::PathBuf;
-
 use anyhow::Context;
 use git2::{Cred, CredentialType, FetchOptions, RemoteCallbacks, build::RepoBuilder};
 
 use crate::{
     Result,
-    secrets::{adapters::git::password_store_path, domain::pass_restore::PasswordStoreRemote},
+    secrets::{
+        adapters::git::password_store_path, domain::pass_restore::PasswordStoreRemote,
+        support::ssh_agent_socket::resolve_ssh_agent_socket,
+    },
 };
 
 /// git2 の SSH agent 認証 clone を `GitClonePort` 契約へ翻訳する adapter。
@@ -28,12 +29,25 @@ impl GitCloneAdapter {
         let socket = resolve_ssh_agent_socket()
             .context("could not resolve a gpg-agent SSH agent socket for password-store clone")?;
         // libssh2 は credentials callback で SSH agent を使う前に `SSH_AUTH_SOCK` を参照する。#14 と同じ
-        // socket 解決結果へ環境変数を合わせ、`git2` が同じ SSH agent 経路を使うようにする。
-        // SAFETY: clone 実行は単一スレッドの use case 経路であり、ここでの環境変数設定は本 process の
-        // SSH agent 接続先を #14 の解決結果へ固定するためだけに行う。
+        // socket 解決結果へ環境変数を合わせ、`git2` が同じ SSH agent 経路を使うようにする。clone は process-global
+        // な `SSH_AUTH_SOCK` を一時的に上書きするだけであり、後続の同一 `dotfiles` process 操作へ副作用を残さない
+        // よう、旧値を保存して clone の成功/失敗いずれでも scope 離脱時に必ず復元する。
+        let previous_sock = std::env::var_os("SSH_AUTH_SOCK");
+        // SAFETY: clone 実行は単一スレッドの use case 経路であり、set/restore はいずれも非 secret な socket path
+        // （`SSH_AUTH_SOCK`）だけを扱う。本 process の SSH agent 接続先を #14 の解決結果へ一時固定し、scope 離脱で
+        // 旧値（未設定なら除去）へ戻すためだけに行う。
         unsafe {
             std::env::set_var("SSH_AUTH_SOCK", &socket);
         }
+        let _restore_sock = scopeguard::guard(previous_sock, |previous| {
+            // SAFETY: 上書きと同じ単一スレッド経路での復元であり、扱う値は非 secret な socket path だけ。
+            unsafe {
+                match previous {
+                    Some(value) => std::env::set_var("SSH_AUTH_SOCK", value),
+                    None => std::env::remove_var("SSH_AUTH_SOCK"),
+                }
+            }
+        });
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(|_url, username_from_url, allowed_types| {
@@ -60,51 +74,5 @@ impl GitCloneAdapter {
                 anyhow::anyhow!("failed to clone private password-store over SSH: {error}")
             })?;
         Ok(())
-    }
-}
-
-/// SSH agent socket を解決する。
-///
-/// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket ならそれを優先し、socket でない場合だけ既存
-/// `SSH_AUTH_SOCK` が socket ならそれへ fallback する（#14 の `ssh_agent_adapter` と同じ解決規則）。
-/// `gpgconf` CLI は使わない。
-fn resolve_ssh_agent_socket() -> Option<PathBuf> {
-    if let Ok(home) = gnupg_home() {
-        let fixed = home.join("S.gpg-agent.ssh");
-        if is_socket(&fixed) {
-            return Some(fixed);
-        }
-    }
-    if let Some(env) = std::env::var_os("SSH_AUTH_SOCK") {
-        let env = PathBuf::from(env);
-        if is_socket(&env) {
-            return Some(env);
-        }
-    }
-    None
-}
-
-/// `${GNUPGHOME:-$HOME/.gnupg}` を解決する。
-fn gnupg_home() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("GNUPGHOME") {
-        return Ok(PathBuf::from(home));
-    }
-    let home = std::env::var_os("HOME").context("HOME is not set; cannot resolve GnuPG home")?;
-    Ok(PathBuf::from(home).join(".gnupg"))
-}
-
-/// 指定 path が socket として存在するかを返す。
-fn is_socket(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        std::fs::metadata(path)
-            .map(|metadata| metadata.file_type().is_socket())
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
     }
 }

@@ -28,6 +28,7 @@ use crate::{
     secrets::{
         domain::gpg_restore::{Keygrip, OpenSshPublicKey, SshAgentReadiness},
         ports::gpg::SshAgentPort,
+        support::ssh_agent_socket::{gnupg_home, resolve_ssh_agent_socket},
     },
 };
 
@@ -75,26 +76,6 @@ impl SshAgentPort for SshAgentAdapter {
             authentication_identity_present,
         })
     }
-}
-
-/// SSH agent socket を解決する。
-///
-/// 設計「zsh 環境変数決定」と `config/zsh/env.zsh` の上書き条件に合わせ、`${GNUPGHOME:-$HOME/.gnupg}/
-/// S.gpg-agent.ssh` が socket ならそれを優先し、socket でない場合だけ既存環境変数 `SSH_AUTH_SOCK` が
-/// 指す path が socket ならそれへ fallback する。`gpgconf` CLI は使わない。
-fn resolve_ssh_agent_socket() -> Option<PathBuf> {
-    if let Ok(Some(fixed)) = ssh_agent_socket_path()
-        && is_socket(&fixed)
-    {
-        return Some(fixed);
-    }
-    if let Some(env) = std::env::var_os("SSH_AUTH_SOCK") {
-        let env = PathBuf::from(env);
-        if is_socket(&env) {
-            return Some(env);
-        }
-    }
-    None
 }
 
 /// SSH agent protocol で identity を列挙し、期待公開鍵と同一 key blob の identity が存在するかを返す。
@@ -242,39 +223,9 @@ impl<'a> ByteCursor<'a> {
     }
 }
 
-/// `${GNUPGHOME:-$HOME/.gnupg}` を解決する。
-fn gnupg_home() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("GNUPGHOME") {
-        return Ok(PathBuf::from(home));
-    }
-    let home = std::env::var_os("HOME").context("HOME is not set; cannot resolve GnuPG home")?;
-    Ok(PathBuf::from(home).join(".gnupg"))
-}
-
 /// gpg-agent の SSH key list（`sshcontrol`）の path を返す。
 fn sshcontrol_path() -> Result<PathBuf> {
     Ok(gnupg_home()?.join("sshcontrol"))
-}
-
-/// `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を SSH agent socket の優先候補として返す。
-fn ssh_agent_socket_path() -> Result<Option<PathBuf>> {
-    Ok(Some(gnupg_home()?.join("S.gpg-agent.ssh")))
-}
-
-/// 指定 path が socket として存在するかを返す。
-fn is_socket(path: &PathBuf) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        std::fs::metadata(path)
-            .map(|metadata| metadata.file_type().is_socket())
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
-    }
 }
 
 /// `sshcontrol` に keygrip（uppercase hex 40）が既に登録されているかを返す。
