@@ -8,6 +8,7 @@ use crate::{
     Result,
     secrets::{
         domain::{
+            bw_login::BwLoginSummary,
             enrollment::{EnrollSummary, YubikeyRole},
             gpg_restore::RestoreGpgSummary,
             pass_restore::RestorePassSummary,
@@ -52,6 +53,14 @@ impl ReportPort for JsonReportAdapter {
         let payload = json!({
             "store_path": summary.store_path,
             "store_readable": summary.store_readable,
+        });
+        write_json_report(&payload)
+    }
+
+    fn write_bw_login_report(&self, summary: &BwLoginSummary) -> Result<()> {
+        let payload = json!({
+            "logged_in": summary.logged_in,
+            "unlocked": summary.unlocked,
         });
         write_json_report(&payload)
     }

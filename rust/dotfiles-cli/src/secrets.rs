@@ -11,12 +11,14 @@
 /// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
 mod adapters {
     mod bw;
+    mod bw_login;
     mod git;
     mod gpg;
     mod io;
     mod yubikey;
 
     pub(in crate::secrets) use bw::BwsClientAdapter;
+    pub(in crate::secrets) use bw_login::BwLoginAdapter;
     pub(in crate::secrets) use git::{GitCloneAdapter, PasswordStoreAdapter};
     pub(in crate::secrets) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
     pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
@@ -50,6 +52,7 @@ enum SecretsCommand {
     VerifyYubikey(VerifyYubikeyOptions),
     RestoreGpg(RestoreGpgOptions),
     RestorePass(RestorePassOptions),
+    BwLogin(BwLoginOptions),
     GpgBackup(GpgBackupOptions),
     PassRemote(PassRemoteOptions),
 }
@@ -160,6 +163,20 @@ struct RestoreGpgOptions {
 struct RestorePassOptions {
     #[arg(long)]
     serial: Option<u32>,
+}
+
+#[derive(Args)]
+/// YubiKey 由来 secret と OTP で Bitwarden Password Manager に login / unlock する option。
+///
+/// 通常は YubiKey 内の `bw-email` を使い、override が必要な場合だけ `--email <email>` を許可する（spec L178）。
+/// master password は YubiKey から取得し、`BW_PASSWORD` env でのみ子プロセスへ渡して保存しない。OTP は端末から
+/// 入力させ、`bw` CLI 引数（argv）へ載せない。
+struct BwLoginOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+    /// override 用の Bitwarden login email。未指定時は YubiKey 内の `bw-email` を使う。
+    #[arg(long)]
+    email: Option<String>,
 }
 
 #[derive(Args)]
@@ -302,6 +319,7 @@ pub(in crate::secrets) struct RuntimePorts {
     pub(in crate::secrets) ssh_agent: adapters::SshAgentAdapter,
     pub(in crate::secrets) password_store: adapters::PasswordStoreAdapter,
     pub(in crate::secrets) git_clone: adapters::GitCloneAdapter,
+    pub(in crate::secrets) bw_login: adapters::BwLoginAdapter,
 }
 
 impl RuntimePorts {
@@ -321,6 +339,7 @@ impl RuntimePorts {
             ssh_agent: adapters::SshAgentAdapter::default(),
             password_store: adapters::PasswordStoreAdapter::default(),
             git_clone: adapters::GitCloneAdapter::default(),
+            bw_login: adapters::BwLoginAdapter,
         }
     }
 }
