@@ -12,7 +12,7 @@
 
 ## 規約計画
 
-- 適用規約: secret-recovery-spec.md（到達仕様の復旧フロー 手順1〜9 L104-112 / 停止条件 L194-214 / bw-login コマンド契約 L176-178 / verify-yubikey 外部確認 L147-157, L201）、secret-handling.md（master password を `BW_PASSWORD` env で子プロセスにだけ渡し保存しない、平文を argv/log/env/一時ファイル/stdout に残さない、外部処理は protection 内操作で完了）、hexagonal-implementation-rules.md（application=順序制御のみ / port=capability 契約 / adapter=翻訳 / support/protection=外部処理境界 backend）、integration.md（構造完了条件・境界維持の観点・レビュー合格条件）。
+- 適用規約: secret-recovery-spec.md（`## 到達仕様の復旧フロー` 手順1〜9 / `## 停止条件` 節 / `### dotfiles secrets bw-login` コマンド契約 / `### dotfiles secrets verify-yubikey` 節の外部確認記述および `## 停止条件` 節の `--check bw-login` 到達確認項）、secret-handling.md（master password を `BW_PASSWORD` env で子プロセスにだけ渡し保存しない、平文を argv/log/env/一時ファイル/stdout に残さない、外部処理は protection 内操作で完了）、hexagonal-implementation-rules.md（application=順序制御のみ / port=capability 契約 / adapter=翻訳 / support/protection=外部処理境界 backend）、integration.md（構造完了条件・境界維持の観点・レビュー合格条件）。
 - #11 系粗粒度進捗との対応: #17 は #12〜#17 を新規マシン復旧フローとして統合する close-out 項目。手順1〜8（enroll/verify/restore-gpg/export-ssh/restore-pass/gpg-backup/pass-remote）は既に個別結線済み。手順9（bw-login）と `verify-yubikey --check bw-login` が現行 base に未結線であることを観察で確認。
 
 ## 実装計画（観察に基づく）
@@ -49,12 +49,12 @@ dev shell（`direnv exec .`）内で実行。
 
 - 秘密値/認証情報の露出確認: master password は `support/protection/bw_login` の `with_secret_utf8` 借用境界内でだけ `BW_PASSWORD` env value へ複製し `bw` 子プロセスへ渡す。借用 closure を抜けると複製は `Zeroizing` で破棄。`BW_PASSWORD` を argv へ載せず、`bw unlock --raw` の stdout(`BW_SESSION`) を application へ返さない。bw-email / OTP は非秘匿だが email は carrier 型統一のため protection 境界で保護値化（`protect_public_bytes`）し、生値取り出し API は追加していない。
 - ログ/引数/一時ファイル/stdout/stderr 確認: secret 平文を CLI 引数・ログ・一時ファイル・永続環境変数・stdout/stderr に残さない。report は login/unlock の成立 bool（`logged_in`/`unlocked`）のみ出力し secret を含まない。
-- 権限境界/永続化/失敗時挙動確認: login / unlock のいずれか失敗時は report を書かずに停止（`run_bw_login` の test で検証）。`--check bw-login` 到達不可時は Failed として report し error を伝播（停止条件 spec L201）。internal stub は実 `bw` CLI を起動せず、port 間 state を共有しない独立 stub。
+- 権限境界/永続化/失敗時挙動確認: login / unlock のいずれか失敗時は report を書かずに停止（`run_bw_login` の test で検証）。`--check bw-login` 到達不可時は Failed として report し error を伝播（spec `## 停止条件` 節の `--check bw-login` 到達確認項）。internal stub は実 `bw` CLI を起動せず、port 間 state を共有しない独立 stub。
 - 未実施理由: なし。
 
 ## #16 依存により interface 結線にとどめた箇所
 
-- 本ブランチに #16（bw-login, branch `feat/secrets-bw-login-issue-16`）は未マージ。手順9 と `--check bw-login` は spec のコマンド契約（L176-178, L201, L155）に対して application 層・port 契約・entrypoint で結線した。
+- 本ブランチに #16（bw-login, branch `feat/secrets-bw-login-issue-16`）は未マージ。手順9 と `--check bw-login` は spec のコマンド契約（`### dotfiles secrets bw-login` 節 / `### dotfiles secrets verify-yubikey` 節の `--check bw-login` 外部確認記述 / `## 停止条件` 節の `--check bw-login` 到達確認項）に対して application 層・port 契約・entrypoint で結線した。
 - `support/protection/bw_login.rs` の実 `bw login` / `bw unlock` 実行（`BW_PASSWORD` env 受け渡し・`BW_SESSION` 取り回し・OTP method 3）は spec 契約どおりに `std::process` で実装したが、実 `bw` CLI バイナリに対する end-to-end 検証は #16 の責務であり、本統合では internal stub による CLI 経路の結線・順序・停止条件の検証にとどめる。#16 マージ時にこの protection 内操作と adapter が #16 の実装と整合するか確認する必要がある。
 
 ## 差し戻し remediation 追記（PR #42 AI レビュー findings 対処）
@@ -65,7 +65,7 @@ dev shell（`direnv exec .`）内で実行。
 
 - FINDING 1（P1 / セキュリティ / `support/protection/bw_login.rs`）: `bw login` / `bw unlock --raw` の `Command` に `.stdout(Stdio::null())` を追加（行80 / 行101）。`bw unlock --raw` が stdout へ出す `BW_SESSION`（および `bw login` の stdout）が dotfiles プロセスの stdout（端末・ログ・JSON report と同一ストリーム）へ継承漏洩する経路を閉じ、成立確認は exit status のみで行う。`BW_SESSION` を読まず・返さず・一時ファイル/永続 env へ出さない。stderr は `bw` 自身の診断出力（secret を含まない。`--raw` の session は stdout 限定）として失敗診断の可視化のため継承する旨を module doc に明記。
 - FINDING 2（P2 / 出力破壊 / `support/protection/bw_login.rs` `check_reachable`）: reachability の `bw --version` にも `.stdout(Stdio::null())` を追加（行58）。version 文字列が `verify-yubikey` の JSON report 前に混入し machine-readable JSON を壊す経路を閉じた。
-- FINDING 3（P2 / 仕様適合）: **方針 (a)+(b)+(c) を採用**（CLI 起動可能性確認に範囲を狭め、差分を本記録へ記載）。根拠: spec L201 が要求する Bitwarden Password Manager への真のサービス到達確認（server URL 設定・ネットワーク疎通）は実 `bw` 統合（#16）の責務であり、#17 単独で完結できない。`bw --version` は CLI バイナリ起動可能性のみを確認する。よって port 契約 `ports/bw_login.rs` の `check_bw_login_reachable` doc と `support/protection/bw_login.rs` の `check_reachable` doc を「CLI invocation capability 確認」に正確に狭め、spec L201 サービス到達確認との差分を既知の制約として両 doc から本記録へ参照させた。**既知の制約**: 現状の `--check bw-login` はネットワーク断・server URL 誤設定でも `bw` バイナリさえ起動できれば `ok` と報告する。真のサービス到達確認（例: `bw status` / server 設定確認）は #16 で実装し、その際に port 契約 doc を再度サービス到達確認へ広げる。
+- FINDING 3（P2 / 仕様適合）: **方針 (a)+(b)+(c) を採用**（CLI 起動可能性確認に範囲を狭め、差分を本記録へ記載）。根拠: spec `## 停止条件` 節の `--check bw-login` 到達確認項が要求する Bitwarden Password Manager への真のサービス到達確認（server URL 設定・ネットワーク疎通）は実 `bw` 統合（#16）の責務であり、#17 単独で完結できない。`bw --version` は CLI バイナリ起動可能性のみを確認する。よって port 契約 `ports/bw_login.rs` の `check_bw_login_reachable` doc と `support/protection/bw_login.rs` の `check_reachable` doc を「CLI invocation capability 確認」に正確に狭め、spec の当該サービス到達確認との差分を既知の制約として両 doc から本記録へ参照させた。**既知の制約**: 現状の `--check bw-login` はネットワーク断・server URL 誤設定でも `bw` バイナリさえ起動できれば `ok` と報告する。真のサービス到達確認（例: `bw status` / server 設定確認）は #16 で実装し、その際に port 契約 doc を再度サービス到達確認へ広げる。
 - FINDING 4（doc / `adapters/io/process.rs:119-122付近`）: OTP コメントを「dotfiles 自身の argv には載せず stdin から読む。後段で `bw login --code <otp>` の子プロセス argv には載るが、ワンタイムコードで長期 secret ではないため protection 保護値ではなく素の `String` で受け渡す」に修正し、誤解（argv へ一切載らない）を解消。
 - FINDING 5（doc / `support/protection/bw_login.rs:25-26付近`）: `login_and_unlock` doc を「`bw unlock --raw` の stdout は `Stdio::null()` で破棄し成立確認は exit status のみ」へ修正し、FINDING 1 実装と一致させた（旧 doc の「stdout を成立確認に使う」記述を撤去）。
 
@@ -91,5 +91,5 @@ dev shell（`direnv exec .`）内で実行。
 
 ### remediation 後の残課題
 
-- 真のサービス到達確認（spec L201）の実装は #16（実 `bw-login` 統合）の責務。#16 で `--check bw-login` を server 到達性確認へ広げ、port 契約 doc と本記録の既知制約を解消する。
+- 真のサービス到達確認（spec `## 停止条件` 節の `--check bw-login` 到達確認項）の実装は #16（実 `bw-login` 統合）の責務。#16 で `--check bw-login` を server 到達性確認へ広げ、port 契約 doc と本記録の既知制約を解消する。
 - 実 `bw` CLI バイナリに対する end-to-end 検証（stdout 破棄の実 `bw` 経路含む）は #16 マージ時に確認する。本 remediation の stdout 破棄テストは fake `bw` による process 境界の検証にとどまる。
