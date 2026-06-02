@@ -105,10 +105,10 @@ backup envelope の登録・recipient 追加と `password-store-remote` の登�
 ```sh
 dotfiles secrets gpg-backup register --primary-fingerprint <40-hex-fingerprint>
 dotfiles secrets gpg-backup add-spare --spare-serial <serial>
-dotfiles secrets pass-remote register --serial <serial>
+dotfiles secrets pass-remote register --serial <serial> [--url git@github.com:<owner>/<repo>.git]
 ```
 
-`register` は既存環境の GPG secret key を encrypted envelope 化し、接続中 YubiKey の recipient を 1 件作って Bitwarden Secrets Manager へ登録します。`add-spare` は既存 envelope を復号して同一 DEK を spare YubiKey の recipient へ追加し、stale overwrite 防止の更新識別子が一致する場合だけ更新します。`pass-remote register` は private `password-store` repository の clone URL（`git@github.com:<owner>/<repo>.git` 形式）を Bitwarden Secrets Manager の復旧 project へ create または update する保管コマンドで、`gpg-backup register`/`add-spare` と対称な provisioning 経路です。`--serial` は `bws-access-token` を読み出す対象 YubiKey を固定します。値（clone URL）は argv に載せず hidden prompt または pipe 入力から保護 buffer へ直接読み込み、既存値の上書きは stale overwrite 防止の更新識別子が一致する場合だけ行います。これらの provisioning コマンドを非対話実行で上書き更新する場合は `--yes` を指定します。
+`register` は既存環境の GPG secret key を encrypted envelope 化し、接続中 YubiKey の recipient を 1 件作って Bitwarden Secrets Manager へ登録します。`add-spare` は既存 envelope を復号して同一 DEK を spare YubiKey の recipient へ追加し、stale overwrite 防止の更新識別子が一致する場合だけ更新します。`pass-remote register` は private `password-store` repository の clone URL（`git@github.com:<owner>/<repo>.git` 形式）を Bitwarden Secrets Manager の復旧 project へ create または update する保管コマンドで、`gpg-backup register`/`add-spare` と対称な provisioning 経路です。`--serial` は `bws-access-token` を読み出す対象 YubiKey を固定します。clone URL は認証・復号・署名・外部アクセス能力を与える credential ではないため、provisioning 入力では非秘匿として扱い、`--url <value>` 引数・可視プロンプト（対話実行で入力をエコー）・pipe（stdin）のいずれの方式でも入力できます（`--url` を指定すればその値を使い、未指定なら terminal で可視プロンプト・非 terminal で pipe から読みます）。ただし private repository の所在を示す値のため、ログ・エラー本文・診断出力には含めません。既存値の上書きは stale overwrite 防止の更新識別子が一致する場合だけ行います。これらの provisioning コマンドを非対話実行で上書き更新する場合は `--yes` を指定します。
 
 gpg-agent の SSH support 設定（`gpg-agent.conf` の `enable-ssh-support` と `pinentry-program`）は Home Manager 管理です。`config/zsh/env.zsh` は `GPG_TTY` を設定し、`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合だけ `SSH_AUTH_SOCK` を上書きします。
 

@@ -129,6 +129,67 @@ pub(crate) fn read_visible_line(
     input.into_protected_secret_line(&session, max_len, too_long_message)
 }
 
+/// 制御端末から非秘匿の 1 行を可視入力（通常の echo つき cooked 入力）で読み取る。
+///
+/// `password-store-remote` の clone URL のように秘密情報でない値の対話入力に使う。raw mode や保護 buffer は
+/// 使わず、利用者が打った文字は端末が echo する。返値は末尾改行を除いた平文 `String` で、保護義務を負わない。
+pub(crate) fn read_visible_plain_line(
+    prompt: &str,
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<String> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    let mut reader = stdin_or_tty_reader()?;
+    let line = read_plain_line_from(&mut reader, max_len, too_long_message)?;
+    // prompt 行を改行で閉じ、後続の stdout 出力が prompt 文言と同じ行に連結しないようにする。
+    eprintln!();
+    Ok(line)
+}
+
+/// stdin（pipe / redirect）から非秘匿の 1 行を読み取り、末尾改行を除いた平文 `String` を返す。
+///
+/// stdin が terminal の場合は pipe 入力を要求して停止する。`password-store-remote` の clone URL のように
+/// 秘密情報でない値の非対話入力に使い、保護 buffer は使わない。
+pub(crate) fn read_stdin_plain_line(
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<String> {
+    if io::stdin().is_terminal() {
+        bail!("stdin URL input requires pipe or redirect input");
+    }
+    read_plain_line_from(&mut io::stdin(), max_len, too_long_message)
+}
+
+/// reader から改行（`\n`/`\r`）までの 1 行を平文 `String` として読み取る共通実装。
+///
+/// `max_len` を超えた時点で `too_long_message` を返して停止し、CR/LF を行末とみなして除く。
+/// 上限超過文言は feature 固有語彙のため caller（adapter）から受け取り、support には焼き込まない。
+/// secret ではない値だけに使う。
+fn read_plain_line_from(
+    reader: &mut impl Read,
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<String> {
+    let mut line = String::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte)? == 0 {
+            break;
+        }
+        match byte[0] {
+            b'\r' | b'\n' => break,
+            value => {
+                line.push(char::from(value));
+                if line.len() > max_len {
+                    bail!("{too_long_message}");
+                }
+            }
+        }
+    }
+    Ok(line)
+}
+
 /// stdin 1 行を読み取り、末尾改行を除いた保護済み secret を返す。
 pub(crate) fn read_stdin_line(
     max_len: usize,

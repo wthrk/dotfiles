@@ -10,8 +10,8 @@ use crate::{
         domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
         ports::io::{
             BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-            PinInputPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SshPublicKeyOutputPort,
+            PasswordStoreRemoteInputPort, PinInputPort, RotationContinuationPort, SecretInputPort,
+            SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::{
             clock, process_io,
@@ -61,16 +61,22 @@ impl SecretInputPort for RealSecretIoAdapter {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")
     }
+}
 
-    fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret> {
-        // clone URL を argv へ載せず保護 buffer へ直接読み込む（設計 L119: hidden prompt または pipe）。
-        // stdin が terminal のとき hidden prompt、非 terminal（pipe）のとき stdin 1 行を読む。
+impl PasswordStoreRemoteInputPort for RealSecretIoAdapter {
+    fn read_password_store_remote_url(&self) -> Result<String> {
+        // clone URL は秘密情報ではないため保護 buffer・非表示入力を使わず、可視入力 / pipe で読む。
+        // stdin が terminal のとき可視プロンプト（エコーする通常入力）、非 terminal（pipe）のとき stdin 1 行。
         const MAX_LEN: usize = 16 * 1024;
         const TOO_LONG_MESSAGE: &str = "password-store-remote input is too large";
         if process_io::stdin_is_terminal() {
-            process_io::read_hidden_line("password-store-remote: ", MAX_LEN, TOO_LONG_MESSAGE)
+            process_io::read_visible_plain_line(
+                "password-store-remote: ",
+                MAX_LEN,
+                TOO_LONG_MESSAGE,
+            )
         } else {
-            process_io::read_stdin_line(MAX_LEN, TOO_LONG_MESSAGE)
+            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
         }
     }
 }
@@ -180,9 +186,11 @@ impl SecretInputPort for ProcessIoAdapter {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         self.secret_io.read_streamed_secret()
     }
+}
 
-    fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_password_store_remote_secret()
+impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
+    fn read_password_store_remote_url(&self) -> Result<String> {
+        self.secret_io.read_password_store_remote_url()
     }
 }
 

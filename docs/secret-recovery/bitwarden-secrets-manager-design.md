@@ -23,8 +23,8 @@ internal backend stub を使う integration test の詳細規則は [Hexagonal I
 保護するもの:
 
 - `bws-access-token` を用いた取得セッション。
-- `gpg-secret-key-backup` と `password-store-remote` の取得値。
-- 取得値のログ、エラー、診断出力への漏えい。
+- credential（`bws-access-token` / `gpg-secret-key-backup`）の取得値。これらは認証・復号・署名・外部アクセス能力を与える秘密として保護する。
+- 取得値（credential と、credential ではないが private な `password-store-remote` を含む）のログ、エラー、診断出力への漏えい。`password-store-remote` は credential ではないが private repository の所在を示す値であり、出力には漏らさない。
 
 保護しないもの:
 
@@ -37,7 +37,7 @@ internal backend stub を使う integration test の詳細規則は [Hexagonal I
 - `bw` CLI と `bws` CLI は Bitwarden Secrets Manager 取得経路では使わない。
 - `bws-access-token` は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。
 - SDK 呼び出しで access token の所有 plaintext buffer が必要になる境界は、`support/protection` 内の BWS 専用操作で完了させる。所有 plaintext buffer は `with_secret` 系借用境界内で SDK 呼び出し直前にだけ作り、public API として公開しない。
-- `bws-access-token`、`gpg-secret-key-backup`、`password-store-remote` はログ、エラー本文、診断出力に含めない。
+- credential（`bws-access-token` / `gpg-secret-key-backup`）と、credential ではないが private な `password-store-remote` は、いずれもログ、エラー本文、診断出力に含めない。`password-store-remote` は credential ではない（provisioning 入力では非秘匿として `--url`／可視プロンプト／pipe で受けてよい）が、private repository の所在を示す値のため出力には漏らさない。
 - Bitwarden Secrets Manager 側の保存先 project は `dotfiles-secret-recovery` に固定する。
 - `bws-access-token` は machine account `dotfiles-secret-recovery-reader` の token とし、`dotfiles-secret-recovery` project への読み取りだけを許可する。
 - Bitwarden Secrets Manager で扱う secret name は `gpg-secret-key-backup` と `password-store-remote` に固定する。
@@ -98,7 +98,7 @@ Bitwarden Secrets Manager で取得する対象と利用先は次のとおり。
 
 ### `password-store-remote`
 
-値は UTF-8 の 1 行文字列で、private `password-store` repository の SSH clone URL とする。許可する形式は `git@github.com:<owner>/<repo>.git` だけである。前後空白、改行、HTTPS URL、`ssh://` URL、local path、別 host は許可しない。
+値は UTF-8 の 1 行文字列で、private `password-store` repository の SSH clone URL とする。この値は認証・復号・署名・外部アクセス能力を与える credential ではないため provisioning 入力では非秘匿として扱い、非表示入力・保護済み buffer を要さない。ただし private repository の所在を示す値であり、ログ・エラー本文・診断出力には含めない。許可する形式は `git@github.com:<owner>/<repo>.git` だけである。前後空白、改行、HTTPS URL、`ssh://` URL、local path、別 host は許可しない。
 
 `<owner>` は GitHub user / organization 名として `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?` に一致する値だけを許可する。`<repo>` は GitHub repository 名として `[A-Za-z0-9._-]+` に一致し、`.` または `..` ではなく、slash、colon、空白、制御文字を含まない値だけを許可する。`restore-pass` はこの値を clone URL として使う前に、1 行であること、`git@github.com:` で始まること、`.git` で終わること、`<owner>/<repo>` が上記制約を満たすことを検証する。
 
@@ -116,7 +116,10 @@ machine account `dotfiles-secret-recovery-reader` の作成、project `dotfiles-
 6. provisioning 用 access token を失効させる。
 7. `dotfiles secrets verify-yubikey --check bws` を実行し、`dotfiles-secret-recovery-reader` token で `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
 
-provisioning 経路は実 secret を CLI 引数、shell history、ログ、共有 terminal、永続一時ファイルへ残してはならない。`gpg-secret-key-backup` と `password-store-remote` の入力は hidden prompt、pipe、または保護済み buffer へ直接読み込む。値を argv へ載せる CLI 形式は採用しない。
+provisioning 経路は実 secret を CLI 引数、shell history、ログ、共有 terminal、永続一時ファイルへ残してはならない。入力方式は secret ごとに次のとおり分ける。
+
+- `gpg-secret-key-backup`（実 secret）: hidden prompt、pipe、または保護済み buffer へ直接読み込む。値を argv へ載せる CLI 形式は採用しない。
+- `password-store-remote`（private repository を指す clone URL であり credential ではない）: 認証情報（credential）ではないため provisioning 入力では非秘匿として扱い、非表示入力・保護済み buffer を要さない。`--url <value>` CLI 引数、可視プロンプト（対話実行で入力をエコーする通常入力）、または pipe（stdin）の**いずれの方式でも**入力できる。優先順位は `--url` 指定値が最優先で、未指定時は stdin が terminal なら可視プロンプト、非 terminal なら pipe から 1 行を読む。値形式（`git@github.com:<owner>/<repo>.git`）の検証は引き続き行う。ただし private repository の所在を示す値であり、ログ・エラー本文・診断出力には含めない（決定事項参照）。
 
 既存 secret を更新する場合、provisioning 経路は更新前に以下を検証し、満たせない場合は停止する。
 

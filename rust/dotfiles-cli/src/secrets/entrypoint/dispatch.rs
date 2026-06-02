@@ -251,6 +251,7 @@ pub(super) async fn dispatch(
                     ProvisionPasswordStoreRemoteCommand {
                         serial: options.serial,
                         assume_overwrite: options.yes,
+                        url: options.url,
                     },
                     &mut ports.device,
                     &mut ports.device_pin_policy,

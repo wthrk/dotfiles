@@ -1126,8 +1126,9 @@ fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> 
 
 #[test]
 fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> TestResult<()> {
-    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で上書き確認 [y] を与え、hidden
-    // prompt から妥当な clone URL を入力して update する。最終観測で新値へ置換されたことを確認する。
+    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で上書き確認 [y] を与え、`--url`
+    // 未指定なので可視プロンプト（非秘匿の clone URL を通常入力でエコー）から妥当な clone URL を入力して
+    // update する。最終観測で新値へ置換されたことを確認する。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
@@ -1154,9 +1155,43 @@ fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> Te
 }
 
 #[test]
+fn pass_remote_register_overwrites_existing_secret_from_url_argument_with_yes() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（非 TTY・stdin なし）で `--url` 引数と
+    // `--yes` を与えて既存 secret を update する。非秘匿の URL は argv から取得され、可視プロンプト/pipe
+    // 入力へ到達せず、最終 datastore が新値へ更新されることを観測する。
+    let initial = bws_spec_with_pass_remote("git@github.com:owner/old-store.git");
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        initial,
+    );
+    let run = run_pipe_with_stub(
+        [
+            "pass-remote",
+            "register",
+            "--serial",
+            "2001",
+            "--url",
+            RESTORE_PASS_REMOTE,
+            "--yes",
+        ],
+        None,
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "clone URL supplied via --url must overwrite the existing value with --yes"
+    );
+    Ok(())
+}
+
+#[test]
 fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestResult<()> {
     // 非対話実行（pipe stdin）で既存 secret を上書きしようとし、`--yes` 未指定なら確認段階で停止する。
-    // 確認で停止するため、URL の hidden 入力（/dev/tty）へは到達しない。
+    // 確認で停止するため、URL の入力（pipe/可視プロンプト）へは到達しない。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
@@ -1205,10 +1240,10 @@ fn pass_remote_register_overwrites_existing_secret_via_stdin_pipe_with_yes() -> 
 }
 
 #[test]
-fn pass_remote_register_stops_when_hidden_url_is_invalid() -> TestResult<()> {
+fn pass_remote_register_stops_when_input_url_is_invalid() -> TestResult<()> {
     // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で上書き確認 [y] を与えたうえで、
-    // hidden prompt へ domain 妥当でない clone URL を入力する。update 経路の URL 検証で停止し、
-    // 最終 datastore が元の値のまま不変であることを観測する（不正 URL の停止を駆動・観測）。
+    // 可視プロンプトへ domain 妥当でない clone URL を入力する。update 経路の URL 検証（application の
+    // PasswordStoreRemote::parse）で停止し、最終 datastore が元の値のまま不変であることを観測する。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),

@@ -53,7 +53,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 - `YubiKey`: `bw-password` を保存し、Bitwarden Password Manager の CLI login / unlock に使う。
 - `YubiKey`: `bws-access-token` を保存し、Bitwarden Secrets Manager から復旧情報を取得する。
 - `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` を保存し、GPG secret key 復元に使う。値は YubiKey recipient 付き encrypted envelope とし、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
-- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `password-store-remote` を保存し、private `password-store` repository の clone URL として使う。値は `git@github.com:<owner>/<repo>.git` 形式に限定する。
+- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `password-store-remote` を保存し、private `password-store` repository の clone URL として使う。値は `git@github.com:<owner>/<repo>.git` 形式に限定する。この値は credential ではなく provisioning 入力では非秘匿として扱うが、private repository の所在を示す値であり出力には漏らさない。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
 - `GitHub`: GPG authentication subkey 由来の SSH 公開鍵 を保持し、private repository clone に使う。
@@ -73,7 +73,7 @@ YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV �
 
 ### Bitwarden Secrets Manager
 
-Bitwarden Secrets Manager は復旧に必要な機械向け secret を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope）と `password-store-remote` である。
+Bitwarden Secrets Manager は復旧に必要な機械向けの取得対象を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope。認証・復号・署名能力を与える credential）と `password-store-remote`（private `password-store` repository の clone URL。credential ではないが private repository の所在を示す値であり、出力には漏らさない）である。`password-store-remote` は credential ではないため provisioning 入力では非秘匿として扱う。
 
 復旧本線では公式 `bitwarden` Rust SDK を使う。`bw` CLI は Bitwarden Secrets Manager からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。YubiKey に保存する token は machine account `dotfiles-secret-recovery-reader` の token とし、project `dotfiles-secret-recovery` の読み取りだけを許可する。
 

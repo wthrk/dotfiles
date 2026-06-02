@@ -181,10 +181,9 @@ impl BwsClientPort for super::BwsClientAdapter {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
         key: &str,
-        value: &ProtectedSecret,
+        remote: &PasswordStoreRemote,
     ) -> crate::Result<BwsSecretId> {
-        // production と同じ domain rule で clone URL 形式を検証してから datastore へ保存する。
-        let remote = stub_validate_password_store_remote(value)?;
+        // application が domain rule で検証済みの clone URL をそのまま datastore へ保存する。
         with_datastore(|store| {
             ensure_access_token_matches_datastore(access_token, store)?;
             let secret_id = format!("bws-secret-id-{key}");
@@ -221,10 +220,9 @@ impl BwsClientPort for super::BwsClientAdapter {
         _project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
         _key: &str,
-        value: &ProtectedSecret,
+        remote: &PasswordStoreRemote,
         expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
-        let remote = stub_validate_password_store_remote(value)?;
         with_datastore(|store| {
             ensure_access_token_matches_datastore(access_token, store)?;
             let current = store
@@ -239,19 +237,6 @@ impl BwsClientPort for super::BwsClientAdapter {
             Ok(())
         })
     }
-}
-
-/// stub 経路でも production と同じ domain rule（[`PasswordStoreRemote::parse`]）で clone URL を検証する。
-///
-/// 入力 buffer の平文は test 観測値であり、`to_test_bytes` で取り出した UTF-8 を parse へ渡す。
-/// real adapter では protection 境界の `with_secret_utf8_async` がこの検証を担う。
-fn stub_validate_password_store_remote(
-    value: &ProtectedSecret,
-) -> crate::Result<PasswordStoreRemote> {
-    let bytes = value.to_test_bytes();
-    let text =
-        std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("clone URL is not valid UTF-8"))?;
-    PasswordStoreRemote::parse(text)
 }
 
 fn read_bws_projects(

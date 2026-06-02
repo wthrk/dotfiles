@@ -35,13 +35,19 @@ pub trait SecretInputPort {
     fn read_bw_password_secret(&self) -> Result<ProtectedSecret>;
     fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret>;
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
+}
 
-    /// provisioning 入力境界で `password-store-remote` の clone URL を保護 buffer へ読み込む。
-    ///
-    /// 設計「初期登録手順」は実 secret を argv / shell history / ログ / 永続一時ファイルへ残さず、hidden
-    /// prompt / pipe / 保護 buffer から読むことを要求する。URL は秘密情報ではないが、入力経路を argv へ
-    /// 載せないために他の secret 入力と同じ保護 buffer 経路で受け取り、形式検証は domain rule に委ねる。
-    fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret>;
+/// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。
+///
+/// `password-store-remote` は private `password-store` repository の SSH clone URL であり、秘密情報では
+/// ない。よって他の secret 入力（`SecretInputPort`）と異なり保護 buffer・非表示入力・zeroize を要さず、
+/// caller は `--url` 未指定時にこの port で 1 行の URL を取得する。implementor は stdin が terminal のとき
+/// 可視プロンプト（入力をエコーする通常入力）で、非 terminal（pipe）のとき stdin 1 行を読み、取得した
+/// 生文字列を返す。URL 形式の妥当性判断（`git@github.com:<owner>/<repo>.git`）は domain rule に委ね、
+/// implementor は再定義しない。
+#[cfg_attr(test, mockall::automock)]
+pub trait PasswordStoreRemoteInputPort {
+    fn read_password_store_remote_url(&self) -> Result<String>;
 }
 
 /// use case が対話 rotate の継続可否を外部入力から取得する capability 契約。
@@ -101,9 +107,9 @@ pub trait BackupUpdateConfirmationPort {
 
     /// project / secret 名だけを表示して BWS secret の上書き更新を明示確認する。
     ///
-    /// 設計「初期登録手順」L127-128 は、`password-store-remote` のように primary fingerprint を持たない
-    /// secret の上書きを、対話実行では上書き対象 secret name と project name を表示して明示確認後に、
-    /// 非対話実行では明示的上書き許可 option がある場合だけ実行することを要求する。caller は確認に必要な
+    /// 設計「初期登録手順」の上書き確認契約（対話実行では上書き対象 secret name と project name を表示し
+    /// 利用者の明示確認を得てから更新、非対話実行では明示的な上書き許可 option が指定されている場合だけ更新）は、
+    /// `password-store-remote` のように primary fingerprint を持たない secret の上書きにこの確認を要求する。caller は確認に必要な
     /// project/secret 名を渡し、`assume_overwrite` で非対話の明示許可有無を伝える。implementor は TTY 可否を
     /// 判定し、対話時は表示と回答取得を、非対話時は `assume_overwrite` の評価を担う。
     fn confirm_secret_overwrite(

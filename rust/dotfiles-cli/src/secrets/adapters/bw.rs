@@ -210,15 +210,14 @@ impl BwsClientPort for BwsClientAdapter {
         Ok(())
     }
 
-    /// 保護済み clone URL を protection 境界で検証し、指定 project に新しい secret を作成する。
+    /// 検証済み clone URL を指定 project に新しい secret として作成する。
     async fn create_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
         key: &str,
-        value: &ProtectedSecret,
+        remote: &PasswordStoreRemote,
     ) -> crate::Result<BwsSecretId> {
-        let remote = bws::validate_password_store_remote_value(value).await?;
         let session = bws::login_client_with_access_token(access_token).await?;
         let organization_id = session
             .client()
@@ -267,10 +266,9 @@ impl BwsClientPort for BwsClientAdapter {
         project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
         key: &str,
-        value: &ProtectedSecret,
+        remote: &PasswordStoreRemote,
         expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
-        let remote = bws::validate_password_store_remote_value(value).await?;
         let session = bws::login_client_with_access_token(access_token).await?;
         let organization_id = session
             .client()
