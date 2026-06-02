@@ -198,6 +198,7 @@
 - 状態: `未開始`
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/bitwarden-password-manager.md](work-items/bitwarden-password-manager.md#16-bitwarden-password-manager-cli-ログイン)
+- 後続義務（#17 委譲）: `verify-yubikey --check bw-login` を真のサービス到達確認へ拡張し、#17 で記録された CLI 起動可能性確認の既知制約を解消する。詳細と強制条件は作業定義文書の構造完了条件・レビュー合格条件を正本とする。
 - レビュー記録: [review-artifacts/bitwarden-password-manager/review.md](review-artifacts/bitwarden-password-manager/review.md#bitwarden-password-manager-レビュー記録)
 - 粗粒度進捗: [issue-11-progress.md](issue-11-progress.md#11-系粗粒度進捗)
 - 対象コードパス:
