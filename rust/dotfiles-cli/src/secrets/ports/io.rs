@@ -37,6 +37,20 @@ pub trait SecretInputPort {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 
+/// use case が BWS provisioning 用 access token を保護値として取得する capability 契約。
+///
+/// 設計「初期登録手順」は、BWS への書込み（project / secret の create・update）に書込み可能な provisioning 用
+/// access token を使い、この token を初期登録後に失効させることを要求する。YubiKey に保存する read-only
+/// `dotfiles-secret-recovery-reader` token は provisioning には使わないため、provisioning コマンドはこの token を
+/// YubiKey storage からではなくこの capability で取得する。provisioning 用 access token は書込み可能な実
+/// credential であり secret として扱う。caller は token を必要とする地点だけを決める。implementor は hidden
+/// prompt（TTY）または pipe（stdin）から保護 buffer へ読み込み、取得した平文を公開 API として返さず、argv・
+/// ログ・shell history・永続環境変数・永続一時ファイルへ残さない。
+#[cfg_attr(test, mockall::automock)]
+pub trait ProvisioningAccessTokenInputPort {
+    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret>;
+}
+
 /// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。
 ///
 /// `password-store-remote` は private `password-store` repository の SSH clone URL であり、秘密情報では

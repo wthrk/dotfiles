@@ -17,8 +17,9 @@ use crate::{
         },
         ports::io::{
             BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-            PasswordStoreRemoteInputPort, PinInputPort, ReportPort, RotationContinuationPort,
-            SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+            PasswordStoreRemoteInputPort, PinInputPort, ProvisioningAccessTokenInputPort,
+            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+            SshPublicKeyOutputPort,
         },
         support::protection::ProtectedSecret,
     },
@@ -49,6 +50,12 @@ impl SecretInputPort for ProcessIoAdapter {
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         self.0.read_streamed_secret()
+    }
+}
+
+impl ProvisioningAccessTokenInputPort for ProcessIoAdapter {
+    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret> {
+        self.0.read_provisioning_access_token()
     }
 }
 

@@ -220,11 +220,12 @@ enum PassRemoteCommand {
 ///
 /// clone URL は private repo の SSH clone URL であって秘密情報ではないため、`--url <value>` で argv 指定
 /// できる。`--url` 未指定時は可視プロンプト（対話・入力をエコー）または pipe（stdin）から 1 行を読む。
-/// `--serial` は `bws-access-token` を読み出す対象 YubiKey を固定し、`--yes` は非対話実行での上書き更新を
-/// 明示許可する。
+/// `--yes` は非対話実行での上書き更新を明示許可する。
+///
+/// この command は YubiKey を一切使わない。BWS 書込みに使う provisioning 用 access token は YubiKey の
+/// read-only reader token ではなく、hidden prompt（TTY）/ pipe（stdin）から保護値として受け取る書込み可能な
+/// credential である。よって `--serial` option は持たず、token を argv へ載せる option も設けない。
 struct PassRemoteRegisterOptions {
-    #[arg(long)]
-    serial: Option<u32>,
     /// 登録する `password-store-remote` の clone URL（`git@github.com:<owner>/<repo>.git`）。
     /// 非秘匿値のため argv 指定を許可する。未指定時は可視プロンプト / pipe から読む。
     #[arg(long)]

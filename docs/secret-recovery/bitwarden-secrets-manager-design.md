@@ -116,8 +116,11 @@ machine account `dotfiles-secret-recovery-reader` の作成、project `dotfiles-
 6. provisioning 用 access token を失効させる。
 7. `dotfiles secrets verify-yubikey --check bws` を実行し、`dotfiles-secret-recovery-reader` token で `gpg-secret-key-backup` と `password-store-remote` を取得できることを確認する。
 
+dotfiles の BWS provisioning コマンド（`gpg-backup register` / `gpg-backup add-spare` / `pass-remote register`）は、provisioning 用 access token を hidden prompt または pipe（stdin）から保護 buffer（`ProtectedSecret`）へ読み込む。argv・ログ・shell history・永続環境変数・永続一時ファイルへ残さない。この token は書込み可能で初期登録後に失効させる。YubiKey に保存する read-only `dotfiles-secret-recovery-reader` token は provisioning には使わない（reader token は読み取り専用で BWS 書込みに使えず、provisioning は step5 の YubiKey enroll より前に行うため、provisioning 実行時に YubiKey の `bws-access-token` はまだ存在しない）。`pass-remote register` は YubiKey を一切使わず、token 入力・URL 入力・確認・project/secret 解決・create/update だけを行う。`gpg-backup register` / `gpg-backup add-spare` は BWS 書込みに provisioning 用 access token を使うが、recipient wrap（PIV slot `82` 公開鍵での DEK wrap）と既存 recipient による DEK unwrap には引き続き接続中 YubiKey を使う。
+
 provisioning 経路は実 secret を CLI 引数、shell history、ログ、共有 terminal、永続一時ファイルへ残してはならない。入力方式は secret ごとに次のとおり分ける。
 
+- provisioning 用 access token（書込み可能な実 credential）: hidden prompt（TTY）または pipe（stdin）から保護 buffer（`ProtectedSecret`）へ直接読み込む。値を argv へ載せる CLI 形式は採用しない。初期登録後に失効させる。
 - `gpg-secret-key-backup`（実 secret）: hidden prompt、pipe、または保護済み buffer へ直接読み込む。値を argv へ載せる CLI 形式は採用しない。
 - `password-store-remote`（private repository を指す clone URL であり credential ではない）: 認証情報（credential）ではないため provisioning 入力では非秘匿として扱い、非表示入力・保護済み buffer を要さない。`--url <value>` CLI 引数、可視プロンプト（対話実行で入力をエコーする通常入力）、または pipe（stdin）の**いずれの方式でも**入力できる。優先順位は `--url` 指定値が最優先で、未指定時は stdin が terminal なら可視プロンプト、非 terminal なら pipe から 1 行を読む。値形式（`git@github.com:<owner>/<repo>.git`）の検証は引き続き行う。ただし private repository の所在を示す値であり、ログ・エラー本文・診断出力には含めない（決定事項参照）。
 

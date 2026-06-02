@@ -6,8 +6,6 @@ use crate::secrets::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RegisterGpgBackupCommand,
         gpg_backup::{EnvelopeMetadata, EnvelopeRecipient, GpgBackupEnvelope},
-        piv::{SecretName, validate_piv_pin_len},
-        storage::SecretStorageReadIntent,
     },
     ports,
 };
@@ -19,20 +17,26 @@ use crate::secrets::{
 /// シナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない場合だけ subkey 構成を検証
 /// し、export 直後の bytes を再解析して fingerprint 一致を確認したうえで envelope 化し、接続中 YubiKey の
 /// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
-/// argv/log/永続ファイルへ出さない。BWS access token は restore 系と同じく接続中 YubiKey storage から
-/// 読み出す。順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで
-/// export・envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup が
-/// ある場合は重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
+/// argv/log/永続ファイルへ出さない。
+///
+/// BWS への書込みには、設計「初期登録手順」が定める書込み可能な provisioning 用 access token を使う。この
+/// token は hidden prompt / pipe から `ProvisioningAccessTokenInputPort` 経由で取得し、初期登録後に失効
+/// させる。YubiKey に保存する read-only `dotfiles-secret-recovery-reader` token は書込みに使えず provisioning
+/// では使わないため、storage/pin 経由の token 読み出しは行わない。一方、YubiKey 本体は recipient wrap（PIV
+/// slot `82` 公開鍵で DEK を RSA-OAEP wrap）に必要なため、recipient 用の device serial 解決は残す。slot `82`
+/// 公開鍵での wrap は private key 操作を伴わないため PIN/touch を要さない。
+///
+/// 順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで export・
+/// envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup がある場合は
+/// 重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
 #[expect(
     clippy::too_many_arguments,
-    reason = "primary 登録は device/pin/storage/keyring/cipher/recipient/clock/bws の port を順序適用する単一 use case"
+    reason = "primary 登録は token-input/device/keyring/cipher/recipient/clock/bws の port を順序適用する単一 use case"
 )]
-pub(crate) async fn run_register_gpg_backup_primary<D, P, S, K, C, Y, T, B>(
+pub(crate) async fn run_register_gpg_backup_primary<A, D, K, C, Y, T, B>(
     command: RegisterGpgBackupCommand,
+    token_input: &A,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    storage_port: &mut S,
     keyring: &mut K,
     cipher: &mut C,
     recipient: &mut Y,
@@ -40,26 +44,20 @@ pub(crate) async fn run_register_gpg_backup_primary<D, P, S, K, C, Y, T, B>(
     bws_client: &B,
 ) -> Result<()>
 where
+    A: ports::ProvisioningAccessTokenInputPort,
     D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
     K: ports::GpgKeyringPort,
     C: ports::BackupCipherPort,
     Y: ports::GpgRecipientPort,
     T: ports::ClockPort,
     B: ports::BwsClientPort,
 {
+    // recipient wrap 対象 YubiKey の serial を解決する（slot 82 公開鍵 wrap に必要）。
     let serial = device_serial.resolve_device_serial(command.serial)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
 
-    // BWS access token を YubiKey storage から読み出し、復旧 project を解決する。
-    let access_token = load_bws_access_token(serial, storage_port, pin.as_ref())?;
+    // BWS 書込み用の provisioning 用 access token を hidden prompt / pipe から取得し、復旧 project を
+    // 解決する。YubiKey の read-only reader token は書込みに使わない。
+    let access_token = token_input.read_provisioning_access_token()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
@@ -106,33 +104,16 @@ where
         .map(|_id| ())
 }
 
-/// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token<S>(
-    serial: u32,
-    storage_port: &mut S,
-    pin: Option<&crate::secrets::support::protection::ProtectedSecret>,
-) -> Result<crate::secrets::support::protection::ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
-    let storage = SecretName::BwsAccessToken.storage_spec(serial);
-    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
-    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-    let secret = storage_port
-        .load_secret(serial, &intent, pin)
-        .map_err(|error| intent.decode_error(error))?;
-    intent.validate_loaded_secret(&secret)?;
-    Ok(secret)
-}
-
 #[cfg(test)]
 mod tests {
     //! primary 登録の順序（重複確認→subkey 検証→export→fingerprint 照合→暗号化→recipient wrap→
     //! envelope→BWS 作成）を mockall + Sequence で検証する単体テスト。
     //!
-    //! keyring / cipher / recipient / clock / bws backend を port mock で差し替え、重複確認が export より
-    //! 前に行われること、subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき
-    //! create が呼ばれること、重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
+    //! token-input / keyring / cipher / recipient / clock / bws backend を port mock で差し替え、BWS 書込みに
+    //! 使う access token を provisioning token 入力経路から取得すること（YubiKey reader token を write に使わない
+    //! ことは storage/pin port を持たない構成で構造的に保証する）、重複確認が export より前に行われること、
+    //! subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき create が呼ばれること、
+    //! 重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
 
     use crate::secrets::{
         domain::{
@@ -141,8 +122,6 @@ mod tests {
                 ConnectedYubiKey, EnvelopeCiphertext, EnvelopeRecipient, PrimaryFingerprint,
             },
             gpg_restore::{ImportedKeyComposition, ResolvedSubkey, SubkeyCapability},
-            manifest::SecretManifest,
-            storage::SecretStorageReadInspection,
         },
         ports,
         support::protection::ProtectedSecret,
@@ -156,11 +135,17 @@ mod tests {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    fn read_inspection() -> SecretStorageReadInspection {
-        SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
-            encoded: Some(vec![1]),
-        }
+    /// provisioning 用 access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    ///
+    /// この mock は YubiKey storage を経由せず provisioning token を返す。pin/storage port は構成へ一切
+    /// 渡さないため、BWS 書込みが YubiKey reader token を使わないことは構造的に保証される。
+    fn token_input() -> ports::MockProvisioningAccessTokenInputPort {
+        let mut token_input = ports::MockProvisioningAccessTokenInputPort::new();
+        token_input
+            .expect_read_provisioning_access_token()
+            .times(1)
+            .returning(|| Ok(material(b"provisioning-token")));
+        token_input
     }
 
     fn ciphertext() -> EnvelopeCiphertext {
@@ -200,25 +185,13 @@ mod tests {
     #[tokio::test]
     async fn register_primary_creates_envelope_when_absent() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
+        let token = token_input();
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_read()
-            .returning(|_, _| Ok(read_inspection()));
-        storage
-            .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
@@ -281,10 +254,8 @@ mod tests {
                 primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
                 serial: Some(2001),
             },
+            &token,
             &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
             &mut keyring,
             &mut cipher,
             &mut recipient,
@@ -298,22 +269,11 @@ mod tests {
     /// 「未登録」と誤認せず、create を呼ばずに重複登録を停止することを検証する。
     #[tokio::test]
     async fn register_primary_stops_when_duplicate_secrets_exist() {
+        let token = token_input();
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_read()
-            .returning(|_, _| Ok(read_inspection()));
-        storage
-            .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
 
         // 重複検出で export・暗号化・wrap のいずれにも進ませず、鍵素材を不要にメモリへ載せない。
         let mut keyring = ports::MockGpgKeyringPort::new();
@@ -359,10 +319,8 @@ mod tests {
                 primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
                 serial: Some(2001),
             },
+            &token,
             &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
             &mut keyring,
             &mut cipher,
             &mut recipient,
