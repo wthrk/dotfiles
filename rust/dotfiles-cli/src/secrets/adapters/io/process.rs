@@ -9,9 +9,10 @@ use crate::{
     secrets::{
         domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
         ports::io::{
-            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-            PasswordStoreRemoteInputPort, PinInputPort, ProvisioningAccessTokenInputPort,
-            RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
+            ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+            ProvisioningAccessTokenInputPort, RotationContinuationPort, SecretInputPort,
+            SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::{
             clock, process_io,
@@ -90,6 +91,21 @@ impl PasswordStoreRemoteInputPort for RealSecretIoAdapter {
                 MAX_LEN,
                 TOO_LONG_MESSAGE,
             )
+        } else {
+            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
+    }
+}
+
+impl BwOtpInputPort for RealSecretIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        // YubiKey OTP は touch 生成・単回利用で `bw login --code <otp>` の argv に載る前提（spec L178）のため、
+        // 保護 buffer・非表示入力を使わず可視入力 / pipe で読む。stdin が terminal のとき可視プロンプト
+        // （エコーする通常入力）、非 terminal（pipe）のとき stdin 1 行。OTP 妥当性判断は domain rule に委ねる。
+        const MAX_LEN: usize = 1024;
+        const TOO_LONG_MESSAGE: &str = "YubiKey OTP input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_visible_plain_line("yubikey-otp: ", MAX_LEN, TOO_LONG_MESSAGE)
         } else {
             process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
         }
@@ -212,6 +228,12 @@ impl ProvisioningAccessTokenInputPort for ProcessIoAdapter {
 impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
     fn read_password_store_remote_url(&self) -> Result<String> {
         self.secret_io.read_password_store_remote_url()
+    }
+}
+
+impl BwOtpInputPort for ProcessIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        self.secret_io.read_bw_otp()
     }
 }
 

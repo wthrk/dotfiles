@@ -16,7 +16,7 @@ mod adapters {
     mod io;
     mod yubikey;
 
-    pub(in crate::secrets) use bw::BwsClientAdapter;
+    pub(in crate::secrets) use bw::{BwLoginAdapter, BwsClientAdapter};
     pub(in crate::secrets) use git::{GitCloneAdapter, PasswordStoreAdapter};
     pub(in crate::secrets) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
     pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
@@ -50,6 +50,7 @@ enum SecretsCommand {
     VerifyYubikey(VerifyYubikeyOptions),
     RestoreGpg(RestoreGpgOptions),
     RestorePass(RestorePassOptions),
+    BwLogin(BwLoginOptions),
     GpgBackup(GpgBackupOptions),
     PassRemote(PassRemoteOptions),
 }
@@ -146,6 +147,20 @@ struct VerifyYubikeyOptions {
 enum VerifyCheck {
     Bws,
     BwLogin,
+}
+
+#[derive(Args)]
+/// YubiKey から `bw-email` / `bw-password` を取得し Bitwarden Password Manager CLI に login / unlock する option。
+///
+/// `bw-email` は通常 YubiKey の値を使い、override が必要な場合だけ `--email <email>` を許可する（spec L178）。
+/// master password は子プロセスの `BW_PASSWORD` env でだけ渡し、argv には載せない。YubiKey OTP は実行時に
+/// 可視入力で受け取り、argv（`--code`）へ載る単回トークンとして扱う。
+struct BwLoginOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+    /// YubiKey の `bw-email` を使わず、指定した login email で login する override。
+    #[arg(long)]
+    email: Option<String>,
 }
 
 #[derive(Args)]
@@ -296,6 +311,7 @@ pub(in crate::secrets) struct RuntimePorts {
     pub(in crate::secrets) storage: adapters::StorageAdapter,
     pub(in crate::secrets) report: adapters::JsonReportAdapter,
     pub(in crate::secrets) bws_client: adapters::BwsClientAdapter,
+    pub(in crate::secrets) bw_login: adapters::BwLoginAdapter,
     pub(in crate::secrets) gpg_recipient: adapters::GpgRecipientAdapter,
     pub(in crate::secrets) backup_cipher: adapters::BackupCipherAdapter,
     pub(in crate::secrets) gpg_keyring: adapters::GpgKeyringAdapter,
@@ -315,6 +331,7 @@ impl RuntimePorts {
             storage: adapters::StorageAdapter::default(),
             report: adapters::JsonReportAdapter::default(),
             bws_client: adapters::BwsClientAdapter,
+            bw_login: adapters::BwLoginAdapter,
             gpg_recipient: adapters::GpgRecipientAdapter::default(),
             backup_cipher: adapters::BackupCipherAdapter::default(),
             gpg_keyring: adapters::GpgKeyringAdapter::default(),

@@ -3,12 +3,14 @@
 use crate::Result;
 use crate::secrets::{
     domain::{
+        bw_login::{BwLoginEmail, BwOtp},
         commands::VerifyYubikeyCommand,
         piv::validate_piv_pin_len,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
         verification::{CheckName, CheckStatus, VerifySummary},
     },
     ports,
+    support::protection::{ProtectedSecret, bw_login},
 };
 
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
@@ -16,7 +18,11 @@ use crate::secrets::{
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
 /// 先頭に固定する。外部確認結果は report 境界へ明示的に反映し、verify 結果の責任範囲を
 /// 曖昧にしない。
-pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B>(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "verify-yubikey は device/pin/storage/report/bws/otp-input/bw-login の port を順序適用する単一 use case"
+)]
+pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B, O, L>(
     command: VerifyYubikeyCommand,
     device_serial: &mut D,
     pin_policy: &mut impl ports::DevicePinPolicyPort,
@@ -24,6 +30,8 @@ pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B>(
     storage_port: &mut S,
     report: &R,
     bws_client: &B,
+    otp_input: &O,
+    bw_login_port: &L,
 ) -> Result<()>
 where
     D: ports::DeviceSerialPort,
@@ -31,6 +39,8 @@ where
     S: ports::SecretStoragePort,
     R: ports::ReportPort,
     B: ports::BwsClientPort,
+    O: ports::BwOtpInputPort,
+    L: ports::BwLoginPort,
 {
     let requested = command.requested_external_checks()?;
     let serial = device_serial.resolve_device_serial(command.serial)?;
@@ -42,23 +52,27 @@ where
         None
     };
     let local_verify = (|| {
-        let mut bws_access_token = None;
+        use crate::secrets::domain::piv::SecretName;
+        let mut bw_email: Option<ProtectedSecret> = None;
+        let mut bw_password: Option<ProtectedSecret> = None;
+        let mut bws_access_token: Option<ProtectedSecret> = None;
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
-            let is_bws_access_token =
-                storage.name == crate::secrets::domain::piv::SecretName::BwsAccessToken;
+            let name = storage.name;
             let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
             let secret = storage_port
                 .load_secret(serial, &intent, pin.as_ref())
                 .map_err(|error| intent.decode_error(error))?;
             intent.validate_loaded_secret(&secret)?;
-            if is_bws_access_token {
-                bws_access_token = Some(secret);
+            match name {
+                SecretName::BwEmail => bw_email = Some(secret),
+                SecretName::BwPassword => bw_password = Some(secret),
+                SecretName::BwsAccessToken => bws_access_token = Some(secret),
             }
         }
-        Ok(bws_access_token)
+        Ok((bw_email, bw_password, bws_access_token))
     })();
-    let bws_access_token = match local_verify {
+    let (loaded_bw_email, loaded_bw_password, loaded_bws_access_token) = match local_verify {
         Ok(value) => value,
         Err(err) => {
             return report
@@ -69,7 +83,7 @@ where
     if requested.is_empty() {
         return report.write_verify_report(&VerifySummary::local_storage_verified(serial));
     }
-    let access_token = bws_access_token.ok_or_else(|| {
+    let access_token = loaded_bws_access_token.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "internal invariant violated: verification plan did not yield bws-access-token"
         )
@@ -82,7 +96,7 @@ where
                 let mut result = Ok(());
                 let project_id =
                     match bws_client
-                        .list_bws_projects(&access_token)
+                        .list_bws_projects(access_token)
                         .await
                         .and_then(|projects| {
                             crate::secrets::domain::bws::BwsProjectName::DOTFILES_SECRET_RECOVERY
@@ -98,20 +112,18 @@ where
                             continue;
                         }
                     };
-                let secret_candidates = match bws_client
-                    .list_bws_secrets(&access_token, &project_id)
-                    .await
-                {
-                    Ok(secrets) => secrets,
-                    Err(error) => {
-                        result = Err(error);
-                        summary.mark_external_check(CheckName::Bws, CheckStatus::Failed);
-                        if first_error.is_none() {
-                            first_error = result.err();
+                let secret_candidates =
+                    match bws_client.list_bws_secrets(access_token, &project_id).await {
+                        Ok(secrets) => secrets,
+                        Err(error) => {
+                            result = Err(error);
+                            summary.mark_external_check(CheckName::Bws, CheckStatus::Failed);
+                            if first_error.is_none() {
+                                first_error = result.err();
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                };
+                    };
                 for secret_name in check.required_bws_secrets().ok_or_else(|| {
                     anyhow::anyhow!("internal invariant violated: bws check has no secret plan")
                 })? {
@@ -124,7 +136,7 @@ where
                             }
                         };
                     if let Err(error) = bws_client
-                        .fetch_bws_secret_by_id(&access_token, &secret_id)
+                        .fetch_bws_secret_by_id(access_token, &secret_id)
                         .await
                         .map(|_| ())
                     {
@@ -143,12 +155,25 @@ where
                 }
             }
             CheckName::BwLogin => {
-                summary.mark_external_check(CheckName::BwLogin, CheckStatus::Failed);
-                if first_error.is_none() {
-                    first_error = Some(anyhow::anyhow!(
-                        "external checks are not implemented yet: {}",
-                        CheckName::BwLogin.as_str()
-                    ));
+                // bw-login 外部確認は、YubiKey 由来の `bw-email` / `bw-password` と入力 OTP で
+                // 実際に `bw login` / `bw unlock` の到達性を確認する（spec L107）。bw-login use case と
+                // 同じ実行経路（`BwLoginPort`）を再利用し、master password は port の `BW_PASSWORD` env 境界で
+                // だけ子プロセスへ渡る。session key は確認専用のため surface せず破棄する。
+                match run_bw_login_check(
+                    loaded_bw_email.as_ref(),
+                    loaded_bw_password.as_ref(),
+                    otp_input,
+                    bw_login_port,
+                )
+                .await
+                {
+                    Ok(()) => summary.mark_external_check(CheckName::BwLogin, CheckStatus::Ok),
+                    Err(error) => {
+                        summary.mark_external_check(CheckName::BwLogin, CheckStatus::Failed);
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
                 }
             }
             CheckName::Setup
@@ -165,6 +190,35 @@ where
         return Err(error);
     }
     Ok(())
+}
+
+/// bw-login 外部確認を bw-login use case と同じ port 経路で実行する。
+///
+/// local storage 検証で load 済みの `bw-email` / `bw-password` を使い、OTP を入力して `bw login` / `bw unlock`
+/// の到達性を確認する。email は protection 境界の内側で argv 安全な値へ翻訳し、master password は port へ保護値
+/// として渡す。session key は確認専用のため受け取った値を surface せず破棄し、login / unlock の成否だけを返す。
+async fn run_bw_login_check<O, L>(
+    bw_email: Option<&ProtectedSecret>,
+    bw_password: Option<&ProtectedSecret>,
+    otp_input: &O,
+    bw_login_port: &L,
+) -> Result<()>
+where
+    O: ports::BwOtpInputPort,
+    L: ports::BwLoginPort,
+{
+    let bw_email = bw_email.ok_or_else(|| {
+        anyhow::anyhow!("internal invariant violated: verification plan did not yield bw-email")
+    })?;
+    let bw_password = bw_password.ok_or_else(|| {
+        anyhow::anyhow!("internal invariant violated: verification plan did not yield bw-password")
+    })?;
+    let email: BwLoginEmail = bw_login::parse_email(bw_email)?;
+    let otp = BwOtp::parse(&otp_input.read_bw_otp()?)?;
+    bw_login_port
+        .login_and_unlock(&email, bw_password, &otp)
+        .await
+        .map(|_session| ())
 }
 
 #[cfg(test)]
@@ -240,6 +294,8 @@ mod tests {
         storage.expect_inspect_secret_storage_read().times(0);
         let report = ports::MockReportPort::new();
         let bws = ports::MockBwsClientPort::new();
+        let otp_input = ports::MockBwOtpInputPort::new();
+        let bw_login = ports::MockBwLoginPort::new();
 
         let result = run_verify_yubikey_with(
             VerifyYubikeyCommand {
@@ -253,6 +309,8 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &otp_input,
+            &bw_login,
         )
         .await;
 
@@ -280,6 +338,8 @@ mod tests {
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
 
         let mut bws = ports::MockBwsClientPort::new();
+        let otp_input = ports::MockBwOtpInputPort::new();
+        let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -339,6 +399,8 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &otp_input,
+            &bw_login,
         )
         .await
     }
@@ -362,6 +424,8 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         let mut bws = ports::MockBwsClientPort::new();
+        let otp_input = ports::MockBwOtpInputPort::new();
+        let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -387,6 +451,8 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &otp_input,
+            &bw_login,
         )
         .await;
 
@@ -412,6 +478,8 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         let mut bws = ports::MockBwsClientPort::new();
+        let otp_input = ports::MockBwOtpInputPort::new();
+        let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -445,6 +513,8 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &otp_input,
+            &bw_login,
         )
         .await;
 
@@ -470,6 +540,8 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         let mut bws = ports::MockBwsClientPort::new();
+        let otp_input = ports::MockBwOtpInputPort::new();
+        let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -517,9 +589,141 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &otp_input,
+            &bw_login,
         )
         .await;
 
         assert!(result.is_err(), "BWS fetch failure must fail");
+    }
+
+    #[tokio::test]
+    async fn verify_bw_login_check_logs_in_and_reports_ok() -> crate::Result<()> {
+        use crate::secrets::domain::bw_login::{BwLoginEmail, BwOtp, BwSessionKey};
+
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut sequence = mockall::Sequence::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|requested| Ok(requested.expect("serial")));
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        expect_local_storage_ok(&mut storage, &mut sequence, 2001);
+
+        // bw-login 確認では BWS port は呼ばれない。
+        let bws = ports::MockBwsClientPort::new();
+
+        let mut otp_input = ports::MockBwOtpInputPort::new();
+        otp_input
+            .expect_read_bw_otp()
+            .times(1)
+            .returning(|| Ok("cccccbtdvuotp".to_owned()));
+
+        // local storage で load した bw-email（"email"）/ bw-password（"password"）が port へ渡る。
+        let mut bw_login = ports::MockBwLoginPort::new();
+        bw_login
+            .expect_login_and_unlock()
+            .times(1)
+            .withf(
+                |email: &BwLoginEmail, password: &ProtectedSecret, otp: &BwOtp| {
+                    email.as_str() == "email"
+                        && otp.as_str() == "cccccbtdvuotp"
+                        && *password == material(b"password")
+                },
+            )
+            .returning(|_, _, _| Ok(BwSessionKey::parse("SESSIONKEY==").expect("session")));
+
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_verify_report()
+            .times(1)
+            .withf(|summary| {
+                summary.checks.get(&CheckName::LocalStorage) == Some(&CheckStatus::Ok)
+                    && summary.checks.get(&CheckName::BwLogin) == Some(&CheckStatus::Ok)
+                    && summary.checks.get(&CheckName::Bws) == Some(&CheckStatus::Skipped)
+            })
+            .returning(|_| Ok(()));
+
+        run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: vec![ExternalCheck::BwLogin],
+                all: false,
+            },
+            &mut device_serial,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &report,
+            &bws,
+            &otp_input,
+            &bw_login,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn verify_bw_login_check_reports_failure_when_login_fails() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut sequence = mockall::Sequence::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        expect_local_storage_ok(&mut storage, &mut sequence, 2001);
+        let bws = ports::MockBwsClientPort::new();
+        let mut otp_input = ports::MockBwOtpInputPort::new();
+        otp_input
+            .expect_read_bw_otp()
+            .times(1)
+            .returning(|| Ok("cccccbtdvuotp".to_owned()));
+        let mut bw_login = ports::MockBwLoginPort::new();
+        bw_login
+            .expect_login_and_unlock()
+            .times(1)
+            .returning(|_, _, _| anyhow::bail!("bw login failed"));
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_verify_report()
+            .times(1)
+            .withf(|summary| summary.checks.get(&CheckName::BwLogin) == Some(&CheckStatus::Failed))
+            .returning(|_| Ok(()));
+
+        let result = run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: vec![ExternalCheck::BwLogin],
+                all: false,
+            },
+            &mut device_serial,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &report,
+            &bws,
+            &otp_input,
+            &bw_login,
+        )
+        .await;
+
+        assert!(result.is_err(), "bw-login failure must fail verify");
     }
 }

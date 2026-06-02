@@ -10,16 +10,17 @@ use crate::{
     Result,
     secrets::{
         domain::{
+            bw_login::BwLoginSummary,
             enrollment::EnrollSummary,
             gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
             pass_restore::RestorePassSummary,
             verification::VerifySummary,
         },
         ports::io::{
-            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-            PasswordStoreRemoteInputPort, PinInputPort, ProvisioningAccessTokenInputPort,
-            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SshPublicKeyOutputPort,
+            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
+            ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+            ProvisioningAccessTokenInputPort, ReportPort, RotationContinuationPort,
+            SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::protection::ProtectedSecret,
     },
@@ -62,6 +63,12 @@ impl ProvisioningAccessTokenInputPort for ProcessIoAdapter {
 impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
     fn read_password_store_remote_url(&self) -> Result<String> {
         self.0.read_password_store_remote_url()
+    }
+}
+
+impl BwOtpInputPort for ProcessIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        self.0.read_bw_otp()
     }
 }
 
@@ -143,5 +150,9 @@ impl ReportPort for JsonReportAdapter {
 
     fn write_restore_pass_report(&self, summary: &RestorePassSummary) -> Result<()> {
         self.0.write_restore_pass_report(summary)
+    }
+
+    fn write_bw_login_report(&self, summary: &BwLoginSummary) -> Result<()> {
+        self.0.write_bw_login_report(summary)
     }
 }

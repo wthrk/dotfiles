@@ -4,6 +4,7 @@
 //! storage の状態遷移、wire format を定義する。port 契約は `ports/` 側へ置き、
 //! 端末 I/O、process 保護、実機 YubiKey discovery は外側の責務とする。
 
+pub(crate) mod bw_login;
 pub(crate) mod bws;
 pub(crate) mod commands;
 pub(crate) mod enrollment;

@@ -8,6 +8,7 @@ use crate::{
     Result,
     secrets::{
         domain::{
+            bw_login::BwLoginSummary,
             enrollment::{EnrollSummary, YubikeyRole},
             gpg_restore::RestoreGpgSummary,
             pass_restore::RestorePassSummary,
@@ -54,6 +55,19 @@ impl ReportPort for JsonReportAdapter {
             "store_readable": summary.store_readable,
         });
         write_json_report(&payload)
+    }
+
+    fn write_bw_login_report(&self, summary: &BwLoginSummary) -> Result<()> {
+        // `BW_SESSION` を disk / dotfile へ永続化せず、利用者が自分で export できる形で surface する（spec L86）。
+        // master password は決して出力しない。session 値は JSON report に含め、続けて利用者がそのまま貼れる
+        // `export BW_SESSION=...` 行を stdout に出す。
+        let payload = json!({
+            "bw_login": "ok",
+            "bw_session": summary.session.as_str(),
+        });
+        write_json_report(&payload)?;
+        println!("export BW_SESSION={}", summary.session.as_str());
+        Ok(())
     }
 }
 
