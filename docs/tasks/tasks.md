@@ -177,8 +177,8 @@
   - `rust/dotfiles-cli/src/secrets/support/protection/bw_login.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 作業定義文書: [secret-recovery/work-items/integration.md](secret-recovery/work-items/integration.md#17-新規マシン復旧フロー統合)
-- レビュー記録: [secret-recovery/review-artifacts/integration/review.md](secret-recovery/review-artifacts/integration/review.md)（集約後レビュー判定: 合格）
-- 現行サイクル差分識別子: `1318b19..bdb3171`（base origin/main `1318b19`、レビュー対象終端 `bdb3171`。branch `feat/secrets-recovery-flow-integration-issue-17`）
+- レビュー記録: [secret-recovery/review-artifacts/integration/review.md](secret-recovery/review-artifacts/integration/review.md)（集約後レビュー判定: 合格。実装差分必須7担当 + 文書是正の参照整合レビュー担当 全員合格）
+- 現行サイクル差分識別子: `1318b19..db34795`（base origin/main `1318b19`、最終終端 `db34795`。branch `feat/secrets-recovery-flow-integration-issue-17`。サイクル1 初版 `bdb3171` を PR #42 AI レビュー P1 検出で差し戻し、サイクル2 `b0340d7`・サイクル3 `991245d`・サイクル4 `db34795` の remediation を経て最終集約合格）
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### 責務基準レビュー強制への是正

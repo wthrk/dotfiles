@@ -223,7 +223,7 @@
 - 主成果物: `実コード差分`
 - 作業定義文書: [work-items/integration.md](work-items/integration.md#17-新規マシン復旧フロー統合)
 - レビュー記録: [review-artifacts/integration/review.md](review-artifacts/integration/review.md)（集約後レビュー判定: 合格）
-- 現行サイクル差分識別子: `1318b19..bdb3171`（base origin/main `1318b19`、レビュー対象終端 `bdb3171`。branch `feat/secrets-recovery-flow-integration-issue-17`）
+- 現行サイクル差分識別子: `1318b19..db34795`（base origin/main `1318b19`、最終終端 `db34795`。branch `feat/secrets-recovery-flow-integration-issue-17`。サイクル1 初版 `bdb3171` を PR #42 AI レビュー P1 検出で差し戻し、サイクル2 `b0340d7`・サイクル3 `991245d`・サイクル4 `db34795` の remediation を経て最終集約合格）
 - 現行サイクル確認/レビュー記録（2026-06-03）:
   - [review-artifacts/integration/confirmation.md](review-artifacts/integration/confirmation.md)
   - [review-artifacts/integration/review.md](review-artifacts/integration/review.md)
@@ -250,15 +250,15 @@
   - `rust/dotfiles-cli/src/secrets_internal_test_stub_contract.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 実装状態: `実装済み（現行サイクル集約レビュー合格）`
-- 確認・レビュー: 確認通過（`cargo build`(default + `secrets-internal-test-stub`)/`clippy -D warnings`/`fmt --check`/`test`(205 unit + 42 stub integration)/`xtask check`、既存コマンド退行なし）。必須7担当全員合格・集約後レビュー判定 `合格`（`review-artifacts/integration/review.md`、現行サイクル差分 `1318b19..bdb3171`）。
+- 確認・レビュー: 確認通過（`cargo build`(default + `secrets-internal-test-stub`)/`clippy -D warnings`/`fmt --check`/`test`(209 unit + 42 stub integration)/`xtask check`、既存コマンド退行なし、stdout 漏洩防止テスト追加）。実装差分必須7担当 + 文書是正の参照整合レビュー担当 全員合格・集約後レビュー判定 `合格`（`review-artifacts/integration/review.md`、最終対象差分 `1318b19..db34795`。サイクル1〜4の差し戻し経緯を含む）。
 - 固定実装単位トラッカー:
 
 | 実装単位 | 状態 | 成果物 | 参照 |
 | --- | --- | --- | --- |
 | 規約計画 | 完了 | `work-items/integration.md` | [implementation-guidelines.md#規約計画](../../secret-recovery/implementation-guidelines.md#規約計画) |
 | 実装計画 | 完了 | `work-items/integration.md` | [implementation-guidelines.md#実装計画](../../secret-recovery/implementation-guidelines.md#実装計画) |
-| 規約文書更新 | 完了（spec 既存契約へ適合・追記不要） | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
-| 実装（bw-login 結線 + verify-yubikey --check bw-login） | 実装済み（集約レビュー合格） | 実コード差分＋テスト（`1318b19..bdb3171`） | [work-items/integration.md](work-items/integration.md#17-新規マシン復旧フロー統合) |
+| 規約文書更新 | 完了（spec に `--check bw-login` 現行範囲＝CLI 起動可能性確認＋#16 委譲を恒久仕様化） | `docs/secret-recovery/secret-recovery-spec.md` | [implementation-guidelines.md#規約文書更新](../../secret-recovery/implementation-guidelines.md#規約文書更新) |
+| 実装（bw-login 結線 + verify-yubikey --check bw-login） | 実装済み（集約レビュー合格） | 実コード差分＋テスト（`1318b19..db34795`） | [work-items/integration.md](work-items/integration.md#17-新規マシン復旧フロー統合) |
 | 確認 | 完了 | `review-artifacts/integration/confirmation.md` | [implementation-guidelines.md#確認](../../secret-recovery/implementation-guidelines.md#確認) |
 | レビュー | 完了（集約後レビュー判定: 合格） | `review-artifacts/integration/review.md` | [implementation-guidelines.md#レビュー](../../secret-recovery/implementation-guidelines.md#レビュー) |
 | 必要時の後続対応 | 完了（不要・未解消 finding なし） | `review-artifacts/integration/review.md` | [implementation-guidelines.md#必要時の後続対応](../../secret-recovery/implementation-guidelines.md#必要時の後続対応) |

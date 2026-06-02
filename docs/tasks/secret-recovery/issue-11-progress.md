@@ -55,5 +55,5 @@
 | `#14` | GPG 復元 / gpg-agent SSH 対応 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#15` | password-store 復元 | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
 | `#16` | Bitwarden Password Manager CLI ログイン | `未着手（履歴上の追加進捗未検出）` | 旧 tasks の issue 定義のみ復元 |
-| `#17` | 新規マシン復旧フロー統合 | `実装済み（現行サイクル集約レビュー合格）` | root/area ledger を `実装済み（現行サイクル集約レビュー合格）` へ更新。`review-artifacts/integration/review.md` は必須7担当全員合格・`集約後レビュー判定: 合格`（現行サイクル差分 `1318b19..bdb3171`）。完了判定は完了判定担当の責務 |
+| `#17` | 新規マシン復旧フロー統合 | `実装済み（現行サイクル集約レビュー合格）` | root/area ledger を `実装済み（現行サイクル集約レビュー合格）` へ更新。`review-artifacts/integration/review.md` は実装差分必須7担当 + 文書是正の参照整合レビュー担当 全員合格・`集約後レビュー判定: 合格`（最終対象差分 `1318b19..db34795`。サイクル1 初版 `bdb3171` を PR #42 AI レビュー P1 検出で差し戻し、サイクル2〜4 remediation を経て最終集約合格）。完了判定は完了判定担当の責務 |
 | `#18` | 最終ドキュメント整理 | `移管済み（repo-global へ移設）` | `docs/tasks/repo-governance/tasks.md`、`docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/confirmation-2026-05-22.md`、`docs/tasks/repo-governance/review-artifacts/global-documentation-remediation/review-2026-05-22.md` を参照 |
