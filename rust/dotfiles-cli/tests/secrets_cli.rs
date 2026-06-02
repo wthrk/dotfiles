@@ -1179,6 +1179,32 @@ fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestRes
 }
 
 #[test]
+fn pass_remote_register_overwrites_existing_secret_via_stdin_pipe_with_yes() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（stdin pipe・非 TTY）で `--yes`
+    // を与え、pipe から妥当な clone URL を渡して既存 secret を上書きする。pipe 入力経路（terminal で
+    // なければ stdin 1 行を読む分岐）と上書き挙動を駆動し、最終 BWS datastore が新値へ更新された
+    // ことを観測する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["pass-remote", "register", "--serial", "2001", "--yes"],
+        Some(&format!("{RESTORE_PASS_REMOTE}\n")),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "pipe-supplied clone URL must overwrite the existing value with --yes"
+    );
+    Ok(())
+}
+
+#[test]
 fn pass_remote_register_stops_when_hidden_url_is_invalid() -> TestResult<()> {
     // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で上書き確認 [y] を与えたうえで、
     // hidden prompt へ domain 妥当でない clone URL を入力する。update 経路の URL 検証で停止し、

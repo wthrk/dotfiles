@@ -63,12 +63,15 @@ impl SecretInputPort for RealSecretIoAdapter {
     }
 
     fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret> {
-        // clone URL を argv へ載せず、hidden line（TTY）または pipe 経由で保護 buffer へ直接読み込む。
-        process_io::read_hidden_line(
-            "password-store-remote: ",
-            16 * 1024,
-            "password-store-remote input is too large",
-        )
+        // clone URL を argv へ載せず保護 buffer へ直接読み込む（設計 L119: hidden prompt または pipe）。
+        // stdin が terminal のとき hidden prompt、非 terminal（pipe）のとき stdin 1 行を読む。
+        const MAX_LEN: usize = 16 * 1024;
+        const TOO_LONG_MESSAGE: &str = "password-store-remote input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_hidden_line("password-store-remote: ", MAX_LEN, TOO_LONG_MESSAGE)
+        } else {
+            process_io::read_stdin_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
     }
 }
 
