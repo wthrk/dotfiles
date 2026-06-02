@@ -253,6 +253,17 @@ impl AddGpgBackupSpareCommand {
     }
 }
 
+/// password-store-remote の provisioning（保管側 create/update）use case の入力 command。
+///
+/// `bws-access-token` を読み出す対象 YubiKey の serial 指定有無と、非対話実行での明示上書き許可だけを
+/// 保持する。clone URL 値自体は argv へ載せず保護 buffer 経路で読むため command には含めない。対話実行では
+/// 上書き対象 secret name と project name を表示して明示確認する責務を port 側へ委譲する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvisionPasswordStoreRemoteCommand {
+    pub serial: Option<u32>,
+    pub assume_overwrite: bool,
+}
+
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }

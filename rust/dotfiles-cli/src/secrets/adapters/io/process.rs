@@ -61,6 +61,15 @@ impl SecretInputPort for RealSecretIoAdapter {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")
     }
+
+    fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret> {
+        // clone URL を argv へ載せず、hidden line（TTY）または pipe 経由で保護 buffer へ直接読み込む。
+        process_io::read_hidden_line(
+            "password-store-remote: ",
+            16 * 1024,
+            "password-store-remote input is too large",
+        )
+    }
 }
 
 impl RotationContinuationPort for RealSecretIoAdapter {
@@ -120,6 +129,21 @@ impl BackupUpdateConfirmationPort for RealSecretIoAdapter {
         let answer = process_io::read_control_line(&prompt)?;
         Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
     }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        if !process_io::stdin_is_terminal() {
+            // 非対話実行では明示的上書き許可 option がある場合だけ更新を許可する。
+            return Ok(assume_overwrite);
+        }
+        let prompt = format!("update BWS secret {secret_name} in project {project_name}? [y/N]: ");
+        let answer = process_io::read_control_line(&prompt)?;
+        Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    }
 }
 
 /// process/terminal I/O helper を secret 入出力 port 群へ翻訳する adapter。
@@ -152,6 +176,10 @@ impl SecretInputPort for ProcessIoAdapter {
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         self.secret_io.read_streamed_secret()
+    }
+
+    fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_password_store_remote_secret()
     }
 }
 
@@ -199,5 +227,15 @@ impl BackupUpdateConfirmationPort for ProcessIoAdapter {
             primary_fingerprint,
             assume_overwrite,
         )
+    }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        self.secret_io
+            .confirm_secret_overwrite(project_name, secret_name, assume_overwrite)
     }
 }

@@ -209,6 +209,102 @@ impl BwsClientPort for BwsClientAdapter {
             .map_err(|_| anyhow::anyhow!("bitwarden secret update failed"))?;
         Ok(())
     }
+
+    /// 保護済み clone URL を protection 境界で検証し、指定 project に新しい secret を作成する。
+    async fn create_password_store_remote(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        key: &str,
+        value: &ProtectedSecret,
+    ) -> crate::Result<BwsSecretId> {
+        let remote = bws::validate_password_store_remote_value(value).await?;
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let organization_id = session
+            .client()
+            .get_access_token_organization()
+            .ok_or_else(|| anyhow::anyhow!("bitwarden organization is missing in access token"))?
+            .into();
+        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
+        let created = session
+            .client()
+            .secrets()
+            .create(&SecretCreateRequest {
+                organization_id,
+                key: key.to_owned(),
+                value: remote.as_str().to_owned(),
+                note: String::new(),
+                project_ids: Some(vec![project_uuid]),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret create failed"))?;
+        Ok(BwsSecretId::new(created.id.to_string()))
+    }
+
+    /// 現行 `password-store-remote` の SDK revision（取得不可なら value digest）を guard 化して返す。
+    async fn fetch_password_store_remote_guard(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<BackupUpdateGuard> {
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        let secret = session
+            .client()
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let guard = BackupUpdateGuard::from_revision(secret.revision_date.to_rfc3339())
+            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(secret.value.as_bytes()));
+        Ok(guard)
+    }
+
+    /// 更新直前に現行 revision を再取得し、guard 一致を確認した場合だけ clone URL を上書き更新する。
+    async fn update_password_store_remote_if_unchanged(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        secret_id: &BwsSecretId,
+        key: &str,
+        value: &ProtectedSecret,
+        expected_guard: &BackupUpdateGuard,
+    ) -> crate::Result<()> {
+        let remote = bws::validate_password_store_remote_value(value).await?;
+        let session = bws::login_client_with_access_token(access_token).await?;
+        let organization_id = session
+            .client()
+            .get_access_token_organization()
+            .ok_or_else(|| anyhow::anyhow!("bitwarden organization is missing in access token"))?
+            .into();
+        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
+        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        // 更新直前に現行値を再取得し、guard 一致を stale overwrite 防止条件として確認する。
+        let current = session
+            .client()
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let current_guard = BackupUpdateGuard::from_revision(current.revision_date.to_rfc3339())
+            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(current.value.as_bytes()));
+        expected_guard.ensure_matches(&current_guard)?;
+        // 利用者が設定した note / project を消さないよう、直前取得した現行値を保持して上書きする。
+        session
+            .client()
+            .secrets()
+            .update(&SecretPutRequest {
+                id,
+                organization_id,
+                key: key.to_owned(),
+                value: remote.as_str().to_owned(),
+                note: current.note.clone(),
+                project_ids: Some(vec![current.project_id.unwrap_or(project_uuid)]),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret update failed"))?;
+        Ok(())
+    }
 }
 
 /// 検証済み envelope を canonical UTF-8 JSON 文字列へ serialize する。encrypted envelope であり平文鍵素材を含まない。

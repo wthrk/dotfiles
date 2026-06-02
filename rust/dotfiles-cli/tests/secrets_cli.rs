@@ -67,6 +67,10 @@ impl PtyRun {
     fn final_yubikey(&self) -> TestResult<Value> {
         final_observation(&self.output, "yubikey")
     }
+
+    fn final_bws(&self) -> TestResult<Value> {
+        final_observation(&self.output, "bws")
+    }
 }
 
 struct StubPorts {
@@ -1116,6 +1120,85 @@ fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> 
         final_git["cloned_remotes"],
         json!([RESTORE_PASS_REMOTE]),
         "empty store with no held recipient secret key must be left in place (not rolled back)"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で上書き確認 [y] を与え、hidden
+    // prompt から妥当な clone URL を入力して update する。最終観測で新値へ置換されたことを確認する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["pass-remote", "register", "--serial", "2001"],
+        Some(&format!("y\n{RESTORE_PASS_REMOTE}\n")),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(
+        run.output.contains("password-store-remote: "),
+        "output: {}",
+        run.output
+    );
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "overwritten password-store-remote must be observed"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestResult<()> {
+    // 非対話実行（pipe stdin）で既存 secret を上書きしようとし、`--yes` 未指定なら確認段階で停止する。
+    // 確認で停止するため、URL の hidden 入力（/dev/tty）へは到達しない。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["pass-remote", "register", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("was not confirmed"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!("https://example.invalid/repo.git"),
+        "declined overwrite must leave the existing value unchanged"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_stops_when_hidden_url_is_invalid() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で上書き確認 [y] を与えたうえで、
+    // hidden prompt へ domain 妥当でない clone URL を入力する。update 経路の URL 検証で停止し、
+    // 最終 datastore が元の値のまま不変であることを観測する（不正 URL の停止を駆動・観測）。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["pass-remote", "register", "--serial", "2001"],
+        Some("y\nnot-a-valid-clone-url\n"),
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!("https://example.invalid/repo.git"),
+        "invalid clone URL must stop the update and leave the existing value unchanged"
     );
     Ok(())
 }

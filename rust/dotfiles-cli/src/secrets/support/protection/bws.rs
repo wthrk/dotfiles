@@ -88,6 +88,20 @@ impl BwsClientSession {
     }
 }
 
+/// provisioning 入力境界で読み込んだ保護済み clone URL を、protection 境界内で domain 値へ検証する。
+///
+/// 入力 buffer の平文は `with_secret_utf8_async` の借用中だけ参照し、[`PasswordStoreRemote::parse`] で
+/// `git@github.com:<owner>/<repo>.git` 形式を検証する。検証済みの URL は秘密情報ではないため
+/// `PasswordStoreRemote` domain 値として返すが、入力 buffer の平文を closure 外へ持ち出さない。URL 形式の
+/// 妥当性判断は domain rule に委ね、adapter で再定義しない。
+pub(crate) async fn validate_password_store_remote_value(
+    value: &ProtectedSecret,
+) -> Result<PasswordStoreRemote> {
+    value
+        .with_secret_utf8_async(|text| Box::pin(async { PasswordStoreRemote::parse(text) }))
+        .await
+}
+
 /// BWS access token で SDK 認証済み client を作成する。
 ///
 /// ここでは SDK が要求する所有 token buffer の作成、login 呼び出し、repository 所有 buffer の

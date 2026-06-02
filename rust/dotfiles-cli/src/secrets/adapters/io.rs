@@ -50,6 +50,10 @@ impl SecretInputPort for ProcessIoAdapter {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         self.0.read_streamed_secret()
     }
+
+    fn read_password_store_remote_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_password_store_remote_secret()
+    }
 }
 
 impl RotationContinuationPort for ProcessIoAdapter {
@@ -98,6 +102,16 @@ impl BackupUpdateConfirmationPort for ProcessIoAdapter {
             primary_fingerprint,
             assume_overwrite,
         )
+    }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        self.0
+            .confirm_secret_overwrite(project_name, secret_name, assume_overwrite)
     }
 }
 

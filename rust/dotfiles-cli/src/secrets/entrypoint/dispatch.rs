@@ -10,8 +10,9 @@ use crate::{
         domain::{
             commands::{
                 AddGpgBackupSpareCommand, EnrollPrimaryCommand, EnrollSpareCommand, GetCommand,
-                PutCommand, RegisterGpgBackupCommand, RestoreGpgCommand, RestorePassCommand,
-                RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
+                ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
+                RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
+                VerifyYubikeyCommand,
             },
             gpg_backup::PrimaryFingerprint,
             verification::ExternalCheck,
@@ -239,6 +240,24 @@ pub(super) async fn dispatch(
                     &mut ports.storage,
                     &ports.bws_client,
                     &mut ports.gpg_recipient,
+                    &ports.process_io,
+                )
+                .await
+            }
+        },
+        super::super::SecretsCommand::PassRemote(options) => match options.command {
+            super::super::PassRemoteCommand::Register(options) => {
+                application::run_provision_password_store_remote::run_provision_password_store_remote(
+                    ProvisionPasswordStoreRemoteCommand {
+                        serial: options.serial,
+                        assume_overwrite: options.yes,
+                    },
+                    &mut ports.device,
+                    &mut ports.device_pin_policy,
+                    &ports.process_io,
+                    &mut ports.storage,
+                    &ports.bws_client,
+                    &ports.process_io,
                     &ports.process_io,
                 )
                 .await

@@ -51,6 +51,7 @@ enum SecretsCommand {
     RestoreGpg(RestoreGpgOptions),
     RestorePass(RestorePassOptions),
     GpgBackup(GpgBackupOptions),
+    PassRemote(PassRemoteOptions),
 }
 
 #[derive(Args)]
@@ -191,6 +192,37 @@ struct GpgBackupAddSpareOptions {
     unwrap_serial: Option<u32>,
     #[arg(long)]
     spare_serial: Option<u32>,
+    /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args)]
+/// `password-store-remote` の provisioning（保管側 create/update）を公開する option。
+///
+/// command 名 `pass-remote` は、`gpg-backup`（`gpg-secret-key-backup` の保管 command 群）と対称に
+/// `password-store-remote` secret の保管 command 群を表す。設計「初期登録手順」step3 が定める保管経路
+/// （管理 plane の bootstrap）を、復旧本線 command（`restore-pass`）と区別して provisioning 動詞 `register`
+/// 配下へ置くため、`restore-pass` ではなく secret 名に揃えた `pass-remote register` を採用する。
+struct PassRemoteOptions {
+    #[command(subcommand)]
+    command: PassRemoteCommand,
+}
+
+#[derive(Subcommand)]
+/// `password-store-remote` secret の create / update を行う provisioning command 群。
+enum PassRemoteCommand {
+    Register(PassRemoteRegisterOptions),
+}
+
+#[derive(Args)]
+/// private `password-store` の clone URL を BWS へ create または update する option。
+///
+/// 値（clone URL）は argv で受けず hidden prompt / stdin pipe / 保護 buffer から読む。`--serial` は
+/// `bws-access-token` を読み出す対象 YubiKey を固定し、`--yes` は非対話実行での上書き更新を明示許可する。
+struct PassRemoteRegisterOptions {
+    #[arg(long)]
+    serial: Option<u32>,
     /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
     #[arg(long)]
     yes: bool,
