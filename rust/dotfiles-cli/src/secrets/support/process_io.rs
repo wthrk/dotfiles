@@ -161,11 +161,13 @@ pub(crate) fn read_stdin_plain_line(
     read_plain_line_from(&mut io::stdin(), max_len, too_long_message)
 }
 
-/// reader から改行（`\n`/`\r`）までの 1 行を平文 `String` として読み取る共通実装。
+/// reader から改行までの 1 行を平文 `String` として読み取る共通実装。
 ///
-/// `max_len` を超えた時点で `too_long_message` を返して停止し、CR/LF を行末とみなして除く。
-/// 上限超過文言は feature 固有語彙のため caller（adapter）から受け取り、support には焼き込まない。
-/// secret ではない値だけに使う。
+/// `max_len` を超えた時点で `too_long_message` を返して停止する。行末は LF（`\n`）・CR（`\r`）・CRLF
+/// （`\r\n`）のいずれも 1 改行として扱う。`\r` を読んだら最初の行をそこで終端し、続く 1 byte が `\n` なら
+/// CRLF として一緒に消費して reader に余分な `\n` を残さない（`\r` の後が `\n` 以外の byte の場合、本 primitive は
+/// 1 行のみを読むためその 1 byte は読み捨てる）。行末文字自体は返値に含めない。上限超過文言は feature 固有語彙の
+/// ため caller（adapter）から受け取り、support には焼き込まない。secret ではない値だけに使う。
 fn read_plain_line_from(
     reader: &mut impl Read,
     max_len: usize,
@@ -178,7 +180,14 @@ fn read_plain_line_from(
             break;
         }
         match byte[0] {
-            b'\r' | b'\n' => break,
+            b'\n' => break,
+            b'\r' => {
+                // CR で行を終端する。CRLF の場合は直後の `\n` を 1 byte 先読みして一緒に消費し、reader へ
+                // 余分な `\n` を残さない。`\r` の後が `\n` 以外なら本 primitive は 1 行のみ読むため読み捨てる。
+                let mut next = [0u8; 1];
+                let _ = reader.read(&mut next)?;
+                break;
+            }
             value => {
                 line.push(char::from(value));
                 if line.len() > max_len {
@@ -224,4 +233,53 @@ pub(crate) fn write_secret_stdout_with(
         bail!("refusing to write secret to terminal; redirect stdout to a file or pipe");
     }
     write_secret(&mut io::stdout().lock())
+}
+
+#[cfg(test)]
+mod tests {
+    //! 非秘匿 1 行読み取りの行末処理（LF / CR / CRLF）が doc どおり 1 改行として扱われ、CRLF 入力で
+    //! reader へ末尾 `\r` も余分な `\n` も残さないことを byte slice reader で検証する。
+
+    use super::read_plain_line_from;
+
+    const TOO_LONG: &str = "input too long";
+
+    #[test]
+    fn reads_line_terminated_by_lf() {
+        let mut reader: &[u8] = b"https://example.test/repo.git\nnext";
+        let line = read_plain_line_from(&mut reader, 1024, TOO_LONG).expect("read line");
+        assert_eq!(line, "https://example.test/repo.git");
+        // LF は消費され、後続データは reader に残る。
+        assert_eq!(reader, b"next");
+    }
+
+    #[test]
+    fn reads_line_terminated_by_lone_cr() {
+        let mut reader: &[u8] = b"value\rnext";
+        let line = read_plain_line_from(&mut reader, 1024, TOO_LONG).expect("read line");
+        assert_eq!(line, "value");
+    }
+
+    #[test]
+    fn crlf_is_consumed_as_single_newline_without_residual_lf() {
+        let mut reader: &[u8] = b"value\r\nnext";
+        let line = read_plain_line_from(&mut reader, 1024, TOO_LONG).expect("read line");
+        assert_eq!(line, "value");
+        // CRLF の `\n` まで消費し、reader に余分な `\n` を残さない。
+        assert_eq!(reader, b"next");
+    }
+
+    #[test]
+    fn line_without_terminator_returns_until_eof() {
+        let mut reader: &[u8] = b"value";
+        let line = read_plain_line_from(&mut reader, 1024, TOO_LONG).expect("read line");
+        assert_eq!(line, "value");
+    }
+
+    #[test]
+    fn exceeding_max_len_fails() {
+        let mut reader: &[u8] = b"0123456789\n";
+        let result = read_plain_line_from(&mut reader, 4, TOO_LONG);
+        assert!(result.is_err(), "over-length input must fail");
+    }
 }
