@@ -175,6 +175,68 @@ impl BwsClientPort for super::BwsClientAdapter {
             Ok(())
         })
     }
+
+    async fn create_password_store_remote(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        key: &str,
+        remote: &PasswordStoreRemote,
+    ) -> crate::Result<BwsSecretId> {
+        // application が domain rule で検証済みの clone URL をそのまま datastore へ保存する。
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let secret_id = format!("bws-secret-id-{key}");
+            store
+                .project_secrets
+                .entry(project_id.as_str().to_owned())
+                .or_default()
+                .insert(secret_id.clone(), key.to_owned());
+            store
+                .secret_values
+                .insert(secret_id.clone(), remote.as_str().to_owned());
+            Ok(BwsSecretId::new(secret_id))
+        })
+    }
+
+    async fn fetch_password_store_remote_guard(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<BackupUpdateGuard> {
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let value = store
+                .secret_values
+                .get(secret_id.as_str())
+                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
+            Ok(BackupUpdateGuard::from_value_bytes(value.as_bytes()))
+        })
+    }
+
+    async fn update_password_store_remote_if_unchanged(
+        &self,
+        access_token: &ProtectedSecret,
+        _project_id: &BwsProjectId,
+        secret_id: &BwsSecretId,
+        _key: &str,
+        remote: &PasswordStoreRemote,
+        expected_guard: &BackupUpdateGuard,
+    ) -> crate::Result<()> {
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let current = store
+                .secret_values
+                .get(secret_id.as_str())
+                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
+            let current_guard = BackupUpdateGuard::from_value_bytes(current.as_bytes());
+            expected_guard.ensure_matches(&current_guard)?;
+            store
+                .secret_values
+                .insert(secret_id.as_str().to_owned(), remote.as_str().to_owned());
+            Ok(())
+        })
+    }
 }
 
 fn read_bws_projects(

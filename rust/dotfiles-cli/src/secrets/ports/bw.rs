@@ -87,4 +87,46 @@ pub trait BwsClientPort {
         envelope: &GpgBackupEnvelope,
         expected_guard: &BackupUpdateGuard,
     ) -> Result<()>;
+
+    /// 指定 project に新しい `password-store-remote` secret を作成し、その ID を返す。
+    ///
+    /// `remote` は application が `--url` または可視プロンプト/pipe 入力を domain rule
+    /// [`PasswordStoreRemote::parse`] で検証した値である。clone URL は秘密情報ではないため `ProtectedSecret`
+    /// ではなく検証済み domain 値で運ぶ。implementor は検証済み URL 文字列を SDK の create 境界へ翻訳する
+    /// だけで、URL 形式の再検証や保護 buffer 化を行わない。`key` は登録する BWS secret 名
+    /// （`password-store-remote`）を渡す。
+    async fn create_password_store_remote(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        key: &str,
+        remote: &PasswordStoreRemote,
+    ) -> Result<BwsSecretId>;
+
+    /// `password-store-remote` の更新直前確認に使う stale overwrite 防止 guard を取得する。
+    ///
+    /// implementor は現行 secret の SDK revision / updatedAt / ETag 相当を
+    /// [`BackupUpdateGuard::from_revision`] で、取得できなければ exact value bytes から
+    /// [`BackupUpdateGuard::from_value_bytes`] で fallback guard を作る。secret value 本体は
+    /// application へ返さず、guard だけを返す。
+    async fn fetch_password_store_remote_guard(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> Result<BackupUpdateGuard>;
+
+    /// stale overwrite 防止 guard が現行値と一致する場合だけ、既存 `password-store-remote` を新値へ更新する。
+    ///
+    /// implementor は更新直前に現行値を再取得し、その guard が `expected_guard` と一致する場合だけ SDK の
+    /// update 境界へ進む。一致しなければ stale overwrite として停止する。`remote` は application が domain rule
+    /// [`PasswordStoreRemote::parse`] で検証済みの非秘匿 clone URL であり、implementor は再検証しない。
+    async fn update_password_store_remote_if_unchanged(
+        &self,
+        access_token: &ProtectedSecret,
+        project_id: &BwsProjectId,
+        secret_id: &BwsSecretId,
+        key: &str,
+        remote: &PasswordStoreRemote,
+        expected_guard: &BackupUpdateGuard,
+    ) -> Result<()>;
 }

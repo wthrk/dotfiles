@@ -1461,6 +1461,49 @@ mod tests {
         }
     }
 
+    /// stale-overwrite 防止 guard は同一値で `Ok`、不一致値で `Err` を返す。
+    ///
+    /// 設計「recipient 運用 / BWS 更新契約」L121-126 の停止条件（更新前 guard と更新直前の現行 guard が
+    /// 一致する場合だけ上書き）を domain rule として直接駆動する。Revision 同士・ValueDigest 同士の
+    /// 値不一致に加え、種類（Revision / ValueDigest）が異なる場合も不一致として停止することを観測する。
+    #[test]
+    fn backup_update_guard_matches_only_identical_value() {
+        let revision_a = BackupUpdateGuard::Revision("rev-1".to_owned());
+        let revision_b = BackupUpdateGuard::Revision("rev-2".to_owned());
+        let digest_a = BackupUpdateGuard::from_value_bytes(b"current-value");
+        let digest_b = BackupUpdateGuard::from_value_bytes(b"changed-value");
+
+        // 一致: 同一 revision / 同一 digest は上書きを許可する。
+        ok(
+            revision_a.ensure_matches(&revision_a.clone()),
+            "matching revision guard",
+        );
+        ok(
+            digest_a.ensure_matches(&BackupUpdateGuard::from_value_bytes(b"current-value")),
+            "matching value-digest guard",
+        );
+
+        // 不一致: revision 値違い・digest 値違いは stale-overwrite として停止する。
+        assert!(
+            revision_a.ensure_matches(&revision_b).is_err(),
+            "differing revision must stop the overwrite"
+        );
+        assert!(
+            digest_a.ensure_matches(&digest_b).is_err(),
+            "differing value digest must stop the overwrite"
+        );
+
+        // 種類違い（Revision vs ValueDigest）も不一致として停止する。
+        assert!(
+            revision_a.ensure_matches(&digest_a).is_err(),
+            "differing guard kind must stop the overwrite"
+        );
+        assert!(
+            digest_a.ensure_matches(&revision_a).is_err(),
+            "differing guard kind must stop the overwrite"
+        );
+    }
+
     /// canonical な wire fingerprint は `to_json` round-trip で書き換えられず保存値のまま出力される。
     #[test]
     fn wire_fingerprints_round_trip_without_rewrite() {

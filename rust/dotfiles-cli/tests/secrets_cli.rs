@@ -67,6 +67,10 @@ impl PtyRun {
     fn final_yubikey(&self) -> TestResult<Value> {
         final_observation(&self.output, "yubikey")
     }
+
+    fn final_bws(&self) -> TestResult<Value> {
+        final_observation(&self.output, "bws")
+    }
 }
 
 struct StubPorts {
@@ -1116,6 +1120,154 @@ fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> 
         final_git["cloned_remotes"],
         json!([RESTORE_PASS_REMOTE]),
         "empty store with no held recipient secret key must be left in place (not rolled back)"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。pass-remote は YubiKey を使わず、BWS 書込み用の
+    // provisioning 用 access token を hidden prompt から受け取る。対話 PTY で provisioning token（stub の
+    // datastore token と一致する `token`）→ 上書き確認 [y] → `--url` 未指定なので可視プロンプト（非秘匿の
+    // clone URL を通常入力でエコー）の順に入力して update する。最終観測で新値へ置換されたことを確認する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["pass-remote", "register"],
+        Some(&format!("token\ny\n{RESTORE_PASS_REMOTE}\n")),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(
+        run.output.contains("provisioning-access-token: "),
+        "output: {}",
+        run.output
+    );
+    assert!(
+        run.output.contains("password-store-remote: "),
+        "output: {}",
+        run.output
+    );
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "overwritten password-store-remote must be observed"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_from_url_argument_with_yes() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（非 TTY）で `--url` 引数と `--yes` を
+    // 与えて既存 secret を update する。BWS 書込み用 provisioning 用 access token は pipe（stdin）の 1 行目で
+    // 渡す（stub datastore token と一致する `token`）。非秘匿の URL は argv から取得され、可視プロンプト/pipe
+    // の URL 入力へは到達せず、最終 datastore が新値へ更新されることを観測する。
+    let initial = bws_spec_with_pass_remote("git@github.com:owner/old-store.git");
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        initial,
+    );
+    let run = run_pipe_with_stub(
+        [
+            "pass-remote",
+            "register",
+            "--url",
+            RESTORE_PASS_REMOTE,
+            "--yes",
+        ],
+        Some("token\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "clone URL supplied via --url must overwrite the existing value with --yes"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestResult<()> {
+    // 非対話実行（pipe stdin）で既存 secret を上書きしようとし、`--yes` 未指定なら確認段階で停止する。
+    // BWS 書込み用 provisioning 用 access token は pipe の 1 行目で渡す。確認で停止するため、URL の入力
+    // （pipe/可視プロンプト）へは到達しない。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["pass-remote", "register"], Some("token\n"), &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("was not confirmed"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!("https://example.invalid/repo.git"),
+        "declined overwrite must leave the existing value unchanged"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_via_stdin_pipe_with_yes() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（stdin pipe・非 TTY）で `--yes`
+    // を与え、pipe の 1 行目で BWS 書込み用 provisioning 用 access token（stub datastore token と一致する
+    // `token`）を、2 行目で妥当な clone URL を渡して既存 secret を上書きする。pipe 入力経路（terminal で
+    // なければ stdin 1 行を読む分岐）と上書き挙動を駆動し、最終 BWS datastore が新値へ更新された
+    // ことを観測する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["pass-remote", "register", "--yes"],
+        Some(&format!("token\n{RESTORE_PASS_REMOTE}\n")),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "pipe-supplied clone URL must overwrite the existing value with --yes"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_stops_when_input_url_is_invalid() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で provisioning 用 access token（stub
+    // datastore token と一致する `token`）→ 上書き確認 [y] → 可視プロンプトへ domain 妥当でない clone URL を
+    // 入力する。update 経路の URL 検証（application の PasswordStoreRemote::parse）で停止し、最終 datastore が
+    // 元の値のまま不変であることを観測する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["pass-remote", "register"],
+        Some("token\ny\nnot-a-valid-clone-url\n"),
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!("https://example.invalid/repo.git"),
+        "invalid clone URL must stop the update and leave the existing value unchanged"
     );
     Ok(())
 }

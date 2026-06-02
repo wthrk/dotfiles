@@ -51,6 +51,7 @@ enum SecretsCommand {
     RestoreGpg(RestoreGpgOptions),
     RestorePass(RestorePassOptions),
     GpgBackup(GpgBackupOptions),
+    PassRemote(PassRemoteOptions),
 }
 
 #[derive(Args)]
@@ -191,6 +192,44 @@ struct GpgBackupAddSpareOptions {
     unwrap_serial: Option<u32>,
     #[arg(long)]
     spare_serial: Option<u32>,
+    /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args)]
+/// `password-store-remote` の provisioning（保管側 create/update）を公開する option。
+///
+/// command 名 `pass-remote` は、`gpg-backup`（`gpg-secret-key-backup` の保管 command 群）と対称に
+/// `password-store-remote` secret の保管 command 群を表す。設計「初期登録手順」step3 が定める保管経路
+/// （管理 plane の bootstrap）を、復旧本線 command（`restore-pass`）と区別して provisioning 動詞 `register`
+/// 配下へ置くため、`restore-pass` ではなく secret 名に揃えた `pass-remote register` を採用する。
+struct PassRemoteOptions {
+    #[command(subcommand)]
+    command: PassRemoteCommand,
+}
+
+#[derive(Subcommand)]
+/// `password-store-remote` secret の create / update を行う provisioning command 群。
+enum PassRemoteCommand {
+    Register(PassRemoteRegisterOptions),
+}
+
+#[derive(Args)]
+/// private `password-store` の clone URL を BWS へ create または update する option。
+///
+/// clone URL は private repo の SSH clone URL であって秘密情報ではないため、`--url <value>` で argv 指定
+/// できる。`--url` 未指定時は可視プロンプト（対話・入力をエコー）または pipe（stdin）から 1 行を読む。
+/// `--yes` は非対話実行での上書き更新を明示許可する。
+///
+/// この command は YubiKey を一切使わない。BWS 書込みに使う provisioning 用 access token は YubiKey の
+/// read-only reader token ではなく、hidden prompt（TTY）/ pipe（stdin）から保護値として受け取る書込み可能な
+/// credential である。よって `--serial` option は持たず、token を argv へ載せる option も設けない。
+struct PassRemoteRegisterOptions {
+    /// 登録する `password-store-remote` の clone URL（`git@github.com:<owner>/<repo>.git`）。
+    /// 非秘匿値のため argv 指定を許可する。未指定時は可視プロンプト / pipe から読む。
+    #[arg(long)]
+    url: Option<String>,
     /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
     #[arg(long)]
     yes: bool,

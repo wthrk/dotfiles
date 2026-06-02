@@ -6,8 +6,7 @@ use crate::secrets::{
         bws::{BwsProjectName, BwsSecretName},
         commands::AddGpgBackupSpareCommand,
         gpg_backup::EnvelopeRecipient,
-        piv::{SecretName, validate_piv_pin_len},
-        storage::SecretStorageReadIntent,
+        piv::validate_piv_pin_len,
     },
     ports,
 };
@@ -18,31 +17,40 @@ use crate::secrets::{
 /// （unwrap 機）で envelope の DEK を unwrap し、同一 DEK を spare の PIV slot `82` 公開鍵で再 wrap して
 /// recipient を追加する。`ciphertext` と `metadata` は変更しない。更新は read-modify-write として扱い、
 /// 更新前に取得した stale overwrite 防止 guard が更新直前の現行値と一致する場合だけ上書きする。対話実行は
-/// 明示確認後、非対話実行は明示的上書き許可がある場合だけ更新する。順序を application に固定するのは
-/// 「envelope 取得後に更新確認を済ませてから DEK unwrap と spare wrap を行い、guard 一致を条件に更新する」
-/// 停止条件の責務境界を保護するためである。更新確認を unwrap/wrap より前へ置くのは、拒否される更新で
-/// YubiKey の PIN/touch と DEK 復号を発生させないためである。DEK は port 境界の保護値として扱い、
-/// application 層では加工しない。
+/// 明示確認後、非対話実行は明示的上書き許可がある場合だけ更新する。
+///
+/// BWS への書込みには、設計「初期登録手順」が定める書込み可能な provisioning 用 access token を使う。この
+/// token は hidden prompt / pipe から `ProvisioningAccessTokenInputPort` 経由で取得し、初期登録後に失効
+/// させる。YubiKey に保存する read-only `dotfiles-secret-recovery-reader` token は書込みに使えず provisioning
+/// では使わないため、storage 経由の token 読み出しは行わない。一方、YubiKey 本体は既存 recipient による DEK
+/// unwrap（PIV slot `82` 秘密鍵、PIN/touch を要する）と spare recipient wrap に必要なため、unwrap 機・spare 機の
+/// device serial 解決と PIN 入力は残す。
+///
+/// 順序を application に固定するのは「envelope 取得後に更新確認を済ませてから PIN 取得・DEK unwrap・spare wrap を
+/// 行い、guard 一致を条件に更新する」停止条件の責務境界を保護するためである。更新確認を PIN 取得・unwrap/wrap より
+/// 前へ置くのは、拒否される更新で YubiKey の PIN prompt・touch と DEK 復号を一切発生させないためである。device serial
+/// 解決（YubiKey 識別）は PIN を伴わないため確認より前で済ませるが、PIN prompt 自体は確認成功後・`unwrap_dek` 直前まで
+/// 遅らせる。DEK は port 境界の保護値として扱い、application 層では加工しない。
 #[expect(
     clippy::too_many_arguments,
-    reason = "spare 追加は device/spare-device/pin/storage/bws/recipient/confirm の port を順序適用する単一 use case"
+    reason = "spare 追加は token-input/device/spare-device/pin/bws/recipient/confirm の port を順序適用する単一 use case"
 )]
-pub(crate) async fn run_add_gpg_backup_spare<D, SD, P, S, B, Y, F>(
+pub(crate) async fn run_add_gpg_backup_spare<A, D, SD, P, B, Y, F>(
     command: AddGpgBackupSpareCommand,
+    token_input: &A,
     device_serial: &mut D,
     spare_device_serial: &mut SD,
     pin_policy: &mut impl ports::DevicePinPolicyPort,
     process: &P,
-    storage_port: &mut S,
     bws_client: &B,
     recipient: &mut Y,
     confirmation: &F,
 ) -> Result<()>
 where
+    A: ports::ProvisioningAccessTokenInputPort,
     D: ports::DeviceSerialPort,
     SD: ports::SpareDeviceSerialPort,
     P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
     B: ports::BwsClientPort,
     Y: ports::GpgRecipientPort,
     F: ports::BackupUpdateConfirmationPort,
@@ -52,16 +60,13 @@ where
     let spare_serial = spare_device_serial.resolve_spare_device_serial(command.spare_serial)?;
     command.ensure_distinct_resolved_serials(unwrap_serial, spare_serial)?;
 
-    let pin = if pin_policy.device_requires_pin(unwrap_serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
+    // device serial 解決（YubiKey 識別）は PIN を伴わないため確認より前で済ませてよいが、PIN prompt 自体は
+    // DEK unwrap のためだけに必要であり、上書きを拒否する対話ケースでは発生させない。よって PIN 取得は
+    // `confirm_backup_update` 成功後・`unwrap_dek` 直前まで遅らせる。
 
-    // unwrap 機の storage から bws-access-token を読み出し、復旧 project / secret を解決する。
-    let access_token = load_bws_access_token(unwrap_serial, storage_port, pin.as_ref())?;
+    // BWS 書込み用の provisioning 用 access token を hidden prompt / pipe から取得し、復旧 project / secret を
+    // 解決する。YubiKey の read-only reader token は書込みに使わない。
+    let access_token = token_input.read_provisioning_access_token()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
     let key = BwsSecretName::GpgSecretKeyBackup.key();
@@ -90,6 +95,16 @@ where
         anyhow::bail!("gpg backup spare recipient update was not confirmed");
     }
 
+    // 確認を通過したので、DEK unwrap のためにのみ必要な PIN をここで初めて取得する。上書き拒否時は
+    // この経路に到達せず、YubiKey の PIN/touch は一切発生しない。
+    let pin = if pin_policy.device_requires_pin(unwrap_serial)? {
+        let pin = process.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
+    } else {
+        None
+    };
+
     // unwrap 機が既存 recipient に一致することを確認し、DEK を unwrap する。
     let connected = recipient.resolve_connected_recipient(unwrap_serial)?;
     let matched = envelope.resolve_recipient(&connected)?;
@@ -112,33 +127,16 @@ where
         .await
 }
 
-/// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token<S>(
-    serial: u32,
-    storage_port: &mut S,
-    pin: Option<&crate::secrets::support::protection::ProtectedSecret>,
-) -> Result<crate::secrets::support::protection::ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
-    let storage = SecretName::BwsAccessToken.storage_spec(serial);
-    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
-    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-    let secret = storage_port
-        .load_secret(serial, &intent, pin)
-        .map_err(|error| intent.decode_error(error))?;
-    intent.validate_loaded_secret(&secret)?;
-    Ok(secret)
-}
-
 #[cfg(test)]
 mod tests {
-    //! spare 追加の順序（device 解決→token 取得→envelope 取得→確認→unwrap→再 wrap→guard 更新）を
-    //! mockall + Sequence で検証する単体テスト。
+    //! spare 追加の順序（device 解決→provisioning token 取得→envelope 取得→確認→unwrap→再 wrap→
+    //! guard 更新）を mockall + Sequence で検証する単体テスト。
     //!
-    //! recipient / bws / confirmation backend を port mock で差し替え、確認が unwrap/wrap より前に呼ばれ、
-    //! 確認を通過した場合だけ guard 付き更新が呼ばれること、確認拒否時に DEK unwrap・spare wrap・更新の
-    //! いずれにも進ませないことを確認する。
+    //! token-input / recipient / bws / confirmation backend を port mock で差し替え、BWS 書込みに使う
+    //! access token を provisioning token 入力経路から取得すること（YubiKey reader token を write に使わない
+    //! ことは storage port を持たない構成で構造的に保証する。YubiKey は recipient unwrap/wrap にのみ使う）、
+    //! 確認が PIN 取得・unwrap/wrap より前に呼ばれ、確認を通過した場合だけ確認→PIN→unwrap→wrap→guard 付き更新の
+    //! 順で進むこと、確認拒否時に PIN 取得・DEK unwrap・spare wrap・更新のいずれにも進ませないことを確認する。
 
     use crate::secrets::{
         domain::{
@@ -146,8 +144,6 @@ mod tests {
             gpg_backup::{
                 BackupUpdateGuard, ConnectedYubiKey, EnvelopeRecipient, GpgBackupEnvelope,
             },
-            manifest::SecretManifest,
-            storage::SecretStorageReadInspection,
         },
         ports,
         support::protection::ProtectedSecret,
@@ -161,11 +157,17 @@ mod tests {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    fn read_inspection() -> SecretStorageReadInspection {
-        SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
-            encoded: Some(vec![1]),
-        }
+    /// provisioning 用 access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    ///
+    /// この mock は YubiKey storage を経由せず provisioning token を返す。storage port は構成へ一切渡さない
+    /// ため、BWS 書込みが YubiKey reader token を使わないことは構造的に保証される。
+    fn token_input() -> ports::MockProvisioningAccessTokenInputPort {
+        let mut token_input = ports::MockProvisioningAccessTokenInputPort::new();
+        token_input
+            .expect_read_provisioning_access_token()
+            .times(1)
+            .returning(|| Ok(material(b"provisioning-token")));
+        token_input
     }
 
     /// unwrap 機 serial 2001 に一致する recipient を 1 件持つ envelope を作る。
@@ -218,6 +220,7 @@ mod tests {
     #[tokio::test]
     async fn add_spare_updates_with_guard_after_confirmation() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
+        let token = token_input();
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -226,18 +229,12 @@ mod tests {
         spare
             .expect_resolve_spare_device_serial()
             .returning(|_| Ok(2002));
+        // PIN を要求する機材を模し、PIN 取得が確認成功後に限定されることを順序で固定する。
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_read()
-            .returning(|_, _| Ok(read_inspection()));
-        storage
-            .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_| Ok(true));
+        let mut process = ports::MockPinInputPort::new();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
@@ -255,13 +252,20 @@ mod tests {
         bws.expect_fetch_gpg_backup_envelope()
             .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("rev".to_owned()))));
 
-        // 確認は unwrap/wrap より前に呼ばれる。
+        // 確認は PIN 取得・unwrap/wrap より前に呼ばれる。
         let mut confirmation = ports::MockBackupUpdateConfirmationPort::new();
         confirmation
             .expect_confirm_backup_update()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _, _, _| Ok(true));
+
+        // PIN 取得は確認成功後・unwrap 直前に発生する。
+        process
+            .expect_read_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(material(b"123456")));
 
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
@@ -295,11 +299,11 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: true,
             },
+            &token,
             &mut device,
             &mut spare,
             &mut pin_policy,
             &process,
-            &mut storage,
             &bws,
             &mut recipient,
             &confirmation,
@@ -307,10 +311,11 @@ mod tests {
         .await
     }
 
-    /// 確認が拒否された場合、DEK unwrap・spare wrap・guard 更新のいずれにも進ませず、PIN/touch と
-    /// DEK 復号を発生させないことを検証する。
+    /// 確認が拒否された場合、PIN 取得・DEK unwrap・spare wrap・guard 更新のいずれにも進ませず、
+    /// YubiKey の PIN/touch と DEK 復号を発生させないことを検証する。
     #[tokio::test]
     async fn add_spare_rejection_skips_unwrap_and_update() {
+        let token = token_input();
         let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
@@ -319,18 +324,14 @@ mod tests {
         spare
             .expect_resolve_spare_device_serial()
             .returning(|_| Ok(2002));
+        // PIN を要求する機材でも、確認拒否時は PIN 取得へ到達しないことを検証する。
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_read()
-            .returning(|_, _| Ok(read_inspection()));
-        storage
-            .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_| Ok(true));
+        let mut process = ports::MockPinInputPort::new();
+        // 拒否時は PIN prompt を発生させない。
+        process.expect_read_pin().times(0);
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
@@ -369,11 +370,11 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: false,
             },
+            &token,
             &mut device,
             &mut spare,
             &mut pin_policy,
             &process,
-            &mut storage,
             &bws,
             &mut recipient,
             &confirmation,

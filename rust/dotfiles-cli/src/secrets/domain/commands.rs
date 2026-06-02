@@ -253,6 +253,23 @@ impl AddGpgBackupSpareCommand {
     }
 }
 
+/// password-store-remote の provisioning（保管側 create/update）use case の入力 command。
+///
+/// 非対話実行での明示上書き許可、および `--url` で明示指定された clone URL 文字列の有無を保持する。
+/// clone URL は private repo の SSH clone URL であって秘密情報ではないため、argv（`--url`）に載せてよい。
+/// `url` が `None` の場合だけ application が port 経由で可視プロンプト（対話）または pipe（非対話）から
+/// 1 行を読む。値そのものの形式検証は domain rule [`PasswordStoreRemote::parse`] に委ねる。対話実行では
+/// 上書き対象 secret name と project name を表示して明示確認する責務を port 側へ委譲する。
+///
+/// この command は YubiKey を使わないため device serial を保持しない。BWS 書込みに使う provisioning 用
+/// access token は YubiKey storage の read-only reader token ではなく、hidden prompt / pipe から取得する
+/// 書込み可能な credential であり、その取得は application が `ProvisioningAccessTokenInputPort` 経由で行う。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionPasswordStoreRemoteCommand {
+    pub assume_overwrite: bool,
+    pub url: Option<String>,
+}
+
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }

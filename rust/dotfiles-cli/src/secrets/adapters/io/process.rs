@@ -10,8 +10,8 @@ use crate::{
         domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
         ports::io::{
             BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-            PinInputPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SshPublicKeyOutputPort,
+            PasswordStoreRemoteInputPort, PinInputPort, ProvisioningAccessTokenInputPort,
+            RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::{
             clock, process_io,
@@ -60,6 +60,39 @@ impl SecretInputPort for RealSecretIoAdapter {
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")
+    }
+}
+
+impl ProvisioningAccessTokenInputPort for RealSecretIoAdapter {
+    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret> {
+        // provisioning 用 access token は書込み可能な実 credential のため secret として扱い、
+        // stdin が terminal のとき hidden prompt（raw mode・echo なし）、非 terminal（pipe）のとき
+        // stdin 1 行を保護 buffer へ読む。いずれも平文を argv / ログ / 端末表示へ残さない。
+        const MAX_LEN: usize = 16 * 1024;
+        const TOO_LONG_MESSAGE: &str = "provisioning access token input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_hidden_line("provisioning-access-token: ", MAX_LEN, TOO_LONG_MESSAGE)
+        } else {
+            process_io::read_stdin_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
+    }
+}
+
+impl PasswordStoreRemoteInputPort for RealSecretIoAdapter {
+    fn read_password_store_remote_url(&self) -> Result<String> {
+        // clone URL は秘密情報ではないため保護 buffer・非表示入力を使わず、可視入力 / pipe で読む。
+        // stdin が terminal のとき可視プロンプト（エコーする通常入力）、非 terminal（pipe）のとき stdin 1 行。
+        const MAX_LEN: usize = 16 * 1024;
+        const TOO_LONG_MESSAGE: &str = "password-store-remote input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_visible_plain_line(
+                "password-store-remote: ",
+                MAX_LEN,
+                TOO_LONG_MESSAGE,
+            )
+        } else {
+            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
     }
 }
 
@@ -120,6 +153,21 @@ impl BackupUpdateConfirmationPort for RealSecretIoAdapter {
         let answer = process_io::read_control_line(&prompt)?;
         Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
     }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        if !process_io::stdin_is_terminal() {
+            // 非対話実行では明示的上書き許可 option がある場合だけ更新を許可する。
+            return Ok(assume_overwrite);
+        }
+        let prompt = format!("update BWS secret {secret_name} in project {project_name}? [y/N]: ");
+        let answer = process_io::read_control_line(&prompt)?;
+        Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    }
 }
 
 /// process/terminal I/O helper を secret 入出力 port 群へ翻訳する adapter。
@@ -152,6 +200,18 @@ impl SecretInputPort for ProcessIoAdapter {
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         self.secret_io.read_streamed_secret()
+    }
+}
+
+impl ProvisioningAccessTokenInputPort for ProcessIoAdapter {
+    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_provisioning_access_token()
+    }
+}
+
+impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
+    fn read_password_store_remote_url(&self) -> Result<String> {
+        self.secret_io.read_password_store_remote_url()
     }
 }
 
@@ -199,5 +259,15 @@ impl BackupUpdateConfirmationPort for ProcessIoAdapter {
             primary_fingerprint,
             assume_overwrite,
         )
+    }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        self.secret_io
+            .confirm_secret_overwrite(project_name, secret_name, assume_overwrite)
     }
 }

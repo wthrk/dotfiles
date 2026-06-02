@@ -10,8 +10,9 @@ use crate::{
         domain::{
             commands::{
                 AddGpgBackupSpareCommand, EnrollPrimaryCommand, EnrollSpareCommand, GetCommand,
-                PutCommand, RegisterGpgBackupCommand, RestoreGpgCommand, RestorePassCommand,
-                RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
+                ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
+                RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
+                VerifyYubikeyCommand,
             },
             gpg_backup::PrimaryFingerprint,
             verification::ExternalCheck,
@@ -213,10 +214,8 @@ pub(super) async fn dispatch(
                         primary_fingerprint,
                         serial: options.serial,
                     },
-                    &mut ports.device,
-                    &mut ports.device_pin_policy,
                     &ports.process_io,
-                    &mut ports.storage,
+                    &mut ports.device,
                     &mut ports.gpg_keyring,
                     &mut ports.backup_cipher,
                     &mut ports.gpg_recipient,
@@ -232,13 +231,28 @@ pub(super) async fn dispatch(
                         spare_serial: options.spare_serial,
                         assume_overwrite: options.yes,
                     },
+                    &ports.process_io,
                     &mut ports.device,
                     &mut ports.spare_device,
                     &mut ports.device_pin_policy,
                     &ports.process_io,
-                    &mut ports.storage,
                     &ports.bws_client,
                     &mut ports.gpg_recipient,
+                    &ports.process_io,
+                )
+                .await
+            }
+        },
+        super::super::SecretsCommand::PassRemote(options) => match options.command {
+            super::super::PassRemoteCommand::Register(options) => {
+                application::run_provision_password_store_remote::run_provision_password_store_remote(
+                    ProvisionPasswordStoreRemoteCommand {
+                        assume_overwrite: options.yes,
+                        url: options.url,
+                    },
+                    &ports.process_io,
+                    &ports.bws_client,
+                    &ports.process_io,
                     &ports.process_io,
                 )
                 .await

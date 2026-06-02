@@ -37,6 +37,33 @@ pub trait SecretInputPort {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 
+/// use case が BWS provisioning 用 access token を保護値として取得する capability 契約。
+///
+/// 設計「初期登録手順」は、BWS への書込み（project / secret の create・update）に書込み可能な provisioning 用
+/// access token を使い、この token を初期登録後に失効させることを要求する。YubiKey に保存する read-only
+/// `dotfiles-secret-recovery-reader` token は provisioning には使わないため、provisioning コマンドはこの token を
+/// YubiKey storage からではなくこの capability で取得する。provisioning 用 access token は書込み可能な実
+/// credential であり secret として扱う。caller は token を必要とする地点だけを決める。implementor は hidden
+/// prompt（TTY）または pipe（stdin）から保護 buffer へ読み込み、取得した平文を公開 API として返さず、argv・
+/// ログ・shell history・永続環境変数・永続一時ファイルへ残さない。
+#[cfg_attr(test, mockall::automock)]
+pub trait ProvisioningAccessTokenInputPort {
+    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret>;
+}
+
+/// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。
+///
+/// `password-store-remote` は private `password-store` repository の SSH clone URL であり、秘密情報では
+/// ない。よって他の secret 入力（`SecretInputPort`）と異なり保護 buffer・非表示入力・zeroize を要さず、
+/// caller は `--url` 未指定時にこの port で 1 行の URL を取得する。implementor は stdin が terminal のとき
+/// 可視プロンプト（入力をエコーする通常入力）で、非 terminal（pipe）のとき stdin 1 行を読み、取得した
+/// 生文字列を返す。URL 形式の妥当性判断（`git@github.com:<owner>/<repo>.git`）は domain rule に委ね、
+/// implementor は再定義しない。
+#[cfg_attr(test, mockall::automock)]
+pub trait PasswordStoreRemoteInputPort {
+    fn read_password_store_remote_url(&self) -> Result<String>;
+}
+
 /// use case が対話 rotate の継続可否を外部入力から取得する capability 契約。
 ///
 /// caller は継続確認が必要な地点だけを決める。implementor は TTY 可否と回答取得を扱い、
@@ -89,6 +116,20 @@ pub trait BackupUpdateConfirmationPort {
         project_name: &str,
         secret_name: &str,
         primary_fingerprint: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool>;
+
+    /// project / secret 名だけを表示して BWS secret の上書き更新を明示確認する。
+    ///
+    /// 設計「初期登録手順」の上書き確認契約（対話実行では上書き対象 secret name と project name を表示し
+    /// 利用者の明示確認を得てから更新、非対話実行では明示的な上書き許可 option が指定されている場合だけ更新）は、
+    /// `password-store-remote` のように primary fingerprint を持たない secret の上書きにこの確認を要求する。caller は確認に必要な
+    /// project/secret 名を渡し、`assume_overwrite` で非対話の明示許可有無を伝える。implementor は TTY 可否を
+    /// 判定し、対話時は表示と回答取得を、非対話時は `assume_overwrite` の評価を担う。
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
         assume_overwrite: bool,
     ) -> Result<bool>;
 }
