@@ -574,6 +574,17 @@ fn verify_yubikey_runs_bw_login_external_check_ok() -> TestResult<()> {
     let stdout = run.user_stdout();
     assert!(stdout.contains("\"name\": \"bw-login\""));
     assert!(stdout.contains("\"status\": \"ok\""));
+    // FINDING 2 退行ガード: bw-login reachability check の前段で `bw` 子プロセスの stdout を破棄しないと、
+    // version 文字列が JSON report の前に混入し machine-readable JSON が壊れる。user_stdout()（観測 sentinel
+    // 行を除いた dotfiles 本来の stdout）が単一の JSON document として parse 可能であることを確認する。
+    let report: Value = serde_json::from_str(stdout.trim())
+        .with_context(|| format!("verify-yubikey report must be parseable JSON: {stdout:?}"))?;
+    assert!(
+        report["checks"].as_array().is_some_and(|checks| checks
+            .iter()
+            .any(|check| check["name"] == json!("bw-login"))),
+        "report must contain the bw-login check: {report}"
+    );
     Ok(())
 }
 

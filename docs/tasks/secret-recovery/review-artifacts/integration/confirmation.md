@@ -56,3 +56,40 @@ dev shell（`direnv exec .`）内で実行。
 
 - 本ブランチに #16（bw-login, branch `feat/secrets-bw-login-issue-16`）は未マージ。手順9 と `--check bw-login` は spec のコマンド契約（L176-178, L201, L155）に対して application 層・port 契約・entrypoint で結線した。
 - `support/protection/bw_login.rs` の実 `bw login` / `bw unlock` 実行（`BW_PASSWORD` env 受け渡し・`BW_SESSION` 取り回し・OTP method 3）は spec 契約どおりに `std::process` で実装したが、実 `bw` CLI バイナリに対する end-to-end 検証は #16 の責務であり、本統合では internal stub による CLI 経路の結線・順序・停止条件の検証にとどめる。#16 マージ時にこの protection 内操作と adapter が #16 の実装と整合するか確認する必要がある。
+
+## 差し戻し remediation 追記（PR #42 AI レビュー findings 対処）
+
+確認開始時 HEAD `512b730` を起点に、PR #42 への AI レビュー findings 5 件を対処した。差分は `実装`（実コード差分 + test）。
+
+### finding ごとの対処
+
+- FINDING 1（P1 / セキュリティ / `support/protection/bw_login.rs`）: `bw login` / `bw unlock --raw` の `Command` に `.stdout(Stdio::null())` を追加（行80 / 行101）。`bw unlock --raw` が stdout へ出す `BW_SESSION`（および `bw login` の stdout）が dotfiles プロセスの stdout（端末・ログ・JSON report と同一ストリーム）へ継承漏洩する経路を閉じ、成立確認は exit status のみで行う。`BW_SESSION` を読まず・返さず・一時ファイル/永続 env へ出さない。stderr は `bw` 自身の診断出力（secret を含まない。`--raw` の session は stdout 限定）として失敗診断の可視化のため継承する旨を module doc に明記。
+- FINDING 2（P2 / 出力破壊 / `support/protection/bw_login.rs` `check_reachable`）: reachability の `bw --version` にも `.stdout(Stdio::null())` を追加（行58）。version 文字列が `verify-yubikey` の JSON report 前に混入し machine-readable JSON を壊す経路を閉じた。
+- FINDING 3（P2 / 仕様適合）: **方針 (a)+(b)+(c) を採用**（CLI 起動可能性確認に範囲を狭め、差分を本記録へ記載）。根拠: spec L201 が要求する Bitwarden Password Manager への真のサービス到達確認（server URL 設定・ネットワーク疎通）は実 `bw` 統合（#16）の責務であり、#17 単独で完結できない。`bw --version` は CLI バイナリ起動可能性のみを確認する。よって port 契約 `ports/bw_login.rs` の `check_bw_login_reachable` doc と `support/protection/bw_login.rs` の `check_reachable` doc を「CLI invocation capability 確認」に正確に狭め、spec L201 サービス到達確認との差分を既知の制約として両 doc から本記録へ参照させた。**既知の制約**: 現状の `--check bw-login` はネットワーク断・server URL 誤設定でも `bw` バイナリさえ起動できれば `ok` と報告する。真のサービス到達確認（例: `bw status` / server 設定確認）は #16 で実装し、その際に port 契約 doc を再度サービス到達確認へ広げる。
+- FINDING 4（doc / `adapters/io/process.rs:119-122付近`）: OTP コメントを「dotfiles 自身の argv には載せず stdin から読む。後段で `bw login --code <otp>` の子プロセス argv には載るが、ワンタイムコードで長期 secret ではないため protection 保護値ではなく素の `String` で受け渡す」に修正し、誤解（argv へ一切載らない）を解消。
+- FINDING 5（doc / `support/protection/bw_login.rs:25-26付近`）: `login_and_unlock` doc を「`bw unlock --raw` の stdout は `Stdio::null()` で破棄し成立確認は exit status のみ」へ修正し、FINDING 1 実装と一致させた（旧 doc の「stdout を成立確認に使う」記述を撤去）。
+
+### 追加したテスト
+
+- `support/protection/bw_login.rs` の `#[cfg(test)] mod tests`（default = gpg-backend build でのみ compile される real `bw` module 内）:
+  - `reachability_check_discards_child_stdout`（FINDING 2）/ `login_and_unlock_discards_child_stdout`（FINDING 1）: `current_exe` 再起動による専用子プロセスで、PATH 先頭に置いた fake `bw`（一意 sentinel を自身の stdout へ出力）を実 process として起動し、対象関数を stdout 継承のまま実行。子プロセス stdout（= dotfiles が端末/JSON report へ出すストリーム）を pipe で捕捉し sentinel が現れないことを確認（`Stdio::null()` 破棄の実証）。marker file で fake `bw` の実起動も確認。process-global fd 退避や PATH 共有変更を使わず並行 `cargo test` でも安定。
+  - `login_failure_is_stop_condition`: 非ゼロ終了 fake `bw` で停止条件（`Err`）かつ stdout 非漏洩を確認。
+- `tests/secrets_cli.rs` の `verify_yubikey_runs_bw_login_external_check_ok`（FINDING 2 退行ガード）: `user_stdout()`（観測 sentinel 行を除いた dotfiles 本来の stdout）が単一の JSON document として parse 可能で、`checks` に `bw-login` を含むことを確認。reachability 前段で `bw` stdout を破棄しないと JSON が壊れる退行を捕捉する。
+
+### remediation 確認結果（dev shell `direnv exec .` 内）
+
+- `cargo build -p dotfiles-cli`（default = gpg-backend）: 成功。
+- `cargo build -p dotfiles-cli --features secrets-internal-test-stub`: 成功。
+- `cargo clippy -p dotfiles-cli --all-targets -- -D warnings`: 成功（警告 0）。
+- `cargo clippy -p dotfiles-cli --all-targets --features secrets-internal-test-stub -- -D warnings`: 成功（警告 0）。
+- `cargo fmt --check`: 成功（fmt 適用後 diff 0）。
+- `cargo test -p dotfiles-cli --lib`: 209 passed / 0 failed（追加 4 件含む）。
+- `cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli`: 42 passed / 0 failed。
+- `cargo xtask check`: 全段階成功（fmt / check / clippy / test 209 unit / stub integration 42 / application route 64 / shell / workflows / nil / flake.lock / nix fmt / nix flake check = all checks passed）。
+- 既存コマンド退行確認: restore-gpg / restore-pass / pass-remote / rotate-bws-token / verify-yubikey(bws/bw-login) の stub integration test が全て成功（退行なし）。
+- 対象差分: 4 ファイル変更（`adapters/io/process.rs` / `ports/bw_login.rs` / `support/protection/bw_login.rs` / `tests/secrets_cli.rs`）。
+
+### remediation 後の残課題
+
+- 真のサービス到達確認（spec L201）の実装は #16（実 `bw-login` 統合）の責務。#16 で `--check bw-login` を server 到達性確認へ広げ、port 契約 doc と本記録の既知制約を解消する。
+- 実 `bw` CLI バイナリに対する end-to-end 検証（stdout 破棄の実 `bw` 経路含む）は #16 マージ時に確認する。本 remediation の stdout 破棄テストは fake `bw` による process 境界の検証にとどまる。

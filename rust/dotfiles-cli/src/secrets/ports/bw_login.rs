@@ -32,10 +32,15 @@ pub trait BwLoginPort {
         otp: &str,
     ) -> Result<BwLoginSummary>;
 
-    /// `verify-yubikey --check bw-login`（spec L155 / L201）の外部到達確認を行う。
+    /// `verify-yubikey --check bw-login`（spec L155 / L201）の外部 check を行う。
     ///
-    /// 設計は、login / unlock を実際に成立させずに `bw` CLI と Bitwarden Password Manager への到達性だけを
-    /// 確認する外部 check として `--check bw-login` を定義する。implementor は `bw` CLI の利用可否と Bitwarden
-    /// Password Manager への到達確認を行い、到達できない場合は `Err` を返す。secret 本文は要求しない。
+    /// この契約は、login / unlock を実際に成立させずに `bw` CLI バイナリの起動可能性（CLI invocation
+    /// capability）だけを確認する外部 check として `--check bw-login` を定義する。implementor は `bw` CLI が
+    /// 起動可能かを確認し、起動できない場合は停止条件として `Err` を返す。secret 本文は要求しない。
+    ///
+    /// 限界（spec L201 との差分）: spec L201 は「Bitwarden Password Manager への到達確認」を要求するが、
+    /// server URL 設定・ネットワーク疎通を含む真のサービス到達性確認は実 `bw` 統合（#16）の責務であり、
+    /// 本契約は CLI 起動可能性確認に範囲を狭める。差分は
+    /// `docs/tasks/secret-recovery/review-artifacts/integration/confirmation.md` に既知の制約として記録する。
     fn check_bw_login_reachable(&self) -> Result<()>;
 }

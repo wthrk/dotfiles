@@ -117,8 +117,10 @@ impl BwLoginEmailOverridePort for RealSecretIoAdapter {
 
 impl BwLoginOtpInputPort for RealSecretIoAdapter {
     fn read_bw_login_otp(&self) -> Result<String> {
-        // OTP はワンタイム認証コードであり長期 secret ではない。可視入力（terminal）/ pipe（非 terminal）で
-        // 1 行を読み、argv へ載せない。
+        // OTP はワンタイム認証コードであり長期 secret ではない（一度使うと無効化される）。可視入力
+        // （terminal）/ pipe（非 terminal）で 1 行を読む。dotfiles 自身の argv には載せず stdin から読む。
+        // 後段で `bw login --code <otp>` の子プロセス argv には載るが、ワンタイムコードであり長期 secret
+        // ではないため protection 境界の保護値ではなく素の `String` で受け渡す。
         const MAX_LEN: usize = 4 * 1024;
         const TOO_LONG_MESSAGE: &str = "bw-login OTP input is too large";
         if process_io::stdin_is_terminal() {
