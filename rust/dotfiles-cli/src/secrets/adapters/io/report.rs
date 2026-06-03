@@ -60,13 +60,14 @@ impl ReportPort for JsonReportAdapter {
     fn write_bw_login_report(&self, summary: &BwLoginSummary) -> Result<()> {
         // `BW_SESSION` を disk / dotfile へ永続化せず、利用者が自分で export できる形で surface する（spec L86）。
         // master password は決して出力しない。session 値は JSON report に含めて stdout に出す。利用者がそのまま
-        // 貼れる `export BW_SESSION=...` 行は stderr に出し、stdout を単一 JSON として機械可読に保つ。
+        // 貼れる `export BW_SESSION='...'` 行は stderr に出し、stdout を単一 JSON として機械可読に保つ。
+        // session 値は single-quote で囲み、空白・特殊文字を含んでも shell 貼り付けで誤解釈されず安全にする。
         let payload = json!({
             "bw_login": "ok",
             "bw_session": summary.session.as_str(),
         });
         write_json_report(&payload)?;
-        eprintln!("export BW_SESSION={}", summary.session.as_str());
+        eprintln!("export BW_SESSION='{}'", summary.session.as_str());
         Ok(())
     }
 }

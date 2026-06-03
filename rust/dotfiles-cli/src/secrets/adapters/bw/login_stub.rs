@@ -61,7 +61,9 @@ impl BwLoginPort for super::BwLoginAdapter {
     ) -> crate::Result<BwSessionKey> {
         with_datastore(|store| {
             // master password を子プロセスへ渡す代わりに、expected 値との一致だけを stub の login 成否とする。
-            if password.to_test_bytes() != store.expected_password.as_bytes() {
+            // 比較用に取り出した平文 bytes は `Zeroizing` で包み、drop 時に process メモリから確実に消去する。
+            let observed = zeroize::Zeroizing::new(password.to_test_bytes());
+            if observed.as_slice() != store.expected_password.as_bytes() {
                 anyhow::bail!("`bw login` failed; the master password did not match the stub spec");
             }
             store.observed_email = Some(email.as_str().to_owned());

@@ -577,7 +577,7 @@ fn bw_login_reads_yubikey_secrets_and_surfaces_session() -> TestResult<()> {
         !stdout.contains("export BW_SESSION="),
         "export hint must not break stdout JSON: {stdout}"
     );
-    assert!(run.stderr.contains("export BW_SESSION=STUBSESSIONKEY=="));
+    assert!(run.stderr.contains("export BW_SESSION='STUBSESSIONKEY=='"));
     assert!(
         !stdout.contains("pw"),
         "master password must not be surfaced"
