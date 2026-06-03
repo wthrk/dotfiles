@@ -16,7 +16,11 @@ use crate::secrets::{
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
 /// 先頭に固定する。外部確認結果は report 境界へ明示的に反映し、verify 結果の責任範囲を
 /// 曖昧にしない。
-pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B>(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "verify-yubikey は device/pin/storage/report/bws/bw-login の port を順序適用する単一 use case"
+)]
+pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B, L>(
     command: VerifyYubikeyCommand,
     device_serial: &mut D,
     pin_policy: &mut impl ports::DevicePinPolicyPort,
@@ -24,6 +28,7 @@ pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B>(
     storage_port: &mut S,
     report: &R,
     bws_client: &B,
+    bw_login: &L,
 ) -> Result<()>
 where
     D: ports::DeviceSerialPort,
@@ -31,6 +36,7 @@ where
     S: ports::SecretStoragePort,
     R: ports::ReportPort,
     B: ports::BwsClientPort,
+    L: ports::BwLoginPort,
 {
     let requested = command.requested_external_checks()?;
     let serial = device_serial.resolve_device_serial(command.serial)?;
@@ -142,15 +148,15 @@ where
                     }
                 }
             }
-            CheckName::BwLogin => {
-                summary.mark_external_check(CheckName::BwLogin, CheckStatus::Failed);
-                if first_error.is_none() {
-                    first_error = Some(anyhow::anyhow!(
-                        "external checks are not implemented yet: {}",
-                        CheckName::BwLogin.as_str()
-                    ));
+            CheckName::BwLogin => match bw_login.check_bw_login_reachable() {
+                Ok(()) => summary.mark_external_check(CheckName::BwLogin, CheckStatus::Ok),
+                Err(error) => {
+                    summary.mark_external_check(CheckName::BwLogin, CheckStatus::Failed);
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
-            }
+            },
             CheckName::Setup
             | CheckName::BwEmail
             | CheckName::BwPassword
@@ -240,6 +246,7 @@ mod tests {
         storage.expect_inspect_secret_storage_read().times(0);
         let report = ports::MockReportPort::new();
         let bws = ports::MockBwsClientPort::new();
+        let bw_login = ports::MockBwLoginPort::new();
 
         let result = run_verify_yubikey_with(
             VerifyYubikeyCommand {
@@ -253,6 +260,7 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &bw_login,
         )
         .await;
 
@@ -327,6 +335,7 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
+        let bw_login = ports::MockBwLoginPort::new();
         run_verify_yubikey_with(
             VerifyYubikeyCommand {
                 serial: Some(2001),
@@ -339,6 +348,7 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &bw_login,
         )
         .await
     }
@@ -375,6 +385,7 @@ mod tests {
             .withf(|summary| summary.checks.get(&CheckName::Bws) == Some(&CheckStatus::Failed))
             .returning(|_| Ok(()));
 
+        let bw_login = ports::MockBwLoginPort::new();
         let result = run_verify_yubikey_with(
             VerifyYubikeyCommand {
                 serial: Some(2001),
@@ -387,6 +398,7 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &bw_login,
         )
         .await;
 
@@ -445,6 +457,7 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &ports::MockBwLoginPort::new(),
         )
         .await;
 
@@ -517,9 +530,112 @@ mod tests {
             &mut storage,
             &report,
             &bws,
+            &ports::MockBwLoginPort::new(),
         )
         .await;
 
         assert!(result.is_err(), "BWS fetch failure must fail");
+    }
+
+    /// `--check bw-login` 成功時、bw-login check が OK として report されることを検証する。
+    #[tokio::test]
+    async fn verify_bw_login_check_reports_ok_on_reachable() -> crate::Result<()> {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut sequence = mockall::Sequence::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        expect_local_storage_ok(&mut storage, &mut sequence, 2001);
+        let bws = ports::MockBwsClientPort::new();
+        let mut bw_login = ports::MockBwLoginPort::new();
+        bw_login
+            .expect_check_bw_login_reachable()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(()));
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_verify_report()
+            .times(1)
+            .withf(|summary| summary.checks.get(&CheckName::BwLogin) == Some(&CheckStatus::Ok))
+            .returning(|_| Ok(()));
+
+        run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: vec![ExternalCheck::BwLogin],
+                all: false,
+            },
+            &mut device_serial,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &report,
+            &bws,
+            &bw_login,
+        )
+        .await
+    }
+
+    /// `--check bw-login` で到達確認が失敗した場合、bw-login check が Failed として report され停止する。
+    #[tokio::test]
+    async fn verify_bw_login_check_reports_failure_on_unreachable() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut sequence = mockall::Sequence::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        expect_local_storage_ok(&mut storage, &mut sequence, 2001);
+        let bws = ports::MockBwsClientPort::new();
+        let mut bw_login = ports::MockBwLoginPort::new();
+        bw_login
+            .expect_check_bw_login_reachable()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| anyhow::bail!("bw CLI not reachable"));
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_verify_report()
+            .times(1)
+            .withf(|summary| summary.checks.get(&CheckName::BwLogin) == Some(&CheckStatus::Failed))
+            .returning(|_| Ok(()));
+
+        let result = run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: vec![ExternalCheck::BwLogin],
+                all: false,
+            },
+            &mut device_serial,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &report,
+            &bws,
+            &bw_login,
+        )
+        .await;
+
+        assert!(result.is_err(), "unreachable bw-login check must fail");
     }
 }

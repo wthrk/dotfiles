@@ -6,6 +6,8 @@ use anyhow::{Context, bail};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(crate) mod bw_login;
 pub(crate) mod bws;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod gpg_backup;
@@ -103,6 +105,21 @@ impl ProtectedSecret {
         borrow(self.value.as_mut_slice())
     }
 
+    /// UTF-8 secret text を同期外部処理の完了まで借用境界内へ閉じる。
+    ///
+    /// 外部 command（例: `bw login`）が master password を env value など owned plaintext として要求する場合、
+    /// この closure 内で env 設定と子プロセス起動まで完了させ、repository 側の所有 buffer を closure 外へ
+    /// 持ち出さない。`std::process::Command::env` が複製する env 値は子プロセス起動境界で `bw` 側へ move する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    pub(in crate::secrets::support::protection) fn with_secret_utf8<R>(
+        &self,
+        borrow: impl FnOnce(&str) -> Result<R>,
+    ) -> Result<R> {
+        let text =
+            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
+        borrow(text)
+    }
+
     /// UTF-8 secret text を async 外部処理の完了まで借用境界内へ閉じる。
     ///
     /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
@@ -189,6 +206,23 @@ impl ProtectedSecret {
 /// `ProtectedSecret` を stdout の secret 出力境界へ渡す用途別操作。
 pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
     process_io::write_secret_stdout_with(|writer| secret.write_to(writer))
+}
+
+/// 非秘匿の public bytes（例: `bw-login --email` の override email）を locked `ProtectedSecret` carrier へ
+/// 載せる protection 境界操作。
+///
+/// `BwLoginPort` は YubiKey 由来 email と override email を同じ `ProtectedSecret` carrier で受け取る。override
+/// email は秘密情報ではないが、carrier 型を統一しつつ生成と zeroize 管理を protection 境界内で完了させるため、
+/// この操作で確保済み buffer へ複製する。返値は session lifetime で zeroize 管理され、平文取り出し API は持たない。
+pub(crate) fn protect_public_bytes(bytes: &[u8], max_len: usize) -> Result<ProtectedSecret> {
+    let session = SecretSession::start()?;
+    let buffer = buffer::ProtectedInputBuffer::read_from(
+        std::io::Cursor::new(bytes),
+        max_len,
+        "public value is too large",
+        &session,
+    )?;
+    buffer.into_protected_secret(&session, max_len, "public value is too large")
 }
 
 impl SecretSession {

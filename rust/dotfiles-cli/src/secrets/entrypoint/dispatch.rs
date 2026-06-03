@@ -9,10 +9,10 @@ use crate::{
         application,
         domain::{
             commands::{
-                AddGpgBackupSpareCommand, EnrollPrimaryCommand, EnrollSpareCommand, GetCommand,
-                ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
-                RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
-                VerifyYubikeyCommand,
+                AddGpgBackupSpareCommand, BwLoginCommand, EnrollPrimaryCommand, EnrollSpareCommand,
+                GetCommand, ProvisionPasswordStoreRemoteCommand, PutCommand,
+                RegisterGpgBackupCommand, RestoreGpgCommand, RestorePassCommand,
+                RotateBwsTokenCommand, SetupCommand, VerifyYubikeyCommand,
             },
             gpg_backup::PrimaryFingerprint,
             verification::ExternalCheck,
@@ -168,6 +168,7 @@ pub(super) async fn dispatch(
                 &mut ports.storage,
                 &ports.report,
                 &ports.bws_client,
+                &ports.bw_login,
             )
             .await
         }
@@ -205,6 +206,22 @@ pub(super) async fn dispatch(
                 &ports.report,
             )
             .await
+        }
+        super::super::SecretsCommand::BwLogin(options) => {
+            application::run_bw_login::run_bw_login(
+                BwLoginCommand {
+                    serial: options.serial,
+                    email: options.email,
+                },
+                &mut ports.device,
+                &mut ports.device_pin_policy,
+                &ports.process_io,
+                &mut ports.storage,
+                &ports.process_io,
+                &ports.process_io,
+                &ports.bw_login,
+                &ports.report,
+            )
         }
         super::super::SecretsCommand::GpgBackup(options) => match options.command {
             super::super::GpgBackupCommand::Register(options) => {

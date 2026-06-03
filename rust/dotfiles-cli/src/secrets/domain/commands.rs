@@ -193,6 +193,17 @@ pub struct RestorePassCommand {
     pub serial: Option<u32>,
 }
 
+/// bw-login use case（spec L176-178）の入力 command。
+///
+/// `bw-email` / `bw-password` を読み出す対象 YubiKey の serial 指定有無と、override 用の email を保持する。
+/// 通常は YubiKey 内の `bw-email` を使い、`email` が `Some` の場合だけ override する。device 選択手段、OTP
+/// 入力手段、`bw login` / `bw unlock` の実行手段は port 境界へ委譲し、この command は手順入力だけを保持する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BwLoginCommand {
+    pub serial: Option<u32>,
+    pub email: Option<String>,
+}
+
 /// export-ssh-public-key use case の入力 command。
 ///
 /// 出力対象の primary fingerprint だけを保持する。GitHub 登録用の OpenSSH 公開鍵出力以外の手段は持たない。

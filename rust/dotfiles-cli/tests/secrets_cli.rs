@@ -14,8 +14,8 @@ use std::{
 
 use anyhow::Context;
 use dotfiles_cli::secrets_internal_test_stub_contract::{
-    BWS_STUB_SPEC_ENV, GIT_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX,
-    YUBIKEY_STUB_SPEC_ENV,
+    BW_LOGIN_STUB_SPEC_ENV, BWS_STUB_SPEC_ENV, GIT_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV,
+    STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
 };
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
@@ -56,6 +56,10 @@ impl CommandRun {
     fn final_git(&self) -> TestResult<Value> {
         final_observation(&self.stdout, "git")
     }
+
+    fn final_bw_login(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "bw-login")
+    }
 }
 
 struct PtyRun {
@@ -78,6 +82,7 @@ struct StubPorts {
     bws_spec_value: Value,
     gpg_spec: Value,
     git_spec: Value,
+    bw_login_spec: Value,
 }
 
 impl StubPorts {
@@ -87,6 +92,7 @@ impl StubPorts {
             bws_spec_value,
             gpg_spec: empty_gpg_spec(),
             git_spec: empty_git_spec(),
+            bw_login_spec: default_bw_login_spec(),
         }
     }
 
@@ -97,6 +103,11 @@ impl StubPorts {
 
     fn with_git(mut self, git_spec: Value) -> Self {
         self.git_spec = git_spec;
+        self
+    }
+
+    fn with_bw_login(mut self, bw_login_spec: Value) -> Self {
+        self.bw_login_spec = bw_login_spec;
         self
     }
 
@@ -111,7 +122,11 @@ impl StubPorts {
                 serde_json::to_string(&self.bws_spec_value)?,
             )
             .env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?)
-            .env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?);
+            .env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?)
+            .env(
+                BW_LOGIN_STUB_SPEC_ENV,
+                serde_json::to_string(&self.bw_login_spec)?,
+            );
         Ok(())
     }
 
@@ -126,6 +141,10 @@ impl StubPorts {
         );
         command.env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?);
         command.env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?);
+        command.env(
+            BW_LOGIN_STUB_SPEC_ENV,
+            serde_json::to_string(&self.bw_login_spec)?,
+        );
         Ok(())
     }
 }
@@ -536,6 +555,88 @@ fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
         "input precondition must fail before device resolution: {}",
         run.stderr
     );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_runs_bw_login_external_check_ok() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bw-login"],
+        None,
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    // FINDING 2 退行ガード: bw-login reachability check の前段で `bw` 子プロセスの stdout を破棄しないと、
+    // version 文字列が JSON report の前に混入し machine-readable JSON が壊れる。user_stdout()（観測 sentinel
+    // 行を除いた dotfiles 本来の stdout）が単一の JSON document として parse 可能であることを確認する。
+    let report: Value = serde_json::from_str(stdout.trim())
+        .with_context(|| format!("verify-yubikey report must be parseable JSON: {stdout:?}"))?;
+    assert!(
+        report["checks"].as_array().is_some_and(|checks| checks
+            .iter()
+            .any(|check| check["name"] == json!("bw-login"))),
+        "report must contain the bw-login check: {report}"
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_bw_login_external_check_fails_when_unreachable() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    )
+    .with_bw_login(bw_login_spec_unreachable());
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bw-login"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"failed\""));
+    Ok(())
+}
+
+#[test]
+fn bw_login_runs_full_flow_with_yubikey_email() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    // OTP は非対話 pipe から 1 行読む。
+    let run = run_pipe_with_stub(["bw-login", "--serial", "2001"], Some("123456\n"), &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"logged_in\": true"));
+    assert!(stdout.contains("\"unlocked\": true"));
+    let final_bw_login = run.final_bw_login()?;
+    assert_eq!(final_bw_login["logged_in"], json!(true));
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn bw_login_stops_when_login_fails() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    )
+    .with_bw_login(bw_login_spec_with_login_failure());
+    let run = run_pipe_with_stub(["bw-login", "--serial", "2001"], Some("123456\n"), &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
     Ok(())
 }
 
@@ -987,6 +1088,21 @@ fn bws_spec_with_pass_remote(remote: &str) -> Value {
 /// Git stub が空でも spec 未設定にしない既定値（store なし・clone 後 `.gpg-id` あり）。
 fn empty_git_spec() -> Value {
     json!({ "store_exists": false, "gpg_id_present": true })
+}
+
+/// login / unlock と reachability の双方が成立する bw-login stub spec を作る（既定）。
+fn default_bw_login_spec() -> Value {
+    json!({ "login_succeeds": true, "reachable": true })
+}
+
+/// login が失敗する bw-login stub spec を作る（停止条件の検証用）。
+fn bw_login_spec_with_login_failure() -> Value {
+    json!({ "login_succeeds": false, "reachable": true })
+}
+
+/// `bw` CLI へ到達できない bw-login stub spec を作る（`--check bw-login` 失敗の検証用）。
+fn bw_login_spec_unreachable() -> Value {
+    json!({ "login_succeeds": true, "reachable": false })
 }
 
 /// clone 前から `~/.password-store` が存在する Git stub spec を作る。
