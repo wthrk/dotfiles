@@ -82,12 +82,19 @@ pub const BW_OTP_TWO_FACTOR_METHOD: &str = "3";
 /// `BW_SESSION` の値であり、後続の vault 操作へ完全アクセスを与える session credential である。spec L86 の
 /// 「`BW_SESSION` の扱いは bw-login のコマンド仕様で定義する」に従い、この値は disk / dotfile へ永続化せず、
 /// 利用者が自分で `export BW_SESSION=...` できるよう surface するためだけに保持する。空文字は unlock 失敗
-/// として拒否する。
+/// として拒否し、改行・タブ・NUL 等の制御文字を含む値は不正な session として拒否する（`BwLoginEmail` /
+/// `BwOtp` と同方針）。`'`（single-quote）は base64 系 session key には現れず、shell export 形式の整形は
+/// presentation 責務として report 側の POSIX エスケープ（`shell_single_quote`）で安全化するため domain では
+/// 拒否しない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BwSessionKey(String);
 
 impl BwSessionKey {
     /// `bw unlock --raw` の stdout を session key として検証して構築する。
+    ///
+    /// 空文字・前後空白だけの値は unlock 失敗として拒否し、制御文字（改行・CR・タブ・NUL 等）を含む値は
+    /// 不正な session として拒否する。制御文字拒否は単一行制約を包含するが、改行・CR を明示拒否する単一行
+    /// チェックは契約意図を示すため残す。受理した値は前後空白を取り除いた 1 行である。
     pub fn parse(value: &str) -> Result<Self> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -95,6 +102,9 @@ impl BwSessionKey {
         }
         if trimmed.chars().any(|c| c == '\n' || c == '\r') {
             anyhow::bail!("bw session key must be a single line");
+        }
+        if trimmed.chars().any(char::is_control) {
+            anyhow::bail!("bw session key must not contain control characters");
         }
         Ok(Self(trimmed.to_owned()))
     }
@@ -138,9 +148,11 @@ mod tests {
     }
 
     #[test]
-    fn session_key_rejects_empty_and_multiline() {
+    fn session_key_rejects_empty_multiline_and_control_characters() {
         assert!(BwSessionKey::parse("   ").is_err());
         assert!(BwSessionKey::parse("line1\nline2").is_err());
+        assert!(BwSessionKey::parse("abc\tdef").is_err());
+        assert!(BwSessionKey::parse("abc\0def").is_err());
         let session = BwSessionKey::parse("  SESSIONKEY==  ").expect("valid session");
         assert_eq!(session.as_str(), "SESSIONKEY==");
     }
