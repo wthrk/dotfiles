@@ -569,11 +569,21 @@ fn bw_login_reads_yubikey_secrets_and_surfaces_session() -> TestResult<()> {
 
     assert!(run.success, "stderr: {}", run.stderr);
     let stdout = run.user_stdout();
-    // session key を surface し、利用者が export できる行を出す。master password は出力しない。
+    // stdout は単一 JSON として機械可読に保ち、session key を含める。master password は出力しない。
     assert!(stdout.contains("\"bw_login\": \"ok\""));
-    assert!(stdout.contains("export BW_SESSION=STUBSESSIONKEY=="));
+    assert!(stdout.contains("\"bw_session\": \"STUBSESSIONKEY==\""));
+    // 利用者が export できるヒント行は stderr に出し、stdout の JSON 機械可読性を保つ。
+    assert!(
+        !stdout.contains("export BW_SESSION="),
+        "export hint must not break stdout JSON: {stdout}"
+    );
+    assert!(run.stderr.contains("export BW_SESSION=STUBSESSIONKEY=="));
     assert!(
         !stdout.contains("pw"),
+        "master password must not be surfaced"
+    );
+    assert!(
+        !run.stderr.contains("pw"),
         "master password must not be surfaced"
     );
     // stub observation: YubiKey の bw-email と入力 OTP を観測し、unlock 済みになる。

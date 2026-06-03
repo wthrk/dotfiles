@@ -10,16 +10,18 @@ use anyhow::Result;
 /// `bw login <email>` の argv に載せる Bitwarden login email。
 ///
 /// `bw-email` は YubiKey に保存する値だが credential ではなく argv に載る非秘匿値である。argv へ
-/// 安全に載せられるよう、空文字・改行・その他制御文字を含む値は domain rule として拒否する。値の
-/// メール形式そのものは Bitwarden 側の責務であり、ここでは argv 安全性だけを保証する。
+/// 安全に載せられるよう、空文字・改行・その他制御文字を含む値は domain rule として拒否する。さらに
+/// `-` で始まる値は `bw login <email>` の positional 引数ではなく `bw` CLI の option として解釈され得る
+/// ため、argv 安全性違反として拒否する。値のメール形式そのものは Bitwarden 側の責務であり、ここでは
+/// argv 安全性だけを保証する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BwLoginEmail(String);
 
 impl BwLoginEmail {
     /// login email 文字列を argv 安全性の観点で検証して構築する。
     ///
-    /// 空文字、前後空白だけ、改行・タブ・NUL を含む制御文字は拒否する。受理した値は前後空白を
-    /// 取り除いた 1 行であり、`bw login <email>` の argv 引数として使える。
+    /// 空文字、前後空白だけ、改行・タブ・NUL を含む制御文字、先頭 `-` は拒否する。受理した値は前後
+    /// 空白を取り除いた 1 行であり、`bw login <email>` の argv 引数として使える。
     pub fn parse(value: &str) -> Result<Self> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -27,6 +29,9 @@ impl BwLoginEmail {
         }
         if trimmed.chars().any(char::is_control) {
             anyhow::bail!("bw-email must not contain control characters");
+        }
+        if trimmed.starts_with('-') {
+            anyhow::bail!("bw-email must not start with '-'");
         }
         Ok(Self(trimmed.to_owned()))
     }
@@ -118,6 +123,8 @@ mod tests {
         assert!(BwLoginEmail::parse("  ").is_err());
         assert!(BwLoginEmail::parse("user@example.com\nINJECT").is_err());
         assert!(BwLoginEmail::parse("user\t@example.com").is_err());
+        assert!(BwLoginEmail::parse("-inject@example.com").is_err());
+        assert!(BwLoginEmail::parse("--apikey").is_err());
         let email = BwLoginEmail::parse("  user@example.com  ").expect("valid email");
         assert_eq!(email.as_str(), "user@example.com");
     }
