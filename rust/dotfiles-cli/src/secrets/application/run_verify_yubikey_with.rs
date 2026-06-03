@@ -51,6 +51,13 @@ where
     } else {
         None
     };
+    // master password（`bw-password`）と YubiKey の `bw-email` の lifetime を要求内容で最小化する。
+    // bw-login 外部確認が要求されている場合に限り `bw-password` を保持し、要求されていなければ存在・復号
+    // 可能性を検証した後は保持しない。YubiKey の `bw-email` は bw-login 確認かつ override 未指定のときだけ
+    // 保持する（override 指定時は override email を使うため `bw-email` を読み・保持しない）。
+    let needs_bw_login = requested.contains(&CheckName::BwLogin);
+    let retain_bw_password = needs_bw_login;
+    let retain_bw_email = needs_bw_login && command.email_override.is_none();
     let local_verify = (|| {
         use crate::secrets::domain::piv::SecretName;
         let mut bw_email: Option<ProtectedSecret> = None;
@@ -63,10 +70,20 @@ where
             let secret = storage_port
                 .load_secret(serial, &intent, pin.as_ref())
                 .map_err(|error| intent.decode_error(error))?;
+            // local storage 検証範囲は縮小しない。3 secret すべての存在・復号可能性をここで検証し、
+            // 検証後に保持するかどうかだけを要求内容（retain_*）で絞る。
             intent.validate_loaded_secret(&secret)?;
             match name {
-                SecretName::BwEmail => bw_email = Some(secret),
-                SecretName::BwPassword => bw_password = Some(secret),
+                SecretName::BwEmail => {
+                    if retain_bw_email {
+                        bw_email = Some(secret);
+                    }
+                }
+                SecretName::BwPassword => {
+                    if retain_bw_password {
+                        bw_password = Some(secret);
+                    }
+                }
                 SecretName::BwsAccessToken => bws_access_token = Some(secret),
             }
         }
@@ -155,11 +172,12 @@ where
                 }
             }
             CheckName::BwLogin => {
-                // bw-login 外部確認は、YubiKey 由来の `bw-email` / `bw-password` と入力 OTP で
-                // 実際に `bw login` / `bw unlock` の到達性を確認する（spec L107）。bw-login use case と
+                // bw-login 外部確認は、`bw-email`（または `--email` override）/ `bw-password` と入力 OTP で
+                // 実際に `bw login` / `bw unlock` の到達性を確認する（yubikey-secret-storage-design.md L286）。bw-login use case と
                 // 同じ実行経路（`BwLoginPort`）を再利用し、master password は port の `BW_PASSWORD` env 境界で
                 // だけ子プロセスへ渡る。session key は確認専用のため surface せず破棄する。
                 match run_bw_login_check(
+                    command.email_override.as_deref(),
                     loaded_bw_email.as_ref(),
                     loaded_bw_password.as_ref(),
                     otp_input,
@@ -194,10 +212,13 @@ where
 
 /// bw-login 外部確認を bw-login use case と同じ port 経路で実行する。
 ///
-/// local storage 検証で load 済みの `bw-email` / `bw-password` を使い、OTP を入力して `bw login` / `bw unlock`
-/// の到達性を確認する。email は protection 境界の内側で argv 安全な値へ翻訳し、master password は port へ保護値
-/// として渡す。session key は確認専用のため受け取った値を surface せず破棄し、login / unlock の成否だけを返す。
+/// login email は `run_bw_login` の email 決定ロジックと同じ方針で決める。`--email` override が
+/// 指定された場合は YubiKey の `bw-email` を使わず override を `BwLoginEmail::parse` で検証し、未指定の
+/// 場合だけ local storage 検証で load 済みの `bw-email` を protection 境界の内側で argv 安全な email へ翻訳する。
+/// master password は port へ保護値として渡し、OTP を入力して `bw login` / `bw unlock` の到達性を確認する。
+/// session key は確認専用のため受け取った値を surface せず破棄し、login / unlock の成否だけを返す。
 async fn run_bw_login_check<O, L>(
+    email_override: Option<&str>,
     bw_email: Option<&ProtectedSecret>,
     bw_password: Option<&ProtectedSecret>,
     otp_input: &O,
@@ -207,13 +228,21 @@ where
     O: ports::BwOtpInputPort,
     L: ports::BwLoginPort,
 {
-    let bw_email = bw_email.ok_or_else(|| {
-        anyhow::anyhow!("internal invariant violated: verification plan did not yield bw-email")
-    })?;
+    // override 指定時は YubiKey の `bw-email` を読まない/使わない（retain 段階でも保持していない）。
+    let email: BwLoginEmail = match email_override {
+        Some(value) => BwLoginEmail::parse(value)?,
+        None => {
+            let bw_email = bw_email.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "internal invariant violated: verification plan did not yield bw-email"
+                )
+            })?;
+            bw_login::parse_email(bw_email)?
+        }
+    };
     let bw_password = bw_password.ok_or_else(|| {
         anyhow::anyhow!("internal invariant violated: verification plan did not yield bw-password")
     })?;
-    let email: BwLoginEmail = bw_login::parse_email(bw_email)?;
     let otp = BwOtp::parse(&otp_input.read_bw_otp()?)?;
     bw_login_port
         .login_and_unlock(&email, bw_password, &otp)
@@ -302,6 +331,7 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::Bws],
                 all: true,
+                email_override: None,
             },
             &mut device_serial,
             &mut pin_policy,
@@ -392,6 +422,7 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::Bws],
                 all: false,
+                email_override: None,
             },
             &mut device_serial,
             &mut pin_policy,
@@ -444,6 +475,7 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::Bws],
                 all: false,
+                email_override: None,
             },
             &mut device_serial,
             &mut pin_policy,
@@ -506,6 +538,7 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::Bws],
                 all: false,
+                email_override: None,
             },
             &mut device_serial,
             &mut pin_policy,
@@ -582,6 +615,7 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::Bws],
                 all: false,
+                email_override: None,
             },
             &mut device_serial,
             &mut pin_policy,
@@ -658,6 +692,84 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::BwLogin],
                 all: false,
+                email_override: None,
+            },
+            &mut device_serial,
+            &mut pin_policy,
+            &process,
+            &mut storage,
+            &report,
+            &bws,
+            &otp_input,
+            &bw_login,
+        )
+        .await
+    }
+
+    /// `--check bw-login --email <override>` は override email で bw-login 確認を行い、bw-login の email 決定に
+    /// YubiKey の `bw-email`（local storage では "email"）を使わないことを検証する（yubikey-secret-storage-design.md L286）。local storage 検証
+    /// 範囲は縮小しないため、bw-email を含む 3 secret は引き続き inspect/load/validate される。
+    #[tokio::test]
+    async fn verify_bw_login_check_uses_email_override() -> crate::Result<()> {
+        use crate::secrets::domain::bw_login::{BwLoginEmail, BwOtp, BwSessionKey};
+
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut sequence = mockall::Sequence::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|requested| Ok(requested.expect("serial")));
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        // local storage 検証範囲は縮小しない: bw-email を含む 3 secret を引き続き検証する。
+        expect_local_storage_ok(&mut storage, &mut sequence, 2001);
+
+        let bws = ports::MockBwsClientPort::new();
+
+        let mut otp_input = ports::MockBwOtpInputPort::new();
+        otp_input
+            .expect_read_bw_otp()
+            .times(1)
+            .returning(|| Ok("cccccbtdvuotp".to_owned()));
+
+        // override email が port へ渡り、YubiKey の `bw-email`（"email"）は bw-login 決定に使われない。
+        let mut bw_login = ports::MockBwLoginPort::new();
+        bw_login
+            .expect_login_and_unlock()
+            .times(1)
+            .withf(
+                |email: &BwLoginEmail, password: &ProtectedSecret, otp: &BwOtp| {
+                    email.as_str() == "override@example.com"
+                        && otp.as_str() == "cccccbtdvuotp"
+                        && *password == material(b"password")
+                },
+            )
+            .returning(|_, _, _| Ok(BwSessionKey::parse("SESSIONKEY==").expect("session")));
+
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_verify_report()
+            .times(1)
+            .withf(|summary| {
+                summary.checks.get(&CheckName::LocalStorage) == Some(&CheckStatus::Ok)
+                    && summary.checks.get(&CheckName::BwLogin) == Some(&CheckStatus::Ok)
+            })
+            .returning(|_| Ok(()));
+
+        run_verify_yubikey_with(
+            VerifyYubikeyCommand {
+                serial: Some(2001),
+                checks: vec![ExternalCheck::BwLogin],
+                all: false,
+                email_override: Some("  override@example.com  ".to_owned()),
             },
             &mut device_serial,
             &mut pin_policy,
@@ -712,6 +824,7 @@ mod tests {
                 serial: Some(2001),
                 checks: vec![ExternalCheck::BwLogin],
                 all: false,
+                email_override: None,
             },
             &mut device_serial,
             &mut pin_policy,

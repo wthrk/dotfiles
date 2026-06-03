@@ -668,6 +668,41 @@ fn verify_yubikey_runs_bw_login_external_check() -> TestResult<()> {
 }
 
 #[test]
+fn verify_yubikey_bw_login_check_uses_email_override() -> TestResult<()> {
+    // `--check bw-login --email <override>` は override email で bw-login 確認を行い、YubiKey の bw-email
+    // （"u@example.com"）を login email に使わない（spec L286）。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        [
+            "verify-yubikey",
+            "--serial",
+            "2001",
+            "--check",
+            "bw-login",
+            "--email",
+            "override@example.com",
+        ],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(
+        final_bw_login["observed_email"],
+        json!("override@example.com")
+    );
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
 fn verify_yubikey_all_includes_bw_login_and_bws_checks() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),

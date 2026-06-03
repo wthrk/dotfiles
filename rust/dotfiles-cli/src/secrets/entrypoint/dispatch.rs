@@ -161,6 +161,7 @@ pub(super) async fn dispatch(
                         })
                         .collect(),
                     all: options.all,
+                    email_override: options.email,
                 },
                 &mut ports.device,
                 &mut ports.device_pin_policy,

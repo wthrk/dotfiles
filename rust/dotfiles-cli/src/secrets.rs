@@ -133,6 +133,10 @@ struct RotateBwsTokenOptions {
 
 #[derive(Args)]
 /// YubiKey に保存された secret と外部確認項目を検証する option。
+///
+/// `--check bw-login`（または `--all`）の bw-login 外部確認では、通常 YubiKey の `bw-email` を使う。
+/// email override が必要な場合は `--email <email>` を使う（yubikey-secret-storage-design.md L286）。override は `bw-login` の
+/// `BwLoginOptions` の `--email` と同じ意味・体裁で、指定時は YubiKey の `bw-email` を読まない。
 struct VerifyYubikeyOptions {
     #[arg(long)]
     serial: Option<u32>,
@@ -140,6 +144,9 @@ struct VerifyYubikeyOptions {
     check: Vec<VerifyCheck>,
     #[arg(long)]
     all: bool,
+    /// bw-login 外部確認で YubiKey の `bw-email` を使わず、指定した login email で login する override（yubikey-secret-storage-design.md L286）。
+    #[arg(long)]
+    email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

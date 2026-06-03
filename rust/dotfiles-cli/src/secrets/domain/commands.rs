@@ -142,12 +142,15 @@ impl RotateBwsTokenCommand {
 
 /// verify-yubikey use case の入力 command。
 ///
-/// serial 指定の有無、要求 check、`--all` 指定を保持し、device 選択手段は port 境界へ委譲する。
+/// serial 指定の有無、要求 check、`--all` 指定、bw-login 外部確認の `--email` override の有無を保持し、
+/// device 選択手段は port 境界へ委譲する。`email_override` が `Some` のときだけ bw-login 外部確認で
+/// YubiKey の `bw-email` を使わず override を使う（yubikey-secret-storage-design.md L286）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyYubikeyCommand {
     pub serial: Option<u32>,
     pub checks: Vec<ExternalCheck>,
     pub all: bool,
+    pub email_override: Option<String>,
 }
 
 impl VerifyYubikeyCommand {
