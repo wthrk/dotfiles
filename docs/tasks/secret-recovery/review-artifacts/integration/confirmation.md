@@ -93,3 +93,8 @@ dev shell（`direnv exec .`）内で実行。
 
 - 真のサービス到達確認（spec `## 停止条件` 節の `--check bw-login` 到達確認項）の実装は #16（実 `bw-login` 統合）の責務。#16 で `--check bw-login` を server 到達性確認へ広げ、port 契約 doc と本記録の既知制約を解消する。
 - 実 `bw` CLI バイナリに対する end-to-end 検証（stdout 破棄の実 `bw` 経路含む）は #16 マージ時に確認する。本 remediation の stdout 破棄テストは fake `bw` による process 境界の検証にとどまる。
+
+### 後日注記（2026-06-03 / #16 PR #43 による解消）
+
+- 上記「remediation 後の残課題」は #16（PR #43）で解消済み。#16 は bw-login を別ファイル構造（`adapters/bw/login_adapter.rs` / `ports/bw.rs` の `BwLoginPort`）で実装し、`verify-yubikey --check bw-login` を `BwLoginPort::login_and_unlock` 経由の実 `bw login` / `bw unlock` 到達確認として実装した（`bw --version` 等の CLI 起動可能性確認ではない）。これに伴い #17 が本記録（FINDING 3）で deferred とした「真のサービス到達確認」の既知制約は解消され、`secret-recovery-spec.md` の限定記述も実到達確認へ是正した。
+- #17 が本統合で追加した bw-login 並行実装ファイル（`ports/bw_login.rs` / `adapters/bw_login.rs` / `adapters/bw_login/internal_stub.rs`）は #16 設計への統一に伴い削除された。本記録中の当該ファイル名・`check_bw_login_reachable` / `check_reachable` / `bw --version` 等の記述は #17 サイクル当時の履歴であり、現行コードは #16（PR #43）の実装が正本。

@@ -11,14 +11,12 @@
 /// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
 mod adapters {
     mod bw;
-    mod bw_login;
     mod git;
     mod gpg;
     mod io;
     mod yubikey;
 
-    pub(in crate::secrets) use bw::BwsClientAdapter;
-    pub(in crate::secrets) use bw_login::BwLoginAdapter;
+    pub(in crate::secrets) use bw::{BwLoginAdapter, BwsClientAdapter};
     pub(in crate::secrets) use git::{GitCloneAdapter, PasswordStoreAdapter};
     pub(in crate::secrets) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
     pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
@@ -135,6 +133,10 @@ struct RotateBwsTokenOptions {
 
 #[derive(Args)]
 /// YubiKey に保存された secret と外部確認項目を検証する option。
+///
+/// `--check bw-login`（または `--all`）の bw-login 外部確認では、通常 YubiKey の `bw-email` を使う。
+/// email override が必要な場合は `--email <email>` を使う（yubikey-secret-storage-design.md L286）。override は `bw-login` の
+/// `BwLoginOptions` の `--email` と同じ意味・体裁で、指定時は YubiKey の `bw-email` を読まない。
 struct VerifyYubikeyOptions {
     #[arg(long)]
     serial: Option<u32>,
@@ -142,6 +144,9 @@ struct VerifyYubikeyOptions {
     check: Vec<VerifyCheck>,
     #[arg(long)]
     all: bool,
+    /// bw-login 外部確認で YubiKey の `bw-email` を使わず、指定した login email で login する override（yubikey-secret-storage-design.md L286）。
+    #[arg(long)]
+    email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -149,6 +154,20 @@ struct VerifyYubikeyOptions {
 enum VerifyCheck {
     Bws,
     BwLogin,
+}
+
+#[derive(Args)]
+/// YubiKey から `bw-email` / `bw-password` を取得し Bitwarden Password Manager CLI に login / unlock する option。
+///
+/// `bw-email` は通常 YubiKey の値を使い、override が必要な場合だけ `--email <email>` を許可する（spec L178）。
+/// master password は子プロセスの `BW_PASSWORD` env でだけ渡し、argv には載せない。YubiKey OTP は実行時に
+/// 可視入力で受け取り、argv（`--code`）へ載る単回トークンとして扱う。
+struct BwLoginOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+    /// YubiKey の `bw-email` を使わず、指定した login email で login する override。
+    #[arg(long)]
+    email: Option<String>,
 }
 
 #[derive(Args)]
@@ -163,20 +182,6 @@ struct RestoreGpgOptions {
 struct RestorePassOptions {
     #[arg(long)]
     serial: Option<u32>,
-}
-
-#[derive(Args)]
-/// YubiKey 由来 secret と OTP で Bitwarden Password Manager に login / unlock する option。
-///
-/// 通常は YubiKey 内の `bw-email` を使い、override が必要な場合だけ `--email <email>` を許可する（spec L178）。
-/// master password は YubiKey から取得し、`BW_PASSWORD` env でのみ子プロセスへ渡して保存しない。OTP は端末から
-/// 入力させ、`bw` CLI 引数（argv）へ載せない。
-struct BwLoginOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-    /// override 用の Bitwarden login email。未指定時は YubiKey 内の `bw-email` を使う。
-    #[arg(long)]
-    email: Option<String>,
 }
 
 #[derive(Args)]
@@ -313,13 +318,13 @@ pub(in crate::secrets) struct RuntimePorts {
     pub(in crate::secrets) storage: adapters::StorageAdapter,
     pub(in crate::secrets) report: adapters::JsonReportAdapter,
     pub(in crate::secrets) bws_client: adapters::BwsClientAdapter,
+    pub(in crate::secrets) bw_login: adapters::BwLoginAdapter,
     pub(in crate::secrets) gpg_recipient: adapters::GpgRecipientAdapter,
     pub(in crate::secrets) backup_cipher: adapters::BackupCipherAdapter,
     pub(in crate::secrets) gpg_keyring: adapters::GpgKeyringAdapter,
     pub(in crate::secrets) ssh_agent: adapters::SshAgentAdapter,
     pub(in crate::secrets) password_store: adapters::PasswordStoreAdapter,
     pub(in crate::secrets) git_clone: adapters::GitCloneAdapter,
-    pub(in crate::secrets) bw_login: adapters::BwLoginAdapter,
 }
 
 impl RuntimePorts {
@@ -333,13 +338,13 @@ impl RuntimePorts {
             storage: adapters::StorageAdapter::default(),
             report: adapters::JsonReportAdapter::default(),
             bws_client: adapters::BwsClientAdapter,
+            bw_login: adapters::BwLoginAdapter,
             gpg_recipient: adapters::GpgRecipientAdapter::default(),
             backup_cipher: adapters::BackupCipherAdapter::default(),
             gpg_keyring: adapters::GpgKeyringAdapter::default(),
             ssh_agent: adapters::SshAgentAdapter::default(),
             password_store: adapters::PasswordStoreAdapter::default(),
             git_clone: adapters::GitCloneAdapter::default(),
-            bw_login: adapters::BwLoginAdapter,
         }
     }
 }

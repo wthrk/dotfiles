@@ -5,6 +5,7 @@
 
 use super::super::{
     domain::{
+        bw_login::{BwLoginEmail, BwOtp, BwSessionKey},
         bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
         gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
         pass_restore::PasswordStoreRemote,
@@ -12,6 +13,25 @@ use super::super::{
     support::protection::ProtectedSecret,
 };
 use crate::Result;
+
+/// use case が Bitwarden Password Manager CLI（`bw`）の login / unlock 境界へ要求する契約。
+///
+/// `bw` CLI の用途は login / unlock に限る（spec L84 / L192）。caller（application）は YubiKey 由来 secret の
+/// 取得順序と email override 判断を持ち、検証済みの login email / OTP と保護値 master password を渡すだけにする。
+/// implementor は `bw login <email> --passwordenv BW_PASSWORD --method 3 --code <otp>` と
+/// `bw unlock --passwordenv BW_PASSWORD --raw` を子プロセスとして実行し、master password を子プロセスの
+/// `BW_PASSWORD` env でだけ渡す。master password を argv / ログ / shell history / 一時ファイル / 親プロセスの
+/// 永続環境変数へ残してはならない。返値は `bw unlock --raw` が stdout に出した session key（`BW_SESSION` 値）で、
+/// disk / dotfile へ永続化しない。
+#[cfg_attr(test, mockall::automock)]
+pub trait BwLoginPort {
+    async fn login_and_unlock(
+        &self,
+        email: &BwLoginEmail,
+        password: &ProtectedSecret,
+        otp: &BwOtp,
+    ) -> Result<BwSessionKey>;
+}
 
 /// use case が Bitwarden Secrets Manager API 境界へ要求する契約。
 ///

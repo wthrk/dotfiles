@@ -9,10 +9,10 @@ use crate::{
     secrets::{
         domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
         ports::io::{
-            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort,
-            BwLoginEmailOverridePort, BwLoginOtpInputPort, ClockPort, PasswordStoreRemoteInputPort,
-            PinInputPort, ProvisioningAccessTokenInputPort, RotationContinuationPort,
-            SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
+            ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+            ProvisioningAccessTokenInputPort, RotationContinuationPort, SecretInputPort,
+            SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::{
             clock, process_io,
@@ -97,6 +97,21 @@ impl PasswordStoreRemoteInputPort for RealSecretIoAdapter {
     }
 }
 
+impl BwOtpInputPort for RealSecretIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        // YubiKey OTP は touch 生成・単回利用で `bw login --code <otp>` の argv に載る前提（spec L178）のため、
+        // 保護 buffer・非表示入力を使わず可視入力 / pipe で読む。stdin が terminal のとき可視プロンプト
+        // （エコーする通常入力）、非 terminal（pipe）のとき stdin 1 行。OTP 妥当性判断は domain rule に委ねる。
+        const MAX_LEN: usize = 1024;
+        const TOO_LONG_MESSAGE: &str = "YubiKey OTP input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_visible_plain_line("yubikey-otp: ", MAX_LEN, TOO_LONG_MESSAGE)
+        } else {
+            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
+    }
+}
+
 impl RotationContinuationPort for RealSecretIoAdapter {
     fn continue_rotation(&self) -> Result<bool> {
         if !process_io::stdin_is_terminal() {
@@ -104,30 +119,6 @@ impl RotationContinuationPort for RealSecretIoAdapter {
         }
         let answer = process_io::read_control_line("rotate another YubiKey? [y/N]: ")?;
         Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
-    }
-}
-
-impl BwLoginEmailOverridePort for RealSecretIoAdapter {
-    fn protect_bw_login_email(&self, email: &str) -> Result<ProtectedSecret> {
-        // override email は非秘匿だが、YubiKey 由来 email と同じ carrier 型で `BwLoginPort` へ渡すため
-        // protection 境界で確保済み buffer へ複製する。生成と zeroize 管理は support/protection に閉じる。
-        crate::secrets::support::protection::protect_public_bytes(email.as_bytes(), 16 * 1024)
-    }
-}
-
-impl BwLoginOtpInputPort for RealSecretIoAdapter {
-    fn read_bw_login_otp(&self) -> Result<String> {
-        // OTP はワンタイム認証コードであり長期 secret ではない（一度使うと無効化される）。可視入力
-        // （terminal）/ pipe（非 terminal）で 1 行を読む。dotfiles 自身の argv には載せず stdin から読む。
-        // 後段で `bw login --code <otp>` の子プロセス argv には載るが、ワンタイムコードであり長期 secret
-        // ではないため protection 境界の保護値ではなく素の `String` で受け渡す。
-        const MAX_LEN: usize = 4 * 1024;
-        const TOO_LONG_MESSAGE: &str = "bw-login OTP input is too large";
-        if process_io::stdin_is_terminal() {
-            process_io::read_visible_plain_line("YubiKey OTP: ", MAX_LEN, TOO_LONG_MESSAGE)
-        } else {
-            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
-        }
     }
 }
 
@@ -240,21 +231,15 @@ impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
     }
 }
 
+impl BwOtpInputPort for ProcessIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        self.secret_io.read_bw_otp()
+    }
+}
+
 impl RotationContinuationPort for ProcessIoAdapter {
     fn continue_rotation(&self) -> Result<bool> {
         self.secret_io.continue_rotation()
-    }
-}
-
-impl BwLoginEmailOverridePort for ProcessIoAdapter {
-    fn protect_bw_login_email(&self, email: &str) -> Result<ProtectedSecret> {
-        self.secret_io.protect_bw_login_email(email)
-    }
-}
-
-impl BwLoginOtpInputPort for ProcessIoAdapter {
-    fn read_bw_login_otp(&self) -> Result<String> {
-        self.secret_io.read_bw_login_otp()
     }
 }
 

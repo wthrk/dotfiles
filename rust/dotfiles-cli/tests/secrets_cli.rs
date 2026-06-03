@@ -56,10 +56,6 @@ impl CommandRun {
     fn final_git(&self) -> TestResult<Value> {
         final_observation(&self.stdout, "git")
     }
-
-    fn final_bw_login(&self) -> TestResult<Value> {
-        final_observation(&self.stdout, "bw-login")
-    }
 }
 
 struct PtyRun {
@@ -559,14 +555,106 @@ fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
 }
 
 #[test]
-fn verify_yubikey_runs_bw_login_external_check_ok() -> TestResult<()> {
+fn bw_login_reads_yubikey_secrets_and_surfaces_session() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    // OTP は単回トークンとして stdin pipe（非 TTY）から 1 行で読む。
+    let run = run_pipe_with_stub(
+        ["bw-login", "--serial", "2001"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    // stdout は単一 JSON として機械可読に保ち、session key を含める。master password は出力しない。
+    assert!(stdout.contains("\"bw_login\": \"ok\""));
+    assert!(stdout.contains("\"bw_session\": \"STUBSESSIONKEY==\""));
+    // 利用者が export できるヒント行は stderr に出し、stdout の JSON 機械可読性を保つ。
+    assert!(
+        !stdout.contains("export BW_SESSION="),
+        "export hint must not break stdout JSON: {stdout}"
+    );
+    assert!(run.stderr.contains("export BW_SESSION='STUBSESSIONKEY=='"));
+    assert!(
+        !stdout.contains("pw"),
+        "master password must not be surfaced"
+    );
+    assert!(
+        !run.stderr.contains("pw"),
+        "master password must not be surfaced"
+    );
+    // stub observation: YubiKey の bw-email と入力 OTP を観測し、unlock 済みになる。
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(final_bw_login["observed_email"], json!("u@example.com"));
+    assert_eq!(final_bw_login["observed_otp"], json!("ccccbtdvotp"));
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn bw_login_uses_email_override() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        [
+            "bw-login",
+            "--serial",
+            "2001",
+            "--email",
+            "override@example.com",
+        ],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    // override 指定時は YubiKey の bw-email ではなく override が login email として使われる。
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(
+        final_bw_login["observed_email"],
+        json!("override@example.com")
+    );
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn bw_login_fails_when_master_password_does_not_match() -> TestResult<()> {
+    // stub の expected_password を YubiKey 値（"pw"）と不一致にして login 失敗を再現する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    )
+    .with_bw_login(json!({
+        "expected_password": "different",
+        "session_key": "STUBSESSIONKEY=="
+    }));
+    let run = run_pipe_with_stub(
+        ["bw-login", "--serial", "2001"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    // 失敗時は session を surface しない。
+    assert!(!run.user_stdout().contains("export BW_SESSION="));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_runs_bw_login_external_check() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let run = run_pipe_with_stub(
         ["verify-yubikey", "--serial", "2001", "--check", "bw-login"],
-        None,
+        Some("ccccbtdvotp\n"),
         &stub,
     )?;
 
@@ -574,69 +662,81 @@ fn verify_yubikey_runs_bw_login_external_check_ok() -> TestResult<()> {
     let stdout = run.user_stdout();
     assert!(stdout.contains("\"name\": \"bw-login\""));
     assert!(stdout.contains("\"status\": \"ok\""));
-    // FINDING 2 退行ガード: bw-login reachability check の前段で `bw` 子プロセスの stdout を破棄しないと、
-    // version 文字列が JSON report の前に混入し machine-readable JSON が壊れる。user_stdout()（観測 sentinel
-    // 行を除いた dotfiles 本来の stdout）が単一の JSON document として parse 可能であることを確認する。
-    let report: Value = serde_json::from_str(stdout.trim())
-        .with_context(|| format!("verify-yubikey report must be parseable JSON: {stdout:?}"))?;
-    assert!(
-        report["checks"].as_array().is_some_and(|checks| checks
-            .iter()
-            .any(|check| check["name"] == json!("bw-login"))),
-        "report must contain the bw-login check: {report}"
-    );
-    Ok(())
-}
-
-#[test]
-fn verify_yubikey_bw_login_external_check_fails_when_unreachable() -> TestResult<()> {
-    let stub = StubPorts::new(
-        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
-        bws_spec(),
-    )
-    .with_bw_login(bw_login_spec_unreachable());
-    let run = run_pipe_with_stub(
-        ["verify-yubikey", "--serial", "2001", "--check", "bw-login"],
-        None,
-        &stub,
-    )?;
-
-    assert!(!run.success, "stdout: {}", run.stdout);
-    let stdout = run.user_stdout();
-    assert!(stdout.contains("\"name\": \"bw-login\""));
-    assert!(stdout.contains("\"status\": \"failed\""));
-    Ok(())
-}
-
-#[test]
-fn bw_login_runs_full_flow_with_yubikey_email() -> TestResult<()> {
-    let stub = StubPorts::new(
-        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
-        bws_spec(),
-    );
-    // OTP は非対話 pipe から 1 行読む。
-    let run = run_pipe_with_stub(["bw-login", "--serial", "2001"], Some("123456\n"), &stub)?;
-
-    assert!(run.success, "stderr: {}", run.stderr);
-    let stdout = run.user_stdout();
-    assert!(stdout.contains("\"logged_in\": true"));
-    assert!(stdout.contains("\"unlocked\": true"));
-    let final_bw_login = run.final_bw_login()?;
-    assert_eq!(final_bw_login["logged_in"], json!(true));
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
     assert_eq!(final_bw_login["unlocked"], json!(true));
     Ok(())
 }
 
 #[test]
-fn bw_login_stops_when_login_fails() -> TestResult<()> {
+fn verify_yubikey_bw_login_check_uses_email_override() -> TestResult<()> {
+    // `--check bw-login --email <override>` は override email で bw-login 確認を行い、YubiKey の bw-email
+    // （"u@example.com"）を login email に使わない（spec L286）。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
-    )
-    .with_bw_login(bw_login_spec_with_login_failure());
-    let run = run_pipe_with_stub(["bw-login", "--serial", "2001"], Some("123456\n"), &stub)?;
+    );
+    let run = run_pipe_with_stub(
+        [
+            "verify-yubikey",
+            "--serial",
+            "2001",
+            "--check",
+            "bw-login",
+            "--email",
+            "override@example.com",
+        ],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
 
-    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(
+        final_bw_login["observed_email"],
+        json!("override@example.com")
+    );
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_all_includes_bw_login_and_bws_checks() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--all"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    // `--all` は bws と bw-login の両方の外部確認を含む（spec L107）。
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(!stdout.contains("\"status\": \"skipped\""));
+    assert!(!stdout.contains("\"status\": \"failed\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_no_args_leaves_bw_login_skipped() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    // 引数なし実行では bw-login 外部確認は machine-readable な skipped として残す（spec L155）。
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"skipped\""));
     Ok(())
 }
 
@@ -920,6 +1020,15 @@ fn yubikey_spec_requiring_pin<const N: usize>(yubikeys: [Value; N]) -> Value {
     })
 }
 
+/// 既定 bw-login stub spec。provisioned fixture の `bw-password`（"pw"）と一致した場合だけ login 成功とし、
+/// 成功時に固定 session key を返す。
+fn default_bw_login_spec() -> Value {
+    json!({
+        "expected_password": "pw",
+        "session_key": "STUBSESSIONKEY=="
+    })
+}
+
 fn fresh_device_spec(serial: u32) -> Value {
     json!({
         "serial": serial,
@@ -1088,21 +1197,6 @@ fn bws_spec_with_pass_remote(remote: &str) -> Value {
 /// Git stub が空でも spec 未設定にしない既定値（store なし・clone 後 `.gpg-id` あり）。
 fn empty_git_spec() -> Value {
     json!({ "store_exists": false, "gpg_id_present": true })
-}
-
-/// login / unlock と reachability の双方が成立する bw-login stub spec を作る（既定）。
-fn default_bw_login_spec() -> Value {
-    json!({ "login_succeeds": true, "reachable": true })
-}
-
-/// login が失敗する bw-login stub spec を作る（停止条件の検証用）。
-fn bw_login_spec_with_login_failure() -> Value {
-    json!({ "login_succeeds": false, "reachable": true })
-}
-
-/// `bw` CLI へ到達できない bw-login stub spec を作る（`--check bw-login` 失敗の検証用）。
-fn bw_login_spec_unreachable() -> Value {
-    json!({ "login_succeeds": true, "reachable": false })
 }
 
 /// clone 前から `~/.password-store` が存在する Git stub spec を作る。

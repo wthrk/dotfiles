@@ -146,7 +146,7 @@
 
 ### Bitwarden Password Manager
 
-- 状態: `未開始`
+- 状態: `実装済み（現行サイクル集約レビュー合格）`
 - GitHub issue: #16
 - 主成果物: `実コード差分`
 - 対象コードパス:
@@ -154,7 +154,7 @@
   - `rust/dotfiles-cli/src/secrets/application.rs`
   - `rust/dotfiles-cli/tests/secrets_cli.rs`
 - 作業定義文書: [secret-recovery/work-items/bitwarden-password-manager.md](secret-recovery/work-items/bitwarden-password-manager.md#16-bitwarden-password-manager-cli-ログイン)
-- レビュー記録: [secret-recovery/review-artifacts/bitwarden-password-manager/review.md](secret-recovery/review-artifacts/bitwarden-password-manager/review.md)
+- レビュー記録: [secret-recovery/review-artifacts/bitwarden-password-manager/review.md](secret-recovery/review-artifacts/bitwarden-password-manager/review.md)（集約後レビュー判定: 合格）
 - 領域台帳/履歴: [secret-recovery/tasks.md](secret-recovery/tasks.md#新規マシン秘密情報復旧基盤タスク)
 
 ### 新規マシン復旧フロー統合

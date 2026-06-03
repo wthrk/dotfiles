@@ -4,21 +4,18 @@
 //! 既存 application の trait import を安定させる再公開だけを担い、契約本文は各 backend module に置く。
 
 pub(crate) mod bw;
-pub(crate) mod bw_login;
 pub(crate) mod git;
 pub(crate) mod gpg;
 pub(crate) mod io;
 pub(crate) mod yubikey;
 
-pub(crate) use bw::BwsClientPort;
-pub(crate) use bw_login::BwLoginPort;
+pub(crate) use bw::{BwLoginPort, BwsClientPort};
 pub(crate) use git::{GitClonePort, PasswordStorePort};
 pub(crate) use gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort};
 pub(crate) use io::{
-    BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwLoginEmailOverridePort,
-    BwLoginOtpInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
-    ProvisioningAccessTokenInputPort, ReportPort, RotationContinuationPort, SecretInputPort,
-    SecretOutputPort, SshPublicKeyOutputPort,
+    BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
+    PasswordStoreRemoteInputPort, PinInputPort, ProvisioningAccessTokenInputPort, ReportPort,
+    RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
 };
 pub(crate) use yubikey::{
     DevicePinPolicyPort, DeviceSerialPort, GpgRecipientPort, SecretStoragePort,
@@ -26,20 +23,17 @@ pub(crate) use yubikey::{
 };
 
 #[cfg(test)]
-pub(crate) use bw::MockBwsClientPort;
-#[cfg(test)]
-pub(crate) use bw_login::MockBwLoginPort;
+pub(crate) use bw::{MockBwLoginPort, MockBwsClientPort};
 #[cfg(test)]
 pub(crate) use git::{MockGitClonePort, MockPasswordStorePort};
 #[cfg(test)]
 pub(crate) use gpg::{MockBackupCipherPort, MockGpgKeyringPort, MockSshAgentPort};
 #[cfg(test)]
 pub(crate) use io::{
-    MockBackupUpdateConfirmationPort, MockBootstrapSecretDocumentInputPort,
-    MockBwLoginEmailOverridePort, MockBwLoginOtpInputPort, MockClockPort,
-    MockPasswordStoreRemoteInputPort, MockPinInputPort, MockProvisioningAccessTokenInputPort,
-    MockReportPort, MockRotationContinuationPort, MockSecretInputPort, MockSecretOutputPort,
-    MockSshPublicKeyOutputPort,
+    MockBackupUpdateConfirmationPort, MockBootstrapSecretDocumentInputPort, MockBwOtpInputPort,
+    MockClockPort, MockPasswordStoreRemoteInputPort, MockPinInputPort,
+    MockProvisioningAccessTokenInputPort, MockReportPort, MockRotationContinuationPort,
+    MockSecretInputPort, MockSecretOutputPort, MockSshPublicKeyOutputPort,
 };
 #[cfg(test)]
 pub(crate) use yubikey::{

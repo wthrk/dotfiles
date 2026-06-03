@@ -17,9 +17,9 @@ use crate::{
             verification::VerifySummary,
         },
         ports::io::{
-            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort,
-            BwLoginEmailOverridePort, BwLoginOtpInputPort, ClockPort, PasswordStoreRemoteInputPort,
-            PinInputPort, ProvisioningAccessTokenInputPort, ReportPort, RotationContinuationPort,
+            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
+            ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+            ProvisioningAccessTokenInputPort, ReportPort, RotationContinuationPort,
             SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::protection::ProtectedSecret,
@@ -66,21 +66,15 @@ impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
     }
 }
 
+impl BwOtpInputPort for ProcessIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        self.0.read_bw_otp()
+    }
+}
+
 impl RotationContinuationPort for ProcessIoAdapter {
     fn continue_rotation(&self) -> Result<bool> {
         self.0.continue_rotation()
-    }
-}
-
-impl BwLoginEmailOverridePort for ProcessIoAdapter {
-    fn protect_bw_login_email(&self, email: &str) -> Result<ProtectedSecret> {
-        self.0.protect_bw_login_email(email)
-    }
-}
-
-impl BwLoginOtpInputPort for ProcessIoAdapter {
-    fn read_bw_login_otp(&self) -> Result<String> {
-        self.0.read_bw_login_otp()
     }
 }
 

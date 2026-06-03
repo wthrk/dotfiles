@@ -11,6 +11,14 @@ mod internal_stub;
 // stub module を import せず、feature 有効でビルドされた同じ `dotfiles` binary を実行し、
 // BWS port 専用の初期条件 spec JSON と最終状態観測 JSON だけを外部観測面として扱う。
 
+// `bw` CLI（Bitwarden Password Manager）の login / unlock 用 adapter backend。real backend は `bw login` /
+// `bw unlock` の子プロセスを起動し、stub backend は子プロセスを起動せず datastore 遷移として模す。BWS SDK
+// 経路（`BwsClientAdapter`）とは port / backend / 観測面を共有しない。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+mod login_adapter;
+#[cfg(feature = "secrets-internal-test-stub")]
+mod login_stub;
+
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden::secrets_manager::{
     projects::ProjectsListRequest,
@@ -35,6 +43,13 @@ use crate::secrets::{
 /// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
 #[derive(Default)]
 pub(in crate::secrets) struct BwsClientAdapter;
+
+/// `bw` CLI（Bitwarden Password Manager）の login / unlock を `BwLoginPort` へ翻訳する adapter。
+///
+/// real backend（`login_adapter`）は `bw login` / `bw unlock` の子プロセスを起動し、stub backend
+/// （`login_stub`）は子プロセスを起動せず datastore 遷移として模す。impl は backend module 側に閉じる。
+#[derive(Default)]
+pub(in crate::secrets) struct BwLoginAdapter;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 impl BwsClientPort for BwsClientAdapter {
