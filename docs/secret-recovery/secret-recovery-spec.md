@@ -154,7 +154,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 このコマンドは ローカル保管 確認だけを実行する。`--check bws`、`--check bw-login`、`--all` は外部確認を要求する option なので、利用できない場合は明示的に失敗する。引数なし実行の 要約 では外部確認項目を機械可読状態値 `skipped` として残す。要約の状態値は `ok` と `skipped` を使い、表示文言は別層で扱う。
 
-到達仕様では `--check bw-login` を Bitwarden Password Manager サービスへの到達確認とする。現行範囲の既知制約として、`--check bw-login` は `bw` CLI バイナリの起動可能性（CLI invocation capability）確認に限定されており、真の Bitwarden Password Manager サービス到達確認（server URL 設定・ネットワーク疎通の検証）は未充足である。この CLI 起動可能性確認は server URL 誤設定やネットワーク断でも `bw` バイナリさえ起動できれば `ok` を返すため、サービス到達不能を検出できない false-positive を許容する範囲にある。`--check bw-login` を真のサービス到達確認へ広げる責務は #16（Bitwarden Password Manager 実 bw-login 統合、`docs/tasks/secret-recovery/work-items/bitwarden-password-manager.md`）にあり、#16 完了までは本項の CLI 起動可能性確認に限定する。
+到達仕様では `--check bw-login` を Bitwarden Password Manager サービスへの到達確認とする。`--check bw-login` は YubiKey 由来の `bw-email` / `bw-password` と入力した YubiKey OTP を使い、`bw-login` と同じ経路で実際に `bw login` / `bw unlock` を実行して Bitwarden Password Manager サービスへ到達し login / unlock が成立することを確認する。server URL 誤設定・ネットワーク断・認証失敗では `bw login` が成立せず、到達確認も失敗する。確認で確立した session key は確認専用のため surface せず破棄する。
 
 このコマンドは GitHub、Google、Apple など外部サービス の FIDO2 / passkey / U2F 登録状況を検証しない。外部サービス の spare key 登録は各サービスの設定画面で確認する。
 
@@ -200,7 +200,7 @@ GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。G
 - 同名 secret が存在し、明示的な上書き option が指定されていない。
 - Bitwarden Secrets Manager から必要な secret が取得できない。
 - `verify-yubikey` で YubiKey 内の bootstrap secret 確認に失敗する。
-- `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。なお `--check bw-login` の到達確認は、#16 完了までは `bw` CLI 起動可能性確認に限定された範囲で停止条件を判定する（`verify-yubikey` 節の既知制約を参照）。真の Bitwarden Password Manager サービス到達確認に基づく停止条件は #16 で充足する。
+- `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。`--check bw-login` の到達確認は実際の `bw login` / `bw unlock` 実行による Bitwarden Password Manager サービス到達確認であり、到達・login・unlock のいずれかが成立しない場合に停止条件を満たす。
 - `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
 - `gpg-secret-key-backup` の envelope 形式検証（version / metadata / recipients / ciphertext）に失敗する。

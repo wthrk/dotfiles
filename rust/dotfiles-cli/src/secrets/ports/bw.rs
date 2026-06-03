@@ -16,7 +16,7 @@ use crate::Result;
 
 /// use case が Bitwarden Password Manager CLI（`bw`）の login / unlock 境界へ要求する契約。
 ///
-/// `bw` CLI の用途は login / unlock に限る（spec L84 / L190）。caller（application）は YubiKey 由来 secret の
+/// `bw` CLI の用途は login / unlock に限る（spec L84 / L192）。caller（application）は YubiKey 由来 secret の
 /// 取得順序と email override 判断を持ち、検証済みの login email / OTP と保護値 master password を渡すだけにする。
 /// implementor は `bw login <email> --passwordenv BW_PASSWORD --method 3 --code <otp>` と
 /// `bw unlock --passwordenv BW_PASSWORD --raw` を子プロセスとして実行し、master password を子プロセスの

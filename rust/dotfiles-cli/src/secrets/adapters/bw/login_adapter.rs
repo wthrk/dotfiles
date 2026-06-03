@@ -1,6 +1,6 @@
 //! `BwLoginPort` を Bitwarden Password Manager CLI（`bw`）の login / unlock 子プロセスへ接続する adapter。
 //!
-//! `bw` CLI は spec L84 / L190 で唯一許可された外部 CLI 例外であり、用途は login / unlock に限る。この adapter
+//! `bw` CLI は spec L84 / L192 で唯一許可された外部 CLI 例外であり、用途は login / unlock に限る。この adapter
 //! だけが `bw login` / `bw unlock` の子プロセスを起動する（`Command::new` はこの境界に閉じる）。master password
 //! （`bw-password`）は protection 境界の borrow からそのまま子プロセスの `BW_PASSWORD` env へ注入し、argv / ログ
 //! / shell history / 一時ファイル / 親プロセスの永続環境変数へは残さない。login email / OTP は domain で検証済みの

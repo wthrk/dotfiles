@@ -3,7 +3,7 @@
 //! `bw` CLI へ渡す login email と YubiKey OTP は argv に載る非秘匿入力であり、master password
 //! （`bw-password`）は子プロセスの `BW_PASSWORD` env でだけ渡す保護値である。この module は argv 値の
 //! 妥当性（改行・制御文字・空文字の排除）と session 結果の意味だけを固定し、process 実行や env 注入の
-//! 詳細は adapter / protection 境界へ閉じる。`bw` CLI の用途は spec L84 / L190 により login / unlock に限る。
+//! 詳細は adapter / protection 境界へ閉じる。`bw` CLI の用途は spec L84 / L192 により login / unlock に限る。
 
 use anyhow::Result;
 
