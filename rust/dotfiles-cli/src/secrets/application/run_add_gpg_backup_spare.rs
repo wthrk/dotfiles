@@ -11,6 +11,17 @@ use crate::secrets::{
     ports,
 };
 
+/// `run_add_gpg_backup_spare` が使う外部 capability を named field で束ねる。
+pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
+    pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) spare_device_serial: &'a mut dyn ports::SpareDeviceSerialPort,
+    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) bws_client: &'a B,
+    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) confirmation: &'a dyn ports::BackupUpdateConfirmationPort,
+}
+
 /// 既存 envelope を復号して同一 DEK を取り出し、spare YubiKey の recipient を追加して BWS を更新する。
 ///
 /// 設計「recipient 運用 / BWS 更新契約」の spare 追加経路を順序制御として固定する。既存 recipient 機
@@ -31,32 +42,24 @@ use crate::secrets::{
 /// 前へ置くのは、拒否される更新で YubiKey の PIN prompt・touch と DEK 復号を一切発生させないためである。device serial
 /// 解決（YubiKey 識別）は PIN を伴わないため確認より前で済ませるが、PIN prompt 自体は確認成功後・`unwrap_dek` 直前まで
 /// 遅らせる。DEK は port 境界の保護値として扱い、application 層では加工しない。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "spare 追加は token-input/device/spare-device/pin/bws/recipient/confirm の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_add_gpg_backup_spare<A, D, SD, P, B, Y, F>(
+pub(crate) async fn run_add_gpg_backup_spare<B>(
     command: AddGpgBackupSpareCommand,
-    token_input: &A,
-    device_serial: &mut D,
-    spare_device_serial: &mut SD,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    bws_client: &B,
-    recipient: &mut Y,
-    confirmation: &F,
+    runtime: AddGpgBackupSpareRuntime<'_, B>,
 ) -> Result<()>
 where
-    A: ports::BwsAccessTokenInputPort,
-    D: ports::DeviceSerialPort,
-    SD: ports::SpareDeviceSerialPort,
-    P: ports::PinInputPort,
     B: ports::BwsClientPort,
-    Y: ports::GpgRecipientPort,
-    F: ports::BackupUpdateConfirmationPort,
 {
+    let AddGpgBackupSpareRuntime {
+        token_input,
+        device,
+        spare_device_serial,
+        process,
+        bws_client,
+        recipient,
+        confirmation,
+    } = runtime;
     command.ensure_requested_serials_distinct()?;
-    let unwrap_serial = device_serial.resolve_device_serial(command.unwrap_serial)?;
+    let unwrap_serial = device.resolve_device_serial(command.unwrap_serial)?;
     let spare_serial = spare_device_serial.resolve_spare_device_serial(command.spare_serial)?;
     command.ensure_distinct_resolved_serials(unwrap_serial, spare_serial)?;
 
@@ -97,7 +100,7 @@ where
 
     // 確認を通過したので、DEK unwrap のためにのみ必要な PIN をここで初めて取得する。上書き拒否時は
     // この経路に到達せず、YubiKey の PIN/touch は一切発生しない。
-    let pin = if pin_policy.device_requires_pin(unwrap_serial)? {
+    let pin = if device.device_requires_pin(unwrap_serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -147,7 +150,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_add_gpg_backup_spare;
+    use super::{AddGpgBackupSpareRuntime, run_add_gpg_backup_spare};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -297,14 +300,15 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: true,
             },
-            &token,
-            &mut device,
-            &mut spare,
-            &mut pin_policy,
-            &process,
-            &bws,
-            &mut recipient,
-            &confirmation,
+            AddGpgBackupSpareRuntime {
+                token_input: &token,
+                device: &mut (&mut device, &mut pin_policy),
+                spare_device_serial: &mut spare,
+                process: &process,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                confirmation: &confirmation,
+            },
         )
         .await
     }
@@ -387,14 +391,15 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: true,
             },
-            &token,
-            &mut device,
-            &mut spare,
-            &mut pin_policy,
-            &process,
-            &bws,
-            &mut recipient,
-            &confirmation,
+            AddGpgBackupSpareRuntime {
+                token_input: &token,
+                device: &mut (&mut device, &mut pin_policy),
+                spare_device_serial: &mut spare,
+                process: &process,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                confirmation: &confirmation,
+            },
         )
         .await;
 
@@ -463,14 +468,15 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: false,
             },
-            &token,
-            &mut device,
-            &mut spare,
-            &mut pin_policy,
-            &process,
-            &bws,
-            &mut recipient,
-            &confirmation,
+            AddGpgBackupSpareRuntime {
+                token_input: &token,
+                device: &mut (&mut device, &mut pin_policy),
+                spare_device_serial: &mut spare,
+                process: &process,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                confirmation: &confirmation,
+            },
         )
         .await;
 

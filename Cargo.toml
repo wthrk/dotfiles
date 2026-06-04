@@ -18,6 +18,7 @@ mod_module_files = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 allow_attributes = "deny"
+too_many_arguments = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0.100"

@@ -12,6 +12,19 @@ use crate::secrets::{
     ports,
 };
 
+/// `run_restore_gpg` が使う外部 capability を named field で束ねる。
+pub(crate) struct RestoreGpgRuntime<'a, B> {
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
+    pub(crate) bws_client: &'a B,
+    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
+    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
+    pub(crate) ssh_agent: &'a mut dyn ports::SshAgentPort,
+    pub(crate) report: &'a dyn ports::ReportPort,
+}
+
 /// `gpg-secret-key-backup` encrypted envelope を接続中 YubiKey で復号して鍵リングへ復元する。
 ///
 /// 設計「鍵リング復元契約」の 10 ステップを順序制御として固定する。envelope 検証・recipient 照合・
@@ -20,36 +33,26 @@ use crate::secrets::{
 /// すべて port 境界の保護値として扱い、application 層では加工しない。順序を application に固定するのは、
 /// 「import 前に fingerprint を確定し既存鍵衝突を止める」「subkey 検証成功まで SSH 経路へ進ませない」
 /// という停止条件の責務境界を保護するためである。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "restore-gpg は device/pin/storage/bws/recipient/cipher/keyring/ssh-agent/report の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_restore_gpg<D, P, S, B, Y, C, K, A, R>(
+pub(crate) async fn run_restore_gpg<B>(
     command: RestoreGpgCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    storage_port: &mut S,
-    bws_client: &B,
-    recipient: &mut Y,
-    cipher: &mut C,
-    keyring: &mut K,
-    ssh_agent: &mut A,
-    report: &R,
+    runtime: RestoreGpgRuntime<'_, B>,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
     B: ports::BwsClientPort,
-    Y: ports::GpgRecipientPort,
-    C: ports::BackupCipherPort,
-    K: ports::GpgKeyringPort,
-    A: ports::SshAgentPort,
-    R: ports::ReportPort,
 {
-    let serial = device_serial.resolve_device_serial(command.serial)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let RestoreGpgRuntime {
+        device,
+        process,
+        storage: storage_port,
+        bws_client,
+        recipient,
+        cipher,
+        keyring,
+        ssh_agent,
+        report,
+    } = runtime;
+    let serial = device.resolve_device_serial(command.serial)?;
+    let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -116,15 +119,11 @@ where
 /// import 自体は成功した前提で呼ばれ、ここで返す失敗はすべて呼び出し側で `delete_secret_key` による
 /// ロールバック対象になる。手順 8 の subkey 検証に失敗した場合は後続の SSH 経路へ進ませず、手順 9-10 の
 /// keygrip 解決 / `sshcontrol` 登録 / SSH support 確認のいずれの失敗も呼び出し側の rollback で原子化する。
-fn restore_imported_key<K, A>(
+fn restore_imported_key(
     imported: &crate::secrets::domain::gpg_backup::PrimaryFingerprint,
-    keyring: &mut K,
-    ssh_agent: &mut A,
-) -> Result<()>
-where
-    K: ports::GpgKeyringPort,
-    A: ports::SshAgentPort,
-{
+    keyring: &mut dyn ports::GpgKeyringPort,
+    ssh_agent: &mut dyn ports::SshAgentPort,
+) -> Result<()> {
     // 8. import 後鍵の subkey 構成（encryption / authentication / signing）を検証する。
     keyring
         .inspect_imported_key(imported)
@@ -141,14 +140,11 @@ where
 }
 
 /// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token<S>(
+fn load_bws_access_token(
     serial: u32,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&crate::secrets::support::protection::ProtectedSecret>,
-) -> Result<crate::secrets::support::protection::ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
+) -> Result<crate::secrets::support::protection::ProtectedSecret> {
     let storage = SecretName::BwsAccessToken.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -182,7 +178,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_restore_gpg;
+    use super::{RestoreGpgRuntime, run_restore_gpg};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
     const KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
@@ -381,16 +377,17 @@ mod tests {
 
         run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut recipient,
-            &mut cipher,
-            &mut keyring,
-            &mut ssh_agent,
-            &report,
+            RestoreGpgRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                cipher: &mut cipher,
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+                report: &report,
+            },
         )
         .await
     }
@@ -454,16 +451,17 @@ mod tests {
 
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut recipient,
-            &mut cipher,
-            &mut keyring,
-            &mut ssh_agent,
-            &report,
+            RestoreGpgRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                cipher: &mut cipher,
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+                report: &report,
+            },
         )
         .await;
 
@@ -562,16 +560,17 @@ mod tests {
 
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut recipient,
-            &mut cipher,
-            &mut keyring,
-            &mut ssh_agent,
-            &report,
+            RestoreGpgRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                cipher: &mut cipher,
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+                report: &report,
+            },
         )
         .await;
 
@@ -679,16 +678,17 @@ mod tests {
 
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut recipient,
-            &mut cipher,
-            &mut keyring,
-            &mut ssh_agent,
-            &report,
+            RestoreGpgRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                cipher: &mut cipher,
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+                report: &report,
+            },
         )
         .await;
 

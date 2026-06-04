@@ -10,6 +10,17 @@ use crate::secrets::{
     ports,
 };
 
+/// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
+pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
+    pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
+    pub(crate) device_serial: &'a mut dyn ports::DeviceSerialPort,
+    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
+    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
+    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) clock: &'a dyn ports::ClockPort,
+    pub(crate) bws_client: &'a B,
+}
+
 /// 既存環境の GPG secret key を encrypted envelope 化し、Bitwarden Secrets Manager へ primary 登録する。
 ///
 /// 設計「backup export 入力契約」「recipient 運用 / BWS 更新契約」の primary 登録経路を順序制御として
@@ -29,29 +40,22 @@ use crate::secrets::{
 /// 順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで export・
 /// envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup がある場合は
 /// 重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "primary 登録は token-input/device/keyring/cipher/recipient/clock/bws の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_register_gpg_backup_primary<A, D, K, C, Y, T, B>(
+pub(crate) async fn run_register_gpg_backup_primary<B>(
     command: RegisterGpgBackupCommand,
-    token_input: &A,
-    device_serial: &mut D,
-    keyring: &mut K,
-    cipher: &mut C,
-    recipient: &mut Y,
-    clock: &T,
-    bws_client: &B,
+    runtime: RegisterGpgBackupPrimaryRuntime<'_, B>,
 ) -> Result<()>
 where
-    A: ports::BwsAccessTokenInputPort,
-    D: ports::DeviceSerialPort,
-    K: ports::GpgKeyringPort,
-    C: ports::BackupCipherPort,
-    Y: ports::GpgRecipientPort,
-    T: ports::ClockPort,
     B: ports::BwsClientPort,
 {
+    let RegisterGpgBackupPrimaryRuntime {
+        token_input,
+        device_serial,
+        keyring,
+        cipher,
+        recipient,
+        clock,
+        bws_client,
+    } = runtime;
     // recipient wrap 対象 YubiKey の serial を解決する（slot 82 公開鍵 wrap に必要）。
     let serial = device_serial.resolve_device_serial(command.serial)?;
 
@@ -126,7 +130,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_register_gpg_backup_primary;
+    use super::{RegisterGpgBackupPrimaryRuntime, run_register_gpg_backup_primary};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -253,13 +257,15 @@ mod tests {
                 primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
                 serial: Some(2001),
             },
-            &token,
-            &mut device,
-            &mut keyring,
-            &mut cipher,
-            &mut recipient,
-            &clock,
-            &bws,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                cipher: &mut cipher,
+                recipient: &mut recipient,
+                clock: &clock,
+                bws_client: &bws,
+            },
         )
         .await
     }
@@ -318,13 +324,15 @@ mod tests {
                 primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
                 serial: Some(2001),
             },
-            &token,
-            &mut device,
-            &mut keyring,
-            &mut cipher,
-            &mut recipient,
-            &clock,
-            &bws,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                cipher: &mut cipher,
+                recipient: &mut recipient,
+                clock: &clock,
+                bws_client: &bws,
+            },
         )
         .await;
 

@@ -186,6 +186,12 @@ impl GpgBackupEnvelope {
             .map_err(|_| invalid_data("failed to serialize gpg backup envelope JSON"))
     }
 
+    /// 検証済み envelope を UTF-8 JSON 文字列へ serialize する。
+    pub fn to_json_string(&self) -> Result<String> {
+        String::from_utf8(self.to_json()?)
+            .map_err(|_| invalid_data("gpg backup envelope is not valid UTF-8"))
+    }
+
     /// wire 表現を schema 検証して domain envelope へ変換する。
     fn from_wire(wire: EnvelopeWire) -> Result<Self> {
         if wire.version != ENVELOPE_VERSION {
@@ -536,6 +542,11 @@ impl BackupUpdateGuard {
             hex.push_str(&format!("{byte:02x}"));
         }
         Self::ValueDigest(hex)
+    }
+
+    /// SDK 更新識別子が空でなければ revision guard、なければ value digest guard を作る。
+    pub fn from_revision_or_value(revision: impl Into<String>, value: &[u8]) -> Self {
+        Self::from_revision(revision).unwrap_or_else(|| Self::from_value_bytes(value))
     }
 
     /// 更新直前に再取得した現行 guard と一致する場合だけ上書きを許可する。

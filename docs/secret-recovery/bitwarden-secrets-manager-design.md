@@ -40,6 +40,7 @@ internal backend stub を使う integration test の詳細規則は [Hexagonal I
 - credential（`bws-access-token` / `gpg-secret-key-backup`）と、credential ではないが private な `password-store-remote` は、いずれもログ、エラー本文、診断出力に含めない。`password-store-remote` は credential ではない（provisioning 入力では非秘匿として `--url`／可視プロンプト／pipe で受けてよい）が、private repository の所在を示す値のため出力には漏らさない。
 - Bitwarden Secrets Manager 側の保存先 project は `dotfiles-secret-recovery` に固定する。
 - project `dotfiles-secret-recovery` は Bitwarden Secrets Manager 側で手動作成する。`dotfiles` の provisioning command と `scripts/provision-secret-recovery-source.sh` は project を作成せず、登録・更新用 token から同名 project が 1 件だけ見えることを BWS provisioning 前 gate とする。
+- organization / machine account / service account の作成や特定 UI 画面名は、この repository の保存モデル前提にしない。実装とレビューは「保存先・名前・保存する値・読書き責務」を下表で照合し、Bitwarden 側 UI の名称変更や個人利用形態に依存した導線を正本にしない。
 - `bws-access-token` は個人運用の Bitwarden Secrets Manager access token とする。provisioning 時の登録・更新用 token と YubiKey に保存する復旧用 token は同一値にせず、YubiKey には復旧時に `dotfiles-secret-recovery` project の必要 secret を読める最小権限の token だけを保存する。
 - Bitwarden Secrets Manager で扱う secret name は `gpg-secret-key-backup` と `password-store-remote` に固定する。
 - Bitwarden Secrets Manager の secret 値形式は secret ごとに固定し、`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope（UTF-8 JSON）として保存する。
@@ -49,6 +50,8 @@ internal backend stub を使う integration test の詳細規則は [Hexagonal I
 ## Bitwarden Secrets Manager 配置
 
 Bitwarden Secrets Manager には、この機能専用の project `dotfiles-secret-recovery` を 1 つ手動で作る。この project は新規マシン復旧で機械的に取得する secret だけを置く境界であり、Web service password、TOTP、recovery code、Bitwarden Password Manager CLI credential、YubiKey に保存する bootstrap secret は置かない。`dotfiles` の provisioning command と `scripts/provision-secret-recovery-source.sh` は project を作成せず、project name から 1 件の project ID を解決できることを前提に secret の create/update だけを行う。
+
+この保存モデルは Bitwarden UI の画面名ではなく、project / secret / access token の関係で定義する。レビューでは organization、machine account、service account、特定 UI ラベルの有無を前提条件として要求していないかを確認し、要求している場合は誤った前提として差し戻す。
 
 YubiKey に保存する `bws-access-token` は、復旧時に `dotfiles-secret-recovery` project の必要 secret を読むために使う。provisioning 時に BWS 登録・更新へ使う token は YubiKey に保存せず、登録・更新後に利用しない状態へ移行する。復旧経路で使う token が有効であることは `verify-yubikey --check bws` で確認する。
 

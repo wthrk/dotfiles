@@ -83,6 +83,7 @@
 
 7. **[手動]→[CMD][対話]** Bitwarden Secrets Manager に復旧用 secret を登録する。
    - **[手動]** Bitwarden Secrets Manager 側で project `dotfiles-secret-recovery` を作成し、BWS 登録・更新用 access token から同名 project が 1 件だけ見える状態にする。`dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register` と `scripts/provision-secret-recovery-source.sh` は project を作成しない。project が存在しない、または同名 project が複数見える場合は BWS provisioning 前 gate 不成立として停止し、secret 登録へ進まない。
+   - この runbook は organization / machine account / service account の作成を前提にしない。Bitwarden UI の名称は変わりうるため、手動操作では「project `dotfiles-secret-recovery` を作り、その project に `gpg-secret-key-backup` と `password-store-remote` を保存し、その 2 secret を読める復旧用 token を YubiKey に保存する」という保存モデルだけを照合する。
    - BWS 登録・更新用 access token を `dotfiles secrets pass-remote register` と `dotfiles secrets gpg-backup register` の hidden prompt または pipe に渡す。token 値そのものを argv、log、runbook、review artifact に書かない。
    - YubiKey に保存する `bws-access-token` は、復旧時に `dotfiles-secret-recovery` project の必要 secret を読める最小権限の復旧用 token とする。BWS 登録・更新用 token と同一値にしない。
    - `password-store-remote` は既存 password-store の GitHub SSH clone URL を使い、`dotfiles secrets pass-remote register --url git@github.com:<owner>/<repo>.git` で登録または明示確認後に更新する。

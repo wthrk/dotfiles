@@ -13,6 +13,16 @@ use crate::secrets::{
     support::protection::{ProtectedSecret, bw_login},
 };
 
+/// `run_bw_login` が使う外部 capability を named field で束ねる。
+pub(crate) struct BwLoginRuntime<'a, B> {
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
+    pub(crate) otp_input: &'a dyn ports::BwOtpInputPort,
+    pub(crate) bw_login: &'a B,
+    pub(crate) report: &'a dyn ports::ReportPort,
+}
+
 /// YubiKey から `bw-email` / `bw-password` を取得し、OTP を入力させて Bitwarden Password Manager CLI に
 /// login / unlock する（spec L178）。
 ///
@@ -21,30 +31,23 @@ use crate::secrets::{
 /// session key 取得は `BwLoginPort` 境界へ閉じる。master password は port へ保護値として渡し、application は
 /// その平文を取り出さない。`BW_SESSION`（session key）は disk / dotfile へ永続化せず、report で利用者へ surface
 /// するだけにする。OTP は単回トークンのため可視入力で読み、argv に載る（spec L178）。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bw-login は device/pin/storage/otp-input/bw-login/report の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_bw_login<D, P, S, O, B, R>(
+pub(crate) async fn run_bw_login<B>(
     command: BwLoginCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    storage_port: &mut S,
-    otp_input: &O,
-    bw_login_port: &B,
-    report: &R,
+    runtime: BwLoginRuntime<'_, B>,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    O: ports::BwOtpInputPort,
     B: ports::BwLoginPort,
-    R: ports::ReportPort,
 {
-    let serial = device_serial.resolve_device_serial(command.serial)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let BwLoginRuntime {
+        device,
+        process,
+        storage: storage_port,
+        otp_input,
+        bw_login: bw_login_port,
+        report,
+    } = runtime;
+    let serial = device.resolve_device_serial(command.serial)?;
+    let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -79,15 +82,12 @@ where
 }
 
 /// YubiKey storage の read 経路（inspect → intent → load → validate）で指定 secret を取得する。
-fn load_yubikey_secret<S>(
+fn load_yubikey_secret(
     serial: u32,
     name: SecretName,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&ProtectedSecret>,
-) -> Result<ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
+) -> Result<ProtectedSecret> {
     let storage = name.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -117,7 +117,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_bw_login;
+    use super::{BwLoginRuntime, run_bw_login};
 
     const SESSION: &str = "SESSIONKEY==";
 
@@ -159,14 +159,13 @@ mod tests {
     #[tokio::test]
     async fn bw_login_reads_yubikey_email_and_logs_in() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDeviceSerialPort::new();
+        let mut device = ports::MockYubiKeyDevicePort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
+        device
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
@@ -224,13 +223,14 @@ mod tests {
                 serial: Some(2001),
                 email_override: None,
             },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &otp_input,
-            &bw_login,
-            &report,
+            BwLoginRuntime {
+                device: &mut device,
+                process: &process,
+                storage: &mut storage,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+                report: &report,
+            },
         )
         .await
     }
@@ -288,13 +288,14 @@ mod tests {
                 serial: Some(2001),
                 email_override: Some("  override@example.com  ".to_owned()),
             },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &otp_input,
-            &bw_login,
-            &report,
+            BwLoginRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+                report: &report,
+            },
         )
         .await
     }
@@ -339,13 +340,14 @@ mod tests {
                 serial: Some(2001),
                 email_override: None,
             },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &otp_input,
-            &bw_login,
-            &report,
+            BwLoginRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+                report: &report,
+            },
         )
         .await;
 

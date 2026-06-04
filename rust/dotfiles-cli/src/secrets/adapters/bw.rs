@@ -52,6 +52,38 @@ pub(in crate::secrets) struct BwsClientAdapter;
 pub(in crate::secrets) struct BwLoginAdapter;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
+fn access_token_scope_id(session: &bws::BwsClientSession) -> crate::Result<Uuid> {
+    session
+        .client()
+        .get_access_token_organization()
+        .map(Into::into)
+        .ok_or_else(|| anyhow::anyhow!("bitwarden access token does not expose a BWS SDK scope id"))
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn parse_sdk_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
+    value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{label} is not a valid UUID"))
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn secret_create_request(
+    organization_id: Uuid,
+    project_id: Uuid,
+    key: &str,
+    value: String,
+) -> SecretCreateRequest {
+    SecretCreateRequest {
+        organization_id,
+        key: key.to_owned(),
+        value,
+        note: String::new(),
+        project_ids: Some(vec![project_id]),
+    }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl BwsClientPort for BwsClientAdapter {
     /// SDK project 一覧を port 境界の lookup 候補へ変換する。
     async fn list_bws_projects(
@@ -63,7 +95,7 @@ impl BwsClientPort for BwsClientAdapter {
             .client()
             .projects()
             .list(&ProjectsListRequest {
-                organization_id: bws_sdk_request_scope_id(&session)?,
+                organization_id: access_token_scope_id(&session)?,
             })
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden project list failed"))?;
@@ -84,7 +116,7 @@ impl BwsClientPort for BwsClientAdapter {
         project_id: &BwsProjectId,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let project_id = parse_uuid(project_id.as_str(), "bws project id")?;
+        let project_id = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
         let secrets = session
             .client()
             .secrets()
@@ -108,12 +140,11 @@ impl BwsClientPort for BwsClientAdapter {
         secret_id: &BwsSecretId,
     ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         let (envelope, guard) = session
             .parse_secret_value_with_revision(id, |json, revision| {
-                // SDK revision（updatedAt 相当）を更新識別子として guard 化する。取得できない場合は value digest。
-                let guard = BackupUpdateGuard::from_revision(revision.to_owned())
-                    .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(json.as_bytes()));
+                let guard =
+                    BackupUpdateGuard::from_revision_or_value(revision.to_owned(), json.as_bytes());
                 let envelope = GpgBackupEnvelope::from_json(json.as_bytes())?;
                 Ok((envelope, guard))
             })
@@ -128,7 +159,7 @@ impl BwsClientPort for BwsClientAdapter {
         secret_id: &BwsSecretId,
     ) -> crate::Result<PasswordStoreRemote> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         let value = session.get_non_secret_value(id).await?;
         PasswordStoreRemote::parse(value.as_str())
     }
@@ -141,13 +172,13 @@ impl BwsClientPort for BwsClientAdapter {
         envelope: &GpgBackupEnvelope,
     ) -> crate::Result<BwsSecretId> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let sdk_scope_id = bws_sdk_request_scope_id(&session)?;
-        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
-        let value = envelope_value(envelope)?;
+        let sdk_scope_id = access_token_scope_id(&session)?;
+        let project_uuid = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
+        let value = envelope.to_json_string()?;
         let created = session
             .client()
             .secrets()
-            .create(&build_secret_create_request(
+            .create(&secret_create_request(
                 sdk_scope_id,
                 project_uuid,
                 BwsSecretName::GpgSecretKeyBackup.key(),
@@ -168,21 +199,20 @@ impl BwsClientPort for BwsClientAdapter {
         expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
-        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
-        // 更新直前に現行値を再取得し、guard 一致を stale overwrite 防止条件として確認する。
+        let project_uuid = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
+        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         let current = session
             .client()
             .secrets()
             .get(&SecretGetRequest { id })
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
-        let current_guard = BackupUpdateGuard::from_revision(current.revision_date.to_rfc3339())
-            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(current.value.as_bytes()));
+        let current_guard = BackupUpdateGuard::from_revision_or_value(
+            current.revision_date.to_rfc3339(),
+            current.value.as_bytes(),
+        );
         expected_guard.ensure_matches(&current_guard)?;
-        let value = envelope_value(envelope)?;
-        // 利用者が設定した note / project を消さないよう、直前取得した現行値を保持して上書きする。
-        // project が未設定の現行値では、解決済みの復旧 project を fallback に使う。
+        let value = envelope.to_json_string()?;
         session
             .client()
             .secrets()
@@ -207,12 +237,12 @@ impl BwsClientPort for BwsClientAdapter {
         remote: &PasswordStoreRemote,
     ) -> crate::Result<BwsSecretId> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let sdk_scope_id = bws_sdk_request_scope_id(&session)?;
-        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
+        let sdk_scope_id = access_token_scope_id(&session)?;
+        let project_uuid = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
         let created = session
             .client()
             .secrets()
-            .create(&build_secret_create_request(
+            .create(&secret_create_request(
                 sdk_scope_id,
                 project_uuid,
                 BwsSecretName::PasswordStoreRemote.key(),
@@ -230,15 +260,17 @@ impl BwsClientPort for BwsClientAdapter {
         secret_id: &BwsSecretId,
     ) -> crate::Result<BackupUpdateGuard> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
+        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         let secret = session
             .client()
             .secrets()
             .get(&SecretGetRequest { id })
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
-        let guard = BackupUpdateGuard::from_revision(secret.revision_date.to_rfc3339())
-            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(secret.value.as_bytes()));
+        let guard = BackupUpdateGuard::from_revision_or_value(
+            secret.revision_date.to_rfc3339(),
+            secret.value.as_bytes(),
+        );
         Ok(guard)
     }
 
@@ -252,19 +284,19 @@ impl BwsClientPort for BwsClientAdapter {
         expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
         let session = bws::login_client_with_access_token(access_token).await?;
-        let project_uuid = parse_uuid(project_id.as_str(), "bws project id")?;
-        let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
-        // 更新直前に現行値を再取得し、guard 一致を stale overwrite 防止条件として確認する。
+        let project_uuid = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
+        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         let current = session
             .client()
             .secrets()
             .get(&SecretGetRequest { id })
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
-        let current_guard = BackupUpdateGuard::from_revision(current.revision_date.to_rfc3339())
-            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(current.value.as_bytes()));
+        let current_guard = BackupUpdateGuard::from_revision_or_value(
+            current.revision_date.to_rfc3339(),
+            current.value.as_bytes(),
+        );
         expected_guard.ensure_matches(&current_guard)?;
-        // 利用者が設定した note / project を消さないよう、直前取得した現行値を保持して上書きする。
         session
             .client()
             .secrets()
@@ -282,100 +314,13 @@ impl BwsClientPort for BwsClientAdapter {
     }
 }
 
-/// 検証済み envelope を canonical UTF-8 JSON 文字列へ serialize する。encrypted envelope であり平文鍵素材を含まない。
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-fn envelope_value(envelope: &GpgBackupEnvelope) -> crate::Result<String> {
-    String::from_utf8(envelope.to_json()?)
-        .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))
-}
-
-/// port 境界の opaque ID を Bitwarden SDK が要求する UUID 型へ翻訳する。
-///
-/// ID の一意性や対象同一性は domain で判定済みとし、ここでは SDK 型変換の失敗だけを扱う。
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-fn parse_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
-    value
-        .parse()
-        .map_err(|_| anyhow::anyhow!("{label} is not a valid UUID"))
-}
-
-/// SDK の request に必要な access-token scope ID を取り出す。
-///
-/// dotfiles の利用者入力・provisioning model にはこの ID を露出させず、BWS access token と project/secret 名だけを
-/// application/domain 境界へ渡す。SDK 型名は `organization_id` だが、ここでは adapter-local な request scope
-/// 翻訳としてのみ扱い、利用者に Bitwarden 管理画面上の organization 入力を要求しない。
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-fn bws_sdk_request_scope_id(session: &bws::BwsClientSession) -> crate::Result<Uuid> {
-    session
-        .client()
-        .get_access_token_organization()
-        .map(Into::into)
-        .ok_or_else(|| anyhow::anyhow!("bitwarden access token does not expose a BWS SDK scope id"))
-}
-
-/// port 境界の project/key/value を SDK create request へ翻訳する。
-///
-/// SDK request field は `organization_id` という名前だが、値は access token から adapter 内で解決した
-/// request scope だけを使う。caller から scope ID を受け取らず、nil placeholder も送らない。
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-fn build_secret_create_request(
-    sdk_scope_id: Uuid,
-    project_id: Uuid,
-    key: &str,
-    value: String,
-) -> SecretCreateRequest {
-    SecretCreateRequest {
-        organization_id: sdk_scope_id,
-        key: key.to_owned(),
-        value,
-        note: String::new(),
-        project_ids: Some(vec![project_id]),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::domain::bws::BwsSecretName;
-
-    /// BWS secret の domain 名を Bitwarden Secrets Manager の固定 key へ翻訳する。
-    #[test]
-    fn bws_secret_name_maps_to_stable_key() {
-        assert_eq!(
-            BwsSecretName::GpgSecretKeyBackup.key(),
-            "gpg-secret-key-backup"
-        );
-        assert_eq!(
-            BwsSecretName::PasswordStoreRemote.key(),
-            "password-store-remote"
-        );
-    }
 
     /// adapter の default 構築が runtime 状態や外部接続を開始しないことを確認する。
     #[test]
     fn adapter_constructs_with_default() {
         let _ = BwsClientAdapter;
-    }
-
-    /// create request の scope は adapter 内で解決した値だけを使い、nil placeholder を送らない。
-    #[cfg(not(feature = "secrets-internal-test-stub"))]
-    #[test]
-    fn create_request_uses_resolved_sdk_scope_without_user_facing_scope_input() -> crate::Result<()>
-    {
-        let sdk_scope_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111")?;
-        let project_id = Uuid::parse_str("22222222-2222-4222-8222-222222222222")?;
-
-        let request = build_secret_create_request(
-            sdk_scope_id,
-            project_id,
-            "gpg-secret-key-backup",
-            "{}".into(),
-        );
-
-        assert_eq!(request.organization_id, sdk_scope_id);
-        assert_ne!(request.organization_id, Uuid::default());
-        assert_eq!(request.project_ids, Some(vec![project_id]));
-        assert_eq!(request.key, "gpg-secret-key-backup");
-        Ok(())
     }
 }

@@ -14,40 +14,44 @@ use crate::secrets::{
     support::protection::{ProtectedSecret, bw_login},
 };
 
+/// `run_verify_yubikey_with` が使う外部 capability を named field で束ねる。
+pub(crate) struct VerifyYubikeyRuntime<'a, B, L> {
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
+    pub(crate) report: &'a dyn ports::ReportPort,
+    pub(crate) bws_client: &'a B,
+    pub(crate) gpg_recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) otp_input: &'a dyn ports::BwOtpInputPort,
+    pub(crate) bw_login: &'a L,
+}
+
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
 ///
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
 /// 先頭に固定する。外部確認結果は report 境界へ明示的に反映し、verify 結果の責任範囲を
 /// 曖昧にしない。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "verify-yubikey は device/pin/storage/report/bws/otp-input/bw-login の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B, Y, O, L>(
+pub(crate) async fn run_verify_yubikey_with<B, L>(
     command: VerifyYubikeyCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    storage_port: &mut S,
-    report: &R,
-    bws_client: &B,
-    gpg_recipient: &mut Y,
-    otp_input: &O,
-    bw_login_port: &L,
+    runtime: VerifyYubikeyRuntime<'_, B, L>,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
     B: ports::BwsClientPort,
-    Y: ports::GpgRecipientPort,
-    O: ports::BwOtpInputPort,
     L: ports::BwLoginPort,
 {
+    let VerifyYubikeyRuntime {
+        device,
+        process,
+        storage: storage_port,
+        report,
+        bws_client,
+        gpg_recipient,
+        otp_input,
+        bw_login: bw_login_port,
+    } = runtime;
     let requested = command.requested_external_checks()?;
-    let serial = device_serial.resolve_device_serial(command.serial)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let serial = device.resolve_device_serial(command.serial)?;
+    let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -166,15 +170,14 @@ where
 /// application は接続中 YubiKey の recipient identity を取得して domain の matching rule を適用し、
 /// unwrap なしで一致 recipient の存在まで確認する。`password-store-remote` も typed port で取得し、
 /// raw secret fetch 成功だけを BWS check の成功条件にしない。
-async fn run_bws_check<B, Y>(
+async fn run_bws_check<B>(
     serial: u32,
     access_token: &ProtectedSecret,
     bws_client: &B,
-    gpg_recipient: &mut Y,
+    gpg_recipient: &mut dyn ports::GpgRecipientPort,
 ) -> Result<()>
 where
     B: ports::BwsClientPort,
-    Y: ports::GpgRecipientPort,
 {
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(access_token).await?)?;
@@ -207,17 +210,15 @@ where
 /// master password（`bw-password`）も on-demand ロードして port へ保護値として渡し、OTP を入力して `bw login`
 /// / `bw unlock` の到達性を確認する。両 secret はこの関数のスコープでだけ存在し、戻ると drop される。
 /// session key は確認専用のため受け取った値を surface せず破棄し、login / unlock の成否だけを返す。
-async fn run_bw_login_check<S, O, L>(
+async fn run_bw_login_check<L>(
     email_override: Option<&str>,
     serial: u32,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&ProtectedSecret>,
-    otp_input: &O,
+    otp_input: &dyn ports::BwOtpInputPort,
     bw_login_port: &L,
 ) -> Result<()>
 where
-    S: ports::SecretStoragePort,
-    O: ports::BwOtpInputPort,
     L: ports::BwLoginPort,
 {
     // override 指定時は YubiKey の `bw-email` を読まない/使わない。未指定時のみ on-demand ロードする。
@@ -241,15 +242,12 @@ where
 /// この helper は application 層の順序制御（必要な分岐の直前で必要 secret だけを読み、戻ると drop する）に
 /// 属するため `pub` にしない。pin はこの use case で取得済みの値を渡す（追加の touch を要しない read 操作）。
 /// `run_bw_login.rs` の同名 helper と同方針だが use case-to-use case call を避けるため本 file に閉じる。
-fn load_yubikey_secret<S>(
+fn load_yubikey_secret(
     serial: u32,
     name: SecretName,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&ProtectedSecret>,
-) -> Result<ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
+) -> Result<ProtectedSecret> {
     let storage = name.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -277,7 +275,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::{run_bws_check, run_verify_yubikey_with};
+    use super::{VerifyYubikeyRuntime, run_bws_check, run_verify_yubikey_with};
 
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -423,15 +421,16 @@ mod tests {
                 all: true,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -534,15 +533,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }
@@ -705,15 +705,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -779,15 +780,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -867,15 +869,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -950,15 +953,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }
@@ -1033,15 +1037,16 @@ mod tests {
                 all: false,
                 email_override: Some("  override@example.com  ".to_owned()),
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }
@@ -1093,15 +1098,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -1228,15 +1234,16 @@ mod tests {
                 all: true,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &mut gpg_recipient,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }

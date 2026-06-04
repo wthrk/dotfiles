@@ -76,11 +76,11 @@ impl BwsClientSession {
         protected.with_secret_utf8(|json| parse(json, revision.as_str()))
     }
 
-    /// SDK get で取得した非秘匿 secret value を `Zeroizing` 管理へ移して返す。
+    /// SDK get で取得した secret value を protected buffer 外へ出せる `Zeroizing` 管理の文字列として返す。
     ///
-    /// `password-store-remote` の clone URL のように secret datastore へ置くが credential ではない値だけに
-    /// 使う。真の secret value には [`Self::parse_secret_value_with_revision`] を使い、plaintext borrow
-    /// を protection backend 操作内に閉じる。
+    /// caller は対象値が protected borrow 境界を必要としないことを protection 外で確定してから呼び出す。
+    /// この support 境界は BWS SDK の secret value を repository 所有文字列へ移し、Drop 時の zeroize を
+    /// 保証するだけで、保存モデル上の secret 名・用途判断は持たない。
     pub(crate) async fn get_non_secret_value(&self, id: Uuid) -> Result<Zeroizing<String>> {
         let secret = self
             .client

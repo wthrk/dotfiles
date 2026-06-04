@@ -19,7 +19,7 @@ pub(crate) use io::{
 };
 pub(crate) use yubikey::{
     DevicePinPolicyPort, DeviceSerialPort, GpgRecipientPort, SecretStoragePort,
-    SpareDeviceSerialPort,
+    SpareDeviceSerialPort, YubiKeyDevicePort,
 };
 
 #[cfg(test)]
@@ -38,5 +38,5 @@ pub(crate) use io::{
 #[cfg(test)]
 pub(crate) use yubikey::{
     MockDevicePinPolicyPort, MockDeviceSerialPort, MockGpgRecipientPort, MockSecretStoragePort,
-    MockSpareDeviceSerialPort,
+    MockSpareDeviceSerialPort, MockYubiKeyDevicePort,
 };

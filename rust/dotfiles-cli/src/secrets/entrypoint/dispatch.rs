@@ -137,13 +137,14 @@ pub(super) async fn dispatch(
                 } else {
                     application::run_rotate_bws_token_with_prompt::run_rotate_bws_token_with_prompt(
                         command,
-                        &mut ports.device,
-                        &mut ports.device_pin_policy,
-                        &ports.process_io,
-                        &ports.process_io,
-                        &ports.process_io,
-                        &mut ports.storage,
-                        &ports.report,
+                        application::run_rotate_bws_token_with_prompt::RotateBwsTokenPromptRuntime {
+                            device: &mut ports.device,
+                            secret_input: &ports.process_io,
+                            continuation: &ports.process_io,
+                            pin_input: &ports.process_io,
+                            storage: &mut ports.storage,
+                            report: &ports.report,
+                        },
                     )
                 }
             }
@@ -163,15 +164,16 @@ pub(super) async fn dispatch(
                     all: options.all,
                     email_override: options.email,
                 },
-                &mut ports.device,
-                &mut ports.device_pin_policy,
-                &ports.process_io,
-                &mut ports.storage,
-                &ports.report,
-                &ports.bws_client,
-                &mut ports.gpg_recipient,
-                &ports.process_io,
-                &ports.bw_login,
+                application::run_verify_yubikey_with::VerifyYubikeyRuntime {
+                    device: &mut ports.device,
+                    process: &ports.process_io,
+                    storage: &mut ports.storage,
+                    report: &ports.report,
+                    bws_client: &ports.bws_client,
+                    gpg_recipient: &mut ports.gpg_recipient,
+                    otp_input: &ports.process_io,
+                    bw_login: &ports.bw_login,
+                },
             )
             .await
         }
@@ -181,13 +183,14 @@ pub(super) async fn dispatch(
                     serial: options.serial,
                     email_override: options.email,
                 },
-                &mut ports.device,
-                &mut ports.device_pin_policy,
-                &ports.process_io,
-                &mut ports.storage,
-                &ports.process_io,
-                &ports.bw_login,
-                &ports.report,
+                application::run_bw_login::BwLoginRuntime {
+                    device: &mut ports.device,
+                    process: &ports.process_io,
+                    storage: &mut ports.storage,
+                    otp_input: &ports.process_io,
+                    bw_login: &ports.bw_login,
+                    report: &ports.report,
+                },
             )
             .await
         }
@@ -196,16 +199,17 @@ pub(super) async fn dispatch(
                 RestoreGpgCommand {
                     serial: options.serial,
                 },
-                &mut ports.device,
-                &mut ports.device_pin_policy,
-                &ports.process_io,
-                &mut ports.storage,
-                &ports.bws_client,
-                &mut ports.gpg_recipient,
-                &mut ports.backup_cipher,
-                &mut ports.gpg_keyring,
-                &mut ports.ssh_agent,
-                &ports.report,
+                application::run_restore_gpg::RestoreGpgRuntime {
+                    device: &mut ports.device,
+                    process: &ports.process_io,
+                    storage: &mut ports.storage,
+                    bws_client: &ports.bws_client,
+                    recipient: &mut ports.gpg_recipient,
+                    cipher: &mut ports.backup_cipher,
+                    keyring: &mut ports.gpg_keyring,
+                    ssh_agent: &mut ports.ssh_agent,
+                    report: &ports.report,
+                },
             )
             .await
         }
@@ -214,15 +218,16 @@ pub(super) async fn dispatch(
                 RestorePassCommand {
                     serial: options.serial,
                 },
-                &mut ports.device,
-                &mut ports.device_pin_policy,
-                &ports.process_io,
-                &mut ports.storage,
-                &ports.bws_client,
-                &mut ports.gpg_keyring,
-                &mut ports.password_store,
-                &mut ports.git_clone,
-                &ports.report,
+                application::run_restore_pass::RestorePassRuntime {
+                    device: &mut ports.device,
+                    process: &ports.process_io,
+                    storage: &mut ports.storage,
+                    bws_client: &ports.bws_client,
+                    keyring: &mut ports.gpg_keyring,
+                    store: &mut ports.password_store,
+                    git_clone: &mut ports.git_clone,
+                    report: &ports.report,
+                },
             )
             .await
         }
@@ -234,13 +239,15 @@ pub(super) async fn dispatch(
                         primary_fingerprint,
                         serial: options.serial,
                     },
-                    &ports.process_io,
-                    &mut ports.device,
-                    &mut ports.gpg_keyring,
-                    &mut ports.backup_cipher,
-                    &mut ports.gpg_recipient,
-                    &ports.process_io,
-                    &ports.bws_client,
+                    application::run_register_gpg_backup_primary::RegisterGpgBackupPrimaryRuntime {
+                        token_input: &ports.process_io,
+                        device_serial: &mut ports.device,
+                        keyring: &mut ports.gpg_keyring,
+                        cipher: &mut ports.backup_cipher,
+                        recipient: &mut ports.gpg_recipient,
+                        clock: &ports.process_io,
+                        bws_client: &ports.bws_client,
+                    },
                 )
                 .await
             }
@@ -251,14 +258,15 @@ pub(super) async fn dispatch(
                         spare_serial: options.spare_serial,
                         assume_overwrite: options.yes,
                     },
-                    &ports.process_io,
-                    &mut ports.device,
-                    &mut ports.spare_device,
-                    &mut ports.device_pin_policy,
-                    &ports.process_io,
-                    &ports.bws_client,
-                    &mut ports.gpg_recipient,
-                    &ports.process_io,
+                    application::run_add_gpg_backup_spare::AddGpgBackupSpareRuntime {
+                        token_input: &ports.process_io,
+                        device: &mut ports.device,
+                        spare_device_serial: &mut ports.spare_device,
+                        process: &ports.process_io,
+                        bws_client: &ports.bws_client,
+                        recipient: &mut ports.gpg_recipient,
+                        confirmation: &ports.process_io,
+                    },
                 )
                 .await
             }

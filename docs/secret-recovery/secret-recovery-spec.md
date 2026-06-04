@@ -56,6 +56,8 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
 - `GitHub`: GPG authentication subkey 由来の SSH 公開鍵 を保持し、private repository clone に使う。
 
+この仕様の保存モデルは、保存先・名前・保存する値で定義する。organization / machine account / service account の作成や特定 UI 画面名は、この repository の実装前提ではない。Bitwarden Secrets Manager について実装・レビューで照合する正本は project `dotfiles-secret-recovery`、secret `gpg-secret-key-backup` / `password-store-remote`、YubiKey storage `bws-access-token` の関係であり、UI の導線名ではない。
+
 ## 責務分担
 
 ### YubiKey
