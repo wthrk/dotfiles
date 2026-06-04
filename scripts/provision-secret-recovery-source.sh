@@ -195,6 +195,10 @@ gh repo view "$PASS_REPO" >/dev/null 2>&1 || {
   gh repo create "$PASS_REPO" --private --disable-issues --disable-wiki >/dev/null 2>&1 \
     || die "GitHub private password-store repository の作成に失敗しました"
 }
+REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate 2>/dev/null)" \
+  || die "GitHub password-store repository の visibility 確認に失敗しました"
+[ "$REPO_IS_PRIVATE" = "true" ] \
+  || die "GitHub password-store repository が private ではありません。private repository を指定してください"
 if [ ! -d "$PASSWORD_STORE_ROOT/.git" ]; then
   log "既存 password-store を Git repository として初期化して remote へ push"
   pass git init >/dev/null 2>&1 || true
@@ -203,7 +207,12 @@ else
 fi
 ensure_password_store_remote
 pass git add -A >/dev/null 2>&1 || true
-pass git commit -m "Initialize password-store" >/dev/null 2>&1 || true
+if pass git diff --cached --quiet >/dev/null 2>&1; then
+  log "password-store に新規 commit 対象はありません"
+else
+  pass git commit -m "Initialize password-store" >/dev/null 2>&1 \
+    || die "password-store Git commit に失敗しました。user.name/user.email/signing/hook 設定を確認してください"
+fi
 pass git branch -M main >/dev/null 2>&1 || true
 pass git push -u origin main >/dev/null 2>&1 \
   || die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
@@ -214,7 +223,7 @@ pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を�
 PROVISIONING_BWS_TOKEN="$(read_bws_access_token 'BWS provisioning access token for create/update')"
 
 log "BWS に password-store-remote を登録"
-run_dotfiles_with_bws_access_token secrets pass-remote register --url "$PASS_CLONE_URL" --yes
+run_dotfiles_with_bws_access_token secrets pass-remote register --url "$PASS_CLONE_URL"
 
 log "BWS に gpg-secret-key-backup を登録"
 run_dotfiles_with_bws_access_token secrets gpg-backup register --primary-fingerprint "$PRIMARY_FINGERPRINT" --serial "$YUBIKEY_SERIAL"
@@ -224,13 +233,14 @@ if [ -n "${SPARE_SERIAL:-}" ]; then
 else
   warn "spare YubiKey serial が未指定のため gpg-backup add-spare は未実行です。spare で復旧可能にするには後で dotfiles secrets gpg-backup add-spare を実行してください。"
 fi
-unset PROVISIONING_BWS_TOKEN
 
 # ── 5. YubiKey への復旧用 BWS read token 保存 ──
 RECOVERY_BWS_TOKEN="$(read_bws_access_token 'BWS recovery/read access token for YubiKey storage')"
+[ "$RECOVERY_BWS_TOKEN" != "$PROVISIONING_BWS_TOKEN" ] \
+  || die "復旧用 BWS access token が登録・更新用 token と同一です。YubiKey には最小権限の復旧用 token だけを保存してください"
 log "復旧用 bws-access-token を YubiKey に保存"
 store_recovery_bws_access_token "$YUBIKEY_SERIAL"
-unset RECOVERY_BWS_TOKEN
+unset PROVISIONING_BWS_TOKEN RECOVERY_BWS_TOKEN
 
 # ── 手動: 各サービスの YubiKey 物理登録 ──
 pause "次を各サービスの UI / 管理画面で行ってください（API でリモート登録できない物理/アカウント操作）:

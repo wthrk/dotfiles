@@ -54,11 +54,30 @@ impl BwsClientSession {
         &self.client
     }
 
-    /// SDK get で取得した secret value を `Zeroizing` 管理へ移して返す。
+    /// SDK get で取得した secret value と revision を protected buffer + owned metadata へ移して返す。
+    pub(crate) async fn get_secret_value_with_revision(
+        &self,
+        id: Uuid,
+    ) -> Result<(ProtectedSecret, String)> {
+        let secret = self
+            .client
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let revision = secret.revision_date.to_rfc3339();
+        let value = Zeroizing::new(secret.value);
+        let mut protected = ProtectedSecret::new(value.len())?;
+        protected.with_secret_mut(|out| out.copy_from_slice(value.as_bytes()));
+        Ok((protected, revision))
+    }
+
+    /// SDK get で取得した非秘匿 secret value を `Zeroizing` 管理へ移して返す。
     ///
-    /// この境界は BWS SDK 返却 buffer の所有権を `Zeroizing<String>` へ移す技術 primitive に限定し、
-    /// secret key の意味づけ、domain 型生成、value 形式検証は caller 側の責務に残す。
-    pub(crate) async fn get_secret_value(&self, id: Uuid) -> Result<Zeroizing<String>> {
+    /// `password-store-remote` の clone URL のように secret datastore へ置くが credential ではない値だけに
+    /// 使う。真の secret value には [`Self::get_secret_value_with_revision`] を使い、`ProtectedSecret`
+    /// 境界を維持する。
+    pub(crate) async fn get_non_secret_value(&self, id: Uuid) -> Result<Zeroizing<String>> {
         let secret = self
             .client
             .secrets()

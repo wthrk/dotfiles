@@ -109,16 +109,14 @@ impl BwsClientPort for BwsClientAdapter {
     ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
         let session = bws::login_client_with_access_token(access_token).await?;
         let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
-        let secret = session
-            .client()
-            .secrets()
-            .get(&SecretGetRequest { id })
-            .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+        let (value, revision) = session.get_secret_value_with_revision(id).await?;
         // SDK revision（updatedAt 相当）を更新識別子として guard 化する。取得できない場合は value digest。
-        let guard = BackupUpdateGuard::from_revision(secret.revision_date.to_rfc3339())
-            .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(secret.value.as_bytes()));
-        let envelope = GpgBackupEnvelope::from_json(secret.value.as_bytes())?;
+        let guard = value.with_secret_utf8(|json| {
+            Ok(BackupUpdateGuard::from_revision(revision)
+                .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(json.as_bytes())))
+        })?;
+        let envelope =
+            value.with_secret_utf8(|json| GpgBackupEnvelope::from_json(json.as_bytes()))?;
         Ok((envelope, guard))
     }
 
@@ -130,7 +128,7 @@ impl BwsClientPort for BwsClientAdapter {
     ) -> crate::Result<PasswordStoreRemote> {
         let session = bws::login_client_with_access_token(access_token).await?;
         let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
-        let value = session.get_secret_value(id).await?;
+        let value = session.get_non_secret_value(id).await?;
         PasswordStoreRemote::parse(value.as_str())
     }
 

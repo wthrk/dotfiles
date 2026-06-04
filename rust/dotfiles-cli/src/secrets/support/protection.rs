@@ -131,6 +131,17 @@ impl ProtectedSecret {
         borrow(text)
     }
 
+    /// UTF-8 secret text を domain parser closure の実行中だけ借用として公開する。
+    ///
+    /// 外部 secret datastore から返った plaintext を、`ProtectedSecret` のまま domain 値へ変換するための
+    /// 境界である。closure は平文文字列を返値や外部 buffer として持ち出してはならず、検証済み domain
+    /// value または error だけを返す。
+    pub(crate) fn with_secret_utf8<R>(&self, borrow: impl FnOnce(&str) -> Result<R>) -> Result<R> {
+        let text =
+            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
+        borrow(text)
+    }
+
     /// 保持中 secret の byte 長を返す。
     ///
     /// 長さ情報のみを露出し、平文 bytes 本体は返さない境界を維持する。
