@@ -169,6 +169,7 @@ pub(super) async fn dispatch(
                 &mut ports.storage,
                 &ports.report,
                 &ports.bws_client,
+                &mut ports.gpg_recipient,
                 &ports.process_io,
                 &ports.bw_login,
             )

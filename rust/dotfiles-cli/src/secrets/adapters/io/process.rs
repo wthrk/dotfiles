@@ -10,9 +10,8 @@ use crate::{
         domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
         ports::io::{
             BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
-            ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
-            ProvisioningAccessTokenInputPort, RotationContinuationPort, SecretInputPort,
-            SecretOutputPort, SshPublicKeyOutputPort,
+            BwsAccessTokenInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+            RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::{
             clock, process_io,
@@ -64,15 +63,15 @@ impl SecretInputPort for RealSecretIoAdapter {
     }
 }
 
-impl ProvisioningAccessTokenInputPort for RealSecretIoAdapter {
-    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret> {
-        // provisioning 用 access token は書込み可能な実 credential のため secret として扱い、
+impl BwsAccessTokenInputPort for RealSecretIoAdapter {
+    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
+        // BWS access token は BWS 操作に使う実 credential のため secret として扱い、
         // stdin が terminal のとき hidden prompt（raw mode・echo なし）、非 terminal（pipe）のとき
         // stdin 1 行を保護 buffer へ読む。いずれも平文を argv / ログ / 端末表示へ残さない。
         const MAX_LEN: usize = 16 * 1024;
-        const TOO_LONG_MESSAGE: &str = "provisioning access token input is too large";
+        const TOO_LONG_MESSAGE: &str = "bws access token input is too large";
         if process_io::stdin_is_terminal() {
-            process_io::read_hidden_line("provisioning-access-token: ", MAX_LEN, TOO_LONG_MESSAGE)
+            process_io::read_hidden_line("bws-access-token: ", MAX_LEN, TOO_LONG_MESSAGE)
         } else {
             process_io::read_stdin_line(MAX_LEN, TOO_LONG_MESSAGE)
         }
@@ -219,9 +218,9 @@ impl SecretInputPort for ProcessIoAdapter {
     }
 }
 
-impl ProvisioningAccessTokenInputPort for ProcessIoAdapter {
-    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_provisioning_access_token()
+impl BwsAccessTokenInputPort for ProcessIoAdapter {
+    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bws_access_token_for_provisioning()
     }
 }
 

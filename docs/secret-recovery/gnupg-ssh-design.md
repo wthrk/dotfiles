@@ -109,6 +109,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 `export-ssh-public-key` は次の契約を満たす。
 
 - 入力はローカル鍵リング上の GPG authentication subkey とする。
+- primary key の指定は必須 option `--primary-fingerprint <40-hex-fingerprint>` で受け取り、その primary key に属する authentication subkey から SSH 公開鍵を導出する。
 - 出力は OpenSSH 公開鍵 1 行のみとし、機械可読な形式で stdout へ書く。
 - stdout が terminal である場合も公開鍵の出力は許可する（秘密情報ではないため）。
 - GitHub API 呼び出しや鍵サーバー参照を内部で行わない。
@@ -165,7 +166,7 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 
 ### `dotfiles gpg export-ssh-public-key`
 
-- authentication subkey 由来の SSH 公開鍵を出力する。
+- `--primary-fingerprint <40-hex-fingerprint>` で指定した primary key の authentication subkey 由来の SSH 公開鍵を出力する。
 - 出力は GitHub SSH keys 登録用途に限定する。
 
 ## 停止条件

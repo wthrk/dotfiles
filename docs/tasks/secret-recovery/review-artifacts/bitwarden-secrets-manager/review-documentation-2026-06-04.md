@@ -1,0 +1,15 @@
+# Bitwarden Secrets Manager documentation review 2026-06-04
+
+判定: 要修正
+判定要約: BWS token モデルの旧説明が production code の doc comment / 近傍コメントに残っており、現行 README / design / runbook の「登録・更新用 token と復旧用 token を同一値にしない」前提と矛盾している。
+根拠:
+
+- レビュー対象: branch `fix/bws-provisioning-inputs-issue-44` の current worktree（未コミット差分を含む）。対象 work item は `docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md`。
+- `README.md`、`docs/secret-recovery/bitwarden-secrets-manager-design.md`、`docs/secret-recovery/secret-recovery-spec.md`、`docs/secret-recovery/initial-provisioning-runbook.md`、`scripts/provision-secret-recovery-source.sh`、および BSM provisioning / verify / port 周辺の production doc comment を確認した。
+- `dotfiles-secret-recovery-reader`、`machine account`、`service account` の user-facing 前提は、確認した現行 README / spec / design / runbook / script には残っていない。`organization` は `docs/secret-recovery/bitwarden-secrets-manager-design.md` の GitHub owner 名の説明にだけ残っており、Bitwarden organization / machine account 前提ではないため本件の差戻し根拠にはしない。
+- `docs/secret-recovery/bitwarden-secrets-manager-design.md:42` と `docs/secret-recovery/bitwarden-secrets-manager-design.md:117` は、BWS 登録・更新用 access token と YubiKey に保存する復旧用 `bws-access-token` を同一値にしない、と明示している。`docs/secret-recovery/initial-provisioning-runbook.md:85` と `docs/secret-recovery/initial-provisioning-runbook.md:88` も、script が登録・更新用 token と復旧用 token を別々に受け取る前提で説明している。
+- これに対して `rust/dotfiles-cli/src/secrets.rs:247`、`rust/dotfiles-cli/src/secrets.rs:248`、`rust/dotfiles-cli/src/secrets.rs:249` は、`pass-remote register` の doc comment で「復旧時に同じ token を使う運用では、利用者が同じ値をこの入力経路で渡し、YubiKey へも `bws-access-token` として保存する」と説明している。これは現行設計の token 分離前提と矛盾する。
+- 同じ旧説明が `rust/dotfiles-cli/src/secrets/domain/commands.rs:286`、`rust/dotfiles-cli/src/secrets/domain/commands.rs:288`、`rust/dotfiles-cli/src/secrets/domain/commands.rs:289`、`rust/dotfiles-cli/src/secrets/ports/io.rs:43`、`rust/dotfiles-cli/src/secrets/ports/io.rs:44`、`rust/dotfiles-cli/src/secrets/ports/io.rs:45` に残っている。port / domain command の責任分界説明として読まれるため、実装利用者と将来の実装担当に誤った token 運用を誘導する。
+- application use case 側にも同じ矛盾が残る。`rust/dotfiles-cli/src/secrets/application/run_provision_password_store_remote.rs:23`、`rust/dotfiles-cli/src/secrets/application/run_provision_password_store_remote.rs:24`、`rust/dotfiles-cli/src/secrets/application/run_provision_password_store_remote.rs:25`、および同 file `:49`、`:50` の近傍コメントは同一 token 運用を前提にしている。`rust/dotfiles-cli/src/secrets/application/run_register_gpg_backup_primary.rs:22`、`:23`、`:24`、`:58`、`:59` と `rust/dotfiles-cli/src/secrets/application/run_add_gpg_backup_spare.rs:22`、`:23`、`:24`、`:67`、`:68` も同じ旧前提を残している。
+- `scripts/provision-secret-recovery-source.sh` の説明範囲は、確認した限り、script が実際に実行する `password-store` remote/push、GitHub SSH 公開鍵登録、BWS secret 登録、指定 YubiKey への復旧用 token 保存と一致している。各サービスの 2FA/FIDO2 登録は `pause` で手動操作として示しており、script の実現範囲を過大説明している blocker は確認しなかった。
+- 以上により、現行の doc comment は実装と文書正本の読者に対して古い token モデルを残している。該当コメントを「provisioning command は YubiKey storage を読まず、登録・更新用 token は入力 port から取得する。復旧用 token は別経路で YubiKey に保存する。同一値運用を前提にしない」という説明へ更新する必要がある。

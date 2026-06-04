@@ -1,10 +1,8 @@
 //! verification check と verify summary の domain model。
 //!
-//! check 名、成功/失敗/未実施の意味、BWS 外部確認 plan を保持し、report の JSON 表現は持たない。
+//! check 名、成功/失敗/未実施の意味を保持し、report の JSON 表現は持たない。
 
 use std::collections::BTreeMap;
-
-use super::bws::BwsSecretName;
 
 /// verify-yubikey で要求できる外部検証種別。
 ///
@@ -52,25 +50,6 @@ impl CheckName {
             Self::LocalStorage => "local-storage",
             Self::Bws => "bws",
             Self::BwLogin => "bw-login",
-        }
-    }
-
-    /// BWS 外部確認で取得必須となる復旧 secret 群を返す。
-    ///
-    /// `verify-yubikey --check bws` の成功条件は domain plan として固定し、application は
-    /// 返された順序で port capability を適用するだけにする。
-    pub fn required_bws_secrets(self) -> Option<&'static [BwsSecretName]> {
-        match self {
-            Self::Bws => Some(&[
-                BwsSecretName::GpgSecretKeyBackup,
-                BwsSecretName::PasswordStoreRemote,
-            ]),
-            Self::Setup
-            | Self::BwEmail
-            | Self::BwPassword
-            | Self::BwsAccessToken
-            | Self::LocalStorage
-            | Self::BwLogin => None,
         }
     }
 }

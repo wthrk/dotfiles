@@ -18,7 +18,7 @@ use anyhow::Context;
 
 use crate::secrets::{
     domain::{
-        bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId, BwsSecretName},
         gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
         pass_restore::PasswordStoreRemote,
     },
@@ -86,14 +86,6 @@ impl BwsClientPort for super::BwsClientAdapter {
         read_bws_secrets(access_token, project_id)
     }
 
-    async fn fetch_bws_secret_by_id(
-        &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<ProtectedSecret> {
-        read_bws_secret_by_id(access_token, secret_id)
-    }
-
     async fn fetch_gpg_backup_envelope(
         &self,
         access_token: &ProtectedSecret,
@@ -132,9 +124,9 @@ impl BwsClientPort for super::BwsClientAdapter {
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
-        key: &str,
         envelope: &GpgBackupEnvelope,
     ) -> crate::Result<BwsSecretId> {
+        let key = BwsSecretName::GpgSecretKeyBackup.key();
         let value = String::from_utf8(envelope.to_json()?)
             .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
         with_datastore(|store| {
@@ -155,7 +147,6 @@ impl BwsClientPort for super::BwsClientAdapter {
         access_token: &ProtectedSecret,
         _project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
-        _key: &str,
         envelope: &GpgBackupEnvelope,
         expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
@@ -180,9 +171,9 @@ impl BwsClientPort for super::BwsClientAdapter {
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
-        key: &str,
         remote: &PasswordStoreRemote,
     ) -> crate::Result<BwsSecretId> {
+        let key = BwsSecretName::PasswordStoreRemote.key();
         // application が domain rule で検証済みの clone URL をそのまま datastore へ保存する。
         with_datastore(|store| {
             ensure_access_token_matches_datastore(access_token, store)?;
@@ -219,7 +210,6 @@ impl BwsClientPort for super::BwsClientAdapter {
         access_token: &ProtectedSecret,
         _project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
-        _key: &str,
         remote: &PasswordStoreRemote,
         expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
@@ -275,21 +265,6 @@ fn read_bws_secrets(
     })
 }
 
-fn read_bws_secret_by_id(
-    access_token: &ProtectedSecret,
-    secret_id: &BwsSecretId,
-) -> crate::Result<ProtectedSecret> {
-    with_datastore(|store| {
-        ensure_access_token_matches_datastore(access_token, store)?;
-        let value = store
-            .secret_values
-            .get(secret_id.as_str())
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
-        protected_secret_from_string(value)
-    })
-}
-
 fn ensure_access_token_matches_datastore(
     access_token: &ProtectedSecret,
     store: &BwsDatastore,
@@ -303,16 +278,6 @@ fn ensure_access_token_matches_datastore(
     } else {
         anyhow::bail!("bitwarden login failed")
     }
-}
-
-fn protected_secret_from_string(value: String) -> crate::Result<ProtectedSecret> {
-    let session = crate::secrets::support::protection::SecretSession::start()?;
-    let buffer = crate::secrets::support::protection::buffer::ProtectedInputBuffer::read_line_from(
-        std::io::Cursor::new(value.into_bytes()),
-        16 * 1024,
-        &session,
-    )?;
-    buffer.into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut BwsDatastore) -> crate::Result<T>) -> crate::Result<T> {

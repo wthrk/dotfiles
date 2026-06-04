@@ -38,18 +38,18 @@ pub trait SecretInputPort {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 
-/// use case が BWS provisioning 用 access token を保護値として取得する capability 契約。
+/// use case が BWS 登録・更新用 access token を保護値として取得する capability 契約。
 ///
-/// 設計「初期登録手順」は、BWS への書込み（project / secret の create・update）に書込み可能な provisioning 用
-/// access token を使い、この token を初期登録後に失効させることを要求する。YubiKey に保存する read-only
-/// `dotfiles-secret-recovery-reader` token は provisioning には使わないため、provisioning コマンドはこの token を
-/// YubiKey storage からではなくこの capability で取得する。provisioning 用 access token は書込み可能な実
-/// credential であり secret として扱う。caller は token を必要とする地点だけを決める。implementor は hidden
-/// prompt（TTY）または pipe（stdin）から保護 buffer へ読み込み、取得した平文を公開 API として返さず、argv・
-/// ログ・shell history・永続環境変数・永続一時ファイルへ残さない。
+/// provisioning command は YubiKey storage を読まず、この capability で受け取った BWS access token を
+/// project / secret の create・update にだけ使う。この token は YubiKey へ保存しない。YubiKey の
+/// `bws-access-token` は復旧時の read 用最小権限 token を別経路で保存するものであり、caller は同一値運用を
+/// 前提にしてはならない。BWS access token は実 credential であり secret として扱う。caller は token を
+/// 必要とする地点だけを決める。implementor は hidden prompt（TTY）または pipe（stdin）から保護 buffer へ
+/// 読み込み、取得した平文を公開 API として返さず、argv・ログ・shell history・永続環境変数・永続一時ファイルへ
+/// 残さない。
 #[cfg_attr(test, mockall::automock)]
-pub trait ProvisioningAccessTokenInputPort {
-    fn read_provisioning_access_token(&self) -> Result<ProtectedSecret>;
+pub trait BwsAccessTokenInputPort {
+    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret>;
 }
 
 /// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。

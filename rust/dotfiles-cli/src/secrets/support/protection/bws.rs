@@ -8,10 +8,7 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::SecretSession;
-use crate::{
-    Result,
-    secrets::{domain::pass_restore::PasswordStoreRemote, support::protection::ProtectedSecret},
-};
+use crate::{Result, secrets::support::protection::ProtectedSecret};
 
 /// SDK login request の repository 所有 access token buffer を Drop で zeroize する guard。
 ///
@@ -57,34 +54,18 @@ impl BwsClientSession {
         &self.client
     }
 
-    /// SDK get と返却 secret value の保護所有値化を、同じ session lifetime 内で完了する。
+    /// SDK get で取得した secret value を `Zeroizing` 管理へ移して返す。
     ///
-    /// caller は domain/application 側で一意解決済みの secret ID だけを渡す。この method は
-    /// lookup rule や 0件/複数件の failure 化を扱わず、SDK get 呼び出しと保護境界だけを担う。
-    pub(crate) async fn get_protected_secret_value(&self, id: Uuid) -> Result<ProtectedSecret> {
+    /// この境界は BWS SDK 返却 buffer の所有権を `Zeroizing<String>` へ移す技術 primitive に限定し、
+    /// secret key の意味づけ、domain 型生成、value 形式検証は caller 側の責務に残す。
+    pub(crate) async fn get_secret_value(&self, id: Uuid) -> Result<Zeroizing<String>> {
         let secret = self
             .client
             .secrets()
             .get(&SecretGetRequest { id })
             .await
             .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
-        protect_secret_value(secret.value)
-    }
-
-    /// SDK get で取得した `password-store-remote` secret value を、protection 境界内で domain 値へ翻訳する。
-    ///
-    /// clone URL は秘密情報ではないが、SDK 返却 value は一旦 `Zeroizing` 管理へ入れてから
-    /// [`PasswordStoreRemote::parse`] で検証する。検証済みの URL 文字列だけを domain 値として返し、
-    /// SDK 返却 buffer は Drop で zeroize する。URL 形式の妥当性判断は domain rule に委ねる。
-    pub(crate) async fn get_password_store_remote(&self, id: Uuid) -> Result<PasswordStoreRemote> {
-        let secret = self
-            .client
-            .secrets()
-            .get(&SecretGetRequest { id })
-            .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
-        let value = Zeroizing::new(secret.value);
-        PasswordStoreRemote::parse(value.as_str())
+        Ok(Zeroizing::new(secret.value))
     }
 }
 
@@ -115,12 +96,4 @@ pub(crate) async fn login_client_with_access_token(
         client,
         _session: session,
     })
-}
-
-/// BWS SDK から返った secret value を直ちに zeroize 管理へ移してから protection 所有値へ移す。
-fn protect_secret_value(value: String) -> Result<ProtectedSecret> {
-    let value = Zeroizing::new(value);
-    let mut secret = ProtectedSecret::new(value.len())?;
-    secret.with_secret_mut(|out| out.copy_from_slice(value.as_bytes()));
-    Ok(secret)
 }

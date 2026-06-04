@@ -51,12 +51,6 @@ pub trait BwsClientPort {
         project_id: &BwsProjectId,
     ) -> Result<Vec<BwsLookupCandidate<BwsSecretId>>>;
 
-    async fn fetch_bws_secret_by_id(
-        &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> Result<ProtectedSecret>;
-
     /// `gpg-secret-key-backup` の encrypted envelope と、その stale overwrite 防止 guard を取得する。
     ///
     /// implementor は取得した secret value bytes を [`GpgBackupEnvelope::from_json`] で domain 値へ
@@ -84,12 +78,12 @@ pub trait BwsClientPort {
     ///
     /// 実装は envelope を canonical JSON へ serialize して SDK の create 境界へ翻訳するだけで、登録対象の
     /// 同一性判断や上書き可否の業務判断は持たない。serialize 結果は暗号化済み envelope であり平文鍵素材を
-    /// 含まない。`key` は登録する BWS secret 名（`gpg-secret-key-backup`）を渡す。
+    /// 含まない。typed capability は常に `gpg-secret-key-backup` を対象にし、caller は secret key 文字列を
+    /// 渡さない。
     async fn create_gpg_backup_envelope(
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
-        key: &str,
         envelope: &GpgBackupEnvelope,
     ) -> Result<BwsSecretId>;
 
@@ -103,7 +97,6 @@ pub trait BwsClientPort {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
-        key: &str,
         envelope: &GpgBackupEnvelope,
         expected_guard: &BackupUpdateGuard,
     ) -> Result<()>;
@@ -113,13 +106,12 @@ pub trait BwsClientPort {
     /// `remote` は application が `--url` または可視プロンプト/pipe 入力を domain rule
     /// [`PasswordStoreRemote::parse`] で検証した値である。clone URL は秘密情報ではないため `ProtectedSecret`
     /// ではなく検証済み domain 値で運ぶ。implementor は検証済み URL 文字列を SDK の create 境界へ翻訳する
-    /// だけで、URL 形式の再検証や保護 buffer 化を行わない。`key` は登録する BWS secret 名
-    /// （`password-store-remote`）を渡す。
+    /// だけで、URL 形式の再検証や保護 buffer 化を行わない。typed capability は常に
+    /// `password-store-remote` を対象にし、caller は secret key 文字列を渡さない。
     async fn create_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
-        key: &str,
         remote: &PasswordStoreRemote,
     ) -> Result<BwsSecretId>;
 
@@ -145,7 +137,6 @@ pub trait BwsClientPort {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
-        key: &str,
         remote: &PasswordStoreRemote,
         expected_guard: &BackupUpdateGuard,
     ) -> Result<()>;

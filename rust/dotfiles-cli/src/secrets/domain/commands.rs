@@ -283,9 +283,10 @@ impl AddGpgBackupSpareCommand {
 /// 1 行を読む。値そのものの形式検証は domain rule [`PasswordStoreRemote::parse`] に委ねる。対話実行では
 /// 上書き対象 secret name と project name を表示して明示確認する責務を port 側へ委譲する。
 ///
-/// この command は YubiKey を使わないため device serial を保持しない。BWS 書込みに使う provisioning 用
-/// access token は YubiKey storage の read-only reader token ではなく、hidden prompt / pipe から取得する
-/// 書込み可能な credential であり、その取得は application が `ProvisioningAccessTokenInputPort` 経由で行う。
+/// この command は YubiKey storage を読まないため device serial を保持しない。BWS 登録・更新に使う
+/// access token は hidden prompt / pipe から取得する credential であり、その取得は application が
+/// `BwsAccessTokenInputPort` 経由で行う。YubiKey へ保存する `bws-access-token` は別経路の復旧用最小権限
+/// token であり、この provisioning 入力と同一値にする運用を前提にしない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisionPasswordStoreRemoteCommand {
     pub assume_overwrite: bool,
