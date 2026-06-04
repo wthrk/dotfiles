@@ -223,7 +223,8 @@ pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を�
 PROVISIONING_BWS_TOKEN="$(read_bws_access_token 'BWS provisioning access token for create/update')"
 
 log "BWS に password-store-remote を登録"
-run_dotfiles_with_bws_access_token secrets pass-remote register --url "$PASS_CLONE_URL"
+pause "BWS の password-store-remote をこれから設定します。既存 secret がある場合も、現在の PASS_REPO / GitHub active account から導出した復旧先が意図した private password-store repository であることを確認してください。repository 所在はログへ表示しません。"
+run_dotfiles_with_bws_access_token secrets pass-remote register --url "$PASS_CLONE_URL" --yes
 
 log "BWS に gpg-secret-key-backup を登録"
 run_dotfiles_with_bws_access_token secrets gpg-backup register --primary-fingerprint "$PRIMARY_FINGERPRINT" --serial "$YUBIKEY_SERIAL"
