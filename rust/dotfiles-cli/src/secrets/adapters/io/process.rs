@@ -71,7 +71,11 @@ impl BwsAccessTokenInputPort for RealSecretIoAdapter {
         const MAX_LEN: usize = 16 * 1024;
         const TOO_LONG_MESSAGE: &str = "bws access token input is too large";
         if process_io::stdin_is_terminal() {
-            process_io::read_hidden_line("bws-access-token: ", MAX_LEN, TOO_LONG_MESSAGE)
+            process_io::read_hidden_line(
+                "bws-access-token (create/update): ",
+                MAX_LEN,
+                TOO_LONG_MESSAGE,
+            )
         } else {
             process_io::read_stdin_line(MAX_LEN, TOO_LONG_MESSAGE)
         }

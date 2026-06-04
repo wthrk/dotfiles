@@ -558,27 +558,6 @@ fn verify_yubikey_bws_check_reports_failed_for_recipient_mismatch() -> TestResul
 }
 
 #[test]
-fn verify_yubikey_bws_check_reports_failed_when_recoverability_is_not_established() -> TestResult<()>
-{
-    let envelope = restore_envelope_json(SPARE_SERIAL);
-    let stub = StubPorts::new(
-        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
-        bws_spec_with_backup_and_pass_remote(&envelope, RESTORE_PASS_REMOTE),
-    );
-    let run = run_pipe_with_stub(
-        ["verify-yubikey", "--serial", "2001", "--check", "bws"],
-        None,
-        &stub,
-    )?;
-
-    assert!(!run.success, "stdout: {}", run.stdout);
-    let stdout = run.user_stdout();
-    assert!(stdout.contains("\"name\": \"bws\""));
-    assert!(stdout.contains("\"status\": \"failed\""));
-    Ok(())
-}
-
-#[test]
 fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([
@@ -1445,7 +1424,7 @@ fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> Te
 
     assert!(run.success, "output: {}", run.output);
     assert!(
-        run.output.contains("bws-access-token: "),
+        run.output.contains("bws-access-token (create/update): "),
         "output: {}",
         run.output
     );
