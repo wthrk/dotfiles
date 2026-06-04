@@ -54,11 +54,15 @@ impl BwsClientSession {
         &self.client
     }
 
-    /// SDK get で取得した secret value と revision を protected buffer + owned metadata へ移して返す。
-    pub(crate) async fn get_secret_value_with_revision(
+    /// SDK get で取得した secret value を protected buffer へ移し、revision と同じ borrow 境界で処理する。
+    ///
+    /// 返却 secret の plaintext はこの protection backend 操作内に閉じ、caller へ `ProtectedSecret` の
+    /// 汎用 borrow API を渡さない。caller は closure で検証済み value または error だけを返す。
+    pub(crate) async fn parse_secret_value_with_revision<R>(
         &self,
         id: Uuid,
-    ) -> Result<(ProtectedSecret, String)> {
+        parse: impl FnOnce(&str, &str) -> Result<R>,
+    ) -> Result<R> {
         let secret = self
             .client
             .secrets()
@@ -69,14 +73,14 @@ impl BwsClientSession {
         let value = Zeroizing::new(secret.value);
         let mut protected = ProtectedSecret::new(value.len())?;
         protected.with_secret_mut(|out| out.copy_from_slice(value.as_bytes()));
-        Ok((protected, revision))
+        protected.with_secret_utf8(|json| parse(json, revision.as_str()))
     }
 
     /// SDK get で取得した非秘匿 secret value を `Zeroizing` 管理へ移して返す。
     ///
     /// `password-store-remote` の clone URL のように secret datastore へ置くが credential ではない値だけに
-    /// 使う。真の secret value には [`Self::get_secret_value_with_revision`] を使い、`ProtectedSecret`
-    /// 境界を維持する。
+    /// 使う。真の secret value には [`Self::parse_secret_value_with_revision`] を使い、plaintext borrow
+    /// を protection backend 操作内に閉じる。
     pub(crate) async fn get_non_secret_value(&self, id: Uuid) -> Result<Zeroizing<String>> {
         let secret = self
             .client

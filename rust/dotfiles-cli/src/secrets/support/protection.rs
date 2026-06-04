@@ -131,12 +131,15 @@ impl ProtectedSecret {
         borrow(text)
     }
 
-    /// UTF-8 secret text を domain parser closure の実行中だけ借用として公開する。
+    /// UTF-8 secret text を protection backend closure の実行中だけ借用として公開する。
     ///
-    /// 外部 secret datastore から返った plaintext を、`ProtectedSecret` のまま domain 値へ変換するための
-    /// 境界である。closure は平文文字列を返値や外部 buffer として持ち出してはならず、検証済み domain
-    /// value または error だけを返す。
-    pub(crate) fn with_secret_utf8<R>(&self, borrow: impl FnOnce(&str) -> Result<R>) -> Result<R> {
+    /// 外部 secret datastore から返った plaintext を、用途別 backend 操作内で検証済み値へ変換するための
+    /// 境界である。closure は平文文字列を返値や外部 buffer として持ち出してはならず、検証済み value
+    /// または error だけを返す。
+    pub(in crate::secrets::support::protection) fn with_secret_utf8<R>(
+        &self,
+        borrow: impl FnOnce(&str) -> Result<R>,
+    ) -> Result<R> {
         let text =
             std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
         borrow(text)

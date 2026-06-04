@@ -109,14 +109,15 @@ impl BwsClientPort for BwsClientAdapter {
     ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
         let session = bws::login_client_with_access_token(access_token).await?;
         let id = parse_uuid(secret_id.as_str(), "bws secret id")?;
-        let (value, revision) = session.get_secret_value_with_revision(id).await?;
-        // SDK revision（updatedAt 相当）を更新識別子として guard 化する。取得できない場合は value digest。
-        let guard = value.with_secret_utf8(|json| {
-            Ok(BackupUpdateGuard::from_revision(revision)
-                .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(json.as_bytes())))
-        })?;
-        let envelope =
-            value.with_secret_utf8(|json| GpgBackupEnvelope::from_json(json.as_bytes()))?;
+        let (envelope, guard) = session
+            .parse_secret_value_with_revision(id, |json, revision| {
+                // SDK revision（updatedAt 相当）を更新識別子として guard 化する。取得できない場合は value digest。
+                let guard = BackupUpdateGuard::from_revision(revision.to_owned())
+                    .unwrap_or_else(|| BackupUpdateGuard::from_value_bytes(json.as_bytes()));
+                let envelope = GpgBackupEnvelope::from_json(json.as_bytes())?;
+                Ok((envelope, guard))
+            })
+            .await?;
         Ok((envelope, guard))
     }
 
