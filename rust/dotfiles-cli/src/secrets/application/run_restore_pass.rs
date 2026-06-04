@@ -13,6 +13,18 @@ use crate::secrets::{
     ports,
 };
 
+/// `run_restore_pass` が使う外部 capability を named field で束ねる。
+pub(crate) struct RestorePassRuntime<'a, B> {
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
+    pub(crate) bws_client: &'a B,
+    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
+    pub(crate) store: &'a mut dyn ports::PasswordStorePort,
+    pub(crate) git_clone: &'a mut dyn ports::GitClonePort,
+    pub(crate) report: &'a dyn ports::ReportPort,
+}
+
 /// `password-store-remote` を取得し、`~/.password-store` 不存在を確認してから private repository を
 /// SSH clone し、`pass` が store を読めることを確認する。
 ///
@@ -41,34 +53,25 @@ use crate::secrets::{
 ///
 /// 各停止条件で停止し、後続処理へ進ませない。clone URL / recipient / 可読性の業務判断は domain rule、clone /
 /// filesystem 走査 / 鍵リング照合は adapter が担い、application は順序と停止条件だけを持つ。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "restore-pass は device/pin/storage/bws/keyring/store/git-clone/report の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_restore_pass<D, P, S, B, K, G, C, R>(
+pub(crate) async fn run_restore_pass<B>(
     command: RestorePassCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    storage_port: &mut S,
-    bws_client: &B,
-    keyring: &mut K,
-    store: &mut G,
-    git_clone: &mut C,
-    report: &R,
+    runtime: RestorePassRuntime<'_, B>,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
     B: ports::BwsClientPort,
-    K: ports::GpgKeyringPort,
-    G: ports::PasswordStorePort,
-    C: ports::GitClonePort,
-    R: ports::ReportPort,
 {
-    let serial = device_serial.resolve_device_serial(command.serial)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let RestorePassRuntime {
+        device,
+        process,
+        storage: storage_port,
+        bws_client,
+        keyring,
+        store,
+        git_clone,
+        report,
+    } = runtime;
+    let serial = device.resolve_device_serial(command.serial)?;
+    let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -130,11 +133,10 @@ where
 /// 最小条件とする（全 recipient ではなく 1 つで可。`pass` は複数 recipient のいずれか 1 つの秘密鍵で復号できる）。
 /// ここで返す失敗は呼び出し側でそのまま error として伝播し（clone 済み store は削除せず残す）、`pass` CLI への
 /// 無条件シェルアウトはしない。
-fn confirm_cloned_store_readable<K, G>(keyring: &mut K, store: &G) -> Result<()>
-where
-    K: ports::GpgKeyringPort,
-    G: ports::PasswordStorePort,
-{
+fn confirm_cloned_store_readable(
+    keyring: &mut dyn ports::GpgKeyringPort,
+    store: &dyn ports::PasswordStorePort,
+) -> Result<()> {
     let readiness = store.inspect_password_store()?;
     let recipients = readiness.parse_recipients()?;
     match readiness.sample_entry() {
@@ -165,14 +167,11 @@ where
 }
 
 /// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token<S>(
+fn load_bws_access_token(
     serial: u32,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&crate::secrets::support::protection::ProtectedSecret>,
-) -> Result<crate::secrets::support::protection::ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
+) -> Result<crate::secrets::support::protection::ProtectedSecret> {
     let storage = SecretName::BwsAccessToken.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -206,7 +205,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_restore_pass;
+    use super::{RestorePassRuntime, run_restore_pass};
 
     const REMOTE_URL: &str = "git@github.com:owner/password-store.git";
     const RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
@@ -326,15 +325,16 @@ mod tests {
 
         run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await
     }
@@ -372,15 +372,16 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await;
 
@@ -439,15 +440,16 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await;
 
@@ -501,15 +503,16 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await;
 
@@ -573,15 +576,16 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await;
 
@@ -637,15 +641,16 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await;
 
@@ -713,15 +718,16 @@ mod tests {
 
         run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            &mut device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &bws,
-            &mut keyring,
-            &mut store,
-            &mut git_clone,
-            &report,
+            RestorePassRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                keyring: &mut keyring,
+                store: &mut store,
+                git_clone: &mut git_clone,
+                report: &report,
+            },
         )
         .await
     }

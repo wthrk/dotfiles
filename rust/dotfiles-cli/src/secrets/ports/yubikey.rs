@@ -35,6 +35,44 @@ pub trait DevicePinPolicyPort {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
 }
 
+/// use case が同一 YubiKey の選択と PIN 方針確認を一体で要求する capability 契約。
+///
+/// caller は device serial 解決と、その serial に対する PIN 要否確認だけを要求する。implementor は
+/// device discovery / 対話選択 / device 状態確認を外部 I/O 境界で完了し、storage 読み書きや use case
+/// 手順を隠さない。
+#[cfg_attr(test, mockall::automock)]
+pub trait YubiKeyDevicePort {
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
+    fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
+}
+
+impl<T> YubiKeyDevicePort for T
+where
+    T: DeviceSerialPort + DevicePinPolicyPort,
+{
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
+        DeviceSerialPort::resolve_device_serial(self, requested)
+    }
+
+    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
+        DevicePinPolicyPort::device_requires_pin(self, serial)
+    }
+}
+
+impl<D, P> YubiKeyDevicePort for (&mut D, &mut P)
+where
+    D: DeviceSerialPort,
+    P: DevicePinPolicyPort,
+{
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
+        self.0.resolve_device_serial(requested)
+    }
+
+    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
+        self.1.device_requires_pin(serial)
+    }
+}
+
 /// use case が spare 対象の serial を確定する capability 契約。
 ///
 /// caller は spare role の候補指定だけを渡し、primary/spare の domain invariant は domain 側で

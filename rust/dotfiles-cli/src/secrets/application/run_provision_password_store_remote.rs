@@ -14,18 +14,16 @@ use crate::secrets::{
 /// create または update する provisioning use case。
 ///
 /// 設計「初期登録手順」step3 が定める `password-store-remote` の保管コマンドを、`gpg-backup register`
-/// と対称な順序制御として固定する。BWS への書込みには書込み可能な provisioning 用 access token を使い、この
-/// token を hidden prompt（TTY）/ pipe（stdin）から保護値として取得したうえで、project name から project ID
+/// と対称な順序制御として固定する。BWS への登録には BWS access token を使い、この token を
+/// hidden prompt（TTY）/ pipe（stdin）から保護値として取得したうえで、project name から project ID
 /// を解決（0件/複数件で停止）し、既存 `password-store-remote` secret の有無を確認する。不在なら入力した
 /// clone URL を create し、ちょうど 1 件存在し上書き許可がある場合だけ stale-overwrite 防止つきで update する。
 /// 複数件は domain failure として停止する。
 ///
-/// この command は YubiKey を一切使わない。設計「初期登録手順」は provisioning（step1-3）を YubiKey へ
-/// reader token を enroll（step5）する前に行うと定めるため、provisioning 実行時に YubiKey の read-only
-/// `dotfiles-secret-recovery-reader` token はまだ存在せず、また reader token は書込みに使えない。よって
-/// device/serial/pin/storage port を持たず、BWS 書込み用の provisioning 用 access token を
-/// `ProvisioningAccessTokenInputPort` で受け取る。provisioning 用 access token は書込み可能な実 credential の
-/// ため secret として保護経路で扱い、argv / log / 永続ファイルへ出さず、初期登録後に失効させる。
+/// この command は YubiKey storage を読まない。provisioning で使う登録・更新用 token は
+/// `BwsAccessTokenInputPort` で受け取り、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
+/// 復旧時の read 用最小権限 token を別経路で用意する。token は実 credential のため secret として保護経路で
+/// 扱い、argv / log / 永続ファイルへ出さない。
 ///
 /// 順序を application に固定するのは「token 取得・project/secret の解決と上書き確認を済ませてから値入力・
 /// 保存へ進む」停止条件の責務境界を保護するためである。update 経路では値入力より前に更新確認を行い、
@@ -43,27 +41,28 @@ pub(crate) async fn run_provision_password_store_remote<A, B, U, F>(
     confirmation: &F,
 ) -> Result<()>
 where
-    A: ports::ProvisioningAccessTokenInputPort,
+    A: ports::BwsAccessTokenInputPort,
     B: ports::BwsClientPort,
     U: ports::PasswordStoreRemoteInputPort,
     F: ports::BackupUpdateConfirmationPort,
 {
-    // BWS 書込み用の provisioning 用 access token を hidden prompt / pipe から保護値として取得し、復旧
-    // project を解決する。YubiKey の read-only reader token は provisioning には使わない。
-    let access_token = token_input.read_provisioning_access_token()?;
+    // BWS 登録・更新用 access token を hidden prompt / pipe から保護値として取得し、復旧 project を解決する。
+    // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
+    let access_token = token_input.read_bws_access_token_for_provisioning()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
     // 既存 password-store-remote secret の候補を取得する。0件は create、1件は update、複数件は停止。
-    // `resolve_id` は 0件/複数件をどちらも `Err` にするため、create 経路と取り違えないよう同名候補
-    // （`name == key`）の件数を直接数える。
-    let key = BwsSecretName::PasswordStoreRemote.key();
+    // `resolve_id` は 0件/複数件をどちらも `Err` にするため、create 経路と取り違えないよう同名候補の
+    // 件数を数える。対象同一性の exact match は domain helper に委ね、application は create/update/停止の
+    // 分岐だけを扱う。
+    let secret_name = BwsSecretName::PasswordStoreRemote;
     let candidates = bws_client
         .list_bws_secrets(&access_token, &project_id)
         .await?;
     let existing_count = candidates
         .iter()
-        .filter(|candidate| candidate.name == key)
+        .filter(|candidate| secret_name.matches_candidate(candidate))
         .count();
 
     match existing_count {
@@ -71,20 +70,19 @@ where
             // 不在: clone URL を入力（--url ＞ 可視プロンプト/pipe）し、検証してから新規 create する。
             let remote = resolve_remote_url(&command.url, url_input)?;
             bws_client
-                .create_password_store_remote(&access_token, &project_id, key, &remote)
+                .create_password_store_remote(&access_token, &project_id, &remote)
                 .await
                 .map(|_id| ())
         }
         1 => {
             // 存在: secret ID と stale-overwrite 防止 guard を取得し、更新確認を値入力より前に行う。
-            let secret_id =
-                BwsSecretName::PasswordStoreRemote.resolve_id(candidates, &project_id)?;
+            let secret_id = secret_name.resolve_id(candidates, &project_id)?;
             let guard = bws_client
                 .fetch_password_store_remote_guard(&access_token, &secret_id)
                 .await?;
             let confirmed = confirmation.confirm_secret_overwrite(
                 BwsProjectName::DOTFILES_SECRET_RECOVERY.as_str(),
-                key,
+                secret_name.key(),
                 command.assume_overwrite,
             )?;
             if !confirmed {
@@ -96,7 +94,6 @@ where
                     &access_token,
                     &project_id,
                     &secret_id,
-                    key,
                     &remote,
                     &guard,
                 )
@@ -127,12 +124,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! provisioning の順序（provisioning token 取得→project 解決→secret 候補確認→create または確認付き
+    //! provisioning の順序（BWS access token 取得→project 解決→secret 候補確認→create または確認付き
     //! guard update）を mockall + Sequence で検証する単体テスト。
     //!
-    //! token-input / url-input / bws / confirmation backend を port mock で差し替え、BWS 書込みに使う
-    //! access token を provisioning token 入力経路から取得すること（YubiKey reader token を write に使わない
-    //! ことは port を一切持たない構成で構造的に保証する）、未登録時に確認・更新へ進ませず create が呼ばれること、
+    //! token-input / url-input / bws / confirmation backend を port mock で差し替え、BWS 登録に使う
+    //! access token を BWS access token 入力経路から取得すること、未登録時に確認・更新へ進ませず create が呼ばれること、
     //! ちょうど 1 件存在し確認を通過した場合だけ guard 付き update が呼ばれ、確認は値入力より前に呼ばれること、
     //! 確認拒否で値入力・update のいずれにも進ませないこと、同名複数件で create/update のいずれにも進ませず
     //! 停止すること、`--url` 指定値・可視プロンプト/pipe 入力のいずれの経路でも検証済み URL が create/update へ
@@ -178,14 +174,14 @@ mod tests {
         }
     }
 
-    /// provisioning 用 access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
     ///
-    /// この mock は YubiKey storage を経由せず provisioning token を返す。device/pin/storage port は構成へ
-    /// 一切渡さないため、BWS 書込みが YubiKey reader token を使わないことは構造的に保証される。
-    fn token_input() -> ports::MockProvisioningAccessTokenInputPort {
-        let mut token_input = ports::MockProvisioningAccessTokenInputPort::new();
+    /// この mock は hidden prompt / pipe 相当の入力経路として BWS access token を返す。
+    /// device/pin/storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
+    fn token_input() -> ports::MockBwsAccessTokenInputPort {
+        let mut token_input = ports::MockBwsAccessTokenInputPort::new();
         token_input
-            .expect_read_provisioning_access_token()
+            .expect_read_bws_access_token_for_provisioning()
             .times(1)
             .returning(|| Ok(material(b"provisioning-token")));
         token_input
@@ -220,8 +216,8 @@ mod tests {
         bws.expect_create_password_store_remote()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, _, remote: &PasswordStoreRemote| remote.as_str() == REMOTE_URL)
-            .returning(|_, _, _, _| Ok(BwsSecretId::new("new-id")));
+            .withf(|_, _, remote: &PasswordStoreRemote| remote.as_str() == REMOTE_URL)
+            .returning(|_, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
             .times(0);
 
@@ -249,8 +245,8 @@ mod tests {
 
         bws.expect_create_password_store_remote()
             .times(1)
-            .withf(|_, _, _, remote: &PasswordStoreRemote| remote.as_str() == REMOTE_URL)
-            .returning(|_, _, _, _| Ok(BwsSecretId::new("new-id")));
+            .withf(|_, _, remote: &PasswordStoreRemote| remote.as_str() == REMOTE_URL)
+            .returning(|_, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
             .times(0);
 
@@ -299,11 +295,11 @@ mod tests {
         bws.expect_update_password_store_remote_if_unchanged()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, _, _, remote: &PasswordStoreRemote, guard| {
+            .withf(|_, _, _, remote: &PasswordStoreRemote, guard| {
                 remote.as_str() == REMOTE_URL
                     && *guard == BackupUpdateGuard::ValueDigest("rev".to_owned())
             })
-            .returning(|_, _, _, _, _, _| Ok(()));
+            .returning(|_, _, _, _, _| Ok(()));
         bws.expect_create_password_store_remote().times(0);
 
         run_provision_password_store_remote(command(true), &token, &bws, &url_input, &confirmation)
@@ -396,7 +392,7 @@ mod tests {
         // 更新直前の現行値が更新前 guard と異なる → domain rule が stale-overwrite `Err` を生成する。
         bws.expect_update_password_store_remote_if_unchanged()
             .times(1)
-            .returning(|_, _, _, _, _, expected_guard| {
+            .returning(|_, _, _, _, expected_guard| {
                 let current_guard = BackupUpdateGuard::ValueDigest("changed-since-read".to_owned());
                 expected_guard.ensure_matches(&current_guard)
             });

@@ -13,13 +13,13 @@ pub(crate) use bw::{BwLoginPort, BwsClientPort};
 pub(crate) use git::{GitClonePort, PasswordStorePort};
 pub(crate) use gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort};
 pub(crate) use io::{
-    BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
-    PasswordStoreRemoteInputPort, PinInputPort, ProvisioningAccessTokenInputPort, ReportPort,
+    BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
+    BwsAccessTokenInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort, ReportPort,
     RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
 };
 pub(crate) use yubikey::{
     DevicePinPolicyPort, DeviceSerialPort, GpgRecipientPort, SecretStoragePort,
-    SpareDeviceSerialPort,
+    SpareDeviceSerialPort, YubiKeyDevicePort,
 };
 
 #[cfg(test)]
@@ -31,12 +31,12 @@ pub(crate) use gpg::{MockBackupCipherPort, MockGpgKeyringPort, MockSshAgentPort}
 #[cfg(test)]
 pub(crate) use io::{
     MockBackupUpdateConfirmationPort, MockBootstrapSecretDocumentInputPort, MockBwOtpInputPort,
-    MockClockPort, MockPasswordStoreRemoteInputPort, MockPinInputPort,
-    MockProvisioningAccessTokenInputPort, MockReportPort, MockRotationContinuationPort,
-    MockSecretInputPort, MockSecretOutputPort, MockSshPublicKeyOutputPort,
+    MockBwsAccessTokenInputPort, MockClockPort, MockPasswordStoreRemoteInputPort, MockPinInputPort,
+    MockReportPort, MockRotationContinuationPort, MockSecretInputPort, MockSecretOutputPort,
+    MockSshPublicKeyOutputPort,
 };
 #[cfg(test)]
 pub(crate) use yubikey::{
     MockDevicePinPolicyPort, MockDeviceSerialPort, MockGpgRecipientPort, MockSecretStoragePort,
-    MockSpareDeviceSerialPort,
+    MockSpareDeviceSerialPort, MockYubiKeyDevicePort,
 };

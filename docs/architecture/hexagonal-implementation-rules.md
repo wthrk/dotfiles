@@ -256,6 +256,10 @@ use case 独自型は定義してはならない。`EnrollSummary`、`VerifySumm
 
 `application` 層に outcome/reporting 型を定義してはならない。`domain` は不変条件・値制約・wire 仕様に加えて、use case が扱う純粋な result / summary value を保持できる。`port` には報告出力 capability（例: `write_report`）のみを置き、具体 DTO は公開 contract に流出させない。
 
+`application` 層で許可される use case 固有の構造体は、`run_*` 関数の実行時依存を束ねる runtime/dependency bundle に限る。bundle は domain 入出力・summary・policy ではなく、`run_*` 関数へ渡す既存 port trait 実装への参照を named fields で保持するだけの型でなければならない。`Ports` という名前を使ってはならない。`Port` / `Ports` は port trait 契約そのものにだけ使う。bundle 名は実行環境の依存束であることを表す `*Runtime` / `*Environment` / `*Gateway` 等から選び、port trait そのものと誤認させてはならない。
+
+runtime/dependency bundle は `too_many_arguments` を隠すための無意味な詰め替えであってはならない。bundle 化しても、port trait が過分割で use case が多数の微細 capability を直接調停している状態は解消扱いにしない。レビューでは、引数数だけでなく「その依存集合が cohesive capability としてまとまっているか」「既存 port 境界を細分化しすぎて application が外部機能の配線表になっていないか」を判定する。同期的な port 群を具体型 generic の羅列として保持するだけなら、trait object 参照や use case が実際に要求する runtime/environment 境界へ寄せられないかを確認する。async trait など Rust の object-safety 制約で generic が必要な場合でも、その generic は必要な capability に限定し、全依存を型パラメータへ展開してはならない。
+
 ## port 契約の分割方針
 
 1 つの巨大 trait に無関係な外部機能を混在させてはならない。`port` は「大まかな外部機能」単位で trait を切り、1 trait = 1 外部機能を基本原則とする。
@@ -265,6 +269,8 @@ use case 独自型は定義してはならない。`EnrollSummary`、`VerifySumm
 - 例: CUI でも `入力`・`出力`・`報告` のように変更理由が異なる capability は分け、同じ変更理由を共有する機能だけを 1 trait にまとめる。
 
 機能内で細分化が必要な場合でも、最終的な use case 境界は外部機能単位 trait（supertrait を含む）で表現し、adapter 実装と module 分割も同じ外部機能単位へ揃えること。
+
+port 分割は「細かいほどよい」ではない。1 method ごとの trait、入力・確認・出力の偶発的な組み合わせ、同じ外部機能を使うたびに増える command 専用 trait、application の都合だけで作った wrapper trait は過分割として扱う。port は変更理由と外部機能の境界で切り、use case 側で常に同じ複数 trait を同時に要求しているなら、cohesive capability として統合するか、上位 capability 境界で要求できないかを先に検討する。逆に、統合によって use case 手順・domain rule・adapter translation を port に隠す場合は fat port として不合格にする。
 
 ## 標準シンボル構成
 
@@ -328,6 +334,7 @@ Rust:
 - リポジトリ由来 Rust に `unsafe` を導入しない。
 - テストを含め `unwrap` と `expect` を使わない。
 - 警告を残さない。
+- `clippy::too_many_arguments` の `allow` / `expect` / `cfg_attr` による抑止を repository-authored source/test source に置いてはならない。`Cargo.toml` の workspace lint は `too_many_arguments = "deny"` を維持し、関数側で回避しない。引数過多は、小さい関数への分割、cohesive capability への port 統合、または `run_*` 関数に閉じた runtime/dependency bundle で解消する。bundle は `Ports` と命名せず、挙動・責務配置を変えない単なる lint 逃げであれば不合格とする。
 
 Nix:
 

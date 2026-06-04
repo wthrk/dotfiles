@@ -24,6 +24,13 @@ impl BwsSecretName {
         }
     }
 
+    /// BWS secret 候補が、この復旧対象の固定 secret key に一致するかを判定する。
+    ///
+    /// exact match の対象同一性は domain rule であり、application は候補数の分岐だけを扱う。
+    pub fn matches_candidate<I>(self, candidate: &BwsLookupCandidate<I>) -> bool {
+        candidate.name == self.key()
+    }
+
     /// BWS secret 候補から、この復旧対象に一致する ID を一意に解決する。
     ///
     /// 0 件と複数件はどちらも domain failure であり、adapter はこの判定を再実装しない。

@@ -2,7 +2,7 @@
 
 この文書は、新しい macOS マシンで `dotfiles` を導入したあと、開発に必要な秘密情報基盤を復旧する到達仕様を定義する恒久仕様文書である。ここでは完成形の仕様だけを定義する。対象は GnuPG secret key、GPG authentication subkey による GitHub SSH identity、private `password-store` repository、`pass` の利用環境、Bitwarden Password Manager の CLI login である。
 
-復旧の入口には YubiKey を使う。YubiKey には Bitwarden master password と Bitwarden Secrets Manager access token を保存する。Bitwarden Secrets Manager には GPG secret key backup と `password-store` の remote URL を保存する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
+復旧の入口には YubiKey を使う。YubiKey には Bitwarden master password と BWS access token を保存する。GPG secret key backup と `password-store` の remote URL は Bitwarden Secrets Manager から取得する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
 
 この文書で強化する要件は設計/仕様契約であり、現行 Rust 実装およびテストが本書の全要件を満たしたことを示すものではない。実装・テストでの充足は、`Bitwarden Secrets Manager` および `GnuPG / SSH` の後続実装作業（`docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md`、`docs/tasks/secret-recovery/work-items/gnupg-ssh.md`）で段階的に反映する。
 
@@ -33,14 +33,14 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 
 対象ごとのスペア作成方法と、この repository での扱いは次のとおり。
 
-- `FIDO2 / passkey / U2F`: GitHub、Bitwarden、Google、Apple など各 service で primary と spare を別々に登録する。手順として記録し、サービスアカウント への登録は自動化しない。
+- `FIDO2 / passkey / U2F`: GitHub、Bitwarden、Google、Apple など各 service の account security 設定で primary と spare を別々に登録する。物理キー登録は手順として記録し、`dotfiles` CLI では自動化しない。
 - `Yubico OTP`: OTP を要求する service で primary と spare を別々に登録する。Bitwarden CLI login の入力方法と検証手順は `dotfiles secrets bw-login` の仕様として定義し運用する。
 - `OATH TOTP`: 同じ TOTP secret / QR code を primary と spare の両方に登録する。既存 secret を取り出せない場合は サービス側で TOTP を再設定する。TOTP secret はこの repository に保存しない。
 - `bw-email`: primary と spare の両方に同じ Bitwarden login email を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bw-password`: primary と spare の両方に同じ Bitwarden master password を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
-- `bws-access-token`: primary と spare の両方に同じ Bitwarden Secrets Manager access token を保存し、rotate 時は全 YubiKey を更新する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録し、rotate 時は `rotate-bws-token` で更新する。
+- `bws-access-token`: primary と spare の両方に同じ Bitwarden Secrets Manager access token を保存し、復旧時の BWS 読取に使う。YubiKey に保存する値は、provisioning の登録・更新用 token ではなく、`dotfiles-secret-recovery` project の必要 secret を読める最小権限の復旧用 token とする。rotate 時は全 YubiKey を更新する。
 - `GPG secret key`: YubiKey には載せず、Bitwarden Secrets Manager の backup から `restore-gpg` で復元する。
-- `GitHub SSH identity`: YubiKey には載せず、復元した GPG authentication subkey 由来の SSH 公開鍵 を使う。`dotfiles gpg export-ssh-public-key` で出力する。
+- `GitHub SSH identity`: YubiKey には載せず、復元した GPG authentication subkey 由来の SSH 公開鍵 を使う。`dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>` で出力する。
 - `password-store`: YubiKey には載せず、GitHub から clone し、復元した GPG key で復号する。`restore-pass` で復元する。
 
 primary YubiKey の紛失後に、primary だけに保存されていた bootstrap secret から spare を後付け作成することはできない。復旧可能性を維持するには、Bitwarden recovery code と各 service の recovery code を別経路で保管し、spare YubiKey を事前登録しておく。
@@ -49,20 +49,20 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 
 保存場所ごとの secret と用途は次のとおり。
 
-- `YubiKey`: `bw-email` を保存し、Bitwarden Password Manager の CLI login / unlock に使う。
-- `YubiKey`: `bw-password` を保存し、Bitwarden Password Manager の CLI login / unlock に使う。
-- `YubiKey`: `bws-access-token` を保存し、Bitwarden Secrets Manager から復旧情報を取得する。
-- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` を保存し、GPG secret key 復元に使う。値は YubiKey recipient 付き encrypted envelope とし、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
-- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `password-store-remote` を保存し、private `password-store` repository の clone URL として使う。値は `git@github.com:<owner>/<repo>.git` 形式に限定する。この値は credential ではなく provisioning 入力では非秘匿として扱うが、private repository の所在を示す値であり出力には漏らさない。
+- `YubiKey`: `bw-email` と `bw-password` を保存し、Bitwarden Password Manager の CLI login / unlock に使う。
+- `YubiKey`: `bws-access-token` を保存し、復旧時の Bitwarden Secrets Manager 読取に使う。
+- `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` と `password-store-remote` を保存する。`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope として保存し、BWS secret value 取得だけで plaintext 復旧完了にしない。`password-store-remote` は credential ではないが private repository の所在を示す値であり出力には漏らさない。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
 - `GitHub`: GPG authentication subkey 由来の SSH 公開鍵 を保持し、private repository clone に使う。
+
+この仕様の保存モデルは、保存先・名前・保存する値で定義する。organization / machine account / service account の作成や特定 UI 画面名は、この repository の実装前提ではない。Bitwarden Secrets Manager について実装・レビューで照合する正本は project `dotfiles-secret-recovery`、secret `gpg-secret-key-backup` / `password-store-remote`、YubiKey storage `bws-access-token` の関係であり、UI の導線名ではない。
 
 ## 責務分担
 
 ### YubiKey
 
-YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-email`、`bw-password`、`bws-access-token` の 3 種類だけである。
+YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-email`、`bw-password`、`bws-access-token` である。`bw-email` / `bw-password` は Bitwarden Password Manager login / unlock に使い、`bws-access-token` は復旧時の Bitwarden Secrets Manager 読取に使う。
 
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 を reset しない。既存領域と衝突する場合は停止する。
 書き込みは management key 認証を前提にし、既定 management key のまま運用しない。既定 key のままでは想定外の上書きリスクを抑止できないため、専用領域を運用する前に非既定 management key への変更を必須にする。
@@ -73,9 +73,9 @@ YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV �
 
 ### Bitwarden Secrets Manager
 
-Bitwarden Secrets Manager は復旧に必要な機械向けの取得対象を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope。認証・復号・署名能力を与える credential）と `password-store-remote`（private `password-store` repository の clone URL。credential ではないが private repository の所在を示す値であり、出力には漏らさない）である。`password-store-remote` は credential ではないため provisioning 入力では非秘匿として扱う。
+Bitwarden Secrets Manager は、復旧に必要な取得対象を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope。認証・復号・署名能力を与える credential）と `password-store-remote`（private `password-store` repository の clone URL。credential ではないが private repository の所在を示す値であり、出力には漏らさない）である。
 
-復旧本線では公式 `bitwarden` Rust SDK を使う。`bw` CLI は Bitwarden Secrets Manager からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。YubiKey に保存する token は machine account `dotfiles-secret-recovery-reader` の token とし、project `dotfiles-secret-recovery` の読み取りだけを許可する。
+復旧本線では公式 `bitwarden` Rust SDK を使う。`bw` CLI は Bitwarden Secrets Manager からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。YubiKey に保存する token は、provisioning の登録・更新用 token とは分け、復旧時に `dotfiles-secret-recovery` project の必要 secret を読める最小権限の個人用 BWS access token とする。
 
 詳細設計は [Bitwarden Secrets Manager 復旧設計](./bitwarden-secrets-manager-design.md) に置く。
 
@@ -105,10 +105,10 @@ private `password-store` repository の clone は `git2` と SSH agent を使う
 2. スペア YubiKey がある場合は、`dotfiles secrets yubikey enroll-spare` で primary から bootstrap secret を読み出し、spare に再暗号化して保存し、ローカル確認 まで実行する。
 3. Bitwarden、GitHub、Google、Apple など YubiKey を使う外部サービス に primary と spare を登録する。
 4. `dotfiles secrets verify-yubikey` で、挿さっている YubiKey に必要な bootstrap secret があることを確認する。BWS と Bitwarden Password Manager の外部確認は、`--check bws`、`--check bw-login`、`--all` を使って実行する。
-5. `bws-access-token` を rotate した場合は `dotfiles secrets yubikey rotate-bws-token` で primary とすべての spare を更新する。対話実行では利用者が対象 YubiKey を選び、要約 の serial で対象全本の更新完了を確認する。非対話実行では `--serial` と `--stdin` を指定して 1 本ずつ更新する。
-6. `dotfiles secrets restore-gpg` で Bitwarden Secrets Manager から GPG secret key backup を取得し、GPG secret key を import する。
-7. `dotfiles gpg export-ssh-public-key` で GPG authentication subkey 由来の SSH 公開鍵 を出力し、GitHub SSH keys に登録する。
-8. `dotfiles secrets restore-pass` で Bitwarden Secrets Manager から `password-store-remote` を取得し、GPG authentication subkey 経由の SSH で private `password-store` repository を clone する。
+5. BWS token を rotate した場合は `dotfiles secrets yubikey rotate-bws-token` で primary とすべての spare を更新する。
+6. `dotfiles secrets restore-gpg` で Bitwarden Secrets Manager から GPG secret key backup を取得し、YubiKey recipient 付き encrypted envelope を検証・復号して GPG secret key を import する。
+7. `dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>` で GPG authentication subkey 由来の SSH 公開鍵 を出力し、GitHub SSH keys に登録する。
+8. `dotfiles secrets restore-pass` で Bitwarden Secrets Manager から `password-store-remote` を取得し、GPG authentication subkey 経由の SSH で clone する。
 9. `dotfiles secrets bw-login` で Bitwarden Password Manager に login / unlock する。
 
 ## 到達仕様のコマンド一覧
@@ -181,7 +181,7 @@ YubiKey から `bw-email` と `bw-password` を取得し、YubiKey OTP を入力
 
 ### `dotfiles gpg export-ssh-public-key`
 
-GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。GitHub SSH keys に登録するために使う。GitHub API は呼ばない。
+`--primary-fingerprint <40-hex-fingerprint>` で指定した primary key の GPG authentication subkey 由来の SSH 公開鍵 を stdout に出力する。GitHub SSH keys に登録するために使う。GitHub API は呼ばない。
 
 ## API / Command Policy
 

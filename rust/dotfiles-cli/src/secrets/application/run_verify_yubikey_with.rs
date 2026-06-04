@@ -4,6 +4,7 @@ use crate::Result;
 use crate::secrets::{
     domain::{
         bw_login::{BwLoginEmail, BwOtp},
+        bws::{BwsProjectName, BwsSecretName},
         commands::VerifyYubikeyCommand,
         piv::{SecretName, validate_piv_pin_len},
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
@@ -13,38 +14,44 @@ use crate::secrets::{
     support::protection::{ProtectedSecret, bw_login},
 };
 
+/// `run_verify_yubikey_with` が使う外部 capability を named field で束ねる。
+pub(crate) struct VerifyYubikeyRuntime<'a, B, L> {
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
+    pub(crate) report: &'a dyn ports::ReportPort,
+    pub(crate) bws_client: &'a B,
+    pub(crate) gpg_recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) otp_input: &'a dyn ports::BwOtpInputPort,
+    pub(crate) bw_login: &'a L,
+}
+
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
 ///
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
 /// 先頭に固定する。外部確認結果は report 境界へ明示的に反映し、verify 結果の責任範囲を
 /// 曖昧にしない。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "verify-yubikey は device/pin/storage/report/bws/otp-input/bw-login の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_verify_yubikey_with<D, P, S, R, B, O, L>(
+pub(crate) async fn run_verify_yubikey_with<B, L>(
     command: VerifyYubikeyCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
-    storage_port: &mut S,
-    report: &R,
-    bws_client: &B,
-    otp_input: &O,
-    bw_login_port: &L,
+    runtime: VerifyYubikeyRuntime<'_, B, L>,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
     B: ports::BwsClientPort,
-    O: ports::BwOtpInputPort,
     L: ports::BwLoginPort,
 {
+    let VerifyYubikeyRuntime {
+        device,
+        process,
+        storage: storage_port,
+        report,
+        bws_client,
+        gpg_recipient,
+        otp_input,
+        bw_login: bw_login_port,
+    } = runtime;
     let requested = command.requested_external_checks()?;
-    let serial = device_serial.resolve_device_serial(command.serial)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let serial = device.resolve_device_serial(command.serial)?;
+    let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -101,58 +108,7 @@ where
                     }
                 };
                 let access_token = &access_token;
-                let mut result = Ok(());
-                let project_id =
-                    match bws_client
-                        .list_bws_projects(access_token)
-                        .await
-                        .and_then(|projects| {
-                            crate::secrets::domain::bws::BwsProjectName::DOTFILES_SECRET_RECOVERY
-                                .resolve_id(projects)
-                        }) {
-                        Ok(project_id) => project_id,
-                        Err(error) => {
-                            result = Err(error);
-                            summary.mark_external_check(CheckName::Bws, CheckStatus::Failed);
-                            if first_error.is_none() {
-                                first_error = result.err();
-                            }
-                            continue;
-                        }
-                    };
-                let secret_candidates =
-                    match bws_client.list_bws_secrets(access_token, &project_id).await {
-                        Ok(secrets) => secrets,
-                        Err(error) => {
-                            result = Err(error);
-                            summary.mark_external_check(CheckName::Bws, CheckStatus::Failed);
-                            if first_error.is_none() {
-                                first_error = result.err();
-                            }
-                            continue;
-                        }
-                    };
-                for secret_name in check.required_bws_secrets().ok_or_else(|| {
-                    anyhow::anyhow!("internal invariant violated: bws check has no secret plan")
-                })? {
-                    let secret_id =
-                        match secret_name.resolve_id(secret_candidates.clone(), &project_id) {
-                            Ok(secret_id) => secret_id,
-                            Err(error) => {
-                                result = Err(error);
-                                break;
-                            }
-                        };
-                    if let Err(error) = bws_client
-                        .fetch_bws_secret_by_id(access_token, &secret_id)
-                        .await
-                        .map(|_| ())
-                    {
-                        result = Err(error);
-                        break;
-                    }
-                }
-                match result {
+                match run_bws_check(serial, access_token, bws_client, gpg_recipient).await {
                     Ok(_) => summary.mark_external_check(CheckName::Bws, CheckStatus::Ok),
                     Err(error) => {
                         summary.mark_external_check(CheckName::Bws, CheckStatus::Failed);
@@ -207,6 +163,45 @@ where
     Ok(())
 }
 
+/// BWS 外部確認で必要な secret 取得・envelope 検証・recipient 照合を順に実行する。
+///
+/// `gpg-secret-key-backup` は typed port で domain envelope として取得し、schema /
+/// `metadata.primary_fingerprint` / ciphertext 構造の検証を BWS adapter + domain 境界で完了させる。
+/// application は接続中 YubiKey の recipient identity を取得して domain の matching rule を適用し、
+/// unwrap なしで一致 recipient の存在まで確認する。`password-store-remote` も typed port で取得し、
+/// raw secret fetch 成功だけを BWS check の成功条件にしない。
+async fn run_bws_check<B>(
+    serial: u32,
+    access_token: &ProtectedSecret,
+    bws_client: &B,
+    gpg_recipient: &mut dyn ports::GpgRecipientPort,
+) -> Result<()>
+where
+    B: ports::BwsClientPort,
+{
+    let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
+        .resolve_id(bws_client.list_bws_projects(access_token).await?)?;
+    let secret_candidates = bws_client
+        .list_bws_secrets(access_token, &project_id)
+        .await?;
+
+    let gpg_secret_id =
+        BwsSecretName::GpgSecretKeyBackup.resolve_id(secret_candidates.clone(), &project_id)?;
+    let pass_secret_id =
+        BwsSecretName::PasswordStoreRemote.resolve_id(secret_candidates, &project_id)?;
+
+    let (envelope, _guard) = bws_client
+        .fetch_gpg_backup_envelope(access_token, &gpg_secret_id)
+        .await?;
+    let connected = gpg_recipient.resolve_connected_recipient(serial)?;
+    envelope.resolve_recipient(&connected)?;
+
+    bws_client
+        .fetch_password_store_remote(access_token, &pass_secret_id)
+        .await
+        .map(|_| ())
+}
+
 /// bw-login 外部確認を bw-login use case と同じ port 経路で実行する。
 ///
 /// login email は `run_bw_login` の email 決定ロジックと同じ方針で決める。`--email` override が
@@ -215,17 +210,15 @@ where
 /// master password（`bw-password`）も on-demand ロードして port へ保護値として渡し、OTP を入力して `bw login`
 /// / `bw unlock` の到達性を確認する。両 secret はこの関数のスコープでだけ存在し、戻ると drop される。
 /// session key は確認専用のため受け取った値を surface せず破棄し、login / unlock の成否だけを返す。
-async fn run_bw_login_check<S, O, L>(
+async fn run_bw_login_check<L>(
     email_override: Option<&str>,
     serial: u32,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&ProtectedSecret>,
-    otp_input: &O,
+    otp_input: &dyn ports::BwOtpInputPort,
     bw_login_port: &L,
 ) -> Result<()>
 where
-    S: ports::SecretStoragePort,
-    O: ports::BwOtpInputPort,
     L: ports::BwLoginPort,
 {
     // override 指定時は YubiKey の `bw-email` を読まない/使わない。未指定時のみ on-demand ロードする。
@@ -249,15 +242,12 @@ where
 /// この helper は application 層の順序制御（必要な分岐の直前で必要 secret だけを読み、戻ると drop する）に
 /// 属するため `pub` にしない。pin はこの use case で取得済みの値を渡す（追加の touch を要しない read 操作）。
 /// `run_bw_login.rs` の同名 helper と同方針だが use case-to-use case call を避けるため本 file に閉じる。
-fn load_yubikey_secret<S>(
+fn load_yubikey_secret(
     serial: u32,
     name: SecretName,
-    storage_port: &mut S,
+    storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&ProtectedSecret>,
-) -> Result<ProtectedSecret>
-where
-    S: ports::SecretStoragePort,
-{
+) -> Result<ProtectedSecret> {
     let storage = name.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -274,7 +264,9 @@ mod tests {
         domain::{
             bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
             commands::VerifyYubikeyCommand,
+            gpg_backup::{BackupUpdateGuard, ConnectedYubiKey, GpgBackupEnvelope},
             manifest::SecretManifest,
+            pass_restore::PasswordStoreRemote,
             piv::SecretName,
             storage::SecretStorageReadInspection,
             verification::{CheckName, CheckStatus, ExternalCheck},
@@ -283,7 +275,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_verify_yubikey_with;
+    use super::{VerifyYubikeyRuntime, run_bws_check, run_verify_yubikey_with};
 
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -303,6 +295,68 @@ mod tests {
             SecretName::BwPassword => material(b"password"),
             SecretName::BwsAccessToken => material(b"access-token"),
         }
+    }
+
+    fn valid_envelope() -> GpgBackupEnvelope {
+        GpgBackupEnvelope::parse(
+            r#"{
+              "version": 1,
+              "metadata": {
+                "primary_fingerprint": "0123456789abcdef0123456789abcdef01234567",
+                "exported_at": "2026-05-31T00:00:00Z",
+                "dek_alg": "aes-256-gcm",
+                "recipient_kek_alg": "rsa-oaep-sha256"
+              },
+              "recipients": [
+                {
+                  "yubikey_serial": "2001",
+                  "piv_slot": "82",
+                  "public_key_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "wrapped_dek": "d3JhcHBlZA=="
+                }
+              ],
+              "ciphertext": {
+                "nonce": "EBESExQVFhcYGRob",
+                "body": "ZW5jcnlwdGVk",
+                "tag": "gIGCg4SFhoeIiYqLjI2Ojw=="
+              }
+            }"#,
+        )
+        .expect("valid envelope")
+    }
+
+    fn connected_recipient() -> ConnectedYubiKey {
+        ConnectedYubiKey::new(
+            "2001",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("connected recipient")
+    }
+
+    fn valid_password_store_remote() -> PasswordStoreRemote {
+        PasswordStoreRemote::parse("git@github.com:owner/password-store.git")
+            .expect("valid password-store remote")
+    }
+
+    fn expect_bws_lookup(bws: &mut ports::MockBwsClientPort) {
+        bws.expect_list_bws_projects().times(1).returning(|_| {
+            Ok(vec![BwsLookupCandidate {
+                id: BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets().times(1).returning(|_, _| {
+            Ok(vec![
+                BwsLookupCandidate {
+                    id: BwsSecretId::new("gpg-id"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                },
+                BwsLookupCandidate {
+                    id: BwsSecretId::new("pass-id"),
+                    name: "password-store-remote".to_owned(),
+                },
+            ])
+        });
     }
 
     /// local storage 検証（3 secret すべての inspect → load）を順序付きで 1 巡分期待する。
@@ -356,6 +410,7 @@ mod tests {
         storage.expect_inspect_secret_storage_read().times(0);
         let report = ports::MockReportPort::new();
         let bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         let otp_input = ports::MockBwOtpInputPort::new();
         let bw_login = ports::MockBwLoginPort::new();
 
@@ -366,14 +421,16 @@ mod tests {
                 all: true,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -408,6 +465,7 @@ mod tests {
         );
 
         let mut bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         let otp_input = ports::MockBwOtpInputPort::new();
         let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
@@ -435,16 +493,27 @@ mod tests {
                     },
                 ])
             });
-        bws.expect_fetch_bws_secret_by_id()
+        bws.expect_fetch_gpg_backup_envelope()
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, secret_id| secret_id.as_str() == "gpg-id")
-            .returning(|_, _| Ok(material(b"gpg")));
-        bws.expect_fetch_bws_secret_by_id()
+            .returning(|_, _| {
+                Ok((
+                    valid_envelope(),
+                    BackupUpdateGuard::from_value_bytes(b"envelope"),
+                ))
+            });
+        gpg_recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(connected_recipient()));
+        gpg_recipient.expect_unwrap_dek().times(0);
+        bws.expect_fetch_password_store_remote()
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, secret_id| secret_id.as_str() == "pass-id")
-            .returning(|_, _| Ok(material(b"pass")));
+            .returning(|_, _| Ok(valid_password_store_remote()));
 
         let mut report = ports::MockReportPort::new();
         report
@@ -464,16 +533,125 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn bws_check_fails_when_gpg_backup_schema_is_invalid() {
+        let access_token = material(b"access-token");
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_lookup(&mut bws);
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .returning(|_, _| anyhow::bail!("failed to parse gpg backup envelope JSON"));
+        bws.expect_fetch_password_store_remote().times(0);
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
+        gpg_recipient.expect_resolve_connected_recipient().times(0);
+
+        let result = run_bws_check(2001, &access_token, &bws, &mut gpg_recipient).await;
+
+        assert!(
+            result.is_err(),
+            "invalid envelope schema must fail bws check"
+        );
+    }
+
+    #[tokio::test]
+    async fn bws_check_fails_when_primary_fingerprint_is_not_lowercase_hex_40() {
+        let access_token = material(b"access-token");
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_lookup(&mut bws);
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .returning(|_, _| {
+                anyhow::bail!(
+                    "gpg backup metadata.primary_fingerprint must be stored as exactly 40 lowercase hex characters with no separators"
+                )
+            });
+        bws.expect_fetch_password_store_remote().times(0);
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
+        gpg_recipient.expect_resolve_connected_recipient().times(0);
+
+        let result = run_bws_check(2001, &access_token, &bws, &mut gpg_recipient).await;
+
+        assert!(
+            result.is_err(),
+            "invalid primary fingerprint must fail bws check"
+        );
+    }
+
+    #[tokio::test]
+    async fn bws_check_fails_when_connected_yubikey_recipient_does_not_match() {
+        let access_token = material(b"access-token");
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_lookup(&mut bws);
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .returning(|_, _| {
+                Ok((
+                    valid_envelope(),
+                    BackupUpdateGuard::from_value_bytes(b"envelope"),
+                ))
+            });
+        bws.expect_fetch_password_store_remote().times(0);
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
+        gpg_recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .returning(|_| {
+                ConnectedYubiKey::new(
+                    "2001",
+                    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                )
+            });
+        gpg_recipient.expect_unwrap_dek().times(0);
+
+        let result = run_bws_check(2001, &access_token, &bws, &mut gpg_recipient).await;
+
+        assert!(
+            result.is_err(),
+            "recipient mismatch must fail before password-store-remote is accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn bws_check_fails_when_unwrap_free_recoverability_cannot_be_established() {
+        let access_token = material(b"access-token");
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_lookup(&mut bws);
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .returning(|_, _| {
+                Ok((
+                    valid_envelope(),
+                    BackupUpdateGuard::from_value_bytes(b"envelope"),
+                ))
+            });
+        bws.expect_fetch_password_store_remote().times(0);
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
+        gpg_recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .returning(|_| anyhow::bail!("connected YubiKey recipient identity is unavailable"));
+        gpg_recipient.expect_unwrap_dek().times(0);
+
+        let result = run_bws_check(2001, &access_token, &bws, &mut gpg_recipient).await;
+
+        assert!(
+            result.is_err(),
+            "bws check must fail when unwrap-free recoverability cannot be established"
+        );
     }
 
     #[tokio::test]
@@ -502,6 +680,7 @@ mod tests {
             SecretName::BwsAccessToken,
         );
         let mut bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         let otp_input = ports::MockBwOtpInputPort::new();
         let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
@@ -509,7 +688,9 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Ok(Vec::new()));
         bws.expect_list_bws_secrets().times(0);
-        bws.expect_fetch_bws_secret_by_id().times(0);
+        bws.expect_fetch_gpg_backup_envelope().times(0);
+        bws.expect_fetch_password_store_remote().times(0);
+        gpg_recipient.expect_resolve_connected_recipient().times(0);
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_verify_report()
@@ -524,14 +705,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -564,6 +747,7 @@ mod tests {
             SecretName::BwsAccessToken,
         );
         let mut bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         let otp_input = ports::MockBwOtpInputPort::new();
         let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
@@ -579,7 +763,9 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(Vec::new()));
-        bws.expect_fetch_bws_secret_by_id().times(0);
+        bws.expect_fetch_gpg_backup_envelope().times(0);
+        bws.expect_fetch_password_store_remote().times(0);
+        gpg_recipient.expect_resolve_connected_recipient().times(0);
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_verify_report()
@@ -594,14 +780,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -634,6 +822,7 @@ mod tests {
             SecretName::BwsAccessToken,
         );
         let mut bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         let otp_input = ports::MockBwOtpInputPort::new();
         let bw_login = ports::MockBwLoginPort::new();
         bws.expect_list_bws_projects()
@@ -660,10 +849,12 @@ mod tests {
                     },
                 ])
             });
-        bws.expect_fetch_bws_secret_by_id()
+        bws.expect_fetch_gpg_backup_envelope()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Err(anyhow::anyhow!("fetch failed")));
+        bws.expect_fetch_password_store_remote().times(0);
+        gpg_recipient.expect_resolve_connected_recipient().times(0);
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_verify_report()
@@ -678,14 +869,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -720,6 +913,7 @@ mod tests {
 
         // bw-login 確認では BWS port は呼ばれない。
         let bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
 
         let mut otp_input = ports::MockBwOtpInputPort::new();
         otp_input
@@ -759,14 +953,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }
@@ -802,6 +998,7 @@ mod tests {
         expect_secret_load(&mut storage, &mut sequence, 2001, SecretName::BwPassword);
 
         let bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
 
         let mut otp_input = ports::MockBwOtpInputPort::new();
         otp_input
@@ -840,14 +1037,16 @@ mod tests {
                 all: false,
                 email_override: Some("  override@example.com  ".to_owned()),
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }
@@ -874,6 +1073,7 @@ mod tests {
         expect_secret_load(&mut storage, &mut sequence, 2001, SecretName::BwEmail);
         expect_secret_load(&mut storage, &mut sequence, 2001, SecretName::BwPassword);
         let bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         let mut otp_input = ports::MockBwOtpInputPort::new();
         otp_input
             .expect_read_bw_otp()
@@ -898,14 +1098,16 @@ mod tests {
                 all: false,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await;
 
@@ -946,6 +1148,7 @@ mod tests {
         );
 
         let mut bws = ports::MockBwsClientPort::new();
+        let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         bws.expect_list_bws_projects()
             .times(1)
             .in_sequence(&mut sequence)
@@ -970,9 +1173,25 @@ mod tests {
                     },
                 ])
             });
-        bws.expect_fetch_bws_secret_by_id()
-            .times(2)
-            .returning(|_, _| Ok(material(b"secret")));
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Ok((
+                    valid_envelope(),
+                    BackupUpdateGuard::from_value_bytes(b"envelope"),
+                ))
+            });
+        gpg_recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(connected_recipient()));
+        gpg_recipient.expect_unwrap_dek().times(0);
+        bws.expect_fetch_password_store_remote()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(valid_password_store_remote()));
 
         // BWS 分岐の後、BwLogin 分岐（override 未指定）が bw-email → bw-password を on-demand ロードする。
         expect_secret_load(&mut storage, &mut sequence, 2001, SecretName::BwEmail);
@@ -1015,14 +1234,16 @@ mod tests {
                 all: true,
                 email_override: None,
             },
-            &mut device_serial,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-            &bws,
-            &otp_input,
-            &bw_login,
+            VerifyYubikeyRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                report: &report,
+                bws_client: &bws,
+                gpg_recipient: &mut gpg_recipient,
+                otp_input: &otp_input,
+                bw_login: &bw_login,
+            },
         )
         .await
     }

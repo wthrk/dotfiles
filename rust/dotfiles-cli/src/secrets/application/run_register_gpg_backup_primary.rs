@@ -10,6 +10,17 @@ use crate::secrets::{
     ports,
 };
 
+/// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
+pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
+    pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
+    pub(crate) device_serial: &'a mut dyn ports::DeviceSerialPort,
+    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
+    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
+    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) clock: &'a dyn ports::ClockPort,
+    pub(crate) bws_client: &'a B,
+}
+
 /// 既存環境の GPG secret key を encrypted envelope 化し、Bitwarden Secrets Manager へ primary 登録する。
 ///
 /// 設計「backup export 入力契約」「recipient 運用 / BWS 更新契約」の primary 登録経路を順序制御として
@@ -19,58 +30,51 @@ use crate::secrets::{
 /// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
 /// argv/log/永続ファイルへ出さない。
 ///
-/// BWS への書込みには、設計「初期登録手順」が定める書込み可能な provisioning 用 access token を使う。この
-/// token は hidden prompt / pipe から `ProvisioningAccessTokenInputPort` 経由で取得し、初期登録後に失効
-/// させる。YubiKey に保存する read-only `dotfiles-secret-recovery-reader` token は書込みに使えず provisioning
-/// では使わないため、storage/pin 経由の token 読み出しは行わない。一方、YubiKey 本体は recipient wrap（PIV
-/// slot `82` 公開鍵で DEK を RSA-OAEP wrap）に必要なため、recipient 用の device serial 解決は残す。slot `82`
+/// BWS への登録には BWS access token を使う。この登録用 token は hidden prompt / pipe から
+/// `BwsAccessTokenInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
+/// 復旧時の read 用最小権限 token を別経路で用意する。この provisioning command 自体は storage/pin 経由の
+/// token 読み出しを行わない。一方、YubiKey 本体は recipient wrap（PIV slot `82` 公開鍵で DEK を RSA-OAEP
+/// wrap）に必要なため、recipient 用の device serial 解決は残す。slot `82`
 /// 公開鍵での wrap は private key 操作を伴わないため PIN/touch を要さない。
 ///
 /// 順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで export・
 /// envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup がある場合は
 /// 重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "primary 登録は token-input/device/keyring/cipher/recipient/clock/bws の port を順序適用する単一 use case"
-)]
-pub(crate) async fn run_register_gpg_backup_primary<A, D, K, C, Y, T, B>(
+pub(crate) async fn run_register_gpg_backup_primary<B>(
     command: RegisterGpgBackupCommand,
-    token_input: &A,
-    device_serial: &mut D,
-    keyring: &mut K,
-    cipher: &mut C,
-    recipient: &mut Y,
-    clock: &T,
-    bws_client: &B,
+    runtime: RegisterGpgBackupPrimaryRuntime<'_, B>,
 ) -> Result<()>
 where
-    A: ports::ProvisioningAccessTokenInputPort,
-    D: ports::DeviceSerialPort,
-    K: ports::GpgKeyringPort,
-    C: ports::BackupCipherPort,
-    Y: ports::GpgRecipientPort,
-    T: ports::ClockPort,
     B: ports::BwsClientPort,
 {
+    let RegisterGpgBackupPrimaryRuntime {
+        token_input,
+        device_serial,
+        keyring,
+        cipher,
+        recipient,
+        clock,
+        bws_client,
+    } = runtime;
     // recipient wrap 対象 YubiKey の serial を解決する（slot 82 公開鍵 wrap に必要）。
     let serial = device_serial.resolve_device_serial(command.serial)?;
 
-    // BWS 書込み用の provisioning 用 access token を hidden prompt / pipe から取得し、復旧 project を
-    // 解決する。YubiKey の read-only reader token は書込みに使わない。
-    let access_token = token_input.read_provisioning_access_token()?;
+    // BWS 登録用 access token を hidden prompt / pipe から取得し、復旧 project を解決する。
+    // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
+    let access_token = token_input.read_bws_access_token_for_provisioning()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
     // 同名 backup が既にある場合は重複登録を停止条件にする。上書きしないと決まっているシナリオで
     // secret key export・DEK 暗号化・recipient wrap を発生させないよう、export より前に重複確認する。
     // `resolve_id` は 0 件と複数件をどちらも `Err` にするため、既存重複 project を「未登録」と
-    // 誤認しないよう、同名候補（`name == key`）の件数を直接数えて 1 件以上で停止する。
-    let key = BwsSecretName::GpgSecretKeyBackup.key();
+    // 誤認しないよう、同名候補の件数を数えて 1 件以上で停止する。対象同一性の exact match は domain
+    // helper に委ね、application は重複時の停止分岐だけを扱う。
     let existing_count = bws_client
         .list_bws_secrets(&access_token, &project_id)
         .await?
         .into_iter()
-        .filter(|candidate| candidate.name == key)
+        .filter(|candidate| BwsSecretName::GpgSecretKeyBackup.matches_candidate(candidate))
         .count();
     if existing_count >= 1 {
         anyhow::bail!(
@@ -99,7 +103,7 @@ where
     let envelope = GpgBackupEnvelope::assemble(metadata, vec![recipient_entry], ciphertext)?;
 
     bws_client
-        .create_gpg_backup_envelope(&access_token, &project_id, key, &envelope)
+        .create_gpg_backup_envelope(&access_token, &project_id, &envelope)
         .await
         .map(|_id| ())
 }
@@ -109,9 +113,8 @@ mod tests {
     //! primary 登録の順序（重複確認→subkey 検証→export→fingerprint 照合→暗号化→recipient wrap→
     //! envelope→BWS 作成）を mockall + Sequence で検証する単体テスト。
     //!
-    //! token-input / keyring / cipher / recipient / clock / bws backend を port mock で差し替え、BWS 書込みに
-    //! 使う access token を provisioning token 入力経路から取得すること（YubiKey reader token を write に使わない
-    //! ことは storage/pin port を持たない構成で構造的に保証する）、重複確認が export より前に行われること、
+    //! token-input / keyring / cipher / recipient / clock / bws backend を port mock で差し替え、BWS 登録に
+    //! 使う access token を BWS access token 入力経路から取得すること、重複確認が export より前に行われること、
     //! subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき create が呼ばれること、
     //! 重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
 
@@ -127,7 +130,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_register_gpg_backup_primary;
+    use super::{RegisterGpgBackupPrimaryRuntime, run_register_gpg_backup_primary};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -135,14 +138,14 @@ mod tests {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    /// provisioning 用 access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
     ///
-    /// この mock は YubiKey storage を経由せず provisioning token を返す。pin/storage port は構成へ一切
-    /// 渡さないため、BWS 書込みが YubiKey reader token を使わないことは構造的に保証される。
-    fn token_input() -> ports::MockProvisioningAccessTokenInputPort {
-        let mut token_input = ports::MockProvisioningAccessTokenInputPort::new();
+    /// この mock は hidden prompt / pipe 相当の入力経路として BWS access token を返す。
+    /// pin/storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
+    fn token_input() -> ports::MockBwsAccessTokenInputPort {
+        let mut token_input = ports::MockBwsAccessTokenInputPort::new();
         token_input
-            .expect_read_provisioning_access_token()
+            .expect_read_bws_access_token_for_provisioning()
             .times(1)
             .returning(|| Ok(material(b"provisioning-token")));
         token_input
@@ -247,20 +250,22 @@ mod tests {
         bws.expect_create_gpg_backup_envelope()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, _, _| Ok(crate::secrets::domain::bws::BwsSecretId::new("new-id")));
+            .returning(|_, _, _| Ok(crate::secrets::domain::bws::BwsSecretId::new("new-id")));
 
         run_register_gpg_backup_primary(
             RegisterGpgBackupCommand {
                 primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
                 serial: Some(2001),
             },
-            &token,
-            &mut device,
-            &mut keyring,
-            &mut cipher,
-            &mut recipient,
-            &clock,
-            &bws,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                cipher: &mut cipher,
+                recipient: &mut recipient,
+                clock: &clock,
+                bws_client: &bws,
+            },
         )
         .await
     }
@@ -319,13 +324,15 @@ mod tests {
                 primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
                 serial: Some(2001),
             },
-            &token,
-            &mut device,
-            &mut keyring,
-            &mut cipher,
-            &mut recipient,
-            &clock,
-            &bws,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                cipher: &mut cipher,
+                recipient: &mut recipient,
+                clock: &clock,
+                bws_client: &bws,
+            },
         )
         .await;
 

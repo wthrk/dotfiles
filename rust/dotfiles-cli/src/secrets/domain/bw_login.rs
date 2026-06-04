@@ -74,7 +74,7 @@ impl BwOtp {
 /// Bitwarden CLI の 2FA method 識別子で、YubiKey OTP は `3`（spec L178）。argv 値の固定は domain rule とし、
 /// adapter で magic number を再定義しない。real `bw` CLI adapter（login_adapter）だけが argv へ載せるため、
 /// `bw` CLI を起動しない stub build では未使用になる。
-#[cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
+#[cfg_attr(feature = "secrets-internal-test-stub", expect(dead_code))]
 pub const BW_OTP_TWO_FACTOR_METHOD: &str = "3";
 
 /// `bw unlock --raw` が stdout に出力する session key を表す結果値。

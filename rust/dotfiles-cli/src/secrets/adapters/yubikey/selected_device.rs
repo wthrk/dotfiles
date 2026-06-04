@@ -25,7 +25,7 @@ use crate::secrets_internal_test_stub_contract::{STUB_OBSERVATION_PREFIX, YUBIKE
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
 const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
 const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
-const BWS_ACCESS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
+const BWS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
 
 #[derive(serde::Deserialize)]
 struct YubiKeyStubSpec {
@@ -404,7 +404,7 @@ fn secret_key_for_object(object_id: u32) -> &'static str {
     match object_id {
         BW_EMAIL_OBJECT_ID => "bw-email",
         BW_PASSWORD_OBJECT_ID => "bw-password",
-        BWS_ACCESS_TOKEN_OBJECT_ID => "bws-access-token",
+        BWS_TOKEN_OBJECT_ID => "bws-access-token",
         _ => "",
     }
 }
@@ -422,7 +422,7 @@ fn storage_object_id(secret_id: u8) -> u32 {
     match secret_id {
         1 => BW_EMAIL_OBJECT_ID,
         2 => BW_PASSWORD_OBJECT_ID,
-        3 => BWS_ACCESS_TOKEN_OBJECT_ID,
+        3 => BWS_TOKEN_OBJECT_ID,
         _ => MANIFEST_OBJECT_ID,
     }
 }

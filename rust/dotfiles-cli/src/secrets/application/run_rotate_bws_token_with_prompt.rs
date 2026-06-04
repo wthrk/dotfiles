@@ -17,38 +17,38 @@ use crate::secrets::{
     ports,
 };
 
+/// `run_rotate_bws_token_with_prompt` が使う外部 capability を named field で束ねる。
+pub(crate) struct RotateBwsTokenPromptRuntime<'a> {
+    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) secret_input: &'a dyn ports::SecretInputPort,
+    pub(crate) continuation: &'a dyn ports::RotationContinuationPort,
+    pub(crate) pin_input: &'a dyn ports::PinInputPort,
+    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
+    pub(crate) report: &'a dyn ports::ReportPort,
+}
+
 /// prompt 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
 /// serial 未指定時は port 境界で対象 device を解決し、token 入力前に既存 local storage を
 /// read/validate する。更新不能な状態では new token を受け取らない。
-#[expect(
-    clippy::too_many_arguments,
-    reason = "各 port を個別注入して use case の境界を明示するため"
-)]
-pub(crate) fn run_rotate_bws_token_with_prompt<D, I, C, P, S, R>(
+pub(crate) fn run_rotate_bws_token_with_prompt(
     command: RotateBwsTokenCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    secret_input: &I,
-    continuation: &C,
-    pin_input: &P,
-    storage_port: &mut S,
-    report: &R,
-) -> Result<()>
-where
-    D: ports::DeviceSerialPort,
-    I: ports::SecretInputPort,
-    C: ports::RotationContinuationPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
-{
+    runtime: RotateBwsTokenPromptRuntime<'_>,
+) -> Result<()> {
+    let RotateBwsTokenPromptRuntime {
+        device,
+        secret_input,
+        continuation,
+        pin_input,
+        storage: storage_port,
+        report,
+    } = runtime;
     let mut updated_serials = BTreeSet::new();
     let mut next_requested_serial = command.serial;
     let mut token = None;
 
     loop {
-        let serial = device_serial.resolve_device_serial(next_requested_serial)?;
+        let serial = device.resolve_device_serial(next_requested_serial)?;
         if !updated_serials.insert(serial) {
             bail!("selected YubiKey was already updated");
         }
@@ -56,7 +56,7 @@ where
         let storage = command.storage_spec(serial);
         let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
         SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
-        let pin = if pin_policy.device_requires_pin(serial)? {
+        let pin = if device.device_requires_pin(serial)? {
             let pin = pin_input.read_pin()?;
             validate_piv_pin_len(pin.len())?;
             Some(pin)
@@ -129,7 +129,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::run_rotate_bws_token_with_prompt;
+    use super::{RotateBwsTokenPromptRuntime, run_rotate_bws_token_with_prompt};
 
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -250,13 +250,14 @@ mod tests {
 
         run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
-            &mut device_serial,
-            &mut pin_policy,
-            &secret_input,
-            &continuation,
-            &pin_input,
-            &mut storage,
-            &report,
+            RotateBwsTokenPromptRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                secret_input: &secret_input,
+                continuation: &continuation,
+                pin_input: &pin_input,
+                storage: &mut storage,
+                report: &report,
+            },
         )
     }
 
@@ -306,13 +307,14 @@ mod tests {
 
         let result = run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: Some(2001) },
-            &mut device_serial,
-            &mut pin_policy,
-            &secret_input,
-            &continuation,
-            &pin_input,
-            &mut storage,
-            &report,
+            RotateBwsTokenPromptRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                secret_input: &secret_input,
+                continuation: &continuation,
+                pin_input: &pin_input,
+                storage: &mut storage,
+                report: &report,
+            },
         );
 
         assert!(
@@ -379,13 +381,14 @@ mod tests {
 
         run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
-            &mut device_serial,
-            &mut pin_policy,
-            &secret_input,
-            &continuation,
-            &pin_input,
-            &mut storage,
-            &report,
+            RotateBwsTokenPromptRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                secret_input: &secret_input,
+                continuation: &continuation,
+                pin_input: &pin_input,
+                storage: &mut storage,
+                report: &report,
+            },
         )
     }
 
@@ -436,13 +439,14 @@ mod tests {
 
         let result = run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
-            &mut device_serial,
-            &mut pin_policy,
-            &secret_input,
-            &continuation,
-            &pin_input,
-            &mut storage,
-            &report,
+            RotateBwsTokenPromptRuntime {
+                device: &mut (&mut device_serial, &mut pin_policy),
+                secret_input: &secret_input,
+                continuation: &continuation,
+                pin_input: &pin_input,
+                storage: &mut storage,
+                report: &report,
+            },
         );
 
         assert!(result.is_err(), "same device must not be rotated twice");
