@@ -117,7 +117,7 @@ run_dotfiles_with_bws_access_token() {
 }
 store_recovery_bws_access_token() {
   local serial="$1"
-  printf '%s\n' "$RECOVERY_BWS_TOKEN" | dotfiles secrets yubikey put bws-access-token --stdin --serial "$serial" --force
+  printf '%s\n' "$RECOVERY_BWS_TOKEN" | dotfiles secrets yubikey put bws-access-token --stdin --serial "$serial"
 }
 provisioning_yubikey_serial() {
   if [ -n "${PROVISIONING_YUBIKEY_SERIAL:-}" ]; then
