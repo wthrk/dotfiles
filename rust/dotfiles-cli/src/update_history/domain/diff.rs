@@ -12,6 +12,8 @@ use crate::Result;
 const ABSENT: &str = "∅";
 /// old/new を区切る矢印。
 const ARROW: &str = "→";
+/// `nix store diff-closures` 末尾の集計見出し名。version 差分ではなくクロージャ総量の増減を表す。
+const CLOSURE_SIZE_HEADING: &str = "Closure size";
 
 /// 差分 version の出所（nix クロージャか Homebrew tap rev か）。
 ///
@@ -67,7 +69,14 @@ pub(crate) fn merge_version_deltas(
 /// `∅`（不在）またはカンマ区切り version 列であり、複数 version は安定のため `, ` で連結して保持する。
 /// 末尾の size delta（`, +1.0 KiB` 等）は version 列と矢印で区切れないため、矢印の右側を最初の
 /// `,` で切って version 部分だけを採る。`∅ → x` は `Added`、`x → ∅` は `Removed`、それ以外は
-/// `Upgraded`。矢印を含まない行（ヘッダ・空行・size 集計行）は version 差分でないため無視する。
+/// `Upgraded`。矢印を含まない行（ヘッダ・空行）は version 差分でないため無視する。
+///
+/// **集計行（`Closure size: 100.0 MiB → 101.0 MiB`）の除外**: `diff-closures` 末尾のクロージャ総量集計行も
+/// 矢印を含むためパース対象になるが、これは version 差分ではなく総量の増減見出しである。残すと name=`Closure
+/// size`、old/new に `100.0 MiB`/`101.0 MiB` を持つ偽パッケージとして件数を水増しし、存在しないパッケージの
+/// ノート取得（404）を招く。集計行の size 値は `+`/`-` 符号を持たないため size delta として落とせない（version
+/// として解決されてしまう）ので、**名前が集計見出し `Closure size` の行**を明示的に捨てる。加えて、version が
+/// 片側も解決できない（old/new がともに `None`）行も差分でない見出し/符号付き集計として捨てる。
 ///
 /// caller responsibility: 行内に矢印があり name が空でないことだけを差分行の条件とする。形式が
 /// 想定外（矢印が複数、name 欠落）の行はパース失敗として `Err` を返し、部分的に壊れた記録を作らない。
@@ -78,7 +87,17 @@ pub(crate) fn parse_diff_closures(text: &str) -> Result<Vec<VersionDelta>> {
         if line.is_empty() || !line.contains(ARROW) {
             continue;
         }
-        deltas.push(parse_line(line)?);
+        let delta = parse_line(line)?;
+        // クロージャ総量集計行（`Closure size: ... → ...`）は version 差分でないため捨てる。size 値が無符号で
+        // version として解決されるため、名前で判別する。
+        if delta.name == CLOSURE_SIZE_HEADING {
+            continue;
+        }
+        // version が片側も解決できない行（符号付き size のみの集計/見出し等）も差分でないため捨てる。
+        if delta.old.is_none() && delta.new.is_none() {
+            continue;
+        }
+        deltas.push(delta);
     }
     Ok(deltas)
 }
@@ -184,20 +203,24 @@ oldpkg: 1.0.0 → ∅, -2.0 KiB
     }
 
     #[test]
-    fn keeps_multiple_versions_and_ignores_non_diff_lines() -> Result<()> {
+    fn keeps_multiple_versions_and_excludes_closure_size_aggregate() -> Result<()> {
         let text = "\
 Version changes:
 glibc: 2.38, 2.39 → 2.40
 Closure size: 100.0 MiB → 101.0 MiB
 ";
         let deltas = parse_diff_closures(text)?;
-        // \"Version changes:\" と \"Closure size: ... → ...\" のうち、後者は version でなく size 集計だが
-        // 矢印を含むためパース対象になる。size token は除去され、version が残らないので old/new とも None。
-        assert_eq!(deltas.len(), 2);
-
+        // P2-2 退行固定: `Closure size: ... → ...` は矢印を含むが size 集計で version が解決できず old/new とも
+        // None になる。これを偽パッケージとして残すと件数水増し・存在しないパッケージのノート取得を招くため、
+        // パーサが捨てる。よって実 version 差分の glibc だけが残り、`Closure size` は出力に現れない。
+        assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].name, "glibc");
         assert_eq!(deltas[0].old.as_deref(), Some("2.38, 2.39"));
         assert_eq!(deltas[0].new.as_deref(), Some("2.40"));
+        assert!(
+            !deltas.iter().any(|d| d.name == "Closure size"),
+            "Closure size aggregate must be excluded: {deltas:?}"
+        );
         Ok(())
     }
 

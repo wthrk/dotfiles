@@ -31,6 +31,10 @@ let
   label = "org.dotfiles.auto-update";
   homeDir = "/Users/${user}";
   stateDir = "${homeDir}/.local/state/dotfiles";
+  # 利用者の dotfiles ローカル flake（`dotfiles init` が書く `~/.config/dotfiles`）。root daemon の darwin 適用は
+  # root で走るため、`--config-dir` を渡さないと `$HOME`（/var/root）配下の存在しない config を見に行き失敗する。
+  # home/darwin 双方にこのユーザ config を明示し、root と user で同じローカル flake を確実に指す。
+  configDir = "${homeDir}/.config/dotfiles";
 
   system = pkgs.stdenv.hostPlatform.system;
   # 絶対 store パスで CLI を指す（PATH 非依存。root daemon の最小環境で確実に解決するため）。
@@ -47,16 +51,21 @@ let
     # ② 適用要否判定・home-manager 適用・要約書込みをユーザ権限で実行する。非 tty なので要約は
     #    pending-summary へ書かれる。darwin は別ステップ（root）で適用するため、ここでは home のみを対象に
     #    する（home-manager を root で走らせない）。`--defer-rev-marker` で `last-applied-rev` はまだ書かず、
-    #    home+darwin の両成功後（④）に確定する。これにより darwin 失敗時の rev drift を防ぐ。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home --defer-rev-marker
+    #    home+darwin の両成功後（④）に確定する。これにより darwin 失敗時の rev drift を防ぐ。`--config-dir` で
+    #    ユーザの `~/.config/dotfiles` を明示し、確実にユーザのローカル flake を指す。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home \
+      --config-dir ${lib.escapeShellArg configDir} --defer-rev-marker
 
-    # ③ darwin 部分は root のまま、sudo を前置しない経路で適用する（既に root daemon のため）。
-    DOTFILES_DARWIN_REBUILD_SUDO=0 ${dotfilesBin} switch darwin --no-sudo
+    # ③ darwin 部分は root のまま、sudo を前置しない経路で適用する（既に root daemon のため）。root では
+    #    `$HOME` が /var/root のため `--config-dir` でユーザ config を明示しないと存在しない config を見に行く。
+    DOTFILES_DARWIN_REBUILD_SUDO=0 ${dotfilesBin} switch darwin \
+      --config-dir ${lib.escapeShellArg configDir} --no-sudo
 
     # ④ home+darwin の両適用が成功した後にだけ rev マーカーを確定する。set -e により②③のいずれかが失敗
     #    すると④へ到達せず、`last-applied-rev` は前回値のまま残る（次回再適用で収束させ、drift を回避）。
-    #    マーカーはユーザ所有で書くため、確定もユーザ権限で行う。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home --commit-rev-marker
+    #    マーカーはユーザ所有で書くため、確定もユーザ権限で行う。`--config-dir` で読む pin を②と一致させる。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home \
+      --config-dir ${lib.escapeShellArg configDir} --commit-rev-marker
   '';
 in
 {

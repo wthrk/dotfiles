@@ -54,24 +54,49 @@ _dotfiles_auto_update_consume_pending() {
   return 1
 }
 
-# 現在の repo pin を `flake.lock` の dotfiles input locked rev から読む（純テキスト抽出）。
+# 現在の repo pin を `flake.lock` の dotfiles input locked rev から読む。
 #
-# JSON パーサに依存せず、nodes.dotfiles.locked.rev を素朴に拾う。確実性より「軽量・失敗で no-op」を優先し、
-# 取れなければ空文字を返して catch-up を起動しない（誤起動より未起動に倒す）。実際の rev 判定と適用は
-# `dotfiles update` 側（堅牢な JSON パーサ + lock）が単一の正本として行う。
+# `jq` があれば `nodes.dotfiles.locked.rev` で厳密抽出する（JSON 構造を正しく辿るため誤検知しない）。`jq` が
+# 無い環境では awk で素朴に拾うが、**dotfiles ノードのブロック範囲に限定**する。素朴な awk が `"dotfiles":` を
+# 一度見ると EOF まで in_node を維持すると、dotfiles ノード内に rev が無い／取り損ねた場合に後続ノードの rev を
+# 誤って拾い、現在 pin でない値で catch-up を不要起動してしまう。これを防ぐため、`"dotfiles":` 行で in_node を
+# 開始し、ネスト深さ（`{`/`}` の数）が dotfiles ノード開始時の深さへ戻った時点で in_node を閉じる。確実性より
+# 「軽量・失敗で no-op」を優先し、取れなければ空文字を返して catch-up を起動しない（誤起動より未起動に倒す）。
+# 実際の rev 判定と適用は `dotfiles update` 側（堅牢な JSON パーサ + lock）が単一の正本として行う。
 _dotfiles_auto_update_repo_pin() {
   local lock
   lock="$(_dotfiles_auto_update_config_dir)/flake.lock"
   [[ -r "$lock" ]] || return 1
-  # dotfiles ノードのブロック内最初の "rev": "<...>" を 1 つ取り出す。
+
+  # jq があれば構造を正しく辿って厳密抽出する（誤検知なし）。null/欠落は空文字に倒す。
+  if (( $+commands[jq] )); then
+    local rev
+    rev="$(jq -r '.nodes.dotfiles.locked.rev // empty' "$lock" 2>/dev/null)"
+    print -r -- "$rev"
+    return 0
+  fi
+
+  # jq 不在時の fallback。dotfiles ノードのブロック範囲（中括弧のネスト深さ）に限定して rev を拾う。
   awk '
-    /"dotfiles"[[:space:]]*:/ { in_node = 1 }
-    in_node && match($0, /"rev"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"/) {
-      s = substr($0, RSTART, RLENGTH)
-      gsub(/.*"rev"[[:space:]]*:[[:space:]]*"/, "", s)
-      gsub(/".*/, "", s)
-      print s
-      exit
+    !in_node && /"dotfiles"[[:space:]]*:/ {
+      in_node = 1
+      start_depth = depth
+    }
+    {
+      # 行内の中括弧でネスト深さを更新する。in_node 開始時の深さへ戻ったらノードを抜ける。
+      n_open = gsub(/{/, "{"); n_close = gsub(/}/, "}")
+      if (in_node && match($0, /"rev"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"/)) {
+        s = substr($0, RSTART, RLENGTH)
+        gsub(/.*"rev"[[:space:]]*:[[:space:]]*"/, "", s)
+        gsub(/".*/, "", s)
+        print s
+        exit
+      }
+      depth += n_open - n_close
+      if (in_node && depth <= start_depth) {
+        # dotfiles ノードを rev 未取得のまま抜けた。後続ノードの rev を拾わないよう探索を打ち切る。
+        exit
+      }
     }
   ' "$lock" 2>/dev/null
 }
@@ -109,7 +134,14 @@ _dotfiles_auto_update_init() {
   if [[ "$pin" != "$applied" ]]; then
     # ログインをブロックしないよう detach で起動する。多重起動は dotfiles 側 lock が吸収する。
     # 適用は非 tty なので要約は `pending-summary` へ書かれ、下の precmd フックが拾って表示する。
-    { dotfiles update >/dev/null 2>&1 } &!
+    #
+    # **target は home に限定する**（既定 `all` を使わない）。detach した非 tty プロセスで `dotfiles update`
+    # の既定 `all` を呼ぶと darwin 適用が `sudo darwin-rebuild` を起動し、tty が無いためパスワード入力できず
+    # 停止する。すると `last-applied-rev` 更新・`pending-summary` 書込みへ到達せず、表示も catch-up も完了
+    # しない。シェル catch-up は user 権限で完結する home 適用だけを行い、darwin 適用は root daemon
+    # （auto-update.nix の launchd daemon）に委ねる。home 側で lock 更新と switch home は進むため、ユーザは
+    # home 更新を即時反映でき、要約表示（pending-summary/precmd）も完了する。
+    { dotfiles update home >/dev/null 2>&1 } &!
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _dotfiles_auto_update_precmd
   fi

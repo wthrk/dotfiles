@@ -4,10 +4,11 @@
 //! 失敗したプログラム名をエラーに含める。
 
 use std::ffi::OsString;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use crate::Result;
-use anyhow::bail;
+use anyhow::{Context, bail};
 use dotfiles_core::command;
 
 /// `dry_run` なら表示のみ、通常時は同じ表示形式で実行して非 0 終了を失敗にする。
@@ -43,6 +44,56 @@ where
     let program = program.into();
     let args = args.into_iter().collect::<Vec<_>>();
     let output = Command::new(&program).args(&args).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "command failed: {}: {}: {}",
+            program.to_string_lossy(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(stdout)
+}
+
+/// 外部コマンドへ `stdin` を流し込み、stdout を捕捉して返す。非 0 終了は失敗にする。
+///
+/// `run_capture` と同じく stdout をプログラム的に読むが、加えて秘密情報（認証ヘッダ等）を **argv に乗せず**
+/// stdin 経由で渡すための経路である。secret を `-H "Authorization: Bearer <token>"` のように argv に置くと、
+/// 同一ホストのプロセス一覧（`ps`）から読めてしまうため、curl の `--config -`（stdin から設定読み取り）に
+/// `header = "Authorization: Bearer ..."` を流す用途に使う。`stdin_data` はそのまま子プロセスの stdin へ書き、
+/// 書き込み後に EOF を送る。stdin に書く内容も argv に現れないため、ログ・プロセス一覧のどちらにも secret を
+/// 残さない。失敗時は終了状態と stderr の先頭を文脈に含め、stdout は UTF-8 文字列として返す。
+pub(crate) fn run_capture_with_stdin<I>(
+    program: impl Into<OsString>,
+    args: I,
+    stdin_data: &[u8],
+) -> Result<String>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let program = program.into();
+    let args = args.into_iter().collect::<Vec<_>>();
+    let mut child = Command::new(&program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to spawn {}", program.to_string_lossy()))?;
+
+    // 子プロセスの stdin へ secret を含む設定を書き、EOF を送る。stdin は drop で閉じ EOF になる。
+    child
+        .stdin
+        .take()
+        .context("child stdin was not captured")?
+        .write_all(stdin_data)
+        .with_context(|| format!("failed to write stdin to {}", program.to_string_lossy()))?;
+
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("failed to wait for {}", program.to_string_lossy()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(

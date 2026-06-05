@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use serde::Deserialize;
 
 use crate::Result;
-use crate::process::run_capture;
+use crate::process::run_capture_with_stdin;
 use crate::update_history::domain::wire::{ChangeCategory, ChangeItem};
 use crate::update_history::ports::{ChangeExtractPort, RawReleaseNotes};
 
@@ -103,8 +103,16 @@ impl GithubModelsExtractAdapter {
     }
 
     /// curl で GitHub Models へ POST し、レスポンス本文を返す。失敗は `Err`。
+    ///
+    /// 認証トークンは **argv に乗せない**。`-H "Authorization: Bearer <token>"` を引数に置くと、同一 runner の
+    /// プロセス一覧（`ps`）から token が読めてしまう（secret を argv/ログに残さない義務に違反する）。代わりに
+    /// curl の `--config -`（stdin から設定を読む）へ `header = "Authorization: Bearer <token>"` を流し込み、
+    /// token を argv にもログにも出さない。Content-Type ヘッダと本文（`-d`）は secret ではないため argv のままで
+    /// よい。stdin の内容（[`auth_config`]）は curl 設定ファイル構文で、token をクォートして 1 ヘッダだけ渡す。
     fn post(token: &str, body: &str) -> Result<String> {
         let args = [
+            OsString::from("--config"),
+            OsString::from("-"),
             OsString::from("--fail"),
             OsString::from("--silent"),
             OsString::from("--show-error"),
@@ -113,14 +121,12 @@ impl GithubModelsExtractAdapter {
             OsString::from("-X"),
             OsString::from("POST"),
             OsString::from("-H"),
-            OsString::from(format!("Authorization: Bearer {token}")),
-            OsString::from("-H"),
             OsString::from("Content-Type: application/json"),
             OsString::from("-d"),
             OsString::from(body.to_string()),
             OsString::from(GITHUB_MODELS_ENDPOINT),
         ];
-        run_capture("curl", args)
+        run_capture_with_stdin("curl", args, auth_config(token).as_bytes())
     }
 
     /// レスポンス本文（チャット補完 JSON）から変更項目列を取り出す。
@@ -150,6 +156,16 @@ impl GithubModelsExtractAdapter {
             })
             .collect()
     }
+}
+
+/// curl の `--config -`（stdin）へ流す設定行を組み立てる。token を argv に出さず Authorization ヘッダを渡す。
+///
+/// curl 設定ファイル構文の `header = "..."` 形式で Authorization ヘッダ 1 件だけを与える。値はダブルクォートで
+/// 囲み、token 内に万一含まれうる `\` と `"` をエスケープして構文を壊さない（GitHub Actions の token は
+/// 英数字主体だが、防御的にエスケープする）。この文字列は stdin 経由でのみ curl へ渡り、argv・ログには現れない。
+fn auth_config(token: &str) -> String {
+    let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("header = \"Authorization: Bearer {escaped}\"\n")
 }
 
 /// JSON 出力スキーマ強制の `response_format`（versioned。category enum と必須フィールドを固定）。
@@ -209,8 +225,22 @@ mod tests {
     //! チャット補完レスポンスからの変更項目抽出（category enum 検証・未知値破棄・空縮退）と
     //! リクエストボディ/スキーマ組み立てを、実 API を呼ばずに固定する。
 
-    use super::{GithubModelsExtractAdapter, response_format_schema};
+    use super::{GithubModelsExtractAdapter, auth_config, response_format_schema};
     use crate::update_history::domain::wire::ChangeCategory;
+
+    #[test]
+    fn auth_config_puts_token_in_stdin_header_not_argv() {
+        // P1-4 退行固定: token は curl の `--config -`（stdin）の Authorization ヘッダとして渡し、argv には
+        // 一切出さない。auth_config は curl 設定構文の `header = "Authorization: Bearer <token>"` を返す。
+        let config = auth_config("ghs_SECRETtoken123");
+        assert_eq!(
+            config,
+            "header = \"Authorization: Bearer ghs_SECRETtoken123\"\n"
+        );
+        // curl 構文を壊しうる文字（バックスラッシュ・ダブルクォート）はエスケープする。
+        let escaped = auth_config(r#"a\b"c"#);
+        assert_eq!(escaped, "header = \"Authorization: Bearer a\\\\b\\\"c\"\n");
+    }
 
     fn completion_with_content(content: &str) -> String {
         serde_json::json!({

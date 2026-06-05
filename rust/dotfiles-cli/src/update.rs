@@ -8,6 +8,17 @@
 //! 既定では dotfiles input だけを更新し、推移的 nixpkgs を dotfiles repo の committed lock に追従させる。
 //! `--full` 指定時のみ input 名を渡さず、ローカル flake の全入力を最新解決へ更新する。
 //!
+//! ## 適用要否判定は lock 更新「後」に行う（fleet 追随の根幹）
+//!
+//! ローカル flake の `flake.lock` における dotfiles pin は、`nix flake update dotfiles` を実行するまで前回適用
+//! 値のまま動かない。upstream（dotfiles repo）が nightly bump で進んでも、ローカル lock を更新しない限り
+//! ローカル pin は古いままである。よって「ローカル pin == `last-applied-rev` なら skip」を **lock 更新前**に
+//! 判定すると、定常状態で常に skip され、マシンは新しい repo pin を永久に発見できず fleet が nightly bump に
+//! 追随しない。これを避けるため、本 module は flock 取得後に **先に `nix flake update dotfiles` を実行して
+//! ローカル lock を最新 repo pin へ更新し**、更新後の pin を読んで `last-applied-rev` と比較する。pin が変化
+//! していなければ switch / record / marker を skip し（lock 更新は冪等で副作用が小さい）、変化していれば switch
+//! と要約と marker 更新を行う。catch-up 要約に使う old nixpkgs rev は **lock 更新前**に、new は更新後に読む。
+//!
 //! ## 状態ディレクトリと所有権
 //!
 //! 状態は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）に置く。auto-update.nix の
@@ -43,14 +54,18 @@ const LOCK_FILE: &str = "update.lock";
 /// `docs/update-history` を解決する config-dir 相対のサブディレクトリ。
 const HISTORY_SUBDIR: &str = "docs/update-history";
 
-/// auto 経路の入口。repo pin を読み、前回適用済み rev と異なるときだけ適用し、適用後要約を振り分ける。
+/// auto 経路の入口。**先に lock を更新してから** repo pin を読み、前回適用済み rev と異なるときだけ適用する。
 ///
-/// 順序: state dir 確保 → `update.lock` 非ブロッキング取得 → （取得失敗なら skip）→ lock 保持下で pin 再読 →
-/// `last-applied-rev`（dotfiles pin）と比較 → 異なれば適用前の推移的 nixpkgs old rev を解決 → `flake update`
-/// と switch を実行 → `last-applied-rev` を原子的更新 → **適用前 nixpkgs rev 起点**の catch-up 要約を tty/
-/// 非 tty で振り分け表示。要約選択は `nixpkgs_old` と突合するため、dedup 用 dotfiles pin ではなく nixpkgs
-/// old rev を起点に渡す（名前空間が異なるため pin SHA を渡すと span が恒久空になる）。lock は処理終端で
-/// 解放する（guard の drop）。`--dry-run` では実際の適用・状態書込みをせず、判定・表示経路だけを通す。
+/// 順序: state dir 確保 → `update.lock` 非ブロッキング取得 → （取得失敗なら skip）→ lock 保持下で **適用前の
+/// 推移的 nixpkgs old rev を解決**（lock 更新前の値）→ `nix flake update dotfiles` で**ローカル lock を最新 repo
+/// pin へ更新**（`--commit-rev-marker` では lock 更新も switch もしない）→ 更新後の dotfiles pin を読む →
+/// `last-applied-rev` と比較 → 同一なら switch / record / marker を skip（lock 更新は冪等で副作用小）→ 異なれば
+/// switch → `last-applied-rev` を原子的更新 → **適用前 nixpkgs rev 起点**の catch-up 要約を tty/非 tty で振り分け
+/// 表示。skip 判定を lock 更新「後」に置くのは、ローカル pin が `nix flake update dotfiles` 前は前回適用値の
+/// まま動かず、更新前判定だと定常状態で常に skip して fleet が nightly bump へ追随しなくなるためである。要約
+/// 選択は `nixpkgs_old` と突合するため、dedup 用 dotfiles pin ではなく nixpkgs old rev を起点に渡す（名前空間が
+/// 異なるため pin SHA を渡すと span が恒久空になる）。lock は処理終端で解放する（guard の drop）。`--dry-run`
+/// では実際の lock 更新・適用・状態書込みをせず、判定・表示経路だけを通す。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     let config_dir = options.switch.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
@@ -69,32 +84,39 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         return Ok(());
     };
 
-    // lock 取得後に pin を再読し、判定〜適用〜マーカー更新を単一 lock 区間で連続させる（TOCTOU 回避）。
-    let current_pin = read_repo_pin(&config_dir)?;
-
     // `--commit-rev-marker`: 二段適用（home→darwin）の **両成功後** に rev マーカーだけを確定させる経路。
-    // home/darwin が別 CLI 起動に分かれる daemon ラッパーで、darwin 成功後にここを呼び、適用済み pin を
-    // 記録する。適用・要約は行わず、現在 pin を `last-applied-rev` へ原子的に書くだけ（lock 区間内で行う）。
+    // home/darwin が別 CLI 起動に分かれる daemon ラッパーで、home ステップが既に lock を更新済みのため、
+    // ここでは lock 更新も switch もせず、更新後の現在 pin を `last-applied-rev` へ原子的に書くだけ（lock 区間内）。
     if options.commit_rev_marker {
+        let current_pin = read_repo_pin(&config_dir)?;
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
         println!("適用済み rev を確定しました（rev {current_pin}）");
         return Ok(());
     }
 
-    let previous_rev = read_last_applied_rev(&state_dir)?;
+    // lock 更新「前」に config flake.lock の推移的 nixpkgs rev（old nixpkgs rev）を解決する。これが catch-up
+    // 要約の選択起点になる。lock 更新後に読むと nixpkgs も bump されて起点が new 側へずれ span が空になりうる
+    // ため、必ず更新前に読む。`last-applied-rev`（dotfiles pin）は適用要否 dedup 専用であり、要約選択には使わない
+    // （要約は `nixpkgs_old` と突合するため、dotfiles pin SHA を渡すと名前空間が違い恒久 miss する）。
+    let previous_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
 
-    if previous_rev.as_deref() == Some(current_pin.as_str()) {
-        // 現在 pin が前回適用済みと同一。適用不要。
-        println!("適用済み pin と同一のため update は不要です（rev {current_pin}）");
+    // **先に** ローカル lock を最新 repo pin へ更新する（skip 判定はこの後）。lock 更新前のローカル pin は前回
+    // 適用値のまま動かないため、更新前に判定すると定常状態で常に skip し fleet が追随しない。lock 更新は冪等で
+    // 副作用が小さいので、skip ケースでも先に走らせて upstream の新 pin を発見させる。
+    update_lock(&config_dir, options.full, dry_run)?;
+
+    // lock 更新後の dotfiles pin を読む。これが今回の適用対象（upstream の最新 repo pin）。
+    let current_pin = read_repo_pin(&config_dir)?;
+
+    let previous_rev = read_last_applied_rev(&state_dir)?;
+    if !should_switch(previous_rev.as_deref(), &current_pin) {
+        // lock 更新後の pin が前回適用済みと同一。switch / record / marker を skip する（lock 更新は実施済み）。
+        println!("適用済み pin と同一のため switch は不要です（rev {current_pin}）");
         return Ok(());
     }
 
-    // 適用「前」に config flake.lock の推移的 nixpkgs rev（old nixpkgs rev）を解決する。これが catch-up
-    // 要約の選択起点になる。`last-applied-rev`（dotfiles pin）は適用要否 dedup 専用であり、要約選択には
-    // 使わない（要約は `nixpkgs_old` と突合するため、dotfiles pin SHA を渡すと名前空間が違い恒久 miss する）。
-    let previous_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
-
-    apply(&config_dir, &options, dry_run)?;
+    // 更新後 pin が前回と異なる → switch を実行する（lock 更新は上で済んでいる）。
+    switch::run(options.switch.clone())?;
 
     // `--defer-rev-marker`: home/darwin を別ステップで適用する daemon ラッパー向けに、rev マーカー書込みを
     // ここでは行わず、darwin 成功後の `--commit-rev-marker` 起動へ委ねる。これにより darwin 失敗時に rev が
@@ -112,13 +134,16 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     Ok(())
 }
 
-/// 既存の switch と同じ対象へ、先に flake.lock を更新してから適用する。
+/// lock 更新「後」の現在 pin と前回適用済み rev から、switch / record / marker を実行すべきかを決める純粋関数。
 ///
-/// auto 経路は適用要否を判定済みで、この関数は実適用（lock 更新 + switch）だけを担う。`--dry-run` では
-/// `process::run` がコマンド表示のみで実行するため、実際の lock 更新・switch・状態書込みは起きない。
-fn apply(config_dir: &Path, options: &UpdateOptions, dry_run: bool) -> Result<()> {
-    update_lock(config_dir, options.full, dry_run)?;
-    switch::run(options.switch.clone())
+/// 前回適用済み rev が無い（初回）か、lock 更新で得た現在 pin と異なるときに `true`（switch すべき）を返す。
+/// 同一なら `false`（skip）。この判定は **必ず `nix flake update dotfiles` 実行後の pin** に対して行うことが
+/// 機能の根幹で、更新前のローカル pin（前回適用値のまま動かない）に対して判定すると定常状態で常に skip し、
+/// マシンが upstream の新 repo pin を永久に発見できず fleet が nightly bump に追随しなくなる。判定を実行・I/O
+/// から切り離し、「更新前 pin == 前回値でも、更新後 pin が新 pin なら switch する／更新後 pin が前回と同一なら
+/// skip する」という根幹挙動を単体検証可能にする。
+fn should_switch(previous_rev: Option<&str>, current_pin: &str) -> bool {
+    previous_rev != Some(current_pin)
 }
 
 /// ローカル flake の lock を更新する。
@@ -441,7 +466,7 @@ mod tests {
     use super::{
         LAST_RUN_LOG, LOCK_FILE, PENDING_SUMMARY, UpdateLock, append_pending_summary,
         parse_nixpkgs_rev, parse_repo_pin, present_summary, read_last_applied_rev,
-        resolve_state_dir, update_args, write_last_applied_rev,
+        resolve_state_dir, should_switch, update_args, write_last_applied_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -477,6 +502,27 @@ mod tests {
             as_strings(&args),
             vec!["flake", "update", "--flake", "/cfg"]
         );
+    }
+
+    #[test]
+    fn skip_decision_is_made_against_post_update_pin() {
+        // P1-1 退行固定: skip 判定は `nix flake update dotfiles` 実行「後」の pin に対して行う。
+        //
+        // 定常状態ではローカル lock の dotfiles pin は前回適用値（"old"）のまま動かない。run() は lock 更新後の
+        // pin を read_repo_pin で読み直してから本関数へ渡すため、以下の 2 ケースを固定する:
+        //   1. 前回適用値 = "old"。lock 更新で pin が新値 "new" になれば switch する（追随する）。
+        //      更新前の pin "old" を渡していた旧実装ではここが常に skip で fleet が追随しなかった。
+        assert!(
+            should_switch(Some("old"), "new"),
+            "lock 更新後に新 pin になれば skip せず switch する"
+        );
+        //   2. lock 更新後の pin が前回適用値 "same" と同一なら switch を skip する（lock 更新は冪等で実施済み）。
+        assert!(
+            !should_switch(Some("same"), "same"),
+            "更新後 pin が前回と同一なら switch を skip する"
+        );
+        // 初回（last-applied-rev 不在）は必ず switch する。
+        assert!(should_switch(None, "first"), "初回は必ず switch する");
     }
 
     #[test]

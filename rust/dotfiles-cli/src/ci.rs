@@ -7,10 +7,13 @@
 //! fail-open を避ける。
 //!
 //! 変更パス収集は `git diff --name-only base..head`（両端 tree の net 差分）ではなく
-//! `git log --name-only --pretty=format: base..head`（範囲内 **全 commit** の変更ファイル）を union する。
-//! net diff は途中 commit で逸脱パスを add してから head までに remove すると取りこぼす（add-then-remove）。
-//! 全 commit union は中間 commit で一度でも触れたパスを必ず拾うため、これが一次防御である（`--squash`
-//! マージ運用の有無に依存しない）。
+//! `git log --no-renames --name-only --pretty=format: base..head`（範囲内 **全 commit** の変更ファイル）を
+//! union する。net diff は途中 commit で逸脱パスを add してから head までに remove すると取りこぼす
+//! （add-then-remove）。全 commit union は中間 commit で一度でも触れたパスを必ず拾うため、これが一次防御で
+//! ある（`--squash` マージ運用の有無に依存しない）。`--no-renames` は rename を delete+add の 2 件として
+//! 扱わせ、宛先だけでなく**元パスも列挙**させる。これが無いと許可外の guard/ruleset/workflow を許可 prefix
+//! 配下へ rename する PR が宛先（許可済み）だけ変更したように見えて guard を通過し、保護設定を削除・移動
+//! できてしまう。元パスを union に入れることで rename 経由の許可外パス改変を取りこぼさない。
 //!
 //! このサブコマンドはリポジトリ保守向けだが、利用者 CLI と同じ binary に載せるのは CI runner が dev shell
 //! 経由で `dotfiles` を使えるためである。利用者向けの常用操作ではないが、xtask に置くと CI が xtask の
@@ -100,9 +103,21 @@ fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
     let range = format!("{}..{}", options.base, options.head);
     // `--pretty=format:` で commit ヘッダ行を空にし、`--name-only` の変更パス行だけを得る。範囲内の全 commit
     // を辿るため、各 commit が触れたパスがすべて出力に現れる（途中 commit で消えた net-clean なパスも含む）。
+    //
+    // `--no-renames` は必須である。これが無いと git は rename を 1 件の「rename」として扱い、`--name-only` は
+    // **宛先パスのみ**を列挙する。すると guard/ruleset/workflow（許可外パス）を許可 prefix 配下（例
+    // `docs/update-history/...`）へ rename する nightly PR が、許可済みの宛先だけを変更したように見えて guard を
+    // 通過し、保護設定を削除・移動できてしまう。`--no-renames` で rename を delete+add の 2 件として扱わせると、
+    // 元パス（許可外）も出力に現れ union へ入り、guard が fail する（許可外パスの混入を取りこぼさない）。
     let log_output = run_git(
         &git_dir_args,
-        ["log", "--name-only", "--pretty=format:", &range],
+        [
+            "log",
+            "--no-renames",
+            "--name-only",
+            "--pretty=format:",
+            &range,
+        ],
     )
     .context("collecting base..head per-commit changed paths failed")?;
     let changed_paths = collect_union_changed_paths(&log_output);
@@ -267,6 +282,27 @@ mod tests {
             "add-then-remove path must survive union collection: {paths:?}"
         );
         // この集合を判定核へ渡せば逸脱パスとして fail する（union が一次防御であることの担保）。
+        let err = super::bump_lock::verify_bump(&paths, MINIMAL_LOCK, MINIMAL_LOCK).unwrap_err();
+        assert!(err.to_string().contains("disallowed path"), "{err}");
+    }
+
+    #[test]
+    fn union_detects_disallowed_source_path_of_rename() {
+        // rename を許可外 → 許可 prefix へ行う nightly PR の guard 回避を固定する。`--no-renames` を付けた
+        // `git log --name-only` は rename を delete+add の 2 件として扱い、**元パスと宛先パスの両方**を行として
+        // 出力する。元パスが許可外（ここでは `.github/rulesets/nightly-bump.json`）なら union に入って guard が
+        // fail する。`--no-renames` を付けず宛先（`docs/update-history/nightly-bump.json`）のみが出る旧挙動だと
+        // 許可 prefix 配下に見えて guard を通過してしまう。
+        //
+        // 1 commit ぶんの `--no-renames --name-only --pretty=format:` 出力（先頭空行=空 commit ヘッダ）。
+        let log_output =
+            "\ndocs/update-history/nightly-bump.json\n.github/rulesets/nightly-bump.json\n";
+        let paths = collect_union_changed_paths(log_output);
+        assert!(
+            paths.contains(".github/rulesets/nightly-bump.json"),
+            "rename source (disallowed) must survive union collection: {paths:?}"
+        );
+        // この集合を判定核へ渡すと許可外パスとして fail する（rename 回避を塞ぐことの担保）。
         let err = super::bump_lock::verify_bump(&paths, MINIMAL_LOCK, MINIMAL_LOCK).unwrap_err();
         assert!(err.to_string().contains("disallowed path"), "{err}");
     }
