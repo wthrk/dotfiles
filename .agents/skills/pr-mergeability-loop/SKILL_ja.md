@@ -7,7 +7,7 @@ description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex re
 
 ## Actor Binding
 
-このスキルは main orchestrator のためのオーケストレーション拡張用補助スキルである。現在アクターの役割を確立・変更せず、独立した delegated PR-loop 役割を作らない。
+このスキルは main orchestrator のためのオーケストレーション拡張用補助スキルである。現在アクターの役割を確立・変更せず、独立した delegated PR-loop 役割を作らない。アクターは、既に起動済みの役割スキルに拘束され続ける。
 
 top-level の PR マージ可能化依頼では、main orchestrator が `/orchestration` と併用してループを調整する。委譲済みの実装担当、レビュー担当、判定担当、commit / PR 操作担当は、このスキルを使ってループ全体を引き取ったり、同じ delegated task の再オーケストレーション、作業単位の再選定、subagent 起動を行ったりしてはならない。各 delegated actor は割り当てられた役割に拘束され続け、PR-loop に関係する事実を親オーケストレーターへ報告する。
 

@@ -7,7 +7,7 @@ description: Use as an orchestration extension for the main orchestrator when a 
 
 ## Actor Binding
 
-This is an orchestration-extension support skill for the main orchestrator. It does not establish or change the current actor's role and does not create a standalone delegated PR-loop role.
+This is an orchestration-extension support skill for the main orchestrator. It does not establish or change the current actor's role and does not create a standalone delegated PR-loop role. The actor remains bound to the role skill already invoked.
 
 For top-level PR mergeability requests, the main orchestrator uses this skill with `/orchestration` to coordinate the loop. Delegated implementation, review, judgement, and commit / PR operation actors must not use this skill to take over the full loop, re-orchestrate, re-select the work unit, or launch subagents for the same delegated task. They stay bound to their assigned role and report PR-loop-relevant facts back to the parent orchestrator.
 
