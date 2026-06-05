@@ -193,8 +193,7 @@
             "dotfiles-cli"
           ];
           cargoTestFlags = [
-            "--package"
-            "dotfiles-cli"
+            "--workspace"
           ];
           buildInputs = [
             # GPG keyring backend（`gpgme` crate）が link する libgpgme / libgpg-error。

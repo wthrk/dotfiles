@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::Context;
-use dotfiles_cli::secrets_internal_test_stub_contract::{
+use dotfiles_secrets::secrets_internal_test_stub_contract::{
     BW_LOGIN_STUB_SPEC_ENV, BWS_STUB_SPEC_ENV, GIT_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV,
     STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
 };

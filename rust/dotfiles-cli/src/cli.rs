@@ -19,8 +19,8 @@ pub(crate) struct Cli {
 /// ローカル flake 操作、秘密情報復旧、設定適用を利用者向け command として公開する。
 enum Command {
     Init(crate::init::InitOptions),
-    Secrets(crate::secrets::SecretsOptions),
-    Gpg(crate::secrets::GpgOptions),
+    Secrets(dotfiles_secrets::SecretsOptions),
+    Gpg(dotfiles_secrets::GpgOptions),
     Switch(crate::switch::SwitchOptions),
     Update(crate::update::UpdateOptions),
 }
@@ -29,8 +29,8 @@ enum Command {
 pub(crate) async fn dispatch() -> Result<()> {
     match Cli::parse().command {
         Command::Init(options) => crate::init::run(options),
-        Command::Secrets(options) => crate::secrets::run(options).await,
-        Command::Gpg(options) => crate::secrets::run_gpg(options),
+        Command::Secrets(options) => dotfiles_secrets::run(options).await,
+        Command::Gpg(options) => dotfiles_secrets::run_gpg(options),
         Command::Switch(options) => crate::switch::run(options),
         Command::Update(options) => crate::update::run(options),
     }

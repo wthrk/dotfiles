@@ -2,6 +2,7 @@
 members = [
   "rust/dotfiles-cli",
   "rust/dotfiles-core",
+  "rust/dotfiles-secrets",
   "rust/tests/checks",
   "rust/tests/integration",
   "rust/tests/integration/guest",
@@ -29,6 +30,7 @@ clap = { version = "4.5.49", features = ["derive", "env"] }
 crossterm = "0.29.0"
 dotfiles-cli = { path = "rust/dotfiles-cli" }
 dotfiles-core = { path = "rust/dotfiles-core" }
+dotfiles-secrets = { path = "rust/dotfiles-secrets", default-features = false }
 filedescriptor = "0.8.3"
 git2 = "0.20.0"
 gpgme = "0.11.0"
