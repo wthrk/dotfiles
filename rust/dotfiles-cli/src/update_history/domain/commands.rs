@@ -1,0 +1,47 @@
+//! `update-history` の `record` / `show` use case が扱う入力 command の domain model。
+//!
+//! CLI option の parse 方式・出力形式・ファイル解決手段は含めず、application が適用する対象
+//! （diff する closure / tap rev、記録する時刻と参照構成、表示の絞り込み条件）だけを保持する。
+//! use case 独自型を application 側に置かないため、入力境界も domain 値として固定する。
+
+/// `record` use case の入力 command。
+///
+/// CI（nightly bump）が渡す old/new の nix closure store path と brew tap rev、記録する nixpkgs
+/// リビジョン、適用時刻（RFC3339 文字列）、diff 対象の参照構成を保持する。ノート取得・LLM 抽出・
+/// 追記先ファイルの解決手段は port 境界へ委譲し、本型は「何を diff し何の時刻で記録するか」だけを表す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordCommand {
+    /// diff 元の nix closure store path。
+    pub(crate) old_closure: String,
+    /// diff 先の nix closure store path。
+    pub(crate) new_closure: String,
+    /// brew tap rev の diff 元（formula/cask 版差分の old rev）。
+    pub(crate) old_rev: String,
+    /// brew tap rev の diff 先（formula/cask 版差分の new rev）。
+    pub(crate) new_rev: String,
+    /// 記録する bump 前 nixpkgs リビジョン。
+    pub(crate) nixpkgs_old: String,
+    /// 記録する bump 後 nixpkgs リビジョン。
+    pub(crate) nixpkgs_new: String,
+    /// diff 対象の参照構成（例: `darwinConfigurations.<ref>`）。
+    pub(crate) reference: String,
+    /// 適用時刻（RFC3339。CI が `--at` で注入する文字列をそのまま記録する）。
+    pub(crate) at: String,
+}
+
+/// `show` use case の入力 command。
+///
+/// 表示の絞り込み条件だけを保持する。履歴 source（`docs/update-history`）の解決手段や描画形式は
+/// application/adapter の責務であり、本型は「どこまで遡り、どう絞り、生データを出すか」という
+/// 表示意図だけを domain 値として表す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShowCommand {
+    /// 表示起点の nixpkgs リビジョン（`None` なら最新エントリまで）。
+    pub(crate) rev: Option<String>,
+    /// 表示するエントリ件数の上限（`None` なら無制限）。
+    pub(crate) limit: Option<usize>,
+    /// 生データ（JSON）で出力するか。
+    pub(crate) json: bool,
+    /// 宣言アプリだけでなく全パッケージを表示するか。
+    pub(crate) all: bool,
+}

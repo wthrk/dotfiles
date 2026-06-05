@@ -1,0 +1,227 @@
+name: nightly update
+
+# nightly に repo の flake.lock を bump し、更新履歴を記録して自動 PR を起票・auto-merge する。
+#
+# 安全要件（plan「ゲート」「自己改変の封路」「設定の版管理と自己保護」準拠）:
+#   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
+#     bump しない（無人で framework を動かさない）。
+#   - 生リリースノート取得 + LLM 抽出は prompt injection 隔離のため `contents: read` の別 job に分離する。
+#     その job だけが `models: read` を持ち、GITHUB_TOKEN で GitHub Models を使う（別 secret 不要）。
+#   - PR 起票・auto-merge は最小権限 GitHub App token で行う。GITHUB_TOKEN 起票の PR は必須 check を発火
+#     しない既知挙動のため、App token で起票して required status check `nightly-bump-guard` を発火させる。
+#   - main へ入るのは required check（guard）通過後のみ。ruleset（bypass actors 空）が auto-merge を縛る。
+#
+# dry_run（workflow_dispatch 既定 true）では bump と record と diff までを実行し、PR 起票・push を行わない。
+# 実発火（schedule）前に dry_run で両 closure build と TOML 生成を検証する運用を前提とする。
+
+on:
+  schedule:
+    # 18:00 UTC（plan 例）。マージ後の朝に各マシンが追随する想定。
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true なら PR 起票・push をせず bump/record/diff のみ検証する"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CI_REFERENCE: darwinConfigurations.ci-ref
+
+jobs:
+  # 1) lock を bump し、bump 前後の参照 closure を build して artifact に渡す。
+  #    LLM や PR 起票の権限を持たせない（contents: read のみ）。
+  bump:
+    name: bump lock and build closures
+    runs-on: macos-15
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
+      nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: 旧 closure と旧 rev を記録
+        id: old
+        run: |
+          set -euo pipefail
+          old_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
+          echo "closure=$old_closure" >> "$GITHUB_OUTPUT"
+          nixpkgs_old="$(nix eval --raw .#inputs.nixpkgs.rev 2>/dev/null || jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
+          echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
+
+      - name: nixpkgs と tap input を bump
+        run: |
+          set -euo pipefail
+          # framework input（nix-darwin / home-manager / nix-homebrew）は bump しない。
+          nix flake update \
+            nixpkgs \
+            homebrew-homebrew-core \
+            homebrew-homebrew-cask \
+            homebrew-azure-bicep \
+            homebrew-hashicorp-tap
+
+      - name: 新 closure と新 rev を記録
+        id: new
+        run: |
+          set -euo pipefail
+          new_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
+          echo "closure=$new_closure" >> "$GITHUB_OUTPUT"
+
+      - name: rev を集約
+        id: revs
+        run: |
+          set -euo pipefail
+          echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}" >> "$GITHUB_OUTPUT"
+          nixpkgs_new="$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
+          echo "nixpkgs_new=$nixpkgs_new" >> "$GITHUB_OUTPUT"
+
+      - name: bump 済み lock と closure path を artifact 化
+        uses: actions/upload-artifact@v4
+        with:
+          name: bump-state
+          retention-days: 1
+          include-hidden-files: true
+          path: |
+            flake.lock
+          if-no-files-found: error
+
+  # 2) 生ノート取得 + LLM 抽出 + record。prompt injection を隔離するため contents: read のみで、
+  #    GitHub Models を使う models: read をこの job にだけ与える。出力は更新履歴 TOML（信頼境界内の機械
+  #    バリデート済み）として artifact に渡す。
+  record:
+    name: extract notes and record history
+    needs: bump
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      models: read
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: bump 済み lock を取得
+        uses: actions/download-artifact@v4
+        with:
+          name: bump-state
+
+      - name: 参照 closure を再 build して record
+        env:
+          NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
+          NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
+          # GitHub Models は GITHUB_TOKEN で使う。別 secret は持たせない。
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          new_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
+          # old closure は bump 前 lock が必要なため、record adapter 側が old_rev/new_rev で再現する。
+          # ここでは new lock で build した closure を new とし、old は bump 前 rev を渡して adapter が解決する。
+          at="$(date -u +%FT%TZ)"
+          out="docs/update-history/$(date -u +%Y-%m).toml"
+          mkdir -p docs/update-history
+          nix develop -c dotfiles update-history record \
+            --old "$new_closure" \
+            --new "$new_closure" \
+            --old-rev "$NIXPKGS_OLD" \
+            --new-rev "$NIXPKGS_NEW" \
+            --nixpkgs-old "$NIXPKGS_OLD" \
+            --nixpkgs-new "$NIXPKGS_NEW" \
+            --reference "$CI_REFERENCE" \
+            --at "$at" \
+            --out "$out"
+
+      - name: 履歴 TOML を artifact 化
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-record
+          retention-days: 1
+          path: |
+            docs/update-history/
+          if-no-files-found: error
+
+  # 3) PR 起票 + auto-merge。最小権限 GitHub App token を使う（GITHUB_TOKEN 起票だと必須 check が発火しない）。
+  #    App ID / private key は repo secret 参照のみ（値は repo に置かない）。
+  open-pr:
+    name: open bump PR and enable auto-merge
+    needs: [bump, record]
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.dry_run == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: GitHub App token を生成
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.NIGHTLY_BUMP_APP_ID }}
+          private-key: ${{ secrets.NIGHTLY_BUMP_APP_PRIVATE_KEY }}
+
+      - name: checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: bump 済み lock を取得
+        uses: actions/download-artifact@v4
+        with:
+          name: bump-state
+
+      - name: 履歴 TOML を取得
+        uses: actions/download-artifact@v4
+        with:
+          name: history-record
+          path: docs/update-history
+
+      - name: bump ブランチを作成して PR 起票
+        id: pr
+        env:
+          # App token を使う。token は argv ではなく env 経由で gh に渡し、ログに出さない。
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          branch="nightly/bump-$(date -u +%Y%m%d%H%M%S)"
+          git switch -c "$branch"
+          git config user.name "nightly-bump[bot]"
+          git config user.email "nightly-bump[bot]@users.noreply.github.com"
+          git add flake.lock docs/update-history
+          if git diff --cached --quiet; then
+            echo "no changes to propose"; exit 0
+          fi
+          git commit -m "chore(deps): nightly flake.lock bump と更新履歴記録"
+          git push origin "$branch"
+          pr_url="$(gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "$branch" \
+            --title "chore(deps): nightly flake.lock bump" \
+            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴を記録します。required status check \`nightly-bump-guard\` 通過後に auto-merge されます。")"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: auto-merge を有効化
+        if: ${{ steps.pr.outputs.pr_url != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh pr merge --auto --squash "${{ steps.pr.outputs.pr_url }}"

@@ -21,6 +21,7 @@
     ./modules/homebrew.nix
     ./modules/macos-defaults.nix
     ./modules/launchagents.nix
+    ./modules/auto-update.nix
   ];
 
   nix.settings = {

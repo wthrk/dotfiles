@@ -29,3 +29,29 @@ where
         bail!("command failed: {}: {status}", program.to_string_lossy())
     }
 }
+
+/// 外部コマンドの stdout を捕捉して返す。非 0 終了は失敗にする。
+///
+/// `run` が stdio を継承するのに対し、本関数は `diff-closures` 出力やリリースノート取得のように
+/// 標準出力をプログラム的に読む用途のために `Command::output()` を使う（`environment.rs` の output
+/// 取得パターンに揃える）。`dry_run` 経路は持たず常に実行する。失敗時は終了状態と stderr の先頭を
+/// 文脈に含め、stdout は UTF-8 文字列として返す。stderr は端末へは流さず、失敗時の診断だけに使う。
+pub(crate) fn run_capture<I>(program: impl Into<OsString>, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let program = program.into();
+    let args = args.into_iter().collect::<Vec<_>>();
+    let output = Command::new(&program).args(&args).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "command failed: {}: {}: {}",
+            program.to_string_lossy(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(stdout)
+}

@@ -51,6 +51,7 @@
       ''
         [[ -f "$HOME/.config/zsh/completion.zsh" ]] && source "$HOME/.config/zsh/completion.zsh"
         [[ -f "$HOME/.config/zsh/prompt.zsh" ]] && source "$HOME/.config/zsh/prompt.zsh"
+        [[ -f "$HOME/.config/zsh/auto-update.zsh" ]] && source "$HOME/.config/zsh/auto-update.zsh"
         [[ -f "$HOME/.config/zsh/local.zsh" ]] && source "$HOME/.config/zsh/local.zsh"
       ''
     ];

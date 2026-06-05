@@ -36,6 +36,19 @@ dotfiles update darwin
 dotfiles update all
 ```
 
+`dotfiles update` は、ローカル flake の `flake.lock` が指す dotfiles リビジョン（repo pin）が前回適用済みと
+同じ場合は適用をスキップします。適用要否は暦日ではなく適用済みリビジョンで判定するため、同じ pin に対して
+何度実行しても再適用されません。適用状態は `$XDG_STATE_HOME/dotfiles`（未設定時は `~/.local/state/dotfiles`）の
+`last-applied-rev` に記録し、同時実行は `update.lock` で排他します。適用後は更新内容の概要を表示し、端末が
+非対話（バックグラウンド適用）のときは `pending-summary` に追記して次回シェル操作時に表示します。
+
+既定では dotfiles input だけを更新して推移的 nixpkgs を repo の lock に追従させます。ローカル flake の全入力を
+最新解決し直す場合は `--full` を付けます。
+
+```sh
+dotfiles update --full
+```
+
 更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。
 
 ```sh
@@ -208,3 +221,25 @@ Tart VM を使う runtime 検証:
 ```sh
 cargo xtask check runtime
 ```
+
+## nightly 自動 bump とゲート
+
+`.github/workflows/nightly-update.yml` が nightly に repo の `flake.lock` を bump（nixpkgs と
+Homebrew tap input のみ。framework input は bump しない）し、更新履歴を `docs/update-history/<YYYY-MM>.toml`
+へ記録して自動 PR を起票・auto-merge します。各マシンはこの bump 済み pin に `dotfiles update` で追随します。
+
+無人 auto-merge の実ゲートは required status check `nightly-bump-guard`
+（`.github/workflows/nightly-bump-guard.yml`）です。この check は `dotfiles ci verify-bump-lock` を呼び、PR の
+base..head の全 commit 履歴に対して次を機械判定します。
+
+- 変更パスが `flake.lock` と `docs/update-history/**` だけであること（`.github/**`・ruleset・ソースが
+  混ざれば fail）。
+- `flake.lock` 差分が許可 input 集合（nixpkgs と tap 4 本）の rev 変更だけで、想定外 input の追加・
+  source 改変・framework input の rev 変更が無いこと。
+
+判定ロジックは Rust の純粋核（`rust/dotfiles-cli/src/ci/bump_lock.rs`）に置き、unit test で固定しています。
+
+ブランチ保護設定は `.github/rulesets/nightly-bump.json` で版管理します（`enforcement=active`・bypass actors
+空）。この設定自体の変更もレビュー必須であり、許可パスが `flake.lock` + `docs/update-history/**` に限定される
+ため、nightly PR が `.github/**`（ruleset/workflow/guard）を変更すると guard が fail し、無人 auto-merge
+されず人手レビュー経路へ送られます。

@@ -1,0 +1,314 @@
+//! catch-up（複数 nightly bump 跨ぎ）の表示時集約を行う domain 関数。
+//!
+//! `last-applied-rev` が複数 bump 遅れていると、適用は複数エントリを一度に跨ぐ。`show` と適用後表示は
+//! 跨いだ全 [`UpdateEntry`] をアプリ単位で集約する: `old` は最古適用版・`new` は最新適用版、
+//! change_item は決定論キー `(name, category, ref_url)` で重複排除し、severity / overall は集約後集合で
+//! 再算出する（再算出は [`super::severity`] の単一関数を共有）。集約はストアではなく表示時マージである。
+
+use std::collections::BTreeMap;
+
+use super::wire::{ChangeItem, ChangeKind, PackageUpdate, UpdateEntry};
+
+/// 集約後 `change` 種別を最古→最新の version 遷移から決める。
+///
+/// 跨ぎ区間の途中種別は捨て、最初の適用前状態と最後の適用後状態だけで種別を確定する:
+/// 開始時不在（最初が `Added`）かつ最後も削除でなければ `Added`、最後が `Removed` なら `Removed`、
+/// それ以外は old→new の version 比較ではなく「上書き更新」を表す `Upgraded` を既定とし、
+/// `Downgraded` は単一区間の種別が降格でかつ跨ぎが起きていないときに保持する。
+fn aggregated_change(first: ChangeKind, last: ChangeKind, spanned: bool) -> ChangeKind {
+    match (first, last) {
+        (_, ChangeKind::Removed) => ChangeKind::Removed,
+        (ChangeKind::Added, _) => ChangeKind::Added,
+        _ if spanned => ChangeKind::Upgraded,
+        (single, _) => single,
+    }
+}
+
+/// 複数 [`UpdateEntry`] を跨いだ更新をアプリ単位で集約し、安定順の [`PackageUpdate`] 列を返す。
+///
+/// `entries` は適用順（`at` 昇順 = 最古→最新）で渡す。各アプリについて `old` は最初に現れたエントリの
+/// `old`、`new` は最後に現れたエントリの `new` を採用する。`change_items` は出現順を保ったまま
+/// 決定論キー `(name, category, ref_url)` で重複排除する。`notes_url` は最新エントリの値を優先する。
+/// `declared` は跨ぎ区間で 1 度でも宣言アプリとして現れたら `true`（宣言表示を落とさない）。
+///
+/// 戻り値の並びは、最初に各アプリが現れた順を安定的に保つ。severity / overall の再算出は呼び出し側が
+/// 集約結果の `change_items` を [`super::severity`] へ渡して行う（本関数は package 集約のみを担う）。
+pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
+    // アプリ名 → 集約途中状態。挿入順を保つため別 Vec に名前順を記録する。
+    let mut order: Vec<String> = Vec::new();
+    let mut acc: BTreeMap<String, PackageUpdate> = BTreeMap::new();
+    // change_item の重複排除キー `(name, category, ref_url)` の既出集合。
+    let mut seen: BTreeMap<(String, String, Option<String>), ()> = BTreeMap::new();
+    // 各アプリの最初の change 種別（集約 change 確定に使う）。
+    let mut first_change: BTreeMap<String, ChangeKind> = BTreeMap::new();
+    // 各アプリが複数エントリを跨いだか。
+    let mut spanned: BTreeMap<String, bool> = BTreeMap::new();
+
+    for entry in entries {
+        for package in &entry.packages {
+            match acc.get_mut(&package.name) {
+                None => {
+                    order.push(package.name.clone());
+                    first_change.insert(package.name.clone(), package.change);
+                    spanned.insert(package.name.clone(), false);
+                    let mut initial = PackageUpdate {
+                        name: package.name.clone(),
+                        old: package.old.clone(),
+                        new: package.new.clone(),
+                        change: package.change,
+                        declared: package.declared,
+                        notes_url: package.notes_url.clone(),
+                        change_items: Vec::new(),
+                    };
+                    push_unique_items(&mut seen, &mut initial, &package.change_items);
+                    acc.insert(package.name.clone(), initial);
+                }
+                Some(existing) => {
+                    // new は最新エントリ、change/notes_url も最新を優先、declared は OR。
+                    existing.new = package.new.clone();
+                    existing.change = package.change;
+                    if package.notes_url.is_some() {
+                        existing.notes_url = package.notes_url.clone();
+                    }
+                    existing.declared = existing.declared || package.declared;
+                    spanned.insert(package.name.clone(), true);
+                    push_unique_items(&mut seen, existing, &package.change_items);
+                }
+            }
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|name| {
+            let mut package = acc.remove(&name)?;
+            let first = first_change.get(&name).copied().unwrap_or(package.change);
+            let spanned = spanned.get(&name).copied().unwrap_or(false);
+            package.change = aggregated_change(first, package.change, spanned);
+            Some(package)
+        })
+        .collect()
+}
+
+/// 決定論キー `(name, category, ref_url)` の未出 change_item だけを順序を保って push する。
+fn push_unique_items(
+    seen: &mut BTreeMap<(String, String, Option<String>), ()>,
+    package: &mut PackageUpdate,
+    items: &[ChangeItem],
+) {
+    for item in items {
+        let category_key = category_key(item);
+        let key = (package.name.clone(), category_key, item.ref_url.clone());
+        if seen.insert(key, ()).is_none() {
+            package.change_items.push(item.clone());
+        }
+    }
+}
+
+/// dedup キーで使う category の安定文字列表現。
+///
+/// 集約は category の同一性だけを見るため、`text` 差分は重複排除に影響させない。
+fn category_key(item: &ChangeItem) -> String {
+    format!("{:?}", item.category)
+}
+
+#[cfg(test)]
+mod tests {
+    //! catch-up 集約の old/new 確定、change_item 重複排除、安定順を固定する。
+
+    use super::*;
+    use crate::update_history::domain::severity::{overall_headline, severity_of};
+    use crate::update_history::domain::wire::{
+        ChangeCategory, ChangeItem, ChangeKind, PackageUpdate, Severity, UpdateEntry,
+    };
+
+    fn entry(at: &str, packages: Vec<PackageUpdate>) -> UpdateEntry {
+        UpdateEntry {
+            at: at.to_string(),
+            nixpkgs_old: "old".to_string(),
+            nixpkgs_new: "new".to_string(),
+            reference: "darwinConfigurations.ci".to_string(),
+            severity: Severity::None,
+            overall: String::new(),
+            packages,
+        }
+    }
+
+    fn change_item(category: ChangeCategory, text: &str, ref_url: Option<&str>) -> ChangeItem {
+        ChangeItem {
+            category,
+            text: text.to_string(),
+            ref_url: ref_url.map(str::to_string),
+        }
+    }
+
+    fn package(
+        name: &str,
+        old: Option<&str>,
+        new: Option<&str>,
+        change: ChangeKind,
+        items: Vec<ChangeItem>,
+    ) -> PackageUpdate {
+        PackageUpdate {
+            name: name.to_string(),
+            old: old.map(str::to_string),
+            new: new.map(str::to_string),
+            change,
+            declared: true,
+            notes_url: None,
+            change_items: items,
+        }
+    }
+
+    #[test]
+    fn aggregate_takes_oldest_old_and_newest_new() {
+        let entries = [
+            entry(
+                "2026-06-01T00:00:00Z",
+                vec![package(
+                    "neovim",
+                    Some("0.10.0"),
+                    Some("0.10.2"),
+                    ChangeKind::Upgraded,
+                    vec![change_item(
+                        ChangeCategory::Fix,
+                        "修正A",
+                        Some("https://x/1"),
+                    )],
+                )],
+            ),
+            entry(
+                "2026-06-02T00:00:00Z",
+                vec![package(
+                    "neovim",
+                    Some("0.10.2"),
+                    Some("0.11.0"),
+                    ChangeKind::Upgraded,
+                    vec![change_item(
+                        ChangeCategory::Feature,
+                        "機能B",
+                        Some("https://x/2"),
+                    )],
+                )],
+            ),
+        ];
+
+        let aggregated = aggregate(&entries);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].old.as_deref(), Some("0.10.0"));
+        assert_eq!(aggregated[0].new.as_deref(), Some("0.11.0"));
+        assert_eq!(aggregated[0].change_items.len(), 2);
+    }
+
+    #[test]
+    fn aggregate_dedups_change_items_by_name_category_ref() {
+        let item = change_item(ChangeCategory::Security, "CVE 修正", Some("https://x/cve"));
+        let entries = [
+            entry(
+                "2026-06-01T00:00:00Z",
+                vec![package(
+                    "openssl",
+                    Some("3.0.0"),
+                    Some("3.0.1"),
+                    ChangeKind::Upgraded,
+                    vec![item.clone()],
+                )],
+            ),
+            entry(
+                "2026-06-02T00:00:00Z",
+                vec![package(
+                    "openssl",
+                    Some("3.0.1"),
+                    Some("3.0.2"),
+                    ChangeKind::Upgraded,
+                    // 同一 (name, category, ref) は重複排除される（text が違っても category/ref 一致で除外）。
+                    vec![
+                        change_item(
+                            ChangeCategory::Security,
+                            "別表現の同一参照",
+                            Some("https://x/cve"),
+                        ),
+                        change_item(ChangeCategory::Feature, "新機能", None),
+                    ],
+                )],
+            ),
+        ];
+
+        let aggregated = aggregate(&entries);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].change_items.len(), 2);
+        // 集約後集合で severity を再算出すると security により critical。
+        assert_eq!(severity_of(&aggregated[0].change_items), Severity::Critical);
+    }
+
+    #[test]
+    fn aggregate_preserves_first_seen_app_order_and_recomputes_overall() {
+        let entries = [entry(
+            "2026-06-01T00:00:00Z",
+            vec![
+                package(
+                    "zlib",
+                    Some("1.2"),
+                    Some("1.3"),
+                    ChangeKind::Upgraded,
+                    vec![change_item(ChangeCategory::Fix, "修正", None)],
+                ),
+                package(
+                    "neovim",
+                    Some("0.10"),
+                    Some("0.11"),
+                    ChangeKind::Upgraded,
+                    vec![change_item(ChangeCategory::Feature, "機能", None)],
+                ),
+            ],
+        )];
+
+        let aggregated = aggregate(&entries);
+
+        assert_eq!(aggregated[0].name, "zlib");
+        assert_eq!(aggregated[1].name, "neovim");
+
+        let all_items: Vec<ChangeItem> = aggregated
+            .iter()
+            .flat_map(|p| p.change_items.clone())
+            .collect();
+        assert_eq!(
+            overall_headline(aggregated.len(), &all_items),
+            "2アプリ更新: ✨1 🐛1"
+        );
+    }
+
+    #[test]
+    fn aggregate_marks_removed_when_last_span_removes_app() {
+        let entries = [
+            entry(
+                "2026-06-01T00:00:00Z",
+                vec![package(
+                    "oldpkg",
+                    Some("1.0"),
+                    Some("1.1"),
+                    ChangeKind::Upgraded,
+                    vec![],
+                )],
+            ),
+            entry(
+                "2026-06-02T00:00:00Z",
+                vec![package(
+                    "oldpkg",
+                    Some("1.1"),
+                    None,
+                    ChangeKind::Removed,
+                    vec![],
+                )],
+            ),
+        ];
+
+        let aggregated = aggregate(&entries);
+
+        assert_eq!(aggregated[0].change, ChangeKind::Removed);
+        assert_eq!(aggregated[0].new, None);
+        assert_eq!(aggregated[0].old.as_deref(), Some("1.0"));
+    }
+}

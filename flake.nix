@@ -310,6 +310,18 @@
 
       darwinModules.default = darwinModule;
 
+      # nightly bump の更新内容を算出するための CI 参照ホスト。
+      #
+      # 各マシンの concrete な `darwinConfigurations` は利用側 flake に置くため、本 repo 単体には
+      # diff-closures で old/new lock を比較する対象が無い。nightly-update.yml はこの固定参照構成の
+      # `system` closure を bump 前後の lock で build し、`nix store diff-closures` で更新を算出する。
+      # 利用者名・ホスト名は CI 内の固定値であり、実フリートとは独立した参照専用構成である。
+      darwinConfigurations.ci-ref = mkDarwin {
+        user = "ci";
+        host = "ci-ref";
+        system = "aarch64-darwin";
+      };
+
       lib = {
         inherit mkHome mkDarwin;
         homeManagerModules.default = homeManagerModule;

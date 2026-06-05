@@ -28,7 +28,10 @@ anyhow.workspace = true
 clap.workspace = true
 dotfiles-core.workspace = true
 dotfiles-secrets.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
