@@ -196,7 +196,8 @@ fn run_verify_ruleset(options: VerifyRulesetOptions) -> Result<()> {
 
     let applied = gh_api(&format!("repos/{repository}/rulesets/{ruleset_id}"))
         .context("fetching applied ruleset detail failed")?;
-    ruleset::verify_applied_ruleset(&applied)?;
+    // 版管理定義（`definition`）を strict policy 等の要求値の source of truth として渡す。
+    ruleset::verify_applied_ruleset(&applied, &definition)?;
 
     println!(
         "nightly-bump ruleset `{expected_name}` (id {ruleset_id}) applied state OK \

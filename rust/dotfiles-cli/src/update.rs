@@ -191,7 +191,14 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // （次回起点）であり、適用要否 marker（`last-applied-*`）とも整合する。
     let applied_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
 
-    if !options.defer_rev_marker {
+    // repo pin 全体の確定（`last-applied-rev`/`last-applied-nixpkgs-rev`）は **全体適用（target=all）でのみ**
+    // 行う。部分 target（`dotfiles update home` / `dotfiles update darwin`）の通常実行でこれを確定すると、
+    // 適用していない他 target がその rev について以降 skip され（`should_switch` が前回値一致で skip）、未適用の
+    // まま starve する。部分 target では rev を確定せず次回の全体適用に残す。daemon 経路の二段適用は
+    // `--defer-rev-marker`（home 部分で確定しない）/`--commit-rev-marker`（darwin 成功後にまとめて確定）で
+    // 整合させており、ここでは `defer_rev_marker` 偽かつ全体適用のときだけ確定する。要約表示自体は target に
+    // 依らず行う（部分適用でも実際に進んだ範囲を見せる）が、apply-dedup の rev 確定は全体適用に限定する。
+    if !options.defer_rev_marker && options.switch.is_full_apply() {
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
         // dotfiles pin と同時に、今回適用した nixpkgs rev も確定する。defer 時は rev 未確定のため書かない
         // （darwin 成功後の `--commit-rev-marker` がまとめて確定する）。

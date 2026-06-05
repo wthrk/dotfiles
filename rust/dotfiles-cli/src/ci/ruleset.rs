@@ -9,8 +9,11 @@
 //! 1. **enforcement=active**: ruleset が無効化（`disabled` / `evaluate`）されていないこと。
 //! 2. **bypass_actors 空**: admin / App を含めいかなる actor も bypass できないこと（required check の
 //!    fail-open を塞ぐ）。
-//! 3. **required status check 包含**: required_status_checks ルールに guard の context（`nightly-bump-guard`）
-//!    が含まれること。これが落ちると guard が required でなくなり fail-open する。
+//! 3. **required status check 包含と strict 一致**: required_status_checks ルールに guard の context
+//!    （`nightly-bump-guard`）が含まれること。これが落ちると guard が required でなくなり fail-open する。
+//!    加えて、適用済み ruleset の `strict_required_status_checks_policy`（merge 前に base へ最新化を要求する
+//!    strict フラグ）が版管理 JSON（`.github/rulesets/nightly-bump.json`）の要求値と一致すること。版管理が
+//!    strict を要求しているのに適用側で false に drift すると、古い base のまま auto-merge されうるため検証する。
 //! 4. **適用対象が default branch を含む**: `target == "branch"` かつ `conditions.ref_name.include` が
 //!    `~DEFAULT_BRANCH`（default branch を表す GitHub のメタ ref）を含むこと。retarget（default branch を含まない
 //!    別 ref へ条件を差し替え）されると、ruleset 自体は active / bypass 空 / required check ありでも main を保護
@@ -40,20 +43,64 @@ const DEFAULT_BRANCH_REF: &str = "~DEFAULT_BRANCH";
 /// GitHub に適用された単一 ruleset の JSON が安全要件を満たすかを判定する。
 ///
 /// `applied` は `gh api repos/{owner}/{repo}/rulesets/{id}` の応答（単一 ruleset。`rules` を含む詳細表現）。
-/// enforcement・bypass_actors・required status check の 3 不変条件を順に検査し、最初の違反理由を載せた
-/// `Err` を返す。すべて満たせば `Ok(())`。
+/// `definition` は版管理された ruleset 定義 JSON（`.github/rulesets/nightly-bump.json`）で、strict policy 等の
+/// 要求値の source of truth として使う。enforcement・bypass_actors・適用対象・required status check（context
+/// 包含と strict policy 一致）の不変条件を順に検査し、最初の違反理由を載せた `Err` を返す。すべて満たせば `Ok(())`。
 ///
 /// caller responsibility: `applied` は ruleset 一覧（`/rulesets`）の要素ではなく、`rules` 配列を含む
 /// 詳細表現（`/rulesets/{id}`）であること。一覧表現は `rules` を持たないため required check を検査できない。
-pub(crate) fn verify_applied_ruleset(applied: &str) -> Result<()> {
+pub(crate) fn verify_applied_ruleset(applied: &str, definition: &str) -> Result<()> {
     let ruleset: Value =
         serde_json::from_str(applied).context("applied ruleset response is not valid JSON")?;
+    let definition: Value = serde_json::from_str(definition)
+        .context("versioned ruleset definition is not valid JSON")?;
 
     verify_enforcement(&ruleset)?;
     verify_bypass_actors_empty(&ruleset)?;
     verify_applied_target(&ruleset)?;
     verify_required_guard_check(&ruleset)?;
+    verify_strict_policy_matches(&ruleset, &definition)?;
     Ok(())
+}
+
+/// 適用済み ruleset の `strict_required_status_checks_policy` が版管理 JSON の要求値に一致するかを検査する。
+///
+/// 版管理 JSON（`definition`）の required_status_checks rule が持つ `strict_required_status_checks_policy` を
+/// 期待値とし、適用済み ruleset（`applied`）の同フィールドがそれと一致することを要求する。版管理が strict を
+/// 要求しているのに適用側で false へ drift していると、古い base のまま auto-merge されうる（merge 前最新化の
+/// 強制が外れる）ため fail にする。両者とも欠落時の既定は GitHub の既定どおり `false` とみなして比較する
+/// （版管理が strict を明示要求していなければ適用側も false で整合）。
+fn verify_strict_policy_matches(applied: &Value, definition: &Value) -> Result<()> {
+    let expected = strict_policy(definition);
+    let actual = strict_policy(applied);
+    if expected == actual {
+        Ok(())
+    } else {
+        bail!(
+            "applied ruleset strict_required_status_checks_policy is {actual}, \
+             but versioned definition requires {expected}; strict policy drifted \
+             (auto-merge may bypass base up-to-date requirement)"
+        )
+    }
+}
+
+/// ruleset 値から required_status_checks rule の `strict_required_status_checks_policy` を読む（欠落は `false`）。
+///
+/// 版管理 JSON と適用済み JSON の双方で同じ抽出規則を共有する。required_status_checks rule が無い、または
+/// strict フラグが無い場合は GitHub 既定の `false` とみなす。
+fn strict_policy(ruleset: &Value) -> bool {
+    ruleset
+        .get("rules")
+        .and_then(Value::as_array)
+        .and_then(|rules| {
+            rules.iter().find(|rule| {
+                rule.get("type").and_then(Value::as_str) == Some("required_status_checks")
+            })
+        })
+        .and_then(|rule| rule.get("parameters"))
+        .and_then(|parameters| parameters.get("strict_required_status_checks_policy"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// 適用対象が default branch（main）を含むことを検査する（retarget による無保護化を塞ぐ）。
@@ -183,12 +230,29 @@ fn verify_required_guard_check(ruleset: &Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    //! 適用済み ruleset JSON の 3 不変条件（active / bypass 空 / guard context 包含）と、
-    //! それぞれが破れたとき fail することを固定する。
+    //! 適用済み ruleset JSON の不変条件（active / bypass 空 / 適用対象 / guard context 包含 / strict policy
+    //! 一致）と、それぞれが破れたとき fail することを固定する。
 
     use super::*;
 
-    /// 全不変条件を満たす最小の適用済み ruleset 詳細 JSON。
+    /// 版管理 ruleset 定義 JSON（strict policy を true で要求する `.github/rulesets/nightly-bump.json` 相当）。
+    fn definition() -> String {
+        r#"{
+          "name": "nightly-bump-protection",
+          "rules": [
+            {
+              "type": "required_status_checks",
+              "parameters": {
+                "strict_required_status_checks_policy": true,
+                "required_status_checks": [ { "context": "nightly-bump-guard" } ]
+              }
+            }
+          ]
+        }"#
+        .to_string()
+    }
+
+    /// 全不変条件を満たす最小の適用済み ruleset 詳細 JSON（strict policy も版管理要求に一致させる）。
     fn valid_ruleset() -> String {
         r#"{
           "name": "nightly-bump-protection",
@@ -203,6 +267,7 @@ mod tests {
             {
               "type": "required_status_checks",
               "parameters": {
+                "strict_required_status_checks_policy": true,
                 "required_status_checks": [
                   { "context": "nightly-bump-guard" }
                 ]
@@ -215,13 +280,13 @@ mod tests {
 
     #[test]
     fn accepts_valid_applied_ruleset() -> Result<()> {
-        verify_applied_ruleset(&valid_ruleset())
+        verify_applied_ruleset(&valid_ruleset(), &definition())
     }
 
     #[test]
     fn rejects_inactive_enforcement() {
         let applied = valid_ruleset().replace(r#""active""#, r#""evaluate""#);
-        let err = verify_applied_ruleset(&applied).unwrap_err();
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("enforcement"), "{err}");
     }
 
@@ -231,7 +296,7 @@ mod tests {
             r#""bypass_actors": [],"#,
             r#""bypass_actors": [ { "actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always" } ],"#,
         );
-        let err = verify_applied_ruleset(&applied).unwrap_err();
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("bypass actor"), "{err}");
     }
 
@@ -244,7 +309,7 @@ mod tests {
           "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
           "rules": [ { "type": "deletion" } ]
         }"#;
-        let err = verify_applied_ruleset(applied).unwrap_err();
+        let err = verify_applied_ruleset(applied, &definition()).unwrap_err();
         assert!(
             err.to_string().contains("no required_status_checks rule"),
             "{err}"
@@ -255,7 +320,7 @@ mod tests {
     fn rejects_target_retargeted_away_from_branch() {
         // P2-5 退行固定: target が branch 以外（tag 等）へ差し替えられた ruleset は main を保護しないため fail。
         let applied = valid_ruleset().replace(r#""target": "branch""#, r#""target": "tag""#);
-        let err = verify_applied_ruleset(&applied).unwrap_err();
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("target is"), "{err}");
     }
 
@@ -267,7 +332,7 @@ mod tests {
             r#""include": ["~DEFAULT_BRANCH"]"#,
             r#""include": ["refs/heads/some-other-branch"]"#,
         );
-        let err = verify_applied_ruleset(&applied).unwrap_err();
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("does not contain"), "{err}");
     }
 
@@ -276,7 +341,7 @@ mod tests {
         // include に `~DEFAULT_BRANCH` があっても exclude で除外されれば保護が外れるため fail。
         let applied =
             valid_ruleset().replace(r#""exclude": []"#, r#""exclude": ["~DEFAULT_BRANCH"]"#);
-        let err = verify_applied_ruleset(&applied).unwrap_err();
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("excludes"), "{err}");
     }
 
@@ -289,15 +354,44 @@ mod tests {
           "bypass_actors": [],
           "rules": [ { "type": "deletion" } ]
         }"#;
-        let err = verify_applied_ruleset(applied).unwrap_err();
+        let err = verify_applied_ruleset(applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("no conditions.ref_name"), "{err}");
     }
 
     #[test]
     fn rejects_guard_context_drift() {
         let applied = valid_ruleset().replace("nightly-bump-guard", "some-other-check");
-        let err = verify_applied_ruleset(&applied).unwrap_err();
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("do not include"), "{err}");
+    }
+
+    #[test]
+    fn rejects_strict_policy_drift() {
+        // N10 退行固定: 版管理 JSON が strict policy を true で要求するのに、適用済み ruleset で false へ
+        // drift していると、古い base のまま auto-merge されうるため fail。
+        let applied = valid_ruleset().replace(
+            r#""strict_required_status_checks_policy": true"#,
+            r#""strict_required_status_checks_policy": false"#,
+        );
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("strict_required_status_checks_policy"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_strict_policy_absent_when_required() {
+        // 適用済み ruleset が strict フラグを持たない（既定 false）のに版管理が true 要求なら fail。
+        let applied =
+            valid_ruleset().replace(r#""strict_required_status_checks_policy": true,"#, "");
+        let err = verify_applied_ruleset(&applied, &definition()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("strict_required_status_checks_policy"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -310,7 +404,7 @@ mod tests {
           "bypass_actors": [],
           "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } }
         }"#;
-        let err = verify_applied_ruleset(applied).unwrap_err();
+        let err = verify_applied_ruleset(applied, &definition()).unwrap_err();
         assert!(err.to_string().contains("no rules array"), "{err}");
     }
 }

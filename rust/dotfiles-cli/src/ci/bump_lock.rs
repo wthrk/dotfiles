@@ -19,7 +19,10 @@
 //!    bump する input（nixpkgs + tap 4 本）を owner/repo の厳密一致で列挙する。framework input（nix-darwin /
 //!    home-manager / nix-homebrew）の rev 変更、想定外 input の追加・削除、source（owner/repo/type/ref/url）の
 //!    改変はすべて fail。version / root / 既存 input の source 同一性も検査し、lock 全体が「許可 input の rev
-//!    だけが動いた」状態であることを確認する。
+//!    だけが動いた」状態であることを確認する。**加えて、許可 input の rev 変更が少なくとも 1 件あること**を
+//!    要求する。lock が実際に bump されていない（許可 input の rev が 1 件も動いていない）PR は、たとえ
+//!    docs/update-history だけを変える「逸脱 lock 変更なし」状態でも nightly bump として auto-merge させない
+//!    （実体のない空 bump を無人 merge する経路を塞ぐ）。
 //!
 //! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。required
 //! status check はこの非 0 終了で fail し、ruleset（bypass actors 空）が auto-merge を止める。
@@ -126,12 +129,25 @@ fn verify_lock_diff(old_lock: &str, new_lock: &str) -> Result<()> {
         );
     }
 
+    let mut allowed_rev_changes = 0usize;
     for (name, old_node) in old_nodes {
         // node 名集合の一致は直前に検査済みのため `get` は必ず `Some`。安全側として欠落時も fail にする。
         let Some(new_node) = new_nodes.get(name) else {
             bail!("flake.lock node `{name}` missing on head despite equal node set");
         };
-        verify_node(name, old_node, new_node)?;
+        if verify_node(name, old_node, new_node)? {
+            allowed_rev_changes += 1;
+        }
+    }
+
+    // lock が実際に bump されていること（許可 input の rev 変更が少なくとも 1 件ある）を要求する。逸脱 lock
+    // 変更が無くても、rev 変更ゼロ（docs/update-history だけ変える等の実体のない nightly PR）は無人 auto-merge
+    // させない。これにより「許可パス内・逸脱 lock 変更なし」だが lock 無更新の空 bump PR を fail させる。
+    if allowed_rev_changes == 0 {
+        bail!(
+            "nightly bump PR changes no allowed input rev; flake.lock is not actually bumped \
+             (expected at least one rev change in an allowed input)"
+        );
     }
     Ok(())
 }
@@ -143,12 +159,14 @@ fn nodes<'a>(lock: &'a Value, label: &str) -> Result<&'a serde_json::Map<String,
         .ok_or_else(|| anyhow!("{label} flake.lock has no nodes object"))
 }
 
-/// 単一 node の base→head 差分を許可規則に照らす。
+/// 単一 node の base→head 差分を許可規則に照らす。許可 input の rev が実際に変わったら `true` を返す。
 ///
 /// 許可 input は source 座標（rev 以外）一致を要求し、rev は変わってよい。未許可 input（framework など）は
 /// rev を含め全フィールド一致を要求する。`locked` を持たない node（`root`）は source 座標を持たないため、
-/// 既に同一性が確認済みの前提でそのまま許可する。
-fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
+/// 既に同一性が確認済みの前提でそのまま許可する。戻り値の `bool` は「許可 input の rev が変わったか」で、
+/// 呼び出し側が lock 実 bump（rev 変更 1 件以上）の有無を集計するのに使う。許可外 node や rev 不変の許可
+/// input は `false` を返す。
+fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<bool> {
     let old_locked = old_node.get("locked");
     let new_locked = new_node.get("locked");
 
@@ -158,7 +176,7 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
         if old_node != new_node {
             bail!("flake.lock node `{name}` changed but has no locked source; not an allowed bump");
         }
-        return Ok(());
+        return Ok(false);
     };
 
     let old_coords = source_coords(old_locked);
@@ -192,8 +210,8 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
         // それに伴って narHash / lastModified も整合的に更新される」ものだけである。rev 不変で内容ハッシュや
         // 取得時刻だけが変われば、source 座標も rev も同じに見えるのに固定対象の内容が差し替わっており、
         // 許可された rev bump の意味を超える。よって rev 変化を伴わない narHash / lastModified の変更は fail。
-        verify_locked_integrity(name, old_locked, new_locked)?;
-        Ok(())
+        let rev_changed = verify_locked_integrity(name, old_locked, new_locked)?;
+        Ok(rev_changed)
     } else {
         // 未許可 input（framework / brew-src など）: rev を含め locked 全体が不変でなければならない。
         if old_locked != new_locked {
@@ -202,11 +220,12 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
                  (e.g. framework input rev); not an allowed bump"
             );
         }
-        Ok(())
+        Ok(false)
     }
 }
 
-/// 許可 input の `locked` 整合を検査する: rev 変化と narHash / lastModified 変化を連動させる。
+/// 許可 input の `locked` 整合を検査する: rev 変化と narHash / lastModified 変化を連動させる。rev が
+/// 変わったら `true` を返す（呼び出し側が lock 実 bump の有無を集計する）。
 ///
 /// 許可 input は rev bump を許すが、その rev に対応する取得物の同一性（`narHash`）と取得時刻
 /// （`lastModified`）は rev に連動して動くのが正当な bump である。`rev` が変わらないのに `narHash` または
@@ -214,14 +233,14 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
 /// 許可範囲を超える。よって「rev 不変かつ narHash/lastModified 変化」を fail にする。rev が動いていれば
 /// narHash/lastModified の変化は許容する（rev に連動した正当な更新）。`rev` 欠落（locked に rev が無い input）は
 /// 許可 input には想定しないため、その場合も narHash/lastModified の変化を許可しない（保守的に fail）。
-fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -> Result<()> {
+fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -> Result<bool> {
     let field =
         |locked: &Value, key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
     let old_rev = field(old_locked, "rev");
     let new_rev = field(new_locked, "rev");
     let rev_changed = old_rev != new_rev;
     if rev_changed {
-        return Ok(());
+        return Ok(true);
     }
     // rev 不変。narHash / lastModified が動いていれば content swap として fail。
     if old_locked.get("narHash") != new_locked.get("narHash") {
@@ -236,7 +255,7 @@ fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -
              (content swap at the same rev); not an allowed bump"
         );
     }
-    Ok(())
+    Ok(false)
 }
 
 /// `locked` オブジェクトから rev を除いた source 座標を取り出す。
@@ -466,6 +485,32 @@ mod tests {
         .to_string();
         let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
         assert!(err.to_string().contains("node set changed"), "{err}");
+    }
+
+    #[test]
+    fn rejects_nightly_pr_with_no_allowed_rev_change() {
+        // N6 退行固定: 許可パス内・逸脱 lock 変更なしでも、許可 input の rev が 1 件も動いていない（lock 実
+        // bump 無し）nightly PR は fail させる。ここでは lock が完全に無変更（docs/update-history だけ変える PR を
+        // 模す）。
+        let lock = lock_with("aaaa", "dddd");
+        let err = verify_bump(
+            &paths(&["flake.lock", "docs/update-history/2026-06.toml"]),
+            &lock,
+            &lock,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("changes no allowed input rev"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn accepts_when_at_least_one_allowed_rev_changes() -> Result<()> {
+        // N6: 許可 input（nixpkgs）の rev が 1 件でも動いていれば lock 実 bump として pass する。
+        let old = lock_with("aaaa", "dddd");
+        let new = lock_with("bbbb", "dddd");
+        verify_bump(&paths(&["flake.lock"]), &old, &new)
     }
 
     #[test]

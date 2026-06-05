@@ -163,10 +163,16 @@ jobs:
           casks="$(sed -n '/casks = \[/,/\];/p' nix/modules/homebrew.nix \
             | grep -oE '"[^"]+"' | tr -d '"')"
           cask_version() {
-            # $1=rev $2=cask 名。cask tap の Casks/<letter>/<name>.rb から version "..." を読む。
-            local rev="$1" name="$2" letter
-            letter="$(printf '%s' "$name" | cut -c1)"
-            gh api "repos/homebrew/homebrew-cask/contents/Casks/${letter}/${name}.rb?ref=${rev}" \
+            # $1=rev $2=cask 名。cask tap の Casks/<subdir>/<name>.rb から version "..." を読む。
+            # subdir は通常 name 先頭 1 文字（letter）だが、font cask（font- 始まり）は letter でなく固定
+            # `font` サブディレクトリ（Casks/font/<name>.rb）に置かれるため subdir を font にする（さもなくば
+            # Casks/f/font-*.rb は 404 になり差分が空縮退する）。
+            local rev="$1" name="$2" subdir
+            case "$name" in
+              font-*) subdir="font" ;;
+              *) subdir="$(printf '%s' "$name" | cut -c1)" ;;
+            esac
+            gh api "repos/homebrew/homebrew-cask/contents/Casks/${subdir}/${name}.rb?ref=${rev}" \
               --jq '.content' 2>/dev/null | base64 -d 2>/dev/null \
               | grep -oE 'version "[^"]+"' | head -n1 | sed -E 's/version "([^"]+)"/\1/' || true
           }

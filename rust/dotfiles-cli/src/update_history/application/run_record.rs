@@ -66,12 +66,19 @@ where
         });
     }
 
-    // 素材が空（closure 差分も brew 差分も空）の夜でも、`nixpkgs_old`/`nixpkgs_new` を持つ
-    // `packages=[]` のエントリを必ず追記する。nixpkgs rev の chain link を欠落させると、`r0` に pin された
-    // マシンの catch-up（`select_entries` が `nixpkgs_old == rev` の完全一致で起点を解決する）で起点が見つからず、
-    // 後続の夜に実際に適用・記録された更新まで含む要約が一切表示されなくなる退行が起きる。空エントリは履歴
-    // chain の連続性のために保持し、利用者表示のノイズ除去は表示側（catch-up 集約が package=0 の空エントリを
-    // 畳む）で行う。
+    // append 要否の判定: **rev が前進した（`nixpkgs_old != nixpkgs_new`）夜は materials が空でも append する**。
+    // nixpkgs rev の chain link を欠落させると、`r0` に pin されたマシンの catch-up（`select_entries` が
+    // `nixpkgs_old == rev` の完全一致で起点を解決する）で起点が見つからず、後続の夜に実際に適用・記録された更新
+    // まで含む要約が一切表示されなくなる退行が起きる（catch-up 連続性）。一方で **rev が前進していない
+    // （`nixpkgs_old == nixpkgs_new`）かつ materials も空**の夜は、chain link としての意味も差分素材も無い無意味な
+    // `packages=[]` エントリを生むだけなので append を skip する。条件をまとめると「append する ⇔ rev 前進あり
+    // または materials 非空」。空エントリの利用者表示ノイズ除去は表示側（catch-up 集約が package=0 を畳む）で行う。
+    let rev_advanced = command.nixpkgs_old != command.nixpkgs_new;
+    if !rev_advanced && materials.is_empty() {
+        // rev 前進なし・差分素材なし。chain link にも要約にもならない空エントリは履歴へ残さない。
+        return Ok(());
+    }
+
     let entry = build_entry(
         command.at,
         command.nixpkgs_old,
@@ -295,11 +302,42 @@ mod tests {
     }
 
     #[test]
+    fn record_skips_append_when_rev_unchanged_and_empty() -> crate::Result<()> {
+        // N9 退行固定: rev 前進なし（`nixpkgs_old == nixpkgs_new`）かつ差分素材も空の夜は、chain link にも
+        // 要約にもならない無意味な `packages=[]` エントリを生むため append を skip する。
+        let mut command = command();
+        command.nixpkgs_new = command.nixpkgs_old.clone();
+
+        let mut closure_diff = MockClosureDiffPort::new();
+        closure_diff
+            .expect_diff_closures()
+            .times(1)
+            .returning(|_, _| Ok(Vec::new()));
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .times(1)
+            .returning(|_, _| Ok(Vec::new()));
+
+        let mut notes = MockNotesPort::new();
+        notes.expect_fetch_release_notes().never();
+        let mut extract = MockChangeExtractPort::new();
+        extract.expect_extract_change_items().never();
+
+        let mut store = MockHistoryStorePort::new();
+        // rev 不変・空素材なので append は一切行わない。
+        store.expect_append_entry().never();
+
+        run_record(command, &closure_diff, &brew_diff, &notes, &extract, &store)
+    }
+
+    #[test]
     fn record_appends_empty_chain_link_when_no_deltas() -> crate::Result<()> {
-        // 退行固定（chain 連続性）: closure 差分も brew 差分も空（更新無し）の夜でも、`nixpkgs_old`/
-        // `nixpkgs_new` を持つ `packages=[]` のエントリを必ず追記する。これを欠くと r0 に pin された
-        // マシンの catch-up で `select_entries` が起点 rev を解決できず、後続の実更新まで表示が消える。
-        // ノート取得・LLM 抽出は対象 delta が無いため呼ばれない（never）が、append は 1 回行う。
+        // 退行固定（chain 連続性 / N9 の「rev 前進あり空 packages→append」側）: closure 差分も brew 差分も空
+        // （更新無し）でも、`nixpkgs_old != nixpkgs_new`（rev 前進あり）なら `packages=[]` のエントリを必ず
+        // 追記する。これを欠くと r0 に pin されたマシンの catch-up で `select_entries` が起点 rev を解決できず、
+        // 後続の実更新まで表示が消える。ノート取得・LLM 抽出は対象 delta が無いため呼ばれない（never）が、
+        // append は 1 回行う。
         let mut closure_diff = MockClosureDiffPort::new();
         closure_diff
             .expect_diff_closures()

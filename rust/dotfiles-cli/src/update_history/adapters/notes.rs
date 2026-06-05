@@ -15,11 +15,13 @@
 //! で `None`（ノート無し）へ縮退する（version+notes_url へ縮退するプラン契約に沿う graceful degradation）。
 //! 取得は許可ホスト https に限定し、取得失敗（不通・404）も `None` へ縮退して record を止めない。
 //!
-//! **Homebrew cask の URL 解決（letter subdir）**: cask tap のファイルは `Casks/<name>.rb` ではなく
+//! **Homebrew cask の URL 解決（letter / font subdir）**: cask tap のファイルは `Casks/<name>.rb` ではなく
 //! `Casks/<letter>/<name>.rb`（letter = name 先頭 1 文字の小文字）に配置される。base を `Casks/` で
 //! 終わる cask tap 基底にしたまま `<base><name>` を連結すると `Casks/<name>` を取得して**常に 404**になり、
 //! ノートが空縮退する。よって基底が cask の `Casks/` レイアウトを指すときは `<base><letter>/<name>.rb` を
-//! 構築する（[`resolve_notes_url`]）。それ以外の基底（forge 等）は従来どおり `<base><name>` を使う。
+//! 構築する（[`resolve_notes_url`]）。例外として **font cask（名が `font-` で始まる）は `Casks/font/<name>.rb`**
+//! （letter でなく `font` 固定サブディレクトリ）に置かれるため、font cask は subdir を `font` にする。それ以外の
+//! 基底（forge 等）は従来どおり `<base><name>` を使う。
 
 use std::ffi::OsString;
 
@@ -63,9 +65,12 @@ impl ReleaseNotesAdapter {
     /// **redirect は追従しない**（`--location` を付けず、`--max-redirs 0` で明示禁止）。`is_allowed_url` は
     /// 初期 URL の host しか検査できず、`--location` で redirect を追従すると 3xx 応答経由で allowlist 外
     /// ホストから本文を取得しうる（`--proto =https` は scheme 制限であって host 制限ではない）。これは
-    /// 「許可ホストの https のみを踏む」契約に反する。よって redirect は一切追わず、初期 URL が 3xx を返す
-    /// ケースは取得失敗扱いで `None`（ノート空縮退＝graceful degradation）にする。これにより host allowlist
-    /// 契約をコードで保証する。
+    /// 「許可ホストの https のみを踏む」契約に反する。host allowlist 契約は **`-L`（`--location`）を付けない**
+    /// ことで保たれる: redirect を追従しないため、curl は初期 URL の host（`is_allowed_url` で検査済み）以外へ
+    /// 一切アクセスしない。`--max-redirs 0` はその意図を明示的に固定する補強である。3xx 応答そのものは curl の
+    /// `--fail`（通常 4xx/5xx を失敗にする）では失敗にならないが、`-L` 無しのため body を持たない 3xx 応答は
+    /// 空本文として返り、`fetch` 側の「空本文 → `None`」分岐でノート空縮退（graceful degradation）になる。
+    /// よって 3xx は allowlist 外 host を踏まず、かつ空縮退する。
     fn fetch(url: &str) -> Result<Option<RawReleaseNotes>> {
         if !is_allowed_url(url) {
             return Ok(None);
@@ -106,15 +111,17 @@ impl NotesPort for ReleaseNotesAdapter {
 /// curl 引数列を組み立てる純粋関数（redirect 不追従を引数列として固定検証できるよう実行から切り離す）。
 ///
 /// **redirect を追従しない**こと（`--location` を含めず `--max-redirs 0`）が host allowlist 契約の要であり、
-/// 引数列をテストで固定して退行を防ぐ。`--fail` で 3xx/4xx を失敗にし、`--proto =https` で https 以外の
-/// scheme を拒む。
+/// 引数列をテストで固定して退行を防ぐ。`-L` 無しのため curl は初期 URL の host 以外を踏まず、これが allowlist
+/// 契約（allowlist 外へ踏まない）を保証する。`--fail` は 4xx/5xx を失敗にする（3xx は `--fail` では失敗にならず、
+/// `-L` 無しのため追従もされず body 無しの 3xx として空縮退する）。`--proto =https` で https 以外の scheme を拒む。
 fn curl_args(url: &str) -> [OsString; 8] {
     [
         OsString::from("--fail"),
         OsString::from("--silent"),
         OsString::from("--show-error"),
-        // redirect を追従しない（allowlist 外 host への横滑りを塞ぐ）。3xx は `--fail` で失敗扱いになり
-        // `None` へ縮退する。`--max-redirs 0` は明示的に「リダイレクトを 0 回まで」とする。
+        // redirect を追従しない（allowlist 外 host への横滑りを塞ぐ）。`-L` 無しのため 3xx は追従されず
+        // body 無しで返り、空本文として `None` へ縮退する（`--fail` は 4xx/5xx 対象で 3xx は失敗にしない）。
+        // `--max-redirs 0` は明示的に「リダイレクトを 0 回まで」とする補強。
         OsString::from("--max-redirs"),
         OsString::from("0"),
         OsString::from("--proto"),
@@ -126,15 +133,17 @@ fn curl_args(url: &str) -> [OsString; 8] {
 /// `notes_base` と package 名から取得対象 URL を構築する純粋関数。
 ///
 /// 基底が Homebrew cask tap の `Casks/` レイアウト（パスが `/Casks/` を含み `Casks/` で終わる）を指すときは、
-/// cask の実配置 `Casks/<letter>/<name>.rb`（letter = name 先頭 1 文字を小文字化）を構築する。これにより
-/// `<base><name>`（= `Casks/<name>`）を取得して常に 404 になり空縮退する不具合を避け、cask 経路で実取得が
-/// 成立する。先頭文字が ASCII 英字でない（数字等の）cask は GitHub の cask tap が同様に小文字 1 文字 subdir に
-/// 置くため、そのまま小文字化した 1 文字を letter に使う。cask 以外の基底（forge 等）は従来どおり
-/// `<base><name>` を連結する。
+/// cask の実配置 `Casks/<subdir>/<name>.rb` を構築する。subdir は通常 `<letter>`（name 先頭 1 文字を小文字化）
+/// だが、**font cask（名が `font-` で始まる）は letter サブディレクトリでなく固定の `font` サブディレクトリ**
+/// （`Casks/font/<name>.rb`）に置かれるため、font cask は subdir を `font` にする。これにより
+/// `<base><name>`（= `Casks/<name>`）や `<base><letter>/<name>.rb`（font cask では 404）を取得して空縮退する
+/// 不具合を避け、cask 経路で実取得が成立する。先頭文字が ASCII 英字でない（数字等の）cask は GitHub の cask
+/// tap が同様に小文字 1 文字 subdir に置くため、そのまま小文字化した 1 文字を letter に使う。cask 以外の基底
+/// （forge 等）は従来どおり `<base><name>` を連結する。
 fn resolve_notes_url(base: &str, name: &str) -> String {
     if is_cask_base(base) {
-        let letter = cask_letter(name);
-        format!("{base}{letter}/{name}.rb")
+        let subdir = cask_subdir(name);
+        format!("{base}{subdir}/{name}.rb")
     } else {
         format!("{base}{name}")
     }
@@ -145,8 +154,15 @@ fn is_cask_base(base: &str) -> bool {
     base.ends_with("/Casks/") || base == "Casks/"
 }
 
-/// cask 名から letter subdir（先頭 1 文字を小文字化）を返す。空名なら空（呼び出し側で 404 縮退に倒れる）。
-fn cask_letter(name: &str) -> String {
+/// cask 名から配置 subdir を返す。font cask（`font-` 始まり）は固定 `font`、それ以外は先頭 1 文字の小文字。
+///
+/// Homebrew の font cask は `Casks/font/<name>.rb`（letter サブディレクトリでなく `font` 固定サブディレクトリ）
+/// に置かれるため、`font-` 始まりの cask は subdir を `font` にする。それ以外は先頭 1 文字を小文字化した letter
+/// subdir（`Casks/<letter>/<name>.rb`）。空名なら空（呼び出し側で 404 縮退に倒れる）。
+fn cask_subdir(name: &str) -> String {
+    if name.starts_with("font-") {
+        return "font".to_string();
+    }
     name.chars()
         .next()
         .map(|c| c.to_ascii_lowercase().to_string())
@@ -210,6 +226,17 @@ mod tests {
         assert_eq!(
             resolve_notes_url(base, "1password"),
             "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/1/1password.rb"
+        );
+    }
+
+    #[test]
+    fn font_cask_resolves_font_subdir() {
+        // N7 退行固定: font cask（`font-` 始まり）は letter subdir でなく固定 `font` subdir に置かれるため、
+        // `Casks/font/<name>.rb` を構築する。letter subdir（`Casks/f/font-cica.rb`）は 404 になり空縮退していた。
+        let base = "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/";
+        assert_eq!(
+            resolve_notes_url(base, "font-cica"),
+            "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/font/font-cica.rb"
         );
     }
 

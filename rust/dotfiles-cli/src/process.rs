@@ -84,12 +84,24 @@ where
         .with_context(|| format!("failed to spawn {}", program.to_string_lossy()))?;
 
     // 子プロセスの stdin へ secret を含む設定を書き、EOF を送る。stdin は drop で閉じ EOF になる。
-    child
-        .stdin
-        .take()
-        .context("child stdin was not captured")?
-        .write_all(stdin_data)
-        .with_context(|| format!("failed to write stdin to {}", program.to_string_lossy()))?;
+    // stdin 取得・書込みの失敗時に early return すると、spawn 済みの子が wait されずぶら下がる（ゾンビ／
+    // 孤児プロセス）。`run_capture`/`run` は内部で必ず子を回収するのに対し、ここは手動 spawn のため、
+    // エラー経路でも `kill` + `wait` で確実に回収してから Err を返す（回収順序をコードで保証する）。
+    let write_result = (|| -> Result<()> {
+        let mut stdin = child.stdin.take().context("child stdin was not captured")?;
+        stdin
+            .write_all(stdin_data)
+            .with_context(|| format!("failed to write stdin to {}", program.to_string_lossy()))?;
+        // stdin を明示的に drop して EOF を送る（子の読取りを完了させる）。
+        drop(stdin);
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        // 子を確実に回収する。kill は既に終了していてもエラーにせず、wait で残骸を刈り取る。
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
 
     let output = child
         .wait_with_output()
