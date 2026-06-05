@@ -35,5 +35,6 @@ toml.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+mockall.workspace = true
 portable-pty = { workspace = true }
 serde_json.workspace = true

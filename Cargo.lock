@@ -1578,6 +1578,7 @@ dependencies = [
  "clap",
  "dotfiles-core",
  "dotfiles-secrets",
+ "mockall",
  "portable-pty",
  "serde",
  "serde_json",
