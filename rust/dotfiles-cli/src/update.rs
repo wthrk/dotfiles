@@ -208,7 +208,19 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // 要約を表示/追記する。**この後で** `last-summarized-nixpkgs-rev` を進めるのが要点で、要約「前」に
     // marker を進めると partial-failure（switch 後・要約前に異常終了）で未表示範囲を失う。逆に要約「後」に
     // 進めることで、同日に defer 経路が連続しても 2 回目は起点 = new rev → 空 span → 再追記しない（A）。
-    present_summary(&state_dir, Some(span_start_nixpkgs_rev.as_str()), dry_run)?;
+    //
+    // tty 判定はアンビエント大域（`std::io::stdout().is_terminal()`）への依存を呼び出し元へ集約するため、
+    // ここで 1 回だけ解決して `present_summary` へ bool で注入する。`present_summary` 内で is_terminal() を
+    // 呼ぶと、stdout が tty になる環境（nix build sandbox の builder）でテストが tty 経路へ入り pending 未書込み
+    // → NotFound で壊れる（非 hermetic）。注入化で分岐が大域から切れ、テストは bool を渡して決定論的に経路を
+    // exercise でき、production の挙動（tty なら端末描画、非 tty なら pending 追記）は不変。
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    present_summary(
+        &state_dir,
+        Some(span_start_nixpkgs_rev.as_str()),
+        dry_run,
+        stdout_is_terminal,
+    )?;
 
     // 要約済み範囲の終端を確定する。defer 経路でも commit 経路でも、要約を見せ終えた直後に必ず書く。
     // これが次回 present_summary の span 起点になり、同日二重追記（A）と partial-failure 堅牢性（B）を両立させる。
@@ -545,16 +557,26 @@ fn write_rev_atomic(final_path: &Path, rev: &str, dry_run: bool) -> Result<()> {
 /// `nixpkgs_from_rev` を catch-up 区間の起点（その nixpkgs rev を適用前状態とする）に使い、複数 bump を
 /// 跨いだ適用をアプリ単位で集約した重要度連動表示にする（描画と集約は `update_history` の show 経路を
 /// 再利用）。起点は dotfiles repo pin ではなく **nixpkgs rev** である（要約選択は `nixpkgs_old` と突合する
-/// ため）。stdout が tty なら起動元端末へ直接出力、非 tty（background daemon）なら `pending-summary` へ
+/// ため）。`stdout_is_terminal` が真なら起動元端末へ直接出力、偽（background daemon）なら `pending-summary` へ
 /// **追記**して次回シェルで 1 回だけ消費させる（rev 単位の未表示分を失わないため上書きしない）。要約は
 /// `last-run.log` へも残す。`--dry-run` では `pending-summary`/`last-run.log` へ書かず、tty 経路は stdout
 /// 表示のみ行う。
-fn present_summary(state_dir: &Path, nixpkgs_from_rev: Option<&str>, dry_run: bool) -> Result<()> {
+///
+/// tty 判定は呼び出し元（`run`）が `std::io::stdout().is_terminal()` を 1 回解決して `stdout_is_terminal` で
+/// 注入する。本関数内では渡された bool で分岐し、内部から `is_terminal()` を呼ばない。これにより分岐が
+/// アンビエント大域から切れ、テストは `stdout_is_terminal` を明示指定して tty/非 tty いずれの経路も決定論的に
+/// exercise できる（stdout が tty になる nix build sandbox でも非 tty 経路を確実に検証できる）。
+fn present_summary(
+    state_dir: &Path,
+    nixpkgs_from_rev: Option<&str>,
+    dry_run: bool,
+    stdout_is_terminal: bool,
+) -> Result<()> {
     // 履歴は state dir のローカル複製（`<state-dir>/history`）から読む。`~/.config/dotfiles` には更新履歴が
     // 無く、適用時に input source から複製済みのこの dir を offline・決定論で参照する。
     let source = state_dir.join(HISTORY_LOCAL_SUBDIR);
 
-    if std::io::stdout().is_terminal() {
+    if stdout_is_terminal {
         // tty: 起動元端末へ直接表示。stdout を sink にして show 描画を再利用する。
         update_history::render_applied_summary(&source, nixpkgs_from_rev, std::io::stdout())?;
         if !dry_run {
@@ -1072,7 +1094,9 @@ mod tests {
         applied_new: &str,
     ) -> crate::Result<()> {
         let span_start = resolve_span_start(state_dir, lock_fallback)?;
-        present_summary(state_dir, Some(span_start.as_str()), false)?;
+        // 非 tty 経路（background daemon の defer 適用）を決定論的に exercise するため stdout_is_terminal=false
+        // を明示注入する。これで stdout が tty になる nix build sandbox でも pending-summary 追記経路を確実に通す。
+        present_summary(state_dir, Some(span_start.as_str()), false, false)?;
         write_last_summarized_nixpkgs_rev(state_dir, applied_new, false)?;
         Ok(())
     }
@@ -1288,8 +1312,9 @@ mod tests {
         // 適用前 nixpkgs rev = "nA"。チェーンは nA->nB, nB->nC（2 bump catch-up）。
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
-        // 非 tty 経路（CI/テストは非 tty）で pending-summary へ追記される。nixpkgs old rev "nA" を渡す。
-        present_summary(&dir, Some("nA"), false)?;
+        // 非 tty 経路を `stdout_is_terminal=false` で決定論的に exercise し、pending-summary へ追記させる。
+        // is_terminal() を注入化したため、stdout が tty になる環境（nix build sandbox）でも本経路を確実に通す。
+        present_summary(&dir, Some("nA"), false, false)?;
         let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
         // 起点 "nA" 以降の 2 エントリ（2 アプリ）が集約表示される。空でないこと（バグ修正の核）。
         assert!(
@@ -1304,7 +1329,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
         std::fs::create_dir_all(&dir2).expect("create dir2");
         write_history(&dir2, &[("nA", "nB"), ("nB", "nC")]);
-        present_summary(&dir2, Some("dotfilespin-not-a-nixpkgs-rev"), false)?;
+        present_summary(&dir2, Some("dotfilespin-not-a-nixpkgs-rev"), false, false)?;
         let empty = std::fs::read_to_string(dir2.join(PENDING_SUMMARY)).unwrap_or_default();
         // 起点が nixpkgs_old に一致しないと span 空（宣言アプリ行が出ない）。
         assert!(
@@ -1319,23 +1344,63 @@ mod tests {
 
     #[test]
     fn present_summary_dry_run_has_no_file_side_effect() -> crate::Result<()> {
-        // dry-run 契約: 非 tty 経路でも `pending-summary` / `last-run.log` を書かない（副作用抑止）。
-        // 既存 `dry_run_lock_has_no_file_side_effect` と同じく、dry_run=true で実ファイルが生成されないことを
-        // assert する。テスト環境は非 tty のため present_summary は background 分岐を通り、dry_run=false なら
-        // 両ファイルへ書く（present_summary_selects_span_by_nixpkgs_rev_not_dotfiles_pin で固定済み）。
+        // dry-run 契約: 非 tty・tty いずれの経路でも `pending-summary` / `last-run.log` を書かない（副作用抑止）。
+        // is_terminal() を注入化したため tty 性をテストが制御でき、`stdout_is_terminal` の両値で副作用無しを固定する。
         let dir = temp_dir("present-dry");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create state+config dir");
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
-        present_summary(&dir, Some("nA"), true)?;
+        // 非 tty 経路の dry-run: pending-summary / last-run.log を書かない。
+        present_summary(&dir, Some("nA"), true, false)?;
         assert!(
             !dir.join(PENDING_SUMMARY).exists(),
-            "dry-run must not write pending-summary"
+            "dry-run (non-tty) must not write pending-summary"
         );
         assert!(
             !dir.join(LAST_RUN_LOG).exists(),
-            "dry-run must not write last-run.log"
+            "dry-run (non-tty) must not write last-run.log"
+        );
+
+        // tty 経路の dry-run: 端末描画のみで last-run.log も書かない（pending は tty 経路では元々書かない）。
+        present_summary(&dir, Some("nA"), true, true)?;
+        assert!(
+            !dir.join(PENDING_SUMMARY).exists(),
+            "dry-run (tty) must not write pending-summary"
+        );
+        assert!(
+            !dir.join(LAST_RUN_LOG).exists(),
+            "dry-run (tty) must not write last-run.log"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn present_summary_tty_path_writes_last_run_log_not_pending() -> crate::Result<()> {
+        // tty 経路（`stdout_is_terminal=true`）の副作用契約を、注入した bool で決定論的に固定する。
+        // is_terminal() を呼び出し元注入にしたため、stdout が tty/非 tty どちらの環境（cargo test の pipe や
+        // nix build sandbox の builder tty）でも、テストは tty 経路を明示指定して exercise できる。
+        // tty 経路は起動元端末へ直接描画し、`pending-summary` は書かず（次回シェル消費は不要）、`last-run.log`
+        // へは要約を残す。stdout 描画自体はキャプチャせず、観測可能なファイル副作用（pending 不在・log 存在）で固定。
+        let dir = temp_dir("present-tty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
+
+        present_summary(&dir, Some("nA"), false, true)?;
+
+        // tty 経路は pending-summary を書かない（非 tty の background 消費契約専用のため）。
+        assert!(
+            !dir.join(PENDING_SUMMARY).exists(),
+            "tty path must not write pending-summary"
+        );
+        // tty 経路でも last-run.log には要約を残す（直近 1 回の適用内容を後追いできる）。
+        let log = std::fs::read_to_string(dir.join(LAST_RUN_LOG)).expect("read last-run.log");
+        assert!(
+            log.contains("neovim-nA"),
+            "tty path must record summary into last-run.log: {log}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
