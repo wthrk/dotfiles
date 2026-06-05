@@ -10,6 +10,7 @@
 - [progress-judgement.md](progress-judgement.md): 進捗前進の最小根拠要件。
 - [task-completion-judgement.md](task-completion-judgement.md): 完了判定とコミット許可条件。
 - [security-obligations.md](security-obligations.md): セキュリティ共通義務。
+- [pr-mergeability-loop.md](pr-mergeability-loop.md): PR review 対応、checks、mergeability 確認を反復して PR を merge 可能状態にする運用。
 
 ## 運用原則
 
