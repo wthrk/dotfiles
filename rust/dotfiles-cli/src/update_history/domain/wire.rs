@@ -111,6 +111,25 @@ pub(crate) enum ChangeCategory {
     DefaultChange,
 }
 
+impl ChangeCategory {
+    /// dedup・集約の決定論キーで使う安定文字列を返す。
+    ///
+    /// 返す値は serde の wire 文字列（TOML 値、kebab-case）と一致させ、wire とキーの一貫性を保つ。
+    /// `Debug` 派生表現に依存しないことが不変条件である: `Debug` は安定契約ではなく variant 名変更等の
+    /// リファクタで表現が変わりうるため、同一入力で dedup キーが変化して集約結果が非決定的になる。
+    /// この明示 match を唯一の安定キー源とし、variant 追加時はここに対応値を追加する。
+    pub(crate) fn as_stable_key(&self) -> &'static str {
+        match self {
+            ChangeCategory::Breaking => "breaking",
+            ChangeCategory::Security => "security",
+            ChangeCategory::Feature => "feature",
+            ChangeCategory::Fix => "fix",
+            ChangeCategory::Deprecation => "deprecation",
+            ChangeCategory::DefaultChange => "default-change",
+        }
+    }
+}
+
 /// エントリ全体の重要度（閉集合）。変更カテゴリ集合から機械算出する（[`super::severity`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

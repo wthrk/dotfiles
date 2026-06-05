@@ -44,7 +44,9 @@ pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
     let mut order: Vec<String> = Vec::new();
     let mut acc: BTreeMap<String, PackageUpdate> = BTreeMap::new();
     // change_item の重複排除キー `(name, category, ref_url, text)` の既出集合。
-    let mut seen: BTreeMap<(String, String, Option<String>, String), ()> = BTreeMap::new();
+    // category 成分は `ChangeCategory::as_stable_key`（wire 文字列と一致する安定キー）を使い、
+    // `Debug` 表現に依存しない（決定論の根拠）。
+    let mut seen: BTreeMap<(String, &'static str, Option<String>, String), ()> = BTreeMap::new();
     // 各アプリの最初の change 種別（集約 change 確定に使う）。
     let mut first_change: BTreeMap<String, ChangeKind> = BTreeMap::new();
     // 各アプリが複数エントリを跨いだか。
@@ -98,15 +100,15 @@ pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
 
 /// 決定論キー `(name, category, ref_url, text)` の未出 change_item だけを順序を保って push する。
 fn push_unique_items(
-    seen: &mut BTreeMap<(String, String, Option<String>, String), ()>,
+    seen: &mut BTreeMap<(String, &'static str, Option<String>, String), ()>,
     package: &mut PackageUpdate,
     items: &[ChangeItem],
 ) {
     for item in items {
-        let category_key = category_key(item);
         let key = (
             package.name.clone(),
-            category_key,
+            // `Debug` 表現でなく wire 一致の安定キーを使い、dedup の決定論を保つ。
+            item.category.as_stable_key(),
             item.ref_url.clone(),
             item.text.clone(),
         );
@@ -114,11 +116,6 @@ fn push_unique_items(
             package.change_items.push(item.clone());
         }
     }
-}
-
-/// dedup キーで使う category の安定文字列表現。
-fn category_key(item: &ChangeItem) -> String {
-    format!("{:?}", item.category)
 }
 
 #[cfg(test)]
@@ -357,6 +354,41 @@ mod tests {
         assert_eq!(aggregated[0].change, ChangeKind::Removed);
         assert_eq!(aggregated[0].new, None);
         assert_eq!(aggregated[0].old.as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn stable_key_matches_wire_string_and_is_debug_independent() {
+        // dedup キーの category 成分は `Debug` 派生表現でなく serde の wire 文字列（kebab-case）と一致する
+        // 安定キーであることを固定する。`Debug` 表現（variant 名そのもの: 例 "DefaultChange"）に依存していれば
+        // この assertion は失敗する。これにより将来 variant 名がリファクタで変わっても dedup キーは不変となる。
+        let cases = [
+            (ChangeCategory::Breaking, "breaking"),
+            (ChangeCategory::Security, "security"),
+            (ChangeCategory::Feature, "feature"),
+            (ChangeCategory::Fix, "fix"),
+            (ChangeCategory::Deprecation, "deprecation"),
+            (ChangeCategory::DefaultChange, "default-change"),
+        ];
+        for (category, wire) in cases {
+            assert_eq!(category.as_stable_key(), wire);
+            // serde wire 文字列（TOML 値）と安定キーの一貫性を固定する。
+            let rendered = toml::to_string(&ChangeItem {
+                category,
+                text: "x".to_string(),
+                ref_url: None,
+            })
+            .expect("change_item serializes");
+            assert!(
+                rendered.contains(&format!("category = \"{wire}\"")),
+                "wire 文字列 {wire} と安定キーが一致しない: {rendered}"
+            );
+            // `Debug` 表現（variant 名）に依存していないことを明示する。
+            assert_ne!(
+                category.as_stable_key(),
+                format!("{category:?}"),
+                "安定キーが Debug 表現に一致してはならない"
+            );
+        }
     }
 
     #[test]
