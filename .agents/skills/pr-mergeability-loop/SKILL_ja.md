@@ -14,14 +14,14 @@ description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex re
 ## Governing Sources
 
 - `docs/task-governance/pr-mergeability-loop.md`
-- `docs/task-governance/workflow.md`、特に PR 運用規則
+- `docs/task-governance/workflow.md`、特に `## 8. ブランチ・コミット・プルリクエスト運用`
 - 文書配置または正本扱いが対象の場合は `docs/docs-governance.md`
 
 ## Required Reading Order
 
 1. 現在アクターを確定した役割スキル
 2. `docs/task-governance/pr-mergeability-loop.md`
-3. `docs/task-governance/workflow.md` の PR 運用規則
+3. `docs/task-governance/workflow.md` の `## 8. ブランチ・コミット・プルリクエスト運用`
 4. 文書配置または正本扱いが対象の場合は `docs/docs-governance.md`
 
 ## When To Use
@@ -30,7 +30,7 @@ description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex re
 
 - PR URL または PR 番号と、mergeability、checks、review thread、PR review 対応に関する依頼
 - PR review 対応
-- AI review、Codex review、Copilot review、または PR 文脈の `@codex review`
+- PR 文脈の AI review、Codex review、Copilot review、または `@codex review`
 - review thread の返信または resolve
 - PR 文脈の checks 確認
 - mergeability 確認

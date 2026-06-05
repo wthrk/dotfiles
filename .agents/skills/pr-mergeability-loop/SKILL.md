@@ -14,23 +14,23 @@ The actor remains bound to the role skill already invoked, such as `/implementat
 ## Governing Sources
 
 - `docs/task-governance/pr-mergeability-loop.md`
-- `docs/task-governance/workflow.md`, especially PR operation rules
+- `docs/task-governance/workflow.md`, especially `## 8. ブランチ・コミット・プルリクエスト運用`
 - `docs/docs-governance.md` when documentation placement or canonical-source handling is in scope
 
 ## Required Reading Order
 
 1. The role skill that established the current actor
 2. `docs/task-governance/pr-mergeability-loop.md`
-3. `docs/task-governance/workflow.md` PR operation rules
+3. `docs/task-governance/workflow.md` `## 8. ブランチ・コミット・プルリクエスト運用`
 4. `docs/docs-governance.md` when documentation placement or canonical-source handling is in scope
 
 ## When To Use
 
 Use this skill with the current role when the instruction includes any of the following:
 
-- PR URL or PR number together with a mergeability, checks, review thread, or PR review response request
+- PR URL or PR number together with mergeability, checks, review thread, or PR review response request
 - PR review response
-- AI review, Codex review, Copilot review, or PR-scoped `@codex review`
+- PR-scoped AI review, Codex review, Copilot review, or `@codex review`
 - review thread reply or resolve
 - PR-scoped checks confirmation
 - mergeability confirmation
