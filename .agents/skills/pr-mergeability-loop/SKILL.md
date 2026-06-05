@@ -28,7 +28,7 @@ For top-level PR mergeability requests, the main orchestrator uses this skill wi
 
 The main orchestrator uses this skill as an orchestration extension when the top-level instruction includes any of the following:
 
-- PR URL or PR number together with mergeability, checks, review thread, or PR review response request
+- PR URL or PR number accompanied by a PR mergeability-related operation or request, such as PR-scoped checks, PR-scoped mergeability confirmation, review thread handling, PR review response, AI/Codex/Copilot review response, or thread resolve
 - PR review response
 - PR-scoped AI review, Codex review, Copilot review, or `@codex review`
 - review thread reply or resolve

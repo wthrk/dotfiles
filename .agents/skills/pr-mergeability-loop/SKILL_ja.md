@@ -28,7 +28,7 @@ top-level の PR マージ可能化依頼では、main orchestrator が `/orches
 
 top-level 指示に次のいずれかが含まれる場合、main orchestrator がオーケストレーション拡張として使う。
 
-- PR URL または PR 番号と、mergeability、checks、review thread、PR review 対応に関する依頼
+- PR URL または PR 番号と、PR 文脈の checks 確認、PR 文脈の mergeability 確認、review thread 対応、PR review 対応、AI/Codex/Copilot review 対応、thread resolve など、PR mergeability に関係する操作または依頼
 - PR review 対応
 - PR 文脈の AI review、Codex review、Copilot review、または `@codex review`
 - review thread の返信または resolve
