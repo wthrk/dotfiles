@@ -57,6 +57,18 @@ mod tests {
     }
 
     #[test]
+    fn rev_resolves_start_when_origin_link_has_empty_packages() {
+        // 退行固定（chain 連続性）: 起点 rev r0 を `nixpkgs_old` に持つエントリが空 bump 夜の chain link
+        // （packages 空）であっても、`select_entries` はその link を起点に解決し、後続の実更新エントリ
+        // r1→r2 まで span に含める（空 link で catch-up 起点が失われない）。
+        let entries = [entry("r0", "r1"), entry("r1", "r2")];
+        let selected = select_entries(&entries, Some("r0"), None);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].nixpkgs_old, "r0");
+        assert_eq!(selected[1].nixpkgs_new, "r2");
+    }
+
+    #[test]
     fn no_rev_returns_all_in_order() {
         let entries = [entry("a", "b"), entry("b", "c")];
         let selected = select_entries(&entries, None, None);

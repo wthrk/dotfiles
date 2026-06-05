@@ -59,13 +59,12 @@ where
         });
     }
 
-    // closure 差分も brew 差分も空（更新無し）の夜は、`packages=[]` の空エントリを履歴に追記しない
-    // （F5 ノイズ抑制）。空エントリは「何も更新されていない」を表すノイズであり、catch-up span 連結や
-    // show の見出しを水増しするだけなので、素材が 1 件も無ければ append を行わず no-op で抜ける。
-    if materials.is_empty() {
-        return Ok(());
-    }
-
+    // 素材が空（closure 差分も brew 差分も空）の夜でも、`nixpkgs_old`/`nixpkgs_new` を持つ
+    // `packages=[]` のエントリを必ず追記する。nixpkgs rev の chain link を欠落させると、`r0` に pin された
+    // マシンの catch-up（`select_entries` が `nixpkgs_old == rev` の完全一致で起点を解決する）で起点が見つからず、
+    // 後続の夜に実際に適用・記録された更新まで含む要約が一切表示されなくなる退行が起きる。空エントリは履歴
+    // chain の連続性のために保持し、利用者表示のノイズ除去は表示側（catch-up 集約が package=0 の空エントリを
+    // 畳む）で行う。
     let entry = build_entry(
         command.at,
         command.nixpkgs_old,
@@ -230,9 +229,11 @@ mod tests {
     }
 
     #[test]
-    fn record_skips_append_when_no_deltas() -> crate::Result<()> {
-        // F5 退行固定: closure 差分も brew 差分も空（更新無し）の夜は、空 packages のエントリを履歴へ
-        // 追記しない。ノート取得・LLM 抽出も呼ばれず、append_entry は 0 回（never）。
+    fn record_appends_empty_chain_link_when_no_deltas() -> crate::Result<()> {
+        // 退行固定（chain 連続性）: closure 差分も brew 差分も空（更新無し）の夜でも、`nixpkgs_old`/
+        // `nixpkgs_new` を持つ `packages=[]` のエントリを必ず追記する。これを欠くと r0 に pin された
+        // マシンの catch-up で `select_entries` が起点 rev を解決できず、後続の実更新まで表示が消える。
+        // ノート取得・LLM 抽出は対象 delta が無いため呼ばれない（never）が、append は 1 回行う。
         let mut closure_diff = MockClosureDiffPort::new();
         closure_diff
             .expect_diff_closures()
@@ -250,7 +251,18 @@ mod tests {
         extract.expect_extract_change_items().never();
 
         let mut store = MockHistoryStorePort::new();
-        store.expect_append_entry().never();
+        store
+            .expect_append_entry()
+            .times(1)
+            .withf(|entry| {
+                // chain link として rev を保持し、packages は空、severity は None。
+                entry.nixpkgs_old == "a1b2c3d"
+                    && entry.nixpkgs_new == "e4f5g6h"
+                    && entry.packages.is_empty()
+                    && entry.severity == Severity::None
+                    && entry.overall == "0アプリ更新"
+            })
+            .returning(|_| Ok(()));
 
         run_record(
             command(),

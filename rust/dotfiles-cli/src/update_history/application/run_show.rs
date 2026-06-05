@@ -73,10 +73,14 @@ mod tests {
     }
 
     fn entry(packages: Vec<PackageUpdate>) -> UpdateEntry {
+        entry_with_revs("a", "b", packages)
+    }
+
+    fn entry_with_revs(old: &str, new: &str, packages: Vec<PackageUpdate>) -> UpdateEntry {
         UpdateEntry {
-            at: "2026-06-05T00:00:00Z".to_string(),
-            nixpkgs_old: "a".to_string(),
-            nixpkgs_new: "b".to_string(),
+            at: format!("{old}->{new}"),
+            nixpkgs_old: old.to_string(),
+            nixpkgs_new: new.to_string(),
             reference: "darwinConfigurations.ci".to_string(),
             severity: Severity::None,
             overall: String::new(),
@@ -90,6 +94,15 @@ mod tests {
             limit: None,
             json: false,
             all,
+        }
+    }
+
+    fn command_from_rev(rev: &str) -> ShowCommand {
+        ShowCommand {
+            rev: Some(rev.to_string()),
+            limit: None,
+            json: false,
+            all: false,
         }
     }
 
@@ -158,5 +171,66 @@ mod tests {
             .returning(|_, _| Ok(()));
 
         run_show(command(true), &store, &report)
+    }
+
+    #[test]
+    fn catch_up_resolves_start_across_empty_chain_link() -> crate::Result<()> {
+        // 退行固定（chain 連続性）: マシンが nixpkgs r0 に pin され、履歴に r0→r1（packages 空の
+        // chain link）と r1→r2（実 packages）がある。`rev=r0` で show すると、`select_entries` は
+        // 空 link を跨いで起点 r0 を解決し、r1→r2 の更新を集約して表示する（空集合にならない）。
+        // 空 link の存在は package 件数（見出し）を水増ししない（aggregate が package=0 を畳む）。
+        let mut store = MockHistoryStorePort::new();
+        store.expect_read_entries().times(1).returning(|| {
+            Ok(vec![
+                // r0→r1: 空 bump 夜の chain link（packages 空）。
+                entry_with_revs("r0", "r1", Vec::new()),
+                // r1→r2: 実際に適用・記録された更新。
+                entry_with_revs(
+                    "r1",
+                    "r2",
+                    vec![package("neovim", true, ChangeCategory::Feature)],
+                ),
+            ])
+        });
+
+        let mut report = MockHistoryReportPort::new();
+        report
+            .expect_write_history()
+            .times(1)
+            .withf(|view, _| {
+                // 起点 r0 が空 link 越しに解決され、r1→r2 の neovim 更新が表示される。
+                view.packages.len() == 1
+                    && view.packages[0].name == "neovim"
+                    && view.severity == Severity::Minor
+                    // 見出しは表示対象（実 package）件数ベース。空 link は水増ししない。
+                    && view.overall == "1アプリ更新: ✨1"
+            })
+            .returning(|_, _| Ok(()));
+
+        run_show(command_from_rev("r0"), &store, &report)
+    }
+
+    #[test]
+    fn catch_up_returns_empty_when_only_empty_link_selected() -> crate::Result<()> {
+        // 空 link だけが選択範囲のとき（その rev 以降に実更新が無い）、集約後 package は 0 件で、
+        // 見出しは「0アプリ更新」、severity は None。空 link が利用者表示のノイズにならないことを固定。
+        let mut store = MockHistoryStorePort::new();
+        store
+            .expect_read_entries()
+            .times(1)
+            .returning(|| Ok(vec![entry_with_revs("r0", "r1", Vec::new())]));
+
+        let mut report = MockHistoryReportPort::new();
+        report
+            .expect_write_history()
+            .times(1)
+            .withf(|view, _| {
+                view.packages.is_empty()
+                    && view.severity == Severity::None
+                    && view.overall == "0アプリ更新"
+            })
+            .returning(|_, _| Ok(()));
+
+        run_show(command_from_rev("r0"), &store, &report)
     }
 }
