@@ -16,10 +16,10 @@
 
 ゴールは、PR が merge 可能状態であると確認できることとする。少なくとも次を満たす。
 
-- PR の mergeability が `mergeStateStatus: CLEAN` / `HAS_HOOKS` など、GitHub 上で merge 可能かつ必要な status が通過している状態である。
-- 必要な checks が success である。
+- PR の mergeability が `mergeStateStatus: CLEAN` / `HAS_HOOKS`、または required status / checks / approvals が満たされており非必須 status の未通過だけで `UNSTABLE` になっているなど、GitHub 上で merge 可能な状態である。
+- required checks が GitHub の required status check 成功扱いである `success` / `skipped` / `neutral` のいずれかである。
 - 未解決の review thread がない。
-- AI / Codex / Copilot review が依頼されている場合、または取得可能な運用である場合は、最新 head に対する review が no-issue である。
+- AI / Codex / Copilot review が明示的に依頼されている場合、または required review / required check として要求されている場合は、最新 head に対する review が no-issue である。
 - 採用した指摘への修正、採用しない指摘への理由返信、対応済み thread の resolve が完了している。
 
 実際の merge 実行は、この文書の責務に含めない。
@@ -63,18 +63,18 @@ PR review comment への採用/不採用返信、対応済み thread の resolve
 - checks の結果。
 - mergeability の結果。
 - 未解決 review thread がないこと。
-- AI / Codex / Copilot review が依頼されている場合、または取得可能な運用である場合は、最新 head に対する review が no-issue であること。
+- AI / Codex / Copilot review が明示的に依頼されている場合、または required review / required check として要求されている場合は、最新 head に対する review が no-issue であること。
 - 採用修正、不採用返信、resolve の実施状況。
 
 ## 保留条件
 
 次の場合は、merge 可能化を完了扱いにせず、保留理由を具体的に報告する。
 
-- checks が pending または failing である。
-- 外部 reviewer または bot review が未完了である。
+- required checks が pending / failing / blocked である、または GitHub の required status check 成功扱いである `success` / `skipped` / `neutral` のいずれでもない。
+- required review、または明示的に依頼された bot review が未完了である。
 - review thread の resolve 権限が不足している。
 - merge conflict がある。
 - branch protection、required approval、required check などの条件が未充足である。
-- 依頼された、または通常取得可能な最新 head に対する AI / Codex / Copilot review を取得できない。
+- 明示的に依頼された、または required review / required check として要求された最新 head に対する AI / Codex / Copilot review を取得できない。
 
 保留報告では、確認した head OID、未充足条件、次に必要な外部操作または待機対象を明示する。
