@@ -49,6 +49,15 @@ use crate::{
 
 /// state dir 配下のファイル名（いずれもユーザ所有で作る）。
 const LAST_APPLIED_REV: &str = "last-applied-rev";
+/// 最後に**適用に成功した**状態の推移的 nixpkgs rev（catch-up 要約 span の真の起点）。
+///
+/// 要約 span の起点に「lock 更新前のローカル lock の nixpkgs rev」を使うと、partial-failure 再実行で誤る:
+/// 前回実行が `nix flake update` まで進んで lock を新 pin へ bump した後に switch/darwin で失敗すると、
+/// `last-applied-rev` は古いまま・ローカル lock は新 pin になる。次回実行で lock 更新「前」に nixpkgs rev を
+/// 読んでも、その値は既に bump 済みの新 rev であり、要約の old が new pin と一致して差分が消える。これを避け、
+/// **最後に適用成功した時点の nixpkgs rev** をこのファイルへ確定書込みし、要約 span の起点に使う（未適用範囲の
+/// 実起点を指す）。`last-applied-rev` と同時に書き、未確定（defer）時は書かない。
+const LAST_APPLIED_NIXPKGS_REV: &str = "last-applied-nixpkgs-rev";
 const PENDING_SUMMARY: &str = "pending-summary";
 const LAST_RUN_LOG: &str = "last-run.log";
 const LOCK_FILE: &str = "update.lock";
@@ -101,15 +110,29 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     if options.commit_rev_marker {
         let current_pin = read_repo_pin(&config_dir)?;
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
+        // dotfiles pin と同時に、適用成功時点の推移的 nixpkgs rev も確定する。home ステップが既に lock を
+        // 更新済みなので、ここで読む nixpkgs rev は今回適用した new 側。次回 catch-up 要約 span の起点になる。
+        let current_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
+        write_last_applied_nixpkgs_rev(&state_dir, &current_nixpkgs_rev, dry_run)?;
         println!("適用済み rev を確定しました（rev {current_pin}）");
         return Ok(());
     }
 
-    // lock 更新「前」に config flake.lock の推移的 nixpkgs rev（old nixpkgs rev）を解決する。これが catch-up
-    // 要約の選択起点になる。lock 更新後に読むと nixpkgs も bump されて起点が new 側へずれ span が空になりうる
-    // ため、必ず更新前に読む。`last-applied-rev`（dotfiles pin）は適用要否 dedup 専用であり、要約選択には使わない
+    // catch-up 要約 span の起点となる「適用前 nixpkgs rev」を解決する。
+    //
+    // 優先するのは **最後に適用成功した時点の nixpkgs rev**（`last-applied-nixpkgs-rev` state file）である。
+    // これを使う理由は partial-failure 再実行への堅牢性: 前回実行が `nix flake update` で lock を新 pin へ
+    // bump した後に switch/darwin で失敗すると、ローカル lock は新 nixpkgs rev・`last-applied-rev` は古いまま
+    // になる。この状態で再実行し、lock 更新「前」のローカル lock から nixpkgs rev を読むと、それは既に bump
+    // 済みの new rev であり、要約の old が new pin と一致して差分（実際にはまだ未適用な範囲）が消える。state
+    // file の値は最後に適用成功した時点で確定したものなので、未適用範囲の実起点を指し、再実行でも崩れない。
+    // state file が無い初回は、lock 更新前のローカル lock の nixpkgs rev へフォールバックする（適用済み状態の
+    // 推定起点として妥当）。`last-applied-rev`（dotfiles pin）は適用要否 dedup 専用で要約選択には使わない
     // （要約は `nixpkgs_old` と突合するため、dotfiles pin SHA を渡すと名前空間が違い恒久 miss する）。
-    let previous_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
+    let span_start_nixpkgs_rev = match read_last_applied_nixpkgs_rev(&state_dir)? {
+        Some(rev) => rev,
+        None => read_nixpkgs_rev(&config_dir)?,
+    };
 
     // **先に** ローカル lock を最新 repo pin へ更新する（skip 判定はこの後）。lock 更新前のローカル pin は前回
     // 適用値のまま動かないため、更新前に判定すると定常状態で常に skip し fleet が追随しない。lock 更新は冪等で
@@ -145,8 +168,13 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // 要約は表示する（home 適用は実際に進んでいるため）。
     if !options.defer_rev_marker {
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
+        // dotfiles pin と同時に、今回適用した nixpkgs rev も確定する（次回 catch-up 要約 span の真の起点）。
+        // lock は上の `update_lock` で new pin へ更新済みなので、ここで読む値は今回適用した new 側。defer 時は
+        // rev 未確定のため書かない（darwin 成功後の `--commit-rev-marker` がまとめて確定する）。
+        let applied_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
+        write_last_applied_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
     }
-    present_summary(&state_dir, Some(previous_nixpkgs_rev.as_str()), dry_run)?;
+    present_summary(&state_dir, Some(span_start_nixpkgs_rev.as_str()), dry_run)?;
     Ok(())
 }
 
@@ -396,10 +424,21 @@ fn parse_nixpkgs_rev(lock_text: &str, input_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("nodes.{nixpkgs_node_name}.locked.rev not found"))
 }
 
+/// 最後に適用成功した時点の nixpkgs rev を読む（不存在/空なら `None`）。
+///
+/// `None`（初回・未確定）なら呼び出し側は lock 更新前のローカル lock の nixpkgs rev へフォールバックする。
+fn read_last_applied_nixpkgs_rev(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(LAST_APPLIED_NIXPKGS_REV))
+}
+
 /// `last-applied-rev` を読む（不存在/空なら `None`）。
 fn read_last_applied_rev(state_dir: &Path) -> Result<Option<String>> {
-    let path = state_dir.join(LAST_APPLIED_REV);
-    match fs::read_to_string(&path) {
+    read_trimmed_rev(&state_dir.join(LAST_APPLIED_REV))
+}
+
+/// state file から trim 済み rev を読む（不存在/空は `None`、その他 I/O 失敗は文脈付き `Err`）。
+fn read_trimmed_rev(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
         Ok(text) => {
             let rev = text.trim();
             Ok(if rev.is_empty() {
@@ -420,14 +459,29 @@ fn read_last_applied_rev(state_dir: &Path) -> Result<Option<String>> {
 /// 部分書込み（途中で観測される不完全 rev）を避けるため、同一 dir 内の temp ファイルへ書いてから rename する。
 /// rename は同一ファイルシステム内で原子的であり、読み手は旧 rev か新 rev のどちらかだけを観測する。
 fn write_last_applied_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_APPLIED_REV), rev, dry_run)
+}
+
+/// 最後に適用成功した時点の nixpkgs rev を原子的に書き込む（ユーザ所有）。`--dry-run` では書かない。
+///
+/// `last-applied-rev` と同時に確定し、catch-up 要約 span の真の起点（未適用範囲の起点）として次回実行で読む。
+fn write_last_applied_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_APPLIED_NIXPKGS_REV), rev, dry_run)
+}
+
+/// rev を同一 dir 内 temp→rename で原子的に書く共有実装（部分書込みを観測させない）。
+fn write_rev_atomic(final_path: &Path, rev: &str, dry_run: bool) -> Result<()> {
     if dry_run {
         return Ok(());
     }
-    let final_path = state_dir.join(LAST_APPLIED_REV);
-    let temp_path = state_dir.join(format!("{LAST_APPLIED_REV}.{}.tmp", std::process::id()));
+    let file_name = final_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| LAST_APPLIED_REV.to_string());
+    let temp_path = final_path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
     fs::write(&temp_path, format!("{rev}\n"))
         .with_context(|| format!("failed to write {}", temp_path.display()))?;
-    fs::rename(&temp_path, &final_path)
+    fs::rename(&temp_path, final_path)
         .with_context(|| format!("failed to atomically replace {}", final_path.display()))?;
     Ok(())
 }
@@ -500,39 +554,127 @@ fn append_last_run_log(state_dir: &Path, nixpkgs_from_rev: Option<&str>) -> Resu
     Ok(())
 }
 
+/// 既存ロックを stale（孤児）とみなす経過時間（秒）。これより古い lock は奪取する。
+///
+/// プロセス kill / 再起動で `Drop` が走らないと lock ファイルが残り、`AlreadyExists` が永久 skip を招く。
+/// 正常な適用（`nix flake update` + switch + darwin-rebuild）は分単位で完了しうるため、誤奪取（実行中の
+/// 適用を別プロセスが横取り）を避けつつ孤児を確実に回収できる十分長い閾値を採る。6 時間は 1 日 1 回の
+/// 適用サイクルより十分短く、かつ最長クラスの実適用より十分長い。
+const LOCK_STALE_SECS: u64 = 6 * 60 * 60;
+
 /// `update.lock` の `O_EXCL` ベース排他ロック。drop でロックファイルを除去する。
 ///
 /// flock(2) を使うと `libc` 直呼び（禁止）か新規 crate が要るため、移植性とテスト容易性を優先し
 /// `create_new`（`O_CREAT|O_EXCL`）でロックファイルを作る方式を採る。作成成功＝ロック取得、`AlreadyExists`＝
-/// 取得失敗（他プロセス適用中）として skip する。lock ファイルはユーザ所有 state dir 配下に作り、drop で除去する。
-/// `--dry-run` では実ロックファイルを作らず（副作用なし）、常に取得成功として判定経路を通す。
+/// 取得失敗だが、**stale lock（プロセス kill/再起動で `Drop` 未実行のまま残った孤児）を永久 skip しない**よう、
+/// 既存 lock の timestamp を見て一定時間（[`LOCK_STALE_SECS`]）より古ければ奪取する。lock ファイルはユーザ所有
+/// state dir 配下に `pid\nepoch_secs` で書き、drop で除去する。`--dry-run` では実ロックファイルを作らず
+/// （副作用なし）、常に取得成功として判定経路を通す。
 struct UpdateLock {
     /// 取得したロックファイルのパス（drop で除去する）。`None` は dry-run（実ファイル無し）。
     path: Option<PathBuf>,
 }
 
 impl UpdateLock {
-    /// ロックを非ブロッキングで試行する。取得成功で `Some`、既存ロックで `None` を返す。
+    /// ロックを非ブロッキングで試行する。取得成功で `Some`、生存中の既存ロックで `None` を返す。
+    ///
+    /// `AlreadyExists` 時は既存 lock の timestamp を見て staleness を判定する。stale（孤児）なら lock ファイルを
+    /// 除去して 1 度だけ `create_new` を再試行する。複数プロセスが同時に stale 判定して奪取競合しても、
+    /// `create_new` の原子性で勝者は 1 つだけになり、敗者は `AlreadyExists` で `None`（skip）へ倒れるため
+    /// 二重適用は起きない。生存中（timestamp が新しい）なら奪取せず `None`（skip）を返す。
     fn try_acquire(state_dir: &Path, dry_run: bool) -> Result<Option<Self>> {
         if dry_run {
             return Ok(Some(Self { path: None }));
         }
         let path = state_dir.join(LOCK_FILE);
+        match Self::create_new_lock(&path)? {
+            Some(lock) => Ok(Some(lock)),
+            None => {
+                // 既存 lock あり。stale（孤児）なら奪取、生存中なら skip。
+                if Self::existing_lock_is_stale(&path) {
+                    // 孤児を除去して 1 度だけ再取得を試みる。除去失敗（別プロセスが先に奪取）は次の
+                    // create_new が AlreadyExists を返すので、いずれにせよ勝者 1 つに収束する。
+                    let _ = fs::remove_file(&path);
+                    Self::create_new_lock(&path)
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    /// `create_new`（`O_CREAT|O_EXCL`）で lock を新規作成する。成功で `Some`、既存（`AlreadyExists`）で `None`。
+    ///
+    /// 作成時は診断・staleness 判定用に `pid\nepoch_secs` を書く。timestamp 書込み失敗は致命にしない
+    /// （その場合 staleness 判定は保守的に「生存中」へ倒れ、誤奪取を避ける）。
+    fn create_new_lock(path: &Path) -> Result<Option<Self>> {
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)
+            .open(path)
         {
             Ok(mut file) => {
-                // 診断用に pid を書く（読み手はいないが、孤児ロックの調査に使える）。失敗は致命ではない。
-                let _ = writeln!(file, "{}", std::process::id());
-                Ok(Some(Self { path: Some(path) }))
+                let _ = write!(
+                    file,
+                    "{}",
+                    lock_payload(std::process::id(), now_epoch_secs())
+                );
+                Ok(Some(Self {
+                    path: Some(path.to_path_buf()),
+                }))
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
             Err(error) => Err(anyhow::Error::from(error)
                 .context(format!("failed to acquire lock {}", path.display()))),
         }
     }
+
+    /// 既存 lock ファイルが stale（孤児）かを timestamp で判定する。
+    ///
+    /// lock 内容の epoch 秒が現在より [`LOCK_STALE_SECS`] 以上古ければ stale とみなす。読取り失敗・timestamp
+    /// 解析不能・lock 消滅は保守的に「stale ではない（生存中）」へ倒し、実行中の適用を誤って横取りしない。
+    fn existing_lock_is_stale(path: &Path) -> bool {
+        let Ok(content) = fs::read_to_string(path) else {
+            return false;
+        };
+        is_stale_lock(&content, now_epoch_secs(), LOCK_STALE_SECS)
+    }
+}
+
+/// lock ファイルの内容（`pid\nepoch_secs`）を組み立てる純粋関数。
+///
+/// 1 行目は診断用 pid、2 行目は staleness 判定に使う取得時刻（UNIX epoch 秒）。
+fn lock_payload(pid: u32, epoch_secs: u64) -> String {
+    format!("{pid}\n{epoch_secs}\n")
+}
+
+/// lock 内容（`pid\nepoch_secs`）と現在時刻から staleness を判定する純粋関数。
+///
+/// 2 行目を epoch 秒として解析し、`now - acquired >= threshold` なら stale（孤児）とみなす。timestamp 行が
+/// 無い / 解析不能 / 未来時刻（負の経過）は保守的に「stale ではない」へ倒し、生存中の適用を横取りしない。
+/// 純粋関数として時刻・閾値を引数化し、奪取条件を I/O 無しで単体検証できるようにする。
+fn is_stale_lock(content: &str, now_secs: u64, threshold_secs: u64) -> bool {
+    let Some(acquired) = content
+        .lines()
+        .nth(1)
+        .and_then(|line| line.trim().parse::<u64>().ok())
+    else {
+        return false;
+    };
+    now_secs
+        .checked_sub(acquired)
+        .is_some_and(|elapsed| elapsed >= threshold_secs)
+}
+
+/// 現在時刻を UNIX epoch 秒で返す（取得不能時は 0）。
+///
+/// `std::time` のみを使う（時刻 crate を導入しない）。epoch より前という異常時は 0 へ倒し、staleness 判定で
+/// 誤って「無限に古い」と扱われないようにする（`is_stale_lock` 側で now < acquired は非 stale へ倒れる）。
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 impl Drop for UpdateLock {
@@ -576,10 +718,11 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        LAST_RUN_LOG, LOCK_FILE, PENDING_SUMMARY, UpdateLock, append_pending_summary,
-        copy_history_dir, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
-        present_summary, read_last_applied_rev, resolve_state_dir, should_switch, update_args,
-        write_last_applied_rev,
+        LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY,
+        UpdateLock, append_pending_summary, copy_history_dir, is_stale_lock, lock_payload,
+        parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin, present_summary,
+        read_last_applied_nixpkgs_rev, read_last_applied_rev, resolve_state_dir, should_switch,
+        update_args, write_last_applied_nixpkgs_rev, write_last_applied_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -739,6 +882,110 @@ mod tests {
         assert!(lock.is_some());
         // dry-run は実ロックファイルを作らない。
         assert!(!dir.join(LOCK_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn is_stale_lock_uses_timestamp_threshold() {
+        // P2-3: lock 内容（`pid\nepoch_secs`）の 2 行目を見て staleness を判定する純粋規則を固定。
+        let now = 1_000_000u64;
+        // 閾値以上古い → stale。
+        assert!(is_stale_lock(
+            &lock_payload(42, now - LOCK_STALE_SECS),
+            now,
+            LOCK_STALE_SECS
+        ));
+        assert!(is_stale_lock(
+            &lock_payload(42, now - LOCK_STALE_SECS - 1),
+            now,
+            LOCK_STALE_SECS
+        ));
+        // 閾値未満（取得直後・実行中）→ 非 stale（横取りしない）。
+        assert!(!is_stale_lock(&lock_payload(42, now), now, LOCK_STALE_SECS));
+        assert!(!is_stale_lock(
+            &lock_payload(42, now - 1),
+            now,
+            LOCK_STALE_SECS
+        ));
+        // timestamp 行が無い / 解析不能 / 未来時刻は保守的に非 stale。
+        assert!(!is_stale_lock("42\n", now, LOCK_STALE_SECS));
+        assert!(!is_stale_lock("42\nnotnum\n", now, LOCK_STALE_SECS));
+        assert!(!is_stale_lock(
+            &lock_payload(42, now + 100),
+            now,
+            LOCK_STALE_SECS
+        ));
+    }
+
+    #[test]
+    fn try_acquire_steals_stale_lock_but_skips_live_lock() -> crate::Result<()> {
+        // P2-3 退行固定: プロセス kill 等で Drop されず残った stale lock は奪取して実行に進む。
+        // 生存中（新しい timestamp）の lock は奪取せず skip する。
+        let dir = temp_dir("lock-stale");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let lock_path = dir.join(LOCK_FILE);
+
+        // 古い timestamp の孤児 lock を手で置く（Drop されなかった残骸を模す）。
+        let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 60);
+        std::fs::write(&lock_path, lock_payload(99999, stale_epoch)).expect("write stale lock");
+        // 奪取して取得成功する。
+        let acquired = UpdateLock::try_acquire(&dir, false)?;
+        assert!(acquired.is_some(), "stale lock must be stolen");
+        // 奪取後の lock は現在時刻で書き直され、生存中扱いになる（別プロセスは skip）。
+        assert!(UpdateLock::try_acquire(&dir, false)?.is_none());
+        drop(acquired);
+
+        // 解放後、新しい（生存中）lock を置くと奪取されない。
+        let fresh_epoch = super::now_epoch_secs();
+        std::fs::write(&lock_path, lock_payload(12345, fresh_epoch)).expect("write fresh lock");
+        assert!(
+            UpdateLock::try_acquire(&dir, false)?.is_none(),
+            "live lock must not be stolen"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn last_applied_nixpkgs_rev_round_trips_and_is_preferred_span_start() -> crate::Result<()> {
+        // P2-2 退行固定: 要約 span の起点は「最後に適用成功した nixpkgs rev」を確定書込みした state file から
+        // 読み、partial-failure 再実行でローカル lock が new pin へ bump 済みでも起点が崩れないようにする。
+        // ここでは state file の round-trip（不在→書込み→読取り、defer/dry-run の非書込み）を固定する。
+        let dir = temp_dir("applied-nixpkgs");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        // 不在時は None（呼び出し側は lock 更新前の nixpkgs rev へフォールバックする）。
+        assert_eq!(read_last_applied_nixpkgs_rev(&dir)?, None);
+
+        // 適用成功時に確定した nixpkgs rev を書く。
+        write_last_applied_nixpkgs_rev(&dir, "nixpkgs-applied-old", false)?;
+        assert_eq!(
+            read_last_applied_nixpkgs_rev(&dir)?,
+            Some("nixpkgs-applied-old".to_string())
+        );
+        // dotfiles pin の `last-applied-rev` とは別ファイルで独立に持つ。
+        write_last_applied_rev(&dir, "dotfiles-pin", false)?;
+        assert_eq!(
+            read_last_applied_nixpkgs_rev(&dir)?,
+            Some("nixpkgs-applied-old".to_string())
+        );
+        assert_eq!(
+            read_last_applied_rev(&dir)?,
+            Some("dotfiles-pin".to_string())
+        );
+        assert!(dir.join(LAST_APPLIED_NIXPKGS_REV).exists());
+
+        // dry-run は書かない（確定済み値を上書きしない）。
+        write_last_applied_nixpkgs_rev(&dir, "should-not-write", true)?;
+        assert_eq!(
+            read_last_applied_nixpkgs_rev(&dir)?,
+            Some("nixpkgs-applied-old".to_string())
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

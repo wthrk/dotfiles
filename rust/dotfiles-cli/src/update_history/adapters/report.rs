@@ -3,8 +3,18 @@
 //! 集約済み [`HistoryView`] を、重要度連動の text（全体見出し → severity バッジ → アプリ別 version と
 //! 変更項目）または生 JSON へ翻訳して出力する。絵文字凡例・category 別グルーピング・破壊的/セキュリティ
 //! 先頭という presentation 仕様はこの adapter に閉じる。`text` は信頼境界外の自由文のため、リンク化・実行・
-//! エスケープ解釈をせずプレーン文字列としてそのまま出力する（prompt injection 表示契約）。意味づけ（重要度
+//! エスケープ解釈をせずプレーン文字列として出力する（prompt injection 表示契約）。意味づけ（重要度
 //! 算出・集約）は domain で済んでおり、本 adapter は表示形式の決定だけを担う。
+//!
+//! ## 端末出力前の制御文字無害化（terminal injection 対策）
+//!
+//! `text` / `notes_url` / `ref_url` / `name` は LLM 抽出または上流リリースノート由来で信頼境界外であり、
+//! 生成された要約は端末へ直接、あるいは `pending-summary` ファイルへ書かれて zsh フックが後で `cat` する。
+//! ANSI escape（ESC `[`…）・OSC（ESC `]`…）・C0/C1 制御文字をそのまま流すと端末が色・カーソル移動・タイトル
+//! 変更・クリップボード操作などとして解釈し、表示偽装やエスケープ injection を許す。本 adapter は端末/ファイル
+//! 出力へ載せる全 untrusted 文字列を [`sanitize`] に通し、表示に必要なタブ以外の制御文字（ESC を含む C0、
+//! C1、DEL）を除去する。改行は 1 行表示を壊さないよう空白へ畳む。JSON 出力（`--json`）は端末解釈されない
+//! 生データ契約のため sanitize せず原値を保つ（機械処理向け）。
 //!
 //! `show` command は stdout へ直接書く [`StdoutHistoryReportAdapter`] を、auto 適用後の要約振り分け
 //! （tty なら端末、非 tty なら `pending-summary` ファイル）は同じ render を任意 sink へ流す
@@ -107,7 +117,7 @@ fn render_text(view: &HistoryView) -> String {
     lines.push(format!(
         "{} {}",
         severity_badge(view.severity),
-        view.overall
+        sanitize(&view.overall)
     ));
     for package in &view.packages {
         lines.push(render_package_heading(package));
@@ -121,22 +131,56 @@ fn render_text(view: &HistoryView) -> String {
 }
 
 /// `name old → new`（不在側は `∅`）と任意の notes URL を 1 行で表す。
+///
+/// `name` / version / `notes_url` は untrusted のため [`sanitize`] で制御文字を無害化してから組む。
 fn render_package_heading(package: &PackageUpdate) -> String {
-    let old = package.old.as_deref().unwrap_or("∅");
-    let new = package.new.as_deref().unwrap_or("∅");
+    let name = sanitize(&package.name);
+    let old = package
+        .old
+        .as_deref()
+        .map(sanitize)
+        .unwrap_or_else(|| "∅".to_string());
+    let new = package
+        .new
+        .as_deref()
+        .map(sanitize)
+        .unwrap_or_else(|| "∅".to_string());
     match &package.notes_url {
-        Some(url) => format!("  {} {old} → {new} ({url})", package.name),
-        None => format!("  {} {old} → {new}", package.name),
+        Some(url) => format!("  {name} {old} → {new} ({})", sanitize(url)),
+        None => format!("  {name} {old} → {new}"),
     }
 }
 
 /// 絵文字付きの変更項目 1 行。`text` はプレーン表示し、`ref` があれば末尾へ付す。
+///
+/// `text` / `ref_url` は untrusted のため [`sanitize`] で端末解釈される制御文字を除去してから出力する。
 fn render_change_item(item: &ChangeItem) -> String {
     let emoji = category_emoji(item.category);
+    let text = sanitize(&item.text);
     match &item.ref_url {
-        Some(url) => format!("    {emoji} {} ({url})", item.text),
-        None => format!("    {emoji} {}", item.text),
+        Some(url) => format!("    {emoji} {text} ({})", sanitize(url)),
+        None => format!("    {emoji} {text}"),
     }
+}
+
+/// 端末/ファイル出力前に untrusted 文字列から端末解釈される制御文字を除去する。
+///
+/// terminal injection 対策の表示無害化。除去対象は ESC（`0x1B`、ANSI/CSI/OSC sequence の起点）を含む C0
+/// 制御文字（`0x00`–`0x1F`）、DEL（`0x7F`）、C1 制御文字（`0x80`–`0x9F`）。タブ（`0x09`）だけは表示整形に
+/// 使うため温存し、改行（`\n` / `\r`）は 1 行表示を壊さないよう半角空白へ畳む。これにより色・カーソル移動・
+/// 画面消去・タイトル/クリップボード操作などの端末制御列が成立しなくなる。通常の表示可能文字（多バイト
+/// UTF-8・絵文字・日本語を含む）はそのまま残すため、テキスト内容を壊しすぎない。
+fn sanitize(input: &str) -> String {
+    input
+        .chars()
+        .filter_map(|ch| match ch {
+            '\t' => Some('\t'),
+            '\n' | '\r' => Some(' '),
+            // C0（ESC 含む）・DEL・C1 を除去。
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
 }
 
 /// 指定 category の変更項目を出現順で返す。
@@ -221,6 +265,57 @@ mod tests {
             overall: "0アプリ更新".to_string(),
         };
         assert_eq!(render_text(&empty), "更新履歴はありません");
+    }
+
+    #[test]
+    fn text_strips_terminal_control_sequences_from_untrusted_text() {
+        // P2-6 退行固定（terminal injection）: untrusted な `text` / `name` / URL に含まれる ANSI/OSC/C0/C1
+        // 制御文字を端末/ファイル出力前に除去する。zsh が後で `cat` しても端末制御列として解釈されない。
+        let view = HistoryView {
+            packages: vec![PackageUpdate {
+                // name に ESC[2J（画面消去）を仕込む。
+                name: "pkg\u{1b}[2J".to_string(),
+                old: Some("1.0".to_string()),
+                new: Some("1.1".to_string()),
+                change: ChangeKind::Upgraded,
+                declared: true,
+                // notes_url に OSC（ESC ] … BEL、ここではクリップボード操作風）を仕込む。
+                notes_url: Some("https://x/\u{1b}]52;c;evil\u{07}".to_string()),
+                change_items: vec![ChangeItem {
+                    category: ChangeCategory::Security,
+                    // text に ANSI 色 + ベル + 改行を仕込む。
+                    text: "悪意\u{1b}[31m赤\u{07}\n改行".to_string(),
+                    ref_url: Some("https://x/ref\u{1b}[0m".to_string()),
+                }],
+            }],
+            severity: Severity::Critical,
+            // overall にも C1（0x9b = CSI）を仕込む。
+            overall: "見出し\u{9b}31m".to_string(),
+        };
+
+        let rendered = render_text(&view);
+        // ESC（0x1B）・BEL（0x07）・C1（0x9B）・生改行が一切残らないこと。
+        assert!(
+            !rendered.contains('\u{1b}'),
+            "ESC must be stripped: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('\u{07}'),
+            "BEL must be stripped: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('\u{9b}'),
+            "C1 CSI must be stripped: {rendered:?}"
+        );
+        // text 内の改行は空白へ畳まれ、可読本文は残る。
+        assert!(rendered.contains("悪意"), "{rendered:?}");
+        assert!(
+            rendered.contains("赤 改行"),
+            "newline folded to space: {rendered:?}"
+        );
+        assert!(rendered.contains("見出し31m"), "{rendered:?}");
+        // 表示の行構造（package/change_item 行）は保たれる。
+        assert!(rendered.contains("pkg[2J 1.0 → 1.1"), "{rendered:?}");
     }
 
     #[test]

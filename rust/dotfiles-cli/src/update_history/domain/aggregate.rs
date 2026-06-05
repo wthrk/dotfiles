@@ -2,8 +2,13 @@
 //!
 //! `last-applied-rev` が複数 bump 遅れていると、適用は複数エントリを一度に跨ぐ。`show` と適用後表示は
 //! 跨いだ全 [`UpdateEntry`] をアプリ単位で集約する: `old` は最古適用版・`new` は最新適用版、
-//! change_item は決定論キー `(name, category, ref_url)` で重複排除し、severity / overall は集約後集合で
+//! change_item は決定論キー `(name, category, ref_url, text)` で重複排除し、severity / overall は集約後集合で
 //! 再算出する（再算出は [`super::severity`] の単一関数を共有）。集約はストアではなく表示時マージである。
+//!
+//! dedup キーに `text` を含める理由: 同一 app・同一 category・`ref_url` 無し（個別 URL を持たない複数の
+//! security/fix 項目など）の異なる変更が複数あるとき、`text` を見ないと 2 件目以降が「同一」とみなされて
+//! 落ちる。`text` を含めると本文が異なる変更は別物として保持され、本当に同一（全フィールド一致）の重複だけが
+//! 排除される。決定論は保たれる（同一 entries 入力に対し常に同じ結果）。
 
 use std::collections::BTreeMap;
 
@@ -37,8 +42,8 @@ pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
     // アプリ名 → 集約途中状態。挿入順を保つため別 Vec に名前順を記録する。
     let mut order: Vec<String> = Vec::new();
     let mut acc: BTreeMap<String, PackageUpdate> = BTreeMap::new();
-    // change_item の重複排除キー `(name, category, ref_url)` の既出集合。
-    let mut seen: BTreeMap<(String, String, Option<String>), ()> = BTreeMap::new();
+    // change_item の重複排除キー `(name, category, ref_url, text)` の既出集合。
+    let mut seen: BTreeMap<(String, String, Option<String>, String), ()> = BTreeMap::new();
     // 各アプリの最初の change 種別（集約 change 確定に使う）。
     let mut first_change: BTreeMap<String, ChangeKind> = BTreeMap::new();
     // 各アプリが複数エントリを跨いだか。
@@ -90,15 +95,20 @@ pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
         .collect()
 }
 
-/// 決定論キー `(name, category, ref_url)` の未出 change_item だけを順序を保って push する。
+/// 決定論キー `(name, category, ref_url, text)` の未出 change_item だけを順序を保って push する。
 fn push_unique_items(
-    seen: &mut BTreeMap<(String, String, Option<String>), ()>,
+    seen: &mut BTreeMap<(String, String, Option<String>, String), ()>,
     package: &mut PackageUpdate,
     items: &[ChangeItem],
 ) {
     for item in items {
         let category_key = category_key(item);
-        let key = (package.name.clone(), category_key, item.ref_url.clone());
+        let key = (
+            package.name.clone(),
+            category_key,
+            item.ref_url.clone(),
+            item.text.clone(),
+        );
         if seen.insert(key, ()).is_none() {
             package.change_items.push(item.clone());
         }
@@ -106,8 +116,6 @@ fn push_unique_items(
 }
 
 /// dedup キーで使う category の安定文字列表現。
-///
-/// 集約は category の同一性だけを見るため、`text` 差分は重複排除に影響させない。
 fn category_key(item: &ChangeItem) -> String {
     format!("{:?}", item.category)
 }
@@ -202,7 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_dedups_change_items_by_name_category_ref() {
+    fn aggregate_dedups_only_fully_identical_change_items() {
+        // dedup キーは `(name, category, ref_url, text)`。全フィールド一致の重複だけを排除し、
+        // 同一 ref でも `text` が異なる変更は別物として保持する（個別 URL を共有する別内容を落とさない）。
         let item = change_item(ChangeCategory::Security, "CVE 修正", Some("https://x/cve"));
         let entries = [
             entry(
@@ -212,7 +222,8 @@ mod tests {
                     Some("3.0.0"),
                     Some("3.0.1"),
                     ChangeKind::Upgraded,
-                    vec![item.clone()],
+                    // 完全同一の item を 2 度入れても 1 件に畳まれる（真の重複排除）。
+                    vec![item.clone(), item.clone()],
                 )],
             ),
             entry(
@@ -222,11 +233,11 @@ mod tests {
                     Some("3.0.1"),
                     Some("3.0.2"),
                     ChangeKind::Upgraded,
-                    // 同一 (name, category, ref) は重複排除される（text が違っても category/ref 一致で除外）。
+                    // 同一 category/ref でも `text` が違えば別物として保持する。
                     vec![
                         change_item(
                             ChangeCategory::Security,
-                            "別表現の同一参照",
+                            "別内容の同一参照",
                             Some("https://x/cve"),
                         ),
                         change_item(ChangeCategory::Feature, "新機能", None),
@@ -238,8 +249,43 @@ mod tests {
         let aggregated = aggregate(&entries);
 
         assert_eq!(aggregated.len(), 1);
-        assert_eq!(aggregated[0].change_items.len(), 2);
+        // 完全同一 1 件 + 別 text の security 1 件 + feature 1 件 = 3 件。
+        assert_eq!(aggregated[0].change_items.len(), 3);
         // 集約後集合で severity を再算出すると security により critical。
+        assert_eq!(severity_of(&aggregated[0].change_items), Severity::Critical);
+    }
+
+    #[test]
+    fn aggregate_preserves_multiple_refless_changes_in_same_category() {
+        // P2-4 退行固定: 同 app・同 category・`ref_url` 無し（個別 URL を持たない複数の security 項目など）の
+        // 異なる変更が、2 件目以降落ちずに全件保持されることを固定する。旧 dedup キー `(name, category, ref_url)`
+        // は `text` を見ないため、これらを「同一」とみなして 1 件しか残さなかった。
+        let entries = [entry(
+            "2026-06-01T00:00:00Z",
+            vec![package(
+                "openssl",
+                Some("3.0.0"),
+                Some("3.0.1"),
+                ChangeKind::Upgraded,
+                vec![
+                    change_item(ChangeCategory::Security, "CVE-A を修正", None),
+                    change_item(ChangeCategory::Security, "CVE-B を修正", None),
+                    change_item(ChangeCategory::Security, "CVE-C を修正", None),
+                ],
+            )],
+        )];
+
+        let aggregated = aggregate(&entries);
+
+        assert_eq!(aggregated.len(), 1);
+        // 3 件すべて保持される（text で区別）。
+        assert_eq!(aggregated[0].change_items.len(), 3);
+        let texts: Vec<&str> = aggregated[0]
+            .change_items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["CVE-A を修正", "CVE-B を修正", "CVE-C を修正"]);
         assert_eq!(severity_of(&aggregated[0].change_items), Severity::Critical);
     }
 

@@ -11,6 +11,10 @@
 //!    fail-open を塞ぐ）。
 //! 3. **required status check 包含**: required_status_checks ルールに guard の context（`nightly-bump-guard`）
 //!    が含まれること。これが落ちると guard が required でなくなり fail-open する。
+//! 4. **適用対象が default branch を含む**: `target == "branch"` かつ `conditions.ref_name.include` が
+//!    `~DEFAULT_BRANCH`（default branch を表す GitHub のメタ ref）を含むこと。retarget（default branch を含まない
+//!    別 ref へ条件を差し替え）されると、ruleset 自体は active / bypass 空 / required check ありでも main を保護
+//!    せず、nightly 無人 auto-merge が無保護の main へ流れる（実質 fail-open）。対象条件まで検証して塞ぐ。
 //!
 //! いずれかに違反すれば [`verify_applied_ruleset`] は違反理由を載せた `Err` を返し、CLI は非 0 終了する。
 //! 適用状態の取得（`gh api`）は CLI 側の責務で、本 module は取得済み JSON の判定だけを担う。
@@ -27,6 +31,12 @@ use crate::Result;
 /// 無効化され fail-open するため、CI が継続検証する。
 pub(crate) const REQUIRED_GUARD_CONTEXT: &str = "nightly-bump-guard";
 
+/// default branch を表す GitHub ruleset の組込みメタ ref。
+///
+/// `conditions.ref_name.include` がこれを含むと、ruleset は repository の default branch（main）へ適用される。
+/// retarget でこれが落ちると main が保護されなくなるため、適用対象検証の load-bearing な固定値。
+const DEFAULT_BRANCH_REF: &str = "~DEFAULT_BRANCH";
+
 /// GitHub に適用された単一 ruleset の JSON が安全要件を満たすかを判定する。
 ///
 /// `applied` は `gh api repos/{owner}/{repo}/rulesets/{id}` の応答（単一 ruleset。`rules` を含む詳細表現）。
@@ -41,8 +51,64 @@ pub(crate) fn verify_applied_ruleset(applied: &str) -> Result<()> {
 
     verify_enforcement(&ruleset)?;
     verify_bypass_actors_empty(&ruleset)?;
+    verify_applied_target(&ruleset)?;
     verify_required_guard_check(&ruleset)?;
     Ok(())
+}
+
+/// 適用対象が default branch（main）を含むことを検査する（retarget による無保護化を塞ぐ）。
+///
+/// `target` が `branch` であり、`conditions.ref_name.include` に [`DEFAULT_BRANCH_REF`] が含まれることを
+/// 確認する。`target` が branch 以外（tag / push 等）へ差し替えられた、または include から default branch が
+/// 落とされた retarget は、ruleset が他の不変条件（active / bypass 空 / required check）を満たしていても
+/// main を保護しないため fail とする。`exclude` で default branch が除外されていれば、include にあっても
+/// 保護が外れるため fail とする。
+fn verify_applied_target(ruleset: &Value) -> Result<()> {
+    match ruleset.get("target").and_then(Value::as_str) {
+        Some("branch") => {}
+        other => bail!(
+            "applied ruleset target is {other:?}, expected \"branch\"; \
+             retargeted ruleset does not protect the default branch (fail-open)"
+        ),
+    }
+
+    let ref_name = ruleset
+        .get("conditions")
+        .and_then(|conditions| conditions.get("ref_name"))
+        .context(
+            "applied ruleset has no conditions.ref_name; cannot confirm it targets the \
+             default branch (fail-open)",
+        )?;
+
+    if ref_name_array_contains(ref_name, "exclude", DEFAULT_BRANCH_REF) {
+        bail!(
+            "applied ruleset excludes `{DEFAULT_BRANCH_REF}` in conditions.ref_name.exclude; \
+             the default branch is not protected (fail-open)"
+        );
+    }
+
+    if ref_name_array_contains(ref_name, "include", DEFAULT_BRANCH_REF) {
+        Ok(())
+    } else {
+        bail!(
+            "applied ruleset conditions.ref_name.include does not contain `{DEFAULT_BRANCH_REF}`; \
+             retargeted away from the default branch (fail-open)"
+        )
+    }
+}
+
+/// `ref_name.<field>`（include / exclude）配列に指定 ref が含まれるかを判定する。
+///
+/// 配列が無い / 文字列でない要素は無視する。include の包含判定と exclude の除外判定の双方で共有する。
+fn ref_name_array_contains(ref_name: &Value, field: &str, target_ref: &str) -> bool {
+    ref_name
+        .get(field)
+        .and_then(Value::as_array)
+        .is_some_and(|refs| {
+            refs.iter()
+                .filter_map(Value::as_str)
+                .any(|value| value == target_ref)
+        })
 }
 
 /// `enforcement` が `active` であることを検査する。
@@ -126,8 +192,12 @@ mod tests {
     fn valid_ruleset() -> String {
         r#"{
           "name": "nightly-bump-protection",
+          "target": "branch",
           "enforcement": "active",
           "bypass_actors": [],
+          "conditions": {
+            "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] }
+          },
           "rules": [
             { "type": "deletion" },
             {
@@ -168,8 +238,10 @@ mod tests {
     #[test]
     fn rejects_missing_required_status_checks_rule() {
         let applied = r#"{
+          "target": "branch",
           "enforcement": "active",
           "bypass_actors": [],
+          "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
           "rules": [ { "type": "deletion" } ]
         }"#;
         let err = verify_applied_ruleset(applied).unwrap_err();
@@ -177,6 +249,48 @@ mod tests {
             err.to_string().contains("no required_status_checks rule"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_target_retargeted_away_from_branch() {
+        // P2-5 退行固定: target が branch 以外（tag 等）へ差し替えられた ruleset は main を保護しないため fail。
+        let applied = valid_ruleset().replace(r#""target": "branch""#, r#""target": "tag""#);
+        let err = verify_applied_ruleset(&applied).unwrap_err();
+        assert!(err.to_string().contains("target is"), "{err}");
+    }
+
+    #[test]
+    fn rejects_conditions_without_default_branch_include() {
+        // P2-5 退行固定: conditions.ref_name.include が `~DEFAULT_BRANCH` を含まない（別 ref へ retarget）と、
+        // active / bypass 空 / required check ありでも main を保護しないため fail。
+        let applied = valid_ruleset().replace(
+            r#""include": ["~DEFAULT_BRANCH"]"#,
+            r#""include": ["refs/heads/some-other-branch"]"#,
+        );
+        let err = verify_applied_ruleset(&applied).unwrap_err();
+        assert!(err.to_string().contains("does not contain"), "{err}");
+    }
+
+    #[test]
+    fn rejects_default_branch_excluded() {
+        // include に `~DEFAULT_BRANCH` があっても exclude で除外されれば保護が外れるため fail。
+        let applied =
+            valid_ruleset().replace(r#""exclude": []"#, r#""exclude": ["~DEFAULT_BRANCH"]"#);
+        let err = verify_applied_ruleset(&applied).unwrap_err();
+        assert!(err.to_string().contains("excludes"), "{err}");
+    }
+
+    #[test]
+    fn rejects_missing_conditions() {
+        // conditions.ref_name 欠落は default branch 適用を確認できないため fail。
+        let applied = r#"{
+          "target": "branch",
+          "enforcement": "active",
+          "bypass_actors": [],
+          "rules": [ { "type": "deletion" } ]
+        }"#;
+        let err = verify_applied_ruleset(applied).unwrap_err();
+        assert!(err.to_string().contains("no conditions.ref_name"), "{err}");
     }
 
     #[test]
@@ -189,7 +303,13 @@ mod tests {
     #[test]
     fn rejects_list_representation_without_rules() {
         // /rulesets 一覧表現（rules 無し）は required check を検査できないため fail。
-        let applied = r#"{ "name": "x", "enforcement": "active", "bypass_actors": [] }"#;
+        let applied = r#"{
+          "name": "x",
+          "target": "branch",
+          "enforcement": "active",
+          "bypass_actors": [],
+          "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } }
+        }"#;
         let err = verify_applied_ruleset(applied).unwrap_err();
         assert!(err.to_string().contains("no rules array"), "{err}");
     }

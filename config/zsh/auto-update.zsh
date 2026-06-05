@@ -125,7 +125,17 @@ _dotfiles_auto_update_init() {
     # しない。シェル catch-up は user 権限で完結する home 適用だけを行い、darwin 適用は root daemon
     # （auto-update.nix の launchd daemon）に委ねる。home 側で lock 更新と switch home は進むため、ユーザは
     # home 更新を即時反映でき、要約表示（pending-summary/precmd）も完了する。
-    { dotfiles update home >/dev/null 2>&1 } &!
+    #
+    # **`--defer-rev-marker` で `last-applied-rev` を確定させない**（重要・darwin starve 回避）。通常経路
+    # （flag 無し）の `dotfiles update home` は home 適用後に `last-applied-rev` を新 pin へ書く。だが home だけ
+    # 適用して rev を確定すると、その rev は「適用済み」扱いになり、同じ rev の darwin（system/GUI）適用が
+    # daemon / 対話 `dotfiles update` で永久に skip される（rev 消費済みで未収束のまま放置）。`--defer-rev-marker`
+    # を付けると home 適用と要約表示は行うが `last-applied-rev` を書かないため、その rev は未確定のまま残り、
+    # darwin 適用（root daemon、または対話 `dotfiles update`）がその rev を消費して収束させられる。rev 確定は
+    # auto-update.nix の daemon（home `--defer-rev-marker` → darwin → `--commit-rev-marker`）が担う。なお
+    # `--defer-rev-marker` でも `dotfiles update` は rev ベースで no-op 冪等（home 適用は同 pin 再適用が冪等）の
+    # ため、毎日の catch-up（1 日 1 回 marker で抑制）は同 pin なら home 側でも実質 no-op になる。
+    { dotfiles update home --defer-rev-marker >/dev/null 2>&1 } &!
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _dotfiles_auto_update_precmd
   fi
