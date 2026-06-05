@@ -40,4 +40,4 @@ The main orchestrator uses this skill as an orchestration extension when the top
 - Apply `docs/task-governance/pr-mergeability-loop.md` directly; this skill does not restate the durable loop procedure.
 - This skill augments `/orchestration` for PR mergeability requests; it does not replace `/orchestration`, `/implementation-execution`, review skills, judgement skills, or the commit / PR operation rules in `workflow.md`.
 - The main orchestrator coordinates target PR selection, PR state inventory, bounded delegation, result aggregation, and repeated re-checks until completion or a blocked condition is known.
-- Delegated actors use their assigned role skill for their bounded task and report checks, review thread, review-result, commit / push, or PR-operation facts back to the parent orchestrator. They do not own the full AI / PR loop.
+- Delegated actors use their assigned role skill for their bounded task and report checks, review thread, review result, commit / push, or PR operation facts back to the parent orchestrator. They do not own the full AI / PR loop.
