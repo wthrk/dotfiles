@@ -1,0 +1,47 @@
+[package]
+name = "dotfiles-secrets"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# 既定の production build では GPG keyring backend（gpgme + sequoia-openpgp）を含める。
+default = ["gpg-backend"]
+# `gpgme` / `sequoia-openpgp` の実 keyring backend と、`git2` の実 password-store clone backend を
+# 有効にする。internal stub build は外部 GPG / Git backend を要求しないため、この feature を外して
+# compile-time で除外する。
+gpg-backend = ["dep:gpgme", "dep:sequoia-openpgp", "dep:git2"]
+secrets-internal-test-stub = []
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+bincode.workspace = true
+bitwarden.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+dotfiles-core.workspace = true
+filedescriptor.workspace = true
+git2 = { workspace = true, optional = true }
+gpgme = { workspace = true, optional = true }
+rand.workspace = true
+region.workspace = true
+rand_core.workspace = true
+rlimit.workspace = true
+rsa.workspace = true
+scopeguard.workspace = true
+sequoia-openpgp = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+yubikey.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+mockall.workspace = true

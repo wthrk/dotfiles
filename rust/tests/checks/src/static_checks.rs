@@ -43,7 +43,7 @@ fn rust(shell: &Shell) -> Result<()> {
     step("cargo test secrets application");
     cmd!(
         shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --lib secrets::application"
+        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-secrets --lib application"
     )
     .run()?;
     Ok(())
