@@ -28,7 +28,7 @@ description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex re
 
 指示に次のいずれかが含まれる場合、現在の役割と併用する。
 
-- PR URL または PR 番号
+- PR URL または PR 番号と、mergeability、checks、review thread、PR review 対応に関する依頼
 - PR review 対応
 - AI review、Codex review、Copilot review、または PR 文脈の `@codex review`
 - review thread の返信または resolve

@@ -21,7 +21,7 @@ This skill does not establish or change the current actor's role. The actor rema
 1. The role skill that established the current actor
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/security-obligations.md`
-4. `docs/task-governance/pr-mergeability-loop.md` when a PR URL or PR number is specified, or when PR review response, AI/Codex/Copilot review, PR-scoped `@codex review`, review thread resolve, checks confirmation, or mergeability confirmation is in scope
+4. `docs/task-governance/pr-mergeability-loop.md` when a PR URL or PR number is specified together with a mergeability, checks, review-thread, or PR review-response request, or when PR review response, AI/Codex/Copilot review, PR-scoped `@codex review`, review thread resolve, checks confirmation, or mergeability confirmation is in scope
 5. `docs/secret-recovery/implementation-guidelines.md`
 6. `docs/docs-governance.md`
 7. The canonical document for the governed area
@@ -30,5 +30,5 @@ This skill does not establish or change the current actor's role. The actor rema
 
 - Use this only as repository-specific governance support.
 - Do not use this skill to switch a delegated role actor into orchestrator for the same delegated task.
-- Also use `/pr-mergeability-loop` when PR instructions include a PR URL or PR number, PR review response, AI/Codex/Copilot review, PR-scoped `@codex review`, review thread resolve, checks confirmation, or mergeability confirmation.
+- Also use `/pr-mergeability-loop` when PR instructions include a PR URL or PR number together with a mergeability, checks, review-thread, or PR review-response request, PR review response, AI/Codex/Copilot review, PR-scoped `@codex review`, review thread resolve, checks confirmation, or mergeability confirmation.
 - Apply canonical documents directly; this skill intentionally does not restate their detailed rules.

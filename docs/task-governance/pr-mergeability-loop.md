@@ -6,7 +6,7 @@
 
 次のいずれかを含む依頼では、この文書を適用する。
 
-- PR URL または PR 番号が指定されている。
+- PR URL または PR 番号が指定され、mergeability、checks、review thread 対応、PR review 対応など、PR を merge 可能状態へ近づける操作が依頼されている。
 - PR review 対応、AI review、Codex review、Copilot review が指定され、対象 PR を特定できる。
 - 対象 PR が特定できる文脈で `@codex review` が指定されている。
 - review thread の返信、修正、resolve が指定されている。
@@ -16,10 +16,10 @@
 
 ゴールは、PR が merge 可能状態であると確認できることとする。少なくとも次を満たす。
 
-- PR の mergeability が `mergeStateStatus: CLEAN` 相当である。
+- PR の mergeability が `mergeStateStatus: CLEAN` / `HAS_HOOKS` など、GitHub 上で merge 可能かつ必要な status が通過している状態である。
 - 必要な checks が success である。
 - 未解決の review thread がない。
-- 最新 head に対する AI / Codex / Copilot review が no-issue である。
+- AI / Codex / Copilot review が依頼されている場合、または取得可能な運用である場合は、最新 head に対する review が no-issue である。
 - 採用した指摘への修正、採用しない指摘への理由返信、対応済み thread の resolve が完了している。
 
 実際の merge 実行は、この文書の責務に含めない。
@@ -54,7 +54,7 @@
 - checks の結果。
 - mergeability の結果。
 - 未解決 review thread がないこと。
-- 最新 head に対する AI / Codex / Copilot review が no-issue であること。
+- AI / Codex / Copilot review が依頼されている場合、または取得可能な運用である場合は、最新 head に対する review が no-issue であること。
 - 採用修正、不採用返信、resolve の実施状況。
 
 ## 保留条件
@@ -66,6 +66,6 @@
 - review thread の resolve 権限が不足している。
 - merge conflict がある。
 - branch protection、required approval、required check などの条件が未充足である。
-- 最新 head に対する AI / Codex / Copilot review を取得できない。
+- 依頼された、または通常取得可能な最新 head に対する AI / Codex / Copilot review を取得できない。
 
 保留報告では、確認した head OID、未充足条件、次に必要な外部操作または待機対象を明示する。

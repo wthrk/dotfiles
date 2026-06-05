@@ -28,7 +28,7 @@ The actor remains bound to the role skill already invoked, such as `/implementat
 
 Use this skill with the current role when the instruction includes any of the following:
 
-- PR URL or PR number
+- PR URL or PR number together with a mergeability, checks, review-thread, or PR review-response request
 - PR review response
 - AI review, Codex review, Copilot review, or PR-scoped `@codex review`
 - review thread reply or resolve
