@@ -10,7 +10,7 @@
 - PR review 対応、AI review、Codex review、Copilot review が指定され、対象 PR を特定できる。
 - 対象 PR が特定できる文脈で `@codex review` が指定されている。
 - review thread の返信、修正、resolve が指定されている。
-- checks、mergeability、merge 可能状態の確認が指定されている。
+- 対象 PR を特定できる文脈で、checks、mergeability、merge 可能状態の確認が指定されている。
 
 ## ゴール
 

@@ -32,7 +32,7 @@ description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex re
 - PR review 対応
 - AI review、Codex review、Copilot review、または PR 文脈の `@codex review`
 - review thread の返信または resolve
-- checks 確認
+- PR 文脈の checks 確認
 - mergeability 確認
 
 ## Rules

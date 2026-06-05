@@ -32,7 +32,7 @@ Use this skill with the current role when the instruction includes any of the fo
 - PR review response
 - AI review, Codex review, Copilot review, or PR-scoped `@codex review`
 - review thread reply or resolve
-- checks confirmation
+- PR-scoped checks confirmation
 - mergeability confirmation
 
 ## Rules
