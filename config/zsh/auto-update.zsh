@@ -7,10 +7,20 @@
 # 振る舞い:
 #   1. ログイン時、background 適用（launchd daemon 等）が残した `pending-summary` を 1 回だけ表示し、
 #      原子的 rename で消費する（複数端末は rename の原子性で最初の 1 端末のみが消費に成功）。
-#   2. 現在の repo pin（ローカル flake の `flake.lock` の dotfiles input rev）が `last-applied-rev` と
-#      異なれば、detach で `dotfiles update` を起動する（ログインをブロックしない）。多重起動は
+#   2. 1 日 1 回程度、detach で `dotfiles update home` を起動する（ログインをブロックしない）。多重起動は
 #      `dotfiles update` 側の lock が吸収する。detach 後はその端末の `precmd` で `pending-summary` を
 #      1 回拾って表示し、消費したら監視を終了する。
+#
+# catch-up 起動可否を stale local pin で決めない（重要）:
+#   旧実装は「ローカル flake.lock の dotfiles pin != last-applied-rev」でのみ起動していたが、これは定常状態
+#   （local pin == last-applied-rev だが upstream は nightly bump で進んでいる）で永久に起動せず、daemon が
+#   走らなかったマシン（ログイン主体・スリープ運用等）が upstream へ追随できなかった。ローカル pin は
+#   `nix flake update dotfiles` を実行するまで前回適用値のまま動かないため、ローカル pin 比較では upstream の
+#   進行を検知できない。よって catch-up 起動は **stale local pin 比較で決めず**、`dotfiles update`（remote 解決
+#   を含み rev ベースで no-op 冪等）を 1 日 1 回程度のトリガ marker（`last-login-trigger`、当日未トリガなら
+#   起動）で起動する。これにより upstream 変化を確実に検知する。トリガ marker は「起動頻度の抑制」専用で、
+#   実適用の重複抑止（rev ベースの `last-applied-rev`）とは別物（rev ベース dedup は `dotfiles update` 側が
+#   維持する）。毎シェルで `dotfiles update` を叩かないこと。
 #
 # 状態ディレクトリ・ファイル名・pin の所在は `rust/dotfiles-cli/src/update.rs` の契約に一致させる。
 
@@ -26,16 +36,42 @@ _dotfiles_auto_update_state_dir() {
   print -r -- "$base/dotfiles"
 }
 
-# config dir は update.rs と同じ規則: $DOTFILES_CONFIG_DIR、未設定なら $HOME/.config/dotfiles。
-_dotfiles_auto_update_config_dir() {
-  print -r -- "${DOTFILES_CONFIG_DIR:-$HOME/.config/dotfiles}"
+# 当日 catch-up を既に起動済みかを判定し、未起動なら trigger marker を当日付で更新して 0 を返す。
+#
+# catch-up 起動頻度の抑制専用 marker（`last-login-trigger`）。中身は当日（`date +%F`）で、毎シェルではなく
+# 1 日 1 回だけ `dotfiles update` を起動するための gate にする。当日分が既に記録されていれば 1 を返して
+# 起動を抑止し、未記録（不在 / 別日）なら marker を当日付へ原子的に更新して 0 を返す（=今日初回起動）。
+# 実適用の重複抑止は別レイヤ（rev ベースの `last-applied-rev`、`dotfiles update` 側）が担うため、この marker は
+# upstream 検知のための「毎日 1 回は remote 解決を試す」起動頻度制御だけに使う。
+_dotfiles_auto_update_should_trigger_today() {
+  local state_dir today marker tmp
+  state_dir="$(_dotfiles_auto_update_state_dir)"
+  today="$(date +%F 2>/dev/null)" || return 1
+  [[ -n "$today" ]] || return 1
+  marker="$state_dir/last-login-trigger"
+
+  # 当日分が既に記録されていれば抑止する（今日はもう起動した）。
+  if [[ -r "$marker" && "$(<"$marker")" == "$today" ]]; then
+    return 1
+  fi
+
+  # state dir が無ければ作る（ユーザ所有）。失敗しても起動判断は続行する（marker 不在時は起動側に倒す）。
+  command mkdir -p -- "$state_dir" 2>/dev/null
+  # 当日付を原子的に書く（temp→rename）。書込み失敗でも今日初回として起動側に倒す。
+  tmp="$marker.$$.tmp"
+  if print -r -- "$today" > "$tmp" 2>/dev/null; then
+    command mv -f -- "$tmp" "$marker" 2>/dev/null
+  fi
+  return 0
 }
 
 # pending-summary を 1 回だけ表示して原子的に消費する。
 #
-# 表示前に `pending-summary` を `pending-summary.shown.<pid>.<epoch>` へ rename する。rename はディレクトリ内で
-# 原子的なので、複数端末が同時に起動しても rename に成功した 1 端末だけが内容を表示でき、二重表示を防ぐ。
-# rename に失敗（既に他端末が消費 / そもそも存在しない）したら何もしない。表示済みファイルは記録として残す。
+# 表示前に `pending-summary` を `pending-summary.consuming.$$`（$$=シェル PID）へ rename して所有権を取る。
+# rename はディレクトリ内で原子的なので、複数端末が同時に起動しても rename に成功した 1 端末だけが内容を
+# 表示でき、二重表示を防ぐ。所有した端末は内容を表示してから `pending-summary.shown` へ**追記**で退避し
+# （連続適用の複数 rev ブロックを上書きで失わない）、`consuming` 一時ファイルを削除する。rename に失敗
+# （既に他端末が消費 / そもそも存在しない）したら何もしない。`.shown` は表示済みの記録として残す。
 _dotfiles_auto_update_consume_pending() {
   local state_dir pending shown
   state_dir="$(_dotfiles_auto_update_state_dir)"
@@ -52,53 +88,6 @@ _dotfiles_auto_update_consume_pending() {
     return 0
   fi
   return 1
-}
-
-# 現在の repo pin を `flake.lock` の dotfiles input locked rev から読む。
-#
-# `jq` があれば `nodes.dotfiles.locked.rev` で厳密抽出する（JSON 構造を正しく辿るため誤検知しない）。`jq` が
-# 無い環境では awk で素朴に拾うが、**dotfiles ノードのブロック範囲に限定**する。素朴な awk が `"dotfiles":` を
-# 一度見ると EOF まで in_node を維持すると、dotfiles ノード内に rev が無い／取り損ねた場合に後続ノードの rev を
-# 誤って拾い、現在 pin でない値で catch-up を不要起動してしまう。これを防ぐため、`"dotfiles":` 行で in_node を
-# 開始し、ネスト深さ（`{`/`}` の数）が dotfiles ノード開始時の深さへ戻った時点で in_node を閉じる。確実性より
-# 「軽量・失敗で no-op」を優先し、取れなければ空文字を返して catch-up を起動しない（誤起動より未起動に倒す）。
-# 実際の rev 判定と適用は `dotfiles update` 側（堅牢な JSON パーサ + lock）が単一の正本として行う。
-_dotfiles_auto_update_repo_pin() {
-  local lock
-  lock="$(_dotfiles_auto_update_config_dir)/flake.lock"
-  [[ -r "$lock" ]] || return 1
-
-  # jq があれば構造を正しく辿って厳密抽出する（誤検知なし）。null/欠落は空文字に倒す。
-  if (( $+commands[jq] )); then
-    local rev
-    rev="$(jq -r '.nodes.dotfiles.locked.rev // empty' "$lock" 2>/dev/null)"
-    print -r -- "$rev"
-    return 0
-  fi
-
-  # jq 不在時の fallback。dotfiles ノードのブロック範囲（中括弧のネスト深さ）に限定して rev を拾う。
-  awk '
-    !in_node && /"dotfiles"[[:space:]]*:/ {
-      in_node = 1
-      start_depth = depth
-    }
-    {
-      # 行内の中括弧でネスト深さを更新する。in_node 開始時の深さへ戻ったらノードを抜ける。
-      n_open = gsub(/{/, "{"); n_close = gsub(/}/, "}")
-      if (in_node && match($0, /"rev"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"/)) {
-        s = substr($0, RSTART, RLENGTH)
-        gsub(/.*"rev"[[:space:]]*:[[:space:]]*"/, "", s)
-        gsub(/".*/, "", s)
-        print s
-        exit
-      }
-      depth += n_open - n_close
-      if (in_node && depth <= start_depth) {
-        # dotfiles ノードを rev 未取得のまま抜けた。後続ノードの rev を拾わないよう探索を打ち切る。
-        exit
-      }
-    }
-  ' "$lock" 2>/dev/null
 }
 
 # detach 起動した適用が完了して `pending-summary` を書いたら、その端末で 1 回拾って表示し消費する。
@@ -122,16 +111,11 @@ _dotfiles_auto_update_init() {
   # 既に background 適用が残した要約があれば、まず 1 回表示して消費する。
   _dotfiles_auto_update_consume_pending
 
-  # 現在 pin と last-applied-rev を比較し、相違時のみ detach で適用を起動する。
-  local pin applied state_dir
-  pin="$(_dotfiles_auto_update_repo_pin)" || return 0
-  [[ -n "$pin" ]] || return 0
-  state_dir="$(_dotfiles_auto_update_state_dir)"
-  applied=""
-  [[ -r "$state_dir/last-applied-rev" ]] && applied="$(<"$state_dir/last-applied-rev")"
-  applied="${applied//[[:space:]]/}"
-
-  if [[ "$pin" != "$applied" ]]; then
+  # catch-up 起動可否は **stale local pin で決めない**（定常状態で upstream を検知できないため）。1 日 1 回
+  # 程度のトリガ marker で、当日未トリガなら detach で `dotfiles update home` を起動する。`dotfiles update` は
+  # remote 解決（`nix flake update dotfiles`）を含み rev ベースで no-op 冪等なので、当日初回に必ず upstream を
+  # 解決し直し、変化があれば適用、無ければ何もしない。
+  if _dotfiles_auto_update_should_trigger_today; then
     # ログインをブロックしないよう detach で起動する。多重起動は dotfiles 側 lock が吸収する。
     # 適用は非 tty なので要約は `pending-summary` へ書かれ、下の precmd フックが拾って表示する。
     #

@@ -59,6 +59,13 @@ where
         });
     }
 
+    // closure 差分も brew 差分も空（更新無し）の夜は、`packages=[]` の空エントリを履歴に追記しない
+    // （F5 ノイズ抑制）。空エントリは「何も更新されていない」を表すノイズであり、catch-up span 連結や
+    // show の見出しを水増しするだけなので、素材が 1 件も無ければ append を行わず no-op で抜ける。
+    if materials.is_empty() {
+        return Ok(());
+    }
+
     let entry = build_entry(
         command.at,
         command.nixpkgs_old,
@@ -211,6 +218,39 @@ mod tests {
                     && entry.packages[0].notes_url.is_none()
             })
             .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &closure_diff,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+        )
+    }
+
+    #[test]
+    fn record_skips_append_when_no_deltas() -> crate::Result<()> {
+        // F5 退行固定: closure 差分も brew 差分も空（更新無し）の夜は、空 packages のエントリを履歴へ
+        // 追記しない。ノート取得・LLM 抽出も呼ばれず、append_entry は 0 回（never）。
+        let mut closure_diff = MockClosureDiffPort::new();
+        closure_diff
+            .expect_diff_closures()
+            .times(1)
+            .returning(|_, _| Ok(Vec::new()));
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .times(1)
+            .returning(|_, _| Ok(Vec::new()));
+
+        let mut notes = MockNotesPort::new();
+        notes.expect_fetch_release_notes().never();
+        let mut extract = MockChangeExtractPort::new();
+        extract.expect_extract_change_items().never();
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().never();
 
         run_record(
             command(),

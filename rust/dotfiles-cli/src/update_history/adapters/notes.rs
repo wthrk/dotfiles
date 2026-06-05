@@ -44,22 +44,19 @@ impl ReleaseNotesAdapter {
     /// 許可ホスト https URL から本文を curl で取得する。
     ///
     /// 取得失敗（ネットワーク不通・404 等）は record を止めないよう `None` へ縮退する。URL が許可ホスト
-    /// https でない場合は取得を試みず `None` を返す（信頼境界外 URL を踏まない）。`--proto =https` で
-    /// https 以外の redirect 追従を禁止する。
+    /// https でない場合は取得を試みず `None` を返す（信頼境界外 URL を踏まない）。
+    ///
+    /// **redirect は追従しない**（`--location` を付けず、`--max-redirs 0` で明示禁止）。`is_allowed_url` は
+    /// 初期 URL の host しか検査できず、`--location` で redirect を追従すると 3xx 応答経由で allowlist 外
+    /// ホストから本文を取得しうる（`--proto =https` は scheme 制限であって host 制限ではない）。これは
+    /// 「許可ホストの https のみを踏む」契約に反する。よって redirect は一切追わず、初期 URL が 3xx を返す
+    /// ケースは取得失敗扱いで `None`（ノート空縮退＝graceful degradation）にする。これにより host allowlist
+    /// 契約をコードで保証する。
     fn fetch(url: &str) -> Result<Option<RawReleaseNotes>> {
         if !is_allowed_url(url) {
             return Ok(None);
         }
-        let args = [
-            OsString::from("--fail"),
-            OsString::from("--silent"),
-            OsString::from("--show-error"),
-            OsString::from("--location"),
-            OsString::from("--proto"),
-            OsString::from("=https"),
-            OsString::from(url),
-        ];
-        match run_capture("curl", args) {
+        match run_capture("curl", curl_args(url)) {
             Ok(text) if !text.trim().is_empty() => Ok(Some(RawReleaseNotes {
                 text,
                 notes_url: url.to_string(),
@@ -84,6 +81,26 @@ impl NotesPort for ReleaseNotesAdapter {
         let url = resolve_notes_url(base, name);
         Self::fetch(&url)
     }
+}
+
+/// curl 引数列を組み立てる純粋関数（redirect 不追従を引数列として固定検証できるよう実行から切り離す）。
+///
+/// **redirect を追従しない**こと（`--location` を含めず `--max-redirs 0`）が host allowlist 契約の要であり、
+/// 引数列をテストで固定して退行を防ぐ。`--fail` で 3xx/4xx を失敗にし、`--proto =https` で https 以外の
+/// scheme を拒む。
+fn curl_args(url: &str) -> [OsString; 8] {
+    [
+        OsString::from("--fail"),
+        OsString::from("--silent"),
+        OsString::from("--show-error"),
+        // redirect を追従しない（allowlist 外 host への横滑りを塞ぐ）。3xx は `--fail` で失敗扱いになり
+        // `None` へ縮退する。`--max-redirs 0` は明示的に「リダイレクトを 0 回まで」とする。
+        OsString::from("--max-redirs"),
+        OsString::from("0"),
+        OsString::from("--proto"),
+        OsString::from("=https"),
+        OsString::from(url),
+    ]
 }
 
 /// `notes_base` と package 名から取得対象 URL を構築する純粋関数。
@@ -118,9 +135,42 @@ fn cask_letter(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! cask の `Casks/<letter>/<name>.rb` URL 構築（P2-3 退行固定）と、非 cask 基底での従来連結を固定する。
+    //! cask の `Casks/<letter>/<name>.rb` URL 構築（P2-3 退行固定）と、非 cask 基底での従来連結、
+    //! および curl の redirect 不追従引数列（S1 退行固定: host allowlist 契約をコードで保証）を固定する。
 
-    use super::resolve_notes_url;
+    use super::{curl_args, resolve_notes_url};
+
+    #[test]
+    fn curl_args_do_not_follow_redirects() {
+        // S1 退行固定: redirect を追従すると `is_allowed_url` で検査した初期 host を越えて allowlist 外 host
+        // から本文を取得しうる（host allowlist 契約違反）。`--location` を含めず `--max-redirs 0` を渡すこと、
+        // および https に限定する `--proto =https` を引数列で固定する。
+        let args: Vec<String> = curl_args("https://github.com/a/b")
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|arg| arg == "--location" || arg == "-L"),
+            "redirect を追従してはならない: {args:?}"
+        );
+        // `--max-redirs 0` が「0」値とともに含まれる。
+        let max_redirs_idx = args
+            .iter()
+            .position(|arg| arg == "--max-redirs")
+            .expect("--max-redirs を指定する");
+        assert_eq!(args.get(max_redirs_idx + 1).map(String::as_str), Some("0"));
+        // https 以外の scheme を拒む。
+        let proto_idx = args
+            .iter()
+            .position(|arg| arg == "--proto")
+            .expect("--proto を指定する");
+        assert_eq!(args.get(proto_idx + 1).map(String::as_str), Some("=https"));
+        // 取得対象 URL が末尾に乗る。
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://github.com/a/b")
+        );
+    }
 
     #[test]
     fn cask_base_resolves_letter_subdir_and_rb_suffix() {

@@ -18,6 +18,17 @@
 #   rev を確定する。darwin が失敗すると（`set -e`）確定ステップへ到達せず、マーカーは前回値のまま残るので、
 #   次回起動で再適用して収束する（darwin 未収束のまま「適用済み」と誤記録して skip する drift を防ぐ）。
 #
+# 無更新日の darwin-rebuild 抑止（F3）:
+#   home ステップが「適用済み pin と同一で no-op」だった日は darwin-rebuild を起動しない。home 適用前の
+#   `last-applied-rev` を控え、home ステップが lock を更新した後の dotfiles pin と突き合わせ、変化が無ければ
+#   darwin ステップと rev 確定を skip する。`--defer-rev-marker` のため `last-applied-rev` は前回値のまま
+#   なので、この比較で「実際に適用したか」を判別できる。
+#
+# launchd PATH（F1）:
+#   launchd daemon の最小 PATH には nix が無い。`dotfiles` は絶対 store パスで起動するが、内部で `nix`・
+#   `home-manager`・`darwin-rebuild` を PATH 解決で spawn するため、wrapper で PATH を明示的に通す。sudo は
+#   env をリセットするので、ユーザ権限ステップは `env PATH="$PATH"` を前置して PATH を引き継ぐ。
+#
 # `~/.local/state/dotfiles` は root で mkdir せず、system.activationScripts で `launchctl asuser` +
 # `sudo -u <user>` によりユーザ所有で作成する（launchagents.nix の asuser idiom に倣う）。
 {
@@ -25,6 +36,7 @@
   pkgs,
   lib,
   inputs,
+  config,
   ...
 }:
 let
@@ -40,32 +52,85 @@ let
   # 絶対 store パスで CLI を指す（PATH 非依存。root daemon の最小環境で確実に解決するため）。
   dotfilesBin = "${inputs.self.packages.${system}.default}/bin/dotfiles";
 
+  # launchd daemon の最小 PATH には nix が無い。`dotfiles` バイナリ自体は絶対 store パスで起動できるが、
+  # `dotfiles update home` は内部で `nix`（`nix flake update`）と `home-manager` を、`dotfiles switch darwin` は
+  # `darwin-rebuild` を **PATH 解決で** spawn する。これらが見つからないと daemon が失敗するため、wrapper の
+  # PATH を明示的に通す。store パスで確実に解決できる `nix`（`config.nix.package`）と coreutils（`mkdir`/`mv`
+  # 等の退避処理）を makeBinPath で先頭に置き、nix-darwin/home-manager が提供する `darwin-rebuild`・
+  # `home-manager` は実行時 profile（`/run/current-system/sw/bin`・`/etc/profiles/per-user/<user>/bin`・
+  # nix default profile）から解決する（これらは build 時の store パスに固定できないため runtime profile で引く）。
+  daemonPath = lib.concatStringsSep ":" [
+    (lib.makeBinPath [
+      config.nix.package
+      pkgs.coreutils
+      # 無更新日に darwin-rebuild を起動しない判定（F3）で flake.lock の pin を厳密抽出するため jq を通す。
+      pkgs.jq
+    ])
+    "/run/current-system/sw/bin"
+    "/etc/profiles/per-user/${user}/bin"
+    "/nix/var/nix/profiles/default/bin"
+    "/usr/bin"
+    "/bin"
+    "/usr/sbin"
+    "/sbin"
+  ];
+
   # 権限分割のみを担う薄いラッパー。業務判断は持たず、誰の権限でどのサブコマンドを呼ぶかだけを決める。
   wrapper = pkgs.writeShellScript "${label}-wrapper" ''
     set -euo pipefail
 
+    # launchd daemon の最小 PATH には nix が無い。wrapper 自身（root の darwin ステップが PATH 解決で
+    # `darwin-rebuild` を引く）と、`sudo -u <user> env PATH=... dotfiles ...` 経由で渡すユーザ権限ステップの
+    # 双方で nix / home-manager / darwin-rebuild を解決できるよう PATH を確定する。sudo は既定で env を
+    # リセットし secure_path で PATH を上書きしうるため、ユーザ権限ステップでは `env PATH="$PATH"` を前置して
+    # 明示的に引き継ぐ。
+    export PATH=${lib.escapeShellArg daemonPath}
+
+    state_dir=${lib.escapeShellArg stateDir}
+    config_dir=${lib.escapeShellArg configDir}
+
     # ① state dir をユーザ所有で用意（activation でも作るが、daemon 起動時の取りこぼしに備える）。
     #    root では mkdir せず、ユーザ権限で作る（マーカーのユーザ所有保証）。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/mkdir -p ${lib.escapeShellArg stateDir}
+    /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/mkdir -p "$state_dir"
+
+    # F3: home ステップが実際に適用したか（repo pin が変化したか）を判定するため、home 適用「前」の
+    #     `last-applied-rev` を控える。home ステップは `--defer-rev-marker` で `last-applied-rev` を書かないので、
+    #     適用後にローカル lock の dotfiles pin と突き合わせれば「適用済み pin と同一＝無更新」を判別できる。
+    applied_before=""
+    if [ -r "$state_dir/last-applied-rev" ]; then
+      applied_before="$(tr -d '[:space:]' < "$state_dir/last-applied-rev" || true)"
+    fi
 
     # ② 適用要否判定・home-manager 適用・要約書込みをユーザ権限で実行する。非 tty なので要約は
     #    pending-summary へ書かれる。darwin は別ステップ（root）で適用するため、ここでは home のみを対象に
     #    する（home-manager を root で走らせない）。`--defer-rev-marker` で `last-applied-rev` はまだ書かず、
     #    home+darwin の両成功後（④）に確定する。これにより darwin 失敗時の rev drift を防ぐ。`--config-dir` で
-    #    ユーザの `~/.config/dotfiles` を明示し、確実にユーザのローカル flake を指す。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home \
-      --config-dir ${lib.escapeShellArg configDir} --defer-rev-marker
+    #    ユーザの `~/.config/dotfiles` を明示し、確実にユーザのローカル flake を指す。sudo は env をリセットし
+    #    PATH を secure_path で上書きしうるため、`env PATH="$PATH"` を前置して nix / home-manager を解決させる。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} /usr/bin/env PATH="$PATH" ${dotfilesBin} update home \
+      --config-dir "$config_dir" --defer-rev-marker
+
+    # F3: home ステップが lock を最新 repo pin へ更新した後の pin を読む。`--defer-rev-marker` のため
+    #     `last-applied-rev` はまだ前回値（applied_before）のまま。新 pin が前回値と同一なら home は no-op
+    #     （適用なし）であり、darwin-rebuild を起動する理由が無いので darwin ステップと rev 確定を skip する
+    #     （無更新日に darwin-rebuild を走らせない）。pin が変化していれば実適用があったので darwin を適用する。
+    applied_after="$(jq -r '.nodes.dotfiles.locked.rev // empty' "$config_dir/flake.lock" 2>/dev/null || true)"
+    if [ -n "$applied_after" ] && [ "$applied_after" = "$applied_before" ]; then
+      echo "home に更新がないため darwin-rebuild を skip します（rev $applied_after）"
+      exit 0
+    fi
 
     # ③ darwin 部分は root のまま、sudo を前置しない経路で適用する（既に root daemon のため）。root では
     #    `$HOME` が /var/root のため `--config-dir` でユーザ config を明示しないと存在しない config を見に行く。
+    #    PATH は wrapper の export 済み値を継承し、`darwin-rebuild` を runtime profile から解決する。
     DOTFILES_DARWIN_REBUILD_SUDO=0 ${dotfilesBin} switch darwin \
-      --config-dir ${lib.escapeShellArg configDir} --no-sudo
+      --config-dir "$config_dir" --no-sudo
 
     # ④ home+darwin の両適用が成功した後にだけ rev マーカーを確定する。set -e により②③のいずれかが失敗
     #    すると④へ到達せず、`last-applied-rev` は前回値のまま残る（次回再適用で収束させ、drift を回避）。
     #    マーカーはユーザ所有で書くため、確定もユーザ権限で行う。`--config-dir` で読む pin を②と一致させる。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home \
-      --config-dir ${lib.escapeShellArg configDir} --commit-rev-marker
+    /usr/bin/sudo -u ${lib.escapeShellArg user} /usr/bin/env PATH="$PATH" ${dotfilesBin} update home \
+      --config-dir "$config_dir" --commit-rev-marker
   '';
 in
 {

@@ -5,7 +5,7 @@
 //! 算出する」のは外部実装を差し替えても変わらない業務規則であり domain に置く。組み立て手段（port 呼び出し
 //! 順序）は application、URL の host 妥当性は [`super::validate`]、severity 算出は [`super::severity`] が担う。
 
-use super::diff::VersionDelta;
+use super::diff::{DeltaSource, VersionDelta};
 use super::severity::{overall_headline, severity_of};
 use super::wire::{ChangeItem, PackageUpdate, Severity, UpdateEntry};
 
@@ -26,16 +26,24 @@ pub(crate) struct PackageMaterial {
 
 /// version 差分 1 件を記録用 [`PackageUpdate`] へ変換する。
 ///
-/// `declared` は本チャンクでは宣言アプリ判定（cli/languages/macos/homebrew 由来の分類）を持たないため
-/// 既定で `true`（`show` 既定で表示）とする。低レベル依存の畳み込み分類は別チャンクで `declared=false` を
-/// 付与する設計余地を wire 型に残してある。`old`/`new`/`change` は差分の値をそのまま採る。
+/// `declared` は差分の出所（[`DeltaSource`]）で決める。`nix store diff-closures` 由来の delta は
+/// nix-store クロージャの**推移的（低レベル）パッケージ**まで含み、`update-history show` の既定表示
+/// （宣言アプリ中心）に混ぜるとノイズになるため `declared: false`（既定で畳み、`--all` で表示）にする。
+/// 一方 brew cask 由来の delta は利用者が宣言した実アプリ（Brewfile/`homebrew.nix` の cask）なので
+/// `declared: true`（既定表示）にする。`old`/`new`/`change` は差分の値をそのまま採る。
 fn to_package_update(material: PackageMaterial) -> PackageUpdate {
+    let declared = match material.delta.source {
+        // nix クロージャ差分は推移的依存を含むため既定では畳む。
+        DeltaSource::NixClosure => false,
+        // brew cask は宣言した実アプリなので既定表示する。
+        DeltaSource::BrewTap => true,
+    };
     PackageUpdate {
         name: material.delta.name,
         old: material.delta.old,
         new: material.delta.new,
         change: material.delta.change,
-        declared: true,
+        declared,
         notes_url: material.notes_url,
         change_items: material.change_items,
     }
@@ -89,12 +97,16 @@ mod tests {
     use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
 
     fn delta(name: &str) -> VersionDelta {
+        delta_with_source(name, DeltaSource::NixClosure)
+    }
+
+    fn delta_with_source(name: &str, source: DeltaSource) -> VersionDelta {
         VersionDelta {
             name: name.to_string(),
             old: Some("1.0".to_string()),
             new: Some("1.1".to_string()),
             change: ChangeKind::Upgraded,
-            source: DeltaSource::NixClosure,
+            source,
         }
     }
 
@@ -132,7 +144,41 @@ mod tests {
         assert_eq!(entry.packages.len(), 2);
         assert_eq!(entry.severity, Severity::Critical);
         assert_eq!(entry.overall, "2アプリ更新: 🔒1 ✨1");
-        assert!(entry.packages[0].declared);
+        // F4: nix クロージャ由来は既定で畳む（declared=false）。
+        assert!(!entry.packages[0].declared);
+    }
+
+    #[test]
+    fn declared_is_false_for_nix_closure_and_true_for_brew_cask() {
+        // F4 退行固定: `nix store diff-closures` 由来の（推移的）パッケージは show 既定の宣言アプリ表示に
+        // 混ぜるとノイズになるため declared=false（既定で畳み `--all` で表示）。brew cask 由来は宣言した
+        // 実アプリなので declared=true（既定表示）。出所（DeltaSource）で判別する。
+        let materials = vec![
+            PackageMaterial {
+                delta: delta_with_source("glibc", DeltaSource::NixClosure),
+                change_items: Vec::new(),
+                notes_url: None,
+            },
+            PackageMaterial {
+                delta: delta_with_source("firefox", DeltaSource::BrewTap),
+                change_items: Vec::new(),
+                notes_url: None,
+            },
+        ];
+        let entry = build_entry(
+            "at".to_string(),
+            "o".to_string(),
+            "n".to_string(),
+            "ref".to_string(),
+            materials,
+        );
+        assert_eq!(entry.packages[0].name, "glibc");
+        assert!(
+            !entry.packages[0].declared,
+            "nix closure 由来は declared=false"
+        );
+        assert_eq!(entry.packages[1].name, "firefox");
+        assert!(entry.packages[1].declared, "brew cask 由来は declared=true");
     }
 
     #[test]

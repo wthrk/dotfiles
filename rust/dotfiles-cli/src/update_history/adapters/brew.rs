@@ -40,6 +40,10 @@ impl BrewTapDiffAdapter {
     ///
     /// 空行・3 列に満たない行は無視する。`∅` は版不在として `None` にし、不在位置から change 種別を確定する
     /// （`∅→x`=Added、`x→∅`=Removed、両側存在=Upgraded）。版比較の業務意味づけは domain rule に委ねる。
+    ///
+    /// **版変更なし（`old==new`）行の除外**（F5 ノイズ抑制）: CI 側でも落とすが、差分源の品質に依存せず
+    /// adapter 側でも `old` と `new` がともに存在して等しい行を捨てる。版が変わっていない cask は「更新」では
+    /// なく、記録・表示に出すと no-op エントリのノイズになるため、ここで二重に防ぐ。
     fn parse_diff(text: &str) -> Vec<VersionDelta> {
         text.lines()
             .filter_map(|line| {
@@ -52,6 +56,12 @@ impl BrewTapDiffAdapter {
                 }
                 let old = version_or_absent(old_raw);
                 let new = version_or_absent(new_raw);
+                // 版変更なし（両側存在かつ等しい）は更新ではないため捨てる（F5 ノイズ抑制）。
+                if let (Some(old_v), Some(new_v)) = (&old, &new)
+                    && old_v == new_v
+                {
+                    return None;
+                }
                 let change = match (&old, &new) {
                     (None, Some(_)) => ChangeKind::Added,
                     (Some(_), None) => ChangeKind::Removed,
@@ -122,5 +132,20 @@ mod tests {
     #[test]
     fn ignores_blank_and_short_lines() {
         assert!(BrewTapDiffAdapter::parse_diff("\n\nonlyname\nname\tonly-old\n").is_empty());
+    }
+
+    #[test]
+    fn drops_rows_with_unchanged_version() {
+        // F5 退行固定: old==new（版変更なし）の cask 行は更新でないため adapter が落とす。実際の更新
+        // （版が変わった行・added・removed）だけが残る。
+        let text = "unchanged\t4.36\t4.36\nfirefox\t120.0\t121.0\nnew-cask\t∅\t1.0\n";
+        let deltas = BrewTapDiffAdapter::parse_diff(text);
+        assert_eq!(deltas.len(), 2);
+        assert!(
+            !deltas.iter().any(|delta| delta.name == "unchanged"),
+            "old==new の行は除外する: {deltas:?}"
+        );
+        assert_eq!(deltas[0].name, "firefox");
+        assert_eq!(deltas[1].name, "new-cask");
     }
 }

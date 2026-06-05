@@ -175,6 +175,9 @@ jobs:
             new_v="$(cask_version "$CASK_REV_NEW" "$name")"
             # 両 rev とも取得できないものは差分対象にしない（縮退）。
             [ -z "$old_v" ] && [ -z "$new_v" ] && continue
+            # 版変更なし（old==new）の cask は更新ではないため diff へ出さない（F5 ノイズ抑制）。
+            # adapter 側でも落とすが、差分ファイル段階で除外して空 record/no-op エントリを根元から防ぐ。
+            [ "$old_v" = "$new_v" ] && continue
             printf '%s\t%s\t%s\n' "$name" "${old_v:-∅}" "${new_v:-∅}" >> "$diff_file"
           done
           echo "diff_file=$diff_file" >> "$GITHUB_OUTPUT"

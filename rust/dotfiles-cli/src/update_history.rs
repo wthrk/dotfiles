@@ -119,7 +119,8 @@ struct ShowOptions {
     /// 宣言アプリだけでなく全パッケージを表示する。
     #[arg(long)]
     all: bool,
-    /// 履歴を読む対象 TOML ファイル（省略時は既定 source の当月ファイルを解決する）。
+    /// 履歴を読む対象 source（ファイル/ディレクトリ）。省略時は `<config-dir>/docs/update-history`
+    /// ディレクトリを既定 source とし、配下の全 `*.toml` 月次ファイルを連結して読む。
     #[arg(long)]
     source: Option<PathBuf>,
 }
@@ -204,13 +205,14 @@ pub(crate) fn render_applied_summary<W: Write>(
     application::run_show::run_show(command, &store, &report)
 }
 
-/// show が読む履歴ファイルパスを解決する。
+/// show が読む履歴 source パスを解決する。
 ///
-/// `--source` 明示時はそのまま使う。省略時は `<config-dir>/docs/update-history/<当月>.toml` を解決する
-/// （適用済み pin 由来の dotfiles input source 内 `docs/update-history`）。当月ファイル名は記録側の
-/// `<YYYY-MM>.toml` 命名に揃えるが、時刻クレートを足さないため当月の決定は呼び出し側の `--source` 明示か、
-/// 既定の config-dir 配下 directory を指す。directory 指定時は最新の月次ファイルを選ぶのではなく、ここでは
-/// config-dir 配下の `docs/update-history` directory を返し、ファイル粒度の選択は `--source` に委ねる。
+/// `--source` 明示時はその path（ファイル/ディレクトリのいずれでも可）をそのまま使う。省略時は
+/// `<config-dir>/docs/update-history` **ディレクトリ**を返す（適用済み pin 由来の dotfiles input source 内）。
+/// 当月ファイルを 1 本に絞り込むのではなくディレクトリを返す理由は、時刻クレートを足さず「当月」を決定
+/// しないためで、ディレクトリ配下の全 `*.toml` 月次ファイルの連結読み込みは adapter
+/// （[`adapters::TomlHistoryStoreAdapter`]）が名前順に行う。特定ファイルへ絞りたい場合は `--source` で
+/// ファイル粒度を明示する。
 fn resolve_show_source(source: Option<PathBuf>) -> Result<PathBuf> {
     match source {
         Some(source) => Ok(source),
