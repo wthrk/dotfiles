@@ -2,14 +2,16 @@
 //!
 //! この module は I/O を持たず、CI が収集した「PR の全 commit を base..head で union した変更パス集合」と
 //! 「base / head の `flake.lock` 内容」を受け取り、許可された bump だけかを決める。判定ロジックを CLI
-//! （`dotfiles ci verify-bump-lock`）の純粋核に置くことで、required status check `nightly-bump-guard` の
-//! 実体を Rust unit test で固定し、shell の中で再実装しない。
+//! （`dotfiles ci verify-bump-lock`）の純粋核に置くことで、nightly-update workflow が同一 run 内でインライン
+//! 実行するセキュリティチェックの実体を Rust unit test で固定し、shell の中で再実装しない。合格すると
+//! workflow は PR head へ `static checks` commit status を投稿し、それが適用済み ruleset の required check を
+//! 満たす（不合格なら非 0 終了し status 投稿・PR 起票・merge を行わない）。
 //!
 //! 判定する不変条件は 2 つだけである。
 //!
 //! 1. **変更パス限定**: PR が触ってよいのは `flake.lock` と `docs/update-history/**` だけ。`.github/**`、
-//!    ruleset 定義、ソース、その他いずれかが base..head の union 差分に 1 つでも混ざれば fail。これにより
-//!    nightly PR が guard / ruleset / workflow / コードを自己改変して無人で main へ入れる経路を塞ぐ。
+//!    workflow 定義、ソース、その他いずれかが base..head の union 差分に 1 つでも混ざれば fail。これにより
+//!    nightly PR が workflow / コードを自己改変して無人で main へ入れる経路を塞ぐ。
 //!    base..head の net diff ではなく **全 commit の union** を検査するのは、途中 commit で逸脱パスを足して
 //!    最終 head で消す回避（net diff は綺麗だが履歴は汚い add-then-remove）を防ぐためである。この union 検査が
 //!    一次防御であり、`--squash` マージ運用の有無には依存しない。union パス集合の収集は CLI 側
@@ -24,8 +26,9 @@
 //!    docs/update-history だけを変える「逸脱 lock 変更なし」状態でも nightly bump として auto-merge させない
 //!    （実体のない空 bump を無人 merge する経路を塞ぐ）。
 //!
-//! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。required
-//! status check はこの非 0 終了で fail し、ruleset（bypass actors 空）が auto-merge を止める。
+//! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。インライン
+//! 実行はこの非 0 終了で fail し、`static checks` status を投稿しないため required check が満たされず
+//! auto-merge は成立しない（fail-closed）。
 
 use std::collections::BTreeSet;
 

@@ -228,39 +228,45 @@ cargo xtask check runtime
 Homebrew tap input のみ。framework input は bump しない）し、更新履歴を `docs/update-history/<YYYY-MM>.toml`
 へ記録して自動 PR を起票・auto-merge します。各マシンはこの bump 済み pin に `dotfiles update` で追随します。
 
-無人 auto-merge の実ゲートは required status check `nightly-bump-guard`
-（`.github/workflows/nightly-bump-guard.yml`）です。この check は `dotfiles ci verify-bump-lock` を呼び、PR の
-base..head の全 commit 履歴に対して次を機械判定します。
+PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**します。別途 GitHub App を作って secret を
+仕込む必要はありません。GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow
+（必須 check）を発火しない既知の制約があるため、`nightly-update.yml` の open-pr job が **同一 run 内で
+セキュリティチェック `dotfiles ci verify-bump-lock` をインライン実行**し、合格時のみ PR head commit へ
+`static checks` という commit status を投稿して required check を満たします。`static checks` は
+`.github/workflows/static-checks.yml` の job 名であり、適用済み「main」ruleset の required context と context 名で
+突合します。
 
-- 変更パスが `flake.lock` と `docs/update-history/**` だけであること（`.github/**`・ruleset・ソースが
-  混ざれば fail）。
+インラインのセキュリティチェックは、PR の base..head 全 commit 履歴に対して次を機械判定します。
+
+- 変更パスが `flake.lock` と `docs/update-history/**` だけであること（`.github/**`・ソースが混ざれば fail）。
 - `flake.lock` 差分が許可 input 集合（nixpkgs と tap 4 本）の rev 変更だけで、想定外 input の追加・
   source 改変・framework input の rev 変更が無いこと。加えて、許可 input でも rev が変わらないまま
   `narHash` / `lastModified` だけが動く（同一 rev の取得物すり替え＝content swap）変更は fail にします。
 
-guard は **検査者と検査対象を分離**します。判定バイナリ（`dotfiles`）は信頼できる base ref（マージ先 =
-既定ブランチ）の dotfiles からビルドし、検査対象（PR の base..head 差分・lock）は別 checkout を `--repo` で
-指します。これにより、悪意ある nightly PR が `verify-bump-lock` を改竄しても判定主体は信頼 base のままで、
-gate を回避できません。判定ロジックは Rust の純粋核（`rust/dotfiles-cli/src/ci/bump_lock.rs`）に置き、unit
-test で固定しています。
+このチェックは **検査者と検査対象を分離**します。判定バイナリ（`dotfiles`）は nightly workflow 自身の信頼 ref
+の checkout からビルドし、検査対象は base..head の lock 差分（git データ）です。PR 作業ツリーの dotfiles を
+検査主体にしないため、悪意ある lock 改変があっても判定主体は信頼コードのままです。判定ロジックは Rust の
+純粋核（`rust/dotfiles-cli/src/ci/bump_lock.rs`）に置き、unit test で固定しています。チェックが fail すると
+`static checks` status は投稿されず、required check が満たされないため無人 auto-merge は成立しません
+（fail-closed・人手レビュー経路へ送られます）。許可パスが `flake.lock` + `docs/update-history/**` に限定される
+ため、nightly PR が `.github/**`（workflow/guard）を変更しようとしてもこのチェックで fail します。
 
-ブランチ保護設定は `.github/rulesets/nightly-bump.json` で版管理します（`enforcement=active`・bypass actors
-空）。この設定自体の変更もレビュー必須であり、許可パスが `flake.lock` + `docs/update-history/**` に限定される
-ため、nightly PR が `.github/**`（ruleset/workflow/guard）を変更すると guard が fail し、無人 auto-merge
-されず人手レビュー経路へ送られます。
+合格後、open-pr job は `@codex review` コメントで codex 自動レビューを起動し（Copilot は GitHub 側のネイティブ
+code review で走ります）、`gh pr merge --auto --squash` で auto-merge を有効化します。Copilot/Codex のレビュー
+充足と required status（`static checks`）満了でマージされます。
 
-GitHub への ruleset 適用は手動 `gh api` 依存ですが、その適用状態は `dotfiles ci verify-ruleset` が scheduled な
-drift 検証 job（`.github/workflows/ruleset-drift.yml` の `verify applied ruleset`、毎日 + `workflow_dispatch`）で
-継続検証します。この検証は PR の内容と無関係な repo 設定の drift 検知であるため、per-PR ゲート（static checks）
-ではなく scheduled job に置いています。`gh api` で実適用済み ruleset を取得し、`enforcement=active`・bypass actors
-空・required check に `nightly-bump-guard` を含むことを assert します（判定核は
-`rust/dotfiles-cli/src/ci/ruleset.rs`、unit test で固定）。適用漏れ・bypass actor の後付け・required check の
-context ドリフトがあれば fail し、required check の無効化（fail-open）を検知します。ruleset 読み取りは repo の
-Administration:read 権限を要し、既定 `GITHUB_TOKEN` では読めないため、nightly bump と同じ最小権限 GitHub App
-（Administration:read を付与）の token で読みます。App ID 設定済みなら token が無効・権限不足の場合に `gh` が
-非 0 終了して検証が fail します（検証不能を success にしない fail-closed）。GitHub App（`NIGHTLY_BUMP_APP_ID`/
-`NIGHTLY_BUMP_APP_PRIVATE_KEY`）未設定時は ruleset を適用できず検証対象が無いため、検証を実行せず neutral
-（skip）として扱います。App を設定し ruleset を適用すると有効化されます。
+### 残留制約（実 GitHub でのみ最終確認できる）
+
+この App 不要フローには、実 GitHub でしか確定できない前提があります（マージ後に `workflow_dispatch`
+`dry_run=false` で検証します）。
+
+- GITHUB_TOKEN で POST した commit status `static checks` が、適用済み ruleset の required context と確実に
+  名前突合してマージ条件を満たすか。
+- `gh pr merge --auto` を GITHUB_TOKEN 権限（`pull-requests: write`）で有効化できるか（repo 設定で
+  auto-merge が有効である必要があります）。
+- `copilot_code_review` が bot / GITHUB_TOKEN 起票 PR で発火するか。
+
+いずれも未充足ならマージは保留され、無人で main に入りません（人手レビューへ送られます）。
 
 ## Homebrew cask の固定状況（無人 upgrade の明示受容）
 

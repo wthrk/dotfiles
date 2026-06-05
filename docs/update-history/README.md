@@ -15,6 +15,6 @@
 ## このディレクトリは nightly が変更してよい数少ないパスである
 
 `docs/update-history/**` は `flake.lock` と並んで、nightly 自動 bump PR が変更してよい許可パスである
-（[nightly-bump-guard](../../.github/workflows/nightly-bump-guard.yml) が
-`dotfiles ci verify-bump-lock` で機械判定する）。`.github/**`・ruleset 定義・ソースなどそれ以外のパスが
-nightly PR に混ざると guard が fail し、無人 auto-merge されない。
+（[nightly-update.yml](../../.github/workflows/nightly-update.yml) の open-pr job が同一 run 内で
+`dotfiles ci verify-bump-lock` をインライン実行して機械判定する）。`.github/**`・ソースなどそれ以外のパスが
+nightly PR に混ざると verify-bump-lock が fail し、`static checks` status が投稿されず無人 auto-merge されない。

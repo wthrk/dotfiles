@@ -2,14 +2,32 @@ name: nightly update
 
 # nightly に repo の flake.lock を bump し、更新履歴を記録して自動 PR を起票・auto-merge する。
 #
-# 安全要件（plan「ゲート」「自己改変の封路」「設定の版管理と自己保護」準拠）:
+# 設計（App 不要・GITHUB_TOKEN 完結）:
+#   - PR 起票・auto-merge は GITHUB_TOKEN（`github.token`）で行う。別途 GitHub App を作って secret を仕込む
+#     ことは要求しない（利用者仕様: bump は PR + copilot/codex 自動レビュー + セキュリティチェックで
+#     マージまで自動、これは GITHUB_TOKEN で完結する）。
 #   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
 #     bump しない（無人で framework を動かさない）。
 #   - 生リリースノート取得 + LLM 抽出は prompt injection 隔離のため `contents: read` の別 job に分離する。
 #     その job だけが `models: read` を持ち、GITHUB_TOKEN で GitHub Models を使う（別 secret 不要）。
-#   - PR 起票・auto-merge は最小権限 GitHub App token で行う。GITHUB_TOKEN 起票の PR は必須 check を発火
-#     しない既知挙動のため、App token で起票して required status check `nightly-bump-guard` を発火させる。
-#   - main へ入るのは required check（guard）通過後のみ。ruleset（bypass actors 空）が auto-merge を縛る。
+#   - GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow（必須 check）を発火し
+#     ない既知の制約がある。これを App 無しで満たすため、open-pr job が **同一 run 内でセキュリティチェック
+#     `dotfiles ci verify-bump-lock` を信頼 ref（この nightly workflow の checkout = 自分自身のコード）から
+#     インライン実行**し、合格時のみ PR head commit に `static checks` という commit status を GITHUB_TOKEN
+#     で POST する。適用済み「main」ruleset の required context `static checks` は context 名で突合するため、
+#     この Actions 由来 status が required check を満たす。検査主体は信頼 ref のコードで、検査対象は
+#     base..head の lock 差分（git データ）であり、PR 作業ツリーの dotfiles を検査主体にしない。
+#   - その後 `@codex review` コメントを投稿（codex 自動レビュー）し、Copilot は GitHub 側のネイティブ
+#     code review で走る。`gh pr merge --auto --squash` で auto-merge を有効化し、copilot レビュー充足 +
+#     required status（`static checks`）満了でマージされる。
+#
+# 残留制約（実 GitHub でしか最終確認できない。マージ後に workflow_dispatch dry_run=false で検証する）:
+#   - GITHUB_TOKEN で POST した commit status `static checks` が、適用済み ruleset の required context と
+#     確実に名前突合してマージ条件を満たすか。
+#   - `gh pr merge --auto` を GITHUB_TOKEN 権限（pull-requests: write）で有効化できるか（repo 設定で
+#     auto-merge が有効である必要がある）。
+#   - copilot_code_review が bot/GITHUB_TOKEN 起票 PR で発火するか。
+#   いずれも未充足ならマージは保留され（無人で main に入らない）、人手レビュー経路へ送られる。
 #
 # dry_run（workflow_dispatch 既定 true）では bump と record と diff までを実行し、PR 起票・push を行わない。
 # 実発火（schedule）前に dry_run で両 closure build と TOML 生成を検証する運用を前提とする。
@@ -236,28 +254,40 @@ jobs:
             docs/update-history/
           if-no-files-found: error
 
-  # 3) PR 起票 + auto-merge。最小権限 GitHub App token を使う（GITHUB_TOKEN 起票だと必須 check が発火しない）。
-  #    App ID / private key は repo secret 参照のみ（値は repo に置かない）。
+  # 3) PR 起票 + インラインセキュリティチェック + status 投稿 + auto-merge。GITHUB_TOKEN で完結する
+  #    （GitHub App / secret は使わない）。GITHUB_TOKEN 起票 PR では `on: pull_request` の必須 check が
+  #    発火しないため、この job が同一 run 内で `dotfiles ci verify-bump-lock` をインライン実行し、合格時
+  #    のみ PR head に `static checks` の commit status を POST して required check を満たす。
   open-pr:
     name: open bump PR and enable auto-merge
     needs: [bump, record]
     if: ${{ github.event_name == 'schedule' || github.event.inputs.dry_run == 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: macos-15
+    timeout-minutes: 60
+    # GITHUB_TOKEN に必要な最小権限のみ付与する。App secret は使わない。
+    #   contents: write       … bump ブランチを push する。
+    #   pull-requests: write  … PR を起票し auto-merge を有効化する。
+    #   statuses: write       … PR head に `static checks` commit status を POST して required check を満たす。
+    #   checks: write         … （将来 check run を使う場合の余地。status 投稿は statuses で足りる。）
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
+      statuses: write
+      checks: write
     steps:
-      - name: GitHub App token を生成
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.NIGHTLY_BUMP_APP_ID }}
-          private-key: ${{ secrets.NIGHTLY_BUMP_APP_PRIVATE_KEY }}
-
+      # この nightly workflow 自身の ref を checkout する。これは信頼 ref（schedule なら既定ブランチ、
+      # workflow_dispatch なら起動 ref）であり、ここでビルドする `dotfiles` バイナリ（verify-bump-lock の
+      # 判定主体）も信頼コードである。後段でこのツリーに bump を commit し、base..head の lock 差分（git
+      # データ）を検査対象にする。判定主体（信頼 ref のコード）と検査対象（git の lock 差分）は分離される。
       - name: checkout
         uses: actions/checkout@v5
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v4
@@ -270,34 +300,86 @@ jobs:
           name: history-record
           path: docs/update-history
 
-      - name: bump ブランチを作成して PR 起票
-        id: pr
-        env:
-          # App token を使う。token は argv ではなく env 経由で gh に渡し、ログに出さない。
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: bump ブランチを作成して commit
+        id: commit
         run: |
           set -euo pipefail
+          base_sha="$(git rev-parse HEAD)"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           branch="nightly/bump-$(date -u +%Y%m%d%H%M%S)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
           git switch -c "$branch"
-          git config user.name "nightly-bump[bot]"
-          git config user.email "nightly-bump[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add flake.lock docs/update-history
           if git diff --cached --quiet; then
-            echo "no changes to propose"; exit 0
+            echo "no changes to propose"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           git commit -m "chore(deps): nightly flake.lock bump と更新履歴記録"
-          git push origin "$branch"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      # セキュリティチェック本体をインライン実行する。判定主体は信頼 ref の dotfiles（このツリーで build）、
+      # 検査対象は base..head の commit パス union と両端 flake.lock 差分。許可外パス混入・許可外 input rev
+      # 変更・空 bump があれば非 0 終了し、後続の status 投稿・PR 起票・merge を行わない（fail-closed）。
+      - name: セキュリティチェック（verify-bump-lock）をインライン実行
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        run: |
+          set -euo pipefail
+          nix develop -c dotfiles ci verify-bump-lock \
+            --base "${{ steps.commit.outputs.base_sha }}" \
+            --head "${{ steps.commit.outputs.head_sha }}" \
+            --repo .
+
+      - name: bump ブランチを push して PR 起票
+        id: pr
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        env:
+          # GITHUB_TOKEN を gh に env 経由で渡す（argv に乗せずログ非混入）。
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push origin "${{ steps.commit.outputs.branch }}"
           pr_url="$(gh pr create \
             --base "${{ github.event.repository.default_branch }}" \
-            --head "$branch" \
+            --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴を記録します。required status check \`nightly-bump-guard\` 通過後に auto-merge されます。")"
+            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴を記録します。同一 run のインライン \`dotfiles ci verify-bump-lock\` が合格したため \`static checks\` status を投稿済みです。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      # GITHUB_TOKEN 起票 PR では `on: pull_request` の static-checks.yml が発火しないため、合格済みの
+      # セキュリティチェックを根拠に PR head へ `static checks` commit status を success で POST する。
+      # context 名は適用済み ruleset の required context（static-checks.yml の job 名）と一致させる。
+      - name: required check `static checks` status を投稿
+        if: ${{ steps.pr.outputs.pr_url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.commit.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+            -f state=success \
+            -f context="static checks" \
+            -f target_url="${RUN_URL}" \
+            -f description="nightly-update run のインライン verify-bump-lock 合格"
+
+      # codex 自動レビューを起動する（Copilot は GitHub 側のネイティブ code review で走る）。
+      - name: codex レビューを依頼
+        if: ${{ steps.pr.outputs.pr_url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr comment "${{ steps.pr.outputs.pr_url }}" --body "@codex review"
 
       - name: auto-merge を有効化
         if: ${{ steps.pr.outputs.pr_url != '' }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh pr merge --auto --squash "${{ steps.pr.outputs.pr_url }}"
