@@ -191,14 +191,15 @@ fn update_args(config_dir: &Path, full: bool) -> Vec<OsString> {
 /// 履歴は **適用済み dotfiles input が指す store path**（`flake.lock` の dotfiles input の locked rev に対応
 /// する source）から複製する。複製先は `<state-dir>/history` で、以降の show/要約はこのローカル複製を
 /// offline・決定論で読む。複製は「source path 解決 → `<source>/docs/update-history` を `<state-dir>/history`
-/// へコピー」の 2 段で、source path 解決（`nix flake metadata`）や copy が失敗しても record/適用は止めず、
+/// へコピー」の 2 段で、source path 解決（`nix flake archive --json`）や copy が失敗しても record/適用は止めず、
 /// 既存複製があればそれを使う graceful degradation にする（履歴は補助情報であり適用の前提ではない）。
+/// source path 解決は `nix flake archive --json`（github 型 input でも realize 済み store path を返す）に拠り、
 /// `--dry-run` では複製しない。
 fn sync_history(config_dir: &Path, state_dir: &Path, dry_run: bool) -> Result<()> {
     if dry_run {
         return Ok(());
     }
-    // source path を解決できない（network 無し・metadata 失敗）場合は既存複製を温存して終了する。
+    // source path を解決できない（network 無し・archive 失敗）場合は既存複製を温存して終了する。
     let Some(source_root) = resolve_input_source(config_dir) else {
         return Ok(());
     };
@@ -211,36 +212,44 @@ fn sync_history(config_dir: &Path, state_dir: &Path, dry_run: bool) -> Result<()
     copy_history_dir(&source_history, &dest)
 }
 
-/// 適用済み dotfiles flake input の source store path を解決する（解決不能なら `None`）。
+/// 適用済み dotfiles flake input の **realize 済み source store path** を解決する（解決不能なら `None`）。
 ///
-/// `nix flake metadata <config-dir> --json` の `locks.nodes.<dotfiles>.locked` が指す store path を返す。
-/// network 無し・nix 不在・metadata 失敗・JSON 解析失敗はいずれも `None` へ縮退し、呼び出し側で既存複製の
-/// 温存に倒す（履歴複製は best-effort で、解決失敗を致命にしない）。
+/// `nix flake archive <config-dir> --json --no-write-lock-file` の `inputs.<dotfiles>.path` が指す store path
+/// を返す。`nix flake metadata --json` の `locks.nodes.<dotfiles>.locked` ではなく archive を使う理由は、
+/// **本番の既定 source（`github:wthrk/dotfiles`、github 型 input）では metadata の locked ノードが `path` キーを
+/// 持たない**（`owner/repo/rev/narHash/lastModified/type` のみ）ため、metadata からは github 型 input の store
+/// path を取り出せず、本番経路で履歴複製が常に no-op になる（N3 が解消対象としたバグの再来）からである。
+/// `nix flake archive --json` は input source を realize した実 store path を input 名ごとに返し、github 型でも
+/// path 型でも `inputs.<input>.path` を持つため、両 source 型で確実に store path を得られる。`--no-write-lock-file`
+/// は config flake の lock を書き換えない（既に `update_lock` で更新済み・読み取り専用にしたい）ため付ける。
+/// switch 済みであれば input source は store に realize 済みなので、archive はクロージャの再コピーを伴わず
+/// 既存 store path を報告するだけで軽量に済む。network 無し・nix 不在・archive 失敗・JSON 解析失敗はいずれも
+/// `None` へ縮退し、呼び出し側で既存複製の温存に倒す（履歴複製は best-effort で、解決失敗を致命にしない）。
 fn resolve_input_source(config_dir: &Path) -> Option<PathBuf> {
     let args = [
         OsString::from("flake"),
-        OsString::from("metadata"),
+        OsString::from("archive"),
         config_dir.as_os_str().to_os_string(),
         OsString::from("--json"),
+        OsString::from("--no-write-lock-file"),
     ];
     let json = run_capture("nix", args).ok()?;
     parse_input_source_path(&json, local_flake::INPUT_NAME).map(PathBuf::from)
 }
 
-/// `nix flake metadata --json` 出力から指定 input の locked source store path を抽出する純粋関数。
+/// `nix flake archive --json` 出力から指定 input の realize 済み source store path を抽出する純粋関数。
 ///
-/// `locks.nodes.<input>.locked.path`（path 系 source）または、store path を直接持つ `locked` 表現から
-/// store path を取り出す。抽出を実行から切り離し、metadata JSON 構造の解釈を単体検証できるようにする。
-/// path が無い形式（解決前など）は `None` を返す。
-fn parse_input_source_path(metadata_json: &str, input_name: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(metadata_json).ok()?;
-    let locked = value
-        .get("locks")
-        .and_then(|locks| locks.get("nodes"))
-        .and_then(|nodes| nodes.get(input_name))
-        .and_then(|node| node.get("locked"))?;
-    locked
-        .get("path")
+/// archive JSON は root flake の `inputs` map を持ち、各 input が `inputs`（推移依存）と `path`（realize 済み
+/// store path）を持つ。`inputs.<input>.path` を取り出す。github 型・path 型のいずれの input source でも
+/// `inputs.<input>.path` は realize 済み store path を指すため、source 種別に依らず抽出できる（github 型 input
+/// に対して `path` を持たなかった metadata 由来パースの本番不全を塞ぐ）。抽出を実行から切り離し、archive JSON
+/// 構造の解釈を単体検証できるようにする。`inputs.<input>` や `path` が無い形式は `None` を返す。
+fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(archive_json).ok()?;
+    value
+        .get("inputs")
+        .and_then(|inputs| inputs.get(input_name))
+        .and_then(|node| node.get("path"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
 }
@@ -944,28 +953,55 @@ mod tests {
     }
 
     #[test]
-    fn parse_input_source_path_reads_dotfiles_locked_path() {
-        // N3 退行固定: `nix flake metadata --json` の locks.nodes.dotfiles.locked.path（store path）を解決する。
-        // 履歴複製元はこの input source path（適用済み pin の source）であり、config dir 直下ではない。
-        let metadata = r#"{
-          "locks": {
-            "nodes": {
-              "dotfiles": {
-                "locked": { "path": "/nix/store/abc-dotfiles-source", "type": "path" }
+    fn parse_input_source_path_resolves_github_input_store_path() {
+        // N3 退行固定（本番不全の核）: 本番の既定 source は `github:wthrk/dotfiles`（github 型 input）であり、
+        // `nix flake metadata --json` の locked ノードは `path` キーを持たない（owner/repo/rev/narHash のみ）。
+        // 旧実装は metadata の `locks.nodes.dotfiles.locked.path` を読むため github 型では常に None へ縮退し、
+        // 本番で履歴複製が無音 no-op していた。修正は `nix flake archive --json` の `inputs.dotfiles.path`
+        // （realize 済み store path）を読むため、github 型 input でも store path を解決できる。
+        //
+        // この fixture は実 `nix flake archive github:wthrk/dotfiles --json` の出力形に基づく:
+        // root flake の `inputs` map に各 input が `inputs`（推移依存）+ `path`（store path）を持つ。
+        let archive = r#"{
+          "inputs": {
+            "dotfiles": {
+              "inputs": {
+                "darwin": { "inputs": {}, "path": "/nix/store/aaa-darwin-source" },
+                "nixpkgs": { "inputs": {}, "path": "/nix/store/bbb-nixpkgs-source" }
               },
-              "root": { "inputs": { "dotfiles": "dotfiles" } }
-            },
-            "root": "root",
-            "version": 7
+              "path": "/nix/store/ccc-dotfiles-source"
+            }
           },
           "path": "/nix/store/zzz-config-flake"
         }"#;
         assert_eq!(
-            parse_input_source_path(metadata, "dotfiles").as_deref(),
-            Some("/nix/store/abc-dotfiles-source")
+            parse_input_source_path(archive, "dotfiles").as_deref(),
+            Some("/nix/store/ccc-dotfiles-source")
         );
-        // path を持たない形式（解決前 / 別 source 種別）は None へ縮退する（既存複製温存に倒す）。
-        let no_path = r#"{ "locks": { "nodes": { "dotfiles": { "locked": { "rev": "x" } } } } }"#;
+    }
+
+    #[test]
+    fn parse_input_source_path_handles_path_type_input() {
+        // path 型 input（ローカル checkout を `path:` で指す等）でも、archive は同じ `inputs.<input>.path`
+        // 形で realize 済み store path を返すため、github 型・path 型の両方で同一抽出経路が動くことを固定する。
+        let archive = r#"{
+          "inputs": {
+            "dotfiles": { "inputs": {}, "path": "/nix/store/ddd-local-source" }
+          },
+          "path": "/nix/store/zzz-config-flake"
+        }"#;
+        assert_eq!(
+            parse_input_source_path(archive, "dotfiles").as_deref(),
+            Some("/nix/store/ddd-local-source")
+        );
+    }
+
+    #[test]
+    fn parse_input_source_path_falls_back_to_none_on_missing_or_broken() {
+        // input が無い / path キーが無い形式は None へ縮退する（既存複製温存に倒す）。
+        let no_input = r#"{ "inputs": {}, "path": "/nix/store/zzz-config-flake" }"#;
+        assert!(parse_input_source_path(no_input, "dotfiles").is_none());
+        let no_path = r#"{ "inputs": { "dotfiles": { "inputs": {} } } }"#;
         assert!(parse_input_source_path(no_path, "dotfiles").is_none());
         // 壊れた JSON も None。
         assert!(parse_input_source_path("not json", "dotfiles").is_none());
