@@ -29,4 +29,4 @@
 
 - skill を編集する前に、`docs/README.md` を必ず読む。
 - skill がリポジトリのワークフローやタスク規則を参照する場合は、`docs/task-governance/README.md` を必ず読む。
-- skill が領域別タスク成果物を参照する場合は、`docs/tasks/README.md` を必ず読む。
+- skill が repository workflow または task rules を参照する場合は、`docs/task-governance/workflow.md` の現行作業単位モデルを使い、削除済み task ledger や review artifact への参照を追加しない。

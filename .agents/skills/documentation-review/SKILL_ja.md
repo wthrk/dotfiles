@@ -11,9 +11,9 @@ description: コード doc comment のドキュメントレビュー担当とし
 
 ## Governing Sources
 
-- `docs/task-governance/implementation-review-judgement.md`（ドキュメントレビュー担当の職責）
-- `docs/architecture/hexagonal-implementation-rules.md`（ドキュメントコメント規則）
-- `docs/docs-governance.md`（存在する場合）
+- `docs/task-governance/implementation-review-judgement.md`
+- `docs/architecture/hexagonal-implementation-rules.md`
+- `docs/docs-governance.md`
 
 ## Required Reading Order
 
@@ -21,11 +21,13 @@ description: コード doc comment のドキュメントレビュー担当とし
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
 4. `docs/architecture/hexagonal-implementation-rules.md`
-5. `docs/docs-governance.md`（存在する場合）
+5. `docs/docs-governance.md`
+6. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+7. 入力が要求する追加正本文書
 
 ## Rules
 
-- 実装とコード内 doc comment の整合を判定する。
-- production 必須対象と test case 除外を含む判定範囲は正本参照に従う。
-- 判定返却のみ行い、実装編集はしない。
-- このファイルで独自規範を追加しない。
+- この役割の判定だけを行い、ソース編集、コミット、別役割の作業をしない。
+- 対象コード、文書、issue、PR、task を直接読む。過去記録、要約、実装担当報告で判定を代替しない。
+- この役割の governing source を適用し、詳細規則をここで再掲しない。
+- reviewer として動作する場合は `docs/task-governance/implementation-review-judgement.md` が要求する verdict 形式で返す。

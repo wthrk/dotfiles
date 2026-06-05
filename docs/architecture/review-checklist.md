@@ -102,7 +102,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - 技術的な便宜（「他の場所でも使いたいから」「長くなったから」）のために分割されていないか。ドメイン概念の境界ではなく実装都合による分割はドメインの設計意図を曇らせる。
 - この分割は「独立したドメイン概念の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
 
-- **依存方向**: 外部 SDK 型・端末状態・プロセス状態へ依存しないこと。`domain` の外部 crate 利用可否は作業定義文書の current-cycle 指示に従って判定し、`言語標準ライブラリ以外に依存しない` という単独規則を機械適用しないこと（`YubiKey` current-cycle では `ProtectedSecret`/`anyhow` を理由に不合格としてはならない）。
+- **依存方向**: 外部 SDK 型・端末状態・プロセス状態へ依存しないこと。`domain` の外部 crate 利用可否は対象仕様と実装責務に従って判定し、`言語標準ライブラリ以外に依存しない` という単独規則を機械適用しないこと。
 - **責務**: value/newtype・不変条件・状態遷移・wire format・domain error に限定されていること。
 - **禁止成果物**: port contract（trait）・presentation DTO・`std::io::Write` 等の I/O 型を含まないこと。
 

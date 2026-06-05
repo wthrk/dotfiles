@@ -22,4 +22,4 @@
 
 - `docs/` 配下を編集する前に、[docs-governance.md](./docs-governance.md) を必ず読む。
 - 変更がタスク規則またはタスク構造に触れる場合は、[task-governance/README.md](./task-governance/README.md) を必ず読む。
-- 変更が領域別タスク成果物に触れる場合は、[tasks/README.md](./tasks/README.md) を必ず読む。
+- 削除済みの task ledger、work item、review artifact、confirmation、issue progress、current-cycle 記録への参照を追加しない。

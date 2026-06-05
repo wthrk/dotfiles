@@ -1,40 +1,37 @@
 ---
 name: orchestration
-description: Use when the main agent receives a top-level task-execution request and must select the active item and delegate roles under repository governance.
+description: Use when the main agent receives a top-level task-execution request and must select the work unit and delegate roles under repository governance.
 ---
 
 # Orchestration
 
-## Canonical Sources
+## Actor Binding
 
-- `docs/README.md`
-- `docs/tasks/README.md`
-- `docs/tasks/tasks.md`
+While this skill is active, the current actor is the orchestrator.
+
+## Governing Sources
+
 - `docs/task-governance/workflow.md`
+- `docs/task-governance/implementation-review-judgement.md`
+- `docs/task-governance/security-obligations.md`
 - `docs/docs-governance.md`
 
 ## Required Reading Order
 
-Use this order as navigation pointers only; the canonical documents own the detailed rules.
-
 1. `docs/README.md`
-2. `docs/tasks/README.md`
-3. `docs/tasks/tasks.md`
-4. `docs/task-governance/README.md`
-5. `docs/task-governance/workflow.md`
-6. Active work item references required by `docs/task-governance/workflow.md`
-7. `docs/docs-governance.md` when documentation placement or canonical-source handling is in scope
+2. `docs/task-governance/README.md`
+3. `docs/task-governance/workflow.md`
+4. `docs/task-governance/implementation-review-judgement.md`
+5. `docs/task-governance/security-obligations.md`
+6. `docs/docs-governance.md`
+7. The user-specified GitHub issue, PR, or explicit task
+8. Additional canonical documents named by that work unit
 
-## When To Use
+## Rules
 
-Use this skill only while acting as the main-agent orchestrator for a top-level task-execution request in this repository.
-
-Delegated implementation, review, progress-judgement, and completion-judgement actors do not become the orchestrator for the delegated task. They use their assigned role skill and execute the delegated role directly.
-
-## Rule
-
-`docs/task-governance/workflow.md` is the canonical source for task flow, active-item selection, allowed orchestrator actions, role separation, delegation obligations, transport-agnostic role handling, and failure handling. This skill intentionally does not restate or reinterpret those detailed rules.
-
-Before any orchestrator action, follow the entry sequence and active-item/delegation flow defined by `docs/task-governance/workflow.md`, using `docs/README.md`, `docs/tasks/README.md`, and `docs/tasks/tasks.md` as the repository entry points.
-
-If this skill conflicts with a canonical governance document, stop and follow the canonical document rather than this summary.
+- Select exactly one work unit from the user-specified GitHub issue, PR, or explicit task.
+- Extract only the delegation parameters needed to launch roles.
+- Launch required fresh role agents; do not self-execute implementation, review, progress judgement, completion judgement, tests, builds, or file edits.
+- Do not ask for extra delegation permission when the user request is already a task-execution command.
+- Record launch/use failure only when a required role cannot be launched.
+- Detailed prohibitions and branch/PR gates are owned by `docs/task-governance/workflow.md`.

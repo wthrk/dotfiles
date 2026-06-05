@@ -290,7 +290,7 @@ port 分割は「細かいほどよい」ではない。1 method ごとの trait
 
 依存方向は常に外側から内側へ向かう。`entrypoint` は `application` と `domain` に依存できるが、`adapter` の具体型へ直接依存してはならない。`application`（`application/use_case` を含む）は `domain` と `port` にのみ依存できる。`entrypoint`、`adapter`、`support` への依存は禁止する。
 
-`domain` は外部 SDK 型・端末状態・プロセス状態へ依存してはならない。`domain` の外部 crate 利用可否は active work item の current-cycle 指示に従って判定し、`言語標準 library 以外に依存しない` という単独規則を機械適用してはならない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
+`domain` は外部 SDK 型・端末状態・プロセス状態へ依存してはならない。`domain` の外部 crate 利用可否は、対象仕様と実装責務に照らして判定し、`言語標準 library 以外に依存しない` という単独規則を機械適用してはならない。`port` は `domain` のみへ依存する。`adapter` は `port`、`domain`、`support` に依存できるが、`application` の use case 順序制御を持ってはならない。`support` は言語標準 library と外部技術 crate に依存できるが、他層の業務語彙へ依存してはならない。`tests` は対象層と test helper に依存する。
 
 `application` で許容する外部クレート依存は `anyhow`（エラー文脈付与）に限定する。`zeroize::Zeroizing` は `support/protection` モジュール（およびその配下）以外で使用してはならない。`application` を含む他層へ `zeroize` を導入してはならない。`adapter` は `application` の flow decision を持たず、`port` は `adapter` 詳細や end-user 文言を持たない。
 
@@ -368,7 +368,7 @@ Lua/Neovim:
 | `<module>/entrypoint/` または `<module>/entrypoint.rs` | entrypoint |
 | `tests/` または `*_tests.rs`、`test_*.rs` | tests |
 
-ディレクトリ名と層が一致しないファイルは配置違反とみなす。配置違反の解消は、ファイルを正しいディレクトリへ移動することで行う。個別機能の違反一覧は各機能の作業定義文書（`docs/tasks/<area>/work-items/`）を正本として管理する。
+ディレクトリ名と層が一致しないファイルは配置違反とみなす。配置違反の解消は、ファイルを正しいディレクトリへ移動することで行う。個別機能の違反一覧は、対象の GitHub issue、PR、明示タスク、または領域仕様文書で管理する。
 
 ## レビュー観点
 

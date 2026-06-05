@@ -1,6 +1,6 @@
 ---
 name: structural-review
-description: 層責務・依存方向・可視性の構造レビュー担当として判定するときに使う。
+description: 構造レビュー担当として判定するときに使う。
 ---
 
 # Structural Review
@@ -19,17 +19,15 @@ description: 層責務・依存方向・可視性の構造レビュー担当と�
 
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
-3. `docs/architecture/hexagonal-implementation-rules.md`
-4. `docs/architecture/review-checklist.md`
-5. `docs/task-governance/implementation-review-judgement.md`
+3. `docs/task-governance/implementation-review-judgement.md`
+4. `docs/architecture/hexagonal-implementation-rules.md`
+5. `docs/architecture/review-checklist.md`
+6. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+7. 入力が要求する追加正本文書
 
 ## Rules
 
-- 層責務・依存・可視性の確認は正本参照に従う。
-- 機械的分離を合格根拠にせず、`docs/architecture/hexagonal-implementation-rules.md` が定義する責務境界で処理を分類する。
-- 処理ごとに正本アーキテクチャ文書で規定された境界に置かれているかを確認する。
-- `support` については、正本アーキテクチャ文書が support に割り当てる責務と他層に割り当てる責務を区別する。
-- adapter 配下の `secrets-internal-test-stub` feature 専用 backend stub は、正本の internal backend stub 条件を満たす場合、その存在だけで production source tree への test double 混入として扱わない。
-- 判定根拠は実コード直接確認で記録する。
-- 判定返却のみ行い、実装編集はしない。
-- チェック項目をこのファイルで重複定義しない。
+- この役割の判定だけを行い、ソース編集、コミット、別役割の作業をしない。
+- 対象コード、文書、issue、PR、task を直接読む。過去記録、要約、実装担当報告で判定を代替しない。
+- この役割の governing source を適用し、詳細規則をここで再掲しない。
+- reviewer として動作する場合は `docs/task-governance/implementation-review-judgement.md` が要求する verdict 形式で返す。
