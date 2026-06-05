@@ -47,6 +47,8 @@ jobs:
     outputs:
       nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
       nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
+      cask_rev_old: ${{ steps.revs.outputs.cask_rev_old }}
+      cask_rev_new: ${{ steps.revs.outputs.cask_rev_new }}
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -64,6 +66,9 @@ jobs:
           echo "closure=$old_closure" >> "$GITHUB_OUTPUT"
           nixpkgs_old="$(nix eval --raw .#inputs.nixpkgs.rev 2>/dev/null || jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
+          # brew cask 版差分（fix3）のため、bump 前の cask tap rev も記録する。
+          cask_rev_old="$(jq -r '.nodes["homebrew-homebrew-cask"].locked.rev' flake.lock)"
+          echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
       - name: nixpkgs と tap input を bump
         run: |
@@ -90,6 +95,9 @@ jobs:
           echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}" >> "$GITHUB_OUTPUT"
           nixpkgs_new="$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
           echo "nixpkgs_new=$nixpkgs_new" >> "$GITHUB_OUTPUT"
+          echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}" >> "$GITHUB_OUTPUT"
+          cask_rev_new="$(jq -r '.nodes["homebrew-homebrew-cask"].locked.rev' flake.lock)"
+          echo "cask_rev_new=$cask_rev_new" >> "$GITHUB_OUTPUT"
 
       - name: bump 済み lock と closure path を artifact 化
         uses: actions/upload-artifact@v4
@@ -126,10 +134,47 @@ jobs:
         with:
           name: bump-state
 
+      # 宣言 cask の版差分を old/new cask tap rev から決定論的に算出する（fix3）。ライブ brew 問い合わせは
+      # せず、各 cask の `version` を tap rev の cask ファイルから読み、`name<TAB>old<TAB>new` の差分ファイルへ
+      # 書く。これが record の `--brew-diff` 入力になり、brew 版差分が空縮退せず実取得される。取得できない
+      # cask（letter subdir 解決失敗・404 等）はその cask 行を出さず、brew 差分は部分的になる（縮退は明示）。
+      - name: brew cask 版差分を算出
+        id: brew
+        env:
+          CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
+          CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
+          # gh は GH_TOKEN を env から読む。token は argv に乗せない。
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          diff_file="$RUNNER_TEMP/brew-diff.tsv"
+          : > "$diff_file"
+          # 宣言 cask 名を homebrew.nix の casks 配列から抽出（"name" 行）。
+          casks="$(sed -n '/casks = \[/,/\];/p' nix/modules/homebrew.nix \
+            | grep -oE '"[^"]+"' | tr -d '"')"
+          cask_version() {
+            # $1=rev $2=cask 名。cask tap の Casks/<letter>/<name>.rb から version "..." を読む。
+            local rev="$1" name="$2" letter
+            letter="$(printf '%s' "$name" | cut -c1)"
+            gh api "repos/homebrew/homebrew-cask/contents/Casks/${letter}/${name}.rb?ref=${rev}" \
+              --jq '.content' 2>/dev/null | base64 -d 2>/dev/null \
+              | grep -oE 'version "[^"]+"' | head -n1 | sed -E 's/version "([^"]+)"/\1/' || true
+          }
+          for name in $casks; do
+            old_v="$(cask_version "$CASK_REV_OLD" "$name")"
+            new_v="$(cask_version "$CASK_REV_NEW" "$name")"
+            # 両 rev とも取得できないものは差分対象にしない（縮退）。
+            [ -z "$old_v" ] && [ -z "$new_v" ] && continue
+            printf '%s\t%s\t%s\n' "$name" "${old_v:-∅}" "${new_v:-∅}" >> "$diff_file"
+          done
+          echo "diff_file=$diff_file" >> "$GITHUB_OUTPUT"
+
       - name: 参照 closure を再 build して record
         env:
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
+          CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
+          BREW_DIFF: ${{ steps.brew.outputs.diff_file }}
           # GitHub Models は GITHUB_TOKEN で使う。別 secret は持たせない。
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -140,6 +185,10 @@ jobs:
           at="$(date -u +%FT%TZ)"
           out="docs/update-history/$(date -u +%Y-%m).toml"
           mkdir -p docs/update-history
+          # notes-base: new cask tap rev の Casks 配下を基底にし、record adapter が `<base><name>` で
+          # cask 定義（homepage/url を含む）を取得する。letter subdir を解決できない cask は 404 となり、
+          # その cask は version+notes_url 縮退（graceful degradation）になる。許可ホスト https のみ取得する。
+          notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
           nix develop -c dotfiles update-history record \
             --old "$new_closure" \
             --new "$new_closure" \
@@ -149,6 +198,8 @@ jobs:
             --nixpkgs-new "$NIXPKGS_NEW" \
             --reference "$CI_REFERENCE" \
             --at "$at" \
+            --brew-diff "$BREW_DIFF" \
+            --notes-base "$notes_base" \
             --out "$out"
 
       - name: 履歴 TOML を artifact 化

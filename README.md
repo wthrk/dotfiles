@@ -243,3 +243,37 @@ base..head の全 commit 履歴に対して次を機械判定します。
 空）。この設定自体の変更もレビュー必須であり、許可パスが `flake.lock` + `docs/update-history/**` に限定される
 ため、nightly PR が `.github/**`（ruleset/workflow/guard）を変更すると guard が fail し、無人 auto-merge
 されず人手レビュー経路へ送られます。
+
+GitHub への ruleset 適用は手動 `gh api` 依存ですが、その適用状態は `dotfiles ci verify-ruleset` が CI
+（`.github/workflows/static-checks.yml` の `verify applied ruleset` job）で継続検証します。`gh api` で実適用済み
+ruleset を取得し、`enforcement=active`・bypass actors 空・required check に `nightly-bump-guard` を含むことを
+assert します（判定核は `rust/dotfiles-cli/src/ci/ruleset.rs`、unit test で固定）。適用漏れ・bypass actor の
+後付け・required check の context ドリフトがあれば fail し、required check の無効化（fail-open）を検知します。
+ruleset 読み取りは repo の Administration:read 権限を要し、既定 `GITHUB_TOKEN` では読めないため、nightly bump
+と同じ最小権限 GitHub App（Administration:read を付与）の token で読みます。token が無効・権限不足の場合は `gh`
+が非 0 終了して検証が fail します（検証不能を success にしない fail-closed）。
+
+## Homebrew cask の固定状況（無人 upgrade の明示受容）
+
+auto-update 経路は switch 時に `brew upgrade`（greedy 無し）を実行して installed cask/formula を tap rev の
+pin へ追従させます。tap rev は cask の「定義」を固定しますが、ダウンロード成果物の固定性は cask 側の `sha256`
+指定に依存します。`brew upgrade` は既定で `auto_updates true` / `version :latest` の cask を upgrade 対象から
+**除外**し（`--greedy` を渡したときだけ対象化）、本設定は `--greedy` を渡さないため、これら自己更新 cask は
+無人 upgrade 経路の対象になりません。よって無人 upgrade が成果物を実際に差し替えるのは `sha256` が明示固定
+された cask に限られ、その成果物は tap rev で再現的に固定されます。
+
+現在の宣言 cask の固定状況を明示受容します。
+
+| cask | tap | sha256 固定 | auto_updates | 無人 upgrade 対象 | 成果物の固定 |
+|---|---|---|---|---|---|
+| `azookey` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
+| `font-cica` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
+| `yubico-authenticator` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
+| `bitwarden` | homebrew/cask | あり | **true** | 対象外（自己更新） | アプリ自己更新（本設定の責務外） |
+| `codex-app` | homebrew/cask | あり（arm） | **true** | 対象外（自己更新） | アプリ自己更新（本設定の責務外） |
+| `ghostty` | homebrew/cask | あり | **true** | 対象外（自己更新） | アプリ自己更新（本設定の責務外） |
+
+`sha256 :no_check`（未固定成果物）を無人 upgrade する cask は現状存在しません。将来そうした cask を足す場合は、
+greedy を有効化しない現状では `auto_updates` 経由でのみ更新され（本経路の対象外）、明示固定が必要なら手動更新へ
+寄せます。auto-update が cask を上げた事実は、適用後に `dotfiles update` の要約（端末 / `pending-summary`、
+`update-history show`）で更新アプリとして通知され、無人差し替えが不可視にならないようにしています。

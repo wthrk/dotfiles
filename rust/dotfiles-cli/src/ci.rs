@@ -11,12 +11,14 @@
 //! cargo ビルド経路に依存するため、判定核を持つ CLI 側に置いて test 可能性と再利用性を確保する。
 
 mod bump_lock;
+mod ruleset;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
+use serde_json::Value;
 
 use crate::Result;
 use crate::process::run_capture;
@@ -29,9 +31,10 @@ pub(crate) struct CiOptions {
 }
 
 #[derive(Subcommand)]
-/// 現在は nightly bump guard のみ。将来 CI 判定を足す場合もここに名詞で並べる。
+/// nightly bump guard と、適用済み ruleset の継続検証。将来 CI 判定を足す場合もここに名詞で並べる。
 enum CiCommand {
     VerifyBumpLock(VerifyBumpLockOptions),
+    VerifyRuleset(VerifyRulesetOptions),
 }
 
 #[derive(Args)]
@@ -52,10 +55,26 @@ struct VerifyBumpLockOptions {
     repo: Option<PathBuf>,
 }
 
+#[derive(Args)]
+/// 版管理された ruleset JSON が GitHub に正しく適用され続けているかを継続検証する option。
+///
+/// 版管理ファイル（`.github/rulesets/nightly-bump.json`）から ruleset `name` を読み、`gh api` で実適用済み
+/// ruleset を取得して enforcement=active・bypass_actors 空・required check 包含を assert する。手動 `gh api`
+/// 依存の適用が漏れ・改竄・context ドリフトしていれば fail し、required check の無効化（fail-open）を検知する。
+struct VerifyRulesetOptions {
+    /// 版管理された ruleset 定義 JSON のパス（`name` の解決に使う）。
+    #[arg(long, default_value = ".github/rulesets/nightly-bump.json")]
+    definition: PathBuf,
+    /// 対象リポジトリ（`owner/repo`）。省略時は `GITHUB_REPOSITORY` 環境変数を使う。
+    #[arg(long)]
+    repository: Option<String>,
+}
+
 /// CLI で parse 済みの `dotfiles ci` command を実行へ振り分ける。
 pub(crate) fn run(options: CiOptions) -> Result<()> {
     match options.command {
         CiCommand::VerifyBumpLock(options) => run_verify_bump_lock(options),
+        CiCommand::VerifyRuleset(options) => run_verify_ruleset(options),
     }
 }
 
@@ -99,6 +118,87 @@ fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
     Ok(())
 }
 
+/// 版管理 ruleset 定義の `name` を解決し、実適用済み ruleset を取得して安全要件を継続検証する。
+///
+/// 手順: ① 版管理 JSON から ruleset `name` を読む → ② `gh api repos/{repo}/rulesets` で一覧から同名の
+/// ruleset id を解決 → ③ `gh api repos/{repo}/rulesets/{id}` で詳細（`rules` 含む）を取得 → ④ I/O を持たない
+/// 純粋核 [`ruleset::verify_applied_ruleset`] で enforcement=active・bypass 空・guard context 包含を assert。
+///
+/// token は `gh` が `GH_TOKEN` 環境変数から読むため argv に乗せず、本関数は token を一切扱わない（git/gh の
+/// stdout だけを捌く）。最小権限読み取りで足りるか: ruleset 読み取りは repo administration:read を要する。CI の
+/// `GITHUB_TOKEN` で読めない場合は `gh` が 403 で非 0 終了し、`run_capture` が fail として伝播する（fail-closed。
+/// 読めない＝検証不能を success にしない）。その場合は admin 読み取り可能な token を CI に与える運用とする。
+fn run_verify_ruleset(options: VerifyRulesetOptions) -> Result<()> {
+    let repository = match options.repository {
+        Some(repository) => repository,
+        None => std::env::var("GITHUB_REPOSITORY").context(
+            "repository not given and GITHUB_REPOSITORY is unset; cannot locate applied ruleset",
+        )?,
+    };
+
+    let definition = std::fs::read_to_string(&options.definition).with_context(|| {
+        format!(
+            "reading ruleset definition {} failed",
+            options.definition.display()
+        )
+    })?;
+    let expected_name = serde_json::from_str::<Value>(&definition)
+        .context("ruleset definition is not valid JSON")?
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("ruleset definition has no name field")?;
+
+    let list = gh_api(&format!("repos/{repository}/rulesets"))
+        .context("listing applied rulesets failed (need repo administration:read)")?;
+    let ruleset_id = resolve_ruleset_id(&list, &expected_name)?;
+
+    let applied = gh_api(&format!("repos/{repository}/rulesets/{ruleset_id}"))
+        .context("fetching applied ruleset detail failed")?;
+    ruleset::verify_applied_ruleset(&applied)?;
+
+    println!(
+        "nightly-bump ruleset `{expected_name}` (id {ruleset_id}) applied state OK \
+         (active, bypass empty, guard required)"
+    );
+    Ok(())
+}
+
+/// ruleset 一覧 JSON から指定 `name` の ruleset id を解決する。0 件は適用漏れとして fail にする。
+fn resolve_ruleset_id(list: &str, expected_name: &str) -> Result<i64> {
+    let rulesets: Value = serde_json::from_str(list).context("ruleset list is not valid JSON")?;
+    let rulesets = rulesets
+        .as_array()
+        .ok_or_else(|| anyhow!("ruleset list is not a JSON array"))?;
+
+    let matched: Vec<&Value> = rulesets
+        .iter()
+        .filter(|ruleset| ruleset.get("name").and_then(Value::as_str) == Some(expected_name))
+        .collect();
+    match matched.as_slice() {
+        [] => bail!(
+            "no applied ruleset named `{expected_name}`; the versioned ruleset is not applied \
+             to GitHub (fail-open: required check absent)"
+        ),
+        [ruleset] => ruleset
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("applied ruleset `{expected_name}` has no integer id")),
+        _ => bail!(
+            "multiple applied rulesets named `{expected_name}`; ambiguous which one enforces the \
+             required check"
+        ),
+    }
+}
+
+/// `gh api <endpoint>` を実行し stdout（JSON）を返す。token は gh が env から読むため argv に乗せない。
+fn gh_api(endpoint: &str) -> Result<String> {
+    run_capture(
+        "gh",
+        ["api", endpoint].into_iter().map(std::ffi::OsString::from),
+    )
+}
+
 /// `git` をオプション付きで実行し stdout を返す。token 等の secret は引数に乗せない（git のみ）。
 fn run_git<'a, I>(dir_args: &[String], subcommand: I) -> Result<String>
 where
@@ -107,4 +207,38 @@ where
     let mut args: Vec<std::ffi::OsString> = dir_args.iter().map(std::ffi::OsString::from).collect();
     args.extend(subcommand.into_iter().map(std::ffi::OsString::from));
     run_capture("git", args)
+}
+
+#[cfg(test)]
+mod tests {
+    //! ruleset 一覧 JSON から name で id を解決する純粋部分（一致 1 件・0 件適用漏れ・複数件曖昧）を固定する。
+
+    use super::resolve_ruleset_id;
+
+    const LIST: &str = r#"[
+      { "id": 11, "name": "other-ruleset" },
+      { "id": 42, "name": "nightly-bump-protection" }
+    ]"#;
+
+    #[test]
+    fn resolves_id_by_name() -> crate::Result<()> {
+        assert_eq!(resolve_ruleset_id(LIST, "nightly-bump-protection")?, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn fails_when_ruleset_not_applied() {
+        let err = resolve_ruleset_id(LIST, "missing-ruleset").unwrap_err();
+        assert!(err.to_string().contains("not applied"), "{err}");
+    }
+
+    #[test]
+    fn fails_when_name_is_ambiguous() {
+        let list = r#"[
+          { "id": 1, "name": "dup" },
+          { "id": 2, "name": "dup" }
+        ]"#;
+        let err = resolve_ruleset_id(list, "dup").unwrap_err();
+        assert!(err.to_string().contains("multiple"), "{err}");
+    }
 }
