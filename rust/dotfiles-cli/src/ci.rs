@@ -117,7 +117,7 @@ fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
 
     bump_lock::verify_bump(&changed_paths, &old_lock, &new_lock)?;
     println!(
-        "nightly-bump-guard: OK ({} changed path(s))",
+        "verify-bump-lock: OK ({} changed path(s))",
         changed_paths.len()
     );
     Ok(())

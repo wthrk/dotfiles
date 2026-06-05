@@ -268,6 +268,17 @@ code review で走ります）、`gh pr merge --auto --squash` で auto-merge �
 
 いずれも未充足ならマージは保留され、無人で main に入りません（人手レビューへ送られます）。
 
+#### インライン `verify-bump-lock` の適用範囲（threat-model）
+
+インラインの `dotfiles ci verify-bump-lock` は、**nightly workflow が自分で起票する bump PR にのみ適用**されます
+（open-pr job が同一 run 内で実行するため）。第三者が `nightly/bump-*` prefix で**直接起票した PR には
+`verify-bump-lock` は走りません**（全 PR を横断検査していた `nightly-bump-guard.yml` の required check は App 廃止に
+伴い削除済みです）。そうした攻撃者起票 PR のマージ阻止は、bypass 不能な「main」ruleset の必須 `static checks` と
+Copilot/Codex の自動レビューに依存します（加えて `.github/**` の改変はそもそも許可パス外として弾かれます）。より
+強い保護が必要なら、App 不要の per-PR guard workflow（`on: pull_request` で nightly-prefix PR に `verify-bump-lock`
+を実行し、その結果を「main」ruleset の required check に加える）を別途有効化できます。本仕様は App / secret 不要を
+維持するため、この per-PR guard は既定では有効化していません。
+
 ## Homebrew cask の固定状況（無人 upgrade の明示受容）
 
 auto-update 経路は switch 時に `brew upgrade`（greedy 無し）を実行して installed cask/formula を tap rev の

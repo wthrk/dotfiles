@@ -29,6 +29,16 @@ name: nightly update
 #   - copilot_code_review が bot/GITHUB_TOKEN 起票 PR で発火するか。
 #   いずれも未充足ならマージは保留され（無人で main に入らない）、人手レビュー経路へ送られる。
 #
+# インライン verify-bump-lock の適用範囲（threat-model。App 廃止に伴い nightly-bump-guard.yml を削除した結果）:
+#   - インライン verify-bump-lock は **nightly workflow が自分で起票する bump PR にのみ適用**される（この
+#     open-pr job が同一 run 内で実行するため）。第三者が nightly/bump-* prefix で**直接起票した PR には
+#     verify-bump-lock は走らない**（全 PR を横断検査していた required check の nightly-bump-guard.yml は削除済み）。
+#   - そうした攻撃者起票 PR のマージ阻止は、bypass 不能な「main」ruleset の必須 `static checks` と Copilot/Codex
+#     の自動レビューに依存する（加えて `.github/**` 改変はそもそも許可パス外として弾かれる）。
+#   - より強い保護が必要なら、App 不要の per-PR guard workflow（on: pull_request で nightly-prefix PR に
+#     verify-bump-lock を実行し「main」ruleset の required check に加える）を別途有効化できる。本仕様は
+#     App/secret 不要を維持するため、この per-PR guard は既定で有効化しない。
+#
 # dry_run（workflow_dispatch 既定 true）では bump と record と diff までを実行し、PR 起票・push を行わない。
 # 実発火（schedule）前に dry_run で両 closure build と TOML 生成を検証する運用を前提とする。
 
