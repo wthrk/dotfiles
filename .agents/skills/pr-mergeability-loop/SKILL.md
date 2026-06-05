@@ -1,15 +1,15 @@
 ---
 name: pr-mergeability-loop
-description: Use as a support skill when a PR instruction involves review response, AI/Codex/Copilot review, PR-scoped @codex review, review thread resolution, checks, or mergeability confirmation.
+description: Use as an orchestration extension for the main orchestrator when a PR instruction involves review response, AI/Codex/Copilot review, PR-scoped @codex review, review thread resolution, checks, or mergeability confirmation.
 ---
 
 # PR Mergeability Loop
 
 ## Actor Binding
 
-This is a support skill only. It does not establish or change the current actor's role.
+This is an orchestration-extension support skill for the main orchestrator. It does not establish or change the current actor's role and does not create a standalone delegated PR-loop role.
 
-The actor remains bound to the role skill already invoked, such as `/implementation-execution`, a review skill, or a judgement skill. Delegated role actors must not use this skill to re-orchestrate, re-select the work unit, or launch subagents for the same delegated task.
+For top-level PR mergeability requests, the main orchestrator uses this skill with `/orchestration` to coordinate the loop. Delegated implementation, review, judgement, and commit / PR operation actors must not use this skill to take over the full loop, re-orchestrate, re-select the work unit, or launch subagents for the same delegated task. They stay bound to their assigned role and report PR-loop-relevant facts back to the parent orchestrator.
 
 ## Governing Sources
 
@@ -26,7 +26,7 @@ The actor remains bound to the role skill already invoked, such as `/implementat
 
 ## When To Use
 
-Use this skill with the current role when the instruction includes any of the following:
+The main orchestrator uses this skill as an orchestration extension when the top-level instruction includes any of the following:
 
 - PR URL or PR number together with mergeability, checks, review thread, or PR review response request
 - PR review response
@@ -38,5 +38,6 @@ Use this skill with the current role when the instruction includes any of the fo
 ## Rules
 
 - Apply `docs/task-governance/pr-mergeability-loop.md` directly; this skill does not restate the durable loop procedure.
-- Use this skill only within the actor's already established role and permissions.
-- Report any operation that the current role cannot perform instead of treating this support skill as authority to perform it.
+- This skill augments `/orchestration` for PR mergeability requests; it does not replace `/orchestration`, `/implementation-execution`, review skills, judgement skills, or the commit / PR operation rules in `workflow.md`.
+- The main orchestrator coordinates target PR selection, PR state inventory, bounded delegation, result aggregation, and repeated re-checks until completion or a blocked condition is known.
+- Delegated actors use their assigned role skill for their bounded task and report checks, review thread, review-result, commit / push, or PR-operation facts back to the parent orchestrator. They do not own the full AI / PR loop.
