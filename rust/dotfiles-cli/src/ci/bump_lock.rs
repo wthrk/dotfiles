@@ -10,9 +10,10 @@
 //! 1. **変更パス限定**: PR が触ってよいのは `flake.lock` と `docs/update-history/**` だけ。`.github/**`、
 //!    ruleset 定義、ソース、その他いずれかが base..head の union 差分に 1 つでも混ざれば fail。これにより
 //!    nightly PR が guard / ruleset / workflow / コードを自己改変して無人で main へ入れる経路を塞ぐ。
-//!    PR の各 commit ではなく base..head の union を検査するのは、途中 commit で逸脱パスを足して最終 head で
-//!    消す回避（diff は綺麗だが履歴は汚い）を防ぐためである。union パス集合の収集は CLI 側（`git diff`/`git
-//!    log` 由来）の責務で、本 module は与えられた集合を判定する。
+//!    base..head の net diff ではなく **全 commit の union** を検査するのは、途中 commit で逸脱パスを足して
+//!    最終 head で消す回避（net diff は綺麗だが履歴は汚い add-then-remove）を防ぐためである。この union 検査が
+//!    一次防御であり、`--squash` マージ運用の有無には依存しない。union パス集合の収集は CLI 側
+//!    （`git log --name-only` の全 commit union 由来）の責務で、本 module は与えられた集合を判定する。
 //!
 //! 2. **lock 差分限定**: `flake.lock` の差分は許可 input 集合の **rev 変更のみ**。許可集合は nightly が
 //!    bump する input（nixpkgs + tap 4 本）を owner/repo の厳密一致で列挙する。framework input（nix-darwin /
@@ -69,8 +70,9 @@ struct SourceCoords {
 /// は base / head の `flake.lock` の生 JSON。許可外パス・許可外 lock 差分があれば、最初に見つけた違反理由を
 /// 載せた `Err` を返す。すべて許可範囲内なら `Ok(())`。CLI はこの結果で終了コードを決める。
 ///
-/// caller responsibility: `changed_paths` は base..head の union（途中 commit を含む）であること。各 commit
-/// 単位の差分や head 単独の差分を渡すと、途中 commit 混入の検出という不変条件が崩れる。
+/// caller responsibility: `changed_paths` は base..head の **全 commit** の union（途中 commit を含む）で
+/// あること。net diff（両端 tree 比較）や head 単独の差分を渡すと、途中 commit 混入（add-then-remove）の
+/// 検出という不変条件が崩れる。
 pub(crate) fn verify_bump(
     changed_paths: &BTreeSet<String>,
     old_lock: &str,

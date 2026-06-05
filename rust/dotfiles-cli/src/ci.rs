@@ -2,9 +2,15 @@
 //!
 //! nightly bump PR を無人 auto-merge してよいかを決める required status check `nightly-bump-guard` の
 //! 実体をここに置く。判定ロジック自体は I/O を持たない [`bump_lock`] に閉じ、本 module は CI から
-//! 「PR の base..head union 変更パス」「base / head の `flake.lock` 内容」を集めて純粋核へ渡す薄い層に
-//! 限定する。shell の中に判定を再実装せず、Rust unit test で固定した規則を CI から呼ぶことで、guard の
+//! 「PR の全 commit を union した変更パス」「base / head の `flake.lock` 内容」を集めて純粋核へ渡す薄い
+//! 層に限定する。shell の中に判定を再実装せず、Rust unit test で固定した規則を CI から呼ぶことで、guard の
 //! fail-open を避ける。
+//!
+//! 変更パス収集は `git diff --name-only base..head`（両端 tree の net 差分）ではなく
+//! `git log --name-only --pretty=format: base..head`（範囲内 **全 commit** の変更ファイル）を union する。
+//! net diff は途中 commit で逸脱パスを add してから head までに remove すると取りこぼす（add-then-remove）。
+//! 全 commit union は中間 commit で一度でも触れたパスを必ず拾うため、これが一次防御である（`--squash`
+//! マージ運用の有無に依存しない）。
 //!
 //! このサブコマンドはリポジトリ保守向けだが、利用者 CLI と同じ binary に載せるのは CI runner が dev shell
 //! 経由で `dotfiles` を使えるためである。利用者向けの常用操作ではないが、xtask に置くと CI が xtask の
@@ -40,9 +46,9 @@ enum CiCommand {
 #[derive(Args)]
 /// nightly bump PR の変更パスと `flake.lock` 差分を許可規則に照らす option。
 ///
-/// CI は PR の base SHA と head SHA を渡す。本 command は base..head の union 変更パスを `git diff` で集め、
-/// base / head の `flake.lock` を `git show` で取り出して [`bump_lock::verify_bump`] に渡す。違反があれば
-/// 非 0 終了し、required status check が fail する。
+/// CI は PR の base SHA と head SHA を渡す。本 command は base..head の **全 commit** の変更パスを
+/// `git log --name-only` で union 収集し、base / head の `flake.lock` を `git show` で取り出して
+/// [`bump_lock::verify_bump`] に渡す。違反があれば非 0 終了し、required status check が fail する。
 struct VerifyBumpLockOptions {
     /// PR の base commit SHA（マージ先の先端）。
     #[arg(long)]
@@ -78,11 +84,13 @@ pub(crate) fn run(options: CiOptions) -> Result<()> {
     }
 }
 
-/// base..head の union 変更パスと両端の `flake.lock` を集め、bump guard 判定を実行する。
+/// base..head の全 commit を union した変更パスと両端の `flake.lock` を集め、bump guard 判定を実行する。
 ///
-/// `git diff --name-only base..head` は base から head へ到達する全 commit の差分を union した変更パスを
-/// 返す（各 commit 単独ではなく履歴全体）。これにより途中 commit で逸脱パスを足して head で消す回避を検出
-/// できる。`flake.lock` 内容は `git show <sha>:flake.lock` で取り出す。判定核は [`bump_lock::verify_bump`]。
+/// `git log --name-only --pretty=format: base..head` は base..head に含まれる **各 commit** の変更ファイル名を
+/// 列挙する。これを union する（[`collect_union_changed_paths`]）ことで、途中 commit で逸脱パスを追加し head
+/// までに削除する add-then-remove を取りこぼさない。`git diff --name-only base..head`（両端 tree の net 差分）
+/// では中間 commit の混入を検出できないため使わない。`flake.lock` 内容は `git show <sha>:flake.lock` で取り出す。
+/// 判定核は [`bump_lock::verify_bump`]。
 fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
     let git_dir_args: Vec<String> = match &options.repo {
         Some(repo) => vec!["-C".to_string(), repo.to_string_lossy().into_owned()],
@@ -90,14 +98,14 @@ fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
     };
 
     let range = format!("{}..{}", options.base, options.head);
-    let diff_output = run_git(&git_dir_args, ["diff", "--name-only", &range])
-        .context("collecting base..head union changed paths failed")?;
-    let changed_paths: BTreeSet<String> = diff_output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect();
+    // `--pretty=format:` で commit ヘッダ行を空にし、`--name-only` の変更パス行だけを得る。範囲内の全 commit
+    // を辿るため、各 commit が触れたパスがすべて出力に現れる（途中 commit で消えた net-clean なパスも含む）。
+    let log_output = run_git(
+        &git_dir_args,
+        ["log", "--name-only", "--pretty=format:", &range],
+    )
+    .context("collecting base..head per-commit changed paths failed")?;
+    let changed_paths = collect_union_changed_paths(&log_output);
 
     let old_lock = run_git(
         &git_dir_args,
@@ -116,6 +124,24 @@ fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
         changed_paths.len()
     );
     Ok(())
+}
+
+/// `git log --name-only --pretty=format: base..head` の出力を全 commit union の変更パス集合へ集約する。
+///
+/// 入力は範囲内 commit を順に並べた行で、`--pretty=format:` により commit ヘッダは空行になり、その後に当該
+/// commit の変更ファイル名が 1 行 1 件で続く。複数 commit の出力が連結されるため、空行（commit 区切り兼ヘッダ）
+/// を読み飛ばし、非空行を trim して `BTreeSet` で unique 化する。これにより、ある commit が追加し別の commit が
+/// 削除して net 差分には現れないパスも、いずれかの commit に現れた時点で集合へ入る（add-then-remove の検出）。
+///
+/// この純粋関数として切り出すのは、実 git repo 無しで multi-commit 出力に対する union 化を unit test で固定する
+/// ためである。git の実行（I/O）は caller が担い、本関数は文字列→集合の変換のみを行う。
+fn collect_union_changed_paths(log_output: &str) -> BTreeSet<String> {
+    log_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// 版管理 ruleset 定義の `name` を解決し、実適用済み ruleset を取得して安全要件を継続検証する。
@@ -211,9 +237,47 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! ruleset 一覧 JSON から name で id を解決する純粋部分（一致 1 件・0 件適用漏れ・複数件曖昧）を固定する。
+    //! ruleset 一覧 JSON から name で id を解決する純粋部分（一致 1 件・0 件適用漏れ・複数件曖昧）と、
+    //! `git log --name-only` 出力を全 commit union の変更パスへ集約する純粋部分（add-then-remove を含む
+    //! multi-commit ケースで逸脱パスを取りこぼさないこと）を固定する。
 
-    use super::resolve_ruleset_id;
+    use super::{collect_union_changed_paths, resolve_ruleset_id};
+
+    #[test]
+    fn union_collects_paths_across_all_commits() {
+        // `--pretty=format:` で各 commit ヘッダは空行。2 commit ぶんの出力を連結したサンプル。
+        let log_output = "\nflake.lock\ndocs/update-history/2026-06.toml\n\nflake.lock\n";
+        let paths = collect_union_changed_paths(log_output);
+        assert!(paths.contains("flake.lock"));
+        assert!(paths.contains("docs/update-history/2026-06.toml"));
+        // 空行（commit 区切り/ヘッダ）は集合に入らない。
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn union_detects_add_then_remove_dropped_by_net_diff() {
+        // 中間 commit で逸脱パス（.github/workflows/x.yml）を add し、head までに remove したケース。
+        // net diff（base..head 両端比較）では現れないが、commit 1 が触れているため union には残る。
+        // commit 1: 逸脱パスを足す / commit 2: 逸脱パスを消し flake.lock だけ残す。
+        let log_output =
+            "\nflake.lock\n.github/workflows/x.yml\n\nflake.lock\n.github/workflows/x.yml\n";
+        let paths = collect_union_changed_paths(log_output);
+        assert!(
+            paths.contains(".github/workflows/x.yml"),
+            "add-then-remove path must survive union collection: {paths:?}"
+        );
+        // この集合を判定核へ渡せば逸脱パスとして fail する（union が一次防御であることの担保）。
+        let err = super::bump_lock::verify_bump(&paths, MINIMAL_LOCK, MINIMAL_LOCK).unwrap_err();
+        assert!(err.to_string().contains("disallowed path"), "{err}");
+    }
+
+    /// add-then-remove ケースの判定確認に使う最小 lock（base=head 同一で lock 差分なし）。
+    /// changed_paths だけが fail 要因になるよう、lock は無変更にしてある。
+    const MINIMAL_LOCK: &str = r#"{
+      "nodes": { "root": { "inputs": {} } },
+      "root": "root",
+      "version": 7
+    }"#;
 
     const LIST: &str = r#"[
       { "id": 11, "name": "other-ruleset" },

@@ -16,7 +16,9 @@ name: nightly bump guard
 #
 # 判定実体は shell ではなく `dotfiles ci verify-bump-lock`（Rust unit test で固定した純粋核）に置く。
 # 変更パスが flake.lock + docs/update-history/** に限定され、flake.lock 差分が許可 input の rev 変更だけ
-# であることを base..head の union（PR の全 commit 履歴）に対して検査する。
+# であることを、base..head の **全 commit** を union した変更パス（`git log --name-only` 由来）に対して検査
+# する。net diff ではなく全 commit union を一次防御に使うため、途中 commit で逸脱パスを足して head で消す
+# add-then-remove も検出でき、`--squash` マージ運用の有無に依存しない。
 
 on:
   workflow_dispatch:
@@ -62,7 +64,7 @@ jobs:
         if: ${{ steps.scope.outputs.enforce == 'true' }}
         uses: actions/checkout@v5
         with:
-          # base..head の union 差分と両端の flake.lock を git で参照するため全履歴を取得する。
+          # base..head の全 commit（union 収集）と両端の flake.lock を git で参照するため全履歴を取得する。
           fetch-depth: 0
 
       - name: Nix を導入

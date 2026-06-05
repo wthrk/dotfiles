@@ -439,9 +439,9 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        LOCK_FILE, PENDING_SUMMARY, UpdateLock, append_pending_summary, parse_nixpkgs_rev,
-        parse_repo_pin, present_summary, read_last_applied_rev, resolve_state_dir, update_args,
-        write_last_applied_rev,
+        LAST_RUN_LOG, LOCK_FILE, PENDING_SUMMARY, UpdateLock, append_pending_summary,
+        parse_nixpkgs_rev, parse_repo_pin, present_summary, read_last_applied_rev,
+        resolve_state_dir, update_args, write_last_applied_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -708,6 +708,31 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+        Ok(())
+    }
+
+    #[test]
+    fn present_summary_dry_run_has_no_file_side_effect() -> crate::Result<()> {
+        // dry-run 契約: 非 tty 経路でも `pending-summary` / `last-run.log` を書かない（副作用抑止）。
+        // 既存 `dry_run_lock_has_no_file_side_effect` と同じく、dry_run=true で実ファイルが生成されないことを
+        // assert する。テスト環境は非 tty のため present_summary は background 分岐を通り、dry_run=false なら
+        // 両ファイルへ書く（present_summary_selects_span_by_nixpkgs_rev_not_dotfiles_pin で固定済み）。
+        let dir = temp_dir("present-dry");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create state+config dir");
+        write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
+
+        present_summary(&dir, &dir, Some("nA"), true)?;
+        assert!(
+            !dir.join(PENDING_SUMMARY).exists(),
+            "dry-run must not write pending-summary"
+        );
+        assert!(
+            !dir.join(LAST_RUN_LOG).exists(),
+            "dry-run must not write last-run.log"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 
