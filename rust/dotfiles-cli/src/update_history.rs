@@ -60,8 +60,9 @@ enum UpdateHistoryCommand {
 #[derive(Args)]
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option。
 ///
-/// CI（network + GitHub Models）が叩く。old/new の nix closure と brew tap rev を diff し、各アプリの
-/// 生ノートを取得して LLM で構造化抽出し、`--out` の月次 TOML へ追記する。`--at` は RFC3339 を注入する。
+/// CI（network + GitHub Models）が叩く。old/new の nix closure を `diff-closures` で diff し（brew 版差分は
+/// `--brew-diff` ファイルから読む）、各アプリの生ノートを取得して LLM で構造化抽出し、`--out` の月次 TOML へ
+/// 追記する。`--at` は RFC3339 を注入する。
 struct RecordOptions {
     /// diff 元の nix closure store path。
     #[arg(long)]
@@ -69,10 +70,11 @@ struct RecordOptions {
     /// diff 先の nix closure store path。
     #[arg(long)]
     new: String,
-    /// brew tap rev の diff 元。
+    /// brew 版差分の diff 元 rev（座標）。現行の brew adapter は `--brew-diff` ファイルを使うため本値は
+    /// 参照されないが、port 契約は rev 座標を受けるため互換のため受け取る（CI は nixpkgs rev を流用注入する）。
     #[arg(long)]
     old_rev: String,
-    /// brew tap rev の diff 先。
+    /// brew 版差分の diff 先 rev（座標）。`--old-rev` と同様に現行 adapter では未参照。
     #[arg(long)]
     new_rev: String,
     /// 記録する bump 前 nixpkgs リビジョン。

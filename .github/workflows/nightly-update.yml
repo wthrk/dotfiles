@@ -129,6 +129,16 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
+      # bump 前（checkout 直後の committed lock）の参照 closure を build する。download-artifact が
+      # flake.lock を bump 後 lock で上書きする前に行うことで、実 old closure store path を得る（fix3:
+      # 以前は old==new を record に渡して nix 差分が常に空だった）。
+      - name: 旧参照 closure を build（bump 前 lock）
+        id: old
+        run: |
+          set -euo pipefail
+          old_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
+          echo "closure=$old_closure" >> "$GITHUB_OUTPUT"
+
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v4
         with:
@@ -169,8 +179,9 @@ jobs:
           done
           echo "diff_file=$diff_file" >> "$GITHUB_OUTPUT"
 
-      - name: 参照 closure を再 build して record
+      - name: 新参照 closure を build して record
         env:
+          OLD_CLOSURE: ${{ steps.old.outputs.closure }}
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
@@ -179,9 +190,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # この時点で flake.lock は download-artifact により bump 後 lock へ上書き済み。よってここで build
+          # した closure は new。old は前ステップで bump 前 lock から build した実 store path（fix3）。両者を
+          # record へ渡し、nix adapter が `nix store diff-closures old new` で実差分を算出する（old==new で
+          # 空縮退しない）。
           new_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
-          # old closure は bump 前 lock が必要なため、record adapter 側が old_rev/new_rev で再現する。
-          # ここでは new lock で build した closure を new とし、old は bump 前 rev を渡して adapter が解決する。
           at="$(date -u +%FT%TZ)"
           out="docs/update-history/$(date -u +%Y-%m).toml"
           mkdir -p docs/update-history
@@ -190,7 +203,7 @@ jobs:
           # その cask は version+notes_url 縮退（graceful degradation）になる。許可ホスト https のみ取得する。
           notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
           nix develop -c dotfiles update-history record \
-            --old "$new_closure" \
+            --old "$OLD_CLOSURE" \
             --new "$new_closure" \
             --old-rev "$NIXPKGS_OLD" \
             --new-rev "$NIXPKGS_NEW" \

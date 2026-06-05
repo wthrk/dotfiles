@@ -7,10 +7,16 @@ name: nightly bump guard
 # required status check と一致させる。一致しないと required check が発火せず fail-open するため、名前は
 # load-bearing である。
 #
+# 適用範囲（重要）: 厳格検査は **nightly bump PR にだけ** 強制する。判定は PR head ブランチが nightly bump の
+# 固定 prefix（`nightly/bump-`。`nightly-update.yml` の起票ブランチに一致）かで行う。それ以外の通常 PR では
+# 制約を課さず pass（exit 0）する。こうしないと bypass actors 空の required check が全 PR を恒久マージ不能に
+# する。required check 自体は全 PR で発火するが（通常 PR では成功）、nightly PR でだけ verify-bump-lock を実行
+# して fail させうる。なお nightly PR は許可パスが flake.lock + docs/update-history/** に限定されているため、
+# guard/ruleset/workflow 自身の自己改変は nightly ブランチからは許可パス外として fail する（自己改変の封路）。
+#
 # 判定実体は shell ではなく `dotfiles ci verify-bump-lock`（Rust unit test で固定した純粋核）に置く。
 # 変更パスが flake.lock + docs/update-history/** に限定され、flake.lock 差分が許可 input の rev 変更だけ
-# であることを base..head の union（PR の全 commit 履歴）に対して検査する。guard 自身・ruleset・workflow を
-# 変更する PR は許可パス外として fail し、無人 auto-merge 経路から人手レビュー経路へ送還される。
+# であることを base..head の union（PR の全 commit 履歴）に対して検査する。
 
 on:
   workflow_dispatch:
@@ -30,18 +36,43 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # nightly bump PR か（head ブランチが固定 prefix `nightly/bump-` か）を判定する。pull_request 以外
+      # （workflow_dispatch）では head ref が無いため、手動検証経路として常に nightly 扱いで強制検査する。
+      - name: 対象判定（nightly bump PR か）
+        id: scope
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "enforce=true" >> "$GITHUB_OUTPUT"
+          elif [ "${PR_HEAD_REF#nightly/bump-}" != "$PR_HEAD_REF" ]; then
+            echo "enforce=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enforce=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 通常 PR は no-op success（nightly bump 制約は課さない）
+        if: ${{ steps.scope.outputs.enforce != 'true' }}
+        run: |
+          echo "nightly-bump-guard: non-nightly PR; skipping bump-lock enforcement (pass)"
+
       - name: checkout
+        if: ${{ steps.scope.outputs.enforce == 'true' }}
         uses: actions/checkout@v5
         with:
           # base..head の union 差分と両端の flake.lock を git で参照するため全履歴を取得する。
           fetch-depth: 0
 
       - name: Nix を導入
+        if: ${{ steps.scope.outputs.enforce == 'true' }}
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
 
       - name: nightly bump guard
+        if: ${{ steps.scope.outputs.enforce == 'true' }}
         env:
           # pull_request 以外（workflow_dispatch）では base/head が無いため、その場合は既定 branch を base に、
           # 現在 ref を head にして手動検証できるようにする。

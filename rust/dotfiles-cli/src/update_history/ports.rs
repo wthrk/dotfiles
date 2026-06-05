@@ -3,7 +3,9 @@
 //! 各 trait は「何を必要とするか」の意図宣言だけを持ち、具体依存（nix プロセス、brew tap rev の
 //! formula/cask 解析、リリースノート HTTP 取得、GitHub Models 呼び出し、TOML ファイル I/O）は持たない。
 //! 境界型は domain 型（`VersionDelta` / `ChangeItem` / `UpdateEntry`）に限定し、SDK 型・パーサ・prompt
-//! 文言・利用者向け文言は adapter（次チャンク）へ閉じる。trait の実体実装は次チャンクで追加する。
+//! 文言・利用者向け文言は adapter（`adapters/nix.rs`・`adapters/brew.rs`・`adapters/notes.rs`・
+//! `adapters/github_models.rs`・`adapters/toml_store.rs`・`adapters/report.rs`）へ閉じる。各 trait の実体
+//! 実装はそれら adapter module が担う。
 
 use super::domain::diff::VersionDelta;
 use super::domain::view::HistoryView;

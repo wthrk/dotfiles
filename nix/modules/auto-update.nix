@@ -12,6 +12,12 @@
 #   - darwin-rebuild は root のまま `DOTFILES_DARWIN_REBUILD_SUDO=0 dotfiles switch darwin` で適用する
 #     （既に root のため sudo を前置しない経路）。
 #
+# rev マーカー確定のタイミング（drift 防止）:
+#   home と darwin は別 CLI 起動で適用するため、home ステップでは `--defer-rev-marker` を付けて
+#   `last-applied-rev` をまだ書かない。home+darwin の両適用が成功した後にだけ `--commit-rev-marker` で
+#   rev を確定する。darwin が失敗すると（`set -e`）確定ステップへ到達せず、マーカーは前回値のまま残るので、
+#   次回起動で再適用して収束する（darwin 未収束のまま「適用済み」と誤記録して skip する drift を防ぐ）。
+#
 # `~/.local/state/dotfiles` は root で mkdir せず、system.activationScripts で `launchctl asuser` +
 # `sudo -u <user>` によりユーザ所有で作成する（launchagents.nix の asuser idiom に倣う）。
 {
@@ -38,13 +44,19 @@ let
     #    root では mkdir せず、ユーザ権限で作る（マーカーのユーザ所有保証）。
     /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/mkdir -p ${lib.escapeShellArg stateDir}
 
-    # ② 適用要否判定・home-manager 適用・要約/マーカー書込みをユーザ権限で実行する。
-    #    非 tty なので要約は pending-summary へ書かれる。darwin は別ステップ（root）で適用するため
-    #    ここでは home のみを対象にする（home-manager を root で走らせない）。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home
+    # ② 適用要否判定・home-manager 適用・要約書込みをユーザ権限で実行する。非 tty なので要約は
+    #    pending-summary へ書かれる。darwin は別ステップ（root）で適用するため、ここでは home のみを対象に
+    #    する（home-manager を root で走らせない）。`--defer-rev-marker` で `last-applied-rev` はまだ書かず、
+    #    home+darwin の両成功後（④）に確定する。これにより darwin 失敗時の rev drift を防ぐ。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home --defer-rev-marker
 
     # ③ darwin 部分は root のまま、sudo を前置しない経路で適用する（既に root daemon のため）。
     DOTFILES_DARWIN_REBUILD_SUDO=0 ${dotfilesBin} switch darwin --no-sudo
+
+    # ④ home+darwin の両適用が成功した後にだけ rev マーカーを確定する。set -e により②③のいずれかが失敗
+    #    すると④へ到達せず、`last-applied-rev` は前回値のまま残る（次回再適用で収束させ、drift を回避）。
+    #    マーカーはユーザ所有で書くため、確定もユーザ権限で行う。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update home --commit-rev-marker
   '';
 in
 {

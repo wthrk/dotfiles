@@ -340,6 +340,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_node_inputs_wiring_change() {
+        // 許可 input（nixpkgs）の rev は動いてよいが、node 間 inputs ワイヤリング改変は rev bump 範囲外。
+        // darwin の inputs.nixpkgs follows を別 node 名へ差し替える（rev は据え置き）。
+        let old = lock_with("aaaa", "dddd");
+        let new = lock_with("bbbb", "dddd").replace(
+            r#""inputs": { "nixpkgs": ["nixpkgs"] }"#,
+            r#""inputs": { "nixpkgs": ["evil"] }"#,
+        );
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(err.to_string().contains("input wiring changed"), "{err}");
+    }
+
+    #[test]
+    fn rejects_node_deletion() {
+        // head で許可 input（nixpkgs）node を削除する。node 集合不一致として fail（追加と同様に削除も未許可）。
+        let old = lock_with("aaaa", "dddd");
+        // nixpkgs node ブロックと root の参照を削り、node 集合を変える。
+        let new = r#"{
+  "nodes": {
+    "darwin": {
+      "inputs": { "nixpkgs": ["nixpkgs"] },
+      "locked": { "owner": "LnL7", "repo": "nix-darwin", "rev": "dddd", "type": "github" },
+      "original": { "owner": "LnL7", "repo": "nix-darwin", "type": "github" }
+    },
+    "root": { "inputs": { "darwin": "darwin" } }
+  },
+  "root": "root",
+  "version": 7
+}"#
+        .to_string();
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(err.to_string().contains("node set changed"), "{err}");
+    }
+
+    #[test]
     fn rejects_no_change_is_fine_but_disallowed_path_fails_even_with_clean_lock() {
         // lock が無変更でも、union に逸脱パスが 1 つあれば fail（途中 commit 混入の検出）。
         let lock = lock_with("aaaa", "dddd");

@@ -127,8 +127,8 @@ pub(crate) enum Severity {
 #[cfg(test)]
 mod tests {
     //! wire 型の TOML 直列化が プラン確定スキーマ（field 名・enum 値・`ref` rename）に一致することを
-    //! バイト固定する。encode/decode 実体は次チャンク adapter だが、serde 契約は domain の不変条件として
-    //! ここで固定する。
+    //! バイト固定する。encode/decode 実体は adapter（`adapters/toml_store.rs`）だが、serde 契約は domain の
+    //! 不変条件としてここで固定する。
 
     use super::*;
 
@@ -206,6 +206,22 @@ category = \"feature\"
 text = \"新機能\"
 ";
         assert_eq!(rendered, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn downgraded_change_kind_serializes_and_round_trips_as_downgraded() -> crate::Result<()> {
+        // 閉集合 enum の `Downgraded` が TOML 値 `downgraded` に一致し、往復で保存されることを固定する。
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrap {
+            change: ChangeKind,
+        }
+        let rendered = toml::to_string(&Wrap {
+            change: ChangeKind::Downgraded,
+        })?;
+        assert_eq!(rendered, "change = \"downgraded\"\n");
+        let parsed: Wrap = toml::from_str(&rendered)?;
+        assert_eq!(parsed.change, ChangeKind::Downgraded);
         Ok(())
     }
 

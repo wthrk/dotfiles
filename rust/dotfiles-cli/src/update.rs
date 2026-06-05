@@ -46,9 +46,11 @@ const HISTORY_SUBDIR: &str = "docs/update-history";
 /// auto 経路の入口。repo pin を読み、前回適用済み rev と異なるときだけ適用し、適用後要約を振り分ける。
 ///
 /// 順序: state dir 確保 → `update.lock` 非ブロッキング取得 → （取得失敗なら skip）→ lock 保持下で pin 再読 →
-/// `last-applied-rev` と比較 → 異なれば `flake update` + switch を実行 → `last-applied-rev` を原子的更新 →
-/// 適用前 rev 起点の catch-up 要約を tty/非 tty で振り分け表示。lock は処理終端で解放する（guard の drop）。
-/// `--dry-run` では実際の適用・状態書込みをせず、判定・表示経路だけを通す（テスト/動作確認用）。
+/// `last-applied-rev`（dotfiles pin）と比較 → 異なれば適用前の推移的 nixpkgs old rev を解決 → `flake update`
+/// と switch を実行 → `last-applied-rev` を原子的更新 → **適用前 nixpkgs rev 起点**の catch-up 要約を tty/
+/// 非 tty で振り分け表示。要約選択は `nixpkgs_old` と突合するため、dedup 用 dotfiles pin ではなく nixpkgs
+/// old rev を起点に渡す（名前空間が異なるため pin SHA を渡すと span が恒久空になる）。lock は処理終端で
+/// 解放する（guard の drop）。`--dry-run` では実際の適用・状態書込みをせず、判定・表示経路だけを通す。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     let config_dir = options.switch.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
@@ -69,6 +71,16 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
 
     // lock 取得後に pin を再読し、判定〜適用〜マーカー更新を単一 lock 区間で連続させる（TOCTOU 回避）。
     let current_pin = read_repo_pin(&config_dir)?;
+
+    // `--commit-rev-marker`: 二段適用（home→darwin）の **両成功後** に rev マーカーだけを確定させる経路。
+    // home/darwin が別 CLI 起動に分かれる daemon ラッパーで、darwin 成功後にここを呼び、適用済み pin を
+    // 記録する。適用・要約は行わず、現在 pin を `last-applied-rev` へ原子的に書くだけ（lock 区間内で行う）。
+    if options.commit_rev_marker {
+        write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
+        println!("適用済み rev を確定しました（rev {current_pin}）");
+        return Ok(());
+    }
+
     let previous_rev = read_last_applied_rev(&state_dir)?;
 
     if previous_rev.as_deref() == Some(current_pin.as_str()) {
@@ -77,9 +89,26 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         return Ok(());
     }
 
+    // 適用「前」に config flake.lock の推移的 nixpkgs rev（old nixpkgs rev）を解決する。これが catch-up
+    // 要約の選択起点になる。`last-applied-rev`（dotfiles pin）は適用要否 dedup 専用であり、要約選択には
+    // 使わない（要約は `nixpkgs_old` と突合するため、dotfiles pin SHA を渡すと名前空間が違い恒久 miss する）。
+    let previous_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
+
     apply(&config_dir, &options, dry_run)?;
-    write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
-    present_summary(&config_dir, &state_dir, previous_rev.as_deref(), dry_run)?;
+
+    // `--defer-rev-marker`: home/darwin を別ステップで適用する daemon ラッパー向けに、rev マーカー書込みを
+    // ここでは行わず、darwin 成功後の `--commit-rev-marker` 起動へ委ねる。これにより darwin 失敗時に rev が
+    // 適用済みと誤記録されて次回 skip し drift する（darwin 未収束のまま放置）問題を防ぐ。defer 時も適用後
+    // 要約は表示する（home 適用は実際に進んでいるため）。
+    if !options.defer_rev_marker {
+        write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
+    }
+    present_summary(
+        &config_dir,
+        &state_dir,
+        Some(previous_nixpkgs_rev.as_str()),
+        dry_run,
+    )?;
     Ok(())
 }
 
@@ -171,6 +200,59 @@ fn parse_repo_pin(lock_text: &str, input_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("nodes.{input_name}.locked.rev not found"))
 }
 
+/// 生成ローカル flake の `flake.lock` から、dotfiles input が引き込む推移的 nixpkgs の locked rev を読む。
+///
+/// 更新履歴の `nixpkgs_old`/`nixpkgs_new` は nixpkgs rev であり、catch-up 要約の選択（`select_entries`）は
+/// この nixpkgs rev と突合する。適用要否 dedup に使う dotfiles repo pin（`read_repo_pin`）とは名前空間が
+/// 異なるため、要約選択の起点は本関数が返す nixpkgs rev を使う。lock 不在・構造不一致・rev 欠落は失敗にする
+/// （誤った起点で要約が崩れないよう、解決不能を黙って空起点へ倒さない）。
+fn read_nixpkgs_rev(config_dir: &Path) -> Result<String> {
+    let lock_path = config_dir.join("flake.lock");
+    let text = fs::read_to_string(&lock_path)
+        .with_context(|| format!("failed to read {}", lock_path.display()))?;
+    parse_nixpkgs_rev(&text, local_flake::INPUT_NAME)
+        .with_context(|| format!("failed to resolve nixpkgs rev from {}", lock_path.display()))
+}
+
+/// `flake.lock` JSON から、`input_name` node が引き込む推移的 nixpkgs node の locked rev を抽出する純粋関数。
+///
+/// 生成ローカル flake では root の input は dotfiles だけで、nixpkgs は dotfiles の推移依存として別 node 名
+/// （例 `nixpkgs`）で現れる。`nodes.<input>.inputs.nixpkgs` は依存先 node 名（文字列、または follows を表す
+/// 配列の先頭文字列）を指すため、それを辿って `nodes.<解決した node 名>.locked.rev` を返す。抽出を実行から
+/// 切り離し、lock 構造の解釈（input 参照の解決）を単体検証できるようにする。
+fn parse_nixpkgs_rev(lock_text: &str, input_name: &str) -> Result<String> {
+    let value: serde_json::Value = serde_json::from_str(lock_text)?;
+    let nodes = value
+        .get("nodes")
+        .ok_or_else(|| anyhow!("flake.lock has no nodes object"))?;
+    // dotfiles node の inputs.nixpkgs が指す node 名を解決する。値は node 名文字列か、follows を表す
+    // 配列（先頭が node 名）のいずれか。どちらも先頭文字列を node 名として扱う。
+    let nixpkgs_ref = nodes
+        .get(input_name)
+        .and_then(|node| node.get("inputs"))
+        .and_then(|inputs| inputs.get("nixpkgs"))
+        .ok_or_else(|| anyhow!("nodes.{input_name}.inputs.nixpkgs not found"))?;
+    let nixpkgs_node_name = match nixpkgs_ref {
+        serde_json::Value::String(name) => name.as_str(),
+        serde_json::Value::Array(items) => items
+            .first()
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("nodes.{input_name}.inputs.nixpkgs is an empty follows path"))?,
+        _ => {
+            return Err(anyhow!(
+                "nodes.{input_name}.inputs.nixpkgs has unexpected shape"
+            ));
+        }
+    };
+    nodes
+        .get(nixpkgs_node_name)
+        .and_then(|node| node.get("locked"))
+        .and_then(|locked| locked.get("rev"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("nodes.{nixpkgs_node_name}.locked.rev not found"))
+}
+
 /// `last-applied-rev` を読む（不存在/空なら `None`）。
 fn read_last_applied_rev(state_dir: &Path) -> Result<Option<String>> {
     let path = state_dir.join(LAST_APPLIED_REV);
@@ -209,24 +291,26 @@ fn write_last_applied_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<
 
 /// 適用後の要約を catch-up 集約し、tty なら stdout、非 tty なら `pending-summary` へ振り分ける。
 ///
-/// `previous_rev` を catch-up 区間の起点（その rev を適用前状態とする）に使い、複数 bump を跨いだ適用を
-/// アプリ単位で集約した重要度連動表示にする（描画と集約は `update_history` の show 経路を再利用）。stdout が
-/// tty なら起動元端末へ直接出力、非 tty（background daemon）なら `pending-summary` へ**追記**して次回シェルで
-/// 1 回だけ消費させる（rev 単位の未表示分を失わないため上書きしない）。要約は `last-run.log` へも残す。
-/// `--dry-run` では `pending-summary`/`last-run.log` へ書かず、tty 経路は stdout 表示のみ行う。
+/// `nixpkgs_from_rev` を catch-up 区間の起点（その nixpkgs rev を適用前状態とする）に使い、複数 bump を
+/// 跨いだ適用をアプリ単位で集約した重要度連動表示にする（描画と集約は `update_history` の show 経路を
+/// 再利用）。起点は dotfiles repo pin ではなく **nixpkgs rev** である（要約選択は `nixpkgs_old` と突合する
+/// ため）。stdout が tty なら起動元端末へ直接出力、非 tty（background daemon）なら `pending-summary` へ
+/// **追記**して次回シェルで 1 回だけ消費させる（rev 単位の未表示分を失わないため上書きしない）。要約は
+/// `last-run.log` へも残す。`--dry-run` では `pending-summary`/`last-run.log` へ書かず、tty 経路は stdout
+/// 表示のみ行う。
 fn present_summary(
     config_dir: &Path,
     state_dir: &Path,
-    previous_rev: Option<&str>,
+    nixpkgs_from_rev: Option<&str>,
     dry_run: bool,
 ) -> Result<()> {
     let source = config_dir.join(HISTORY_SUBDIR);
 
     if std::io::stdout().is_terminal() {
         // tty: 起動元端末へ直接表示。stdout を sink にして show 描画を再利用する。
-        update_history::render_applied_summary(&source, previous_rev, std::io::stdout())?;
+        update_history::render_applied_summary(&source, nixpkgs_from_rev, std::io::stdout())?;
         if !dry_run {
-            append_last_run_log(state_dir, config_dir, previous_rev)?;
+            append_last_run_log(state_dir, config_dir, nixpkgs_from_rev)?;
         }
         return Ok(());
     }
@@ -235,22 +319,23 @@ fn present_summary(
     if dry_run {
         // dry-run でもファイル契約を観測できるよう、捕捉バッファへ描画して破棄する（副作用なし）。
         let mut buffer = Vec::new();
-        update_history::render_applied_summary(&source, previous_rev, &mut buffer)?;
+        update_history::render_applied_summary(&source, nixpkgs_from_rev, &mut buffer)?;
         return Ok(());
     }
-    append_pending_summary(state_dir, &source, previous_rev)?;
-    append_last_run_log(state_dir, config_dir, previous_rev)?;
+    append_pending_summary(state_dir, &source, nixpkgs_from_rev)?;
+    append_last_run_log(state_dir, config_dir, nixpkgs_from_rev)?;
     Ok(())
 }
 
 /// `pending-summary` へ適用要約ブロックを追記する（上書きしない）。
 ///
 /// 非 tty 適用ごとに 1 ブロックを末尾へ足す。daemon が連続適用しても未表示 rev を失わないよう追記で運用し、
-/// 消費（表示と削除）は次チャンクの zsh フックが原子的 rename で 1 回だけ行うファイル契約とする。
+/// 消費（表示と削除）は zsh フック（`config/zsh/auto-update.zsh`）が原子的 rename で 1 回だけ行うファイル
+/// 契約とする。
 fn append_pending_summary(
     state_dir: &Path,
     source: &Path,
-    previous_rev: Option<&str>,
+    nixpkgs_from_rev: Option<&str>,
 ) -> Result<()> {
     let path = state_dir.join(PENDING_SUMMARY);
     let file = fs::OpenOptions::new()
@@ -258,7 +343,7 @@ fn append_pending_summary(
         .append(true)
         .open(&path)
         .with_context(|| format!("failed to open {}", path.display()))?;
-    update_history::render_applied_summary(source, previous_rev, &file)?;
+    update_history::render_applied_summary(source, nixpkgs_from_rev, &file)?;
     Ok(())
 }
 
@@ -268,13 +353,13 @@ fn append_pending_summary(
 fn append_last_run_log(
     state_dir: &Path,
     config_dir: &Path,
-    previous_rev: Option<&str>,
+    nixpkgs_from_rev: Option<&str>,
 ) -> Result<()> {
     let path = state_dir.join(LAST_RUN_LOG);
     let source = config_dir.join(HISTORY_SUBDIR);
     let file =
         fs::File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
-    update_history::render_applied_summary(&source, previous_rev, &file)?;
+    update_history::render_applied_summary(&source, nixpkgs_from_rev, &file)?;
     Ok(())
 }
 
@@ -331,6 +416,17 @@ pub(crate) struct UpdateOptions {
     /// dotfiles input だけでなくローカル flake の全入力を最新解決で更新する。
     #[arg(long)]
     full: bool,
+    /// 適用後に `last-applied-rev` を書かず、rev マーカー確定を後続の `--commit-rev-marker` へ委ねる。
+    ///
+    /// home/darwin を別ステップで適用する daemon ラッパー向け。home 適用ステップでこれを指定し、darwin 成功
+    /// 後に `--commit-rev-marker` で rev を確定することで、darwin 失敗時の rev drift（未収束のまま skip）を防ぐ。
+    #[arg(long, conflicts_with = "commit_rev_marker")]
+    defer_rev_marker: bool,
+    /// 適用・要約をせず、現在 pin を `last-applied-rev` へ確定書込みするだけの経路。
+    ///
+    /// `--defer-rev-marker` で適用した home に続き darwin が成功した後、ラッパーがこれを呼んで rev を確定する。
+    #[arg(long, conflicts_with = "defer_rev_marker")]
+    commit_rev_marker: bool,
 }
 
 #[cfg(test)]
@@ -343,8 +439,9 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        LOCK_FILE, UpdateLock, parse_repo_pin, read_last_applied_rev, resolve_state_dir,
-        update_args, write_last_applied_rev,
+        LOCK_FILE, PENDING_SUMMARY, UpdateLock, append_pending_summary, parse_nixpkgs_rev,
+        parse_repo_pin, present_summary, read_last_applied_rev, resolve_state_dir, update_args,
+        write_last_applied_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -483,6 +580,187 @@ mod tests {
         assert!(lock.is_some());
         // dry-run は実ロックファイルを作らない。
         assert!(!dir.join(LOCK_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// 生成ローカル flake の lock テキスト（root input は dotfiles のみ、nixpkgs は dotfiles の推移依存）。
+    /// dotfiles pin SHA と nixpkgs rev を**別値**にして、要約選択が pin ではなく nixpkgs rev を使うことを
+    /// 検証できるようにする。
+    fn local_flake_lock(dotfiles_pin: &str, nixpkgs_rev: &str, follows_array: bool) -> String {
+        let nixpkgs_ref = if follows_array {
+            r#"["nixpkgs"]"#.to_string()
+        } else {
+            r#""nixpkgs""#.to_string()
+        };
+        format!(
+            r#"{{
+              "nodes": {{
+                "dotfiles": {{
+                  "inputs": {{ "nixpkgs": {nixpkgs_ref} }},
+                  "locked": {{ "rev": "{dotfiles_pin}", "type": "github" }}
+                }},
+                "nixpkgs": {{
+                  "locked": {{ "rev": "{nixpkgs_rev}", "type": "github" }}
+                }},
+                "root": {{ "inputs": {{ "dotfiles": "dotfiles" }} }}
+              }},
+              "root": "root",
+              "version": 7
+            }}"#
+        )
+    }
+
+    #[test]
+    fn parse_nixpkgs_rev_follows_transitive_node_not_dotfiles_pin() -> crate::Result<()> {
+        // 重大1 回帰: dotfiles pin（dedup 用）と nixpkgs rev（要約選択用）は別名前空間。
+        // 要約選択へ pin を渡すと nixpkgs_old と恒久不一致になるため、推移的 nixpkgs rev を解決する。
+        let lock = local_flake_lock("dotfilespin111", "nixpkgsrev999", false);
+        // pin と nixpkgs rev を取り違えないこと。
+        assert_eq!(parse_repo_pin(&lock, "dotfiles")?, "dotfilespin111");
+        assert_eq!(parse_nixpkgs_rev(&lock, "dotfiles")?, "nixpkgsrev999");
+        assert_ne!(
+            parse_repo_pin(&lock, "dotfiles")?,
+            parse_nixpkgs_rev(&lock, "dotfiles")?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_nixpkgs_rev_resolves_follows_array_reference() -> crate::Result<()> {
+        // inputs.nixpkgs が follows を表す配列（先頭が node 名）でも node を解決できる。
+        let lock = local_flake_lock("pinAAA", "revBBB", true);
+        assert_eq!(parse_nixpkgs_rev(&lock, "dotfiles")?, "revBBB");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_nixpkgs_rev_fails_when_input_wiring_missing() {
+        // dotfiles node に inputs.nixpkgs が無ければ要約起点を誤らないよう失敗にする。
+        let lock = r#"{ "nodes": { "dotfiles": { "locked": { "rev": "x" } } }, "root": "root" }"#;
+        assert!(parse_nixpkgs_rev(lock, "dotfiles").is_err());
+    }
+
+    /// テスト用に `<dir>/docs/update-history/2026-06.toml` を書く。各エントリは `nixpkgs_old -> nixpkgs_new`
+    /// のチェーンで、宣言アプリ 1 件を持つ（show 既定の宣言フィルタを通す）。
+    fn write_history(config_dir: &Path, chain: &[(&str, &str)]) {
+        let history_dir = config_dir.join(super::HISTORY_SUBDIR);
+        std::fs::create_dir_all(&history_dir).expect("create history dir");
+        let mut toml = String::new();
+        for (old, new) in chain {
+            toml.push_str(&format!(
+                "[[update]]\n\
+                 at = \"2026-06-05T00:00:00Z\"\n\
+                 nixpkgs_old = \"{old}\"\n\
+                 nixpkgs_new = \"{new}\"\n\
+                 reference = \"darwinConfigurations.ci\"\n\
+                 severity = \"minor\"\n\
+                 overall = \"1アプリ更新\"\n\
+                 \n\
+                 [[update.package]]\n\
+                 name = \"neovim-{old}\"\n\
+                 old = \"1.0\"\n\
+                 new = \"1.1\"\n\
+                 change = \"upgraded\"\n\
+                 declared = true\n\
+                 \n\
+                 [[update.package.change_item]]\n\
+                 category = \"feature\"\n\
+                 text = \"新機能 {old}\"\n\n"
+            ));
+        }
+        std::fs::write(history_dir.join("2026-06.toml"), toml).expect("write history toml");
+    }
+
+    #[test]
+    fn present_summary_selects_span_by_nixpkgs_rev_not_dotfiles_pin() -> crate::Result<()> {
+        // 重大1 を踏むケース: dotfiles pin と nixpkgs rev が別値でも、nixpkgs old rev を起点に渡せば
+        // catch-up span が正しく選ばれて要約が空にならない。pin SHA を起点にしていた旧実装では恒久空だった。
+        let dir = temp_dir("present-nixpkgs");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create state+config dir");
+        // 適用前 nixpkgs rev = "nA"。チェーンは nA->nB, nB->nC（2 bump catch-up）。
+        write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
+
+        // 非 tty 経路（CI/テストは非 tty）で pending-summary へ追記される。nixpkgs old rev "nA" を渡す。
+        present_summary(&dir, &dir, Some("nA"), false)?;
+        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        // 起点 "nA" 以降の 2 エントリ（2 アプリ）が集約表示される。空でないこと（バグ修正の核）。
+        assert!(
+            !pending.trim().is_empty(),
+            "summary must not be empty: {pending}"
+        );
+        assert!(pending.contains("neovim-nA"), "{pending}");
+        assert!(pending.contains("neovim-nB"), "{pending}");
+
+        // 逆に dotfiles pin（nixpkgs_old に無い値）を起点にすると span は空＝旧バグ挙動を再現できる。
+        let dir2 = temp_dir("present-pin");
+        let _ = std::fs::remove_dir_all(&dir2);
+        std::fs::create_dir_all(&dir2).expect("create dir2");
+        write_history(&dir2, &[("nA", "nB"), ("nB", "nC")]);
+        present_summary(&dir2, &dir2, Some("dotfilespin-not-a-nixpkgs-rev"), false)?;
+        let empty = std::fs::read_to_string(dir2.join(PENDING_SUMMARY)).unwrap_or_default();
+        // 起点が nixpkgs_old に一致しないと span 空（宣言アプリ行が出ない）。
+        assert!(
+            !empty.contains("neovim-"),
+            "pin-as-rev should select empty span: {empty}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+        Ok(())
+    }
+
+    #[test]
+    fn append_pending_summary_accumulates_rev_blocks() -> crate::Result<()> {
+        // 非 tty 連続適用で pending-summary が rev 単位に**追記**累積し、未表示 rev を失わないことを実ファイルで固定。
+        let dir = temp_dir("pending-accumulate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        write_history(&dir, &[("r1", "r2"), ("r2", "r3")]);
+        let source = dir.join(super::HISTORY_SUBDIR);
+
+        // 1 回目: r1 起点（r1->r2, r2->r3 の 2 ブロック相当を 1 show として追記）。
+        append_pending_summary(&dir, &source, Some("r1"))?;
+        let after_first = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read");
+        assert!(after_first.contains("neovim-r1"));
+
+        // 2 回目: r2 起点を追記。上書きされず先頭ブロックが残る（累積）。
+        append_pending_summary(&dir, &source, Some("r2"))?;
+        let after_second = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read");
+        assert!(
+            after_second.contains("neovim-r1"),
+            "first block must remain: {after_second}"
+        );
+        assert!(
+            after_second.contains("neovim-r2"),
+            "second block appended: {after_second}"
+        );
+        assert!(
+            after_second.len() > after_first.len(),
+            "append must grow file, not overwrite"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn write_last_applied_rev_defer_then_commit_round_trips() -> crate::Result<()> {
+        // 付随（drift 防止）: defer 経路では rev を書かず、commit で確定する分離をマーカー I/O として固定する。
+        // run() の home/darwin 二段は実適用を要するため、ここでは「適用後 marker を遅延し後で確定する」契約の
+        // 核（write/read の前後関係）を直接 assert する。
+        let dir = temp_dir("defer-commit");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        // defer: marker 未書込み（None のまま）。
+        assert_eq!(read_last_applied_rev(&dir)?, None);
+        // commit: 現在 pin を確定。
+        write_last_applied_rev(&dir, "pin-after-darwin", false)?;
+        assert_eq!(
+            read_last_applied_rev(&dir)?,
+            Some("pin-after-darwin".to_string())
+        );
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

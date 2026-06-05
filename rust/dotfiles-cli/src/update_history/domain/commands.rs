@@ -15,9 +15,10 @@ pub(crate) struct RecordCommand {
     pub(crate) old_closure: String,
     /// diff 先の nix closure store path。
     pub(crate) new_closure: String,
-    /// brew tap rev の diff 元（formula/cask 版差分の old rev）。
+    /// brew 版差分の diff 元 rev 座標。現行の file ベース brew adapter は `--brew-diff` を使うため本値は
+    /// 参照されない（port 契約互換のため保持。CI は nixpkgs rev を流用注入する）。
     pub(crate) old_rev: String,
-    /// brew tap rev の diff 先（formula/cask 版差分の new rev）。
+    /// brew 版差分の diff 先 rev 座標。`old_rev` と同様に現行 adapter では未参照。
     pub(crate) new_rev: String,
     /// 記録する bump 前 nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,

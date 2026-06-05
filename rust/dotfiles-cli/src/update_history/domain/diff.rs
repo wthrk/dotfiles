@@ -1,9 +1,9 @@
 //! `nix store diff-closures` 出力テキストを構造化 version 差分へ変換する純粋パーサと、
 //! brew tap rev 版差分の表現型。
 //!
-//! ここに置くのは外部 I/O を持たない純粋な文字列パースとマージだけである。nix プロセス実行、
-//! tap rev からの formula/cask 解決は adapter（次チャンク）の責務であり、本 module は取得済み
-//! テキスト/値を構造へ翻訳する規則だけを domain rule として固定する。
+//! ここに置くのは外部 I/O を持たない純粋な文字列パースとマージだけである。nix プロセス実行
+//! （`adapters/nix.rs`）、tap rev からの formula/cask 版差分読み取り（`adapters/brew.rs`）は adapter の
+//! 責務であり、本 module は取得済みテキスト/値を構造へ翻訳する規則だけを domain rule として固定する。
 
 use super::wire::ChangeKind;
 use crate::Result;
@@ -17,7 +17,7 @@ const ARROW: &str = "→";
 ///
 /// nix=`diff-closures` と brew=tap rev 版差分は同じ version 差分モデルへ統合されるが、出所により
 /// ノート取得先（forge releases / cask homepage）が変わるため、出所だけは型として保持する。
-/// 実取得は次チャンクの adapter が行い、本 module は出所タグ付けまでを担う。
+/// 実取得は adapter（`adapters/nix.rs`・`adapters/brew.rs`）が行い、本 module は出所タグ付けまでを担う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeltaSource {
     /// `nix store diff-closures` 由来。

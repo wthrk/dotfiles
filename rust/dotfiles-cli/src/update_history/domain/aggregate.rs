@@ -311,4 +311,27 @@ mod tests {
         assert_eq!(aggregated[0].new, None);
         assert_eq!(aggregated[0].old.as_deref(), Some("1.0"));
     }
+
+    #[test]
+    fn aggregate_preserves_downgraded_for_single_unspanned_entry() {
+        // 単一区間（跨ぎ無し）で change=Downgraded のパッケージは、その種別をそのまま保持する
+        // （spanned のときだけ Upgraded へ畳むため、単一区間では降格を捨てない）。
+        let entries = [entry(
+            "2026-06-01T00:00:00Z",
+            vec![package(
+                "rolledback",
+                Some("2.0"),
+                Some("1.9"),
+                ChangeKind::Downgraded,
+                vec![change_item(ChangeCategory::Fix, "差し戻し", None)],
+            )],
+        )];
+
+        let aggregated = aggregate(&entries);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].change, ChangeKind::Downgraded);
+        assert_eq!(aggregated[0].old.as_deref(), Some("2.0"));
+        assert_eq!(aggregated[0].new.as_deref(), Some("1.9"));
+    }
 }
