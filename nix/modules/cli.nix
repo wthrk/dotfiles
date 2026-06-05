@@ -88,7 +88,6 @@ in
       yt-dlp
       zsh-completions
       chromedriver
-      silver-searcher
       gnumake
     ]
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
