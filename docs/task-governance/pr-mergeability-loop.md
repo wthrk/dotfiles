@@ -17,7 +17,7 @@
 ゴールは、PR が merge 可能状態であると確認できることとする。少なくとも次を満たす。
 
 - GitHub が PR を merge 可能と示しており、required status / checks / approvals が満たされている。`mergeStateStatus` の値が `CLEAN` の場合、または required gate の充足を別途確認したうえで `HAS_HOOKS` の場合は merge 可能状態として扱う。`UNSTABLE` は required status / checks / approvals が満たされており非必須 status の未通過だけである場合に限り、GitHub 上で merge 可能な状態として扱う。
-- required checks が GitHub の required status check 成功扱いである `success` / `skipped` / `neutral` のいずれかである。
+- required checks は、required status context では `success` 相当、check run conclusion では `success` / `skipped` / `neutral` 相当として扱われる値である。
 - 未解決の review thread がない。
 - AI / Codex / Copilot review が明示的に依頼されている場合、または required review / required check として要求されている場合は、最新 head に対する review が no-issue である。
 - 採用した指摘への修正、採用しない指摘への理由返信、対応済み thread の resolve が完了している。
@@ -70,7 +70,7 @@ PR review comment への採用/不採用返信、対応済み thread の resolve
 
 次の場合は、merge 可能化を完了扱いにせず、保留理由を具体的に報告する。
 
-- required checks が pending / failing / blocked である、または GitHub の required status check 成功扱いである `success` / `skipped` / `neutral` のいずれでもない。
+- required checks が pending / failing / blocked である、または required status context では `success` 相当、check run conclusion では `success` / `skipped` / `neutral` 相当として扱われる値ではない。
 - required review、または明示的に依頼された bot review が未完了である。
 - review thread の resolve 権限が不足している。
 - merge conflict がある。
