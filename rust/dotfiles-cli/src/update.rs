@@ -43,7 +43,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 use clap::Args;
 
-use crate::{Result, local_flake, process::run as run_process, switch, update_history};
+use crate::{
+    Result, local_flake, process::run as run_process, process::run_capture, switch, update_history,
+};
 
 /// state dir 配下のファイル名（いずれもユーザ所有で作る）。
 const LAST_APPLIED_REV: &str = "last-applied-rev";
@@ -51,8 +53,17 @@ const PENDING_SUMMARY: &str = "pending-summary";
 const LAST_RUN_LOG: &str = "last-run.log";
 const LOCK_FILE: &str = "update.lock";
 
-/// `docs/update-history` を解決する config-dir 相対のサブディレクトリ。
+/// 適用済み dotfiles flake input source 内の更新履歴ディレクトリ（`<source>/docs/update-history`）。
 const HISTORY_SUBDIR: &str = "docs/update-history";
+
+/// state dir 配下に複製した更新履歴のローカル複製先（`<state-dir>/history`）。
+///
+/// `show` / 適用後要約はこのローカル複製を読む。複製元は適用済み dotfiles flake input の source
+/// （`~/.config/dotfiles` のローカル flake が pin する store path）の `docs/update-history` である。
+/// ローカル `~/.config/dotfiles` 自身には `docs/update-history` が無い（init が作るのは flake.nix/flake.lock
+/// だけ）ため、config dir を直接読むと show が常に空になる。適用時に input source からここへ複製し、
+/// 以降の読取りは offline・決定論でこのローカル複製を参照する。
+const HISTORY_LOCAL_SUBDIR: &str = "history";
 
 /// auto 経路の入口。**先に lock を更新してから** repo pin を読み、前回適用済み rev と異なるときだけ適用する。
 ///
@@ -118,6 +129,16 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // 更新後 pin が前回と異なる → switch を実行する（lock 更新は上で済んでいる）。
     switch::run(options.switch.clone())?;
 
+    // 適用済み dotfiles flake input source の `docs/update-history` を state dir のローカル複製へ取り込む。
+    // `~/.config/dotfiles` 自身には更新履歴が無いため、input source（pin が指す store path）から複製し、
+    // 以降の要約・show をこのローカル複製から offline・決定論で読む。複製失敗（network 無し・解決不能・
+    // read-only source 等）は適用を止めず、既存の複製があればそれを使う graceful degradation にする。
+    // `--dry-run` では複製しない。
+    if let Err(error) = sync_history(&config_dir, &state_dir, dry_run) {
+        // best-effort: 履歴複製失敗は警告に留め、switch/適用は続行する（履歴は補助情報）。
+        eprintln!("更新履歴の複製に失敗しました（既存の履歴複製を使用します）: {error}");
+    }
+
     // `--defer-rev-marker`: home/darwin を別ステップで適用する daemon ラッパー向けに、rev マーカー書込みを
     // ここでは行わず、darwin 成功後の `--commit-rev-marker` 起動へ委ねる。これにより darwin 失敗時に rev が
     // 適用済みと誤記録されて次回 skip し drift する（darwin 未収束のまま放置）問題を防ぐ。defer 時も適用後
@@ -125,12 +146,7 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     if !options.defer_rev_marker {
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
     }
-    present_summary(
-        &config_dir,
-        &state_dir,
-        Some(previous_nixpkgs_rev.as_str()),
-        dry_run,
-    )?;
+    present_summary(&state_dir, Some(previous_nixpkgs_rev.as_str()), dry_run)?;
     Ok(())
 }
 
@@ -167,6 +183,99 @@ fn update_args(config_dir: &Path, full: bool) -> Vec<OsString> {
     args.push(OsString::from("--flake"));
     args.push(config_dir.as_os_str().to_os_string());
     args
+}
+
+/// 適用済み dotfiles flake input source の `docs/update-history` を state dir のローカル複製へ取り込む。
+///
+/// `~/.config/dotfiles` のローカル flake は `flake.nix`/`flake.lock` だけを持ち更新履歴を含まないため、
+/// 履歴は **適用済み dotfiles input が指す store path**（`flake.lock` の dotfiles input の locked rev に対応
+/// する source）から複製する。複製先は `<state-dir>/history` で、以降の show/要約はこのローカル複製を
+/// offline・決定論で読む。複製は「source path 解決 → `<source>/docs/update-history` を `<state-dir>/history`
+/// へコピー」の 2 段で、source path 解決（`nix flake metadata`）や copy が失敗しても record/適用は止めず、
+/// 既存複製があればそれを使う graceful degradation にする（履歴は補助情報であり適用の前提ではない）。
+/// `--dry-run` では複製しない。
+fn sync_history(config_dir: &Path, state_dir: &Path, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    // source path を解決できない（network 無し・metadata 失敗）場合は既存複製を温存して終了する。
+    let Some(source_root) = resolve_input_source(config_dir) else {
+        return Ok(());
+    };
+    let source_history = source_root.join(HISTORY_SUBDIR);
+    if !source_history.is_dir() {
+        // source 側に履歴 dir が無ければ複製対象が無い。既存複製を温存する。
+        return Ok(());
+    }
+    let dest = state_dir.join(HISTORY_LOCAL_SUBDIR);
+    copy_history_dir(&source_history, &dest)
+}
+
+/// 適用済み dotfiles flake input の source store path を解決する（解決不能なら `None`）。
+///
+/// `nix flake metadata <config-dir> --json` の `locks.nodes.<dotfiles>.locked` が指す store path を返す。
+/// network 無し・nix 不在・metadata 失敗・JSON 解析失敗はいずれも `None` へ縮退し、呼び出し側で既存複製の
+/// 温存に倒す（履歴複製は best-effort で、解決失敗を致命にしない）。
+fn resolve_input_source(config_dir: &Path) -> Option<PathBuf> {
+    let args = [
+        OsString::from("flake"),
+        OsString::from("metadata"),
+        config_dir.as_os_str().to_os_string(),
+        OsString::from("--json"),
+    ];
+    let json = run_capture("nix", args).ok()?;
+    parse_input_source_path(&json, local_flake::INPUT_NAME).map(PathBuf::from)
+}
+
+/// `nix flake metadata --json` 出力から指定 input の locked source store path を抽出する純粋関数。
+///
+/// `locks.nodes.<input>.locked.path`（path 系 source）または、store path を直接持つ `locked` 表現から
+/// store path を取り出す。抽出を実行から切り離し、metadata JSON 構造の解釈を単体検証できるようにする。
+/// path が無い形式（解決前など）は `None` を返す。
+fn parse_input_source_path(metadata_json: &str, input_name: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(metadata_json).ok()?;
+    let locked = value
+        .get("locks")
+        .and_then(|locks| locks.get("nodes"))
+        .and_then(|nodes| nodes.get(input_name))
+        .and_then(|node| node.get("locked"))?;
+    locked
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// `<source>/docs/update-history` のディレクトリ内 `*.toml` を `<state-dir>/history` へ複製する。
+///
+/// 複製先を作り直し（既存複製を新 source の内容で置き換え）、source 直下の通常ファイルだけを名前ごとコピー
+/// する（サブディレクトリは履歴 layout 上想定しないため対象外）。store path 由来 source は read-only な
+/// ため、複製先はユーザ所有 state dir に置いて以降の読取りを保証する。コピー失敗は呼び出し側が best-effort
+/// として扱えるよう `Err` を返すが、致命にしないのは呼び出し側の責務である。
+fn copy_history_dir(source_history: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest)
+        .with_context(|| format!("failed to create history dir {}", dest.display()))?;
+    for entry in fs::read_dir(source_history)
+        .with_context(|| format!("failed to read {}", source_history.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        fs::copy(&from, &to)
+            .with_context(|| format!("failed to copy {} to {}", from.display(), to.display()))?;
+    }
+    Ok(())
+}
+
+/// 更新履歴のローカル複製ディレクトリ（`<state-dir>/history`）を返す。
+///
+/// `update-history show`（`--source` 未指定時）が読む既定 source。適用時に dotfiles input source から
+/// この dir へ複製された履歴を offline・決定論で読むための共有解決点であり、`update` 経路と `update-history`
+/// 経路で同一の state dir 解決規則（XDG/HOME）を使う。
+pub(crate) fn history_local_dir() -> Result<PathBuf> {
+    Ok(state_dir()?.join(HISTORY_LOCAL_SUBDIR))
 }
 
 /// ユーザ所有の state dir（`$XDG_STATE_HOME/dotfiles`、未設定なら `$HOME/.local/state/dotfiles`）を返す。
@@ -323,19 +432,16 @@ fn write_last_applied_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<
 /// **追記**して次回シェルで 1 回だけ消費させる（rev 単位の未表示分を失わないため上書きしない）。要約は
 /// `last-run.log` へも残す。`--dry-run` では `pending-summary`/`last-run.log` へ書かず、tty 経路は stdout
 /// 表示のみ行う。
-fn present_summary(
-    config_dir: &Path,
-    state_dir: &Path,
-    nixpkgs_from_rev: Option<&str>,
-    dry_run: bool,
-) -> Result<()> {
-    let source = config_dir.join(HISTORY_SUBDIR);
+fn present_summary(state_dir: &Path, nixpkgs_from_rev: Option<&str>, dry_run: bool) -> Result<()> {
+    // 履歴は state dir のローカル複製（`<state-dir>/history`）から読む。`~/.config/dotfiles` には更新履歴が
+    // 無く、適用時に input source から複製済みのこの dir を offline・決定論で参照する。
+    let source = state_dir.join(HISTORY_LOCAL_SUBDIR);
 
     if std::io::stdout().is_terminal() {
         // tty: 起動元端末へ直接表示。stdout を sink にして show 描画を再利用する。
         update_history::render_applied_summary(&source, nixpkgs_from_rev, std::io::stdout())?;
         if !dry_run {
-            append_last_run_log(state_dir, config_dir, nixpkgs_from_rev)?;
+            append_last_run_log(state_dir, nixpkgs_from_rev)?;
         }
         return Ok(());
     }
@@ -348,7 +454,7 @@ fn present_summary(
         return Ok(());
     }
     append_pending_summary(state_dir, &source, nixpkgs_from_rev)?;
-    append_last_run_log(state_dir, config_dir, nixpkgs_from_rev)?;
+    append_last_run_log(state_dir, nixpkgs_from_rev)?;
     Ok(())
 }
 
@@ -374,14 +480,11 @@ fn append_pending_summary(
 
 /// `last-run.log` へ適用要約を残す（適用経路の出力記録）。
 ///
-/// 適用の人間可読な要約を上書き保存し、直近 1 回分の適用内容を後から確認できるようにする。
-fn append_last_run_log(
-    state_dir: &Path,
-    config_dir: &Path,
-    nixpkgs_from_rev: Option<&str>,
-) -> Result<()> {
+/// 適用の人間可読な要約を上書き保存し、直近 1 回分の適用内容を後から確認できるようにする。履歴 source は
+/// state dir のローカル複製（`<state-dir>/history`）を読む。
+fn append_last_run_log(state_dir: &Path, nixpkgs_from_rev: Option<&str>) -> Result<()> {
     let path = state_dir.join(LAST_RUN_LOG);
-    let source = config_dir.join(HISTORY_SUBDIR);
+    let source = state_dir.join(HISTORY_LOCAL_SUBDIR);
     let file =
         fs::File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
     update_history::render_applied_summary(&source, nixpkgs_from_rev, &file)?;
@@ -465,8 +568,9 @@ mod tests {
 
     use super::{
         LAST_RUN_LOG, LOCK_FILE, PENDING_SUMMARY, UpdateLock, append_pending_summary,
-        parse_nixpkgs_rev, parse_repo_pin, present_summary, read_last_applied_rev,
-        resolve_state_dir, should_switch, update_args, write_last_applied_rev,
+        copy_history_dir, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
+        present_summary, read_last_applied_rev, resolve_state_dir, should_switch, update_args,
+        write_last_applied_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -687,10 +791,13 @@ mod tests {
         assert!(parse_nixpkgs_rev(lock, "dotfiles").is_err());
     }
 
-    /// テスト用に `<dir>/docs/update-history/2026-06.toml` を書く。各エントリは `nixpkgs_old -> nixpkgs_new`
-    /// のチェーンで、宣言アプリ 1 件を持つ（show 既定の宣言フィルタを通す）。
-    fn write_history(config_dir: &Path, chain: &[(&str, &str)]) {
-        let history_dir = config_dir.join(super::HISTORY_SUBDIR);
+    /// テスト用に state dir のローカル履歴複製 `<state-dir>/history/2026-06.toml` を書く。
+    ///
+    /// `present_summary` は config dir の `docs/update-history` ではなく state dir のローカル複製
+    /// （[`super::HISTORY_LOCAL_SUBDIR`]）を読むため、テストもそこへ履歴を置く。各エントリは
+    /// `nixpkgs_old -> nixpkgs_new` のチェーンで、宣言アプリ 1 件を持つ（show 既定の宣言フィルタを通す）。
+    fn write_history(state_dir: &Path, chain: &[(&str, &str)]) {
+        let history_dir = state_dir.join(super::HISTORY_LOCAL_SUBDIR);
         std::fs::create_dir_all(&history_dir).expect("create history dir");
         let mut toml = String::new();
         for (old, new) in chain {
@@ -729,7 +836,7 @@ mod tests {
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
         // 非 tty 経路（CI/テストは非 tty）で pending-summary へ追記される。nixpkgs old rev "nA" を渡す。
-        present_summary(&dir, &dir, Some("nA"), false)?;
+        present_summary(&dir, Some("nA"), false)?;
         let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
         // 起点 "nA" 以降の 2 エントリ（2 アプリ）が集約表示される。空でないこと（バグ修正の核）。
         assert!(
@@ -744,7 +851,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
         std::fs::create_dir_all(&dir2).expect("create dir2");
         write_history(&dir2, &[("nA", "nB"), ("nB", "nC")]);
-        present_summary(&dir2, &dir2, Some("dotfilespin-not-a-nixpkgs-rev"), false)?;
+        present_summary(&dir2, Some("dotfilespin-not-a-nixpkgs-rev"), false)?;
         let empty = std::fs::read_to_string(dir2.join(PENDING_SUMMARY)).unwrap_or_default();
         // 起点が nixpkgs_old に一致しないと span 空（宣言アプリ行が出ない）。
         assert!(
@@ -768,7 +875,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create state+config dir");
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
-        present_summary(&dir, &dir, Some("nA"), true)?;
+        present_summary(&dir, Some("nA"), true)?;
         assert!(
             !dir.join(PENDING_SUMMARY).exists(),
             "dry-run must not write pending-summary"
@@ -789,7 +896,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
         write_history(&dir, &[("r1", "r2"), ("r2", "r3")]);
-        let source = dir.join(super::HISTORY_SUBDIR);
+        let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
 
         // 1 回目: r1 起点（r1->r2, r2->r3 の 2 ブロック相当を 1 show として追記）。
         append_pending_summary(&dir, &source, Some("r1"))?;
@@ -833,6 +940,65 @@ mod tests {
             Some("pin-after-darwin".to_string())
         );
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_input_source_path_reads_dotfiles_locked_path() {
+        // N3 退行固定: `nix flake metadata --json` の locks.nodes.dotfiles.locked.path（store path）を解決する。
+        // 履歴複製元はこの input source path（適用済み pin の source）であり、config dir 直下ではない。
+        let metadata = r#"{
+          "locks": {
+            "nodes": {
+              "dotfiles": {
+                "locked": { "path": "/nix/store/abc-dotfiles-source", "type": "path" }
+              },
+              "root": { "inputs": { "dotfiles": "dotfiles" } }
+            },
+            "root": "root",
+            "version": 7
+          },
+          "path": "/nix/store/zzz-config-flake"
+        }"#;
+        assert_eq!(
+            parse_input_source_path(metadata, "dotfiles").as_deref(),
+            Some("/nix/store/abc-dotfiles-source")
+        );
+        // path を持たない形式（解決前 / 別 source 種別）は None へ縮退する（既存複製温存に倒す）。
+        let no_path = r#"{ "locks": { "nodes": { "dotfiles": { "locked": { "rev": "x" } } } } }"#;
+        assert!(parse_input_source_path(no_path, "dotfiles").is_none());
+        // 壊れた JSON も None。
+        assert!(parse_input_source_path("not json", "dotfiles").is_none());
+    }
+
+    #[test]
+    fn copy_history_dir_replicates_toml_files_to_local_dest() -> crate::Result<()> {
+        // N3 退行固定: input source の docs/update-history 配下の通常ファイルを state dir のローカル複製へ
+        // コピーする。複製先は読取り対象（show/要約）になる。
+        let base = temp_dir("copy-history");
+        let _ = std::fs::remove_dir_all(&base);
+        let source_history = base.join("src-docs-history");
+        std::fs::create_dir_all(&source_history).expect("create source history");
+        std::fs::write(source_history.join("2026-05.toml"), "a = 1\n").expect("write src toml1");
+        std::fs::write(source_history.join("2026-06.toml"), "b = 2\n").expect("write src toml2");
+        // サブディレクトリは複製対象外（履歴 layout 上想定しない）。
+        std::fs::create_dir_all(source_history.join("nested")).expect("create nested");
+
+        let dest = base.join("history");
+        copy_history_dir(&source_history, &dest)?;
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("2026-05.toml")).expect("read dest toml1"),
+            "a = 1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("2026-06.toml")).expect("read dest toml2"),
+            "b = 2\n"
+        );
+        // サブディレクトリはコピーされない。
+        assert!(!dest.join("nested").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 }

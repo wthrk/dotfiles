@@ -169,6 +169,13 @@ fn auth_config(token: &str) -> String {
 }
 
 /// JSON 出力スキーマ強制の `response_format`（versioned。category enum と必須フィールドを固定）。
+///
+/// **strict structured output の必須要件**: GitHub Models（OpenAI 互換）の `strict: true` は、`object` の
+/// 全 `properties` を `required` に列挙することを要求し、`required` に無い property があるとスキーマ自体を
+/// API が拒否して抽出が丸ごと失敗する。`ref`（ノート内の任意 URL）は LLM が「無い」を返せる必要があるが、
+/// strict では単純に省略できないため、`ref` を **nullable**（`type: ["string","null"]`）にしつつ
+/// `required` に含める。これにより LLM は ref 無しを JSON `null` として返せ、パース側（[`ExtractedItem`]）は
+/// `Option<String>` の deserialize で `null` を `None` として受ける。category/text は常に存在する必須値。
 fn response_format_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "json_schema",
@@ -185,7 +192,8 @@ fn response_format_schema() -> serde_json::Value {
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
-                            "required": ["category", "text"],
+                            // strict: 全 property を required に列挙する。ref は nullable で「無し」を null 表現。
+                            "required": ["category", "text", "ref"],
                             "properties": {
                                 "category": {
                                     "type": "string",
@@ -195,7 +203,9 @@ fn response_format_schema() -> serde_json::Value {
                                     ]
                                 },
                                 "text": { "type": "string" },
-                                "ref": { "type": "string" }
+                                // optional な ref は strict 下で required に含めるため nullable にする
+                                // （LLM は ref 無しを null で返し、パース側で null→None を許容する）。
+                                "ref": { "type": ["string", "null"] }
                             }
                         }
                     }
@@ -304,5 +314,49 @@ mod tests {
         assert_eq!(list.len(), 6);
         assert!(list.iter().any(|v| v == "security"));
         assert!(list.iter().any(|v| v == "default-change"));
+    }
+
+    #[test]
+    fn strict_schema_marks_all_properties_required_and_ref_nullable() {
+        // N1 退行固定: strict structured output は item の全 property を required に列挙することを要求する。
+        // ref を required から外すと API がスキーマを拒否し抽出が丸ごと失敗するため、ref は nullable
+        // （type=["string","null"]）にしつつ required へ含める。
+        let schema = response_format_schema();
+        assert_eq!(schema["json_schema"]["strict"], true);
+        let item = &schema["json_schema"]["schema"]["properties"]["changes"]["items"];
+        // 全 property（category/text/ref）が required に列挙されていること。
+        let required: Vec<&str> = item["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(required.contains(&"category"), "{required:?}");
+        assert!(required.contains(&"text"), "{required:?}");
+        assert!(
+            required.contains(&"ref"),
+            "strict は ref も required に含める必要がある: {required:?}"
+        );
+        // ref は nullable（["string","null"]）であること。
+        let ref_type = item["properties"]["ref"]["type"]
+            .as_array()
+            .expect("ref type array");
+        assert!(ref_type.iter().any(|v| v == "string"), "{ref_type:?}");
+        assert!(
+            ref_type.iter().any(|v| v == "null"),
+            "ref は null を返せる必要がある: {ref_type:?}"
+        );
+    }
+
+    #[test]
+    fn null_ref_parses_as_none() {
+        // strict 下で LLM が ref 無しを JSON null で返したとき、ref_url が None になる（null→None 許容）。
+        let content = serde_json::json!({
+            "changes": [ { "category": "fix", "text": "バグ修正", "ref": null } ]
+        })
+        .to_string();
+        let items = GithubModelsExtractAdapter::parse_response(&completion_with_content(&content));
+        assert_eq!(items.len(), 1);
+        assert!(items[0].ref_url.is_none(), "null ref は None になる");
     }
 }

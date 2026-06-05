@@ -38,8 +38,15 @@ where
 
     let mut materials = Vec::with_capacity(deltas.len());
     for delta in deltas {
-        // 各アプリの `(old, new]` 生ノートを取得し、取得できたものだけ LLM 抽出へ回す。
-        let raw = notes.fetch_release_notes(&delta.name, delta.old.clone(), delta.new.clone())?;
+        // 各アプリの `(old, new]` 生ノートを、差分の出所（nix/brew）に応じた取得先から取得し、取得できた
+        // ものだけ LLM 抽出へ回す。出所を渡すのは、nix と brew でノート取得先 base / 解決規則が異なるためで、
+        // 同一規則で引くと誤った URL（nix package を cask レイアウトで引く等）になるのを防ぐ。
+        let raw = notes.fetch_release_notes(
+            &delta.name,
+            delta.source,
+            delta.old.clone(),
+            delta.new.clone(),
+        )?;
         let (change_items, notes_url) = match raw {
             Some(raw) => {
                 // LLM 出力は信頼境界外。記録前に host/長さ/件数を機械バリデートする。
@@ -112,6 +119,63 @@ mod tests {
         }
     }
 
+    fn brew_delta(name: &str) -> VersionDelta {
+        VersionDelta {
+            name: name.to_string(),
+            old: Some("120".to_string()),
+            new: Some("121".to_string()),
+            change: ChangeKind::Upgraded,
+            source: DeltaSource::BrewTap,
+        }
+    }
+
+    #[test]
+    fn notes_fetch_receives_per_delta_source() -> crate::Result<()> {
+        // N5 退行固定: nix delta には NixClosure、brew delta には BrewTap が NotesPort へ渡る。
+        // これにより adapter は出所別 base（forge / cask レイアウト）で正しい URL を引ける。
+        let mut closure_diff = MockClosureDiffPort::new();
+        closure_diff
+            .expect_diff_closures()
+            .returning(|_, _| Ok(vec![nix_delta("openssl")]));
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .returning(|_, _| Ok(vec![brew_delta("firefox")]));
+
+        let mut notes = MockNotesPort::new();
+        // nix package openssl は NixClosure 出所で引かれる。
+        notes
+            .expect_fetch_release_notes()
+            .withf(|name, source, _, _| name == "openssl" && *source == DeltaSource::NixClosure)
+            .times(1)
+            .returning(|_, _, _, _| Ok(None));
+        // brew cask firefox は BrewTap 出所で引かれる。
+        notes
+            .expect_fetch_release_notes()
+            .withf(|name, source, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
+            .times(1)
+            .returning(|_, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract.expect_extract_change_items().never();
+
+        let mut store = MockHistoryStorePort::new();
+        store
+            .expect_append_entry()
+            .times(1)
+            .withf(|entry| entry.packages.len() == 2)
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &closure_diff,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+        )
+    }
+
     #[test]
     fn record_extracts_sanitizes_and_appends_one_entry() -> crate::Result<()> {
         let mut closure_diff = MockClosureDiffPort::new();
@@ -128,8 +192,10 @@ mod tests {
         let mut notes = MockNotesPort::new();
         notes
             .expect_fetch_release_notes()
+            // nix delta なので source = NixClosure が渡ることを withf で固定する（N5 振り分け）。
+            .withf(|_, source, _, _| *source == DeltaSource::NixClosure)
             .times(1)
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(Some(RawReleaseNotes {
                     text: "CVE fix".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
@@ -202,7 +268,7 @@ mod tests {
         notes
             .expect_fetch_release_notes()
             .times(1)
-            .returning(|_, _, _| Ok(None));
+            .returning(|_, _, _, _| Ok(None));
         let mut extract = MockChangeExtractPort::new();
         extract.expect_extract_change_items().never();
 

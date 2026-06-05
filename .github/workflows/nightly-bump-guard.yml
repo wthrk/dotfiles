@@ -19,6 +19,14 @@ name: nightly bump guard
 # であることを、base..head の **全 commit** を union した変更パス（`git log --name-only` 由来）に対して検査
 # する。net diff ではなく全 commit union を一次防御に使うため、途中 commit で逸脱パスを足して head で消す
 # add-then-remove も検出でき、`--squash` マージ運用の有無に依存しない。
+#
+# **検査者と検査対象の分離（重要・セキュリティ）**: guard を **PR 自身のコードでビルドして実行しない**。
+# pull_request の checkout は PR の merge branch を置くため、PR の作業ツリーで `dotfiles ci verify-bump-lock`
+# を動かすと、悪意ある nightly PR が verify-bump-lock を改竄して guard を常に pass させられる（gate 回避）。
+# よって guard バイナリは **信頼できる base ref（マージ先 = 既定ブランチ）の dotfiles** からビルドし
+# （`trusted-tree`）、検査対象（PR の base..head 差分・lock）は別 checkout（`pr-tree`）を `--repo` で指す。
+# 判定主体（trusted dotfiles）と検査対象（PR の git データ）を分離することで、PR head のコード改竄で gate を
+# 回避できないようにする。
 
 on:
   workflow_dispatch:
@@ -60,12 +68,27 @@ jobs:
         run: |
           echo "nightly-bump-guard: non-nightly PR; skipping bump-lock enforcement (pass)"
 
-      - name: checkout
+      # 検査対象（PR の作業ツリー）の checkout。base..head の全 commit と両端の flake.lock を git で参照する
+      # ため全履歴を取得する。**この作業ツリーの dotfiles コードは検査主体にしない**（PR が verify-bump-lock を
+      # 改竄して guard を常 pass にする回避を防ぐ）。ここは「検査対象の git データ（lock・変更パス）」だけを置く。
+      - name: 検査対象（PR）を checkout
         if: ${{ steps.scope.outputs.enforce == 'true' }}
         uses: actions/checkout@v5
         with:
-          # base..head の全 commit（union 収集）と両端の flake.lock を git で参照するため全履歴を取得する。
           fetch-depth: 0
+          path: pr-tree
+
+      # 検査者（trusted dotfiles）の checkout。base ref（= PR のマージ先 = 既定ブランチ）の dotfiles を別途
+      # 取得し、その信頼コードから guard バイナリをビルドする。PR head が verify-bump-lock を書き換えても、
+      # 判定主体は base 側の信頼コードのままなので gate を回避できない（検査対象と検査者を分離する）。
+      - name: 検査者（trusted base の dotfiles）を checkout
+        if: ${{ steps.scope.outputs.enforce == 'true' }}
+        uses: actions/checkout@v5
+        with:
+          # pull_request では base ブランチ（マージ先）を信頼 ref にする。workflow_dispatch では base が無い
+          # ため既定ブランチを使う。PR head の ref/sha は信頼 ref に**しない**。
+          ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          path: trusted-tree
 
       - name: Nix を導入
         if: ${{ steps.scope.outputs.enforce == 'true' }}
@@ -73,15 +96,23 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      - name: nightly bump guard
+      - name: nightly bump guard（trusted dotfiles で PR の lock を検査）
         if: ${{ steps.scope.outputs.enforce == 'true' }}
         env:
           # pull_request 以外（workflow_dispatch）では base/head が無いため、その場合は既定 branch を base に、
           # 現在 ref を head にして手動検証できるようにする。
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          base="${PR_BASE_SHA:-origin/${{ github.event.repository.default_branch }}}"
+          base="${PR_BASE_SHA:-origin/${DEFAULT_BRANCH}}"
           head="${PR_HEAD_SHA:-${{ github.sha }}}"
-          nix develop -c dotfiles ci verify-bump-lock --base "$base" --head "$head"
+          # 検査者は trusted-tree（base ref の dotfiles）からビルドし、検査対象は pr-tree（PR の git データ）を
+          # `--repo` で指す。これにより「判定ロジック=信頼 base / 検査対象 lock・変更パス=PR」を分離する。
+          # base/head SHA は pr-tree の履歴に存在する（fetch-depth: 0 で全履歴取得済み）。
+          nix develop ./trusted-tree -c \
+            dotfiles ci verify-bump-lock \
+            --base "$base" \
+            --head "$head" \
+            --repo pr-tree

@@ -7,7 +7,7 @@
 //! `adapters/github_models.rs`・`adapters/toml_store.rs`・`adapters/report.rs`）へ閉じる。各 trait の実体
 //! 実装はそれら adapter module が担う。
 
-use super::domain::diff::VersionDelta;
+use super::domain::diff::{DeltaSource, VersionDelta};
 use super::domain::view::HistoryView;
 use super::domain::wire::{ChangeItem, UpdateEntry};
 use crate::Result;
@@ -39,18 +39,23 @@ pub(crate) trait BrewVersionDiffPort {
 
 /// 更新パッケージの生リリースノートを取得する capability 契約（外部機能: ノート取得）。
 ///
-/// caller は対象パッケージと version 範囲を渡す。implementor は forge releases / cask homepage 等から
-/// `(old, new]` の生ノートテキストを取得して返す。取得不能時は `None` を返し（フォールバックは version +
-/// URL のみ）、ノートの構造化や要約は行わない。生ノートは信頼境界外であり、後段の機械バリデートで守る。
+/// caller は対象パッケージと version 範囲、そして差分の出所（[`DeltaSource`]）を渡す。implementor は
+/// 出所ごとに異なるノート取得先（nix=forge releases / nixpkgs `meta.changelog`、brew=cask 定義の
+/// `Casks/<letter>/<name>.rb`）を選び、`(old, new]` の生ノートテキストを取得して返す。出所を渡すのは、
+/// nix と brew で取得先の base URL / 解決規則が異なり、同一規則で引くと誤った URL（例: nix package を cask
+/// レイアウトで引いて 404）になるためである。取得不能時は `None` を返し（フォールバックは version + URL の
+/// み）、ノートの構造化や要約は行わない。生ノートは信頼境界外であり、後段の機械バリデートで守る。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait NotesPort {
-    /// 対象パッケージの `(old, new]` 範囲の生リリースノートを取得する。
+    /// 対象パッケージの `(old, new]` 範囲の生リリースノートを、差分の出所に応じた取得先から取得する。
     ///
-    /// `notes_url` は記録に残すノート参照 URL。implementor はノート本文取得と URL 確定だけを担い、
+    /// `source` は nix クロージャ由来か brew tap 由来かを示し、implementor はこれで取得先 base / 解決規則を
+    /// 振り分ける。`notes_url` は記録に残すノート参照 URL。implementor はノート本文取得と URL 確定だけを担い、
     /// 変更概要の意味づけや severity 算出は行わない。
     fn fetch_release_notes(
         &self,
         name: &str,
+        source: DeltaSource,
         old: Option<String>,
         new: Option<String>,
     ) -> Result<Option<RawReleaseNotes>>;

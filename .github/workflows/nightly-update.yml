@@ -201,10 +201,13 @@ jobs:
           at="$(date -u +%FT%TZ)"
           out="docs/update-history/$(date -u +%Y-%m).toml"
           mkdir -p docs/update-history
-          # notes-base: new cask tap rev の Casks 配下を基底にし、record adapter が `<base><name>` で
-          # cask 定義（homepage/url を含む）を取得する。letter subdir を解決できない cask は 404 となり、
-          # その cask は version+notes_url 縮退（graceful degradation）になる。許可ホスト https のみ取得する。
-          notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
+          # brew-notes-base: new cask tap rev の Casks 配下を基底にし、record adapter が
+          # `<base><letter>/<name>.rb` で cask 定義（homepage/url を含む）を取得する。これは **brew tap 由来**
+          # package にだけ適用され、nix クロージャ由来 package には使われない（出所別 base 振り分け）。letter
+          # subdir を解決できない cask は 404 となり、その cask は version+notes_url 縮退（graceful degradation）に
+          # なる。許可ホスト https のみ取得する。nix package のノート base（forge / meta.changelog 系）はこの
+          # workflow では未解決のため渡さず、nix package のノートは version+notes_url へ縮退する。
+          brew_notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
           nix develop -c dotfiles update-history record \
             --old "$OLD_CLOSURE" \
             --new "$new_closure" \
@@ -215,7 +218,7 @@ jobs:
             --reference "$CI_REFERENCE" \
             --at "$at" \
             --brew-diff "$BREW_DIFF" \
-            --notes-base "$notes_base" \
+            --brew-notes-base "$brew_notes_base" \
             --out "$out"
 
       - name: 履歴 TOML を artifact 化

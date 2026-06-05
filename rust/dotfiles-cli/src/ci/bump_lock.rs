@@ -181,12 +181,19 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
             );
         }
         match (new_coords.owner.as_deref(), new_coords.repo.as_deref()) {
-            (Some(o), Some(r)) if o == *owner && r == *repo => Ok(()),
+            (Some(o), Some(r)) if o == *owner && r == *repo => {}
             other => bail!(
                 "flake.lock node `{name}` owner/repo {other:?} does not match \
                  allowed {owner}/{repo}; not an allowed bump"
             ),
         }
+        // content swap 防御: 許可 input でも、rev が **変わらないまま** narHash / lastModified だけが
+        // 動く（= 同一 rev の取得物すり替え）変更は許可しない。nightly bump の正当な変更は「rev が進み、
+        // それに伴って narHash / lastModified も整合的に更新される」ものだけである。rev 不変で内容ハッシュや
+        // 取得時刻だけが変われば、source 座標も rev も同じに見えるのに固定対象の内容が差し替わっており、
+        // 許可された rev bump の意味を超える。よって rev 変化を伴わない narHash / lastModified の変更は fail。
+        verify_locked_integrity(name, old_locked, new_locked)?;
+        Ok(())
     } else {
         // 未許可 input（framework / brew-src など）: rev を含め locked 全体が不変でなければならない。
         if old_locked != new_locked {
@@ -197,6 +204,39 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<()> {
         }
         Ok(())
     }
+}
+
+/// 許可 input の `locked` 整合を検査する: rev 変化と narHash / lastModified 変化を連動させる。
+///
+/// 許可 input は rev bump を許すが、その rev に対応する取得物の同一性（`narHash`）と取得時刻
+/// （`lastModified`）は rev に連動して動くのが正当な bump である。`rev` が変わらないのに `narHash` または
+/// `lastModified` だけが変われば、同一 rev のまま固定対象の内容がすり替わった content swap であり、rev bump の
+/// 許可範囲を超える。よって「rev 不変かつ narHash/lastModified 変化」を fail にする。rev が動いていれば
+/// narHash/lastModified の変化は許容する（rev に連動した正当な更新）。`rev` 欠落（locked に rev が無い input）は
+/// 許可 input には想定しないため、その場合も narHash/lastModified の変化を許可しない（保守的に fail）。
+fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -> Result<()> {
+    let field =
+        |locked: &Value, key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
+    let old_rev = field(old_locked, "rev");
+    let new_rev = field(new_locked, "rev");
+    let rev_changed = old_rev != new_rev;
+    if rev_changed {
+        return Ok(());
+    }
+    // rev 不変。narHash / lastModified が動いていれば content swap として fail。
+    if old_locked.get("narHash") != new_locked.get("narHash") {
+        bail!(
+            "flake.lock node `{name}` narHash changed while rev is unchanged \
+             (content swap at the same rev); not an allowed bump"
+        );
+    }
+    if old_locked.get("lastModified") != new_locked.get("lastModified") {
+        bail!(
+            "flake.lock node `{name}` lastModified changed while rev is unchanged \
+             (content swap at the same rev); not an allowed bump"
+        );
+    }
+    Ok(())
 }
 
 /// `locked` オブジェクトから rev を除いた source 座標を取り出す。
@@ -224,17 +264,20 @@ mod tests {
     }
 
     /// 最小構成の lock（nixpkgs 許可 input 1 つ + framework input 1 つ）。`{rev}` を差し替えて使う。
+    ///
+    /// `narHash` は rev に連動して整合的に動く前提なので rev から決定論的に導出し、rev だけ動かせば narHash も
+    /// 揃うようにする。content swap 検査（rev 不変で narHash だけ変える）は専用 test で別途 lock を組む。
     fn lock_with(nixpkgs_rev: &str, darwin_rev: &str) -> String {
         format!(
             r#"{{
   "nodes": {{
     "darwin": {{
       "inputs": {{ "nixpkgs": ["nixpkgs"] }},
-      "locked": {{ "owner": "LnL7", "repo": "nix-darwin", "rev": "{darwin_rev}", "type": "github" }},
+      "locked": {{ "owner": "LnL7", "repo": "nix-darwin", "rev": "{darwin_rev}", "narHash": "sha256-{darwin_rev}", "type": "github" }},
       "original": {{ "owner": "LnL7", "repo": "nix-darwin", "type": "github" }}
     }},
     "nixpkgs": {{
-      "locked": {{ "owner": "NixOS", "repo": "nixpkgs", "rev": "{nixpkgs_rev}", "type": "github" }},
+      "locked": {{ "owner": "NixOS", "repo": "nixpkgs", "rev": "{nixpkgs_rev}", "narHash": "sha256-{nixpkgs_rev}", "type": "github" }},
       "original": {{ "owner": "NixOS", "ref": "nixpkgs-unstable", "repo": "nixpkgs", "type": "github" }}
     }},
     "root": {{ "inputs": {{ "darwin": "darwin", "nixpkgs": "nixpkgs" }} }}
@@ -331,6 +374,55 @@ mod tests {
                 .contains("original source declaration changed"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_narhash_swap_with_unchanged_rev() {
+        // N4 退行固定: 許可 input でも rev 不変のまま narHash だけ差し替える content swap は fail。
+        // owner/repo/type/ref/url/rev はすべて同一に見えるが、固定 rev の取得物がすり替わっている。
+        let old = lock_with("aaaa", "dddd");
+        let new = lock_with("aaaa", "dddd").replace(
+            r#""rev": "aaaa", "narHash": "sha256-aaaa""#,
+            r#""rev": "aaaa", "narHash": "sha256-EVILSWAP""#,
+        );
+        // 置換が効いて old != new であることを前提に検査する。
+        assert_ne!(old, new, "narHash 置換が lock 本文を変えていること");
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("narHash changed while rev is unchanged"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_last_modified_swap_with_unchanged_rev() {
+        // N4 退行固定（lastModified 版）: rev 不変で lastModified だけ動く（同一 rev の取得時刻すり替え）も fail。
+        let old = lock_with("aaaa", "dddd").replace(
+            r#""rev": "aaaa", "narHash": "sha256-aaaa""#,
+            r#""rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 100"#,
+        );
+        let new = lock_with("aaaa", "dddd").replace(
+            r#""rev": "aaaa", "narHash": "sha256-aaaa""#,
+            r#""rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 999"#,
+        );
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("lastModified changed while rev is unchanged"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn accepts_narhash_change_when_rev_also_bumps() -> Result<()> {
+        // 正当な bump: rev が進めば narHash も連動して動く。これは許可（content swap ではない）。
+        // lock_with は narHash を rev から導出するため、rev を変えれば narHash も変わる。
+        let old = lock_with("aaaa", "dddd");
+        let new = lock_with("bbbb", "dddd");
+        // narHash が実際に変わっていること（連動更新の確認）。
+        assert!(new.contains("sha256-bbbb"), "narHash は rev に連動する");
+        verify_bump(&paths(&["flake.lock"]), &old, &new)
     }
 
     #[test]

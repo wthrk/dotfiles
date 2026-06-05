@@ -40,9 +40,6 @@ use clap::{Args, Subcommand};
 use crate::Result;
 use domain::commands::{RecordCommand, ShowCommand};
 
-/// `docs/update-history` 配下のファイル名（`<YYYY-MM>.toml`）を解決する既定 source ディレクトリ名。
-const HISTORY_SUBDIR: &str = "docs/update-history";
-
 #[derive(Args)]
 /// 更新履歴の記録（CI）と閲覧（利用者）を分けて公開する最上位 command。
 pub(crate) struct UpdateHistoryOptions {
@@ -53,7 +50,9 @@ pub(crate) struct UpdateHistoryOptions {
 #[derive(Subcommand)]
 /// CI が叩く記録 command と、利用者が叩く閲覧 command。
 enum UpdateHistoryCommand {
-    Record(RecordOptions),
+    // record option は閲覧 option より大幅にフィールドが多く enum variant 間で size 差が出るため、
+    // `Box` で間接化して `large_enum_variant` を避ける（clap は `Box<Args>` を subcommand 変種に取れる）。
+    Record(Box<RecordOptions>),
     Show(ShowOptions),
 }
 
@@ -96,16 +95,23 @@ struct RecordOptions {
     /// 未指定なら brew 差分は縮退して空。
     #[arg(long)]
     brew_diff: Option<PathBuf>,
-    /// リリースノート URL の基底（`<notes_base><name>` を取得対象にする）。未指定ならノート取得は縮退して空。
+    /// brew cask のリリースノート URL 基底（cask 定義の `Casks/` レイアウト。`<base><letter>/<name>.rb` を
+    /// 取得対象にする）。brew tap 由来 package にだけ使う。未指定なら brew package のノート取得は縮退して空。
+    /// 後方互換のため旧 `--notes-base` も別名として受ける（旧運用は cask base を渡していた）。
+    #[arg(long, alias = "notes-base")]
+    brew_notes_base: Option<String>,
+    /// nix クロージャ由来 package のリリースノート URL 基底（forge releases / `meta.changelog` 系。
+    /// `<base><name>` を取得対象にする）。nix package にだけ使う。未指定なら nix package のノート取得は縮退して空。
     #[arg(long)]
-    notes_base: Option<String>,
+    nix_notes_base: Option<String>,
 }
 
 #[derive(Args)]
 /// 適用済み pin 由来の更新履歴を閲覧する option。
 ///
 /// `--rev` 起点からの catch-up 区間をアプリ単位で集約し、severity バッジ + 全体概要 + アプリ別変更リストを
-/// 表示する。`--source` 省略時は `<config-dir>/docs/update-history` を読む。
+/// 表示する。`--source` 省略時は state dir のローカル履歴複製（`<state-dir>/history`）を読む。これは
+/// `dotfiles update` 適用時に dotfiles input source の `docs/update-history` から複製されたものである。
 struct ShowOptions {
     /// 表示起点の nixpkgs リビジョン（省略時は最新まで）。
     #[arg(long)]
@@ -119,8 +125,8 @@ struct ShowOptions {
     /// 宣言アプリだけでなく全パッケージを表示する。
     #[arg(long)]
     all: bool,
-    /// 履歴を読む対象 source（ファイル/ディレクトリ）。省略時は `<config-dir>/docs/update-history`
-    /// ディレクトリを既定 source とし、配下の全 `*.toml` 月次ファイルを連結して読む。
+    /// 履歴を読む対象 source（ファイル/ディレクトリ）。省略時は state dir のローカル履歴複製
+    /// （`<state-dir>/history`）ディレクトリを既定 source とし、配下の全 `*.toml` 月次ファイルを連結して読む。
     #[arg(long)]
     source: Option<PathBuf>,
 }
@@ -131,7 +137,7 @@ struct ShowOptions {
 /// composition root（[`run_record`] / [`run_show`]）へ閉じる。
 pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
     match options.command {
-        UpdateHistoryCommand::Record(options) => run_record(options),
+        UpdateHistoryCommand::Record(options) => run_record(*options),
         UpdateHistoryCommand::Show(options) => run_show(options),
     }
 }
@@ -140,7 +146,7 @@ pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
 fn run_record(options: RecordOptions) -> Result<()> {
     let closure_diff = adapters::NixClosureDiffAdapter;
     let brew_diff = adapters::BrewTapDiffAdapter::new(options.brew_diff);
-    let notes = adapters::ReleaseNotesAdapter::new(options.notes_base);
+    let notes = adapters::ReleaseNotesAdapter::new(options.nix_notes_base, options.brew_notes_base);
     let extract = adapters::GithubModelsExtractAdapter;
     let store = adapters::TomlHistoryStoreAdapter::new(options.out);
 
@@ -207,18 +213,16 @@ pub(crate) fn render_applied_summary<W: Write>(
 
 /// show が読む履歴 source パスを解決する。
 ///
-/// `--source` 明示時はその path（ファイル/ディレクトリのいずれでも可）をそのまま使う。省略時は
-/// `<config-dir>/docs/update-history` **ディレクトリ**を返す（適用済み pin 由来の dotfiles input source 内）。
-/// 当月ファイルを 1 本に絞り込むのではなくディレクトリを返す理由は、時刻クレートを足さず「当月」を決定
-/// しないためで、ディレクトリ配下の全 `*.toml` 月次ファイルの連結読み込みは adapter
-/// （[`adapters::TomlHistoryStoreAdapter`]）が名前順に行う。特定ファイルへ絞りたい場合は `--source` で
-/// ファイル粒度を明示する。
+/// `--source` 明示時はその path（ファイル/ディレクトリのいずれでも可）をそのまま使う。省略時は **state dir の
+/// ローカル複製**（`<state-dir>/history`、[`crate::update::history_local_dir`]）を返す。`~/.config/dotfiles` の
+/// ローカル flake は `flake.nix`/`flake.lock` だけを持ち `docs/update-history` を含まないため、config dir を
+/// 直接読むと show が常に空になる。履歴は **適用済み dotfiles input source** にあり、`dotfiles update` が適用時
+/// にそれを state dir のローカル複製へ取り込む。show はその複製を offline・決定論で読む。ディレクトリ配下の全
+/// `*.toml` 月次ファイルの連結読み込みは adapter（[`adapters::TomlHistoryStoreAdapter`]）が名前順に行う。
+/// 特定ファイルへ絞りたい場合は `--source` でファイル粒度を明示する。
 fn resolve_show_source(source: Option<PathBuf>) -> Result<PathBuf> {
     match source {
         Some(source) => Ok(source),
-        None => {
-            let config_dir = crate::environment::config_dir(None)?;
-            Ok(config_dir.join(HISTORY_SUBDIR))
-        }
+        None => crate::update::history_local_dir(),
     }
 }

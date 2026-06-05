@@ -7,13 +7,16 @@
 //! バリデート（host/長さ/件数）と LLM 抽出は別責務である。
 //!
 //! ノート URL の解決: package 名から forge/cask URL を引く確定的手段（nixpkgs `meta.changelog` 評価等）は
-//! 実行環境に依存するため、本 adapter は CI が解決した URL テンプレート（`notes_base`）に package 名を
-//! 連結した URL を取得対象にする。`notes_base` 未指定時は URL を決められないため全 package で `None`（ノート
-//! 無し）へ縮退する（version+notes_url へ縮退するプラン契約に沿う graceful degradation）。取得は許可ホスト
-//! https に限定し、取得失敗（不通・404）も `None` へ縮退して record を止めない。
+//! 実行環境に依存するため、本 adapter は CI が解決した URL テンプレート（base）に package 名を連結した URL を
+//! 取得対象にする。base は **差分の出所（nix / brew）ごとに分けて**保持する: nix クロージャ由来は forge
+//! releases / nixpkgs `meta.changelog` 系の base、brew tap 由来は cask 定義の `Casks/` レイアウト base である。
+//! 出所で base を分けるのは、nix と brew で取得先 URL の解決規則が異なり、同一 base で引くと誤った URL（例:
+//! nix package を cask レイアウトで引いて 404）になるためである。該当出所の base 未指定時はその出所の package
+//! で `None`（ノート無し）へ縮退する（version+notes_url へ縮退するプラン契約に沿う graceful degradation）。
+//! 取得は許可ホスト https に限定し、取得失敗（不通・404）も `None` へ縮退して record を止めない。
 //!
 //! **Homebrew cask の URL 解決（letter subdir）**: cask tap のファイルは `Casks/<name>.rb` ではなく
-//! `Casks/<letter>/<name>.rb`（letter = name 先頭 1 文字の小文字）に配置される。`notes_base` を `Casks/` で
+//! `Casks/<letter>/<name>.rb`（letter = name 先頭 1 文字の小文字）に配置される。base を `Casks/` で
 //! 終わる cask tap 基底にしたまま `<base><name>` を連結すると `Casks/<name>` を取得して**常に 404**になり、
 //! ノートが空縮退する。よって基底が cask の `Casks/` レイアウトを指すときは `<base><letter>/<name>.rb` を
 //! 構築する（[`resolve_notes_url`]）。それ以外の基底（forge 等）は従来どおり `<base><name>` を使う。
@@ -22,23 +25,34 @@ use std::ffi::OsString;
 
 use crate::Result;
 use crate::process::run_capture;
+use crate::update_history::domain::diff::DeltaSource;
 use crate::update_history::domain::validate::is_allowed_url;
 use crate::update_history::ports::{NotesPort, RawReleaseNotes};
 
 /// リリースノート取得を `NotesPort` 契約へ翻訳する adapter。
 ///
-/// `notes_base` は CI が解決したノート URL の基底（末尾に package 名を連結して取得対象 URL を作る）。
-/// `None` のとき URL を決められないとみなし、全 package で `None`（ノート無し）へ縮退する。
+/// `nix_notes_base` / `brew_notes_base` は CI が解決した出所別のノート URL 基底（末尾に package 名を連結して
+/// 取得対象 URL を作る）。差分の出所に応じて base を選び、該当出所の base が `None` のときはその出所の package
+/// で `None`（ノート無し）へ縮退する。出所別に base を持つことで、nix package を cask レイアウトで引くような
+/// 誤った URL 構築を防ぐ。
 #[derive(Default)]
 pub(in crate::update_history) struct ReleaseNotesAdapter {
-    /// ノート URL の基底。`<notes_base><name>` を取得対象にする。未設定ならノート取得は縮退。
-    notes_base: Option<String>,
+    /// nix クロージャ由来 package のノート URL 基底（forge releases / `meta.changelog` 系）。
+    nix_notes_base: Option<String>,
+    /// brew tap 由来 cask のノート URL 基底（cask 定義の `Casks/` レイアウト）。
+    brew_notes_base: Option<String>,
 }
 
 impl ReleaseNotesAdapter {
-    /// ノート URL の基底を束ねた adapter を作る。`None` でノート取得を縮退（`None`）にする。
-    pub(in crate::update_history) fn new(notes_base: Option<String>) -> Self {
-        Self { notes_base }
+    /// 出所別のノート URL 基底を束ねた adapter を作る。各出所で `None` ならその出所のノート取得を縮退する。
+    pub(in crate::update_history) fn new(
+        nix_notes_base: Option<String>,
+        brew_notes_base: Option<String>,
+    ) -> Self {
+        Self {
+            nix_notes_base,
+            brew_notes_base,
+        }
     }
 
     /// 許可ホスト https URL から本文を curl で取得する。
@@ -71,11 +85,17 @@ impl NotesPort for ReleaseNotesAdapter {
     fn fetch_release_notes(
         &self,
         name: &str,
+        source: DeltaSource,
         _old: Option<String>,
         _new: Option<String>,
     ) -> Result<Option<RawReleaseNotes>> {
-        // ノート URL の基底が無い実行環境では URL を決められないため `None` へ縮退する。
-        let Some(base) = &self.notes_base else {
+        // 差分の出所に応じて取得先 base を選ぶ。nix package を cask base で引く（またはその逆）と誤った URL に
+        // なるため、出所で base を振り分ける。該当出所の base が無ければその package は `None` へ縮退する。
+        let base = match source {
+            DeltaSource::NixClosure => &self.nix_notes_base,
+            DeltaSource::BrewTap => &self.brew_notes_base,
+        };
+        let Some(base) = base else {
             return Ok(None);
         };
         let url = resolve_notes_url(base, name);

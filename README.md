@@ -235,9 +235,14 @@ base..head の全 commit 履歴に対して次を機械判定します。
 - 変更パスが `flake.lock` と `docs/update-history/**` だけであること（`.github/**`・ruleset・ソースが
   混ざれば fail）。
 - `flake.lock` 差分が許可 input 集合（nixpkgs と tap 4 本）の rev 変更だけで、想定外 input の追加・
-  source 改変・framework input の rev 変更が無いこと。
+  source 改変・framework input の rev 変更が無いこと。加えて、許可 input でも rev が変わらないまま
+  `narHash` / `lastModified` だけが動く（同一 rev の取得物すり替え＝content swap）変更は fail にします。
 
-判定ロジックは Rust の純粋核（`rust/dotfiles-cli/src/ci/bump_lock.rs`）に置き、unit test で固定しています。
+guard は **検査者と検査対象を分離**します。判定バイナリ（`dotfiles`）は信頼できる base ref（マージ先 =
+既定ブランチ）の dotfiles からビルドし、検査対象（PR の base..head 差分・lock）は別 checkout を `--repo` で
+指します。これにより、悪意ある nightly PR が `verify-bump-lock` を改竄しても判定主体は信頼 base のままで、
+gate を回避できません。判定ロジックは Rust の純粋核（`rust/dotfiles-cli/src/ci/bump_lock.rs`）に置き、unit
+test で固定しています。
 
 ブランチ保護設定は `.github/rulesets/nightly-bump.json` で版管理します（`enforcement=active`・bypass actors
 空）。この設定自体の変更もレビュー必須であり、許可パスが `flake.lock` + `docs/update-history/**` に限定される
