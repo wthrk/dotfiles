@@ -1,6 +1,6 @@
 ---
 name: pr-mergeability-loop
-description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex review、review thread resolve、checks、mergeability 確認を含む PR 指示で、main orchestrator のオーケストレーション拡張として使う。
+description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex review、review thread resolve、PR 文脈の checks、PR 文脈の mergeability 確認を含む PR 指示で、main orchestrator のオーケストレーション拡張として使う。
 ---
 
 # PR Mergeability Loop
@@ -33,7 +33,7 @@ top-level 指示に次のいずれかが含まれる場合、main orchestrator �
 - PR 文脈の AI review、Codex review、Copilot review、または `@codex review`
 - review thread の返信または resolve
 - PR 文脈の checks 確認
-- mergeability 確認
+- PR 文脈の mergeability 確認
 
 ## Rules
 

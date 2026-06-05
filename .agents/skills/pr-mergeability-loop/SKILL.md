@@ -1,6 +1,6 @@
 ---
 name: pr-mergeability-loop
-description: Use as an orchestration extension for the main orchestrator when a PR instruction involves review response, AI/Codex/Copilot review, PR-scoped @codex review, review thread resolution, checks, or mergeability confirmation.
+description: Use as an orchestration extension for the main orchestrator when a PR instruction involves review response, AI/Codex/Copilot review, PR-scoped @codex review, review thread resolution, PR-scoped checks, or PR-scoped mergeability confirmation.
 ---
 
 # PR Mergeability Loop
@@ -33,7 +33,7 @@ The main orchestrator uses this skill as an orchestration extension when the top
 - PR-scoped AI review, Codex review, Copilot review, or `@codex review`
 - review thread reply or resolve
 - PR-scoped checks confirmation
-- mergeability confirmation
+- PR-scoped mergeability confirmation
 
 ## Rules
 

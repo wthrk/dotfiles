@@ -21,7 +21,7 @@ description: 役割確定済みの実行者が、dotfiles または secret-recov
 1. 現在アクターを確定した役割スキル
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/security-obligations.md`
-4. main orchestrator が PR URL または PR 番号と mergeability 関連操作の組み合わせ、PR review 対応、PR 文脈の AI/Codex/Copilot review、PR 文脈の `@codex review`、review thread resolve、PR 文脈の checks 確認、mergeability 確認、または明示的に PR mergeability に関係する依頼を扱う場合は `docs/task-governance/pr-mergeability-loop.md`
+4. main orchestrator が PR URL または PR 番号と mergeability 関連操作の組み合わせ、PR review 対応、PR 文脈の AI/Codex/Copilot review、PR 文脈の `@codex review`、review thread resolve、PR 文脈の checks 確認、PR 文脈の mergeability 確認、または明示的に PR mergeability に関係する依頼を扱う場合は `docs/task-governance/pr-mergeability-loop.md`
 5. `docs/secret-recovery/implementation-guidelines.md`
 6. `docs/docs-governance.md`
 7. 統治対象領域の正本文書
@@ -30,6 +30,6 @@ description: 役割確定済みの実行者が、dotfiles または secret-recov
 
 - リポジトリ固有の統治補助としてだけ使う。
 - 委譲済み役割アクターが同じ delegated task のオーケストレーターへ自己切替するために使わない。
-- top-level の PR 指示に PR URL または PR 番号と mergeability 関連操作の組み合わせ、PR review 対応、PR 文脈の AI/Codex/Copilot review、PR 文脈の `@codex review`、review thread resolve、PR 文脈の checks 確認、mergeability 確認、または明示的に PR mergeability に関係する依頼が含まれる場合、main orchestrator は `/pr-mergeability-loop` もオーケストレーション拡張として使う。
+- top-level の PR 指示に PR URL または PR 番号と mergeability 関連操作の組み合わせ、PR review 対応、PR 文脈の AI/Codex/Copilot review、PR 文脈の `@codex review`、review thread resolve、PR 文脈の checks 確認、PR 文脈の mergeability 確認、または明示的に PR mergeability に関係する依頼が含まれる場合、main orchestrator は `/pr-mergeability-loop` もオーケストレーション拡張として使う。
 - 委譲済み actor は `/pr-mergeability-loop` を使って PR loop 全体を引き取らない。割り当てられた役割に従い、PR-loop に関係する事実を親オーケストレーターへ報告する。
 - 正本文書を直接適用する。このスキルは詳細規則を再掲しない。
