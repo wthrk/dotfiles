@@ -46,13 +46,21 @@ const EXTRACT_SYSTEM_PROMPT: &str = "\
 根拠となる変更が無ければ空の配列を返します。出力は指定された JSON スキーマに厳密に従ってください。";
 
 /// LLM 出力の最上位 JSON 形（`{ "changes": [...] }`）。
+///
+/// `changes` を `Vec<serde_json::Value>` で寛容に受け、各要素は [`GithubModelsExtractAdapter::parse_response`]
+/// が 1 件ずつ [`ExtractedItem`] へ try-parse する。要素を `Vec<ExtractedItem>` で一括 deserialize すると、
+/// 未知 category（や不正 item）が 1 件でも混ざった時点で配列全体の deserialize が失敗し、有効項目まで
+/// 含めて全 changes が空へ縮退する。要素単位で受けることで、不正項目だけを drop し有効項目を保持する。
 #[derive(Deserialize)]
 struct ExtractedChanges {
     #[serde(default)]
-    changes: Vec<ExtractedItem>,
+    changes: Vec<serde_json::Value>,
 }
 
-/// LLM が返す 1 変更項目。category は enum で deserialize し、未知値は項目ごと破棄する。
+/// LLM が返す 1 変更項目。category は enum で deserialize し、未知値はその項目だけ破棄する。
+///
+/// 破棄は要素単位で行う（[`ExtractedChanges`] 参照）。未知 category・型不一致の item を try-parse すると
+/// その 1 件だけ deserialize に失敗するため、呼び出し側はその項目を drop し有効項目を残す。
 #[derive(Deserialize)]
 struct ExtractedItem {
     category: ChangeCategory,
@@ -132,8 +140,10 @@ impl GithubModelsExtractAdapter {
     /// レスポンス本文（チャット補完 JSON）から変更項目列を取り出す。
     ///
     /// チャット補完の `choices[0].message.content` を JSON として再解析し、`changes` 配列を
-    /// [`ChangeItem`] へ翻訳する。category enum の妥当性は deserialize で検証され、未知 category や
-    /// 形不一致は項目破棄/空配列へ縮退する。host/長さ/件数の機械バリデートは domain 側で別途行う。
+    /// [`ChangeItem`] へ翻訳する。`changes` は要素単位で try-parse し、未知 category や型不一致の item は
+    /// **その項目だけ drop** して有効項目を保持する（一括 deserialize だと不正 1 件で全 changes が空へ
+    /// 縮退するため）。content 全体の JSON 解析失敗・`choices` 不在のみ空配列へ縮退する。host/長さ/件数の
+    /// 機械バリデートは domain 側で別途行う。
     fn parse_response(response: &str) -> Vec<ChangeItem> {
         let completion: ChatCompletion = match serde_json::from_str(response) {
             Ok(value) => value,
@@ -149,6 +159,8 @@ impl GithubModelsExtractAdapter {
         extracted
             .changes
             .into_iter()
+            // 各 item を個別に寛容に deserialize し、未知 category/不正 item はその 1 件だけ skip する。
+            .filter_map(|value| serde_json::from_value::<ExtractedItem>(value).ok())
             .map(|item| ChangeItem {
                 category: item.category,
                 text: item.text,
@@ -280,13 +292,32 @@ mod tests {
 
     #[test]
     fn unknown_category_drops_to_empty() {
-        // 未知 category を含む不正スキーマは deserialize 失敗で空へ縮退する。
+        // 未知 category の item はその項目だけ drop される。全項目が未知なら結果は空になる。
         let content = serde_json::json!({
             "changes": [ { "category": "marketing", "text": "宣伝" } ]
         })
         .to_string();
         let items = GithubModelsExtractAdapter::parse_response(&completion_with_content(&content));
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn unknown_category_item_is_skipped_without_dropping_valid_items() {
+        // 退行固定: `changes` 配列に未知 category が 1 件混ざっても、配列全体の deserialize を失敗させて
+        // 全 changes を空へ縮退させてはならない。不正 item はその 1 件だけ drop し、有効項目は保持する。
+        let content = serde_json::json!({
+            "changes": [
+                { "category": "security", "text": "CVE 修正", "ref": "https://github.com/a/b/pull/1" },
+                { "category": "marketing", "text": "宣伝" },
+                { "category": "feature", "text": "新機能" }
+            ]
+        })
+        .to_string();
+        let items = GithubModelsExtractAdapter::parse_response(&completion_with_content(&content));
+        // 有効 2 件（security, feature）が残り、未知 category の 1 件だけ落ちる。
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].category, ChangeCategory::Security);
+        assert_eq!(items[1].category, ChangeCategory::Feature);
     }
 
     #[test]

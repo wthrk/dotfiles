@@ -66,7 +66,8 @@ pub(crate) struct PackageUpdate {
 ///
 /// `category` は閉集合 enum で severity 算出の根拠になり、`text` は日本語 1 行の概要、
 /// `ref_url` はその変更の PR/issue/release URL（任意）。catch-up 集約の重複排除は
-/// 決定論キー `(name, category, ref_url)` で行うため、本型の `category` / `ref_url` が同一性に効く。
+/// 決定論キー `(name, category, ref_url, text)` で行うため、本型の `category` / `ref_url` / `text` が
+/// 同一性に効く（同一 category・同一 `ref_url` でも `text` が異なれば別の変更として保持される）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChangeItem {
     /// 変更カテゴリ（severity 算出と表示グルーピングの根拠）。
@@ -116,7 +117,9 @@ pub(crate) enum ChangeCategory {
 pub(crate) enum Severity {
     /// security 変更を含む。
     Critical,
-    /// 破壊的変更または削除を含む。
+    /// `ChangeCategory::Breaking`（破壊的変更）または `Deprecation`（非推奨化）を含む（[`super::severity`]）。
+    /// severity は `change_items` の category 集合のみから算出するため、パッケージ単位の
+    /// `ChangeKind::Removed`（パッケージ削除）はこの severity に影響しない（別レイヤの差分種別）。
     Major,
     /// 機能追加/修正のみ。
     Minor,

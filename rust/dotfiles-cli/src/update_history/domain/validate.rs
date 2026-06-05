@@ -21,8 +21,11 @@ const MAX_TEXT_CHARS: usize = 200;
 
 /// URL が許可ホストの https URL かを判定する。
 ///
-/// `https://<host>[:port]/...` 形式で、`<host>` が [`ALLOWED_HOSTS`] のいずれかに厳密一致する場合だけ
-/// `true`。scheme が https でない、host が allowlist 外、形式不正はすべて `false`。記録・表示双方が共有する。
+/// `https://<host>[:port]/...` 形式で、`<host>` が [`ALLOWED_HOSTS`] のいずれかに一致する場合だけ
+/// `true`。host は RFC 上 case-insensitive なため、allowlist との一致は ASCII 大文字小文字を無視して
+/// 判定する（`https://GitHub.com/...` 等の正当な URL を弾かない）。scheme が https でない、host が
+/// allowlist 外、形式不正はすべて `false`。scheme 固定・credential（`@`）拒否・path injection 防御
+/// （host を最初の `/` までで切る）は維持する。記録・表示双方が共有する。
 pub(crate) fn is_allowed_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
@@ -33,7 +36,10 @@ pub(crate) fn is_allowed_url(url: &str) -> bool {
         return false;
     }
     let host = authority.split(':').next().unwrap_or("");
-    ALLOWED_HOSTS.contains(&host)
+    // host は case-insensitive（RFC）なので allowlist 一致も大文字小文字を無視する。
+    ALLOWED_HOSTS
+        .iter()
+        .any(|allowed| host.eq_ignore_ascii_case(allowed))
 }
 
 /// LLM 抽出済み change_item 列を記録前にサニタイズする。
@@ -108,6 +114,19 @@ mod tests {
         assert!(!is_allowed_url("https://user@github.com/a"));
         assert!(!is_allowed_url("ftp://github.com/a"));
         assert!(!is_allowed_url("not a url"));
+    }
+
+    #[test]
+    fn allows_mixed_case_allowlisted_hosts() {
+        // host は RFC 上 case-insensitive。allowlist との一致は大文字小文字を無視するため、
+        // `GitHub.com` / `RAW.githubusercontent.com` のような大小混在の正当な host も許可する。
+        assert!(is_allowed_url("https://GitHub.com/a/b/pull/1"));
+        assert!(is_allowed_url("https://GITHUB.COM/a/b"));
+        assert!(is_allowed_url("https://RAW.githubusercontent.com/a/b"));
+        assert!(is_allowed_url("https://GitLab.com/a/b"));
+        // allowlist 外は大小を変えても依然拒否（case-insensitive 化が allowlist を緩めない）。
+        assert!(!is_allowed_url("https://EVIL.example/github.com"));
+        assert!(!is_allowed_url("https://NotGithub.com/a"));
     }
 
     #[test]

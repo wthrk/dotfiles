@@ -33,7 +33,8 @@ fn aggregated_change(first: ChangeKind, last: ChangeKind, spanned: bool) -> Chan
 ///
 /// `entries` は適用順（`at` 昇順 = 最古→最新）で渡す。各アプリについて `old` は最初に現れたエントリの
 /// `old`、`new` は最後に現れたエントリの `new` を採用する。`change_items` は出現順を保ったまま
-/// 決定論キー `(name, category, ref_url)` で重複排除する。`notes_url` は最新エントリの値を優先する。
+/// 決定論キー `(name, category, ref_url, text)` で重複排除する（`text` を含める理由は本 module 先頭
+/// コメント参照）。`notes_url` は最新エントリの値を優先する。
 /// `declared` は跨ぎ区間で 1 度でも宣言アプリとして現れたら `true`（宣言表示を落とさない）。
 ///
 /// 戻り値の並びは、最初に各アプリが現れた順を安定的に保つ。severity / overall の再算出は呼び出し側が
