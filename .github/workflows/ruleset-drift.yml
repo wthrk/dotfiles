@@ -1,0 +1,78 @@
+name: Ruleset drift
+
+# 版管理された ruleset（.github/rulesets/nightly-bump.json）が GitHub に正しく適用され続けているかを
+# scheduled に継続検証（drift 検知）する。手動 gh api 適用が漏れ・改竄・context ドリフトしていれば fail し、
+# required status check nightly-bump-guard の無効化（fail-open）を検知する。
+#
+# この検証は PR の内容と無関係な repo 設定の drift 検知であるため、per-PR ゲート（static-checks）ではなく
+# scheduled job に置く。nightly 自動マージの実ゲートは required status check nightly-bump-guard + 適用済み
+# ruleset であり、本 job はその適用状態の drift 検知である。
+#
+# ruleset 読み取りは repo の Administration:read 権限を要する。既定 GITHUB_TOKEN は ruleset を読めないため、
+# nightly bump と同じ最小権限 GitHub App（Administration:read を付与した NIGHTLY_BUMP_APP）の token で読む。
+#
+# skip-neutral: GitHub App（NIGHTLY_BUMP_APP_ID）未設定時は ruleset を適用できないため検証対象が存在しない。
+# その場合は検証を実行せず neutral（exit 0）で抜ける。App ID 設定済み時は従来どおり fail-closed で検証し、
+# token 無効・権限不足・ruleset 不正なら fail させる（検証不能を success にしない）。
+
+on:
+  schedule:
+    # 07:00 UTC daily。drift を毎日検知する。
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  ruleset:
+    name: verify applied ruleset
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      # job-level if は secrets を参照できないため、App ID を env に渡して step 内で空判定する。
+      # 未設定なら以降の検証 step を skip し、job 全体を neutral（success）で終える。
+      - name: GitHub App 設定有無を判定
+        id: app-config
+        env:
+          NIGHTLY_BUMP_APP_ID: ${{ secrets.NIGHTLY_BUMP_APP_ID }}
+        run: |
+          if [ -z "${NIGHTLY_BUMP_APP_ID}" ]; then
+            echo "GitHub App 未設定のため ruleset 検証は無効。NIGHTLY_BUMP_APP_ID/KEY を設定し ruleset を適用すると有効化される。"
+            echo "configured=false" >>"${GITHUB_OUTPUT}"
+          else
+            echo "configured=true" >>"${GITHUB_OUTPUT}"
+          fi
+
+      - name: GitHub App token を生成
+        id: app-token
+        if: steps.app-config.outputs.configured == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.NIGHTLY_BUMP_APP_ID }}
+          private-key: ${{ secrets.NIGHTLY_BUMP_APP_PRIVATE_KEY }}
+
+      - name: checkout
+        if: steps.app-config.outputs.configured == 'true'
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        if: steps.app-config.outputs.configured == 'true'
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: verify applied ruleset
+        if: steps.app-config.outputs.configured == 'true'
+        env:
+          # gh は GH_TOKEN を env から読む。token は argv に乗せない（ログ非混入）。
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: nix develop -c dotfiles ci verify-ruleset

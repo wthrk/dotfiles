@@ -244,14 +244,18 @@ base..head の全 commit 履歴に対して次を機械判定します。
 ため、nightly PR が `.github/**`（ruleset/workflow/guard）を変更すると guard が fail し、無人 auto-merge
 されず人手レビュー経路へ送られます。
 
-GitHub への ruleset 適用は手動 `gh api` 依存ですが、その適用状態は `dotfiles ci verify-ruleset` が CI
-（`.github/workflows/static-checks.yml` の `verify applied ruleset` job）で継続検証します。`gh api` で実適用済み
-ruleset を取得し、`enforcement=active`・bypass actors 空・required check に `nightly-bump-guard` を含むことを
-assert します（判定核は `rust/dotfiles-cli/src/ci/ruleset.rs`、unit test で固定）。適用漏れ・bypass actor の
-後付け・required check の context ドリフトがあれば fail し、required check の無効化（fail-open）を検知します。
-ruleset 読み取りは repo の Administration:read 権限を要し、既定 `GITHUB_TOKEN` では読めないため、nightly bump
-と同じ最小権限 GitHub App（Administration:read を付与）の token で読みます。token が無効・権限不足の場合は `gh`
-が非 0 終了して検証が fail します（検証不能を success にしない fail-closed）。
+GitHub への ruleset 適用は手動 `gh api` 依存ですが、その適用状態は `dotfiles ci verify-ruleset` が scheduled な
+drift 検証 job（`.github/workflows/ruleset-drift.yml` の `verify applied ruleset`、毎日 + `workflow_dispatch`）で
+継続検証します。この検証は PR の内容と無関係な repo 設定の drift 検知であるため、per-PR ゲート（static checks）
+ではなく scheduled job に置いています。`gh api` で実適用済み ruleset を取得し、`enforcement=active`・bypass actors
+空・required check に `nightly-bump-guard` を含むことを assert します（判定核は
+`rust/dotfiles-cli/src/ci/ruleset.rs`、unit test で固定）。適用漏れ・bypass actor の後付け・required check の
+context ドリフトがあれば fail し、required check の無効化（fail-open）を検知します。ruleset 読み取りは repo の
+Administration:read 権限を要し、既定 `GITHUB_TOKEN` では読めないため、nightly bump と同じ最小権限 GitHub App
+（Administration:read を付与）の token で読みます。App ID 設定済みなら token が無効・権限不足の場合に `gh` が
+非 0 終了して検証が fail します（検証不能を success にしない fail-closed）。GitHub App（`NIGHTLY_BUMP_APP_ID`/
+`NIGHTLY_BUMP_APP_PRIVATE_KEY`）未設定時は ruleset を適用できず検証対象が無いため、検証を実行せず neutral
+（skip）として扱います。App を設定し ruleset を適用すると有効化されます。
 
 ## Homebrew cask の固定状況（無人 upgrade の明示受容）
 
