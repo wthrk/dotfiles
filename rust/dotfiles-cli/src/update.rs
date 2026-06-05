@@ -58,6 +58,20 @@ const LAST_APPLIED_REV: &str = "last-applied-rev";
 /// **最後に適用成功した時点の nixpkgs rev** をこのファイルへ確定書込みし、要約 span の起点に使う（未適用範囲の
 /// 実起点を指す）。`last-applied-rev` と同時に書き、未確定（defer）時は書かない。
 const LAST_APPLIED_NIXPKGS_REV: &str = "last-applied-nixpkgs-rev";
+/// 最後に**要約を表示/追記し終えた**範囲の終端（new 側）nixpkgs rev（catch-up 要約 span の起点に使う）。
+///
+/// catch-up 要約 span の起点は「適用済み rev」ではなく「**最後に利用者へ見せ終えた rev**」でなければ
+/// show-once が壊れる。`last-applied-nixpkgs-rev` は適用成功時にしか確定せず（defer 経路では書かれない）、
+/// これを span 起点に使うと、同日に shell catch-up（defer）と daemon home（defer）が両方走る通常ケースで
+/// 二度見えする: shell catch-up は span 起点 = N0 で N0→N1 を追記（defer なので applied 未更新）、daemon home
+/// も span 起点が依然 N0（defer で applied 未更新）のため **同一 N0→N1 を再追記** してしまう。
+///
+/// これを防ぐため、**要約を append/表示し終えた直後**に、その範囲の new 側 nixpkgs rev をこの marker へ
+/// 確定書込みし（defer 経路でも commit 経路でも書く）、次回 present_summary はこの marker を span 起点に読む。
+/// 2 回目は起点 = N1 → `select_entries` が `nixpkgs_old == N1` を見つけられず空 → 再追記しない（A: 二重抑止）。
+/// partial-failure では switch 失敗時に要約自体が走らずこの marker も進まないため、前回要約済み rev が保たれ、
+/// 再実行で未表示範囲を失わない（B: partial-failure 堅牢性）。要約「後」に書く点が `last-applied-*` と異なる。
+const LAST_SUMMARIZED_NIXPKGS_REV: &str = "last-summarized-nixpkgs-rev";
 const PENDING_SUMMARY: &str = "pending-summary";
 const LAST_RUN_LOG: &str = "last-run.log";
 const LOCK_FILE: &str = "update.lock";
@@ -111,27 +125,34 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         let current_pin = read_repo_pin(&config_dir)?;
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
         // dotfiles pin と同時に、適用成功時点の推移的 nixpkgs rev も確定する。home ステップが既に lock を
-        // 更新済みなので、ここで読む nixpkgs rev は今回適用した new 側。次回 catch-up 要約 span の起点になる。
+        // 更新済みなので、ここで読む nixpkgs rev は今回適用した new 側。これは要約 span 起点解決の二次
+        // フォールバック（最優先は要約後に進む `last-summarized-nixpkgs-rev`。home defer ステップが要約済み）。
         let current_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
         write_last_applied_nixpkgs_rev(&state_dir, &current_nixpkgs_rev, dry_run)?;
         println!("適用済み rev を確定しました（rev {current_pin}）");
         return Ok(());
     }
 
-    // catch-up 要約 span の起点となる「適用前 nixpkgs rev」を解決する。
+    // catch-up 要約 span の起点となる「最後に利用者へ見せ終えた nixpkgs rev」を解決する。
     //
-    // 優先するのは **最後に適用成功した時点の nixpkgs rev**（`last-applied-nixpkgs-rev` state file）である。
-    // これを使う理由は partial-failure 再実行への堅牢性: 前回実行が `nix flake update` で lock を新 pin へ
-    // bump した後に switch/darwin で失敗すると、ローカル lock は新 nixpkgs rev・`last-applied-rev` は古いまま
-    // になる。この状態で再実行し、lock 更新「前」のローカル lock から nixpkgs rev を読むと、それは既に bump
-    // 済みの new rev であり、要約の old が new pin と一致して差分（実際にはまだ未適用な範囲）が消える。state
-    // file の値は最後に適用成功した時点で確定したものなので、未適用範囲の実起点を指し、再実行でも崩れない。
-    // state file が無い初回は、lock 更新前のローカル lock の nixpkgs rev へフォールバックする（適用済み状態の
-    // 推定起点として妥当）。`last-applied-rev`（dotfiles pin）は適用要否 dedup 専用で要約選択には使わない
-    // （要約は `nixpkgs_old` と突合するため、dotfiles pin SHA を渡すと名前空間が違い恒久 miss する）。
-    let span_start_nixpkgs_rev = match read_last_applied_nixpkgs_rev(&state_dir)? {
+    // 最優先は **最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev**（`last-summarized-nixpkgs-rev`）。
+    // これを起点に使う理由は二つある:
+    //   (A) 同日二重追記の抑止: shell catch-up（defer）と daemon home（defer）が同日に両方走っても、先行
+    //       実行が要約後にこの marker を N1 へ進めるため、後続は起点 = N1 → `select_entries` が空 → 再追記
+    //       しない（`last-applied-nixpkgs-rev` は defer で更新されず、起点に使うと同一ブロックを二度追記する）。
+    //   (B) partial-failure 堅牢性: switch/darwin が要約「前」に失敗するとこの marker は進まないため、前回
+    //       要約済み rev が保たれ、再実行で未表示範囲（要約 span）を失わない。
+    // marker が無いとき（このコード導入前に適用済み・本当の初回）は、適用要否 dedup 専用の値ではなく要約用の
+    // 値へ縮退する: まず `last-applied-nixpkgs-rev`（旧経路で commit 時に書かれた最後の適用 rev）、それも無ければ
+    // lock 更新「前」のローカル lock の nixpkgs rev（適用済み状態の推定起点）へフォールバックする。`last-applied-rev`
+    // （dotfiles pin）は適用要否 dedup 専用で要約選択には使わない（要約は `nixpkgs_old` と突合するため、dotfiles
+    // pin SHA を渡すと名前空間が違い恒久 miss する）。
+    let span_start_nixpkgs_rev = match read_last_summarized_nixpkgs_rev(&state_dir)? {
         Some(rev) => rev,
-        None => read_nixpkgs_rev(&config_dir)?,
+        None => match read_last_applied_nixpkgs_rev(&state_dir)? {
+            Some(rev) => rev,
+            None => read_nixpkgs_rev(&config_dir)?,
+        },
     };
 
     // **先に** ローカル lock を最新 repo pin へ更新する（skip 判定はこの後）。lock 更新前のローカル pin は前回
@@ -166,15 +187,25 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // ここでは行わず、darwin 成功後の `--commit-rev-marker` 起動へ委ねる。これにより darwin 失敗時に rev が
     // 適用済みと誤記録されて次回 skip し drift する（darwin 未収束のまま放置）問題を防ぐ。defer 時も適用後
     // 要約は表示する（home 適用は実際に進んでいるため）。
+    // 今回適用した new 側 nixpkgs rev（lock は上の `update_lock` で new pin へ更新済み）。要約 span の終端
+    // （次回起点）であり、適用要否 marker（`last-applied-*`）とも整合する。
+    let applied_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
+
     if !options.defer_rev_marker {
         write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
-        // dotfiles pin と同時に、今回適用した nixpkgs rev も確定する（次回 catch-up 要約 span の真の起点）。
-        // lock は上の `update_lock` で new pin へ更新済みなので、ここで読む値は今回適用した new 側。defer 時は
-        // rev 未確定のため書かない（darwin 成功後の `--commit-rev-marker` がまとめて確定する）。
-        let applied_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
+        // dotfiles pin と同時に、今回適用した nixpkgs rev も確定する。defer 時は rev 未確定のため書かない
+        // （darwin 成功後の `--commit-rev-marker` がまとめて確定する）。
         write_last_applied_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
     }
+
+    // 要約を表示/追記する。**この後で** `last-summarized-nixpkgs-rev` を進めるのが要点で、要約「前」に
+    // marker を進めると partial-failure（switch 後・要約前に異常終了）で未表示範囲を失う。逆に要約「後」に
+    // 進めることで、同日に defer 経路が連続しても 2 回目は起点 = new rev → 空 span → 再追記しない（A）。
     present_summary(&state_dir, Some(span_start_nixpkgs_rev.as_str()), dry_run)?;
+
+    // 要約済み範囲の終端を確定する。defer 経路でも commit 経路でも、要約を見せ終えた直後に必ず書く。
+    // これが次回 present_summary の span 起点になり、同日二重追記（A）と partial-failure 堅牢性（B）を両立させる。
+    write_last_summarized_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
     Ok(())
 }
 
@@ -431,6 +462,14 @@ fn read_last_applied_nixpkgs_rev(state_dir: &Path) -> Result<Option<String>> {
     read_trimmed_rev(&state_dir.join(LAST_APPLIED_NIXPKGS_REV))
 }
 
+/// 最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev を読む（不存在/空なら `None`）。
+///
+/// `None`（このコード導入前に適用済み・本当の初回）なら呼び出し側は `last-applied-nixpkgs-rev`、次いで
+/// lock 更新前のローカル lock の nixpkgs rev へ縮退する。
+fn read_last_summarized_nixpkgs_rev(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(LAST_SUMMARIZED_NIXPKGS_REV))
+}
+
 /// `last-applied-rev` を読む（不存在/空なら `None`）。
 fn read_last_applied_rev(state_dir: &Path) -> Result<Option<String>> {
     read_trimmed_rev(&state_dir.join(LAST_APPLIED_REV))
@@ -467,6 +506,14 @@ fn write_last_applied_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<
 /// `last-applied-rev` と同時に確定し、catch-up 要約 span の真の起点（未適用範囲の起点）として次回実行で読む。
 fn write_last_applied_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
     write_rev_atomic(&state_dir.join(LAST_APPLIED_NIXPKGS_REV), rev, dry_run)
+}
+
+/// 最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev を原子的に書き込む（ユーザ所有）。`--dry-run` 不書込。
+///
+/// 要約「後」に書くことで、次回 present_summary の span 起点が「最後に見せ終えた rev」になり、同日二重追記の
+/// 抑止（A）と partial-failure 堅牢性（B）を両立させる。
+fn write_last_summarized_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_SUMMARIZED_NIXPKGS_REV), rev, dry_run)
 }
 
 /// rev を同一 dir 内 temp→rename で原子的に書く共有実装（部分書込みを観測させない）。
@@ -718,11 +765,12 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY,
-        UpdateLock, append_pending_summary, copy_history_dir, is_stale_lock, lock_payload,
-        parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin, present_summary,
-        read_last_applied_nixpkgs_rev, read_last_applied_rev, resolve_state_dir, should_switch,
-        update_args, write_last_applied_nixpkgs_rev, write_last_applied_rev,
+        LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG, LAST_SUMMARIZED_NIXPKGS_REV, LOCK_FILE,
+        LOCK_STALE_SECS, PENDING_SUMMARY, UpdateLock, append_pending_summary, copy_history_dir,
+        is_stale_lock, lock_payload, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
+        present_summary, read_last_applied_nixpkgs_rev, read_last_applied_rev,
+        read_last_summarized_nixpkgs_rev, resolve_state_dir, should_switch, update_args,
+        write_last_applied_nixpkgs_rev, write_last_applied_rev, write_last_summarized_nixpkgs_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -950,10 +998,12 @@ mod tests {
     }
 
     #[test]
-    fn last_applied_nixpkgs_rev_round_trips_and_is_preferred_span_start() -> crate::Result<()> {
-        // P2-2 退行固定: 要約 span の起点は「最後に適用成功した nixpkgs rev」を確定書込みした state file から
-        // 読み、partial-failure 再実行でローカル lock が new pin へ bump 済みでも起点が崩れないようにする。
-        // ここでは state file の round-trip（不在→書込み→読取り、defer/dry-run の非書込み）を固定する。
+    fn last_applied_nixpkgs_rev_round_trips_as_secondary_span_fallback() -> crate::Result<()> {
+        // P2-2 退行固定（更新）: `last-applied-nixpkgs-rev` は適用成功時に確定する state file で、要約 span 起点
+        // 解決の **二次フォールバック**（最優先は `last-summarized-nixpkgs-rev`。show-once 退行修正で追加）。
+        // ローカル lock が new pin へ bump 済みでも、commit 経路で書かれたこの値が起点候補として残る。ここでは
+        // state file の round-trip（不在→書込み→読取り、`last-applied-rev` と独立、dry-run 非書込み）を固定する。
+        // 起点解決の優先順位そのものは `summarized_marker_takes_precedence_over_applied_for_span_start` が固定する。
         let dir = temp_dir("applied-nixpkgs");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
@@ -984,6 +1034,146 @@ mod tests {
         assert_eq!(
             read_last_applied_nixpkgs_rev(&dir)?,
             Some("nixpkgs-applied-old".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// `run()` の要約 span 起点解決を、nix 不要で決定論的に再現する test-only ヘルパ。
+    ///
+    /// 本番 `run()` は marker を `last-summarized-nixpkgs-rev`（最優先）→ `last-applied-nixpkgs-rev` →
+    /// lock 更新前 nixpkgs rev の順で解決する。nix（lock 更新）を伴わずに本番と同じ優先順位を固定するため、
+    /// lock フォールバック値は `lock_fallback` 引数で注入する（本番の `read_nixpkgs_rev` 相当）。
+    fn resolve_span_start(state_dir: &Path, lock_fallback: &str) -> crate::Result<String> {
+        Ok(match read_last_summarized_nixpkgs_rev(state_dir)? {
+            Some(rev) => rev,
+            None => match read_last_applied_nixpkgs_rev(state_dir)? {
+                Some(rev) => rev,
+                None => lock_fallback.to_string(),
+            },
+        })
+    }
+
+    /// 非 tty 適用 1 回ぶん（要約 → 要約済み marker 確定）を、本番 `run()` の defer 経路と同じ順序で実行する。
+    ///
+    /// 要約「後」に `last-summarized-nixpkgs-rev` を `applied_new` へ進める点が要点（partial-failure で要約前に
+    /// 失敗すると marker が進まないことを別テストで固定する）。
+    fn apply_once_defer(
+        state_dir: &Path,
+        lock_fallback: &str,
+        applied_new: &str,
+    ) -> crate::Result<()> {
+        let span_start = resolve_span_start(state_dir, lock_fallback)?;
+        present_summary(state_dir, Some(span_start.as_str()), false)?;
+        write_last_summarized_nixpkgs_rev(state_dir, applied_new, false)?;
+        Ok(())
+    }
+
+    #[test]
+    fn same_day_defer_runs_append_update_block_only_once() -> crate::Result<()> {
+        // 退行固定（A: show-once）: 同日に shell catch-up（defer）と daemon home（defer）が両方走る通常ケースで、
+        // pending-summary に同一更新ブロック（N0->N1）が **1 回だけ** 入ることを決定論的に固定する。
+        //
+        // marker（`last-summarized-nixpkgs-rev`）を要約「後」に進めるため、2 回目の present_summary は起点 = N1
+        // → `select_entries` が `nixpkgs_old == N1` を見つけられず空 span → 再追記しない。defer 経路では
+        // `last-applied-nixpkgs-rev` が更新されないため、旧実装（applied を span 起点に使用）はここで二度追記した。
+        let dir = temp_dir("same-day-defer");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        // 履歴 chain: N0->N1（実 packages 1 件）。lock fallback（初回起点）は N0。
+        write_history(&dir, &[("N0", "N1")]);
+
+        // 1 回目（shell catch-up, defer）: 起点 = N0（marker 無し→ lock fallback）→ N0->N1 を追記し marker=N1。
+        apply_once_defer(&dir, "N0", "N1")?;
+        // 2 回目（daemon home, defer, 同日）: 起点 = marker(N1)。defer なので applied は依然未更新（None）。
+        apply_once_defer(&dir, "N0", "N1")?;
+
+        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        // 更新ブロック（宣言アプリ行 neovim-N0）は 1 回だけ現れる（二度見え＝退行を弾く）。
+        let occurrences = pending.matches("neovim-N0").count();
+        assert_eq!(
+            occurrences, 1,
+            "same-day defer runs must append the N0->N1 block exactly once: {pending}"
+        );
+        // marker は要約済み終端 N1 に確定している（defer でも書く）。
+        assert_eq!(
+            read_last_summarized_nixpkgs_rev(&dir)?,
+            Some("N1".to_string())
+        );
+        // defer 経路では適用 marker（`last-applied-nixpkgs-rev`）は進めない（rev 確定は commit が担う）。
+        assert_eq!(read_last_applied_nixpkgs_rev(&dir)?, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn partial_failure_before_summary_preserves_span() -> crate::Result<()> {
+        // 退行固定（B: partial-failure 堅牢性）: switch/darwin が **要約前** に失敗した再実行で、要約 span が
+        // 消えないことを固定する。要約「後」に marker を進める設計のため、要約前に失敗すれば marker は前回
+        // 要約済み rev のまま保たれ、再実行で未表示範囲を再び示せる。
+        let dir = temp_dir("partial-failure");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        // 履歴 chain: N0->N1->N2。N0->N1 は前回適用で要約済み、N1->N2 が今回の未表示範囲。
+        write_history(&dir, &[("N0", "N1"), ("N1", "N2")]);
+
+        // 前回の成功適用で N0->N1 を要約済み（marker = N1）にしておく。
+        apply_once_defer(&dir, "N0", "N1")?;
+        let _ = std::fs::remove_file(dir.join(PENDING_SUMMARY)); // 前回ぶんは消費済みとみなす。
+
+        // 今回: lock は N2 へ bump 済みだが switch が要約「前」に失敗 → present_summary も marker 書込みも
+        // 走らない。よって marker は N1 のまま。span 起点は marker(N1) を読む（bump 済み lock=N2 ではない）。
+        let span_start = resolve_span_start(&dir, "N2")?;
+        assert_eq!(
+            span_start, "N1",
+            "span start must be preserved at last-summarized rev, not the bumped lock rev"
+        );
+
+        // 再実行（switch 成功）で N1->N2 を要約できる（未表示範囲が消えていない）。
+        apply_once_defer(&dir, "N2", "N2")?;
+        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        assert!(
+            pending.contains("neovim-N1"),
+            "re-run must still summarize the unshown N1->N2 range: {pending}"
+        );
+        // 二重表示にならないよう、再表示は未表示範囲（N1->N2）のみ。既表示 N0->N1 は出ない。
+        assert!(
+            !pending.contains("neovim-N0"),
+            "already-summarized N0->N1 must not reappear: {pending}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn summarized_marker_takes_precedence_over_applied_for_span_start() -> crate::Result<()> {
+        // 起点解決の優先順位を固定する: `last-summarized-nixpkgs-rev`（最優先）→ `last-applied-nixpkgs-rev`
+        // → lock fallback。summarized は「最後に見せ終えた rev」で、適用 marker より新しくなりうる（defer 連続）。
+        let dir = temp_dir("span-precedence");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        // どちらも無ければ lock fallback。
+        assert_eq!(resolve_span_start(&dir, "lock-rev")?, "lock-rev");
+        // applied のみ → applied。
+        write_last_applied_nixpkgs_rev(&dir, "applied-rev", false)?;
+        assert_eq!(resolve_span_start(&dir, "lock-rev")?, "applied-rev");
+        // summarized があれば最優先。
+        write_last_summarized_nixpkgs_rev(&dir, "summarized-rev", false)?;
+        assert_eq!(resolve_span_start(&dir, "lock-rev")?, "summarized-rev");
+        // round-trip と dry-run 非書込も固定。
+        assert_eq!(
+            read_last_summarized_nixpkgs_rev(&dir)?,
+            Some("summarized-rev".to_string())
+        );
+        assert!(dir.join(LAST_SUMMARIZED_NIXPKGS_REV).exists());
+        write_last_summarized_nixpkgs_rev(&dir, "should-not-write", true)?;
+        assert_eq!(
+            read_last_summarized_nixpkgs_rev(&dir)?,
+            Some("summarized-rev".to_string())
         );
 
         let _ = std::fs::remove_dir_all(&dir);
