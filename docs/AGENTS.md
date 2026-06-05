@@ -22,4 +22,4 @@ This file applies to everything under `docs/`.
 
 - Before editing under `docs/`, you must read [docs-governance.md](./docs-governance.md).
 - When the change touches task rules or task structure, you must read [task-governance/README.md](./task-governance/README.md).
-- When the change touches area task artifacts, you must read [tasks/README.md](./tasks/README.md).
+- Do not add references to deleted task ledgers, work items, review artifacts, confirmation files, issue progress files, or current-cycle records.

@@ -4,7 +4,7 @@
 
 復旧の入口には YubiKey を使う。YubiKey には Bitwarden master password と BWS access token を保存する。GPG secret key backup と `password-store` の remote URL は Bitwarden Secrets Manager から取得する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
 
-この文書で強化する要件は設計/仕様契約であり、現行 Rust 実装およびテストが本書の全要件を満たしたことを示すものではない。実装・テストでの充足は、`Bitwarden Secrets Manager` および `GnuPG / SSH` の後続実装作業（`docs/tasks/secret-recovery/work-items/bitwarden-secrets-manager.md`、`docs/tasks/secret-recovery/work-items/gnupg-ssh.md`）で段階的に反映する。
+この文書で強化する要件は設計/仕様契約であり、現行 Rust 実装およびテストが本書の全要件を満たしたことを示すものではない。実装・テストでの充足は、ユーザー指定の GitHub issue、PR、または明示タスクで段階的に反映する。
 
 secret の保護境界、core dump 無効化、paging / memory lock / signal trap の扱い、外部処理が secret の借用または所有 plaintext buffer の move を要求する場合の実装方針は [Secret handling policy](./secret-handling.md) を正本とする。この仕様文書では復旧対象とコマンド契約だけを定義し、secret handling の詳細を再掲しない。
 
@@ -67,7 +67,7 @@ YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-emai
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 を reset しない。既存領域と衝突する場合は停止する。
 書き込みは management key 認証を前提にし、既定 management key のまま運用しない。既定 key のままでは想定外の上書きリスクを抑止できないため、専用領域を運用する前に非既定 management key への変更を必須にする。
 
-現行 YubiKey work item サイクルでは、実装完了判定上の既知例外として factory-default management key を暫定前提にする。非既定 management key への切替、取得、注入は次フェーズの鍵管理作業で扱い、この暫定リスクは次フェーズで閉じる。
+factory-default management key を使う運用は暫定前提にしてはならない。非既定 management key への切替、取得、注入を満たせない場合は、その作業単位の完了条件として明示的に扱う。
 
 詳細設計は [YubiKey 秘密情報保存設計](./yubikey-secret-storage-design.md) に置く。
 

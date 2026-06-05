@@ -11,9 +11,9 @@ While this skill is active, the current actor is the **documentation reviewer**.
 
 ## Governing Sources
 
-- `docs/task-governance/implementation-review-judgement.md` (section: documentation reviewer responsibilities)
-- `docs/architecture/hexagonal-implementation-rules.md` (canonical source for doc-comment review rules)
-- `docs/docs-governance.md` (if present)
+- `docs/task-governance/implementation-review-judgement.md`
+- `docs/architecture/hexagonal-implementation-rules.md`
+- `docs/docs-governance.md`
 
 ## Required Reading Order
 
@@ -21,11 +21,13 @@ While this skill is active, the current actor is the **documentation reviewer**.
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
 4. `docs/architecture/hexagonal-implementation-rules.md`
-5. `docs/docs-governance.md` (if present)
+5. `docs/docs-governance.md`
+6. The user-specified GitHub issue, PR, explicit task, or delegated review input
+7. Additional canonical documents required by the input
 
 ## Rules
 
-- Judge alignment between implementation and code doc comments.
-- Use canonical scope, including mandatory production targets and test-case exclusion defined in governing sources.
-- Return verdict only; do not edit implementation.
-- Do not add local normative rules here.
+- Perform only this role's judgement; do not edit source files, commit, or perform another role's work.
+- Read the target code, documents, issue, PR, or task directly. Do not substitute past records, summaries, or implementer reports for judgement.
+- Apply the governing source for this role and avoid restating its detailed rules here.
+- Return the verdict format required by `docs/task-governance/implementation-review-judgement.md` when acting as a reviewer.

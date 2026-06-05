@@ -1,81 +1,57 @@
 # AGENTS_ja.md
 
-これはこのリポジトリの最小セッション入口文書である。役割とスキルの対応、オーケストレーターの絶対禁止事項、そしてそれ以外を所有する正本への導線だけを保持する。正本が所有する詳細をここで再掲してはならない（`docs/docs-governance.md` を参照）。
-
-## デフォルトスキル — 役割とスキルの対応
-
-このリポジトリでは、top-level のタスク実行依頼の先頭で、メインエージェントが他の行為より前に `/orchestration` スキルを起動する。active work item の選定・委譲・読み取り・ファイル操作は、メインエージェントのオーケストレーションスキルが有効になるまで開始してはならない。
-
-委譲された役割エージェントはメインエージェントにはならない。委譲された実装担当は `/implementation-execution` から開始し、同じ delegated task について `/orchestration` を起動せず、その委譲済み実装割当に対して追加のサブエージェントを起動しない。
-
-すべての役割は、作業を開始する前に対応スキルを起動しなければならない：
-
-| 役割 | スキル |
-|---|---|
-| オーケストレーター | `/orchestration` |
-| リポジトリ固有オーケストレーション（secrets モジュール・ドメイン固有制約） | `/dotfiles-task-governance` |
-| 実装担当 | `/implementation-execution` |
-| レビュー担当（必須レビュー担当集合は `docs/task-governance/implementation-review-judgement.md` の「必須レビュー担当」に従う） | `/implementation-review-judgement` |
-| 完了判定担当 | `/task-completion-judgement` |
-
-各役割は、対応スキルが有効になる前に active work item の選定・ファイル読み取り・ファイル編集・サブエージェント委譲・判定のいずれも開始してはならない。役割スキルが定める禁止事項は、その役割として動作している間にのみ適用される。オーケストレーター禁止事項は、オーケストレーターとして動作するメインエージェントを拘束し、`/implementation-execution` 配下で動作する委譲済み実装担当には適用しない。
-
-## オーケストレーター役割 — 絶対禁止事項
-
-このリポジトリのタスク実行依頼では、メインエージェントだけがオーケストレーターとして動作する。オーケストレーターとして動作中、以下は緊急性・単純さ・ユーザー指示の如何を問わず絶対禁止である：
-
-- ファイルの直接編集（Edit ツール・Write ツール・その他ファイル書き込み操作）
-- 実装判定目的での対象実装コード・仕様・テスト・レビュー成果物の読み取り
-- テスト・ビルドコマンド・検証コマンドの実行
-- 実装・レビュー判定・進捗判定・完了判定の直接実施
-- 依頼がすでにタスク実行コマンドである場合の委譲可否についての追加許可請求
-
-オーケストレーターが許可される行為は、`docs/task-governance/workflow.md` が定める入口、active item 選定、委譲パラメーター抽出、役割起動、起動/利用失敗記録の行為に限る。これには、単一の active work item を選定して委譲を準備するために workflow が定める入口参照だけを読み、必要な fresh subagent を起動すること、または起動/利用失敗を統治記録先へ残すことが含まれる。
-
-この禁止事項は全タスク種別（secret-recovery 実装・文書是正・リファクタリング・その他すべての作業）に適用される。「単純な修正」という例外はない。役割分離の哲学、委譲義務、実行機構に依存しない役割規則、失敗時処理の詳細は `docs/task-governance/workflow.md`（`2. 役割`・`7. 役割分離`）が正本である。同文書に従う。
-
-## 翻訳同期
-
-- `AGENTS_ja.md` は `AGENTS.md` と意味的に一致させる。
-- `AGENTS.md` を編集する場合は、同一変更で `AGENTS_ja.md` も更新する。
-- レビュー時に両文書の意味一致を確認する。
-- このリポジトリ内のどこかに新しい `AGENTS.md` を追加する場合は、同一変更で隣接する `AGENTS_ja.md` も追加する。ディレクトリ単位の `AGENTS.md` だけを単独で作成または残置してはならない。
-
-## リポジトリ概要
-
-このリポジトリは、macOS の利用者環境向け dotfiles を管理する Nix flake プロジェクトである。`dotfiles` CLI（Rust ワークスペース）、Home Manager / nix-darwin モジュール、zsh と Neovim の利用者設定、そしてリポジトリ内のタスク実行を統治する文書群と役割スキルを提供する。作業は統治対象であり、タスクフロー・役割分離・レビューゲートは `docs/task-governance/` が定義する。入口手順は後述の「必須参照と正本」節にある。
-
-本節は高レベルの導線のみを示す。詳細は所有文書へ参照を渡し、正本が所有する規則をここで再掲しない。
-
-### 主要ディレクトリ / ファイル構成
-
-- `rust/` — `dotfiles` CLI の Cargo ワークスペース。メンバー: `dotfiles-cli`（CLI バイナリ）、`dotfiles-core`（共有コア）、`xtask`（内部タスクランナー）、`rust/tests/` 配下の integration/check crate。層・公開範囲規則は `docs/architecture/` が正本。
-- `nix/` — flake から参照される Nix 設定: `home.nix`（Home Manager）、`darwin.nix`（nix-darwin）、再利用モジュール `nix/modules/`、プロジェクトテンプレート `nix/templates/`。
-- `flake.nix` / `flake.lock` / `Cargo.toml` / `Cargo.lock` — リポジトリ直下の flake と Rust ワークスペースのマニフェスト。
-- `config/` — 利用者アプリ設定: `config/zsh/`（zsh）、`config/nvim/`（Neovim）。
-- `scripts/` — シェル入口と補助スクリプト。bootstrap 入口 `scripts/bootstrap.sh` を含む。
-- `docs/` — 文書と統治。`docs/architecture/`（Hexagonal Architecture、ディレクトリ別レビューチェック）、`docs/task-governance/`（タスクフロー、役割、レビュー/完了判定、セキュリティ義務）、`docs/tasks/`（active item 台帳と領域別 work item）、`docs/secret-recovery/`（秘密情報取り扱いの設計と方針）、`docs/docs-governance.md`（配置 / 正本 / 重複禁止規約）。
-- `.agents/skills/` — 役割スキル（オーケストレーション、実装実行、各レビュー役割、完了判定）。上表の役割に対応づけられる。
-- `.github/` — GitHub ワークフロー。`.envrc`、`.zshrc`、`.gitconfig` 等の直下 dotfiles はローカル環境を構成する。
+これはこのリポジトリの最小セッション入口文書である。言語方針、スキル先行の入口順序、役割とスキルの対応、オーケストレーター禁止事項への導線、翻訳同期だけを保持する。
 
 ## コミュニケーション
 
 - 利用者が別言語を明示しない限り、日本語で応答する。
 - コードレビュー指摘、PR 要約、検証メモは日本語で記述する。
-- 技術識別子、コマンド名、ファイルパス、コミット種別、上流引用は必要に応じて原文を保持する。
+- 技術識別子、コマンド、パス、コミット種別、上流引用は必要に応じて原文を保持する。
 
-## 必須参照と正本
+## スキル先行入口
 
-作業前に `docs/task-governance/workflow.md` が定める入口と active item 選定手順に従う。`docs/README.md`、`docs/tasks/README.md`、`docs/tasks/tasks.md` から開始し、単一の active work item を選定したうえで、workflow と当該 item が現在の役割に要求する参照先だけを辿る。セッション再開時、コンテキストクリア後、または継続依頼を受けたときも、最初にこの入口手順を取り直す。
+- すべての top-level task-execution request では、タスク参照を読む前、または役割作業を始める前に `/orchestration` を起動する。
+- 下記の最初に読む参照は、skill 起動前作業ではなく、`/orchestration` skill の Required Reading Order として読む。
 
-各領域では、ここの再掲ではなく正本を読んでから行動する：
+## 最初に読む参照
 
-- タスクフロー、状態、役割分離、コミット着手ゲート、ブランチ・コミット・プルリクエスト運用、文書指示の適用、フォールバック処理: `docs/task-governance/workflow.md`（入口: `docs/task-governance/README.md`）。
-- 実装担当の強制義務、再読義務、記録義務、完了・継続義務、検証選択、ローカル生成物の取り扱い: `docs/task-governance/implementation-execution.md`。
-- 必須レビュー担当集合と集約規則: `docs/task-governance/implementation-review-judgement.md`。
-- 完了判定とコミット許可条件: `docs/task-governance/task-completion-judgement.md`、進捗判定: `docs/task-governance/progress-judgement.md`。
-- Hexagonal Architecture（層モデル、許可/禁止成果物、依存方向、公開範囲）、comment / doc comment 規則、言語別コードスタイル（Rust/Nix/Shell/Lua）: `docs/architecture/hexagonal-implementation-rules.md`、ディレクトリ別チェック: `docs/architecture/review-checklist.md`。
-- セキュリティ義務（秘密情報の非コミット、マシン固有状態、Homebrew tap 固定 等）: `docs/task-governance/security-obligations.md`。
-- secret-recovery の計画・進行/継続・文書取り扱い、固定実装単位、役割分担、実装方針: `docs/secret-recovery/implementation-guidelines.md`（入口: `docs/secret-recovery/README.md`）。これらの領域固有規則をここで再掲・再解釈してはならない。
-- 文書配置・正本・重複禁止の規約: `docs/docs-governance.md`。
-- リポジトリのセットアップ、dev shell 利用、開発/検証コマンド（`direnv allow .` / `nix develop`、`cargo xtask ...`）: `README.md`（開発環境 / 内部タスク / 検証）。Nix 環境に依存するコマンドはすべて dev shell 内で実行し、dev shell 外では `direnv exec .` を前置する。
+- [docs/README.md](docs/README.md) から開始し、続いて [docs/task-governance/README.md](docs/task-governance/README.md) と [docs/task-governance/workflow.md](docs/task-governance/workflow.md) を読む。
+- 文書配置、正本扱い、重複禁止は [docs/docs-governance.md](docs/docs-governance.md) を適用する。
+- 役割詳細は `.agents/skills/*/SKILL.md` が所有する。ここで再掲しない。
+
+## 役割とスキルの対応
+
+すべての役割は、役割作業の前に指定スキルを起動しなければならない。
+
+| 役割 | スキル |
+|---|---|
+| オーケストレーター | `/orchestration` |
+| リポジトリ固有統治補助 | `/dotfiles-task-governance` |
+| 実装担当 | `/implementation-execution` |
+| レビュー集約 | `/implementation-review-judgement` |
+| 完了判定 | `/task-completion-judgement` |
+
+個別レビュー担当は次のスキルファイルを使う。
+
+| レビュー担当 | スキルファイル |
+|---|---|
+| 構造レビュー担当 | `.agents/skills/structural-review/SKILL.md` |
+| 運用整合レビュー担当 | `.agents/skills/operational-consistency-review/SKILL.md` |
+| セキュリティレビュー担当 | `.agents/skills/security-review/SKILL.md` |
+| 仕様適合レビュー担当 | `.agents/skills/specification-conformance-review/SKILL.md` |
+| テストレビュー担当 | `.agents/skills/test-review/SKILL.md` |
+| ドキュメントレビュー担当 | `.agents/skills/documentation-review/SKILL.md` |
+| アーキテクチャ整合レビュー担当 | `.agents/skills/architectural-consistency-review/SKILL.md` |
+| 参照整合レビュー担当 | `.agents/skills/reference-integrity-review/SKILL.md` |
+
+委譲された役割エージェントは、その delegated task についてメインエージェントにはならない。委譲された実装担当は `/implementation-execution` から開始し、同じ delegated task について `/orchestration` を起動せず、その委譲済み実装割当に対して追加のサブエージェントを起動しない。
+
+## オーケストレーター禁止事項
+
+オーケストレーターの絶対禁止事項と許可行為は [docs/task-governance/workflow.md](docs/task-governance/workflow.md) が定義する。このファイルでは重複定義しない。
+
+## 翻訳同期
+
+- `AGENTS_ja.md` は `AGENTS.md` と意味的に一致させる。
+- `AGENTS.md` を編集する場合は、同じ変更で `AGENTS_ja.md` も更新する。
+- このリポジトリ内のどこかに新しい `AGENTS.md` を追加する場合は、同じ変更で隣接する `AGENTS_ja.md` も追加する。

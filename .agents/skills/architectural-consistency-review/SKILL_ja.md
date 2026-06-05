@@ -1,6 +1,6 @@
 ---
 name: architectural-consistency-review
-description: モジュール全体整合を判定するアーキテクチャ整合レビュー担当として使う。
+description: アーキテクチャ整合レビュー担当として判定するときに使う。
 ---
 
 # Architectural Consistency Review
@@ -12,23 +12,21 @@ description: モジュール全体整合を判定するアーキテクチャ整�
 ## Governing Sources
 
 - `docs/architecture/hexagonal-implementation-rules.md`
-- `docs/architecture/review-checklist.md`
 - `docs/task-governance/implementation-review-judgement.md`
 
 ## Required Reading Order
 
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
-3. `docs/architecture/hexagonal-implementation-rules.md`
-4. `docs/architecture/review-checklist.md`
-5. `docs/task-governance/implementation-review-judgement.md`
+3. `docs/task-governance/implementation-review-judgement.md`
+4. `docs/architecture/hexagonal-implementation-rules.md`
+5. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+6. 入力が要求する追加正本文書
 
 ## Rules
 
-- シンボル単位ではなく、モジュール全体の設計整合を判定する。
-- 機械的分離ではなく、処理が正本アーキテクチャ文書で規定された責務境界に置かれた一貫した設計かを判定する。
-- 薄い port / adapter を作るために、正本アーキテクチャ文書が他層へ割り当てる責務を別層へ逃がしていないかを確認する。
-- adapter 配下の `secrets-internal-test-stub` feature 専用 backend stub は、正本の internal backend stub 条件に照らして判定する。その存在だけで全体非整合と判定しない。
-- 対象モジュールを独立に直接読んで判定する。
-- 判定返却のみ行い、実装編集はしない。
-- 規範詳細はこのファイルで再定義しない。
+- この役割の判定だけを行い、ソース編集、コミット、別役割の作業をしない。
+- 対象コード、文書、issue、PR、task を直接読む。過去記録、要約、実装担当報告で判定を代替しない。
+- この役割の境界は `docs/task-governance/implementation-review-judgement.md` に従う。構造チェックリストの合否総和ではなく、モジュール全体の設計整合を判定する。
+- この役割の governing source を適用し、詳細規則をここで再掲しない。
+- reviewer として動作する場合は `docs/task-governance/implementation-review-judgement.md` が要求する verdict 形式で返す。

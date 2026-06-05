@@ -29,4 +29,4 @@ This file applies to everything under `.agents/skills/`.
 
 - Before editing any skill, you must read `docs/README.md`.
 - When the skill refers to repository workflow or task rules, you must read `docs/task-governance/README.md`.
-- When the skill refers to area task artifacts, you must read `docs/tasks/README.md`.
+- When a skill refers to repository workflow or task rules, use the current work-unit model in `docs/task-governance/workflow.md`; do not add references to deleted task ledgers or review artifacts.

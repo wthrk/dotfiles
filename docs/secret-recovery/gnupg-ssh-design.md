@@ -36,7 +36,7 @@
 - `~/.ssh/id_ed25519` の利用有無は判定条件に含めず、GPG authentication subkey 経由の経路だけを復旧対象にする。
 - Home Manager で `gpg-agent.conf` を生成し、`enable-ssh-support` を含む SSH support 設定を恒久的に管理する。
 - zsh 環境変数は `GPG_TTY` と `SSH_AUTH_SOCK` を必須とし、`SSH_AUTH_SOCK` は `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合のみ上書きする。
-- 既存 key の扱いは「停止」を正とし、同一 primary fingerprint の secret key が既に鍵リングにある場合は import 前に停止する（既存 key 上書きは本 issue では扱わない）。
+- 既存 key の扱いは「停止」を正とし、同一 primary fingerprint の secret key が既に鍵リングにある場合は import 前に停止する（既存 key の上書きは対象外とする）。
 
 ## backup export 入力契約
 

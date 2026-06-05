@@ -13,20 +13,19 @@ description: セキュリティレビュー担当として判定するときに�
 
 - `docs/task-governance/security-obligations.md`
 - `docs/task-governance/implementation-review-judgement.md`
-- `docs/task-governance/workflow.md`
 
 ## Required Reading Order
 
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
-3. `docs/task-governance/workflow.md`
+3. `docs/task-governance/implementation-review-judgement.md`
 4. `docs/task-governance/security-obligations.md`
-5. `docs/task-governance/implementation-review-judgement.md`
-6. 委譲されたレビュー対象パス
+5. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+6. 入力が要求する追加正本文書
 
 ## Rules
 
-- 機密露出・不正アクセス経路・権限昇格リスクを評価する。
-- 要約で代替せず、実コードを直接確認する。
-- 判定返却のみ行い、実装編集はしない。
-- 判定規則は正本参照に従い、このファイルで重複定義しない。
+- この役割の判定だけを行い、ソース編集、コミット、別役割の作業をしない。
+- 対象コード、文書、issue、PR、task を直接読む。過去記録、要約、実装担当報告で判定を代替しない。
+- この役割の governing source を適用し、詳細規則をここで再掲しない。
+- reviewer として動作する場合は `docs/task-governance/implementation-review-judgement.md` が要求する verdict 形式で返す。

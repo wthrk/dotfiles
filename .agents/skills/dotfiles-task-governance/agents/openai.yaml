@@ -1,4 +1,4 @@
 interface:
   display_name: "Dotfiles Task Governance"
-  short_description: "Repo task orchestration and progress governance"
-  default_prompt: "Use $dotfiles-task-governance to orchestrate implementation, review, progress judgement, and task-history recovery in this repository."
+  short_description: "Repo-specific constraints and secret-recovery governance support"
+  default_prompt: "Use $dotfiles-task-governance only to apply repository-specific constraints and secret-recovery governance after another role skill has established the actor role."
