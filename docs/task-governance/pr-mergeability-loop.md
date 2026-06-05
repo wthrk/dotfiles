@@ -7,7 +7,8 @@
 次のいずれかを含む依頼では、この文書を適用する。
 
 - PR URL または PR 番号が指定されている。
-- PR review 対応、AI review、Codex review、Copilot review、`@codex review` が指定されている。
+- PR review 対応、AI review、Codex review、Copilot review が指定され、対象 PR を特定できる。
+- 対象 PR が特定できる文脈で `@codex review` が指定されている。
 - review thread の返信、修正、resolve が指定されている。
 - checks、mergeability、merge 可能状態の確認が指定されている。
 
@@ -30,9 +31,9 @@
 1. PR 番号、base branch、head branch、head OID を確認する。
 2. checks と mergeability を確認し、pending / failing / blocked の理由を特定する。
 3. review、comment、review thread の inventory を作成し、未対応、対応済み、誤検出、権限不足で resolve 不能のものを分ける。
-4. 最新 head に AI / Codex / Copilot review がない、または古い head への review しかない場合は、必要に応じて `@codex review` などのリクエストを行う。
+4. 最新 head に AI / Codex / Copilot review がない、または古い head への review しかない場合は、対象 PR が特定できる範囲で、必要に応じて `@codex review` などのリクエストを行う。PR が特定できない review 依頼は、この文書ではなく通常の差分レビューとして扱う。
 5. 指摘ごとに採用または不採用を判断する。
-6. 採用する指摘は、現在役割で許可されている場合に限り修正し、commit / push する。許可されていない場合は、修正対象として適切な実行主体へ戻す。
+6. 採用する指摘は、現在役割で許可されている場合に限り修正する。commit / push は、`workflow.md` のコミット着手ゲートなど既存 gate を満たし、現在役割で許可されている場合に限り行う。許可されていない場合、または gate を満たしていない場合は、修正対象として適切な実行主体へ戻す。
 7. 不採用の指摘は、現在役割で許可されている場合に限り PR 上で理由を返信する。許可されていない場合は、返信が必要な事項として適切な PR 操作担当へ戻す。
 8. 対応済み review thread は、現在役割で許可されており、かつ resolve 権限がある場合に限り resolve する。許可または権限が不足する場合は、resolve が必要な事項として報告する。
 9. 新しい head OID に対して、checks、mergeability、未解決 thread、AI / Codex / Copilot review 結果を再確認する。

@@ -1,6 +1,6 @@
 ---
 name: pr-mergeability-loop
-description: Use as a support skill when a PR instruction involves review response, AI/Codex/Copilot review, @codex review, review thread resolution, checks, or mergeability confirmation.
+description: Use as a support skill when a PR instruction involves review response, AI/Codex/Copilot review, PR-scoped @codex review, review thread resolution, checks, or mergeability confirmation.
 ---
 
 # PR Mergeability Loop
@@ -30,16 +30,13 @@ Use this skill with the current role when the instruction includes any of the fo
 
 - PR URL or PR number
 - PR review response
-- AI review, Codex review, Copilot review, or `@codex review`
+- AI review, Codex review, Copilot review, or PR-scoped `@codex review`
 - review thread reply or resolve
 - checks confirmation
 - mergeability confirmation
 
 ## Rules
 
-- Apply `docs/task-governance/pr-mergeability-loop.md` directly.
-- Treat the goal as making the PR confirmably mergeable, not performing the merge.
-- Work against the latest PR head OID and repeat after every pushed fix.
-- Confirm checks, mergeability, unresolved review threads, and latest-head AI/Codex/Copilot review status before reporting completion.
-- Reply to adopted or rejected review comments as required, and resolve completed threads when permitted.
-- If checks are pending or failing, external review is incomplete, resolve permission is missing, conflicts exist, branch protection is unsatisfied, or latest-head AI/Codex/Copilot review cannot be obtained, report the hold condition instead of calling the loop complete.
+- Apply `docs/task-governance/pr-mergeability-loop.md` directly; this skill does not restate the durable loop procedure.
+- Use this skill only within the actor's already established role and permissions.
+- Report any operation that the current role cannot perform instead of treating this support skill as authority to perform it.

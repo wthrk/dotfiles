@@ -1,6 +1,6 @@
 ---
 name: pr-mergeability-loop
-description: PR review 対応、AI/Codex/Copilot review、@codex review、review thread resolve、checks、mergeability 確認を含む PR 指示で補助スキルとして使う。
+description: PR review 対応、AI/Codex/Copilot review、PR 文脈の @codex review、review thread resolve、checks、mergeability 確認を含む PR 指示で補助スキルとして使う。
 ---
 
 # PR Mergeability Loop
@@ -30,16 +30,13 @@ description: PR review 対応、AI/Codex/Copilot review、@codex review、review
 
 - PR URL または PR 番号
 - PR review 対応
-- AI review、Codex review、Copilot review、または `@codex review`
+- AI review、Codex review、Copilot review、または PR 文脈の `@codex review`
 - review thread の返信または resolve
 - checks 確認
 - mergeability 確認
 
 ## Rules
 
-- `docs/task-governance/pr-mergeability-loop.md` を直接適用する。
-- ゴールは PR を確認可能な merge 可能状態にすることであり、実際の merge 実行ではない。
-- 最新 PR head OID を対象にし、修正 push のたびに反復する。
-- 完了報告前に、checks、mergeability、未解決 review thread、最新 head に対する AI/Codex/Copilot review 状態を確認する。
-- 採用または不採用の review comment には必要な返信を行い、権限がある場合は対応済み thread を resolve する。
-- checks pending/failing、外部 review 未完了、resolve 権限不足、conflict、branch protection 未充足、最新 head の AI/Codex/Copilot review 取得不能がある場合は、完了扱いにせず保留条件として報告する。
+- `docs/task-governance/pr-mergeability-loop.md` を直接適用する。このスキルは永続的な反復手順を再掲しない。
+- すでに確立済みの現在アクターの役割と権限の範囲内でのみ使う。
+- 現在役割で実行できない操作は、この補助スキルを根拠に実行せず、実行不能事項として報告する。
