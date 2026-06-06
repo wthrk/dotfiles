@@ -90,6 +90,26 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
+      # GitHub Actions の cache backend で /nix/store を run 間に永続化する（外部 cache サービス・
+      # CACHIX 等の secret 不要。token は既定の github.token）。restore はビルド前（install-nix 直後）に
+      # 置き、save は post action で job 末尾に自動実行される。lock が同一なら primary-key で完全再利用、
+      # nightly が lock を bump して miss した場合は restore-prefixes-first-match で前回 run の近い
+      # キャッシュから old/new closure を差分復元する。cache.nixos.org から取得できるパスはソース固定で
+      # 再取得可能なため、保存量は gc-max-store-size-macos の GC でローカルビルド成果物中心に抑え、
+      # GHA キャッシュ上限（repo/個別 10GB 級）を超えて save が失敗しないようにする。purge で同 prefix の
+      # 旧バージョンを掃除して容量累積を防ぐ（primary-key 一致版は never で保護）。
+      - name: /nix/store を GHA キャッシュから復元
+        uses: nix-community/cache-nix-action@v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-macos: 8G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P1DT12H
+          purge-primary-key: never
+
       - name: 旧 closure と旧 rev を記録
         id: old
         run: |
@@ -160,6 +180,21 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
+
+      # /nix/store を GHA キャッシュから復元する（bump job と同設計）。restore は最初の nix build より前に
+      # 置く。この時点で flake.lock は checkout 直後の committed（bump 前）lock なので primary-key は bump job
+      # と同じ committed lock 由来になり、bump job が save したキャッシュへ first-match で寄せられる。
+      - name: /nix/store を GHA キャッシュから復元
+        uses: nix-community/cache-nix-action@v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-macos: 8G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P1DT12H
+          purge-primary-key: never
 
       # bump 前（checkout 直後の committed lock）の参照 closure を build する。download-artifact が
       # flake.lock を bump 後 lock で上書きする前に行うことで、実 old closure store path を得る（fix3:
@@ -302,6 +337,22 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
+
+      # /nix/store を GHA キャッシュから復元する（bump/record job と同設計）。この job は dev shell
+      # （nix develop で dotfiles バイナリを build）を起動するため、その依存閉包を run 間で償却する。
+      # restore は download-artifact が lock を bump 後へ上書きする前に置き、primary-key を committed lock
+      # 由来にして bump job のキャッシュへ first-match で寄せる。
+      - name: /nix/store を GHA キャッシュから復元
+        uses: nix-community/cache-nix-action@v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-macos: 8G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P1DT12H
+          purge-primary-key: never
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v4
