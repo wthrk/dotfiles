@@ -36,28 +36,63 @@ _dotfiles_auto_update_state_dir() {
   print -r -- "$base/dotfiles"
 }
 
-# 当日 catch-up を既に起動済みかを判定し、未起動なら trigger marker を当日付で更新して 0 を返す。
+# 当日 catch-up を既に **成功させたか** を判定する（起動可否の gate）。未成功なら 0（=今日まだ起動すべき）。
 #
 # catch-up 起動頻度の抑制専用 marker（`last-login-trigger`）。中身は当日（`date +%F`）で、毎シェルではなく
 # 1 日 1 回だけ `dotfiles update` を起動するための gate にする。当日分が既に記録されていれば 1 を返して
-# 起動を抑止し、未記録（不在 / 別日）なら marker を当日付へ原子的に更新して 0 を返す（=今日初回起動）。
-# 実適用の重複抑止は別レイヤ（rev ベースの `last-applied-rev`、`dotfiles update` 側）が担うため、この marker は
-# upstream 検知のための「毎日 1 回は remote 解決を試す」起動頻度制御だけに使う。
+# 起動を抑止し、未記録（不在 / 別日）なら 0 を返す（=今日まだ起動していない）。
+#
+# **marker は起動「前」ではなく catch-up が成功した「後」に確定する**（重要・失敗日の再試行）。旧実装は
+# background 起動の前に当日付を書いていたため、初回ログインで network 不通や一時的な `nix flake update` 失敗が
+# 起きても、同日中の後続シェルは marker を見て再試行しなかった。daemon が動かないマシン（ログイン主体・スリープ
+# 運用）ほどこの catch-up が唯一の追随経路なので、失敗日は再試行できる必要がある。よってこの関数は marker を
+# **読むだけ**（書かない）にし、marker の確定は background の `dotfiles update home` が成功で終了した時にだけ
+# 行う（`_dotfiles_auto_update_run_catchup`）。当日に未成功なら、同日でも次のシェルで再び起動を試みる。
+#
+# 同日に複数シェルが起動して二重に background を立ち上げても、実適用の重複は `dotfiles update` 側の
+# `update.lock` が吸収する（後発は skip）。よって marker を成功時確定に倒しても二重適用は起きない。実適用の
+# 重複抑止は別レイヤ（rev ベースの `last-applied-rev`、`dotfiles update` 側）が担う。
 _dotfiles_auto_update_should_trigger_today() {
-  local state_dir today marker tmp
+  local state_dir today marker
   state_dir="$(_dotfiles_auto_update_state_dir)"
   today="$(date +%F 2>/dev/null)" || return 1
   [[ -n "$today" ]] || return 1
   marker="$state_dir/last-login-trigger"
 
-  # 当日分が既に記録されていれば抑止する（今日はもう起動した）。
+  # 当日分（成功記録）が既にあれば抑止する（今日はもう成功した）。未記録 / 別日なら起動側に倒す。
   if [[ -r "$marker" && "$(<"$marker")" == "$today" ]]; then
     return 1
   fi
+  return 0
+}
 
-  # state dir が無ければ作る（ユーザ所有）。失敗しても起動判断は続行する（marker 不在時は起動側に倒す）。
+# catch-up を background で実行し、**成功した時だけ** 当日 trigger marker を確定する。
+#
+# `dotfiles update home --defer-rev-marker` が 0 で終了した時のみ `last-login-trigger` を当日付へ原子的に
+# 書く。失敗（network 不通・`nix flake update` 失敗・lock 競合 skip 以外の異常）時は marker を書かないので、
+# 同日中の後続シェルが再び起動を試みて追随を回復できる（失敗日の再試行）。marker は起動頻度の抑制専用で、
+# 実適用の重複抑止（rev ベースの `last-applied-rev`）とは別物。要約は非 tty 適用のため `pending-summary` へ
+# 書かれ、`precmd` フックが拾って表示する。
+_dotfiles_auto_update_run_catchup() {
+  local state_dir today marker tmp
+  state_dir="$(_dotfiles_auto_update_state_dir)"
+
+  # **target は home に限定する**（既定 `all` を使わない）。detach した非 tty で `dotfiles update` の既定 `all`
+  # を呼ぶと darwin 適用が `sudo darwin-rebuild` を起動し、tty が無いためパスワード入力できず停止する。
+  # **`--defer-rev-marker`** で `last-applied-rev` を確定させない（home だけ適用して rev を確定すると、その rev
+  # の darwin 適用が daemon / 対話 `dotfiles update` で永久に skip される）。詳細は init 関数のコメント参照。
+  if ! dotfiles update home --defer-rev-marker >/dev/null 2>&1; then
+    # 失敗した。marker を確定しない（同日の後続シェルが再試行できるよう起動可否を開けておく）。
+    return 1
+  fi
+
+  # 成功した。当日 trigger marker を確定して、同日中の重複起動を抑止する。
+  today="$(date +%F 2>/dev/null)" || return 0
+  [[ -n "$today" ]] || return 0
+  marker="$state_dir/last-login-trigger"
+  # state dir が無ければ作る（ユーザ所有）。失敗しても致命にしない（次回起動側に倒れるだけ）。
   command mkdir -p -- "$state_dir" 2>/dev/null
-  # 当日付を原子的に書く（temp→rename）。書込み失敗でも今日初回として起動側に倒す。
+  # 当日付を原子的に書く（temp→rename）。
   tmp="$marker.$$.tmp"
   if print -r -- "$today" > "$tmp" 2>/dev/null; then
     command mv -f -- "$tmp" "$marker" 2>/dev/null
@@ -112,30 +147,19 @@ _dotfiles_auto_update_init() {
   _dotfiles_auto_update_consume_pending
 
   # catch-up 起動可否は **stale local pin で決めない**（定常状態で upstream を検知できないため）。1 日 1 回
-  # 程度のトリガ marker で、当日未トリガなら detach で `dotfiles update home` を起動する。`dotfiles update` は
-  # remote 解決（`nix flake update dotfiles`）を含み rev ベースで no-op 冪等なので、当日初回に必ず upstream を
-  # 解決し直し、変化があれば適用、無ければ何もしない。
+  # 程度のトリガ marker で、当日まだ catch-up を成功させていなければ detach で `dotfiles update home` を
+  # 起動する。`dotfiles update` は remote 解決（`nix flake update dotfiles`）を含み rev ベースで no-op 冪等
+  # なので、当日初回に必ず upstream を解決し直し、変化があれば適用、無ければ何もしない。
+  #
+  # marker は **起動前ではなく成功後** に確定する（`_dotfiles_auto_update_run_catchup`）。初回ログインで
+  # network 不通や一時的な `nix flake update` 失敗が起きた日は marker を書かないため、同日の後続シェルが
+  # 再試行して追随を回復できる（daemon が動かないマシンほど catch-up が唯一の追随経路）。実適用の重複は
+  # `dotfiles update` 側 `update.lock` が吸収するため、同日に複数シェルが起動しても二重適用にならない。
   if _dotfiles_auto_update_should_trigger_today; then
-    # ログインをブロックしないよう detach で起動する。多重起動は dotfiles 側 lock が吸収する。
-    # 適用は非 tty なので要約は `pending-summary` へ書かれ、下の precmd フックが拾って表示する。
-    #
-    # **target は home に限定する**（既定 `all` を使わない）。detach した非 tty プロセスで `dotfiles update`
-    # の既定 `all` を呼ぶと darwin 適用が `sudo darwin-rebuild` を起動し、tty が無いためパスワード入力できず
-    # 停止する。すると `last-applied-rev` 更新・`pending-summary` 書込みへ到達せず、表示も catch-up も完了
-    # しない。シェル catch-up は user 権限で完結する home 適用だけを行い、darwin 適用は root daemon
-    # （auto-update.nix の launchd daemon）に委ねる。home 側で lock 更新と switch home は進むため、ユーザは
-    # home 更新を即時反映でき、要約表示（pending-summary/precmd）も完了する。
-    #
-    # **`--defer-rev-marker` で `last-applied-rev` を確定させない**（重要・darwin starve 回避）。通常経路
-    # （flag 無し）の `dotfiles update home` は home 適用後に `last-applied-rev` を新 pin へ書く。だが home だけ
-    # 適用して rev を確定すると、その rev は「適用済み」扱いになり、同じ rev の darwin（system/GUI）適用が
-    # daemon / 対話 `dotfiles update` で永久に skip される（rev 消費済みで未収束のまま放置）。`--defer-rev-marker`
-    # を付けると home 適用と要約表示は行うが `last-applied-rev` を書かないため、その rev は未確定のまま残り、
-    # darwin 適用（root daemon、または対話 `dotfiles update`）がその rev を消費して収束させられる。rev 確定は
-    # auto-update.nix の daemon（home `--defer-rev-marker` → darwin → `--commit-rev-marker`）が担う。なお
-    # `--defer-rev-marker` でも `dotfiles update` は rev ベースで no-op 冪等（home 適用は同 pin 再適用が冪等）の
-    # ため、毎日の catch-up（1 日 1 回 marker で抑制）は同 pin なら home 側でも実質 no-op になる。
-    { dotfiles update home --defer-rev-marker >/dev/null 2>&1 } &!
+    # ログインをブロックしないよう detach で起動する。多重起動は dotfiles 側 lock が吸収する。適用は非 tty
+    # なので要約は `pending-summary` へ書かれ、下の precmd フックが拾って表示する。target/`--defer-rev-marker`
+    # の選択理由と marker 成功時確定は `_dotfiles_auto_update_run_catchup` のコメントに集約する。
+    { _dotfiles_auto_update_run_catchup } &!
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _dotfiles_auto_update_precmd
   fi

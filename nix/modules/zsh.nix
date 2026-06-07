@@ -51,8 +51,12 @@
       ''
         [[ -f "$HOME/.config/zsh/completion.zsh" ]] && source "$HOME/.config/zsh/completion.zsh"
         [[ -f "$HOME/.config/zsh/prompt.zsh" ]] && source "$HOME/.config/zsh/prompt.zsh"
-        [[ -f "$HOME/.config/zsh/auto-update.zsh" ]] && source "$HOME/.config/zsh/auto-update.zsh"
+        # local.zsh は auto-update.zsh より先に読む。利用者は local.zsh で
+        # `export DOTFILES_AUTO_UPDATE_DISABLE=1` を置いて catch-up を無効化するため、auto-update.zsh が
+        # 先頭でこのフラグを見る時点で local 設定が読み込まれている必要がある（先に読まないと未設定扱いで
+        # 起動してしまい、利用者の無効化が効かない）。
         [[ -f "$HOME/.config/zsh/local.zsh" ]] && source "$HOME/.config/zsh/local.zsh"
+        [[ -f "$HOME/.config/zsh/auto-update.zsh" ]] && source "$HOME/.config/zsh/auto-update.zsh"
       ''
     ];
   };

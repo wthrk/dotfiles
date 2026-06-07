@@ -18,19 +18,34 @@
 #   rev を確定する。darwin が失敗すると（`set -e`）確定ステップへ到達せず、マーカーは前回値のまま残るので、
 #   次回起動で再適用して収束する（darwin 未収束のまま「適用済み」と誤記録して skip する drift を防ぐ）。
 #
-# 無更新日の darwin-rebuild 抑止（F3）:
-#   home ステップが「適用済み pin と同一で no-op」だった日は darwin-rebuild を起動しない。home 適用前の
-#   `last-applied-rev` を控え、home ステップが lock を更新した後の dotfiles pin と突き合わせ、変化が無ければ
-#   darwin ステップと rev 確定を skip する。`--defer-rev-marker` のため `last-applied-rev` は前回値のまま
-#   なので、この比較で「実際に適用したか」を判別できる。
+# 無更新日の darwin-rebuild 抑止（F3）と home 適用成功の確認:
+#   home ステップが実際に switch したかを **CLI の `deferred-rev` marker の有無**で判別し、適用が無い日は
+#   darwin-rebuild を起動しない。CLI は適用サイクルごとに `deferred-rev` をクリアし、`--defer-rev-marker` の
+#   home が **実際に switch 成功した時だけ** `deferred-rev` を書く（適用済み pin と同一で no-op、または別
+#   `dotfiles update` が `update.lock` を保持中で home が skip した場合は書かない）。よって wrapper は home
+#   ステップ前に `deferred-rev` を退避・除去し、ステップ後に `deferred-rev` が存在する時だけ darwin と commit へ
+#   進む。これにより (a) flake.lock の pin を wrapper で再解析せず（path source の narHash/lastModified pin でも
+#   CLI と同一判定になる）、(b) lock 競合で home が skip した日に「pin だけ変わった」ことを誤って適用済みと
+#   みなして darwin/commit へ進む drift を防ぐ。commit も同じ `deferred-rev` を確定するため、適用した pin と
+#   確定する pin が必ず一致する。
 #
 # launchd PATH（F1）:
 #   launchd daemon の最小 PATH には nix が無い。`dotfiles` は絶対 store パスで起動するが、内部で `nix`・
 #   `home-manager`・`darwin-rebuild` を PATH 解決で spawn するため、wrapper で PATH を明示的に通す。sudo は
 #   env をリセットするので、ユーザ権限ステップは `env PATH="$PATH"` を前置して PATH を引き継ぐ。
 #
-# `~/.local/state/dotfiles` は root で mkdir せず、system.activationScripts で `launchctl asuser` +
+# state dir は root で mkdir せず、system.activationScripts で `launchctl asuser` +
 # `sudo -u <user>` によりユーザ所有で作成する（launchagents.nix の asuser idiom に倣う）。
+#
+# state dir の所在（zsh / CLI と一致させる。daemon が書く marker をシェルが消費できるように）:
+#   zsh フックと CLI の `state_dir()` は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）を
+#   読む。launchd daemon はユーザのログイン環境を持たず `XDG_STATE_HOME` が伝わらないため、wrapper が常に
+#   `~/.local/state/dotfiles` を使い、かつ `sudo -u <user>` した CLI へも XDG を渡さないと、利用者が
+#   `XDG_STATE_HOME` を設定している場合に daemon（`~/.local/state/dotfiles`）とシェル（`$XDG_STATE_HOME/dotfiles`）が
+#   別 marker を読み、`last-applied-rev` / `pending-summary` を消費できず重複適用・要約未表示になる。これを避け、
+#   wrapper は **利用者の per-user launchd 環境から `XDG_STATE_HOME` を実行時解決**し（未設定なら HOME 既定へ縮退）、
+#   自身の marker 読取りと `sudo -u <user>` CLI 起動の双方で同じ state dir を指す（CLI へは `env XDG_STATE_HOME=...`
+#   で伝播し、CLI の `state_dir()` がシェルと同一の dir を解決する）。
 {
   user,
   pkgs,
@@ -42,7 +57,9 @@
 let
   label = "org.dotfiles.auto-update";
   homeDir = "/Users/${user}";
-  stateDir = "${homeDir}/.local/state/dotfiles";
+  # `XDG_STATE_HOME` 未設定時の既定 state base（zsh / CLI の HOME フォールバックと一致）。XDG を設定している
+  # 利用者では wrapper が実行時に per-user launchd 環境から `XDG_STATE_HOME` を解決して上書きする。
+  defaultStateDir = "${homeDir}/.local/state/dotfiles";
   # 利用者の dotfiles ローカル flake（`dotfiles init` が書く `~/.config/dotfiles`）。root daemon の darwin 適用は
   # root で走るため、`--config-dir` を渡さないと `$HOME`（/var/root）配下の存在しない config を見に行き失敗する。
   # home/darwin 双方にこのユーザ config を明示し、root と user で同じローカル flake を確実に指す。
@@ -63,8 +80,6 @@ let
     (lib.makeBinPath [
       config.nix.package
       pkgs.coreutils
-      # 無更新日に darwin-rebuild を起動しない判定（F3）で flake.lock の pin を厳密抽出するため jq を通す。
-      pkgs.jq
     ])
     "/run/current-system/sw/bin"
     "/etc/profiles/per-user/${user}/bin"
@@ -86,37 +101,63 @@ let
     # 明示的に引き継ぐ。
     export PATH=${lib.escapeShellArg daemonPath}
 
-    state_dir=${lib.escapeShellArg stateDir}
     config_dir=${lib.escapeShellArg configDir}
+
+    # state dir を zsh / CLI と一致させる。launchd daemon はユーザのログイン環境を持たないため、利用者が
+    # `XDG_STATE_HOME` を設定していてもここには伝わらない。per-user launchd 環境（`launchctl asuser <uid>
+    # launchctl getenv XDG_STATE_HOME`）から利用者の `XDG_STATE_HOME` を実行時解決し、設定されていれば
+    # `$XDG_STATE_HOME/dotfiles`、未設定なら HOME 既定（`~/.local/state/dotfiles`）を state dir にする。これにより
+    # daemon が書く marker をシェル（CLI の `state_dir()`）が同じ dir で消費でき、重複適用・要約未表示を防ぐ。
+    # 解決した `XDG_STATE_HOME` は `sudo -u <user>` する CLI へも `env XDG_STATE_HOME=...` で伝播し、CLI の
+    # `state_dir()` が wrapper と同一 dir を解決するようにする。
+    uid="$(/usr/bin/id -u ${lib.escapeShellArg user})"
+    xdg_state_home="$(/bin/launchctl asuser "$uid" /bin/launchctl getenv XDG_STATE_HOME 2>/dev/null || true)"
+    xdg_state_home="$(printf '%s' "$xdg_state_home" | tr -d '[:space:]')"
+    if [ -n "$xdg_state_home" ]; then
+      state_dir="$xdg_state_home/dotfiles"
+    else
+      state_dir=${lib.escapeShellArg defaultStateDir}
+    fi
+
+    # 解決した XDG を sudo -u する CLI へ伝播するための env 前置を組み立てる（未設定なら付けない）。CLI の
+    # `state_dir()` が wrapper と同一 dir を解決し、marker / pending-summary を一致させる。PATH も sudo の
+    # env リセットに備えて常に渡す。
+    if [ -n "$xdg_state_home" ]; then
+      user_env="/usr/bin/env PATH=$PATH XDG_STATE_HOME=$xdg_state_home"
+    else
+      user_env="/usr/bin/env PATH=$PATH"
+    fi
 
     # ① state dir をユーザ所有で用意（activation でも作るが、daemon 起動時の取りこぼしに備える）。
     #    root では mkdir せず、ユーザ権限で作る（マーカーのユーザ所有保証）。
     /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/mkdir -p "$state_dir"
 
-    # F3: home ステップが実際に適用したか（repo pin が変化したか）を判定するため、home 適用「前」の
-    #     `last-applied-rev` を控える。home ステップは `--defer-rev-marker` で `last-applied-rev` を書かないので、
-    #     適用後にローカル lock の dotfiles pin と突き合わせれば「適用済み pin と同一＝無更新」を判別できる。
-    applied_before=""
-    if [ -r "$state_dir/last-applied-rev" ]; then
-      applied_before="$(tr -d '[:space:]' < "$state_dir/last-applied-rev" || true)"
-    fi
+    # home ステップが実際に switch したかは **CLI の `deferred-rev` marker の有無**で判別する。CLI は適用
+    # サイクル冒頭で deferred marker をクリアし、`--defer-rev-marker` の home が実際に switch 成功した時だけ
+    # `deferred-rev` を書く（適用済み pin と同一で no-op、または別 `dotfiles update` が `update.lock` を保持中で
+    # home が skip した場合は書かない）。判定を確実にするため、home ステップ前にこの marker を退避・除去して
+    # おき、ステップ後に存在すれば「この起動の home が実際に適用した」と確定できる。lock 競合で home が skip
+    # した場合でも flake.lock の共有 pin だけが進むことはあるが、marker が書かれないので darwin/commit へ
+    # 誤って進まない（home 未収束のまま「適用済み」と誤確定する drift を防ぐ）。
+    deferred_marker="$state_dir/deferred-rev"
+    /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/rm -f "$deferred_marker"
 
     # ② 適用要否判定・home-manager 適用・要約書込みをユーザ権限で実行する。非 tty なので要約は
     #    pending-summary へ書かれる。darwin は別ステップ（root）で適用するため、ここでは home のみを対象に
     #    する（home-manager を root で走らせない）。`--defer-rev-marker` で `last-applied-rev` はまだ書かず、
     #    home+darwin の両成功後（④）に確定する。これにより darwin 失敗時の rev drift を防ぐ。`--config-dir` で
     #    ユーザの `~/.config/dotfiles` を明示し、確実にユーザのローカル flake を指す。sudo は env をリセットし
-    #    PATH を secure_path で上書きしうるため、`env PATH="$PATH"` を前置して nix / home-manager を解決させる。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} /usr/bin/env PATH="$PATH" ${dotfilesBin} update home \
+    #    PATH を secure_path で上書きしうるため、`$user_env`（PATH と解決済み XDG_STATE_HOME を渡す）を前置する。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} $user_env ${dotfilesBin} update home \
       --config-dir "$config_dir" --defer-rev-marker
 
-    # F3: home ステップが lock を最新 repo pin へ更新した後の pin を読む。`--defer-rev-marker` のため
-    #     `last-applied-rev` はまだ前回値（applied_before）のまま。新 pin が前回値と同一なら home は no-op
-    #     （適用なし）であり、darwin-rebuild を起動する理由が無いので darwin ステップと rev 確定を skip する
-    #     （無更新日に darwin-rebuild を走らせない）。pin が変化していれば実適用があったので darwin を適用する。
-    applied_after="$(jq -r '.nodes.dotfiles.locked.rev // empty' "$config_dir/flake.lock" 2>/dev/null || true)"
-    if [ -n "$applied_after" ] && [ "$applied_after" = "$applied_before" ]; then
-      echo "home に更新がないため darwin-rebuild を skip します（rev $applied_after）"
+    # home が実際に switch したか（=`deferred-rev` marker が書かれたか）で darwin / commit へ進むかを決める。
+    # marker が無ければ home は no-op（適用済み pin と同一）か lock 競合 skip であり、darwin-rebuild を起動する
+    # 理由が無いので darwin ステップと rev 確定を skip する（無更新日 / 競合日に重い system switch を走らせない）。
+    # marker の有無判定は CLI の pin identity（rev→narHash→lastModified）に従うため、path source（rev-less）でも
+    # github source でも CLI と同一の適用判定になる（wrapper では flake.lock を再解析しない）。
+    if ! /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/test -f "$deferred_marker"; then
+      echo "home に更新がないため darwin-rebuild を skip します"
       exit 0
     fi
 
@@ -128,8 +169,10 @@ let
 
     # ④ home+darwin の両適用が成功した後にだけ rev マーカーを確定する。set -e により②③のいずれかが失敗
     #    すると④へ到達せず、`last-applied-rev` は前回値のまま残る（次回再適用で収束させ、drift を回避）。
-    #    マーカーはユーザ所有で書くため、確定もユーザ権限で行う。`--config-dir` で読む pin を②と一致させる。
-    /usr/bin/sudo -u ${lib.escapeShellArg user} /usr/bin/env PATH="$PATH" ${dotfilesBin} update home \
+    #    commit は ② が書いた `deferred-rev`（実際に適用した pin）を読んで確定するため、適用した pin と確定する
+    #    pin が必ず一致する。マーカーはユーザ所有で書くため、確定もユーザ権限で行う。`--config-dir` で読む pin
+    #    を②と一致させ、`$user_env` で同一 state dir（XDG）を CLI へ伝える。
+    /usr/bin/sudo -u ${lib.escapeShellArg user} $user_env ${dotfilesBin} update home \
       --config-dir "$config_dir" --commit-rev-marker
   '';
 in
@@ -153,10 +196,20 @@ in
     };
   };
 
-  # `~/.local/state/dotfiles` をユーザ所有で作成する。root で mkdir すると root 所有になり、daemon の
-  # `sudo -u <user>` 書込みやシェルからの consume が壊れるため、launchctl asuser + sudo -u でユーザ権限で作る。
+  # state dir をユーザ所有で作成する。root で mkdir すると root 所有になり、daemon の `sudo -u <user>` 書込みや
+  # シェルからの consume が壊れるため、launchctl asuser + sudo -u でユーザ権限で作る。所在は wrapper / CLI と
+  # 一致させ、per-user launchd 環境の `XDG_STATE_HOME` を尊重する（設定済みなら `$XDG_STATE_HOME/dotfiles`、
+  # 未設定なら `~/.local/state/dotfiles`）。wrapper も runtime で同じ解決をして作り直すため、ここは先行作成の
+  # best-effort であり、解決失敗時は既定 dir へ縮退する。
   system.activationScripts.postActivation.text = lib.mkAfter ''
     uid="$(id -u ${lib.escapeShellArg user})"
-    launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- mkdir -p ${lib.escapeShellArg stateDir}
+    xdg_state_home="$(launchctl asuser "$uid" launchctl getenv XDG_STATE_HOME 2>/dev/null || true)"
+    xdg_state_home="$(printf '%s' "$xdg_state_home" | tr -d '[:space:]')"
+    if [ -n "$xdg_state_home" ]; then
+      state_dir="$xdg_state_home/dotfiles"
+    else
+      state_dir=${lib.escapeShellArg defaultStateDir}
+    fi
+    launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- mkdir -p "$state_dir"
   '';
 }
