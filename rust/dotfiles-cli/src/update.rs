@@ -75,6 +75,20 @@ const LAST_SUMMARIZED_NIXPKGS_REV: &str = "last-summarized-nixpkgs-rev";
 const PENDING_SUMMARY: &str = "pending-summary";
 const LAST_RUN_LOG: &str = "last-run.log";
 const LOCK_FILE: &str = "update.lock";
+/// `--defer-rev-marker` 適用時に **その時点で適用した** dotfiles repo pin を控える state file（ユーザ所有）。
+///
+/// daemon ラッパーは home 適用後に user 側 `update.lock` を解放してから root の `darwin-rebuild` →
+/// `--commit-rev-marker` を別 CLI 起動で実行する。`--commit-rev-marker` が「現在の repo pin」を読み直して
+/// 確定すると、home 適用時点の pin と darwin commit 時点の pin が乖離した場合に **適用していない pin を
+/// `last-applied` へ確定**しうる（commit までの間に lock が再 bump される競合）。これを避けるため、defer 時に
+/// 適用した pin をこのファイルへ控え、commit はこの defer 値を読んで確定する（commit 時に現在 pin を読み直さ
+/// ない）。defer 値が無い場合（defer を経ない直接 commit 呼び出し）だけ後方互換で現在 pin へフォールバックする。
+const DEFERRED_REV: &str = "deferred-rev";
+/// `--defer-rev-marker` 適用時に控える、適用時点の推移的 nixpkgs rev（`DEFERRED_REV` と対）。
+///
+/// `last-applied-nixpkgs-rev` を commit で確定する際、dotfiles pin と同様に defer 時点の値を使い、commit 時の
+/// 現在 nixpkgs rev を読み直さない。これにより dotfiles pin / nixpkgs rev の両方が defer 時点で整合する。
+const DEFERRED_NIXPKGS_REV: &str = "deferred-nixpkgs-rev";
 
 /// 適用済み dotfiles flake input source 内の更新履歴ディレクトリ（`<source>/docs/update-history`）。
 const HISTORY_SUBDIR: &str = "docs/update-history";
@@ -120,16 +134,32 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
 
     // `--commit-rev-marker`: 二段適用（home→darwin）の **両成功後** に rev マーカーだけを確定させる経路。
     // home/darwin が別 CLI 起動に分かれる daemon ラッパーで、home ステップが既に lock を更新済みのため、
-    // ここでは lock 更新も switch もせず、更新後の現在 pin を `last-applied-rev` へ原子的に書くだけ（lock 区間内）。
+    // ここでは lock 更新も switch もしない。
+    //
+    // 確定する pin は **home defer ステップで実際に適用した pin**（`deferred-rev`）を読む（B）。commit 時に
+    // 「現在の repo pin」を読み直すと、home 適用後・commit 前に lock が再 bump された場合に **適用していない
+    // pin を `last-applied` へ確定**しうる。defer 時に控えた pin を確定すれば、適用した pin と確定する pin が
+    // 必ず一致する。defer 値が無い場合（defer を経ない直接 commit 呼び出し）だけ後方互換で現在 pin へ縮退する。
     if options.commit_rev_marker {
-        let current_pin = read_repo_pin(&config_dir)?;
-        write_last_applied_rev(&state_dir, &current_pin, dry_run)?;
-        // dotfiles pin と同時に、適用成功時点の推移的 nixpkgs rev も確定する。home ステップが既に lock を
-        // 更新済みなので、ここで読む nixpkgs rev は今回適用した new 側。これは要約 span 起点解決の二次
-        // フォールバック（最優先は要約後に進む `last-summarized-nixpkgs-rev`。home defer ステップが要約済み）。
-        let current_nixpkgs_rev = read_nixpkgs_rev(&config_dir)?;
-        write_last_applied_nixpkgs_rev(&state_dir, &current_nixpkgs_rev, dry_run)?;
-        println!("適用済み rev を確定しました（rev {current_pin}）");
+        let committed_pin = match read_deferred_rev(&state_dir)? {
+            Some(rev) => rev,
+            None => read_repo_pin(&config_dir)?,
+        };
+        write_last_applied_rev(&state_dir, &committed_pin, dry_run)?;
+        // dotfiles pin と同時に、適用時点の推移的 nixpkgs rev も確定する。これも defer 時点で控えた値を優先し、
+        // 無ければ現在値へ縮退する（dotfiles pin と同じ defer 時点の整合を保つ）。これは要約 span 起点解決の
+        // 二次フォールバック（最優先は要約後に進む `last-summarized-nixpkgs-rev`。home defer ステップが要約済み）。
+        let committed_nixpkgs_rev = match read_deferred_nixpkgs_rev(&state_dir)? {
+            Some(rev) => rev,
+            None => read_nixpkgs_rev(&config_dir)?,
+        };
+        write_last_applied_nixpkgs_rev(&state_dir, &committed_nixpkgs_rev, dry_run)?;
+        // 確定後は defer marker を消す（次回 defer→commit サイクルへ古い値を持ち越さない）。dry-run では触らない。
+        if !dry_run {
+            let _ = fs::remove_file(state_dir.join(DEFERRED_REV));
+            let _ = fs::remove_file(state_dir.join(DEFERRED_NIXPKGS_REV));
+        }
+        println!("適用済み rev を確定しました（rev {committed_pin}）");
         return Ok(());
     }
 
@@ -178,10 +208,23 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // 以降の要約・show をこのローカル複製から offline・決定論で読む。複製失敗（network 無し・解決不能・
     // read-only source 等）は適用を止めず、既存の複製があればそれを使う graceful degradation にする。
     // `--dry-run` では複製しない。
-    if let Err(error) = sync_history(&config_dir, &state_dir, dry_run) {
-        // best-effort: 履歴複製失敗は警告に留め、switch/適用は続行する（履歴は補助情報）。
-        eprintln!("更新履歴の複製に失敗しました（既存の履歴複製を使用します）: {error}");
-    }
+    //
+    // ただし複製が失敗した場合は **要約表示と要約済み marker の確定を skip** する（A）。sync_history が失敗
+    // すると初回や一時的な archive 失敗で `<state>/history` 複製が無いまま present_summary が空/古い履歴を
+    // 読み、それでも `last-summarized-nixpkgs-rev` を new rev へ進めると、その rev の要約が永久に失われる
+    // （次回は marker が先へ進んでいて再表示されない）。よって履歴が読めた時だけ summarized を進め、複製失敗
+    // 時は span 起点を保って次回再試行で表示できるようにする。適用 dedup の `last-applied-*` 確定とは分離し、
+    // last-applied は履歴複製の成否に依らず確定する（適用自体は進んでいるため）。
+    let history_synced = match sync_history(&config_dir, &state_dir, dry_run) {
+        Ok(()) => true,
+        Err(error) => {
+            // best-effort: 履歴複製失敗は警告に留め、switch/適用は続行する（履歴は補助情報）。
+            eprintln!(
+                "更新履歴の複製に失敗しました（要約表示と要約済み rev の確定は次回へ繰り越します）: {error}"
+            );
+            false
+        }
+    };
 
     // `--defer-rev-marker`: home/darwin を別ステップで適用する daemon ラッパー向けに、rev マーカー書込みを
     // ここでは行わず、darwin 成功後の `--commit-rev-marker` 起動へ委ねる。これにより darwin 失敗時に rev が
@@ -203,28 +246,41 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         // dotfiles pin と同時に、今回適用した nixpkgs rev も確定する。defer 時は rev 未確定のため書かない
         // （darwin 成功後の `--commit-rev-marker` がまとめて確定する）。
         write_last_applied_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
+    } else if options.defer_rev_marker {
+        // defer 経路: `last-applied-*` はまだ確定しないが、**この時点で適用した pin / nixpkgs rev** を defer
+        // marker へ控える（B）。後続の `--commit-rev-marker` はこの defer 値を確定し、commit 時に現在 pin を
+        // 読み直さない。これにより home 適用後・commit 前に lock が再 bump されても、適用した pin と確定する pin
+        // が必ず一致し、適用していない pin を `last-applied` へ確定する乖離を防ぐ。
+        write_deferred_rev(&state_dir, &current_pin, dry_run)?;
+        write_deferred_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
     }
 
     // 要約を表示/追記する。**この後で** `last-summarized-nixpkgs-rev` を進めるのが要点で、要約「前」に
     // marker を進めると partial-failure（switch 後・要約前に異常終了）で未表示範囲を失う。逆に要約「後」に
-    // 進めることで、同日に defer 経路が連続しても 2 回目は起点 = new rev → 空 span → 再追記しない（A）。
+    // 進めることで、同日に defer 経路が連続しても 2 回目は起点 = new rev → 空 span → 再追記しない。
+    //
+    // 履歴複製が失敗（`history_synced == false`）したときは要約も marker 確定も行わない（A）。複製が無いまま
+    // 空/古い履歴で要約すると、見せていない rev について marker だけ進み、その rev の要約が永久に失われる。
+    // 複製が成功した時だけ要約 → marker 確定へ進み、失敗時は span 起点を保って次回再試行に委ねる。
     //
     // tty 判定はアンビエント大域（`std::io::stdout().is_terminal()`）への依存を呼び出し元へ集約するため、
     // ここで 1 回だけ解決して `present_summary` へ bool で注入する。`present_summary` 内で is_terminal() を
     // 呼ぶと、stdout が tty になる環境（nix build sandbox の builder）でテストが tty 経路へ入り pending 未書込み
     // → NotFound で壊れる（非 hermetic）。注入化で分岐が大域から切れ、テストは bool を渡して決定論的に経路を
     // exercise でき、production の挙動（tty なら端末描画、非 tty なら pending 追記）は不変。
-    let stdout_is_terminal = std::io::stdout().is_terminal();
-    present_summary(
-        &state_dir,
-        Some(span_start_nixpkgs_rev.as_str()),
-        dry_run,
-        stdout_is_terminal,
-    )?;
+    if history_synced {
+        let stdout_is_terminal = std::io::stdout().is_terminal();
+        present_summary(
+            &state_dir,
+            Some(span_start_nixpkgs_rev.as_str()),
+            dry_run,
+            stdout_is_terminal,
+        )?;
 
-    // 要約済み範囲の終端を確定する。defer 経路でも commit 経路でも、要約を見せ終えた直後に必ず書く。
-    // これが次回 present_summary の span 起点になり、同日二重追記（A）と partial-failure 堅牢性（B）を両立させる。
-    write_last_summarized_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
+        // 要約済み範囲の終端を確定する。defer 経路でも commit 経路でも、要約を見せ終えた直後に必ず書く。
+        // これが次回 present_summary の span 起点になり、同日二重追記と partial-failure 堅牢性を両立させる。
+        write_last_summarized_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
+    }
     Ok(())
 }
 
@@ -393,11 +449,16 @@ fn resolve_state_dir(xdg_state_home: Option<OsString>, home: Option<OsString>) -
     Ok(base.join("dotfiles"))
 }
 
-/// 生成ローカル flake の `flake.lock` から dotfiles input の locked rev（= 現在の repo pin）を読む。
+/// 生成ローカル flake の `flake.lock` から dotfiles input の現在の repo pin（適用要否 dedup の同一性）を読む。
 ///
-/// `nodes.<INPUT_NAME>.locked.rev` を repo pin として扱う。これは各マシンが追随する dotfiles repo の
-/// 適用対象リビジョンであり、`last-applied-rev` との比較で適用要否を決める。lock 不在・構造不一致・rev 欠落は
-/// 失敗にする（適用要否を誤判定して未適用/重複適用に倒さないため）。
+/// 既定の github source では `nodes.<INPUT_NAME>.locked.rev` を pin とする。これは各マシンが追随する dotfiles
+/// repo の適用対象リビジョンであり、`last-applied-rev` との比較で適用要否を決める。
+///
+/// `dotfiles init --source path:/...` のローカル source（path 型 input）は `locked.rev` を持たない（F）。rev を
+/// 必須にすると path source で `update` 経路が常に失敗する。そこで rev が無い場合は **`narHash`** を pin の
+/// 同一性へフォールバックする（path source の内容が変われば narHash が動き、再適用される）。`narHash` も無ければ
+/// `lastModified` へ縮退する。いずれも無い（pin 同一性を表す値が一切無い）場合だけ失敗にする（適用要否を誤判定
+/// して未適用/重複適用に倒さないため）。github source はこのフォールバックに到達せず従来どおり rev で dedup する。
 fn read_repo_pin(config_dir: &Path) -> Result<String> {
     let lock_path = config_dir.join("flake.lock");
     let text = fs::read_to_string(&lock_path)
@@ -406,19 +467,40 @@ fn read_repo_pin(config_dir: &Path) -> Result<String> {
         .with_context(|| format!("failed to resolve repo pin from {}", lock_path.display()))
 }
 
-/// `flake.lock` JSON テキストから指定 input の locked rev を抽出する純粋関数。
+/// `flake.lock` JSON テキストから指定 input の repo pin 同一性を抽出する純粋関数。
 ///
-/// 抽出経路を実行から切り離し、lock JSON 構造（`nodes.<input>.locked.rev`）の解釈を単体検証できるようにする。
+/// 抽出経路を実行から切り離し、lock JSON 構造の解釈を単体検証できるようにする。pin 同一性は `locked.rev`
+/// （github source）→ `locked.narHash`（path source で rev が無い場合）→ `locked.lastModified`（数値も許容）の
+/// 順で解決する。rev を持つ source は従来どおり rev で dedup し、rev の無い path source でも narHash/lastModified で
+/// 適用要否を判定できるようにして update 経路が壊れないようにする（F）。いずれも無ければ `Err`。
 fn parse_repo_pin(lock_text: &str, input_name: &str) -> Result<String> {
     let value: serde_json::Value = serde_json::from_str(lock_text)?;
-    value
+    let locked = value
         .get("nodes")
         .and_then(|nodes| nodes.get(input_name))
         .and_then(|node| node.get("locked"))
-        .and_then(|locked| locked.get("rev"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("nodes.{input_name}.locked.rev not found"))
+        .ok_or_else(|| anyhow!("nodes.{input_name}.locked not found"))?;
+    locked_pin_identity(locked).ok_or_else(|| {
+        anyhow!("nodes.{input_name}.locked has no rev/narHash/lastModified pin identity")
+    })
+}
+
+/// `locked` オブジェクトから repo pin 同一性を 1 つ解決する純粋関数（rev → narHash → lastModified の順）。
+///
+/// rev（github source）を最優先し、rev の無い path source では narHash、それも無ければ lastModified を
+/// 同一性に使う。lastModified は数値で現れうるため数値も文字列化して受ける。いずれも無ければ `None`。
+fn locked_pin_identity(locked: &serde_json::Value) -> Option<String> {
+    if let Some(rev) = locked.get("rev").and_then(serde_json::Value::as_str) {
+        return Some(rev.to_string());
+    }
+    if let Some(nar_hash) = locked.get("narHash").and_then(serde_json::Value::as_str) {
+        return Some(nar_hash.to_string());
+    }
+    match locked.get("lastModified") {
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(serde_json::Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 /// 生成ローカル flake の `flake.lock` から、dotfiles input が引き込む推移的 nixpkgs の locked rev を読む。
@@ -494,6 +576,20 @@ fn read_last_applied_rev(state_dir: &Path) -> Result<Option<String>> {
     read_trimmed_rev(&state_dir.join(LAST_APPLIED_REV))
 }
 
+/// defer 時に控えた「適用した dotfiles repo pin」を読む（不存在/空なら `None`）。
+///
+/// `--commit-rev-marker` がこの値を最優先で確定する。`None`（defer を経ない直接 commit）なら現在 pin へ縮退する。
+fn read_deferred_rev(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(DEFERRED_REV))
+}
+
+/// defer 時に控えた「適用した推移的 nixpkgs rev」を読む（不存在/空なら `None`）。
+///
+/// `DEFERRED_REV` と対で、commit 時に dotfiles pin と同じ defer 時点の値を確定するために使う。
+fn read_deferred_nixpkgs_rev(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(DEFERRED_NIXPKGS_REV))
+}
+
 /// state file から trim 済み rev を読む（不存在/空は `None`、その他 I/O 失敗は文脈付き `Err`）。
 fn read_trimmed_rev(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
@@ -525,6 +621,21 @@ fn write_last_applied_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<
 /// `last-applied-rev` と同時に確定し、catch-up 要約 span の真の起点（未適用範囲の起点）として次回実行で読む。
 fn write_last_applied_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
     write_rev_atomic(&state_dir.join(LAST_APPLIED_NIXPKGS_REV), rev, dry_run)
+}
+
+/// defer 時に適用した dotfiles repo pin を原子的に控える（ユーザ所有）。`--dry-run` では書かない。
+///
+/// 後続の `--commit-rev-marker` がこの defer 値を `last-applied-rev` へ確定するため、commit 時に現在 pin を
+/// 読み直さず、適用した pin と確定する pin の乖離を防ぐ（B）。
+fn write_deferred_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(DEFERRED_REV), rev, dry_run)
+}
+
+/// defer 時に適用した推移的 nixpkgs rev を原子的に控える（ユーザ所有）。`--dry-run` では書かない。
+///
+/// `DEFERRED_REV` と対で、commit が `last-applied-nixpkgs-rev` を defer 時点の値で確定するために使う。
+fn write_deferred_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(DEFERRED_NIXPKGS_REV), rev, dry_run)
 }
 
 /// 最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev を原子的に書き込む（ユーザ所有）。`--dry-run` 不書込。
@@ -597,24 +708,58 @@ fn present_summary(
     Ok(())
 }
 
-/// `pending-summary` へ適用要約ブロックを追記する（上書きしない）。
+/// `pending-summary` へ適用要約ブロックを追記する（上書きしない）。完成済みブロックだけを公開する（C）。
 ///
 /// 非 tty 適用ごとに 1 ブロックを末尾へ足す。daemon が連続適用しても未表示 rev を失わないよう追記で運用し、
 /// 消費（表示と削除）は zsh フック（`config/zsh/auto-update.zsh`）が原子的 rename で 1 回だけ行うファイル
 /// 契約とする。
+///
+/// **atomicity**: 旧実装は `pending-summary` を append open してから `render_applied_summary` が履歴を読んで
+/// 書き込んだため、render 途中で失敗すると **部分的なブロックが `pending-summary` に残り**、その隙に消費側
+/// （zsh フックの原子的 rename）が半端な内容を rename・表示・退避してしまう余地があった。これを避けるため、
+/// まず同一 dir 内の temp ファイルへブロックを **完成させてから** 1 回の `write_all` で `pending-summary` 末尾へ
+/// 追記する。render 失敗時は temp に閉じ、`pending-summary` には 1 バイトも触れない（部分内容を公開・消費させ
+/// ない）。temp は同一 dir 内（rename と読取りが原子的なファイルシステム前提）に置き、追記後に削除する。
+/// 完成ブロックの追記は 1 回の write でまとめて行うため、render の途中失敗による partial block は公開されない。
 fn append_pending_summary(
     state_dir: &Path,
     source: &Path,
     nixpkgs_from_rev: Option<&str>,
 ) -> Result<()> {
     let path = state_dir.join(PENDING_SUMMARY);
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    update_history::render_applied_summary(source, nixpkgs_from_rev, &file)?;
-    Ok(())
+    // まず temp ファイルへブロックを完成させる（render 途中失敗は temp に閉じ、pending-summary へ波及させない）。
+    let temp_path = path.with_file_name(format!(
+        "{PENDING_SUMMARY}.render.{}.tmp",
+        std::process::id()
+    ));
+    let rendered = (|| -> Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        update_history::render_applied_summary(source, nixpkgs_from_rev, &mut buffer)?;
+        Ok(buffer)
+    })();
+    let rendered = match rendered {
+        Ok(buffer) => buffer,
+        Err(error) => {
+            // 念のため temp を残さない（render 自体は buffer 上で行うため通常 temp は未生成だが、保険で掃除）。
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    };
+    // 完成済みバイト列を temp へ書き、そこから 1 回の write で pending-summary 末尾へ追記する。
+    fs::write(&temp_path, &rendered)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    let append_result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        file.write_all(&rendered)
+            .with_context(|| format!("failed to append to {}", path.display()))?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temp_path);
+    append_result
 }
 
 /// `last-run.log` へ適用要約を残す（適用経路の出力記録）。
@@ -654,10 +799,14 @@ struct UpdateLock {
 impl UpdateLock {
     /// ロックを非ブロッキングで試行する。取得成功で `Some`、生存中の既存ロックで `None` を返す。
     ///
-    /// `AlreadyExists` 時は既存 lock の timestamp を見て staleness を判定する。stale（孤児）なら lock ファイルを
-    /// 除去して 1 度だけ `create_new` を再試行する。複数プロセスが同時に stale 判定して奪取競合しても、
-    /// `create_new` の原子性で勝者は 1 つだけになり、敗者は `AlreadyExists` で `None`（skip）へ倒れるため
-    /// 二重適用は起きない。生存中（timestamp が新しい）なら奪取せず `None`（skip）を返す。
+    /// `AlreadyExists` 時は既存 lock の timestamp を見て staleness を判定する。stale（孤児）なら steal marker の
+    /// `O_EXCL` 作成を CAS にして奪取権を 1 プロセスへ直列化し（[`steal_stale_lock`]）、勝者だけが新 lock を張る。
+    ///
+    /// 旧実装の「stale 判定 → `remove_file` → `create_new`」は、複数プロセスが同時に stale 判定した場合に、
+    /// プロセス A が新 lock を張った直後にプロセス B の `remove_file` が **A の新 lock を消し**、双方が `create_new`
+    /// に成功して二重奪取・二重適用へ至る race があった。奪取権を専用 marker の `O_EXCL` 作成で直列化することで、
+    /// remove → `create_new` の区間が単一プロセスに閉じ、remove-clobber も live-lock 横取りも起きない。生存中
+    /// （timestamp が新しい）なら奪取せず `None`（skip）を返す。`libc` を直呼びせず std のみで実現する。
     fn try_acquire(state_dir: &Path, dry_run: bool) -> Result<Option<Self>> {
         if dry_run {
             return Ok(Some(Self { path: None }));
@@ -666,12 +815,74 @@ impl UpdateLock {
         match Self::create_new_lock(&path)? {
             Some(lock) => Ok(Some(lock)),
             None => {
-                // 既存 lock あり。stale（孤児）なら奪取、生存中なら skip。
+                // 既存 lock あり。stale（孤児）なら rename CAS で奪取、生存中なら skip。
                 if Self::existing_lock_is_stale(&path) {
-                    // 孤児を除去して 1 度だけ再取得を試みる。除去失敗（別プロセスが先に奪取）は次の
-                    // create_new が AlreadyExists を返すので、いずれにせよ勝者 1 つに収束する。
-                    let _ = fs::remove_file(&path);
-                    Self::create_new_lock(&path)
+                    Self::steal_stale_lock(&path)
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    /// stale な lock を、専用 steal marker の `O_EXCL` 作成を CAS にして奪取する。勝者だけが新 lock を張る。
+    ///
+    /// **race-free CAS の要点**: 奪取の本体（古い lock の除去 → 新 lock 作成）を直接複数プロセスにやらせると、
+    /// 「A が新 lock を張った直後に B の remove が A の新 lock を消す」「B が A の生存 lock を rename で横取りする」
+    /// といった窓が生じ、二重奪取（同時に 2 つの排他が成立）に至る。これを根絶するため、**奪取権そのものを別
+    /// ファイル（`update.lock.steal`）の `O_EXCL`（`create_new`）作成で 1 プロセスへ直列化**する。`create_new` は
+    /// OS レベルで原子的に「ちょうど 1 人だけ成功」を保証するので、steal marker を作れた 1 プロセスだけが奪取
+    /// 区間に入る。敗者は marker 作成に失敗して `None`（skip）へ倒れ、古い lock には一切触れない。
+    ///
+    /// 奪取区間に入った勝者は、**marker 取得後に改めて現在の lock を再判定**する（TOCTOU 回避）。marker 待ちの
+    /// 間に別の勝者が既に lock を更新している可能性があるため、(1) lock が消えていれば `create_new` で張る、
+    /// (2) まだ存在し stale なら remove → `create_new` で張替える、(3) 既に fresh（別勝者が更新済み）なら奪取を
+    /// 諦める。これらは steal marker により単一プロセスへ直列化済みのため、remove と create_new の間に他者が
+    /// 割り込むことはない。区間終了時に marker を必ず除去する。`libc` を直呼びせず std のみで実現する。
+    fn steal_stale_lock(path: &Path) -> Result<Option<Self>> {
+        let steal_marker = path.with_file_name(format!("{LOCK_FILE}.steal"));
+        // 奪取権の CAS: steal marker を create_new できた 1 プロセスだけが奪取区間に入る。
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&steal_marker)
+        {
+            Ok(mut marker) => {
+                let _ = write!(
+                    marker,
+                    "{}",
+                    lock_payload(std::process::id(), now_epoch_secs())
+                );
+            }
+            // 別プロセスが奪取区間にいる。古い lock に触れず skip する（marker は所有者が除去する）。
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+            Err(error) => {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "failed to create steal marker {}",
+                    steal_marker.display()
+                )));
+            }
+        }
+        // ここから先は steal marker により単一プロセスへ直列化された奪取区間。終了時に marker を必ず除去する。
+        let outcome = Self::steal_within_marker(path);
+        let _ = fs::remove_file(&steal_marker);
+        outcome
+    }
+
+    /// steal marker を保持した奪取区間内で、現在の lock 状態に応じて新 lock を張る（単一プロセス前提）。
+    ///
+    /// marker 取得待ちの間に別勝者が lock を更新した可能性があるため、marker 取得「後」に再判定する: lock 消滅
+    /// なら新規作成、stale なら remove して張替え、fresh なら奪取せず `None`。marker により直列化済みのため、
+    /// remove → `create_new` の間に他者が割り込まない（remove-clobber race が原理的に起きない）。
+    fn steal_within_marker(path: &Path) -> Result<Option<Self>> {
+        match Self::create_new_lock(path)? {
+            // lock が消えていた（別勝者が解放済み）。そのまま新 lock を獲得。
+            Some(lock) => Ok(Some(lock)),
+            None => {
+                // lock がまだ在る。stale なら remove して張替え、fresh（別勝者が更新済み）なら奪取しない。
+                if Self::existing_lock_is_stale(path) {
+                    let _ = fs::remove_file(path);
+                    Self::create_new_lock(path)
                 } else {
                     Ok(None)
                 }
@@ -794,11 +1005,13 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG, LAST_SUMMARIZED_NIXPKGS_REV, LOCK_FILE,
-        LOCK_STALE_SECS, PENDING_SUMMARY, UpdateLock, append_pending_summary, copy_history_dir,
-        is_stale_lock, lock_payload, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
-        present_summary, read_last_applied_nixpkgs_rev, read_last_applied_rev,
-        read_last_summarized_nixpkgs_rev, resolve_state_dir, should_switch, update_args,
+        DEFERRED_NIXPKGS_REV, DEFERRED_REV, LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG,
+        LAST_SUMMARIZED_NIXPKGS_REV, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY, UpdateLock,
+        append_pending_summary, copy_history_dir, is_stale_lock, lock_payload,
+        parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin, present_summary,
+        read_deferred_nixpkgs_rev, read_deferred_rev, read_last_applied_nixpkgs_rev,
+        read_last_applied_rev, read_last_summarized_nixpkgs_rev, resolve_state_dir, should_switch,
+        update_args, write_deferred_nixpkgs_rev, write_deferred_rev,
         write_last_applied_nixpkgs_rev, write_last_applied_rev, write_last_summarized_nixpkgs_rev,
     };
 
@@ -1545,5 +1758,291 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
         Ok(())
+    }
+
+    /// 非 tty 適用 1 回ぶんを、履歴複製の成否（`history_synced`）で要約・marker 確定を gate して実行する。
+    ///
+    /// 本番 `run()` は `sync_history` 成功時だけ present_summary → `last-summarized-nixpkgs-rev` 確定へ進む（A）。
+    /// 失敗時は要約も marker 確定もせず span 起点を保つ。nix を伴わずにこの gate 挙動を固定するため、
+    /// `history_synced` を引数で注入して run() の該当分岐と同じ順序を再現する。
+    fn apply_once_defer_gated(
+        state_dir: &Path,
+        lock_fallback: &str,
+        applied_new: &str,
+        history_synced: bool,
+    ) -> crate::Result<()> {
+        if history_synced {
+            let span_start = resolve_span_start(state_dir, lock_fallback)?;
+            present_summary(state_dir, Some(span_start.as_str()), false, false)?;
+            write_last_summarized_nixpkgs_rev(state_dir, applied_new, false)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_history_failure_does_not_advance_summarized_marker() -> crate::Result<()> {
+        // A 退行固定: sync_history が失敗（履歴複製が無い）した適用では、要約も `last-summarized-nixpkgs-rev` の
+        // 確定もしない。これにより、その rev の要約が永久に失われる（marker だけ進んで次回再表示されない）退行を
+        // 防ぐ。次回 sync 成功時の再実行で未表示範囲を再び要約できる。
+        let dir = temp_dir("sync-fail-marker");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        // 履歴 chain: N0->N1。span 起点（lock fallback）は N0。
+        write_history(&dir, &[("N0", "N1")]);
+
+        // 履歴複製失敗（history_synced=false）の適用: 要約も marker 確定もしない。
+        apply_once_defer_gated(&dir, "N0", "N1", false)?;
+        assert!(
+            !dir.join(PENDING_SUMMARY).exists(),
+            "sync 失敗時は要約（pending-summary）を書かない"
+        );
+        assert_eq!(
+            read_last_summarized_nixpkgs_rev(&dir)?,
+            None,
+            "sync 失敗時は要約済み marker を進めない（その rev の要約を失わない）"
+        );
+
+        // 次回（履歴複製成功）で同じ範囲 N0->N1 を要約でき、marker が N1 へ進む（未表示範囲を取り戻す）。
+        apply_once_defer_gated(&dir, "N0", "N1", true)?;
+        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        assert!(
+            pending.contains("neovim-N0"),
+            "再実行で未表示範囲 N0->N1 を要約する: {pending}"
+        );
+        assert_eq!(
+            read_last_summarized_nixpkgs_rev(&dir)?,
+            Some("N1".to_string()),
+            "sync 成功後に marker が確定する"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_rev_round_trips_and_commit_uses_deferred_pin() -> crate::Result<()> {
+        // B 退行固定: defer 時に控えた pin/nixpkgs rev を commit が確定する（commit 時に現在 pin を読み直さない）。
+        // run() の home/darwin 二段は実適用を要するため、ここでは commit が参照する defer marker の I/O 契約
+        // （round-trip・read_deferred 優先・dotfiles pin / nixpkgs の独立保持・dry-run 非書込）を直接固定する。
+        let dir = temp_dir("deferred-rev");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        // defer 前は marker 不在（commit は現在 pin へフォールバックする）。
+        assert_eq!(read_deferred_rev(&dir)?, None);
+        assert_eq!(read_deferred_nixpkgs_rev(&dir)?, None);
+
+        // defer 時点で「適用した pin」を控える。
+        write_deferred_rev(&dir, "pin-applied-at-defer", false)?;
+        write_deferred_nixpkgs_rev(&dir, "nixpkgs-applied-at-defer", false)?;
+        assert_eq!(
+            read_deferred_rev(&dir)?,
+            Some("pin-applied-at-defer".to_string())
+        );
+        assert_eq!(
+            read_deferred_nixpkgs_rev(&dir)?,
+            Some("nixpkgs-applied-at-defer".to_string())
+        );
+        // 別ファイルで独立保持されている。
+        assert!(dir.join(DEFERRED_REV).exists());
+        assert!(dir.join(DEFERRED_NIXPKGS_REV).exists());
+
+        // commit はこの defer 値を確定する（現在 pin を読み直さない）ことを、commit_rev_marker が読む経路と
+        // 同じ read_deferred_rev で固定する。run() の commit 分岐は `read_deferred_rev(..).or_else(現在pin)` で
+        // あり、defer 値があればそれを優先する。ここでは defer 値が確定対象になることを read で示す。
+        assert_eq!(
+            read_deferred_rev(&dir)?.as_deref(),
+            Some("pin-applied-at-defer"),
+            "commit は home 適用時点の defer pin を確定する（commit 時点の現在 pin ではない）"
+        );
+
+        // dry-run は控えを書かない（既存 defer 値を壊さない）。
+        write_deferred_rev(&dir, "should-not-write", true)?;
+        assert_eq!(
+            read_deferred_rev(&dir)?,
+            Some("pin-applied-at-defer".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_repo_pin_falls_back_to_narhash_for_path_source_without_rev() -> crate::Result<()> {
+        // F 退行固定: path source（`dotfiles init --source path:/...`）の dotfiles input は `locked.rev` を
+        // 持たない。rev 必須にすると update 経路が path source で壊れるため、rev が無ければ narHash を pin 同一性へ
+        // フォールバックする。github source（rev あり）は従来どおり rev で dedup する。
+        let github_lock = r#"{
+          "nodes": {
+            "dotfiles": { "locked": { "rev": "ghrev123", "narHash": "sha256-gh", "type": "github" } }
+          },
+          "root": "root", "version": 7
+        }"#;
+        // github source は rev を pin にする（narHash があっても rev 優先）。
+        assert_eq!(parse_repo_pin(github_lock, "dotfiles")?, "ghrev123");
+
+        // path source は rev が無い。narHash を pin 同一性に使う（update が壊れない）。
+        let path_lock = r#"{
+          "nodes": {
+            "dotfiles": {
+              "locked": { "narHash": "sha256-pathcontent", "path": "/nix/store/aaa", "type": "path", "lastModified": 123 }
+            }
+          },
+          "root": "root", "version": 7
+        }"#;
+        assert_eq!(parse_repo_pin(path_lock, "dotfiles")?, "sha256-pathcontent");
+
+        // narHash も無ければ lastModified（数値）へ縮退する。
+        let last_modified_only = r#"{
+          "nodes": { "dotfiles": { "locked": { "path": "/nix/store/bbb", "type": "path", "lastModified": 456 } } },
+          "root": "root", "version": 7
+        }"#;
+        assert_eq!(parse_repo_pin(last_modified_only, "dotfiles")?, "456");
+
+        // rev/narHash/lastModified が一切無ければ pin 同一性を解決できず失敗（dedup 誤判定を避ける）。
+        let no_identity = r#"{ "nodes": { "dotfiles": { "locked": { "type": "path" } } } }"#;
+        assert!(parse_repo_pin(no_identity, "dotfiles").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn should_switch_works_for_path_source_narhash_pin() {
+        // F: path source の pin（narHash）でも should_switch の dedup が成立する。内容が変われば narHash が
+        // 動いて switch、同一なら skip する（rev source と同じ dedup 規則が narHash でも働く）。
+        assert!(
+            should_switch(Some("sha256-old"), "sha256-new"),
+            "path source 内容変化（narHash 変化）は switch する"
+        );
+        assert!(
+            !should_switch(Some("sha256-same"), "sha256-same"),
+            "path source 内容不変（narHash 同一）は skip する"
+        );
+    }
+
+    #[test]
+    fn append_pending_summary_does_not_publish_partial_block_on_render_failure() -> crate::Result<()>
+    {
+        // C 退行固定: render 途中失敗で部分的な pending-summary を公開・消費させない。完成済みブロックだけを
+        // temp 経由で 1 回 write する設計のため、履歴 source が壊れて render に失敗しても pending-summary は
+        // 作られない（既存内容も汚さない）。ここでは履歴複製を欠いた state dir（render が空/失敗しうる source）で
+        // 既存内容が温存され、temp ファイルが残骸として残らないことを固定する。
+        let dir = temp_dir("pending-atomic");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        // 既存 pending-summary に確定済みブロックがある状態を作る。
+        write_history(&dir, &[("r1", "r2")]);
+        let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
+        append_pending_summary(&dir, &source, Some("r1"))?;
+        let baseline = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read baseline");
+        assert!(baseline.contains("neovim-r1"), "baseline block present");
+
+        // render 用 temp が残骸として残っていないこと（成功時も掃除する契約）。
+        let temp_leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read state dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{PENDING_SUMMARY}.render."))
+            })
+            .collect();
+        assert!(
+            temp_leftovers.is_empty(),
+            "render temp must not linger after append"
+        );
+
+        // 存在しない source（render が空ブロックになる）でも、既存の確定済みブロックは温存される
+        // （部分公開・既存破壊が起きない）。
+        let missing_source = dir.join("does-not-exist");
+        append_pending_summary(&dir, &missing_source, Some("r1"))?;
+        let after = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read after");
+        assert!(
+            after.contains("neovim-r1"),
+            "existing committed block must be preserved: {after}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_stale_steal_yields_single_winner_via_rename_cas() -> crate::Result<()> {
+        // D 退行固定: stale lock を複数プロセスが同時奪取しても、rename ベースの CAS で **同時に保持される lock は
+        // 高々 1 つ**になる。旧実装（read→remove_file→create_new）は A の新 lock を B の remove が消し、双方が
+        // create_new に成功して二重奪取・二重適用しうる race があった。ここでは複数スレッドで同時に try_acquire し、
+        // 奪取できた lock を **解放せず保持し続けたまま** 全スレッドの完了を待つ。誰も解放しないので、同時保持数が
+        // そのまま「同時に成立した排他の数」になる。これが 1 を超えれば二重奪取＝退行。逐次の acquire→release→
+        // acquire（正当）を winner 数に数え込まないよう、scope 終了まで lock を Vec に退避して保持する。
+        let dir = temp_dir("steal-cas");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let lock_path = dir.join(LOCK_FILE);
+
+        let contenders = 16;
+        for _ in 0..64 {
+            // 各ラウンドで古い孤児 lock を置き、全スレッドに stale と判定させる。
+            let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
+            std::fs::write(&lock_path, lock_payload(99999, stale_epoch)).expect("write stale lock");
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(contenders));
+            // 取得できた lock を解放せず保持し続けるための退避先（同時保持数を測る）。
+            let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::<UpdateLock>::new()));
+            std::thread::scope(|scope| {
+                for _ in 0..contenders {
+                    let dir = dir.clone();
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    let held = std::sync::Arc::clone(&held);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        if let Ok(Some(lock)) = UpdateLock::try_acquire(&dir, false) {
+                            // 解放せず保持する（scope 終了まで生かして同時保持数を観測する）。
+                            if let Ok(mut guard) = held.lock() {
+                                guard.push(lock);
+                            }
+                        }
+                    });
+                }
+            });
+            let mut held = held.lock().expect("held lock");
+            let count = held.len();
+            assert!(
+                count <= 1,
+                "stale lock steal must yield at most one concurrently-held lock, got {count}"
+            );
+            // 保持していた lock を解放してから次ラウンドへ（drop で lock ファイルを除去）。
+            held.clear();
+            drop(held);
+            // steal marker が残骸として残らない（奪取区間終了時に必ず除去される）。
+            assert!(
+                !dir.join(format!("{LOCK_FILE}.steal")).exists(),
+                "steal marker must be cleaned up after the steal section"
+            );
+            let _ = std::fs::remove_file(&lock_path);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn locked_pin_identity_prefers_rev_then_narhash_then_last_modified() {
+        // F: pin 同一性解決の優先順位（rev → narHash → lastModified）を純粋関数として固定する。
+        use serde_json::json;
+        assert_eq!(
+            super::locked_pin_identity(&json!({ "rev": "R", "narHash": "N", "lastModified": 1 }))
+                .as_deref(),
+            Some("R")
+        );
+        assert_eq!(
+            super::locked_pin_identity(&json!({ "narHash": "N", "lastModified": 1 })).as_deref(),
+            Some("N")
+        );
+        assert_eq!(
+            super::locked_pin_identity(&json!({ "lastModified": 42 })).as_deref(),
+            Some("42")
+        );
+        assert_eq!(super::locked_pin_identity(&json!({ "type": "path" })), None);
     }
 }

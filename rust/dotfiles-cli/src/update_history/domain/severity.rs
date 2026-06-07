@@ -9,7 +9,7 @@ use super::wire::{ChangeCategory, ChangeItem, Severity};
 /// 変更カテゴリ集合から重要度を機械算出する唯一の domain 関数。
 ///
 /// 規則（決定論。`record` と `show` が共有）:
-/// security を含む → `Critical`／breaking または deprecation（削除を含む）を含む → `Major`／
+/// security を含む → `Critical`／breaking または deprecation を含む → `Major`／
 /// feature・fix・default-change のみ → `Minor`／空 → `None`。
 /// severity は `text` などの自由文を一切見ず、`category` 閉集合だけを根拠にする。
 pub(crate) fn severity_of(items: &[ChangeItem]) -> Severity {
@@ -35,7 +35,7 @@ pub(crate) fn severity_of(items: &[ChangeItem]) -> Severity {
 
 /// 各変更カテゴリの絵文字凡例（プラン確定の表示契約）。
 ///
-/// 🔒security ⚠️breaking 🗑️deprecation/removal 🔧default-change ✨feature 🐛fix。
+/// 🔒security ⚠️breaking 🗑️deprecation 🔧default-change ✨feature 🐛fix。
 fn category_emoji(category: ChangeCategory) -> &'static str {
     match category {
         ChangeCategory::Security => "🔒",

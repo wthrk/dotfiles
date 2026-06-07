@@ -234,13 +234,27 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<bool> {
 /// （`lastModified`）は rev に連動して動くのが正当な bump である。`rev` が変わらないのに `narHash` または
 /// `lastModified` だけが変われば、同一 rev のまま固定対象の内容がすり替わった content swap であり、rev bump の
 /// 許可範囲を超える。よって「rev 不変かつ narHash/lastModified 変化」を fail にする。rev が動いていれば
-/// narHash/lastModified の変化は許容する（rev に連動した正当な更新）。`rev` 欠落（locked に rev が無い input）は
-/// 許可 input には想定しないため、その場合も narHash/lastModified の変化を許可しない（保守的に fail）。
+/// narHash/lastModified の変化は許容する（rev に連動した正当な更新）。
+///
+/// 加えて、許可 input は **`locked.rev` が old/head 双方で文字列として存在することを必須**とする。許可 input の
+/// `locked.rev` が削除されたり文字列以外（数値・null・object 等）へ壊れると、`field(...,"rev")` が `None` を返し、
+/// `old==new`（ともに `None`）で「rev 変化なし」と誤認したまま narHash/lastModified も一致すれば guard を素通り
+/// する。これは rev 欠落・rev 破壊の lock を無人 auto-merge へ通す抜けになるため、欠落/非文字列を明示的に fail に
+/// する（fail-closed）。これにより guard は「許可 input の rev が文字列で実在し、かつ rev 連動で内容が動いた」
+/// 状態だけを許可する。
 fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -> Result<bool> {
-    let field =
+    let str_field =
         |locked: &Value, key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
-    let old_rev = field(old_locked, "rev");
-    let new_rev = field(new_locked, "rev");
+    let require_rev = |locked: &Value, label: &str| -> Result<String> {
+        str_field(locked, "rev").ok_or_else(|| {
+            anyhow!(
+                "flake.lock node `{name}` allowed bump input is missing a string `locked.rev` \
+                 on {label}; rev-less or broken-rev lock is not an allowed bump"
+            )
+        })
+    };
+    let old_rev = require_rev(old_locked, "base")?;
+    let new_rev = require_rev(new_locked, "head")?;
     let rev_changed = old_rev != new_rev;
     if rev_changed {
         return Ok(true);
@@ -445,6 +459,34 @@ mod tests {
         // narHash が実際に変わっていること（連動更新の確認）。
         assert!(new.contains("sha256-bbbb"), "narHash は rev に連動する");
         verify_bump(&paths(&["flake.lock"]), &old, &new)
+    }
+
+    #[test]
+    fn rejects_allowed_input_with_missing_rev() {
+        // E 退行固定: 許可 input（nixpkgs）の `locked.rev` が削除された lock は guard が見逃さず fail にする。
+        // base/head とも rev を持たないと旧実装は `old_rev == new_rev`（ともに None）で「変化なし」扱いとなり、
+        // narHash/lastModified も一致すれば素通りした。rev 欠落の壊れた lock を無人 merge へ通さない。
+        let old =
+            lock_with("aaaa", "dddd").replace(r#""rev": "aaaa", "narHash": "sha256-aaaa", "#, "");
+        let new = old.clone();
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string().contains("missing a string `locked.rev`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_allowed_input_with_non_string_rev() {
+        // E 退行固定: 許可 input の `locked.rev` が文字列以外（ここでは数値）へ壊された lock も fail にする。
+        // `as_str()` が None を返すため rev 欠落と同様に「変化なし」誤認の抜けになる。非文字列 rev も明示 fail。
+        let old = lock_with("aaaa", "dddd").replace(r#""rev": "aaaa""#, r#""rev": 12345"#);
+        let new = old.clone();
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string().contains("missing a string `locked.rev`"),
+            "{err}"
+        );
     }
 
     #[test]

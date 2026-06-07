@@ -35,8 +35,9 @@ where
 ///
 /// `run` が stdio を継承するのに対し、本関数は `diff-closures` 出力やリリースノート取得のように
 /// 標準出力をプログラム的に読む用途のために `Command::output()` を使う（`environment.rs` の output
-/// 取得パターンに揃える）。`dry_run` 経路は持たず常に実行する。失敗時は終了状態と stderr の先頭を
-/// 文脈に含め、stdout は UTF-8 文字列として返す。stderr は端末へは流さず、失敗時の診断だけに使う。
+/// 取得パターンに揃える）。`dry_run` 経路は持たず常に実行する。失敗時は終了状態と stderr 全文（前後の
+/// 空白を `trim` した全体）を文脈に含め、stdout は UTF-8 文字列として返す。stderr は端末へは流さず、失敗時の
+/// 診断だけに使う。
 pub(crate) fn run_capture<I>(program: impl Into<OsString>, args: I) -> Result<String>
 where
     I: IntoIterator<Item = OsString>,
@@ -64,7 +65,8 @@ where
 /// 同一ホストのプロセス一覧（`ps`）から読めてしまうため、curl の `--config -`（stdin から設定読み取り）に
 /// `header = "Authorization: Bearer ..."` を流す用途に使う。`stdin_data` はそのまま子プロセスの stdin へ書き、
 /// 書き込み後に EOF を送る。stdin に書く内容も argv に現れないため、ログ・プロセス一覧のどちらにも secret を
-/// 残さない。失敗時は終了状態と stderr の先頭を文脈に含め、stdout は UTF-8 文字列として返す。
+/// 残さない。失敗時は終了状態と stderr 全文（前後の空白を `trim` した全体）を文脈に含め、stdout は UTF-8
+/// 文字列として返す。
 pub(crate) fn run_capture_with_stdin<I>(
     program: impl Into<OsString>,
     args: I,

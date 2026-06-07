@@ -210,9 +210,10 @@ glibc: 2.38, 2.39 → 2.40
 Closure size: 100.0 MiB → 101.0 MiB
 ";
         let deltas = parse_diff_closures(text)?;
-        // P2-2 退行固定: `Closure size: ... → ...` は矢印を含むが size 集計で version が解決できず old/new とも
-        // None になる。これを偽パッケージとして残すと件数水増し・存在しないパッケージのノート取得を招くため、
-        // パーサが捨てる。よって実 version 差分の glibc だけが残り、`Closure size` は出力に現れない。
+        // P2-2 退行固定: `Closure size: 100.0 MiB → 101.0 MiB` は矢印を含み old/new も Some（`100.0 MiB` /
+        // `101.0 MiB`）にパースされるが、これは個別パッケージではなくクロージャ全体の size 集計行である。
+        // 偽パッケージとして残すと件数水増し・存在しないパッケージのノート取得を招くため、name が `Closure size`
+        // であることを根拠にパーサが捨てる。よって実 version 差分の glibc だけが残り、`Closure size` は出力に現れない。
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].name, "glibc");
         assert_eq!(deltas[0].old.as_deref(), Some("2.38, 2.39"));
