@@ -56,10 +56,6 @@ on:
         description: "true なら PR 起票・push をせず bump/record/diff のみ検証する"
         type: boolean
         default: true
-  # TEMPORARY（CI 実挙動検証用・マージ前に削除）: default branch に未配置で workflow_dispatch が
-  # 使えないため、PR 同期で bump/record/diff を実走させて挙動を確認する。open-pr job は
-  # `github.event_name == 'schedule' || inputs.dry_run == 'false'` でガードされ pull_request では skip される。
-  pull_request:
 
 permissions:
   contents: read
