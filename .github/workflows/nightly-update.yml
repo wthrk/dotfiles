@@ -11,12 +11,16 @@ name: nightly update
 #   - 生リリースノート取得 + LLM 抽出は prompt injection 隔離のため `contents: read` の別 job に分離する。
 #     その job だけが `models: read` を持ち、GITHUB_TOKEN で GitHub Models を使う（別 secret 不要）。
 #   - GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow（必須 check）を発火し
-#     ない既知の制約がある。これを App 無しで満たすため、open-pr job が **同一 run 内でセキュリティチェック
-#     `dotfiles ci verify-bump-lock` を信頼 ref（この nightly workflow の checkout = 自分自身のコード）から
-#     インライン実行**し、合格時のみ PR head commit に `static checks` という commit status を GITHUB_TOKEN
-#     で POST する。適用済み「main」ruleset の required context `static checks` は context 名で突合するため、
-#     この Actions 由来 status が required check を満たす。検査主体は信頼 ref のコードで、検査対象は
-#     base..head の lock 差分（git データ）であり、PR 作業ツリーの dotfiles を検査主体にしない。
+#     ない既知の制約がある。これを App 無しで満たすため、open-pr job が **同一 run 内で ①セキュリティチェック
+#     `dotfiles ci verify-bump-lock`（信頼 ref = この nightly workflow の checkout = 自分自身のコードで実行）
+#     と ②実 static checks `cargo xtask check static`（static-checks.yml と同一コマンドを bump 後 lock で実行）
+#     の両方を走らせ、両方が合格した場合に限り** PR head commit に `static checks` という commit status を
+#     GITHUB_TOKEN で POST する。適用済み「main」ruleset の required context `static checks` は context 名で
+#     突合するため、この Actions 由来 status が required check を満たす。①の検査主体は信頼 ref のコードで、
+#     検査対象は base..head の lock 差分（git データ）であり、PR 作業ツリーの dotfiles を検査主体にしない。
+#     ②は bot PR では他に誰も走らせない実 static checks（`nix flake check` 含む）で、bump で config が eval
+#     失敗していないかを auto-merge 前に検知する真のゲートになる。いずれか失敗すれば status を投稿しない
+#     （required check 未充足 → auto-merge されない・fail-closed）。
 #   - その後 `@codex review` コメントを投稿（codex 自動レビュー）し、Copilot は GitHub 側のネイティブ
 #     code review で走る。`gh pr merge --auto --squash` で auto-merge を有効化し、copilot レビュー充足 +
 #     required status（`static checks`）満了でマージされる。
@@ -271,15 +275,23 @@ jobs:
             docs/update-history/
           if-no-files-found: error
 
-  # 3) PR 起票 + インラインセキュリティチェック + status 投稿 + auto-merge。GITHUB_TOKEN で完結する
-  #    （GitHub App / secret は使わない）。GITHUB_TOKEN 起票 PR では `on: pull_request` の必須 check が
-  #    発火しないため、この job が同一 run 内で `dotfiles ci verify-bump-lock` をインライン実行し、合格時
-  #    のみ PR head に `static checks` の commit status を POST して required check を満たす。
+  # 3) PR 起票 + インラインセキュリティチェック + 実 static checks + status 投稿 + auto-merge。
+  #    GITHUB_TOKEN で完結する（GitHub App / secret は使わない）。GITHUB_TOKEN 起票 PR では
+  #    `on: pull_request` の必須 check（static-checks.yml）が発火しないため、この job が同一 run 内で
+  #    ①`dotfiles ci verify-bump-lock`（lock 差分のセキュリティ検査）と ②`cargo xtask check static`
+  #    （static-checks.yml と同一の実 static checks）を bump 後 lock で実行し、**両方が合格した場合に
+  #    限り** PR head に `static checks` の commit status を success で POST して required check を満たす。
+  #    どちらか失敗なら step 失敗で job が止まり、status 投稿（後続 step）に到達しない（fail-closed）。
+  #
+  #    runs-on は ubuntu-latest（static-checks.yml と同条件）。`cargo xtask check static` は
+  #    `nix flake check --all-systems` を含み darwinConfigurations を eval するが、非 darwin runner では
+  #    `.system` 派生はビルドされない（eval のみ・~11 分・重い closure ビルド無し）。verify-bump-lock 用
+  #    `dotfiles` バイナリの build（小さい）と合わせても重い closure は発生しない。
   open-pr:
     name: open bump PR and enable auto-merge
     needs: [bump, record]
     if: ${{ github.event_name == 'schedule' || github.event.inputs.dry_run == 'false' }}
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     # GITHUB_TOKEN に必要な最小権限のみ付与する。App secret は使わない。
     #   contents: write       … bump ブランチを push する。
@@ -340,7 +352,8 @@ jobs:
 
       # セキュリティチェック本体をインライン実行する。判定主体は信頼 ref の dotfiles（このツリーで build）、
       # 検査対象は base..head の commit パス union と両端 flake.lock 差分。許可外パス混入・許可外 input rev
-      # 変更・空 bump があれば非 0 終了し、後続の status 投稿・PR 起票・merge を行わない（fail-closed）。
+      # 変更・空 bump があれば非 0 終了し、後続の static checks・status 投稿・PR 起票・merge を行わない
+      # （fail-closed。step 失敗で job が止まり後続 step に到達しない）。
       - name: セキュリティチェック（verify-bump-lock）をインライン実行
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
         run: |
@@ -349,6 +362,19 @@ jobs:
             --base "${{ steps.commit.outputs.base_sha }}" \
             --head "${{ steps.commit.outputs.head_sha }}" \
             --repo .
+
+      # 実 static checks を bump 後 lock で実行する。これは static-checks.yml と同一コマンドで、
+      # GITHUB_TOKEN 起票 bot PR では他に誰も走らせないため重複でなく必須。`nix flake check --all-systems`
+      # を含み、bump で config が eval 失敗していないか（例: upstream 削除されたパッケージ参照）を
+      # auto-merge 前に検知する真のゲートになる。失敗すれば step 失敗で job が止まり、後続の status 投稿に
+      # 到達しないため required check `static checks` は未充足のまま（success 詐称しない・fail-closed）。
+      # ubuntu-latest 上では darwinConfigurations は eval されるが `.system` はビルドされない
+      # （static-checks.yml と同条件・重い closure ビルド無し）。
+      - name: 実 static checks（cargo xtask check static）を bump 後 lock で実行
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        run: |
+          set -euo pipefail
+          nix develop -c cargo xtask check static
 
       - name: bump ブランチを push して PR 起票
         id: pr
@@ -363,14 +389,17 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴を記録します。同一 run のインライン \`dotfiles ci verify-bump-lock\` が合格したため \`static checks\` status を投稿済みです。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
+            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴を記録します。同一 run で \`dotfiles ci verify-bump-lock\` と実 \`cargo xtask check static\`（static-checks.yml と同一）の両方が合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
-      # GITHUB_TOKEN 起票 PR では `on: pull_request` の static-checks.yml が発火しないため、合格済みの
-      # セキュリティチェックを根拠に PR head へ `static checks` commit status を success で POST する。
-      # context 名は適用済み ruleset の required context（static-checks.yml の job 名）と一致させる。
+      # GITHUB_TOKEN 起票 PR では `on: pull_request` の static-checks.yml が発火しないため、同一 run で
+      # 実行した ①verify-bump-lock と ②実 static checks の**両方が合格した場合に限り** PR head へ
+      # `static checks` commit status を success で POST して required check を満たす。両 step は本 step の
+      # 前段にあり、いずれか失敗すれば job が止まり本 step に到達しない（success 詐称しない）。`if: success()`
+      # を併用し、前段 step がすべて成功した場合のみ投稿することを明示的に保証する。context 名は適用済み
+      # ruleset の required context（static-checks.yml の job 名 `static checks`）と一致させる。
       - name: required check `static checks` status を投稿
-        if: ${{ steps.pr.outputs.pr_url != '' }}
+        if: ${{ success() && steps.pr.outputs.pr_url != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -382,7 +411,7 @@ jobs:
             -f state=success \
             -f context="static checks" \
             -f target_url="${RUN_URL}" \
-            -f description="nightly-update run のインライン verify-bump-lock 合格"
+            -f description="nightly-update run の verify-bump-lock + 実 static checks 合格"
 
       # codex 自動レビューを起動する（Copilot は GitHub 側のネイティブ code review で走る）。
       - name: codex レビューを依頼
