@@ -33,6 +33,33 @@ const EXTRACT_MODEL: &str = "openai/gpt-4o-mini";
 /// 出力ブレを抑えるため温度は低く固定する。
 const EXTRACT_TEMPERATURE: f32 = 0.0;
 
+/// 生リリースノートを 1 リクエストへ載せる際の最大文字数（char 単位）。
+///
+/// GitHub Models の gpt-4o-mini はリクエスト本文を **最大 8000 トークン**に制限する（超過は
+/// `HTTP 413 tokens_limit_reached` で全件失敗する）。リクエストは「固定 system prompt（指示）+
+/// response_format スキーマ + 生ノート（user message）」の合計であり、生ノートを**保守的な char 上限**で
+/// 切り詰めて 8000 トークンを確実に下回らせる（厳密なトークン計算はせず、char ベースで安全側に倒す）。
+///
+/// 見積もりの根拠（保守的に 1 token ≒ 3 chars と置く。日本語・記号・URL でトークン密度が上がるため厚めの
+/// margin を取る。実際の英語平均は 1 token ≒ 4 chars 程度なので 3 は安全側）。
+/// system prompt（[`EXTRACT_SYSTEM_PROMPT`]）≈ 370 chars ⇒ 概算 ≈ 124 token、日本語主体で密度が高くても
+/// 余裕を見て ≈ 400 token と置く。response_format スキーマ（[`response_format_schema`]）≈ 600 chars ⇒
+/// 概算 ≈ 200 token、余裕を見て ≈ 300 token と置く。固定メッセージ枠・role ラベル等の overhead ≈ 100 token。
+/// 合算すると生ノート以外の overhead ≈ 800 token を保守的に確保する。残り予算 8000 − 800 = 7200 token を
+/// 生ノートへ割り当てられるが、さらに margin を厚くして生ノートは **〜2000 token 相当**に抑える。
+///
+/// `MAX_NOTES_CHARS = 6000` chars は、1 token ≒ 3 chars の保守見積もりで ≈ 2000 token に相当する。よって
+/// 全体は overhead 800 + ノート 2000 ≈ 2800 token となり、8000 token を大幅に下回る（多言語・記号で密度が
+/// 上がっても 8000 を超えない margin を確保する）。複数パッケージは各々別呼び出しのため、1 パッケージ分の
+/// ノートをこの上限内へ収めれば足りる。
+const MAX_NOTES_CHARS: usize = 6000;
+
+/// ノートを切り詰めた際に末尾へ付ける印。LLM に「与えたノートは全文でない」ことを示す。
+///
+/// 切り詰めても「与えたノートのみを根拠とし、無ければ空配列」というハルシネーション防止契約
+/// （[`EXTRACT_SYSTEM_PROMPT`]）は維持される。印自体は短く、上限見積もりへの影響は無視できる。
+const TRUNCATION_MARKER: &str = "\n…(truncated)";
+
 /// 抽出契約を固定する versioned system prompt（v1）。
 ///
 /// 含む: 破壊的変更/セキュリティ修正/新機能/重要バグ修正/非推奨・削除/デフォルト挙動変更。
@@ -99,7 +126,11 @@ impl GithubModelsExtractAdapter {
     }
 
     /// チャット補完のリクエストボディ JSON を組み立てる（versioned prompt + json schema 強制）。
+    ///
+    /// 生ノートは送信前に [`truncate_notes`] で [`MAX_NOTES_CHARS`] 以内へ切り詰め、リクエスト本文が
+    /// gpt-4o-mini の 8000 トークン上限を確実に下回るようにする（上限超過は `HTTP 413` で全件失敗するため）。
     fn request_body(notes_text: &str) -> Result<String> {
+        let notes_text = truncate_notes(notes_text);
         let body = serde_json::json!({
             "model": EXTRACT_MODEL,
             "temperature": EXTRACT_TEMPERATURE,
@@ -203,6 +234,25 @@ fn split_status_and_body(raw: &str) -> (u16, String) {
     let (body, status_text) = raw.split_at(digits_start);
     let status = status_text.parse::<u16>().unwrap_or(0);
     (status, body.to_string())
+}
+
+/// 生リリースノートを gpt-4o-mini のリクエスト上限内へ収めるため [`MAX_NOTES_CHARS`] 以内へ切り詰める。
+///
+/// リクエスト本文（system prompt + スキーマ + 生ノート）が 8000 トークン上限を超えると GitHub Models は
+/// `HTTP 413 tokens_limit_reached` を返し抽出が全件失敗する。生ノートは信頼境界外の任意長テキストなので、
+/// adapter（外部 API への翻訳境界）で保守的な char 上限へ切り詰めるのが翻訳責務である（トークンの厳密計算は
+/// せず char ベースで安全側に倒す。上限根拠は [`MAX_NOTES_CHARS`] のコメント参照）。
+///
+/// 切り詰めは **char 境界**で行い（`chars()` ベース）、multibyte 文字を途中で割らない。切り詰めた場合は末尾へ
+/// [`TRUNCATION_MARKER`] を付け、LLM に全文でないことを示す（ハルシネーション防止契約は維持）。上限以内の
+/// 短いノートはそのまま（印を付けず）返す。
+fn truncate_notes(notes_text: &str) -> String {
+    // char 数で上限判定する（byte 長ではなく文字数。multibyte の途中で切らないため）。
+    if notes_text.chars().count() <= MAX_NOTES_CHARS {
+        return notes_text.to_string();
+    }
+    let truncated: String = notes_text.chars().take(MAX_NOTES_CHARS).collect();
+    format!("{truncated}{TRUNCATION_MARKER}")
 }
 
 /// 診断ログ用に本文の先頭を短く切り詰める。secret は出力に現れない前提だが、長文の垂れ流しを避けるため
@@ -309,8 +359,8 @@ mod tests {
     //! リクエストボディ/スキーマ組み立てを、実 API を呼ばずに固定する。
 
     use super::{
-        GithubModelsExtractAdapter, auth_config, body_snippet, response_format_schema,
-        split_status_and_body,
+        GithubModelsExtractAdapter, MAX_NOTES_CHARS, TRUNCATION_MARKER, auth_config, body_snippet,
+        response_format_schema, split_status_and_body, truncate_notes,
     };
     use crate::update_history::domain::wire::ChangeCategory;
 
@@ -491,6 +541,66 @@ mod tests {
         let auth = auth_config("ghs_SECRET");
         assert!(auth.contains("ghs_SECRET"));
         assert!(!snippet.contains("ghs_SECRET"));
+    }
+
+    #[test]
+    fn short_notes_are_not_truncated() {
+        // 上限以内の短いノートはそのまま（切り詰め印を付けず）返す。
+        let notes = "短いリリースノート";
+        let result = truncate_notes(notes);
+        assert_eq!(result, notes);
+        assert!(!result.contains(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn notes_at_exact_limit_are_not_truncated() {
+        // ちょうど上限（MAX_NOTES_CHARS）のノートは切り詰めない（`<=` 境界）。
+        let notes = "a".repeat(MAX_NOTES_CHARS);
+        let result = truncate_notes(&notes);
+        assert_eq!(result.chars().count(), MAX_NOTES_CHARS);
+        assert!(!result.contains(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn over_limit_notes_are_truncated_to_max_chars_plus_marker() {
+        // 退行固定: 上限超のノートは MAX_NOTES_CHARS char へ切られ、末尾へ切り詰め印が付く。
+        // これにより gpt-4o-mini の 8000 トークン上限を超えず HTTP 413 を避ける。
+        let notes = "a".repeat(MAX_NOTES_CHARS + 5000);
+        let result = truncate_notes(&notes);
+        // 本体は厳密に MAX_NOTES_CHARS char。残りは切り詰め印のみ。
+        assert!(result.starts_with(&"a".repeat(MAX_NOTES_CHARS)));
+        assert!(result.ends_with(TRUNCATION_MARKER));
+        let marker_chars = TRUNCATION_MARKER.chars().count();
+        assert_eq!(result.chars().count(), MAX_NOTES_CHARS + marker_chars);
+    }
+
+    #[test]
+    fn truncation_cuts_on_char_boundary_for_multibyte() {
+        // 退行固定: multibyte 文字を途中で割らない（chars() ベースで切る）。各文字は 3 byte の日本語。
+        // 上限を 1 char 超える長さで切り、結果が valid UTF-8（panic せず）かつ MAX_NOTES_CHARS char
+        // ＋印であることを確認する。byte 単位で切ると multibyte 境界を壊しうるが char 単位なら安全。
+        let notes = "あ".repeat(MAX_NOTES_CHARS + 100);
+        let result = truncate_notes(&notes);
+        assert!(result.starts_with(&"あ".repeat(MAX_NOTES_CHARS)));
+        assert!(result.ends_with(TRUNCATION_MARKER));
+        let marker_chars = TRUNCATION_MARKER.chars().count();
+        assert_eq!(result.chars().count(), MAX_NOTES_CHARS + marker_chars);
+    }
+
+    #[test]
+    fn request_body_truncates_over_limit_notes() -> crate::Result<()> {
+        // 退行固定: request_body は上限超ノートを user message へ載せる前に切り詰める。
+        // user content の char 数が MAX_NOTES_CHARS + 印 を超えないことを確認する（HTTP 413 回避の核）。
+        let long_notes = "x".repeat(MAX_NOTES_CHARS + 9000);
+        let body = GithubModelsExtractAdapter::request_body(&long_notes)?;
+        let value: serde_json::Value = serde_json::from_str(&body)?;
+        let content = value["messages"][1]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("user content missing"))?;
+        let marker_chars = TRUNCATION_MARKER.chars().count();
+        assert_eq!(content.chars().count(), MAX_NOTES_CHARS + marker_chars);
+        assert!(content.ends_with(TRUNCATION_MARKER));
+        Ok(())
     }
 
     #[test]
