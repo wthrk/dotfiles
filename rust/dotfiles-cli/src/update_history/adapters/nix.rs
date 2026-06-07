@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::Result;
+use crate::update_history::domain::diff::NixPackage;
 use crate::update_history::ports::NixVersionPort;
 
 /// `nix eval` 由来の old/new name→version JSON ファイルを `NixVersionPort` 契約へ翻訳する adapter。
@@ -35,12 +36,14 @@ impl NixEvalVersionAdapter {
         Self { old, new }
     }
 
-    /// eval JSON ファイルを読んで name→version マップへ翻訳する。
+    /// eval JSON ファイルを読んで name→[`NixPackage`] マップへ翻訳する。
     ///
     /// path が `None` またはファイル不存在なら空マップを返す（縮退）。それ以外の I/O / JSON parse 失敗は
-    /// `Err` で伝播し、部分的に壊れた差分を作らない。`nix eval --json --apply` の出力は flat な
-    /// `{ "name": "version" }` object であることを契約とする。
-    fn read_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, String>> {
+    /// `Err` で伝播し、部分的に壊れた差分を作らない。`nix eval --json --apply` の出力は
+    /// `{ "name": { "version": "...", "notes_source": "..." }, ... }` object であることを契約とする
+    /// （`notes_source` は `meta.changelog`/`meta.homepage` 由来。eval 側で常に出力されるが、欠落時は
+    /// `NixPackage` の `serde(default)` で空文字へ縮退する）。
+    fn read_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, NixPackage>> {
         let Some(path) = path else {
             return Ok(BTreeMap::new());
         };
@@ -51,17 +54,17 @@ impl NixEvalVersionAdapter {
             }
             Err(error) => return Err(error.into()),
         };
-        let map: BTreeMap<String, String> = serde_json::from_str(&text)?;
+        let map: BTreeMap<String, NixPackage> = serde_json::from_str(&text)?;
         Ok(map)
     }
 }
 
 impl NixVersionPort for NixEvalVersionAdapter {
-    fn old_versions(&self) -> Result<BTreeMap<String, String>> {
+    fn old_versions(&self) -> Result<BTreeMap<String, NixPackage>> {
         Self::read_map(&self.old)
     }
 
-    fn new_versions(&self) -> Result<BTreeMap<String, String>> {
+    fn new_versions(&self) -> Result<BTreeMap<String, NixPackage>> {
         Self::read_map(&self.new)
     }
 }
@@ -87,15 +90,49 @@ mod tests {
     }
 
     #[test]
-    fn reads_flat_name_version_json() -> Result<()> {
-        let old = write_temp("old", r#"{"neovim":"0.10.2","zlib":"1.3.1"}"#)?;
-        let new = write_temp("new", r#"{"neovim":"0.11.0","zlib":"1.3.1"}"#)?;
+    fn reads_name_version_notes_source_json() -> Result<()> {
+        let old = write_temp(
+            "old",
+            r#"{"neovim":{"version":"0.10.2","notes_source":"https://github.com/neovim/neovim"},"zlib":{"version":"1.3.1","notes_source":""}}"#,
+        )?;
+        let new = write_temp(
+            "new",
+            r#"{"neovim":{"version":"0.11.0","notes_source":"https://github.com/neovim/neovim"},"zlib":{"version":"1.3.1","notes_source":""}}"#,
+        )?;
         let adapter = NixEvalVersionAdapter::new(Some(old), Some(new));
 
         let old_map = adapter.old_versions()?;
         let new_map = adapter.new_versions()?;
-        assert_eq!(old_map.get("neovim").map(String::as_str), Some("0.10.2"));
-        assert_eq!(new_map.get("neovim").map(String::as_str), Some("0.11.0"));
+        assert_eq!(
+            old_map.get("neovim").map(|p| p.version.as_str()),
+            Some("0.10.2")
+        );
+        assert_eq!(
+            new_map.get("neovim").map(|p| p.version.as_str()),
+            Some("0.11.0")
+        );
+        // notes_source（meta.changelog/homepage 由来）も読み取る。
+        assert_eq!(
+            new_map.get("neovim").map(|p| p.notes_source.as_str()),
+            Some("https://github.com/neovim/neovim")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_notes_source_field_defaults_to_empty() -> Result<()> {
+        // notes_source 欠落（旧形式や meta 不在）は serde(default) で空文字へ縮退する。
+        let new = write_temp("new-no-notes", r#"{"git":{"version":"2.54.0"}}"#)?;
+        let adapter = NixEvalVersionAdapter::new(None, Some(new));
+        let new_map = adapter.new_versions()?;
+        assert_eq!(
+            new_map.get("git").map(|p| p.version.as_str()),
+            Some("2.54.0")
+        );
+        assert_eq!(
+            new_map.get("git").map(|p| p.notes_source.as_str()),
+            Some("")
+        );
         Ok(())
     }
 

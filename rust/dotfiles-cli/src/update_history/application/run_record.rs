@@ -51,6 +51,7 @@ where
         let raw = notes.fetch_release_notes(
             &delta.name,
             delta.source,
+            delta.notes_source.clone(),
             delta.old.clone(),
             delta.new.clone(),
         )?;
@@ -105,7 +106,7 @@ mod tests {
 
     use super::run_record;
     use crate::update_history::domain::commands::RecordCommand;
-    use crate::update_history::domain::diff::{DeltaSource, VersionDelta};
+    use crate::update_history::domain::diff::{DeltaSource, NixPackage, VersionDelta};
     use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
     use crate::update_history::ports::{
         MockBrewVersionDiffPort, MockChangeExtractPort, MockHistoryStorePort, MockNixVersionPort,
@@ -123,13 +124,26 @@ mod tests {
         }
     }
 
-    /// 単一 nix delta（`name`, 1.0→1.1）を生む old/new eval マップを返す mock を組む。
+    /// version と notes_source から `NixPackage` を作る。
+    fn pkg(version: &str, notes_source: &str) -> NixPackage {
+        NixPackage {
+            version: version.to_string(),
+            notes_source: notes_source.to_string(),
+        }
+    }
+
+    /// 単一 nix delta（`name`, 1.0→1.1、notes_source 空）を生む old/new eval マップを返す mock を組む。
     fn nix_versions_for(name: &'static str) -> MockNixVersionPort {
+        nix_versions_with_notes(name, "")
+    }
+
+    /// 単一 nix delta（`name`, 1.0→1.1）で new 側に notes_source を持たせる eval マップ mock。
+    fn nix_versions_with_notes(name: &'static str, notes: &'static str) -> MockNixVersionPort {
         let mut nix = MockNixVersionPort::new();
         nix.expect_old_versions()
-            .returning(move || Ok(BTreeMap::from([(name.to_string(), "1.0".to_string())])));
+            .returning(move || Ok(BTreeMap::from([(name.to_string(), pkg("1.0", ""))])));
         nix.expect_new_versions()
-            .returning(move || Ok(BTreeMap::from([(name.to_string(), "1.1".to_string())])));
+            .returning(move || Ok(BTreeMap::from([(name.to_string(), pkg("1.1", notes))])));
         nix
     }
 
@@ -148,6 +162,7 @@ mod tests {
             new: Some("121".to_string()),
             change: ChangeKind::Upgraded,
             source: DeltaSource::BrewTap,
+            notes_source: None,
         }
     }
 
@@ -165,15 +180,15 @@ mod tests {
         // nix package openssl は NixEval 出所で引かれる。
         notes
             .expect_fetch_release_notes()
-            .withf(|name, source, _, _| name == "openssl" && *source == DeltaSource::NixEval)
+            .withf(|name, source, _, _, _| name == "openssl" && *source == DeltaSource::NixEval)
             .times(1)
-            .returning(|_, _, _, _| Ok(None));
+            .returning(|_, _, _, _, _| Ok(None));
         // brew cask firefox は BrewTap 出所で引かれる。
         notes
             .expect_fetch_release_notes()
-            .withf(|name, source, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
+            .withf(|name, source, _, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
             .times(1)
-            .returning(|_, _, _, _| Ok(None));
+            .returning(|_, _, _, _, _| Ok(None));
 
         let mut extract = MockChangeExtractPort::new();
         extract.expect_extract_change_items().never();
@@ -197,7 +212,9 @@ mod tests {
 
     #[test]
     fn record_extracts_sanitizes_and_appends_one_entry() -> crate::Result<()> {
-        let nix_versions = nix_versions_for("openssl");
+        // nix delta は new 側 notes_source（meta.changelog/homepage 由来）を運び、それが NotesPort へ
+        // 渡る（nix のリリースノート取得経路）。
+        let nix_versions = nix_versions_with_notes("openssl", "https://github.com/openssl/openssl");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -207,10 +224,14 @@ mod tests {
         let mut notes = MockNotesPort::new();
         notes
             .expect_fetch_release_notes()
-            // nix delta なので source = NixEval が渡ることを withf で固定する（N5 振り分け）。
-            .withf(|_, source, _, _| *source == DeltaSource::NixEval)
+            // nix delta なので source = NixEval と new 側 notes_source が渡ることを withf で固定する
+            // （N5 振り分け + nix ノート取得先運搬）。
+            .withf(|_, source, notes_source, _, _| {
+                *source == DeltaSource::NixEval
+                    && notes_source.as_deref() == Some("https://github.com/openssl/openssl")
+            })
             .times(1)
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(Some(RawReleaseNotes {
                     text: "CVE fix".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
@@ -280,7 +301,7 @@ mod tests {
         notes
             .expect_fetch_release_notes()
             .times(1)
-            .returning(|_, _, _, _| Ok(None));
+            .returning(|_, _, _, _, _| Ok(None));
         let mut extract = MockChangeExtractPort::new();
         extract.expect_extract_change_items().never();
 

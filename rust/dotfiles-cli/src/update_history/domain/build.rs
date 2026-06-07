@@ -110,6 +110,7 @@ mod tests {
             new: Some("1.1".to_string()),
             change: ChangeKind::Upgraded,
             source,
+            notes_source: None,
         }
     }
 

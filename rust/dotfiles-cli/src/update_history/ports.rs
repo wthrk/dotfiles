@@ -9,26 +9,28 @@
 
 use std::collections::BTreeMap;
 
-use super::domain::diff::{DeltaSource, VersionDelta};
+use super::domain::diff::{DeltaSource, NixPackage, VersionDelta};
 use super::domain::view::HistoryView;
 use super::domain::wire::{ChangeItem, UpdateEntry};
 use crate::Result;
 
-/// nix 参照構成の宣言パッケージ name→version マップを old/new それぞれ取得する capability 契約
+/// nix 参照構成の宣言パッケージ name→[`NixPackage`] マップを old/new それぞれ取得する capability 契約
 /// （外部機能: nix eval 結果の取得）。
 ///
-/// nightly が欲しいのは「どの宣言パッケージが old→new で版変化したか」だけであり、それは `nix eval`
-/// で評価時属性（`pname`/`version`）として数秒で取れる。closure を実体化（`diff-closures`）してフル
-/// closure を 2 回ビルドする必要はない。caller（application）は old/new の version マップを受け取り、
-/// 比較（[`super::domain::diff::diff_versions`]）と差分種別の業務意味を domain rule に委ねる。implementor
-/// は ci-ref の old/new lock で eval 済みの name→version JSON を取得して `BTreeMap` へ翻訳するだけを担う。
+/// nightly が欲しいのは「どの宣言パッケージが old→new で版変化したか」と「各パッケージの当該版の
+/// リリースノート取得先」であり、いずれも `nix eval` で評価時属性（`pname`/`version` と
+/// `meta.changelog`/`meta.homepage`）として数秒で取れる。closure を実体化（`diff-closures`）してフル
+/// closure を 2 回ビルドする必要はない。caller（application）は old/new の [`NixPackage`] マップを受け取り、
+/// 比較（[`super::domain::diff::diff_versions`]）と差分種別・ノート取得先の運搬を domain rule に委ねる。
+/// implementor は ci-ref の old/new lock で eval 済みの `{ name: { version, notes_source } }` JSON を取得して
+/// `BTreeMap` へ翻訳するだけを担う。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait NixVersionPort {
-    /// bump 前（old lock）の宣言パッケージ name→version マップを返す。
-    fn old_versions(&self) -> Result<BTreeMap<String, String>>;
+    /// bump 前（old lock）の宣言パッケージ name→[`NixPackage`] マップを返す。
+    fn old_versions(&self) -> Result<BTreeMap<String, NixPackage>>;
 
-    /// bump 後（new lock）の宣言パッケージ name→version マップを返す。
-    fn new_versions(&self) -> Result<BTreeMap<String, String>>;
+    /// bump 後（new lock）の宣言パッケージ name→[`NixPackage`] マップを返す。
+    fn new_versions(&self) -> Result<BTreeMap<String, NixPackage>>;
 }
 
 /// Homebrew tap rev 間の version 差分を取得する capability 契約（外部機能: brew tap 解析）。
@@ -44,23 +46,27 @@ pub(crate) trait BrewVersionDiffPort {
 
 /// 更新パッケージの生リリースノートを取得する capability 契約（外部機能: ノート取得）。
 ///
-/// caller は対象パッケージと version 範囲、そして差分の出所（[`DeltaSource`]）を渡す。implementor は
-/// 出所ごとに異なるノート取得先（nix=forge releases / nixpkgs `meta.changelog`、brew=cask 定義の
-/// `Casks/<letter>/<name>.rb`）を選び、`(old, new]` の生ノートテキストを取得して返す。出所を渡すのは、
-/// nix と brew で取得先の base URL / 解決規則が異なり、同一規則で引くと誤った URL（例: nix package を cask
-/// レイアウトで引いて 404）になるためである。取得不能時は `None` を返し（フォールバックは version + URL の
-/// み）、ノートの構造化や要約は行わない。生ノートは信頼境界外であり、後段の機械バリデートで守る。
+/// caller は対象パッケージと version 範囲、差分の出所（[`DeltaSource`]）、そして nix eval 由来の
+/// ノート取得先 URL（`notes_source`）を渡す。implementor は出所ごとに異なるノート取得先を選ぶ:
+/// nix eval 由来は delta が運ぶ `notes_source`（`meta.changelog`/`meta.homepage` 由来 URL）から、brew tap
+/// 由来は cask 定義の `Casks/<letter>/<name>.rb` から、`(old, new]` の生ノートテキストを取得して返す。
+/// 出所を渡すのは、nix と brew で取得先の解決規則が異なり、同一規則で引くと誤った URL（例: nix package を
+/// cask レイアウトで引いて 404）になるためである。取得不能時・`notes_source` 不明時は `None` を返し
+/// （フォールバックは version + URL のみ）、ノートの構造化や要約は行わない。生ノートおよび `notes_source`
+/// URL は信頼境界外であり、取得は許可ホスト https に限定し、後段の機械バリデートでも守る。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait NotesPort {
     /// 対象パッケージの `(old, new]` 範囲の生リリースノートを、差分の出所に応じた取得先から取得する。
     ///
-    /// `source` は nix クロージャ由来か brew tap 由来かを示し、implementor はこれで取得先 base / 解決規則を
-    /// 振り分ける。`notes_url` は記録に残すノート参照 URL。implementor はノート本文取得と URL 確定だけを担い、
-    /// 変更概要の意味づけや severity 算出は行わない。
+    /// `source` は nix クロージャ由来か brew tap 由来かを示し、implementor はこれで取得先 / 解決規則を
+    /// 振り分ける。`notes_source` は nix eval 由来 delta が運ぶ当該版のノート取得先 URL（`meta.changelog`/
+    /// `meta.homepage`。brew では `None`）。`notes_url` は記録に残すノート参照 URL。implementor はノート本文
+    /// 取得と URL 確定だけを担い、変更概要の意味づけや severity 算出は行わない。
     fn fetch_release_notes(
         &self,
         name: &str,
         source: DeltaSource,
+        notes_source: Option<String>,
         old: Option<String>,
         new: Option<String>,
     ) -> Result<Option<RawReleaseNotes>>;

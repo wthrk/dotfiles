@@ -102,12 +102,10 @@ struct RecordOptions {
     /// brew cask のリリースノート URL 基底（cask 定義の `Casks/` レイアウト。`<base><letter>/<name>.rb` を
     /// 取得対象にする）。brew tap 由来 package にだけ使う。未指定なら brew package のノート取得は縮退して空。
     /// 後方互換のため旧 `--notes-base` も別名として受ける（旧運用は cask base を渡していた）。
+    /// nix eval 由来 package のノート取得先は `--nix-old`/`--nix-new` の eval JSON が各パッケージごとに
+    /// 運ぶ `notes_source`（`meta.changelog`/`meta.homepage`）を使うため、nix 用の base 引数は持たない。
     #[arg(long, alias = "notes-base")]
     brew_notes_base: Option<String>,
-    /// nix クロージャ由来 package のリリースノート URL 基底（forge releases / `meta.changelog` 系。
-    /// `<base><name>` を取得対象にする）。nix package にだけ使う。未指定なら nix package のノート取得は縮退して空。
-    #[arg(long)]
-    nix_notes_base: Option<String>,
 }
 
 #[derive(Args)]
@@ -150,7 +148,7 @@ pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
 fn run_record(options: RecordOptions) -> Result<()> {
     let nix_versions = adapters::NixEvalVersionAdapter::new(options.nix_old, options.nix_new);
     let brew_diff = adapters::BrewTapDiffAdapter::new(options.brew_diff);
-    let notes = adapters::ReleaseNotesAdapter::new(options.nix_notes_base, options.brew_notes_base);
+    let notes = adapters::ReleaseNotesAdapter::new(options.brew_notes_base);
     let extract = adapters::GithubModelsExtractAdapter;
     let store = adapters::TomlHistoryStoreAdapter::new(options.out);
 

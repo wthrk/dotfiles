@@ -5,13 +5,18 @@
 # 版変化したか」だけで、それは `pname`/`version`（評価時属性）を `nix eval --json` で数秒・ビルド/フェッチ不要で
 # 取れる。closure を `nix store diff-closures` のために実体化（フル closure を 2 回ビルド）する必要はない。
 #
-# 出力: `$2` に `{ "name": "version", ... }` の flat JSON object を書く。これを `dotfiles update-history record`
-# の `--nix-old` / `--nix-new` が読み、domain の純粋比較（diff_versions）で版差分を求める。
+# 出力: `$2` に `{ "name": { "version": "...", "notes_source": "..." }, ... }` の JSON object を書く。これを
+# `dotfiles update-history record` の `--nix-old` / `--nix-new` が読み、domain の純粋比較（diff_versions）で
+# 版差分を求めると同時に、各パッケージの当該版のリリースノート取得先（notes_source）を delta へ運ぶ。
 #
 # 評価対象: home-manager の `home.packages`（利用者宣言パッケージ）と nix-darwin の
-# `environment.systemPackages`（GUI アプリ等の system 宣言パッケージ）。両 attrset の name→version を統合し、
-# 同名は system 側を優先する（重複は実フリートでは基本起きない）。`pname`/`version` が無いパッケージは
+# `environment.systemPackages`（GUI アプリ等の system 宣言パッケージ）。両 attrset の name→{version,notes_source}
+# を統合し、同名は system 側を優先する（重複は実フリートでは基本起きない）。`pname`/`version` が無いパッケージは
 # `parseDrvName` でフォールバックし、版が取れなければ空文字（record 側で版不明 = None として扱う）。
+#
+# notes_source: 各パッケージの `meta.changelog`（リリースノート/CHANGELOG の正準 URL）を優先し、無ければ
+# `meta.homepage`、いずれも無ければ空文字にする。これは評価時 meta 属性であり、ビルド/フェッチを伴わない。
+# record 側はこの URL（信頼境界外）を host allowlist で機械検証してから GitHub Models 要約へ回す。
 #
 # 使い方: eval-declared-versions.sh <reference> <out-json>
 #   <reference>  例: darwinConfigurations.ci-ref
@@ -24,9 +29,10 @@ out="${2:?usage: eval-declared-versions.sh <reference> <out-json>}"
 # 参照構成から利用者名を eval で取得する（ci-ref は user=ci 固定だが、参照を引数化したため動的に解決する）。
 user="$(nix eval --raw ".#${reference}.config.system.primaryUser")"
 
-# パッケージリスト attrset を name→version object へ畳む `--apply` 式。`pname` 優先、無ければ
-# `parseDrvName (p.name)`、version は `p.version`（無ければ空文字）。
-apply='ps: builtins.listToAttrs (map (p: { name = p.pname or (builtins.parseDrvName (p.name or "")).name; value = p.version or ""; }) ps)'
+# パッケージリスト attrset を name→{version,notes_source} object へ畳む `--apply` 式。`pname` 優先、無ければ
+# `parseDrvName (p.name)`、version は `p.version`（無ければ空文字）、notes_source は `p.meta.changelog`
+# （無ければ `p.meta.homepage`、いずれも無ければ空文字）。meta 属性の評価のみでビルド/フェッチは走らない。
+apply='ps: builtins.listToAttrs (map (p: { name = p.pname or (builtins.parseDrvName (p.name or "")).name; value = { version = p.version or ""; notes_source = (p.meta.changelog or p.meta.homepage or ""); }; }) ps)'
 
 home_json="$(nix eval --json \
   ".#${reference}.config.home-manager.users.${user}.home.packages" \
