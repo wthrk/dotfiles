@@ -73,7 +73,8 @@ impl BrewTapDiffAdapter {
                     new,
                     change,
                     source: DeltaSource::BrewTap,
-                    // brew はノート URL を cask base + name で解決するため delta には取得先を持たせない。
+                    // brew はノート URL を cask base + name で解決するため delta には取得元を持たせない。
+                    repo: None,
                     notes_source: None,
                 })
             })

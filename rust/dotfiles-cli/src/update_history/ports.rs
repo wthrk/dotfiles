@@ -46,26 +46,29 @@ pub(crate) trait BrewVersionDiffPort {
 
 /// 更新パッケージの生リリースノートを取得する capability 契約（外部機能: ノート取得）。
 ///
-/// caller は対象パッケージと version 範囲、差分の出所（[`DeltaSource`]）、そして nix eval 由来の
-/// ノート取得先 URL（`notes_source`）を渡す。implementor は出所ごとに異なるノート取得先を選ぶ:
-/// nix eval 由来は delta が運ぶ `notes_source`（`meta.changelog`/`meta.homepage` 由来 URL）から、brew tap
-/// 由来は cask 定義の `Casks/<letter>/<name>.rb` から、`(old, new]` の生ノートテキストを取得して返す。
-/// 出所を渡すのは、nix と brew で取得先の解決規則が異なり、同一規則で引くと誤った URL（例: nix package を
-/// cask レイアウトで引いて 404）になるためである。取得不能時・`notes_source` 不明時は `None` を返し
-/// （フォールバックは version + URL のみ）、ノートの構造化や要約は行わない。生ノートおよび `notes_source`
-/// URL は信頼境界外であり、取得は許可ホスト https に限定し、後段の機械バリデートでも守る。
+/// caller は対象パッケージと version 範囲、差分の出所（[`DeltaSource`]）、nix eval 由来の GitHub
+/// `owner/repo`（`repo`）と changelog URL（`notes_source`）を渡す。implementor は出所ごとに異なる取得元を
+/// 選ぶ: nix eval 由来は delta が運ぶ `repo` から **GitHub Releases API で `(old, new]` 範囲のリリースノート**
+/// を取得し（空振り時は `notes_source`（`meta.changelog`/`meta.homepage`）の changelog raw へフォールバック）、
+/// brew tap 由来は cask 定義の `Casks/<letter>/<name>.rb` から生ノートテキストを取得して返す。出所を渡すのは、
+/// nix と brew で取得規則が異なり、同一規則で引くと誤った URL（例: nix package を cask レイアウトで引いて 404）
+/// になるためである。いずれの取得元も解決不能・取得不能なら `None` を返し（フォールバックは version + URL のみ）、
+/// ノートの構造化や要約は行わない。生ノート・`repo`・`notes_source` はいずれも信頼境界外であり、取得は許可
+/// ホスト https に限定し、後段の機械バリデートでも守る。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait NotesPort {
-    /// 対象パッケージの `(old, new]` 範囲の生リリースノートを、差分の出所に応じた取得先から取得する。
+    /// 対象パッケージの `(old, new]` 範囲の生リリースノートを、差分の出所に応じた取得元から取得する。
     ///
-    /// `source` は nix クロージャ由来か brew tap 由来かを示し、implementor はこれで取得先 / 解決規則を
-    /// 振り分ける。`notes_source` は nix eval 由来 delta が運ぶ当該版のノート取得先 URL（`meta.changelog`/
-    /// `meta.homepage`。brew では `None`）。`notes_url` は記録に残すノート参照 URL。implementor はノート本文
-    /// 取得と URL 確定だけを担い、変更概要の意味づけや severity 算出は行わない。
+    /// `source` は nix eval 由来か brew tap 由来かを示し、implementor はこれで取得元 / 解決規則を振り分ける。
+    /// `repo` は nix eval 由来 delta が運ぶ GitHub `owner/repo`（Releases API の一次取得元。brew・github 由来
+    /// 不明では `None`）。`notes_source` は changelog URL（Releases API 空振り時のフォールバック取得元。
+    /// brew では `None`）。`old`/`new` は Releases API で `(old, new]` 範囲のリリースを絞るための version。
+    /// implementor はノート本文取得と URL 確定だけを担い、変更概要の意味づけや severity 算出は行わない。
     fn fetch_release_notes(
         &self,
         name: &str,
         source: DeltaSource,
+        repo: Option<String>,
         notes_source: Option<String>,
         old: Option<String>,
         new: Option<String>,

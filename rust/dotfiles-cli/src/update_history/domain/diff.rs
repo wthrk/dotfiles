@@ -22,19 +22,26 @@ pub(crate) enum DeltaSource {
     BrewTap,
 }
 
-/// `nix eval` が宣言パッケージごとに返す評価時属性（version とノート取得先）。
+/// `nix eval` が宣言パッケージごとに返す評価時属性（version・GitHub owner/repo・changelog URL）。
 ///
 /// `version` は `pname`/`version`（無ければ `parseDrvName` フォールバック、版が取れなければ空文字）。
-/// `notes_source` は `meta.changelog`（無ければ `meta.homepage`、いずれも無ければ空文字）であり、当該版の
-/// リリースノートを引く forge/changelog/homepage URL の出所になる。version 比較は `version` だけで行い、
-/// `notes_source` は new 側の値を [`VersionDelta`] のノート取得先として運ぶ（信頼境界外の URL であり、
-/// 実取得時に host allowlist で機械検証する）。
+/// `repo` は当該パッケージの GitHub `owner/repo`（`meta.homepage`→`src`→`meta.changelog` の優先で eval が
+/// 抽出。github 由来が取れなければ空文字）であり、GitHub Releases API で old→new 範囲のリリースノートを引く
+/// 一次取得元になる。`notes_source`（旧 JSON key、現 `changelog`）は `meta.changelog`（無ければ
+/// `meta.homepage`）の URL で、Releases API が空振りしたときの changelog raw フォールバック取得先になる。
+/// version 比較は `version` だけで行い、`repo`/`notes_source` は new 側の値を [`VersionDelta`] のノート取得元
+/// として運ぶ（いずれも信頼境界外の値であり、実取得時に host allowlist で機械検証する）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct NixPackage {
     /// 評価時 version（無ければ空文字。空は版不明 = `None` 扱い）。
     pub(crate) version: String,
-    /// `meta.changelog` または `meta.homepage` 由来のノート取得先 URL（無ければ空文字）。
+    /// GitHub `owner/repo`（eval が `meta.homepage`/`src`/`meta.changelog` から抽出。無ければ空文字）。
     #[serde(default)]
+    pub(crate) repo: String,
+    /// `meta.changelog` または `meta.homepage` 由来の changelog URL（無ければ空文字）。eval JSON では
+    /// `changelog` key で出力する（旧 `notes_source` key も alias で受ける）。Releases API 空振り時の
+    /// changelog raw フォールバック取得先。
+    #[serde(default, alias = "changelog")]
     pub(crate) notes_source: String,
 }
 
@@ -57,7 +64,10 @@ pub(crate) struct VersionDelta {
     pub(crate) change: ChangeKind,
     /// 差分の出所（nix eval / brew tap）。
     pub(crate) source: DeltaSource,
-    /// nix eval 由来のノート取得先 URL（`meta.changelog`/`meta.homepage`。無ければ `None`）。brew は `None`。
+    /// nix eval 由来の GitHub `owner/repo`（Releases API の一次取得元。無ければ `None`）。brew は `None`。
+    pub(crate) repo: Option<String>,
+    /// nix eval 由来の changelog URL（`meta.changelog`/`meta.homepage`。Releases API 空振り時の
+    /// フォールバック取得先。無ければ `None`）。brew は `None`。
     pub(crate) notes_source: Option<String>,
 }
 
@@ -109,7 +119,8 @@ pub(crate) fn diff_versions(
 
     // new 側を基準に added / upgraded / downgraded / unchanged を判定する（BTreeMap 反復で名前昇順）。
     for (name, new_pkg) in new {
-        let notes_source = notes_source_value(&new_pkg.notes_source);
+        let repo = empty_to_none(&new_pkg.repo);
+        let notes_source = empty_to_none(&new_pkg.notes_source);
         match old.get(name) {
             // 両側に在る。version 文字列が異なるときだけ差分にする。
             Some(old_pkg) => {
@@ -123,6 +134,7 @@ pub(crate) fn diff_versions(
                     new: version_value(&new_pkg.version),
                     change,
                     source: DeltaSource::NixEval,
+                    repo,
                     notes_source,
                 });
             }
@@ -133,6 +145,7 @@ pub(crate) fn diff_versions(
                 new: version_value(&new_pkg.version),
                 change: ChangeKind::Added,
                 source: DeltaSource::NixEval,
+                repo,
                 notes_source,
             }),
         }
@@ -147,7 +160,8 @@ pub(crate) fn diff_versions(
                 new: None,
                 change: ChangeKind::Removed,
                 source: DeltaSource::NixEval,
-                // removed は new 版が無いためノート取得先も無い。
+                // removed は new 版が無いためノート取得元も無い。
+                repo: None,
                 notes_source: None,
             });
         }
@@ -168,15 +182,16 @@ fn version_value(version: &str) -> Option<String> {
     }
 }
 
-/// 空文字（`meta.changelog`/`meta.homepage` 不在の eval フォールバック）を `None`、それ以外を URL として返す。
+/// 空文字（eval フォールバックで repo/changelog が取れなかった場合）を `None`、それ以外を値として返す。
 ///
-/// 空 `notes_source` を偽の取得先として運ばないようにする。`None` の delta は実取得側で「取得先不明」と
-/// して version のみへ縮退する（プラン契約の graceful degradation）。URL の host 妥当性検証は実取得時に行う。
-fn notes_source_value(notes_source: &str) -> Option<String> {
-    if notes_source.is_empty() {
+/// 空文字を偽の取得元として運ばないようにする。`repo`/`notes_source` がともに `None` の delta は実取得側で
+/// 「取得元不明」として version のみへ縮退する（プラン契約の graceful degradation）。値の妥当性検証
+/// （owner/repo 形・host allowlist）は実取得時に行う。
+fn empty_to_none(value: &str) -> Option<String> {
+    if value.is_empty() {
         None
     } else {
-        Some(notes_source.to_string())
+        Some(value.to_string())
     }
 }
 
@@ -235,7 +250,7 @@ mod tests {
 
     use super::*;
 
-    /// name→version のペアを `NixPackage` マップ（notes_source 空）へ畳む。
+    /// name→version のペアを `NixPackage` マップ（repo/notes_source 空）へ畳む。
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, NixPackage> {
         pairs
             .iter()
@@ -244,6 +259,7 @@ mod tests {
                     (*name).to_string(),
                     NixPackage {
                         version: (*version).to_string(),
+                        repo: String::new(),
                         notes_source: String::new(),
                     },
                 )
@@ -251,15 +267,16 @@ mod tests {
             .collect()
     }
 
-    /// name→(version, notes_source) を `NixPackage` マップへ畳む（notes_source 運搬テスト用）。
-    fn map_with_notes(pairs: &[(&str, &str, &str)]) -> BTreeMap<String, NixPackage> {
+    /// name→(version, repo, notes_source) を `NixPackage` マップへ畳む（repo/notes_source 運搬テスト用）。
+    fn map_with_notes(pairs: &[(&str, &str, &str, &str)]) -> BTreeMap<String, NixPackage> {
         pairs
             .iter()
-            .map(|(name, version, notes)| {
+            .map(|(name, version, repo, notes)| {
                 (
                     (*name).to_string(),
                     NixPackage {
                         version: (*version).to_string(),
+                        repo: (*repo).to_string(),
                         notes_source: (*notes).to_string(),
                     },
                 )
@@ -293,6 +310,7 @@ mod tests {
                 new: Some("0.11.0".to_string()),
                 change: ChangeKind::Upgraded,
                 source: DeltaSource::NixEval,
+                repo: None,
                 notes_source: None,
             })
         );
@@ -304,6 +322,7 @@ mod tests {
                 new: Some("14.1.0".to_string()),
                 change: ChangeKind::Added,
                 source: DeltaSource::NixEval,
+                repo: None,
                 notes_source: None,
             })
         );
@@ -315,6 +334,7 @@ mod tests {
                 new: Some("3.3.10".to_string()),
                 change: ChangeKind::Downgraded,
                 source: DeltaSource::NixEval,
+                repo: None,
                 notes_source: None,
             })
         );
@@ -326,6 +346,7 @@ mod tests {
                 new: None,
                 change: ChangeKind::Removed,
                 source: DeltaSource::NixEval,
+                repo: None,
                 notes_source: None,
             })
         );
@@ -379,45 +400,58 @@ mod tests {
     }
 
     #[test]
-    fn diff_carries_new_side_notes_source_into_delta() {
-        // nix eval 由来 delta は更新後（new）版のノート取得先（meta.changelog/homepage）を運ぶ。
-        // upgraded/added は new の notes_source を採り、removed は new が無いため notes_source=None。
-        // 空文字 notes_source（meta 不在）は None へ縮退する。
+    fn diff_carries_new_side_repo_and_notes_source_into_delta() {
+        // nix eval 由来 delta は更新後（new）版の repo（owner/repo）と changelog 取得元を運ぶ。
+        // upgraded/added は new の repo/notes_source を採り、removed は new が無いため両方 None。
+        // 空文字（repo/changelog 不在）は None へ縮退する。
         let old = map_with_notes(&[
             (
                 "neovim",
                 "0.10",
+                "neovim/neovim",
                 "https://github.com/neovim/neovim/blob/master/CHANGELOG",
             ),
-            ("oldpkg", "1.0", "https://example.com/old"),
+            ("oldpkg", "1.0", "", "https://example.com/old"),
         ]);
         let new = map_with_notes(&[
             (
                 "neovim",
                 "0.11",
+                "neovim/neovim",
                 "https://github.com/neovim/neovim/blob/master/CHANGELOG",
             ),
-            ("ripgrep", "14.1", "https://github.com/BurntSushi/ripgrep"),
-            ("nonotes", "2.0", ""),
+            (
+                "ripgrep",
+                "14.1",
+                "BurntSushi/ripgrep",
+                "https://github.com/BurntSushi/ripgrep",
+            ),
+            ("nonotes", "2.0", "", ""),
         ]);
         let deltas = diff_versions(&old, &new);
 
-        // upgraded: new 側の notes_source を運ぶ。
+        // upgraded: new 側の repo と notes_source を運ぶ。
+        assert_eq!(
+            find(&deltas, "neovim").and_then(|d| d.repo.as_deref()),
+            Some("neovim/neovim")
+        );
         assert_eq!(
             find(&deltas, "neovim").and_then(|d| d.notes_source.as_deref()),
             Some("https://github.com/neovim/neovim/blob/master/CHANGELOG")
         );
-        // added: new 側の notes_source を運ぶ。
+        // added: new 側の repo を運ぶ。
         assert_eq!(
-            find(&deltas, "ripgrep").and_then(|d| d.notes_source.as_deref()),
-            Some("https://github.com/BurntSushi/ripgrep")
+            find(&deltas, "ripgrep").and_then(|d| d.repo.as_deref()),
+            Some("BurntSushi/ripgrep")
         );
-        // meta 不在（空文字）は None へ縮退。
+        // repo/changelog 不在（空文字）は None へ縮退。
+        assert_eq!(find(&deltas, "nonotes").map(|d| d.repo.clone()), Some(None));
         assert_eq!(
             find(&deltas, "nonotes").map(|d| d.notes_source.clone()),
             Some(None)
         );
-        // removed: new 版が無いため notes_source は None。
+        // removed: new 版が無いため repo/notes_source は None。
+        assert_eq!(find(&deltas, "oldpkg").map(|d| d.repo.clone()), Some(None));
         assert_eq!(
             find(&deltas, "oldpkg").map(|d| d.notes_source.clone()),
             Some(None)
@@ -432,6 +466,7 @@ mod tests {
             new: Some("0.11".to_string()),
             change: ChangeKind::Upgraded,
             source: DeltaSource::NixEval,
+            repo: None,
             notes_source: None,
         }];
         let brew = vec![VersionDelta {
@@ -440,6 +475,7 @@ mod tests {
             new: Some("121".to_string()),
             change: ChangeKind::Upgraded,
             source: DeltaSource::BrewTap,
+            repo: None,
             notes_source: None,
         }];
 

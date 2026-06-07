@@ -40,9 +40,10 @@ impl NixEvalVersionAdapter {
     ///
     /// path が `None` またはファイル不存在なら空マップを返す（縮退）。それ以外の I/O / JSON parse 失敗は
     /// `Err` で伝播し、部分的に壊れた差分を作らない。`nix eval --json --apply` の出力は
-    /// `{ "name": { "version": "...", "notes_source": "..." }, ... }` object であることを契約とする
-    /// （`notes_source` は `meta.changelog`/`meta.homepage` 由来。eval 側で常に出力されるが、欠落時は
-    /// `NixPackage` の `serde(default)` で空文字へ縮退する）。
+    /// `{ "name": { "version": "...", "repo": "owner/repo", "changelog": "..." }, ... }` object である
+    /// ことを契約とする（`repo` は GitHub owner/repo、`changelog` は `meta.changelog`/`meta.homepage` 由来。
+    /// eval 側で常に出力されるが、欠落時は `NixPackage` の `serde(default)` で空文字へ縮退し、旧 `notes_source`
+    /// key も `changelog` の alias で受ける）。
     fn read_map(path: &Option<PathBuf>) -> Result<BTreeMap<String, NixPackage>> {
         let Some(path) = path else {
             return Ok(BTreeMap::new());
@@ -90,14 +91,14 @@ mod tests {
     }
 
     #[test]
-    fn reads_name_version_notes_source_json() -> Result<()> {
+    fn reads_name_version_repo_changelog_json() -> Result<()> {
         let old = write_temp(
             "old",
-            r#"{"neovim":{"version":"0.10.2","notes_source":"https://github.com/neovim/neovim"},"zlib":{"version":"1.3.1","notes_source":""}}"#,
+            r#"{"neovim":{"version":"0.10.2","repo":"neovim/neovim","changelog":"https://github.com/neovim/neovim/blob/master/CHANGELOG.md"},"zlib":{"version":"1.3.1","repo":"","changelog":""}}"#,
         )?;
         let new = write_temp(
             "new",
-            r#"{"neovim":{"version":"0.11.0","notes_source":"https://github.com/neovim/neovim"},"zlib":{"version":"1.3.1","notes_source":""}}"#,
+            r#"{"neovim":{"version":"0.11.0","repo":"neovim/neovim","changelog":"https://github.com/neovim/neovim/blob/master/CHANGELOG.md"},"zlib":{"version":"1.3.1","repo":"","changelog":""}}"#,
         )?;
         let adapter = NixEvalVersionAdapter::new(Some(old), Some(new));
 
@@ -111,17 +112,22 @@ mod tests {
             new_map.get("neovim").map(|p| p.version.as_str()),
             Some("0.11.0")
         );
-        // notes_source（meta.changelog/homepage 由来）も読み取る。
+        // repo（GitHub owner/repo）を読み取る。
+        assert_eq!(
+            new_map.get("neovim").map(|p| p.repo.as_str()),
+            Some("neovim/neovim")
+        );
+        // changelog（meta.changelog/homepage 由来）も読み取る。
         assert_eq!(
             new_map.get("neovim").map(|p| p.notes_source.as_str()),
-            Some("https://github.com/neovim/neovim")
+            Some("https://github.com/neovim/neovim/blob/master/CHANGELOG.md")
         );
         Ok(())
     }
 
     #[test]
-    fn missing_notes_source_field_defaults_to_empty() -> Result<()> {
-        // notes_source 欠落（旧形式や meta 不在）は serde(default) で空文字へ縮退する。
+    fn missing_repo_and_changelog_fields_default_to_empty() -> Result<()> {
+        // repo/changelog 欠落（旧形式や github 由来不明）は serde(default) で空文字へ縮退する。
         let new = write_temp("new-no-notes", r#"{"git":{"version":"2.54.0"}}"#)?;
         let adapter = NixEvalVersionAdapter::new(None, Some(new));
         let new_map = adapter.new_versions()?;
@@ -129,9 +135,26 @@ mod tests {
             new_map.get("git").map(|p| p.version.as_str()),
             Some("2.54.0")
         );
+        assert_eq!(new_map.get("git").map(|p| p.repo.as_str()), Some(""));
         assert_eq!(
             new_map.get("git").map(|p| p.notes_source.as_str()),
             Some("")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reads_legacy_notes_source_key_via_alias() -> Result<()> {
+        // 旧 JSON key `notes_source` も `changelog` の alias で受ける（後方互換）。
+        let new = write_temp(
+            "new-legacy",
+            r#"{"git":{"version":"2.54.0","notes_source":"https://github.com/git/git"}}"#,
+        )?;
+        let adapter = NixEvalVersionAdapter::new(None, Some(new));
+        let new_map = adapter.new_versions()?;
+        assert_eq!(
+            new_map.get("git").map(|p| p.notes_source.as_str()),
+            Some("https://github.com/git/git")
         );
         Ok(())
     }

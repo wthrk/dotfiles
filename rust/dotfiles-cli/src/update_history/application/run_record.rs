@@ -62,6 +62,7 @@ where
         let raw = notes.fetch_release_notes(
             &delta.name,
             delta.source,
+            delta.repo.clone(),
             delta.notes_source.clone(),
             delta.old.clone(),
             delta.new.clone(),
@@ -149,26 +150,27 @@ mod tests {
         }
     }
 
-    /// version と notes_source から `NixPackage` を作る。
-    fn pkg(version: &str, notes_source: &str) -> NixPackage {
+    /// version と repo・notes_source から `NixPackage` を作る。
+    fn pkg(version: &str, repo: &str, notes_source: &str) -> NixPackage {
         NixPackage {
             version: version.to_string(),
+            repo: repo.to_string(),
             notes_source: notes_source.to_string(),
         }
     }
 
-    /// 単一 nix delta（`name`, 1.0→1.1、notes_source 空）を生む old/new eval マップを返す mock を組む。
+    /// 単一 nix delta（`name`, 1.0→1.1、repo/notes_source 空）を生む old/new eval マップを返す mock を組む。
     fn nix_versions_for(name: &'static str) -> MockNixVersionPort {
-        nix_versions_with_notes(name, "")
+        nix_versions_with_repo(name, "")
     }
 
-    /// 単一 nix delta（`name`, 1.0→1.1）で new 側に notes_source を持たせる eval マップ mock。
-    fn nix_versions_with_notes(name: &'static str, notes: &'static str) -> MockNixVersionPort {
+    /// 単一 nix delta（`name`, 1.0→1.1）で new 側に repo（owner/repo）を持たせる eval マップ mock。
+    fn nix_versions_with_repo(name: &'static str, repo: &'static str) -> MockNixVersionPort {
         let mut nix = MockNixVersionPort::new();
         nix.expect_old_versions()
-            .returning(move || Ok(BTreeMap::from([(name.to_string(), pkg("1.0", ""))])));
+            .returning(move || Ok(BTreeMap::from([(name.to_string(), pkg("1.0", "", ""))])));
         nix.expect_new_versions()
-            .returning(move || Ok(BTreeMap::from([(name.to_string(), pkg("1.1", notes))])));
+            .returning(move || Ok(BTreeMap::from([(name.to_string(), pkg("1.1", repo, ""))])));
         nix
     }
 
@@ -187,6 +189,7 @@ mod tests {
             new: Some("121".to_string()),
             change: ChangeKind::Upgraded,
             source: DeltaSource::BrewTap,
+            repo: None,
             notes_source: None,
         }
     }
@@ -205,15 +208,15 @@ mod tests {
         // nix package openssl は NixEval 出所で引かれる。
         notes
             .expect_fetch_release_notes()
-            .withf(|name, source, _, _, _| name == "openssl" && *source == DeltaSource::NixEval)
+            .withf(|name, source, _, _, _, _| name == "openssl" && *source == DeltaSource::NixEval)
             .times(1)
-            .returning(|_, _, _, _, _| Ok(None));
+            .returning(|_, _, _, _, _, _| Ok(None));
         // brew cask firefox は BrewTap 出所で引かれる。
         notes
             .expect_fetch_release_notes()
-            .withf(|name, source, _, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
+            .withf(|name, source, _, _, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
             .times(1)
-            .returning(|_, _, _, _, _| Ok(None));
+            .returning(|_, _, _, _, _, _| Ok(None));
 
         let mut extract = MockChangeExtractPort::new();
         extract.expect_extract_change_items().never();
@@ -237,9 +240,8 @@ mod tests {
 
     #[test]
     fn record_extracts_sanitizes_and_appends_one_entry() -> crate::Result<()> {
-        // nix delta は new 側 notes_source（meta.changelog/homepage 由来）を運び、それが NotesPort へ
-        // 渡る（nix のリリースノート取得経路）。
-        let nix_versions = nix_versions_with_notes("openssl", "https://github.com/openssl/openssl");
+        // nix delta は new 側 repo（owner/repo）を運び、それが NotesPort へ渡る（Releases API 取得経路）。
+        let nix_versions = nix_versions_with_repo("openssl", "openssl/openssl");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -249,14 +251,13 @@ mod tests {
         let mut notes = MockNotesPort::new();
         notes
             .expect_fetch_release_notes()
-            // nix delta なので source = NixEval と new 側 notes_source が渡ることを withf で固定する
-            // （N5 振り分け + nix ノート取得先運搬）。
-            .withf(|_, source, notes_source, _, _| {
-                *source == DeltaSource::NixEval
-                    && notes_source.as_deref() == Some("https://github.com/openssl/openssl")
+            // nix delta なので source = NixEval と new 側 repo が渡ることを withf で固定する
+            // （N5 振り分け + nix リリースノート取得元運搬）。
+            .withf(|_, source, repo, _, _, _| {
+                *source == DeltaSource::NixEval && repo.as_deref() == Some("openssl/openssl")
             })
             .times(1)
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(Some(RawReleaseNotes {
                     text: "CVE fix".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
@@ -324,7 +325,7 @@ mod tests {
         // LLM 抽出を呼ばず version-only（変更リスト空・notes_url は保持）へ縮退する。これにより全件持続 429 の
         // 最悪ケースでも record 総時間が record job timeout（60分）内へ構造的に収まる。stop 判断は application、
         // 予算計測は port（mock では予算超過 = true を返す）。
-        let nix_versions = nix_versions_with_notes("openssl", "https://github.com/openssl/openssl");
+        let nix_versions = nix_versions_with_repo("openssl", "openssl/openssl");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -335,7 +336,7 @@ mod tests {
         notes
             .expect_fetch_release_notes()
             .times(1)
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(Some(RawReleaseNotes {
                     text: "CVE fix".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
@@ -387,7 +388,7 @@ mod tests {
         notes
             .expect_fetch_release_notes()
             .times(1)
-            .returning(|_, _, _, _, _| Ok(None));
+            .returning(|_, _, _, _, _, _| Ok(None));
         let mut extract = MockChangeExtractPort::new();
         extract.expect_extract_change_items().never();
 
