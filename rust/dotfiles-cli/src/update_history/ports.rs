@@ -7,23 +7,28 @@
 //! `adapters/github_models.rs`・`adapters/toml_store.rs`・`adapters/report.rs`）へ閉じる。各 trait の実体
 //! 実装はそれら adapter module が担う。
 
+use std::collections::BTreeMap;
+
 use super::domain::diff::{DeltaSource, VersionDelta};
 use super::domain::view::HistoryView;
 use super::domain::wire::{ChangeItem, UpdateEntry};
 use crate::Result;
 
-/// nix クロージャ間の version 差分を取得する capability 契約（外部機能: nix プロセス実行）。
+/// nix 参照構成の宣言パッケージ name→version マップを old/new それぞれ取得する capability 契約
+/// （外部機能: nix eval 結果の取得）。
 ///
-/// caller（application）は old/new closure path を決め、diff 実行順序を制御する。implementor は
-/// `nix store diff-closures` を実行し、その出力を domain パーサへ通して [`VersionDelta`] 列へ翻訳する。
-/// version 比較規則や差分種別の業務意味は domain rule に委ね、adapter は実行と翻訳に限定する。
+/// nightly が欲しいのは「どの宣言パッケージが old→new で版変化したか」だけであり、それは `nix eval`
+/// で評価時属性（`pname`/`version`）として数秒で取れる。closure を実体化（`diff-closures`）してフル
+/// closure を 2 回ビルドする必要はない。caller（application）は old/new の version マップを受け取り、
+/// 比較（[`super::domain::diff::diff_versions`]）と差分種別の業務意味を domain rule に委ねる。implementor
+/// は ci-ref の old/new lock で eval 済みの name→version JSON を取得して `BTreeMap` へ翻訳するだけを担う。
 #[cfg_attr(test, mockall::automock)]
-pub(crate) trait ClosureDiffPort {
-    /// old/new closure 間の nix version 差分を返す。
-    ///
-    /// implementor は 2 つの closure store path を受け取り diff を実行する。closure 選択や
-    /// 参照構成の決定は caller の責務であり、implementor は差分テキストの取得と翻訳だけを担う。
-    fn diff_closures(&self, old_closure: &str, new_closure: &str) -> Result<Vec<VersionDelta>>;
+pub(crate) trait NixVersionPort {
+    /// bump 前（old lock）の宣言パッケージ name→version マップを返す。
+    fn old_versions(&self) -> Result<BTreeMap<String, String>>;
+
+    /// bump 後（new lock）の宣言パッケージ name→version マップを返す。
+    fn new_versions(&self) -> Result<BTreeMap<String, String>>;
 }
 
 /// Homebrew tap rev 間の version 差分を取得する capability 契約（外部機能: brew tap 解析）。

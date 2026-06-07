@@ -26,15 +26,18 @@ pub(crate) struct PackageMaterial {
 
 /// version 差分 1 件を記録用 [`PackageUpdate`] へ変換する。
 ///
-/// `declared` は差分の出所（[`DeltaSource`]）で決める。`nix store diff-closures` 由来の delta は
-/// nix-store クロージャの**推移的（低レベル）パッケージ**まで含み、`update-history show` の既定表示
-/// （宣言アプリ中心）に混ぜるとノイズになるため `declared: false`（既定で畳み、`--all` で表示）にする。
-/// 一方 brew cask 由来の delta は利用者が宣言した実アプリ（Brewfile/`homebrew.nix` の cask）なので
-/// `declared: true`（既定表示）にする。`old`/`new`/`change` は差分の値をそのまま採る。
+/// `declared` は差分の出所（[`DeltaSource`]）で決める。`nix eval` 由来の delta は ci-ref の
+/// `home.packages` + `environment.systemPackages` の**宣言パッケージ**であり、利用者が宣言した実アプリ
+/// なので `declared: true`（既定表示）にする。brew cask 由来の delta も宣言した実アプリ（`homebrew.nix`
+/// の cask）なので `declared: true`。`old`/`new`/`change` は差分の値をそのまま採る。
+///
+/// 補足: eval ベース化以前は `nix store diff-closures` がクロージャの推移的（低レベル）依存まで含むため
+/// nix 由来を `declared: false` で畳んでいたが、eval は宣言パッケージ集合だけを返し推移的依存を含まない
+/// ため、nix 由来も宣言アプリとして既定表示にする。
 fn to_package_update(material: PackageMaterial) -> PackageUpdate {
     let declared = match material.delta.source {
-        // nix クロージャ差分は推移的依存を含むため既定では畳む。
-        DeltaSource::NixClosure => false,
+        // nix eval 差分は宣言パッケージのみ（推移的依存を含まない）なので既定表示する。
+        DeltaSource::NixEval => true,
         // brew cask は宣言した実アプリなので既定表示する。
         DeltaSource::BrewTap => true,
     };
@@ -97,7 +100,7 @@ mod tests {
     use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
 
     fn delta(name: &str) -> VersionDelta {
-        delta_with_source(name, DeltaSource::NixClosure)
+        delta_with_source(name, DeltaSource::NixEval)
     }
 
     fn delta_with_source(name: &str, source: DeltaSource) -> VersionDelta {
@@ -144,18 +147,18 @@ mod tests {
         assert_eq!(entry.packages.len(), 2);
         assert_eq!(entry.severity, Severity::Critical);
         assert_eq!(entry.overall, "2アプリ更新: 🔒1 ✨1");
-        // F4: nix クロージャ由来は既定で畳む（declared=false）。
-        assert!(!entry.packages[0].declared);
+        // eval ベース化後: nix eval 由来は宣言パッケージなので declared=true。
+        assert!(entry.packages[0].declared);
     }
 
     #[test]
-    fn declared_is_false_for_nix_closure_and_true_for_brew_cask() {
-        // F4 退行固定: `nix store diff-closures` 由来の（推移的）パッケージは show 既定の宣言アプリ表示に
-        // 混ぜるとノイズになるため declared=false（既定で畳み `--all` で表示）。brew cask 由来は宣言した
-        // 実アプリなので declared=true（既定表示）。出所（DeltaSource）で判別する。
+    fn declared_is_true_for_nix_eval_and_brew_cask() {
+        // eval ベース化後の退行固定: `nix eval` 由来は ci-ref の宣言パッケージ（home.packages +
+        // systemPackages）であり推移的依存を含まないため declared=true（既定表示）。brew cask 由来も
+        // 宣言した実アプリなので declared=true。出所（DeltaSource）で判別する。
         let materials = vec![
             PackageMaterial {
-                delta: delta_with_source("glibc", DeltaSource::NixClosure),
+                delta: delta_with_source("neovim", DeltaSource::NixEval),
                 change_items: Vec::new(),
                 notes_url: None,
             },
@@ -172,11 +175,8 @@ mod tests {
             "ref".to_string(),
             materials,
         );
-        assert_eq!(entry.packages[0].name, "glibc");
-        assert!(
-            !entry.packages[0].declared,
-            "nix closure 由来は declared=false"
-        );
+        assert_eq!(entry.packages[0].name, "neovim");
+        assert!(entry.packages[0].declared, "nix eval 由来は declared=true");
         assert_eq!(entry.packages[1].name, "firefox");
         assert!(entry.packages[1].declared, "brew cask 由来は declared=true");
     }

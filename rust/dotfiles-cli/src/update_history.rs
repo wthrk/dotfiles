@@ -21,7 +21,7 @@ mod adapters {
 
     pub(in crate::update_history) use brew::BrewTapDiffAdapter;
     pub(in crate::update_history) use github_models::GithubModelsExtractAdapter;
-    pub(in crate::update_history) use nix::NixClosureDiffAdapter;
+    pub(in crate::update_history) use nix::NixEvalVersionAdapter;
     pub(in crate::update_history) use notes::ReleaseNotesAdapter;
     pub(in crate::update_history) use report::{
         StdoutHistoryReportAdapter, WriterHistoryReportAdapter,
@@ -59,16 +59,20 @@ enum UpdateHistoryCommand {
 #[derive(Args)]
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option。
 ///
-/// CI（network + GitHub Models）が叩く。old/new の nix closure を `diff-closures` で diff し（brew 版差分は
-/// `--brew-diff` ファイルから読む）、各アプリの生ノートを取得して LLM で構造化抽出し、`--out` の月次 TOML へ
+/// CI（network + GitHub Models）が叩く。nix 版差分は eval ベース: CI が ci-ref の old/new lock で
+/// `nix eval --json` した宣言パッケージの name→version JSON ファイル（`--nix-old`/`--nix-new`）を読み、
+/// domain の純粋比較で差分を求める（フル closure を `diff-closures` で 2 回ビルドする必要はない）。brew 版差分は
+/// `--brew-diff` ファイルから読む。各アプリの生ノートを取得して LLM で構造化抽出し、`--out` の月次 TOML へ
 /// 追記する。`--at` は RFC3339 を注入する。
 struct RecordOptions {
-    /// diff 元の nix closure store path。
-    #[arg(long)]
-    old: String,
-    /// diff 先の nix closure store path。
-    #[arg(long)]
-    new: String,
+    /// bump 前 lock で eval した宣言パッケージの name→version JSON ファイル（`{ "name": "version", ... }`）。
+    /// 未指定なら nix old 側は空マップへ縮退する。後方互換のため旧 `--old` も別名として受ける。
+    #[arg(long, alias = "old")]
+    nix_old: Option<PathBuf>,
+    /// bump 後 lock で eval した宣言パッケージの name→version JSON ファイル。未指定なら nix new 側は空マップ
+    /// へ縮退する。後方互換のため旧 `--new` も別名として受ける。
+    #[arg(long, alias = "new")]
+    nix_new: Option<PathBuf>,
     /// brew 版差分の diff 元 rev（座標）。現行の brew adapter は `--brew-diff` ファイルを使うため本値は
     /// 参照されないが、port 契約は rev 座標を受けるため互換のため受け取る（CI は nixpkgs rev を流用注入する）。
     #[arg(long)]
@@ -144,15 +148,13 @@ pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
 
 /// record 経路の composition root: adapter concrete を結線し record use case を駆動する。
 fn run_record(options: RecordOptions) -> Result<()> {
-    let closure_diff = adapters::NixClosureDiffAdapter;
+    let nix_versions = adapters::NixEvalVersionAdapter::new(options.nix_old, options.nix_new);
     let brew_diff = adapters::BrewTapDiffAdapter::new(options.brew_diff);
     let notes = adapters::ReleaseNotesAdapter::new(options.nix_notes_base, options.brew_notes_base);
     let extract = adapters::GithubModelsExtractAdapter;
     let store = adapters::TomlHistoryStoreAdapter::new(options.out);
 
     let command = RecordCommand {
-        old_closure: options.old,
-        new_closure: options.new,
         old_rev: options.old_rev,
         new_rev: options.new_rev,
         nixpkgs_old: options.nixpkgs_old,
@@ -162,7 +164,7 @@ fn run_record(options: RecordOptions) -> Result<()> {
     };
     application::run_record::run_record(
         command,
-        &closure_diff,
+        &nix_versions,
         &brew_diff,
         &notes,
         &extract,

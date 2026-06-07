@@ -3,36 +3,43 @@
 use crate::Result;
 use crate::update_history::domain::build::{PackageMaterial, build_entry};
 use crate::update_history::domain::commands::RecordCommand;
-use crate::update_history::domain::diff::merge_version_deltas;
+use crate::update_history::domain::diff::{diff_versions, merge_version_deltas};
 use crate::update_history::domain::validate::{sanitize_change_items, sanitize_notes_url};
 use crate::update_history::ports::{
-    BrewVersionDiffPort, ChangeExtractPort, ClosureDiffPort, HistoryStorePort, NotesPort,
+    BrewVersionDiffPort, ChangeExtractPort, HistoryStorePort, NixVersionPort, NotesPort,
 };
 
 /// nix/brew の version 差分を統合し、各アプリの生ノートを LLM 抽出して 1 エントリを履歴へ追記する。
 ///
 /// 順序制御の理由: 差分（nix→brew）を先に確定してから各アプリのノート取得・LLM 抽出を行うのは、
-/// 差分に現れたアプリだけをノート取得・抽出対象にし、無関係なノート取得を避けるためである。停止条件は
-/// 各 port の `Err` 伝播であり、ノート取得不能（`None`）や LLM 未使用（空配列）はフォールバックとして
-/// version + URL のみへ縮退させ、record 全体は失敗させない。LLM 出力と生ノート URL は信頼境界外のため、
-/// 記録前に必ず domain の機械バリデート（host allowlist / 長さ / 件数）を通す。severity / overall の算出は
-/// domain（[`build_entry`]）に委ね、application は素材収集の順序だけを保持する。
-pub(crate) fn run_record<D, B, N, X, S>(
+/// 差分に現れたアプリだけをノート取得・抽出対象にし、無関係なノート取得を避けるためである。nix 差分は
+/// eval ベース化により `nix store diff-closures`（フル closure を 2 回ビルド）ではなく、ci-ref の old/new
+/// lock で eval した宣言パッケージの name→version マップ 2 つを取得し、domain の純粋比較
+/// （[`diff_versions`]）に通して求める（ビルド/フェッチ不要・数秒）。停止条件は各 port の `Err` 伝播であり、
+/// ノート取得不能（`None`）や LLM 未使用（空配列）はフォールバックとして version + URL のみへ縮退させ、
+/// record 全体は失敗させない。LLM 出力と生ノート URL は信頼境界外のため、記録前に必ず domain の機械
+/// バリデート（host allowlist / 長さ / 件数）を通す。severity / overall の算出は domain（[`build_entry`]）に
+/// 委ね、application は素材収集の順序だけを保持する。
+pub(crate) fn run_record<V, B, N, X, S>(
     command: RecordCommand,
-    closure_diff: &D,
+    nix_versions: &V,
     brew_diff: &B,
     notes: &N,
     extract: &X,
     store: &S,
 ) -> Result<()>
 where
-    D: ClosureDiffPort,
+    V: NixVersionPort,
     B: BrewVersionDiffPort,
     N: NotesPort,
     X: ChangeExtractPort,
     S: HistoryStorePort,
 {
-    let nix_deltas = closure_diff.diff_closures(&command.old_closure, &command.new_closure)?;
+    // ci-ref の old/new lock で eval した宣言パッケージ name→version マップを取得し、domain の純粋比較で
+    // 差分を求める。closure を実体化せず評価時属性だけを比べるため、ビルドは一切走らない。
+    let old_versions = nix_versions.old_versions()?;
+    let new_versions = nix_versions.new_versions()?;
+    let nix_deltas = diff_versions(&old_versions, &new_versions);
     let brew_deltas = brew_diff.diff_brew_versions(&command.old_rev, &command.new_rev)?;
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
 
@@ -91,22 +98,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! record の順序（nix/brew diff → ノート取得 → LLM 抽出 → サニタイズ → 追記）と
+    //! record の順序（nix eval diff / brew diff → ノート取得 → LLM 抽出 → サニタイズ → 追記）と
     //! フォールバック（ノート不在で version のみ）・バリデート（不正 URL 破棄）を mockall mock で固定する。
+
+    use std::collections::BTreeMap;
 
     use super::run_record;
     use crate::update_history::domain::commands::RecordCommand;
     use crate::update_history::domain::diff::{DeltaSource, VersionDelta};
     use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
     use crate::update_history::ports::{
-        MockBrewVersionDiffPort, MockChangeExtractPort, MockClosureDiffPort, MockHistoryStorePort,
+        MockBrewVersionDiffPort, MockChangeExtractPort, MockHistoryStorePort, MockNixVersionPort,
         MockNotesPort, RawReleaseNotes,
     };
 
     fn command() -> RecordCommand {
         RecordCommand {
-            old_closure: "/nix/old".to_string(),
-            new_closure: "/nix/new".to_string(),
             old_rev: "oldrev".to_string(),
             new_rev: "newrev".to_string(),
             nixpkgs_old: "a1b2c3d".to_string(),
@@ -116,14 +123,22 @@ mod tests {
         }
     }
 
-    fn nix_delta(name: &str) -> VersionDelta {
-        VersionDelta {
-            name: name.to_string(),
-            old: Some("1.0".to_string()),
-            new: Some("1.1".to_string()),
-            change: ChangeKind::Upgraded,
-            source: DeltaSource::NixClosure,
-        }
+    /// 単一 nix delta（`name`, 1.0→1.1）を生む old/new eval マップを返す mock を組む。
+    fn nix_versions_for(name: &'static str) -> MockNixVersionPort {
+        let mut nix = MockNixVersionPort::new();
+        nix.expect_old_versions()
+            .returning(move || Ok(BTreeMap::from([(name.to_string(), "1.0".to_string())])));
+        nix.expect_new_versions()
+            .returning(move || Ok(BTreeMap::from([(name.to_string(), "1.1".to_string())])));
+        nix
+    }
+
+    /// nix 差分が空（old==new）になる eval マップ mock。
+    fn nix_versions_empty() -> MockNixVersionPort {
+        let mut nix = MockNixVersionPort::new();
+        nix.expect_old_versions().returning(|| Ok(BTreeMap::new()));
+        nix.expect_new_versions().returning(|| Ok(BTreeMap::new()));
+        nix
     }
 
     fn brew_delta(name: &str) -> VersionDelta {
@@ -138,22 +153,19 @@ mod tests {
 
     #[test]
     fn notes_fetch_receives_per_delta_source() -> crate::Result<()> {
-        // N5 退行固定: nix delta には NixClosure、brew delta には BrewTap が NotesPort へ渡る。
+        // N5 退行固定: nix delta には NixEval、brew delta には BrewTap が NotesPort へ渡る。
         // これにより adapter は出所別 base（forge / cask レイアウト）で正しい URL を引ける。
-        let mut closure_diff = MockClosureDiffPort::new();
-        closure_diff
-            .expect_diff_closures()
-            .returning(|_, _| Ok(vec![nix_delta("openssl")]));
+        let nix_versions = nix_versions_for("openssl");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
             .returning(|_, _| Ok(vec![brew_delta("firefox")]));
 
         let mut notes = MockNotesPort::new();
-        // nix package openssl は NixClosure 出所で引かれる。
+        // nix package openssl は NixEval 出所で引かれる。
         notes
             .expect_fetch_release_notes()
-            .withf(|name, source, _, _| name == "openssl" && *source == DeltaSource::NixClosure)
+            .withf(|name, source, _, _| name == "openssl" && *source == DeltaSource::NixEval)
             .times(1)
             .returning(|_, _, _, _| Ok(None));
         // brew cask firefox は BrewTap 出所で引かれる。
@@ -175,7 +187,7 @@ mod tests {
 
         run_record(
             command(),
-            &closure_diff,
+            &nix_versions,
             &brew_diff,
             &notes,
             &extract,
@@ -185,11 +197,7 @@ mod tests {
 
     #[test]
     fn record_extracts_sanitizes_and_appends_one_entry() -> crate::Result<()> {
-        let mut closure_diff = MockClosureDiffPort::new();
-        closure_diff
-            .expect_diff_closures()
-            .times(1)
-            .returning(|_, _| Ok(vec![nix_delta("openssl")]));
+        let nix_versions = nix_versions_for("openssl");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -199,8 +207,8 @@ mod tests {
         let mut notes = MockNotesPort::new();
         notes
             .expect_fetch_release_notes()
-            // nix delta なので source = NixClosure が渡ることを withf で固定する（N5 振り分け）。
-            .withf(|_, source, _, _| *source == DeltaSource::NixClosure)
+            // nix delta なので source = NixEval が渡ることを withf で固定する（N5 振り分け）。
+            .withf(|_, source, _, _| *source == DeltaSource::NixEval)
             .times(1)
             .returning(|_, _, _, _| {
                 Ok(Some(RawReleaseNotes {
@@ -251,7 +259,7 @@ mod tests {
 
         run_record(
             command(),
-            &closure_diff,
+            &nix_versions,
             &brew_diff,
             &notes,
             &extract,
@@ -261,10 +269,7 @@ mod tests {
 
     #[test]
     fn record_falls_back_to_version_only_when_notes_absent() -> crate::Result<()> {
-        let mut closure_diff = MockClosureDiffPort::new();
-        closure_diff
-            .expect_diff_closures()
-            .returning(|_, _| Ok(vec![nix_delta("neovim")]));
+        let nix_versions = nix_versions_for("neovim");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -293,7 +298,7 @@ mod tests {
 
         run_record(
             command(),
-            &closure_diff,
+            &nix_versions,
             &brew_diff,
             &notes,
             &extract,
@@ -308,11 +313,7 @@ mod tests {
         let mut command = command();
         command.nixpkgs_new = command.nixpkgs_old.clone();
 
-        let mut closure_diff = MockClosureDiffPort::new();
-        closure_diff
-            .expect_diff_closures()
-            .times(1)
-            .returning(|_, _| Ok(Vec::new()));
+        let nix_versions = nix_versions_empty();
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -328,21 +329,17 @@ mod tests {
         // rev 不変・空素材なので append は一切行わない。
         store.expect_append_entry().never();
 
-        run_record(command, &closure_diff, &brew_diff, &notes, &extract, &store)
+        run_record(command, &nix_versions, &brew_diff, &notes, &extract, &store)
     }
 
     #[test]
     fn record_appends_empty_chain_link_when_no_deltas() -> crate::Result<()> {
-        // 退行固定（chain 連続性 / N9 の「rev 前進あり空 packages→append」側）: closure 差分も brew 差分も空
+        // 退行固定（chain 連続性 / N9 の「rev 前進あり空 packages→append」側）: nix eval 差分も brew 差分も空
         // （更新無し）でも、`nixpkgs_old != nixpkgs_new`（rev 前進あり）なら `packages=[]` のエントリを必ず
         // 追記する。これを欠くと r0 に pin されたマシンの catch-up で `select_entries` が起点 rev を解決できず、
         // 後続の実更新まで表示が消える。ノート取得・LLM 抽出は対象 delta が無いため呼ばれない（never）が、
         // append は 1 回行う。
-        let mut closure_diff = MockClosureDiffPort::new();
-        closure_diff
-            .expect_diff_closures()
-            .times(1)
-            .returning(|_, _| Ok(Vec::new()));
+        let nix_versions = nix_versions_empty();
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
             .expect_diff_brew_versions()
@@ -370,7 +367,7 @@ mod tests {
 
         run_record(
             command(),
-            &closure_diff,
+            &nix_versions,
             &brew_diff,
             &notes,
             &extract,

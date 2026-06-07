@@ -97,7 +97,7 @@ impl NotesPort for ReleaseNotesAdapter {
         // 差分の出所に応じて取得先 base を選ぶ。nix package を cask base で引く（またはその逆）と誤った URL に
         // なるため、出所で base を振り分ける。該当出所の base が無ければその package は `None` へ縮退する。
         let base = match source {
-            DeltaSource::NixClosure => &self.nix_notes_base,
+            DeltaSource::NixEval => &self.nix_notes_base,
             DeltaSource::BrewTap => &self.brew_notes_base,
         };
         let Some(base) = base else {

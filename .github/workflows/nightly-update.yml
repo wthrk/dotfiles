@@ -40,7 +40,7 @@ name: nightly update
 #     App/secret 不要を維持するため、この per-PR guard は既定で有効化しない。
 #
 # dry_run（workflow_dispatch 既定 true）では bump と record と diff までを実行し、PR 起票・push を行わない。
-# 実発火（schedule）前に dry_run で両 closure build と TOML 生成を検証する運用を前提とする。
+# 実発火（schedule）前に dry_run で old/new eval（ビルド非実行・数秒）と TOML 生成を検証する運用を前提とする。
 
 on:
   schedule:
@@ -68,12 +68,19 @@ env:
   CI_REFERENCE: darwinConfigurations.ci-ref
 
 jobs:
-  # 1) lock を bump し、bump 前後の参照 closure を build して artifact に渡す。
+  # 1) lock を bump し、bump 前後の宣言パッケージ版を eval（ビルド不要）して artifact に渡す。
   #    LLM や PR 起票の権限を持たせない（contents: read のみ）。
+  #
+  #    eval ベース化（closure ビルド全廃）: nightly が必要とするのは「どの宣言パッケージが old→new で版変化
+  #    したか」だけで、それは `pname`/`version`（評価時属性）を `nix eval --json` で数秒で取れる。フル closure
+  #    （~12GiB、GUI アプリ + Rust クレートのソースビルド）を `nix store diff-closures` のため old/new 2 回
+  #    ビルドしていたのが ①~80 分 ②macos runner のディスク枯渇（No space left on device）③キャッシュ追加でも
+  #    peak ディスク悪化、と破綻していた。eval はビルド/フェッチを伴わずディスク無関係のため、ディスク解放
+  #    ステップと /nix/store の GHA キャッシュ（cache-nix-action）は不要になり削除した。
   bump:
-    name: bump lock and build closures
+    name: bump lock and eval declared versions
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:
@@ -85,56 +92,23 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
-      # ディスク解放（macos runner の不要物を削除して closure ビルド用領域を確保）。
-      # ci-ref のフル closure（~12GiB、bitwarden-api-api 等の Rust クレートのソースビルドを含む）に
-      # GHA キャッシュ復元を重ねると runner の空き（~14GB）を超え `No space left on device` で失敗するため、
-      # nix 導入・store キャッシュ復元の前に旧 Xcode・iOS/watchOS シミュレータ等の大物を消して数十 GB 空ける。
-      # 存在しなくても失敗させない（`|| true`）。最後に `df -h` で空きを記録する。
-      - name: ディスク解放（macos runner の不要物を削除して closure ビルド用領域を確保）
-        run: |
-          set -eux
-          sudo rm -rf /Applications/Xcode_*.app || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
-          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/* || true
-          sudo rm -rf ~/Library/Developer/Xcode/watchOS\ DeviceSupport/* || true
-          sudo rm -rf /Library/Developer/CommandLineTools/SDKs/MacOSX10.* || true
-          df -h /
-
       - name: Nix を導入
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
 
-      # GitHub Actions の cache backend で /nix/store を run 間に永続化する（外部 cache サービス・
-      # CACHIX 等の secret 不要。token は既定の github.token）。restore はビルド前（install-nix 直後）に
-      # 置き、save は post action で job 末尾に自動実行される。lock が同一なら primary-key で完全再利用、
-      # nightly が lock を bump して miss した場合は restore-prefixes-first-match で前回 run の近い
-      # キャッシュから old/new closure を差分復元する。cache.nixos.org から取得できるパスはソース固定で
-      # 再取得可能なため、保存量は gc-max-store-size-macos の GC でローカルビルド成果物中心に抑え、
-      # GHA キャッシュ上限（repo/個別 10GB 級）を超えて save が失敗しないようにする。purge で同 prefix の
-      # 旧バージョンを掃除して容量累積を防ぐ（primary-key 一致版は never で保護）。
-      - name: /nix/store を GHA キャッシュから復元
-        uses: nix-community/cache-nix-action@v7.0.2
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-macos: 8G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P1DT12H
-          purge-primary-key: never
-
-      - name: 旧 closure と旧 rev を記録
+      # ci-ref の宣言パッケージ（home.packages + environment.systemPackages）の name→version を eval する。
+      # `--apply` で `pname`/`version`（無ければ `parseDrvName` / 空 version 許容）を name→version object に
+      # 畳む。ビルド/フェッチは一切走らず数秒で完了する。home / system 両 attrset を jq で 1 マップへ統合する
+      # （system 側に同名があれば system を優先。実フリートでは重複は基本起きない）。
+      - name: bump 前の宣言パッケージ版を eval
         id: old
         run: |
           set -euo pipefail
-          old_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
-          echo "closure=$old_closure" >> "$GITHUB_OUTPUT"
-          nixpkgs_old="$(nix eval --raw .#inputs.nixpkgs.rev 2>/dev/null || jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
+          ./.github/scripts/eval-declared-versions.sh "$CI_REFERENCE" nix-old.json
+          nixpkgs_old="$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
-          # brew cask 版差分（fix3）のため、bump 前の cask tap rev も記録する。
+          # brew cask 版差分のため、bump 前の cask tap rev も記録する。
           cask_rev_old="$(jq -r '.nodes["homebrew-homebrew-cask"].locked.rev' flake.lock)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
@@ -149,12 +123,11 @@ jobs:
             homebrew-azure-bicep \
             homebrew-hashicorp-tap
 
-      - name: 新 closure と新 rev を記録
+      - name: bump 後の宣言パッケージ版を eval
         id: new
         run: |
           set -euo pipefail
-          new_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
-          echo "closure=$new_closure" >> "$GITHUB_OUTPUT"
+          ./.github/scripts/eval-declared-versions.sh "$CI_REFERENCE" nix-new.json
 
       - name: rev を集約
         id: revs
@@ -167,7 +140,7 @@ jobs:
           cask_rev_new="$(jq -r '.nodes["homebrew-homebrew-cask"].locked.rev' flake.lock)"
           echo "cask_rev_new=$cask_rev_new" >> "$GITHUB_OUTPUT"
 
-      - name: bump 済み lock と closure path を artifact 化
+      - name: bump 済み lock と eval 版マップを artifact 化
         uses: actions/upload-artifact@v4
         with:
           name: bump-state
@@ -175,6 +148,8 @@ jobs:
           include-hidden-files: true
           path: |
             flake.lock
+            nix-old.json
+            nix-new.json
           if-no-files-found: error
 
   # 2) 生ノート取得 + LLM 抽出 + record。prompt injection を隔離するため contents: read のみで、
@@ -184,7 +159,7 @@ jobs:
     name: extract notes and record history
     needs: bump
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 60
     permissions:
       contents: read
       models: read
@@ -192,50 +167,16 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
-      # ディスク解放（bump job と同設計）。record も old/new closure を build するため、nix 導入・store
-      # キャッシュ復元の前に大物を消して領域を確保する。
-      - name: ディスク解放（macos runner の不要物を削除して closure ビルド用領域を確保）
-        run: |
-          set -eux
-          sudo rm -rf /Applications/Xcode_*.app || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
-          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/* || true
-          sudo rm -rf ~/Library/Developer/Xcode/watchOS\ DeviceSupport/* || true
-          sudo rm -rf /Library/Developer/CommandLineTools/SDKs/MacOSX10.* || true
-          df -h /
-
       - name: Nix を導入
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
 
-      # /nix/store を GHA キャッシュから復元する（bump job と同設計）。restore は最初の nix build より前に
-      # 置く。この時点で flake.lock は checkout 直後の committed（bump 前）lock なので primary-key は bump job
-      # と同じ committed lock 由来になり、bump job が save したキャッシュへ first-match で寄せられる。
-      - name: /nix/store を GHA キャッシュから復元
-        uses: nix-community/cache-nix-action@v7.0.2
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-macos: 8G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P1DT12H
-          purge-primary-key: never
-
-      # bump 前（checkout 直後の committed lock）の参照 closure を build する。download-artifact が
-      # flake.lock を bump 後 lock で上書きする前に行うことで、実 old closure store path を得る（fix3:
-      # 以前は old==new を record に渡して nix 差分が常に空だった）。
-      - name: 旧参照 closure を build（bump 前 lock）
-        id: old
-        run: |
-          set -euo pipefail
-          old_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
-          echo "closure=$old_closure" >> "$GITHUB_OUTPUT"
-
-      - name: bump 済み lock を取得
+      # bump job が eval した old/new 版マップ（nix-old.json / nix-new.json）と bump 後 lock を取得する。
+      # eval ベース化により record 側で closure を build する必要は無く、版差分は eval JSON から得る。
+      # download-artifact は bump 後 flake.lock を作業ツリーに展開するが、record はそれを参照しない
+      # （nix 版差分は eval JSON、brew 版差分は tap rev の cask ファイルから決定論的に算出する）。
+      - name: bump 済み lock と eval 版マップを取得
         uses: actions/download-artifact@v4
         with:
           name: bump-state
@@ -284,9 +225,8 @@ jobs:
           done
           echo "diff_file=$diff_file" >> "$GITHUB_OUTPUT"
 
-      - name: 新参照 closure を build して record
+      - name: eval 版差分から record
         env:
-          OLD_CLOSURE: ${{ steps.old.outputs.closure }}
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
@@ -295,24 +235,23 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # この時点で flake.lock は download-artifact により bump 後 lock へ上書き済み。よってここで build
-          # した closure は new。old は前ステップで bump 前 lock から build した実 store path（fix3）。両者を
-          # record へ渡し、nix adapter が `nix store diff-closures old new` で実差分を算出する（old==new で
-          # 空縮退しない）。
-          new_closure="$(nix build --no-link --print-out-paths ".#${CI_REFERENCE}.system")"
+          # nix 版差分は bump job が eval した old/new 版マップ（nix-old.json / nix-new.json）から得る。closure は
+          # 一切 build しない（eval ベース化）。record の nix adapter が 2 マップを domain の diff_versions で比較し、
+          # 版変化した宣言パッケージだけを差分にする（old==new は除外）。`nix develop` は dotfiles バイナリの
+          # build だけに使う（小さい）。
           at="$(date -u +%FT%TZ)"
           out="docs/update-history/$(date -u +%Y-%m).toml"
           mkdir -p docs/update-history
           # brew-notes-base: new cask tap rev の Casks 配下を基底にし、record adapter が
           # `<base><letter>/<name>.rb` で cask 定義（homepage/url を含む）を取得する。これは **brew tap 由来**
-          # package にだけ適用され、nix クロージャ由来 package には使われない（出所別 base 振り分け）。letter
+          # package にだけ適用され、nix eval 由来 package には使われない（出所別 base 振り分け）。letter
           # subdir を解決できない cask は 404 となり、その cask は version+notes_url 縮退（graceful degradation）に
           # なる。許可ホスト https のみ取得する。nix package のノート base（forge / meta.changelog 系）はこの
           # workflow では未解決のため渡さず、nix package のノートは version+notes_url へ縮退する。
           brew_notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
           nix develop -c dotfiles update-history record \
-            --old "$OLD_CLOSURE" \
-            --new "$new_closure" \
+            --nix-old nix-old.json \
+            --nix-new nix-new.json \
             --old-rev "$NIXPKGS_OLD" \
             --new-rev "$NIXPKGS_NEW" \
             --nixpkgs-old "$NIXPKGS_OLD" \
@@ -366,22 +305,6 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
-
-      # /nix/store を GHA キャッシュから復元する（bump/record job と同設計）。この job は dev shell
-      # （nix develop で dotfiles バイナリを build）を起動するため、その依存閉包を run 間で償却する。
-      # restore は download-artifact が lock を bump 後へ上書きする前に置き、primary-key を committed lock
-      # 由来にして bump job のキャッシュへ first-match で寄せる。
-      - name: /nix/store を GHA キャッシュから復元
-        uses: nix-community/cache-nix-action@v7.0.2
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-macos: 8G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P1DT12H
-          purge-primary-key: never
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v4

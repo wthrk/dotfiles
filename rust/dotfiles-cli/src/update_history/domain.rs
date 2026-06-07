@@ -1,7 +1,7 @@
 //! `update-history` の domain 層。
 //!
 //! 更新履歴 TOML の wire/ドメイン型、変更カテゴリからの severity 機械算出、catch-up での
-//! アプリ単位集約、overall 機械見出し生成、`nix store diff-closures` 出力の純粋パーサを定義する。
+//! アプリ単位集約、overall 機械見出し生成、nix eval 由来 name→version マップの純粋比較を定義する。
 //!
 //! ここに置くのは「外部実装を差し替えても変わらない業務規則」だけである。TOML ファイル I/O、
 //! nix/brew プロセス実行、リリースノート取得、LLM 抽出は port 契約の裏（adapter）の責務であり、

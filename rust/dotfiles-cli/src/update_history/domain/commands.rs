@@ -6,15 +6,13 @@
 
 /// `record` use case の入力 command。
 ///
-/// CI（nightly bump）が渡す old/new の nix closure store path と brew tap rev、記録する nixpkgs
-/// リビジョン、適用時刻（RFC3339 文字列）、diff 対象の参照構成を保持する。ノート取得・LLM 抽出・
-/// 追記先ファイルの解決手段は port 境界へ委譲し、本型は「何を diff し何の時刻で記録するか」だけを表す。
+/// CI（nightly bump）が記録する nixpkgs リビジョン、適用時刻（RFC3339 文字列）、diff 対象の参照構成を
+/// 保持する。nix version 差分（eval JSON）と brew 版差分（tap rev ファイル）の取得・ノート取得・LLM 抽出・
+/// 追記先ファイルの解決手段は port 境界へ委譲し、本型は「何の rev・時刻・参照で記録するか」だけを表す。
+/// eval ベース化により、以前 closure store path を保持していた `old_closure`/`new_closure` は不要になった
+/// （nix 差分は eval JSON ファイルから adapter が取得する）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecordCommand {
-    /// diff 元の nix closure store path。
-    pub(crate) old_closure: String,
-    /// diff 先の nix closure store path。
-    pub(crate) new_closure: String,
     /// brew 版差分の diff 元 rev 座標。現行の file ベース brew adapter は `--brew-diff` を使うため本値は
     /// 参照されない（port 契約互換のため保持。CI は nixpkgs rev を流用注入する）。
     pub(crate) old_rev: String,
