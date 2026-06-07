@@ -55,6 +55,10 @@ where
     // 予算超過で LLM 抽出を skip して version-only へ縮退させたパッケージ数。最後に 1 行で件数を明示する
     // （サイレント切り捨て防止）。
     let mut budget_skipped = 0usize;
+    // ノート取得・抽出の縮退を可観測にするためのサマリ件数（無人パイプラインがサイレント全滅に気づけるよう、
+    // 概要付き＝抽出結果が 1 件以上ついた件数と、version-only＝変更リスト空へ縮退した件数を最後に 1 行で出す）。
+    let mut summarized = 0usize;
+    let mut version_only = 0usize;
     for delta in deltas {
         // 各アプリの `(old, new]` 生ノートを、差分の出所（nix/brew）に応じた取得先から取得し、取得できた
         // ものだけ LLM 抽出へ回す。出所を渡すのは、nix と brew でノート取得先 base / 解決規則が異なるためで、
@@ -87,6 +91,14 @@ where
             // ノート取得不能なら version 差分のみ（変更リスト空・URL なし）へ縮退する。
             None => (Vec::new(), None),
         };
+        // 可観測サマリの集計: 抽出結果が 1 件以上ついたものを「概要付き」、変更リスト空（ノート取得不能・
+        // 抽出 0 件・予算超過縮退）を「version-only」として数える。失敗理由の内訳（auth/rate・budget）は
+        // 各 adapter / 予算ログ側で診断済みで、ここでは全体の縮退比率を 1 行で可視化する。
+        if change_items.is_empty() {
+            version_only += 1;
+        } else {
+            summarized += 1;
+        }
         materials.push(PackageMaterial {
             delta,
             change_items,
@@ -98,6 +110,12 @@ where
         eprintln!(
             "GitHub Models extract: budget exhausted, {budget_skipped} packages recorded version-only"
         );
+    }
+    // ノート取得・抽出フェーズの縮退サマリを 1 行で出す（概要付き/version-only の件数）。token 失効・レート
+    // 枯渇で全件 version-only に静かに全滅しても、無人パイプラインが CI ログで気づけるようにする
+    // （budget-exhausted ログと対称。サイレント全滅防止）。対象 delta が 1 件もない夜は出さない。
+    if summarized + version_only > 0 {
+        eprintln!("notes: {summarized} packages summarized, {version_only} version-only");
     }
 
     // append 要否の判定: **rev が前進した（`nixpkgs_old != nixpkgs_new`）夜は materials が空でも append する**。

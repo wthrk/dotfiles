@@ -211,21 +211,25 @@ fn compare_versions(old: &str, new: &str) -> ChangeKind {
     }
 }
 
-/// 2 version 文字列の順序を成分単位で比較する。`old` を左、`new` を右に取り `old.cmp(new)` 相当を返す。
-fn version_ordering(old: &str, new: &str) -> std::cmp::Ordering {
-    let old_parts = split_components(old);
-    let new_parts = split_components(new);
-    for (lhs, rhs) in old_parts.iter().zip(new_parts.iter()) {
-        let ordering = compare_component(lhs, rhs);
+/// 2 version 文字列の順序を成分単位で比較する。`lhs` を左、`rhs` を右に取り `lhs.cmp(rhs)` 相当を返す。
+///
+/// 比較は version 差分の意味論（昇格/降格）と Releases API 範囲フィルタ（[`version_in_range`]）の双方が
+/// 依拠する domain rule であり、`update_history` module 内で共有する（adapter が同等比較を再実装しない）。
+/// 全成分が等しく長さだけ異なるときは成分数が多い側を新しいとみなす（`1.2` < `1.2.1`）。
+pub(in crate::update_history) fn version_ordering(lhs: &str, rhs: &str) -> std::cmp::Ordering {
+    let lhs_parts = split_components(lhs);
+    let rhs_parts = split_components(rhs);
+    for (l, r) in lhs_parts.iter().zip(rhs_parts.iter()) {
+        let ordering = compare_component(l, r);
         if ordering != std::cmp::Ordering::Equal {
             return ordering;
         }
     }
-    old_parts.len().cmp(&new_parts.len())
+    lhs_parts.len().cmp(&rhs_parts.len())
 }
 
-/// version 文字列を `.` と `-` で成分へ分割する。
-fn split_components(version: &str) -> Vec<&str> {
+/// version 文字列を `.` と `-` で成分へ分割する（空成分は除く）。`update_history` module 内で共有する。
+pub(in crate::update_history) fn split_components(version: &str) -> Vec<&str> {
     version
         .split(['.', '-'])
         .filter(|s| !s.is_empty())
@@ -233,14 +237,80 @@ fn split_components(version: &str) -> Vec<&str> {
 }
 
 /// 1 成分を比較する。両方が数値解釈できれば数値比較、片方のみ数値なら数値側を小さく、いずれも非数値なら
-/// 文字列辞書順で比較する。
-fn compare_component(lhs: &str, rhs: &str) -> std::cmp::Ordering {
+/// 文字列辞書順で比較する。`update_history` module 内で共有する。
+pub(in crate::update_history) fn compare_component(lhs: &str, rhs: &str) -> std::cmp::Ordering {
     match (lhs.parse::<u64>(), rhs.parse::<u64>()) {
         (Ok(l), Ok(r)) => l.cmp(&r),
         (Ok(_), Err(_)) => std::cmp::Ordering::Less,
         (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
         (Err(_), Err(_)) => lhs.cmp(rhs),
     }
+}
+
+/// tag/name 文字列から version 様トークンを抽出して正規化する純粋関数（domain rule）。
+///
+/// GitHub の release tag/name には `v1.2.3` / `1.2.3` / `<pkg>-v1.2.3` / `<pkg>-1.2.3` / `release-1.2.3` の
+/// ような揺れがある。`-`/空白/`_` 区切りの各トークンを後ろから見て、最初の文字が数字の version 様トークン
+/// （先頭 `v`/`V` は剥がす）を採る。「tag 文字列をどの version へ正規化するか」は外部実装を差し替えても
+/// 変わらない整合判定であり domain rule である。version 様トークンが見つからなければ `None`。
+pub(in crate::update_history) fn extract_version_token(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .split(['-', ' ', '_'])
+        .rev()
+        .map(normalize_version)
+        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
+/// version 文字列を正規化する純粋関数（先頭の `v`/`V` を剥がし、前後空白を除く）。domain rule。
+///
+/// tag 揺れ（`v{ver}` と `{ver}`）を同一 version として扱うための正規化であり、範囲判定・比較の前段に置く。
+pub(in crate::update_history) fn normalize_version(version: &str) -> String {
+    let trimmed = version.trim();
+    trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// release tag（無ければ name）から version 文字列を抽出して正規化する純粋関数（domain rule）。
+///
+/// tag を優先し、tag から version 様トークンが取れなければ name から抽出する（[`extract_version_token`]）。
+/// いずれからも取れなければ `None`。Releases API のどのリリースが範囲に属するかを決める基準値であり、
+/// 外部実装に依らない値抽出規則として domain に置く。
+pub(in crate::update_history) fn release_version(tag: &str, name: &str) -> Option<String> {
+    extract_version_token(tag).or_else(|| extract_version_token(name))
+}
+
+/// 抽出済み release version が `(old, new]`（old 排他・new 包含）に入るかを判定する純粋関数（domain rule）。
+///
+/// 「どのリリースが old→new の更新範囲に属するか」は外部取得実装（Releases API 等）を差し替えても変わらない
+/// 整合判定であり domain rule である。`version` は抽出済みの正規化対象 version（[`release_version`] の戻り値）。
+/// `old`/`new` は版文字列（`v` 接頭等の揺れを含みうる）で、`None` のときその側の境界を課さない（old=None なら
+/// 下限なし、new=None なら上限なし）。比較は [`version_ordering`] で行い、境界値は [`normalize_version`] で
+/// tag 揺れを正規化してから比べる。
+pub(in crate::update_history) fn version_in_range(
+    version: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+) -> bool {
+    // old 排他: version > old（old があるときだけ下限を課す）。
+    if let Some(old) = old.map(normalize_version)
+        && version_ordering(version, &old) != std::cmp::Ordering::Greater
+    {
+        return false;
+    }
+    // new 包含: version <= new（new があるときだけ上限を課す）。
+    if let Some(new) = new.map(normalize_version)
+        && version_ordering(version, &new) == std::cmp::Ordering::Greater
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -456,6 +526,72 @@ mod tests {
             find(&deltas, "oldpkg").map(|d| d.notes_source.clone()),
             Some(None)
         );
+    }
+
+    #[test]
+    fn normalize_version_strips_v_prefix_and_whitespace() {
+        assert_eq!(normalize_version("v1.2.3"), "1.2.3");
+        assert_eq!(normalize_version("V2.0"), "2.0");
+        assert_eq!(normalize_version("  1.0  "), "1.0");
+        // 先頭が数字なら剥がさない。
+        assert_eq!(normalize_version("3.4.0"), "3.4.0");
+    }
+
+    #[test]
+    fn extract_version_token_picks_last_version_like_token() {
+        // tag 揺れ（`v` 接頭・接頭辞付き・接頭なし）から version 様トークンを採り正規化する。
+        assert_eq!(extract_version_token("v1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(extract_version_token("1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            extract_version_token("pkg-v1.5.0").as_deref(),
+            Some("1.5.0")
+        );
+        assert_eq!(extract_version_token("release-1.0").as_deref(), Some("1.0"));
+        // version 様トークンが無ければ None。
+        assert_eq!(extract_version_token("latest"), None);
+        assert_eq!(extract_version_token("   "), None);
+    }
+
+    #[test]
+    fn release_version_prefers_tag_then_name() {
+        assert_eq!(
+            release_version("v1.2.3", "anything").as_deref(),
+            Some("1.2.3")
+        );
+        // tag から取れなければ name から抽出する。
+        assert_eq!(
+            release_version("latest", "Release 2.0.0").as_deref(),
+            Some("2.0.0")
+        );
+        // いずれからも取れなければ None。
+        assert_eq!(release_version("latest", "nightly"), None);
+    }
+
+    #[test]
+    fn version_in_range_is_old_exclusive_new_inclusive() {
+        // (old, new] = (1.0.0, 1.2.0]: old は排他、new は包含、範囲外は除外。
+        let old = Some("1.0.0");
+        let new = Some("1.2.0");
+        assert!(!version_in_range("1.0.0", old, new), "old は排他");
+        assert!(version_in_range("1.1.0", old, new), "範囲内");
+        assert!(version_in_range("1.2.0", old, new), "new は包含");
+        assert!(!version_in_range("0.9.0", old, new), "old 未満は除外");
+        assert!(!version_in_range("1.3.0", old, new), "new 超過は除外");
+    }
+
+    #[test]
+    fn version_in_range_normalizes_boundary_tag_variants() {
+        // 境界値が `v` 接頭の tag 揺れでも正規化して比較する。
+        assert!(version_in_range("1.5.0", Some("v1.0.0"), Some("v2.0.0")));
+        assert!(!version_in_range("2.5.0", Some("v1.0.0"), Some("v2.0.0")));
+    }
+
+    #[test]
+    fn version_in_range_with_unbounded_old_or_new() {
+        // old=None なら下限なし、new=None なら上限なし、両方 None なら常に範囲内。
+        assert!(version_in_range("0.1.0", None, Some("1.0.0")));
+        assert!(version_in_range("9.9.9", Some("1.0.0"), None));
+        assert!(version_in_range("5.0.0", None, None));
     }
 
     #[test]

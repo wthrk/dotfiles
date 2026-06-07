@@ -15,7 +15,8 @@
 //!     取得し（未認証 60 req/h を避け 5000 req/h に。token は stdin config（`--config -`）で渡し argv/ログ
 //!     非露出）、各リリースの tag/version が `(old, new]` に入るものの `.body`（リリースノート markdown）を
 //!     **古い順に連結**して生ノートにする。tag 名は `v{ver}`/`{ver}`/`{name}-v{ver}` 等の揺れがあるため
-//!     正規化して version 一致を見る（[`release_in_range`]）。記録用 `notes_url` は人間が辿れる
+//!     正規化して version 一致を見る（範囲判定・tag 正規化は domain の `version_in_range`/`release_version`
+//!     へ委譲し、adapter は JSON へ適用するだけ）。記録用 `notes_url` は人間が辿れる
 //!     `github.com/{o}/{r}/releases` ページにする。
 //!   - **フォールバック連鎖**: Releases API で取れない（リリース未公開・tag 不一致・404・repo 不明・token
 //!     未設定）→ `notes_source`（`meta.changelog`/`meta.homepage`）を「生ノートが返る取得先」へ
@@ -51,9 +52,16 @@ use std::ffi::OsString;
 
 use crate::Result;
 use crate::process::{run_capture, run_capture_with_stdin};
-use crate::update_history::domain::diff::DeltaSource;
+use crate::update_history::domain::diff::{DeltaSource, release_version, version_in_range};
 use crate::update_history::domain::validate::is_allowed_url;
 use crate::update_history::ports::{NotesPort, RawReleaseNotes};
+
+/// curl の `--write-out` トレーラを本文から切り出す sentinel（Releases API 取得の HTTP status 読み取り用）。
+///
+/// 本文（任意の JSON 応答）と衝突しない一意文字列を選ぶ。`fetch_releases_page` は `--fail` を使わず
+/// （4xx/5xx を curl exit へ倒すと本物の status を握り潰し 401/403/429 を空振りと区別できなくなる）、
+/// 本文末尾へこの sentinel に続けて `http_code` を付加し [`split_status`] で本文・status へ切り分ける。
+const RELEASES_META_SENTINEL: &str = "\n<<<DOTFILES_RELEASES_META>>>\n";
 
 /// GitHub Releases API のページサイズ（1 ページあたりの最大件数。API 上限は 100）。
 const RELEASES_PER_PAGE: u32 = 100;
@@ -243,6 +251,10 @@ impl ReleaseNotesAdapter {
     ///
     /// `api.github.com` は [`is_allowed_url`] の allowlist 済み host。redirect 不追従・`--proto =https` を
     /// 適用する（[`releases_list_curl_args`]）。`.body` は信頼境界外のまま返し、構造化・要約はしない。
+    ///
+    /// 観測: 認証/レート失敗（HTTP 401/403/429）は単なる空振り（404・リリース無・範囲 0 件）と区別して
+    /// stderr へ 1 行診断する（[`fetch_releases_page`]）。token 失効や per-hour レート枯渇による全件失敗を
+    /// CI ログで判別可能にし、サイレント全滅を防ぐためである（token は露出しない）。
     fn fetch_releases_range(
         owner: &str,
         repo: &str,
@@ -257,9 +269,10 @@ impl ReleaseNotesAdapter {
             if !is_allowed_url(&api_url) {
                 return Ok(None);
             }
-            let json = match fetch_releases_page(&api_url, token.as_deref()) {
+            let json = match fetch_releases_page(&api_url, token.as_deref(), owner, repo) {
                 Ok(Some(text)) => text,
-                // 取得失敗（404・不通・空応答）は changelog フォールバックへ倒す。
+                // 取得失敗（404・不通・空応答・認証/レート失敗）は changelog フォールバックへ倒す。
+                // 認証/レート失敗（401/403/429）は fetch_releases_page 内で診断ログ済み。
                 Ok(None) | Err(_) => return Ok(None),
             };
             let releases = match parse_releases(&json) {
@@ -268,8 +281,8 @@ impl ReleaseNotesAdapter {
             };
             let page_len = releases.len();
             for release in releases {
-                if release_in_range(&release, old, new) {
-                    bodies.push((release.sort_key(), release.body));
+                if let Some(version) = release.in_range_version(old, new) {
+                    bodies.push((version, release.body));
                 }
             }
             // 1 ページが満杯でなければ最終ページ（以降は空）なので打ち切る（過剰リクエスト抑制）。
@@ -277,21 +290,29 @@ impl ReleaseNotesAdapter {
                 break;
             }
         }
-        if bodies.is_empty() {
+        let text = join_release_bodies(bodies);
+        if text.is_empty() {
             return Ok(None);
         }
-        // 古い順（version 昇順）に連結する。Releases API は新しい順で返すため、sort_key で安定整列する。
-        bodies.sort_by(|a, b| a.0.cmp(&b.0));
-        let text = bodies
-            .into_iter()
-            .map(|(_, body)| body)
-            .collect::<Vec<_>>()
-            .join(RELEASE_BODY_SEPARATOR);
         Ok(Some(RawReleaseNotes {
             text,
             notes_url: releases_page_url(owner, repo),
         }))
     }
+}
+
+/// 範囲内 release の `(version, body)` 列を version 昇順（古い順）に連結する純粋関数。
+///
+/// Releases API は新しい順で返すため、version 文字列をキーに安定整列してから [`RELEASE_BODY_SEPARATOR`]
+/// （`\n\n---\n\n`）で連結する。空入力は空文字を返す（呼び出し側が `None` 縮退に倒す）。LLM へは古い順に
+/// 積んだ生テキストとして渡す（時系列で読めるようにする）ための整列・連結規則。
+fn join_release_bodies(mut bodies: Vec<(String, String)>) -> String {
+    bodies.sort_by(|a, b| a.0.cmp(&b.0));
+    bodies
+        .into_iter()
+        .map(|(_, body)| body)
+        .collect::<Vec<_>>()
+        .join(RELEASE_BODY_SEPARATOR)
 }
 
 /// curl 引数列を組み立てる純粋関数（redirect 不追従を引数列として固定検証できるよう実行から切り離す）。
@@ -432,40 +453,82 @@ fn releases_page_url(owner: &str, repo: &str) -> String {
     format!("https://github.com/{owner}/{repo}/releases")
 }
 
-/// Releases 一覧 API を 1 ページ取得する。`Ok(Some(json))` は本文取得成功、`Ok(None)` は空応答（縮退）。
+/// Releases 一覧 API を 1 ページ取得する。`Ok(Some(json))` は本文取得成功（HTTP 200）、`Ok(None)` は空振り
+/// （404・リリース無・空応答）または認証/レート失敗（401/403/429）で、いずれも changelog フォールバックへ倒す。
 ///
 /// token があれば curl の `--config -`（stdin）の Authorization ヘッダで認証して 5000 req/h を使う
 /// （token は argv/ログに出さない。[`auth_config`]）。token が無ければ未認証で取得する（60 req/h）。redirect
-/// 不追従・`--proto =https`・`--fail`（4xx/5xx を curl 失敗 → `Err` → 呼び出し側で changelog フォールバック）を
-/// 適用する（[`releases_list_curl_args`]）。GitHub REST API の JSON 応答固定のため `Accept` ヘッダも付ける。
-fn fetch_releases_page(api_url: &str, token: Option<&str>) -> Result<Option<String>> {
+/// 不追従・`--proto =https` を適用する（[`releases_list_curl_args`]）。GitHub REST API の JSON 応答固定のため
+/// `Accept` ヘッダも付ける。
+///
+/// 観測: `--fail` は使わず（4xx/5xx を curl exit へ倒すと本物の HTTP status を握り潰し、認証/レート失敗を
+/// 空振りと区別できない＝サイレント全滅を招く）、`--write-out` で本文末尾へ status を付加して [`split_status`]
+/// で読む。**401/403/429 は認証/レート失敗**として stderr へ 1 行診断する（token 失効・per-hour レート枯渇に
+/// よる全件失敗を CI ログで判別可能にする）。それ以外の非 200（404 等）は単なる空振りとして無言で `None`。
+/// curl プロセス自体の失敗（spawn/不通）は `Err`（呼び出し側が changelog フォールバックへ倒す）。token は
+/// status 出力に現れない（`%{http_code}` は数値のみ）ため診断ログに secret は漏れない。
+fn fetch_releases_page(
+    api_url: &str,
+    token: Option<&str>,
+    owner: &str,
+    repo: &str,
+) -> Result<Option<String>> {
     let args = releases_list_curl_args(api_url, token.is_some());
-    let text = match token {
+    let raw = match token {
         Some(token) => run_capture_with_stdin("curl", args, auth_config(token).as_bytes())?,
         None => run_capture("curl", args)?,
     };
-    if text.trim().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(text))
+    let (status, body) = split_status(&raw);
+    match status {
+        200 if !body.trim().is_empty() => Ok(Some(body)),
+        // 認証/レート失敗は空振り（404・範囲 0 件）と区別して診断する。token 失効・レート枯渇による全件失敗を
+        // CI ログで判別可能にする（サイレント切り捨て禁止）。token は status に現れず secret は漏れない。
+        401 | 403 | 429 => {
+            eprintln!(
+                "update-history notes: releases API auth/rate failure: HTTP {status} for {owner}/{repo}"
+            );
+            Ok(None)
+        }
+        // 200 だが空本文、または 404・その他非 200 は単なる空振り。無言で changelog フォールバックへ倒す。
+        _ => Ok(None),
     }
+}
+
+/// curl の `--write-out` トレーラ（[`RELEASES_META_SENTINEL`] + status）出力から `(status, body)` を切り出す。
+///
+/// curl は本文を stdout へ流し、その後ろへ sentinel と `%{http_code}`（3 桁数値）を付加する。**最後の**
+/// sentinel 以降を status トレーラとして切り出す（本文に sentinel 同一文字列が現れる確率は無視できるが、万一
+/// 現れても最後の出現＝curl が付けたトレーラを採る）。sentinel が見つからない想定外出力は status `0`・本文
+/// 全体とし、呼び出し側が空振り扱いで `None` へ縮退する。token はこの出力に現れない（status は数値のみ）。
+fn split_status(raw: &str) -> (u16, String) {
+    let Some(sentinel_at) = raw.rfind(RELEASES_META_SENTINEL) else {
+        return (0, raw.to_string());
+    };
+    let body = raw[..sentinel_at].to_string();
+    let status_text = &raw[sentinel_at + RELEASES_META_SENTINEL.len()..];
+    let status = status_text.trim().parse::<u16>().unwrap_or(0);
+    (status, body)
 }
 
 /// Releases 一覧取得用の curl 引数列を組み立てる純粋関数。
 ///
-/// host allowlist 契約（redirect 不追従・https 限定・`--fail`）は [`curl_args`] と同一。`Accept`/`X-GitHub-Api-Version`
+/// host allowlist 契約（redirect 不追従・https 限定）は [`curl_args`] と同一。`Accept`/`X-GitHub-Api-Version`
 /// で GitHub REST API の JSON 応答を固定する。`with_auth` のとき `--config -`（stdin）から Authorization を
 /// 読むため `--config -` を加える（token 本体は argv に置かず stdin で渡す＝secret 非露出）。token を含まない
 /// ヘッダ（`Accept` 等）は argv に置いてよい。
+///
+/// 観測: `--fail` は付けない。4xx/5xx を curl exit へ倒すと本物の HTTP status を握り潰し、認証/レート失敗
+/// （401/403/429）を空振りと区別できなくなる（サイレント全滅）。代わりに `--write-out` で本文末尾へ
+/// [`RELEASES_META_SENTINEL`] + `%{http_code}` を付加し、[`fetch_releases_page`] が status を読んで診断する。
+/// `%{http_code}` は数値のみで token を含まない。
 fn releases_list_curl_args(url: &str, with_auth: bool) -> Vec<OsString> {
-    let mut args = Vec::with_capacity(14);
+    let mut args = Vec::with_capacity(16);
     if with_auth {
         // token は stdin（--config -）の Authorization ヘッダで渡す（argv 非露出）。
         args.push(OsString::from("--config"));
         args.push(OsString::from("-"));
     }
     args.extend([
-        OsString::from("--fail"),
         OsString::from("--silent"),
         OsString::from("--show-error"),
         // redirect を追従しない（allowlist 外 host への横滑りを塞ぐ）。
@@ -478,6 +541,10 @@ fn releases_list_curl_args(url: &str, with_auth: bool) -> Vec<OsString> {
         OsString::from("Accept: application/vnd.github+json"),
         OsString::from("--header"),
         OsString::from("X-GitHub-Api-Version: 2022-11-28"),
+        // 本文末尾へ sentinel + HTTP status を付加する（token は含まれない＝数値のみ）。認証/レート失敗を
+        // 空振りと区別するため `--fail` を使わず status を読む。
+        OsString::from("--write-out"),
+        OsString::from(format!("{RELEASES_META_SENTINEL}%{{http_code}}")),
         OsString::from(url),
     ]);
     args
@@ -534,105 +601,18 @@ struct Release {
 }
 
 impl Release {
-    /// 範囲整列用のソートキー（version 文字列）。tag から抽出した version、無ければ name から抽出、いずれも
-    /// 無ければ tag/name 生文字列を使う。version 昇順（古い順）の安定整列に使う。
-    fn sort_key(&self) -> String {
-        release_version(&self.tag_name, &self.name).unwrap_or_else(|| self.tag_name.clone())
-    }
-}
-
-/// リリースの version が `(old, new]` 範囲（old 排他・new 包含）に入るかを判定する純粋関数。
-///
-/// `body` が空（リリースノート無し）は範囲内でも除外する（LLM の材料にならない）。リリースの version は tag
-/// （無ければ name）から [`release_version`] で抽出する。抽出不能なら範囲外扱い（除外）。`old`/`new` が
-/// `None`（版不明）の場合はその側の境界を課さない（old=None なら下限なし、new=None なら上限なし）。比較は
-/// [`version_ordering`] による成分比較で、tag 揺れ（`v` 接頭・`name-` 接頭）を正規化してから比べる。
-fn release_in_range(release: &Release, old: Option<&str>, new: Option<&str>) -> bool {
-    if release.body.trim().is_empty() {
-        return false;
-    }
-    let Some(ver) = release_version(&release.tag_name, &release.name) else {
-        return false;
-    };
-    // old 排他: ver > old（old があるときだけ下限を課す）。
-    if let Some(old) = old.map(normalize_version)
-        && version_ordering(&ver, &old) != std::cmp::Ordering::Greater
-    {
-        return false;
-    }
-    // new 包含: ver <= new（new があるときだけ上限を課す）。
-    if let Some(new) = new.map(normalize_version)
-        && version_ordering(&ver, &new) == std::cmp::Ordering::Greater
-    {
-        return false;
-    }
-    true
-}
-
-/// tag（無ければ name）から version 文字列を抽出して正規化する純粋関数。
-///
-/// tag/name には `v1.2.3` / `1.2.3` / `<pkg>-v1.2.3` / `<pkg>-1.2.3` / `release-1.2.3` のような揺れがある。
-/// 末尾の「数字で始まる version 様トークン」を取り出し（`-`/空白区切りの最終トークン）、先頭の `v` を剥がして
-/// 正規化する。version 様トークンが見つからなければ `None`。
-fn release_version(tag: &str, name: &str) -> Option<String> {
-    extract_version_token(tag).or_else(|| extract_version_token(name))
-}
-
-/// 文字列から version 様トークン（先頭 `v` を許し、最初の文字が数字）を抽出して正規化する。
-fn extract_version_token(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    // `-` または空白区切りの各トークンを後ろから見て、version 様（`v`? + 数字始まり）の最終トークンを採る。
-    trimmed
-        .split(['-', ' ', '_'])
-        .rev()
-        .map(normalize_version)
-        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
-}
-
-/// version 文字列を正規化する（先頭の `v`/`V` を剥がし、前後空白を除く）。
-fn normalize_version(version: &str) -> String {
-    let trimmed = version.trim();
-    trimmed
-        .strip_prefix('v')
-        .or_else(|| trimmed.strip_prefix('V'))
-        .unwrap_or(trimmed)
-        .to_string()
-}
-
-/// 2 version 文字列の順序を成分単位で比較する（`.`/`-` 区切り。数値成分は数値、非数値は辞書順）。
-///
-/// `lhs.cmp(rhs)` 相当。全成分が等しく長さだけ異なるときは成分数が多い側を新しいとみなす（`1.2` < `1.2.1`）。
-/// 範囲フィルタ（[`release_in_range`]）専用の局所比較で、domain の version 比較とは独立に閉じる。
-fn version_ordering(lhs: &str, rhs: &str) -> std::cmp::Ordering {
-    let lhs_parts = split_components(lhs);
-    let rhs_parts = split_components(rhs);
-    for (l, r) in lhs_parts.iter().zip(rhs_parts.iter()) {
-        let ordering = compare_component(l, r);
-        if ordering != std::cmp::Ordering::Equal {
-            return ordering;
+    /// `(old, new]` 範囲に入りかつ本文がある場合、整列キーとなる version を返す（domain 規則へ委譲）。
+    ///
+    /// 範囲判定（old 排他・new 包含）と tag→version 正規化は domain rule（[`version_in_range`] /
+    /// [`release_version`]）であり、adapter はそれを Releases API JSON へ適用するだけである。本文が空
+    /// （リリースノート無し）・version 抽出不能・範囲外はいずれも `None`（連結対象から除外）。返す version は
+    /// 古い順整列（[`join_release_bodies`]）のキーに使う。
+    fn in_range_version(&self, old: Option<&str>, new: Option<&str>) -> Option<String> {
+        if self.body.trim().is_empty() {
+            return None;
         }
-    }
-    lhs_parts.len().cmp(&rhs_parts.len())
-}
-
-/// version 文字列を `.` と `-` で成分へ分割する（空成分は除く）。
-fn split_components(version: &str) -> Vec<&str> {
-    version
-        .split(['.', '-'])
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// 1 成分を比較する。両方数値なら数値比較、片方のみ数値なら数値側を小さく、いずれも非数値なら辞書順。
-fn compare_component(lhs: &str, rhs: &str) -> std::cmp::Ordering {
-    match (lhs.parse::<u64>(), rhs.parse::<u64>()) {
-        (Ok(l), Ok(r)) => l.cmp(&r),
-        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-        (Err(_), Err(_)) => lhs.cmp(rhs),
+        let version = release_version(&self.tag_name, &self.name)?;
+        version_in_range(&version, old, new).then_some(version)
     }
 }
 
@@ -682,9 +662,9 @@ mod tests {
 
     use super::{
         NotesFetchPlan, Release, ReleaseNotesAdapter, auth_config, curl_args, extract_release_body,
-        parse_releases, release_api_curl_args, release_in_range, releases_list_curl_args,
+        join_release_bodies, parse_releases, release_api_curl_args, releases_list_curl_args,
         releases_list_url, releases_page_url, resolve_nix_notes_source, resolve_notes_url,
-        split_owner_repo,
+        split_owner_repo, split_status,
     };
     use crate::update_history::domain::diff::DeltaSource;
     use crate::update_history::ports::NotesPort;
@@ -1079,7 +1059,57 @@ mod tests {
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect();
         assert!(!args.iter().any(|a| a == "--config"));
-        assert!(args.iter().any(|a| a == "--fail"));
+        // `--fail` は付けない（4xx/5xx を curl exit へ倒すと認証/レート失敗を空振りと区別できなくなる）。
+        assert!(!args.iter().any(|a| a == "--fail"));
+        // 代わりに `--write-out` で本文末尾へ status を付加して読む。
+        assert!(args.iter().any(|a| a == "--write-out"));
+    }
+
+    #[test]
+    fn releases_list_curl_args_write_out_appends_status_sentinel() {
+        // 観測: `--write-out` の値が sentinel + `%{http_code}` で、HTTP status を本文末尾へ付加する。
+        let args: Vec<String> =
+            releases_list_curl_args("https://api.github.com/repos/o/r/releases", true)
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+        let wo = args
+            .iter()
+            .position(|a| a == "--write-out")
+            .expect("--write-out");
+        let value = args
+            .get(wo + 1)
+            .map(String::as_str)
+            .expect("write-out value");
+        assert!(value.ends_with("%{http_code}"), "{value:?}");
+        assert!(value.contains(super::RELEASES_META_SENTINEL), "{value:?}");
+    }
+
+    #[test]
+    fn split_status_separates_body_and_http_code() {
+        // curl 出力（本文 + sentinel + status）から status と本文を切り出す。
+        let raw = format!(
+            "{body}{sentinel}403",
+            body = r#"{"message":"rate limited"}"#,
+            sentinel = super::RELEASES_META_SENTINEL
+        );
+        let (status, body) = split_status(&raw);
+        assert_eq!(status, 403);
+        assert_eq!(body, r#"{"message":"rate limited"}"#);
+
+        // 200 本文も同様に切り出せる。
+        let raw = format!("[]{sentinel}200", sentinel = super::RELEASES_META_SENTINEL);
+        let (status, body) = split_status(&raw);
+        assert_eq!(status, 200);
+        assert_eq!(body, "[]");
+    }
+
+    #[test]
+    fn split_status_returns_zero_when_no_sentinel() {
+        // 想定外出力（sentinel 無し）は status 0・本文全体（呼び出し側で空振り扱い→None 縮退）。
+        let (status, body) = split_status("no sentinel here");
+        assert_eq!(status, 0);
+        assert_eq!(body, "no sentinel here");
     }
 
     /// fixture: tag_name/name/body を持つ releases 配列 JSON を組む。
@@ -1118,71 +1148,60 @@ mod tests {
     }
 
     #[test]
-    fn release_in_range_is_old_exclusive_new_inclusive() {
-        // (old, new] = (1.0.0, 1.2.0]: 1.0.0 は除外（old 排他）、1.2.0 は含む（new 包含）、範囲外は除外。
-        let old = Some("1.0.0");
-        let new = Some("1.2.0");
-        assert!(
-            !release_in_range(&release("v1.0.0", "x"), old, new),
-            "old は排他"
-        );
-        assert!(
-            release_in_range(&release("v1.1.0", "x"), old, new),
-            "範囲内"
-        );
-        assert!(
-            release_in_range(&release("v1.2.0", "x"), old, new),
-            "new は包含"
-        );
-        assert!(
-            !release_in_range(&release("v0.9.0", "x"), old, new),
-            "old 未満は除外"
-        );
-        assert!(
-            !release_in_range(&release("v1.3.0", "x"), old, new),
-            "new 超過は除外"
-        );
-    }
-
-    #[test]
-    fn release_in_range_handles_tag_variants_and_empty_body() {
+    fn in_range_version_applies_domain_range_and_returns_sort_key() {
+        // 範囲判定（old 排他・new 包含）は domain へ委譲し、範囲内なら整列キー version を返す。
         let old = Some("1.0.0");
         let new = Some("2.0.0");
-        // tag 揺れ: `v` 接頭・接頭辞付き（`pkg-v1.5.0`）・接頭なし（`1.5.0`）いずれも version を抽出して照合。
-        assert!(release_in_range(&release("v1.5.0", "x"), old, new));
-        assert!(release_in_range(&release("mypkg-v1.5.0", "x"), old, new));
-        assert!(release_in_range(&release("1.5.0", "x"), old, new));
-        // body 空（リリースノート無し）は範囲内でも除外（LLM の材料にならない）。
-        assert!(!release_in_range(&release("v1.5.0", "   "), old, new));
-        // version を抽出できない tag/name は除外。
-        assert!(!release_in_range(&release("latest", "x"), old, new));
+        // tag 揺れ（`v` 接頭・接頭辞付き・接頭なし）でも domain の version 抽出で照合し、正規化 version を返す。
+        assert_eq!(
+            release("v1.5.0", "x").in_range_version(old, new).as_deref(),
+            Some("1.5.0")
+        );
+        assert_eq!(
+            release("mypkg-v1.5.0", "x")
+                .in_range_version(old, new)
+                .as_deref(),
+            Some("1.5.0")
+        );
+        // old 排他・new 超過は範囲外（None）。
+        assert!(release("v1.0.0", "x").in_range_version(old, new).is_none());
+        assert!(release("v2.5.0", "x").in_range_version(old, new).is_none());
     }
 
     #[test]
-    fn release_in_range_with_unbounded_old_or_new() {
-        // old=None なら下限なし、new=None なら上限なし。
-        assert!(release_in_range(
-            &release("v0.1.0", "x"),
-            None,
-            Some("1.0.0")
-        ));
-        assert!(release_in_range(
-            &release("v9.9.9", "x"),
-            Some("1.0.0"),
-            None
-        ));
-        assert!(release_in_range(&release("v5.0.0", "x"), None, None));
+    fn in_range_version_excludes_empty_body_and_unextractable() {
+        let old = Some("1.0.0");
+        let new = Some("2.0.0");
+        // body 空（リリースノート無し）は範囲内でも除外（LLM の材料にならない）。これは adapter 側の翻訳判断
+        // （JSON `.body` の有無）であり domain 範囲判定の前に弾く。
+        assert!(
+            release("v1.5.0", "   ")
+                .in_range_version(old, new)
+                .is_none()
+        );
+        // version を抽出できない tag/name は除外（domain の release_version が None）。
+        assert!(release("latest", "x").in_range_version(old, new).is_none());
     }
 
     #[test]
-    fn release_sort_key_uses_extracted_version() {
-        // sort_key は tag から抽出した version（`v` 剥がし・接頭辞剥がし）を使い、古い順整列を可能にする。
-        assert_eq!(release("v1.2.3", "x").sort_key(), "1.2.3");
-        let named = Release {
-            tag_name: "pkg-2.0.0".to_string(),
-            name: "Release 2.0.0".to_string(),
-            body: "x".to_string(),
-        };
-        assert_eq!(named.sort_key(), "2.0.0");
+    fn join_release_bodies_sorts_ascending_and_joins_with_separator() {
+        // 退行固定: 複数 in-range body を version 昇順（古い順）に整列し、`\n\n---\n\n` で連結する。
+        // 入力順は新しい順（Releases API の返却順）でも、version で安定整列して古い順にする。
+        let bodies = vec![
+            ("2.0.0".to_string(), "new body".to_string()),
+            ("1.0.0".to_string(), "old body".to_string()),
+            ("1.5.0".to_string(), "mid body".to_string()),
+        ];
+        assert_eq!(
+            join_release_bodies(bodies),
+            "old body\n\n---\n\nmid body\n\n---\n\nnew body"
+        );
+        // 空入力は空文字（呼び出し側が None 縮退に倒す）。
+        assert_eq!(join_release_bodies(Vec::new()), "");
+        // 1 件は区切り無しでそのまま。
+        assert_eq!(
+            join_release_bodies(vec![("1.0.0".to_string(), "only".to_string())]),
+            "only"
+        );
     }
 }

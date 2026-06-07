@@ -36,6 +36,12 @@ set -euo pipefail
 reference="${1:?usage: eval-declared-versions.sh <reference> <out-json>}"
 out="${2:?usage: eval-declared-versions.sh <reference> <out-json>}"
 
+# owner/repo・changelog 導出の純関数群は derive-repo.nix を単一正本にする（checks のテストと同じ実装を共有し
+# 規則のドリフトを防ぐ）。flake の pure eval ではフレーク外の絶対パス import が禁止されるため、ファイル内容を
+# 読み込んで `--apply` 式へ inline 注入する（path import を避けつつ実装を 1 箇所に保つ）。
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+derive_repo_nix="$(cat "${script_dir}/derive-repo.nix")"
+
 # 参照構成から利用者名を eval で取得する（ci-ref は user=ci 固定だが、参照を引数化したため動的に解決する）。
 user="$(nix eval --raw ".#${reference}.config.system.primaryUser")"
 
@@ -48,57 +54,22 @@ user="$(nix eval --raw ".#${reference}.config.system.primaryUser")"
 #
 # 文字列からの owner/repo 抽出は `builtins.match` の正規表現で行い、url や owner/repo フィールドのみを参照する
 # （ビルド/フェッチ非実行）。`p.src.owner`/`p.src.repo` 等は存在しないパッケージがあるため `or` で握りつぶす。
-apply='
+apply="
 ps:
 let
-  # github URL 文字列から "owner/repo" を取り出す（取れなければ "")。末尾 .git・クエリ/フラグメントは除く。
-  fromUrl = url:
-    let m = builtins.match "https?://github\\.com/([^/]+)/([^/?#]+).*" url;
-    in if m == null then ""
-       else
-         let
-           owner = builtins.elemAt m 0;
-           repoRaw = builtins.elemAt m 1;
-           repo =
-             let g = builtins.match "(.+)\\.git" repoRaw;
-             in if g == null then repoRaw else builtins.elemAt g 0;
-         in if owner == "" || repo == "" then "" else owner + "/" + repo;
-  # 値が文字列ならそれを、そうでなければ "" を返す（安全な文字列化）。
-  asStr = v: if builtins.isString v then v else "";
-  # src（fetchFromGitHub 等）から owner/repo を取り出す。owner+repo 直接指定を最優先、無ければ url/urls。
-  fromSrc = p:
-    let
-      src = p.src or null;
-      owner = asStr (src.owner or "");
-      repo = asStr (src.repo or "");
-      url = asStr (src.url or "");
-      urls = src.urls or [];
-      firstUrl = if builtins.isList urls && urls != [] then asStr (builtins.head urls) else "";
-    in
-      if src == null then ""
-      else if owner != "" && repo != "" then owner + "/" + repo
-      else if url != "" && fromUrl url != "" then fromUrl url
-      else if firstUrl != "" then fromUrl firstUrl
-      else "";
-  changelogOf = p: asStr (p.meta.changelog or p.meta.homepage or "");
-  homepageOf = p: asStr (p.meta.homepage or "");
-  changelogUrlOf = p: asStr (p.meta.changelog or "");
-  # repo 導出: homepage(github) → src → changelog(github) の優先。
-  repoOf = p:
-    let
-      h = fromUrl (homepageOf p);
-      s = if h != "" then h else fromSrc p;
-    in if s != "" then s else fromUrl (changelogUrlOf p);
+  derive = (
+${derive_repo_nix}
+  );
 in
 builtins.listToAttrs (map (p: {
-  name = p.pname or (builtins.parseDrvName (p.name or "")).name;
+  name = p.pname or (builtins.parseDrvName (p.name or \"\")).name;
   value = {
-    version = p.version or "";
-    repo = repoOf p;
-    changelog = changelogOf p;
+    version = p.version or \"\";
+    repo = derive.repoOf p;
+    changelog = derive.changelogOf p;
   };
 }) ps)
-'
+"
 
 home_json="$(nix eval --json \
   ".#${reference}.config.home-manager.users.${user}.home.packages" \
