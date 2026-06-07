@@ -17,7 +17,15 @@ use crate::update_history::ports::{
 /// lock で eval した宣言パッケージの name→version マップ 2 つを取得し、domain の純粋比較
 /// （[`diff_versions`]）に通して求める（ビルド/フェッチ不要・数秒）。停止条件は各 port の `Err` 伝播であり、
 /// ノート取得不能（`None`）や LLM 未使用（空配列）はフォールバックとして version + URL のみへ縮退させ、
-/// record 全体は失敗させない。LLM 出力と生ノート URL は信頼境界外のため、記録前に必ず domain の機械
+/// record 全体は失敗させない。
+///
+/// 抽出フェーズ全体の wall-clock 予算（停止条件）: 全件持続 429 のような最悪ケースでは LLM 抽出の 429 リトライ
+/// 待機が積み上がり、抽出ループ全体が record job timeout（60分）へ接近・超過しうる（超過すると後続 job（PR 起票）が
+/// 止まり無人 nightly が停止する）。これを構造的に防ぐため、各パッケージの抽出前に
+/// [`ChangeExtractPort::extract_budget_exhausted`] を問い合わせ、予算超過後は LLM 抽出を呼ばず version-only（変更
+/// リスト空・notes_url は保持）へ縮退させる（record は success 継続）。予算超過で skip した件数は最後に 1 行で
+/// stderr へ明示する（サイレント切り捨て防止）。予算の計測（時刻・経過）は port 実装（adapter）が担い、application は
+/// 「残りを skip して version-only に倒す」停止条件の判断だけを持つ。LLM 出力と生ノート URL は信頼境界外のため、記録前に必ず domain の機械
 /// バリデート（host allowlist / 長さ / 件数）を通す。severity / overall の算出は domain（[`build_entry`]）に
 /// 委ね、application は素材収集の順序だけを保持する。
 pub(crate) fn run_record<V, B, N, X, S>(
@@ -44,6 +52,9 @@ where
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
 
     let mut materials = Vec::with_capacity(deltas.len());
+    // 予算超過で LLM 抽出を skip して version-only へ縮退させたパッケージ数。最後に 1 行で件数を明示する
+    // （サイレント切り捨て防止）。
+    let mut budget_skipped = 0usize;
     for delta in deltas {
         // 各アプリの `(old, new]` 生ノートを、差分の出所（nix/brew）に応じた取得先から取得し、取得できた
         // ものだけ LLM 抽出へ回す。出所を渡すのは、nix と brew でノート取得先 base / 解決規則が異なるためで、
@@ -56,6 +67,14 @@ where
             delta.new.clone(),
         )?;
         let (change_items, notes_url) = match raw {
+            // 抽出フェーズ全体の wall-clock 予算を使い切っていたら、残りパッケージは LLM 抽出を呼ばず
+            // version-only（変更リスト空・URL は保持）へ縮退する。全件持続 429 の最悪ケースで抽出が record job
+            // timeout（60分）へ接近・超過し、後続 job（PR 起票）が止まって無人 nightly が停止するのを構造的に防ぐ。
+            // 停止条件（残りを skip して version-only に倒す）の判断は application が持ち、予算超過の計測は port が担う。
+            Some(raw) if extract.extract_budget_exhausted() => {
+                budget_skipped += 1;
+                (Vec::new(), sanitize_notes_url(Some(raw.notes_url)))
+            }
             Some(raw) => {
                 // LLM 出力は信頼境界外。記録前に host/長さ/件数を機械バリデートする。
                 let extracted = extract.extract_change_items(&raw)?;
@@ -72,6 +91,12 @@ where
             change_items,
             notes_url,
         });
+    }
+    // 予算超過で抽出を skip したパッケージがあれば件数を 1 行で明示する（サイレント切り捨てなし）。
+    if budget_skipped > 0 {
+        eprintln!(
+            "GitHub Models extract: budget exhausted, {budget_skipped} packages recorded version-only"
+        );
     }
 
     // append 要否の判定: **rev が前進した（`nixpkgs_old != nixpkgs_new`）夜は materials が空でも append する**。
@@ -239,6 +264,10 @@ mod tests {
             });
 
         let mut extract = MockChangeExtractPort::new();
+        // 予算未超過なら通常どおり抽出する。
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
         extract
             .expect_extract_change_items()
             .times(1)
@@ -273,6 +302,63 @@ mod tests {
                     && entry.packages[0].change_items[0].ref_url.is_none()
                     && entry.packages[0].change_items[1].ref_url.as_deref()
                         == Some("https://github.com/openssl/openssl/pull/2")
+                    && entry.packages[0].notes_url.as_deref()
+                        == Some("https://github.com/openssl/openssl/releases/tag/v1.1")
+            })
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+        )
+    }
+
+    #[test]
+    fn record_skips_extraction_to_version_only_when_extract_budget_exhausted() -> crate::Result<()>
+    {
+        // 退行固定（抽出フェーズ wall-clock 予算）: ノートは取得できても抽出フェーズの予算を使い切っていれば、
+        // LLM 抽出を呼ばず version-only（変更リスト空・notes_url は保持）へ縮退する。これにより全件持続 429 の
+        // 最悪ケースでも record 総時間が record job timeout（60分）内へ構造的に収まる。stop 判断は application、
+        // 予算計測は port（mock では予算超過 = true を返す）。
+        let nix_versions = nix_versions_with_notes("openssl", "https://github.com/openssl/openssl");
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .times(1)
+            .returning(|_, _| Ok(Vec::new()));
+
+        let mut notes = MockNotesPort::new();
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _| {
+                Ok(Some(RawReleaseNotes {
+                    text: "CVE fix".to_string(),
+                    notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                }))
+            });
+
+        let mut extract = MockChangeExtractPort::new();
+        // 予算超過なので各パッケージの抽出前に true を返し、抽出は一度も呼ばれない。
+        extract
+            .expect_extract_budget_exhausted()
+            .times(1)
+            .returning(|| true);
+        extract.expect_extract_change_items().never();
+
+        let mut store = MockHistoryStorePort::new();
+        store
+            .expect_append_entry()
+            .times(1)
+            .withf(|entry| {
+                // version-only 縮退: 変更リストは空だが notes_url は保持される。
+                entry.packages.len() == 1
+                    && entry.packages[0].name == "openssl"
+                    && entry.packages[0].change_items.is_empty()
                     && entry.packages[0].notes_url.as_deref()
                         == Some("https://github.com/openssl/openssl/releases/tag/v1.1")
             })

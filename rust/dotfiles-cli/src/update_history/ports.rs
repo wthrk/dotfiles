@@ -89,12 +89,26 @@ pub(crate) struct RawReleaseNotes {
 /// implementor は GitHub Models 等で生ノートを `Vec<ChangeItem>`（category + text + ref）へ抽出する。
 /// caller は抽出結果を機械バリデート（schema/enum/長さ/host）してから記録に使う。severity はこの抽出
 /// 結果でなく category enum から機械算出するため、LLM 出力はマージ判断に使わない（injection 耐性）。
+///
+/// 抽出フェーズ全体の wall-clock 予算（[`Self::extract_budget_exhausted`]）も契約に含む。複数パッケージを
+/// 順に抽出する caller（application）は、各抽出の前に予算超過を問い合わせ、超過後は LLM 抽出を skip して
+/// version-only へ縮退させる。これは「外部 I/O にどれだけ時間を使ってよいか」という抽出 I/O の予算境界であり、
+/// 残りパッケージを LLM 抽出するか version-only に倒すかという停止条件の判断は caller（application）が担う。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait ChangeExtractPort {
     /// 生リリースノートを構造化変更リストへ抽出する。
     ///
     /// implementor は与えた生ノートのみを根拠とし（ハルシネーション禁止）、根拠が無ければ空配列を返す。
     fn extract_change_items(&self, notes: &RawReleaseNotes) -> Result<Vec<ChangeItem>>;
+
+    /// 抽出フェーズ全体の wall-clock 予算を使い切ったか（`true` なら以降の LLM 抽出を skip すべき）。
+    ///
+    /// implementor は抽出フェーズ開始時刻を起点に、総時間予算を超過したかだけを返す（外部 I/O はしない）。
+    /// caller（application）はこれを各パッケージ抽出の前に問い合わせ、超過後は LLM 抽出を呼ばず version-only
+    /// へ縮退させる（record 全体は success を維持し、skip 件数を診断ログで明示する）。予算を設ける理由は、
+    /// 全件持続 429 のような最悪ケースで抽出が record job timeout（60分）へ接近・超過し、後続 job（PR 起票）が
+    /// 止まって無人 nightly が停止するのを構造的に防ぐためである。
+    fn extract_budget_exhausted(&self) -> bool;
 }
 
 /// 更新履歴 TOML を読み書きする capability 契約（外部機能: TOML ファイル I/O）。

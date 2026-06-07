@@ -21,6 +21,13 @@
 //! 再試行する（[`GithubModelsExtractAdapter::post_with_retry`]）。複数パッケージにまたがる呼び出し列の間隔は
 //! adapter が保持する呼び出し間隔状態（[`MIN_REQUEST_INTERVAL`]）で per-minute 上限内へ収まるようペースを敷く
 //! （[`ChangeExtractPort`] 実装参照）。最終的に 429 が解消しなくても record は止めず空配列へ縮退する。
+//!
+//! 抽出フェーズ全体の wall-clock 予算（[`EXTRACT_BUDGET`]）: 1 リクエストの 429 リトライ上振れ（最大 ~80s）と
+//! パッケージ間ペーシングが積み上がると、全件持続 429 のとき抽出ループ全体が record job timeout（60分）へ接近・
+//! 超過しうる（超過すると後続 job（PR 起票）が止まり無人 nightly が停止する）。これを構造的に防ぐため、抽出
+//! フェーズ開始時刻を起点に総時間予算を設け、超過後は残りパッケージの LLM 抽出を skip して version-only へ縮退
+//! させる（[`GithubModelsExtractAdapter::extract_budget_exhausted`]、停止条件の適用は application が担う）。
+//! 個々の 429 リトライ待機も deadline を跨ぐなら待たずに縮退する（[`retry_loop`] へ残予算を渡す）。
 
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -94,6 +101,22 @@ const MAX_BACKOFF: Duration = Duration::from_secs(20);
 /// に収まり、record job timeout（60分）を大きく下回る（30 件で約 60 秒 + retry 上振れ）。
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 
+/// 抽出フェーズ全体に与える wall-clock 予算（deadline）。超過後は残りパッケージの LLM 抽出を skip して
+/// version-only へ縮退する（[`GithubModelsExtractAdapter::extract_budget_exhausted`]）。
+///
+/// 根拠（最悪ケース＝全件持続 429 でも record 総時間が record job timeout（60分）を割らないこと）:
+/// - record job（`nightly-update.yml` の `record`）は `timeout-minutes: 60`。抽出フェーズ以外に、devShell 起動・
+///   `nix build .#default`（dotfiles バイナリ）・nix/brew 版差分の取得・各パッケージのノート取得 HTTP・TOML 追記等の
+///   他工程がある。これらに安全側で **~15 分**を見込む。
+/// - 抽出フェーズへ与える予算をこの **35 分**に固定すると、抽出 ≤ 35 分 + 他工程 ~15 分 = ~50 分 ≤ 60 分の
+///   構造的マージン（~10 分）を確保できる。
+/// - 予算超過の判定はループの各抽出の **前**に行い、超過後は LLM 呼び出しを一切しない。さらに個々の 429 リトライ
+///   待機も deadline を跨ぐなら待たずに縮退する（[`retry_loop`] へ残予算を渡す）ため、抽出フェーズの実 wall-clock は
+///   「予算 + 進行中だった 1 リクエストの最大上振れ（~80s）」を超えない。35 分 + ~80s でも 60 分を大きく下回る。
+/// - 個々の 1 リクエスト上振れ ~80s の内訳: 429 リトライ最大 4 回の待機（各 ≤ MAX_BACKOFF=20s ⇒ 最大 ~80s）+
+///   curl の応答時間。pacing（2s）は次リクエスト開始前の待機で deadline 判定と直交する。
+const EXTRACT_BUDGET: Duration = Duration::from_secs(35 * 60);
+
 /// curl で取得した HTTP ヘッダ JSON から `Retry-After` を読むためのヘッダ名（小文字）。`%{header_json}` の
 /// キーは小文字化されて入るため、参照側も小文字で引く。
 const RETRY_AFTER_HEADER: &str = "retry-after";
@@ -162,17 +185,22 @@ struct ChatMessage {
 ///
 /// `last_request_at` は直前にリクエストを開始した時刻を保持し、複数パッケージにまたがる呼び出し列へ
 /// [`MIN_REQUEST_INTERVAL`] のペーシングを敷くために使う（per-minute レート上限内へ収めるため）。
-/// `ChangeExtractPort::extract_change_items` は `&self` を取るため、呼び出しごとに更新する時刻は `Cell`
-/// で内部可変にする。adapter は単一スレッドの record 経路でのみ使われるため `Cell` で十分（共有なし）。
+/// `extract_phase_start` は抽出フェーズ開始時刻（最初の予算判定/抽出のいずれか早い方で確定）を保持し、
+/// [`EXTRACT_BUDGET`] の wall-clock 予算超過を判定するために使う（全件持続 429 で抽出が record job timeout を
+/// 食い潰すのを防ぐ）。`ChangeExtractPort` の各メソッドは `&self` を取るため、呼び出しごとに更新する時刻は
+/// `Cell` で内部可変にする。adapter は単一スレッドの record 経路でのみ使われるため `Cell` で十分（共有なし）。
 pub(in crate::update_history) struct GithubModelsExtractAdapter {
     /// 直前のリクエスト開始時刻。未呼び出しの間は `None`（初回はペーシング待機なし）。
     last_request_at: Cell<Option<Instant>>,
+    /// 抽出フェーズ開始時刻。未確定の間は `None`（最初の予算判定または抽出時に `Instant::now()` で確定する）。
+    extract_phase_start: Cell<Option<Instant>>,
 }
 
 impl Default for GithubModelsExtractAdapter {
     fn default() -> Self {
         Self {
             last_request_at: Cell::new(None),
+            extract_phase_start: Cell::new(None),
         }
     }
 }
@@ -181,6 +209,26 @@ impl GithubModelsExtractAdapter {
     /// composition root から結線するための adapter を生成する（ペーシング状態は未初期化＝初回は即時）。
     pub(in crate::update_history) fn new() -> Self {
         Self::default()
+    }
+
+    /// 抽出フェーズ開始からの経過時間を返す（未確定なら今を起点に確定して 0 を返す）。
+    ///
+    /// 抽出フェーズの起点は「最初に予算判定または抽出を行った時点」とする。bump/eval は別 CI job、ノート取得
+    /// や版差分算出はこの起点より前に走るため、起点は抽出ループ突入時刻に十分近い。`Cell` で内部可変に確定する
+    /// （単一スレッドの record 経路専用）。
+    fn elapsed_since_phase_start(&self) -> Duration {
+        match self.extract_phase_start.get() {
+            Some(start) => start.elapsed(),
+            None => {
+                self.extract_phase_start.set(Some(Instant::now()));
+                Duration::ZERO
+            }
+        }
+    }
+
+    /// 抽出フェーズ開始から [`EXTRACT_BUDGET`] までの残予算を返す（超過済みなら `Duration::ZERO`）。
+    fn remaining_budget(&self) -> Duration {
+        EXTRACT_BUDGET.saturating_sub(self.elapsed_since_phase_start())
     }
 
     /// `GITHUB_TOKEN` を読む。未設定/空なら `None`（抽出を空へ縮退）。
@@ -257,11 +305,18 @@ impl GithubModelsExtractAdapter {
     /// 呼び出し側が診断ログを出して空配列へ縮退する（daily 上限など待っても解消しない 429 で無限に粘らない）。
     /// 429 以外（200 や他のエラー status）は再試行せず即返す（401/403/413 等はバックオフで解消しないため）。
     /// 待機は同期 blocking 実行文脈（curl は blocking `std::process::Command`）に合わせ [`sleep`] で行う。
-    /// 再試行ループ本体（status 判定・待機計算・有界回数）は network/sleep に依存しない純粋部分として
-    /// [`retry_loop`] へ切り出し、ここでは実 [`post`] と実 [`sleep`] を注入するだけにする（ループ規約は
-    /// hermetic にテスト可能）。
-    fn post_with_retry(token: &str, body: &str) -> Result<(u16, String, String)> {
-        retry_loop(|| Self::post(token, body), sleep)
+    /// 再試行ループ本体（status 判定・待機計算・有界回数・残予算判定）は network/sleep に依存しない純粋部分として
+    /// [`retry_loop`] へ切り出し、ここでは実 [`post`]・実 [`sleep`]・実残予算（[`remaining_budget`](Self::remaining_budget)）
+    /// を注入するだけにする（ループ規約は hermetic にテスト可能）。
+    ///
+    /// 残予算: 抽出フェーズの wall-clock 予算（[`EXTRACT_BUDGET`]）の残りを各待機の前に確認し、待機が deadline を
+    /// 跨ぐ（残予算より長い）なら待たずに最後の 429 を返して縮退する（deadline を超える待機をしない）。
+    fn post_with_retry(&self, token: &str, body: &str) -> Result<(u16, String, String)> {
+        retry_loop(
+            || Self::post(token, body),
+            sleep,
+            || self.remaining_budget(),
+        )
     }
 
     /// 直前のリクエスト開始から [`MIN_REQUEST_INTERVAL`] が経つまで待機し、複数パッケージにまたがる呼び出し列へ
@@ -383,10 +438,20 @@ fn backoff_delay(attempt: u32) -> Duration {
 /// 最大 [`MAX_RATE_LIMIT_RETRIES`] 回で、それでも 429 が続けば最後の `(429, body, headers)` を返す（呼び出し側
 /// が空配列へ縮退＝daily 上限など待っても解消しない 429 で無限に粘らない）。`request` の `Err` はそのまま伝播する
 /// （curl プロセス自体の失敗）。`wait` を closure で受けることで、テストは実 sleep せず待機時間を観測できる。
-fn retry_loop<R, W>(mut request: R, mut wait: W) -> Result<(u16, String, String)>
+///
+/// `remaining_budget` は抽出フェーズ全体の wall-clock 残予算（[`EXTRACT_BUDGET`]）を返す。待機を入れる前に残予算を
+/// 確認し、**待機が残予算を超える（deadline を跨ぐ）なら待たずに**最後の 429 を返して縮退する（deadline を超える
+/// 待機をしない）。これにより 1 リクエストのリトライ待機が抽出フェーズ予算を食い破らない。`remaining_budget` も
+/// closure で受け、テストは実時計に依存せず残予算を注入できる。
+fn retry_loop<R, W, B>(
+    mut request: R,
+    mut wait: W,
+    mut remaining_budget: B,
+) -> Result<(u16, String, String)>
 where
     R: FnMut() -> Result<(u16, String, String)>,
     W: FnMut(Duration),
+    B: FnMut() -> Duration,
 {
     let mut attempt = 0;
     loop {
@@ -398,6 +463,15 @@ where
             .map(Duration::from_secs)
             .map(|d| d.min(MAX_BACKOFF))
             .unwrap_or_else(|| backoff_delay(attempt));
+        // 待機が抽出フェーズ予算（deadline）を跨ぐなら待たずに縮退する（deadline を超える待機をしない）。
+        // 残予算 0（既に超過）でも待たず、進行中だった本リクエストの 429 をそのまま返して version-only へ倒す。
+        if delay > remaining_budget() {
+            eprintln!(
+                "GitHub Models extract: 429 retry wait {}s would exceed extract budget, degrading to version-only",
+                delay.as_secs()
+            );
+            return Ok((status, response, headers));
+        }
         // 429 は CI ログで可視化する（なぜ record が遅延したかの根拠）。token は含まれない。
         eprintln!(
             "GitHub Models extract rate-limited: HTTP 429, retry {}/{MAX_RATE_LIMIT_RETRIES} after {}s",
@@ -528,8 +602,17 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
         // 複数パッケージの呼び出し列が per-minute レート上限を超えないよう、呼び出し前に最小間隔を敷く。
         self.pace_before_request();
         // 呼び出し失敗（ネットワーク/認証/レート）も record を止めず空へ縮退する。診断ログだけ残す。
-        match Self::post_with_retry(&token, &body) {
+        match self.post_with_retry(&token, &body) {
             Ok((200, response, _headers)) => Ok(Self::parse_response(&response)),
+            Ok((429, _response, _headers)) => {
+                // 有界リトライ（または残予算切れ）を使い切っても 429 が解消しなかった経路。一過性レート制限の
+                // 枯渇を、汎用 HTTP エラーと区別できる文言で明示する（運用者が単発エラーと切り分けられる）。
+                // token は含まれない（status は数値、本文は出さない）。version+notes_url へ縮退。
+                eprintln!(
+                    "GitHub Models extract degraded: HTTP 429 after {MAX_RATE_LIMIT_RETRIES} bounded retries (rate-limited)"
+                );
+                Ok(Vec::new())
+            }
             Ok((status, response, _headers)) => {
                 // HTTP エラー: status と本文断片（token 非含有）を 1 行ログ。空へ縮退。
                 eprintln!(
@@ -546,6 +629,15 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
             }
         }
     }
+
+    /// 抽出フェーズの wall-clock 予算（[`EXTRACT_BUDGET`]）を使い切ったかを返す。
+    ///
+    /// 抽出フェーズ開始（[`elapsed_since_phase_start`](Self::elapsed_since_phase_start) で初回に確定）からの
+    /// 経過が予算以上なら `true`。外部 I/O はせず、内部の経過時間だけで判定する。caller（application）は各
+    /// パッケージ抽出の前にこれを問い合わせ、`true` の間は LLM 抽出を呼ばず version-only へ縮退させる。
+    fn extract_budget_exhausted(&self) -> bool {
+        self.remaining_budget().is_zero()
+    }
 }
 
 #[cfg(test)]
@@ -555,11 +647,12 @@ mod tests {
     //! curl トレーラ（status/header JSON）切り出しという純粋部分を、実 API/network/sleep を呼ばずに固定する。
 
     use super::{
-        BACKOFF_BASE, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
+        BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
         MAX_RATE_LIMIT_RETRIES, TRUNCATION_MARKER, auth_config, backoff_delay, body_snippet,
         response_format_schema, retry_after_seconds, retry_loop, split_meta, truncate_notes,
     };
     use crate::update_history::domain::wire::ChangeCategory;
+    use crate::update_history::ports::ChangeExtractPort;
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -762,6 +855,12 @@ mod tests {
         assert!(backoff_delay(4) <= MAX_BACKOFF);
     }
 
+    /// retry_loop へ注入する「予算無制限」残予算 closure（deadline を跨ぐ待機抑止が無効＝従来挙動）。
+    /// 待機時間がこの値を超えることはないため、deadline による縮退は発生しない。
+    fn budget_unlimited() -> Duration {
+        Duration::from_secs(u64::MAX)
+    }
+
     /// retry_loop へ注入する request stub: 呼び出しごとに与えた `(status, body, headers)` を順に返し、
     /// 列を超えたら最後の要素を返し続ける。呼び出し回数も観測する。実 curl/network を呼ばない。
     struct RequestStub<'a> {
@@ -790,7 +889,11 @@ mod tests {
         // 200 は再試行せず即返し、待機もしない。
         let stub = RequestStub::new(&[(200, r#"{"choices":[]}"#, "{}")]);
         let waits = Cell::new(0usize);
-        let (status, body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        let (status, body, _headers) = retry_loop(
+            || stub.next(),
+            |_| waits.set(waits.get() + 1),
+            budget_unlimited,
+        )?;
         assert_eq!(status, 200);
         assert_eq!(body, r#"{"choices":[]}"#);
         assert_eq!(stub.calls.get(), 1);
@@ -807,7 +910,11 @@ mod tests {
             (200, r#"{"choices":[]}"#, "{}"),
         ]);
         let waits = Cell::new(0usize);
-        let (status, _body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        let (status, _body, _headers) = retry_loop(
+            || stub.next(),
+            |_| waits.set(waits.get() + 1),
+            budget_unlimited,
+        )?;
         assert_eq!(status, 200);
         assert_eq!(stub.calls.get(), 3, "429×2 の後 200 で成功＝3 回呼ぶ");
         assert_eq!(waits.get(), 2, "429 を受けた 2 回だけ待機する");
@@ -820,7 +927,11 @@ mod tests {
         // 429 を返す（呼び出し側が空配列へ縮退）。無限に粘らない・サイレントに無限待機しない。
         let stub = RequestStub::new(&[(429, "rate limited", "{}")]);
         let waits = Cell::new(0usize);
-        let (status, _body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        let (status, _body, _headers) = retry_loop(
+            || stub.next(),
+            |_| waits.set(waits.get() + 1),
+            budget_unlimited,
+        )?;
         assert_eq!(status, 429, "解消しなければ最後の 429 を返す");
         // 初回 + 再試行回数 = 呼び出し回数。待機は再試行回数分だけ。
         let expected_calls = (MAX_RATE_LIMIT_RETRIES + 1) as usize;
@@ -837,7 +948,8 @@ mod tests {
             (200, r#"{"choices":[]}"#, "{}"),
         ]);
         let observed: Cell<Option<Duration>> = Cell::new(None);
-        let (status, _body, _headers) = retry_loop(|| stub.next(), |d| observed.set(Some(d)))?;
+        let (status, _body, _headers) =
+            retry_loop(|| stub.next(), |d| observed.set(Some(d)), budget_unlimited)?;
         assert_eq!(status, 200);
         assert_eq!(
             observed.get(),
@@ -852,11 +964,91 @@ mod tests {
         // 退行固定: 403/413 等はバックオフで解消しないため再試行せず即返す（無駄な待機をしない）。
         let stub = RequestStub::new(&[(403, "forbidden", "{}")]);
         let waits = Cell::new(0usize);
-        let (status, _body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        let (status, _body, _headers) = retry_loop(
+            || stub.next(),
+            |_| waits.set(waits.get() + 1),
+            budget_unlimited,
+        )?;
         assert_eq!(status, 403);
         assert_eq!(stub.calls.get(), 1);
         assert_eq!(waits.get(), 0);
         Ok(())
+    }
+
+    #[test]
+    fn retry_loop_does_not_wait_when_delay_exceeds_remaining_budget() -> crate::Result<()> {
+        // 退行固定（deadline を跨ぐ待機の抑止）: 429 のリトライ待機が抽出フェーズの残予算を超える場合、待たずに
+        // 最後の 429 を返して縮退する。残予算を待機時間より小さく注入し、wait が一度も呼ばれないことを固定する。
+        let stub = RequestStub::new(&[(429, "rate limited", "{}")]);
+        let waits = Cell::new(0usize);
+        // 残予算 1s に対し最初のバックオフは BACKOFF_BASE(2s) で、待機が残予算を超える。
+        let remaining = Duration::from_secs(1);
+        let (status, _body, _headers) =
+            retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1), || remaining)?;
+        assert_eq!(status, 429, "予算超過の待機をせず最後の 429 を返す");
+        assert_eq!(stub.calls.get(), 1, "初回 request の後、待機せず即縮退する");
+        assert_eq!(
+            waits.get(),
+            0,
+            "deadline を跨ぐ待機はしない（一度も sleep しない）"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_loop_does_not_wait_when_budget_already_exhausted() -> crate::Result<()> {
+        // 退行固定: 残予算 0（既に deadline 超過）なら、どんな短い待機でも入れずに即縮退する。
+        let stub = RequestStub::new(&[(429, "rate limited", r#"{"retry-after":["1"]}"#)]);
+        let waits = Cell::new(0usize);
+        let (status, _body, _headers) = retry_loop(
+            || stub.next(),
+            |_| waits.set(waits.get() + 1),
+            || Duration::ZERO,
+        )?;
+        assert_eq!(status, 429);
+        assert_eq!(stub.calls.get(), 1);
+        assert_eq!(waits.get(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn extract_budget_exhausted_is_false_before_and_true_after_deadline() {
+        // 退行固定（deadline 判定の純粋部分）: 抽出フェーズ開始からの経過が EXTRACT_BUDGET 未満なら未超過、
+        // 以上なら超過。adapter の extract_phase_start を直接操作して実時計に依存せず固定する。
+        let adapter = GithubModelsExtractAdapter::new();
+        // 開始時刻を「予算ちょうど未満」過去に設定（未超過）。
+        let just_within = std::time::Instant::now()
+            .checked_sub(EXTRACT_BUDGET - Duration::from_secs(1))
+            .expect("instant within range");
+        adapter.extract_phase_start.set(Some(just_within));
+        assert!(
+            !adapter.extract_budget_exhausted(),
+            "予算未満は未超過（抽出を続ける）"
+        );
+        // 開始時刻を「予算超過」過去に設定（超過）。
+        let past_budget = std::time::Instant::now()
+            .checked_sub(EXTRACT_BUDGET + Duration::from_secs(1))
+            .expect("instant within range");
+        adapter.extract_phase_start.set(Some(past_budget));
+        assert!(
+            adapter.extract_budget_exhausted(),
+            "予算超過は以降の抽出を skip する"
+        );
+    }
+
+    #[test]
+    fn extract_phase_start_is_anchored_on_first_query() {
+        // 退行固定: 起点未確定の adapter は最初の予算問い合わせで起点を確定し、その時点では未超過（経過 ~0）。
+        let adapter = GithubModelsExtractAdapter::new();
+        assert!(adapter.extract_phase_start.get().is_none(), "初期は未確定");
+        assert!(
+            !adapter.extract_budget_exhausted(),
+            "確定直後は経過 ~0 で未超過"
+        );
+        assert!(
+            adapter.extract_phase_start.get().is_some(),
+            "問い合わせで起点が確定する"
+        );
     }
 
     #[test]
