@@ -85,6 +85,22 @@ jobs:
       - name: checkout
         uses: actions/checkout@v5
 
+      # ディスク解放（macos runner の不要物を削除して closure ビルド用領域を確保）。
+      # ci-ref のフル closure（~12GiB、bitwarden-api-api 等の Rust クレートのソースビルドを含む）に
+      # GHA キャッシュ復元を重ねると runner の空き（~14GB）を超え `No space left on device` で失敗するため、
+      # nix 導入・store キャッシュ復元の前に旧 Xcode・iOS/watchOS シミュレータ等の大物を消して数十 GB 空ける。
+      # 存在しなくても失敗させない（`|| true`）。最後に `df -h` で空きを記録する。
+      - name: ディスク解放（macos runner の不要物を削除して closure ビルド用領域を確保）
+        run: |
+          set -eux
+          sudo rm -rf /Applications/Xcode_*.app || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
+          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/* || true
+          sudo rm -rf ~/Library/Developer/Xcode/watchOS\ DeviceSupport/* || true
+          sudo rm -rf /Library/Developer/CommandLineTools/SDKs/MacOSX10.* || true
+          df -h /
+
       - name: Nix を導入
         uses: cachix/install-nix-action@v31
         with:
@@ -175,6 +191,19 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v5
+
+      # ディスク解放（bump job と同設計）。record も old/new closure を build するため、nix 導入・store
+      # キャッシュ復元の前に大物を消して領域を確保する。
+      - name: ディスク解放（macos runner の不要物を削除して closure ビルド用領域を確保）
+        run: |
+          set -eux
+          sudo rm -rf /Applications/Xcode_*.app || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Devices/* || true
+          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport/* || true
+          sudo rm -rf ~/Library/Developer/Xcode/watchOS\ DeviceSupport/* || true
+          sudo rm -rf /Library/Developer/CommandLineTools/SDKs/MacOSX10.* || true
+          df -h /
 
       - name: Nix を導入
         uses: cachix/install-nix-action@v31

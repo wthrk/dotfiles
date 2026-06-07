@@ -155,13 +155,23 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         };
         write_last_applied_nixpkgs_rev(&state_dir, &committed_nixpkgs_rev, dry_run)?;
         // 確定後は defer marker を消す（次回 defer→commit サイクルへ古い値を持ち越さない）。dry-run では触らない。
-        if !dry_run {
-            let _ = fs::remove_file(state_dir.join(DEFERRED_REV));
-            let _ = fs::remove_file(state_dir.join(DEFERRED_NIXPKGS_REV));
-        }
+        clear_deferred_markers(&state_dir, dry_run);
         println!("適用済み rev を確定しました（rev {committed_pin}）");
         return Ok(());
     }
+
+    // 新しい適用サイクルの開始時に、前サイクルの deferred marker（`deferred-rev`/`deferred-nixpkgs-rev`）を
+    // 消してサイクルローカル化する（安全性質を状態機械内へ閉じる）。
+    //
+    // commit 経路（上で return 済み）は確定後に marker を消すが、それは「defer→commit が必ず対で走る」現行
+    // ラッパーの不変条件に依存している。darwin 失敗（auto-update.nix の `set -e`）で commit へ到達せず deferred
+    // marker が残骸化すると、将来 home/darwin/commit を別ジョブへ分離した場合に、後続サイクルの commit が **この
+    // サイクルで適用していない古い defer 値を `last-applied` へ誤確定**しうる。これを wrapper の結線に依存せず
+    // 防ぐため、**defer を実際に書く前（新サイクルの冒頭）で既存 deferred marker を必ずクリア**する。これにより
+    // commit が読む deferred marker は「このサイクルの defer ステップが書いた値」だけになり、前サイクルの残骸を
+    // 確定しない（残骸はこのクリアで消えるため、defer を経ない commit は現在 pin への後方互換縮退に倒れる）。
+    // dry-run では状態を触らない。
+    clear_deferred_markers(&state_dir, dry_run);
 
     // catch-up 要約 span の起点となる「最後に利用者へ見せ終えた nixpkgs rev」を解決する。
     //
@@ -638,6 +648,20 @@ fn write_deferred_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Res
     write_rev_atomic(&state_dir.join(DEFERRED_NIXPKGS_REV), rev, dry_run)
 }
 
+/// deferred marker（`deferred-rev`/`deferred-nixpkgs-rev`）を消す。`--dry-run` では触らない。
+///
+/// 新サイクルの冒頭（defer 書込み前）と commit 確定後の両方で呼び、deferred 値を 1 サイクルへ閉じる。これにより
+/// commit が読む deferred 値は **そのサイクルの defer ステップが書いた値だけ**になり、darwin 失敗等で commit へ
+/// 到達しなかった前サイクルの残骸を、後続サイクルの commit が未適用 pin として誤確定しない（サイクルローカル化）。
+/// 不存在の marker 除去は no-op（致命にしない）。
+fn clear_deferred_markers(state_dir: &Path, dry_run: bool) {
+    if dry_run {
+        return;
+    }
+    let _ = fs::remove_file(state_dir.join(DEFERRED_REV));
+    let _ = fs::remove_file(state_dir.join(DEFERRED_NIXPKGS_REV));
+}
+
 /// 最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev を原子的に書き込む（ユーザ所有）。`--dry-run` 不書込。
 ///
 /// 要約「後」に書くことで、次回 present_summary の span 起点が「最後に見せ終えた rev」になり、同日二重追記の
@@ -783,6 +807,18 @@ fn append_last_run_log(state_dir: &Path, nixpkgs_from_rev: Option<&str>) -> Resu
 /// 適用サイクルより十分短く、かつ最長クラスの実適用より十分長い。
 const LOCK_STALE_SECS: u64 = 6 * 60 * 60;
 
+/// steal marker（`update.lock.steal`）を孤児とみなす経過時間（秒）。これより古い marker は回収する。
+///
+/// 奪取権を直列化する `update.lock.steal` は、奪取区間（古い lock の remove → 新 lock の create_new）の
+/// **間だけ**存在する短命 marker である。区間中にプロセスが kill/OOM/電源断/abort されると `remove_file`
+/// が走らず marker が恒久残骸化し、以後 `steal_stale_lock` が必ず `AlreadyExists` で `None`（skip）へ倒れ、
+/// **stale lock の奪取が永久に起きなくなる**（marker 残骸が「stale lock を永久 skip しない」という機構自体の
+/// 目的を破る）。これを防ぐため marker 自身に短い TTL を与え、TTL より古い marker は孤児とみなして回収し
+/// 奪取権を再取得する。奪取区間（remove + create_new、I/O 数回）は秒オーダーで完了するため、誤回収（実行中の
+/// 別プロセスの奪取権を横取り）を避けつつ孤児を速やかに掃除できる短さにする。5 分は実奪取区間より十分長く、
+/// `LOCK_STALE_SECS` より十分短い。
+const STEAL_MARKER_STALE_SECS: u64 = 5 * 60;
+
 /// `update.lock` の `O_EXCL` ベース排他ロック。drop でロックファイルを除去する。
 ///
 /// flock(2) を使うと `libc` 直呼び（禁止）か新規 crate が要るため、移植性とテスト容易性を優先し
@@ -842,10 +878,53 @@ impl UpdateLock {
     fn steal_stale_lock(path: &Path) -> Result<Option<Self>> {
         let steal_marker = path.with_file_name(format!("{LOCK_FILE}.steal"));
         // 奪取権の CAS: steal marker を create_new できた 1 プロセスだけが奪取区間に入る。
+        if !Self::claim_steal_marker(&steal_marker)? {
+            // 別プロセスが奪取区間にいる（marker は新鮮）。古い lock に触れず skip する。
+            return Ok(None);
+        }
+        // ここから先は steal marker により単一プロセスへ直列化された奪取区間。終了時に marker を必ず除去する。
+        let outcome = Self::steal_within_marker(path);
+        let _ = fs::remove_file(&steal_marker);
+        outcome
+    }
+
+    /// steal marker（奪取権 CAS）を取得する。取得成功で `true`、別プロセスが新鮮に保持中なら `false`。
+    ///
+    /// 基本は `update.lock.steal` の `create_new`（`O_EXCL`）作成で「ちょうど 1 人だけ成功」を OS レベルに
+    /// 直列化する。ただし marker 作成者が奪取区間中に kill/OOM/電源断/abort されると `remove_file` が走らず
+    /// marker が恒久残骸化し、以後すべての奪取が `AlreadyExists` で永久 skip へ倒れて **stale lock を一切
+    /// 奪取できなくなる**（fleet が静かに更新停止し自己回復しない）。これを防ぐため、`AlreadyExists` 時には
+    /// 既存 marker の timestamp を見て [`STEAL_MARKER_STALE_SECS`] より古ければ **孤児とみなして回収**する:
+    /// 古い marker を remove して `create_new` を 1 回だけ再試行し、勝てた 1 プロセスが奪取権を再取得する。
+    /// marker が新鮮（実行中の別奪取者が保持）なら回収せず `false`（skip）へ倒し、横取りしない。回収の
+    /// remove→create_new で別プロセスと競合しても、`create_new` の `O_EXCL` が同時成功を 1 人に絞るため
+    /// 二重奪取は起きない（敗者は `AlreadyExists`→`false`）。読取り不能・timestamp 解析不能は保守的に
+    /// 「新鮮」へ倒し（`is_stale_lock` の挙動）、誤回収を避ける。`libc` を直呼びせず std のみで実現する。
+    fn claim_steal_marker(steal_marker: &Path) -> Result<bool> {
+        match Self::create_new_marker(steal_marker)? {
+            true => Ok(true),
+            false => {
+                // 既存 marker あり。孤児（TTL 超過）なら回収して再取得、新鮮なら奪取権を譲る。
+                if Self::steal_marker_is_stale(steal_marker) {
+                    let _ = fs::remove_file(steal_marker);
+                    // 回収後の再取得。別プロセスが先に取り直していれば AlreadyExists→false で skip する。
+                    Self::create_new_marker(steal_marker)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// steal marker を `create_new`（`O_EXCL`）で作る。成功で `true`、既存（`AlreadyExists`）で `false`。
+    ///
+    /// 作成時は孤児回収（TTL 判定）用に `pid\nepoch_secs` を書く。timestamp 書込み失敗は致命にしない
+    /// （その場合の staleness 判定は保守的に「新鮮」へ倒れ、誤回収を避ける）。
+    fn create_new_marker(steal_marker: &Path) -> Result<bool> {
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&steal_marker)
+            .open(steal_marker)
         {
             Ok(mut marker) => {
                 let _ = write!(
@@ -853,20 +932,26 @@ impl UpdateLock {
                     "{}",
                     lock_payload(std::process::id(), now_epoch_secs())
                 );
+                Ok(true)
             }
-            // 別プロセスが奪取区間にいる。古い lock に触れず skip する（marker は所有者が除去する）。
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
-            Err(error) => {
-                return Err(anyhow::Error::from(error).context(format!(
-                    "failed to create steal marker {}",
-                    steal_marker.display()
-                )));
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(anyhow::Error::from(error).context(format!(
+                "failed to create steal marker {}",
+                steal_marker.display()
+            ))),
         }
-        // ここから先は steal marker により単一プロセスへ直列化された奪取区間。終了時に marker を必ず除去する。
-        let outcome = Self::steal_within_marker(path);
-        let _ = fs::remove_file(&steal_marker);
-        outcome
+    }
+
+    /// 既存 steal marker が孤児（TTL 超過）かを timestamp で判定する。
+    ///
+    /// marker 内容の epoch 秒が現在より [`STEAL_MARKER_STALE_SECS`] 以上古ければ孤児とみなす。読取り失敗・
+    /// timestamp 解析不能・marker 消滅・未来時刻は保守的に「新鮮（孤児でない）」へ倒し、実行中の別奪取者の
+    /// 奪取権を誤回収しない。
+    fn steal_marker_is_stale(steal_marker: &Path) -> bool {
+        let Ok(content) = fs::read_to_string(steal_marker) else {
+            return false;
+        };
+        is_stale_lock(&content, now_epoch_secs(), STEAL_MARKER_STALE_SECS)
     }
 
     /// steal marker を保持した奪取区間内で、現在の lock 状態に応じて新 lock を張る（単一プロセス前提）。
@@ -1006,13 +1091,14 @@ mod tests {
 
     use super::{
         DEFERRED_NIXPKGS_REV, DEFERRED_REV, LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG,
-        LAST_SUMMARIZED_NIXPKGS_REV, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY, UpdateLock,
-        append_pending_summary, copy_history_dir, is_stale_lock, lock_payload,
-        parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin, present_summary,
-        read_deferred_nixpkgs_rev, read_deferred_rev, read_last_applied_nixpkgs_rev,
-        read_last_applied_rev, read_last_summarized_nixpkgs_rev, resolve_state_dir, should_switch,
-        update_args, write_deferred_nixpkgs_rev, write_deferred_rev,
-        write_last_applied_nixpkgs_rev, write_last_applied_rev, write_last_summarized_nixpkgs_rev,
+        LAST_SUMMARIZED_NIXPKGS_REV, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY,
+        STEAL_MARKER_STALE_SECS, UpdateLock, append_pending_summary, clear_deferred_markers,
+        copy_history_dir, is_stale_lock, lock_payload, parse_input_source_path, parse_nixpkgs_rev,
+        parse_repo_pin, present_summary, read_deferred_nixpkgs_rev, read_deferred_rev,
+        read_last_applied_nixpkgs_rev, read_last_applied_rev, read_last_summarized_nixpkgs_rev,
+        resolve_state_dir, should_switch, update_args, write_deferred_nixpkgs_rev,
+        write_deferred_rev, write_last_applied_nixpkgs_rev, write_last_applied_rev,
+        write_last_summarized_nixpkgs_rev,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -2021,6 +2107,128 @@ mod tests {
             );
             let _ = std::fs::remove_file(&lock_path);
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn orphan_steal_marker_does_not_permanently_skip_stale_lock_steal() -> crate::Result<()> {
+        // 2 退行固定: steal marker（`update.lock.steal`）の孤児残骸が stale lock の奪取を永久 skip しないこと。
+        //
+        // 奪取区間中にプロセスが kill/OOM/電源断/abort されると `remove_file` が走らず marker が恒久残骸化し、
+        // 以後すべての try_acquire が marker の `AlreadyExists` で永久 skip へ倒れて stale lock を一切奪取できなく
+        // なる（fleet が静かに更新停止）。marker 自身に TTL を与えたため、TTL 超過の孤児 marker は回収され、
+        // stale lock の奪取が再開する。
+        let dir = temp_dir("orphan-steal");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let lock_path = dir.join(LOCK_FILE);
+        let steal_marker = dir.join(format!("{LOCK_FILE}.steal"));
+
+        // stale な孤児 lock（Drop されず残った残骸）を置く。
+        let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
+        std::fs::write(&lock_path, lock_payload(99999, stale_epoch)).expect("write stale lock");
+
+        // 孤児 steal marker（TTL 超過）を置く。これが残ると旧実装は AlreadyExists で永久 skip した。
+        let stale_marker_epoch =
+            super::now_epoch_secs().saturating_sub(STEAL_MARKER_STALE_SECS + 60);
+        std::fs::write(&steal_marker, lock_payload(88888, stale_marker_epoch))
+            .expect("write orphan steal marker");
+
+        // 孤児 marker を回収して stale lock を奪取し、取得成功する（永久 skip しない）。
+        let acquired = UpdateLock::try_acquire(&dir, false)?;
+        assert!(
+            acquired.is_some(),
+            "orphan steal marker must be reclaimed so the stale lock can still be stolen"
+        );
+        // 奪取区間終了で marker は除去されている（残骸が累積しない）。
+        assert!(
+            !steal_marker.exists(),
+            "steal marker must be cleaned up after the steal section"
+        );
+        drop(acquired);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_steal_marker_is_not_reclaimed() -> crate::Result<()> {
+        // 2 補完: 新鮮な steal marker（実行中の別奪取者が保持）は回収せず奪取権を譲る（横取りしない）。
+        // marker が TTL 未満なら別プロセスが奪取区間にいるとみなし、try_acquire は None（skip）へ倒れる。
+        let dir = temp_dir("fresh-steal");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let lock_path = dir.join(LOCK_FILE);
+        let steal_marker = dir.join(format!("{LOCK_FILE}.steal"));
+
+        // stale lock + 新鮮な steal marker（別プロセスが今まさに奪取中）。
+        let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
+        std::fs::write(&lock_path, lock_payload(99999, stale_epoch)).expect("write stale lock");
+        std::fs::write(&steal_marker, lock_payload(77777, super::now_epoch_secs()))
+            .expect("write fresh steal marker");
+
+        // 新鮮 marker は回収しない → skip（None）。別奪取者の lock/marker を横取りしない。
+        assert!(
+            UpdateLock::try_acquire(&dir, false)?.is_none(),
+            "fresh steal marker (live stealer) must not be reclaimed"
+        );
+        // 新鮮 marker は残したまま（所有者が除去する）。
+        assert!(
+            steal_marker.exists(),
+            "fresh steal marker must be left intact for its owner"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn new_cycle_clears_stale_deferred_markers_so_commit_does_not_confirm_unapplied_pin()
+    -> crate::Result<()> {
+        // 3 退行固定: deferred marker のサイクルローカル化。darwin 失敗等で commit へ到達せず deferred marker が
+        // 残骸化しても、新サイクル冒頭の `clear_deferred_markers` がそれを消すため、後続サイクルの commit が
+        // **このサイクルで適用していない古い defer 値を `last-applied` へ誤確定しない**（commit は marker 不在で
+        // 現在 pin への後方互換縮退に倒れる）。
+        let dir = temp_dir("cycle-local-defer");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        // 前サイクルの残骸 deferred marker（commit へ到達せず残った未適用 pin の控え）を模す。
+        write_deferred_rev(&dir, "stale-pin-from-aborted-cycle", false)?;
+        write_deferred_nixpkgs_rev(&dir, "stale-nixpkgs-from-aborted-cycle", false)?;
+        assert_eq!(
+            read_deferred_rev(&dir)?.as_deref(),
+            Some("stale-pin-from-aborted-cycle")
+        );
+
+        // 新サイクル冒頭のクリア（run() が defer 書込み前に必ず呼ぶ）。
+        clear_deferred_markers(&dir, false);
+
+        // 残骸は消えている。これ以降に defer を経ずに commit が走っても、read_deferred_rev は None を返し
+        // 古い未適用 pin を確定しない（現在 pin への縮退に倒れる）。
+        assert_eq!(
+            read_deferred_rev(&dir)?,
+            None,
+            "stale deferred pin must be cleared at new cycle start"
+        );
+        assert_eq!(
+            read_deferred_nixpkgs_rev(&dir)?,
+            None,
+            "stale deferred nixpkgs rev must be cleared at new cycle start"
+        );
+        assert!(!dir.join(DEFERRED_REV).exists());
+        assert!(!dir.join(DEFERRED_NIXPKGS_REV).exists());
+
+        // dry-run はクリアしない（状態を触らない契約）。
+        write_deferred_rev(&dir, "dry-run-keeps-this", false)?;
+        clear_deferred_markers(&dir, true);
+        assert_eq!(
+            read_deferred_rev(&dir)?.as_deref(),
+            Some("dry-run-keeps-this"),
+            "dry-run must not clear deferred markers"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
