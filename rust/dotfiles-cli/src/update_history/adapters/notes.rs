@@ -52,7 +52,9 @@ use std::ffi::OsString;
 
 use crate::Result;
 use crate::process::{run_capture, run_capture_with_stdin};
-use crate::update_history::domain::diff::{DeltaSource, release_version, version_in_range};
+use crate::update_history::domain::diff::{
+    DeltaSource, release_version, version_in_range, version_ordering,
+};
 use crate::update_history::domain::validate::is_allowed_url;
 use crate::update_history::ports::{NotesPort, RawReleaseNotes};
 
@@ -303,11 +305,14 @@ impl ReleaseNotesAdapter {
 
 /// 範囲内 release の `(version, body)` 列を version 昇順（古い順）に連結する純粋関数。
 ///
-/// Releases API は新しい順で返すため、version 文字列をキーに安定整列してから [`RELEASE_BODY_SEPARATOR`]
-/// （`\n\n---\n\n`）で連結する。空入力は空文字を返す（呼び出し側が `None` 縮退に倒す）。LLM へは古い順に
+/// Releases API は新しい順で返すため、version をキーに安定整列してから [`RELEASE_BODY_SEPARATOR`]
+/// （`\n\n---\n\n`）で連結する。整列順は domain の [`version_ordering`]（成分単位比較）へ委譲する。
+/// version 順序は domain rule であり、adapter が `String` 字句比較で再決定すると二桁 version で順序が
+/// 逆転する（例: 字句では `"10.0.0" < "2.0.0"`）。adapter に version 比較を再実装せず domain 呼び出しのみ
+/// にすることで層境界を保つ。空入力は空文字を返す（呼び出し側が `None` 縮退に倒す）。LLM へは古い順に
 /// 積んだ生テキストとして渡す（時系列で読めるようにする）ための整列・連結規則。
 fn join_release_bodies(mut bodies: Vec<(String, String)>) -> String {
-    bodies.sort_by(|a, b| a.0.cmp(&b.0));
+    bodies.sort_by(|a, b| version_ordering(&a.0, &b.0));
     bodies
         .into_iter()
         .map(|(_, body)| body)
@@ -1202,6 +1207,22 @@ mod tests {
         assert_eq!(
             join_release_bodies(vec![("1.0.0".to_string(), "only".to_string())]),
             "only"
+        );
+    }
+
+    #[test]
+    fn join_release_bodies_orders_two_digit_versions_numerically() {
+        // 退行固定: 整列は domain の version_ordering（成分単位比較）へ委譲する。`String` 字句比較だと
+        // `"10.0.0"` が `"2.0.0"`/`"9.0.0"` より前に来て二桁 version で連結順が逆転する。成分比較なら
+        // 昇順は 2.0.0 < 9.0.0 < 10.0.0 になる。入力順は新しい順（Releases API の返却順）。
+        let bodies = vec![
+            ("10.0.0".to_string(), "ten".to_string()),
+            ("9.0.0".to_string(), "nine".to_string()),
+            ("2.0.0".to_string(), "two".to_string()),
+        ];
+        assert_eq!(
+            join_release_bodies(bodies),
+            "two\n\n---\n\nnine\n\n---\n\nten"
         );
     }
 }
