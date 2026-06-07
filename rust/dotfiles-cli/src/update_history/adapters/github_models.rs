@@ -14,8 +14,17 @@
 //!
 //! prompt/スキーマの versioning: 抽出契約（含む/除外・日本語 1 行・低 temperature・ノート根拠限定）を
 //! [`EXTRACT_SYSTEM_PROMPT`] と [`response_format_schema`] として本 adapter 内に versioned 固定する。
+//!
+//! レート制限（HTTP 429）対応: GitHub Models の無料枠は per-minute レート上限が低く、record は差分パッケージ
+//! 分の要約を立て続けに投げるため上限へ当たりやすい。1 リクエスト単位では `HTTP 429` を受けた際に
+//! [`Retry-After`](RETRY_AFTER_HEADER) ヘッダ（秒）を尊重して待機し、無ければ指数バックオフで有界回数だけ
+//! 再試行する（[`GithubModelsExtractAdapter::post_with_retry`]）。複数パッケージにまたがる呼び出し列の間隔は
+//! adapter が保持する呼び出し間隔状態（[`MIN_REQUEST_INTERVAL`]）で per-minute 上限内へ収まるようペースを敷く
+//! （[`ChangeExtractPort`] 実装参照）。最終的に 429 が解消しなくても record は止めず空配列へ縮退する。
 
+use std::cell::Cell;
 use std::ffi::OsString;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -59,6 +68,39 @@ const MAX_NOTES_CHARS: usize = 6000;
 /// 切り詰めても「与えたノートのみを根拠とし、無ければ空配列」というハルシネーション防止契約
 /// （[`EXTRACT_SYSTEM_PROMPT`]）は維持される。印自体は短く、上限見積もりへの影響は無視できる。
 const TRUNCATION_MARKER: &str = "\n…(truncated)";
+
+/// HTTP 429（レート制限）に対する 1 リクエスト単位の最大再試行回数。
+///
+/// 待機を挟んで最大この回数だけ再試行し、それでも 429 が解消しなければ空配列へ縮退する（record は止めない）。
+/// 有界にするのは、daily 上限など待っても解消しない 429 でリクエストが無限に粘って record job timeout（60分）を
+/// 食い潰すのを防ぐため。最大 4 回 + 指数バックオフ（2+4+8+16=30s）でも 1 リクエストの上振れは約 30 秒に収まる。
+const MAX_RATE_LIMIT_RETRIES: u32 = 4;
+
+/// `Retry-After` ヘッダが無い 429 で使う指数バックオフの基準待機（最初の再試行前に待つ秒数）。
+///
+/// retry 回数 n（0 始まり）で `BACKOFF_BASE * 2^n` 秒待つ（2s, 4s, 8s, 16s）。`Retry-After` があればそちらを
+/// 優先し、この指数バックオフは fallback として使う。
+const BACKOFF_BASE: Duration = Duration::from_secs(2);
+
+/// 指数バックオフの 1 回あたり上限。サーバが極端な `Retry-After` を返した場合も含め、1 回の待機がこれを超えない
+/// ようにして 1 リクエストの総待機が読めなくなる（timeout を食い潰す）のを防ぐ。
+const MAX_BACKOFF: Duration = Duration::from_secs(20);
+
+/// パッケージ間の呼び出しに敷く最小間隔。per-minute レート上限内へ収めるためのペーシング基準。
+///
+/// 直前のリクエスト開始からこの間隔が経つまで次のリクエストを開始しない（[`ChangeExtractPort`] 実装が
+/// adapter 保持の最終リクエスト時刻で待機を挿入する）。GitHub Models 無料枠は概ね低 RPM のため、
+/// パッケージごとに数秒の間隔を空けて分散させる。差分パッケージが多くても全体は「件数 × 本間隔 + retry 上振れ」
+/// に収まり、record job timeout（60分）を大きく下回る（30 件で約 60 秒 + retry 上振れ）。
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
+
+/// curl で取得した HTTP ヘッダ JSON から `Retry-After` を読むためのヘッダ名（小文字）。`%{header_json}` の
+/// キーは小文字化されて入るため、参照側も小文字で引く。
+const RETRY_AFTER_HEADER: &str = "retry-after";
+
+/// curl の `--write-out` 末尾トレーラを本文から切り出す sentinel。本文（任意の API レスポンス）と衝突しない
+/// 一意文字列を選ぶ。トレーラはこの sentinel に続いて `http_code` と `header_json` を改行区切りで持つ。
+const CURL_META_SENTINEL: &str = "\n<<<DOTFILES_CURL_META>>>\n";
 
 /// 抽出契約を固定する versioned system prompt（v1）。
 ///
@@ -117,9 +159,30 @@ struct ChatMessage {
 }
 
 /// GitHub Models 抽出を `ChangeExtractPort` 契約へ翻訳する adapter。
-pub(in crate::update_history) struct GithubModelsExtractAdapter;
+///
+/// `last_request_at` は直前にリクエストを開始した時刻を保持し、複数パッケージにまたがる呼び出し列へ
+/// [`MIN_REQUEST_INTERVAL`] のペーシングを敷くために使う（per-minute レート上限内へ収めるため）。
+/// `ChangeExtractPort::extract_change_items` は `&self` を取るため、呼び出しごとに更新する時刻は `Cell`
+/// で内部可変にする。adapter は単一スレッドの record 経路でのみ使われるため `Cell` で十分（共有なし）。
+pub(in crate::update_history) struct GithubModelsExtractAdapter {
+    /// 直前のリクエスト開始時刻。未呼び出しの間は `None`（初回はペーシング待機なし）。
+    last_request_at: Cell<Option<Instant>>,
+}
+
+impl Default for GithubModelsExtractAdapter {
+    fn default() -> Self {
+        Self {
+            last_request_at: Cell::new(None),
+        }
+    }
+}
 
 impl GithubModelsExtractAdapter {
+    /// composition root から結線するための adapter を生成する（ペーシング状態は未初期化＝初回は即時）。
+    pub(in crate::update_history) fn new() -> Self {
+        Self::default()
+    }
+
     /// `GITHUB_TOKEN` を読む。未設定/空なら `None`（抽出を空へ縮退）。
     fn github_token() -> Option<String> {
         std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty())
@@ -143,7 +206,8 @@ impl GithubModelsExtractAdapter {
         Ok(serde_json::to_string(&body)?)
     }
 
-    /// curl で GitHub Models へ POST し、`(HTTP status, レスポンス本文)` を返す。curl 自体の失敗のみ `Err`。
+    /// curl で GitHub Models へ POST し、`(HTTP status, レスポンス本文, レスポンスヘッダ JSON)` を返す。
+    /// curl 自体の失敗のみ `Err`。
     ///
     /// 認証トークンは **argv に乗せない**。`-H "Authorization: Bearer <token>"` を引数に置くと、同一 runner の
     /// プロセス一覧（`ps`）から token が読めてしまう（secret を argv/ログに残さない義務に違反する）。代わりに
@@ -153,11 +217,13 @@ impl GithubModelsExtractAdapter {
     ///
     /// 診断のため、HTTP エラー（4xx/5xx）でも curl を非 0 終了させない。`--fail` は HTTP エラーを curl exit へ
     /// 倒し本物の status code を握り潰す（CI ログに「なぜ空縮退したか」が残らない原因だった）ので使わない。
-    /// 代わりに `--write-out '%{http_code}'` で status code をレスポンス本文の末尾へ付け、[`split_status_and_body`]
-    /// で末尾の status を切り出す。`-w` を足しても Authorization は stdin の `--config -` に閉じたままで、
-    /// argv・ログ・`-w` の出力いずれにも token は現れない（`%{http_code}` は数値のみ）。返り値 `Err` は curl
-    /// プロセス自体の失敗（spawn 失敗・ネットワーク不達等で非 0 終了）に限る。
-    fn post(token: &str, body: &str) -> Result<(u16, String)> {
+    /// 代わりに `--write-out` で本文末尾へ [`CURL_META_SENTINEL`] に続けて `http_code` と `header_json` を
+    /// 付加し、[`split_meta`] で本文・status・ヘッダ JSON へ切り分ける。ヘッダ JSON は 429 の `Retry-After`
+    /// を尊重するために取得する（[`post_with_retry`]）。`-w` を足しても Authorization は stdin の `--config -`
+    /// に閉じたままで、argv・ログ・`-w` の出力いずれにも token は現れない（出力は status とレスポンスヘッダのみで、
+    /// リクエストの Authorization ヘッダは `%{header_json}` の対象外）。返り値 `Err` は curl プロセス自体の失敗
+    /// （spawn 失敗・ネットワーク不達等で非 0 終了）に限る。
+    fn post(token: &str, body: &str) -> Result<(u16, String, String)> {
         let args = [
             OsString::from("--config"),
             OsString::from("-"),
@@ -171,13 +237,46 @@ impl GithubModelsExtractAdapter {
             OsString::from("Content-Type: application/json"),
             OsString::from("-d"),
             OsString::from(body.to_string()),
-            // status code を本文の末尾へ付加する。token は含まれない（数値のみ）。
+            // 本文末尾へ sentinel + status + レスポンスヘッダ JSON を付加する。token は含まれない
+            // （%{http_code} は数値、%{header_json} は **レスポンス**ヘッダのみでリクエスト Authorization は出ない）。
             OsString::from("--write-out"),
-            OsString::from("%{http_code}"),
+            OsString::from(format!(
+                "{CURL_META_SENTINEL}%{{http_code}}\n%{{header_json}}"
+            )),
             OsString::from(GITHUB_MODELS_ENDPOINT),
         ];
         let raw = run_capture_with_stdin("curl", args, auth_config(token).as_bytes())?;
-        Ok(split_status_and_body(&raw))
+        Ok(split_meta(&raw))
+    }
+
+    /// [`post`] を呼び、HTTP 429（レート制限）なら待機して有界回数だけ再試行する。curl 自体の失敗のみ `Err`。
+    ///
+    /// 429 を受けたら [`retry_after_seconds`] で `Retry-After` ヘッダ（秒）を読み、あればその秒数、無ければ
+    /// [`backoff_delay`] の指数バックオフ（[`BACKOFF_BASE`] × 2^n、[`MAX_BACKOFF`] 上限）だけ待ってから再試行する。
+    /// 再試行は最大 [`MAX_RATE_LIMIT_RETRIES`] 回。それでも 429 が続けば最後の `(429, body, headers)` を返し、
+    /// 呼び出し側が診断ログを出して空配列へ縮退する（daily 上限など待っても解消しない 429 で無限に粘らない）。
+    /// 429 以外（200 や他のエラー status）は再試行せず即返す（401/403/413 等はバックオフで解消しないため）。
+    /// 待機は同期 blocking 実行文脈（curl は blocking `std::process::Command`）に合わせ [`sleep`] で行う。
+    /// 再試行ループ本体（status 判定・待機計算・有界回数）は network/sleep に依存しない純粋部分として
+    /// [`retry_loop`] へ切り出し、ここでは実 [`post`] と実 [`sleep`] を注入するだけにする（ループ規約は
+    /// hermetic にテスト可能）。
+    fn post_with_retry(token: &str, body: &str) -> Result<(u16, String, String)> {
+        retry_loop(|| Self::post(token, body), sleep)
+    }
+
+    /// 直前のリクエスト開始から [`MIN_REQUEST_INTERVAL`] が経つまで待機し、複数パッケージにまたがる呼び出し列へ
+    /// per-minute レート上限内のペースを敷く。待機後に「今回の開始時刻」を記録する。
+    ///
+    /// 初回（`last_request_at` が `None`）は待機しない。`Cell` で内部可変に時刻を持つ（単一スレッドの record
+    /// 経路専用）。待機は同期 blocking 文脈に合わせ [`sleep`] で行う。
+    fn pace_before_request(&self) {
+        if let Some(last) = self.last_request_at.get() {
+            let elapsed = last.elapsed();
+            if elapsed < MIN_REQUEST_INTERVAL {
+                sleep(MIN_REQUEST_INTERVAL - elapsed);
+            }
+        }
+        self.last_request_at.set(Some(Instant::now()));
     }
 
     /// レスポンス本文（チャット補完 JSON）から変更項目列を取り出す。
@@ -223,17 +322,104 @@ fn auth_config(token: &str) -> String {
     format!("header = \"Authorization: Bearer {escaped}\"\n")
 }
 
-/// curl の stdout（本文）+ `--write-out '%{http_code}'`（末尾 status）出力から `(status, body)` を切り出す。
+/// curl の stdout（本文）+ `--write-out` トレーラ（[`CURL_META_SENTINEL`] + status + ヘッダ JSON）出力から
+/// `(status, body, header_json)` を切り出す。
 ///
-/// curl は本文をそのまま stdout へ流し、その後ろへ `%{http_code}`（常に 3 桁の数値）を追記する。よって
-/// 出力末尾の連続する ASCII 数字を status code とみなし、残りを本文とする。status の解析に失敗した場合
-/// （想定外出力）は status `0` を返し、呼び出し側は HTTP エラー扱いで診断ログを出す（縮退は維持）。token は
-/// この出力には現れないため、ログへ本文断片を出しても secret は漏れない（`%{http_code}` は数値のみ）。
-fn split_status_and_body(raw: &str) -> (u16, String) {
-    let digits_start = raw.len() - raw.chars().rev().take_while(char::is_ascii_digit).count();
-    let (body, status_text) = raw.split_at(digits_start);
-    let status = status_text.parse::<u16>().unwrap_or(0);
-    (status, body.to_string())
+/// curl は本文をそのまま stdout へ流し、その後ろへ sentinel・`%{http_code}`（3 桁数値）・`%{header_json}`
+/// （レスポンスヘッダの JSON オブジェクト）を改行区切りで追記する。sentinel は本文と衝突しない一意文字列なので、
+/// **最後の** sentinel 以降をトレーラとして切り出す（本文へ sentinel と同一文字列が現れる確率は無視できるが、
+/// 万一現れても最後の出現＝curl が付けたトレーラを採る）。sentinel が見つからない想定外出力は status `0`・
+/// ヘッダ空とし、呼び出し側が HTTP エラー扱いで診断ログを出す（縮退は維持）。token はこの出力に現れないため、
+/// ログへ本文断片を出しても secret は漏れない（status は数値、header_json は**レスポンス**ヘッダのみ）。
+fn split_meta(raw: &str) -> (u16, String, String) {
+    let Some(sentinel_at) = raw.rfind(CURL_META_SENTINEL) else {
+        return (0, raw.to_string(), String::new());
+    };
+    let body = raw[..sentinel_at].to_string();
+    let trailer = &raw[sentinel_at + CURL_META_SENTINEL.len()..];
+    // トレーラは "<http_code>\n<header_json>"。最初の改行で status とヘッダ JSON を分ける。
+    let (status_text, header_json) = match trailer.split_once('\n') {
+        Some((status_text, header_json)) => (status_text, header_json),
+        None => (trailer, ""),
+    };
+    let status = status_text.trim().parse::<u16>().unwrap_or(0);
+    (status, body, header_json.to_string())
+}
+
+/// curl の `%{header_json}` 出力（レスポンスヘッダの JSON）から `Retry-After`（秒）を読む。
+///
+/// `%{header_json}` はヘッダ名を小文字キー・値を文字列配列にした JSON オブジェクトを出す（例:
+/// `{"retry-after":["12"],...}`）。`Retry-After` の秒数表現のみを尊重し、HTTP-date 形式や非数値・欠落は
+/// `None`（呼び出し側は指数バックオフへ fallback）とする。解析できない JSON も `None`。
+fn retry_after_seconds(header_json: &str) -> Option<u64> {
+    let headers: serde_json::Value = serde_json::from_str(header_json).ok()?;
+    let value = headers.get(RETRY_AFTER_HEADER)?;
+    // header_json は値を配列で持つ（同名ヘッダ複数対応）。先頭要素を秒数として読む。
+    let raw = value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.as_str())?;
+    raw.trim().parse::<u64>().ok()
+}
+
+/// 指数バックオフの待機時間を求める（`Retry-After` が無い 429 の fallback）。
+///
+/// retry 回数 `attempt`（0 始まり）に対し `BACKOFF_BASE × 2^attempt` を返し、[`MAX_BACKOFF`] で頭打ちにする。
+/// `2^attempt` は overflow しない範囲（`MAX_RATE_LIMIT_RETRIES` は小さい）で計算し、上限 clamp で異常値を防ぐ。
+fn backoff_delay(attempt: u32) -> Duration {
+    let multiplier = 1u32.checked_shl(attempt).unwrap_or(u32::MAX);
+    BACKOFF_BASE
+        .checked_mul(multiplier)
+        .unwrap_or(MAX_BACKOFF)
+        .min(MAX_BACKOFF)
+}
+
+/// HTTP 429 のバックオフ付き再試行ループ本体（network/sleep に依存しない純粋規約）。
+///
+/// `request` を呼んで `(status, body, headers)` を得る。429 以外（200 や 401/403/413 等）はバックオフで解消
+/// しないため再試行せず即返す。429 なら待機時間を [`Retry-After`](RETRY_AFTER_HEADER)（あれば [`MAX_BACKOFF`]
+/// で clamp）または [`backoff_delay`] の指数バックオフで決め、`wait` へ渡して待たせてから再試行する。再試行は
+/// 最大 [`MAX_RATE_LIMIT_RETRIES`] 回で、それでも 429 が続けば最後の `(429, body, headers)` を返す（呼び出し側
+/// が空配列へ縮退＝daily 上限など待っても解消しない 429 で無限に粘らない）。`request` の `Err` はそのまま伝播する
+/// （curl プロセス自体の失敗）。`wait` を closure で受けることで、テストは実 sleep せず待機時間を観測できる。
+fn retry_loop<R, W>(mut request: R, mut wait: W) -> Result<(u16, String, String)>
+where
+    R: FnMut() -> Result<(u16, String, String)>,
+    W: FnMut(Duration),
+{
+    let mut attempt = 0;
+    loop {
+        let (status, response, headers) = request()?;
+        if status != 429 || attempt >= MAX_RATE_LIMIT_RETRIES {
+            return Ok((status, response, headers));
+        }
+        let delay = retry_after_seconds(&headers)
+            .map(Duration::from_secs)
+            .map(|d| d.min(MAX_BACKOFF))
+            .unwrap_or_else(|| backoff_delay(attempt));
+        // 429 は CI ログで可視化する（なぜ record が遅延したかの根拠）。token は含まれない。
+        eprintln!(
+            "GitHub Models extract rate-limited: HTTP 429, retry {}/{MAX_RATE_LIMIT_RETRIES} after {}s",
+            attempt + 1,
+            delay.as_secs()
+        );
+        wait(delay);
+        attempt += 1;
+    }
+}
+
+/// レート制限待機・ペーシングの blocking 待機。
+///
+/// record 経路は `current_thread` tokio runtime 内で実行されるが、HTTP は blocking な外部 `curl`
+/// （`std::process::Command`）で同期に行うため、待機もこの同期文脈に合わせて [`std::thread::sleep`] で行う。
+/// record 経路には同時に走る他 async task が無いため、この thread を待たせても他作業を阻害しない（nested
+/// `block_on` は current_thread runtime で panic するため使わない）。`Duration::ZERO` 以下では即返る。
+fn sleep(duration: Duration) {
+    if duration.is_zero() {
+        return;
+    }
+    std::thread::sleep(duration);
 }
 
 /// 生リリースノートを gpt-4o-mini のリクエスト上限内へ収めるため [`MAX_NOTES_CHARS`] 以内へ切り詰める。
@@ -322,8 +508,15 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
     /// 縮退契約（[module 先頭][self] 参照）は維持しつつ、**なぜ空になったか**を非致命の 1 行診断として stderr へ
     /// 出す（CI ログで HTTP 403/401 等の握り潰しを可視化するため）。診断は: token 未設定（`skipped`）、curl
     /// プロセス失敗（`degraded: curl failed`）、HTTP 非 200（`degraded: HTTP <code>` + 本文断片）。token は
-    /// いずれのログにも出さない（`-w` は数値 status のみ、本文断片は token を含まない API レスポンス）。成功時は
-    /// ログしない（うるさくしない）。返り値は常に `Ok`（解析結果または空配列）で record を止めない。
+    /// いずれのログにも出さない（`-w` は数値 status とレスポンスヘッダのみ、本文断片は token を含まない API
+    /// レスポンス）。成功時はログしない（うるさくしない）。返り値は常に `Ok`（解析結果または空配列）で record を
+    /// 止めない。
+    ///
+    /// レート制限対応: 呼び出し前に [`pace_before_request`](Self::pace_before_request) で
+    /// [`MIN_REQUEST_INTERVAL`] のペーシングを敷き（複数パッケージの呼び出し列が per-minute 上限を超えないよう
+    /// 分散）、HTTP 呼び出しは [`post_with_retry`](Self::post_with_retry) で 429 のバックオフ付き再試行を行う。
+    /// 有界回数の再試行でも 429 が解消しない場合（daily 上限等）は他の HTTP エラーと同様に空配列へ縮退し、
+    /// version+notes_url を残す（record success 維持・サイレント切り捨てなし＝429 は診断ログで件数可視化済み）。
     fn extract_change_items(&self, notes: &RawReleaseNotes) -> Result<Vec<ChangeItem>> {
         // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック）。未設定検知時に 1 度だけ
         // ログする（呼び出しごとではない＝この経路自体が未設定時に 1 回通る）。
@@ -332,10 +525,12 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
             return Ok(Vec::new());
         };
         let body = Self::request_body(&notes.text)?;
+        // 複数パッケージの呼び出し列が per-minute レート上限を超えないよう、呼び出し前に最小間隔を敷く。
+        self.pace_before_request();
         // 呼び出し失敗（ネットワーク/認証/レート）も record を止めず空へ縮退する。診断ログだけ残す。
-        match Self::post(&token, &body) {
-            Ok((200, response)) => Ok(Self::parse_response(&response)),
-            Ok((status, response)) => {
+        match Self::post_with_retry(&token, &body) {
+            Ok((200, response, _headers)) => Ok(Self::parse_response(&response)),
+            Ok((status, response, _headers)) => {
                 // HTTP エラー: status と本文断片（token 非含有）を 1 行ログ。空へ縮退。
                 eprintln!(
                     "GitHub Models extract degraded: HTTP {status}: {}",
@@ -356,13 +551,17 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
 #[cfg(test)]
 mod tests {
     //! チャット補完レスポンスからの変更項目抽出（category enum 検証・未知値破棄・空縮退）と
-    //! リクエストボディ/スキーマ組み立てを、実 API を呼ばずに固定する。
+    //! リクエストボディ/スキーマ組み立て、および 429 レート制限のバックオフ計算・`Retry-After` 解釈・
+    //! curl トレーラ（status/header JSON）切り出しという純粋部分を、実 API/network/sleep を呼ばずに固定する。
 
     use super::{
-        GithubModelsExtractAdapter, MAX_NOTES_CHARS, TRUNCATION_MARKER, auth_config, body_snippet,
-        response_format_schema, split_status_and_body, truncate_notes,
+        BACKOFF_BASE, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
+        MAX_RATE_LIMIT_RETRIES, TRUNCATION_MARKER, auth_config, backoff_delay, body_snippet,
+        response_format_schema, retry_after_seconds, retry_loop, split_meta, truncate_notes,
     };
     use crate::update_history::domain::wire::ChangeCategory;
+    use std::cell::Cell;
+    use std::time::Duration;
 
     #[test]
     fn auth_config_puts_token_in_stdin_header_not_argv() {
@@ -493,26 +692,171 @@ mod tests {
         );
     }
 
+    /// curl の `--write-out` トレーラ（sentinel + status + header JSON）を本文末尾へ付けた raw 文字列を組む
+    /// test helper。実 curl/network を呼ばずに [`split_meta`] の切り出しを固定するため。
+    fn raw_with_meta(body: &str, status: u16, header_json: &str) -> String {
+        format!("{body}{}{status}\n{header_json}", super::CURL_META_SENTINEL)
+    }
+
     #[test]
-    fn split_status_and_body_separates_trailing_http_code() {
-        // curl は本文の末尾へ `%{http_code}`（3 桁数値）を付加する。末尾の連続数字を status として切り出し、
-        // 残りを本文とする。JSON 本文が `}` で終わるため数字が本文末尾と衝突しない。
-        let (status, body) = split_status_and_body(r#"{"choices":[]}200"#);
+    fn split_meta_separates_body_status_and_headers() {
+        // curl は本文の末尾へ sentinel + `%{http_code}` + `%{header_json}` を付加する。sentinel 以降を
+        // トレーラとして切り出し、本文・status・ヘッダ JSON へ分ける。
+        let raw = raw_with_meta(r#"{"choices":[]}"#, 200, r#"{"retry-after":["5"]}"#);
+        let (status, body, headers) = split_meta(&raw);
         assert_eq!(status, 200);
         assert_eq!(body, r#"{"choices":[]}"#);
+        assert_eq!(headers, r#"{"retry-after":["5"]}"#);
 
         // HTTP エラー status も同様に切り出せる。
-        let (status, body) = split_status_and_body(r#"{"error":"forbidden"}403"#);
+        let raw = raw_with_meta(r#"{"error":"forbidden"}"#, 403, "{}");
+        let (status, body, _headers) = split_meta(&raw);
         assert_eq!(status, 403);
         assert_eq!(body, r#"{"error":"forbidden"}"#);
     }
 
     #[test]
-    fn split_status_and_body_returns_zero_when_no_status() {
-        // 想定外出力（status 末尾無し）は status 0（呼び出し側で HTTP エラー扱い→診断ログ→空縮退）。
-        let (status, body) = split_status_and_body("not json no status");
+    fn split_meta_returns_zero_when_no_sentinel() {
+        // 想定外出力（sentinel 無し）は status 0・ヘッダ空（呼び出し側で HTTP エラー扱い→診断ログ→空縮退）。
+        let (status, body, headers) = split_meta("not json no meta");
         assert_eq!(status, 0);
-        assert_eq!(body, "not json no status");
+        assert_eq!(body, "not json no meta");
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn retry_after_seconds_reads_numeric_seconds_from_header_json() {
+        // `%{header_json}` は値を文字列配列で持つ（小文字キー）。Retry-After の秒数表現を読む。
+        assert_eq!(
+            retry_after_seconds(r#"{"retry-after":["12"],"content-type":["application/json"]}"#),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn retry_after_seconds_is_none_for_missing_or_nonnumeric() {
+        // ヘッダ欠落・非数値（HTTP-date 等）・解析不能 JSON は None（指数バックオフへ fallback）。
+        assert_eq!(
+            retry_after_seconds(r#"{"content-type":["application/json"]}"#),
+            None
+        );
+        assert_eq!(
+            retry_after_seconds(r#"{"retry-after":["Wed, 21 Oct 2025 07:28:00 GMT"]}"#),
+            None
+        );
+        assert_eq!(retry_after_seconds("not json"), None);
+        assert_eq!(retry_after_seconds(""), None);
+    }
+
+    #[test]
+    fn backoff_delay_is_exponential_and_capped() {
+        // 退行固定: Retry-After 無しの 429 fallback は BACKOFF_BASE × 2^attempt（2s,4s,8s,16s）で、
+        // MAX_BACKOFF（20s）で頭打ちにする。指数が上限を超えても 1 回の待機が読めなくならない。
+        assert_eq!(backoff_delay(0), BACKOFF_BASE);
+        assert_eq!(backoff_delay(1), BACKOFF_BASE * 2);
+        assert_eq!(backoff_delay(2), BACKOFF_BASE * 4);
+        assert_eq!(backoff_delay(3), BACKOFF_BASE * 8);
+        // 大きな attempt でも上限 clamp（overflow せず MAX_BACKOFF を返す）。
+        assert_eq!(backoff_delay(60), MAX_BACKOFF);
+        // どの attempt でも 1 回の待機は MAX_BACKOFF を超えない。
+        assert!(backoff_delay(4) <= MAX_BACKOFF);
+    }
+
+    /// retry_loop へ注入する request stub: 呼び出しごとに与えた `(status, body, headers)` を順に返し、
+    /// 列を超えたら最後の要素を返し続ける。呼び出し回数も観測する。実 curl/network を呼ばない。
+    struct RequestStub<'a> {
+        responses: &'a [(u16, &'a str, &'a str)],
+        calls: Cell<usize>,
+    }
+
+    impl<'a> RequestStub<'a> {
+        fn new(responses: &'a [(u16, &'a str, &'a str)]) -> Self {
+            Self {
+                responses,
+                calls: Cell::new(0),
+            }
+        }
+
+        fn next(&self) -> crate::Result<(u16, String, String)> {
+            let index = self.calls.get().min(self.responses.len() - 1);
+            self.calls.set(self.calls.get() + 1);
+            let (status, body, headers) = self.responses[index];
+            Ok((status, body.to_string(), headers.to_string()))
+        }
+    }
+
+    #[test]
+    fn retry_loop_returns_immediately_on_success_without_waiting() -> crate::Result<()> {
+        // 200 は再試行せず即返し、待機もしない。
+        let stub = RequestStub::new(&[(200, r#"{"choices":[]}"#, "{}")]);
+        let waits = Cell::new(0usize);
+        let (status, body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        assert_eq!(status, 200);
+        assert_eq!(body, r#"{"choices":[]}"#);
+        assert_eq!(stub.calls.get(), 1);
+        assert_eq!(waits.get(), 0, "成功時は待機しない");
+        Ok(())
+    }
+
+    #[test]
+    fn retry_loop_retries_on_429_then_succeeds() -> crate::Result<()> {
+        // 退行固定: 429 を受けたら待機して再試行し、後続の 200 で成功する。
+        let stub = RequestStub::new(&[
+            (429, "rate limited", "{}"),
+            (429, "rate limited", "{}"),
+            (200, r#"{"choices":[]}"#, "{}"),
+        ]);
+        let waits = Cell::new(0usize);
+        let (status, _body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        assert_eq!(status, 200);
+        assert_eq!(stub.calls.get(), 3, "429×2 の後 200 で成功＝3 回呼ぶ");
+        assert_eq!(waits.get(), 2, "429 を受けた 2 回だけ待機する");
+        Ok(())
+    }
+
+    #[test]
+    fn retry_loop_degrades_after_bounded_retries_on_persistent_429() -> crate::Result<()> {
+        // 退行固定: 429 が解消しない（daily 上限等）場合は MAX_RATE_LIMIT_RETRIES 回再試行した後、最後の
+        // 429 を返す（呼び出し側が空配列へ縮退）。無限に粘らない・サイレントに無限待機しない。
+        let stub = RequestStub::new(&[(429, "rate limited", "{}")]);
+        let waits = Cell::new(0usize);
+        let (status, _body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        assert_eq!(status, 429, "解消しなければ最後の 429 を返す");
+        // 初回 + 再試行回数 = 呼び出し回数。待機は再試行回数分だけ。
+        let expected_calls = (MAX_RATE_LIMIT_RETRIES + 1) as usize;
+        assert_eq!(stub.calls.get(), expected_calls);
+        assert_eq!(waits.get(), MAX_RATE_LIMIT_RETRIES as usize);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_loop_honors_retry_after_header_over_backoff() -> crate::Result<()> {
+        // 退行固定: 429 の Retry-After（秒）があればその秒数を待つ（指数バックオフより優先）。
+        let stub = RequestStub::new(&[
+            (429, "rate limited", r#"{"retry-after":["7"]}"#),
+            (200, r#"{"choices":[]}"#, "{}"),
+        ]);
+        let observed: Cell<Option<Duration>> = Cell::new(None);
+        let (status, _body, _headers) = retry_loop(|| stub.next(), |d| observed.set(Some(d)))?;
+        assert_eq!(status, 200);
+        assert_eq!(
+            observed.get(),
+            Some(Duration::from_secs(7)),
+            "Retry-After 7s を尊重する（指数バックオフ 2s ではない）"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_loop_does_not_retry_non_429_errors() -> crate::Result<()> {
+        // 退行固定: 403/413 等はバックオフで解消しないため再試行せず即返す（無駄な待機をしない）。
+        let stub = RequestStub::new(&[(403, "forbidden", "{}")]);
+        let waits = Cell::new(0usize);
+        let (status, _body, _headers) = retry_loop(|| stub.next(), |_| waits.set(waits.get() + 1))?;
+        assert_eq!(status, 403);
+        assert_eq!(stub.calls.get(), 1);
+        assert_eq!(waits.get(), 0);
+        Ok(())
     }
 
     #[test]

@@ -149,7 +149,7 @@ fn run_record(options: RecordOptions) -> Result<()> {
     let nix_versions = adapters::NixEvalVersionAdapter::new(options.nix_old, options.nix_new);
     let brew_diff = adapters::BrewTapDiffAdapter::new(options.brew_diff);
     let notes = adapters::ReleaseNotesAdapter::new(options.brew_notes_base);
-    let extract = adapters::GithubModelsExtractAdapter;
+    let extract = adapters::GithubModelsExtractAdapter::new();
     let store = adapters::TomlHistoryStoreAdapter::new(options.out);
 
     let command = RecordCommand {
