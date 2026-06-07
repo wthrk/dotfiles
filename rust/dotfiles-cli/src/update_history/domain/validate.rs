@@ -5,7 +5,19 @@
 //! 守る。enum 値の妥当性は wire 型の deserialize で既に閉じているため、ここでは host / 長さ / 件数の
 //! 機械判定だけを domain rule として固定する。severity は別途 category enum から算出するため本 module では扱わない。
 
+use std::collections::BTreeSet;
+
 use super::wire::ChangeItem;
+
+/// エージェントの `fetch_url` ツールに常に許可する GitHub 系ホスト集合。
+///
+/// パッケージごとの fetch 許可ホスト集合（[`allowed_fetch_hosts`]）の基底になる。リリースノートは
+/// GitHub Releases ページ・API・raw ファイルに置かれることが多く、これらの公式 host はパッケージに依らず
+/// 常に許可してよい（取得・記録 URL の host allowlist [`ALLOWED_HOSTS`] とも整合する）。`gitlab.com` は
+/// 一部パッケージのノート置き場だが「常時許可」ではなくパッケージの宣言 host（homepage/repo）に
+/// gitlab.com が現れたときだけ [`allowed_fetch_hosts`] が個別に加える。
+const ALWAYS_ALLOWED_FETCH_HOSTS: [&str; 3] =
+    ["github.com", "raw.githubusercontent.com", "api.github.com"];
 
 /// 参照 URL に許可するホスト集合（https のみ）。
 ///
@@ -50,6 +62,76 @@ pub(crate) fn is_allowed_url(url: &str) -> bool {
     ALLOWED_HOSTS
         .iter()
         .any(|allowed| host.eq_ignore_ascii_case(allowed))
+}
+
+/// パッケージごとに `fetch_url` ツールへ許可するホスト集合を eval メタのヒントから組み立てる（domain rule）。
+///
+/// **信頼境界**: 許可ホスト集合は eval（`eval-declared-versions.sh`、信頼境界内）由来の値だけから組み立てる。
+/// `repo`（GitHub `owner/repo`）・`homepage`・`changelog` はすべて評価時属性であり、攻撃者が制御するノート
+/// 本文（信頼境界外）からは決して拡張しない。これが SSRF 防御の核である: エージェント（LLM）はノート本文に
+/// 現れた任意 URL を fetch 要求しうるが、その host がこの集合外なら adapter は fetch せず「not allowed」を返す。
+///
+/// 集合の構成:
+/// - 常に [`ALWAYS_ALLOWED_FETCH_HOSTS`]（github.com / raw.githubusercontent.com / api.github.com）。
+///   リリースノートの一次取得元（Releases ページ・API・raw changelog）であり、パッケージに依らず公式。
+/// - `repo` が `owner/repo` 形なら、その forge host として `github.com`（既に基底に含む）。`repo` は eval が
+///   GitHub owner/repo として抽出した値なので追加 host は不要だが、将来 forge 拡張時の拡張点として host 抽出
+///   経路を通す。
+/// - `homepage` / `changelog` の URL から host を抽出して加える（例: `neovim.io`、`gitlab.com`）。これにより
+///   エージェントは「そのパッケージの正規ドメイン」のノートを自分で辿れる。host 抽出は https URL に限る
+///   （[`host_of`]）。
+///
+/// 返す集合は小文字化済み host の `BTreeSet`（決定論・重複排除）。adapter はこの集合と [`fetch_host_allowed`]
+/// で fetch 可否を機械判定する。
+pub(crate) fn allowed_fetch_hosts(
+    repo: Option<&str>,
+    homepage: Option<&str>,
+    changelog: Option<&str>,
+) -> BTreeSet<String> {
+    let mut hosts: BTreeSet<String> = ALWAYS_ALLOWED_FETCH_HOSTS
+        .iter()
+        .map(|host| host.to_string())
+        .collect();
+    // repo（owner/repo）は GitHub 由来（eval が github URL から抽出）なので host は github.com（基底に含む）。
+    // owner/repo に `/` 以外の host 情報は無いため、ここでは追加 host を導かない（将来 forge 拡張の通り道）。
+    let _ = repo;
+    for hint in [homepage, changelog].into_iter().flatten() {
+        if let Some(host) = host_of(hint) {
+            hosts.insert(host);
+        }
+    }
+    hosts
+}
+
+/// https URL から小文字化した host を抽出する純粋関数（credential 拒否・path injection 防御）。
+///
+/// `https://<host>[:port]/...` の `<host>` を小文字で返す。scheme が https でない、credential（`@`）を含む、
+/// host が空の URL は `None`。[`is_allowed_url`] と同じ host 切り出し規則を使い、抽出 host を allowlist 構築や
+/// 機械判定の単一の host 解釈源にする。
+pub(crate) fn host_of(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') || authority.is_empty() {
+        return None;
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// エージェントが要求した `fetch_url` の URL が、そのパッケージの許可ホスト集合に属する https かを判定する。
+///
+/// `allowed_hosts` は [`allowed_fetch_hosts`] が eval メタから組み立てた小文字化 host 集合。URL は https で
+/// かつその host が集合に含まれるときだけ `true`。scheme 不正・credential 含み・host 不一致は `false`。
+/// ノート本文（信頼境界外）から得た URL でも、この機械判定を必ず通すことで SSRF（許可外 host への横滑り）を塞ぐ。
+pub(crate) fn fetch_host_allowed(url: &str, allowed_hosts: &BTreeSet<String>) -> bool {
+    match host_of(url) {
+        Some(host) => allowed_hosts.contains(&host),
+        None => false,
+    }
 }
 
 /// LLM 抽出済み change_item 列を記録前にサニタイズする。
@@ -187,6 +269,69 @@ mod tests {
             .map(|i| item(&format!("項目{i}"), None))
             .collect();
         assert_eq!(sanitize_change_items(many).len(), MAX_ITEMS);
+    }
+
+    #[test]
+    fn allowed_fetch_hosts_always_includes_github_family() {
+        // 退行固定（SSRF allowlist 基底）: ヒントが何も無くても github 系公式 host は常に許可される。
+        let hosts = allowed_fetch_hosts(None, None, None);
+        assert!(hosts.contains("github.com"));
+        assert!(hosts.contains("raw.githubusercontent.com"));
+        assert!(hosts.contains("api.github.com"));
+        // gitlab.com は「常時許可」ではない（宣言 host に現れたときだけ加わる）。
+        assert!(!hosts.contains("gitlab.com"));
+    }
+
+    #[test]
+    fn allowed_fetch_hosts_adds_homepage_and_changelog_hosts() {
+        // 退行固定: homepage / changelog の host を eval メタから集合へ加える（パッケージの正規ドメイン）。
+        let hosts = allowed_fetch_hosts(
+            Some("neovim/neovim"),
+            Some("https://neovim.io/"),
+            Some("https://gitlab.com/o/r/blob/v1/CHANGELOG.md"),
+        );
+        assert!(hosts.contains("neovim.io"));
+        assert!(hosts.contains("gitlab.com"));
+        // 基底 host も維持。
+        assert!(hosts.contains("github.com"));
+    }
+
+    #[test]
+    fn allowed_fetch_hosts_ignores_non_https_hints() {
+        // http / 不正 URL のヒントは host を導かない（https のみ）。基底 host は残る。
+        let hosts = allowed_fetch_hosts(None, Some("http://evil.example/x"), Some("not a url"));
+        assert!(!hosts.contains("evil.example"));
+        assert_eq!(hosts.len(), ALWAYS_ALLOWED_FETCH_HOSTS.len());
+    }
+
+    #[test]
+    fn host_of_extracts_lowercased_host_for_https_only() {
+        assert_eq!(
+            host_of("https://GitHub.com/a/b").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            host_of("https://neovim.io:443/").as_deref(),
+            Some("neovim.io")
+        );
+        assert_eq!(host_of("http://github.com/a"), None);
+        assert_eq!(host_of("https://user@github.com/a"), None);
+        assert_eq!(host_of("not a url"), None);
+    }
+
+    #[test]
+    fn fetch_host_allowed_matches_set_membership_for_https() {
+        // 退行固定（SSRF 機械判定）: 集合内 host の https のみ許可。集合外・非 https は拒否する。
+        let hosts = allowed_fetch_hosts(None, Some("https://neovim.io/"), None);
+        assert!(fetch_host_allowed("https://neovim.io/news", &hosts));
+        assert!(fetch_host_allowed(
+            "https://github.com/neovim/neovim/releases",
+            &hosts
+        ));
+        // ノート本文に現れた許可外 host は拒否（横滑り防止）。
+        assert!(!fetch_host_allowed("https://evil.example/x", &hosts));
+        // https でなければ拒否。
+        assert!(!fetch_host_allowed("http://neovim.io/x", &hosts));
     }
 
     #[test]

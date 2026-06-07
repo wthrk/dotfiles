@@ -87,11 +87,45 @@ pub(crate) struct RawReleaseNotes {
     pub(crate) notes_url: String,
 }
 
-/// 生リリースノートから構造化変更リストを抽出する capability 契約（外部機能: LLM 抽出）。
+/// AI エージェントが「適切なリリースノートのソースを自分で探して fetch して読み」構造化変更リストを抽出する
+/// ための、1 パッケージ分の入力境界（信頼境界内 = eval メタ由来のヒント）。
 ///
-/// implementor は GitHub Models 等で生ノートを `Vec<ChangeItem>`（category + text + ref）へ抽出する。
-/// caller は抽出結果を機械バリデート（schema/enum/長さ/host）してから記録に使う。severity はこの抽出
-/// 結果でなく category enum から機械算出するため、LLM 出力はマージ判断に使わない（injection 耐性）。
+/// リリースノートの場所は機械的に一律取得できないため、抽出は **AI エージェントに適切なノートを取得させて
+/// 要約させる**方式へ作り直した。adapter（GitHub Models tool-use ループ）はこのヒントから、パッケージの正規
+/// ドメインに限定した fetch 許可ホスト集合を組み立て（[`super::domain::validate::allowed_fetch_hosts`]）、AI が
+/// 要求した `fetch_url` をその集合内 https に限って実行する（SSRF 防御）。`seed_notes` は機械解決で先に取れた
+/// 生ノート（あれば会話の初期材料として与える。AI は更に自分で fetch して補える）。
+///
+/// 各フィールドはすべて eval（信頼境界内）由来のヒントであり、ノート本文（信頼境界外）では拡張しない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtractRequest {
+    /// パッケージ名（AI への user prompt に載せる識別子）。
+    pub(crate) name: String,
+    /// 更新前 version（`added` では `None`）。
+    pub(crate) old: Option<String>,
+    /// 更新後 version（`removed` では `None`）。
+    pub(crate) new: Option<String>,
+    /// GitHub `owner/repo`（eval 抽出。fetch 許可ホスト集合と AI ヒント）。
+    pub(crate) repo: Option<String>,
+    /// homepage URL（`meta.homepage`。fetch 許可ホスト集合と AI ヒント）。
+    pub(crate) homepage: Option<String>,
+    /// changelog URL（`meta.changelog`/`meta.homepage`。fetch 許可ホスト集合と AI ヒント）。
+    pub(crate) changelog: Option<String>,
+    /// 機械解決で先に取得できた生ノート（あれば AI へ初期材料として与える。信頼境界外）。無ければ `None`。
+    pub(crate) seed_notes: Option<RawReleaseNotes>,
+}
+
+/// AI エージェントにノートを取得・要約させて構造化変更リストを抽出する capability 契約（外部機能: LLM エージェント）。
+///
+/// implementor（GitHub Models tool-use ループ）は [`ExtractRequest`] のヒント（パッケージ名・old→new・
+/// homepage/repo/changelog）から **AI 自身に適切なリリースノートのソースを探させ、`fetch_url` ツールで取得・
+/// 読解させ**、構造化変更（category + text + ref）の配列を返させる。caller は抽出結果を機械バリデート
+/// （schema/enum/長さ/host）してから記録に使う。severity はこの抽出結果でなく category enum から機械算出する
+/// ため、LLM 出力はマージ判断に使わない（injection 耐性）。
+///
+/// SSRF 防御は implementor の責務: fetch 許可ホスト集合は **eval メタ由来のヒント host だけ**から組み立て、AI が
+/// 要求した URL の host が集合外なら fetch せずツール結果として拒否を返す（ノート本文由来 URL を無検証で
+/// fetch しない）。fetch は許可ホスト https に限定し、取得テキストは truncate・反復回数は有界にする。
 ///
 /// 抽出フェーズ全体の wall-clock 予算（[`Self::extract_budget_exhausted`]）も契約に含む。複数パッケージを
 /// 順に抽出する caller（application）は、各抽出の前に予算超過を問い合わせ、超過後は LLM 抽出を skip して
@@ -99,10 +133,11 @@ pub(crate) struct RawReleaseNotes {
 /// 残りパッケージを LLM 抽出するか version-only に倒すかという停止条件の判断は caller（application）が担う。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait ChangeExtractPort {
-    /// 生リリースノートを構造化変更リストへ抽出する。
+    /// AI エージェントにノートを取得・要約させて構造化変更リストを抽出する。
     ///
-    /// implementor は与えた生ノートのみを根拠とし（ハルシネーション禁止）、根拠が無ければ空配列を返す。
-    fn extract_change_items(&self, notes: &RawReleaseNotes) -> Result<Vec<ChangeItem>>;
+    /// implementor は与えたヒントから AI に適切なノートを fetch・読解させ、取得した実ノートのみを根拠として
+    /// （ハルシネーション禁止）構造化変更を返す。根拠が無ければ空配列を返す。
+    fn extract_change_items(&self, request: &ExtractRequest) -> Result<Vec<ChangeItem>>;
 
     /// 抽出フェーズ全体の wall-clock 予算を使い切ったか（`true` なら以降の LLM 抽出を skip すべき）。
     ///

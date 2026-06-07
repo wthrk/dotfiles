@@ -7,15 +7,17 @@
 # （`pname`/`version` と `meta`/`src`）を `nix eval --json` で数秒・ビルド/フェッチ不要で取れる。closure を
 # `nix store diff-closures` のために実体化（フル closure を 2 回ビルド）する必要はない。
 #
-# 出力: `$2` に `{ "name": { "version": "...", "repo": "owner/repo", "changelog": "..." }, ... }` の JSON
-# object を書く。これを `dotfiles update-history record` の `--nix-old` / `--nix-new` が読み、domain の純粋比較
-# （diff_versions）で版差分を求めると同時に、各パッケージの GitHub owner/repo（repo）と changelog URL を delta
-# へ運ぶ。record 側は repo から GitHub Releases API で old→new 範囲のリリースノートを取得し（空振り時は
-# changelog へフォールバック）、要約する。
+# 出力: `$2` に `{ "name": { "version": "...", "repo": "owner/repo", "changelog": "...", "homepage": "..." }, ... }`
+# の JSON object を書く。これを `dotfiles update-history record` の `--nix-old` / `--nix-new` が読み、domain の
+# 純粋比較（diff_versions）で版差分を求めると同時に、各パッケージの GitHub owner/repo（repo）・changelog URL・
+# homepage URL を delta へ運ぶ。record 側の AI エージェント（GitHub Models tool-use ループ）は、これらを
+# 「適切なリリースノートのソースを自分で探して fetch する」ヒント兼 fetch 許可ホスト集合の素材に使う
+# （許可ホスト集合は eval 由来のこれらの host だけから組み立て、ノート本文では拡張しない＝SSRF 防御）。
 #
 # 評価対象: home-manager の `home.packages`（利用者宣言パッケージ）と nix-darwin の
 # `environment.systemPackages`（GUI アプリ等の system 宣言パッケージ）。両 attrset の
-# name→{version,repo,changelog} を統合し、同名は system 側を優先する（重複は実フリートでは基本起きない）。
+# name→{version,repo,changelog,homepage} を統合し、同名は system 側を優先する（重複は実フリートでは基本
+# 起きない）。
 # `pname`/`version` が無いパッケージは `parseDrvName` でフォールバックし、版が取れなければ空文字（record 側で
 # 版不明 = None として扱う）。
 #
@@ -45,11 +47,12 @@ derive_repo_nix="$(cat "${script_dir}/derive-repo.nix")"
 # 参照構成から利用者名を eval で取得する（ci-ref は user=ci 固定だが、参照を引数化したため動的に解決する）。
 user="$(nix eval --raw ".#${reference}.config.system.primaryUser")"
 
-# パッケージリスト attrset を name→{version,repo,changelog} object へ畳む `--apply` 式。
+# パッケージリスト attrset を name→{version,repo,changelog,homepage} object へ畳む `--apply` 式。
 #
 # - name:    `pname` 優先、無ければ `parseDrvName (p.name)`。
 # - version: `p.version`（無ければ空文字）。
 # - changelog: `p.meta.changelog`（無ければ `p.meta.homepage`、いずれも無ければ空文字）。
+# - homepage: `p.meta.homepage`（無ければ空文字）。AI エージェントの fetch 許可ホスト集合のヒントになる。
 # - repo:    GitHub owner/repo を ①homepage ②src ③changelog の優先で抽出（無ければ空文字）。
 #
 # 文字列からの owner/repo 抽出は `builtins.match` の正規表現で行い、url や owner/repo フィールドのみを参照する
@@ -67,6 +70,7 @@ builtins.listToAttrs (map (p: {
     version = p.version or \"\";
     repo = derive.repoOf p;
     changelog = derive.changelogOf p;
+    homepage = derive.homepageOf p;
   };
 }) ps)
 "

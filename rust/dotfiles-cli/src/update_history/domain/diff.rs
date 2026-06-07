@@ -40,9 +40,13 @@ pub(crate) struct NixPackage {
     pub(crate) repo: String,
     /// `meta.changelog` または `meta.homepage` 由来の changelog URL（無ければ空文字）。eval JSON では
     /// `changelog` key で出力する（旧 `notes_source` key も alias で受ける）。Releases API 空振り時の
-    /// changelog raw フォールバック取得先。
+    /// changelog raw フォールバック取得先であり、AI エージェントの fetch 許可ホスト集合ヒントにもなる。
     #[serde(default, alias = "changelog")]
     pub(crate) notes_source: String,
+    /// `meta.homepage` 由来の URL（無ければ空文字）。AI エージェント（GitHub Models tool-use ループ）の
+    /// fetch 許可ホスト集合のヒントになる（このパッケージの正規ドメインを許可するため）。信頼境界内（eval 由来）。
+    #[serde(default)]
+    pub(crate) homepage: String,
 }
 
 /// 単一パッケージの version 差分（比較/マージの中間表現）。
@@ -69,6 +73,9 @@ pub(crate) struct VersionDelta {
     /// nix eval 由来の changelog URL（`meta.changelog`/`meta.homepage`。Releases API 空振り時の
     /// フォールバック取得先。無ければ `None`）。brew は `None`。
     pub(crate) notes_source: Option<String>,
+    /// nix eval 由来の homepage URL（`meta.homepage`。AI エージェントの fetch 許可ホスト集合ヒント。
+    /// 無ければ `None`）。brew は `None`。信頼境界内（eval 由来）。
+    pub(crate) homepage: Option<String>,
 }
 
 /// nix eval 由来 / brew tap 由来の version 差分を同一モデルへ統合する。
@@ -121,6 +128,7 @@ pub(crate) fn diff_versions(
     for (name, new_pkg) in new {
         let repo = empty_to_none(&new_pkg.repo);
         let notes_source = empty_to_none(&new_pkg.notes_source);
+        let homepage = empty_to_none(&new_pkg.homepage);
         match old.get(name) {
             // 両側に在る。version 文字列が異なるときだけ差分にする。
             Some(old_pkg) => {
@@ -136,6 +144,7 @@ pub(crate) fn diff_versions(
                     source: DeltaSource::NixEval,
                     repo,
                     notes_source,
+                    homepage,
                 });
             }
             // new のみに在る → 追加。
@@ -147,6 +156,7 @@ pub(crate) fn diff_versions(
                 source: DeltaSource::NixEval,
                 repo,
                 notes_source,
+                homepage,
             }),
         }
     }
@@ -163,6 +173,7 @@ pub(crate) fn diff_versions(
                 // removed は new 版が無いためノート取得元も無い。
                 repo: None,
                 notes_source: None,
+                homepage: None,
             });
         }
     }
@@ -331,6 +342,7 @@ mod tests {
                         version: (*version).to_string(),
                         repo: String::new(),
                         notes_source: String::new(),
+                        homepage: String::new(),
                     },
                 )
             })
@@ -348,6 +360,7 @@ mod tests {
                         version: (*version).to_string(),
                         repo: (*repo).to_string(),
                         notes_source: (*notes).to_string(),
+                        homepage: String::new(),
                     },
                 )
             })
@@ -382,6 +395,7 @@ mod tests {
                 source: DeltaSource::NixEval,
                 repo: None,
                 notes_source: None,
+                homepage: None,
             })
         );
         assert_eq!(
@@ -394,6 +408,7 @@ mod tests {
                 source: DeltaSource::NixEval,
                 repo: None,
                 notes_source: None,
+                homepage: None,
             })
         );
         assert_eq!(
@@ -406,6 +421,7 @@ mod tests {
                 source: DeltaSource::NixEval,
                 repo: None,
                 notes_source: None,
+                homepage: None,
             })
         );
         assert_eq!(
@@ -418,6 +434,7 @@ mod tests {
                 source: DeltaSource::NixEval,
                 repo: None,
                 notes_source: None,
+                homepage: None,
             })
         );
     }
@@ -604,6 +621,7 @@ mod tests {
             source: DeltaSource::NixEval,
             repo: None,
             notes_source: None,
+            homepage: None,
         }];
         let brew = vec![VersionDelta {
             name: "firefox".to_string(),
@@ -613,6 +631,7 @@ mod tests {
             source: DeltaSource::BrewTap,
             repo: None,
             notes_source: None,
+            homepage: None,
         }];
 
         let merged = merge_version_deltas(nix, brew);

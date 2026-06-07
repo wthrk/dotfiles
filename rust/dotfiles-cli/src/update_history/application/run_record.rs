@@ -6,7 +6,8 @@ use crate::update_history::domain::commands::RecordCommand;
 use crate::update_history::domain::diff::{diff_versions, merge_version_deltas};
 use crate::update_history::domain::validate::{sanitize_change_items, sanitize_notes_url};
 use crate::update_history::ports::{
-    BrewVersionDiffPort, ChangeExtractPort, HistoryStorePort, NixVersionPort, NotesPort,
+    BrewVersionDiffPort, ChangeExtractPort, ExtractRequest, HistoryStorePort, NixVersionPort,
+    NotesPort,
 };
 
 /// nix/brew の version 差分を統合し、各アプリの生ノートを LLM 抽出して 1 エントリを履歴へ追記する。
@@ -60,10 +61,11 @@ where
     let mut summarized = 0usize;
     let mut version_only = 0usize;
     for delta in deltas {
-        // 各アプリの `(old, new]` 生ノートを、差分の出所（nix/brew）に応じた取得先から取得し、取得できた
-        // ものだけ LLM 抽出へ回す。出所を渡すのは、nix と brew でノート取得先 base / 解決規則が異なるためで、
-        // 同一規則で引くと誤った URL（nix package を cask レイアウトで引く等）になるのを防ぐ。
-        let raw = notes.fetch_release_notes(
+        // 機械解決でノート取得を先に試みる（AI エージェントへ与える初期材料 + 記録用 notes_url の供給）。
+        // 出所（nix/brew）でノート取得先 base / 解決規則が異なるため source を渡す（同一規則で引くと誤った URL
+        // になるのを防ぐ）。これは AI 主導の前段ヒントであり、取得不能でも AI はヒント URL から自分で fetch を
+        // 試みられる（機械解決は fallback/ヒントとして残す）。
+        let seed = notes.fetch_release_notes(
             &delta.name,
             delta.source,
             delta.repo.clone(),
@@ -71,25 +73,36 @@ where
             delta.old.clone(),
             delta.new.clone(),
         )?;
-        let (change_items, notes_url) = match raw {
-            // 抽出フェーズ全体の wall-clock 予算を使い切っていたら、残りパッケージは LLM 抽出を呼ばず
+        // 記録用 notes_url は機械解決が返した URL を一次に、無ければ changelog/homepage ヒントへ倒す
+        // （いずれも記録前に host allowlist で機械バリデートする）。
+        let notes_url = sanitize_notes_url(
+            seed.as_ref()
+                .map(|seed| seed.notes_url.clone())
+                .or_else(|| delta.notes_source.clone())
+                .or_else(|| delta.homepage.clone()),
+        );
+        let change_items = if extract.extract_budget_exhausted() {
+            // 抽出フェーズ全体の wall-clock 予算を使い切っていたら、残りパッケージは AI 抽出を呼ばず
             // version-only（変更リスト空・URL は保持）へ縮退する。全件持続 429 の最悪ケースで抽出が record job
             // timeout（60分）へ接近・超過し、後続 job（PR 起票）が止まって無人 nightly が停止するのを構造的に防ぐ。
             // 停止条件（残りを skip して version-only に倒す）の判断は application が持ち、予算超過の計測は port が担う。
-            Some(raw) if extract.extract_budget_exhausted() => {
-                budget_skipped += 1;
-                (Vec::new(), sanitize_notes_url(Some(raw.notes_url)))
-            }
-            Some(raw) => {
-                // LLM 出力は信頼境界外。記録前に host/長さ/件数を機械バリデートする。
-                let extracted = extract.extract_change_items(&raw)?;
-                (
-                    sanitize_change_items(extracted),
-                    sanitize_notes_url(Some(raw.notes_url)),
-                )
-            }
-            // ノート取得不能なら version 差分のみ（変更リスト空・URL なし）へ縮退する。
-            None => (Vec::new(), None),
+            budget_skipped += 1;
+            Vec::new()
+        } else {
+            // AI エージェントにヒント（パッケージ名・old→new・homepage/repo/changelog）と seed ノートを渡し、
+            // AI 自身に適切なノートを fetch・読解させて構造化変更を抽出させる。SSRF 許可ホスト集合の組み立てと
+            // fetch は adapter（port 裏）の責務。LLM 出力は信頼境界外のため、記録前に host/長さ/件数を機械
+            // バリデートする。
+            let request = ExtractRequest {
+                name: delta.name.clone(),
+                old: delta.old.clone(),
+                new: delta.new.clone(),
+                repo: delta.repo.clone(),
+                homepage: delta.homepage.clone(),
+                changelog: delta.notes_source.clone(),
+                seed_notes: seed,
+            };
+            sanitize_change_items(extract.extract_change_items(&request)?)
         };
         // 可観測サマリの集計: 抽出結果が 1 件以上ついたものを「概要付き」、変更リスト空（ノート取得不能・
         // 抽出 0 件・予算超過縮退）を「version-only」として数える。失敗理由の内訳（auth/rate・budget）は
@@ -174,6 +187,7 @@ mod tests {
             version: version.to_string(),
             repo: repo.to_string(),
             notes_source: notes_source.to_string(),
+            homepage: String::new(),
         }
     }
 
@@ -209,6 +223,7 @@ mod tests {
             source: DeltaSource::BrewTap,
             repo: None,
             notes_source: None,
+            homepage: None,
         }
     }
 
@@ -236,8 +251,16 @@ mod tests {
             .times(1)
             .returning(|_, _, _, _, _, _| Ok(None));
 
+        // seed ノートが取れなくても AI エージェントはヒント URL から自分で fetch を試みられるため、予算未超過なら
+        // 各 delta で抽出が呼ばれる（ここでは AI もノートを見つけられず空配列を返す = version-only へ縮退）。
         let mut extract = MockChangeExtractPort::new();
-        extract.expect_extract_change_items().never();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        extract
+            .expect_extract_change_items()
+            .times(2)
+            .returning(|_| Ok(Vec::new()));
 
         let mut store = MockHistoryStorePort::new();
         store
@@ -289,6 +312,15 @@ mod tests {
             .returning(|| false);
         extract
             .expect_extract_change_items()
+            // ExtractRequest が delta のヒント（name・old→new・repo）と seed ノートを運ぶことを固定する。
+            .withf(|request| {
+                request.name == "openssl"
+                    && request.old.as_deref() == Some("1.0")
+                    && request.new.as_deref() == Some("1.1")
+                    && request.repo.as_deref() == Some("openssl/openssl")
+                    && request.seed_notes.as_ref().map(|notes| notes.text.as_str())
+                        == Some("CVE fix")
+            })
             .times(1)
             .returning(|_| {
                 Ok(vec![
@@ -395,6 +427,8 @@ mod tests {
 
     #[test]
     fn record_falls_back_to_version_only_when_notes_absent() -> crate::Result<()> {
+        // seed ノート取得不能・ヒント URL も無い（repo/homepage/changelog すべて空）なら、AI エージェントは
+        // 取得元が無いため空配列を返し、version-only（変更リスト空・notes_url なし）へ縮退する。
         let nix_versions = nix_versions_for("neovim");
         let mut brew_diff = MockBrewVersionDiffPort::new();
         brew_diff
@@ -402,13 +436,20 @@ mod tests {
             .returning(|_, _| Ok(Vec::new()));
 
         let mut notes = MockNotesPort::new();
-        // ノート取得不能なら LLM 抽出は呼ばれない。
+        // seed ノート取得は試みるが取得不能（None）。
         notes
             .expect_fetch_release_notes()
             .times(1)
             .returning(|_, _, _, _, _, _| Ok(None));
         let mut extract = MockChangeExtractPort::new();
-        extract.expect_extract_change_items().never();
+        // 予算未超過なので AI 抽出は呼ばれるが、ヒント URL が無いため AI も空配列を返す。
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        extract
+            .expect_extract_change_items()
+            .times(1)
+            .returning(|_| Ok(Vec::new()));
 
         let mut store = MockHistoryStorePort::new();
         store

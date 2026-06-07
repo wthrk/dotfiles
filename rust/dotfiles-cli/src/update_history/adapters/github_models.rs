@@ -1,9 +1,31 @@
-//! `ChangeExtractPort` を GitHub Models 推論 API（`curl` プロセス）へ接続する adapter。
+//! `ChangeExtractPort` を GitHub Models 推論 API（`curl` プロセス）の **tool-use エージェントループ**へ接続する
+//! adapter。
 //!
-//! 生リリースノート（信頼境界外）を GitHub Models のチャット補完へ渡し、versioned prompt と JSON 出力
-//! スキーマに従って構造化変更リスト（category + text + ref）を抽出する。認証は Actions の `GITHUB_TOKEN`
-//! を `Authorization: Bearer` で使い、別 secret を要求しない。`dotfiles` の async runtime 内から blocking
-//! HTTP client を使わないため、リクエストは外部 `curl` への翻訳で行う。
+//! リリースノートの場所は機械的に一律取得できないため、抽出は **AI エージェントに適切なノートを取得させて
+//! 要約させる**方式を取る。adapter は [`ExtractRequest`] のヒント（パッケージ名・old→new・homepage/repo/changelog）
+//! から、パッケージの正規ドメインに限定した fetch 許可ホスト集合を組み立て（domain の
+//! [`allowed_fetch_hosts`](crate::update_history::domain::validate::allowed_fetch_hosts)）、AI に `fetch_url`
+//! ツールを与えて会話ループを回す:
+//!
+//! 1. 初回 request: system prompt（抽出契約 + ハルシネーション防止）+ user（パッケージ名・old→new・ヒント URL
+//!    群・seed ノート）+ `tools=[fetch_url]` + `tool_choice=auto`。
+//! 2. レスポンスが `finish_reason: tool_calls` なら各 `fetch_url(url)` を **SSRF 検査つきで実行**し、取得テキスト
+//!    （truncate 済）を `role: tool` メッセージで会話へ追加して再 request。
+//! 3. AI が十分なノートを読んだら（tool_calls を出さなくなる、または反復上限）、**tools を外し response_format
+//!    （strict schema）を付けた最終ターン**で構造化変更リストを返させる。
+//! 4. 有界: 1 パッケージあたり tool_call 反復は最大 [`MAX_TOOL_ITERATIONS`] 回。超過したら持っている材料で
+//!    最終要約ターンへ移る。
+//!
+//! 認証は Actions の `GITHUB_TOKEN` を `Authorization: Bearer` で使い、別 secret を要求しない。`dotfiles` の
+//! async runtime 内から blocking HTTP client を使わないため、リクエストは外部 `curl` への翻訳で行う。
+//!
+//! **SSRF（最重要）**: AI が要求する `fetch_url` の URL は、eval メタ由来（信頼境界内）のヒント host だけから
+//! 組み立てた許可ホスト集合に host が一致する https のみ実行する。集合外の URL は fetch せずツール結果として
+//! 「not allowed」を返す（AI は別 URL を試せる）。**ノート本文（信頼境界外）から得た URL を無検証で fetch
+//! しない**＝ホスト集合はパッケージごとに eval メタから組み立て、ノート内容で拡張しない。fetch は注入された
+//! 安全 fetch（[`notes`](crate::update_history::adapters) の `-L` 無し・`--max-redirs 0`・`--proto =https`・https
+//! のみの curl）を再利用し、取得テキストは [`MAX_NOTES_CHARS`] へ truncate、総 fetch 回数も [`MAX_TOOL_ITERATIONS`]
+//! × [`MAX_TOOL_CALLS_PER_TURN`] で有界にする。
 //!
 //! 縮退契約: `GITHUB_TOKEN` 未設定・API 呼び出し失敗・JSON 解析失敗・スキーマ不一致は、record を止めず
 //! 空配列（version+notes_url へ縮退）へ倒す。縮退時は **なぜ空になったか**を非致命の 1 行診断として stderr へ
@@ -37,8 +59,10 @@ use serde::Deserialize;
 
 use crate::Result;
 use crate::process::run_capture_with_stdin;
+use crate::update_history::adapters::fetch_allowed_note;
+use crate::update_history::domain::validate::allowed_fetch_hosts;
 use crate::update_history::domain::wire::{ChangeCategory, ChangeItem};
-use crate::update_history::ports::{ChangeExtractPort, RawReleaseNotes};
+use crate::update_history::ports::{ChangeExtractPort, ExtractRequest};
 
 /// GitHub Models 推論エンドポイント（OpenAI 互換チャット補完）。
 const GITHUB_MODELS_ENDPOINT: &str = "https://models.github.ai/inference/chat/completions";
@@ -134,19 +158,43 @@ const RETRY_AFTER_HEADER: &str = "retry-after";
 /// 一意文字列を選ぶ。トレーラはこの sentinel に続いて `http_code` と `header_json` を改行区切りで持つ。
 const CURL_META_SENTINEL: &str = "\n<<<DOTFILES_CURL_META>>>\n";
 
+/// 1 パッケージあたりの tool_call 反復（fetch → 再 request）の最大回数。
+///
+/// AI が `fetch_url` を要求するたびに 1 反復を消費する。上限に達したら（または AI が tool_calls を出さなく
+/// なったら）tools を外して response_format 強制の最終要約ターンへ移る。有界にするのは、AI が延々と fetch を
+/// 要求して model 呼び出しが膨らみ、抽出フェーズ予算（[`EXTRACT_BUDGET`]）や record job timeout を食い潰すのを
+/// 防ぐため。各反復は 1 model 呼び出し + 数件の fetch であり、3 反復で「初回 → fetch → 再考 → fetch → 再考」
+/// 程度の探索が可能。
+const MAX_TOOL_ITERATIONS: u32 = 3;
+
+/// 1 ターンで実行する tool_call（fetch）の最大件数。
+///
+/// AI が 1 レスポンスで複数 `fetch_url` を並べても、実行する fetch をこの件数で打ち切る（残りは「skipped」を
+/// ツール結果で返す）。1 パッケージの総 fetch 回数を [`MAX_TOOL_ITERATIONS`] × この値で有界にし、過剰 HTTP を
+/// 防ぐ。
+const MAX_TOOL_CALLS_PER_TURN: usize = 4;
+
+/// `fetch_url` ツールの名前（AI が tool_call で指定し、adapter が照合する）。
+const FETCH_TOOL_NAME: &str = "fetch_url";
+
 /// 抽出契約を固定する versioned system prompt（v1）。
 ///
 /// 含む: 破壊的変更/セキュリティ修正/新機能/重要バグ修正/非推奨・削除/デフォルト挙動変更。
 /// 除外: 内部リファクタ/CI/ビルド/依存 bump/ドキュメント/typo/宣伝。`text` は簡潔な日本語 1 行。
 /// 与えた生ノートのみを根拠とし（創作禁止）、根拠が無ければ空配列。`ref` はノート内に現れた https URL のみ。
 const EXTRACT_SYSTEM_PROMPT: &str = "\
-あなたはソフトウェアのリリースノートから利用者に意味のある変更だけを抽出する分類器です。\
-与えられたリリースノート本文だけを根拠とし、本文に書かれていない内容を創作してはいけません。\
+あなたはソフトウェアのリリースノートを調査し、利用者に意味のある変更だけを抽出するエージェントです。\
+与えられたパッケージ名・更新前後バージョン・ヒント URL（homepage / リポジトリ / changelog）を手がかりに、\
+fetch_url ツールを使って適切なリリースノート/changelog を自分で取得して読んでください。\
+fetch_url には許可されたドメインの https URL だけを渡せます（許可外は『not allowed』が返ります）。\
+GitHub のパッケージなら releases ページや changelog ファイルの URL を組み立てて取得すると有効です。\
+十分なノートを読み終えたら、取得した実際のノート本文だけを根拠に変更を抽出してください。\
+取得できなかった内容や本文に書かれていない内容を創作してはいけません。\
 含めるのは次のカテゴリの変更だけです: 破壊的変更(breaking)、セキュリティ修正(security)、\
 新機能(feature)、重要なバグ修正(fix)、非推奨化・削除(deprecation)、デフォルト挙動変更(default-change)。\
 除外するもの: 内部リファクタリング、CI/ビルド変更、依存パッケージの単純な bump、ドキュメント/typo 修正、宣伝。\
 各変更は category と簡潔な日本語 1 行の text を持ちます。ref はノート本文に現れた https の URL のみ、無ければ省略します。\
-根拠となる変更が無ければ空の配列を返します。出力は指定された JSON スキーマに厳密に従ってください。";
+根拠となる変更が無ければ空の配列を返します。最終出力は指定された JSON スキーマに厳密に従ってください。";
 
 /// LLM 出力の最上位 JSON 形（`{ "changes": [...] }`）。
 ///
@@ -182,12 +230,35 @@ struct ChatCompletion {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    /// `tool_calls` / `stop` 等。エージェントループはこれで「AI がツールを呼びたいか」を判定する。
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ChatMessage {
     #[serde(default)]
     content: String,
+    /// AI が要求した tool_call（`fetch_url(url)`）。無ければ空。エージェントループがこれを実行する。
+    #[serde(default)]
+    tool_calls: Vec<ToolCall>,
+}
+
+/// AI が返す 1 件の tool_call（OpenAI 互換）。`id` は対応する `role: tool` 応答へ紐付ける。
+#[derive(Deserialize)]
+struct ToolCall {
+    #[serde(default)]
+    id: String,
+    function: ToolCallFunction,
+}
+
+/// tool_call の関数指定。`name` は [`FETCH_TOOL_NAME`] と照合、`arguments` は JSON 文字列（`{"url": "..."}`）。
+#[derive(Deserialize)]
+struct ToolCallFunction {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    arguments: String,
 }
 
 /// GitHub Models 抽出を `ChangeExtractPort` 契約へ翻訳する adapter。
@@ -245,19 +316,44 @@ impl GithubModelsExtractAdapter {
         std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty())
     }
 
-    /// チャット補完のリクエストボディ JSON を組み立てる（versioned prompt + json schema 強制）。
+    /// エージェントループ初回の会話メッセージ列（system + user）を組み立てる。
     ///
-    /// 生ノートは送信前に [`truncate_notes`] で [`MAX_NOTES_CHARS`] 以内へ切り詰め、リクエスト本文が
-    /// gpt-4o-mini の 8000 トークン上限を確実に下回るようにする（上限超過は `HTTP 413` で全件失敗するため）。
-    fn request_body(notes_text: &str) -> Result<String> {
-        let notes_text = truncate_notes(notes_text);
+    /// user メッセージはパッケージ名・old→new・ヒント URL 群（homepage/repo/changelog）と、機械解決で取れた
+    /// seed ノート（あれば truncate 済み）を載せる。seed があっても AI は更に fetch_url で補える。seed ノートは
+    /// 信頼境界外だが、後段で抽出結果を機械バリデートするため会話材料として与えてよい。
+    fn initial_messages(request: &ExtractRequest) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({ "role": "system", "content": EXTRACT_SYSTEM_PROMPT }),
+            serde_json::json!({ "role": "user", "content": user_prompt(request) }),
+        ]
+    }
+
+    /// tool-use ターンのリクエストボディ JSON を組み立てる（messages + tools + tool_choice=auto）。
+    ///
+    /// AI が `fetch_url` を自分で呼べるよう tools を与え、呼ぶか否かは AI に委ねる（`tool_choice: auto`）。
+    /// response_format はこのターンでは付けない（ツール使用中に schema を強制すると tool_call を出せなくなる
+    /// ため、最終要約ターン [`final_body`] でのみ schema を強制する）。
+    fn tool_turn_body(messages: &[serde_json::Value]) -> Result<String> {
         let body = serde_json::json!({
             "model": EXTRACT_MODEL,
             "temperature": EXTRACT_TEMPERATURE,
-            "messages": [
-                { "role": "system", "content": EXTRACT_SYSTEM_PROMPT },
-                { "role": "user", "content": notes_text },
-            ],
+            "messages": messages,
+            "tools": [fetch_url_tool()],
+            "tool_choice": "auto",
+        });
+        Ok(serde_json::to_string(&body)?)
+    }
+
+    /// 最終要約ターンのリクエストボディ JSON を組み立てる（messages + response_format 強制、tools 無し）。
+    ///
+    /// 十分なノートを読み終えた（または反復上限に達した）会話に対し、tools を外し strict schema の
+    /// response_format を付けて構造化変更リストを返させる。tools を外すことで AI は要約へ収束し、schema 強制で
+    /// 出力形を固定する。
+    fn final_body(messages: &[serde_json::Value]) -> Result<String> {
+        let body = serde_json::json!({
+            "model": EXTRACT_MODEL,
+            "temperature": EXTRACT_TEMPERATURE,
+            "messages": messages,
             "response_format": response_format_schema(),
         });
         Ok(serde_json::to_string(&body)?)
@@ -343,7 +439,7 @@ impl GithubModelsExtractAdapter {
         self.last_request_at.set(Some(Instant::now()));
     }
 
-    /// レスポンス本文（チャット補完 JSON）から変更項目列を取り出す。
+    /// 最終要約ターンのレスポンス本文（チャット補完 JSON）から変更項目列を取り出す。
     ///
     /// チャット補完の `choices[0].message.content` を JSON として再解析し、`changes` 配列を
     /// [`ChangeItem`] へ翻訳する。`changes` は要素単位で try-parse し、未知 category や型不一致の item は
@@ -358,21 +454,7 @@ impl GithubModelsExtractAdapter {
         let Some(choice) = completion.choices.into_iter().next() else {
             return Vec::new();
         };
-        let extracted: ExtractedChanges = match serde_json::from_str(&choice.message.content) {
-            Ok(value) => value,
-            Err(_) => return Vec::new(),
-        };
-        extracted
-            .changes
-            .into_iter()
-            // 各 item を個別に寛容に deserialize し、未知 category/不正 item はその 1 件だけ skip する。
-            .filter_map(|value| serde_json::from_value::<ExtractedItem>(value).ok())
-            .map(|item| ChangeItem {
-                category: item.category,
-                text: item.text,
-                ref_url: item.r#ref,
-            })
-            .collect()
+        parse_change_items(&choice.message.content)
     }
 }
 
@@ -384,6 +466,216 @@ impl GithubModelsExtractAdapter {
 fn auth_config(token: &str) -> String {
     let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
     format!("header = \"Authorization: Bearer {escaped}\"\n")
+}
+
+/// `fetch_url` ツールの JSON 定義（OpenAI 互換 function tool）。
+///
+/// AI は `fetch_url({"url": "..."})` でリリースノート/changelog を自分で取得できる。description で「許可された
+/// ドメインの https URL のみ」「取得テキストはリリースノート要約の根拠」を AI に伝える。許可外 URL の実行拒否は
+/// adapter 側の SSRF 検査（[`fetch_host_allowed`]）が機械的に担保し、prompt の指示だけに依存しない。
+fn fetch_url_tool() -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": FETCH_TOOL_NAME,
+            "description": "指定した https URL の本文を取得して返す。許可されたドメイン（パッケージの \
+    homepage / リポジトリ / GitHub 公式）の https URL のみ取得でき、許可外は『not allowed』を返す。\
+    リリースノートや changelog の取得に使う。",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["url"],
+                "properties": {
+                    "url": { "type": "string", "description": "取得する https URL" }
+                }
+            }
+        }
+    })
+}
+
+/// エージェント初回 user メッセージの本文を組み立てる純粋関数。
+///
+/// パッケージ名・更新前後バージョン・ヒント URL（homepage/repo/changelog）を AI へ提示し、seed ノートがあれば
+/// truncate して添える。AI はこれらを手がかりに fetch_url で適切なノートを自分で取得する。
+fn user_prompt(request: &ExtractRequest) -> String {
+    let mut lines = vec![format!("パッケージ: {}", request.name)];
+    let old = request.old.as_deref().unwrap_or("(なし)");
+    let new = request.new.as_deref().unwrap_or("(なし)");
+    lines.push(format!("更新: {old} → {new}"));
+    if let Some(repo) = request.repo.as_deref().filter(|s| !s.is_empty()) {
+        lines.push(format!("GitHub リポジトリ: {repo}"));
+        lines.push(format!(
+            "releases ページ: https://github.com/{repo}/releases"
+        ));
+    }
+    if let Some(homepage) = request.homepage.as_deref().filter(|s| !s.is_empty()) {
+        lines.push(format!("homepage: {homepage}"));
+    }
+    if let Some(changelog) = request.changelog.as_deref().filter(|s| !s.is_empty()) {
+        lines.push(format!("changelog: {changelog}"));
+    }
+    if let Some(seed) = request.seed_notes.as_ref() {
+        lines.push(String::from(
+            "参考として機械取得したノート（不完全な場合があるため fetch_url で補ってよい）:",
+        ));
+        lines.push(truncate_notes(&seed.text));
+    } else {
+        lines.push(String::from(
+            "fetch_url で適切なリリースノートを取得してから抽出してください。",
+        ));
+    }
+    lines.join("\n")
+}
+
+/// 最終ターン content（`{ "changes": [...] }`）から [`ChangeItem`] 列を取り出す純粋関数。
+///
+/// `changes` は要素単位で try-parse し、未知 category や型不一致の item はその 1 件だけ drop する（一括
+/// deserialize だと不正 1 件で全 changes が空へ縮退するため）。content の JSON 解析失敗は空配列。host/長さ/件数の
+/// 機械バリデートは domain 側で別途行う。
+fn parse_change_items(content: &str) -> Vec<ChangeItem> {
+    let extracted: ExtractedChanges = match serde_json::from_str(content) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    extracted
+        .changes
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<ExtractedItem>(value).ok())
+        .map(|item| ChangeItem {
+            category: item.category,
+            text: item.text,
+            ref_url: item.r#ref,
+        })
+        .collect()
+}
+
+/// チャット補完レスポンスから最初の choice の `(tool_calls, finish_reason)` を取り出す純粋関数。
+///
+/// エージェントループはこれで「AI が `fetch_url` を呼びたいか」を判定する。JSON 解析失敗・`choices` 不在は
+/// 「tool_call 無し」（空 Vec, `None`）として扱い、ループは最終要約ターンへ移る。`finish_reason` は診断と
+/// 「tool_calls を出したか」の補助判定に使う。
+fn parse_turn(response: &str) -> (Vec<ToolCall>, Option<String>) {
+    let completion: ChatCompletion = match serde_json::from_str(response) {
+        Ok(value) => value,
+        Err(_) => return (Vec::new(), None),
+    };
+    match completion.choices.into_iter().next() {
+        Some(choice) => (choice.message.tool_calls, choice.finish_reason),
+        None => (Vec::new(), None),
+    }
+}
+
+/// tool_call の `arguments`（JSON 文字列 `{"url": "..."}`）から URL を取り出す純粋関数。
+///
+/// `name` が [`FETCH_TOOL_NAME`] でない・arguments が JSON でない・`url` フィールドが無い/非文字列は `None`
+/// （その tool_call は無視する）。AI が渡した URL の host 許可判定は呼び出し側（fetch 実行前）が行う。
+fn tool_call_url(call: &ToolCall) -> Option<String> {
+    if call.function.name != FETCH_TOOL_NAME {
+        return None;
+    }
+    let args: serde_json::Value = serde_json::from_str(&call.function.arguments).ok()?;
+    args.get("url")?.as_str().map(str::to_string)
+}
+
+/// AI が tool_call で要求した assistant メッセージを会話へ追加する形（OpenAI 互換）に組み立てる。
+///
+/// 再 request では、AI の tool_call を含む assistant メッセージと、それに対応する `role: tool` 応答を順に
+/// 会話へ積む必要がある。assistant メッセージは `tool_calls` を `id`/`function.name`/`function.arguments` で
+/// echo back する（API がツール応答を紐付けるため）。content は空文字にする。
+fn assistant_tool_call_message(calls: &[ToolCall]) -> serde_json::Value {
+    let tool_calls: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|call| {
+            serde_json::json!({
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                }
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": tool_calls,
+    })
+}
+
+/// tool_call への `role: tool` 応答メッセージを組み立てる（`tool_call_id` で紐付け）。
+fn tool_result_message(tool_call_id: &str, content: &str) -> serde_json::Value {
+    serde_json::json!({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": content,
+    })
+}
+
+/// tool-use エージェントループ本体（network/fetch/sleep に依存しない純粋規約）。
+///
+/// `request` は 1 model 呼び出し（body JSON を渡し、レスポンス本文文字列を返す）。`fetch` は SSRF 検査つきの
+/// URL 取得（許可外/失敗は `None`）。両 closure を注入することで、実 GitHub Models・実 curl を呼ばずにループ
+/// 規約（tool_call→fetch→再 request→最終 schema・有界反復）を hermetic にテストできる。
+///
+/// 進行:
+/// 1. 初回 [`tool_turn_body`]（messages + tools + tool_choice=auto）で `request`。
+/// 2. レスポンスの tool_calls を [`parse_turn`] で読む。tool_calls があり反復が [`MAX_TOOL_ITERATIONS`] 未満なら、
+///    各 `fetch_url(url)` を `fetch` で実行（1 ターン最大 [`MAX_TOOL_CALLS_PER_TURN`] 件、許可外/失敗は「not
+///    allowed」/「fetch failed」をツール結果に）、assistant の tool_call と `role: tool` 応答を会話へ積んで再
+///    [`tool_turn_body`] で `request`。
+/// 3. tool_calls が無くなる or 反復上限に達したら、tools を外し response_format を付けた [`final_body`] で
+///    `request` し、[`parse_change_items`] で構造化変更を取り出す。
+/// 4. `request` の `Err`（curl プロセス失敗）はそのまま伝播（呼び出し側が縮退）。
+///
+/// SSRF 許可ホスト判定は注入された `fetch` closure 内に閉じる（[`fetch_allowed_note`] が host 集合で機械判定し、
+/// 許可外は `None`）。ループ本体は host 集合を直接持たず、「`fetch` が `None` を返したら『not allowed』を AI へ
+/// 返す」という規約だけを担う（host 集合の組み立ては呼び出し側の責務）。
+fn agent_loop<R, F>(
+    request: &ExtractRequest,
+    mut model_request: R,
+    mut fetch: F,
+) -> Result<Vec<ChangeItem>>
+where
+    R: FnMut(&str) -> Result<String>,
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let mut messages = GithubModelsExtractAdapter::initial_messages(request);
+    for _ in 0..MAX_TOOL_ITERATIONS {
+        let body = GithubModelsExtractAdapter::tool_turn_body(&messages)?;
+        let response = model_request(&body)?;
+        let (calls, _finish_reason) = parse_turn(&response);
+        let fetch_calls: Vec<&ToolCall> = calls
+            .iter()
+            .filter(|call| call.function.name == FETCH_TOOL_NAME)
+            .collect();
+        if fetch_calls.is_empty() {
+            // AI はもうツールを呼ばない。最終要約ターンへ移る。
+            break;
+        }
+        // AI の tool_call を assistant メッセージとして echo back し、各呼び出しへ tool 応答を積む。
+        messages.push(assistant_tool_call_message(&calls));
+        for call in calls.iter().take(MAX_TOOL_CALLS_PER_TURN) {
+            // fetch_url 以外の tool_call は紐付けのため空応答を返す（API は全 tool_call へ応答を要求する）。
+            let result = match tool_call_url(call) {
+                Some(url) => match fetch(&url)? {
+                    Some(text) => truncate_notes(&text),
+                    // 許可外 host または取得失敗。AI は別 URL を試せる。
+                    None => String::from("not allowed or fetch failed"),
+                },
+                None => String::from("unsupported tool"),
+            };
+            messages.push(tool_result_message(&call.id, &result));
+        }
+        // MAX_TOOL_CALLS_PER_TURN を超えた残り tool_call にも紐付け応答を積む（API 整合）。
+        for call in calls.iter().skip(MAX_TOOL_CALLS_PER_TURN) {
+            messages.push(tool_result_message(&call.id, "skipped (too many calls)"));
+        }
+    }
+    // 最終要約ターン: tools を外し response_format 強制で構造化変更を返させる。
+    let final_body = GithubModelsExtractAdapter::final_body(&messages)?;
+    let response = model_request(&final_body)?;
+    Ok(GithubModelsExtractAdapter::parse_response(&response))
 }
 
 /// curl の stdout（本文）+ `--write-out` トレーラ（[`CURL_META_SENTINEL`] + status + ヘッダ JSON）出力から
@@ -585,57 +877,80 @@ fn response_format_schema() -> serde_json::Value {
     })
 }
 
-impl ChangeExtractPort for GithubModelsExtractAdapter {
-    /// 生リリースノートを GitHub Models で構造化変更へ抽出する。失敗は record を止めず空配列へ縮退する。
+impl GithubModelsExtractAdapter {
+    /// 1 model 呼び出しを実行する: ペーシングを敷き、429 リトライつきで POST し、200 本文を返す。
     ///
-    /// 縮退契約（[module 先頭][self] 参照）は維持しつつ、**なぜ空になったか**を非致命の 1 行診断として stderr へ
-    /// 出す（CI ログで HTTP 403/401 等の握り潰しを可視化するため）。診断は: token 未設定（`skipped`）、curl
-    /// プロセス失敗（`degraded: curl failed`）、HTTP 非 200（`degraded: HTTP <code>` + 本文断片）。token は
-    /// いずれのログにも出さない（`-w` は数値 status とレスポンスヘッダのみ、本文断片は token を含まない API
-    /// レスポンス）。成功時はログしない（うるさくしない）。返り値は常に `Ok`（解析結果または空配列）で record を
-    /// 止めない。
-    ///
-    /// レート制限対応: 呼び出し前に [`pace_before_request`](Self::pace_before_request) で
-    /// [`MIN_REQUEST_INTERVAL`] のペーシングを敷き（複数パッケージの呼び出し列が per-minute 上限を超えないよう
-    /// 分散）、HTTP 呼び出しは [`post_with_retry`](Self::post_with_retry) で 429 のバックオフ付き再試行を行う。
-    /// 有界回数の再試行でも 429 が解消しない場合（daily 上限等）は他の HTTP エラーと同様に空配列へ縮退し、
-    /// version+notes_url を残す（record success 維持・サイレント切り捨てなし＝429 は診断ログで件数可視化済み）。
-    fn extract_change_items(&self, notes: &RawReleaseNotes) -> Result<Vec<ChangeItem>> {
-        // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック）。未設定検知時に 1 度だけ
-        // ログする（呼び出しごとではない＝この経路自体が未設定時に 1 回通る）。
-        let Some(token) = Self::github_token() else {
-            eprintln!("GitHub Models extract skipped: GITHUB_TOKEN unset");
-            return Ok(Vec::new());
-        };
-        let body = Self::request_body(&notes.text)?;
-        // 複数パッケージの呼び出し列が per-minute レート上限を超えないよう、呼び出し前に最小間隔を敷く。
+    /// 非 200（429・他 HTTP エラー）と curl 失敗は `Err` にして agent_loop の外（[`extract_change_items`]）へ
+    /// 伝播させ、そこで空配列へ縮退させる。診断（429/他 HTTP/curl 失敗の区別）はここで 1 行ログする（token は
+    /// 出さない）。各 model 呼び出しの前に [`pace_before_request`] で per-minute レート上限内のペースを敷く
+    /// （エージェントは 1 パッケージで複数 model 呼び出しをするため、ペーシング/予算は model 呼び出し単位で効かせる）。
+    fn model_request(&self, token: &str, body: &str) -> Result<String> {
         self.pace_before_request();
-        // 呼び出し失敗（ネットワーク/認証/レート）も record を止めず空へ縮退する。診断ログだけ残す。
-        match self.post_with_retry(&token, &body) {
-            Ok((200, response, _headers)) => Ok(Self::parse_response(&response)),
+        match self.post_with_retry(token, body) {
+            Ok((200, response, _headers)) => Ok(response),
             Ok((429, _response, _headers)) => {
-                // 有界リトライ（または残予算切れ）を使い切っても 429 が解消しなかった経路。一過性レート制限の
-                // 枯渇を、汎用 HTTP エラーと区別できる文言で明示する（運用者が単発エラーと切り分けられる）。
-                // token は含まれない（status は数値、本文は出さない）。version+notes_url へ縮退。
                 eprintln!(
                     "GitHub Models extract degraded: HTTP 429 after {MAX_RATE_LIMIT_RETRIES} bounded retries (rate-limited)"
                 );
-                Ok(Vec::new())
+                anyhow::bail!("github models rate-limited (429)")
             }
             Ok((status, response, _headers)) => {
-                // HTTP エラー: status と本文断片（token 非含有）を 1 行ログ。空へ縮退。
                 eprintln!(
                     "GitHub Models extract degraded: HTTP {status}: {}",
                     body_snippet(&response)
                 );
-                Ok(Vec::new())
+                anyhow::bail!("github models HTTP {status}")
             }
-            Err(_) => {
-                // curl プロセス自体の失敗（spawn/ネットワーク不達等）。error 本文に token は含まれないが、防御的に
-                // 詳細は出さず固定文言のみログする。空へ縮退。
+            Err(error) => {
                 eprintln!("GitHub Models extract degraded: curl failed");
-                Ok(Vec::new())
+                Err(error)
             }
+        }
+    }
+}
+
+impl ChangeExtractPort for GithubModelsExtractAdapter {
+    /// AI エージェントにノートを取得・要約させて構造化変更へ抽出する。失敗は record を止めず空配列へ縮退する。
+    ///
+    /// エージェントループ（[`agent_loop`]）に、ヒントから組み立てた fetch 許可ホスト集合と、実 model 呼び出し
+    /// （[`model_request`](Self::model_request)）・実 SSRF 検査つき fetch（[`fetch_allowed_note`]）を注入して
+    /// 駆動する。AI が `fetch_url` で自分でノートを取得・読解し、最終ターンで構造化変更を返す。
+    ///
+    /// SSRF: fetch 許可ホスト集合は **eval メタ由来のヒント**（repo/homepage/changelog）だけから
+    /// [`allowed_fetch_hosts`] で組み立て、ノート本文（信頼境界外）では拡張しない。AI が要求した URL の host が
+    /// 集合外なら [`fetch_allowed_note`] が fetch せず `None` を返し、ループは「not allowed」を AI へ返す。
+    ///
+    /// 縮退契約（[module 先頭][self] 参照）は維持しつつ、**なぜ空になったか**を非致命の 1 行診断として stderr へ
+    /// 出す（token 未設定（`skipped`）、curl プロセス失敗、HTTP 非 200）。token はいずれのログにも出さない。
+    /// 返り値は常に `Ok`（解析結果または空配列）で record を止めない。
+    ///
+    /// レート制限/予算: 各 model 呼び出しの前に [`pace_before_request`](Self::pace_before_request) で
+    /// [`MIN_REQUEST_INTERVAL`] のペースを敷き、HTTP 呼び出しは [`post_with_retry`](Self::post_with_retry) で
+    /// 429 のバックオフ付き再試行を行う。有界回数でも 429 が解消しない場合は空配列へ縮退する（record success
+    /// 維持）。ペーシング/予算は **model 呼び出し単位**で効く（エージェントは 1 パッケージで複数回呼ぶ）。
+    fn extract_change_items(&self, request: &ExtractRequest) -> Result<Vec<ChangeItem>> {
+        // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック）。
+        let Some(token) = Self::github_token() else {
+            eprintln!("GitHub Models extract skipped: GITHUB_TOKEN unset");
+            return Ok(Vec::new());
+        };
+        // fetch 許可ホスト集合は eval メタ由来のヒントだけから組み立てる（ノート本文では拡張しない＝SSRF 防御）。
+        let allowed_hosts = allowed_fetch_hosts(
+            request.repo.as_deref(),
+            request.homepage.as_deref(),
+            request.changelog.as_deref(),
+        );
+        // model 呼び出しは self.model_request（ペーシング + 429 リトライ + 診断 + 非 200/curl 失敗を Err 化）、
+        // fetch は SSRF 検査つき fetch_allowed_note を注入する。いずれかの Err（レート枯渇・HTTP エラー・curl
+        // 失敗）は record を止めず空配列へ縮退する（診断は model_request 側で 1 行ログ済み）。
+        match agent_loop(
+            request,
+            |body| self.model_request(&token, body),
+            |url| fetch_allowed_note(url, &allowed_hosts),
+        ) {
+            Ok(items) => Ok(items),
+            // model 呼び出しの失敗（レート枯渇・HTTP エラー・curl 失敗）。診断は model_request で出力済み。
+            Err(_) => Ok(Vec::new()),
         }
     }
 
@@ -657,14 +972,32 @@ mod tests {
 
     use super::{
         BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
-        MAX_RATE_LIMIT_RETRIES, MIN_REQUEST_INTERVAL, TRUNCATION_MARKER, auth_config,
-        backoff_delay, body_snippet, response_format_schema, retry_after_seconds, retry_loop,
-        split_meta, truncate_notes,
+        MAX_RATE_LIMIT_RETRIES, MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_ITERATIONS, MIN_REQUEST_INTERVAL,
+        TRUNCATION_MARKER, agent_loop, auth_config, backoff_delay, body_snippet,
+        response_format_schema, retry_after_seconds, retry_loop, split_meta, tool_call_url,
+        truncate_notes, user_prompt,
     };
+    use crate::update_history::domain::validate::allowed_fetch_hosts;
     use crate::update_history::domain::wire::ChangeCategory;
-    use crate::update_history::ports::ChangeExtractPort;
+    use crate::update_history::ports::{ChangeExtractPort, ExtractRequest, RawReleaseNotes};
     use std::cell::Cell;
     use std::time::Duration;
+
+    /// テスト用 [`ExtractRequest`] を作る（name + old→new + repo ヒント + 任意 seed ノート）。
+    fn request_with(name: &str, repo: Option<&str>, seed: Option<&str>) -> ExtractRequest {
+        ExtractRequest {
+            name: name.to_string(),
+            old: Some("1.0".to_string()),
+            new: Some("1.1".to_string()),
+            repo: repo.map(str::to_string),
+            homepage: None,
+            changelog: None,
+            seed_notes: seed.map(|text| RawReleaseNotes {
+                text: text.to_string(),
+                notes_url: format!("https://github.com/{}/releases", repo.unwrap_or("o/r")),
+            }),
+        }
+    }
 
     #[test]
     fn auth_config_puts_token_in_stdin_header_not_argv() {
@@ -743,13 +1076,83 @@ mod tests {
     }
 
     #[test]
-    fn request_body_includes_prompt_schema_and_low_temperature() -> crate::Result<()> {
-        let body = GithubModelsExtractAdapter::request_body("raw notes")?;
+    fn tool_turn_body_offers_fetch_tool_and_auto_choice() -> crate::Result<()> {
+        // tool-use ターンは fetch_url ツールを与え tool_choice=auto で AI に呼ぶか委ねる。response_format は
+        // このターンでは付けない（ツール使用を妨げないため）。
+        let request = request_with("neovim", Some("neovim/neovim"), None);
+        let messages = GithubModelsExtractAdapter::initial_messages(&request);
+        let body = GithubModelsExtractAdapter::tool_turn_body(&messages)?;
+        let value: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(value["temperature"], 0.0);
+        assert_eq!(value["tool_choice"], "auto");
+        assert_eq!(value["tools"][0]["function"]["name"], "fetch_url");
+        assert!(
+            value["response_format"].is_null(),
+            "tool ターンに schema は付けない"
+        );
+        // system + user の 2 メッセージで始まる。
+        assert_eq!(value["messages"][0]["role"], "system");
+        assert_eq!(value["messages"][1]["role"], "user");
+        Ok(())
+    }
+
+    #[test]
+    fn final_body_forces_schema_without_tools() -> crate::Result<()> {
+        // 最終要約ターンは tools を外し response_format（strict schema）を強制する。
+        let request = request_with("neovim", Some("neovim/neovim"), None);
+        let messages = GithubModelsExtractAdapter::initial_messages(&request);
+        let body = GithubModelsExtractAdapter::final_body(&messages)?;
         let value: serde_json::Value = serde_json::from_str(&body)?;
         assert_eq!(value["temperature"], 0.0);
         assert_eq!(value["response_format"]["type"], "json_schema");
-        assert_eq!(value["messages"][1]["content"], "raw notes");
+        assert!(value["tools"].is_null(), "最終ターンに tools は付けない");
         Ok(())
+    }
+
+    #[test]
+    fn user_prompt_includes_name_versions_and_hint_urls() {
+        // user prompt はパッケージ名・old→new・ヒント URL を AI へ提示する（fetch の手がかり）。
+        let request = ExtractRequest {
+            name: "neovim".to_string(),
+            old: Some("0.10".to_string()),
+            new: Some("0.11".to_string()),
+            repo: Some("neovim/neovim".to_string()),
+            homepage: Some("https://neovim.io/".to_string()),
+            changelog: Some(
+                "https://github.com/neovim/neovim/blob/master/CHANGELOG.md".to_string(),
+            ),
+            seed_notes: None,
+        };
+        let prompt = user_prompt(&request);
+        assert!(prompt.contains("neovim"));
+        assert!(prompt.contains("0.10"));
+        assert!(prompt.contains("0.11"));
+        assert!(prompt.contains("https://github.com/neovim/neovim/releases"));
+        assert!(prompt.contains("https://neovim.io/"));
+    }
+
+    #[test]
+    fn tool_call_url_reads_url_from_fetch_arguments() {
+        // fetch_url tool_call の arguments(JSON) から url を取り出す。別ツール名・不正 JSON は None。
+        let call = super::ToolCall {
+            id: "c1".to_string(),
+            function: super::ToolCallFunction {
+                name: "fetch_url".to_string(),
+                arguments: r#"{"url":"https://github.com/o/r/releases"}"#.to_string(),
+            },
+        };
+        assert_eq!(
+            tool_call_url(&call).as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        let other = super::ToolCall {
+            id: "c2".to_string(),
+            function: super::ToolCallFunction {
+                name: "other_tool".to_string(),
+                arguments: r#"{"url":"https://github.com/x"}"#.to_string(),
+            },
+        };
+        assert_eq!(tool_call_url(&other), None);
     }
 
     #[test]
@@ -1163,19 +1566,233 @@ mod tests {
     }
 
     #[test]
-    fn request_body_truncates_over_limit_notes() -> crate::Result<()> {
-        // 退行固定: request_body は上限超ノートを user message へ載せる前に切り詰める。
-        // user content の char 数が MAX_NOTES_CHARS + 印 を超えないことを確認する（HTTP 413 回避の核）。
+    fn user_prompt_truncates_over_limit_seed_notes() {
+        // 退行固定: 上限超の seed ノートは user prompt へ載せる前に切り詰める（HTTP 413 回避の核）。
+        // truncate 印で終わり、本体が MAX_NOTES_CHARS 以内であることを確認する。
         let long_notes = "x".repeat(MAX_NOTES_CHARS + 9000);
-        let body = GithubModelsExtractAdapter::request_body(&long_notes)?;
-        let value: serde_json::Value = serde_json::from_str(&body)?;
-        let content = value["messages"][1]["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("user content missing"))?;
-        let marker_chars = TRUNCATION_MARKER.chars().count();
-        assert_eq!(content.chars().count(), MAX_NOTES_CHARS + marker_chars);
-        assert!(content.ends_with(TRUNCATION_MARKER));
+        let request = ExtractRequest {
+            name: "pkg".to_string(),
+            old: None,
+            new: None,
+            repo: None,
+            homepage: None,
+            changelog: None,
+            seed_notes: Some(RawReleaseNotes {
+                text: long_notes,
+                notes_url: "https://github.com/o/r/releases".to_string(),
+            }),
+        };
+        let prompt = user_prompt(&request);
+        assert!(prompt.ends_with(TRUNCATION_MARKER));
+        // seed 本体（"x" 連続）は MAX_NOTES_CHARS 以内へ切られている。
+        let x_count = prompt.chars().filter(|c| *c == 'x').count();
+        assert_eq!(x_count, MAX_NOTES_CHARS);
+    }
+
+    #[test]
+    fn agent_loop_fetches_then_summarizes_with_schema() -> crate::Result<()> {
+        // 退行固定（エージェントループの主経路）: 初回 tool ターンで AI が fetch_url を要求 → adapter が fetch を
+        // 実行（SSRF 許可 host）→ 再 request → AI がツールを出さない → 最終 schema ターンで構造化変更を返す。
+        // 実 model/network/curl を呼ばず request/fetch closure を注入して規約を固定する。
+        let request = request_with("neovim", Some("neovim/neovim"), None);
+        let _allowed = allowed_fetch_hosts(Some("neovim/neovim"), None, None);
+
+        let calls = Cell::new(0usize);
+        let fetched = Cell::new(0usize);
+        // 1 回目: tool_call で fetch_url を要求。2 回目（最終）: 構造化変更を返す。
+        let model = |_body: &str| -> crate::Result<String> {
+            let n = calls.get();
+            calls.set(n + 1);
+            if n == 0 {
+                Ok(serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "fetch_url",
+                                    "arguments": "{\"url\":\"https://github.com/neovim/neovim/releases\"}"
+                                }
+                            }]
+                        }
+                    }]
+                })
+                .to_string())
+            } else {
+                Ok(serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "{\"changes\":[{\"category\":\"feature\",\"text\":\"新機能\",\"ref\":null}]}"
+                        }
+                    }]
+                })
+                .to_string())
+            }
+        };
+        let fetch = |url: &str| -> crate::Result<Option<String>> {
+            fetched.set(fetched.get() + 1);
+            // 許可 host の URL なら fetch 成功を模す。
+            assert_eq!(url, "https://github.com/neovim/neovim/releases");
+            Ok(Some("## Features\n- new thing".to_string()))
+        };
+
+        let items = agent_loop(&request, model, fetch)?;
+        // 1: tool ターン(fetch 要求) → 2: ツール無し（読了）でループ脱出 → 3: 最終 schema ターンで構造化変更。
+        assert_eq!(
+            calls.get(),
+            3,
+            "tool ターン + 読了ターン + 最終 schema ターン = 3 model 呼び出し"
+        );
+        assert_eq!(fetched.get(), 1, "AI が要求した 1 件を fetch する");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].category, ChangeCategory::Feature);
         Ok(())
+    }
+
+    #[test]
+    fn agent_loop_skips_disallowed_url_but_returns_not_allowed() -> crate::Result<()> {
+        // 退行固定（SSRF）: AI がノート本文由来の許可外 host を fetch_url で要求しても、注入された fetch が
+        // None（fetch_allowed_note が host 不一致で fetch しない想定）を返し、ループは「not allowed」を AI へ
+        // 返す。adapter は許可外 host へ実 fetch しない（ここでは fetch closure が呼ばれても host 判定で None）。
+        let request = request_with("pkg", Some("o/r"), None);
+        let allowed = allowed_fetch_hosts(Some("o/r"), None, None);
+        let model = |_body: &str| -> crate::Result<String> {
+            // 常に許可外 URL の fetch を 1 回要求し続けるが、反復上限で最終ターンへ抜ける。
+            Ok(serde_json::json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "c",
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_url",
+                                "arguments": "{\"url\":\"https://evil.example/x\"}"
+                            }
+                        }]
+                    }
+                }]
+            })
+            .to_string())
+        };
+        // fetch_allowed_note と同じ SSRF 判定を模す closure: 許可 host 集合に無い URL は fetch せず None。
+        let fetch = |url: &str| -> crate::Result<Option<String>> {
+            if crate::update_history::domain::validate::fetch_host_allowed(url, &allowed) {
+                Ok(Some("notes".to_string()))
+            } else {
+                Ok(None)
+            }
+        };
+        // 最終ターンは空 changes を返す（model は常に tool_calls を返すが、反復上限後に final_body が呼ばれ、
+        // ここでも同じ tool_calls JSON が返るため content 由来の changes は無く空になる）。
+        let items = agent_loop(&request, model, fetch)?;
+        assert!(
+            items.is_empty(),
+            "許可外 fetch しか得られなければ空配列へ縮退"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_loop_bounds_tool_iterations() -> crate::Result<()> {
+        // 退行固定（有界反復）: AI が毎ターン fetch_url を要求し続けても、tool ターンは MAX_TOOL_ITERATIONS 回
+        // で打ち切り、最終要約ターンへ移る。model 呼び出し総数 = MAX_TOOL_ITERATIONS + 1（最終ターン）。
+        let request = request_with("pkg", Some("o/r"), None);
+        let calls = Cell::new(0usize);
+        let model = |_body: &str| -> crate::Result<String> {
+            calls.set(calls.get() + 1);
+            Ok(serde_json::json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "c",
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_url",
+                                "arguments": "{\"url\":\"https://github.com/o/r/releases\"}"
+                            }
+                        }]
+                    }
+                }]
+            })
+            .to_string())
+        };
+        let fetch = |_url: &str| -> crate::Result<Option<String>> { Ok(Some("notes".to_string())) };
+        let _ = agent_loop(&request, model, fetch)?;
+        assert_eq!(
+            calls.get(),
+            (MAX_TOOL_ITERATIONS + 1) as usize,
+            "tool 反復は上限で打ち切り、最終ターンを 1 回行う"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_loop_caps_tool_calls_per_turn() -> crate::Result<()> {
+        // 退行固定（1 ターン fetch 件数上限）: AI が 1 レスポンスで大量の fetch_url を並べても、実行する fetch は
+        // MAX_TOOL_CALLS_PER_TURN 件で打ち切る（残りは skipped をツール結果に）。
+        let request = request_with("pkg", Some("o/r"), None);
+        let fetched = Cell::new(0usize);
+        let calls = Cell::new(0usize);
+        let model = |_body: &str| -> crate::Result<String> {
+            let n = calls.get();
+            calls.set(n + 1);
+            if n == 0 {
+                // 1 ターンで MAX_TOOL_CALLS_PER_TURN + 3 件の fetch を要求する。
+                let tool_calls: Vec<serde_json::Value> = (0..(MAX_TOOL_CALLS_PER_TURN + 3))
+                    .map(|i| {
+                        serde_json::json!({
+                            "id": format!("c{i}"),
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_url",
+                                "arguments": "{\"url\":\"https://github.com/o/r/releases\"}"
+                            }
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": { "content": "", "tool_calls": tool_calls }
+                    }]
+                })
+                .to_string())
+            } else {
+                Ok(serde_json::json!({
+                    "choices": [{ "finish_reason": "stop", "message": { "content": "{\"changes\":[]}" } }]
+                })
+                .to_string())
+            }
+        };
+        let fetch = |_url: &str| -> crate::Result<Option<String>> {
+            fetched.set(fetched.get() + 1);
+            Ok(Some("notes".to_string()))
+        };
+        let _ = agent_loop(&request, model, fetch)?;
+        assert_eq!(
+            fetched.get(),
+            MAX_TOOL_CALLS_PER_TURN,
+            "1 ターンの fetch は上限で打ち切る"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_loop_propagates_model_error() {
+        // 退行固定（縮退）: model 呼び出しが Err（レート枯渇・HTTP エラー・curl 失敗）なら、エージェントループは
+        // その Err を伝播し、呼び出し側（extract_change_items）が空配列へ縮退する。
+        let request = request_with("pkg", Some("o/r"), None);
+        let model = |_body: &str| -> crate::Result<String> { anyhow::bail!("rate limited") };
+        let fetch = |_url: &str| -> crate::Result<Option<String>> { Ok(None) };
+        assert!(agent_loop(&request, model, fetch).is_err());
     }
 
     #[test]

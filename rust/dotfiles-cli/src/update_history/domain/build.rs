@@ -112,6 +112,7 @@ mod tests {
             source,
             repo: None,
             notes_source: None,
+            homepage: None,
         }
     }
 

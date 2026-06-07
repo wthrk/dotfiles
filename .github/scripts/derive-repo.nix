@@ -73,6 +73,7 @@ in
     asStr
     fromSrc
     changelogOf
+    homepageOf
     repoOf
     ;
 }

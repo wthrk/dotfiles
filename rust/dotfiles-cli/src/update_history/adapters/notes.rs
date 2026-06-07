@@ -48,6 +48,7 @@
 //! （letter でなく `font` 固定サブディレクトリ）に置かれるため、font cask は subdir を `font` にする。それ以外の
 //! 基底（forge 等）は従来どおり `<base><name>` を使う。
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 
 use crate::Result;
@@ -55,8 +56,33 @@ use crate::process::{run_capture, run_capture_with_stdin};
 use crate::update_history::domain::diff::{
     DeltaSource, release_version, version_in_range, version_ordering,
 };
-use crate::update_history::domain::validate::is_allowed_url;
+use crate::update_history::domain::validate::{fetch_host_allowed, is_allowed_url};
 use crate::update_history::ports::{NotesPort, RawReleaseNotes};
+
+/// AI エージェント（GitHub Models tool-use ループ）が要求した `fetch_url` の URL を、SSRF 検査つきで取得する。
+///
+/// この関数は GitHub Models adapter のエージェントループから注入される **安全 fetch** であり、notes adapter が
+/// 既に持つ「`-L` 無し・`--max-redirs 0`・`--proto =https`・https のみ」の curl 経路（[`curl_args`]）をそのまま
+/// 再利用する（agent loop 側に curl 引数列を二重実装しない）。
+///
+/// **SSRF 防御**: `allowed_hosts` は呼び出し側が eval メタ（信頼境界内）のヒント host だけから組み立てた
+/// パッケージごとの許可ホスト集合（[`fetch_host_allowed`] で機械判定）。URL の host が集合外、または https 以外
+/// なら **fetch せず** `Ok(None)`（呼び出し側はツール結果として「not allowed」を AI へ返す）。集合内 https のみ
+/// 実際に curl を起動する。ノート本文（信頼境界外）から AI が拾った URL でも、この機械判定を必ず通すことで
+/// 許可外 host への横滑りを塞ぐ。取得失敗・空本文も `Ok(None)`（AI は別 URL を試せる）。redirect は追従しない
+/// （初期 host 以外を踏まない）。返す本文の truncate（上限文字数）は呼び出し側の責務（adapter ごとの上限）。
+pub(in crate::update_history) fn fetch_allowed_note(
+    url: &str,
+    allowed_hosts: &BTreeSet<String>,
+) -> Result<Option<String>> {
+    if !fetch_host_allowed(url, allowed_hosts) {
+        return Ok(None);
+    }
+    match run_capture("curl", curl_args(url)) {
+        Ok(text) if !text.trim().is_empty() => Ok(Some(text)),
+        Ok(_) | Err(_) => Ok(None),
+    }
+}
 
 /// curl の `--write-out` トレーラを本文から切り出す sentinel（Releases API 取得の HTTP status 読み取り用）。
 ///

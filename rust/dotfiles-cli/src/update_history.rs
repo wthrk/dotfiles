@@ -22,7 +22,7 @@ mod adapters {
     pub(in crate::update_history) use brew::BrewTapDiffAdapter;
     pub(in crate::update_history) use github_models::GithubModelsExtractAdapter;
     pub(in crate::update_history) use nix::NixEvalVersionAdapter;
-    pub(in crate::update_history) use notes::ReleaseNotesAdapter;
+    pub(in crate::update_history) use notes::{ReleaseNotesAdapter, fetch_allowed_note};
     pub(in crate::update_history) use report::{
         StdoutHistoryReportAdapter, WriterHistoryReportAdapter,
     };
