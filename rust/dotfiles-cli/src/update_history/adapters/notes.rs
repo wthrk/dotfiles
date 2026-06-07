@@ -8,9 +8,21 @@
 //!
 //! ノート URL の解決は差分の出所（nix / brew）で分かれる:
 //! - **nix eval 由来**: 各パッケージの `meta.changelog`（無ければ `meta.homepage`）を CI が `nix eval` で
-//!   解決し、その URL を delta の `notes_source` として運ぶ。本 adapter は `notes_source` をそのまま取得対象に
-//!   する（package 名連結はしない。changelog/homepage は既に完全な URL のため）。`notes_source` 不明
-//!   （`meta` 不在）なら `None`（ノート無し）へ縮退する。
+//!   解決し、その URL を delta の `notes_source` として運ぶ。ただし `meta.changelog`/`meta.homepage` は
+//!   **github.com の HTML ページ URL**（`.../blob/<ref>/<path>` の changelog ファイル閲覧ページ、
+//!   `.../releases/tag/<tag>` のリリースページ、repo root）であることが多く、そのまま curl すると生の
+//!   リリースノートでなく **GitHub の HTML ページ**が返り、LLM が抽出材料にできず空配列になる。よって本
+//!   adapter は `notes_source` を「生ノートテキストが返る取得先」へ [`resolve_nix_notes_source`] で変換して
+//!   から取得する（package 名連結はしない）。変換規則は次のとおり:
+//!   - `github.com/<owner>/<repo>/blob/<ref>/<path>` → `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
+//!     （生ファイル取得。`/blob/refs/tags/<tag>/...` の ref 形も含めて `blob/` 直後をそのまま raw の ref 位置へ移す）。
+//!   - `github.com/<owner>/<repo>/releases/tag/<tag>` → Releases API
+//!     `api.github.com/repos/<owner>/<repo>/releases/tags/<tag>` を取得し JSON の `.body`（リリースノート
+//!     markdown）を抽出して生ノートにする。
+//!   - それ以外（repo root `github.com/<owner>/<repo>`、gitlab、判別不能）→ 生ノート取得不能として `None`
+//!     （version+notes_url 縮退）。`notes_source` 不明（`meta` 不在）も `None` へ縮退する。
+//!
+//!   URL 形の翻訳（HTML 閲覧 URL → 生テキスト取得先）は外部取得先の形式差異吸収であり adapter の責務に置く。
 //! - **brew tap 由来**: CI が解決した cask tap の `Casks/` レイアウト base に package 名を連結した URL
 //!   （`<base><letter>/<name>.rb`）を取得対象にする。`brew_notes_base` 未指定なら `None` へ縮退する。
 //!
@@ -82,6 +94,61 @@ impl ReleaseNotesAdapter {
             Ok(_) | Err(_) => Ok(None),
         }
     }
+
+    /// 取得方式（[`NotesFetchPlan`]）に従って生ノートを取得する。
+    ///
+    /// `Raw` は取得先 URL の本文をそのまま生ノートにする（[`Self::fetch`] と同じ host allowlist・redirect
+    /// 不追従の取得経路）。`ReleasesApi` は Releases API JSON を取得し、`.body`（リリースノート markdown）を
+    /// 生ノートとして取り出す。取得方式に関わらず取得先 URL は変換後 URL であり、`fetch`/`fetch_release_api`
+    /// 内で `is_allowed_url`（raw.githubusercontent.com / api.github.com を含む allowlist）を機械適用する。
+    /// 取得失敗・空本文・JSON 不正・`.body` 空はいずれもノート無し（version+notes_url 縮退）へ倒す。
+    fn fetch_plan(plan: NotesFetchPlan) -> Result<Option<RawReleaseNotes>> {
+        match plan {
+            NotesFetchPlan::Raw(url) => Self::fetch(&url),
+            NotesFetchPlan::ReleasesApi { api_url, notes_url } => {
+                Self::fetch_release_api(&api_url, &notes_url)
+            }
+        }
+    }
+
+    /// GitHub Releases API JSON を取得し `.body`（リリースノート markdown）を生ノートとして返す。
+    ///
+    /// `api_url` は `is_allowed_url`（api.github.com を含む allowlist）で検査してから [`fetch`](Self::fetch)
+    /// と同じ redirect 不追従経路で取得する。応答 JSON の `.body` フィールド（文字列）を抽出し、それを
+    /// 生ノートテキストにする。記録に残す `notes_url` は表示用に元の `releases/tag` ページ URL を使う
+    /// （API URL でなく人間が辿れるリリースページを残す）。取得失敗・JSON 不正・`.body` 不在/非文字列/空は
+    /// すべてノート無しへ縮退する。`.body` は GitHub 上の任意入力であり信頼境界外のまま後段の機械バリデートで守る。
+    ///
+    /// token は不要（公開リポジトリの Releases API は未認証で読める）。本 adapter は token を付けないため
+    /// argv/ログに secret は現れない。
+    fn fetch_release_api(api_url: &str, notes_url: &str) -> Result<Option<RawReleaseNotes>> {
+        if !is_allowed_url(api_url) {
+            return Ok(None);
+        }
+        let json = match run_capture("curl", release_api_curl_args(api_url)) {
+            Ok(text) if !text.trim().is_empty() => text,
+            Ok(_) | Err(_) => return Ok(None),
+        };
+        match extract_release_body(&json) {
+            Some(body) => Ok(Some(RawReleaseNotes {
+                text: body,
+                notes_url: notes_url.to_string(),
+            })),
+            None => Ok(None),
+        }
+    }
+}
+
+/// nix eval 由来 `notes_source`（信頼境界外 URL）の取得方式を表す純粋な解決結果。
+///
+/// `meta.changelog`/`meta.homepage` の HTML 閲覧 URL を「生ノートが返る取得先」へ翻訳した結果であり、
+/// adapter はこれを受けて取得経路（生本文 / Releases API `.body`）を選ぶ。変換不能は呼び出し側で `None`
+/// （version+notes_url 縮退）へ倒す。
+enum NotesFetchPlan {
+    /// 取得先 URL の本文をそのまま生ノートにする（raw ファイル等）。
+    Raw(String),
+    /// Releases API JSON を取得し `.body` を生ノートにする。`notes_url` は記録に残す元のリリースページ URL。
+    ReleasesApi { api_url: String, notes_url: String },
 }
 
 impl NotesPort for ReleaseNotesAdapter {
@@ -98,15 +165,19 @@ impl NotesPort for ReleaseNotesAdapter {
         // 出所を取り違えると誤った URL（例: nix package を cask レイアウトで引いて 404）になるため振り分ける。
         // 取得対象 URL が解決できなければその package は `None`（ノート無し）へ縮退する。
         let url = match source {
-            // nix eval 由来: meta.changelog/homepage 由来の notes_source をそのまま取得対象にする。
-            // 不明（None）または空ならノート無しへ縮退する。
+            // nix eval 由来: meta.changelog/homepage 由来の notes_source は github.com の HTML 閲覧ページ
+            // URL のことが多く、そのまま curl すると HTML が返り LLM が抽出できない。生ノートが返る取得先へ
+            // 変換する。不明（None）・空・変換不能（repo root/gitlab 等）はノート無しへ縮退する。
             DeltaSource::NixEval => {
-                match notes_source
+                let Some(raw) = notes_source
                     .as_deref()
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                {
-                    Some(url) => url.to_string(),
+                else {
+                    return Ok(None);
+                };
+                match resolve_nix_notes_source(raw) {
+                    Some(plan) => return Self::fetch_plan(plan),
                     None => return Ok(None),
                 }
             }
@@ -142,6 +213,90 @@ fn curl_args(url: &str) -> [OsString; 8] {
         OsString::from("=https"),
         OsString::from(url),
     ]
+}
+
+/// Releases API 取得用の curl 引数列を組み立てる純粋関数。
+///
+/// 取得経路の host allowlist 契約（redirect 不追従・https 限定）は [`curl_args`] と同一で、加えて GitHub
+/// REST API が要求/推奨する `Accept: application/vnd.github+json` ヘッダを付ける（JSON 応答を固定する）。
+/// このヘッダは secret を含まないため argv に置いてよい（token は付けないため argv/ログに secret は現れない）。
+fn release_api_curl_args(url: &str) -> [OsString; 10] {
+    [
+        OsString::from("--fail"),
+        OsString::from("--silent"),
+        OsString::from("--show-error"),
+        OsString::from("--max-redirs"),
+        OsString::from("0"),
+        OsString::from("--proto"),
+        OsString::from("=https"),
+        // GitHub REST API の JSON 応答を固定する（secret 非含有のため argv 可）。
+        OsString::from("--header"),
+        OsString::from("Accept: application/vnd.github+json"),
+        OsString::from(url),
+    ]
+}
+
+/// nix eval 由来 `notes_source` URL を「生ノートが返る取得先」へ翻訳する純粋関数。
+///
+/// `meta.changelog`/`meta.homepage` は github.com の HTML 閲覧ページ URL であることが多く、そのまま curl
+/// すると HTML が返り LLM が抽出できない。本関数は host=`github.com` の URL 形を判別して取得方式へ変換する:
+/// - `/<owner>/<repo>/blob/<ref...>/<path...>` → `raw.githubusercontent.com/<owner>/<repo>/<ref...>/<path...>`
+///   （`/blob/` 直後の ref+path 部分をそのまま raw のパスへ移す。`blob/refs/tags/<tag>/CHANGELOG.md` のような
+///   ref 形も `blob/` の後ろを保つことで正しく変換される）。[`NotesFetchPlan::Raw`] で生ファイル取得。
+/// - `/<owner>/<repo>/releases/tag/<tag>` → `api.github.com/repos/<owner>/<repo>/releases/tags/<tag>` を
+///   [`NotesFetchPlan::ReleasesApi`] で取得し `.body` を生ノートにする（記録用 `notes_url` は元のリリースページ）。
+/// - repo root（`/<owner>/<repo>` のみ）・github.com 以外（gitlab 等）・判別不能 → `None`（取得不能縮退）。
+///
+/// host を含む URL の厳密判定のみを行い、取得そのものは行わない（純粋関数）。変換後 URL の host allowlist
+/// 検査は取得側（`fetch`/`fetch_release_api`）が `is_allowed_url` で行う。
+fn resolve_nix_notes_source(url: &str) -> Option<NotesFetchPlan> {
+    // github.com の https URL のパス部分だけを対象にする。それ以外（gitlab 等）は取得不能縮退。
+    let rest = url.strip_prefix("https://github.com/")?;
+    // path injection / credential 混入を避けるため authority 末尾（`/` 区切り）以降だけを見る。
+    // strip 済みなので rest は path（`<owner>/<repo>/...`）。owner/repo を切り出す。
+    let mut segments = rest.splitn(3, '/');
+    let owner = non_empty(segments.next())?;
+    let repo = non_empty(segments.next())?;
+    let tail = segments.next().unwrap_or("");
+
+    if let Some(blob_tail) = tail.strip_prefix("blob/") {
+        // blob/<ref...>/<path...> の ref+path をそのまま raw のパスへ移す。
+        if blob_tail.is_empty() {
+            return None;
+        }
+        return Some(NotesFetchPlan::Raw(format!(
+            "https://raw.githubusercontent.com/{owner}/{repo}/{blob_tail}"
+        )));
+    }
+    if let Some(tag) = tail.strip_prefix("releases/tag/") {
+        let tag = non_empty(Some(tag))?;
+        return Some(NotesFetchPlan::ReleasesApi {
+            api_url: format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"),
+            notes_url: url.to_string(),
+        });
+    }
+    // repo root（tail 空）や未対応のパス形は生ノート取得不能として縮退する。
+    None
+}
+
+/// 文字列 option を trim して空でなければ返す（URL セグメントの非空判定用ヘルパ）。
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// GitHub Releases API 応答 JSON から `.body`（リリースノート markdown）を抽出する純粋関数。
+///
+/// `.body` フィールドが文字列でかつ trim 後非空のときだけ `Some` を返す。JSON 不正・`.body` 不在・非文字列・
+/// 空文字列はすべて `None`（取得不能縮退）。`.body` は GitHub 上の任意入力であり信頼境界外のまま返し、
+/// 構造化・要約はしない（後段の機械バリデートで守る）。
+fn extract_release_body(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let body = value.get("body")?.as_str()?;
+    if body.trim().is_empty() {
+        None
+    } else {
+        Some(body.to_string())
+    }
 }
 
 /// `notes_base` と package 名から取得対象 URL を構築する純粋関数。
@@ -188,7 +343,10 @@ mod tests {
     //! cask の `Casks/<letter>/<name>.rb` URL 構築（P2-3 退行固定）と、非 cask 基底での従来連結、
     //! および curl の redirect 不追従引数列（S1 退行固定: host allowlist 契約をコードで保証）を固定する。
 
-    use super::{ReleaseNotesAdapter, curl_args, resolve_notes_url};
+    use super::{
+        NotesFetchPlan, ReleaseNotesAdapter, curl_args, extract_release_body,
+        release_api_curl_args, resolve_nix_notes_source, resolve_notes_url,
+    };
     use crate::update_history::domain::diff::DeltaSource;
     use crate::update_history::ports::NotesPort;
 
@@ -309,6 +467,148 @@ mod tests {
             resolve_notes_url(base, "font-cica"),
             "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/font/font-cica.rb"
         );
+    }
+
+    #[test]
+    fn blob_url_resolves_to_raw_githubusercontent() {
+        // changelog の HTML 閲覧 URL（blob）は raw ファイル取得先へ変換する。
+        match resolve_nix_notes_source("https://github.com/o/r/blob/v1.2.3/CHANGELOG.md") {
+            Some(NotesFetchPlan::Raw(url)) => assert_eq!(
+                url,
+                "https://raw.githubusercontent.com/o/r/v1.2.3/CHANGELOG.md"
+            ),
+            other => panic!("expected Raw, got {other:?}", other = PlanDbg(&other)),
+        }
+        // ref が `refs/tags/<tag>` 形でも blob 直後をそのまま raw のパスへ移す。
+        match resolve_nix_notes_source(
+            "https://github.com/o/r/blob/refs/tags/v1.2.3/docs/CHANGELOG.md",
+        ) {
+            Some(NotesFetchPlan::Raw(url)) => assert_eq!(
+                url,
+                "https://raw.githubusercontent.com/o/r/refs/tags/v1.2.3/docs/CHANGELOG.md"
+            ),
+            other => panic!("expected Raw, got {other:?}", other = PlanDbg(&other)),
+        }
+    }
+
+    #[test]
+    fn releases_tag_url_resolves_to_releases_api() {
+        // releases/tag ページは Releases API へ変換し、記録 URL は元のリリースページを保つ。
+        match resolve_nix_notes_source("https://github.com/o/r/releases/tag/v2.0.0") {
+            Some(NotesFetchPlan::ReleasesApi { api_url, notes_url }) => {
+                assert_eq!(
+                    api_url,
+                    "https://api.github.com/repos/o/r/releases/tags/v2.0.0"
+                );
+                assert_eq!(notes_url, "https://github.com/o/r/releases/tag/v2.0.0");
+            }
+            other => panic!(
+                "expected ReleasesApi, got {other:?}",
+                other = PlanDbg(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn repo_root_and_non_github_and_unknown_degrade_to_none() {
+        // repo root（生ノート不能）・github.com 以外（gitlab）・判別不能パスはすべて取得不能縮退（None）。
+        assert!(resolve_nix_notes_source("https://github.com/o/r").is_none());
+        assert!(resolve_nix_notes_source("https://github.com/o/r/").is_none());
+        assert!(resolve_nix_notes_source("https://gitlab.com/o/r/blob/v1/CHANGELOG.md").is_none());
+        assert!(resolve_nix_notes_source("https://github.com/o/r/tree/main/docs").is_none());
+        assert!(resolve_nix_notes_source("https://example.com/whatever").is_none());
+        // owner/repo 欠落・blob/releases 直後が空も縮退。
+        assert!(resolve_nix_notes_source("https://github.com/o").is_none());
+        assert!(resolve_nix_notes_source("https://github.com/o/r/blob/").is_none());
+        assert!(resolve_nix_notes_source("https://github.com/o/r/releases/tag/").is_none());
+    }
+
+    #[test]
+    fn extract_release_body_reads_body_field() {
+        // Releases API JSON の `.body` を生ノートとして抽出する（fixture: 実 network 非依存）。
+        let json = "{\"tag_name\":\"v1.0.0\",\"body\":\"## Fixes\\n- crash on startup\"}";
+        assert_eq!(
+            extract_release_body(json).as_deref(),
+            Some("## Fixes\n- crash on startup")
+        );
+    }
+
+    #[test]
+    fn extract_release_body_degrades_on_missing_empty_or_invalid() {
+        // `.body` 不在・非文字列・空・JSON 不正はすべて None（version+notes_url 縮退）。
+        assert!(extract_release_body(r#"{"tag_name":"v1.0.0"}"#).is_none());
+        assert!(extract_release_body(r#"{"body":null}"#).is_none());
+        assert!(extract_release_body(r#"{"body":123}"#).is_none());
+        assert!(extract_release_body(r#"{"body":"   "}"#).is_none());
+        assert!(extract_release_body("not json").is_none());
+    }
+
+    #[test]
+    fn release_api_curl_args_set_accept_and_no_redirects() {
+        // Releases API 取得も redirect 不追従・https 限定を維持し、JSON 応答固定の Accept を付ける。
+        let args: Vec<String> =
+            release_api_curl_args("https://api.github.com/repos/o/r/releases/tags/v1")
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+        assert!(!args.iter().any(|arg| arg == "--location" || arg == "-L"));
+        let max_redirs_idx = args
+            .iter()
+            .position(|arg| arg == "--max-redirs")
+            .expect("--max-redirs を指定する");
+        assert_eq!(args.get(max_redirs_idx + 1).map(String::as_str), Some("0"));
+        let proto_idx = args
+            .iter()
+            .position(|arg| arg == "--proto")
+            .expect("--proto を指定する");
+        assert_eq!(args.get(proto_idx + 1).map(String::as_str), Some("=https"));
+        let header_idx = args
+            .iter()
+            .position(|arg| arg == "--header")
+            .expect("--header を指定する");
+        assert_eq!(
+            args.get(header_idx + 1).map(String::as_str),
+            Some("Accept: application/vnd.github+json")
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://api.github.com/repos/o/r/releases/tags/v1")
+        );
+    }
+
+    #[test]
+    fn nix_with_repo_root_notes_source_degrades_without_network() -> crate::Result<()> {
+        // nix 経路で notes_source が repo root（変換不能）なら curl を起動せず None へ縮退する（hermetic）。
+        let adapter = ReleaseNotesAdapter::new(None);
+        assert!(
+            adapter
+                .fetch_release_notes(
+                    "neovim",
+                    DeltaSource::NixEval,
+                    Some("https://github.com/neovim/neovim".to_string()),
+                    None,
+                    None,
+                )?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    /// テスト失敗メッセージ用に [`NotesFetchPlan`] を簡易表示するラッパ（本体は `Debug` を持たない）。
+    struct PlanDbg<'a>(&'a Option<NotesFetchPlan>);
+    impl std::fmt::Debug for PlanDbg<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                None => write!(f, "None"),
+                Some(NotesFetchPlan::Raw(u)) => write!(f, "Raw({u})"),
+                Some(NotesFetchPlan::ReleasesApi { api_url, notes_url }) => {
+                    write!(
+                        f,
+                        "ReleasesApi {{ api_url: {api_url}, notes_url: {notes_url} }}"
+                    )
+                }
+            }
+        }
     }
 
     #[test]

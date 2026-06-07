@@ -11,7 +11,17 @@ use super::wire::ChangeItem;
 ///
 /// `ref` / `notes_url` はこの集合のいずれかを host に持つ https URL だけを残す。攻撃者が生ノートへ
 /// 埋め込んだ任意 URL を記録・表示経路へ通さないための allowlist であり、prefix でなく host の厳密一致で判定する。
-const ALLOWED_HOSTS: [&str; 3] = ["github.com", "gitlab.com", "raw.githubusercontent.com"];
+///
+/// `api.github.com` は GitHub 公式 REST API（リリースノート本文 `.body` 取得）の host である。notes adapter は
+/// `github.com/.../releases/tag/<tag>` を Releases API（`api.github.com/repos/.../releases/tags/<tag>`）へ変換して
+/// 取得するため、その変換後 URL が allowlist を通る必要がある。公式 API のみを host 厳密一致で許可し、`.body`
+/// 本文は依然信頼境界外（prompt injection 源）として後段の機械バリデートで守る。
+const ALLOWED_HOSTS: [&str; 4] = [
+    "github.com",
+    "gitlab.com",
+    "raw.githubusercontent.com",
+    "api.github.com",
+];
 
 /// 1 パッケージあたりに残す change_item の最大件数。
 const MAX_ITEMS: usize = 12;
@@ -114,6 +124,19 @@ mod tests {
         assert!(!is_allowed_url("https://user@github.com/a"));
         assert!(!is_allowed_url("ftp://github.com/a"));
         assert!(!is_allowed_url("not a url"));
+    }
+
+    #[test]
+    fn allows_api_github_com_for_releases_api() {
+        // releases/tag → Releases API 変換の取得先 host を allowlist に追加した退行固定。
+        // 公式 API host は許可し、他は依然拒否（紛らわしい近傍 host も弾く）。
+        assert!(is_allowed_url(
+            "https://api.github.com/repos/o/r/releases/tags/v1.2.3"
+        ));
+        assert!(is_allowed_url("https://API.GitHub.com/repos/o/r/releases"));
+        assert!(!is_allowed_url("https://api.github.com.evil.example/x"));
+        assert!(!is_allowed_url("https://evil-api.github.com/x"));
+        assert!(!is_allowed_url("http://api.github.com/repos/o/r"));
     }
 
     #[test]
