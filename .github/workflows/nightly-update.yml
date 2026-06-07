@@ -279,8 +279,10 @@ jobs:
           # `<base><letter>/<name>.rb` で cask 定義（homepage/url を含む）を取得する。これは **brew tap 由来**
           # package にだけ適用され、nix eval 由来 package には使われない（出所別 base 振り分け）。letter
           # subdir を解決できない cask は 404 となり、その cask は version+notes_url 縮退（graceful degradation）に
-          # なる。許可ホスト https のみ取得する。nix package のノート base（forge / meta.changelog 系）はこの
-          # workflow では未解決のため渡さず、nix package のノートは version+notes_url へ縮退する。
+          # なる。許可ホスト https のみ取得する。nix package のノート取得先は eval JSON（nix-old/new.json）が
+          # package ごとに運ぶ notes_source（meta.changelog、無ければ meta.homepage）で per-package に解決され、
+          # この base 引数は brew 専用。notes_source が無い/許可ホスト外/取得不能な nix package は version+notes_url
+          # へ縮退する（許可ホスト https のみ取得）。
           brew_notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
           # dotfiles バイナリは devShell に含まれないため、公開パッケージ `.#default`（= dotfiles-cli、
           # bin 名 dotfiles）をビルドして実行する。dotfiles-cli は小さな Rust crate で重い closure は引かない。
