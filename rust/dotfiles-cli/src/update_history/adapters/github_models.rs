@@ -24,8 +24,11 @@
 //!   4. 有界: 1 パッケージあたり tool_call 反復は最大 [`MAX_TOOL_ITERATIONS`] 回（model 呼び出しは最大
 //!      `MAX_TOOL_ITERATIONS + 1` 回）。超過したら持っている材料で最終要約ターンへ移る。
 //!
-//! ハルシネーション防止（与えた seed の実ノートのみを根拠とし、無ければ空）は両経路で維持する
-//! （[`EXTRACT_SYSTEM_PROMPT`] 契約は tools の有無に依らない）。
+//! ハルシネーション防止（与えた seed の実ノートのみを根拠とし、無ければ空）は両経路で維持する。共通抽出契約
+//! [`EXTRACT_CONTRACT_PROMPT`] は両経路の system prompt（探索 [`agent_system_prompt`] / 要約のみ
+//! [`summarize_system_prompt`]）へ連結され、含む/除外カテゴリ・1 行日本語・空配列契約は tools の有無に依らない。
+//! 取得方針だけが経路で分岐し、**要約のみ経路へは提示されない fetch_url の利用指示を送らない**（seed のみを根拠に
+//! 要約すると明示し、要約品質劣化やモデルの『取得できない』応答を避ける）。
 //!
 //! 認証は Actions の `GITHUB_TOKEN` を `Authorization: Bearer` で使い、別 secret を要求しない。`dotfiles` の
 //! async runtime 内から blocking HTTP client を使わないため、リクエストは外部 `curl` への翻訳で行う。
@@ -46,7 +49,9 @@
 //! なく category enum から domain が算出するため、LLM 出力をマージ判断に使わない（injection 耐性）。
 //!
 //! prompt/スキーマの versioning: 抽出契約（含む/除外・日本語 1 行・低 temperature・ノート根拠限定）を
-//! [`EXTRACT_SYSTEM_PROMPT`] と [`response_format_schema`] として本 adapter 内に versioned 固定する。
+//! [`EXTRACT_CONTRACT_PROMPT`]（両経路の system prompt が共有する共通契約）と [`response_format_schema`] として
+//! 本 adapter 内に versioned 固定する。経路別の取得方針 prefix（[`AGENT_PROMPT_PREFIX`] / [`SUMMARIZE_PROMPT_PREFIX`]）も
+//! 同じく versioned 固定する。
 //!
 //! レート制限（HTTP 429）対応: GitHub Models の無料枠は per-minute レート上限が低く、record は差分パッケージ
 //! 分の要約を立て続けに投げるため上限へ当たりやすい。1 リクエスト単位では `HTTP 429` を受けた際に
@@ -93,7 +98,7 @@ const EXTRACT_TEMPERATURE: f32 = 0.0;
 ///
 /// 見積もりの根拠（保守的に 1 token ≒ 3 chars と置く。日本語・記号・URL でトークン密度が上がるため厚めの
 /// margin を取る。実際の英語平均は 1 token ≒ 4 chars 程度なので 3 は安全側）。
-/// system prompt（[`EXTRACT_SYSTEM_PROMPT`]）≈ 370 chars ⇒ 概算 ≈ 124 token、日本語主体で密度が高くても
+/// system prompt（取得方針 prefix + [`EXTRACT_CONTRACT_PROMPT`]）≈ 370 chars ⇒ 概算 ≈ 124 token、日本語主体で密度が高くても
 /// 余裕を見て ≈ 400 token と置く。response_format スキーマ（[`response_format_schema`]）≈ 600 chars ⇒
 /// 概算 ≈ 200 token、余裕を見て ≈ 300 token と置く。固定メッセージ枠・role ラベル等の overhead ≈ 100 token。
 /// 合算すると生ノート以外の overhead ≈ 800 token を保守的に確保する。残り予算 8000 − 800 = 7200 token を
@@ -108,7 +113,7 @@ const MAX_NOTES_CHARS: usize = 6000;
 /// ノートを切り詰めた際に末尾へ付ける印。LLM に「与えたノートは全文でない」ことを示す。
 ///
 /// 切り詰めても「与えたノートのみを根拠とし、無ければ空配列」というハルシネーション防止契約
-/// （[`EXTRACT_SYSTEM_PROMPT`]）は維持される。印自体は短く、上限見積もりへの影響は無視できる。
+/// （[`EXTRACT_CONTRACT_PROMPT`]）は維持される。印自体は短く、上限見積もりへの影響は無視できる。
 const TRUNCATION_MARKER: &str = "\n…(truncated)";
 
 /// HTTP 429（レート制限）に対する 1 リクエスト単位の最大再試行回数。
@@ -188,24 +193,61 @@ const MAX_TOOL_CALLS_PER_TURN: usize = 4;
 /// `fetch_url` ツールの名前（AI が tool_call で指定し、adapter が照合する）。
 const FETCH_TOOL_NAME: &str = "fetch_url";
 
-/// 抽出契約を固定する versioned system prompt（v1）。
+/// 抽出契約（カテゴリ含む/除外・日本語 1 行・ノート根拠限定・ハルシネーション防止・strict schema 準拠）を
+/// 固定する system prompt の共通末尾（versioned, v1）。経路非依存の抽出契約本体であり、2 経路の system prompt
+/// （[`agent_system_prompt`] / [`summarize_system_prompt`]）が冒頭の取得方針だけを差し替えてこの契約本文を
+/// **そのまま末尾へ連結**して共有する（両経路で含む/除外カテゴリ・1 行日本語・空配列契約・strict schema 準拠を
+/// 同一に保つため、契約本文の重複記述を避けてこの 1 定数に固定する）。
 ///
 /// 含む: 破壊的変更/セキュリティ修正/新機能/重要バグ修正/非推奨・削除/デフォルト挙動変更。
 /// 除外: 内部リファクタ/CI/ビルド/依存 bump/ドキュメント/typo/宣伝。`text` は簡潔な日本語 1 行。
-/// 与えた生ノートのみを根拠とし（創作禁止）、根拠が無ければ空配列。`ref` はノート内に現れた https URL のみ。
-const EXTRACT_SYSTEM_PROMPT: &str = "\
+/// 与えたノート本文のみを根拠とし（創作禁止）、根拠が無ければ空配列。`ref` はノート内に現れた https URL のみ。
+const EXTRACT_CONTRACT_PROMPT: &str = "\
+含めるのは次のカテゴリの変更だけです: 破壊的変更(breaking)、セキュリティ修正(security)、\
+新機能(feature)、重要なバグ修正(fix)、非推奨化・削除(deprecation)、デフォルト挙動変更(default-change)。\
+除外するもの: 内部リファクタリング、CI/ビルド変更、依存パッケージの単純な bump、ドキュメント/typo 修正、宣伝。\
+各変更は category と簡潔な日本語 1 行の text を持ちます。ref はノート本文に現れた https の URL のみ、無ければ省略します。\
+根拠となる変更が無ければ空の配列を返します。最終出力は指定された JSON スキーマに厳密に従ってください。";
+
+/// **探索経路（agent_loop, tool 提示あり）** の system prompt 冒頭（取得方針）。
+///
+/// `fetch_url` ツールを提示する経路でのみ使う取得方針で、AI に「ヒント URL を手がかりに自分でノートを
+/// fetch_url で取得して読め」と指示する。共通契約 [`EXTRACT_CONTRACT_PROMPT`] と連結して
+/// [`agent_system_prompt`] を成す。tool を提示しない summarize_only 経路へはこの取得方針を送ってはならない
+/// （提示されないツールの利用指示になるため）。
+const AGENT_PROMPT_PREFIX: &str = "\
 あなたはソフトウェアのリリースノートを調査し、利用者に意味のある変更だけを抽出するエージェントです。\
 与えられたパッケージ名・更新前後バージョン・ヒント URL（homepage / リポジトリ / changelog）を手がかりに、\
 fetch_url ツールを使って適切なリリースノート/changelog を自分で取得して読んでください。\
 fetch_url には許可されたドメインの https URL だけを渡せます（許可外は『not allowed』が返ります）。\
 GitHub のパッケージなら releases ページや changelog ファイルの URL を組み立てて取得すると有効です。\
 十分なノートを読み終えたら、取得した実際のノート本文だけを根拠に変更を抽出してください。\
-取得できなかった内容や本文に書かれていない内容を創作してはいけません。\
-含めるのは次のカテゴリの変更だけです: 破壊的変更(breaking)、セキュリティ修正(security)、\
-新機能(feature)、重要なバグ修正(fix)、非推奨化・削除(deprecation)、デフォルト挙動変更(default-change)。\
-除外するもの: 内部リファクタリング、CI/ビルド変更、依存パッケージの単純な bump、ドキュメント/typo 修正、宣伝。\
-各変更は category と簡潔な日本語 1 行の text を持ちます。ref はノート本文に現れた https の URL のみ、無ければ省略します。\
-根拠となる変更が無ければ空の配列を返します。最終出力は指定された JSON スキーマに厳密に従ってください。";
+取得できなかった内容や本文に書かれていない内容を創作してはいけません。";
+
+/// **要約のみ経路（summarize_only, tool 非提示）** の system prompt 冒頭（取得方針）。
+///
+/// `fetch_url` ツールを提示しない経路でのみ使う取得方針で、AI に外部取得（fetch）の手段は無いことを明示し
+/// 「与えられた seed ノート本文だけを根拠に」要約させる。共通契約 [`EXTRACT_CONTRACT_PROMPT`] と連結して
+/// [`summarize_system_prompt`] を成す。提示されないツール（fetch_url）の利用指示を一切含めないことで、
+/// 要約品質の劣化やモデルが「取得できない」と返す懸念を避ける。
+const SUMMARIZE_PROMPT_PREFIX: &str = "\
+あなたはソフトウェアのリリースノートを要約し、利用者に意味のある変更だけを抽出するエージェントです。\
+与えられたパッケージ名・更新前後バージョンと、本文として提示された参考リリースノートだけを根拠にしてください。\
+外部取得（fetch）の手段はありません。提示された本文以外を取得したり参照したりすることはできません。\
+提示された本文に書かれていない内容や、本文から確認できない内容を創作してはいけません。";
+
+/// 探索経路（agent_loop）の versioned system prompt（v1）。取得方針（[`AGENT_PROMPT_PREFIX`]）+ 共通抽出契約
+/// （[`EXTRACT_CONTRACT_PROMPT`]）を実行時に連結して返す。fetch_url tool を提示する経路でのみ使う。
+fn agent_system_prompt() -> String {
+    format!("{AGENT_PROMPT_PREFIX}{EXTRACT_CONTRACT_PROMPT}")
+}
+
+/// 要約のみ経路（summarize_only）の versioned system prompt（v1）。取得方針（[`SUMMARIZE_PROMPT_PREFIX`]）+
+/// 共通抽出契約（[`EXTRACT_CONTRACT_PROMPT`]）を実行時に連結して返す。fetch_url tool を提示しない経路でのみ
+/// 使い、外部取得指示を一切含めない（seed のみを根拠に要約）。
+fn summarize_system_prompt() -> String {
+    format!("{SUMMARIZE_PROMPT_PREFIX}{EXTRACT_CONTRACT_PROMPT}")
+}
 
 /// LLM 出力の最上位 JSON 形（`{ "changes": [...] }`）。
 ///
@@ -327,15 +369,18 @@ impl GithubModelsExtractAdapter {
         std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty())
     }
 
-    /// エージェントループ初回の会話メッセージ列（system + user）を組み立てる。
+    /// 経路別の初回会話メッセージ列（system + user）を組み立てる。
     ///
-    /// user メッセージはパッケージ名・old→new・ヒント URL 群（homepage/repo/changelog）と、機械解決で取れた
-    /// seed ノート（あれば truncate 済み）を載せる。seed があっても AI は更に fetch_url で補える。seed ノートは
-    /// 信頼境界外だが、後段で抽出結果を機械バリデートするため会話材料として与えてよい。
-    fn initial_messages(request: &ExtractRequest) -> Vec<serde_json::Value> {
+    /// system prompt と user prompt を **経路ごとに引数で受ける**ことで、tool 提示の有無に応じた取得方針を
+    /// 正しく載せる（探索経路は fetch 指示、要約のみ経路は seed のみ要約）。両 prompt とも共通抽出契約
+    /// （[`EXTRACT_CONTRACT_PROMPT`]）を含み、含む/除外カテゴリ・1 行日本語・空配列契約は経路に依らず維持する。
+    /// user メッセージはパッケージ名・old→new・ヒント URL 群（homepage/repo/changelog）と seed ノート
+    /// （あれば truncate 済み）を載せる。seed ノートは信頼境界外だが、後段で抽出結果を機械バリデートするため
+    /// 会話材料として与えてよい。
+    fn initial_messages(system_prompt: &str, user_prompt: &str) -> Vec<serde_json::Value> {
         vec![
-            serde_json::json!({ "role": "system", "content": EXTRACT_SYSTEM_PROMPT }),
-            serde_json::json!({ "role": "user", "content": user_prompt(request) }),
+            serde_json::json!({ "role": "system", "content": system_prompt }),
+            serde_json::json!({ "role": "user", "content": user_prompt }),
         ]
     }
 
@@ -504,11 +549,12 @@ fn fetch_url_tool() -> serde_json::Value {
     })
 }
 
-/// エージェント初回 user メッセージの本文を組み立てる純粋関数。
+/// user メッセージ共通の見出し行（パッケージ名・更新前後バージョン・ヒント URL）を組み立てる純粋関数。
 ///
-/// パッケージ名・更新前後バージョン・ヒント URL（homepage/repo/changelog）を AI へ提示し、seed ノートがあれば
-/// truncate して添える。AI はこれらを手がかりに fetch_url で適切なノートを自分で取得する。
-fn user_prompt(request: &ExtractRequest) -> String {
+/// パッケージ名・old→new・ヒント URL（homepage/repo/changelog）を AI へ提示する行群を返す。2 経路の
+/// user prompt（[`agent_user_prompt`] / [`summarize_user_prompt`]）が共有し、経路ごとに seed/fetch の扱いだけを
+/// 末尾へ追記する。
+fn user_prompt_header(request: &ExtractRequest) -> Vec<String> {
     let mut lines = vec![format!("パッケージ: {}", request.name)];
     let old = request.old.as_deref().unwrap_or("(なし)");
     let new = request.new.as_deref().unwrap_or("(なし)");
@@ -525,6 +571,16 @@ fn user_prompt(request: &ExtractRequest) -> String {
     if let Some(changelog) = request.changelog.as_deref().filter(|s| !s.is_empty()) {
         lines.push(format!("changelog: {changelog}"));
     }
+    lines
+}
+
+/// **探索経路（agent_loop, tool 提示あり）** の初回 user メッセージ本文を組み立てる純粋関数。
+///
+/// 共通見出し（[`user_prompt_header`]）に加え、seed ノートがあれば「fetch_url で補ってよい」旨を添えて truncate
+/// して載せ、無ければ「fetch_url で取得してから抽出せよ」と促す。AI はこれらを手がかりに fetch_url で適切な
+/// ノートを自分で取得する。**fetch_url tool を提示する経路でのみ使う**（fetch 指示を含むため）。
+fn agent_user_prompt(request: &ExtractRequest) -> String {
+    let mut lines = user_prompt_header(request);
     if let Some(seed) = request.seed_notes.as_ref() {
         lines.push(String::from(
             "参考として機械取得したノート（不完全な場合があるため fetch_url で補ってよい）:",
@@ -534,6 +590,30 @@ fn user_prompt(request: &ExtractRequest) -> String {
         lines.push(String::from(
             "fetch_url で適切なリリースノートを取得してから抽出してください。",
         ));
+    }
+    lines.join("\n")
+}
+
+/// **要約のみ経路（summarize_only, tool 非提示）** の初回 user メッセージ本文を組み立てる純粋関数。
+///
+/// 共通見出し（[`user_prompt_header`]）に加え、seed ノート本文（truncate 済み）を「これだけを根拠にせよ」と
+/// 明示して載せる。**fetch（外部取得）を一切促さない**。この経路は [`has_sufficient_seed`] が真のときだけ
+/// 呼ばれるため seed ノートは必ず存在するが、防御的に seed 不在では「根拠が無ければ空配列」を促す本文にする
+/// （ハルシネーション防止: 提示本文以外を創作させない）。fetch_url tool を提示しない経路でのみ使う。
+fn summarize_user_prompt(request: &ExtractRequest) -> String {
+    let mut lines = user_prompt_header(request);
+    match request.seed_notes.as_ref() {
+        Some(seed) => {
+            lines.push(String::from(
+                "以下の参考リリースノート本文だけを根拠に変更を抽出してください（本文以外は取得・参照できません）:",
+            ));
+            lines.push(truncate_notes(&seed.text));
+        }
+        None => {
+            lines.push(String::from(
+                "参考リリースノートは提示されていません。根拠となる本文が無いため、空の配列を返してください。",
+            ));
+        }
     }
     lines.join("\n")
 }
@@ -651,7 +731,10 @@ where
     R: FnMut(&str) -> Result<String>,
     F: FnMut(&str) -> Result<Option<String>>,
 {
-    let mut messages = GithubModelsExtractAdapter::initial_messages(request);
+    let mut messages = GithubModelsExtractAdapter::initial_messages(
+        &agent_system_prompt(),
+        &agent_user_prompt(request),
+    );
     // AI が会話中に最後に成功 fetch（非 None）した URL を採用取得元として保持する。これを provenance として
     // `origin=ai-discovered` でレジストリへ学習・再利用する経路にする（利用者要件 (3)/(4)）。許可外/取得失敗
     // （None）では更新しない。最後の成功 fetch を採るのは、AI が複数 fetch を試した末に有効ノートへ収束した
@@ -722,15 +805,20 @@ fn has_sufficient_seed(request: &ExtractRequest) -> bool {
 /// （seed を含む）に対し即 [`final_body`]（tools 無し・response_format 強制）を投げ、[`parse_change_items`] で
 /// 構造化変更を取り出す。
 ///
-/// ハルシネーション防止: 根拠は与えた seed の実ノートのみ（[`EXTRACT_SYSTEM_PROMPT`] の「与えたノートのみを
-/// 根拠とし、無ければ空」契約は tools の有無に依らず維持される）。`source_url` は **常に `None`** を返す
-/// （ai-discovered 学習は探索経路でのみ更新し、summarize_only 経路では既存 source を据え置く＝reused は origin
-/// 維持、mechanical は自身の取得元 URL を別途学習済み）。`request` の `Err`（curl プロセス失敗）はそのまま伝播。
+/// ハルシネーション防止: 根拠は与えた seed の実ノートのみ。**この経路専用の seed-only system/user prompt**
+/// （[`summarize_system_prompt`] / [`summarize_user_prompt`]）を使い、提示されない fetch_url ツールの利用指示は
+/// 一切送らない（外部取得は行わない/できないと明示）。共通抽出契約（[`EXTRACT_CONTRACT_PROMPT`]）の「与えた
+/// ノートのみを根拠とし、無ければ空」は維持される。`source_url` は **常に `None`** を返す（ai-discovered 学習は
+/// 探索経路でのみ更新し、summarize_only 経路では既存 source を据え置く＝reused は origin 維持、mechanical は
+/// 自身の取得元 URL を別途学習済み）。`request` の `Err`（curl プロセス失敗）はそのまま伝播。
 fn summarize_only<R>(request: &ExtractRequest, mut model_request: R) -> Result<ExtractOutcome>
 where
     R: FnMut(&str) -> Result<String>,
 {
-    let messages = GithubModelsExtractAdapter::initial_messages(request);
+    let messages = GithubModelsExtractAdapter::initial_messages(
+        &summarize_system_prompt(),
+        &summarize_user_prompt(request),
+    );
     let final_body = GithubModelsExtractAdapter::final_body(&messages)?;
     let response = model_request(&final_body)?;
     Ok(ExtractOutcome {
@@ -985,8 +1073,10 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
     ///   [`MAX_TOOL_ITERATIONS`]+1 回 model 呼び出し）で AI にノートを探させる。AI が採用した取得元 URL を
     ///   `source_url` で返し、`origin=ai-discovered` 学習経路へ渡す。
     ///
-    /// ハルシネーション防止は両経路で維持する（与えた seed の実ノートのみを根拠とし、無ければ空。
-    /// [`EXTRACT_SYSTEM_PROMPT`] 契約は tools の有無に依らない）。
+    /// ハルシネーション防止は両経路で維持する（与えた seed の実ノートのみを根拠とし、無ければ空。共通抽出契約
+    /// [`EXTRACT_CONTRACT_PROMPT`] は tools の有無に依らず両経路の system prompt が共有する）。プロンプトは経路で
+    /// 分岐し、探索経路は fetch_url 取得指示（[`agent_system_prompt`]）、要約のみ経路は seed のみ要約
+    /// （[`summarize_system_prompt`]・fetch 指示なし）を載せる。
     ///
     /// SSRF: 探索経路の fetch 許可ホスト集合は **eval メタ由来のヒント**（repo/homepage/changelog）だけから
     /// [`allowed_fetch_hosts`] で組み立て、ノート本文（信頼境界外）では拡張しない。AI が要求した URL の host が
@@ -1053,9 +1143,10 @@ mod tests {
     use super::{
         BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
         MAX_RATE_LIMIT_RETRIES, MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_ITERATIONS, MIN_REQUEST_INTERVAL,
-        TRUNCATION_MARKER, agent_loop, auth_config, backoff_delay, body_snippet,
-        has_sufficient_seed, response_format_schema, retry_after_seconds, retry_loop, split_meta,
-        summarize_only, tool_call_url, truncate_notes, user_prompt,
+        TRUNCATION_MARKER, agent_loop, agent_system_prompt, agent_user_prompt, auth_config,
+        backoff_delay, body_snippet, has_sufficient_seed, response_format_schema,
+        retry_after_seconds, retry_loop, split_meta, summarize_only, summarize_system_prompt,
+        summarize_user_prompt, tool_call_url, truncate_notes,
     };
     use crate::update_history::domain::validate::allowed_fetch_hosts;
     use crate::update_history::domain::wire::ChangeCategory;
@@ -1160,7 +1251,10 @@ mod tests {
         // tool-use ターンは fetch_url ツールを与え tool_choice=auto で AI に呼ぶか委ねる。response_format は
         // このターンでは付けない（ツール使用を妨げないため）。
         let request = request_with("neovim", Some("neovim/neovim"), None);
-        let messages = GithubModelsExtractAdapter::initial_messages(&request);
+        let messages = GithubModelsExtractAdapter::initial_messages(
+            &agent_system_prompt(),
+            &agent_user_prompt(&request),
+        );
         let body = GithubModelsExtractAdapter::tool_turn_body(&messages)?;
         let value: serde_json::Value = serde_json::from_str(&body)?;
         assert_eq!(value["temperature"], 0.0);
@@ -1180,7 +1274,10 @@ mod tests {
     fn final_body_forces_schema_without_tools() -> crate::Result<()> {
         // 最終要約ターンは tools を外し response_format（strict schema）を強制する。
         let request = request_with("neovim", Some("neovim/neovim"), None);
-        let messages = GithubModelsExtractAdapter::initial_messages(&request);
+        let messages = GithubModelsExtractAdapter::initial_messages(
+            &agent_system_prompt(),
+            &agent_user_prompt(&request),
+        );
         let body = GithubModelsExtractAdapter::final_body(&messages)?;
         let value: serde_json::Value = serde_json::from_str(&body)?;
         assert_eq!(value["temperature"], 0.0);
@@ -1203,7 +1300,7 @@ mod tests {
             ),
             seed_notes: None,
         };
-        let prompt = user_prompt(&request);
+        let prompt = agent_user_prompt(&request);
         assert!(prompt.contains("neovim"));
         assert!(prompt.contains("0.10"));
         assert!(prompt.contains("0.11"));
@@ -1662,11 +1759,13 @@ mod tests {
                 notes_url: "https://github.com/o/r/releases".to_string(),
             }),
         };
-        let prompt = user_prompt(&request);
-        assert!(prompt.ends_with(TRUNCATION_MARKER));
-        // seed 本体（"x" 連続）は MAX_NOTES_CHARS 以内へ切られている。
-        let x_count = prompt.chars().filter(|c| *c == 'x').count();
-        assert_eq!(x_count, MAX_NOTES_CHARS);
+        // 両経路の user prompt とも seed を載せる前に truncate する（HTTP 413 回避は経路に依らない）。
+        for prompt in [agent_user_prompt(&request), summarize_user_prompt(&request)] {
+            assert!(prompt.ends_with(TRUNCATION_MARKER));
+            // seed 本体（"x" 連続）は MAX_NOTES_CHARS 以内へ切られている。
+            let x_count = prompt.chars().filter(|c| *c == 'x').count();
+            assert_eq!(x_count, MAX_NOTES_CHARS);
+        }
     }
 
     #[test]
@@ -1948,11 +2047,29 @@ mod tests {
                 .iter()
                 .find(|m| m["role"] == "user")
                 .expect("user message");
+            let user_content = user["content"].as_str().expect("user content");
             assert!(
-                user["content"]
-                    .as_str()
-                    .is_some_and(|c| c.contains("new thing")),
+                user_content.contains("new thing"),
                 "user メッセージに seed ノートが載る"
+            );
+            // 経路不整合の退行固定: summarize_only の user prompt に fetch_url 指示を送らない。
+            assert!(
+                !user_content.contains("fetch_url"),
+                "summarize_only の user prompt は fetch_url を促さない"
+            );
+            // system プロンプトは「seed のみ要約」であり、提示されない fetch ツールの利用指示を含まない。
+            let system = messages
+                .iter()
+                .find(|m| m["role"] == "system")
+                .expect("system message");
+            let system_content = system["content"].as_str().expect("system content");
+            assert!(
+                !system_content.contains("fetch_url"),
+                "summarize_only の system は fetch_url 指示を含まない"
+            );
+            assert!(
+                system_content.contains("外部取得（fetch）の手段はありません"),
+                "summarize_only の system は seed のみ要約を明示する"
             );
             Ok(serde_json::json!({
                 "choices": [{
@@ -1973,6 +2090,91 @@ mod tests {
             "summarize_only は source_url を学習しない（既存 source 据え置き）"
         );
         Ok(())
+    }
+
+    #[test]
+    fn summarize_system_prompt_is_seed_only_without_fetch_instruction() {
+        // 退行固定（経路不整合の核）: 要約のみ経路（tool 非提示）の system プロンプトは、提示されない fetch_url
+        // ツールの利用指示を一切含まず、seed 本文のみを根拠にする方針を明示する。共通抽出契約（含む/除外カテゴリ・
+        // 1 行日本語・空配列・strict schema 準拠）は維持する。
+        let prompt = summarize_system_prompt();
+        assert!(
+            !prompt.contains("fetch_url"),
+            "summarize 経路 system に fetch_url 指示を載せない: {prompt}"
+        );
+        assert!(
+            !prompt.contains("releases ページ"),
+            "summarize 経路 system に URL 組み立て指示を載せない: {prompt}"
+        );
+        assert!(
+            prompt.contains("外部取得（fetch）の手段はありません"),
+            "summarize 経路 system は外部取得不可を明示する: {prompt}"
+        );
+        // 共通抽出契約（ハルシネーション防止・カテゴリ・1 行日本語・空配列）は維持する。
+        assert!(prompt.contains("空の配列"), "{prompt}");
+        assert!(prompt.contains("創作してはいけません"), "{prompt}");
+        assert!(prompt.contains("breaking"), "{prompt}");
+        assert!(prompt.contains("default-change"), "{prompt}");
+    }
+
+    #[test]
+    fn agent_system_prompt_keeps_fetch_instruction() {
+        // 退行固定（探索経路）: tool 提示ありの探索経路 system プロンプトは fetch_url 取得指示を維持する
+        // （要約のみ経路へは送らないが、探索経路では必須）。共通抽出契約も維持する。
+        let prompt = agent_system_prompt();
+        assert!(
+            prompt.contains("fetch_url"),
+            "agent 経路 system は fetch_url 取得指示を載せる: {prompt}"
+        );
+        // 共通抽出契約（ハルシネーション防止・カテゴリ・空配列）は両経路で同一に維持する。
+        assert!(prompt.contains("空の配列"), "{prompt}");
+        assert!(prompt.contains("創作してはいけません"), "{prompt}");
+        assert!(prompt.contains("breaking"), "{prompt}");
+        assert!(prompt.contains("default-change"), "{prompt}");
+    }
+
+    #[test]
+    fn both_route_system_prompts_share_extract_contract() {
+        // 退行固定: 2 経路の system プロンプトは取得方針 prefix だけが異なり、抽出契約本文（含む/除外カテゴリ・
+        // 1 行日本語・空配列・strict schema 準拠）を同一に共有する（契約の二重定義によるドリフトを防ぐ）。
+        let agent = agent_system_prompt();
+        let summarize = summarize_system_prompt();
+        assert_ne!(agent, summarize, "取得方針 prefix が異なるため全体は不一致");
+        // 共通契約本文（EXTRACT_CONTRACT_PROMPT）は両者の末尾に同一に現れる。
+        assert!(agent.ends_with(super::EXTRACT_CONTRACT_PROMPT), "{agent}");
+        assert!(
+            summarize.ends_with(super::EXTRACT_CONTRACT_PROMPT),
+            "{summarize}"
+        );
+    }
+
+    #[test]
+    fn agent_user_prompt_keeps_fetch_supplement_hint_with_seed() {
+        // 退行固定（探索経路 user prompt）: seed があっても探索経路の user prompt は「fetch_url で補ってよい」を
+        // 維持する（探索経路は seed + fetch の両方を使える）。
+        let request = request_with("pkg", Some("o/r"), Some("## Fixes\n- crash"));
+        let prompt = agent_user_prompt(&request);
+        assert!(prompt.contains("crash"), "seed 本文が載る: {prompt}");
+        assert!(
+            prompt.contains("fetch_url"),
+            "探索経路は fetch_url 補完を促す: {prompt}"
+        );
+    }
+
+    #[test]
+    fn summarize_user_prompt_is_seed_only_without_fetch_hint() {
+        // 退行固定（要約のみ経路 user prompt）: seed 本文だけを根拠に抽出させ、fetch（外部取得）を一切促さない。
+        let request = request_with("pkg", Some("o/r"), Some("## Fixes\n- crash"));
+        let prompt = summarize_user_prompt(&request);
+        assert!(prompt.contains("crash"), "seed 本文が載る: {prompt}");
+        assert!(
+            !prompt.contains("fetch_url"),
+            "要約のみ経路は fetch_url を促さない: {prompt}"
+        );
+        assert!(
+            prompt.contains("本文以外は取得・参照できません"),
+            "本文のみを根拠にする旨を明示する: {prompt}"
+        );
     }
 
     #[test]
