@@ -101,6 +101,21 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
+      # /nix/store を run 間でキャッシュする（GHA cache backend・GITHUB_TOKEN のみ・外部 secret 不要）。
+      # eval ベース化で ~12GiB のフル darwin closure ビルドは消えており、この job が実際に取得するのは
+      # eval 用の nixpkgs 等の小さい依存だけのため、保存物は GHA 上限内に収まる。restore/save の失敗や
+      # miss はビルドを遅くするだけで fail させない（fail-on 既定 = 空 = fail-safe）。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
       # ci-ref の宣言パッケージ（home.packages + environment.systemPackages）の name→version を eval する。
       # `--apply` で `pname`/`version`（無ければ `parseDrvName` / 空 version 許容）を name→version object に
       # 畳む。ビルド/フェッチは一切走らず数秒で完了する。home / system 両 attrset を jq で 1 マップへ統合する
@@ -175,6 +190,20 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
+
+      # /nix/store を run 間でキャッシュする（bump job と同設計）。record は `.#default`（dotfiles-cli の
+      # 小さな Rust crate）を build し eval 依存を取得するだけのため保存物は小さく、GHA 上限内に収まる。
+      # miss/失敗は遅くなるだけで fail させない（fail-safe）。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
 
       # bump job が eval した old/new 版マップ（nix-old.json / nix-new.json）と bump 後 lock を取得する。
       # eval ベース化により record 側で closure を build する必要は無く、版差分は eval JSON から得る。
@@ -320,6 +349,29 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
+
+      # /nix/store を run 間でキャッシュする（bump/record と同設計）。open-pr は `.#default`（verify-bump-lock
+      # 用 dotfiles バイナリ・小さい）の build と `cargo xtask check static`（`nix flake check` の eval + toolchain
+      # 取得）を行うため、その /nix/store 取得物をキャッシュして高速化する。restore は checkout した base ツリーの
+      # flake.lock を鍵にする（artifact の bump 後 lock 展開より前に走る）。miss/失敗は遅くなるだけで fail させない。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。open-pr は `.#default` の build と
+      # `cargo xtask check static`（workspace コンパイル）を行うため target/ の再ビルド回避が効く。static-checks.yml
+      # と同一コマンド・同一 OS（ubuntu）のため shared-key を共有して両 workflow 間で target/ を温める。fail-safe。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: static-checks-${{ runner.os }}
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v4
