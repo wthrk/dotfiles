@@ -4,13 +4,17 @@ use crate::Result;
 use crate::update_history::domain::build::{PackageMaterial, build_entry};
 use crate::update_history::domain::commands::RecordCommand;
 use crate::update_history::domain::diff::{diff_versions, merge_version_deltas};
-use crate::update_history::domain::validate::{sanitize_change_items, sanitize_notes_url};
+use crate::update_history::domain::registry::{NotesOrigin, NotesSourceEntry, NotesSourceRegistry};
+use crate::update_history::domain::validate::{
+    is_allowed_url, sanitize_change_items, sanitize_notes_url,
+};
 use crate::update_history::ports::{
-    BrewVersionDiffPort, ChangeExtractPort, ExtractRequest, HistoryStorePort, NixVersionPort,
-    NotesPort,
+    BrewVersionDiffPort, ChangeExtractPort, ExtractOutcome, ExtractRequest, HistoryStorePort,
+    NixVersionPort, NotesPort, NotesSourceRegistryPort,
 };
 
-/// nix/brew の version 差分を統合し、各アプリの生ノートを LLM 抽出して 1 エントリを履歴へ追記する。
+/// nix/brew の version 差分を統合し、各アプリのノートを **レジストリ参照 → 機械解決 → AI 探索**の順で取得・
+/// LLM 抽出して 1 エントリを履歴へ追記し、取得元（provenance）をレジストリへ学習する。
 ///
 /// 順序制御の理由: 差分（nix→brew）を先に確定してから各アプリのノート取得・LLM 抽出を行うのは、
 /// 差分に現れたアプリだけをノート取得・抽出対象にし、無関係なノート取得を避けるためである。nix 差分は
@@ -19,6 +23,26 @@ use crate::update_history::ports::{
 /// （[`diff_versions`]）に通して求める（ビルド/フェッチ不要・数秒）。停止条件は各 port の `Err` 伝播であり、
 /// ノート取得不能（`None`）や LLM 未使用（空配列）はフォールバックとして version + URL のみへ縮退させ、
 /// record 全体は失敗させない。
+///
+/// **ノート取得元レジストリ（学習・再利用。利用者要件 (3)/(4)）**: 各パッケージごとに次の順で notes を得る:
+/// 1. **レジストリ参照**: 保存済み `source`（[`NotesOrigin::Mechanical`]/[`NotesOrigin::AiDiscovered`]）が
+///    あれば、それを **直接 fetch**（[`NotesPort::fetch_notes_from_source`]・host allowlist 検査つき）して
+///    要約する。**機械解決も AI 探索もしない**（再探索しない＝GitHub Models レート消費を逓減）。fetch 成功で
+///    要約できたら provenance は据え置き（origin 維持）。これが回を追ってレート消費を逓減させる核である。
+/// 2. レジストリ未登録／**自己修復**（保存 source の fetch が空/失敗）なら **機械解決**（既存 Releases API
+///    range / changelog 解決）。取れたら、その取得元 URL を [`NotesOrigin::Mechanical`] でレジストリへ記録する。
+/// 3. 機械解決も不能なら **AI エージェント探索**（既存 agent loop）。AI が fetch して有効ノートを得て採用した
+///    取得元 URL を [`NotesOrigin::AiDiscovered`] でレジストリへ記録する（[`ExtractOutcome::source_url`] 経路）。
+/// 4. いずれも不能なら version-only。`origin=none` を記録して次回も探索対象に戻す（取得元が後から現れる
+///    可能性に追従。設計判断: 空エントリを残すより「探索済みだが未発見」を明示する方が再探索の根拠が残る）。
+///
+/// **自己修復**: レジストリの保存 source を fetch して空/失敗なら、機械解決 → AI 探索へフォールバックし、成功
+/// した新ソースでレジストリを更新する（プロジェクトが changelog を移動した等に追従する）。
+///
+/// **セキュリティ（SSRF/学習境界）**: レジストリへ書く URL は **記録前に必ず host allowlist（[`is_allowed_url`]）
+/// で機械検証**し、許可外 host の source は学習しない（`origin=none` へ倒す）。これにより次回フロー 1 の再利用でも
+/// 許可外 URL を fetch しない。AI 採用 URL は SSRF 検査を通った fetch のものだが、レジストリは repo 管理で人手改変も
+/// ありうるため、再利用 fetch（adapter）でも host allowlist を再適用する（二重防御）。
 ///
 /// 抽出フェーズ全体の wall-clock 予算（停止条件）: 全件持続 429 のような最悪ケースでは LLM 抽出の 429 リトライ
 /// 待機が積み上がり、抽出ループ全体が record job timeout（60分）へ接近・超過しうる（超過すると後続 job（PR 起票）が
@@ -29,13 +53,17 @@ use crate::update_history::ports::{
 /// 「残りを skip して version-only に倒す」停止条件の判断だけを持つ。LLM 出力と生ノート URL は信頼境界外のため、記録前に必ず domain の機械
 /// バリデート（host allowlist / 長さ / 件数）を通す。severity / overall の算出は domain（[`build_entry`]）に
 /// 委ね、application は素材収集の順序だけを保持する。
-pub(crate) fn run_record<V, B, N, X, S>(
+///
+/// **provenance 可観測性**: ノート取得・抽出フェーズの縮退サマリに加え、レジストリ hit 件数・機械解決件数・
+/// AI 探索件数を最後に 1 行で stderr へ出す（どの経路でノートを得たかを CI ログで可視化。サイレント化しない）。
+pub(crate) fn run_record<V, B, N, X, S, G>(
     command: RecordCommand,
     nix_versions: &V,
     brew_diff: &B,
     notes: &N,
     extract: &X,
     store: &S,
+    registry_store: &G,
 ) -> Result<()>
 where
     V: NixVersionPort,
@@ -43,6 +71,7 @@ where
     N: NotesPort,
     X: ChangeExtractPort,
     S: HistoryStorePort,
+    G: NotesSourceRegistryPort,
 {
     // ci-ref の old/new lock で eval した宣言パッケージ name→version マップを取得し、domain の純粋比較で
     // 差分を求める。closure を実体化せず評価時属性だけを比べるため、ビルドは一切走らない。
@@ -52,6 +81,12 @@ where
     let brew_deltas = brew_diff.diff_brew_versions(&command.old_rev, &command.new_rev)?;
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
 
+    // レジストリ（provenance の学習・再利用）を 1 回読み出す。フロー 1 の最優先参照に使い、更新があれば
+    // 最後に 1 回書き戻す（決定論・名前昇順は domain/adapter が保証）。読み出し失敗は record 全体の Err として
+    // 伝播させる（レジストリ破損を黙殺しない）。
+    let mut registry = registry_store.read_registry()?;
+    let mut registry_dirty = false;
+
     let mut materials = Vec::with_capacity(deltas.len());
     // 予算超過で LLM 抽出を skip して version-only へ縮退させたパッケージ数。最後に 1 行で件数を明示する
     // （サイレント切り捨て防止）。
@@ -60,39 +95,61 @@ where
     // 概要付き＝抽出結果が 1 件以上ついた件数と、version-only＝変更リスト空へ縮退した件数を最後に 1 行で出す）。
     let mut summarized = 0usize;
     let mut version_only = 0usize;
+    // provenance 経路の内訳（どこからノートを得たか）を CI ログで可視化するための件数。
+    let mut registry_hits = 0usize;
+    let mut mechanical_found = 0usize;
+    let mut ai_discovered = 0usize;
     for delta in deltas {
-        // 機械解決でノート取得を先に試みる（AI エージェントへ与える初期材料 + 記録用 notes_url の供給）。
-        // 出所（nix/brew）でノート取得先 base / 解決規則が異なるため source を渡す（同一規則で引くと誤った URL
-        // になるのを防ぐ）。これは AI 主導の前段ヒントであり、取得不能でも AI はヒント URL から自分で fetch を
-        // 試みられる（機械解決は fallback/ヒントとして残す）。
-        let seed = notes.fetch_release_notes(
-            &delta.name,
-            delta.source,
-            delta.repo.clone(),
-            delta.notes_source.clone(),
-            delta.old.clone(),
-            delta.new.clone(),
-        )?;
-        // 記録用 notes_url は機械解決が返した URL を一次に、無ければ changelog/homepage ヒントへ倒す
-        // （いずれも記録前に host allowlist で機械バリデートする）。
-        let notes_url = sanitize_notes_url(
-            seed.as_ref()
-                .map(|seed| seed.notes_url.clone())
-                .or_else(|| delta.notes_source.clone())
-                .or_else(|| delta.homepage.clone()),
-        );
-        let change_items = if extract.extract_budget_exhausted() {
-            // 抽出フェーズ全体の wall-clock 予算を使い切っていたら、残りパッケージは AI 抽出を呼ばず
-            // version-only（変更リスト空・URL は保持）へ縮退する。全件持続 429 の最悪ケースで抽出が record job
-            // timeout（60分）へ接近・超過し、後続 job（PR 起票）が止まって無人 nightly が停止するのを構造的に防ぐ。
-            // 停止条件（残りを skip して version-only に倒す）の判断は application が持ち、予算超過の計測は port が担う。
+        // フロー 1（レジストリ参照）を最優先する。保存済み有効 source があれば直接 fetch して再利用し、機械
+        // 解決・AI 探索を skip する（再探索しない＝レート逓減）。fetch が空/失敗なら自己修復として機械→AI へ倒す。
+        // `reused` が `Some` のとき：seed ノート + 記録 URL を持ち、AI には探索させず seed の要約だけさせる。
+        let saved_source = registry
+            .lookup(&delta.name)
+            .and_then(|entry| entry.reusable_source())
+            // レジストリは repo 管理で人手改変もありうるため、再利用前にも host allowlist を再適用する（二重防御）。
+            .filter(|url| is_allowed_url(url))
+            .map(str::to_string);
+        let reused = match saved_source.as_deref() {
+            Some(url) => notes
+                .fetch_notes_from_source(url)?
+                .map(|notes| (url.to_string(), notes)),
+            None => None,
+        };
+
+        // フロー 2（機械解決）: レジストリ未登録 or 自己修復（再利用 fetch 失敗）なら機械解決を試みる。出所
+        // （nix/brew）で取得規則が異なるため source を渡す。取れたら origin=mechanical 学習候補にする。
+        let mechanical = match &reused {
+            Some(_) => None,
+            None => notes.fetch_release_notes(
+                &delta.name,
+                delta.source,
+                delta.repo.clone(),
+                delta.notes_source.clone(),
+                delta.old.clone(),
+                delta.new.clone(),
+            )?,
+        };
+
+        // 抽出へ渡す seed ノートと記録 URL を確定する。reused（フロー 1）→ 再利用ノート、mechanical（フロー 2）
+        // → 機械解決ノート、いずれも無ければ None（AI がヒント URL から自分で fetch する＝フロー 3）。
+        let (seed, resolved_notes_url) = match (&reused, &mechanical) {
+            (Some((url, notes_text)), _) => (Some(notes_text.clone()), Some(url.clone())),
+            (None, Some(notes_text)) => {
+                (Some(notes_text.clone()), Some(notes_text.notes_url.clone()))
+            }
+            (None, None) => (None, None),
+        };
+
+        // 単一の AI 抽出（予算ゲートつき）: 解決した seed があれば AI はそれを要約し（探索しない）、無ければ
+        // ヒント URL から自分で fetch して探索する（フロー 3）。outcome は構造化変更 + AI が採用した取得元 URL を
+        // 運ぶ。1 パッケージにつき AI 呼び出しは最大 1 回で、二重呼び出しによるレート消費増を避ける。
+        let outcome = if extract.extract_budget_exhausted() {
+            // 抽出フェーズの wall-clock 予算超過: AI を呼ばず version-only（変更リスト空・URL は保持）へ縮退する。
+            // 全件持続 429 の最悪ケースで抽出が record job timeout（60分）へ接近・超過し、後続 job（PR 起票）が
+            // 止まって無人 nightly が停止するのを構造的に防ぐ。停止判断は application、予算計測は port。
             budget_skipped += 1;
-            Vec::new()
+            ExtractOutcome::default()
         } else {
-            // AI エージェントにヒント（パッケージ名・old→new・homepage/repo/changelog）と seed ノートを渡し、
-            // AI 自身に適切なノートを fetch・読解させて構造化変更を抽出させる。SSRF 許可ホスト集合の組み立てと
-            // fetch は adapter（port 裏）の責務。LLM 出力は信頼境界外のため、記録前に host/長さ/件数を機械
-            // バリデートする。
             let request = ExtractRequest {
                 name: delta.name.clone(),
                 old: delta.old.clone(),
@@ -102,8 +159,56 @@ where
                 changelog: delta.notes_source.clone(),
                 seed_notes: seed,
             };
-            sanitize_change_items(extract.extract_change_items(&request)?)
+            extract.extract_change_items(&request)?
         };
+        // LLM 出力は信頼境界外のため、記録前に host/長さ/件数を機械バリデートする。
+        let change_items = sanitize_change_items(outcome.items);
+
+        // provenance を確定して学習する（フロー別。利用者要件 (3)/(4)）:
+        // - フロー 1（reused）: origin 据え置き。レジストリを書き換えない（再探索しない・据え置きを保つ）。
+        // - フロー 2（mechanical）: 機械解決の取得元 URL を origin=mechanical で学習。
+        // - フロー 3（AI 採用 URL あり）: AI が採用した取得元 URL を origin=ai-discovered で学習。
+        // - いずれも取得元未確定: origin=none を学習し、次回も探索対象に戻す（取得元が後から現れる可能性に追従）。
+        if reused.is_some() {
+            registry_hits += 1;
+        } else if let Some(mech) = &mechanical {
+            mechanical_found += 1;
+            let provenance = NotesSourceEntry {
+                source: Some(mech.notes_url.clone()),
+                origin: NotesOrigin::Mechanical,
+                discovered_at: Some(command.at.clone()),
+                note: None,
+            };
+            learn_provenance(&mut registry, &mut registry_dirty, &delta.name, provenance);
+        } else if let Some(source_url) = &outcome.source_url {
+            ai_discovered += 1;
+            let provenance = NotesSourceEntry {
+                source: Some(source_url.clone()),
+                origin: NotesOrigin::AiDiscovered,
+                discovered_at: Some(command.at.clone()),
+                note: None,
+            };
+            learn_provenance(&mut registry, &mut registry_dirty, &delta.name, provenance);
+        } else {
+            // 機械解決も AI 採用取得元も無い。origin=none を学習して次回も探索対象に戻す。
+            let provenance = NotesSourceEntry {
+                source: None,
+                origin: NotesOrigin::None,
+                discovered_at: Some(command.at.clone()),
+                note: None,
+            };
+            learn_provenance(&mut registry, &mut registry_dirty, &delta.name, provenance);
+        }
+
+        // 記録用 notes_url は解決経路が返した URL を一次に（AI 採用 URL も含む）、無ければ changelog/homepage
+        // ヒントへ倒す（いずれも記録前に host allowlist で機械バリデートする）。
+        let notes_url = sanitize_notes_url(
+            resolved_notes_url
+                .or_else(|| outcome.source_url.clone())
+                .or_else(|| delta.notes_source.clone())
+                .or_else(|| delta.homepage.clone()),
+        );
+
         // 可観測サマリの集計: 抽出結果が 1 件以上ついたものを「概要付き」、変更リスト空（ノート取得不能・
         // 抽出 0 件・予算超過縮退）を「version-only」として数える。失敗理由の内訳（auth/rate・budget）は
         // 各 adapter / 予算ログ側で診断済みで、ここでは全体の縮退比率を 1 行で可視化する。
@@ -129,6 +234,18 @@ where
     // （budget-exhausted ログと対称。サイレント全滅防止）。対象 delta が 1 件もない夜は出さない。
     if summarized + version_only > 0 {
         eprintln!("notes: {summarized} packages summarized, {version_only} version-only");
+        // provenance 経路の内訳（どこからノートを得たか）を併記する。レジストリ hit が回を追って増える＝AI 探索
+        // が新規/未知/自己修復のみへ収束し GitHub Models のレート消費が逓減している、という運用根拠を残す。
+        eprintln!(
+            "notes provenance: {registry_hits} registry-reused, {mechanical_found} mechanical, {ai_discovered} ai-discovered"
+        );
+    }
+
+    // レジストリに更新があれば 1 回だけ書き戻す（決定論・名前昇順は domain/adapter が保証）。書き戻し先は
+    // nightly が commit する `docs/update-history/**` 内なので、レジストリも同経路で repo に入り次回 record が
+    // 参照できる（再利用でレート逓減）。
+    if registry_dirty {
+        registry_store.write_registry(&registry)?;
     }
 
     // append 要否の判定: **rev が前進した（`nixpkgs_old != nixpkgs_new`）夜は materials が空でも append する**。
@@ -154,21 +271,83 @@ where
     store.append_entry(&entry)
 }
 
+/// 確定した provenance をサニタイズしてレジストリへ学習し、更新フラグを立てる。
+///
+/// `record`（記録直前）が許可外 source を学習しないよう [`sanitize_provenance`] を通してからレジストリへ
+/// upsert する。同一パッケージの既存エントリは上書きする（自己修復で取得元が移動したプロジェクトに追従）。
+/// `dirty` を `true` にして、ループ後にレジストリを 1 回だけ書き戻すべきことを示す。これは「どの provenance を
+/// いつ学習するか」という use case orchestration の一部であり、origin マッピングは domain 値の構築に限る。
+fn learn_provenance(
+    registry: &mut NotesSourceRegistry,
+    dirty: &mut bool,
+    name: &str,
+    provenance: NotesSourceEntry,
+) {
+    registry.record(name.to_string(), sanitize_provenance(provenance));
+    *dirty = true;
+}
+
+/// 学習する provenance を記録前に host allowlist で機械サニタイズする（許可外 source を学習しない）。
+///
+/// `source` が許可ホスト https でなければ source を捨てて [`NotesOrigin::None`] へ倒す（許可外 URL を
+/// レジストリへ学習せず、次回フロー 1 で fetch しないため）。`origin=none`（source なし）はそのまま通す。
+/// これは「許可外 source を学習しない」という業務規則の適用であり、record が記録直前に適用する。
+fn sanitize_provenance(entry: NotesSourceEntry) -> NotesSourceEntry {
+    match entry.source {
+        // 許可ホスト https の source はそのまま学習する。
+        Some(ref url) if is_allowed_url(url) => entry,
+        // 許可外 host の source は学習しない（origin=none・source なしへ倒す）。
+        Some(_) => NotesSourceEntry {
+            source: None,
+            origin: NotesOrigin::None,
+            discovered_at: entry.discovered_at,
+            note: entry.note,
+        },
+        // source 無し（origin=none 等）はそのまま。
+        None => entry,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    //! record の順序（nix eval diff / brew diff → ノート取得 → LLM 抽出 → サニタイズ → 追記）と
-    //! フォールバック（ノート不在で version のみ）・バリデート（不正 URL 破棄）を mockall mock で固定する。
+    //! record の順序（レジストリ参照 → 機械解決 → AI 探索 → サニタイズ → 追記）と provenance 学習
+    //! （mechanical/ai-discovered/none・許可外 source 不学習）・自己修復・再利用（hit→再探索しない）を
+    //! mockall mock で hermetic に固定する。
 
     use std::collections::BTreeMap;
 
     use super::run_record;
     use crate::update_history::domain::commands::RecordCommand;
     use crate::update_history::domain::diff::{DeltaSource, NixPackage, VersionDelta};
+    use crate::update_history::domain::registry::{
+        NotesOrigin, NotesSourceEntry, NotesSourceRegistry,
+    };
     use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
     use crate::update_history::ports::{
-        MockBrewVersionDiffPort, MockChangeExtractPort, MockHistoryStorePort, MockNixVersionPort,
-        MockNotesPort, RawReleaseNotes,
+        ExtractOutcome, MockBrewVersionDiffPort, MockChangeExtractPort, MockHistoryStorePort,
+        MockNixVersionPort, MockNotesPort, MockNotesSourceRegistryPort, RawReleaseNotes,
     };
+
+    /// 空レジストリを返し、`write_registry` を任意回（学習が起きれば 1 回）受ける registry mock。
+    ///
+    /// 既存テスト（レジストリ未登録経路）はこの空レジストリを使う。provenance 学習で書き戻しが走るため
+    /// `write_registry` は受理する（回数は問わない＝学習有無に依存しないテストで使える）。
+    fn empty_registry_store() -> MockNotesSourceRegistryPort {
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        registry.expect_write_registry().returning(|_| Ok(()));
+        registry
+    }
+
+    /// `extract_change_items` の戻り値 [`ExtractOutcome`] を変更リストのみ（採用取得元なし）で作る helper。
+    fn outcome(items: Vec<ChangeItem>) -> ExtractOutcome {
+        ExtractOutcome {
+            items,
+            source_url: None,
+        }
+    }
 
     fn command() -> RecordCommand {
         RecordCommand {
@@ -260,7 +439,7 @@ mod tests {
         extract
             .expect_extract_change_items()
             .times(2)
-            .returning(|_| Ok(Vec::new()));
+            .returning(|_| Ok(outcome(Vec::new())));
 
         let mut store = MockHistoryStorePort::new();
         store
@@ -276,6 +455,7 @@ mod tests {
             &notes,
             &extract,
             &store,
+            &empty_registry_store(),
         )
     }
 
@@ -323,7 +503,7 @@ mod tests {
             })
             .times(1)
             .returning(|_| {
-                Ok(vec![
+                Ok(outcome(vec![
                     ChangeItem {
                         category: ChangeCategory::Security,
                         text: "CVE 修正".to_string(),
@@ -335,7 +515,7 @@ mod tests {
                         text: "新機能".to_string(),
                         ref_url: Some("https://github.com/openssl/openssl/pull/2".to_string()),
                     },
-                ])
+                ]))
             });
 
         let mut store = MockHistoryStorePort::new();
@@ -365,6 +545,7 @@ mod tests {
             &notes,
             &extract,
             &store,
+            &empty_registry_store(),
         )
     }
 
@@ -422,6 +603,7 @@ mod tests {
             &notes,
             &extract,
             &store,
+            &empty_registry_store(),
         )
     }
 
@@ -449,7 +631,7 @@ mod tests {
         extract
             .expect_extract_change_items()
             .times(1)
-            .returning(|_| Ok(Vec::new()));
+            .returning(|_| Ok(outcome(Vec::new())));
 
         let mut store = MockHistoryStorePort::new();
         store
@@ -470,6 +652,7 @@ mod tests {
             &notes,
             &extract,
             &store,
+            &empty_registry_store(),
         )
     }
 
@@ -496,7 +679,15 @@ mod tests {
         // rev 不変・空素材なので append は一切行わない。
         store.expect_append_entry().never();
 
-        run_record(command, &nix_versions, &brew_diff, &notes, &extract, &store)
+        run_record(
+            command,
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &empty_registry_store(),
+        )
     }
 
     #[test]
@@ -539,6 +730,392 @@ mod tests {
             &notes,
             &extract,
             &store,
+            &empty_registry_store(),
+        )
+    }
+
+    /// nix delta（`name`, 1.0→1.1、new 側 repo）を生む old/new eval マップ + brew 空 diff の標準セットを返す。
+    fn nix_only_diff(
+        name: &'static str,
+        repo: &'static str,
+    ) -> (MockNixVersionPort, MockBrewVersionDiffPort) {
+        let nix_versions = nix_versions_with_repo(name, repo);
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .returning(|_, _| Ok(Vec::new()));
+        (nix_versions, brew_diff)
+    }
+
+    #[test]
+    fn registry_hit_reuses_saved_source_without_re_searching() -> crate::Result<()> {
+        // 退行固定（再利用フロー 1）: レジストリに保存済み source があれば、それを直接 fetch
+        // （fetch_notes_from_source）して再利用し、機械解決（fetch_release_notes）も AI 探索も行わない
+        // （再探索しない＝レート逓減）。provenance は据え置きなので write_registry も呼ばない。
+        let (nix_versions, brew_diff) = nix_only_diff("openssl", "openssl/openssl");
+
+        let mut notes = MockNotesPort::new();
+        // 保存 source を直接 fetch して再利用する。
+        notes
+            .expect_fetch_notes_from_source()
+            .withf(|url| url == "https://github.com/openssl/openssl/releases")
+            .times(1)
+            .returning(|url| {
+                Ok(Some(RawReleaseNotes {
+                    text: "reused notes".to_string(),
+                    notes_url: url.to_string(),
+                }))
+            });
+        // 機械解決は一切呼ばれない（再探索しない）。
+        notes.expect_fetch_release_notes().never();
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // 再利用ノートを seed に受け取り、AI は探索せず要約する（source_url は無し＝provenance 据え置き）。
+        extract
+            .expect_extract_change_items()
+            .withf(|request| {
+                request.seed_notes.as_ref().map(|n| n.text.as_str()) == Some("reused notes")
+            })
+            .times(1)
+            .returning(|_| {
+                Ok(outcome(vec![ChangeItem {
+                    category: ChangeCategory::Fix,
+                    text: "修正".to_string(),
+                    ref_url: None,
+                }]))
+            });
+
+        let mut store = MockHistoryStorePort::new();
+        store
+            .expect_append_entry()
+            .times(1)
+            .withf(|entry| {
+                entry.packages[0].notes_url.as_deref()
+                    == Some("https://github.com/openssl/openssl/releases")
+            })
+            .returning(|_| Ok(()));
+
+        // レジストリ hit: openssl に origin=mechanical の保存 source。再探索しないので write は呼ばれない。
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry.expect_read_registry().returning(|| {
+            let mut r = NotesSourceRegistry::default();
+            r.record(
+                "openssl".to_string(),
+                NotesSourceEntry {
+                    source: Some("https://github.com/openssl/openssl/releases".to_string()),
+                    origin: NotesOrigin::Mechanical,
+                    discovered_at: None,
+                    note: None,
+                },
+            );
+            Ok(r)
+        });
+        registry.expect_write_registry().never();
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn mechanical_resolution_records_origin_mechanical() -> crate::Result<()> {
+        // 退行固定（フロー 2 学習）: レジストリ未登録で機械解決が取れたら、その取得元 URL を origin=mechanical で
+        // レジストリへ記録する（write_registry が呼ばれ、保存 source・origin が正しい）。
+        let (nix_versions, brew_diff) = nix_only_diff("openssl", "openssl/openssl");
+
+        let mut notes = MockNotesPort::new();
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| {
+                Ok(Some(RawReleaseNotes {
+                    text: "notes".to_string(),
+                    notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                }))
+            });
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        extract
+            .expect_extract_change_items()
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("openssl").is_some_and(|e| {
+                    e.origin == NotesOrigin::Mechanical
+                        && e.source.as_deref()
+                            == Some("https://github.com/openssl/openssl/releases/tag/v1.1")
+                })
+            })
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn ai_discovered_source_records_origin_ai_discovered() -> crate::Result<()> {
+        // 退行固定（フロー 3 学習）: 機械解決が空で AI が取得元 URL を採用したら、その URL を
+        // origin=ai-discovered でレジストリへ記録する。
+        let (nix_versions, brew_diff) = nix_only_diff("neovim", "neovim/neovim");
+
+        let mut notes = MockNotesPort::new();
+        // 機械解決は空（None）→ AI 探索へ倒す。
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // AI が採用取得元 URL を返す（source_url）。
+        extract
+            .expect_extract_change_items()
+            .times(1)
+            .returning(|_| {
+                Ok(ExtractOutcome {
+                    items: vec![ChangeItem {
+                        category: ChangeCategory::Feature,
+                        text: "新機能".to_string(),
+                        ref_url: None,
+                    }],
+                    source_url: Some("https://github.com/neovim/neovim/releases".to_string()),
+                })
+            });
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("neovim").is_some_and(|e| {
+                    e.origin == NotesOrigin::AiDiscovered
+                        && e.source.as_deref() == Some("https://github.com/neovim/neovim/releases")
+                })
+            })
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn unresolved_notes_record_origin_none() -> crate::Result<()> {
+        // 退行固定（フロー 4 学習）: 機械解決も AI 採用取得元も無ければ origin=none を記録し、次回も探索対象に戻す。
+        let (nix_versions, brew_diff) = nix_only_diff("zlib", "");
+
+        let mut notes = MockNotesPort::new();
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // AI も取得元を採用できない（source_url なし・空変更）。
+        extract
+            .expect_extract_change_items()
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("zlib")
+                    .is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none())
+            })
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn self_heals_when_saved_source_fetch_fails() -> crate::Result<()> {
+        // 退行固定（自己修復）: レジストリ保存 source の直接 fetch が空/失敗（None）なら、機械解決へフォールバック
+        // し、成功した新ソースで origin=mechanical へレジストリを更新する（取得元移動に追従）。
+        let (nix_versions, brew_diff) = nix_only_diff("openssl", "openssl/openssl");
+
+        let mut notes = MockNotesPort::new();
+        // 保存 source の再利用 fetch が失敗（None）。
+        notes
+            .expect_fetch_notes_from_source()
+            .times(1)
+            .returning(|_| Ok(None));
+        // 自己修復で機械解決を試みて新ソースを得る。
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| {
+                Ok(Some(RawReleaseNotes {
+                    text: "fresh notes".to_string(),
+                    notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                }))
+            });
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        extract
+            .expect_extract_change_items()
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        // レジストリには古い（移動した）source が ai-discovered で保存されている。
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry.expect_read_registry().returning(|| {
+            let mut r = NotesSourceRegistry::default();
+            r.record(
+                "openssl".to_string(),
+                NotesSourceEntry {
+                    source: Some(
+                        "https://github.com/openssl/openssl/blob/old/CHANGELOG".to_string(),
+                    ),
+                    origin: NotesOrigin::AiDiscovered,
+                    discovered_at: None,
+                    note: None,
+                },
+            );
+            Ok(r)
+        });
+        // 自己修復で新ソース（origin=mechanical）へ更新する。
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("openssl").is_some_and(|e| {
+                    e.origin == NotesOrigin::Mechanical
+                        && e.source.as_deref()
+                            == Some("https://github.com/openssl/openssl/releases/tag/v1.1")
+                })
+            })
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn disallowed_ai_source_is_not_learned() -> crate::Result<()> {
+        // 退行固定（SSRF/学習境界）: AI が採用した取得元 URL が許可ホスト外なら、レジストリへ学習せず
+        // origin=none へ倒す（次回フロー 1 で許可外 URL を fetch しない）。
+        let (nix_versions, brew_diff) = nix_only_diff("neovim", "neovim/neovim");
+
+        let mut notes = MockNotesPort::new();
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // AI が許可外 host の取得元 URL を返す（本来 SSRF 検査を通った fetch のはずだが、二重防御として記録側でも弾く）。
+        extract
+            .expect_extract_change_items()
+            .times(1)
+            .returning(|_| {
+                Ok(ExtractOutcome {
+                    items: Vec::new(),
+                    source_url: Some("https://evil.example/notes".to_string()),
+                })
+            });
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        // 許可外 source は学習しない: origin=none・source なしで記録される。
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("neovim")
+                    .is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none())
+            })
+            .returning(|_| Ok(()));
+
+        run_record(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
         )
     }
 }

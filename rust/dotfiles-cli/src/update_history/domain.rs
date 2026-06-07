@@ -11,6 +11,7 @@ pub(crate) mod aggregate;
 pub(crate) mod build;
 pub(crate) mod commands;
 pub(crate) mod diff;
+pub(crate) mod registry;
 pub(crate) mod selection;
 pub(crate) mod severity;
 pub(crate) mod validate;

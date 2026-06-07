@@ -16,6 +16,7 @@ mod adapters {
     mod github_models;
     mod nix;
     mod notes;
+    mod registry_store;
     mod report;
     mod toml_store;
 
@@ -23,6 +24,7 @@ mod adapters {
     pub(in crate::update_history) use github_models::GithubModelsExtractAdapter;
     pub(in crate::update_history) use nix::NixEvalVersionAdapter;
     pub(in crate::update_history) use notes::{ReleaseNotesAdapter, fetch_allowed_note};
+    pub(in crate::update_history) use registry_store::TomlNotesSourceRegistryAdapter;
     pub(in crate::update_history) use report::{
         StdoutHistoryReportAdapter, WriterHistoryReportAdapter,
     };
@@ -95,6 +97,13 @@ struct RecordOptions {
     /// 追記先の月次 TOML ファイル（`docs/update-history/<YYYY-MM>.toml`）。
     #[arg(long)]
     out: PathBuf,
+    /// ノート取得元レジストリ（provenance の学習・再利用）の TOML ファイル
+    /// （`docs/update-history/notes-sources.toml`）。利用者要件 (3)/(4): 取得元をここへ保存し、次回 record は
+    /// これを最優先参照して再利用し再探索しない（AI 探索を新規/未知/自己修復のみへ限定してレートを逓減）。
+    /// 未指定なら `--out` と同じ directory の `notes-sources.toml` を既定にする（nightly が commit する
+    /// `docs/update-history/**` 内に収まり、レジストリも同経路で repo に入る）。
+    #[arg(long)]
+    notes_sources: Option<PathBuf>,
     /// CI が old/new tap rev から事前算出した brew 版差分ファイル（`name<TAB>old<TAB>new`）。
     /// 未指定なら brew 差分は縮退して空。
     #[arg(long)]
@@ -146,11 +155,18 @@ pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
 
 /// record 経路の composition root: adapter concrete を結線し record use case を駆動する。
 fn run_record(options: RecordOptions) -> Result<()> {
+    // レジストリ path: 明示指定が無ければ `--out` と同じ directory の `notes-sources.toml` を既定にする
+    // （nightly が commit する `docs/update-history/**` 内に収め、レジストリも同経路で repo に入れる）。
+    let registry_path = options
+        .notes_sources
+        .unwrap_or_else(|| default_registry_path(&options.out));
+
     let nix_versions = adapters::NixEvalVersionAdapter::new(options.nix_old, options.nix_new);
     let brew_diff = adapters::BrewTapDiffAdapter::new(options.brew_diff);
     let notes = adapters::ReleaseNotesAdapter::new(options.brew_notes_base);
     let extract = adapters::GithubModelsExtractAdapter::new();
     let store = adapters::TomlHistoryStoreAdapter::new(options.out);
+    let registry_store = adapters::TomlNotesSourceRegistryAdapter::new(registry_path);
 
     let command = RecordCommand {
         old_rev: options.old_rev,
@@ -167,7 +183,20 @@ fn run_record(options: RecordOptions) -> Result<()> {
         &notes,
         &extract,
         &store,
+        &registry_store,
     )
+}
+
+/// `--out`（月次 TOML）の置き場と同じ directory にレジストリ `notes-sources.toml` を置く既定パスを返す。
+///
+/// レジストリは月次履歴と同じ `docs/update-history/` 配下に置き、nightly の commit 許可パス
+/// （`docs/update-history/**`）内に収める。`--out` に親 directory が無い（ファイル名のみ）場合は
+/// カレント directory の `notes-sources.toml` にする。
+fn default_registry_path(out: &Path) -> PathBuf {
+    match out.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        Some(parent) => parent.join("notes-sources.toml"),
+        None => PathBuf::from("notes-sources.toml"),
+    }
 }
 
 /// show 経路の composition root: 履歴 source を解決し adapter を結線して show use case を駆動する。

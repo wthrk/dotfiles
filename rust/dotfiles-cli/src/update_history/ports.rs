@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 
 use super::domain::diff::{DeltaSource, NixPackage, VersionDelta};
+use super::domain::registry::NotesSourceRegistry;
 use super::domain::view::HistoryView;
 use super::domain::wire::{ChangeItem, UpdateEntry};
 use crate::Result;
@@ -73,6 +74,17 @@ pub(crate) trait NotesPort {
         old: Option<String>,
         new: Option<String>,
     ) -> Result<Option<RawReleaseNotes>>;
+
+    /// レジストリに保存済みの取得元 URL を **直接** fetch して生ノートを取得する（再利用フロー専用）。
+    ///
+    /// 利用者要件 (4): 前回 record でレジストリに学習した取得元（`source`）があれば、次回はそれを直接
+    /// fetch して再利用し、機械解決・AI 探索を一切しない（AI 探索を新規/未知/自己修復のみへ限定して
+    /// GitHub Models のレート消費を逓減させる）。`url` はレジストリ由来（repo 管理・レビュー対象だが、
+    /// AI-discovered で書かれた URL は元を辿れば AI 由来）であり、implementor は取得前に必ず host allowlist
+    /// （`is_allowed_url`）+ `-L` 無し・`--max-redirs 0`・https を機械適用する（既存 fetch 経路と同一）。
+    /// 取得失敗・空本文・許可外 host はいずれも `None`（呼び出し側は **自己修復**として機械解決 → AI 探索へ
+    /// フォールバックする）。`notes_url`（記録に残す URL）は取得した `url` をそのまま採る。
+    fn fetch_notes_from_source(&self, url: &str) -> Result<Option<RawReleaseNotes>>;
 }
 
 /// 取得済み生リリースノートと参照 URL の境界型。
@@ -115,6 +127,20 @@ pub(crate) struct ExtractRequest {
     pub(crate) seed_notes: Option<RawReleaseNotes>,
 }
 
+/// AI エージェント抽出の結果（構造化変更リスト + AI が採用した取得元 URL）。
+///
+/// `items` は機械バリデート前の構造化変更（信頼境界外）。`source_url` は AI が会話中に実際に fetch して
+/// 採用した取得元 URL（provenance として `origin=ai-discovered` でレジストリへ学習する経路。fetch
+/// していない・採用できなかったときは `None`）。SSRF 検査を通った fetch の URL だけを運ぶが、レジストリへ
+/// 書く前に呼び出し側（`record`）が host allowlist を再適用する（信頼境界外 URL を学習しないため）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ExtractOutcome {
+    /// 抽出した構造化変更リスト（機械バリデート前。信頼境界外）。
+    pub(crate) items: Vec<ChangeItem>,
+    /// AI が採用した取得元 URL（あれば。`origin=ai-discovered` 学習経路。無ければ `None`）。
+    pub(crate) source_url: Option<String>,
+}
+
 /// AI エージェントにノートを取得・要約させて構造化変更リストを抽出する capability 契約（外部機能: LLM エージェント）。
 ///
 /// implementor（GitHub Models tool-use ループ）は [`ExtractRequest`] のヒント（パッケージ名・old→new・
@@ -133,11 +159,15 @@ pub(crate) struct ExtractRequest {
 /// 残りパッケージを LLM 抽出するか version-only に倒すかという停止条件の判断は caller（application）が担う。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait ChangeExtractPort {
-    /// AI エージェントにノートを取得・要約させて構造化変更リストを抽出する。
+    /// AI エージェントにノートを取得・要約させて構造化変更リストを抽出し、AI が**採用した取得元 URL**を併せて返す。
     ///
     /// implementor は与えたヒントから AI に適切なノートを fetch・読解させ、取得した実ノートのみを根拠として
-    /// （ハルシネーション禁止）構造化変更を返す。根拠が無ければ空配列を返す。
-    fn extract_change_items(&self, request: &ExtractRequest) -> Result<Vec<ChangeItem>>;
+    /// （ハルシネーション禁止）構造化変更を返す。根拠が無ければ空配列を返す。加えて、AI が会話中に実際に
+    /// fetch し採用した取得元 URL（あれば最後に成功した fetch URL）を [`ExtractOutcome::source_url`] として返す。
+    /// これは provenance レジストリへ `origin=ai-discovered` の取得元として学習・再利用するための経路であり
+    /// （利用者要件 (3)/(4)）、fetch していない・採用できなかった場合は `None` を返す。返す URL は SSRF 検査
+    /// （許可ホスト集合内 https）を通過した fetch のものだけであり、呼び出し側は記録前に host allowlist を再適用する。
+    fn extract_change_items(&self, request: &ExtractRequest) -> Result<ExtractOutcome>;
 
     /// 抽出フェーズ全体の wall-clock 予算を使い切ったか（`true` なら以降の LLM 抽出を skip すべき）。
     ///
@@ -177,4 +207,21 @@ pub(crate) trait HistoryReportPort {
     /// `json` が `true` のとき生データ（JSON）を、`false` のとき重要度連動の text を出力する。
     /// 表示順・絵文字・破壊的/セキュリティ先頭などの整形規則は implementor が決める。
     fn write_history(&self, view: &HistoryView, json: bool) -> Result<()>;
+}
+
+/// ノート取得元レジストリ（provenance の学習・再利用）を読み書きする capability 契約（外部機能: TOML ファイル I/O）。
+///
+/// 利用者要件 (3)/(4): record はパッケージごとにどこからノートを取得したか（取得元 URL + origin）を
+/// repo 管理の TOML（`docs/update-history/notes-sources.toml`）へ保存し、次回以降はそれを参照して
+/// 再利用し再探索しない。implementor は read（不存在なら空レジストリ）と write（決定論・名前昇順で全体を
+/// 書き戻す）を担う。レジストリの参照優先・自己修復・origin 別の再探索要否は application/domain の責務であり、
+/// store は単純な永続化境界（全体 read / 全体 write）に限定する。serde derive を介した TOML encode/decode の
+/// 具体実装は adapter に閉じ、domain は `toml` クレートへ依存しない。
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait NotesSourceRegistryPort {
+    /// レジストリ全体を読み出す（不存在なら空レジストリ）。
+    fn read_registry(&self) -> Result<NotesSourceRegistry>;
+
+    /// レジストリ全体を書き戻す（決定論・名前昇順）。
+    fn write_registry(&self, registry: &NotesSourceRegistry) -> Result<()>;
 }

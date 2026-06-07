@@ -228,6 +228,15 @@ cargo xtask check runtime
 Homebrew tap input のみ。framework input は bump しない）し、更新履歴を `docs/update-history/<YYYY-MM>.toml`
 へ記録して自動 PR を起票・auto-merge します。各マシンはこの bump 済み pin に `dotfiles update` で追随します。
 
+各アプリの「何が変わったか」概要は上流のリリースノートから取得しますが、ノートの置き場は一律に機械取得
+できないため、(1) 機械的に取れるものは Releases API / changelog から取得し、(2) 取れないものは GitHub Models の
+AI エージェントに探させます。さらに、**どこからノートを取得したか（provenance）を
+`docs/update-history/notes-sources.toml`（ノート取得元レジストリ）に保存**し、次回以降の record はこのレジストリを
+最優先参照して同じ取得元を再利用します（再探索しません）。これにより AI 探索は新規/未知パッケージと自己修復
+（取得元が移動した等）に限定され、回を追って GitHub Models のレート消費が逓減します。レジストリはパッケージ名
+昇順の決定論ソートで diff を最小化し、`docs/update-history/**` 配下にあるため nightly の commit 許可パス内で
+repo に入ります。AI 由来の取得元 URL も含め、保存・再取得時は必ず許可ホスト https に限定して検証します。
+
 PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**します。別途 GitHub App を作って secret を
 仕込む必要はありません。GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow
 （必須 check）を発火しない既知の制約があるため、`nightly-update.yml` の open-pr job が **同一 run 内で

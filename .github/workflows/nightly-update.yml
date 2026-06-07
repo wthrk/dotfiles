@@ -274,6 +274,11 @@ jobs:
           # build だけに使う（小さい）。
           at="$(date -u +%FT%TZ)"
           out="docs/update-history/$(date -u +%Y-%m).toml"
+          # ノート取得元レジストリ（provenance の学習・再利用）。checkout した repo の既存レジストリを参照して
+          # 再利用し（再探索しない＝GitHub Models レート逓減）、新規/未知/自己修復の取得元だけを追記する。
+          # docs/update-history/** 配下に置くため nightly の commit 許可パス内に収まり、レジストリも同経路で
+          # repo に入る。記録経路は origin（mechanical/ai-discovered/none）別の決定論ソートで diff を最小化する。
+          notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
           # brew-notes-base: new cask tap rev の Casks 配下を基底にし、record adapter が
           # `<base><letter>/<name>.rb` で cask 定義（homepage/url を含む）を取得する。これは **brew tap 由来**
@@ -298,6 +303,7 @@ jobs:
             --at "$at" \
             --brew-diff "$BREW_DIFF" \
             --brew-notes-base "$brew_notes_base" \
+            --notes-sources "$notes_sources" \
             --out "$out"
 
       - name: 履歴 TOML を artifact 化

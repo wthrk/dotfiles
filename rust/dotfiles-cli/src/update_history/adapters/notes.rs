@@ -231,6 +231,16 @@ impl NotesPort for ReleaseNotesAdapter {
             }
         }
     }
+
+    /// レジストリに保存済みの取得元 URL を直接 fetch して生ノートを取得する（再利用フロー専用）。
+    ///
+    /// 既存の [`fetch`](Self::fetch) 経路をそのまま使い、`is_allowed_url`（host allowlist）+ redirect 不追従
+    /// （`-L` 無し・`--max-redirs 0`）+ `--proto =https` を機械適用する。`url` はレジストリ由来（AI-discovered
+    /// なら元は AI 由来）の信頼境界外 URL だが、この機械検証を必ず通すことで許可外 host を踏まない。取得失敗・
+    /// 空本文・許可外 host はいずれも `None`（呼び出し側は自己修復として機械解決 → AI 探索へフォールバックする）。
+    fn fetch_notes_from_source(&self, url: &str) -> Result<Option<RawReleaseNotes>> {
+        Self::fetch(url)
+    }
 }
 
 impl ReleaseNotesAdapter {

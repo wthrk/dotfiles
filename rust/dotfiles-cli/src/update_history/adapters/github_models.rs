@@ -62,7 +62,7 @@ use crate::process::run_capture_with_stdin;
 use crate::update_history::adapters::fetch_allowed_note;
 use crate::update_history::domain::validate::allowed_fetch_hosts;
 use crate::update_history::domain::wire::{ChangeCategory, ChangeItem};
-use crate::update_history::ports::{ChangeExtractPort, ExtractRequest};
+use crate::update_history::ports::{ChangeExtractPort, ExtractOutcome, ExtractRequest};
 
 /// GitHub Models 推論エンドポイント（OpenAI 互換チャット補完）。
 const GITHUB_MODELS_ENDPOINT: &str = "https://models.github.ai/inference/chat/completions";
@@ -635,12 +635,17 @@ fn agent_loop<R, F>(
     request: &ExtractRequest,
     mut model_request: R,
     mut fetch: F,
-) -> Result<Vec<ChangeItem>>
+) -> Result<ExtractOutcome>
 where
     R: FnMut(&str) -> Result<String>,
     F: FnMut(&str) -> Result<Option<String>>,
 {
     let mut messages = GithubModelsExtractAdapter::initial_messages(request);
+    // AI が会話中に最後に成功 fetch（非 None）した URL を採用取得元として保持する。これを provenance として
+    // `origin=ai-discovered` でレジストリへ学習・再利用する経路にする（利用者要件 (3)/(4)）。許可外/取得失敗
+    // （None）では更新しない。最後の成功 fetch を採るのは、AI が複数 fetch を試した末に有効ノートへ収束した
+    // URL を採用取得元と見なすためである（採用ノートに最も近い）。
+    let mut adopted_source: Option<String> = None;
     for _ in 0..MAX_TOOL_ITERATIONS {
         let body = GithubModelsExtractAdapter::tool_turn_body(&messages)?;
         let response = model_request(&body)?;
@@ -659,8 +664,12 @@ where
             // fetch_url 以外の tool_call は紐付けのため空応答を返す（API は全 tool_call へ応答を要求する）。
             let result = match tool_call_url(call) {
                 Some(url) => match fetch(&url)? {
-                    Some(text) => truncate_notes(&text),
-                    // 許可外 host または取得失敗。AI は別 URL を試せる。
+                    Some(text) => {
+                        // 成功 fetch（SSRF 検査通過 + 非空本文）の URL を採用取得元候補として記録する。
+                        adopted_source = Some(url);
+                        truncate_notes(&text)
+                    }
+                    // 許可外 host または取得失敗。AI は別 URL を試せる（採用取得元は更新しない）。
                     None => String::from("not allowed or fetch failed"),
                 },
                 None => String::from("unsupported tool"),
@@ -675,7 +684,10 @@ where
     // 最終要約ターン: tools を外し response_format 強制で構造化変更を返させる。
     let final_body = GithubModelsExtractAdapter::final_body(&messages)?;
     let response = model_request(&final_body)?;
-    Ok(GithubModelsExtractAdapter::parse_response(&response))
+    Ok(ExtractOutcome {
+        items: GithubModelsExtractAdapter::parse_response(&response),
+        source_url: adopted_source,
+    })
 }
 
 /// curl の stdout（本文）+ `--write-out` トレーラ（[`CURL_META_SENTINEL`] + status + ヘッダ JSON）出力から
@@ -928,11 +940,11 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
     /// [`MIN_REQUEST_INTERVAL`] のペースを敷き、HTTP 呼び出しは [`post_with_retry`](Self::post_with_retry) で
     /// 429 のバックオフ付き再試行を行う。有界回数でも 429 が解消しない場合は空配列へ縮退する（record success
     /// 維持）。ペーシング/予算は **model 呼び出し単位**で効く（エージェントは 1 パッケージで複数回呼ぶ）。
-    fn extract_change_items(&self, request: &ExtractRequest) -> Result<Vec<ChangeItem>> {
-        // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック）。
+    fn extract_change_items(&self, request: &ExtractRequest) -> Result<ExtractOutcome> {
+        // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック。採用取得元も無し）。
         let Some(token) = Self::github_token() else {
             eprintln!("GitHub Models extract skipped: GITHUB_TOKEN unset");
-            return Ok(Vec::new());
+            return Ok(ExtractOutcome::default());
         };
         // fetch 許可ホスト集合は eval メタ由来のヒントだけから組み立てる（ノート本文では拡張しない＝SSRF 防御）。
         let allowed_hosts = allowed_fetch_hosts(
@@ -948,9 +960,9 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
             |body| self.model_request(&token, body),
             |url| fetch_allowed_note(url, &allowed_hosts),
         ) {
-            Ok(items) => Ok(items),
+            Ok(outcome) => Ok(outcome),
             // model 呼び出しの失敗（レート枯渇・HTTP エラー・curl 失敗）。診断は model_request で出力済み。
-            Err(_) => Ok(Vec::new()),
+            Err(_) => Ok(ExtractOutcome::default()),
         }
     }
 
@@ -1640,7 +1652,7 @@ mod tests {
             Ok(Some("## Features\n- new thing".to_string()))
         };
 
-        let items = agent_loop(&request, model, fetch)?;
+        let outcome = agent_loop(&request, model, fetch)?;
         // 1: tool ターン(fetch 要求) → 2: ツール無し（読了）でループ脱出 → 3: 最終 schema ターンで構造化変更。
         assert_eq!(
             calls.get(),
@@ -1648,8 +1660,13 @@ mod tests {
             "tool ターン + 読了ターン + 最終 schema ターン = 3 model 呼び出し"
         );
         assert_eq!(fetched.get(), 1, "AI が要求した 1 件を fetch する");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].category, ChangeCategory::Feature);
+        assert_eq!(outcome.items.len(), 1);
+        assert_eq!(outcome.items[0].category, ChangeCategory::Feature);
+        // 採用取得元（provenance）: AI が成功 fetch した URL を `origin=ai-discovered` 学習用に返す。
+        assert_eq!(
+            outcome.source_url.as_deref(),
+            Some("https://github.com/neovim/neovim/releases")
+        );
         Ok(())
     }
 
@@ -1690,10 +1707,15 @@ mod tests {
         };
         // 最終ターンは空 changes を返す（model は常に tool_calls を返すが、反復上限後に final_body が呼ばれ、
         // ここでも同じ tool_calls JSON が返るため content 由来の changes は無く空になる）。
-        let items = agent_loop(&request, model, fetch)?;
+        let outcome = agent_loop(&request, model, fetch)?;
         assert!(
-            items.is_empty(),
+            outcome.items.is_empty(),
             "許可外 fetch しか得られなければ空配列へ縮退"
+        );
+        // 許可外 fetch しか得られなければ採用取得元も無い（許可外 URL を provenance へ学習しない）。
+        assert!(
+            outcome.source_url.is_none(),
+            "許可外 fetch は採用取得元にしない（SSRF: 学習しない）"
         );
         Ok(())
     }
