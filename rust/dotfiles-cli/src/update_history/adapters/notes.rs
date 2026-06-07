@@ -48,7 +48,6 @@
 //! （letter でなく `font` 固定サブディレクトリ）に置かれるため、font cask は subdir を `font` にする。それ以外の
 //! 基底（forge 等）は従来どおり `<base><name>` を使う。
 
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 
 use crate::Result;
@@ -56,33 +55,9 @@ use crate::process::{run_capture, run_capture_with_stdin};
 use crate::update_history::domain::diff::{
     DeltaSource, release_version, version_in_range, version_ordering,
 };
-use crate::update_history::domain::validate::{fetch_host_allowed, is_allowed_url};
+use crate::update_history::domain::validate::is_allowed_url;
 use crate::update_history::ports::{NotesPort, RawReleaseNotes};
-
-/// AI エージェント（GitHub Models tool-use ループ）が要求した `fetch_url` の URL を、SSRF 検査つきで取得する。
-///
-/// この関数は GitHub Models adapter のエージェントループから注入される **安全 fetch** であり、notes adapter が
-/// 既に持つ「`-L` 無し・`--max-redirs 0`・`--proto =https`・https のみ」の curl 経路（[`curl_args`]）をそのまま
-/// 再利用する（agent loop 側に curl 引数列を二重実装しない）。
-///
-/// **SSRF 防御**: `allowed_hosts` は呼び出し側が eval メタ（信頼境界内）のヒント host だけから組み立てた
-/// パッケージごとの許可ホスト集合（[`fetch_host_allowed`] で機械判定）。URL の host が集合外、または https 以外
-/// なら **fetch せず** `Ok(None)`（呼び出し側はツール結果として「not allowed」を AI へ返す）。集合内 https のみ
-/// 実際に curl を起動する。ノート本文（信頼境界外）から AI が拾った URL でも、この機械判定を必ず通すことで
-/// 許可外 host への横滑りを塞ぐ。取得失敗・空本文も `Ok(None)`（AI は別 URL を試せる）。redirect は追従しない
-/// （初期 host 以外を踏まない）。返す本文の truncate（上限文字数）は呼び出し側の責務（adapter ごとの上限）。
-pub(in crate::update_history) fn fetch_allowed_note(
-    url: &str,
-    allowed_hosts: &BTreeSet<String>,
-) -> Result<Option<String>> {
-    if !fetch_host_allowed(url, allowed_hosts) {
-        return Ok(None);
-    }
-    match run_capture("curl", curl_args(url)) {
-        Ok(text) if !text.trim().is_empty() => Ok(Some(text)),
-        Ok(_) | Err(_) => Ok(None),
-    }
-}
+use crate::update_history::support::safe_https_fetch;
 
 /// curl の `--write-out` トレーラを本文から切り出す sentinel（Releases API 取得の HTTP status 読み取り用）。
 ///
@@ -121,32 +96,24 @@ impl ReleaseNotesAdapter {
         Self { brew_notes_base }
     }
 
-    /// 許可ホスト https URL から本文を curl で取得する。
+    /// 許可ホスト https URL から本文を取得し、`RawReleaseNotes` へ翻訳する。
     ///
-    /// 取得失敗（ネットワーク不通・404 等）は record を止めないよう `None` へ縮退する。URL が許可ホスト
-    /// https でない場合は取得を試みず `None` を返す（信頼境界外 URL を踏まない）。
-    ///
-    /// **redirect は追従しない**（`--location` を付けず、`--max-redirs 0` で明示禁止）。`is_allowed_url` は
-    /// 初期 URL の host しか検査できず、`--location` で redirect を追従すると 3xx 応答経由で allowlist 外
-    /// ホストから本文を取得しうる（`--proto =https` は scheme 制限であって host 制限ではない）。これは
-    /// 「許可ホストの https のみを踏む」契約に反する。host allowlist 契約は **`-L`（`--location`）を付けない**
-    /// ことで保たれる: redirect を追従しないため、curl は初期 URL の host（`is_allowed_url` で検査済み）以外へ
-    /// 一切アクセスしない。`--max-redirs 0` はその意図を明示的に固定する補強である。3xx 応答そのものは curl の
-    /// `--fail`（通常 4xx/5xx を失敗にする）では失敗にならないが、`-L` 無しのため body を持たない 3xx 応答は
-    /// 空本文として返り、`fetch` 側の「空本文 → `None`」分岐でノート空縮退（graceful degradation）になる。
-    /// よって 3xx は allowlist 外 host を踏まず、かつ空縮退する。
+    /// host allowlist 検査（`is_allowed_url`、初期 URL の host のみ検査できる domain rule）をこの adapter が
+    /// 行い、許可ホスト https でない URL は取得を試みず `None` を返す（信頼境界外 URL を踏まない）。実 curl は
+    /// process-generic な安全 fetch primitive（[`safe_https_fetch`]、`-L` 無し・`--max-redirs 0`・`--proto =https`・
+    /// 非空本文のみ `Some`）へ委譲する。redirect 不追従が host allowlist 契約の要であり、support 側が引数列で
+    /// 固定する（`-L` で redirect を追従すると 3xx 経由で allowlist 外 host から本文を取得しうるが、`-L` 無しの
+    /// ため初期 host 以外を踏まず、body 無しの 3xx は空本文として `None` へ縮退する）。取得失敗・空本文は record を
+    /// 止めないよう `None` へ縮退する。adapter は host 検査と `RawReleaseNotes`（記録 URL 付与）への翻訳だけを担い、
+    /// 安全 curl の引数組み立ては support に閉じる（複数 adapter での curl 引数二重実装を避ける）。
     fn fetch(url: &str) -> Result<Option<RawReleaseNotes>> {
         if !is_allowed_url(url) {
             return Ok(None);
         }
-        match run_capture("curl", curl_args(url)) {
-            Ok(text) if !text.trim().is_empty() => Ok(Some(RawReleaseNotes {
-                text,
-                notes_url: url.to_string(),
-            })),
-            // 空本文または取得失敗はノート無しとして縮退する。
-            Ok(_) | Err(_) => Ok(None),
-        }
+        Ok(safe_https_fetch(url)?.map(|text| RawReleaseNotes {
+            text,
+            notes_url: url.to_string(),
+        }))
     }
 
     /// 取得方式（[`NotesFetchPlan`]）に従って生ノートを取得する。
@@ -356,31 +323,10 @@ fn join_release_bodies(mut bodies: Vec<(String, String)>) -> String {
         .join(RELEASE_BODY_SEPARATOR)
 }
 
-/// curl 引数列を組み立てる純粋関数（redirect 不追従を引数列として固定検証できるよう実行から切り離す）。
-///
-/// **redirect を追従しない**こと（`--location` を含めず `--max-redirs 0`）が host allowlist 契約の要であり、
-/// 引数列をテストで固定して退行を防ぐ。`-L` 無しのため curl は初期 URL の host 以外を踏まず、これが allowlist
-/// 契約（allowlist 外へ踏まない）を保証する。`--fail` は 4xx/5xx を失敗にする（3xx は `--fail` では失敗にならず、
-/// `-L` 無しのため追従もされず body 無しの 3xx として空縮退する）。`--proto =https` で https 以外の scheme を拒む。
-fn curl_args(url: &str) -> [OsString; 8] {
-    [
-        OsString::from("--fail"),
-        OsString::from("--silent"),
-        OsString::from("--show-error"),
-        // redirect を追従しない（allowlist 外 host への横滑りを塞ぐ）。`-L` 無しのため 3xx は追従されず
-        // body 無しで返り、空本文として `None` へ縮退する（`--fail` は 4xx/5xx 対象で 3xx は失敗にしない）。
-        // `--max-redirs 0` は明示的に「リダイレクトを 0 回まで」とする補強。
-        OsString::from("--max-redirs"),
-        OsString::from("0"),
-        OsString::from("--proto"),
-        OsString::from("=https"),
-        OsString::from(url),
-    ]
-}
-
 /// Releases API 取得用の curl 引数列を組み立てる純粋関数。
 ///
-/// 取得経路の host allowlist 契約（redirect 不追従・https 限定）は [`curl_args`] と同一で、加えて GitHub
+/// 取得経路の host allowlist 契約（redirect 不追従・https 限定）は support の安全 fetch 引数列
+/// （[`safe_fetch_args`](crate::update_history::support::safe_fetch_args)）と同一で、加えて GitHub
 /// REST API が要求/推奨する `Accept: application/vnd.github+json` ヘッダを付ける（JSON 応答を固定する）。
 /// このヘッダは secret を含まないため argv に置いてよい（token は付けないため argv/ログに secret は現れない）。
 fn release_api_curl_args(url: &str) -> [OsString; 10] {
@@ -553,7 +499,8 @@ fn split_status(raw: &str) -> (u16, String) {
 
 /// Releases 一覧取得用の curl 引数列を組み立てる純粋関数。
 ///
-/// host allowlist 契約（redirect 不追従・https 限定）は [`curl_args`] と同一。`Accept`/`X-GitHub-Api-Version`
+/// host allowlist 契約（redirect 不追従・https 限定）は support の安全 fetch 引数列
+/// （[`safe_fetch_args`](crate::update_history::support::safe_fetch_args)）と同一。`Accept`/`X-GitHub-Api-Version`
 /// で GitHub REST API の JSON 応答を固定する。`with_auth` のとき `--config -`（stdin）から Authorization を
 /// 読むため `--config -` を加える（token 本体は argv に置かず stdin で渡す＝secret 非露出）。token を含まない
 /// ヘッダ（`Accept` 等）は argv に置いてよい。
@@ -699,10 +646,11 @@ fn cask_subdir(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     //! cask の `Casks/<letter>/<name>.rb` URL 構築（P2-3 退行固定）と、非 cask 基底での従来連結、
-    //! および curl の redirect 不追従引数列（S1 退行固定: host allowlist 契約をコードで保証）を固定する。
+    //! および Releases API curl の redirect 不追従引数列（host allowlist 契約をコードで保証）を固定する。
+    //! 安全 fetch 引数列（`-L` 無し）の退行固定は support module の test が担う（curl 経路の一本化）。
 
     use super::{
-        NotesFetchPlan, Release, ReleaseNotesAdapter, auth_config, curl_args, extract_release_body,
+        NotesFetchPlan, Release, ReleaseNotesAdapter, auth_config, extract_release_body,
         join_release_bodies, parse_releases, release_api_curl_args, releases_list_curl_args,
         releases_list_url, releases_page_url, resolve_nix_notes_source, resolve_notes_url,
         split_owner_repo, split_status,
@@ -788,38 +736,6 @@ mod tests {
                 .is_none()
         );
         Ok(())
-    }
-
-    #[test]
-    fn curl_args_do_not_follow_redirects() {
-        // S1 退行固定: redirect を追従すると `is_allowed_url` で検査した初期 host を越えて allowlist 外 host
-        // から本文を取得しうる（host allowlist 契約違反）。`--location` を含めず `--max-redirs 0` を渡すこと、
-        // および https に限定する `--proto =https` を引数列で固定する。
-        let args: Vec<String> = curl_args("https://github.com/a/b")
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            !args.iter().any(|arg| arg == "--location" || arg == "-L"),
-            "redirect を追従してはならない: {args:?}"
-        );
-        // `--max-redirs 0` が「0」値とともに含まれる。
-        let max_redirs_idx = args
-            .iter()
-            .position(|arg| arg == "--max-redirs")
-            .expect("--max-redirs を指定する");
-        assert_eq!(args.get(max_redirs_idx + 1).map(String::as_str), Some("0"));
-        // https 以外の scheme を拒む。
-        let proto_idx = args
-            .iter()
-            .position(|arg| arg == "--proto")
-            .expect("--proto を指定する");
-        assert_eq!(args.get(proto_idx + 1).map(String::as_str), Some("=https"));
-        // 取得対象 URL が末尾に乗る。
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("https://github.com/a/b")
-        );
     }
 
     #[test]

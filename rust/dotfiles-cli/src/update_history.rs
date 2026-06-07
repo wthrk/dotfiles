@@ -23,7 +23,7 @@ mod adapters {
     pub(in crate::update_history) use brew::BrewTapDiffAdapter;
     pub(in crate::update_history) use github_models::GithubModelsExtractAdapter;
     pub(in crate::update_history) use nix::NixEvalVersionAdapter;
-    pub(in crate::update_history) use notes::{ReleaseNotesAdapter, fetch_allowed_note};
+    pub(in crate::update_history) use notes::ReleaseNotesAdapter;
     pub(in crate::update_history) use registry_store::TomlNotesSourceRegistryAdapter;
     pub(in crate::update_history) use report::{
         StdoutHistoryReportAdapter, WriterHistoryReportAdapter,
@@ -33,6 +33,8 @@ mod adapters {
 mod application;
 pub(crate) mod domain;
 pub(crate) mod ports;
+/// process-generic な安全 fetch primitive（業務語彙を持たない技術境界。notes / github_models 双方が再利用）。
+mod support;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

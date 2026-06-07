@@ -1,10 +1,14 @@
 //! ノート取得元レジストリ（provenance の学習・再利用）の wire/ドメイン型と決定論規則。
 //!
 //! 利用者要件: (3) どこからノートを取得したか（provenance）を repo 管理のファイルへ保存し、
-//! (4) 次回以降はそのレジストリを参照して再利用し再探索しない（AI 探索を新規/未知/自己修復のみへ限定して
-//! GitHub Models のレート消費を逓減させる）。本 module はレジストリの「パッケージ名 → 取得元」マップと
-//! その更新規則（決定論・安定ソート）だけを domain rule として固定する。ファイル I/O（TOML encode/decode）は
-//! adapter（`adapters/registry_store.rs`）が担い、本 module は `toml` クレートへ依存しない純粋 domain である。
+//! (4) 次回以降はそのレジストリを参照して再利用し再探索しない。再利用 hit したパッケージは保存 source を直接
+//! fetch した seed ノートを抽出 port へ渡し、**ツール探索なしの要約のみ 1 回**の GitHub Models 呼び出しで済む。
+//! 未知ノート（registry/機械解決で seed が取れないもの）だけが tool-use 探索（最大 model 呼び出し数回）を要する。
+//! よって registry が回を追って埋まるほど GitHub Models のレート消費が実際に逓減する。本 module はレジストリの
+//! 「パッケージ名 → 取得元」マップとその更新規則（決定論・安定ソート）だけを domain rule として固定する。
+//! ファイル I/O（TOML encode/decode）は adapter（`adapters/registry_store.rs`）が担い、本 module は `toml`
+//! クレートへ依存しない純粋 domain である。再利用判断（origin 別の再探索要否）は [`NotesSourceEntry::reusable_source`]
+//! が持ち、seed の有無による model 呼び出し回数の切替（要約のみ 1 回 / 探索）は抽出 port 実装（adapter）が担う。
 //!
 //! 信頼境界: レジストリは repo 管理（レビュー対象）だが、AI-discovered で書き込む `source` URL は AI 由来で
 //! ある。レジストリへ書く URL は記録前に host allowlist（[`super::validate::is_allowed_url`]）で機械検証し、

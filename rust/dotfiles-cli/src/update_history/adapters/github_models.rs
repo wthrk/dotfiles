@@ -1,20 +1,31 @@
-//! `ChangeExtractPort` を GitHub Models 推論 API（`curl` プロセス）の **tool-use エージェントループ**へ接続する
-//! adapter。
+//! `ChangeExtractPort` を GitHub Models 推論 API（`curl` プロセス）へ接続する adapter。
 //!
-//! リリースノートの場所は機械的に一律取得できないため、抽出は **AI エージェントに適切なノートを取得させて
-//! 要約させる**方式を取る。adapter は [`ExtractRequest`] のヒント（パッケージ名・old→new・homepage/repo/changelog）
-//! から、パッケージの正規ドメインに限定した fetch 許可ホスト集合を組み立て（domain の
-//! [`allowed_fetch_hosts`](crate::update_history::domain::validate::allowed_fetch_hosts)）、AI に `fetch_url`
-//! ツールを与えて会話ループを回す:
+//! リリースノートの場所は機械的に一律取得できないため、抽出は **seed ノートがあればその要約、無ければ AI
+//! エージェントに適切なノートを取得させて要約させる**方式を取る。`extract_change_items` は seed の有無で 2 経路へ
+//! 分岐する（[`has_sufficient_seed`]）:
 //!
-//! 1. 初回 request: system prompt（抽出契約 + ハルシネーション防止）+ user（パッケージ名・old→new・ヒント URL
-//!    群・seed ノート）+ `tools=[fetch_url]` + `tool_choice=auto`。
-//! 2. レスポンスが `finish_reason: tool_calls` なら各 `fetch_url(url)` を **SSRF 検査つきで実行**し、取得テキスト
-//!    （truncate 済）を `role: tool` メッセージで会話へ追加して再 request。
-//! 3. AI が十分なノートを読んだら（tool_calls を出さなくなる、または反復上限）、**tools を外し response_format
-//!    （strict schema）を付けた最終ターン**で構造化変更リストを返させる。
-//! 4. 有界: 1 パッケージあたり tool_call 反復は最大 [`MAX_TOOL_ITERATIONS`] 回。超過したら持っている材料で
-//!    最終要約ターンへ移る。
+//! - **seed が十分にある場合**（registry 再利用 fetch 成功 or 機械解決成功で seed ノートが既に取得済み）:
+//!   **ツールを与えず seed を根拠に 1 回だけ** structured output（strict schema）で要約する（[`summarize_only`]）。
+//!   `fetch_url` 探索をしないため **GitHub Models 呼び出しは 1 回**。registry が埋まるほど機械的に取れる/学習済みの
+//!   ものが 1 回化され、GitHub Models のレート消費が回を追って実際に逓減する（利用者要件 4 が真になる）。
+//!   ai-discovered 学習は行わない（探索経路でのみ更新）。
+//! - **seed が無い/空の場合のみ**: 未知ノートを探させる **tool-use エージェントループ**（[`agent_loop`]）を回す。
+//!   adapter は [`ExtractRequest`] のヒント（パッケージ名・old→new・homepage/repo/changelog）から、パッケージの
+//!   正規ドメインに限定した fetch 許可ホスト集合を組み立て（domain の
+//!   [`allowed_fetch_hosts`](crate::update_history::domain::validate::allowed_fetch_hosts)）、AI に `fetch_url`
+//!   ツールを与えて会話ループを回す:
+//!
+//!   1. 初回 request: system prompt（抽出契約 + ハルシネーション防止）+ user（パッケージ名・old→new・ヒント URL
+//!      群）+ `tools=[fetch_url]` + `tool_choice=auto`。
+//!   2. レスポンスが `finish_reason: tool_calls` なら各 `fetch_url(url)` を **SSRF 検査つきで実行**し、取得テキスト
+//!      （truncate 済）を `role: tool` メッセージで会話へ追加して再 request。
+//!   3. AI が十分なノートを読んだら（tool_calls を出さなくなる、または反復上限）、**tools を外し response_format
+//!      （strict schema）を付けた最終ターン**で構造化変更リストを返させる。
+//!   4. 有界: 1 パッケージあたり tool_call 反復は最大 [`MAX_TOOL_ITERATIONS`] 回（model 呼び出しは最大
+//!      `MAX_TOOL_ITERATIONS + 1` 回）。超過したら持っている材料で最終要約ターンへ移る。
+//!
+//! ハルシネーション防止（与えた seed の実ノートのみを根拠とし、無ければ空）は両経路で維持する
+//! （[`EXTRACT_SYSTEM_PROMPT`] 契約は tools の有無に依らない）。
 //!
 //! 認証は Actions の `GITHUB_TOKEN` を `Authorization: Bearer` で使い、別 secret を要求しない。`dotfiles` の
 //! async runtime 内から blocking HTTP client を使わないため、リクエストは外部 `curl` への翻訳で行う。
@@ -59,10 +70,10 @@ use serde::Deserialize;
 
 use crate::Result;
 use crate::process::run_capture_with_stdin;
-use crate::update_history::adapters::fetch_allowed_note;
 use crate::update_history::domain::validate::allowed_fetch_hosts;
 use crate::update_history::domain::wire::{ChangeCategory, ChangeItem};
 use crate::update_history::ports::{ChangeExtractPort, ExtractOutcome, ExtractRequest};
+use crate::update_history::support::fetch_allowed_note;
 
 /// GitHub Models 推論エンドポイント（OpenAI 互換チャット補完）。
 const GITHUB_MODELS_ENDPOINT: &str = "https://models.github.ai/inference/chat/completions";
@@ -690,6 +701,45 @@ where
     })
 }
 
+/// seed ノートが「十分にある」（要約の根拠に足る非空テキストを持つ）かを判定する純粋関数。
+///
+/// `extract_change_items` の経路分岐に使う: seed が十分にあれば（registry 再利用 fetch 成功 or 機械解決成功）
+/// ツール探索せず seed の **要約のみ 1 回**（[`summarize_only`]）、無ければ AI に fetch_url で探索させる
+/// （[`agent_loop`]）。判定は「`seed_notes` が `Some` でかつ本文が trim 後非空」とする。空白だけの seed は
+/// 根拠にならないため「無し」扱いにして探索経路へ倒す。
+fn has_sufficient_seed(request: &ExtractRequest) -> bool {
+    request
+        .seed_notes
+        .as_ref()
+        .is_some_and(|notes| !notes.text.trim().is_empty())
+}
+
+/// seed ノートを根拠に **ツールを与えず 1 回だけ** structured output（strict schema）で要約する純粋規約。
+///
+/// registry 再利用 fetch 成功・機械解決成功で seed ノートが既に取得済みのとき（[`has_sufficient_seed`]）に使う。
+/// `fetch_url` ツールを提示しないため AI は探索できず、**GitHub Models 呼び出しは 1 回**で終わる（registry が
+/// 埋まるほど探索が新規/未知のみへ収束し、レート消費が回を追って実際に逓減する核）。会話は初回 user メッセージ
+/// （seed を含む）に対し即 [`final_body`]（tools 無し・response_format 強制）を投げ、[`parse_change_items`] で
+/// 構造化変更を取り出す。
+///
+/// ハルシネーション防止: 根拠は与えた seed の実ノートのみ（[`EXTRACT_SYSTEM_PROMPT`] の「与えたノートのみを
+/// 根拠とし、無ければ空」契約は tools の有無に依らず維持される）。`source_url` は **常に `None`** を返す
+/// （ai-discovered 学習は探索経路でのみ更新し、summarize_only 経路では既存 source を据え置く＝reused は origin
+/// 維持、mechanical は自身の取得元 URL を別途学習済み）。`request` の `Err`（curl プロセス失敗）はそのまま伝播。
+fn summarize_only<R>(request: &ExtractRequest, mut model_request: R) -> Result<ExtractOutcome>
+where
+    R: FnMut(&str) -> Result<String>,
+{
+    let messages = GithubModelsExtractAdapter::initial_messages(request);
+    let final_body = GithubModelsExtractAdapter::final_body(&messages)?;
+    let response = model_request(&final_body)?;
+    Ok(ExtractOutcome {
+        items: GithubModelsExtractAdapter::parse_response(&response),
+        // summarize_only 経路では採用取得元を学習しない（ai-discovered は探索経路でのみ更新）。
+        source_url: None,
+    })
+}
+
 /// curl の stdout（本文）+ `--write-out` トレーラ（[`CURL_META_SENTINEL`] + status + ヘッダ JSON）出力から
 /// `(status, body, header_json)` を切り出す。
 ///
@@ -922,15 +972,26 @@ impl GithubModelsExtractAdapter {
 }
 
 impl ChangeExtractPort for GithubModelsExtractAdapter {
-    /// AI エージェントにノートを取得・要約させて構造化変更へ抽出する。失敗は record を止めず空配列へ縮退する。
+    /// ノートを要約して構造化変更へ抽出する。seed の有無で **要約のみ 1 回**と **探索（有界）**を切り替える。
+    /// 失敗は record を止めず空配列へ縮退する。
     ///
-    /// エージェントループ（[`agent_loop`]）に、ヒントから組み立てた fetch 許可ホスト集合と、実 model 呼び出し
-    /// （[`model_request`](Self::model_request)）・実 SSRF 検査つき fetch（[`fetch_allowed_note`]）を注入して
-    /// 駆動する。AI が `fetch_url` で自分でノートを取得・読解し、最終ターンで構造化変更を返す。
+    /// **経路分岐（レート逓減の核）**:
+    /// - **seed が十分にある場合**（[`has_sufficient_seed`]＝registry 再利用 fetch 成功 or 機械解決成功で seed
+    ///   ノートが既に取得済み）: **ツールを与えず seed を根拠に 1 回だけ** structured output で要約する
+    ///   （[`summarize_only`]）。`fetch_url` 探索をしないため **GitHub Models 呼び出しは 1 回**。registry が
+    ///   埋まるほど機械的に取れる/学習済みのものが 1 回化され、GitHub Models のレート消費が回を追って実際に逓減する
+    ///   （利用者要件 4 が真になる）。ai-discovered 学習は行わない（`source_url=None`、既存 source 据え置き）。
+    /// - **seed が無い/空の場合のみ**: 既存の [`agent_loop`]（`fetch_url` tool-use 探索、最大
+    ///   [`MAX_TOOL_ITERATIONS`]+1 回 model 呼び出し）で AI にノートを探させる。AI が採用した取得元 URL を
+    ///   `source_url` で返し、`origin=ai-discovered` 学習経路へ渡す。
     ///
-    /// SSRF: fetch 許可ホスト集合は **eval メタ由来のヒント**（repo/homepage/changelog）だけから
+    /// ハルシネーション防止は両経路で維持する（与えた seed の実ノートのみを根拠とし、無ければ空。
+    /// [`EXTRACT_SYSTEM_PROMPT`] 契約は tools の有無に依らない）。
+    ///
+    /// SSRF: 探索経路の fetch 許可ホスト集合は **eval メタ由来のヒント**（repo/homepage/changelog）だけから
     /// [`allowed_fetch_hosts`] で組み立て、ノート本文（信頼境界外）では拡張しない。AI が要求した URL の host が
     /// 集合外なら [`fetch_allowed_note`] が fetch せず `None` を返し、ループは「not allowed」を AI へ返す。
+    /// summarize_only 経路は fetch せず seed のみを根拠にするため、許可ホスト集合は組み立てない。
     ///
     /// 縮退契約（[module 先頭][self] 参照）は維持しつつ、**なぜ空になったか**を非致命の 1 行診断として stderr へ
     /// 出す（token 未設定（`skipped`）、curl プロセス失敗、HTTP 非 200）。token はいずれのログにも出さない。
@@ -939,29 +1000,36 @@ impl ChangeExtractPort for GithubModelsExtractAdapter {
     /// レート制限/予算: 各 model 呼び出しの前に [`pace_before_request`](Self::pace_before_request) で
     /// [`MIN_REQUEST_INTERVAL`] のペースを敷き、HTTP 呼び出しは [`post_with_retry`](Self::post_with_retry) で
     /// 429 のバックオフ付き再試行を行う。有界回数でも 429 が解消しない場合は空配列へ縮退する（record success
-    /// 維持）。ペーシング/予算は **model 呼び出し単位**で効く（エージェントは 1 パッケージで複数回呼ぶ）。
+    /// 維持）。ペーシング/予算は **model 呼び出し単位**で効く（探索経路は 1 パッケージで複数回呼ぶ）。
     fn extract_change_items(&self, request: &ExtractRequest) -> Result<ExtractOutcome> {
         // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック。採用取得元も無し）。
         let Some(token) = Self::github_token() else {
             eprintln!("GitHub Models extract skipped: GITHUB_TOKEN unset");
             return Ok(ExtractOutcome::default());
         };
-        // fetch 許可ホスト集合は eval メタ由来のヒントだけから組み立てる（ノート本文では拡張しない＝SSRF 防御）。
-        let allowed_hosts = allowed_fetch_hosts(
-            request.repo.as_deref(),
-            request.homepage.as_deref(),
-            request.changelog.as_deref(),
-        );
-        // model 呼び出しは self.model_request（ペーシング + 429 リトライ + 診断 + 非 200/curl 失敗を Err 化）、
-        // fetch は SSRF 検査つき fetch_allowed_note を注入する。いずれかの Err（レート枯渇・HTTP エラー・curl
-        // 失敗）は record を止めず空配列へ縮退する（診断は model_request 側で 1 行ログ済み）。
-        match agent_loop(
-            request,
-            |body| self.model_request(&token, body),
-            |url| fetch_allowed_note(url, &allowed_hosts),
-        ) {
+        // seed が十分にあれば探索せず要約のみ 1 回（レート逓減）。無い/空のときだけ AI に fetch_url 探索させる。
+        let result = if has_sufficient_seed(request) {
+            // summarize_only: tools を与えず seed を根拠に 1 回だけ要約する（GitHub Models 呼び出しは 1 回）。
+            summarize_only(request, |body| self.model_request(&token, body))
+        } else {
+            // fetch 許可ホスト集合は eval メタ由来のヒントだけから組み立てる（ノート本文では拡張しない＝SSRF 防御）。
+            let allowed_hosts = allowed_fetch_hosts(
+                request.repo.as_deref(),
+                request.homepage.as_deref(),
+                request.changelog.as_deref(),
+            );
+            // model 呼び出しは self.model_request（ペーシング + 429 リトライ + 診断 + 非 200/curl 失敗を Err 化）、
+            // fetch は SSRF 検査つき fetch_allowed_note を注入する。
+            agent_loop(
+                request,
+                |body| self.model_request(&token, body),
+                |url| fetch_allowed_note(url, &allowed_hosts),
+            )
+        };
+        match result {
             Ok(outcome) => Ok(outcome),
-            // model 呼び出しの失敗（レート枯渇・HTTP エラー・curl 失敗）。診断は model_request で出力済み。
+            // model 呼び出しの失敗（レート枯渇・HTTP エラー・curl 失敗）は record を止めず空配列へ縮退する。
+            // 診断は model_request 側で 1 行ログ済み。
             Err(_) => Ok(ExtractOutcome::default()),
         }
     }
@@ -986,8 +1054,8 @@ mod tests {
         BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
         MAX_RATE_LIMIT_RETRIES, MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_ITERATIONS, MIN_REQUEST_INTERVAL,
         TRUNCATION_MARKER, agent_loop, auth_config, backoff_delay, body_snippet,
-        response_format_schema, retry_after_seconds, retry_loop, split_meta, tool_call_url,
-        truncate_notes, user_prompt,
+        has_sufficient_seed, response_format_schema, retry_after_seconds, retry_loop, split_meta,
+        summarize_only, tool_call_url, truncate_notes, user_prompt,
     };
     use crate::update_history::domain::validate::allowed_fetch_hosts;
     use crate::update_history::domain::wire::ChangeCategory;
@@ -1827,5 +1895,165 @@ mod tests {
         let items = GithubModelsExtractAdapter::parse_response(&completion_with_content(&content));
         assert_eq!(items.len(), 1);
         assert!(items[0].ref_url.is_none(), "null ref は None になる");
+    }
+
+    #[test]
+    fn has_sufficient_seed_requires_nonblank_seed_text() {
+        // 経路分岐の判定: seed が Some でかつ本文非空のときだけ summarize_only 経路（要約のみ）へ倒す。
+        // seed 無し・空白だけの seed は探索経路（agent_loop）へ倒す。
+        assert!(has_sufficient_seed(&request_with(
+            "pkg",
+            Some("o/r"),
+            Some("## Fixes\n- crash")
+        )));
+        assert!(!has_sufficient_seed(&request_with(
+            "pkg",
+            Some("o/r"),
+            None
+        )));
+        assert!(!has_sufficient_seed(&request_with(
+            "pkg",
+            Some("o/r"),
+            Some("   \n  ")
+        )));
+    }
+
+    #[test]
+    fn summarize_only_calls_model_once_without_offering_tools() -> crate::Result<()> {
+        // 退行固定（レート逓減の核）: seed が十分にあるとき summarize_only は **tools を与えず 1 回だけ** model を
+        // 呼び、seed を根拠に構造化変更を返す。GitHub Models 呼び出しは 1 回（探索しない）で、リクエストボディに
+        // tools/tool_choice を含まず response_format（strict schema）を強制することを固定する。
+        let request = request_with(
+            "neovim",
+            Some("neovim/neovim"),
+            Some("## Features\n- new thing"),
+        );
+        let calls = Cell::new(0usize);
+        let model = |body: &str| -> crate::Result<String> {
+            calls.set(calls.get() + 1);
+            // summarize_only のリクエストボディは tools を提示せず schema を強制する。
+            let value: serde_json::Value = serde_json::from_str(body).expect("body is valid JSON");
+            assert!(
+                value["tools"].is_null(),
+                "summarize_only に tools は付けない"
+            );
+            assert!(
+                value["tool_choice"].is_null(),
+                "summarize_only に tool_choice は付けない"
+            );
+            assert_eq!(value["response_format"]["type"], "json_schema");
+            // seed ノートが user メッセージへ載っていることを確認する（要約の根拠）。
+            let messages = value["messages"].as_array().expect("messages array");
+            let user = messages
+                .iter()
+                .find(|m| m["role"] == "user")
+                .expect("user message");
+            assert!(
+                user["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("new thing")),
+                "user メッセージに seed ノートが載る"
+            );
+            Ok(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"changes\":[{\"category\":\"feature\",\"text\":\"新機能\",\"ref\":null}]}"
+                    }
+                }]
+            })
+            .to_string())
+        };
+        let outcome = summarize_only(&request, model)?;
+        assert_eq!(calls.get(), 1, "seed 有→要約のみで model 呼び出しは 1 回");
+        assert_eq!(outcome.items.len(), 1);
+        assert_eq!(outcome.items[0].category, ChangeCategory::Feature);
+        // summarize_only 経路は採用取得元を学習しない（ai-discovered は探索経路でのみ更新）。
+        assert!(
+            outcome.source_url.is_none(),
+            "summarize_only は source_url を学習しない（既存 source 据え置き）"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_only_keeps_hallucination_prevention_when_seed_yields_no_changes()
+    -> crate::Result<()> {
+        // 退行固定（ハルシネーション防止）: seed を根拠にしても LLM が「該当変更なし」を返せば空配列になる
+        // （無ければ空という契約は tools の有無に依らない）。1 回だけ呼び、空 changes を空 items へ通す。
+        let request = request_with("pkg", Some("o/r"), Some("内部リファクタのみ"));
+        let calls = Cell::new(0usize);
+        let model = |_body: &str| -> crate::Result<String> {
+            calls.set(calls.get() + 1);
+            Ok(serde_json::json!({
+                "choices": [{ "message": { "content": "{\"changes\":[]}" } }]
+            })
+            .to_string())
+        };
+        let outcome = summarize_only(&request, model)?;
+        assert_eq!(calls.get(), 1);
+        assert!(outcome.items.is_empty(), "根拠が無ければ空配列へ縮退する");
+        assert!(outcome.source_url.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_only_propagates_model_error() {
+        // 退行固定（縮退）: summarize_only の model 呼び出しが Err なら、その Err を伝播し呼び出し側
+        // （extract_change_items）が空配列へ縮退する。
+        let request = request_with("pkg", Some("o/r"), Some("notes"));
+        let model = |_body: &str| -> crate::Result<String> { anyhow::bail!("rate limited") };
+        assert!(summarize_only(&request, model).is_err());
+    }
+
+    #[test]
+    fn agent_loop_path_explores_when_seed_absent() -> crate::Result<()> {
+        // 退行固定（探索経路）: seed が無いときは agent_loop が fetch_url で探索する（複数 model 呼び出し）。
+        // この振り分けは has_sufficient_seed が担い、seed 無しでは探索経路へ倒ることを agent_loop 経由で固定する。
+        let request = request_with("neovim", Some("neovim/neovim"), None);
+        assert!(!has_sufficient_seed(&request), "seed 無しは探索経路");
+        let calls = Cell::new(0usize);
+        let model = |_body: &str| -> crate::Result<String> {
+            let n = calls.get();
+            calls.set(n + 1);
+            if n == 0 {
+                Ok(serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "fetch_url",
+                                    "arguments": "{\"url\":\"https://github.com/neovim/neovim/releases\"}"
+                                }
+                            }]
+                        }
+                    }]
+                })
+                .to_string())
+            } else {
+                Ok(serde_json::json!({
+                    "choices": [{
+                        "message": { "content": "{\"changes\":[]}" }
+                    }]
+                })
+                .to_string())
+            }
+        };
+        let fetch =
+            |_url: &str| -> crate::Result<Option<String>> { Ok(Some("## Notes".to_string())) };
+        let outcome = agent_loop(&request, model, fetch)?;
+        assert!(
+            calls.get() > 1,
+            "seed 無し探索経路は複数 model 呼び出しを行う（要約のみの 1 回ではない）"
+        );
+        // 探索で成功 fetch した URL は採用取得元として返る（ai-discovered 学習経路）。
+        assert_eq!(
+            outcome.source_url.as_deref(),
+            Some("https://github.com/neovim/neovim/releases")
+        );
+        Ok(())
     }
 }

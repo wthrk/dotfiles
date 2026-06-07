@@ -12,6 +12,14 @@
 1 ファイルに 1 日複数件入りうる（`at` はエントリ単位の RFC3339 タイムスタンプ）。スキーマは
 `rust/dotfiles-cli/src/update_history/domain/wire.rs` を正本とする。
 
+record job は同一実行で `notes-sources.toml`（ノート取得元レジストリ）も同ディレクトリへ書く。これはパッケージ
+ごとに「どこからリリースノートを取得したか（取得元 URL + origin: 機械解決 / AI 探索 / 未発見）」を学習・再利用
+するためのレジストリで、決定論的にパッケージ名昇順でソートして書き出す（diff 最小化）。次回 record はこれを最優先
+参照し、再利用 hit したパッケージは保存取得元を直接 fetch した seed ノートを要約するだけで済むため、AI 探索を
+新規/未知/自己修復のみへ限定して GitHub Models のレート消費を逓減させる。`docs/update-history/**` は nightly が
+変更してよい許可パス内なので、レジストリも同経路で repo に入り次回 record が参照できる。スキーマ正本は
+`rust/dotfiles-cli/src/update_history/domain/registry.rs` とする。
+
 ## このディレクトリは nightly が変更してよい数少ないパスである
 
 `docs/update-history/**` は `flake.lock` と並んで、nightly 自動 bump PR が変更してよい許可パスである

@@ -26,13 +26,19 @@ use crate::update_history::ports::{
 ///
 /// **ノート取得元レジストリ（学習・再利用。利用者要件 (3)/(4)）**: 各パッケージごとに次の順で notes を得る:
 /// 1. **レジストリ参照**: 保存済み `source`（[`NotesOrigin::Mechanical`]/[`NotesOrigin::AiDiscovered`]）が
-///    あれば、それを **直接 fetch**（[`NotesPort::fetch_notes_from_source`]・host allowlist 検査つき）して
-///    要約する。**機械解決も AI 探索もしない**（再探索しない＝GitHub Models レート消費を逓減）。fetch 成功で
-///    要約できたら provenance は据え置き（origin 維持）。これが回を追ってレート消費を逓減させる核である。
+///    あれば、それを **直接 fetch**（[`NotesPort::fetch_notes_from_source`]・host allowlist 検査つき）し、その
+///    seed ノートを抽出 port へ渡す。**機械解決も AI 探索もしない**。fetch 成功で要約できたら provenance は
+///    据え置き（origin 維持）。
 /// 2. レジストリ未登録／**自己修復**（保存 source の fetch が空/失敗）なら **機械解決**（既存 Releases API
 ///    range / changelog 解決）。取れたら、その取得元 URL を [`NotesOrigin::Mechanical`] でレジストリへ記録する。
 /// 3. 機械解決も不能なら **AI エージェント探索**（既存 agent loop）。AI が fetch して有効ノートを得て採用した
 ///    取得元 URL を [`NotesOrigin::AiDiscovered`] でレジストリへ記録する（[`ExtractOutcome::source_url`] 経路）。
+///
+/// **GitHub Models レート消費の逓減（利用者要件 4）**: 抽出 port（adapter）は seed の有無で呼び出し回数を
+/// 変える。フロー 1/2 で seed ノートが取れたパッケージは **ツール探索なしの要約のみ 1 回**で済み、フロー 3
+/// （seed 無し＝未知ノート）だけが tool-use 探索（最大 MAX_TOOL_ITERATIONS+1 回の model 呼び出し）を行う。
+/// よって registry が回を追って埋まる（registry 参照 hit と機械解決 hit が増える）ほど、GitHub Models 呼び出し
+/// 回数の総和が実際に逓減する。これが「再利用でレート消費を逓減」の核である。
 /// 4. いずれも不能なら version-only。`origin=none` を記録して次回も探索対象に戻す（取得元が後から現れる
 ///    可能性に追従。設計判断: 空エントリを残すより「探索済みだが未発見」を明示する方が再探索の根拠が残る）。
 ///
@@ -140,9 +146,12 @@ where
             (None, None) => (None, None),
         };
 
-        // 単一の AI 抽出（予算ゲートつき）: 解決した seed があれば AI はそれを要約し（探索しない）、無ければ
-        // ヒント URL から自分で fetch して探索する（フロー 3）。outcome は構造化変更 + AI が採用した取得元 URL を
-        // 運ぶ。1 パッケージにつき AI 呼び出しは最大 1 回で、二重呼び出しによるレート消費増を避ける。
+        // 単一の AI 抽出（予算ゲートつき）: 解決した seed があれば AI はそれを **ツールを与えず 1 回だけ要約**し
+        // （探索しない＝GitHub Models 呼び出しは 1 回）、無ければヒント URL から自分で fetch して探索する
+        // （フロー 3＝tool-use ループで最大 MAX_TOOL_ITERATIONS+1 回の model 呼び出し）。経路分岐は port 実装
+        // （adapter）が seed の有無で行う。outcome は構造化変更 + AI が採用した取得元 URL を運ぶ。registry/機械解決で
+        // seed が取れるパッケージは 1 回化されるため、registry が埋まるほど GitHub Models のレート消費が回を追って
+        // 逓減する（未知ノートだけが探索＝最大 MAX_TOOL_ITERATIONS+1 回。利用者要件 4）。
         let outcome = if extract.extract_budget_exhausted() {
             // 抽出フェーズの wall-clock 予算超過: AI を呼ばず version-only（変更リスト空・URL は保持）へ縮退する。
             // 全件持続 429 の最悪ケースで抽出が record job timeout（60分）へ接近・超過し、後続 job（PR 起票）が
@@ -234,8 +243,11 @@ where
     // （budget-exhausted ログと対称。サイレント全滅防止）。対象 delta が 1 件もない夜は出さない。
     if summarized + version_only > 0 {
         eprintln!("notes: {summarized} packages summarized, {version_only} version-only");
-        // provenance 経路の内訳（どこからノートを得たか）を併記する。レジストリ hit が回を追って増える＝AI 探索
-        // が新規/未知/自己修復のみへ収束し GitHub Models のレート消費が逓減している、という運用根拠を残す。
+        // provenance 経路の内訳（どこからノートを得たか）を併記する。registry-reused / mechanical は seed を
+        // 抽出 port へ渡して **要約のみ 1 回**で済む経路、ai-discovered は seed 無しで **tool-use 探索**（最大
+        // MAX_TOOL_ITERATIONS+1 回の model 呼び出し）を要した経路である。registry-reused/mechanical が回を追って
+        // 増え ai-discovered が新規/未知/自己修復のみへ収束する＝GitHub Models のレート消費が実際に逓減している、
+        // という運用根拠を残す。
         eprintln!(
             "notes provenance: {registry_hits} registry-reused, {mechanical_found} mechanical, {ai_discovered} ai-discovered"
         );
