@@ -418,20 +418,23 @@ impl GithubModelsExtractAdapter {
     /// curl で GitHub Models へ POST し、`(HTTP status, レスポンス本文, レスポンスヘッダ JSON)` を返す。
     /// curl 自体の失敗のみ `Err`。
     ///
-    /// 認証トークンは **argv に乗せない**。`-H "Authorization: Bearer <token>"` を引数に置くと、同一 runner の
-    /// プロセス一覧（`ps`）から token が読めてしまう（secret を argv/ログに残さない義務に違反する）。代わりに
-    /// curl の `--config -`（stdin から設定を読む）へ `header = "Authorization: Bearer <token>"` を流し込み、
-    /// token を argv にもログにも出さない。Content-Type ヘッダと本文（`-d`）は secret ではないため argv のままで
-    /// よい。stdin の内容（[`auth_config`]）は curl 設定ファイル構文で、token をクォートして 1 ヘッダだけ渡す。
+    /// 認証トークンと **リクエスト本文の両方を argv に乗せない**。`-H "Authorization: Bearer <token>"` を引数に
+    /// 置くと同一 runner のプロセス一覧（`ps`）から token が読め（secret を argv/ログに残さない義務に違反）、
+    /// `-d <body>` を引数に置くと大きな changelog（数十〜数百 KB）で `Command::spawn` が argv 長上限
+    /// （`E2BIG`）に当たって失敗し、呼び出し側が空配列へ縮退して抽出が丸ごと欠落する。これを避けるため、token と
+    /// 本文を curl の `--config -`（stdin から設定を読む）へまとめて流し込み、argv には固定オプションだけを残す。
+    /// stdin の内容（[`request_config`]）は curl 設定ファイル構文で、`header = "Authorization: Bearer <token>"` と
+    /// `data = "<body>"` を渡す。本文は `serde_json::to_string` の単一行 compact JSON なので config 構文の `\\`/`\"`
+    /// をエスケープするだけで安全に載り、長さは stdin 経由のため argv 長上限に依存しない（大ノートでも抽出が走る）。
     ///
     /// 診断のため、HTTP エラー（4xx/5xx）でも curl を非 0 終了させない。`--fail` は HTTP エラーを curl exit へ
     /// 倒し本物の status code を握り潰す（CI ログに「なぜ空縮退したか」が残らない原因だった）ので使わない。
     /// 代わりに `--write-out` で本文末尾へ [`CURL_META_SENTINEL`] に続けて `http_code` と `header_json` を
     /// 付加し、[`split_meta`] で本文・status・ヘッダ JSON へ切り分ける。ヘッダ JSON は 429 の `Retry-After`
-    /// を尊重するために取得する（[`post_with_retry`]）。`-w` を足しても Authorization は stdin の `--config -`
-    /// に閉じたままで、argv・ログ・`-w` の出力いずれにも token は現れない（出力は status とレスポンスヘッダのみで、
-    /// リクエストの Authorization ヘッダは `%{header_json}` の対象外）。返り値 `Err` は curl プロセス自体の失敗
-    /// （spawn 失敗・ネットワーク不達等で非 0 終了）に限る。
+    /// を尊重するために取得する（[`post_with_retry`]）。`-w` を足しても Authorization も本文も stdin の
+    /// `--config -` に閉じたままで、argv・ログ・`-w` の出力いずれにも token は現れない（出力は status とレスポンス
+    /// ヘッダのみで、リクエストの Authorization ヘッダは `%{header_json}` の対象外）。返り値 `Err` は curl プロセス
+    /// 自体の失敗（spawn 失敗・ネットワーク不達等で非 0 終了）に限る。
     fn post(token: &str, body: &str) -> Result<(u16, String, String)> {
         let args = [
             OsString::from("--config"),
@@ -444,8 +447,6 @@ impl GithubModelsExtractAdapter {
             OsString::from("POST"),
             OsString::from("-H"),
             OsString::from("Content-Type: application/json"),
-            OsString::from("-d"),
-            OsString::from(body.to_string()),
             // 本文末尾へ sentinel + status + レスポンスヘッダ JSON を付加する。token は含まれない
             // （%{http_code} は数値、%{header_json} は **レスポンス**ヘッダのみでリクエスト Authorization は出ない）。
             OsString::from("--write-out"),
@@ -454,7 +455,9 @@ impl GithubModelsExtractAdapter {
             )),
             OsString::from(GITHUB_MODELS_ENDPOINT),
         ];
-        let raw = run_capture_with_stdin("curl", args, auth_config(token).as_bytes())?;
+        // token（認証ヘッダ）と本文（data）の両方を stdin の curl 設定へ載せ、argv には出さない（token 非露出 +
+        // 大本文での E2BIG 回避）。
+        let raw = run_capture_with_stdin("curl", args, request_config(token, body).as_bytes())?;
         Ok(split_meta(&raw))
     }
 
@@ -514,14 +517,31 @@ impl GithubModelsExtractAdapter {
     }
 }
 
-/// curl の `--config -`（stdin）へ流す設定行を組み立てる。token を argv に出さず Authorization ヘッダを渡す。
+/// curl の `--config -`（stdin）へ流す設定全体（Authorization ヘッダ + リクエスト本文）を組み立てる。
 ///
-/// curl 設定ファイル構文の `header = "..."` 形式で Authorization ヘッダ 1 件だけを与える。値はダブルクォートで
-/// 囲み、token 内に万一含まれうる `\` と `"` をエスケープして構文を壊さない（GitHub Actions の token は
-/// 英数字主体だが、防御的にエスケープする）。この文字列は stdin 経由でのみ curl へ渡り、argv・ログには現れない。
-fn auth_config(token: &str) -> String {
-    let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("header = \"Authorization: Bearer {escaped}\"\n")
+/// token と本文の両方を argv に出さず stdin 経由で curl へ渡すための設定文字列を返す。curl 設定ファイル構文の
+/// `header = "..."`（Authorization ヘッダ 1 件）と `data = "..."`（POST 本文）を 1 行ずつ与える。どちらの値も
+/// ダブルクォートで囲み、構文を壊しうる `\` と `"` をエスケープする（[`config_quote`]）。本文は
+/// `serde_json::to_string` の単一行 compact JSON のため埋め込み改行は無く、エスケープは `\`/`"` だけで足りる。
+///
+/// token を stdin に閉じる理由は、`-H "Authorization: Bearer <token>"` を argv に置くと `ps` から secret が
+/// 読めてしまうため（argv/ログに secret を残さない義務）。本文を stdin に閉じる理由は、大きな changelog を
+/// `-d <body>` で argv に載せると argv 長上限（`E2BIG`）で `spawn` が失敗し抽出が空へ縮退するため。stdin 経由なら
+/// argv 長に依存せず、token も本文も argv・ログには現れない。
+fn request_config(token: &str, body: &str) -> String {
+    format!(
+        "header = \"Authorization: Bearer {}\"\ndata = \"{}\"\n",
+        config_quote(token),
+        config_quote(body),
+    )
+}
+
+/// curl 設定ファイルのクォート値（`"..."`）へ安全に埋め込むため `\` と `"` をエスケープする。
+///
+/// curl の設定パーサはダブルクォートで囲んだ値の中で `\\` と `\"` をエスケープシーケンスとして解釈する。値内の
+/// `\` と `"` をそれぞれ前置エスケープし、クォートの早期終了や予期しないエスケープ解釈による構文破壊を防ぐ。
+fn config_quote(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// `fetch_url` ツールの JSON 定義（OpenAI 互換 function tool）。
@@ -1143,8 +1163,8 @@ mod tests {
     use super::{
         BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
         MAX_RATE_LIMIT_RETRIES, MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_ITERATIONS, MIN_REQUEST_INTERVAL,
-        TRUNCATION_MARKER, agent_loop, agent_system_prompt, agent_user_prompt, auth_config,
-        backoff_delay, body_snippet, has_sufficient_seed, response_format_schema,
+        TRUNCATION_MARKER, agent_loop, agent_system_prompt, agent_user_prompt, backoff_delay,
+        body_snippet, has_sufficient_seed, request_config, response_format_schema,
         retry_after_seconds, retry_loop, split_meta, summarize_only, summarize_system_prompt,
         summarize_user_prompt, tool_call_url, truncate_notes,
     };
@@ -1171,17 +1191,58 @@ mod tests {
     }
 
     #[test]
-    fn auth_config_puts_token_in_stdin_header_not_argv() {
+    fn request_config_puts_token_and_body_in_stdin_not_argv() {
         // P1-4 退行固定: token は curl の `--config -`（stdin）の Authorization ヘッダとして渡し、argv には
-        // 一切出さない。auth_config は curl 設定構文の `header = "Authorization: Bearer <token>"` を返す。
-        let config = auth_config("ghs_SECRETtoken123");
-        assert_eq!(
-            config,
-            "header = \"Authorization: Bearer ghs_SECRETtoken123\"\n"
+        // 一切出さない。request_config は curl 設定構文の `header = "Authorization: Bearer <token>"` を含む。
+        let config = request_config("ghs_SECRETtoken123", r#"{"model":"x"}"#);
+        assert!(
+            config.contains("header = \"Authorization: Bearer ghs_SECRETtoken123\"\n"),
+            "{config}"
         );
-        // curl 構文を壊しうる文字（バックスラッシュ・ダブルクォート）はエスケープする。
-        let escaped = auth_config(r#"a\b"c"#);
-        assert_eq!(escaped, "header = \"Authorization: Bearer a\\\\b\\\"c\"\n");
+        // 本文も stdin の `data = "..."` として渡し、argv に載せない（大ノートでの E2BIG 回避）。
+        assert!(
+            config.contains("data = \"{\\\"model\\\":\\\"x\\\"}\"\n"),
+            "{config}"
+        );
+        // curl 構文を壊しうる文字（バックスラッシュ・ダブルクォート）は header/data 双方でエスケープする。
+        let escaped = request_config(r#"a\b"c"#, r#"d\e"f"#);
+        assert!(
+            escaped.contains("header = \"Authorization: Bearer a\\\\b\\\"c\"\n"),
+            "{escaped}"
+        );
+        assert!(escaped.contains("data = \"d\\\\e\\\"f\"\n"), "{escaped}");
+    }
+
+    #[test]
+    fn request_config_keeps_large_body_off_argv_via_stdin() {
+        // 退行固定（E2BIG 回避）: 数百 KB の大きな changelog 本文でも、本文は curl 設定（stdin）の `data = "..."`
+        // として渡す。post の argv は固定オプションだけで本文を含まないため、argv 長上限（E2BIG）に当たらず
+        // spawn が失敗しない（= 大ノートでも LLM 抽出が走り、概要が欠落しない）。
+        let huge_body = format!(r#"{{"notes":"{}"}}"#, "a".repeat(300_000));
+        let config = request_config("ghs_token", &huge_body);
+        // 大本文は stdin 設定側に載る（argv ではなく stdin で渡るため argv 長に依存しない）。
+        assert!(config.len() > 300_000, "大本文は stdin 設定へ載る");
+        assert!(config.contains("data = \""), "{}", &config[..80]);
+        // post の固定 argv には本文が現れない（本文は stdin の data= に閉じる）。argv は --config - と固定
+        // オプションだけで、本文長に依存しない。
+        let post_argv = [
+            "--config",
+            "-",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=https",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "--write-out",
+            super::GITHUB_MODELS_ENDPOINT,
+        ];
+        assert!(
+            post_argv.iter().all(|arg| !arg.contains("aaaa")),
+            "本文（巨大ノート）は argv に現れない"
+        );
     }
 
     fn completion_with_content(content: &str) -> String {
@@ -1685,15 +1746,15 @@ mod tests {
     #[test]
     fn diagnostic_snippet_never_contains_token() {
         // token は API レスポンス本文に現れない（auth は stdin の `--config -` に閉じる）。仮に本文へ token 様の
-        // 文字列が混ざっても、診断ログに使う body_snippet/auth_config の経路は token を別管理する。ここでは
-        // auth_config（stdin 専用）が body_snippet（ログ用）と別関数であること、ログ経路が本文だけを扱うことを
+        // 文字列が混ざっても、診断ログに使う body_snippet/request_config の経路は token を別管理する。ここでは
+        // request_config（stdin 専用）が body_snippet（ログ用）と別関数であること、ログ経路が本文だけを扱うことを
         // 退行固定する: auth ヘッダ文字列は body_snippet の入力に決して渡らない。
         let response_body = r#"{"choices":[{"message":{"content":"{\"changes\":[]}"}}]}"#;
         let snippet = body_snippet(response_body);
         assert!(!snippet.contains("Authorization"), "{snippet}");
         assert!(!snippet.contains("Bearer"), "{snippet}");
-        // auth_config（token を含む）はログには使わず stdin 専用であることを示す（別関数・別経路）。
-        let auth = auth_config("ghs_SECRET");
+        // request_config（token を含む）はログには使わず stdin 専用であることを示す（別関数・別経路）。
+        let auth = request_config("ghs_SECRET", r#"{"model":"x"}"#);
         assert!(auth.contains("ghs_SECRET"));
         assert!(!snippet.contains("ghs_SECRET"));
     }

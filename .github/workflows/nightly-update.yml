@@ -390,9 +390,19 @@ jobs:
 
       - name: bump ブランチを作成して commit
         id: commit
+        env:
+          # PR の base は常に既定ブランチ（下の `gh pr create --base`）。verify-bump-lock の検査 base も
+          # この既定ブランチ SHA に揃えるため、ここで参照する。
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          base_sha="$(git rev-parse HEAD)"
+          # 検査 base は **実際の PR base（既定ブランチ）の SHA** に揃える。checkout HEAD（= 起動 ref の HEAD）を
+          # base にすると、workflow_dispatch を既定ブランチ以外の ref から非 dry-run 起動した場合に、その ref に
+          # 既にあった変更が base..head 差分へ入らず verify-bump-lock の許可パス guard を素通りしたまま、既定
+          # ブランチ宛て PR（auto-merge 対象）へ混入しうる。PR base = 既定ブランチに合わせた base SHA を検査基準に
+          # することで、起動 ref が既定ブランチから先行していてもその差分が許可外パスとして fail-closed に弾かれる。
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          base_sha="$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}")"
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           branch="nightly/bump-$(date -u +%Y%m%d%H%M%S)"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"

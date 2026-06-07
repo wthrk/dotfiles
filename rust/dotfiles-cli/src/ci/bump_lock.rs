@@ -57,9 +57,15 @@ const ALLOWED_BUMP_INPUTS: [(&str, &str, &str); 5] = [
 
 /// 1 つの lock node の同一性を決める source 座標（rev を除く）。
 ///
-/// rev だけが変わったことを確かめるため、rev 以外（owner / repo / type / ref / url / flake フラグ）を
-/// まとめて比較する。許可 input はこの座標が完全一致した上で rev だけ異なることを要求し、未許可 input は
-/// rev を含む全フィールドが一致することを要求する。
+/// rev だけが変わったことを確かめるため、rev 以外（owner / repo / type / ref / url / host / dir / flake
+/// フラグ）をまとめて比較する。許可 input はこの座標が完全一致した上で rev だけ異なることを要求し、未許可
+/// input は rev を含む全フィールドが一致することを要求する。
+///
+/// `host` を含める理由（信頼境界の拡張）: Nix の github flake ref は `host` 属性で取得先ホスト（既定
+/// `github.com`）を上書きでき、`host` だけを GitHub Enterprise 等へ差し替えると owner/repo/type/ref/rev が
+/// すべて期待値どおりに見えるのに、実際の取得先 host が許可された github.com から逸脱する。`host` を座標に
+/// 含めて比較することで、許可 input の owner/repo 厳密一致の信頼境界を取得先 host まで拡張し、host drift を
+/// fail-closed にする。`dir`（subflake のサブディレクトリ指定）も同様に fetch 対象を変えうるため座標へ含める。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceCoords {
     owner: Option<String>,
@@ -67,6 +73,10 @@ struct SourceCoords {
     node_type: Option<String>,
     reference: Option<String>,
     url: Option<String>,
+    /// 取得先ホスト（github ref の `host`、既定 github.com）。GitHub Enterprise 等への drift を検出するため。
+    host: Option<String>,
+    /// subflake のサブディレクトリ指定（`dir`）。fetch 対象パスを変えうるため座標へ含める。
+    dir: Option<String>,
     flake: Option<bool>,
 }
 
@@ -233,8 +243,7 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<bool> {
 /// 許可 input は rev bump を許すが、その rev に対応する取得物の同一性（`narHash`）と取得時刻
 /// （`lastModified`）は rev に連動して動くのが正当な bump である。`rev` が変わらないのに `narHash` または
 /// `lastModified` だけが変われば、同一 rev のまま固定対象の内容がすり替わった content swap であり、rev bump の
-/// 許可範囲を超える。よって「rev 不変かつ narHash/lastModified 変化」を fail にする。rev が動いていれば
-/// narHash/lastModified の変化は許容する（rev に連動した正当な更新）。
+/// 許可範囲を超える。よって「rev 不変かつ narHash/lastModified 変化」を fail にする。
 ///
 /// 加えて、許可 input は **`locked.rev` が old/head 双方で文字列として存在することを必須**とする。許可 input の
 /// `locked.rev` が削除されたり文字列以外（数値・null・object 等）へ壊れると、`field(...,"rev")` が `None` を返し、
@@ -242,6 +251,13 @@ fn verify_node(name: &str, old_node: &Value, new_node: &Value) -> Result<bool> {
 /// する。これは rev 欠落・rev 破壊の lock を無人 auto-merge へ通す抜けになるため、欠落/非文字列を明示的に fail に
 /// する（fail-closed）。これにより guard は「許可 input の rev が文字列で実在し、かつ rev 連動で内容が動いた」
 /// 状態だけを許可する。
+///
+/// **rev 変更時も lock identity を fail-closed 検証**: GitHub input の正当な lock node は `narHash`（fixed-output
+/// 同一性）を文字列で、`lastModified`（取得時刻）を整数で必ず持つ。rev が動いたとき、これらが head 側で削除・
+/// 非文字列化（narHash）・非整数化（lastModified）されても rev 変化だけで `Ok(true)` を返していると、identity を
+/// 欠いた壊れた lock を「実 bump」として static checks success にしてしまう。rev が変わった場合も head の
+/// `narHash` が非空文字列、`lastModified` が整数で存在することを要求し、欠落/型崩れを fail にする（壊れた lock を
+/// auto-merge へ通さない）。
 fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -> Result<bool> {
     let str_field =
         |locked: &Value, key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
@@ -257,6 +273,11 @@ fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -
     let new_rev = require_rev(new_locked, "head")?;
     let rev_changed = old_rev != new_rev;
     if rev_changed {
+        // rev が動いた = 実 bump。ただし head 側に GitHub input の lock identity（narHash 文字列 +
+        // lastModified 整数）が無い/型崩れしている lock は、rev だけ進めて identity を削った壊れた lock であり
+        // auto-merge へ通さない（fail-closed）。base..head の base 側で既に壊れている可能性に依存しないよう、
+        // 必ず head（適用される側）の identity を要求する。
+        require_lock_identity(name, new_locked)?;
         return Ok(true);
     }
     // rev 不変。narHash / lastModified が動いていれば content swap として fail。
@@ -275,6 +296,29 @@ fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -
     Ok(false)
 }
 
+/// 許可 input の rev bump 後 `locked` が GitHub input の lock identity を保っているかを fail-closed 検証する。
+///
+/// 正当な GitHub flake input の lock node は `narHash`（fixed-output 同一性）を非空文字列で、`lastModified`
+/// （取得時刻）を整数で持つ。rev を進めながらこれらを削除・非文字列化・非整数化した lock は、固定対象の同一性
+/// 証跡を欠いており「許可された rev bump」の意味を満たさない。欠落・型崩れ・空 narHash を明示的に fail にし、
+/// identity を欠いた lock を static checks success にしない。
+fn require_lock_identity(name: &str, locked: &Value) -> Result<()> {
+    match locked.get("narHash").and_then(Value::as_str) {
+        Some(hash) if !hash.is_empty() => {}
+        _ => bail!(
+            "flake.lock node `{name}` allowed bump input is missing a non-empty string \
+             `locked.narHash` on head; rev bump without lock identity is not an allowed bump"
+        ),
+    }
+    if locked.get("lastModified").and_then(Value::as_i64).is_none() {
+        bail!(
+            "flake.lock node `{name}` allowed bump input is missing an integer \
+             `locked.lastModified` on head; rev bump without lock identity is not an allowed bump"
+        );
+    }
+    Ok(())
+}
+
 /// `locked` オブジェクトから rev を除いた source 座標を取り出す。
 fn source_coords(locked: &Value) -> SourceCoords {
     let str_field = |key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
@@ -284,6 +328,8 @@ fn source_coords(locked: &Value) -> SourceCoords {
         node_type: str_field("type"),
         reference: str_field("ref"),
         url: str_field("url"),
+        host: str_field("host"),
+        dir: str_field("dir"),
         flake: locked.get("flake").and_then(Value::as_bool),
     }
 }
@@ -303,17 +349,19 @@ mod tests {
     ///
     /// `narHash` は rev に連動して整合的に動く前提なので rev から決定論的に導出し、rev だけ動かせば narHash も
     /// 揃うようにする。content swap 検査（rev 不変で narHash だけ変える）は専用 test で別途 lock を組む。
+    /// 許可 input の rev bump 後の lock identity 検査（[`require_lock_identity`]）が要求する `lastModified`
+    /// （整数）も持たせ、正当な GitHub input lock node の形を模す。
     fn lock_with(nixpkgs_rev: &str, darwin_rev: &str) -> String {
         format!(
             r#"{{
   "nodes": {{
     "darwin": {{
       "inputs": {{ "nixpkgs": ["nixpkgs"] }},
-      "locked": {{ "owner": "LnL7", "repo": "nix-darwin", "rev": "{darwin_rev}", "narHash": "sha256-{darwin_rev}", "type": "github" }},
+      "locked": {{ "owner": "LnL7", "repo": "nix-darwin", "rev": "{darwin_rev}", "narHash": "sha256-{darwin_rev}", "lastModified": 1700000000, "type": "github" }},
       "original": {{ "owner": "LnL7", "repo": "nix-darwin", "type": "github" }}
     }},
     "nixpkgs": {{
-      "locked": {{ "owner": "NixOS", "repo": "nixpkgs", "rev": "{nixpkgs_rev}", "narHash": "sha256-{nixpkgs_rev}", "type": "github" }},
+      "locked": {{ "owner": "NixOS", "repo": "nixpkgs", "rev": "{nixpkgs_rev}", "narHash": "sha256-{nixpkgs_rev}", "lastModified": 1700000000, "type": "github" }},
       "original": {{ "owner": "NixOS", "ref": "nixpkgs-unstable", "repo": "nixpkgs", "type": "github" }}
     }},
     "root": {{ "inputs": {{ "darwin": "darwin", "nixpkgs": "nixpkgs" }} }}
@@ -434,12 +482,13 @@ mod tests {
     #[test]
     fn rejects_last_modified_swap_with_unchanged_rev() {
         // N4 退行固定（lastModified 版）: rev 不変で lastModified だけ動く（同一 rev の取得時刻すり替え）も fail。
+        // nixpkgs（許可 input）の lastModified だけを base/head で別値に差し替える（darwin 側は据え置き）。
         let old = lock_with("aaaa", "dddd").replace(
-            r#""rev": "aaaa", "narHash": "sha256-aaaa""#,
+            r#""rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 1700000000"#,
             r#""rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 100"#,
         );
         let new = lock_with("aaaa", "dddd").replace(
-            r#""rev": "aaaa", "narHash": "sha256-aaaa""#,
+            r#""rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 1700000000"#,
             r#""rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 999"#,
         );
         let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
@@ -487,6 +536,72 @@ mod tests {
             err.to_string().contains("missing a string `locked.rev`"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_host_drift_on_allowed_input() {
+        // host 退行固定: 許可 input（nixpkgs）の owner/repo/type/ref/rev をすべて期待値どおりに保ったまま、
+        // `locked.host` だけを GitHub Enterprise 等へ差し替えると取得先 host が github.com から逸脱する。
+        // host を source 座標に含めることで、rev を動かしても host drift を「source coordinates changed」で fail
+        // にする（owner/repo 厳密一致の信頼境界を host まで拡張）。
+        let old = lock_with("aaaa", "dddd");
+        // nixpkgs に host を足し（base には無い→head で github.example.com を注入）、rev も動かす。
+        let new = lock_with("bbbb", "dddd").replace(
+            r#""owner": "NixOS", "repo": "nixpkgs", "rev": "bbbb""#,
+            r#""owner": "NixOS", "repo": "nixpkgs", "host": "github.example.com", "rev": "bbbb""#,
+        );
+        assert_ne!(old, new, "host 注入が lock 本文を変えていること");
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string().contains("source coordinates changed"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_rev_bump_with_missing_narhash() {
+        // identity 退行固定: 許可 input の rev は動くが head 側で `locked.narHash` が削除された lock は、
+        // rev 変化だけで「実 bump」として通してはならない。lock identity（fixed-output 同一性）を欠いた壊れた
+        // lock を fail-closed で fail にする。
+        let old = lock_with("aaaa", "dddd");
+        // head: nixpkgs の rev を bbbb へ進めつつ narHash を削除する。
+        let new = lock_with("bbbb", "dddd").replace(
+            r#""rev": "bbbb", "narHash": "sha256-bbbb", "#,
+            r#""rev": "bbbb", "#,
+        );
+        assert_ne!(old, new);
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string().contains("missing a non-empty string"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_rev_bump_with_non_string_narhash() {
+        // identity 退行固定: rev は動くが head の narHash が文字列以外（数値）へ壊れた lock も fail。
+        let old = lock_with("aaaa", "dddd");
+        let new =
+            lock_with("bbbb", "dddd").replace(r#""narHash": "sha256-bbbb""#, r#""narHash": 12345"#);
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string().contains("missing a non-empty string"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_rev_bump_with_missing_last_modified() {
+        // identity 退行固定: rev は動くが head 側で `locked.lastModified` が削除（または非整数化）された lock も
+        // fail。rev だけ進めて取得時刻 identity を削った lock を auto-merge へ通さない。
+        let old = lock_with("aaaa", "dddd");
+        let new = lock_with("bbbb", "dddd").replace(
+            r#""narHash": "sha256-bbbb", "lastModified": 1700000000, "#,
+            r#""narHash": "sha256-bbbb", "#,
+        );
+        assert_ne!(old, new);
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(err.to_string().contains("missing an integer"), "{err}");
     }
 
     #[test]
