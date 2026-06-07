@@ -96,10 +96,19 @@ const MAX_BACKOFF: Duration = Duration::from_secs(20);
 /// パッケージ間の呼び出しに敷く最小間隔。per-minute レート上限内へ収めるためのペーシング基準。
 ///
 /// 直前のリクエスト開始からこの間隔が経つまで次のリクエストを開始しない（[`ChangeExtractPort`] 実装が
-/// adapter 保持の最終リクエスト時刻で待機を挿入する）。GitHub Models 無料枠は概ね低 RPM のため、
-/// パッケージごとに数秒の間隔を空けて分散させる。差分パッケージが多くても全体は「件数 × 本間隔 + retry 上振れ」
-/// に収まり、record job timeout（60分）を大きく下回る（30 件で約 60 秒 + retry 上振れ）。
-const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
+/// adapter 保持の最終リクエスト時刻で待機を挿入する）。
+///
+/// 値の根拠（per-minute レート上限を確実に下回ること）: GitHub Models 無料枠の per-minute レート上限は典型的に
+/// ~15 req/min と低く、CI 実走では旧値（2s ≒ 30 req/min）が上限を超過して HTTP 429 が継続した（`Retry-After: 7s`
+/// 程度が返る本物のレート制限）。**8 秒**間隔は 60s ÷ 8s = **7.5 req/min** で、~15 req/min 上限の半分以下に確実に
+/// 収まり 429 を回避する。直前リクエストの **開始**時刻基準で待機するため、429 リトライ待機とは二重計上されない
+/// （[`pace_before_request`](GithubModelsExtractAdapter::pace_before_request)）。
+///
+/// 予算内であること: 差分パッケージが多くても全体は「件数 × 本間隔 + retry 上振れ」に収まる。30 件 × 8s = 240s
+/// ≒ 4 分で、抽出フェーズ予算（[`EXTRACT_BUDGET`] = 35 分）・record job timeout（60 分）を大きく下回る（本間隔の
+/// 拡大は予算へ十分な余裕を残す）。なお無料枠の per-minute/日次 quota が極端に低い場合は本間隔でも 429 が残りうるが、
+/// その際も version+notes_url へ縮退して record success を維持する（既存契約・[`ChangeExtractPort`] 実装参照）。
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(8);
 
 /// 抽出フェーズ全体に与える wall-clock 予算（deadline）。超過後は残りパッケージの LLM 抽出を skip して
 /// version-only へ縮退する（[`GithubModelsExtractAdapter::extract_budget_exhausted`]）。
@@ -648,8 +657,9 @@ mod tests {
 
     use super::{
         BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
-        MAX_RATE_LIMIT_RETRIES, TRUNCATION_MARKER, auth_config, backoff_delay, body_snippet,
-        response_format_schema, retry_after_seconds, retry_loop, split_meta, truncate_notes,
+        MAX_RATE_LIMIT_RETRIES, MIN_REQUEST_INTERVAL, TRUNCATION_MARKER, auth_config,
+        backoff_delay, body_snippet, response_format_schema, retry_after_seconds, retry_loop,
+        split_meta, truncate_notes,
     };
     use crate::update_history::domain::wire::ChangeCategory;
     use crate::update_history::ports::ChangeExtractPort;
@@ -1048,6 +1058,35 @@ mod tests {
         assert!(
             adapter.extract_phase_start.get().is_some(),
             "問い合わせで起点が確定する"
+        );
+    }
+
+    #[test]
+    fn pacing_interval_stays_under_per_minute_rate_limit() {
+        // 退行固定（レート上限回避）: 本間隔は GitHub Models 無料枠の typical per-minute 上限（~15 req/min）を
+        // 確実に下回ること。間隔から逆算した req/min（60s ÷ 間隔）が安全側（≤ ~10 req/min）であることを固定する。
+        // これより短い間隔へ戻すと CI 実走で観測された HTTP 429 継続が再発する。
+        let secs = MIN_REQUEST_INTERVAL.as_secs();
+        assert!(
+            secs >= 6,
+            "間隔 {secs}s: per-minute 上限を下回るため 6s 以上が必要"
+        );
+        let req_per_min = 60 / secs;
+        assert!(
+            req_per_min <= 10,
+            "{req_per_min} req/min: ~15 req/min 上限へ安全側で収める（≤10 req/min）"
+        );
+    }
+
+    #[test]
+    fn thirty_packages_pacing_fits_within_extract_budget() {
+        // 退行固定（予算内）: 差分 30 パッケージ分を本間隔で直列に投げても、総ペーシング時間は抽出フェーズ予算
+        // （EXTRACT_BUDGET = 35 分）に収まる。間隔拡大が予算を食い破らないことを固定する（30 件 × 8s = 240s ≪ 35 分）。
+        const PACKAGES: u32 = 30;
+        let total_pacing = MIN_REQUEST_INTERVAL * PACKAGES;
+        assert!(
+            total_pacing < EXTRACT_BUDGET,
+            "30 パッケージの総ペーシング {total_pacing:?} は抽出予算 {EXTRACT_BUDGET:?} 内に収まる"
         );
     }
 
