@@ -6,7 +6,9 @@
 //! HTTP client を使わないため、リクエストは外部 `curl` への翻訳で行う。
 //!
 //! 縮退契約: `GITHUB_TOKEN` 未設定・API 呼び出し失敗・JSON 解析失敗・スキーマ不一致は、record を止めず
-//! 空配列（version+notes_url へ縮退）へ倒す。LLM 出力は category enum の妥当性をこの adapter の deserialize
+//! 空配列（version+notes_url へ縮退）へ倒す。縮退時は **なぜ空になったか**を非致命の 1 行診断として stderr へ
+//! 出す（token 未設定・HTTP 非 200・curl 失敗を CI ログで可視化するため）が、token・secret は決してログへ出さ
+//! ない。LLM 出力は category enum の妥当性をこの adapter の deserialize
 //! で機械検証し、host/長さ/件数の機械バリデートは後段の domain（`validate`）が担う。severity は LLM 出力では
 //! なく category enum から domain が算出するため、LLM 出力をマージ判断に使わない（injection 耐性）。
 //!
@@ -110,18 +112,24 @@ impl GithubModelsExtractAdapter {
         Ok(serde_json::to_string(&body)?)
     }
 
-    /// curl で GitHub Models へ POST し、レスポンス本文を返す。失敗は `Err`。
+    /// curl で GitHub Models へ POST し、`(HTTP status, レスポンス本文)` を返す。curl 自体の失敗のみ `Err`。
     ///
     /// 認証トークンは **argv に乗せない**。`-H "Authorization: Bearer <token>"` を引数に置くと、同一 runner の
     /// プロセス一覧（`ps`）から token が読めてしまう（secret を argv/ログに残さない義務に違反する）。代わりに
     /// curl の `--config -`（stdin から設定を読む）へ `header = "Authorization: Bearer <token>"` を流し込み、
     /// token を argv にもログにも出さない。Content-Type ヘッダと本文（`-d`）は secret ではないため argv のままで
     /// よい。stdin の内容（[`auth_config`]）は curl 設定ファイル構文で、token をクォートして 1 ヘッダだけ渡す。
-    fn post(token: &str, body: &str) -> Result<String> {
+    ///
+    /// 診断のため、HTTP エラー（4xx/5xx）でも curl を非 0 終了させない。`--fail` は HTTP エラーを curl exit へ
+    /// 倒し本物の status code を握り潰す（CI ログに「なぜ空縮退したか」が残らない原因だった）ので使わない。
+    /// 代わりに `--write-out '%{http_code}'` で status code をレスポンス本文の末尾へ付け、[`split_status_and_body`]
+    /// で末尾の status を切り出す。`-w` を足しても Authorization は stdin の `--config -` に閉じたままで、
+    /// argv・ログ・`-w` の出力いずれにも token は現れない（`%{http_code}` は数値のみ）。返り値 `Err` は curl
+    /// プロセス自体の失敗（spawn 失敗・ネットワーク不達等で非 0 終了）に限る。
+    fn post(token: &str, body: &str) -> Result<(u16, String)> {
         let args = [
             OsString::from("--config"),
             OsString::from("-"),
-            OsString::from("--fail"),
             OsString::from("--silent"),
             OsString::from("--show-error"),
             OsString::from("--proto"),
@@ -132,9 +140,13 @@ impl GithubModelsExtractAdapter {
             OsString::from("Content-Type: application/json"),
             OsString::from("-d"),
             OsString::from(body.to_string()),
+            // status code を本文の末尾へ付加する。token は含まれない（数値のみ）。
+            OsString::from("--write-out"),
+            OsString::from("%{http_code}"),
             OsString::from(GITHUB_MODELS_ENDPOINT),
         ];
-        run_capture_with_stdin("curl", args, auth_config(token).as_bytes())
+        let raw = run_capture_with_stdin("curl", args, auth_config(token).as_bytes())?;
+        Ok(split_status_and_body(&raw))
     }
 
     /// レスポンス本文（チャット補完 JSON）から変更項目列を取り出す。
@@ -178,6 +190,33 @@ impl GithubModelsExtractAdapter {
 fn auth_config(token: &str) -> String {
     let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
     format!("header = \"Authorization: Bearer {escaped}\"\n")
+}
+
+/// curl の stdout（本文）+ `--write-out '%{http_code}'`（末尾 status）出力から `(status, body)` を切り出す。
+///
+/// curl は本文をそのまま stdout へ流し、その後ろへ `%{http_code}`（常に 3 桁の数値）を追記する。よって
+/// 出力末尾の連続する ASCII 数字を status code とみなし、残りを本文とする。status の解析に失敗した場合
+/// （想定外出力）は status `0` を返し、呼び出し側は HTTP エラー扱いで診断ログを出す（縮退は維持）。token は
+/// この出力には現れないため、ログへ本文断片を出しても secret は漏れない（`%{http_code}` は数値のみ）。
+fn split_status_and_body(raw: &str) -> (u16, String) {
+    let digits_start = raw.len() - raw.chars().rev().take_while(char::is_ascii_digit).count();
+    let (body, status_text) = raw.split_at(digits_start);
+    let status = status_text.parse::<u16>().unwrap_or(0);
+    (status, body.to_string())
+}
+
+/// 診断ログ用に本文の先頭を短く切り詰める。secret は出力に現れない前提だが、長文の垂れ流しを避けるため
+/// 先頭 120 byte（char 境界優先）に制限し、改行を空白へ畳んで 1 行ログに収める。
+fn body_snippet(body: &str) -> String {
+    const LIMIT: usize = 120;
+    let trimmed = body.trim();
+    let head: String = trimmed.chars().take(LIMIT).collect();
+    let collapsed = head.replace(['\n', '\r'], " ");
+    if trimmed.chars().count() > LIMIT {
+        format!("{collapsed}…")
+    } else {
+        collapsed
+    }
 }
 
 /// JSON 出力スキーマ強制の `response_format`（versioned。category enum と必須フィールドを固定）。
@@ -228,16 +267,38 @@ fn response_format_schema() -> serde_json::Value {
 }
 
 impl ChangeExtractPort for GithubModelsExtractAdapter {
+    /// 生リリースノートを GitHub Models で構造化変更へ抽出する。失敗は record を止めず空配列へ縮退する。
+    ///
+    /// 縮退契約（[module 先頭][self] 参照）は維持しつつ、**なぜ空になったか**を非致命の 1 行診断として stderr へ
+    /// 出す（CI ログで HTTP 403/401 等の握り潰しを可視化するため）。診断は: token 未設定（`skipped`）、curl
+    /// プロセス失敗（`degraded: curl failed`）、HTTP 非 200（`degraded: HTTP <code>` + 本文断片）。token は
+    /// いずれのログにも出さない（`-w` は数値 status のみ、本文断片は token を含まない API レスポンス）。成功時は
+    /// ログしない（うるさくしない）。返り値は常に `Ok`（解析結果または空配列）で record を止めない。
     fn extract_change_items(&self, notes: &RawReleaseNotes) -> Result<Vec<ChangeItem>> {
-        // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック）。
+        // GITHUB_TOKEN 未設定なら呼び出さず空へ縮退（version+notes_url へフォールバック）。未設定検知時に 1 度だけ
+        // ログする（呼び出しごとではない＝この経路自体が未設定時に 1 回通る）。
         let Some(token) = Self::github_token() else {
+            eprintln!("GitHub Models extract skipped: GITHUB_TOKEN unset");
             return Ok(Vec::new());
         };
         let body = Self::request_body(&notes.text)?;
-        // 呼び出し失敗（ネットワーク/認証/レート）も record を止めず空へ縮退する。
+        // 呼び出し失敗（ネットワーク/認証/レート）も record を止めず空へ縮退する。診断ログだけ残す。
         match Self::post(&token, &body) {
-            Ok(response) => Ok(Self::parse_response(&response)),
-            Err(_) => Ok(Vec::new()),
+            Ok((200, response)) => Ok(Self::parse_response(&response)),
+            Ok((status, response)) => {
+                // HTTP エラー: status と本文断片（token 非含有）を 1 行ログ。空へ縮退。
+                eprintln!(
+                    "GitHub Models extract degraded: HTTP {status}: {}",
+                    body_snippet(&response)
+                );
+                Ok(Vec::new())
+            }
+            Err(_) => {
+                // curl プロセス自体の失敗（spawn/ネットワーク不達等）。error 本文に token は含まれないが、防御的に
+                // 詳細は出さず固定文言のみログする。空へ縮退。
+                eprintln!("GitHub Models extract degraded: curl failed");
+                Ok(Vec::new())
+            }
         }
     }
 }
@@ -247,7 +308,10 @@ mod tests {
     //! チャット補完レスポンスからの変更項目抽出（category enum 検証・未知値破棄・空縮退）と
     //! リクエストボディ/スキーマ組み立てを、実 API を呼ばずに固定する。
 
-    use super::{GithubModelsExtractAdapter, auth_config, response_format_schema};
+    use super::{
+        GithubModelsExtractAdapter, auth_config, body_snippet, response_format_schema,
+        split_status_and_body,
+    };
     use crate::update_history::domain::wire::ChangeCategory;
 
     #[test]
@@ -377,6 +441,56 @@ mod tests {
             ref_type.iter().any(|v| v == "null"),
             "ref は null を返せる必要がある: {ref_type:?}"
         );
+    }
+
+    #[test]
+    fn split_status_and_body_separates_trailing_http_code() {
+        // curl は本文の末尾へ `%{http_code}`（3 桁数値）を付加する。末尾の連続数字を status として切り出し、
+        // 残りを本文とする。JSON 本文が `}` で終わるため数字が本文末尾と衝突しない。
+        let (status, body) = split_status_and_body(r#"{"choices":[]}200"#);
+        assert_eq!(status, 200);
+        assert_eq!(body, r#"{"choices":[]}"#);
+
+        // HTTP エラー status も同様に切り出せる。
+        let (status, body) = split_status_and_body(r#"{"error":"forbidden"}403"#);
+        assert_eq!(status, 403);
+        assert_eq!(body, r#"{"error":"forbidden"}"#);
+    }
+
+    #[test]
+    fn split_status_and_body_returns_zero_when_no_status() {
+        // 想定外出力（status 末尾無し）は status 0（呼び出し側で HTTP エラー扱い→診断ログ→空縮退）。
+        let (status, body) = split_status_and_body("not json no status");
+        assert_eq!(status, 0);
+        assert_eq!(body, "not json no status");
+    }
+
+    #[test]
+    fn body_snippet_truncates_and_collapses_newlines() {
+        // 長文は先頭 120 char に切り詰め省略記号を付ける。改行は空白へ畳んで 1 行ログに収める。
+        let long = "a".repeat(200);
+        let snippet = body_snippet(&long);
+        assert!(snippet.ends_with('…'), "{snippet}");
+        assert_eq!(snippet.chars().count(), 121); // 120 char + 省略記号
+        let multiline = body_snippet("line1\nline2\r\nline3");
+        assert!(!multiline.contains('\n'), "{multiline}");
+        assert!(!multiline.contains('\r'), "{multiline}");
+    }
+
+    #[test]
+    fn diagnostic_snippet_never_contains_token() {
+        // token は API レスポンス本文に現れない（auth は stdin の `--config -` に閉じる）。仮に本文へ token 様の
+        // 文字列が混ざっても、診断ログに使う body_snippet/auth_config の経路は token を別管理する。ここでは
+        // auth_config（stdin 専用）が body_snippet（ログ用）と別関数であること、ログ経路が本文だけを扱うことを
+        // 退行固定する: auth ヘッダ文字列は body_snippet の入力に決して渡らない。
+        let response_body = r#"{"choices":[{"message":{"content":"{\"changes\":[]}"}}]}"#;
+        let snippet = body_snippet(response_body);
+        assert!(!snippet.contains("Authorization"), "{snippet}");
+        assert!(!snippet.contains("Bearer"), "{snippet}");
+        // auth_config（token を含む）はログには使わず stdin 専用であることを示す（別関数・別経路）。
+        let auth = auth_config("ghs_SECRET");
+        assert!(auth.contains("ghs_SECRET"));
+        assert!(!snippet.contains("ghs_SECRET"));
     }
 
     #[test]
