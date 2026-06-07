@@ -253,7 +253,10 @@ jobs:
           # なる。許可ホスト https のみ取得する。nix package のノート base（forge / meta.changelog 系）はこの
           # workflow では未解決のため渡さず、nix package のノートは version+notes_url へ縮退する。
           brew_notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
-          nix develop -c dotfiles update-history record \
+          # dotfiles バイナリは devShell に含まれないため、公開パッケージ `.#default`（= dotfiles-cli、
+          # bin 名 dotfiles）をビルドして実行する。dotfiles-cli は小さな Rust crate で重い closure は引かない。
+          dotfiles_bin="$(nix build --no-link --print-out-paths .#default)/bin/dotfiles"
+          "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
             --nix-new nix-new.json \
             --old-rev "$NIXPKGS_OLD" \
@@ -358,7 +361,11 @@ jobs:
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
         run: |
           set -euo pipefail
-          nix develop -c dotfiles ci verify-bump-lock \
+          # 判定主体の dotfiles は devShell に無いため、checkout した信頼 ref の flake から `.#default`
+          # （= dotfiles-cli、bin 名 dotfiles）をビルドして実行する。`.#default` は信頼 ref の flake から
+          # ビルドされるため、検査主体（信頼 ref のコード）と検査対象（base..head の lock 差分）の分離は保たれる。
+          dotfiles_bin="$(nix build --no-link --print-out-paths .#default)/bin/dotfiles"
+          "$dotfiles_bin" ci verify-bump-lock \
             --base "${{ steps.commit.outputs.base_sha }}" \
             --head "${{ steps.commit.outputs.head_sha }}" \
             --repo .
