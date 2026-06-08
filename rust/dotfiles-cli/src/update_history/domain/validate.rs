@@ -39,6 +39,9 @@ const ALLOWED_HOSTS: [&str; 4] = [
 const MAX_ITEMS: usize = 12;
 
 /// `text` 1 行概要の最大文字数（char 単位）。超過分は切り詰める。
+///
+/// 切り詰め時は省略記号 `…` を末尾に付すため、結果は省略記号 1 文字分だけ増え、最大 `MAX_TEXT_CHARS + 1`
+/// 文字になり得る（[`truncate_chars`] 参照）。
 const MAX_TEXT_CHARS: usize = 200;
 
 /// URL が許可ホストの https URL かを判定する。

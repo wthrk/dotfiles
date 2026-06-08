@@ -213,12 +213,15 @@ fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
     step("nightly-update no-op (history upload not fail-on-empty)");
     let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
 
-    // history-record アップロードブロックを切り出し、その `if-no-files-found` が `error` でないことを確認する
-    // （無更新夜の 0 件アップロードを失敗扱いにしない）。安全側の `warn`/`ignore` のいずれかを要求する。
-    let upload = workflow
-        .split("name: history-record")
+    // history-record の upload-artifact ステップ本体だけを切り出し、その `if-no-files-found` が `error` でない
+    // ことを確認する（無更新夜の 0 件アップロードを失敗扱いにしない）。判定対象を当該ステップ（`- name: 履歴
+    // TOML を artifact 化` から次の `- name:` の手前まで）にスコープし、後続に別 upload ステップが追加されても
+    // その `if-no-files-found:` を拾わないようにする。安全側の `warn`/`ignore` のいずれかを要求する。
+    let upload_section = workflow
+        .split("- name: 履歴 TOML を artifact 化")
         .nth(1)
         .unwrap_or_default();
+    let upload = upload_section.split("- name:").next().unwrap_or_default();
     ensure!(
         !upload.contains("if-no-files-found: error"),
         "record の history-record アップロードは無更新夜（0 件）を失敗扱いにしないため \
