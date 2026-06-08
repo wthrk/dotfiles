@@ -69,8 +69,10 @@ enum UpdateHistoryCommand {
 /// `--brew-diff` ファイルから読む。各アプリの生ノートを取得して LLM で構造化抽出し、`--out` の月次 TOML へ
 /// 追記する。`--at` は RFC3339 を注入する。
 struct RecordOptions {
-    /// bump 前 lock で eval した宣言パッケージの name→version JSON ファイル（`{ "name": "version", ... }`）。
-    /// 未指定なら nix old 側は空マップへ縮退する。後方互換のため旧 `--old` も別名として受ける。
+    /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル
+    /// （`{ "name": { "version": "...", "repo": "owner/repo", "changelog": "..." }, ... }`。`repo`/`changelog`
+    /// は省略可で `serde(default)`、旧 `notes_source` key も `changelog` の alias で受ける）。未指定なら nix old
+    /// 側は空マップへ縮退する。後方互換のため旧 `--old` も別名として受ける。
     #[arg(long, alias = "old")]
     nix_old: Option<PathBuf>,
     /// bump 後 lock で eval した宣言パッケージの name→version JSON ファイル。未指定なら nix new 側は空マップ
@@ -209,6 +211,8 @@ fn run_show(options: ShowOptions) -> Result<()> {
 
     let command = ShowCommand {
         rev: options.rev,
+        // 利用者 `show` は nixpkgs rev 起点（`--rev`）で選ぶ。`after_at` は適用後要約専用カーソルのため None。
+        after_at: None,
         limit: options.limit,
         json: options.json,
         all: options.all,
@@ -216,30 +220,43 @@ fn run_show(options: ShowOptions) -> Result<()> {
     application::run_show::run_show(command, &store, &report)
 }
 
-/// auto 適用後の要約を、適用前 rev からの catch-up 区間を集約して任意 sink へ描画する composition root。
+/// auto 適用後の要約を、要約済み `at` カーソル以降の catch-up 区間を集約して任意 sink へ描画する
+/// composition root。要約し終えた終端エントリの `at`（次回カーソル）を返す。
 ///
 /// flat `update` module（auto 経路）から呼ぶ再利用入口。`source` は適用済み pin 由来の
-/// `docs/update-history` directory（または単一 TOML ファイル）、`applied_from_rev` は適用前の
-/// `last-applied-rev`（その rev を `nixpkgs_old` に持つエントリ以降を catch-up 区間とする。`None` なら全件）。
+/// `docs/update-history` directory（または単一 TOML ファイル）、`summarized_after_at` は**前回要約し終えた
+/// エントリの `at`**（その `at` より後に記録されたエントリだけを catch-up 区間とする。`None` なら全件 = 初回）。
 /// `sink` には tty 時は stdout、非 tty 時は `pending-summary` ファイルなど呼び出し側が選んだ writer を渡す。
 ///
-/// 集約・severity 再算出・重要度連動描画は show 経路（`run_show` + 共有 render）をそのまま再利用し、
-/// 業務規則（catch-up 集約・severity）や表示形式を auto 経路側へ二重実装しない。`json`/`all` は固定で
-/// text・宣言アプリ中心（適用後の利用者向け表示要件）。
+/// **nixpkgs rev ではなく `at` カーソルを使う理由**: brew tap だけが進み `nixpkgs_old == nixpkgs_new`
+/// （= 同一 nixpkgs rev）の brew-only 更新が複数できると、nixpkgs rev 起点では `N -> N` を越えて進めず、
+/// 要約済みの brew-only 更新を毎回再表示してしまう。各エントリの `at` は記録のたびに前進する一意値なので、
+/// 要約済み `at` を単調カーソルにすれば一度要約した更新を再表示しない（[`select_entries_after`]）。
+///
+/// 戻り値は要約し終えた終端エントリの `at`。呼び出し側はこれを要約済み marker（`at` カーソル）へ書き、次回の
+/// `summarized_after_at` に渡す。選択範囲が空（新規更新なし）なら `None` を返し、marker は進めない。
+/// 集約・severity 再算出・重要度連動描画は show 経路（`run_applied_summary` + 共有 helper）を再利用し、
+/// 業務規則や表示形式を二重実装しない。`json`/`all` は固定で text・宣言アプリ中心（適用後の利用者向け表示要件）。
+///
+/// caller responsibility: 呼び出し側（`update` module）は要約済み marker を nixpkgs rev ではなく
+/// **`at` 値**で保持し、その値を `summarized_after_at` へ渡し、戻り値（次回カーソル）を marker へ確定する。
+///
+/// [`select_entries_after`]: crate::update_history::domain::selection::select_entries_after
 pub(crate) fn render_applied_summary<W: Write>(
     source: &Path,
-    applied_from_rev: Option<&str>,
+    summarized_after_at: Option<&str>,
     sink: W,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let store = adapters::TomlHistoryStoreAdapter::new(source);
     let report = adapters::WriterHistoryReportAdapter::new(sink);
     let command = ShowCommand {
-        rev: applied_from_rev.map(str::to_string),
+        rev: None,
+        after_at: summarized_after_at.map(str::to_string),
         limit: None,
         json: false,
         all: false,
     };
-    application::run_show::run_show(command, &store, &report)
+    application::run_show::run_applied_summary(command, &store, &report)
 }
 
 /// show が読む履歴 source パスを解決する。
@@ -255,5 +272,98 @@ fn resolve_show_source(source: Option<PathBuf>) -> Result<PathBuf> {
     match source {
         Some(source) => Ok(source),
         None => crate::update::history_local_dir(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! composition root の `render_applied_summary` が `at` カーソルで要約し終えた終端 `at` を返し、
+    //! brew-only `N -> N` 更新を再表示しないことを、実 TOML 履歴を読んで end-to-end で固定する。
+
+    use std::io::Write as _;
+
+    use super::render_applied_summary;
+    use crate::Result;
+
+    /// 一時 dir に月次 TOML を 1 ファイル書き、その dir を source として返す（adapter は dir 配下を連結読みする）。
+    fn write_history_dir(name: &str, toml: &str) -> Result<std::path::PathBuf> {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "dotfiles-render-applied-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let mut file = std::fs::File::create(dir.join("2026-06.toml"))?;
+        file.write_all(toml.as_bytes())?;
+        Ok(dir)
+    }
+
+    #[test]
+    fn render_applied_summary_uses_at_cursor_and_returns_terminal_at() -> Result<()> {
+        // brew-only 2 夜（nixpkgs_old==nixpkgs_new="N"）。`at` カーソルで一度要約したら再表示しない。
+        let toml = "\
+[[update]]
+at = \"2026-06-01T00:00:00Z\"
+nixpkgs_old = \"N\"
+nixpkgs_new = \"N\"
+reference = \"darwinConfigurations.ci\"
+severity = \"minor\"
+overall = \"1アプリ更新: ✨1\"
+
+[[update.package]]
+name = \"firefox\"
+old = \"120\"
+new = \"121\"
+change = \"upgraded\"
+declared = true
+source = \"brew\"
+
+[[update.package.change_item]]
+category = \"feature\"
+text = \"新機能\"
+
+[[update]]
+at = \"2026-06-02T00:00:00Z\"
+nixpkgs_old = \"N\"
+nixpkgs_new = \"N\"
+reference = \"darwinConfigurations.ci\"
+severity = \"minor\"
+overall = \"1アプリ更新: 🐛1\"
+
+[[update.package]]
+name = \"slack\"
+old = \"4.0\"
+new = \"4.1\"
+change = \"upgraded\"
+declared = true
+source = \"brew\"
+
+[[update.package.change_item]]
+category = \"fix\"
+text = \"修正\"
+";
+        let dir = write_history_dir("at-cursor", toml)?;
+
+        // 初回（marker 無し）: 全 brew-only 更新を要約し、終端 `at` を返す。
+        let mut buf1: Vec<u8> = Vec::new();
+        let cursor = render_applied_summary(&dir, None, &mut buf1)?;
+        let rendered1 = String::from_utf8(buf1)?;
+        assert!(rendered1.contains("firefox"), "{rendered1:?}");
+        assert!(rendered1.contains("slack"), "{rendered1:?}");
+        assert_eq!(cursor.as_deref(), Some("2026-06-02T00:00:00Z"));
+
+        // 2 回目（marker = 終端 at）: 新規が無いので brew-only 更新を再表示しない（見出しのみ「0アプリ更新」）。
+        let mut buf2: Vec<u8> = Vec::new();
+        let cursor2 = render_applied_summary(&dir, cursor.as_deref(), &mut buf2)?;
+        let rendered2 = String::from_utf8(buf2)?;
+        assert!(
+            !rendered2.contains("firefox") && !rendered2.contains("slack"),
+            "要約済み brew-only 更新を再表示しない: {rendered2:?}"
+        );
+        assert!(rendered2.contains("0アプリ更新"), "{rendered2:?}");
+        assert_eq!(cursor2, None, "空 span では marker を進めない");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

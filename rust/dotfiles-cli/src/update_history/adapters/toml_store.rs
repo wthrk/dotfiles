@@ -97,7 +97,9 @@ mod tests {
     //! read（不存在で空）と append（既存保持・複数件）の往復をテンポラリファイルで固定する。
 
     use super::TomlHistoryStoreAdapter;
-    use crate::update_history::domain::wire::{ChangeKind, PackageUpdate, Severity, UpdateEntry};
+    use crate::update_history::domain::wire::{
+        ChangeKind, PackageSource, PackageUpdate, Severity, UpdateEntry,
+    };
     use crate::update_history::ports::HistoryStorePort;
 
     fn sample(at: &str, name: &str) -> UpdateEntry {
@@ -114,6 +116,7 @@ mod tests {
                 new: Some("1.1".to_string()),
                 change: ChangeKind::Upgraded,
                 declared: true,
+                source: PackageSource::Nix,
                 notes_url: None,
                 change_items: Vec::new(),
             }],

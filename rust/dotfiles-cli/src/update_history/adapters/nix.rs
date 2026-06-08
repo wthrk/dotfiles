@@ -3,8 +3,10 @@
 //! eval ベース化により、nightly は ci-ref のフル closure を `nix store diff-closures` で 2 回ビルド
 //! する代わりに、宣言パッケージの `pname`/`version`（評価時属性。ビルド/フェッチ不要）を `nix eval
 //! --json` で数秒で取得する。CI は old lock（bump 前）と new lock（bump 後）でそれぞれ eval し、その
-//! `{ "name": "version", ... }` JSON をファイルへ書く。本 adapter はその 2 ファイルを読んで `BTreeMap`
-//! へ翻訳する境界であり、version 比較・差分種別の業務意味は domain rule（[`diff_versions`]）に委ねる。
+//! `{ "name": { "version": "...", "repo": "owner/repo", "changelog": "..." }, ... }` JSON をファイルへ書く
+//! （`repo`/`changelog` は省略可で `serde(default)`、旧 `notes_source` key も `changelog` の alias で受ける）。
+//! 本 adapter はその 2 ファイルを読んで `BTreeMap` へ翻訳する境界であり、version 比較・差分種別の業務意味は
+//! domain rule（[`diff_versions`]）に委ねる。
 //!
 //! eval JSON ファイルが与えられない／読めない実行環境では、record を失敗させず空マップを返す
 //! （「差分取得不能はフォールバックして version+notes_url へ縮退」のプラン契約に沿う graceful

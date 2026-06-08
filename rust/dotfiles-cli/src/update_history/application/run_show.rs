@@ -4,10 +4,12 @@ use crate::Result;
 use crate::update_history::domain::aggregate::aggregate;
 use crate::update_history::domain::build::recompute_severity;
 use crate::update_history::domain::commands::ShowCommand;
-use crate::update_history::domain::selection::select_entries;
+use crate::update_history::domain::selection::{
+    last_summarized_at, select_entries, select_entries_after,
+};
 use crate::update_history::domain::severity::overall_headline;
 use crate::update_history::domain::view::HistoryView;
-use crate::update_history::domain::wire::ChangeItem;
+use crate::update_history::domain::wire::{ChangeItem, UpdateEntry};
 use crate::update_history::ports::{HistoryReportPort, HistoryStorePort};
 
 /// 適用済み pin 由来の履歴を読み、起点 rev からの catch-up 区間を集約して重要度連動ビューを出力する。
@@ -17,42 +19,87 @@ use crate::update_history::ports::{HistoryReportPort, HistoryStorePort};
 /// 全体重要度を出すためである。severity/overall は集約後集合に対し record 側と同一の domain 関数で再算出し、
 /// 記録時と表示時で重要度規則を二重化しない。`all` による宣言/非宣言の絞り込みは表示意図であり、ここで
 /// 適用してから出力境界へ渡す（presentation 整形は adapter に閉じる）。停止条件は各 port の `Err` 伝播。
+///
+/// 選択は `after_at`（適用後要約の `at` 単調カーソル）があればそれを優先し、無ければ利用者 `show` の `rev`
+/// 起点で切り出す（[`select_for_show`]）。
 pub(crate) fn run_show<S, R>(command: ShowCommand, store: &S, report: &R) -> Result<()>
 where
     S: HistoryStorePort,
     R: HistoryReportPort,
 {
     let entries = store.read_entries()?;
-    let selected = select_entries(&entries, command.rev.as_deref(), command.limit);
-    let mut packages = aggregate(&selected);
-    if !command.all {
+    let selected = select_for_show(&entries, &command);
+    let view = build_view(&selected, command.all);
+    report.write_history(&view, command.json)
+}
+
+/// 適用後要約 use case: `after_at` カーソル以降の更新を集約・表示し、要約し終えた終端 `at` を返す。
+///
+/// 順序制御の理由: 読み出し → `at` カーソル選択 → catch-up 集約 → severity/overall 再算出 → 出力 → 終端 `at`
+/// 確定。auto 経路は nixpkgs rev では `N -> N`（brew-only）を越えられないため、要約済みエントリの `at` を
+/// 単調カーソルにして再表示を抑止する。戻り値の終端 `at` を呼び出し側が marker へ書き、次回の `after_at` に
+/// 渡すことで、一度要約した brew-only 更新が再表示されない。`show` 経路と同じ集約・severity・表示形式を
+/// 共有 domain/helper で使い重複実装しない（use case 間呼び出しはしない）。`None` を返すのは選択範囲が空
+/// （新規更新なし）のときで、呼び出し側は marker を進めない。
+pub(crate) fn run_applied_summary<S, R>(
+    command: ShowCommand,
+    store: &S,
+    report: &R,
+) -> Result<Option<String>>
+where
+    S: HistoryStorePort,
+    R: HistoryReportPort,
+{
+    let entries = store.read_entries()?;
+    let selected = select_entries_after(&entries, command.after_at.as_deref(), command.limit);
+    let view = build_view(&selected, command.all);
+    report.write_history(&view, command.json)?;
+    // 要約し終えた終端エントリの `at`（次回 `after_at` カーソル）。空 span なら `None`。
+    Ok(last_summarized_at(&selected))
+}
+
+/// command の `after_at`（優先）/`rev` から表示対象エントリを切り出す。
+///
+/// `after_at` が `Some` のとき auto 適用後要約の `at` 単調カーソル選択、`None` のとき利用者 `show` の
+/// nixpkgs rev 起点選択にフォールバックする（両者は排他に使う）。
+fn select_for_show(entries: &[UpdateEntry], command: &ShowCommand) -> Vec<UpdateEntry> {
+    match command.after_at.as_deref() {
+        Some(after) => select_entries_after(entries, Some(after), command.limit),
+        None => select_entries(entries, command.rev.as_deref(), command.limit),
+    }
+}
+
+/// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
+///
+/// `all=false` は宣言アプリ中心（既定）、`true` は低レベル依存も含める。severity/overall は集約後集合に対し
+/// record 側と同一の domain 関数で再算出し、記録時と表示時で重要度規則を二重化しない（`show`/適用後要約で共有）。
+fn build_view(selected: &[UpdateEntry], all: bool) -> HistoryView {
+    let mut packages = aggregate(selected);
+    if !all {
         // 既定は宣言アプリ中心。`--all` 指定時のみ低レベル依存も表示する。
         packages.retain(|package| package.declared);
     }
-
     let all_items: Vec<ChangeItem> = packages
         .iter()
         .flat_map(|package| package.change_items.clone())
         .collect();
     let severity = recompute_severity(&all_items);
     let overall = overall_headline(packages.len(), &all_items);
-
-    let view = HistoryView {
+    HistoryView {
         packages,
         severity,
         overall,
-    };
-    report.write_history(&view, command.json)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     //! show の順序（読み出し → 範囲選択 → 集約 → severity 再算出 → 出力）と `--all` 絞り込みを mock で固定する。
 
-    use super::run_show;
+    use super::{run_applied_summary, run_show};
     use crate::update_history::domain::commands::ShowCommand;
     use crate::update_history::domain::wire::{
-        ChangeCategory, ChangeItem, ChangeKind, PackageUpdate, Severity, UpdateEntry,
+        ChangeCategory, ChangeItem, ChangeKind, PackageSource, PackageUpdate, Severity, UpdateEntry,
     };
     use crate::update_history::ports::{MockHistoryReportPort, MockHistoryStorePort};
 
@@ -63,6 +110,7 @@ mod tests {
             new: Some("1.1".to_string()),
             change: ChangeKind::Upgraded,
             declared,
+            source: PackageSource::Nix,
             notes_url: None,
             change_items: vec![ChangeItem {
                 category,
@@ -91,6 +139,7 @@ mod tests {
     fn command(all: bool) -> ShowCommand {
         ShowCommand {
             rev: None,
+            after_at: None,
             limit: None,
             json: false,
             all,
@@ -100,6 +149,17 @@ mod tests {
     fn command_from_rev(rev: &str) -> ShowCommand {
         ShowCommand {
             rev: Some(rev.to_string()),
+            after_at: None,
+            limit: None,
+            json: false,
+            all: false,
+        }
+    }
+
+    fn command_after_at(after_at: &str) -> ShowCommand {
+        ShowCommand {
+            rev: None,
+            after_at: Some(after_at.to_string()),
             limit: None,
             json: false,
             all: false,
@@ -232,5 +292,87 @@ mod tests {
             .returning(|_, _| Ok(()));
 
         run_show(command_from_rev("r0"), &store, &report)
+    }
+
+    /// 明示 `at`（と nixpkgs_old==nixpkgs_new=N）で brew-only 夜を表すエントリを作る。
+    fn entry_at(at: &str, packages: Vec<PackageUpdate>) -> UpdateEntry {
+        UpdateEntry {
+            at: at.to_string(),
+            nixpkgs_old: "N".to_string(),
+            nixpkgs_new: "N".to_string(),
+            reference: "darwinConfigurations.ci".to_string(),
+            severity: Severity::None,
+            overall: String::new(),
+            packages,
+        }
+    }
+
+    #[test]
+    fn applied_summary_advances_cursor_and_skips_already_summarized_brew_only() -> crate::Result<()>
+    {
+        // 退行固定（P2: brew-only 再表示抑止）: nixpkgs rev が動かない（`N -> N`）brew-only 更新を、`at`
+        // カーソルで一度要約したら再表示しない。1 回目（after_at=None）で全件要約し終端 `at` を marker として
+        // 返す。2 回目（after_at=marker）は新規が無ければ空 view（「0アプリ更新」）になり、要約済み更新を
+        // 再表示しない。run_applied_summary が要約済み終端 `at` を返すことも固定する。
+        let mut store = MockHistoryStorePort::new();
+        store.expect_read_entries().times(1).returning(|| {
+            Ok(vec![
+                entry_at(
+                    "2026-06-01T00:00:00Z",
+                    vec![package("firefox", true, ChangeCategory::Feature)],
+                ),
+                entry_at(
+                    "2026-06-02T00:00:00Z",
+                    vec![package("slack", true, ChangeCategory::Fix)],
+                ),
+            ])
+        });
+        let mut report = MockHistoryReportPort::new();
+        report
+            .expect_write_history()
+            .times(1)
+            .withf(|view, _| view.packages.len() == 2)
+            .returning(|_, _| Ok(()));
+
+        // 1 回目: marker 無し → 全 brew-only 更新を要約。終端 at を返す。
+        let cursor = run_applied_summary(command_after_at_none(), &store, &report)?;
+        assert_eq!(cursor.as_deref(), Some("2026-06-02T00:00:00Z"));
+
+        // 2 回目: marker = 終端 at。新規が無いので空 view（「0アプリ更新」）。再表示しない。
+        let mut store2 = MockHistoryStorePort::new();
+        store2.expect_read_entries().times(1).returning(|| {
+            Ok(vec![
+                entry_at(
+                    "2026-06-01T00:00:00Z",
+                    vec![package("firefox", true, ChangeCategory::Feature)],
+                ),
+                entry_at(
+                    "2026-06-02T00:00:00Z",
+                    vec![package("slack", true, ChangeCategory::Fix)],
+                ),
+            ])
+        });
+        let mut report2 = MockHistoryReportPort::new();
+        report2
+            .expect_write_history()
+            .times(1)
+            .withf(|view, _| view.packages.is_empty() && view.overall == "0アプリ更新")
+            .returning(|_, _| Ok(()));
+
+        let cursor2 =
+            run_applied_summary(command_after_at("2026-06-02T00:00:00Z"), &store2, &report2)?;
+        // 空 span なので marker は進めない（None）。
+        assert_eq!(cursor2, None);
+        Ok(())
+    }
+
+    fn command_after_at_none() -> ShowCommand {
+        ShowCommand {
+            rev: None,
+            after_at: None,
+            limit: None,
+            json: false,
+            all: false,
+        }
     }
 }

@@ -37,6 +37,52 @@ pub(crate) fn select_entries(
     }
 }
 
+/// 適用後要約のカーソル: 「最後に要約し終えたエントリ」より後のエントリだけを適用順で返す。
+///
+/// auto 適用後要約を `nixpkgs_old` 起点（[`select_entries`]）で選ぶと brew-only 更新を毎回再表示する。brew
+/// tap だけが進み `nixpkgs_old == nixpkgs_new`（= 同一 nixpkgs rev `N`）のエントリが複数できると、要約済み
+/// marker も `N` のままになり、次回 `select_entries(..., Some("N"), ...)` が同じ `N -> N` エントリを再選択する
+/// ためである（nixpkgs rev では `N -> N` を越えて進めない）。
+///
+/// 本関数は nixpkgs rev ではなく **履歴エントリの記録時刻 `at`（RFC3339）を単調カーソル**にして `N -> N` を
+/// 越える。各エントリの `at` は記録のたびに前進する一意な値（brew-only 夜でも進む）であり、RFC3339 文字列の
+/// 辞書順は時系列順に一致する。
+///
+/// 規則:
+/// - `entries` は記録順（最古→最新 = `at` 昇順）で渡す。
+/// - `after_at` が `Some(t)` のとき、`at` が `t` より **厳密に後**（`entry.at > t`）のエントリだけを残す
+///   （`t` 自身のエントリは要約済みとして除外する。これが `N -> N` 再表示の抑止）。
+/// - `after_at` が `None`（初回・marker 未確定）のときは全エントリを対象にする。
+/// - `limit` が `Some(n)` のとき、起点側（最古）から最大 n 件に切り詰める。`Some(0)` は空。
+///
+/// 返値は所有 [`UpdateEntry`] の clone で、catch-up 集約・severity 再算出へそのまま渡せる。
+pub(crate) fn select_entries_after(
+    entries: &[UpdateEntry],
+    after_at: Option<&str>,
+    limit: Option<usize>,
+) -> Vec<UpdateEntry> {
+    let span = entries
+        .iter()
+        .filter(|entry| match after_at {
+            // `at` が marker より厳密に後のエントリだけ（要約済みの `at == marker` を除外）。
+            Some(after) => entry.at.as_str() > after,
+            None => true,
+        })
+        .cloned();
+    match limit {
+        Some(limit) => span.take(limit).collect(),
+        None => span.collect(),
+    }
+}
+
+/// 与えたエントリ列のうち最後（最新）のエントリの `at`（要約済み marker 確定に使う）。
+///
+/// 空なら `None`。auto 適用後要約は要約「後」にこの `at` を marker へ書き、次回 [`select_entries_after`] の
+/// `after_at` に渡す。これにより `N -> N` の brew-only 更新も一度要約したら marker が前進し再表示されない。
+pub(crate) fn last_summarized_at(entries: &[UpdateEntry]) -> Option<String> {
+    entries.last().map(|entry| entry.at.clone())
+}
+
 #[cfg(test)]
 mod tests {
     //! 起点 rev からの catch-up 区間切り出しと件数上限の適用を固定する。
@@ -100,5 +146,84 @@ mod tests {
         assert_eq!(selected[0].nixpkgs_old, "a");
         assert_eq!(selected[1].nixpkgs_old, "b");
         assert!(select_entries(&entries, None, Some(0)).is_empty());
+    }
+
+    /// `at` を明示できる entry を作る（`at` カーソルの検証用）。`nixpkgs_old==nixpkgs_new` で brew-only 夜を表す。
+    fn entry_at(at: &str, nixpkgs: &str) -> UpdateEntry {
+        UpdateEntry {
+            at: at.to_string(),
+            nixpkgs_old: nixpkgs.to_string(),
+            nixpkgs_new: nixpkgs.to_string(),
+            reference: "darwinConfigurations.ci".to_string(),
+            severity: Severity::None,
+            overall: String::new(),
+            packages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn select_after_at_does_not_redisplay_brew_only_n_to_n_entries() {
+        // 退行固定（P2: brew-only 再表示抑止）: nixpkgs rev が動かない（`N -> N`）brew-only 更新が複数あっても、
+        // `at` カーソルで要約済みを越えて進む。nixpkgs rev 起点（`select_entries(Some("N"))`）は最初の `N -> N`
+        // を毎回再選択するが、`select_entries_after` は要約済み `at` より後だけを選ぶため再表示しない。
+        let entries = [
+            entry_at("2026-06-01T00:00:00Z", "N"),
+            entry_at("2026-06-02T00:00:00Z", "N"),
+            entry_at("2026-06-03T00:00:00Z", "N"),
+        ];
+
+        // 初回（marker 無し）: 全件対象。要約後 marker = 最後の at。
+        let first = select_entries_after(&entries, None, None);
+        assert_eq!(first.len(), 3);
+        let marker = last_summarized_at(&first).expect("non-empty span has a terminal at");
+        assert_eq!(marker, "2026-06-03T00:00:00Z");
+
+        // 2 回目（同じ履歴・新規 brew 更新なし）: marker 以降は空。`N -> N` を再表示しない。
+        let second = select_entries_after(&entries, Some(marker.as_str()), None);
+        assert!(
+            second.is_empty(),
+            "要約済み at 以降に新規が無ければ再表示しない: {second:?}"
+        );
+
+        // 対照: nixpkgs rev 起点だと最初の `N -> N` を再選択してしまう（旧経路の再表示バグ）。
+        let rev_based = select_entries(&entries, Some("N"), None);
+        assert_eq!(
+            rev_based.len(),
+            3,
+            "nixpkgs rev 起点は N->N を毎回再選択する（at カーソルが必要な根拠）"
+        );
+    }
+
+    #[test]
+    fn select_after_at_picks_only_newer_entries_then_advances() {
+        // marker より後の新規 brew-only 更新だけを選ぶ。要約後は marker がその新規の at へ進む。
+        let entries = [
+            entry_at("2026-06-01T00:00:00Z", "N"),
+            entry_at("2026-06-02T00:00:00Z", "N"),
+        ];
+        let selected = select_entries_after(&entries, Some("2026-06-01T00:00:00Z"), None);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].at, "2026-06-02T00:00:00Z");
+        assert_eq!(
+            last_summarized_at(&selected).as_deref(),
+            Some("2026-06-02T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn select_after_at_none_marker_returns_all_and_respects_limit() {
+        let entries = [
+            entry_at("2026-06-01T00:00:00Z", "N"),
+            entry_at("2026-06-02T00:00:00Z", "N"),
+            entry_at("2026-06-03T00:00:00Z", "N"),
+        ];
+        // marker 無し（初回）は全件。
+        assert_eq!(select_entries_after(&entries, None, None).len(), 3);
+        // limit は最古側から切る。
+        let limited = select_entries_after(&entries, None, Some(2));
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].at, "2026-06-01T00:00:00Z");
+        // 空 span の marker は None。
+        assert_eq!(last_summarized_at(&[]), None);
     }
 }

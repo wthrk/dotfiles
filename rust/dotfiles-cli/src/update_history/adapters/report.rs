@@ -109,10 +109,12 @@ fn category_emoji(category: ChangeCategory) -> &'static str {
 }
 
 /// 重要度連動の text 表示を組み立てる（全体見出し → severity バッジ → アプリ別 version + 変更項目）。
+///
+/// `packages` が空でも見出し（severity バッジ + overall）だけは必ず出す。空時に「更新履歴はありません」を
+/// 返すと、chain-link のみ（`overall="0アプリ更新"`）の夜や、`--all` 未指定で undeclared パッケージだけが
+/// 集約された範囲を「履歴が無い」と誤解させる。overall（`0アプリ更新` 等）は domain が package 件数から
+/// 機械算出済みなので、見出しを出せば「対象範囲は確かに見たが宣言アプリ更新は 0 件」が利用者に伝わる。
 fn render_text(view: &HistoryView) -> String {
-    if view.packages.is_empty() {
-        return "更新履歴はありません".to_string();
-    }
     let mut lines = Vec::new();
     lines.push(format!(
         "{} {}",
@@ -215,7 +217,7 @@ mod tests {
     use super::{render_json, render_text};
     use crate::update_history::domain::view::HistoryView;
     use crate::update_history::domain::wire::{
-        ChangeCategory, ChangeItem, ChangeKind, PackageUpdate, Severity,
+        ChangeCategory, ChangeItem, ChangeKind, PackageSource, PackageUpdate, Severity,
     };
 
     fn view() -> HistoryView {
@@ -226,6 +228,7 @@ mod tests {
                 new: Some("3.0.1".to_string()),
                 change: ChangeKind::Upgraded,
                 declared: true,
+                source: PackageSource::Nix,
                 notes_url: Some("https://github.com/openssl/openssl".to_string()),
                 change_items: vec![
                     ChangeItem {
@@ -258,13 +261,21 @@ mod tests {
     }
 
     #[test]
-    fn empty_view_reports_no_history() {
+    fn empty_view_still_emits_header_with_overall() {
+        // 退行固定（P2: 空 view でも見出しを出す）: packages が空でも severity バッジ + overall の見出し行を
+        // 必ず出力する。chain-link のみ／undeclared のみで集約後 0 件になった範囲を「更新履歴はありません」と
+        // 誤解させず、「0アプリ更新」を見出しとして返す。
         let empty = HistoryView {
             packages: Vec::new(),
             severity: Severity::None,
             overall: "0アプリ更新".to_string(),
         };
-        assert_eq!(render_text(&empty), "更新履歴はありません");
+        let rendered = render_text(&empty);
+        assert_eq!(rendered, "[none] 0アプリ更新");
+        assert!(
+            !rendered.contains("更新履歴はありません"),
+            "空 view でも見出しを出す: {rendered:?}"
+        );
     }
 
     #[test]
@@ -279,6 +290,7 @@ mod tests {
                 new: Some("1.1".to_string()),
                 change: ChangeKind::Upgraded,
                 declared: true,
+                source: PackageSource::Nix,
                 // notes_url に OSC（ESC ] … BEL、ここではクリップボード操作風）を仕込む。
                 notes_url: Some("https://x/\u{1b}]52;c;evil\u{07}".to_string()),
                 change_items: vec![ChangeItem {

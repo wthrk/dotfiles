@@ -35,8 +35,13 @@ pub(crate) struct RecordCommand {
 /// 表示意図だけを domain 値として表す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShowCommand {
-    /// 表示起点の nixpkgs リビジョン（`None` なら最新エントリまで）。
+    /// 表示起点の nixpkgs リビジョン（`None` なら最新エントリまで）。利用者の `show` 経路が使う。
     pub(crate) rev: Option<String>,
+    /// 適用後要約のカーソル: ここに `Some(at)` を渡すと、その `at` より後に記録されたエントリだけを対象に
+    /// する（`rev` より優先）。`rev` と排他で使い、auto 適用後要約が `N -> N` の brew-only 更新を再表示
+    /// しないための単調カーソル（[`crate::update_history::domain::selection::select_entries_after`]）。
+    /// `None` なら `rev` ベースの選択にフォールバックする。
+    pub(crate) after_at: Option<String>,
     /// 表示するエントリ件数の上限（`None` なら無制限）。
     pub(crate) limit: Option<usize>,
     /// 生データ（JSON）で出力するか。

@@ -7,7 +7,7 @@
 
 use super::diff::{DeltaSource, VersionDelta};
 use super::severity::{overall_headline, severity_of};
-use super::wire::{ChangeItem, PackageUpdate, Severity, UpdateEntry};
+use super::wire::{ChangeItem, PackageSource, PackageUpdate, Severity, UpdateEntry};
 
 /// 1 パッケージ分の素材（version 差分 + 変更リスト + ノート URL）を表す中間入力。
 ///
@@ -35,11 +35,11 @@ pub(crate) struct PackageMaterial {
 /// nix 由来を `declared: false` で畳んでいたが、eval は宣言パッケージ集合だけを返し推移的依存を含まない
 /// ため、nix 由来も宣言アプリとして既定表示にする。
 fn to_package_update(material: PackageMaterial) -> PackageUpdate {
-    let declared = match material.delta.source {
-        // nix eval 差分は宣言パッケージのみ（推移的依存を含まない）なので既定表示する。
-        DeltaSource::NixEval => true,
-        // brew cask は宣言した実アプリなので既定表示する。
-        DeltaSource::BrewTap => true,
+    let (declared, source) = match material.delta.source {
+        // nix eval 差分は宣言パッケージのみ（推移的依存を含まない）なので既定表示する。出所は nix。
+        DeltaSource::NixEval => (true, PackageSource::Nix),
+        // brew cask は宣言した実アプリなので既定表示する。出所は brew。
+        DeltaSource::BrewTap => (true, PackageSource::Brew),
     };
     PackageUpdate {
         name: material.delta.name,
@@ -47,6 +47,7 @@ fn to_package_update(material: PackageMaterial) -> PackageUpdate {
         new: material.delta.new,
         change: material.delta.change,
         declared,
+        source,
         notes_url: material.notes_url,
         change_items: material.change_items,
     }
@@ -97,7 +98,9 @@ mod tests {
 
     use super::*;
     use crate::update_history::domain::diff::{DeltaSource, VersionDelta};
-    use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
+    use crate::update_history::domain::wire::{
+        ChangeCategory, ChangeItem, ChangeKind, PackageSource, Severity,
+    };
 
     fn delta(name: &str) -> VersionDelta {
         delta_with_source(name, DeltaSource::NixEval)
@@ -180,8 +183,10 @@ mod tests {
         );
         assert_eq!(entry.packages[0].name, "neovim");
         assert!(entry.packages[0].declared, "nix eval 由来は declared=true");
+        assert_eq!(entry.packages[0].source, PackageSource::Nix);
         assert_eq!(entry.packages[1].name, "firefox");
         assert!(entry.packages[1].declared, "brew cask 由来は declared=true");
+        assert_eq!(entry.packages[1].source, PackageSource::Brew);
     }
 
     #[test]

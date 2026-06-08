@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use crate::Result;
-use crate::update_history::domain::diff::{DeltaSource, VersionDelta};
+use crate::update_history::domain::diff::{DeltaSource, VersionDelta, version_ordering};
 use crate::update_history::domain::wire::ChangeKind;
 use crate::update_history::ports::BrewVersionDiffPort;
 
@@ -38,12 +38,17 @@ impl BrewTapDiffAdapter {
 
     /// 差分ファイル本文を `name<TAB>old<TAB>new` 行として `BrewTap` 系統の delta へ翻訳する。
     ///
-    /// 空行・3 列に満たない行は無視する。`∅` は版不在として `None` にし、不在位置から change 種別を確定する
-    /// （`∅→x`=Added、`x→∅`=Removed、両側存在=Upgraded）。版比較の業務意味づけは domain rule に委ねる。
+    /// 空行・3 列に満たない行は無視する。`∅` は版不在として `None` にし、不在位置から change 種別を確定する:
+    /// `∅→x`=Added、`x→∅`=Removed、両側存在は **nix 側と同一の domain 版比較規則**（[`version_ordering`]）で
+    /// `old < new`=Upgraded、`old > new`=Downgraded を確定する（tap rev 巻き戻しで old>new の行が来ても誤って
+    /// Upgraded にしない）。版比較規則そのものは domain rule（[`version_ordering`]）に委ね、adapter は行 → delta
+    /// 翻訳と種別への対応づけだけを担う。
     ///
-    /// **版変更なし（`old==new`）行の除外**（F5 ノイズ抑制）: CI 側でも落とすが、差分源の品質に依存せず
-    /// adapter 側でも `old` と `new` がともに存在して等しい行を捨てる。版が変わっていない cask は「更新」では
-    /// なく、記録・表示に出すと no-op エントリのノイズになるため、ここで二重に防ぐ。
+    /// **更新でない行の除外**:
+    /// - 両側不在（`∅→∅` / 空→空）の行は「更新」を表さない（差分源の破損や生成側バグのノイズ）。`old=None`/
+    ///   `new=None` の不正な delta を作らないよう早期に捨てる。
+    /// - 版変更なし（両側存在かつ等しい `old==new`）の行も更新ではないため捨てる（F5 ノイズ抑制）。CI 側でも
+    ///   落とすが、差分源の品質に依存せず adapter 側でも二重に防ぐ。
     fn parse_diff(text: &str) -> Vec<VersionDelta> {
         text.lines()
             .filter_map(|line| {
@@ -56,16 +61,17 @@ impl BrewTapDiffAdapter {
                 }
                 let old = version_or_absent(old_raw);
                 let new = version_or_absent(new_raw);
-                // 版変更なし（両側存在かつ等しい）は更新ではないため捨てる（F5 ノイズ抑制）。
-                if let (Some(old_v), Some(new_v)) = (&old, &new)
-                    && old_v == new_v
-                {
-                    return None;
-                }
                 let change = match (&old, &new) {
+                    // 両側不在は更新ではない（破損行）。不正な delta を作らず早期に捨てる。
+                    (None, None) => return None,
                     (None, Some(_)) => ChangeKind::Added,
                     (Some(_), None) => ChangeKind::Removed,
-                    _ => ChangeKind::Upgraded,
+                    // 両側存在: 版変更なしは捨て、それ以外は domain 版比較で昇格/降格を確定する。
+                    (Some(old_v), Some(new_v)) => match version_ordering(old_v, new_v) {
+                        std::cmp::Ordering::Equal => return None,
+                        std::cmp::Ordering::Less => ChangeKind::Upgraded,
+                        std::cmp::Ordering::Greater => ChangeKind::Downgraded,
+                    },
                 };
                 Some(VersionDelta {
                     name: name.to_string(),
@@ -151,5 +157,37 @@ mod tests {
         );
         assert_eq!(deltas[0].name, "firefox");
         assert_eq!(deltas[1].name, "new-cask");
+    }
+
+    #[test]
+    fn drops_rows_with_both_sides_absent() {
+        // 退行固定（P2: 破損行除外）: old/new の両方が不在（`∅→∅` および空→空）の行は「更新」ではないため、
+        // `change=Upgraded` + old=None/new=None の不正な delta を作らず捨てる。差分源の破損や生成側バグの
+        // ノイズが記録・表示へ漏れないことを固定する。実更新行（firefox）だけが残る。
+        let text = "broken\t∅\t∅\nempty\t\t\nfirefox\t120.0\t121.0\n";
+        let deltas = BrewTapDiffAdapter::parse_diff(text);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].name, "firefox");
+        assert!(
+            !deltas
+                .iter()
+                .any(|delta| delta.old.is_none() && delta.new.is_none()),
+            "両側不在の不正 delta を作らない: {deltas:?}"
+        );
+    }
+
+    #[test]
+    fn determines_downgraded_when_old_greater_than_new() {
+        // 退行固定（P2: tap rev 巻き戻し）: 両側存在で old > new の行は nix 側と同一の domain 版比較
+        // （`version_ordering`）で `Downgraded` を確定する。常に Upgraded にしない。old < new は Upgraded のまま。
+        let text = "rolledback\t121.0\t120.0\nupgraded\t120.0\t121.0\n";
+        let deltas = BrewTapDiffAdapter::parse_diff(text);
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0].name, "rolledback");
+        assert_eq!(deltas[0].change, ChangeKind::Downgraded);
+        assert_eq!(deltas[0].old.as_deref(), Some("121.0"));
+        assert_eq!(deltas[0].new.as_deref(), Some("120.0"));
+        assert_eq!(deltas[1].name, "upgraded");
+        assert_eq!(deltas[1].change, ChangeKind::Upgraded);
     }
 }

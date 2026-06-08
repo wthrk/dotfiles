@@ -58,20 +58,21 @@ const LAST_APPLIED_REV: &str = "last-applied-rev";
 /// **最後に適用成功した時点の nixpkgs rev** をこのファイルへ確定書込みし、要約 span の起点に使う（未適用範囲の
 /// 実起点を指す）。`last-applied-rev` と同時に書き、未確定（defer）時は書かない。
 const LAST_APPLIED_NIXPKGS_REV: &str = "last-applied-nixpkgs-rev";
-/// 最後に**要約を表示/追記し終えた**範囲の終端（new 側）nixpkgs rev（catch-up 要約 span の起点に使う）。
+/// 最後に**要約を表示/追記し終えた**履歴エントリの `at`（RFC3339。catch-up 要約 span の `at` カーソル起点）。
 ///
-/// catch-up 要約 span の起点は「適用済み rev」ではなく「**最後に利用者へ見せ終えた rev**」でなければ
-/// show-once が壊れる。`last-applied-nixpkgs-rev` は適用成功時にしか確定せず（defer 経路では書かれない）、
-/// これを span 起点に使うと、同日に shell catch-up（defer）と daemon home（defer）が両方走る通常ケースで
-/// 二度見えする: shell catch-up は span 起点 = N0 で N0→N1 を追記（defer なので applied 未更新）、daemon home
-/// も span 起点が依然 N0（defer で applied 未更新）のため **同一 N0→N1 を再追記** してしまう。
+/// catch-up 要約 span の起点は「適用済み rev」ではなく「**最後に利用者へ見せ終えたエントリ**」でなければ
+/// show-once が壊れる。さらに**起点を nixpkgs rev にすると brew-only 更新を再表示する**: brew tap だけが進み
+/// `nixpkgs_old == nixpkgs_new`（= 同一 nixpkgs rev `N`）のエントリが複数できると、nixpkgs rev では `N -> N`
+/// を越えて進めず、要約済み brew-only 更新を毎回再選択してしまう。これを避けるため、span 起点は nixpkgs rev
+/// ではなく**履歴エントリの `at`**（記録のたび前進する一意値。brew-only 夜でも進む）を単調カーソルにする。
 ///
-/// これを防ぐため、**要約を append/表示し終えた直後**に、その範囲の new 側 nixpkgs rev をこの marker へ
-/// 確定書込みし（defer 経路でも commit 経路でも書く）、次回 present_summary はこの marker を span 起点に読む。
-/// 2 回目は起点 = N1 → `select_entries` が `nixpkgs_old == N1` を見つけられず空 → 再追記しない（A: 二重抑止）。
-/// partial-failure では switch 失敗時に要約自体が走らずこの marker も進まないため、前回要約済み rev が保たれ、
-/// 再実行で未表示範囲を失わない（B: partial-failure 堅牢性）。要約「後」に書く点が `last-applied-*` と異なる。
-const LAST_SUMMARIZED_NIXPKGS_REV: &str = "last-summarized-nixpkgs-rev";
+/// **要約を append/表示し終えた直後**に、要約した範囲の終端エントリの `at`（`render_applied_summary` の戻り値）を
+/// この marker へ確定書込みし（defer 経路でも commit 経路でも書く）、次回 present_summary はこの `at` を起点
+/// （`after_at`）に読む。2 回目は起点 = 終端 `at` → `select_entries_after` がそれより後を選び空 → 再追記しない
+/// （A: 二重抑止／brew-only 再表示抑止）。partial-failure では switch 失敗時に要約自体が走らずこの marker も
+/// 進まないため、前回要約済み `at` が保たれ、再実行で未表示範囲を失わない（B: partial-failure 堅牢性）。
+/// 要約「後」に書く点が `last-applied-*` と異なる。marker が無い（初回）ときは `None`（全件）から始める。
+const LAST_SUMMARIZED_AT: &str = "last-summarized-at";
 const PENDING_SUMMARY: &str = "pending-summary";
 const LAST_RUN_LOG: &str = "last-run.log";
 const LOCK_FILE: &str = "update.lock";
@@ -173,27 +174,19 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // dry-run では状態を触らない。
     clear_deferred_markers(&state_dir, dry_run);
 
-    // catch-up 要約 span の起点となる「最後に利用者へ見せ終えた nixpkgs rev」を解決する。
+    // catch-up 要約 span の起点となる「最後に利用者へ見せ終えた履歴エントリの `at`」を解決する。
     //
-    // 最優先は **最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev**（`last-summarized-nixpkgs-rev`）。
-    // これを起点に使う理由は二つある:
+    // 起点は **最後に要約を表示/追記し終えたエントリの `at`**（`last-summarized-at`）。これを使う理由:
     //   (A) 同日二重追記の抑止: shell catch-up（defer）と daemon home（defer）が同日に両方走っても、先行
-    //       実行が要約後にこの marker を N1 へ進めるため、後続は起点 = N1 → `select_entries` が空 → 再追記
-    //       しない（`last-applied-nixpkgs-rev` は defer で更新されず、起点に使うと同一ブロックを二度追記する）。
+    //       実行が要約後にこの marker を終端 `at` へ進めるため、後続は起点 = 終端 `at` → `select_entries_after`
+    //       がそれより後を選び空 → 再追記しない。
+    //   (A') brew-only 再表示の抑止: nixpkgs rev を起点にすると `nixpkgs_old == nixpkgs_new`（同一 nixpkgs rev）
+    //       の brew-only 更新を毎回再選択してしまう。`at` は記録のたび前進する一意値なので `N -> N` を越えて進む。
     //   (B) partial-failure 堅牢性: switch/darwin が要約「前」に失敗するとこの marker は進まないため、前回
-    //       要約済み rev が保たれ、再実行で未表示範囲（要約 span）を失わない。
-    // marker が無いとき（このコード導入前に適用済み・本当の初回）は、適用要否 dedup 専用の値ではなく要約用の
-    // 値へ縮退する: まず `last-applied-nixpkgs-rev`（旧経路で commit 時に書かれた最後の適用 rev）、それも無ければ
-    // lock 更新「前」のローカル lock の nixpkgs rev（適用済み状態の推定起点）へフォールバックする。`last-applied-rev`
-    // （dotfiles pin）は適用要否 dedup 専用で要約選択には使わない（要約は `nixpkgs_old` と突合するため、dotfiles
-    // pin SHA を渡すと名前空間が違い恒久 miss する）。
-    let span_start_nixpkgs_rev = match read_last_summarized_nixpkgs_rev(&state_dir)? {
-        Some(rev) => rev,
-        None => match read_last_applied_nixpkgs_rev(&state_dir)? {
-            Some(rev) => rev,
-            None => read_nixpkgs_rev(&config_dir)?,
-        },
-    };
+    //       要約済み `at` が保たれ、再実行で未表示範囲（要約 span）を失わない。
+    // marker が無いとき（このコード導入前に適用済み・本当の初回）は `None`（全件 = 初回 catch-up）から始める。
+    // 旧 nixpkgs-rev フォールバックは `at` ではないため使わない（`after_at` に rev を渡すと誤選択する）。
+    let span_start_at = read_last_summarized_at(&state_dir)?;
 
     // **先に** ローカル lock を最新 repo pin へ更新する（skip 判定はこの後）。lock 更新前のローカル pin は前回
     // 適用値のまま動かないため、更新前に判定すると定常状態で常に skip し fleet が追随しない。lock 更新は冪等で
@@ -280,16 +273,22 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // exercise でき、production の挙動（tty なら端末描画、非 tty なら pending 追記）は不変。
     if history_synced {
         let stdout_is_terminal = std::io::stdout().is_terminal();
-        present_summary(
+        // 要約 span は `at` カーソル起点（`span_start_at`、初回は `None`）。要約し終えた終端エントリの `at` が
+        // 返るので、それを要約済み marker として確定する（次回の `after_at`）。要約対象が空（新規無し）なら
+        // `None` が返り marker は進めない（前回 `at` を保つ）。
+        let summarized_at = present_summary(
             &state_dir,
-            Some(span_start_nixpkgs_rev.as_str()),
+            span_start_at.as_deref(),
             dry_run,
             stdout_is_terminal,
         )?;
 
-        // 要約済み範囲の終端を確定する。defer 経路でも commit 経路でも、要約を見せ終えた直後に必ず書く。
-        // これが次回 present_summary の span 起点になり、同日二重追記と partial-failure 堅牢性を両立させる。
-        write_last_summarized_nixpkgs_rev(&state_dir, &applied_nixpkgs_rev, dry_run)?;
+        // 要約済み範囲の終端 `at` を確定する。defer 経路でも commit 経路でも、要約を見せ終えた直後に必ず書く。
+        // これが次回 present_summary の span 起点（`after_at`）になり、同日二重追記・brew-only `N -> N` 再表示の
+        // 抑止・partial-failure 堅牢性を両立させる。空 span（`None`）のときは marker を進めない。
+        if let Some(at) = summarized_at {
+            write_last_summarized_at(&state_dir, &at, dry_run)?;
+        }
     }
     Ok(())
 }
@@ -566,19 +565,13 @@ fn parse_nixpkgs_rev(lock_text: &str, input_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("nodes.{nixpkgs_node_name}.locked.rev not found"))
 }
 
-/// 最後に適用成功した時点の nixpkgs rev を読む（不存在/空なら `None`）。
+/// 最後に要約を表示/追記し終えた履歴エントリの `at`（RFC3339）を読む（不存在/空なら `None`）。
 ///
-/// `None`（初回・未確定）なら呼び出し側は lock 更新前のローカル lock の nixpkgs rev へフォールバックする。
-fn read_last_applied_nixpkgs_rev(state_dir: &Path) -> Result<Option<String>> {
-    read_trimmed_rev(&state_dir.join(LAST_APPLIED_NIXPKGS_REV))
-}
-
-/// 最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev を読む（不存在/空なら `None`）。
-///
-/// `None`（このコード導入前に適用済み・本当の初回）なら呼び出し側は `last-applied-nixpkgs-rev`、次いで
-/// lock 更新前のローカル lock の nixpkgs rev へ縮退する。
-fn read_last_summarized_nixpkgs_rev(state_dir: &Path) -> Result<Option<String>> {
-    read_trimmed_rev(&state_dir.join(LAST_SUMMARIZED_NIXPKGS_REV))
+/// `None`（このコード導入前に適用済み・本当の初回）なら呼び出し側は `after_at = None`（全件 = 初回 catch-up）
+/// から始める。`at` カーソルは brew-only `N -> N` 更新も越えて進むため、nixpkgs rev へのフォールバックは
+/// 持たない（rev は `at` ではなく、`select_entries_after` の `after_at` に渡すと誤選択するため）。
+fn read_last_summarized_at(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(LAST_SUMMARIZED_AT))
 }
 
 /// `last-applied-rev` を読む（不存在/空なら `None`）。
@@ -662,12 +655,12 @@ fn clear_deferred_markers(state_dir: &Path, dry_run: bool) {
     let _ = fs::remove_file(state_dir.join(DEFERRED_NIXPKGS_REV));
 }
 
-/// 最後に要約を表示/追記し終えた範囲の new 側 nixpkgs rev を原子的に書き込む（ユーザ所有）。`--dry-run` 不書込。
+/// 最後に要約を表示/追記し終えた履歴エントリの `at` を原子的に書き込む（ユーザ所有）。`--dry-run` 不書込。
 ///
-/// 要約「後」に書くことで、次回 present_summary の span 起点が「最後に見せ終えた rev」になり、同日二重追記の
-/// 抑止（A）と partial-failure 堅牢性（B）を両立させる。
-fn write_last_summarized_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
-    write_rev_atomic(&state_dir.join(LAST_SUMMARIZED_NIXPKGS_REV), rev, dry_run)
+/// 要約「後」に書くことで、次回 present_summary の span 起点（`after_at`）が「最後に見せ終えたエントリの `at`」
+/// になり、同日二重追記の抑止（A）・brew-only `N -> N` 再表示の抑止・partial-failure 堅牢性（B）を両立させる。
+fn write_last_summarized_at(state_dir: &Path, at: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_SUMMARIZED_AT), at, dry_run)
 }
 
 /// rev を同一 dir 内 temp→rename で原子的に書く共有実装（部分書込みを観測させない）。
@@ -703,33 +696,38 @@ fn write_rev_atomic(final_path: &Path, rev: &str, dry_run: bool) -> Result<()> {
 /// exercise できる（stdout が tty になる nix build sandbox でも非 tty 経路を確実に検証できる）。
 fn present_summary(
     state_dir: &Path,
-    nixpkgs_from_rev: Option<&str>,
+    summarized_after_at: Option<&str>,
     dry_run: bool,
     stdout_is_terminal: bool,
-) -> Result<()> {
+) -> Result<Option<String>> {
     // 履歴は state dir のローカル複製（`<state-dir>/history`）から読む。`~/.config/dotfiles` には更新履歴が
     // 無く、適用時に input source から複製済みのこの dir を offline・決定論で参照する。
     let source = state_dir.join(HISTORY_LOCAL_SUBDIR);
 
     if stdout_is_terminal {
-        // tty: 起動元端末へ直接表示。stdout を sink にして show 描画を再利用する。
-        update_history::render_applied_summary(&source, nixpkgs_from_rev, std::io::stdout())?;
+        // tty: 起動元端末へ直接表示。stdout を sink にして show 描画を再利用する。要約し終えた終端 `at` を返す。
+        let summarized_at = update_history::render_applied_summary(
+            &source,
+            summarized_after_at,
+            std::io::stdout(),
+        )?;
         if !dry_run {
-            append_last_run_log(state_dir, nixpkgs_from_rev)?;
+            append_last_run_log(state_dir, summarized_after_at)?;
         }
-        return Ok(());
+        return Ok(summarized_at);
     }
 
-    // 非 tty（background）: pending-summary へ rev 単位で追記し、次回シェルが 1 回だけ消費する。
+    // 非 tty（background）: pending-summary へ追記し、次回シェルが 1 回だけ消費する。
     if dry_run {
         // dry-run でもファイル契約を観測できるよう、捕捉バッファへ描画して破棄する（副作用なし）。
         let mut buffer = Vec::new();
-        update_history::render_applied_summary(&source, nixpkgs_from_rev, &mut buffer)?;
-        return Ok(());
+        let summarized_at =
+            update_history::render_applied_summary(&source, summarized_after_at, &mut buffer)?;
+        return Ok(summarized_at);
     }
-    append_pending_summary(state_dir, &source, nixpkgs_from_rev)?;
-    append_last_run_log(state_dir, nixpkgs_from_rev)?;
-    Ok(())
+    let summarized_at = append_pending_summary(state_dir, &source, summarized_after_at)?;
+    append_last_run_log(state_dir, summarized_after_at)?;
+    Ok(summarized_at)
 }
 
 /// `pending-summary` へ適用要約ブロックを追記する（上書きしない）。完成済みブロックだけを公開する（C）。
@@ -748,21 +746,23 @@ fn present_summary(
 fn append_pending_summary(
     state_dir: &Path,
     source: &Path,
-    nixpkgs_from_rev: Option<&str>,
-) -> Result<()> {
+    summarized_after_at: Option<&str>,
+) -> Result<Option<String>> {
     let path = state_dir.join(PENDING_SUMMARY);
     // まず temp ファイルへブロックを完成させる（render 途中失敗は temp に閉じ、pending-summary へ波及させない）。
     let temp_path = path.with_file_name(format!(
         "{PENDING_SUMMARY}.render.{}.tmp",
         std::process::id()
     ));
-    let rendered = (|| -> Result<Vec<u8>> {
+    // render は buffer 上で行い、要約し終えた終端 `at`（次回カーソル）も同時に得る。
+    let rendered = (|| -> Result<(Vec<u8>, Option<String>)> {
         let mut buffer = Vec::new();
-        update_history::render_applied_summary(source, nixpkgs_from_rev, &mut buffer)?;
-        Ok(buffer)
+        let summarized_at =
+            update_history::render_applied_summary(source, summarized_after_at, &mut buffer)?;
+        Ok((buffer, summarized_at))
     })();
-    let rendered = match rendered {
-        Ok(buffer) => buffer,
+    let (rendered, summarized_at) = match rendered {
+        Ok(pair) => pair,
         Err(error) => {
             // 念のため temp を残さない（render 自体は buffer 上で行うため通常 temp は未生成だが、保険で掃除）。
             let _ = fs::remove_file(&temp_path);
@@ -783,19 +783,20 @@ fn append_pending_summary(
         Ok(())
     })();
     let _ = fs::remove_file(&temp_path);
-    append_result
+    append_result.map(|()| summarized_at)
 }
 
 /// `last-run.log` へ適用要約を残す（適用経路の出力記録）。
 ///
 /// 適用の人間可読な要約を上書き保存し、直近 1 回分の適用内容を後から確認できるようにする。履歴 source は
-/// state dir のローカル複製（`<state-dir>/history`）を読む。
-fn append_last_run_log(state_dir: &Path, nixpkgs_from_rev: Option<&str>) -> Result<()> {
+/// state dir のローカル複製（`<state-dir>/history`）を読む。要約済み marker の確定は呼び出し側（`present_summary`
+/// の戻り値経由）が担うため、本関数は render 戻り値（終端 `at`）を破棄する（ログ出力が責務）。
+fn append_last_run_log(state_dir: &Path, summarized_after_at: Option<&str>) -> Result<()> {
     let path = state_dir.join(LAST_RUN_LOG);
     let source = state_dir.join(HISTORY_LOCAL_SUBDIR);
     let file =
         fs::File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
-    update_history::render_applied_summary(&source, nixpkgs_from_rev, &file)?;
+    let _ = update_history::render_applied_summary(&source, summarized_after_at, &file)?;
     Ok(())
 }
 
@@ -1091,14 +1092,13 @@ mod tests {
 
     use super::{
         DEFERRED_NIXPKGS_REV, DEFERRED_REV, LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG,
-        LAST_SUMMARIZED_NIXPKGS_REV, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY,
-        STEAL_MARKER_STALE_SECS, UpdateLock, append_pending_summary, clear_deferred_markers,
-        copy_history_dir, is_stale_lock, lock_payload, parse_input_source_path, parse_nixpkgs_rev,
-        parse_repo_pin, present_summary, read_deferred_nixpkgs_rev, read_deferred_rev,
-        read_last_applied_nixpkgs_rev, read_last_applied_rev, read_last_summarized_nixpkgs_rev,
-        resolve_state_dir, should_switch, update_args, write_deferred_nixpkgs_rev,
-        write_deferred_rev, write_last_applied_nixpkgs_rev, write_last_applied_rev,
-        write_last_summarized_nixpkgs_rev,
+        LAST_SUMMARIZED_AT, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY, STEAL_MARKER_STALE_SECS,
+        UpdateLock, append_pending_summary, clear_deferred_markers, copy_history_dir,
+        is_stale_lock, lock_payload, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
+        present_summary, read_deferred_nixpkgs_rev, read_deferred_rev, read_last_applied_rev,
+        read_last_summarized_at, resolve_state_dir, should_switch, update_args,
+        write_deferred_nixpkgs_rev, write_deferred_rev, write_last_applied_nixpkgs_rev,
+        write_last_applied_rev, write_last_summarized_at,
     };
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
@@ -1326,77 +1326,54 @@ mod tests {
     }
 
     #[test]
-    fn last_applied_nixpkgs_rev_round_trips_as_secondary_span_fallback() -> crate::Result<()> {
-        // P2-2 退行固定（更新）: `last-applied-nixpkgs-rev` は適用成功時に確定する state file で、要約 span 起点
-        // 解決の **二次フォールバック**（最優先は `last-summarized-nixpkgs-rev`。show-once 退行修正で追加）。
-        // ローカル lock が new pin へ bump 済みでも、commit 経路で書かれたこの値が起点候補として残る。ここでは
-        // state file の round-trip（不在→書込み→読取り、`last-applied-rev` と独立、dry-run 非書込み）を固定する。
-        // 起点解決の優先順位そのものは `summarized_marker_takes_precedence_over_applied_for_span_start` が固定する。
+    fn last_applied_nixpkgs_rev_writes_independent_file_and_respects_dry_run() -> crate::Result<()>
+    {
+        // `last-applied-nixpkgs-rev` は適用成功時／commit 時に確定する state file で、適用済み nixpkgs rev を
+        // 記録する（`--commit-rev-marker` 経路がこの値を確定する）。要約 span 起点は `at` カーソル
+        // （`last-summarized-at`）へ移行したため、本 marker はもはや span 起点解決のフォールバックには使わない
+        // （production では読まない write-only の記録）。ここでは書込みが `last-applied-rev` と別ファイルへ
+        // 独立に行われ、dry-run では書かないことを固定する。
         let dir = temp_dir("applied-nixpkgs");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
 
-        // 不在時は None（呼び出し側は lock 更新前の nixpkgs rev へフォールバックする）。
-        assert_eq!(read_last_applied_nixpkgs_rev(&dir)?, None);
-
-        // 適用成功時に確定した nixpkgs rev を書く。
+        // 適用成功時に確定した nixpkgs rev を書く。dotfiles pin の `last-applied-rev` とは別ファイル。
         write_last_applied_nixpkgs_rev(&dir, "nixpkgs-applied-old", false)?;
-        assert_eq!(
-            read_last_applied_nixpkgs_rev(&dir)?,
-            Some("nixpkgs-applied-old".to_string())
-        );
-        // dotfiles pin の `last-applied-rev` とは別ファイルで独立に持つ。
         write_last_applied_rev(&dir, "dotfiles-pin", false)?;
+        assert!(dir.join(LAST_APPLIED_NIXPKGS_REV).exists());
         assert_eq!(
-            read_last_applied_nixpkgs_rev(&dir)?,
-            Some("nixpkgs-applied-old".to_string())
+            std::fs::read_to_string(dir.join(LAST_APPLIED_NIXPKGS_REV))?.trim(),
+            "nixpkgs-applied-old"
         );
         assert_eq!(
             read_last_applied_rev(&dir)?,
             Some("dotfiles-pin".to_string())
         );
-        assert!(dir.join(LAST_APPLIED_NIXPKGS_REV).exists());
 
-        // dry-run は書かない（確定済み値を上書きしない）。
+        // dry-run は書かない（既存の確定済み値を上書きしない）。
         write_last_applied_nixpkgs_rev(&dir, "should-not-write", true)?;
         assert_eq!(
-            read_last_applied_nixpkgs_rev(&dir)?,
-            Some("nixpkgs-applied-old".to_string())
+            std::fs::read_to_string(dir.join(LAST_APPLIED_NIXPKGS_REV))?.trim(),
+            "nixpkgs-applied-old"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 
-    /// `run()` の要約 span 起点解決を、nix 不要で決定論的に再現する test-only ヘルパ。
-    ///
-    /// 本番 `run()` は marker を `last-summarized-nixpkgs-rev`（最優先）→ `last-applied-nixpkgs-rev` →
-    /// lock 更新前 nixpkgs rev の順で解決する。nix（lock 更新）を伴わずに本番と同じ優先順位を固定するため、
-    /// lock フォールバック値は `lock_fallback` 引数で注入する（本番の `read_nixpkgs_rev` 相当）。
-    fn resolve_span_start(state_dir: &Path, lock_fallback: &str) -> crate::Result<String> {
-        Ok(match read_last_summarized_nixpkgs_rev(state_dir)? {
-            Some(rev) => rev,
-            None => match read_last_applied_nixpkgs_rev(state_dir)? {
-                Some(rev) => rev,
-                None => lock_fallback.to_string(),
-            },
-        })
-    }
-
     /// 非 tty 適用 1 回ぶん（要約 → 要約済み marker 確定）を、本番 `run()` の defer 経路と同じ順序で実行する。
     ///
-    /// 要約「後」に `last-summarized-nixpkgs-rev` を `applied_new` へ進める点が要点（partial-failure で要約前に
-    /// 失敗すると marker が進まないことを別テストで固定する）。
-    fn apply_once_defer(
-        state_dir: &Path,
-        lock_fallback: &str,
-        applied_new: &str,
-    ) -> crate::Result<()> {
-        let span_start = resolve_span_start(state_dir, lock_fallback)?;
+    /// span 起点は `last-summarized-at`（`at` カーソル。marker 無し = 初回 = `None` で全件）。要約「後」に
+    /// `present_summary` が返した終端 `at` を marker へ進める（要約前に失敗すると marker が進まないことを
+    /// 別テストで固定する）。`None`（空 span）のときは marker を進めない。
+    fn apply_once_defer(state_dir: &Path) -> crate::Result<()> {
+        let span_start_at = read_last_summarized_at(state_dir)?;
         // 非 tty 経路（background daemon の defer 適用）を決定論的に exercise するため stdout_is_terminal=false
         // を明示注入する。これで stdout が tty になる nix build sandbox でも pending-summary 追記経路を確実に通す。
-        present_summary(state_dir, Some(span_start.as_str()), false, false)?;
-        write_last_summarized_nixpkgs_rev(state_dir, applied_new, false)?;
+        let summarized_at = present_summary(state_dir, span_start_at.as_deref(), false, false)?;
+        if let Some(at) = summarized_at {
+            write_last_summarized_at(state_dir, &at, false)?;
+        }
         Ok(())
     }
 
@@ -1405,19 +1382,18 @@ mod tests {
         // 退行固定（A: show-once）: 同日に shell catch-up（defer）と daemon home（defer）が両方走る通常ケースで、
         // pending-summary に同一更新ブロック（N0->N1）が **1 回だけ** 入ることを決定論的に固定する。
         //
-        // marker（`last-summarized-nixpkgs-rev`）を要約「後」に進めるため、2 回目の present_summary は起点 = N1
-        // → `select_entries` が `nixpkgs_old == N1` を見つけられず空 span → 再追記しない。defer 経路では
-        // `last-applied-nixpkgs-rev` が更新されないため、旧実装（applied を span 起点に使用）はここで二度追記した。
+        // marker（`last-summarized-at`）を要約「後」に終端 `at` へ進めるため、2 回目の present_summary は起点 =
+        // その `at` → `select_entries_after` がそれより後を選び空 span → 再追記しない。
         let dir = temp_dir("same-day-defer");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
-        // 履歴 chain: N0->N1（実 packages 1 件）。lock fallback（初回起点）は N0。
+        // 履歴 chain: N0->N1（実 packages 1 件、at = 2026-06-01）。
         write_history(&dir, &[("N0", "N1")]);
 
-        // 1 回目（shell catch-up, defer）: 起点 = N0（marker 無し→ lock fallback）→ N0->N1 を追記し marker=N1。
-        apply_once_defer(&dir, "N0", "N1")?;
-        // 2 回目（daemon home, defer, 同日）: 起点 = marker(N1)。defer なので applied は依然未更新（None）。
-        apply_once_defer(&dir, "N0", "N1")?;
+        // 1 回目（shell catch-up, defer）: marker 無し → 全件 → N0->N1 を追記し marker = at(0)。
+        apply_once_defer(&dir)?;
+        // 2 回目（daemon home, defer, 同日）: 起点 = marker(at(0))。新規無し → 空 span → 再追記しない。
+        apply_once_defer(&dir)?;
 
         let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
         // 更新ブロック（宣言アプリ行 neovim-N0）は 1 回だけ現れる（二度見え＝退行を弾く）。
@@ -1426,13 +1402,40 @@ mod tests {
             occurrences, 1,
             "same-day defer runs must append the N0->N1 block exactly once: {pending}"
         );
-        // marker は要約済み終端 N1 に確定している（defer でも書く）。
-        assert_eq!(
-            read_last_summarized_nixpkgs_rev(&dir)?,
-            Some("N1".to_string())
+        // marker は要約済み終端エントリの `at` に確定している（defer でも書く）。
+        assert_eq!(read_last_summarized_at(&dir)?, Some(at_of(0)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn same_day_defer_does_not_redisplay_brew_only_n_to_n_updates() -> crate::Result<()> {
+        // 退行固定（P2: brew-only 再表示抑止）: nixpkgs rev が動かない（`N -> N`）brew-only 更新が連続しても、
+        // `at` カーソルで一度要約したら再表示しない。旧 nixpkgs-rev 起点は `N -> N` を越えられず、同じ
+        // brew-only 更新を毎回再追記した。
+        let dir = temp_dir("brew-only-n-to-n");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        // 2 夜とも nixpkgs rev が動かない（`nixpkgs_old == nixpkgs_new`）brew-only 更新。`at` だけが進む
+        // （2026-06-01, 2026-06-02）。パッケージ名は別（neovim-Na / neovim-Nb）にして集約で潰れないようにする。
+        write_history(&dir, &[("Na", "Na"), ("Nb", "Nb")]);
+
+        // 1 回目: marker 無し → 両エントリを要約し marker = 終端 at(1)。
+        apply_once_defer(&dir)?;
+        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        assert!(pending.contains("neovim-Na"), "初回は Na を要約: {pending}");
+        assert!(pending.contains("neovim-Nb"), "初回は Nb を要約: {pending}");
+        assert_eq!(read_last_summarized_at(&dir)?, Some(at_of(1)));
+        let _ = std::fs::remove_file(dir.join(PENDING_SUMMARY)); // 消費済みとみなす。
+
+        // 2 回目: 新規 brew-only 更新なし → marker(at(1)) 以降は空 → 再追記しない。
+        apply_once_defer(&dir)?;
+        let pending2 = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).unwrap_or_default();
+        assert!(
+            !pending2.contains("neovim-Na") && !pending2.contains("neovim-Nb"),
+            "要約済み brew-only 更新を再表示しない: {pending2:?}"
         );
-        // defer 経路では適用 marker（`last-applied-nixpkgs-rev`）は進めない（rev 確定は commit が担う）。
-        assert_eq!(read_last_applied_nixpkgs_rev(&dir)?, None);
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
@@ -1442,27 +1445,30 @@ mod tests {
     fn partial_failure_before_summary_preserves_span() -> crate::Result<()> {
         // 退行固定（B: partial-failure 堅牢性）: switch/darwin が **要約前** に失敗した再実行で、要約 span が
         // 消えないことを固定する。要約「後」に marker を進める設計のため、要約前に失敗すれば marker は前回
-        // 要約済み rev のまま保たれ、再実行で未表示範囲を再び示せる。
+        // 要約済み `at` のまま保たれ、再実行で未表示範囲を再び示せる。
         let dir = temp_dir("partial-failure");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
-        // 履歴 chain: N0->N1->N2。N0->N1 は前回適用で要約済み、N1->N2 が今回の未表示範囲。
+        // 履歴 chain: N0->N1（at(0)）・N1->N2（at(1)）。N0->N1 は前回適用で要約済み、N1->N2 が未表示範囲。
         write_history(&dir, &[("N0", "N1"), ("N1", "N2")]);
 
-        // 前回の成功適用で N0->N1 を要約済み（marker = N1）にしておく。
-        apply_once_defer(&dir, "N0", "N1")?;
+        // 前回の成功適用で **N0->N1 だけ**要約済み（marker = at(0)）にしておく（at(1) より前で止める）。
+        let first = present_summary(&dir, None, false, false)?;
+        // 全件選択されるので終端は at(1) になってしまう。partial-failure を模すため marker は at(0) に固定する。
+        let _ = first;
+        write_last_summarized_at(&dir, &at_of(0), false)?;
         let _ = std::fs::remove_file(dir.join(PENDING_SUMMARY)); // 前回ぶんは消費済みとみなす。
 
-        // 今回: lock は N2 へ bump 済みだが switch が要約「前」に失敗 → present_summary も marker 書込みも
-        // 走らない。よって marker は N1 のまま。span 起点は marker(N1) を読む（bump 済み lock=N2 ではない）。
-        let span_start = resolve_span_start(&dir, "N2")?;
+        // 今回: switch が要約「前」に失敗 → present_summary も marker 書込みも走らない。marker は at(0) のまま。
+        let span_start = read_last_summarized_at(&dir)?;
         assert_eq!(
-            span_start, "N1",
-            "span start must be preserved at last-summarized rev, not the bumped lock rev"
+            span_start.as_deref(),
+            Some(at_of(0).as_str()),
+            "span start must be preserved at last-summarized at, not advanced"
         );
 
-        // 再実行（switch 成功）で N1->N2 を要約できる（未表示範囲が消えていない）。
-        apply_once_defer(&dir, "N2", "N2")?;
+        // 再実行（switch 成功）で N1->N2（at(1)）を要約できる（未表示範囲が消えていない）。
+        apply_once_defer(&dir)?;
         let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
         assert!(
             pending.contains("neovim-N1"),
@@ -1479,31 +1485,26 @@ mod tests {
     }
 
     #[test]
-    fn summarized_marker_takes_precedence_over_applied_for_span_start() -> crate::Result<()> {
-        // 起点解決の優先順位を固定する: `last-summarized-nixpkgs-rev`（最優先）→ `last-applied-nixpkgs-rev`
-        // → lock fallback。summarized は「最後に見せ終えた rev」で、適用 marker より新しくなりうる（defer 連続）。
-        let dir = temp_dir("span-precedence");
+    fn summarized_at_marker_round_trips_and_respects_dry_run() -> crate::Result<()> {
+        // `last-summarized-at` marker の read/write 往復と dry-run 非書込を固定する。
+        let dir = temp_dir("summarized-at-marker");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
 
-        // どちらも無ければ lock fallback。
-        assert_eq!(resolve_span_start(&dir, "lock-rev")?, "lock-rev");
-        // applied のみ → applied。
-        write_last_applied_nixpkgs_rev(&dir, "applied-rev", false)?;
-        assert_eq!(resolve_span_start(&dir, "lock-rev")?, "applied-rev");
-        // summarized があれば最優先。
-        write_last_summarized_nixpkgs_rev(&dir, "summarized-rev", false)?;
-        assert_eq!(resolve_span_start(&dir, "lock-rev")?, "summarized-rev");
-        // round-trip と dry-run 非書込も固定。
+        // marker 無し（初回）は None（全件 = 初回 catch-up）。
+        assert_eq!(read_last_summarized_at(&dir)?, None);
+        // 書込→読出で往復する。
+        write_last_summarized_at(&dir, "2026-06-02T00:00:00Z", false)?;
         assert_eq!(
-            read_last_summarized_nixpkgs_rev(&dir)?,
-            Some("summarized-rev".to_string())
+            read_last_summarized_at(&dir)?,
+            Some("2026-06-02T00:00:00Z".to_string())
         );
-        assert!(dir.join(LAST_SUMMARIZED_NIXPKGS_REV).exists());
-        write_last_summarized_nixpkgs_rev(&dir, "should-not-write", true)?;
+        assert!(dir.join(LAST_SUMMARIZED_AT).exists());
+        // dry-run は書き込まない（既存値を保つ）。
+        write_last_summarized_at(&dir, "should-not-write", true)?;
         assert_eq!(
-            read_last_summarized_nixpkgs_rev(&dir)?,
-            Some("summarized-rev".to_string())
+            read_last_summarized_at(&dir)?,
+            Some("2026-06-02T00:00:00Z".to_string())
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1576,10 +1577,13 @@ mod tests {
         let history_dir = state_dir.join(super::HISTORY_LOCAL_SUBDIR);
         std::fs::create_dir_all(&history_dir).expect("create history dir");
         let mut toml = String::new();
-        for (old, new) in chain {
+        // 各エントリへ**記録順に増える一意な `at`** を与える（`at` カーソルの単調性の前提）。RFC3339 文字列の
+        // 辞書順が時系列順に一致するよう日付を 1 日ずつ進める（`2026-06-01`, `2026-06-02`, ...）。
+        for (index, (old, new)) in chain.iter().enumerate() {
+            let day = index + 1;
             toml.push_str(&format!(
                 "[[update]]\n\
-                 at = \"2026-06-05T00:00:00Z\"\n\
+                 at = \"2026-06-{day:02}T00:00:00Z\"\n\
                  nixpkgs_old = \"{old}\"\n\
                  nixpkgs_new = \"{new}\"\n\
                  reference = \"darwinConfigurations.ci\"\n\
@@ -1601,40 +1605,47 @@ mod tests {
         std::fs::write(history_dir.join("2026-06.toml"), toml).expect("write history toml");
     }
 
+    /// chain index（0 始まり）に対応するエントリの `at`（[`write_history`] と同じ採番）。`at` カーソルの
+    /// 期待値をテストで参照するためのヘルパ。
+    fn at_of(index: usize) -> String {
+        format!("2026-06-{:02}T00:00:00Z", index + 1)
+    }
+
     #[test]
-    fn present_summary_selects_span_by_nixpkgs_rev_not_dotfiles_pin() -> crate::Result<()> {
-        // 重大1 を踏むケース: dotfiles pin と nixpkgs rev が別値でも、nixpkgs old rev を起点に渡せば
-        // catch-up span が正しく選ばれて要約が空にならない。pin SHA を起点にしていた旧実装では恒久空だった。
-        let dir = temp_dir("present-nixpkgs");
+    fn present_summary_selects_span_by_at_cursor() -> crate::Result<()> {
+        // 適用後要約は `at` カーソルで catch-up span を選ぶ（nixpkgs rev / dotfiles pin ではない）。marker 無し
+        // （初回 = `None`）なら全エントリを集約表示し、要約済み `at` 以降に新規が無ければ空 span になる。
+        let dir = temp_dir("present-at");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create state+config dir");
-        // 適用前 nixpkgs rev = "nA"。チェーンは nA->nB, nB->nC（2 bump catch-up）。
+        // チェーンは nA->nB（at(0)）, nB->nC（at(1)）（2 bump catch-up）。
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
+        // 初回（marker 無し = None）: 起点以降の 2 エントリ（2 アプリ）が集約表示される。空でないこと。
         // 非 tty 経路を `stdout_is_terminal=false` で決定論的に exercise し、pending-summary へ追記させる。
-        // is_terminal() を注入化したため、stdout が tty になる環境（nix build sandbox）でも本経路を確実に通す。
-        present_summary(&dir, Some("nA"), false, false)?;
+        let summarized_at = present_summary(&dir, None, false, false)?;
         let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
-        // 起点 "nA" 以降の 2 エントリ（2 アプリ）が集約表示される。空でないこと（バグ修正の核）。
         assert!(
             !pending.trim().is_empty(),
             "summary must not be empty: {pending}"
         );
         assert!(pending.contains("neovim-nA"), "{pending}");
         assert!(pending.contains("neovim-nB"), "{pending}");
+        // 要約し終えた終端エントリの `at`（次回カーソル）が返る。
+        assert_eq!(summarized_at, Some(at_of(1)));
 
-        // 逆に dotfiles pin（nixpkgs_old に無い値）を起点にすると span は空＝旧バグ挙動を再現できる。
-        let dir2 = temp_dir("present-pin");
+        // 終端 `at` 以降に新規が無ければ空 span（宣言アプリ行が出ない・marker は進めないため None が返る）。
+        let dir2 = temp_dir("present-at-empty");
         let _ = std::fs::remove_dir_all(&dir2);
         std::fs::create_dir_all(&dir2).expect("create dir2");
         write_history(&dir2, &[("nA", "nB"), ("nB", "nC")]);
-        present_summary(&dir2, Some("dotfilespin-not-a-nixpkgs-rev"), false, false)?;
+        let none = present_summary(&dir2, Some(at_of(1).as_str()), false, false)?;
         let empty = std::fs::read_to_string(dir2.join(PENDING_SUMMARY)).unwrap_or_default();
-        // 起点が nixpkgs_old に一致しないと span 空（宣言アプリ行が出ない）。
         assert!(
             !empty.contains("neovim-"),
-            "pin-as-rev should select empty span: {empty}"
+            "終端 at 以降に新規が無ければ空 span: {empty}"
         );
+        assert_eq!(none, None, "空 span では次回カーソル None");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
@@ -1651,7 +1662,7 @@ mod tests {
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
         // 非 tty 経路の dry-run: pending-summary / last-run.log を書かない。
-        present_summary(&dir, Some("nA"), true, false)?;
+        present_summary(&dir, None, true, false)?;
         assert!(
             !dir.join(PENDING_SUMMARY).exists(),
             "dry-run (non-tty) must not write pending-summary"
@@ -1662,7 +1673,7 @@ mod tests {
         );
 
         // tty 経路の dry-run: 端末描画のみで last-run.log も書かない（pending は tty 経路では元々書かない）。
-        present_summary(&dir, Some("nA"), true, true)?;
+        present_summary(&dir, None, true, true)?;
         assert!(
             !dir.join(PENDING_SUMMARY).exists(),
             "dry-run (tty) must not write pending-summary"
@@ -1688,7 +1699,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create dir");
         write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
 
-        present_summary(&dir, Some("nA"), false, true)?;
+        present_summary(&dir, None, false, true)?;
 
         // tty 経路は pending-summary を書かない（非 tty の background 消費契約専用のため）。
         assert!(
@@ -1715,21 +1726,23 @@ mod tests {
         write_history(&dir, &[("r1", "r2"), ("r2", "r3")]);
         let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
 
-        // 1 回目: r1 起点（r1->r2, r2->r3 の 2 ブロック相当を 1 show として追記）。
-        append_pending_summary(&dir, &source, Some("r1"))?;
+        // 1 回目: marker 無し（None = 全件）で 2 エントリ相当を 1 show として追記。終端 at(1) を返す。
+        let first_cursor = append_pending_summary(&dir, &source, None)?;
         let after_first = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read");
         assert!(after_first.contains("neovim-r1"));
+        assert_eq!(first_cursor, Some(at_of(1)));
 
-        // 2 回目: r2 起点を追記。上書きされず先頭ブロックが残る（累積）。
-        append_pending_summary(&dir, &source, Some("r2"))?;
+        // 2 回目: 別履歴に新規エントリ（r3->r4, at(2)）を足し、at(1) 起点で追記。先頭ブロックは残る（累積）。
+        write_history(&dir, &[("r1", "r2"), ("r2", "r3"), ("r3", "r4")]);
+        append_pending_summary(&dir, &source, Some(at_of(1).as_str()))?;
         let after_second = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read");
         assert!(
             after_second.contains("neovim-r1"),
             "first block must remain: {after_second}"
         );
         assert!(
-            after_second.contains("neovim-r2"),
-            "second block appended: {after_second}"
+            after_second.contains("neovim-r3"),
+            "new block (r3->r4) appended: {after_second}"
         );
         assert!(
             after_second.len() > after_first.len(),
@@ -1848,56 +1861,53 @@ mod tests {
 
     /// 非 tty 適用 1 回ぶんを、履歴複製の成否（`history_synced`）で要約・marker 確定を gate して実行する。
     ///
-    /// 本番 `run()` は `sync_history` 成功時だけ present_summary → `last-summarized-nixpkgs-rev` 確定へ進む（A）。
-    /// 失敗時は要約も marker 確定もせず span 起点を保つ。nix を伴わずにこの gate 挙動を固定するため、
-    /// `history_synced` を引数で注入して run() の該当分岐と同じ順序を再現する。
-    fn apply_once_defer_gated(
-        state_dir: &Path,
-        lock_fallback: &str,
-        applied_new: &str,
-        history_synced: bool,
-    ) -> crate::Result<()> {
+    /// 本番 `run()` は `sync_history` 成功時だけ present_summary → `last-summarized-at` 確定へ進む（A）。
+    /// 失敗時は要約も marker 確定もせず span 起点（`at` カーソル）を保つ。nix を伴わずにこの gate 挙動を固定する
+    /// ため、`history_synced` を引数で注入して run() の該当分岐と同じ順序を再現する。
+    fn apply_once_defer_gated(state_dir: &Path, history_synced: bool) -> crate::Result<()> {
         if history_synced {
-            let span_start = resolve_span_start(state_dir, lock_fallback)?;
-            present_summary(state_dir, Some(span_start.as_str()), false, false)?;
-            write_last_summarized_nixpkgs_rev(state_dir, applied_new, false)?;
+            let span_start_at = read_last_summarized_at(state_dir)?;
+            let summarized_at = present_summary(state_dir, span_start_at.as_deref(), false, false)?;
+            if let Some(at) = summarized_at {
+                write_last_summarized_at(state_dir, &at, false)?;
+            }
         }
         Ok(())
     }
 
     #[test]
     fn sync_history_failure_does_not_advance_summarized_marker() -> crate::Result<()> {
-        // A 退行固定: sync_history が失敗（履歴複製が無い）した適用では、要約も `last-summarized-nixpkgs-rev` の
-        // 確定もしない。これにより、その rev の要約が永久に失われる（marker だけ進んで次回再表示されない）退行を
-        // 防ぐ。次回 sync 成功時の再実行で未表示範囲を再び要約できる。
+        // A 退行固定: sync_history が失敗（履歴複製が無い）した適用では、要約も `last-summarized-at` の確定も
+        // しない。これにより、その範囲の要約が永久に失われる（marker だけ進んで次回再表示されない）退行を防ぐ。
+        // 次回 sync 成功時の再実行で未表示範囲を再び要約できる。
         let dir = temp_dir("sync-fail-marker");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
-        // 履歴 chain: N0->N1。span 起点（lock fallback）は N0。
+        // 履歴 chain: N0->N1（at(0)）。
         write_history(&dir, &[("N0", "N1")]);
 
         // 履歴複製失敗（history_synced=false）の適用: 要約も marker 確定もしない。
-        apply_once_defer_gated(&dir, "N0", "N1", false)?;
+        apply_once_defer_gated(&dir, false)?;
         assert!(
             !dir.join(PENDING_SUMMARY).exists(),
             "sync 失敗時は要約（pending-summary）を書かない"
         );
         assert_eq!(
-            read_last_summarized_nixpkgs_rev(&dir)?,
+            read_last_summarized_at(&dir)?,
             None,
-            "sync 失敗時は要約済み marker を進めない（その rev の要約を失わない）"
+            "sync 失敗時は要約済み marker を進めない（その範囲の要約を失わない）"
         );
 
-        // 次回（履歴複製成功）で同じ範囲 N0->N1 を要約でき、marker が N1 へ進む（未表示範囲を取り戻す）。
-        apply_once_defer_gated(&dir, "N0", "N1", true)?;
+        // 次回（履歴複製成功）で同じ範囲 N0->N1 を要約でき、marker が終端 at(0) へ進む（未表示範囲を取り戻す）。
+        apply_once_defer_gated(&dir, true)?;
         let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
         assert!(
             pending.contains("neovim-N0"),
             "再実行で未表示範囲 N0->N1 を要約する: {pending}"
         );
         assert_eq!(
-            read_last_summarized_nixpkgs_rev(&dir)?,
-            Some("N1".to_string()),
+            read_last_summarized_at(&dir)?,
+            Some(at_of(0)),
             "sync 成功後に marker が確定する"
         );
 
@@ -2016,10 +2026,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
 
-        // 既存 pending-summary に確定済みブロックがある状態を作る。
+        // 既存 pending-summary に確定済みブロックがある状態を作る（marker 無し = None で全件要約）。
         write_history(&dir, &[("r1", "r2")]);
         let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
-        append_pending_summary(&dir, &source, Some("r1"))?;
+        append_pending_summary(&dir, &source, None)?;
         let baseline = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read baseline");
         assert!(baseline.contains("neovim-r1"), "baseline block present");
 

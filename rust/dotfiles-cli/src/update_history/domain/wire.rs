@@ -35,14 +35,51 @@ pub(crate) struct UpdateEntry {
     pub(crate) packages: Vec<PackageUpdate>,
 }
 
+/// パッケージ更新の出所（nix closure か Homebrew cask か）。catch-up 集約の同一性キーの一部。
+///
+/// nix と brew は同名パッケージ（例 `firefox`: nixpkgs の firefox と cask の firefox）を別物として記録する
+/// 設計であり、表示時集約（[`super::aggregate`]）が `name` だけで畳むと old/new・declared・notes_url が後勝ちで
+/// 誤表示される。出所を同一性キーへ含めるため、wire（記録）にも source を残す。TOML 値は lowercase
+/// （`nix`/`brew`）。旧スキーマ（source 無し）の後方互換は [`PackageUpdate::source`] の `serde(default)` が担う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PackageSource {
+    /// nix eval 由来（宣言パッケージの name→version 差分）。
+    Nix,
+    /// Homebrew tap 由来（cask/formula の版差分）。
+    Brew,
+}
+
+impl Default for PackageSource {
+    /// 旧スキーマ（source field を持たない既存 TOML）の deserialize 既定。
+    ///
+    /// source 導入前に記録されたエントリは出所を持たない。既定を `Nix` に倒すのは、旧運用の宣言パッケージ
+    /// 記録が主に nix eval 由来であり、同名衝突（nix/brew firefox）の現実的頻度が低いことによる保守的既定で
+    /// ある。新規記録は record 経路が常に明示 source を書くため、この既定は後方互換読み出しにのみ効く。
+    fn default() -> Self {
+        PackageSource::Nix
+    }
+}
+
+impl PackageSource {
+    /// dedup・集約の決定論キーで使う安定文字列を返す（serde wire 文字列と一致）。
+    pub(crate) fn as_stable_key(&self) -> &'static str {
+        match self {
+            PackageSource::Nix => "nix",
+            PackageSource::Brew => "brew",
+        }
+    }
+}
+
 /// 1 アプリ/パッケージの version 差分と構造化変更リスト（TOML `[[update.package]]` に対応）。
 ///
 /// `old` / `new` は `added` / `removed` で片側が `None` になりうるため `Option` で保持する。
 /// `declared` は宣言アプリ（`show` 既定で表示）か低レベル依存（既定で畳む）かの区別であり、
-/// `change_items` は LLM 抽出済みの構造化変更（取得不能/未抽出なら空）を保持する。
+/// `change_items` は LLM 抽出済みの構造化変更（取得不能/未抽出なら空）を保持する。`source` は出所
+/// （nix/brew）で、catch-up 集約の同一性キーに含める（同名 nix/brew パッケージを 1 件に潰さないため）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PackageUpdate {
-    /// パッケージ/アプリ名。catch-up 集約の同一性キーの一部。
+    /// パッケージ/アプリ名。catch-up 集約の同一性キーの一部（`source` と対）。
     pub(crate) name: String,
     /// 更新前 version（`added` では `None`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +91,10 @@ pub(crate) struct PackageUpdate {
     pub(crate) change: ChangeKind,
     /// 宣言アプリなら `true`（`show` 既定で表示）、低レベル依存なら `false`。
     pub(crate) declared: bool,
+    /// 更新の出所（nix/brew）。catch-up 集約の同一性キーの一部。旧スキーマ（source 無し）は
+    /// `serde(default)` で [`PackageSource::Nix`] へ縮退する。
+    #[serde(default)]
+    pub(crate) source: PackageSource,
     /// リリースノート/changelog の URL（取得不能なら `None`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) notes_url: Option<String>,
@@ -168,6 +209,7 @@ mod tests {
                 new: Some("0.11.0".to_string()),
                 change: ChangeKind::Upgraded,
                 declared: true,
+                source: PackageSource::Nix,
                 notes_url: Some(
                     "https://github.com/neovim/neovim/releases/tag/v0.11.0".to_string(),
                 ),
@@ -216,6 +258,7 @@ old = \"0.10.2\"
 new = \"0.11.0\"
 change = \"upgraded\"
 declared = true
+source = \"nix\"
 notes_url = \"https://github.com/neovim/neovim/releases/tag/v0.11.0\"
 
 [[update.package.change_item]]
@@ -244,6 +287,37 @@ text = \"新機能\"
         assert_eq!(rendered, "change = \"downgraded\"\n");
         let parsed: Wrap = toml::from_str(&rendered)?;
         assert_eq!(parsed.change, ChangeKind::Downgraded);
+        Ok(())
+    }
+
+    #[test]
+    fn package_source_serializes_lowercase_and_round_trips() -> crate::Result<()> {
+        // 出所 enum が TOML 値 `nix`/`brew` に一致し、往復で保存されることを固定する。
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrap {
+            source: PackageSource,
+        }
+        let rendered = toml::to_string(&Wrap {
+            source: PackageSource::Brew,
+        })?;
+        assert_eq!(rendered, "source = \"brew\"\n");
+        let parsed: Wrap = toml::from_str(&rendered)?;
+        assert_eq!(parsed.source, PackageSource::Brew);
+        Ok(())
+    }
+
+    #[test]
+    fn package_without_source_field_defaults_to_nix() -> crate::Result<()> {
+        // 後方互換: source 導入前に記録された `[[update.package]]`（source field 無し）も読めること、
+        // かつ `serde(default)` で `PackageSource::Nix` へ縮退することを固定する。
+        let toml = "\
+name = \"neovim\"
+change = \"upgraded\"
+declared = true
+";
+        let parsed: PackageUpdate = toml::from_str(toml)?;
+        assert_eq!(parsed.source, PackageSource::Nix);
+        assert_eq!(parsed.name, "neovim");
         Ok(())
     }
 

@@ -14,6 +14,19 @@ use std::collections::BTreeMap;
 
 use super::wire::{ChangeItem, ChangeKind, PackageUpdate, UpdateEntry};
 
+/// catch-up 集約の同一性キー `(name, source)`。
+///
+/// `name` だけで畳むと、nix closure の `firefox` と cask の `firefox` が同じ catch-up span に入ったとき
+/// 1 件に潰れ、old/new・declared・notes_url が後勝ちで誤表示される（別物の更新を 1 件として扱う）。出所
+/// （[`super::wire::PackageSource`]）を同一性キーへ含め、同名でも nix/brew は別エントリとして集約する。`source`
+/// の安定キーは `PackageSource::as_stable_key` を使い、`Debug` 表現に依存しない（dedup 決定論の根拠）。
+type AggregateKey = (String, &'static str);
+
+/// パッケージから集約キー `(name, source)` を作る。
+fn aggregate_key(package: &PackageUpdate) -> AggregateKey {
+    (package.name.clone(), package.source.as_stable_key())
+}
+
 /// 集約後 `change` 種別を最古→最新の version 遷移から決める。
 ///
 /// 跨ぎ区間の途中種別は捨て、最初の適用前状態と最後の適用後状態だけで種別を確定する:
@@ -40,36 +53,39 @@ fn aggregated_change(first: ChangeKind, last: ChangeKind, spanned: bool) -> Chan
 /// 戻り値の並びは、最初に各アプリが現れた順を安定的に保つ。severity / overall の再算出は呼び出し側が
 /// 集約結果の `change_items` を [`super::severity`] へ渡して行う（本関数は package 集約のみを担う）。
 pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
-    // アプリ名 → 集約途中状態。挿入順を保つため別 Vec に名前順を記録する。
-    let mut order: Vec<String> = Vec::new();
-    let mut acc: BTreeMap<String, PackageUpdate> = BTreeMap::new();
-    // change_item の重複排除キー `(name, category, ref_url, text)` の既出集合。
-    // category 成分は `ChangeCategory::as_stable_key`（wire 文字列と一致する安定キー）を使い、
-    // `Debug` 表現に依存しない（決定論の根拠）。
-    let mut seen: BTreeMap<(String, &'static str, Option<String>, String), ()> = BTreeMap::new();
-    // 各アプリの最初の change 種別（集約 change 確定に使う）。
-    let mut first_change: BTreeMap<String, ChangeKind> = BTreeMap::new();
-    // 各アプリが複数エントリを跨いだか。
-    let mut spanned: BTreeMap<String, bool> = BTreeMap::new();
+    // `(name, source)` → 集約途中状態。挿入順を保つため別 Vec に出現順キーを記録する。
+    let mut order: Vec<AggregateKey> = Vec::new();
+    let mut acc: BTreeMap<AggregateKey, PackageUpdate> = BTreeMap::new();
+    // change_item の重複排除キー `(name, source, category, ref_url, text)` の既出集合。
+    // source/category 成分は `as_stable_key`（wire 文字列と一致する安定キー）を使い、`Debug` 表現に依存
+    // しない（決定論の根拠）。source を含めるのは、同名でも nix/brew で別物の変更を誤って畳まないため。
+    let mut seen: BTreeMap<(AggregateKey, &'static str, Option<String>, String), ()> =
+        BTreeMap::new();
+    // 各 `(name, source)` の最初の change 種別（集約 change 確定に使う）。
+    let mut first_change: BTreeMap<AggregateKey, ChangeKind> = BTreeMap::new();
+    // 各 `(name, source)` が複数エントリを跨いだか。
+    let mut spanned: BTreeMap<AggregateKey, bool> = BTreeMap::new();
 
     for entry in entries {
         for package in &entry.packages {
-            match acc.get_mut(&package.name) {
+            let key = aggregate_key(package);
+            match acc.get_mut(&key) {
                 None => {
-                    order.push(package.name.clone());
-                    first_change.insert(package.name.clone(), package.change);
-                    spanned.insert(package.name.clone(), false);
+                    order.push(key.clone());
+                    first_change.insert(key.clone(), package.change);
+                    spanned.insert(key.clone(), false);
                     let mut initial = PackageUpdate {
                         name: package.name.clone(),
                         old: package.old.clone(),
                         new: package.new.clone(),
                         change: package.change,
                         declared: package.declared,
+                        source: package.source,
                         notes_url: package.notes_url.clone(),
                         change_items: Vec::new(),
                     };
-                    push_unique_items(&mut seen, &mut initial, &package.change_items);
-                    acc.insert(package.name.clone(), initial);
+                    push_unique_items(&mut seen, &key, &mut initial, &package.change_items);
+                    acc.insert(key, initial);
                 }
                 Some(existing) => {
                     // new は最新エントリ、change/notes_url も最新を優先、declared は OR。
@@ -79,8 +95,8 @@ pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
                         existing.notes_url = package.notes_url.clone();
                     }
                     existing.declared = existing.declared || package.declared;
-                    spanned.insert(package.name.clone(), true);
-                    push_unique_items(&mut seen, existing, &package.change_items);
+                    spanned.insert(key.clone(), true);
+                    push_unique_items(&mut seen, &key, existing, &package.change_items);
                 }
             }
         }
@@ -88,31 +104,32 @@ pub(crate) fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
 
     order
         .into_iter()
-        .filter_map(|name| {
-            let mut package = acc.remove(&name)?;
-            let first = first_change.get(&name).copied().unwrap_or(package.change);
-            let spanned = spanned.get(&name).copied().unwrap_or(false);
+        .filter_map(|key| {
+            let mut package = acc.remove(&key)?;
+            let first = first_change.get(&key).copied().unwrap_or(package.change);
+            let spanned = spanned.get(&key).copied().unwrap_or(false);
             package.change = aggregated_change(first, package.change, spanned);
             Some(package)
         })
         .collect()
 }
 
-/// 決定論キー `(name, category, ref_url, text)` の未出 change_item だけを順序を保って push する。
+/// 決定論キー `((name, source), category, ref_url, text)` の未出 change_item だけを順序を保って push する。
 fn push_unique_items(
-    seen: &mut BTreeMap<(String, &'static str, Option<String>, String), ()>,
+    seen: &mut BTreeMap<(AggregateKey, &'static str, Option<String>, String), ()>,
+    key: &AggregateKey,
     package: &mut PackageUpdate,
     items: &[ChangeItem],
 ) {
     for item in items {
-        let key = (
-            package.name.clone(),
+        let dedup_key = (
+            key.clone(),
             // `Debug` 表現でなく wire 一致の安定キーを使い、dedup の決定論を保つ。
             item.category.as_stable_key(),
             item.ref_url.clone(),
             item.text.clone(),
         );
-        if seen.insert(key, ()).is_none() {
+        if seen.insert(dedup_key, ()).is_none() {
             package.change_items.push(item.clone());
         }
     }
@@ -125,7 +142,7 @@ mod tests {
     use super::*;
     use crate::update_history::domain::severity::{overall_headline, severity_of};
     use crate::update_history::domain::wire::{
-        ChangeCategory, ChangeItem, ChangeKind, PackageUpdate, Severity, UpdateEntry,
+        ChangeCategory, ChangeItem, ChangeKind, PackageSource, PackageUpdate, Severity, UpdateEntry,
     };
 
     fn entry(at: &str, packages: Vec<PackageUpdate>) -> UpdateEntry {
@@ -155,12 +172,24 @@ mod tests {
         change: ChangeKind,
         items: Vec<ChangeItem>,
     ) -> PackageUpdate {
+        package_with_source(name, old, new, change, PackageSource::Nix, items)
+    }
+
+    fn package_with_source(
+        name: &str,
+        old: Option<&str>,
+        new: Option<&str>,
+        change: ChangeKind,
+        source: PackageSource,
+        items: Vec<ChangeItem>,
+    ) -> PackageUpdate {
         PackageUpdate {
             name: name.to_string(),
             old: old.map(str::to_string),
             new: new.map(str::to_string),
             change,
             declared: true,
+            source,
             notes_url: None,
             change_items: items,
         }
@@ -285,6 +314,73 @@ mod tests {
             .collect();
         assert_eq!(texts, vec!["CVE-A を修正", "CVE-B を修正", "CVE-C を修正"]);
         assert_eq!(severity_of(&aggregated[0].change_items), Severity::Critical);
+    }
+
+    #[test]
+    fn aggregate_keeps_same_name_nix_and_brew_separate() {
+        // 退行固定（P2: 出所込み集約キー）: 同名 `firefox` でも nix closure 由来と cask（brew）由来は別物の
+        // 更新であり、catch-up span で 1 件に潰さず 2 件として保持する。旧実装は集約キーが `name` だけのため
+        // old/new・notes_url が後勝ちで誤表示された。`(name, source)` をキーにして両者を区別する。
+        let entries = [entry(
+            "2026-06-01T00:00:00Z",
+            vec![
+                {
+                    let mut p = package_with_source(
+                        "firefox",
+                        Some("120"),
+                        Some("121"),
+                        ChangeKind::Upgraded,
+                        PackageSource::Nix,
+                        vec![change_item(ChangeCategory::Fix, "nix 側修正", None)],
+                    );
+                    p.notes_url = Some("https://example.com/nix-firefox".to_string());
+                    p
+                },
+                {
+                    let mut p = package_with_source(
+                        "firefox",
+                        Some("130"),
+                        Some("131"),
+                        ChangeKind::Upgraded,
+                        PackageSource::Brew,
+                        vec![change_item(ChangeCategory::Feature, "cask 側機能", None)],
+                    );
+                    p.notes_url = Some("https://example.com/brew-firefox".to_string());
+                    p
+                },
+            ],
+        )];
+
+        let aggregated = aggregate(&entries);
+
+        // 1 件に潰れず、nix/brew の firefox が別エントリとして残る。
+        assert_eq!(aggregated.len(), 2);
+        let nix = aggregated
+            .iter()
+            .find(|p| p.source == PackageSource::Nix)
+            .expect("nix firefox present");
+        let brew = aggregated
+            .iter()
+            .find(|p| p.source == PackageSource::Brew)
+            .expect("brew firefox present");
+        // old/new・notes_url が後勝ちで混線せず、各出所の値を保つ。
+        assert_eq!(nix.old.as_deref(), Some("120"));
+        assert_eq!(nix.new.as_deref(), Some("121"));
+        assert_eq!(
+            nix.notes_url.as_deref(),
+            Some("https://example.com/nix-firefox")
+        );
+        assert_eq!(brew.old.as_deref(), Some("130"));
+        assert_eq!(brew.new.as_deref(), Some("131"));
+        assert_eq!(
+            brew.notes_url.as_deref(),
+            Some("https://example.com/brew-firefox")
+        );
+        // change_item も出所ごとに別保持され、混ざらない。
+        assert_eq!(nix.change_items.len(), 1);
+        assert_eq!(nix.change_items[0].text, "nix 側修正");
+        assert_eq!(brew.change_items.len(), 1);
+        assert_eq!(brew.change_items[0].text, "cask 側機能");
     }
 
     #[test]
