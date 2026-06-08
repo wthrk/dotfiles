@@ -64,11 +64,16 @@ pub(crate) struct RecordRuntime<'a, V, B, N, X, S, G, D> {
 /// （seed 無し＝未知ノート）だけが tool-use 探索（最大 MAX_TOOL_ITERATIONS+1 回の model 呼び出し）を行う。
 /// よって registry が回を追って埋まる（registry 参照 hit と機械解決 hit が増える）ほど、GitHub Models 呼び出し
 /// 回数の総和が実際に逓減する。これが「再利用でレート消費を逓減」の核である。
-/// 4. いずれも不能なら version-only。`origin=none` を記録して次回も探索対象に戻す（取得元が後から現れる
-///    可能性に追従。設計判断: 空エントリを残すより「探索済みだが未発見」を明示する方が再探索の根拠が残る）。
+/// 4. いずれも不能なら version-only。**保存済みの有効 source が無いときだけ** `origin=none` を記録して次回も
+///    探索対象に戻す（取得元が後から現れる可能性に追従。設計判断: 空エントリを残すより「探索済みだが未発見」を
+///    明示する方が再探索の根拠が残る）。**保存済みの有効 source が在る**のに全経路が空を返した場合（保存 source の
+///    fetch が一時的に失敗し、同 run の機械解決・AI 探索も空だった）は、その既存エントリを **`origin=none` で
+///    上書きせず保持**する（finding 3374863459。1 回の一時失敗で有効な取得元を失い次回も探索/LLM 消費へ戻る退行を
+///    防ぐ。新しい有効 source を得た時だけフロー 2/3 が上書きする）。
 ///
 /// **自己修復**: レジストリの保存 source を fetch して空/失敗なら、機械解決 → AI 探索へフォールバックし、成功
-/// した新ソースでレジストリを更新する（プロジェクトが changelog を移動した等に追従する）。
+/// した新ソースでレジストリを更新する（プロジェクトが changelog を移動した等に追従する）。全経路が空を返した
+/// 一時失敗時は既存 source を保持し（上記フロー 4）、有効な取得元を 1 回の不調で失わない。
 ///
 /// **セキュリティ（SSRF/学習境界）**: レジストリへ書く URL は **記録前に必ず host allowlist（[`is_allowed_url`]）
 /// で機械検証**し、許可外 host の source は学習しない（`origin=none` へ倒す）。これにより次回フロー 1 の再利用でも
@@ -178,6 +183,16 @@ where
             (None, None) => (None, None),
         };
 
+        // brew cask の探索ヒント（finding 3374863454）: brew delta は repo/homepage/changelog ヒントを運ばず、
+        // cask `.rb` 定義そのものは seed にしない（定義ファイルを summarize_only で要約しない）。seed が無い
+        // brew delta では cask `.rb` から homepage（無ければ url）を **探索ヒント** として取り出し、AI tool-use
+        // 探索（agent_loop）の fetch 許可ホスト基底にする。nix delta や seed が取れた brew delta では呼ばない。
+        let brew_homepage_hint = if delta.source == DeltaSource::BrewTap && seed.is_none() {
+            notes.resolve_brew_notes_hint(&delta.name)?
+        } else {
+            None
+        };
+
         // 単一の AI 抽出（予算ゲートつき）: 解決した seed があれば AI はそれを **ツールを与えず 1 回だけ要約**し
         // （探索しない＝GitHub Models 呼び出しは 1 回）、無ければヒント URL から自分で fetch して探索する
         // （フロー 3＝tool-use ループで最大 MAX_TOOL_ITERATIONS+1 回の model 呼び出し）。経路分岐は port 実装
@@ -196,7 +211,11 @@ where
                 old: delta.old.clone(),
                 new: delta.new.clone(),
                 repo: delta.repo.clone(),
-                homepage: delta.homepage.clone(),
+                // brew cask は repo/homepage を運ばないため、cask `.rb` から取り出した探索ヒント（homepage/url）を
+                // homepage として与え、agent_loop が実ノートを探せるようにする（無ければ delta の homepage）。
+                homepage: brew_homepage_hint
+                    .clone()
+                    .or_else(|| delta.homepage.clone()),
                 changelog: delta.notes_source.clone(),
                 seed_notes: seed,
             };
@@ -255,8 +274,21 @@ where
                 delta.source,
                 provenance,
             );
+        } else if registry
+            .lookup(&delta.name, delta.source)
+            .and_then(NotesSourceEntry::reusable_source)
+            .is_some()
+        {
+            // **全経路（保存 source の再取得・機械解決・AI 探索）が source を返せなかったが、レジストリには
+            // 有効な保存 source が既に在る**（finding 3374863459）。これは保存 source の fetch がネットワーク不調や
+            // レート制限で **一時的に** 失敗し、同じ run の機械解決・AI 探索も取得元を返せなかったケースである。
+            // ここで `record()`（既存エントリを置換）で origin=none を上書きすると、有効だった取得元を 1 回の
+            // 一時失敗で失い、次回以降も registry hit せず探索/LLM 消費へ戻ってしまう。よって **既存の有効
+            // エントリは上書きせず保持**し、registry を dirty にしない（次回フロー 1 の再利用機会を温存する）。
+            // 新たな有効 source を得た時だけ上書きするのは上の mechanical/ai-discovered 分岐が担う。
         } else {
-            // 機械解決も AI 採用取得元も無い。origin=none を学習して次回も探索対象に戻す。
+            // 機械解決も AI 採用取得元も無く、保存済みの有効 source も無い。origin=none を学習して次回も探索
+            // 対象に戻す（取得元が後から現れる可能性に追従。空エントリを残すより「探索済みだが未発見」を明示する）。
             let provenance = NotesSourceEntry {
                 source: None,
                 origin: NotesOrigin::None,
@@ -540,6 +572,13 @@ mod tests {
             .withf(|name, source, _, _, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
             .times(1)
             .returning(|_, _, _, _, _, _| Ok(None));
+        // brew は cask `.rb` を seed にせず、seed 無し brew delta では探索ヒント（homepage/url）を解決する
+        // （finding 3374863454）。ここではヒントも無し（None）として agent_loop へ渡す。
+        notes
+            .expect_resolve_brew_notes_hint()
+            .withf(|name| name == "firefox")
+            .times(1)
+            .returning(|_| Ok(None));
 
         // seed ノートが取れなくても AI エージェントはヒント URL から自分で fetch を試みられるため、予算未超過なら
         // 各 delta で抽出が呼ばれる（ここでは AI もノートを見つけられず空配列を返す = version-only へ縮退）。
@@ -1257,6 +1296,126 @@ mod tests {
             &extract,
             &store,
             &registry,
+        )
+    }
+
+    #[test]
+    fn temporary_all_path_failure_preserves_existing_saved_source() -> crate::Result<()> {
+        // finding 3374863459 退行固定: 保存済みの有効 source があるパッケージで、その URL の fetch が一時的に失敗し
+        // （reused=None）、同じ run の機械解決（mechanical=None）も AI 探索（source_url なし・空変更）も取得元を
+        // 返せなかった場合、既存エントリを origin=none で **上書きしない**（有効な取得元を 1 回の不調で失わない）。
+        // 退行版（else 分岐が無条件に origin=none を record）なら registry が書き換わり write_registry が呼ばれて
+        // しまうため、ここでは **write_registry が一切呼ばれない**（registry を据え置く）ことで単一勝者性を固定する。
+        let (nix_versions, brew_diff) = nix_only_diff("openssl", "openssl/openssl");
+
+        let mut notes = MockNotesPort::new();
+        // 保存 source の再利用 fetch が一時的に失敗（None）。
+        notes
+            .expect_fetch_notes_from_source()
+            .times(1)
+            .returning(|_| Ok(None));
+        // 自己修復の機械解決も一時失敗で取得元を返せない（None）。
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // AI も取得元を採用できない（source_url なし・空変更）。
+        extract
+            .expect_extract_change_items()
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        // レジストリには有効な保存 source（mechanical・raw 再取得可能）が既に在る。
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry.expect_read_registry().returning(|| {
+            let mut r = NotesSourceRegistry::default();
+            r.record(
+                "openssl",
+                DeltaSource::NixEval,
+                NotesSourceEntry {
+                    source: Some(
+                        "https://raw.githubusercontent.com/openssl/openssl/v1.0/CHANGELOG.md"
+                            .to_string(),
+                    ),
+                    origin: NotesOrigin::Mechanical,
+                    discovered_at: None,
+                    note: None,
+                },
+            );
+            Ok(r)
+        });
+        // 全経路一時失敗時は既存 source を保持し、registry を据え置く（write_registry を呼ばない）。
+        registry.expect_write_registry().never();
+
+        run_record_with(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn brew_cask_hint_routes_to_agent_loop_without_definition_seed() -> crate::Result<()> {
+        // finding 3374863454 退行固定: brew delta は cask `.rb` 定義を seed にせず（summarize_only に入れない）、
+        // 定義から取り出した探索ヒント（homepage/url）を `ExtractRequest.homepage` へ載せて agent_loop（seed なし
+        // ＝tool-use 探索）へ回す。ここでは seed_notes が None のまま、解決した homepage ヒントが request に乗ることを固定する。
+        let nix_versions = nix_versions_empty();
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .returning(|_, _| Ok(vec![brew_delta("firefox")]));
+
+        let mut notes = MockNotesPort::new();
+        // cask `.rb` は seed にしない（None）。
+        notes
+            .expect_fetch_release_notes()
+            .withf(|name, source, _, _, _, _| name == "firefox" && *source == DeltaSource::BrewTap)
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+        // seed 無し brew delta で探索ヒント（cask 定義の homepage）を解決する。
+        notes
+            .expect_resolve_brew_notes_hint()
+            .withf(|name| name == "firefox")
+            .times(1)
+            .returning(|_| Ok(Some("https://www.mozilla.org/firefox/".to_string())));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // ExtractRequest は seed 無し（agent_loop 経路）で、homepage に cask 探索ヒントが乗る。
+        extract
+            .expect_extract_change_items()
+            .times(1)
+            .withf(|request| {
+                request.name == "firefox"
+                    && request.seed_notes.is_none()
+                    && request.homepage.as_deref() == Some("https://www.mozilla.org/firefox/")
+            })
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        run_record_with(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &empty_registry_store(),
         )
     }
 

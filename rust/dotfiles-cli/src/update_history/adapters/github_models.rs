@@ -1306,12 +1306,16 @@ mod tests {
                 "{flag} の直後に有界な数値が続く: {args:?}"
             );
         }
-        // https 限定（scheme 制限）を維持する。
-        let proto = args
-            .iter()
-            .position(|arg| arg == "--proto")
-            .expect("--proto");
-        assert_eq!(args.get(proto + 1).map(String::as_str), Some("=https"));
+        // https 限定（scheme 制限）を維持する。`--proto` の直後に `=https` が続くことを expect 不使用で固定する
+        // （上の timeout flag 検証と同じ `is_some` + `and_then` パターン。リポジトリ Rust スタイル: テストを含め
+        // unwrap/expect を使わない）。
+        let proto_idx = args.iter().position(|arg| arg == "--proto");
+        assert!(proto_idx.is_some(), "--proto を指定する: {args:?}");
+        assert_eq!(
+            proto_idx.and_then(|i| args.get(i + 1)).map(String::as_str),
+            Some("=https"),
+            "--proto の直後に =https が続く: {args:?}"
+        );
         // token・本文は argv に現れない（stdin の `--config -` に閉じる）。
         assert!(args.windows(2).any(|w| w[0] == "--config" && w[1] == "-"));
         assert!(

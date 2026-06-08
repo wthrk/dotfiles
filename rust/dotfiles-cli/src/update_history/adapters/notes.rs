@@ -31,8 +31,12 @@
 //!   - それ以外（repo root `github.com/<owner>/<repo>`、gitlab、判別不能）→ 生ノート取得不能として `None`。
 //!
 //!   URL 形の翻訳（HTML 閲覧 URL → 生テキスト取得先）は外部取得先の形式差異吸収であり adapter の責務に置く。
-//! - **brew tap 由来**: CI が解決した cask tap の `Casks/` レイアウト base に package 名を連結した URL
-//!   （`<base><letter>/<name>.rb`）を取得対象にする。`brew_notes_base` 未指定なら `None` へ縮退する。
+//! - **brew tap 由来**: cask `.rb` 定義は homepage/url を含む**定義ファイル**であって実リリースノート本文では
+//!   ないため、`fetch_release_notes` の seed（summarize_only 経路）にしない（finding 3374863454。常に `None`）。
+//!   代わりに [`ReleaseNotesAdapter::resolve_brew_notes_hint`] が CI 解決の cask tap `Casks/` レイアウト base に
+//!   package 名を連結した URL（`<base><letter>/<name>.rb`）を取得し、Ruby の `homepage`/`url` を **探索ヒント**
+//!   として取り出す。application はそのヒントを `ExtractRequest.homepage` へ載せ、AI tool-use 探索（agent_loop）に
+//!   実ノートを探させる。`brew_notes_base` 未指定なら探索ヒントも `None` へ縮退する。
 //!
 //! 出所で解決規則を分けるのは、nix と brew で取得先 URL の解決規則が異なり、混同すると誤った URL（例:
 //! nix package を cask レイアウトで引いて 404）になるためである。いずれの取得先未解決もその package で
@@ -88,8 +92,9 @@ const RELEASE_BODY_SEPARATOR: &str = "\n\n---\n\n";
 ///
 /// nix eval 由来 package のノート取得先は delta が運ぶ `notes_source`（`meta.changelog`/`meta.homepage`）を
 /// 使うため adapter は base を持たない。`brew_notes_base` は CI が解決した brew cask の `Casks/` レイアウト
-/// 基底（末尾に `<letter>/<name>.rb` を連結して取得対象 URL を作る）であり、`None` のとき brew package は
-/// `None`（ノート無し）へ縮退する。
+/// 基底（末尾に `<letter>/<name>.rb` を連結して cask 定義 URL を作る）であり、cask 定義から **探索ヒント**
+/// （homepage/url）を取り出す [`resolve_brew_notes_hint`](Self::resolve_brew_notes_hint) が使う。cask 定義そのものは
+/// seed にしない（finding 3374863454）。`None` のとき brew package は探索ヒント無し（version-only）へ縮退する。
 #[derive(Default)]
 pub(in crate::update_history) struct ReleaseNotesAdapter {
     /// brew tap 由来 cask のノート URL 基底（cask 定義の `Casks/` レイアウト）。
@@ -191,7 +196,9 @@ enum NotesFetchPlan {
 impl NotesPort for ReleaseNotesAdapter {
     fn fetch_release_notes(
         &self,
-        name: &str,
+        // brew は cask `.rb` を seed にしないため name を使わず（探索ヒントは resolve_brew_notes_hint が name で引く）、
+        // nix は repo/notes_source で取得元を解決するため、本関数では name を使わない。
+        _name: &str,
         source: DeltaSource,
         repo: Option<String>,
         notes_source: Option<String>,
@@ -205,13 +212,11 @@ impl NotesPort for ReleaseNotesAdapter {
             // nix eval 由来: 一次に GitHub Releases API で old→new 範囲のリリースノートを取得し、空振り時は
             // changelog（meta.changelog/homepage）へフォールバックする。両方不能ならノート無しへ縮退。
             DeltaSource::NixEval => Self::fetch_nix_notes(repo, notes_source, old, new),
-            // brew tap 由来: cask base + name から `<base><letter>/<name>.rb` を構築する。base 未指定なら縮退。
-            DeltaSource::BrewTap => {
-                let Some(base) = &self.brew_notes_base else {
-                    return Ok(None);
-                };
-                Self::fetch(&resolve_notes_url(base, name))
-            }
+            // brew tap 由来: cask `.rb` 定義そのものは実ノート本文ではなく homepage/url を含む定義ファイルなので、
+            // seed（summarize_only 経路）にしない（finding 3374863454）。seed は常に `None` を返し、homepage 探索
+            // ヒントは [`resolve_brew_notes_hint`](Self::resolve_brew_notes_hint) 経由で application が agent_loop へ
+            // 回す。これにより cask 経路は定義ファイルを直接要約せず、AI に実ノートを探索させる。
+            DeltaSource::BrewTap => Ok(None),
         }
     }
 
@@ -223,6 +228,25 @@ impl NotesPort for ReleaseNotesAdapter {
     /// 空本文・許可外 host はいずれも `None`（呼び出し側は自己修復として機械解決 → AI 探索へフォールバックする）。
     fn fetch_notes_from_source(&self, url: &str) -> Result<Option<RawReleaseNotes>> {
         Self::fetch(url)
+    }
+
+    /// brew cask `.rb` 定義を取得し、`homepage`（無ければ `url`）を探索ヒント URL として 1 件取り出す。
+    ///
+    /// cask 定義そのものは実ノート本文でないため seed にしない（finding 3374863454）。base + name から
+    /// `Casks/<subdir>/<name>.rb` を構築（[`resolve_notes_url`]）して [`fetch`](Self::fetch) と同じ host
+    /// allowlist + redirect 不追従経路で取得し、Ruby の `homepage "..."`/`url "..."` の値を抽出する
+    /// （[`parse_cask_hint`]）。base 未指定・取得失敗・抽出不能はすべて `None`（探索ヒント無し）。抽出した URL は
+    /// 信頼境界外であり、application が `ExtractRequest.homepage` へ載せた後の agent_loop 側 fetch 許可ホスト
+    /// 検査・SSRF 防御で守る。
+    fn resolve_brew_notes_hint(&self, name: &str) -> Result<Option<String>> {
+        let Some(base) = &self.brew_notes_base else {
+            return Ok(None);
+        };
+        let url = resolve_notes_url(base, name);
+        if !is_allowed_url(&url) {
+            return Ok(None);
+        }
+        Ok(safe_https_fetch(&url)?.as_deref().and_then(parse_cask_hint))
     }
 }
 
@@ -653,6 +677,48 @@ fn resolve_notes_url(base: &str, name: &str) -> String {
     }
 }
 
+/// brew cask `.rb` 定義テキストから探索ヒント URL（`homepage` 優先、無ければ `url`）を 1 件抽出する純粋関数。
+///
+/// cask 定義は Ruby DSL で `homepage "https://..."` / `url "https://..."` の行を持つ（finding 3374863454）。
+/// これらは実リリースノート本文ではないため seed にせず、homepage（プロジェクト公式サイト＝ノート探索の
+/// 起点として最適）を一次、`url`（配布物 URL）をフォールバックにして AI tool-use 探索のヒント host を得る。
+/// 行頭の空白を許し、`homepage`/`url` キーワードに続く最初の **ダブルクォート文字列**の中身を取り出す。
+/// 抽出できなければ `None`（探索ヒント無し＝version-only へ縮退）。値は信頼境界外であり、後段の host
+/// allowlist / agent_loop 側 SSRF 検査で守る（ここでは形の抽出だけを行う）。
+fn parse_cask_hint(rb: &str) -> Option<String> {
+    extract_dsl_string(rb, "homepage").or_else(|| extract_dsl_string(rb, "url"))
+}
+
+/// cask `.rb` の Ruby DSL から `<key> "<value>"` の最初の二重引用符文字列値を抽出する純粋関数。
+///
+/// 各行を走査し、trim 後に `<key>` で始まりその直後が空白の行を対象にして、最初の `"` と次の `"` の間を値と
+/// する。`key` 直後が空白でない行（`url_template` 等の別キー）は対象にしない。値が空、または引用符が閉じない
+/// 行は対象外として次行を見る。最初に得た非空値を返す（無ければ `None`）。
+fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
+    for line in rb.lines() {
+        let trimmed = line.trim_start();
+        let Some(after_key) = trimmed.strip_prefix(key) else {
+            continue;
+        };
+        // `key` 直後は空白でなければならない（`url_template` のような別キーを誤検出しない）。
+        if !after_key.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some(open) = after_key.find('"') else {
+            continue;
+        };
+        let rest = &after_key[open + 1..];
+        let Some(close) = rest.find('"') else {
+            continue;
+        };
+        let value = &rest[..close];
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 /// 基底が Homebrew cask tap の `Casks/` ディレクトリを指すか（`Casks/` で終わる）を判定する。
 fn is_cask_base(base: &str) -> bool {
     base.ends_with("/Casks/") || base == "Casks/"
@@ -681,9 +747,9 @@ mod tests {
 
     use super::{
         NotesFetchPlan, Release, ReleaseNotesAdapter, auth_config, extract_release_body,
-        join_release_bodies, parse_releases, release_api_curl_args, releases_list_curl_args,
-        releases_list_url, releases_page_url, resolve_nix_notes_source, resolve_notes_url,
-        split_owner_repo, split_status,
+        join_release_bodies, parse_cask_hint, parse_releases, release_api_curl_args,
+        releases_list_curl_args, releases_list_url, releases_page_url, resolve_nix_notes_source,
+        resolve_notes_url, split_owner_repo, split_status,
     };
     use crate::update_history::domain::diff::DeltaSource;
     use crate::update_history::ports::NotesPort;
@@ -781,6 +847,53 @@ mod tests {
                 .is_none()
         );
         Ok(())
+    }
+
+    #[test]
+    fn brew_fetch_release_notes_never_seeds_with_cask_definition() -> crate::Result<()> {
+        // finding 3374863454 退行固定: brew tap 由来の `fetch_release_notes` は cask `.rb` 定義そのものを
+        // seed（summarize_only 経路）にしない。base が設定されていても seed は常に `None` を返す
+        // （定義ファイルを直接要約しない）。旧実装は `<base><letter>/<name>.rb` を fetch して `.rb` 本文を
+        // `RawReleaseNotes` で返し、非空 seed として summarize_only に入っていた。base 有無に依らず seed=None を
+        // 固定する（curl を起動せず hermetic）。
+        let base = "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/";
+        let adapter = ReleaseNotesAdapter::new(Some(base.to_string()));
+        assert!(
+            adapter
+                .fetch_release_notes("firefox", DeltaSource::BrewTap, None, None, None, None)?
+                .is_none(),
+            "cask `.rb` 定義は seed にせず None を返す（summarize_only に入らない）"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn brew_notes_hint_degrades_to_none_without_base() -> crate::Result<()> {
+        // base 未指定なら探索ヒントも解決できず None（curl を起動しない hermetic）。
+        let adapter = ReleaseNotesAdapter::new(None);
+        assert!(adapter.resolve_brew_notes_hint("firefox")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_cask_hint_prefers_homepage_then_url() {
+        // finding 3374863454: cask `.rb` 定義から探索ヒントを取り出す。homepage を一次、url をフォールバックに。
+        let rb = "cask \"firefox\" do\n  version \"121.0\"\n  url \"https://download.example/firefox.dmg\"\n  homepage \"https://www.mozilla.org/firefox/\"\nend\n";
+        assert_eq!(
+            parse_cask_hint(rb).as_deref(),
+            Some("https://www.mozilla.org/firefox/")
+        );
+        // homepage が無ければ url をヒントにする。
+        let rb_no_home =
+            "cask \"x\" do\n  url \"https://github.com/o/r/releases/download/v1/x.zip\"\nend\n";
+        assert_eq!(
+            parse_cask_hint(rb_no_home).as_deref(),
+            Some("https://github.com/o/r/releases/download/v1/x.zip")
+        );
+        // homepage/url が無ければヒント無し。`url_template` のような別キーは誤検出しない。
+        let rb_none = "cask \"x\" do\n  url_template \"https://example/#{version}\"\nend\n";
+        assert!(parse_cask_hint(rb_none).is_none());
+        assert!(parse_cask_hint("cask \"x\" do\nend\n").is_none());
     }
 
     #[test]

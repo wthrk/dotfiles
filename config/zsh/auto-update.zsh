@@ -19,8 +19,15 @@
 #   進行を検知できない。よって catch-up 起動は **stale local pin 比較で決めず**、`dotfiles update`（remote 解決
 #   を含み rev ベースで no-op 冪等）を 1 日 1 回程度のトリガ marker（`last-login-trigger`、当日未トリガなら
 #   起動）で起動する。これにより upstream 変化を確実に検知する。トリガ marker は「起動頻度の抑制」専用で、
-#   実適用の重複抑止（rev ベースの `last-applied-rev`）とは別物（rev ベース dedup は `dotfiles update` 側が
+#   実適用の重複抑止（rev ベースの applied marker）とは別物（rev ベース dedup は `dotfiles update` 側が
 #   維持する）。毎シェルで `dotfiles update` を叩かないこと。
+#
+#   home-only catch-up の rev ベース dedup は **home スコープ marker**（`last-applied-home-rev`）で行う（重要）:
+#   `dotfiles update home`（非 defer）は darwin を適用しないため、全体スコープの `last-applied-rev` を確定すると
+#   未適用の darwin が永久 starve する。よって `update home` は全体 marker を動かさず home スコープ marker だけを
+#   確定し、`dotfiles update` 側の `should_switch_home` が翌日以降の同一 pin を skip する。これがないと home-only は
+#   どの applied marker も確定せず、同一 pin を毎ログイン再 switch する無限ループになる（退行 finding 3374863446）。
+#   home スコープ marker は home しか進めないため、daemon フル経路の全体適用は引き続き darwin を適用要と判定する。
 #
 # 状態ディレクトリ・ファイル名・pin の所在は `rust/dotfiles-cli/src/update.rs` の契約に一致させる。
 
@@ -68,20 +75,34 @@ _dotfiles_auto_update_should_trigger_today() {
 
 # catch-up を background で実行し、**成功した時だけ** 当日 trigger marker を確定する。
 #
-# `dotfiles update home --defer-rev-marker` が 0 で終了した時のみ `last-login-trigger` を当日付へ原子的に
-# 書く。失敗（network 不通・`nix flake update` 失敗・lock 競合 skip 以外の異常）時は marker を書かないので、
-# 同日中の後続シェルが再び起動を試みて追随を回復できる（失敗日の再試行）。marker は起動頻度の抑制専用で、
-# 実適用の重複抑止（rev ベースの `last-applied-rev`）とは別物。要約は非 tty 適用のため `pending-summary` へ
-# 書かれ、`precmd` フックが拾って表示する。
+# `dotfiles update home`（**非 defer**）が 0 で終了した時のみ `last-login-trigger` を当日付へ原子的に書く。
+# 失敗（network 不通・`nix flake update` 失敗・lock 競合 skip 以外の異常）時は marker を書かないので、同日中の
+# 後続シェルが再び起動を試みて追随を回復できる（失敗日の再試行）。marker は起動頻度の抑制専用で、実適用の
+# 重複抑止（rev ベースの `last-applied-rev`）とは別物。要約は非 tty 適用のため `pending-summary` へ書かれ、
+# `precmd` フックが拾って表示する。
+#
+# **`--defer-rev-marker` を付けない理由（finding 3374863446）**: この zsh catch-up は **daemon を前提にしない
+# home-only 経路** であり、defer→darwin→commit の三段を持たない（zsh は darwin を適用しない）。`--defer-rev-marker`
+# は daemon ラッパーが home/darwin を別ステップで適用し、両成功後に `--commit-rev-marker` で確定する三段の前半
+# だけを担う flag である。zsh は対になる `--commit-rev-marker` を呼ばないため、defer を付けると CLI は `deferred-rev`
+# だけを書いて終了し、**適用後要約（pending-summary）も `last-applied-*` 確定も一切行われない**。すると daemon が
+# 走らないマシン（ログイン主体・スリープ運用）では、同じ pin が翌日以降も未確定のまま毎日再適用され続け、要約も
+# 永久に表示されない。よって home-only catch-up は **非 defer の要約経路**にし、CLI が適用後に NixOnly フィルタで
+# pending-summary を書き（home-only は cask を適用しないため未適用 cask を通知しない既存挙動を維持）、**home スコープ
+# marker（`last-applied-home-rev`）** を確定して同一 pin の再適用を止める。全体スコープの `last-applied-rev` は home-only
+# では確定しない（部分 target で全体 pin を確定すると未適用 darwin が永久 starve するため）が、home スコープ marker
+# だけ分離して確定することで毎ログイン再適用の無限ループを止めつつ darwin の starve も防ぐ。daemon のフル経路
+# （home defer→darwin→commit の対構造）はこの変更で壊れない（daemon は引き続き wrapper が defer と commit を対で呼ぶ）。
 _dotfiles_auto_update_run_catchup() {
   local state_dir today marker tmp
   state_dir="$(_dotfiles_auto_update_state_dir)"
 
   # **target は home に限定する**（既定 `all` を使わない）。detach した非 tty で `dotfiles update` の既定 `all`
   # を呼ぶと darwin 適用が `sudo darwin-rebuild` を起動し、tty が無いためパスワード入力できず停止する。
-  # **`--defer-rev-marker`** で `last-applied-rev` を確定させない（home だけ適用して rev を確定すると、その rev
-  # の darwin 適用が daemon / 対話 `dotfiles update` で永久に skip される）。詳細は init 関数のコメント参照。
-  if ! dotfiles update home --defer-rev-marker >/dev/null 2>&1; then
+  # home-only 適用は non-defer の要約経路を通り、適用後に NixOnly 要約を pending-summary へ書いて **home スコープ
+  # marker（`last-applied-home-rev`）** を確定する（同一 pin の毎日再適用を止める。全体 marker は動かさず darwin を
+  # starve させない）。詳細は本関数冒頭・init 関数のコメント参照。
+  if ! dotfiles update home >/dev/null 2>&1; then
     # 失敗した。marker を確定しない（同日の後続シェルが再試行できるよう起動可否を開けておく）。
     return 1
   fi
@@ -157,8 +178,10 @@ _dotfiles_auto_update_init() {
   # `dotfiles update` 側 `update.lock` が吸収するため、同日に複数シェルが起動しても二重適用にならない。
   if _dotfiles_auto_update_should_trigger_today; then
     # ログインをブロックしないよう detach で起動する。多重起動は dotfiles 側 lock が吸収する。適用は非 tty
-    # なので要約は `pending-summary` へ書かれ、下の precmd フックが拾って表示する。target/`--defer-rev-marker`
-    # の選択理由と marker 成功時確定は `_dotfiles_auto_update_run_catchup` のコメントに集約する。
+    # なので要約は `pending-summary` へ書かれ、下の precmd フックが拾って表示する。home-only catch-up は
+    # **非 defer の要約経路**（NixOnly 要約 + `last-applied-*` 確定）を通る（daemon を前提にしない経路。
+    # defer すると要約も marker 確定もされず同一 pin が再適用され続ける退行を避ける。finding 3374863446）。
+    # target 選択・非 defer の理由・marker 成功時確定は `_dotfiles_auto_update_run_catchup` のコメントに集約する。
     { _dotfiles_auto_update_run_catchup } &!
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _dotfiles_auto_update_precmd

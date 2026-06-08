@@ -51,11 +51,13 @@ pub(crate) trait BrewVersionDiffPort {
 /// `owner/repo`（`repo`）と changelog URL（`notes_source`）を渡す。implementor は出所ごとに異なる取得元を
 /// 選ぶ: nix eval 由来は delta が運ぶ `repo` から **GitHub Releases API で `(old, new]` 範囲のリリースノート**
 /// を取得し（空振り時は `notes_source`（`meta.changelog`/`meta.homepage`）の changelog raw へフォールバック）、
-/// brew tap 由来は cask 定義の `Casks/<letter>/<name>.rb` から生ノートテキストを取得して返す。出所を渡すのは、
-/// nix と brew で取得規則が異なり、同一規則で引くと誤った URL（例: nix package を cask レイアウトで引いて 404）
-/// になるためである。いずれの取得元も解決不能・取得不能なら `None` を返し（フォールバックは version + URL のみ）、
-/// ノートの構造化や要約は行わない。生ノート・`repo`・`notes_source` はいずれも信頼境界外であり、取得は許可
-/// ホスト https に限定し、後段の機械バリデートでも守る。
+/// **brew tap 由来は seed を作らず常に `None` を返す**（cask `.rb` 定義は実ノート本文でないため summarize_only
+/// seed にしない。finding 3374863454）。brew の探索ヒント（cask 定義の homepage/url）は別 capability
+/// [`NotesPort::resolve_brew_notes_hint`] が担い、application が agent_loop へ回す。出所を渡すのは、nix と brew で
+/// 取得規則が異なり、同一規則で引くと誤った URL（例: nix package を cask レイアウトで引いて 404）になるためである。
+/// いずれの取得元も解決不能・取得不能なら `None` を返し（フォールバックは version + URL のみ）、ノートの構造化や
+/// 要約は行わない。生ノート・`repo`・`notes_source` はいずれも信頼境界外であり、取得は許可ホスト https に限定し、
+/// 後段の機械バリデートでも守る。
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait NotesPort {
     /// 対象パッケージの `(old, new]` 範囲の生リリースノートを、差分の出所に応じた取得元から取得する。
@@ -85,6 +87,21 @@ pub(crate) trait NotesPort {
     /// 取得失敗・空本文・許可外 host はいずれも `None`（呼び出し側は **自己修復**として機械解決 → AI 探索へ
     /// フォールバックする）。`notes_url`（記録に残す URL）は取得した `url` をそのまま採る。
     fn fetch_notes_from_source(&self, url: &str) -> Result<Option<RawReleaseNotes>>;
+
+    /// brew cask の `Casks/<subdir>/<name>.rb` 定義から **探索ヒント**となる homepage URL を取り出す（finding 3374863454）。
+    ///
+    /// cask `.rb` は homepage / url を含む **定義ファイル**であって実リリースノート本文ではない。これを
+    /// [`fetch_release_notes`](Self::fetch_release_notes) の seed としてそのまま返すと、非空 seed と判定されて
+    /// **要約のみ経路（summarize_only）** に入り、AI が定義ファイル（homepage/url の Ruby 行）だけを根拠に要約して
+    /// しまい、実ノートを探索せず空/不正確な要約になる。そこで brew では定義そのものを seed にせず、定義から
+    /// `homepage`（無ければ `url`）を **探索ヒント** として取り出して返し、呼び出し側（application）がそれを
+    /// `ExtractRequest.homepage` へ載せて **AI tool-use 探索経路（agent_loop）** で実ノートを探させる。
+    ///
+    /// implementor は `.rb` を host allowlist + redirect 不追従で取得し（既存 fetch 経路と同一）、Ruby の
+    /// `homepage "..."`（無ければ `url "..."`）の値を 1 件抽出して返す。取得失敗・定義不在・homepage/url 抽出
+    /// 不能はすべて `None`（探索ヒント無し＝この package は version-only へ縮退）。返す URL は信頼境界外であり、
+    /// 後段の host allowlist / agent_loop 側 SSRF 検査で守る。base 未設定でも `None`。
+    fn resolve_brew_notes_hint(&self, name: &str) -> Result<Option<String>>;
 }
 
 /// 取得済み生リリースノートと参照 URL の境界型。

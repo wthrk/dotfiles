@@ -49,6 +49,20 @@ use crate::{
 
 /// state dir 配下のファイル名（いずれもユーザ所有で作る）。
 const LAST_APPLIED_REV: &str = "last-applied-rev";
+/// home 部分適用（`dotfiles update home`・非 defer）が最後に適用した dotfiles repo pin を控える state file。
+///
+/// **退行 finding 3374863446 の是正**: `last-applied-rev`（全体スコープ）は全体適用（target=all・非 defer）
+/// でのみ確定する（[`commit_apply_markers`] / [`SwitchOptions::is_full_apply`]）。これは部分 target で全体 pin を
+/// 確定すると未適用の他 target（darwin）が永久 starve するためである。しかし `last-applied-rev` だけだと、zsh
+/// login catch-up が呼ぶ home-only `update home`（darwin を適用しない非 defer 経路）は **どの applied marker も
+/// 確定せず**、`should_switch` が翌日以降も `previous_rev != current_pin` を真と判定して **同一 pin を毎ログイン
+/// 再 switch する無限ループ**になる。
+///
+/// これを避けるため、home スコープ専用の applied marker を分離する。home-only catch-up は適用後にこの marker へ
+/// 適用 pin を確定し、次回 home-only の適用要否（[`should_switch_home`]）はこの home marker（または全体適用が
+/// 確定した `last-applied-rev`）を読んで同一 pin を dedup する。home marker は home スコープしか確定しないため、
+/// 全体適用が読む `last-applied-rev` を動かさず、darwin は引き続き適用要と判定される（starve しない）。
+const LAST_APPLIED_HOME_REV: &str = "last-applied-home-rev";
 /// 最後に**適用に成功した**状態の推移的 nixpkgs rev（catch-up 要約 span の真の起点）。
 ///
 /// 要約 span の起点に「lock 更新前のローカル lock の nixpkgs rev」を使うと、partial-failure 再実行で誤る:
@@ -73,6 +87,25 @@ const LAST_APPLIED_NIXPKGS_REV: &str = "last-applied-nixpkgs-rev";
 /// 進まないため、前回要約済み `at` が保たれ、再実行で未表示範囲を失わない（B: partial-failure 堅牢性）。
 /// 要約「後」に書く点が `last-applied-*` と異なる。marker が無い（初回）ときは `None`（全件）から始める。
 const LAST_SUMMARIZED_AT: &str = "last-summarized-at";
+/// home-only NixOnly 要約（zsh ログイン catch-up の `update home`・非 defer）専用の要約済み `at` カーソル。
+///
+/// **退行 finding（運用整合）の是正**: `last-summarized-at`（全体/`All` スコープ）を home-only の **NixOnly** 要約と
+/// 共有すると、選択 span に cask（brew）エントリが含まれていても home-only 要約が `select_entries_after` の filter
+/// 「前」の selected 終端 `at` までカーソルを前進させてしまう。daemon（darwin）端末では launchd daemon の三段適用
+/// （home defer → darwin → commit `All`）と zsh ログイン catch-up（`update home`・非 defer・NixOnly）が**同一 state
+/// dir・同一 `last-summarized-at` を共有**するため、後者が先に走って cursor を cask エントリ越しに進めると、daemon
+/// commit step の `All` 要約が空 span（「0アプリ更新」）になり、**darwin が実適用した cask がどの pending-summary
+/// にも出ない（cask 要約 starve＝未表示要約喪失）**。
+///
+/// これを避け、`last-applied-rev` / `last-applied-home-rev` と同じ scope 分離方針で **home-only NixOnly 要約は
+/// 独自のカーソル（本 marker）**で進める。daemon の `All` スコープは `last-summarized-at` を読み書きし続けるため、
+/// home-only NixOnly 要約は `All` スコープのカーソルを一切動かさず、commit step の `All` 要約が cask を必ず 1 回
+/// 要約できる（要件1: starve しない）。home-only 専用端末（daemon 無し・cask 非適用）では NixOnly 要約だけが走り、
+/// 本 marker が NixOnly filter 後ではなく filter 前の選択 span 終端へ進む点は**この scope では正しい**（nix 更新は
+/// home が実適用済みで、cask は NixOnly が表示しないため誤って「適用済み」と見せない。同じ nix 更新を毎回再表示
+/// しない show-once も、本 marker が span 終端へ進むことで維持される。要件2）。`All` スコープと scope 別に持つため、
+/// 既存の show-once（scope 内 1 回表示）・複数端末単一消費・catch-up 集約と矛盾しない（要件3）。
+const LAST_SUMMARIZED_HOME_AT: &str = "last-summarized-home-at";
 const PENDING_SUMMARY: &str = "pending-summary";
 const LAST_RUN_LOG: &str = "last-run.log";
 const LOCK_FILE: &str = "update.lock";
@@ -208,13 +241,14 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
                 // ローカル履歴複製は home step の `sync_history` で取り込み済みのため、ここでは複製せず読むだけ。
                 // 複製不在/破損で要約が失敗しても rev 確定（上）は済んでおり、要約は次回 catch-up（zsh/daemon）へ
                 // 委ねる（best-effort。commit の主責務である rev 確定を要約失敗で巻き戻さない）。
-                let span_start_at = read_last_summarized_at(&state_dir)?;
-                if let Err(error) = present_and_commit_summary(
-                    &state_dir,
-                    span_start_at.as_deref(),
-                    update_history::domain::wire::PackageSourceFilter::All,
-                    dry_run,
-                ) {
+                //
+                // **scope = `All`（全体スコープ）**: span 起点と書き戻す marker は `last-summarized-at`（`All` スコープ
+                // カーソル）を使う。home-only NixOnly 要約が動かす `last-summarized-home-at` とは分離されているため、
+                // zsh ログイン catch-up が先に走って home カーソルを進めていても、この `All` 要約の span 起点は影響を
+                // 受けず、darwin 実適用 cask を含む適用済み範囲を必ず 1 回要約できる（cask starve を防ぐ。要件1）。
+                if let Err(error) =
+                    present_and_commit_summary(&state_dir, SummaryScope::All, dry_run)
+                {
                     eprintln!(
                         "適用済み範囲の要約に失敗しました（rev 確定済み・要約は次回へ繰越）: {error}"
                     );
@@ -245,9 +279,9 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // dry-run では状態を触らない。
     clear_deferred_markers(&state_dir, dry_run);
 
-    // catch-up 要約 span の起点となる「最後に利用者へ見せ終えた履歴エントリの `at`」を解決する。
-    //
-    // 起点は **最後に要約を表示/追記し終えたエントリの `at`**（`last-summarized-at`）。これを使う理由:
+    // catch-up 要約 span の起点となる「最後に利用者へ見せ終えた履歴エントリの `at`」は、要約直前に
+    // `present_and_commit_summary` が **scope のカーソル**（`All` は `last-summarized-at`、`HomeOnlyNix` は
+    // `last-summarized-home-at`）から読む。起点に要約済み `at` を使う理由:
     //   (A) 同日二重追記の抑止: shell catch-up（defer）と daemon home（defer）が同日に両方走っても、先行
     //       実行が要約後にこの marker を終端 `at` へ進めるため、後続は起点 = 終端 `at` → `select_entries_after`
     //       がそれより後を選び空 → 再追記しない。
@@ -255,9 +289,8 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     //       の brew-only 更新を毎回再選択してしまう。`at` は記録のたび前進する一意値なので `N -> N` を越えて進む。
     //   (B) partial-failure 堅牢性: switch/darwin が要約「前」に失敗するとこの marker は進まないため、前回
     //       要約済み `at` が保たれ、再実行で未表示範囲（要約 span）を失わない。
-    // marker が無いとき（このコード導入前に適用済み・本当の初回）は `None`（全件 = 初回 catch-up）から始める。
-    // 旧 nixpkgs-rev フォールバックは `at` ではないため使わない（`after_at` に rev を渡すと誤選択する）。
-    let span_start_at = read_last_summarized_at(&state_dir)?;
+    // span 起点の読みは scope と対で `present_and_commit_summary` 内に閉じ、read/write カーソルが scope 間で
+    // 食い違わないようにする（home-only NixOnly 要約が `All` スコープのカーソルを進める退行を構造的に防ぐ）。
 
     // **先に** ローカル lock を最新 repo pin へ更新する（skip 判定はこの後）。lock 更新前のローカル pin は前回
     // 適用値のまま動かないため、更新前に判定すると定常状態で常に skip し fleet が追随しない。lock 更新は冪等で
@@ -272,7 +305,16 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // 新入力が適用されない。`--full` 時は lock 全体ダイジェストを読み、pin か lock のいずれかが前回適用値と
     // 異なれば switch する。非 `--full` 経路は dotfiles input だけの更新なので従来どおり pin で判定する。
     let previous_rev = read_last_applied_rev(&state_dir)?;
-    let should_apply = if options.full {
+    let should_apply = if options.switch.is_home_only_apply() && !options.defer_rev_marker {
+        // home 部分適用（zsh login catch-up の `update home`・非 defer）は **home スコープ marker** で適用要否を
+        // 判定する（finding 3374863446 の退行是正）。全体スコープの `last-applied-rev` は home-only では確定
+        // しないため、これだけ見ると同一 pin を毎ログイン再 switch する。home marker（前回 home-only 適用 pin）
+        // または全体適用が確定した `last-applied-rev`（全体適用は home を含むため home 適用済みとみなす）の
+        // いずれかが current_pin に一致すれば skip する。home marker は home スコープしか確定しないため、全体
+        // 適用（target=all）の `should_switch` は引き続き未適用 pin を switch 要と判定でき、darwin は starve しない。
+        let home_rev = read_last_applied_home_rev(&state_dir)?;
+        should_switch_home(home_rev.as_deref(), previous_rev.as_deref(), &current_pin)
+    } else if options.full {
         let current_lock_id = read_lock_id(&config_dir)?;
         let previous_lock_id = read_last_applied_lock_id(&state_dir)?;
         should_switch_full(
@@ -348,14 +390,23 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     // `defer_rev_marker`: daemon フル経路（home+darwin 両方適用）でのみ home step の要約を commit へ委ねる。
     if history_synced && !options.defer_rev_marker {
         // 適用後要約は実際に適用した target に対応する出所だけへ絞る（finding 3368653947）。home-only catch-up
-        // （`update home`・非 defer）は home-manager の nix package だけを switch するため `NixOnly` で brew cask
-        // を除外し、未適用の cask を通知しない。darwin / 全体適用は `All`（systemPackages + cask を適用）。
-        let source_filter = if options.switch.is_home_only_apply() {
-            update_history::domain::wire::PackageSourceFilter::NixOnly
+        // （`update home`・非 defer）は home-manager の nix package だけを switch するため **`HomeOnlyNix` scope**
+        // （`NixOnly` + `last-summarized-home-at` カーソル）で brew cask を除外し、未適用の cask を通知しない。
+        // darwin / 全体適用は **`All` scope**（systemPackages + cask + `last-summarized-at` カーソル）。
+        //
+        // **scope を分離する理由（運用整合 finding 是正）**: home-only NixOnly 要約は `select_entries_after` の
+        // filter「前」の選択 span 終端 `at` までカーソルを進めるため、`All` と共有カーソルだと daemon 端末で
+        // home-only 要約が cask エントリ越しに `All` スコープのカーソルを進め、commit `All` 要約が空 span になって
+        // 実適用 cask が starve する。scope 別カーソル（`SummaryScope`）にすることで、home-only NixOnly 要約は
+        // `All` スコープのカーソル（`last-summarized-at`）を動かさず、commit `All` 要約が cask を 1 回要約できる
+        // （要件1）。home-only 専用端末では NixOnly 要約だけが home カーソルを進め、nix の show-once を維持しつつ
+        // cask を「適用済み」と誤表示しない（要件2）。
+        let scope = if options.switch.is_home_only_apply() {
+            SummaryScope::HomeOnlyNix
         } else {
-            update_history::domain::wire::PackageSourceFilter::All
+            SummaryScope::All
         };
-        present_and_commit_summary(&state_dir, span_start_at.as_deref(), source_filter, dry_run)?;
+        present_and_commit_summary(&state_dir, scope, dry_run)?;
     }
 
     // **marker 確定を要約成功後に行う（finding 3368519980）**: 全体適用（target=all・非 defer）の
@@ -405,6 +456,21 @@ fn should_switch_full(
     current_lock_id: &str,
 ) -> bool {
     should_switch(previous_rev, current_pin) || previous_lock_id != Some(current_lock_id)
+}
+
+/// home 部分適用（`update home`・非 defer）の switch 要否を **home スコープ marker** で決める純粋関数。
+///
+/// home-only catch-up が同一 pin を毎ログイン再 switch する退行（finding 3374863446）を防ぐための判定。home
+/// 部分適用は全体スコープの `last-applied-rev` を確定しない（部分 target で全体 pin を確定すると darwin が永久
+/// starve するため）ので、home-only の dedup には home 専用 marker（`last-applied-home-rev`）が要る。
+///
+/// `home_rev` は前回 home-only 適用が確定した home スコープ pin、`full_rev` は全体適用が確定した
+/// `last-applied-rev`（全体適用は home を含むため home 適用済みの根拠になる）。いずれかが `current_pin` に一致
+/// すれば home は適用済みなので `false`（skip）、どちらも一致しなければ `true`（switch）を返す。両 marker とも
+/// `None`（初回）なら一致せず必ず switch する。この関数は home スコープしか参照しないため、全体適用の
+/// [`should_switch`] が darwin 側の適用要否を独立に判定でき、home-only 適用後も darwin は starve しない。
+fn should_switch_home(home_rev: Option<&str>, full_rev: Option<&str>, current_pin: &str) -> bool {
+    home_rev != Some(current_pin) && full_rev != Some(current_pin)
 }
 
 /// `--commit-rev-marker` の token 検証結果。確定するか、別サイクル上書き検知で確定を skip するか。
@@ -582,6 +648,13 @@ fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<Strin
 /// （サブディレクトリは履歴 layout 上想定しないため対象外）。store path 由来 source は read-only なため、複製先は
 /// ユーザ所有 state dir に置いて以降の読取りを保証する。コピー失敗は呼び出し側が best-effort として扱えるよう
 /// `Err` を返す（致命にしないのは呼び出し側の責務）。失敗時は temp を掃除し、既存 dest は壊さない。
+///
+/// **置換失敗時に旧複製を喪失しない**（finding 3374863441）: 単に `remove_dir_all(dest)` を先に行ってから
+/// `rename(temp, dest)` すると、その rename が失敗した場合（temp と dest が別ファイルシステムにある等）に旧複製が
+/// 既に消えていて、`sync_history` が `Err` を返すと呼び出し側はそれを警告へ落として `last-applied-*` を確定するため、
+/// 次回同じ pin では switch/sync が skip され `update-history show` や適用後要約が空/古い状態から自己回復しない。
+/// よって dest を先に消さず、**既存 dest を backup へ rename 退避 → temp を dest へ rename → 成功時に backup を削除、
+/// 失敗時は backup を dest へ rename 復元**の順にして、置換失敗時に旧複製を残す。
 fn copy_history_dir(source_history: &Path, dest: &Path) -> Result<()> {
     // dest と同一親 dir 内の一時 dir に新しい複製を構築する（rename での atomic 置換を成立させるため）。
     let parent = dest.parent().unwrap_or(Path::new("."));
@@ -618,15 +691,48 @@ fn copy_history_dir(source_history: &Path, dest: &Path) -> Result<()> {
         return Err(error);
     }
 
-    // 既存 dest を消してから temp を dest へ rename する。古い dest の削除で source に無い古い TOML が消え、
-    // 新しい完全な複製だけが残る。dest 削除と rename の間に読み手が来ても、temp は完成済みで rename は原子的。
-    let _ = fs::remove_dir_all(dest);
-    if let Err(error) = fs::rename(&temp_dir, dest) {
-        let _ = fs::remove_dir_all(&temp_dir);
+    // 完成した temp を、旧複製を喪失せずに dest へ原子的に差し替える。
+    let backup_dir = parent.join(format!("{dest_name}.backup.{}.tmp", std::process::id()));
+    replace_history_dir_atomically(&temp_dir, dest, &backup_dir)
+}
+
+/// 完成済み複製 `temp_dir` を、旧複製を喪失せずに `dest` へ差し替える（finding 3374863441）。
+///
+/// **置換失敗時に旧複製を残す退避/復元規律**: dest を先に `remove_dir_all` してから `rename(temp, dest)` すると、
+/// その rename が失敗（temp と dest が別ファイルシステムにある等）した瞬間に旧複製を失う。呼び出し側はその失敗を
+/// best-effort の警告へ落として `last-applied-*` を確定するため、次回同じ pin では switch/sync が skip され、
+/// `update-history show` や適用後要約が空/古い状態から自己回復しない。よって順序を次のように固定する:
+///
+/// 1. 既存 dest を `backup_dir` へ rename 退避する（dest が無い初回 = `NotFound` は退避不要）。
+/// 2. `temp_dir` を dest へ rename する。
+/// 3. 成功時のみ `backup_dir` を削除する。
+/// 4. 失敗時は temp を掃除し、退避した旧複製を `backup_dir` → dest へ rename 復元して喪失を防ぐ。
+///
+/// 退避 rename 自体が `NotFound` 以外で失敗した場合は dest を破壊していないので、そのまま置換へ進む（置換成功なら
+/// 新複製で上書きされ、置換失敗でも dest は元位置に残る）。`backup_dir` は呼び出し側が dest と同一親 dir 内の一意名で
+/// 与える前提。`libc` を直呼びせず std の rename / remove のみで実現する。
+fn replace_history_dir_atomically(temp_dir: &Path, dest: &Path, backup_dir: &Path) -> Result<()> {
+    let _ = fs::remove_dir_all(backup_dir);
+    let backed_up = match fs::rename(dest, backup_dir) {
+        Ok(()) => true,
+        // dest が無い（初回複製）場合は退避するものが無い。それ以外の退避失敗も致命にせず、dest を破壊しないまま
+        // 後続の置換へ進む（置換が成功すれば新複製で上書きされ、失敗時は dest がそのまま残る）。
+        Err(_) => false,
+    };
+    if let Err(error) = fs::rename(temp_dir, dest) {
+        // 置換に失敗した。temp を掃除し、退避した旧複製を dest へ戻して喪失を防ぐ。
+        let _ = fs::remove_dir_all(temp_dir);
+        if backed_up {
+            let _ = fs::rename(backup_dir, dest);
+        }
         return Err(anyhow::Error::from(error).context(format!(
             "failed to atomically replace history dir {}",
             dest.display()
         )));
+    }
+    // 置換成功。退避した旧複製はもう不要なので削除する。
+    if backed_up {
+        let _ = fs::remove_dir_all(backup_dir);
     }
     Ok(())
 }
@@ -813,9 +919,28 @@ fn read_last_summarized_at(state_dir: &Path) -> Result<Option<String>> {
     read_trimmed_rev(&state_dir.join(LAST_SUMMARIZED_AT))
 }
 
+/// home-only NixOnly 要約専用の要約済み `at` カーソルを読む（不存在/空なら `None`）。
+///
+/// `All` スコープの `last-summarized-at` とは分離した home スコープ専用カーソル（運用整合 finding 是正）。
+/// zsh ログイン catch-up（`update home`・非 defer・NixOnly）の span 起点はこの home カーソルを読み、daemon の
+/// `All` スコープ（`last-summarized-at`）を動かさないことで commit step の cask 要約を starve させない。
+/// `None`（初回・本 marker 導入前）なら NixOnly 要約は `after_at = None`（全件）から始める。
+fn read_last_summarized_home_at(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(LAST_SUMMARIZED_HOME_AT))
+}
+
 /// `last-applied-rev` を読む（不存在/空なら `None`）。
 fn read_last_applied_rev(state_dir: &Path) -> Result<Option<String>> {
     read_trimmed_rev(&state_dir.join(LAST_APPLIED_REV))
+}
+
+/// home 部分適用が最後に確定した home スコープ pin を読む（不存在/空なら `None`）。
+///
+/// home-only catch-up（`update home`・非 defer）の dedup 判定（[`should_switch_home`]）で使う。marker が無い
+/// （home-only 適用が一度も成功していない・本機能導入前）なら `None` で、その場合 home-only は switch する
+/// （全体適用の `last-applied-rev` が一致しない限り）。
+fn read_last_applied_home_rev(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(LAST_APPLIED_HOME_REV))
 }
 
 /// 最後に `--full` 適用した `flake.lock` 全体の identity を読む（不存在/空なら `None`）。
@@ -874,6 +999,15 @@ fn read_trimmed_rev(path: &Path) -> Result<Option<String>> {
 /// rename は同一ファイルシステム内で原子的であり、読み手は旧 rev か新 rev のどちらかだけを観測する。
 fn write_last_applied_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
     write_rev_atomic(&state_dir.join(LAST_APPLIED_REV), rev, dry_run)
+}
+
+/// home 部分適用が適用した dotfiles repo pin を home スコープ marker へ原子的に控える（ユーザ所有）。
+///
+/// home-only catch-up（`update home`・非 defer）の適用成功後に確定し、次回 home-only の [`should_switch_home`]
+/// が同一 pin を dedup できるようにする（finding 3374863446）。home スコープしか確定しないため、全体適用が読む
+/// `last-applied-rev` を動かさず darwin を starve させない。`--dry-run` では書かない。
+fn write_last_applied_home_rev(state_dir: &Path, rev: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_APPLIED_HOME_REV), rev, dry_run)
 }
 
 /// 最後に適用成功した時点の nixpkgs rev を原子的に書き込む（ユーザ所有）。`--dry-run` では書かない。
@@ -939,6 +1073,15 @@ fn write_last_summarized_at(state_dir: &Path, at: &str, dry_run: bool) -> Result
     write_rev_atomic(&state_dir.join(LAST_SUMMARIZED_AT), at, dry_run)
 }
 
+/// home-only NixOnly 要約専用の要約済み `at` カーソルを原子的に書き込む（ユーザ所有）。`--dry-run` 不書込。
+///
+/// `All` スコープの `last-summarized-at` と分離した home スコープ専用カーソルを進めることで、daemon 端末で
+/// home-only NixOnly 要約が `All` スコープのカーソルを cask エントリ越しに進め、commit `All` 要約の cask を
+/// starve させる退行を防ぐ（運用整合 finding 是正）。要約「後」に書く点は `last-summarized-at` と同じ。
+fn write_last_summarized_home_at(state_dir: &Path, at: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_SUMMARIZED_HOME_AT), at, dry_run)
+}
+
 /// rev を同一 dir 内 temp→rename で原子的に書く共有実装（部分書込みを観測させない）。
 fn write_rev_atomic(final_path: &Path, rev: &str, dry_run: bool) -> Result<()> {
     if dry_run {
@@ -956,41 +1099,96 @@ fn write_rev_atomic(final_path: &Path, rev: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// 適用後要約を表示/追記し、**成功時に**要約済み marker（`last-summarized-at`）を終端 `at` へ進める。
+/// 適用後要約の scope。**source_filter と要約済み `at` カーソルを 1 組に束ねる**ことで、read/write のカーソルが
+/// scope 間で食い違わないようにする（運用整合 finding 是正の核）。
 ///
-/// `present_summary`（表示/pending 追記）を呼び、空でない span を要約し終えたら終端 `at` を marker へ書く。
+/// - `All`: 全体適用（target=all・非 defer）と daemon commit step（`--commit-rev-marker`）。nix + cask を要約し、
+///   `last-summarized-at` を読み書きする。
+/// - `HomeOnlyNix`: home-only catch-up（`update home`・非 defer。zsh ログイン catch-up）。nix（NixOnly）だけを
+///   要約し、**`All` とは分離した `last-summarized-home-at`** を読み書きする。
+///
+/// scope を分離する理由: home-only NixOnly 要約が `select_entries_after` の filter「前」の選択 span 終端 `at` まで
+/// カーソルを進めるため、共有カーソル（`last-summarized-at`）を使うと、daemon 端末で home-only 要約が cask エントリ
+/// 越しに `All` スコープのカーソルを進め、commit `All` 要約が空 span になって **実適用 cask が starve** する。scope
+/// 別カーソルにすれば、home-only NixOnly 要約は `All` スコープのカーソルを動かさず、commit `All` 要約が cask を
+/// 必ず 1 回要約できる（要件1）。home-only 専用端末では NixOnly 要約だけが home カーソルを進め、nix の show-once を
+/// 維持しつつ cask を「適用済み」と誤表示しない（要件2）。
+#[derive(Clone, Copy)]
+enum SummaryScope {
+    /// 全体適用 / daemon commit step。nix + cask を `last-summarized-at` カーソルで要約する。
+    All,
+    /// home-only catch-up（NixOnly）。nix だけを `last-summarized-home-at` カーソルで要約する。
+    HomeOnlyNix,
+}
+
+impl SummaryScope {
+    /// この scope の要約に使う出所フィルタ（`All` は nix + cask、`HomeOnlyNix` は nix のみ）。
+    fn source_filter(self) -> update_history::domain::wire::PackageSourceFilter {
+        match self {
+            SummaryScope::All => update_history::domain::wire::PackageSourceFilter::All,
+            SummaryScope::HomeOnlyNix => update_history::domain::wire::PackageSourceFilter::NixOnly,
+        }
+    }
+
+    /// この scope の要約済み `at` カーソルを読む（span 起点）。scope 別ファイルから読む。
+    fn read_cursor(self, state_dir: &Path) -> Result<Option<String>> {
+        match self {
+            SummaryScope::All => read_last_summarized_at(state_dir),
+            SummaryScope::HomeOnlyNix => read_last_summarized_home_at(state_dir),
+        }
+    }
+
+    /// この scope の要約済み `at` カーソルを終端 `at` へ進める（要約成功後に書く）。scope 別ファイルへ書く。
+    fn write_cursor(self, state_dir: &Path, at: &str, dry_run: bool) -> Result<()> {
+        match self {
+            SummaryScope::All => write_last_summarized_at(state_dir, at, dry_run),
+            SummaryScope::HomeOnlyNix => write_last_summarized_home_at(state_dir, at, dry_run),
+        }
+    }
+}
+
+/// 適用後要約を表示/追記し、**成功時に** scope の要約済み marker を終端 `at` へ進める。
+///
+/// span 起点（`after_at`）と書き戻す marker は **同一 scope のカーソル**（`SummaryScope::read_cursor` /
+/// `write_cursor`）であり、`All` は `last-summarized-at`、`HomeOnlyNix` は `last-summarized-home-at` を読み書きする。
+/// read と write を同じ scope のカーソルへ束ねることで、home-only NixOnly 要約が `All` スコープのカーソルを cask
+/// エントリ越しに進めて commit `All` 要約の cask を starve させる退行を防ぐ（運用整合 finding 是正）。
+///
+/// `present_summary`（表示/pending 追記）を呼び、空でない span を要約し終えたら終端 `at` を scope カーソルへ書く。
 /// 要約「後」に marker を進めることで、partial-failure（要約中の異常終了）で未表示範囲を失わず、同日に
 /// defer/commit 経路が連続しても 2 回目は起点 = 終端 `at` → 空 span → 再追記しない。`present_summary` が `Err`
 /// （履歴 TOML 破損・pending-summary 書込み失敗等）なら marker を進めず `Err` を伝播する（呼び出し側が
 /// 要約失敗時に apply-dedup marker を確定しないことで、未表示 span を次回再 switch で再要約できる）。
 /// 空 span（`None`）のときは marker を進めない（前回 `at` を保つ）。tty 判定はここで 1 回だけ解決して
 /// `present_summary` へ注入する（テストが tty 経路へ誤って入らないようアンビエント大域依存を呼び出し側へ集約）。
-fn present_and_commit_summary(
-    state_dir: &Path,
-    span_start_at: Option<&str>,
-    source_filter: update_history::domain::wire::PackageSourceFilter,
-    dry_run: bool,
-) -> Result<()> {
+fn present_and_commit_summary(state_dir: &Path, scope: SummaryScope, dry_run: bool) -> Result<()> {
+    let span_start_at = scope.read_cursor(state_dir)?;
     let stdout_is_terminal = std::io::stdout().is_terminal();
     let summarized_at = present_summary(
         state_dir,
-        span_start_at,
-        source_filter,
+        span_start_at.as_deref(),
+        scope.source_filter(),
         dry_run,
         stdout_is_terminal,
     )?;
     if let Some(at) = summarized_at {
-        write_last_summarized_at(state_dir, &at, dry_run)?;
+        scope.write_cursor(state_dir, &at, dry_run)?;
     }
     Ok(())
 }
 
-/// apply-dedup marker（`last-applied-*`）または defer marker を確定する（要約成功後に呼ぶ）。
+/// apply-dedup marker（`last-applied-*` / home スコープ marker）または defer marker を確定する（要約成功後に呼ぶ）。
 ///
 /// repo pin 全体の確定（`last-applied-rev`/`last-applied-nixpkgs-rev`/`last-applied-lock-id`）は
-/// **全体適用（target=all・非 defer）でのみ**行う。部分 target（`update home`/`update darwin`）でこれを確定すると、
-/// 適用していない他 target がその rev について以降 skip され（`should_switch` が前回値一致で skip）、未適用のまま
-/// starve する。`--defer-rev-marker`（daemon home step）では `last-applied-*` を確定せず、適用した pin/nixpkgs rev/
+/// **全体適用（target=all・非 defer）でのみ**行う。部分 target で全体 pin を確定すると、適用していない他 target
+/// がその rev について以降 skip され（`should_switch` が前回値一致で skip）、未適用のまま starve するためである。
+///
+/// 一方、home 部分適用（`update home`・非 defer。zsh login catch-up）は **home スコープ marker
+/// （`last-applied-home-rev`）** を確定する（finding 3374863446 の退行是正）。全体 marker を動かさないので darwin は
+/// starve しないが、home スコープでは同一 pin の再適用を dedup できる（[`should_switch_home`] が読む）。home marker
+/// は home スコープしか進めないため、全体適用の `should_switch` 判定とは独立しており、相互に干渉しない。
+///
+/// `--defer-rev-marker`（daemon home step）では `last-applied-*` も home marker も確定せず、適用した pin/nixpkgs rev/
 /// サイクル token を defer marker へ控える（後続の `--commit-rev-marker` が確定する）。
 ///
 /// caller responsibility: 要約（`present_and_commit_summary`）が成功した後に呼ぶこと（finding 3368519980）。
@@ -1016,6 +1214,12 @@ fn commit_apply_markers(
             let applied_lock_id = read_lock_id(config_dir)?;
             write_last_applied_lock_id(state_dir, &applied_lock_id, dry_run)?;
         }
+    } else if !options.defer_rev_marker && options.switch.is_home_only_apply() {
+        // home 部分適用（zsh login catch-up）: 全体 marker は確定せず（darwin starve 回避）、home スコープ marker
+        // だけ確定する（finding 3374863446）。これで次回 home-only は同一 pin を dedup でき、毎ログイン再適用の
+        // 無限ループを止める。home スコープしか進めないため darwin は引き続き適用要と判定される。nixpkgs rev /
+        // lock-id は全体スコープの marker なのでここでは確定しない（home-only は cask/system を適用しない）。
+        write_last_applied_home_rev(state_dir, current_pin, dry_run)?;
     } else if options.defer_rev_marker {
         // defer 経路: `last-applied-*` はまだ確定しないが、**この時点で適用した pin / nixpkgs rev** を defer
         // marker へ控える（B）。後続の `--commit-rev-marker` はこの defer 値を確定し、commit 時に現在 pin を
@@ -1217,13 +1421,13 @@ const LOCK_STALE_SECS: u64 = 6 * 60 * 60;
 
 /// steal marker（`update.lock.steal`）を孤児とみなす経過時間（秒）。これより古い marker は回収する。
 ///
-/// 奪取権を直列化する `update.lock.steal` は、奪取区間（古い lock の remove → 新 lock の create_new）の
-/// **間だけ**存在する短命 marker である。区間中にプロセスが kill/OOM/電源断/abort されると `remove_file`
-/// が走らず marker が恒久残骸化し、以後 `steal_stale_lock` が必ず `AlreadyExists` で `None`（skip）へ倒れ、
-/// **stale lock の奪取が永久に起きなくなる**（marker 残骸が「stale lock を永久 skip しない」という機構自体の
-/// 目的を破る）。これを防ぐため marker 自身に短い TTL を与え、TTL より古い marker は孤児とみなして回収し
-/// 奪取権を再取得する。奪取区間（remove + create_new、I/O 数回）は秒オーダーで完了するため、誤回収（実行中の
-/// 別プロセスの奪取権を横取り）を避けつつ孤児を速やかに掃除できる短さにする。5 分は実奪取区間より十分長く、
+/// 奪取権を直列化する `update.lock.steal` は、奪取区間（古い lock を直接 remove せず **必ず rename で退避してから**
+/// 新 lock を create_new で張る rename-CAS）の **間だけ**存在する短命 marker である。区間中にプロセスが
+/// kill/OOM/電源断/abort されると `remove_file` が走らず marker が恒久残骸化し、以後 `steal_stale_lock` が必ず
+/// `AlreadyExists` で `None`（skip）へ倒れ、**stale lock の奪取が永久に起きなくなる**（marker 残骸が「stale lock を
+/// 永久 skip しない」という機構自体の目的を破る）。これを防ぐため marker 自身に短い TTL を与え、TTL より古い marker
+/// は孤児とみなして回収し奪取権を再取得する。奪取区間（rename 退避 + create_new、I/O 数回）は秒オーダーで完了する
+/// ため、誤回収（実行中の別プロセスの奪取権を横取り）を避けつつ孤児を速やかに掃除できる短さにする。5 分は実奪取区間より十分長く、
 /// `LOCK_STALE_SECS` より十分短い。
 const STEAL_MARKER_STALE_SECS: u64 = 5 * 60;
 
@@ -1236,6 +1440,21 @@ const STEAL_MARKER_STALE_SECS: u64 = 5 * 60;
 /// 全員「成功（上書き）」と誤判定する（CAS が崩れて二重奪取）。プロセス内一意のカウンタを足して中継名を必ず
 /// 別名にし、各回収者の rename dst を衝突させない（マルチスレッドでも src 単一性で 1 人に絞る）。
 static STEAL_RENAME_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// **同一プロセス内の奪取区間を直列化する process-wide mutex（finding 3368585963 の単一勝者厳密化）**。
+///
+/// 実運用では `dotfiles update` は 1 マシン 1 プロセスで、奪取区間に入るのは常に 1 スレッドだけ（プロセス内で
+/// 自分自身と奪取を競うことはない）。プロセス間の排他は `update.lock` / `update.lock.steal` のファイル `O_EXCL`
+/// が担う。一方で **複数スレッドが同一プロセス内で同時に奪取区間へ入る**と、ある世代の lock を別スレッドが
+/// rename 退避して `lock_path` が一瞬空く窓に、同プロセスの `try_acquire` 冒頭 `create_new`(O_EXCL) が割り込んで
+/// **同一世代でない 2 本目の lock を取得**し、退避された側が phantom holder として残る（同時保持 2）。これは
+/// file `O_EXCL` だけでは塞げない（O_EXCL は「不在 → 作成」の同時実行しか直列化せず、退避で生じた不在窓への
+/// 割り込みは別経路の正規取得に見える）。そこで **奪取区間全体をプロセス内 mutex で 1 スレッドに直列化**し、
+/// 「ある世代の fresh lock を別スレッドが退避して不在窓を作る」cross-generation rename を原理的に消す。これにより
+/// 奪取は常に「stale 世代 1 本 → （奪取者 or 不在窓を取った try_acquire）1 人」の単一遷移になり、同時保持は
+/// 高々 1 本になる。プロセス間は従来どおりファイル marker / lock の `O_EXCL` が担うため、本 mutex はプロセス内
+/// 直列化を足すだけで cross-process 排他を弱めない。`libc` を直呼びせず std の `Mutex` のみで実現する。
+static STEAL_SECTION_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// rename CAS 中継ファイルの一意 suffix（`<pid>.<epoch>.<seq>`）を作る。
 ///
@@ -1307,6 +1526,27 @@ impl UpdateLock {
     /// 集約され、remove-clobber 二重奪取が原理的に起きない。区間終了時に marker を必ず除去する。`libc` を直呼びせず
     /// std の create_new / rename のみで実現する。
     fn steal_stale_lock(path: &Path) -> Result<Option<Self>> {
+        // **プロセス内の奪取区間を 1 スレッドへ直列化する**（[`STEAL_SECTION_MUTEX`]）。複数スレッドが同時に奪取区間
+        // へ入ると、ある世代の lock を別スレッドが rename 退避して `lock_path` が空く窓に、同プロセスの別経路
+        // `create_new`(O_EXCL) が割り込んで同時保持 2 本になりうる（cross-generation rename）。区間全体を mutex で
+        // 直列化してこの窓を消す。実運用は 1 プロセス 1 スレッドなので競合は無く、プロセス間は file `O_EXCL` が担う。
+        let _section = STEAL_SECTION_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // 奪取区間の **ファイル protocol 本体**（marker CAS → 実 lock 張替え → marker 除去）。protocol そのものが
+        // create_new(O_EXCL)/rename CAS で cross-process 単一勝者を保証するため、in-process mutex は補助に過ぎない。
+        Self::steal_stale_lock_protocol(path)
+    }
+
+    /// 奪取区間のファイル protocol 本体（marker CAS → 実 lock 張替え → marker 除去）。
+    ///
+    /// `STEAL_SECTION_MUTEX` を **持たない**（呼び出し側 [`steal_stale_lock`] が補助的に取る）。この protocol 自体が
+    /// `create_new`(O_EXCL) と rename CAS だけで **cross-process（= 別プロセス間。in-process mutex は効かない）でも
+    /// 単一勝者を保証する**ことが単独要件であり、テストはこの関数を mutex を経由せず多スレッドから直接競わせて
+    /// 「rename-CAS を旧バグ（lock path を直接 remove→create_new）へ退行させると同時保持が 2 以上になる」ことを
+    /// 固定する（finding 3368585963 / B 是正）。in-process mutex はこの単一勝者性の上の冗長な直列化であり、
+    /// protocol の正しさには依存しない。`libc` を直呼びせず std の create_new / rename のみで実現する。
+    fn steal_stale_lock_protocol(path: &Path) -> Result<Option<Self>> {
         let steal_marker = path.with_file_name(format!("{LOCK_FILE}.steal"));
         // 奪取権 CAS: marker を取得できた者だけが奪取区間に入る（孤児 marker は rename CAS で単一回収）。
         if !Self::claim_steal_marker(&steal_marker)? {
@@ -1314,6 +1554,12 @@ impl UpdateLock {
             return Ok(None);
         }
         // marker により直列化された奪取区間。実 lock 張替えも rename CAS で単一化する。終了時に marker を除去する。
+        //
+        // **marker の除去は奪取結果が確定した後に行う**（順序が単一勝者保証の要）。除去を steal の「前」や並行に
+        // 出すと、reclaim 経路の敗者が走らせる `create_new_marker`（[`claim_steal_marker`] ステップ 3）が、
+        // 本 owner の steal 区間中に marker を再取得して **2 本目の奪取区間へ同時入場**しうる。除去を steal 完了後に
+        // 限定し、かつ実 lock の取得点を `steal_stale_lock_file_via_rename` 内の唯一の `create_new`(O_EXCL) に
+        // 集約することで、marker 経路が万一同時入場を許しても実 lock を握れるのは高々 1 人になる。
         let outcome = Self::steal_within_marker(path);
         let _ = fs::remove_file(&steal_marker);
         outcome
@@ -1493,9 +1739,14 @@ impl UpdateLock {
     ///
     /// rename 成功は「奪取権の獲得」ではなく「孤児退避の権利」であり、新 lock の真の取得点は最後の `create_new`
     /// （O_EXCL）に集約する。rename で奪った中身が判定〜rename 間に別勝者の fresh lock へ差し替わっていれば（TOCTOU）、
-    /// 奪ったのは孤児でなく生きた lock なので元位置へ戻して（空のときだけ）`None`（skip）へ倒し、生きた owner を
-    /// 横取りしない。rename 失敗（src 消滅）は、別プロセスが既に退避・張替え中なので `create_new`(O_EXCL) を 1 回
-    /// 試みて、取れれば取得・取れなければ skip。`libc` を直呼びせず std の rename / create_new のみで実現する。
+    /// 奪ったのは孤児でなく生きた lock なので [`restore_fresh_stolen_lock`] で **非破壊に元へ戻して** `None`（skip）へ
+    /// 倒し、生きた owner を横取りしない。rename 失敗（src 消滅）は、別プロセスが既に退避・張替え中なので奪取せず
+    /// `None`（skip）へ倒す（無更新は安全側）。
+    ///
+    /// なお本関数は **奪取区間（[`STEAL_SECTION_MUTEX`] でプロセス内 1 スレッドへ直列化）内**でのみ呼ばれるため、
+    /// 同一プロセスの別スレッドが「現世代の fresh lock を退避して `lock_path` を空ける」cross-generation rename は
+    /// 起きない（その退避が同時保持 2 の主因だった）。プロセス間は file `O_EXCL` が担う。`libc` を直呼びせず std の
+    /// rename / create_new のみで実現する。
     fn steal_stale_lock_file_via_rename(path: &Path) -> Result<Option<Self>> {
         let stealing =
             path.with_file_name(format!("{LOCK_FILE}.stealing.{}", steal_rename_suffix()));
@@ -1513,16 +1764,60 @@ impl UpdateLock {
                     .context(format!("failed to steal stale lock {}", path.display())));
             }
         }
-        // 奪った中身を再確認する。判定〜rename 間に fresh lock へ差し替わっていれば横取りしない（元へ戻す）。
+        // 奪った中身を再確認する。判定〜rename 間に fresh lock へ差し替わっていれば横取りせず、生きた owner の
+        // lock を **非破壊で元へ戻す**（[`restore_fresh_stolen_lock`]）。fresh 中継を `remove_file` で捨てると、その
+        // owner の `UpdateLock` は依然生きているのに `lock_path` が空席へ戻り、後続の `create_new_lock`(O_EXCL) が
+        // 2 本目の lock を取得して同時保持 2 になるため、復元は create_new(O_EXCL) で非破壊に行う。
         if Self::lock_is_fresh(&stealing) {
-            if fs::rename(&stealing, path).is_err() {
-                let _ = fs::remove_file(&stealing);
-            }
+            Self::restore_fresh_stolen_lock(&stealing, path);
             return Ok(None);
         }
         // 真に孤児だった。中継を消して新 lock を O_EXCL で張る（lock path の作成は O_EXCL でちょうど 1 人が成功）。
         let _ = fs::remove_file(&stealing);
         Self::create_new_lock(path)
+    }
+
+    /// rename CAS で奪ったが fresh（生きた owner の実 lock）だった中継ファイルを、元の `lock_path` へ非破壊で戻す。
+    ///
+    /// **二重保持を作らないための復元規律（finding 3368585963）**: 奪った中継 `stealing` が生きた owner の lock
+    /// だった場合、その owner の `UpdateLock` は依然生存している。中継を `remove_file` で捨てると `lock_path` が
+    /// 空席へ戻り、後続の `create_new_lock`(O_EXCL) が 2 本目の lock を取得して同時保持が 2 になる。これを断つため、
+    /// fresh 中継は **絶対に黙って捨てず**、その内容を `lock_path` へ復元する。
+    ///
+    /// **復元は `fs::rename` を使わない**: POSIX の `rename` は dst を**無条件に上書き**するため、別 owner が既に
+    /// `lock_path` に張った新 lock を rename 復元が黙って潰し、その owner の `UpdateLock` を `lock_path` から消して
+    /// しまう（別経路の二重保持窓）。よって復元は **`create_new`(O_EXCL) で `lock_path` を埋める**非破壊操作にする:
+    /// `lock_path` が空なら奪った内容をそのまま書き戻し（owner の lock が復帰）、既に別 owner の lock が在れば
+    /// `AlreadyExists` で書き込まず中継だけ捨てる（生きた lock は `lock_path` に 1 本在るので空席化しない）。
+    /// `create_new` は同時実行を O_EXCL で 1 人に直列化するので、復元と別 owner の取得が競合しても上書き衝突しない。
+    /// 書込み失敗（I/O 異常）など `lock_path` を埋められなかった場合は中継を**消さずに残し**（消すと空席化＝二重保持
+    /// 窓を開く）、`update.lock.stealing.*` 中継として次回サイクルの孤児掃除に委ねる。`libc` を直呼びせず std の
+    /// read / create_new / remove のみで実現する。
+    fn restore_fresh_stolen_lock(stealing: &Path, path: &Path) {
+        // 奪った fresh lock の内容を読み、`lock_path` が空なら同内容で原子的に復元する（O_EXCL なので上書きしない）。
+        let Ok(content) = fs::read(stealing) else {
+            // 中身を読めない（既に別経路で消えた等）。空席化を避けるため中継はそのまま残す。
+            return;
+        };
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut file) => {
+                if file.write_all(&content).is_ok() {
+                    // owner の lock が `lock_path` へ復帰した。中継は不要なので捨てる。
+                    let _ = fs::remove_file(stealing);
+                }
+                // 書込み失敗時は `lock_path` が空内容で残るが、中継は残して二重保持窓を作らない（次回掃除に委ねる）。
+            }
+            // 別 owner の lock が既に `lock_path` を埋めている。生きた lock は 1 本だけなので中継は捨ててよい。
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(stealing);
+            }
+            // それ以外の失敗（I/O 異常）。中継を消すと空席化＝二重保持窓を開くため、消さず残す。
+            Err(_) => {}
+        }
     }
 
     /// `create_new`（`O_CREAT|O_EXCL`）で lock を新規作成する。成功で `Some`、既存（`AlreadyExists`）で `None`。
@@ -1701,19 +1996,44 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        CommitDecision, DEFERRED_NIXPKGS_REV, DEFERRED_REV, DEFERRED_TOKEN, LAST_APPLIED_LOCK_ID,
-        LAST_APPLIED_NIXPKGS_REV, LAST_RUN_LOG, LAST_SUMMARIZED_AT, LOCK_FILE, LOCK_STALE_SECS,
-        PENDING_SUMMARY, STEAL_MARKER_STALE_SECS, UpdateLock, append_pending_summary,
-        clear_deferred_markers, copy_history_dir, is_stale_lock, is_stale_lock_owner,
-        lock_content_id, lock_payload, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
-        pid_is_alive, present_and_commit_summary, present_summary, read_deferred_nixpkgs_rev,
-        read_deferred_rev, read_deferred_token, read_last_applied_lock_id, read_last_applied_rev,
-        read_last_summarized_at, resolve_committed_marker, resolve_state_dir, should_switch,
-        should_switch_full, sync_history_from_source, update_args, write_deferred_nixpkgs_rev,
-        write_deferred_rev, write_deferred_token, write_last_applied_lock_id,
-        write_last_applied_nixpkgs_rev, write_last_applied_rev, write_last_summarized_at,
+        CommitDecision, DEFERRED_NIXPKGS_REV, DEFERRED_REV, DEFERRED_TOKEN, LAST_APPLIED_HOME_REV,
+        LAST_APPLIED_LOCK_ID, LAST_APPLIED_NIXPKGS_REV, LAST_APPLIED_REV, LAST_RUN_LOG,
+        LAST_SUMMARIZED_AT, LAST_SUMMARIZED_HOME_AT, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY,
+        STEAL_MARKER_STALE_SECS, SummaryScope, UpdateLock, UpdateOptions, append_pending_summary,
+        clear_deferred_markers, commit_apply_markers, copy_history_dir, is_stale_lock,
+        is_stale_lock_owner, lock_content_id, lock_payload, parse_input_source_path,
+        parse_nixpkgs_rev, parse_repo_pin, pid_is_alive, present_and_commit_summary,
+        present_summary, read_deferred_nixpkgs_rev, read_deferred_rev, read_deferred_token,
+        read_last_applied_home_rev, read_last_applied_lock_id, read_last_applied_rev,
+        read_last_summarized_at, read_last_summarized_home_at, replace_history_dir_atomically,
+        resolve_committed_marker, resolve_state_dir, should_switch, should_switch_full,
+        should_switch_home, sync_history_from_source, update_args, write_deferred_nixpkgs_rev,
+        write_deferred_rev, write_deferred_token, write_last_applied_home_rev,
+        write_last_applied_lock_id, write_last_applied_nixpkgs_rev, write_last_applied_rev,
+        write_last_summarized_at, write_last_summarized_home_at,
     };
     use crate::update_history::domain::wire::PackageSourceFilter;
+    use anyhow::anyhow;
+    use clap::Parser;
+
+    /// `UpdateOptions` を clap 経由で解析するためのテスト専用ラッパー。
+    ///
+    /// `UpdateOptions` のフィールドは private で直接構築できないため、`commit_apply_markers` /
+    /// `run` 相当の経路を target 別に検証するには clap 解析で組み立てる。先頭にダミー実行名を補う。
+    #[derive(Parser)]
+    struct TestUpdateCli {
+        #[command(flatten)]
+        update: UpdateOptions,
+    }
+
+    /// 引数列から `UpdateOptions` を解析する（先頭にダミー実行名を補う）。失敗は文脈付き `Err`。
+    fn parse_update(args: &[&str]) -> crate::Result<UpdateOptions> {
+        let mut argv = vec!["dotfiles"];
+        argv.extend_from_slice(args);
+        TestUpdateCli::try_parse_from(argv)
+            .map(|cli| cli.update)
+            .map_err(|error| anyhow!("parse update options: {error}"))
+    }
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
     fn as_strings(args: &[OsString]) -> Vec<String> {
@@ -1722,12 +2042,47 @@ mod tests {
             .collect()
     }
 
-    /// テスト専用の一時ディレクトリ（TMPDIR 配下）を作る。
-    fn temp_dir(tag: &str) -> PathBuf {
+    /// テスト専用の一時ディレクトリ（TMPDIR 配下）を作る。失敗は `crate::Result` で伝播する
+    /// （リポジトリ Rust スタイル: テストを含め unwrap/expect を使わない）。
+    fn temp_dir(tag: &str) -> crate::Result<PathBuf> {
         let mut dir = std::env::temp_dir();
         dir.push(format!("dotfiles-update-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp state dir");
-        dir
+        tmkdirp(&dir)?;
+        Ok(dir)
+    }
+
+    /// テスト用 fs ヘルパ（unwrap/expect を避け、`?` 伝播へ寄せるための薄いラッパ）。失敗は文脈付き
+    /// `crate::Result` の `Err` にする。テストの set up / 観測で panic させず Result で扱うための支援境界。
+    /// `Path`/`PathBuf` のいずれも受けられるよう `impl AsRef<Path>` で取る。
+    fn tmkdirp(path: impl AsRef<Path>) -> crate::Result<()> {
+        let path = path.as_ref();
+        std::fs::create_dir_all(path)
+            .map_err(|error| anyhow!("create dir {}: {error}", path.display()))
+    }
+
+    /// テスト用 fs ヘルパ: ファイル書込み。失敗は文脈付き `Err`。
+    fn twrite(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> crate::Result<()> {
+        let path = path.as_ref();
+        std::fs::write(path, contents).map_err(|error| anyhow!("write {}: {error}", path.display()))
+    }
+
+    /// テスト用 fs ヘルパ: ファイル読取り（文字列）。失敗は文脈付き `Err`。
+    fn tread(path: impl AsRef<Path>) -> crate::Result<String> {
+        let path = path.as_ref();
+        std::fs::read_to_string(path).map_err(|error| anyhow!("read {}: {error}", path.display()))
+    }
+
+    /// テスト用 fs ヘルパ: ファイル削除。失敗は文脈付き `Err`。
+    fn tremove_file(path: impl AsRef<Path>) -> crate::Result<()> {
+        let path = path.as_ref();
+        std::fs::remove_file(path).map_err(|error| anyhow!("remove {}: {error}", path.display()))
+    }
+
+    /// テスト用 fs ヘルパ: rename。失敗は文脈付き `Err`。
+    fn trename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> crate::Result<()> {
+        let (from, to) = (from.as_ref(), to.as_ref());
+        std::fs::rename(from, to)
+            .map_err(|error| anyhow!("rename {} -> {}: {error}", from.display(), to.display()))
     }
 
     #[test]
@@ -1769,6 +2124,138 @@ mod tests {
         );
         // 初回（last-applied-rev 不在）は必ず switch する。
         assert!(should_switch(None, "first"), "初回は必ず switch する");
+    }
+
+    #[test]
+    fn home_only_dedup_uses_home_scope_marker_without_starving_darwin() {
+        // 退行 finding 3374863446 固定（pin 注入のユニットテスト）: home-only catch-up（`update home`・非 defer）の
+        // 適用要否は home スコープ marker で判定し、毎ログイン同一 pin 再適用の無限ループを止める。同時に、home
+        // スコープしか確定しないため全体適用（darwin を含む）の `should_switch` 判定を動かさず darwin を starve
+        // させないことを固定する。
+        //
+        // home marker が current_pin と一致すれば skip（前回 home-only 適用済み）。
+        assert!(
+            !should_switch_home(Some("pin-a"), None, "pin-a"),
+            "home marker 一致なら home-only は再適用しない（無限ループ退行の是正）"
+        );
+        // home marker 不在（初回 home-only）でも、全体適用が確定した `last-applied-rev` が一致すれば home は適用済み
+        // とみなし skip する（全体適用は home を含むため）。
+        assert!(
+            !should_switch_home(None, Some("pin-a"), "pin-a"),
+            "全体適用が確定した pin と一致すれば home-only は再適用しない"
+        );
+        // どちらの marker も current_pin に一致しなければ適用する（新 pin への追随）。
+        assert!(
+            should_switch_home(Some("pin-old"), Some("pin-old"), "pin-new"),
+            "home/全体いずれの marker も新 pin と異なれば home-only は switch する"
+        );
+        // 初回（両 marker 不在）は必ず適用する。
+        assert!(
+            should_switch_home(None, None, "first"),
+            "両 marker 不在の初回は home-only も必ず switch する"
+        );
+        // **darwin 非 starve の根拠**: home-only が home marker だけ確定しても全体スコープの `last-applied-rev`
+        // （full_rev）は home marker の値で動かない。全体適用の適用要否を見る `should_switch` は full_rev を読むため、
+        // home marker のみが新 pin で確定された状態でも、全体適用は依然 switch 要（true）と判定される。
+        assert!(
+            should_switch(Some("pin-old"), "pin-new"),
+            "home marker 確定は全体スコープ判定（should_switch）を動かさず darwin は依然適用要"
+        );
+    }
+
+    #[test]
+    fn home_only_apply_commits_only_home_scope_marker() -> crate::Result<()> {
+        // 退行 finding 3374863446 固定（実行後 marker 確定）: home-only `update home`（非 defer）の適用後 marker 確定
+        // （`commit_apply_markers`）が **home スコープ marker（`last-applied-home-rev`）だけ**を確定し、全体スコープ
+        // marker（`last-applied-rev`/`last-applied-nixpkgs-rev`/`last-applied-lock-id`）を一切動かさないことを固定する。
+        // これにより次回 home-only は dedup でき、かつ darwin を含む全体適用は未適用 pin を依然 switch 要と判定する。
+        let dir = temp_dir("home-marker")?;
+        let _ = std::fs::remove_file(dir.join(LAST_APPLIED_HOME_REV));
+        let _ = std::fs::remove_file(dir.join(LAST_APPLIED_REV));
+        let _ = std::fs::remove_file(dir.join(LAST_APPLIED_NIXPKGS_REV));
+
+        // `update home`（非 defer・非 full）を clap 解析で組み立て、適用後 marker 確定を実行する。config_dir は
+        // home-only 非 full 経路では lock-id を読まないためダミーで足りる。
+        let options = parse_update(&["home"])?;
+        commit_apply_markers(
+            &dir,
+            &options,
+            Path::new("/nonexistent-config"),
+            "pin-home",
+            "nixpkgs-home",
+            false,
+        )?;
+
+        // home スコープ marker だけ確定する。
+        assert_eq!(
+            read_last_applied_home_rev(&dir)?,
+            Some("pin-home".to_string()),
+            "home-only 適用後は home スコープ marker を確定する"
+        );
+        // 全体スコープ marker は一切動かさない（darwin starve 回避）。
+        assert_eq!(
+            read_last_applied_rev(&dir)?,
+            None,
+            "home-only 適用は全体スコープの last-applied-rev を確定しない（darwin 非 starve）"
+        );
+        assert!(
+            !dir.join(LAST_APPLIED_NIXPKGS_REV).exists(),
+            "home-only 適用は全体スコープの last-applied-nixpkgs-rev を書かない"
+        );
+
+        // 次回 home-only の適用要否: 同一 pin は home marker 一致で skip、新 pin は switch。
+        let home_rev = read_last_applied_home_rev(&dir)?;
+        let full_rev = read_last_applied_rev(&dir)?;
+        assert!(
+            !should_switch_home(home_rev.as_deref(), full_rev.as_deref(), "pin-home"),
+            "確定後の同一 pin は home-only で skip する（無限ループ退行の是正）"
+        );
+        assert!(
+            should_switch_home(home_rev.as_deref(), full_rev.as_deref(), "pin-next"),
+            "新 pin は home-only で switch する（追随）"
+        );
+        // darwin 非 starve: 全体適用が読む `last-applied-rev` は None のままなので、全体適用は pin-home を依然
+        // switch 要（適用要）と判定する。
+        assert!(
+            should_switch(full_rev.as_deref(), "pin-home"),
+            "home-only 適用後も全体適用（darwin 含む）は同 pin を依然適用要と判定する"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn home_marker_round_trips_atomically_and_respects_dry_run() -> crate::Result<()> {
+        // home スコープ marker（`last-applied-home-rev`）の read/write 往復と dry-run 非書込を固定する。
+        let dir = temp_dir("home-rev")?;
+        let _ = std::fs::remove_file(dir.join(LAST_APPLIED_HOME_REV));
+        // 未書込みは None。
+        assert_eq!(read_last_applied_home_rev(&dir)?, None);
+
+        write_last_applied_home_rev(&dir, "home-pin", false)?;
+        assert_eq!(
+            read_last_applied_home_rev(&dir)?,
+            Some("home-pin".to_string())
+        );
+        assert!(dir.join(LAST_APPLIED_HOME_REV).exists());
+        // temp ファイルは rename 後に残らない。
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|error| anyhow!("read state dir: {error}"))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftover.is_empty());
+
+        // dry-run は書き込まない。
+        write_last_applied_home_rev(&dir, "home-pin-dryrun", true)?;
+        assert_eq!(
+            read_last_applied_home_rev(&dir)?,
+            Some("home-pin".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
@@ -1823,7 +2310,7 @@ mod tests {
 
     #[test]
     fn last_applied_rev_round_trips_atomically() -> crate::Result<()> {
-        let dir = temp_dir("rev");
+        let dir = temp_dir("rev")?;
         // 未書込みは None。
         assert_eq!(read_last_applied_rev(&dir)?, None);
 
@@ -1831,7 +2318,7 @@ mod tests {
         assert_eq!(read_last_applied_rev(&dir)?, Some("rev-new".to_string()));
         // temp ファイルは rename 後に残らない。
         let leftover: Vec<_> = std::fs::read_dir(&dir)
-            .expect("read state dir")
+            .map_err(|error| anyhow!("read state dir: {error}"))?
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
@@ -1847,7 +2334,7 @@ mod tests {
 
     #[test]
     fn lock_is_exclusive_until_dropped() -> crate::Result<()> {
-        let dir = temp_dir("lock");
+        let dir = temp_dir("lock")?;
         let _ = std::fs::remove_file(dir.join(LOCK_FILE));
 
         let first = UpdateLock::try_acquire(&dir, false)?;
@@ -1867,7 +2354,7 @@ mod tests {
 
     #[test]
     fn dry_run_lock_has_no_file_side_effect() -> crate::Result<()> {
-        let dir = temp_dir("lock-dry");
+        let dir = temp_dir("lock-dry")?;
         let lock = UpdateLock::try_acquire(&dir, true)?;
         assert!(lock.is_some());
         // dry-run は実ロックファイルを作らない。
@@ -1947,30 +2434,36 @@ mod tests {
         );
     }
 
-    /// テストで「確実に生存していない pid」を選ぶ。子プロセスを spawn して即 wait し、回収済み pid を再利用
+    /// テストで「確実に生存していない pid」を返す。子プロセスを spawn して即 wait し、回収済み pid を再利用
     /// する（その pid は wait 後に解放され、`kill -0` が必ず失敗する）。`libc` を使わず std のみで構成する。
+    ///
+    /// spawn/wait に失敗した場合は、ほぼ確実に割り当てられない大きな pid 値（PID_MAX 超過）へフォールバックして
+    /// panic させない（unwrap/expect 不使用）。stale 判定は pid 不在で成立するため、未割当 pid でも目的を満たす。
     fn dead_pid_for_test() -> u32 {
-        let mut child = std::process::Command::new("true")
-            .spawn()
-            .expect("spawn short-lived child");
-        let pid = child.id();
-        child.wait().expect("reap child");
-        pid
+        const UNLIKELY_LIVE_PID: u32 = 0x7fff_fffe;
+        match std::process::Command::new("true").spawn() {
+            Ok(mut child) => {
+                let pid = child.id();
+                // 回収して pid を解放する（以後この pid は不在 = stale 判定が成立する）。失敗しても致命にしない。
+                let _ = child.wait();
+                pid
+            }
+            Err(_) => UNLIKELY_LIVE_PID,
+        }
     }
 
     #[test]
     fn try_acquire_does_not_steal_lock_held_by_live_pid() -> crate::Result<()> {
         // finding 3368559583 退行固定（経路）: payload の pid が生存中の lock は、timestamp が 6h を超えて
         // 古くても try_acquire が奪取せず skip（None）する。switch / marker 更新の排他を live owner に保つ。
-        let dir = temp_dir("live-pid-lock");
+        let dir = temp_dir("live-pid-lock")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
 
         // 古い timestamp（6h 超過）だが、owner pid は自プロセス（確実に生存中）。
         let old_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 600);
-        std::fs::write(&lock_path, lock_payload(std::process::id(), old_epoch))
-            .expect("write live-owned lock");
+        twrite(&lock_path, lock_payload(std::process::id(), old_epoch))?;
 
         // live owner の lock は奪取しない（None = skip）。
         assert!(
@@ -1979,7 +2472,7 @@ mod tests {
         );
         // lock ファイルは触られず残る（奪取で書き換えられていない）。
         assert_eq!(
-            std::fs::read_to_string(&lock_path).expect("read lock"),
+            tread(&lock_path)?,
             lock_payload(std::process::id(), old_epoch),
             "live owner の lock payload は奪取されず保たれる"
         );
@@ -1992,16 +2485,15 @@ mod tests {
     fn try_acquire_steals_stale_lock_but_skips_live_lock() -> crate::Result<()> {
         // P2-3 退行固定: プロセス kill 等で Drop されず残った stale lock は奪取して実行に進む。
         // 生存中（新しい timestamp）の lock は奪取せず skip する。
-        let dir = temp_dir("lock-stale");
+        let dir = temp_dir("lock-stale")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
 
         // 古い timestamp かつ owner pid が不在（kill / 再起動で消えた孤児）の lock を置く。pid 生存ガードを
         // 確実に通すため、回収済み（確実に dead な）pid を使う。
         let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 60);
-        std::fs::write(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))
-            .expect("write stale lock");
+        twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
         // 奪取して取得成功する。
         let acquired = UpdateLock::try_acquire(&dir, false)?;
         assert!(acquired.is_some(), "stale lock must be stolen");
@@ -2011,8 +2503,7 @@ mod tests {
 
         // 解放後、新しい（生存中）lock を置くと奪取されない。
         let fresh_epoch = super::now_epoch_secs();
-        std::fs::write(&lock_path, lock_payload(std::process::id(), fresh_epoch))
-            .expect("write fresh lock");
+        twrite(&lock_path, lock_payload(std::process::id(), fresh_epoch))?;
         assert!(
             UpdateLock::try_acquire(&dir, false)?.is_none(),
             "live lock must not be stolen"
@@ -2030,9 +2521,9 @@ mod tests {
         // （`last-summarized-at`）へ移行したため、本 marker はもはや span 起点解決のフォールバックには使わない
         // （production では読まない write-only の記録）。ここでは書込みが `last-applied-rev` と別ファイルへ
         // 独立に行われ、dry-run では書かないことを固定する。
-        let dir = temp_dir("applied-nixpkgs");
+        let dir = temp_dir("applied-nixpkgs")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // 適用成功時に確定した nixpkgs rev を書く。dotfiles pin の `last-applied-rev` とは別ファイル。
         write_last_applied_nixpkgs_rev(&dir, "nixpkgs-applied-old", false)?;
@@ -2087,18 +2578,17 @@ mod tests {
         //
         // marker（`last-summarized-at`）を要約「後」に終端 `at` へ進めるため、2 回目の present_summary は起点 =
         // その `at` → `select_entries_after` がそれより後を選び空 span → 再追記しない。
-        let dir = temp_dir("same-day-defer");
+        let dir = temp_dir("same-day-defer")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         // 履歴 chain: N0->N1（実 packages 1 件、at = 2026-06-01）。
-        write_history(&dir, &[("N0", "N1")]);
-
+        write_history(&dir, &[("N0", "N1")])?;
         // 1 回目（shell catch-up, defer）: marker 無し → 全件 → N0->N1 を追記し marker = at(0)。
         apply_once_defer(&dir)?;
         // 2 回目（daemon home, defer, 同日）: 起点 = marker(at(0))。新規無し → 空 span → 再追記しない。
         apply_once_defer(&dir)?;
 
-        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        let pending = tread(dir.join(PENDING_SUMMARY))?;
         // 更新ブロック（宣言アプリ行 neovim-N0）は 1 回だけ現れる（二度見え＝退行を弾く）。
         let occurrences = pending.matches("neovim-N0").count();
         assert_eq!(
@@ -2117,16 +2607,15 @@ mod tests {
         // 退行固定（P2: brew-only 再表示抑止）: nixpkgs rev が動かない（`N -> N`）brew-only 更新が連続しても、
         // `at` カーソルで一度要約したら再表示しない。旧 nixpkgs-rev 起点は `N -> N` を越えられず、同じ
         // brew-only 更新を毎回再追記した。
-        let dir = temp_dir("brew-only-n-to-n");
+        let dir = temp_dir("brew-only-n-to-n")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         // 2 夜とも nixpkgs rev が動かない（`nixpkgs_old == nixpkgs_new`）brew-only 更新。`at` だけが進む
         // （2026-06-01, 2026-06-02）。パッケージ名は別（neovim-Na / neovim-Nb）にして集約で潰れないようにする。
-        write_history(&dir, &[("Na", "Na"), ("Nb", "Nb")]);
-
+        write_history(&dir, &[("Na", "Na"), ("Nb", "Nb")])?;
         // 1 回目: marker 無し → 両エントリを要約し marker = 終端 at(1)。
         apply_once_defer(&dir)?;
-        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        let pending = tread(dir.join(PENDING_SUMMARY))?;
         assert!(pending.contains("neovim-Na"), "初回は Na を要約: {pending}");
         assert!(pending.contains("neovim-Nb"), "初回は Nb を要約: {pending}");
         assert_eq!(read_last_summarized_at(&dir)?, Some(at_of(1)));
@@ -2149,12 +2638,11 @@ mod tests {
         // 退行固定（B: partial-failure 堅牢性）: switch/darwin が **要約前** に失敗した再実行で、要約 span が
         // 消えないことを固定する。要約「後」に marker を進める設計のため、要約前に失敗すれば marker は前回
         // 要約済み `at` のまま保たれ、再実行で未表示範囲を再び示せる。
-        let dir = temp_dir("partial-failure");
+        let dir = temp_dir("partial-failure")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         // 履歴 chain: N0->N1（at(0)）・N1->N2（at(1)）。N0->N1 は前回適用で要約済み、N1->N2 が未表示範囲。
-        write_history(&dir, &[("N0", "N1"), ("N1", "N2")]);
-
+        write_history(&dir, &[("N0", "N1"), ("N1", "N2")])?;
         // 前回の成功適用で **N0->N1 だけ**要約済み（marker = at(0)）にしておく（at(1) より前で止める）。
         let first = present_summary(&dir, None, PackageSourceFilter::All, false, false)?;
         // 全件選択されるので終端は at(1) になってしまう。partial-failure を模すため marker は at(0) に固定する。
@@ -2172,7 +2660,7 @@ mod tests {
 
         // 再実行（switch 成功）で N1->N2（at(1)）を要約できる（未表示範囲が消えていない）。
         apply_once_defer(&dir)?;
-        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        let pending = tread(dir.join(PENDING_SUMMARY))?;
         assert!(
             pending.contains("neovim-N1"),
             "re-run must still summarize the unshown N1->N2 range: {pending}"
@@ -2190,9 +2678,9 @@ mod tests {
     #[test]
     fn summarized_at_marker_round_trips_and_respects_dry_run() -> crate::Result<()> {
         // `last-summarized-at` marker の read/write 往復と dry-run 非書込を固定する。
-        let dir = temp_dir("summarized-at-marker");
+        let dir = temp_dir("summarized-at-marker")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // marker 無し（初回）は None（全件 = 初回 catch-up）。
         assert_eq!(read_last_summarized_at(&dir)?, None);
@@ -2276,9 +2764,9 @@ mod tests {
     /// `present_summary` は config dir の `docs/update-history` ではなく state dir のローカル複製
     /// （[`super::HISTORY_LOCAL_SUBDIR`]）を読むため、テストもそこへ履歴を置く。各エントリは
     /// `nixpkgs_old -> nixpkgs_new` のチェーンで、宣言アプリ 1 件を持つ（show 既定の宣言フィルタを通す）。
-    fn write_history(state_dir: &Path, chain: &[(&str, &str)]) {
+    fn write_history(state_dir: &Path, chain: &[(&str, &str)]) -> crate::Result<()> {
         let history_dir = state_dir.join(super::HISTORY_LOCAL_SUBDIR);
-        std::fs::create_dir_all(&history_dir).expect("create history dir");
+        tmkdirp(&history_dir)?;
         let mut toml = String::new();
         // 各エントリへ**記録順に増える一意な `at`** を与える（`at` カーソルの単調性の前提）。RFC3339 文字列の
         // 辞書順が時系列順に一致するよう日付を 1 日ずつ進める（`2026-06-01`, `2026-06-02`, ...）。
@@ -2305,7 +2793,8 @@ mod tests {
                  text = \"新機能 {old}\"\n\n"
             ));
         }
-        std::fs::write(history_dir.join("2026-06.toml"), toml).expect("write history toml");
+        twrite(history_dir.join("2026-06.toml"), toml)?;
+        Ok(())
     }
 
     /// chain index（0 始まり）に対応するエントリの `at`（[`write_history`] と同じ採番）。`at` カーソルの
@@ -2318,9 +2807,9 @@ mod tests {
     ///
     /// `at = 2026-06-01`、nixpkgs rev は `N0->N1`。home-only 適用（`NixOnly`）は neovim だけを、darwin/全体適用
     /// （`All`）は neovim + firefox（cask）を要約に含めるべきことを exercise するための fixture。
-    fn write_history_with_nix_and_brew(state_dir: &Path) {
+    fn write_history_with_nix_and_brew(state_dir: &Path) -> crate::Result<()> {
         let history_dir = state_dir.join(super::HISTORY_LOCAL_SUBDIR);
-        std::fs::create_dir_all(&history_dir).expect("create history dir");
+        tmkdirp(&history_dir)?;
         let toml = "[[update]]\n\
              at = \"2026-06-01T00:00:00Z\"\n\
              nixpkgs_old = \"N0\"\n\
@@ -2344,23 +2833,23 @@ mod tests {
              new = \"121\"\n\
              change = \"upgraded\"\n\
              declared = true\n\n";
-        std::fs::write(history_dir.join("2026-06.toml"), toml).expect("write history toml");
+        twrite(history_dir.join("2026-06.toml"), toml)?;
+        Ok(())
     }
 
     #[test]
     fn present_summary_selects_span_by_at_cursor() -> crate::Result<()> {
         // 適用後要約は `at` カーソルで catch-up span を選ぶ（nixpkgs rev / dotfiles pin ではない）。marker 無し
         // （初回 = `None`）なら全エントリを集約表示し、要約済み `at` 以降に新規が無ければ空 span になる。
-        let dir = temp_dir("present-at");
+        let dir = temp_dir("present-at")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create state+config dir");
+        tmkdirp(&dir)?;
         // チェーンは nA->nB（at(0)）, nB->nC（at(1)）（2 bump catch-up）。
-        write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
-
+        write_history(&dir, &[("nA", "nB"), ("nB", "nC")])?;
         // 初回（marker 無し = None）: 起点以降の 2 エントリ（2 アプリ）が集約表示される。空でないこと。
         // 非 tty 経路を `stdout_is_terminal=false` で決定論的に exercise し、pending-summary へ追記させる。
         let summarized_at = present_summary(&dir, None, PackageSourceFilter::All, false, false)?;
-        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        let pending = tread(dir.join(PENDING_SUMMARY))?;
         assert!(
             !pending.trim().is_empty(),
             "summary must not be empty: {pending}"
@@ -2371,10 +2860,10 @@ mod tests {
         assert_eq!(summarized_at, Some(at_of(1)));
 
         // 終端 `at` 以降に新規が無ければ空 span（宣言アプリ行が出ない・marker は進めないため None が返る）。
-        let dir2 = temp_dir("present-at-empty");
+        let dir2 = temp_dir("present-at-empty")?;
         let _ = std::fs::remove_dir_all(&dir2);
-        std::fs::create_dir_all(&dir2).expect("create dir2");
-        write_history(&dir2, &[("nA", "nB"), ("nB", "nC")]);
+        tmkdirp(&dir2)?;
+        write_history(&dir2, &[("nA", "nB"), ("nB", "nC")])?;
         let none = present_summary(
             &dir2,
             Some(at_of(1).as_str()),
@@ -2398,11 +2887,10 @@ mod tests {
     fn present_summary_dry_run_has_no_file_side_effect() -> crate::Result<()> {
         // dry-run 契約: 非 tty・tty いずれの経路でも `pending-summary` / `last-run.log` を書かない（副作用抑止）。
         // is_terminal() を注入化したため tty 性をテストが制御でき、`stdout_is_terminal` の両値で副作用無しを固定する。
-        let dir = temp_dir("present-dry");
+        let dir = temp_dir("present-dry")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create state+config dir");
-        write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
-
+        tmkdirp(&dir)?;
+        write_history(&dir, &[("nA", "nB"), ("nB", "nC")])?;
         // 非 tty 経路の dry-run: pending-summary / last-run.log を書かない。
         present_summary(&dir, None, PackageSourceFilter::All, true, false)?;
         assert!(
@@ -2436,11 +2924,10 @@ mod tests {
         // nix build sandbox の builder tty）でも、テストは tty 経路を明示指定して exercise できる。
         // tty 経路は起動元端末へ直接描画し、`pending-summary` は書かず（次回シェル消費は不要）、`last-run.log`
         // へは要約を残す。stdout 描画自体はキャプチャせず、観測可能なファイル副作用（pending 不在・log 存在）で固定。
-        let dir = temp_dir("present-tty");
+        let dir = temp_dir("present-tty")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
-        write_history(&dir, &[("nA", "nB"), ("nB", "nC")]);
-
+        tmkdirp(&dir)?;
+        write_history(&dir, &[("nA", "nB"), ("nB", "nC")])?;
         present_summary(&dir, None, PackageSourceFilter::All, false, true)?;
 
         // tty 経路は pending-summary を書かない（非 tty の background 消費契約専用のため）。
@@ -2449,7 +2936,7 @@ mod tests {
             "tty path must not write pending-summary"
         );
         // tty 経路でも last-run.log には要約を残す（直近 1 回の適用内容を後追いできる）。
-        let log = std::fs::read_to_string(dir.join(LAST_RUN_LOG)).expect("read last-run.log");
+        let log = tread(dir.join(LAST_RUN_LOG))?;
         assert!(
             log.contains("neovim-nA"),
             "tty path must record summary into last-run.log: {log}"
@@ -2465,14 +2952,13 @@ mod tests {
         // 除外して nix（neovim）だけ出す。一方、darwin/全体適用（`All`）の要約は cask を含めて両方出す。
         // daemon フル経路では home step が NixOnly で nix だけ要約 → darwin で実適用された cask が starve する
         // 欠落を防ぐため、commit step を `All` で要約させる（その入口契約をここでフィルタ単位に固定する）。
-        let dir = temp_dir("home-only-filter");
+        let dir = temp_dir("home-only-filter")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
-        write_history_with_nix_and_brew(&dir);
-
+        tmkdirp(&dir)?;
+        write_history_with_nix_and_brew(&dir)?;
         // home-only（NixOnly）: neovim を出し firefox（cask）を出さない（非 tty で pending へ追記）。
         present_summary(&dir, None, PackageSourceFilter::NixOnly, false, false)?;
-        let nix_only = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        let nix_only = tread(dir.join(PENDING_SUMMARY))?;
         assert!(
             nix_only.contains("neovim"),
             "NixOnly は nix を出す: {nix_only}"
@@ -2484,12 +2970,12 @@ mod tests {
         let _ = std::fs::remove_file(dir.join(PENDING_SUMMARY));
 
         // 全体/darwin（All）: 同じ span を cask 込みで要約する（commit step の適用済み cask 通知）。
-        let dir2 = temp_dir("full-filter");
+        let dir2 = temp_dir("full-filter")?;
         let _ = std::fs::remove_dir_all(&dir2);
-        std::fs::create_dir_all(&dir2).expect("create dir2");
-        write_history_with_nix_and_brew(&dir2);
+        tmkdirp(&dir2)?;
+        write_history_with_nix_and_brew(&dir2)?;
         present_summary(&dir2, None, PackageSourceFilter::All, false, false)?;
-        let all = std::fs::read_to_string(dir2.join(PENDING_SUMMARY)).expect("read pending");
+        let all = tread(dir2.join(PENDING_SUMMARY))?;
         assert!(all.contains("neovim"), "All は nix を出す: {all}");
         assert!(
             all.contains("firefox"),
@@ -2511,23 +2997,19 @@ mod tests {
         // 要約失敗を hermetic に作るため、`<state>/history` 配下を **ディレクトリにできないファイル**として置く
         // （history source の読取りが失敗 → present_summary が Err）。要約前に `last-summarized-at` を at(-1) 相当の
         // 既知値へ置き、Err 後もその値が保たれることを観測する。
-        let dir = temp_dir("summary-error-marker");
+        let dir = temp_dir("summary-error-marker")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         // 要約前の marker（前回要約済み終端 `at`）。Err 後もこの値が変わらないことを固定する。
         write_last_summarized_at(&dir, "2026-05-31T00:00:00Z", false)?;
 
         // history source を「読めない」状態にする: `<state>/history` を通常ファイルにして TOML ディレクトリ走査を
         // 失敗させる（adapter のディレクトリ読取りが Err になる）。
         let history = dir.join(super::HISTORY_LOCAL_SUBDIR);
-        std::fs::write(&history, b"not a directory").expect("write history-as-file");
+        twrite(&history, b"not a directory")?;
 
-        let result = present_and_commit_summary(
-            &dir,
-            Some("2026-05-31T00:00:00Z"),
-            PackageSourceFilter::All,
-            false,
-        );
+        // `All` scope は `last-summarized-at`（上で 2026-05-31 に確定済み）を span 起点に読む。
+        let result = present_and_commit_summary(&dir, SummaryScope::All, false);
         assert!(
             result.is_err(),
             "history 読取り不能なら present_summary は Err を返す"
@@ -2543,30 +3025,199 @@ mod tests {
         Ok(())
     }
 
+    /// 非 tty 適用 1 回ぶん（要約 → scope カーソル確定）を、本番 `present_and_commit_summary` と同じ scope 別
+    /// カーソル read/write 順序で実行する（`stdout_is_terminal=false` 注入で pending-summary 経路を決定論化）。
+    ///
+    /// `present_and_commit_summary` は tty 判定をアンビエント `is_terminal()` で解決するため、nix build sandbox の
+    /// tty stdout でも非 tty 経路（pending-summary 追記）を確実に exercise できるよう、scope カーソルの read/write を
+    /// 本番と同じく `SummaryScope` 経由で対にしつつ tty 性だけ注入する。本番 `run()` の summary 分岐と同値。
+    fn apply_once_scope(state_dir: &Path, scope: SummaryScope) -> crate::Result<()> {
+        let span_start_at = scope.read_cursor(state_dir)?;
+        let summarized_at = present_summary(
+            state_dir,
+            span_start_at.as_deref(),
+            scope.source_filter(),
+            false,
+            false,
+        )?;
+        if let Some(at) = summarized_at {
+            scope.write_cursor(state_dir, &at, false)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn summarized_home_at_marker_round_trips_and_respects_dry_run() -> crate::Result<()> {
+        // `last-summarized-home-at`（home スコープ専用カーソル）の read/write 往復と dry-run 非書込を固定する。
+        // `All` スコープの `last-summarized-at` とは別ファイルで分離していること（scope 分離の前提）も確認する。
+        let dir = temp_dir("summarized-home-at-marker")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        tmkdirp(&dir)?;
+
+        // marker 無し（初回）は None（全件 = 初回 catch-up）。
+        assert_eq!(read_last_summarized_home_at(&dir)?, None);
+        // 書込→読出で往復する。
+        write_last_summarized_home_at(&dir, "2026-06-03T00:00:00Z", false)?;
+        assert_eq!(
+            read_last_summarized_home_at(&dir)?,
+            Some("2026-06-03T00:00:00Z".to_string())
+        );
+        assert!(dir.join(LAST_SUMMARIZED_HOME_AT).exists());
+        // `All` スコープのカーソル（last-summarized-at）とは別ファイルで、home の書込が `All` を汚さない。
+        assert_eq!(
+            read_last_summarized_at(&dir)?,
+            None,
+            "home スコープの書込は `All` スコープのカーソルを動かさない"
+        );
+        // dry-run は書き込まない（既存値を保つ）。
+        write_last_summarized_home_at(&dir, "should-not-write", true)?;
+        assert_eq!(
+            read_last_summarized_home_at(&dir)?,
+            Some("2026-06-03T00:00:00Z".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn daemon_home_nix_summary_does_not_starve_cask_in_commit_all_summary() -> crate::Result<()> {
+        // 退行固定（運用整合 finding・要件1）: daemon（darwin）端末で zsh ログイン catch-up の home-only NixOnly
+        // 要約が先に走っても、その後の daemon commit step の `All` 要約から **実適用 cask（firefox）が失われない**
+        // ことを、履歴 fixture と scope カーソルのパラメータ注入で決定論的に固定する。
+        //
+        // 失敗インターリーブ（scope カーソルを共有していた退行）:
+        //   1. home-only NixOnly 要約が neovim（nix）だけを表示し、共有カーソルを cask を含む選択 span 終端 `at`
+        //      （filter 前 selected の終端）まで前進させる。
+        //   2. daemon commit `All` 要約が共有カーソルを span 起点に読むため空 span（「0アプリ更新」）になり、
+        //      darwin が実適用した firefox（cask）がどの pending-summary にも出ず starve する。
+        // scope 別カーソル（`last-summarized-at` / `last-summarized-home-at`）にすることで、home NixOnly 要約は
+        // `All` スコープのカーソルを動かさず、commit `All` 要約が cask を 1 回要約できる。
+        let dir = temp_dir("daemon-cask-starve")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        tmkdirp(&dir)?;
+        // 1 エントリに nix（neovim）と brew cask（firefox）が同居する適用済み範囲（at = 2026-06-01）。
+        write_history_with_nix_and_brew(&dir)?;
+
+        // ① zsh ログイン catch-up（home-only・NixOnly）が先に要約する。neovim だけを表示し、home スコープ
+        //    カーソル（`last-summarized-home-at`）だけを進める。
+        apply_once_scope(&dir, SummaryScope::HomeOnlyNix)?;
+        let home_pending = tread(dir.join(PENDING_SUMMARY))?;
+        assert!(
+            home_pending.contains("neovim"),
+            "home-only NixOnly 要約は nix（neovim）を出す: {home_pending}"
+        );
+        assert!(
+            !home_pending.contains("firefox"),
+            "home-only NixOnly 要約は未適用 cask（firefox）を出さない: {home_pending}"
+        );
+        // home スコープカーソルだけが進み、`All` スコープのカーソルは未前進（cask starve を防ぐ核心）。
+        assert_eq!(
+            read_last_summarized_home_at(&dir)?.as_deref(),
+            Some("2026-06-01T00:00:00Z"),
+            "home NixOnly 要約は home スコープカーソルを進める"
+        );
+        assert_eq!(
+            read_last_summarized_at(&dir)?,
+            None,
+            "home NixOnly 要約は `All` スコープのカーソル（last-summarized-at）を進めない"
+        );
+        // home 要約ぶんは消費済みとみなす（consumer が rename で消費する契約）。
+        let _ = std::fs::remove_file(dir.join(PENDING_SUMMARY));
+
+        // ② daemon commit step（`All`）が要約する。`All` スコープのカーソルは未前進なので span は空にならず、
+        //    実適用 cask（firefox）を含む適用済み範囲が 1 回要約される（starve しない）。
+        apply_once_scope(&dir, SummaryScope::All)?;
+        let commit_pending = tread(dir.join(PENDING_SUMMARY))?;
+        assert!(
+            commit_pending.contains("firefox"),
+            "commit `All` 要約は darwin 実適用 cask（firefox）を必ず出す（starve しない・要件1）: {commit_pending}"
+        );
+        assert!(
+            commit_pending.contains("neovim"),
+            "commit `All` 要約は同エントリの nix（neovim）も含む: {commit_pending}"
+        );
+        // commit 後は `All` スコープのカーソルが終端 `at` へ確定する（次回 `All` 要約は再表示しない）。
+        assert_eq!(
+            read_last_summarized_at(&dir)?.as_deref(),
+            Some("2026-06-01T00:00:00Z"),
+            "commit `All` 要約後に `All` スコープカーソルが確定する"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn home_only_terminal_does_not_show_cask_and_keeps_nix_show_once() -> crate::Result<()> {
+        // 退行固定（運用整合 finding・要件2）: home-only 専用端末（daemon 無し・cask を適用しない）では、NixOnly
+        // 要約だけが走る。(a) 未適用 cask（firefox）を「適用済み」として誤表示しない、(b) 同じ nix 更新（neovim）を
+        // 毎ログイン再表示しない（show-once 維持）ことを、home スコープカーソルのパラメータ注入で固定する。
+        let dir = temp_dir("home-only-terminal")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        tmkdirp(&dir)?;
+        // nix（neovim）と cask（firefox）が同居する 1 エントリ（at = 2026-06-01）。
+        write_history_with_nix_and_brew(&dir)?;
+
+        // 1 回目（home-only NixOnly・marker 無し = 全件）: neovim を表示し cask は出さない。home カーソルが進む。
+        apply_once_scope(&dir, SummaryScope::HomeOnlyNix)?;
+        let first = tread(dir.join(PENDING_SUMMARY))?;
+        assert!(
+            first.contains("neovim"),
+            "home-only は nix を表示する: {first}"
+        );
+        assert!(
+            !first.contains("firefox"),
+            "home-only 専用端末は未適用 cask を「適用済み」と誤表示しない（要件2-a）: {first}"
+        );
+        assert_eq!(
+            read_last_summarized_home_at(&dir)?.as_deref(),
+            Some("2026-06-01T00:00:00Z"),
+            "home NixOnly 要約後に home スコープカーソルが確定する"
+        );
+        // 表示済みぶんは消費済みとみなす。
+        let _ = std::fs::remove_file(dir.join(PENDING_SUMMARY));
+
+        // 2 回目（同一履歴・新規なし）: home カーソル以降は空 span → neovim を再表示しない（show-once・要件2-b）。
+        apply_once_scope(&dir, SummaryScope::HomeOnlyNix)?;
+        let second = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).unwrap_or_default();
+        assert!(
+            !second.contains("neovim"),
+            "要約済み nix 更新を毎ログイン再表示しない（show-once 維持・要件2-b）: {second:?}"
+        );
+        assert!(
+            !second.contains("firefox"),
+            "cask は home-only 専用端末で一度も表示しない: {second:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
     #[test]
     fn append_pending_summary_accumulates_rev_blocks() -> crate::Result<()> {
         // 非 tty 連続適用で pending-summary が rev 単位に**追記**累積し、未表示 rev を失わないことを実ファイルで固定。
-        let dir = temp_dir("pending-accumulate");
+        let dir = temp_dir("pending-accumulate")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
-        write_history(&dir, &[("r1", "r2"), ("r2", "r3")]);
+        tmkdirp(&dir)?;
+        write_history(&dir, &[("r1", "r2"), ("r2", "r3")])?;
         let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
 
         // 1 回目: marker 無し（None = 全件）で 2 エントリ相当を 1 show として追記。終端 at(1) を返す。
         let first_cursor = append_pending_summary(&dir, &source, None, PackageSourceFilter::All)?;
-        let after_first = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read");
+        let after_first = tread(dir.join(PENDING_SUMMARY))?;
         assert!(after_first.contains("neovim-r1"));
         assert_eq!(first_cursor, Some(at_of(1)));
 
         // 2 回目: 別履歴に新規エントリ（r3->r4, at(2)）を足し、at(1) 起点で追記。先頭ブロックは残る（累積）。
-        write_history(&dir, &[("r1", "r2"), ("r2", "r3"), ("r3", "r4")]);
+        write_history(&dir, &[("r1", "r2"), ("r2", "r3"), ("r3", "r4")])?;
         append_pending_summary(
             &dir,
             &source,
             Some(at_of(1).as_str()),
             PackageSourceFilter::All,
         )?;
-        let after_second = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read");
+        let after_second = tread(dir.join(PENDING_SUMMARY))?;
         assert!(
             after_second.contains("neovim-r1"),
             "first block must remain: {after_second}"
@@ -2589,9 +3240,9 @@ mod tests {
         // 付随（drift 防止）: defer 経路では rev を書かず、commit で確定する分離をマーカー I/O として固定する。
         // run() の home/darwin 二段は実適用を要するため、ここでは「適用後 marker を遅延し後で確定する」契約の
         // 核（write/read の前後関係）を直接 assert する。
-        let dir = temp_dir("defer-commit");
+        let dir = temp_dir("defer-commit")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         // defer: marker 未書込み（None のまま）。
         assert_eq!(read_last_applied_rev(&dir)?, None);
         // commit: 現在 pin を確定。
@@ -2663,26 +3314,20 @@ mod tests {
     fn copy_history_dir_replicates_toml_files_to_local_dest() -> crate::Result<()> {
         // N3 退行固定: input source の docs/update-history 配下の通常ファイルを state dir のローカル複製へ
         // コピーする。複製先は読取り対象（show/要約）になる。
-        let base = temp_dir("copy-history");
+        let base = temp_dir("copy-history")?;
         let _ = std::fs::remove_dir_all(&base);
         let source_history = base.join("src-docs-history");
-        std::fs::create_dir_all(&source_history).expect("create source history");
-        std::fs::write(source_history.join("2026-05.toml"), "a = 1\n").expect("write src toml1");
-        std::fs::write(source_history.join("2026-06.toml"), "b = 2\n").expect("write src toml2");
+        tmkdirp(&source_history)?;
+        twrite(source_history.join("2026-05.toml"), "a = 1\n")?;
+        twrite(source_history.join("2026-06.toml"), "b = 2\n")?;
         // サブディレクトリは複製対象外（履歴 layout 上想定しない）。
-        std::fs::create_dir_all(source_history.join("nested")).expect("create nested");
+        tmkdirp(source_history.join("nested"))?;
 
         let dest = base.join("history");
         copy_history_dir(&source_history, &dest)?;
 
-        assert_eq!(
-            std::fs::read_to_string(dest.join("2026-05.toml")).expect("read dest toml1"),
-            "a = 1\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dest.join("2026-06.toml")).expect("read dest toml2"),
-            "b = 2\n"
-        );
+        assert_eq!(tread(dest.join("2026-05.toml"))?, "a = 1\n");
+        assert_eq!(tread(dest.join("2026-06.toml"))?, "b = 2\n");
         // サブディレクトリはコピーされない。
         assert!(!dest.join("nested").exists());
 
@@ -2695,22 +3340,22 @@ mod tests {
         // finding 3368677389 退行固定: source 側で月次 TOML が削除/リネームされた pin に更新したら、複製先の
         // 古い `*.toml` を残さない。上書きコピーだけだと削除済み履歴が show / 要約に混入するため、複製前に dest を
         // 作り直して source に無いファイルを消す。
-        let base = temp_dir("copy-history-stale");
+        let base = temp_dir("copy-history-stale")?;
         let _ = std::fs::remove_dir_all(&base);
         let source_history = base.join("src-docs-history");
         let dest = base.join("history");
-        std::fs::create_dir_all(&source_history).expect("create source history");
+        tmkdirp(&source_history)?;
 
         // 1 回目の pin: 2026-05 と 2026-06 を複製する。
-        std::fs::write(source_history.join("2026-05.toml"), "a = 1\n").expect("write may");
-        std::fs::write(source_history.join("2026-06.toml"), "b = 2\n").expect("write jun");
+        twrite(source_history.join("2026-05.toml"), "a = 1\n")?;
+        twrite(source_history.join("2026-06.toml"), "b = 2\n")?;
         copy_history_dir(&source_history, &dest)?;
         assert!(dest.join("2026-05.toml").exists());
         assert!(dest.join("2026-06.toml").exists());
 
         // 2 回目の pin: source 側で 2026-05 を削除（リネーム相当）し 2026-06 を更新する。
-        std::fs::remove_file(source_history.join("2026-05.toml")).expect("remove may from source");
-        std::fs::write(source_history.join("2026-06.toml"), "b = 22\n").expect("update jun");
+        tremove_file(source_history.join("2026-05.toml"))?;
+        twrite(source_history.join("2026-06.toml"), "b = 22\n")?;
         copy_history_dir(&source_history, &dest)?;
 
         // 削除済み 2026-05 は複製先からも消えている（古い履歴が表示に混入しない）。
@@ -2719,17 +3364,63 @@ mod tests {
             "source から消えた古い TOML は複製先からも除去される"
         );
         // 残った 2026-06 は新しい内容で更新されている。
-        assert_eq!(
-            std::fs::read_to_string(dest.join("2026-06.toml")).expect("read jun"),
-            "b = 22\n"
-        );
+        assert_eq!(tread(dest.join("2026-06.toml"))?, "b = 22\n");
         // sync temp の残骸が残らない（atomic 置換後に消える）。
         let leftover_temp: Vec<_> = std::fs::read_dir(&base)
-            .expect("read base")
+            .map_err(|error| anyhow!("read base: {error}"))?
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().contains(".sync."))
             .collect();
         assert!(leftover_temp.is_empty(), "sync temp dir must not linger");
+
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_history_dir_atomically_preserves_old_replica_when_rename_fails() -> crate::Result<()>
+    {
+        // finding 3374863441 退行固定: temp→dest の置換 rename が失敗しても、既存の旧複製を喪失しない。
+        // 旧実装は dest を先に remove_dir_all してから rename したため、rename 失敗時に旧複製が消え、
+        // 呼び出し側が警告に落として last-applied-* を確定すると次回同じ pin で switch/sync が skip され、
+        // show / 要約が空のまま自己回復しなかった。新実装は dest を backup へ退避し、置換失敗時に backup を
+        // dest へ rename 復元するため旧複製が残る。
+        //
+        // 置換 rename の失敗を決定論的に注入する: `temp_dir` を **存在しないパス**にすると `fs::rename(temp, dest)`
+        // が `NotFound` で失敗し、置換失敗経路（temp 掃除 → backup→dest 復元）を確実に通る。退行版（dest を先に
+        // remove_dir_all して rename）ならこの注入で旧複製が消え、本テストの「旧複製温存」assert が FAIL する。
+        let base = temp_dir("replace-history-preserve")?;
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).map_err(|error| anyhow!("create base: {error}"))?;
+        let dest = base.join("history");
+        let backup_dir = base.join("history.backup.tmp");
+
+        // 旧複製（失われてはならない既存複製）を dest に用意する。
+        std::fs::create_dir_all(&dest).map_err(|error| anyhow!("create dest: {error}"))?;
+        twrite(dest.join("2026-05.toml"), "old = 1\n")
+            .map_err(|error| anyhow!("write old toml: {error}"))?;
+
+        // 置換元 temp を存在しないパスにして temp→dest rename を必ず失敗させる。
+        let missing_temp = base.join("history.sync.missing.tmp");
+        let result = replace_history_dir_atomically(&missing_temp, &dest, &backup_dir);
+        if result.is_ok() {
+            return Err(anyhow!(
+                "replacement must fail when the prepared temp dir is absent"
+            ));
+        }
+
+        // 旧複製が dest に残り、内容も元のまま（backup→dest へ復元される）であること。
+        let preserved = std::fs::read_to_string(dest.join("2026-05.toml"))
+            .map_err(|error| anyhow!("old replica must survive failed replacement: {error}"))?;
+        assert_eq!(
+            preserved, "old = 1\n",
+            "置換失敗時は旧複製を喪失せず元内容のまま温存する"
+        );
+        // backup 退避先が残骸として残らない（復元 rename で dest へ戻る）。
+        assert!(
+            !backup_dir.exists(),
+            "復元後に backup 退避先が残骸として残らない"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
         Ok(())
@@ -2762,12 +3453,11 @@ mod tests {
         // A 退行固定: sync_history が失敗（履歴複製が無い）した適用では、要約も `last-summarized-at` の確定も
         // しない。これにより、その範囲の要約が永久に失われる（marker だけ進んで次回再表示されない）退行を防ぐ。
         // 次回 sync 成功時の再実行で未表示範囲を再び要約できる。
-        let dir = temp_dir("sync-fail-marker");
+        let dir = temp_dir("sync-fail-marker")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         // 履歴 chain: N0->N1（at(0)）。
-        write_history(&dir, &[("N0", "N1")]);
-
+        write_history(&dir, &[("N0", "N1")])?;
         // 履歴複製失敗（history_synced=false）の適用: 要約も marker 確定もしない。
         apply_once_defer_gated(&dir, false)?;
         assert!(
@@ -2782,7 +3472,7 @@ mod tests {
 
         // 次回（履歴複製成功）で同じ範囲 N0->N1 を要約でき、marker が終端 at(0) へ進む（未表示範囲を取り戻す）。
         apply_once_defer_gated(&dir, true)?;
-        let pending = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read pending");
+        let pending = tread(dir.join(PENDING_SUMMARY))?;
         assert!(
             pending.contains("neovim-N0"),
             "再実行で未表示範囲 N0->N1 を要約する: {pending}"
@@ -2802,9 +3492,9 @@ mod tests {
         // finding 3368519977 退行固定: `nix flake archive` 失敗（`resolve_input_source` が `None`）は同期
         // 未成功として `Err` を返し、呼び出し側が `history_synced = true` にして空/古い履歴で marker を進める
         // 退行を防ぐ。source あり履歴無しは「複製対象が無い正常系」として `Ok(())`（archive 失敗と区別する）。
-        let dir = temp_dir("sync-archive-fail");
+        let dir = temp_dir("sync-archive-fail")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // archive 失敗（None）: Err を返す（marker 確定を抑止できるよう同期未成功にする）。
         assert!(
@@ -2814,7 +3504,7 @@ mod tests {
 
         // source は解決できたが `docs/update-history` が無い: 複製対象が無いだけの正常系として Ok。
         let source_without_history = dir.join("src-no-history");
-        std::fs::create_dir_all(&source_without_history).expect("create source root");
+        tmkdirp(&source_without_history)?;
         assert!(
             sync_history_from_source(Some(source_without_history), &dir).is_ok(),
             "source あり履歴無しは複製対象が無いだけで Ok（archive 失敗と区別する）"
@@ -2823,12 +3513,11 @@ mod tests {
         // source 解決成功 + 履歴 dir あり: 複製して Ok。
         let source_with_history = dir.join("src-with-history");
         let history = source_with_history.join(super::HISTORY_SUBDIR);
-        std::fs::create_dir_all(&history).expect("create source history");
-        std::fs::write(history.join("2026-06.toml"), "x = 1\n").expect("write src toml");
+        tmkdirp(&history)?;
+        twrite(history.join("2026-06.toml"), "x = 1\n")?;
         sync_history_from_source(Some(source_with_history), &dir)?;
         assert_eq!(
-            std::fs::read_to_string(dir.join(super::HISTORY_LOCAL_SUBDIR).join("2026-06.toml"))
-                .expect("read dest toml"),
+            tread(dir.join(super::HISTORY_LOCAL_SUBDIR).join("2026-06.toml"))?,
             "x = 1\n",
             "履歴 dir があれば state dir のローカル複製へコピーする"
         );
@@ -2842,9 +3531,9 @@ mod tests {
         // B 退行固定: defer 時に控えた pin/nixpkgs rev を commit が確定する（commit 時に現在 pin を読み直さない）。
         // run() の home/darwin 二段は実適用を要するため、ここでは commit が参照する defer marker の I/O 契約
         // （round-trip・read_deferred 優先・dotfiles pin / nixpkgs の独立保持・dry-run 非書込）を直接固定する。
-        let dir = temp_dir("deferred-rev");
+        let dir = temp_dir("deferred-rev")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // defer 前は marker 不在（commit は現在 pin へフォールバックする）。
         assert_eq!(read_deferred_rev(&dir)?, None);
@@ -2943,9 +3632,9 @@ mod tests {
     fn deferred_token_round_trips_and_clears_with_markers() -> crate::Result<()> {
         // finding 3368519975 退行固定（I/O 契約）: defer 時に控える `deferred-token` の read/write 往復と、
         // `clear_deferred_markers` が token も pin/nixpkgs rev と一緒に 1 サイクルへ閉じる（消す）ことを固定する。
-        let dir = temp_dir("deferred-token");
+        let dir = temp_dir("deferred-token")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // defer 前は token 不在。
         assert_eq!(read_deferred_token(&dir)?, None);
@@ -3090,9 +3779,9 @@ mod tests {
     #[test]
     fn last_applied_lock_id_round_trips_and_respects_dry_run() -> crate::Result<()> {
         // `--full` 専用 marker `last-applied-lock-id` の read/write 往復と dry-run 非書込を固定する。
-        let dir = temp_dir("applied-lock-id");
+        let dir = temp_dir("applied-lock-id")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // marker 無し（--full 初回）は None。
         assert_eq!(read_last_applied_lock_id(&dir)?, None);
@@ -3121,20 +3810,20 @@ mod tests {
         // temp 経由で 1 回 write する設計のため、履歴 source が壊れて render に失敗しても pending-summary は
         // 作られない（既存内容も汚さない）。ここでは履歴複製を欠いた state dir（render が空/失敗しうる source）で
         // 既存内容が温存され、temp ファイルが残骸として残らないことを固定する。
-        let dir = temp_dir("pending-atomic");
+        let dir = temp_dir("pending-atomic")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // 既存 pending-summary に確定済みブロックがある状態を作る（marker 無し = None で全件要約）。
-        write_history(&dir, &[("r1", "r2")]);
+        write_history(&dir, &[("r1", "r2")])?;
         let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
         append_pending_summary(&dir, &source, None, PackageSourceFilter::All)?;
-        let baseline = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read baseline");
+        let baseline = tread(dir.join(PENDING_SUMMARY))?;
         assert!(baseline.contains("neovim-r1"), "baseline block present");
 
         // publish/claim 用 temp が残骸として残っていないこと（成功時も掃除する契約）。
         let temp_leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .expect("read state dir")
+            .map_err(|error| anyhow!("read state dir: {error}"))?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -3151,7 +3840,7 @@ mod tests {
         // （部分公開・既存破壊が起きない）。
         let missing_source = dir.join("does-not-exist");
         append_pending_summary(&dir, &missing_source, Some("r1"), PackageSourceFilter::All)?;
-        let after = std::fs::read_to_string(dir.join(PENDING_SUMMARY)).expect("read after");
+        let after = tread(dir.join(PENDING_SUMMARY))?;
         assert!(
             after.contains("neovim-r1"),
             "existing committed block must be preserved: {after}"
@@ -3168,19 +3857,19 @@ mod tests {
         // "$pending.consuming.$$"` で消費しても要約ブロックを失わない。producer は consumer と同じ rename で
         // 所有権を取って publish するため、consumer が先に claim した既存ブロックは consumer 側に残り、producer は
         // NotFound → 新ブロックだけを fresh publish する（孤児 inode への append で要約が消えない）。
-        let dir = temp_dir("pending-consumer-race");
+        let dir = temp_dir("pending-consumer-race")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let pending = dir.join(PENDING_SUMMARY);
 
         // 履歴 chain: r1->r2（at(0)）, r2->r3（at(1)）。
-        write_history(&dir, &[("r1", "r2"), ("r2", "r3")]);
+        write_history(&dir, &[("r1", "r2"), ("r2", "r3")])?;
         let source = dir.join(super::HISTORY_LOCAL_SUBDIR);
 
         // producer #1: ブロック A（r1->r2..）を publish する（marker 無し → 全件だが limit 無しなので両方。
         // ここでは 1 件目 at(0) 起点の累積を見るため None で全件 publish）。
         append_pending_summary(&dir, &source, None, PackageSourceFilter::All)?;
-        let block_a = std::fs::read_to_string(&pending).expect("read pending after #1");
+        let block_a = tread(&pending)?;
         assert!(
             block_a.contains("neovim-r1"),
             "block A published: {block_a}"
@@ -3188,12 +3877,12 @@ mod tests {
 
         // consumer が pending を atomic rename で claim する（producer #2 の publish 直前の窓を模す）。
         let consuming = dir.join(format!("{PENDING_SUMMARY}.consuming.test"));
-        std::fs::rename(&pending, &consuming).expect("consumer claims pending");
+        trename(&pending, &consuming)?;
         assert!(!pending.exists(), "consumer took the pending file");
 
         // producer #2: 新たな履歴 r3->r4（at(2)）を足して publish する。pending は consumer が持ち去ったので
         // producer の claim は NotFound → block B だけを fresh publish する（既存 inode へ append しない）。
-        write_history(&dir, &[("r1", "r2"), ("r2", "r3"), ("r3", "r4")]);
+        write_history(&dir, &[("r1", "r2"), ("r2", "r3"), ("r3", "r4")])?;
         append_pending_summary(
             &dir,
             &source,
@@ -3202,13 +3891,13 @@ mod tests {
         )?;
 
         // consumer が claim した分（block A）は失われていない。
-        let consumed = std::fs::read_to_string(&consuming).expect("read consumed block A");
+        let consumed = tread(&consuming)?;
         assert!(
             consumed.contains("neovim-r1"),
             "consumer-claimed block A must survive the concurrent producer publish: {consumed}"
         );
         // producer #2 の新ブロック B も新しい pending として公開されている（孤児 inode へ書いて失っていない）。
-        let block_b = std::fs::read_to_string(&pending).expect("read pending after #2");
+        let block_b = tread(&pending)?;
         assert!(
             block_b.contains("neovim-r3"),
             "new block B must be published to a fresh pending, not lost to the orphaned inode: {block_b}"
@@ -3220,36 +3909,46 @@ mod tests {
 
     #[test]
     fn concurrent_stale_steal_yields_single_winner_via_rename_cas() -> crate::Result<()> {
-        // D 退行固定: stale lock を複数プロセスが同時奪取しても、rename ベースの CAS で **同時に保持される lock は
-        // 高々 1 つ**になる。旧実装（read→remove_file→create_new）は A の新 lock を B の remove が消し、双方が
-        // create_new に成功して二重奪取・二重適用しうる race があった。ここでは複数スレッドで同時に try_acquire し、
-        // 奪取できた lock を **解放せず保持し続けたまま** 全スレッドの完了を待つ。誰も解放しないので、同時保持数が
-        // そのまま「同時に成立した排他の数」になる。これが 1 を超えれば二重奪取＝退行。逐次の acquire→release→
-        // acquire（正当）を winner 数に数え込まないよう、scope 終了まで lock を Vec に退避して保持する。
-        let dir = temp_dir("steal-cas");
+        // D 退行固定（B 是正: ファイル protocol レベルで単一勝者を検証）: stale lock を複数の競合者が同時奪取しても、
+        // rename ベースの CAS で **同時に保持される lock は高々 1 つ**になる。旧実装（read→remove_file→create_new）は
+        // A の新 lock を B の remove が消し、双方が create_new に成功して二重奪取・二重適用しうる race があった。
+        //
+        // **`STEAL_SECTION_MUTEX` を経由しない**: 旧テストは `try_acquire`→`steal_stale_lock` 経由で奪取区間が
+        // process-wide mutex に直列化され、rename-CAS をバグ版（lock path を直接 remove→create_new）へ退行させても
+        // pass してしまい（protocol の単一勝者性を検証していない）、隠蔽されていた。ここでは奪取区間内側の **ファイル
+        // primitive** [`UpdateLock::steal_stale_lock_file_via_rename`] を多スレッドから直接競わせ、mutex を経由せずに
+        // **ファイル protocol そのものが cross-thread（= cross-process と同じ create_new(O_EXCL)/rename CAS）で単一
+        // 勝者を保証する**ことを固定する。リトマス: rename-CAS を旧バグ（remove→create_new）へ退行させると本テストが
+        // FAIL する（同時保持が 2 以上になる）。
+        //
+        // 取得できた lock を **解放せず保持し続けたまま** 全スレッドの完了を待つ。誰も解放しないので、同時保持数が
+        // そのまま「同時に成立した排他の数」になる。これが 1 を超えれば二重奪取＝退行。
+        let dir = temp_dir("steal-cas")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
 
         let contenders = 16;
         for _ in 0..64 {
-            // 各ラウンドで古い孤児 lock（owner pid 不在 + 古い timestamp）を置き、全スレッドに stale と
-            // 判定させる。pid 生存ガードを確実に通すため、回収済み（dead な）pid を使う。
+            // 各ラウンドで古い孤児 lock（owner pid 不在 + 古い timestamp）を置き、全スレッドに stale な被奪取
+            // 対象を 1 本だけ与える。pid 生存ガードを確実に通すため、回収済み（dead な）pid を使う。
             let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-            std::fs::write(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))
-                .expect("write stale lock");
+            twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(contenders));
             // 取得できた lock を解放せず保持し続けるための退避先（同時保持数を測る）。
             let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::<UpdateLock>::new()));
             std::thread::scope(|scope| {
                 for _ in 0..contenders {
-                    let dir = dir.clone();
+                    let lock_path = lock_path.clone();
                     let barrier = std::sync::Arc::clone(&barrier);
                     let held = std::sync::Arc::clone(&held);
                     scope.spawn(move || {
                         barrier.wait();
-                        if let Ok(Some(lock)) = UpdateLock::try_acquire(&dir, false) {
+                        // **mutex を経由せず**ファイル primitive を直接競わせる（protocol レベルの単一勝者検証）。
+                        if let Ok(Some(lock)) =
+                            UpdateLock::steal_stale_lock_file_via_rename(&lock_path)
+                        {
                             // 解放せず保持する（scope 終了まで生かして同時保持数を観測する）。
                             if let Ok(mut guard) = held.lock() {
                                 guard.push(lock);
@@ -3258,7 +3957,9 @@ mod tests {
                     });
                 }
             });
-            let mut held = held.lock().expect("held lock");
+            let mut held = held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let count = held.len();
             assert!(
                 count <= 1,
@@ -3267,10 +3968,14 @@ mod tests {
             // 保持していた lock を解放してから次ラウンドへ（drop で lock ファイルを除去）。
             held.clear();
             drop(held);
-            // steal marker が残骸として残らない（奪取区間終了時に必ず除去される）。
+            // 奪取の rename 中継（`update.lock.stealing.*`）が残骸として残らない。
+            let leftover_stealing = std::fs::read_dir(&dir)
+                .map_err(|error| anyhow!("read dir: {error}"))?
+                .filter_map(std::result::Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains(".stealing."));
             assert!(
-                !dir.join(format!("{LOCK_FILE}.steal")).exists(),
-                "steal marker must be cleaned up after the steal section"
+                !leftover_stealing,
+                "rename-CAS steal middle files must not leak"
             );
             let _ = std::fs::remove_file(&lock_path);
         }
@@ -3287,26 +3992,24 @@ mod tests {
         // 以後すべての try_acquire が marker の `AlreadyExists` で永久 skip へ倒れて stale lock を一切奪取できなく
         // なる（fleet が静かに更新停止）。marker 自身に TTL を与えたため、TTL 超過の孤児 marker は回収され、
         // stale lock の奪取が再開する。
-        let dir = temp_dir("orphan-steal");
+        let dir = temp_dir("orphan-steal")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
         let steal_marker = dir.join(format!("{LOCK_FILE}.steal"));
 
         // stale な孤児 lock（Drop されず残った残骸、owner pid 不在）を置く。
         let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-        std::fs::write(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))
-            .expect("write stale lock");
+        twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
 
         // 孤児 steal marker（TTL 超過 + owner pid 不在）を置く。これが残ると旧実装は AlreadyExists で永久 skip
         // した。pid 生存ガードを通すため dead な pid を使う。
         let stale_marker_epoch =
             super::now_epoch_secs().saturating_sub(STEAL_MARKER_STALE_SECS + 60);
-        std::fs::write(
+        twrite(
             &steal_marker,
             lock_payload(dead_pid_for_test(), stale_marker_epoch),
-        )
-        .expect("write orphan steal marker");
+        )?;
 
         // 孤児 marker を回収して stale lock を奪取し、取得成功する（永久 skip しない）。
         let acquired = UpdateLock::try_acquire(&dir, false)?;
@@ -3329,22 +4032,20 @@ mod tests {
     fn fresh_steal_marker_is_not_reclaimed() -> crate::Result<()> {
         // 2 補完: 新鮮な steal marker（実行中の別奪取者が保持）は回収せず奪取権を譲る（横取りしない）。
         // marker が TTL 未満なら別プロセスが奪取区間にいるとみなし、try_acquire は None（skip）へ倒れる。
-        let dir = temp_dir("fresh-steal");
+        let dir = temp_dir("fresh-steal")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
         let steal_marker = dir.join(format!("{LOCK_FILE}.steal"));
 
         // stale lock（owner pid 不在）+ 新鮮な steal marker（別プロセスが今まさに奪取中）。marker は
         // timestamp が新鮮なので回収されない（pid に依らず）。
         let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-        std::fs::write(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))
-            .expect("write stale lock");
-        std::fs::write(
+        twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
+        twrite(
             &steal_marker,
             lock_payload(std::process::id(), super::now_epoch_secs()),
-        )
-        .expect("write fresh steal marker");
+        )?;
 
         // 新鮮 marker は回収しない → skip（None）。別奪取者の lock/marker を横取りしない。
         assert!(
@@ -3364,19 +4065,25 @@ mod tests {
     #[test]
     fn concurrent_orphan_steal_marker_reclaim_yields_single_winner_via_rename_cas()
     -> crate::Result<()> {
-        // finding 3368585963 退行固定: steal marker の **TTL 回収経路**（孤児 marker の期限切れ回収）も rename
-        // ベース CAS で単一勝者になることを直接固定する。旧実装の「無条件 remove_file → create_new」では、
-        // 複数プロセスが同時に孤児 marker を観測すると、A が remove→create_new で新 marker を張った直後に
-        // (孤児を観測済みの) B が remove で A の新 marker を消し B も create_new に成功して、A・B 双方が奪取区間へ
-        // 入り 2 本の dotfiles update が同時に switch/marker 更新へ進みうる。reclaim を rename CAS にしたため、孤児を
-        // 一意名へ rename で奪えた 1 人だけが回収者になり、同時に保持される lock は高々 1 つになる。
+        // finding 3368585963 退行固定（B 是正: ファイル protocol レベルで単一勝者を検証）: steal marker の
+        // **TTL 回収経路**（孤児 marker の期限切れ回収）も rename ベース CAS で単一勝者になることを直接固定する。
+        // 旧実装の「無条件 remove_file → create_new」では、複数プロセスが同時に孤児 marker を観測すると、A が
+        // remove→create_new で新 marker を張った直後に (孤児を観測済みの) B が remove で A の新 marker を消し B も
+        // create_new に成功して、A・B 双方が奪取区間へ入り 2 本の dotfiles update が同時に switch/marker 更新へ
+        // 進みうる。reclaim を rename CAS にしたため、孤児を一意名へ rename で奪えた 1 人だけが回収者になり、
+        // 同時に保持される lock は高々 1 つになる。
+        //
+        // **`STEAL_SECTION_MUTEX` を経由しない**: 奪取区間のファイル protocol 本体 [`UpdateLock::steal_stale_lock_protocol`]
+        // を多スレッドから直接競わせ、in-process mutex の直列化に隠蔽されずに **protocol（marker reclaim の rename CAS
+        // ＋実 lock の rename CAS）そのものが cross-process（= create_new(O_EXCL)/rename）で単一勝者を保証する**ことを
+        // 固定する。リトマス: rename-CAS を旧バグ（remove→create_new）へ退行させると本テストが FAIL する。
         //
         // 各ラウンドで「stale lock + 孤児 steal marker（TTL 超過 + dead pid）」を置き、全スレッドに **TTL 回収経路**
         // を通らせる（毎回 marker を置くので create_new は AlreadyExists で必ず reclaim 分岐へ入る）。奪取できた
         // lock を解放せず保持して同時保持数を測り、1 を超えれば二重奪取＝退行。
-        let dir = temp_dir("orphan-steal-cas");
+        let dir = temp_dir("orphan-steal-cas")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
         let steal_marker = dir.join(format!("{LOCK_FILE}.steal"));
 
@@ -3384,28 +4091,28 @@ mod tests {
         for _ in 0..64 {
             // stale な孤児 lock（dead pid + 古い timestamp）。
             let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-            std::fs::write(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))
-                .expect("write stale lock");
+            twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
             // 孤児 steal marker（TTL 超過 + dead pid）。これにより全スレッドが create_new=AlreadyExists →
             // steal_marker_is_stale=true → reclaim_stale_steal_marker（rename CAS）の TTL 回収経路を通る。
             let stale_marker_epoch =
                 super::now_epoch_secs().saturating_sub(STEAL_MARKER_STALE_SECS + 60);
-            std::fs::write(
+            twrite(
                 &steal_marker,
                 lock_payload(dead_pid_for_test(), stale_marker_epoch),
-            )
-            .expect("write orphan steal marker");
+            )?;
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(contenders));
             let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::<UpdateLock>::new()));
             std::thread::scope(|scope| {
                 for _ in 0..contenders {
-                    let dir = dir.clone();
+                    let lock_path = lock_path.clone();
                     let barrier = std::sync::Arc::clone(&barrier);
                     let held = std::sync::Arc::clone(&held);
                     scope.spawn(move || {
                         barrier.wait();
-                        if let Ok(Some(lock)) = UpdateLock::try_acquire(&dir, false) {
+                        // **mutex を経由せず**奪取区間のファイル protocol 本体を直接競わせる（reclaim CAS ＋ steal CAS の
+                        // 単一勝者性を protocol レベルで検証する）。
+                        if let Ok(Some(lock)) = UpdateLock::steal_stale_lock_protocol(&lock_path) {
                             // 解放せず保持して同時保持数を観測する。
                             if let Ok(mut guard) = held.lock() {
                                 guard.push(lock);
@@ -3414,7 +4121,9 @@ mod tests {
                     });
                 }
             });
-            let mut held = held.lock().expect("held lock");
+            let mut held = held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let count = held.len();
             assert!(
                 count <= 1,
@@ -3428,7 +4137,7 @@ mod tests {
                 "steal marker must be cleaned up after the reclaim/steal section"
             );
             let leftover_reclaiming = std::fs::read_dir(&dir)
-                .expect("read dir")
+                .map_err(|error| anyhow!("read dir: {error}"))?
                 .filter_map(std::result::Result::ok)
                 .any(|entry| {
                     entry
@@ -3454,9 +4163,9 @@ mod tests {
         // 残骸化しても、新サイクル冒頭の `clear_deferred_markers` がそれを消すため、後続サイクルの commit が
         // **このサイクルで適用していない古い defer 値を `last-applied` へ誤確定しない**（commit は marker 不在で
         // 現在 pin への後方互換縮退に倒れる）。
-        let dir = temp_dir("cycle-local-defer");
+        let dir = temp_dir("cycle-local-defer")?;
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        tmkdirp(&dir)?;
 
         // 前サイクルの残骸 deferred marker（commit へ到達せず残った未適用 pin の控え）を模す。
         write_deferred_rev(&dir, "stale-pin-from-aborted-cycle", false)?;
