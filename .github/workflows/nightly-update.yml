@@ -43,6 +43,17 @@ name: nightly update
 #     verify-bump-lock を実行し「main」ruleset の required check に加える）を別途有効化できる。本仕様は
 #     App/secret 不要を維持するため、この per-PR guard は既定で有効化しない。
 #
+# 起動 ref の制限（finding 3376361125）:
+#   - open-pr（非 dry-run・PR 起票/status 投稿経路）は **既定ブランチ起動に限定**する。schedule は GitHub の
+#     制約上常に既定ブランチで発火するため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定ブランチの
+#     ときだけ許可する（job-level `if` + 先頭の明示ガード step で fail-closed を二重化）。
+#   - 理由: open-pr は信頼 ref（= この workflow の checkout）から検査主体（guard バイナリ `.#default` と
+#     `cargo xtask check static`）をビルド・実行する。非既定 ref（PR head）に guard / static check を弱める変更が
+#     ある状態で非既定 ref から非 dry-run 起動されると、その改変済みコードで検査主体をビルドしてしまい、base..head に
+#     許可外パスが含まれていても成功させ、その head に `static checks` status を詐称投稿して既定ブランチ宛て PR の
+#     保護を迂回できる。起動 ref を既定ブランチに固定することで検査主体を信頼コードに限定し、この迂回経路を塞ぐ。
+#     検査「対象」の base が既定ブランチ SHA に固定済み（下記 base_sha）であることはこれと独立に維持する。
+#
 # dry_run（workflow_dispatch 既定 true）では bump と record と diff までを実行し、PR 起票・push を行わない。
 # 実発火（schedule）前に dry_run で old/new eval（ビルド非実行・数秒）と TOML 生成を検証する運用を前提とする。
 
@@ -350,7 +361,19 @@ jobs:
   open-pr:
     name: open bump PR and enable auto-merge
     needs: [bump, record]
-    if: ${{ github.event_name == 'schedule' || github.event.inputs.dry_run == 'false' }}
+    # 非 dry-run（PR 起票・status 投稿経路）は **既定ブランチ起動に限定**する（finding 3376361125）。
+    #   - schedule は GitHub の制約上常に既定ブランチで発火するため許可する。
+    #   - workflow_dispatch は dry_run=false かつ **起動 ref が既定ブランチ**のときだけ許可する。
+    # これは、非既定 ref（PR head）に `dotfiles ci verify-bump-lock` guard や `cargo xtask check static` を
+    # 弱める変更がある状態で手動起動されると、その信頼できない ref から検査主体（guard バイナリ `.#default` と
+    # static check）をビルド・実行して base..head の許可外パスを素通りさせ、`static checks` status を詐称投稿して
+    # 既定ブランチ宛て PR の保護を迂回できる経路を塞ぐためである。非既定 ref の非 dry-run はここで skip される
+    # （job 自体が起動しない）。冗長な明示ガード step も先頭に置き fail-closed を二重化する。
+    if: >-
+      ${{ github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.dry_run == 'false' &&
+           github.ref_name == github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # GITHUB_TOKEN に必要な最小権限のみ付与する。App secret は使わない。
@@ -364,10 +387,33 @@ jobs:
       statuses: write
       checks: write
     steps:
-      # この nightly workflow 自身の ref を checkout する。これは信頼 ref（schedule なら既定ブランチ、
-      # workflow_dispatch なら起動 ref）であり、ここでビルドする `dotfiles` バイナリ（verify-bump-lock の
-      # 判定主体）も信頼コードである。後段でこのツリーに bump を commit し、base..head の lock 差分（git
-      # データ）を検査対象にする。判定主体（信頼 ref のコード）と検査対象（git の lock 差分）は分離される。
+      # 明示ガード（fail-closed の二重化・finding 3376361125）: 非既定 ref からの非 dry-run 起動を checkout 前に
+      # 拒否する。job-level `if` で既に skip される前提だが、`if` 条件の将来変更や評価差異で誤って到達した場合でも、
+      # 信頼できない起動 ref から検査主体（guard バイナリ `.#default` と `cargo xtask check static`）をビルド・実行
+      # する前にここで fail させ、`static checks` status 詐称投稿の経路を確実に塞ぐ。schedule は既定ブランチ固定の
+      # ため通過する。workflow_dispatch は起動 ref（github.ref_name）が既定ブランチのときだけ通過する。
+      - name: 非既定 ref の非 dry-run を拒否（guard）
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # schedule は常に既定ブランチで発火するため許可。
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            exit 0
+          fi
+          # それ以外（workflow_dispatch 非 dry-run）は起動 ref が既定ブランチでなければ拒否する。
+          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::非既定 ref ($REF_NAME) からの非 dry-run open-pr は拒否します（既定ブランチ $DEFAULT_BRANCH からのみ許可）。" >&2
+            exit 1
+          fi
+
+      # この nightly workflow 自身の ref を checkout する。これは信頼 ref（非 dry-run 経路は上のガードと
+      # job-level `if` により **既定ブランチ起動に限定**済み = schedule もしくは既定ブランチからの dispatch）で
+      # あり、ここでビルドする `dotfiles` バイナリ（verify-bump-lock の判定主体）も信頼コードである。後段でこの
+      # ツリーに bump を commit し、base..head の lock 差分（git データ）を検査対象にする。判定主体（信頼 ref の
+      # コード）と検査対象（git の lock 差分）は分離される。
       - name: checkout
         uses: actions/checkout@v5
         with:

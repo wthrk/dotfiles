@@ -7,11 +7,7 @@ use std::process::ExitCode;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    match dotfiles_cli::dispatch().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("{err}");
-            ExitCode::FAILURE
-        }
-    }
+    // dispatch が exit code を確定する（`update` の lock 競合 skip は専用 code。詳細は cli::dispatch）。
+    // エラー時の stderr 出力も dispatch 内で済ませる。
+    dotfiles_cli::dispatch().await
 }

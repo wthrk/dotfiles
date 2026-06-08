@@ -120,6 +120,22 @@ const LOCK_FILE: &str = "update.lock";
 /// switch を要否判定する。本 marker は `--full` の全体適用成功時にだけ確定し、非 `--full` 経路では pin ベース
 /// 判定を維持する（dotfiles input だけの更新は pin が代表する）。
 const LAST_APPLIED_LOCK_ID: &str = "last-applied-lock-id";
+/// home 部分適用（`dotfiles update home --full`・非 defer）が最後に適用した `flake.lock` 全体 identity を控える
+/// **home スコープ専用**の state file。
+///
+/// **finding 3376248543 の是正**: `dotfiles update home --full` では home-only 分岐が `options.full` 判定より先に
+/// 選ばれるため、旧実装は home/full marker の repo pin（`last-applied-home-rev`）だけで skip 判定し、更新後
+/// `flake.lock` の全体 identity を見なかった。dotfiles pin が同じまま `--full` で nixpkgs 等の他 input だけが
+/// 変わる通常ケースでは、lock は更新済みなのに pin 一致で skip し home-manager switch が走らず新入力が home 環境へ
+/// 適用されない。これを避け、home-only でも `--full` 時は lock 全体 identity の変化でも switch を要否判定する
+/// （[`should_switch_home_full`]）。
+///
+/// **lock-id marker を home スコープへ分離する理由**: 全体スコープの `last-applied-lock-id` を home-only `--full` が
+/// 確定すると、後続の全体 `--full` 適用（target=all）の [`should_switch_full`] が lock-id 一致で skip し、未適用の
+/// darwin/system が starve する。`last-applied-home-rev` と同じ scope 分離方針で home-only `--full` は本 home
+/// スコープ marker だけを確定し、全体スコープの `last-applied-lock-id` を動かさない。これで全体 `--full` は
+/// 引き続き他 input 変化を検知でき、home-only `--full` の同一 lock 再適用も dedup できる。
+const LAST_APPLIED_HOME_LOCK_ID: &str = "last-applied-home-lock-id";
 /// `--defer-rev-marker` 適用時に **その時点で適用した** dotfiles repo pin を控える state file（ユーザ所有）。
 ///
 /// daemon ラッパーは home 適用後に user 側 `update.lock` を解放してから root の `darwin-rebuild` →
@@ -163,6 +179,29 @@ const HISTORY_SUBDIR: &str = "docs/update-history";
 /// 以降の読取りは offline・決定論でこのローカル複製を参照する。
 const HISTORY_LOCAL_SUBDIR: &str = "history";
 
+/// 別の `dotfiles update` が `update.lock` を保持していて適用を skip したことを zsh catch-up へ伝える専用 exit code。
+///
+/// **finding 3376248532 の是正**: CLI は別プロセスが lock を保持しているだけでも（実際には何も適用していなくても）
+/// 終了する。zsh の `_dotfiles_auto_update_run_catchup` が終了ステータスだけで「当日 catch-up 成功」を判定すると、
+/// 複数ログインで後発シェルが lock 競合 skip して当日 marker を成功扱いで書いた後、先行 update が network 失敗で
+/// 落ちると、同日の後続シェルが再試行せず追随できない。よって lock 競合 skip だけは **exit 0（実適用成功）でも
+/// exit 1（異常失敗）でもない専用コード**で返し、zsh は「実適用も up-to-date も確認できた」ときだけ当日 marker を
+/// 確定する。`75`（`EX_TEMPFAIL`。sysexits 慣用の一時失敗＝再試行可）を採り、汎用失敗（1）と衝突させない。
+pub(crate) const LOCK_CONTENDED_EXIT_CODE: u8 = 75;
+
+/// `dotfiles update` の実行結果。終了コード変換（[`crate::cli`]）と zsh catch-up の marker 確定可否を分けるための区別。
+///
+/// - `Completed`: 実際に適用したか、適用済み pin と同一で up-to-date を確認したか、`--commit-rev-marker` を処理した
+///   （= この実行が catch-up の責務を果たした）。zsh は当日 marker を確定してよい。exit 0。
+/// - `LockContended`: 別の `dotfiles update` が lock を保持していて何も判定/適用できなかった。catch-up は未達成で
+///   あり、zsh は当日 marker を確定してはならない（同日後続シェルが再試行できるよう開けておく）。専用 exit code。
+pub(crate) enum UpdateOutcome {
+    /// 適用 / up-to-date 確認 / commit 処理を完了した（catch-up 責務を果たした）。exit 0。
+    Completed,
+    /// lock 競合で skip した（catch-up 未達成）。[`LOCK_CONTENDED_EXIT_CODE`] で終了する。
+    LockContended,
+}
+
 /// auto 経路の入口。**先に lock を更新してから** repo pin を読み、前回適用済み rev と異なるときだけ適用する。
 ///
 /// 順序: state dir 確保 → `update.lock` 非ブロッキング取得 → （取得失敗なら skip）→ lock 保持下で **適用前の
@@ -175,7 +214,7 @@ const HISTORY_LOCAL_SUBDIR: &str = "history";
 /// 選択は `nixpkgs_old` と突合するため、dedup 用 dotfiles pin ではなく nixpkgs old rev を起点に渡す（名前空間が
 /// 異なるため pin SHA を渡すと span が恒久空になる）。lock は処理終端で解放する（guard の drop）。`--dry-run`
 /// では実際の lock 更新・適用・状態書込みをせず、判定・表示経路だけを通す。
-pub(crate) fn run(options: UpdateOptions) -> Result<()> {
+pub(crate) fn run(options: UpdateOptions) -> Result<UpdateOutcome> {
     let config_dir = options.switch.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
 
@@ -187,10 +226,11 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
             .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
     }
 
-    // lock 取得失敗 = 他プロセスが適用中。skip して次回再判定（exit 0）。
+    // lock 取得失敗 = 他プロセスが適用中。この実行は何も判定/適用できていない（catch-up 未達成）ので、専用 exit
+    // code を返して zsh が当日 marker を確定しないようにする（finding 3376248532）。次回シェル/スケジュールで再判定。
     let Some(_lock) = UpdateLock::try_acquire(&state_dir, dry_run)? else {
         println!("別の dotfiles update が適用中のため skip します");
-        return Ok(());
+        return Ok(UpdateOutcome::LockContended);
     };
 
     // `--commit-rev-marker`: 二段適用（home→darwin）の **両成功後** に rev マーカーだけを確定させる経路。
@@ -217,41 +257,56 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
             deferred_nixpkgs_rev.as_deref(),
         ) {
             CommitDecision::Confirm { pin, nixpkgs_rev } => {
-                // defer 時点の値（pin あり）か、後方互換の現在値縮退（pin None）で確定する。
+                // defer 時点の値（pin あり）か、後方互換の現在値縮退（pin None）で確定する pin/nixpkgs rev を決める。
                 let committed_pin = match pin {
                     Some(rev) => rev.to_string(),
                     None => read_repo_pin(&config_dir)?,
                 };
-                write_last_applied_rev(&state_dir, &committed_pin, dry_run)?;
                 let committed_nixpkgs_rev = match nixpkgs_rev {
                     Some(rev) => rev.to_string(),
                     None => read_nixpkgs_rev(&config_dir)?,
                 };
-                write_last_applied_nixpkgs_rev(&state_dir, &committed_nixpkgs_rev, dry_run)?;
-                // 確定後は defer marker を消す（次回 defer→commit サイクルへ古い値を持ち越さない）。
-                clear_deferred_markers(&state_dir, dry_run);
-                println!("適用済み rev を確定しました（rev {committed_pin}）");
 
-                // **darwin 適用完了後の適用済み範囲要約（finding 運用整合）**: daemon フル経路は home step
-                // （`--defer-rev-marker`）では要約を委譲しており、darwin で実適用された brew cask を含む適用済み
-                // 範囲はこの commit step（home+darwin 両方適用済み）で `All`（nix + cask）として 1 回だけ要約する。
-                // home step で NixOnly 要約すると darwin 適用 cask が starve するため、cask を含む `All` 要約を
-                // ここへ集約する。要約 span 起点は home step が進めなかった `last-summarized-at`（home defer 経路
-                // では要約も marker 確定もしていないため前回値のまま）を使い、要約成功時に終端 `at` を確定する。
-                // ローカル履歴複製は home step の `sync_history` で取り込み済みのため、ここでは複製せず読むだけ。
-                // 複製不在/破損で要約が失敗しても rev 確定（上）は済んでおり、要約は次回 catch-up（zsh/daemon）へ
-                // 委ねる（best-effort。commit の主責務である rev 確定を要約失敗で巻き戻さない）。
+                // **要約を marker 確定「前」に行う（finding 3376248504）**: daemon フル経路は home step
+                // （`--defer-rev-marker`）では要約を委譲し、darwin で実適用された brew cask を含む適用済み範囲はこの
+                // commit step（home+darwin 両方適用済み）で `All`（nix + cask）として 1 回だけ要約する。旧実装は
+                // `last-applied-*` を **先に確定**してから要約を best-effort で呼んでいたため、履歴 TOML 破損や
+                // pending-summary 書込み失敗で要約だけ失敗すると、`last-summarized-at` が古いままでも次回は同一 pin と
+                // 判定され早期 return に入り、未表示の darwin/cask を含む適用済み範囲が二度と再要約されなかった。
+                // よって **要約成功後にだけ rev marker を確定**し、要約失敗時は rev を確定せず deferred marker も残す。
+                // すると次の defer→commit サイクル（または skip 経路の `All` 要約再試行）が同一 pin で再要約を試せる
+                // （switch/darwin は冪等再実行され、要約 cursor `last-summarized-at` は失敗時に進まないため未表示 span を
+                // 失わない）。darwin drift 懸念（rev 未確定で darwin 再適用）は冪等再適用で安全側に倒れ、非 defer 経路
+                // （finding 3368519980）と同じ「実作業成功後に marker 確定」方針に揃う。
                 //
                 // **scope = `All`（全体スコープ）**: span 起点と書き戻す marker は `last-summarized-at`（`All` スコープ
                 // カーソル）を使う。home-only NixOnly 要約が動かす `last-summarized-home-at` とは分離されているため、
                 // zsh ログイン catch-up が先に走って home カーソルを進めていても、この `All` 要約の span 起点は影響を
                 // 受けず、darwin 実適用 cask を含む適用済み範囲を必ず 1 回要約できる（cask starve を防ぐ。要件1）。
-                if let Err(error) =
-                    present_and_commit_summary(&state_dir, SummaryScope::All, dry_run)
-                {
-                    eprintln!(
-                        "適用済み範囲の要約に失敗しました（rev 確定済み・要約は次回へ繰越）: {error}"
-                    );
+                // ローカル履歴複製は home step の `sync_history` で取り込み済みのため、ここでは複製せず読むだけ。
+                let summary_result =
+                    present_and_commit_summary(&state_dir, SummaryScope::All, dry_run);
+                match commit_writeback_plan(summary_result.is_ok()) {
+                    CommitWriteback::Persist => {
+                        // 要約成功 → rev marker を確定し、defer marker を消す（次サイクルへ古い値を持ち越さない）。
+                        write_last_applied_rev(&state_dir, &committed_pin, dry_run)?;
+                        write_last_applied_nixpkgs_rev(
+                            &state_dir,
+                            &committed_nixpkgs_rev,
+                            dry_run,
+                        )?;
+                        clear_deferred_markers(&state_dir, dry_run);
+                        println!("適用済み rev を確定しました（rev {committed_pin}）");
+                    }
+                    CommitWriteback::Defer => {
+                        // 要約失敗 → rev を確定せず deferred marker も残し、次サイクルで再要約を試せるようにする
+                        // （未表示 span を失わない）。darwin は冪等再適用される。要約 Err の文脈を stderr へ出す。
+                        if let Err(error) = &summary_result {
+                            eprintln!(
+                                "適用済み範囲の要約に失敗しました（rev 未確定・次サイクルで再要約を試行）: {error}"
+                            );
+                        }
+                    }
                 }
             }
             CommitDecision::Skip => {
@@ -263,7 +318,8 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
                 );
             }
         }
-        return Ok(());
+        // commit 処理を実行した（catch-up 責務を果たした）。
+        return Ok(UpdateOutcome::Completed);
     }
 
     // 新しい適用サイクルの開始時に、前サイクルの deferred marker（`deferred-rev`/`deferred-nixpkgs-rev`）を
@@ -313,7 +369,24 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         // いずれかが current_pin に一致すれば skip する。home marker は home スコープしか確定しないため、全体
         // 適用（target=all）の `should_switch` は引き続き未適用 pin を switch 要と判定でき、darwin は starve しない。
         let home_rev = read_last_applied_home_rev(&state_dir)?;
-        should_switch_home(home_rev.as_deref(), previous_rev.as_deref(), &current_pin)
+        if options.full {
+            // `update home --full`（finding 3376248543）: home-only 分岐が `options.full` より先に選ばれるため、
+            // home/full marker の pin だけで skip すると dotfiles pin 不変 + 他 input だけ変化のケースで lock 更新済み
+            // でも switch が走らない。`--full` 時は home スコープの lock-id（`last-applied-home-lock-id`）と現在の
+            // lock 全体 identity を比較し、pin か lock のいずれかが変化していれば switch する。lock-id は home スコープ
+            // marker を読むため、全体 `--full` 適用の dedup を壊さず darwin を starve させない。
+            let current_lock_id = read_lock_id(&config_dir)?;
+            let previous_home_lock_id = read_last_applied_home_lock_id(&state_dir)?;
+            should_switch_home_full(
+                home_rev.as_deref(),
+                previous_rev.as_deref(),
+                &current_pin,
+                previous_home_lock_id.as_deref(),
+                &current_lock_id,
+            )
+        } else {
+            should_switch_home(home_rev.as_deref(), previous_rev.as_deref(), &current_pin)
+        }
     } else if options.full {
         let current_lock_id = read_lock_id(&config_dir)?;
         let previous_lock_id = read_last_applied_lock_id(&state_dir)?;
@@ -330,7 +403,8 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         // lock 更新後の pin（`--full` では lock 全体）が前回適用済みと同一。switch / record / marker を skip する
         // （lock 更新は実施済み）。
         println!("適用済み pin と同一のため switch は不要です（rev {current_pin}）");
-        return Ok(());
+        // up-to-date を確認できた（catch-up 責務を果たした）。lock 競合とは区別して Completed を返す。
+        return Ok(UpdateOutcome::Completed);
     }
 
     // 更新後 pin が前回と異なる → switch を実行する（lock 更新は上で済んでいる）。
@@ -409,23 +483,35 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
         present_and_commit_summary(&state_dir, scope, dry_run)?;
     }
 
-    // **marker 確定を要約成功後に行う（finding 3368519980）**: 全体適用（target=all・非 defer）の
-    // `last-applied-rev`/`last-applied-nixpkgs-rev`/`last-applied-lock-id` は、要約（`present_and_commit_summary`）が
-    // 成功した後に確定する。要約より先に last-applied を確定すると、履歴 TOML 破損や pending-summary 書込み失敗で
-    // 要約だけが Err 終了した場合に、次回 `should_switch` が同一 pin と判定して早期 return し、`last-summarized-at`
-    // が古いままでも未表示 span が二度と要約されない。要約成功後に確定すれば、要約失敗時は last-applied を書かず
-    // 次回再 switch で未表示 span を再要約できる（switch/適用は冪等再実行される）。`history_synced == false`
-    // （履歴複製失敗で要約を skip した場合）でも適用自体は進んでいるため last-applied は確定する（要約だけ次回へ
-    // 繰越）。defer 経路の deferred marker も要約委譲後に控える（commit step が確定する）。
+    // **marker 確定を「実作業（履歴同期 + 要約）成功後」に行う（finding 3368519980 / 3376248509）**: 全体適用
+    // （target=all・非 defer）/ home 部分適用（非 defer）の apply-dedup marker（`last-applied-rev` /
+    // `last-applied-nixpkgs-rev` / `last-applied-lock-id` / `last-applied-home-rev` / `last-applied-home-lock-id`）は、
+    // 履歴同期（`history_synced`）と要約（`present_and_commit_summary`）が成功した後にだけ確定する。
+    //
+    // 要約失敗時に確定しない理由（3368519980）: 要約より先に last-applied を確定すると、履歴 TOML 破損や
+    // pending-summary 書込み失敗で要約だけが Err 終了した場合に、次回 `should_switch` が同一 pin と判定して早期
+    // return し、`last-summarized-at` が古いままでも未表示 span が二度と要約されない（要約失敗は上の `?` で伝播し、
+    // ここに到達しないため last-applied を書かない）。
+    //
+    // **履歴同期失敗時も確定しない理由（finding 3376248509）**: 旧実装は `history_synced == false`（一時的な
+    // archive/network 失敗で要約を skip した場合）でも「適用自体は進んでいる」として last-applied を確定していた。
+    // すると次回同一 pin では `should_apply=false` で `sync_history` より前に早期 return し、通信復旧後も同じ pin
+    // では履歴複製・適用後要約を再試行できず、次の bump まで `update-history show` / pending summary が空/古いまま
+    // になる。よって履歴同期未成功時は apply-dedup marker を確定せず、次回同一 pin で switch（冪等）→ 再同期 →
+    // 再要約を試せるようにする。`commit_apply_markers` へ `history_synced` を渡し、非 defer の apply-dedup 確定を
+    // この成否で条件化する。defer 経路の deferred marker は要約を commit step へ委譲するため履歴同期失敗でも控える
+    // （commit step が要約成功後に確定し、失敗時は次サイクルで再試行する＝finding 3376248504）。
     commit_apply_markers(
         &state_dir,
         &options,
         &config_dir,
         &current_pin,
         &applied_nixpkgs_rev,
+        history_synced,
         dry_run,
     )?;
-    Ok(())
+    // 実際に適用した（catch-up 責務を果たした）。
+    Ok(UpdateOutcome::Completed)
 }
 
 /// lock 更新「後」の現在 pin と前回適用済み rev から、switch / record / marker を実行すべきかを決める純粋関数。
@@ -471,6 +557,31 @@ fn should_switch_full(
 /// [`should_switch`] が darwin 側の適用要否を独立に判定でき、home-only 適用後も darwin は starve しない。
 fn should_switch_home(home_rev: Option<&str>, full_rev: Option<&str>, current_pin: &str) -> bool {
     home_rev != Some(current_pin) && full_rev != Some(current_pin)
+}
+
+/// home 部分適用 + `--full`（`update home --full`・非 defer）の switch 要否を、home スコープ pin と
+/// `flake.lock` 全体 identity の **いずれかの変化**で決める純粋関数（finding 3376248543）。
+///
+/// `update home --full` は home-only 分岐が `options.full` 判定より先に選ばれるため、pin だけ見る
+/// [`should_switch_home`] では dotfiles pin 不変 + 他 input（nixpkgs 等）だけ変化のケースで lock 更新済みでも
+/// skip し、home-manager switch が走らない。本関数は (a) home スコープ pin 判定（[`should_switch_home`]）が
+/// switch 要、または (b) lock 全体 identity が **home スコープの前回 `--full` 適用値**（`last-applied-home-lock-id`）
+/// と異なるとき `true`（switch）を返す。`previous_home_lock_id` が `None`（home `--full` 初回・本機能導入前）なら
+/// lock 未適用とみなして switch する。
+///
+/// lock-id 比較は **home スコープ marker** を読む（全体 `last-applied-lock-id` ではない）。全体 marker を読むと
+/// home-only と全体 `--full` がカーソルを共有して darwin starve / 誤 dedup を起こすため、`should_switch_home` が
+/// home/全体 pin を scope 分離するのと同じ方針で lock-id も home スコープへ分離する。判定を I/O から切り離し、
+/// 「pin 同一でも lock 変化なら switch / pin も lock も同一なら skip」を単体検証可能にする。
+fn should_switch_home_full(
+    home_rev: Option<&str>,
+    full_rev: Option<&str>,
+    current_pin: &str,
+    previous_home_lock_id: Option<&str>,
+    current_lock_id: &str,
+) -> bool {
+    should_switch_home(home_rev, full_rev, current_pin)
+        || previous_home_lock_id != Some(current_lock_id)
 }
 
 /// `--commit-rev-marker` の token 検証結果。確定するか、別サイクル上書き検知で確定を skip するか。
@@ -525,6 +636,32 @@ fn resolve_committed_marker<'a>(
             pin: deferred_rev,
             nixpkgs_rev: deferred_nixpkgs_rev,
         },
+    }
+}
+
+/// commit（`--commit-rev-marker`）の `Confirm` 分岐で、`All` 要約の成否に応じた marker writeback の可否を表す。
+///
+/// `Persist` は rev marker（`last-applied-rev` / `last-applied-nixpkgs-rev`）を確定し deferred marker を clear する。
+/// `Defer` は何も書き戻さず（rev 未確定・deferred marker 残置）、次サイクルでの再要約に委ねる。
+#[derive(Debug, PartialEq, Eq)]
+enum CommitWriteback {
+    /// 要約成功 → rev marker を確定し deferred marker を clear する。
+    Persist,
+    /// 要約失敗 → rev を確定せず deferred marker も残す（再要約のため）。
+    Defer,
+}
+
+/// commit `Confirm` 分岐の writeback gating を `All` 要約の成否だけから決める純粋関数（finding 3376248504）。
+///
+/// 要約成功時のみ `last-applied-rev` / `last-applied-nixpkgs-rev` を確定し deferred marker を clear（`Persist`）、
+/// 要約失敗時は rev を確定せず deferred marker を残す（`Defer`）。これは「実作業（要約表示）成功後にだけ marker を
+/// 確定する」契約であり、要約失敗で marker を先に進めて未表示 span を失う退行を防ぐ。判定を I/O から切り離し、
+/// 要約成否を `bool` で注入して両分岐を決定論的に固定できるようにする。
+fn commit_writeback_plan(summary_succeeded: bool) -> CommitWriteback {
+    if summary_succeeded {
+        CommitWriteback::Persist
+    } else {
+        CommitWriteback::Defer
     }
 }
 
@@ -952,6 +1089,16 @@ fn read_last_applied_lock_id(state_dir: &Path) -> Result<Option<String>> {
     read_trimmed_rev(&state_dir.join(LAST_APPLIED_LOCK_ID))
 }
 
+/// home 部分適用が最後に `--full` 適用した `flake.lock` 全体 identity を読む（不存在/空なら `None`）。
+///
+/// `update home --full` の switch 要否判定（[`should_switch_home_full`]）で、dotfiles pin 不変でも lock 全体が
+/// 変化したかを home スコープで比較するために使う（finding 3376248543）。marker が無い（home `--full` 初回・本機能
+/// 導入前）なら `None` で、その場合 home `--full` は必ず switch する（lock 全体を未適用とみなす）。全体スコープの
+/// `last-applied-lock-id` とは分離した home 専用カーソルであり、全体 `--full` 適用の dedup を動かさない。
+fn read_last_applied_home_lock_id(state_dir: &Path) -> Result<Option<String>> {
+    read_trimmed_rev(&state_dir.join(LAST_APPLIED_HOME_LOCK_ID))
+}
+
 /// defer 時に控えた「適用した dotfiles repo pin」を読む（不存在/空なら `None`）。
 ///
 /// `--commit-rev-marker` がこの値を最優先で確定する。`None`（defer を経ない直接 commit）なら現在 pin へ縮退する。
@@ -1024,6 +1171,15 @@ fn write_last_applied_nixpkgs_rev(state_dir: &Path, rev: &str, dry_run: bool) ->
 /// 本 marker を書かない（dotfiles input だけの更新は pin が代表する）。
 fn write_last_applied_lock_id(state_dir: &Path, lock_id: &str, dry_run: bool) -> Result<()> {
     write_rev_atomic(&state_dir.join(LAST_APPLIED_LOCK_ID), lock_id, dry_run)
+}
+
+/// home 部分適用が `--full` 適用した `flake.lock` 全体 identity を home スコープ marker へ原子的に控える（ユーザ所有）。
+///
+/// `update home --full`（非 defer）の適用成功後に確定し、次回 home `--full` の [`should_switch_home_full`] が
+/// 同一 lock を dedup できるようにする（finding 3376248543）。全体スコープの `last-applied-lock-id` を動かさないため、
+/// 全体 `--full` 適用（target=all）の dedup を壊さず darwin を starve させない。`--dry-run` では書かない。
+fn write_last_applied_home_lock_id(state_dir: &Path, lock_id: &str, dry_run: bool) -> Result<()> {
+    write_rev_atomic(&state_dir.join(LAST_APPLIED_HOME_LOCK_ID), lock_id, dry_run)
 }
 
 /// defer 時に適用した dotfiles repo pin を原子的に控える（ユーザ所有）。`--dry-run` では書かない。
@@ -1194,16 +1350,25 @@ fn present_and_commit_summary(state_dir: &Path, scope: SummaryScope, dry_run: bo
 /// caller responsibility: 要約（`present_and_commit_summary`）が成功した後に呼ぶこと（finding 3368519980）。
 /// 要約より先に last-applied を確定すると、要約だけが失敗した場合に次回 `should_switch` が同一 pin で早期 return し
 /// 未表示 span が二度と要約されない。要約成功後に確定すれば、要約失敗時は last-applied を書かず次回再 switch で
-/// 未表示 span を再要約できる。`history_synced == false`（要約 skip）でも適用は進んでいるため確定する。
+/// 未表示 span を再要約できる。
+///
+/// `history_synced`: 履歴複製（`sync_history`）が成功したか。**非 defer の apply-dedup marker は
+/// `history_synced == true` のときだけ確定する**（finding 3376248509）。一時的な archive/network 失敗で
+/// `history_synced == false` のとき確定すると、次回同一 pin で `sync_history` より前に早期 return し、通信復旧後も
+/// 同じ pin で履歴複製・適用後要約を再試行できず、次の bump まで show/pending summary が空/古いままになる。よって
+/// 履歴同期未成功時は確定せず、次回同一 pin で switch（冪等）→ 再同期 → 再要約を試せるようにする。defer 経路の
+/// deferred marker は要約を commit step へ委譲するため `history_synced` に依らず控える（commit が要約成功後に確定し、
+/// 失敗時は次サイクルで再試行する＝finding 3376248504）。
 fn commit_apply_markers(
     state_dir: &Path,
     options: &UpdateOptions,
     config_dir: &Path,
     current_pin: &str,
     applied_nixpkgs_rev: &str,
+    history_synced: bool,
     dry_run: bool,
 ) -> Result<()> {
-    if !options.defer_rev_marker && options.switch.is_full_apply() {
+    if !options.defer_rev_marker && options.switch.is_full_apply() && history_synced {
         write_last_applied_rev(state_dir, current_pin, dry_run)?;
         // dotfiles pin と同時に、今回適用した nixpkgs rev も確定する。defer 時は rev 未確定のため書かない
         // （darwin 成功後の `--commit-rev-marker` がまとめて確定する）。
@@ -1214,12 +1379,21 @@ fn commit_apply_markers(
             let applied_lock_id = read_lock_id(config_dir)?;
             write_last_applied_lock_id(state_dir, &applied_lock_id, dry_run)?;
         }
-    } else if !options.defer_rev_marker && options.switch.is_home_only_apply() {
+    } else if !options.defer_rev_marker && options.switch.is_home_only_apply() && history_synced {
         // home 部分適用（zsh login catch-up）: 全体 marker は確定せず（darwin starve 回避）、home スコープ marker
         // だけ確定する（finding 3374863446）。これで次回 home-only は同一 pin を dedup でき、毎ログイン再適用の
         // 無限ループを止める。home スコープしか進めないため darwin は引き続き適用要と判定される。nixpkgs rev /
-        // lock-id は全体スコープの marker なのでここでは確定しない（home-only は cask/system を適用しない）。
+        // nixpkgs rev / 全体 lock-id は全体スコープ marker なのでここでは確定しない（home-only は cask/system を
+        // 適用しない）。
         write_last_applied_home_rev(state_dir, current_pin, dry_run)?;
+        // `update home --full` では home スコープの lock-id も確定し、次回 home `--full` で dotfiles pin 不変 +
+        // 他 input 変化のケースを検知できるようにする（finding 3376248543）。全体スコープの `last-applied-lock-id` は
+        // 動かさないため、全体 `--full` 適用（target=all）の dedup を壊さず darwin を starve させない。非 `--full` の
+        // home-only は pin が代表するので home lock-id marker を書かない。
+        if options.full {
+            let applied_lock_id = read_lock_id(config_dir)?;
+            write_last_applied_home_lock_id(state_dir, &applied_lock_id, dry_run)?;
+        }
     } else if options.defer_rev_marker {
         // defer 経路: `last-applied-*` はまだ確定しないが、**この時点で適用した pin / nixpkgs rev** を defer
         // marker へ控える（B）。後続の `--commit-rev-marker` はこの defer 値を確定し、commit 時に現在 pin を
@@ -1471,9 +1645,9 @@ fn steal_rename_suffix() -> String {
 /// flock(2) を使うと `libc` 直呼び（禁止）か新規 crate が要るため、移植性とテスト容易性を優先し
 /// `create_new`（`O_CREAT|O_EXCL`）でロックファイルを作る方式を採る。作成成功＝ロック取得、`AlreadyExists`＝
 /// 取得失敗だが、**stale lock（プロセス kill/再起動で `Drop` 未実行のまま残った孤児）を永久 skip しない**よう、
-/// 既存 lock の timestamp を見て一定時間（[`LOCK_STALE_SECS`]）より古ければ奪取する。lock ファイルはユーザ所有
-/// state dir 配下に `pid\nepoch_secs` で書き、drop で除去する。`--dry-run` では実ロックファイルを作らず
-/// （副作用なし）、常に取得成功として判定経路を通す。
+/// 既存 lock の owner 生存（pid + プロセス開始時刻 identity）と timestamp を見て、孤児（[`LOCK_STALE_SECS`] 超過）
+/// なら奪取する。lock ファイルはユーザ所有 state dir 配下に `pid\nepoch_secs\nstart_token`（[`lock_payload`]）で書き、
+/// drop で除去する。`--dry-run` では実ロックファイルを作らず（副作用なし）、常に取得成功として判定経路を通す。
 struct UpdateLock {
     /// 取得したロックファイルのパス（drop で除去する）。`None` は dry-run（実ファイル無し）。
     path: Option<PathBuf>,
@@ -1657,8 +1831,9 @@ impl UpdateLock {
 
     /// steal marker を `create_new`（`O_EXCL`）で作る。成功で `true`、既存（`AlreadyExists`）で `false`。
     ///
-    /// 作成時は孤児回収（TTL 判定）用に `pid\nepoch_secs` を書く。timestamp 書込み失敗は致命にしない
-    /// （その場合の staleness 判定は保守的に「新鮮」へ倒れ、誤回収を避ける）。
+    /// 作成時は孤児回収（pid 生存 + 開始時刻 identity + TTL 判定）用に `pid\nepoch_secs\nstart_token`
+    /// （[`current_lock_payload`]）を書く。書込み失敗は致命にしない（その場合の staleness 判定は保守的に「新鮮」へ
+    /// 倒れ、誤回収を避ける）。
     fn create_new_marker(steal_marker: &Path) -> Result<bool> {
         match fs::OpenOptions::new()
             .write(true)
@@ -1666,11 +1841,7 @@ impl UpdateLock {
             .open(steal_marker)
         {
             Ok(mut marker) => {
-                let _ = write!(
-                    marker,
-                    "{}",
-                    lock_payload(std::process::id(), now_epoch_secs())
-                );
+                let _ = write!(marker, "{}", current_lock_payload());
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
@@ -1822,7 +1993,8 @@ impl UpdateLock {
 
     /// `create_new`（`O_CREAT|O_EXCL`）で lock を新規作成する。成功で `Some`、既存（`AlreadyExists`）で `None`。
     ///
-    /// 作成時は診断・staleness 判定用に `pid\nepoch_secs` を書く。timestamp 書込み失敗は致命にしない
+    /// 作成時は診断・staleness 判定（pid 生存 + 開始時刻 identity + timestamp）用に
+    /// `pid\nepoch_secs\nstart_token`（[`current_lock_payload`]）を書く。書込み失敗は致命にしない
     /// （その場合 staleness 判定は保守的に「生存中」へ倒れ、誤奪取を避ける）。
     fn create_new_lock(path: &Path) -> Result<Option<Self>> {
         match fs::OpenOptions::new()
@@ -1831,11 +2003,7 @@ impl UpdateLock {
             .open(path)
         {
             Ok(mut file) => {
-                let _ = write!(
-                    file,
-                    "{}",
-                    lock_payload(std::process::id(), now_epoch_secs())
-                );
+                let _ = write!(file, "{}", current_lock_payload());
                 Ok(Some(Self {
                     path: Some(path.to_path_buf()),
                 }))
@@ -1860,14 +2028,34 @@ impl UpdateLock {
     }
 }
 
-/// lock ファイルの内容（`pid\nepoch_secs`）を組み立てる純粋関数。
+/// lock ファイルの内容（`pid\nepoch_secs\nstart_token`）を組み立てる純粋関数。
 ///
-/// 1 行目は診断用 pid、2 行目は staleness 判定に使う取得時刻（UNIX epoch 秒）。
-fn lock_payload(pid: u32, epoch_secs: u64) -> String {
-    format!("{pid}\n{epoch_secs}\n")
+/// 1 行目は owner の pid、2 行目は staleness 判定に使う取得時刻（UNIX epoch 秒）、3 行目は **owner プロセスの
+/// 固有 identity**（プロセス開始時刻トークン。空なら省略相当の空行）。
+///
+/// **3 行目（start token）を持つ理由（finding 3376248521 — pid 再利用の誤判定回避）**: 旧 payload は `pid` 生存
+/// だけで owner 実行中とみなしていたため、`dotfiles update` が kill/OOM/再起動で `Drop` されず lock を残した後に
+/// OS が **同じ pid を無関係な長寿命プロセスへ再利用**すると、その別プロセスが生存している限り `kill -0` が成功して
+/// timestamp が 6h を超えても lock が永久に非 stale 扱いになり、auto-update が手動削除まで復旧しない。pid に加えて
+/// owner プロセスの開始時刻トークンを控え、判定時に「pid 生存 **かつ** 開始時刻が一致」のときだけ live owner とみなす
+/// ことで、pid 再利用（別プロセス＝開始時刻が異なる）を孤児として正しく回収できるようにする。`start_token` が空
+/// （取得不能環境）の場合は 3 行目を空行にし、判定側は pid 生存のみの後方互換へ保守的に倒れる。
+fn lock_payload(pid: u32, epoch_secs: u64, start_token: &str) -> String {
+    format!("{pid}\n{epoch_secs}\n{start_token}\n")
 }
 
-/// lock 内容（`pid\nepoch_secs`）と現在時刻から staleness を判定する純粋関数。
+/// 現在のプロセスを owner とする lock/steal marker payload を組み立てる。
+///
+/// pid・取得時刻・**現在プロセスの開始時刻トークン**（[`process_start_token`]）を [`lock_payload`] で連結する。
+/// 開始時刻が `ps` から取得できない環境では空トークン（3 行目空行）で書き、判定側は pid 生存のみの後方互換へ
+/// 保守的に倒れる（取得不能でも lock 取得自体は止めない）。
+fn current_lock_payload() -> String {
+    let pid = std::process::id();
+    let start_token = process_start_token(pid).unwrap_or_default();
+    lock_payload(pid, now_epoch_secs(), &start_token)
+}
+
+/// lock 内容（`pid\nepoch_secs\nstart_token`）の payload 2 行目（epoch 行）と現在時刻から staleness を判定する純粋関数。
 ///
 /// 2 行目を epoch 秒として解析し、`now - acquired >= threshold` なら stale（孤児）とみなす。timestamp 行が
 /// 無い / 解析不能 / 未来時刻（負の経過）は保守的に「stale ではない」へ倒し、生存中の適用を横取りしない。
@@ -1891,26 +2079,102 @@ fn is_stale_lock(content: &str, now_secs: u64, threshold_secs: u64) -> bool {
         .is_some_and(|elapsed| elapsed >= threshold_secs)
 }
 
-/// lock/steal marker payload（`pid\nepoch_secs`）の owner が孤児（奪取可）かを pid 生存 + timestamp で判定する。
+/// lock/steal marker payload（`pid\nepoch_secs\nstart_token`）の owner が孤児（奪取可）かを
+/// **pid 生存 + プロセス開始時刻 identity + timestamp** で判定する。
 ///
-/// **判定順**: payload の 1 行目 pid を解析し、その pid が生存していれば（[`pid_is_alive`]）owner は実行中と
-/// みなし、timestamp が `threshold_secs` を超えていても **非 stale（奪取しない）** を返す。これにより、初回
+/// **判定順**: payload の 1 行目 pid を解析し、その pid が生存していて（[`pid_is_alive`]）、かつ
+/// **payload が控えた owner プロセスの開始時刻トークンが現在その pid が持つ開始時刻と一致**するなら、owner は
+/// 実行中とみなし timestamp が `threshold_secs` を超えていても **非 stale（奪取しない）** を返す。これにより、初回
 /// 適用や大 rebuild が `LOCK_STALE_SECS`（6h）を超えてまだ走っている live owner の lock を後続が横取りし、
-/// 2 本目の `dotfiles update` を同時進行させて switch / marker 更新の排他を壊す退行を防ぐ。pid が生存して
-/// いない（プロセス kill / 再起動で消えた孤児）か、pid を解析できない場合にだけ timestamp 規則
-/// （[`is_stale_lock`]）へ委ね、6h 超過の真の孤児を回収する。pid 行が無い / 解析不能なら保守的に timestamp
-/// だけで判定する（旧 payload 互換）。`kill -0` は std の `Command` 経由で呼び、`libc` を直呼びしない。
+/// 2 本目の `dotfiles update` を同時進行させて switch / marker 更新の排他を壊す退行を防ぐ。
+///
+/// **pid 再利用の孤児を回収する（finding 3376248521）**: owner が kill/OOM/再起動で消えた後に OS が同じ pid を
+/// 無関係な長寿命プロセスへ再利用すると、pid 生存だけでは live owner と誤判定し、timestamp が 6h を超えても lock が
+/// 永久に非 stale になって auto-update が手動削除まで復旧しない。payload の開始時刻トークンと **現在その pid が持つ
+/// 開始時刻**を照合し、不一致（= 別プロセスが pid を再利用した）なら owner は既に消えた孤児とみなして timestamp 規則
+/// （[`is_stale_lock`]）へ委ね、6h 超過なら回収する。
+///
+/// **取得不能/旧 payload は保守的に倒す**: payload が start token を持たない（3 行目が空 = 旧 payload・取得不能環境で
+/// 控えられなかった）場合、または現在の開始時刻を `ps` から取得できない場合は、identity 照合を強制できないため
+/// **pid 生存のみの後方互換判定**（pid 生存なら非 stale）へ保守的に倒し、live owner を誤奪取しない。pid 不一致による
+/// 誤回収より、live owner 横取りによる二重適用の方が危険なため、不確実時は「奪取しない」へ寄せる。pid 行が無い /
+/// 解析不能なら timestamp だけで判定する（最古の旧 payload 互換）。`kill -0` / `ps` は std の `Command` 経由で
+/// 呼び、`libc` を直呼びしない。
 fn is_stale_lock_owner(content: &str, now_secs: u64, threshold_secs: u64) -> bool {
     if let Some(pid) = content
         .lines()
         .next()
         .and_then(|line| line.trim().parse::<u32>().ok())
         && pid_is_alive(pid)
+        && lock_owner_identity_matches(content, pid)
     {
-        // owner が生存中。timestamp が古くても奪取しない（live owner の二重実行を防ぐ）。
+        // owner が生存中かつ識別子一致（pid 再利用でない）。timestamp が古くても奪取しない（二重実行を防ぐ）。
         return false;
     }
     is_stale_lock(content, now_secs, threshold_secs)
+}
+
+/// payload が控えた owner の開始時刻トークンが、現在その pid が持つ開始時刻と一致するかを判定する純粋寄り関数。
+///
+/// payload の 3 行目（[`lock_payload`] が書く start token）を取り出し、`pid` の現在の開始時刻
+/// （[`process_start_token`]）と照合する。**両方が得られて一致したときだけ `true`（同一 owner）**、それ以外は
+/// 保守的に `true`（識別不能なら live owner 扱い＝奪取しない側へ倒す）を返す:
+/// - payload に start token が無い（旧 payload・取得不能で空行）→ 照合できないので `true`（pid 生存判定のみへ縮退）。
+/// - 現在の開始時刻を取得できない（`ps` 失敗・対象 pid 消滅直後など）→ `true`（誤奪取を避ける保守側）。
+/// - 両方あって **不一致** → `false`（pid 再利用＝別プロセス。owner は孤児として回収可）。
+///
+/// pid 再利用の誤回収より live owner 横取りの方が危険なため、識別不能（token 欠落・取得不能）は「奪取しない」へ
+/// 寄せる。不一致が確定したときだけ孤児として倒す。`ps` 実行は [`process_start_token`] に閉じる。
+fn lock_owner_identity_matches(content: &str, pid: u32) -> bool {
+    let stored_token = content
+        .lines()
+        .nth(2)
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    let Some(stored) = stored_token else {
+        // payload に start token が無い（旧 payload・取得不能で空行）。pid 生存判定のみへ後方互換縮退する。
+        return true;
+    };
+    match process_start_token(pid) {
+        // 現在の開始時刻が得られた: 一致なら同一 owner、不一致なら pid 再利用（別プロセス）で孤児。
+        Some(current) => current == stored,
+        // 現在の開始時刻を取得できない（`ps` 失敗）。識別不能なので誤奪取を避けて live owner 扱いに倒す。
+        None => true,
+    }
+}
+
+/// 指定 pid の **プロセス開始時刻トークン**（owner identity）を `ps -o lstart= -p <pid>` から取得する。
+///
+/// プロセス開始時刻は pid が生きている間は不変で、pid が再利用（別プロセスへ割り当て）されると変わるため、
+/// 「同じ pid が同じ owner か」を識別する固有値として使える（finding 3376248521 の pid 再利用検知）。`ps` の
+/// `lstart` 列（プロセス開始の壁時計時刻）を取り、ロケール依存の前後空白・連続空白を 1 個へ正規化して安定化する
+/// （payload 書込み時と判定時で同一正規化を通すため、表記揺れで誤不一致にならない）。空出力・`ps` 起動失敗・非 0
+/// 終了・対象 pid 不在は `None`（取得不能）で、呼び出し側は保守的に live owner 扱いへ倒す。`std::process::Command`
+/// で `ps` を起動し、`libc` を直接呼ばない（リポジトリ規約: libc 直呼び禁止）。
+fn process_start_token(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .arg("-o")
+        .arg("lstart=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let token = normalize_start_token(&text);
+    if token.is_empty() { None } else { Some(token) }
+}
+
+/// `ps -o lstart=` 出力を、表記揺れに依らない安定トークンへ正規化する純粋関数。
+///
+/// 前後空白を除き、連続空白（ロケール依存の桁揃え空白を含む）を単一空白へ畳む。payload 書込み時と staleness 判定時で
+/// 同一正規化を通すことで、同じプロセス開始時刻が空白表記の差で誤不一致になるのを防ぐ。正規化を I/O から切り離し、
+/// 空白畳み込み規則を単体検証できるようにする。
+fn normalize_start_token(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// pid が生存しているかを `kill -0 <pid>` の終了コードで判定する（`libc` 直呼び禁止のため外部コマンド経由）。
@@ -1996,21 +2260,23 @@ mod tests {
     use std::ffi::OsString as TestOsString;
 
     use super::{
-        CommitDecision, DEFERRED_NIXPKGS_REV, DEFERRED_REV, DEFERRED_TOKEN, LAST_APPLIED_HOME_REV,
-        LAST_APPLIED_LOCK_ID, LAST_APPLIED_NIXPKGS_REV, LAST_APPLIED_REV, LAST_RUN_LOG,
-        LAST_SUMMARIZED_AT, LAST_SUMMARIZED_HOME_AT, LOCK_FILE, LOCK_STALE_SECS, PENDING_SUMMARY,
-        STEAL_MARKER_STALE_SECS, SummaryScope, UpdateLock, UpdateOptions, append_pending_summary,
-        clear_deferred_markers, commit_apply_markers, copy_history_dir, is_stale_lock,
-        is_stale_lock_owner, lock_content_id, lock_payload, parse_input_source_path,
-        parse_nixpkgs_rev, parse_repo_pin, pid_is_alive, present_and_commit_summary,
-        present_summary, read_deferred_nixpkgs_rev, read_deferred_rev, read_deferred_token,
+        CommitDecision, CommitWriteback, DEFERRED_NIXPKGS_REV, DEFERRED_REV, DEFERRED_TOKEN,
+        LAST_APPLIED_HOME_REV, LAST_APPLIED_LOCK_ID, LAST_APPLIED_NIXPKGS_REV, LAST_APPLIED_REV,
+        LAST_RUN_LOG, LAST_SUMMARIZED_AT, LAST_SUMMARIZED_HOME_AT, LOCK_FILE, LOCK_STALE_SECS,
+        PENDING_SUMMARY, STEAL_MARKER_STALE_SECS, SummaryScope, UpdateLock, UpdateOptions,
+        append_pending_summary, clear_deferred_markers, commit_apply_markers,
+        commit_writeback_plan, copy_history_dir, is_stale_lock, is_stale_lock_owner,
+        lock_content_id, lock_payload, parse_input_source_path, parse_nixpkgs_rev, parse_repo_pin,
+        pid_is_alive, present_and_commit_summary, present_summary, read_deferred_nixpkgs_rev,
+        read_deferred_rev, read_deferred_token, read_last_applied_home_lock_id,
         read_last_applied_home_rev, read_last_applied_lock_id, read_last_applied_rev,
         read_last_summarized_at, read_last_summarized_home_at, replace_history_dir_atomically,
         resolve_committed_marker, resolve_state_dir, should_switch, should_switch_full,
-        should_switch_home, sync_history_from_source, update_args, write_deferred_nixpkgs_rev,
-        write_deferred_rev, write_deferred_token, write_last_applied_home_rev,
-        write_last_applied_lock_id, write_last_applied_nixpkgs_rev, write_last_applied_rev,
-        write_last_summarized_at, write_last_summarized_home_at,
+        should_switch_home, should_switch_home_full, sync_history_from_source, update_args,
+        write_deferred_nixpkgs_rev, write_deferred_rev, write_deferred_token,
+        write_last_applied_home_lock_id, write_last_applied_home_rev, write_last_applied_lock_id,
+        write_last_applied_nixpkgs_rev, write_last_applied_rev, write_last_summarized_at,
+        write_last_summarized_home_at,
     };
     use crate::update_history::domain::wire::PackageSourceFilter;
     use anyhow::anyhow;
@@ -2183,6 +2449,7 @@ mod tests {
             Path::new("/nonexistent-config"),
             "pin-home",
             "nixpkgs-home",
+            true, // history_synced: 履歴同期成功時に home スコープ marker を確定する。
             false,
         )?;
 
@@ -2222,6 +2489,186 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_dedup_markers_not_committed_when_history_sync_failed() -> crate::Result<()> {
+        // finding 3376248509 退行固定: 履歴同期未成功（`history_synced == false`）のとき、非 defer の apply-dedup
+        // marker（全体 / home スコープ）を確定しない。確定すると次回同一 pin で sync より前に早期 return し、通信
+        // 復旧後も同じ pin で再同期・再要約できず、次の bump まで show/pending が空/古いままになる。確定しないことで
+        // 次回同一 pin で switch（冪等）→ 再同期 → 再要約を試せる。
+        let dir = temp_dir("history-sync-fail-marker")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        tmkdirp(&dir)?;
+
+        // 全体適用（target 省略 = all・非 defer・非 full）。history_synced=false では last-applied-* を書かない。
+        let all = parse_update(&[])?;
+        commit_apply_markers(
+            &dir,
+            &all,
+            Path::new("/nonexistent-config"),
+            "pin-all",
+            "nixpkgs-all",
+            false, // history_synced=false
+            false,
+        )?;
+        assert_eq!(
+            read_last_applied_rev(&dir)?,
+            None,
+            "履歴同期失敗時は全体 last-applied-rev を確定しない（次回同一 pin で再同期できるよう）"
+        );
+        assert!(
+            !dir.join(LAST_APPLIED_NIXPKGS_REV).exists(),
+            "履歴同期失敗時は last-applied-nixpkgs-rev を書かない"
+        );
+
+        // home 部分適用（非 defer）。history_synced=false では home スコープ marker も書かない。
+        let home = parse_update(&["home"])?;
+        commit_apply_markers(
+            &dir,
+            &home,
+            Path::new("/nonexistent-config"),
+            "pin-home",
+            "nixpkgs-home",
+            false, // history_synced=false
+            false,
+        )?;
+        assert_eq!(
+            read_last_applied_home_rev(&dir)?,
+            None,
+            "履歴同期失敗時は home スコープ marker も確定しない"
+        );
+
+        // 対照: history_synced=true なら全体適用で last-applied-rev を確定する（既存挙動を保つ）。
+        commit_apply_markers(
+            &dir,
+            &all,
+            Path::new("/nonexistent-config"),
+            "pin-all",
+            "nixpkgs-all",
+            true, // history_synced=true
+            false,
+        )?;
+        assert_eq!(
+            read_last_applied_rev(&dir)?,
+            Some("pin-all".to_string()),
+            "履歴同期成功時は従来どおり last-applied-rev を確定する"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn home_full_apply_commits_home_scope_lock_id_marker() -> crate::Result<()> {
+        // finding 3376248543 固定（実行後 marker 確定）: `update home --full`（非 defer）の適用後 marker 確定が
+        // home スコープ lock-id marker（`last-applied-home-lock-id`）を確定し、全体スコープの `last-applied-lock-id`
+        // を動かさないことを固定する（全体 `--full` の dedup を壊さず darwin starve を回避）。
+        let dir = temp_dir("home-full-lockid")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        tmkdirp(&dir)?;
+
+        // config_dir に flake.lock を置き、read_lock_id が決定論的 identity を返せるようにする。
+        let config_dir = dir.join("config");
+        tmkdirp(&config_dir)?;
+        twrite(config_dir.join("flake.lock"), b"{\"nodes\":{}}\n")?;
+
+        let options = parse_update(&["home", "--full"])?;
+        commit_apply_markers(
+            &dir,
+            &options,
+            &config_dir,
+            "pin-home-full",
+            "nixpkgs-home-full",
+            true,
+            false,
+        )?;
+
+        // home スコープ pin marker と home スコープ lock-id marker を確定する。
+        assert_eq!(
+            read_last_applied_home_rev(&dir)?,
+            Some("pin-home-full".to_string()),
+            "home --full は home スコープ pin marker を確定する"
+        );
+        let expected_lock_id = super::lock_content_id(b"{\"nodes\":{}}\n");
+        assert_eq!(
+            read_last_applied_home_lock_id(&dir)?,
+            Some(expected_lock_id),
+            "home --full は home スコープ lock-id marker を確定する"
+        );
+        // 全体スコープの lock-id / pin marker は一切動かさない（全体 --full の dedup・darwin starve を壊さない）。
+        assert_eq!(
+            read_last_applied_lock_id(&dir)?,
+            None,
+            "home --full は全体スコープ last-applied-lock-id を確定しない"
+        );
+        assert_eq!(
+            read_last_applied_rev(&dir)?,
+            None,
+            "home --full は全体スコープ last-applied-rev を確定しない"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn should_switch_home_full_uses_lock_identity_when_pin_unchanged() {
+        // finding 3376248543 固定（判定純粋関数）: `update home --full` の switch 要否は home スコープ pin と
+        // lock 全体 identity のいずれかの変化で決める。dotfiles pin 不変でも lock-id が変われば switch する。
+        // pin も lock-id も前回 home `--full` 適用値と同一なら skip する。
+        // pin 一致 + lock-id 一致 → skip。
+        assert!(
+            !should_switch_home_full(Some("pin"), None, "pin", Some("lock-a"), "lock-a"),
+            "pin も lock-id も同一なら home --full は skip"
+        );
+        // pin 一致だが lock-id 変化（nixpkgs 等だけ動いた通常ケース）→ switch（旧 pin-only 判定の退行是正）。
+        assert!(
+            should_switch_home_full(Some("pin"), None, "pin", Some("lock-a"), "lock-b"),
+            "pin 同一でも lock-id 変化なら home --full は switch する"
+        );
+        // pin 変化 → lock-id に依らず switch。
+        assert!(
+            should_switch_home_full(Some("pin-old"), None, "pin-new", Some("lock-a"), "lock-a"),
+            "pin 変化なら home --full は switch する"
+        );
+        // home lock-id marker 不在（home --full 初回）→ lock 未適用とみなし switch。
+        assert!(
+            should_switch_home_full(Some("pin"), None, "pin", None, "lock-a"),
+            "home lock-id marker 不在（初回）は home --full で switch する"
+        );
+        // 全体適用が確定した last-applied-rev（full_rev）が一致すれば pin 判定は skip 側だが、lock-id 不在なら
+        // lock 変化扱いで switch（全体適用は全体 lock-id を別管理するため home --full は home lock-id で再判定する）。
+        assert!(
+            should_switch_home_full(None, Some("pin"), "pin", None, "lock-a"),
+            "全体適用済み pin でも home lock-id 未確定なら home --full は lock 変化として switch"
+        );
+    }
+
+    #[test]
+    fn home_full_lock_id_marker_round_trips_and_respects_dry_run() -> crate::Result<()> {
+        // home スコープ lock-id marker（`last-applied-home-lock-id`）の read/write 往復と dry-run 非書込を固定する。
+        let dir = temp_dir("home-full-lockid-roundtrip")?;
+        let _ = std::fs::remove_dir_all(&dir);
+        tmkdirp(&dir)?;
+        assert_eq!(read_last_applied_home_lock_id(&dir)?, None);
+
+        write_last_applied_home_lock_id(&dir, "lock-id-x", false)?;
+        assert_eq!(
+            read_last_applied_home_lock_id(&dir)?,
+            Some("lock-id-x".to_string())
+        );
+
+        // dry-run では書かない。
+        let dir2 = temp_dir("home-full-lockid-dry")?;
+        let _ = std::fs::remove_dir_all(&dir2);
+        tmkdirp(&dir2)?;
+        write_last_applied_home_lock_id(&dir2, "lock-id-y", true)?;
+        assert_eq!(read_last_applied_home_lock_id(&dir2)?, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
         Ok(())
     }
 
@@ -2365,23 +2812,27 @@ mod tests {
 
     #[test]
     fn is_stale_lock_uses_timestamp_threshold() {
-        // P2-3: lock 内容（`pid\nepoch_secs`）の 2 行目を見て staleness を判定する純粋規則を固定。
+        // P2-3: lock payload（`pid\nepoch_secs\nstart_token`）の 2 行目（epoch 行）を見て staleness を判定する純粋規則を固定。
         let now = 1_000_000u64;
         // 閾値以上古い → stale。
         assert!(is_stale_lock(
-            &lock_payload(42, now - LOCK_STALE_SECS),
+            &dead_lock_payload(42, now - LOCK_STALE_SECS),
             now,
             LOCK_STALE_SECS
         ));
         assert!(is_stale_lock(
-            &lock_payload(42, now - LOCK_STALE_SECS - 1),
+            &dead_lock_payload(42, now - LOCK_STALE_SECS - 1),
             now,
             LOCK_STALE_SECS
         ));
         // 閾値未満（取得直後・実行中）→ 非 stale（横取りしない）。
-        assert!(!is_stale_lock(&lock_payload(42, now), now, LOCK_STALE_SECS));
         assert!(!is_stale_lock(
-            &lock_payload(42, now - 1),
+            &dead_lock_payload(42, now),
+            now,
+            LOCK_STALE_SECS
+        ));
+        assert!(!is_stale_lock(
+            &dead_lock_payload(42, now - 1),
             now,
             LOCK_STALE_SECS
         ));
@@ -2389,7 +2840,7 @@ mod tests {
         assert!(!is_stale_lock("42\n", now, LOCK_STALE_SECS));
         assert!(!is_stale_lock("42\nnotnum\n", now, LOCK_STALE_SECS));
         assert!(!is_stale_lock(
-            &lock_payload(42, now + 100),
+            &dead_lock_payload(42, now + 100),
             now,
             LOCK_STALE_SECS
         ));
@@ -2402,16 +2853,16 @@ mod tests {
         let now = 2_000_000u64;
         let old = now - LOCK_STALE_SECS - 600; // 閾値を十分超過した古い取得時刻。
 
-        // 自プロセス pid は確実に生存している。古い timestamp でも owner 生存なら非 stale（奪取しない）。
+        // 自プロセス pid は確実に生存している。古い timestamp でも owner 生存（pid + 開始時刻一致）なら非 stale。
         let live_pid = std::process::id();
         assert!(pid_is_alive(live_pid), "current process must be alive");
         assert!(
-            !is_stale_lock_owner(&lock_payload(live_pid, old), now, LOCK_STALE_SECS),
+            !is_stale_lock_owner(&live_lock_payload(old), now, LOCK_STALE_SECS),
             "live owner の lock は timestamp が古くても奪取しない"
         );
         // 対照: timestamp だけ見る is_stale_lock は同じ payload を stale と判定する（pid 生存で覆る前の判定）。
         assert!(
-            is_stale_lock(&lock_payload(live_pid, old), now, LOCK_STALE_SECS),
+            is_stale_lock(&live_lock_payload(old), now, LOCK_STALE_SECS),
             "timestamp 単独では古いので stale（pid 生存ガードが効くことの対照）"
         );
 
@@ -2419,12 +2870,12 @@ mod tests {
         let dead_pid = dead_pid_for_test();
         assert!(!pid_is_alive(dead_pid), "selected pid must be dead");
         assert!(
-            is_stale_lock_owner(&lock_payload(dead_pid, old), now, LOCK_STALE_SECS),
+            is_stale_lock_owner(&dead_lock_payload(dead_pid, old), now, LOCK_STALE_SECS),
             "孤児 pid + 古い timestamp は stale（真の孤児は回収する）"
         );
         // 孤児 pid でも timestamp が新しければ非 stale（取得直後の owner を誤奪取しない）。
         assert!(
-            !is_stale_lock_owner(&lock_payload(dead_pid, now), now, LOCK_STALE_SECS),
+            !is_stale_lock_owner(&dead_lock_payload(dead_pid, now), now, LOCK_STALE_SECS),
             "孤児 pid でも timestamp が新しければ奪取しない"
         );
         // pid 行が無い旧 payload は timestamp だけで判定する（後方互換）。pid も timestamp も無ければ非 stale。
@@ -2432,6 +2883,103 @@ mod tests {
             !is_stale_lock_owner("\n", now, LOCK_STALE_SECS),
             "pid も timestamp も無い payload は保守的に非 stale"
         );
+    }
+
+    #[test]
+    fn is_stale_lock_owner_reclaims_reused_pid_with_mismatched_start_token() {
+        // finding 3376248521 退行固定: owner が落ちた後に OS が同じ pid を別プロセスへ再利用すると、pid 生存だけでは
+        // live owner と誤判定して 6h 超でも非 stale のままになり、auto-update が手動削除まで復旧しない。payload の
+        // 開始時刻トークンと現在 pid の開始時刻を照合し、不一致（= 別プロセスが pid を再利用）なら timestamp 規則で
+        // 孤児として回収する。
+        let now = 3_000_000u64;
+        let old = now - LOCK_STALE_SECS - 600;
+
+        // 自プロセス pid（確実に生存）だが、payload の開始時刻トークンは現在値と **異なる**（pid 再利用を模す）。
+        let live_pid = std::process::id();
+        assert!(pid_is_alive(live_pid), "current process must be alive");
+        let real_token = super::process_start_token(live_pid);
+        // 実トークンが取れる環境でのみ、不一致トークンで「pid 再利用 → 回収」を検証する。取れない環境（`ps`
+        // 不在等）では identity 照合できず保守的に live owner 扱いになるため、その分岐は別 assert で固定する。
+        if let Some(real) = real_token {
+            let mismatched = format!("{real} REUSED-MARKER");
+            assert_ne!(mismatched, real, "不一致トークンを確実に作る");
+            let reused_payload = lock_payload(live_pid, old, &mismatched);
+            assert!(
+                is_stale_lock_owner(&reused_payload, now, LOCK_STALE_SECS),
+                "pid 生存でも開始時刻トークン不一致（pid 再利用）+ 古い timestamp は stale（孤児回収）"
+            );
+            // 同じ不一致 payload でも timestamp が新しければ非 stale（取得直後を誤回収しない）。
+            assert!(
+                !is_stale_lock_owner(
+                    &lock_payload(live_pid, now, &mismatched),
+                    now,
+                    LOCK_STALE_SECS
+                ),
+                "トークン不一致でも timestamp が新しければ回収しない"
+            );
+            // 対照: トークンが一致すれば（同一 owner）古い timestamp でも非 stale（奪取しない）。
+            assert!(
+                !is_stale_lock_owner(&lock_payload(live_pid, old, &real), now, LOCK_STALE_SECS),
+                "開始時刻トークン一致 = 同一 owner は古くても奪取しない"
+            );
+        }
+
+        // 取得不能/旧 payload（start token 空）は identity 照合できず pid 生存のみの後方互換へ倒れる: pid 生存なら
+        // 古い timestamp でも非 stale（live owner 誤奪取を避ける保守側）。
+        assert!(
+            !is_stale_lock_owner(&dead_lock_payload(live_pid, old), now, LOCK_STALE_SECS),
+            "start token 空（取得不能/旧 payload）は pid 生存のみで判定し live owner を奪取しない"
+        );
+    }
+
+    #[test]
+    fn normalize_start_token_collapses_whitespace() {
+        // `ps -o lstart=` のロケール依存桁揃え空白・前後空白を畳んで安定トークンにする純粋規則を固定する。
+        // 書込み時と判定時で同一正規化を通すため、空白表記差で同一プロセスが誤不一致にならないことを保証する。
+        assert_eq!(
+            super::normalize_start_token("  Mon Jun  9 05:53:09 2026  \n"),
+            "Mon Jun 9 05:53:09 2026"
+        );
+        assert_eq!(super::normalize_start_token("   "), "");
+        assert_eq!(super::normalize_start_token(""), "");
+    }
+
+    #[test]
+    fn lock_owner_identity_matches_is_conservative_when_token_absent() {
+        // payload に start token が無い（3 行目空・2 行 payload）場合は identity 照合できないため、保守的に `true`
+        // （live owner 扱い = 奪取しない）へ倒す。pid 生存判定のみの後方互換を保証する。
+        let live_pid = std::process::id();
+        // 3 行目空（dead_lock_payload は token を空にする）。
+        assert!(
+            super::lock_owner_identity_matches(&dead_lock_payload(live_pid, 0), live_pid),
+            "start token 空は identity 照合不能 → 保守的に一致扱い（奪取しない）"
+        );
+        // 2 行 payload（旧 payload。3 行目自体が無い）も保守的に一致扱い。
+        assert!(
+            super::lock_owner_identity_matches("123\n456\n", live_pid),
+            "旧 2 行 payload は identity 照合不能 → 保守的に一致扱い"
+        );
+    }
+
+    /// 自プロセス（生存中の live owner）の lock payload を、指定取得時刻 + **現在の開始時刻トークン**で組み立てる
+    /// テスト helper。
+    ///
+    /// `is_stale_lock_owner` は pid 生存に加えて payload の開始時刻トークンが現在 pid の開始時刻と一致するときだけ
+    /// live owner とみなす（finding 3376248521）。よって live owner を表す payload は自プロセスの実 start token を
+    /// 控える必要があり、これを 1 箇所へ集約する。`ps` が取れない環境では空トークンへ縮退し、判定側は pid 生存のみの
+    /// 後方互換で live owner 扱いになる。
+    fn live_lock_payload(epoch: u64) -> String {
+        let pid = std::process::id();
+        let token = super::process_start_token(pid).unwrap_or_default();
+        lock_payload(pid, epoch, &token)
+    }
+
+    /// 孤児（dead）pid 向けの lock payload を組み立てるテスト helper（start token は空）。
+    ///
+    /// dead pid では `pid_is_alive` が false になり identity 照合は短絡されるため、start token は空でよい。
+    /// timestamp のみで stale 判定する純粋経路（`is_stale_lock`）の入力にも使える。
+    fn dead_lock_payload(pid: u32, epoch: u64) -> String {
+        lock_payload(pid, epoch, "")
     }
 
     /// テストで「確実に生存していない pid」を返す。子プロセスを spawn して即 wait し、回収済み pid を再利用
@@ -2461,9 +3009,10 @@ mod tests {
         tmkdirp(&dir)?;
         let lock_path = dir.join(LOCK_FILE);
 
-        // 古い timestamp（6h 超過）だが、owner pid は自プロセス（確実に生存中）。
+        // 古い timestamp（6h 超過）だが、owner pid は自プロセス（確実に生存中）かつ開始時刻トークン一致。
         let old_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 600);
-        twrite(&lock_path, lock_payload(std::process::id(), old_epoch))?;
+        let live_payload = live_lock_payload(old_epoch);
+        twrite(&lock_path, &live_payload)?;
 
         // live owner の lock は奪取しない（None = skip）。
         assert!(
@@ -2473,7 +3022,7 @@ mod tests {
         // lock ファイルは触られず残る（奪取で書き換えられていない）。
         assert_eq!(
             tread(&lock_path)?,
-            lock_payload(std::process::id(), old_epoch),
+            live_payload,
             "live owner の lock payload は奪取されず保たれる"
         );
 
@@ -2493,7 +3042,10 @@ mod tests {
         // 古い timestamp かつ owner pid が不在（kill / 再起動で消えた孤児）の lock を置く。pid 生存ガードを
         // 確実に通すため、回収済み（確実に dead な）pid を使う。
         let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 60);
-        twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
+        twrite(
+            &lock_path,
+            dead_lock_payload(dead_pid_for_test(), stale_epoch),
+        )?;
         // 奪取して取得成功する。
         let acquired = UpdateLock::try_acquire(&dir, false)?;
         assert!(acquired.is_some(), "stale lock must be stolen");
@@ -2501,9 +3053,9 @@ mod tests {
         assert!(UpdateLock::try_acquire(&dir, false)?.is_none());
         drop(acquired);
 
-        // 解放後、新しい（生存中）lock を置くと奪取されない。
+        // 解放後、新しい（生存中）lock を置くと奪取されない（live owner = 自プロセス + 開始時刻一致）。
         let fresh_epoch = super::now_epoch_secs();
-        twrite(&lock_path, lock_payload(std::process::id(), fresh_epoch))?;
+        twrite(&lock_path, live_lock_payload(fresh_epoch))?;
         assert!(
             UpdateLock::try_acquire(&dir, false)?.is_none(),
             "live lock must not be stolen"
@@ -3629,6 +4181,82 @@ mod tests {
     }
 
     #[test]
+    fn commit_writeback_gating_confirms_only_on_summary_success() -> crate::Result<()> {
+        // finding 3376248504 退行固定: commit（`--commit-rev-marker`）Confirm 分岐の writeback gating。
+        //
+        // 純粋判定: 要約成功 → `Persist`（rev marker 確定 + deferred clear）、要約失敗 → `Defer`（rev 未確定 +
+        // deferred 残置）。要約成否を bool で注入し、両分岐を I/O・network・nix 無しで決定論的に固定する。
+        assert_eq!(commit_writeback_plan(true), CommitWriteback::Persist);
+        assert_eq!(commit_writeback_plan(false), CommitWriteback::Defer);
+
+        // I/O 契約: 純粋判定を run() と同じ順序で marker 書込みへ結線したとき、要約成否で state file が
+        // 取り違わずに確定/残置されることを固定する（gating が退行すると未表示 span を失う）。
+        // ケース失敗（Defer）: deferred marker を控えた状態で要約失敗 → rev 未確定・deferred 残置。
+        let fail_dir = temp_dir("commit-writeback-defer")?;
+        let _ = std::fs::remove_dir_all(&fail_dir);
+        tmkdirp(&fail_dir)?;
+        write_deferred_rev(&fail_dir, "deferred-pin", false)?;
+        write_deferred_nixpkgs_rev(&fail_dir, "deferred-nixpkgs", false)?;
+        match commit_writeback_plan(false) {
+            CommitWriteback::Persist => {
+                write_last_applied_rev(&fail_dir, "deferred-pin", false)?;
+                write_last_applied_nixpkgs_rev(&fail_dir, "deferred-nixpkgs", false)?;
+                clear_deferred_markers(&fail_dir, false);
+            }
+            CommitWriteback::Defer => {}
+        }
+        assert_eq!(
+            read_last_applied_rev(&fail_dir)?,
+            None,
+            "要約失敗時は rev を確定しない"
+        );
+        assert_eq!(
+            read_deferred_rev(&fail_dir)?.as_deref(),
+            Some("deferred-pin"),
+            "要約失敗時は deferred marker を残置する（次サイクルで再要約）"
+        );
+        assert_eq!(
+            read_deferred_nixpkgs_rev(&fail_dir)?.as_deref(),
+            Some("deferred-nixpkgs"),
+            "要約失敗時は deferred nixpkgs marker も残置する"
+        );
+        let _ = std::fs::remove_dir_all(&fail_dir);
+
+        // ケース成功（Persist）: 同じ初期状態で要約成功 → rev 確定 + deferred clear。
+        let ok_dir = temp_dir("commit-writeback-persist")?;
+        let _ = std::fs::remove_dir_all(&ok_dir);
+        tmkdirp(&ok_dir)?;
+        write_deferred_rev(&ok_dir, "deferred-pin", false)?;
+        write_deferred_nixpkgs_rev(&ok_dir, "deferred-nixpkgs", false)?;
+        match commit_writeback_plan(true) {
+            CommitWriteback::Persist => {
+                write_last_applied_rev(&ok_dir, "deferred-pin", false)?;
+                write_last_applied_nixpkgs_rev(&ok_dir, "deferred-nixpkgs", false)?;
+                clear_deferred_markers(&ok_dir, false);
+            }
+            CommitWriteback::Defer => {}
+        }
+        assert_eq!(
+            read_last_applied_rev(&ok_dir)?.as_deref(),
+            Some("deferred-pin"),
+            "要約成功時は defer 時点の pin を確定する"
+        );
+        assert_eq!(
+            read_deferred_rev(&ok_dir)?,
+            None,
+            "要約成功時は deferred marker を clear する"
+        );
+        assert_eq!(
+            read_deferred_nixpkgs_rev(&ok_dir)?,
+            None,
+            "要約成功時は deferred nixpkgs marker も clear する"
+        );
+        let _ = std::fs::remove_dir_all(&ok_dir);
+
+        Ok(())
+    }
+
+    #[test]
     fn deferred_token_round_trips_and_clears_with_markers() -> crate::Result<()> {
         // finding 3368519975 退行固定（I/O 契約）: defer 時に控える `deferred-token` の read/write 往復と、
         // `clear_deferred_markers` が token も pin/nixpkgs rev と一緒に 1 サイクルへ閉じる（消す）ことを固定する。
@@ -3933,7 +4561,10 @@ mod tests {
             // 各ラウンドで古い孤児 lock（owner pid 不在 + 古い timestamp）を置き、全スレッドに stale な被奪取
             // 対象を 1 本だけ与える。pid 生存ガードを確実に通すため、回収済み（dead な）pid を使う。
             let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-            twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
+            twrite(
+                &lock_path,
+                dead_lock_payload(dead_pid_for_test(), stale_epoch),
+            )?;
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(contenders));
             // 取得できた lock を解放せず保持し続けるための退避先（同時保持数を測る）。
@@ -4000,7 +4631,10 @@ mod tests {
 
         // stale な孤児 lock（Drop されず残った残骸、owner pid 不在）を置く。
         let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-        twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
+        twrite(
+            &lock_path,
+            dead_lock_payload(dead_pid_for_test(), stale_epoch),
+        )?;
 
         // 孤児 steal marker（TTL 超過 + owner pid 不在）を置く。これが残ると旧実装は AlreadyExists で永久 skip
         // した。pid 生存ガードを通すため dead な pid を使う。
@@ -4008,7 +4642,7 @@ mod tests {
             super::now_epoch_secs().saturating_sub(STEAL_MARKER_STALE_SECS + 60);
         twrite(
             &steal_marker,
-            lock_payload(dead_pid_for_test(), stale_marker_epoch),
+            dead_lock_payload(dead_pid_for_test(), stale_marker_epoch),
         )?;
 
         // 孤児 marker を回収して stale lock を奪取し、取得成功する（永久 skip しない）。
@@ -4041,11 +4675,11 @@ mod tests {
         // stale lock（owner pid 不在）+ 新鮮な steal marker（別プロセスが今まさに奪取中）。marker は
         // timestamp が新鮮なので回収されない（pid に依らず）。
         let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-        twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
         twrite(
-            &steal_marker,
-            lock_payload(std::process::id(), super::now_epoch_secs()),
+            &lock_path,
+            dead_lock_payload(dead_pid_for_test(), stale_epoch),
         )?;
+        twrite(&steal_marker, live_lock_payload(super::now_epoch_secs()))?;
 
         // 新鮮 marker は回収しない → skip（None）。別奪取者の lock/marker を横取りしない。
         assert!(
@@ -4091,14 +4725,17 @@ mod tests {
         for _ in 0..64 {
             // stale な孤児 lock（dead pid + 古い timestamp）。
             let stale_epoch = super::now_epoch_secs().saturating_sub(LOCK_STALE_SECS + 120);
-            twrite(&lock_path, lock_payload(dead_pid_for_test(), stale_epoch))?;
+            twrite(
+                &lock_path,
+                dead_lock_payload(dead_pid_for_test(), stale_epoch),
+            )?;
             // 孤児 steal marker（TTL 超過 + dead pid）。これにより全スレッドが create_new=AlreadyExists →
             // steal_marker_is_stale=true → reclaim_stale_steal_marker（rename CAS）の TTL 回収経路を通る。
             let stale_marker_epoch =
                 super::now_epoch_secs().saturating_sub(STEAL_MARKER_STALE_SECS + 60);
             twrite(
                 &steal_marker,
-                lock_payload(dead_pid_for_test(), stale_marker_epoch),
+                dead_lock_payload(dead_pid_for_test(), stale_marker_epoch),
             )?;
 
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(contenders));

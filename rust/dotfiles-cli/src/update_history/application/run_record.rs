@@ -259,7 +259,17 @@ where
                 delta.source,
                 provenance,
             );
-        } else if let Some(source_url) = &outcome.source_url {
+        } else if let Some(source_url) = outcome
+            .source_url
+            .as_ref()
+            .filter(|_| !change_items.is_empty())
+        {
+            // **有効な変更抽出が得られた場合だけ ai-discovered source を学習する**（finding 3376248537）。AI 探索が
+            // 許可 host のページを fetch しても最終 `change_items` が空（homepage HTML だけ読んで要約が空等）のとき、
+            // 最後に fetch 成功した `source_url` を ai-discovered として保存すると、次回 registry hit で機械解決/AI
+            // 探索を skip しその HTML を seed に summarize_only へ入り、実リリースノートを探し直せず version-only が
+            // 固定化する。よって `change_items` が非空（実際に変更を抽出できた）のときだけ source を学習し、空のときは
+            // 学習せず下位分岐（既存有効 source 温存 / origin=none）へ倒して次回も探索し直せるようにする。
             ai_discovered += 1;
             let provenance = NotesSourceEntry {
                 source: Some(source_url.clone()),
@@ -1159,6 +1169,130 @@ mod tests {
                 })
             })
             .returning(|_| Ok(()));
+
+        run_record_with(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn ai_source_with_empty_change_items_is_not_learned() -> crate::Result<()> {
+        // finding 3376248537 退行固定: AI 探索が許可 host を fetch して `source_url` を採用しても、最終
+        // `change_items` が空（homepage HTML だけ読んで要約が空等）なら ai-discovered として **学習しない**。
+        // 学習すると次回 registry hit で機械解決/AI 探索を skip しその HTML を seed に summarize_only へ入り、実
+        // リリースノートを探し直せず version-only が固定化する。空抽出時は origin=none を記録して次回も探索し直す。
+        let (nix_versions, brew_diff) = nix_only_diff("neovim", "neovim/neovim");
+
+        let mut notes = MockNotesPort::new();
+        // 機械解決は空（None）→ AI 探索へ倒す。
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // AI は取得元 URL を採用した（source_url あり）が、変更抽出は空（items 空）。
+        extract
+            .expect_extract_change_items()
+            .times(1)
+            .returning(|_| {
+                Ok(ExtractOutcome {
+                    items: Vec::new(),
+                    source_url: Some("https://neovim.io/".to_string()),
+                })
+            });
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        // registry は空（既存の有効 source 無し）。ai-discovered を学習せず origin=none を記録する（source なし）。
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("neovim", DeltaSource::NixEval)
+                    .is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none())
+            })
+            .returning(|_| Ok(()));
+
+        run_record_with(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn ai_source_with_empty_change_items_preserves_existing_saved_source() -> crate::Result<()> {
+        // finding 3376248537 補完: 空抽出 + `source_url` ありでも、registry に既存の有効 source があれば上書きせず
+        // 温存する（一時的な抽出失敗で有効な取得元を失わない）。ai-discovered を空抽出で学習しないため、下位の
+        // 「既存有効 source 温存」分岐へ正しく倒れることを固定する。
+        let (nix_versions, brew_diff) = nix_only_diff("neovim", "neovim/neovim");
+
+        let mut notes = MockNotesPort::new();
+        // 保存 source の再利用 fetch が失敗（None）→ 機械解決も空 → AI 探索へ倒れる。
+        notes
+            .expect_fetch_notes_from_source()
+            .times(1)
+            .returning(|_| Ok(None));
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        // AI は別ページの URL を採用したが抽出は空。これを学習すると有効な保存 source を毒する。
+        extract
+            .expect_extract_change_items()
+            .times(1)
+            .returning(|_| {
+                Ok(ExtractOutcome {
+                    items: Vec::new(),
+                    source_url: Some("https://neovim.io/".to_string()),
+                })
+            });
+
+        let mut store = MockHistoryStorePort::new();
+        store.expect_append_entry().returning(|_| Ok(()));
+
+        // registry には有効な ai-discovered source が保存済み。空抽出では上書きしない（write しない）。
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry.expect_read_registry().returning(|| {
+            let mut r = NotesSourceRegistry::default();
+            r.record(
+                "neovim",
+                DeltaSource::NixEval,
+                NotesSourceEntry {
+                    source: Some("https://github.com/neovim/neovim/releases/tag/v0.10".to_string()),
+                    origin: NotesOrigin::AiDiscovered,
+                    discovered_at: None,
+                    note: None,
+                },
+            );
+            Ok(r)
+        });
+        // 既存有効 source は温存するので registry は dirty にならない（write_registry を呼ばない）。
+        registry.expect_write_registry().never();
 
         run_record_with(
             command(),

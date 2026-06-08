@@ -73,13 +73,21 @@ _dotfiles_auto_update_should_trigger_today() {
   return 0
 }
 
-# catch-up を background で実行し、**成功した時だけ** 当日 trigger marker を確定する。
+# catch-up を background で実行し、**実適用 / up-to-date を確認できた時だけ**（exit 0）当日 trigger marker を確定する。
 #
-# `dotfiles update home`（**非 defer**）が 0 で終了した時のみ `last-login-trigger` を当日付へ原子的に書く。
-# 失敗（network 不通・`nix flake update` 失敗・lock 競合 skip 以外の異常）時は marker を書かないので、同日中の
-# 後続シェルが再び起動を試みて追随を回復できる（失敗日の再試行）。marker は起動頻度の抑制専用で、実適用の
-# 重複抑止（rev ベースの `last-applied-rev`）とは別物。要約は非 tty 適用のため `pending-summary` へ書かれ、
-# `precmd` フックが拾って表示する。
+# lock 競合 skip と成功の区別（finding 3376248532）: `dotfiles update` は別の update が `update.lock` を保持して
+# いるだけでも終了する。終了ステータスを「成功 / 失敗」の 2 値でしか見ないと、lock 競合 skip（何も適用していない）を
+# 成功扱いで当日 marker へ書いてしまい、先行 update が network 失敗で落ちた場合に同日後続シェルが再試行せず追随
+# できない。CLI は lock 競合 skip だけを **exit 0 でも汎用失敗でもない専用 exit code（`EX_TEMPFAIL`=75。update.rs の
+# `LOCK_CONTENDED_EXIT_CODE`）** で返すので、zsh は **exit 0（実適用 / up-to-date 確認）のときだけ** 当日 marker を
+# 確定し、専用コードやその他の失敗では確定しない（再試行可に開けておく）。
+#
+# `dotfiles update home`（**非 defer**）が **exit 0** で終了した時のみ `last-login-trigger` を当日付へ原子的に書く。
+# lock 競合 skip（専用 exit code `EX_TEMPFAIL`＝何も適用していない）や失敗（network 不通・`nix flake update` 失敗等）
+# では marker を書かないので、同日中の後続シェルが再び起動を試みて追随を回復できる（失敗日・競合日の再試行）。
+# exit 0 だけを「catch-up 成功」とみなすことで、lock 競合 skip を成功扱いにしない（finding 3376248532）。marker は
+# 起動頻度の抑制専用で、実適用の重複抑止（rev ベースの `last-applied-rev`）とは別物。要約は非 tty 適用のため
+# `pending-summary` へ書かれ、`precmd` フックが拾って表示する。
 #
 # **`--defer-rev-marker` を付けない理由（finding 3374863446）**: この zsh catch-up は **daemon を前提にしない
 # home-only 経路** であり、defer→darwin→commit の三段を持たない（zsh は darwin を適用しない）。`--defer-rev-marker`
@@ -102,12 +110,18 @@ _dotfiles_auto_update_run_catchup() {
   # home-only 適用は non-defer の要約経路を通り、適用後に NixOnly 要約を pending-summary へ書いて **home スコープ
   # marker（`last-applied-home-rev`）** を確定する（同一 pin の毎日再適用を止める。全体 marker は動かさず darwin を
   # starve させない）。詳細は本関数冒頭・init 関数のコメント参照。
-  if ! dotfiles update home >/dev/null 2>&1; then
-    # 失敗した。marker を確定しない（同日の後続シェルが再試行できるよう起動可否を開けておく）。
+  dotfiles update home >/dev/null 2>&1
+  local rc=$?
+  if (( rc != 0 )); then
+    # exit 0 以外（lock 競合 skip の専用 code `EX_TEMPFAIL`・network 失敗・nix 失敗等）。何も適用できていない
+    # ので marker を確定しない（同日の後続シェルが再試行できるよう起動可否を開けておく）。lock 競合は想定内の
+    # 一時 skip であり失敗扱いの戻り値を返すが、ここでは「marker を書かない」点だけが重要（呼び出し側は戻り値で
+    # 追加処理を分岐しない）。
     return 1
   fi
 
-  # 成功した。当日 trigger marker を確定して、同日中の重複起動を抑止する。
+  # exit 0 = 実適用 / up-to-date を確認できた（catch-up 責務を果たした）。当日 trigger marker を確定して、
+  # 同日中の重複起動を抑止する。
   today="$(date +%F 2>/dev/null)" || return 0
   [[ -n "$today" ]] || return 0
   marker="$state_dir/last-login-trigger"

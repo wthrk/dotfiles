@@ -168,8 +168,26 @@ let
     #    home+darwin の両成功後（④）に確定する。これにより darwin 失敗時の rev drift を防ぐ。`--config-dir` で
     #    ユーザの `~/.config/dotfiles` を明示し、確実にユーザのローカル flake を指す。sudo は env をリセットし
     #    PATH を secure_path で上書きしうるため、`$user_env`（PATH と解決済み XDG_STATE_HOME を渡す）を前置する。
+    #
+    #    **lock 競合 skip の専用 exit code を吸収する（finding 3376248532）**: CLI は別の `dotfiles update` が
+    #    `update.lock` を保持中で何も適用できなかった場合だけ専用 code（`EX_TEMPFAIL`=75）で終了する。これは想定内の
+    #    一時 skip（drift ではない）であり、`set -e` で daemon サイクル全体を異常終了させるべきではない。よって
+    #    defer ステップだけ `set -e` を一時停止して exit code を捕捉し、75（lock 競合）は graceful skip、それ以外の
+    #    非 0（network/nix 失敗等）は従来どおり異常終了させる（darwin/commit へ進ませない）。exit 0（適用 / no-op）は
+    #    続行し、実際に適用したかは下の `deferred-rev` marker の有無で判別する。
+    home_defer_rc=0
+    set +e
     /usr/bin/sudo -u ${lib.escapeShellArg user} $user_env ${dotfilesBin} update home \
       --config-dir "$config_dir" --defer-rev-marker --rev-marker-token "$rev_marker_token"
+    home_defer_rc=$?
+    set -e
+    if [ "$home_defer_rc" -eq 75 ]; then
+      echo "別の dotfiles update が適用中のため home を skip しました（lock 競合・次回再判定）"
+      exit 0
+    elif [ "$home_defer_rc" -ne 0 ]; then
+      echo "home 適用が失敗しました（rc=$home_defer_rc）。darwin/commit を skip します" >&2
+      exit "$home_defer_rc"
+    fi
 
     # home が実際に switch したか（=`deferred-rev` marker が書かれたか）で darwin / commit へ進むかを決める。
     # marker が無ければ home は no-op（適用済み pin と同一）か lock 競合 skip であり、darwin-rebuild を起動する
@@ -192,8 +210,23 @@ let
     #    commit は ② が書いた `deferred-rev`（実際に適用した pin）を読んで確定するため、適用した pin と確定する
     #    pin が必ず一致する。マーカーはユーザ所有で書くため、確定もユーザ権限で行う。`--config-dir` で読む pin
     #    を②と一致させ、`$user_env` で同一 state dir（XDG）を CLI へ伝える。
+    #
+    #    commit でも lock 競合 skip（専用 code 75）は想定内の一時 skip として graceful に扱う（次サイクルで再確定）。
+    #    rev 未確定でも darwin は適用済みであり、次サイクルが冪等再適用 + 再確定で収束する。それ以外の非 0
+    #    （要約失敗は CLI 内で best-effort 化され exit 0 のため該当しない。pin 解析失敗等の異常）は set -e で異常終了。
+    commit_rc=0
+    set +e
     /usr/bin/sudo -u ${lib.escapeShellArg user} $user_env ${dotfilesBin} update home \
       --config-dir "$config_dir" --commit-rev-marker --rev-marker-token "$rev_marker_token"
+    commit_rc=$?
+    set -e
+    if [ "$commit_rc" -eq 75 ]; then
+      echo "rev 確定が lock 競合で skip されました（次サイクルで再確定・darwin は適用済み）"
+      exit 0
+    elif [ "$commit_rc" -ne 0 ]; then
+      echo "rev 確定が失敗しました（rc=$commit_rc）" >&2
+      exit "$commit_rc"
+    fi
   '';
 in
 {
