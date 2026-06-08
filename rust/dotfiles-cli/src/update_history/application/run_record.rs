@@ -3,15 +3,40 @@
 use crate::Result;
 use crate::update_history::domain::build::{PackageMaterial, build_entry};
 use crate::update_history::domain::commands::RecordCommand;
-use crate::update_history::domain::diff::{diff_versions, merge_version_deltas};
+use crate::update_history::domain::diff::{DeltaSource, diff_versions, merge_version_deltas};
 use crate::update_history::domain::registry::{NotesOrigin, NotesSourceEntry, NotesSourceRegistry};
 use crate::update_history::domain::validate::{
     is_allowed_url, sanitize_change_items, sanitize_notes_url,
 };
 use crate::update_history::ports::{
     BrewVersionDiffPort, ChangeExtractPort, ExtractOutcome, ExtractRequest, HistoryStorePort,
-    NixVersionPort, NotesPort, NotesSourceRegistryPort,
+    NixVersionPort, NotesPort, NotesSourceRegistryPort, RecordDiagnosticsPort,
 };
+
+/// `run_record` 実行時の port trait 実装への参照を束ねる runtime/dependency bundle。
+///
+/// `record` use case は version 差分取得（nix/brew）・ノート取得・LLM 抽出・履歴永続化・provenance レジストリ・
+/// 診断出力という cohesive な「履歴記録に必要な外部境界一式」を同時に必要とする。これらを引数で個別に渡すと
+/// `run_record` の引数が肥大化するため、`run_*` 関数に閉じた実行時依存束として named fields でまとめる
+/// （`Ports` とは命名しない＝port trait 契約そのものと誤認させない。これは実行環境の依存束である）。各 field は
+/// 既存 port trait 実装への参照のみを持ち、domain 入出力・summary・policy は持たない（引数数を隠すための無意味な
+/// 詰め替えではなく、record が要求する外部境界一式を 1 つの実行環境境界へ寄せたもの）。
+pub(crate) struct RecordRuntime<'a, V, B, N, X, S, G, D> {
+    /// nix eval 由来の old/new 宣言パッケージ版マップ取得。
+    pub(crate) nix_versions: &'a V,
+    /// brew tap rev 間の version 差分取得。
+    pub(crate) brew_diff: &'a B,
+    /// リリースノート取得（出所別解決・再利用 source 直接 fetch）。
+    pub(crate) notes: &'a N,
+    /// AI エージェントによる構造化変更抽出（予算ゲート付き）。
+    pub(crate) extract: &'a X,
+    /// 更新履歴 TOML の read/append。
+    pub(crate) store: &'a S,
+    /// ノート取得元レジストリ（provenance）の read/write。
+    pub(crate) registry_store: &'a G,
+    /// 縮退・provenance 経路の診断出力。
+    pub(crate) diagnostics: &'a D,
+}
 
 /// nix/brew の version 差分を統合し、各アプリのノートを **レジストリ参照 → 機械解決 → AI 探索**の順で取得・
 /// LLM 抽出して 1 エントリを履歴へ追記し、取得元（provenance）をレジストリへ学習する。
@@ -62,14 +87,9 @@ use crate::update_history::ports::{
 ///
 /// **provenance 可観測性**: ノート取得・抽出フェーズの縮退サマリに加え、レジストリ hit 件数・機械解決件数・
 /// AI 探索件数を最後に 1 行で stderr へ出す（どの経路でノートを得たかを CI ログで可視化。サイレント化しない）。
-pub(crate) fn run_record<V, B, N, X, S, G>(
+pub(crate) fn run_record<V, B, N, X, S, G, D>(
     command: RecordCommand,
-    nix_versions: &V,
-    brew_diff: &B,
-    notes: &N,
-    extract: &X,
-    store: &S,
-    registry_store: &G,
+    runtime: &RecordRuntime<'_, V, B, N, X, S, G, D>,
 ) -> Result<()>
 where
     V: NixVersionPort,
@@ -78,7 +98,19 @@ where
     X: ChangeExtractPort,
     S: HistoryStorePort,
     G: NotesSourceRegistryPort,
+    D: RecordDiagnosticsPort,
 {
+    // 実行時依存は runtime bundle から取り出す（引数肥大化を避けつつ、cohesive な外部境界一式へ寄せる）。
+    let RecordRuntime {
+        nix_versions,
+        brew_diff,
+        notes,
+        extract,
+        store,
+        registry_store,
+        diagnostics,
+    } = runtime;
+
     // ci-ref の old/new lock で eval した宣言パッケージ name→version マップを取得し、domain の純粋比較で
     // 差分を求める。closure を実体化せず評価時属性だけを比べるため、ビルドは一切走らない。
     let old_versions = nix_versions.old_versions()?;
@@ -110,7 +142,7 @@ where
         // 解決・AI 探索を skip する（再探索しない＝レート逓減）。fetch が空/失敗なら自己修復として機械→AI へ倒す。
         // `reused` が `Some` のとき：seed ノート + 記録 URL を持ち、AI には探索させず seed の要約だけさせる。
         let saved_source = registry
-            .lookup(&delta.name)
+            .lookup(&delta.name, delta.source)
             .and_then(|entry| entry.reusable_source())
             // レジストリは repo 管理で人手改変もありうるため、再利用前にも host allowlist を再適用する（二重防御）。
             .filter(|url| is_allowed_url(url))
@@ -182,13 +214,32 @@ where
             registry_hits += 1;
         } else if let Some(mech) = &mechanical {
             mechanical_found += 1;
-            let provenance = NotesSourceEntry {
-                source: Some(mech.notes_url.clone()),
-                origin: NotesOrigin::Mechanical,
-                discovered_at: Some(command.at.clone()),
-                note: None,
+            // 再利用 source に学習してよいのは **raw 再取得できる URL（`refetch_url`）だけ**である（finding
+            // 3369076722）。Releases API range/tag のように `notes_url` が表示用 HTML ページで raw 再取得しても
+            // 同じ本文が返らない取得は `refetch_url` が `None` であり、その場合は再利用 source を学習せず
+            // origin=none を記録して次回も機械解決し直す（HTML ページを seed に再利用して要約が空/不正確に
+            // なるのを防ぐ）。`refetch_url` がある（raw changelog / cask `.rb`）ときだけ origin=mechanical で学習する。
+            let provenance = match &mech.refetch_url {
+                Some(refetch_url) => NotesSourceEntry {
+                    source: Some(refetch_url.clone()),
+                    origin: NotesOrigin::Mechanical,
+                    discovered_at: Some(command.at.clone()),
+                    note: None,
+                },
+                None => NotesSourceEntry {
+                    source: None,
+                    origin: NotesOrigin::None,
+                    discovered_at: Some(command.at.clone()),
+                    note: None,
+                },
             };
-            learn_provenance(&mut registry, &mut registry_dirty, &delta.name, provenance);
+            learn_provenance(
+                &mut registry,
+                &mut registry_dirty,
+                &delta.name,
+                delta.source,
+                provenance,
+            );
         } else if let Some(source_url) = &outcome.source_url {
             ai_discovered += 1;
             let provenance = NotesSourceEntry {
@@ -197,7 +248,13 @@ where
                 discovered_at: Some(command.at.clone()),
                 note: None,
             };
-            learn_provenance(&mut registry, &mut registry_dirty, &delta.name, provenance);
+            learn_provenance(
+                &mut registry,
+                &mut registry_dirty,
+                &delta.name,
+                delta.source,
+                provenance,
+            );
         } else {
             // 機械解決も AI 採用取得元も無い。origin=none を学習して次回も探索対象に戻す。
             let provenance = NotesSourceEntry {
@@ -206,7 +263,13 @@ where
                 discovered_at: Some(command.at.clone()),
                 note: None,
             };
-            learn_provenance(&mut registry, &mut registry_dirty, &delta.name, provenance);
+            learn_provenance(
+                &mut registry,
+                &mut registry_dirty,
+                &delta.name,
+                delta.source,
+                provenance,
+            );
         }
 
         // 記録用 notes_url は解決経路が返した URL を一次に（AI 採用 URL も含む）、無ければ changelog/homepage
@@ -232,24 +295,22 @@ where
             notes_url,
         });
     }
-    // 予算超過で抽出を skip したパッケージがあれば件数を 1 行で明示する（サイレント切り捨てなし）。
+    // 予算超過で抽出を skip したパッケージがあれば件数を診断する（サイレント切り捨てなし）。具体的な出力先・
+    // 整形は diagnostics port（adapter = stderr）に閉じ、application は「何を観測させるか」だけを決める。
     if budget_skipped > 0 {
-        eprintln!(
-            "GitHub Models extract: budget exhausted, {budget_skipped} packages recorded version-only"
-        );
+        diagnostics.report_budget_skipped(budget_skipped);
     }
-    // ノート取得・抽出フェーズの縮退サマリを 1 行で出す（概要付き/version-only の件数）。token 失効・レート
-    // 枯渇で全件 version-only に静かに全滅しても、無人パイプラインが CI ログで気づけるようにする
-    // （budget-exhausted ログと対称。サイレント全滅防止）。対象 delta が 1 件もない夜は出さない。
+    // ノート取得・抽出フェーズの縮退サマリ（概要付き/version-only の件数）と provenance 経路内訳を診断する。
+    // token 失効・レート枯渇で全件 version-only に静かに全滅しても、また registry-reused/mechanical が回を追って
+    // 増え ai-discovered が新規/未知/自己修復へ収束する（レート逓減）ことも、無人パイプラインが CI ログで観測
+    // できるようにする。対象 delta が 1 件もない夜は出さない（出力先・整形は adapter の責務）。
     if summarized + version_only > 0 {
-        eprintln!("notes: {summarized} packages summarized, {version_only} version-only");
-        // provenance 経路の内訳（どこからノートを得たか）を併記する。registry-reused / mechanical は seed を
-        // 抽出 port へ渡して **要約のみ 1 回**で済む経路、ai-discovered は seed 無しで **tool-use 探索**（最大
-        // MAX_TOOL_ITERATIONS+1 回の model 呼び出し）を要した経路である。registry-reused/mechanical が回を追って
-        // 増え ai-discovered が新規/未知/自己修復のみへ収束する＝GitHub Models のレート消費が実際に逓減している、
-        // という運用根拠を残す。
-        eprintln!(
-            "notes provenance: {registry_hits} registry-reused, {mechanical_found} mechanical, {ai_discovered} ai-discovered"
+        diagnostics.report_notes_summary(
+            summarized,
+            version_only,
+            registry_hits,
+            mechanical_found,
+            ai_discovered,
         );
     }
 
@@ -293,9 +354,10 @@ fn learn_provenance(
     registry: &mut NotesSourceRegistry,
     dirty: &mut bool,
     name: &str,
+    source: DeltaSource,
     provenance: NotesSourceEntry,
 ) {
-    registry.record(name.to_string(), sanitize_provenance(provenance));
+    registry.record(name, source, sanitize_provenance(provenance));
     *dirty = true;
 }
 
@@ -337,8 +399,45 @@ mod tests {
     use crate::update_history::domain::wire::{ChangeCategory, ChangeItem, ChangeKind, Severity};
     use crate::update_history::ports::{
         ExtractOutcome, MockBrewVersionDiffPort, MockChangeExtractPort, MockHistoryStorePort,
-        MockNixVersionPort, MockNotesPort, MockNotesSourceRegistryPort, RawReleaseNotes,
+        MockNixVersionPort, MockNotesPort, MockNotesSourceRegistryPort, MockRecordDiagnosticsPort,
+        RawReleaseNotes,
     };
+
+    /// 診断 port の mock を作る（観測専用のため任意回受理する。件数の正確値は本体ロジックの責務外）。
+    fn diagnostics() -> MockRecordDiagnosticsPort {
+        let mut diagnostics = MockRecordDiagnosticsPort::new();
+        diagnostics.expect_report_budget_skipped().returning(|_| ());
+        diagnostics
+            .expect_report_notes_summary()
+            .returning(|_, _, _, _, _| ());
+        diagnostics
+    }
+
+    /// 各 mock port を runtime bundle へ束ねて `run_record` を駆動するテストヘルパ。
+    ///
+    /// 診断 port は観測専用のため、ここで生成した受理 mock を使う（各テストは記録ロジックの port 駆動だけを
+    /// 検証し、診断出力件数は検証対象外）。bundle 構築の定型を 1 か所へ閉じる。
+    fn run_record_with(
+        command: RecordCommand,
+        nix_versions: &MockNixVersionPort,
+        brew_diff: &MockBrewVersionDiffPort,
+        notes: &MockNotesPort,
+        extract: &MockChangeExtractPort,
+        store: &MockHistoryStorePort,
+        registry_store: &MockNotesSourceRegistryPort,
+    ) -> crate::Result<()> {
+        let diagnostics = diagnostics();
+        let runtime = super::RecordRuntime {
+            nix_versions,
+            brew_diff,
+            notes,
+            extract,
+            store,
+            registry_store,
+            diagnostics: &diagnostics,
+        };
+        run_record(command, &runtime)
+    }
 
     /// 空レジストリを返し、`write_registry` を任意回（学習が起きれば 1 回）受ける registry mock。
     ///
@@ -460,7 +559,7 @@ mod tests {
             .withf(|entry| entry.packages.len() == 2)
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -494,6 +593,8 @@ mod tests {
                 Ok(Some(RawReleaseNotes {
                     text: "CVE fix".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                    // Releases API 由来は raw 再取得できないため refetch_url なし（記録 notes_url は表示用）。
+                    refetch_url: None,
                 }))
             });
 
@@ -550,7 +651,7 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -583,6 +684,8 @@ mod tests {
                 Ok(Some(RawReleaseNotes {
                     text: "CVE fix".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                    // Releases API 由来は raw 再取得できないため refetch_url なし（記録 notes_url は表示用）。
+                    refetch_url: None,
                 }))
             });
 
@@ -608,7 +711,7 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -657,7 +760,7 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -691,7 +794,7 @@ mod tests {
         // rev 不変・空素材なので append は一切行わない。
         store.expect_append_entry().never();
 
-        run_record(
+        run_record_with(
             command,
             &nix_versions,
             &brew_diff,
@@ -735,7 +838,7 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -776,6 +879,7 @@ mod tests {
                 Ok(Some(RawReleaseNotes {
                     text: "reused notes".to_string(),
                     notes_url: url.to_string(),
+                    refetch_url: Some(url.to_string()),
                 }))
             });
         // 機械解決は一切呼ばれない（再探索しない）。
@@ -815,7 +919,8 @@ mod tests {
         registry.expect_read_registry().returning(|| {
             let mut r = NotesSourceRegistry::default();
             r.record(
-                "openssl".to_string(),
+                "openssl",
+                DeltaSource::NixEval,
                 NotesSourceEntry {
                     source: Some("https://github.com/openssl/openssl/releases".to_string()),
                     origin: NotesOrigin::Mechanical,
@@ -827,7 +932,7 @@ mod tests {
         });
         registry.expect_write_registry().never();
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -840,8 +945,9 @@ mod tests {
 
     #[test]
     fn mechanical_resolution_records_origin_mechanical() -> crate::Result<()> {
-        // 退行固定（フロー 2 学習）: レジストリ未登録で機械解決が取れたら、その取得元 URL を origin=mechanical で
-        // レジストリへ記録する（write_registry が呼ばれ、保存 source・origin が正しい）。
+        // 退行固定（フロー 2 学習）: レジストリ未登録で機械解決が raw 再取得可能な URL（refetch_url）で取れたら、
+        // その **refetch_url** を origin=mechanical でレジストリへ記録する（finding 3369076722: 表示用 notes_url
+        // でなく raw 再取得 URL を学習する）。ここでは raw changelog（refetch 可）を機械解決が返す。
         let (nix_versions, brew_diff) = nix_only_diff("openssl", "openssl/openssl");
 
         let mut notes = MockNotesPort::new();
@@ -851,7 +957,13 @@ mod tests {
             .returning(|_, _, _, _, _, _| {
                 Ok(Some(RawReleaseNotes {
                     text: "notes".to_string(),
+                    // 表示用 URL（人間が辿るページ）。
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                    // raw 再取得できる URL（raw changelog）。これが provenance の再利用 source に学習される。
+                    refetch_url: Some(
+                        "https://raw.githubusercontent.com/openssl/openssl/v1.1/CHANGELOG.md"
+                            .to_string(),
+                    ),
                 }))
             });
 
@@ -874,15 +986,81 @@ mod tests {
             .expect_write_registry()
             .times(1)
             .withf(|r| {
-                r.lookup("openssl").is_some_and(|e| {
+                r.lookup("openssl", DeltaSource::NixEval).is_some_and(|e| {
                     e.origin == NotesOrigin::Mechanical
+                        // 表示用 notes_url ではなく refetch_url（raw changelog）を学習する（finding 3369076722）。
                         && e.source.as_deref()
-                            == Some("https://github.com/openssl/openssl/releases/tag/v1.1")
+                            == Some("https://raw.githubusercontent.com/openssl/openssl/v1.1/CHANGELOG.md")
                 })
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
+            command(),
+            &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn mechanical_without_refetch_url_records_origin_none_not_poisoned_page() -> crate::Result<()> {
+        // 退行固定（finding 3369076722）: 機械解決がノートを返しても **raw 再取得できる URL（refetch_url）が
+        // 無い**（Releases API range/tag のように notes_url が表示用 HTML ページ）場合、その表示用 URL を再利用
+        // source に学習せず origin=none を記録する。これにより次回フロー 1 で HTML ページを raw curl して seed に
+        // 再利用し、要約が空/不正確になるのを防ぐ（次回も機械解決し直す）。
+        let (nix_versions, brew_diff) = nix_only_diff("openssl", "openssl/openssl");
+
+        let mut notes = MockNotesPort::new();
+        notes
+            .expect_fetch_release_notes()
+            .times(1)
+            .returning(|_, _, _, _, _, _| {
+                Ok(Some(RawReleaseNotes {
+                    text: "range notes".to_string(),
+                    // 表示用 HTML ページ（Releases API range 由来）。raw 再取得で同じ本文は返らない。
+                    notes_url: "https://github.com/openssl/openssl/releases".to_string(),
+                    refetch_url: None,
+                }))
+            });
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        extract
+            .expect_extract_change_items()
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        // 記録される notes_url は表示用 URL のまま（履歴の表示には HTML ページを残してよい）。
+        store
+            .expect_append_entry()
+            .times(1)
+            .withf(|entry| {
+                entry.packages[0].notes_url.as_deref()
+                    == Some("https://github.com/openssl/openssl/releases")
+            })
+            .returning(|_| Ok(()));
+
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry
+            .expect_read_registry()
+            .returning(|| Ok(NotesSourceRegistry::default()));
+        // refetch_url が無いので再利用 source を学習せず origin=none（表示用 HTML ページを source にしない）。
+        registry
+            .expect_write_registry()
+            .times(1)
+            .withf(|r| {
+                r.lookup("openssl", DeltaSource::NixEval)
+                    .is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none())
+            })
+            .returning(|_| Ok(()));
+
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -936,14 +1114,14 @@ mod tests {
             .expect_write_registry()
             .times(1)
             .withf(|r| {
-                r.lookup("neovim").is_some_and(|e| {
+                r.lookup("neovim", DeltaSource::NixEval).is_some_and(|e| {
                     e.origin == NotesOrigin::AiDiscovered
                         && e.source.as_deref() == Some("https://github.com/neovim/neovim/releases")
                 })
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -985,12 +1163,12 @@ mod tests {
             .expect_write_registry()
             .times(1)
             .withf(|r| {
-                r.lookup("zlib")
+                r.lookup("zlib", DeltaSource::NixEval)
                     .is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none())
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -1013,7 +1191,7 @@ mod tests {
             .expect_fetch_notes_from_source()
             .times(1)
             .returning(|_| Ok(None));
-        // 自己修復で機械解決を試みて新ソースを得る。
+        // 自己修復で機械解決を試みて新ソース（raw 再取得可能な refetch_url）を得る。
         notes
             .expect_fetch_release_notes()
             .times(1)
@@ -1021,6 +1199,10 @@ mod tests {
                 Ok(Some(RawReleaseNotes {
                     text: "fresh notes".to_string(),
                     notes_url: "https://github.com/openssl/openssl/releases/tag/v1.1".to_string(),
+                    refetch_url: Some(
+                        "https://raw.githubusercontent.com/openssl/openssl/v1.1/CHANGELOG.md"
+                            .to_string(),
+                    ),
                 }))
             });
 
@@ -1040,7 +1222,8 @@ mod tests {
         registry.expect_read_registry().returning(|| {
             let mut r = NotesSourceRegistry::default();
             r.record(
-                "openssl".to_string(),
+                "openssl",
+                DeltaSource::NixEval,
                 NotesSourceEntry {
                     source: Some(
                         "https://github.com/openssl/openssl/blob/old/CHANGELOG".to_string(),
@@ -1057,15 +1240,16 @@ mod tests {
             .expect_write_registry()
             .times(1)
             .withf(|r| {
-                r.lookup("openssl").is_some_and(|e| {
+                r.lookup("openssl", DeltaSource::NixEval).is_some_and(|e| {
                     e.origin == NotesOrigin::Mechanical
+                        // 表示用 notes_url ではなく refetch_url（raw changelog）を学習する（finding 3369076722）。
                         && e.source.as_deref()
-                            == Some("https://github.com/openssl/openssl/releases/tag/v1.1")
+                            == Some("https://raw.githubusercontent.com/openssl/openssl/v1.1/CHANGELOG.md")
                 })
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
             &brew_diff,
@@ -1115,14 +1299,105 @@ mod tests {
             .expect_write_registry()
             .times(1)
             .withf(|r| {
-                r.lookup("neovim")
+                r.lookup("neovim", DeltaSource::NixEval)
                     .is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none())
             })
             .returning(|_| Ok(()));
 
-        run_record(
+        run_record_with(
             command(),
             &nix_versions,
+            &brew_diff,
+            &notes,
+            &extract,
+            &store,
+            &registry,
+        )
+    }
+
+    #[test]
+    fn registry_lookup_is_keyed_by_source_not_just_name() -> crate::Result<()> {
+        // 退行固定（finding 3369076719）: 同名 `firefox` の nix delta と brew delta があるとき、レジストリ参照は
+        // 出所込みキーで引く。レジストリには brew/firefox の保存 source だけがあり、nix/firefox は未登録とする。
+        // 旧実装（name だけのキー）なら nix delta が brew の保存 source を誤って再利用してしまうが、出所込みキー
+        // では nix/firefox は未 hit → 機械解決へ倒れる（別出所の取得元を取り違えない）。
+        let mut nix = MockNixVersionPort::new();
+        nix.expect_old_versions().returning(|| {
+            Ok(BTreeMap::from([(
+                "firefox".to_string(),
+                pkg("120", "", ""),
+            )]))
+        });
+        nix.expect_new_versions().returning(|| {
+            Ok(BTreeMap::from([(
+                "firefox".to_string(),
+                pkg("121", "mozilla/firefox", ""),
+            )]))
+        });
+        let mut brew_diff = MockBrewVersionDiffPort::new();
+        brew_diff
+            .expect_diff_brew_versions()
+            .returning(|_, _| Ok(vec![brew_delta("firefox")]));
+
+        let mut notes = MockNotesPort::new();
+        // brew/firefox は保存 source を再利用して fetch（fetch_notes_from_source）。
+        notes
+            .expect_fetch_notes_from_source()
+            .withf(|url| url == "https://github.com/homebrew/homebrew-cask/blob/x/firefox.rb")
+            .times(1)
+            .returning(|url| {
+                Ok(Some(RawReleaseNotes {
+                    text: "brew reused".to_string(),
+                    notes_url: url.to_string(),
+                    refetch_url: Some(url.to_string()),
+                }))
+            });
+        // nix/firefox は未 hit のため機械解決を試みる（別出所の brew source を再利用しない）。
+        notes
+            .expect_fetch_release_notes()
+            .withf(|name, source, _, _, _, _| name == "firefox" && *source == DeltaSource::NixEval)
+            .times(1)
+            .returning(|_, _, _, _, _, _| Ok(None));
+
+        let mut extract = MockChangeExtractPort::new();
+        extract
+            .expect_extract_budget_exhausted()
+            .returning(|| false);
+        extract
+            .expect_extract_change_items()
+            .returning(|_| Ok(outcome(Vec::new())));
+
+        let mut store = MockHistoryStorePort::new();
+        store
+            .expect_append_entry()
+            .times(1)
+            .withf(|entry| entry.packages.len() == 2)
+            .returning(|_| Ok(()));
+
+        // レジストリには brew/firefox だけが登録済み（nix/firefox は未登録）。
+        let mut registry = MockNotesSourceRegistryPort::new();
+        registry.expect_read_registry().returning(|| {
+            let mut r = NotesSourceRegistry::default();
+            r.record(
+                "firefox",
+                DeltaSource::BrewTap,
+                NotesSourceEntry {
+                    source: Some(
+                        "https://github.com/homebrew/homebrew-cask/blob/x/firefox.rb".to_string(),
+                    ),
+                    origin: NotesOrigin::AiDiscovered,
+                    discovered_at: None,
+                    note: None,
+                },
+            );
+            Ok(r)
+        });
+        // nix/firefox の機械解決は None なので学習は origin=none（write は走る）。
+        registry.expect_write_registry().returning(|_| Ok(()));
+
+        run_record_with(
+            command(),
+            &nix,
             &brew_diff,
             &notes,
             &extract,

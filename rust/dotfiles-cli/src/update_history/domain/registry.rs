@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::diff::DeltaSource;
+
 /// ノート取得元の出所（どの解決経路で取得元が確定したか）。
 ///
 /// `origin` は「次回も再探索すべきか」の判断材料になる: `Mechanical` / `AiDiscovered` は有効な取得元が
@@ -83,18 +85,32 @@ pub(crate) struct NotesSourceRegistry {
     entries: BTreeMap<String, NotesSourceEntry>,
 }
 
+/// パッケージ名と出所からレジストリの一意キーを組み立てる純粋関数（finding 3369076719）。
+///
+/// nix 由来と brew 由来は同名でも別パッケージ（例: nix の `firefox` と cask の `firefox`）であり、ノート取得元
+/// provenance を name だけで突合すると別出所の取得元を取り違える。キーへ出所を含めて `<source>/<name>`
+/// （例 `nix/firefox` / `brew/firefox`）にし、同名でも出所が違えば別エントリとして学習・再利用する。出所は
+/// [`DeltaSource::as_stable_key`]（`Debug` 表現非依存）を使い、決定論を保つ。`<source>/` 前置のため `BTreeMap`
+/// の昇順整列は出所ごとにまとまり、直列化 diff も安定する。
+pub(crate) fn registry_key(name: &str, source: DeltaSource) -> String {
+    format!("{}/{name}", source.as_stable_key())
+}
+
 impl NotesSourceRegistry {
-    /// 指定パッケージの保存済みエントリを参照する（無ければ `None`）。
-    pub(crate) fn lookup(&self, name: &str) -> Option<&NotesSourceEntry> {
-        self.entries.get(name)
+    /// 指定パッケージ（名前 + 出所）の保存済みエントリを参照する（無ければ `None`）。
+    ///
+    /// キーは出所込み（[`registry_key`]）。同名でも nix/brew は別エントリとして引く（finding 3369076719）。
+    pub(crate) fn lookup(&self, name: &str, source: DeltaSource) -> Option<&NotesSourceEntry> {
+        self.entries.get(&registry_key(name, source))
     }
 
-    /// 指定パッケージの取得元を記録（追記/上書き）する。
+    /// 指定パッケージ（名前 + 出所）の取得元を記録（追記/上書き）する。
     ///
-    /// 既存エントリがあれば上書きする（自己修復で取得元が移動したプロジェクトに追従するため）。`BTreeMap`
+    /// 既存エントリがあれば上書きする（自己修復で取得元が移動したプロジェクトに追従するため）。キーは出所込み
+    /// （[`registry_key`]）で、同名でも nix/brew を別エントリとして学習する（finding 3369076719）。`BTreeMap`
     /// なので挿入後も名前昇順を保ち、直列化は決定論になる。
-    pub(crate) fn record(&mut self, name: String, entry: NotesSourceEntry) {
-        self.entries.insert(name, entry);
+    pub(crate) fn record(&mut self, name: &str, source: DeltaSource, entry: NotesSourceEntry) {
+        self.entries.insert(registry_key(name, source), entry);
     }
 }
 
@@ -143,63 +159,114 @@ mod tests {
     #[test]
     fn record_upserts_and_lookup_reads_back() {
         let mut registry = NotesSourceRegistry::default();
-        assert!(registry.lookup("neovim").is_none());
+        assert!(registry.lookup("neovim", DeltaSource::NixEval).is_none());
         registry.record(
-            "neovim".to_string(),
+            "neovim",
+            DeltaSource::NixEval,
             entry(
                 Some("https://github.com/neovim/neovim/releases"),
                 NotesOrigin::Mechanical,
             ),
         );
         assert_eq!(
-            registry.lookup("neovim").and_then(|e| e.reusable_source()),
+            registry
+                .lookup("neovim", DeltaSource::NixEval)
+                .and_then(|e| e.reusable_source()),
             Some("https://github.com/neovim/neovim/releases")
         );
-        // 自己修復: 同一パッケージの再記録は上書きする（取得元が移動したプロジェクトに追従）。
+        // 自己修復: 同一パッケージ・同一出所の再記録は上書きする（取得元が移動したプロジェクトに追従）。
         registry.record(
-            "neovim".to_string(),
+            "neovim",
+            DeltaSource::NixEval,
             entry(
                 Some("https://github.com/neovim/neovim/blob/master/CHANGELOG"),
                 NotesOrigin::AiDiscovered,
             ),
         );
         assert_eq!(
-            registry.lookup("neovim").map(|e| e.origin),
+            registry
+                .lookup("neovim", DeltaSource::NixEval)
+                .map(|e| e.origin),
             Some(NotesOrigin::AiDiscovered)
         );
     }
 
     #[test]
-    fn registry_serializes_deterministically_in_name_order() -> crate::Result<()> {
-        // 決定論固定: 挿入順に依らず TOML はパッケージ名昇順で直列化され diff を最小化する。
+    fn same_name_nix_and_brew_are_kept_separate() {
+        // 退行固定（finding 3369076719）: 同名 `firefox` でも nix 由来と brew 由来は別パッケージであり、
+        // provenance を別エントリとして学習・参照する。name だけで突合すると別出所の取得元を取り違える。
         let mut registry = NotesSourceRegistry::default();
         registry.record(
-            "ripgrep".to_string(),
+            "firefox",
+            DeltaSource::NixEval,
+            entry(
+                Some("https://github.com/mozilla/firefox/releases"),
+                NotesOrigin::Mechanical,
+            ),
+        );
+        registry.record(
+            "firefox",
+            DeltaSource::BrewTap,
+            entry(
+                Some("https://github.com/homebrew/homebrew-cask/blob/x/firefox.rb"),
+                NotesOrigin::AiDiscovered,
+            ),
+        );
+        // 出所ごとに別エントリとして引ける（取り違えない）。
+        assert_eq!(
+            registry
+                .lookup("firefox", DeltaSource::NixEval)
+                .and_then(|e| e.reusable_source()),
+            Some("https://github.com/mozilla/firefox/releases")
+        );
+        assert_eq!(
+            registry
+                .lookup("firefox", DeltaSource::BrewTap)
+                .and_then(|e| e.reusable_source()),
+            Some("https://github.com/homebrew/homebrew-cask/blob/x/firefox.rb")
+        );
+        // キーは出所込み（`<source>/<name>`）。
+        assert_eq!(registry_key("firefox", DeltaSource::NixEval), "nix/firefox");
+        assert_eq!(
+            registry_key("firefox", DeltaSource::BrewTap),
+            "brew/firefox"
+        );
+    }
+
+    #[test]
+    fn registry_serializes_deterministically_in_name_order() -> crate::Result<()> {
+        // 決定論固定: 挿入順に依らず TOML はキー（`<source>/<name>`）昇順で直列化され diff を最小化する。
+        let mut registry = NotesSourceRegistry::default();
+        registry.record(
+            "ripgrep",
+            DeltaSource::NixEval,
             entry(
                 Some("https://github.com/BurntSushi/ripgrep/releases"),
                 NotesOrigin::Mechanical,
             ),
         );
         registry.record(
-            "bat".to_string(),
+            "bat",
+            DeltaSource::NixEval,
             entry(
                 Some("https://github.com/sharkdp/bat/releases"),
                 NotesOrigin::AiDiscovered,
             ),
         );
-        registry.record("zlib".to_string(), entry(None, NotesOrigin::None));
+        registry.record("zlib", DeltaSource::NixEval, entry(None, NotesOrigin::None));
 
         let rendered = toml::to_string(&registry)?;
+        // キーは `nix/<name>` で、TOML テーブル名はクォートされる（`/` を含むため）。昇順で並ぶ。
         let expected = "\
-[bat]
+[\"nix/bat\"]
 source = \"https://github.com/sharkdp/bat/releases\"
 origin = \"ai-discovered\"
 
-[ripgrep]
+[\"nix/ripgrep\"]
 source = \"https://github.com/BurntSushi/ripgrep/releases\"
 origin = \"mechanical\"
 
-[zlib]
+[\"nix/zlib\"]
 origin = \"none\"
 ";
         assert_eq!(rendered, expected);

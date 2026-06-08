@@ -48,4 +48,10 @@ pub(crate) struct ShowCommand {
     pub(crate) json: bool,
     /// 宣言アプリだけでなく全パッケージを表示するか。
     pub(crate) all: bool,
+    /// 適用後要約を、実際に適用した target に対応する出所だけへ絞る policy（finding 3368653947）。
+    ///
+    /// `dotfiles update home` の部分適用は home-manager（nix）だけを switch するため、brew cask を含む全体履歴を
+    /// 要約すると未適用 cask まで通知される。target に対応する出所だけを残すため本 filter を渡す。利用者 `show`
+    /// や全体適用は `All`（絞らない）。詳細は [`crate::update_history::domain::wire::PackageSourceFilter`]。
+    pub(crate) source_filter: super::wire::PackageSourceFilter,
 }

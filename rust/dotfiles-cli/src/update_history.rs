@@ -13,6 +13,7 @@
 /// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
 mod adapters {
     mod brew;
+    mod diagnostics;
     mod github_models;
     mod nix;
     mod notes;
@@ -21,6 +22,7 @@ mod adapters {
     mod toml_store;
 
     pub(in crate::update_history) use brew::BrewTapDiffAdapter;
+    pub(in crate::update_history) use diagnostics::StderrRecordDiagnosticsAdapter;
     pub(in crate::update_history) use github_models::GithubModelsExtractAdapter;
     pub(in crate::update_history) use nix::NixEvalVersionAdapter;
     pub(in crate::update_history) use notes::ReleaseNotesAdapter;
@@ -171,6 +173,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     let extract = adapters::GithubModelsExtractAdapter::new();
     let store = adapters::TomlHistoryStoreAdapter::new(options.out);
     let registry_store = adapters::TomlNotesSourceRegistryAdapter::new(registry_path);
+    // 縮退・provenance 経路の診断は adapter（stderr 出力）へ閉じ、application から concrete I/O を排除する。
+    let diagnostics = adapters::StderrRecordDiagnosticsAdapter;
 
     let command = RecordCommand {
         old_rev: options.old_rev,
@@ -180,15 +184,16 @@ fn run_record(options: RecordOptions) -> Result<()> {
         reference: options.reference,
         at: options.at,
     };
-    application::run_record::run_record(
-        command,
-        &nix_versions,
-        &brew_diff,
-        &notes,
-        &extract,
-        &store,
-        &registry_store,
-    )
+    let runtime = application::run_record::RecordRuntime {
+        nix_versions: &nix_versions,
+        brew_diff: &brew_diff,
+        notes: &notes,
+        extract: &extract,
+        store: &store,
+        registry_store: &registry_store,
+        diagnostics: &diagnostics,
+    };
+    application::run_record::run_record(command, &runtime)
 }
 
 /// `--out`（月次 TOML）の置き場と同じ directory にレジストリ `notes-sources.toml` を置く既定パスを返す。
@@ -216,6 +221,8 @@ fn run_show(options: ShowOptions) -> Result<()> {
         limit: options.limit,
         json: options.json,
         all: options.all,
+        // 利用者 `show` は全出所を表示する（適用後要約の target 絞り込みは update 経路専用）。
+        source_filter: domain::wire::PackageSourceFilter::All,
     };
     application::run_show::run_show(command, &store, &report)
 }
@@ -227,6 +234,8 @@ fn run_show(options: ShowOptions) -> Result<()> {
 /// `docs/update-history` directory（または単一 TOML ファイル）、`summarized_after_at` は**前回要約し終えた
 /// エントリの `at`**（その `at` より後に記録されたエントリだけを catch-up 区間とする。`None` なら全件 = 初回）。
 /// `sink` には tty 時は stdout、非 tty 時は `pending-summary` ファイルなど呼び出し側が選んだ writer を渡す。
+/// `source_filter` は実際に適用した target に対応する出所だけへ要約を絞る（finding 3368653947。home 部分適用は
+/// `NixOnly` で brew cask を除外して未適用 cask を通知しない。全体/darwin 適用は `All`）。
 ///
 /// **nixpkgs rev ではなく `at` カーソルを使う理由**: brew tap だけが進み `nixpkgs_old == nixpkgs_new`
 /// （= 同一 nixpkgs rev）の brew-only 更新が複数できると、nixpkgs rev 起点では `N -> N` を越えて進めず、
@@ -245,6 +254,7 @@ fn run_show(options: ShowOptions) -> Result<()> {
 pub(crate) fn render_applied_summary<W: Write>(
     source: &Path,
     summarized_after_at: Option<&str>,
+    source_filter: domain::wire::PackageSourceFilter,
     sink: W,
 ) -> Result<Option<String>> {
     let store = adapters::TomlHistoryStoreAdapter::new(source);
@@ -255,6 +265,8 @@ pub(crate) fn render_applied_summary<W: Write>(
         limit: None,
         json: false,
         all: false,
+        // 適用後要約は実際に適用した target に対応する出所だけへ絞る（home 部分適用は nix のみ）。
+        source_filter,
     };
     application::run_show::run_applied_summary(command, &store, &report)
 }
@@ -282,6 +294,7 @@ mod tests {
 
     use std::io::Write as _;
 
+    use super::domain::wire::PackageSourceFilter;
     use super::render_applied_summary;
     use crate::Result;
 
@@ -346,7 +359,7 @@ text = \"修正\"
 
         // 初回（marker 無し）: 全 brew-only 更新を要約し、終端 `at` を返す。
         let mut buf1: Vec<u8> = Vec::new();
-        let cursor = render_applied_summary(&dir, None, &mut buf1)?;
+        let cursor = render_applied_summary(&dir, None, PackageSourceFilter::All, &mut buf1)?;
         let rendered1 = String::from_utf8(buf1)?;
         assert!(rendered1.contains("firefox"), "{rendered1:?}");
         assert!(rendered1.contains("slack"), "{rendered1:?}");
@@ -354,7 +367,8 @@ text = \"修正\"
 
         // 2 回目（marker = 終端 at）: 新規が無いので brew-only 更新を再表示しない（見出しのみ「0アプリ更新」）。
         let mut buf2: Vec<u8> = Vec::new();
-        let cursor2 = render_applied_summary(&dir, cursor.as_deref(), &mut buf2)?;
+        let cursor2 =
+            render_applied_summary(&dir, cursor.as_deref(), PackageSourceFilter::All, &mut buf2)?;
         let rendered2 = String::from_utf8(buf2)?;
         assert!(
             !rendered2.contains("firefox") && !rendered2.contains("slack"),
@@ -362,6 +376,73 @@ text = \"修正\"
         );
         assert!(rendered2.contains("0アプリ更新"), "{rendered2:?}");
         assert_eq!(cursor2, None, "空 span では marker を進めない");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn home_target_summary_excludes_brew_cask_updates() -> crate::Result<()> {
+        // finding 3368653947 退行固定: home 部分適用（`NixOnly`）の要約は brew cask 更新を出さない。CI 履歴には
+        // nix package（neovim）と brew cask（firefox）が両方あるが、home だけ switch した直後の要約は home-manager
+        // の nix 更新だけを見せ、未適用の cask（Firefox）を通知しない。`All`（全体/darwin 適用）は両方見せる。
+        let toml = "\
+[[update]]
+at = \"2026-06-01T00:00:00Z\"
+nixpkgs_old = \"N0\"
+nixpkgs_new = \"N1\"
+reference = \"darwinConfigurations.ci\"
+severity = \"minor\"
+overall = \"2アプリ更新\"
+
+[[update.package]]
+name = \"neovim\"
+old = \"0.10\"
+new = \"0.11\"
+change = \"upgraded\"
+declared = true
+source = \"nix\"
+
+[[update.package.change_item]]
+category = \"feature\"
+text = \"新機能\"
+
+[[update.package]]
+name = \"firefox\"
+old = \"120\"
+new = \"121\"
+change = \"upgraded\"
+declared = true
+source = \"brew\"
+
+[[update.package.change_item]]
+category = \"feature\"
+text = \"cask 新機能\"
+";
+        let dir = write_history_dir("home-filter", toml)?;
+
+        // home 部分適用（NixOnly）: nix の neovim だけ要約し、brew cask の firefox は出さない。
+        let mut buf_home: Vec<u8> = Vec::new();
+        render_applied_summary(&dir, None, PackageSourceFilter::NixOnly, &mut buf_home)?;
+        let home = String::from_utf8(buf_home)?;
+        assert!(
+            home.contains("neovim"),
+            "home 要約は nix package を出す: {home:?}"
+        );
+        assert!(
+            !home.contains("firefox"),
+            "home 部分適用は未適用の brew cask を出さない: {home:?}"
+        );
+
+        // 全体適用（All）: nix も brew cask も両方出す。
+        let mut buf_all: Vec<u8> = Vec::new();
+        render_applied_summary(&dir, None, PackageSourceFilter::All, &mut buf_all)?;
+        let all = String::from_utf8(buf_all)?;
+        assert!(all.contains("neovim"), "全体要約は nix を出す: {all:?}");
+        assert!(
+            all.contains("firefox"),
+            "全体要約は brew cask も出す: {all:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())

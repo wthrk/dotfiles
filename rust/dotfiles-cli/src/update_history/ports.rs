@@ -90,13 +90,24 @@ pub(crate) trait NotesPort {
 /// 取得済み生リリースノートと参照 URL の境界型。
 ///
 /// `text` は信頼境界外の生テキスト（prompt injection 源）であり、LLM 抽出後に機械バリデートする前提で運ぶ。
-/// `notes_url` は記録に残すノート URL。具体的な取得実装（HTTP・forge API）は adapter に閉じる。
+/// `notes_url` は **記録・表示に残す**ノート参照 URL（人間が辿れるページ。例: `github.com/{o}/{r}/releases`）。
+///
+/// `refetch_url` は **同じ生ノート本文を後から raw 取得し直せる URL**（あれば）。provenance レジストリへ
+/// 再利用 source として学習してよいのはこちらだけである（finding 3369076722）。`notes_url`（表示用 HTML ページ
+/// 等）を再利用 source にすると、次回 [`NotesPort::fetch_notes_from_source`] がその HTML/JSON ページを raw curl
+/// して seed にしてしまい、要約が空/不正確になる。`refetch_url` は「raw 取得で同じ本文が返る URL」のときだけ
+/// `Some`（例: raw changelog ファイル・cask `.rb` 生ファイル）にし、Releases API の range/tag 取得のように
+/// 単一 raw URL で本文を再現できない取得では `None` にする（その場合 record は再利用 source を学習せず、次回も
+/// 機械解決し直す）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawReleaseNotes {
     /// `(old, new]` 範囲の生リリースノート本文（信頼境界外）。
     pub(crate) text: String,
-    /// 記録に残すノート参照 URL。
+    /// 記録・表示に残すノート参照 URL（人間が辿れるページ。raw 再取得できるとは限らない）。
     pub(crate) notes_url: String,
+    /// 同じ本文を raw 取得し直せる URL（あれば）。provenance の再利用 source に学習してよいのはこれだけ
+    /// （finding 3369076722）。raw 再現できない取得（Releases API range/tag 等）では `None`。
+    pub(crate) refetch_url: Option<String>,
 }
 
 /// AI エージェントが「適切なリリースノートのソースを自分で探して fetch して読み」構造化変更リストを抽出する
@@ -192,6 +203,32 @@ pub(crate) trait HistoryStorePort {
 
     /// 新エントリを既存履歴へ追記する（既存エントリは保持する）。
     fn append_entry(&self, entry: &UpdateEntry) -> Result<()>;
+}
+
+/// record の縮退・provenance 経路の診断サマリを出力する capability 契約（外部機能: 診断ログ出力）。
+///
+/// record use case は、抽出予算超過で version-only へ縮退した件数、概要付き/version-only の件数、provenance
+/// 経路（registry-reused / mechanical / ai-discovered）の内訳を CI ログに残し、無人パイプラインが「token 失効や
+/// レート枯渇で全件 version-only に静かに全滅した」「どの経路でノートを得たか」を観測できるようにする。これらは
+/// **何を観測させるか**という意図であり、stderr への具体的な書き出し（`eprintln!`）は presentation/I/O であって
+/// application の責務ではない。caller（application）は集計した件数を渡すだけで、出力先・整形は implementor
+/// （adapter）に閉じる（application から concrete I/O を排除する）。各メソッドは観測専用で、失敗しても record の
+/// 成否に影響させない（implementor は best-effort 出力に倒す）。
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait RecordDiagnosticsPort {
+    /// 抽出予算超過で LLM 抽出を skip し version-only へ縮退したパッケージ件数を診断する（件数 0 なら呼ばない）。
+    fn report_budget_skipped(&self, skipped: usize);
+
+    /// ノート取得・抽出フェーズの縮退サマリ（概要付き件数 / version-only 件数）と provenance 経路内訳
+    /// （registry-reused / mechanical / ai-discovered）を診断する。対象 delta が 1 件もない夜は呼ばない。
+    fn report_notes_summary(
+        &self,
+        summarized: usize,
+        version_only: usize,
+        registry_hits: usize,
+        mechanical_found: usize,
+        ai_discovered: usize,
+    );
 }
 
 /// 集約済み履歴ビューを利用者向けに出力する capability 契約（外部機能: 端末 / JSON 出力）。

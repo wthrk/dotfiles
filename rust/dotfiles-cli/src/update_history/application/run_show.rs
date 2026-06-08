@@ -9,7 +9,7 @@ use crate::update_history::domain::selection::{
 };
 use crate::update_history::domain::severity::overall_headline;
 use crate::update_history::domain::view::HistoryView;
-use crate::update_history::domain::wire::{ChangeItem, UpdateEntry};
+use crate::update_history::domain::wire::{ChangeItem, PackageSourceFilter, UpdateEntry};
 use crate::update_history::ports::{HistoryReportPort, HistoryStorePort};
 
 /// 適用済み pin 由来の履歴を読み、起点 rev からの catch-up 区間を集約して重要度連動ビューを出力する。
@@ -29,7 +29,7 @@ where
 {
     let entries = store.read_entries()?;
     let selected = select_for_show(&entries, &command);
-    let view = build_view(&selected, command.all);
+    let view = build_view(&selected, command.all, command.source_filter);
     report.write_history(&view, command.json)
 }
 
@@ -52,7 +52,7 @@ where
 {
     let entries = store.read_entries()?;
     let selected = select_entries_after(&entries, command.after_at.as_deref(), command.limit);
-    let view = build_view(&selected, command.all);
+    let view = build_view(&selected, command.all, command.source_filter);
     report.write_history(&view, command.json)?;
     // 要約し終えた終端エントリの `at`（次回 `after_at` カーソル）。空 span なら `None`。
     Ok(last_summarized_at(&selected))
@@ -71,14 +71,22 @@ fn select_for_show(entries: &[UpdateEntry], command: &ShowCommand) -> Vec<Update
 
 /// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
 ///
-/// `all=false` は宣言アプリ中心（既定）、`true` は低レベル依存も含める。severity/overall は集約後集合に対し
-/// record 側と同一の domain 関数で再算出し、記録時と表示時で重要度規則を二重化しない（`show`/適用後要約で共有）。
-fn build_view(selected: &[UpdateEntry], all: bool) -> HistoryView {
+/// `all=false` は宣言アプリ中心（既定）、`true` は低レベル依存も含める。`source_filter` は適用後要約を実際に
+/// 適用した target に対応する出所だけへ絞る（finding 3368653947。`NixOnly` は brew cask を除外して home 部分適用で
+/// 未適用 cask を通知しない。利用者 `show`/全体適用は `All`）。severity/overall は **絞り込み後**集合に対し record
+/// 側と同一の domain 関数で再算出し、記録時と表示時で重要度規則を二重化しない（`show`/適用後要約で共有）。
+fn build_view(
+    selected: &[UpdateEntry],
+    all: bool,
+    source_filter: PackageSourceFilter,
+) -> HistoryView {
     let mut packages = aggregate(selected);
     if !all {
         // 既定は宣言アプリ中心。`--all` 指定時のみ低レベル依存も表示する。
         packages.retain(|package| package.declared);
     }
+    // 適用後要約は実際に適用した target に対応する出所だけへ絞る（home 部分適用は nix のみ → cask 誤通知を防ぐ）。
+    packages.retain(|package| source_filter.includes(package.source));
     let all_items: Vec<ChangeItem> = packages
         .iter()
         .flat_map(|package| package.change_items.clone())
@@ -99,18 +107,28 @@ mod tests {
     use super::{run_applied_summary, run_show};
     use crate::update_history::domain::commands::ShowCommand;
     use crate::update_history::domain::wire::{
-        ChangeCategory, ChangeItem, ChangeKind, PackageSource, PackageUpdate, Severity, UpdateEntry,
+        ChangeCategory, ChangeItem, ChangeKind, PackageSource, PackageSourceFilter, PackageUpdate,
+        Severity, UpdateEntry,
     };
     use crate::update_history::ports::{MockHistoryReportPort, MockHistoryStorePort};
 
     fn package(name: &str, declared: bool, category: ChangeCategory) -> PackageUpdate {
+        package_with_source(name, declared, category, PackageSource::Nix)
+    }
+
+    fn package_with_source(
+        name: &str,
+        declared: bool,
+        category: ChangeCategory,
+        source: PackageSource,
+    ) -> PackageUpdate {
         PackageUpdate {
             name: name.to_string(),
             old: Some("1.0".to_string()),
             new: Some("1.1".to_string()),
             change: ChangeKind::Upgraded,
             declared,
-            source: PackageSource::Nix,
+            source,
             notes_url: None,
             change_items: vec![ChangeItem {
                 category,
@@ -143,6 +161,7 @@ mod tests {
             limit: None,
             json: false,
             all,
+            source_filter: PackageSourceFilter::All,
         }
     }
 
@@ -153,6 +172,7 @@ mod tests {
             limit: None,
             json: false,
             all: false,
+            source_filter: PackageSourceFilter::All,
         }
     }
 
@@ -163,6 +183,7 @@ mod tests {
             limit: None,
             json: false,
             all: false,
+            source_filter: PackageSourceFilter::All,
         }
     }
 
@@ -366,6 +387,46 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn applied_summary_nix_only_filter_excludes_brew_packages() -> crate::Result<()> {
+        // finding 3368653947 退行固定: home 部分適用（`NixOnly`）の要約は brew cask を含めない。集約後に出所で
+        // 絞り、severity/overall も絞り込み後集合で再算出する（未適用 cask が件数・重要度に乗らない）。
+        let mut store = MockHistoryStorePort::new();
+        store.expect_read_entries().times(1).returning(|| {
+            Ok(vec![entry(vec![
+                package_with_source("neovim", true, ChangeCategory::Feature, PackageSource::Nix),
+                package_with_source(
+                    "firefox",
+                    true,
+                    ChangeCategory::Feature,
+                    PackageSource::Brew,
+                ),
+            ])])
+        });
+        let mut report = MockHistoryReportPort::new();
+        report
+            .expect_write_history()
+            .times(1)
+            .withf(|view, _| {
+                // nix の neovim だけ残り、brew cask の firefox は除外される。見出しも 1 アプリ。
+                view.packages.len() == 1
+                    && view.packages[0].name == "neovim"
+                    && view.overall == "1アプリ更新: ✨1"
+            })
+            .returning(|_, _| Ok(()));
+
+        let command = ShowCommand {
+            rev: None,
+            after_at: None,
+            limit: None,
+            json: false,
+            all: false,
+            source_filter: PackageSourceFilter::NixOnly,
+        };
+        run_applied_summary(command, &store, &report)?;
+        Ok(())
+    }
+
     fn command_after_at_none() -> ShowCommand {
         ShowCommand {
             rev: None,
@@ -373,6 +434,7 @@ mod tests {
             limit: None,
             json: false,
             all: false,
+            source_filter: PackageSourceFilter::All,
         }
     }
 }

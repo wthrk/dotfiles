@@ -61,6 +61,7 @@ mod tests {
     //! read（不存在で空）と write（決定論・往復保存）をテンポラリファイルで固定する。
 
     use super::TomlNotesSourceRegistryAdapter;
+    use crate::update_history::domain::diff::DeltaSource;
     use crate::update_history::domain::registry::{
         NotesOrigin, NotesSourceEntry, NotesSourceRegistry,
     };
@@ -102,13 +103,14 @@ mod tests {
 
         let mut registry = NotesSourceRegistry::default();
         registry.record(
-            "neovim".to_string(),
+            "neovim",
+            DeltaSource::NixEval,
             entry(
                 Some("https://github.com/neovim/neovim/releases"),
                 NotesOrigin::Mechanical,
             ),
         );
-        registry.record("zlib".to_string(), entry(None, NotesOrigin::None));
+        registry.record("zlib", DeltaSource::NixEval, entry(None, NotesOrigin::None));
 
         adapter.write_registry(&registry)?;
         let read = adapter.read_registry()?;

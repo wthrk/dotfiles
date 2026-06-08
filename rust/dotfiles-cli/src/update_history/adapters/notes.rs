@@ -66,6 +66,13 @@ use crate::update_history::support::safe_https_fetch;
 /// 本文末尾へこの sentinel に続けて `http_code` を付加し [`split_status`] で本文・status へ切り分ける。
 const RELEASES_META_SENTINEL: &str = "\n<<<DOTFILES_RELEASES_META>>>\n";
 
+/// Releases API 取得 curl の接続上限秒（`--connect-timeout`）。応答しない host で待ち続けないため
+/// （finding 3368730838）。support の安全 fetch と同程度に取る。
+const FETCH_CONNECT_TIMEOUT_SECS: &str = "10";
+/// Releases API 取得 curl の転送全体の上限秒（`--max-time`）。接続後に応答を返さない host で record job が
+/// 子プロセス完了待ちのまま job timeout（60分）まで止まるのを防ぐ（finding 3368730838）。
+const FETCH_MAX_TIME_SECS: &str = "30";
+
 /// GitHub Releases API のページサイズ（1 ページあたりの最大件数。API 上限は 100）。
 const RELEASES_PER_PAGE: u32 = 100;
 
@@ -103,7 +110,8 @@ impl ReleaseNotesAdapter {
     /// process-generic な安全 fetch primitive（[`safe_https_fetch`]、`-L` 無し・`--max-redirs 0`・`--proto =https`・
     /// 非空本文のみ `Some`）へ委譲する。redirect 不追従が host allowlist 契約の要であり、support 側が引数列で
     /// 固定する（`-L` で redirect を追従すると 3xx 経由で allowlist 外 host から本文を取得しうるが、`-L` 無しの
-    /// ため初期 host 以外を踏まず、body 無しの 3xx は空本文として `None` へ縮退する）。取得失敗・空本文は record を
+    /// ため初期 host 以外を踏まない。3xx でも本文自体は返り得る（サーバ実装次第）が、それは許可済み host からの
+    /// 本文であり、非空本文を `Some` として返すかは support 側の責務、内容は後段の機械バリデートで扱う）。取得失敗・空本文は record を
     /// 止めないよう `None` へ縮退する。adapter は host 検査と `RawReleaseNotes`（記録 URL 付与）への翻訳だけを担い、
     /// 安全 curl の引数組み立ては support に閉じる（複数 adapter での curl 引数二重実装を避ける）。
     fn fetch(url: &str) -> Result<Option<RawReleaseNotes>> {
@@ -113,6 +121,10 @@ impl ReleaseNotesAdapter {
         Ok(safe_https_fetch(url)?.map(|text| RawReleaseNotes {
             text,
             notes_url: url.to_string(),
+            // `fetch` は `url` の raw 本文をそのまま返すため、同じ `url` を再取得すれば同じ本文が返る
+            // （raw changelog ファイル・cask `.rb` 生ファイル）。よって `url` を再取得用 source として学習してよい
+            // （finding 3369076722）。
+            refetch_url: Some(url.to_string()),
         }))
     }
 
@@ -154,6 +166,10 @@ impl ReleaseNotesAdapter {
             Some(body) => Ok(Some(RawReleaseNotes {
                 text: body,
                 notes_url: notes_url.to_string(),
+                // 本文は Releases API JSON の `.body` から抽出したものであり、`notes_url`（表示用リリースページ）
+                // も `api_url`（JSON 応答）も raw 取得では同じ本文を返さない。再取得用 source を持たない
+                // （finding 3369076722）→ record は再利用 source を学習せず、次回も機械解決し直す。
+                refetch_url: None,
             })),
             None => Ok(None),
         }
@@ -302,6 +318,10 @@ impl ReleaseNotesAdapter {
         Ok(Some(RawReleaseNotes {
             text,
             notes_url: releases_page_url(owner, repo),
+            // 本文は `(old, new]` 範囲の複数リリース `.body` を連結したもので、単一 raw URL では再現できない
+            // （`notes_url` は表示用 HTML ページ）。再取得用 source を持たない（finding 3369076722）→ record は
+            // 再利用 source を学習せず、次回も Releases API range を解決し直す。
+            refetch_url: None,
         }))
     }
 }
@@ -329,7 +349,7 @@ fn join_release_bodies(mut bodies: Vec<(String, String)>) -> String {
 /// （[`safe_fetch_args`](crate::update_history::support::safe_fetch_args)）と同一で、加えて GitHub
 /// REST API が要求/推奨する `Accept: application/vnd.github+json` ヘッダを付ける（JSON 応答を固定する）。
 /// このヘッダは secret を含まないため argv に置いてよい（token は付けないため argv/ログに secret は現れない）。
-fn release_api_curl_args(url: &str) -> [OsString; 10] {
+fn release_api_curl_args(url: &str) -> [OsString; 14] {
     [
         OsString::from("--fail"),
         OsString::from("--silent"),
@@ -338,6 +358,11 @@ fn release_api_curl_args(url: &str) -> [OsString; 10] {
         OsString::from("0"),
         OsString::from("--proto"),
         OsString::from("=https"),
+        // 応答しない host で record job が止まらないよう接続/転送全体を有界化する（finding 3368730838）。
+        OsString::from("--connect-timeout"),
+        OsString::from(FETCH_CONNECT_TIMEOUT_SECS),
+        OsString::from("--max-time"),
+        OsString::from(FETCH_MAX_TIME_SECS),
         // GitHub REST API の JSON 応答を固定する（secret 非含有のため argv 可）。
         OsString::from("--header"),
         OsString::from("Accept: application/vnd.github+json"),
@@ -524,6 +549,11 @@ fn releases_list_curl_args(url: &str, with_auth: bool) -> Vec<OsString> {
         OsString::from("0"),
         OsString::from("--proto"),
         OsString::from("=https"),
+        // 応答しない host で record job が止まらないよう接続/転送全体を有界化する（finding 3368730838）。
+        OsString::from("--connect-timeout"),
+        OsString::from(FETCH_CONNECT_TIMEOUT_SECS),
+        OsString::from("--max-time"),
+        OsString::from(FETCH_MAX_TIME_SECS),
         // GitHub REST API の JSON 応答を固定する（secret 非含有のため argv 可）。
         OsString::from("--header"),
         OsString::from("Accept: application/vnd.github+json"),
@@ -657,6 +687,21 @@ mod tests {
     };
     use crate::update_history::domain::diff::DeltaSource;
     use crate::update_history::ports::NotesPort;
+
+    /// curl 引数列が接続上限（`--connect-timeout`）と転送全体上限（`--max-time`）を有界値で含むことを固定する
+    /// 共通アサーション（finding 3368730838 の退行固定）。各 flag の直後に空でない数値が続くことを検証する
+    /// （数値の正確値は定数側の責務、ここでは有界 timeout が「存在し数値で続く」ことだけを退行固定する）。
+    fn assert_bound_timeout_flags(args: &[String]) {
+        for flag in ["--connect-timeout", "--max-time"] {
+            let idx = args.iter().position(|arg| arg == flag);
+            assert!(idx.is_some(), "{flag} を指定する: {args:?}");
+            let value = idx.and_then(|i| args.get(i + 1)).map(String::as_str);
+            assert!(
+                value.is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())),
+                "{flag} の直後に有界な数値が続く: {args:?}"
+            );
+        }
+    }
 
     #[test]
     fn nix_without_repo_or_notes_source_degrades_to_none_without_network() -> crate::Result<()> {
@@ -863,6 +908,9 @@ mod tests {
             .position(|arg| arg == "--proto")
             .expect("--proto を指定する");
         assert_eq!(args.get(proto_idx + 1).map(String::as_str), Some("=https"));
+        // 退行固定（finding 3368730838）: Releases API 取得 curl も接続/転送全体を有界化し、応答しない host で
+        // record job が子プロセス完了待ちのまま timeout まで止まらないようにする。
+        assert_bound_timeout_flags(&args);
         let header_idx = args
             .iter()
             .position(|arg| arg == "--header")
@@ -1000,6 +1048,8 @@ mod tests {
         assert_eq!(args.get(mr + 1).map(String::as_str), Some("0"));
         let proto = args.iter().position(|a| a == "--proto").expect("--proto");
         assert_eq!(args.get(proto + 1).map(String::as_str), Some("=https"));
+        // 退行固定（finding 3368730838）: auth 経路でも接続/転送全体を有界化する。
+        assert_bound_timeout_flags(&args);
         // 取得対象 URL が末尾に乗る。
         assert_eq!(
             args.last().map(String::as_str),
@@ -1020,6 +1070,8 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--fail"));
         // 代わりに `--write-out` で本文末尾へ status を付加して読む。
         assert!(args.iter().any(|a| a == "--write-out"));
+        // 退行固定（finding 3368730838）: 非 auth 経路でも接続/転送全体を有界化する。
+        assert_bound_timeout_flags(&args);
     }
 
     #[test]

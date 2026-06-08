@@ -73,12 +73,14 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use std::collections::BTreeSet;
+
 use crate::Result;
 use crate::process::run_capture_with_stdin;
-use crate::update_history::domain::validate::allowed_fetch_hosts;
+use crate::update_history::domain::validate::{allowed_fetch_hosts, fetch_host_allowed};
 use crate::update_history::domain::wire::{ChangeCategory, ChangeItem};
 use crate::update_history::ports::{ChangeExtractPort, ExtractOutcome, ExtractRequest};
-use crate::update_history::support::fetch_allowed_note;
+use crate::update_history::support::safe_https_fetch;
 
 /// GitHub Models 推論エンドポイント（OpenAI 互換チャット補完）。
 const GITHUB_MODELS_ENDPOINT: &str = "https://models.github.ai/inference/chat/completions";
@@ -132,6 +134,14 @@ const BACKOFF_BASE: Duration = Duration::from_secs(2);
 /// 指数バックオフの 1 回あたり上限。サーバが極端な `Retry-After` を返した場合も含め、1 回の待機がこれを超えない
 /// ようにして 1 リクエストの総待機が読めなくなる（timeout を食い潰す）のを防ぐ。
 const MAX_BACKOFF: Duration = Duration::from_secs(20);
+
+/// GitHub Models POST curl の接続上限秒（`--connect-timeout`）。endpoint が接続を受けない場合に有界で打ち切る。
+const POST_CONNECT_TIMEOUT_SECS: &str = "10";
+/// GitHub Models POST curl の転送全体の上限秒（`--max-time`）。endpoint が接続後に応答を返さないケースで、
+/// 1 リクエストが無限に hang して抽出フェーズ予算（[`EXTRACT_BUDGET`]）の deadline 判定（リクエスト間でのみ
+/// 確認）も効かず record job timeout（60分）まで止まるのを防ぐ（finding 3368730838 と同種の per-request 有界化）。
+/// 429 リトライ待機（最大 ~80s）とは別の、curl 1 回の転送時間上限である。
+const POST_MAX_TIME_SECS: &str = "60";
 
 /// パッケージ間の呼び出しに敷く最小間隔。per-minute レート上限内へ収めるためのペーシング基準。
 ///
@@ -436,28 +446,13 @@ impl GithubModelsExtractAdapter {
     /// ヘッダのみで、リクエストの Authorization ヘッダは `%{header_json}` の対象外）。返り値 `Err` は curl プロセス
     /// 自体の失敗（spawn 失敗・ネットワーク不達等で非 0 終了）に限る。
     fn post(token: &str, body: &str) -> Result<(u16, String, String)> {
-        let args = [
-            OsString::from("--config"),
-            OsString::from("-"),
-            OsString::from("--silent"),
-            OsString::from("--show-error"),
-            OsString::from("--proto"),
-            OsString::from("=https"),
-            OsString::from("-X"),
-            OsString::from("POST"),
-            OsString::from("-H"),
-            OsString::from("Content-Type: application/json"),
-            // 本文末尾へ sentinel + status + レスポンスヘッダ JSON を付加する。token は含まれない
-            // （%{http_code} は数値、%{header_json} は **レスポンス**ヘッダのみでリクエスト Authorization は出ない）。
-            OsString::from("--write-out"),
-            OsString::from(format!(
-                "{CURL_META_SENTINEL}%{{http_code}}\n%{{header_json}}"
-            )),
-            OsString::from(GITHUB_MODELS_ENDPOINT),
-        ];
         // token（認証ヘッダ）と本文（data）の両方を stdin の curl 設定へ載せ、argv には出さない（token 非露出 +
-        // 大本文での E2BIG 回避）。
-        let raw = run_capture_with_stdin("curl", args, request_config(token, body).as_bytes())?;
+        // 大本文での E2BIG 回避）。argv（[`post_curl_args`]）は本文に依存しない固定オプションのみ。
+        let raw = run_capture_with_stdin(
+            "curl",
+            post_curl_args(),
+            request_config(token, body).as_bytes(),
+        )?;
         Ok(split_meta(&raw))
     }
 
@@ -515,6 +510,43 @@ impl GithubModelsExtractAdapter {
         };
         parse_change_items(&choice.message.content)
     }
+}
+
+/// GitHub Models POST の curl 引数列（本文・token に依存しない固定オプション）を組み立てる純粋関数。
+///
+/// token と本文は argv に出さず stdin の `--config -`（[`request_config`]）へ閉じるため、この argv は本文長に
+/// 依存しない固定列である（大ノートでも E2BIG にならず、token も argv へ現れない）。`--proto =https` で https
+/// 限定し、`--connect-timeout`/`--max-time` で接続・転送全体を有界化する（応答しない endpoint で 1 リクエストが
+/// hang して record job timeout（60分）まで止まるのを防ぐ。finding 3368730838 と同種。抽出フェーズ予算の deadline
+/// はリクエスト間でしか効かないため per-request の curl 上限が要る）。`--fail` は付けず（HTTP status を握り潰さない）、
+/// `--write-out` で本文末尾へ sentinel + `%{http_code}` + `%{header_json}` を付ける（status/Retry-After 読み取り用、
+/// token は含まれない）。引数列をテストで固定して timeout 退行を防ぐ。
+fn post_curl_args() -> [OsString; 17] {
+    [
+        OsString::from("--config"),
+        OsString::from("-"),
+        OsString::from("--silent"),
+        OsString::from("--show-error"),
+        OsString::from("--proto"),
+        OsString::from("=https"),
+        // 接続/転送全体を有界化し、応答しない endpoint で 1 リクエストが hang して record job timeout まで
+        // 止まるのを防ぐ（finding 3368730838 と同種。予算 deadline はリクエスト間でのみ効くため per-request 上限が要る）。
+        OsString::from("--connect-timeout"),
+        OsString::from(POST_CONNECT_TIMEOUT_SECS),
+        OsString::from("--max-time"),
+        OsString::from(POST_MAX_TIME_SECS),
+        OsString::from("-X"),
+        OsString::from("POST"),
+        OsString::from("-H"),
+        OsString::from("Content-Type: application/json"),
+        // 本文末尾へ sentinel + status + レスポンスヘッダ JSON を付加する。token は含まれない
+        // （%{http_code} は数値、%{header_json} は **レスポンス**ヘッダのみでリクエスト Authorization は出ない）。
+        OsString::from("--write-out"),
+        OsString::from(format!(
+            "{CURL_META_SENTINEL}%{{http_code}}\n%{{header_json}}"
+        )),
+        OsString::from(GITHUB_MODELS_ENDPOINT),
+    ]
 }
 
 /// curl の `--config -`（stdin）へ流す設定全体（Authorization ヘッダ + リクエスト本文）を組み立てる。
@@ -674,6 +706,25 @@ fn parse_turn(response: &str) -> (Vec<ToolCall>, Option<String>) {
         Some(choice) => (choice.message.tool_calls, choice.finish_reason),
         None => (Vec::new(), None),
     }
+}
+
+/// 許可 host 集合に属する https URL だけを安全 curl で取得する（SSRF 検査 + 安全 fetch の合成）。
+///
+/// AI エージェント（tool-use ループ）が要求した `fetch_url` の URL を取得する前に、host 集合の所属判定を
+/// domain（[`fetch_host_allowed`]）へ、実際の安全 curl 取得を support（[`safe_https_fetch`]、redirect 不追従・
+/// https 限定・有界 timeout/サイズ）へ委譲して組み立てる。host が集合外、または https 以外なら **fetch せず**
+/// `Ok(None)`（ループは「not allowed」を AI へ返す）。集合内 https のみ実際に curl を起動する。`allowed_hosts` は
+/// 呼び出し側が eval メタ（信頼境界内）のヒント host だけから組み立てたパッケージごとの許可 host 集合で、
+/// ノート本文（信頼境界外）から拾った URL でもこの機械判定を必ず通すことで許可外 host への横滑りを塞ぐ。
+/// 取得失敗・空本文も `Ok(None)`。
+///
+/// この合成は **adapter の責務**である（host 集合判定=domain・安全 curl=support という規定済み境界の組み立てを
+/// 呼び出し側 adapter で行い、support へ domain 依存を持ち込まない）。
+fn fetch_allowed_note(url: &str, allowed_hosts: &BTreeSet<String>) -> Result<Option<String>> {
+    if !fetch_host_allowed(url, allowed_hosts) {
+        return Ok(None);
+    }
+    safe_https_fetch(url)
 }
 
 /// tool_call の `arguments`（JSON 文字列 `{"url": "..."}`）から URL を取り出す純粋関数。
@@ -1164,9 +1215,9 @@ mod tests {
         BACKOFF_BASE, EXTRACT_BUDGET, GithubModelsExtractAdapter, MAX_BACKOFF, MAX_NOTES_CHARS,
         MAX_RATE_LIMIT_RETRIES, MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_ITERATIONS, MIN_REQUEST_INTERVAL,
         TRUNCATION_MARKER, agent_loop, agent_system_prompt, agent_user_prompt, backoff_delay,
-        body_snippet, has_sufficient_seed, request_config, response_format_schema,
-        retry_after_seconds, retry_loop, split_meta, summarize_only, summarize_system_prompt,
-        summarize_user_prompt, tool_call_url, truncate_notes,
+        body_snippet, fetch_allowed_note, has_sufficient_seed, post_curl_args, request_config,
+        response_format_schema, retry_after_seconds, retry_loop, split_meta, summarize_only,
+        summarize_system_prompt, summarize_user_prompt, tool_call_url, truncate_notes,
     };
     use crate::update_history::domain::validate::allowed_fetch_hosts;
     use crate::update_history::domain::wire::ChangeCategory;
@@ -1186,6 +1237,7 @@ mod tests {
             seed_notes: seed.map(|text| RawReleaseNotes {
                 text: text.to_string(),
                 notes_url: format!("https://github.com/{}/releases", repo.unwrap_or("o/r")),
+                refetch_url: None,
             }),
         }
     }
@@ -1223,25 +1275,50 @@ mod tests {
         // 大本文は stdin 設定側に載る（argv ではなく stdin で渡るため argv 長に依存しない）。
         assert!(config.len() > 300_000, "大本文は stdin 設定へ載る");
         assert!(config.contains("data = \""), "{}", &config[..80]);
-        // post の固定 argv には本文が現れない（本文は stdin の data= に閉じる）。argv は --config - と固定
-        // オプションだけで、本文長に依存しない。
-        let post_argv = [
-            "--config",
-            "-",
-            "--silent",
-            "--show-error",
-            "--proto",
-            "=https",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "--write-out",
-            super::GITHUB_MODELS_ENDPOINT,
-        ];
+        // post の固定 argv（実 builder 出力）には本文が現れない（本文は stdin の data= に閉じる）。argv は
+        // --config - と固定オプションだけで、本文長に依存しない。手書きリテラルでなく実 [`post_curl_args`] を検証する。
+        let post_argv: Vec<String> = post_curl_args()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
         assert!(
             post_argv.iter().all(|arg| !arg.contains("aaaa")),
-            "本文（巨大ノート）は argv に現れない"
+            "本文（巨大ノート）は argv に現れない: {post_argv:?}"
+        );
+    }
+
+    #[test]
+    fn post_curl_args_bound_time_and_https_without_secret() {
+        // 退行固定（finding 3368730838）: GitHub Models POST の実 argv builder が接続上限（`--connect-timeout`）と
+        // 転送全体上限（`--max-time`）を有界値で含み、応答しない endpoint で 1 リクエストが record job timeout まで
+        // hang しないことを固定する。手書きリテラルでなく実 [`post_curl_args`] 出力を検証する（hermetic: network 非依存）。
+        let args: Vec<String> = post_curl_args()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        // 各 timeout flag の直後に空でない有界な数値が続くこと（数値の正確値は定数側の責務）。
+        for flag in ["--connect-timeout", "--max-time"] {
+            let idx = args.iter().position(|arg| arg == flag);
+            assert!(idx.is_some(), "{flag} を指定する: {args:?}");
+            let value = idx.and_then(|i| args.get(i + 1)).map(String::as_str);
+            assert!(
+                value.is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())),
+                "{flag} の直後に有界な数値が続く: {args:?}"
+            );
+        }
+        // https 限定（scheme 制限）を維持する。
+        let proto = args
+            .iter()
+            .position(|arg| arg == "--proto")
+            .expect("--proto");
+        assert_eq!(args.get(proto + 1).map(String::as_str), Some("=https"));
+        // token・本文は argv に現れない（stdin の `--config -` に閉じる）。
+        assert!(args.windows(2).any(|w| w[0] == "--config" && w[1] == "-"));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains("Bearer") || a.contains("Authorization")),
+            "argv に Authorization/token を載せてはならない: {args:?}"
         );
     }
 
@@ -1818,6 +1895,7 @@ mod tests {
             seed_notes: Some(RawReleaseNotes {
                 text: long_notes,
                 notes_url: "https://github.com/o/r/releases".to_string(),
+                refetch_url: None,
             }),
         };
         // 両経路の user prompt とも seed を載せる前に truncate する（HTTP 413 回避は経路に依らない）。
@@ -1981,6 +2059,20 @@ mod tests {
             (MAX_TOOL_ITERATIONS + 1) as usize,
             "tool 反復は上限で打ち切り、最終ターンを 1 回行う"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fetch_allowed_note_skips_disallowed_host_without_running_curl() -> crate::Result<()> {
+        // 退行固定（SSRF, finding 3369266055）: host 集合判定（domain）と安全 fetch（support）の合成は本 adapter の
+        // 責務であり、許可 host 集合外の URL は domain 判定で弾かれ curl を一切起動せず None を返す（hermetic:
+        // network 非依存）。許可 host 集合は eval メタ由来のヒントだけから組み立てる。support から domain 依存を
+        // 外したため、合成関数の回帰テストは adapter 側で持つ。
+        let allowed = allowed_fetch_hosts(Some("neovim/neovim"), None, None);
+        // ノート本文由来の許可外 host は fetch せず None（curl を起動しない）。
+        assert!(fetch_allowed_note("https://evil.example/x", &allowed)?.is_none());
+        // https 以外も host 判定前に弾かれる（curl を起動しない）。
+        assert!(fetch_allowed_note("http://github.com/a/b", &allowed)?.is_none());
         Ok(())
     }
 

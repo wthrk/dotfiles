@@ -22,6 +22,21 @@ pub(crate) enum DeltaSource {
     BrewTap,
 }
 
+impl DeltaSource {
+    /// 出所の安定キー（provenance レジストリのキー名前空間に使う）。
+    ///
+    /// nix 由来と brew 由来は同名でも別パッケージ（例: nix の `firefox` と cask の `firefox`）であり、
+    /// ノート取得元 provenance を name だけで突合すると別出所の取得元を取り違えて再利用・記録してしまう
+    /// （finding 3369076719）。レジストリのキーへ出所を含めるための安定キーをここで固定する。`Debug` 表現でなく
+    /// この値を使うことで、将来 variant 名がリファクタで変わってもキーは不変になる（決定論の根拠）。
+    pub(crate) fn as_stable_key(self) -> &'static str {
+        match self {
+            DeltaSource::NixEval => "nix",
+            DeltaSource::BrewTap => "brew",
+        }
+    }
+}
+
 /// `nix eval` が宣言パッケージごとに返す評価時属性（version・GitHub owner/repo・changelog URL）。
 ///
 /// `version` は `pname`/`version`（無ければ `parseDrvName` フォールバック、版が取れなければ空文字）。

@@ -247,6 +247,16 @@ impl SwitchOptions {
         self.dry_run
     }
 
+    /// 適用 target が home 部分適用（`home`）かを返す（`darwin`/`all`/省略では `false`）。
+    ///
+    /// `update` の適用後要約を実際に適用した target に対応する出所だけへ絞るために使う（finding 3368653947）。
+    /// `home` 部分適用は home-manager（nix）だけを switch するため、`update` 側はこの判定で要約を nix 出所だけへ
+    /// 絞り、未適用の brew cask（darwin 適用対象）を通知しない。`darwin`（systemPackages + cask を適用）と
+    /// 全体適用（target 省略 = `all`）は全出所を要約するため `false`。`matches!` で `Home` だけを真にする。
+    pub(crate) fn is_home_only_apply(&self) -> bool {
+        matches!(self.target(), SwitchTarget::Home)
+    }
+
     /// Darwin 適用で `sudo` を前置するか。`--no-sudo` か env `DOTFILES_DARWIN_REBUILD_SUDO=0` で省略する。
     fn use_sudo(&self) -> bool {
         let env_value = std::env::var(DARWIN_REBUILD_SUDO_ENV).ok();

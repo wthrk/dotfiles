@@ -85,9 +85,15 @@ mod tests {
 
     /// テスト一時ファイルへ JSON を書き、その path を返す。書込み失敗は `Result` で伝播する
     /// （`unwrap`/`expect` 禁止）。
+    ///
+    /// ファイル名に `std::process::id()` を含め、同一 runner 上で並列テストや他プロセスの再実行が重なっても
+    /// 衝突・取り違えを起こさないようにする（toml_store の temp 命名と同じ一意化方針）。
     fn write_temp(name: &str, content: &str) -> Result<PathBuf> {
         let mut path = std::env::temp_dir();
-        path.push(format!("dotfiles-nix-eval-test-{name}.json"));
+        path.push(format!(
+            "dotfiles-nix-eval-test-{}-{name}.json",
+            std::process::id()
+        ));
         std::fs::write(&path, content)?;
         Ok(path)
     }

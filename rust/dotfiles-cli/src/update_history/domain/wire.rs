@@ -71,6 +71,45 @@ impl PackageSource {
     }
 }
 
+/// 適用後要約を「実際に適用した target に対応する出所」だけへ絞る domain policy。
+///
+/// `dotfiles update home`（zsh catch-up / daemon の home step）は home-manager だけを switch するが、CI 履歴は
+/// `home.packages`（nix）に加えて `environment.systemPackages`（nix）と brew cask（brew）も含む。home だけ適用
+/// した直後に全体履歴を要約すると、未適用の cask（Firefox 等）まで適用済みのように `pending-summary` へ出る
+/// （finding 3368653947）。これを避け、適用した target に対応する出所だけを残す。
+///
+/// 出所判別の粒度は wire の [`PackageSource`]（nix / brew）に限られる。`home` 適用は home-manager の nix
+/// パッケージなので **brew cask を除外**して nix 出所だけを残す（`environment.systemPackages` も nix 出所のため
+/// 同列に残るが、cask の誤通知という finding の中核は塞ぐ。nix の home/system 分離は wire スキーマに無く本 filter の
+/// 対象外）。`darwin` 適用は systemPackages（nix）+ cask（brew）の双方を適用するため全出所を残す。target 省略
+/// （全体適用）も全出所を残す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageSourceFilter {
+    /// 全出所を残す（全体適用 / darwin 適用）。
+    All,
+    /// nix 出所だけ残す（home 適用。brew cask を除外して未適用 cask の誤通知を防ぐ）。
+    NixOnly,
+}
+
+impl Default for PackageSourceFilter {
+    /// 既定は全出所（利用者 `show` や全体適用の要約は絞らない）。
+    fn default() -> Self {
+        PackageSourceFilter::All
+    }
+}
+
+impl PackageSourceFilter {
+    /// この filter が指定 [`PackageSource`] の package を要約へ含めてよいかを返す。
+    ///
+    /// `All` は常に真。`NixOnly` は nix 出所だけ真（brew は偽）。集約後の package 絞り込みで使う。
+    pub(crate) fn includes(&self, source: PackageSource) -> bool {
+        match self {
+            PackageSourceFilter::All => true,
+            PackageSourceFilter::NixOnly => matches!(source, PackageSource::Nix),
+        }
+    }
+}
+
 /// 1 アプリ/パッケージの version 差分と構造化変更リスト（TOML `[[update.package]]` に対応）。
 ///
 /// `old` / `new` は `added` / `removed` で片側が `None` になりうるため `Option` で保持する。
@@ -304,6 +343,20 @@ text = \"新機能\"
         let parsed: Wrap = toml::from_str(&rendered)?;
         assert_eq!(parsed.source, PackageSource::Brew);
         Ok(())
+    }
+
+    #[test]
+    fn package_source_filter_includes_by_target_source() {
+        // finding 3368653947: NixOnly（home 部分適用）は nix を含み brew を除外する。All は両方含む。
+        assert!(PackageSourceFilter::All.includes(PackageSource::Nix));
+        assert!(PackageSourceFilter::All.includes(PackageSource::Brew));
+        assert!(PackageSourceFilter::NixOnly.includes(PackageSource::Nix));
+        assert!(
+            !PackageSourceFilter::NixOnly.includes(PackageSource::Brew),
+            "home 部分適用は brew cask を除外する"
+        );
+        // 既定は All（利用者 show / 全体適用は絞らない）。
+        assert_eq!(PackageSourceFilter::default(), PackageSourceFilter::All);
     }
 
     #[test]

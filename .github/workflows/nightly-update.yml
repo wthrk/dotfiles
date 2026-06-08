@@ -228,6 +228,20 @@ jobs:
           # 宣言 cask 名を homebrew.nix の casks 配列から抽出（"name" 行）。
           casks="$(sed -n '/casks = \[/,/\];/p' nix/modules/homebrew.nix \
             | grep -oE '"[^"]+"' | tr -d '"')"
+          # 自己更新 cask（`auto_updates true`）を版差分から除外する。nix-darwin の `onActivation.upgrade`
+          # は `--greedy` を渡さないため `brew upgrade` はこれらを**無人 upgrade の対象外**にする（homebrew.nix
+          # の onActivation コメントと README「Homebrew cask の固定状況」参照）。tap rev で version だけが進んでも
+          # auto-update が実際に適用しないので、適用後要約・pending-summary に「未適用のアプリ更新」を出さないため
+          # 履歴差分から落とす。除外集合は homebrew.nix の `auto_updates true` cask（bitwarden / codex-app /
+          # ghostty）に一致させ、ここを変える場合は homebrew.nix の onActivation コメントと同期させること。
+          auto_update_casks="bitwarden codex-app ghostty"
+          is_auto_update_cask() {
+            # $1=cask 名。auto_updates 集合に属するなら 0（=除外する）。
+            case " $auto_update_casks " in
+              *" $1 "*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
           cask_version() {
             # $1=rev $2=cask 名。cask tap の Casks/<subdir>/<name>.rb から version "..." を読む。
             # subdir は通常 name 先頭 1 文字（letter）だが、font cask（font- 始まり）は letter でなく固定
@@ -243,6 +257,10 @@ jobs:
               | grep -oE 'version "[^"]+"' | head -n1 | sed -E 's/version "([^"]+)"/\1/' || true
           }
           for name in $casks; do
+            # 自己更新 cask は brew upgrade が無人適用しないため、tap 上で version が進んでも更新履歴へ出さない。
+            if is_auto_update_cask "$name"; then
+              continue
+            fi
             old_v="$(cask_version "$CASK_REV_OLD" "$name")"
             new_v="$(cask_version "$CASK_REV_NEW" "$name")"
             # 両 rev とも取得できないものは差分対象にしない（縮退）。
@@ -302,6 +320,12 @@ jobs:
             --notes-sources "$notes_sources" \
             --out "$out"
 
+      # 全 input が既に最新で nix/brew 差分も空の「無更新の夜」は run_record が TOML を書かず（append 条件
+      # `rev_advanced || !materials.is_empty()`）、checkout 由来の notes-sources.toml も無ければ
+      # docs/update-history/ のアップロード対象が 0 件になりうる。`if-no-files-found: error` だと無更新夜が
+      # 失敗扱いになり clean no-op にならないため、`warn` で安全側に倒す（0 件でも record job を赤くしない）。
+      # 後段 open-pr は download-artifact を `continue-on-error` で受け、`git add docs/update-history` の差分が
+      # 無ければ `has_changes=false` で no-op（PR 起票せず）になるため、無更新夜は全体として clean no-op になる。
       - name: 履歴 TOML を artifact 化
         uses: actions/upload-artifact@v4
         with:
@@ -309,7 +333,7 @@ jobs:
           retention-days: 1
           path: |
             docs/update-history/
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # 3) PR 起票 + インラインセキュリティチェック + 実 static checks + status 投稿 + auto-merge。
   #    GITHUB_TOKEN で完結する（GitHub App / secret は使わない）。GITHUB_TOKEN 起票 PR では
@@ -382,8 +406,13 @@ jobs:
         with:
           name: bump-state
 
+      # 無更新の夜は record job が history-record artifact を作らない（upload が 0 件で warn 縮退）。その場合
+      # download が「artifact 不在」で失敗するが、無更新夜を clean no-op にするため失敗を許容する
+      # （continue-on-error）。artifact が無ければ docs/update-history は checkout 状態のままで、後段の
+      # `git add docs/update-history` が差分無し→`has_changes=false`→PR 起票せず no-op になる（fail-safe）。
       - name: 履歴 TOML を取得
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: history-record
           path: docs/update-history

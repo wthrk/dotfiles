@@ -71,6 +71,62 @@ fn nix_derive_repo(shell: &Shell) -> Result<()> {
         "非 github は空文字へ縮退する",
     )?;
 
+    // notes_source（changelog/homepage）の文字列正規化（finding 3368618922 / 3368677387）:
+    // nixpkgs の `meta.changelog` / `meta.homepage` は文字列だけでなく複数 URL の list になり得る。
+    // list/非文字列をそのまま JSON 化すると record 側の `NixPackage.notes_source: String` deserialize が
+    // 失敗して record が落ちるため、`asStr` で **非文字列は空文字へ正規化**し、JSON スキーマを常に文字列に保つ。
+    assert_str_field_of(
+        shell,
+        &derive,
+        "changelogOf",
+        "{ meta.changelog = [ \"https://github.com/o/r/blob/main/A.md\" \
+                              \"https://github.com/o/r/blob/main/B.md\" ]; }",
+        "",
+        "changelog が list なら空文字へ正規化する（配列を JSON へ出さない）",
+    )?;
+    assert_str_field_of(
+        shell,
+        &derive,
+        "changelogOf",
+        "{ meta.changelog = \"https://github.com/o/r/blob/main/CHANGELOG.md\"; }",
+        "https://github.com/o/r/blob/main/CHANGELOG.md",
+        "changelog が文字列ならそのまま通す",
+    )?;
+    assert_str_field_of(
+        shell,
+        &derive,
+        "homepageOf",
+        "{ meta.homepage = [ \"https://a.example\" \"https://b.example\" ]; }",
+        "",
+        "homepage が list なら空文字へ正規化する（配列を JSON へ出さない）",
+    )?;
+
+    Ok(())
+}
+
+/// fixture package 1 件へ `derive-repo.nix` の文字列フィールド導出関数（`changelogOf`/`homepageOf`）を適用し、
+/// 期待文字列（list/非文字列なら空文字へ正規化）を確かめる。
+///
+/// `meta.changelog`/`meta.homepage` が list でも常に文字列を返すこと（JSON スキーマ安定 = record の
+/// deserialize 不落）を fixture 4 分岐で固定する。`repoOf` と同じく inline した `nix eval --expr` の純評価で、
+/// network・実構成 eval を伴わない。
+fn assert_str_field_of(
+    shell: &Shell,
+    derive: &str,
+    func: &str,
+    fixture: &str,
+    expected: &str,
+    context: &str,
+) -> Result<()> {
+    let expr = format!("({derive}).{func} ({fixture})");
+    let actual = match cmd!(shell, "nix eval --raw --expr {expr}").read() {
+        Ok(value) => value,
+        Err(error) => bail!("derive-repo.nix {func} eval failed ({context}): {error}"),
+    };
+    ensure!(
+        actual == expected,
+        "derive-repo.nix {func} mismatch ({context}): expected {expected:?}, got {actual:?}"
+    );
     Ok(())
 }
 
@@ -141,6 +197,50 @@ fn shell_scripts(shell: &Shell) -> Result<()> {
 fn github_actions(shell: &Shell) -> Result<()> {
     step("GitHub Actions workflows");
     cmd!(shell, "actionlint").run()?;
+    nightly_no_update_is_clean_no_op(shell)?;
+    Ok(())
+}
+
+/// nightly-update.yml の「無更新の夜が clean no-op になる」不変条件を hermetic に固定する（finding 3368677388）。
+///
+/// 全 input が既に最新で nix/brew 差分も空の夜は run_record が更新履歴 TOML を書かず、record job の
+/// history-record アップロード対象が 0 件になりうる。このとき record の upload-artifact が
+/// `if-no-files-found: error` だと無更新夜が失敗扱いになり、clean no-op（PR 起票せず success）にならない。
+/// アップロードを安全側（`warn`/`ignore`）にし、後段 open-pr の history-record download を
+/// `continue-on-error` で受けて artifact 不在を許容することで、無更新夜が全体として no-op になることを
+/// workflow テキスト上で固定する（network/nix 非依存・ファイル内容の静的検査のみ）。
+fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
+    step("nightly-update no-op (history upload not fail-on-empty)");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+
+    // history-record アップロードブロックを切り出し、その `if-no-files-found` が `error` でないことを確認する
+    // （無更新夜の 0 件アップロードを失敗扱いにしない）。安全側の `warn`/`ignore` のいずれかを要求する。
+    let upload = workflow
+        .split("name: history-record")
+        .nth(1)
+        .unwrap_or_default();
+    ensure!(
+        !upload.contains("if-no-files-found: error"),
+        "record の history-record アップロードは無更新夜（0 件）を失敗扱いにしないため \
+         `if-no-files-found: error` を使ってはならない（warn/ignore で clean no-op にする）"
+    );
+    ensure!(
+        upload.contains("if-no-files-found: warn") || upload.contains("if-no-files-found: ignore"),
+        "record の history-record アップロードは `if-no-files-found: warn`/`ignore` で 0 件を許容すること"
+    );
+
+    // open-pr の history-record download は、無更新夜で artifact が作られない場合に job を赤くしないため
+    // `continue-on-error: true` を伴うこと（download 失敗を許容して no-op フローへ倒す）。
+    let download = workflow
+        .split("name: 履歴 TOML を取得")
+        .nth(1)
+        .unwrap_or_default();
+    let download_step = download.split("- name:").next().unwrap_or_default();
+    ensure!(
+        download_step.contains("continue-on-error: true"),
+        "open-pr の history-record download は無更新夜の artifact 不在を許容するため \
+         `continue-on-error: true` を伴うこと（PR 起票せず no-op へ倒す）"
+    );
     Ok(())
 }
 

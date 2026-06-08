@@ -18,6 +18,16 @@
 #   rev を確定する。darwin が失敗すると（`set -e`）確定ステップへ到達せず、マーカーは前回値のまま残るので、
 #   次回起動で再適用して収束する（darwin 未収束のまま「適用済み」と誤記録して skip する drift を防ぐ）。
 #
+# defer→commit のサイクル固定（rev マーカー token。finding 3368519975）:
+#   home の `--defer-rev-marker` 終了後に user 側 `update.lock` を解放してから root の darwin を別プロセスで
+#   実行する間、別の login catch-up が新サイクルを始めて `deferred-rev` を上書きでき、commit が root の適用した
+#   pin ではなく後続サイクルの pin を確定して以後の darwin 適用を skip し得る（darwin 実行中は lock 解放済みの
+#   ため排他で防げない）。これを防ぐため、wrapper は defer 直前に 1 サイクル分の token（`rev_marker_token`）を
+#   生成し、home defer ステップと commit ステップへ **同値** を `--rev-marker-token` で渡す。CLI は defer 時に
+#   deferred 値と同じ瞬間にこの token を `deferred-token` へ控え、commit 時に `deferred-token` が渡された token と
+#   一致する時だけ `deferred-rev` を確定する。後続サイクルが deferred 値を上書きすれば token も変わるため、root
+#   のサイクルの commit は不一致を検知して未適用 pin を確定しない（次回サイクルで再適用して収束）。
+#
 # 無更新日の darwin-rebuild 抑止（F3）と home 適用成功の確認:
 #   home ステップが実際に switch したかを **CLI の `deferred-rev` marker の有無**で判別し、適用が無い日は
 #   darwin-rebuild を起動しない。CLI は適用サイクルごとに `deferred-rev` をクリアし、`--defer-rev-marker` の
@@ -142,6 +152,16 @@ let
     deferred_marker="$state_dir/deferred-rev"
     /usr/bin/sudo -u ${lib.escapeShellArg user} /bin/rm -f "$deferred_marker"
 
+    # この darwin 実行サイクルを識別する **rev マーカー token** を生成する（finding 3368519975）。home defer
+    # ステップへ `--rev-marker-token` で渡し、CLI は deferred 値と同じ瞬間にこの token を `deferred-token` へ
+    # 控える。同じ token を commit ステップへも渡し、CLI は `deferred-token` がこの token と一致する時だけ
+    # `deferred-rev` を確定する。home 適用後に user 側 `update.lock` を解放してから root の darwin を実行する間に
+    # 別の login catch-up が新サイクルを始めて `deferred-rev`/`deferred-token` を上書きしても、token 不一致で
+    # commit が **root が適用していない後続サイクルの pin を確定しない**（darwin 実行中は lock 解放済みのため
+    # 排他では防げない競合を token で防ぐ）。値は衝突しなければよいので pid + epoch 秒で構成する（同一マシン内の
+    # 直近サイクルと重複しない単調・一意な識別子）。
+    rev_marker_token="$$-$(/bin/date -u +%s)"
+
     # ② 適用要否判定・home-manager 適用・要約書込みをユーザ権限で実行する。非 tty なので要約は
     #    pending-summary へ書かれる。darwin は別ステップ（root）で適用するため、ここでは home のみを対象に
     #    する（home-manager を root で走らせない）。`--defer-rev-marker` で `last-applied-rev` はまだ書かず、
@@ -149,7 +169,7 @@ let
     #    ユーザの `~/.config/dotfiles` を明示し、確実にユーザのローカル flake を指す。sudo は env をリセットし
     #    PATH を secure_path で上書きしうるため、`$user_env`（PATH と解決済み XDG_STATE_HOME を渡す）を前置する。
     /usr/bin/sudo -u ${lib.escapeShellArg user} $user_env ${dotfilesBin} update home \
-      --config-dir "$config_dir" --defer-rev-marker
+      --config-dir "$config_dir" --defer-rev-marker --rev-marker-token "$rev_marker_token"
 
     # home が実際に switch したか（=`deferred-rev` marker が書かれたか）で darwin / commit へ進むかを決める。
     # marker が無ければ home は no-op（適用済み pin と同一）か lock 競合 skip であり、darwin-rebuild を起動する
@@ -173,7 +193,7 @@ let
     #    pin が必ず一致する。マーカーはユーザ所有で書くため、確定もユーザ権限で行う。`--config-dir` で読む pin
     #    を②と一致させ、`$user_env` で同一 state dir（XDG）を CLI へ伝える。
     /usr/bin/sudo -u ${lib.escapeShellArg user} $user_env ${dotfilesBin} update home \
-      --config-dir "$config_dir" --commit-rev-marker
+      --config-dir "$config_dir" --commit-rev-marker --rev-marker-token "$rev_marker_token"
   '';
 in
 {
