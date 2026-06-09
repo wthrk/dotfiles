@@ -1,0 +1,474 @@
+//! nix eval 由来の name→version マップ比較と、brew tap rev 版差分の表現型・純粋規則。
+//!
+//! 外部 I/O を持たない純粋な比較とマージ、および version 比較/範囲判定の domain rule を置く。nix eval
+//! プロセス実行・eval JSON 取得・brew 版差分ファイル読み取りは [`super::notes`] の取得関数が担い、本 module は
+//! 取得済み値を version 差分モデルへ翻訳する規則だけを固定する。version 差分の意味論（added/removed/
+//! upgraded/downgraded）はここが正本である。
+
+use std::collections::BTreeMap;
+
+use super::wire::ChangeKind;
+
+/// 差分 version の出所（nix eval か Homebrew tap rev か）。
+///
+/// nix=eval と brew=tap rev 版差分は同じ version 差分モデルへ統合されるが、出所により
+/// ノート取得先（forge releases / cask homepage）が変わるため、出所だけは型として保持する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeltaSource {
+    /// `nix eval` で取得した宣言パッケージの name→version 差分由来。
+    NixEval,
+    /// Homebrew tap rev の formula/cask ファイル差分由来。
+    BrewTap,
+}
+
+impl DeltaSource {
+    /// 出所の安定キー（provenance レジストリのキー名前空間に使う）。
+    ///
+    /// nix 由来と brew 由来は同名でも別パッケージ（例: nix の `firefox` と cask の `firefox`）であり、ノート
+    /// 取得元 provenance を name だけで突合すると別出所の取得元を取り違える。`Debug` 表現でなくこの値を使い、
+    /// variant 名がリファクタで変わってもキーは不変にする（決定論の根拠）。
+    pub(crate) fn as_stable_key(self) -> &'static str {
+        match self {
+            DeltaSource::NixEval => "nix",
+            DeltaSource::BrewTap => "brew",
+        }
+    }
+}
+
+/// `nix eval` が宣言パッケージごとに返す評価時属性（version・GitHub owner/repo・changelog URL・homepage）。
+///
+/// `version` は `pname`/`version`（取れなければ空文字）。`repo` は GitHub `owner/repo`（無ければ空文字）で
+/// Releases API の一次取得元。`notes_source`（旧 JSON key、現 `changelog`）は changelog URL（Releases API 空振り
+/// 時の raw フォールバック取得先）。`homepage` は AI エージェントの fetch 許可ホスト集合のヒント。いずれも
+/// 信頼境界外の値であり、実取得時に host allowlist で機械検証する。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct NixPackage {
+    /// 評価時 version（無ければ空文字。空は版不明 = `None` 扱い）。
+    pub(crate) version: String,
+    /// GitHub `owner/repo`（無ければ空文字）。
+    #[serde(default)]
+    pub(crate) repo: String,
+    /// changelog URL（無ければ空文字）。eval JSON では `changelog` key で出力する（旧 `notes_source` key も
+    /// alias で受ける）。
+    #[serde(default, alias = "changelog")]
+    pub(crate) notes_source: String,
+    /// `meta.homepage` 由来の URL（無ければ空文字）。AI エージェントの fetch 許可ホスト集合のヒント。
+    #[serde(default)]
+    pub(crate) homepage: String,
+}
+
+/// 単一パッケージの version 差分（比較/マージの中間表現）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VersionDelta {
+    /// パッケージ名。
+    pub(crate) name: String,
+    /// 更新前 version（不在なら `None`）。
+    pub(crate) old: Option<String>,
+    /// 更新後 version（不在なら `None`）。
+    pub(crate) new: Option<String>,
+    /// version 差分の種別。
+    pub(crate) change: ChangeKind,
+    /// 差分の出所（nix eval / brew tap）。
+    pub(crate) source: DeltaSource,
+    /// nix eval 由来の GitHub `owner/repo`（無ければ `None`）。brew は `None`。
+    pub(crate) repo: Option<String>,
+    /// nix eval 由来の changelog URL（無ければ `None`）。brew は `None`。
+    pub(crate) notes_source: Option<String>,
+    /// nix eval 由来の homepage URL（無ければ `None`）。brew は `None`。
+    pub(crate) homepage: Option<String>,
+}
+
+/// nix eval 由来 / brew tap 由来の version 差分を同一モデルへ統合する（nix を先に、brew を後に）。
+pub(crate) fn merge_version_deltas(
+    nix: Vec<VersionDelta>,
+    brew: Vec<VersionDelta>,
+) -> Vec<VersionDelta> {
+    let mut merged = nix;
+    merged.extend(brew);
+    merged
+}
+
+/// old/new の宣言パッケージ name→version マップを比較して [`VersionDelta`] 列へ変換する純粋関数。
+///
+/// new のみ→Added、old のみ→Removed、両方在り version が異なる→大小比較で Upgraded/Downgraded、等しい→除外。
+/// 出力は名前昇順（`BTreeMap` 反復順）で決定論的。`repo`/`notes_source`/`homepage` は new 側の値を運ぶ
+/// （removed は new が無いため `None`）。
+pub(crate) fn diff_versions(
+    old: &BTreeMap<String, NixPackage>,
+    new: &BTreeMap<String, NixPackage>,
+) -> Vec<VersionDelta> {
+    let mut deltas = Vec::new();
+    for (name, new_pkg) in new {
+        let repo = empty_to_none(&new_pkg.repo);
+        let notes_source = empty_to_none(&new_pkg.notes_source);
+        let homepage = empty_to_none(&new_pkg.homepage);
+        match old.get(name) {
+            Some(old_pkg) => {
+                if old_pkg.version == new_pkg.version {
+                    continue;
+                }
+                let change = compare_versions(&old_pkg.version, &new_pkg.version);
+                deltas.push(VersionDelta {
+                    name: name.clone(),
+                    old: version_value(&old_pkg.version),
+                    new: version_value(&new_pkg.version),
+                    change,
+                    source: DeltaSource::NixEval,
+                    repo,
+                    notes_source,
+                    homepage,
+                });
+            }
+            None => deltas.push(VersionDelta {
+                name: name.clone(),
+                old: None,
+                new: version_value(&new_pkg.version),
+                change: ChangeKind::Added,
+                source: DeltaSource::NixEval,
+                repo,
+                notes_source,
+                homepage,
+            }),
+        }
+    }
+    for (name, old_pkg) in old {
+        if !new.contains_key(name) {
+            deltas.push(VersionDelta {
+                name: name.clone(),
+                old: version_value(&old_pkg.version),
+                new: None,
+                change: ChangeKind::Removed,
+                source: DeltaSource::NixEval,
+                repo: None,
+                notes_source: None,
+                homepage: None,
+            });
+        }
+    }
+    deltas
+}
+
+/// version 属性が空文字なら `None`、それ以外は版文字列を返す。
+fn version_value(version: &str) -> Option<String> {
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
+/// 空文字を `None`、それ以外を値として返す（偽の取得元を運ばない）。
+fn empty_to_none(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// 両側に存在する 2 version 文字列を比較し、昇格か降格かを決める。
+fn compare_versions(old: &str, new: &str) -> ChangeKind {
+    match version_ordering(old, new) {
+        std::cmp::Ordering::Greater => ChangeKind::Downgraded,
+        std::cmp::Ordering::Less => ChangeKind::Upgraded,
+        std::cmp::Ordering::Equal => ChangeKind::Upgraded,
+    }
+}
+
+/// 2 version 文字列の順序を成分単位で比較する（`lhs.cmp(rhs)` 相当）。
+///
+/// 全成分が等しく長さだけ異なるときは成分数が多い側を新しいとみなす（`1.2` < `1.2.1`）。版比較・範囲判定の
+/// 単一の正本であり、brew 差分・release 範囲フィルタもこれを共有する。
+pub(crate) fn version_ordering(lhs: &str, rhs: &str) -> std::cmp::Ordering {
+    let lhs_parts = split_components(lhs);
+    let rhs_parts = split_components(rhs);
+    for (l, r) in lhs_parts.iter().zip(rhs_parts.iter()) {
+        let ordering = compare_component(l, r);
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
+    }
+    lhs_parts.len().cmp(&rhs_parts.len())
+}
+
+/// version 文字列を `.` と `-` で成分へ分割する（空成分は除く）。
+fn split_components(version: &str) -> Vec<&str> {
+    version
+        .split(['.', '-'])
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 1 成分を比較する（両方数値なら数値比較、片方のみ数値なら数値側を小さく、いずれも非数値なら辞書順）。
+fn compare_component(lhs: &str, rhs: &str) -> std::cmp::Ordering {
+    match (lhs.parse::<u64>(), rhs.parse::<u64>()) {
+        (Ok(l), Ok(r)) => l.cmp(&r),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => lhs.cmp(rhs),
+    }
+}
+
+/// tag/name 文字列から version 様トークンを抽出して正規化する純粋関数。
+fn extract_version_token(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .split(['-', ' ', '_'])
+        .rev()
+        .map(normalize_version)
+        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
+/// version 文字列を正規化する純粋関数（先頭の `v`/`V` を剥がし、前後空白を除く）。
+fn normalize_version(version: &str) -> String {
+    let trimmed = version.trim();
+    trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// release tag（無ければ name）から version 文字列を抽出して正規化する純粋関数。
+pub(crate) fn release_version(tag: &str, name: &str) -> Option<String> {
+    extract_version_token(tag).or_else(|| extract_version_token(name))
+}
+
+/// 抽出済み release version が `(old, new]`（old 排他・new 包含）に入るかを判定する純粋関数。
+pub(crate) fn version_in_range(version: &str, old: Option<&str>, new: Option<&str>) -> bool {
+    if let Some(old) = old.map(normalize_version)
+        && version_ordering(version, &old) != std::cmp::Ordering::Greater
+    {
+        return false;
+    }
+    if let Some(new) = new.map(normalize_version)
+        && version_ordering(version, &new) == std::cmp::Ordering::Greater
+    {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    //! eval マップ比較の種別確定・version 欠落フォールバック・マージ順序・版比較/範囲判定を固定する。
+
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, NixPackage> {
+        pairs
+            .iter()
+            .map(|(name, version)| {
+                (
+                    (*name).to_string(),
+                    NixPackage {
+                        version: (*version).to_string(),
+                        repo: String::new(),
+                        notes_source: String::new(),
+                        homepage: String::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn map_with_notes(pairs: &[(&str, &str, &str, &str)]) -> BTreeMap<String, NixPackage> {
+        pairs
+            .iter()
+            .map(|(name, version, repo, notes)| {
+                (
+                    (*name).to_string(),
+                    NixPackage {
+                        version: (*version).to_string(),
+                        repo: (*repo).to_string(),
+                        notes_source: (*notes).to_string(),
+                        homepage: String::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn find<'a>(deltas: &'a [VersionDelta], name: &str) -> Option<&'a VersionDelta> {
+        deltas.iter().find(|d| d.name == name)
+    }
+
+    #[test]
+    fn diff_detects_added_removed_upgraded_downgraded() {
+        let old = map(&[("neovim", "0.10.2"), ("oldpkg", "1.0.0"), ("ruby", "3.4.0")]);
+        let new = map(&[
+            ("neovim", "0.11.0"),
+            ("ripgrep", "14.1.0"),
+            ("ruby", "3.3.10"),
+        ]);
+        let deltas = diff_versions(&old, &new);
+        assert_eq!(deltas.len(), 4);
+        assert_eq!(
+            find(&deltas, "neovim").map(|d| d.change),
+            Some(ChangeKind::Upgraded)
+        );
+        assert_eq!(
+            find(&deltas, "ripgrep").map(|d| d.change),
+            Some(ChangeKind::Added)
+        );
+        assert_eq!(find(&deltas, "ripgrep").map(|d| d.old.clone()), Some(None));
+        assert_eq!(
+            find(&deltas, "ruby").map(|d| d.change),
+            Some(ChangeKind::Downgraded)
+        );
+        assert_eq!(
+            find(&deltas, "oldpkg").map(|d| d.change),
+            Some(ChangeKind::Removed)
+        );
+        assert_eq!(find(&deltas, "oldpkg").map(|d| d.new.clone()), Some(None));
+    }
+
+    #[test]
+    fn diff_excludes_unchanged_versions() {
+        let old = map(&[("zlib", "1.3.1"), ("git", "2.53.0")]);
+        let new = map(&[("zlib", "1.3.1"), ("git", "2.54.0")]);
+        let deltas = diff_versions(&old, &new);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].name, "git");
+    }
+
+    #[test]
+    fn diff_treats_empty_version_as_absent() {
+        let old = map(&[("google-cloud-sdk", ""), ("python3", "")]);
+        let new = map(&[("google-cloud-sdk", "500.0.0"), ("python3", "")]);
+        let deltas = diff_versions(&old, &new);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].name, "google-cloud-sdk");
+        assert_eq!(deltas[0].old, None);
+        assert_eq!(deltas[0].new.as_deref(), Some("500.0.0"));
+    }
+
+    #[test]
+    fn diff_output_is_name_sorted_for_determinism() {
+        let old = map(&[("a", "1"), ("c", "1")]);
+        let new = map(&[("a", "2"), ("b", "1"), ("c", "2")]);
+        let deltas = diff_versions(&old, &new);
+        let names: Vec<&str> = deltas.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn diff_handles_multi_component_versions() {
+        let old = map(&[("pkg", "1.2"), ("nodejs", "22.22.2")]);
+        let new = map(&[("pkg", "1.2.1"), ("nodejs", "22.22.10")]);
+        let deltas = diff_versions(&old, &new);
+        assert!(deltas.iter().all(|d| d.change == ChangeKind::Upgraded));
+    }
+
+    #[test]
+    fn diff_carries_new_side_repo_and_notes_source_into_delta() {
+        let old = map_with_notes(&[(
+            "neovim",
+            "0.10",
+            "neovim/neovim",
+            "https://github.com/neovim/neovim/blob/master/CHANGELOG",
+        )]);
+        let new = map_with_notes(&[
+            (
+                "neovim",
+                "0.11",
+                "neovim/neovim",
+                "https://github.com/neovim/neovim/blob/master/CHANGELOG",
+            ),
+            ("nonotes", "2.0", "", ""),
+        ]);
+        let deltas = diff_versions(&old, &new);
+        assert_eq!(
+            find(&deltas, "neovim").and_then(|d| d.repo.as_deref()),
+            Some("neovim/neovim")
+        );
+        assert_eq!(find(&deltas, "nonotes").map(|d| d.repo.clone()), Some(None));
+    }
+
+    #[test]
+    fn normalize_version_strips_v_prefix_and_whitespace() {
+        assert_eq!(normalize_version("v1.2.3"), "1.2.3");
+        assert_eq!(normalize_version("V2.0"), "2.0");
+        assert_eq!(normalize_version("  1.0  "), "1.0");
+        assert_eq!(normalize_version("3.4.0"), "3.4.0");
+    }
+
+    #[test]
+    fn extract_version_token_picks_last_version_like_token() {
+        assert_eq!(extract_version_token("v1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            extract_version_token("pkg-v1.5.0").as_deref(),
+            Some("1.5.0")
+        );
+        assert_eq!(extract_version_token("release-1.0").as_deref(), Some("1.0"));
+        assert_eq!(extract_version_token("latest"), None);
+    }
+
+    #[test]
+    fn release_version_prefers_tag_then_name() {
+        assert_eq!(
+            release_version("v1.2.3", "anything").as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            release_version("latest", "Release 2.0.0").as_deref(),
+            Some("2.0.0")
+        );
+        assert_eq!(release_version("latest", "nightly"), None);
+    }
+
+    #[test]
+    fn version_in_range_is_old_exclusive_new_inclusive() {
+        let old = Some("1.0.0");
+        let new = Some("1.2.0");
+        assert!(!version_in_range("1.0.0", old, new));
+        assert!(version_in_range("1.1.0", old, new));
+        assert!(version_in_range("1.2.0", old, new));
+        assert!(!version_in_range("0.9.0", old, new));
+        assert!(!version_in_range("1.3.0", old, new));
+    }
+
+    #[test]
+    fn version_in_range_normalizes_boundary_tag_variants() {
+        assert!(version_in_range("1.5.0", Some("v1.0.0"), Some("v2.0.0")));
+        assert!(!version_in_range("2.5.0", Some("v1.0.0"), Some("v2.0.0")));
+    }
+
+    #[test]
+    fn version_in_range_with_unbounded_old_or_new() {
+        assert!(version_in_range("0.1.0", None, Some("1.0.0")));
+        assert!(version_in_range("9.9.9", Some("1.0.0"), None));
+        assert!(version_in_range("5.0.0", None, None));
+    }
+
+    #[test]
+    fn merge_keeps_nix_first_then_brew() {
+        let nix = vec![VersionDelta {
+            name: "neovim".to_string(),
+            old: Some("0.10".to_string()),
+            new: Some("0.11".to_string()),
+            change: ChangeKind::Upgraded,
+            source: DeltaSource::NixEval,
+            repo: None,
+            notes_source: None,
+            homepage: None,
+        }];
+        let brew = vec![VersionDelta {
+            name: "firefox".to_string(),
+            old: Some("120".to_string()),
+            new: Some("121".to_string()),
+            change: ChangeKind::Upgraded,
+            source: DeltaSource::BrewTap,
+            repo: None,
+            notes_source: None,
+            homepage: None,
+        }];
+        let merged = merge_version_deltas(nix, brew);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].source, DeltaSource::NixEval);
+        assert_eq!(merged[1].source, DeltaSource::BrewTap);
+    }
+}

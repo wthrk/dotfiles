@@ -231,30 +231,9 @@ impl SwitchOptions {
         self.target.unwrap_or(SwitchTarget::All)
     }
 
-    /// 適用対象が全体（`all`／target 省略）かを返す（部分 target `home`/`darwin` では `false`）。
-    ///
-    /// `update` の通常実行で repo pin 全体（`last-applied-rev`/`last-applied-nixpkgs-rev`）を確定してよいのは
-    /// **全体適用時だけ**である。部分 target（`home` だけ／`darwin` だけ）の通常実行でこれを確定すると、適用して
-    /// いない他 target がその rev について以降 skip され（`should_switch` が前回値一致で skip）、未適用のまま
-    /// starve する。よって `update` は本判定で全体適用時のみ rev を確定し、部分 target では確定を次回の全体適用に
-    /// 残す。`matches!` で `All` だけを真にする（`Home`/`Darwin` は偽）。
-    pub(crate) fn is_full_apply(&self) -> bool {
-        matches!(self.target(), SwitchTarget::All)
-    }
-
     /// `update` が lock 更新と switch の両方を同じ予行実行モードで扱う。
     pub(crate) fn dry_run(&self) -> bool {
         self.dry_run
-    }
-
-    /// 適用 target が home 部分適用（`home`）かを返す（`darwin`/`all`/省略では `false`）。
-    ///
-    /// `update` の適用後要約を実際に適用した target に対応する出所だけへ絞るために使う（finding 3368653947）。
-    /// `home` 部分適用は home-manager（nix）だけを switch するため、`update` 側はこの判定で要約を nix 出所だけへ
-    /// 絞り、未適用の brew cask（darwin 適用対象）を通知しない。`darwin`（systemPackages + cask を適用）と
-    /// 全体適用（target 省略 = `all`）は全出所を要約するため `false`。`matches!` で `Home` だけを真にする。
-    pub(crate) fn is_home_only_apply(&self) -> bool {
-        matches!(self.target(), SwitchTarget::Home)
     }
 
     /// Darwin 適用で `sudo` を前置するか。`--no-sudo` か env `DOTFILES_DARWIN_REBUILD_SUDO=0` で省略する。
@@ -279,25 +258,7 @@ mod tests {
 
     use std::ffi::OsString;
 
-    use clap::Parser;
-
-    use super::{SwitchOptions, darwin_rebuild_command, move_command, should_use_sudo};
-
-    /// `SwitchOptions` を clap 経由で解析するためのテスト専用ラッパー。
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        switch: SwitchOptions,
-    }
-
-    /// 引数列から `SwitchOptions` を解析する（先頭にダミー実行名を補う）。
-    fn parse_switch(args: &[&str]) -> SwitchOptions {
-        let mut argv = vec!["dotfiles"];
-        argv.extend_from_slice(args);
-        TestCli::try_parse_from(argv)
-            .expect("parse switch options")
-            .switch
-    }
+    use super::{darwin_rebuild_command, move_command, should_use_sudo};
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
     fn as_strings(args: &[OsString]) -> Vec<String> {
@@ -356,25 +317,6 @@ mod tests {
         );
         assert_eq!(program.to_string_lossy(), "mv");
         assert_eq!(as_strings(&args), vec!["/etc/zshrc", "/etc/zshrc.bak"]);
-    }
-
-    #[test]
-    fn is_full_apply_only_for_all_target() {
-        // N8: target 省略（既定 all）と明示 all は全体適用。部分 target（home / darwin）は全体適用でない。
-        // これにより update は全体適用時のみ `last-applied-rev` を確定し、部分適用での他 target starve を防ぐ。
-        assert!(parse_switch(&[]).is_full_apply(), "target 省略は all 扱い");
-        assert!(
-            parse_switch(&["all"]).is_full_apply(),
-            "明示 all は全体適用"
-        );
-        assert!(
-            !parse_switch(&["home"]).is_full_apply(),
-            "home 部分 target は全体適用でない"
-        );
-        assert!(
-            !parse_switch(&["darwin"]).is_full_apply(),
-            "darwin 部分 target は全体適用でない"
-        );
     }
 
     #[test]

@@ -18,8 +18,8 @@ pub type Result<T> = dotfiles_core::Result<T>;
 
 /// crate 公開の CLI 実行 entrypoint。
 ///
-/// 終了コードを直接返す（`update` の lock 競合 skip 専用 code を含む。詳細は [`cli::dispatch`]）。binary 側は
-/// この `ExitCode` をそのままプロセス終了コードへ渡す。
+/// 終了コードを直接返す（`Ok` → 0 / `Err` → 1。詳細は [`cli::dispatch`]）。binary 側はこの `ExitCode` を
+/// そのままプロセス終了コードへ渡す。
 pub async fn dispatch() -> std::process::ExitCode {
     cli::dispatch().await
 }
