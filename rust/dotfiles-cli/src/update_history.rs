@@ -5,11 +5,19 @@
 //! OpenAI API（env `OPEN_AI_API_KEY`）で駆動し、1 回の record で全変更パッケージを要約しきる。取れない概要は
 //! version-only（version old→new + notes_url のみ）としてその場で確定記録する（夜をまたいで再試行しない）。
 //!
+//! nightly パイプラインの**ロジックは全て Rust に集約**する。`record` は ci-ref と old/new lock を受けて
+//! eval（[`eval`]: `nix eval` 起動 + owner/repo 導出）→ nix 版差分 → brew cask 版差分（[`brew`]: reqwest で
+//! cask `.rb` 取得・version 解析）→ ノート取得 → OpenAI 要約 → TOML 記録までを完結する。bash/nix/yaml には
+//! 避けられない nix tool 呼び出し（`nix eval` / `nix flake update`）以外のロジックを置かない。`eval-versions` /
+//! `lock-rev` は workflow が old を bump 前に評価するための薄い Rust ラッパで、整形・導出・rev 抽出は Rust が担う。
+//!
 //! 構成はフラットな少数モジュール + 普通の関数。HTTP/LLM の差し替え点は [`llm::ChangeExtractor`] trait の 1 つ
 //! だけで、決定論テストはこれを fake に差し替える。hex 階層（domain/ports/adapters/application/support の層分割・
 //! port trait・mockall）は持たない。
 
+mod brew;
 mod diff;
+mod eval;
 mod llm;
 mod notes;
 mod record;
@@ -32,35 +40,31 @@ pub(crate) struct UpdateHistoryOptions {
 }
 
 #[derive(Subcommand)]
-/// CI が叩く記録 command と、利用者が叩く閲覧 command。
+/// CI が叩く記録・eval・rev 抽出 command と、利用者が叩く閲覧 command。
 enum UpdateHistoryCommand {
-    // record option は閲覧より大幅にフィールドが多いため Box で間接化して large_enum_variant を避ける。
+    // record option は他より大幅にフィールドが多いため Box で間接化して large_enum_variant を避ける。
     Record(Box<RecordOptions>),
+    EvalVersions(EvalVersionsOptions),
+    LockRev(LockRevOptions),
     Show(ShowOptions),
 }
 
 #[derive(Args)]
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option（CI が叩く）。
 struct RecordOptions {
-    /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル（旧 `--old` も別名で受ける）。
+    /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル（`eval-versions` が bump 前に書く）。
     #[arg(long, alias = "old")]
     nix_old: Option<PathBuf>,
-    /// bump 後 lock で eval した宣言パッケージの name→属性 JSON ファイル（旧 `--new` も別名で受ける）。
+    /// bump 後 lock の宣言パッケージ JSON（省略時は `--reference` を `nix eval` して Rust で導出する）。
     #[arg(long, alias = "new")]
     nix_new: Option<PathBuf>,
-    /// brew 版差分の diff 元 rev（座標。現行 file ベース brew では未参照だが互換のため受ける）。
-    #[arg(long)]
-    old_rev: String,
-    /// brew 版差分の diff 先 rev（座標。`--old-rev` と同様に未参照）。
-    #[arg(long)]
-    new_rev: String,
     /// 記録する bump 前 nixpkgs リビジョン。
     #[arg(long)]
     nixpkgs_old: String,
     /// 記録する bump 後 nixpkgs リビジョン。
     #[arg(long)]
     nixpkgs_new: String,
-    /// diff 対象の参照構成（例: `darwinConfigurations.<ref>`）。
+    /// diff 対象の参照構成（例: `darwinConfigurations.<ref>`）。`--nix-new` 省略時は eval にも使う。
     #[arg(long)]
     reference: String,
     /// 適用時刻（RFC3339。CI が `date -u +%FT%TZ` を注入する）。
@@ -72,12 +76,37 @@ struct RecordOptions {
     /// ノート取得元レジストリ TOML（未指定なら `--out` と同じ directory の `notes-sources.toml`）。
     #[arg(long)]
     notes_sources: Option<PathBuf>,
-    /// CI が old/new tap rev から事前算出した brew 版差分ファイル（`name<TAB>old<TAB>new`）。
+    /// 宣言 cask を読む `homebrew.nix` path（指定時、両 cask rev から版差分を Rust で算出する）。
     #[arg(long)]
-    brew_diff: Option<PathBuf>,
-    /// brew cask のリリースノート URL 基底（`Casks/` レイアウト。旧 `--notes-base` も別名で受ける）。
-    #[arg(long, alias = "notes-base")]
-    brew_notes_base: Option<String>,
+    homebrew_nix: Option<PathBuf>,
+    /// brew cask tap の bump 前 rev（`--homebrew-nix` と対で cask 版差分に使う）。
+    #[arg(long)]
+    cask_rev_old: Option<String>,
+    /// brew cask tap の bump 後 rev（cask 版差分と、cask 探索ヒントの `Casks/` 基底に使う）。
+    #[arg(long)]
+    cask_rev_new: Option<String>,
+}
+
+#[derive(Args)]
+/// 参照構成の宣言パッケージ版を `nix eval` し、導出済み name→属性 JSON を書く option（bump 前後で叩く）。
+struct EvalVersionsOptions {
+    /// eval する参照構成（例: `darwinConfigurations.ci-ref`）。
+    #[arg(long)]
+    reference: String,
+    /// 書き出す JSON ファイル path。
+    #[arg(long)]
+    out: PathBuf,
+}
+
+#[derive(Args)]
+/// flake.lock の `nodes.<node>.locked.rev` を取り出して標準出力へ書く option（jq の置き換え）。
+struct LockRevOptions {
+    /// 読む flake.lock path。
+    #[arg(long)]
+    lock: PathBuf,
+    /// rev を取り出すノード名（例: `nixpkgs` / `homebrew-homebrew-cask`）。
+    #[arg(long)]
+    node: String,
 }
 
 #[derive(Args)]
@@ -100,12 +129,31 @@ struct ShowOptions {
     source: Option<PathBuf>,
 }
 
-/// `update-history` サブコマンドを受けて record / show を駆動する。
+/// `update-history` サブコマンドを受けて record / eval-versions / lock-rev / show を駆動する。
 pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
     match options.command {
         UpdateHistoryCommand::Record(options) => run_record(*options),
+        UpdateHistoryCommand::EvalVersions(options) => run_eval_versions(options),
+        UpdateHistoryCommand::LockRev(options) => run_lock_rev(options),
         UpdateHistoryCommand::Show(options) => run_show(options),
     }
+}
+
+/// 参照構成を `nix eval` し、導出済み宣言パッケージ JSON を `--out` へ書く（bump 前後で叩く）。
+fn run_eval_versions(options: EvalVersionsOptions) -> Result<()> {
+    let versions = eval::eval_declared_versions(&options.reference)?;
+    if let Some(parent) = options.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&options.out, serde_json::to_string(&versions)?)?;
+    Ok(())
+}
+
+/// flake.lock のノード rev を標準出力へ書く（不在は空行）。
+fn run_lock_rev(options: LockRevOptions) -> Result<()> {
+    let rev = eval::lock_node_rev(&options.lock, &options.node)?.unwrap_or_default();
+    println!("{rev}");
+    Ok(())
 }
 
 /// `--out` と同じ directory にレジストリ `notes-sources.toml` を置く既定パスを返す。
@@ -121,7 +169,11 @@ fn run_record(options: RecordOptions) -> Result<()> {
         .notes_sources
         .clone()
         .unwrap_or_else(|| default_registry_path(&options.out));
-    let extractor = llm::OpenAiExtractor::new(options.brew_notes_base.clone());
+    // cask 探索ヒントの `Casks/` 基底は bump 後 cask rev から組み立てる（無ければ brew は探索ヒント無し）。
+    let brew_notes_base = options.cask_rev_new.as_deref().map(|rev| {
+        format!("https://raw.githubusercontent.com/homebrew/homebrew-cask/{rev}/Casks/")
+    });
+    let extractor = llm::OpenAiExtractor::new(brew_notes_base);
     let input = record::RecordInput {
         nixpkgs_old: options.nixpkgs_old,
         nixpkgs_new: options.nixpkgs_new,
@@ -131,7 +183,9 @@ fn run_record(options: RecordOptions) -> Result<()> {
         registry_path: &registry_path,
         nix_old: options.nix_old.as_deref(),
         nix_new: options.nix_new.as_deref(),
-        brew_diff: options.brew_diff.as_deref(),
+        homebrew_nix: options.homebrew_nix.as_deref(),
+        cask_rev_old: options.cask_rev_old.as_deref(),
+        cask_rev_new: options.cask_rev_new.as_deref(),
     };
     record::run_record(input, &extractor)
 }

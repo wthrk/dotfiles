@@ -3,6 +3,10 @@ name: nightly update
 # nightly に repo の flake.lock を bump し、更新履歴（版差分＋概要）を記録して自動 PR を起票・auto-merge する。
 #
 # 設計（単純版・App 不要・GITHUB_TOKEN + OPEN_AI_API_KEY 完結）:
+#   - パイプラインのロジックは全て `dotfiles update-history`（Rust）が持つ。eval 整形・owner/repo 導出・nix 版
+#     差分・brew cask 版差分（reqwest で cask `.rb` 取得・version 解析・auto_updates 除外）・flake.lock rev 抽出は
+#     Rust に集約し、workflow は避けられない nix tool 呼び出し（Rust が起動する `nix eval` / `nix flake update`）と
+#     薄いオーケストレーション（checkout / install nix / bump / record 起動 / upload / PR）だけを行う。
 #   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
 #     bump しない（無人で framework を動かさない）。
 #   - 概要（change_items）の LLM 抽出は OpenAI API を使う。record job に **secret
@@ -53,9 +57,10 @@ env:
   CI_REFERENCE: darwinConfigurations.ci-ref
 
 jobs:
-  # 1) lock を bump し、bump 前後の宣言パッケージ版を eval（ビルド不要）して artifact に渡す。
-  #    LLM や PR 起票の権限を持たせない（contents: read のみ）。eval は `pname`/`version` を `nix eval --json`
-  #    で数秒で取れるため、フル closure ビルドもディスク解放も /nix/store キャッシュも不要。
+  # 1) bump 前の宣言パッケージ版を eval（Rust）し、lock を bump し、bump 前後の input rev を取り出して artifact に
+  #    渡す。整形・owner/repo 導出・rev 抽出のロジックは全て `dotfiles update-history`（Rust）が持ち、ここは
+  #    避けられない nix tool 呼び出し（`nix eval` は Rust が起動・`nix flake update`）と薄いオーケストレーション
+  #    だけを行う。LLM や PR 起票の権限を持たせない（contents: read のみ）。
   bump:
     name: bump lock and eval declared versions
     runs-on: macos-15
@@ -76,16 +81,26 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # ci-ref の宣言パッケージ（home.packages + environment.systemPackages）の name→version を eval する。
-      # ビルド/フェッチは一切走らず数秒で完了する。
-      - name: bump 前の宣言パッケージ版を eval
-        id: old
+      # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリをビルドする。`nix eval` 起動・owner/repo 導出・
+      # flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。
+      - name: dotfiles バイナリをビルド
+        id: build
         run: |
           set -euo pipefail
-          ./.github/scripts/eval-declared-versions.sh "$CI_REFERENCE" nix-old.json
-          nixpkgs_old="$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
+          echo "bin=$(nix build --no-link --print-out-paths .#default)/bin/dotfiles" >> "$GITHUB_OUTPUT"
+
+      # bump 前の宣言パッケージ版を Rust が `nix eval`（生の評価値）して owner/repo 導出まで行い JSON へ書く。
+      # 併せて bump 前 input rev を Rust（serde_json）が抽出する（jq 不使用）。
+      - name: bump 前の宣言パッケージ版を eval と rev 抽出
+        id: old
+        env:
+          DOTFILES_BIN: ${{ steps.build.outputs.bin }}
+        run: |
+          set -euo pipefail
+          "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
+          nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
-          cask_rev_old="$(jq -r '.nodes["homebrew-homebrew-cask"].locked.rev' flake.lock)"
+          cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
       - name: nixpkgs と tap input を bump
@@ -99,24 +114,21 @@ jobs:
             homebrew-azure-bicep \
             homebrew-hashicorp-tap
 
-      - name: bump 後の宣言パッケージ版を eval
-        id: new
-        run: |
-          set -euo pipefail
-          ./.github/scripts/eval-declared-versions.sh "$CI_REFERENCE" nix-new.json
-
-      - name: rev を集約
+      # bump 後 input rev を Rust（serde_json）が抽出する（bump 後版の eval は record が bump 済み lock で行う）。
+      - name: bump 後の input rev を抽出
         id: revs
+        env:
+          DOTFILES_BIN: ${{ steps.build.outputs.bin }}
         run: |
           set -euo pipefail
           echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}" >> "$GITHUB_OUTPUT"
-          nixpkgs_new="$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)"
+          nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_new=$nixpkgs_new" >> "$GITHUB_OUTPUT"
           echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}" >> "$GITHUB_OUTPUT"
-          cask_rev_new="$(jq -r '.nodes["homebrew-homebrew-cask"].locked.rev' flake.lock)"
+          cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_new=$cask_rev_new" >> "$GITHUB_OUTPUT"
 
-      - name: bump 済み lock と eval 版マップを artifact 化
+      - name: bump 済み lock と bump 前 eval 版マップを artifact 化
         uses: actions/upload-artifact@v4
         with:
           name: bump-state
@@ -125,13 +137,13 @@ jobs:
           path: |
             flake.lock
             nix-old.json
-            nix-new.json
           if-no-files-found: error
 
-  # 2) brew 版差分算出 → record（版差分＋概要を 1 回で完結）。
-  #    概要の LLM 抽出は OpenAI API を使う。secret `OPEN_AI_API_KEY` を record step に env で結線し、
-  #    CLI（async-openai crate）が env から読む。GitHub Models（models: read / GITHUB_TOKEN の LLM 用途）は使わない。
-  #    出力は更新履歴 TOML（機械バリデート済み）として artifact に渡す。
+  # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
+  #    brew cask `.rb` 取得と version 解析（reqwest）・auto_updates 除外・概要抽出は全て `dotfiles update-history
+  #    record`（Rust）が行う。ここは bump 済み lock の取得と record 起動だけを行う。概要の LLM 抽出は OpenAI API
+  #    （async-openai crate）で、secret `OPEN_AI_API_KEY` を env で結線する（GitHub Models は使わない）。出力は
+  #    更新履歴 TOML（機械バリデート済み）として artifact に渡す。
   record:
     name: extract notes and record history
     needs: bump
@@ -148,70 +160,22 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      - name: bump 済み lock と eval 版マップを取得
+      # bump 済み flake.lock を checkout 上に展開する（record の bump 後 nix eval が bump 済み lock を使う）。
+      - name: bump 済み lock と bump 前 eval 版マップを取得
         uses: actions/download-artifact@v4
         with:
           name: bump-state
 
-      # 宣言 cask の版差分を old/new cask tap rev から決定論的に算出する（ライブ brew 問い合わせはしない）。
-      # 各 cask の `version` を tap rev の cask ファイルから読み、`name<TAB>old<TAB>new` の差分ファイルへ書く。
-      # 自己更新 cask（`auto_updates true`）は `brew upgrade` が無人 upgrade しないため差分から除外する。
-      - name: brew cask 版差分を算出
-        id: brew
-        env:
-          CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
-          CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
-          # gh は GH_TOKEN を env から読む。token は argv に乗せない。
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          diff_file="$RUNNER_TEMP/brew-diff.tsv"
-          : > "$diff_file"
-          casks="$(sed -n '/casks = \[/,/\];/p' nix/modules/homebrew.nix \
-            | grep -oE '"[^"]+"' | tr -d '"')"
-          # 自己更新 cask（homebrew.nix の `auto_updates true`）を版差分から除外する。ここを変える場合は
-          # homebrew.nix の onActivation コメントと同期させること。
-          auto_update_casks="bitwarden codex-app ghostty"
-          is_auto_update_cask() {
-            case " $auto_update_casks " in
-              *" $1 "*) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-          cask_version() {
-            # $1=rev $2=cask 名。cask tap の Casks/<subdir>/<name>.rb から version "..." を読む。
-            # font cask は letter でなく固定 `font` サブディレクトリに置かれる。
-            local rev="$1" name="$2" subdir
-            case "$name" in
-              font-*) subdir="font" ;;
-              *) subdir="$(printf '%s' "$name" | cut -c1)" ;;
-            esac
-            gh api "repos/homebrew/homebrew-cask/contents/Casks/${subdir}/${name}.rb?ref=${rev}" \
-              --jq '.content' 2>/dev/null | base64 -d 2>/dev/null \
-              | grep -oE 'version "[^"]+"' | head -n1 | sed -E 's/version "([^"]+)"/\1/' || true
-          }
-          for name in $casks; do
-            if is_auto_update_cask "$name"; then
-              continue
-            fi
-            old_v="$(cask_version "$CASK_REV_OLD" "$name")"
-            new_v="$(cask_version "$CASK_REV_NEW" "$name")"
-            # 両 rev とも取得できない / 版変更なしの cask は差分対象にしない（縮退・ノイズ抑制）。
-            [ -z "$old_v" ] && [ -z "$new_v" ] && continue
-            [ "$old_v" = "$new_v" ] && continue
-            printf '%s\t%s\t%s\n' "$name" "${old_v:-∅}" "${new_v:-∅}" >> "$diff_file"
-          done
-          echo "diff_file=$diff_file" >> "$GITHUB_OUTPUT"
-
-      # eval 版差分から record（版差分＋概要を 1 回で完結）。概要の LLM 抽出は OpenAI API（async-openai crate）で
-      # 行い、API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv / ログに出さない）。
-      # ノートが取れないものは version-only（version + notes_url のみ）としてその場で確定記録する。
-      - name: eval 版差分から record
+      # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
+      # `.rb` を取得し version 解析、auto_updates cask 除外、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
+      # 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv /
+      # ログに出さない）。ノートが取れないものは version-only（version + notes_url のみ）として確定記録する。
+      - name: record（nix/brew 版差分 + 概要）
         env:
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
+          CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
-          BREW_DIFF: ${{ steps.brew.outputs.diff_file }}
           # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
           # 認証 5000 req/hr）。notes.rs::github_token() が env GITHUB_TOKEN を読む。LLM 用途ではないため
           # permissions: models: read は不要（contents: read で public release 取得に十分）。
@@ -225,20 +189,17 @@ jobs:
           # ノート取得元レジストリ（provenance の学習・再利用）。既存レジストリを再利用し、新規/未知の取得元だけを追記する。
           notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
-          brew_notes_base="https://raw.githubusercontent.com/homebrew/homebrew-cask/${CASK_REV_NEW}/Casks/"
           # dotfiles バイナリは devShell に含まれないため、公開パッケージ `.#default`（= dotfiles-cli）をビルドして実行する。
           dotfiles_bin="$(nix build --no-link --print-out-paths .#default)/bin/dotfiles"
           "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
-            --nix-new nix-new.json \
-            --old-rev "$NIXPKGS_OLD" \
-            --new-rev "$NIXPKGS_NEW" \
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \
             --reference "$CI_REFERENCE" \
+            --homebrew-nix nix/modules/homebrew.nix \
+            --cask-rev-old "$CASK_REV_OLD" \
+            --cask-rev-new "$CASK_REV_NEW" \
             --at "$at" \
-            --brew-diff "$BREW_DIFF" \
-            --brew-notes-base "$brew_notes_base" \
             --notes-sources "$notes_sources" \
             --out "$out"
 

@@ -41,7 +41,7 @@ impl DeltaSource {
 /// Releases API の一次取得元。`notes_source`（旧 JSON key、現 `changelog`）は changelog URL（Releases API 空振り
 /// 時の raw フォールバック取得先）。`homepage` は AI エージェントの fetch 許可ホスト集合のヒント。いずれも
 /// 信頼境界外の値であり、実取得時に host allowlist で機械検証する。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NixPackage {
     /// 評価時 version（無ければ空文字。空は版不明 = `None` 扱い）。
     pub(crate) version: String,

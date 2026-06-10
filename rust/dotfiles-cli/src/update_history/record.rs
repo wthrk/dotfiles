@@ -17,13 +17,14 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::diff::{DeltaSource, VersionDelta, diff_versions, merge_version_deltas};
+use super::diff::{DeltaSource, NixPackage, VersionDelta, diff_versions, merge_version_deltas};
 use super::llm::{ChangeExtractor, ExtractRequest, OpenAiExtractor};
 use super::notes::{self, RawReleaseNotes};
 use super::wire::{
     ChangeItem, PackageSource, PackageUpdate, UpdateEntry, is_allowed_url, overall_headline,
     sanitize_change_items, sanitize_notes_url, severity_of,
 };
+use super::{brew, eval};
 use crate::Result;
 
 /// record use case の入力（記録する rev・時刻・参照と版差分入力）。
@@ -42,10 +43,14 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) registry_path: &'a Path,
     /// bump 前 lock の eval JSON ファイル（無ければ nix old は空）。
     pub(crate) nix_old: Option<&'a Path>,
-    /// bump 後 lock の eval JSON ファイル。
+    /// bump 後 lock の eval JSON ファイル（無ければ `reference` を `nix eval` して導出する）。
     pub(crate) nix_new: Option<&'a Path>,
-    /// brew tap 版差分ファイル（無ければ brew 差分は空）。
-    pub(crate) brew_diff: Option<&'a Path>,
+    /// 宣言 cask を読む `homebrew.nix` path（cask rev と対で brew 版差分を算出する）。
+    pub(crate) homebrew_nix: Option<&'a Path>,
+    /// brew cask tap の bump 前 rev（cask 版差分に使う）。
+    pub(crate) cask_rev_old: Option<&'a str>,
+    /// brew cask tap の bump 後 rev（cask 版差分に使う）。
+    pub(crate) cask_rev_new: Option<&'a str>,
 }
 
 /// 1 パッケージ分の素材（version 差分 + 変更リスト + ノート URL）。change_items が空なら version-only。
@@ -267,23 +272,36 @@ fn sanitize_provenance(entry: NotesSourceEntry) -> NotesSourceEntry {
 }
 
 /// record use case: 版差分 → ノート取得・抽出 → 履歴追記（取れないものは version-only 確定）。provenance を学習する。
+///
+/// bump 後 nix 版は `--nix-new` ファイルがあればそれを、無ければ `reference` を `nix eval` して Rust で導出する。
+/// brew cask 版差分は `homebrew.nix` + 両 cask rev から reqwest で算出する。
 pub(crate) fn run_record(input: RecordInput<'_>, extract: &OpenAiExtractor) -> Result<()> {
-    run_record_with(&input, extract, &notes::fetch_from_source, &|name| {
-        extract.brew_homepage_hint(name)
-    })
+    run_record_with(
+        &input,
+        extract,
+        &notes::fetch_from_source,
+        &|name| extract.brew_homepage_hint(name),
+        &|reference| eval::eval_declared_versions(reference),
+        &brew::fetch_cask_rb,
+    )
 }
 
-/// テスト可能な record 本体（LLM seam・registry 再利用 fetch seam・brew ヒント関数を注入する）。
+/// テスト可能な record 本体（LLM seam・registry 再利用 fetch seam・brew ヒント・nix eval・cask fetch を注入する）。
 fn run_record_with(
     input: &RecordInput<'_>,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
+    eval_new: &dyn Fn(&str) -> Result<std::collections::BTreeMap<String, NixPackage>>,
+    fetch_cask: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<()> {
     let old_versions = notes::read_nix_versions(input.nix_old)?;
-    let new_versions = notes::read_nix_versions(input.nix_new)?;
+    let new_versions = match input.nix_new {
+        Some(path) => notes::read_nix_versions(Some(path))?,
+        None => eval_new(&input.reference)?,
+    };
     let nix_deltas = diff_versions(&old_versions, &new_versions);
-    let brew_deltas = notes::read_brew_deltas(input.brew_diff)?;
+    let brew_deltas = compute_brew_deltas(input, fetch_cask)?;
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
 
     let mut registry = read_registry(input.registry_path)?;
@@ -336,6 +354,22 @@ fn run_record_with(
         materials,
     );
     append_entry(input.out, &entry)
+}
+
+/// `homebrew.nix` + 両 cask rev が揃うときだけ、reqwest で cask `.rb` を取得して brew 版差分を算出する。
+///
+/// いずれかが欠ける（cask 差分不要 / テスト）なら空。cask list と version 解析・auto_updates 除外は [`brew`]。
+fn compute_brew_deltas(
+    input: &RecordInput<'_>,
+    fetch_cask: &dyn Fn(&str) -> Result<Option<String>>,
+) -> Result<Vec<VersionDelta>> {
+    let (Some(homebrew_nix), Some(rev_old), Some(rev_new)) =
+        (input.homebrew_nix, input.cask_rev_old, input.cask_rev_new)
+    else {
+        return Ok(Vec::new());
+    };
+    let casks_nix = std::fs::read_to_string(homebrew_nix)?;
+    brew::diff_casks(&casks_nix, rev_old, rev_new, fetch_cask)
 }
 
 // ---- provenance レジストリ（学習・再利用の wire/ドメイン型と決定論規則） ----
@@ -569,6 +603,16 @@ mod tests {
         Ok(None)
     }
 
+    /// nix-new ファイルを与えるテストでは eval seam を踏まない（呼ばれたら空マップ）。
+    fn no_eval(_: &str) -> Result<std::collections::BTreeMap<String, NixPackage>> {
+        Ok(std::collections::BTreeMap::new())
+    }
+
+    /// cask 差分を踏まないテスト seam（homebrew_nix 未指定なら呼ばれない）。
+    fn no_cask(_: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     fn outcome(items: Vec<ChangeItem>) -> ExtractOutcome {
         ExtractOutcome {
             items,
@@ -615,7 +659,9 @@ mod tests {
             registry_path: registry,
             nix_old,
             nix_new,
-            brew_diff: None,
+            homebrew_nix: None,
+            cask_rev_old: None,
+            cask_rev_new: None,
         }
     }
 
@@ -641,6 +687,8 @@ mod tests {
             &extract,
             &no_fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
 
         let entries = read_entries(&out)?;
@@ -667,6 +715,8 @@ mod tests {
             &extract,
             &no_fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
 
         let entries = read_entries(&out)?;
@@ -699,6 +749,8 @@ mod tests {
             &extract,
             &no_fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
 
         let learned = read_registry(&registry)?;
@@ -729,6 +781,8 @@ mod tests {
             &extract,
             &no_fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
         let learned = read_registry(&registry)?;
         let entry = learned.lookup("neovim", DeltaSource::NixEval);
@@ -749,6 +803,8 @@ mod tests {
             &extract,
             &no_fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
         let entries = read_entries(&out)?;
         assert_eq!(entries.len(), 1);
@@ -766,7 +822,14 @@ mod tests {
         let mut inp = input(&dir, &out, &registry, None, None);
         inp.nixpkgs_new = inp.nixpkgs_old.clone();
         let extract = FakeExtractor::new();
-        run_record_with(&inp, &extract, &no_fetch_source, &no_brew_hint)?;
+        run_record_with(
+            &inp,
+            &extract,
+            &no_fetch_source,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
         // rev 不変・空素材 → append しない（ファイルが存在しない）。
         assert!(read_entries(&out)?.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -802,6 +865,8 @@ mod tests {
             &extract,
             &no_fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
         let entries = read_entries(&out)?;
         assert!(entries[0].packages[0].change_items.is_empty());
@@ -857,6 +922,8 @@ mod tests {
             &extract,
             &fetch_source,
             &no_brew_hint,
+            &no_eval,
+            &no_cask,
         )?;
 
         // 再利用 fetch は保存済み URL に対し 1 回だけ（機械解決の追加 fetch は踏まない）。
@@ -875,6 +942,87 @@ mod tests {
             after.lookup("neovim", DeltaSource::NixEval),
             Some(&saved_entry)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_computes_brew_cask_delta_and_records_version_only() -> Result<()> {
+        // homebrew.nix + 両 cask rev から cask 版差分を Rust（reqwest seam）で算出し、ノート未取得は
+        // version-only として記録する経路を network 抜きで固定する。
+        let dir = temp_dir("brew");
+        let homebrew = write_nix(&dir, "homebrew.nix", "casks = [ \"azookey\" ];");
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let mut inp = input(&dir, &out, &registry, None, None);
+        inp.homebrew_nix = Some(&homebrew);
+        inp.cask_rev_old = Some("oldrev");
+        inp.cask_rev_new = Some("newrev");
+        // cask fetch seam: rev に応じて azookey の version 文字列を返す（upgrade）。
+        let fetch_cask = |url: &str| -> Result<Option<String>> {
+            Ok(if url.contains("/oldrev/") {
+                Some("cask \"x\" do\n  version \"1.0\"\nend\n".to_string())
+            } else if url.contains("/newrev/") {
+                Some("cask \"x\" do\n  version \"1.1\"\nend\n".to_string())
+            } else {
+                None
+            })
+        };
+        let extract = FakeExtractor::new();
+        run_record_with(
+            &inp,
+            &extract,
+            &no_fetch_source,
+            &no_brew_hint,
+            &no_eval,
+            &fetch_cask,
+        )?;
+        let entries = read_entries(&out)?;
+        let pkg = &entries[0].packages[0];
+        assert_eq!(pkg.name, "azookey");
+        assert_eq!(pkg.source, PackageSource::Brew);
+        assert_eq!(pkg.old.as_deref(), Some("1.0"));
+        assert_eq!(pkg.new.as_deref(), Some("1.1"));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_evals_nix_new_via_seam_when_file_absent() -> Result<()> {
+        // `--nix-new` 未指定なら eval seam（本番は nix eval）で bump 後版を得る経路を固定する。
+        let dir = temp_dir("eval-new");
+        let old = write_nix(&dir, "old.json", r#"{"neovim":{"version":"0.10"}}"#);
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let mut inp = input(&dir, &out, &registry, Some(&old), None);
+        inp.nix_new = None;
+        let eval_new =
+            |_reference: &str| -> Result<std::collections::BTreeMap<String, NixPackage>> {
+                let mut map = std::collections::BTreeMap::new();
+                map.insert(
+                    "neovim".to_string(),
+                    NixPackage {
+                        version: "0.11".to_string(),
+                        repo: String::new(),
+                        notes_source: String::new(),
+                        homepage: String::new(),
+                    },
+                );
+                Ok(map)
+            };
+        let extract = FakeExtractor::new();
+        run_record_with(
+            &inp,
+            &extract,
+            &no_fetch_source,
+            &no_brew_hint,
+            &eval_new,
+            &no_cask,
+        )?;
+        let entries = read_entries(&out)?;
+        let pkg = &entries[0].packages[0];
+        assert_eq!(pkg.name, "neovim");
+        assert_eq!(pkg.new.as_deref(), Some("0.11"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

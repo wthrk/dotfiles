@@ -20,7 +20,6 @@ use std::time::Duration;
 use super::diff::{
     DeltaSource, NixPackage, VersionDelta, release_version, version_in_range, version_ordering,
 };
-use super::wire::ChangeKind;
 use super::wire::is_allowed_url;
 use crate::Result;
 
@@ -142,67 +141,6 @@ pub(crate) fn read_nix_versions(
         Err(error) => return Err(error.into()),
     };
     Ok(serde_json::from_str(&text)?)
-}
-
-/// 版不在を示す記号（brew 差分ファイルの `∅`）。
-const ABSENT: &str = "∅";
-
-/// brew tap 版差分ファイル（`name<TAB>old<TAB>new`）を読み、`BrewTap` 系統の delta へ翻訳する。
-///
-/// path が `None` / 不存在なら空（縮退）。両側不在・版変更なしの行は捨てる。版比較は domain 規則を共有する。
-pub(crate) fn read_brew_deltas(path: Option<&std::path::Path>) -> Result<Vec<VersionDelta>> {
-    let Some(path) = path else {
-        return Ok(Vec::new());
-    };
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(parse_brew_diff(&text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn parse_brew_diff(text: &str) -> Vec<VersionDelta> {
-    text.lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            let name = fields.next()?.trim();
-            let old_raw = fields.next()?.trim();
-            let new_raw = fields.next()?.trim();
-            if name.is_empty() {
-                return None;
-            }
-            let old = version_or_absent(old_raw);
-            let new = version_or_absent(new_raw);
-            let change = match (&old, &new) {
-                (None, None) => return None,
-                (None, Some(_)) => ChangeKind::Added,
-                (Some(_), None) => ChangeKind::Removed,
-                (Some(old_v), Some(new_v)) => match version_ordering(old_v, new_v) {
-                    std::cmp::Ordering::Equal => return None,
-                    std::cmp::Ordering::Less => ChangeKind::Upgraded,
-                    std::cmp::Ordering::Greater => ChangeKind::Downgraded,
-                },
-            };
-            Some(VersionDelta {
-                name: name.to_string(),
-                old,
-                new,
-                change,
-                source: DeltaSource::BrewTap,
-                repo: None,
-                notes_source: None,
-                homepage: None,
-            })
-        })
-        .collect()
-}
-
-fn version_or_absent(value: &str) -> Option<String> {
-    if value.is_empty() || value == ABSENT {
-        None
-    } else {
-        Some(value.to_string())
-    }
 }
 
 // ---- ノート取得 ----
@@ -550,8 +488,8 @@ fn cask_subdir(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! brew 差分パース・nix eval 読み取り・URL 変換・cask URL 構築・cask ヒント抽出・GitHub ヘッダ定数と、
-    //! 安全 fetch client 構成（redirect 不追従・https 限定・有界）・本文上限読みを network 抜きで固定する。
+    //! nix eval 読み取り・URL 変換・cask URL 構築・cask ヒント抽出・GitHub ヘッダ定数と、安全 fetch client
+    //! 構成（redirect 不追従・https 限定・有界）・本文上限読みを network 抜きで固定する。
 
     use super::*;
 
@@ -580,28 +518,6 @@ mod tests {
             GITHUB_API_VERSION_HEADER,
             ("X-GitHub-Api-Version", "2022-11-28")
         );
-    }
-
-    #[test]
-    fn parses_tab_separated_brew_versions_and_drops_noise() {
-        let text = "firefox\t120.0\t121.0\nslack\t∅\t4.36\nold-cask\t1.0\t∅\nbad line\nunchanged\t1\t1\nboth\t∅\t∅\n";
-        let deltas = parse_brew_diff(text);
-        assert_eq!(deltas.len(), 3);
-        assert_eq!(deltas[0].name, "firefox");
-        assert_eq!(deltas[0].change, ChangeKind::Upgraded);
-        assert_eq!(deltas[1].change, ChangeKind::Added);
-        assert_eq!(deltas[2].change, ChangeKind::Removed);
-        assert!(
-            !deltas
-                .iter()
-                .any(|d| d.name == "unchanged" || d.name == "both")
-        );
-    }
-
-    #[test]
-    fn brew_diff_determines_downgrade_via_domain_ordering() {
-        let deltas = parse_brew_diff("rolledback\t121.0\t120.0\n");
-        assert_eq!(deltas[0].change, ChangeKind::Downgraded);
     }
 
     #[test]
