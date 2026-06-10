@@ -1,17 +1,16 @@
 //! show / applied-summary use case: 履歴を読み、catch-up 範囲を集約し、重要度連動ビューを出力する。
 //!
-//! 読み出し → 範囲選択（rev/`at` カーソル）→ catch-up 集約 → severity/overall 再算出 → 描画（text/JSON）の順に
-//! 処理する。`last-applied-rev` が複数 bump 遅れていると適用は複数エントリを跨ぐため、跨いだ全 [`UpdateEntry`] を
-//! アプリ単位で集約する: `old` は最古適用版・`new` は最新適用版、change_item は決定論キー
-//! `(name, source, category, ref_url, text)` で重複排除し、severity / overall は集約後集合で record と同一規則
-//! （[`super::wire::severity_of`]）により再算出する（記録時と表示時で重要度規則を二重化しない）。
+//! 読み出し → 範囲選択（起点 rev）→ catch-up 集約 → severity/overall 再算出 → 描画（text/JSON）の順に処理する。
+//! 複数 bump を跨ぐ適用では複数エントリを跨ぐため、跨いだ全 [`UpdateEntry`] をアプリ単位で集約する: `old` は最古
+//! 適用版・`new` は最新適用版、change_item は決定論キー `(name, source, category, ref_url, text)` で重複排除し、
+//! severity / overall は集約後集合で record と同一規則（[`super::wire::severity_of`]）により再算出する（記録時と
+//! 表示時で重要度規則を二重化しない）。
 //!
 //! 描画は injection 安全: `text` / `notes_url` / `ref_url` / `name` は LLM 抽出または上流ノート由来で信頼境界外で
 //! あり、端末出力前に [`sanitize`] で ANSI escape・OSC・C0/C1 制御文字を除去する。JSON 出力（`--json`）は機械処理
 //! 向けの生データ契約のため sanitize せず原値を保つ。
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::Path;
 
 use super::record::read_entries;
@@ -215,42 +214,6 @@ fn select_entries(
     }
 }
 
-/// 「最後に要約し終えたエントリ」の `at` に一致する記録位置の **次**から、適用（記録）順でエントリを返す。
-///
-/// カーソル（`after_at`）は前回 [`last_entry_cursor`] が出力した `at` であり、その値に**完全一致**するエントリを
-/// 記録順（履歴ファイルの並び）で探し、その次のインデックス以降を取る。これにより `at` の文字列比較を避ける:
-/// RFC3339 は `+09:00` と `Z` のようにオフセット表記が混在しうるため、`>` での辞書順比較は時刻順と一致せず
-/// 前進・再表示抑止を誤りうる。記録順での位置選択は表記揺れに依存しない。
-///
-/// フォールバック: カーソルに完全一致するエントリが無い場合（履歴の prune 等で消えた）、安全側に倒して
-/// 全エントリを起点（最古）から返す（取りこぼしを防ぐ）。`after_at` が `None`（初回）も全エントリ。
-fn select_entries_after(
-    entries: &[UpdateEntry],
-    after_at: Option<&str>,
-    limit: Option<usize>,
-) -> Vec<UpdateEntry> {
-    let start = match after_at {
-        Some(after) => match entries.iter().position(|entry| entry.at == after) {
-            Some(index) => index + 1,
-            None => 0,
-        },
-        None => 0,
-    };
-    let span = entries.get(start..).unwrap_or(&[]).iter().cloned();
-    match limit {
-        Some(limit) => span.take(limit).collect(),
-        None => span.collect(),
-    }
-}
-
-/// 適用後要約のカーソル（last-summarized-at）を、選択 span の最後（最新）エントリの `at` に確定する。
-///
-/// record は 1 回で全変更パッケージを要約しきる（version-only 含め確定する）ため、pending 停止は無く、カーソルは
-/// 普通に前進する。空 span なら `None`。
-fn last_entry_cursor(entries: &[UpdateEntry]) -> Option<String> {
-    entries.last().map(|entry| entry.at.clone())
-}
-
 /// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
 ///
 /// `all=false` は宣言アプリ中心（既定）、`true` は低レベル依存も含める。update は常に全体適用のため出所で
@@ -397,26 +360,6 @@ pub(crate) fn run_show(
     let view = build_view(&selected, all);
     println!("{}", render(&view, json)?);
     Ok(())
-}
-
-/// auto 適用後要約: `after_at` カーソル以降の更新を集約・描画し、要約済みカーソルの新 `at` を返す。
-///
-/// `sink` には tty 時は stdout、非 tty 時は `pending-summary` writer を渡す。update は home/system 部分適用を
-/// 持たず常に全体適用なので、出所フィルタは設けず全パッケージを集約する。
-///
-/// record は 1 回で全変更パッケージを要約しきる（ノートが取れないものも version-only としてその場で確定する）ため、
-/// 返すカーソルは選択 span の最後（最新）エントリの `at` で、普通に前進する（[`last_entry_cursor`]）。version-only
-/// パッケージは描画で `[versionのみ]` 印を添えて見せる。
-pub(crate) fn render_applied_summary<W: Write>(
-    source: &Path,
-    summarized_after_at: Option<&str>,
-    mut sink: W,
-) -> Result<Option<String>> {
-    let entries = read_entries(source)?;
-    let selected = select_entries_after(&entries, summarized_after_at, None);
-    let view = build_view(&selected, false);
-    writeln!(sink, "{}", render(&view, false)?)?;
-    Ok(last_entry_cursor(&selected))
 }
 
 #[cfg(test)]
@@ -635,68 +578,6 @@ mod tests {
         assert!(select_entries(&entries, None, Some(0)).is_empty());
     }
 
-    fn entry_at(at: &str, nixpkgs: &str) -> UpdateEntry {
-        entry_with_revs(at, nixpkgs, nixpkgs, Vec::new())
-    }
-
-    #[test]
-    fn select_after_at_does_not_redisplay_n_to_n_entries() {
-        let entries = [
-            entry_at("2026-06-01T00:00:00Z", "N"),
-            entry_at("2026-06-02T00:00:00Z", "N"),
-            entry_at("2026-06-03T00:00:00Z", "N"),
-        ];
-        let first = select_entries_after(&entries, None, None);
-        assert_eq!(first.len(), 3);
-        // カーソルは最新エントリの at へ普通に前進する。
-        let marker = last_entry_cursor(&first);
-        assert_eq!(marker.as_deref(), Some("2026-06-03T00:00:00Z"));
-        assert!(select_entries_after(&entries, marker.as_deref(), None).is_empty());
-        // 対照: nixpkgs rev 起点だと毎回再選択する。
-        assert_eq!(select_entries(&entries, Some("N"), None).len(), 3);
-        assert_eq!(last_entry_cursor(&[]), None);
-    }
-
-    #[test]
-    fn select_after_at_uses_record_order_not_string_compare_across_offsets() {
-        // RFC3339 のオフセット表記が混在（`+09:00` と `Z`）すると `at` の辞書順比較は時刻順と一致しない。
-        // 例: 記録順では古い `2026-06-02T09:00:00+09:00`（=00:00Z）の文字列は、後発の `2026-06-02T01:00:00Z` より
-        // 辞書順で大きい。記録順（位置）選択ならこの揺れに依存せず正しく前進・再表示抑止できる。
-        let entries = [
-            entry_at("2026-06-02T09:00:00+09:00", "r0"),
-            entry_at("2026-06-02T01:00:00Z", "r1"),
-            entry_at("2026-06-02T11:00:00+09:00", "r2"),
-        ];
-        // 初回は全件。カーソルは最新（記録順で最後）の at。
-        let first = select_entries_after(&entries, None, None);
-        assert_eq!(first.len(), 3);
-        let marker = last_entry_cursor(&first);
-        assert_eq!(marker.as_deref(), Some("2026-06-02T11:00:00+09:00"));
-        // カーソル以降は無く、再表示しない（文字列 `>` 比較なら最後の `+09:00` が `Z` 始まりより大きく誤判定しうる）。
-        assert!(select_entries_after(&entries, marker.as_deref(), None).is_empty());
-
-        // 中間カーソル（オフセット付き）: 記録位置の次（`r1`,`r2`）だけを取る。文字列比較では
-        // `2026-06-02T09:00:00+09:00`（=00:00Z 相当）より大きい entry を取りこぼす/取り違える恐れがある。
-        let mid = select_entries_after(&entries, Some("2026-06-02T09:00:00+09:00"), None);
-        let revs: Vec<&str> = mid.iter().map(|e| e.nixpkgs_new.as_str()).collect();
-        assert_eq!(revs, vec!["r1", "r2"]);
-        assert_eq!(
-            last_entry_cursor(&mid).as_deref(),
-            Some("2026-06-02T11:00:00+09:00")
-        );
-    }
-
-    #[test]
-    fn select_after_at_falls_back_to_all_when_cursor_absent() {
-        // カーソルが履歴に存在しない（prune 等）場合は安全側に倒して全件（最古起点）を返す。
-        let entries = [
-            entry_at("2026-06-01T00:00:00Z", "r0"),
-            entry_at("2026-06-02T00:00:00Z", "r1"),
-        ];
-        let selected = select_entries_after(&entries, Some("1999-01-01T00:00:00Z"), None);
-        assert_eq!(selected.len(), 2);
-    }
-
     #[test]
     fn build_view_filters_declared_and_recomputes() {
         let declared = package(
@@ -834,16 +715,6 @@ mod tests {
         )
     }
 
-    /// 要約を Vec バッファへ描画し `(描画文字列, 要約済みカーソル)` を返す（テストの Write sink を 1 箇所に閉じる）。
-    fn render_to_string(
-        dir: &std::path::Path,
-        after_at: Option<&str>,
-    ) -> Result<(String, Option<String>)> {
-        let mut buf: Vec<u8> = Vec::new();
-        let cursor = render_applied_summary(dir, after_at, &mut buf)?;
-        Ok((String::from_utf8(buf)?, cursor))
-    }
-
     fn write_dir(tag: &str, entries: &[UpdateEntry]) -> Result<std::path::PathBuf> {
         let dir =
             std::env::temp_dir().join(format!("dotfiles-uh-show-{}-{tag}", std::process::id()));
@@ -853,33 +724,6 @@ mod tests {
             .iter()
             .try_for_each(|entry| append_entry(&dir.join("2026-06.toml"), entry))?;
         Ok(dir)
-    }
-
-    #[test]
-    fn applied_summary_resolves_across_chain_link_and_advances_cursor() -> Result<()> {
-        let dir = write_dir(
-            "cursor",
-            &[
-                entry_with_revs("2026-06-01T00:00:00Z", "r0", "r1", Vec::new()),
-                entry_with_revs(
-                    "2026-06-02T00:00:00Z",
-                    "r1",
-                    "r2",
-                    vec![show_package("neovim", ChangeCategory::Feature)],
-                ),
-            ],
-        )?;
-        let (rendered, cursor) = render_to_string(&dir, None)?;
-        assert!(rendered.contains("neovim"), "{rendered}");
-        assert_eq!(cursor.as_deref(), Some("2026-06-02T00:00:00Z"));
-
-        // カーソル以降は再表示しない。
-        let (r2, cursor2) = render_to_string(&dir, cursor.as_deref())?;
-        assert!(!r2.contains("neovim"));
-        assert!(r2.contains("0アプリ更新"));
-        assert_eq!(cursor2, None);
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
     }
 
     /// version-only パッケージ（ノートが取れず version + notes_url のみで確定。change_items 空）。
@@ -894,41 +738,6 @@ mod tests {
                 Vec::new(),
             )
         }
-    }
-
-    #[test]
-    fn applied_summary_cursor_advances_past_version_only() -> Result<()> {
-        // record は version-only もその場で確定するため、version-only エントリでカーソルが止まらず普通に前進する。
-        let first_at = "2026-06-01T00:00:00Z";
-        let later_at = "2026-06-02T00:00:00Z";
-        let dir = write_dir(
-            "version-only-cursor",
-            &[
-                entry_with_revs(first_at, "r0", "r1", vec![version_only_package("ghost")]),
-                entry_with_revs(
-                    later_at,
-                    "r1",
-                    "r2",
-                    vec![show_package("neovim", ChangeCategory::Feature)],
-                ),
-            ],
-        )?;
-        let (rendered, cursor) = render_to_string(&dir, None)?;
-        assert!(
-            rendered.contains("ghost"),
-            "version-only も描画する: {rendered}"
-        );
-        assert!(rendered.contains("[versionのみ]"), "{rendered}");
-        assert!(rendered.contains("neovim"), "{rendered}");
-        // version-only はカーソルを止めないため最新エントリまで前進する。
-        assert_eq!(cursor.as_deref(), Some(later_at), "版のみを越えて前進");
-
-        // カーソル以降は再表示しない（重複再公開なし）。
-        let (rendered2, cursor2) = render_to_string(&dir, cursor.as_deref())?;
-        assert!(!rendered2.contains("neovim"), "{rendered2}");
-        assert_eq!(cursor2, None);
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
     }
 
     #[test]

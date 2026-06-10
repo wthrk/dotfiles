@@ -17,9 +17,6 @@ mod update_history;
 pub type Result<T> = dotfiles_core::Result<T>;
 
 /// crate 公開の CLI 実行 entrypoint。
-///
-/// 終了コードを直接返す（`Ok` → 0 / `Err` → 1。詳細は [`cli::dispatch`]）。binary 側はこの `ExitCode` を
-/// そのままプロセス終了コードへ渡す。
-pub async fn dispatch() -> std::process::ExitCode {
+pub async fn dispatch() -> Result<()> {
     cli::dispatch().await
 }

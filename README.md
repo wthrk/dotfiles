@@ -26,29 +26,19 @@ sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になり
 
 ## 更新と適用
 
-導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` は適用対象を
-取らず、常に全体（macOS は nix-darwin が Home Manager も一括適用、非 macOS は Home Manager standalone）を
-適用します。
+導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
+flake の lock を更新（`nix flake update --flake <config_dir>`）してから、既存の `switch` と同じ適用処理を
+行います（macOS は nix-darwin が Home Manager も一括適用、非 macOS は Home Manager standalone）。
 
 ```sh
 dotfiles update
 ```
 
-`dotfiles update` は、ローカル flake の `flake.lock` が指す dotfiles リビジョン（repo pin）が前回適用済みと
-同じ場合は適用をスキップします。適用要否は暦日ではなく適用済みリビジョンで判定するため、同じ pin に対して
-何度実行しても再適用されません。適用状態は `$HOME/.local/state/dotfiles`（`XDG_STATE_HOME` 非依存・固定）の
-`last-applied-rev` に記録します。単一更新者・冪等を前提に同時実行は想定しません（排他ファイルは持たず、
-重複適用は適用済みリビジョン判定で抑止します）。適用後は更新内容の概要を表示し、端末が
-非対話（バックグラウンド適用）のときは `pending-summary` に追記して次回シェル操作時に表示します。
+ローカルに適用状態ファイルや marker は持たず、冪等性は nix 自身の lock / profile と switch の冪等性に委ねます。
+適用された更新の概要（version 差分と change_items）は repo の `docs/update-history/*.toml`（nightly CI が記録）
+にあり、`dotfiles update-history show` でいつでも閲覧できます。
 
-既定では dotfiles input だけを更新して推移的 nixpkgs を repo の lock に追従させます。ローカル flake の全入力を
-最新解決し直す場合は `--full` を付けます。
-
-```sh
-dotfiles update --full
-```
-
-更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。`update` と違い `switch` は
+更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。`update` / `switch` はいずれも
 適用対象を取り、`home` / `darwin` で部分適用できます（対象省略時は `all`）。
 
 ```sh
@@ -317,5 +307,5 @@ greedy 有効化の前提は「全 cask が sha256 固定」です。`sha256 :no
 rev の cask `.rb` を検査し、`sha256 :no_check` があれば fail-closed で停止します（cask 名を添えて中断）。cask を
 追加する際は、対象 cask の `.rb` が `sha256 "<hash>"` で固定されている（`sha256 :no_check` でない）ことを確認して
 ください。固定できない cask は `homebrew.nix` の `casks` から外し、必要なら手動更新へ寄せます。auto-update が cask
-を上げた事実は、適用後に `dotfiles update` の要約（端末 / `pending-summary`、`update-history show`）で更新アプリ
-として通知され、無人差し替えが不可視にならないようにしています。
+を上げた事実は、nightly CI が記録する `docs/update-history/*.toml`（`dotfiles update-history show` で閲覧）に更新
+アプリとして現れ、無人差し替えが不可視にならないようにしています。

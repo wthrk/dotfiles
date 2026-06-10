@@ -7,6 +7,11 @@ use std::process::ExitCode;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    // dispatch が各コマンドの `Result` を `ExitCode` へ変換し、エラー時は stderr へ出力してから非 0 を返す。
-    dotfiles_cli::dispatch().await
+    match dotfiles_cli::dispatch().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
 }

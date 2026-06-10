@@ -18,14 +18,12 @@
 }:
 let
   # auto-update daemon は nightly bump 後に各マシンを repo pin へ無人収束させる薄い launchd service である。
-  # **root のまま** `dotfiles update --config-dir <homeDir>/.config/dotfiles --no-sudo` を 09:00 に 1 回呼ぶ。適用
-  # 要否判定・home-manager/darwin 適用・要約/marker 書込みといった業務判断は **すべて `dotfiles update` CLI 側**に
-  # あり、wrapper は PATH を通して CLI を呼び、root 書込み分の所有権をユーザへ戻すだけの薄い層である。
-  #
-  # root 実行の理由: home-manager は nix-darwin モジュールとして組み込まれ、root の `darwin-rebuild switch` が
-  # system と home-manager を一度に適用する。`sudo -u <user>` で権限を落とすと darwin-rebuild が root を得られず
-  # 失敗するため落とさない。`--no-sudo` / `DOTFILES_DARWIN_REBUILD_SUDO=0` は root で darwin-rebuild に sudo を
-  # 前置しない正しい指定。
+  # launchd timer は 09:00 に 1 回だけ起動し、`sudo -u <user> dotfiles update` を **ユーザ権限**で呼ぶ。flake.lock
+  # 更新（`nix flake update`）はユーザ権限で走り flake.lock はユーザ所有のまま更新されるため、所有権の戻し処理を
+  # 持たない。system 適用（`darwin-rebuild switch`）は CLI 内の `sudo darwin-rebuild` が昇格して行い、
+  # 無人実行を成立させるため当該ユーザへ `darwin-rebuild switch` の NOPASSWD sudo を最小スコープで付与する。適用要否
+  # 判定・home-manager/darwin 適用といった業務判断はすべて `dotfiles update` CLI 側にあり、wrapper は PATH を通して
+  # CLI を呼ぶだけの薄い層である。
   autoUpdateLabel = "org.dotfiles.auto-update";
   homeDir = "/Users/${user}";
   configDir = "${homeDir}/.config/dotfiles";
@@ -36,11 +34,13 @@ let
   # 存在判定は `builtins.hasAttr` で行う。
   hasAutoUpdatePackage = builtins.hasAttr autoUpdateSystem inputs.self.packages;
 
-  # 絶対 store パスで CLI を指す（PATH 非依存。root daemon の最小環境で確実に解決するため）。
+  # 絶対 store パスで CLI を指す（PATH 非依存。launchd の最小環境で確実に解決するため）。
   dotfilesBin = "${inputs.self.packages.${autoUpdateSystem}.default}/bin/dotfiles";
 
   # makeBinPath で確実に解決できる `nix` / coreutils を先頭に置き、`darwin-rebuild` / `home-manager` は実行時
-  # profile から引く（build 時の store パスに固定できないため runtime profile で解決する）。
+  # profile から引く（build 時の store パスに固定できないため runtime profile で解決する）。CLI に焼き込まれた
+  # `DOTFILES_DARWIN_REBUILD` / `DOTFILES_HOME_MANAGER` 絶対パスが効くため、この PATH は `nix` / `sudo` の解決にだけ
+  # 使う。
   autoUpdatePath = lib.concatStringsSep ":" [
     (lib.makeBinPath [
       config.nix.package
@@ -54,35 +54,24 @@ let
     "/sbin"
   ];
 
-  # launchd timer が呼ぶ薄い wrapper。**root のまま** `dotfiles update --no-sudo` を 1 回 exec するだけ。PATH と
-  # `HOME` / `DOTFILES_DARWIN_REBUILD_SUDO=0` を渡して CLI へ委ねる。
+  # launchd timer が呼ぶ薄い wrapper。`sudo -u <user> dotfiles update` を 1 回 exec するだけ。`--config-dir` /
+  # `--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも switch_darwin が正しい
+  # `#<host>` を参照するよう渡す（無指定だと daemon が存在しない `#<current-host>` を引いて失敗しうる）。wrapper は
+  # `--config-dir` を明示で渡すため、CLI の config_dir 解決は HOME に依存せずユーザ dir を指す。
   autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg autoUpdatePath}
 
-    # root 実行で root 所有になった state dir / flake.lock をユーザへ戻す。zsh の pending-summary show-once は
-    # ユーザ権限の rename で消費するため、root 書込み分を戻さないと次回ユーザ実行が EACCES になる。`set -e` で
-    # update 失敗時もスクリプト終了時に必ず所有権を戻すよう、chown は EXIT trap に置く（成功・失敗どちらでも実行）。
-    #
-    # symlink を辿らず所有権を戻す。`chown` は既定で symlink を辿るため、ユーザ（または侵害されたユーザ
-    # セッション）が flake.lock や state dir 配下を任意パスへの symlink にすり替えると、root がその指す先の
-    # 所有権を変えうる。macOS(BSD) の `chown` は `-h`（symlink 自体を対象にし、辿らない）と `-R`（再帰）を
-    # 受ける。再帰の state dir は `-hR`、単一 flake.lock は `-h` を付け、symlink を辿らないことを明示する。
-    # best-effort（存在しなくても落とさない）。クリーンアップはシェル関数に置き、`trap` には関数名だけを
-    # 渡す。値（ユーザ名・パス）は trap 文字列に埋め込まず通常のコマンド文脈に置くため、空白・引用符を
-    # 含む任意の値でも安全に展開される。
-    restore_ownership() {
-      /usr/sbin/chown -hR ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true
-      /usr/sbin/chown -h ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true
-    }
-    trap restore_ownership EXIT
+    exec sudo -u ${lib.escapeShellArg user} ${dotfilesBin} update \
+      --config-dir ${lib.escapeShellArg configDir} --host ${lib.escapeShellArg host}
+  '';
 
-    # root のまま実行する。`HOME` をユーザの home に向け、CLI の state_dir() / config_dir がユーザ dir を指す
-    # ようにする。`--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも switch_darwin が
-    # 正しい `#<host>` を参照するよう渡す（無指定だと daemon が存在しない `#<current-host>` を引いて失敗しうる）。
-    env HOME=${lib.escapeShellArg homeDir} DOTFILES_DARWIN_REBUILD_SUDO=0 \
-      ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --host ${lib.escapeShellArg host} --no-sudo
+  # 無人 update を成立させるため、`dotfiles update` がユーザ権限で実行する CLI 内の `sudo darwin-rebuild switch` に
+  # だけ NOPASSWD を最小付与する。darwin-rebuild の store パスは build ごとに変わるためワイルドカードで指し、許可は
+  # `switch` サブコマンドに限定する（広い `darwin-rebuild *` や任意コマンドの sudo は与えない）。
+  autoUpdateSudoers = ''
+    ${user} ALL=(root) NOPASSWD: /nix/store/*-darwin-rebuild/bin/darwin-rebuild switch *
   '';
 in
 {
@@ -112,6 +101,13 @@ in
       StandardOutPath = "/var/log/${autoUpdateLabel}.out.log";
       StandardErrorPath = "/var/log/${autoUpdateLabel}.err.log";
     };
+  };
+
+  # auto-update daemon が存在する system でだけ sudoers 断片を置く。`sudo` は誤った権限の sudoers ファイルを無視
+  # するため、`environment.etc` の `mode` を `0440` に固定する。
+  environment.etc."sudoers.d/${autoUpdateLabel}" = lib.mkIf hasAutoUpdatePackage {
+    text = autoUpdateSudoers;
+    mode = "0440";
   };
 
   nix.settings = {

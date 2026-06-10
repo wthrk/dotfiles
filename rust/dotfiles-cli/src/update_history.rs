@@ -23,13 +23,15 @@ mod record;
 mod show;
 mod wire;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 
-use crate::Result;
+use crate::{Result, local_flake, process::run_capture};
 
-pub(crate) use show::render_applied_summary;
+/// 適用済み dotfiles flake input source 内の更新履歴ディレクトリ（`<source>/docs/update-history`）。
+const HISTORY_SUBDIR: &str = "docs/update-history";
 
 #[derive(Args)]
 /// 更新履歴の記録（CI）・閲覧（利用者）を分けて公開する最上位 command。
@@ -123,9 +125,12 @@ struct ShowOptions {
     /// 宣言アプリだけでなく全パッケージを表示する。
     #[arg(long)]
     all: bool,
-    /// 履歴を読む対象 source（ファイル/ディレクトリ）。省略時は state dir のローカル履歴複製。
+    /// 履歴を読む対象 source（ファイル/ディレクトリ）。省略時は適用済み dotfiles input source の更新履歴 dir。
     #[arg(long)]
     source: Option<PathBuf>,
+    /// 省略 source 解決に使うローカル flake の設定 dir（省略時は `$HOME/.config/dotfiles`）。
+    #[arg(long, env = "DOTFILES_CONFIG_DIR", value_name = "PATH")]
+    config_dir: Option<PathBuf>,
 }
 
 /// `update-history` サブコマンドを受けて record / eval-versions / lock-rev / show を駆動する。
@@ -189,10 +194,22 @@ fn run_record(options: RecordOptions) -> Result<()> {
     record::run_record(input, &extractor)
 }
 
+/// 利用者 `show`: 履歴 source を読み、起点 rev からの catch-up 区間を集約して stdout へ出力する。
+///
+/// `--source` 省略時は適用済み dotfiles input source の更新履歴 dir を解決する（`update` と同じ stateless 経路。
+/// 永続 state を参照しない）。source を解決できない（network 無し・nix 不在・archive 失敗等）場合は `Err` で止める。
 fn run_show(options: ShowOptions) -> Result<()> {
     let source = match options.source {
         Some(source) => source,
-        None => crate::update::history_local_dir()?,
+        None => {
+            let config_dir = crate::environment::config_dir(options.config_dir)?;
+            resolve_history_source(&config_dir).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "適用済み dotfiles input source の更新履歴を解決できませんでした\
+                     （`--source` で履歴 dir を明示してください）"
+                )
+            })?
+        }
     };
     show::run_show(
         &source,
@@ -201,4 +218,40 @@ fn run_show(options: ShowOptions) -> Result<()> {
         options.json,
         options.all,
     )
+}
+
+/// 適用済み dotfiles input source の `docs/update-history` dir を解決する（解決不能なら `None`）。
+///
+/// `show`（`--source` 未指定時）の既定 source。適用済み dotfiles flake input が指す realize 済み store path
+/// （`docs/update-history`）から offline・決定論で読み、永続 state を参照しない。
+fn resolve_history_source(config_dir: &Path) -> Option<PathBuf> {
+    resolve_input_source(config_dir).map(|source| source.join(HISTORY_SUBDIR))
+}
+
+/// 適用済み dotfiles flake input の **realize 済み source store path** を解決する（解決不能なら `None`）。
+///
+/// `nix flake archive <config-dir> --json --no-write-lock-file` の `inputs.<dotfiles>.path` を返す。metadata の
+/// `locked` でなく archive を使うのは、本番の github 型 input が metadata に `path` を持たないためである。
+/// network 無し・nix 不在・archive 失敗・JSON 解析失敗はいずれも `None` へ縮退する（履歴解決は best-effort）。
+fn resolve_input_source(config_dir: &Path) -> Option<PathBuf> {
+    let args = [
+        OsString::from("flake"),
+        OsString::from("archive"),
+        config_dir.as_os_str().to_os_string(),
+        OsString::from("--json"),
+        OsString::from("--no-write-lock-file"),
+    ];
+    let json = run_capture("nix", args).ok()?;
+    parse_input_source_path(&json, local_flake::INPUT_NAME).map(PathBuf::from)
+}
+
+/// `nix flake archive --json` 出力から指定 input の realize 済み source store path を抽出する純粋関数。
+fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(archive_json).ok()?;
+    value
+        .get("inputs")
+        .and_then(|inputs| inputs.get(input_name))
+        .and_then(|node| node.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
