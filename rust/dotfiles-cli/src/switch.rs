@@ -307,12 +307,27 @@ mod tests {
     //! Darwin 適用の sudo 有無で program 名と引数列が決まることを固定する。
     //! root daemon 経路（sudo 省略）と通常経路（sudo 昇格）の双方を引数列で検証する。
     //! あわせて `All` 展開がプラットフォームで分岐すること（macOS→darwin のみ・非 macOS→home のみ）を固定する。
+    //! さらに `switch` の適用対象が位置引数（`switch home|darwin|all`）として受理され、
+    //! `--target` オプションを要求しないことを clap パースで固定する。
 
     use std::ffi::OsString;
 
+    use clap::Parser;
+
     use super::{
-        SwitchTarget, darwin_rebuild_command, move_command, should_use_sudo, targets_for_all,
+        SwitchOptions, SwitchTarget, darwin_rebuild_command, move_command, should_use_sudo,
+        targets_for_all,
     };
+
+    /// `SwitchOptions` を `try_parse_from` で検証するための最小ラッパ。
+    ///
+    /// `SwitchOptions` は `Args` のみを derive するため、`Parser` を持つ型に flatten して引数列から
+    /// 直接パースできるようにする（位置引数の受理可否をプロセス起動なしで固定するための入口）。
+    #[derive(Parser)]
+    struct ParseHarness {
+        #[command(flatten)]
+        options: SwitchOptions,
+    }
 
     /// `SwitchTarget` は `PartialEq` を持たないので、All 展開を識別子で比較できるよう文字列へ写す。
     fn target_names(targets: &[SwitchTarget]) -> Vec<&'static str> {
@@ -324,6 +339,21 @@ mod tests {
                 SwitchTarget::All => "all",
             })
             .collect()
+    }
+
+    /// パース済みの省略可能な適用対象を識別子へ写す（省略時は `None`）。
+    fn parsed_target_name(target: Option<SwitchTarget>) -> Option<&'static str> {
+        target.map(|target| match target {
+            SwitchTarget::Home => "home",
+            SwitchTarget::Darwin => "darwin",
+            SwitchTarget::All => "all",
+        })
+    }
+
+    /// 引数列を `switch` 相当のパースに通し、受理時は適用対象の識別子を返す。
+    fn parse_target(args: &[&str]) -> std::result::Result<Option<&'static str>, clap::error::Error> {
+        let iter = std::iter::once("dotfiles-switch").chain(args.iter().copied());
+        ParseHarness::try_parse_from(iter).map(|parsed| parsed_target_name(parsed.options.target))
     }
 
     #[test]
@@ -409,5 +439,39 @@ mod tests {
         assert!(!should_use_sudo(true, Some("1")));
         // env `0` は省略する。
         assert!(!should_use_sudo(false, Some("0")));
+    }
+
+    #[test]
+    fn switch_accepts_positional_targets() {
+        // README の `dotfiles switch home|darwin|all` どおり、適用対象が位置引数として受理される。
+        assert_eq!(parse_target(&["home"]).ok(), Some(Some("home")));
+        assert_eq!(parse_target(&["darwin"]).ok(), Some(Some("darwin")));
+        assert_eq!(parse_target(&["all"]).ok(), Some(Some("all")));
+    }
+
+    #[test]
+    fn switch_target_is_optional() {
+        // 対象省略時もパースは成功し、適用対象は未指定（`None`）になる（既定は `All` へ落ちる）。
+        assert_eq!(parse_target(&[]).ok(), Some(None));
+    }
+
+    #[test]
+    fn switch_rejects_target_as_option() {
+        // 適用対象は位置引数であり `--target` オプションは存在しない。`--target home` は拒否される。
+        let error = parse_target(&["--target", "home"]);
+        assert!(error.is_err());
+        if let Err(error) = error {
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn switch_rejects_unknown_target_value() {
+        // 位置引数は `ValueEnum` で検証され、未知の値は拒否される。
+        let error = parse_target(&["bogus"]);
+        assert!(error.is_err());
+        if let Err(error) = error {
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        }
     }
 }

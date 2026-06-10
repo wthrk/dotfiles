@@ -4,7 +4,9 @@ name: nightly update
 #
 # 設計（単純版・App 不要・GITHUB_TOKEN + OPEN_AI_API_KEY 完結）:
 #   - パイプラインのロジックは全て `dotfiles update-history`（Rust）が持つ。eval 整形・owner/repo 導出・nix 版
-#     差分・brew cask 版差分（reqwest で cask `.rb` 取得・version 解析・auto_updates 除外）・flake.lock rev 抽出は
+#     差分・brew cask 版差分（reqwest で cask `.rb` 取得・version 解析。`homebrew.nix` の `greedyCasks = true` に
+#     合わせ `auto_updates true` の cask も追跡対象。`sha256 :no_check` の未固定成果物は fail-closed で停止）・
+#     flake.lock rev 抽出は
 #     Rust に集約し、workflow は避けられない nix tool 呼び出し（Rust が起動する `nix eval` / `nix flake update`）と
 #     薄いオーケストレーション（checkout / install nix / bump / record 起動 / upload / PR）だけを行う。
 #   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
