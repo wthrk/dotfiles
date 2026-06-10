@@ -351,7 +351,9 @@ mod tests {
     }
 
     /// 引数列を `switch` 相当のパースに通し、受理時は適用対象の識別子を返す。
-    fn parse_target(args: &[&str]) -> std::result::Result<Option<&'static str>, clap::error::Error> {
+    fn parse_target(
+        args: &[&str],
+    ) -> std::result::Result<Option<&'static str>, clap::error::Error> {
         let iter = std::iter::once("dotfiles-switch").chain(args.iter().copied());
         ParseHarness::try_parse_from(iter).map(|parsed| parsed_target_name(parsed.options.target))
     }
