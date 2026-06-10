@@ -25,7 +25,6 @@ pub(super) struct JsonReportAdapter;
 impl ReportPort for JsonReportAdapter {
     fn write_enroll_report(&self, summary: &EnrollSummary) -> Result<()> {
         let payload = json!({
-            "serial": summary.serial,
             "role": report_role(summary.role),
             "checks": report_checks(&summary.checks),
         });
@@ -34,7 +33,6 @@ impl ReportPort for JsonReportAdapter {
 
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()> {
         let payload = json!({
-            "serial": summary.serial,
             "checks": report_checks(&summary.checks),
         });
         write_json_report(&payload)
@@ -42,7 +40,6 @@ impl ReportPort for JsonReportAdapter {
 
     fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()> {
         let payload = json!({
-            "primary_fingerprint": summary.primary_fingerprint,
             "ssh_key_registered": summary.ssh_key_registered,
             "ssh_support_ready": summary.ssh_support_ready,
         });

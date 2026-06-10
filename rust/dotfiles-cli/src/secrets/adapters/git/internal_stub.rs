@@ -37,6 +37,8 @@ struct GitStubSpec {
     /// clone 後に store 内へサンプル `*.gpg` entry が観測されるか（復号確認対象の有無）。
     #[serde(default = "default_true")]
     sample_entry_present: bool,
+    /// 設定済み local `origin` remote URL の観測値。
+    configured_origin_remote: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -57,6 +59,7 @@ struct GitDatastore {
     gpg_id_present: bool,
     gpg_id_recipients: Vec<String>,
     sample_entry_present: bool,
+    configured_origin_remote: Option<String>,
     cloned_remotes: Vec<String>,
 }
 
@@ -98,6 +101,10 @@ impl PasswordStorePort for PasswordStoreStub {
             })
         })
     }
+
+    fn configured_origin_remote(&self) -> Result<Option<String>> {
+        with_datastore(|store| Ok(store.configured_origin_remote.clone()))
+    }
 }
 
 impl GitClonePort for GitCloneStub {
@@ -137,6 +144,7 @@ fn load_datastore() -> Result<GitDatastore> {
         gpg_id_present: spec.gpg_id_present,
         gpg_id_recipients: spec.gpg_id_recipients,
         sample_entry_present: spec.sample_entry_present,
+        configured_origin_remote: spec.configured_origin_remote,
         cloned_remotes: Vec::new(),
     })
 }

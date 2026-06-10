@@ -25,7 +25,7 @@
 - encrypted envelope は UTF-8 JSON で保存し、`version: 1` を固定する。top-level は `version` / `metadata` / `recipients` / `ciphertext` の 4 要素とする。
 - `metadata` は `primary_fingerprint`（lowercase hex 40 文字、区切りなし）、`exported_at`（UTC RFC3339）、`dek_alg`（`aes-256-gcm` 固定）、`recipient_kek_alg`（`rsa-oaep-sha256` 固定）を必須とする。
 - `ciphertext` は `nonce`、`body`、`tag` を base64 文字列で保持する。`nonce` は AES-GCM nonce 12 bytes、`body` は DEK で暗号化した OpenPGP backup bytes、`tag` は AES-GCM authentication tag 16 bytes とする。`tag` を `body` へ連結しない。
-- `recipients` は 1 件以上必須とし、要素は `yubikey_serial`（10 進文字列）、`piv_slot`（string, `82` 固定）、`public_key_fingerprint`（PIV slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 で digest した lowercase hex 64 文字、区切りなし）、`wrapped_dek`（base64）を必須とする。
+- `recipients` は primary と spare の事前登録を監査できるよう 2 件以上を運用到達条件とし、要素は `yubikey_serial`（10 進文字列）、`piv_slot`（string, `82` 固定）、`public_key_fingerprint`（PIV slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 で digest した lowercase hex 64 文字、区切りなし）、`wrapped_dek`（base64）を必須とする。
 - `restore-gpg` は YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
 - `restore-gpg` は接続中 YubiKey と envelope recipient の照合に成功した場合のみ data encryption key を unwrap し、復号した backup を import へ渡す。
 - GPG 鍵リングの import API は `gpgme` に固定し、通常実装で `gpg` CLI は使わない。
@@ -40,19 +40,18 @@
 
 ## backup export 入力契約
 
-`gpg-secret-key-backup` の envelope 作成入力は、既存環境のローカル鍵リングから得た OpenPGP transferable secret key bytes とする。export 対象は利用者が指定した primary fingerprint 1 件に限定し、export 前に encryption / authentication / signing subkey が揃っていることを検証する。
+`gpg-secret-key-backup` の envelope 作成入力は、既存環境のローカル鍵リングから得た OpenPGP transferable secret key bytes とする。export 対象は、設定済み password-store の `.gpg-id` が単一 primary に解決できる場合はその primary fingerprint 1 件に限定する。password-store が未設定、または `.gpg-id` が存在しない / 空の場合だけ、ローカル鍵リング上の使用可能な secret primary key の 0 件 / 1 件 / 複数件を一意解決する。export 前に encryption / authentication / signing subkey が揃っていることを検証する。
 
-export は `gpgme` の in-memory export API を使う。通常実装で `gpg --export-secret-keys` などの外部 CLI は使わず、secret key material を argv、shell history、ログ、永続一時ファイルへ出さない。export 直後の bytes は `sequoia-openpgp` で再解析し、導出した primary fingerprint が指定値と一致する場合だけ envelope 化へ進む。
+export は `gpgme` の in-memory export API を使う。通常実装で `gpg --export-secret-keys` などの外部 CLI は使わず、secret key material を argv、shell history、ログ、永続一時ファイルへ出さない。export 直後の bytes は `sequoia-openpgp` で再解析し、導出した primary fingerprint が解決済み primary fingerprint と一致する場合だけ envelope 化へ進む。
 
-envelope 化では、export bytes をそのまま ASCII armor へ変換せず、AES-256-GCM の DEK で暗号化する。DEK は接続中 YubiKey の slot `82` 公開鍵 recipient ごとに RSA-OAEP-SHA256 で wrap し、`recipients` に保存する。DEK、復号済み backup、export bytes は保護境界内の一時値として扱い、外部 command や永続ファイルへ渡さない。
+envelope 化では、export bytes をそのまま ASCII armor へ変換せず、AES-256-GCM の DEK で暗号化する。保存可能な envelope は primary と spare の各 YubiKey の slot `82` 公開鍵 recipient ごとに DEK を RSA-OAEP-SHA256 で wrap し、`recipients` に 2 件以上を保存する。現行の `gpg-backup register` は接続中 YubiKey 1 本の recipient しか取得できないため、BWS 同名 secret が 0 件の新規作成では 1 recipient envelope を作成せず停止する。DEK、復号済み backup、export bytes は保護境界内の一時値として扱い、外部 command や永続ファイルへ渡さない。
 
-## recipient 運用 / BWS 更新契約
+## recipient 運用 / BWS 登録契約
 
-- primary 登録時は接続中 YubiKey の recipient を 1 件作成し、`recipients` 初期値として保存する。
-- spare 追加時は既存 envelope を復号して同一 DEK を使い、spare recipient の `wrapped_dek` を `recipients` へ追加して同一 secret name を更新する（`ciphertext` は変更しない）。この更新も BWS secret の read-modify-write として扱い、更新前に読み出した revision / updatedAt / ETag 相当の更新識別子（取得不可の場合は exact UTF-8 secret value bytes の SHA-256 digest）を保持し、更新直前に再取得した現行値と一致する場合だけ上書きする。
+- primary 登録時は primary と spare の recipient が揃っていることを到達条件とし、新規作成経路でも 1 recipient だけの `gpg-secret-key-backup` を BWS に永続化して成功扱いしない。
 - recipient 照合は `yubikey_serial` と `public_key_fingerprint` の両方一致を必須とし、片方のみ一致は不正扱いで停止する。
-- recipient 追加を含む envelope 更新（spare 追加、reencrypt、置換更新）では、更新前に BWS から読み出した現行 secret の revision / updatedAt / ETag 相当の更新識別子を既知値として保持し、更新直前に再取得した現行 secret の更新識別子が一致することを確認する。SDK で更新識別子を取得できない場合は、最初に読み出した exact UTF-8 secret value bytes の SHA-256 digest を保持し、更新直前に再取得した exact value bytes の digest と一致する場合だけ上書きする。`version` と `metadata.primary_fingerprint` だけを stale overwrite 防止条件に使わない。
-- BWS 更新は対話実行では project/secret 名と envelope `metadata.primary_fingerprint` を表示して明示確認後に実行し、非対話実行では明示的上書き許可 option がある場合だけ更新する。
+- `gpg-backup register` / BWS 外部確認は同名 secret が 1 件の場合でも `metadata.primary_fingerprint`、接続中 YubiKey recipient の一致、primary/spare の 2 recipient 以上が揃っていることを確認する。1 recipient の envelope は primary 紛失時の復旧経路を満たさないため成功扱いにしない。複数件なら停止する。
+- envelope を変更する CLI 経路は提供しない。
 
 ## GPG import API 決定
 
@@ -88,7 +87,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 
 1. YubiKey から `bws-access-token` を取得する。
 2. Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得する。
-3. 取得値の envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient がない場合は停止する。
+3. 取得値の envelope 形式（version / metadata / recipients / ciphertext）と primary/spare の 2 recipient 以上が揃う復旧到達状態を検証し、接続中 YubiKey と一致する recipient がない場合は停止する。
 4. 接続中 YubiKey で data encryption key を unwrap して復号済み backup を得る。
 5. 復号済み backup から primary fingerprint を導出し、envelope `metadata.primary_fingerprint` と一致しない場合は停止する。
 6. import 前に、同一 primary fingerprint の secret key が既存の鍵リングにあるか確認し、存在する場合は停止する。
@@ -109,7 +108,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 `export-ssh-public-key` は次の契約を満たす。
 
 - 入力はローカル鍵リング上の GPG authentication subkey とする。
-- primary key の指定は必須 option `--primary-fingerprint <40-hex-fingerprint>` で受け取り、その primary key に属する authentication subkey から SSH 公開鍵を導出する。
+- primary key は、設定済み password-store の `.gpg-id` が単一 primary に解決できる場合はその primary を使う。鍵リングに複数の使用可能な secret primary key があっても、`.gpg-id` が単一 primary に解決できる場合は曖昧扱いにしない。password-store が未設定、または `.gpg-id` が存在しない / 空の場合だけ、使用可能な secret primary key の 0 件 / 1 件 / 複数件を一意解決し、0 件または複数件の場合は対象を選ばず停止する。
 - 出力は OpenSSH 公開鍵 1 行のみとし、機械可読な形式で stdout へ書く。
 - stdout が terminal である場合も公開鍵の出力は許可する（秘密情報ではないため）。
 - GitHub API 呼び出しや鍵サーバー参照を内部で行わない。
@@ -166,14 +165,14 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 
 ### `dotfiles gpg export-ssh-public-key`
 
-- `--primary-fingerprint <40-hex-fingerprint>` で指定した primary key の authentication subkey 由来の SSH 公開鍵を出力する。
+- application は設定済み password-store の `.gpg-id` を優先して primary key を決め、未設定の場合だけ GPG keyring port から得た使用可能な secret primary key 候補を一意解決する。解決した primary key の authentication subkey 由来の SSH 公開鍵を出力する。
 - 出力は GitHub SSH keys 登録用途に限定する。
 
 ## 停止条件
 
 - `bws-access-token` が取得できない。
 - Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得できない。
-- backup envelope の形式検証（version / metadata / recipients / ciphertext）に失敗する。
+- backup envelope の形式検証（version / metadata / recipients / ciphertext）に失敗する、または primary/spare の 2 recipient 以上が揃っていない。
 - 接続中 YubiKey と一致する recipient が存在しない。
 - data encryption key の unwrap または backup 復号に失敗する。
 - 復号済み backup の primary fingerprint が envelope `metadata.primary_fingerprint` と一致しない。

@@ -7,19 +7,15 @@
 //! ため、この module に閉じる。鍵リング実装・process I/O・ハードウェア依存は持たず、
 //! 純粋な値・検証・照合だけを扱う。secret 平文や復号済み backup はこの層へ載せない。
 //!
-//! この型群は domain 層のみを実装する増分で追加されており、`restore-gpg` / BWS recipient
-//! 更新などの consumer 配線は後続増分で行う。それまでは domain value の検証済み読み取り面が
-//! 未使用となるため、module 単位で `dead_code` を許容する（consumer 配線時に解消する）。
+//! `restore-gpg` / BWS primary 登録で使う読み取り面以外にも、schema 境界として保持する検証済み値が
+//! あるため、module 単位で `dead_code` を許容する。
 #![allow(
     dead_code,
-    reason = "restore-gpg / BWS recipient consumers wire a subset of these validated read accessors; \
-              the remainder stay as domain read surface for the export / spare-update paths"
+    reason = "restore-gpg / BWS primary registration consumers wire a subset of these validated read accessors"
 )]
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
 use crate::Result;
+use serde::{Deserialize, Serialize};
 
 /// envelope が固定する schema version。
 const ENVELOPE_VERSION: u8 = 1;
@@ -78,8 +74,18 @@ pub struct EnvelopeRecipient {
 }
 
 /// primary key fingerprint を lowercase hex 40 文字（区切りなし）に正規化した値。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PrimaryFingerprint(String);
+
+/// ローカル GPG secret primary key 候補の domain 表現。
+///
+/// 鍵リング adapter は候補列挙だけを行い、0 件 / 1 件 / 複数件の停止条件はこの domain 型で
+/// 解決する。caller は曖昧な鍵を自動選択せず、`.gpg-id` など別の既存設定がある場合だけ
+/// その設定から得た fingerprint を使う。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretPrimaryKeyCandidates {
+    fingerprints: Vec<PrimaryFingerprint>,
+}
 
 /// PIV slot 公開鍵 fingerprint を lowercase hex 64 文字（区切りなし）に正規化した値。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,49 +255,40 @@ impl GpgBackupEnvelope {
             .ok_or_else(|| invalid_data("no gpg backup recipient matches the connected YubiKey"))
     }
 
-    /// 検証済みの構成要素から envelope を直接組み立てる。
+    /// primary と spare の事前登録を監査するため、復旧 recipient が複数あることを確認する。
     ///
-    /// backup export + envelope 化（primary 登録）で使う。`metadata` / `ciphertext` / `recipients`
-    /// は構築済み domain 値であり、recipients が空でないことだけをここで再確認する。schema 検証は
-    /// 各構成要素の構築時に完了している。
+    /// 1 recipient の envelope は接続中 YubiKey では復旧できても、primary 紛失時に spare 側へ
+    /// DEK unwrap 経路を提供しない。BWS 外部確認はこの状態を成功扱いにせず、少なくとも 2 件の
+    /// recipient が事前登録済みであることを復旧可能性の到達条件として強制する。
+    pub fn ensure_spare_recipient_registered(&self) -> Result<()> {
+        if self.recipients.len() < 2 {
+            return Err(invalid_data(
+                "gpg backup envelope must include primary and spare YubiKey recipients",
+            ));
+        }
+        Ok(())
+    }
+
+    /// 検証済みの構成要素から復旧可能 envelope を直接組み立てる。
+    ///
+    /// backup export + envelope 化（primary 登録）で使う。新規保存経路では primary/spare の
+    /// 2 recipient 以上を復旧到達条件として強制し、1 recipient の envelope を BWS へ永続化させない。
+    /// 既存保存値の schema parse は互換確認のため 1 recipient 以上を受理し、運用到達条件は
+    /// [`Self::ensure_spare_recipient_registered`] で確認する。
     pub fn assemble(
         metadata: EnvelopeMetadata,
         recipients: Vec<EnvelopeRecipient>,
         ciphertext: EnvelopeCiphertext,
     ) -> Result<Self> {
-        if recipients.is_empty() {
+        if recipients.len() < 2 {
             return Err(invalid_data(
-                "gpg backup envelope must have at least one recipient",
+                "gpg backup envelope must include primary and spare YubiKey recipients",
             ));
         }
         Ok(Self {
             metadata,
             recipients,
             ciphertext,
-        })
-    }
-
-    /// 既存 envelope へ spare recipient を追加した新しい envelope を返す。
-    ///
-    /// 設計「recipient 運用 / BWS 更新契約」の spare 追加に対応する。`ciphertext` と `metadata` は
-    /// 変更せず、同一 serial の recipient が既にある場合は重複登録を停止条件として拒否する。
-    /// caller は同一 DEK を spare recipient 公開鍵で wrap した `wrapped_dek` を渡す責務を負う。
-    pub fn with_added_recipient(&self, recipient: EnvelopeRecipient) -> Result<Self> {
-        if self
-            .recipients
-            .iter()
-            .any(|existing| existing.yubikey_serial == recipient.yubikey_serial)
-        {
-            return Err(invalid_data(
-                "gpg backup envelope already has a recipient for this YubiKey serial",
-            ));
-        }
-        let mut recipients = self.recipients.clone();
-        recipients.push(recipient);
-        Ok(Self {
-            metadata: self.metadata.clone(),
-            recipients,
-            ciphertext: self.ciphertext.clone(),
         })
     }
 }
@@ -448,7 +445,7 @@ impl EnvelopeRecipient {
 
     /// 接続中 YubiKey の照合値と wrap 済み DEK から recipient を構築する。
     ///
-    /// backup export（primary 登録）と spare 追加で使う。`serial` は 10 進文字列、
+    /// backup export（primary 登録）で使う。`serial` は 10 進文字列、
     /// `public_key_fingerprint` は既に lowercase hex 64 文字へ正規化済みの domain 値、
     /// `wrapped_dek` は RSA-OAEP-SHA256 で wrap した非空 bytes でなければならない。
     /// 値そのものは構築時にこの module の保存可能条件で再検証する。
@@ -496,71 +493,13 @@ impl ConnectedYubiKey {
         let serial = serial.into();
         if serial.is_empty() || !serial.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(invalid_data(
-                "connected YubiKey serial must be a decimal string",
+                "connected YubiKey recipient identity must be a decimal string",
             ));
         }
         Ok(Self {
             serial,
             public_key_fingerprint: PublicKeyFingerprint::parse(public_key_fingerprint)?,
         })
-    }
-}
-
-/// BWS の `gpg-secret-key-backup` secret を read-modify-write で更新するときに、
-/// 更新前後の現行値が変化していないことを確認する stale overwrite 防止 guard。
-///
-/// 設計「recipient 運用 / BWS 更新契約」は、更新識別子（revision / updatedAt / ETag 相当）が
-/// 取得できればそれを、取得できなければ最初に読み出した exact UTF-8 secret value bytes の
-/// SHA-256 digest を既知値として保持し、更新直前に再取得した現行値の更新識別子（または digest）が
-/// 一致する場合だけ上書きすることを要求する。`version` と `metadata.primary_fingerprint` だけを
-/// 防止条件に使ってはならない。この判定は SDK 実装を差し替えても変わらない業務規則であるため
-/// domain に閉じる。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackupUpdateGuard {
-    /// SDK が提供する更新識別子（revision / updatedAt / ETag 相当）。
-    Revision(String),
-    /// 更新識別子を取得できない場合の、exact secret value bytes の SHA-256 digest（lowercase hex）。
-    ValueDigest(String),
-}
-
-impl BackupUpdateGuard {
-    /// SDK 更新識別子から guard を作る。空文字列は識別子として扱わず digest fallback を促す。
-    pub fn from_revision(revision: impl Into<String>) -> Option<Self> {
-        let revision = revision.into();
-        if revision.is_empty() {
-            None
-        } else {
-            Some(Self::Revision(revision))
-        }
-    }
-
-    /// exact secret value bytes の SHA-256 digest から guard を作る（更新識別子 fallback）。
-    pub fn from_value_bytes(bytes: &[u8]) -> Self {
-        let digest = Sha256::digest(bytes);
-        let mut hex = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            hex.push_str(&format!("{byte:02x}"));
-        }
-        Self::ValueDigest(hex)
-    }
-
-    /// SDK 更新識別子が空でなければ revision guard、なければ value digest guard を作る。
-    pub fn from_revision_or_value(revision: impl Into<String>, value: &[u8]) -> Self {
-        Self::from_revision(revision).unwrap_or_else(|| Self::from_value_bytes(value))
-    }
-
-    /// 更新直前に再取得した現行 guard と一致する場合だけ上書きを許可する。
-    ///
-    /// 一致しない場合は stale overwrite として停止条件にする。識別子の種類（revision / digest）が
-    /// 異なる場合も不一致として扱い、`version` / `primary_fingerprint` だけで判断させない。
-    pub fn ensure_matches(&self, current: &Self) -> Result<()> {
-        if self == current {
-            Ok(())
-        } else {
-            Err(invalid_data(
-                "gpg backup secret changed since it was read; refusing to overwrite (stale update)",
-            ))
-        }
     }
 }
 
@@ -589,6 +528,34 @@ impl PrimaryFingerprint {
     /// 正規化済み lowercase hex 文字列を借用する。
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl SecretPrimaryKeyCandidates {
+    /// adapter が列挙した使用可能 secret primary fingerprint 候補を保持する。
+    pub fn new(fingerprints: Vec<PrimaryFingerprint>) -> Self {
+        Self { fingerprints }
+    }
+
+    /// 使用可能 secret primary key が 1 件だけの場合に fingerprint を返す。
+    ///
+    /// 0 件または複数件は、利用者入力で補わせず停止する domain failure である。
+    pub fn resolve_unique(self) -> Result<PrimaryFingerprint> {
+        let mut fingerprints = self.fingerprints;
+        fingerprints.sort();
+        fingerprints.dedup();
+        match fingerprints.len() {
+            0 => Err(invalid_data("GPG secret key is not available")),
+            1 => Ok(fingerprints.remove(0)),
+            _ => Err(invalid_data(
+                "multiple GPG secret keys are available; refusing to choose a primary fingerprint",
+            )),
+        }
+    }
+
+    /// 候補一覧を借用する。domain/application tests が候補列挙契約を確認するための観測口。
+    pub fn fingerprints(&self) -> &[PrimaryFingerprint] {
+        &self.fingerprints
     }
 }
 
@@ -995,6 +962,33 @@ mod tests {
         assert_eq!(recipient.wrapped_dek(), b"wrapped-dek-bytes");
     }
 
+    /// 既存保存値として parse できる 1 recipient envelope でも、復旧到達条件では拒否する。
+    #[test]
+    fn spare_recipient_check_rejects_single_recipient_envelope() {
+        let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
+
+        assert!(
+            envelope.ensure_spare_recipient_registered().is_err(),
+            "one-recipient envelope must not satisfy primary/spare recovery reachability"
+        );
+    }
+
+    /// 新規 envelope 組み立てでは 1 recipient の BWS 永続化を domain rule で拒否する。
+    #[test]
+    fn assemble_rejects_single_recipient_envelope() {
+        let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
+        let result = GpgBackupEnvelope::assemble(
+            envelope.metadata().clone(),
+            envelope.recipients().to_vec(),
+            envelope.ciphertext().clone(),
+        );
+
+        assert!(
+            result.is_err(),
+            "new envelope assembly must require primary and spare recipients"
+        );
+    }
+
     /// 検証済み envelope は canonical JSON へ round-trip する。
     #[test]
     fn valid_envelope_round_trips_through_json() {
@@ -1253,7 +1247,7 @@ mod tests {
         assert_eq!(parsed.as_str(), PRIMARY_FP);
     }
 
-    /// 接続中 YubiKey serial が 10 進でない場合は照合入力構築で拒否する。
+    /// 接続中 YubiKey の recipient identity が 10 進でない場合は照合入力構築で拒否する。
     #[test]
     fn rejects_non_decimal_connected_serial() {
         assert!(ConnectedYubiKey::new("12ab", PUBKEY_FP).is_err());
@@ -1470,49 +1464,6 @@ mod tests {
                 "expected wire public_key_fingerprint {invalid:?} to be rejected"
             );
         }
-    }
-
-    /// stale-overwrite 防止 guard は同一値で `Ok`、不一致値で `Err` を返す。
-    ///
-    /// 設計「recipient 運用 / BWS 更新契約」L121-126 の停止条件（更新前 guard と更新直前の現行 guard が
-    /// 一致する場合だけ上書き）を domain rule として直接駆動する。Revision 同士・ValueDigest 同士の
-    /// 値不一致に加え、種類（Revision / ValueDigest）が異なる場合も不一致として停止することを観測する。
-    #[test]
-    fn backup_update_guard_matches_only_identical_value() {
-        let revision_a = BackupUpdateGuard::Revision("rev-1".to_owned());
-        let revision_b = BackupUpdateGuard::Revision("rev-2".to_owned());
-        let digest_a = BackupUpdateGuard::from_value_bytes(b"current-value");
-        let digest_b = BackupUpdateGuard::from_value_bytes(b"changed-value");
-
-        // 一致: 同一 revision / 同一 digest は上書きを許可する。
-        ok(
-            revision_a.ensure_matches(&revision_a.clone()),
-            "matching revision guard",
-        );
-        ok(
-            digest_a.ensure_matches(&BackupUpdateGuard::from_value_bytes(b"current-value")),
-            "matching value-digest guard",
-        );
-
-        // 不一致: revision 値違い・digest 値違いは stale-overwrite として停止する。
-        assert!(
-            revision_a.ensure_matches(&revision_b).is_err(),
-            "differing revision must stop the overwrite"
-        );
-        assert!(
-            digest_a.ensure_matches(&digest_b).is_err(),
-            "differing value digest must stop the overwrite"
-        );
-
-        // 種類違い（Revision vs ValueDigest）も不一致として停止する。
-        assert!(
-            revision_a.ensure_matches(&digest_a).is_err(),
-            "differing guard kind must stop the overwrite"
-        );
-        assert!(
-            digest_a.ensure_matches(&revision_a).is_err(),
-            "differing guard kind must stop the overwrite"
-        );
     }
 
     /// canonical な wire fingerprint は `to_json` round-trip で書き換えられず保存値のまま出力される。

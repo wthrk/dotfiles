@@ -222,11 +222,6 @@ impl SecretDeviceIo for TestStubSecretDevice {
         Ok(stub_recipient_fingerprint(self.serial))
     }
 
-    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
-        // stub では DEK を平文 bytes としてそのまま wrapped value に保持し、round-trip を観測可能にする。
-        Ok(dek.to_test_bytes())
-    }
-
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
         ProtectedSecret::from_test_bytes(wrapped_dek)
     }

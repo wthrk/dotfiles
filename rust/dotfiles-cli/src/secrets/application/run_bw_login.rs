@@ -10,7 +10,6 @@ use crate::secrets::{
         storage::SecretStorageReadIntent,
     },
     ports,
-    support::protection::{ProtectedSecret, bw_login},
 };
 
 /// `run_bw_login` が使う外部 capability を named field で束ねる。
@@ -46,7 +45,7 @@ where
         bw_login: bw_login_port,
         report,
     } = runtime;
-    let serial = device.resolve_device_serial(command.serial)?;
+    let serial = device.resolve_device_serial()?;
     let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -61,14 +60,25 @@ where
     let email = match &command.email_override {
         Some(value) => BwLoginEmail::parse(value)?,
         None => {
-            let stored_email =
-                load_yubikey_secret(serial, SecretName::BwEmail, storage_port, pin.as_ref())?;
-            bw_login::parse_email(&stored_email)?
+            let storage = SecretName::BwEmail.storage_spec(serial);
+            let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
+            let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+            let stored_email = storage_port
+                .load_secret(serial, &intent, pin.as_ref())
+                .map_err(|error| intent.decode_error(error))?;
+            intent.validate_loaded_secret(&stored_email)?;
+            BwLoginEmail::parse_protected(&stored_email)?
         }
     };
 
     // master password を YubiKey から保護値として読み出す。平文は取り出さず、そのまま port へ渡す。
-    let password = load_yubikey_secret(serial, SecretName::BwPassword, storage_port, pin.as_ref())?;
+    let storage = SecretName::BwPassword.storage_spec(serial);
+    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
+    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+    let password = storage_port
+        .load_secret(serial, &intent, pin.as_ref())
+        .map_err(|error| intent.decode_error(error))?;
+    intent.validate_loaded_secret(&password)?;
 
     // YubiKey OTP を可視入力で読み、domain rule で検証する（argv に載る単回トークン）。
     let otp = BwOtp::parse(&otp_input.read_bw_otp()?)?;
@@ -79,23 +89,6 @@ where
         .login_and_unlock(&email, &password, &otp)
         .await?;
     report.write_bw_login_report(&BwLoginSummary { session })
-}
-
-/// YubiKey storage の read 経路（inspect → intent → load → validate）で指定 secret を取得する。
-fn load_yubikey_secret(
-    serial: u32,
-    name: SecretName,
-    storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&ProtectedSecret>,
-) -> Result<ProtectedSecret> {
-    let storage = name.storage_spec(serial);
-    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
-    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-    let secret = storage_port
-        .load_secret(serial, &intent, pin)
-        .map_err(|error| intent.decode_error(error))?;
-    intent.validate_loaded_secret(&secret)?;
-    Ok(secret)
 }
 
 #[cfg(test)]
@@ -114,20 +107,29 @@ mod tests {
             storage::SecretStorageReadInspection,
         },
         ports,
-        support::protection::ProtectedSecret,
     };
 
     use super::{BwLoginRuntime, run_bw_login};
 
     const SESSION: &str = "SESSIONKEY==";
 
-    fn material(bytes: &'static [u8]) -> ProtectedSecret {
-        ProtectedSecret::from_test_bytes(bytes).expect("test secret")
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("expected {context} to succeed: {error}"),
+        }
+    }
+
+    fn material(bytes: &'static [u8]) -> ports::ProtectedSecret {
+        ok(
+            ports::ProtectedSecret::from_test_bytes(bytes),
+            "test secret",
+        )
     }
 
     fn read_inspection() -> SecretStorageReadInspection {
         SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(ok(SecretManifest::expected().encode(), "manifest")),
             encoded: Some(vec![1]),
         }
     }
@@ -164,7 +166,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|requested| Ok(requested.expect("serial")));
+            .returning(|| Ok(2001));
         device
             .expect_device_requires_pin()
             .times(1)
@@ -202,13 +204,13 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(
-                |email: &BwLoginEmail, password: &ProtectedSecret, otp: &BwOtp| {
+                |email: &BwLoginEmail, password: &ports::ProtectedSecret, otp: &BwOtp| {
                     email.as_str() == "user@example.com"
                         && otp.as_str() == "cccccbtdvuotp"
                         && *password == material(b"master-password")
                 },
             )
-            .returning(|_, _, _| Ok(BwSessionKey::parse(SESSION).expect("session")));
+            .returning(|_, _, _| Ok(ok(BwSessionKey::parse(SESSION), "session")));
 
         let mut report = ports::MockReportPort::new();
         report
@@ -220,7 +222,6 @@ mod tests {
 
         run_bw_login(
             BwLoginCommand {
-                serial: Some(2001),
                 email_override: None,
             },
             BwLoginRuntime {
@@ -238,9 +239,7 @@ mod tests {
     #[tokio::test]
     async fn bw_login_uses_email_override_without_reading_stored_email() -> crate::Result<()> {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -275,7 +274,7 @@ mod tests {
             .expect_login_and_unlock()
             .times(1)
             .withf(|email: &BwLoginEmail, _, _| email.as_str() == "override@example.com")
-            .returning(|_, _, _| Ok(BwSessionKey::parse(SESSION).expect("session")));
+            .returning(|_, _, _| Ok(ok(BwSessionKey::parse(SESSION), "session")));
 
         let mut report = ports::MockReportPort::new();
         report
@@ -285,7 +284,6 @@ mod tests {
 
         run_bw_login(
             BwLoginCommand {
-                serial: Some(2001),
                 email_override: Some("  override@example.com  ".to_owned()),
             },
             BwLoginRuntime {
@@ -303,9 +301,7 @@ mod tests {
     #[tokio::test]
     async fn bw_login_stops_when_login_fails_without_reporting() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -316,6 +312,13 @@ mod tests {
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
+        storage.expect_load_secret().returning(|_, intent, _| {
+            Ok(match intent.storage.name {
+                SecretName::BwEmail => material(b"user@example.com"),
+                SecretName::BwPassword => material(b"master-password"),
+                SecretName::BwsAccessToken => material(b"access-token"),
+            })
+        });
         storage
             .expect_load_secret()
             .returning(|_, _, _| Ok(material(b"master-password")));
@@ -337,7 +340,6 @@ mod tests {
 
         let result = run_bw_login(
             BwLoginCommand {
-                serial: Some(2001),
                 email_override: None,
             },
             BwLoginRuntime {

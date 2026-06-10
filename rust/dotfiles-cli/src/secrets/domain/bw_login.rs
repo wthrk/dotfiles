@@ -7,6 +7,8 @@
 
 use anyhow::Result;
 
+use crate::secrets::support::protection::ProtectedSecret;
+
 /// `bw login <email>` の argv に載せる Bitwarden login email。
 ///
 /// `bw-email` は YubiKey に保存する値だが credential ではなく argv に載る非秘匿値である。argv へ
@@ -39,6 +41,11 @@ impl BwLoginEmail {
     /// argv に載せる検証済み email 文字列を返す。
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// YubiKey storage から取得した `bw-email` を argv 安全な login email へ変換する。
+    pub fn parse_protected(value: &ProtectedSecret) -> Result<Self> {
+        value.with_secret_utf8(Self::parse)
     }
 }
 

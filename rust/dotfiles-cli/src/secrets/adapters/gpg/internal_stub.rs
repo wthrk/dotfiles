@@ -25,7 +25,7 @@ use crate::{
     Result,
     secrets::{
         domain::{
-            gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
+            gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint, SecretPrimaryKeyCandidates},
             gpg_restore::{
                 ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
             },
@@ -36,12 +36,6 @@ use crate::{
     },
     secrets_internal_test_stub_contract::{GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX},
 };
-
-/// stub DEK の固定 byte 長（real backend の AES-256-GCM DEK と同じ 32 bytes）。
-const STUB_DEK_LEN: usize = 32;
-/// stub の固定 nonce/tag（envelope schema の byte 長に合わせる）。
-const STUB_NONCE_LEN: usize = 12;
-const STUB_TAG_LEN: usize = 16;
 
 #[derive(serde::Deserialize)]
 struct GpgStubSpec {
@@ -136,12 +130,16 @@ pub(super) struct BackupCipherStub;
 pub(super) struct SshAgentStub;
 
 impl GpgKeyringPort for GpgKeyringStub {
-    fn export_secret_key(
-        &mut self,
-        primary_fingerprint: &PrimaryFingerprint,
-    ) -> Result<ProtectedSecret> {
-        // export bytes は fingerprint hex 文字列とする（cipher stub の body 規約と整合）。
-        ProtectedSecret::from_test_bytes(primary_fingerprint.as_str().as_bytes())
+    fn list_secret_primary_fingerprints(&mut self) -> Result<SecretPrimaryKeyCandidates> {
+        with_datastore(|store| {
+            let mut keys = store.keys.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            let fingerprints = keys
+                .into_iter()
+                .map(|key| PrimaryFingerprint::parse(&key))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(SecretPrimaryKeyCandidates::new(fingerprints))
+        })
     }
 
     fn parse_backup_primary_fingerprint(
@@ -227,6 +225,36 @@ impl GpgKeyringPort for GpgKeyringStub {
         })
     }
 
+    fn primary_fingerprint_for_recipient(
+        &mut self,
+        recipient: &GpgRecipientId,
+    ) -> Result<Option<PrimaryFingerprint>> {
+        with_datastore(|store| {
+            let Some(held) = store
+                .held_recipients
+                .iter()
+                .find(|held| held.eq_ignore_ascii_case(recipient.as_str()))
+            else {
+                return Ok(None);
+            };
+            if let Some(key) = store
+                .keys
+                .keys()
+                .find(|key| key.eq_ignore_ascii_case(held))
+                .cloned()
+            {
+                return PrimaryFingerprint::parse(&key).map(Some);
+            }
+            if store.keys.len() == 1 {
+                let Some(key) = store.keys.keys().next().cloned() else {
+                    anyhow::bail!("single stub key must exist");
+                };
+                return PrimaryFingerprint::parse(&key).map(Some);
+            }
+            Ok(None)
+        })
+    }
+
     fn can_decrypt_store_entry(&mut self, _entry_path: &std::path::Path) -> Result<()> {
         let decryptable = with_datastore(|store| Ok(store.store_entry_decryptable))?;
         if decryptable {
@@ -238,21 +266,6 @@ impl GpgKeyringPort for GpgKeyringStub {
 }
 
 impl BackupCipherPort for BackupCipherStub {
-    fn generate_dek(&mut self) -> Result<ProtectedSecret> {
-        let bytes: Vec<u8> = (0..STUB_DEK_LEN).map(|index| index as u8).collect();
-        ProtectedSecret::from_test_bytes(&bytes)
-    }
-
-    fn encrypt_backup(
-        &mut self,
-        _dek: &ProtectedSecret,
-        backup: &ProtectedSecret,
-    ) -> Result<EnvelopeCiphertext> {
-        // stub は body をそのまま保持する（DEK round-trip の観測規約）。
-        let body = backup.to_test_bytes();
-        EnvelopeCiphertext::new(vec![0u8; STUB_NONCE_LEN], body, vec![0u8; STUB_TAG_LEN])
-    }
-
     fn decrypt_backup(
         &mut self,
         _dek: &ProtectedSecret,

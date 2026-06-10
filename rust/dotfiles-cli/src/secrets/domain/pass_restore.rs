@@ -83,6 +83,46 @@ impl PasswordStoreRemote {
         )))
     }
 
+    /// 既存 password-store の GitHub origin remote を repository identity として受け入れ、
+    /// BWS 登録用の SSH clone URL へ正規化する。
+    ///
+    /// 利用者の既存 `password-store` が HTTPS origin を使っている場合でも、origin は repository の同一性確認に
+    /// だけ使う。復旧時の clone は GPG authentication subkey 経由の SSH に固定するため、BWS へ保存する値は常に
+    /// `git@github.com:<owner>/<repo>.git` 形式へ canonicalize する。CLI/shell はこの SSH URL を argv/stdin/env
+    /// で中継せず、application が観測済み origin から domain rule として導出する。
+    pub fn from_configured_origin(value: &str) -> Result<Self> {
+        if let Ok(remote) = Self::parse(value) {
+            return Ok(remote);
+        }
+        if value.chars().any(|ch| ch.is_whitespace()) {
+            anyhow::bail!("password-store origin remote must not contain whitespace");
+        }
+        if value.chars().any(|ch| ch.is_control()) {
+            anyhow::bail!("password-store origin remote must not contain control characters");
+        }
+        let Some(without_prefix) = value.strip_prefix("https://github.com/") else {
+            anyhow::bail!("password-store origin remote must be a GitHub SSH or HTTPS clone URL");
+        };
+        let owner_repo = without_prefix
+            .strip_suffix(GIT_SUFFIX)
+            .unwrap_or(without_prefix);
+        let mut segments = owner_repo.split('/');
+        let owner = segments
+            .next()
+            .filter(|owner| is_valid_owner(owner))
+            .ok_or_else(|| anyhow::anyhow!("password-store origin owner is invalid"))?;
+        let repo = segments
+            .next()
+            .filter(|repo| is_valid_repository(repo))
+            .ok_or_else(|| anyhow::anyhow!("password-store origin repository is invalid"))?;
+        if segments.next().is_some() {
+            anyhow::bail!("password-store origin remote must be exactly owner/repository");
+        }
+        Ok(Self(format!(
+            "{GITHUB_SSH_PREFIX}{owner}/{repo}{GIT_SUFFIX}"
+        )))
+    }
+
     /// 検証済み clone URL を adapter（git2）へ渡すために借用する。
     pub fn as_str(&self) -> &str {
         &self.0
@@ -232,6 +272,15 @@ mod tests {
     fn parses_valid_github_ssh_clone_url() -> Result<()> {
         let remote = PasswordStoreRemote::parse("git@github.com:owner/password-store.git")?;
         assert_eq!(remote.as_str(), "git@github.com:owner/password-store.git");
+        Ok(())
+    }
+
+    /// HTTPS origin は既存 repository identity として受け入れ、復旧用の SSH clone URL へ正規化する。
+    #[test]
+    fn configured_https_origin_normalizes_to_ssh_clone_url() -> Result<()> {
+        let remote =
+            PasswordStoreRemote::from_configured_origin("https://github.com/owner/repo.git")?;
+        assert_eq!(remote.as_str(), "git@github.com:owner/repo.git");
         Ok(())
     }
 

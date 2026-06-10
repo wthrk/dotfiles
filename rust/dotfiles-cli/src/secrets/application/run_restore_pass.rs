@@ -70,7 +70,8 @@ where
         git_clone,
         report,
     } = runtime;
-    let serial = device.resolve_device_serial(command.serial)?;
+    let _ = command;
+    let serial = device.resolve_device_serial()?;
     let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -80,7 +81,13 @@ where
     };
 
     // 1. bws-access-token を YubiKey storage から読み出す。
-    let access_token = load_bws_access_token(serial, storage_port, pin.as_ref())?;
+    let storage = SecretName::BwsAccessToken.storage_spec(serial);
+    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
+    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+    let access_token = storage_port
+        .load_secret(serial, &intent, pin.as_ref())
+        .map_err(|error| intent.decode_error(error))?;
+    intent.validate_loaded_secret(&access_token)?;
 
     // 2. BWS から `password-store-remote` を取得する（URL 妥当性は domain 検証で確定済み）。
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
@@ -113,7 +120,31 @@ where
     //    application からは削除せず、そのまま残してエラーを返す。設計（spec L174）に可読性失敗時の自動削除は無く、
     //    削除は手順 3 の不存在確認後に別 process が差し替えた store を誤削除しうる TOCTOU を持つ。再実行の安全性は
     //    既存 store 停止条件（手順 3 / spec L212）に委ね、再試行のため store は手動で削除させる。
-    match confirm_cloned_store_readable(keyring, store) {
+    let store_readability = (|| -> Result<()> {
+        let readiness = store.inspect_password_store()?;
+        let recipients = readiness.parse_recipients()?;
+        match readiness.sample_entry() {
+            Some(entry) => {
+                keyring.can_decrypt_store_entry(entry)?;
+            }
+            None => {
+                let mut any_available = false;
+                for recipient in &recipients {
+                    if keyring.secret_key_available_for_recipient(recipient)? {
+                        any_available = true;
+                        break;
+                    }
+                }
+                if !any_available {
+                    anyhow::bail!(
+                        "cloned password-store is encrypted only to GPG keys whose secret keys are not in the keyring; pass cannot decrypt it"
+                    );
+                }
+            }
+        }
+        Ok(())
+    })();
+    match store_readability {
         Ok(()) => report.write_restore_pass_report(&RestorePassSummary {
             store_path: format!("~/{PASSWORD_STORE_DIR_NAME}"),
             store_readable: true,
@@ -122,64 +153,6 @@ where
             "cloned ~/{PASSWORD_STORE_DIR_NAME} but could not read it with the available GPG key ({error:#}); the cloned store was left in place and must be removed manually before retrying"
         )),
     }
-}
-
-/// clone 後 store が `pass` から読めることを確認する（実復号を最終判定とし、空 store のみ recipient 保持で代替）。
-///
-/// store 観測（`.gpg-id` 有無・recipient 行・サンプル entry）を取得し、domain で `.gpg-id` の存在・非空という
-/// 構造的最小条件を確認する。サンプル entry があれば、それを復元済み秘密鍵で実際に復号できることが可読性の最終
-/// 判定であり、recipient の数・形式（複数 recipient / email・user-id）には依存しない。entry が無い空 store では
-/// 復号確認ができないため、`.gpg-id` recipient のうち少なくとも 1 つに対応する復元済み秘密鍵を保持していることを
-/// 最小条件とする（全 recipient ではなく 1 つで可。`pass` は複数 recipient のいずれか 1 つの秘密鍵で復号できる）。
-/// ここで返す失敗は呼び出し側でそのまま error として伝播し（clone 済み store は削除せず残す）、`pass` CLI への
-/// 無条件シェルアウトはしない。
-fn confirm_cloned_store_readable(
-    keyring: &mut dyn ports::GpgKeyringPort,
-    store: &dyn ports::PasswordStorePort,
-) -> Result<()> {
-    let readiness = store.inspect_password_store()?;
-    let recipients = readiness.parse_recipients()?;
-    match readiness.sample_entry() {
-        Some(entry) => {
-            // store に entry があれば、実際に復元済み秘密鍵で復号できることが可読性の最終判定。
-            // recipient の数・形式（複数 recipient / email・user-id）に依存しない ground truth。
-            keyring.can_decrypt_store_entry(entry)?;
-        }
-        None => {
-            // entry が無い空 store では復号確認ができないため、`.gpg-id` recipient のうち
-            // 少なくとも 1 つに対応する復元済み秘密鍵を保持していることを最小条件とする
-            // （全 recipient ではなく 1 つで可。pass は複数 recipient のいずれか 1 つの秘密鍵で復号できる）。
-            let mut any_available = false;
-            for recipient in &recipients {
-                if keyring.secret_key_available_for_recipient(recipient)? {
-                    any_available = true;
-                    break;
-                }
-            }
-            if !any_available {
-                anyhow::bail!(
-                    "cloned password-store is encrypted only to GPG keys whose secret keys are not in the keyring; pass cannot decrypt it"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token(
-    serial: u32,
-    storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::secrets::support::protection::ProtectedSecret>,
-) -> Result<crate::secrets::support::protection::ProtectedSecret> {
-    let storage = SecretName::BwsAccessToken.storage_spec(serial);
-    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
-    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-    let secret = storage_port
-        .load_secret(serial, &intent, pin)
-        .map_err(|error| intent.decode_error(error))?;
-    intent.validate_loaded_secret(&secret)?;
-    Ok(secret)
 }
 
 #[cfg(test)]
@@ -202,7 +175,7 @@ mod tests {
             storage::SecretStorageReadInspection,
         },
         ports,
-        support::protection::ProtectedSecret,
+        ports::ProtectedSecret,
     };
 
     use super::{RestorePassRuntime, run_restore_pass};
@@ -272,7 +245,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|requested| Ok(requested.expect("serial")));
+            .returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -324,7 +297,7 @@ mod tests {
             .returning(|_| Ok(()));
 
         run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -342,9 +315,7 @@ mod tests {
     #[tokio::test]
     async fn restore_pass_stops_when_store_already_exists() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -371,7 +342,7 @@ mod tests {
         report.expect_write_restore_pass_report().times(0);
 
         let result = run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -397,9 +368,7 @@ mod tests {
     #[tokio::test]
     async fn restore_pass_errors_when_cloned_store_is_unreadable() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -439,7 +408,7 @@ mod tests {
         report.expect_write_restore_pass_report().times(0);
 
         let result = run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -465,9 +434,7 @@ mod tests {
     #[tokio::test]
     async fn restore_pass_returns_error_without_rollback_when_clone_fails() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -502,7 +469,7 @@ mod tests {
         report.expect_write_restore_pass_report().times(0);
 
         let result = run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -527,9 +494,7 @@ mod tests {
     #[tokio::test]
     async fn restore_pass_errors_when_no_recipient_secret_key_for_empty_store() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -575,7 +540,7 @@ mod tests {
         report.expect_write_restore_pass_report().times(0);
 
         let result = run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -600,9 +565,7 @@ mod tests {
     #[tokio::test]
     async fn restore_pass_errors_when_sample_entry_cannot_decrypt() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -640,7 +603,7 @@ mod tests {
         report.expect_write_restore_pass_report().times(0);
 
         let result = run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -667,9 +630,7 @@ mod tests {
     -> crate::Result<()> {
         const SECOND_RECIPIENT: &str = "FEDCBA9876543210FEDCBA9876543210FEDCBA98";
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -717,7 +678,7 @@ mod tests {
             .returning(|_| Ok(()));
 
         run_restore_pass(
-            RestorePassCommand { serial: Some(2001) },
+            RestorePassCommand,
             RestorePassRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,

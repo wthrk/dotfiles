@@ -23,7 +23,7 @@ where
     S: ports::SecretStoragePort,
     O: ports::SecretOutputPort,
 {
-    let serial = device_serial.resolve_device_serial(command.serial)?;
+    let serial = device_serial.resolve_device_serial()?;
     let pin = if pin_policy.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -49,7 +49,7 @@ mod tests {
             storage::SecretStorageReadInspection,
         },
         ports,
-        support::protection::ProtectedSecret,
+        ports::ProtectedSecret,
     };
 
     use super::run_get_with;
@@ -73,7 +73,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|requested| Ok(requested.expect("serial")));
+            .returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -103,7 +103,6 @@ mod tests {
         run_get_with(
             GetCommand {
                 name: SecretName::BwsAccessToken,
-                serial: Some(2001),
             },
             &mut device_serial,
             &mut pin_policy,
@@ -119,7 +118,7 @@ mod tests {
         device_serial
             .expect_resolve_device_serial()
             .times(1)
-            .returning(|_| Ok(2001));
+            .returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -146,7 +145,6 @@ mod tests {
         run_get_with(
             GetCommand {
                 name: SecretName::BwsAccessToken,
-                serial: Some(2001),
             },
             &mut device_serial,
             &mut pin_policy,

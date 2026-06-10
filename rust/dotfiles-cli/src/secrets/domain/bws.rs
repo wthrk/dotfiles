@@ -1,4 +1,4 @@
-//! Bitwarden Secrets Manager の lookup 対象同一性と opaque ID を表す domain model。
+//! Bitwarden Secrets Manager の lookup 対象同一性を表す domain model。
 //!
 //! 固定 project / secret name、一意解決、0 件/複数件の failure 化は SDK 実装詳細ではなく
 //! 復旧対象の業務規則であるため、この module に閉じる。
@@ -24,11 +24,15 @@ impl BwsSecretName {
         }
     }
 
-    /// BWS secret 候補が、この復旧対象の固定 secret key に一致するかを判定する。
+    /// BWS secret 候補を missing / unique / ambiguous の domain 状態へ分類する。
     ///
-    /// exact match の対象同一性は domain rule であり、application は候補数の分岐だけを扱う。
-    pub fn matches_candidate<I>(self, candidate: &BwsLookupCandidate<I>) -> bool {
-        candidate.name == self.key()
+    /// application はこの状態だけを見て create/use/停止を選び、候補数の数え上げや対象同一性を
+    /// use case 内へ重複させない。
+    pub fn resolve_lookup<I: Clone>(
+        self,
+        candidates: impl IntoIterator<Item = BwsLookupCandidate<I>>,
+    ) -> BwsLookupResolution<I> {
+        resolve_bws_lookup(candidates, self.key())
     }
 
     /// BWS secret 候補から、この復旧対象に一致する ID を一意に解決する。
@@ -116,6 +120,16 @@ impl BwsProjectName {
         "dotfiles-secret-recovery"
     }
 
+    /// BWS project 候補を missing / unique / ambiguous の domain 状態へ分類する。
+    ///
+    /// 0 件なら caller が project を作成でき、複数件なら対象 project が曖昧なため停止する。
+    pub fn resolve_lookup<I: Clone>(
+        self,
+        candidates: impl IntoIterator<Item = BwsLookupCandidate<I>>,
+    ) -> BwsLookupResolution<I> {
+        resolve_bws_lookup(candidates, self.as_str())
+    }
+
     /// BWS project 候補から復旧用 project ID を一意に解決する。
     ///
     /// 0 件と複数件はどちらも domain failure であり、adapter は SDK の候補一覧を渡すだけにする。
@@ -142,6 +156,17 @@ pub struct BwsLookupCandidate<I> {
     pub name: String,
 }
 
+/// BWS 固定名 lookup の domain 解決状態。
+///
+/// `missing` は未作成なら作成できる対象、`unique` は既存設定として使える対象、`ambiguous` は
+/// 上書きや自動選択をせず停止すべき状態を表す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BwsLookupResolution<I> {
+    Missing,
+    Unique(I),
+    Ambiguous,
+}
+
 /// BWS project/secret lookup の exact match を一箇所で失敗条件へ変換する。
 ///
 /// project と secret の両方で「0 件は未登録、複数件は曖昧」という同じ domain rule を共有するため、
@@ -164,13 +189,29 @@ fn resolve_single_bws_lookup<I: Clone>(
     Ok(candidate.id.clone())
 }
 
+fn resolve_bws_lookup<I: Clone>(
+    candidates: impl IntoIterator<Item = BwsLookupCandidate<I>>,
+    expected_name: &str,
+) -> BwsLookupResolution<I> {
+    let mut matches = candidates
+        .into_iter()
+        .filter(|candidate| candidate.name == expected_name);
+    let Some(candidate) = matches.next() else {
+        return BwsLookupResolution::Missing;
+    };
+    if matches.next().is_some() {
+        return BwsLookupResolution::Ambiguous;
+    }
+    BwsLookupResolution::Unique(candidate.id.clone())
+}
+
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BwsLookupCandidate, BwsProjectName, BwsSecretName};
+    use super::{BwsLookupCandidate, BwsLookupResolution, BwsProjectName, BwsSecretName};
 
     fn candidate(id: &'static str, name: &'static str) -> BwsLookupCandidate<&'static str> {
         BwsLookupCandidate {
@@ -188,6 +229,30 @@ mod tests {
         ]);
 
         assert_eq!(result.ok(), Some("target"));
+    }
+
+    /// BWS 固定名 lookup は 0 件・1 件・複数件を domain の解決状態として分類する。
+    #[test]
+    fn bws_project_name_classifies_lookup_state() {
+        assert_eq!(
+            BwsProjectName::DOTFILES_SECRET_RECOVERY
+                .resolve_lookup([candidate("other", "other-project")]),
+            BwsLookupResolution::Missing
+        );
+        assert_eq!(
+            BwsProjectName::DOTFILES_SECRET_RECOVERY.resolve_lookup([
+                candidate("target", "dotfiles-secret-recovery"),
+                candidate("other", "other-project"),
+            ]),
+            BwsLookupResolution::Unique("target")
+        );
+        assert_eq!(
+            BwsProjectName::DOTFILES_SECRET_RECOVERY.resolve_lookup([
+                candidate("first", "dotfiles-secret-recovery"),
+                candidate("second", "dotfiles-secret-recovery"),
+            ]),
+            BwsLookupResolution::Ambiguous
+        );
     }
 
     /// BWS project 名が見つからない場合は domain failure として停止する。

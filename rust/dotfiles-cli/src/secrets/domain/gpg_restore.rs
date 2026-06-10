@@ -303,11 +303,9 @@ impl SshAgentReadiness {
 /// `restore-gpg` の完了状態を表す domain summary。
 ///
 /// 設計「鍵リング復元契約」を満たして停止せず復元できたことの意味だけを保持し、表示仕様
-/// （JSON key 名・整形）は adapter 側の責務とする。fingerprint 以外の鍵素材はここへ載せない。
+/// （JSON key 名・整形）は adapter 側の責務とする。鍵識別子や鍵素材は report surface に載せない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreGpgSummary {
-    /// import / subkey 検証 / keygrip 登録の対象になった primary fingerprint（lowercase hex 40）。
-    pub primary_fingerprint: String,
     /// authentication subkey の keygrip（uppercase hex 40）を SSH key list へ登録できたか。
     pub ssh_key_registered: bool,
     /// gpg-agent SSH support が利用可能（socket 解決 + authentication identity 識別）であったか。

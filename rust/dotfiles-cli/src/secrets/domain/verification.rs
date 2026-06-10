@@ -59,23 +59,31 @@ impl CheckName {
 /// local storage と external checks の結果意味だけを保持し、表示仕様は外側へ出す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifySummary {
-    pub serial: u32,
     pub checks: BTreeMap<CheckName, CheckStatus>,
 }
 
 impl VerifySummary {
+    /// local-storage だけを要約対象にする summary を構築する。
+    ///
+    /// rotate 系 use case は外部確認を含めず、更新した 1 本のローカル再検証結果だけを返す。
+    pub fn local_storage_only(status: CheckStatus) -> Self {
+        Self {
+            checks: [(CheckName::LocalStorage, status)].into_iter().collect(),
+        }
+    }
+
     /// local storage 検証が成功した通常系 summary を構築する。
     ///
     /// external checks は未実施として初期化し、後続の実行結果反映を待つ。
-    pub fn local_storage_verified(serial: u32) -> Self {
-        Self::with_local_storage_status(serial, CheckStatus::Ok)
+    pub fn local_storage_verified() -> Self {
+        Self::with_local_storage_status(CheckStatus::Ok)
     }
 
     /// local storage 検証が失敗した停止系 summary を構築する。
     ///
     /// この summary は external checks を未実施のまま保持し、呼び出し側に継続不可を示す。
-    pub fn local_storage_failed(serial: u32) -> Self {
-        Self::with_local_storage_status(serial, CheckStatus::Failed)
+    pub fn local_storage_failed() -> Self {
+        Self::with_local_storage_status(CheckStatus::Failed)
     }
 
     /// external check の実行結果を summary へ反映する。
@@ -83,9 +91,8 @@ impl VerifySummary {
         self.checks.insert(check, status);
     }
 
-    fn with_local_storage_status(serial: u32, local_storage: CheckStatus) -> Self {
+    fn with_local_storage_status(local_storage: CheckStatus) -> Self {
         Self {
-            serial,
             checks: [
                 (CheckName::LocalStorage, local_storage),
                 (CheckName::Bws, CheckStatus::Skipped),
@@ -104,9 +111,8 @@ mod tests {
     /// verify summary は local storage failure 状態を保持する。
     #[test]
     fn verify_summary_records_local_storage_failure() {
-        let summary = VerifySummary::local_storage_failed(42);
+        let summary = VerifySummary::local_storage_failed();
 
-        assert_eq!(summary.serial, 42);
         assert_eq!(
             summary.checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Failed)

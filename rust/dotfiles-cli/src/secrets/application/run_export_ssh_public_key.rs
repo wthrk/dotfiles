@@ -1,7 +1,10 @@
 //! export-ssh-public-key の順序を固定し、鍵リング解決と出力の実装詳細を port 境界の外へ閉じる。
 
 use crate::Result;
-use crate::secrets::{domain::commands::ExportSshPublicKeyCommand, ports};
+use crate::secrets::{
+    domain::{commands::ExportSshPublicKeyCommand, gpg_backup::SecretPrimaryKeyCandidates},
+    ports,
+};
 
 /// ローカル鍵リング上の GPG authentication subkey 由来の OpenSSH 公開鍵を stdout へ出力する。
 ///
@@ -13,13 +16,39 @@ use crate::secrets::{domain::commands::ExportSshPublicKeyCommand, ports};
 pub(crate) fn run_export_ssh_public_key<K, O>(
     command: ExportSshPublicKeyCommand,
     keyring: &mut K,
+    store: &dyn ports::PasswordStorePort,
     output: &O,
 ) -> Result<()>
 where
     K: ports::GpgKeyringPort,
     O: ports::SshPublicKeyOutputPort,
 {
-    let public_key = keyring.authentication_subkey_ssh_public_key(&command.primary_fingerprint)?;
+    let _ = command;
+    let primary_fingerprint = if store.password_store_exists()? {
+        let readiness = store.inspect_password_store()?;
+        if readiness.gpg_id_present && !readiness.gpg_id_recipients.is_empty() {
+            let mut fingerprints = Vec::new();
+            for recipient in readiness.parse_recipients()? {
+                let Some(fingerprint) = keyring.primary_fingerprint_for_recipient(&recipient)?
+                else {
+                    anyhow::bail!(
+                        "password-store recipient does not resolve to an available GPG secret key"
+                    );
+                };
+                fingerprints.push(fingerprint);
+            }
+            SecretPrimaryKeyCandidates::new(fingerprints).resolve_unique()?
+        } else {
+            keyring
+                .list_secret_primary_fingerprints()?
+                .resolve_unique()?
+        }
+    } else {
+        keyring
+            .list_secret_primary_fingerprints()?
+            .resolve_unique()?
+    };
+    let public_key = keyring.authentication_subkey_ssh_public_key(&primary_fingerprint)?;
     output.write_ssh_public_key(&public_key)
 }
 
@@ -32,8 +61,10 @@ mod tests {
 
     use crate::secrets::{
         domain::{
-            commands::ExportSshPublicKeyCommand, gpg_backup::PrimaryFingerprint,
+            commands::ExportSshPublicKeyCommand,
+            gpg_backup::{PrimaryFingerprint, SecretPrimaryKeyCandidates},
             gpg_restore::OpenSshPublicKey,
+            pass_restore::PasswordStoreReadiness,
         },
         ports,
     };
@@ -48,6 +79,15 @@ mod tests {
         let mut sequence = mockall::Sequence::new();
         let mut keyring = ports::MockGpgKeyringPort::new();
         keyring
+            .expect_list_secret_primary_fingerprints()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| {
+                Ok(SecretPrimaryKeyCandidates::new(vec![
+                    PrimaryFingerprint::parse(PRIMARY_FP)?,
+                ]))
+            });
+        keyring
             .expect_authentication_subkey_ssh_public_key()
             .times(1)
             .in_sequence(&mut sequence)
@@ -60,12 +100,98 @@ mod tests {
             .withf(|public_key| public_key.as_str() == SSH_LINE)
             .returning(|_| Ok(()));
 
-        run_export_ssh_public_key(
-            ExportSshPublicKeyCommand {
-                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
-            },
-            &mut keyring,
-            &output,
-        )
+        let mut store = ports::MockPasswordStorePort::new();
+        store
+            .expect_password_store_exists()
+            .times(1)
+            .returning(|| Ok(false));
+
+        let _ = PrimaryFingerprint::parse(PRIMARY_FP)?;
+
+        run_export_ssh_public_key(ExportSshPublicKeyCommand, &mut keyring, &store, &output)
+    }
+
+    /// fingerprint 未指定時は鍵リング内の単一 secret primary を解決して SSH 公開鍵 export へ進む。
+    #[test]
+    fn export_ssh_public_key_without_fingerprint_resolves_single_secret_key() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_list_secret_primary_fingerprints()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| {
+                Ok(SecretPrimaryKeyCandidates::new(vec![
+                    PrimaryFingerprint::parse(PRIMARY_FP)?,
+                ]))
+            });
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
+            .returning(|_| OpenSshPublicKey::parse(SSH_LINE));
+        let mut output = ports::MockSshPublicKeyOutputPort::new();
+        output
+            .expect_write_ssh_public_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|public_key| public_key.as_str() == SSH_LINE)
+            .returning(|_| Ok(()));
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store
+            .expect_password_store_exists()
+            .times(1)
+            .returning(|| Ok(false));
+
+        run_export_ssh_public_key(ExportSshPublicKeyCommand, &mut keyring, &store, &output)
+    }
+
+    /// 設定済み password-store の `.gpg-id` recipient が解決できる場合は、その primary を優先する。
+    #[test]
+    fn export_ssh_public_key_prefers_configured_password_store_recipient() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring.expect_list_secret_primary_fingerprints().times(0);
+        keyring
+            .expect_primary_fingerprint_for_recipient()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|recipient| {
+                assert_eq!(recipient.as_str(), PRIMARY_FP);
+                Ok(Some(PrimaryFingerprint::parse(PRIMARY_FP)?))
+            });
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
+            .returning(|_| OpenSshPublicKey::parse(SSH_LINE));
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store
+            .expect_password_store_exists()
+            .times(1)
+            .returning(|| Ok(true));
+        store
+            .expect_inspect_password_store()
+            .times(1)
+            .returning(|| {
+                Ok(PasswordStoreReadiness {
+                    gpg_id_present: true,
+                    gpg_id_recipients: vec![PRIMARY_FP.to_owned()],
+                    sample_entry: None,
+                })
+            });
+
+        let mut output = ports::MockSshPublicKeyOutputPort::new();
+        output
+            .expect_write_ssh_public_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(()));
+
+        run_export_ssh_public_key(ExportSshPublicKeyCommand, &mut keyring, &store, &output)
     }
 }

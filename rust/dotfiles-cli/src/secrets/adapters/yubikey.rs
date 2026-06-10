@@ -28,7 +28,6 @@ use crate::{
         },
         ports::yubikey::{
             DevicePinPolicyPort, DeviceSerialPort, GpgRecipientPort, SecretStoragePort,
-            SpareDeviceSerialPort,
         },
         support::protection::{ProtectedSecret, SecretSession},
     },
@@ -39,14 +38,8 @@ use crate::{
 pub(in crate::secrets) struct DeviceSelectionAdapter(device_serial_adapter::DeviceSelectionAdapter);
 
 impl DeviceSerialPort for DeviceSelectionAdapter {
-    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
-        self.0.resolve_device_serial(requested)
-    }
-}
-
-impl SpareDeviceSerialPort for DeviceSelectionAdapter {
-    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32> {
-        self.0.resolve_spare_device_serial(requested_spare_serial)
+    fn resolve_device_serial(&mut self) -> Result<u32> {
+        self.0.resolve_device_serial()
     }
 }
 
@@ -139,18 +132,6 @@ impl GpgRecipientPort for GpgRecipientAdapter {
         ConnectedYubiKey::new(serial.to_string(), &fingerprint)
     }
 
-    fn wrap_dek_for_recipient(
-        &mut self,
-        serial: u32,
-        dek: &ProtectedSecret,
-    ) -> Result<EnvelopeRecipient> {
-        let mut device = self.open_device_by_serial(serial)?;
-        let fingerprint = device.recipient_public_key_fingerprint()?;
-        let connected = ConnectedYubiKey::new(serial.to_string(), &fingerprint)?;
-        let wrapped_dek = device.wrap_dek(dek)?;
-        EnvelopeRecipient::new(&connected, wrapped_dek)
-    }
-
     fn unwrap_dek(
         &mut self,
         serial: u32,
@@ -218,16 +199,14 @@ trait SecretDeviceIo {
     ///
     /// `gpg-secret-key-backup` recipient の `public_key_fingerprint` に対応する。公開鍵は秘密情報ではない。
     fn recipient_public_key_fingerprint(&mut self) -> Result<String>;
-    /// PIV slot `82` 公開鍵で DEK を RSA-OAEP-SHA256 wrap した不透明 bytes を返す。
-    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>>;
     /// PIV slot `82` 秘密鍵で wrapped DEK を device 内 RSA decrypt + OAEP unwrap して DEK を復元する。
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret>;
 }
 
 /// device discovery と serial 指定 open を adapter 内部で抽象化する境界。
 ///
-/// この trait は候補列挙と選択済み device handle の生成だけを担う。複数候補時の
-/// 選択方針や use case 停止条件は caller 側が決め、実装はその判断を持ち込まない。
+/// この trait は候補列挙と、解決済み serial に対する device handle の生成だけを担う。
+/// 複数候補時に対象を受け付けない停止条件は device serial adapter 側で完了する。
 trait SelectedDeviceDiscoveryIo {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>>;
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice>;
@@ -322,10 +301,6 @@ impl SecretDeviceIo for SelectedSecretDevice {
 
     fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
         self.inner.recipient_public_key_fingerprint()
-    }
-
-    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
-        self.inner.wrap_dek(dek)
     }
 
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
@@ -522,10 +497,6 @@ impl SecretDeviceIo for YubikeySecretDevice {
             .to_public_key_der()
             .context("failed to DER-encode YubiKey slot 82 public key")?;
         Ok(sha256_lowercase_hex(der.as_bytes()))
-    }
-
-    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
-        self.wrap_content_key(dek)
     }
 
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {

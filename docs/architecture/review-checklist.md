@@ -162,9 +162,9 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 各層レビューで次を追加確認する。
 
 - application:
-  command dispatch、input modality（Prompt/Stdin/StdinJson 等）、report DTO 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装を含めていないか。
+  command dispatch、input modality（Prompt/Stdin 等）、report DTO 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装を含めていないか。
 - ports:
-  modality enum や stdin-json の手段表現を契約へ露出していないか。`read_secret_from_prompt` のように capability 名で表現されているか。
+  modality enum の手段表現を契約へ露出していないか。`read_secret_from_prompt` のように capability 名で表現されているか。
 - adapters:
   `application::...` 型へ直接依存せず、port 契約へ変換しているか。device selection と report 出力は adapter が担い、技術的な実行/翻訳以外の意味づけや use case 順序は持ち込んでいないか。
 - support:

@@ -21,7 +21,8 @@ where
     D: ports::DeviceSerialPort,
     S: ports::SecretStoragePort,
 {
-    let serial = device.resolve_device_serial(command.serial)?;
+    let _ = command;
+    let serial = device.resolve_device_serial()?;
     let probe = SecretStorageSetupProbe::expected();
     let inspection = storage.inspect_secret_storage_setup(serial, &probe)?;
     let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
@@ -60,7 +61,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|requested| Ok(requested.unwrap_or(2001)));
+            .returning(|| Ok(2001));
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -77,10 +78,6 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
 
-        run_setup_with(
-            SetupCommand { serial: Some(2001) },
-            &mut device,
-            &mut storage,
-        )
+        run_setup_with(SetupCommand, &mut device, &mut storage)
     }
 }

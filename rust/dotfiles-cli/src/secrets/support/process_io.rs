@@ -29,31 +29,9 @@ fn stdin_or_tty_reader() -> Result<FileDescriptor> {
 
 /// 現在の stdin が terminal に接続されているかを返す。
 ///
-/// feature 固有の判断は行わず、adapter が対話選択を許可できる process 状態だけを公開する。
+/// feature 固有の判断は行わず、adapter が端末入力を許可できる process 状態だけを公開する。
 pub(crate) fn stdin_is_terminal() -> bool {
     io::stdin().is_terminal()
-}
-
-/// 制御端末から非 secret の 1 行を読み取る。
-///
-/// 番号選択など secret ではない入力だけに使い、secret payload は `read_hidden_line` か
-/// `read_visible_line` の protected buffer 経路へ渡す。
-pub(crate) fn read_control_line(prompt: &str) -> Result<String> {
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    let mut reader = stdin_or_tty_reader()?;
-    let mut line = String::new();
-    let mut byte = [0u8; 1];
-    loop {
-        if reader.read(&mut byte)? == 0 {
-            break;
-        }
-        match byte[0] {
-            b'\r' | b'\n' => break,
-            value => line.push(char::from(value)),
-        }
-    }
-    Ok(line)
 }
 
 /// hidden input reader の readable 状態を待つ。
@@ -149,8 +127,8 @@ pub(crate) fn read_visible_plain_line(
 
 /// stdin（pipe / redirect）から非秘匿の 1 行を読み取り、末尾改行を除いた平文 `String` を返す。
 ///
-/// stdin が terminal の場合は pipe 入力を要求して停止する。`password-store-remote` の clone URL のように
-/// 秘密情報でない値の非対話入力に使い、保護 buffer は使わない。
+/// stdin が terminal の場合は pipe 入力を要求して停止する。YubiKey OTP のように secret ではない値の
+/// 非対話入力に使い、保護 buffer は使わない。
 pub(crate) fn read_stdin_plain_line(
     max_len: usize,
     too_long_message: &'static str,
@@ -210,19 +188,6 @@ pub(crate) fn read_stdin_line(
     let session = SecretSession::start()?;
     let input = ProtectedInputBuffer::read_line_from(io::stdin(), max_len, &session)?;
     input.into_protected_secret_line(&session, max_len, too_long_message)
-}
-
-/// stdin 全体を保護バッファへ読み取り、末尾改行を保持したまま追加の平文複製なしで返す。
-pub(crate) fn read_stdin_all(
-    max_len: usize,
-    too_long_message: &'static str,
-) -> Result<ProtectedSecret> {
-    if io::stdin().is_terminal() {
-        bail!("stdin document input requires pipe or redirect input");
-    }
-    let session = SecretSession::start()?;
-    let input = ProtectedInputBuffer::read_from(io::stdin(), max_len, too_long_message, &session)?;
-    input.into_protected_secret(&session, max_len, too_long_message)
 }
 
 /// terminal 直書きを拒否し、caller supplied secret writer を stdout redirect 境界で実行する。

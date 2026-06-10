@@ -65,7 +65,7 @@ struct YubikeyOptions {
 #[derive(Subcommand)]
 /// YubiKey PIV storage の高水準 command と低水準 command。
 enum YubikeyCommand {
-    Setup(SerialOptions),
+    Setup(SetupOptions),
     Put(PutOptions),
     Get(GetOptions),
     EnrollPrimary(EnrollPrimaryOptions),
@@ -74,19 +74,14 @@ enum YubikeyCommand {
 }
 
 #[derive(Args)]
-/// 非対話実行では secret 入力前に対象 YubiKey を serial で固定する。
-struct SerialOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-}
+/// 接続中 YubiKey が 1 本だけであることを確認して storage を初期化する。
+struct SetupOptions {}
 
 #[derive(Args)]
-/// 1 secret を指定した YubiKey に保存する低水準 command の option。
+/// 1 secret を接続中の単一 YubiKey に保存する低水準 command の option。
 struct PutOptions {
     #[arg(value_parser = parse_secret_name)]
     name: SecretName,
-    #[arg(long)]
-    serial: Option<u32>,
     #[arg(long)]
     stdin: bool,
     #[arg(long)]
@@ -94,39 +89,23 @@ struct PutOptions {
 }
 
 #[derive(Args)]
-/// 1 secret を指定した YubiKey から取得する低水準 command の option。
+/// 1 secret を接続中の単一 YubiKey から取得する低水準 command の option。
 struct GetOptions {
     #[arg(value_parser = parse_secret_name)]
     name: SecretName,
-    #[arg(long)]
-    serial: Option<u32>,
 }
 
 #[derive(Args)]
-/// primary YubiKey に bootstrap secret 一式を初期登録する option。
-struct EnrollPrimaryOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-    #[arg(long)]
-    stdin_json: bool,
-}
+/// 接続中の単一 primary YubiKey に bootstrap secret 一式を初期登録する option。
+struct EnrollPrimaryOptions {}
 
 #[derive(Args)]
-/// spare YubiKey に primary 由来の bootstrap secret 一式を登録する option。
-struct EnrollSpareOptions {
-    #[arg(long)]
-    primary_serial: Option<u32>,
-    #[arg(long)]
-    spare_serial: Option<u32>,
-    #[arg(long)]
-    stdin_json: bool,
-}
+/// 接続中の単一 spare YubiKey に CLI secret input port から受け取る bootstrap secret 一式を登録する option。
+struct EnrollSpareOptions {}
 
 #[derive(Args)]
-/// `rotate-bws-token` で更新する YubiKey と token の受け取り境界を表す option。
+/// `rotate-bws-token` で更新する token の受け取り境界を表す option。
 struct RotateBwsTokenOptions {
-    #[arg(long)]
-    serial: Option<u32>,
     #[arg(long)]
     stdin: bool,
 }
@@ -135,16 +114,14 @@ struct RotateBwsTokenOptions {
 /// YubiKey に保存された secret と外部確認項目を検証する option。
 ///
 /// `--check bw-login`（または `--all`）の bw-login 外部確認では、通常 YubiKey の `bw-email` を使う。
-/// email override が必要な場合は `--email <email>` を使う（yubikey-secret-storage-design.md L286）。override は `bw-login` の
+/// email override が必要な場合は `--email <email>` を使う（yubikey-secret-storage-design.md の `dotfiles secrets verify-yubikey` 節）。override は `bw-login` の
 /// `BwLoginOptions` の `--email` と同じ意味・体裁で、指定時は YubiKey の `bw-email` を読まない。
 struct VerifyYubikeyOptions {
-    #[arg(long)]
-    serial: Option<u32>,
     #[arg(long, value_enum)]
     check: Vec<VerifyCheck>,
     #[arg(long)]
     all: bool,
-    /// bw-login 外部確認で YubiKey の `bw-email` を使わず、指定した login email で login する override（yubikey-secret-storage-design.md L286）。
+    /// bw-login 外部確認で YubiKey の `bw-email` を使わず、指定した login email で login する override（yubikey-secret-storage-design.md の `dotfiles secrets verify-yubikey` 節）。
     #[arg(long)]
     email: Option<String>,
 }
@@ -163,8 +140,6 @@ enum VerifyCheck {
 /// master password は子プロセスの `BW_PASSWORD` env でだけ渡し、argv には載せない。YubiKey OTP は実行時に
 /// 可視入力で受け取り、argv（`--code`）へ載る単回トークンとして扱う。
 struct BwLoginOptions {
-    #[arg(long)]
-    serial: Option<u32>,
     /// YubiKey の `bw-email` を使わず、指定した login email で login する override。
     #[arg(long)]
     email: Option<String>,
@@ -172,55 +147,37 @@ struct BwLoginOptions {
 
 #[derive(Args)]
 /// `gpg-secret-key-backup` envelope を接続中 YubiKey で復号して鍵リングへ復元する option。
-struct RestoreGpgOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-}
+struct RestoreGpgOptions {}
 
 #[derive(Args)]
 /// `password-store-remote` を取得し private `password-store` を SSH clone する option。
-struct RestorePassOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-}
+struct RestorePassOptions {}
 
 #[derive(Args)]
-/// `gpg-secret-key-backup` の registration / recipient 追加を公開する option。
+/// `gpg-secret-key-backup` の事前登録状態確認を公開する option。
 struct GpgBackupOptions {
     #[command(subcommand)]
     command: GpgBackupCommand,
 }
 
 #[derive(Subcommand)]
-/// `gpg-secret-key-backup` envelope の primary 登録と spare recipient 追加。
+/// `gpg-secret-key-backup` envelope の事前登録状態確認。
 enum GpgBackupCommand {
     Register(GpgBackupRegisterOptions),
-    AddSpare(GpgBackupAddSpareOptions),
 }
 
 #[derive(Args)]
-/// 既存環境の GPG secret key を encrypted envelope 化して primary 登録する option。
-struct GpgBackupRegisterOptions {
-    #[arg(long)]
-    primary_fingerprint: String,
-    #[arg(long)]
-    serial: Option<u32>,
-}
+/// 既存 `gpg-secret-key-backup` envelope が接続中 YubiKey と整合するか確認する option。
+///
+/// 現行 CLI は project 不在なら `dotfiles-secret-recovery` を作成するが、未登録状態から
+/// `gpg-secret-key-backup` 自体を新規作成も更新もしない。project 内で secret が未登録なら停止し、
+/// 既存 1 件が primary fingerprint・接続中 recipient・2 recipient 以上条件を満たす場合だけ成功する。
+/// 初回 envelope 作成の正本手順は別途必要で、この command や provisioning script だけでは
+/// 初期プロビジョニング完了にならない。
+struct GpgBackupRegisterOptions {}
 
 #[derive(Args)]
-/// 既存 envelope を復号して spare YubiKey の recipient を追加する option。
-struct GpgBackupAddSpareOptions {
-    #[arg(long)]
-    unwrap_serial: Option<u32>,
-    #[arg(long)]
-    spare_serial: Option<u32>,
-    /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
-    #[arg(long)]
-    yes: bool,
-}
-
-#[derive(Args)]
-/// `password-store-remote` の provisioning（保管側 create/update）を公開する option。
+/// `password-store-remote` の provisioning（保管側 create/use）を公開する option。
 ///
 /// command 名 `pass-remote` は、`gpg-backup`（`gpg-secret-key-backup` の保管 command 群）と対称に
 /// `password-store-remote` secret の保管 command 群を表す。設計「初期登録手順」step3 が定める保管経路
@@ -232,31 +189,24 @@ struct PassRemoteOptions {
 }
 
 #[derive(Subcommand)]
-/// `password-store-remote` secret の create / update を行う provisioning command 群。
+/// `password-store-remote` secret の create / use を行う provisioning command 群。
 enum PassRemoteCommand {
     Register(PassRemoteRegisterOptions),
 }
 
 #[derive(Args)]
-/// private `password-store` の clone URL を BWS へ create または update する option。
+/// private `password-store` の clone URL を BWS へ create または既存照合する option。
 ///
-/// clone URL は private repo の SSH clone URL であって秘密情報ではないため、`--url <value>` で argv 指定
-/// できる。`--url` 未指定時は可視プロンプト（対話・入力をエコー）または pipe（stdin）から 1 行を読む。
-/// `--yes` は非対話実行での上書き更新を明示許可する。
+/// clone URL は private repo の SSH clone URL であって秘密情報ではない。configured origin が観測できる場合は
+/// その repository identity を優先し、origin が無い場合だけ controlling TTY の可視対話入力へ委譲する。
+/// provisioning script は URL を argv / stdin / 環境変数で中継しない。
+/// BWS に既存 `password-store-remote` がある場合も、configured origin から期待値を導けるときだけ照合に成功し、
+/// origin が無い既存値は fail-closed で停止する。
 ///
-/// この command は YubiKey storage を読まない。BWS 登録・更新に使う access token は hidden prompt（TTY）/
+/// この command は YubiKey storage を読まない。BWS 登録に使う access token は hidden prompt（TTY）/
 /// pipe（stdin）から保護値として受け取り、YubiKey へ保存しない。YubiKey の `bws-access-token` には
-/// 別経路で復旧用の最小権限 token を保存する前提のため、`--serial` option は持たず、token を argv へ
-/// 載せる option も設けない。
-struct PassRemoteRegisterOptions {
-    /// 登録する `password-store-remote` の clone URL（`git@github.com:<owner>/<repo>.git`）。
-    /// 非秘匿値のため argv 指定を許可する。未指定時は可視プロンプト / pipe から読む。
-    #[arg(long)]
-    url: Option<String>,
-    /// 非対話実行で BWS secret の上書き更新を明示的に許可する。
-    #[arg(long)]
-    yes: bool,
-}
+/// 別経路で復旧用の最小権限 token を保存する前提のため、token を argv へ載せる option も設けない。
+struct PassRemoteRegisterOptions {}
 
 #[derive(Args)]
 /// GPG authentication subkey 由来の SSH 公開鍵を扱う最上位 command。
@@ -273,10 +223,7 @@ enum GpgCommand {
 
 #[derive(Args)]
 /// authentication subkey 由来の OpenSSH 公開鍵を出力する option。
-struct GpgExportSshPublicKeyOptions {
-    #[arg(long)]
-    primary_fingerprint: String,
-}
+struct GpgExportSshPublicKeyOptions {}
 
 /// CLI で parse 済みの `dotfiles secrets` command を entrypoint 境界へ渡す。
 ///
@@ -294,16 +241,15 @@ pub(crate) async fn run(options: SecretsOptions) -> Result<()> {
 /// 束ねる。command 定義と option 変換だけをここで行い、鍵リング解決と出力翻訳は adapter へ閉じる。
 pub(crate) fn run_gpg(options: GpgOptions) -> Result<()> {
     let mut keyring = adapters::GpgKeyringAdapter::default();
+    let store = adapters::PasswordStoreAdapter::default();
     let output = adapters::ProcessIoAdapter::default();
     match options.command {
         GpgCommand::ExportSshPublicKey(options) => {
-            let primary_fingerprint =
-                domain::gpg_backup::PrimaryFingerprint::parse(&options.primary_fingerprint)?;
+            let _ = options;
             application::run_export_ssh_public_key::run_export_ssh_public_key(
-                domain::commands::ExportSshPublicKeyCommand {
-                    primary_fingerprint,
-                },
+                domain::commands::ExportSshPublicKeyCommand,
                 &mut keyring,
+                &store,
                 &output,
             )
         }

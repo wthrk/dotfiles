@@ -17,10 +17,8 @@ use crate::{
             verification::VerifySummary,
         },
         ports::io::{
-            BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
-            BwsAccessTokenInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
-            ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-            SshPublicKeyOutputPort,
+            BwOtpInputPort, BwsAccessTokenInputPort, PasswordStoreRemoteInputPort, PinInputPort,
+            ReportPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
         },
         support::protection::ProtectedSecret,
     },
@@ -72,20 +70,6 @@ impl BwOtpInputPort for ProcessIoAdapter {
     }
 }
 
-impl RotationContinuationPort for ProcessIoAdapter {
-    fn continue_rotation(&self) -> Result<bool> {
-        self.0.continue_rotation()
-    }
-}
-
-impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
-    fn read_bootstrap_secret_fields(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, ProtectedSecret>> {
-        self.0.read_bootstrap_secret_fields()
-    }
-}
-
 impl SecretOutputPort for ProcessIoAdapter {
     fn write_secret(&self, secret: &ProtectedSecret) -> Result<()> {
         self.0.write_secret(secret)
@@ -95,39 +79,6 @@ impl SecretOutputPort for ProcessIoAdapter {
 impl SshPublicKeyOutputPort for ProcessIoAdapter {
     fn write_ssh_public_key(&self, public_key: &OpenSshPublicKey) -> Result<()> {
         self.0.write_ssh_public_key(public_key)
-    }
-}
-
-impl ClockPort for ProcessIoAdapter {
-    fn now_rfc3339_utc(&self) -> Result<String> {
-        self.0.now_rfc3339_utc()
-    }
-}
-
-impl BackupUpdateConfirmationPort for ProcessIoAdapter {
-    fn confirm_backup_update(
-        &self,
-        project_name: &str,
-        secret_name: &str,
-        primary_fingerprint: &str,
-        assume_overwrite: bool,
-    ) -> Result<bool> {
-        self.0.confirm_backup_update(
-            project_name,
-            secret_name,
-            primary_fingerprint,
-            assume_overwrite,
-        )
-    }
-
-    fn confirm_secret_overwrite(
-        &self,
-        project_name: &str,
-        secret_name: &str,
-        assume_overwrite: bool,
-    ) -> Result<bool> {
-        self.0
-            .confirm_secret_overwrite(project_name, secret_name, assume_overwrite)
     }
 }
 

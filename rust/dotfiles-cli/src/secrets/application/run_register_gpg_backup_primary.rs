@@ -1,11 +1,11 @@
-//! gpg-secret-key-backup の primary 登録順序を固定し、export/暗号化/登録の実装詳細を port 境界へ閉じる。
+//! gpg-secret-key-backup の事前登録状態確認順序を固定し、export/暗号化/登録の実装詳細を port 境界へ閉じる。
 
 use crate::Result;
 use crate::secrets::{
     domain::{
-        bws::{BwsProjectName, BwsSecretName},
+        bws::{BwsLookupResolution, BwsProjectName, BwsSecretName},
         commands::RegisterGpgBackupCommand,
-        gpg_backup::{EnvelopeMetadata, EnvelopeRecipient, GpgBackupEnvelope},
+        gpg_backup::SecretPrimaryKeyCandidates,
     },
     ports,
 };
@@ -15,31 +15,31 @@ pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
     pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
     pub(crate) device_serial: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
-    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
+    pub(crate) store: &'a dyn ports::PasswordStorePort,
     pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
-    pub(crate) clock: &'a dyn ports::ClockPort,
     pub(crate) bws_client: &'a B,
 }
 
-/// 既存環境の GPG secret key を encrypted envelope 化し、Bitwarden Secrets Manager へ primary 登録する。
+/// 既存 `gpg-secret-key-backup` envelope が、この CLI で使える復旧到達状態かを確認する。
 ///
-/// 設計「backup export 入力契約」「recipient 運用 / BWS 更新契約」の primary 登録経路を順序制御として
-/// 固定する。BWS の同名 backup 重複確認を secret key export より前に行い、上書きしないと決まっている
-/// シナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない場合だけ subkey 構成を検証
-/// し、export 直後の bytes を再解析して fingerprint 一致を確認したうえで envelope 化し、接続中 YubiKey の
-/// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
-/// argv/log/永続ファイルへ出さない。
+/// 設計「backup export 入力契約」「recipient 運用 / BWS 登録契約」のうち、現行 CLI で実装済みなのは
+/// 既存 envelope の照合経路だけである。BWS の同名 backup 重複確認を secret key export より前に行い、
+/// 上書きしないと決まっているシナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない
+/// 場合でも、現行 CLI 経路では primary/spare 2 recipient envelope を作れないため、secret key export と
+/// DEK 暗号化へ進む前に停止する。secret key material と DEK は port 境界の保護値として扱い、argv/log/
+/// 永続ファイルへ出さない。
 ///
 /// BWS への登録には BWS access token を使う。この登録用 token は hidden prompt / pipe から
 /// `BwsAccessTokenInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
 /// 復旧時の read 用最小権限 token を別経路で用意する。この provisioning command 自体は storage/pin 経由の
-/// token 読み出しを行わない。一方、YubiKey 本体は recipient wrap（PIV slot `82` 公開鍵で DEK を RSA-OAEP
-/// wrap）に必要なため、recipient 用の device serial 解決は残す。slot `82`
-/// 公開鍵での wrap は private key 操作を伴わないため PIN/touch を要さない。
+/// token 読み出しを行わない。既存 envelope の確認では接続中 YubiKey の recipient identity だけを解決し、
+/// 新規 envelope 作成は primary/spare 2 recipient を同時取得できる CLI 経路ができるまで拒否する。
 ///
-/// 順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで export・
-/// envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup がある場合は
-/// 重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
+/// 順序を application に固定するのは「既存 envelope の primary 一致と 2 recipient 到達状態を満たすまで
+/// export・envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。
+/// 既存の同名 backup が 1 件ある場合は metadata の primary fingerprint が解決済み primary fingerprint と
+/// 一致し、接続中 YubiKey の recipient が含まれる場合だけ成功扱いにする。envelope 変更はこの CLI 経路では
+/// 扱わない。
 pub(crate) async fn run_register_gpg_backup_primary<B>(
     command: RegisterGpgBackupCommand,
     runtime: RegisterGpgBackupPrimaryRuntime<'_, B>,
@@ -51,91 +51,123 @@ where
         token_input,
         device_serial,
         keyring,
-        cipher,
+        store,
         recipient,
-        clock,
         bws_client,
     } = runtime;
-    // recipient wrap 対象 YubiKey の serial を解決する（slot 82 公開鍵 wrap に必要）。
-    let serial = device_serial.resolve_device_serial(command.serial)?;
-
+    let _ = command;
+    let primary_fingerprint = if store.password_store_exists()? {
+        let readiness = store.inspect_password_store()?;
+        if readiness.gpg_id_present && !readiness.gpg_id_recipients.is_empty() {
+            let mut fingerprints = Vec::new();
+            for recipient_id in readiness.parse_recipients()? {
+                let Some(fingerprint) = keyring.primary_fingerprint_for_recipient(&recipient_id)?
+                else {
+                    anyhow::bail!(
+                        "password-store recipient does not resolve to an available GPG secret key"
+                    );
+                };
+                fingerprints.push(fingerprint);
+            }
+            SecretPrimaryKeyCandidates::new(fingerprints).resolve_unique()?
+        } else {
+            keyring
+                .list_secret_primary_fingerprints()?
+                .resolve_unique()?
+        }
+    } else {
+        keyring
+            .list_secret_primary_fingerprints()?
+            .resolve_unique()?
+    };
     // BWS 登録用 access token を hidden prompt / pipe から取得し、復旧 project を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
     let access_token = token_input.read_bws_access_token_for_provisioning()?;
-    let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
-        .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
+    let project_name = BwsProjectName::DOTFILES_SECRET_RECOVERY;
+    let project_candidates = bws_client.list_bws_projects(&access_token).await?;
+    let project_id = match project_name.resolve_lookup(project_candidates) {
+        BwsLookupResolution::Missing => {
+            bws_client
+                .create_bws_project(&access_token, project_name)
+                .await?
+        }
+        BwsLookupResolution::Unique(project_id) => project_id,
+        BwsLookupResolution::Ambiguous => {
+            anyhow::bail!("multiple bws projects matched: {}", project_name.as_str())
+        }
+    };
 
-    // 同名 backup が既にある場合は重複登録を停止条件にする。上書きしないと決まっているシナリオで
-    // secret key export・DEK 暗号化・recipient wrap を発生させないよう、export より前に重複確認する。
-    // `resolve_id` は 0 件と複数件をどちらも `Err` にするため、既存重複 project を「未登録」と
-    // 誤認しないよう、同名候補の件数を数えて 1 件以上で停止する。対象同一性の exact match は domain
-    // helper に委ね、application は重複時の停止分岐だけを扱う。
-    let existing_count = bws_client
+    // 同名 backup の有無を export より前に確認する。既存 1 件で primary が一致すれば設定済み secret を
+    // 使用し、secret key export・DEK 暗号化・recipient wrap を再実行しない。0 件は現行 CLI 経路で
+    // primary/spare 2 recipient envelope を作れないため、secret key material を読む前に停止する。
+    let candidates = bws_client
         .list_bws_secrets(&access_token, &project_id)
-        .await?
-        .into_iter()
-        .filter(|candidate| BwsSecretName::GpgSecretKeyBackup.matches_candidate(candidate))
-        .count();
-    if existing_count >= 1 {
-        anyhow::bail!(
-            "a gpg-secret-key-backup secret already exists; refusing to overwrite on primary registration"
-        );
+        .await?;
+    match BwsSecretName::GpgSecretKeyBackup.resolve_lookup(candidates) {
+        BwsLookupResolution::Missing => {
+            anyhow::bail!(
+                "gpg-secret-key-backup is not registered; current CLI cannot create a primary/spare recipient envelope"
+            )
+        }
+        BwsLookupResolution::Unique(secret_id) => {
+            let envelope = bws_client
+                .fetch_gpg_backup_envelope(&access_token, &secret_id)
+                .await?;
+            if envelope.metadata().primary_fingerprint().as_str() != primary_fingerprint.as_str() {
+                anyhow::bail!(
+                    "existing gpg-secret-key-backup primary fingerprint does not match the resolved key"
+                );
+            }
+            envelope.ensure_spare_recipient_registered()?;
+            let serial = device_serial.resolve_device_serial()?;
+            let connected = recipient.resolve_connected_recipient(serial)?;
+            envelope.resolve_recipient(&connected)?;
+            return Ok(());
+        }
+        BwsLookupResolution::Ambiguous => anyhow::bail!(
+            "multiple gpg-secret-key-backup secrets exist in the recovery project; refusing to provision"
+        ),
     }
-
-    // export 前に encryption / authentication / signing subkey の利用可能状態を検証する。
-    keyring
-        .inspect_imported_key(&command.primary_fingerprint)?
-        .ensure_usable()?;
-
-    // export 直後の bytes を再解析し、導出 fingerprint が指定値と一致する場合だけ envelope 化へ進む。
-    let backup = keyring.export_secret_key(&command.primary_fingerprint)?;
-    let parsed = keyring.parse_backup_primary_fingerprint(&backup)?;
-    if parsed.as_str() != command.primary_fingerprint.as_str() {
-        anyhow::bail!("exported gpg backup primary fingerprint does not match the requested key");
-    }
-
-    // DEK を生成して backup を暗号化し、接続中 YubiKey の recipient で DEK を wrap する。
-    let dek = cipher.generate_dek()?;
-    let ciphertext = cipher.encrypt_backup(&dek, &backup)?;
-    let recipient_entry: EnvelopeRecipient = recipient.wrap_dek_for_recipient(serial, &dek)?;
-
-    let metadata = EnvelopeMetadata::new(parsed, clock.now_rfc3339_utc()?)?;
-    let envelope = GpgBackupEnvelope::assemble(metadata, vec![recipient_entry], ciphertext)?;
-
-    bws_client
-        .create_gpg_backup_envelope(&access_token, &project_id, &envelope)
-        .await
-        .map(|_id| ())
 }
 
 #[cfg(test)]
 mod tests {
-    //! primary 登録の順序（重複確認→subkey 検証→export→fingerprint 照合→暗号化→recipient wrap→
-    //! envelope→BWS 作成）を mockall + Sequence で検証する単体テスト。
+    //! primary 登録の順序（BWS 重複確認→既存 envelope 検証）を mockall + Sequence で検証する単体テスト。
     //!
-    //! token-input / keyring / cipher / recipient / clock / bws backend を port mock で差し替え、BWS 登録に
+    //! token-input / keyring / recipient / bws backend を port mock で差し替え、BWS 登録に
     //! 使う access token を BWS access token 入力経路から取得すること、重複確認が export より前に行われること、
-    //! subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき create が呼ばれること、
-    //! 重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
+    //! 未登録時は create/export/encrypt/wrap/BWS 作成へ進まず secret export 前に停止すること、既存 envelope
+    //! の primary fingerprint と 2 recipient 条件、接続中 recipient 一致を満たすまで登録へ
+    //! 進ませないことを確認する。
 
     use crate::secrets::{
         domain::{
             commands::RegisterGpgBackupCommand,
             gpg_backup::{
-                ConnectedYubiKey, EnvelopeCiphertext, EnvelopeRecipient, PrimaryFingerprint,
+                ConnectedYubiKey, EnvelopeCiphertext, EnvelopeMetadata, EnvelopeRecipient,
+                GpgBackupEnvelope, PrimaryFingerprint, SecretPrimaryKeyCandidates,
             },
             gpg_restore::{ImportedKeyComposition, ResolvedSubkey, SubkeyCapability},
+            pass_restore::PasswordStoreReadiness,
         },
         ports,
-        support::protection::ProtectedSecret,
+        ports::ProtectedSecret,
     };
 
     use super::{RegisterGpgBackupPrimaryRuntime, run_register_gpg_backup_primary};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
+    /// `Result::Ok` を取り出す。テストでも `unwrap` / `expect` を使わないための最小 helper。
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("expected {context} to succeed: {error}"),
+        }
+    }
+
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
-        ProtectedSecret::from_test_bytes(bytes).expect("test secret")
+        ok(ProtectedSecret::from_test_bytes(bytes), "test secret")
     }
 
     /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
@@ -152,17 +184,53 @@ mod tests {
     }
 
     fn ciphertext() -> EnvelopeCiphertext {
-        EnvelopeCiphertext::new(vec![0u8; 12], b"encrypted".to_vec(), vec![0u8; 16])
-            .expect("ciphertext")
+        ok(
+            EnvelopeCiphertext::new(vec![0u8; 12], b"encrypted".to_vec(), vec![0u8; 16]),
+            "ciphertext",
+        )
     }
 
     fn recipient_entry() -> EnvelopeRecipient {
         let connected = ConnectedYubiKey::new(
             "2001",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        let connected = ok(connected, "connected");
+        ok(
+            EnvelopeRecipient::new(&connected, b"wrapped".to_vec()),
+            "recipient",
         )
-        .expect("connected");
-        EnvelopeRecipient::new(&connected, b"wrapped".to_vec()).expect("recipient")
+    }
+
+    fn existing_envelope(primary_fingerprint: &str) -> GpgBackupEnvelope {
+        let spare = ConnectedYubiKey::new(
+            "2002",
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        );
+        let spare = ok(spare, "spare connected");
+        ok(
+            GpgBackupEnvelope::assemble(
+                ok(
+                    EnvelopeMetadata::new(
+                        ok(
+                            PrimaryFingerprint::parse(primary_fingerprint),
+                            "fingerprint",
+                        ),
+                        "2026-05-31T00:00:00Z".to_owned(),
+                    ),
+                    "metadata",
+                ),
+                vec![
+                    recipient_entry(),
+                    ok(
+                        EnvelopeRecipient::new(&spare, b"wrapped-spare".to_vec()),
+                        "spare recipient",
+                    ),
+                ],
+                ciphertext(),
+            ),
+            "envelope",
+        )
     }
 
     fn all_usable() -> ImportedKeyComposition {
@@ -185,16 +253,30 @@ mod tests {
         )
     }
 
+    fn expect_single_primary_resolution(
+        keyring: &mut ports::MockGpgKeyringPort,
+        store: &mut ports::MockPasswordStorePort,
+    ) {
+        store
+            .expect_password_store_exists()
+            .times(1)
+            .returning(|| Ok(false));
+        keyring
+            .expect_list_secret_primary_fingerprints()
+            .times(1)
+            .returning(|| {
+                Ok(SecretPrimaryKeyCandidates::new(vec![
+                    PrimaryFingerprint::parse(PRIMARY_FP)?,
+                ]))
+            });
+    }
+
     #[tokio::test]
-    async fn register_primary_creates_envelope_when_absent() -> crate::Result<()> {
+    async fn register_primary_stops_before_create_when_new_envelope_has_only_connected_recipient()
+    -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
         let token = token_input();
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|requested| Ok(requested.expect("serial")));
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
@@ -209,92 +291,242 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(Vec::new()));
 
+        device
+            .expect_resolve_device_serial()
+            .times(0)
+            .returning(|| Ok(2001));
+
         let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut store = ports::MockPasswordStorePort::new();
+        expect_single_primary_resolution(&mut keyring, &mut store);
         keyring
             .expect_inspect_imported_key()
-            .times(1)
-            .in_sequence(&mut sequence)
+            .times(0)
             .returning(|_| Ok(all_usable()));
         keyring
-            .expect_export_secret_key()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(material(b"backup")));
-        keyring
             .expect_parse_backup_primary_fingerprint()
-            .times(1)
+            .times(0)
             .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
 
-        let mut cipher = ports::MockBackupCipherPort::new();
-        cipher
-            .expect_generate_dek()
-            .times(1)
-            .returning(|| Ok(material(b"dek")));
-        cipher
-            .expect_encrypt_backup()
-            .times(1)
-            .returning(|_, _| Ok(ciphertext()));
-
         let mut recipient = ports::MockGpgRecipientPort::new();
-        recipient
-            .expect_wrap_dek_for_recipient()
-            .times(1)
-            .returning(|_, _| Ok(recipient_entry()));
 
-        let mut clock = ports::MockClockPort::new();
-        clock
-            .expect_now_rfc3339_utc()
-            .times(1)
-            .returning(|| Ok("2026-05-31T00:00:00Z".to_owned()));
-
-        bws.expect_create_gpg_backup_envelope()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _, _| Ok(crate::secrets::domain::bws::BwsSecretId::new("new-id")));
-
-        run_register_gpg_backup_primary(
-            RegisterGpgBackupCommand {
-                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
-                serial: Some(2001),
-            },
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand,
             RegisterGpgBackupPrimaryRuntime {
                 token_input: &token,
                 device_serial: &mut device,
                 keyring: &mut keyring,
-                cipher: &mut cipher,
+                store: &store,
                 recipient: &mut recipient,
-                clock: &clock,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "new gpg-secret-key-backup must not be persisted with only one recipient"
+        );
+        Ok(())
+    }
+
+    /// 復旧 project 未作成時は project を作成してから、同名 backup の未登録確認後に 1 recipient 作成を拒否する。
+    #[tokio::test]
+    async fn register_primary_creates_project_when_missing_before_envelope_create()
+    -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(Vec::new()));
+        bws.expect_create_bws_project()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|_, project_name| project_name.as_str() == "dotfiles-secret-recovery")
+            .returning(|_, _| {
+                Ok(crate::secrets::domain::bws::BwsProjectId::new(
+                    "project-new",
+                ))
+            });
+        bws.expect_list_bws_secrets()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, project_id| {
+                assert_eq!(project_id.as_str(), "project-new");
+                Ok(Vec::new())
+            });
+
+        device
+            .expect_resolve_device_serial()
+            .times(0)
+            .returning(|| Ok(2001));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut store = ports::MockPasswordStorePort::new();
+        expect_single_primary_resolution(&mut keyring, &mut store);
+        keyring
+            .expect_inspect_imported_key()
+            .times(0)
+            .returning(|_| Ok(all_usable()));
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .times(0)
+            .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                store: &store,
+                recipient: &mut recipient,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "fresh project path must still reject a one-recipient backup envelope"
+        );
+        Ok(())
+    }
+
+    /// 復旧 project が複数一致する場合は、secret 確認・device 解決・鍵 export へ進ませず停止する。
+    #[tokio::test]
+    async fn register_primary_stops_when_duplicate_projects_exist() {
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
+        device.expect_resolve_device_serial().times(0);
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut store = ports::MockPasswordStorePort::new();
+        expect_single_primary_resolution(&mut keyring, &mut store);
+        keyring.expect_inspect_imported_key().times(0);
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient.expect_resolve_connected_recipient().times(0);
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().times(1).returning(|_| {
+            Ok(vec![
+                crate::secrets::domain::bws::BwsLookupCandidate {
+                    id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                    name: "dotfiles-secret-recovery".to_owned(),
+                },
+                crate::secrets::domain::bws::BwsLookupCandidate {
+                    id: crate::secrets::domain::bws::BwsProjectId::new("project-2"),
+                    name: "dotfiles-secret-recovery".to_owned(),
+                },
+            ])
+        });
+        bws.expect_create_bws_project().times(0);
+        bws.expect_list_bws_secrets().times(0);
+        bws.expect_fetch_gpg_backup_envelope().times(0);
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                store: &store,
+                recipient: &mut recipient,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "duplicate recovery projects must stop gpg backup registration"
+        );
+    }
+
+    /// 同名 backup が 1 件存在し primary fingerprint と接続中 recipient が一致する場合は、設定済み secret を使い、
+    /// export・暗号化・wrap・create へ進まない。
+    #[tokio::test]
+    async fn register_primary_uses_existing_matching_secret() -> crate::Result<()> {
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Ok(2001));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut store = ports::MockPasswordStorePort::new();
+        expect_single_primary_resolution(&mut keyring, &mut store);
+        keyring.expect_inspect_imported_key().times(0);
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .withf(|serial| *serial == 2001)
+            .returning(|_| {
+                ConnectedYubiKey::new(
+                    "2001",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                )
+            });
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsSecretId::new("backup-id"),
+                name: "gpg-secret-key-backup".to_owned(),
+            }])
+        });
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .returning(|_, _| Ok(existing_envelope(PRIMARY_FP)));
+
+        run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                store: &store,
+                recipient: &mut recipient,
                 bws_client: &bws,
             },
         )
         .await
     }
 
-    /// 同名 backup が複数 project に重複して存在する場合は、`resolve_id` の複数件 `Err` を
+    /// 同名 backup が複数存在する場合は、`resolve_id` の複数件 `Err` を
     /// 「未登録」と誤認せず、create を呼ばずに重複登録を停止することを検証する。
     #[tokio::test]
     async fn register_primary_stops_when_duplicate_secrets_exist() {
         let token = token_input();
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|requested| Ok(requested.expect("serial")));
+        device.expect_resolve_device_serial().times(0);
 
         // 重複検出で export・暗号化・wrap のいずれにも進ませず、鍵素材を不要にメモリへ載せない。
         let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut store = ports::MockPasswordStorePort::new();
+        expect_single_primary_resolution(&mut keyring, &mut store);
         keyring.expect_inspect_imported_key().times(0);
-        keyring.expect_export_secret_key().times(0);
         keyring.expect_parse_backup_primary_fingerprint().times(0);
 
-        let mut cipher = ports::MockBackupCipherPort::new();
-        cipher.expect_generate_dek().times(0);
-        cipher.expect_encrypt_backup().times(0);
-
         let mut recipient = ports::MockGpgRecipientPort::new();
-        recipient.expect_wrap_dek_for_recipient().times(0);
-
-        let mut clock = ports::MockClockPort::new();
-        clock.expect_now_rfc3339_utc().times(0);
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
@@ -317,20 +549,15 @@ mod tests {
             ])
         });
         // 重複検出で create へ進ませない。
-        bws.expect_create_gpg_backup_envelope().times(0);
 
         let result = run_register_gpg_backup_primary(
-            RegisterGpgBackupCommand {
-                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
-                serial: Some(2001),
-            },
+            RegisterGpgBackupCommand,
             RegisterGpgBackupPrimaryRuntime {
                 token_input: &token,
                 device_serial: &mut device,
                 keyring: &mut keyring,
-                cipher: &mut cipher,
+                store: &store,
                 recipient: &mut recipient,
-                clock: &clock,
                 bws_client: &bws,
             },
         )
@@ -340,5 +567,168 @@ mod tests {
             result.is_err(),
             "duplicate gpg-secret-key-backup secrets must stop primary registration"
         );
+    }
+
+    /// fingerprint 未指定かつ store 未初期化時は、鍵リング内の単一 secret primary だけを backup 対象にする。
+    #[tokio::test]
+    async fn register_primary_without_fingerprint_resolves_single_secret_key() -> crate::Result<()>
+    {
+        let mut sequence = mockall::Sequence::new();
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(Vec::new()));
+
+        device
+            .expect_resolve_device_serial()
+            .times(0)
+            .returning(|| Ok(2001));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_list_secret_primary_fingerprints()
+            .times(1)
+            .returning(|| {
+                Ok(
+                    crate::secrets::domain::gpg_backup::SecretPrimaryKeyCandidates::new(vec![
+                        PrimaryFingerprint::parse(PRIMARY_FP)?,
+                    ]),
+                )
+            });
+        keyring
+            .expect_inspect_imported_key()
+            .times(0)
+            .returning(|fingerprint| {
+                assert_eq!(fingerprint.as_str(), PRIMARY_FP);
+                Ok(all_usable())
+            });
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .times(0)
+            .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
+        let mut store = ports::MockPasswordStorePort::new();
+        store
+            .expect_password_store_exists()
+            .times(1)
+            .returning(|| Ok(false));
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                store: &store,
+                recipient: &mut recipient,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "auto-resolved new backup must stop before persisting a one-recipient envelope"
+        );
+        Ok(())
+    }
+
+    /// fingerprint 未指定かつ `.gpg-id` がある場合は、設定済み recipient から解決した primary を使う。
+    #[tokio::test]
+    async fn register_primary_without_fingerprint_prefers_configured_gpg_id_recipient()
+    -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
+
+        let mut store = ports::MockPasswordStorePort::new();
+        store
+            .expect_password_store_exists()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(true));
+        store
+            .expect_inspect_password_store()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| {
+                Ok(PasswordStoreReadiness {
+                    gpg_id_present: true,
+                    gpg_id_recipients: vec!["configured-recipient@example.invalid".to_owned()],
+                    sample_entry: None,
+                })
+            });
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring.expect_list_secret_primary_fingerprints().times(0);
+        keyring
+            .expect_primary_fingerprint_for_recipient()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|recipient| {
+                assert_eq!(recipient.as_str(), "configured-recipient@example.invalid");
+                PrimaryFingerprint::parse(PRIMARY_FP).map(Some)
+            });
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(Vec::new()));
+
+        device
+            .expect_resolve_device_serial()
+            .times(0)
+            .returning(|| Ok(2001));
+
+        keyring
+            .expect_inspect_imported_key()
+            .times(0)
+            .returning(|fingerprint| {
+                assert_eq!(fingerprint.as_str(), PRIMARY_FP);
+                Ok(all_usable())
+            });
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .times(0)
+            .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand,
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                store: &store,
+                recipient: &mut recipient,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "configured .gpg-id path must not persist a one-recipient backup envelope"
+        );
+        Ok(())
     }
 }

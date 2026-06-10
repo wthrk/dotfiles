@@ -32,24 +32,6 @@ impl ProtectedInputBuffer {
         })
     }
 
-    /// reader から最大 `limit + 1` bytes を読み込む。
-    ///
-    /// `limit` を超えた場合は指定 error で失敗する。
-    pub(crate) fn read_from(
-        mut reader: impl Read,
-        limit: usize,
-        too_large_error: &'static str,
-        session: &SecretSession,
-    ) -> Result<Self> {
-        let mut buffer = Self::new(limit + 1, session)?;
-        buffer.read_capped_from(&mut reader, limit + 1)?;
-        if buffer.len > limit {
-            bail!(too_large_error);
-        }
-
-        Ok(buffer)
-    }
-
     /// reader から行入力用の bytes を読み込む。
     ///
     /// 末尾改行を除いた後に上限判定できるよう、CRLF 分の余剰容量を確保する。
@@ -62,18 +44,6 @@ impl ProtectedInputBuffer {
         let mut buffer = Self::new(read_limit, session)?;
         buffer.read_line_capped_from(&mut reader, read_limit)?;
         Ok(buffer)
-    }
-
-    fn read_capped_from(&mut self, reader: &mut impl Read, cap: usize) -> io::Result<()> {
-        let target_len = cap.min(self.buffer.len());
-        while self.len < target_len {
-            let read = reader.read(&mut self.buffer[self.len..target_len])?;
-            if read == 0 {
-                break;
-            }
-            self.len += read;
-        }
-        Ok(())
     }
 
     /// reader から 1 行ぶんだけ読み込み、最初の LF か `cap` 到達で停止する。
@@ -143,20 +113,6 @@ impl ProtectedInputBuffer {
         (buffer, lock)
     }
 
-    /// 入力 allocation を、読み取り済み raw bytes と任意の lock guard へ分解する。
-    ///
-    /// stdin document など末尾改行も payload の一部として扱う入力境界で使う。caller は返却された
-    /// bytes と guard を直後に `ProtectedSecret` へ移し、zeroize ownership を再結合する。
-    fn into_bytes_and_lock(self) -> (Vec<u8>, Option<region::LockGuard>) {
-        let mut this = self;
-        let mut wrapped = std::mem::take(&mut this.buffer);
-        let mut buffer = std::mem::take(&mut *wrapped);
-        let lock = this.lock.take();
-        buffer.truncate(this.len);
-
-        (buffer, lock)
-    }
-
     /// 行入力 bytes を、保護済み値へ移す。
     ///
     /// 上限は末尾改行を除いた bytes に適用し、超過時は指定 error で失敗する。
@@ -170,20 +126,6 @@ impl ProtectedInputBuffer {
             bail!(too_large_error);
         }
         let (buffer, lock) = self.into_trimmed_bytes_and_lock();
-        Ok(session.protect_locked_secret_value(buffer, lock))
-    }
-
-    /// 入力 bytes を、末尾改行を保持したまま保護済み値へ移す。
-    pub(crate) fn into_protected_secret(
-        self,
-        session: &SecretSession,
-        limit: usize,
-        too_large_error: &'static str,
-    ) -> Result<ProtectedSecret> {
-        if self.len > limit {
-            bail!(too_large_error);
-        }
-        let (buffer, lock) = self.into_bytes_and_lock();
         Ok(session.protect_locked_secret_value(buffer, lock))
     }
 }

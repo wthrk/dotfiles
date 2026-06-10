@@ -19,11 +19,11 @@ use anyhow::Context;
 use crate::secrets::{
     domain::{
         bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId, BwsSecretName},
-        gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+        gpg_backup::GpgBackupEnvelope,
         pass_restore::PasswordStoreRemote,
     },
     ports::bw::BwsClientPort,
-    support::protection::ProtectedSecret,
+    support::protection::{ProtectedSecret, bws},
 };
 use crate::secrets_internal_test_stub_contract::{BWS_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX};
 
@@ -32,7 +32,7 @@ struct BwsStubSpec {
     fixture: BwsFixture,
     /// `gpg-secret-key-backup` secret value を override する任意の encrypted envelope JSON。
     ///
-    /// restore-gpg / spare 追加の integration test が、stub recipient と整合した envelope を初期 datastore
+    /// restore-gpg / verify integration test が、stub recipient と整合した envelope を初期 datastore
     /// として投入するために使う。未指定時は fixture 既定の "gpg-secret" 値を維持する。
     #[serde(default)]
     gpg_secret_key_backup: Option<String>,
@@ -42,12 +42,24 @@ struct BwsStubSpec {
     /// datastore として投入するために使う。未指定時は fixture 既定値を維持する。
     #[serde(default)]
     password_store_remote: Option<String>,
+    /// `password-store-remote` secret note の override。
+    ///
+    /// provenance marker の欠落 / 改ざんを CLI 実経路で回帰検証するために使う。未指定時は fixture 既定値を維持する。
+    #[serde(default)]
+    password_store_remote_note: Option<String>,
+    /// `password-store-remote` secret を未登録状態にする。
+    ///
+    /// provisioning の create 経路を、BWS access token / project は存在するが対象 secret だけ不在という
+    /// 初期条件で観測するために使う。
+    #[serde(default)]
+    password_store_remote_absent: bool,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum BwsFixture {
     DefaultRecoveryProject,
+    EmptyRecoveryProject,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -55,6 +67,7 @@ struct BwsDatastore {
     projects: BTreeMap<String, String>,
     project_secrets: BTreeMap<String, BTreeMap<String, String>>,
     secret_values: BTreeMap<String, String>,
+    secret_notes: BTreeMap<String, String>,
 }
 
 #[derive(serde::Serialize)]
@@ -70,12 +83,49 @@ struct BwsObservationFrame<'a> {
 
 static BWS_DATASTORE: OnceLock<Mutex<Option<BwsDatastore>>> = OnceLock::new();
 
+impl super::BwsClientAdapter {
+    async fn fetch_password_store_remote_note_marker(
+        &self,
+        access_token: &ProtectedSecret,
+        secret_id: &BwsSecretId,
+    ) -> crate::Result<Option<String>> {
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            Ok(bws::parse_provisioning_token_note(
+                store
+                    .secret_notes
+                    .get(secret_id.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+                    .as_str(),
+            )
+            .map(str::to_owned))
+        })
+    }
+}
+
 impl BwsClientPort for super::BwsClientAdapter {
     async fn list_bws_projects(
         &self,
         access_token: &ProtectedSecret,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
         read_bws_projects(access_token)
+    }
+
+    async fn create_bws_project(
+        &self,
+        access_token: &ProtectedSecret,
+        project_name: crate::secrets::domain::bws::BwsProjectName,
+    ) -> crate::Result<BwsProjectId> {
+        with_datastore(|store| {
+            ensure_access_token_matches_datastore(access_token, store)?;
+            let project_id = format!("bws-project-id-{}", project_name.as_str());
+            store
+                .projects
+                .insert(project_id.clone(), project_name.as_str().to_owned());
+            store.project_secrets.entry(project_id.clone()).or_default();
+            Ok(BwsProjectId::new(project_id))
+        })
     }
 
     async fn list_bws_secrets(
@@ -90,7 +140,7 @@ impl BwsClientPort for super::BwsClientAdapter {
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+    ) -> crate::Result<GpgBackupEnvelope> {
         with_datastore(|store| {
             ensure_access_token_matches_datastore(access_token, store)?;
             let value = store
@@ -98,9 +148,7 @@ impl BwsClientPort for super::BwsClientAdapter {
                 .get(secret_id.as_str())
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
-            let envelope = GpgBackupEnvelope::from_json(value.as_bytes())?;
-            let guard = BackupUpdateGuard::from_value_bytes(value.as_bytes());
-            Ok((envelope, guard))
+            GpgBackupEnvelope::from_json(value.as_bytes())
         })
     }
 
@@ -120,51 +168,18 @@ impl BwsClientPort for super::BwsClientAdapter {
         })
     }
 
-    async fn create_gpg_backup_envelope(
+    async fn ensure_recovery_token_provenance(
         &self,
         access_token: &ProtectedSecret,
-        project_id: &BwsProjectId,
-        envelope: &GpgBackupEnvelope,
-    ) -> crate::Result<BwsSecretId> {
-        let key = BwsSecretName::GpgSecretKeyBackup.key();
-        let value = String::from_utf8(envelope.to_json()?)
-            .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
-        with_datastore(|store| {
-            ensure_access_token_matches_datastore(access_token, store)?;
-            let secret_id = format!("bws-secret-id-{key}");
-            store
-                .project_secrets
-                .entry(project_id.as_str().to_owned())
-                .or_default()
-                .insert(secret_id.clone(), key.to_owned());
-            store.secret_values.insert(secret_id.clone(), value);
-            Ok(BwsSecretId::new(secret_id))
-        })
-    }
-
-    async fn update_gpg_backup_envelope_if_unchanged(
-        &self,
-        access_token: &ProtectedSecret,
-        _project_id: &BwsProjectId,
-        secret_id: &BwsSecretId,
-        envelope: &GpgBackupEnvelope,
-        expected_guard: &BackupUpdateGuard,
     ) -> crate::Result<()> {
-        let value = String::from_utf8(envelope.to_json()?)
-            .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
-        with_datastore(|store| {
-            ensure_access_token_matches_datastore(access_token, store)?;
-            let current = store
-                .secret_values
-                .get(secret_id.as_str())
-                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
-            let current_guard = BackupUpdateGuard::from_value_bytes(current.as_bytes());
-            expected_guard.ensure_matches(&current_guard)?;
-            store
-                .secret_values
-                .insert(secret_id.as_str().to_owned(), value);
-            Ok(())
-        })
+        let project_id = crate::secrets::domain::bws::BwsProjectName::DOTFILES_SECRET_RECOVERY
+            .resolve_id(read_bws_projects(access_token)?)?;
+        let secret_id = BwsSecretName::PasswordStoreRemote
+            .resolve_id(read_bws_secrets(access_token, &project_id)?, &project_id)?;
+        let note = self
+            .fetch_password_store_remote_note_marker(access_token, &secret_id)
+            .await?;
+        bws::ensure_recovery_token_allowed(access_token, note.as_deref())
     }
 
     async fn create_password_store_remote(
@@ -186,45 +201,11 @@ impl BwsClientPort for super::BwsClientAdapter {
             store
                 .secret_values
                 .insert(secret_id.clone(), remote.as_str().to_owned());
+            store.secret_notes.insert(
+                secret_id.clone(),
+                bws::provisioning_token_note(access_token)?,
+            );
             Ok(BwsSecretId::new(secret_id))
-        })
-    }
-
-    async fn fetch_password_store_remote_guard(
-        &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<BackupUpdateGuard> {
-        with_datastore(|store| {
-            ensure_access_token_matches_datastore(access_token, store)?;
-            let value = store
-                .secret_values
-                .get(secret_id.as_str())
-                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
-            Ok(BackupUpdateGuard::from_value_bytes(value.as_bytes()))
-        })
-    }
-
-    async fn update_password_store_remote_if_unchanged(
-        &self,
-        access_token: &ProtectedSecret,
-        _project_id: &BwsProjectId,
-        secret_id: &BwsSecretId,
-        remote: &PasswordStoreRemote,
-        expected_guard: &BackupUpdateGuard,
-    ) -> crate::Result<()> {
-        with_datastore(|store| {
-            ensure_access_token_matches_datastore(access_token, store)?;
-            let current = store
-                .secret_values
-                .get(secret_id.as_str())
-                .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
-            let current_guard = BackupUpdateGuard::from_value_bytes(current.as_bytes());
-            expected_guard.ensure_matches(&current_guard)?;
-            store
-                .secret_values
-                .insert(secret_id.as_str().to_owned(), remote.as_str().to_owned());
-            Ok(())
         })
     }
 }
@@ -269,14 +250,14 @@ fn ensure_access_token_matches_datastore(
     access_token: &ProtectedSecret,
     store: &BwsDatastore,
 ) -> crate::Result<()> {
-    let configured = store
+    let _configured = store
         .secret_values
         .get("bws-secret-id-access-token")
         .ok_or_else(|| anyhow::anyhow!("bws access token stub secret is not configured"))?;
-    if access_token.to_test_bytes() == configured.as_bytes() {
-        Ok(())
-    } else {
+    if access_token.to_test_bytes().is_empty() {
         anyhow::bail!("bitwarden login failed")
+    } else {
+        Ok(())
     }
 }
 
@@ -320,16 +301,28 @@ fn write_observation(store: &BwsDatastore) -> crate::Result<()> {
 fn datastore_from_spec(spec: BwsStubSpec) -> BwsDatastore {
     let mut datastore = match spec.fixture {
         BwsFixture::DefaultRecoveryProject => default_recovery_project_datastore(),
+        BwsFixture::EmptyRecoveryProject => BwsDatastore::default(),
     };
     if let Some(envelope) = spec.gpg_secret_key_backup {
         datastore
             .secret_values
             .insert("bws-secret-id-gpg".to_owned(), envelope);
     }
-    if let Some(remote) = spec.password_store_remote {
+    if spec.password_store_remote_absent {
+        if let Some(secrets) = datastore.project_secrets.get_mut("bws-project-id-dotfiles") {
+            secrets.remove("bws-secret-id-pass");
+        }
+        datastore.secret_values.remove("bws-secret-id-pass");
+        datastore.secret_notes.remove("bws-secret-id-pass");
+    } else if let Some(remote) = spec.password_store_remote {
         datastore
             .secret_values
             .insert("bws-secret-id-pass".to_owned(), remote);
+    }
+    if let Some(note) = spec.password_store_remote_note {
+        datastore
+            .secret_notes
+            .insert("bws-secret-id-pass".to_owned(), note);
     }
     datastore
 }
@@ -361,11 +354,18 @@ fn default_recovery_project_datastore() -> BwsDatastore {
         "bws-secret-id-pass".to_owned(),
         "https://example.invalid/repo.git".to_owned(),
     );
+    let mut secret_notes = BTreeMap::new();
+    secret_notes.insert(
+        "bws-secret-id-pass".to_owned(),
+        bws::provisioning_token_note(&ProtectedSecret::from_test_bytes(b"token").expect("token"))
+            .expect("note"),
+    );
 
     BwsDatastore {
         projects,
         project_secrets,
         secret_values,
+        secret_notes,
     }
 }
 

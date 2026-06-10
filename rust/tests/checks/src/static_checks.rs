@@ -49,10 +49,18 @@ fn rust(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// bootstrap 用 shell script の構文を検証する。
+/// repository 管理の shell script 構文と provisioning regression を検証する。
 fn shell_scripts(shell: &Shell) -> Result<()> {
     step("shell scripts");
     cmd!(shell, "bash -n scripts/bootstrap.sh").run()?;
+    cmd!(shell, "bash -n scripts/provision-secret-recovery-source.sh").run()?;
+    cmd!(
+        shell,
+        "bash -n scripts/test-provision-secret-recovery-source.sh"
+    )
+    .run()?;
+    step("provision-secret-recovery-source shell tests");
+    cmd!(shell, "scripts/test-provision-secret-recovery-source.sh").run()?;
     Ok(())
 }
 

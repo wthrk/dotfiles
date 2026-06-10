@@ -9,18 +9,7 @@
 #![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
 use crate::Result;
-use crate::secrets::domain::bw_login::BwLoginEmail;
 use crate::secrets::support::protection::ProtectedSecret;
-
-/// YubiKey から読み出した `bw-email` 保護値を borrow 境界の内側で argv 安全な login email へ翻訳する。
-///
-/// `bw-email` は credential ではないが YubiKey storage 上では他 secret と同じ [`ProtectedSecret`] で運ばれる。
-/// argv に載せるために平文へ変換する必要があり、その変換は `with_secret` を呼べる protection 境界の内側で
-/// 行う。検証（空文字・制御文字の排除）は domain rule [`BwLoginEmail::parse`] に委ね、検証済みの 1 行だけを
-/// 返す。email が UTF-8 でない場合は失敗する。
-pub(crate) fn parse_email(email: &ProtectedSecret) -> Result<BwLoginEmail> {
-    email.with_secret_password_str(BwLoginEmail::parse)
-}
 
 /// master password の平文を借用境界の内側だけで `runner` へ渡す。
 ///

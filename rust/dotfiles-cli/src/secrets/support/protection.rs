@@ -1,8 +1,8 @@
 //! 平文 bytes の生存期間に紐づける process 保護と zeroize 境界。
 
-use std::{collections::BTreeMap, future::Future, io::Write, pin::Pin};
+use std::{future::Future, io::Write, pin::Pin};
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
@@ -131,12 +131,26 @@ impl ProtectedSecret {
         borrow(text)
     }
 
+    /// UTF-8 secret text を domain parser の実行中だけ借用として公開する。
+    ///
+    /// secret carrier として保持している [`ProtectedSecret`] から、domain が非機密の検証済み値だけを
+    /// 導出するための限定 borrow 境界である。closure は平文文字列を返値や外部 buffer として持ち出しては
+    /// ならず、検証済み value または error だけを返す。
+    pub(in crate::secrets) fn with_secret_utf8<R>(
+        &self,
+        borrow: impl FnOnce(&str) -> Result<R>,
+    ) -> Result<R> {
+        let text =
+            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
+        borrow(text)
+    }
+
     /// UTF-8 secret text を protection backend closure の実行中だけ借用として公開する。
     ///
     /// 外部 secret datastore から返った plaintext を、用途別 backend 操作内で検証済み値へ変換するための
     /// 境界である。closure は平文文字列を返値や外部 buffer として持ち出してはならず、検証済み value
     /// または error だけを返す。
-    pub(in crate::secrets::support::protection) fn with_secret_utf8<R>(
+    pub(in crate::secrets::support::protection) fn with_secret_utf8_protection<R>(
         &self,
         borrow: impl FnOnce(&str) -> Result<R>,
     ) -> Result<R> {
@@ -181,37 +195,6 @@ impl ProtectedSecret {
     )]
     pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
         self.with_secret(|bytes| bytes.to_vec())
-    }
-
-    /// secret JSON bytes を field 単位の locked `ProtectedSecret` map へ復元する。
-    ///
-    /// 入力 JSON は `with_secret` の借用中だけ parse し、serde が作る平文 `String` は
-    /// `Zeroizing<String>` としてこの関数の stack frame 内に閉じる。各 field は
-    /// `field_limit` を超えた時点で `Err` にし、長すぎる平文を protected map へ格納しない。
-    ///
-    /// 成功時は各 field value を新しい locked `ProtectedSecret` へコピーして返す。返却後に
-    /// caller が保持するのは protection 境界内の値だけであり、一時 `String` は Drop 時に
-    /// zeroize される。
-    pub(crate) fn decode_json_string_map(
-        &self,
-        field_limit: usize,
-    ) -> Result<BTreeMap<String, Self>> {
-        let object = self.with_secret(|bytes| {
-            serde_json::from_slice::<BTreeMap<String, Zeroizing<String>>>(bytes)
-                .context("failed to decode protected JSON object")
-        })?;
-
-        let mut fields = BTreeMap::new();
-        for (key, text) in object {
-            if text.len() > field_limit {
-                bail!("JSON field `{key}` exceeds maximum length");
-            }
-            let mut secret = Self::new(text.len())
-                .with_context(|| format!("failed to protect JSON field `{key}`"))?;
-            secret.with_secret_mut(|out| out.copy_from_slice(text.as_bytes()));
-            fields.insert(key, secret);
-        }
-        Ok(fields)
     }
 }
 

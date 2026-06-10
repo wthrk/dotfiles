@@ -20,7 +20,7 @@ use crate::{
     Result,
     secrets::{
         domain::{
-            gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
+            gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint, SecretPrimaryKeyCandidates},
             gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
             pass_restore::GpgRecipientId,
         },
@@ -39,11 +39,8 @@ type GpgKeyringInner = keyring_adapter::GpgKeyringAdapter;
 type GpgKeyringInner = internal_stub::GpgKeyringStub;
 
 impl GpgKeyringPort for GpgKeyringAdapter {
-    fn export_secret_key(
-        &mut self,
-        primary_fingerprint: &PrimaryFingerprint,
-    ) -> Result<ProtectedSecret> {
-        self.0.export_secret_key(primary_fingerprint)
+    fn list_secret_primary_fingerprints(&mut self) -> Result<SecretPrimaryKeyCandidates> {
+        self.0.list_secret_primary_fingerprints()
     }
 
     fn parse_backup_primary_fingerprint(
@@ -91,6 +88,13 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         self.0.secret_key_available_for_recipient(recipient)
     }
 
+    fn primary_fingerprint_for_recipient(
+        &mut self,
+        recipient: &GpgRecipientId,
+    ) -> Result<Option<PrimaryFingerprint>> {
+        self.0.primary_fingerprint_for_recipient(recipient)
+    }
+
     fn can_decrypt_store_entry(&mut self, entry_path: &std::path::Path) -> Result<()> {
         self.0.can_decrypt_store_entry(entry_path)
     }
@@ -106,18 +110,6 @@ type BackupCipherInner = cipher_adapter::BackupCipherAdapter;
 type BackupCipherInner = internal_stub::BackupCipherStub;
 
 impl BackupCipherPort for BackupCipherAdapter {
-    fn generate_dek(&mut self) -> Result<ProtectedSecret> {
-        self.0.generate_dek()
-    }
-
-    fn encrypt_backup(
-        &mut self,
-        dek: &ProtectedSecret,
-        backup: &ProtectedSecret,
-    ) -> Result<EnvelopeCiphertext> {
-        self.0.encrypt_backup(dek, backup)
-    }
-
     fn decrypt_backup(
         &mut self,
         dek: &ProtectedSecret,

@@ -142,9 +142,9 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - allowed:
   use case の順序制御、停止条件、分岐、port 呼び出しの順番
 - forbidden:
-  command dispatch、input modality の分岐詳細（Prompt/Stdin/StdinJson 等）、report DTO の JSON 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装、use case 独自型定義
+  command dispatch、input modality の分岐詳細（Prompt/Stdin 等）、report DTO の JSON 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装、use case 独自型定義
 - 典型的な誤配置:
-  `application` が `--stdin`/`--stdin-json` の実装詳細を enum で保持する、`println!` で report を整形する、`YubiKey::open_*` 相当を直接呼ぶ
+  `application` が `--stdin` など入力方式の実装詳細を enum で保持する、`println!` で report を整形する、`YubiKey::open_*` 相当を直接呼ぶ
 - 判定質問:
   「このコードは手順の宣言だけか。具体 I/O 形式・デバイス選択・シリアライズ仕様を知っていないか」
 - この repo の具体例:
@@ -155,7 +155,7 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - allowed:
   capability 契約（例: `read_secret_from_prompt`、`read_secret_from_stdin`、`write_secret`、`write_*_report`）
 - forbidden:
-  input modality の手段表現そのもの（`Prompt/Stdin/StdinJson` enum）、report DTO の具体型、prompt 文言、stdin JSON parser
+  input modality の手段表現そのもの（`Prompt/Stdin` enum）、report DTO の具体型、prompt 文言
 - 典型的な誤配置:
   `read_secret(name, source_enum)` のように手段を port 契約へ露出する、`EnrollmentJson` DTO を ports に置く
 - 判定質問:
@@ -166,7 +166,7 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 ### adapters
 
 - allowed:
-  device selection（serial 指定・対話選択）、stdin/stdout/terminal I/O、report DTO 変換、外部 API 変換
+  device discovery と複数接続拒否、stdin/stdout/terminal I/O、report DTO 変換、外部 API 変換
 - forbidden:
   application 型への直接依存、use case の順序決定、業務判断の中心化
 - 典型的な誤配置:
@@ -181,7 +181,7 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - allowed:
   protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）、secret 保護境界内で完了する外部処理向け backend 操作、storage backend 内部の暗号化・復号・sealed blob 操作
 - forbidden:
-  stdin-json、enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針、固定 secret key/name/role に基づく一意解決や 0件/複数件の業務判断、外部確認 plan。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
+  enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針、固定 secret key/name/role に基づく一意解決や 0件/複数件の業務判断、外部確認 plan。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
 - 典型的な誤配置:
   `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ、`support/protection/bws.rs` が固定 BWS secret name の一意解決や `verify-yubikey --check bws` の成功条件を決める、storage backend の sealed blob helper が setup 済み判定や必須 secret の過不足判定を決める
 - 判定質問:

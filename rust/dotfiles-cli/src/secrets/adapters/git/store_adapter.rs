@@ -64,6 +64,24 @@ impl PasswordStoreAdapter {
             sample_entry,
         })
     }
+
+    /// 設定済み `origin` remote URL を `~/.password-store/.git/config` から観測する。
+    ///
+    /// Git 設定形式の詳細は `git2` に委ね、この adapter は store backend の外部状態を port 境界値へ翻訳する。
+    pub(super) fn configured_origin_remote(&self) -> Result<Option<String>> {
+        let git_config = password_store_path()?.join(".git").join("config");
+        if !path_exists_including_broken_symlink(&git_config) {
+            return Ok(None);
+        }
+        let config =
+            git2::Config::open(&git_config).context("failed to open password-store Git config")?;
+        match config.get_string("remote.origin.url") {
+            Ok(remote) if remote.is_empty() => Ok(None),
+            Ok(remote) => Ok(Some(remote)),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err) => Err(err).context("failed to read password-store origin remote"),
+        }
+    }
 }
 
 /// `.gpg-id` の読み取り上限（byte）。`.gpg-id` は recipient fingerprint/user-id を数行持つだけの小さな

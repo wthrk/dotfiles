@@ -51,7 +51,8 @@ where
         ssh_agent,
         report,
     } = runtime;
-    let serial = device.resolve_device_serial(command.serial)?;
+    let _ = command;
+    let serial = device.resolve_device_serial()?;
     let pin = if device.device_requires_pin(serial)? {
         let pin = process.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -61,7 +62,13 @@ where
     };
 
     // 1-2. bws-access-token を YubiKey storage から読み出し、BWS から envelope を取得する。
-    let access_token = load_bws_access_token(serial, storage_port, pin.as_ref())?;
+    let storage = SecretName::BwsAccessToken.storage_spec(serial);
+    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
+    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+    let access_token = storage_port
+        .load_secret(serial, &intent, pin.as_ref())
+        .map_err(|error| intent.decode_error(error))?;
+    intent.validate_loaded_secret(&access_token)?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
     let secret_id = BwsSecretName::GpgSecretKeyBackup.resolve_id(
@@ -72,11 +79,13 @@ where
     )?;
 
     // 3. envelope 形式（version / metadata / recipients / ciphertext）を検証して取得する。
-    let (envelope, _guard) = bws_client
+    let envelope = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
 
-    // 3-4. 接続中 YubiKey に一致する recipient を解決し、DEK を unwrap して backup を復号する。
+    // 3-4. primary/spare recipient が揃う復旧到達状態を確認してから、接続中 YubiKey に一致する
+    // recipient を解決し、DEK を unwrap して backup を復号する。
+    envelope.ensure_spare_recipient_registered()?;
     let connected = recipient.resolve_connected_recipient(serial)?;
     let matched = envelope.resolve_recipient(&connected)?;
     let dek = recipient.unwrap_dek(serial, matched, pin.as_ref())?;
@@ -101,9 +110,23 @@ where
     // 鍵リングに残さないよう best-effort で削除してから元エラーを返す。残置すると次回 restore が手順 6 の
     // 既存鍵衝突で止まり復旧不能になるため、import 後の復元処理全体を atomic に扱う。
     let imported = keyring.import_secret_key(&backup)?;
-    match restore_imported_key(&imported, keyring, ssh_agent) {
+    let restore_result = (|| -> Result<()> {
+        // 8. import 後鍵の subkey 構成（encryption / authentication / signing）を検証する。
+        keyring
+            .inspect_imported_key(&imported)
+            .and_then(|composition| composition.ensure_usable())?;
+
+        // 9. authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（冪等）。
+        let keygrip = keyring.authentication_subkey_keygrip(&imported)?;
+        ssh_agent.register_authentication_subkey(&keygrip)?;
+
+        // 10. gpg-agent SSH support 利用可否を確認する。identity 識別は authentication subkey 由来の
+        // OpenSSH 公開鍵 key blob を期待値として照合するため、公開鍵を解決して渡す。
+        let public_key = keyring.authentication_subkey_ssh_public_key(&imported)?;
+        ssh_agent.inspect_ssh_agent(&public_key)?.ensure_ready()
+    })();
+    match restore_result {
         Ok(()) => report.write_restore_gpg_report(&RestoreGpgSummary {
-            primary_fingerprint: imported.as_str().to_owned(),
             ssh_key_registered: true,
             ssh_support_ready: true,
         }),
@@ -112,47 +135,6 @@ where
             Err(error)
         }
     }
-}
-
-/// import 後の subkey 検証・keygrip 登録・SSH support 確認（手順 8-10）を順に実行する。
-///
-/// import 自体は成功した前提で呼ばれ、ここで返す失敗はすべて呼び出し側で `delete_secret_key` による
-/// ロールバック対象になる。手順 8 の subkey 検証に失敗した場合は後続の SSH 経路へ進ませず、手順 9-10 の
-/// keygrip 解決 / `sshcontrol` 登録 / SSH support 確認のいずれの失敗も呼び出し側の rollback で原子化する。
-fn restore_imported_key(
-    imported: &crate::secrets::domain::gpg_backup::PrimaryFingerprint,
-    keyring: &mut dyn ports::GpgKeyringPort,
-    ssh_agent: &mut dyn ports::SshAgentPort,
-) -> Result<()> {
-    // 8. import 後鍵の subkey 構成（encryption / authentication / signing）を検証する。
-    keyring
-        .inspect_imported_key(imported)
-        .and_then(|composition| composition.ensure_usable())?;
-
-    // 9. authentication subkey の keygrip を gpg-agent の SSH key list へ登録する（冪等）。
-    let keygrip = keyring.authentication_subkey_keygrip(imported)?;
-    ssh_agent.register_authentication_subkey(&keygrip)?;
-
-    // 10. gpg-agent SSH support 利用可否を確認する。identity 識別は authentication subkey 由来の
-    // OpenSSH 公開鍵 key blob を期待値として照合するため、公開鍵を解決して渡す。
-    let public_key = keyring.authentication_subkey_ssh_public_key(imported)?;
-    ssh_agent.inspect_ssh_agent(&public_key)?.ensure_ready()
-}
-
-/// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token(
-    serial: u32,
-    storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::secrets::support::protection::ProtectedSecret>,
-) -> Result<crate::secrets::support::protection::ProtectedSecret> {
-    let storage = SecretName::BwsAccessToken.storage_spec(serial);
-    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
-    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
-    let secret = storage_port
-        .load_secret(serial, &intent, pin)
-        .map_err(|error| intent.decode_error(error))?;
-    intent.validate_loaded_secret(&secret)?;
-    Ok(secret)
 }
 
 #[cfg(test)]
@@ -166,7 +148,7 @@ mod tests {
     use crate::secrets::{
         domain::{
             commands::RestoreGpgCommand,
-            gpg_backup::{BackupUpdateGuard, ConnectedYubiKey, GpgBackupEnvelope},
+            gpg_backup::{ConnectedYubiKey, GpgBackupEnvelope},
             gpg_restore::{
                 ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey,
                 SshAgentReadiness, SubkeyCapability,
@@ -175,7 +157,7 @@ mod tests {
             storage::SecretStorageReadInspection,
         },
         ports,
-        support::protection::ProtectedSecret,
+        ports::ProtectedSecret,
     };
 
     use super::{RestoreGpgRuntime, run_restore_gpg};
@@ -184,20 +166,64 @@ mod tests {
     const KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
     const SSH_PUBLIC_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTBODY restore";
 
+    /// `Result::Ok` を取り出す。テストでも `unwrap` / `expect` を使わないための最小 helper。
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("expected {context} to succeed: {error}"),
+        }
+    }
+
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
-        ProtectedSecret::from_test_bytes(bytes).expect("test secret")
+        ok(ProtectedSecret::from_test_bytes(bytes), "test secret")
     }
 
     fn read_inspection() -> SecretStorageReadInspection {
         SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(ok(SecretManifest::expected().encode(), "manifest")),
             encoded: Some(vec![1]),
         }
     }
 
-    /// serial 2001 に一致する recipient を 1 件持つ有効 envelope JSON を作る。
+    /// serial 2001 に一致する recipient と spare recipient を持つ有効 envelope JSON を作る。
     fn envelope() -> GpgBackupEnvelope {
         // public_key_fingerprint は recipient mock が返す ConnectedYubiKey と一致させる。
+        let pubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let json = format!(
+            r#"{{
+              "version": 1,
+              "metadata": {{
+                "primary_fingerprint": "{PRIMARY_FP}",
+                "exported_at": "2026-05-31T00:00:00Z",
+                "dek_alg": "aes-256-gcm",
+                "recipient_kek_alg": "rsa-oaep-sha256"
+              }},
+              "recipients": [
+                {{
+                  "yubikey_serial": "2001",
+                  "piv_slot": "82",
+                  "public_key_fingerprint": "{pubkey}",
+                  "wrapped_dek": "d3JhcHBlZA=="
+                }},
+                {{
+                  "yubikey_serial": "2002",
+                  "piv_slot": "82",
+                  "public_key_fingerprint": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                  "wrapped_dek": "c3BhcmUtd3JhcHBlZA=="
+                }}
+              ],
+              "ciphertext": {{
+                "nonce": "EBESExQVFhcYGRob",
+                "body": "ZW5jcnlwdGVk",
+                "tag": "gIGCg4SFhoeIiYqLjI2Ojw=="
+              }}
+            }}"#
+        );
+        ok(GpgBackupEnvelope::parse(&json), "valid envelope")
+    }
+
+    /// 既存保存値として parse はできるが、restore-gpg 本線では復旧到達状態にしない envelope を作る。
+    fn single_recipient_envelope() -> GpgBackupEnvelope {
         let pubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let json = format!(
             r#"{{
@@ -223,15 +249,20 @@ mod tests {
               }}
             }}"#
         );
-        GpgBackupEnvelope::parse(&json).expect("valid envelope")
+        ok(
+            GpgBackupEnvelope::parse(&json),
+            "single-recipient envelope remains parseable",
+        )
     }
 
     fn connected() -> ConnectedYubiKey {
-        ConnectedYubiKey::new(
-            "2001",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ok(
+            ConnectedYubiKey::new(
+                "2001",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            "connected yubikey",
         )
-        .expect("connected yubikey")
     }
 
     fn all_usable_composition() -> ImportedKeyComposition {
@@ -278,7 +309,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|requested| Ok(requested.expect("serial")));
+            .returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -304,7 +335,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope()
             .times(1)
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+            .returning(|_, _| Ok(envelope()));
 
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
@@ -368,15 +399,11 @@ mod tests {
         report
             .expect_write_restore_gpg_report()
             .times(1)
-            .withf(|summary| {
-                summary.primary_fingerprint == PRIMARY_FP
-                    && summary.ssh_key_registered
-                    && summary.ssh_support_ready
-            })
+            .withf(|summary| summary.ssh_key_registered && summary.ssh_support_ready)
             .returning(|_| Ok(()));
 
         run_restore_gpg(
-            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgCommand,
             RestoreGpgRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -395,9 +422,7 @@ mod tests {
     #[tokio::test]
     async fn restore_gpg_stops_when_existing_key_collides() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -424,7 +449,7 @@ mod tests {
             }])
         });
         bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+            .returning(|_, _| Ok(envelope()));
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()
@@ -450,7 +475,7 @@ mod tests {
         let report = ports::MockReportPort::new();
 
         let result = run_restore_gpg(
-            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgCommand,
             RestoreGpgRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -468,14 +493,10 @@ mod tests {
         assert!(result.is_err(), "existing key collision must stop import");
     }
 
-    /// import 後の subkey 検証に失敗した場合、不完全鍵を残さないよう `delete_secret_key` を呼んで
-    /// ロールバックし、元の検証エラーを返すことを検証する（次回 restore の衝突復旧不能を防ぐ）。
     #[tokio::test]
-    async fn restore_gpg_rolls_back_when_verification_fails() {
+    async fn restore_gpg_rejects_single_recipient_envelope_before_unwrap() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -502,7 +523,74 @@ mod tests {
             }])
         });
         bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+            .returning(|_, _| Ok(single_recipient_envelope()));
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient.expect_resolve_connected_recipient().times(0);
+        recipient.expect_unwrap_dek().times(0);
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher.expect_decrypt_backup().times(0);
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
+        keyring.expect_import_secret_key().times(0);
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_register_authentication_subkey().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_restore_gpg(
+            RestoreGpgCommand,
+            RestoreGpgRuntime {
+                device: &mut (&mut device, &mut pin_policy),
+                process: &process,
+                storage: &mut storage,
+                bws_client: &bws,
+                recipient: &mut recipient,
+                cipher: &mut cipher,
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+                report: &report,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "single recipient envelope must not reach restore unwrap/import path"
+        );
+    }
+
+    /// import 後の subkey 検証に失敗した場合、不完全鍵を残さないよう `delete_secret_key` を呼んで
+    /// ロールバックし、元の検証エラーを返すことを検証する（次回 restore の衝突復旧不能を防ぐ）。
+    #[tokio::test]
+    async fn restore_gpg_rolls_back_when_verification_fails() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![crate::secrets::domain::bws::BwsLookupCandidate {
+                id: crate::secrets::domain::bws::BwsSecretId::new("gpg-id"),
+                name: "gpg-secret-key-backup".to_owned(),
+            }])
+        });
+        bws.expect_fetch_gpg_backup_envelope()
+            .returning(|_, _| Ok(envelope()));
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()
@@ -559,7 +647,7 @@ mod tests {
         let report = ports::MockReportPort::new();
 
         let result = run_restore_gpg(
-            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgCommand,
             RestoreGpgRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,
@@ -586,9 +674,7 @@ mod tests {
     #[tokio::test]
     async fn restore_gpg_rolls_back_when_ssh_support_fails_after_import() {
         let mut device = ports::MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .returning(|_| Ok(2001));
+        device.expect_resolve_device_serial().returning(|| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
@@ -615,7 +701,7 @@ mod tests {
             }])
         });
         bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+            .returning(|_, _| Ok(envelope()));
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()
@@ -677,7 +763,7 @@ mod tests {
         let report = ports::MockReportPort::new();
 
         let result = run_restore_gpg(
-            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgCommand,
             RestoreGpgRuntime {
                 device: &mut (&mut device, &mut pin_policy),
                 process: &process,

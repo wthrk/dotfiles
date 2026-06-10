@@ -15,24 +15,26 @@ use crate::secrets::{
 
 /// stdin 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
-/// token 読み取り方式は port 境界で差し替え、use case 側では serial 必須条件と
-/// token 入力前の既存 local storage 検証を固定する。
-pub(crate) fn run_rotate_bws_token_with_stdin<D, I, P, S, R>(
+/// token 読み取り方式は port 境界で差し替え、対象 YubiKey 解決と複数接続時の停止は
+/// `YubiKeyDevicePort` 境界へ委譲する。use case 側では token 入力前の既存 local storage 検証を固定する。
+pub(crate) async fn run_rotate_bws_token_with_stdin<D, I, P, S, R, B>(
     command: RotateBwsTokenCommand,
     device: &mut D,
     secret_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
+    bws_client: &B,
 ) -> Result<()>
 where
-    D: ports::DevicePinPolicyPort,
+    D: ports::YubiKeyDevicePort,
     I: ports::SecretInputPort,
     P: ports::PinInputPort,
     S: ports::SecretStoragePort,
     R: ports::ReportPort,
+    B: ports::BwsClientPort,
 {
-    let serial = command.required_serial()?;
+    let serial = device.resolve_device_serial()?;
     let storage = command.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
     SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
@@ -56,10 +58,13 @@ where
     })();
     if let Err(err) = pre_update_verify {
         return report
-            .write_verify_report(&VerifySummary::local_storage_failed(serial))
+            .write_verify_report(&VerifySummary::local_storage_only(
+                crate::secrets::domain::verification::CheckStatus::Failed,
+            ))
             .and(Err(err));
     }
     let token = secret_input.read_streamed_secret()?;
+    bws_client.ensure_recovery_token_provenance(&token).await?;
     let intent = SecretStorageWriteIntent::store(storage, inspection, token.len())?;
     storage_port.store_secret(serial, intent, &token)?;
     let verify_result: Result<()> = (|| {
@@ -74,9 +79,13 @@ where
         Ok(())
     })();
     match verify_result {
-        Ok(()) => report.write_verify_report(&VerifySummary::local_storage_verified(serial)),
+        Ok(()) => report.write_verify_report(&VerifySummary::local_storage_only(
+            crate::secrets::domain::verification::CheckStatus::Ok,
+        )),
         Err(err) => report
-            .write_verify_report(&VerifySummary::local_storage_failed(serial))
+            .write_verify_report(&VerifySummary::local_storage_only(
+                crate::secrets::domain::verification::CheckStatus::Failed,
+            ))
             .and(Err(err)),
     }
 }
@@ -92,7 +101,7 @@ mod tests {
             verification::{CheckName, CheckStatus},
         },
         ports,
-        support::protection::ProtectedSecret,
+        ports::ProtectedSecret,
     };
 
     use super::run_rotate_bws_token_with_stdin;
@@ -154,32 +163,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rotate_stdin_requires_serial_before_ports() {
-        let mut device = ports::MockDevicePinPolicyPort::new();
+    fn expect_bws_gate(
+        bws: &mut ports::MockBwsClientPort,
+        _sequence: &mut mockall::Sequence,
+        outcome: crate::Result<()>,
+    ) {
+        let mut outcome = Some(outcome);
+        bws.expect_ensure_recovery_token_provenance()
+            .times(1)
+            .returning(move |_| outcome.take().expect("single use outcome"));
+    }
+
+    #[tokio::test]
+    async fn rotate_stdin_stops_when_device_selection_fails_before_storage() {
+        let mut device = ports::MockYubiKeyDevicePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Err(anyhow::anyhow!("multiple YubiKeys detected")));
         device.expect_device_requires_pin().times(0);
         let secret_input = ports::MockSecretInputPort::new();
         let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_write().times(0);
         let report = ports::MockReportPort::new();
+        let bws = ports::MockBwsClientPort::new();
 
         let result = run_rotate_bws_token_with_stdin(
-            RotateBwsTokenCommand { serial: None },
+            RotateBwsTokenCommand,
             &mut device,
             &secret_input,
             &pin_input,
             &mut storage,
             &report,
-        );
+            &bws,
+        )
+        .await;
 
-        assert!(result.is_err(), "stdin rotate requires explicit serial");
+        assert!(
+            result.is_err(),
+            "stdin rotate must stop before storage when device selection fails"
+        );
     }
 
-    #[test]
-    fn rotate_stdin_checks_storage_before_reading_token_and_reports() -> crate::Result<()> {
+    #[tokio::test]
+    async fn rotate_stdin_checks_storage_before_reading_token_and_reports() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::MockYubiKeyDevicePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Ok(2001));
         device
             .expect_device_requires_pin()
             .times(1)
@@ -201,6 +235,8 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"new-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_gate(&mut bws, &mut sequence, Ok(()));
         storage
             .expect_store_secret()
             .times(1)
@@ -217,26 +253,29 @@ mod tests {
         report
             .expect_write_verify_report()
             .times(1)
-            .withf(|summary| {
-                summary.serial == 2001
-                    && summary.checks.get(&CheckName::LocalStorage) == Some(&CheckStatus::Ok)
-            })
+            .withf(|summary| summary.checks.get(&CheckName::LocalStorage) == Some(&CheckStatus::Ok))
             .returning(|_| Ok(()));
 
         run_rotate_bws_token_with_stdin(
-            RotateBwsTokenCommand { serial: Some(2001) },
+            RotateBwsTokenCommand,
             &mut device,
             &secret_input,
             &pin_input,
             &mut storage,
             &report,
+            &bws,
         )
+        .await
     }
 
-    #[test]
-    fn rotate_stdin_stops_before_token_read_when_existing_storage_invalid() {
+    #[tokio::test]
+    async fn rotate_stdin_stops_before_token_read_when_existing_storage_invalid() {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::MockYubiKeyDevicePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Ok(2001));
         device
             .expect_device_requires_pin()
             .times(1)
@@ -260,23 +299,25 @@ mod tests {
         storage.expect_store_secret().times(0);
 
         let mut report = ports::MockReportPort::new();
+        let bws = ports::MockBwsClientPort::new();
         report
             .expect_write_verify_report()
             .times(1)
             .withf(|summary| {
-                summary.serial == 2001
-                    && summary.checks.get(&CheckName::LocalStorage) == Some(&CheckStatus::Failed)
+                summary.checks.get(&CheckName::LocalStorage) == Some(&CheckStatus::Failed)
             })
             .returning(|_| Ok(()));
 
         let result = run_rotate_bws_token_with_stdin(
-            RotateBwsTokenCommand { serial: Some(2001) },
+            RotateBwsTokenCommand,
             &mut device,
             &secret_input,
             &pin_input,
             &mut storage,
             &report,
-        );
+            &bws,
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -284,10 +325,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rotate_stdin_reads_pin_when_device_requires_it() -> crate::Result<()> {
+    #[tokio::test]
+    async fn rotate_stdin_reads_pin_when_device_requires_it() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::MockDevicePinPolicyPort::new();
+        let mut device = ports::MockYubiKeyDevicePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Ok(2001));
         device
             .expect_device_requires_pin()
             .times(1)
@@ -297,6 +342,8 @@ mod tests {
             .expect_read_streamed_secret()
             .times(1)
             .returning(|| Ok(material(b"new-token")));
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_gate(&mut bws, &mut sequence, Ok(()));
         let mut pin_input = ports::MockPinInputPort::new();
         pin_input
             .expect_read_pin()
@@ -321,12 +368,124 @@ mod tests {
             .returning(|_| Ok(()));
 
         run_rotate_bws_token_with_stdin(
-            RotateBwsTokenCommand { serial: Some(2001) },
+            RotateBwsTokenCommand,
             &mut device,
             &secret_input,
             &pin_input,
             &mut storage,
             &report,
+            &bws,
         )
+        .await
+    }
+
+    #[tokio::test]
+    async fn rotate_stdin_rejects_same_token_before_store() {
+        let mut sequence = mockall::Sequence::new();
+        let mut device = ports::MockYubiKeyDevicePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Ok(2001));
+        device
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
+        let mut secret_input = ports::MockSecretInputPort::new();
+        secret_input
+            .expect_read_streamed_secret()
+            .times(1)
+            .returning(|| Ok(material(b"same-token")));
+        let pin_input = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(write_inspection(false)));
+        expect_local_verify_ok(&mut storage, &mut sequence, 2001);
+        storage.expect_store_secret().times(0);
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_gate(
+            &mut bws,
+            &mut sequence,
+            Err(anyhow::anyhow!(
+                "refusing to store bws-access-token: recovery token must differ from the provisioning token"
+            )),
+        );
+        let report = ports::MockReportPort::new();
+
+        let result = run_rotate_bws_token_with_stdin(
+            RotateBwsTokenCommand,
+            &mut device,
+            &secret_input,
+            &pin_input,
+            &mut storage,
+            &report,
+            &bws,
+        )
+        .await;
+
+        assert_eq!(
+            result
+                .expect_err("same provisioning token must be rejected")
+                .to_string(),
+            "refusing to store bws-access-token: recovery token must differ from the provisioning token"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_stdin_rejects_missing_or_invalid_provenance_before_store() {
+        let mut sequence = mockall::Sequence::new();
+        let mut device = ports::MockYubiKeyDevicePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|| Ok(2001));
+        device
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
+        let mut secret_input = ports::MockSecretInputPort::new();
+        secret_input
+            .expect_read_streamed_secret()
+            .times(1)
+            .returning(|| Ok(material(b"candidate-token")));
+        let pin_input = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(write_inspection(false)));
+        expect_local_verify_ok(&mut storage, &mut sequence, 2001);
+        storage.expect_store_secret().times(0);
+        let mut bws = ports::MockBwsClientPort::new();
+        expect_bws_gate(
+            &mut bws,
+            &mut sequence,
+            Err(anyhow::anyhow!(
+                "refusing to store bws-access-token: password-store-remote is missing provisioning token provenance"
+            )),
+        );
+        let report = ports::MockReportPort::new();
+
+        let result = run_rotate_bws_token_with_stdin(
+            RotateBwsTokenCommand,
+            &mut device,
+            &secret_input,
+            &pin_input,
+            &mut storage,
+            &report,
+            &bws,
+        )
+        .await;
+
+        assert_eq!(
+            result
+                .expect_err("tampered provenance note must be rejected")
+                .to_string(),
+            "refusing to store bws-access-token: password-store-remote is missing provisioning token provenance"
+        );
     }
 }
