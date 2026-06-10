@@ -2,7 +2,8 @@
 //!
 //! reqwest で `raw.githubusercontent.com/homebrew/homebrew-cask/<rev>/Casks/<subdir>/<name>.rb` を取得して
 //! `version "..."` を解析する。自己更新 cask（`auto_updates true` = bitwarden/codex-app/ghostty）は `brew upgrade`
-//! が無人 upgrade しないため差分から除外する。subdir は cask 名の先頭文字（font cask は固定 `font`）。
+//! が無人 upgrade しないため差分から除外する。subdir は cask 名の先頭文字（font cask は `font/font-<X>`、`<X>`
+//! は `font-` の次の 1 文字）。
 //!
 //! cask 一覧は `nix/modules/homebrew.nix` の `casks = [ ... ]` から抽出する（switch が導入する cask と同一源）。
 
@@ -87,15 +88,19 @@ fn cask_version(
     Ok(fetch(&url)?.as_deref().and_then(parse_cask_version))
 }
 
-/// `raw.githubusercontent.com` の cask `.rb` 取得 URL を構築する純粋関数（font cask は固定 `font` subdir）。
+/// `raw.githubusercontent.com` の cask `.rb` 取得 URL を構築する純粋関数。font cask は `font/font-<X>`
+/// （`<X>` は `font-` の次の 1 文字を小文字化）、非 font cask は cask 名の先頭文字を subdir にする。
 fn cask_rb_url(rev: &str, name: &str) -> String {
-    let subdir = if name.starts_with("font-") {
-        "font".to_string()
-    } else {
-        name.chars()
+    let subdir = match name
+        .strip_prefix("font-")
+        .and_then(|rest| rest.chars().next())
+    {
+        Some(c) => format!("font/font-{}", c.to_ascii_lowercase()),
+        None => name
+            .chars()
             .next()
             .map(|c| c.to_ascii_lowercase().to_string())
-            .unwrap_or_default()
+            .unwrap_or_default(),
     };
     format!(
         "https://raw.githubusercontent.com/homebrew/homebrew-cask/{rev}/Casks/{subdir}/{name}.rb"
@@ -172,7 +177,7 @@ mod tests {
         );
         assert_eq!(
             cask_rb_url("deadbeef", "font-cica"),
-            "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/font/font-cica.rb"
+            "https://raw.githubusercontent.com/homebrew/homebrew-cask/deadbeef/Casks/font/font-c/font-cica.rb"
         );
     }
 
