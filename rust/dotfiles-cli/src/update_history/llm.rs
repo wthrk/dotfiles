@@ -909,4 +909,44 @@ mod tests {
         assert!(t.ends_with(TRUNCATION_MARKER));
         assert_eq!(truncate_notes("short"), "short");
     }
+
+    #[test]
+    fn truncate_notes_keeps_head_so_newest_release_survives() {
+        // notes.rs は seed を新しい版が先頭になるよう連結する。truncate_notes は先頭 MAX_NOTES_CHARS を残すため、
+        // 巨大な版区間でも最新版差分（先頭）が必ず残る（末尾切り捨てで肝心の最新差分を落とさない）。
+        let newest = "NEWEST_RELEASE_NOTES ".repeat(10);
+        let filler = "x".repeat(MAX_NOTES_CHARS * 2);
+        let seed = format!("{newest}{filler}");
+        let truncated = truncate_notes(&seed);
+        assert!(truncated.starts_with("NEWEST_RELEASE_NOTES"));
+        assert_eq!(
+            truncated.chars().count(),
+            MAX_NOTES_CHARS + TRUNCATION_MARKER.chars().count()
+        );
+    }
+
+    #[test]
+    fn large_seed_summarizes_without_collapsing_to_empty() -> Result<()> {
+        // atuin 相当の「巨大な版区間 seed」を与えても、seed 経路（ツール無し 1 回要約）で抽出が空に倒れず
+        // items>=1 を返すことを決定論で固定する（過大入力で空応答に倒れる退行を検知）。model_call は注入の fake。
+        let huge_seed = "## v18.16.1\n- feature: 新機能\n".repeat(5000); // ~6 万行・MAX_NOTES_CHARS 超
+        let calls = Cell::new(0u32);
+        let call: &ModelCall<'_> = &|request| {
+            calls.set(calls.get() + 1);
+            // 送信メッセージは MAX_NOTES_CHARS で切り詰め済み（過大本文を丸ごと送らない）こと自体は
+            // truncate_notes 側で固定。ここでは seed 経路が 1 回要約し非空 items を返すことを確認する。
+            assert!(request.tools.is_none(), "seed 経路はツールを与えない");
+            Ok(changes_content(
+                r#"{"changes":[{"category":"feature","text":"新機能","ref":null}]}"#,
+            ))
+        };
+        let outcome = run_extraction(
+            &request_with("atuin", Some("atuinsh/atuin"), Some(&huge_seed)),
+            call,
+            |_| Ok(None),
+        )?;
+        assert_eq!(calls.get(), 1);
+        assert_eq!(outcome.items.len(), 1);
+        Ok(())
+    }
 }

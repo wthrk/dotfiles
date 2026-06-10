@@ -339,7 +339,7 @@ fn read_capped<R: Read>(reader: R, limit: u64) -> String {
 const RELEASES_PER_PAGE: u32 = 100;
 /// Releases API のページング取得上限ページ数。
 const MAX_RELEASE_PAGES: u32 = 3;
-/// 範囲取得した複数リリース `.body` を連結する区切り（古い順に積む）。
+/// 範囲取得した複数リリース `.body` を連結する区切り（新しい順に積む）。
 const RELEASE_BODY_SEPARATOR: &str = "\n\n---\n\n";
 
 /// 取得済み生リリースノートと参照 URL の境界型。
@@ -579,11 +579,12 @@ fn collect_release_bodies(
     collect_release_bodies(owner, repo, old, new, page + 1, extended)
 }
 
-/// 範囲取得した `(version, body)` を version の semver 昇順（古い順）に連結する。
+/// 範囲取得した `(version, body)` を version の semver 降順（新しい順）に連結する。
 ///
 /// 並べ替えキーは [`VersionKey`]（[`version_ordering`] へ委譲する `Ord` ラッパ）で `(version, index)` を作り、
-/// `BTreeMap` の安定順序に委ねて古い順を得る（可変ソートを使わない）。`index` は同一 version の複数 body を入力
-/// 出現順に保つためのタイブレーク。
+/// `BTreeMap` の安定順序を得てから `.rev()` で降順に反転する（可変ソートを使わない）。`index` は同一 version の
+/// 複数 body を入力出現順に保つためのタイブレーク。新しい版を先頭へ積むのは、下流（[`super::llm`]）が seed を
+/// 先頭から `MAX_NOTES_CHARS` で切り詰めるとき、肝心の最新版差分が末尾切り捨てで落ちないようにするためである。
 fn join_release_bodies(bodies: Vec<(String, String)>) -> String {
     bodies
         .into_iter()
@@ -591,6 +592,7 @@ fn join_release_bodies(bodies: Vec<(String, String)>) -> String {
         .map(|(index, (version, body))| ((VersionKey(version), index), body))
         .collect::<std::collections::BTreeMap<_, _>>()
         .into_values()
+        .rev()
         .collect::<Vec<_>>()
         .join(RELEASE_BODY_SEPARATOR)
 }
@@ -623,18 +625,48 @@ const GITHUB_API_VERSION_HEADER: Header<'static> = ("X-GitHub-Api-Version", "202
 /// 許可host（[`is_allowed_url`] が真＝[`host_of`] の構造的検査を通る公開 https）の URL は、生 changelog
 /// （`https://raw.githubusercontent.com/.../CHANGELOG.md`・`https://gitlab.com/...` 等）を `Raw` で fallback
 /// 取得する。SSRF は `is_allowed_url`（host_of の IP/localhost/単一ラベル/credential 拒否）で唯一ゲートされる。
+///
+/// ただし landing page（サイト/リポジトリのルート。`https://github.com/owner/repo`・`https://www.docker.com/` 等）は
+/// 機械 seed に固定しない。これらの本文は HTML の `<head>`/ナビゲーション chrome であり、リリースノート本文を
+/// 含まない（先頭を [`super::llm`] が切り詰めると chrome だけが残り抽出 0 件に倒れる）。landing page は seed を
+/// `None` にして AI の `fetch_url` 探索へ回す（agent は `/releases` 等を自分で組み立てて実ノート本文を読む）。
 fn resolve_nix_notes_source(url: &str) -> Option<NotesFetchPlan> {
-    if let Some(plan) = resolve_github_notes_source(url) {
-        return Some(plan);
+    // github.com の URL は構造化変換（blob→raw / releases-tag→API）に当たるものだけ機械 seed にする。
+    // それ以外の github.com URL（bare repo root `/owner/repo`・issues・wiki 等）は landing page（HTML chrome）で
+    // あり生本文を Raw 取得すると先頭が chrome だけになり抽出 0 件に倒れるため、機械 seed にせず None を返す
+    // （seed 無しで AI の fetch_url 探索へ回す）。
+    if is_github_landing_host(url) {
+        return resolve_github_notes_source(url);
     }
-    // github の構造化変換に当たらない URL は、許可host なら生本文を fallback 取得する。
-    if is_allowed_url(url) {
+    // github 以外の URL は、許可host かつ landing page（サイトルート）でなければ生本文を fallback 取得する。
+    if is_allowed_url(url) && !is_landing_page_url(url) {
         return Some(NotesFetchPlan::Raw(url.to_string()));
     }
     None
 }
 
+/// URL が `github.com`（構造化変換を試みる host）かを判定する純粋関数。
+fn is_github_landing_host(url: &str) -> bool {
+    url.starts_with("https://github.com/")
+}
+
+/// URL が landing page（document path を持たないサイトルート）かを判定する純粋関数。
+///
+/// path が空・`/` のみのホストルート（`https://www.docker.com/`・`https://neovim.io` 等）は HTML chrome だけで
+/// リリースノート本文を含まないため、機械 seed に使わない。document path（`/blog/...`・`/CHANGELOG.md` 等）を
+/// 持つ URL は landing page ではない。github の bare repo root（`/owner/repo`）は [`resolve_nix_notes_source`]
+/// が github host 分岐で先に弾くため、ここでは github 以外の host 直下の path 有無だけを見る。
+fn is_landing_page_url(url: &str) -> bool {
+    match url::Url::parse(url) {
+        Ok(parsed) => parsed.path().trim_matches('/').is_empty(),
+        Err(_) => false,
+    }
+}
+
 /// `github.com` の blob/releases-tag URL を構造化取得先へ翻訳する純粋関数（該当しなければ `None`）。
+///
+/// bare repo root（`https://github.com/owner/repo`。blob/releases-tag いずれにも当たらない tail 空）は landing
+/// page（HTML chrome）であり機械 seed に使わないため `None` を返す（呼び出し側で AI 探索へ回る）。
 fn resolve_github_notes_source(url: &str) -> Option<NotesFetchPlan> {
     let rest = url.strip_prefix("https://github.com/")?;
     let (owner, after_owner) = rest.split_once('/')?;
@@ -936,10 +968,65 @@ mod tests {
             }
             _ => panic!("expected ReleasesApi"),
         }
-        // github repo root（構造化変換に当たらない）でも、許可host なので生本文を Raw で fallback 取得する。
-        match resolve_nix_notes_source("https://github.com/o/r") {
-            Some(NotesFetchPlan::Raw(url)) => assert_eq!(url, "https://github.com/o/r"),
-            _ => panic!("expected Raw fallback for allowed host"),
+        // github bare repo root（blob/releases-tag いずれにも当たらない）は landing page（HTML chrome）であり
+        // 機械 seed に使わない → None（呼び出し側で AI 探索へ回す）。末尾 `/` 有無いずれも同様。
+        assert!(resolve_nix_notes_source("https://github.com/o/r").is_none());
+        assert!(resolve_nix_notes_source("https://github.com/o/r/").is_none());
+    }
+
+    #[test]
+    fn landing_page_urls_are_not_used_as_mechanical_seed() {
+        // サイト/リポジトリのルートは HTML chrome だけで実ノートを含まないため、機械 seed に固定せず None を返す
+        // （seed 無しで AI fetch_url 探索へ回す）。atuin/docker/compose/kubectl の機械 seed が bare repo root /
+        // homepage HTML（300〜390KB）になり items=0 に倒れた退行を固定する。拒否経路は出所で 2 系統に分かれる:
+        // github bare repo root は github host 分岐（resolve_github_notes_source が blob/releases-tag いずれにも
+        // 当たらず None）、github 以外の host ルートは is_landing_page_url（path 空 or `/` のみ）で弾く。いずれも
+        // 共通の契約は「機械 seed にしない」= resolve_nix_notes_source が None。
+        for url in [
+            "https://github.com/atuinsh/atuin",
+            "https://github.com/docker/compose",
+            "https://github.com/kubernetes/kubectl",
+            "https://www.docker.com/",
+            "https://neovim.io",
+            "https://www.php.net/",
+        ] {
+            assert!(
+                resolve_nix_notes_source(url).is_none(),
+                "landing page must not become a mechanical seed: {url}"
+            );
+        }
+        // github bare repo root は host ルートではない（path に owner/repo を持つ）が、blob/releases-tag いずれにも
+        // 当たらないため github host 分岐で None になる（is_landing_page_url の対象ではない）。
+        for url in [
+            "https://github.com/atuinsh/atuin",
+            "https://github.com/docker/compose",
+            "https://github.com/kubernetes/kubectl",
+        ] {
+            assert!(!is_landing_page_url(url), "{url} は github bare repo root");
+        }
+        // github 以外の host ルート（path 空 or `/` のみ）は is_landing_page_url で弾く。
+        for url in [
+            "https://www.docker.com/",
+            "https://neovim.io",
+            "https://www.php.net/",
+        ] {
+            assert!(
+                is_landing_page_url(url),
+                "{url} は host ルートの landing page"
+            );
+        }
+        // document path を持つ URL は landing page ではなく Raw 取得対象（実 changelog/ノート本文）。
+        for url in [
+            "https://bun.sh/blog/bun-v1.3.13",
+            "https://raw.githubusercontent.com/o/r/v1.2.3/CHANGELOG.md",
+            "https://www.postgresql.org/docs/release/14.23/",
+            "https://gitlab.com/o/r/-/raw/main/CHANGELOG.md",
+        ] {
+            assert!(!is_landing_page_url(url), "{url} は document path を持つ");
+            assert!(
+                matches!(resolve_nix_notes_source(url), Some(NotesFetchPlan::Raw(got)) if got == url),
+                "document path は Raw 取得対象: {url}"
+            );
         }
     }
 
@@ -990,6 +1077,28 @@ mod tests {
         );
         assert_eq!(extract_release_body(r#"{"body":"  "}"#), None);
         assert_eq!(extract_release_body(r#"{}"#), None);
+    }
+
+    #[test]
+    fn join_release_bodies_orders_newest_first_for_truncation_safety() {
+        // 取得順（API は新しい順だが page を跨ぐと前後しうる）に依らず、semver 降順（新しい版が先頭）で連結する。
+        // 下流（llm）が seed を先頭から切り詰めるため、新しい版の差分を先頭に置き末尾切り捨てで落とさない。
+        let joined = join_release_bodies(vec![
+            ("1.0.0".to_string(), "oldest".to_string()),
+            ("1.2.0".to_string(), "newest".to_string()),
+            ("1.1.0".to_string(), "middle".to_string()),
+        ]);
+        assert_eq!(
+            joined,
+            format!("newest{RELEASE_BODY_SEPARATOR}middle{RELEASE_BODY_SEPARATOR}oldest")
+        );
+        // 先頭が最新版本文であること（先頭からの切り詰めで最新差分が残る）。
+        assert!(joined.starts_with("newest"));
+        // 単一版はそのまま。
+        assert_eq!(
+            join_release_bodies(vec![("2.0.0".to_string(), "only".to_string())]),
+            "only"
+        );
     }
 
     #[test]
