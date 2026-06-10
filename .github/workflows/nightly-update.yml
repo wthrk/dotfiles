@@ -238,13 +238,13 @@ jobs:
           # 認証 5000 req/hr）。notes.rs::github_token() が env GITHUB_TOKEN を読む。LLM 用途ではないため
           # permissions: models: read は不要（contents: read で public release 取得に十分）。
           GITHUB_TOKEN: ${{ github.token }}
-          # 概要抽出の OpenAI API キー（利用者が設定済みの secret。この厳密名で CLI が env から読む）。トリガが
-          # schedule か workflow_dispatch のとき secret を渡す。workflow_dispatch は repo への write 権限保持者しか
-          # 起動できず、write 権限者は元来この secret にアクセスできるため、dispatch 実行への secret 付与は権限昇格に
-          # ならない。owner が任意ブランチの概要生成を手動で検証できるよう、dispatch でも secret を結線する。PR 起票・
+          # 概要抽出の OpenAI API キー（利用者が設定済みの secret。この厳密名で CLI が env から読む）。secret は
+          # 起動 ref が既定ブランチ（refs/heads/<既定ブランチ>）のときのみ渡す。schedule は GitHub の制約上常に
+          # 既定ブランチで発火するため secret を受け取り、workflow_dispatch も既定ブランチ起動時のみ secret を
+          # 受け取る。非既定 ref の dispatch では空キーになり、CLI は OpenAI 抽出を skip（version-only：version +
+          # notes_url のみ）する。これにより非既定ブランチで改変した record から secret を抜く経路を塞ぐ。PR 起票・
           # `static checks` status 投稿経路の既定ブランチ限定は open-pr job 側で別途維持する（そこが信頼境界）。
-          # 空キーのとき CLI は OpenAI 抽出を skip（version-only）する。
-          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && secrets.OPEN_AI_API_KEY || '' }}
+          OPEN_AI_API_KEY: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && secrets.OPEN_AI_API_KEY || '' }}
         run: |
           set -euo pipefail
           at="$(date -u +%FT%TZ)"
