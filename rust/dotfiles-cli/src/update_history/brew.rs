@@ -133,10 +133,13 @@ fn has_no_check_sha256(rb: &str) -> bool {
     })
 }
 
-/// `raw.githubusercontent.com` の cask `.rb` 取得 URL を構築する純粋関数。font cask は `font/font-<X>`
-/// （`<X>` は `font-` の次の 1 文字を小文字化）、非 font cask は cask 名の先頭文字を subdir にする。
-fn cask_rb_url(rev: &str, name: &str) -> String {
-    let subdir = match name
+/// homebrew-cask リポジトリ内で cask `.rb` が置かれる `Casks/` 配下の subdir を返す純粋関数。font cask は
+/// `font/font-<X>`（`<X>` は `font-` の次の 1 文字を小文字化）、非 font cask は cask 名の先頭文字（小文字化）。
+///
+/// brew tap rev 差分の `.rb` 取得（[`cask_rb_url`]）と cask homepage/url ヒント取得（[`super::notes`] の cask URL
+/// 解決）で同じ subdir 規則を共有し、取得先 path のずれを防ぐ正本とする。
+pub(super) fn cask_subdir(name: &str) -> String {
+    match name
         .strip_prefix("font-")
         .and_then(|rest| rest.chars().next())
     {
@@ -146,7 +149,12 @@ fn cask_rb_url(rev: &str, name: &str) -> String {
             .next()
             .map(|c| c.to_ascii_lowercase().to_string())
             .unwrap_or_default(),
-    };
+    }
+}
+
+/// `raw.githubusercontent.com` の cask `.rb` 取得 URL を構築する純粋関数。subdir 規則は [`cask_subdir`] に従う。
+fn cask_rb_url(rev: &str, name: &str) -> String {
+    let subdir = cask_subdir(name);
     format!(
         "https://raw.githubusercontent.com/homebrew/homebrew-cask/{rev}/Casks/{subdir}/{name}.rb"
     )

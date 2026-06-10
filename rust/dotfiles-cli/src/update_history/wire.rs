@@ -269,12 +269,17 @@ const MAX_ITEMS: usize = 12;
 /// `text` 1 行概要の最大文字数（char 単位）。超過分は切り詰める（末尾に `…` を付すため最大 +1 文字）。
 const MAX_TEXT_CHARS: usize = 200;
 
-/// URL が構造的に安全な公開 https URL かを判定する（SSRF の唯一の境界）。
+/// URL が構造的に安全な公開 https URL かを判定する SSRF の構造的フィルタ。
 ///
 /// 狭いホスト allowlist には依存せず、[`host_of`] の構造的検査（https 限定・credential 拒否・IP リテラル拒否・
 /// localhost / 単一ラベルホスト拒否・内部 DNS 名/メタデータ FQDN 拒否）が通れば許可する。リリースノートの所在は
 /// github に限らない（cargo は doc.rust-lang.org、iterm2 は iterm2.com 等）ため、到達先ホストの一覧では制限しない。
-/// 機械取得・AI fetch・provenance 学習・ref/notes_url サニタイズはすべてこの 1 関数を境界として共有する。
+/// 機械取得・AI fetch・provenance 学習・ref/notes_url サニタイズはこの 1 関数を共通の構造的境界として共有する。
+///
+/// この検査は URL 文字列の構造だけを見る。公開ドメインが private/link-local IP へ解決される DNS rebinding や、
+/// 社内 DNS による接続先 IP ベースの SSRF は構造的検査では防げない。本機能は GitHub-hosted runner（内部
+/// ネットワーク・社内 DNS 不在、メタデータは IP リテラルで拒否済み）専用であり、DNS rebinding は脅威モデルの
+/// 対象外とする。実 IP 解決ガードは持たない。
 pub(crate) fn is_allowed_url(url: &str) -> bool {
     host_of(url).is_some()
 }
@@ -299,11 +304,13 @@ fn is_internal_domain(host: &str) -> bool {
 /// 手組みの `split(':')` は IPv6（`[::1]`）やポート付き・credential 付き URL を正しく扱えず判定を
 /// すり抜ける恐れがあるため、host 抽出は `url::Url` の厳密パースに委ねる。wire は純粋ドメイン層なので HTTP
 /// クライアント型（`reqwest::Url`）ではなく既に `url::Host` を使う `url` crate へ直接寄せる。以下はいずれも
-/// host を導かない（= SSRF 到達を塞ぐ）: https 以外・credential 付き・IP リテラル（IPv4/IPv6。10進/8進/16進/IDN
-/// 表記や IPv4-mapped IPv6 も `url` が IP へ正規化するため一律拒否。ループバックや metadata service への到達源）・
-/// localhost・単一ラベルホスト（`.` を含まない host。内部 DNS 名の疑い）・ドット付き内部 DNS 名/メタデータ FQDN
-/// （`metadata.google.internal` や `.internal`/`.local`/`.localdomain`/`.localhost` で終わる host。[`is_internal_domain`]）。
-/// DNS は実解決せず（hermetic）、構造的な接尾辞照合だけで判定する。公開ホストは TLD を持ち内部接尾辞で終わらないため許可する。
+/// host を導かない（= 構造的に SSRF 候補を弾く）: https 以外・credential 付き・IP リテラル（IPv4/IPv6。10進/8進/
+/// 16進/IDN 表記や IPv4-mapped IPv6 も `url` が IP へ正規化するため一律拒否。ループバックや metadata service への
+/// 到達源）・localhost・単一ラベルホスト（`.` を含まない host。内部 DNS 名の疑い）・ドット付き内部 DNS 名/メタデータ
+/// FQDN（`metadata.google.internal` や `.internal`/`.local`/`.localdomain`/`.localhost` で終わる host。
+/// [`is_internal_domain`]）。DNS は実解決せず（hermetic）、構造的な接尾辞照合だけで判定する。公開ホストは TLD を持ち
+/// 内部接尾辞で終わらないため許可する。文字列構造のみの検査のため、公開ドメインが private/link-local IP へ解決される
+/// DNS rebinding や社内 DNS 経由の IP ベース SSRF は防げない（GitHub-hosted runner 専用前提で対象外）。
 pub(crate) fn host_of(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     if parsed.scheme() != "https" {

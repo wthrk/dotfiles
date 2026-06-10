@@ -18,9 +18,9 @@
 }:
 let
   # auto-update daemon は nightly bump 後に各マシンを repo pin へ無人収束させる薄い launchd service である。
-  # **root のまま** `dotfiles update --config-dir <homeDir>/.config/dotfiles --no-sudo` を 09:00 に 1 回 exec する
-  # だけにする。適用要否判定・home-manager/darwin 適用・要約/marker 書込みといった業務判断は **すべて
-  # `dotfiles update` CLI 側**にあり、wrapper は PATH を通して CLI を 1 回 exec する薄い層である。
+  # **root のまま** `dotfiles update --config-dir <homeDir>/.config/dotfiles --no-sudo` を 09:00 に 1 回呼ぶ。適用
+  # 要否判定・home-manager/darwin 適用・要約/marker 書込みといった業務判断は **すべて `dotfiles update` CLI 側**に
+  # あり、wrapper は PATH を通して CLI を呼び、root 書込み分の所有権をユーザへ戻すだけの薄い層である。
   #
   # root 実行の理由: home-manager は nix-darwin モジュールとして組み込まれ、root の `darwin-rebuild switch` が
   # system と home-manager を一度に適用する。`sudo -u <user>` で権限を落とすと darwin-rebuild が root を得られず
@@ -64,8 +64,13 @@ let
 
     # root のまま実行する。`HOME` をユーザの home に向け、CLI の state_dir() / config_dir がユーザ dir を指す
     # ようにする。
-    exec env HOME=${lib.escapeShellArg homeDir} DOTFILES_DARWIN_REBUILD_SUDO=0 \
+    env HOME=${lib.escapeShellArg homeDir} DOTFILES_DARWIN_REBUILD_SUDO=0 \
       ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --no-sudo
+
+    # root 実行で root 所有になった state dir / flake.lock をユーザへ戻す。zsh の pending-summary show-once は
+    # ユーザ権限の rename で消費するため、root 書込み分を戻さないと次回ユーザ実行が EACCES になる。best-effort。
+    /usr/sbin/chown -R ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true
+    /usr/sbin/chown ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true
   '';
 in
 {

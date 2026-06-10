@@ -39,8 +39,8 @@ impl DeltaSource {
 ///
 /// `version` は `pname`/`version`（取れなければ空文字）。`repo` は GitHub `owner/repo`（無ければ空文字）で
 /// Releases API の一次取得元。`notes_source` は changelog URL（Releases API 空振り時の raw フォールバック取得先）。
-/// `homepage` は AI エージェントの fetch 許可ホスト集合のヒント。いずれも信頼境界外の値であり、実取得時に host
-/// allowlist で機械検証する。
+/// `homepage` は AI エージェントの fetch 許可ホスト集合のヒント。いずれも信頼境界外の値であり、実取得時に
+/// `host_of` の構造的検査（https 限定・credential/IP リテラル/localhost/単一ラベル/内部 DNS 拒否）で機械検証する。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NixPackage {
     /// 評価時 version（無ければ空文字。空は版不明 = `None` 扱い）。

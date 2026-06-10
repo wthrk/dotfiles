@@ -7,7 +7,8 @@
 //!
 //! repo（owner/repo）導出の優先: ①`meta.homepage` が github ②無ければ `src`（owner+repo 直接、無ければ
 //! url/urls の github URL）③無ければ `meta.changelog` の github URL。github 由来が取れなければ空（version-only
-//! 行き）。すべて信頼境界外の値であり、実取得時に host allowlist で機械検証する。
+//! 行き）。すべて信頼境界外の値であり、実取得時に `host_of` の構造的検査（https 限定・credential/IP リテラル/
+//! localhost/単一ラベル/内部 DNS 拒否）で機械検証する。
 //!
 //! flake.lock の rev 抽出（[`lock_node_rev`]）も serde_json で行う。
 

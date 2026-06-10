@@ -756,10 +756,11 @@ impl Release {
     }
 }
 
-/// `notes_base` と package 名から cask 取得 URL（`Casks/<subdir>/<name>.rb`）を構築する純粋関数。
+/// `notes_base` と package 名から cask 取得 URL（`Casks/<subdir>/<name>.rb`）を構築する純粋関数。subdir 規則は
+/// brew tap rev 差分と同一の [`super::brew::cask_subdir`] を共有し、取得 path のずれを防ぐ。
 fn resolve_cask_url(base: &str, name: &str) -> String {
     if is_cask_base(base) {
-        let subdir = cask_subdir(name);
+        let subdir = super::brew::cask_subdir(name);
         format!("{base}{subdir}/{name}.rb")
     } else {
         format!("{base}{name}")
@@ -796,16 +797,6 @@ fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
 
 fn is_cask_base(base: &str) -> bool {
     base.ends_with("/Casks/") || base == "Casks/"
-}
-
-fn cask_subdir(name: &str) -> String {
-    if name.starts_with("font-") {
-        return "font".to_string();
-    }
-    name.chars()
-        .next()
-        .map(|c| c.to_ascii_lowercase().to_string())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -984,7 +975,7 @@ mod tests {
         );
         assert_eq!(
             resolve_cask_url(base, "font-cica"),
-            format!("{base}font/font-cica.rb")
+            format!("{base}font/font-c/font-cica.rb")
         );
     }
 

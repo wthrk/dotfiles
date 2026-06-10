@@ -187,12 +187,13 @@ jobs:
           # permissions: models: read は不要（contents: read で public release 取得に十分）。
           GITHUB_TOKEN: ${{ github.token }}
           # 概要抽出の OpenAI API キー（利用者が設定済みの secret。この厳密名で CLI が env から読む）。信頼 ref
-          # （schedule か、workflow_dispatch かつ起動 ref が既定ブランチ）のときだけ secret を渡し、それ以外
-          # （非既定 ref からの workflow_dispatch dry-run 等）は空文字にする。workflow_dispatch は任意 branch で
-          # 実行でき、その branch が CLI を改変して secret を流出させうるため、信頼 ref 以外には secret を結線
-          # しない。空キーのとき CLI は OpenAI 抽出を skip（version-only）するため、非既定 ref の検証は概要無しで
-          # 安全に完走する。
-          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch) && secrets.OPEN_AI_API_KEY || '' }}
+          # （schedule か、workflow_dispatch かつ起動 ref が既定ブランチ「branch」）のときだけ secret を渡し、
+          # それ以外（非既定 ref からの workflow_dispatch dry-run 等）は空文字にする。tag は許可しない: `ref_name`
+          # 単独だと既定ブランチ名と同名の tag（例 tag `main`）が通り得るため、ref が `refs/heads/<既定ブランチ>`
+          # である（= branch かつ既定ブランチ）ことを `github.ref` で照合する。workflow_dispatch は任意 ref で
+          # 実行でき、その ref が CLI を改変して secret を流出させうるため、信頼 ref 以外には secret を結線しない。
+          # 空キーのとき CLI は OpenAI 抽出を skip（version-only）するため、非既定 ref の検証は概要無しで安全に完走する。
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && secrets.OPEN_AI_API_KEY || '' }}
         run: |
           set -euo pipefail
           at="$(date -u +%FT%TZ)"
@@ -242,13 +243,15 @@ jobs:
     name: open bump PR and enable auto-merge
     needs: [bump, record]
     # 非 dry-run（PR 起票・status 投稿経路）は既定ブランチ起動に限定する。schedule は常に既定ブランチで発火する
-    # ため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定ブランチのときだけ許可する。これは信頼
-    # できない ref から検査主体をビルドして `static checks` status を詐称投稿する経路を塞ぐ。
+    # ため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定ブランチ（branch かつ既定ブランチ）のとき
+    # だけ許可する。tag は許可しない: ref が `refs/heads/<既定ブランチ>` であることを `github.ref` で照合し、既定
+    # ブランチ名と同名の tag（例 tag `main`）を除外する。これは信頼できない ref から検査主体をビルドして
+    # `static checks` status を詐称投稿する経路を塞ぐ。
     if: >-
       ${{ github.event_name == 'schedule' ||
           (github.event_name == 'workflow_dispatch' &&
            github.event.inputs.dry_run == 'false' &&
-           github.ref_name == github.event.repository.default_branch) }}
+           github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -262,15 +265,17 @@ jobs:
       - name: 非既定 ref の非 dry-run を拒否（guard）
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "schedule" ]; then
             exit 0
           fi
-          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
-            echo "::error::非既定 ref ($REF_NAME) からの非 dry-run open-pr は拒否します（既定ブランチ $DEFAULT_BRANCH からのみ許可）。" >&2
+          # branch かつ既定ブランチ（ref が refs/heads/<既定ブランチ>）のみ許可する。tag は除外する: ref_name
+          # 単独照合だと既定ブランチ名と同名の tag が通り得るため、ref 全体を refs/heads/<既定ブランチ> と照合する。
+          if [ "$REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::非既定 ref ($REF) からの非 dry-run open-pr は拒否します（既定ブランチ refs/heads/$DEFAULT_BRANCH からのみ許可）。" >&2
             exit 1
           fi
 
