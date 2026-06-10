@@ -517,25 +517,66 @@ fn fetch_release_api(api_url: &str, notes_url: &str) -> Result<Option<RawRelease
     }))
 }
 
-/// GitHub Releases API で `owner/repo` の `(old, new]` 範囲のリリースノートを取得して連結する。
+/// GitHub Releases API で `owner/repo` のリリースノートを取得して連結する。
+///
+/// 一次は厳密な `(old, new]` 範囲（[`collect_release_bodies`]）。API 取得自体は成功したが範囲に該当する本文が
+/// 一件も無い場合（タグ表記揺れ・old 排他境界・新版リリース未タグ等で窓が空になる）、repo-backed パッケージが
+/// 機械 seed を全く持てず route=none に落ちるのを防ぐため、`old` を外して `new` 以下の最新リリースを seed にする
+/// 緩和フォールバックを一度だけ試みる（構造化 Releases API の `.body` のみで landing page HTML は混ぜない）。
+/// API 取得そのものが失敗（[`collect_release_bodies`] が `None`）した場合はフォールバックせず `None` を返す。
 fn fetch_releases_range(
     owner: &str,
     repo: &str,
     old: Option<&str>,
     new: Option<&str>,
 ) -> Result<Option<RawReleaseNotes>> {
-    let Some(bodies) = collect_release_bodies(owner, repo, old, new, 1, Vec::new())? else {
+    fetch_releases_range_with(owner, repo, old, new, &|api_url| {
+        fetch_releases_page(api_url, owner, repo)
+    })
+}
+
+/// [`fetch_releases_range`] 本体。Releases API ページ取得を `fetch_page`（api_url→生 JSON）へ注入し、network 抜きで
+/// 緩和制御を決定論に固定できるようにする。本番は [`fetch_releases_page`] を渡す。
+fn fetch_releases_range_with(
+    owner: &str,
+    repo: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+    fetch_page: &dyn Fn(&str) -> Result<Option<String>>,
+) -> Result<Option<RawReleaseNotes>> {
+    // 厳密 `(old, new]` 範囲を集める。`None`=API 取得そのものが失敗（緩和しても無駄＝再取得で叩かない）、
+    // `Some(空)`=取得成功だが窓が空（緩和の対象）、`Some(非空)`=本文在り（そのまま seed）。
+    let Some(strict) = collect_release_bodies(owner, repo, old, new, 1, Vec::new(), fetch_page)?
+    else {
         return Ok(None);
     };
-    let text = join_release_bodies(bodies);
-    if text.is_empty() {
+    if !strict.is_empty() {
+        return Ok(Some(release_notes_from(owner, repo, strict)));
+    }
+    // 厳密窓が空（取得は成功）かつ old 境界が在るときのみ、old を外した `..=new` の最新リリースを seed に緩和する。
+    // タグ表記揺れ・old 排他境界・新版リリース未タグ等で `(old, new]` 窓が空になっても、repo-backed パッケージが
+    // 機械 seed を全く持てず route=none に落ちるのを防ぐ。old が元から無い（初回固定）場合は既に最広の範囲であり、
+    // 緩和しても結果は変わらないため試みない（構造化 Releases API の `.body` のみ。landing page HTML は混ぜない）。
+    if old.is_none() {
         return Ok(None);
     }
-    Ok(Some(RawReleaseNotes {
-        text,
+    let Some(relaxed) = collect_release_bodies(owner, repo, None, new, 1, Vec::new(), fetch_page)?
+    else {
+        return Ok(None);
+    };
+    if relaxed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(release_notes_from(owner, repo, relaxed)))
+}
+
+/// 集めた `(version, body)` 列を seed [`RawReleaseNotes`] へ畳む（連結は新しい版が先頭）。
+fn release_notes_from(owner: &str, repo: &str, bodies: Vec<(String, String)>) -> RawReleaseNotes {
+    RawReleaseNotes {
+        text: join_release_bodies(bodies),
         notes_url: releases_page_url(owner, repo),
         refetch_url: None,
-    }))
+    }
 }
 
 /// `(old, new]` 範囲の `(version, body)` をページ走査で集める（不変 accumulator の再帰。`None`=取得断念）。
@@ -550,6 +591,7 @@ fn collect_release_bodies(
     new: Option<&str>,
     page: u32,
     acc: Vec<(String, String)>,
+    fetch_page: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<Option<Vec<(String, String)>>> {
     if page > MAX_RELEASE_PAGES {
         return Ok(Some(acc));
@@ -558,7 +600,7 @@ fn collect_release_bodies(
     if !is_allowed_url(&api_url) {
         return Ok(None);
     }
-    let Some(json) = fetch_releases_page(&api_url, owner, repo)? else {
+    let Some(json) = fetch_page(&api_url)? else {
         return Ok(None);
     };
     let Some(releases) = parse_releases(&json) else {
@@ -576,7 +618,7 @@ fn collect_release_bodies(
     if (page_len as u32) < RELEASES_PER_PAGE {
         return Ok(Some(extended));
     }
-    collect_release_bodies(owner, repo, old, new, page + 1, extended)
+    collect_release_bodies(owner, repo, old, new, page + 1, extended, fetch_page)
 }
 
 /// 範囲取得した `(version, body)` を version の semver 降順（新しい順）に連結する。
@@ -1099,6 +1141,95 @@ mod tests {
             join_release_bodies(vec![("2.0.0".to_string(), "only".to_string())]),
             "only"
         );
+    }
+
+    /// release 1 件の JSON object を組み立てるテスト補助（tag/name/body）。
+    fn release_json(tag: &str, name: &str, body: &str) -> serde_json::Value {
+        serde_json::json!({ "tag_name": tag, "name": name, "body": body })
+    }
+
+    #[test]
+    fn release_range_relaxes_old_when_strict_window_is_empty() -> Result<()> {
+        // repo-backed パッケージで API 取得は成功するが、`(old, new]` 厳密窓に該当本文が一件も無い退行ケースを固定
+        // する。old=1.5.0/new=2.0.0 に対しリリースは v1.0.0 と v3.0.0 のみ（どちらも `(1.5.0, 2.0.0]` の外）で
+        // 厳密窓は空。これを `route=none seed=0` に落とさず、old を外した `..=2.0.0` の最新該当リリース（v1.0.0）を
+        // 機械 seed に緩和する（構造化 Releases API の `.body` のみ。landing page HTML は混ぜない）。fetch_page は
+        // 単一ページ（< per_page）の固定 JSON を返す注入 seam。
+        let page_json = serde_json::Value::Array(vec![
+            release_json("v3.0.0", "3.0.0", "## 3.0.0\n- 新しすぎる版（窓外）"),
+            release_json("v1.0.0", "1.0.0", "## 1.0.0\n- feature: 緩和で拾う本文"),
+        ])
+        .to_string();
+        let calls = std::cell::Cell::new(0u32);
+        let fetch_page = |_url: &str| -> Result<Option<String>> {
+            calls.set(calls.get() + 1);
+            Ok(Some(page_json.clone()))
+        };
+        let notes = fetch_releases_range_with("o", "r", Some("1.5.0"), Some("2.0.0"), &fetch_page)?;
+        let notes = notes.ok_or_else(|| anyhow::anyhow!("relaxed range should yield a seed"))?;
+        // 緩和窓 `..=2.0.0` は v1.0.0 を拾い、v3.0.0（new 超過）は除外する。
+        assert!(notes.text.contains("緩和で拾う本文"));
+        assert!(!notes.text.contains("窓外"));
+        assert_eq!(notes.notes_url, "https://github.com/o/r/releases");
+        // 厳密 1 回（空窓）+ 緩和 1 回 = ページ取得は 2 回（短ページなので各 1 ページで停止）。
+        assert_eq!(calls.get(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn release_range_uses_strict_window_without_relaxing_when_nonempty() -> Result<()> {
+        // 厳密窓に該当本文が在れば緩和しない（厳密 1 回のみで確定）。old=1.0.0/new=2.0.0 で v2.0.0 が該当する。
+        let page_json = serde_json::Value::Array(vec![
+            release_json("v2.0.0", "2.0.0", "## 2.0.0\n- feature: 新機能"),
+            release_json("v1.0.0", "1.0.0", "## 1.0.0\n- 旧版"),
+        ])
+        .to_string();
+        let calls = std::cell::Cell::new(0u32);
+        let fetch_page = |_url: &str| -> Result<Option<String>> {
+            calls.set(calls.get() + 1);
+            Ok(Some(page_json.clone()))
+        };
+        let notes = fetch_releases_range_with("o", "r", Some("1.0.0"), Some("2.0.0"), &fetch_page)?;
+        let notes = notes.ok_or_else(|| anyhow::anyhow!("strict range should yield a seed"))?;
+        // `(1.0.0, 2.0.0]` は old 排他で v1.0.0 を含まず v2.0.0 のみ。
+        assert!(notes.text.contains("新機能"));
+        assert!(!notes.text.contains("旧版"));
+        // 厳密窓が非空なので緩和ページ取得は踏まない（1 ページのみ）。
+        assert_eq!(calls.get(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn release_range_returns_none_when_api_fetch_fails() -> Result<()> {
+        // API 取得そのものが失敗（fetch_page が None）なら緩和もせず None（機械 seed 無し → AI fetch_url 経路へ）。
+        let calls = std::cell::Cell::new(0u32);
+        let fetch_page = |_url: &str| -> Result<Option<String>> {
+            calls.set(calls.get() + 1);
+            Ok(None)
+        };
+        assert!(
+            fetch_releases_range_with("o", "r", Some("1.0.0"), Some("2.0.0"), &fetch_page)?
+                .is_none()
+        );
+        // 厳密 1 回で取得失敗を確定し、緩和（取得成功の空窓ではない）はしない。
+        assert_eq!(calls.get(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn release_range_no_old_does_not_double_fetch() -> Result<()> {
+        // 初回固定（old=None）は既に最広範囲。空窓でも緩和しない（同じ範囲の二重取得を避ける）。本文不在なら None。
+        let page_json =
+            serde_json::Value::Array(vec![release_json("v2.0.0", "2.0.0", "")]).to_string();
+        let calls = std::cell::Cell::new(0u32);
+        let fetch_page = |_url: &str| -> Result<Option<String>> {
+            calls.set(calls.get() + 1);
+            Ok(Some(page_json.clone()))
+        };
+        assert!(fetch_releases_range_with("o", "r", None, Some("2.0.0"), &fetch_page)?.is_none());
+        // old=None なので緩和分岐に入らず、ページ取得は厳密 1 回のみ。
+        assert_eq!(calls.get(), 1);
+        Ok(())
     }
 
     #[test]

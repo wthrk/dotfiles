@@ -333,6 +333,30 @@ mod tests {
     }
 
     #[test]
+    fn derive_package_keeps_repo_from_github_homepage_without_changelog() {
+        // 退行固定: homepage が github の bare repo root（`github.com/<owner>/<repo>`）を指し changelog が無い
+        // パッケージ（uv/zed-editor/tree 等）は、homepage HTML を notes seed に固定しない一方で owner/repo は
+        // homepage から導出し続ける。repo が非空である限り下流は mechanical(releases-range)/ai(fetch_url) に乗せ、
+        // route=none（version-only）へは落ちない。
+        let raw = RawPackage {
+            version: "0.7.0".to_string(),
+            homepage: serde_json::json!("https://github.com/astral-sh/uv"),
+            changelog: serde_json::Value::Null,
+            src_owner: serde_json::Value::Null,
+            src_repo: serde_json::Value::Null,
+            src_url: serde_json::Value::Null,
+            src_urls: serde_json::Value::Null,
+        };
+        let package = derive_package(raw);
+        // homepage HTML を notes seed にしない一方で owner/repo は homepage(github) から導出する。
+        assert_eq!(package.repo, "astral-sh/uv");
+        // changelog 不在でも homepage HTML を機械 seed に固定しない（notes_source は空）。
+        assert_eq!(package.notes_source, "");
+        // homepage は AI fetch_url 探索ヒントとして保持する。
+        assert_eq!(package.homepage, "https://github.com/astral-sh/uv");
+    }
+
+    #[test]
     fn derive_package_uses_changelog_as_notes_source() {
         let raw = RawPackage {
             version: "1.2.3".to_string(),
