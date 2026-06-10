@@ -156,6 +156,9 @@ fn resolve_notes(
             (None, None) => (None, None),
         };
 
+    // seed 本文長を move 前に控える（診断ログ用）。
+    let seed_len = seed.as_ref().map(|n| n.text.chars().count()).unwrap_or(0);
+
     // brew cask の探索ヒント（seed が無い brew delta のみ）。
     let brew_homepage_hint = if delta.source == DeltaSource::BrewTap && seed.is_none() {
         brew_hint(&delta.name)?
@@ -238,6 +241,25 @@ fn resolve_notes(
             .or_else(|| outcome.source_url.clone())
             .or_else(|| delta.notes_source.clone())
             .or_else(|| delta.homepage.clone()),
+    );
+    // パッケージ単位のカバレッジ診断（CI ログ向け。どの経路でノートを得たか・seed 長・抽出件数を 1 行で出す）。
+    // items=0（version-only）になった原因（repo 導出ミス / seed あり抽出 0 = 本文不足や truncation / 取得不能）を
+    // 後から切り分けられるようにする。TOML には出さない。
+    let route = if reused.is_some() {
+        "reuse"
+    } else if mechanical.is_some() {
+        "mechanical"
+    } else if outcome.source_url.is_some() {
+        "ai"
+    } else {
+        "none"
+    };
+    eprintln!(
+        "uh: {name} source={source:?} repo='{repo}' route={route} seed={seed_len} items={items}",
+        name = delta.name,
+        source = delta.source,
+        repo = delta.repo.as_deref().unwrap_or(""),
+        items = change_items.len(),
     );
     Ok(ResolvedNotes {
         change_items,

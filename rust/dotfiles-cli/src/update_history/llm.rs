@@ -14,12 +14,12 @@
 //! 直接読む。API キーは env `OPEN_AI_API_KEY` から読み crate の [`OpenAIConfig`] へ渡す（argv に現れない）。キー
 //! 未設定（ローカル等）なら抽出を skip して空（呼び出し側が version-only として記録する）。
 //!
-//! GitHub Models 時代の無料枠レート制限機械（ペーシング/予算/多段バックオフ）は持たない。async-openai 既定の
-//! client バックオフ（max_elapsed_time=15 分）は [`CLIENT_BACKOFF_MAX_ELAPSED`] で抑制し、リトライ意味論は
-//! [`model_call`] へ一本化する。一過性エラー
-//! （5xx/timeout/接続）は run 内で少数リトライ（[`MAX_TRANSIENT_RETRIES`]）して吸収し、取り切れなければ空へ縮退する
-//! （呼び出し側が version-only として確定する。夜をまたいで再試行しない）。同期の record 経路から呼ぶため、async
-//! 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
+//! GitHub Models 時代の無料枠レート制限機械（ペーシング/予算/多段バックオフ）は持たない。一過性エラー
+//! （5xx/timeout/接続/瞬間的 rate_limit）の回復は async-openai client の指数バックオフ
+//! （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒に上限。既定 15 分は record を 120 分タイムアウトさせるため短縮）へ
+//! 一本化し、[`model_call`] 自身は追加リトライしない。バックオフを使い切っても
+//! 失敗するエラーは空へ縮退する（呼び出し側が version-only として確定する。夜をまたいで再試行しない）。同期の
+//! record 経路から呼ぶため、async 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
 //!
 //! **SSRF（最重要）**: AI が要求する `fetch_url` の URL は、eval メタ由来（信頼境界内）のヒント host だけから
 //! 組み立てた許可ホスト集合に host が一致する https のみ実行する。ノート本文（信頼境界外）から得た URL を無検証で
@@ -62,16 +62,14 @@ const MAX_NOTES_CHARS: usize = 6000;
 /// ノートを切り詰めた際に末尾へ付ける印。
 const TRUNCATION_MARKER: &str = "\n…(truncated)";
 
-/// 一過性エラー（5xx/接続）に対する 1 リクエスト単位の再試行回数（無料枠ペーシングではなく素直な少数リトライ）。
-const MAX_TRANSIENT_RETRIES: u32 = 2;
-
-/// async-openai client 内蔵バックオフの最大経過時間（実質リトライ無効化）。
+/// async-openai client 内蔵バックオフの最大経過時間。
 ///
-/// async-openai 0.28 の既定 backoff は max_elapsed_time=15 分で、全リクエストを 15 分までリトライし続ける。
-/// `billing_not_active`（429, type!=insufficient_quota）を crate が Transient 扱いし 15 分リトライすると、record
-/// が 120 分タイムアウトする。ここを 0 に縮めて crate 内リトライを実質 1 回へ落とし、リトライ意味論を [`model_call`]
-/// （[`MAX_TRANSIENT_RETRIES`] と [`is_transient`]、恒久エラーは即 version-only 縮退）へ一本化する。
-const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(0);
+/// async-openai 0.28 の既定 backoff は max_elapsed_time=15 分で、`billing_not_active`（429,
+/// type!=insufficient_quota）のような恒久エラーまで 15 分リトライし続け、record が 120 分タイムアウトする。一方で
+/// 0 まで縮めると一過性失敗（5xx/接続/瞬間的 rate_limit）も一切リトライされず、ノートを取得済みのパッケージでも
+/// LLM 抽出が空に落ちてカバレッジを失う。そこで **60 秒**に上限を置き、crate の指数バックオフに一過性失敗の回復を
+/// 任せつつ、恒久エラーは 60 秒で打ち切る（53 パッケージ逐次でも最悪 53×60s < 120 分タイムアウトに収まる）。
+const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(60);
 
 /// 1 パッケージあたりの tool_call 反復（fetch → 再 request）の最大回数。
 const MAX_TOOL_ITERATIONS: u32 = 3;
@@ -180,7 +178,8 @@ impl OpenAiExtractor {
     pub(crate) fn new(brew_notes_base: Option<String>) -> Self {
         let client = api_key().map(|key| {
             let config = OpenAIConfig::new().with_api_key(key);
-            // crate 内蔵バックオフ（既定 15 分）を抑制し、リトライは model_call に委ねる。
+            // crate 内蔵バックオフの上限を 60 秒へ短縮する（既定 15 分は record を 120 分タイムアウトさせる）。
+            // 一過性失敗の回復はこのバックオフに一本化し、model_call は追加リトライしない。
             let backoff = backoff::ExponentialBackoff {
                 max_elapsed_time: Some(CLIENT_BACKOFF_MAX_ELAPSED),
                 ..Default::default()
@@ -293,30 +292,24 @@ where
 
 /// 1 model 呼び出し: async-openai client で chat completion を実行し、最小レスポンスへ射影する。
 ///
-/// 一過性エラー（rate_limit/429/5xx/接続）は run 内で少数リトライ（[`MAX_TRANSIENT_RETRIES`]）して吸収し、取り
-/// 切れなければ空レスポンス（[`ResponseMessage::default`]）へ縮退する。恒久失敗（不正リクエスト等）も同様に空
-/// レスポンスへ倒す。いずれも上位の空判定で version-only として確定する（夜をまたいで再試行しない）。
+/// 一過性エラー（rate_limit/429/5xx/接続）の回復は client 内蔵の指数バックオフ
+/// （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒）に委ね、ここでは追加リトライしない。
+/// バックオフを使い切っても失敗するエラー（一過性・恒久いずれも）は空レスポンス（[`ResponseMessage::default`]）へ
+/// 縮退し、上位の空判定で version-only として確定する（夜をまたいで再試行しない）。is_transient はログ分類のみに使う。
 fn model_call(
     client: &Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
 ) -> Result<ResponseMessage> {
-    let mut attempt = 0;
-    loop {
-        match run_blocking(client.clone(), request.clone()) {
-            Ok(message) => return Ok(message),
-            Err(error) if is_transient(&error) && attempt < MAX_TRANSIENT_RETRIES => {
-                attempt += 1;
-            }
-            Err(error) if is_transient(&error) => {
-                // run 内リトライ後も一過性失敗 → 空レスポンスへ縮退（version-only 確定）。
-                eprintln!("OpenAI extract transient: {}", error_snippet(&error));
-                return Ok(ResponseMessage::default());
-            }
-            Err(error) => {
-                // 恒久失敗（不正リクエスト等）→ 空レスポンスへ縮退（version-only 確定）。
-                eprintln!("OpenAI extract degraded: {}", error_snippet(&error));
-                return Ok(ResponseMessage::default());
-            }
+    match run_blocking(client.clone(), request) {
+        Ok(message) => Ok(message),
+        Err(error) => {
+            let kind = if is_transient(&error) {
+                "transient"
+            } else {
+                "degraded"
+            };
+            eprintln!("OpenAI extract {kind}: {}", error_snippet(&error));
+            Ok(ResponseMessage::default())
         }
     }
 }
@@ -693,11 +686,10 @@ mod tests {
     }
 
     #[test]
-    fn client_backoff_is_disabled_to_avoid_15min_retry() {
-        // async-openai 既定 backoff（max_elapsed_time=15 分）は billing_not_active(429) を 15 分リトライし
-        // record を 120 分タイムアウトさせる。0 へ縮めて crate 内リトライを実質 1 回へ落とす意図が、将来の
-        // リファクタで既定（15 分相当）へ戻る回帰を 1 行で検知する。
-        assert_eq!(CLIENT_BACKOFF_MAX_ELAPSED, Duration::from_secs(0));
+    fn client_backoff_is_bounded_between_zero_and_default() {
+        // 既定 15 分（record を 120 分タイムアウトさせる）でも 0（一過性失敗を回復できずカバレッジを失う）でも
+        // なく、60 秒上限であることを固定する。将来のリファクタで両極端へ戻る回帰を検知する。
+        assert_eq!(CLIENT_BACKOFF_MAX_ELAPSED, Duration::from_secs(60));
     }
 
     #[test]
