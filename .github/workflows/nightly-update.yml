@@ -151,6 +151,11 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    outputs:
+      # record が当月 history TOML を書いた（= 更新ありで履歴 artifact が必要）かどうか。open-pr 側はこの値で
+      # history-record download を fail-closed にするか（更新ありの夜）/ 失敗許容にするか（無更新の clean no-op）を
+      # 分岐する。
+      has_history: ${{ steps.record.outputs.has_history }}
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -171,6 +176,7 @@ jobs:
       # 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv /
       # ログに出さない）。ノートが取れないものは version-only（version + notes_url のみ）として確定記録する。
       - name: record（nix/brew 版差分 + 概要）
+        id: record
         env:
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
@@ -202,6 +208,14 @@ jobs:
             --at "$at" \
             --notes-sources "$notes_sources" \
             --out "$out"
+          # record が docs/update-history/ を変更したか（= 更新あり）を後段へ伝える。当月 TOML は既に repo に
+          # commit 済みで checkout に存在しうるため、ファイル有無ではなく checkout からの差分有無で判定する
+          # （無更新 no-op と真の download 失敗を取り違えないため）。差分があれば download を fail-closed にすべき夜。
+          if [ -n "$(git status --porcelain -- docs/update-history)" ]; then
+            echo "has_history=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_history=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # 無更新の夜は record が TOML を書かず、docs/update-history/ のアップロード対象が 0 件になりうる。
       # `if-no-files-found: error` だと無更新夜が失敗扱いになるため `warn` で安全側に倒す（clean no-op）。
@@ -279,12 +293,13 @@ jobs:
         with:
           name: bump-state
 
-      # 無更新の夜は record が history-record artifact を作らない。その場合 download が失敗するが、clean no-op に
-      # するため失敗を許容する（continue-on-error）。artifact 不在なら docs/update-history は checkout 状態のままで、
-      # 後段の `git add` が差分無し→`has_changes=false`→PR 起票せず no-op になる。
+      # 無更新の夜（record が history を書かない）は history-record artifact が無く download が失敗するが、clean
+      # no-op にするため失敗を許容する。一方 record が history を書いた夜（has_history=true）は download の一時失敗・
+      # 権限/破損エラーを握り潰さず fail-closed にする（history 欠落のまま flake.lock 単独 bump PR が auto-merge
+      # されるのを防ぐ）。失敗許容するのは無更新夜だけに限定する。
       - name: 履歴 TOML を取得
         uses: actions/download-artifact@v4
-        continue-on-error: true
+        continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}
         with:
           name: history-record
           path: docs/update-history

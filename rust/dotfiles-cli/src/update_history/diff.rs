@@ -167,21 +167,59 @@ fn empty_to_none(value: &str) -> Option<String> {
 }
 
 /// 両側に存在する 2 version 文字列を比較し、昇格か降格かを決める。
+///
+/// 文字列が完全一致する差分は呼び出し側（[`diff_versions`]）で除外済みのため、ここに来る old/new は必ず異なる。
+/// `version_ordering` が `Equal`（区切り記号差など成分が同値）になったときは方向を `Upgraded` に固定せず、
+/// 生文字列の安定タイブレークで向きを決める（`old < new` を Upgraded、それ以外を Downgraded）。
 fn compare_versions(old: &str, new: &str) -> ChangeKind {
     match version_ordering(old, new) {
         std::cmp::Ordering::Greater => ChangeKind::Downgraded,
         std::cmp::Ordering::Less => ChangeKind::Upgraded,
-        std::cmp::Ordering::Equal => ChangeKind::Upgraded,
+        std::cmp::Ordering::Equal => match old.cmp(new) {
+            std::cmp::Ordering::Greater => ChangeKind::Downgraded,
+            // 文字列も等しいケースは呼び出し側で除外済み。残りは Upgraded に倒す（安定タイブレーク）。
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => ChangeKind::Upgraded,
+        },
     }
 }
 
-/// 2 version 文字列の順序を成分単位で比較する（`lhs.cmp(rhs)` 相当）。
+/// 2 version 文字列の順序を比較する（semver の prerelease 規則に沿う）。
 ///
-/// 全成分が等しく長さだけ異なるときは成分数が多い側を新しいとみなす（`1.2` < `1.2.1`）。版比較・範囲判定の
-/// 単一の正本であり、brew 差分・release 範囲フィルタもこれを共有する。
+/// release 部（最初の `-` より前）を成分単位で比較し、全成分が等しく長さだけ異なるときは成分数が多い側を
+/// 新しいとみなす（`1.2` < `1.2.1`）。release 部が等しいときは prerelease 規則を適用する: prerelease 付き
+/// （`1.0.0-rc1`）は同じ release の stable（`1.0.0`）より **低い**。双方 prerelease のときは prerelease 成分の
+/// 辞書/数値比較で順序づける。版比較・範囲判定の単一の正本であり、brew 差分・release 範囲フィルタも共有する。
 pub(crate) fn version_ordering(lhs: &str, rhs: &str) -> std::cmp::Ordering {
-    let lhs_parts = split_components(lhs);
-    let rhs_parts = split_components(rhs);
+    let (lhs_release, lhs_pre) = split_release_pre(lhs);
+    let (rhs_release, rhs_pre) = split_release_pre(rhs);
+    let release_order = compare_parts(&lhs_release, &rhs_release);
+    if release_order != std::cmp::Ordering::Equal {
+        return release_order;
+    }
+    // release 部が同値: prerelease 無しは prerelease 有りより新しい（stable > prerelease）。
+    match (lhs_pre.is_empty(), rhs_pre.is_empty()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => compare_parts(&lhs_pre, &rhs_pre),
+    }
+}
+
+/// version 文字列を release 部（最初の `-` より前）と prerelease 部（以降）の成分列へ分ける。
+///
+/// release 部は `.` 区切り、prerelease 部は `.` と `-` 区切りで成分化する（空成分は除く）。
+fn split_release_pre(version: &str) -> (Vec<&str>, Vec<&str>) {
+    let (release, pre) = match version.split_once('-') {
+        Some((release, pre)) => (release, pre),
+        None => (version, ""),
+    };
+    let release_parts: Vec<&str> = release.split('.').filter(|s| !s.is_empty()).collect();
+    let pre_parts: Vec<&str> = pre.split(['.', '-']).filter(|s| !s.is_empty()).collect();
+    (release_parts, pre_parts)
+}
+
+/// 成分列を先頭から比較し、全成分が等しいときは成分数が多い側を新しいとみなす。
+fn compare_parts(lhs_parts: &[&str], rhs_parts: &[&str]) -> std::cmp::Ordering {
     for (l, r) in lhs_parts.iter().zip(rhs_parts.iter()) {
         let ordering = compare_component(l, r);
         if ordering != std::cmp::Ordering::Equal {
@@ -189,14 +227,6 @@ pub(crate) fn version_ordering(lhs: &str, rhs: &str) -> std::cmp::Ordering {
         }
     }
     lhs_parts.len().cmp(&rhs_parts.len())
-}
-
-/// version 文字列を `.` と `-` で成分へ分割する（空成分は除く）。
-fn split_components(version: &str) -> Vec<&str> {
-    version
-        .split(['.', '-'])
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// 1 成分を比較する（両方数値なら数値比較、片方のみ数値なら数値側を小さく、いずれも非数値なら辞書順）。
@@ -386,6 +416,49 @@ mod tests {
             Some("neovim/neovim")
         );
         assert_eq!(find(&deltas, "nonotes").map(|d| d.repo.clone()), Some(None));
+    }
+
+    #[test]
+    fn prerelease_is_lower_than_same_stable_release() {
+        // semver: prerelease（`1.0.0-rc1`）は同 release の stable（`1.0.0`）より低い。
+        assert_eq!(
+            version_ordering("1.0.0-rc1", "1.0.0"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            version_ordering("1.0.0", "1.0.0-rc1"),
+            std::cmp::Ordering::Greater
+        );
+        // 双方 prerelease は prerelease 成分で比較する（rc1 < rc2）。
+        assert_eq!(
+            version_ordering("1.0.0-rc1", "1.0.0-rc2"),
+            std::cmp::Ordering::Less
+        );
+        // release 成分の差は prerelease の有無より優先する。
+        assert_eq!(
+            version_ordering("1.0.0", "1.1.0-rc1"),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn prerelease_to_stable_is_upgrade_not_downgrade() {
+        // `1.0.0-rc1` → `1.0.0` は upgrade（成分数だけ見て downgrade 誤分類しない）。
+        let old = map(&[("pkg", "1.0.0-rc1")]);
+        let new = map(&[("pkg", "1.0.0")]);
+        let deltas = diff_versions(&old, &new);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].change, ChangeKind::Upgraded);
+    }
+
+    #[test]
+    fn equal_ordering_does_not_force_upgraded_direction() {
+        // 区切り記号差（末尾区切りなど）で成分が同値=Equal になる異なる文字列。向きは生文字列の安定
+        // タイブレークで決め、Upgraded 固定にしない。
+        assert_eq!(version_ordering("1.0.", "1.0"), std::cmp::Ordering::Equal);
+        // old > new（文字列降順）の Equal は Downgraded、old < new は Upgraded に倒れる。
+        assert_eq!(compare_versions("1.0.", "1.0"), ChangeKind::Downgraded);
+        assert_eq!(compare_versions("1.0", "1.0."), ChangeKind::Upgraded);
     }
 
     #[test]

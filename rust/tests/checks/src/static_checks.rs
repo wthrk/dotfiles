@@ -70,9 +70,10 @@ fn github_actions(shell: &Shell) -> Result<()> {
 /// 全 input が既に最新で nix/brew 差分も空の夜は run_record が更新履歴 TOML を書かず、record job の
 /// history-record アップロード対象が 0 件になりうる。このとき record の upload-artifact が
 /// `if-no-files-found: error` だと無更新夜が失敗扱いになり、clean no-op（PR 起票せず success）にならない。
-/// アップロードを安全側（`warn`/`ignore`）にし、後段 open-pr の history-record download を
-/// `continue-on-error` で受けて artifact 不在を許容することで、無更新夜が全体として no-op になることを
-/// workflow テキスト上で固定する（network/nix 非依存・ファイル内容の静的検査のみ）。
+/// アップロードを安全側（`warn`/`ignore`）にし、後段 open-pr の history-record download は無更新夜だけ
+/// 失敗を許容（`continue-on-error` を record の `has_history != 'true'` でガード）することで、無更新夜が
+/// 全体として no-op になりつつ、更新ありの夜の真の download 失敗は握り潰さないことを workflow テキスト上で
+/// 固定する（network/nix 非依存・ファイル内容の静的検査のみ）。
 fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
     step("nightly-update no-op (history upload not fail-on-empty)");
     let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
@@ -96,17 +97,32 @@ fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
         "record の history-record アップロードは `if-no-files-found: warn`/`ignore` で 0 件を許容すること"
     );
 
-    // open-pr の history-record download は、無更新夜で artifact が作られない場合に job を赤くしないため
-    // `continue-on-error: true` を伴うこと（download 失敗を許容して no-op フローへ倒す）。
+    // record job は当月 history を書いたか（更新あり）を `has_history` output で後段へ渡すこと。これが無いと
+    // open-pr 側で無更新夜と更新夜を区別できず、download 失敗を一律握り潰す回帰へ戻る。
+    ensure!(
+        workflow.contains("has_history: ${{ steps.record.outputs.has_history }}"),
+        "record job は当月 history を書いたかを `has_history` output で公開すること（更新夜の download 失敗を \
+         握り潰さないための分岐根拠）"
+    );
+
+    // open-pr の history-record download は、無更新夜（record が history を書かない）だけ artifact 不在を許容し、
+    // 更新ありの夜（has_history=true）は download の一時失敗を握り潰さず fail-closed にすること。そのため
+    // `continue-on-error` を `needs.record.outputs.has_history != 'true'` でガードする（無条件 `true` は禁止）。
     let download = workflow
         .split("name: 履歴 TOML を取得")
         .nth(1)
         .unwrap_or_default();
     let download_step = download.split("- name:").next().unwrap_or_default();
     ensure!(
-        download_step.contains("continue-on-error: true"),
-        "open-pr の history-record download は無更新夜の artifact 不在を許容するため \
-         `continue-on-error: true` を伴うこと（PR 起票せず no-op へ倒す）"
+        download_step
+            .contains("continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}"),
+        "open-pr の history-record download は無更新夜だけ失敗を許容し更新夜は fail-closed にするため \
+         `continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}` でガードすること"
+    );
+    ensure!(
+        !download_step.contains("continue-on-error: true"),
+        "open-pr の history-record download は無条件 `continue-on-error: true` を使ってはならない \
+         （更新夜の真の download 失敗を握り潰す）"
     );
     Ok(())
 }

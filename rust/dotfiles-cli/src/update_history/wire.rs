@@ -270,17 +270,10 @@ const MAX_TEXT_CHARS: usize = 200;
 
 /// URL が許可ホストの https URL かを判定する（scheme 固定・credential 拒否・host case-insensitive）。
 pub(crate) fn is_allowed_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
-        return false;
-    };
-    let authority = rest.split('/').next().unwrap_or("");
-    if authority.contains('@') || authority.is_empty() {
-        return false;
+    match host_of(url) {
+        Some(host) => ALLOWED_HOSTS.iter().any(|allowed| host == *allowed),
+        None => false,
     }
-    let host = authority.split(':').next().unwrap_or("");
-    ALLOWED_HOSTS
-        .iter()
-        .any(|allowed| host.eq_ignore_ascii_case(allowed))
 }
 
 /// パッケージごとに `fetch_url` へ許可するホスト集合を eval メタのヒント（信頼境界内）から組み立てる。
@@ -305,18 +298,33 @@ pub(crate) fn allowed_fetch_hosts(
     hosts
 }
 
-/// https URL から小文字化した host を抽出する純粋関数（credential 拒否・path injection 防御）。
+/// https URL から小文字化した host を抽出する純粋関数（credential 拒否・path injection 防御・SSRF 防御）。
+///
+/// 手組みの `split(':')` は IPv6（`[::1]`）やポート付き・credential 付き URL を正しく扱えず allowlist を
+/// すり抜ける恐れがあるため、host 抽出は `reqwest::Url`（url crate）の厳密パースに委ねる。https 以外・
+/// credential 付き・localhost / IP リテラル（ループバックや metadata service への到達源）は host を導かない。
 pub(crate) fn host_of(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://")?;
-    let authority = rest.split('/').next().unwrap_or("");
-    if authority.contains('@') || authority.is_empty() {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" {
         return None;
     }
-    let host = authority.split(':').next().unwrap_or("");
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_ascii_lowercase())
+    // credential（`user:pass@`）付きは拒否する。
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    let host = parsed.host()?;
+    match host {
+        // IP リテラル（IPv4/IPv6）はループバック/メタデータサービス等への SSRF 源になるため拒否する。
+        url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
+        url::Host::Domain(domain) => {
+            let lowered = domain.to_ascii_lowercase();
+            // `localhost` 等のローカル名はローカルサービス到達源になるため拒否する。
+            if lowered.is_empty() || lowered == "localhost" {
+                None
+            } else {
+                Some(lowered)
+            }
+        }
     }
 }
 
@@ -684,5 +692,32 @@ declared = true
         ));
         assert!(!fetch_host_allowed("https://evil.example/x", &hosts));
         assert!(!fetch_host_allowed("http://neovim.io/x", &hosts));
+    }
+
+    #[test]
+    fn host_of_rejects_ipv6_port_and_credential_via_url_parse() {
+        // IPv6 リテラル（loopback 含む）は host を導かない（簡易 split パスのすり抜けを塞ぐ）。
+        assert_eq!(host_of("https://[::1]/x"), None);
+        assert_eq!(host_of("https://[2001:db8::1]:443/x"), None);
+        // IPv4 リテラル（loopback / metadata service）も拒否する。
+        assert_eq!(host_of("https://127.0.0.1/x"), None);
+        assert_eq!(host_of("https://169.254.169.254/latest/meta-data"), None);
+        // localhost も拒否する。
+        assert_eq!(host_of("https://localhost/x"), None);
+        // credential 付きは拒否する（`user@`・`user:pass@` の両形）。
+        assert_eq!(host_of("https://user@github.com/a"), None);
+        assert_eq!(host_of("https://user:pass@github.com/a"), None);
+        // ポート付き許可ホストは host のみ（ポートを落として）正しく抽出する。
+        assert_eq!(
+            host_of("https://github.com:443/a/b").as_deref(),
+            Some("github.com")
+        );
+        // allowlist 照合経路でも IPv6 / credential / localhost はすり抜けない。
+        assert!(!is_allowed_url("https://[::1]/github.com"));
+        assert!(!is_allowed_url("https://localhost/a"));
+        assert!(!is_allowed_url("https://user:pass@github.com/a"));
+        let hosts = allowed_fetch_hosts(None, None, None);
+        assert!(!fetch_host_allowed("https://[::1]/x", &hosts));
+        assert!(!fetch_host_allowed("https://169.254.169.254/x", &hosts));
     }
 }

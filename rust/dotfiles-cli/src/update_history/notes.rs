@@ -33,6 +33,10 @@ const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 /// 共有 blocking client（redirect 不追従・https 限定・有界 timeout）。初回アクセスで 1 度だけ構築する。
 static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 
+/// 全 HTTP 取得に添える固定 User-Agent。GitHub REST API は UA 無しのリクエストを 403 で拒否するため、共有
+/// client の default header として 1 箇所で付与し、GitHub API・raw.githubusercontent.com 双方の経路に効かせる。
+const HTTP_USER_AGENT: &str = concat!("dotfiles-update-history/", env!("CARGO_PKG_VERSION"));
+
 /// 1 リクエストに添える追加ヘッダ（名前と値の組）。
 type Header<'a> = (&'a str, &'a str);
 
@@ -55,6 +59,7 @@ fn build_http_client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
+        .user_agent(HTTP_USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()?)
@@ -505,6 +510,13 @@ mod tests {
             "abc"
         );
         Ok(())
+    }
+
+    #[test]
+    fn http_user_agent_is_fixed_nonempty_crate_ua() {
+        // GitHub API は UA 無しを 403 で拒否するため、共有 client へ付与する固定 UA は非空で crate 名を含む。
+        assert!(HTTP_USER_AGENT.starts_with("dotfiles-update-history/"));
+        assert!(HTTP_USER_AGENT.len() > "dotfiles-update-history/".len());
     }
 
     #[test]
