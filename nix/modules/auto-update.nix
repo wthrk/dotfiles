@@ -45,7 +45,8 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   # x86_64-darwin 等、flake の `packageSystems` に含まれない system では `packages.${system}` が存在しない。
   # その system で評価が落ちないよう、package が無ければ daemon を定義しない（degrade）。
-  hasPackage = inputs.self.packages ? ${system};
+  # 動的キー（`system` は変数）の存在判定は `builtins.hasAttr` で行う（`? ${system}` も有効だが可読性のため）。
+  hasPackage = builtins.hasAttr system inputs.self.packages;
 
   # 絶対 store パスで CLI を指す（PATH 非依存。root daemon の最小環境で確実に解決するため）。
   dotfilesBin = "${inputs.self.packages.${system}.default}/bin/dotfiles";

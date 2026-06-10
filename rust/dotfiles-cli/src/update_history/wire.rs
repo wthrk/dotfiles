@@ -301,10 +301,11 @@ pub(crate) fn allowed_fetch_hosts(
 /// https URL から小文字化した host を抽出する純粋関数（credential 拒否・path injection 防御・SSRF 防御）。
 ///
 /// 手組みの `split(':')` は IPv6（`[::1]`）やポート付き・credential 付き URL を正しく扱えず allowlist を
-/// すり抜ける恐れがあるため、host 抽出は `reqwest::Url`（url crate）の厳密パースに委ねる。https 以外・
+/// すり抜ける恐れがあるため、host 抽出は `url::Url` の厳密パースに委ねる。wire は純粋ドメイン層なので HTTP
+/// クライアント型（`reqwest::Url`）ではなく既に `url::Host` を使う `url` crate へ直接寄せる。https 以外・
 /// credential 付き・localhost / IP リテラル（ループバックや metadata service への到達源）は host を導かない。
 pub(crate) fn host_of(url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
+    let parsed = url::Url::parse(url).ok()?;
     if parsed.scheme() != "https" {
         return None;
     }

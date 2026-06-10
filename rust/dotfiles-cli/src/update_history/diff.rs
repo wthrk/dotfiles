@@ -48,9 +48,9 @@ pub(crate) struct NixPackage {
     /// GitHub `owner/repo`（無ければ空文字）。
     #[serde(default)]
     pub(crate) repo: String,
-    /// changelog URL（無ければ空文字）。eval JSON では `changelog` key で出力する（旧 `notes_source` key も
-    /// alias で受ける）。
-    #[serde(default, alias = "changelog")]
+    /// changelog URL（無ければ空文字）。eval JSON では `changelog` key で serialize / deserialize する（rename）。
+    /// 旧 `notes_source` key も alias で受ける（後方互換）。フィールド名は内部都合で `notes_source` のまま。
+    #[serde(default, rename = "changelog", alias = "notes_source")]
     pub(crate) notes_source: String,
     /// `meta.homepage` 由来の URL（無ければ空文字）。AI エージェントの fetch 許可ホスト集合のヒント。
     #[serde(default)]
