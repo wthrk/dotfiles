@@ -20,7 +20,7 @@ use std::time::Duration;
 use super::diff::{
     DeltaSource, NixPackage, VersionDelta, release_version, version_in_range, version_ordering,
 };
-use super::wire::is_allowed_url;
+use super::wire::{host_of, is_allowed_url};
 use crate::Result;
 
 /// 接続確立の上限。
@@ -29,6 +29,24 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// 1 レスポンス本文の読み取り上限（バイト）。超過分は読まずに打ち切る。
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// GitHub ホストへの GET をレート/一過性失敗時に再試行する最大回数（初回を除く追加試行数）。
+///
+/// GitHub 以外のホストは [`NON_GITHUB_MAX_RETRIES`] に絞り、総待機が record job の `timeout-minutes:120` を
+/// 圧迫しないようにする。
+const GITHUB_MAX_RETRIES: u32 = 3;
+/// GitHub 以外のホストへの GET の追加試行数（接続失敗の取りこぼし防止に 1 回だけ。レート制限は GitHub 固有）。
+const NON_GITHUB_MAX_RETRIES: u32 = 1;
+/// 指数バックオフの初期待機（秒）。`base * 2^attempt` で増やす。
+const BACKOFF_BASE_SECS: u64 = 1;
+/// 1 回のバックオフ待機の上限（秒）。`Retry-After` も指数項もこの値で頭打ちにする。
+const BACKOFF_MAX_SECS: u64 = 30;
+/// 1 リクエストあたりのバックオフ総待機の上限（秒）。これを超える待機が必要なら諦めて縮退する。
+///
+/// 最悪ケース見積もり（GitHub host・全試行がバックオフ対象）: attempt0=1s, attempt1=2s, attempt2=4s の合計 7s。
+/// 53 パッケージが各複数 fetch（releases ページ最大 3 + フォールバック + AI fetch）でも、認証付与により
+/// レート枯渇は起きにくく、最悪でも 1 パッケージ数十秒・全体は 120 分の timeout に十分収まる。
+const BACKOFF_TOTAL_CAP_SECS: u64 = 60;
 
 /// 共有 blocking client（redirect 不追従・https 限定・有界 timeout）。初回アクセスで 1 度だけ構築する。
 static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
@@ -44,6 +62,21 @@ type Header<'a> = (&'a str, &'a str);
 struct HttpResponse {
     status: u16,
     body: String,
+}
+
+/// 1 回の GET 試行の結果（再試行判定・バックオフ算出に必要な最小情報）。
+///
+/// `Connected` は応答が返った（status/body と再試行に効くヘッダを保持）。`SendError` は接続/転送段の失敗。
+enum Attempt {
+    Connected {
+        status: u16,
+        body: String,
+        /// `Retry-After` ヘッダ（秒数 or HTTP-date 文字列。あれば）。
+        retry_after: Option<String>,
+        /// GitHub の `X-RateLimit-Remaining`（あれば。`0` は primary rate limit 枯渇の兆候）。
+        rate_remaining: Option<String>,
+    },
+    SendError,
 }
 
 /// 共有 client を取得する（構築失敗時は都度新規構築へフォールバックして握り潰さない）。
@@ -67,21 +100,200 @@ fn build_http_client() -> Result<reqwest::blocking::Client> {
 
 /// 許可済み https URL を redirect 不追従・有界本文で GET する（host 検査は呼び出し側責務）。
 ///
-/// 取得成功は `Some(HttpResponse)`、接続/転送失敗は `None`（呼び出し側が縮退する）。本文は
+/// GitHub 系ホスト（[`is_github_host`]）には `GITHUB_TOKEN` を `Authorization: Bearer` で添え、未認証
+/// 60req/hr ではなく認証 5000req/hr の枠で叩く（token は reqwest のヘッダ値として渡すため argv/URL/ログに
+/// 出ない）。GitHub 以外のホストには token を**絶対に付けない**（漏えい防止）。レート/一過性失敗
+/// （403 secondary・429・5xx・接続失敗）は有界バックオフで少数回再試行する（[`retry_decision`]）。
+///
+/// 取得成功は `Some(HttpResponse)`、接続/転送失敗・再試行枯渇は `None`（呼び出し側が縮退する）。本文は
 /// [`MAX_RESPONSE_BYTES`] までで打ち切って読む。
 fn http_get(url: &str, headers: &[Header<'_>]) -> Result<Option<HttpResponse>> {
+    let github_host = host_of(url).is_some_and(|host| is_github_host(&host));
+    // GitHub 系ホストにだけ token を添える（host 一致時のみ。token 漏えい防止）。
+    let authorization = if github_host {
+        github_token().map(|token| format!("Bearer {token}"))
+    } else {
+        None
+    };
+    let max_retries = if github_host {
+        GITHUB_MAX_RETRIES
+    } else {
+        NON_GITHUB_MAX_RETRIES
+    };
+
+    let mut waited_total: u64 = 0;
+    let mut attempt_index: u32 = 0;
+    loop {
+        let attempt = http_get_once(url, headers, authorization.as_deref())?;
+        let decision = retry_decision(&attempt, github_host);
+        if let RetryDecision::Done(response) = decision {
+            return Ok(response);
+        }
+        if attempt_index >= max_retries {
+            return Ok(attempt_to_response(&attempt));
+        }
+        let retry_after = match &attempt {
+            Attempt::Connected { retry_after, .. } => retry_after.as_deref(),
+            Attempt::SendError => None,
+        };
+        let Some(wait) = backoff_wait_secs(
+            attempt_index,
+            retry_after,
+            waited_total,
+            BACKOFF_TOTAL_CAP_SECS,
+        ) else {
+            // これ以上待つと総待機上限を超える → 諦めて縮退する。
+            return Ok(attempt_to_response(&attempt));
+        };
+        if wait > 0 {
+            std::thread::sleep(Duration::from_secs(wait));
+        }
+        waited_total = waited_total.saturating_add(wait);
+        attempt_index += 1;
+    }
+}
+
+/// 1 回だけ GET を試み、再試行判定に必要な情報を [`Attempt`] へ翻訳する。
+fn http_get_once(
+    url: &str,
+    headers: &[Header<'_>],
+    authorization: Option<&str>,
+) -> Result<Attempt> {
     let client = http_client()?;
     let mut request = client.get(url);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
+    if let Some(authorization) = authorization {
+        request = request.header("Authorization", authorization);
+    }
     let response = match request.send() {
         Ok(response) => response,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(Attempt::SendError),
     };
     let status = response.status().as_u16();
+    let retry_after = header_value(response.headers(), "retry-after");
+    let rate_remaining = header_value(response.headers(), "x-ratelimit-remaining");
     let body = read_capped(response, MAX_RESPONSE_BYTES);
-    Ok(Some(HttpResponse { status, body }))
+    Ok(Attempt::Connected {
+        status,
+        body,
+        retry_after,
+        rate_remaining,
+    })
+}
+
+/// レスポンスヘッダから 1 値を ASCII 文字列として取り出す（非 ASCII/不在は `None`）。
+fn header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// 再試行の判定結果。`Done` は確定（`Some(response)`=応答あり / `None`=接続失敗で縮退）、`Retry` は再試行対象。
+enum RetryDecision {
+    Done(Option<HttpResponse>),
+    Retry,
+}
+
+/// 1 回の試行結果を「確定（縮退含む）か再試行対象か」へ翻訳する純粋関数（network 抜きで決定論的）。
+///
+/// 再試行対象: 接続失敗（`SendError`）・429・5xx・403（secondary rate limit 兆候があるもの）。即確定:
+/// 2xx・404 等それ以外。primary rate limit（`X-RateLimit-Remaining: 0`）の 403 は reset まで待つと長すぎる
+/// ため**再試行せず縮退**する（認証付与で primary 枯渇は起きにくい前提）。GitHub 以外のホストは 403 の
+/// secondary 判定を行わず（rate limit 概念は GitHub 固有）429/5xx/接続失敗のみ再試行対象にする。
+fn retry_decision(attempt: &Attempt, github_host: bool) -> RetryDecision {
+    match attempt {
+        Attempt::SendError => RetryDecision::Retry,
+        Attempt::Connected {
+            status,
+            body,
+            rate_remaining,
+            ..
+        } => {
+            if *status == 429 || (500..600).contains(status) {
+                return RetryDecision::Retry;
+            }
+            if *status == 403 && github_host {
+                // primary rate limit（remaining=0）は reset 待ちが長すぎるため再試行せず縮退する。
+                if is_primary_rate_limited(rate_remaining.as_deref()) {
+                    return RetryDecision::Done(None);
+                }
+                if is_secondary_rate_limited(body) {
+                    return RetryDecision::Retry;
+                }
+            }
+            RetryDecision::Done(attempt_to_response(attempt))
+        }
+    }
+}
+
+/// `X-RateLimit-Remaining` が `0` なら primary rate limit 枯渇とみなす純粋判定。
+fn is_primary_rate_limited(rate_remaining: Option<&str>) -> bool {
+    rate_remaining.map(str::trim) == Some("0")
+}
+
+/// 403 本文が GitHub の secondary rate limit / abuse 検知の兆候を含むかの純粋判定（小文字化して部分一致）。
+fn is_secondary_rate_limited(body: &str) -> bool {
+    let lowered = body.to_ascii_lowercase();
+    lowered.contains("secondary rate limit")
+        || lowered.contains("abuse detection")
+        || lowered.contains("rate limit")
+}
+
+/// [`Attempt`] を呼び出し側の [`HttpResponse`] へ翻訳する（接続失敗は `None`。再試行枯渇/上限到達時の縮退に使う）。
+fn attempt_to_response(attempt: &Attempt) -> Option<HttpResponse> {
+    match attempt {
+        Attempt::SendError => None,
+        Attempt::Connected { status, body, .. } => Some(HttpResponse {
+            status: *status,
+            body: body.clone(),
+        }),
+    }
+}
+
+/// 指定したホストが GitHub 系（token を添えてよい・rate limit 再試行の対象）かの純粋判定。
+///
+/// `host_of` で正規化済み小文字 host を前提に、`github.com` / `api.github.com` / `raw.githubusercontent.com`
+/// と、その厳密なサブドメイン（`.github.com` 等で終わる）だけを GitHub 系とみなす。`notgithub.com` のような
+/// 接尾辞偽装は弾く（`ends_with(".github.com")` の先頭ドット必須）。
+fn is_github_host(host: &str) -> bool {
+    const GITHUB_HOSTS: [&str; 3] = ["github.com", "api.github.com", "raw.githubusercontent.com"];
+    GITHUB_HOSTS
+        .iter()
+        .any(|root| host == *root || host.ends_with(&format!(".{root}")))
+}
+
+/// 次回バックオフの待機秒を算出する純粋関数（`Retry-After` 優先、無ければ指数）。
+///
+/// `attempt_index` は 0 始まり（初回失敗後の待機が index=0）。`Retry-After` が秒数としてパースできればそれを、
+/// できなければ `BACKOFF_BASE_SECS * 2^attempt_index` を採り、いずれも [`BACKOFF_MAX_SECS`] で頭打ちにする。
+/// `waited_total + wait` が `total_cap` を超える場合は `None`（これ以上待たず諦める）。
+fn backoff_wait_secs(
+    attempt_index: u32,
+    retry_after: Option<&str>,
+    waited_total: u64,
+    total_cap: u64,
+) -> Option<u64> {
+    let wait = match retry_after.and_then(parse_retry_after_secs) {
+        Some(secs) => secs.min(BACKOFF_MAX_SECS),
+        None => {
+            let factor = 1u64.checked_shl(attempt_index).unwrap_or(u64::MAX);
+            BACKOFF_BASE_SECS
+                .saturating_mul(factor)
+                .min(BACKOFF_MAX_SECS)
+        }
+    };
+    if waited_total.saturating_add(wait) > total_cap {
+        return None;
+    }
+    Some(wait)
+}
+
+/// `Retry-After` ヘッダ値を秒数として解釈する純粋関数（delta-seconds 形式のみ。HTTP-date は対象外で `None`）。
+fn parse_retry_after_secs(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
 }
 
 /// 任意の [`Read`] を `limit` バイトまで読み、UTF-8 として lossy にデコードする純粋規約。
@@ -254,14 +466,13 @@ fn fetch_releases_range(
     old: Option<&str>,
     new: Option<&str>,
 ) -> Result<Option<RawReleaseNotes>> {
-    let token = github_token();
     let mut bodies: Vec<(String, String)> = Vec::new();
     for page in 1..=MAX_RELEASE_PAGES {
         let api_url = releases_list_url(owner, repo, page);
         if !is_allowed_url(&api_url) {
             return Ok(None);
         }
-        let json = match fetch_releases_page(&api_url, token.as_deref(), owner, repo)? {
+        let json = match fetch_releases_page(&api_url, owner, repo)? {
             Some(text) => text,
             None => return Ok(None),
         };
@@ -365,21 +576,14 @@ fn releases_page_url(owner: &str, repo: &str) -> String {
     format!("https://github.com/{owner}/{repo}/releases")
 }
 
-/// GitHub Releases API の 1 ページを reqwest で取得する（token があれば Authorization ヘッダで添える）。
+/// GitHub Releases API の 1 ページを reqwest で取得する。
 ///
-/// token は reqwest のヘッダ値として渡すため process argv には一切現れない（curl `--config -` 相当の秘匿を
-/// in-process で達成）。2xx 非空本文だけを `Some` で返し、接続失敗・非 2xx・空本文は `None`（取得不能）。
-fn fetch_releases_page(
-    api_url: &str,
-    token: Option<&str>,
-    owner: &str,
-    repo: &str,
-) -> Result<Option<String>> {
-    let authorization = token.map(|token| format!("Bearer {token}"));
-    let mut headers: Vec<Header<'_>> = vec![GITHUB_ACCEPT_HEADER, GITHUB_API_VERSION_HEADER];
-    if let Some(authorization) = authorization.as_deref() {
-        headers.push(("Authorization", authorization));
-    }
+/// `GITHUB_TOKEN` は [`http_get`] が GitHub 系ホストにだけ `Authorization: Bearer` で添える（reqwest の
+/// ヘッダ値として渡すため process argv には一切現れない。curl `--config -` 相当の秘匿を in-process で達成）。
+/// レート/一過性失敗（403 secondary・429・5xx・接続失敗）は [`http_get`] が有界バックオフで再試行する。
+/// 2xx 非空本文だけを `Some` で返し、接続失敗・非 2xx・空本文は `None`（取得不能）。
+fn fetch_releases_page(api_url: &str, owner: &str, repo: &str) -> Result<Option<String>> {
+    let headers: [Header<'_>; 2] = [GITHUB_ACCEPT_HEADER, GITHUB_API_VERSION_HEADER];
     let Some(response) = http_get(api_url, &headers)? else {
         return Ok(None);
     };
@@ -666,5 +870,163 @@ mod tests {
     fn brew_hint_without_base_is_none() -> Result<()> {
         assert!(brew_notes_hint(None, "firefox")?.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn is_github_host_matches_github_family_only() {
+        // token 添付・rate limit 再試行の対象になる GitHub 系 host（正規化済み小文字）。
+        assert!(is_github_host("github.com"));
+        assert!(is_github_host("api.github.com"));
+        assert!(is_github_host("raw.githubusercontent.com"));
+        // `github.com` の厳密なサブドメインも GitHub 系。
+        assert!(is_github_host("codeload.github.com"));
+        // 機械取得で叩く 3 ホスト以外（`objects.githubusercontent.com` 等の release asset 配信は
+        // raw.githubusercontent.com の子孫でないため）には token を添えない（保守的に最小スコープ）。
+        assert!(!is_github_host("objects.githubusercontent.com"));
+        // GitHub 以外（cargo / iterm2 等のノート所在）には token を添えない。
+        assert!(!is_github_host("doc.rust-lang.org"));
+        assert!(!is_github_host("iterm2.com"));
+        assert!(!is_github_host("example.com"));
+        assert!(!is_github_host("gitlab.com"));
+        // 接尾辞偽装（`notgithub.com`・`github.com.evil.com`）は GitHub 系とみなさない。
+        assert!(!is_github_host("notgithub.com"));
+        assert!(!is_github_host("github.com.evil.com"));
+        assert!(!is_github_host("evilgithub.com"));
+    }
+
+    /// テスト用に Connected な Attempt を組む。
+    fn connected(
+        status: u16,
+        body: &str,
+        retry_after: Option<&str>,
+        remaining: Option<&str>,
+    ) -> Attempt {
+        Attempt::Connected {
+            status,
+            body: body.to_string(),
+            retry_after: retry_after.map(str::to_string),
+            rate_remaining: remaining.map(str::to_string),
+        }
+    }
+
+    fn is_retry(attempt: &Attempt, github_host: bool) -> bool {
+        matches!(retry_decision(attempt, github_host), RetryDecision::Retry)
+    }
+
+    #[test]
+    fn retry_decision_retries_transient_and_finalizes_terminal() {
+        // 接続失敗・429・5xx は GitHub でも非 GitHub でも再試行対象。
+        assert!(is_retry(&Attempt::SendError, true));
+        assert!(is_retry(&Attempt::SendError, false));
+        assert!(is_retry(&connected(429, "", None, None), true));
+        assert!(is_retry(&connected(429, "", None, None), false));
+        assert!(is_retry(&connected(500, "", None, None), true));
+        assert!(is_retry(&connected(503, "", None, None), false));
+        // 200/404 は即確定（再試行しない）。
+        assert!(!is_retry(&connected(200, "ok", None, None), true));
+        assert!(!is_retry(&connected(404, "", None, None), true));
+    }
+
+    #[test]
+    fn retry_decision_handles_403_rate_limit_only_for_github() {
+        // GitHub の 403 secondary rate limit（本文兆候あり）は再試行対象。
+        assert!(is_retry(
+            &connected(403, "You have exceeded a secondary rate limit", None, None),
+            true
+        ));
+        assert!(is_retry(
+            &connected(403, "API rate limit exceeded for user", None, None),
+            true
+        ));
+        // primary rate limit 枯渇（remaining=0）の 403 は reset 待ちが長すぎるため再試行せず None へ縮退する。
+        match retry_decision(
+            &connected(403, "API rate limit exceeded", None, Some("0")),
+            true,
+        ) {
+            RetryDecision::Done(None) => {}
+            _ => panic!("primary rate limit は再試行せず縮退"),
+        }
+        // rate limit 兆候の無い 403（純粋な権限拒否）は即確定（縮退）。
+        match retry_decision(&connected(403, "forbidden", None, None), true) {
+            RetryDecision::Done(Some(response)) => assert_eq!(response.status, 403),
+            _ => panic!("rate limit 兆候の無い 403 は確定"),
+        }
+        // GitHub 以外のホストでは 403 を rate limit とみなさず即確定（rate limit 概念は GitHub 固有）。
+        assert!(!is_retry(
+            &connected(403, "secondary rate limit", None, None),
+            false
+        ));
+    }
+
+    #[test]
+    fn backoff_wait_secs_uses_exponential_then_retry_after_capped() {
+        // Retry-After 無し → 指数（1, 2, 4 ...）を上限で頭打ち。
+        assert_eq!(
+            backoff_wait_secs(0, None, 0, BACKOFF_TOTAL_CAP_SECS),
+            Some(1)
+        );
+        assert_eq!(
+            backoff_wait_secs(1, None, 0, BACKOFF_TOTAL_CAP_SECS),
+            Some(2)
+        );
+        assert_eq!(
+            backoff_wait_secs(2, None, 0, BACKOFF_TOTAL_CAP_SECS),
+            Some(4)
+        );
+        // 指数項が BACKOFF_MAX_SECS を超えても頭打ち。
+        assert_eq!(
+            backoff_wait_secs(20, None, 0, BACKOFF_TOTAL_CAP_SECS),
+            Some(BACKOFF_MAX_SECS)
+        );
+        // Retry-After（秒）優先。上限でクランプ。
+        assert_eq!(
+            backoff_wait_secs(0, Some("5"), 0, BACKOFF_TOTAL_CAP_SECS),
+            Some(5)
+        );
+        assert_eq!(
+            backoff_wait_secs(0, Some("9999"), 0, BACKOFF_TOTAL_CAP_SECS),
+            Some(BACKOFF_MAX_SECS)
+        );
+        // HTTP-date 形式の Retry-After は秒数化できず指数へフォールバック。
+        assert_eq!(
+            backoff_wait_secs(
+                0,
+                Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+                0,
+                BACKOFF_TOTAL_CAP_SECS
+            ),
+            Some(1)
+        );
+        // 総待機上限を超える待機は None（諦める）。
+        assert_eq!(backoff_wait_secs(0, Some("10"), 55, 60), None);
+        assert_eq!(backoff_wait_secs(0, Some("5"), 55, 60), Some(5));
+    }
+
+    #[test]
+    fn parse_retry_after_secs_accepts_delta_seconds_only() {
+        assert_eq!(parse_retry_after_secs("0"), Some(0));
+        assert_eq!(parse_retry_after_secs("  42 "), Some(42));
+        assert_eq!(
+            parse_retry_after_secs("Wed, 21 Oct 2026 07:28:00 GMT"),
+            None
+        );
+        assert_eq!(parse_retry_after_secs(""), None);
+        assert_eq!(parse_retry_after_secs("-1"), None);
+    }
+
+    #[test]
+    fn primary_and_secondary_rate_limit_signals() {
+        assert!(is_primary_rate_limited(Some("0")));
+        assert!(is_primary_rate_limited(Some(" 0 ")));
+        assert!(!is_primary_rate_limited(Some("1")));
+        assert!(!is_primary_rate_limited(None));
+        assert!(is_secondary_rate_limited(
+            "You have exceeded a SECONDARY RATE LIMIT"
+        ));
+        assert!(is_secondary_rate_limited(
+            "triggered an abuse detection mechanism"
+        ));
+        assert!(is_secondary_rate_limited("API rate limit exceeded"));
+        assert!(!is_secondary_rate_limited("forbidden: bad credentials"));
     }
 }
