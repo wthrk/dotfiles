@@ -20,9 +20,11 @@
 //!
 //! ## 状態ディレクトリと所有権
 //!
-//! 状態は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）に置き、必ずユーザ所有で作る。
-//! auto-update.nix のラッパーはユーザ状態（このバイナリ）を `sudo -u <user>` で呼ぶ前提であり、root 専用パスや
-//! 所有権昇格を行わない。
+//! 状態は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）に置く。このバイナリ自身は
+//! root 専用パスや所有権昇格を行わず、与えられた `HOME`/`XDG_STATE_HOME` 配下にしか state を書かない。
+//! auto-update.nix のラッパーは darwin-rebuild を root で走らせるため **root のまま** このバイナリを呼び
+//! （`HOME` をユーザ home に向ける）、適用後に書かれた state を `chown -R <user>` でユーザ所有へ直す。
+//! これにより zsh の show-once（ユーザ権限）が `pending-summary` を消費できる。
 
 use std::ffi::OsString;
 use std::fs;
@@ -95,7 +97,9 @@ pub(crate) fn run(options: UpdateOptions) -> Result<UpdateOutcome> {
     }
 
     // 更新後 pin が前回と異なる → switch を実行する（home+darwin を一度に。部分適用経路は持たない）。
-    switch::run(options.switch.clone())?;
+    // `update` は target を受け取らず常に `SwitchTarget::All` で適用するため、部分適用後に全体 marker を
+    // 確定する不整合（`dotfiles update home` で home だけ適用して全体 pin を確定する）が起き得ない。
+    switch::apply(&options.switch, switch::SwitchTarget::All)?;
 
     // 適用済み dotfiles flake input source の `docs/update-history` を state dir のローカル複製へ取り込む。
     // 複製失敗（network 無し・解決不能等）は適用を止めず、要約と要約済み marker の確定だけを次回へ繰り越す。
@@ -511,10 +515,15 @@ fn append_last_run_log(state_dir: &Path, summarized_after_at: Option<&str>) -> R
 }
 
 /// `dotfiles update` の利用者向け option（単純版）。
+///
+/// **部分 target を受理しない**: `switch` の共通オプション（[`switch::SwitchCommon`]）だけを flatten し、適用対象
+/// （`home`/`darwin`）を持たない。`update` は常に全体適用（home+darwin）であり、これにより部分適用後に全体
+/// `last-applied-rev` を確定してしまう不整合（例: `dotfiles update home` で home だけ適用→daemon が同一 pin を
+/// skip→darwin/system 未適用が残る）を構造的に排除する。
 #[derive(Args)]
 pub(crate) struct UpdateOptions {
     #[command(flatten)]
-    switch: switch::SwitchOptions,
+    switch: switch::SwitchCommon,
     /// dotfiles input だけでなくローカル flake の全入力を最新解決で更新する。
     #[arg(long)]
     full: bool,
@@ -581,6 +590,15 @@ mod tests {
             vec!["flake", "update", "dotfiles", "--flake", "/cfg"]
         );
         Ok(())
+    }
+
+    #[test]
+    fn rejects_partial_target_so_update_is_always_full() {
+        // 部分 target（`home` / `darwin`）は受理しない。`update` は常に全体適用であり、部分適用後に全体
+        // `last-applied-rev` を確定する不整合を構造的に排除する。位置引数 `home`/`darwin` は parse error。
+        assert!(parse_update(&["home"]).is_err());
+        assert!(parse_update(&["darwin"]).is_err());
+        assert!(parse_update(&["all"]).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # nightly bump 後に各マシンを repo pin へ無人で収束させる auto-update daemon（単純版）。
 #
-# launchd daemon（root/system）が `StartCalendarInterval` で定期起動し、`sudo -u <user> dotfiles update` を
+# launchd daemon（root/system）が `StartCalendarInterval` で定期起動し、**root のまま** `dotfiles update` を
 # 1 回呼ぶだけにする。適用要否判定・home-manager 適用・要約/marker 書込みといった業務判断は **すべて
 # `dotfiles update` CLI 側** にあり、nix へは漏らさない。
 #
@@ -11,20 +11,24 @@
 #   `dotfiles update` は単一 marker `last-applied-rev` で冪等（同一 pin なら no-op）であり、同時更新者を想定しない
 #   （万一の同時実行は nix 自身の store/profile ロックと冪等性に委ねる）。よって排他・scope・defer は不要。
 #
-# 権限:
-#   - home-manager 適用とユーザ状態（`last-applied-rev` / `pending-summary` 等）の書込みは `sudo -u <user>` で
-#     ユーザ権限で行う（home-manager を root で走らせない・marker をユーザ所有で書く）。
-#   - darwin-rebuild は既に root のため `DOTFILES_DARWIN_REBUILD_SUDO=0` で sudo を前置しない経路を使う
-#     （`dotfiles update` が内部の switch darwin でこの env を尊重する）。
+# 権限（root 実行・apply 分割なし・state はユーザ所有へ chown）:
+#   - home-manager は nix-darwin モジュール（`darwin.nix` の `home-manager.users.${user}`）として組み込まれ、
+#     **root の `darwin-rebuild switch` が system と home-manager の両方を一度に適用する**。したがって daemon は
+#     root のまま `dotfiles update --no-sudo` を 1 回呼べば全部適用できる（`sudo -u <user>` で権限を落とすと
+#     darwin-rebuild が root を得られず失敗するため、落とさない）。`--no-sudo` /
+#     `DOTFILES_DARWIN_REBUILD_SUDO=0` は **root で darwin-rebuild に sudo を前置しない**正しい指定で維持する。
+#   - apply は分割しない。書いた state の所有権だけを後から調整する: root 実行で生まれる
+#     `last-applied-rev` / `pending-summary` 等は、適用後に `chown -R <user>` で **ユーザ所有に直す**。
+#     これは zsh の show-once（ユーザ権限）が `pending-summary` を rename で消費するために必須である。
 #
 # state dir はユーザ所有の `~/.local/state/dotfiles`。利用者が `XDG_STATE_HOME` を設定していればそれを尊重し
-# （値はそのまま使い空白も保持する）、CLI の `state_dir()` と同一の dir を指すよう `sudo -u <user>` する CLI へ
-# `XDG_STATE_HOME` を伝播する。これにより daemon が書く marker をシェル（CLI の `state_dir()`）が同じ dir で
-# 消費でき、重複適用・要約未表示を防ぐ。
+# （値はそのまま使い空白も保持する）、CLI の `state_dir()` と同一の dir を指すよう wrapper が `HOME`（と
+# 設定時 `XDG_STATE_HOME`）を CLI へ渡して state_dir をユーザの dir に向ける。root 実行で書いた state は
+# 適用後に `chown -R <user>` でユーザ所有へ直す。これにより daemon が書く marker をシェル（CLI の
+# `state_dir()`）が同じ dir・同じ所有権で消費でき、重複適用・要約未表示を防ぐ。
 #
 # launchd PATH: 最小 PATH には nix が無い。`dotfiles` は絶対 store パスで起動するが、内部で `nix` /
-# `home-manager` / `darwin-rebuild` を PATH 解決で spawn するため wrapper で PATH を通す。sudo は env を
-# リセットするので、ユーザ権限経路は `env PATH=... [XDG_STATE_HOME=...]` を前置して引き継ぐ。
+# `home-manager` / `darwin-rebuild` を PATH 解決で spawn するため wrapper で PATH を通す。
 {
   user,
   pkgs,
@@ -62,30 +66,44 @@ let
     "/sbin"
   ];
 
-  # launchd timer が呼ぶ薄い wrapper。`sudo -u <user> dotfiles update` を 1 回呼ぶだけ。darwin は CLI 内部で
-  # `DOTFILES_DARWIN_REBUILD_SUDO=0` の sudo 無し経路を使う。
+  # launchd timer が呼ぶ薄い wrapper。**root のまま** `dotfiles update --no-sudo` を 1 回呼ぶだけ。
+  # darwin-rebuild は root の `darwin-rebuild switch` で system と home-manager の両方を一度に適用する
+  # （`DOTFILES_DARWIN_REBUILD_SUDO=0` で root が darwin-rebuild に sudo を前置しない正しい経路）。
+  # 適用後、root 実行で生まれた state を `chown -R <user>` でユーザ所有へ直し、zsh show-once が消費できるようにする。
   wrapper = pkgs.writeShellScript "${label}-wrapper" ''
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg daemonPath}
 
-    # state dir を CLI / シェルと一致させる。launchd daemon はユーザのログイン環境を持たないため、利用者の
-    # `XDG_STATE_HOME` を per-user launchd 環境から実行時解決し、設定されていれば同値を `sudo -u <user>` する
-    # CLI へ伝播して CLI の `state_dir()` が同一 dir を指すようにする（marker / pending-summary を一致させる）。
-    # 値は CLI の解決規則と同じく **そのまま** 使う（trim せず空白も保持する）。
+    # state dir を CLI / シェルと一致させる。launchd daemon はユーザのログイン環境を持たないため、wrapper が
+    # ユーザの `HOME`（と利用者設定時 `XDG_STATE_HOME`）を CLI へ渡して CLI の `state_dir()` をユーザの dir へ
+    # 向ける（marker / pending-summary を一致させる）。`XDG_STATE_HOME` は per-user launchd 環境から実行時解決し、
+    # CLI の解決規則と同じく **そのまま** 使う（末尾改行だけ除去し空白を含む正当なパスは保持する）。
     uid="$(/usr/bin/id -u ${lib.escapeShellArg user})"
     xdg_state_home="$(/bin/launchctl asuser "$uid" /bin/launchctl getenv XDG_STATE_HOME 2>/dev/null || true)"
+    # `launchctl getenv` は末尾に改行を付けるため、末尾改行だけを 1 つ落とす（中身の空白は保持する）。
+    xdg_state_home="''${xdg_state_home%$'\n'}"
 
-    # darwin は既に root のため sudo を前置しない経路を使う。home-manager とユーザ marker はユーザ権限で
-    # 書くため `sudo -u <user>` する。sudo は env をリセットするので PATH（と解決できた XDG）を明示的に渡す。
+    # root のまま実行する。`--no-sudo` / `DOTFILES_DARWIN_REBUILD_SUDO=0` は root で darwin-rebuild に sudo を
+    # 前置しない正しい指定。`HOME` をユーザの home に向け、CLI の state_dir() がユーザ dir を指すようにする。
     if [ -n "$xdg_state_home" ]; then
-      /usr/bin/sudo -u ${lib.escapeShellArg user} \
-        /usr/bin/env PATH="$PATH" XDG_STATE_HOME="$xdg_state_home" DOTFILES_DARWIN_REBUILD_SUDO=0 \
+      /usr/bin/env PATH="$PATH" HOME=${lib.escapeShellArg homeDir} XDG_STATE_HOME="$xdg_state_home" \
+        DOTFILES_DARWIN_REBUILD_SUDO=0 \
         ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --no-sudo
+      # root 実行で書いた state（XDG_STATE_HOME 配下の dotfiles dir）をユーザ所有へ直す。
+      state_dir="$xdg_state_home/dotfiles"
     else
-      /usr/bin/sudo -u ${lib.escapeShellArg user} \
-        /usr/bin/env PATH="$PATH" DOTFILES_DARWIN_REBUILD_SUDO=0 \
+      /usr/bin/env PATH="$PATH" HOME=${lib.escapeShellArg homeDir} \
+        DOTFILES_DARWIN_REBUILD_SUDO=0 \
         ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --no-sudo
+      # XDG 未設定なら CLI と同じ既定（$HOME/.local/state/dotfiles）。
+      state_dir=${lib.escapeShellArg homeDir}"/.local/state/dotfiles"
+    fi
+
+    # zsh show-once（ユーザ権限）が `pending-summary` を rename 消費できるよう、root が書いた state を
+    # ユーザ所有へ直す（apply は分割せず、書いた state の所有権だけ調整する）。dir 不在なら no-op。
+    if [ -d "$state_dir" ]; then
+      /usr/sbin/chown -R ${lib.escapeShellArg user} "$state_dir"
     fi
   '';
 in

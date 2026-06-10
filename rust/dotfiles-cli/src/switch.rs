@@ -24,16 +24,49 @@ use crate::{
 
 /// 指定された対象を、生成済みローカル flake の属性名規約に従って適用する。
 pub(crate) fn run(options: SwitchOptions) -> Result<()> {
-    let config_dir = options.config_dir()?;
+    apply(&options.common, options.target())
+}
+
+/// 共通オプションと適用対象から、生成済みローカル flake の属性名規約に従って適用する。
+///
+/// `update` は target を受け取らず常に [`SwitchTarget::All`] で呼ぶための入口でもある。`All` の実体は
+/// プラットフォームで分かれ（[`targets_for_all`]）、macOS は darwin-rebuild 一本（home も一括適用）、
+/// 非 macOS は home-manager standalone 一本になる。
+pub(crate) fn apply(common: &SwitchCommon, target: SwitchTarget) -> Result<()> {
+    let config_dir = common.config_dir()?;
     ensure_config_exists(&config_dir)?;
 
-    match options.target() {
-        SwitchTarget::Home => switch_home(&config_dir, &options),
-        SwitchTarget::Darwin => switch_darwin(&config_dir, &options),
+    match target {
+        SwitchTarget::Home => switch_home(&config_dir, common),
+        SwitchTarget::Darwin => switch_darwin(&config_dir, common),
         SwitchTarget::All => {
-            switch_home(&config_dir, &options)?;
-            switch_darwin(&config_dir, &options)
+            for unit in targets_for_all(cfg!(target_os = "macos")) {
+                match unit {
+                    SwitchTarget::Home => switch_home(&config_dir, common)?,
+                    SwitchTarget::Darwin => switch_darwin(&config_dir, common)?,
+                    // `targets_for_all` は Home/Darwin の単一 unit 列だけを返すため All は到達しない。
+                    SwitchTarget::All => {}
+                }
+            }
+            Ok(())
         }
+    }
+}
+
+/// `SwitchTarget::All`（`dotfiles update` と `switch all`）で実際に実行する単一 target 列を
+/// プラットフォームから決める純粋関数。
+///
+/// macOS では home-manager が nix-darwin モジュール（`darwin.nix` の `home-manager.users.${user}`）として
+/// 組み込まれ `darwin-rebuild switch` が system と home の両方を一度に適用する。よって standalone
+/// `home-manager switch` は呼ばず `Darwin` のみを返す（standalone を追加で呼ぶと二重適用になり、root daemon
+/// 経路では standalone home が `~/.local/state/home-manager` 等へ root 所有ファイルを残し以後の
+/// ユーザ操作が EACCES で失敗する）。非 macOS（Linux 等）には darwin-rebuild が無いため `Home`（home-manager
+/// standalone）のみを返す。`switch home`/`switch darwin` の明示単一 target はこの関数を経由せず従来どおり。
+fn targets_for_all(is_macos: bool) -> &'static [SwitchTarget] {
+    if is_macos {
+        &[SwitchTarget::Darwin]
+    } else {
+        &[SwitchTarget::Home]
     }
 }
 
@@ -51,7 +84,7 @@ pub(crate) fn ensure_config_exists(config_dir: &Path) -> Result<()> {
 }
 
 /// `home-manager switch --flake <config-dir>#<user>` を実行する。
-fn switch_home(config_dir: &Path, options: &SwitchOptions) -> Result<()> {
+fn switch_home(config_dir: &Path, options: &SwitchCommon) -> Result<()> {
     let user = options.user.clone().map_or_else(current_user, Ok)?;
     run_process(
         options.home_manager.clone(),
@@ -69,7 +102,7 @@ fn switch_home(config_dir: &Path, options: &SwitchOptions) -> Result<()> {
 /// 既定では `sudo` で昇格するが、`--no-sudo`（または `DOTFILES_DARWIN_REBUILD_SUDO=0`）が指定された場合は
 /// 既に root であることを前提に `darwin-rebuild` を直接呼ぶ（root daemon 経路）。退避処理（`mv`）の昇格有無も
 /// 同じ判定に揃える。
-fn switch_darwin(config_dir: &Path, options: &SwitchOptions) -> Result<()> {
+fn switch_darwin(config_dir: &Path, options: &SwitchCommon) -> Result<()> {
     let host = options.host.clone().map_or_else(current_host, Ok)?;
     let use_sudo = options.use_sudo();
     prepare_nix_darwin_etc(use_sudo, options.dry_run)?;
@@ -190,9 +223,22 @@ fn flake_ref(path: &Path, output: &str) -> OsString {
 }
 
 #[derive(Args, Clone)]
-/// 適用対象、出力名の上書き、外部コマンドのパス、予行実行を受け取る。
+/// `dotfiles switch` の利用者オプション。適用対象と共通オプションを受け取る。
+///
+/// `target` は `switch` だけが受け取る。`update` は常に全体適用（home+darwin）で部分 target を受理しないため、
+/// `target` を持たない [`SwitchCommon`] だけを flatten する（部分適用後に全体 marker を確定する不整合を防ぐ）。
 pub(crate) struct SwitchOptions {
     target: Option<SwitchTarget>,
+    #[command(flatten)]
+    common: SwitchCommon,
+}
+
+#[derive(Args, Clone)]
+/// 出力名の上書き、外部コマンドのパス、sudo 省略、予行実行といった `switch`/`update` 共通オプション。
+///
+/// 適用対象（`target`）は含めない。`update` はこれを flatten し常に全体適用するため、ここに target を置くと
+/// `dotfiles update home` を受理してしまう。
+pub(crate) struct SwitchCommon {
     #[arg(long, env = "DOTFILES_USER")]
     user: Option<String>,
     #[arg(long, env = "DOTFILES_HOST")]
@@ -221,14 +267,17 @@ pub(crate) struct SwitchOptions {
 const DARWIN_REBUILD_SUDO_ENV: &str = "DOTFILES_DARWIN_REBUILD_SUDO";
 
 impl SwitchOptions {
+    /// 対象省略時は [`SwitchTarget::All`]。実体はプラットフォームで分かれ（[`targets_for_all`]）、
+    /// macOS は darwin-rebuild 一本（home も一括適用）、非 macOS は home-manager standalone 一本になる。
+    fn target(&self) -> SwitchTarget {
+        self.target.unwrap_or(SwitchTarget::All)
+    }
+}
+
+impl SwitchCommon {
     /// `switch` と `update` が同じ設定ディレクトリ解決を使うための入口。
     pub(crate) fn config_dir(&self) -> Result<PathBuf> {
         config_dir(self.config_dir.clone())
-    }
-
-    /// 対象省略時は、日常利用で期待する Home Manager と Darwin の両方を適用する。
-    fn target(&self) -> SwitchTarget {
-        self.target.unwrap_or(SwitchTarget::All)
     }
 
     /// `update` が lock 更新と switch の両方を同じ予行実行モードで扱う。
@@ -244,8 +293,10 @@ impl SwitchOptions {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-/// `home` と `darwin` は独立して実行でき、`all` は Home Manager の後に Darwin を実行する。
-enum SwitchTarget {
+/// `home` と `darwin` は独立して実行できる。`all` はプラットフォームに応じて単一経路を選ぶ
+/// （[`targets_for_all`] 参照。macOS は darwin-rebuild が home も一括適用するので Darwin のみ、
+/// 非 macOS は home-manager standalone のみ）。
+pub(crate) enum SwitchTarget {
     Home,
     Darwin,
     All,
@@ -255,10 +306,38 @@ enum SwitchTarget {
 mod tests {
     //! Darwin 適用の sudo 有無で program 名と引数列が決まることを固定する。
     //! root daemon 経路（sudo 省略）と通常経路（sudo 昇格）の双方を引数列で検証する。
+    //! あわせて `All` 展開がプラットフォームで分岐すること（macOS→darwin のみ・非 macOS→home のみ）を固定する。
 
     use std::ffi::OsString;
 
-    use super::{darwin_rebuild_command, move_command, should_use_sudo};
+    use super::{
+        SwitchTarget, darwin_rebuild_command, move_command, should_use_sudo, targets_for_all,
+    };
+
+    /// `SwitchTarget` は `PartialEq` を持たないので、All 展開を識別子で比較できるよう文字列へ写す。
+    fn target_names(targets: &[SwitchTarget]) -> Vec<&'static str> {
+        targets
+            .iter()
+            .map(|target| match target {
+                SwitchTarget::Home => "home",
+                SwitchTarget::Darwin => "darwin",
+                SwitchTarget::All => "all",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn all_on_macos_runs_darwin_only() {
+        // macOS では darwin-rebuild が home も一括適用するため、standalone home は呼ばず Darwin 一本。
+        // standalone home を足すと二重適用になり root daemon 経路でユーザ home に root 所有ファイルを残す。
+        assert_eq!(target_names(targets_for_all(true)), vec!["darwin"]);
+    }
+
+    #[test]
+    fn all_on_non_macos_runs_home_only() {
+        // 非 macOS（Linux 等）には darwin-rebuild が無いため home-manager standalone 一本。
+        assert_eq!(target_names(targets_for_all(false)), vec!["home"]);
+    }
 
     /// 引数列を比較しやすいよう `OsString` を文字列へ揃える。
     fn as_strings(args: &[OsString]) -> Vec<String> {
