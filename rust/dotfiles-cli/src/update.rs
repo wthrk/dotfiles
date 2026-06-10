@@ -64,14 +64,21 @@ pub(crate) enum UpdateOutcome {
 
 /// auto 経路の入口。**先に lock を更新してから** repo pin を読み、前回適用済み rev と異なるときだけ適用する。
 ///
-/// 順序: state dir 確保 → `nix flake update` で **ローカル lock を最新 repo pin へ更新**（`--dry-run` では非実行）
-/// → 更新後の dotfiles pin を読む → `last-applied-rev` と同じなら switch / record / marker を skip（冪等）→
+/// 順序: flake ファイルの symlink 拒否 → state dir 確保 → `nix flake update` で **ローカル lock を最新 repo pin へ
+/// 更新**（`--dry-run` では非実行）→ 更新後の dotfiles pin を読む → `last-applied-rev` と同じなら switch / record /
+/// marker を skip（冪等。ただし dry-run では lock 未更新で pin が古いため skip 判定はせず誤った『switch 不要』を出さない）→
 /// 異なれば switch → 履歴をローカル複製 → 適用範囲の catch-up 要約を tty/非 tty で振り分け表示 → `last-applied-rev`
 /// を原子的更新。skip 判定を lock 更新「後」に置くのは、ローカル pin が `nix flake update` 前は前回適用値のまま
 /// 動かず、更新前判定だと定常状態で常に skip して fleet が nightly bump へ追随しなくなるためである。
 pub(crate) fn run(options: UpdateOptions) -> Result<UpdateOutcome> {
     let config_dir = options.switch.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
+
+    // lock を書き換える前に flake ファイルが symlink でないことを検査する。root daemon は root のまま
+    // ユーザ所有 `~/.config/dotfiles` を `--config-dir` に渡すため、利用者が `flake.lock` を root 所有ファイルへの
+    // symlink に差し替えると `nix flake update` が root 権限でリンク先を上書きさせられる（権限昇格）。dotfiles の
+    // flake ファイルが symlink であることは正当でないため、root 実行に限らず常に拒否する。
+    assert_flake_files_not_symlink(&config_dir)?;
 
     let state_dir = state_dir()?;
     let dry_run = options.switch.dry_run();
@@ -89,7 +96,15 @@ pub(crate) fn run(options: UpdateOptions) -> Result<UpdateOutcome> {
     // lock 更新後の dotfiles pin を読む。これが今回の適用対象（upstream の最新 repo pin）。
     let current_pin = read_repo_pin(&config_dir)?;
     let previous_rev = read_last_applied_rev(&state_dir)?;
-    if previous_rev.as_deref() == Some(current_pin.as_str()) {
+    if dry_run {
+        // dry-run では `update_lock` が `flake.lock` を更新しないため、`current_pin` は更新前の古い pin である。
+        // pin 比較による「switch 不要」の早期 return は古い pin に基づく誤判定（定常状態で常に skip）になりうるため
+        // 行わず、実行時には lock が最新 repo pin へ更新されてから判定される旨を明示する。
+        println!(
+            "dry-run: lock を更新していないため pin 比較による switch 要否判定は行いません\
+             （現 pin {current_pin}。実行時は lock 更新後の pin で判定し、必要なら switch されます）"
+        );
+    } else if previous_rev.as_deref() == Some(current_pin.as_str()) {
         // 更新後の pin が前回適用済みと同一。switch / record / marker を skip する（lock 更新は実施済み）。
         println!("適用済み pin と同一のため switch は不要です（rev {current_pin}）");
         return Ok(UpdateOutcome::Completed);
@@ -126,6 +141,39 @@ pub(crate) fn run(options: UpdateOptions) -> Result<UpdateOutcome> {
         write_rev_atomic(&state_dir.join(LAST_APPLIED_REV), &current_pin, dry_run)?;
     }
     Ok(UpdateOutcome::Completed)
+}
+
+/// `<config_dir>/flake.lock` と `<config_dir>/flake.nix` が symlink でないことを検査する（symlink なら `Err`）。
+///
+/// root daemon が root のままユーザ所有 config dir を扱う経路で、利用者が flake ファイルを root 所有ファイルへの
+/// symlink へ差し替えると、`nix flake update` の `flake.lock` 書き換えが root 権限でリンク先を上書きさせられる
+/// （権限昇格）。検査を `assert_not_symlink` の純粋判定に委ね、存在する flake ファイルがすべて通常ファイルである
+/// ことを確かめる。
+fn assert_flake_files_not_symlink(config_dir: &Path) -> Result<()> {
+    ["flake.lock", "flake.nix"]
+        .into_iter()
+        .try_for_each(|name| assert_not_symlink(&config_dir.join(name)))
+}
+
+/// `path` が存在する場合に symlink でない（通常ファイル/dir である）ことを検査する純粋関数（不在は許容）。
+///
+/// `std::fs::symlink_metadata` は symlink 自体の metadata を返す（リンク先を辿らない）ため、symlink を確実に
+/// 検出できる。`NotFound` は flake ファイルが無い正当な状態として許容し、それ以外の stat 失敗は伝播する。
+/// `libc` を直呼びせず std のみで判定する。
+fn assert_not_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(anyhow!(
+            "{} が symlink です。dotfiles の flake ファイルが symlink であることは正当でないため停止します\
+             （root 権限でのリンク先上書きによる権限昇格を防ぐ）",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(anyhow::Error::from(error).context(format!(
+            "failed to stat {} for symlink check",
+            path.display()
+        ))),
+    }
 }
 
 /// ローカル flake の lock を更新する。
@@ -570,9 +618,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        LAST_APPLIED_REV, UpdateOptions, claim_existing_pending, parse_input_source_path,
-        parse_repo_pin, read_last_applied_rev, replace_history_dir_atomically, resolve_state_dir,
-        update_args, write_rev_atomic,
+        LAST_APPLIED_REV, UpdateOptions, assert_not_symlink, claim_existing_pending,
+        parse_input_source_path, parse_repo_pin, read_last_applied_rev,
+        replace_history_dir_atomically, resolve_state_dir, update_args, write_rev_atomic,
     };
     use anyhow::anyhow;
     use clap::Parser;
@@ -770,6 +818,28 @@ mod tests {
         assert!(path.is_dir());
         assert!(!claim.exists());
         assert_eq!(tread(path.join("marker"))?, "kept");
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn assert_not_symlink_rejects_symlink_allows_regular_and_absent() -> crate::Result<()> {
+        let dir = temp_dir("symlink-check")?;
+        // 通常ファイルは許可。
+        let regular = dir.join("flake.lock");
+        twrite(&regular, "{}\n")?;
+        assert!(assert_not_symlink(&regular).is_ok());
+        // 不在は許容。
+        let absent = dir.join("flake.nix");
+        let _ = std::fs::remove_file(&absent);
+        assert!(assert_not_symlink(&absent).is_ok());
+        // symlink は拒否（root 権限でのリンク先上書き＝権限昇格を防ぐ）。
+        let link = dir.join("link.lock");
+        let target = dir.join("target");
+        twrite(&target, "secret")?;
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).map_err(|error| anyhow!("symlink: {error}"))?;
+        assert!(assert_not_symlink(&link).is_err());
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

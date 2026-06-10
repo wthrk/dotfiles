@@ -36,7 +36,7 @@ dotfiles update
 
 `dotfiles update` は、ローカル flake の `flake.lock` が指す dotfiles リビジョン（repo pin）が前回適用済みと
 同じ場合は適用をスキップします。適用要否は暦日ではなく適用済みリビジョンで判定するため、同じ pin に対して
-何度実行しても再適用されません。適用状態は `$XDG_STATE_HOME/dotfiles`（未設定時は `~/.local/state/dotfiles`）の
+何度実行しても再適用されません。適用状態は `$HOME/.local/state/dotfiles`（`XDG_STATE_HOME` 非依存・固定）の
 `last-applied-rev` に記録します。単一更新者・冪等を前提に同時実行は想定しません（排他ファイルは持たず、
 重複適用は適用済みリビジョン判定で抑止します）。適用後は更新内容の概要を表示し、端末が
 非対話（バックグラウンド適用）のときは `pending-summary` に追記して次回シェル操作時に表示します。
