@@ -81,13 +81,42 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリをビルドする。`nix eval` 起動・owner/repo 導出・
-      # flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。
+      # /nix/store を run 間・job 間でキャッシュする（static-checks.yml と同 action・同 key 規約）。`nix develop` の
+      # devShell closure（rust toolchain / C lib: gpgme・libgit2・libssh2・openssl・zlib 等）と、dotfiles-cli が
+      # 起動する `nix eval` / `nix flake update` / `nix flake check` の評価物を substitute する（cargo の crate
+      # ビルドは rust-cache 側が担う）。macos runner のため runner.os は static-checks（ubuntu）と別 namespace に
+      # なり、macOS の store path を Linux と混ぜない（bump/record/open-pr のうち macOS の bump↔record が共有する）。
+      # primary-key は checkout 上の flake.lock（bump 前）＋ Cargo で安定し、ヒット時は restore のみ。devShell の
+      # closure（toolchain＋C lib）は eval だけの static-checks より大きいため gc-max-store-size を広めに取り、保存
+      # 物の eviction を避ける（repo 合計 ~10GB の GHA cache 予算内）。miss/失敗は遅くなるだけで fail させない
+      # （fail-on 既定 = fail-safe）。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
+      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-${{ runner.os }}
+
+      # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
+      # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
+      # `nix develop -c` 経由でランタイムライブラリ（gpgme/libgit2/libssh2/openssl/zlib 等）を供給する。
       - name: dotfiles バイナリをビルド
         id: build
         run: |
           set -euo pipefail
-          echo "bin=$(nix build --no-link --print-out-paths .#default)/bin/dotfiles" >> "$GITHUB_OUTPUT"
+          nix develop -c cargo build --release -p dotfiles-cli
+          echo "bin=$PWD/target/release/dotfiles" >> "$GITHUB_OUTPUT"
 
       # bump 前の宣言パッケージ版を Rust が `nix eval`（生の評価値）して owner/repo 導出まで行い JSON へ書く。
       # 併せて bump 前 input rev を Rust（serde_json）が抽出する（jq 不使用）。
@@ -97,10 +126,10 @@ jobs:
           DOTFILES_BIN: ${{ steps.build.outputs.bin }}
         run: |
           set -euo pipefail
-          "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
-          nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          nix develop -c "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
+          nixpkgs_old="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
-          cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          cask_rev_old="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
       - name: nixpkgs と tap input を bump
@@ -122,10 +151,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}" >> "$GITHUB_OUTPUT"
-          nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          nixpkgs_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_new=$nixpkgs_new" >> "$GITHUB_OUTPUT"
           echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}" >> "$GITHUB_OUTPUT"
-          cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          cask_rev_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_new=$cask_rev_new" >> "$GITHUB_OUTPUT"
 
       - name: bump 済み lock と bump 前 eval 版マップを artifact 化
@@ -165,6 +194,29 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
+      # /nix/store を run 間・job 間でキャッシュする（bump job と同 key 規約）。cache restore 時点の checkout は
+      # bump 前 flake.lock のため primary-key は bump job と一致し、bump job が温めた devShell closure（rust
+      # toolchain / C lib）と `nix eval` / `nix flake update` の評価物を restore する。record の `nix eval`（bump 後
+      # 版）は後段の artifact download で bump 後 lock に差し替えるため、bump 後 nixpkgs に依存する derivation はその
+      # 回だけ 1 度再ビルドしうる（限界として明記）。fail-safe。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
+      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-${{ runner.os }}
+
       # bump 済み flake.lock を checkout 上に展開する（record の bump 後 nix eval が bump 済み lock を使う）。
       - name: bump 済み lock と bump 前 eval 版マップを取得
         uses: actions/download-artifact@v4
@@ -200,9 +252,11 @@ jobs:
           # ノート取得元レジストリ（provenance の学習・再利用）。既存レジストリを再利用し、新規/未知の取得元だけを追記する。
           notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
-          # dotfiles バイナリは devShell に含まれないため、公開パッケージ `.#default`（= dotfiles-cli）をビルドして実行する。
-          dotfiles_bin="$(nix build --no-link --print-out-paths .#default)/bin/dotfiles"
-          "$dotfiles_bin" update-history record \
+          # dotfiles バイナリを devShell 内 cargo でビルドし、実行も `nix develop -c` 経由でランタイムライブラリ
+          # （gpgme/libgit2/libssh2/openssl/zlib 等）を供給する。
+          nix develop -c cargo build --release -p dotfiles-cli
+          dotfiles_bin="$PWD/target/release/dotfiles"
+          nix develop -c "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \
@@ -290,8 +344,27 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # cargo build キャッシュ（~/.cargo + target/）を再利用する。`.#default` の build と `cargo xtask check static`
-      # で target/ の再ビルド回避が効く。static-checks.yml と同一 OS（ubuntu）のため shared-key を共有する。
+      # /nix/store を run 間・job 間でキャッシュする（static-checks.yml と同 action・同 key 規約・同 OS=ubuntu）。
+      # cache restore 時点の checkout は bump 前 flake.lock のため primary-key は static-checks（既定ブランチ PR）と
+      # 一致し、static-checks が温めた devShell closure と `nix flake check` の取得物を restore して open-pr の
+      # `nix develop`（verify-bump-lock の cargo build）と `nix flake check`（cargo xtask check static 内）を
+      # substitute する（cargo の crate ビルドは rust-cache 側が担う）。後段の artifact download で bump 後 lock に
+      # 差し替えるため、bump 後 nixpkgs に依存する derivation はその回だけ 1 度再ビルドしうる（限界として明記）。
+      # fail-safe。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。verify-bump-lock の cargo build と
+      # `cargo xtask check static` で target/ の再ビルド回避が効く。static-checks.yml と同一 OS（ubuntu）のため
+      # shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
@@ -345,8 +418,10 @@ jobs:
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
         run: |
           set -euo pipefail
-          dotfiles_bin="$(nix build --no-link --print-out-paths .#default)/bin/dotfiles"
-          "$dotfiles_bin" ci verify-bump-lock \
+          # 判定主体を devShell 内 cargo でビルドし、実行も `nix develop -c` 経由でランタイムライブラリを供給する。
+          nix develop -c cargo build --release -p dotfiles-cli
+          dotfiles_bin="$PWD/target/release/dotfiles"
+          nix develop -c "$dotfiles_bin" ci verify-bump-lock \
             --base "${{ steps.commit.outputs.base_sha }}" \
             --head "${{ steps.commit.outputs.head_sha }}" \
             --repo .
