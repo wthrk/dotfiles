@@ -237,9 +237,18 @@ fn decide_provenance(
         return None;
     }
     if let Some(mech) = mechanical {
-        return Some(match &mech.refetch_url {
+        // 機械 refetch URL も版固有（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）
+        // なら恒久 provenance に学習しない。版固有 changelog（例 `blob/v1.2.3/CHANGELOG.md`）を学習すると次回
+        // `v1.2.3→v1.2.4` で古い tag の changelog を seed に再利用し誤要約/空要約になるため、AI source と同じ
+        // 版固有フィルタを適用する。学習に足る版非依存 refetch URL が無い（不在・版固有）場合は origin=none へ
+        // 倒して次回再探索へ戻す。
+        let reusable_refetch = mech
+            .refetch_url
+            .as_deref()
+            .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
+        return Some(match reusable_refetch {
             Some(refetch_url) => NotesSourceEntry {
-                source: Some(refetch_url.clone()),
+                source: Some(refetch_url.to_string()),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: Some(at.to_string()),
                 note: None,
@@ -920,6 +929,92 @@ mod tests {
             Some(""),
             None
         ));
+    }
+
+    /// 版差分 1 件（NixEval）を組む test ヘルパ（version 文字列だけ与える）。
+    fn delta_of(name: &str, old: &str, new: &str) -> VersionDelta {
+        VersionDelta {
+            name: name.to_string(),
+            old: Some(old.to_string()),
+            new: Some(new.to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            source: DeltaSource::NixEval,
+            repo: None,
+            notes_source: None,
+            homepage: None,
+        }
+    }
+
+    /// 機械解決 [`RawReleaseNotes`] を組む test ヘルパ（refetch_url だけ可変）。
+    fn mech_notes(refetch_url: Option<&str>) -> RawReleaseNotes {
+        RawReleaseNotes {
+            text: "notes".to_string(),
+            notes_url: "https://github.com/o/r/releases".to_string(),
+            refetch_url: refetch_url.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn decide_provenance_learns_version_independent_mechanical_refetch_url() {
+        // 版非依存の機械 refetch URL（raw CHANGELOG）は Mechanical provenance として学習する。
+        let delta = delta_of("neovim", "1.2.3", "1.2.4");
+        let registry = NotesSourceRegistry::default();
+        let mech = mech_notes(Some(
+            "https://raw.githubusercontent.com/o/r/main/CHANGELOG.md",
+        ));
+        let learned = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            Some(&mech),
+            None,
+            false,
+        );
+        assert!(
+            learned.is_some_and(|entry| entry.origin == NotesOrigin::Mechanical
+                && entry.source.as_deref()
+                    == Some("https://raw.githubusercontent.com/o/r/main/CHANGELOG.md"))
+        );
+    }
+
+    #[test]
+    fn decide_provenance_does_not_learn_version_specific_mechanical_refetch_url() {
+        // 版固有の機械 refetch URL（tag 配下 changelog）は学習せず origin=none へ倒す。次回 `v1.2.3→v1.2.4` で
+        // 古い tag の CHANGELOG を seed に再利用させないため、AI source と同じ版固有フィルタを適用する。
+        let delta = delta_of("neovim", "1.2.3", "1.2.4");
+        let registry = NotesSourceRegistry::default();
+        let mech = mech_notes(Some("https://github.com/o/r/blob/v1.2.3/CHANGELOG.md"));
+        let learned = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            Some(&mech),
+            None,
+            false,
+        );
+        assert!(
+            learned
+                .is_some_and(|entry| entry.origin == NotesOrigin::None && entry.source.is_none()),
+            "版固有の機械 refetch URL は学習しない"
+        );
+
+        // releases/tag/ 配下の refetch URL も版固有として学習しない。
+        let mech_tag = mech_notes(Some("https://github.com/o/r/releases/tag/v1.2.3"));
+        let learned_tag = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            Some(&mech_tag),
+            None,
+            false,
+        );
+        assert!(
+            learned_tag
+                .is_some_and(|entry| entry.origin == NotesOrigin::None && entry.source.is_none())
+        );
     }
 
     #[test]
