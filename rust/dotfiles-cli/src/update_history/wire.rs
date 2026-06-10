@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_serializes_to_plan_toml_schema() -> crate::Result<()> {
+    fn entry_serializes_to_plain_toml_schema() -> crate::Result<()> {
         let document = HistoryDocument {
             updates: vec![sample_entry()],
         };
