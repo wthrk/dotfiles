@@ -119,12 +119,9 @@ fn derive_package(raw: RawPackage) -> NixPackage {
             first_url(&raw.src_urls),
             &changelog,
         ),
-        // changelog（無ければ homepage）を Releases API 空振り時の raw フォールバック取得元にする。
-        notes_source: if changelog.is_empty() {
-            homepage.clone()
-        } else {
-            changelog
-        },
+        // changelog を Releases API 空振り時の raw フォールバック取得元にする。changelog が無いときは空のまま
+        // にし、homepage の HTML を生ノート seed に固定しない（homepage は AI の fetch_url 探索ヒントに残る）。
+        notes_source: changelog,
         homepage,
     }
 }
@@ -317,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_package_falls_back_changelog_to_homepage_for_notes_source() {
+    fn derive_package_keeps_notes_source_empty_without_changelog() {
         let raw = RawPackage {
             version: "1.2.3".to_string(),
             homepage: serde_json::json!("https://homepage.example/"),
@@ -329,8 +326,29 @@ mod tests {
         };
         let package = derive_package(raw);
         assert_eq!(package.version, "1.2.3");
-        // changelog 無し → notes_source は homepage へフォールバック。
-        assert_eq!(package.notes_source, "https://homepage.example/");
+        // changelog 無し → notes_source は空のまま（homepage の HTML を生ノート seed に固定しない）。
+        assert_eq!(package.notes_source, "");
+        // homepage は AI の fetch_url 探索ヒントとして保持する。
+        assert_eq!(package.homepage, "https://homepage.example/");
+    }
+
+    #[test]
+    fn derive_package_uses_changelog_as_notes_source() {
+        let raw = RawPackage {
+            version: "1.2.3".to_string(),
+            homepage: serde_json::json!("https://homepage.example/"),
+            changelog: serde_json::json!("https://github.com/o/r/blob/main/CHANGELOG.md"),
+            src_owner: serde_json::Value::Null,
+            src_repo: serde_json::Value::Null,
+            src_url: serde_json::Value::Null,
+            src_urls: serde_json::Value::Null,
+        };
+        let package = derive_package(raw);
+        // changelog あり → notes_source は changelog（homepage は別途ヒントに残る）。
+        assert_eq!(
+            package.notes_source,
+            "https://github.com/o/r/blob/main/CHANGELOG.md"
+        );
         assert_eq!(package.homepage, "https://homepage.example/");
     }
 

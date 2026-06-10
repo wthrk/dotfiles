@@ -196,16 +196,73 @@ fn assert_pinned(name: &str, rb: &str) -> Result<()> {
     Ok(())
 }
 
-/// cask `.rb` 本文に `sha256 :no_check`（成果物を固定しない指定）があるかを判定する純粋関数。
+/// cask `.rb` 本文に `:no_check`（成果物を固定しない指定）の `sha256` スタンザがあるかを判定する純粋関数。
 ///
-/// 行頭の空白を除いた `sha256` 宣言行で、続く非空白トークンが `:no_check` のものを未固定とみなす。
+/// `sha256` スタンザは同一行直後（`sha256 :no_check`）だけでなく、arch 別指定（`sha256 arm: :no_check, intel:
+/// "..."`）や継続行（`arm: :no_check` / `intel: :no_check`）でも未固定を宣言しうる。`sha256` 宣言行から、続く
+/// 継続行（行頭が arch ラベル `arm:` / `intel:` で始まるか、行末が `,` で続く）までを 1 スタンザとして集め、その
+/// 範囲に `:no_check` トークンが現れれば未固定とみなす。誤検出を避けるため `:no_check` は語境界（直後が識別子
+/// 文字でない）でだけ拾い、`version "..."` 等の文字列リテラル内の偶発一致は対象 sha256 スタンザ外なので拾わない。
 fn has_no_check_sha256(rb: &str) -> bool {
-    rb.lines().any(|line| {
+    let lines: Vec<&str> = rb.lines().collect();
+    lines.iter().enumerate().any(|(index, line)| {
         line.trim_start()
             .strip_prefix("sha256")
-            .map(str::trim_start)
-            .is_some_and(|rest| rest.starts_with(":no_check"))
+            .is_some_and(|rest| {
+                // `sha256abc` のような別トークンを誤って拾わない（`sha256` 直後は空白か行末）。
+                (rest.is_empty() || rest.starts_with(char::is_whitespace))
+                    && sha256_stanza_lines(&lines, index, rest).any(stanza_has_no_check)
+            })
     })
+}
+
+/// `sha256` 宣言行とそれに連なる継続行群を、スタンザ範囲のトークン文字列の列として返す純粋関数。
+///
+/// 宣言行は `sha256` を除いた残り（`rest`）。継続行は、宣言行が `,` で終わるか、行頭が arch ラベル
+/// （`arm:` / `intel:` / `x86_64:` 等の `<ident>:`）で始まる限り、`sha256` 行の直後から順に取り込む。
+fn sha256_stanza_lines<'a>(
+    lines: &'a [&'a str],
+    sha_index: usize,
+    rest: &'a str,
+) -> impl Iterator<Item = &'a str> {
+    let continuations =
+        lines
+            .iter()
+            .skip(sha_index + 1)
+            .scan(line_continues(rest), |prev_continues, line| {
+                if !*prev_continues && !starts_with_arch_label(line) {
+                    return None;
+                }
+                *prev_continues = line_continues(line);
+                Some(*line)
+            });
+    std::iter::once(rest).chain(continuations)
+}
+
+/// スタンザ範囲の 1 行に `:no_check` トークンが語境界で現れるかの純粋判定。
+fn stanza_has_no_check(line: &str) -> bool {
+    line.match_indices(":no_check").any(|(start, matched)| {
+        line[start + matched.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+    })
+}
+
+/// 行末（trim 後）が `,` で終わる＝次行へ続くかの純粋判定（arch 別 sha256 の継続検出に使う）。
+fn line_continues(line: &str) -> bool {
+    line.trim_end().ends_with(',')
+}
+
+/// 行頭（trim 後）が arch ラベル `<ident>:`（`arm:` / `intel:` / `x86_64:` 等）で始まるかの純粋判定。
+fn starts_with_arch_label(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed
+        .find(':')
+        .map(|colon| &trimmed[..colon])
+        .is_some_and(|label| {
+            !label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// homebrew-cask リポジトリ内で cask `.rb` が置かれる `Casks/` 配下の subdir を返す純粋関数。font cask は
@@ -415,6 +472,30 @@ mod tests {
         assert!(has_no_check_sha256("  sha256 :no_check\n"));
         assert!(!has_no_check_sha256("  sha256 \"abc123\"\n"));
         assert!(!has_no_check_sha256("  version \"1.0\"\n"));
+        // arch 別 sha256（同一行）の `:no_check` も未固定として拾う。
+        assert!(has_no_check_sha256(
+            "  sha256 arm: :no_check, intel: \"abc123\"\n"
+        ));
+        assert!(has_no_check_sha256(
+            "  sha256 arm: \"abc123\", intel: :no_check\n"
+        ));
+        // arch 別 sha256（継続行）の `:no_check` も拾う。
+        assert!(has_no_check_sha256(
+            "  sha256 arm:   \"abc123\",\n         intel: :no_check\n"
+        ));
+        assert!(has_no_check_sha256(
+            "  sha256 arm:   :no_check,\n         intel: \"abc123\"\n"
+        ));
+        // arch 別だが両 arch とも実 checksum 固定なら未固定ではない。
+        assert!(!has_no_check_sha256(
+            "  sha256 arm:   \"aaa\",\n         intel: \"bbb\"\n"
+        ));
+        // `sha256` 直後が別トークン（`sha256sums` 等）の行は対象外。
+        assert!(!has_no_check_sha256("  sha256sum :no_check\n"));
+        // sha256 スタンザ外（後続の無関係行）の `:no_check` 偶発一致は拾わない。
+        assert!(!has_no_check_sha256(
+            "  sha256 \"abc123\"\n  desc \":no_check はラベルではない\"\n"
+        ));
     }
 
     #[test]
