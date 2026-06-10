@@ -13,9 +13,23 @@
 use anyhow::bail;
 
 use super::diff::{DeltaSource, VersionDelta, version_ordering};
-use super::notes::safe_https_fetch;
+use super::notes::{FetchOutcome, safe_https_fetch_outcome};
 use super::wire::{ChangeKind, is_allowed_url};
 use crate::Result;
+
+/// cask `.rb` 取得 seam の 3 値結果（本文あり / 明確な不在=404 / それ以外の取得不能）。
+///
+/// 取得不能（接続失敗・5xx・429 等）を不在と区別しないと、一過性障害を「削除」と誤確定しうる。`Removed` 確定は
+/// `NotFound`（明確な不在）にだけ許し、`Unavailable` は今回の差分判定をスキップ（版変化なし扱い）して fail-closed
+/// にするため、本文の有無に加えて 404 かどうかを seam が運ぶ。
+pub(crate) enum CaskFetch {
+    /// cask `.rb` 本文を取得した。
+    Body(String),
+    /// 明確な不在（HTTP 404）。new rev でこれになった cask は削除確定の根拠になる。
+    NotFound,
+    /// 取得不能（接続失敗・5xx・429・404 以外の失敗）。削除にも upgrade にも倒さず差分判定をスキップする。
+    Unavailable,
+}
 
 /// 宣言 cask の old→new tap rev 版差分を算出する。
 ///
@@ -28,7 +42,7 @@ pub(crate) fn diff_casks(
     casks_nix: &str,
     rev_old: &str,
     rev_new: &str,
-    fetch: &dyn Fn(&str) -> Result<Option<String>>,
+    fetch: &dyn Fn(&str) -> Result<CaskFetch>,
 ) -> Result<Vec<VersionDelta>> {
     // 各 cask の old/new 版差分を `Result<Option<delta>>` へ翻訳して、Err 伝播（`collect::<Result<_>>`）と
     // 版変化なし（`None`）の除去（`flatten`）を分けて行う。
@@ -41,29 +55,39 @@ pub(crate) fn diff_casks(
 
 /// 1 cask の old/new 版を取得し、版変化があれば [`VersionDelta`] を組む（取得不能/版不変は `None`）。
 ///
-/// new rev の `.rb` 本文に対しては成果物固定を [`assert_pinned`] で検査し、`sha256 :no_check` なら fail-closed。
+/// old/new いずれかが `Unavailable`（404 以外の取得不能＝接続失敗・5xx・429 等）なら、一過性障害を `Removed` や
+/// `Upgraded` と誤確定しないため差分判定をスキップ（版変化なし扱いの `None`）して fail-closed にする。`Removed`
+/// 確定は old が版あり・new が明確な不在（404=`Absent`）のときだけ許す。new rev の `.rb` 本文に対しては成果物固定
+/// を [`assert_pinned`] で検査し、`sha256 :no_check` なら fail-closed。
 fn cask_delta(
     rev_old: &str,
     rev_new: &str,
     name: String,
-    fetch: &dyn Fn(&str) -> Result<Option<String>>,
+    fetch: &dyn Fn(&str) -> Result<CaskFetch>,
 ) -> Result<Option<VersionDelta>> {
-    let old = cask_version(rev_old, &name, fetch)?;
-    let new = cask_version_pinned(rev_new, &name, fetch)?;
+    let (Some(old), Some(new)) = (
+        cask_version(rev_old, &name, fetch)?,
+        cask_version_pinned(rev_new, &name, fetch)?,
+    ) else {
+        // old/new いずれかが取得不能（`Unavailable`）→ 今回は差分判定しない（誤確定回避の fail-closed）。
+        return Ok(None);
+    };
     let change = match (&old, &new) {
-        (None, None) => return Ok(None),
-        (None, Some(_)) => ChangeKind::Added,
-        (Some(_), None) => ChangeKind::Removed,
-        (Some(old_v), Some(new_v)) => match version_ordering(old_v, new_v) {
-            std::cmp::Ordering::Equal => return Ok(None),
-            std::cmp::Ordering::Less => ChangeKind::Upgraded,
-            std::cmp::Ordering::Greater => ChangeKind::Downgraded,
-        },
+        (CaskState::Absent, CaskState::Absent) => return Ok(None),
+        (CaskState::Absent, CaskState::Version(_)) => ChangeKind::Added,
+        (CaskState::Version(_), CaskState::Absent) => ChangeKind::Removed,
+        (CaskState::Version(old_v), CaskState::Version(new_v)) => {
+            match version_ordering(old_v, new_v) {
+                std::cmp::Ordering::Equal => return Ok(None),
+                std::cmp::Ordering::Less => ChangeKind::Upgraded,
+                std::cmp::Ordering::Greater => ChangeKind::Downgraded,
+            }
+        }
     };
     Ok(Some(VersionDelta {
         name,
-        old,
-        new,
+        old: old.into_version(),
+        new: new.into_version(),
         change,
         source: DeltaSource::BrewTap,
         repo: None,
@@ -72,38 +96,79 @@ fn cask_delta(
     }))
 }
 
-/// 本番経路: reqwest で cask `.rb` を取得する fetch seam（redirect 不追従・https 限定・有界本文）。
-pub(crate) fn fetch_cask_rb(url: &str) -> Result<Option<String>> {
-    if !is_allowed_url(url) {
-        return Ok(None);
-    }
-    safe_https_fetch(url)
+/// 取得不能（`Unavailable`）を除いた、ある rev における cask の状態（版あり / 明確な不在=404）。
+enum CaskState {
+    /// `version "..."` を取得した。
+    Version(String),
+    /// 明確な不在（404、または `.rb` に version 行が無い）。
+    Absent,
 }
 
-/// 単一 cask の `version "..."` を tap rev の `.rb` から取得する（取得不能 / 未定義は `None`）。
+impl CaskState {
+    /// 版差分記録用に `Option<String>` へ変換する（`Absent`=`None`）。
+    fn into_version(self) -> Option<String> {
+        match self {
+            CaskState::Version(version) => Some(version),
+            CaskState::Absent => None,
+        }
+    }
+}
+
+/// 本番経路: reqwest で cask `.rb` を取得し 3 値（本文 / 404 / 取得不能）の [`CaskFetch`] へ翻訳する fetch seam。
+///
+/// 許可外 URL は構造的に取得対象外＝明確な不在（`NotFound`）とみなす。取得自体は [`safe_https_fetch_outcome`]
+/// （redirect 不追従・https 限定・有界本文）の status から 404 とその他失敗を区別する。
+pub(crate) fn fetch_cask_rb(url: &str) -> Result<CaskFetch> {
+    if !is_allowed_url(url) {
+        return Ok(CaskFetch::NotFound);
+    }
+    Ok(match safe_https_fetch_outcome(url)? {
+        FetchOutcome::Body(body) => CaskFetch::Body(body),
+        FetchOutcome::NotFound => CaskFetch::NotFound,
+        FetchOutcome::Unavailable => CaskFetch::Unavailable,
+    })
+}
+
+/// 単一 cask の tap rev における状態を `.rb` から取得する（`Unavailable`=取得不能なら `None` でスキップ要求）。
+///
+/// `Body` は version 行があれば `Version`、無ければ `Absent`。`NotFound`（404）は `Absent`。`Unavailable`
+/// （接続失敗・5xx・429 等）は版差分判定をスキップさせるため `None` を返す。
 fn cask_version(
     rev: &str,
     name: &str,
-    fetch: &dyn Fn(&str) -> Result<Option<String>>,
-) -> Result<Option<String>> {
+    fetch: &dyn Fn(&str) -> Result<CaskFetch>,
+) -> Result<Option<CaskState>> {
     let url = cask_rb_url(rev, name);
-    Ok(fetch(&url)?.as_deref().and_then(parse_cask_version))
+    Ok(match fetch(&url)? {
+        CaskFetch::Body(rb) => Some(cask_state_of(&rb)),
+        CaskFetch::NotFound => Some(CaskState::Absent),
+        CaskFetch::Unavailable => None,
+    })
 }
 
-/// new rev 用: `.rb` を取得し成果物固定を [`assert_pinned`] で検査してから `version "..."` を取り出す。
+/// new rev 用: `.rb` を取得し成果物固定を [`assert_pinned`] で検査してから状態（版/不在）を決める。
 ///
 /// greedy 有効化（`homebrew.nix` の `greedyCasks = true`）で全 cask が無人 upgrade 対象になるため、未固定成果物
-/// （`sha256 :no_check`）が new rev に現れたら fail-closed にし、外部成果物の再現性なき無人差し替えを阻む。
-/// `.rb` 取得不能（`None`）は検査対象が無いとみなして通す（版も `None` を返す）。
+/// （`sha256 :no_check`）が new rev に現れたら fail-closed にし、外部成果物の再現性なき無人差し替えを阻む。404
+/// （`NotFound`）は明確な不在＝`Absent`、取得不能（`Unavailable`）は差分判定スキップの `None`。
 fn cask_version_pinned(
     rev: &str,
     name: &str,
-    fetch: &dyn Fn(&str) -> Result<Option<String>>,
-) -> Result<Option<String>> {
+    fetch: &dyn Fn(&str) -> Result<CaskFetch>,
+) -> Result<Option<CaskState>> {
     let url = cask_rb_url(rev, name);
     match fetch(&url)? {
-        None => Ok(None),
-        Some(rb) => assert_pinned(name, &rb).map(|()| parse_cask_version(&rb)),
+        CaskFetch::Body(rb) => assert_pinned(name, &rb).map(|()| Some(cask_state_of(&rb))),
+        CaskFetch::NotFound => Ok(Some(CaskState::Absent)),
+        CaskFetch::Unavailable => Ok(None),
+    }
+}
+
+/// 取得済み `.rb` 本文を cask の状態へ翻訳する純粋関数（version 行があれば `Version`、無ければ `Absent`）。
+fn cask_state_of(rb: &str) -> CaskState {
+    match parse_cask_version(rb) {
+        Some(version) => CaskState::Version(version),
+        None => CaskState::Absent,
     }
 }
 
@@ -211,6 +276,14 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// map に本文があれば `Body`、無ければ `NotFound`（明確な不在）を返す fetch seam（取得不能を出さない）。
+    fn body_or_not_found(map: &BTreeMap<String, String>, url: &str) -> CaskFetch {
+        match map.get(url) {
+            Some(body) => CaskFetch::Body(body.clone()),
+            None => CaskFetch::NotFound,
+        }
+    }
+
     #[test]
     fn parse_cask_list_extracts_quoted_names() {
         let nix = "  casks = [\n    \"azookey\"\n    \"bitwarden\"\n    \"font-cica\"\n  ];\n";
@@ -273,9 +346,12 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let fetch = |url: &str| -> Result<Option<String>> {
-            Ok(old.get(url).or_else(|| new.get(url)).cloned())
-        };
+        let merged: BTreeMap<String, String> = old
+            .iter()
+            .chain(new.iter())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let fetch = |url: &str| -> Result<CaskFetch> { Ok(body_or_not_found(&merged, url)) };
         let deltas = diff_casks(nix, "old", "new", &fetch)?;
         // azookey と bitwarden（auto_updates）の双方が追跡される。yubico-authenticator は版不変で除外。
         assert_eq!(deltas.len(), 2);
@@ -301,11 +377,13 @@ mod tests {
     fn diff_casks_fails_closed_on_no_check_sha256() {
         // new rev の `.rb` が `sha256 :no_check`（未固定成果物）なら greedy 前提に反するため停止する。
         let nix = "casks = [ \"loose\" ];";
-        let fetch = |url: &str| -> Result<Option<String>> {
+        let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "loose") {
-                Some("cask \"loose\" do\n  version \"1.0\"\n  sha256 :no_check\nend\n".to_string())
+                CaskFetch::Body(
+                    "cask \"loose\" do\n  version \"1.0\"\n  sha256 :no_check\nend\n".to_string(),
+                )
             } else {
-                None
+                CaskFetch::NotFound
             })
         };
         let error = diff_casks(nix, "old", "new", &fetch)
@@ -331,14 +409,15 @@ mod tests {
 
     #[test]
     fn diff_casks_marks_added_and_removed() -> Result<()> {
+        // newcask: old 不在(404)→new 版あり=Added。oldcask: old 版あり→new 不在(404)=Removed。
         let nix = "casks = [ \"newcask\" \"oldcask\" ];";
-        let fetch = |url: &str| -> Result<Option<String>> {
+        let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "newcask") {
-                Some(version_rb("3.0"))
+                CaskFetch::Body(version_rb("3.0"))
             } else if url == cask_rb_url("old", "oldcask") {
-                Some(version_rb("1.0"))
+                CaskFetch::Body(version_rb("1.0"))
             } else {
-                None
+                CaskFetch::NotFound
             })
         };
         let deltas = diff_casks(nix, "old", "new", &fetch)?;
@@ -346,6 +425,65 @@ mod tests {
         let removed = deltas.iter().find(|d| d.name == "oldcask");
         assert_eq!(added.map(|d| d.change), Some(ChangeKind::Added));
         assert_eq!(removed.map(|d| d.change), Some(ChangeKind::Removed));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_casks_skips_when_new_rev_unavailable_even_if_old_exists() -> Result<()> {
+        // new rev の `.rb` が取得不能（5xx/429/接続失敗＝`Unavailable`）なら、old があっても Removed と
+        // 誤確定せず差分判定をスキップする（一過性障害の fail-closed）。
+        let nix = "casks = [ \"flaky\" ];";
+        let fetch = |url: &str| -> Result<CaskFetch> {
+            Ok(if url == cask_rb_url("old", "flaky") {
+                CaskFetch::Body(version_rb("1.0"))
+            } else {
+                // new rev は取得不能。
+                CaskFetch::Unavailable
+            })
+        };
+        let deltas = diff_casks(nix, "old", "new", &fetch)?;
+        assert!(
+            deltas.is_empty(),
+            "new rev が取得不能なら Removed にせずスキップする: {deltas:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_casks_marks_removed_only_on_explicit_not_found() -> Result<()> {
+        // new rev が明確な不在（404＝`NotFound`）で old が版ありのときだけ Removed を確定する。
+        let nix = "casks = [ \"gone\" ];";
+        let fetch = |url: &str| -> Result<CaskFetch> {
+            Ok(if url == cask_rb_url("old", "gone") {
+                CaskFetch::Body(version_rb("1.0"))
+            } else {
+                CaskFetch::NotFound
+            })
+        };
+        let deltas = diff_casks(nix, "old", "new", &fetch)?;
+        assert_eq!(
+            deltas.iter().find(|d| d.name == "gone").map(|d| d.change),
+            Some(ChangeKind::Removed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_casks_skips_when_old_rev_unavailable() -> Result<()> {
+        // old rev が取得不能なら、new に版があっても Added と誤確定せずスキップする（両側 fail-closed）。
+        let nix = "casks = [ \"flaky\" ];";
+        let fetch = |url: &str| -> Result<CaskFetch> {
+            Ok(if url == cask_rb_url("new", "flaky") {
+                CaskFetch::Body(version_rb("2.0"))
+            } else {
+                CaskFetch::Unavailable
+            })
+        };
+        let deltas = diff_casks(nix, "old", "new", &fetch)?;
+        assert!(
+            deltas.is_empty(),
+            "old rev 取得不能はスキップする: {deltas:?}"
+        );
         Ok(())
     }
 

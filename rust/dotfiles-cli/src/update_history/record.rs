@@ -247,7 +247,13 @@ fn decide_provenance(
             None => none_provenance(at),
         });
     }
-    if let Some(source_url) = ai_source_url.filter(|_| !change_items_empty) {
+    // AI が版固有 URL（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）で要約した
+    // 場合は恒久 provenance に学習しない（次回 `vX→vY` で古い版ページを seed に再利用すると誤要約/空要約になる）。
+    // 版非依存（`/releases`・`CHANGELOG`・blob の固定ファイル等）の AI source だけを再利用 provenance として学習する。
+    if let Some(source_url) = ai_source_url
+        .filter(|_| !change_items_empty)
+        .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()))
+    {
         return Some(NotesSourceEntry {
             source: Some(source_url.to_string()),
             origin: NotesOrigin::AiDiscovered,
@@ -255,15 +261,50 @@ fn decide_provenance(
             note: None,
         });
     }
+    // 全経路が空 / AI が版固有 URL でしか要約できなかった → 既存有効 source を据え置くか origin=none へ戻す。
+    reuse_or_none_provenance(delta, at, registry)
+}
+
+/// 学習に足る取得元が無いとき、既存有効 source が在れば据え置き（`None`）、無ければ origin=none を学習する。
+///
+/// 全経路が空を返した一時失敗や、AI が版固有 URL でしか要約できず再利用学習を拒否した場合に使う。既存の有効
+/// source を上書きしないことで一時失敗での provenance 喪失を防ぎ、無ければ次回再探索へ戻す。
+fn reuse_or_none_provenance(
+    delta: &VersionDelta,
+    at: &str,
+    registry: &NotesSourceRegistry,
+) -> Option<NotesSourceEntry> {
     if registry
         .lookup(&delta.name, delta.source)
         .and_then(NotesSourceEntry::reusable_source)
         .is_some()
     {
-        // 全経路が空を返したが既存有効 source が在る一時失敗 → 既存を保持（上書きしない）。
         return None;
     }
     Some(none_provenance(at))
+}
+
+/// AI 由来 source_url が版非依存（恒久 provenance として再利用可能）かを判定する純粋関数。
+///
+/// 版固有と判定する URL は再利用不可（次回 `vX→vY` で古い版ページを seed にする誤要約を防ぐため学習しない）:
+/// `/releases/tag/<tag>`・`/releases/download/<tag>/`・path/query に old/new version 文字列を含む URL。版非依存
+/// （`/releases`・`CHANGELOG`/`changelog`・blob の固定ファイル・docs index 等）は再利用可。
+fn is_reusable_ai_source(url: &str, old: Option<&str>, new: Option<&str>) -> bool {
+    !is_version_specific_url(url, old, new)
+}
+
+/// URL が版固有（特定 tag/version に縛られ、版が進むと別ページになる）かを判定する純粋関数。
+fn is_version_specific_url(url: &str, old: Option<&str>, new: Option<&str>) -> bool {
+    let lowered = url.to_ascii_lowercase();
+    if lowered.contains("/releases/tag/") || lowered.contains("/releases/download/") {
+        return true;
+    }
+    [old, new]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .any(|version| url.contains(version))
 }
 
 /// 有効な取得元が無いことを表す provenance（origin=none。次回再探索へ戻す）。
@@ -324,7 +365,7 @@ fn run_record_with(
     fetch_source: &NotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     eval_new: &dyn Fn(&str) -> Result<std::collections::BTreeMap<String, NixPackage>>,
-    fetch_cask: &dyn Fn(&str) -> Result<Option<String>>,
+    fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
 ) -> Result<()> {
     let old_versions = notes::read_nix_versions(input.nix_old)?;
     let new_versions = match input.nix_new {
@@ -422,7 +463,7 @@ struct RecordAccum {
 /// 検査は [`brew`]。
 fn compute_brew_deltas(
     input: &RecordInput<'_>,
-    fetch_cask: &dyn Fn(&str) -> Result<Option<String>>,
+    fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
 ) -> Result<Vec<VersionDelta>> {
     let (Some(homebrew_nix), Some(rev_old), Some(rev_new)) =
         (input.homebrew_nix, input.cask_rev_old, input.cask_rev_new)
@@ -677,8 +718,8 @@ mod tests {
     }
 
     /// cask 差分を踏まないテスト seam（homebrew_nix 未指定なら呼ばれない）。
-    fn no_cask(_: &str) -> Result<Option<String>> {
-        Ok(None)
+    fn no_cask(_: &str) -> Result<brew::CaskFetch> {
+        Ok(brew::CaskFetch::NotFound)
     }
 
     fn outcome(items: Vec<ChangeItem>) -> ExtractOutcome {
@@ -825,6 +866,95 @@ mod tests {
         let entry = learned.lookup("neovim", DeltaSource::NixEval);
         assert!(entry.is_some_and(|e| e.origin == NotesOrigin::AiDiscovered
             && e.source.as_deref() == Some("https://github.com/neovim/neovim/releases")));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn is_reusable_ai_source_rejects_version_specific_urls() {
+        // 版固有 URL（再利用不可）: releases/tag・releases/download・old/new version 文字列を含む path/query。
+        assert!(!is_reusable_ai_source(
+            "https://github.com/o/r/releases/tag/v1.2.3",
+            Some("1.2.2"),
+            Some("1.2.3")
+        ));
+        assert!(!is_reusable_ai_source(
+            "https://github.com/o/r/releases/download/v1.2.3/notes.txt",
+            None,
+            None
+        ));
+        assert!(!is_reusable_ai_source(
+            "https://example.com/changelog/1.2.3",
+            Some("1.2.2"),
+            Some("1.2.3")
+        ));
+        assert!(!is_reusable_ai_source(
+            "https://example.com/notes?version=1.2.3",
+            None,
+            Some("1.2.3")
+        ));
+        // 版非依存 URL（再利用可）: /releases・CHANGELOG・blob 固定ファイル・docs index。
+        assert!(is_reusable_ai_source(
+            "https://github.com/o/r/releases",
+            Some("1.2.2"),
+            Some("1.2.3")
+        ));
+        assert!(is_reusable_ai_source(
+            "https://github.com/o/r/blob/main/CHANGELOG.md",
+            Some("1.2.2"),
+            Some("1.2.3")
+        ));
+        assert!(is_reusable_ai_source(
+            "https://raw.githubusercontent.com/o/r/main/CHANGELOG.md",
+            None,
+            None
+        ));
+        assert!(is_reusable_ai_source(
+            "https://docs.example.com/",
+            Some("1.2.2"),
+            Some("1.2.3")
+        ));
+        // version が空文字列なら誤判定しない（空版を含む扱いにしない）。
+        assert!(is_reusable_ai_source(
+            "https://github.com/o/r/releases",
+            Some(""),
+            None
+        ));
+    }
+
+    #[test]
+    fn record_does_not_learn_version_specific_ai_source() -> Result<()> {
+        let dir = temp_dir("provenance-version-specific");
+        let old = write_nix(&dir, "old.json", r#"{"neovim":{"version":"0.10"}}"#);
+        let new = write_nix(&dir, "new.json", r#"{"neovim":{"version":"0.11"}}"#);
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        // AI が版固有ページ（releases/tag/v0.11）を取得して要約成功 → 恒久 provenance に学習しない（origin=none）。
+        let extract = FakeExtractor::with(
+            "neovim",
+            ExtractOutcome {
+                items: vec![item(ChangeCategory::Feature, "新機能")],
+                source_url: Some("https://github.com/neovim/neovim/releases/tag/v0.11".to_string()),
+            },
+        );
+        run_record_with(
+            &input(&dir, &out, &registry, Some(&old), Some(&new)),
+            &extract,
+            &no_fetch_source,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+        let learned = read_registry(&registry)?;
+        let entry = learned.lookup("neovim", DeltaSource::NixEval);
+        assert!(
+            entry.is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none()),
+            "版固有 URL は学習せず origin=none へ倒す: {entry:?}"
+        );
+        // ただしノート自体は記録される（change_items + notes_url）。
+        let entries = read_entries(&out)?;
+        let pkg = &entries[0].packages[0];
+        assert_eq!(pkg.change_items.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -1030,13 +1160,13 @@ mod tests {
             ..input(&dir, &out, &registry, None, None)
         };
         // cask fetch seam: rev に応じて azookey の version 文字列を返す（upgrade）。
-        let fetch_cask = |url: &str| -> Result<Option<String>> {
+        let fetch_cask = |url: &str| -> Result<brew::CaskFetch> {
             Ok(if url.contains("/oldrev/") {
-                Some("cask \"x\" do\n  version \"1.0\"\nend\n".to_string())
+                brew::CaskFetch::Body("cask \"x\" do\n  version \"1.0\"\nend\n".to_string())
             } else if url.contains("/newrev/") {
-                Some("cask \"x\" do\n  version \"1.1\"\nend\n".to_string())
+                brew::CaskFetch::Body("cask \"x\" do\n  version \"1.1\"\nend\n".to_string())
             } else {
-                None
+                brew::CaskFetch::NotFound
             })
         };
         let extract = FakeExtractor::new();

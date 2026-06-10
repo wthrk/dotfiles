@@ -367,6 +367,36 @@ pub(crate) fn safe_https_fetch(url: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// `safe_https_fetch` の取得結果を「本文あり / 明確な不在(404) / それ以外の取得不能」の 3 値で表す。
+///
+/// 不在（404）と一過性失敗（接続失敗・5xx・429 等）を区別できないと、取得不能を「削除」と誤確定しうる。本文の
+/// 有無だけでなく、削除確定を 404 にだけ許す呼び出し側（[`super::brew`]）のために status を 3 値へ翻訳する。
+pub(crate) enum FetchOutcome {
+    /// 2xx の非空本文を取得した。
+    Body(String),
+    /// 明確な不在（HTTP 404）。資源が存在しないことが確定した。
+    NotFound,
+    /// 取得不能（接続失敗・5xx・429・404 以外の非 2xx・空本文）。一過性失敗の可能性があり不在と区別する。
+    Unavailable,
+}
+
+/// 与えた https URL を取得し、本文 / 404 / その他取得不能の 3 値（[`FetchOutcome`]）で返す。
+///
+/// host allowlist 検査は呼び出し側の責務（この primitive は host を再判定しない）。2xx 非空本文は `Body`、
+/// HTTP 404 は `NotFound`、接続失敗・5xx・429・その他非 2xx・空本文は `Unavailable`。
+pub(crate) fn safe_https_fetch_outcome(url: &str) -> Result<FetchOutcome> {
+    let Some(response) = http_get(url, &[])? else {
+        return Ok(FetchOutcome::Unavailable);
+    };
+    if (200..300).contains(&response.status) && !response.body.trim().is_empty() {
+        return Ok(FetchOutcome::Body(response.body));
+    }
+    if response.status == 404 {
+        return Ok(FetchOutcome::NotFound);
+    }
+    Ok(FetchOutcome::Unavailable)
+}
+
 // ---- version 差分入力の読み取り ----
 
 /// nix eval JSON ファイル（`{ "name": { "version", "repo", "changelog", "homepage" }, ... }`）を読む。
