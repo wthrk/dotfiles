@@ -47,7 +47,6 @@ let
       pkgs.coreutils
     ])
     "/run/current-system/sw/bin"
-    "/etc/profiles/per-user/${user}/bin"
     "/nix/var/nix/profiles/default/bin"
     "/usr/bin"
     "/bin"
@@ -70,8 +69,14 @@ let
     # セッション）が flake.lock や state dir 配下を任意パスへの symlink にすり替えると、root がその指す先の
     # 所有権を変えうる。macOS(BSD) の `chown` は `-h`（symlink 自体を対象にし、辿らない）と `-R`（再帰）を
     # 受ける。再帰の state dir は `-hR`、単一 flake.lock は `-h` を付け、symlink を辿らないことを明示する。
-    # best-effort（存在しなくても落とさない）。
-    trap '/usr/sbin/chown -hR ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true; /usr/sbin/chown -h ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true' EXIT
+    # best-effort（存在しなくても落とさない）。クリーンアップはシェル関数に置き、`trap` には関数名だけを
+    # 渡す。値（ユーザ名・パス）は trap 文字列に埋め込まず通常のコマンド文脈に置くため、空白・引用符を
+    # 含む任意の値でも安全に展開される。
+    restore_ownership() {
+      /usr/sbin/chown -hR ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true
+      /usr/sbin/chown -h ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true
+    }
+    trap restore_ownership EXIT
 
     # root のまま実行する。`HOME` をユーザの home に向け、CLI の state_dir() / config_dir がユーザ dir を指す
     # ようにする。`--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも switch_darwin が
