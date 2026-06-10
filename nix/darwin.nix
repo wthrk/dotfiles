@@ -68,9 +68,15 @@ let
       ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --no-sudo
 
     # root 実行で root 所有になった state dir / flake.lock をユーザへ戻す。zsh の pending-summary show-once は
-    # ユーザ権限の rename で消費するため、root 書込み分を戻さないと次回ユーザ実行が EACCES になる。best-effort。
-    /usr/sbin/chown -R ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true
-    /usr/sbin/chown ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true
+    # ユーザ権限の rename で消費するため、root 書込み分を戻さないと次回ユーザ実行が EACCES になる。
+    #
+    # symlink を辿らず所有権を戻す。`chown` は既定で symlink を辿るため、ユーザ（または侵害されたユーザ
+    # セッション）が flake.lock や state dir 配下を任意パスへの symlink にすり替えると、root がその指す先の
+    # 所有権を変えうる。macOS(BSD) の `chown` は `-h`（symlink 自体を対象にし、辿らない）と `-R`（再帰）を
+    # 受ける。再帰の state dir は `-hR`、単一 flake.lock は `-h` を付け、symlink を辿らないことを明示する。
+    # best-effort（存在しなくても落とさない）。
+    /usr/sbin/chown -hR ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true
+    /usr/sbin/chown -h ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true
   '';
 in
 {

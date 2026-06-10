@@ -127,15 +127,23 @@ fn run_verify_bump_lock(options: VerifyBumpLockOptions) -> Result<()> {
 ///
 /// 入力は範囲内 commit を順に並べた行で、`--pretty=format:` により commit ヘッダは空行になり、その後に当該
 /// commit の変更ファイル名が 1 行 1 件で続く。複数 commit の出力が連結されるため、空行（commit 区切り兼ヘッダ）
-/// を読み飛ばし、非空行を trim して `BTreeSet` で unique 化する。これにより、ある commit が追加し別の commit が
-/// 削除して net 差分には現れないパスも、いずれかの commit に現れた時点で集合へ入る（add-then-remove の検出）。
+/// だけを読み飛ばし、それ以外の行は **改行のみを除いた生のパス** として `BTreeSet` で unique 化する。これに
+/// より、ある commit が追加し別の commit が削除して net 差分には現れないパスも、いずれかの commit に現れた時点
+/// で集合へ入る（add-then-remove の検出）。
+///
+/// パス行に `trim()` 等の正規化をかけないのは、auto-merge 一次防御の回避を塞ぐためである。許可判定（`flake.lock`
+/// の厳密一致 / `docs/update-history/**` の prefix 一致）は guard が受け取った文字列そのものに対して行うので、
+/// ここで前後空白を削ると、前後に空白を足した細工パス（例 `" flake.lock"`・`"docs/update-history/x ../evil "`）が
+/// trim 後に許可と一致して見え、実際に変更されたパス（git が出力した生のパス）と検査対象がずれて gate をすり抜け
+/// うる。`git log --name-only` は通常パスをそのまま出力し、特殊文字を含む場合のみ全体をダブルクォートで括った
+/// octal escape 表現にする（その場合は `flake.lock` 等の許可 prefix と一致しない別文字列になる）。空白を含む
+/// 許可外パスを許可と誤判定させないため、空行（改行のみ）判定以外の正規化を一切かけない。
 ///
 /// この純粋関数として切り出すのは、実 git repo 無しで multi-commit 出力に対する union 化を unit test で固定する
 /// ためである。git の実行（I/O）は caller が担い、本関数は文字列→集合の変換のみを行う。
 fn collect_union_changed_paths(log_output: &str) -> BTreeSet<String> {
     log_output
         .lines()
-        .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect()
@@ -167,6 +175,56 @@ mod tests {
         assert!(paths.contains("docs/update-history/2026-06.toml"));
         // 空行（commit 区切り/ヘッダ）は集合に入らない。
         assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn union_keeps_genuine_allowed_paths_verbatim_and_passes_guard() -> crate::Result<()> {
+        // 正当な nightly PR の出力（前後空白を含まない生パス）は許可 prefix と一致し guard を通る。
+        // 集約が生パスを保つことを、許可判定（`verify_bump`）まで通して固定する。
+        let log_output = "\nflake.lock\ndocs/update-history/2026-06.toml\n";
+        let paths = collect_union_changed_paths(log_output);
+        assert!(
+            paths.contains("flake.lock"),
+            "生の flake.lock を保持: {paths:?}"
+        );
+        assert!(
+            paths.contains("docs/update-history/2026-06.toml"),
+            "生の docs/update-history パスを保持: {paths:?}"
+        );
+        // base=head 同一 lock では rev 無変更で fail する（空 bump 防御）が、パスは許可判定を通る。
+        // ここでは「パス判定が許可になること」を確かめるため、許可外パスではなく lock 側の理由で fail する
+        // ことを確認する（disallowed path で fail しない）。
+        let err = super::bump_lock::verify_bump(&paths, MINIMAL_LOCK, MINIMAL_LOCK).unwrap_err();
+        assert!(
+            !err.to_string().contains("disallowed path"),
+            "正当な生パスは許可判定を通る（fail 理由は lock 側）: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn union_does_not_normalize_whitespace_padded_crafted_path() {
+        // trim 回避の退行固定: 前後空白を足した細工パスは、trim すれば許可 prefix と一致して見えるが、
+        // 集約は改行のみを除いた生パスを保つため許可判定で許可外として fail する。leading-space 版の
+        // `flake.lock` と trailing-space 版の `docs/update-history/...` の両方を 1 commit ぶんに混ぜる。
+        let log_output = "\n flake.lock\ndocs/update-history/2026-06.toml \n";
+        let paths = collect_union_changed_paths(log_output);
+        // 生パス（空白付き）がそのまま集合に入る。trim 後の許可形には化けない。
+        assert!(
+            paths.contains(" flake.lock"),
+            "leading space を保持: {paths:?}"
+        );
+        assert!(
+            paths.contains("docs/update-history/2026-06.toml "),
+            "trailing space を保持: {paths:?}"
+        );
+        assert!(
+            !paths.contains("flake.lock"),
+            "trim 済みの許可形へ正規化しない: {paths:?}"
+        );
+        // これらを判定核へ渡すと、空白付きの細工パスが許可外として fail する（一次防御がすり抜けない）。
+        let err = super::bump_lock::verify_bump(&paths, MINIMAL_LOCK, MINIMAL_LOCK).unwrap_err();
+        assert!(err.to_string().contains("disallowed path"), "{err}");
     }
 
     #[test]
