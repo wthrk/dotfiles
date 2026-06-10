@@ -4,7 +4,7 @@
 //! 結合だけを扱う。payload id と AAD の値そのものの意味は呼び出し側が決め、この
 //! support 境界は与えられた識別子と AAD を AEAD 検証へ渡す責務に限定する。
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bincode::config;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -91,8 +91,7 @@ impl SealedBlob {
     }
 
     fn decode_for_payload_id(input: &[u8], expected_payload_id: u8) -> Result<Self> {
-        let blob = Self::decode(input)
-            .map_err(|error| anyhow::anyhow!("failed to decode sealed blob: {error}"))?;
+        let blob = Self::decode(input).context("failed to decode sealed blob")?;
         if blob.payload_id != expected_payload_id {
             anyhow::bail!("sealed blob id does not match requested payload id");
         }
@@ -236,7 +235,7 @@ fn open_decoded(
         .with_secret_mut(|secret_bytes| {
             decrypt_detached(&cipher, &blob.nonce, aad, secret_bytes, &blob.tag)
         })
-        .map_err(|_| anyhow::anyhow!("failed to decrypt payload"))?;
+        .context("failed to decrypt payload")?;
     Ok(secret)
 }
 

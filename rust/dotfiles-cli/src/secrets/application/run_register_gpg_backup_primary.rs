@@ -1,5 +1,7 @@
 //! gpg-secret-key-backup の事前登録状態確認順序を固定し、export/暗号化/登録の実装詳細を port 境界へ閉じる。
 
+use anyhow::Context;
+
 use crate::Result;
 use crate::secrets::{
     domain::{
@@ -82,15 +84,29 @@ where
     };
     // BWS 登録用 access token を hidden prompt / pipe から取得し、復旧 project を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
-    let access_token = token_input.read_bws_access_token_for_provisioning()?;
+    let access_token = token_input
+        .read_bws_access_token_for_provisioning()
+        .context("`gpg-backup register` failed while reading `bws-access-token (create/use)`")?;
     let project_name = BwsProjectName::DOTFILES_SECRET_RECOVERY;
-    let project_candidates = bws_client.list_bws_projects(&access_token).await?;
+    let project_candidates = bws_client
+        .list_bws_projects(&access_token)
+        .await
+        .with_context(|| {
+            format!(
+                "`gpg-backup register` failed while resolving BWS project `{}`",
+                project_name.as_str()
+            )
+        })?;
     let project_id = match project_name.resolve_lookup(project_candidates) {
-        BwsLookupResolution::Missing => {
-            bws_client
-                .create_bws_project(&access_token, project_name)
-                .await?
-        }
+        BwsLookupResolution::Missing => bws_client
+            .create_bws_project(&access_token, project_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "`gpg-backup register` failed while creating BWS project `{}`",
+                    project_name.as_str()
+                )
+            })?,
         BwsLookupResolution::Unique(project_id) => project_id,
         BwsLookupResolution::Ambiguous => {
             anyhow::bail!("multiple bws projects matched: {}", project_name.as_str())
@@ -102,7 +118,14 @@ where
     // primary/spare 2 recipient envelope を作れないため、secret key material を読む前に停止する。
     let candidates = bws_client
         .list_bws_secrets(&access_token, &project_id)
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "`gpg-backup register` failed while listing secret `{}` in project `{}`",
+                BwsSecretName::GpgSecretKeyBackup.key(),
+                project_id.as_str()
+            )
+        })?;
     match BwsSecretName::GpgSecretKeyBackup.resolve_lookup(candidates) {
         BwsLookupResolution::Missing => {
             anyhow::bail!(
@@ -112,7 +135,13 @@ where
         BwsLookupResolution::Unique(secret_id) => {
             let envelope = bws_client
                 .fetch_gpg_backup_envelope(&access_token, &secret_id)
-                .await?;
+                .await
+                .with_context(|| {
+                    format!(
+                        "`gpg-backup register` failed while loading secret `{}`",
+                        BwsSecretName::GpgSecretKeyBackup.key()
+                    )
+                })?;
             if envelope.metadata().primary_fingerprint().as_str() != primary_fingerprint.as_str() {
                 anyhow::bail!(
                     "existing gpg-secret-key-backup primary fingerprint does not match the resolved key"

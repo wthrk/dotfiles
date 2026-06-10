@@ -77,6 +77,17 @@ struct GitObservationFrame<'a> {
 
 static GIT_DATASTORE: OnceLock<Mutex<Option<GitDatastore>>> = OnceLock::new();
 
+#[derive(Debug)]
+struct GitStubDatastoreLockPoisoned;
+
+impl std::fmt::Display for GitStubDatastoreLockPoisoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Git internal stub datastore lock is poisoned")
+    }
+}
+
+impl std::error::Error for GitStubDatastoreLockPoisoned {}
+
 /// password-store filesystem port の internal backend stub。
 #[derive(Default)]
 pub(super) struct PasswordStoreStub;
@@ -120,9 +131,7 @@ impl GitClonePort for GitCloneStub {
 
 fn with_datastore<T>(f: impl FnOnce(&mut GitDatastore) -> Result<T>) -> Result<T> {
     let datastore = GIT_DATASTORE.get_or_init(|| Mutex::new(None));
-    let mut state = datastore
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Git internal stub datastore lock is poisoned"))?;
+    let mut state = datastore.lock().map_err(|_| GitStubDatastoreLockPoisoned)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }

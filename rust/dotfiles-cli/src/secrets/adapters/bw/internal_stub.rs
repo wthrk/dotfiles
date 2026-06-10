@@ -53,6 +53,9 @@ struct BwsStubSpec {
     /// 初期条件で観測するために使う。
     #[serde(default)]
     password_store_remote_absent: bool,
+    /// access token が非空でも BWS auth failure を強制する。
+    #[serde(default)]
+    force_auth_failure: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -68,6 +71,7 @@ struct BwsDatastore {
     project_secrets: BTreeMap<String, BTreeMap<String, String>>,
     secret_values: BTreeMap<String, String>,
     secret_notes: BTreeMap<String, String>,
+    force_auth_failure: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -82,6 +86,28 @@ struct BwsObservationFrame<'a> {
 }
 
 static BWS_DATASTORE: OnceLock<Mutex<Option<BwsDatastore>>> = OnceLock::new();
+
+#[derive(Debug)]
+struct BwsStubAccessTokenAuthError;
+
+impl std::fmt::Display for BwsStubAccessTokenAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BWS internal stub rejected the provided access token")
+    }
+}
+
+impl std::error::Error for BwsStubAccessTokenAuthError {}
+
+#[derive(Debug)]
+struct BwsStubDatastoreLockPoisoned;
+
+impl std::fmt::Display for BwsStubDatastoreLockPoisoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BWS internal stub datastore lock is poisoned")
+    }
+}
+
+impl std::error::Error for BwsStubDatastoreLockPoisoned {}
 
 impl super::BwsClientAdapter {
     async fn fetch_password_store_remote_note_marker(
@@ -101,6 +127,7 @@ impl super::BwsClientAdapter {
             )
             .map(str::to_owned))
         })
+        .context("BWS internal stub failed to fetch `password-store-remote` provenance marker")
     }
 }
 
@@ -109,7 +136,7 @@ impl BwsClientPort for super::BwsClientAdapter {
         &self,
         access_token: &ProtectedSecret,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-        read_bws_projects(access_token)
+        read_bws_projects(access_token).context("BWS internal stub failed to list projects")
     }
 
     async fn create_bws_project(
@@ -126,6 +153,12 @@ impl BwsClientPort for super::BwsClientAdapter {
             store.project_secrets.entry(project_id.clone()).or_default();
             Ok(BwsProjectId::new(project_id))
         })
+        .with_context(|| {
+            format!(
+                "BWS internal stub failed to create project `{}`",
+                project_name.as_str()
+            )
+        })
     }
 
     async fn list_bws_secrets(
@@ -133,7 +166,12 @@ impl BwsClientPort for super::BwsClientAdapter {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-        read_bws_secrets(access_token, project_id)
+        read_bws_secrets(access_token, project_id).with_context(|| {
+            format!(
+                "BWS internal stub failed to list secrets in project `{}`",
+                project_id.as_str()
+            )
+        })
     }
 
     async fn fetch_gpg_backup_envelope(
@@ -149,6 +187,12 @@ impl BwsClientPort for super::BwsClientAdapter {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
             GpgBackupEnvelope::from_json(value.as_bytes())
+        })
+        .with_context(|| {
+            format!(
+                "BWS internal stub failed to fetch secret `{}` as `gpg-secret-key-backup`",
+                secret_id.as_str()
+            )
         })
     }
 
@@ -166,6 +210,12 @@ impl BwsClientPort for super::BwsClientAdapter {
                 .ok_or_else(|| anyhow::anyhow!("bitwarden secret get failed"))?;
             PasswordStoreRemote::parse(&value)
         })
+        .with_context(|| {
+            format!(
+                "BWS internal stub failed to fetch secret `{}` as `password-store-remote`",
+                secret_id.as_str()
+            )
+        })
     }
 
     async fn ensure_recovery_token_provenance(
@@ -178,7 +228,10 @@ impl BwsClientPort for super::BwsClientAdapter {
             .resolve_id(read_bws_secrets(access_token, &project_id)?, &project_id)?;
         let note = self
             .fetch_password_store_remote_note_marker(access_token, &secret_id)
-            .await?;
+            .await
+            .context(
+                "BWS internal stub failed to fetch `password-store-remote` provenance marker",
+            )?;
         bws::ensure_recovery_token_allowed(access_token, note.as_deref())
     }
 
@@ -207,6 +260,7 @@ impl BwsClientPort for super::BwsClientAdapter {
             );
             Ok(BwsSecretId::new(secret_id))
         })
+        .context("BWS internal stub failed to create secret `password-store-remote`")
     }
 }
 
@@ -254,18 +308,16 @@ fn ensure_access_token_matches_datastore(
         .secret_values
         .get("bws-secret-id-access-token")
         .ok_or_else(|| anyhow::anyhow!("bws access token stub secret is not configured"))?;
-    if access_token.to_test_bytes().is_empty() {
-        anyhow::bail!("bitwarden login failed")
-    } else {
-        Ok(())
+    bws::validate_access_token_text(access_token)?;
+    if store.force_auth_failure {
+        return Err(BwsStubAccessTokenAuthError.into());
     }
+    Ok(())
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut BwsDatastore) -> crate::Result<T>) -> crate::Result<T> {
     let datastore = BWS_DATASTORE.get_or_init(|| Mutex::new(None));
-    let mut state = datastore
-        .lock()
-        .map_err(|_| anyhow::anyhow!("BWS internal stub datastore lock is poisoned"))?;
+    let mut state = datastore.lock().map_err(|_| BwsStubDatastoreLockPoisoned)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }
@@ -324,6 +376,7 @@ fn datastore_from_spec(spec: BwsStubSpec) -> BwsDatastore {
             .secret_notes
             .insert("bws-secret-id-pass".to_owned(), note);
     }
+    datastore.force_auth_failure = spec.force_auth_failure;
     datastore
 }
 
@@ -366,6 +419,7 @@ fn default_recovery_project_datastore() -> BwsDatastore {
         project_secrets,
         secret_values,
         secret_notes,
+        force_auth_failure: false,
     }
 }
 

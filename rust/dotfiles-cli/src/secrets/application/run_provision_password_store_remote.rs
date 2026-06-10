@@ -1,5 +1,7 @@
 //! password-store-remote の保管側 provisioning 順序を固定し、値取得と検証を port/domain 境界へ閉じる。
 
+use anyhow::Context;
+
 use crate::Result;
 use crate::secrets::{
     domain::{
@@ -51,15 +53,29 @@ where
     let _ = command;
     // BWS 登録用 access token を hidden prompt / pipe から保護値として取得し、復旧 project を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
-    let access_token = token_input.read_bws_access_token_for_provisioning()?;
+    let access_token = token_input
+        .read_bws_access_token_for_provisioning()
+        .context("`pass-remote register` failed while reading `bws-access-token (create/use)`")?;
     let project_name = BwsProjectName::DOTFILES_SECRET_RECOVERY;
-    let project_candidates = bws_client.list_bws_projects(&access_token).await?;
+    let project_candidates = bws_client
+        .list_bws_projects(&access_token)
+        .await
+        .with_context(|| {
+            format!(
+                "`pass-remote register` failed while resolving BWS project `{}`",
+                project_name.as_str()
+            )
+        })?;
     let project_id = match project_name.resolve_lookup(project_candidates) {
-        BwsLookupResolution::Missing => {
-            bws_client
-                .create_bws_project(&access_token, project_name)
-                .await?
-        }
+        BwsLookupResolution::Missing => bws_client
+            .create_bws_project(&access_token, project_name)
+            .await
+            .with_context(|| {
+                format!(
+                    "`pass-remote register` failed while creating BWS project `{}`",
+                    project_name.as_str()
+                )
+            })?,
         BwsLookupResolution::Unique(project_id) => project_id,
         BwsLookupResolution::Ambiguous => {
             anyhow::bail!("multiple bws projects matched: {}", project_name.as_str())
@@ -73,7 +89,14 @@ where
     let secret_name = BwsSecretName::PasswordStoreRemote;
     let candidates = bws_client
         .list_bws_secrets(&access_token, &project_id)
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "`pass-remote register` failed while listing secret `{}` in project `{}`",
+                secret_name.key(),
+                project_id.as_str()
+            )
+        })?;
     match secret_name.resolve_lookup(candidates) {
         BwsLookupResolution::Missing => {
             // 不在: clone URL を input port から取得し、検証してから新規 create する。
@@ -84,12 +107,25 @@ where
             bws_client
                 .create_password_store_remote(&access_token, &project_id, &remote)
                 .await
+                .with_context(|| {
+                    format!(
+                        "`pass-remote register` failed while creating secret `{}` in project `{}`",
+                        secret_name.key(),
+                        project_id.as_str()
+                    )
+                })
                 .map(|_id| ())
         }
         BwsLookupResolution::Unique(secret_id) => {
             let existing_remote = bws_client
                 .fetch_password_store_remote(&access_token, &secret_id)
-                .await?;
+                .await
+                .with_context(|| {
+                    format!(
+                        "`pass-remote register` failed while loading existing secret `{}`",
+                        secret_name.key()
+                    )
+                })?;
             let Some(origin_remote) = store.configured_origin_remote()? else {
                 anyhow::bail!(
                     "existing password-store-remote cannot be reused without a configured local origin"

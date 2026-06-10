@@ -52,6 +52,17 @@ struct BwLoginObservationFrame<'a> {
 
 static BW_LOGIN_DATASTORE: OnceLock<Mutex<Option<BwLoginDatastore>>> = OnceLock::new();
 
+#[derive(Debug)]
+struct BwLoginStubDatastoreLockPoisoned;
+
+impl std::fmt::Display for BwLoginStubDatastoreLockPoisoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "bw-login internal stub datastore lock is poisoned")
+    }
+}
+
+impl std::error::Error for BwLoginStubDatastoreLockPoisoned {}
+
 impl BwLoginPort for super::BwLoginAdapter {
     async fn login_and_unlock(
         &self,
@@ -80,7 +91,7 @@ fn with_datastore<T>(
     let datastore = BW_LOGIN_DATASTORE.get_or_init(|| Mutex::new(None));
     let mut state = datastore
         .lock()
-        .map_err(|_| anyhow::anyhow!("bw-login internal stub datastore lock is poisoned"))?;
+        .map_err(|_| BwLoginStubDatastoreLockPoisoned)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }

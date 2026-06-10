@@ -26,6 +26,17 @@ const SPARE_SERIAL: u32 = 2002;
 
 type TestResult<T> = anyhow::Result<T>;
 
+#[derive(Debug)]
+struct PtyOutputReaderJoinFailed;
+
+impl std::fmt::Display for PtyOutputReaderJoinFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to join PTY output reader")
+    }
+}
+
+impl std::error::Error for PtyOutputReaderJoinFailed {}
+
 struct CommandRun {
     success: bool,
     stdout: String,
@@ -1129,7 +1140,7 @@ fn run_pty_with_stub<const N: usize>(
     drop(pair.master);
     let output = output_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("failed to join PTY output reader"))??;
+        .map_err(|_| PtyOutputReaderJoinFailed)??;
     Ok(PtyRun {
         success: status.success(),
         output,
@@ -1635,6 +1646,132 @@ fn pass_remote_register_does_not_reuse_stdin_as_url_without_configured_origin() 
     Ok(())
 }
 
+/// 空の BWS 登録用 token は BWS project 解決開始後、BWS 側 token 検証で停止し、`bw login` 相当へ進めない。
+#[test]
+fn pass_remote_register_rejects_empty_piped_bws_token_before_any_bws_login() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_without_pass_remote(),
+    )
+    .with_git(json!({
+        "configured_origin_remote": RESTORE_PASS_REMOTE
+    }));
+    let run = run_pipe_with_stub(["pass-remote", "register"], Some("\n"), &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains(
+            "`pass-remote register` failed while resolving BWS project `dotfiles-secret-recovery`"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(
+            "caused by:\n  1: BWS internal stub failed to list projects\n  2: bws access token must not be empty"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !run.has_bws_observation(),
+        "empty token must stop before BWS observation is written: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
+/// TTY prompt 経路でも空の BWS 登録用 token は BWS project 解決開始後の token 検証で停止する。
+#[test]
+fn pass_remote_register_rejects_empty_tty_bws_token_before_any_bws_login() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_without_pass_remote(),
+    )
+    .with_git(json!({
+        "configured_origin_remote": RESTORE_PASS_REMOTE
+    }));
+    let run = run_pty_with_stub(["pass-remote", "register"], Some("\n"), &stub)?;
+
+    assert!(!run.success, "output: {}", run.output);
+    assert!(
+        run.output.contains("bws-access-token (create/use): "),
+        "output: {}",
+        run.output
+    );
+    assert!(
+        run.output.contains(
+            "`pass-remote register` failed while resolving BWS project `dotfiles-secret-recovery`"
+        ),
+        "output: {}",
+        run.output
+    );
+    assert!(
+        run.output.contains(
+            "caused by:\r\n  1: BWS internal stub failed to list projects\r\n  2: bws access token must not be empty"
+        ),
+        "output: {}",
+        run.output
+    );
+    assert!(
+        !run.output
+            .contains("BWS internal stub rejected the provided access token"),
+        "empty token must not fall through to BWS backend auth failure: {}",
+        run.output
+    );
+    assert!(
+        !run.output.contains(STUB_OBSERVATION_PREFIX),
+        "empty token must stop before BWS observation is written: {}",
+        run.output
+    );
+    Ok(())
+}
+
+/// 非空だが無効な BWS 登録用 token は、`pass-remote register` の operation / backend / source chain を表示する。
+#[test]
+fn pass_remote_register_surfaces_operation_backend_and_source_chain_for_bws_auth_failure()
+-> TestResult<()> {
+    let mut bws = bws_spec_without_pass_remote();
+    bws["force_auth_failure"] = json!(true);
+    let stub = StubPorts::new(yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]), bws)
+        .with_git(json!({
+            "configured_origin_remote": RESTORE_PASS_REMOTE
+        }));
+    let run = run_pipe_with_stub(["pass-remote", "register"], Some("token\n"), &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains(
+            "`pass-remote register` failed while resolving BWS project `dotfiles-secret-recovery`"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr
+            .contains("  1: BWS internal stub failed to list projects"),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr
+            .contains("  2: BWS internal stub rejected the provided access token"),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("bitwarden login failed"),
+        "legacy top-level message must not survive without chain context: {}",
+        run.stderr
+    );
+    assert!(
+        !run.has_bws_observation(),
+        "auth failure must stop before BWS observation is written: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
 /// 削除済みの `--url` を `pass-remote register` で受け付けない CLI 境界を固定する。
 #[test]
 fn pass_remote_register_stops_when_input_url_is_invalid() -> TestResult<()> {
@@ -1878,6 +2015,59 @@ fn gpg_backup_register_without_fingerprint_uses_gpg_id_with_stub_paths() -> Test
     let run = run_pipe_with_stub(["gpg-backup", "register"], Some("token\n"), &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
+    Ok(())
+}
+
+/// `gpg-backup register` は BWS auth failure 時に operation / backend / source chain を維持する。
+#[test]
+fn gpg_backup_register_surfaces_operation_backend_and_source_chain_for_bws_auth_failure()
+-> TestResult<()> {
+    let mut bws = bws_spec_with_backup(&restore_envelope_json(PRIMARY_SERIAL));
+    bws["force_auth_failure"] = json!(true);
+    let stub = StubPorts::new(yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]), bws)
+        .with_gpg(json!({
+            "existing_keys": [],
+            "keys": {
+                RESTORE_PRIMARY_FP: {
+                    "capabilities": ["encryption", "authentication", "signing"],
+                    "keygrip": RESTORE_KEYGRIP,
+                    "ssh_public_key": RESTORE_SSH_LINE
+                }
+            },
+            "held_recipients": [RESTORE_PASS_RECIPIENT]
+        }))
+        .with_git(json!({
+            "store_exists": true,
+            "gpg_id_present": true,
+            "gpg_id_recipients": [RESTORE_PASS_RECIPIENT]
+        }));
+    let run = run_pipe_with_stub(["gpg-backup", "register"], Some("token\n"), &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains(
+            "`gpg-backup register` failed while resolving BWS project `dotfiles-secret-recovery`"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(
+            "caused by:\n  1: BWS internal stub failed to list projects\n  2: BWS internal stub rejected the provided access token"
+        ),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("bitwarden login failed"),
+        "legacy top-level message must not survive without chain context: {}",
+        run.stderr
+    );
+    assert!(
+        !run.has_bws_observation(),
+        "auth failure must stop before BWS observation is written: {}",
+        run.stdout
+    );
     Ok(())
 }
 

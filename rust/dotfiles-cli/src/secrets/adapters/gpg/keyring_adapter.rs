@@ -74,7 +74,7 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             {
                 Ok(false)
             }
-            Err(error) => Err(anyhow::Error::new(error).context("failed to query GPG secret key")),
+            Err(error) => Err(error).context("failed to query GPG secret key"),
         }
     }
 
@@ -205,8 +205,9 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             {
                 Ok(false)
             }
-            Err(error) => Err(anyhow::Error::new(error)
-                .context("failed to query GPG secret key for password-store recipient")),
+            Err(error) => {
+                Err(error).context("failed to query GPG secret key for password-store recipient")
+            }
         }
     }
 
@@ -228,8 +229,8 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             {
                 Ok(None)
             }
-            Err(error) => Err(anyhow::Error::new(error)
-                .context("failed to query GPG primary fingerprint for password-store recipient")),
+            Err(error) => Err(error)
+                .context("failed to query GPG primary fingerprint for password-store recipient"),
         }
     }
 

@@ -2,6 +2,7 @@
 //!
 //! summary の意味づけは domain に残し、この module は出力フォーマットだけを担う。
 
+use anyhow::Context;
 use serde_json::json;
 
 use crate::{
@@ -94,7 +95,8 @@ fn shell_single_quote(value: &str) -> String {
 }
 
 fn write_json_report(value: &serde_json::Value) -> Result<()> {
-    let rendered = serde_json::to_string_pretty(value).map_err(anyhow::Error::new)?;
+    let rendered =
+        serde_json::to_string_pretty(value).context("failed to render CLI JSON report")?;
     println!("{rendered}");
     Ok(())
 }

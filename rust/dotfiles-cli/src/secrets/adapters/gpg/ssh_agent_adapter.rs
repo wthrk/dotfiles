@@ -234,7 +234,7 @@ fn sshcontrol_contains(path: &PathBuf, keygrip: &Keygrip) -> Result<bool> {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
-            return Err(anyhow::Error::new(error).context("failed to read gpg-agent sshcontrol"));
+            return Err(error).context("failed to read gpg-agent sshcontrol");
         }
     };
     for line in BufReader::new(file).lines() {

@@ -380,7 +380,7 @@ impl YubikeySecretDevice {
                     AlgorithmId::Rsa2048,
                     SECRET_SLOT,
                 )
-                .map_err(anyhow::Error::new)
+                .context("failed to decrypt wrapped content key with YubiKey PIV")
             },
             256,
         )
@@ -408,7 +408,9 @@ impl SecretDeviceIo for YubikeySecretDevice {
     }
 
     fn pin_retries(&mut self) -> Result<u8> {
-        self.yubikey.get_pin_retries().map_err(anyhow::Error::new)
+        self.yubikey
+            .get_pin_retries()
+            .context("failed to query YubiKey PIN retry counter")
     }
 
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
@@ -514,7 +516,9 @@ struct YubikeyPinVerifier<'a>(&'a mut YubiKey);
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 impl piv_pin::PivPinVerifier for YubikeyPinVerifier<'_> {
     fn verify(&mut self, bytes: &[u8]) -> Result<()> {
-        self.0.verify_pin(bytes).map_err(anyhow::Error::new)
+        self.0
+            .verify_pin(bytes)
+            .context("failed to verify YubiKey PIV PIN")
     }
 }
 

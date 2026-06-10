@@ -148,6 +148,6 @@ pub(crate) fn decrypt_backup_body(
     backup.with_secret_mut(|out| out.copy_from_slice(body));
     backup
         .with_secret_mut(|bytes| decrypt_detached(&cipher, nonce, &[], bytes, tag))
-        .map_err(|_| anyhow::anyhow!("failed to decrypt gpg backup body"))?;
+        .context("failed to decrypt gpg backup body")?;
     Ok(backup)
 }

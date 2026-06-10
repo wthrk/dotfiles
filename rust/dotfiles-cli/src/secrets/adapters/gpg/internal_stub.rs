@@ -117,6 +117,17 @@ struct GpgObservationFrame<'a> {
 
 static GPG_DATASTORE: OnceLock<Mutex<Option<GpgDatastore>>> = OnceLock::new();
 
+#[derive(Debug)]
+struct GpgStubDatastoreLockPoisoned;
+
+impl std::fmt::Display for GpgStubDatastoreLockPoisoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GPG internal stub datastore lock is poisoned")
+    }
+}
+
+impl std::error::Error for GpgStubDatastoreLockPoisoned {}
+
 /// GPG 鍵リング port の internal backend stub。
 #[derive(Default)]
 pub(super) struct GpgKeyringStub;
@@ -348,9 +359,7 @@ fn stored_key(primary_fingerprint: &PrimaryFingerprint) -> Result<StoredKey> {
 
 fn with_datastore<T>(f: impl FnOnce(&mut GpgDatastore) -> Result<T>) -> Result<T> {
     let datastore = GPG_DATASTORE.get_or_init(|| Mutex::new(None));
-    let mut state = datastore
-        .lock()
-        .map_err(|_| anyhow::anyhow!("GPG internal stub datastore lock is poisoned"))?;
+    let mut state = datastore.lock().map_err(|_| GpgStubDatastoreLockPoisoned)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }

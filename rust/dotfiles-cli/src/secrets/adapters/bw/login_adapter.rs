@@ -11,6 +11,8 @@
 
 use std::process::{Command, Stdio};
 
+use anyhow::Context;
+
 use crate::Result;
 use crate::secrets::{
     domain::bw_login::{BW_OTP_TWO_FACTOR_METHOD, BwLoginEmail, BwOtp, BwSessionKey},
@@ -59,7 +61,7 @@ fn run_login(email: &BwLoginEmail, password_plaintext: &str, otp: &BwOtp) -> Res
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|error| anyhow::anyhow!("failed to run `bw login`: {error}"))?;
+        .with_context(|| format!("failed to run `{BW_PROGRAM} login`"))?;
     if !status.success() {
         anyhow::bail!("`bw login` failed; check the YubiKey OTP and Bitwarden credentials");
     }
@@ -80,12 +82,12 @@ fn run_unlock(password_plaintext: &str) -> Result<BwSessionKey> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .map_err(|error| anyhow::anyhow!("failed to run `bw unlock`: {error}"))?;
+        .with_context(|| format!("failed to run `{BW_PROGRAM} unlock`"))?;
     if !output.status.success() {
         anyhow::bail!("`bw unlock` failed; the Bitwarden master password may be incorrect");
     }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| anyhow::anyhow!("`bw unlock` returned a non-UTF-8 session key"))?;
+    let stdout =
+        String::from_utf8(output.stdout).context("`bw unlock` returned a non-UTF-8 session key")?;
     BwSessionKey::parse(&stdout)
 }
 

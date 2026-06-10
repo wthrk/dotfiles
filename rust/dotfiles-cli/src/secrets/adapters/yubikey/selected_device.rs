@@ -92,6 +92,17 @@ struct YubiKeyObservationFrame<'a> {
 
 static YUBIKEY_DATASTORE: OnceLock<Mutex<Option<YubiKeyDatastore>>> = OnceLock::new();
 
+#[derive(Debug)]
+struct YubikeyStubDatastoreLockPoisoned;
+
+impl std::fmt::Display for YubikeyStubDatastoreLockPoisoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "YubiKey internal stub datastore lock is poisoned")
+    }
+}
+
+impl std::error::Error for YubikeyStubDatastoreLockPoisoned {}
+
 struct TestStubSecretDevice {
     serial: u32,
     pin_verified: bool,
@@ -260,7 +271,7 @@ fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Resu
     let datastore = YUBIKEY_DATASTORE.get_or_init(|| Mutex::new(None));
     let mut state = datastore
         .lock()
-        .map_err(|_| anyhow::anyhow!("YubiKey internal stub datastore lock is poisoned"))?;
+        .map_err(|_| YubikeyStubDatastoreLockPoisoned)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }

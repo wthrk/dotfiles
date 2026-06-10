@@ -2,6 +2,8 @@
 //!
 //! application は BWS lookup plan と domain の一意解決規則を保持する。adapter は SDK API の
 //! project/secret/list/get 境界を port の ID 候補と保護済み secret へ翻訳する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use anyhow::Context;
 
 #[cfg(feature = "secrets-internal-test-stub")]
 mod internal_stub;
@@ -62,7 +64,7 @@ fn access_token_scope_id(session: &bws::BwsClientSession) -> crate::Result<Uuid>
 fn parse_sdk_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
     value
         .parse()
-        .map_err(|_| anyhow::anyhow!("{label} is not a valid UUID"))
+        .with_context(|| format!("{label} is not a valid UUID"))
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -83,6 +85,16 @@ fn secret_create_request(
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
+async fn login_bws_session(
+    access_token: &ProtectedSecret,
+    operation: impl FnOnce() -> String,
+) -> crate::Result<bws::BwsClientSession> {
+    bws::login_client_with_access_token(access_token)
+        .await
+        .with_context(operation)
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl BwsClientAdapter {
     /// `password-store-remote` secret note の provenance marker を adapter 境界内で取り出す。
     async fn fetch_password_store_remote_note_marker(
@@ -90,7 +102,13 @@ impl BwsClientAdapter {
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
     ) -> crate::Result<Option<String>> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            format!(
+                "BWS client adapter failed to fetch secret `{}` as `password-store-remote` note",
+                secret_id.as_str()
+            )
+        })
+        .await?;
         let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         let note = session.get_non_secret_note(id).await?;
         Ok(bws::parse_provisioning_token_note(note.as_str()).map(str::to_owned))
@@ -104,7 +122,10 @@ impl BwsClientPort for BwsClientAdapter {
         &self,
         access_token: &ProtectedSecret,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            "BWS client adapter failed to list projects".into()
+        })
+        .await?;
         let projects = session
             .client()
             .projects()
@@ -112,7 +133,7 @@ impl BwsClientPort for BwsClientAdapter {
                 organization_id: access_token_scope_id(&session)?,
             })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden project list failed"))?;
+            .context("BWS client adapter failed to list projects")?;
         Ok(projects
             .data
             .into_iter()
@@ -129,7 +150,13 @@ impl BwsClientPort for BwsClientAdapter {
         access_token: &ProtectedSecret,
         project_name: BwsProjectName,
     ) -> crate::Result<BwsProjectId> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            format!(
+                "BWS client adapter failed to create project `{}`",
+                project_name.as_str()
+            )
+        })
+        .await?;
         let created = session
             .client()
             .projects()
@@ -138,7 +165,12 @@ impl BwsClientPort for BwsClientAdapter {
                 name: project_name.as_str().to_owned(),
             })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden project create failed"))?;
+            .with_context(|| {
+                format!(
+                    "BWS client adapter failed to create project `{}`",
+                    project_name.as_str()
+                )
+            })?;
         Ok(BwsProjectId::new(created.id.to_string()))
     }
 
@@ -148,14 +180,25 @@ impl BwsClientPort for BwsClientAdapter {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
     ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            format!(
+                "BWS client adapter failed to list secrets in project `{}`",
+                project_id.as_str()
+            )
+        })
+        .await?;
         let project_id = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
         let secrets = session
             .client()
             .secrets()
             .list_by_project(&SecretIdentifiersByProjectRequest { project_id })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret list failed"))?;
+            .with_context(|| {
+                format!(
+                    "BWS client adapter failed to list secrets in project `{}`",
+                    project_id
+                )
+            })?;
         Ok(secrets
             .data
             .into_iter()
@@ -172,13 +215,25 @@ impl BwsClientPort for BwsClientAdapter {
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
     ) -> crate::Result<GpgBackupEnvelope> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            format!(
+                "BWS client adapter failed to fetch secret `{}` as `gpg-secret-key-backup`",
+                secret_id.as_str()
+            )
+        })
+        .await?;
         let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
         session
             .parse_secret_value_with_revision(id, |json, _revision| {
                 GpgBackupEnvelope::from_json(json.as_bytes())
             })
             .await
+            .with_context(|| {
+                format!(
+                    "BWS client adapter failed to fetch secret `{}` as `gpg-secret-key-backup`",
+                    secret_id.as_str()
+                )
+            })
     }
 
     /// `password-store-remote` secret value を取得し、adapter 翻訳として domain 検証した clone URL を返す。
@@ -187,9 +242,20 @@ impl BwsClientPort for BwsClientAdapter {
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
     ) -> crate::Result<PasswordStoreRemote> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            format!(
+                "BWS client adapter failed to fetch secret `{}` as `password-store-remote`",
+                secret_id.as_str()
+            )
+        })
+        .await?;
         let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
-        let value = session.get_non_secret_value(id).await?;
+        let value = session.get_non_secret_value(id).await.with_context(|| {
+            format!(
+                "BWS client adapter failed to fetch secret `{}` as `password-store-remote`",
+                secret_id.as_str()
+            )
+        })?;
         PasswordStoreRemote::parse(value.as_str())
     }
 
@@ -206,7 +272,10 @@ impl BwsClientPort for BwsClientAdapter {
         )?;
         let note_marker = self
             .fetch_password_store_remote_note_marker(access_token, &secret_id)
-            .await?;
+            .await
+            .context(
+                "BWS client adapter failed to fetch `password-store-remote` provenance marker",
+            )?;
         bws::ensure_recovery_token_allowed(access_token, note_marker.as_deref())
     }
 
@@ -217,7 +286,10 @@ impl BwsClientPort for BwsClientAdapter {
         project_id: &BwsProjectId,
         remote: &PasswordStoreRemote,
     ) -> crate::Result<BwsSecretId> {
-        let session = bws::login_client_with_access_token(access_token).await?;
+        let session = login_bws_session(access_token, || {
+            "BWS client adapter failed to create secret `password-store-remote`".into()
+        })
+        .await?;
         let sdk_scope_id = access_token_scope_id(&session)?;
         let project_uuid = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
         let created = session
@@ -231,7 +303,7 @@ impl BwsClientPort for BwsClientAdapter {
                 bws::provisioning_token_note(access_token)?,
             ))
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret create failed"))?;
+            .context("BWS client adapter failed to create secret `password-store-remote`")?;
         Ok(BwsSecretId::new(created.id.to_string()))
     }
 }
@@ -239,10 +311,94 @@ impl BwsClientPort for BwsClientAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::{
+        domain::bws::{BwsProjectId, BwsProjectName},
+        ports::bw::BwsClientPort,
+        support::protection::ProtectedSecret,
+    };
 
     /// adapter の default 構築が runtime 状態や外部接続を開始しないことを確認する。
     #[test]
     fn adapter_constructs_with_default() {
         let _ = BwsClientAdapter;
+    }
+
+    fn protected_secret(bytes: &[u8]) -> ProtectedSecret {
+        match ProtectedSecret::from_test_bytes(bytes) {
+            Ok(secret) => secret,
+            Err(error) => panic!("failed to create test secret: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_bws_projects_wraps_login_failure_with_adapter_context() {
+        let adapter = BwsClientAdapter;
+        let error = match adapter.list_bws_projects(&protected_secret(b"\n")).await {
+            Ok(_) => panic!("expected list_bws_projects to fail"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+
+        assert!(
+            rendered.contains("BWS client adapter failed to list projects"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("bws access token must not be empty"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_bws_project_wraps_login_failure_with_adapter_context() {
+        let adapter = BwsClientAdapter;
+        let error = match adapter
+            .create_bws_project(
+                &protected_secret(b"\n"),
+                BwsProjectName::DOTFILES_SECRET_RECOVERY,
+            )
+            .await
+        {
+            Ok(_) => panic!("expected create_bws_project to fail"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+
+        assert!(
+            rendered
+                .contains("BWS client adapter failed to create project `dotfiles-secret-recovery`"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("bws access token must not be empty"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_bws_secrets_wraps_login_failure_with_adapter_context() {
+        let adapter = BwsClientAdapter;
+        let error = match adapter
+            .list_bws_secrets(
+                &protected_secret(b"\n"),
+                &BwsProjectId::new("11111111-1111-1111-1111-111111111111"),
+            )
+            .await
+        {
+            Ok(_) => panic!("expected list_bws_secrets to fail"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+
+        assert!(
+            rendered.contains(
+                "BWS client adapter failed to list secrets in project `11111111-1111-1111-1111-111111111111`"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("bws access token must not be empty"),
+            "{rendered}"
+        );
     }
 }

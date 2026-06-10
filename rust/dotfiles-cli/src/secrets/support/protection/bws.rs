@@ -1,6 +1,7 @@
 //! BWS SDK が要求する所有 plaintext buffer と secret 返却値を protection 境界内で扱う操作。
 #![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
+use anyhow::Context;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden::auth::AccessToken;
 use bitwarden::{
@@ -13,6 +14,20 @@ use super::SecretSession;
 use crate::{Result, secrets::support::protection::ProtectedSecret};
 
 const PROVISIONING_TOKEN_NOTE_PREFIX: &str = "dotfiles-provisioning-bws-access-token-id=";
+
+/// BWS access token を SDK / stub 認証へ渡す前提の入力制約で検証する。
+pub(crate) fn validate_access_token_text(access_token: &ProtectedSecret) -> Result<()> {
+    access_token.with_secret_utf8(|token| {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("bws access token must not be empty");
+        }
+        if trimmed.chars().any(char::is_control) {
+            anyhow::bail!("bws access token must not contain control characters");
+        }
+        Ok(())
+    })
+}
 
 /// SDK login request の repository 所有 access token buffer を Drop で zeroize する guard。
 ///
@@ -72,7 +87,7 @@ impl BwsClientSession {
             .secrets()
             .get(&SecretGetRequest { id })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+            .context("BWS SDK secret get failed")?;
         let revision = secret.revision_date.to_rfc3339();
         let value = Zeroizing::new(secret.value);
         let mut protected = ProtectedSecret::new(value.len())?;
@@ -91,7 +106,7 @@ impl BwsClientSession {
             .secrets()
             .get(&SecretGetRequest { id })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+            .context("BWS SDK secret get failed")?;
         Ok(Zeroizing::new(secret.value))
     }
 
@@ -102,7 +117,7 @@ impl BwsClientSession {
             .secrets()
             .get(&SecretGetRequest { id })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+            .context("BWS SDK secret get failed")?;
         Ok(Zeroizing::new(secret.note))
     }
 }
@@ -115,16 +130,18 @@ pub(crate) async fn login_client_with_access_token(
     access_token: &ProtectedSecret,
 ) -> Result<BwsClientSession> {
     let session = SecretSession::start()?;
+    validate_access_token_text(access_token)?;
     let client = access_token
         .with_secret_utf8_async(|token| {
             Box::pin(async {
+                let trimmed = token.trim();
                 let client = Client::new(None);
-                let request = ZeroizingAccessTokenLoginRequest::new(token.trim().to_owned());
+                let request = ZeroizingAccessTokenLoginRequest::new(trimmed.to_owned());
                 client
                     .auth()
                     .login_access_token(request.as_request())
                     .await
-                    .map_err(|_| anyhow::anyhow!("bitwarden login failed"))?;
+                    .context("BWS SDK access-token login failed")?;
                 drop(request);
                 Ok(client)
             })
@@ -209,7 +226,8 @@ pub(crate) fn ensure_recovery_token_allowed(
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_recovery_token_allowed, parse_provisioning_token_note, provisioning_token_note,
+        ensure_recovery_token_allowed, login_client_with_access_token,
+        parse_provisioning_token_note, provisioning_token_note, validate_access_token_text,
     };
     use crate::secrets::support::protection::ProtectedSecret;
 
@@ -253,6 +271,46 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "refusing to store bws-access-token: password-store-remote is missing provisioning token provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_client_rejects_empty_access_token_before_sdk_login() {
+        let secret = ProtectedSecret::from_test_bytes(b"\n").expect("test secret");
+
+        let error = match login_client_with_access_token(&secret).await {
+            Ok(_) => panic!("empty access token must fail before SDK login"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "bws access token must not be empty");
+    }
+
+    #[tokio::test]
+    async fn login_client_rejects_control_characters_before_sdk_login() {
+        let secret = ProtectedSecret::from_test_bytes(b"\x04token").expect("test secret");
+
+        let error = match login_client_with_access_token(&secret).await {
+            Ok(_) => panic!("control characters must fail before SDK login"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "bws access token must not contain control characters"
+        );
+    }
+
+    #[test]
+    fn validate_access_token_rejects_control_characters_after_trim() {
+        let secret = ProtectedSecret::from_test_bytes(b" \x04 ").expect("test secret");
+
+        let error = validate_access_token_text(&secret)
+            .expect_err("control characters must fail before auth");
+
+        assert_eq!(
+            error.to_string(),
+            "bws access token must not contain control characters"
         );
     }
 }

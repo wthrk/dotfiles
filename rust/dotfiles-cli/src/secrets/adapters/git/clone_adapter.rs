@@ -140,8 +140,7 @@ impl GitCloneAdapter {
                 anyhow::bail!("refusing to clone over an existing ~/.password-store");
             }
             Err(error) => {
-                return Err(anyhow::Error::new(error)
-                    .context("failed to claim ~/.password-store before cloning"));
+                return Err(error).context("failed to claim ~/.password-store before cloning");
             }
         }
 
