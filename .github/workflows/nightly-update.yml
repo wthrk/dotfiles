@@ -64,7 +64,7 @@ jobs:
   bump:
     name: bump lock and eval declared versions
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:
@@ -148,7 +148,7 @@ jobs:
     name: extract notes and record history
     needs: bump
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
