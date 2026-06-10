@@ -4,8 +4,7 @@
 //!
 //! nix/brew の版差分を統合し、各アプリのノートを **レジストリ参照 → 機械解決 → AI 探索**の順で取得・LLM 抽出
 //! して 1 エントリを履歴へ追記し、取得元（provenance）をレジストリへ学習する。ノートが取れない/抽出が空の
-//! パッケージはその場で **version-only**（version old→new + notes_url のみ、change_items 空）として確定記録する
-//! （夜をまたいで再試行しない）。
+//! パッケージはその場で **version-only**（version old→new + notes_url のみ、change_items 空）として確定記録する。
 //!
 //! ## provenance（利用者要件 (3)/(4)）
 //!
@@ -116,20 +115,25 @@ struct ResolvedNotes {
     notes_url: Option<String>,
 }
 
-/// 1 delta のノートを [registry 参照 → 機械解決 → AI 探索] で得て、change_items と記録 URL を確定する。
+/// [`resolve_notes`] の結果と、レジストリへ学習すべき provenance（`None`=据え置き）の組。
+struct NoteResolution {
+    notes: ResolvedNotes,
+    learned: Option<NotesSourceEntry>,
+}
+
+/// 1 delta のノートを [registry 参照 → 機械解決 → AI 探索] で得て、change_items・記録 URL・学習 provenance を確定する。
 ///
-/// `extract` は LLM seam、`fetch_source` は registry 再利用フローの HTTP seam（注入差し替え可）。
-/// `registry`/`registry_dirty` は provenance 学習で更新する。change_items が空なら呼び出し側が version-only と
-/// して記録する。
+/// `extract` は LLM seam、`fetch_source` は registry 再利用フローの HTTP seam（注入差し替え可）。レジストリは
+/// 読み取りだけ（`&NotesSourceRegistry`）で、学習する provenance は `learned`（`Some`=記録、`None`=据え置き）で
+/// 返し、書き込みは呼び出し側へ委ねる。change_items が空なら呼び出し側が version-only として記録する。
 fn resolve_notes(
     delta: &VersionDelta,
     at: &str,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
-    registry: &mut NotesSourceRegistry,
-    registry_dirty: &mut bool,
-) -> Result<ResolvedNotes> {
+    registry: &NotesSourceRegistry,
+) -> Result<NoteResolution> {
     // フロー 1（レジストリ参照）: 保存済み有効 source を直接 fetch して再利用（再探索しない）。
     let saved_source = registry
         .lookup(&delta.name, delta.source)
@@ -171,70 +175,15 @@ fn resolve_notes(
     let outcome = extract.extract(&request)?;
     let change_items = sanitize_change_items(outcome.items);
 
-    // provenance を確定して学習する（フロー別）。
-    if reused.is_some() {
-        // 据え置き（再探索しない）。
-    } else if let Some(mech) = &mechanical {
-        let provenance = match &mech.refetch_url {
-            Some(refetch_url) => NotesSourceEntry {
-                source: Some(refetch_url.clone()),
-                origin: NotesOrigin::Mechanical,
-                discovered_at: Some(at.to_string()),
-                note: None,
-            },
-            None => NotesSourceEntry {
-                source: None,
-                origin: NotesOrigin::None,
-                discovered_at: Some(at.to_string()),
-                note: None,
-            },
-        };
-        learn_provenance(
-            registry,
-            registry_dirty,
-            &delta.name,
-            delta.source,
-            provenance,
-        );
-    } else if let Some(source_url) = outcome
-        .source_url
-        .as_ref()
-        .filter(|_| !change_items.is_empty())
-    {
-        let provenance = NotesSourceEntry {
-            source: Some(source_url.clone()),
-            origin: NotesOrigin::AiDiscovered,
-            discovered_at: Some(at.to_string()),
-            note: None,
-        };
-        learn_provenance(
-            registry,
-            registry_dirty,
-            &delta.name,
-            delta.source,
-            provenance,
-        );
-    } else if registry
-        .lookup(&delta.name, delta.source)
-        .and_then(NotesSourceEntry::reusable_source)
-        .is_some()
-    {
-        // 全経路が空を返したが既存有効 source が在る一時失敗 → 既存を保持（上書きしない）。
-    } else {
-        let provenance = NotesSourceEntry {
-            source: None,
-            origin: NotesOrigin::None,
-            discovered_at: Some(at.to_string()),
-            note: None,
-        };
-        learn_provenance(
-            registry,
-            registry_dirty,
-            &delta.name,
-            delta.source,
-            provenance,
-        );
-    }
+    let learned = decide_provenance(
+        delta,
+        at,
+        registry,
+        reused.is_some(),
+        mechanical.as_ref(),
+        outcome.source_url.as_deref(),
+        change_items.is_empty(),
+    );
 
     let notes_url = sanitize_notes_url(
         resolved_notes_url
@@ -261,22 +210,82 @@ fn resolve_notes(
         repo = delta.repo.as_deref().unwrap_or(""),
         items = change_items.len(),
     );
-    Ok(ResolvedNotes {
-        change_items,
-        notes_url,
+    Ok(NoteResolution {
+        notes: ResolvedNotes {
+            change_items,
+            notes_url,
+        },
+        learned,
     })
 }
 
-/// 確定した provenance をサニタイズしてレジストリへ学習し、更新フラグを立てる。
+/// 各解決フローの結果から、レジストリへ学習すべき provenance を 1 つ決める純粋関数（`None`=据え置き）。
+///
+/// 再利用成功（`reused`）は据え置き。機械解決成功は refetch URL（無ければ origin=none）を学習。AI 探索が有効
+/// change_items を伴う取得元を採用したならそれを学習。全経路が空でも既存有効 source が在れば据え置き、無ければ
+/// origin=none を学習して次回再探索へ戻す。
+fn decide_provenance(
+    delta: &VersionDelta,
+    at: &str,
+    registry: &NotesSourceRegistry,
+    reused: bool,
+    mechanical: Option<&RawReleaseNotes>,
+    ai_source_url: Option<&str>,
+    change_items_empty: bool,
+) -> Option<NotesSourceEntry> {
+    if reused {
+        return None;
+    }
+    if let Some(mech) = mechanical {
+        return Some(match &mech.refetch_url {
+            Some(refetch_url) => NotesSourceEntry {
+                source: Some(refetch_url.clone()),
+                origin: NotesOrigin::Mechanical,
+                discovered_at: Some(at.to_string()),
+                note: None,
+            },
+            None => none_provenance(at),
+        });
+    }
+    if let Some(source_url) = ai_source_url.filter(|_| !change_items_empty) {
+        return Some(NotesSourceEntry {
+            source: Some(source_url.to_string()),
+            origin: NotesOrigin::AiDiscovered,
+            discovered_at: Some(at.to_string()),
+            note: None,
+        });
+    }
+    if registry
+        .lookup(&delta.name, delta.source)
+        .and_then(NotesSourceEntry::reusable_source)
+        .is_some()
+    {
+        // 全経路が空を返したが既存有効 source が在る一時失敗 → 既存を保持（上書きしない）。
+        return None;
+    }
+    Some(none_provenance(at))
+}
+
+/// 有効な取得元が無いことを表す provenance（origin=none。次回再探索へ戻す）。
+fn none_provenance(at: &str) -> NotesSourceEntry {
+    NotesSourceEntry {
+        source: None,
+        origin: NotesOrigin::None,
+        discovered_at: Some(at.to_string()),
+        note: None,
+    }
+}
+
+/// 学習する provenance をサニタイズしてレジストリへ記録した新しいレジストリを返す（関数型の再構築）。
 fn learn_provenance(
-    registry: &mut NotesSourceRegistry,
-    dirty: &mut bool,
+    registry: NotesSourceRegistry,
     name: &str,
     source: DeltaSource,
     provenance: NotesSourceEntry,
-) {
+) -> NotesSourceRegistry {
+    let mut registry = registry;
     registry.record(name, source, sanitize_provenance(provenance));
-    *dirty = true;
+    registry
 }
 
 /// 学習する provenance を記録前に host allowlist で機械サニタイズする（許可外 source を学習しない）。
@@ -326,34 +335,56 @@ fn run_record_with(
     let brew_deltas = compute_brew_deltas(input, fetch_cask)?;
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
 
-    let mut registry = read_registry(input.registry_path)?;
-    let mut registry_dirty = false;
+    // 各 delta を解決しつつレジストリ（学習）と素材列を不変 accumulator で畳み込む。`registry_dirty` は学習が
+    // 1 度でも起きたかを `learned.is_some()` の or で持ち回る。
+    let initial = RecordAccum {
+        registry: read_registry(input.registry_path)?,
+        registry_dirty: false,
+        materials: Vec::new(),
+    };
+    let accumulated =
+        deltas
+            .into_iter()
+            .try_fold(initial, |accum, delta| -> Result<RecordAccum> {
+                let resolution = resolve_notes(
+                    &delta,
+                    &input.at,
+                    extract,
+                    fetch_source,
+                    brew_hint,
+                    &accum.registry,
+                )?;
+                let registry = match &resolution.learned {
+                    Some(entry) => {
+                        learn_provenance(accum.registry, &delta.name, delta.source, entry.clone())
+                    }
+                    None => accum.registry,
+                };
+                Ok(RecordAccum {
+                    registry,
+                    registry_dirty: accum.registry_dirty || resolution.learned.is_some(),
+                    materials: accum
+                        .materials
+                        .into_iter()
+                        .chain(std::iter::once(PackageMaterial {
+                            delta,
+                            change_items: resolution.notes.change_items,
+                            notes_url: resolution.notes.notes_url,
+                        }))
+                        .collect(),
+                })
+            })?;
+    let RecordAccum {
+        registry,
+        registry_dirty,
+        materials,
+    } = accumulated;
 
-    let mut materials = Vec::with_capacity(deltas.len());
-    let mut summarized = 0usize;
-    let mut version_only = 0usize;
-    for delta in deltas {
-        let resolved = resolve_notes(
-            &delta,
-            &input.at,
-            extract,
-            fetch_source,
-            brew_hint,
-            &mut registry,
-            &mut registry_dirty,
-        )?;
-        // ノートが取れなければ（change_items 空）その場で version-only として確定する（夜をまたいで再試行しない）。
-        if resolved.change_items.is_empty() {
-            version_only += 1;
-        } else {
-            summarized += 1;
-        }
-        materials.push(PackageMaterial {
-            delta,
-            change_items: resolved.change_items,
-            notes_url: resolved.notes_url,
-        });
-    }
+    let summarized = materials
+        .iter()
+        .filter(|material| !material.change_items.is_empty())
+        .count();
+    let version_only = materials.len() - summarized;
     if summarized + version_only > 0 {
         eprintln!("notes: {summarized} packages summarized, {version_only} version-only");
     }
@@ -376,6 +407,13 @@ fn run_record_with(
         materials,
     );
     append_entry(input.out, &entry)
+}
+
+/// `run_record_with` の delta 畳み込み途中状態（学習中レジストリ・学習有無・確定済み素材列）。
+struct RecordAccum {
+    registry: NotesSourceRegistry,
+    registry_dirty: bool,
+    materials: Vec<PackageMaterial>,
 }
 
 /// `homebrew.nix` + 両 cask rev が揃うときだけ、reqwest で cask `.rb` を取得して brew 版差分を算出する。
@@ -500,8 +538,11 @@ fn read_document(path: &Path) -> Result<HistoryDocument> {
 }
 
 /// directory 配下の月次履歴ファイルだけを名前順に読み、エントリを連結する（registry/非月次を除外）。
+///
+/// 月次ファイルを `BTreeSet<PathBuf>` へ集めて名前順を得（可変ソートを使わない）、各ファイルの全エントリを
+/// `try_fold` で順に連結する（読み取り失敗は伝播）。
 fn read_directory(path: &Path) -> Result<Vec<UpdateEntry>> {
-    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(path) {
+    let files: std::collections::BTreeSet<std::path::PathBuf> = match std::fs::read_dir(path) {
         Ok(read_dir) => read_dir
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| {
@@ -513,12 +554,10 @@ fn read_directory(path: &Path) -> Result<Vec<UpdateEntry>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
-    files.sort();
-    let mut entries = Vec::new();
-    for file in files {
-        entries.extend(read_document(&file)?.updates);
-    }
-    Ok(entries)
+    files.into_iter().try_fold(Vec::new(), |entries, file| {
+        let updates = read_document(&file)?.updates;
+        Ok(entries.into_iter().chain(updates).collect())
+    })
 }
 
 /// 履歴 source（ファイル/ディレクトリ）の全エントリを読む。directory なら月次ファイルを名前順に連結する。
@@ -543,8 +582,14 @@ fn write_document(path: &Path, document: &HistoryDocument) -> Result<()> {
 
 /// 新エントリを既存履歴へ追記する（既存エントリは保持する）。
 pub(crate) fn append_entry(path: &Path, entry: &UpdateEntry) -> Result<()> {
-    let mut document = read_document(path)?;
-    document.updates.push(entry.clone());
+    let existing = read_document(path)?;
+    let document = HistoryDocument {
+        updates: existing
+            .updates
+            .into_iter()
+            .chain(std::iter::once(entry.clone()))
+            .collect(),
+    };
     write_document(path, &document)
 }
 
@@ -651,8 +696,8 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("dotfiles-uh-record-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dotfiles-uh-record-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).ok();
         dir
@@ -841,8 +886,11 @@ mod tests {
         let dir = temp_dir("skip-empty");
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
-        let mut inp = input(&dir, &out, &registry, None, None);
-        inp.nixpkgs_new = inp.nixpkgs_old.clone();
+        let base = input(&dir, &out, &registry, None, None);
+        let inp = RecordInput {
+            nixpkgs_new: base.nixpkgs_old.clone(),
+            ..base
+        };
         let extract = FakeExtractor::new();
         run_record_with(
             &inp,
@@ -868,9 +916,8 @@ mod tests {
         let new = write_nix(&dir, "new.json", r#"{"neovim":{"version":"0.11"}}"#);
         let out = dir.join("2026-06.toml");
         let registry_path = dir.join("notes-sources.toml");
-        let mut registry = NotesSourceRegistry::default();
         // 構造的に不正な source（単一ラベルホスト）は再利用 fetch を踏まない（is_allowed_url で除外）→ 機械解決へ。
-        registry.record(
+        let registry = registry_of(vec![(
             "neovim",
             DeltaSource::NixEval,
             NotesSourceEntry {
@@ -879,7 +926,7 @@ mod tests {
                 discovered_at: None,
                 note: None,
             },
-        );
+        )]);
         write_registry(&registry_path, &registry)?;
         let extract = FakeExtractor::new();
         run_record_with(
@@ -907,14 +954,13 @@ mod tests {
         let out = dir.join("2026-06.toml");
         let registry_path = dir.join("notes-sources.toml");
         let saved_url = "https://github.com/neovim/neovim/releases";
-        let mut registry = NotesSourceRegistry::default();
         let saved_entry = NotesSourceEntry {
             source: Some(saved_url.to_string()),
             origin: NotesOrigin::Mechanical,
             discovered_at: Some("2026-05-01T00:00:00Z".to_string()),
             note: None,
         };
-        registry.record("neovim", DeltaSource::NixEval, saved_entry.clone());
+        let registry = registry_of(vec![("neovim", DeltaSource::NixEval, saved_entry.clone())]);
         write_registry(&registry_path, &registry)?;
 
         // fetch_source seam: 保存済み URL のみ有効ノートを返し、呼び出し回数を観測する。
@@ -976,10 +1022,12 @@ mod tests {
         let homebrew = write_nix(&dir, "homebrew.nix", "casks = [ \"azookey\" ];");
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
-        let mut inp = input(&dir, &out, &registry, None, None);
-        inp.homebrew_nix = Some(&homebrew);
-        inp.cask_rev_old = Some("oldrev");
-        inp.cask_rev_new = Some("newrev");
+        let inp = RecordInput {
+            homebrew_nix: Some(&homebrew),
+            cask_rev_old: Some("oldrev"),
+            cask_rev_new: Some("newrev"),
+            ..input(&dir, &out, &registry, None, None)
+        };
         // cask fetch seam: rev に応じて azookey の version 文字列を返す（upgrade）。
         let fetch_cask = |url: &str| -> Result<Option<String>> {
             Ok(if url.contains("/oldrev/") {
@@ -1016,12 +1064,11 @@ mod tests {
         let old = write_nix(&dir, "old.json", r#"{"neovim":{"version":"0.10"}}"#);
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
-        let mut inp = input(&dir, &out, &registry, Some(&old), None);
-        inp.nix_new = None;
+        // `input(.., Some(&old), None)` で nix_new は既に None（eval seam 経路）。
+        let inp = input(&dir, &out, &registry, Some(&old), None);
         let eval_new =
             |_reference: &str| -> Result<std::collections::BTreeMap<String, NixPackage>> {
-                let mut map = std::collections::BTreeMap::new();
-                map.insert(
+                Ok(std::iter::once((
                     "neovim".to_string(),
                     NixPackage {
                         version: "0.11".to_string(),
@@ -1029,8 +1076,8 @@ mod tests {
                         notes_source: String::new(),
                         homepage: String::new(),
                     },
-                );
-                Ok(map)
+                ))
+                .collect())
             };
         let extract = FakeExtractor::new();
         run_record_with(
@@ -1050,6 +1097,18 @@ mod tests {
     }
 
     // ---- registry / store の単体固定 ----
+
+    /// `(name, source, entry)` 列を畳んでレジストリを組む（`record` の可変挿入を 1 箇所に閉じる）。
+    fn registry_of(entries: Vec<(&str, DeltaSource, NotesSourceEntry)>) -> NotesSourceRegistry {
+        entries.into_iter().fold(
+            NotesSourceRegistry::default(),
+            |registry, (name, source, entry)| {
+                let mut registry = registry;
+                registry.record(name, source, entry);
+                registry
+            },
+        )
+    }
 
     fn entry_of(source: Option<&str>, origin: NotesOrigin) -> NotesSourceEntry {
         NotesSourceEntry {
@@ -1087,25 +1146,30 @@ mod tests {
 
     #[test]
     fn registry_upserts_keeps_nix_brew_separate_and_serializes_in_name_order() -> Result<()> {
-        let mut registry = NotesSourceRegistry::default();
-        assert!(registry.lookup("neovim", DeltaSource::NixEval).is_none());
+        assert!(
+            NotesSourceRegistry::default()
+                .lookup("neovim", DeltaSource::NixEval)
+                .is_none()
+        );
         // 同名 nix/brew は別キー。
-        registry.record(
-            "firefox",
-            DeltaSource::NixEval,
-            entry_of(
-                Some("https://github.com/mozilla/firefox/releases"),
-                NotesOrigin::Mechanical,
+        let registry = registry_of(vec![
+            (
+                "firefox",
+                DeltaSource::NixEval,
+                entry_of(
+                    Some("https://github.com/mozilla/firefox/releases"),
+                    NotesOrigin::Mechanical,
+                ),
             ),
-        );
-        registry.record(
-            "firefox",
-            DeltaSource::BrewTap,
-            entry_of(
-                Some("https://github.com/homebrew/homebrew-cask/blob/x/firefox.rb"),
-                NotesOrigin::AiDiscovered,
+            (
+                "firefox",
+                DeltaSource::BrewTap,
+                entry_of(
+                    Some("https://github.com/homebrew/homebrew-cask/blob/x/firefox.rb"),
+                    NotesOrigin::AiDiscovered,
+                ),
             ),
-        );
+        ]);
         assert_eq!(registry_key("firefox", DeltaSource::NixEval), "nix/firefox");
         assert_eq!(
             registry_key("firefox", DeltaSource::BrewTap),
@@ -1119,28 +1183,29 @@ mod tests {
         );
 
         // 名前昇順で決定論直列化（バイト固定）。
-        let mut ordered = NotesSourceRegistry::default();
-        ordered.record(
-            "ripgrep",
-            DeltaSource::NixEval,
-            entry_of(
-                Some("https://github.com/BurntSushi/ripgrep/releases"),
-                NotesOrigin::Mechanical,
+        let ordered = registry_of(vec![
+            (
+                "ripgrep",
+                DeltaSource::NixEval,
+                entry_of(
+                    Some("https://github.com/BurntSushi/ripgrep/releases"),
+                    NotesOrigin::Mechanical,
+                ),
             ),
-        );
-        ordered.record(
-            "bat",
-            DeltaSource::NixEval,
-            entry_of(
-                Some("https://github.com/sharkdp/bat/releases"),
-                NotesOrigin::AiDiscovered,
+            (
+                "bat",
+                DeltaSource::NixEval,
+                entry_of(
+                    Some("https://github.com/sharkdp/bat/releases"),
+                    NotesOrigin::AiDiscovered,
+                ),
             ),
-        );
-        ordered.record(
-            "zlib",
-            DeltaSource::NixEval,
-            entry_of(None, NotesOrigin::None),
-        );
+            (
+                "zlib",
+                DeltaSource::NixEval,
+                entry_of(None, NotesOrigin::None),
+            ),
+        ]);
         let rendered = toml::to_string(&ordered)?;
         let expected = "\
 [\"nix/bat\"]
@@ -1215,15 +1280,14 @@ origin = \"none\"
         let dir = temp_dir("registry-file");
         let path = dir.join("notes-sources.toml");
         assert_eq!(read_registry(&path)?, NotesSourceRegistry::default());
-        let mut registry = NotesSourceRegistry::default();
-        registry.record(
+        let registry = registry_of(vec![(
             "neovim",
             DeltaSource::NixEval,
             entry_of(
                 Some("https://github.com/neovim/neovim/releases"),
                 NotesOrigin::Mechanical,
             ),
-        );
+        )]);
         write_registry(&path, &registry)?;
         assert_eq!(read_registry(&path)?, registry);
         let _ = std::fs::remove_dir_all(&dir);

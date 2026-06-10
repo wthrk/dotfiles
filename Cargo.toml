@@ -44,6 +44,7 @@ reqwest = { version = "0.12.28", default-features = false, features = ["blocking
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 rlimit = "0.10.2"
 rsa = { version = "0.9.8", features = ["sha2"] }
+percent-encoding = "2.3.2"
 portable-pty = "0.9.0"
 sequoia-openpgp = { version = "1.21.2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 serde = { version = "1.0.228", features = ["derive"] }

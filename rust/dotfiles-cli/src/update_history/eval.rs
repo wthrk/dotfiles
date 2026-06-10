@@ -3,14 +3,13 @@
 //! nightly の nix 版差分は、各宣言パッケージの `pname`/`version` と当該版リリースノート取得元（owner/repo・
 //! changelog・homepage）を要する。これらは評価時属性のみで数秒・ビルド/フェッチ非実行で取れる。本 module は
 //! [`eval_declared_versions`] で `nix eval` を **生の評価値だけ返す最小 `--apply` 式**（owner/repo 導出規則を
-//! 含まない）で起動し、整形・repo 導出・changelog/homepage 抽出を **Rust 側**で行って [`NixPackage`] へ畳む
-//! （旧 `eval-declared-versions.sh` + `derive-repo.nix` の置き換え）。
+//! 含まない）で起動し、整形・repo 導出・changelog/homepage 抽出を **Rust 側**で行って [`NixPackage`] へ畳む。
 //!
 //! repo（owner/repo）導出の優先: ①`meta.homepage` が github ②無ければ `src`（owner+repo 直接、無ければ
 //! url/urls の github URL）③無ければ `meta.changelog` の github URL。github 由来が取れなければ空（version-only
 //! 行き）。すべて信頼境界外の値であり、実取得時に host allowlist で機械検証する。
 //!
-//! flake.lock の rev 抽出（[`lock_node_rev`]）も serde_json で行い、workflow の jq を撤去する。
+//! flake.lock の rev 抽出（[`lock_node_rev`]）も serde_json で行う。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -82,9 +81,8 @@ pub(crate) fn eval_declared_versions(reference: &str) -> Result<BTreeMap<String,
         ".#{reference}.config.home-manager.users.{user}.home.packages"
     ))?;
     let system = eval_package_list(&format!(".#{reference}.config.environment.systemPackages"))?;
-    let mut merged = home;
-    merged.extend(system);
-    Ok(merged)
+    // home を先に、同名は system 側で上書きする（後勝ち）。`chain` で system を後に置き collect する。
+    Ok(home.into_iter().chain(system).collect())
 }
 
 /// 1 つのパッケージ list attribute を `nix eval --json --apply` で評価し、導出済み name→[`NixPackage`] を返す。
@@ -159,9 +157,13 @@ fn repo_from_url(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://github.com/")
         .or_else(|| url.strip_prefix("http://github.com/"))?;
-    let mut segments = rest.split('/');
-    let owner = segments.next().filter(|s| !s.is_empty())?;
-    let repo_raw = segments.next().filter(|s| !s.is_empty())?;
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = Some(owner).filter(|s| !s.is_empty())?;
+    // repo は owner の次の segment（さらに `/` があればそこまで）。
+    let repo_raw = after_owner
+        .split_once('/')
+        .map_or(after_owner, |(repo, _)| repo);
+    let repo_raw = Some(repo_raw).filter(|s| !s.is_empty())?;
     // 末尾のクエリ/フラグメント（`?`/`#` 以降）を落とし、続く `.git` を剥がす。
     let repo = repo_raw
         .split(['?', '#'])
@@ -188,7 +190,7 @@ fn first_url(value: &serde_json::Value) -> Option<&str> {
     value.as_array()?.first()?.as_str()
 }
 
-/// flake.lock の `nodes.<node>.locked.rev` を serde_json で取り出す（workflow の jq 置き換え）。
+/// flake.lock の `nodes.<node>.locked.rev` を serde_json で取り出す（workflow が rev 抽出に呼ぶ）。
 pub(crate) fn lock_node_rev(lock_path: &Path, node: &str) -> Result<Option<String>> {
     #[derive(Deserialize)]
     struct Lock {
@@ -333,8 +335,8 @@ mod tests {
 
     #[test]
     fn lock_node_rev_extracts_locked_rev() -> Result<()> {
-        let mut path = std::env::temp_dir();
-        path.push(format!("dotfiles-uh-lock-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("dotfiles-uh-lock-{}.json", std::process::id()));
         std::fs::write(
             &path,
             r#"{"nodes":{"nixpkgs":{"locked":{"rev":"deadbeef"}},"root":{}}}"#,

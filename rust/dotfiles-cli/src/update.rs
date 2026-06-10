@@ -1,15 +1,14 @@
-//! `dotfiles update` の auto 適用経路（単純版）。ローカル flake の repo pin を追随し、必要時だけ適用する。
+//! `dotfiles update` の auto 適用経路。ローカル flake の repo pin を追随し、必要時だけ適用する。
 //!
 //! `switch` は lock 済みの入力をそのまま使う。`update` は repo pin（生成ローカル flake の `flake.lock` に
 //! おける dotfiles input の locked rev）が前回適用済み rev と異なるときだけ、`flake update` + switch を実行
 //! して fleet を repo pin へ収束させる。
 //!
-//! ## 設計（過剰設計の撤去）
+//! ## 更新経路と状態
 //!
-//! 更新経路は 1 本だけ（scheduler の薄い launchd timer が同じ `dotfiles update` を呼ぶ）であり、同時更新者を
-//! 作らない。よって排他・ロック・steal・scope 別 marker・defer/commit 二段といった機械は **一切持たない**。
-//! 万一の同時実行は nix 自身の store/profile ロックと冪等性に委ねる。状態は単一 marker `last-applied-rev`
-//! （適用済み dotfiles pin）と要約済みカーソル `last-summarized-at` だけである。
+//! 更新経路は 1 本（launchd timer が同じ `dotfiles update` を呼ぶ）で同時更新者を作らないため、排他・ロック・
+//! scope 別 marker を持たない。万一の同時実行は nix 自身の store/profile ロックと冪等性に委ねる。状態は単一
+//! marker `last-applied-rev`（適用済み dotfiles pin）と要約済みカーソル `last-summarized-at` だけである。
 //!
 //! ## 適用要否判定は lock 更新「後」に行う（fleet 追随の根幹）
 //!
@@ -18,13 +17,11 @@
 //! してマシンが新しい repo pin を永久に発見できない。これを避け、本 module は **先に `nix flake update` で
 //! ローカル lock を最新 repo pin へ更新**し、更新後の pin を読んで `last-applied-rev` と比較する。
 //!
-//! ## 状態ディレクトリと所有権
+//! ## 状態ディレクトリ
 //!
-//! 状態は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）に置く。このバイナリ自身は
-//! root 専用パスや所有権昇格を行わず、与えられた `HOME`/`XDG_STATE_HOME` 配下にしか state を書かない。
-//! auto-update.nix のラッパーは darwin-rebuild を root で走らせるため **root のまま** このバイナリを呼び
-//! （`HOME` をユーザ home に向ける）、適用後に書かれた state を `chown -R <user>` でユーザ所有へ直す。
-//! これにより zsh の show-once（ユーザ権限）が `pending-summary` を消費できる。
+//! 状態は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）に置く。auto-update の launchd
+//! daemon は darwin-rebuild を root で走らせるため **root のまま**（`HOME` をユーザ home に向けて）このバイナリ
+//! を呼ぶ。
 
 use std::ffi::OsString;
 use std::fs;
@@ -58,7 +55,7 @@ const HISTORY_LOCAL_SUBDIR: &str = "history";
 
 /// `dotfiles update` の実行結果。cli が exit code へ変換する。
 ///
-/// 排他を持たない単純版では「適用した / up-to-date を確認した」を区別せず、いずれも `Completed`（成功）にする。
+/// 排他を持たないため「適用した / up-to-date を確認した」を区別せず、いずれも `Completed`（成功）にする。
 pub(crate) enum UpdateOutcome {
     /// 適用 / up-to-date 確認を完了した。exit 0。
     Completed,
@@ -77,6 +74,7 @@ pub(crate) fn run(options: UpdateOptions) -> Result<UpdateOutcome> {
 
     let state_dir = state_dir()?;
     let dry_run = options.switch.dry_run();
+
     if !dry_run {
         // 状態ファイルはユーザ所有の state dir 配下にしか作らない。
         fs::create_dir_all(&state_dir)
@@ -141,13 +139,16 @@ fn update_lock(config_dir: &Path, full: bool, dry_run: bool) -> Result<()> {
 ///
 /// 既定では dotfiles input 名を含め、`full` 指定時は input 名を省いて全入力更新へフォールバックする。
 fn update_args(config_dir: &Path, full: bool) -> Vec<OsString> {
-    let mut args = vec![OsString::from("flake"), OsString::from("update")];
-    if !full {
-        args.push(OsString::from(local_flake::INPUT_NAME));
-    }
-    args.push(OsString::from("--flake"));
-    args.push(config_dir.as_os_str().to_os_string());
-    args
+    // `full` 指定時は input 名を省いて全入力更新へフォールバックする（既定は dotfiles input だけ）。
+    let input_name = (!full).then(|| OsString::from(local_flake::INPUT_NAME));
+    [OsString::from("flake"), OsString::from("update")]
+        .into_iter()
+        .chain(input_name)
+        .chain([
+            OsString::from("--flake"),
+            config_dir.as_os_str().to_os_string(),
+        ])
+        .collect()
 }
 
 /// 適用済み dotfiles flake input source の `docs/update-history` を state dir のローカル複製へ取り込む。
@@ -213,8 +214,8 @@ fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<Strin
 ///
 /// 複製前に dest を一時 dir へ新規構築 → 完成後に既存 dest と atomic に rename 置換する。読み手（show / 要約）は
 /// 「古い完全な複製」か「新しい完全な複製」のどちらかだけを観測し、削除途中・コピー途中の中間状態を見ない。
-/// 旧複製喪失を避けるため、既存 dest を backup へ rename 退避 → temp を dest へ rename → 成功時に backup を削除、
-/// 失敗時は backup を dest へ rename 復元する。`libc` を直呼びせず std の rename/remove のみで実現する。
+/// 既存複製の喪失を避けるため、既存 dest を backup へ rename 退避 → temp を dest へ rename → 成功時に backup を
+/// 削除、失敗時は backup を dest へ rename 復元する。`libc` を直呼びせず std の rename/remove のみで実現する。
 fn copy_history_dir(source_history: &Path, dest: &Path) -> Result<()> {
     let parent = dest.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)
@@ -253,10 +254,10 @@ fn copy_history_dir(source_history: &Path, dest: &Path) -> Result<()> {
     replace_history_dir_atomically(&temp_dir, dest, &backup_dir)
 }
 
-/// 完成済み複製 `temp_dir` を、旧複製を喪失せずに `dest` へ差し替える。
+/// 完成済み複製 `temp_dir` を、既存複製を喪失せずに `dest` へ差し替える。
 ///
 /// 1. 既存 dest を `backup_dir` へ rename 退避（dest が無い初回は退避不要）。2. `temp_dir` を dest へ rename。
-/// 3. 成功時のみ `backup_dir` を削除。4. 失敗時は temp を掃除し、退避した旧複製を dest へ rename 復元する。
+/// 3. 成功時のみ `backup_dir` を削除。4. 失敗時は temp を掃除し、退避した既存複製を dest へ rename 復元する。
 fn replace_history_dir_atomically(temp_dir: &Path, dest: &Path, backup_dir: &Path) -> Result<()> {
     let _ = fs::remove_dir_all(backup_dir);
     let backed_up = fs::rename(dest, backup_dir).is_ok();
@@ -284,22 +285,26 @@ pub(crate) fn history_local_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join(HISTORY_LOCAL_SUBDIR))
 }
 
-/// ユーザ所有の state dir（`$XDG_STATE_HOME/dotfiles`、未設定なら `$HOME/.local/state/dotfiles`）を返す。
+/// state dir（`$XDG_STATE_HOME/dotfiles`、未設定なら `$HOME/.local/state/dotfiles`）を返す。
 fn state_dir() -> Result<PathBuf> {
     resolve_state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
 }
 
 /// XDG/HOME の env 値から state dir を決める純粋関数（解決規則を env 参照から切り離してテスト可能にする）。
+///
+/// `XDG_STATE_HOME` が非空ならそれを基点に `<XDG>/dotfiles`、未設定/空なら `<HOME>/.local/state/dotfiles`。
+/// HOME も無ければ `Err`。
 fn resolve_state_dir(xdg_state_home: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {
-    let base = match xdg_state_home {
-        Some(value) if !value.is_empty() => PathBuf::from(value),
-        _ => home
-            .map(PathBuf::from)
-            .filter(|path| !path.as_os_str().is_empty())
-            .ok_or_else(|| anyhow!("HOME is required"))?
-            .join(".local")
-            .join("state"),
-    };
+    if let Some(value) = xdg_state_home.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(value).join("dotfiles"));
+    }
+
+    let base = home
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| anyhow!("HOME is required"))?
+        .join(".local")
+        .join("state");
     Ok(base.join("dotfiles"))
 }
 
@@ -432,12 +437,48 @@ fn present_summary(
 
     if dry_run {
         // dry-run でも描画経路を通すが副作用は持たない（捕捉バッファへ描画して破棄する）。
-        let mut buffer = Vec::new();
-        return update_history::render_applied_summary(&source, summarized_after_at, &mut buffer);
+        let (_bytes, summarized_at) = render_summary_bytes(&source, summarized_after_at)?;
+        return Ok(summarized_at);
     }
     let summarized_at = append_pending_summary(state_dir, &source, summarized_after_at)?;
     append_last_run_log(state_dir, summarized_after_at)?;
     Ok(summarized_at)
+}
+
+/// 適用後要約を Vec バッファへ描画し、`(描画バイト列, 要約済み終端 at)` を返す。
+///
+/// `render_applied_summary` は `Write` sink へ書くため、ここで Vec の writer を 1 箇所に閉じ込める（呼び出し側へ
+/// 可変バッファを露出しない）。dry-run の破棄描画と `pending-summary` への追記公開がこの 1 関数を共有する。
+fn render_summary_bytes(
+    source: &Path,
+    summarized_after_at: Option<&str>,
+) -> Result<(Vec<u8>, Option<String>)> {
+    let mut buffer = Vec::new();
+    let summarized_at =
+        update_history::render_applied_summary(source, summarized_after_at, &mut buffer)?;
+    Ok((buffer, summarized_at))
+}
+
+/// 既存 `pending-summary`（`path`）を `claim_path` へ atomic rename して所有権を取り、その内容を返す。
+///
+/// `path` が存在しなければ空（初回 publish）を返す。rename 後の read に失敗したときは claim を `path` へ戻して
+/// 内容を失わせず `Err` を返す（戻し自体に失敗しても claim ファイルは残り、consumer から完全消失することは防ぐ）。
+/// rename の所有権獲得が NotFound 以外で失敗したときも `Err`。
+fn claim_existing_pending(path: &Path, claim_path: &Path) -> Result<Vec<u8>> {
+    match fs::rename(path, claim_path) {
+        Ok(()) => match fs::read(claim_path) {
+            Ok(bytes) => Ok(bytes),
+            Err(error) => {
+                let _ = fs::rename(claim_path, path);
+                Err(anyhow::Error::from(error)
+                    .context(format!("failed to read claimed {}", claim_path.display())))
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => {
+            Err(anyhow::Error::from(error).context(format!("failed to claim {}", path.display())))
+        }
+    }
 }
 
 /// `pending-summary` へ適用要約ブロックを追記公開する（上書きしない・完成済みブロックだけを公開する）。
@@ -453,33 +494,26 @@ fn append_pending_summary(
     summarized_after_at: Option<&str>,
 ) -> Result<Option<String>> {
     let path = state_dir.join(PENDING_SUMMARY);
-    let mut rendered = Vec::new();
-    let summarized_at =
-        update_history::render_applied_summary(source, summarized_after_at, &mut rendered)?;
+    let (rendered, summarized_at) = render_summary_bytes(source, summarized_after_at)?;
 
     let claim_path = path.with_file_name(format!(
         "{PENDING_SUMMARY}.appending.{}",
         std::process::id()
     ));
     let _ = fs::remove_file(&claim_path);
-    let existing = match fs::rename(&path, &claim_path) {
-        Ok(()) => fs::read(&claim_path)
-            .with_context(|| format!("failed to read claimed {}", claim_path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => {
-            return Err(
-                anyhow::Error::from(error).context(format!("failed to claim {}", path.display()))
-            );
-        }
-    };
+    let existing = claim_existing_pending(&path, &claim_path)?;
 
     let temp_path = path.with_file_name(format!(
         "{PENDING_SUMMARY}.publish.{}.tmp",
         std::process::id()
     ));
     let publish = (|| -> Result<()> {
-        let mut combined = existing.clone();
-        combined.extend_from_slice(&rendered);
+        // 既存ブロックの後ろに今回ブロックを不変連結して 1 度に書き出す。
+        let combined: Vec<u8> = existing
+            .iter()
+            .copied()
+            .chain(rendered.iter().copied())
+            .collect();
         fs::write(&temp_path, &combined)
             .with_context(|| format!("failed to write {}", temp_path.display()))?;
         fs::rename(&temp_path, &path)
@@ -514,7 +548,7 @@ fn append_last_run_log(state_dir: &Path, summarized_after_at: Option<&str>) -> R
     Ok(())
 }
 
-/// `dotfiles update` の利用者向け option（単純版）。
+/// `dotfiles update` の利用者向け option。
 ///
 /// **部分 target を受理しない**: `switch` の共通オプション（[`switch::SwitchCommon`]）だけを flatten し、適用対象
 /// （`home`/`darwin`）を持たない。`update` は常に全体適用（home+darwin）であり、これにより部分適用後に全体
@@ -531,15 +565,15 @@ pub(crate) struct UpdateOptions {
 
 #[cfg(test)]
 mod tests {
-    //! 単純版 update の引数列・pin 解析・state dir 解決・marker 原子書込み・冪等判定を固定する。
+    //! update の引数列・pin 解析・state dir 解決・marker 原子書込み・冪等判定を固定する。
 
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     use super::{
-        LAST_APPLIED_REV, UpdateOptions, parse_input_source_path, parse_repo_pin,
-        read_last_applied_rev, replace_history_dir_atomically, resolve_state_dir, update_args,
-        write_rev_atomic,
+        LAST_APPLIED_REV, UpdateOptions, claim_existing_pending, parse_input_source_path,
+        parse_repo_pin, read_last_applied_rev, replace_history_dir_atomically, resolve_state_dir,
+        update_args, write_rev_atomic,
     };
     use anyhow::anyhow;
     use clap::Parser;
@@ -551,8 +585,9 @@ mod tests {
     }
 
     fn parse_update(args: &[&str]) -> crate::Result<UpdateOptions> {
-        let mut argv = vec!["dotfiles"];
-        argv.extend_from_slice(args);
+        let argv: Vec<&str> = std::iter::once("dotfiles")
+            .chain(args.iter().copied())
+            .collect();
         TestUpdateCli::try_parse_from(argv)
             .map(|cli| cli.update)
             .map_err(|error| anyhow!("parse update options: {error}"))
@@ -565,8 +600,8 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> crate::Result<PathBuf> {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("dotfiles-update-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dotfiles-update-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|error| anyhow!("create dir: {error}"))?;
         Ok(dir)
     }
@@ -641,16 +676,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_state_dir_prefers_xdg_then_home() -> crate::Result<()> {
-        let xdg = resolve_state_dir(
-            Some(OsString::from("/xdg/state")),
+    fn resolve_state_dir_honors_non_empty_xdg() -> crate::Result<()> {
+        // XDG_STATE_HOME が非空ならそれを基点に `<XDG>/dotfiles` を使う。
+        let resolved = resolve_state_dir(
+            Some(OsString::from("/xdg-state")),
             Some(OsString::from("/home/u")),
         )?;
-        assert_eq!(xdg, PathBuf::from("/xdg/state/dotfiles"));
+        assert_eq!(resolved, PathBuf::from("/xdg-state").join("dotfiles"));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_state_dir_falls_back_on_empty_xdg_and_errs_without_home() -> crate::Result<()> {
         // XDG 空ならば HOME/.local/state へ倒れる。
-        let home = resolve_state_dir(Some(OsString::from("")), Some(OsString::from("/home/u")))?;
-        assert_eq!(home, PathBuf::from("/home/u/.local/state/dotfiles"));
-        // XDG も HOME も無ければ Err（root 領域へ誤って書かない）。
+        let resolved =
+            resolve_state_dir(Some(OsString::from("")), Some(OsString::from("/home/u")))?;
+        assert_eq!(
+            resolved,
+            PathBuf::from("/home/u")
+                .join(".local")
+                .join("state")
+                .join("dotfiles")
+        );
+        // XDG も HOME も無ければ Err。
         assert!(resolve_state_dir(None, None).is_err());
         Ok(())
     }
@@ -682,6 +730,57 @@ mod tests {
         twrite(temp.join("2026-06.toml"), "new")?;
         replace_history_dir_atomically(&temp, &dest, &backup)?;
         assert_eq!(tread(dest.join("2026-06.toml"))?, "new");
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn claim_existing_pending_returns_empty_when_absent() -> crate::Result<()> {
+        // 既存 `pending-summary` が無ければ初回 publish として空内容を返す。
+        let dir = temp_dir("claim-absent")?;
+        let path = dir.join("pending-summary");
+        let claim = dir.join("pending-summary.appending");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&claim);
+        assert!(claim_existing_pending(&path, &claim)?.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn claim_existing_pending_reads_and_owns_existing() -> crate::Result<()> {
+        // 既存 `pending-summary` を claim へ rename して内容を返し、live ファイルは claim 側へ移る。
+        let dir = temp_dir("claim-read")?;
+        let path = dir.join("pending-summary");
+        let claim = dir.join("pending-summary.appending");
+        let _ = std::fs::remove_file(&claim);
+        twrite(&path, "block-A\n")?;
+        assert_eq!(claim_existing_pending(&path, &claim)?, b"block-A\n");
+        assert!(!path.exists());
+        assert_eq!(tread(&claim)?, "block-A\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn claim_existing_pending_restores_pending_when_read_fails() -> crate::Result<()> {
+        // read 失敗経路でも `pending-summary` を失わない。live が directory のとき rename(live→claim) は成功し
+        // 直後の read(claim) が「Is a directory」で失敗するため、read 失敗→claim を live へ戻す経路を踏む。
+        // 復元後に `pending-summary` が元の位置へ戻っており、consumer から消失しないことを固定する。
+        let dir = temp_dir("claim-read-fail")?;
+        let path = dir.join("pending-summary");
+        let claim = dir.join("pending-summary.appending");
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_dir_all(&claim);
+        std::fs::create_dir_all(&path).map_err(|error| anyhow!("mkdir live: {error}"))?;
+        twrite(path.join("marker"), "kept")?;
+
+        let result = claim_existing_pending(&path, &claim);
+        assert!(result.is_err());
+        // claim は live へ戻り、内容（marker）も保持されている。
+        assert!(path.is_dir());
+        assert!(!claim.exists());
+        assert_eq!(tread(path.join("marker"))?, "kept");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

@@ -1,9 +1,8 @@
 # dotfiles 自動アップデートの shell 連携（pending-summary の show-once 表示のみ）。
 #
-# 単純版ではシェル側の責務を「background 適用（launchd daemon の `dotfiles update`）が残した
-# `pending-summary` をログイン時に 1 回だけ表示して原子的に消費する」ことだけに縮小する。catch-up 起動・
-# trigger marker・scope cursor・detach 適用（`dotfiles update home` の login catch-up）は撤去した。
-# 追随は launchd daemon の `dotfiles update`（rev ベースで冪等）に一本化されており、シェルは適用しない。
+# シェル側の責務は「background 適用（launchd daemon の `dotfiles update`）が残した `pending-summary` を
+# ログイン時に 1 回だけ表示して原子的に消費する」ことだけである。repo pin への追随は launchd daemon の
+# `dotfiles update`（rev ベースで冪等）に一本化されており、シェルは適用しない。
 #
 # このフックは「インタラクティブシェルでのログイン体験を壊さない」ことを最優先にする。重い処理は一切せず、
 # 既存 marker の表示だけを行う。dotfiles 不在・state 不在・失敗時は静かに no-op し、ログインを止めない。

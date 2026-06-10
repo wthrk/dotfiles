@@ -38,9 +38,9 @@ impl DeltaSource {
 /// `nix eval` が宣言パッケージごとに返す評価時属性（version・GitHub owner/repo・changelog URL・homepage）。
 ///
 /// `version` は `pname`/`version`（取れなければ空文字）。`repo` は GitHub `owner/repo`（無ければ空文字）で
-/// Releases API の一次取得元。`notes_source`（旧 JSON key、現 `changelog`）は changelog URL（Releases API 空振り
-/// 時の raw フォールバック取得先）。`homepage` は AI エージェントの fetch 許可ホスト集合のヒント。いずれも
-/// 信頼境界外の値であり、実取得時に host allowlist で機械検証する。
+/// Releases API の一次取得元。`notes_source` は changelog URL（Releases API 空振り時の raw フォールバック取得先）。
+/// `homepage` は AI エージェントの fetch 許可ホスト集合のヒント。いずれも信頼境界外の値であり、実取得時に host
+/// allowlist で機械検証する。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NixPackage {
     /// 評価時 version（無ければ空文字。空は版不明 = `None` 扱い）。
@@ -48,8 +48,8 @@ pub(crate) struct NixPackage {
     /// GitHub `owner/repo`（無ければ空文字）。
     #[serde(default)]
     pub(crate) repo: String,
-    /// changelog URL（無ければ空文字）。eval JSON では `changelog` key で serialize / deserialize する（rename）。
-    /// 旧 `notes_source` key も alias で受ける（後方互換）。フィールド名は内部都合で `notes_source` のまま。
+    /// changelog URL（無ければ空文字）。eval JSON では `changelog` key で serialize / deserialize し、`notes_source`
+    /// key も alias で受ける。Rust フィールド名は `notes_source`。
     #[serde(default, rename = "changelog", alias = "notes_source")]
     pub(crate) notes_source: String,
     /// `meta.homepage` 由来の URL（無ければ空文字）。AI エージェントの fetch 許可ホスト集合のヒント。
@@ -83,9 +83,7 @@ pub(crate) fn merge_version_deltas(
     nix: Vec<VersionDelta>,
     brew: Vec<VersionDelta>,
 ) -> Vec<VersionDelta> {
-    let mut merged = nix;
-    merged.extend(brew);
-    merged
+    nix.into_iter().chain(brew).collect()
 }
 
 /// old/new の宣言パッケージ name→version マップを比較して [`VersionDelta`] 列へ変換する純粋関数。
@@ -97,55 +95,64 @@ pub(crate) fn diff_versions(
     old: &BTreeMap<String, NixPackage>,
     new: &BTreeMap<String, NixPackage>,
 ) -> Vec<VersionDelta> {
-    let mut deltas = Vec::new();
-    for (name, new_pkg) in new {
-        let repo = empty_to_none(&new_pkg.repo);
-        let notes_source = empty_to_none(&new_pkg.notes_source);
-        let homepage = empty_to_none(&new_pkg.homepage);
-        match old.get(name) {
-            Some(old_pkg) => {
-                if old_pkg.version == new_pkg.version {
-                    continue;
-                }
-                let change = compare_versions(&old_pkg.version, &new_pkg.version);
-                deltas.push(VersionDelta {
-                    name: name.clone(),
-                    old: version_value(&old_pkg.version),
-                    new: version_value(&new_pkg.version),
-                    change,
-                    source: DeltaSource::NixEval,
-                    repo,
-                    notes_source,
-                    homepage,
-                });
-            }
-            None => deltas.push(VersionDelta {
-                name: name.clone(),
-                old: None,
-                new: version_value(&new_pkg.version),
-                change: ChangeKind::Added,
-                source: DeltaSource::NixEval,
-                repo,
-                notes_source,
-                homepage,
-            }),
-        }
+    // new 側（Added / Upgraded / Downgraded。版不変は除外）を name 昇順で先に、続けて old のみ（Removed）を name
+    // 昇順で連結する。いずれも `BTreeMap` 反復順なので決定論的。
+    let changed = new
+        .iter()
+        .filter_map(|(name, new_pkg)| changed_delta(name, old.get(name), new_pkg));
+    let removed = old
+        .iter()
+        .filter(|(name, _)| !new.contains_key(*name))
+        .map(|(name, old_pkg)| removed_delta(name, old_pkg));
+    changed.chain(removed).collect()
+}
+
+/// new 側 1 件を、old の有無と版比較から `Added`/`Upgraded`/`Downgraded` の delta へ翻訳する（版不変は `None`）。
+fn changed_delta(
+    name: &str,
+    old_pkg: Option<&NixPackage>,
+    new_pkg: &NixPackage,
+) -> Option<VersionDelta> {
+    let repo = empty_to_none(&new_pkg.repo);
+    let notes_source = empty_to_none(&new_pkg.notes_source);
+    let homepage = empty_to_none(&new_pkg.homepage);
+    match old_pkg {
+        Some(old_pkg) if old_pkg.version == new_pkg.version => None,
+        Some(old_pkg) => Some(VersionDelta {
+            name: name.to_string(),
+            old: version_value(&old_pkg.version),
+            new: version_value(&new_pkg.version),
+            change: compare_versions(&old_pkg.version, &new_pkg.version),
+            source: DeltaSource::NixEval,
+            repo,
+            notes_source,
+            homepage,
+        }),
+        None => Some(VersionDelta {
+            name: name.to_string(),
+            old: None,
+            new: version_value(&new_pkg.version),
+            change: ChangeKind::Added,
+            source: DeltaSource::NixEval,
+            repo,
+            notes_source,
+            homepage,
+        }),
     }
-    for (name, old_pkg) in old {
-        if !new.contains_key(name) {
-            deltas.push(VersionDelta {
-                name: name.clone(),
-                old: version_value(&old_pkg.version),
-                new: None,
-                change: ChangeKind::Removed,
-                source: DeltaSource::NixEval,
-                repo: None,
-                notes_source: None,
-                homepage: None,
-            });
-        }
+}
+
+/// old のみに存在するパッケージを `Removed` delta へ翻訳する（new が無いので取得元は運ばない）。
+fn removed_delta(name: &str, old_pkg: &NixPackage) -> VersionDelta {
+    VersionDelta {
+        name: name.to_string(),
+        old: version_value(&old_pkg.version),
+        new: None,
+        change: ChangeKind::Removed,
+        source: DeltaSource::NixEval,
+        repo: None,
+        notes_source: None,
+        homepage: None,
     }
-    deltas
 }
 
 /// version 属性が空文字なら `None`、それ以外は版文字列を返す。
@@ -240,16 +247,37 @@ fn compare_component(lhs: &str, rhs: &str) -> std::cmp::Ordering {
 }
 
 /// tag/name 文字列から version 様トークンを抽出して正規化する純粋関数。
+///
+/// label と version を分ける区切り（空白・`_`）で分割し、末尾トークンから version 開始位置を探す。`-` は
+/// 区切りとして消費せず、prerelease suffix（`v1.0.0-rc1` の `-rc1`）を version の一部として保持する。
+/// label 接頭辞（`pkg-v1.5.0` の `pkg-`・`release-1.0` の `release-`）は version 開始 segment まで読み飛ばす。
 fn extract_version_token(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
     }
-    trimmed
-        .split(['-', ' ', '_'])
-        .rev()
-        .map(normalize_version)
-        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    trimmed.split([' ', '_']).rev().find_map(version_from_token)
+}
+
+/// 1 トークン（`pkg-v1.5.0` / `v1.0.0-rc1` 等）から version 開始 segment 以降を取り出し正規化する純粋関数。
+///
+/// `-` 区切りの segment を左から走査し、`v`/`V` を剥がして数字始まりになる最初の segment を version 開始と
+/// みなす。その segment 以降（prerelease suffix を含む）を `-` で再結合し正規化して返す（version 様が無ければ
+/// `None`）。これにより label 接頭辞は読み飛ばしつつ prerelease suffix は保持する。
+fn version_from_token(token: &str) -> Option<String> {
+    let segments: Vec<&str> = token.split('-').collect();
+    let start = segments
+        .iter()
+        .position(|segment| starts_with_version_digit(segment))?;
+    Some(normalize_version(&segments[start..].join("-")))
+}
+
+/// segment が（先頭の `v`/`V` を剥がしたうえで）数字始まりかを判定する純粋関数。
+fn starts_with_version_digit(segment: &str) -> bool {
+    normalize_version(segment)
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit())
 }
 
 /// version 文字列を正規化する純粋関数（先頭の `v`/`V` を剥がし、前後空白を除く）。
@@ -478,6 +506,49 @@ mod tests {
         );
         assert_eq!(extract_version_token("release-1.0").as_deref(), Some("1.0"));
         assert_eq!(extract_version_token("latest"), None);
+        // prerelease suffix（`-rc1` 等）は version の一部として保持する（label 接頭辞のみ読み飛ばす）。
+        assert_eq!(
+            extract_version_token("v1.0.0-rc1").as_deref(),
+            Some("1.0.0-rc1")
+        );
+        assert_eq!(
+            extract_version_token("pkg-v2.0.0-beta.2").as_deref(),
+            Some("2.0.0-beta.2")
+        );
+        assert_eq!(
+            extract_version_token("Release 3.1.0-alpha").as_deref(),
+            Some("3.1.0-alpha")
+        );
+    }
+
+    #[test]
+    fn release_version_preserves_prerelease_suffix() {
+        // GitHub release tag/name から prerelease suffix を含む semver 全体を抽出する（suffix を捨てない）。
+        assert_eq!(
+            release_version("v1.0.0-rc1", "anything").as_deref(),
+            Some("1.0.0-rc1")
+        );
+        assert_eq!(
+            release_version("latest", "v2.0.0-beta.1").as_deref(),
+            Some("2.0.0-beta.1")
+        );
+    }
+
+    #[test]
+    fn prerelease_not_misincluded_into_stable_range() {
+        // `(1.0.0-rc1, 1.0.0]` 範囲: stable `1.0.0` は包含、prerelease `1.0.0-rc1`（=old 境界）は old 排他で除外。
+        let old = Some("1.0.0-rc1");
+        let new = Some("1.0.0");
+        // old 境界の prerelease 自身は old 排他なので入らない。
+        assert!(!version_in_range("1.0.0-rc1", old, new));
+        // stable は範囲に入る（prerelease より新しい）。
+        assert!(version_in_range("1.0.0", old, new));
+        // 別 release の prerelease（`1.0.0-rc2`）は old(`1.0.0-rc1`)より新しく new(`1.0.0`)以下なので入る。
+        assert!(version_in_range("1.0.0-rc2", old, new));
+        // 逆向き: `(1.0.0, 1.1.0]` に `1.1.0-rc1` は stable `1.1.0` より低いため new 包含側に入る（誤って外さない）。
+        assert!(version_in_range("1.1.0-rc1", Some("1.0.0"), Some("1.1.0")));
+        // 次 stable の prerelease（`1.1.0-rc1`）は old=`1.1.0` のとき old 以下なので除外（rc は stable に混入しない）。
+        assert!(!version_in_range("1.1.0-rc1", Some("1.1.0"), Some("1.2.0")));
     }
 
     #[test]

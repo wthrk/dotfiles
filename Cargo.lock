@@ -1631,6 +1631,7 @@ dependencies = [
  "clap",
  "dotfiles-core",
  "dotfiles-secrets",
+ "percent-encoding",
  "portable-pty",
  "reqwest",
  "serde",

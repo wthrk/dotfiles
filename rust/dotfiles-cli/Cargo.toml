@@ -30,6 +30,7 @@ backoff.workspace = true
 clap.workspace = true
 dotfiles-core.workspace = true
 dotfiles-secrets.workspace = true
+percent-encoding.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

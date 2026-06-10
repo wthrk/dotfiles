@@ -26,14 +26,12 @@ sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になり
 
 ## 更新と適用
 
-導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。
-対象を省略すると `all` として扱い、Home Manager の後に nix-darwin を適用します。
+導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` は適用対象を
+取らず、常に全体（macOS は nix-darwin が Home Manager も一括適用、非 macOS は Home Manager standalone）を
+適用します。
 
 ```sh
 dotfiles update
-dotfiles update home
-dotfiles update darwin
-dotfiles update all
 ```
 
 `dotfiles update` は、ローカル flake の `flake.lock` が指す dotfiles リビジョン（repo pin）が前回適用済みと
@@ -50,7 +48,8 @@ dotfiles update all
 dotfiles update --full
 ```
 
-更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。
+更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。`update` と違い `switch` は
+適用対象を取り、`home` / `darwin` で部分適用できます（対象省略時は `all`）。
 
 ```sh
 dotfiles switch

@@ -14,12 +14,10 @@
 //! 直接読む。API キーは env `OPEN_AI_API_KEY` から読み crate の [`OpenAIConfig`] へ渡す（argv に現れない）。キー
 //! 未設定（ローカル等）なら抽出を skip して空（呼び出し側が version-only として記録する）。
 //!
-//! GitHub Models 時代の無料枠レート制限機械（ペーシング/予算/多段バックオフ）は持たない。一過性エラー
-//! （5xx/timeout/接続/瞬間的 rate_limit）の回復は async-openai client の指数バックオフ
-//! （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒に上限。既定 15 分は record を 120 分タイムアウトさせるため短縮）へ
-//! 一本化し、[`model_call`] 自身は追加リトライしない。バックオフを使い切っても
-//! 失敗するエラーは空へ縮退する（呼び出し側が version-only として確定する。夜をまたいで再試行しない）。同期の
-//! record 経路から呼ぶため、async 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
+//! 一過性エラー（5xx/timeout/接続/瞬間的 rate_limit）の回復は async-openai client の指数バックオフ
+//! （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒上限）へ一本化し、[`model_call`] 自身は追加リトライしない。バックオフを
+//! 使い切っても失敗するエラーは空へ縮退する（呼び出し側が version-only として確定する）。同期の record 経路から
+//! 呼ぶため、async 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
 //!
 //! **SSRF（最重要）**: AI が要求する `fetch_url` の URL は、[`super::wire::is_allowed_url`] の構造的検査
 //! （https 限定・credential 拒否・IP リテラル拒否・localhost / 単一ラベルホスト拒否）を通った公開 https のみ実行する。
@@ -151,8 +149,8 @@ struct ExtractedItem {
 
 /// 1 model 呼び出しの抽象（テストは fake を注入）。typed request を受け、typed response メッセージを返す。
 ///
-/// 一過性失敗（rate_limit/429/5xx/接続）は run 内で少数リトライし、取り切れなければ空レスポンス
-/// （[`ResponseMessage::default`]）へ縮退する（呼び出し側が version-only として確定する。夜をまたいで再試行しない）。
+/// 一過性失敗（rate_limit/429/5xx/接続）の回復は client 内蔵バックオフに委ね、ここでは追加リトライしない。
+/// それでも失敗するエラーは空レスポンス（[`ResponseMessage::default`]）へ縮退する（呼び出し側が version-only として確定する）。
 type ModelCall<'a> = dyn Fn(CreateChatCompletionRequest) -> Result<ResponseMessage> + 'a;
 
 /// model 呼び出しが返す最小レスポンス（content と tool_calls だけを取り出した typed response の射影）。
@@ -180,8 +178,8 @@ impl OpenAiExtractor {
     pub(crate) fn new(brew_notes_base: Option<String>) -> Self {
         let client = api_key().map(|key| {
             let config = OpenAIConfig::new().with_api_key(key);
-            // crate 内蔵バックオフの上限を 60 秒へ短縮する（既定 15 分は record を 120 分タイムアウトさせる）。
-            // 一過性失敗の回復はこのバックオフに一本化し、model_call は追加リトライしない。
+            // crate 内蔵バックオフの上限を 60 秒に置く（[`CLIENT_BACKOFF_MAX_ELAPSED`]）。一過性失敗の回復は
+            // このバックオフに一本化し、model_call は追加リトライしない。
             let backoff = backoff::ExponentialBackoff {
                 max_elapsed_time: Some(CLIENT_BACKOFF_MAX_ELAPSED),
                 ..Default::default()
@@ -245,42 +243,104 @@ where
         });
     }
 
-    let mut messages = vec![
+    let messages = vec![
         system_message(&agent_system_prompt())?,
         user_message(&agent_user_prompt(request))?,
     ];
-    let mut adopted_source: Option<String> = None;
-    for _ in 0..MAX_TOOL_ITERATIONS {
-        let response = call(tool_turn_request(messages.clone())?)?;
-        let fetch_calls: Vec<&ChatCompletionMessageToolCall> = response
+    run_agent_loop(call, &mut fetch, messages, None, MAX_TOOL_ITERATIONS)
+}
+
+/// tool-use エージェントループを不変メッセージ列の再帰で回す（`loop` + 可変 push を使わない）。
+///
+/// 1 ターン: 現在の `messages` で tool_turn を呼び、`fetch_url` 要求が無ければ最終要約ターンへ抜ける。要求が
+/// あれば assistant の tool_call メッセージ + 各 tool 結果メッセージを `messages` へ不変連結し、採用取得元
+/// （最後に fetch 成功した URL）を更新して、`remaining - 1` で自己再帰する。残り回数 0 でも最終要約へ抜ける。
+fn run_agent_loop<F>(
+    call: &ModelCall<'_>,
+    fetch: &mut F,
+    messages: Vec<ChatCompletionRequestMessage>,
+    adopted_source: Option<String>,
+    remaining: u32,
+) -> Result<ExtractOutcome>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let response = if remaining == 0 {
+        None
+    } else {
+        Some(call(tool_turn_request(messages.clone())?)?)
+    };
+    let has_fetch_request = response.as_ref().is_some_and(|response| {
+        response
             .tool_calls
             .iter()
-            .filter(|c| c.function.name == FETCH_TOOL_NAME)
-            .collect();
-        if fetch_calls.is_empty() {
-            break;
-        }
-        messages.push(assistant_tool_call_message(&response.tool_calls)?);
-        for call_item in response.tool_calls.iter().take(MAX_TOOL_CALLS_PER_TURN) {
-            let result = match tool_call_url(call_item) {
+            .any(|c| c.function.name == FETCH_TOOL_NAME)
+    });
+    let Some(response) = response.filter(|_| has_fetch_request) else {
+        return summarize_after_tools(call, messages, adopted_source);
+    };
+    let (turn_messages, next_source) = run_tool_turn(fetch, &response.tool_calls, adopted_source)?;
+    let next_messages: Vec<ChatCompletionRequestMessage> = messages
+        .into_iter()
+        .chain(std::iter::once(assistant_tool_call_message(
+            &response.tool_calls,
+        )?))
+        .chain(turn_messages)
+        .collect();
+    run_agent_loop(call, fetch, next_messages, next_source, remaining - 1)
+}
+
+/// 1 ターンの tool_call 群を実行し、追記すべき tool 結果メッセージ列と更新後の採用取得元を返す。
+///
+/// 先頭 [`MAX_TOOL_CALLS_PER_TURN`] 件だけ実際に fetch し、超過分は `skipped` 結果を返す。fetch 成功した URL は
+/// 採用取得元として `adopted_source` を更新する（同一ターンで複数成功すれば最後を採る）。
+fn run_tool_turn<F>(
+    fetch: &mut F,
+    tool_calls: &[ChatCompletionMessageToolCall],
+    adopted_source: Option<String>,
+) -> Result<(Vec<ChatCompletionRequestMessage>, Option<String>)>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let executed = tool_calls.iter().take(MAX_TOOL_CALLS_PER_TURN).try_fold(
+        (Vec::new(), adopted_source),
+        |(results, source), call_item| -> Result<_> {
+            let (result, next_source) = match tool_call_url(call_item) {
                 Some(url) => match fetch(&url)? {
-                    Some(text) => {
-                        adopted_source = Some(url);
-                        truncate_notes(&text)
-                    }
-                    None => String::from("not allowed or fetch failed"),
+                    Some(text) => (truncate_notes(&text), Some(url)),
+                    None => (String::from("not allowed or fetch failed"), source),
                 },
-                None => String::from("unsupported tool"),
+                None => (String::from("unsupported tool"), source),
             };
-            messages.push(tool_result_message(&call_item.id, &result)?);
-        }
-        for call_item in response.tool_calls.iter().skip(MAX_TOOL_CALLS_PER_TURN) {
-            messages.push(tool_result_message(
-                &call_item.id,
-                "skipped (too many calls)",
-            )?);
-        }
-    }
+            let message = tool_result_message(&call_item.id, &result)?;
+            Ok((
+                results
+                    .into_iter()
+                    .chain(std::iter::once(message))
+                    .collect(),
+                next_source,
+            ))
+        },
+    )?;
+    let (executed_messages, next_source): (Vec<ChatCompletionRequestMessage>, Option<String>) =
+        executed;
+    let skipped: Vec<ChatCompletionRequestMessage> = tool_calls
+        .iter()
+        .skip(MAX_TOOL_CALLS_PER_TURN)
+        .map(|call_item| tool_result_message(&call_item.id, "skipped (too many calls)"))
+        .collect::<Result<_>>()?;
+    Ok((
+        executed_messages.into_iter().chain(skipped).collect(),
+        next_source,
+    ))
+}
+
+/// tool-use ターン後の最終要約を実行し、構造化変更と採用取得元を確定する。
+fn summarize_after_tools(
+    call: &ModelCall<'_>,
+    messages: Vec<ChatCompletionRequestMessage>,
+    adopted_source: Option<String>,
+) -> Result<ExtractOutcome> {
     let response = call(summarize_request(messages)?)?;
     Ok(ExtractOutcome {
         items: parse_change_items(response.content.as_deref().unwrap_or_default()),
@@ -293,7 +353,7 @@ where
 /// 一過性エラー（rate_limit/429/5xx/接続）の回復は client 内蔵の指数バックオフ
 /// （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒）に委ね、ここでは追加リトライしない。
 /// バックオフを使い切っても失敗するエラー（一過性・恒久いずれも）は空レスポンス（[`ResponseMessage::default`]）へ
-/// 縮退し、上位の空判定で version-only として確定する（夜をまたいで再試行しない）。is_transient はログ分類のみに使う。
+/// 縮退し、上位の空判定で version-only として確定する。is_transient はログ分類のみに使う。
 fn model_call(
     client: &Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
@@ -529,52 +589,73 @@ fn summarize_system_prompt() -> String {
 }
 
 fn user_prompt_header(request: &ExtractRequest) -> Vec<String> {
-    let mut lines = vec![format!("パッケージ: {}", request.name)];
     let old = request.old.as_deref().unwrap_or("(なし)");
     let new = request.new.as_deref().unwrap_or("(なし)");
-    lines.push(format!("更新: {old} → {new}"));
-    if let Some(repo) = request.repo.as_deref().filter(|s| !s.is_empty()) {
-        lines.push(format!("GitHub リポジトリ: {repo}"));
-        lines.push(format!(
-            "releases ページ: https://github.com/{repo}/releases"
-        ));
-    }
-    if let Some(homepage) = request.homepage.as_deref().filter(|s| !s.is_empty()) {
-        lines.push(format!("homepage: {homepage}"));
-    }
-    if let Some(changelog) = request.changelog.as_deref().filter(|s| !s.is_empty()) {
-        lines.push(format!("changelog: {changelog}"));
-    }
-    lines
+    let repo_lines = request
+        .repo
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .into_iter()
+        .flat_map(|repo| {
+            [
+                format!("GitHub リポジトリ: {repo}"),
+                format!("releases ページ: https://github.com/{repo}/releases"),
+            ]
+        });
+    let homepage_line = request
+        .homepage
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|homepage| format!("homepage: {homepage}"));
+    let changelog_line = request
+        .changelog
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|changelog| format!("changelog: {changelog}"));
+    std::iter::once(format!("パッケージ: {}", request.name))
+        .chain(std::iter::once(format!("更新: {old} → {new}")))
+        .chain(repo_lines)
+        .chain(homepage_line)
+        .chain(changelog_line)
+        .collect()
 }
 
 fn agent_user_prompt(request: &ExtractRequest) -> String {
-    let mut lines = user_prompt_header(request);
-    if let Some(seed) = request.seed_notes.as_ref() {
-        lines.push(String::from(
-            "参考として機械取得したノート（不完全な場合があるため fetch_url で補ってよい）:",
-        ));
-        lines.push(truncate_notes(&seed.text));
-    } else {
-        lines.push(String::from(
+    let tail = match request.seed_notes.as_ref() {
+        Some(seed) => vec![
+            String::from(
+                "参考として機械取得したノート（不完全な場合があるため fetch_url で補ってよい）:",
+            ),
+            truncate_notes(&seed.text),
+        ],
+        None => vec![String::from(
             "fetch_url で適切なリリースノートを取得してから抽出してください。",
-        ));
-    }
-    lines.join("\n")
+        )],
+    };
+    user_prompt_header(request)
+        .into_iter()
+        .chain(tail)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn summarize_user_prompt(request: &ExtractRequest) -> String {
-    let mut lines = user_prompt_header(request);
-    match request.seed_notes.as_ref() {
-        Some(seed) => {
-            lines.push(String::from("以下の参考リリースノート本文だけを根拠に変更を抽出してください（本文以外は取得・参照できません）:"));
-            lines.push(truncate_notes(&seed.text));
-        }
-        None => {
-            lines.push(String::from("参考リリースノートは提示されていません。根拠となる本文が無いため、空の配列を返してください。"));
-        }
-    }
-    lines.join("\n")
+    let tail = match request.seed_notes.as_ref() {
+        Some(seed) => vec![
+            String::from(
+                "以下の参考リリースノート本文だけを根拠に変更を抽出してください（本文以外は取得・参照できません）:",
+            ),
+            truncate_notes(&seed.text),
+        ],
+        None => vec![String::from(
+            "参考リリースノートは提示されていません。根拠となる本文が無いため、空の配列を返してください。",
+        )],
+    };
+    user_prompt_header(request)
+        .into_iter()
+        .chain(tail)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---- パース・補助 ----

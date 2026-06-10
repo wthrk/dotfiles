@@ -13,9 +13,10 @@
 //! **SSRF 防御は host_of の構造的検査で担保する**（狭いホスト allowlist では制限しない）。リリースノート/changelog
 //! の所在はパッケージごとに異なり github に限らない（cargo は doc.rust-lang.org、iterm2 は iterm2.com 等）ため、
 //! AI fetch も機械取得も「到達先ホスト一覧」での制限はしない。代わりに [`host_of`] が https 限定・credential 拒否・
-//! IP リテラル（IPv4/IPv6）拒否・localhost 拒否・単一ラベルホスト（内部 DNS 名の疑い）拒否を行い、これを SSRF の
-//! 唯一の構造的境界にする。HTTP クライアント側の redirect 不追従・https 限定・サイズ/時間上限（[`super::notes`] の
-//! `build_http_client`）と合わせて防御する。
+//! IP リテラル（IPv4/IPv6）拒否・localhost 拒否・単一ラベルホスト（内部 DNS 名の疑い）拒否・既知の内部/メタデータ
+//! host（`metadata.google.internal` 等のメタデータ FQDN・`.internal`/`.local`/`.localdomain`/`.localhost` で終わる
+//! 内部 TLD）拒否を行い、これを SSRF の唯一の構造的境界にする。HTTP クライアント側の redirect 不追従・https 限定・サイズ/
+//! 時間上限（[`super::notes`] の `build_http_client`）と合わせて防御する。
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +46,7 @@ pub(crate) struct UpdateEntry {
 /// パッケージ更新の出所（nix closure か Homebrew cask か）。catch-up 集約の同一性キーの一部。
 ///
 /// nix と brew は同名パッケージ（例 `firefox`）を別物として記録する。出所を同一性キーへ含めるため、wire にも
-/// 残す。TOML 値は lowercase（`nix`/`brew`）。旧スキーマ（source 無し）の後方互換は `serde(default)` が担う。
+/// 残す。TOML 値は lowercase（`nix`/`brew`）。source を持たない TOML は `serde(default)` で `Nix` へ縮退する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum PackageSource {
@@ -56,7 +57,7 @@ pub(crate) enum PackageSource {
 }
 
 impl Default for PackageSource {
-    /// 旧スキーマ（source field を持たない既存 TOML）の deserialize 既定（保守的に `Nix`）。
+    /// source field を持たない TOML の deserialize 既定（保守的に `Nix`）。
     fn default() -> Self {
         PackageSource::Nix
     }
@@ -94,7 +95,7 @@ pub(crate) struct PackageUpdate {
     pub(crate) change: ChangeKind,
     /// 宣言アプリなら `true`（`show` 既定で表示）、低レベル依存なら `false`。
     pub(crate) declared: bool,
-    /// 更新の出所（nix/brew）。旧スキーマ（source 無し）は `serde(default)` で `Nix` へ縮退する。
+    /// 更新の出所（nix/brew）。source 省略時は `serde(default)` で `Nix` へ縮退する。
     #[serde(default)]
     pub(crate) source: PackageSource,
     /// リリースノート/changelog の URL（取得不能なら `None`）。
@@ -189,17 +190,24 @@ pub(crate) enum Severity {
 /// 規則（決定論。`record` と `show` が共有）: security を含む → `Critical`／breaking または deprecation を含む →
 /// `Major`／feature・fix・default-change のみ → `Minor`／空 → `None`。`text` 等の自由文は一切見ない。
 pub(crate) fn severity_of(items: &[ChangeItem]) -> Severity {
-    let mut has_major = false;
-    let mut has_minor = false;
-    for item in items {
-        match item.category {
-            ChangeCategory::Security => return Severity::Critical,
-            ChangeCategory::Breaking | ChangeCategory::Deprecation => has_major = true,
-            ChangeCategory::Feature | ChangeCategory::Fix | ChangeCategory::DefaultChange => {
-                has_minor = true;
-            }
-        }
+    if items
+        .iter()
+        .any(|item| item.category == ChangeCategory::Security)
+    {
+        return Severity::Critical;
     }
+    let has_major = items.iter().any(|item| {
+        matches!(
+            item.category,
+            ChangeCategory::Breaking | ChangeCategory::Deprecation
+        )
+    });
+    let has_minor = items.iter().any(|item| {
+        matches!(
+            item.category,
+            ChangeCategory::Feature | ChangeCategory::Fix | ChangeCategory::DefaultChange
+        )
+    });
     if has_major {
         Severity::Major
     } else if has_minor {
@@ -264,11 +272,26 @@ const MAX_TEXT_CHARS: usize = 200;
 /// URL が構造的に安全な公開 https URL かを判定する（SSRF の唯一の境界）。
 ///
 /// 狭いホスト allowlist には依存せず、[`host_of`] の構造的検査（https 限定・credential 拒否・IP リテラル拒否・
-/// localhost / 単一ラベルホスト拒否）が通れば許可する。リリースノートの所在は github に限らない（cargo は
-/// doc.rust-lang.org、iterm2 は iterm2.com 等）ため、到達先ホストの一覧では制限しない。機械取得・AI fetch・
-/// provenance 学習・ref/notes_url サニタイズはすべてこの 1 関数を境界として共有する。
+/// localhost / 単一ラベルホスト拒否・内部 DNS 名/メタデータ FQDN 拒否）が通れば許可する。リリースノートの所在は
+/// github に限らない（cargo は doc.rust-lang.org、iterm2 は iterm2.com 等）ため、到達先ホストの一覧では制限しない。
+/// 機械取得・AI fetch・provenance 学習・ref/notes_url サニタイズはすべてこの 1 関数を境界として共有する。
 pub(crate) fn is_allowed_url(url: &str) -> bool {
     host_of(url).is_some()
+}
+
+/// 内部 DNS / メタデータ FQDN を判定する内部 TLD 接尾辞（小文字・先頭ドット込みで照合する）。
+///
+/// `.internal`（GCP メタデータ FQDN `metadata.google.internal` を含む）・`.local`（mDNS）・`.localdomain`・
+/// `.localhost` で終わるドット付きホストは内部名とみなして拒否する。公開ドメインはこれらの内部 TLD で終わらない。
+const INTERNAL_TLD_SUFFIXES: [&str; 4] = [".internal", ".local", ".localdomain", ".localhost"];
+
+/// ドット付きホストが内部 DNS 名/メタデータ FQDN かを判定する純粋関数。
+///
+/// 単一ラベルホストは [`host_of`] 側で既に拒否されるため、ここはドット付きの内部 TLD 接尾辞だけを見る。
+fn is_internal_domain(host: &str) -> bool {
+    INTERNAL_TLD_SUFFIXES
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
 }
 
 /// https URL から小文字化した host を抽出する純粋関数（SSRF の構造的境界。credential 拒否・IP/localhost 拒否）。
@@ -278,11 +301,9 @@ pub(crate) fn is_allowed_url(url: &str) -> bool {
 /// クライアント型（`reqwest::Url`）ではなく既に `url::Host` を使う `url` crate へ直接寄せる。以下はいずれも
 /// host を導かない（= SSRF 到達を塞ぐ）: https 以外・credential 付き・IP リテラル（IPv4/IPv6。10進/8進/16進/IDN
 /// 表記や IPv4-mapped IPv6 も `url` が IP へ正規化するため一律拒否。ループバックや metadata service への到達源）・
-/// localhost・単一ラベルホスト（`.` を含まない host。内部 DNS 名の疑い）。
-///
-/// 注意: ドットを含む内部 DNS 名（例 `metadata.google.internal`・社内 `*.internal.corp`）は構造上ここでは塞がない。
-/// record は GitHub-hosted runner（内部メタデータは IP リテラル `169.254.169.254` 経由で拒否済み・社内 DNS 不在）
-/// 専用処理のため現状実害は無いが、self-hosted/クラウド内 runner へ移す場合はこの境界の再評価を要する。
+/// localhost・単一ラベルホスト（`.` を含まない host。内部 DNS 名の疑い）・ドット付き内部 DNS 名/メタデータ FQDN
+/// （`metadata.google.internal` や `.internal`/`.local`/`.localdomain`/`.localhost` で終わる host。[`is_internal_domain`]）。
+/// DNS は実解決せず（hermetic）、構造的な接尾辞照合だけで判定する。公開ホストは TLD を持ち内部接尾辞で終わらないため許可する。
 pub(crate) fn host_of(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     if parsed.scheme() != "https" {
@@ -302,10 +323,14 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
             // （`.` を含まない host。例 `intranet`）は内部 DNS 名の可能性があるため拒否し、localhost 以外の
             // 内部名到達も塞ぐ。公開ドメインは必ず TLD を含み `.` を持つ。
             if lowered.is_empty() || lowered == "localhost" || !lowered.contains('.') {
-                None
-            } else {
-                Some(lowered)
+                return None;
             }
+            // ドット付き内部 DNS 名/メタデータ FQDN（`metadata.google.internal`・`*.internal`・`*.local` 等）も
+            // クラウド内 metadata service への SSRF 源になるため拒否する。
+            if is_internal_domain(&lowered) {
+                return None;
+            }
+            Some(lowered)
         }
     }
 }
@@ -338,13 +363,14 @@ pub(crate) fn sanitize_notes_url(notes_url: Option<String>) -> Option<String> {
     notes_url.filter(|url| is_allowed_url(url))
 }
 
-/// `text` を char 境界で最大長へ切り詰める。
+/// `text` を char 境界で最大長へ切り詰める（超過時のみ末尾に `…` を付す）。
 fn truncate_chars(text: &str, max_chars: usize) -> String {
-    let mut result: String = text.chars().take(max_chars).collect();
+    let head: String = text.chars().take(max_chars).collect();
     if text.chars().count() > max_chars {
-        result.push('…');
+        format!("{head}…")
+    } else {
+        head
     }
-    result
 }
 
 #[cfg(test)]
@@ -465,7 +491,7 @@ text = \"新機能\"
 
     #[test]
     fn package_without_optional_fields_parses() -> crate::Result<()> {
-        // 後方互換: 旧スキーマ（source 無し）の `[[update.package]]` は Nix へ縮退して parse できる。
+        // source を持たない `[[update.package]]` は Nix へ縮退して parse できる。
         let toml = "\
 name = \"neovim\"
 change = \"upgraded\"
@@ -599,6 +625,17 @@ declared = true
         assert!(!is_allowed_url("https://[::1]/x"));
         assert!(!is_allowed_url("https://localhost/a"));
         assert!(!is_allowed_url("https://intranet/a"));
+        // ドット付き内部 DNS 名/メタデータ FQDN（クラウド内 metadata service への SSRF 源）も拒否する。
+        assert!(!is_allowed_url(
+            "https://metadata.google.internal/computeMetadata/v1/"
+        ));
+        assert!(!is_allowed_url("https://service.internal/a"));
+        assert!(!is_allowed_url("https://printer.local/a"));
+        assert!(!is_allowed_url("https://host.localdomain/a"));
+        assert!(!is_allowed_url("https://foo.localhost/a"));
+        // 内部 TLD を接尾辞に含むが公開 TLD で終わる host（偽装）は許可する。
+        assert!(is_allowed_url("https://internal.example.com/a"));
+        assert!(is_allowed_url("https://metadata.example.com/a"));
     }
 
     #[test]
@@ -675,6 +712,32 @@ declared = true
         // 単一ラベルホスト（内部 DNS 名の疑い。`.` を含まない）は拒否する。
         assert_eq!(host_of("https://intranet/a"), None);
         assert_eq!(host_of("https://internal-service/a"), None);
+    }
+
+    #[test]
+    fn host_of_rejects_internal_dns_and_metadata_fqdn_but_allows_public_lookalikes() {
+        // ドット付き内部 DNS 名/メタデータ FQDN（DNS は実解決せず接尾辞照合で構造的に拒否する）。
+        assert_eq!(
+            host_of("https://metadata.google.internal/computeMetadata/v1/"),
+            None
+        );
+        assert_eq!(host_of("https://service.internal/a"), None);
+        assert_eq!(host_of("https://printer.local/a"), None);
+        assert_eq!(host_of("https://host.localdomain/a"), None);
+        assert_eq!(host_of("https://foo.localhost/a"), None);
+        // 公開 TLD で終わる host は内部 TLD ラベルを含んでも許可する（接尾辞照合なので誤検知しない）。
+        assert_eq!(
+            host_of("https://internal.example.com/a").as_deref(),
+            Some("internal.example.com")
+        );
+        assert_eq!(
+            host_of("https://metadata.example.com/a").as_deref(),
+            Some("metadata.example.com")
+        );
+        assert_eq!(
+            host_of("https://localhost.example.com/a").as_deref(),
+            Some("localhost.example.com")
+        );
     }
 
     #[test]

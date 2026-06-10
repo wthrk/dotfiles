@@ -1,9 +1,9 @@
-//! `dotfiles update-history` の単純版（フラット）モジュール。
+//! `dotfiles update-history` モジュール。
 //!
 //! nightly bump で更新されたアプリの version 差分と「何が変わったか」の構造化変更リストを
 //! `docs/update-history/<YYYY-MM>.toml` に記録（`record`）し、適用済み pin の記録を閲覧（`show`）する。LLM は
-//! OpenAI API（env `OPEN_AI_API_KEY`）で駆動し、1 回の record で全変更パッケージを要約しきる。取れない概要は
-//! version-only（version old→new + notes_url のみ）としてその場で確定記録する（夜をまたいで再試行しない）。
+//! OpenAI API（env `OPEN_AI_API_KEY`）で駆動し、1 回の record で全変更パッケージを要約しきる。概要が取れない
+//! パッケージは version-only（version old→new + notes_url のみ）としてその場で確定記録する。
 //!
 //! nightly パイプラインの**ロジックは全て Rust に集約**する。`record` は ci-ref と old/new lock を受けて
 //! eval（[`eval`]: `nix eval` 起動 + owner/repo 導出）→ nix 版差分 → brew cask 版差分（[`brew`]: reqwest で
@@ -12,8 +12,7 @@
 //! `lock-rev` は workflow が old を bump 前に評価するための薄い Rust ラッパで、整形・導出・rev 抽出は Rust が担う。
 //!
 //! 構成はフラットな少数モジュール + 普通の関数。HTTP/LLM の差し替え点は [`llm::ChangeExtractor`] trait の 1 つ
-//! だけで、決定論テストはこれを fake に差し替える。hex 階層（domain/ports/adapters/application/support の層分割・
-//! port trait・mockall）は持たない。
+//! だけで、決定論テストはこれを fake に差し替える。
 
 mod brew;
 mod diff;
@@ -99,7 +98,7 @@ struct EvalVersionsOptions {
 }
 
 #[derive(Args)]
-/// flake.lock の `nodes.<node>.locked.rev` を取り出して標準出力へ書く option（jq の置き換え）。
+/// flake.lock の `nodes.<node>.locked.rev` を取り出して標準出力へ書く option。
 struct LockRevOptions {
     /// 読む flake.lock path。
     #[arg(long)]

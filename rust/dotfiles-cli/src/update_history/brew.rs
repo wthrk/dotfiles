@@ -1,9 +1,8 @@
 //! 宣言 cask の版差分を old/new tap rev の cask `.rb` 定義から決定論的に算出する（ライブ brew 非問い合わせ）。
 //!
-//! 旧 workflow の bash（`gh api`+`base64`+`grep`+`sed`）を撤去し、reqwest で
-//! `raw.githubusercontent.com/homebrew/homebrew-cask/<rev>/Casks/<subdir>/<name>.rb` を取得して `version "..."`
-//! を解析する。自己更新 cask（`auto_updates true` = bitwarden/codex-app/ghostty）は `brew upgrade` が無人
-//! upgrade しないため差分から除外する。subdir は cask 名の先頭文字（font cask は固定 `font`）。
+//! reqwest で `raw.githubusercontent.com/homebrew/homebrew-cask/<rev>/Casks/<subdir>/<name>.rb` を取得して
+//! `version "..."` を解析する。自己更新 cask（`auto_updates true` = bitwarden/codex-app/ghostty）は `brew upgrade`
+//! が無人 upgrade しないため差分から除外する。subdir は cask 名の先頭文字（font cask は固定 `font`）。
 //!
 //! cask 一覧は `nix/modules/homebrew.nix` の `casks = [ ... ]` から抽出する（switch が導入する cask と同一源）。
 
@@ -29,35 +28,45 @@ pub(crate) fn diff_casks(
     rev_new: &str,
     fetch: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<Vec<VersionDelta>> {
-    let mut deltas = Vec::new();
-    for name in parse_cask_list(casks_nix) {
-        if AUTO_UPDATE_CASKS.contains(&name.as_str()) {
-            continue;
-        }
-        let old = cask_version(rev_old, &name, fetch)?;
-        let new = cask_version(rev_new, &name, fetch)?;
-        let change = match (&old, &new) {
-            (None, None) => continue,
-            (None, Some(_)) => ChangeKind::Added,
-            (Some(_), None) => ChangeKind::Removed,
-            (Some(old_v), Some(new_v)) => match version_ordering(old_v, new_v) {
-                std::cmp::Ordering::Equal => continue,
-                std::cmp::Ordering::Less => ChangeKind::Upgraded,
-                std::cmp::Ordering::Greater => ChangeKind::Downgraded,
-            },
-        };
-        deltas.push(VersionDelta {
-            name,
-            old,
-            new,
-            change,
-            source: DeltaSource::BrewTap,
-            repo: None,
-            notes_source: None,
-            homepage: None,
-        });
-    }
-    Ok(deltas)
+    // auto_updates cask を除外し、各 cask の old/new 版差分を `Result<Option<delta>>` へ翻訳して、Err 伝播
+    // （`collect::<Result<_>>`）と版変化なし（`None`）の除去（`flatten`）を分けて行う。
+    parse_cask_list(casks_nix)
+        .into_iter()
+        .filter(|name| !AUTO_UPDATE_CASKS.contains(&name.as_str()))
+        .map(|name| cask_delta(rev_old, rev_new, name, fetch))
+        .collect::<Result<Vec<Option<VersionDelta>>>>()
+        .map(|deltas| deltas.into_iter().flatten().collect())
+}
+
+/// 1 cask の old/new 版を取得し、版変化があれば [`VersionDelta`] を組む（取得不能/版不変は `None`）。
+fn cask_delta(
+    rev_old: &str,
+    rev_new: &str,
+    name: String,
+    fetch: &dyn Fn(&str) -> Result<Option<String>>,
+) -> Result<Option<VersionDelta>> {
+    let old = cask_version(rev_old, &name, fetch)?;
+    let new = cask_version(rev_new, &name, fetch)?;
+    let change = match (&old, &new) {
+        (None, None) => return Ok(None),
+        (None, Some(_)) => ChangeKind::Added,
+        (Some(_), None) => ChangeKind::Removed,
+        (Some(old_v), Some(new_v)) => match version_ordering(old_v, new_v) {
+            std::cmp::Ordering::Equal => return Ok(None),
+            std::cmp::Ordering::Less => ChangeKind::Upgraded,
+            std::cmp::Ordering::Greater => ChangeKind::Downgraded,
+        },
+    };
+    Ok(Some(VersionDelta {
+        name,
+        old,
+        new,
+        change,
+        source: DeltaSource::BrewTap,
+        repo: None,
+        notes_source: None,
+        homepage: None,
+    }))
 }
 
 /// 本番経路: reqwest で cask `.rb` を取得する fetch seam（redirect 不追従・https 限定・有界本文）。
@@ -186,18 +195,24 @@ mod tests {
     fn diff_casks_excludes_auto_updates_and_computes_changes() -> Result<()> {
         // azookey: upgrade、yubico-authenticator: 版不変→除外、bitwarden: auto_updates→除外。
         let nix = "casks = [ \"azookey\" \"bitwarden\" \"yubico-authenticator\" ];";
-        let mut old: BTreeMap<String, String> = BTreeMap::new();
-        old.insert(cask_rb_url("old", "azookey"), version_rb("1.0"));
-        old.insert(
-            cask_rb_url("old", "yubico-authenticator"),
-            version_rb("2.0"),
-        );
-        let mut new: BTreeMap<String, String> = BTreeMap::new();
-        new.insert(cask_rb_url("new", "azookey"), version_rb("1.1"));
-        new.insert(
-            cask_rb_url("new", "yubico-authenticator"),
-            version_rb("2.0"),
-        );
+        let old: BTreeMap<String, String> = [
+            (cask_rb_url("old", "azookey"), version_rb("1.0")),
+            (
+                cask_rb_url("old", "yubico-authenticator"),
+                version_rb("2.0"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let new: BTreeMap<String, String> = [
+            (cask_rb_url("new", "azookey"), version_rb("1.1")),
+            (
+                cask_rb_url("new", "yubico-authenticator"),
+                version_rb("2.0"),
+            ),
+        ]
+        .into_iter()
+        .collect();
         let fetch = |url: &str| -> Result<Option<String>> {
             Ok(old.get(url).or_else(|| new.get(url)).cloned())
         };

@@ -51,80 +51,145 @@ fn aggregated_change(first: ChangeKind, last: ChangeKind, spanned: bool) -> Chan
     }
 }
 
+/// change_item の重複排除キー（category 安定キー・ref_url・text）。
+type ItemDedupKey = (&'static str, Option<String>, String);
+
+/// 1 アプリの集約途中状態（最初の change と span 有無、dedup 済み change_item の集合を保持する）。
+#[derive(Clone)]
+struct PackageAccum {
+    package: PackageUpdate,
+    first_change: ChangeKind,
+    spanned: bool,
+    seen_items: std::collections::BTreeSet<ItemDedupKey>,
+}
+
+/// 集約全体の途中状態（初出順 `order` と key→[`PackageAccum`] の `acc`）。
+#[derive(Default)]
+struct Aggregation {
+    order: Vec<AggregateKey>,
+    acc: BTreeMap<AggregateKey, PackageAccum>,
+}
+
 /// 複数 [`UpdateEntry`] を跨いだ更新をアプリ単位で集約し、安定順の [`PackageUpdate`] 列を返す。
 fn aggregate(entries: &[UpdateEntry]) -> Vec<PackageUpdate> {
-    let mut order: Vec<AggregateKey> = Vec::new();
-    let mut acc: BTreeMap<AggregateKey, PackageUpdate> = BTreeMap::new();
-    let mut seen: BTreeMap<(AggregateKey, &'static str, Option<String>, String), ()> =
-        BTreeMap::new();
-    let mut first_change: BTreeMap<AggregateKey, ChangeKind> = BTreeMap::new();
-    let mut spanned: BTreeMap<AggregateKey, bool> = BTreeMap::new();
-
-    for entry in entries {
-        for package in &entry.packages {
-            let key = aggregate_key(package);
-            match acc.get_mut(&key) {
-                None => {
-                    order.push(key.clone());
-                    first_change.insert(key.clone(), package.change);
-                    spanned.insert(key.clone(), false);
-                    let mut initial = PackageUpdate {
-                        name: package.name.clone(),
-                        old: package.old.clone(),
-                        new: package.new.clone(),
-                        change: package.change,
-                        declared: package.declared,
-                        source: package.source,
-                        notes_url: package.notes_url.clone(),
-                        change_items: Vec::new(),
-                    };
-                    push_unique_items(&mut seen, &key, &mut initial, &package.change_items);
-                    acc.insert(key, initial);
-                }
-                Some(existing) => {
-                    existing.new = package.new.clone();
-                    existing.change = package.change;
-                    if package.notes_url.is_some() {
-                        existing.notes_url = package.notes_url.clone();
-                    }
-                    existing.declared = existing.declared || package.declared;
-                    spanned.insert(key.clone(), true);
-                    push_unique_items(&mut seen, &key, existing, &package.change_items);
-                }
-            }
-        }
-    }
-
-    order
+    let aggregation = entries
+        .iter()
+        .flat_map(|entry| entry.packages.iter())
+        .fold(Aggregation::default(), fold_package);
+    let acc = aggregation.acc;
+    aggregation
+        .order
         .into_iter()
-        .filter_map(|key| {
-            let mut package = acc.remove(&key)?;
-            let first = first_change.get(&key).copied().unwrap_or(package.change);
-            let spanned = spanned.get(&key).copied().unwrap_or(false);
-            package.change = aggregated_change(first, package.change, spanned);
-            Some(package)
+        .filter_map(|key| acc.get(&key).cloned())
+        .map(|accum| {
+            let change = aggregated_change(accum.first_change, accum.package.change, accum.spanned);
+            PackageUpdate {
+                change,
+                ..accum.package
+            }
         })
         .collect()
 }
 
-/// 決定論キーの未出 change_item だけを順序を保って push する。
-fn push_unique_items(
-    seen: &mut BTreeMap<(AggregateKey, &'static str, Option<String>, String), ()>,
-    key: &AggregateKey,
-    package: &mut PackageUpdate,
-    items: &[ChangeItem],
-) {
-    for item in items {
-        let dedup_key = (
-            key.clone(),
-            item.category.as_stable_key(),
-            item.ref_url.clone(),
-            item.text.clone(),
-        );
-        if seen.insert(dedup_key, ()).is_none() {
-            package.change_items.push(item.clone());
+/// 1 パッケージを集約状態へ畳み込む（初出は initial を作り、再出は new/change/notes_url/declared を更新する）。
+fn fold_package(aggregation: Aggregation, package: &PackageUpdate) -> Aggregation {
+    let Aggregation { order, acc } = aggregation;
+    let key = aggregate_key(package);
+    match acc.get(&key) {
+        None => {
+            let (change_items, seen_items) =
+                merge_unique_items(Vec::new(), std::collections::BTreeSet::new(), package);
+            let initial = PackageAccum {
+                package: PackageUpdate {
+                    name: package.name.clone(),
+                    old: package.old.clone(),
+                    new: package.new.clone(),
+                    change: package.change,
+                    declared: package.declared,
+                    source: package.source,
+                    notes_url: package.notes_url.clone(),
+                    change_items,
+                },
+                first_change: package.change,
+                spanned: false,
+                seen_items,
+            };
+            Aggregation {
+                order: order
+                    .into_iter()
+                    .chain(std::iter::once(key.clone()))
+                    .collect(),
+                acc: insert_accum(acc, key, initial),
+            }
+        }
+        Some(existing) => {
+            let (change_items, seen_items) = merge_unique_items(
+                existing.package.change_items.clone(),
+                existing.seen_items.clone(),
+                package,
+            );
+            let merged = PackageAccum {
+                package: PackageUpdate {
+                    new: package.new.clone(),
+                    change: package.change,
+                    notes_url: package
+                        .notes_url
+                        .clone()
+                        .or_else(|| existing.package.notes_url.clone()),
+                    declared: existing.package.declared || package.declared,
+                    change_items,
+                    ..existing.package.clone()
+                },
+                first_change: existing.first_change,
+                spanned: true,
+                seen_items,
+            };
+            Aggregation {
+                order,
+                acc: insert_accum(acc, key, merged),
+            }
         }
     }
+}
+
+/// `acc` に 1 件挿入した新しい map を返す（可変挿入を関数型の再構築へ閉じ込める）。
+fn insert_accum(
+    acc: BTreeMap<AggregateKey, PackageAccum>,
+    key: AggregateKey,
+    accum: PackageAccum,
+) -> BTreeMap<AggregateKey, PackageAccum> {
+    let mut acc = acc;
+    acc.insert(key, accum);
+    acc
+}
+
+/// 既存 change_item 列 + dedup 集合に、未出の change_item だけを順序を保って加えた新しい組を返す。
+fn merge_unique_items(
+    items: Vec<ChangeItem>,
+    seen: std::collections::BTreeSet<ItemDedupKey>,
+    package: &PackageUpdate,
+) -> (Vec<ChangeItem>, std::collections::BTreeSet<ItemDedupKey>) {
+    package
+        .change_items
+        .iter()
+        .fold((items, seen), |(items, seen), item| {
+            let dedup_key = (
+                item.category.as_stable_key(),
+                item.ref_url.clone(),
+                item.text.clone(),
+            );
+            if seen.contains(&dedup_key) {
+                (items, seen)
+            } else {
+                (
+                    items
+                        .into_iter()
+                        .chain(std::iter::once(item.clone()))
+                        .collect(),
+                    seen.into_iter().chain(std::iter::once(dedup_key)).collect(),
+                )
+            }
+        })
 }
 
 /// 表示対象エントリを起点 rev と件数上限で絞り込み、適用順（最古→最新）の部分列を返す。
@@ -150,19 +215,28 @@ fn select_entries(
     }
 }
 
-/// 「最後に要約し終えたエントリ」の `at` より厳密に後のエントリだけを適用順で返す（`N -> N` 再表示抑止）。
+/// 「最後に要約し終えたエントリ」の `at` に一致する記録位置の **次**から、適用（記録）順でエントリを返す。
+///
+/// カーソル（`after_at`）は前回 [`last_entry_cursor`] が出力した `at` であり、その値に**完全一致**するエントリを
+/// 記録順（履歴ファイルの並び）で探し、その次のインデックス以降を取る。これにより `at` の文字列比較を避ける:
+/// RFC3339 は `+09:00` と `Z` のようにオフセット表記が混在しうるため、`>` での辞書順比較は時刻順と一致せず
+/// 前進・再表示抑止を誤りうる。記録順での位置選択は表記揺れに依存しない。
+///
+/// フォールバック: カーソルに完全一致するエントリが無い場合（履歴の prune 等で消えた）、安全側に倒して
+/// 全エントリを起点（最古）から返す（取りこぼしを防ぐ）。`after_at` が `None`（初回）も全エントリ。
 fn select_entries_after(
     entries: &[UpdateEntry],
     after_at: Option<&str>,
     limit: Option<usize>,
 ) -> Vec<UpdateEntry> {
-    let span = entries
-        .iter()
-        .filter(|entry| match after_at {
-            Some(after) => entry.at.as_str() > after,
-            None => true,
-        })
-        .cloned();
+    let start = match after_at {
+        Some(after) => match entries.iter().position(|entry| entry.at == after) {
+            Some(index) => index + 1,
+            None => 0,
+        },
+        None => 0,
+    };
+    let span = entries.get(start..).unwrap_or(&[]).iter().cloned();
     match limit {
         Some(limit) => span.take(limit).collect(),
         None => span.collect(),
@@ -179,13 +253,13 @@ fn last_entry_cursor(entries: &[UpdateEntry]) -> Option<String> {
 
 /// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
 ///
-/// `all=false` は宣言アプリ中心（既定）、`true` は低レベル依存も含める。単純版 update は常に全体適用のため出所で
+/// `all=false` は宣言アプリ中心（既定）、`true` は低レベル依存も含める。update は常に全体適用のため出所で
 /// 絞らない（全出所を表示）。severity/overall は絞り込み後集合に対し record と同一規則で再算出する。
 fn build_view(selected: &[UpdateEntry], all: bool) -> HistoryView {
-    let mut packages = aggregate(selected);
-    if !all {
-        packages.retain(|package| package.declared);
-    }
+    let packages: Vec<PackageUpdate> = aggregate(selected)
+        .into_iter()
+        .filter(|package| all || package.declared)
+        .collect();
     let all_items: Vec<ChangeItem> = packages
         .iter()
         .flat_map(|package| package.change_items.clone())
@@ -223,25 +297,26 @@ fn severity_badge(severity: Severity) -> &'static str {
 ///
 /// `packages` が空でも見出し（severity バッジ + overall）だけは必ず出す。
 fn render_text(view: &HistoryView) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!(
+    let header = format!(
         "{} {}",
         severity_badge(view.severity),
         sanitize(&view.overall)
-    ));
-    for package in &view.packages {
-        lines.push(render_package_heading(package));
-        for category in CATEGORY_ORDER {
-            for item in package
+    );
+    let package_lines = view.packages.iter().flat_map(|package| {
+        // 見出し行に続けて、category 安定順に変更項目を並べる。
+        let items = CATEGORY_ORDER.into_iter().flat_map(move |category| {
+            package
                 .change_items
                 .iter()
-                .filter(|item| item.category == category)
-            {
-                lines.push(render_change_item(item));
-            }
-        }
-    }
-    lines.join("\n")
+                .filter(move |item| item.category == category)
+                .map(render_change_item)
+        });
+        std::iter::once(render_package_heading(package)).chain(items)
+    });
+    std::iter::once(header)
+        .chain(package_lines)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `name old → new`（不在側は `∅`）と任意の notes URL を 1 行で表す。version-only（change_items 空）は印を添える。
@@ -326,8 +401,8 @@ pub(crate) fn run_show(
 
 /// auto 適用後要約: `after_at` カーソル以降の更新を集約・描画し、要約済みカーソルの新 `at` を返す。
 ///
-/// `sink` には tty 時は stdout、非 tty 時は `pending-summary` writer を渡す。単純版 update は home/system 部分適用
-/// を持たず常に全体適用なので、出所フィルタは設けず全パッケージを集約する。
+/// `sink` には tty 時は stdout、非 tty 時は `pending-summary` writer を渡す。update は home/system 部分適用を
+/// 持たず常に全体適用なので、出所フィルタは設けず全パッケージを集約する。
 ///
 /// record は 1 回で全変更パッケージを要約しきる（ノートが取れないものも version-only としてその場で確定する）ため、
 /// 返すカーソルは選択 span の最後（最新）エントリの `at` で、普通に前進する（[`last_entry_cursor`]）。version-only
@@ -583,23 +658,64 @@ mod tests {
     }
 
     #[test]
+    fn select_after_at_uses_record_order_not_string_compare_across_offsets() {
+        // RFC3339 のオフセット表記が混在（`+09:00` と `Z`）すると `at` の辞書順比較は時刻順と一致しない。
+        // 例: 記録順では古い `2026-06-02T09:00:00+09:00`（=00:00Z）の文字列は、後発の `2026-06-02T01:00:00Z` より
+        // 辞書順で大きい。記録順（位置）選択ならこの揺れに依存せず正しく前進・再表示抑止できる。
+        let entries = [
+            entry_at("2026-06-02T09:00:00+09:00", "r0"),
+            entry_at("2026-06-02T01:00:00Z", "r1"),
+            entry_at("2026-06-02T11:00:00+09:00", "r2"),
+        ];
+        // 初回は全件。カーソルは最新（記録順で最後）の at。
+        let first = select_entries_after(&entries, None, None);
+        assert_eq!(first.len(), 3);
+        let marker = last_entry_cursor(&first);
+        assert_eq!(marker.as_deref(), Some("2026-06-02T11:00:00+09:00"));
+        // カーソル以降は無く、再表示しない（文字列 `>` 比較なら最後の `+09:00` が `Z` 始まりより大きく誤判定しうる）。
+        assert!(select_entries_after(&entries, marker.as_deref(), None).is_empty());
+
+        // 中間カーソル（オフセット付き）: 記録位置の次（`r1`,`r2`）だけを取る。文字列比較では
+        // `2026-06-02T09:00:00+09:00`（=00:00Z 相当）より大きい entry を取りこぼす/取り違える恐れがある。
+        let mid = select_entries_after(&entries, Some("2026-06-02T09:00:00+09:00"), None);
+        let revs: Vec<&str> = mid.iter().map(|e| e.nixpkgs_new.as_str()).collect();
+        assert_eq!(revs, vec!["r1", "r2"]);
+        assert_eq!(
+            last_entry_cursor(&mid).as_deref(),
+            Some("2026-06-02T11:00:00+09:00")
+        );
+    }
+
+    #[test]
+    fn select_after_at_falls_back_to_all_when_cursor_absent() {
+        // カーソルが履歴に存在しない（prune 等）場合は安全側に倒して全件（最古起点）を返す。
+        let entries = [
+            entry_at("2026-06-01T00:00:00Z", "r0"),
+            entry_at("2026-06-02T00:00:00Z", "r1"),
+        ];
+        let selected = select_entries_after(&entries, Some("1999-01-01T00:00:00Z"), None);
+        assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
     fn build_view_filters_declared_and_recomputes() {
-        let mut declared = package(
+        let declared = package(
             "neovim",
             Some("0.10"),
             Some("0.11"),
             ChangeKind::Upgraded,
             vec![change_item(ChangeCategory::Feature, "機能", None)],
         );
-        declared.declared = true;
-        let mut undeclared = package(
-            "libfoo",
-            Some("1"),
-            Some("2"),
-            ChangeKind::Upgraded,
-            vec![change_item(ChangeCategory::Fix, "修正", None)],
-        );
-        undeclared.declared = false;
+        let undeclared = PackageUpdate {
+            declared: false,
+            ..package(
+                "libfoo",
+                Some("1"),
+                Some("2"),
+                ChangeKind::Upgraded,
+                vec![change_item(ChangeCategory::Fix, "修正", None)],
+            )
+        };
         let entries = [entry("2026-06-01T00:00:00Z", vec![declared, undeclared])];
         let default_view = build_view(&entries, false);
         assert_eq!(default_view.packages.len(), 1);
@@ -653,8 +769,22 @@ mod tests {
         assert_eq!(render_text(&empty), "[none] 0アプリ更新");
 
         // change_items 空（version-only）は `[versionのみ]` 印を添えて見せる。
-        let mut v = view();
-        v.packages[0].change_items.clear();
+        let HistoryView {
+            packages,
+            severity,
+            overall,
+        } = view();
+        let v = HistoryView {
+            packages: packages
+                .into_iter()
+                .map(|package| PackageUpdate {
+                    change_items: Vec::new(),
+                    ..package
+                })
+                .collect(),
+            severity,
+            overall,
+        };
         assert!(render_text(&v).contains("[versionのみ]"));
     }
 
@@ -704,14 +834,24 @@ mod tests {
         )
     }
 
+    /// 要約を Vec バッファへ描画し `(描画文字列, 要約済みカーソル)` を返す（テストの Write sink を 1 箇所に閉じる）。
+    fn render_to_string(
+        dir: &std::path::Path,
+        after_at: Option<&str>,
+    ) -> Result<(String, Option<String>)> {
+        let mut buf: Vec<u8> = Vec::new();
+        let cursor = render_applied_summary(dir, after_at, &mut buf)?;
+        Ok((String::from_utf8(buf)?, cursor))
+    }
+
     fn write_dir(tag: &str, entries: &[UpdateEntry]) -> Result<std::path::PathBuf> {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("dotfiles-uh-show-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dotfiles-uh-show-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
-        for e in entries {
-            append_entry(&dir.join("2026-06.toml"), e)?;
-        }
+        entries
+            .iter()
+            .try_for_each(|entry| append_entry(&dir.join("2026-06.toml"), entry))?;
         Ok(dir)
     }
 
@@ -729,16 +869,12 @@ mod tests {
                 ),
             ],
         )?;
-        let mut buf: Vec<u8> = Vec::new();
-        let cursor = render_applied_summary(&dir, None, &mut buf)?;
-        let rendered = String::from_utf8(buf)?;
+        let (rendered, cursor) = render_to_string(&dir, None)?;
         assert!(rendered.contains("neovim"), "{rendered}");
         assert_eq!(cursor.as_deref(), Some("2026-06-02T00:00:00Z"));
 
         // カーソル以降は再表示しない。
-        let mut buf2: Vec<u8> = Vec::new();
-        let cursor2 = render_applied_summary(&dir, cursor.as_deref(), &mut buf2)?;
-        let r2 = String::from_utf8(buf2)?;
+        let (r2, cursor2) = render_to_string(&dir, cursor.as_deref())?;
         assert!(!r2.contains("neovim"));
         assert!(r2.contains("0アプリ更新"));
         assert_eq!(cursor2, None);
@@ -748,15 +884,16 @@ mod tests {
 
     /// version-only パッケージ（ノートが取れず version + notes_url のみで確定。change_items 空）。
     fn version_only_package(name: &str) -> PackageUpdate {
-        let mut package = package(
-            name,
-            Some("1.0"),
-            Some("1.1"),
-            ChangeKind::Upgraded,
-            Vec::new(),
-        );
-        package.notes_url = Some("https://github.com/o/r/releases".to_string());
-        package
+        PackageUpdate {
+            notes_url: Some("https://github.com/o/r/releases".to_string()),
+            ..package(
+                name,
+                Some("1.0"),
+                Some("1.1"),
+                ChangeKind::Upgraded,
+                Vec::new(),
+            )
+        }
     }
 
     #[test]
@@ -776,9 +913,7 @@ mod tests {
                 ),
             ],
         )?;
-        let mut buf: Vec<u8> = Vec::new();
-        let cursor = render_applied_summary(&dir, None, &mut buf)?;
-        let rendered = String::from_utf8(buf)?;
+        let (rendered, cursor) = render_to_string(&dir, None)?;
         assert!(
             rendered.contains("ghost"),
             "version-only も描画する: {rendered}"
@@ -789,9 +924,7 @@ mod tests {
         assert_eq!(cursor.as_deref(), Some(later_at), "版のみを越えて前進");
 
         // カーソル以降は再表示しない（重複再公開なし）。
-        let mut buf2: Vec<u8> = Vec::new();
-        let cursor2 = render_applied_summary(&dir, cursor.as_deref(), &mut buf2)?;
-        let rendered2 = String::from_utf8(buf2)?;
+        let (rendered2, cursor2) = render_to_string(&dir, cursor.as_deref())?;
         assert!(!rendered2.contains("neovim"), "{rendered2}");
         assert_eq!(cursor2, None);
         let _ = std::fs::remove_dir_all(&dir);

@@ -121,36 +121,63 @@ fn http_get(url: &str, headers: &[Header<'_>]) -> Result<Option<HttpResponse>> {
         NON_GITHUB_MAX_RETRIES
     };
 
-    let mut waited_total: u64 = 0;
-    let mut attempt_index: u32 = 0;
-    loop {
-        let attempt = http_get_once(url, headers, authorization.as_deref())?;
-        let decision = retry_decision(&attempt, github_host);
-        if let RetryDecision::Done(response) = decision {
-            return Ok(response);
-        }
-        if attempt_index >= max_retries {
-            return Ok(attempt_to_response(&attempt));
-        }
-        let retry_after = match &attempt {
-            Attempt::Connected { retry_after, .. } => retry_after.as_deref(),
-            Attempt::SendError => None,
-        };
-        let Some(wait) = backoff_wait_secs(
-            attempt_index,
-            retry_after,
-            waited_total,
-            BACKOFF_TOTAL_CAP_SECS,
-        ) else {
-            // これ以上待つと総待機上限を超える → 諦めて縮退する。
-            return Ok(attempt_to_response(&attempt));
-        };
-        if wait > 0 {
-            std::thread::sleep(Duration::from_secs(wait));
-        }
-        waited_total = waited_total.saturating_add(wait);
-        attempt_index += 1;
+    http_get_retrying(
+        url,
+        headers,
+        authorization.as_deref(),
+        github_host,
+        max_retries,
+        0,
+        0,
+    )
+}
+
+/// `http_get` の再試行を不変カウンタ（`attempt_index` / `waited_total`）の再帰で回す。
+///
+/// 1 回試行し、`retry_decision` が確定なら結果を返す。再試行対象でも試行上限到達・総待機上限超過なら縮退
+/// （`attempt_to_response`）。続行可能なら `backoff_wait_secs` 分だけ待ち、`attempt_index + 1` /
+/// `waited_total + wait` で自己再帰する（`loop` + 可変カウンタを使わない）。
+fn http_get_retrying(
+    url: &str,
+    headers: &[Header<'_>],
+    authorization: Option<&str>,
+    github_host: bool,
+    max_retries: u32,
+    attempt_index: u32,
+    waited_total: u64,
+) -> Result<Option<HttpResponse>> {
+    let attempt = http_get_once(url, headers, authorization)?;
+    if let RetryDecision::Done(response) = retry_decision(&attempt, github_host) {
+        return Ok(response);
     }
+    if attempt_index >= max_retries {
+        return Ok(attempt_to_response(&attempt));
+    }
+    let retry_after = match &attempt {
+        Attempt::Connected { retry_after, .. } => retry_after.as_deref(),
+        Attempt::SendError => None,
+    };
+    let Some(wait) = backoff_wait_secs(
+        attempt_index,
+        retry_after,
+        waited_total,
+        BACKOFF_TOTAL_CAP_SECS,
+    ) else {
+        // これ以上待つと総待機上限を超える → 諦めて縮退する。
+        return Ok(attempt_to_response(&attempt));
+    };
+    if wait > 0 {
+        std::thread::sleep(Duration::from_secs(wait));
+    }
+    http_get_retrying(
+        url,
+        headers,
+        authorization,
+        github_host,
+        max_retries,
+        attempt_index + 1,
+        waited_total.saturating_add(wait),
+    )
 }
 
 /// 1 回だけ GET を試み、再試行判定に必要な情報を [`Attempt`] へ翻訳する。
@@ -160,13 +187,15 @@ fn http_get_once(
     authorization: Option<&str>,
 ) -> Result<Attempt> {
     let client = http_client()?;
-    let mut request = client.get(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    if let Some(authorization) = authorization {
-        request = request.header("Authorization", authorization);
-    }
+    let base = headers
+        .iter()
+        .fold(client.get(url), |request, (name, value)| {
+            request.header(*name, *value)
+        });
+    let request = match authorization {
+        Some(authorization) => base.header("Authorization", authorization),
+        None => base,
+    };
     let response = match request.send() {
         Ok(response) => response,
         Err(_) => return Ok(Attempt::SendError),
@@ -299,11 +328,10 @@ fn parse_retry_after_secs(value: &str) -> Option<u64> {
 /// 任意の [`Read`] を `limit` バイトまで読み、UTF-8 として lossy にデコードする純粋規約。
 ///
 /// `take` で読み取り段階から上限を掛け、巨大本文を全量バッファしない（資源枯渇防止）。読み取り失敗は読めた分だけ
-/// 返す（接続途中切断でも部分本文を活かす）。
+/// 返す（接続途中切断でも部分本文を活かす）。`read_to_end` の宛先 Vec はこの関数内に閉じた I/O バッファである。
 fn read_capped<R: Read>(reader: R, limit: u64) -> String {
     let mut buffer = Vec::new();
-    let mut limited = reader.take(limit);
-    let _ = limited.read_to_end(&mut buffer);
+    let _ = reader.take(limit).read_to_end(&mut buffer);
     String::from_utf8_lossy(&buffer).into_owned()
 }
 
@@ -466,30 +494,9 @@ fn fetch_releases_range(
     old: Option<&str>,
     new: Option<&str>,
 ) -> Result<Option<RawReleaseNotes>> {
-    let mut bodies: Vec<(String, String)> = Vec::new();
-    for page in 1..=MAX_RELEASE_PAGES {
-        let api_url = releases_list_url(owner, repo, page);
-        if !is_allowed_url(&api_url) {
-            return Ok(None);
-        }
-        let json = match fetch_releases_page(&api_url, owner, repo)? {
-            Some(text) => text,
-            None => return Ok(None),
-        };
-        let releases = match parse_releases(&json) {
-            Some(releases) => releases,
-            None => return Ok(None),
-        };
-        let page_len = releases.len();
-        for release in releases {
-            if let Some(version) = release.in_range_version(old, new) {
-                bodies.push((version, release.body));
-            }
-        }
-        if (page_len as u32) < RELEASES_PER_PAGE {
-            break;
-        }
-    }
+    let Some(bodies) = collect_release_bodies(owner, repo, old, new, 1, Vec::new())? else {
+        return Ok(None);
+    };
     let text = join_release_bodies(bodies);
     if text.is_empty() {
         return Ok(None);
@@ -501,13 +508,78 @@ fn fetch_releases_range(
     }))
 }
 
-fn join_release_bodies(mut bodies: Vec<(String, String)>) -> String {
-    bodies.sort_by(|a, b| version_ordering(&a.0, &b.0));
+/// `(old, new]` 範囲の `(version, body)` をページ走査で集める（不変 accumulator の再帰。`None`=取得断念）。
+///
+/// `page` を 1 から `MAX_RELEASE_PAGES` まで進め、各ページの in-range release を `acc` に不変連結して次ページへ
+/// 渡す。許可外 URL・ページ取得失敗・JSON 解析失敗はいずれも `Ok(None)`（範囲取得そのものを断念）。短いページ
+/// （`< RELEASES_PER_PAGE`）に達するか最終ページまで進めば、集めた列を `Ok(Some(..))` で返す。
+fn collect_release_bodies(
+    owner: &str,
+    repo: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+    page: u32,
+    acc: Vec<(String, String)>,
+) -> Result<Option<Vec<(String, String)>>> {
+    if page > MAX_RELEASE_PAGES {
+        return Ok(Some(acc));
+    }
+    let api_url = releases_list_url(owner, repo, page);
+    if !is_allowed_url(&api_url) {
+        return Ok(None);
+    }
+    let Some(json) = fetch_releases_page(&api_url, owner, repo)? else {
+        return Ok(None);
+    };
+    let Some(releases) = parse_releases(&json) else {
+        return Ok(None);
+    };
+    let page_len = releases.len();
+    let extended: Vec<(String, String)> = acc
+        .into_iter()
+        .chain(releases.into_iter().filter_map(|release| {
+            release
+                .in_range_version(old, new)
+                .map(|version| (version, release.body))
+        }))
+        .collect();
+    if (page_len as u32) < RELEASES_PER_PAGE {
+        return Ok(Some(extended));
+    }
+    collect_release_bodies(owner, repo, old, new, page + 1, extended)
+}
+
+/// 範囲取得した `(version, body)` を version の semver 昇順（古い順）に連結する。
+///
+/// 並べ替えキーは [`VersionKey`]（[`version_ordering`] へ委譲する `Ord` ラッパ）で `(version, index)` を作り、
+/// `BTreeMap` の安定順序に委ねて古い順を得る（可変ソートを使わない）。`index` は同一 version の複数 body を入力
+/// 出現順に保つためのタイブレーク。
+fn join_release_bodies(bodies: Vec<(String, String)>) -> String {
     bodies
         .into_iter()
-        .map(|(_, body)| body)
+        .enumerate()
+        .map(|(index, (version, body))| ((VersionKey(version), index), body))
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
         .collect::<Vec<_>>()
         .join(RELEASE_BODY_SEPARATOR)
+}
+
+/// version 文字列を [`version_ordering`]（semver 規則）で順序づける `Ord` ラッパ（`BTreeMap` キー用）。
+#[derive(PartialEq, Eq)]
+struct VersionKey(String);
+
+impl Ord for VersionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // semver 上 Equal の異表記でも `BTreeMap` キーの一貫性のため生文字列でタイブレークする。
+        version_ordering(&self.0, &other.0).then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+impl PartialOrd for VersionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// GitHub Releases API 取得に添える Accept ヘッダ。
@@ -516,12 +588,33 @@ const GITHUB_ACCEPT_HEADER: Header<'static> = ("Accept", "application/vnd.github
 const GITHUB_API_VERSION_HEADER: Header<'static> = ("X-GitHub-Api-Version", "2022-11-28");
 
 /// nix eval 由来 `notes_source` URL を「生ノートが返る取得先」へ翻訳する純粋関数。
+///
+/// `github.com` の blob（→raw）/ releases/tag（→Releases API）は構造化エンドポイントへ変換する。それ以外でも
+/// 許可host（[`is_allowed_url`] が真＝[`host_of`] の構造的検査を通る公開 https）の URL は、生 changelog
+/// （`https://raw.githubusercontent.com/.../CHANGELOG.md`・`https://gitlab.com/...` 等）を `Raw` で fallback
+/// 取得する。SSRF は `is_allowed_url`（host_of の IP/localhost/単一ラベル/credential 拒否）で唯一ゲートされる。
 fn resolve_nix_notes_source(url: &str) -> Option<NotesFetchPlan> {
+    if let Some(plan) = resolve_github_notes_source(url) {
+        return Some(plan);
+    }
+    // github の構造化変換に当たらない URL は、許可host なら生本文を fallback 取得する。
+    if is_allowed_url(url) {
+        return Some(NotesFetchPlan::Raw(url.to_string()));
+    }
+    None
+}
+
+/// `github.com` の blob/releases-tag URL を構造化取得先へ翻訳する純粋関数（該当しなければ `None`）。
+fn resolve_github_notes_source(url: &str) -> Option<NotesFetchPlan> {
     let rest = url.strip_prefix("https://github.com/")?;
-    let mut segments = rest.splitn(3, '/');
-    let owner = non_empty(segments.next())?;
-    let repo = non_empty(segments.next())?;
-    let tail = segments.next().unwrap_or("");
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = non_empty(Some(owner))?;
+    // owner の次の segment が repo、それ以降（無ければ空）が tail。
+    let (repo, tail) = match after_owner.split_once('/') {
+        Some((repo, tail)) => (repo, tail),
+        None => (after_owner, ""),
+    };
+    let repo = non_empty(Some(repo))?;
     if let Some(blob_tail) = tail.strip_prefix("blob/") {
         if blob_tail.is_empty() {
             return None;
@@ -532,12 +625,32 @@ fn resolve_nix_notes_source(url: &str) -> Option<NotesFetchPlan> {
     }
     if let Some(tag) = tail.strip_prefix("releases/tag/") {
         let tag = non_empty(Some(tag))?;
+        // slash を含む tag（`foo/bar`）は API path segment を壊すため percent-encode してから補間する。
+        let encoded_tag = encode_tag_segment(tag);
         return Some(NotesFetchPlan::ReleasesApi {
-            api_url: format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"),
+            api_url: format!(
+                "https://api.github.com/repos/{owner}/{repo}/releases/tags/{encoded_tag}"
+            ),
             notes_url: url.to_string(),
         });
     }
     None
+}
+
+/// release tag を Releases API の単一 path segment へ percent-encode する純粋関数（`/`→`%2F` 等）。
+///
+/// `releases/tags/{tag}` の `{tag}` は 1 path segment であり、`foo/bar` のような slash 入り tag を生で補間すると
+/// API path 階層が崩れ 404 になる。`percent-encoding` crate の `NON_ALPHANUMERIC` を基底に、path segment で
+/// 安全な `-._~` だけ除外する集合で encode する（手組み encode はしない）。
+fn encode_tag_segment(tag: &str) -> String {
+    use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+    // unreserved（RFC 3986）`-._~` は素のまま残し、`/` を含む他の非英数字は encode する。
+    const TAG_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    utf8_percent_encode(tag, TAG_SEGMENT).to_string()
 }
 
 fn non_empty(s: Option<&str>) -> Option<&str> {
@@ -702,6 +815,11 @@ mod tests {
 
     use super::*;
 
+    /// `<temp>/<prefix>-<pid>.json` の一意パスを返すテスト補助。
+    fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}.json", std::process::id()))
+    }
+
     #[test]
     fn http_client_builds_and_read_capped_truncates_at_limit() -> Result<()> {
         // 構築が成功し（redirect/https/timeout が矛盾しない）、共有 client を返せる。
@@ -738,8 +856,7 @@ mod tests {
 
     #[test]
     fn read_nix_versions_parses_and_degrades() -> Result<()> {
-        let mut path = std::env::temp_dir();
-        path.push(format!("dotfiles-uh-nix-{}.json", std::process::id()));
+        let path = unique_temp_path("dotfiles-uh-nix");
         std::fs::write(
             &path,
             r#"{"neovim":{"version":"0.11.0","repo":"neovim/neovim","changelog":"https://github.com/neovim/neovim/blob/master/CHANGELOG.md"},"git":{"version":"2.54.0"}}"#,
@@ -757,20 +874,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         // None / 不存在は空マップへ縮退。
         assert!(read_nix_versions(None)?.is_empty());
-        let mut missing = std::env::temp_dir();
-        missing.push("dotfiles-uh-nix-missing.json");
+        let missing = std::env::temp_dir().join("dotfiles-uh-nix-missing.json");
         let _ = std::fs::remove_file(&missing);
         assert!(read_nix_versions(Some(&missing))?.is_empty());
         Ok(())
     }
 
     #[test]
-    fn legacy_notes_source_key_via_alias() -> Result<()> {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "dotfiles-uh-nix-legacy-{}.json",
-            std::process::id()
-        ));
+    fn notes_source_key_is_accepted_via_alias() -> Result<()> {
+        let path = unique_temp_path("dotfiles-uh-nix-alias");
         std::fs::write(
             &path,
             r#"{"git":{"version":"2.54.0","notes_source":"https://github.com/git/git"}}"#,
@@ -803,9 +915,50 @@ mod tests {
             }
             _ => panic!("expected ReleasesApi"),
         }
-        // repo root / 非 github は None。
-        assert!(resolve_nix_notes_source("https://github.com/o/r").is_none());
-        assert!(resolve_nix_notes_source("https://gitlab.com/o/r/blob/v1/CHANGELOG").is_none());
+        // github repo root（構造化変換に当たらない）でも、許可host なので生本文を Raw で fallback 取得する。
+        match resolve_nix_notes_source("https://github.com/o/r") {
+            Some(NotesFetchPlan::Raw(url)) => assert_eq!(url, "https://github.com/o/r"),
+            _ => panic!("expected Raw fallback for allowed host"),
+        }
+    }
+
+    #[test]
+    fn raw_changelog_on_allowed_host_falls_back_to_raw_fetch() {
+        // github 以外の許可host が指す生 changelog（raw.githubusercontent.com / gitlab.com）は Raw で取得する。
+        for url in [
+            "https://raw.githubusercontent.com/o/r/main/CHANGELOG.md",
+            "https://gitlab.com/o/r/-/raw/main/CHANGELOG.md",
+            "https://example.com/changelog",
+        ] {
+            match resolve_nix_notes_source(url) {
+                Some(NotesFetchPlan::Raw(got)) => assert_eq!(got, url),
+                _ => panic!("expected Raw for allowed host: {url}"),
+            }
+        }
+        // SSRF 構造的拒否（http / IP / localhost / 単一ラベル）は Raw fallback に到達せず None。
+        assert!(resolve_nix_notes_source("http://github.com/o/r").is_none());
+        assert!(resolve_nix_notes_source("https://169.254.169.254/latest/meta-data").is_none());
+        assert!(resolve_nix_notes_source("https://localhost/changelog").is_none());
+        assert!(resolve_nix_notes_source("https://intranet/changelog").is_none());
+    }
+
+    #[test]
+    fn release_tag_with_slash_is_percent_encoded_in_api_url() {
+        // slash 入り tag（`foo/bar`）は path segment を壊すため `%2F` へ encode してから API URL を組む。
+        match resolve_nix_notes_source("https://github.com/o/r/releases/tag/foo/bar") {
+            Some(NotesFetchPlan::ReleasesApi { api_url, notes_url }) => {
+                assert_eq!(
+                    api_url,
+                    "https://api.github.com/repos/o/r/releases/tags/foo%2Fbar"
+                );
+                assert_eq!(notes_url, "https://github.com/o/r/releases/tag/foo/bar");
+            }
+            _ => panic!("expected ReleasesApi with encoded tag"),
+        }
+        // unreserved（`-._~`）は素のまま、空白等は encode する。
+        assert_eq!(encode_tag_segment("v1.0.0-rc1"), "v1.0.0-rc1");
+        assert_eq!(encode_tag_segment("a b"), "a%20b");
+        assert_eq!(encode_tag_segment("x/y/z"), "x%2Fy%2Fz");
     }
 
     #[test]

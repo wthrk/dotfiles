@@ -4,10 +4,10 @@
 //! `/etc/bashrc` と `/etc/zshrc` について、nix-darwin 管理リンク以外があれば退避し、
 //! nix-darwin のリンク作成を妨げない。
 //!
-//! Darwin 適用は通常 `sudo darwin-rebuild` で昇格するが、auto-update.nix の root daemon は
-//! 既に root で動くため `--no-sudo`（または `DOTFILES_DARWIN_REBUILD_SUDO=0`）で sudo を前置しない
-//! 経路を選ぶ。非 root でこの経路を選んだ場合は昇格しないので `darwin-rebuild` が失敗する（昇格なしの
-//! 適用は失敗が正しい挙動であり、本 CLI は黙って成功扱いにしない）。
+//! Darwin 適用は通常 `sudo darwin-rebuild` で昇格するが、auto-update の launchd daemon は既に root で動くため
+//! `--no-sudo`（または `DOTFILES_DARWIN_REBUILD_SUDO=0`）で sudo を前置しない経路を選ぶ。非 root でこの経路を
+//! 選んだ場合は昇格しないので `darwin-rebuild` が失敗する（昇格なしの適用は失敗が正しい挙動であり、本 CLI は
+//! 黙って成功扱いにしない）。
 
 use std::ffi::OsString;
 use std::fs;
@@ -61,7 +61,7 @@ pub(crate) fn apply(common: &SwitchCommon, target: SwitchTarget) -> Result<()> {
 /// `home-manager switch` は呼ばず `Darwin` のみを返す（standalone を追加で呼ぶと二重適用になり、root daemon
 /// 経路では standalone home が `~/.local/state/home-manager` 等へ root 所有ファイルを残し以後の
 /// ユーザ操作が EACCES で失敗する）。非 macOS（Linux 等）には darwin-rebuild が無いため `Home`（home-manager
-/// standalone）のみを返す。`switch home`/`switch darwin` の明示単一 target はこの関数を経由せず従来どおり。
+/// standalone）のみを返す。`switch home`/`switch darwin` の明示単一 target はこの関数を経由しない。
 fn targets_for_all(is_macos: bool) -> &'static [SwitchTarget] {
     if is_macos {
         &[SwitchTarget::Darwin]
