@@ -1,8 +1,8 @@
 //! nightly bump PR を無人 auto-merge してよいかを機械判定する純粋規則。
 //!
 //! この module は I/O を持たず、CI が収集した「PR の全 commit を base..head で union した変更パス集合」と
-//! 「base / head の `flake.lock` 内容」を受け取り、許可された bump だけかを決める。判定ロジックを CLI
-//! （`dotfiles ci verify-bump-lock`）の純粋核に置くことで、nightly-update workflow が同一 run 内でインライン
+//! 「base / head の `flake.lock` 内容」を受け取り、許可された bump だけかを決める。判定ロジックを保守 CLI
+//! （`cargo xtask ci verify-bump-lock`）の純粋核に置くことで、nightly-update workflow が同一 run 内でインライン
 //! 実行するセキュリティチェックの実体を Rust unit test で固定し、shell の中で再実装しない。合格すると
 //! workflow は PR head へ `static checks` commit status を投稿し、それが適用済み ruleset の required check を
 //! 満たす（不合格なら非 0 終了し status 投稿・PR 起票・merge を行わない）。
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn rejects_ruleset_and_source_paths() {
         assert!(verify_changed_paths(&paths(&[".github/rulesets/nightly.json"])).is_err());
-        assert!(verify_changed_paths(&paths(&["rust/dotfiles-cli/src/ci.rs"])).is_err());
+        assert!(verify_changed_paths(&paths(&["rust/xtask/src/ci.rs"])).is_err());
         // docs/update-history directory 自体（末尾 / 無し）は prefix にマッチしないため未許可。
         assert!(verify_changed_paths(&paths(&["docs/update-history"])).is_err());
     }

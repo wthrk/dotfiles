@@ -234,7 +234,7 @@ record はこのレジストリを最優先参照して同じ取得元を再利�
 PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**します。別途 GitHub App を作って secret を
 仕込む必要はありません。GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow
 （必須 check）を発火しない既知の制約があるため、`nightly-update.yml` の open-pr job が **同一 run 内で
-セキュリティチェック `dotfiles ci verify-bump-lock` をインライン実行**し、合格時のみ PR head commit へ
+セキュリティチェック `cargo xtask ci verify-bump-lock` をインライン実行**し、合格時のみ PR head commit へ
 `static checks` という commit status を投稿して required check を満たします。`static checks` は
 `.github/workflows/static-checks.yml` の job 名であり、適用済み「main」ruleset の required context と context 名で
 突合します。
@@ -246,10 +246,10 @@ PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**しま
   source 改変・framework input の rev 変更が無いこと。加えて、許可 input でも rev が変わらないまま
   `narHash` / `lastModified` だけが動く（同一 rev の取得物すり替え＝content swap）変更は fail にします。
 
-このチェックは **検査者と検査対象を分離**します。判定バイナリ（`dotfiles`）は nightly workflow 自身の信頼 ref
-の checkout からビルドし、検査対象は base..head の lock 差分（git データ）です。PR 作業ツリーの dotfiles を
-検査主体にしないため、悪意ある lock 改変があっても判定主体は信頼コードのままです。判定ロジックは Rust の
-純粋核（`rust/dotfiles-cli/src/ci/bump_lock.rs`）に置き、unit test で固定しています。チェックが fail すると
+このチェックは **検査者と検査対象を分離**します。判定バイナリ（`cargo xtask ci verify-bump-lock`）は nightly
+workflow 自身の信頼 ref の checkout からビルドし、検査対象は base..head の lock 差分（git データ）です。PR 作業
+ツリーの dotfiles を検査主体にしないため、悪意ある lock 改変があっても判定主体は信頼コードのままです。判定
+ロジックは Rust の純粋核（`rust/xtask/src/ci/bump_lock.rs`）に置き、unit test で固定しています。チェックが fail すると
 `static checks` status は投稿されず、required check が満たされないため無人 auto-merge は成立しません
 （fail-closed・人手レビュー経路へ送られます）。許可パスが `flake.lock` + `docs/update-history/**` に限定される
 ため、nightly PR が `.github/**`（workflow/guard）を変更しようとしてもこのチェックで fail します。
@@ -273,7 +273,7 @@ code review で走ります）、`gh pr merge --auto --squash` で auto-merge �
 
 #### インライン `verify-bump-lock` の適用範囲（threat-model）
 
-インラインの `dotfiles ci verify-bump-lock` は、**nightly workflow が自分で起票する bump PR にのみ適用**されます
+インラインの `cargo xtask ci verify-bump-lock` は、**nightly workflow が自分で起票する bump PR にのみ適用**されます
 （open-pr job が同一 run 内で実行するため）。第三者が `nightly/bump-*` prefix で**直接起票した PR には
 `verify-bump-lock` は走りません**（全 PR を横断検査していた `nightly-bump-guard.yml` の required check は App 廃止に
 伴い削除済みです）。そうした攻撃者起票 PR のマージ阻止は、bypass 不能な「main」ruleset の必須 `static checks` と

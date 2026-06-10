@@ -6127,6 +6127,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dotfiles-core",
+ "serde_json",
 ]
 
 [[package]]

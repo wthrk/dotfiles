@@ -18,7 +18,7 @@ name: nightly update
 #     としてその場で確定記録する（夜をまたいで埋める backfill は持たない）。
 #   - PR 起票・auto-merge は GITHUB_TOKEN で行う（GitHub App / 別 secret は追加しない）。GITHUB_TOKEN 起票 PR
 #     では `on: pull_request` の必須 check（static-checks.yml）が発火しないため、open-pr job が同一 run 内で
-#     ①`dotfiles ci verify-bump-lock`（base..head の許可パス + lock 差分のセキュリティ検査）と ②実
+#     ①`cargo xtask ci verify-bump-lock`（base..head の許可パス + lock 差分のセキュリティ検査）と ②実
 #     `cargo xtask check static`（static-checks.yml と同一）の両方が合格した場合に限り、PR head へ
 #     `static checks` commit status を success で POST して required check を満たす（fail-closed）。
 #
@@ -27,7 +27,7 @@ name: nightly update
 #     制約上常に既定ブランチで発火するため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定
 #     ブランチのときだけ許可する（job-level `if` + 先頭の明示ガード step で fail-closed を二重化）。これは
 #     信頼できない ref から検査主体（guard バイナリと static check）をビルドして status を詐称投稿する経路を塞ぐ。
-#   - 許可パス（flake.lock + docs/update-history/**）の強制は `dotfiles ci verify-bump-lock` が base..head の
+#   - 許可パス（flake.lock + docs/update-history/**）の強制は `cargo xtask ci verify-bump-lock` が base..head の
 #     commit パス union を検査して担う。許可外パス混入・許可外 input rev 変更・空 bump があれば非 0 終了し、
 #     後続の static checks・status 投稿・PR 起票・merge へ進まない（無人 auto-merge が許可外を入れない最低限）。
 #
@@ -292,7 +292,7 @@ jobs:
   # 3) PR 起票 + インラインセキュリティチェック（verify-bump-lock）+ 実 static checks + status 投稿 + auto-merge。
   #    GITHUB_TOKEN で完結する（GitHub App / 別 secret は使わない）。GITHUB_TOKEN 起票 PR では
   #    `on: pull_request` の static-checks.yml が発火しないため、この job が同一 run 内で
-  #    ①`dotfiles ci verify-bump-lock`（許可パス + lock 差分の検査）と ②`cargo xtask check static`
+  #    ①`cargo xtask ci verify-bump-lock`（許可パス + lock 差分の検査）と ②`cargo xtask check static`
   #    （static-checks.yml と同一）の両方が合格した場合に限り `static checks` status を success で POST する。
   open-pr:
     name: open bump PR and enable auto-merge
@@ -335,7 +335,7 @@ jobs:
           fi
 
       # この nightly workflow 自身の ref（信頼 ref = 上のガードと job-level `if` で既定ブランチ起動に限定済み）を
-      # checkout する。ここでビルドする `dotfiles` バイナリ（verify-bump-lock の判定主体）も信頼コードである。
+      # checkout する。ここでビルドする `cargo xtask ci verify-bump-lock`（判定主体）も信頼コードである。
       - name: checkout
         uses: actions/checkout@v5
         with:
@@ -420,10 +420,9 @@ jobs:
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
         run: |
           set -euo pipefail
-          # 判定主体を devShell 内 cargo でビルドし、実行も `nix develop -c` 経由でランタイムライブラリを供給する。
-          nix develop -c cargo build --release -p dotfiles-cli
-          dotfiles_bin="$PWD/target/release/dotfiles"
-          nix develop -c "$dotfiles_bin" ci verify-bump-lock \
+          # 判定主体（保守コマンド）を devShell 内 cargo で実行し、ランタイムライブラリを `nix develop -c` 経由で
+          # 供給する。`cargo xtask check static` と同じ xtask 起動経路に揃える。
+          nix develop -c cargo xtask ci verify-bump-lock \
             --base "${{ steps.commit.outputs.base_sha }}" \
             --head "${{ steps.commit.outputs.head_sha }}" \
             --repo .
@@ -450,7 +449,7 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`dotfiles ci verify-bump-lock\` と実 \`cargo xtask check static\`（static-checks.yml と同一）の両方が合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
+            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\` と実 \`cargo xtask check static\`（static-checks.yml と同一）の両方が合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
       # ①verify-bump-lock と ②実 static checks の両方が合格した場合に限り PR head へ `static checks` commit

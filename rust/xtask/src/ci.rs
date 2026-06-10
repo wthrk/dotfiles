@@ -7,6 +7,10 @@
 //! `flake.lock` 内容」を集めて純粋核へ渡す薄い層に限定する。shell の中に判定を再実装せず、Rust unit test で
 //! 固定した規則を CI から呼ぶことで、gate の fail-open を避ける。
 //!
+//! 配置は xtask（保守コマンド）に固定する。これは利用者が直接実行する操作ではなく、リポジトリ CI / 保守の
+//! 機械判定であり、nightly-update workflow は同一 job 内で既に `cargo xtask check static` を `nix develop -c`
+//! 経由で呼ぶため、xtask の cargo ビルド経路へ追加で依存させることはない。
+//!
 //! 変更パス収集は `git diff --name-only base..head`（両端 tree の net 差分）ではなく
 //! `git log --no-renames --name-only --pretty=format: base..head`（範囲内 **全 commit** の変更ファイル）を
 //! union する。net diff は途中 commit で逸脱パスを add してから head までに remove すると取りこぼす
@@ -15,21 +19,18 @@
 //! 扱わせ、宛先だけでなく**元パスも列挙**させる。これが無いと許可外の workflow / ソースを許可 prefix 配下へ
 //! rename する PR が宛先（許可済み）だけ変更したように見えて gate を通過し、保護設定を削除・移動できてしまう。
 //! 元パスを union に入れることで rename 経由の許可外パス改変を取りこぼさない。
-//!
-//! このサブコマンドはリポジトリ保守向けだが、利用者 CLI と同じ binary に載せるのは CI runner が dev shell
-//! 経由で `dotfiles` を使えるためである。利用者向けの常用操作ではないが、xtask に置くと CI が xtask の
-//! cargo ビルド経路に依存するため、判定核を持つ CLI 側に置いて test 可能性と再利用性を確保する。
 
 mod bump_lock;
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
+use std::process::Command;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 
 use crate::Result;
-use crate::process::run_capture;
 
 #[derive(Args)]
 /// CI 機械判定のサブコマンドをまとめる最上位 command。
@@ -40,7 +41,7 @@ pub(crate) struct CiOptions {
 
 #[derive(Subcommand)]
 /// nightly bump guard の機械判定。将来 CI 判定を足す場合もここに名詞で並べる。
-enum CiCommand {
+pub(crate) enum CiCommand {
     VerifyBumpLock(VerifyBumpLockOptions),
 }
 
@@ -50,7 +51,7 @@ enum CiCommand {
 /// CI は PR の base SHA と head SHA を渡す。本 command は base..head の **全 commit** の変更パスを
 /// `git log --name-only` で union 収集し、base / head の `flake.lock` を `git show` で取り出して
 /// [`bump_lock::verify_bump`] に渡す。違反があれば非 0 終了し、required status check が fail する。
-struct VerifyBumpLockOptions {
+pub(crate) struct VerifyBumpLockOptions {
     /// PR の base commit SHA（マージ先の先端）。
     #[arg(long)]
     base: String,
@@ -62,7 +63,7 @@ struct VerifyBumpLockOptions {
     repo: Option<PathBuf>,
 }
 
-/// CLI で parse 済みの `dotfiles ci` command を実行へ振り分ける。
+/// CLI で parse 済みの `cargo xtask ci` command を実行へ振り分ける。
 pub(crate) fn run(options: CiOptions) -> Result<()> {
     match options.command {
         CiCommand::VerifyBumpLock(options) => run_verify_bump_lock(options),
@@ -150,13 +151,22 @@ fn collect_union_changed_paths(log_output: &str) -> BTreeSet<String> {
 }
 
 /// `git` をオプション付きで実行し stdout を返す。token 等の secret は引数に乗せない（git のみ）。
+///
+/// 非 0 終了は失敗にし、終了状態と stderr（前後空白を `trim` した全体）を文脈に含める。stderr は端末へ流さず
+/// 失敗時の診断にだけ使い、stdout は UTF-8 文字列として返す。
 fn run_git<'a, I>(dir_args: &[String], subcommand: I) -> Result<String>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut args: Vec<std::ffi::OsString> = dir_args.iter().map(std::ffi::OsString::from).collect();
-    args.extend(subcommand.into_iter().map(std::ffi::OsString::from));
-    run_capture("git", args)
+    let mut args: Vec<OsString> = dir_args.iter().map(OsString::from).collect();
+    args.extend(subcommand.into_iter().map(OsString::from));
+    let output = Command::new("git").args(&args).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("command failed: git: {}: {}", output.status, stderr.trim());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(stdout)
 }
 
 #[cfg(test)]
