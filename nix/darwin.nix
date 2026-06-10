@@ -52,16 +52,20 @@ let
     "/sbin"
   ];
 
-  # launchd timer が呼ぶ薄い wrapper。`dotfiles update` を root のまま 1 回 exec するだけ。`HOME` を対象ユーザの
-  # home に固定し、`--config-dir` / `--host` を明示で渡すため、CLI の config_dir 解決は環境に依存せずユーザ dir を
-  # 指す。`--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも switch_darwin が正しい
-  # `#<host>` を参照するよう渡す（無指定だと daemon が存在しない `#<current-host>` を引いて失敗しうる）。
+  # launchd timer が呼ぶ薄い wrapper。`dotfiles update` を root のまま 1 回 exec するだけ。target を `darwin` に
+  # 固定するため、`darwin-rebuild switch --flake <config>#<host>` だけを適用する。この nix-darwin 構成は
+  # `home-manager.darwinModules.home-manager` を取り込み `home-manager.users.${user}` を宣言するため、`darwin-rebuild
+  # switch` が system と Home Manager を一括適用する。target 無指定（既定 `all`）だと standalone の
+  # `home-manager switch --flake <config>#<id -un>` を先に実行し、root daemon では `id -un` が root を返すうえ生成
+  # flake に `homeConfigurations.root` が無いため失敗し、後続の darwin 適用に到達しない。`HOME` を対象ユーザの home に
+  # 固定し、`--config-dir` / `--host` を明示で渡すため、CLI の config_dir 解決は環境に依存せずユーザ dir を指し、
+  # `--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも `#<host>` を正しく参照する。
   autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg autoUpdatePath}
 
-    exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update \
+    exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update darwin \
       --config-dir ${lib.escapeShellArg configDir} --host ${lib.escapeShellArg host}
   '';
 in
