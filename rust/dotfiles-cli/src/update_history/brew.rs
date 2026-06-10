@@ -1,45 +1,47 @@
 //! 宣言 cask の版差分を old/new tap rev の cask `.rb` 定義から決定論的に算出する（ライブ brew 非問い合わせ）。
 //!
 //! reqwest で `raw.githubusercontent.com/homebrew/homebrew-cask/<rev>/Casks/<subdir>/<name>.rb` を取得して
-//! `version "..."` を解析する。自己更新 cask（`auto_updates true` = bitwarden/codex-app/ghostty）は `brew upgrade`
-//! が無人 upgrade しないため差分から除外する。subdir は cask 名の先頭文字（font cask は `font/font-<X>`、`<X>`
-//! は `font-` の次の 1 文字）。
+//! `version "..."` を解析する。全 cask（`auto_updates true` = bitwarden/codex-app/ghostty も含む）が `homebrew.nix`
+//! の `greedyCasks = true` で無人 upgrade の対象になるため、版差分の追跡対象にする。subdir は cask 名の先頭文字
+//! （font cask は `font/font-<X>`、`<X>` は `font-` の次の 1 文字）。
+//!
+//! greedy 有効化の前提は「全 cask が sha256 固定」。new rev の cask `.rb` に `sha256 :no_check`（未固定成果物）が
+//! あれば、無人 upgrade が外部成果物を再現性なく差し替えうるため fail-closed にする（[`assert_pinned`]）。
 //!
 //! cask 一覧は `nix/modules/homebrew.nix` の `casks = [ ... ]` から抽出する（switch が導入する cask と同一源）。
+
+use anyhow::bail;
 
 use super::diff::{DeltaSource, VersionDelta, version_ordering};
 use super::notes::safe_https_fetch;
 use super::wire::{ChangeKind, is_allowed_url};
 use crate::Result;
 
-/// 自己更新 cask（`auto_updates true`）。`brew upgrade` が無人 upgrade しないため版差分から除外する。
-///
-/// 変える場合は `nix/modules/homebrew.nix` の onActivation コメントと同期させること。
-const AUTO_UPDATE_CASKS: [&str; 3] = ["bitwarden", "codex-app", "ghostty"];
-
 /// 宣言 cask の old→new tap rev 版差分を算出する。
 ///
 /// `casks_nix` は `nix/modules/homebrew.nix` のテキスト（`casks = [ ... ]` を抽出）。各 cask の `version` を
-/// 両 rev の cask `.rb` から取り、auto_updates cask を除外し、版変化のあるものだけ [`VersionDelta`] にする。
-/// 両 rev とも取得不能 / 版変更なしは捨てる（ノイズ抑制）。`fetch` は cask `.rb` 取得 seam（本番は reqwest、
-/// テストは fake）。
+/// 両 rev の cask `.rb` から取り、版変化のあるものだけ [`VersionDelta`] にする。両 rev とも取得不能 / 版変更なし
+/// は捨てる（ノイズ抑制）。`greedyCasks = true` で全 cask が無人 upgrade 対象になるため `auto_updates true` の
+/// cask も追跡する。new rev の `.rb` が `sha256 :no_check` の未固定成果物なら fail-closed にする（[`assert_pinned`]）。
+/// `fetch` は cask `.rb` 取得 seam（本番は reqwest、テストは fake）。
 pub(crate) fn diff_casks(
     casks_nix: &str,
     rev_old: &str,
     rev_new: &str,
     fetch: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<Vec<VersionDelta>> {
-    // auto_updates cask を除外し、各 cask の old/new 版差分を `Result<Option<delta>>` へ翻訳して、Err 伝播
-    // （`collect::<Result<_>>`）と版変化なし（`None`）の除去（`flatten`）を分けて行う。
+    // 各 cask の old/new 版差分を `Result<Option<delta>>` へ翻訳して、Err 伝播（`collect::<Result<_>>`）と
+    // 版変化なし（`None`）の除去（`flatten`）を分けて行う。
     parse_cask_list(casks_nix)
         .into_iter()
-        .filter(|name| !AUTO_UPDATE_CASKS.contains(&name.as_str()))
         .map(|name| cask_delta(rev_old, rev_new, name, fetch))
         .collect::<Result<Vec<Option<VersionDelta>>>>()
         .map(|deltas| deltas.into_iter().flatten().collect())
 }
 
 /// 1 cask の old/new 版を取得し、版変化があれば [`VersionDelta`] を組む（取得不能/版不変は `None`）。
+///
+/// new rev の `.rb` 本文に対しては成果物固定を [`assert_pinned`] で検査し、`sha256 :no_check` なら fail-closed。
 fn cask_delta(
     rev_old: &str,
     rev_new: &str,
@@ -47,7 +49,7 @@ fn cask_delta(
     fetch: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<Option<VersionDelta>> {
     let old = cask_version(rev_old, &name, fetch)?;
-    let new = cask_version(rev_new, &name, fetch)?;
+    let new = cask_version_pinned(rev_new, &name, fetch)?;
     let change = match (&old, &new) {
         (None, None) => return Ok(None),
         (None, Some(_)) => ChangeKind::Added,
@@ -86,6 +88,49 @@ fn cask_version(
 ) -> Result<Option<String>> {
     let url = cask_rb_url(rev, name);
     Ok(fetch(&url)?.as_deref().and_then(parse_cask_version))
+}
+
+/// new rev 用: `.rb` を取得し成果物固定を [`assert_pinned`] で検査してから `version "..."` を取り出す。
+///
+/// greedy 有効化（`homebrew.nix` の `greedyCasks = true`）で全 cask が無人 upgrade 対象になるため、未固定成果物
+/// （`sha256 :no_check`）が new rev に現れたら fail-closed にし、外部成果物の再現性なき無人差し替えを阻む。
+/// `.rb` 取得不能（`None`）は検査対象が無いとみなして通す（版も `None` を返す）。
+fn cask_version_pinned(
+    rev: &str,
+    name: &str,
+    fetch: &dyn Fn(&str) -> Result<Option<String>>,
+) -> Result<Option<String>> {
+    let url = cask_rb_url(rev, name);
+    match fetch(&url)? {
+        None => Ok(None),
+        Some(rb) => assert_pinned(name, &rb).map(|()| parse_cask_version(&rb)),
+    }
+}
+
+/// cask `.rb` 本文が成果物を固定しているかを検査し、`sha256 :no_check` なら fail-closed にする。
+///
+/// greedy 有効下では未固定成果物が無人差し替えされうるため、`greedyCasks = true` の前提「全 cask が sha256 固定」
+/// を守れない cask が tap rev に現れた時点で停止し、原因 cask 名を添える。
+fn assert_pinned(name: &str, rb: &str) -> Result<()> {
+    if has_no_check_sha256(rb) {
+        bail!(
+            "cask `{name}` は `sha256 :no_check`（未固定成果物）。greedy 有効化の前提（全 cask sha256 固定）に\
+             反するため停止する。`homebrew.nix` から外すか sha256 を固定すること"
+        );
+    }
+    Ok(())
+}
+
+/// cask `.rb` 本文に `sha256 :no_check`（成果物を固定しない指定）があるかを判定する純粋関数。
+///
+/// 行頭の空白を除いた `sha256` 宣言行で、続く非空白トークンが `:no_check` のものを未固定とみなす。
+fn has_no_check_sha256(rb: &str) -> bool {
+    rb.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("sha256")
+            .map(str::trim_start)
+            .is_some_and(|rest| rest.starts_with(":no_check"))
+    })
 }
 
 /// `raw.githubusercontent.com` の cask `.rb` 取得 URL を構築する純粋関数。font cask は `font/font-<X>`
@@ -152,8 +197,8 @@ fn parse_cask_list(nix: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    //! cask list 抽出・cask URL 構築（letter/font subdir）・version 解析・版差分（auto_updates 除外・
-    //! added/removed/upgraded・ノイズ除去）を network 抜きで固定する。
+    //! cask list 抽出・cask URL 構築（letter/font subdir）・version 解析・版差分（auto_updates も追跡・
+    //! added/removed/upgraded・ノイズ除去）・`sha256 :no_check` の fail-closed を network 抜きで固定する。
 
     use super::*;
     use std::collections::BTreeMap;
@@ -197,11 +242,12 @@ mod tests {
     }
 
     #[test]
-    fn diff_casks_excludes_auto_updates_and_computes_changes() -> Result<()> {
-        // azookey: upgrade、yubico-authenticator: 版不変→除外、bitwarden: auto_updates→除外。
+    fn diff_casks_tracks_auto_updates_and_computes_changes() -> Result<()> {
+        // azookey: upgrade、yubico-authenticator: 版不変→除外、bitwarden（auto_updates 相当）: upgrade で追跡。
         let nix = "casks = [ \"azookey\" \"bitwarden\" \"yubico-authenticator\" ];";
         let old: BTreeMap<String, String> = [
             (cask_rb_url("old", "azookey"), version_rb("1.0")),
+            (cask_rb_url("old", "bitwarden"), version_rb("2024.1")),
             (
                 cask_rb_url("old", "yubico-authenticator"),
                 version_rb("2.0"),
@@ -211,6 +257,7 @@ mod tests {
         .collect();
         let new: BTreeMap<String, String> = [
             (cask_rb_url("new", "azookey"), version_rb("1.1")),
+            (cask_rb_url("new", "bitwarden"), version_rb("2024.2")),
             (
                 cask_rb_url("new", "yubico-authenticator"),
                 version_rb("2.0"),
@@ -222,13 +269,56 @@ mod tests {
             Ok(old.get(url).or_else(|| new.get(url)).cloned())
         };
         let deltas = diff_casks(nix, "old", "new", &fetch)?;
-        assert_eq!(deltas.len(), 1);
-        assert_eq!(deltas[0].name, "azookey");
-        assert_eq!(deltas[0].change, ChangeKind::Upgraded);
-        assert_eq!(deltas[0].old.as_deref(), Some("1.0"));
-        assert_eq!(deltas[0].new.as_deref(), Some("1.1"));
-        assert_eq!(deltas[0].source, DeltaSource::BrewTap);
+        // azookey と bitwarden（auto_updates）の双方が追跡される。yubico-authenticator は版不変で除外。
+        assert_eq!(deltas.len(), 2);
+        let azookey = deltas
+            .iter()
+            .find(|d| d.name == "azookey")
+            .ok_or_else(|| anyhow::anyhow!("azookey delta missing"))?;
+        assert_eq!(azookey.change, ChangeKind::Upgraded);
+        assert_eq!(azookey.old.as_deref(), Some("1.0"));
+        assert_eq!(azookey.new.as_deref(), Some("1.1"));
+        assert_eq!(azookey.source, DeltaSource::BrewTap);
+        let bitwarden = deltas
+            .iter()
+            .find(|d| d.name == "bitwarden")
+            .ok_or_else(|| anyhow::anyhow!("bitwarden delta missing"))?;
+        assert_eq!(bitwarden.change, ChangeKind::Upgraded);
+        assert_eq!(bitwarden.old.as_deref(), Some("2024.1"));
+        assert_eq!(bitwarden.new.as_deref(), Some("2024.2"));
         Ok(())
+    }
+
+    #[test]
+    fn diff_casks_fails_closed_on_no_check_sha256() {
+        // new rev の `.rb` が `sha256 :no_check`（未固定成果物）なら greedy 前提に反するため停止する。
+        let nix = "casks = [ \"loose\" ];";
+        let fetch = |url: &str| -> Result<Option<String>> {
+            Ok(if url == cask_rb_url("new", "loose") {
+                Some("cask \"loose\" do\n  version \"1.0\"\n  sha256 :no_check\nend\n".to_string())
+            } else {
+                None
+            })
+        };
+        let error = diff_casks(nix, "old", "new", &fetch)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            error.contains("loose"),
+            "error should name the cask: {error}"
+        );
+        assert!(
+            error.contains("no_check"),
+            "error should cite no_check: {error}"
+        );
+    }
+
+    #[test]
+    fn has_no_check_sha256_distinguishes_pinned_from_unpinned() {
+        assert!(has_no_check_sha256("  sha256 :no_check\n"));
+        assert!(!has_no_check_sha256("  sha256 \"abc123\"\n"));
+        assert!(!has_no_check_sha256("  version \"1.0\"\n"));
     }
 
     #[test]

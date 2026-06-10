@@ -418,7 +418,8 @@ struct RecordAccum {
 
 /// `homebrew.nix` + 両 cask rev が揃うときだけ、reqwest で cask `.rb` を取得して brew 版差分を算出する。
 ///
-/// いずれかが欠ける（cask 差分不要 / テスト）なら空。cask list と version 解析・auto_updates 除外は [`brew`]。
+/// いずれかが欠ける（cask 差分不要 / テスト）なら空。cask list と version 解析・`sha256 :no_check` の fail-closed
+/// 検査は [`brew`]。
 fn compute_brew_deltas(
     input: &RecordInput<'_>,
     fetch_cask: &dyn Fn(&str) -> Result<Option<String>>,

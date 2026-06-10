@@ -140,7 +140,7 @@ jobs:
           if-no-files-found: error
 
   # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
-  #    brew cask `.rb` 取得と version 解析（reqwest）・auto_updates 除外・概要抽出は全て `dotfiles update-history
+  #    brew cask `.rb` 取得と version 解析（reqwest）・sha256 未固定 cask の fail-closed 検査・概要抽出は全て `dotfiles update-history
   #    record`（Rust）が行う。ここは bump 済み lock の取得と record 起動だけを行う。概要の LLM 抽出は OpenAI API
   #    （async-openai crate）で、secret `OPEN_AI_API_KEY` を env で結線する（GitHub Models は使わない）。出力は
   #    更新履歴 TOML（機械バリデート済み）として artifact に渡す。
@@ -172,7 +172,7 @@ jobs:
           name: bump-state
 
       # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
-      # `.rb` を取得し version 解析、auto_updates cask 除外、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
+      # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
       # 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv /
       # ログに出さない）。ノートが取れないものは version-only（version + notes_url のみ）として確定記録する。
       - name: record（nix/brew 版差分 + 概要）

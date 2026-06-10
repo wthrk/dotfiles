@@ -294,12 +294,12 @@ Copilot/Codex の自動レビューに依存します（加えて `.github/**` �
 
 ## Homebrew cask の固定状況（無人 upgrade の明示受容）
 
-auto-update 経路は switch 時に `brew upgrade`（greedy 無し）を実行して installed cask/formula を tap rev の
-pin へ追従させます。tap rev は cask の「定義」を固定しますが、ダウンロード成果物の固定性は cask 側の `sha256`
-指定に依存します。`brew upgrade` は既定で `auto_updates true` / `version :latest` の cask を upgrade 対象から
-**除外**し（`--greedy` を渡したときだけ対象化）、本設定は `--greedy` を渡さないため、これら自己更新 cask は
-無人 upgrade 経路の対象になりません。よって無人 upgrade が成果物を実際に差し替えるのは `sha256` が明示固定
-された cask に限られ、その成果物は tap rev で再現的に固定されます。
+auto-update 経路は switch 時に `brew upgrade` を実行して installed cask/formula を tap rev の pin へ追従させます。
+`homebrew.nix` で `greedyCasks = true` を有効化しているため、`auto_updates true` / `version :latest` の cask も
+upgrade 対象になり、全 cask が tap pin へ決定論的に収束します（`dotfiles update-history` の差分にも現れます）。
+tap rev は cask の「定義」を固定し、ダウンロード成果物の固定性は cask 側の `sha256` 指定に依存します。現在の
+宣言 cask は `auto_updates true` のものも含め全て `sha256` で成果物を明示固定しているため、greedy 有効下でも無人
+upgrade が差し替える成果物は tap rev で再現的に固定されます。
 
 現在の宣言 cask の固定状況を明示受容します。
 
@@ -308,11 +308,14 @@ pin へ追従させます。tap rev は cask の「定義」を固定します�
 | `azookey` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
 | `font-cica` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
 | `yubico-authenticator` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
-| `bitwarden` | homebrew/cask | あり | **true** | 対象外（自己更新） | アプリ自己更新（本設定の責務外） |
-| `codex-app` | homebrew/cask | あり（arm） | **true** | 対象外（自己更新） | アプリ自己更新（本設定の責務外） |
-| `ghostty` | homebrew/cask | あり | **true** | 対象外（自己更新） | アプリ自己更新（本設定の責務外） |
+| `bitwarden` | homebrew/cask | あり | **true** | 対象（greedy） | tap rev で固定（再現的） |
+| `codex-app` | homebrew/cask | あり（arm） | **true** | 対象（greedy） | tap rev で固定（再現的） |
+| `ghostty` | homebrew/cask | あり | **true** | 対象（greedy） | tap rev で固定（再現的） |
 
-`sha256 :no_check`（未固定成果物）を無人 upgrade する cask は現状存在しません。将来そうした cask を足す場合は、
-greedy を有効化しない現状では `auto_updates` 経由でのみ更新され（本経路の対象外）、明示固定が必要なら手動更新へ
-寄せます。auto-update が cask を上げた事実は、適用後に `dotfiles update` の要約（端末 / `pending-summary`、
-`update-history show`）で更新アプリとして通知され、無人差し替えが不可視にならないようにしています。
+greedy 有効化の前提は「全 cask が sha256 固定」です。`sha256 :no_check`（未固定成果物）の cask を足すと、greedy
+有効下では未固定成果物が無人差し替えされうるため、`dotfiles update-history record` 経路の brew モジュールが tap
+rev の cask `.rb` を検査し、`sha256 :no_check` があれば fail-closed で停止します（cask 名を添えて中断）。cask を
+追加する際は、対象 cask の `.rb` が `sha256 "<hash>"` で固定されている（`sha256 :no_check` でない）ことを確認して
+ください。固定できない cask は `homebrew.nix` の `casks` から外し、必要なら手動更新へ寄せます。auto-update が cask
+を上げた事実は、適用後に `dotfiles update` の要約（端末 / `pending-summary`、`update-history show`）で更新アプリ
+として通知され、無人差し替えが不可視にならないようにしています。
