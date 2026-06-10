@@ -7,7 +7,7 @@ use std::{ffi::OsString, path::Path};
 
 use clap::Args;
 
-use crate::{Result, process::run as run_process, switch};
+use crate::{Result, local_flake::INPUT_NAME, process::run as run_process, switch};
 
 /// 既存の `switch` と同じオプションを受け取り、先に flake.lock を更新する。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
@@ -17,18 +17,26 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     switch::run(options.switch)
 }
 
-/// 生成済みローカル flake の全入力を最新の解決結果で lock し直す。
+/// 生成済みローカル flake の `dotfiles` input だけを再 lock する。
+///
+/// 全 input を更新すると各端末が CI bump 済みの repo lock ではなく独自に最新 nixpkgs/taps へ進み、
+/// fleet pin から乖離する。`dotfiles` input のみを更新し、推移的 nixpkgs/taps を repo の committed
+/// lock に追従させる。
 fn update_lock(config_dir: &Path, dry_run: bool) -> Result<()> {
-    run_process(
-        "nix",
-        [
-            OsString::from("flake"),
-            OsString::from("update"),
-            OsString::from("--flake"),
-            config_dir.as_os_str().to_os_string(),
-        ],
-        dry_run,
-    )
+    run_process("nix", update_lock_args(config_dir), dry_run)
+}
+
+/// `nix flake update <dotfiles> --flake <config-dir>` の引数列を組み立てる純粋関数。
+fn update_lock_args(config_dir: &Path) -> Vec<OsString> {
+    [
+        OsString::from("flake"),
+        OsString::from("update"),
+        OsString::from(INPUT_NAME),
+        OsString::from("--flake"),
+        config_dir.as_os_str().to_os_string(),
+    ]
+    .into_iter()
+    .collect()
 }
 
 #[derive(Args)]
@@ -36,4 +44,29 @@ fn update_lock(config_dir: &Path, dry_run: bool) -> Result<()> {
 pub(crate) struct UpdateOptions {
     #[command(flatten)]
     switch: switch::SwitchOptions,
+}
+
+/// `update_lock_args` が `dotfiles` input だけを対象に `nix flake update` を組むことを検証する。
+#[cfg(test)]
+mod tests {
+    use super::update_lock_args;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    /// 全 input 更新ではなく `dotfiles` input 名付きで repo pin に追従させる。
+    #[test]
+    fn update_lock_args_targets_dotfiles_input() {
+        let args = update_lock_args(Path::new("/cfg"));
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("flake"),
+                OsString::from("update"),
+                OsString::from("dotfiles"),
+                OsString::from("--flake"),
+                OsString::from("/cfg"),
+            ]
+        );
+    }
 }

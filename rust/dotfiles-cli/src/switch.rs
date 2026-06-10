@@ -59,19 +59,54 @@ fn switch_home(config_dir: &Path, options: &SwitchOptions) -> Result<()> {
     )
 }
 
-/// `sudo darwin-rebuild switch --flake <config-dir>#<host>` を実行する。
+/// `darwin-rebuild switch --flake <config-dir>#<host>` を、実行 euid に応じて適用する。
+///
+/// root（auto-update daemon の launchd 実行）では sudo を前置せず直接適用し、無人実行で sudo の
+/// 対話/sudoers を要さない。非 root（対話利用者）では従来どおり `sudo` を前置して昇格する。
 fn switch_darwin(config_dir: &Path, options: &SwitchOptions) -> Result<()> {
     let host = options.host.clone().map_or_else(current_host, Ok)?;
     prepare_nix_darwin_etc(options.dry_run)?;
-    run_process(
-        "sudo",
-        std::iter::once(options.darwin_rebuild.clone()).chain([
-            OsString::from("switch"),
-            OsString::from("--flake"),
-            flake_ref(config_dir, &host),
-        ]),
-        options.dry_run,
-    )
+    let invocation = darwin_rebuild_invocation(
+        &options.darwin_rebuild,
+        flake_ref(config_dir, &host),
+        rustix::process::geteuid().is_root(),
+    );
+    run_process(invocation.program, invocation.args, options.dry_run)
+}
+
+/// `darwin-rebuild switch --flake <ref>` の実行プログラムと引数を、root 実行かどうかで決める。
+///
+/// root のときは `darwin-rebuild` を直接、非 root のときは `sudo` 経由で昇格する純粋関数で、
+/// euid を引数で受け取り副作用を持たない（呼び出し側で euid を解決する）。
+fn darwin_rebuild_invocation(
+    darwin_rebuild: &OsString,
+    flake_ref: OsString,
+    is_root: bool,
+) -> DarwinRebuildInvocation {
+    let switch_args = [
+        OsString::from("switch"),
+        OsString::from("--flake"),
+        flake_ref,
+    ];
+    if is_root {
+        DarwinRebuildInvocation {
+            program: darwin_rebuild.clone(),
+            args: switch_args.into_iter().collect(),
+        }
+    } else {
+        DarwinRebuildInvocation {
+            program: OsString::from("sudo"),
+            args: std::iter::once(darwin_rebuild.clone())
+                .chain(switch_args)
+                .collect(),
+        }
+    }
+}
+
+/// `darwin-rebuild switch` 実行の起動プログラムと引数列。
+struct DarwinRebuildInvocation {
+    program: OsString,
+    args: Vec<OsString>,
 }
 
 /// nix-darwin が `/etc/static` リンクを作る前に、衝突する既存シェル起動ファイルだけを退避する。
@@ -180,4 +215,52 @@ enum SwitchTarget {
     Home,
     Darwin,
     All,
+}
+
+/// `darwin_rebuild_invocation` が euid に応じて sudo 前置の有無を切り替えることを検証する。
+#[cfg(test)]
+mod tests {
+    use super::darwin_rebuild_invocation;
+    use std::ffi::OsString;
+
+    /// root 実行では sudo を前置せず `darwin-rebuild switch` を直接起動する。
+    #[test]
+    fn root_invocation_runs_darwin_rebuild_without_sudo() {
+        let invocation = darwin_rebuild_invocation(
+            &OsString::from("darwin-rebuild"),
+            OsString::from("/cfg#host"),
+            true,
+        );
+
+        assert_eq!(invocation.program, OsString::from("darwin-rebuild"));
+        assert_eq!(
+            invocation.args,
+            vec![
+                OsString::from("switch"),
+                OsString::from("--flake"),
+                OsString::from("/cfg#host"),
+            ]
+        );
+    }
+
+    /// 非 root 実行では `sudo` を前置して `darwin-rebuild switch` を昇格起動する。
+    #[test]
+    fn non_root_invocation_prefixes_sudo() {
+        let invocation = darwin_rebuild_invocation(
+            &OsString::from("darwin-rebuild"),
+            OsString::from("/cfg#host"),
+            false,
+        );
+
+        assert_eq!(invocation.program, OsString::from("sudo"));
+        assert_eq!(
+            invocation.args,
+            vec![
+                OsString::from("darwin-rebuild"),
+                OsString::from("switch"),
+                OsString::from("--flake"),
+                OsString::from("/cfg#host"),
+            ]
+        );
+    }
 }
