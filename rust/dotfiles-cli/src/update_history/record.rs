@@ -860,21 +860,21 @@ mod tests {
 
     #[test]
     fn registry_reuse_skips_re_extraction_path() -> Result<()> {
-        // 退行固定（再利用フロー 1）: 保存済み有効 source があれば fetch_from_source を試みる。host allowlist で
-        // 許可された URL のみ再利用するが、network 不要にするため許可外 host を保存して reused=None に倒し、
-        // 機械解決（nix repo 無し）も空 → version-only になることを確認する（再利用判定の経路を通す）。
+        // 退行固定（再利用フロー 1）: 保存済み有効 source があれば fetch_from_source を試みる。構造的に安全な
+        // 公開 https のみ再利用するが、network 不要にするため fetch_source seam（no_fetch_source）が None を返し
+        // reused=None に倒し、機械解決（nix repo 無し）も空 → version-only になることを確認する（再利用判定の経路を通す）。
         let dir = temp_dir("reuse");
         let old = write_nix(&dir, "old.json", r#"{"neovim":{"version":"0.10"}}"#);
         let new = write_nix(&dir, "new.json", r#"{"neovim":{"version":"0.11"}}"#);
         let out = dir.join("2026-06.toml");
         let registry_path = dir.join("notes-sources.toml");
         let mut registry = NotesSourceRegistry::default();
-        // 許可外 host は再利用 fetch を踏まない（is_allowed_url で除外）→ 機械解決へ。
+        // 構造的に不正な source（単一ラベルホスト）は再利用 fetch を踏まない（is_allowed_url で除外）→ 機械解決へ。
         registry.record(
             "neovim",
             DeltaSource::NixEval,
             NotesSourceEntry {
-                source: Some("https://evil.example/notes".to_string()),
+                source: Some("https://intranet/notes".to_string()),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: None,
                 note: None,

@@ -1,16 +1,21 @@
 //! 更新履歴 TOML の wire/ドメイン型・閉集合 enum と、その型に閉じた純粋ドメイン規則（severity 機械算出・
-//! LLM 出力/参照 URL のサニタイズ・SSRF fetch 許可ホスト判定）。
+//! LLM 出力/参照 URL のサニタイズ・SSRF の構造的 URL 判定）。
 //!
 //! field 名と enum 値は TOML スキーマ（`docs/update-history/<YYYY-MM>.toml`）に一致させる。`ref` は Rust
 //! 予約語のため serde rename で TOML key `ref` に対応させる。閉集合（変更種別・変更カテゴリ・重要度）は生文字列
 //! ではなく enum で表し、serde rename で TOML 値（kebab-case 含む）へ写す。
 //!
 //! severity は LLM 生成の自由文ではなく変更カテゴリ（閉集合 enum）からのみ決定論的に算出する（prompt injection
-//! で severity が改変されない）。生リリースノートと LLM 出力は信頼境界外であり、TOML へ書く前に「許可ホストの
+//! で severity が改変されない）。生リリースノートと LLM 出力は信頼境界外であり、TOML へ書く前に「構造的に安全な
 //! https URL だけを残す」「1 行概要の長さ・項目数を上限で切り詰める」で守る（[`sanitize_change_items`] /
-//! [`is_allowed_url`] / SSRF の [`allowed_fetch_hosts`]）。
-
-use std::collections::BTreeSet;
+//! [`is_allowed_url`]）。
+//!
+//! **SSRF 防御は host_of の構造的検査で担保する**（狭いホスト allowlist では制限しない）。リリースノート/changelog
+//! の所在はパッケージごとに異なり github に限らない（cargo は doc.rust-lang.org、iterm2 は iterm2.com 等）ため、
+//! AI fetch も機械取得も「到達先ホスト一覧」での制限はしない。代わりに [`host_of`] が https 限定・credential 拒否・
+//! IP リテラル（IPv4/IPv6）拒否・localhost 拒否・単一ラベルホスト（内部 DNS 名の疑い）拒否を行い、これを SSRF の
+//! 唯一の構造的境界にする。HTTP クライアント側の redirect 不追従・https 限定・サイズ/時間上限（[`super::notes`] の
+//! `build_http_client`）と合わせて防御する。
 
 use serde::{Deserialize, Serialize};
 
@@ -248,19 +253,7 @@ pub(crate) fn overall_headline(package_count: usize, items: &[ChangeItem]) -> St
     }
 }
 
-// ---- 参照 URL の host allowlist・SSRF fetch 許可ホスト・LLM 出力サニタイズ ----
-
-/// エージェントの `fetch_url` に常に許可する GitHub 系ホスト集合（パッケージ毎集合の基底）。
-const ALWAYS_ALLOWED_FETCH_HOSTS: [&str; 3] =
-    ["github.com", "raw.githubusercontent.com", "api.github.com"];
-
-/// 参照 URL に許可するホスト集合（https のみ。host 厳密一致）。
-const ALLOWED_HOSTS: [&str; 4] = [
-    "github.com",
-    "gitlab.com",
-    "raw.githubusercontent.com",
-    "api.github.com",
-];
+// ---- 参照 URL の構造的 SSRF 判定・LLM 出力サニタイズ ----
 
 /// 1 パッケージあたりに残す change_item の最大件数。
 const MAX_ITEMS: usize = 12;
@@ -268,42 +261,28 @@ const MAX_ITEMS: usize = 12;
 /// `text` 1 行概要の最大文字数（char 単位）。超過分は切り詰める（末尾に `…` を付すため最大 +1 文字）。
 const MAX_TEXT_CHARS: usize = 200;
 
-/// URL が許可ホストの https URL かを判定する（scheme 固定・credential 拒否・host case-insensitive）。
+/// URL が構造的に安全な公開 https URL かを判定する（SSRF の唯一の境界）。
+///
+/// 狭いホスト allowlist には依存せず、[`host_of`] の構造的検査（https 限定・credential 拒否・IP リテラル拒否・
+/// localhost / 単一ラベルホスト拒否）が通れば許可する。リリースノートの所在は github に限らない（cargo は
+/// doc.rust-lang.org、iterm2 は iterm2.com 等）ため、到達先ホストの一覧では制限しない。機械取得・AI fetch・
+/// provenance 学習・ref/notes_url サニタイズはすべてこの 1 関数を境界として共有する。
 pub(crate) fn is_allowed_url(url: &str) -> bool {
-    match host_of(url) {
-        Some(host) => ALLOWED_HOSTS.iter().any(|allowed| host == *allowed),
-        None => false,
-    }
+    host_of(url).is_some()
 }
 
-/// パッケージごとに `fetch_url` へ許可するホスト集合を eval メタのヒント（信頼境界内）から組み立てる。
+/// https URL から小文字化した host を抽出する純粋関数（SSRF の構造的境界。credential 拒否・IP/localhost 拒否）。
 ///
-/// ノート本文（信頼境界外）からは決して拡張しない（SSRF 防御の核）。常に github 系基底を含め、homepage/changelog
-/// の https host を加える。返す集合は小文字化済み host の `BTreeSet`（決定論・重複排除）。
-pub(crate) fn allowed_fetch_hosts(
-    repo: Option<&str>,
-    homepage: Option<&str>,
-    changelog: Option<&str>,
-) -> BTreeSet<String> {
-    let mut hosts: BTreeSet<String> = ALWAYS_ALLOWED_FETCH_HOSTS
-        .iter()
-        .map(|host| host.to_string())
-        .collect();
-    let _ = repo;
-    for hint in [homepage, changelog].into_iter().flatten() {
-        if let Some(host) = host_of(hint) {
-            hosts.insert(host);
-        }
-    }
-    hosts
-}
-
-/// https URL から小文字化した host を抽出する純粋関数（credential 拒否・path injection 防御・SSRF 防御）。
-///
-/// 手組みの `split(':')` は IPv6（`[::1]`）やポート付き・credential 付き URL を正しく扱えず allowlist を
+/// 手組みの `split(':')` は IPv6（`[::1]`）やポート付き・credential 付き URL を正しく扱えず判定を
 /// すり抜ける恐れがあるため、host 抽出は `url::Url` の厳密パースに委ねる。wire は純粋ドメイン層なので HTTP
-/// クライアント型（`reqwest::Url`）ではなく既に `url::Host` を使う `url` crate へ直接寄せる。https 以外・
-/// credential 付き・localhost / IP リテラル（ループバックや metadata service への到達源）は host を導かない。
+/// クライアント型（`reqwest::Url`）ではなく既に `url::Host` を使う `url` crate へ直接寄せる。以下はいずれも
+/// host を導かない（= SSRF 到達を塞ぐ）: https 以外・credential 付き・IP リテラル（IPv4/IPv6。10進/8進/16進/IDN
+/// 表記や IPv4-mapped IPv6 も `url` が IP へ正規化するため一律拒否。ループバックや metadata service への到達源）・
+/// localhost・単一ラベルホスト（`.` を含まない host。内部 DNS 名の疑い）。
+///
+/// 注意: ドットを含む内部 DNS 名（例 `metadata.google.internal`・社内 `*.internal.corp`）は構造上ここでは塞がない。
+/// record は GitHub-hosted runner（内部メタデータは IP リテラル `169.254.169.254` 経由で拒否済み・社内 DNS 不在）
+/// 専用処理のため現状実害は無いが、self-hosted/クラウド内 runner へ移す場合はこの境界の再評価を要する。
 pub(crate) fn host_of(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     if parsed.scheme() != "https" {
@@ -319,21 +298,15 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
         url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
         url::Host::Domain(domain) => {
             let lowered = domain.to_ascii_lowercase();
-            // `localhost` 等のローカル名はローカルサービス到達源になるため拒否する。
-            if lowered.is_empty() || lowered == "localhost" {
+            // `localhost` 等のローカル名はローカルサービス到達源になるため拒否する。さらに単一ラベルホスト
+            // （`.` を含まない host。例 `intranet`）は内部 DNS 名の可能性があるため拒否し、localhost 以外の
+            // 内部名到達も塞ぐ。公開ドメインは必ず TLD を含み `.` を持つ。
+            if lowered.is_empty() || lowered == "localhost" || !lowered.contains('.') {
                 None
             } else {
                 Some(lowered)
             }
         }
-    }
-}
-
-/// エージェントが要求した URL が許可ホスト集合内の https かを判定する（SSRF 機械判定）。
-pub(crate) fn fetch_host_allowed(url: &str, allowed_hosts: &BTreeSet<String>) -> bool {
-    match host_of(url) {
-        Some(host) => allowed_hosts.contains(&host),
-        None => false,
     }
 }
 
@@ -599,7 +572,8 @@ declared = true
     }
 
     #[test]
-    fn allows_only_https_allowlisted_hosts() {
+    fn allows_structurally_safe_public_https_beyond_github() {
+        // github 系に限らず、構造的に安全な公開 https を許可する（ノート所在は github 外にもある）。
         assert!(is_allowed_url("https://github.com/a/b/pull/1"));
         assert!(is_allowed_url("https://gitlab.com/a/b"));
         assert!(is_allowed_url(
@@ -607,20 +581,35 @@ declared = true
         ));
         assert!(is_allowed_url("https://API.GitHub.com/repos/o/r/releases"));
         assert!(is_allowed_url("https://RAW.githubusercontent.com/a/b"));
+        // cargo / iterm2 等、github 外のリリースノート所在も許可する。
+        assert!(is_allowed_url(
+            "https://doc.rust-lang.org/nightly/cargo/CHANGELOG.html"
+        ));
+        assert!(is_allowed_url("https://iterm2.com/downloads.html"));
+        assert!(is_allowed_url("https://example.com/changelog"));
+        // SSRF 構造的拒否は維持・強化する。
         assert!(!is_allowed_url("http://github.com/a/b"));
-        assert!(!is_allowed_url("https://evil.example/github.com"));
-        assert!(!is_allowed_url("https://api.github.com.evil.example/x"));
         assert!(!is_allowed_url("https://user@github.com/a"));
+        assert!(!is_allowed_url("https://user:pass@github.com/a"));
         assert!(!is_allowed_url("ftp://github.com/a"));
         assert!(!is_allowed_url("not a url"));
+        // IP リテラル・localhost・単一ラベルホスト（内部 DNS 名）は拒否する。
+        assert!(!is_allowed_url("https://127.0.0.1/x"));
+        assert!(!is_allowed_url("https://169.254.169.254/latest/meta-data"));
+        assert!(!is_allowed_url("https://[::1]/x"));
+        assert!(!is_allowed_url("https://localhost/a"));
+        assert!(!is_allowed_url("https://intranet/a"));
     }
 
     #[test]
     fn sanitize_change_items_drops_disallowed_ref_blank_text_and_caps() {
-        let dropped =
-            sanitize_change_items(vec![item_with("修正", Some("https://evil.example/x"))]);
+        // 構造的に安全でない ref（http / localhost）は破棄する。公開 https の ref は残す（github 外でも可）。
+        let dropped = sanitize_change_items(vec![item_with("修正", Some("http://example.com/x"))]);
         assert_eq!(dropped.len(), 1);
         assert_eq!(dropped[0].ref_url, None);
+        let dropped_local =
+            sanitize_change_items(vec![item_with("修正", Some("https://localhost/x"))]);
+        assert_eq!(dropped_local[0].ref_url, None);
         let kept = sanitize_change_items(vec![item_with(
             "修正",
             Some("https://github.com/a/b/pull/2"),
@@ -628,6 +617,15 @@ declared = true
         assert_eq!(
             kept[0].ref_url.as_deref(),
             Some("https://github.com/a/b/pull/2")
+        );
+        // github 外の公開 https ref も表示用途として許容する。
+        let kept_off_github = sanitize_change_items(vec![item_with(
+            "修正",
+            Some("https://doc.rust-lang.org/cargo/CHANGELOG.html"),
+        )]);
+        assert_eq!(
+            kept_off_github[0].ref_url.as_deref(),
+            Some("https://doc.rust-lang.org/cargo/CHANGELOG.html")
         );
         let blank = sanitize_change_items(vec![item_with("   ", None), item_with("実体", None)]);
         assert_eq!(blank.len(), 1);
@@ -655,27 +653,7 @@ declared = true
     }
 
     #[test]
-    fn allowed_fetch_hosts_basis_and_hints_only_from_trusted_meta() {
-        let base = allowed_fetch_hosts(None, None, None);
-        assert!(base.contains("github.com"));
-        assert!(base.contains("raw.githubusercontent.com"));
-        assert!(base.contains("api.github.com"));
-        assert!(!base.contains("gitlab.com"));
-        let hosts = allowed_fetch_hosts(
-            Some("neovim/neovim"),
-            Some("https://neovim.io/"),
-            Some("https://gitlab.com/o/r/blob/v1/CHANGELOG.md"),
-        );
-        assert!(hosts.contains("neovim.io"));
-        assert!(hosts.contains("gitlab.com"));
-        // http / 不正ヒントは host を導かない。
-        let ignored = allowed_fetch_hosts(None, Some("http://evil.example/x"), Some("not a url"));
-        assert!(!ignored.contains("evil.example"));
-        assert_eq!(ignored.len(), ALWAYS_ALLOWED_FETCH_HOSTS.len());
-    }
-
-    #[test]
-    fn host_of_and_fetch_host_allowed() {
+    fn host_of_extracts_public_hosts_and_rejects_single_label() {
         assert_eq!(
             host_of("https://GitHub.com/a/b").as_deref(),
             Some("github.com")
@@ -684,15 +662,19 @@ declared = true
             host_of("https://neovim.io:443/").as_deref(),
             Some("neovim.io")
         );
+        // github 外の公開ドメインも host を導く（cargo / iterm2）。
+        assert_eq!(
+            host_of("https://doc.rust-lang.org/cargo/CHANGELOG.html").as_deref(),
+            Some("doc.rust-lang.org")
+        );
+        assert_eq!(
+            host_of("https://iterm2.com/downloads.html").as_deref(),
+            Some("iterm2.com")
+        );
         assert_eq!(host_of("http://github.com/a"), None);
-        let hosts = allowed_fetch_hosts(None, Some("https://neovim.io/"), None);
-        assert!(fetch_host_allowed("https://neovim.io/news", &hosts));
-        assert!(fetch_host_allowed(
-            "https://github.com/neovim/neovim/releases",
-            &hosts
-        ));
-        assert!(!fetch_host_allowed("https://evil.example/x", &hosts));
-        assert!(!fetch_host_allowed("http://neovim.io/x", &hosts));
+        // 単一ラベルホスト（内部 DNS 名の疑い。`.` を含まない）は拒否する。
+        assert_eq!(host_of("https://intranet/a"), None);
+        assert_eq!(host_of("https://internal-service/a"), None);
     }
 
     #[test]
@@ -708,17 +690,16 @@ declared = true
         // credential 付きは拒否する（`user@`・`user:pass@` の両形）。
         assert_eq!(host_of("https://user@github.com/a"), None);
         assert_eq!(host_of("https://user:pass@github.com/a"), None);
-        // ポート付き許可ホストは host のみ（ポートを落として）正しく抽出する。
+        // ポート付きホストは host のみ（ポートを落として）正しく抽出する。
         assert_eq!(
             host_of("https://github.com:443/a/b").as_deref(),
             Some("github.com")
         );
-        // allowlist 照合経路でも IPv6 / credential / localhost はすり抜けない。
+        // is_allowed_url（構造的境界）でも IPv6 / credential / localhost / 単一ラベルはすり抜けない。
         assert!(!is_allowed_url("https://[::1]/github.com"));
         assert!(!is_allowed_url("https://localhost/a"));
         assert!(!is_allowed_url("https://user:pass@github.com/a"));
-        let hosts = allowed_fetch_hosts(None, None, None);
-        assert!(!fetch_host_allowed("https://[::1]/x", &hosts));
-        assert!(!fetch_host_allowed("https://169.254.169.254/x", &hosts));
+        assert!(!is_allowed_url("https://169.254.169.254/x"));
+        assert!(!is_allowed_url("https://intranet/x"));
     }
 }

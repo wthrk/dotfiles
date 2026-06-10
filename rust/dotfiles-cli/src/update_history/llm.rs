@@ -21,14 +21,16 @@
 //! 失敗するエラーは空へ縮退する（呼び出し側が version-only として確定する。夜をまたいで再試行しない）。同期の
 //! record 経路から呼ぶため、async 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
 //!
-//! **SSRF（最重要）**: AI が要求する `fetch_url` の URL は、eval メタ由来（信頼境界内）のヒント host だけから
-//! 組み立てた許可ホスト集合に host が一致する https のみ実行する。ノート本文（信頼境界外）から得た URL を無検証で
-//! fetch しない。fetch は [`super::notes::safe_https_fetch`]（redirect 不追従・https 限定・有界）を再利用する。
+//! **SSRF（最重要）**: AI が要求する `fetch_url` の URL は、[`super::wire::is_allowed_url`] の構造的検査
+//! （https 限定・credential 拒否・IP リテラル拒否・localhost / 単一ラベルホスト拒否）を通った公開 https のみ実行する。
+//! リリースノートの所在は github に限らない（cargo は doc.rust-lang.org、iterm2 は iterm2.com 等）ため、狭いホスト
+//! allowlist では制限せず、構造的に安全な公開 https へ到達できる。ただし AI が選んだ URL も必ずこの構造的検査を
+//! 通し（ノート本文＝信頼境界外を無検証で fetch しない）、fetch は [`super::notes::safe_https_fetch`]（redirect
+//! 不追従・https 限定・有界）を再利用する。
 //!
 //! 抽出の trait seam は [`ChangeExtractor`] 1 つだけで、テストはこれを fake 実装に差し替える。本物の
 //! [`OpenAiExtractor`] は async-openai で OpenAI を叩く。
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use async_openai::Client;
@@ -45,7 +47,7 @@ use serde::Deserialize;
 
 use super::diff::VersionDelta;
 use super::notes::{RawReleaseNotes, brew_notes_hint, safe_https_fetch};
-use super::wire::{ChangeCategory, ChangeItem, allowed_fetch_hosts, fetch_host_allowed};
+use super::wire::{ChangeCategory, ChangeItem, is_allowed_url};
 use crate::Result;
 
 /// API キーを読む env 変数名（GitHub secret。厳密表記）。
@@ -205,13 +207,9 @@ impl ChangeExtractor for OpenAiExtractor {
             eprintln!("OpenAI extract skipped: {OPENAI_API_KEY_ENV} unset");
             return Ok(ExtractOutcome::default());
         };
-        let allowed_hosts = allowed_fetch_hosts(
-            request.repo.as_deref(),
-            request.homepage.as_deref(),
-            request.changelog.as_deref(),
-        );
         let call: &ModelCall<'_> = &|req| model_call(client, req);
-        let fetch = |url: &str| fetch_allowed_note(url, &allowed_hosts);
+        // AI が選んだ URL は wire の構造的検査（is_allowed_url）を必ず通す。狭いホスト allowlist には依存しない。
+        let fetch = |url: &str| fetch_allowed_note(url);
         run_extraction(request, call, fetch)
     }
 }
@@ -439,7 +437,7 @@ fn summarize_request(
         .build()?)
 }
 
-/// AI へ与える `fetch_url` ツール定義（許可ドメインの https のみ取得できることを description で明示する）。
+/// AI へ与える `fetch_url` ツール定義（公開 https を取得できること・github 外も可であることを description で明示）。
 fn fetch_url_tool() -> Result<ChatCompletionTool> {
     Ok(ChatCompletionToolArgs::default()
         .r#type(ChatCompletionToolType::Function)
@@ -447,9 +445,10 @@ fn fetch_url_tool() -> Result<ChatCompletionTool> {
             FunctionObjectArgs::default()
                 .name(FETCH_TOOL_NAME)
                 .description(
-                    "指定した https URL の本文を取得して返す。許可されたドメイン（パッケージの homepage / \
-リポジトリ / GitHub 公式）の https URL のみ取得でき、許可外は『not allowed』を返す。リリースノートや \
-changelog の取得に使う。",
+                    "指定した https URL の本文を取得して返す。GitHub に限らず、構造的に安全な公開 https URL \
+（プロジェクト公式サイトの changelog ページ・別リポジトリの releases・ドキュメントサイト等）を取得できる。\
+取得不能な URL（http や内部アドレス等の安全でない URL を含む）は『not allowed or fetch failed』を返す。\
+リリースノートや changelog の取得に使う。",
                 )
                 .parameters(serde_json::json!({
                     "type": "object",
@@ -507,9 +506,12 @@ const AGENT_PROMPT_PREFIX: &str = "\
 あなたはソフトウェアのリリースノートを調査し、利用者に意味のある変更だけを抽出するエージェントです。\
 与えられたパッケージ名・更新前後バージョン・ヒント URL（homepage / リポジトリ / changelog）を手がかりに、\
 fetch_url ツールを使って適切なリリースノート/changelog を自分で取得して読んでください。\
-fetch_url には許可されたドメインの https URL だけを渡せます（許可外は『not allowed』が返ります）。\
-GitHub のパッケージなら releases ページや changelog ファイルの URL を組み立てて取得すると有効です。\
-十分なノートを読み終えたら、取得した実際のノート本文だけを根拠に変更を抽出してください。\
+fetch_url には構造的に安全な公開 https URL を渡せます（GitHub に限りません。http や内部アドレス等の安全でない \
+URL は取得できません）。GitHub のパッケージなら releases ページや changelog ファイルの URL を組み立てて取得すると \
+有効です。リリースノート/changelog が GitHub に無い、または『changelog は別の場所へ移動した』等のポインタしか \
+無い場合は、その実際の所在（プロジェクト公式サイトの changelog ページ、別リポジトリの releases、ドキュメント \
+サイト等）を自分で組み立てて fetch し、実ノート本文を取得してから抽出してください。https の公開 URL なら GitHub \
+以外でも取得できます。十分なノートを読み終えたら、取得した実際のノート本文だけを根拠に変更を抽出してください。\
 取得できなかった内容や本文に書かれていない内容を創作してはいけません。";
 
 const SUMMARIZE_PROMPT_PREFIX: &str = "\
@@ -595,9 +597,13 @@ fn parse_change_items(content: &str) -> Vec<ChangeItem> {
         .collect()
 }
 
-/// 許可 host 集合に属する https URL だけを安全 fetch で取得する（SSRF 検査 + 安全 fetch の合成）。
-fn fetch_allowed_note(url: &str, allowed_hosts: &BTreeSet<String>) -> Result<Option<String>> {
-    if !fetch_host_allowed(url, allowed_hosts) {
+/// 構造的に安全な公開 https URL だけを安全 fetch で取得する（SSRF 構造的検査 + 安全 fetch の合成）。
+///
+/// 狭いホスト allowlist には依存せず、[`is_allowed_url`]（https 限定・credential 拒否・IP リテラル拒否・
+/// localhost / 単一ラベルホスト拒否）が通れば取得する。これにより github 外のノート所在（doc.rust-lang.org・
+/// iterm2.com 等）へも到達でき、かつ AI が選んだ URL も必ずこの構造的検査を素通りさせない。
+fn fetch_allowed_note(url: &str) -> Result<Option<String>> {
+    if !is_allowed_url(url) {
         return Ok(None);
     }
     safe_https_fetch(url)
@@ -802,10 +808,16 @@ mod tests {
     }
 
     #[test]
-    fn fetch_allowed_note_blocks_disallowed_host() -> Result<()> {
-        let hosts = allowed_fetch_hosts(None, Some("https://neovim.io/"), None);
-        // 許可外 host は fetch せず None（hermetic）。
-        assert!(fetch_allowed_note("https://evil.example/x", &hosts)?.is_none());
+    fn fetch_allowed_note_blocks_structurally_unsafe_url() -> Result<()> {
+        // 構造的に安全でない URL（http / localhost / IP リテラル / 単一ラベルホスト / credential）は
+        // fetch せず None（hermetic）。狭いホスト allowlist ではなく is_allowed_url の構造的検査で塞ぐ。
+        assert!(fetch_allowed_note("http://example.com/x")?.is_none());
+        assert!(fetch_allowed_note("https://localhost/x")?.is_none());
+        assert!(fetch_allowed_note("https://127.0.0.1/x")?.is_none());
+        assert!(fetch_allowed_note("https://169.254.169.254/latest/meta-data")?.is_none());
+        assert!(fetch_allowed_note("https://intranet/x")?.is_none());
+        assert!(fetch_allowed_note("https://user:pass@github.com/x")?.is_none());
+        assert!(fetch_allowed_note("not a url")?.is_none());
         Ok(())
     }
 

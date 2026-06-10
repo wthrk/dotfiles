@@ -654,9 +654,10 @@ mod tests {
     fn fetch_nix_notes_degrades_without_network_when_no_hints() -> Result<()> {
         // repo/notes_source ともに無し → curl を踏まず空（hermetic）。
         assert!(fetch_nix_notes(None, None, None, None)?.is_none());
-        // 許可外 host の notes_source は変換段で空（curl を踏まない）。
+        // 非 github の notes_source は機械取得 plan（github 専用の resolve_nix_notes_source）を導かず変換段で
+        // 空（curl を踏まない）。機械取得は github の構造化エンドポイントに閉じる（AI fetch のみ github 外へ広がる）。
         assert!(
-            fetch_nix_notes(None, Some("https://evil.example/changelog"), None, None)?.is_none()
+            fetch_nix_notes(None, Some("https://example.com/changelog"), None, None)?.is_none()
         );
         Ok(())
     }
