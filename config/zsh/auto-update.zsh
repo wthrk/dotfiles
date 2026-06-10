@@ -8,7 +8,9 @@
 # 既存 marker の表示だけを行う。dotfiles 不在・state 不在・失敗時は静かに no-op し、ログインを止めない。
 #
 # 状態ディレクトリ・ファイル名は `rust/dotfiles-cli/src/update.rs` の契約に一致させる
-# （state dir = `$XDG_STATE_HOME/dotfiles`、未設定なら `$HOME/.local/state/dotfiles`）。
+# （state dir = `$HOME/.local/state/dotfiles` 固定）。launchd daemon は clean env で動き利用者の interactive
+# `XDG_STATE_HOME` を見られないため、CLI 側は XDG 非依存に HOME 基準で固定する。shell hook も同じ HOME 基準を
+# 読み、daemon・手動 CLI・shell の state dir を一致させて show-once（pending-summary 消費）を成立させる。
 
 # インタラクティブシェル限定。非対話（スクリプト・zsh checks の一部経路）では何もしない。
 [[ -o interactive ]] || return 0
@@ -16,10 +18,10 @@
 # 利用者が明示的に無効化したら何もしない。
 [[ -n "${DOTFILES_AUTO_UPDATE_DISABLE:-}" ]] && return 0
 
-# state dir は update.rs と同じ規則: $XDG_STATE_HOME/dotfiles、未設定なら $HOME/.local/state/dotfiles。
+# state dir は update.rs と同じ規則: $HOME/.local/state/dotfiles 固定（XDG_STATE_HOME 非依存）。daemon の clean
+# env で見えない XDG を参照しないことで daemon・手動 CLI・shell の state dir を一致させる。
 _dotfiles_auto_update_state_dir() {
-  local base="${XDG_STATE_HOME:-$HOME/.local/state}"
-  print -r -- "$base/dotfiles"
+  print -r -- "$HOME/.local/state/dotfiles"
 }
 
 # pending-summary を 1 回だけ表示して原子的に消費する。

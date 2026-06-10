@@ -308,7 +308,10 @@ fn is_internal_domain(host: &str) -> bool {
 /// 16進/IDN 表記や IPv4-mapped IPv6 も `url` が IP へ正規化するため一律拒否。ループバックや metadata service への
 /// 到達源）・localhost・単一ラベルホスト（`.` を含まない host。内部 DNS 名の疑い）・ドット付き内部 DNS 名/メタデータ
 /// FQDN（`metadata.google.internal` や `.internal`/`.local`/`.localdomain`/`.localhost` で終わる host。
-/// [`is_internal_domain`]）。DNS は実解決せず（hermetic）、構造的な接尾辞照合だけで判定する。公開ホストは TLD を持ち
+/// [`is_internal_domain`]）。判定前に末尾ドットを全て除いて DNS の絶対表記（`host.`）を相対表記と同一視し、
+/// `localhost.`・`intranet.`・`metadata.google.internal.`（および `localhost..` のような多重末尾ドット）の
+/// 末尾ドット付き内部名が判定をすり抜けるのを防ぐ。
+/// DNS は実解決せず（hermetic）、構造的な接尾辞照合だけで判定する。公開ホストは TLD を持ち
 /// 内部接尾辞で終わらないため許可する。文字列構造のみの検査のため、公開ドメインが private/link-local IP へ解決される
 /// DNS rebinding や社内 DNS 経由の IP ベース SSRF は防げない（GitHub-hosted runner 専用前提で対象外）。
 pub(crate) fn host_of(url: &str) -> Option<String> {
@@ -325,7 +328,13 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
         // IP リテラル（IPv4/IPv6）はループバック/メタデータサービス等への SSRF 源になるため拒否する。
         url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
         url::Host::Domain(domain) => {
-            let lowered = domain.to_ascii_lowercase();
+            // DNS の絶対表記（末尾ドット付き FQDN。例 `localhost.`・`metadata.google.internal.`）を相対表記と
+            // 同一視するため、末尾ドットを全て除いて正規化してから localhost/単一ラベル/内部 DNS 判定にかける。
+            // 正規化しないと `localhost.` が `== "localhost"` に不一致、`intranet.` が `.` を含み単一ラベル判定を
+            // 回避、`metadata.google.internal.` が `.internal` 接尾辞に不一致となってすり抜ける。`url` crate は
+            // 多重末尾ドット（`localhost..`）を保持するため、1 つだけ除く正規化では `localhost.` が残ってすり抜ける。
+            let lowered_full = domain.to_ascii_lowercase();
+            let lowered = lowered_full.trim_end_matches('.');
             // `localhost` 等のローカル名はローカルサービス到達源になるため拒否する。さらに単一ラベルホスト
             // （`.` を含まない host。例 `intranet`）は内部 DNS 名の可能性があるため拒否し、localhost 以外の
             // 内部名到達も塞ぐ。公開ドメインは必ず TLD を含み `.` を持つ。
@@ -334,10 +343,10 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
             }
             // ドット付き内部 DNS 名/メタデータ FQDN（`metadata.google.internal`・`*.internal`・`*.local` 等）も
             // クラウド内 metadata service への SSRF 源になるため拒否する。
-            if is_internal_domain(&lowered) {
+            if is_internal_domain(lowered) {
                 return None;
             }
-            Some(lowered)
+            Some(lowered.to_string())
         }
     }
 }
@@ -643,6 +652,20 @@ declared = true
         // 内部 TLD を接尾辞に含むが公開 TLD で終わる host（偽装）は許可する。
         assert!(is_allowed_url("https://internal.example.com/a"));
         assert!(is_allowed_url("https://metadata.example.com/a"));
+        // 末尾ドット付き FQDN（DNS 絶対表記）の内部名は末尾ドット正規化後に拒否する。
+        assert!(!is_allowed_url("https://localhost./"));
+        assert!(!is_allowed_url("https://intranet./"));
+        assert!(!is_allowed_url(
+            "https://metadata.google.internal./computeMetadata/v1/"
+        ));
+        // 多重末尾ドット（`url` crate が保持する）も全て除く正規化で内部名として拒否する。
+        assert!(!is_allowed_url("https://localhost../"));
+        assert!(!is_allowed_url("https://localhost.../"));
+        assert!(!is_allowed_url(
+            "https://metadata.google.internal../computeMetadata/v1/"
+        ));
+        // 末尾ドット付きでも公開ドメインは正規化後に許可する。
+        assert!(is_allowed_url("https://github.com./a/b"));
     }
 
     #[test]
@@ -744,6 +767,26 @@ declared = true
         assert_eq!(
             host_of("https://localhost.example.com/a").as_deref(),
             Some("localhost.example.com")
+        );
+        // 末尾ドット付き FQDN（DNS 絶対表記）は正規化後に内部名判定されるため拒否する。
+        assert_eq!(host_of("https://localhost./"), None);
+        assert_eq!(host_of("https://intranet./"), None);
+        assert_eq!(
+            host_of("https://metadata.google.internal./computeMetadata/v1/"),
+            None
+        );
+        assert_eq!(host_of("https://service.internal./a"), None);
+        // 多重末尾ドット（`url` crate が保持する）は全て除いて正規化するため内部名判定で拒否する。
+        assert_eq!(host_of("https://localhost../"), None);
+        assert_eq!(host_of("https://localhost.../"), None);
+        assert_eq!(
+            host_of("https://metadata.google.internal../computeMetadata/v1/"),
+            None
+        );
+        // 末尾ドット付きでも公開ドメインは正規化後に許可する（`github.com.` → `github.com`）。
+        assert_eq!(
+            host_of("https://github.com./a/b").as_deref(),
+            Some("github.com")
         );
     }
 

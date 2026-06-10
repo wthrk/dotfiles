@@ -19,9 +19,10 @@
 //!
 //! ## 状態ディレクトリ
 //!
-//! 状態は `$XDG_STATE_HOME/dotfiles`（未設定なら `$HOME/.local/state/dotfiles`）に置く。auto-update の launchd
-//! daemon は darwin-rebuild を root で走らせるため **root のまま**（`HOME` をユーザ home に向けて）このバイナリ
-//! を呼ぶ。
+//! 状態は `XDG_STATE_HOME` 非依存の固定 `$HOME/.local/state/dotfiles` に置く。auto-update の launchd daemon は
+//! launchd の clean env で動き、利用者がインタラクティブシェルで設定する `XDG_STATE_HOME` を見られないため、daemon・
+//! 手動 CLI・shell hook の state dir を一致させるには XDG を参照せず HOME 基準に固定するしかない。daemon は
+//! darwin-rebuild を root で走らせるため **root のまま**（`HOME` をユーザ home に向けて）このバイナリを呼ぶ。
 
 use std::ffi::OsString;
 use std::fs;
@@ -280,25 +281,23 @@ fn replace_history_dir_atomically(temp_dir: &Path, dest: &Path, backup_dir: &Pat
 /// 更新履歴のローカル複製ディレクトリ（`<state-dir>/history`）を返す。
 ///
 /// `update-history show`（`--source` 未指定時）が読む既定 source であり、`update` 経路と同一の state dir 解決
-/// 規則（XDG/HOME）を共有する。
+/// 規則（HOME 固定）を共有する。
 pub(crate) fn history_local_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join(HISTORY_LOCAL_SUBDIR))
 }
 
-/// state dir（`$XDG_STATE_HOME/dotfiles`、未設定なら `$HOME/.local/state/dotfiles`）を返す。
+/// state dir（`$HOME/.local/state/dotfiles`）を返す。
 fn state_dir() -> Result<PathBuf> {
-    resolve_state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+    resolve_state_dir(std::env::var_os("HOME"))
 }
 
-/// XDG/HOME の env 値から state dir を決める純粋関数（解決規則を env 参照から切り離してテスト可能にする）。
+/// HOME の env 値から state dir を決める純粋関数（解決規則を env 参照から切り離してテスト可能にする）。
 ///
-/// `XDG_STATE_HOME` が非空ならそれを基点に `<XDG>/dotfiles`、未設定/空なら `<HOME>/.local/state/dotfiles`。
-/// HOME も無ければ `Err`。
-fn resolve_state_dir(xdg_state_home: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {
-    if let Some(value) = xdg_state_home.filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(value).join("dotfiles"));
-    }
-
+/// `XDG_STATE_HOME` は参照せず `<HOME>/.local/state/dotfiles` に固定する。auto-update の launchd daemon は clean
+/// env で動き利用者の interactive `XDG_STATE_HOME` を見られないため、XDG 依存だと daemon と shell hook の state dir
+/// がずれて show-once（pending-summary 消費）が機能しない。HOME 基準に固定して daemon・手動 CLI・shell hook を一致
+/// させる。HOME が無ければ `Err`。
+fn resolve_state_dir(home: Option<OsString>) -> Result<PathBuf> {
     let base = home
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
@@ -676,21 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_state_dir_honors_non_empty_xdg() -> crate::Result<()> {
-        // XDG_STATE_HOME が非空ならそれを基点に `<XDG>/dotfiles` を使う。
-        let resolved = resolve_state_dir(
-            Some(OsString::from("/xdg-state")),
-            Some(OsString::from("/home/u")),
-        )?;
-        assert_eq!(resolved, PathBuf::from("/xdg-state").join("dotfiles"));
-        Ok(())
-    }
-
-    #[test]
-    fn resolve_state_dir_falls_back_on_empty_xdg_and_errs_without_home() -> crate::Result<()> {
-        // XDG 空ならば HOME/.local/state へ倒れる。
-        let resolved =
-            resolve_state_dir(Some(OsString::from("")), Some(OsString::from("/home/u")))?;
+    fn resolve_state_dir_is_home_fixed_and_ignores_xdg() -> crate::Result<()> {
+        // XDG_STATE_HOME は参照せず HOME 基準に固定する（daemon の clean env と shell hook の state dir 一致のため）。
+        let resolved = resolve_state_dir(Some(OsString::from("/home/u")))?;
         assert_eq!(
             resolved,
             PathBuf::from("/home/u")
@@ -698,8 +685,10 @@ mod tests {
                 .join("state")
                 .join("dotfiles")
         );
-        // XDG も HOME も無ければ Err。
-        assert!(resolve_state_dir(None, None).is_err());
+        // HOME が無ければ Err。
+        assert!(resolve_state_dir(None).is_err());
+        // HOME が空でも Err。
+        assert!(resolve_state_dir(Some(OsString::from(""))).is_err());
         Ok(())
     }
 

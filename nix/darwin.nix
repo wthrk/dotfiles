@@ -62,21 +62,22 @@ let
 
     export PATH=${lib.escapeShellArg autoUpdatePath}
 
-    # root のまま実行する。`HOME` をユーザの home に向け、CLI の state_dir() / config_dir がユーザ dir を指す
-    # ようにする。
-    env HOME=${lib.escapeShellArg homeDir} DOTFILES_DARWIN_REBUILD_SUDO=0 \
-      ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --no-sudo
-
     # root 実行で root 所有になった state dir / flake.lock をユーザへ戻す。zsh の pending-summary show-once は
-    # ユーザ権限の rename で消費するため、root 書込み分を戻さないと次回ユーザ実行が EACCES になる。
+    # ユーザ権限の rename で消費するため、root 書込み分を戻さないと次回ユーザ実行が EACCES になる。`set -e` で
+    # update 失敗時もスクリプト終了時に必ず所有権を戻すよう、chown は EXIT trap に置く（成功・失敗どちらでも実行）。
     #
     # symlink を辿らず所有権を戻す。`chown` は既定で symlink を辿るため、ユーザ（または侵害されたユーザ
     # セッション）が flake.lock や state dir 配下を任意パスへの symlink にすり替えると、root がその指す先の
     # 所有権を変えうる。macOS(BSD) の `chown` は `-h`（symlink 自体を対象にし、辿らない）と `-R`（再帰）を
     # 受ける。再帰の state dir は `-hR`、単一 flake.lock は `-h` を付け、symlink を辿らないことを明示する。
     # best-effort（存在しなくても落とさない）。
-    /usr/sbin/chown -hR ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true
-    /usr/sbin/chown -h ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true
+    trap '/usr/sbin/chown -hR ${lib.escapeShellArg user} ${lib.escapeShellArg "${homeDir}/.local/state/dotfiles"} 2>/dev/null || true; /usr/sbin/chown -h ${lib.escapeShellArg user} ${lib.escapeShellArg "${configDir}/flake.lock"} 2>/dev/null || true' EXIT
+
+    # root のまま実行する。`HOME` をユーザの home に向け、CLI の state_dir() / config_dir がユーザ dir を指す
+    # ようにする。`--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも switch_darwin が
+    # 正しい `#<host>` を参照するよう渡す（無指定だと daemon が存在しない `#<current-host>` を引いて失敗しうる）。
+    env HOME=${lib.escapeShellArg homeDir} DOTFILES_DARWIN_REBUILD_SUDO=0 \
+      ${dotfilesBin} update --config-dir ${lib.escapeShellArg configDir} --host ${lib.escapeShellArg host} --no-sudo
   '';
 in
 {
