@@ -25,6 +25,7 @@ too_many_arguments = "deny"
 anyhow = "1.0.100"
 aes-gcm = { version = "0.10.3", features = ["zeroize"] }
 async-openai = "0.28.3"
+backoff = "0.4.0"
 bitwarden = { version = "2.1.0", features = ["secrets"] }
 bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.5.49", features = ["derive", "env"] }

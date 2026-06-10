@@ -14,7 +14,9 @@
 //! 直接読む。API キーは env `OPEN_AI_API_KEY` から読み crate の [`OpenAIConfig`] へ渡す（argv に現れない）。キー
 //! 未設定（ローカル等）なら抽出を skip して空（呼び出し側が version-only として記録する）。
 //!
-//! GitHub Models 時代の無料枠レート制限機械（ペーシング/予算/多段バックオフ）は持たない。一過性エラー
+//! GitHub Models 時代の無料枠レート制限機械（ペーシング/予算/多段バックオフ）は持たない。async-openai 既定の
+//! client バックオフ（max_elapsed_time=15 分）は [`CLIENT_BACKOFF_MAX_ELAPSED`] で抑制し、リトライ意味論は
+//! [`model_call`] へ一本化する。一過性エラー
 //! （5xx/timeout/接続）は run 内で少数リトライ（[`MAX_TRANSIENT_RETRIES`]）して吸収し、取り切れなければ空へ縮退する
 //! （呼び出し側が version-only として確定する。夜をまたいで再試行しない）。同期の record 経路から呼ぶため、async
 //! 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
@@ -27,6 +29,7 @@
 //! [`OpenAiExtractor`] は async-openai で OpenAI を叩く。
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
@@ -61,6 +64,14 @@ const TRUNCATION_MARKER: &str = "\n…(truncated)";
 
 /// 一過性エラー（5xx/接続）に対する 1 リクエスト単位の再試行回数（無料枠ペーシングではなく素直な少数リトライ）。
 const MAX_TRANSIENT_RETRIES: u32 = 2;
+
+/// async-openai client 内蔵バックオフの最大経過時間（実質リトライ無効化）。
+///
+/// async-openai 0.28 の既定 backoff は max_elapsed_time=15 分で、全リクエストを 15 分までリトライし続ける。
+/// `billing_not_active`（429, type!=insufficient_quota）を crate が Transient 扱いし 15 分リトライすると、record
+/// が 120 分タイムアウトする。ここを 0 に縮めて crate 内リトライを実質 1 回へ落とし、リトライ意味論を [`model_call`]
+/// （[`MAX_TRANSIENT_RETRIES`] と [`is_transient`]、恒久エラーは即 version-only 縮退）へ一本化する。
+const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(0);
 
 /// 1 パッケージあたりの tool_call 反復（fetch → 再 request）の最大回数。
 const MAX_TOOL_ITERATIONS: u32 = 3;
@@ -169,7 +180,12 @@ impl OpenAiExtractor {
     pub(crate) fn new(brew_notes_base: Option<String>) -> Self {
         let client = api_key().map(|key| {
             let config = OpenAIConfig::new().with_api_key(key);
-            Client::with_config(config)
+            // crate 内蔵バックオフ（既定 15 分）を抑制し、リトライは model_call に委ねる。
+            let backoff = backoff::ExponentialBackoff {
+                max_elapsed_time: Some(CLIENT_BACKOFF_MAX_ELAPSED),
+                ..Default::default()
+            };
+            Client::with_config(config).with_backoff(backoff)
         });
         Self {
             brew_notes_base,
@@ -674,6 +690,14 @@ mod tests {
         assert_eq!(OPENAI_API_KEY_ENV, "OPEN_AI_API_KEY");
         assert_eq!(EXTRACT_MODEL, "gpt-4o-mini");
         Ok(())
+    }
+
+    #[test]
+    fn client_backoff_is_disabled_to_avoid_15min_retry() {
+        // async-openai 既定 backoff（max_elapsed_time=15 分）は billing_not_active(429) を 15 分リトライし
+        // record を 120 分タイムアウトさせる。0 へ縮めて crate 内リトライを実質 1 回へ落とす意図が、将来の
+        // リファクタで既定（15 分相当）へ戻る回帰を 1 行で検知する。
+        assert_eq!(CLIENT_BACKOFF_MAX_ELAPSED, Duration::from_secs(0));
     }
 
     #[test]
