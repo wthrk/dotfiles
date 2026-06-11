@@ -64,6 +64,7 @@ fn github_actions(shell: &Shell) -> Result<()> {
     cmd!(shell, "actionlint").run()?;
     nightly_no_update_is_clean_no_op(shell)?;
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
+    nightly_record_reuses_built_binary(shell)?;
     Ok(())
 }
 
@@ -159,6 +160,35 @@ fn assert_nightly_record_secret_gating_is_testable_and_bounded(workflow: &str) -
     Ok(())
 }
 
+/// nightly-update.yml の record job が bump job の dotfiles binary artifact を再利用し、record での再ビルドへ
+/// 退行しないことを静的に固定する。
+fn nightly_record_reuses_built_binary(shell: &Shell) -> Result<()> {
+    step("nightly-update record reuses built binary");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_record_reuses_built_binary(&workflow)
+}
+
+fn assert_nightly_record_reuses_built_binary(workflow: &str) -> Result<()> {
+    ensure!(
+        workflow.contains("target/release/dotfiles"),
+        "bump-state artifact は built dotfiles binary (`target/release/dotfiles`) を含むこと"
+    );
+    let record_section = workflow
+        .split("- name: record（nix/brew 版差分 + 概要）")
+        .nth(1)
+        .unwrap_or_default();
+    let record_step = record_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        !record_step.contains("cargo build --release -p dotfiles-cli"),
+        "record job は bump job でビルド済みの dotfiles binary を再利用し、ここで再ビルドしてはならない"
+    );
+    ensure!(
+        record_step.contains("dotfiles_bin=\"$PWD/target/release/dotfiles\""),
+        "record job は artifact から展開した built dotfiles binary を使うこと"
+    );
+    Ok(())
+}
+
 /// lock file が存在する状態で、Nix flake の評価と Nix ファイルの整形を検証する。
 fn nix(shell: &Shell) -> Result<()> {
     step("flake.lock exists");
@@ -238,6 +268,7 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
 mod tests {
     use super::{
         assert_auto_update_wrapper_uses_update_all_semantics,
+        assert_nightly_record_reuses_built_binary,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
     };
 
@@ -302,5 +333,22 @@ mod tests {
 
         let result = assert_nightly_record_secret_gating_is_testable_and_bounded(workflow);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn nightly_record_reuses_built_binary_and_skips_rebuild() {
+        let workflow = r#"
+          path: |
+            flake.lock
+            nix-old.json
+            target/release/dotfiles
+          - name: record（nix/brew 版差分 + 概要）
+            run: |
+              dotfiles_bin="$PWD/target/release/dotfiles"
+              nix develop -c "$dotfiles_bin" update-history record \
+                --out "$out"
+        "#;
+
+        assert!(assert_nightly_record_reuses_built_binary(workflow).is_ok());
     }
 }

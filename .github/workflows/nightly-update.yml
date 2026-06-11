@@ -165,7 +165,7 @@ jobs:
             echo "cask_rev_new=$cask_rev_new"
           } >> "$GITHUB_OUTPUT"
 
-      - name: bump 済み lock と bump 前 eval 版マップを artifact 化
+      - name: bump 済み lock と eval 版マップと dotfiles binary を artifact 化
         uses: actions/upload-artifact@v4
         with:
           name: bump-state
@@ -174,6 +174,7 @@ jobs:
           path: |
             flake.lock
             nix-old.json
+            target/release/dotfiles
           if-no-files-found: error
 
   # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
@@ -225,8 +226,8 @@ jobs:
         with:
           shared-key: nightly-${{ runner.os }}
 
-      # bump 済み flake.lock を checkout 上に展開する（record の bump 後 nix eval が bump 済み lock を使う）。
-      - name: bump 済み lock と bump 前 eval 版マップを取得
+      # bump 済み flake.lock・bump 前 eval 版マップ・bump job でビルド済みの dotfiles binary を checkout 上に展開する。
+      - name: bump 済み lock と bump 前 eval 版マップと dotfiles binary を取得
         uses: actions/download-artifact@v4
         with:
           name: bump-state
@@ -261,9 +262,6 @@ jobs:
           # ノート取得元レジストリ（provenance の学習・再利用）。既存レジストリを再利用し、新規/未知の取得元だけを追記する。
           notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
-          # dotfiles バイナリを devShell 内 cargo でビルドし、実行も `nix develop -c` 経由でランタイムライブラリ
-          # （gpgme/libgit2/libssh2/openssl/zlib 等）を供給する。
-          nix develop -c cargo build --release -p dotfiles-cli
           dotfiles_bin="$PWD/target/release/dotfiles"
           nix develop -c "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
