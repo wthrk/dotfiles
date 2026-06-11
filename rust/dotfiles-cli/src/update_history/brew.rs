@@ -19,13 +19,14 @@ use crate::Result;
 
 /// cask `.rb` 取得 seam の 3 値結果（本文あり / 明確な不在=404 / それ以外の取得不能）。
 ///
-/// 取得不能（接続失敗・5xx・429 等）を不在と区別しないと、一過性障害を「削除」と誤確定しうる。`Removed` 確定は
-/// `NotFound`（明確な不在）にだけ許す。`Unavailable` は rev により倒し分ける（new rev は fail-closed の `Err`、old
+/// 取得不能（接続失敗・5xx・429 等）を不在と区別しないと、一過性障害を「削除」と誤確定しうる。new rev の
+/// `NotFound` は宣言 cask が bump 後 tap に存在しない状態なので fail-closed にし、old rev の `NotFound` だけを
+/// `Added` 判定の不在根拠として使う。`Unavailable` は rev により倒し分ける（new rev は fail-closed の `Err`、old
 /// rev は安全側のスキップ）ため、本文の有無に加えて 404 かどうかを seam が運ぶ。
 pub(crate) enum CaskFetch {
     /// cask `.rb` 本文を取得した。
     Body(String),
-    /// 明確な不在（HTTP 404）。new rev でこれになった cask は削除確定の根拠になる。
+    /// 明確な不在（HTTP 404）。new rev でこれになった宣言 cask は fail-closed の停止根拠になる。
     NotFound,
     /// 取得不能（接続失敗・5xx・429・404 以外の失敗）。new rev では固定性を確認できないため record を失敗させ、old
     /// rev では安全側（差分なし扱い）でスキップする。
@@ -60,9 +61,9 @@ pub(crate) fn diff_casks(
 /// new rev が `Unavailable`（404 以外の取得不能＝接続失敗・5xx・429 等）なら、固定性（`sha256 :no_check` 検査）を
 /// 確認できないまま greedy upgrade が未固定成果物を取り込みうるため `Err` で record を失敗させる（fail-closed:
 /// 固定性を確認できないなら PR を作らせない）。old rev が `Unavailable` のときは new の固定性は確認済みで、old が
-/// 読めないのは安全側（差分なし扱い）なので差分判定をスキップ（版変化なし扱いの `None`）する。`Removed` 確定は old
-/// が版あり・new が明確な不在（404=`Absent`）のときだけ許す。new rev の `.rb` 本文に対しては成果物固定を
-/// [`assert_pinned`] で検査し、`sha256 :no_check` なら fail-closed。
+/// 読めないのは安全側（差分なし扱い）なので差分判定をスキップ（版変化なし扱いの `None`）する。new rev が 404
+/// なら宣言側がまだ同じ PR で直せない cask 欠落なので、`Removed` として記録せず fail-closed にする。new rev の
+/// `.rb` 本文に対しては成果物固定を [`assert_pinned`] で検査し、`sha256 :no_check` なら fail-closed。
 fn cask_delta(
     rev_old: &str,
     rev_new: &str,
@@ -159,8 +160,9 @@ fn cask_version(
 ///
 /// greedy 有効化（`homebrew.nix` の `greedyCasks = true`）で全 cask が無人 upgrade 対象になるため、未固定成果物
 /// （`sha256 :no_check`）が new rev に現れたら fail-closed にし、外部成果物の再現性なき無人差し替えを阻む。404
-/// （`NotFound`）は明確な不在＝`Absent`。取得不能（`Unavailable`）は固定性を確認できないため `None` を返し、呼び出し
-/// 側（[`cask_delta`]）が record を失敗させる（fail-closed: 取得障害の夜に未固定 cask の混入を見逃さない）。
+/// （`NotFound`）も宣言 cask 欠落を示すため fail-closed にする。取得不能（`Unavailable`）は固定性を確認できないため
+/// `None` を返し、呼び出し側（[`cask_delta`]）が record を失敗させる（fail-closed: 取得障害の夜に未固定 cask の
+/// 混入を見逃さない）。
 fn cask_version_pinned(
     rev: &str,
     name: &str,
@@ -169,7 +171,13 @@ fn cask_version_pinned(
     let url = cask_rb_url(rev, name);
     match fetch(&url)? {
         CaskFetch::Body(rb) => assert_pinned(name, &rb).map(|()| Some(cask_state_of(&rb))),
-        CaskFetch::NotFound => Ok(Some(CaskState::Absent)),
+        CaskFetch::NotFound => {
+            bail!(
+                "cask `{name}` は new rev `{rev}` の homebrew-cask tap に存在しない（404）。\
+                 `homebrew.nix` の宣言 cask として残っているため、Removed として履歴記録せず停止する\
+                 （fail-closed: 宣言側を人手で修正すること）"
+            );
+        }
         CaskFetch::Unavailable => Ok(None),
     }
 }
@@ -499,23 +507,19 @@ mod tests {
     }
 
     #[test]
-    fn diff_casks_marks_added_and_removed() -> Result<()> {
-        // newcask: old 不在(404)→new 版あり=Added。oldcask: old 版あり→new 不在(404)=Removed。
-        let nix = "casks = [ \"newcask\" \"oldcask\" ];";
+    fn diff_casks_marks_added_from_old_not_found() -> Result<()> {
+        // old 不在(404)→new 版ありは Added。new 側 404 は宣言 cask 欠落として別テストで fail-closed にする。
+        let nix = "casks = [ \"newcask\" ];";
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "newcask") {
                 CaskFetch::Body(version_rb("3.0"))
-            } else if url == cask_rb_url("old", "oldcask") {
-                CaskFetch::Body(version_rb("1.0"))
             } else {
                 CaskFetch::NotFound
             })
         };
         let deltas = diff_casks(nix, "old", "new", &fetch)?;
         let added = deltas.iter().find(|d| d.name == "newcask");
-        let removed = deltas.iter().find(|d| d.name == "oldcask");
         assert_eq!(added.map(|d| d.change), Some(ChangeKind::Added));
-        assert_eq!(removed.map(|d| d.change), Some(ChangeKind::Removed));
         Ok(())
     }
 
@@ -547,8 +551,8 @@ mod tests {
     }
 
     #[test]
-    fn diff_casks_marks_removed_only_on_explicit_not_found() -> Result<()> {
-        // new rev が明確な不在（404＝`NotFound`）で old が版ありのときだけ Removed を確定する。
+    fn diff_casks_fails_closed_when_declared_cask_is_not_found_at_new_rev() {
+        // new rev が明確な不在（404＝`NotFound`）なら、宣言 cask を Removed として履歴記録せず停止する。
         let nix = "casks = [ \"gone\" ];";
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("old", "gone") {
@@ -557,17 +561,27 @@ mod tests {
                 CaskFetch::NotFound
             })
         };
-        let deltas = diff_casks(nix, "old", "new", &fetch)?;
-        assert_eq!(
-            deltas.iter().find(|d| d.name == "gone").map(|d| d.change),
-            Some(ChangeKind::Removed)
+        let error = diff_casks(nix, "old", "new", &fetch)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            error.contains("gone"),
+            "error should name the cask: {error}"
         );
-        Ok(())
+        assert!(
+            error.contains("404"),
+            "error should cite not found status: {error}"
+        );
+        assert!(
+            error.contains("Removed"),
+            "error should say it did not record Removed: {error}"
+        );
     }
 
     #[test]
     fn diff_casks_skips_when_old_rev_unavailable() -> Result<()> {
-        // old rev が取得不能なら、new に版があっても Added と誤確定せずスキップする（両側 fail-closed）。
+        // old rev が取得不能なら、new に版があっても Added と誤確定せず安全側でスキップする。
         let nix = "casks = [ \"flaky\" ];";
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "flaky") {
