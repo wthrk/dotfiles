@@ -6,13 +6,13 @@
 //! clone は提示する SSH identity を選べないため、socket 解決は gpg-agent socket
 //! （`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に使う `resolve_gpg_agent_socket` を用い、通常の
 //! `ssh-agent` を指しうる既存 `SSH_AUTH_SOCK` へは fallback しない。既存 `~/.ssh/id_ed25519` を新規運用で使わ
-//! ない仕様（spec L92 / L100 / L210）を守るためであり、gpg-agent socket が無ければ clone を停止する。
+//! ない `secret-recovery-spec.md` と `gnupg-ssh-design.md` の復旧経路を守るためであり、gpg-agent socket が無ければ clone を停止する。
 //!
 //! gpg-agent SSH support の確立（SSH agent socket の有効化）・authentication subkey の `sshcontrol` 相当への
-//! 登録・利用可否確認は `restore-gpg` の責務である（design L116-124）。本 adapter は `restore-gpg` が整えた
+//! 登録・利用可否確認は `restore-gpg` の責務である（`gnupg-ssh-design.md` の gpg-agent SSH support 経路）。本 adapter は `restore-gpg` が整えた
 //! gpg-agent の SSH agent 経由で `Cred::ssh_key_from_agent` により clone するだけであり、clone 前に agent の
-//! identity を列挙・照合・排除しない（application も同様に再検査しない。spec L174 / entrypoint doc
-//! `application/run_restore_pass.rs` 参照）。`Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の
+//! identity を列挙・照合・排除しない（application も同様に再検査しない。`secret-recovery-spec.md` が
+//! 定義する SSH agent 認証 clone と `application/run_restore_pass.rs` 参照）。`Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の
 //! 特定 identity を選んで提示する API を持たないが、本 adapter の安全境界は (1) strict な gpg-agent socket 解決
 //! （`resolve_gpg_agent_socket`。通常の `ssh-agent` や `~/.ssh/id_ed25519` 等へ fallback しない）で提示元を
 //! gpg-agent の SSH socket に限定すること、(2) `certificate_check` による GitHub host key の pin 照合で接続先を
@@ -24,6 +24,8 @@
 //! `github.com` であり、libssh2 が提示する SSH host key の raw bytes が GitHub 公表の既知 host key
 //! （Ed25519 / ECDSA / RSA の公開鍵）と byte 一致することを検証し、一致しなければ clone を停止する。
 //! GitHub 公表鍵は出典コメント付きの定数 [`GITHUB_SSH_HOST_KEYS`] として pin する。
+
+use std::{error::Error, fmt};
 
 use anyhow::Context;
 use git2::{
@@ -78,7 +80,7 @@ impl GitCloneAdapter {
     pub(super) fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
         // clone は提示する SSH identity を選べないため、gpg-agent socket を strict に解決する。通常の `ssh-agent`
         // を指しうる `SSH_AUTH_SOCK` へは fallback せず、gpg-agent socket が無ければ clone を試みず停止する
-        // （既存 `~/.ssh` 鍵での clone を防ぐ。spec L92 / L100 / L210）。
+        // （既存 `~/.ssh` 鍵での clone を防ぐ）。
         let socket = resolve_gpg_agent_socket()?
             .context("could not resolve the gpg-agent SSH agent socket for password-store clone")?;
         // libssh2 は credentials callback で SSH agent を使う前に `SSH_AUTH_SOCK` を参照する。strict に解決した
@@ -152,15 +154,43 @@ impl GitCloneAdapter {
             .clone(remote.as_str(), &destination)
         {
             let _ = std::fs::remove_dir_all(&destination);
-            return Err(anyhow::anyhow!(
-                "failed to clone private password-store over SSH: {error}"
-            ));
+            return Err(redacted_clone_error(error))
+                .context("failed to clone private password-store over SSH");
         }
 
         // clone 成功時 destination は既に `~/.password-store` にあり、rename は不要。
         Ok(())
     }
 }
+
+/// git2 clone failure を URL 非露出の source error へ変換する。
+///
+/// `git2::Error` の message は clone URL を含み得るため、表示 chain には載せない。診断性は
+/// `ErrorClass` / `ErrorCode` に限定し、`password-store-remote` 実値を stderr へ出さない。
+fn redacted_clone_error(error: git2::Error) -> RedactedGitCloneError {
+    RedactedGitCloneError {
+        class: error.class(),
+        code: error.code(),
+    }
+}
+
+#[derive(Debug)]
+struct RedactedGitCloneError {
+    class: git2::ErrorClass,
+    code: git2::ErrorCode,
+}
+
+impl fmt::Display for RedactedGitCloneError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "git clone failed with class {:?} and code {:?}",
+            self.class, self.code
+        )
+    }
+}
+
+impl Error for RedactedGitCloneError {}
 
 /// 接続先 host が `github.com` であり、提示された SSH host key が GitHub 公表の pin 鍵と一致するかを検証する。
 ///
@@ -265,7 +295,30 @@ mod tests {
     //! libssh2 host key 提示を伴わない純粋な decode と pin 突合だけを検証し、外部 network/git は呼ばない。
     //! `Cert` は実 git 接続なしに構築できないため、pin 突合に使う decode 関数と pin 定数の整合だけを直接検証する。
 
-    use super::{GITHUB_SSH_HOST_KEYS, standard_base64_decode};
+    use super::{GITHUB_SSH_HOST_KEYS, redacted_clone_error, standard_base64_decode};
+
+    #[test]
+    /// clone 失敗時の error chain が remote URL 実値を表示しないことを固定する。
+    fn clone_error_chain_redacts_remote_url() {
+        let remote = "git@github.com:example-owner/password-store.git";
+        let source = git2::Error::from_str(&format!("failed to connect while cloning {remote}"));
+        let error = anyhow::Error::from(redacted_clone_error(source))
+            .context("failed to clone private password-store over SSH");
+        let rendered = format!("{error:#}");
+
+        assert!(
+            rendered.contains("failed to clone private password-store over SSH"),
+            "top-level clone context must be preserved:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("git clone failed with class"),
+            "redacted source must keep git2 class/code diagnostics:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(remote) && !rendered.contains("example-owner/password-store"),
+            "clone error chain must not leak password-store-remote value:\n{rendered}"
+        );
+    }
 
     /// pin した各 GitHub host key の base64 本体が decode でき、type prefix を持つことを確認する。
     #[test]

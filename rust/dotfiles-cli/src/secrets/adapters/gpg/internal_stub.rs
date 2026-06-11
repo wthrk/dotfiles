@@ -7,7 +7,7 @@
 //!
 //! この stub は GPG port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::GPG_STUB_SPEC_ENV` の GPG 専用 spec から private datastore へ
-//! 展開し、最終観測 JSON は stdout の sentinel line として書き出す。YubiKey / BWS port stub とは
+//! 展開し、最終観測 JSON は stdout の sentinel line として書き出す。YubiKey / Bitwarden vault port stub とは
 //! state/schema/file を共有しない。
 //!
 //! cipher stub の backup body 規約: integration test は復号済み backup を「primary fingerprint の
@@ -105,8 +105,8 @@ struct StoredKey {
 
 #[derive(serde::Serialize)]
 struct GpgObservation {
-    imported_keys: Vec<String>,
-    registered_keygrips: Vec<String>,
+    imported_key_count: usize,
+    registered_keygrip_count: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -118,7 +118,17 @@ struct GpgObservationFrame<'a> {
 static GPG_DATASTORE: OnceLock<Mutex<Option<GpgDatastore>>> = OnceLock::new();
 
 #[derive(Debug)]
-struct GpgStubDatastoreLockPoisoned;
+struct GpgStubDatastoreLockPoisoned {
+    source: DatastoreLockPoisonSource,
+}
+
+impl GpgStubDatastoreLockPoisoned {
+    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
+        Self {
+            source: DatastoreLockPoisonSource::from_poison(source),
+        }
+    }
+}
 
 impl std::fmt::Display for GpgStubDatastoreLockPoisoned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -126,7 +136,32 @@ impl std::fmt::Display for GpgStubDatastoreLockPoisoned {
     }
 }
 
-impl std::error::Error for GpgStubDatastoreLockPoisoned {}
+impl std::error::Error for GpgStubDatastoreLockPoisoned {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Debug)]
+struct DatastoreLockPoisonSource {
+    message: String,
+}
+
+impl DatastoreLockPoisonSource {
+    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
+        Self {
+            message: source.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for DatastoreLockPoisonSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DatastoreLockPoisonSource {}
 
 /// GPG 鍵リング port の internal backend stub。
 #[derive(Default)]
@@ -305,7 +340,7 @@ impl SshAgentPort for SshAgentStub {
         expected_public_key: &OpenSshPublicKey,
     ) -> Result<SshAgentReadiness> {
         // real adapter は agent が列挙する identity の key blob を期待公開鍵の key blob と byte 一致で照合し、
-        // 復元鍵 identity が識別可能かを観測する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は観測
+        // 復元鍵 identity が識別可能かを観測する。復元鍵と無関係な既存 identity の有無は観測
         // しない。stub は restore-gpg の register→identify linkage（「期待公開鍵と同一 key blob を持つ鍵の keygrip が
         // SSH key list へ登録済み」なら、その鍵を agent 列挙 identity の 1 つとみなす）を再現し、同じ domain 照合
         // （`matches_agent_key_blob`）で復元鍵の識別可否を判定する。
@@ -351,15 +386,15 @@ fn stored_key(primary_fingerprint: &PrimaryFingerprint) -> Result<StoredKey> {
             .keys
             .get(primary_fingerprint.as_str())
             .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("stub gpg key not found: {}", primary_fingerprint.as_str())
-            })
+            .ok_or_else(|| anyhow::anyhow!("stub gpg key not found"))
     })
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut GpgDatastore) -> Result<T>) -> Result<T> {
     let datastore = GPG_DATASTORE.get_or_init(|| Mutex::new(None));
-    let mut state = datastore.lock().map_err(|_| GpgStubDatastoreLockPoisoned)?;
+    let mut state = datastore
+        .lock()
+        .map_err(GpgStubDatastoreLockPoisoned::from_poison)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }
@@ -402,8 +437,8 @@ fn load_datastore() -> Result<GpgDatastore> {
 
 fn write_observation(store: &GpgDatastore) -> Result<()> {
     let observation = GpgObservation {
-        imported_keys: store.imported.clone(),
-        registered_keygrips: store.registered_keygrips.clone(),
+        imported_key_count: store.imported.len(),
+        registered_keygrip_count: store.registered_keygrips.len(),
     };
     let frame = GpgObservationFrame {
         port: "gpg",

@@ -7,7 +7,7 @@
 //! この stub は YubiKey port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::YUBIKEY_STUB_SPEC_ENV` の YubiKey 専用 spec から private datastore
 //! へ展開し、最終観測 JSON は stdout の sentinel line として書き出す。
-//! BWS port stub とは state/schema/file を共有しない。
+//! vault port stub とは state/schema/file を共有しない。
 
 use std::{
     collections::BTreeMap,
@@ -23,9 +23,8 @@ use super::{
 use crate::secrets_internal_test_stub_contract::{STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV};
 
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
-const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
-const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
-const BWS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
+const BITWARDEN_CLIENT_ID_OBJECT_ID: u32 = 0x005f_ff17;
+const BITWARDEN_CLIENT_SECRET_OBJECT_ID: u32 = 0x005f_ff18;
 
 #[derive(serde::Deserialize)]
 struct YubiKeyStubSpec {
@@ -48,14 +47,11 @@ struct YubiKeyDeviceSpec {
 enum YubiKeyDeviceFixture {
     Fresh,
     Provisioned,
-    WritableBwsAccessToken,
     Seeded {
-        #[serde(rename = "bw-email")]
-        bw_email: String,
-        #[serde(rename = "bw-password")]
-        bw_password: String,
-        #[serde(rename = "bws-access-token")]
-        bws_access_token: String,
+        #[serde(rename = "bitwarden-client-id")]
+        bitwarden_client_id: String,
+        #[serde(rename = "bitwarden-client-secret")]
+        bitwarden_client_secret: String,
     },
 }
 
@@ -93,7 +89,17 @@ struct YubiKeyObservationFrame<'a> {
 static YUBIKEY_DATASTORE: OnceLock<Mutex<Option<YubiKeyDatastore>>> = OnceLock::new();
 
 #[derive(Debug)]
-struct YubikeyStubDatastoreLockPoisoned;
+struct YubikeyStubDatastoreLockPoisoned {
+    source: DatastoreLockPoisonSource,
+}
+
+impl YubikeyStubDatastoreLockPoisoned {
+    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
+        Self {
+            source: DatastoreLockPoisonSource::from_poison(source),
+        }
+    }
+}
 
 impl std::fmt::Display for YubikeyStubDatastoreLockPoisoned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -101,7 +107,32 @@ impl std::fmt::Display for YubikeyStubDatastoreLockPoisoned {
     }
 }
 
-impl std::error::Error for YubikeyStubDatastoreLockPoisoned {}
+impl std::error::Error for YubikeyStubDatastoreLockPoisoned {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Debug)]
+struct DatastoreLockPoisonSource {
+    message: String,
+}
+
+impl DatastoreLockPoisonSource {
+    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
+        Self {
+            message: source.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for DatastoreLockPoisonSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DatastoreLockPoisonSource {}
 
 struct TestStubSecretDevice {
     serial: u32,
@@ -218,14 +249,10 @@ impl SecretDeviceIo for TestStubSecretDevice {
                 .ok_or_else(|| anyhow::anyhow!("missing secret"))
         })?;
 
-        let session = crate::secrets::support::protection::SecretSession::start()?;
-        let buffer =
-            crate::secrets::support::protection::buffer::ProtectedInputBuffer::read_line_from(
-                std::io::Cursor::new(value.into_bytes()),
-                16 * 1024,
-                &session,
-            )?;
-        buffer.into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
+        if value.len() > 16 * 1024 {
+            anyhow::bail!("internal stub secret is too large");
+        }
+        ProtectedSecret::from_test_bytes(value.as_bytes())
     }
 
     fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
@@ -271,7 +298,7 @@ fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Resu
     let datastore = YUBIKEY_DATASTORE.get_or_init(|| Mutex::new(None));
     let mut state = datastore
         .lock()
-        .map_err(|_| YubikeyStubDatastoreLockPoisoned)?;
+        .map_err(YubikeyStubDatastoreLockPoisoned::from_poison)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }
@@ -325,17 +352,13 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
     let mut device = match spec.fixture {
         YubiKeyDeviceFixture::Fresh => StubDeviceDatastore::default(),
         YubiKeyDeviceFixture::Provisioned => provisioned_device_datastore(default_secrets()),
-        YubiKeyDeviceFixture::WritableBwsAccessToken => {
-            let mut secrets = BTreeMap::new();
-            secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
-            secrets.insert("bw-password".to_owned(), "pw".to_owned());
-            provisioned_device_datastore(secrets)
-        }
         YubiKeyDeviceFixture::Seeded {
-            bw_email,
-            bw_password,
-            bws_access_token,
-        } => provisioned_device_datastore(seeded_secrets(bw_email, bw_password, bws_access_token)),
+            bitwarden_client_id,
+            bitwarden_client_secret,
+        } => provisioned_device_datastore(seeded_secrets(
+            bitwarden_client_id,
+            bitwarden_client_secret,
+        )),
     };
     device.corrupt = spec.storage_decode_errors;
     device
@@ -357,21 +380,21 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
 
 fn default_secrets() -> BTreeMap<String, String> {
     let mut secrets = BTreeMap::new();
-    secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
-    secrets.insert("bw-password".to_owned(), "pw".to_owned());
-    secrets.insert("bws-access-token".to_owned(), "token".to_owned());
+    secrets.insert("bitwarden-client-id".to_owned(), "u@example.com".to_owned());
+    secrets.insert("bitwarden-client-secret".to_owned(), "pw".to_owned());
     secrets
 }
 
 fn seeded_secrets(
-    bw_email: String,
-    bw_password: String,
-    bws_access_token: String,
+    bitwarden_client_id: String,
+    bitwarden_client_secret: String,
 ) -> BTreeMap<String, String> {
     let mut seeded = BTreeMap::new();
-    seeded.insert("bw-email".to_owned(), bw_email);
-    seeded.insert("bw-password".to_owned(), bw_password);
-    seeded.insert("bws-access-token".to_owned(), bws_access_token);
+    seeded.insert("bitwarden-client-id".to_owned(), bitwarden_client_id);
+    seeded.insert(
+        "bitwarden-client-secret".to_owned(),
+        bitwarden_client_secret,
+    );
     seeded
 }
 
@@ -384,7 +407,11 @@ fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
                 serial.clone(),
                 StubDeviceObservation {
                     key_exists: device.key_exists,
-                    stored_secrets: device.secrets.clone(),
+                    stored_secrets: device
+                        .secrets
+                        .keys()
+                        .map(|name| (name.clone(), "<redacted>".to_owned()))
+                        .collect(),
                 },
             )
         })
@@ -408,27 +435,24 @@ fn device_store_mut(store: &mut YubiKeyDatastore, serial: u32) -> Result<&mut St
 
 fn secret_key_for_object(object_id: u32) -> &'static str {
     match object_id {
-        BW_EMAIL_OBJECT_ID => "bw-email",
-        BW_PASSWORD_OBJECT_ID => "bw-password",
-        BWS_TOKEN_OBJECT_ID => "bws-access-token",
+        BITWARDEN_CLIENT_ID_OBJECT_ID => "bitwarden-client-id",
+        BITWARDEN_CLIENT_SECRET_OBJECT_ID => "bitwarden-client-secret",
         _ => "",
     }
 }
 
 fn secret_key(secret_id: u8) -> &'static str {
     match secret_id {
-        1 => "bw-email",
-        2 => "bw-password",
-        3 => "bws-access-token",
+        1 => "bitwarden-client-id",
+        2 => "bitwarden-client-secret",
         _ => "unknown",
     }
 }
 
 fn storage_object_id(secret_id: u8) -> u32 {
     match secret_id {
-        1 => BW_EMAIL_OBJECT_ID,
-        2 => BW_PASSWORD_OBJECT_ID,
-        3 => BWS_TOKEN_OBJECT_ID,
+        1 => BITWARDEN_CLIENT_ID_OBJECT_ID,
+        2 => BITWARDEN_CLIENT_SECRET_OBJECT_ID,
         _ => MANIFEST_OBJECT_ID,
     }
 }

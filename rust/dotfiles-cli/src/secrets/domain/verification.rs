@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 /// CLI 入力の閉じた集合を表し、domain check 名への写像元として使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalCheck {
-    Bws,
-    BwLogin,
+    Vault,
 }
 
 /// 各 verification/enrollment check の結果状態。
@@ -29,12 +28,10 @@ pub enum CheckStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CheckName {
     Setup,
-    BwEmail,
-    BwPassword,
-    BwsAccessToken,
+    BitwardenClientId,
+    BitwardenClientSecret,
     LocalStorage,
-    Bws,
-    BwLogin,
+    Vault,
 }
 
 impl CheckName {
@@ -44,12 +41,10 @@ impl CheckName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Setup => "setup",
-            Self::BwEmail => "bw-email",
-            Self::BwPassword => "bw-password",
-            Self::BwsAccessToken => "bws-access-token",
+            Self::BitwardenClientId => "bitwarden-client-id",
+            Self::BitwardenClientSecret => "bitwarden-client-secret",
             Self::LocalStorage => "local-storage",
-            Self::Bws => "bws",
-            Self::BwLogin => "bw-login",
+            Self::Vault => "vault",
         }
     }
 }
@@ -63,15 +58,6 @@ pub struct VerifySummary {
 }
 
 impl VerifySummary {
-    /// local-storage だけを要約対象にする summary を構築する。
-    ///
-    /// rotate 系 use case は外部確認を含めず、更新した 1 本のローカル再検証結果だけを返す。
-    pub fn local_storage_only(status: CheckStatus) -> Self {
-        Self {
-            checks: [(CheckName::LocalStorage, status)].into_iter().collect(),
-        }
-    }
-
     /// local storage 検証が成功した通常系 summary を構築する。
     ///
     /// external checks は未実施として初期化し、後続の実行結果反映を待つ。
@@ -95,8 +81,7 @@ impl VerifySummary {
         Self {
             checks: [
                 (CheckName::LocalStorage, local_storage),
-                (CheckName::Bws, CheckStatus::Skipped),
-                (CheckName::BwLogin, CheckStatus::Skipped),
+                (CheckName::Vault, CheckStatus::Skipped),
             ]
             .into_iter()
             .collect(),

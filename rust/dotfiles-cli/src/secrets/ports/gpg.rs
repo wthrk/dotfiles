@@ -124,7 +124,7 @@ pub trait SshAgentPort {
     /// agent が SSH agent protocol で列挙する identity を取得し、socket 解決可否（`socket_resolved`）に加えて、
     /// 期待公開鍵（`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）と key blob が byte 一致する
     /// identity が含まれるか（`recovery_identity_present`）を `SshAgentReadiness` へ翻訳する。caller は復元鍵提示の
-    /// 確認を `SshAgentReadiness::ensure_ready` で行う。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は
+    /// 確認を `SshAgentReadiness::ensure_ready` で行う。復元鍵と無関係な既存 identity の有無は
     /// 観測しない。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
     fn inspect_ssh_agent(
         &mut self,

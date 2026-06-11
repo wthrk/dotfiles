@@ -16,7 +16,7 @@ mod adapters {
     mod io;
     mod yubikey;
 
-    pub(in crate::secrets) use bw::{BwLoginAdapter, BwsClientAdapter};
+    pub(in crate::secrets) use bw::VaultClientAdapter;
     pub(in crate::secrets) use git::{GitCloneAdapter, PasswordStoreAdapter};
     pub(in crate::secrets) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
     pub(in crate::secrets) use io::{JsonReportAdapter, ProcessIoAdapter};
@@ -50,7 +50,6 @@ enum SecretsCommand {
     VerifyYubikey(VerifyYubikeyOptions),
     RestoreGpg(RestoreGpgOptions),
     RestorePass(RestorePassOptions),
-    BwLogin(BwLoginOptions),
     GpgBackup(GpgBackupOptions),
     PassRemote(PassRemoteOptions),
 }
@@ -70,7 +69,6 @@ enum YubikeyCommand {
     Get(GetOptions),
     EnrollPrimary(EnrollPrimaryOptions),
     EnrollSpare(EnrollSpareOptions),
-    RotateBwsToken(RotateBwsTokenOptions),
 }
 
 #[derive(Args)]
@@ -80,10 +78,7 @@ struct SetupOptions {}
 #[derive(Args)]
 /// 1 secret を接続中の単一 YubiKey に保存する低水準 command の option。
 struct PutOptions {
-    #[arg(value_parser = parse_secret_name)]
-    name: SecretName,
-    #[arg(long)]
-    stdin: bool,
+    name: String,
     #[arg(long)]
     force: bool,
 }
@@ -91,8 +86,7 @@ struct PutOptions {
 #[derive(Args)]
 /// 1 secret を接続中の単一 YubiKey から取得する低水準 command の option。
 struct GetOptions {
-    #[arg(value_parser = parse_secret_name)]
-    name: SecretName,
+    name: String,
 }
 
 #[derive(Args)]
@@ -104,45 +98,18 @@ struct EnrollPrimaryOptions {}
 struct EnrollSpareOptions {}
 
 #[derive(Args)]
-/// `rotate-bws-token` で更新する token の受け取り境界を表す option。
-struct RotateBwsTokenOptions {
-    #[arg(long)]
-    stdin: bool,
-}
-
-#[derive(Args)]
-/// YubiKey に保存された secret と外部確認項目を検証する option。
-///
-/// `--check bw-login`（または `--all`）の bw-login 外部確認では、通常 YubiKey の `bw-email` を使う。
-/// email override が必要な場合は `--email <email>` を使う（yubikey-secret-storage-design.md の `dotfiles secrets verify-yubikey` 節）。override は `bw-login` の
-/// `BwLoginOptions` の `--email` と同じ意味・体裁で、指定時は YubiKey の `bw-email` を読まない。
+/// YubiKey に保存された secret と個人 vault 外部確認項目を検証する option。
 struct VerifyYubikeyOptions {
     #[arg(long, value_enum)]
     check: Vec<VerifyCheck>,
     #[arg(long)]
     all: bool,
-    /// bw-login 外部確認で YubiKey の `bw-email` を使わず、指定した login email で login する override（yubikey-secret-storage-design.md の `dotfiles secrets verify-yubikey` 節）。
-    #[arg(long)]
-    email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 /// `verify-yubikey --check` で追加する外部確認項目。
 enum VerifyCheck {
-    Bws,
-    BwLogin,
-}
-
-#[derive(Args)]
-/// YubiKey から `bw-email` / `bw-password` を取得し Bitwarden Password Manager CLI に login / unlock する option。
-///
-/// `bw-email` は通常 YubiKey の値を使い、override が必要な場合だけ `--email <email>` を許可する（spec L178）。
-/// master password は子プロセスの `BW_PASSWORD` env でだけ渡し、argv には載せない。YubiKey OTP は実行時に
-/// 可視入力で受け取り、argv（`--code`）へ載る単回トークンとして扱う。
-struct BwLoginOptions {
-    /// YubiKey の `bw-email` を使わず、指定した login email で login する override。
-    #[arg(long)]
-    email: Option<String>,
+    Vault,
 }
 
 #[derive(Args)]
@@ -169,19 +136,18 @@ enum GpgBackupCommand {
 #[derive(Args)]
 /// 既存 `gpg-secret-key-backup` envelope が接続中 YubiKey と整合するか確認する option。
 ///
-/// 現行 CLI は project 不在なら `dotfiles-secret-recovery` を作成するが、未登録状態から
-/// `gpg-secret-key-backup` 自体を新規作成も更新もしない。project 内で secret が未登録なら停止し、
-/// 既存 1 件が primary fingerprint・接続中 recipient・2 recipient 以上条件を満たす場合だけ成功する。
-/// 初回 envelope 作成の正本手順は別途必要で、この command や provisioning script だけでは
-/// 初期プロビジョニング完了にならない。
+/// YubiKey storage に保存済みの Bitwarden account API key を使い、Bitwarden 個人 vault の
+/// SDK/API adapter 境界で既存 `gpg-secret-key-backup` item を照合する。
+/// 新規 1 recipient envelope は作成せず、2 recipient 以上を満たす
+/// 既存 secret だけを成功扱いにする。
 struct GpgBackupRegisterOptions {}
 
 #[derive(Args)]
 /// `password-store-remote` の provisioning（保管側 create/use）を公開する option。
 ///
 /// command 名 `pass-remote` は、`gpg-backup`（`gpg-secret-key-backup` の保管 command 群）と対称に
-/// `password-store-remote` secret の保管 command 群を表す。設計「初期登録手順」step3 が定める保管経路
-/// （管理 plane の bootstrap）を、復旧本線 command（`restore-pass`）と区別して provisioning 動詞 `register`
+/// `password-store-remote` secret の保管 command 群を表す。`secret-recovery-spec.md` と
+/// `bitwarden-personal-vault-design.md` が定める保管経路を、復旧本線 command（`restore-pass`）と区別して provisioning 動詞 `register`
 /// 配下へ置くため、`restore-pass` ではなく secret 名に揃えた `pass-remote register` を採用する。
 struct PassRemoteOptions {
     #[command(subcommand)]
@@ -195,17 +161,12 @@ enum PassRemoteCommand {
 }
 
 #[derive(Args)]
-/// private `password-store` の clone URL を BWS へ create または既存照合する option。
+/// private `password-store` の clone URL を Bitwarden 個人 vault へ create または既存照合する option。
 ///
-/// clone URL は private repo の SSH clone URL であって秘密情報ではない。configured origin が観測できる場合は
-/// その repository identity を優先し、origin が無い場合だけ controlling TTY の可視対話入力へ委譲する。
-/// provisioning script は URL を argv / stdin / 環境変数で中継しない。
-/// BWS に既存 `password-store-remote` がある場合も、configured origin から期待値を導けるときだけ照合に成功し、
-/// origin が無い既存値は fail-closed で停止する。
-///
-/// この command は YubiKey storage を読まない。BWS 登録に使う access token は hidden prompt（TTY）/
-/// pipe（stdin）から保護値として受け取り、YubiKey へ保存しない。YubiKey の `bws-access-token` には
-/// 別経路で復旧用の最小権限 token を保存する前提のため、token を argv へ載せる option も設けない。
+/// YubiKey storage に保存済みの Bitwarden account API key と、CLI/app input port で取得した master password を使い、
+/// SDK/API adapter 境界で `password-store-remote` item を create または既存照合する。登録値は
+/// `git@github.com:<owner>/<repo>.git` 形式へ正規化した SSH clone URL を使い、URL は
+/// argv/stdin/env ではなく CLI/app 側の input port で取得する。
 struct PassRemoteRegisterOptions {}
 
 #[derive(Args)]
@@ -264,8 +225,7 @@ pub(in crate::secrets) struct RuntimePorts {
     pub(in crate::secrets) process_io: adapters::ProcessIoAdapter,
     pub(in crate::secrets) storage: adapters::StorageAdapter,
     pub(in crate::secrets) report: adapters::JsonReportAdapter,
-    pub(in crate::secrets) bws_client: adapters::BwsClientAdapter,
-    pub(in crate::secrets) bw_login: adapters::BwLoginAdapter,
+    pub(in crate::secrets) vault_client: adapters::VaultClientAdapter,
     pub(in crate::secrets) gpg_recipient: adapters::GpgRecipientAdapter,
     pub(in crate::secrets) backup_cipher: adapters::BackupCipherAdapter,
     pub(in crate::secrets) gpg_keyring: adapters::GpgKeyringAdapter,
@@ -284,8 +244,7 @@ impl RuntimePorts {
             process_io: adapters::ProcessIoAdapter::default(),
             storage: adapters::StorageAdapter::default(),
             report: adapters::JsonReportAdapter::default(),
-            bws_client: adapters::BwsClientAdapter,
-            bw_login: adapters::BwLoginAdapter,
+            vault_client: adapters::VaultClientAdapter,
             gpg_recipient: adapters::GpgRecipientAdapter::default(),
             backup_cipher: adapters::BackupCipherAdapter::default(),
             gpg_keyring: adapters::GpgKeyringAdapter::default(),
@@ -297,8 +256,6 @@ impl RuntimePorts {
 }
 
 /// CLI 入力は利用者向け kebab-case 名に限定し、wire format の numeric id を露出しない。
-fn parse_secret_name(value: &str) -> std::result::Result<SecretName, String> {
-    value
-        .parse()
-        .map_err(|_| format!("unsupported YubiKey secret name: {value}"))
+fn parse_secret_name(value: &str) -> crate::Result<SecretName> {
+    value.parse().map_err(anyhow::Error::msg)
 }

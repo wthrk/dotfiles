@@ -132,12 +132,12 @@ pub trait SecretStoragePort {
 /// use case が `gpg-secret-key-backup` recipient 運用のために接続中 YubiKey へ要求する capability 契約。
 ///
 /// caller は recipient 照合・DEK unwrap の順序と停止条件を application/domain 側で決める。
-/// implementor は PIV slot `82` 公開鍵の解決、recipient 照合用 identity の構築、device 内 RSA decrypt
+/// implementor は PIV slot `82` 公開鍵 fingerprint の解決、recipient 照合用 identity の構築、device 内 RSA decrypt
 /// による DEK unwrap だけを担い、recipient 照合の業務規則そのものは再定義しない。secret key material や
 /// DEK は `ProtectedSecret` の借用境界内で扱う。
 #[cfg_attr(test, mockall::automock)]
 pub trait GpgRecipientPort {
-    /// 接続中 YubiKey の serial と PIV slot `82` 公開鍵 fingerprint から、recipient 照合入力を構築する。
+    /// 接続中 YubiKey の PIV slot `82` 公開鍵 fingerprint から、recipient 照合入力を構築する。
     fn resolve_connected_recipient(&mut self, serial: u32) -> Result<ConnectedYubiKey>;
 
     /// 一致した recipient の `wrapped_dek` を、接続中 YubiKey の PIV slot `82` 秘密鍵で unwrap して DEK を得る。

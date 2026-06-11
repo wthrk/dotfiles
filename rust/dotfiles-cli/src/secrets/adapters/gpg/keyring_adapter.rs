@@ -29,6 +29,31 @@ use crate::{
 #[derive(Default)]
 pub(super) struct GpgKeyringAdapter;
 
+#[derive(Debug)]
+struct GpgFingerprintResolutionError {
+    source: Option<std::str::Utf8Error>,
+}
+
+impl GpgFingerprintResolutionError {
+    fn from_source(source: Option<std::str::Utf8Error>) -> Self {
+        Self { source }
+    }
+}
+
+impl std::fmt::Display for GpgFingerprintResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GPG recipient primary fingerprint could not be resolved")
+    }
+}
+
+impl std::error::Error for GpgFingerprintResolutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|source| source as &(dyn std::error::Error + 'static))
+    }
+}
+
 impl GpgKeyringAdapter {
     /// OpenPGP protocol の gpgme context を生成する（非 secret metadata 取得用）。
     fn context() -> Result<gpgme::Context> {
@@ -218,9 +243,9 @@ impl GpgKeyringPort for GpgKeyringAdapter {
         let mut context = Self::context()?;
         match context.get_secret_key(recipient.as_str()) {
             Ok(key) => {
-                let fingerprint = key.fingerprint().map_err(|_| {
-                    anyhow::anyhow!("GPG recipient primary fingerprint could not be resolved")
-                })?;
+                let fingerprint = key
+                    .fingerprint()
+                    .map_err(GpgFingerprintResolutionError::from_source)?;
                 Ok(Some(PrimaryFingerprint::parse(fingerprint)?))
             }
             Err(error)

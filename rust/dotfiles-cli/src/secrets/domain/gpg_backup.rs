@@ -3,18 +3,19 @@
 //! envelope は UTF-8 JSON で `version` / `metadata` / `recipients` / `ciphertext` を保持する。
 //! 固定 version・固定アルゴリズム・fingerprint 形式・nonce/tag byte 長・recipient 件数・
 //! base64/hex 妥当性といった保存可能条件と、接続中 YubiKey と recipient の照合規則は、
-//! gpgme / YubiKey unwrap / BWS 取得などの外部実装を差し替えても変わらない業務規則である
+//! gpgme / YubiKey unwrap / Bitwarden vault 取得などの外部実装を差し替えても変わらない業務規則である
 //! ため、この module に閉じる。鍵リング実装・process I/O・ハードウェア依存は持たず、
 //! 純粋な値・検証・照合だけを扱う。secret 平文や復号済み backup はこの層へ載せない。
 //!
-//! `restore-gpg` / BWS primary 登録で使う読み取り面以外にも、schema 境界として保持する検証済み値が
+//! `restore-gpg` / Bitwarden vault primary 登録で使う読み取り面以外にも、schema 境界として保持する検証済み値が
 //! あるため、module 単位で `dead_code` を許容する。
 #![allow(
     dead_code,
-    reason = "restore-gpg / BWS primary registration consumers wire a subset of these validated read accessors"
+    reason = "restore-gpg / Bitwarden vault primary registration consumers wire a subset of these validated read accessors"
 )]
 
 use crate::Result;
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 /// envelope が固定する schema version。
@@ -23,7 +24,7 @@ const ENVELOPE_VERSION: u8 = 1;
 const DEK_ALG: &str = "aes-256-gcm";
 /// `metadata.recipient_kek_alg` の固定値。
 const RECIPIENT_KEK_ALG: &str = "rsa-oaep-sha256";
-/// recipient の固定 PIV slot（正本 BWS schema に合わせ文字列固定）。
+/// recipient の固定 PIV slot（正本 Bitwarden vault schema に合わせ文字列固定）。
 const RECIPIENT_PIV_SLOT: &str = "82";
 /// `metadata.primary_fingerprint` の lowercase hex 文字数（区切りなし）。
 const PRIMARY_FINGERPRINT_HEX_LEN: usize = 40;
@@ -68,7 +69,6 @@ pub struct EnvelopeCiphertext {
 /// envelope `recipients` 要素の検証済み domain 表現。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvelopeRecipient {
-    yubikey_serial: String,
     public_key_fingerprint: PublicKeyFingerprint,
     wrapped_dek: Vec<u8>,
 }
@@ -93,11 +93,10 @@ pub struct PublicKeyFingerprint(String);
 
 /// 接続中 YubiKey を recipient 照合へ渡すための識別子。
 ///
-/// `serial` と `public_key_fingerprint` の両方一致だけを成立条件とし、片方のみ一致は
-/// 不正として解決しない recipient matching の入力境界値である。
+/// YubiKey serial は envelope schema や照合条件に入れず、PIV slot `82` public key fingerprint
+/// だけを監査可能な recipient identity とする。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectedYubiKey {
-    serial: String,
     public_key_fingerprint: PublicKeyFingerprint,
 }
 
@@ -134,7 +133,6 @@ struct CiphertextWire {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecipientWire {
-    yubikey_serial: String,
     piv_slot: String,
     public_key_fingerprint: String,
     wrapped_dek: String,
@@ -148,8 +146,8 @@ impl GpgBackupEnvelope {
     /// base64/hex 妥当性違反は domain error として停止する。
     /// 失敗 message に secret 本文や平文は含めない。
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
-        let wire: EnvelopeWire = serde_json::from_slice(bytes)
-            .map_err(|_| invalid_data("failed to parse gpg backup envelope JSON"))?;
+        let wire: EnvelopeWire =
+            serde_json::from_slice(bytes).context("failed to parse gpg backup envelope JSON")?;
         Self::from_wire(wire)
     }
 
@@ -176,7 +174,6 @@ impl GpgBackupEnvelope {
                 .recipients
                 .iter()
                 .map(|recipient| RecipientWire {
-                    yubikey_serial: recipient.yubikey_serial.clone(),
                     piv_slot: RECIPIENT_PIV_SLOT.to_owned(),
                     public_key_fingerprint: recipient.public_key_fingerprint.0.clone(),
                     wrapped_dek: base64_encode(&recipient.wrapped_dek),
@@ -188,14 +185,12 @@ impl GpgBackupEnvelope {
                 tag: base64_encode(&self.ciphertext.tag),
             },
         };
-        serde_json::to_vec(&wire)
-            .map_err(|_| invalid_data("failed to serialize gpg backup envelope JSON"))
+        serde_json::to_vec(&wire).context("failed to serialize gpg backup envelope JSON")
     }
 
     /// 検証済み envelope を UTF-8 JSON 文字列へ serialize する。
     pub fn to_json_string(&self) -> Result<String> {
-        String::from_utf8(self.to_json()?)
-            .map_err(|_| invalid_data("gpg backup envelope is not valid UTF-8"))
+        String::from_utf8(self.to_json()?).context("gpg backup envelope is not valid UTF-8")
     }
 
     /// wire 表現を schema 検証して domain envelope へ変換する。
@@ -245,9 +240,10 @@ impl GpgBackupEnvelope {
 
     /// 接続中 YubiKey に一致する recipient を解決する。
     ///
-    /// `yubikey_serial` と `public_key_fingerprint` の両方が一致する recipient だけを返す。
-    /// 片方のみ一致は不正であり解決しない（後続の DEK unwrap へ進ませない停止条件）。
-    /// 一致が無い場合は domain failure を返す。
+    /// `public_key_fingerprint` が一致する recipient だけを返す。
+    ///
+    /// YubiKey serial は要求せず、PIV slot `82` public key fingerprint を接続中 recipient の
+    /// 監査可能な identity とする。一致が無い場合は domain failure を返す。
     pub fn resolve_recipient(&self, connected: &ConnectedYubiKey) -> Result<&EnvelopeRecipient> {
         self.recipients
             .iter()
@@ -255,15 +251,15 @@ impl GpgBackupEnvelope {
             .ok_or_else(|| invalid_data("no gpg backup recipient matches the connected YubiKey"))
     }
 
-    /// primary と spare の事前登録を監査するため、復旧 recipient が複数あることを確認する。
+    /// 復旧到達性を監査するため、recipient が 2 件以上あることを確認する。
     ///
-    /// 1 recipient の envelope は接続中 YubiKey では復旧できても、primary 紛失時に spare 側へ
-    /// DEK unwrap 経路を提供しない。BWS 外部確認はこの状態を成功扱いにせず、少なくとも 2 件の
+    /// 1 recipient の envelope は接続中 YubiKey では復旧できても、別 recipient による DEK unwrap
+    /// 経路を提供しない。Bitwarden vault 外部確認はこの状態を成功扱いにせず、少なくとも 2 件の
     /// recipient が事前登録済みであることを復旧可能性の到達条件として強制する。
-    pub fn ensure_spare_recipient_registered(&self) -> Result<()> {
+    pub fn ensure_recovery_recipient_count(&self) -> Result<()> {
         if self.recipients.len() < 2 {
             return Err(invalid_data(
-                "gpg backup envelope must include primary and spare YubiKey recipients",
+                "gpg backup envelope must include at least two YubiKey recipients",
             ));
         }
         Ok(())
@@ -271,10 +267,10 @@ impl GpgBackupEnvelope {
 
     /// 検証済みの構成要素から復旧可能 envelope を直接組み立てる。
     ///
-    /// backup export + envelope 化（primary 登録）で使う。新規保存経路では primary/spare の
-    /// 2 recipient 以上を復旧到達条件として強制し、1 recipient の envelope を BWS へ永続化させない。
+    /// backup export + envelope 化（primary 登録）で使う。新規保存経路では
+    /// 2 件以上の recipient を復旧到達条件として強制し、1 recipient の envelope を Bitwarden vault へ永続化させない。
     /// 既存保存値の schema parse は互換確認のため 1 recipient 以上を受理し、運用到達条件は
-    /// [`Self::ensure_spare_recipient_registered`] で確認する。
+    /// [`Self::ensure_recovery_recipient_count`] で確認する。
     pub fn assemble(
         metadata: EnvelopeMetadata,
         recipients: Vec<EnvelopeRecipient>,
@@ -282,7 +278,7 @@ impl GpgBackupEnvelope {
     ) -> Result<Self> {
         if recipients.len() < 2 {
             return Err(invalid_data(
-                "gpg backup envelope must include primary and spare YubiKey recipients",
+                "gpg backup envelope must include at least two YubiKey recipients",
             ));
         }
         Ok(Self {
@@ -419,16 +415,6 @@ impl EnvelopeRecipient {
                 "gpg backup recipient piv_slot must be the string {RECIPIENT_PIV_SLOT:?}"
             )));
         }
-        if wire.yubikey_serial.is_empty()
-            || !wire
-                .yubikey_serial
-                .bytes()
-                .all(|byte| byte.is_ascii_digit())
-        {
-            return Err(invalid_data(
-                "gpg backup recipient yubikey_serial must be a decimal string",
-            ));
-        }
         let wrapped_dek = base64_decode(&wire.wrapped_dek, "recipient.wrapped_dek")?;
         if wrapped_dek.is_empty() {
             return Err(invalid_data(
@@ -437,7 +423,6 @@ impl EnvelopeRecipient {
         }
 
         Ok(Self {
-            yubikey_serial: wire.yubikey_serial,
             public_key_fingerprint: PublicKeyFingerprint::from_wire(&wire.public_key_fingerprint)?,
             wrapped_dek,
         })
@@ -445,8 +430,8 @@ impl EnvelopeRecipient {
 
     /// 接続中 YubiKey の照合値と wrap 済み DEK から recipient を構築する。
     ///
-    /// backup export（primary 登録）で使う。`serial` は 10 進文字列、
-    /// `public_key_fingerprint` は既に lowercase hex 64 文字へ正規化済みの domain 値、
+    /// backup export（primary 登録）で使う。`public_key_fingerprint` は既に lowercase hex 64 文字へ
+    /// 正規化済みの domain 値、
     /// `wrapped_dek` は RSA-OAEP-SHA256 で wrap した非空 bytes でなければならない。
     /// 値そのものは構築時にこの module の保存可能条件で再検証する。
     pub fn new(connected: &ConnectedYubiKey, wrapped_dek: Vec<u8>) -> Result<Self> {
@@ -456,15 +441,9 @@ impl EnvelopeRecipient {
             ));
         }
         Ok(Self {
-            yubikey_serial: connected.serial.clone(),
             public_key_fingerprint: connected.public_key_fingerprint.clone(),
             wrapped_dek,
         })
-    }
-
-    /// recipient の `yubikey_serial`（10 進文字列）を借用する。
-    pub fn yubikey_serial(&self) -> &str {
-        &self.yubikey_serial
     }
 
     /// recipient PIV slot 公開鍵 fingerprint を借用する。
@@ -477,27 +456,19 @@ impl EnvelopeRecipient {
         &self.wrapped_dek
     }
 
-    /// 接続中 YubiKey と serial・fingerprint の両方が一致するかを判定する。
+    /// 接続中 YubiKey と public key fingerprint が一致するかを判定する。
     fn matches(&self, connected: &ConnectedYubiKey) -> bool {
-        self.yubikey_serial == connected.serial
-            && self.public_key_fingerprint == connected.public_key_fingerprint
+        self.public_key_fingerprint == connected.public_key_fingerprint
     }
 }
 
 impl ConnectedYubiKey {
-    /// 接続中 YubiKey の serial と公開鍵 fingerprint から照合入力を構築する。
+    /// 接続中 YubiKey の公開鍵 fingerprint から照合入力を構築する。
     ///
-    /// `serial` は 10 進文字列、`public_key_fingerprint` は大文字小文字・区切り混在を許容し、
-    /// lowercase hex 64 文字へ正規化したうえで保持する。
-    pub fn new(serial: impl Into<String>, public_key_fingerprint: &str) -> Result<Self> {
-        let serial = serial.into();
-        if serial.is_empty() || !serial.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(invalid_data(
-                "connected YubiKey recipient identity must be a decimal string",
-            ));
-        }
+    /// `public_key_fingerprint` は大文字小文字・区切り混在を許容し、lowercase hex 64 文字へ
+    /// 正規化したうえで保持する。
+    pub fn new(public_key_fingerprint: &str) -> Result<Self> {
         Ok(Self {
-            serial,
             public_key_fingerprint: PublicKeyFingerprint::parse(public_key_fingerprint)?,
         })
     }
@@ -589,7 +560,7 @@ impl PublicKeyFingerprint {
 
 /// `metadata.exported_at` が UTC RFC3339 形式であることを schema 検証する。
 ///
-/// 設計「決定事項」は `exported_at` を UTC RFC3339 の必須 metadata と規定する。実時刻取得や
+/// envelope schema は `exported_at` を UTC RFC3339 の必須 metadata として扱う。実時刻取得や
 /// timezone DB は不要なため、外部 crate に依存せず純粋関数で形式（`YYYY-MM-DDThh:mm:ss[.fff]`）と
 /// 各フィールドの数値範囲（full-date は月別日数と閏年判定を含む暦日妥当性）、および UTC を表す
 /// time-offset（`Z` または `+00:00`）だけを検証する。
@@ -696,7 +667,7 @@ fn parse_fixed_width_number(field: &str, width: usize) -> Option<u32> {
 
 /// wire（envelope JSON 由来の保存値）の fingerprint が既に canonical であることを厳格検証する。
 ///
-/// BWS から取得した envelope の `metadata.primary_fingerprint` / recipient
+/// Bitwarden vault から取得した envelope の `metadata.primary_fingerprint` / recipient
 /// `public_key_fingerprint` は設計上「lowercase hex、指定長ちょうど、区切り・空白なし」の
 /// schema 値である。保存値の正規化（書き換え）は破損を隠すため、この関数は [`normalize_fingerprint`]
 /// と異なり大文字小文字変換・区切り除去を一切行わず、uppercase・`:` 等の区切り・空白・長さ
@@ -871,9 +842,9 @@ fn invalid_data(message: impl Into<String>) -> anyhow::Error {
 mod tests {
     //! `gpg-secret-key-backup` envelope の parse / validate / match 規則の単体テスト。
     //!
-    //! 正常系と、設計「停止条件」に対応する異常系（version 不正・recipients 0 件・
+    //! 正常系と、envelope schema の停止条件に対応する異常系（version 不正・recipients 0 件・
     //! fingerprint 長/文字種不正・固定アルゴリズム不一致・nonce/tag 長不正・base64 不正・
-    //! `exported_at` の UTC RFC3339 形式不正・片側のみ一致 recipient）を網羅する。
+    //! `exported_at` の UTC RFC3339 形式不正・recipient 不一致）を網羅する。
     //! test double は持ち込まず純粋ロジックだけを検証する。
 
     use super::*;
@@ -927,7 +898,6 @@ mod tests {
               }},
               "recipients": [
                 {{
-                  "yubikey_serial": "12345678",
                   "piv_slot": "82",
                   "public_key_fingerprint": "{PUBKEY_FP}",
                   "wrapped_dek": "{wrapped}"
@@ -953,12 +923,8 @@ mod tests {
         assert_eq!(envelope.ciphertext().body(), b"encrypted-backup-bytes");
         assert_eq!(envelope.recipients().len(), 1);
 
-        let connected = ok(
-            ConnectedYubiKey::new("12345678", PUBKEY_FP),
-            "connected yubikey",
-        );
+        let connected = ok(ConnectedYubiKey::new(PUBKEY_FP), "connected yubikey");
         let recipient = ok(envelope.resolve_recipient(&connected), "recipient match");
-        assert_eq!(recipient.yubikey_serial(), "12345678");
         assert_eq!(recipient.wrapped_dek(), b"wrapped-dek-bytes");
     }
 
@@ -968,12 +934,12 @@ mod tests {
         let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
 
         assert!(
-            envelope.ensure_spare_recipient_registered().is_err(),
-            "one-recipient envelope must not satisfy primary/spare recovery reachability"
+            envelope.ensure_recovery_recipient_count().is_err(),
+            "one-recipient envelope must not satisfy multi-recipient recovery reachability"
         );
     }
 
-    /// 新規 envelope 組み立てでは 1 recipient の BWS 永続化を domain rule で拒否する。
+    /// 新規 envelope 組み立てでは 1 recipient の Bitwarden vault 永続化を domain rule で拒否する。
     #[test]
     fn assemble_rejects_single_recipient_envelope() {
         let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
@@ -985,7 +951,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "new envelope assembly must require primary and spare recipients"
+            "new envelope assembly must require at least two recipients"
         );
     }
 
@@ -997,6 +963,30 @@ mod tests {
         let reparsed = ok(GpgBackupEnvelope::from_json(&json), "reparse");
 
         assert_eq!(envelope, reparsed);
+    }
+
+    /// JSON parse failure は下位 source を error chain に残し、secret/fingerprint 実値を context に含めない。
+    #[test]
+    fn invalid_json_preserves_parse_source_without_secret_values() {
+        let json = format!(r#"{{"metadata":{{"primary_fingerprint":"{PRIMARY_FP}"}},"#);
+        let error = match GpgBackupEnvelope::parse(&json) {
+            Ok(_) => panic!("invalid envelope JSON must fail"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+
+        assert!(
+            rendered.contains("failed to parse gpg backup envelope JSON"),
+            "top-level parse context must be preserved:\n{rendered}"
+        );
+        assert!(
+            error.chain().count() > 1,
+            "serde_json parse source must remain in the chain:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(PRIMARY_FP),
+            "parse error chain must not echo fixture fingerprint:\n{rendered}"
+        );
     }
 
     /// `version` が 1 以外の envelope は停止条件として拒否する。
@@ -1171,6 +1161,15 @@ mod tests {
             "unknown recipient field must be rejected"
         );
 
+        let serial = valid_envelope_json().replace(
+            "\"piv_slot\": \"82\",",
+            "\"yubikey_serial\": \"12345678\",\n                  \"piv_slot\": \"82\",",
+        );
+        assert!(
+            GpgBackupEnvelope::parse(&serial).is_err(),
+            "yubikey_serial must not be part of the envelope schema"
+        );
+
         let ciphertext = valid_envelope_json()
             .replace("\"ciphertext\": {", "\"ciphertext\": { \"extra\": \"x\",");
         assert!(
@@ -1207,33 +1206,18 @@ mod tests {
 
         assert!(
             text.contains("\"piv_slot\":\"82\""),
-            "to_json must emit piv_slot as the string \"82\": {text}"
+            "to_json must emit piv_slot as the string \"82\""
         );
         let reparsed = ok(GpgBackupEnvelope::parse(&text), "reparse");
         assert_eq!(envelope, reparsed);
     }
 
-    /// serial だけ一致し fingerprint が異なる場合は recipient を解決しない。
+    /// fingerprint が異なる場合は recipient を解決しない。
     #[test]
-    fn does_not_match_on_serial_only() {
+    fn does_not_match_on_different_fingerprint() {
         let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
         let other_fp = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-        let connected = ok(
-            ConnectedYubiKey::new("12345678", other_fp),
-            "connected yubikey",
-        );
-
-        assert!(envelope.resolve_recipient(&connected).is_err());
-    }
-
-    /// fingerprint だけ一致し serial が異なる場合は recipient を解決しない。
-    #[test]
-    fn does_not_match_on_fingerprint_only() {
-        let envelope = ok(GpgBackupEnvelope::parse(&valid_envelope_json()), "parse");
-        let connected = ok(
-            ConnectedYubiKey::new("87654321", PUBKEY_FP),
-            "connected yubikey",
-        );
+        let connected = ok(ConnectedYubiKey::new(other_fp), "connected yubikey");
 
         assert!(envelope.resolve_recipient(&connected).is_err());
     }
@@ -1247,10 +1231,10 @@ mod tests {
         assert_eq!(parsed.as_str(), PRIMARY_FP);
     }
 
-    /// 接続中 YubiKey の recipient identity が 10 進でない場合は照合入力構築で拒否する。
+    /// 接続中 YubiKey の recipient identity は serial なしで構築できる。
     #[test]
-    fn rejects_non_decimal_connected_serial() {
-        assert!(ConnectedYubiKey::new("12ab", PUBKEY_FP).is_err());
+    fn connected_identity_does_not_require_yubikey_serial() {
+        assert!(ConnectedYubiKey::new(PUBKEY_FP).is_ok());
     }
 
     /// 既定 envelope の `exported_at` 値を差し替えた JSON を返す。
@@ -1423,18 +1407,18 @@ mod tests {
         let too_short = "0123456789abcdef0123456789abcdef0123456";
         let too_long = "0123456789abcdef0123456789abcdef012345670";
         let non_hex = "0123456789abcdef0123456789abcdef0123456g";
-        for invalid in [
-            uppercase,
-            colon_separated,
-            with_space,
-            too_short,
-            too_long,
-            non_hex,
+        for (case, invalid) in [
+            ("uppercase", uppercase),
+            ("colon-separated", colon_separated),
+            ("with-space", with_space),
+            ("too-short", too_short),
+            ("too-long", too_long),
+            ("non-hex", non_hex),
         ] {
             let json = valid_envelope_json().replace(PRIMARY_FP, invalid);
             assert!(
                 GpgBackupEnvelope::parse(&json).is_err(),
-                "expected wire primary_fingerprint {invalid:?} to be rejected"
+                "expected wire primary_fingerprint case {case} to be rejected"
             );
         }
     }
@@ -1450,18 +1434,18 @@ mod tests {
         let too_short = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
         let too_long = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0";
         let non_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg";
-        for invalid in [
-            uppercase,
-            colon_separated,
-            with_space,
-            too_short,
-            too_long,
-            non_hex,
+        for (case, invalid) in [
+            ("uppercase", uppercase),
+            ("colon-separated", colon_separated),
+            ("with-space", with_space),
+            ("too-short", too_short),
+            ("too-long", too_long),
+            ("non-hex", non_hex),
         ] {
             let json = valid_envelope_json().replace(PUBKEY_FP, invalid);
             assert!(
                 GpgBackupEnvelope::parse(&json).is_err(),
-                "expected wire public_key_fingerprint {invalid:?} to be rejected"
+                "expected wire public_key_fingerprint case {case} to be rejected"
             );
         }
     }
@@ -1478,11 +1462,11 @@ mod tests {
 
         assert!(
             text.contains(PRIMARY_FP),
-            "to_json must emit primary_fingerprint unchanged: {text}"
+            "to_json must emit primary_fingerprint unchanged"
         );
         assert!(
             text.contains(PUBKEY_FP),
-            "to_json must emit public_key_fingerprint unchanged: {text}"
+            "to_json must emit public_key_fingerprint unchanged"
         );
         let reparsed = ok(GpgBackupEnvelope::parse(&text), "reparse");
         assert_eq!(envelope, reparsed);

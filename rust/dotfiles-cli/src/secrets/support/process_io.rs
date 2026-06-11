@@ -3,17 +3,27 @@
 //! この module は YubiKey や use case 名を知らず、端末 raw mode、stdin/stdout の TTY 判定、
 //! byte 読み取り、保護済み入力 buffer への移送だけを担当する。
 
-use std::io::{self, IsTerminal, Read, Write};
+#[cfg(any(test, not(feature = "secrets-internal-test-stub")))]
+use std::io::Read;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use std::io::Write;
+use std::io::{self, IsTerminal};
 
-use anyhow::{Context, bail};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use anyhow::Context;
+use anyhow::bail;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use filedescriptor::{AsRawFileDescriptor, FileDescriptor, POLLERR, POLLHUP, POLLIN, poll, pollfd};
 
 use crate::Result;
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use super::protection::{ProtectedSecret, SecretSession, buffer::ProtectedInputBuffer};
 
 /// 制御端末優先の reader を返し、pipe 実行時も対話入力境界を維持する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 fn stdin_or_tty_reader() -> Result<FileDescriptor> {
     if io::stdin().is_terminal() {
         FileDescriptor::dup(&io::stdin()).map_err(Into::into)
@@ -27,14 +37,8 @@ fn stdin_or_tty_reader() -> Result<FileDescriptor> {
     }
 }
 
-/// 現在の stdin が terminal に接続されているかを返す。
-///
-/// feature 固有の判断は行わず、adapter が端末入力を許可できる process 状態だけを公開する。
-pub(crate) fn stdin_is_terminal() -> bool {
-    io::stdin().is_terminal()
-}
-
 /// hidden input reader の readable 状態を待つ。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 fn read_hidden_byte(reader: &mut FileDescriptor, byte: &mut [u8; 1]) -> Result<usize> {
     loop {
         let mut fds = [pollfd {
@@ -56,6 +60,7 @@ fn read_hidden_byte(reader: &mut FileDescriptor, byte: &mut [u8; 1]) -> Result<u
 /// 非表示入力を raw mode で読み取り、入力 bytes を保護メモリのまま返す。
 ///
 /// backspace と Ctrl-C を process I/O 境界で吸収する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) fn read_hidden_line(
     prompt: &str,
     max_len: usize,
@@ -93,24 +98,11 @@ pub(crate) fn read_hidden_line(
     input.into_protected_secret_line(&session, max_len, too_long_message)
 }
 
-/// visible 入力を保護バッファへ直接取り込み、平文コピーを残さない。
-pub(crate) fn read_visible_line(
-    prompt: &str,
-    max_len: usize,
-    too_long_message: &'static str,
-) -> Result<ProtectedSecret> {
-    let session = SecretSession::start()?;
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    let mut reader = stdin_or_tty_reader()?;
-    let input = ProtectedInputBuffer::read_line_from(&mut reader, max_len, &session)?;
-    input.into_protected_secret_line(&session, max_len, too_long_message)
-}
-
 /// 制御端末から非秘匿の 1 行を可視入力（通常の echo つき cooked 入力）で読み取る。
 ///
 /// `password-store-remote` の clone URL のように秘密情報でない値の対話入力に使う。raw mode や保護 buffer は
 /// 使わず、利用者が打った文字は端末が echo する。返値は末尾改行を除いた平文 `String` で、保護義務を負わない。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) fn read_visible_plain_line(
     prompt: &str,
     max_len: usize,
@@ -125,20 +117,6 @@ pub(crate) fn read_visible_plain_line(
     Ok(line)
 }
 
-/// stdin（pipe / redirect）から非秘匿の 1 行を読み取り、末尾改行を除いた平文 `String` を返す。
-///
-/// stdin が terminal の場合は pipe 入力を要求して停止する。YubiKey OTP のように secret ではない値の
-/// 非対話入力に使い、保護 buffer は使わない。
-pub(crate) fn read_stdin_plain_line(
-    max_len: usize,
-    too_long_message: &'static str,
-) -> Result<String> {
-    if io::stdin().is_terminal() {
-        bail!("stdin URL input requires pipe or redirect input");
-    }
-    read_plain_line_from(&mut io::stdin(), max_len, too_long_message)
-}
-
 /// reader から改行までの 1 行を平文 `String` として読み取る共通実装。
 ///
 /// `max_len` を超えた時点で `too_long_message` を返して停止する。行末は LF（`\n`）・CR（`\r`）・CRLF
@@ -146,6 +124,7 @@ pub(crate) fn read_stdin_plain_line(
 /// CRLF として一緒に消費して reader に余分な `\n` を残さない（`\r` の後が `\n` 以外の byte の場合、本 primitive は
 /// 1 行のみを読むためその 1 byte は読み捨てる）。行末文字自体は返値に含めない。上限超過文言は feature 固有語彙の
 /// ため caller（adapter）から受け取り、support には焼き込まない。secret ではない値だけに使う。
+#[cfg(any(test, not(feature = "secrets-internal-test-stub")))]
 fn read_plain_line_from(
     reader: &mut impl Read,
     max_len: usize,
@@ -177,19 +156,6 @@ fn read_plain_line_from(
     Ok(line)
 }
 
-/// stdin 1 行を読み取り、末尾改行を除いた保護済み secret を返す。
-pub(crate) fn read_stdin_line(
-    max_len: usize,
-    too_long_message: &'static str,
-) -> Result<ProtectedSecret> {
-    if io::stdin().is_terminal() {
-        bail!("stdin secret input requires pipe or redirect input");
-    }
-    let session = SecretSession::start()?;
-    let input = ProtectedInputBuffer::read_line_from(io::stdin(), max_len, &session)?;
-    input.into_protected_secret_line(&session, max_len, too_long_message)
-}
-
 /// terminal 直書きを拒否し、caller supplied secret writer を stdout redirect 境界で実行する。
 pub(crate) fn write_secret_stdout_with(
     write_secret: impl FnOnce(&mut std::io::StdoutLock<'_>) -> Result<()>,
@@ -209,6 +175,7 @@ mod tests {
 
     const TOO_LONG: &str = "input too long";
 
+    /// LF 終端の入力では行本体だけを返し、後続 bytes を reader に残す。
     #[test]
     fn reads_line_terminated_by_lf() {
         let mut reader: &[u8] = b"https://example.test/repo.git\nnext";
@@ -218,6 +185,7 @@ mod tests {
         assert_eq!(reader, b"next");
     }
 
+    /// 単独 CR 終端の入力では CR を行末として扱い、返値に含めない。
     #[test]
     fn reads_line_terminated_by_lone_cr() {
         let mut reader: &[u8] = b"value\rnext";
@@ -225,6 +193,7 @@ mod tests {
         assert_eq!(line, "value");
     }
 
+    /// CRLF 終端の入力では CRLF 全体を 1 改行として消費し、余分な LF を残さない。
     #[test]
     fn crlf_is_consumed_as_single_newline_without_residual_lf() {
         let mut reader: &[u8] = b"value\r\nnext";
@@ -234,6 +203,7 @@ mod tests {
         assert_eq!(reader, b"next");
     }
 
+    /// 終端なしの入力では EOF までの内容を 1 行として返す。
     #[test]
     fn line_without_terminator_returns_until_eof() {
         let mut reader: &[u8] = b"value";
@@ -241,6 +211,7 @@ mod tests {
         assert_eq!(line, "value");
     }
 
+    /// 最大長を超えた入力は caller supplied message で失敗する。
     #[test]
     fn exceeding_max_len_fails() {
         let mut reader: &[u8] = b"0123456789\n";

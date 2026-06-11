@@ -1,6 +1,6 @@
 //! 入力 bytes の読み込み容量と zeroize 対象 allocation を同じ所有値で管理する buffer。
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 use anyhow::bail;
 use zeroize::{Zeroize, Zeroizing};
@@ -30,41 +30,6 @@ impl ProtectedInputBuffer {
             len: 0,
             lock,
         })
-    }
-
-    /// reader から行入力用の bytes を読み込む。
-    ///
-    /// 末尾改行を除いた後に上限判定できるよう、CRLF 分の余剰容量を確保する。
-    pub(crate) fn read_line_from(
-        mut reader: impl Read,
-        limit: usize,
-        session: &SecretSession,
-    ) -> Result<Self> {
-        let read_limit = limit + 3;
-        let mut buffer = Self::new(read_limit, session)?;
-        buffer.read_line_capped_from(&mut reader, read_limit)?;
-        Ok(buffer)
-    }
-
-    /// reader から 1 行ぶんだけ読み込み、最初の LF か `cap` 到達で停止する。
-    ///
-    /// この関数は停止地点より後ろの bytes を読み捨てず reader 側へ残す。caller は trailing bytes が
-    /// 未読のまま残り得る前提で、その後の再読込や追加 prompt の境界を管理する責務を持つ。
-    fn read_line_capped_from(&mut self, reader: &mut impl Read, cap: usize) -> io::Result<()> {
-        let target_len = cap.min(self.buffer.len());
-        let mut byte = [0u8; 1];
-        while self.len < target_len {
-            let read = reader.read(&mut byte)?;
-            if read == 0 {
-                break;
-            }
-            self.buffer[self.len] = byte[0];
-            self.len += 1;
-            if matches!(byte[0], b'\n') {
-                break;
-            }
-        }
-        Ok(())
     }
 
     /// 読み込み済み範囲を byte slice として返す。
@@ -155,7 +120,7 @@ impl Write for ProtectedInputBuffer {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Write};
+    use std::io::Write;
 
     use crate::Result;
     use sha2::{Digest, Sha256};
@@ -173,7 +138,8 @@ mod tests {
     #[test]
     fn secret_line_accepts_exact_limit_with_lf() -> Result<()> {
         let session = crate::secrets::support::protection::SecretSession::start()?;
-        let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\n"), 3, &session)?;
+        let mut input = ProtectedInputBuffer::new(5, &session)?;
+        input.write_all(b"abc\n")?;
         let secret = input.into_protected_secret_line(&session, 3, "too large")?;
 
         secret.with_secret(|secret| assert_secret_bytes_eq(secret, b"abc", "lf secret"));
@@ -183,7 +149,8 @@ mod tests {
     #[test]
     fn secret_line_accepts_exact_limit_with_crlf() -> Result<()> {
         let session = crate::secrets::support::protection::SecretSession::start()?;
-        let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abc\r\n"), 3, &session)?;
+        let mut input = ProtectedInputBuffer::new(5, &session)?;
+        input.write_all(b"abc\r\n")?;
         let secret = input.into_protected_secret_line(&session, 3, "too large")?;
 
         secret.with_secret(|secret| assert_secret_bytes_eq(secret, b"abc", "crlf secret"));
@@ -193,22 +160,11 @@ mod tests {
     #[test]
     fn secret_line_rejects_body_past_limit_after_trim() -> Result<()> {
         let session = crate::secrets::support::protection::SecretSession::start()?;
-        let input = ProtectedInputBuffer::read_line_from(Cursor::new(b"abcd\n"), 3, &session)?;
+        let mut input = ProtectedInputBuffer::new(5, &session)?;
+        input.write_all(b"abcd\n")?;
         let err = input.into_protected_secret_line(&session, 3, "too large");
 
         assert!(err.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn read_line_from_stops_at_first_newline() -> Result<()> {
-        let session = crate::secrets::support::protection::SecretSession::start()?;
-        let mut cursor = Cursor::new(b"first\nsecond\n");
-        let first = ProtectedInputBuffer::read_line_from(&mut cursor, 16, &session)?;
-        let second = ProtectedInputBuffer::read_line_from(&mut cursor, 16, &session)?;
-
-        assert_eq!(first.as_slice(), b"first\n");
-        assert_eq!(second.as_slice(), b"second\n");
         Ok(())
     }
 

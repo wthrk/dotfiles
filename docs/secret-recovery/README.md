@@ -8,6 +8,6 @@
 - [secret-handling.md](secret-handling.md#secret-handling-policy): secret の保護境界、protection 内操作、外部処理境界、レビュー観点を定義する。
 - [secret-recovery-spec.md](secret-recovery-spec.md): 秘密情報復旧機能の仕様を定義する。
 - [initial-provisioning-runbook.md](initial-provisioning-runbook.md): 初期プロビジョニングと新規マシン復旧の実行手順を案内する。
-- [bitwarden-secrets-manager-design.md](bitwarden-secrets-manager-design.md): Bitwarden Secrets Manager 取得経路の設計を定義する。
+- [bitwarden-personal-vault-design.md](bitwarden-personal-vault-design.md): Bitwarden 個人 vault 取得経路の設計を定義する。
 - [gnupg-ssh-design.md](gnupg-ssh-design.md): GPG 復元と gpg-agent SSH support 経路の設計を定義する。
 - [yubikey-secret-storage-design.md](yubikey-secret-storage-design.md): YubiKey 保存方式の設計を定義する。

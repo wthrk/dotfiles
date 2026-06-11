@@ -18,8 +18,8 @@ pub(crate) fn run_setup_with<D, S>(
     storage: &mut S,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    S: ports::SecretStoragePort,
+    D: ports::yubikey::DeviceSerialPort,
+    S: ports::yubikey::SecretStoragePort,
 {
     let _ = command;
     let serial = device.resolve_device_serial()?;
@@ -30,6 +30,7 @@ where
     storage.finalize_secret_storage_setup(serial, intent)
 }
 
+/// setup use case が device 解決、domain intent、storage 初期化の順序だけを担うことを検証する。
 #[cfg(test)]
 mod tests {
     use crate::secrets::{
@@ -52,10 +53,11 @@ mod tests {
         }
     }
 
+    /// serial 解決後に setup inspection から intent を作り、initialize/finalize を順に呼ぶ。
     #[test]
     fn setup_initializes_storage_after_serial_resolution() -> crate::Result<()> {
-        let mut device = ports::MockDeviceSerialPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut device = ports::yubikey::MockDeviceSerialPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         let mut sequence = mockall::Sequence::new();
         device
             .expect_resolve_device_serial()

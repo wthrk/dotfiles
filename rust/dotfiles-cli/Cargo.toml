@@ -12,6 +12,11 @@ path = "src/lib.rs"
 name = "dotfiles"
 path = "src/main.rs"
 
+[[test]]
+name = "secrets_cli"
+path = "tests/secrets_cli.rs"
+required-features = ["secrets-internal-test-stub"]
+
 [lints]
 workspace = true
 
@@ -28,7 +33,11 @@ secrets-internal-test-stub = []
 aes-gcm.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
-bitwarden.workspace = true
+bitwarden-api-api.workspace = true
+bitwarden-core.workspace = true
+bitwarden-crypto.workspace = true
+bitwarden-vault.workspace = true
+chrono.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true

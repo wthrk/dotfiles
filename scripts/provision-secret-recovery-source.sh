@@ -4,15 +4,21 @@
 #
 # 既存設定があれば検証して使い、未設定の password-store はローカル GPG secret key を
 # 解決または作成して pass init する。複数候補で一意に決められない場合は停止する。
-# password-store の GitHub remote 作成/設定/push、GitHub SSH 鍵登録、
-# BWS project / 復旧用 secret 登録、YubiKey への復旧用 bws-access-token 保存を扱う。
-# `gpg-secret-key-backup` は既存 2 recipient envelope の照合だけを行い、空の BWS から初回 envelope を
-# 作成して初期プロビジョニングを完了させる script ではない。
-# BWS project `dotfiles-secret-recovery` は設定済みなら使い、未設定なら dotfiles CLI が作成する。
-# YubiKey は 1 本だけ接続されている場合だけ dotfiles CLI が対象にし、複数本なら停止する。
+# password-store の GitHub remote 作成/設定/push、GitHub SSH 鍵登録、secret-recovery の
+# personal vault/YubiKey 登録 command 起動までを扱う。この script は primary YubiKey と
+# `password-store-remote` の登録までを実行し、spare 登録後に operator が
+# `gpg-secret-key-backup` envelope を個人 Bitwarden vault へ投入して
+# `dotfiles secrets gpg-backup register` で監査する。
+#
+# 事前投入 gate:
+# - この script と `dotfiles secrets yubikey enroll-spare` の完了後に、個人 Bitwarden vault
+#   item `gpg-secret-key-backup` へ 2 recipient 以上を含む encrypted envelope を投入する。
+# - この script は envelope 本文、fingerprint、URL、secret を shell argv/stdin/env で受け取らず、
+#   BWS / bw CLI login / unlock / session / project / organization 経路も使わない。
+# - gate は、この script の外で実行する `dotfiles secrets gpg-backup register` が既存 item を照合して監査する。
 #
 # 入力規約:
-# - この shell script は provisioning 入力値（BWS token、YubiKey serial、password-store remote URL、
+# - この shell script は provisioning 入力値（vault credential、password-store remote URL、
 #   GPG primary fingerprint、YubiKey 保存 secret など）を read / pipe / argv / 環境変数で受け取らない。
 # - provisioning 入力値を `dotfiles` CLI へ値付き argv / pipe / stdin で中継しない。
 # - `dotfiles` CLI が必要とする入力や一意解決は、CLI 側の prompt/input port または adapter に委譲する。
@@ -40,12 +46,18 @@ warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die()   { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "必要なコマンドが見つかりません: $1"; }
 mask_fingerprint() {
-  local fingerprint="$1"
-  if [ "${#fingerprint}" -le 12 ]; then
-    printf '[masked]'
-  else
-    printf '%s...%s' "${fingerprint:0:8}" "${fingerprint: -4}"
+  printf '[redacted fingerprint]'
+}
+run_gpg_quick() {
+  local stderr_file
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/dotfiles-gpg.XXXXXX")" \
+    || die "GPG 診断出力の一時退避先を作成できません"
+  if gpg "$@" 2>"$stderr_file"; then
+    rm -f "$stderr_file"
+    return 0
   fi
+  rm -f "$stderr_file"
+  return 1
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,6 +90,8 @@ if [ "$USE_REPO_HEAD" -eq 1 ]; then
 else
   require dotfiles
 fi
+
+warn "後続 gate: この script と enroll-spare の後、個人 Bitwarden vault item 'gpg-secret-key-backup' に 2 recipient 以上の encrypted envelope を投入し、dotfiles secrets gpg-backup register で監査してください。"
 
 run_dotfiles() {
   local status
@@ -122,70 +136,122 @@ password_store_dir() {
 password_store_gpg_id_file() {
   printf '%s/.gpg-id' "$(password_store_dir)"
 }
+emit_gpg_secret_key_record() {
+  local fingerprint="$1"
+  local uid="$2"
+  local subkey_capabilities="$3"
+  [ -n "$fingerprint" ] || return 0
+  printf '%s\t%s\t%s\n' "$fingerprint" "$uid" "$subkey_capabilities"
+}
+gpg_secret_key_records() {
+  local eligible=0
+  local fingerprint=""
+  local uid=""
+  local subkey_capabilities=""
+  local line fields kind validity capabilities
+  while IFS= read -r line; do
+    IFS=: read -r -a fields <<<"$line"
+    kind="${fields[0]:-}"
+    validity="${fields[1]:-}"
+    capabilities="${fields[11]:-}"
+    case "$kind" in
+      sec)
+        emit_gpg_secret_key_record "$fingerprint" "$uid" "$subkey_capabilities"
+        fingerprint=""
+        uid=""
+        subkey_capabilities=""
+        eligible=0
+        if [[ "$validity" != *r* && "$validity" != *e* && "$validity" != *d* && "$capabilities" != *D* ]]; then
+          eligible=1
+        fi
+        ;;
+      fpr)
+        if [ "$eligible" -eq 1 ] && [ -z "$fingerprint" ]; then
+          fingerprint="${fields[9]:-}"
+        fi
+        ;;
+      uid)
+        if [ "$eligible" -eq 1 ] && [ -z "$uid" ]; then
+          uid="${fields[9]:-}"
+        fi
+        ;;
+      ssb)
+        if [ "$eligible" -eq 1 ] \
+          && [[ "$validity" != *r* && "$validity" != *e* && "$validity" != *d* && "$capabilities" != *D* ]]; then
+          subkey_capabilities="${subkey_capabilities}${capabilities}"
+        fi
+        ;;
+    esac
+  done < <(gpg --list-secret-keys --with-colons --fingerprint 2>/dev/null)
+  emit_gpg_secret_key_record "$fingerprint" "$uid" "$subkey_capabilities"
+}
+gpg_record_for_recipient() {
+  local recipient="$1"
+  local matched_fingerprint=""
+  local matched_uid=""
+  local matched_capabilities=""
+  local fingerprint uid capabilities
+  while IFS=$'\t' read -r fingerprint uid capabilities; do
+    [ -n "$fingerprint" ] || continue
+    if [ "$recipient" = "$fingerprint" ] \
+      || [ "$recipient" = "${fingerprint: -16}" ] \
+      || [ "$recipient" = "$uid" ] \
+      || [[ -n "$uid" && "$uid" == *"$recipient"* ]]; then
+      if [ -n "$matched_fingerprint" ] && [ "$matched_fingerprint" != "$fingerprint" ]; then
+        return 2
+      fi
+      matched_fingerprint="$fingerprint"
+      matched_uid="$uid"
+      matched_capabilities="$capabilities"
+    fi
+  done < <(gpg_secret_key_records)
+  [ -n "$matched_fingerprint" ] || return 1
+  printf '%s\t%s\t%s\n' "$matched_fingerprint" "$matched_uid" "$matched_capabilities"
+}
 recipient_secret_key_fingerprint() {
-  gpg --list-secret-keys --with-colons --fingerprint "$1" 2>/dev/null \
-    | awk -F: '
-        /^sec:/ {
-          candidate = ($1 == "sec" && $2 !~ /[red]/ && index($12, "D") == 0)
-          next
-        }
-        /^fpr:/ && candidate {
-          print $10
-          exit
-        }
-      '
+  local record
+  record="$(gpg_record_for_recipient "$1")" || return 1
+  printf '%s' "${record%%$'\t'*}"
 }
 gpg_uid_for_fingerprint() {
-  gpg --list-secret-keys --with-colons "$1" 2>/dev/null \
-    | awk -F: '/^uid:/{ print $10; exit }'
+  local record rest uid
+  record="$(gpg_record_for_recipient "$1")" || return 1
+  rest="${record#*$'\t'}"
+  uid="${rest%%$'\t'*}"
+  printf '%s' "$uid"
+}
+gpg_unique_uid_for_fingerprint() {
+  local fingerprint="$1" target_uid other_fingerprint other_uid capabilities
+  target_uid="$(gpg_uid_for_fingerprint "$fingerprint")" || return 1
+  [ -n "$target_uid" ] \
+    || die "GPG key の UID を解決できません"
+  while IFS=$'\t' read -r other_fingerprint other_uid capabilities; do
+    [ -n "$other_fingerprint" ] || continue
+    if [ "$other_uid" = "$target_uid" ] && [ "$other_fingerprint" != "$fingerprint" ]; then
+      die "同一 UID を持つ GPG secret key が複数存在するため、UID 経由の GPG 操作を安全に実行できません"
+    fi
+  done < <(gpg_secret_key_records)
+  printf '%s' "$target_uid"
 }
 gpg_secret_key_fingerprints() {
-  gpg --list-secret-keys --with-colons --fingerprint 2>/dev/null \
-    | awk -F: '
-        /^sec:/ {
-          want = ($1 == "sec" && $2 !~ /[red]/ && index($12, "D") == 0)
-          next
-        }
-        /^fpr:/ && want {
-          print $10
-          want = 0
-        }
-      '
+  local fingerprint uid capabilities
+  while IFS=$'\t' read -r fingerprint uid capabilities; do
+    [ -n "$fingerprint" ] || continue
+    printf '%s\n' "$fingerprint"
+  done < <(gpg_secret_key_records)
 }
 assert_eligible_gpg_primary() {
   local fingerprint="$1"
-  gpg --list-secret-keys --with-colons --fingerprint "$fingerprint" 2>/dev/null \
-    | awk -F: -v fpr="$fingerprint" '
-        /^sec:/ {
-          eligible = ($1 == "sec" && $2 !~ /[red]/ && index($12, "D") == 0)
-          next
-        }
-        /^fpr:/ && $10 == fpr {
-          found = 1
-          exit eligible ? 0 : 2
-        }
-        END {
-          if (!found) {
-            exit 1
-          }
-        }
-      ' \
+  gpg_record_for_recipient "$fingerprint" >/dev/null \
     || die "GPG secret key が revoked / expired / disabled、またはローカルで使用不能です: $(mask_fingerprint "$fingerprint")"
 }
 have_eligible_subkey_capability() {
   local fingerprint="$1"
   local capability="$2"
-  gpg --list-secret-keys --with-colons "$fingerprint" 2>/dev/null \
-    | awk -F: -v c="$capability" '
-        /^ssb:/ {
-          if ($1 == "ssb" && $2 !~ /[red]/ && index($12, "D") == 0 && index($12, c)) {
-            found = 1
-          }
-        }
-        END {
-          exit found ? 0 : 1
-        }
-      '
+  local record capabilities
+  record="$(gpg_record_for_recipient "$fingerprint")" || return 1
+  capabilities="${record##*$'\t'}"
+  [[ "$capabilities" == *"$capability"* ]]
 }
 create_gpg_secret_key() {
   local name email uid fingerprint
@@ -200,7 +266,7 @@ create_gpg_secret_key() {
 
   uid="${name} <${email}>"
   log "password-store 用 GPG secret key を作成" >&2
-  gpg --quick-generate-key "$uid" "$GPG_ALGO_PRIMARY" cert never \
+  run_gpg_quick --quick-generate-key "$uid" "$GPG_ALGO_PRIMARY" cert never \
     || die "GPG secret key の作成に失敗しました"
   fingerprint="$(recipient_secret_key_fingerprint "$uid")"
   [ -n "$fingerprint" ] \
@@ -240,7 +306,7 @@ verify_password_store_recipients() {
     case "$recipient" in \#*) continue ;; esac
     fingerprint="$(recipient_secret_key_fingerprint "$recipient")"
     [ -n "$fingerprint" ] \
-      || die "password-store recipient の使用可能な秘密鍵がローカルにありません。import/generate または revoked / expired / disabled 状態の解消が必要です: $recipient"
+      || die "password-store recipient の使用可能な秘密鍵がローカルにありません。import/generate または revoked / expired / disabled 状態の解消が必要です"
     assert_eligible_gpg_primary "$fingerprint"
     if [ -z "$primary_fingerprint" ]; then
       primary_fingerprint="$fingerprint"
@@ -253,7 +319,7 @@ verify_password_store_recipients() {
   printf '%s' "$primary_fingerprint"
 }
 ensure_password_store_initialized() {
-  local gpg_id_file fingerprint
+  local gpg_id_file fingerprint key_ref
   gpg_id_file="$(password_store_gpg_id_file)"
   if [ -s "$gpg_id_file" ]; then
     verify_password_store_recipients
@@ -263,9 +329,12 @@ ensure_password_store_initialized() {
   fingerprint="$(select_gpg_secret_key)"
   [ -n "$fingerprint" ] \
     || die "password-store 用 GPG secret key を解決できません"
+  key_ref="$(gpg_unique_uid_for_fingerprint "$fingerprint")"
+  [ -n "$key_ref" ] \
+    || die "password-store 用 GPG key の UID を解決できません"
   log "password-store が未初期化のため pass init を実行" >&2
   mkdir -p "$PASSWORD_STORE_ROOT"
-  pass init "$fingerprint" >/dev/null 2>&1 \
+  pass init "$key_ref" >/dev/null 2>&1 \
     || die "pass init に失敗しました"
   verify_password_store_recipients
 }
@@ -311,12 +380,10 @@ resolve_password_store_remote() {
   if [ -n "$current_origin" ]; then
     PASS_REPO="$(github_repo_from_clone_url "$current_origin")" \
       || die "password-store の既存 origin から GitHub repository を解決できません"
-    PASS_GIT_REMOTE_URL="$current_origin"
-    PASS_CLONE_URL="$(github_ssh_clone_url_for_repo "$PASS_REPO")"
+    PASS_HAS_ORIGIN=1
   else
     PASS_REPO="${GH_LOGIN}/password-store"
-    PASS_CLONE_URL="git@github.com:${PASS_REPO}.git"
-    PASS_GIT_REMOTE_URL="$PASS_CLONE_URL"
+    PASS_HAS_ORIGIN=0
   fi
 }
 ensure_password_store_remote() {
@@ -328,7 +395,8 @@ ensure_password_store_remote() {
     [ "$current_repo" = "$PASS_REPO" ] \
       || die "password-store の origin remote が登録対象 repository と矛盾しています。既存 origin は上書きしません"
   else
-    pass git remote add origin "$PASS_GIT_REMOTE_URL"
+    [ "${REPO_EXISTS:-0}" -eq 0 ] \
+      || die "password-store の origin remote が未設定です。既存 repository へ push する前に origin を手動設定してください"
   fi
 }
 remote_repo_from_name() {
@@ -354,12 +422,12 @@ verify_existing_upstream_push_target() {
 PRIMARY_FINGERPRINT="$(ensure_password_store_initialized)"
 [ -n "${PRIMARY_FINGERPRINT:-}" ] \
   || die "password-store 用 primary fingerprint を解決できません"
-GPG_OWNER="$(gpg_uid_for_fingerprint "$PRIMARY_FINGERPRINT")"
+GPG_OWNER="$(gpg_unique_uid_for_fingerprint "$PRIMARY_FINGERPRINT")"
 log "password-store recipient の秘密鍵を使用"
 assert_eligible_gpg_primary "$PRIMARY_FINGERPRINT"
-have_eligible_subkey_capability "$PRIMARY_FINGERPRINT" e || { log "encryption subkey を追加"; gpg --quick-add-key "${PRIMARY_FINGERPRINT}" "$GPG_ALGO_ENCRYPT" encrypt never; }
-have_eligible_subkey_capability "$PRIMARY_FINGERPRINT" a || { log "authentication subkey を追加"; gpg --quick-add-key "${PRIMARY_FINGERPRINT}" "$GPG_ALGO_PRIMARY" auth never; }
-have_eligible_subkey_capability "$PRIMARY_FINGERPRINT" s || { log "signing subkey を追加"; gpg --quick-add-key "${PRIMARY_FINGERPRINT}" "$GPG_ALGO_PRIMARY" sign never; }
+have_eligible_subkey_capability "$PRIMARY_FINGERPRINT" e || { log "encryption subkey を追加"; run_gpg_quick --quick-add-key "$GPG_OWNER" "$GPG_ALGO_ENCRYPT" encrypt never || die "GPG encryption subkey の追加に失敗しました"; }
+have_eligible_subkey_capability "$PRIMARY_FINGERPRINT" a || { log "authentication subkey を追加"; run_gpg_quick --quick-add-key "$GPG_OWNER" "$GPG_ALGO_PRIMARY" auth never || die "GPG authentication subkey の追加に失敗しました"; }
+have_eligible_subkey_capability "$PRIMARY_FINGERPRINT" s || { log "signing subkey を追加"; run_gpg_quick --quick-add-key "$GPG_OWNER" "$GPG_ALGO_PRIMARY" sign never || die "GPG signing subkey の追加に失敗しました"; }
 log "GPG 鍵構成を確認済み"
 warn "この鍵のバックアップと revocation certificate を別経路で保管してください。"
 
@@ -371,15 +439,23 @@ gh ssh-key list 2>/dev/null | grep -qF "$(printf '%s' "$SSH_PUB" | awk '{print $
 
 # ── 3. private password-store repository の remote 設定・push ──
 resolve_password_store_remote
-gh repo view "$PASS_REPO" >/dev/null 2>&1 || {
+REPO_EXISTS=1
+gh repo view "$PASS_REPO" >/dev/null 2>&1 || REPO_EXISTS=0
+if [ "$REPO_EXISTS" -eq 1 ] && [ "${PASS_HAS_ORIGIN:-0}" -eq 0 ]; then
+  die "password-store の origin remote が未設定です。既存 GitHub repository へ push する前に origin を手動設定してください"
+fi
+if [ "$REPO_EXISTS" -eq 0 ] && [ "${PASS_HAS_ORIGIN:-0}" -eq 1 ]; then
   log "GitHub に private password-store repository を作成"
   gh repo create "$PASS_REPO" --private --disable-issues --disable-wiki >/dev/null 2>&1 \
     || die "GitHub private password-store repository の作成に失敗しました"
-}
-REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate 2>/dev/null)" \
-  || die "GitHub password-store repository の visibility 確認に失敗しました"
-[ "$REPO_IS_PRIVATE" = "true" ] \
-  || die "GitHub password-store repository が private ではありません。private repository を指定してください"
+  REPO_EXISTS=1
+fi
+if [ "$REPO_EXISTS" -eq 1 ]; then
+  REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate 2>/dev/null)" \
+    || die "GitHub password-store repository の visibility 確認に失敗しました"
+  [ "$REPO_IS_PRIVATE" = "true" ] \
+    || die "GitHub password-store repository が private ではありません。private repository を指定してください"
+fi
 PASSWORD_STORE_GIT_CREATED=0
 if [ ! -d "$PASSWORD_STORE_ROOT/.git" ]; then
   log "password-store を Git repository として初期化して remote へ push"
@@ -396,10 +472,20 @@ else
   pass git commit -m "Initialize password-store" >/dev/null 2>&1 \
     || die "password-store Git commit に失敗しました。user.name/user.email/signing/hook 設定を確認してください"
 fi
+PUSH_COMPLETED=0
+if [ "$REPO_EXISTS" -eq 0 ]; then
+  log "GitHub に private password-store repository を作成して origin 設定と push を実行"
+  gh repo create "$PASS_REPO" --private --disable-issues --disable-wiki --source "$PASSWORD_STORE_ROOT" --remote origin --push >/dev/null 2>&1 \
+    || die "GitHub private password-store repository の作成または push に失敗しました"
+  PUSH_COMPLETED=1
+  REPO_EXISTS=1
+fi
 if [ "$PASSWORD_STORE_GIT_CREATED" -eq 1 ]; then
   pass git branch -M main >/dev/null 2>&1 || true
-  pass git push -u origin main >/dev/null 2>&1 \
-    || die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
+  if [ "$PUSH_COMPLETED" -eq 0 ]; then
+    pass git push -u origin main >/dev/null 2>&1 \
+      || die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
+  fi
 else
   CURRENT_BRANCH="$(pass git branch --show-current 2>/dev/null || true)"
   [ -n "$CURRENT_BRANCH" ] \
@@ -414,20 +500,17 @@ else
 fi
 confirm_password_store_primary_fingerprint
 
-# ── 4. BWS への復旧用 secret 登録 ──
-log "BWS に password-store-remote を登録"
+# ── 4. secret-recovery provisioning command を起動 ──
+log "YubiKey へ bootstrap secret を登録"
+run_dotfiles secrets yubikey enroll-primary
+
+log "Bitwarden vault へ password-store-remote を登録または既存照合"
 run_dotfiles secrets pass-remote register
 
-log "BWS の gpg-secret-key-backup 既存 envelope を照合"
-log "gpg-secret-key-backup は primary/spare 2 recipient 以上の既存 envelope だけを成功扱いにします"
-run_dotfiles secrets gpg-backup register
-
-# ── 5. YubiKey への復旧用 BWS read token 保存 ──
-log "復旧用 bws-access-token を YubiKey に保存"
-run_dotfiles secrets yubikey put bws-access-token
+warn "この script は gpg-secret-key-backup envelope を作成・投入・照合しません。enroll-spare の後に runbook の gate を満たし、dotfiles secrets gpg-backup register を実行してください。"
 
 # ── 注意: 各サービスの YubiKey 物理登録 ──
 warn "必要に応じて次を各サービスの UI / 管理画面で確認してください（script は途中停止しません）:
-    - Bitwarden Password Manager: アカウント 2FA に primary/spare の YubiKey を登録。recovery code 保管。
+    - Bitwarden 個人 account: アカウント 2FA に primary/spare の YubiKey を登録。recovery code 保管。
     - GitHub: security key として primary/spare を登録。
     - Google / Apple 等: primary/spare を FIDO2/passkey 登録。recovery code 保管。"

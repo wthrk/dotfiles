@@ -19,7 +19,7 @@ use crate::Result;
 pub trait PasswordStorePort {
     /// `~/.password-store` が既に存在するかを確認する。
     ///
-    /// 設計（spec L174 / 停止条件 L212）は clone 前に `~/.password-store` 不存在を要求する。
+    /// この実装は既存 store の上書きを防ぐため clone 前に home 直下の `.password-store` を確認する。
     /// implementor は path の存在有無だけを返し、停止判断は caller（application）が行う。
     fn password_store_exists(&self) -> Result<bool>;
 
@@ -34,7 +34,7 @@ pub trait PasswordStorePort {
     /// 設定済み password-store の `origin` remote URL を観測する。
     ///
     /// provisioning の `password-store-remote` 登録では、既存 local remote があれば input fallback
-    /// より優先する。implementor は Git/store backend から origin URL を取得して返すだけにし、BWS への
+    /// より優先する。implementor は Git/store backend から origin URL を取得して返すだけにし、Bitwarden vault への
     /// create/use 分岐や URL 妥当性の判定は caller/domain 側で行う。
     fn configured_origin_remote(&self) -> Result<Option<String>>;
 }

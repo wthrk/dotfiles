@@ -62,8 +62,8 @@ impl GitClonePort for GitCloneAdapter {
 
 /// clone 先と filesystem 観測対象の `~/.password-store` path を `$HOME` から解決する。
 ///
-/// 設計（spec L174）は store path を `~/.password-store` に固定する。clone adapter と store adapter が
-/// 同一 path を観測するための共有 path 解決であり、business 判断は持たない filesystem primitive である。
+/// この実装では clone adapter と store adapter が同一の home 直下 `.password-store` path を観測する。
+/// そのための共有 path 解決であり、business 判断は持たない filesystem primitive である。
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 fn password_store_path() -> Result<std::path::PathBuf> {
     use anyhow::Context;

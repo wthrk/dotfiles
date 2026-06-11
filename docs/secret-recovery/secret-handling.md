@@ -6,7 +6,7 @@
 
 この repository では、認証、復号、署名、復旧、外部サービスアクセス、またはそれらの再生成に使える値を secret として扱う。平文そのものだけでなく、復号直後の値、外部 API から返った復旧用値、復旧に必要な credential、key material、token、passphrase も secret である。
 
-公開鍵、識別子、slot 番号、object ID、project 名、secret 名、serial、固定のコマンド名は、それ単体で上記の能力を与えない限り secret ではない。ただし、ログや診断で secret と同じ構造体に同居する場合は redaction の対象にする。
+公開鍵、識別子、slot 番号、object ID、vault item 名、secret 名、serial、固定のコマンド名は、それ単体で上記の能力を与えない限り secret ではない。ただし、ログや診断で secret と同じ構造体に同居する場合は redaction の対象にする。
 
 ## 守る対象
 
@@ -43,7 +43,7 @@ signal trap による cleanup も強い必須防御として扱わない。通�
 
 storage backend が暗号化された永続化を内包する場合、暗号化・復号・sealed blob encode/decode は backend 内部機能として `support/protection` に置ける。port は sealed blob 形式や暗号操作ではなく、secret datastore の保存・取得・状態確認 capability を公開する。application/domain は secret の意味、必須性、順序、検証を扱い、sealed blob の内部形式や復号手順を直接扱わない。
 
-この許可は backend 実装依存の技術補助、SDK 呼び出しの安全な補助、暗号化 / 復号 / sealed blob / protection / zeroize / core dump 保護などの技術境界、業務判断を含まない変換に限る。固定 secret key の意味づけ、setup 済み判定、不足項目の決定、必須 secret の決定、一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、BWS check の外部検証 plan などを `support/protection` に移してはならない。これらは処理ごとに既存規定上の責務境界を判定し、規定済みの境界に置く。
+この許可は backend 実装依存の技術補助、SDK 呼び出しの安全な補助、暗号化 / 復号 / sealed blob / protection / zeroize / core dump 保護などの技術境界、業務判断を含まない変換に限る。固定 secret key の意味づけ、setup 済み判定、不足項目の決定、必須 secret の決定、一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、vault check の外部検証 plan などを `support/protection` に移してはならない。これらは処理ごとに既存規定上の責務境界を判定し、規定済みの境界に置く。
 
 ## 外部処理境界
 

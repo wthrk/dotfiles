@@ -1,404 +1,296 @@
-//! `BwsClientPort` を Bitwarden Secrets Manager 取得境界へ接続する adapter。
+//! `VaultClientPort` を Bitwarden 個人 vault API 境界へ接続する adapter。
 //!
-//! application は BWS lookup plan と domain の一意解決規則を保持する。adapter は SDK API の
-//! project/secret/list/get 境界を port の ID 候補と保護済み secret へ翻訳する。
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-use anyhow::Context;
+//! application は vault secret の一意解決規則を保持する。adapter は SDK/API の item
+//! list/get/create 境界を port の ID 候補と domain 値へ翻訳する。
 
 #[cfg(feature = "secrets-internal-test-stub")]
 mod internal_stub;
-// `secrets-internal-test-stub` feature 専用の BWS adapter backend stub。
-//
-// production build には含めず、runtime real/stub 分岐は作らない。integration test は adapter
-// stub module を import せず、feature 有効でビルドされた同じ `dotfiles` binary を実行し、
-// BWS port 専用の初期条件 spec JSON と最終状態観測 JSON だけを外部観測面として扱う。
-
-// `bw` CLI（Bitwarden Password Manager）の login / unlock 用 adapter backend。real backend は `bw login` /
-// `bw unlock` の子プロセスを起動し、stub backend は子プロセスを起動せず datastore 遷移として模す。BWS SDK
-// 経路（`BwsClientAdapter`）とは port / backend / 観測面を共有しない。
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-mod login_adapter;
-#[cfg(feature = "secrets-internal-test-stub")]
-mod login_stub;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use bitwarden::secrets_manager::{
-    projects::{ProjectCreateRequest, ProjectsListRequest},
-    secrets::{SecretCreateRequest, SecretIdentifiersByProjectRequest},
-};
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-use uuid::Uuid;
+use std::{future::Future, pin::Pin};
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use crate::secrets::{
-    domain::{
-        bws::{BwsLookupCandidate, BwsProjectId, BwsProjectName, BwsSecretId, BwsSecretName},
-        gpg_backup::GpgBackupEnvelope,
-        pass_restore::PasswordStoreRemote,
+use anyhow::Context;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use bitwarden_api_api::apis::ciphers_api;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use bitwarden_api_api::models::{CipherCreateRequestModel, CipherRequestModel};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use bitwarden_crypto::{KeyDecryptable, KeyEncryptable, SymmetricCryptoKey};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use bitwarden_vault::{CipherRepromptType, CipherType, CipherView, ClientVaultExt, SyncRequest};
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use crate::{
+    Result,
+    secrets::{
+        domain::{
+            gpg_backup::GpgBackupEnvelope,
+            pass_restore::PasswordStoreRemote,
+            vault::{
+                BitwardenVaultCredentials, VaultLookupCandidate, VaultSecretId, VaultSecretName,
+            },
+        },
+        ports::bw::VaultClientPort,
+        support::protection::bitwarden_account_api,
     },
-    ports::bw::BwsClientPort,
-    support::protection::{ProtectedSecret, bws},
 };
 
-/// Bitwarden Secrets Manager SDK を `BwsClientPort` へ翻訳する adapter。
+/// Bitwarden 個人 vault SDK/API を `VaultClientPort` へ翻訳する adapter。
 #[derive(Default)]
-pub(in crate::secrets) struct BwsClientAdapter;
-
-/// `bw` CLI（Bitwarden Password Manager）の login / unlock を `BwLoginPort` へ翻訳する adapter。
-///
-/// real backend（`login_adapter`）は `bw login` / `bw unlock` の子プロセスを起動し、stub backend
-/// （`login_stub`）は子プロセスを起動せず datastore 遷移として模す。impl は backend module 側に閉じる。
-#[derive(Default)]
-pub(in crate::secrets) struct BwLoginAdapter;
+pub(in crate::secrets) struct VaultClientAdapter;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-fn access_token_scope_id(session: &bws::BwsClientSession) -> crate::Result<Uuid> {
-    session
-        .client()
-        .get_access_token_organization()
-        .map(Into::into)
-        .ok_or_else(|| anyhow::anyhow!("bitwarden access token does not expose a BWS SDK scope id"))
-}
-
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-fn parse_sdk_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
-    value
-        .parse()
-        .with_context(|| format!("{label} is not a valid UUID"))
-}
-
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-fn secret_create_request(
-    organization_id: Uuid,
-    project_id: Uuid,
-    key: &str,
-    value: String,
-    note: String,
-) -> SecretCreateRequest {
-    SecretCreateRequest {
-        organization_id,
-        key: key.to_owned(),
-        value,
-        note,
-        project_ids: Some(vec![project_id]),
-    }
-}
-
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-async fn login_bws_session(
-    access_token: &ProtectedSecret,
-    operation: impl FnOnce() -> String,
-) -> crate::Result<bws::BwsClientSession> {
-    bws::login_client_with_access_token(access_token)
-        .await
-        .with_context(operation)
-}
-
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-impl BwsClientAdapter {
-    /// `password-store-remote` secret note の provenance marker を adapter 境界内で取り出す。
-    async fn fetch_password_store_remote_note_marker(
+impl VaultClientPort for VaultClientAdapter {
+    async fn list_vault_secrets(
         &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<Option<String>> {
-        let session = login_bws_session(access_token, || {
-            format!(
-                "BWS client adapter failed to fetch secret `{}` as `password-store-remote` note",
-                secret_id.as_str()
-            )
-        })
-        .await?;
-        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
-        let note = session.get_non_secret_note(id).await?;
-        Ok(bws::parse_provisioning_token_note(note.as_str()).map(str::to_owned))
-    }
-}
-
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-impl BwsClientPort for BwsClientAdapter {
-    /// SDK project 一覧を port 境界の lookup 候補へ変換する。
-    async fn list_bws_projects(
-        &self,
-        access_token: &ProtectedSecret,
-    ) -> crate::Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
-        let session = login_bws_session(access_token, || {
-            "BWS client adapter failed to list projects".into()
-        })
-        .await?;
-        let projects = session
-            .client()
-            .projects()
-            .list(&ProjectsListRequest {
-                organization_id: access_token_scope_id(&session)?,
-            })
-            .await
-            .context("BWS client adapter failed to list projects")?;
-        Ok(projects
-            .data
+        credentials: &BitwardenVaultCredentials,
+    ) -> Result<Vec<VaultLookupCandidate<VaultSecretId>>> {
+        Ok(SdkPersonalVaultBackend
+            .list(credentials)
+            .await?
             .into_iter()
-            .map(|project| BwsLookupCandidate {
-                id: BwsProjectId::new(project.id.to_string()),
-                name: project.name,
+            .map(|item| VaultLookupCandidate {
+                id: VaultSecretId::new(item.id),
+                name: item.name,
             })
             .collect())
     }
 
-    /// SDK project create を port 境界の opaque project ID へ変換する。
-    async fn create_bws_project(
-        &self,
-        access_token: &ProtectedSecret,
-        project_name: BwsProjectName,
-    ) -> crate::Result<BwsProjectId> {
-        let session = login_bws_session(access_token, || {
-            format!(
-                "BWS client adapter failed to create project `{}`",
-                project_name.as_str()
-            )
-        })
-        .await?;
-        let created = session
-            .client()
-            .projects()
-            .create(&ProjectCreateRequest {
-                organization_id: access_token_scope_id(&session)?,
-                name: project_name.as_str().to_owned(),
-            })
-            .await
-            .with_context(|| {
-                format!(
-                    "BWS client adapter failed to create project `{}`",
-                    project_name.as_str()
-                )
-            })?;
-        Ok(BwsProjectId::new(created.id.to_string()))
-    }
-
-    /// SDK secret 一覧を指定 project 内の port 境界 lookup 候補へ変換する。
-    async fn list_bws_secrets(
-        &self,
-        access_token: &ProtectedSecret,
-        project_id: &BwsProjectId,
-    ) -> crate::Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
-        let session = login_bws_session(access_token, || {
-            format!(
-                "BWS client adapter failed to list secrets in project `{}`",
-                project_id.as_str()
-            )
-        })
-        .await?;
-        let project_id = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
-        let secrets = session
-            .client()
-            .secrets()
-            .list_by_project(&SecretIdentifiersByProjectRequest { project_id })
-            .await
-            .with_context(|| {
-                format!(
-                    "BWS client adapter failed to list secrets in project `{}`",
-                    project_id
-                )
-            })?;
-        Ok(secrets
-            .data
-            .into_iter()
-            .map(|secret| BwsLookupCandidate {
-                id: BwsSecretId::new(secret.id.to_string()),
-                name: secret.key,
-            })
-            .collect())
-    }
-
-    /// secret value（encrypted envelope JSON）を取得し、domain envelope へ翻訳する。
     async fn fetch_gpg_backup_envelope(
         &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<GpgBackupEnvelope> {
-        let session = login_bws_session(access_token, || {
-            format!(
-                "BWS client adapter failed to fetch secret `{}` as `gpg-secret-key-backup`",
-                secret_id.as_str()
-            )
-        })
-        .await?;
-        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
-        session
-            .parse_secret_value_with_revision(id, |json, _revision| {
-                GpgBackupEnvelope::from_json(json.as_bytes())
-            })
-            .await
-            .with_context(|| {
-                format!(
-                    "BWS client adapter failed to fetch secret `{}` as `gpg-secret-key-backup`",
-                    secret_id.as_str()
-                )
-            })
+        credentials: &BitwardenVaultCredentials,
+        secret_id: &VaultSecretId,
+    ) -> Result<GpgBackupEnvelope> {
+        let item = SdkPersonalVaultBackend
+            .fetch(credentials, secret_id.as_str())
+            .await?;
+        GpgBackupEnvelope::from_json(item.value.as_bytes())
     }
 
-    /// `password-store-remote` secret value を取得し、adapter 翻訳として domain 検証した clone URL を返す。
     async fn fetch_password_store_remote(
         &self,
-        access_token: &ProtectedSecret,
-        secret_id: &BwsSecretId,
-    ) -> crate::Result<PasswordStoreRemote> {
-        let session = login_bws_session(access_token, || {
-            format!(
-                "BWS client adapter failed to fetch secret `{}` as `password-store-remote`",
-                secret_id.as_str()
-            )
-        })
-        .await?;
-        let id = parse_sdk_uuid(secret_id.as_str(), "bws secret id")?;
-        let value = session.get_non_secret_value(id).await.with_context(|| {
-            format!(
-                "BWS client adapter failed to fetch secret `{}` as `password-store-remote`",
-                secret_id.as_str()
-            )
-        })?;
-        PasswordStoreRemote::parse(value.as_str())
+        credentials: &BitwardenVaultCredentials,
+        secret_id: &VaultSecretId,
+    ) -> Result<PasswordStoreRemote> {
+        let item = SdkPersonalVaultBackend
+            .fetch(credentials, secret_id.as_str())
+            .await?;
+        PasswordStoreRemote::parse(item.value.as_str())
     }
 
-    /// 候補 `bws-access-token` の provenance gate を、token id 抽出と BWS note 取得を含めて adapter 境界内で完了する。
-    async fn ensure_recovery_token_provenance(
-        &self,
-        access_token: &ProtectedSecret,
-    ) -> crate::Result<()> {
-        let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
-            .resolve_id(self.list_bws_projects(access_token).await?)?;
-        let secret_id = BwsSecretName::PasswordStoreRemote.resolve_id(
-            self.list_bws_secrets(access_token, &project_id).await?,
-            &project_id,
-        )?;
-        let note_marker = self
-            .fetch_password_store_remote_note_marker(access_token, &secret_id)
-            .await
-            .context(
-                "BWS client adapter failed to fetch `password-store-remote` provenance marker",
-            )?;
-        bws::ensure_recovery_token_allowed(access_token, note_marker.as_deref())
-    }
-
-    /// 検証済み clone URL を指定 project に新しい secret として作成する。
     async fn create_password_store_remote(
         &self,
-        access_token: &ProtectedSecret,
-        project_id: &BwsProjectId,
+        credentials: &BitwardenVaultCredentials,
         remote: &PasswordStoreRemote,
-    ) -> crate::Result<BwsSecretId> {
-        let session = login_bws_session(access_token, || {
-            "BWS client adapter failed to create secret `password-store-remote`".into()
-        })
-        .await?;
-        let sdk_scope_id = access_token_scope_id(&session)?;
-        let project_uuid = parse_sdk_uuid(project_id.as_str(), "bws project id")?;
-        let created = session
-            .client()
-            .secrets()
-            .create(&secret_create_request(
-                sdk_scope_id,
-                project_uuid,
-                BwsSecretName::PasswordStoreRemote.key(),
-                remote.as_str().to_owned(),
-                bws::provisioning_token_note(access_token)?,
-            ))
+    ) -> Result<VaultSecretId> {
+        SdkPersonalVaultBackend
+            .create(
+                credentials,
+                VaultSecretName::PasswordStoreRemote.key(),
+                remote.as_str(),
+            )
             .await
-            .context("BWS client adapter failed to create secret `password-store-remote`")?;
-        Ok(BwsSecretId::new(created.id.to_string()))
+            .map(VaultSecretId::new)
     }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+struct PersonalVaultItem {
+    id: String,
+    name: String,
+    value: String,
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+/// Bitwarden SDK/API backend と port adapter の間で暗号化済み vault item 操作だけを抽象化する境界。
+///
+/// caller は item 名の一意解決や domain 側の停止判断を保持し、この trait は list/fetch/create の
+/// 外部 API 操作を `PersonalVaultItem` へ翻訳する責務に限定する。
+trait PersonalVaultBackend {
+    fn list<'a>(
+        &'a self,
+        credentials: &'a BitwardenVaultCredentials,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PersonalVaultItem>>> + 'a>>;
+
+    fn fetch<'a>(
+        &'a self,
+        credentials: &'a BitwardenVaultCredentials,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<PersonalVaultItem>> + 'a>>;
+
+    fn create<'a>(
+        &'a self,
+        credentials: &'a BitwardenVaultCredentials,
+        name: &'a str,
+        value: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>>;
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+/// Bitwarden SDK/API を使う本番 backend 実装。
+///
+/// account API key と master password による user crypto 初期化を SDK 境界へ渡し、復号済み view と
+/// port/domain 値の間の翻訳だけを行う。
+struct SdkPersonalVaultBackend;
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl PersonalVaultBackend for SdkPersonalVaultBackend {
+    fn list<'a>(
+        &'a self,
+        credentials: &'a BitwardenVaultCredentials,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PersonalVaultItem>>> + 'a>> {
+        Box::pin(async move { load_personal_vault_items(credentials).await })
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        credentials: &'a BitwardenVaultCredentials,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<PersonalVaultItem>> + 'a>> {
+        Box::pin(async move {
+            load_personal_vault_items(credentials)
+                .await?
+                .into_iter()
+                .find(|item| item.id == id)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Bitwarden personal vault item not found",
+                    )
+                    .into()
+                })
+        })
+    }
+
+    fn create<'a>(
+        &'a self,
+        credentials: &'a BitwardenVaultCredentials,
+        name: &'a str,
+        value: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
+        Box::pin(async move { create_personal_vault_secure_note(credentials, name, value).await })
+    }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+/// 個人 vault の暗号化済み cipher 一覧を同期し、復号した secure note view を adapter 内部 item へ翻訳する。
+///
+/// lookup の 0 件・複数件判定は application/domain 側へ残し、この helper は SDK の sync/decrypt 境界と
+/// 欠損 SDK field の技術的失敗化だけを扱う。
+async fn load_personal_vault_items(
+    credentials: &BitwardenVaultCredentials,
+) -> Result<Vec<PersonalVaultItem>> {
+    let client = bitwarden_account_api::authenticate_with_account_api_key(
+        credentials.api_key().client_id(),
+        credentials.api_key().client_secret(),
+        credentials.master_password(),
+    )
+    .await?;
+    let user_key = SymmetricCryptoKey::try_from(client.crypto().get_user_encryption_key().await?)
+        .context("Bitwarden personal vault user key could not be loaded")?;
+    let sync = client
+        .vault()
+        .sync(&SyncRequest {
+            exclude_subdomains: Some(true),
+        })
+        .await
+        .context("Bitwarden personal vault sync failed")?;
+    sync.ciphers
+        .into_iter()
+        .filter(|cipher| cipher.deleted_date.is_none())
+        .map(|cipher| {
+            let view: CipherView = cipher
+                .decrypt_with_key(&user_key)
+                .context("Bitwarden personal vault item decrypt failed")?;
+            Ok(PersonalVaultItem {
+                id: view
+                    .id
+                    .map(|id| id.to_string())
+                    .ok_or_else(|| missing_data("Bitwarden personal vault item ID is missing"))?,
+                name: view.name,
+                value: view.notes.unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+/// 個人 vault に secure note cipher を作成し、SDK/API の作成結果 ID を port 境界値へ戻すための helper。
+///
+/// 保存対象名と値は caller が domain/application 側で決めたものだけを受け取り、この helper は user key による
+/// encrypt と Bitwarden API request 変換に責務を閉じる。
+async fn create_personal_vault_secure_note(
+    credentials: &BitwardenVaultCredentials,
+    name: &str,
+    value: &str,
+) -> Result<String> {
+    let client = bitwarden_account_api::authenticate_with_account_api_key(
+        credentials.api_key().client_id(),
+        credentials.api_key().client_secret(),
+        credentials.master_password(),
+    )
+    .await?;
+    let user_key = SymmetricCryptoKey::try_from(client.crypto().get_user_encryption_key().await?)
+        .context("Bitwarden personal vault user key could not be loaded")?;
+    let now = chrono::Utc::now();
+    let cipher = CipherView {
+        id: None,
+        organization_id: None,
+        folder_id: None,
+        collection_ids: Vec::new(),
+        key: None,
+        name: name.to_owned(),
+        notes: Some(value.to_owned()),
+        r#type: CipherType::SecureNote,
+        login: None,
+        identity: None,
+        card: None,
+        secure_note: None,
+        favorite: false,
+        reprompt: CipherRepromptType::None,
+        organization_use_totp: false,
+        edit: true,
+        view_password: true,
+        local_data: None,
+        attachments: None,
+        fields: None,
+        password_history: None,
+        creation_date: now,
+        deleted_date: None,
+        revision_date: now,
+    };
+    let encrypted = cipher
+        .encrypt_with_key(&user_key)
+        .context("Bitwarden personal vault item encrypt failed")?;
+    let request: CipherRequestModel = serde_json::from_value(serde_json::to_value(encrypted)?)
+        .context("Bitwarden personal vault item request encode failed")?;
+    let created = client.internal.get_api_configurations().await;
+    let created = ciphers_api::ciphers_create_post(
+        &created.api,
+        Some(CipherCreateRequestModel::new(request)),
+    )
+    .await
+    .context("Bitwarden personal vault item create failed")?;
+    created
+        .id
+        .map(|id| id.to_string())
+        .ok_or_else(|| missing_data("Bitwarden personal vault created item ID is missing").into())
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn missing_data(message: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
 #[cfg(test)]
+/// Bitwarden 個人 vault adapter の inline unit test。
 mod tests {
-    use super::*;
-    use crate::secrets::{
-        domain::bws::{BwsProjectId, BwsProjectName},
-        ports::bw::BwsClientPort,
-        support::protection::ProtectedSecret,
-    };
+    use super::VaultClientAdapter;
 
     /// adapter の default 構築が runtime 状態や外部接続を開始しないことを確認する。
     #[test]
     fn adapter_constructs_with_default() {
-        let _ = BwsClientAdapter;
-    }
-
-    fn protected_secret(bytes: &[u8]) -> ProtectedSecret {
-        match ProtectedSecret::from_test_bytes(bytes) {
-            Ok(secret) => secret,
-            Err(error) => panic!("failed to create test secret: {error}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn list_bws_projects_wraps_login_failure_with_adapter_context() {
-        let adapter = BwsClientAdapter;
-        let error = match adapter.list_bws_projects(&protected_secret(b"\n")).await {
-            Ok(_) => panic!("expected list_bws_projects to fail"),
-            Err(error) => error,
-        };
-        let rendered = format!("{error:#}");
-
-        assert!(
-            rendered.contains("BWS client adapter failed to list projects"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("bws access token must not be empty"),
-            "{rendered}"
-        );
-    }
-
-    #[tokio::test]
-    async fn create_bws_project_wraps_login_failure_with_adapter_context() {
-        let adapter = BwsClientAdapter;
-        let error = match adapter
-            .create_bws_project(
-                &protected_secret(b"\n"),
-                BwsProjectName::DOTFILES_SECRET_RECOVERY,
-            )
-            .await
-        {
-            Ok(_) => panic!("expected create_bws_project to fail"),
-            Err(error) => error,
-        };
-        let rendered = format!("{error:#}");
-
-        assert!(
-            rendered
-                .contains("BWS client adapter failed to create project `dotfiles-secret-recovery`"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("bws access token must not be empty"),
-            "{rendered}"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_bws_secrets_wraps_login_failure_with_adapter_context() {
-        let adapter = BwsClientAdapter;
-        let error = match adapter
-            .list_bws_secrets(
-                &protected_secret(b"\n"),
-                &BwsProjectId::new("11111111-1111-1111-1111-111111111111"),
-            )
-            .await
-        {
-            Ok(_) => panic!("expected list_bws_secrets to fail"),
-            Err(error) => error,
-        };
-        let rendered = format!("{error:#}");
-
-        assert!(
-            rendered.contains(
-                "BWS client adapter failed to list secrets in project `11111111-1111-1111-1111-111111111111`"
-            ),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("bws access token must not be empty"),
-            "{rendered}"
-        );
+        let _ = VaultClientAdapter;
     }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `provision-secret-recovery-source.sh` の検証フローを fake gpg/pass/gh/dotfiles で実行する。
 #
-# 実 GitHub・GPG・password-store・BWS へ触れず、既存 store / 新規 store / origin 正規化 /
+# 実 GitHub・GPG・password-store・personal vault へ触れず、既存 store / 新規 store / origin 正規化 /
 # dotfiles CLI 呼び出し境界を一時ディレクトリ内の stub で固定する。
 set -euo pipefail
 
@@ -26,27 +26,48 @@ fp2="2222222222222222222222222222222222222222"
 
 emit_key() {
   local fp="$1"
+  local uid="Test User <test@example.invalid>"
+  if [ "$fp" = "$fp2" ]; then
+    uid="Other User <other@example.invalid>"
+  fi
+  if [ "${FAKE_GPG_DUPLICATE_UID:-0}" = "1" ]; then
+    uid="Test User <test@example.invalid>"
+  fi
   printf 'sec:u:255:22:%s:0:0:::::cC:\n' "${fp:0:16}"
   printf 'fpr:::::::::%s:\n' "$fp"
-  printf 'uid:u:::::::0:Test User <%s@example.invalid>:\n' "$fp"
-  printf 'ssb:u:255:22:%s:0:0:::::e:\n' "${fp:0:16}"
-  printf 'ssb:u:255:22:%s:0:0:::::a:\n' "${fp:0:16}"
-  printf 'ssb:u:255:22:%s:0:0:::::s:\n' "${fp:0:16}"
+  printf 'uid:u:::::::0:%s:\n' "$uid"
+  if [ "${FAKE_GPG_MISSING_SUBKEYS:-0}" != "1" ]; then
+    printf 'ssb:u:255:22:%s:0:0:::::e:\n' "${fp:0:16}"
+    printf 'ssb:u:255:22:%s:0:0:::::a:\n' "${fp:0:16}"
+    printf 'ssb:u:255:22:%s:0:0:::::s:\n' "${fp:0:16}"
+  fi
 }
 
 case " $* " in
   *" --quick-generate-key "*)
     printf 'gpg-generate:%s\n' "$*" >>"${FAKE_LOG:?}"
+    printf 'gpg: revocation certificate stored for %s\n' "$fp1" >&2
     exit 0
     ;;
   *" --quick-add-key "*)
+    printf 'gpg-quick-add-key:%s\n' "$*" >>"${FAKE_LOG:?}"
+    printf 'gpg: added subkey for %s\n' "$fp1" >&2
     exit 0
     ;;
   *" --list-secret-keys "*)
+    if [ "${FAKE_GPG_MODE:-single}" = "becomes-unusable" ]; then
+      count_file="${FAKE_LOG:?}.gpg-list-count"
+      count="$(cat "$count_file" 2>/dev/null || printf '0')"
+      printf '%s\n' "$((count + 1))" >"$count_file"
+      if [ "$count" -lt 4 ]; then
+        emit_key "$fp1"
+      fi
+      exit 0
+    fi
     if [ "${FAKE_GPG_MODE:-single}" = "none" ]; then
-      case "${!#}" in
-        "$fp1"|*"$fp1"*|*"1111111111111111"*|*"Test User <test@example.invalid>"*) emit_key "$fp1" ;;
-      esac
+      if grep -q '^gpg-generate:' "${FAKE_LOG:?}" 2>/dev/null; then
+        emit_key "$fp1"
+      fi
     elif [ "${FAKE_GPG_MODE:-single}" = "multiple" ] && [ "${!#}" != "$fp1" ] && [ "${!#}" != "$fp2" ]; then
       emit_key "$fp1"
       emit_key "$fp2"
@@ -135,10 +156,18 @@ case "$1" in
     case "$2" in
       view)
         if printf '%s\n' "$*" | grep -q -- '--json isPrivate'; then
+          [ "${FAKE_REPO_EXISTS:-0}" = "1" ] || exit 1
+          printf 'true\n'
+          exit 0
+        fi
+        [ "${FAKE_REPO_EXISTS:-0}" = "1" ] || exit 1
+        ;;
+      create)
+        printf 'gh-repo-create:%s\n' "$*" >>"${FAKE_LOG:?}"
+        if printf '%s\n' "$*" | grep -q -- '--json isPrivate'; then
           printf 'true\n'
         fi
         ;;
-      create) : ;;
     esac
     ;;
 esac
@@ -209,10 +238,26 @@ FAKE_CARGO
 
 chmod +x "$bin/gpg" "$bin/pass" "$bin/gh" "$bin/git" "$bin/dotfiles" "$bin/direnv" "$bin/cargo"
 
+assert_dotfiles_order() {
+  local enroll_line pass_line
+  enroll_line="$(grep -n "^$1:secrets yubikey enroll-primary$" "$log" | cut -d: -f1)"
+  pass_line="$(grep -n "^$1:secrets pass-remote register$" "$log" | cut -d: -f1)"
+  [ -n "$enroll_line" ] && [ -n "$pass_line" ] \
+    || return 1
+  [ "$enroll_line" -lt "$pass_line" ]
+}
+
+assert_gpg_backup_register_not_run() {
+  if grep -Eq "^$1:secrets gpg-backup register$" "$log"; then
+    printf 'provisioning script must leave gpg-backup register to the post-enroll-spare gate\n' >&2
+    exit 1
+  fi
+}
+
 run_script() {
   local mode="$1"
   local scenario="${2:-new-store}"
-  rm -f "$log"
+  rm -f "$log" "${log}.gpg-list-count"
   rm -rf "$store"
   mkdir -p "$store"
   case "$scenario" in
@@ -236,6 +281,7 @@ run_script() {
     HOME="$home" \
     PASSWORD_STORE_DIR="$store" \
     FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS="$([ "$scenario" = "new-store" ] && printf 0 || printf 1)" \
     FAKE_GPG_MODE="$mode" \
     bash "$SCRIPT"
 }
@@ -250,6 +296,7 @@ run_script_with_args() {
     HOME="$home" \
     PASSWORD_STORE_DIR="$store" \
     FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
     FAKE_GPG_MODE="$mode" \
     bash "$SCRIPT" "$@"
 }
@@ -263,7 +310,38 @@ run_script_with_pipe() {
     HOME="$home" \
     PASSWORD_STORE_DIR="$store" \
     FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
     FAKE_GPG_MODE="$mode" \
+    bash "$SCRIPT"
+}
+
+run_script_duplicate_uid_existing_recipient() {
+  rm -f "$log"
+  rm -rf "$store"
+  mkdir -p "$store"
+  printf '%s\n' '1111111111111111111111111111111111111111' >"$store/.gpg-id"
+  PATH="$bin:$PATH" \
+    HOME="$home" \
+    PASSWORD_STORE_DIR="$store" \
+    FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
+    FAKE_GPG_MODE=multiple \
+    FAKE_GPG_DUPLICATE_UID=1 \
+    bash "$SCRIPT"
+}
+
+run_script_missing_subkeys() {
+  rm -f "$log"
+  rm -rf "$store"
+  mkdir -p "$store"
+  printf '%s\n' '1111111111111111111111111111111111111111' >"$store/.gpg-id"
+  PATH="$bin:$PATH" \
+    HOME="$home" \
+    PASSWORD_STORE_DIR="$store" \
+    FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
+    FAKE_GPG_MODE=single \
+    FAKE_GPG_MISSING_SUBKEYS=1 \
     bash "$SCRIPT"
 }
 
@@ -276,6 +354,7 @@ run_script_repo_head() {
     HOME="$home" \
     PASSWORD_STORE_DIR="$store" \
     FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
     FAKE_GPG_MODE="$mode" \
     bash "$SCRIPT" --repo-head
 }
@@ -289,6 +368,7 @@ run_script_repo_head_env() {
     HOME="$home" \
     PASSWORD_STORE_DIR="$store" \
     FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
     FAKE_GPG_MODE="$mode" \
     DOTFILES_PROVISION_USE_REPO_HEAD=1 \
     bash "$SCRIPT"
@@ -304,23 +384,40 @@ run_script_with_repo_head_env_value() {
     HOME="$home" \
     PASSWORD_STORE_DIR="$store" \
     FAKE_LOG="$log" \
+    FAKE_REPO_EXISTS=0 \
     FAKE_GPG_MODE="$mode" \
     DOTFILES_PROVISION_USE_REPO_HEAD="$env_value" \
     bash "$SCRIPT"
 }
 
 run_script single >"$tmpdir/single.out" 2>"$tmpdir/single.err"
-grep -q 'pass-init:1111111111111111111111111111111111111111' "$log"
+grep -q "後続 gate: この script と enroll-spare の後" "$tmpdir/single.out"
+grep -q "この script は gpg-secret-key-backup envelope を作成・投入・照合しません" "$tmpdir/single.out"
+grep -q 'pass-init:Test User <test@example.invalid>' "$log"
 grep -q '^dotfiles:gpg export-ssh-public-key$' "$log"
 grep -q '^dotfiles:secrets pass-remote register$' "$log"
-grep -q '^dotfiles:secrets gpg-backup register$' "$log"
-grep -q '^dotfiles:secrets yubikey put bws-access-token$' "$log"
+grep -q '^dotfiles:secrets yubikey enroll-primary$' "$log"
+assert_gpg_backup_register_not_run dotfiles
+assert_dotfiles_order dotfiles \
+  || { printf 'provisioning commands must enroll YubiKey before password-store remote registration\n' >&2; exit 1; }
+if grep -Eq '^(pass-init|gpg-quick-add-key):.*1111111111111111111111111111111111111111' "$log"; then
+  printf 'provisioning script must not forward raw primary fingerprint through gpg/pass argv\n' >&2
+  exit 1
+fi
 if grep -q '1111111111111111111111111111111111111111' "$tmpdir/single.out" "$tmpdir/single.err"; then
   printf 'provisioning script must not print raw primary fingerprint in logs or errors\n' >&2
   exit 1
 fi
+if grep -Eq '11111111|\.\.\.1111' "$tmpdir/single.out" "$tmpdir/single.err"; then
+  printf 'provisioning script must not print primary fingerprint display fragments in logs or errors\n' >&2
+  exit 1
+fi
 if grep -Eq -- '--url|--primary-fingerprint|--stdin' "$log"; then
   printf 'provisioning script must not forward input values or stdin mode through dotfiles argv\n' >&2
+  exit 1
+fi
+if grep -Eq 'BWS|BW_SESSION|bw login|bw unlock|organization|project' "$tmpdir/single.out" "$tmpdir/single.err" "$log"; then
+  printf 'provisioning script must not reintroduce BWS/bw CLI/session/project/organization flow\n' >&2
   exit 1
 fi
 if grep -q '^dotfiles-stdin:' "$log"; then
@@ -328,27 +425,31 @@ if grep -q '^dotfiles-stdin:' "$log"; then
   exit 1
 fi
 
-run_script_with_pipe single >/dev/null
+run_script_with_pipe single >"$tmpdir/pipe.out" 2>"$tmpdir/pipe.err"
 if grep -q '^dotfiles-stdin:' "$log"; then
   printf 'provisioning script must not forward piped script stdin through dotfiles stdin\n' >&2
   exit 1
 fi
 
-run_script_repo_head single >/dev/null
+run_script_repo_head single >"$tmpdir/repo-head.out" 2>"$tmpdir/repo-head.err"
 grep -q '^cargo-dotfiles:gpg export-ssh-public-key$' "$log"
 grep -q '^cargo-dotfiles:secrets pass-remote register$' "$log"
-grep -q '^cargo-dotfiles:secrets gpg-backup register$' "$log"
-grep -q '^cargo-dotfiles:secrets yubikey put bws-access-token$' "$log"
+grep -q '^cargo-dotfiles:secrets yubikey enroll-primary$' "$log"
+assert_gpg_backup_register_not_run cargo-dotfiles
+assert_dotfiles_order cargo-dotfiles \
+  || { printf 'repo-head provisioning commands must enroll YubiKey before password-store remote registration\n' >&2; exit 1; }
 if grep -q '^cargo-dotfiles-stdin:' "$log"; then
   printf 'repo-head dotfiles wrapper must not inherit script stdin\n' >&2
   exit 1
 fi
 
-run_script_repo_head_env single >/dev/null
+run_script_repo_head_env single >"$tmpdir/repo-head-env.out" 2>"$tmpdir/repo-head-env.err"
 grep -q '^cargo-dotfiles:gpg export-ssh-public-key$' "$log"
 grep -q '^cargo-dotfiles:secrets pass-remote register$' "$log"
-grep -q '^cargo-dotfiles:secrets gpg-backup register$' "$log"
-grep -q '^cargo-dotfiles:secrets yubikey put bws-access-token$' "$log"
+grep -q '^cargo-dotfiles:secrets yubikey enroll-primary$' "$log"
+assert_gpg_backup_register_not_run cargo-dotfiles
+assert_dotfiles_order cargo-dotfiles \
+  || { printf 'repo-head env provisioning commands must enroll YubiKey before password-store remote registration\n' >&2; exit 1; }
 
 if run_script_with_repo_head_env_value single 0 >"$tmpdir/repo-head-env-0.out" 2>"$tmpdir/repo-head-env-0.err"; then
   printf 'expected DOTFILES_PROVISION_USE_REPO_HEAD=0 to stop provisioning\n' >&2
@@ -370,15 +471,45 @@ if [ -f "$log" ] && grep -Eq '^(dotfiles|cargo-dotfiles):' "$log"; then
   exit 1
 fi
 
-run_script none >/dev/null
-grep -q '^gpg-generate:--quick-generate-key Test User <test@example.invalid> ed25519 cert never$' "$log"
-grep -q 'pass-init:1111111111111111111111111111111111111111' "$log"
+if run_script becomes-unusable existing-repo >"$tmpdir/becomes-unusable.out" 2>"$tmpdir/becomes-unusable.err"; then
+  printf 'expected unusable GPG key to stop provisioning\n' >&2
+  exit 1
+fi
+grep -q 'GPG secret key が revoked / expired / disabled、またはローカルで使用不能です: \[redacted fingerprint\]' "$tmpdir/becomes-unusable.err"
+if grep -q '1111111111111111111111111111111111111111' "$tmpdir/becomes-unusable.out" "$tmpdir/becomes-unusable.err"; then
+  printf 'unusable-key error must not print raw primary fingerprint\n' >&2
+  exit 1
+fi
+if grep -Eq '11111111|\.\.\.1111' "$tmpdir/becomes-unusable.out" "$tmpdir/becomes-unusable.err"; then
+  printf 'unusable-key error must not print primary fingerprint display fragments\n' >&2
+  exit 1
+fi
 
-FAKE_GIT_UPSTREAM=main run_script single existing-repo >/dev/null
+run_script none >"$tmpdir/none.out" 2>"$tmpdir/none.err"
+grep -q '^gpg-generate:--quick-generate-key Test User <test@example.invalid> ed25519 cert never$' "$log"
+grep -q 'pass-init:Test User <test@example.invalid>' "$log"
+if grep -Eq '^(pass-init|gpg-quick-add-key):.*1111111111111111111111111111111111111111' "$log"; then
+  printf 'generated-key provisioning must not forward raw primary fingerprint through gpg/pass argv\n' >&2
+  exit 1
+fi
+if grep -Eq '1111111111111111111111111111111111111111|11111111|\.\.\.1111' "$tmpdir/none.out" "$tmpdir/none.err"; then
+  printf 'gpg quick-generate-key external stderr must not reach provisioning output\n' >&2
+  exit 1
+fi
+
+run_script_missing_subkeys >"$tmpdir/missing-subkeys.out" 2>"$tmpdir/missing-subkeys.err"
+grep -q '^gpg-quick-add-key:--quick-add-key Test User <test@example.invalid> cv25519 encrypt never$' "$log"
+grep -q '^gpg-quick-add-key:--quick-add-key Test User <test@example.invalid> ed25519 auth never$' "$log"
+grep -q '^gpg-quick-add-key:--quick-add-key Test User <test@example.invalid> ed25519 sign never$' "$log"
+if grep -Eq '1111111111111111111111111111111111111111|11111111|\.\.\.1111' "$tmpdir/missing-subkeys.out" "$tmpdir/missing-subkeys.err"; then
+  printf 'gpg quick-add-key external stderr must not reach provisioning output\n' >&2
+  exit 1
+fi
+
+FAKE_GIT_UPSTREAM=main run_script single existing-repo >"$tmpdir/existing-repo.out" 2>"$tmpdir/existing-repo.err"
 grep -q 'git-push:-u origin main' "$log"
 
-FAKE_GIT_UPSTREAM=main run_script single existing-https-origin >/dev/null
-grep -q '^dotfiles:secrets pass-remote register$' "$log"
+FAKE_GIT_UPSTREAM=main run_script single existing-https-origin >"$tmpdir/existing-https-origin.out" 2>"$tmpdir/existing-https-origin.err"
 grep -q 'git-push:-u origin main' "$log"
 if grep -q 'git-remote-origin:' "$log"; then
   printf 'existing HTTPS password-store origin must be respected and not rewritten by the script\n' >&2
@@ -407,12 +538,12 @@ for scenario in bad-owner-origin extra-https-segment-origin extra-ssh-segment-or
   printf '%s\n' '1111111111111111111111111111111111111111' >"$store/.gpg-id"
   printf '%s\n' "$origin" >"$store/.git-origin"
   if PATH="$bin:$PATH" HOME="$home" PASSWORD_STORE_DIR="$store" FAKE_LOG="$log" FAKE_GPG_MODE=single bash "$SCRIPT" >"$tmpdir/${scenario}.out" 2>"$tmpdir/${scenario}.err"; then
-    printf 'expected invalid GitHub-like origin to stop provisioning: %s\n' "$origin" >&2
+    printf 'expected invalid GitHub-like origin to stop provisioning for scenario: %s\n' "$scenario" >&2
     exit 1
   fi
   grep -q 'password-store の既存 origin から GitHub repository を解決できません' "$tmpdir/${scenario}.err"
   if grep -q "$origin" "$tmpdir/${scenario}.err"; then
-    printf 'invalid origin rejection must not echo raw origin: %s\n' "$origin" >&2
+    printf 'invalid origin rejection must not echo raw origin for scenario: %s\n' "$scenario" >&2
     exit 1
   fi
 done
@@ -424,6 +555,16 @@ fi
 grep -q '複数の GPG secret key が存在します' "$tmpdir/multiple.err"
 if [ -f "$log" ] && grep -q 'pass-init:' "$log"; then
   printf 'pass init must not run when multiple GPG keys are present\n' >&2
+  exit 1
+fi
+
+if run_script_duplicate_uid_existing_recipient >"$tmpdir/duplicate-uid.out" 2>"$tmpdir/duplicate-uid.err"; then
+  printf 'expected duplicate GPG UID to stop provisioning before UID-based quick-add-key\n' >&2
+  exit 1
+fi
+grep -q '同一 UID を持つ GPG secret key が複数存在するため' "$tmpdir/duplicate-uid.err"
+if [ -f "$log" ] && grep -q '^gpg-quick-add-key:' "$log"; then
+  printf 'duplicate GPG UID must stop before gpg --quick-add-key\n' >&2
   exit 1
 fi
 

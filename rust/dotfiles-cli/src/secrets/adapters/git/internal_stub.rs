@@ -6,7 +6,7 @@
 //!
 //! この stub は Git port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::GIT_STUB_SPEC_ENV` の Git 専用 spec から private datastore へ
-//! 展開し、最終観測 JSON は stdout の sentinel line として書き出す。YubiKey / BWS / GPG port stub とは
+//! 展開し、最終観測 JSON は stdout の sentinel line として書き出す。YubiKey / Bitwarden vault / GPG port stub とは
 //! state/schema/file を共有しない。clone は実 Git/SSH を行わず、spec が与えた store 構成（`gpg_id_present`）
 //! を「clone 後 store として観測される状態」へ反映するだけの datastore 遷移として模す。
 
@@ -60,12 +60,12 @@ struct GitDatastore {
     gpg_id_recipients: Vec<String>,
     sample_entry_present: bool,
     configured_origin_remote: Option<String>,
-    cloned_remotes: Vec<String>,
+    cloned_remote_count: usize,
 }
 
 #[derive(serde::Serialize)]
 struct GitObservation {
-    cloned_remotes: Vec<String>,
+    cloned_remote_count: usize,
     store_exists: bool,
 }
 
@@ -78,7 +78,17 @@ struct GitObservationFrame<'a> {
 static GIT_DATASTORE: OnceLock<Mutex<Option<GitDatastore>>> = OnceLock::new();
 
 #[derive(Debug)]
-struct GitStubDatastoreLockPoisoned;
+struct GitStubDatastoreLockPoisoned {
+    source: DatastoreLockPoisonSource,
+}
+
+impl GitStubDatastoreLockPoisoned {
+    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
+        Self {
+            source: DatastoreLockPoisonSource::from_poison(source),
+        }
+    }
+}
 
 impl std::fmt::Display for GitStubDatastoreLockPoisoned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -86,7 +96,32 @@ impl std::fmt::Display for GitStubDatastoreLockPoisoned {
     }
 }
 
-impl std::error::Error for GitStubDatastoreLockPoisoned {}
+impl std::error::Error for GitStubDatastoreLockPoisoned {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Debug)]
+struct DatastoreLockPoisonSource {
+    message: String,
+}
+
+impl DatastoreLockPoisonSource {
+    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
+        Self {
+            message: source.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for DatastoreLockPoisonSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DatastoreLockPoisonSource {}
 
 /// password-store filesystem port の internal backend stub。
 #[derive(Default)]
@@ -122,7 +157,8 @@ impl GitClonePort for GitCloneStub {
     fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
         with_datastore(|store| {
             // clone は実 Git/SSH を行わず、clone 後 store が存在する状態へ datastore を遷移させる。
-            store.cloned_remotes.push(remote.as_str().to_owned());
+            let _ = remote;
+            store.cloned_remote_count += 1;
             store.store_exists = true;
             Ok(())
         })
@@ -131,7 +167,9 @@ impl GitClonePort for GitCloneStub {
 
 fn with_datastore<T>(f: impl FnOnce(&mut GitDatastore) -> Result<T>) -> Result<T> {
     let datastore = GIT_DATASTORE.get_or_init(|| Mutex::new(None));
-    let mut state = datastore.lock().map_err(|_| GitStubDatastoreLockPoisoned)?;
+    let mut state = datastore
+        .lock()
+        .map_err(GitStubDatastoreLockPoisoned::from_poison)?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }
@@ -154,13 +192,13 @@ fn load_datastore() -> Result<GitDatastore> {
         gpg_id_recipients: spec.gpg_id_recipients,
         sample_entry_present: spec.sample_entry_present,
         configured_origin_remote: spec.configured_origin_remote,
-        cloned_remotes: Vec::new(),
+        cloned_remote_count: 0,
     })
 }
 
 fn write_observation(store: &GitDatastore) -> Result<()> {
     let observation = GitObservation {
-        cloned_remotes: store.cloned_remotes.clone(),
+        cloned_remote_count: store.cloned_remote_count,
         store_exists: store.store_exists,
     };
     let frame = GitObservationFrame {

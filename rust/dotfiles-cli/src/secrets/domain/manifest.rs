@@ -27,9 +27,8 @@ pub struct SecretManifest {
 ///
 /// 各 field は `ProtectedSecret` として保持し、平文文字列化は domain の責務に含めない。
 pub struct BootstrapSecretDocument {
-    pub bw_email: ProtectedSecret,
-    pub bw_password: ProtectedSecret,
-    pub bws_access_token: ProtectedSecret,
+    pub bitwarden_client_id: ProtectedSecret,
+    pub bitwarden_client_secret: ProtectedSecret,
 }
 
 impl SecretManifest {
@@ -130,31 +129,28 @@ impl SecretManifest {
 impl BootstrapSecretDocument {
     /// 既に取得済みの `ProtectedSecret` 群から bootstrap document を構築する。
     pub fn from_secret_materials(
-        bw_email: &ProtectedSecret,
-        bw_password: &ProtectedSecret,
-        bws_access_token: &ProtectedSecret,
+        bitwarden_client_id: &ProtectedSecret,
+        bitwarden_client_secret: &ProtectedSecret,
     ) -> Result<Self> {
         Ok(Self {
-            bw_email: ProtectedSecret::try_clone(bw_email)?,
-            bw_password: ProtectedSecret::try_clone(bw_password)?,
-            bws_access_token: ProtectedSecret::try_clone(bws_access_token)?,
+            bitwarden_client_id: ProtectedSecret::try_clone(bitwarden_client_id)?,
+            bitwarden_client_secret: ProtectedSecret::try_clone(bitwarden_client_secret)?,
         })
     }
 
-    /// bootstrap document の 3 secrets を storage 固定順の `(SecretStorageSpec, value)` で返す。
+    /// bootstrap document の 2 secrets を storage 固定順の `(SecretStorageSpec, value)` で返す。
     ///
     /// document field と YubiKey storage object の対応は domain rule なので、use case は
     /// field 名から object id / AAD 規則を再構築せず、この対応を保存手順へ適用する。
-    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &ProtectedSecret); 3] {
+    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &ProtectedSecret); 2] {
         [
-            (SecretName::BwEmail.storage_spec(serial), &self.bw_email),
             (
-                SecretName::BwPassword.storage_spec(serial),
-                &self.bw_password,
+                SecretName::BitwardenClientId.storage_spec(serial),
+                &self.bitwarden_client_id,
             ),
             (
-                SecretName::BwsAccessToken.storage_spec(serial),
-                &self.bws_access_token,
+                SecretName::BitwardenClientSecret.storage_spec(serial),
+                &self.bitwarden_client_secret,
             ),
         ]
     }

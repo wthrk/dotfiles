@@ -20,23 +20,21 @@ use crate::secrets::{
 /// primary から secret を読み出す旧設計と stdin payload を使う旧境界を廃止し、spare でも CLI の
 /// secret input port だけから値を受け取る。use case は単一接続確認と setup を secret 入力前に完了し、
 /// setup 不能な YubiKey では bootstrap secret を読まずに停止する。
-pub(crate) async fn run_enroll_spare_with_prompt<D, I, P, S, R, B>(
+pub(crate) async fn run_enroll_spare_with_prompt<D, I, P, S, R>(
     command: EnrollSpareCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     secret_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
-    bws_client: &B,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    I: ports::SecretInputPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
-    B: ports::BwsClientPort,
+    D: ports::yubikey::DeviceSerialPort,
+    I: ports::io::SecretInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
     let _ = command;
     let serial = device_serial.resolve_device_serial()?;
@@ -44,14 +42,12 @@ where
     let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
     storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
-    let bw_email = secret_input.read_bw_email_secret()?;
-    let bw_password = secret_input.read_bw_password_secret()?;
-    let bws_access_token = secret_input.read_bws_access_token_secret()?;
-    bws_client
-        .ensure_recovery_token_provenance(&bws_access_token)
-        .await?;
-    let document =
-        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
+    let bitwarden_client_id = secret_input.read_bitwarden_client_id_secret()?;
+    let bitwarden_client_secret = secret_input.read_bitwarden_client_secret()?;
+    let document = BootstrapSecretDocument::from_secret_materials(
+        &bitwarden_client_id,
+        &bitwarden_client_secret,
+    )?;
     for (storage, value) in document.storage_entries(serial) {
         let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
         storage_port.store_secret(serial, intent, value)?;
@@ -75,6 +71,7 @@ where
     report.write_enroll_report(&EnrollSummary::spare_completed())
 }
 
+/// enroll-spare(prompt) が primary 読み出しや stdin 経由へ戻らないことを port mock で検証する。
 #[cfg(test)]
 mod tests {
     use crate::secrets::{
@@ -83,7 +80,7 @@ mod tests {
             storage::SecretStorageSetupInspection,
         },
         ports,
-        ports::ProtectedSecret,
+        support::protection::ProtectedSecret,
     };
 
     use super::run_enroll_spare_with_prompt;
@@ -102,40 +99,30 @@ mod tests {
         }
     }
 
-    fn expect_bws_recovery_token_gate(
-        bws: &mut ports::MockBwsClientPort,
-        outcome: crate::Result<()>,
-    ) {
-        let mut outcome = Some(outcome);
-        bws.expect_ensure_recovery_token_provenance()
-            .times(1)
-            .returning(move |_| outcome.take().expect("single use outcome"));
-    }
-
+    /// spare 登録でも input port 由来の 2 bootstrap secret だけを保存する。
     #[tokio::test]
-    async fn enroll_spare_prompt_rejects_same_token_before_store() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+    async fn enroll_spare_prompt_stores_two_bootstrap_secrets() -> crate::Result<()> {
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
+        let mut secret_input = ports::io::MockSecretInputPort::new();
         secret_input
-            .expect_read_bw_email_secret()
+            .expect_read_bitwarden_client_id_secret()
             .times(1)
             .returning(|| Ok(material(b"email")));
         secret_input
-            .expect_read_bw_password_secret()
+            .expect_read_bitwarden_client_secret()
             .times(1)
             .returning(|| Ok(material(b"password")));
-        secret_input
-            .expect_read_bws_access_token_secret()
-            .times(1)
-            .returning(|| Ok(material(b"same-token")));
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -144,79 +131,40 @@ mod tests {
             .expect_initialize_secret_storage()
             .times(1)
             .returning(|_, _| Ok(()));
-        storage.expect_store_secret().times(0);
-        let report = ports::MockReportPort::new();
-        let mut bws = ports::MockBwsClientPort::new();
-        expect_bws_recovery_token_gate(
-            &mut bws,
-            Err(anyhow::anyhow!(
-                "refusing to store bws-access-token: recovery token must differ from the provisioning token"
-            )),
-        );
-
-        let result = run_enroll_spare_with_prompt(
-            EnrollSpareCommand,
-            &mut device_serial,
-            &mut pin_policy,
-            &secret_input,
-            &pin_input,
-            &mut storage,
-            &report,
-            &bws,
-        )
-        .await;
-
-        assert_eq!(
-            result
-                .expect_err("same provisioning token must be rejected")
-                .to_string(),
-            "refusing to store bws-access-token: recovery token must differ from the provisioning token"
-        );
-    }
-
-    #[tokio::test]
-    async fn enroll_spare_prompt_rejects_missing_or_invalid_provenance_before_store() {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
-        device_serial
-            .expect_resolve_device_serial()
-            .times(1)
-            .returning(|| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
-        let mut secret_input = ports::MockSecretInputPort::new();
-        secret_input
-            .expect_read_bw_email_secret()
-            .times(1)
-            .returning(|| Ok(material(b"email")));
-        secret_input
-            .expect_read_bw_password_secret()
-            .times(1)
-            .returning(|| Ok(material(b"password")));
-        secret_input
-            .expect_read_bws_access_token_secret()
-            .times(1)
-            .returning(|| Ok(material(b"candidate-token")));
-        let pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_setup()
-            .times(1)
-            .returning(|_, _| Ok(setup_inspection()));
+            .expect_store_secret()
+            .times(2)
+            .returning(|_, _, _| Ok(()));
         storage
-            .expect_initialize_secret_storage()
+            .expect_finalize_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(()));
-        storage.expect_store_secret().times(0);
-        let report = ports::MockReportPort::new();
-        let mut bws = ports::MockBwsClientPort::new();
-        expect_bws_recovery_token_gate(
-            &mut bws,
-            Err(anyhow::anyhow!(
-                "refusing to store bws-access-token: password-store-remote is missing provisioning token provenance"
-            )),
-        );
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(2)
+            .returning(|_, _| {
+                Ok(
+                    crate::secrets::domain::storage::SecretStorageReadInspection {
+                        manifest_bytes: Some(
+                            crate::secrets::domain::manifest::SecretManifest::expected()
+                                .encode()
+                                .expect("manifest"),
+                        ),
+                        encoded: Some(vec![1]),
+                    },
+                )
+            });
+        storage
+            .expect_load_secret()
+            .times(2)
+            .returning(|_, _, _| Ok(material(b"loaded")));
+        let mut report = ports::io::MockReportPort::new();
+        report
+            .expect_write_enroll_report()
+            .times(1)
+            .returning(|_| Ok(()));
 
-        let result = run_enroll_spare_with_prompt(
+        run_enroll_spare_with_prompt(
             EnrollSpareCommand,
             &mut device_serial,
             &mut pin_policy,
@@ -224,15 +172,7 @@ mod tests {
             &pin_input,
             &mut storage,
             &report,
-            &bws,
         )
-        .await;
-
-        assert_eq!(
-            result
-                .expect_err("tampered provenance note must be rejected")
-                .to_string(),
-            "refusing to store bws-access-token: password-store-remote is missing provisioning token provenance"
-        );
+        .await
     }
 }

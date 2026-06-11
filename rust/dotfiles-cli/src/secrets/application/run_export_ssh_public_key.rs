@@ -8,20 +8,20 @@ use crate::secrets::{
 
 /// ローカル鍵リング上の GPG authentication subkey 由来の OpenSSH 公開鍵を stdout へ出力する。
 ///
-/// 設計「公開鍵出力契約」を満たす単純な順序制御だけを担う。公開鍵は秘密情報ではないため
+/// `gnupg-ssh-design.md` が述べる authentication subkey 公開鍵識別と同じ keyring 境界を使い、
+/// 公開鍵を機械可読な 1 行として出力する単純な順序制御だけを担う。公開鍵は秘密情報ではないため
 /// `SshPublicKeyOutputPort` を通じて terminal でも出力を許可する。GitHub API 呼び出しや鍵サーバー
-/// 参照は行わず、authentication subkey 由来の 1 行だけを機械可読な形式で渡す。順序を application に
-/// 置くのは、鍵リング解決（adapter）と出力境界（adapter）の責務を分離したうえで「authentication
-/// subkey の公開鍵を解決してから出力する」という手順だけを保持するためである。
+/// 参照は行わない。順序を application に置くのは、鍵リング解決（adapter）と出力境界（adapter）の責務を
+/// 分離したうえで「authentication subkey の公開鍵を解決してから出力する」という手順だけを保持するためである。
 pub(crate) fn run_export_ssh_public_key<K, O>(
     command: ExportSshPublicKeyCommand,
     keyring: &mut K,
-    store: &dyn ports::PasswordStorePort,
+    store: &dyn ports::git::PasswordStorePort,
     output: &O,
 ) -> Result<()>
 where
-    K: ports::GpgKeyringPort,
-    O: ports::SshPublicKeyOutputPort,
+    K: ports::gpg::GpgKeyringPort,
+    O: ports::io::SshPublicKeyOutputPort,
 {
     let _ = command;
     let primary_fingerprint = if store.password_store_exists()? {
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn export_ssh_public_key_resolves_and_writes() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut keyring = ports::gpg::MockGpgKeyringPort::new();
         keyring
             .expect_list_secret_primary_fingerprints()
             .times(1)
@@ -92,7 +92,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| OpenSshPublicKey::parse(SSH_LINE));
-        let mut output = ports::MockSshPublicKeyOutputPort::new();
+        let mut output = ports::io::MockSshPublicKeyOutputPort::new();
         output
             .expect_write_ssh_public_key()
             .times(1)
@@ -100,7 +100,7 @@ mod tests {
             .withf(|public_key| public_key.as_str() == SSH_LINE)
             .returning(|_| Ok(()));
 
-        let mut store = ports::MockPasswordStorePort::new();
+        let mut store = ports::git::MockPasswordStorePort::new();
         store
             .expect_password_store_exists()
             .times(1)
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn export_ssh_public_key_without_fingerprint_resolves_single_secret_key() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut keyring = ports::gpg::MockGpgKeyringPort::new();
         keyring
             .expect_list_secret_primary_fingerprints()
             .times(1)
@@ -131,7 +131,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
             .returning(|_| OpenSshPublicKey::parse(SSH_LINE));
-        let mut output = ports::MockSshPublicKeyOutputPort::new();
+        let mut output = ports::io::MockSshPublicKeyOutputPort::new();
         output
             .expect_write_ssh_public_key()
             .times(1)
@@ -139,7 +139,7 @@ mod tests {
             .withf(|public_key| public_key.as_str() == SSH_LINE)
             .returning(|_| Ok(()));
 
-        let mut store = ports::MockPasswordStorePort::new();
+        let mut store = ports::git::MockPasswordStorePort::new();
         store
             .expect_password_store_exists()
             .times(1)
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn export_ssh_public_key_prefers_configured_password_store_recipient() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut keyring = ports::gpg::MockGpgKeyringPort::new();
         keyring.expect_list_secret_primary_fingerprints().times(0);
         keyring
             .expect_primary_fingerprint_for_recipient()
@@ -169,7 +169,7 @@ mod tests {
             .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
             .returning(|_| OpenSshPublicKey::parse(SSH_LINE));
 
-        let mut store = ports::MockPasswordStorePort::new();
+        let mut store = ports::git::MockPasswordStorePort::new();
         store
             .expect_password_store_exists()
             .times(1)
@@ -185,7 +185,7 @@ mod tests {
                 })
             });
 
-        let mut output = ports::MockSshPublicKeyOutputPort::new();
+        let mut output = ports::io::MockSshPublicKeyOutputPort::new();
         output
             .expect_write_ssh_public_key()
             .times(1)

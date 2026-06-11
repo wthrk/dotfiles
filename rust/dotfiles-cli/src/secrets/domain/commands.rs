@@ -59,60 +59,34 @@ pub struct EnrollPrimaryCommand;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnrollSpareCommand;
 
-/// rotate-bws-token use case の入力 command。
-///
-/// 保存し直す secret 名を固定する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RotateBwsTokenCommand;
-
-impl RotateBwsTokenCommand {
-    /// rotate 対象 secret 名を返す。
-    pub fn target_secret(self) -> SecretName {
-        SecretName::BwsAccessToken
-    }
-
-    /// 指定 serial に対する rotate 対象の storage spec を返す。
-    pub fn storage_spec(self, serial: u32) -> SecretStorageSpec {
-        self.target_secret().storage_spec(serial)
-    }
-}
-
 /// verify-yubikey use case の入力 command。
 ///
-/// 要求 check、`--all` 指定、bw-login 外部確認の `--email` override の有無を保持し、
-/// device 選択手段は port 境界へ委譲する。`email_override` が `Some` のときだけ bw-login 外部確認で
-/// YubiKey の `bw-email` を使わず override を使う（yubikey-secret-storage-design.md の `dotfiles secrets verify-yubikey` 節）。
+/// 要求 check と `--all` 指定だけを保持し、device 選択手段は port 境界へ委譲する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyYubikeyCommand {
     pub checks: Vec<ExternalCheck>,
     pub all: bool,
-    pub email_override: Option<String>,
 }
 
 impl VerifyYubikeyCommand {
     /// verify-yubikey が要求された external check 集合を domain check 名へ正規化する。
     ///
     /// `--all` と `--check` の併用は不変条件違反として失敗する。
-    /// 同じ check を複数回指定（例: `--check bw-login --check bw-login`）しても各 external check は
-    /// 高々 1 回だけ実行するよう、出現順を保ったまま重複排除する。これにより bw-login 確認が二重実行され、
-    /// 1 回目の login/unlock で `bw` CLI がログイン済みになった状態で 2 回目の `bw login` が
-    /// 「already logged in」で失敗し、有効な credential / OTP でも検証全体を成功させられなくなることを防ぐ。
-    /// 呼び出し側は返値の順序を presentation 用ではなく domain の実行順として扱う責務を負う。
+    /// 同じ check を複数回指定しても各 external check は高々 1 回だけ実行する。
     pub fn requested_external_checks(&self) -> Result<Vec<CheckName>> {
         if self.all && !self.checks.is_empty() {
             return Err(invalid_input("--all and --check cannot be used together").into());
         }
 
         if self.all {
-            return Ok(vec![CheckName::Bws, CheckName::BwLogin]);
+            return Ok(vec![CheckName::Vault]);
         }
 
         // 出現順を保ったまま重複を取り除き、同じ external check を 2 回以上実行しない。
         let mut checks = Vec::new();
         for check in &self.checks {
             let name = match check {
-                ExternalCheck::Bws => CheckName::Bws,
-                ExternalCheck::BwLogin => CheckName::BwLogin,
+                ExternalCheck::Vault => CheckName::Vault,
             };
             if !checks.contains(&name) {
                 checks.push(name);
@@ -124,27 +98,17 @@ impl VerifyYubikeyCommand {
 
 /// restore-gpg use case の入力 command。
 ///
-/// `bws-access-token` を読み出す device 選択手段や
+/// Bitwarden 個人 vault へ接続するための資格情報読み出し手段や
 /// envelope 取得手段は port 境界へ委譲する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestoreGpgCommand;
 
 /// restore-pass use case の入力 command。
 ///
-/// `bws-access-token` を読み出す device 選択手段や
+/// Bitwarden 個人 vault へ接続するための資格情報読み出し手段や
 /// remote URL 取得手段、clone 手段は port 境界へ委譲する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestorePassCommand;
-
-/// bw-login use case の入力 command。
-///
-/// `bw-email` / `bw-password` を読み出す対象と、`--email` override の有無だけを保持する。
-/// device 選択手段、YubiKey secret 取得手順、OTP 入力手段、`bw` CLI 実行詳細は port 境界へ委譲する。
-/// `email_override` が `Some` のときだけ YubiKey の `bw-email` を使わず override を使う（spec L178）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BwLoginCommand {
-    pub email_override: Option<String>,
-}
 
 /// export-ssh-public-key use case の入力 command。
 ///
@@ -165,8 +129,8 @@ pub struct RegisterGpgBackupCommand;
 /// [`PasswordStoreRemote::parse`](crate::secrets::domain::pass_restore::PasswordStoreRemote::parse)
 /// に委ねる。
 ///
-/// YubiKey storage を読まないため device serial も保持しない。BWS 登録に使う access token は
-/// credential であり、その取得は application が `BwsAccessTokenInputPort` 経由で行う。
+/// Bitwarden 個人 vault への接続資格情報は YubiKey storage に保存済みの account API key から use case が
+/// 局所的に読み出すため、この command は外部入力方式や device override 値を保持しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProvisionPasswordStoreRemoteCommand;
 
@@ -174,52 +138,30 @@ fn invalid_input(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
 
+/// CLI parse 後の command domain 値が external check 指定を正規化する規則を検証する。
 #[cfg(test)]
 mod tests {
     use super::VerifyYubikeyCommand;
     use crate::secrets::domain::verification::{CheckName, ExternalCheck};
 
     fn verify_command(checks: Vec<ExternalCheck>, all: bool) -> VerifyYubikeyCommand {
-        VerifyYubikeyCommand {
-            checks,
-            all,
-            email_override: None,
-        }
+        VerifyYubikeyCommand { checks, all }
     }
 
-    /// 同じ check を複数回指定しても各 external check は 1 回だけ実行する（bw-login の二重実行による
-    /// 2 回目 `bw login` の「already logged in」失敗を防ぐ）。
+    /// 重複した外部確認指定は use case へ渡す前に 1 回の check へ正規化する。
     #[test]
     fn requested_external_checks_dedupes_repeated_check() {
-        let command = verify_command(vec![ExternalCheck::BwLogin, ExternalCheck::BwLogin], false);
+        let command = verify_command(vec![ExternalCheck::Vault, ExternalCheck::Vault], false);
         assert_eq!(
             command.requested_external_checks().expect("checks"),
-            vec![CheckName::BwLogin]
-        );
-    }
-
-    /// 混在した重複でも出現順を保ったまま重複排除する。
-    #[test]
-    fn requested_external_checks_dedupes_mixed_repeats_preserving_order() {
-        let command = verify_command(
-            vec![
-                ExternalCheck::BwLogin,
-                ExternalCheck::Bws,
-                ExternalCheck::BwLogin,
-                ExternalCheck::Bws,
-            ],
-            false,
-        );
-        assert_eq!(
-            command.requested_external_checks().expect("checks"),
-            vec![CheckName::BwLogin, CheckName::Bws]
+            vec![CheckName::Vault]
         );
     }
 
     /// `--all` と `--check` の併用は不変条件違反として失敗する。
     #[test]
     fn requested_external_checks_rejects_all_with_check() {
-        let command = verify_command(vec![ExternalCheck::BwLogin], true);
+        let command = verify_command(vec![ExternalCheck::Vault], true);
         assert!(command.requested_external_checks().is_err());
     }
 }

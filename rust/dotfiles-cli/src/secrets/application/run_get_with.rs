@@ -12,16 +12,16 @@ use crate::secrets::{
 pub(crate) fn run_get_with<D, P, S, O>(
     command: GetCommand,
     device_serial: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
+    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
     process: &P,
     storage_port: &mut S,
     output: &O,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    O: ports::SecretOutputPort,
+    D: ports::yubikey::DeviceSerialPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    O: ports::io::SecretOutputPort,
 {
     let serial = device_serial.resolve_device_serial()?;
     let pin = if pin_policy.device_requires_pin(serial)? {
@@ -41,6 +41,7 @@ where
     output.write_secret(&secret)
 }
 
+/// get use case が復号結果を application で加工せず output port へ渡す順序を検証する。
 #[cfg(test)]
 mod tests {
     use crate::secrets::{
@@ -49,7 +50,7 @@ mod tests {
             storage::SecretStorageReadInspection,
         },
         ports,
-        ports::ProtectedSecret,
+        support::protection::ProtectedSecret,
     };
 
     use super::run_get_with;
@@ -65,34 +66,37 @@ mod tests {
         }
     }
 
+    /// 指定 secret の inspection/load 後に output port へ保護値を渡す。
     #[test]
     fn get_loads_secret_and_writes_output() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
+        let process = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BwsAccessToken)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _, _| Ok(material(b"token")));
-        let mut output = ports::MockSecretOutputPort::new();
+        let mut output = ports::io::MockSecretOutputPort::new();
         output
             .expect_write_secret()
             .times(1)
@@ -102,7 +106,7 @@ mod tests {
 
         run_get_with(
             GetCommand {
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
             },
             &mut device_serial,
             &mut pin_policy,
@@ -112,24 +116,25 @@ mod tests {
         )
     }
 
+    /// PIN は device policy が要求した場合だけ読み、load 境界へ渡す。
     #[test]
     fn get_reads_pin_only_when_device_requires_it() -> crate::Result<()> {
-        let mut device_serial = ports::MockDeviceSerialPort::new();
+        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .returning(|| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(true));
-        let mut process = ports::MockPinInputPort::new();
+        let mut process = ports::io::MockPinInputPort::new();
         process
             .expect_read_pin()
             .times(1)
             .returning(|| Ok(material(b"123456")));
-        let mut storage = ports::MockSecretStoragePort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .times(1)
@@ -139,12 +144,12 @@ mod tests {
             .times(1)
             .withf(|_, _, pin| pin.is_some())
             .returning(|_, _, _| Ok(material(b"token")));
-        let mut output = ports::MockSecretOutputPort::new();
+        let mut output = ports::io::MockSecretOutputPort::new();
         output.expect_write_secret().times(1).returning(|_| Ok(()));
 
         run_get_with(
             GetCommand {
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
             },
             &mut device_serial,
             &mut pin_policy,

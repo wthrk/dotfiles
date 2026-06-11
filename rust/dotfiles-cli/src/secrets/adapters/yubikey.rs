@@ -129,7 +129,7 @@ impl GpgRecipientPort for GpgRecipientAdapter {
     fn resolve_connected_recipient(&mut self, serial: u32) -> Result<ConnectedYubiKey> {
         let mut device = self.open_device_by_serial(serial)?;
         let fingerprint = device.recipient_public_key_fingerprint()?;
-        ConnectedYubiKey::new(serial.to_string(), &fingerprint)
+        ConnectedYubiKey::new(&fingerprint)
     }
 
     fn unwrap_dek(
