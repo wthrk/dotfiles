@@ -173,6 +173,10 @@ fn assert_nightly_record_reuses_built_binary(workflow: &str) -> Result<()> {
         workflow.contains("target/release/dotfiles"),
         "bump-state artifact は built dotfiles binary (`target/release/dotfiles`) を含むこと"
     );
+    ensure!(
+        workflow.contains("chmod +x target/release/dotfiles"),
+        "record job は artifact 展開後に `target/release/dotfiles` の実行ビットを戻すこと"
+    );
     let record_section = workflow
         .split("- name: record（nix/brew 版差分 + 概要）")
         .nth(1)
@@ -342,6 +346,8 @@ mod tests {
             flake.lock
             nix-old.json
             target/release/dotfiles
+          - name: dotfiles binary を実行可能にする
+            run: chmod +x target/release/dotfiles
           - name: record（nix/brew 版差分 + 概要）
             run: |
               dotfiles_bin="$PWD/target/release/dotfiles"

@@ -232,6 +232,9 @@ jobs:
         with:
           name: bump-state
 
+      - name: dotfiles binary を実行可能にする
+        run: chmod +x target/release/dotfiles
+
       # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
       # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
       # 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv /
