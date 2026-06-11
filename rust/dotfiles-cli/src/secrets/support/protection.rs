@@ -3,6 +3,8 @@
 use std::io::Write;
 
 use anyhow::Context;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -42,6 +44,51 @@ pub(crate) struct SecretSession {
 pub struct ProtectedSecret {
     value: Zeroizing<Vec<u8>>,
     _lock: Option<region::LockGuard>,
+}
+
+/// process I/O が一時的に所有する secret bytes を zeroize 境界へ置く固定長 buffer。
+///
+/// `Zeroizing` 型そのものは protection 内に閉じ、caller は read/parse の実行中だけ slice を
+/// 借用する。chunk や escape sequence 判定中の pending bytes のように、`ProtectedSecret` へ
+/// 移す前の repository-owned 平文断片を保持する用途に限定する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(in crate::secrets::support) struct TransientSecretBytes<const N: usize> {
+    bytes: Zeroizing<[u8; N]>,
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl<const N: usize> TransientSecretBytes<N> {
+    /// zeroize 対象の固定長 buffer を 0 初期化する。
+    pub(in crate::secrets::support) fn new() -> Self {
+        Self {
+            bytes: Zeroizing::new([0; N]),
+        }
+    }
+
+    /// I/O API へ渡すため、buffer 全体を mutable slice として一時借用する。
+    pub(in crate::secrets::support) fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.bytes[..]
+    }
+
+    /// 読み込み済み範囲の参照用に、buffer 全体を immutable slice として一時借用する。
+    pub(in crate::secrets::support) fn as_slice(&self) -> &[u8] {
+        &self.bytes[..]
+    }
+
+    /// pending sequence の 1 byte を記録する。
+    pub(in crate::secrets::support) fn set(&mut self, index: usize, byte: u8) {
+        self.bytes[index] = byte;
+    }
+
+    /// pending sequence の先頭 `len` bytes だけを判定用に借用する。
+    pub(in crate::secrets::support) fn prefix(&self, len: usize) -> &[u8] {
+        &self.bytes[..len]
+    }
+
+    /// 現在保持している一時 plaintext 断片を即時 zeroize する。
+    pub(in crate::secrets::support) fn clear(&mut self) {
+        self.bytes[..].zeroize();
+    }
 }
 
 impl PartialEq for ProtectedSecret {
@@ -136,10 +183,6 @@ impl ProtectedSecret {
     ///
     /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
     #[cfg(any(test, feature = "secrets-internal-test-stub"))]
-    #[cfg_attr(
-        all(test, not(feature = "secrets-internal-test-stub")),
-        expect(dead_code)
-    )]
     pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
         self.with_secret(|bytes| bytes.to_vec())
     }

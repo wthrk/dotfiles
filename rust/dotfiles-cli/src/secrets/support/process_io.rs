@@ -1,7 +1,7 @@
 //! process 標準入出力と制御端末を扱う汎用 I/O 補助。
 //!
 //! この module は YubiKey や use case 名を知らず、端末 raw mode、stdin/stdout の TTY 判定、
-//! byte 読み取り、保護済み入力 buffer への移送だけを担当する。
+//! byte stream 読み取り、保護済み入力 buffer への移送だけを担当する。
 
 #[cfg(any(test, not(feature = "secrets-internal-test-stub")))]
 use std::io::Read;
@@ -20,7 +20,18 @@ use filedescriptor::{AsRawFileDescriptor, FileDescriptor, POLLERR, POLLHUP, POLL
 use crate::Result;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use super::protection::{ProtectedSecret, SecretSession, buffer::ProtectedInputBuffer};
+use super::protection::{
+    ProtectedSecret, SecretSession, TransientSecretBytes, buffer::ProtectedInputBuffer,
+};
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+const BRACKETED_PASTE_MARKER_LEN: usize = 6;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+const HIDDEN_INPUT_CHUNK_LEN: usize = 1024;
 
 /// 制御端末優先の reader を返し、pipe 実行時も対話入力境界を維持する。
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -39,7 +50,7 @@ fn stdin_or_tty_reader() -> Result<FileDescriptor> {
 
 /// hidden input reader の readable 状態を待つ。
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-fn read_hidden_byte(reader: &mut FileDescriptor, byte: &mut [u8; 1]) -> Result<usize> {
+fn read_hidden_chunk(reader: &mut FileDescriptor, chunk: &mut [u8]) -> Result<usize> {
     loop {
         let mut fds = [pollfd {
             fd: reader.as_raw_file_descriptor(),
@@ -53,13 +64,193 @@ fn read_hidden_byte(reader: &mut FileDescriptor, byte: &mut [u8; 1]) -> Result<u
         if fds[0].revents & (POLLERR | POLLHUP) != 0 && fds[0].revents & POLLIN == 0 {
             return Ok(0);
         }
-        return reader.read(byte).map_err(Into::into);
+        return reader.read(chunk).map_err(Into::into);
     }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HiddenInputStatus {
+    Continue,
+    Complete,
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+/// hidden/no-echo 入力で bracketed paste marker を除去する filter。
+///
+/// ESC 始まりの pending bytes は secret 本文断片になり得るため `TransientSecretBytes` に一時保持し、
+/// この型は marker 判定と zeroize/clear 境界だけを担う。caller は hidden/no-echo 入力から得た bytes に限って渡す。
+struct BracketedPasteFilter {
+    pending: TransientSecretBytes<BRACKETED_PASTE_MARKER_LEN>,
+    pending_len: usize,
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl BracketedPasteFilter {
+    /// bracketed paste marker 判定用の一時 pending buffer を初期化する。
+    ///
+    /// pending は ESC から始まった入力断片を一時的に保持するため、marker ではない secret 本文が
+    /// 入る場合がある。zeroize は `TransientSecretBytes` に委譲し、この filter は marker
+    /// 判定と clear タイミングだけを担当する。
+    fn new() -> Self {
+        Self {
+            pending: TransientSecretBytes::new(),
+            pending_len: 0,
+        }
+    }
+
+    /// 1 byte を marker 判定に通し、secret 本文だけを protected input buffer へ移す。
+    ///
+    /// caller は hidden/no-echo 入力から得た byte だけを渡す。pending に保持した bytes は、
+    /// marker と確定した時、不一致で本文へ flush した時、または flush が失敗した時に clear する。
+    fn push(
+        &mut self,
+        byte: u8,
+        input: &mut ProtectedInputBuffer,
+        max_len: usize,
+        too_long_message: &'static str,
+    ) -> Result<HiddenInputStatus> {
+        if self.pending_len == 0 {
+            if byte == BRACKETED_PASTE_START[0] {
+                self.pending.set(0, byte);
+                self.pending_len = 1;
+                return Ok(HiddenInputStatus::Continue);
+            }
+            return push_hidden_input_byte(input, byte, max_len, too_long_message);
+        }
+
+        self.pending.set(self.pending_len, byte);
+        self.pending_len += 1;
+        let pending = self.pending.prefix(self.pending_len);
+        if pending == BRACKETED_PASTE_START || pending == BRACKETED_PASTE_END {
+            self.clear_pending();
+            return Ok(HiddenInputStatus::Continue);
+        }
+        if BRACKETED_PASTE_START.starts_with(pending) || BRACKETED_PASTE_END.starts_with(pending) {
+            return Ok(HiddenInputStatus::Continue);
+        }
+
+        let status = flush_hidden_input_pending(pending, input, max_len, too_long_message);
+        self.clear_pending();
+        status
+    }
+
+    /// EOF 時に marker 未確定の pending bytes を本文として処理する。
+    ///
+    /// 完了・継続・エラーのいずれでも pending を clear し、未確定の secret 断片を filter 内に残さない。
+    fn finish(
+        &mut self,
+        input: &mut ProtectedInputBuffer,
+        max_len: usize,
+        too_long_message: &'static str,
+    ) -> Result<HiddenInputStatus> {
+        let status = flush_hidden_input_pending(
+            self.pending.prefix(self.pending_len),
+            input,
+            max_len,
+            too_long_message,
+        );
+        self.clear_pending();
+        status
+    }
+
+    fn clear_pending(&mut self) {
+        self.pending_len = 0;
+        self.pending.clear();
+    }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl Drop for BracketedPasteFilter {
+    fn drop(&mut self) {
+        self.clear_pending();
+    }
+}
+
+/// marker ではない pending bytes を hidden input として protected buffer へ戻す。
+///
+/// caller はこの関数の成否にかかわらず、元の pending owner を clear する責務を持つ。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn flush_hidden_input_pending(
+    pending: &[u8],
+    input: &mut ProtectedInputBuffer,
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<HiddenInputStatus> {
+    for byte in pending {
+        if push_hidden_input_byte(input, *byte, max_len, too_long_message)?
+            == HiddenInputStatus::Complete
+        {
+            return Ok(HiddenInputStatus::Complete);
+        }
+    }
+    Ok(HiddenInputStatus::Continue)
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+/// hidden/no-echo 入力の制御 bytes を処理し、本文 byte だけを protected buffer へ書く。
+///
+/// 上限超過や書き込み失敗時も secret 本文は error 文字列へ含めない。caller は未処理の一時
+/// chunk/pending を protection wrapper 経由で破棄する。
+fn push_hidden_input_byte(
+    input: &mut ProtectedInputBuffer,
+    byte: u8,
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<HiddenInputStatus> {
+    match byte {
+        b'\r' | b'\n' => Ok(HiddenInputStatus::Complete),
+        3 => bail!("interrupted while reading hidden input"),
+        8 | 127 => {
+            input.pop_byte();
+            Ok(HiddenInputStatus::Continue)
+        }
+        value => {
+            input.write_all(&[value])?;
+            if input.as_slice().len() > max_len {
+                bail!("{too_long_message}");
+            }
+            Ok(HiddenInputStatus::Continue)
+        }
+    }
+}
+
+/// reader から hidden line を読み、terminal paste marker を secret buffer へ混入させない。
+#[cfg(all(test, not(feature = "secrets-internal-test-stub")))]
+fn read_hidden_line_from(
+    reader: &mut impl Read,
+    max_len: usize,
+    too_long_message: &'static str,
+    session: &SecretSession,
+) -> Result<ProtectedSecret> {
+    let mut input = ProtectedInputBuffer::new(max_len + 1, session)?;
+    let mut chunk = TransientSecretBytes::<HIDDEN_INPUT_CHUNK_LEN>::new();
+    let mut paste_filter = BracketedPasteFilter::new();
+    loop {
+        let read = reader.read(chunk.as_mut_slice())?;
+        if read == 0 {
+            if paste_filter.finish(&mut input, max_len, too_long_message)?
+                == HiddenInputStatus::Complete
+            {
+                break;
+            }
+            break;
+        }
+        for byte in &chunk.as_slice()[..read] {
+            if paste_filter.push(*byte, &mut input, max_len, too_long_message)?
+                == HiddenInputStatus::Complete
+            {
+                return input.into_protected_secret_line(session, max_len, too_long_message);
+            }
+        }
+    }
+    input.into_protected_secret_line(session, max_len, too_long_message)
 }
 
 /// 非表示入力を raw mode で読み取り、入力 bytes を保護メモリのまま返す。
 ///
-/// backspace と Ctrl-C を process I/O 境界で吸収する。
+/// backspace と Ctrl-C を process I/O 境界で吸収する。paste が terminal から bracketed paste
+/// marker つきで届いた場合、marker は制御列として扱い secret buffer へ入れない。
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) fn read_hidden_line(
     prompt: &str,
@@ -75,25 +266,24 @@ pub(crate) fn read_hidden_line(
         let _ = disable_raw_mode();
     });
     let mut input = ProtectedInputBuffer::new(max_len + 1, &session)?;
-    let mut byte = [0u8; 1];
+    let mut chunk = TransientSecretBytes::<HIDDEN_INPUT_CHUNK_LEN>::new();
+    let mut paste_filter = BracketedPasteFilter::new();
     loop {
-        if read_hidden_byte(&mut reader, &mut byte)? == 0 {
+        let read = read_hidden_chunk(&mut reader, chunk.as_mut_slice())?;
+        if read == 0 {
             break;
         }
-        match byte[0] {
-            b'\r' | b'\n' => {
+        for byte in &chunk.as_slice()[..read] {
+            if paste_filter.push(*byte, &mut input, max_len, too_long_message)?
+                == HiddenInputStatus::Complete
+            {
                 eprintln!();
-                break;
-            }
-            3 => bail!("interrupted while reading hidden input"),
-            8 | 127 => input.pop_byte(),
-            value => {
-                input.write_all(&[value])?;
-                if input.as_slice().len() > max_len {
-                    bail!("{too_long_message}");
-                }
+                return input.into_protected_secret_line(&session, max_len, too_long_message);
             }
         }
+    }
+    if paste_filter.finish(&mut input, max_len, too_long_message)? == HiddenInputStatus::Complete {
+        eprintln!();
     }
     input.into_protected_secret_line(&session, max_len, too_long_message)
 }
@@ -168,12 +358,106 @@ pub(crate) fn write_secret_stdout_with(
 
 #[cfg(test)]
 mod tests {
-    //! 非秘匿 1 行読み取りの行末処理（LF / CR / CRLF）が doc どおり 1 改行として扱われ、CRLF 入力で
-    //! reader へ末尾 `\r` も余分な `\n` も残さないことを byte slice reader で検証する。
+    //! 非秘匿 1 行読み取りの行末処理と、秘匿入力 paste 経路を byte reader で検証する。
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    use std::io::{self, Read};
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    use std::time::{Duration, Instant};
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    use sha2::{Digest, Sha256};
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    use crate::{Result, secrets::support::protection::SecretSession};
 
     use super::read_plain_line_from;
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    use super::{
+        BRACKETED_PASTE_END, BRACKETED_PASTE_START, read_hidden_line, read_hidden_line_from,
+    };
 
     const TOO_LONG: &str = "input too long";
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    const PTY_CHILD_ENV: &str = "DOTFILES_PROCESS_IO_PTY_HIDDEN_CHILD";
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    struct ChunkReader<'a> {
+        chunks: &'a [&'a [u8]],
+        index: usize,
+    }
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    impl<'a> ChunkReader<'a> {
+        fn new(chunks: &'a [&'a [u8]]) -> Self {
+            Self { chunks, index: 0 }
+        }
+    }
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    impl Read for ChunkReader<'_> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.chunks.get(self.index) else {
+                return Ok(0);
+            };
+            self.index += 1;
+            let len = chunk.len().min(output.len());
+            output[..len].copy_from_slice(&chunk[..len]);
+            Ok(len)
+        }
+    }
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    fn assert_secret_bytes_eq(actual: &[u8], expected: &[u8], label: &str) {
+        let actual_digest: [u8; 32] = Sha256::digest(actual).into();
+        let expected_digest: [u8; 32] = Sha256::digest(expected).into();
+
+        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+        assert_eq!(actual_digest, expected_digest, "{label} digest mismatch");
+    }
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    fn assert_hidden_too_long(
+        result: Result<crate::secrets::support::protection::ProtectedSecret>,
+    ) {
+        let error = match result {
+            Ok(_) => panic!("over-limit hidden input must fail"),
+            Err(error) => error,
+        };
+        let text = error.to_string();
+        assert!(
+            text.contains(TOO_LONG),
+            "hidden input over-limit error must use fixed caller message"
+        );
+        assert!(
+            !text.contains("pasted-client-secret"),
+            "hidden input over-limit error must not include pasted secret fixture"
+        );
+        assert!(
+            !text.contains("secret-fragment"),
+            "hidden input over-limit error must not include escape-prefixed secret fixture"
+        );
+    }
+
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    fn read_until_prompt(reader: &mut dyn Read, prompt: &str) -> Result<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        let mut byte = [0u8; 1];
+        while Instant::now() < deadline {
+            if reader.read(&mut byte)? == 0 {
+                continue;
+            }
+            output.push(byte[0]);
+            let text = String::from_utf8_lossy(&output);
+            if text.contains(prompt) {
+                return Ok(text.into_owned());
+            }
+        }
+        anyhow::bail!("timed out waiting for hidden prompt")
+    }
 
     /// LF 終端の入力では行本体だけを返し、後続 bytes を reader に残す。
     #[test]
@@ -217,5 +501,232 @@ mod tests {
         let mut reader: &[u8] = b"0123456789\n";
         let result = read_plain_line_from(&mut reader, 4, TOO_LONG);
         assert!(result.is_err(), "over-length input must fail");
+    }
+
+    /// paste 相当で複数 byte が 1 回の read で届いても、改行までの全 bytes を秘匿値として受け付ける。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_accepts_pasted_bytes_delivered_in_one_read() -> Result<()> {
+        let session = SecretSession::start()?;
+        let mut reader: &[u8] = b"pasted-client-secret\n";
+        let secret = read_hidden_line_from(&mut reader, 1024, TOO_LONG, &session)?;
+
+        assert_secret_bytes_eq(
+            &secret.to_test_bytes(),
+            b"pasted-client-secret",
+            "pasted hidden input",
+        );
+        Ok(())
+    }
+
+    /// terminal が bracketed paste marker を付けても、marker を secret buffer へ混入させない。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_strips_bracketed_paste_markers() -> Result<()> {
+        let session = SecretSession::start()?;
+        let mut input = Vec::new();
+        input.extend_from_slice(BRACKETED_PASTE_START);
+        input.extend_from_slice(b"pasted-client-secret");
+        input.extend_from_slice(BRACKETED_PASTE_END);
+        input.push(b'\n');
+        let mut reader = input.as_slice();
+        let secret = read_hidden_line_from(&mut reader, 1024, TOO_LONG, &session)?;
+
+        assert_secret_bytes_eq(
+            &secret.to_test_bytes(),
+            b"pasted-client-secret",
+            "bracketed pasted hidden input",
+        );
+        Ok(())
+    }
+
+    /// bracketed paste marker が read 境界で分割されても、marker を secret buffer へ混入させない。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_strips_bracketed_paste_markers_split_across_reads() -> Result<()> {
+        let session = SecretSession::start()?;
+        let chunks: &[&[u8]] = &[b"\x1b[2", b"00~pasted-", b"client-secret\x1b[20", b"1~\n"];
+        let mut reader = ChunkReader::new(chunks);
+        let secret = read_hidden_line_from(&mut reader, 1024, TOO_LONG, &session)?;
+
+        assert_secret_bytes_eq(
+            &secret.to_test_bytes(),
+            b"pasted-client-secret",
+            "split bracketed pasted hidden input",
+        );
+        Ok(())
+    }
+
+    /// ESC から始まっても bracketed paste marker でなければ、本文として保持する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_preserves_escape_prefixed_non_marker_input() -> Result<()> {
+        let session = SecretSession::start()?;
+        let mut reader: &[u8] = b"\x1bsecret-fragment\n";
+        let secret = read_hidden_line_from(&mut reader, 1024, TOO_LONG, &session)?;
+
+        assert_secret_bytes_eq(
+            &secret.to_test_bytes(),
+            b"\x1bsecret-fragment",
+            "escape-prefixed hidden input",
+        );
+        Ok(())
+    }
+
+    /// paste 相当で複数 byte が 1 回の read で届く hidden 入力でも、本文上限超過は固定 error で失敗する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_rejects_over_limit_pasted_bytes_delivered_in_one_read() -> Result<()> {
+        let session = SecretSession::start()?;
+        let mut reader: &[u8] = b"pasted-client-secret\n";
+
+        assert_hidden_too_long(read_hidden_line_from(&mut reader, 4, TOO_LONG, &session));
+        Ok(())
+    }
+
+    /// marker に見えかけて不一致になった pending 本文で上限超過しても、固定 error だけを返す。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_rejects_over_limit_escape_prefixed_non_marker_input() -> Result<()> {
+        let session = SecretSession::start()?;
+        let mut reader: &[u8] = b"\x1bsecret-fragment\n";
+
+        assert_hidden_too_long(read_hidden_line_from(&mut reader, 4, TOO_LONG, &session));
+        Ok(())
+    }
+
+    /// bracketed paste marker 付き hidden 入力では、marker を除いた本文に max_len を適用する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn hidden_line_rejects_over_limit_bracketed_paste_body() -> Result<()> {
+        let session = SecretSession::start()?;
+        let mut input = Vec::new();
+        input.extend_from_slice(BRACKETED_PASTE_START);
+        input.extend_from_slice(b"pasted-client-secret");
+        input.extend_from_slice(BRACKETED_PASTE_END);
+        input.push(b'\n');
+        let mut reader = input.as_slice();
+
+        assert_hidden_too_long(read_hidden_line_from(&mut reader, 4, TOO_LONG, &session));
+        Ok(())
+    }
+
+    /// PTY 上の実 hidden prompt に paste 相当の byte 列を一括投入し、TTY/raw/poll/read 経路を通して検証する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn pty_hidden_prompt_accepts_pasted_bracketed_input() -> Result<()> {
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut command = CommandBuilder::new(std::env::current_exe()?);
+        command.args([
+            "--exact",
+            "secrets::support::process_io::tests::pty_hidden_child_reads_pasted_input",
+            "--nocapture",
+        ]);
+        command.env(PTY_CHILD_ENV, "1");
+        let mut child = pair.slave.spawn_command(command)?;
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader()?;
+        let mut writer = pair.master.take_writer()?;
+        let prompt_output = read_until_prompt(&mut *reader, "hidden-test: ")?;
+        assert!(
+            !prompt_output.contains("pasted-client-secret"),
+            "prompt output must not contain the pasted secret"
+        );
+
+        let mut pasted = Vec::new();
+        pasted.extend_from_slice(BRACKETED_PASTE_START);
+        pasted.extend_from_slice(b"pasted-client-secret");
+        pasted.extend_from_slice(BRACKETED_PASTE_END);
+        pasted.push(b'\n');
+        writer.write_all(&pasted)?;
+        drop(writer);
+
+        let status = child.wait()?;
+        assert!(
+            status.success(),
+            "PTY hidden prompt child test failed: {status}"
+        );
+        Ok(())
+    }
+
+    /// PTY 上の実 hidden prompt でも、bracketed paste 本文の上限超過が固定 error で失敗する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn pty_hidden_prompt_rejects_over_limit_pasted_bracketed_input() -> Result<()> {
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut command = CommandBuilder::new(std::env::current_exe()?);
+        command.args([
+            "--exact",
+            "secrets::support::process_io::tests::pty_hidden_child_rejects_over_limit_pasted_input",
+            "--nocapture",
+        ]);
+        command.env(PTY_CHILD_ENV, "1");
+        let mut child = pair.slave.spawn_command(command)?;
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader()?;
+        let mut writer = pair.master.take_writer()?;
+        let prompt_output = read_until_prompt(&mut *reader, "hidden-test: ")?;
+        assert!(
+            !prompt_output.contains("pasted-client-secret"),
+            "prompt output must not contain the pasted secret"
+        );
+
+        let mut pasted = Vec::new();
+        pasted.extend_from_slice(BRACKETED_PASTE_START);
+        pasted.extend_from_slice(b"pasted-client-secret");
+        pasted.extend_from_slice(BRACKETED_PASTE_END);
+        pasted.push(b'\n');
+        writer.write_all(&pasted)?;
+        drop(writer);
+
+        let status = child.wait()?;
+        assert!(
+            status.success(),
+            "PTY hidden prompt over-limit child test failed: {status}"
+        );
+        Ok(())
+    }
+
+    /// `pty_hidden_prompt_accepts_pasted_bracketed_input` の子プロセス側で実 hidden reader を実行する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn pty_hidden_child_reads_pasted_input() -> Result<()> {
+        if std::env::var_os(PTY_CHILD_ENV).is_none() {
+            return Ok(());
+        }
+
+        let secret = read_hidden_line("hidden-test: ", 1024, TOO_LONG)?;
+        assert_secret_bytes_eq(
+            &secret.to_test_bytes(),
+            b"pasted-client-secret",
+            "pty pasted hidden input",
+        );
+        Ok(())
+    }
+
+    /// `pty_hidden_prompt_rejects_over_limit_pasted_bracketed_input` の子プロセス側で失敗経路を検証する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn pty_hidden_child_rejects_over_limit_pasted_input() -> Result<()> {
+        if std::env::var_os(PTY_CHILD_ENV).is_none() {
+            return Ok(());
+        }
+
+        assert_hidden_too_long(read_hidden_line("hidden-test: ", 4, TOO_LONG));
+        Ok(())
     }
 }
