@@ -78,9 +78,7 @@ pub(crate) fn eval_declared_versions(reference: &str) -> Result<BTreeMap<String,
         ],
     )?;
     let user = user.trim();
-    let home = eval_package_list(&format!(
-        ".#{reference}.config.home-manager.users.{user}.home.packages"
-    ))?;
+    let home = eval_package_list(&home_manager_packages_attr_path(reference, user))?;
     let system = eval_package_list(&format!(".#{reference}.config.environment.systemPackages"))?;
     // home を先に、同名は system 側で上書きする（後勝ち）。`chain` で system を後に置き collect する。
     Ok(home.into_iter().chain(system).collect())
@@ -103,6 +101,22 @@ fn eval_package_list(attr: &str) -> Result<BTreeMap<String, NixPackage>> {
         .into_iter()
         .map(|(name, package)| (name, derive_package(package)))
         .collect())
+}
+
+/// Home Manager の宣言パッケージ attr path を、ユーザー名を Nix 文字列キーとして組み立てる。
+fn home_manager_packages_attr_path(reference: &str, user: &str) -> String {
+    format!(
+        ".#{reference}.config.home-manager.users.\"{}\".home.packages",
+        escape_nix_string(user)
+    )
+}
+
+/// CLI/eval 由来の値を Nix の二重引用符文字列キーへ安全に埋め込む。
+fn escape_nix_string(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace("${", "\\${")
 }
 
 /// 生評価値 1 件を導出済み [`NixPackage`]（version + repo/changelog/homepage）へ翻訳する純粋関数。
@@ -215,9 +229,26 @@ pub(crate) fn lock_node_rev(lock_path: &Path, node: &str) -> Result<Option<Strin
 #[cfg(test)]
 mod tests {
     //! owner/repo 導出の 4 分岐（homepage→src→changelog・`.git` 剥がし・非 github 空）・文字列正規化
-    //! （list/非文字列→空）・flake.lock rev 抽出を network/nix 抜きで固定する。
+    //! （list/非文字列→空）・Home Manager attr path の文字列キー化と escape・flake.lock rev 抽出を
+    //! network/nix 抜きで固定する。
 
     use super::*;
+
+    #[test]
+    fn home_manager_packages_attr_path_quotes_user_as_string_key() {
+        assert_eq!(
+            home_manager_packages_attr_path("darwinConfigurations.mac", "user-name"),
+            r#".#darwinConfigurations.mac.config.home-manager.users."user-name".home.packages"#
+        );
+    }
+
+    #[test]
+    fn home_manager_packages_attr_path_escapes_nix_string_key() {
+        assert_eq!(
+            home_manager_packages_attr_path("darwinConfigurations.mac", r#"a\b"${bad}"#),
+            r#".#darwinConfigurations.mac.config.home-manager.users."a\\b\"\${bad}".home.packages"#
+        );
+    }
 
     #[test]
     fn derive_repo_prefers_homepage_then_src_then_changelog() {
