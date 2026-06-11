@@ -166,7 +166,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: bump 済み lock と eval 版マップを artifact 化
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bump-state
           retention-days: 1
@@ -227,7 +227,7 @@ jobs:
 
       # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
       - name: bump 済み lock と bump 前 eval 版マップを取得
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bump-state
 
@@ -289,7 +289,7 @@ jobs:
       # 無更新の夜は record が TOML を書かず、docs/update-history/ のアップロード対象が 0 件になりうる。
       # `if-no-files-found: error` だと無更新夜が失敗扱いになるため `warn` で安全側に倒す（clean no-op）。
       - name: 履歴 TOML を artifact 化
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: history-record
           retention-days: 1
@@ -381,7 +381,7 @@ jobs:
           shared-key: static-checks-${{ runner.os }}
 
       - name: bump 済み lock を取得
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bump-state
 
@@ -390,7 +390,7 @@ jobs:
       # 権限/破損エラーを握り潰さず fail-closed にする（history 欠落のまま flake.lock 単独 bump PR が auto-merge
       # されるのを防ぐ）。失敗許容するのは無更新夜だけに限定する。
       - name: 履歴 TOML を取得
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}
         with:
           name: history-record

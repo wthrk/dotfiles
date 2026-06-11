@@ -66,6 +66,7 @@ fn github_actions(shell: &Shell) -> Result<()> {
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
     nightly_record_rebuilds_in_job(shell)?;
     nightly_lock_rev_skips_nix_develop(shell)?;
+    nightly_artifact_actions_use_supported_node_runtime(shell)?;
     Ok(())
 }
 
@@ -220,6 +221,33 @@ fn assert_nightly_lock_rev_skips_nix_develop(workflow: &str) -> Result<()> {
     Ok(())
 }
 
+/// nightly-update.yml の artifact action が Node 20 廃止 warning の出る古い major に戻らないことを静的に固定する。
+fn nightly_artifact_actions_use_supported_node_runtime(shell: &Shell) -> Result<()> {
+    step("nightly-update artifact actions avoid node20 deprecation");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_artifact_actions_use_supported_node_runtime(&workflow)
+}
+
+fn assert_nightly_artifact_actions_use_supported_node_runtime(workflow: &str) -> Result<()> {
+    ensure!(
+        workflow.contains("actions/upload-artifact@v7"),
+        "nightly-update は Node 20 廃止 warning を避けるため upload-artifact@v7 を使うこと"
+    );
+    ensure!(
+        workflow.contains("actions/download-artifact@v8"),
+        "nightly-update は Node 20 廃止 warning を避けるため download-artifact@v8 を使うこと"
+    );
+    ensure!(
+        !workflow.contains("actions/upload-artifact@v4"),
+        "nightly-update は upload-artifact@v4 へ戻してはならない"
+    );
+    ensure!(
+        !workflow.contains("actions/download-artifact@v4"),
+        "nightly-update は download-artifact@v4 へ戻してはならない"
+    );
+    Ok(())
+}
+
 /// lock file が存在する状態で、Nix flake の評価と Nix ファイルの整形を検証する。
 fn nix(shell: &Shell) -> Result<()> {
     step("flake.lock exists");
@@ -299,6 +327,7 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
 mod tests {
     use super::{
         assert_auto_update_wrapper_uses_update_all_semantics,
+        assert_nightly_artifact_actions_use_supported_node_runtime,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
     };
@@ -391,5 +420,15 @@ mod tests {
         "#;
 
         assert!(assert_nightly_lock_rev_skips_nix_develop(workflow).is_ok());
+    }
+
+    #[test]
+    fn nightly_artifact_actions_use_supported_node_runtime() {
+        let workflow = r#"
+          - uses: actions/upload-artifact@v7
+          - uses: actions/download-artifact@v8
+        "#;
+
+        assert!(assert_nightly_artifact_actions_use_supported_node_runtime(workflow).is_ok());
     }
 }
