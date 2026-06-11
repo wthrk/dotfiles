@@ -14,6 +14,8 @@ use crate::{
     switch,
 };
 
+const DEFAULT_NIX_PROGRAM: &str = "/nix/var/nix/profiles/default/bin/nix";
+
 /// 既存の `switch` と同じオプションを受け取り、先に flake.lock を更新する。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     let config_dir = options.switch.config_dir()?;
@@ -49,16 +51,14 @@ fn update_lock_args(config_dir: &Path) -> Vec<OsString> {
 /// lock 更新を root のまま行うか、対象ユーザーへ降格して行うかを引数列へ反映する。
 fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> UpdateLockInvocation {
     let args = update_lock_args(config_dir);
+    let nix = OsString::from(DEFAULT_NIX_PROGRAM);
     if let Some(user) = lock_owner {
         UpdateLockInvocation {
             program: OsString::from("sudo"),
-            args: sudo_as_user_args(user, OsString::from("nix"), args),
+            args: sudo_as_user_args(user, nix, args),
         }
     } else {
-        UpdateLockInvocation {
-            program: OsString::from("nix"),
-            args,
-        }
+        UpdateLockInvocation { program: nix, args }
     }
 }
 
@@ -99,7 +99,7 @@ mod tests {
         );
     }
 
-    /// root daemon の `--user` 経路では lock 更新も対象ユーザーの HOME/uid で実行する。
+    /// root daemon の `--user` 経路では lock 更新も対象ユーザーの HOME/uid で実行し、`nix` は絶対パスで起動する。
     #[test]
     fn update_lock_with_owner_runs_nix_as_target_user() {
         let invocation = update_lock_invocation(Path::new("/cfg"), Some("alice"));
@@ -111,13 +111,27 @@ mod tests {
                 OsString::from("-H"),
                 OsString::from("-u"),
                 OsString::from("alice"),
-                OsString::from("nix"),
+                OsString::from("env"),
+                OsString::from(format!(
+                    "PATH={}",
+                    std::env::var("PATH").unwrap_or_default()
+                )),
+                OsString::from("/nix/var/nix/profiles/default/bin/nix"),
                 OsString::from("flake"),
                 OsString::from("update"),
                 OsString::from("dotfiles"),
                 OsString::from("--flake"),
                 OsString::from("/cfg"),
             ]
+        );
+    }
+
+    #[test]
+    fn update_lock_without_owner_uses_absolute_nix_path() {
+        let invocation = update_lock_invocation(Path::new("/cfg"), None);
+        assert_eq!(
+            invocation.program,
+            OsString::from("/nix/var/nix/profiles/default/bin/nix")
         );
     }
 }

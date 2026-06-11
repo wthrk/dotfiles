@@ -2,7 +2,8 @@
 //!
 //! 読み出し → 範囲選択（起点 rev）→ catch-up 集約 → severity/overall 再算出 → 描画（text/JSON）の順に処理する。
 //! 複数 bump を跨ぐ適用では複数エントリを跨ぐため、跨いだ全 [`UpdateEntry`] をアプリ単位で集約する: `old` は最古
-//! 適用版・`new` は最新適用版、change_item は決定論キー `(name, source, category, ref_url, text)` で重複排除し、
+//! 適用版・`new` は最新適用版、package 集約キーは `(name, source)`、各 package 内の change_item は決定論キー
+//! `(category, ref_url, text)` で重複排除し、
 //! severity / overall は集約後集合で record と同一規則（[`super::wire::severity_of`]）により再算出する（記録時と
 //! 表示時で重要度規則を二重化しない）。
 //!
@@ -171,23 +172,16 @@ fn merge_unique_items(
     package
         .change_items
         .iter()
-        .fold((items, seen), |(items, seen), item| {
+        .fold((items, seen), |(mut items, mut seen), item| {
             let dedup_key = (
                 item.category.as_stable_key(),
                 item.ref_url.clone(),
                 item.text.clone(),
             );
-            if seen.contains(&dedup_key) {
-                (items, seen)
-            } else {
-                (
-                    items
-                        .into_iter()
-                        .chain(std::iter::once(item.clone()))
-                        .collect(),
-                    seen.into_iter().chain(std::iter::once(dedup_key)).collect(),
-                )
+            if seen.insert(dedup_key) {
+                items.push(item.clone());
             }
+            (items, seen)
         })
 }
 

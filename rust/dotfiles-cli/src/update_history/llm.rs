@@ -15,7 +15,7 @@
 //! 未設定（ローカル等）なら抽出を skip して空（呼び出し側が version-only として記録する）。
 //!
 //! 一過性エラー（5xx/timeout/接続/瞬間的 rate_limit）の回復は async-openai client の指数バックオフ
-//! （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒上限）へ一本化し、[`model_call`] 自身は追加リトライしない。バックオフを
+//! （[`CLIENT_BACKOFF_MAX_ELAPSED`]=20 秒上限）へ一本化し、[`model_call`] 自身は追加リトライしない。バックオフを
 //! 使い切っても失敗するエラーは空へ縮退する（呼び出し側が version-only として確定する）。同期の record 経路から
 //! 呼ぶため、async 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
 //!
@@ -68,13 +68,14 @@ const TRUNCATION_MARKER: &str = "\n…(truncated)";
 /// async-openai 0.28 の既定 backoff は max_elapsed_time=15 分で、`billing_not_active`（429,
 /// type!=insufficient_quota）のような恒久エラーまで 15 分リトライし続け、record が 120 分タイムアウトする。一方で
 /// 0 まで縮めると一過性失敗（5xx/接続/瞬間的 rate_limit）も一切リトライされず、ノートを取得済みのパッケージでも
-/// LLM 抽出が空に落ちてカバレッジを失う。そこで **60 秒**に上限を置き、crate の指数バックオフに一過性失敗の回復を
-/// 任せつつ、恒久エラーは 60 秒で打ち切る（53 パッケージ逐次でも最悪 53×60s < 120 分タイムアウトに収まる）。
-const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(60);
+/// LLM 抽出が空に落ちてカバレッジを失う。そこで **20 秒**に上限を置き、crate の指数バックオフに一過性失敗の回復を
+/// 任せつつ、恒久エラーは 20 秒で打ち切る。呼び出し側の hard timeout と揃え、worker が呼び出し側より長く
+/// 走り続けないようにする。
+const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(20);
 
 /// 1 パッケージの OpenAI 呼び出しを同期ブリッジで待つ最大時間。
 ///
-/// client 内蔵バックオフ 60 秒より短く、CI 全体を引きずらない 1 パッケージ上限。
+/// client 内蔵バックオフと同じ 20 秒で揃え、CI 全体を引きずらない 1 パッケージ上限。
 ///
 /// record は全パッケージを逐次処理するため、1 件 90 秒でも 50 件超で 1 時間級へ膨らむ。そこで 20 秒で打ち切り、
 /// 要約が間に合わないものは version-only へ縮退して run 全体の前進を優先する。
@@ -187,7 +188,7 @@ impl OpenAiExtractor {
     pub(crate) fn new(brew_notes_base: Option<String>) -> Self {
         let client = api_key().map(|key| {
             let config = OpenAIConfig::new().with_api_key(key);
-            // crate 内蔵バックオフの上限を 60 秒に置く（[`CLIENT_BACKOFF_MAX_ELAPSED`]）。一過性失敗の回復は
+            // crate 内蔵バックオフの上限を 20 秒に置く（[`CLIENT_BACKOFF_MAX_ELAPSED`]）。一過性失敗の回復は
             // このバックオフに一本化し、model_call は追加リトライしない。
             let backoff = backoff::ExponentialBackoff {
                 max_elapsed_time: Some(CLIENT_BACKOFF_MAX_ELAPSED),
@@ -360,7 +361,7 @@ fn summarize_after_tools(
 /// 1 model 呼び出し: async-openai client で chat completion を実行し、最小レスポンスへ射影する。
 ///
 /// 一過性エラー（rate_limit/429/5xx/接続）の回復は client 内蔵の指数バックオフ
-/// （[`CLIENT_BACKOFF_MAX_ELAPSED`]=60 秒）に委ね、ここでは追加リトライしない。
+/// （[`CLIENT_BACKOFF_MAX_ELAPSED`]=20 秒）に委ね、ここでは追加リトライしない。
 /// バックオフを使い切っても失敗するエラー（一過性・恒久いずれも）は空レスポンス（[`ResponseMessage::default`]）へ
 /// 縮退し、上位の空判定で version-only として確定する。is_transient はログ分類のみに使う。
 fn model_call(
@@ -796,8 +797,8 @@ mod tests {
     #[test]
     fn client_backoff_is_bounded_between_zero_and_default() {
         // 既定 15 分（record を 120 分タイムアウトさせる）でも 0（一過性失敗を回復できずカバレッジを失う）でも
-        // なく、60 秒上限であることを固定する。将来のリファクタで両極端へ戻る回帰を検知する。
-        assert_eq!(CLIENT_BACKOFF_MAX_ELAPSED, Duration::from_secs(60));
+        // なく、呼び出し側 hard timeout と揃った 20 秒上限であることを固定する。
+        assert_eq!(CLIENT_BACKOFF_MAX_ELAPSED, Duration::from_secs(20));
     }
 
     #[test]

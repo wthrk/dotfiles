@@ -43,6 +43,8 @@ let
       config.nix.package
       pkgs.coreutils
     ])
+    "/etc/profiles/per-user/${user}/bin"
+    "${homeDir}/.nix-profile/bin"
     "/run/current-system/sw/bin"
     "/nix/var/nix/profiles/default/bin"
     "/usr/bin"

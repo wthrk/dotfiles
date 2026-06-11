@@ -35,13 +35,25 @@ pub(crate) fn sudo_as_user_args<I>(user: &str, program: OsString, args: I) -> Ve
 where
     I: IntoIterator<Item = OsString>,
 {
+    let inherited_path = std::env::var_os("PATH");
     [
         OsString::from("-H"),
         OsString::from("-u"),
         OsString::from(user),
-        program,
     ]
     .into_iter()
+    .chain(
+        inherited_path
+            .map(|path| {
+                vec![OsString::from("env"), {
+                    let mut assignment = OsString::from("PATH=");
+                    assignment.push(path);
+                    assignment
+                }]
+            })
+            .unwrap_or_default(),
+    )
+    .chain(std::iter::once(program))
     .chain(args)
     .collect()
 }
@@ -79,7 +91,7 @@ mod tests {
     use super::sudo_as_user_args;
     use std::ffi::OsString;
 
-    /// root daemon から呼ぶ外部コマンドは `sudo -H -u <user>` で包む。
+    /// root daemon から呼ぶ外部コマンドは `sudo -H -u <user> env PATH=...` で包み、呼び出し元 PATH を渡す。
     #[test]
     fn sudo_as_user_args_prefixes_user_context() {
         let args = sudo_as_user_args(
@@ -89,15 +101,19 @@ mod tests {
         );
 
         assert_eq!(
-            args,
-            vec![
+            &args[..3],
+            &[
                 OsString::from("-H"),
                 OsString::from("-u"),
                 OsString::from("alice"),
-                OsString::from("nix"),
-                OsString::from("flake"),
-                OsString::from("update"),
             ]
         );
+        assert!(args.contains(&OsString::from("env")));
+        assert!(
+            args.iter()
+                .any(|arg| arg.to_string_lossy().starts_with("PATH="))
+        );
+        assert!(args.contains(&OsString::from("nix")));
+        assert!(args.ends_with(&[OsString::from("flake"), OsString::from("update")]));
     }
 }

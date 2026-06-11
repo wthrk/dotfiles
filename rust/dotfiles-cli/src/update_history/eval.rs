@@ -27,16 +27,20 @@ use crate::process::run_capture;
 /// そのまま JSON object へ写すだけ。整形と owner/repo 導出は Rust 側（[`derive_package`]）が行う。`src` の各
 /// フィールドは存在しないパッケージがあるため `or` で握り潰す。`builtins.parseDrvName` は pname 欠落時の名前
 /// フォールバック。
-const RAW_EVAL_APPLY: &str = r#"ps: builtins.listToAttrs (map (p: {
+const RAW_EVAL_APPLY: &str = r#"ps: builtins.listToAttrs (map (p:
+  let
+    meta = p.meta or {};
+    src = p.src or {};
+  in {
   name = p.pname or (builtins.parseDrvName (p.name or "")).name;
   value = {
     version = p.version or "";
-    homepage = p.meta.homepage or null;
-    changelog = p.meta.changelog or null;
-    src_owner = p.src.owner or null;
-    src_repo = p.src.repo or null;
-    src_url = p.src.url or null;
-    src_urls = p.src.urls or null;
+    homepage = meta.homepage or null;
+    changelog = meta.changelog or null;
+    src_owner = src.owner or null;
+    src_repo = src.repo or null;
+    src_url = src.url or null;
+    src_urls = src.urls or null;
   };
 }) ps)"#;
 

@@ -49,7 +49,7 @@ pub(crate) fn diff_casks(
 ) -> Result<Vec<VersionDelta>> {
     // 各 cask の old/new 版差分を `Result<Option<delta>>` へ翻訳して、Err 伝播（`collect::<Result<_>>`）と
     // 版変化なし（`None`）の除去（`flatten`）を分けて行う。
-    parse_cask_list(casks_nix)
+    parse_cask_list(casks_nix)?
         .into_iter()
         .map(|name| cask_delta(rev_old, rev_new, name, fetch))
         .collect::<Result<Vec<Option<VersionDelta>>>>()
@@ -328,21 +328,23 @@ fn parse_cask_version(rb: &str) -> Option<String> {
 }
 
 /// `nix/modules/homebrew.nix` の `casks = [ "a" "b" ... ];` から cask 名を抽出する純粋関数。
-fn parse_cask_list(nix: &str) -> Vec<String> {
+fn parse_cask_list(nix: &str) -> Result<Vec<String>> {
     let Some(after) = nix.split_once("casks = [").map(|(_, rest)| rest) else {
-        return Vec::new();
+        bail!(
+            "`homebrew.nix` に `casks = [` ブロックが見つからない。brew 差分抽出規約が壊れているため停止する（fail-closed）"
+        );
     };
     let block = after
         .split_once(']')
         .map(|(block, _)| block)
         .unwrap_or(after);
-    block
+    Ok(block
         .split('"')
         .skip(1)
         .step_by(2)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -362,10 +364,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_cask_list_extracts_quoted_names() {
+    fn parse_cask_list_extracts_quoted_names() -> Result<()> {
         let nix = "  casks = [\n    \"azookey\"\n    \"bitwarden\"\n    \"font-cica\"\n  ];\n";
-        assert_eq!(parse_cask_list(nix), ["azookey", "bitwarden", "font-cica"]);
-        assert!(parse_cask_list("no casks here").is_empty());
+        assert_eq!(parse_cask_list(nix)?, ["azookey", "bitwarden", "font-cica"]);
+        let err = parse_cask_list("no casks here")
+            .expect_err("missing casks block must fail closed")
+            .to_string();
+        assert!(err.contains("casks = ["), "{err}");
+        Ok(())
     }
 
     #[test]

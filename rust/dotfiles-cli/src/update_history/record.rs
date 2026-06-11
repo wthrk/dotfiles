@@ -458,9 +458,11 @@ fn run_record_with(
         write_registry(input.registry_path, &registry)?;
     }
 
-    // rev 前進なし・差分素材なしの夜は chain link にも要約にもならない空エントリを残さない。
-    let rev_advanced = input.nixpkgs_old != input.nixpkgs_new;
-    if !rev_advanced && materials.is_empty() {
+    // どの tracked cursor も前進せず、差分素材も無い夜だけ空エントリを抑止する。
+    let cursor_advanced = input.cursor_old != input.cursor_new;
+    let nixpkgs_advanced = input.nixpkgs_old != input.nixpkgs_new;
+    let cask_advanced = input.cask_rev_old != input.cask_rev_new;
+    if !(cursor_advanced || nixpkgs_advanced || cask_advanced) && materials.is_empty() {
         return Ok(());
     }
 
@@ -1134,7 +1136,10 @@ mod tests {
         let registry = dir.join("notes-sources.toml");
         let base = input(&dir, &out, &registry, None, None);
         let inp = RecordInput {
+            cursor_new: base.cursor_old.clone(),
             nixpkgs_new: base.nixpkgs_old.clone(),
+            cask_rev_old: Some("cask-same"),
+            cask_rev_new: Some("cask-same"),
             ..base
         };
         let extract = FakeExtractor::new();
