@@ -118,8 +118,8 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          nix develop -c cargo build --release -p dotfiles-cli
-          echo "bin=$PWD/target/release/dotfiles" >> "$GITHUB_OUTPUT"
+          nix develop -c cargo build -p dotfiles-cli
+          echo "bin=$PWD/target/debug/dotfiles" >> "$GITHUB_OUTPUT"
 
       # bump 前の宣言パッケージ版を Rust が `nix eval`（生の評価値）して owner/repo 導出まで行い JSON へ書く。
       # 併せて bump 前 input rev を Rust（serde_json）が抽出する（jq 不使用）。
@@ -174,7 +174,7 @@ jobs:
           path: |
             flake.lock
             nix-old.json
-            target/release/dotfiles
+            target/debug/dotfiles
           if-no-files-found: error
 
   # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
@@ -233,7 +233,7 @@ jobs:
           name: bump-state
 
       - name: dotfiles binary を実行可能にする
-        run: chmod +x target/release/dotfiles
+        run: chmod +x target/debug/dotfiles
 
       # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
       # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
@@ -265,7 +265,7 @@ jobs:
           # ノート取得元レジストリ（provenance の学習・再利用）。既存レジストリを再利用し、新規/未知の取得元だけを追記する。
           notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
-          dotfiles_bin="$PWD/target/release/dotfiles"
+          dotfiles_bin="$PWD/target/debug/dotfiles"
           nix develop -c "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
             --cursor-old "$DOTFILES_CURSOR_OLD" \

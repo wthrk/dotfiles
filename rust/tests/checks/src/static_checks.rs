@@ -171,12 +171,12 @@ fn nightly_record_reuses_built_binary(shell: &Shell) -> Result<()> {
 
 fn assert_nightly_record_reuses_built_binary(workflow: &str) -> Result<()> {
     ensure!(
-        workflow.contains("target/release/dotfiles"),
-        "bump-state artifact は built dotfiles binary (`target/release/dotfiles`) を含むこと"
+        workflow.contains("target/debug/dotfiles"),
+        "bump-state artifact は built dotfiles binary (`target/debug/dotfiles`) を含むこと"
     );
     ensure!(
-        workflow.contains("chmod +x target/release/dotfiles"),
-        "record job は artifact 展開後に `target/release/dotfiles` の実行ビットを戻すこと"
+        workflow.contains("chmod +x target/debug/dotfiles"),
+        "record job は artifact 展開後に `target/debug/dotfiles` の実行ビットを戻すこと"
     );
     let record_section = workflow
         .split("- name: record（nix/brew 版差分 + 概要）")
@@ -184,11 +184,12 @@ fn assert_nightly_record_reuses_built_binary(workflow: &str) -> Result<()> {
         .unwrap_or_default();
     let record_step = record_section.split("- name:").next().unwrap_or_default();
     ensure!(
-        !record_step.contains("cargo build --release -p dotfiles-cli"),
+        !record_step.contains("cargo build --release -p dotfiles-cli")
+            && !record_step.contains("cargo build -p dotfiles-cli"),
         "record job は bump job でビルド済みの dotfiles binary を再利用し、ここで再ビルドしてはならない"
     );
     ensure!(
-        record_step.contains("dotfiles_bin=\"$PWD/target/release/dotfiles\""),
+        record_step.contains("dotfiles_bin=\"$PWD/target/debug/dotfiles\""),
         "record job は artifact から展開した built dotfiles binary を使うこと"
     );
     Ok(())
@@ -371,12 +372,12 @@ mod tests {
           path: |
             flake.lock
             nix-old.json
-            target/release/dotfiles
+            target/debug/dotfiles
           - name: dotfiles binary を実行可能にする
-            run: chmod +x target/release/dotfiles
+            run: chmod +x target/debug/dotfiles
           - name: record（nix/brew 版差分 + 概要）
             run: |
-              dotfiles_bin="$PWD/target/release/dotfiles"
+              dotfiles_bin="$PWD/target/debug/dotfiles"
               nix develop -c "$dotfiles_bin" update-history record \
                 --out "$out"
         "#;
