@@ -392,6 +392,7 @@ fn run_record_with(
     let nix_deltas = diff_versions(&old_versions, &new_versions);
     let brew_deltas = compute_brew_deltas(input, fetch_cask)?;
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
+    let total = deltas.len();
 
     // 各 delta を解決しつつレジストリ（学習）と素材列を不変 accumulator で畳み込む。`registry_dirty` は学習が
     // 1 度でも起きたかを `learned.is_some()` の or で持ち回る。
@@ -400,38 +401,44 @@ fn run_record_with(
         registry_dirty: false,
         materials: Vec::new(),
     };
-    let accumulated =
-        deltas
-            .into_iter()
-            .try_fold(initial, |accum, delta| -> Result<RecordAccum> {
-                let resolution = resolve_notes(
-                    &delta,
-                    &input.at,
-                    extract,
-                    fetch_source,
-                    brew_hint,
-                    &accum.registry,
-                )?;
-                let registry = match &resolution.learned {
-                    Some(entry) => {
-                        learn_provenance(accum.registry, &delta.name, delta.source, entry.clone())
-                    }
-                    None => accum.registry,
-                };
-                Ok(RecordAccum {
-                    registry,
-                    registry_dirty: accum.registry_dirty || resolution.learned.is_some(),
-                    materials: accum
-                        .materials
-                        .into_iter()
-                        .chain(std::iter::once(PackageMaterial {
-                            delta,
-                            change_items: resolution.notes.change_items,
-                            notes_url: resolution.notes.notes_url,
-                        }))
-                        .collect(),
-                })
-            })?;
+    let accumulated = deltas.into_iter().enumerate().try_fold(
+        initial,
+        |accum, (index, delta)| -> Result<RecordAccum> {
+            eprintln!(
+                "uh: progress {current}/{total} resolving {name}",
+                current = index + 1,
+                total = total,
+                name = delta.name,
+            );
+            let resolution = resolve_notes(
+                &delta,
+                &input.at,
+                extract,
+                fetch_source,
+                brew_hint,
+                &accum.registry,
+            )?;
+            let registry = match &resolution.learned {
+                Some(entry) => {
+                    learn_provenance(accum.registry, &delta.name, delta.source, entry.clone())
+                }
+                None => accum.registry,
+            };
+            Ok(RecordAccum {
+                registry,
+                registry_dirty: accum.registry_dirty || resolution.learned.is_some(),
+                materials: accum
+                    .materials
+                    .into_iter()
+                    .chain(std::iter::once(PackageMaterial {
+                        delta,
+                        change_items: resolution.notes.change_items,
+                        notes_url: resolution.notes.notes_url,
+                    }))
+                    .collect(),
+            })
+        },
+    )?;
     let RecordAccum {
         registry,
         registry_dirty,

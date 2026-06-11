@@ -29,6 +29,7 @@
 //! 抽出の trait seam は [`ChangeExtractor`] 1 つだけで、テストはこれを fake 実装に差し替える。本物の
 //! [`OpenAiExtractor`] は async-openai で OpenAI を叩く。
 
+use std::sync::mpsc;
 use std::time::Duration;
 
 use async_openai::Client;
@@ -70,6 +71,12 @@ const TRUNCATION_MARKER: &str = "\n…(truncated)";
 /// LLM 抽出が空に落ちてカバレッジを失う。そこで **60 秒**に上限を置き、crate の指数バックオフに一過性失敗の回復を
 /// 任せつつ、恒久エラーは 60 秒で打ち切る（53 パッケージ逐次でも最悪 53×60s < 120 分タイムアウトに収まる）。
 const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(60);
+
+/// 1 パッケージの OpenAI 呼び出しを同期ブリッジで待つ最大時間。
+///
+/// client 内蔵バックオフ 60 秒に加えて、レスポンス生成や seed 無しの tool-use 1 往復分を吸収する。ここを超えたら
+/// version-only へ縮退し、record 全体を止めない。
+const OPENAI_HARD_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// 1 パッケージあたりの tool_call 反復（fetch → 再 request）の最大回数。
 const MAX_TOOL_ITERATIONS: u32 = 3;
@@ -381,35 +388,39 @@ fn run_blocking(
     client: Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
 ) -> std::result::Result<ResponseMessage, OpenAIError> {
-    std::thread::scope(|scope| {
-        scope
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| {
-                        OpenAIError::InvalidArgument(format!("tokio runtime build failed: {error}"))
-                    })?;
-                let response =
-                    runtime.block_on(async move { client.chat().create(request).await })?;
-                let message = response
-                    .choices
-                    .into_iter()
-                    .next()
-                    .map(|choice| ResponseMessage {
-                        content: choice.message.content,
-                        tool_calls: choice.message.tool_calls.unwrap_or_default(),
-                    })
-                    .unwrap_or_default();
-                Ok(message)
-            })
-            .join()
-            .unwrap_or_else(|_| {
-                Err(OpenAIError::InvalidArgument(
-                    "openai worker thread panicked".to_string(),
-                ))
-            })
-    })
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = (|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    OpenAIError::InvalidArgument(format!("tokio runtime build failed: {error}"))
+                })?;
+            let response = runtime.block_on(async move { client.chat().create(request).await })?;
+            let message = response
+                .choices
+                .into_iter()
+                .next()
+                .map(|choice| ResponseMessage {
+                    content: choice.message.content,
+                    tool_calls: choice.message.tool_calls.unwrap_or_default(),
+                })
+                .unwrap_or_default();
+            Ok(message)
+        })();
+        let _ = sender.send(result);
+    });
+    match receiver.recv_timeout(OPENAI_HARD_TIMEOUT) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(OpenAIError::InvalidArgument(format!(
+            "openai hard timeout after {}s",
+            OPENAI_HARD_TIMEOUT.as_secs()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(OpenAIError::InvalidArgument(
+            "openai worker thread disconnected".to_string(),
+        )),
+    }
 }
 
 /// API 失敗が一過性（接続/5xx/タイムアウト）かを判定する（少数リトライ対象）。
