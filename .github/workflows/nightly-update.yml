@@ -155,13 +155,15 @@ jobs:
           DOTFILES_BIN: ${{ steps.build.outputs.bin }}
         run: |
           set -euo pipefail
-          echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}" >> "$GITHUB_OUTPUT"
           nixpkgs_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
-          echo "nixpkgs_new=$nixpkgs_new" >> "$GITHUB_OUTPUT"
-          echo "dotfiles_cursor_old=${{ steps.old.outputs.dotfiles_cursor_old }}" >> "$GITHUB_OUTPUT"
-          echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}" >> "$GITHUB_OUTPUT"
           cask_rev_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
-          echo "cask_rev_new=$cask_rev_new" >> "$GITHUB_OUTPUT"
+          {
+            echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}"
+            echo "nixpkgs_new=$nixpkgs_new"
+            echo "dotfiles_cursor_old=${{ steps.old.outputs.dotfiles_cursor_old }}"
+            echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}"
+            echo "cask_rev_new=$cask_rev_new"
+          } >> "$GITHUB_OUTPUT"
 
       - name: bump 済み lock と bump 前 eval 版マップを artifact 化
         uses: actions/upload-artifact@v4
