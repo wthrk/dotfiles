@@ -74,9 +74,11 @@ const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(60);
 
 /// 1 パッケージの OpenAI 呼び出しを同期ブリッジで待つ最大時間。
 ///
-/// client 内蔵バックオフ 60 秒に加えて、レスポンス生成や seed 無しの tool-use 1 往復分を吸収する。ここを超えたら
-/// version-only へ縮退し、record 全体を止めない。
-const OPENAI_HARD_TIMEOUT: Duration = Duration::from_secs(90);
+/// client 内蔵バックオフ 60 秒より短く、CI 全体を引きずらない 1 パッケージ上限。
+///
+/// record は全パッケージを逐次処理するため、1 件 90 秒でも 50 件超で 1 時間級へ膨らむ。そこで 20 秒で打ち切り、
+/// 要約が間に合わないものは version-only へ縮退して run 全体の前進を優先する。
+const OPENAI_HARD_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 1 パッケージあたりの tool_call 反復（fetch → 再 request）の最大回数。
 const MAX_TOOL_ITERATIONS: u32 = 3;
@@ -800,7 +802,7 @@ mod tests {
 
     #[test]
     fn openai_hard_timeout_is_bounded() {
-        assert_eq!(OPENAI_HARD_TIMEOUT, Duration::from_secs(90));
+        assert_eq!(OPENAI_HARD_TIMEOUT, Duration::from_secs(20));
     }
 
     #[test]
