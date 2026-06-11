@@ -11,7 +11,7 @@ name: nightly update
 #     薄いオーケストレーション（checkout / install nix / bump / record 起動 / upload / PR）だけを行う。
 #   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
 #     bump しない（無人で framework を動かさない）。
-#   - 概要（change_items）の LLM 抽出は OpenAI API を使う。record job に **secret
+#   - 概要（change_items）の LLM 抽出の正本は OpenAI API。record job に **secret
 #     `OPEN_AI_API_KEY`** を `env` で結線し、CLI（async-openai crate）が env から読む。GitHub Models /
 #     `permissions: models: read` / GITHUB_TOKEN の LLM 用途は撤去した（PR 起票等の GITHUB_TOKEN は残す）。
 #   - record は 1 回で全変更パッケージを要約しきる。ノートが取れないものは version-only（version + notes_url のみ）

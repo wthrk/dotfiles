@@ -27,8 +27,9 @@ sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になり
 ## 更新と適用
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
-flake の lock を更新（`nix flake update --flake <config_dir>`）してから、既存の `switch` と同じ適用処理を
-行います（macOS は nix-darwin が Home Manager も一括適用、非 macOS は Home Manager standalone）。
+flake の `dotfiles` input だけを更新（`nix flake update dotfiles --flake <config_dir>`）し、repo の committed
+lock にある nixpkgs / Homebrew tap pin へ追随してから、既存の `switch` と同じ適用処理を行います（対象省略時は
+`all` として Home Manager、続いて nix-darwin を適用。非 macOS は Home Manager standalone）。
 
 ```sh
 dotfiles update
@@ -219,8 +220,8 @@ Homebrew tap input のみ。framework input は bump しない）し、更新履
 へ記録して自動 PR を起票・auto-merge します。各マシンはこの bump 済み pin に `dotfiles update` で追随します。
 
 各アプリの「何が変わったか」概要は上流のリリースノートから取得しますが、ノートの置き場は一律に機械取得
-できないため、(1) 機械的に取れるものは Releases API / changelog から取得し、(2) 取れないものは OpenAI API
-（`async-openai` crate）の AI エージェントに探させます。概要取得は nightly の GitHub secret
+できないため、(1) 機械的に取れるものは Releases API / changelog から取得し、(2) 取れないものは GitHub
+Models ではなく OpenAI API（`async-openai` crate）の AI エージェントに探させます。概要取得は nightly の GitHub secret
 `OPEN_AI_API_KEY` を要し、未設定（ローカル等）やノートが取れない場合はそのパッケージを version-only
 （version old→new + notes_url のみ）としてその場で確定記録します（1 回の record で全変更パッケージを処理し
 きり、夜をまたいで埋め直しません）。さらに、**どこからノートを取得したか

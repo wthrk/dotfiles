@@ -13,6 +13,7 @@ pub(crate) fn check() -> Result<()> {
     rust(&shell)?;
     shell_scripts(&shell)?;
     github_actions(&shell)?;
+    auto_update_wrapper_uses_update_all_semantics(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)
 }
@@ -153,6 +154,42 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// root auto-update wrapper が `dotfiles update` の既定 `all` 経路を保つことを静的に検証する。
+fn auto_update_wrapper_uses_update_all_semantics(shell: &Shell) -> Result<()> {
+    step("nix-darwin auto-update wrapper");
+    let module = shell.read_file("nix/darwin.nix")?;
+    assert_auto_update_wrapper_uses_update_all_semantics(&module)
+}
+
+/// wrapper 本体だけを見て、`update darwin` 固定への退行と `--user` 欠落を検出する。
+fn assert_auto_update_wrapper_uses_update_all_semantics(module: &str) -> Result<()> {
+    let wrapper = module
+        .split("autoUpdateWrapper = pkgs.writeShellScript")
+        .nth(1)
+        .unwrap_or_default()
+        .split("'';")
+        .next()
+        .unwrap_or_default();
+
+    ensure!(
+        wrapper.contains("${dotfilesBin} update \\"),
+        "auto-update wrapper は target を省略して `dotfiles update` の既定 `all` を使うこと"
+    );
+    ensure!(
+        !wrapper.contains("${dotfilesBin} update darwin"),
+        "auto-update wrapper は `dotfiles update darwin` に固定してはならない"
+    );
+    ensure!(
+        wrapper.contains("--user ${lib.escapeShellArg user}"),
+        "root daemon からの更新では lock 更新と Home Manager を降格するため `--user` を渡すこと"
+    );
+    ensure!(
+        wrapper.contains("--host ${lib.escapeShellArg host}"),
+        "nix-darwin 出力名を固定するため `--host` を渡すこと"
+    );
+    Ok(())
+}
+
 /// `target` 配下を除外し、整形と nil 診断の対象になる Nix ファイルだけを列挙する。
 fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     Ok(cmd!(
@@ -164,4 +201,39 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     .map(|path| path.trim_start_matches("./"))
     .map(ToOwned::to_owned)
     .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_auto_update_wrapper_uses_update_all_semantics;
+
+    /// wrapper が target を省略し、root daemon 用の `--user` / `--host` を渡す形を受け入れる。
+    #[test]
+    fn auto_update_wrapper_accepts_default_update_target_with_user_and_host() {
+        let module = r#"
+          autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
+            exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update \
+              --config-dir ${lib.escapeShellArg configDir} \
+              --user ${lib.escapeShellArg user} \
+              --host ${lib.escapeShellArg host}
+          '';
+        "#;
+
+        assert!(assert_auto_update_wrapper_uses_update_all_semantics(module).is_ok());
+    }
+
+    /// `update darwin` へ戻すと root daemon の all semantics が崩れるため検出する。
+    #[test]
+    fn auto_update_wrapper_rejects_darwin_target_regression() {
+        let module = r#"
+          autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
+            exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update darwin \
+              --config-dir ${lib.escapeShellArg configDir} \
+              --user ${lib.escapeShellArg user} \
+              --host ${lib.escapeShellArg host}
+          '';
+        "#;
+
+        assert!(assert_auto_update_wrapper_uses_update_all_semantics(module).is_err());
+    }
 }

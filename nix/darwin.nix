@@ -18,11 +18,10 @@
 }:
 let
   # auto-update daemon は nightly bump 後に各マシンを repo pin へ無人収束させる薄い launchd service である。
-  # launchd timer は 09:00 に 1 回だけ起動し、`dotfiles update` を root のまま呼ぶ。root daemon が直接実行するため
-  # sudo を要さず、`darwin-rebuild switch` も CLI 内で root のまま sudo なしで適用する。flake.lock 更新
-  # （`nix flake update`）も root で走るため所有権の juggling を持たず、sudoers / NOPASSWD / chown も持たない。適用
-  # 要否判定・home-manager/darwin 適用といった業務判断はすべて `dotfiles update` CLI 側にあり、wrapper は PATH を
-  # 通して CLI を呼ぶだけの薄い層である。
+  # launchd timer は 09:00 に 1 回だけ起動し、root daemon から `dotfiles update` の既定 target（all）を呼ぶ。
+  # CLI 側が lock 更新と Home Manager を対象ユーザー権限へ降格し、darwin-rebuild だけを root のまま適用する。
+  # wrapper は対象ユーザー・HOME・config-dir・host を明示し、適用順序や target semantics は CLI の `update` / `switch`
+  # と同じ実装に委ねる。
   autoUpdateLabel = "org.dotfiles.auto-update";
   homeDir = "/Users/${user}";
   configDir = "${homeDir}/.config/dotfiles";
@@ -52,21 +51,20 @@ let
     "/sbin"
   ];
 
-  # launchd timer が呼ぶ薄い wrapper。`dotfiles update` を root のまま 1 回 exec するだけ。target を `darwin` に
-  # 固定するため、`darwin-rebuild switch --flake <config>#<host>` だけを適用する。この nix-darwin 構成は
-  # `home-manager.darwinModules.home-manager` を取り込み `home-manager.users.${user}` を宣言するため、`darwin-rebuild
-  # switch` が system と Home Manager を一括適用する。target 無指定（既定 `all`）だと standalone の
-  # `home-manager switch --flake <config>#<id -un>` を先に実行し、root daemon では `id -un` が root を返すうえ生成
-  # flake に `homeConfigurations.root` が無いため失敗し、後続の darwin 適用に到達しない。`HOME` を対象ユーザの home に
-  # 固定し、`--config-dir` / `--host` を明示で渡すため、CLI の config_dir 解決は環境に依存せずユーザ dir を指し、
+  # launchd timer が呼ぶ薄い wrapper。target は省略し、手動 `dotfiles update` と同じ既定 `all`
+  # （lock 更新後に Home Manager、続いて nix-darwin）を使う。root daemon から呼ぶため `--user` を明示し、CLI が
+  # lock 更新と standalone Home Manager を `sudo -H -u ${user}` で実行できるようにする。`HOME` と `--config-dir` は
+  # 対象ユーザーのローカル flake へ固定し、root の `$HOME/.config/dotfiles` や `homeConfigurations.root` を参照しない。
   # `--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも `#<host>` を正しく参照する。
   autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg autoUpdatePath}
 
-    exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update darwin \
-      --config-dir ${lib.escapeShellArg configDir} --host ${lib.escapeShellArg host}
+    exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update \
+      --config-dir ${lib.escapeShellArg configDir} \
+      --user ${lib.escapeShellArg user} \
+      --host ${lib.escapeShellArg host}
   '';
 in
 {

@@ -25,8 +25,7 @@
       #   混入すると、greedy 有効下では未固定成果物が無人差し替えされる。これを防ぐため、tap rev の cask `.rb` に
       #   `sha256 :no_check` があれば fail-closed にする検査を `dotfiles update-history record` 経路（Rust 側 brew
       #   モジュール）で実行する（cask 追加時の確認手順は README「Homebrew cask の固定状況」を参照）。auto-update
-      #   適用後は `dotfiles update` の要約（端末 / `update-history show`）が当該更新を利用者へ通知するため、無人で
-      #   cask が上がった事実は可視化される。
+      #   適用後の変更内容は `dotfiles update-history show` で確認できるため、無人で cask が上がった事実は可視化される。
       #
       # `autoUpdate` は引き続き無効にして switch 時の暗黙 tap 取得を避ける（tap は flake input rev で固定）。
       autoUpdate = false;

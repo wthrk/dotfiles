@@ -30,6 +30,22 @@ where
     }
 }
 
+/// `sudo -H -u <user> <program> ...` の引数列を組み立てる。
+pub(crate) fn sudo_as_user_args<I>(user: &str, program: OsString, args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    [
+        OsString::from("-H"),
+        OsString::from("-u"),
+        OsString::from(user),
+        program,
+    ]
+    .into_iter()
+    .chain(args)
+    .collect()
+}
+
 /// 外部コマンドの stdout を捕捉して返す。非 0 終了は失敗にする。
 ///
 /// `run` が stdio を継承するのに対し、本関数は `nix flake archive --json` 出力やリリースノート取得の
@@ -55,4 +71,33 @@ where
     }
     let stdout = String::from_utf8(output.stdout)?;
     Ok(stdout)
+}
+
+/// ユーザー権限実行の sudo 引数が HOME を対象ユーザーへ寄せることを検証する。
+#[cfg(test)]
+mod tests {
+    use super::sudo_as_user_args;
+    use std::ffi::OsString;
+
+    /// root daemon から呼ぶ外部コマンドは `sudo -H -u <user>` で包む。
+    #[test]
+    fn sudo_as_user_args_prefixes_user_context() {
+        let args = sudo_as_user_args(
+            "alice",
+            OsString::from("nix"),
+            [OsString::from("flake"), OsString::from("update")],
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("-H"),
+                OsString::from("-u"),
+                OsString::from("alice"),
+                OsString::from("nix"),
+                OsString::from("flake"),
+                OsString::from("update"),
+            ]
+        );
+    }
 }
