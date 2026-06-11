@@ -60,11 +60,11 @@
     "homebrew-azure-bicep": {
       "flake": false,
       "locked": {
-        "lastModified": 1775158240,
-        "narHash": "sha256-4iJ2igM2WDIF+83kRGpmtx8i80Qi4JSXHwWzR2l/j5g=",
+        "lastModified": 1781117025,
+        "narHash": "sha256-gX+kPhr56aPmxfSSiS+DSTysBb04UbhOC8cRgVi6UKM=",
         "owner": "Azure",
         "repo": "homebrew-bicep",
-        "rev": "dff4e18be1df900c36011abef4b763e196d1b047",
+        "rev": "f3653bc0b2ea68c30b7cd2ac397c37dda61cbcc1",
         "type": "github"
       },
       "original": {
@@ -76,11 +76,11 @@
     "homebrew-hashicorp-tap": {
       "flake": false,
       "locked": {
-        "lastModified": 1776258526,
-        "narHash": "sha256-cggpDch1UlazYPo+Uj1iKMtU8Dz78xlAJ7ezFcMGGOU=",
+        "lastModified": 1781096466,
+        "narHash": "sha256-AFi+6Et6xnl5gk8UMBa91vgeG2ITXhbOTNyBr3jvjYc=",
         "owner": "hashicorp",
         "repo": "homebrew-tap",
-        "rev": "b3736797deda743a2bd6a9c013ceddce47ae4743",
+        "rev": "de75977feb52e7c2e44e26b0a67f72e11db6f6ce",
         "type": "github"
       },
       "original": {
@@ -92,11 +92,11 @@
     "homebrew-homebrew-cask": {
       "flake": false,
       "locked": {
-        "lastModified": 1776595637,
-        "narHash": "sha256-3hytUgUfeRfn9u8HBJVgepO/sUjDTjc4bv14sN6fHro=",
+        "lastModified": 1781202233,
+        "narHash": "sha256-K7ACI2h2DUwczmdj+UiZYM3PQDJiBXZzKItkCzHi+fE=",
         "owner": "homebrew",
         "repo": "homebrew-cask",
-        "rev": "1c59e8745a26763e70e4b35619d1186a1cf4449b",
+        "rev": "7f5db05a6815b513d12056a306a1eb7558889a52",
         "type": "github"
       },
       "original": {
@@ -108,11 +108,11 @@
     "homebrew-homebrew-core": {
       "flake": false,
       "locked": {
-        "lastModified": 1776600113,
-        "narHash": "sha256-FScFL61SAFFfb5DxkrMOokff4eRLgOQGwMmxynkHEbE=",
+        "lastModified": 1781204721,
+        "narHash": "sha256-HhCdpVey8KDVmtgtwq/2jUl0cWqX9ZEAeai3XHfTLNQ=",
         "owner": "homebrew",
         "repo": "homebrew-core",
-        "rev": "532f74e22909fe18c7c3ce18d827bd37b4df4068",
+        "rev": "21ecf53bf009bd531c6648611901f6d9cd269d0a",
         "type": "github"
       },
       "original": {
@@ -141,11 +141,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1776329215,
-        "narHash": "sha256-a8BYi3mzoJ/AcJP8UldOx8emoPRLeWqALZWu4ZvjPXw=",
+        "lastModified": 1781141223,
+        "narHash": "sha256-Eye4UQJjC4TLobclolFCMl6MrjgiF6Bk1cOI5x8SH00=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "b86751bc4085f48661017fa226dee99fab6c651b",
+        "rev": "b503dde361500433ca25a32e8f4d218bf58fb659",
         "type": "github"
       },
       "original": {

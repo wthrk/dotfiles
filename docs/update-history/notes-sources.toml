@@ -1,0 +1,237 @@
+["brew/azookey"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["brew/bitwarden"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["brew/codex-app"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/atuin"]
+source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/bitwarden-cli"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/bun"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/cargo"]
+source = "https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/cargo-deny"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/cargo-edit"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/chromedriver"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/clippy"]
+source = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/composer"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/coreutils"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/delve"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/diesel-cli"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/discord"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/docker"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/docker-compose"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/docker-credential-helpers"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/eslint"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/ffmpeg"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/firefox-bin"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/fzf"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/gh"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/git"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/go"]
+source = "https://go.dev/doc/devel/release#go1.25"
+origin = "mechanical"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/golangci-lint"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/google-chrome"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/iterm2"]
+source = "https://github.com/gnachman/iTerm2/releases"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/jujutsu"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/kubectl"]
+source = "https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/neovim"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/nix"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/nodejs"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/opam"]
+source = "https://opam.ocaml.org/blog/opam-2-5-1/"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/php-with-extensions"]
+source = "https://www.php.net/releases/8_4_22.php"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/postgresql"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/prettier"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/pyright"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/ruff"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/rust-analyzer"]
+source = "https://rust-analyzer.github.io/"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/rustc"]
+source = "https://doc.rust-lang.org/stable/releases.html#version-1-95-0"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/rustfmt"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/skaffold"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/slack"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/stylua"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/temurin-bin"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/tree"]
+source = "https://oldmanprogrammer.net/source.php?dir=projects/tree/CHANGES"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/uv"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/vscode"]
+source = "https://code.visualstudio.com/updates/v1_123"
+origin = "mechanical"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/xquartz"]
+source = "https://github.com/XQuartz/XQuartz/releases"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/yt-dlp"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/yubikey-manager"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/zed-editor"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/zsh"]
+source = "https://zsh.sourceforge.io/releases.html"
+origin = "ai-discovered"
+discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/zsh-completions"]
+origin = "none"
+discovered_at = "2026-06-11T19:26:39Z"
