@@ -64,7 +64,7 @@ fn github_actions(shell: &Shell) -> Result<()> {
     cmd!(shell, "actionlint").run()?;
     nightly_no_update_is_clean_no_op(shell)?;
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
-    nightly_record_reuses_built_binary(shell)?;
+    nightly_record_rebuilds_in_job(shell)?;
     nightly_lock_rev_skips_nix_develop(shell)?;
     Ok(())
 }
@@ -161,36 +161,36 @@ fn assert_nightly_record_secret_gating_is_testable_and_bounded(workflow: &str) -
     Ok(())
 }
 
-/// nightly-update.yml の record job が bump job の dotfiles binary artifact を再利用し、record での再ビルドへ
-/// 退行しないことを静的に固定する。
-fn nightly_record_reuses_built_binary(shell: &Shell) -> Result<()> {
-    step("nightly-update record reuses built binary");
+/// nightly-update.yml の record job が同一 job で dotfiles binary を再ビルドし、job 間で持ち回した binary の
+/// 動的ライブラリ参照切れに依存しないことを静的に固定する。
+fn nightly_record_rebuilds_in_job(shell: &Shell) -> Result<()> {
+    step("nightly-update record rebuilds binary in job");
     let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
-    assert_nightly_record_reuses_built_binary(&workflow)
+    assert_nightly_record_rebuilds_in_job(&workflow)
 }
 
-fn assert_nightly_record_reuses_built_binary(workflow: &str) -> Result<()> {
-    ensure!(
-        workflow.contains("target/debug/dotfiles"),
-        "bump-state artifact は built dotfiles binary (`target/debug/dotfiles`) を含むこと"
-    );
-    ensure!(
-        workflow.contains("chmod +x target/debug/dotfiles"),
-        "record job は artifact 展開後に `target/debug/dotfiles` の実行ビットを戻すこと"
-    );
+fn assert_nightly_record_rebuilds_in_job(workflow: &str) -> Result<()> {
     let record_section = workflow
         .split("- name: record（nix/brew 版差分 + 概要）")
         .nth(1)
         .unwrap_or_default();
     let record_step = record_section.split("- name:").next().unwrap_or_default();
     ensure!(
-        !record_step.contains("cargo build --release -p dotfiles-cli")
-            && !record_step.contains("cargo build -p dotfiles-cli"),
-        "record job は bump job でビルド済みの dotfiles binary を再利用し、ここで再ビルドしてはならない"
+        workflow.contains("- name: record 用 dotfiles バイナリをビルド")
+            && workflow.contains("nix develop -c cargo build -p dotfiles-cli"),
+        "record job は同一 job の devShell で dotfiles binary を再ビルドすること"
     );
     ensure!(
         record_step.contains("dotfiles_bin=\"$PWD/target/debug/dotfiles\""),
-        "record job は artifact から展開した built dotfiles binary を使うこと"
+        "record job は同一 job でビルドした target/debug/dotfiles を使うこと"
+    );
+    ensure!(
+        !workflow.contains("chmod +x target/debug/dotfiles"),
+        "record job は artifact binary の実行ビット復元に依存してはならない"
+    );
+    ensure!(
+        !workflow.contains("bump 前 eval 版マップと dotfiles binary を取得"),
+        "record job の artifact download は binary を前提にしてはならない"
     );
     Ok(())
 }
@@ -299,7 +299,7 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
 mod tests {
     use super::{
         assert_auto_update_wrapper_uses_update_all_semantics,
-        assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_reuses_built_binary,
+        assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
     };
 
@@ -367,14 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn nightly_record_reuses_built_binary_and_skips_rebuild() {
+    fn nightly_record_rebuilds_binary_in_job() {
         let workflow = r#"
-          path: |
-            flake.lock
-            nix-old.json
-            target/debug/dotfiles
-          - name: dotfiles binary を実行可能にする
-            run: chmod +x target/debug/dotfiles
+          - name: record 用 dotfiles バイナリをビルド
+            run: nix develop -c cargo build -p dotfiles-cli
           - name: record（nix/brew 版差分 + 概要）
             run: |
               dotfiles_bin="$PWD/target/debug/dotfiles"
@@ -382,7 +378,7 @@ mod tests {
                 --out "$out"
         "#;
 
-        assert!(assert_nightly_record_reuses_built_binary(workflow).is_ok());
+        assert!(assert_nightly_record_rebuilds_in_job(workflow).is_ok());
     }
 
     #[test]

@@ -165,7 +165,7 @@ jobs:
             echo "cask_rev_new=$cask_rev_new"
           } >> "$GITHUB_OUTPUT"
 
-      - name: bump 済み lock と eval 版マップと dotfiles binary を artifact 化
+      - name: bump 済み lock と eval 版マップを artifact 化
         uses: actions/upload-artifact@v4
         with:
           name: bump-state
@@ -174,7 +174,6 @@ jobs:
           path: |
             flake.lock
             nix-old.json
-            target/debug/dotfiles
           if-no-files-found: error
 
   # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
@@ -226,14 +225,14 @@ jobs:
         with:
           shared-key: nightly-${{ runner.os }}
 
-      # bump 済み flake.lock・bump 前 eval 版マップ・bump job でビルド済みの dotfiles binary を checkout 上に展開する。
-      - name: bump 済み lock と bump 前 eval 版マップと dotfiles binary を取得
+      # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
+      - name: bump 済み lock と bump 前 eval 版マップを取得
         uses: actions/download-artifact@v4
         with:
           name: bump-state
 
-      - name: dotfiles binary を実行可能にする
-        run: chmod +x target/debug/dotfiles
+      - name: record 用 dotfiles バイナリをビルド
+        run: nix develop -c cargo build -p dotfiles-cli
 
       # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
       # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
