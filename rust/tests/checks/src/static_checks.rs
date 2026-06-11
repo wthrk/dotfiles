@@ -65,6 +65,7 @@ fn github_actions(shell: &Shell) -> Result<()> {
     nightly_no_update_is_clean_no_op(shell)?;
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
     nightly_record_reuses_built_binary(shell)?;
+    nightly_lock_rev_skips_nix_develop(shell)?;
     Ok(())
 }
 
@@ -193,6 +194,31 @@ fn assert_nightly_record_reuses_built_binary(workflow: &str) -> Result<()> {
     Ok(())
 }
 
+/// nightly-update.yml の lock-rev 抽出が `nix develop` を不要に挟まず、純粋な lock file parse として直接実行される
+/// ことを静的に固定する。
+fn nightly_lock_rev_skips_nix_develop(shell: &Shell) -> Result<()> {
+    step("nightly-update lock-rev skips nix develop");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_lock_rev_skips_nix_develop(&workflow)
+}
+
+fn assert_nightly_lock_rev_skips_nix_develop(workflow: &str) -> Result<()> {
+    ensure!(
+        workflow
+            .contains("\"$DOTFILES_BIN\" update-history lock-rev --lock flake.lock --node nixpkgs"),
+        "lock-rev は built dotfiles binary を直接実行すること"
+    );
+    ensure!(
+        workflow.contains("\"$DOTFILES_BIN\" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask"),
+        "cask rev 抽出も built dotfiles binary を直接実行すること"
+    );
+    ensure!(
+        !workflow.contains("nix develop -c \"$DOTFILES_BIN\" update-history lock-rev"),
+        "lock-rev は `nix develop` を挟まず直接実行し、不要な shell 起動で bump を遅くしてはならない"
+    );
+    Ok(())
+}
+
 /// lock file が存在する状態で、Nix flake の評価と Nix ファイルの整形を検証する。
 fn nix(shell: &Shell) -> Result<()> {
     step("flake.lock exists");
@@ -272,7 +298,7 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
 mod tests {
     use super::{
         assert_auto_update_wrapper_uses_update_all_semantics,
-        assert_nightly_record_reuses_built_binary,
+        assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_reuses_built_binary,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
     };
 
@@ -356,5 +382,17 @@ mod tests {
         "#;
 
         assert!(assert_nightly_record_reuses_built_binary(workflow).is_ok());
+    }
+
+    #[test]
+    fn nightly_lock_rev_runs_without_nix_develop() {
+        let workflow = r#"
+          nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+        "#;
+
+        assert!(assert_nightly_lock_rev_skips_nix_develop(workflow).is_ok());
     }
 }

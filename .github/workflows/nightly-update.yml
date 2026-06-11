@@ -130,11 +130,11 @@ jobs:
         run: |
           set -euo pipefail
           nix develop -c "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
-          nixpkgs_old="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
           dotfiles_cursor_old="$(git rev-parse HEAD)"
           echo "dotfiles_cursor_old=$dotfiles_cursor_old" >> "$GITHUB_OUTPUT"
-          cask_rev_old="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
       - name: nixpkgs と tap input を bump
@@ -155,8 +155,8 @@ jobs:
           DOTFILES_BIN: ${{ steps.build.outputs.bin }}
         run: |
           set -euo pipefail
-          nixpkgs_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
-          cask_rev_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           {
             echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}"
             echo "nixpkgs_new=$nixpkgs_new"
