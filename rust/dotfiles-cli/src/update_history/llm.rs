@@ -411,11 +411,18 @@ fn run_blocking(
         })();
         let _ = sender.send(result);
     });
-    match receiver.recv_timeout(OPENAI_HARD_TIMEOUT) {
+    recv_worker_result(receiver, OPENAI_HARD_TIMEOUT)
+}
+
+fn recv_worker_result(
+    receiver: mpsc::Receiver<std::result::Result<ResponseMessage, OpenAIError>>,
+    timeout: Duration,
+) -> std::result::Result<ResponseMessage, OpenAIError> {
+    match receiver.recv_timeout(timeout) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => Err(OpenAIError::InvalidArgument(format!(
             "openai hard timeout after {}s",
-            OPENAI_HARD_TIMEOUT.as_secs()
+            timeout.as_secs()
         ))),
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(OpenAIError::InvalidArgument(
             "openai worker thread disconnected".to_string(),
@@ -733,6 +740,7 @@ mod tests {
     use super::*;
     use async_openai::types::{ChatCompletionToolType, FunctionCall};
     use std::cell::Cell;
+    use std::sync::mpsc;
 
     fn request_with(name: &str, repo: Option<&str>, seed: Option<&str>) -> ExtractRequest {
         ExtractRequest {
@@ -788,6 +796,19 @@ mod tests {
         // 既定 15 分（record を 120 分タイムアウトさせる）でも 0（一過性失敗を回復できずカバレッジを失う）でも
         // なく、60 秒上限であることを固定する。将来のリファクタで両極端へ戻る回帰を検知する。
         assert_eq!(CLIENT_BACKOFF_MAX_ELAPSED, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn openai_hard_timeout_is_bounded() {
+        assert_eq!(OPENAI_HARD_TIMEOUT, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn recv_worker_result_times_out_without_blocking_forever() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let err = recv_worker_result(receiver, Duration::from_millis(1))
+            .expect_err("worker wait must time out");
+        assert!(err.to_string().contains("openai hard timeout"));
     }
 
     #[test]
