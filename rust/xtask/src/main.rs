@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 mod apply;
 mod check;
+mod ci;
 mod cli;
 
 type Result<T> = dotfiles_core::Result<T>;

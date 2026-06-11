@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{Result, apply, check};
+use crate::{Result, apply, check, ci};
 
 #[derive(Parser)]
 #[command(name = "xtask")]
@@ -13,7 +13,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-/// 検証だけを行う `check` と、検証後にローカル適用する `apply`。
+/// 検証だけを行う `check`、検証後にローカル適用する `apply`、CI 機械判定の `ci`。
 enum Command {
     Apply {
         #[arg(value_enum, default_value_t = ApplyTarget::All)]
@@ -23,6 +23,7 @@ enum Command {
         #[command(subcommand)]
         target: Option<CheckTarget>,
     },
+    Ci(ci::CiOptions),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -57,5 +58,6 @@ pub fn dispatch() -> Result<()> {
     match Cli::parse().command {
         Command::Apply { target } => apply::run(target),
         Command::Check { target } => check::run(target),
+        Command::Ci(options) => ci::run(options),
     }
 }

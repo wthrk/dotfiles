@@ -51,6 +51,8 @@
       ''
         [[ -f "$HOME/.config/zsh/completion.zsh" ]] && source "$HOME/.config/zsh/completion.zsh"
         [[ -f "$HOME/.config/zsh/prompt.zsh" ]] && source "$HOME/.config/zsh/prompt.zsh"
+        # local.zsh は管理対象 zsh 設定の最後に読む。利用者がマシン固有の上書きを置く場所であり、
+        # 既定の env/options/prompt 等を読んだ後に評価して上書きを効かせる。
         [[ -f "$HOME/.config/zsh/local.zsh" ]] && source "$HOME/.config/zsh/local.zsh"
       ''
     ];

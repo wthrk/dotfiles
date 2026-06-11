@@ -5,9 +5,8 @@
 
 use std::process::ExitCode;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
-    match dotfiles_cli::dispatch().await {
+fn main() -> ExitCode {
+    match dotfiles_cli::dispatch() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");

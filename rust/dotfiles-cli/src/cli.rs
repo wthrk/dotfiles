@@ -23,15 +23,24 @@ enum Command {
     Gpg(dotfiles_secrets::GpgOptions),
     Switch(crate::switch::SwitchOptions),
     Update(crate::update::UpdateOptions),
+    UpdateHistory(crate::update_history::UpdateHistoryOptions),
 }
 
-/// clap が確定したオプションだけを各処理へ渡し、ここでは実行ロジックを持たない。
-pub(crate) async fn dispatch() -> Result<()> {
+/// clap が確定したオプションだけを各処理へ渡す。
+///
+/// 同期 command は async runtime の外でそのまま実行し、runtime が必要な `Secrets` だけここで current-thread
+/// runtime を立てる。`update-history` のような同期 command を async runtime 内で走らせると、内部で別 runtime を
+/// ブリッジした際に drop 文脈が衝突するため、entrypoint 側でここを分ける。
+pub(crate) fn dispatch() -> Result<()> {
     match Cli::parse().command {
         Command::Init(options) => crate::init::run(options),
-        Command::Secrets(options) => dotfiles_secrets::run(options).await,
+        Command::Secrets(options) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(dotfiles_secrets::run(options)),
         Command::Gpg(options) => dotfiles_secrets::run_gpg(options),
         Command::Switch(options) => crate::switch::run(options),
         Command::Update(options) => crate::update::run(options),
+        Command::UpdateHistory(options) => crate::update_history::run(options),
     }
 }

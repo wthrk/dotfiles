@@ -7,28 +7,65 @@ use std::{ffi::OsString, path::Path};
 
 use clap::Args;
 
-use crate::{Result, process::run as run_process, switch};
+use crate::{
+    Result,
+    local_flake::INPUT_NAME,
+    process::{run as run_process, sudo_as_user_args},
+    switch,
+};
+
+const DEFAULT_NIX_PROGRAM: &str = "/nix/var/nix/profiles/default/bin/nix";
 
 /// 既存の `switch` と同じオプションを受け取り、先に flake.lock を更新する。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     let config_dir = options.switch.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
-    update_lock(&config_dir, options.switch.dry_run())?;
+    let lock_owner = options.switch.root_user_override().map(str::to_owned);
+    update_lock(&config_dir, options.switch.dry_run(), lock_owner.as_deref())?;
     switch::run(options.switch)
 }
 
-/// 生成済みローカル flake の全入力を最新の解決結果で lock し直す。
-fn update_lock(config_dir: &Path, dry_run: bool) -> Result<()> {
-    run_process(
-        "nix",
-        [
-            OsString::from("flake"),
-            OsString::from("update"),
-            OsString::from("--flake"),
-            config_dir.as_os_str().to_os_string(),
-        ],
-        dry_run,
-    )
+/// 生成済みローカル flake の `dotfiles` input だけを再 lock する。
+///
+/// 全 input を更新すると各端末が CI bump 済みの repo lock ではなく独自に最新 nixpkgs/taps へ進み、
+/// fleet pin から乖離する。`dotfiles` input のみを更新し、推移的 nixpkgs/taps を repo の committed
+/// lock に追従させる。
+fn update_lock(config_dir: &Path, dry_run: bool, lock_owner: Option<&str>) -> Result<()> {
+    let invocation = update_lock_invocation(config_dir, lock_owner);
+    run_process(invocation.program, invocation.args, dry_run)
+}
+
+/// `nix flake update <dotfiles> --flake <config-dir>` の引数列を組み立てる純粋関数。
+fn update_lock_args(config_dir: &Path) -> Vec<OsString> {
+    [
+        OsString::from("flake"),
+        OsString::from("update"),
+        OsString::from(INPUT_NAME),
+        OsString::from("--flake"),
+        config_dir.as_os_str().to_os_string(),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// lock 更新を root のまま行うか、対象ユーザーへ降格して行うかを引数列へ反映する。
+fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> UpdateLockInvocation {
+    let args = update_lock_args(config_dir);
+    let nix = OsString::from(DEFAULT_NIX_PROGRAM);
+    if let Some(user) = lock_owner {
+        UpdateLockInvocation {
+            program: OsString::from("sudo"),
+            args: sudo_as_user_args(user, nix, args),
+        }
+    } else {
+        UpdateLockInvocation { program: nix, args }
+    }
+}
+
+/// `nix flake update` 実行の起動プログラムと引数列。
+struct UpdateLockInvocation {
+    program: OsString,
+    args: Vec<OsString>,
 }
 
 #[derive(Args)]
@@ -36,4 +73,65 @@ fn update_lock(config_dir: &Path, dry_run: bool) -> Result<()> {
 pub(crate) struct UpdateOptions {
     #[command(flatten)]
     switch: switch::SwitchOptions,
+}
+
+/// `update_lock_args` が `dotfiles` input だけを対象に `nix flake update` を組むことを検証する。
+#[cfg(test)]
+mod tests {
+    use super::{update_lock_args, update_lock_invocation};
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    /// 全 input 更新ではなく `dotfiles` input 名付きで repo pin に追従させる。
+    #[test]
+    fn update_lock_args_targets_dotfiles_input() {
+        let args = update_lock_args(Path::new("/cfg"));
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("flake"),
+                OsString::from("update"),
+                OsString::from("dotfiles"),
+                OsString::from("--flake"),
+                OsString::from("/cfg"),
+            ]
+        );
+    }
+
+    /// root daemon の `--user` 経路では lock 更新も対象ユーザーの HOME/uid で実行し、`nix` は絶対パスで起動する。
+    #[test]
+    fn update_lock_with_owner_runs_nix_as_target_user() {
+        let invocation = update_lock_invocation(Path::new("/cfg"), Some("alice"));
+
+        assert_eq!(invocation.program, OsString::from("sudo"));
+        assert_eq!(
+            invocation.args,
+            vec![
+                OsString::from("-H"),
+                OsString::from("-u"),
+                OsString::from("alice"),
+                OsString::from("env"),
+                OsString::from(format!(
+                    "PATH={}",
+                    std::env::var("PATH").unwrap_or_default()
+                )),
+                OsString::from("/nix/var/nix/profiles/default/bin/nix"),
+                OsString::from("flake"),
+                OsString::from("update"),
+                OsString::from("dotfiles"),
+                OsString::from("--flake"),
+                OsString::from("/cfg"),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_lock_without_owner_uses_absolute_nix_path() {
+        let invocation = update_lock_invocation(Path::new("/cfg"), None);
+        assert_eq!(
+            invocation.program,
+            OsString::from("/nix/var/nix/profiles/default/bin/nix")
+        );
+    }
 }

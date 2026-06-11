@@ -10,11 +10,12 @@ mod local_flake;
 mod process;
 mod switch;
 mod update;
+mod update_history;
 
 /// CLI の各 command が共有する結果型。
 pub type Result<T> = dotfiles_core::Result<T>;
 
 /// crate 公開の CLI 実行 entrypoint。
-pub async fn dispatch() -> Result<()> {
-    cli::dispatch().await
+pub fn dispatch() -> Result<()> {
+    cli::dispatch()
 }

@@ -2,6 +2,7 @@
 //!
 //! Rust、shell script、Nix flake などの外部検証コマンドを順に実行する。
 
+use anyhow::ensure;
 use xshell::{Shell, cmd};
 
 use crate::{Result, command::step};
@@ -12,6 +13,7 @@ pub(crate) fn check() -> Result<()> {
     rust(&shell)?;
     shell_scripts(&shell)?;
     github_actions(&shell)?;
+    auto_update_wrapper_uses_update_all_semantics(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)
 }
@@ -60,6 +62,189 @@ fn shell_scripts(shell: &Shell) -> Result<()> {
 fn github_actions(shell: &Shell) -> Result<()> {
     step("GitHub Actions workflows");
     cmd!(shell, "actionlint").run()?;
+    nightly_no_update_is_clean_no_op(shell)?;
+    nightly_record_secret_gating_is_testable_and_bounded(shell)?;
+    nightly_record_rebuilds_in_job(shell)?;
+    nightly_lock_rev_skips_nix_develop(shell)?;
+    nightly_artifact_actions_use_supported_node_runtime(shell)?;
+    Ok(())
+}
+
+/// nightly-update.yml の「無更新の夜が clean no-op になる」不変条件を hermetic に固定する（finding 3368677388）。
+///
+/// 全 input が既に最新で nix/brew 差分も空の夜は run_record が更新履歴 TOML を書かず、record job の
+/// history-record アップロード対象が 0 件になりうる。このとき record の upload-artifact が
+/// `if-no-files-found: error` だと無更新夜が失敗扱いになり、clean no-op（PR 起票せず success）にならない。
+/// アップロードを安全側（`warn`/`ignore`）にし、後段 open-pr の history-record download は無更新夜だけ
+/// 失敗を許容（`continue-on-error` を record の `has_history != 'true'` でガード）することで、無更新夜が
+/// 全体として no-op になりつつ、更新ありの夜の真の download 失敗は握り潰さないことを workflow テキスト上で
+/// 固定する（network/nix 非依存・ファイル内容の静的検査のみ）。
+fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
+    step("nightly-update no-op (history upload not fail-on-empty)");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+
+    // history-record の upload-artifact ステップ本体だけを切り出し、その `if-no-files-found` が `error` でない
+    // ことを確認する（無更新夜の 0 件アップロードを失敗扱いにしない）。判定対象を当該ステップ（`- name: 履歴
+    // TOML を artifact 化` から次の `- name:` の手前まで）にスコープし、後続に別 upload ステップが追加されても
+    // その `if-no-files-found:` を拾わないようにする。安全側の `warn`/`ignore` のいずれかを要求する。
+    let upload_section = workflow
+        .split("- name: 履歴 TOML を artifact 化")
+        .nth(1)
+        .unwrap_or_default();
+    let upload = upload_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        !upload.contains("if-no-files-found: error"),
+        "record の history-record アップロードは無更新夜（0 件）を失敗扱いにしないため \
+         `if-no-files-found: error` を使ってはならない（warn/ignore で clean no-op にする）"
+    );
+    ensure!(
+        upload.contains("if-no-files-found: warn") || upload.contains("if-no-files-found: ignore"),
+        "record の history-record アップロードは `if-no-files-found: warn`/`ignore` で 0 件を許容すること"
+    );
+
+    // record job は当月 history を書いたか（更新あり）を `has_history` output で後段へ渡すこと。これが無いと
+    // open-pr 側で無更新夜と更新夜を区別できず、download 失敗を一律握り潰す回帰へ戻る。
+    ensure!(
+        workflow.contains("has_history: ${{ steps.record.outputs.has_history }}"),
+        "record job は当月 history を書いたかを `has_history` output で公開すること（更新夜の download 失敗を \
+         握り潰さないための分岐根拠）"
+    );
+
+    // open-pr の history-record download は、無更新夜（record が history を書かない）だけ artifact 不在を許容し、
+    // 更新ありの夜（has_history=true）は download の一時失敗を握り潰さず fail-closed にすること。そのため
+    // `continue-on-error` を `needs.record.outputs.has_history != 'true'` でガードする（無条件 `true` は禁止）。
+    let download = workflow
+        .split("name: 履歴 TOML を取得")
+        .nth(1)
+        .unwrap_or_default();
+    let download_step = download.split("- name:").next().unwrap_or_default();
+    ensure!(
+        download_step
+            .contains("continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}"),
+        "open-pr の history-record download は無更新夜だけ失敗を許容し更新夜は fail-closed にするため \
+         `continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}` でガードすること"
+    );
+    ensure!(
+        !download_step.contains("continue-on-error: true"),
+        "open-pr の history-record download は無条件 `continue-on-error: true` を使ってはならない \
+         （更新夜の真の download 失敗を握り潰す）"
+    );
+    Ok(())
+}
+
+/// nightly-update.yml の record 要約経路が「PR 段階で検証可能だが無制限には開かない」ことを静的に固定する。
+///
+/// `OPEN_AI_API_KEY` を既定ブランチ ref 限定にすると、未マージ PR の workflow では要約付き履歴を検証できない。
+/// 一方で常時注入へ戻すと、workflow_dispatch を叩ける任意 actor へ secret を広げる。そこで record job の
+/// secret 注入は `schedule` または `workflow_dispatch && github.actor == github.repository_owner` に限定し、
+/// repo owner の手動検証 run だけ要約付き履歴を許可する。PR 起票/status 投稿の信頼境界は open-pr job の
+/// 既定ブランチ制限が継続して担う。
+fn nightly_record_secret_gating_is_testable_and_bounded(shell: &Shell) -> Result<()> {
+    step("nightly-update record secret gating");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_record_secret_gating_is_testable_and_bounded(&workflow)
+}
+
+fn assert_nightly_record_secret_gating_is_testable_and_bounded(workflow: &str) -> Result<()> {
+    ensure!(
+        workflow.contains(
+            "OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}"
+        ),
+        "record job の OPEN_AI_API_KEY は schedule または repo owner の workflow_dispatch に限定し、\
+         PR ブランチ dry-run でも要約付き履歴を検証できる形を維持すること"
+    );
+    ensure!(
+        workflow.contains(
+            "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}"
+        ),
+        "open-pr job の既定ブランチ限定は維持し、PR 起票/status 投稿経路の信頼境界を弱めてはならない"
+    );
+    Ok(())
+}
+
+/// nightly-update.yml の record job が同一 job で dotfiles binary を再ビルドし、job 間で持ち回した binary の
+/// 動的ライブラリ参照切れに依存しないことを静的に固定する。
+fn nightly_record_rebuilds_in_job(shell: &Shell) -> Result<()> {
+    step("nightly-update record rebuilds binary in job");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_record_rebuilds_in_job(&workflow)
+}
+
+fn assert_nightly_record_rebuilds_in_job(workflow: &str) -> Result<()> {
+    let record_section = workflow
+        .split("- name: record（nix/brew 版差分 + 概要）")
+        .nth(1)
+        .unwrap_or_default();
+    let record_step = record_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        workflow.contains("- name: record 用 dotfiles バイナリをビルド")
+            && workflow.contains("nix develop -c cargo build -p dotfiles-cli"),
+        "record job は同一 job の devShell で dotfiles binary を再ビルドすること"
+    );
+    ensure!(
+        record_step.contains("dotfiles_bin=\"$PWD/target/debug/dotfiles\""),
+        "record job は同一 job でビルドした target/debug/dotfiles を使うこと"
+    );
+    ensure!(
+        !workflow.contains("chmod +x target/debug/dotfiles"),
+        "record job は artifact binary の実行ビット復元に依存してはならない"
+    );
+    ensure!(
+        !workflow.contains("bump 前 eval 版マップと dotfiles binary を取得"),
+        "record job の artifact download は binary を前提にしてはならない"
+    );
+    Ok(())
+}
+
+/// nightly-update.yml の lock-rev 抽出が `nix develop` を不要に挟まず、純粋な lock file parse として直接実行される
+/// ことを静的に固定する。
+fn nightly_lock_rev_skips_nix_develop(shell: &Shell) -> Result<()> {
+    step("nightly-update lock-rev skips nix develop");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_lock_rev_skips_nix_develop(&workflow)
+}
+
+fn assert_nightly_lock_rev_skips_nix_develop(workflow: &str) -> Result<()> {
+    ensure!(
+        workflow
+            .contains("\"$DOTFILES_BIN\" update-history lock-rev --lock flake.lock --node nixpkgs"),
+        "lock-rev は built dotfiles binary を直接実行すること"
+    );
+    ensure!(
+        workflow.contains("\"$DOTFILES_BIN\" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask"),
+        "cask rev 抽出も built dotfiles binary を直接実行すること"
+    );
+    ensure!(
+        !workflow.contains("nix develop -c \"$DOTFILES_BIN\" update-history lock-rev"),
+        "lock-rev は `nix develop` を挟まず直接実行し、不要な shell 起動で bump を遅くしてはならない"
+    );
+    Ok(())
+}
+
+/// nightly-update.yml の artifact action が Node 20 廃止 warning の出る古い major に戻らないことを静的に固定する。
+fn nightly_artifact_actions_use_supported_node_runtime(shell: &Shell) -> Result<()> {
+    step("nightly-update artifact actions avoid node20 deprecation");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_artifact_actions_use_supported_node_runtime(&workflow)
+}
+
+fn assert_nightly_artifact_actions_use_supported_node_runtime(workflow: &str) -> Result<()> {
+    ensure!(
+        workflow.contains("actions/upload-artifact@v7"),
+        "nightly-update は Node 20 廃止 warning を避けるため upload-artifact@v7 を使うこと"
+    );
+    ensure!(
+        workflow.contains("actions/download-artifact@v8"),
+        "nightly-update は Node 20 廃止 warning を避けるため download-artifact@v8 を使うこと"
+    );
+    ensure!(
+        !workflow.contains("actions/upload-artifact@v4"),
+        "nightly-update は upload-artifact@v4 へ戻してはならない"
+    );
+    ensure!(
+        !workflow.contains("actions/download-artifact@v4"),
+        "nightly-update は download-artifact@v4 へ戻してはならない"
+    );
     Ok(())
 }
 
@@ -89,6 +274,42 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// root auto-update wrapper が `dotfiles update` の既定 `all` 経路を保つことを静的に検証する。
+fn auto_update_wrapper_uses_update_all_semantics(shell: &Shell) -> Result<()> {
+    step("nix-darwin auto-update wrapper");
+    let module = shell.read_file("nix/darwin.nix")?;
+    assert_auto_update_wrapper_uses_update_all_semantics(&module)
+}
+
+/// wrapper 本体だけを見て、`update darwin` 固定への退行と `--user` 欠落を検出する。
+fn assert_auto_update_wrapper_uses_update_all_semantics(module: &str) -> Result<()> {
+    let wrapper = module
+        .split("autoUpdateWrapper = pkgs.writeShellScript")
+        .nth(1)
+        .unwrap_or_default()
+        .split("'';")
+        .next()
+        .unwrap_or_default();
+
+    ensure!(
+        wrapper.contains("${dotfilesBin} update \\"),
+        "auto-update wrapper は target を省略して `dotfiles update` の既定 `all` を使うこと"
+    );
+    ensure!(
+        !wrapper.contains("${dotfilesBin} update darwin"),
+        "auto-update wrapper は `dotfiles update darwin` に固定してはならない"
+    );
+    ensure!(
+        wrapper.contains("--user ${lib.escapeShellArg user}"),
+        "root daemon からの更新では lock 更新と Home Manager を降格するため `--user` を渡すこと"
+    );
+    ensure!(
+        wrapper.contains("--host ${lib.escapeShellArg host}"),
+        "nix-darwin 出力名を固定するため `--host` を渡すこと"
+    );
+    Ok(())
+}
+
 /// `target` 配下を除外し、整形と nil 診断の対象になる Nix ファイルだけを列挙する。
 fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     Ok(cmd!(
@@ -100,4 +321,114 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     .map(|path| path.trim_start_matches("./"))
     .map(ToOwned::to_owned)
     .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        assert_auto_update_wrapper_uses_update_all_semantics,
+        assert_nightly_artifact_actions_use_supported_node_runtime,
+        assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
+        assert_nightly_record_secret_gating_is_testable_and_bounded,
+    };
+
+    /// wrapper が target を省略し、root daemon 用の `--user` / `--host` を渡す形を受け入れる。
+    #[test]
+    fn auto_update_wrapper_accepts_default_update_target_with_user_and_host() {
+        let module = r#"
+          autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
+            exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update \
+              --config-dir ${lib.escapeShellArg configDir} \
+              --user ${lib.escapeShellArg user} \
+              --host ${lib.escapeShellArg host}
+          '';
+        "#;
+
+        assert!(assert_auto_update_wrapper_uses_update_all_semantics(module).is_ok());
+    }
+
+    /// `update darwin` へ戻すと root daemon の all semantics が崩れるため検出する。
+    #[test]
+    fn auto_update_wrapper_rejects_darwin_target_regression() {
+        let module = r#"
+          autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
+            exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update darwin \
+              --config-dir ${lib.escapeShellArg configDir} \
+              --user ${lib.escapeShellArg user} \
+              --host ${lib.escapeShellArg host}
+          '';
+        "#;
+
+        assert!(assert_auto_update_wrapper_uses_update_all_semantics(module).is_err());
+    }
+
+    /// record job の OpenAI secret は repo owner の manual dispatch でも使える一方、open-pr の default-branch
+    /// gate は維持されることを受け入れる。
+    #[test]
+    fn nightly_record_secret_gating_accepts_owner_dispatch_and_keeps_open_pr_gate() {
+        let workflow = r#"
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
+          if: >-
+            ${{ github.event_name == 'schedule' ||
+                (github.event_name == 'workflow_dispatch' &&
+                 github.event.inputs.dry_run == 'false' &&
+                 github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+        "#;
+
+        assert!(assert_nightly_record_secret_gating_is_testable_and_bounded(workflow).is_ok());
+    }
+
+    /// record job の OpenAI secret を default branch ref 限定へ戻す退行は、PR 段階で要約付き履歴を検証できないため
+    /// 拒否する。
+    #[test]
+    fn nightly_record_secret_gating_rejects_default_branch_only_regression() {
+        let workflow = r#"
+          OPEN_AI_API_KEY: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && secrets.OPEN_AI_API_KEY || '' }}
+          if: >-
+            ${{ github.event_name == 'schedule' ||
+                (github.event_name == 'workflow_dispatch' &&
+                 github.event.inputs.dry_run == 'false' &&
+                 github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+        "#;
+
+        let result = assert_nightly_record_secret_gating_is_testable_and_bounded(workflow);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nightly_record_rebuilds_binary_in_job() {
+        let workflow = r#"
+          - name: record 用 dotfiles バイナリをビルド
+            run: nix develop -c cargo build -p dotfiles-cli
+          - name: record（nix/brew 版差分 + 概要）
+            run: |
+              dotfiles_bin="$PWD/target/debug/dotfiles"
+              nix develop -c "$dotfiles_bin" update-history record \
+                --out "$out"
+        "#;
+
+        assert!(assert_nightly_record_rebuilds_in_job(workflow).is_ok());
+    }
+
+    #[test]
+    fn nightly_lock_rev_runs_without_nix_develop() {
+        let workflow = r#"
+          nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+        "#;
+
+        assert!(assert_nightly_lock_rev_skips_nix_develop(workflow).is_ok());
+    }
+
+    #[test]
+    fn nightly_artifact_actions_use_supported_node_runtime() {
+        let workflow = r#"
+          - uses: actions/upload-artifact@v7
+          - uses: actions/download-artifact@v8
+        "#;
+
+        assert!(assert_nightly_artifact_actions_use_supported_node_runtime(workflow).is_ok());
+    }
 }
