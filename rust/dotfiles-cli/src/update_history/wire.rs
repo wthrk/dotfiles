@@ -28,6 +28,16 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct UpdateEntry {
     /// 適用時刻（RFC3339。CI が `--at` で注入する文字列をそのまま保持する）。
     pub(crate) at: String,
+    /// catch-up 範囲選択用の bump 前 dotfiles input リビジョン。
+    ///
+    /// Homebrew tap だけが進む更新では `nixpkgs_old == nixpkgs_new` になりうるため、`show --rev` のカーソルは
+    /// dotfiles input rev を優先する。古い TOML はこの field を持たないため、読み取り時は `nixpkgs_old` へ
+    /// フォールバックする。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cursor_old: Option<String>,
+    /// catch-up 範囲選択用の bump 後 dotfiles input リビジョン。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cursor_new: Option<String>,
     /// bump 前の nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後の nixpkgs リビジョン。
@@ -398,6 +408,8 @@ mod tests {
     fn sample_entry() -> UpdateEntry {
         UpdateEntry {
             at: "2026-06-05T18:00:11Z".to_string(),
+            cursor_old: Some("dotfiles-old".to_string()),
+            cursor_new: None,
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -444,6 +456,7 @@ mod tests {
         let expected = "\
 [[update]]
 at = \"2026-06-05T18:00:11Z\"
+cursor_old = \"dotfiles-old\"
 nixpkgs_old = \"a1b2c3d\"
 nixpkgs_new = \"e4f5g6h\"
 reference = \"darwinConfigurations.ci\"

@@ -22,22 +22,22 @@ use crate::Result;
 /// 取得不能（接続失敗・5xx・429 等）を不在と区別しないと、一過性障害を「削除」と誤確定しうる。new rev の
 /// `NotFound` は宣言 cask が bump 後 tap に存在しない状態なので fail-closed にし、old rev の `NotFound` だけを
 /// `Added` 判定の不在根拠として使う。`Unavailable` は rev により倒し分ける（new rev は fail-closed の `Err`、old
-/// rev は安全側のスキップ）ため、本文の有無に加えて 404 かどうかを seam が運ぶ。
+/// rev も fail-closed）ため、本文の有無に加えて 404 かどうかを seam が運ぶ。
 pub(crate) enum CaskFetch {
     /// cask `.rb` 本文を取得した。
     Body(String),
     /// 明確な不在（HTTP 404）。new rev でこれになった宣言 cask は fail-closed の停止根拠になる。
     NotFound,
-    /// 取得不能（接続失敗・5xx・429・404 以外の失敗）。new rev では固定性を確認できないため record を失敗させ、old
-    /// rev では安全側（差分なし扱い）でスキップする。
+    /// 取得不能（接続失敗・5xx・429・404 以外の失敗）。new rev では固定性を確認できず、old rev では old
+    /// version を確定できないため、どちらも brew 更新履歴の欠落を避ける fail-closed の停止根拠にする。
     Unavailable,
 }
 
 /// 宣言 cask の old→new tap rev 版差分を算出する。
 ///
 /// `casks_nix` は `nix/modules/homebrew.nix` のテキスト（`casks = [ ... ]` を抽出）。各 cask の `version` を
-/// 両 rev の cask `.rb` から取り、版変化のあるものだけ [`VersionDelta`] にする。old rev 取得不能 / 版変更なし
-/// は捨てる（ノイズ抑制）。`greedyCasks = true` で全 cask が無人 upgrade 対象になるため `auto_updates true` の
+/// 両 rev の cask `.rb` から取り、版変化のあるものだけ [`VersionDelta`] にする。版変更なしは捨てる（ノイズ抑制）。
+/// old rev 取得不能は差分なしとして扱わず fail-closed にする。`greedyCasks = true` で全 cask が無人 upgrade 対象になるため `auto_updates true` の
 /// cask も追跡する。new rev の `.rb` が `sha256 :no_check` の未固定成果物なら、または new rev が取得不能で固定性を
 /// 確認できないなら fail-closed（`Err`）にする（[`assert_pinned`] / [`cask_delta`]）。
 /// `fetch` は cask `.rb` 取得 seam（本番は reqwest、テストは fake）。
@@ -56,12 +56,12 @@ pub(crate) fn diff_casks(
         .map(|deltas| deltas.into_iter().flatten().collect())
 }
 
-/// 1 cask の old/new 版を取得し、版変化があれば [`VersionDelta`] を組む（old 取得不能/版不変は `None`）。
+/// 1 cask の old/new 版を取得し、版変化があれば [`VersionDelta`] を組む（版不変は `None`）。
 ///
 /// new rev が `Unavailable`（404 以外の取得不能＝接続失敗・5xx・429 等）なら、固定性（`sha256 :no_check` 検査）を
 /// 確認できないまま greedy upgrade が未固定成果物を取り込みうるため `Err` で record を失敗させる（fail-closed:
-/// 固定性を確認できないなら PR を作らせない）。old rev が `Unavailable` のときは new の固定性は確認済みで、old が
-/// 読めないのは安全側（差分なし扱い）なので差分判定をスキップ（版変化なし扱いの `None`）する。new rev が 404
+/// 固定性を確認できないなら PR を作らせない）。old rev が `Unavailable` のときも差分を確定できず、brew-only
+/// 更新の履歴欠落につながるため `Err` で record を失敗させる。new rev が 404
 /// なら宣言側がまだ同じ PR で直せない cask 欠落なので、`Removed` として記録せず fail-closed にする。new rev の
 /// `.rb` 本文に対しては成果物固定を [`assert_pinned`] で検査し、`sha256 :no_check` なら fail-closed。
 fn cask_delta(
@@ -79,8 +79,10 @@ fn cask_delta(
         );
     };
     let Some(old) = cask_version(rev_old, &name, fetch)? else {
-        // old rev が取得不能（`Unavailable`）→ new の固定性は確認済みで old が読めないのは安全側＝差分なし扱い。
-        return Ok(None);
+        bail!(
+            "cask `{name}` の old rev `.rb` を取得できなかった（接続失敗・5xx・429 等）。\
+             old version を確定できず brew 更新履歴が欠落しうるため停止する（fail-closed）"
+        );
     };
     let change = match (&old, &new) {
         (CaskState::Absent, CaskState::Absent) => return Ok(None),
@@ -139,10 +141,10 @@ pub(crate) fn fetch_cask_rb(url: &str) -> Result<CaskFetch> {
     })
 }
 
-/// 単一 cask の tap rev における状態を `.rb` から取得する（`Unavailable`=取得不能なら `None` でスキップ要求）。
+/// 単一 cask の tap rev における状態を `.rb` から取得する（`Unavailable`=取得不能なら `None` で fail-closed 要求）。
 ///
 /// `Body` は version 行があれば `Version`、無ければ `Absent`。`NotFound`（404）は `Absent`。`Unavailable`
-/// （接続失敗・5xx・429 等）は版差分判定をスキップさせるため `None` を返す。
+/// （接続失敗・5xx・429 等）は呼び出し側で fail-closed させるため `None` を返す。
 fn cask_version(
     rev: &str,
     name: &str,
@@ -580,8 +582,8 @@ mod tests {
     }
 
     #[test]
-    fn diff_casks_skips_when_old_rev_unavailable() -> Result<()> {
-        // old rev が取得不能なら、new に版があっても Added と誤確定せず安全側でスキップする。
+    fn diff_casks_fails_closed_when_old_rev_unavailable() {
+        // old rev が取得不能なら、new に版があっても差分なしとして silent skip せず fail-closed にする。
         let nix = "casks = [ \"flaky\" ];";
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "flaky") {
@@ -590,12 +592,22 @@ mod tests {
                 CaskFetch::Unavailable
             })
         };
-        let deltas = diff_casks(nix, "old", "new", &fetch)?;
+        let error = diff_casks(nix, "old", "new", &fetch)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(
-            deltas.is_empty(),
-            "old rev 取得不能はスキップする: {deltas:?}"
+            error.contains("flaky"),
+            "error should name the cask: {error}"
         );
-        Ok(())
+        assert!(
+            error.contains("old rev"),
+            "error should cite old rev: {error}"
+        );
+        assert!(
+            error.contains("fail-closed"),
+            "error should cite fail-closed: {error}"
+        );
     }
 
     fn version_rb(version: &str) -> String {

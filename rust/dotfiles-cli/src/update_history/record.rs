@@ -28,6 +28,10 @@ use crate::Result;
 
 /// record use case の入力（記録する rev・時刻・参照と版差分入力）。
 pub(crate) struct RecordInput<'a> {
+    /// bump 前 dotfiles input リビジョン（show の範囲カーソル）。
+    pub(crate) cursor_old: Option<String>,
+    /// bump 後 dotfiles input リビジョン（show の範囲カーソル）。
+    pub(crate) cursor_new: Option<String>,
     /// bump 前 nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後 nixpkgs リビジョン。
@@ -80,6 +84,8 @@ fn to_package_update(material: PackageMaterial) -> PackageUpdate {
 /// パッケージ素材列から、severity / overall を機械算出した 1 件の [`UpdateEntry`] を組み立てる。
 fn build_entry(
     at: String,
+    cursor_old: Option<String>,
+    cursor_new: Option<String>,
     nixpkgs_old: String,
     nixpkgs_new: String,
     reference: String,
@@ -94,6 +100,8 @@ fn build_entry(
     let overall = overall_headline(packages.len(), &all_items);
     UpdateEntry {
         at,
+        cursor_old,
+        cursor_new,
         nixpkgs_old,
         nixpkgs_new,
         reference,
@@ -451,6 +459,8 @@ fn run_record_with(
 
     let entry = build_entry(
         input.at.clone(),
+        input.cursor_old.clone(),
+        input.cursor_new.clone(),
         input.nixpkgs_old.clone(),
         input.nixpkgs_new.clone(),
         input.reference.clone(),
@@ -769,6 +779,8 @@ mod tests {
     ) -> RecordInput<'a> {
         let _ = dir;
         RecordInput {
+            cursor_old: Some("dotfiles-old".to_string()),
+            cursor_new: Some("dotfiles-new".to_string()),
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -811,6 +823,7 @@ mod tests {
 
         let entries = read_entries(&out)?;
         assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].cursor_old.as_deref(), Some("dotfiles-old"));
         let pkg = &entries[0].packages[0];
         assert_eq!(pkg.name, "neovim");
         assert_eq!(pkg.change_items.len(), 1);
@@ -1454,6 +1467,8 @@ origin = \"none\"
     fn store_sample(at: &str, name: &str) -> UpdateEntry {
         UpdateEntry {
             at: at.to_string(),
+            cursor_old: None,
+            cursor_new: None,
             nixpkgs_old: "o".to_string(),
             nixpkgs_new: "n".to_string(),
             reference: "darwinConfigurations.ci".to_string(),

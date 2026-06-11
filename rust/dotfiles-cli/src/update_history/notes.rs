@@ -522,7 +522,7 @@ fn fetch_release_api(api_url: &str, notes_url: &str) -> Result<Option<RawRelease
 ///
 /// 一次は厳密な `(old, new]` 範囲（[`collect_release_bodies`]）。API 取得自体は成功したが範囲に該当する本文が
 /// 一件も無い場合（タグ表記揺れ・old 排他境界・新版リリース未タグ等で窓が空になる）、repo-backed パッケージが
-/// 機械 seed を全く持てず route=none に落ちるのを防ぐため、`old` を外して `new` 以下の最新リリースを seed にする
+/// 機械 seed を全く持てず route=none に落ちるのを防ぐため、`old` より後のリリース本文だけを seed にする
 /// 緩和フォールバックを一度だけ試みる（構造化 Releases API の `.body` のみで landing page HTML は混ぜない）。
 /// API 取得そのものが失敗（[`collect_release_bodies`] が `None`）した場合はフォールバックせず `None` を返す。
 fn fetch_releases_range(
@@ -554,14 +554,16 @@ fn fetch_releases_range_with(
     if !strict.is_empty() {
         return Ok(Some(release_notes_from(owner, repo, strict)));
     }
-    // 厳密窓が空（取得は成功）かつ old 境界が在るときのみ、old を外した `..=new` の最新リリースを seed に緩和する。
+    // 厳密窓が空（取得は成功）かつ old 境界が在るときのみ、new 側の上限を外した `(old, ..)` の最新リリースを seed
+    // に緩和する。old 境界以前の本文を seed に混ぜると、既に適用済みの古い release notes を今回更新として LLM が
+    // 抽出する false positive になるため、緩和しても old より後という下限は保つ。
     // タグ表記揺れ・old 排他境界・新版リリース未タグ等で `(old, new]` 窓が空になっても、repo-backed パッケージが
     // 機械 seed を全く持てず route=none に落ちるのを防ぐ。old が元から無い（初回固定）場合は既に最広の範囲であり、
     // 緩和しても結果は変わらないため試みない（構造化 Releases API の `.body` のみ。landing page HTML は混ぜない）。
     if old.is_none() {
         return Ok(None);
     }
-    let Some(relaxed) = collect_release_bodies(owner, repo, None, new, 1, Vec::new(), fetch_page)?
+    let Some(relaxed) = collect_release_bodies(owner, repo, old, None, 1, Vec::new(), fetch_page)?
     else {
         return Ok(None);
     };
@@ -1150,15 +1152,15 @@ mod tests {
     }
 
     #[test]
-    fn release_range_relaxes_old_when_strict_window_is_empty() -> Result<()> {
+    fn release_range_relaxes_new_when_strict_window_is_empty() -> Result<()> {
         // repo-backed パッケージで API 取得は成功するが、`(old, new]` 厳密窓に該当本文が一件も無い退行ケースを固定
         // する。old=1.5.0/new=2.0.0 に対しリリースは v1.0.0 と v3.0.0 のみ（どちらも `(1.5.0, 2.0.0]` の外）で
-        // 厳密窓は空。これを `route=none seed=0` に落とさず、old を外した `..=2.0.0` の最新該当リリース（v1.0.0）を
-        // 機械 seed に緩和する（構造化 Releases API の `.body` のみ。landing page HTML は混ぜない）。fetch_page は
+        // 厳密窓は空。これを `route=none seed=0` に落とさず、new 上限を外した `(1.5.0, ..)` の最新該当リリースを
+        // 機械 seed に緩和する。old 境界以前の release body は混ぜない。fetch_page は
         // 単一ページ（< per_page）の固定 JSON を返す注入 seam。
         let page_json = serde_json::Value::Array(vec![
             release_json("v3.0.0", "3.0.0", "## 3.0.0\n- 新しすぎる版（窓外）"),
-            release_json("v1.0.0", "1.0.0", "## 1.0.0\n- feature: 緩和で拾う本文"),
+            release_json("v1.0.0", "1.0.0", "## 1.0.0\n- old以前の本文"),
         ])
         .to_string();
         let calls = std::cell::Cell::new(0u32);
@@ -1168,9 +1170,9 @@ mod tests {
         };
         let notes = fetch_releases_range_with("o", "r", Some("1.5.0"), Some("2.0.0"), &fetch_page)?;
         let notes = notes.ok_or_else(|| anyhow::anyhow!("relaxed range should yield a seed"))?;
-        // 緩和窓 `..=2.0.0` は v1.0.0 を拾い、v3.0.0（new 超過）は除外する。
-        assert!(notes.text.contains("緩和で拾う本文"));
-        assert!(!notes.text.contains("窓外"));
+        // 緩和窓 `(1.5.0, ..)` は v3.0.0 を拾い、v1.0.0（old 以前）は除外する。
+        assert!(notes.text.contains("窓外"));
+        assert!(!notes.text.contains("old以前"));
         assert_eq!(notes.notes_url, "https://github.com/o/r/releases");
         // 厳密 1 回（空窓）+ 緩和 1 回 = ページ取得は 2 回（短ページなので各 1 ページで停止）。
         assert_eq!(calls.get(), 2);

@@ -72,6 +72,7 @@ jobs:
     outputs:
       nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
       nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
+      dotfiles_cursor_old: ${{ steps.revs.outputs.dotfiles_cursor_old }}
       cask_rev_old: ${{ steps.revs.outputs.cask_rev_old }}
       cask_rev_new: ${{ steps.revs.outputs.cask_rev_new }}
     steps:
@@ -131,6 +132,8 @@ jobs:
           nix develop -c "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
           nixpkgs_old="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
+          dotfiles_cursor_old="$(git rev-parse HEAD)"
+          echo "dotfiles_cursor_old=$dotfiles_cursor_old" >> "$GITHUB_OUTPUT"
           cask_rev_old="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
@@ -155,6 +158,7 @@ jobs:
           echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}" >> "$GITHUB_OUTPUT"
           nixpkgs_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_new=$nixpkgs_new" >> "$GITHUB_OUTPUT"
+          echo "dotfiles_cursor_old=${{ steps.old.outputs.dotfiles_cursor_old }}" >> "$GITHUB_OUTPUT"
           echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}" >> "$GITHUB_OUTPUT"
           cask_rev_new="$(nix develop -c "$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_new=$cask_rev_new" >> "$GITHUB_OUTPUT"
@@ -234,6 +238,7 @@ jobs:
         env:
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
+          DOTFILES_CURSOR_OLD: ${{ needs.bump.outputs.dotfiles_cursor_old }}
           CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
           # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
@@ -260,6 +265,7 @@ jobs:
           dotfiles_bin="$PWD/target/release/dotfiles"
           nix develop -c "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
+            --cursor-old "$DOTFILES_CURSOR_OLD" \
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \
             --reference "$CI_REFERENCE" \

@@ -53,6 +53,12 @@ enum UpdateHistoryCommand {
 #[derive(Args)]
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option（CI が叩く）。
 struct RecordOptions {
+    /// bump 前 dotfiles input リビジョン（brew-only 更新でも前進する show 用カーソル）。
+    #[arg(long)]
+    cursor_old: Option<String>,
+    /// bump 後 dotfiles input リビジョン（brew-only 更新でも前進する show 用カーソル）。
+    #[arg(long)]
+    cursor_new: Option<String>,
     /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル（`eval-versions` が bump 前に書く）。
     #[arg(long, alias = "old")]
     nix_old: Option<PathBuf>,
@@ -113,7 +119,7 @@ struct LockRevOptions {
 #[derive(Args)]
 /// 適用済み pin 由来の更新履歴を閲覧する option（利用者が叩く）。
 struct ShowOptions {
-    /// 表示起点の nixpkgs リビジョン（省略時は最新まで）。
+    /// 表示起点の履歴カーソル rev（新形式は dotfiles input rev、旧履歴は nixpkgs rev）。
     #[arg(long)]
     rev: Option<String>,
     /// 表示するエントリ件数の上限。
@@ -179,6 +185,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     });
     let extractor = llm::OpenAiExtractor::new(brew_notes_base);
     let input = record::RecordInput {
+        cursor_old: options.cursor_old,
+        cursor_new: options.cursor_new,
         nixpkgs_old: options.nixpkgs_old,
         nixpkgs_new: options.nixpkgs_new,
         reference: options.reference,

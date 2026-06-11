@@ -193,7 +193,8 @@ fn merge_unique_items(
 
 /// 表示対象エントリを起点 rev と件数上限で絞り込み、適用順（最古→最新）の部分列を返す。
 ///
-/// `rev` が `Some` のとき、その rev を `nixpkgs_old` に持つ最初のエントリ以降を起点にする（一致無しは空）。
+/// `rev` が `Some` のとき、その rev をカーソル old（新形式は `cursor_old`、旧形式は `nixpkgs_old`）に持つ
+/// 最初のエントリ以降を起点にする（一致無しは空）。
 /// `None` なら全エントリ。`limit` は起点側（最古）から切る。
 fn select_entries(
     entries: &[UpdateEntry],
@@ -201,7 +202,10 @@ fn select_entries(
     limit: Option<usize>,
 ) -> Vec<UpdateEntry> {
     let start = match rev {
-        Some(rev) => match entries.iter().position(|entry| entry.nixpkgs_old == rev) {
+        Some(rev) => match entries
+            .iter()
+            .position(|entry| entry_cursor_old(entry) == rev)
+        {
             Some(index) => index,
             None => return Vec::new(),
         },
@@ -212,6 +216,10 @@ fn select_entries(
         Some(limit) => span.iter().take(limit).cloned().collect(),
         None => span.to_vec(),
     }
+}
+
+fn entry_cursor_old(entry: &UpdateEntry) -> &str {
+    entry.cursor_old.as_deref().unwrap_or(&entry.nixpkgs_old)
 }
 
 /// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
@@ -379,6 +387,8 @@ mod tests {
     ) -> UpdateEntry {
         UpdateEntry {
             at: at.to_string(),
+            cursor_old: None,
+            cursor_new: None,
             nixpkgs_old: old.to_string(),
             nixpkgs_new: new.to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -576,6 +586,22 @@ mod tests {
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0].nixpkgs_old, "a");
         assert!(select_entries(&entries, None, Some(0)).is_empty());
+    }
+
+    #[test]
+    fn select_entries_prefers_cursor_old_for_brew_only_chain_links() {
+        let mut first = rev_entry("nix-a", "nix-a");
+        first.cursor_old = Some("dotfiles-a".to_string());
+        first.cursor_new = Some("dotfiles-b".to_string());
+        let mut second = rev_entry("nix-a", "nix-a");
+        second.cursor_old = Some("dotfiles-b".to_string());
+        second.cursor_new = Some("dotfiles-c".to_string());
+        let entries = [first, second];
+
+        let selected = select_entries(&entries, Some("dotfiles-b"), None);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].cursor_old.as_deref(), Some("dotfiles-b"));
+        assert!(select_entries(&entries, Some("nix-a"), None).is_empty());
     }
 
     #[test]
