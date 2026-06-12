@@ -14,6 +14,7 @@ pub(crate) fn check() -> Result<()> {
     shell_scripts(&shell)?;
     github_actions(&shell)?;
     auto_update_wrapper_uses_update_all_semantics(&shell)?;
+    darwin_home_manager_propagates_include_self_package(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)
 }
@@ -67,6 +68,32 @@ fn github_actions(shell: &Shell) -> Result<()> {
     nightly_record_rebuilds_in_job(shell)?;
     nightly_lock_rev_skips_nix_develop(shell)?;
     nightly_artifact_actions_use_supported_node_runtime(shell)?;
+    Ok(())
+}
+
+/// `mkDarwin` から Home Manager の子モジュールへ `includeSelfPackage` が落ちずに届くことを固定する。
+///
+/// `darwinModule` 自体で `_module.args.includeSelfPackage` を持っていても、`nix/darwin.nix` が
+/// `home-manager.extraSpecialArgs` へ同値を渡し忘れると、`home.nix -> modules/cli.nix` の評価だけが
+/// `attribute 'includeSelfPackage' missing` で落ちる。nightly の `darwinConfigurations.ci-ref` eval は
+/// まさにこの経路を踏むため、静的検査で配線抜けを止める。
+fn darwin_home_manager_propagates_include_self_package(shell: &Shell) -> Result<()> {
+    step("darwin home-manager includeSelfPackage propagation");
+    let darwin = shell.read_file("nix/darwin.nix")?;
+    ensure!(
+        darwin.contains("includeSelfPackage ? true,"),
+        "nix/darwin.nix は `includeSelfPackage` をモジュール引数で受け取り、mkDarwin 既定値を保持すること"
+    );
+    let extra_special_args = darwin
+        .split("home-manager.extraSpecialArgs =")
+        .nth(1)
+        .and_then(|section| section.split("home-manager.users.").next())
+        .unwrap_or_default();
+    ensure!(
+        extra_special_args.contains("includeSelfPackage"),
+        "nix/darwin.nix は `home-manager.extraSpecialArgs` へ `includeSelfPackage` を渡し、\
+         home.nix -> modules/cli.nix の評価で欠落させないこと"
+    );
     Ok(())
 }
 
