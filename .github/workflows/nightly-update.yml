@@ -73,6 +73,7 @@ jobs:
       nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
       nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
       dotfiles_cursor_old: ${{ steps.revs.outputs.dotfiles_cursor_old }}
+      dotfiles_cursor_new: ${{ steps.revs.outputs.dotfiles_cursor_new }}
       cask_rev_old: ${{ steps.revs.outputs.cask_rev_old }}
       cask_rev_new: ${{ steps.revs.outputs.cask_rev_new }}
     steps:
@@ -161,6 +162,7 @@ jobs:
             echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}"
             echo "nixpkgs_new=$nixpkgs_new"
             echo "dotfiles_cursor_old=${{ steps.old.outputs.dotfiles_cursor_old }}"
+            echo "dotfiles_cursor_new=$(git rev-parse HEAD)"
             echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}"
             echo "cask_rev_new=$cask_rev_new"
           } >> "$GITHUB_OUTPUT"
@@ -244,6 +246,7 @@ jobs:
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
           DOTFILES_CURSOR_OLD: ${{ needs.bump.outputs.dotfiles_cursor_old }}
+          DOTFILES_CURSOR_NEW: ${{ needs.bump.outputs.dotfiles_cursor_new }}
           CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
           # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
@@ -251,12 +254,12 @@ jobs:
           # permissions: models: read は不要（contents: read で public release 取得に十分）。
           GITHUB_TOKEN: ${{ github.token }}
           # 概要抽出の OpenAI API キー（利用者が設定済みの secret。この厳密名で CLI が env から読む）。schedule は
-          # GitHub の制約上常に既定ブランチで発火するためそのまま secret を受け取る。workflow_dispatch は
-          # repo owner が手動起動した run に限って secret を受け取り、PR ブランチ dry-run でも要約付き履歴を
-          # 検証できるようにする。repo owner 以外が起動した dispatch では空キーになり、CLI は OpenAI 抽出を skip
-          # （version-only：version + notes_url のみ）する。PR 起票・`static checks` status 投稿経路の既定
-          # ブランチ限定は open-pr job 側で別途維持する（そこが信頼境界）。
-          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
+          # GitHub の制約上 schedule は常に既定ブランチで発火するためそのまま secret を受け取る。workflow_dispatch は
+          # repo owner が **既定ブランチ ref** で手動起動した run に限って secret を受け取る。未信頼 branch/tag を
+          # checkout した dry-run へ secret を渡さず、CLI は OpenAI 抽出を skip（version-only：version +
+          # notes_url のみ）する。PR 起票・`static checks` status 投稿経路の既定ブランチ限定は open-pr job 側で
+          # 別途維持する（そこが信頼境界）。
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && secrets.OPEN_AI_API_KEY || '' }}
         run: |
           set -euo pipefail
           at="$(date -u +%FT%TZ)"
@@ -268,6 +271,7 @@ jobs:
           nix develop -c "$dotfiles_bin" update-history record \
             --nix-old nix-old.json \
             --cursor-old "$DOTFILES_CURSOR_OLD" \
+            --cursor-new "$DOTFILES_CURSOR_NEW" \
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \
             --reference "$CI_REFERENCE" \
@@ -400,11 +404,16 @@ jobs:
         id: commit
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BUMP_BASE_SHA: ${{ needs.bump.outputs.dotfiles_cursor_old }}
         run: |
           set -euo pipefail
           # 検査 base は実際の PR base（既定ブランチ）の SHA に揃える（checkout HEAD ではない）。
           git fetch --no-tags origin "$DEFAULT_BRANCH"
           base_sha="$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}")"
+          if [ "$base_sha" != "$BUMP_BASE_SHA" ]; then
+            echo "::error::bump artifact base ($BUMP_BASE_SHA) と現在の ${DEFAULT_BRANCH} ($base_sha) が一致しません。最新 base で bump をやり直してください。" >&2
+            exit 1
+          fi
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           branch="nightly/bump-$(date -u +%Y%m%d%H%M%S)"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"

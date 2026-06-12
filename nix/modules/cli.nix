@@ -37,7 +37,10 @@ let
 in
 {
   programs.gh.enable = true;
-  programs.atuin.enable = true;
+  programs.atuin = {
+    enable = true;
+    enableZshIntegration = false;
+  };
   programs.zoxide.enable = true;
 
   programs.fzf = {
