@@ -194,6 +194,7 @@ struct TestHome {
     path: PathBuf,
     user: String,
     config_dir: PathBuf,
+    source_snapshot: PathBuf,
 }
 
 impl TestHome {
@@ -204,15 +205,25 @@ impl TestHome {
         let config_dir =
             env::temp_dir().join(format!("dotfiles-zsh-config-{}-{suffix}", process::id()));
         let config_dir_path = config_dir.display().to_string();
-        let source = env::current_dir()?.canonicalize()?.display().to_string();
+        let source_root = env::current_dir()?.canonicalize()?;
+        let source_snapshot =
+            env::temp_dir().join(format!("dotfiles-zsh-source-{}-{suffix}", process::id()));
         let _ = fs::remove_dir_all(&config_dir);
+        let _ = fs::remove_dir_all(&source_snapshot);
         fs::create_dir_all(&config_dir)?;
+        copy_tree_excluding(
+            &source_root,
+            &source_snapshot,
+            &[".git", ".direnv", "target"],
+        )?;
+        let source = source_snapshot.canonicalize()?.display().to_string();
 
         cmd!(
             shell,
-            "env DOTFILES_CONFIG_DIR={config_dir_path} cargo run --package dotfiles-cli -- init --user {user} --host {user} --system aarch64-darwin --source {source}"
+            "env DOTFILES_CONFIG_DIR={config_dir_path} cargo run --package dotfiles-cli -- init --user {user} --host {user} --system aarch64-darwin --source {source} --skip-self-package"
         )
         .run()?;
+        assert_self_package_excluded(shell, &config_dir_path, &user)?;
 
         let activation_package = cmd!(
             shell,
@@ -260,6 +271,7 @@ impl TestHome {
             path,
             user,
             config_dir,
+            source_snapshot,
         })
     }
 
@@ -278,6 +290,7 @@ impl Drop for TestHome {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
         let _ = fs::remove_dir_all(&self.config_dir);
+        let _ = fs::remove_dir_all(&self.source_snapshot);
     }
 }
 
@@ -291,6 +304,50 @@ fn copy_with_home_rewrite(
     let text = fs::read_to_string(source)?;
     let rewritten = text.replace(generated_home, &home.display().to_string());
     fs::write(dest, rewritten)?;
+    Ok(())
+}
+
+/// mutable な worktree をそのまま path input に渡すと `target/` 配下の一時生成物の出入りで
+/// `nix flake lock` が壊れるため、zsh 検証用に安定した source snapshot を作る。
+fn copy_tree_excluding(source: &Path, dest: &Path, excluded_names: &[&str]) -> Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if excluded_names.iter().any(|excluded| *excluded == name) {
+            continue;
+        }
+
+        let source_path = entry.path();
+        let dest_path = dest.join(&file_name);
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_tree_excluding(&source_path, &dest_path, excluded_names)?;
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&source_path)?;
+            unix_fs::symlink(target, dest_path)?;
+        } else {
+            fs::copy(&source_path, &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// zsh 検証用 local flake では self package を外し、不要な dotfiles CLI release build を避ける。
+fn assert_self_package_excluded(shell: &Shell, config_dir_path: &str, user: &str) -> Result<()> {
+    let packages = cmd!(
+        shell,
+        "nix eval --raw --no-update-lock-file {config_dir_path}#homeConfigurations.{user}.config.home.packages --apply 'ps: builtins.concatStringsSep \",\" (builtins.map (p: p.name or \"\") ps)'"
+    )
+    .read()?;
+    if packages
+        .split(',')
+        .any(|name| name.starts_with("dotfiles-cli-"))
+    {
+        bail!("FAIL PATH:self-package-excluded\n  actual: {packages}");
+    }
+    println!("PASS PATH:self-package-excluded");
     Ok(())
 }
 
