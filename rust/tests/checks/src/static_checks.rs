@@ -132,26 +132,40 @@ fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// nightly-update.yml の record 要約経路が「PR 段階で検証可能だが無制限には開かない」ことを静的に固定する。
+/// nightly-update.yml の record 要約経路が「default branch ref に限定された secret 注入」になっていることを固定する。
 ///
-/// `OPEN_AI_API_KEY` を既定ブランチ ref 限定にすると、未マージ PR の workflow では要約付き履歴を検証できない。
-/// 一方で常時注入へ戻すと、workflow_dispatch を叩ける任意 actor へ secret を広げる。そこで record job の
-/// secret 注入は `schedule` または `workflow_dispatch && github.actor == github.repository_owner` に限定し、
-/// repo owner の手動検証 run だけ要約付き履歴を許可する。PR 起票/status 投稿の信頼境界は open-pr job の
-/// 既定ブランチ制限が継続して担う。
+/// `OPEN_AI_API_KEY` を workflow_dispatch の任意 ref に戻すと、未審査 ref の Rust/Nix コードへ secret を
+/// 渡せる。そこで record job の secret 注入は `schedule` または `workflow_dispatch && github.actor ==
+/// github.repository_owner && github.ref == default_branch` に限定し、未審査 ref の dry-run では version-only
+/// に倒す。open-pr job 側の既定ブランチ制限と合わせて、secret を使う build/record 経路全体を既定ブランチへ
+/// 閉じ込める。
 fn nightly_record_secret_gating_is_testable_and_bounded(shell: &Shell) -> Result<()> {
     step("nightly-update record secret gating");
     let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
     assert_nightly_record_secret_gating_is_testable_and_bounded(&workflow)
 }
 
+#[cfg(test)]
+fn record_secret_gate_allows(
+    event_name: &str,
+    actor: &str,
+    repository_owner: &str,
+    git_ref: &str,
+    default_branch: &str,
+) -> bool {
+    event_name == "schedule"
+        || (event_name == "workflow_dispatch"
+            && actor == repository_owner
+            && git_ref == format!("refs/heads/{default_branch}"))
+}
+
 fn assert_nightly_record_secret_gating_is_testable_and_bounded(workflow: &str) -> Result<()> {
     ensure!(
         workflow.contains(
-            "OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}"
+            "OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && secrets.OPEN_AI_API_KEY || '' }}"
         ),
-        "record job の OPEN_AI_API_KEY は schedule または repo owner の workflow_dispatch に限定し、\
-         PR ブランチ dry-run でも要約付き履歴を検証できる形を維持すること"
+        "record job の OPEN_AI_API_KEY は schedule または repo owner の default branch workflow_dispatch に限定し、\
+         未審査 ref の dry-run へ secret を渡さないこと"
     );
     ensure!(
         workflow.contains(
@@ -329,7 +343,7 @@ mod tests {
         assert_auto_update_wrapper_uses_update_all_semantics,
         assert_nightly_artifact_actions_use_supported_node_runtime,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
-        assert_nightly_record_secret_gating_is_testable_and_bounded,
+        assert_nightly_record_secret_gating_is_testable_and_bounded, record_secret_gate_allows,
     };
 
     /// wrapper が target を省略し、root daemon 用の `--user` / `--host` を渡す形を受け入れる。
@@ -362,12 +376,11 @@ mod tests {
         assert!(assert_auto_update_wrapper_uses_update_all_semantics(module).is_err());
     }
 
-    /// record job の OpenAI secret は repo owner の manual dispatch でも使える一方、open-pr の default-branch
-    /// gate は維持されることを受け入れる。
+    /// record job の OpenAI secret は repo owner の manual dispatch でも default branch ref に限定される。
     #[test]
-    fn nightly_record_secret_gating_accepts_owner_dispatch_and_keeps_open_pr_gate() {
+    fn nightly_record_secret_gating_accepts_owner_default_branch_dispatch_and_keeps_open_pr_gate() {
         let workflow = r#"
-          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && secrets.OPEN_AI_API_KEY || '' }}
           if: >-
             ${{ github.event_name == 'schedule' ||
                 (github.event_name == 'workflow_dispatch' &&
@@ -378,12 +391,33 @@ mod tests {
         assert!(assert_nightly_record_secret_gating_is_testable_and_bounded(workflow).is_ok());
     }
 
-    /// record job の OpenAI secret を default branch ref 限定へ戻す退行は、PR 段階で要約付き履歴を検証できないため
-    /// 拒否する。
     #[test]
-    fn nightly_record_secret_gating_rejects_default_branch_only_regression() {
+    fn record_secret_gate_rejects_owner_non_default_branch_dispatch() {
+        assert!(!record_secret_gate_allows(
+            "workflow_dispatch",
+            "owner",
+            "owner",
+            "refs/heads/feature",
+            "main"
+        ));
+    }
+
+    #[test]
+    fn record_secret_gate_accepts_owner_default_branch_dispatch() {
+        assert!(record_secret_gate_allows(
+            "workflow_dispatch",
+            "owner",
+            "owner",
+            "refs/heads/main",
+            "main"
+        ));
+    }
+
+    /// record job の OpenAI secret を owner の任意 dispatch へ戻す退行は、未審査 ref へ secret が流れるため拒否する。
+    #[test]
+    fn nightly_record_secret_gating_rejects_non_default_branch_dispatch_regression() {
         let workflow = r#"
-          OPEN_AI_API_KEY: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && secrets.OPEN_AI_API_KEY || '' }}
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
           if: >-
             ${{ github.event_name == 'schedule' ||
                 (github.event_name == 'workflow_dispatch' &&

@@ -12,7 +12,20 @@
 pub(crate) const INPUT_NAME: &str = "dotfiles";
 
 /// `#<user>` で Home Manager、`#<host>` で nix-darwin を参照できる flake を描画する。
-pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> String {
+pub(crate) fn render(
+    source: &str,
+    user: &str,
+    host: &str,
+    system: &str,
+    include_self_package: bool,
+) -> String {
+    let include_self_package = if include_self_package {
+        String::new()
+    } else {
+        r#"
+        includeSelfPackage = false;"#
+            .to_string()
+    };
     format!(
         r#"{{
   inputs.{input}.url = "{source}";
@@ -22,6 +35,7 @@ pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> Stri
       {input}.lib.mkHome {{
         user = "{user_value}";
         system = "{system_value}";
+{home_include_self_package}
       }};
 
     darwinConfigurations."{host_attr}" =
@@ -29,6 +43,7 @@ pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> Stri
         user = "{user_value}";
         host = "{host_value}";
         system = "{system_value}";
+{darwin_include_self_package}
       }};
   }};
 }}
@@ -39,7 +54,9 @@ pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> Stri
         user_value = escape_nix_string(user),
         host_attr = escape_nix_string(host),
         host_value = escape_nix_string(host),
-        system_value = escape_nix_string(system)
+        system_value = escape_nix_string(system),
+        home_include_self_package = include_self_package.clone(),
+        darwin_include_self_package = include_self_package
     )
 }
 
@@ -69,6 +86,7 @@ mod tests {
             "alice",
             "macbook",
             "aarch64-darwin",
+            true,
         );
 
         // 生成 flake は指定された dotfiles 参照を使う必要がある。
@@ -96,6 +114,7 @@ mod tests {
             "a\\b",
             "h\"ost/${host}",
             "x86_64-linux",
+            true,
         );
 
         // 動的な参照、ユーザー名、ホスト名は Nix 文字列に埋め込むため、
@@ -103,5 +122,18 @@ mod tests {
         assert!(flake.contains(r#"inputs.dotfiles.url = "path:/tmp/a\"b/\${bad}";"#));
         assert!(flake.contains(r#"homeConfigurations."a\\b""#));
         assert!(flake.contains(r#"host = "h\"ost/\${host}";"#));
+    }
+
+    #[test]
+    fn renders_home_without_self_package_when_requested() {
+        let flake = render(
+            "github:wthrk/dotfiles",
+            "alice",
+            "macbook",
+            "aarch64-darwin",
+            false,
+        );
+
+        assert_eq!(flake.matches("includeSelfPackage = false;").count(), 2);
     }
 }

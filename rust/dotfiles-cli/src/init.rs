@@ -39,7 +39,13 @@ pub(crate) fn run(options: InitOptions) -> Result<()> {
     fs::create_dir_all(config_dir)?;
     fs::write(
         &config_path,
-        local_flake::render(&options.source, &user, &host, &system),
+        local_flake::render(
+            &options.source,
+            &user,
+            &host,
+            &system,
+            !options.skip_self_package,
+        ),
     )?;
     lock_config(config_dir)?;
 
@@ -74,6 +80,8 @@ pub(crate) struct InitOptions {
     source: String,
     #[arg(long, env = "DOTFILES_CONFIG_DIR", value_name = "PATH")]
     config_dir: Option<PathBuf>,
+    #[arg(long)]
+    skip_self_package: bool,
     #[arg(long)]
     force: bool,
 }
