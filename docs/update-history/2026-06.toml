@@ -1234,3 +1234,104 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-06-12T19:19:16Z"
+cursor_old = "9d635e7efdb61f1bf75f30dab551c96a953281b3"
+nixpkgs_old = "b503dde361500433ca25a32e8f4d218bf58fb659"
+nixpkgs_new = "173d0ad7a974f8543a9ab01d2271b2e290341b33"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "5アプリ更新: ✨7 🐛2"
+
+[[update.package]]
+name = "gh"
+old = "2.93.0"
+new = "2.94.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/cli/cli/releases/tag/v2.94.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`gh discussion` コマンドセットを追加（プレビュー）"
+ref = "https://github.com/cli/cli/pull/13541"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ディスカッションにコメントするための `gh discussion comment` を追加"
+ref = "https://github.com/cli/cli/pull/13620"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Issues 2.0 サポートを追加：イシュータイプ、サブイシュー、関係性"
+ref = "https://github.com/cli/cli/pull/13057"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ネストされたディレクトリでのスキル発見をサポートする修正"
+ref = "https://github.com/cli/cli/pull/13459"
+
+[[update.package]]
+name = "google-chrome"
+old = "149.0.7827.103"
+new = "149.0.7827.115"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+change_item = []
+
+[[update.package]]
+name = "neovim"
+old = "0.12.2"
+new = "0.12.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/neovim/neovim/releases/tag/v0.12.3"
+change_item = []
+
+[[update.package]]
+name = "zed-editor"
+old = "1.5.4"
+new = "1.6.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.6.3"
+
+[[update.package.change_item]]
+category = "feature"
+text = "エージェントスキルをリンクで共有する機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/58009"
+
+[[update.package.change_item]]
+category = "feature"
+text = "コミット履歴の差分表示にスプリットモードを切り替える機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/58163"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Gitパネルで追加および削除された行数の合計を表示する機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/58018"
+
+[[update.package]]
+name = "codex-app"
+old = "26.608.12217"
+new = "26.609.30741"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいAPIエンドポイントを追加しました。"
+ref = "https://github.com/openai/codex/releases/tag/v26.609.30741"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の入力に対する応答の精度を改善しました。"
+ref = "https://github.com/openai/codex/releases/tag/v26.609.30741"

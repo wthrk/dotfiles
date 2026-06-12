@@ -7,8 +7,9 @@ origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/codex-app"]
-origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+source = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+origin = "ai-discovered"
+discovered_at = "2026-06-12T19:19:16Z"
 
 ["nix/atuin"]
 source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
@@ -95,7 +96,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-12T19:19:16Z"
 
 ["nix/git"]
 origin = "none"
@@ -112,7 +113,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/google-chrome"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-12T19:19:16Z"
 
 ["nix/iterm2"]
 source = "https://github.com/gnachman/iTerm2/releases"
@@ -130,7 +131,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/neovim"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-12T19:19:16Z"
 
 ["nix/nix"]
 origin = "none"
@@ -225,7 +226,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-12T19:19:16Z"
 
 ["nix/zsh"]
 source = "https://zsh.sourceforge.io/releases.html"
