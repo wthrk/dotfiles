@@ -1,0 +1,113 @@
+name: verify history backfill
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    name: backfill old history artifact
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SOURCE_ARTIFACT_ID: "7605795883"
+      OPEN_AI_API_KEY: ${{ github.actor == github.repository_owner && secrets.OPEN_AI_API_KEY || '' }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-${{ runner.os }}
+
+      - name: dotfiles バイナリをビルド
+        run: nix develop -c cargo build -p dotfiles-cli
+
+      - name: 旧 history artifact を取得
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/verify-history-backfill/input
+          curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o /tmp/verify-history-backfill/history-record.zip
+          unzip -o /tmp/verify-history-backfill/history-record.zip -d /tmp/verify-history-backfill/input
+
+      - name: backfill 前の空件数を集計
+        id: before
+        run: |
+          set -euo pipefail
+          count="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          with Path('/tmp/verify-history-backfill/input/2026-06.toml').open('rb') as f:
+              data = tomllib.load(f)
+          empties = sum(
+              1
+              for update in data.get('update', [])
+              for package in update.get('package', [])
+              if not package.get('change_item')
+          )
+          print(empties)
+          PY
+          )"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: version-only を backfill
+        run: |
+          set -euo pipefail
+          dotfiles_bin="$PWD/target/debug/dotfiles"
+          nix develop -c "$dotfiles_bin" update-history backfill-version-only \
+            --history /tmp/verify-history-backfill/input/2026-06.toml \
+            --notes-sources /tmp/verify-history-backfill/input/notes-sources.toml
+
+      - name: backfill 後の空件数を集計
+        id: after
+        run: |
+          set -euo pipefail
+          count="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          with Path('/tmp/verify-history-backfill/input/2026-06.toml').open('rb') as f:
+              data = tomllib.load(f)
+          empties = sum(
+              1
+              for update in data.get('update', [])
+              for package in update.get('package', [])
+              if not package.get('change_item')
+          )
+          print(empties)
+          PY
+          )"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: 空件数が減ったことを検証
+        run: |
+          set -euo pipefail
+          before="${{ steps.before.outputs.count }}"
+          after="${{ steps.after.outputs.count }}"
+          echo "before=$before after=$after"
+          test "$after" -lt "$before"
+
+      - name: backfill 後 artifact を保存
+        uses: actions/upload-artifact@v7
+        with:
+          name: backfilled-history-record
+          retention-days: 1
+          path: |
+            /tmp/verify-history-backfill/input/2026-06.toml
+            /tmp/verify-history-backfill/input/notes-sources.toml
+          if-no-files-found: error
