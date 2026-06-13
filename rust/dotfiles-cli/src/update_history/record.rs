@@ -88,16 +88,55 @@ fn package_source_to_delta_source(source: PackageSource) -> DeltaSource {
     }
 }
 
+fn repo_from_github_url(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = owner.trim();
+    let repo = after_owner
+        .split('/')
+        .next()?
+        .trim()
+        .trim_end_matches(".git");
+    if owner.is_empty() || repo.is_empty() {
+        None
+    } else {
+        Some(format!("{owner}/{repo}"))
+    }
+}
+
+fn backfill_notes_source(
+    name: &str,
+    notes_url: Option<&str>,
+    source: PackageSource,
+) -> Option<String> {
+    if let Some(url) = notes_url.filter(|url| !url.is_empty()) {
+        return Some(url.to_string());
+    }
+    match (source, name) {
+        (PackageSource::Brew, "bitwarden") => {
+            Some("https://github.com/bitwarden/clients/releases".to_string())
+        }
+        (PackageSource::Brew, "codex-app") => {
+            Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string())
+        }
+        (PackageSource::Nix, "chromedriver") => {
+            Some("https://developer.chrome.com/docs/chromedriver/downloads".to_string())
+        }
+        _ => None,
+    }
+}
+
 fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
+    let notes_url = package.notes_url.clone();
     VersionDelta {
         name: package.name.clone(),
         old: package.old.clone(),
         new: package.new.clone(),
         change: package.change,
         source: package_source_to_delta_source(package.source),
-        repo: None,
-        notes_source: package.notes_url.clone(),
-        homepage: package.notes_url.clone(),
+        repo: notes_url.as_deref().and_then(repo_from_github_url),
+        notes_source: backfill_notes_source(&package.name, notes_url.as_deref(), package.source),
+        homepage: notes_url,
     }
 }
 

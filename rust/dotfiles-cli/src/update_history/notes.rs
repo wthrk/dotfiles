@@ -452,7 +452,7 @@ pub(crate) fn fetch_release_notes(delta: &VersionDelta) -> Result<Option<RawRele
 /// brew cask `.rb` 定義を取得し、`homepage`（無ければ `url`）を探索ヒント URL として 1 件取り出す。
 pub(crate) fn brew_notes_hint(brew_notes_base: Option<&str>, name: &str) -> Result<Option<String>> {
     let Some(base) = brew_notes_base else {
-        return Ok(None);
+        return Ok(package_brew_hint(name));
     };
     let url = resolve_cask_url(base, name);
     if !is_allowed_url(&url) {
@@ -466,6 +466,7 @@ pub(crate) fn brew_notes_hint(brew_notes_base: Option<&str>, name: &str) -> Resu
 
 fn package_brew_hint(name: &str) -> Option<String> {
     match name {
+        "bitwarden" => Some("https://github.com/bitwarden/clients/releases".to_string()),
         "codex-app" => Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string()),
         _ => None,
     }
