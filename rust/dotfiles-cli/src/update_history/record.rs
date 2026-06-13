@@ -123,6 +123,15 @@ fn github_compare_url(repo: &str, old: Option<&str>, new: Option<&str>) -> Optio
     ))
 }
 
+fn github_release_tag_url(repo: &str, version: Option<&str>) -> Option<String> {
+    let repo = repo.trim();
+    let version = version.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "https://github.com/{repo}/releases/tag/{}",
+        version_tag(version)
+    ))
+}
+
 fn neovim_news_url(version: Option<&str>) -> Option<String> {
     let version = version?;
     let mut parts = version.trim_start_matches('v').split('.');
@@ -130,6 +139,21 @@ fn neovim_news_url(version: Option<&str>) -> Option<String> {
     let minor = parts.next()?;
     Some(format!(
         "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-{major}.{minor}.txt"
+    ))
+}
+
+fn rust_release_notes_url(version: Option<&str>) -> Option<String> {
+    let version = version.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "https://doc.rust-lang.org/stable/releases.html#version-{}",
+        version.trim_start_matches('v').replace('.', "-")
+    ))
+}
+
+fn chrome_releases_search_url(version: Option<&str>) -> Option<String> {
+    let version = version.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "https://chromereleases.googleblog.com/search?q={version}"
     ))
 }
 
@@ -159,13 +183,13 @@ fn backfill_notes_source(
         (PackageSource::Brew, "codex-app") => {
             Some("https://developers.openai.com/codex/changelog".to_string())
         }
-        // ChromeDriver downloads は巨大な docs HTML で、機械 seed にすると抽出 0 件に倒れやすい。
-        // backfill では changelog hint を付けず AI fetch に戻す。
-        (PackageSource::Nix, "chromedriver") => None,
+        (PackageSource::Nix, "chromedriver") => chrome_releases_search_url(new),
+        (PackageSource::Nix, "docker-compose") => github_release_tag_url("docker/compose", new),
         (PackageSource::Nix, "neovim") => neovim_news_url(new),
         (PackageSource::Nix, "docker") | (PackageSource::Nix, "docker-credential-helpers") => {
             repo.and_then(|repo| github_compare_url(repo, old, new))
         }
+        (PackageSource::Nix, "rustfmt") => rust_release_notes_url(new),
         _ => notes_url
             .filter(|url| !url.is_empty())
             .map(std::string::ToString::to_string),
@@ -1895,7 +1919,7 @@ origin = \"none\"
     }
 
     #[test]
-    fn package_to_backfill_delta_disables_chromedriver_mechanical_seed() {
+    fn package_to_backfill_delta_uses_chromedriver_version_search() {
         let package = PackageUpdate {
             name: "chromedriver".to_string(),
             old: Some("147.0.7727.102".to_string()),
@@ -1907,6 +1931,47 @@ origin = \"none\"
             change_items: Vec::new(),
         };
         let delta = package_to_backfill_delta(&package);
-        assert_eq!(delta.notes_source, None);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://chromereleases.googleblog.com/search?q=149.0.7827.103")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_docker_compose_release_tag() {
+        let package = PackageUpdate {
+            name: "docker-compose".to_string(),
+            old: Some("5.0.2".to_string()),
+            new: Some("5.1.4".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/docker/compose".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://github.com/docker/compose/releases/tag/v5.1.4")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_rust_release_notes_for_rustfmt() {
+        let package = PackageUpdate {
+            name: "rustfmt".to_string(),
+            old: Some("1.94.0".to_string()),
+            new: Some("1.95.0".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/rust-lang-nursery/rustfmt".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://doc.rust-lang.org/stable/releases.html#version-1-95-0")
+        );
     }
 }
