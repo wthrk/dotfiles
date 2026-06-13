@@ -109,10 +109,18 @@ fn backfill_notes_source(
     notes_url: Option<&str>,
     source: PackageSource,
 ) -> Option<String> {
-    if let Some(url) = notes_url.filter(|url| !url.is_empty()) {
-        return Some(url.to_string());
-    }
     match (source, name) {
+        (PackageSource::Nix, "coreutils") => {
+            Some("https://git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string())
+        }
+        (PackageSource::Nix, "discord") => Some("https://discord.com/tags/patch-notes".to_string()),
+        (PackageSource::Nix, "nix") => {
+            Some("https://nixos.org/manual/nix/latest/release-notes/rl-2.34".to_string())
+        }
+        (PackageSource::Nix, "slack") => Some("https://slack.com/release-notes/mac".to_string()),
+        (PackageSource::Nix, "temurin-bin") => {
+            Some("https://adoptium.net/temurin/release-notes".to_string())
+        }
         (PackageSource::Brew, "bitwarden") => {
             Some("https://bitwarden.com/help/releasenotes/".to_string())
         }
@@ -122,12 +130,9 @@ fn backfill_notes_source(
         (PackageSource::Nix, "chromedriver") => {
             Some("https://developer.chrome.com/docs/chromedriver/downloads".to_string())
         }
-        (PackageSource::Nix, "discord") => Some("https://discord.com/tags/patch-notes".to_string()),
-        (PackageSource::Nix, "slack") => Some("https://slack.com/release-notes/mac".to_string()),
-        (PackageSource::Nix, "temurin-bin") => {
-            Some("https://adoptium.net/temurin/release-notes".to_string())
-        }
-        _ => None,
+        _ => notes_url
+            .filter(|url| !url.is_empty())
+            .map(std::string::ToString::to_string),
     }
 }
 
@@ -1774,13 +1779,52 @@ origin = \"none\"
             change: super::super::wire::ChangeKind::Upgraded,
             declared: true,
             source: PackageSource::Nix,
-            notes_url: None,
+            notes_url: Some("https://slack.com/release-notes".to_string()),
             change_items: Vec::new(),
         };
         let delta = package_to_backfill_delta(&package);
         assert_eq!(
             delta.notes_source.as_deref(),
             Some("https://slack.com/release-notes/mac")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_prefers_curated_source_over_stale_notes_url() {
+        let package = PackageUpdate {
+            name: "discord".to_string(),
+            old: Some("0.0.382".to_string()),
+            new: Some("0.0.393".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://discordapp.com/".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://discord.com/tags/patch-notes")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_recovers_repo_from_github_releases_url() {
+        let package = PackageUpdate {
+            name: "docker".to_string(),
+            old: Some("29.4.0".to_string()),
+            new: Some("29.5.3".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/docker/cli/releases".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.repo.as_deref(), Some("docker/cli"));
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://github.com/docker/cli/releases")
         );
     }
 }
