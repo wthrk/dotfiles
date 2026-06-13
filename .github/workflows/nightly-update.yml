@@ -310,6 +310,8 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
 
       - name: 旧 history artifact の version-only を backfill
+        env:
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
         run: |
           set -euo pipefail
           dotfiles_bin="$PWD/target/debug/dotfiles"
