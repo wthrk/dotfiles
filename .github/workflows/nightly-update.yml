@@ -281,6 +281,74 @@ jobs:
             docs/update-history/
           if-no-files-found: warn
 
+      - name: 旧 history artifact を取得して空件数を集計
+        id: verify_before
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/verify-history-backfill/input
+          curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/7605795883/zip" \
+            -o /tmp/verify-history-backfill/history-record.zip
+          unzip -o /tmp/verify-history-backfill/history-record.zip -d /tmp/verify-history-backfill/input
+          count="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          with Path('/tmp/verify-history-backfill/input/2026-06.toml').open('rb') as f:
+              data = tomllib.load(f)
+          print(sum(
+              1
+              for update in data.get('update', [])
+              for package in update.get('package', [])
+              if not package.get('change_item')
+          ))
+          PY
+          )"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: 旧 history artifact の version-only を backfill
+        run: |
+          set -euo pipefail
+          dotfiles_bin="$PWD/target/debug/dotfiles"
+          nix develop -c "$dotfiles_bin" update-history backfill-version-only \
+            --history /tmp/verify-history-backfill/input/2026-06.toml \
+            --notes-sources /tmp/verify-history-backfill/input/notes-sources.toml
+
+      - name: backfill 後の空件数を集計して改善を確認
+        id: verify_after
+        run: |
+          set -euo pipefail
+          before="${{ steps.verify_before.outputs.count }}"
+          after="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          with Path('/tmp/verify-history-backfill/input/2026-06.toml').open('rb') as f:
+              data = tomllib.load(f)
+          print(sum(
+              1
+              for update in data.get('update', [])
+              for package in update.get('package', [])
+              if not package.get('change_item')
+          ))
+          PY
+          )"
+          echo "before=$before after=$after"
+          echo "count=$after" >> "$GITHUB_OUTPUT"
+          test "$after" -lt "$before"
+
+      - name: backfill 後 history artifact を保存
+        uses: actions/upload-artifact@v7
+        with:
+          name: backfilled-history-record
+          retention-days: 1
+          path: |
+            /tmp/verify-history-backfill/input/2026-06.toml
+            /tmp/verify-history-backfill/input/notes-sources.toml
+          if-no-files-found: error
+
   # 3) PR 起票 + インラインセキュリティチェック（verify-bump-lock）+ 実 static checks + status 投稿 + auto-merge。
   #    GITHUB_TOKEN で完結する（GitHub App / 別 secret は使わない）。GITHUB_TOKEN 起票 PR では
   #    `on: pull_request` の static-checks.yml が発火しないため、この job が同一 run 内で
