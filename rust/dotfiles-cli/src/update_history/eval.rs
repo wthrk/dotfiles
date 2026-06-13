@@ -221,7 +221,7 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
     }
     match (name, homepage) {
         ("coreutils", "https://www.gnu.org/software/coreutils/") => {
-            "https://git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
+            "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
         }
         ("nix", "https://nixos.org/nix") => {
             "https://nixos.org/manual/nix/latest/release-notes/rl-2.34".to_string()
@@ -588,7 +588,7 @@ mod tests {
         );
         assert_eq!(
             coreutils.notes_source,
-            "https://git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS"
+            "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS"
         );
 
         let discord = derive_package(

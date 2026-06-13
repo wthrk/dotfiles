@@ -167,7 +167,7 @@ fn backfill_notes_source(
 ) -> Option<String> {
     match (source, name) {
         (PackageSource::Nix, "coreutils") => {
-            Some("https://git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string())
+            Some("https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string())
         }
         (PackageSource::Nix, "discord") => Some("https://discord.com/tags/patch-notes".to_string()),
         (PackageSource::Nix, "nix") => {
@@ -1854,6 +1854,25 @@ origin = \"none\"
         assert_eq!(
             delta.notes_source.as_deref(),
             Some("https://slack.com/release-notes/mac")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_cgit_coreutils_news_url() {
+        let package = PackageUpdate {
+            name: "coreutils".to_string(),
+            old: Some("9.10".to_string()),
+            new: Some("9.11".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://www.gnu.org/software/coreutils/".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS")
         );
     }
 
