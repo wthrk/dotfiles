@@ -195,6 +195,15 @@ fn package_notes_source(name: &str, homepage: &str, changelog: &str) -> String {
         ("chromedriver", "https://chromedriver.chromium.org/") => {
             "https://developer.chrome.com/docs/chromedriver/downloads".to_string()
         }
+        ("discord", "https://discordapp.com/") => {
+            "https://discord.com/tags/patch-notes".to_string()
+        }
+        ("slack", "https://slack.com/intl/en-jp/downloads/mac") => {
+            "https://slack.com/release-notes/mac".to_string()
+        }
+        ("temurin-bin", "https://adoptium.net/") => {
+            "https://adoptium.net/temurin/release-notes".to_string()
+        }
         _ => String::new(),
     }
 }
@@ -520,6 +529,54 @@ mod tests {
         assert_eq!(
             chromedriver.notes_source,
             "https://developer.chrome.com/docs/chromedriver/downloads"
+        );
+    }
+
+    #[test]
+    fn derive_package_adds_notes_source_fallbacks_for_desktop_apps() {
+        let discord = derive_package(
+            "discord",
+            RawPackage {
+                version: "0.0.393".to_string(),
+                homepage: serde_json::json!("https://discordapp.com/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(discord.notes_source, "https://discord.com/tags/patch-notes");
+
+        let slack = derive_package(
+            "slack",
+            RawPackage {
+                version: "4.49.89".to_string(),
+                homepage: serde_json::json!("https://slack.com/intl/en-jp/downloads/mac"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(slack.notes_source, "https://slack.com/release-notes/mac");
+
+        let temurin = derive_package(
+            "temurin-bin",
+            RawPackage {
+                version: "21.0.11".to_string(),
+                homepage: serde_json::json!("https://adoptium.net/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            temurin.notes_source,
+            "https://adoptium.net/temurin/release-notes"
         );
     }
 
