@@ -466,8 +466,8 @@ pub(crate) fn brew_notes_hint(brew_notes_base: Option<&str>, name: &str) -> Resu
 
 fn package_brew_hint(name: &str) -> Option<String> {
     match name {
-        "bitwarden" => Some("https://github.com/bitwarden/clients/releases".to_string()),
-        "codex-app" => Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string()),
+        "bitwarden" => Some("https://bitwarden.com/help/releasenotes/".to_string()),
+        "codex-app" => Some("https://developers.openai.com/codex/changelog".to_string()),
         _ => None,
     }
 }
@@ -1316,7 +1316,16 @@ mod tests {
         std::fs::remove_dir(&temp)?;
         assert_eq!(
             hint,
-            Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string())
+            Some("https://developers.openai.com/codex/changelog".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn brew_notes_hint_uses_official_bitwarden_release_notes_fallback() -> Result<()> {
+        assert_eq!(
+            brew_notes_hint(None, "bitwarden")?,
+            Some("https://bitwarden.com/help/releasenotes/".to_string())
         );
         Ok(())
     }
