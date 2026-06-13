@@ -224,7 +224,7 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
             "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
         }
         ("nix", "https://nixos.org/nix") => {
-            "https://nixos.org/manual/nix/latest/release-notes/rl-2.34".to_string()
+            "https://raw.githubusercontent.com/NixOS/nix/master/doc/manual/source/release-notes/rl-2.34.md".to_string()
         }
         ("google-chrome", "https://www.google.com/chrome/browser/") => {
             "https://chromereleases.googleblog.com/".to_string()
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(package.repo, "NixOS/nix");
         assert_eq!(
             package.notes_source,
-            "https://nixos.org/manual/nix/latest/release-notes/rl-2.34"
+            "https://raw.githubusercontent.com/NixOS/nix/master/doc/manual/source/release-notes/rl-2.34.md"
         );
         assert_eq!(package.homepage, "https://nixos.org/nix");
     }
