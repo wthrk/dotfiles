@@ -456,9 +456,19 @@ pub(crate) fn brew_notes_hint(brew_notes_base: Option<&str>, name: &str) -> Resu
     };
     let url = resolve_cask_url(base, name);
     if !is_allowed_url(&url) {
-        return Ok(None);
+        return Ok(package_brew_hint(name));
     }
-    Ok(safe_https_fetch(&url)?.as_deref().and_then(parse_cask_hint))
+    Ok(safe_https_fetch(&url)?
+        .as_deref()
+        .and_then(parse_cask_hint)
+        .or_else(|| package_brew_hint(name)))
+}
+
+fn package_brew_hint(name: &str) -> Option<String> {
+    match name {
+        "codex-app" => Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string()),
+        _ => None,
+    }
 }
 
 fn fetch_nix_notes(
@@ -1290,6 +1300,24 @@ mod tests {
             parse_cask_hint("cask \"x\" do\n  url_template \"https://example/#{version}\"\nend\n")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn brew_notes_hint_falls_back_to_package_specific_hint_when_cask_has_no_hint() -> Result<()> {
+        let temp =
+            std::env::temp_dir().join(format!("dotfiles-codex-app-hint-{}", std::process::id()));
+        std::fs::create_dir_all(&temp)?;
+        let rb = temp.join("codex-app.rb");
+        std::fs::write(&rb, "cask \"codex-app\" do\n  version \"1.0.0\"\nend\n")?;
+        let base = format!("file://{}", temp.display());
+        let hint = brew_notes_hint(Some(&base), "codex-app")?;
+        std::fs::remove_file(&rb)?;
+        std::fs::remove_dir(&temp)?;
+        assert_eq!(
+            hint,
+            Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string())
+        );
+        Ok(())
     }
 
     #[test]
