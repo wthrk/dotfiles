@@ -687,6 +687,9 @@ const GITHUB_API_VERSION_HEADER: Header<'static> = ("X-GitHub-Api-Version", "202
 /// 含まない（先頭を [`super::llm`] が切り詰めると chrome だけが残り抽出 0 件に倒れる）。landing page は seed を
 /// `None` にして AI の `fetch_url` 探索へ回す（agent は `/releases` 等を自分で組み立てて実ノート本文を読む）。
 fn resolve_nix_notes_source(url: &str) -> Option<NotesFetchPlan> {
+    if url == "https://developer.chrome.com/docs/chromedriver/downloads" {
+        return None;
+    }
     // github.com の URL は構造化変換（blob→raw / releases-tag→API）に当たるものだけ機械 seed にする。
     // それ以外の github.com URL（bare repo root `/owner/repo`・issues・wiki 等）は landing page（HTML chrome）で
     // あり生本文を Raw 取得すると先頭が chrome だけになり抽出 0 件に倒れるため、機械 seed にせず None を返す
@@ -1120,6 +1123,14 @@ mod tests {
         assert!(resolve_nix_notes_source("https://169.254.169.254/latest/meta-data").is_none());
         assert!(resolve_nix_notes_source("https://localhost/changelog").is_none());
         assert!(resolve_nix_notes_source("https://intranet/changelog").is_none());
+    }
+
+    #[test]
+    fn chromedriver_downloads_page_is_not_used_as_mechanical_seed() {
+        assert!(
+            resolve_nix_notes_source("https://developer.chrome.com/docs/chromedriver/downloads")
+                .is_none()
+        );
     }
 
     #[test]
