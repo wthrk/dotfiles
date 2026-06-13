@@ -81,6 +81,26 @@ fn to_package_update(material: PackageMaterial) -> PackageUpdate {
     }
 }
 
+fn package_source_to_delta_source(source: PackageSource) -> DeltaSource {
+    match source {
+        PackageSource::Nix => DeltaSource::NixEval,
+        PackageSource::Brew => DeltaSource::BrewTap,
+    }
+}
+
+fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
+    VersionDelta {
+        name: package.name.clone(),
+        old: package.old.clone(),
+        new: package.new.clone(),
+        change: package.change,
+        source: package_source_to_delta_source(package.source),
+        repo: None,
+        notes_source: package.notes_url.clone(),
+        homepage: package.notes_url.clone(),
+    }
+}
+
 /// パッケージ素材列から、severity / overall を機械算出した 1 件の [`UpdateEntry`] を組み立てる。
 fn build_entry(
     at: String,
@@ -373,6 +393,101 @@ pub(crate) fn run_record(input: RecordInput<'_>, extract: &OpenAiExtractor) -> R
         &|reference| eval::eval_declared_versions(reference),
         &brew::fetch_cask_rb,
     )
+}
+
+pub(crate) fn run_backfill_version_only(
+    history_path: &Path,
+    registry_path: &Path,
+    extract: &OpenAiExtractor,
+) -> Result<()> {
+    run_backfill_version_only_with(
+        history_path,
+        registry_path,
+        extract,
+        &notes::fetch_from_source,
+        &|name| extract.brew_homepage_hint(name),
+    )
+}
+
+fn run_backfill_version_only_with(
+    history_path: &Path,
+    registry_path: &Path,
+    extract: &dyn ChangeExtractor,
+    fetch_source: &NotesFetch<'_>,
+    brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
+) -> Result<()> {
+    let mut document = read_document(history_path)?;
+    let initial_registry = read_registry(registry_path)?;
+    let (updates, registry, dirty) = document.updates.into_iter().try_fold(
+        (Vec::new(), initial_registry, false),
+        |(updates, registry, dirty), mut entry| -> Result<_> {
+            let (packages, registry, changed) = entry.packages.into_iter().try_fold(
+                (Vec::new(), registry, false),
+                |(packages, registry, changed), package| -> Result<_> {
+                    if !package.change_items.is_empty() {
+                        return Ok((
+                            packages
+                                .into_iter()
+                                .chain(std::iter::once(package))
+                                .collect::<Vec<_>>(),
+                            registry,
+                            changed,
+                        ));
+                    }
+                    let delta = package_to_backfill_delta(&package);
+                    let resolution = resolve_notes(
+                        &delta,
+                        &entry.at,
+                        extract,
+                        fetch_source,
+                        brew_hint,
+                        &registry,
+                    )?;
+                    let registry = match &resolution.learned {
+                        Some(learned) => {
+                            learn_provenance(registry, &delta.name, delta.source, learned.clone())
+                        }
+                        None => registry,
+                    };
+                    let updated = PackageUpdate {
+                        notes_url: resolution.notes.notes_url.or(package.notes_url.clone()),
+                        change_items: resolution.notes.change_items,
+                        ..package
+                    };
+                    Ok((
+                        packages
+                            .into_iter()
+                            .chain(std::iter::once(updated))
+                            .collect::<Vec<_>>(),
+                        registry,
+                        changed,
+                    ))
+                },
+            )?;
+            entry.packages = packages;
+            let all_items: Vec<ChangeItem> = entry
+                .packages
+                .iter()
+                .flat_map(|package| package.change_items.clone())
+                .collect();
+            entry.severity = severity_of(&all_items);
+            entry.overall = overall_headline(entry.packages.len(), &all_items);
+            Ok((
+                updates
+                    .into_iter()
+                    .chain(std::iter::once(entry))
+                    .collect::<Vec<_>>(),
+                registry,
+                dirty || changed,
+            ))
+        },
+    )?;
+    document.updates = updates;
+    write_document(history_path, &document)?;
+    if dirty {
+        write_registry(registry_path, &registry)?;
+    }
+    Ok(())
 }
 
 /// テスト可能な record 本体（LLM seam・registry 再利用 fetch seam・brew ヒント・nix eval・cask fetch を注入する）。
@@ -1543,6 +1658,67 @@ origin = \"none\"
         )]);
         write_registry(&path, &registry)?;
         assert_eq!(read_registry(&path)?, registry);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_version_only_rewrites_history_entry_and_overall() -> Result<()> {
+        let dir = temp_dir("backfill-history");
+        let history = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        write_document(
+            &history,
+            &HistoryDocument {
+                updates: vec![UpdateEntry {
+                    at: "2026-06-13T09:45:17Z".to_string(),
+                    cursor_old: None,
+                    cursor_new: None,
+                    nixpkgs_old: "old".to_string(),
+                    nixpkgs_new: "new".to_string(),
+                    reference: "darwinConfigurations.ci-ref".to_string(),
+                    severity: super::super::wire::Severity::None,
+                    overall: "1アプリ更新".to_string(),
+                    packages: vec![PackageUpdate {
+                        name: "codex-app".to_string(),
+                        old: Some("1.0.0".to_string()),
+                        new: Some("1.1.0".to_string()),
+                        change: super::super::wire::ChangeKind::Upgraded,
+                        declared: true,
+                        source: PackageSource::Brew,
+                        notes_url: None,
+                        change_items: Vec::new(),
+                    }],
+                }],
+            },
+        )?;
+        let extractor = FakeExtractor::with(
+            "codex-app",
+            ExtractOutcome {
+                items: vec![ChangeItem {
+                    category: super::super::wire::ChangeCategory::Feature,
+                    text: "変更".to_string(),
+                    ref_url: Some(
+                        "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
+                    ),
+                }],
+                source_url: Some(
+                    "https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string(),
+                ),
+            },
+        );
+        run_backfill_version_only_with(&history, &registry, &extractor, &|_| Ok(None), &|name| {
+            Ok((name == "codex-app")
+                .then(|| "https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string()))
+        })?;
+        let after = read_document(&history)?;
+        let package = &after.updates[0].packages[0];
+        assert_eq!(
+            package.notes_url.as_deref(),
+            Some("https://github.com/openai/codex/blob/main/CHANGELOG.md")
+        );
+        assert_eq!(package.change_items.len(), 1);
+        assert_eq!(after.updates[0].overall, "1アプリ更新: ✨1");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

@@ -45,6 +45,7 @@ pub(crate) struct UpdateHistoryOptions {
 enum UpdateHistoryCommand {
     // record option は他より大幅にフィールドが多いため Box で間接化して large_enum_variant を避ける。
     Record(Box<RecordOptions>),
+    BackfillVersionOnly(BackfillVersionOnlyOptions),
     EvalVersions(EvalVersionsOptions),
     LockRev(LockRevOptions),
     Show(ShowOptions),
@@ -106,6 +107,17 @@ struct EvalVersionsOptions {
 }
 
 #[derive(Args)]
+/// 既存の月次履歴 TOML に残っている version-only package を、現在の取得ロジックで再処理して埋め直す。
+struct BackfillVersionOnlyOptions {
+    /// 更新対象の月次履歴 TOML。
+    #[arg(long)]
+    history: PathBuf,
+    /// provenance レジストリ TOML（未指定なら `--history` と同じ directory の `notes-sources.toml`）。
+    #[arg(long)]
+    notes_sources: Option<PathBuf>,
+}
+
+#[derive(Args)]
 /// flake.lock の `nodes.<node>.locked.rev` を取り出して標準出力へ書く option。
 struct LockRevOptions {
     /// 読む flake.lock path。
@@ -143,6 +155,7 @@ struct ShowOptions {
 pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
     match options.command {
         UpdateHistoryCommand::Record(options) => run_record(*options),
+        UpdateHistoryCommand::BackfillVersionOnly(options) => run_backfill_version_only(options),
         UpdateHistoryCommand::EvalVersions(options) => run_eval_versions(options),
         UpdateHistoryCommand::LockRev(options) => run_lock_rev(options),
         UpdateHistoryCommand::Show(options) => run_show(options),
@@ -200,6 +213,15 @@ fn run_record(options: RecordOptions) -> Result<()> {
         cask_rev_new: options.cask_rev_new.as_deref(),
     };
     record::run_record(input, &extractor)
+}
+
+fn run_backfill_version_only(options: BackfillVersionOnlyOptions) -> Result<()> {
+    let registry_path = options
+        .notes_sources
+        .clone()
+        .unwrap_or_else(|| default_registry_path(&options.history));
+    let extractor = llm::OpenAiExtractor::new(None);
+    record::run_backfill_version_only(&options.history, &registry_path, &extractor)
 }
 
 /// 利用者 `show`: 履歴 source を読み、起点 rev からの catch-up 区間を集約して stdout へ出力する。
