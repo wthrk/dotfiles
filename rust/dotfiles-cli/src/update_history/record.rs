@@ -114,13 +114,18 @@ fn backfill_notes_source(
     }
     match (source, name) {
         (PackageSource::Brew, "bitwarden") => {
-            Some("https://github.com/bitwarden/clients/releases".to_string())
+            Some("https://bitwarden.com/help/releasenotes/".to_string())
         }
         (PackageSource::Brew, "codex-app") => {
-            Some("https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string())
+            Some("https://developers.openai.com/codex/changelog".to_string())
         }
         (PackageSource::Nix, "chromedriver") => {
             Some("https://developer.chrome.com/docs/chromedriver/downloads".to_string())
+        }
+        (PackageSource::Nix, "discord") => Some("https://discord.com/tags/patch-notes".to_string()),
+        (PackageSource::Nix, "slack") => Some("https://slack.com/release-notes/mac".to_string()),
+        (PackageSource::Nix, "temurin-bin") => {
+            Some("https://adoptium.net/temurin/release-notes".to_string())
         }
         _ => None,
     }
@@ -1741,24 +1746,41 @@ origin = \"none\"
                         "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
                     ),
                 }],
-                source_url: Some(
-                    "https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string(),
-                ),
+                source_url: Some("https://developers.openai.com/codex/changelog".to_string()),
             },
         );
         run_backfill_version_only_with(&history, &registry, &extractor, &|_| Ok(None), &|name| {
             Ok((name == "codex-app")
-                .then(|| "https://github.com/openai/codex/blob/main/CHANGELOG.md".to_string()))
+                .then(|| "https://developers.openai.com/codex/changelog".to_string()))
         })?;
         let after = read_document(&history)?;
         let package = &after.updates[0].packages[0];
         assert_eq!(
             package.notes_url.as_deref(),
-            Some("https://github.com/openai/codex/blob/main/CHANGELOG.md")
+            Some("https://developers.openai.com/codex/changelog")
         );
         assert_eq!(package.change_items.len(), 1);
         assert_eq!(after.updates[0].overall, "1アプリ更新: ✨1");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    #[test]
+    fn package_to_backfill_delta_adds_official_notes_fallbacks() {
+        let package = PackageUpdate {
+            name: "slack".to_string(),
+            old: Some("4.48.100".to_string()),
+            new: Some("4.49.89".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: None,
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://slack.com/release-notes/mac")
+        );
     }
 }
