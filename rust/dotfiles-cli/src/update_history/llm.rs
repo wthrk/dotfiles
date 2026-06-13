@@ -107,16 +107,38 @@ impl ExtractRequest {
         seed: Option<RawReleaseNotes>,
         brew_homepage_hint: Option<String>,
     ) -> Self {
+        let homepage = brew_homepage_hint
+            .or_else(|| delta.homepage.clone())
+            .map(|url| normalize_hint_url(&url).unwrap_or(url));
+        let changelog = delta
+            .notes_source
+            .as_deref()
+            .map(|url| normalize_hint_url(url).unwrap_or_else(|| url.to_string()));
         ExtractRequest {
             name: delta.name.clone(),
             old: delta.old.clone(),
             new: delta.new.clone(),
             repo: delta.repo.clone(),
-            homepage: brew_homepage_hint.or_else(|| delta.homepage.clone()),
-            changelog: delta.notes_source.clone(),
+            homepage,
+            changelog,
             seed_notes: seed,
         }
     }
+}
+
+fn normalize_hint_url(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = owner.trim();
+    let repo = after_owner.split('/').next()?.trim();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let tail = after_owner[repo.len()..].trim_start_matches('/');
+    if tail.starts_with("releases/tag/") || tail.starts_with("releases/download/") {
+        return Some(format!("https://github.com/{owner}/{repo}/releases"));
+    }
+    Some(url.to_string())
 }
 
 /// AI エージェント抽出の結果（構造化変更リスト + AI が採用した取得元 URL）。
@@ -247,10 +269,15 @@ where
             user_message(&summarize_user_prompt(request))?,
         ];
         let response = call(summarize_request(messages)?)?;
-        return Ok(ExtractOutcome {
-            items: parse_change_items(response.content.as_deref().unwrap_or_default()),
-            source_url: None,
-        });
+        let items = parse_change_items(response.content.as_deref().unwrap_or_default());
+        if !items.is_empty() {
+            return Ok(ExtractOutcome {
+                items,
+                source_url: None,
+            });
+        }
+        // 機械 seed が在っても、本文不足・HTML 主体・版別ページの揺れで 1 回要約が空に落ちることがある。
+        // その場合は seed を参考情報として保持したまま tool-use へ落とし、より適切な release notes を再探索させる。
     }
 
     let messages = vec![
@@ -741,6 +768,7 @@ mod tests {
     //! を実 network 抜きで固定する。
 
     use super::*;
+    use crate::update_history::diff::DeltaSource;
     use async_openai::types::{ChatCompletionToolType, FunctionCall};
     use std::cell::Cell;
     use std::sync::mpsc;
@@ -859,6 +887,176 @@ mod tests {
     }
 
     #[test]
+    fn from_delta_prefers_brew_github_release_hint_over_generic_homepage() {
+        let delta = VersionDelta {
+            name: "bitwarden".to_string(),
+            old: Some("1.0".to_string()),
+            new: Some("1.1".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            source: DeltaSource::BrewTap,
+            repo: None,
+            notes_source: None,
+            homepage: Some("https://bitwarden.com/".to_string()),
+        };
+        let request = ExtractRequest::from_delta(
+            &delta,
+            None,
+            Some("https://github.com/bitwarden/clients/releases".to_string()),
+        );
+        assert_eq!(
+            request.homepage.as_deref(),
+            Some("https://github.com/bitwarden/clients/releases")
+        );
+    }
+
+    #[test]
+    fn from_delta_normalizes_github_release_tag_hint() {
+        let delta = VersionDelta {
+            name: "skaffold".to_string(),
+            old: Some("2.17.1".to_string()),
+            new: Some("2.21.0".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            source: DeltaSource::NixEval,
+            repo: Some("GoogleContainerTools/skaffold".to_string()),
+            notes_source: Some(
+                "https://github.com/GoogleContainerTools/skaffold/releases/tag/v2.21.0".to_string(),
+            ),
+            homepage: Some("https://skaffold.dev/".to_string()),
+        };
+        let request = ExtractRequest::from_delta(&delta, None, None);
+        assert_eq!(
+            request.changelog.as_deref(),
+            Some("https://github.com/GoogleContainerTools/skaffold/releases")
+        );
+    }
+
+    #[test]
+    fn agent_prompt_uses_normalized_release_hint_for_artifact_delta() {
+        let request = ExtractRequest {
+            name: "nix".to_string(),
+            old: Some("2.34.6+1".to_string()),
+            new: Some("2.34.7+1".to_string()),
+            repo: None,
+            homepage: Some("https://nixos.org/nix".to_string()),
+            changelog: normalize_hint_url("https://github.com/NixOS/nix/releases/tag/2.34.7"),
+            seed_notes: Some(RawReleaseNotes {
+                text: "thin notes".to_string(),
+                notes_url: "https://github.com/NixOS/nix/releases/tag/2.34.7".to_string(),
+                refetch_url: None,
+            }),
+        };
+        let prompt = agent_user_prompt(&request);
+        assert!(prompt.contains("changelog: https://github.com/NixOS/nix/releases"));
+        assert!(!prompt.contains("changelog: https://github.com/NixOS/nix/releases/tag/2.34.7"));
+    }
+
+    #[test]
+    fn from_delta_preserves_useful_hints_for_empty_artifact_cases() {
+        let cases = vec![
+            (
+                VersionDelta {
+                    name: "docker".to_string(),
+                    old: Some("29.4.0".to_string()),
+                    new: Some("29.5.3".to_string()),
+                    change: super::super::wire::ChangeKind::Upgraded,
+                    source: DeltaSource::NixEval,
+                    repo: Some("docker/cli".to_string()),
+                    notes_source: None,
+                    homepage: Some("https://www.docker.com/".to_string()),
+                },
+                None,
+                Some("docker/cli"),
+                Some("https://www.docker.com/"),
+                None,
+            ),
+            (
+                VersionDelta {
+                    name: "go".to_string(),
+                    old: Some("1.25.9".to_string()),
+                    new: Some("1.25.11".to_string()),
+                    change: super::super::wire::ChangeKind::Upgraded,
+                    source: DeltaSource::NixEval,
+                    repo: None,
+                    notes_source: Some("https://go.dev/doc/devel/release#go1.25".to_string()),
+                    homepage: Some("https://go.dev/".to_string()),
+                },
+                None,
+                None,
+                Some("https://go.dev/"),
+                Some("https://go.dev/doc/devel/release#go1.25"),
+            ),
+            (
+                VersionDelta {
+                    name: "skaffold".to_string(),
+                    old: Some("2.17.1".to_string()),
+                    new: Some("2.21.0".to_string()),
+                    change: super::super::wire::ChangeKind::Upgraded,
+                    source: DeltaSource::NixEval,
+                    repo: Some("GoogleContainerTools/skaffold".to_string()),
+                    notes_source: Some(
+                        "https://github.com/GoogleContainerTools/skaffold/releases/tag/v2.21.0"
+                            .to_string(),
+                    ),
+                    homepage: Some("https://skaffold.dev/".to_string()),
+                },
+                None,
+                Some("GoogleContainerTools/skaffold"),
+                Some("https://skaffold.dev/"),
+                Some("https://github.com/GoogleContainerTools/skaffold/releases"),
+            ),
+            (
+                VersionDelta {
+                    name: "bitwarden".to_string(),
+                    old: Some("2026.3.1".to_string()),
+                    new: Some("2026.5.0".to_string()),
+                    change: super::super::wire::ChangeKind::Upgraded,
+                    source: DeltaSource::BrewTap,
+                    repo: None,
+                    notes_source: Some("https://github.com/bitwarden/server/releases".to_string()),
+                    homepage: Some("https://bitwarden.com/".to_string()),
+                },
+                Some("https://github.com/bitwarden/clients/releases".to_string()),
+                None,
+                Some("https://github.com/bitwarden/clients/releases"),
+                Some("https://github.com/bitwarden/server/releases"),
+            ),
+        ];
+
+        for (delta, brew_hint, repo, homepage, changelog) in cases {
+            let request = ExtractRequest::from_delta(&delta, None, brew_hint);
+            assert_eq!(request.repo.as_deref(), repo, "repo for {}", delta.name);
+            assert_eq!(
+                request.homepage.as_deref(),
+                homepage,
+                "homepage for {}",
+                delta.name
+            );
+            assert_eq!(
+                request.changelog.as_deref(),
+                changelog,
+                "changelog for {}",
+                delta.name
+            );
+        }
+    }
+
+    #[test]
+    fn agent_prompt_includes_brew_release_hint() {
+        let request = ExtractRequest {
+            name: "bitwarden".to_string(),
+            old: Some("2026.3.1".to_string()),
+            new: Some("2026.5.0".to_string()),
+            repo: None,
+            homepage: Some("https://github.com/bitwarden/clients/releases".to_string()),
+            changelog: None,
+            seed_notes: None,
+        };
+        let prompt = agent_user_prompt(&request);
+        assert!(prompt.contains("homepage: https://github.com/bitwarden/clients/releases"));
+        assert!(prompt.contains("fetch_url で適切なリリースノートを取得"));
+    }
+
+    #[test]
     fn seeded_extraction_does_one_call_and_no_source_url() -> Result<()> {
         let calls = Cell::new(0u32);
         let call: &ModelCall<'_> = &|_request| {
@@ -875,6 +1073,57 @@ mod tests {
         assert_eq!(calls.get(), 1, "seed 要約はツール無しで 1 回だけ呼ぶ");
         assert_eq!(outcome.items.len(), 1);
         assert_eq!(outcome.source_url, None);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_seeded_summary_falls_back_to_tool_use() -> Result<()> {
+        let model_calls = Cell::new(0u32);
+        let call: &ModelCall<'_> = &|request| {
+            let n = model_calls.get();
+            model_calls.set(n + 1);
+            match n {
+                0 => {
+                    assert!(
+                        request.tools.is_none(),
+                        "seed 経路は最初に 1 回だけ要約する"
+                    );
+                    Ok(changes_content(r#"{"changes":[]}"#))
+                }
+                1 => {
+                    let tools = request.tools.clone().unwrap_or_default();
+                    assert_eq!(tools.len(), 1, "空要約後は tool-use へ落ちる");
+                    Ok(ResponseMessage {
+                        content: None,
+                        tool_calls: vec![fetch_tool_call(
+                            "c1",
+                            "https://github.com/docker/cli/releases",
+                        )],
+                    })
+                }
+                _ => Ok(changes_content(
+                    r#"{"changes":[{"category":"fix","text":"修正","ref":null}]}"#,
+                )),
+            }
+        };
+        let outcome = run_extraction(
+            &request_with("docker", Some("docker/cli"), Some("thin seed")),
+            call,
+            |url| {
+                assert_eq!(url, "https://github.com/docker/cli/releases");
+                Ok(Some("better notes".to_string()))
+            },
+        )?;
+        assert_eq!(
+            model_calls.get(),
+            4,
+            "空 seed 要約後に fetch と最終要約まで進む"
+        );
+        assert_eq!(outcome.items.len(), 1);
+        assert_eq!(
+            outcome.source_url.as_deref(),
+            Some("https://github.com/docker/cli/releases")
+        );
         Ok(())
     }
 

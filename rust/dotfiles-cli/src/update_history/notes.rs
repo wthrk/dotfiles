@@ -875,7 +875,9 @@ fn resolve_cask_url(base: &str, name: &str) -> String {
 }
 
 fn parse_cask_hint(rb: &str) -> Option<String> {
-    extract_dsl_string(rb, "homepage").or_else(|| extract_dsl_string(rb, "url"))
+    let homepage = extract_dsl_string(rb, "homepage");
+    let url = extract_dsl_string(rb, "url");
+    normalize_cask_hint(url.as_deref()).or(homepage).or(url)
 }
 
 fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
@@ -900,6 +902,20 @@ fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// cask `url` から、AI が探索に使いやすい安定ヒント URL を導出する。
+///
+/// GitHub の release asset URL（`releases/download/...`）や tag URL は、そのままだと版固有で長すぎるため
+/// `https://github.com/<owner>/<repo>/releases` へ正規化する。GitHub repo root / releases はそのまま使う。
+/// それ以外の URL は、homepage の方が安定な探索ヒントになりやすいためここでは採らない。
+fn normalize_cask_hint(url: Option<&str>) -> Option<String> {
+    let url = url?;
+    let rest = url.strip_prefix("https://github.com/")?;
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = non_empty(Some(owner))?;
+    let repo = non_empty(after_owner.split('/').next())?;
+    Some(format!("https://github.com/{owner}/{repo}/releases"))
 }
 
 fn is_cask_base(base: &str) -> bool {
@@ -1253,17 +1269,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_cask_hint_prefers_homepage_then_url() {
-        let rb = "cask \"firefox\" do\n  url \"https://download.example/firefox.dmg\"\n  homepage \"https://www.mozilla.org/firefox/\"\nend\n";
+    fn parse_cask_hint_prefers_github_release_url_over_generic_homepage() {
+        let rb = "cask \"bitwarden\" do\n  url \"https://github.com/bitwarden/clients/releases/download/desktop-v#{version}/Bitwarden-#{version}-universal.dmg\"\n  homepage \"https://bitwarden.com/\"\nend\n";
         assert_eq!(
             parse_cask_hint(rb).as_deref(),
-            Some("https://www.mozilla.org/firefox/")
+            Some("https://github.com/bitwarden/clients/releases")
         );
         let rb_no_home =
             "cask \"x\" do\n  url \"https://github.com/o/r/releases/download/v1/x.zip\"\nend\n";
         assert_eq!(
             parse_cask_hint(rb_no_home).as_deref(),
-            Some("https://github.com/o/r/releases/download/v1/x.zip")
+            Some("https://github.com/o/r/releases")
+        );
+        let rb_home_only = "cask \"firefox\" do\n  url \"https://download.example/firefox.dmg\"\n  homepage \"https://www.mozilla.org/firefox/\"\nend\n";
+        assert_eq!(
+            parse_cask_hint(rb_home_only).as_deref(),
+            Some("https://www.mozilla.org/firefox/")
         );
         assert!(
             parse_cask_hint("cask \"x\" do\n  url_template \"https://example/#{version}\"\nend\n")
