@@ -104,10 +104,42 @@ fn repo_from_github_url(url: &str) -> Option<String> {
     }
 }
 
+fn version_tag(version: &str) -> String {
+    let trimmed = version.trim();
+    if trimmed.starts_with('v') {
+        trimmed.to_string()
+    } else {
+        format!("v{trimmed}")
+    }
+}
+
+fn github_compare_url(repo: &str, old: Option<&str>, new: Option<&str>) -> Option<String> {
+    let old = old.map(str::trim).filter(|s| !s.is_empty())?;
+    let new = new.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "https://github.com/{repo}/compare/{}...{}",
+        version_tag(old),
+        version_tag(new)
+    ))
+}
+
+fn neovim_news_url(version: Option<&str>) -> Option<String> {
+    let version = version?;
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    Some(format!(
+        "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-{major}.{minor}.txt"
+    ))
+}
+
 fn backfill_notes_source(
     name: &str,
     notes_url: Option<&str>,
     source: PackageSource,
+    repo: Option<&str>,
+    old: Option<&str>,
+    new: Option<&str>,
 ) -> Option<String> {
     match (source, name) {
         (PackageSource::Nix, "coreutils") => {
@@ -127,8 +159,12 @@ fn backfill_notes_source(
         (PackageSource::Brew, "codex-app") => {
             Some("https://developers.openai.com/codex/changelog".to_string())
         }
-        (PackageSource::Nix, "chromedriver") => {
-            Some("https://developer.chrome.com/docs/chromedriver/downloads".to_string())
+        // ChromeDriver downloads は巨大な docs HTML で、機械 seed にすると抽出 0 件に倒れやすい。
+        // backfill では changelog hint を付けず AI fetch に戻す。
+        (PackageSource::Nix, "chromedriver") => None,
+        (PackageSource::Nix, "neovim") => neovim_news_url(new),
+        (PackageSource::Nix, "docker") | (PackageSource::Nix, "docker-credential-helpers") => {
+            repo.and_then(|repo| github_compare_url(repo, old, new))
         }
         _ => notes_url
             .filter(|url| !url.is_empty())
@@ -138,14 +174,22 @@ fn backfill_notes_source(
 
 fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
     let notes_url = package.notes_url.clone();
+    let repo = notes_url.as_deref().and_then(repo_from_github_url);
     VersionDelta {
         name: package.name.clone(),
         old: package.old.clone(),
         new: package.new.clone(),
         change: package.change,
         source: package_source_to_delta_source(package.source),
-        repo: notes_url.as_deref().and_then(repo_from_github_url),
-        notes_source: backfill_notes_source(&package.name, notes_url.as_deref(), package.source),
+        repo: repo.clone(),
+        notes_source: backfill_notes_source(
+            &package.name,
+            notes_url.as_deref(),
+            package.source,
+            repo.as_deref(),
+            package.old.as_deref(),
+            package.new.as_deref(),
+        ),
         homepage: notes_url,
     }
 }
@@ -1824,7 +1868,45 @@ origin = \"none\"
         assert_eq!(delta.repo.as_deref(), Some("docker/cli"));
         assert_eq!(
             delta.notes_source.as_deref(),
-            Some("https://github.com/docker/cli/releases")
+            Some("https://github.com/docker/cli/compare/v29.4.0...v29.5.3")
         );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_neovim_news_file() {
+        let package = PackageUpdate {
+            name: "neovim".to_string(),
+            old: Some("0.12.2".to_string()),
+            new: Some("0.12.3".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/neovim/neovim/releases/tag/v0.12.3".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.repo.as_deref(), Some("neovim/neovim"));
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-0.12.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_disables_chromedriver_mechanical_seed() {
+        let package = PackageUpdate {
+            name: "chromedriver".to_string(),
+            old: Some("147.0.7727.102".to_string()),
+            new: Some("149.0.7827.103".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://developer.chrome.com/docs/chromedriver/downloads".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.notes_source, None);
     }
 }
