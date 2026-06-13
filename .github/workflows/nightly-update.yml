@@ -93,16 +93,8 @@ jobs:
       # closure（toolchain＋C lib）は eval だけの static-checks より大きいため gc-max-store-size を広めに取り、保存
       # 物の eviction を避ける（repo 合計 ~10GB の GHA cache 予算内）。miss/失敗は遅くなるだけで fail させない
       # （fail-on 既定 = fail-safe）。
-      - name: /nix/store をキャッシュ
-        uses: nix-community/cache-nix-action@v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size: 5G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-primary-key: never
+      - name: /nix/store cache を skip
+        run: echo "skip /nix/store cache for verification"
 
       # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
       # bump↔record は同一 OS（macOS）のため shared-key を共有する。
@@ -207,16 +199,8 @@ jobs:
       # toolchain / C lib）と `nix eval` / `nix flake update` の評価物を restore する。record の `nix eval`（bump 後
       # 版）は後段の artifact download で bump 後 lock に差し替えるため、bump 後 nixpkgs に依存する derivation はその
       # 回だけ 1 度再ビルドしうる（限界として明記）。fail-safe。
-      - name: /nix/store をキャッシュ
-        uses: nix-community/cache-nix-action@v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size: 5G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-primary-key: never
+      - name: /nix/store cache を skip
+        run: echo "skip /nix/store cache for verification"
 
       # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
       # bump↔record は同一 OS（macOS）のため shared-key を共有する。
@@ -361,16 +345,8 @@ jobs:
       # substitute する（cargo の crate ビルドは rust-cache 側が担う）。後段の artifact download で bump 後 lock に
       # 差し替えるため、bump 後 nixpkgs に依存する derivation はその回だけ 1 度再ビルドしうる（限界として明記）。
       # fail-safe。
-      - name: /nix/store をキャッシュ
-        uses: nix-community/cache-nix-action@v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size: 3G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-primary-key: never
+      - name: /nix/store cache を skip
+        run: echo "skip /nix/store cache for verification"
 
       # cargo build キャッシュ（~/.cargo + target/）を再利用する。verify-bump-lock の cargo build と
       # `cargo xtask check static` で target/ の再ビルド回避が効く。static-checks.yml と同一 OS（ubuntu）のため
