@@ -186,6 +186,9 @@ fn package_notes_source(name: &str, homepage: &str, changelog: &str) -> String {
         return changelog.to_string();
     }
     match (name, homepage) {
+        ("coreutils", "https://www.gnu.org/software/coreutils/") => {
+            "https://git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
+        }
         ("nix", "https://nixos.org/nix") => {
             "https://nixos.org/manual/nix/latest/release-notes/rl-2.34".to_string()
         }
@@ -198,9 +201,8 @@ fn package_notes_source(name: &str, homepage: &str, changelog: &str) -> String {
         ("discord", "https://discordapp.com/") => {
             "https://discord.com/tags/patch-notes".to_string()
         }
-        ("slack", "https://slack.com/intl/en-jp/downloads/mac") => {
-            "https://slack.com/release-notes/mac".to_string()
-        }
+        ("slack", "https://slack.com/intl/en-jp/downloads/mac")
+        | ("slack", "https://slack.com") => "https://slack.com/release-notes/mac".to_string(),
         ("temurin-bin", "https://adoptium.net/") => {
             "https://adoptium.net/temurin/release-notes".to_string()
         }
@@ -534,6 +536,23 @@ mod tests {
 
     #[test]
     fn derive_package_adds_notes_source_fallbacks_for_desktop_apps() {
+        let coreutils = derive_package(
+            "coreutils",
+            RawPackage {
+                version: "9.11".to_string(),
+                homepage: serde_json::json!("https://www.gnu.org/software/coreutils/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            coreutils.notes_source,
+            "https://git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS"
+        );
+
         let discord = derive_package(
             "discord",
             RawPackage {
@@ -552,7 +571,7 @@ mod tests {
             "slack",
             RawPackage {
                 version: "4.49.89".to_string(),
-                homepage: serde_json::json!("https://slack.com/intl/en-jp/downloads/mac"),
+                homepage: serde_json::json!("https://slack.com"),
                 changelog: serde_json::Value::Null,
                 src_owner: serde_json::Value::Null,
                 src_repo: serde_json::Value::Null,
