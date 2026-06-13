@@ -1783,4 +1783,24 @@ origin = \"none\"
             Some("https://slack.com/release-notes/mac")
         );
     }
+
+    #[test]
+    fn package_to_backfill_delta_recovers_repo_from_github_releases_url() {
+        let package = PackageUpdate {
+            name: "docker".to_string(),
+            old: Some("29.4.0".to_string()),
+            new: Some("29.5.3".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/docker/cli/releases".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.repo.as_deref(), Some("docker/cli"));
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://github.com/docker/cli/releases")
+        );
+    }
 }
