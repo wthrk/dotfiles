@@ -1335,3 +1335,22 @@ ref = "https://github.com/openai/codex/releases/tag/v26.609.30741"
 category = "fix"
 text = "特定の入力に対する応答の精度を改善しました。"
 ref = "https://github.com/openai/codex/releases/tag/v26.609.30741"
+
+[[update]]
+at = "2026-06-13T19:02:30Z"
+cursor_old = "7f4d5810cc681d795c19b714a0c867e9f30c7029"
+nixpkgs_old = "173d0ad7a974f8543a9ab01d2271b2e290341b33"
+nixpkgs_new = "49a4bd0573c376468dd7996ddb6f9fa31d8c4d97"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "codex-app"
+old = "26.609.30741"
+new = "26.609.41114"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
