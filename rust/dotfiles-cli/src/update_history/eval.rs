@@ -129,7 +129,7 @@ fn escape_nix_string(value: &str) -> String {
 /// 生評価値 1 件を導出済み [`NixPackage`]（version + repo/changelog/homepage）へ翻訳する純粋関数。
 fn derive_package(name: &str, raw: RawPackage) -> NixPackage {
     let homepage = as_str(&raw.homepage);
-    let changelog = package_notes_source(name, &homepage, &as_str(&raw.changelog));
+    let changelog = package_notes_source(name, &raw.version, &homepage, &as_str(&raw.changelog));
     NixPackage {
         version: raw.version,
         repo: derive_repo(
@@ -181,7 +181,41 @@ fn repo_hint_for_package(name: &str, homepage: &str) -> String {
     }
 }
 
-fn package_notes_source(name: &str, homepage: &str, changelog: &str) -> String {
+fn rust_release_notes_url(version: &str) -> Option<String> {
+    let version = version.trim();
+    if version.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://doc.rust-lang.org/stable/releases.html#version-{}",
+        version.trim_start_matches('v').replace('.', "-")
+    ))
+}
+
+fn github_release_tag_url(repo: &str, version: &str) -> Option<String> {
+    let version = version.trim();
+    if repo.is_empty() || version.is_empty() {
+        return None;
+    }
+    let tag = if version.starts_with('v') {
+        version.to_string()
+    } else {
+        format!("v{version}")
+    };
+    Some(format!("https://github.com/{repo}/releases/tag/{tag}"))
+}
+
+fn chrome_releases_search_url(version: &str) -> Option<String> {
+    let version = version.trim();
+    if version.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://chromereleases.googleblog.com/search?q={version}"
+    ))
+}
+
+fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &str) -> String {
     if !changelog.is_empty() {
         return changelog.to_string();
     }
@@ -196,8 +230,12 @@ fn package_notes_source(name: &str, homepage: &str, changelog: &str) -> String {
             "https://chromereleases.googleblog.com/".to_string()
         }
         ("chromedriver", "https://chromedriver.chromium.org/") => {
-            "https://developer.chrome.com/docs/chromedriver/downloads".to_string()
+            chrome_releases_search_url(version).unwrap_or_default()
         }
+        ("docker-compose", _) => {
+            github_release_tag_url("docker/compose", version).unwrap_or_default()
+        }
+        ("rustfmt", _) => rust_release_notes_url(version).unwrap_or_default(),
         ("discord", "https://discordapp.com/") => {
             "https://discord.com/tags/patch-notes".to_string()
         }
@@ -530,7 +568,7 @@ mod tests {
         );
         assert_eq!(
             chromedriver.notes_source,
-            "https://developer.chrome.com/docs/chromedriver/downloads"
+            "https://chromereleases.googleblog.com/search?q=149.0.7827.103"
         );
     }
 
@@ -580,6 +618,40 @@ mod tests {
             },
         );
         assert_eq!(slack.notes_source, "https://slack.com/release-notes/mac");
+
+        let docker_compose = derive_package(
+            "docker-compose",
+            RawPackage {
+                version: "5.1.4".to_string(),
+                homepage: serde_json::json!("https://github.com/docker/compose"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            docker_compose.notes_source,
+            "https://github.com/docker/compose/releases/tag/v5.1.4"
+        );
+
+        let rustfmt = derive_package(
+            "rustfmt",
+            RawPackage {
+                version: "1.95.0".to_string(),
+                homepage: serde_json::json!("https://github.com/rust-lang-nursery/rustfmt"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            rustfmt.notes_source,
+            "https://doc.rust-lang.org/stable/releases.html#version-1-95-0"
+        );
 
         let temurin = derive_package(
             "temurin-bin",
