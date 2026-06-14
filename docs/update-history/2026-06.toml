@@ -1354,3 +1354,22 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-06-14T19:13:04Z"
+cursor_old = "32284a4ccbe72f2c8b52eccef37f143d785eac5f"
+nixpkgs_old = "49a4bd0573c376468dd7996ddb6f9fa31d8c4d97"
+nixpkgs_new = "9f11f828c213641c2369a9f1fa31fe31557e3156"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "chromedriver"
+old = "149.0.7827.103"
+new = "149.0.7827.115"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromedriver.chromium.org/"
+change_item = []
