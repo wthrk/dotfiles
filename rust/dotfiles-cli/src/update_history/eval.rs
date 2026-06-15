@@ -159,19 +159,20 @@ fn derive_repo(
     src_first_url: Option<&str>,
     changelog: &str,
 ) -> String {
-    if let Some(repo) = repo_from_url(homepage) {
+    if let Some(repo) = super::wire::repo_from_github_url(homepage) {
         return repo;
     }
     if !src_owner.is_empty() && !src_repo.is_empty() {
         return format!("{src_owner}/{src_repo}");
     }
-    if let Some(repo) = repo_from_url(src_url) {
+    if let Some(repo) = super::wire::repo_from_github_url(src_url) {
         return repo;
     }
-    if let Some(repo) = src_first_url.and_then(repo_from_url) {
+    if let Some(repo) = src_first_url.and_then(super::wire::repo_from_github_url) {
         return repo;
     }
-    repo_from_url(changelog).unwrap_or_else(|| repo_hint_for_package(name, homepage))
+    super::wire::repo_from_github_url(changelog)
+        .unwrap_or_else(|| repo_hint_for_package(name, homepage))
 }
 
 fn repo_hint_for_package(name: &str, homepage: &str) -> String {
@@ -181,15 +182,22 @@ fn repo_hint_for_package(name: &str, homepage: &str) -> String {
     }
 }
 
+fn nix_release_notes_url(version: &str) -> Option<String> {
+    let version = version.trim().trim_start_matches('v');
+    let mut parts = version.split('.');
+    let major = non_empty(parts.next())?;
+    let minor = non_empty(parts.next())?;
+    Some(format!(
+        "https://nix.dev/manual/nix/{major}.{minor}/release-notes/rl-{major}.{minor}"
+    ))
+}
+
 fn rust_release_notes_url(version: &str) -> Option<String> {
     let version = version.trim();
     if version.is_empty() {
         return None;
     }
-    Some(format!(
-        "https://doc.rust-lang.org/stable/releases.html#version-{}",
-        version.trim_start_matches('v').replace('.', "-")
-    ))
+    Some("https://doc.rust-lang.org/stable/releases.html".to_string())
 }
 
 fn github_release_tag_url(repo: &str, version: &str) -> Option<String> {
@@ -223,9 +231,7 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
         ("coreutils", "https://www.gnu.org/software/coreutils/") => {
             "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
         }
-        ("nix", "https://nixos.org/nix") => {
-            "https://raw.githubusercontent.com/NixOS/nix/master/doc/manual/source/release-notes/rl-2.34.md".to_string()
-        }
+        ("nix", "https://nixos.org/nix") => nix_release_notes_url(version).unwrap_or_default(),
         ("google-chrome", "https://www.google.com/chrome/browser/") => {
             "https://chromereleases.googleblog.com/".to_string()
         }
@@ -248,29 +254,8 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
     }
 }
 
-/// github URL 文字列から `owner/repo` を取り出す純粋関数（末尾 `.git`・クエリ/フラグメントは除く）。
-pub(crate) fn repo_from_url(url: &str) -> Option<String> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))?;
-    let (owner, after_owner) = rest.split_once('/')?;
-    let owner = Some(owner).filter(|s| !s.is_empty())?;
-    // repo は owner の次の segment（さらに `/` があればそこまで）。
-    let repo_raw = after_owner
-        .split_once('/')
-        .map_or(after_owner, |(repo, _)| repo);
-    let repo_raw = Some(repo_raw).filter(|s| !s.is_empty())?;
-    // 末尾のクエリ/フラグメント（`?`/`#` 以降）を落とし、続く `.git` を剥がす。
-    let repo = repo_raw
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(repo_raw)
-        .trim_end_matches(".git");
-    if repo.is_empty() {
-        None
-    } else {
-        Some(format!("{owner}/{repo}"))
-    }
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// `serde_json::Value` を文字列へ正規化する（文字列はそのまま、list/null/非文字列は空文字）。
@@ -414,22 +399,38 @@ mod tests {
     }
 
     #[test]
-    fn repo_from_url_strips_git_and_query() {
+    fn releases_url_from_github_url_normalizes_release_variants_only() {
         assert_eq!(
-            repo_from_url("https://github.com/o/r.git").as_deref(),
-            Some("o/r")
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/releases"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
         );
         assert_eq!(
-            repo_from_url("https://github.com/o/r/releases/tag/v1").as_deref(),
-            Some("o/r")
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/releases/tag/v1.2.3"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
         );
         assert_eq!(
-            repo_from_url("https://github.com/o/r?tab=x").as_deref(),
-            Some("o/r")
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/releases/download/v1/x.zip"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
         );
-        assert_eq!(repo_from_url("https://gitlab.com/o/r"), None);
-        assert_eq!(repo_from_url("not a url"), None);
-        assert_eq!(repo_from_url("https://github.com/o"), None);
+        assert_eq!(
+            crate::update_history::wire::releases_url_from_github_url("https://github.com/o/r"),
+            None
+        );
+        assert_eq!(
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/issues/1"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -530,7 +531,7 @@ mod tests {
         assert_eq!(package.repo, "NixOS/nix");
         assert_eq!(
             package.notes_source,
-            "https://raw.githubusercontent.com/NixOS/nix/master/doc/manual/source/release-notes/rl-2.34.md"
+            "https://nix.dev/manual/nix/2.34/release-notes/rl-2.34"
         );
         assert_eq!(package.homepage, "https://nixos.org/nix");
     }
@@ -650,7 +651,7 @@ mod tests {
         );
         assert_eq!(
             rustfmt.notes_source,
-            "https://doc.rust-lang.org/stable/releases.html#version-1-95-0"
+            "https://doc.rust-lang.org/stable/releases.html"
         );
 
         let temurin = derive_package(

@@ -59,8 +59,8 @@ env:
   CI_REFERENCE: darwinConfigurations.ci-ref
 
 jobs:
-  # 1) bump 前の宣言パッケージ版を eval（Rust）し、lock を bump し、bump 前後の input rev を取り出して artifact に
-  #    渡す。整形・owner/repo 導出・rev 抽出のロジックは全て `dotfiles update-history`（Rust）が持ち、ここは
+  # 1) bump 前の宣言パッケージ版を eval（Rust）し、lock を bump し、bump 前後の rev を取り出して artifact に渡す。
+  #    整形・owner/repo 導出・rev 抽出のロジックは全て `dotfiles update-history`（Rust）が持ち、ここは
   #    避けられない nix tool 呼び出し（`nix eval` は Rust が起動・`nix flake update`）と薄いオーケストレーション
   #    だけを行う。LLM や PR 起票の権限を持たせない（contents: read のみ）。
   bump:
@@ -70,10 +70,9 @@ jobs:
     permissions:
       contents: read
     outputs:
+      repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}
       nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
       nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
-      dotfiles_cursor_old: ${{ steps.revs.outputs.dotfiles_cursor_old }}
-      dotfiles_cursor_new: ${{ steps.revs.outputs.dotfiles_cursor_new }}
       cask_rev_old: ${{ steps.revs.outputs.cask_rev_old }}
       cask_rev_new: ${{ steps.revs.outputs.cask_rev_new }}
     steps:
@@ -123,18 +122,17 @@ jobs:
           echo "bin=$PWD/target/debug/dotfiles" >> "$GITHUB_OUTPUT"
 
       # bump 前の宣言パッケージ版を Rust が `nix eval`（生の評価値）して owner/repo 導出まで行い JSON へ書く。
-      # 併せて bump 前 input rev を Rust（serde_json）が抽出する（jq 不使用）。
       - name: bump 前の宣言パッケージ版を eval と rev 抽出
         id: old
         env:
           DOTFILES_BIN: ${{ steps.build.outputs.bin }}
         run: |
           set -euo pipefail
+          cp flake.lock old-flake.lock
           nix develop -c "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
+          echo "repo_base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
-          dotfiles_cursor_old="$(git rev-parse HEAD)"
-          echo "dotfiles_cursor_old=$dotfiles_cursor_old" >> "$GITHUB_OUTPUT"
           cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
@@ -161,8 +159,6 @@ jobs:
           {
             echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}"
             echo "nixpkgs_new=$nixpkgs_new"
-            echo "dotfiles_cursor_old=${{ steps.old.outputs.dotfiles_cursor_old }}"
-            echo "dotfiles_cursor_new=$(git rev-parse HEAD)"
             echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}"
             echo "cask_rev_new=$cask_rev_new"
           } >> "$GITHUB_OUTPUT"
@@ -175,6 +171,7 @@ jobs:
           include-hidden-files: true
           path: |
             flake.lock
+            old-flake.lock
             nix-old.json
           if-no-files-found: error
 
@@ -245,8 +242,6 @@ jobs:
         env:
           NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
-          DOTFILES_CURSOR_OLD: ${{ needs.bump.outputs.dotfiles_cursor_old }}
-          DOTFILES_CURSOR_NEW: ${{ needs.bump.outputs.dotfiles_cursor_new }}
           CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
           # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
@@ -269,9 +264,9 @@ jobs:
           mkdir -p docs/update-history
           dotfiles_bin="$PWD/target/debug/dotfiles"
           nix develop -c "$dotfiles_bin" update-history record \
+            --lock-old old-flake.lock \
+            --lock-new flake.lock \
             --nix-old nix-old.json \
-            --cursor-old "$DOTFILES_CURSOR_OLD" \
-            --cursor-new "$DOTFILES_CURSOR_NEW" \
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \
             --reference "$CI_REFERENCE" \
@@ -404,7 +399,7 @@ jobs:
         id: commit
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          BUMP_BASE_SHA: ${{ needs.bump.outputs.dotfiles_cursor_old }}
+          BUMP_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
         run: |
           set -euo pipefail
           # 検査 base は実際の PR base（既定ブランチ）の SHA に揃える（checkout HEAD ではない）。

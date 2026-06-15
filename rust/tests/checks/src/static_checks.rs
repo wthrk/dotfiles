@@ -66,6 +66,7 @@ fn github_actions(shell: &Shell) -> Result<()> {
     nightly_no_update_is_clean_no_op(shell)?;
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
     nightly_record_rebuilds_in_job(shell)?;
+    nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(shell)?;
     nightly_lock_rev_skips_nix_develop(shell)?;
     nightly_artifact_actions_use_supported_node_runtime(shell)?;
     Ok(())
@@ -237,6 +238,82 @@ fn assert_nightly_record_rebuilds_in_job(workflow: &str) -> Result<()> {
     Ok(())
 }
 
+/// nightly-update.yml の bump artifact が `old-flake.lock` と `repo_base_sha` を保持し、record/open-pr へ
+/// それぞれ `--lock-old/--lock-new` と `BUMP_BASE_SHA` で受け渡されることを静的に固定する。
+fn nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(shell: &Shell) -> Result<()> {
+    step("nightly-update bump artifact preserves old lock and base sha wiring");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(&workflow)
+}
+
+fn assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(
+    workflow: &str,
+) -> Result<()> {
+    let old_eval_section = workflow
+        .split("- name: bump 前の宣言パッケージ版を eval と rev 抽出")
+        .nth(1)
+        .unwrap_or_default();
+    let old_eval_step = old_eval_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        old_eval_step.contains("cp flake.lock old-flake.lock"),
+        "bump job は flake update 前に `cp flake.lock old-flake.lock` で旧 lock を保存すること"
+    );
+    ensure!(
+        old_eval_step
+            .contains("echo \"repo_base_sha=$(git rev-parse HEAD)\" >> \"$GITHUB_OUTPUT\""),
+        "bump job は artifact 作成時点の checkout HEAD を `repo_base_sha` output として公開すること"
+    );
+
+    let bump_artifact_section = workflow
+        .split("- name: bump 済み lock と eval 版マップを artifact 化")
+        .nth(1)
+        .unwrap_or_default();
+    let bump_artifact_step = bump_artifact_section
+        .split("- name:")
+        .next()
+        .unwrap_or_default();
+    ensure!(
+        bump_artifact_step.contains("name: bump-state"),
+        "bump job は record/open-pr 共有用に `bump-state` artifact を publish すること"
+    );
+    ensure!(
+        bump_artifact_step.contains("old-flake.lock"),
+        "bump-state artifact は `old-flake.lock` を含み、record job へ旧 lock を渡すこと"
+    );
+    ensure!(
+        bump_artifact_step.contains("flake.lock"),
+        "bump-state artifact は bump 後 `flake.lock` も含むこと"
+    );
+
+    let record_section = workflow
+        .split("- name: record（nix/brew 版差分 + 概要）")
+        .nth(1)
+        .unwrap_or_default();
+    let record_step = record_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        record_step.contains("--lock-old old-flake.lock"),
+        "record job は bump artifact から展開した `old-flake.lock` を `--lock-old` で渡すこと"
+    );
+    ensure!(
+        record_step.contains("--lock-new flake.lock"),
+        "record job は bump 後 `flake.lock` を `--lock-new` で渡すこと"
+    );
+
+    ensure!(
+        workflow.contains("repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}"),
+        "bump job outputs は `steps.old.outputs.repo_base_sha` を `repo_base_sha` として公開すること"
+    );
+    ensure!(
+        workflow.contains("BUMP_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}"),
+        "open-pr job は `needs.bump.outputs.repo_base_sha` を `BUMP_BASE_SHA` へ配線すること"
+    );
+    ensure!(
+        workflow.contains("if [ \"$base_sha\" != \"$BUMP_BASE_SHA\" ]; then"),
+        "open-pr job は `BUMP_BASE_SHA` と現在の default branch HEAD を比較して fail-closed にすること"
+    );
+    Ok(())
+}
+
 /// nightly-update.yml の lock-rev 抽出が `nix develop` を不要に挟まず、純粋な lock file parse として直接実行される
 /// ことを静的に固定する。
 fn nightly_lock_rev_skips_nix_develop(shell: &Shell) -> Result<()> {
@@ -369,6 +446,7 @@ mod tests {
     use super::{
         assert_auto_update_wrapper_uses_update_all_semantics,
         assert_nightly_artifact_actions_use_supported_node_runtime,
+        assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
         assert_nightly_record_secret_gating_is_testable_and_bounded, record_secret_gate_allows,
     };
@@ -469,6 +547,75 @@ mod tests {
         "#;
 
         assert!(assert_nightly_record_rebuilds_in_job(workflow).is_ok());
+    }
+
+    #[test]
+    fn nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring() {
+        let workflow = r#"
+          outputs:
+            repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}
+          - name: bump 前の宣言パッケージ版を eval と rev 抽出
+            run: |
+              cp flake.lock old-flake.lock
+              echo "repo_base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          - name: bump 済み lock と eval 版マップを artifact 化
+            with:
+              name: bump-state
+              path: |
+                flake.lock
+                old-flake.lock
+                nix-old.json
+          - name: record（nix/brew 版差分 + 概要）
+            run: |
+              nix develop -c "$dotfiles_bin" update-history record \
+                --lock-old old-flake.lock \
+                --lock-new flake.lock \
+                --out "$out"
+          - name: bump ブランチを作成して commit
+            env:
+              BUMP_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
+            run: |
+              if [ "$base_sha" != "$BUMP_BASE_SHA" ]; then
+                exit 1
+              fi
+        "#;
+
+        assert!(
+            assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(workflow).is_ok()
+        );
+    }
+
+    #[test]
+    fn nightly_bump_artifact_rejects_missing_old_lock_and_base_sha_wiring() {
+        let workflow = r#"
+          outputs:
+            repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}
+          - name: bump 前の宣言パッケージ版を eval と rev 抽出
+            run: |
+              echo "repo_base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          - name: bump 済み lock と eval 版マップを artifact 化
+            with:
+              name: bump-state
+              path: |
+                flake.lock
+                nix-old.json
+          - name: record（nix/brew 版差分 + 概要）
+            run: |
+              nix develop -c "$dotfiles_bin" update-history record \
+                --lock-new flake.lock \
+                --out "$out"
+          - name: bump ブランチを作成して commit
+            env:
+              BUMP_BASE_SHA: ${{ github.sha }}
+            run: |
+              if [ "$base_sha" != "$BUMP_BASE_SHA" ]; then
+                exit 1
+              fi
+        "#;
+
+        assert!(
+            assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(workflow).is_err()
+        );
     }
 
     #[test]

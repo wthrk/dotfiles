@@ -924,22 +924,7 @@ fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
 /// `https://github.com/<owner>/<repo>/releases` へ正規化する。既に `.../releases` を指す URL はそのまま使う。
 /// それ以外の GitHub URL は homepage の方が安定な探索ヒントになりやすいため、ここでは採らない。
 fn normalize_cask_hint(url: Option<&str>) -> Option<String> {
-    let url = url?;
-    let rest = url.strip_prefix("https://github.com/")?;
-    let (owner, after_owner) = rest.split_once('/')?;
-    let owner = non_empty(Some(owner))?;
-    let (repo, tail) = match after_owner.split_once('/') {
-        Some((repo, tail)) => (non_empty(Some(repo))?, tail),
-        None => return None,
-    };
-    if tail == "releases"
-        || tail.starts_with("releases/tag/")
-        || tail.starts_with("releases/download/")
-    {
-        Some(format!("https://github.com/{owner}/{repo}/releases"))
-    } else {
-        None
-    }
+    url.and_then(super::wire::releases_url_from_github_url)
 }
 
 fn is_cask_base(base: &str) -> bool {
