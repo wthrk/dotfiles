@@ -127,18 +127,7 @@ impl ExtractRequest {
 }
 
 fn normalize_hint_url(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://github.com/")?;
-    let (owner, after_owner) = rest.split_once('/')?;
-    let owner = owner.trim();
-    let repo = after_owner.split('/').next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    let tail = after_owner[repo.len()..].trim_start_matches('/');
-    if tail.starts_with("releases/tag/") || tail.starts_with("releases/download/") {
-        return Some(format!("https://github.com/{owner}/{repo}/releases"));
-    }
-    Some(url.to_string())
+    super::wire::releases_url_from_github_url(url).or_else(|| Some(url.to_string()))
 }
 
 /// AI エージェント抽出の結果（構造化変更リスト + AI が採用した取得元 URL）。

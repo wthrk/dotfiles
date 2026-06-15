@@ -54,12 +54,12 @@ enum UpdateHistoryCommand {
 #[derive(Args)]
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option（CI が叩く）。
 struct RecordOptions {
-    /// bump 前 dotfiles input リビジョン（brew-only 更新でも前進する show 用カーソル）。
+    /// bump 前 lock ファイル（state key は Rust 側で算出する）。
     #[arg(long)]
-    cursor_old: Option<String>,
-    /// bump 後 dotfiles input リビジョン（brew-only 更新でも前進する show 用カーソル）。
+    lock_old: Option<PathBuf>,
+    /// bump 後 lock ファイル（state key は Rust 側で算出する）。
     #[arg(long)]
-    cursor_new: Option<String>,
+    lock_new: Option<PathBuf>,
     /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル（`eval-versions` が bump 前に書く）。
     #[arg(long, alias = "old")]
     nix_old: Option<PathBuf>,
@@ -131,9 +131,9 @@ struct LockRevOptions {
 #[derive(Args)]
 /// 適用済み pin 由来の更新履歴を閲覧する option（利用者が叩く）。
 struct ShowOptions {
-    /// 表示起点の履歴カーソル rev（新形式は dotfiles input rev、旧履歴は nixpkgs rev）。
-    #[arg(long)]
-    rev: Option<String>,
+    /// 表示起点の状態キー（新形式は `state_old`、旧履歴は `nixpkgs_old`。互換 alias: `--rev`）。
+    #[arg(long, alias = "rev")]
+    state: Option<String>,
     /// 表示するエントリ件数の上限。
     #[arg(long)]
     limit: Option<usize>,
@@ -198,8 +198,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     });
     let extractor = llm::OpenAiExtractor::new(brew_notes_base);
     let input = record::RecordInput {
-        cursor_old: options.cursor_old,
-        cursor_new: options.cursor_new,
+        lock_old: options.lock_old.as_deref(),
+        lock_new: options.lock_new.as_deref(),
         nixpkgs_old: options.nixpkgs_old,
         nixpkgs_new: options.nixpkgs_new,
         reference: options.reference,
@@ -224,7 +224,8 @@ fn run_backfill_version_only(options: BackfillVersionOnlyOptions) -> Result<()> 
     record::run_backfill_version_only(&options.history, &registry_path, &extractor)
 }
 
-/// 利用者 `show`: 履歴 source を読み、起点 rev からの catch-up 区間を集約して stdout へ出力する。
+/// 利用者 `show`: 履歴 source を読み、起点 state（旧履歴は `nixpkgs_old` fallback）からの catch-up 区間を
+/// 集約して stdout へ出力する。
 ///
 /// `--source` 省略時は適用済み dotfiles input source の更新履歴 dir を解決する（`update` と同じ stateless 経路。
 /// 永続 state を参照しない）。source を解決できない（network 無し・nix 不在・archive 失敗等）場合は `Err` で止める。
@@ -243,7 +244,7 @@ fn run_show(options: ShowOptions) -> Result<()> {
     };
     show::run_show(
         &source,
-        options.rev.as_deref(),
+        options.state.as_deref(),
         options.limit,
         options.json,
         options.all,

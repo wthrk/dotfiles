@@ -1,6 +1,8 @@
-//! show / applied-summary use case: 履歴を読み、catch-up 範囲を集約し、重要度連動ビューを出力する。
+//! show / applied-summary use case: 履歴を読み、`state_old` 優先の catch-up 範囲を集約し、重要度連動ビューを
+//! 出力する。
 //!
-//! 読み出し → 範囲選択（起点 rev）→ catch-up 集約 → severity/overall 再算出 → 描画（text/JSON）の順に処理する。
+//! 読み出し → 範囲選択（起点 state。旧履歴は `nixpkgs_old` fallback）→ catch-up 集約 → severity/overall 再算出
+//! → 描画（text/JSON）の順に処理する。
 //! 複数 bump を跨ぐ適用では複数エントリを跨ぐため、跨いだ全 [`UpdateEntry`] をアプリ単位で集約する: `old` は最古
 //! 適用版・`new` は最新適用版、package 集約キーは `(name, source)`、各 package 内の change_item は決定論キー
 //! `(category, ref_url, text)` で重複排除し、
@@ -185,20 +187,21 @@ fn merge_unique_items(
         })
 }
 
-/// 表示対象エントリを起点 rev と件数上限で絞り込み、適用順（最古→最新）の部分列を返す。
+/// 表示対象エントリを起点 state（旧履歴は `nixpkgs_old` fallback）と件数上限で絞り込み、適用順
+/// （最古→最新）の部分列を返す。
 ///
-/// `rev` が `Some` のとき、その rev をカーソル old（新形式は `cursor_old`、旧形式は `nixpkgs_old`）に持つ
-/// 最初のエントリ以降を起点にする（一致無しは空）。
+/// `state` が `Some` のとき、その key を `state_old`（旧履歴は `nixpkgs_old` fallback）に持つ最初の
+/// エントリ以降を起点にする（一致無しは空）。
 /// `None` なら全エントリ。`limit` は起点側（最古）から切る。
 fn select_entries(
     entries: &[UpdateEntry],
-    rev: Option<&str>,
+    state: Option<&str>,
     limit: Option<usize>,
 ) -> Vec<UpdateEntry> {
-    let start = match rev {
-        Some(rev) => match entries
+    let start = match state {
+        Some(state) => match entries
             .iter()
-            .position(|entry| entry_cursor_old(entry) == rev)
+            .position(|entry| entry_state_old(entry) == state)
         {
             Some(index) => index,
             None => return Vec::new(),
@@ -212,8 +215,8 @@ fn select_entries(
     }
 }
 
-fn entry_cursor_old(entry: &UpdateEntry) -> &str {
-    entry.cursor_old.as_deref().unwrap_or(&entry.nixpkgs_old)
+fn entry_state_old(entry: &UpdateEntry) -> &str {
+    entry.state_old.as_deref().unwrap_or(&entry.nixpkgs_old)
 }
 
 /// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
@@ -349,7 +352,8 @@ fn render_json(view: &HistoryView) -> Result<String> {
 
 // ---- use case ----
 
-/// 利用者 `show`: 履歴 source を読み、起点 rev からの catch-up 区間を集約して stdout へ出力する。
+/// 利用者 `show`: 履歴 source を読み、起点 state（`state_old` 優先、旧履歴は `nixpkgs_old` fallback）からの
+/// catch-up 区間を集約して stdout へ出力する。
 pub(crate) fn run_show(
     source: &Path,
     rev: Option<&str>,
@@ -381,8 +385,8 @@ mod tests {
     ) -> UpdateEntry {
         UpdateEntry {
             at: at.to_string(),
-            cursor_old: None,
-            cursor_new: None,
+            state_old: None,
+            state_new: None,
             nixpkgs_old: old.to_string(),
             nixpkgs_new: new.to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -583,18 +587,18 @@ mod tests {
     }
 
     #[test]
-    fn select_entries_prefers_cursor_old_for_brew_only_chain_links() {
+    fn select_entries_prefers_state_old_for_tap_only_chain_links() {
         let mut first = rev_entry("nix-a", "nix-a");
-        first.cursor_old = Some("dotfiles-a".to_string());
-        first.cursor_new = Some("dotfiles-b".to_string());
+        first.state_old = Some("lock-a".to_string());
+        first.state_new = Some("lock-b".to_string());
         let mut second = rev_entry("nix-a", "nix-a");
-        second.cursor_old = Some("dotfiles-b".to_string());
-        second.cursor_new = Some("dotfiles-c".to_string());
+        second.state_old = Some("lock-b".to_string());
+        second.state_new = Some("lock-c".to_string());
         let entries = [first, second];
 
-        let selected = select_entries(&entries, Some("dotfiles-b"), None);
+        let selected = select_entries(&entries, Some("lock-b"), None);
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].cursor_old.as_deref(), Some("dotfiles-b"));
+        assert_eq!(selected[0].state_old.as_deref(), Some("lock-b"));
         assert!(select_entries(&entries, Some("nix-a"), None).is_empty());
     }
 

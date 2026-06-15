@@ -20,6 +20,48 @@
 
 use serde::{Deserialize, Serialize};
 
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn parse_github_repo_url(url: &str) -> Option<(&str, &str, &str)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = non_empty(Some(owner))?;
+    let repo_raw = after_owner
+        .split_once('/')
+        .map_or(after_owner, |(repo, _)| repo);
+    let repo_raw = non_empty(Some(repo_raw))?;
+    let repo = repo_raw
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(repo_raw)
+        .trim_end_matches(".git");
+    let repo = non_empty(Some(repo))?;
+    let tail = after_owner[repo_raw.len()..].trim_start_matches('/');
+    Some((owner, repo, tail))
+}
+
+/// github URL 文字列から `owner/repo` を取り出す純粋関数（末尾 `.git`・クエリ/フラグメントは除く）。
+pub(crate) fn repo_from_github_url(url: &str) -> Option<String> {
+    parse_github_repo_url(url).map(|(owner, repo, _)| format!("{owner}/{repo}"))
+}
+
+/// GitHub release/tag/download URL から、版非依存な `.../releases` ヒント URL を導出する。
+pub(crate) fn releases_url_from_github_url(url: &str) -> Option<String> {
+    let (owner, repo, tail) = parse_github_repo_url(url)?;
+    if tail == "releases"
+        || tail.starts_with("releases/tag/")
+        || tail.starts_with("releases/download/")
+    {
+        Some(format!("https://github.com/{owner}/{repo}/releases"))
+    } else {
+        None
+    }
+}
+
 /// 1 回の nightly bump で記録される更新エントリ（TOML `[[update]]` 1 件に対応）。
 ///
 /// `at` はエントリ単位の RFC3339 タイムスタンプ。`severity` / `overall` はエントリ全体の重要度・機械見出しで、
@@ -28,16 +70,12 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct UpdateEntry {
     /// 適用時刻（RFC3339。CI が `--at` で注入する文字列をそのまま保持する）。
     pub(crate) at: String,
-    /// catch-up 範囲選択用の bump 前 dotfiles input リビジョン。
-    ///
-    /// Homebrew tap だけが進む更新では `nixpkgs_old == nixpkgs_new` になりうるため、`show --rev` のカーソルは
-    /// dotfiles input rev を優先する。古い TOML はこの field を持たないため、読み取り時は `nixpkgs_old` へ
-    /// フォールバックする。
+    /// bump 前 lock state key（`flake.lock` 内容ハッシュ。tap-only 更新でも一意な起点を持つ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cursor_old: Option<String>,
-    /// catch-up 範囲選択用の bump 後 dotfiles input リビジョン。
+    pub(crate) state_old: Option<String>,
+    /// bump 後 lock state key（`flake.lock` 内容ハッシュ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cursor_new: Option<String>,
+    pub(crate) state_new: Option<String>,
     /// bump 前の nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後の nixpkgs リビジョン。
@@ -408,8 +446,8 @@ mod tests {
     fn sample_entry() -> UpdateEntry {
         UpdateEntry {
             at: "2026-06-05T18:00:11Z".to_string(),
-            cursor_old: Some("dotfiles-old".to_string()),
-            cursor_new: None,
+            state_old: Some("lock-old".to_string()),
+            state_new: Some("lock-new".to_string()),
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -456,7 +494,8 @@ mod tests {
         let expected = "\
 [[update]]
 at = \"2026-06-05T18:00:11Z\"
-cursor_old = \"dotfiles-old\"
+state_old = \"lock-old\"
+state_new = \"lock-new\"
 nixpkgs_old = \"a1b2c3d\"
 nixpkgs_new = \"e4f5g6h\"
 reference = \"darwinConfigurations.ci\"
@@ -565,6 +604,42 @@ declared = true
         assert_eq!(parsed.change, ChangeKind::Downgraded);
         assert_eq!(parsed.source, PackageSource::Brew);
         Ok(())
+    }
+
+    #[test]
+    fn repo_from_github_url_strips_git_and_query() {
+        assert_eq!(
+            repo_from_github_url("https://github.com/o/r.git?x=1#frag").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            repo_from_github_url("http://github.com/o/r/issues/1").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(repo_from_github_url("https://gitlab.com/o/r"), None);
+        assert_eq!(repo_from_github_url("https://github.com/o"), None);
+    }
+
+    #[test]
+    fn releases_url_from_github_url_normalizes_release_variants_only() {
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/tag/v1.2.3").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/download/v1/x.zip")
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(releases_url_from_github_url("https://github.com/o/r"), None);
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/issues/1"),
+            None
+        );
     }
 
     fn item(category: ChangeCategory) -> ChangeItem {

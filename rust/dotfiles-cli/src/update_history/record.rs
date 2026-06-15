@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::diff::{DeltaSource, NixPackage, VersionDelta, diff_versions, merge_version_deltas};
 use super::llm::{ChangeExtractor, ExtractRequest, OpenAiExtractor};
@@ -28,10 +29,10 @@ use crate::Result;
 
 /// record use case の入力（記録する rev・時刻・参照と版差分入力）。
 pub(crate) struct RecordInput<'a> {
-    /// bump 前 dotfiles input リビジョン（show の範囲カーソル）。
-    pub(crate) cursor_old: Option<String>,
-    /// bump 後 dotfiles input リビジョン（show の範囲カーソル）。
-    pub(crate) cursor_new: Option<String>,
+    /// bump 前 lock ファイル（state key は Rust 側で算出する）。
+    pub(crate) lock_old: Option<&'a Path>,
+    /// bump 後 lock ファイル（state key は Rust 側で算出する）。
+    pub(crate) lock_new: Option<&'a Path>,
     /// bump 前 nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後 nixpkgs リビジョン。
@@ -127,10 +128,17 @@ fn neovim_news_url(version: Option<&str>) -> Option<String> {
 }
 
 fn rust_release_notes_url(version: Option<&str>) -> Option<String> {
+    let _version = version.map(str::trim).filter(|s| !s.is_empty())?;
+    Some("https://doc.rust-lang.org/stable/releases.html".to_string())
+}
+
+fn nix_release_notes_url(version: Option<&str>) -> Option<String> {
     let version = version.map(str::trim).filter(|s| !s.is_empty())?;
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
     Some(format!(
-        "https://doc.rust-lang.org/stable/releases.html#version-{}",
-        version.trim_start_matches('v').replace('.', "-")
+        "https://nix.dev/manual/nix/{major}.{minor}/release-notes/rl-{major}.{minor}"
     ))
 }
 
@@ -154,10 +162,7 @@ fn backfill_notes_source(
             Some("https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string())
         }
         (PackageSource::Nix, "discord") => Some("https://discord.com/tags/patch-notes".to_string()),
-        (PackageSource::Nix, "nix") => Some(
-            "https://raw.githubusercontent.com/NixOS/nix/master/doc/manual/source/release-notes/rl-2.34.md"
-                .to_string(),
-        ),
+        (PackageSource::Nix, "nix") => nix_release_notes_url(new),
         (PackageSource::Nix, "slack") => Some("https://slack.com/release-notes/mac".to_string()),
         (PackageSource::Nix, "temurin-bin") => {
             Some("https://adoptium.net/temurin/release-notes".to_string())
@@ -183,7 +188,9 @@ fn backfill_notes_source(
 
 fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
     let notes_url = package.notes_url.clone();
-    let repo = notes_url.as_deref().and_then(eval::repo_from_url);
+    let repo = notes_url
+        .as_deref()
+        .and_then(super::wire::repo_from_github_url);
     VersionDelta {
         name: package.name.clone(),
         old: package.old.clone(),
@@ -206,8 +213,8 @@ fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
 /// パッケージ素材列から、severity / overall を機械算出した 1 件の [`UpdateEntry`] を組み立てる。
 fn build_entry(
     at: String,
-    cursor_old: Option<String>,
-    cursor_new: Option<String>,
+    state_old: Option<String>,
+    state_new: Option<String>,
     nixpkgs_old: String,
     nixpkgs_new: String,
     reference: String,
@@ -222,8 +229,8 @@ fn build_entry(
     let overall = overall_headline(packages.len(), &all_items);
     UpdateEntry {
         at,
-        cursor_old,
-        cursor_new,
+        state_old,
+        state_new,
         nixpkgs_old,
         nixpkgs_new,
         reference,
@@ -316,8 +323,11 @@ fn resolve_notes(
     );
 
     let notes_url = sanitize_notes_url(
-        resolved_notes_url
-            .or_else(|| outcome.source_url.clone())
+        outcome
+            .source_url
+            .clone()
+            .filter(|_| !change_items.is_empty())
+            .or(resolved_notes_url)
             .or_else(|| delta.notes_source.clone())
             .or_else(|| delta.homepage.clone()),
     );
@@ -351,9 +361,10 @@ fn resolve_notes(
 
 /// 各解決フローの結果から、レジストリへ学習すべき provenance を 1 つ決める純粋関数（`None`=据え置き）。
 ///
-/// 再利用成功（`reused`）は据え置き。機械解決成功は refetch URL（無ければ origin=none）を学習。AI 探索が有効
-/// change_items を伴う取得元を採用したならそれを学習。全経路が空でも既存有効 source が在れば据え置き、無ければ
-/// origin=none を学習して次回再探索へ戻す。
+/// 再利用成功（`reused`）は据え置き。seed から空要約になった後でも reusable な AI source が有効
+/// change_items を伴って得られた場合は、それを機械取得元より先に採用する。そうでなければ機械解決の refetch URL
+///（無ければ origin=none）を学習し、全経路が空でも既存有効 source が在れば据え置き、無ければ origin=none を
+/// 学習して次回再探索へ戻す。
 fn decide_provenance(
     delta: &VersionDelta,
     at: &str,
@@ -366,6 +377,20 @@ fn decide_provenance(
     if reused {
         return None;
     }
+    let reusable_ai = ai_source_url
+        .filter(|_| !change_items_empty)
+        .and_then(normalize_reusable_source_url)
+        .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
+    if let Some(source_url) = reusable_ai.as_deref().filter(|source_url| {
+        mechanical.and_then(mechanical_source_url).as_deref() != Some(*source_url)
+    }) {
+        return Some(NotesSourceEntry {
+            source: Some(source_url.to_string()),
+            origin: NotesOrigin::AiDiscovered,
+            discovered_at: Some(at.to_string()),
+            note: None,
+        });
+    }
     if let Some(mech) = mechanical {
         // 機械 refetch URL も版固有（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）
         // なら恒久 provenance に学習しない。版固有 changelog（例 `blob/v1.2.3/CHANGELOG.md`）を学習すると次回
@@ -375,10 +400,11 @@ fn decide_provenance(
         let reusable_refetch = mech
             .refetch_url
             .as_deref()
+            .and_then(normalize_reusable_source_url)
             .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
         return Some(match reusable_refetch {
             Some(refetch_url) => NotesSourceEntry {
-                source: Some(refetch_url.to_string()),
+                source: Some(refetch_url),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: Some(at.to_string()),
                 note: None,
@@ -389,12 +415,9 @@ fn decide_provenance(
     // AI が版固有 URL（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）で要約した
     // 場合は恒久 provenance に学習しない（次回 `vX→vY` で古い版ページを seed に再利用すると誤要約/空要約になる）。
     // 版非依存（`/releases`・`CHANGELOG`・blob の固定ファイル等）の AI source だけを再利用 provenance として学習する。
-    if let Some(source_url) = ai_source_url
-        .filter(|_| !change_items_empty)
-        .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()))
-    {
+    if let Some(source_url) = reusable_ai {
         return Some(NotesSourceEntry {
-            source: Some(source_url.to_string()),
+            source: Some(source_url),
             origin: NotesOrigin::AiDiscovered,
             discovered_at: Some(at.to_string()),
             note: None,
@@ -438,12 +461,59 @@ fn is_version_specific_url(url: &str, old: Option<&str>, new: Option<&str>) -> b
     if lowered.contains("/releases/tag/") || lowered.contains("/releases/download/") {
         return true;
     }
-    [old, new]
-        .into_iter()
-        .flatten()
+    version_markers(old)
+        .chain(version_markers(new))
+        .any(|marker| url.contains(&marker))
+}
+
+fn version_markers(version: Option<&str>) -> impl Iterator<Item = String> {
+    let version = version
         .map(str::trim)
-        .filter(|version| !version.is_empty())
-        .any(|version| url.contains(version))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let major_minor = version
+        .as_deref()
+        .and_then(major_minor_version_marker)
+        .map(str::to_string);
+    version.into_iter().chain(major_minor)
+}
+
+fn major_minor_version_marker(version: &str) -> Option<&str> {
+    let version = version.trim_start_matches('v');
+    let mut parts = version.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if major.is_empty() || minor.is_empty() {
+        return None;
+    }
+    let marker_len = major.len() + 1 + minor.len();
+    Some(&version[..marker_len])
+}
+
+fn normalize_reusable_source_url(url: &str) -> Option<String> {
+    let normalized = url.split('#').next().unwrap_or(url).trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn mechanical_source_url(notes: &RawReleaseNotes) -> Option<String> {
+    notes
+        .refetch_url
+        .as_deref()
+        .or(Some(notes.notes_url.as_str()))
+        .and_then(normalize_reusable_source_url)
+}
+
+fn lock_state_key(path: Option<&Path>) -> Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path)?;
+    let digest = Sha256::digest(bytes);
+    Ok(Some(format!("{digest:x}")))
 }
 
 /// 有効な取得元が無いことを表す provenance（origin=none。次回再探索へ戻す）。
@@ -681,18 +751,19 @@ fn run_record_with(
         write_registry(input.registry_path, &registry)?;
     }
 
-    // どの tracked cursor も前進せず、差分素材も無い夜だけ空エントリを抑止する。
-    let cursor_advanced = input.cursor_old != input.cursor_new;
+    // nixpkgs も cask も前進せず、差分素材も無い夜だけ空エントリを抑止する。
     let nixpkgs_advanced = input.nixpkgs_old != input.nixpkgs_new;
     let cask_advanced = input.cask_rev_old != input.cask_rev_new;
-    if !(cursor_advanced || nixpkgs_advanced || cask_advanced) && materials.is_empty() {
+    if !(nixpkgs_advanced || cask_advanced) && materials.is_empty() {
         return Ok(());
     }
+    let state_old = lock_state_key(input.lock_old)?;
+    let state_new = lock_state_key(input.lock_new)?;
 
     let entry = build_entry(
         input.at.clone(),
-        input.cursor_old.clone(),
-        input.cursor_new.clone(),
+        state_old,
+        state_new,
         input.nixpkgs_old.clone(),
         input.nixpkgs_new.clone(),
         input.reference.clone(),
@@ -1011,8 +1082,8 @@ mod tests {
     ) -> RecordInput<'a> {
         let _ = dir;
         RecordInput {
-            cursor_old: Some("dotfiles-old".to_string()),
-            cursor_new: Some("dotfiles-new".to_string()),
+            lock_old: None,
+            lock_new: None,
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -1043,9 +1114,18 @@ mod tests {
             "neovim",
             outcome(vec![item(ChangeCategory::Feature, "新機能")]),
         );
+        let lock_old = dir.join("old-flake.lock");
+        let lock_new = dir.join("flake.lock");
+        std::fs::write(&lock_old, "old-lock").ok();
+        std::fs::write(&lock_new, "new-lock").ok();
+        let input = RecordInput {
+            lock_old: Some(&lock_old),
+            lock_new: Some(&lock_new),
+            ..input(&dir, &out, &registry, Some(&old), Some(&new))
+        };
 
         run_record_with(
-            &input(&dir, &out, &registry, Some(&old), Some(&new)),
+            &input,
             &extract,
             &no_fetch_source,
             &no_brew_hint,
@@ -1055,7 +1135,8 @@ mod tests {
 
         let entries = read_entries(&out)?;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].cursor_old.as_deref(), Some("dotfiles-old"));
+        assert_eq!(entries[0].state_old, lock_state_key(Some(&lock_old))?);
+        assert_eq!(entries[0].state_new, lock_state_key(Some(&lock_new))?);
         let pkg = &entries[0].packages[0];
         assert_eq!(pkg.name, "neovim");
         assert_eq!(pkg.change_items.len(), 1);
@@ -1330,11 +1411,67 @@ mod tests {
     }
 
     #[test]
-    fn record_appends_empty_chain_link_when_rev_advanced_but_no_deltas() -> Result<()> {
+    fn record_prefers_ai_discovered_source_after_empty_seeded_summary_fallback() -> Result<()> {
+        let dir = temp_dir("provenance-seeded-fallback");
+        let old = write_nix(
+            &dir,
+            "old.json",
+            r#"{"nix":{"version":"2.34.6","repo":"NixOS/nix"}}"#,
+        );
+        let new = write_nix(
+            &dir,
+            "new.json",
+            r#"{"nix":{"version":"2.34.7","repo":"NixOS/nix","notes_source":"https://github.com/NixOS/nix/releases/tag/2.34.7"}}"#,
+        );
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let extract = FakeExtractor::with(
+            "nix",
+            ExtractOutcome {
+                items: vec![item(ChangeCategory::Feature, "新機能")],
+                source_url: Some("https://github.com/NixOS/nix/releases".to_string()),
+            },
+        );
+        run_record_with(
+            &input(&dir, &out, &registry, Some(&old), Some(&new)),
+            &extract,
+            &|url| {
+                assert_eq!(url, "https://github.com/NixOS/nix/releases/tag/2.34.7");
+                Ok(Some(RawReleaseNotes {
+                    text: "thin seed".to_string(),
+                    notes_url: url.to_string(),
+                    refetch_url: None,
+                }))
+            },
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+        let learned = read_registry(&registry)?;
+        let entry = learned
+            .lookup("nix", DeltaSource::NixEval)
+            .ok_or_else(|| anyhow::anyhow!("missing learned provenance"))?;
+        assert_eq!(entry.origin, NotesOrigin::AiDiscovered);
+        assert_eq!(
+            entry.source.as_deref(),
+            Some("https://github.com/NixOS/nix/releases")
+        );
+        let entries = read_entries(&out)?;
+        let package = &entries[0].packages[0];
+        assert_eq!(
+            package.notes_url.as_deref(),
+            Some("https://github.com/NixOS/nix/releases")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_appends_empty_chain_link_when_nixpkgs_advanced_but_no_deltas() -> Result<()> {
         let dir = temp_dir("chain-link");
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
-        // nix old/new 無し → 差分なし。rev 前進あり（a1b2c3d != e4f5g6h）→ 空 chain link を追記する。
+        // nix old/new 無し → 差分なし。nixpkgs 前進あり（a1b2c3d != e4f5g6h）→ 空 chain link を追記する。
         let extract = FakeExtractor::new();
         run_record_with(
             &input(&dir, &out, &registry, None, None),
@@ -1359,7 +1496,6 @@ mod tests {
         let registry = dir.join("notes-sources.toml");
         let base = input(&dir, &out, &registry, None, None);
         let inp = RecordInput {
-            cursor_new: base.cursor_old.clone(),
             nixpkgs_new: base.nixpkgs_old.clone(),
             cask_rev_old: Some("cask-same"),
             cask_rev_new: Some("cask-same"),
@@ -1702,8 +1838,8 @@ origin = \"none\"
     fn store_sample(at: &str, name: &str) -> UpdateEntry {
         UpdateEntry {
             at: at.to_string(),
-            cursor_old: None,
-            cursor_new: None,
+            state_old: None,
+            state_new: None,
             nixpkgs_old: "o".to_string(),
             nixpkgs_new: "n".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -1780,8 +1916,8 @@ origin = \"none\"
             &HistoryDocument {
                 updates: vec![UpdateEntry {
                     at: "2026-06-13T09:45:17Z".to_string(),
-                    cursor_old: None,
-                    cursor_new: None,
+                    state_old: None,
+                    state_new: None,
                     nixpkgs_old: "old".to_string(),
                     nixpkgs_new: "new".to_string(),
                     reference: "darwinConfigurations.ci-ref".to_string(),
@@ -1839,8 +1975,8 @@ origin = \"none\"
             &HistoryDocument {
                 updates: vec![UpdateEntry {
                     at: "2026-06-13T09:45:17Z".to_string(),
-                    cursor_old: None,
-                    cursor_new: None,
+                    state_old: None,
+                    state_new: None,
                     nixpkgs_old: "old".to_string(),
                     nixpkgs_new: "new".to_string(),
                     reference: "darwinConfigurations.ci-ref".to_string(),
@@ -1897,11 +2033,17 @@ origin = \"none\"
     #[test]
     fn package_to_backfill_delta_uses_shared_repo_parser() {
         assert_eq!(
-            eval::repo_from_url("https://github.com/o/r.git?tab=readme#top").as_deref(),
+            crate::update_history::wire::repo_from_github_url(
+                "https://github.com/o/r.git?tab=readme#top"
+            )
+            .as_deref(),
             Some("o/r")
         );
         assert_eq!(
-            eval::repo_from_url("http://github.com/o/r/releases/tag/v1.0.0?x=1").as_deref(),
+            crate::update_history::wire::repo_from_github_url(
+                "http://github.com/o/r/releases/tag/v1.0.0?x=1"
+            )
+            .as_deref(),
             Some("o/r")
         );
     }
@@ -1979,9 +2121,7 @@ origin = \"none\"
         assert_eq!(delta.repo.as_deref(), Some("NixOS/nix"));
         assert_eq!(
             delta.notes_source.as_deref(),
-            Some(
-                "https://raw.githubusercontent.com/NixOS/nix/master/doc/manual/source/release-notes/rl-2.34.md"
-            )
+            Some("https://nix.dev/manual/nix/2.34/release-notes/rl-2.34")
         );
     }
 
@@ -2080,7 +2220,16 @@ origin = \"none\"
         let delta = package_to_backfill_delta(&package);
         assert_eq!(
             delta.notes_source.as_deref(),
-            Some("https://doc.rust-lang.org/stable/releases.html#version-1-95-0")
+            Some("https://doc.rust-lang.org/stable/releases.html")
         );
+    }
+
+    #[test]
+    fn neovim_minor_specific_news_url_is_version_specific() {
+        assert!(is_version_specific_url(
+            "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-0.12.txt",
+            Some("0.12.2"),
+            Some("0.13.0")
+        ));
     }
 }
