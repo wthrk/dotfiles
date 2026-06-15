@@ -89,13 +89,16 @@ fn package_source_to_delta_source(source: PackageSource) -> DeltaSource {
 }
 
 fn repo_from_github_url(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://github.com/")?;
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
     let (owner, after_owner) = rest.split_once('/')?;
     let owner = owner.trim();
-    let repo = after_owner
-        .split('/')
-        .next()?
-        .trim()
+    let repo_raw = after_owner.split('/').next()?.trim();
+    let repo = repo_raw
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(repo_raw)
         .trim_end_matches(".git");
     if owner.is_empty() || repo.is_empty() {
         None
@@ -567,9 +570,16 @@ fn run_backfill_version_only_with(
                         }
                         None => registry,
                     };
+                    let notes_url =
+                        resolution.notes.notes_url.or(package.notes_url.clone());
+                    let change_items = resolution.notes.change_items;
+                    let changed = changed
+                        || resolution.learned.is_some()
+                        || notes_url != package.notes_url
+                        || change_items != package.change_items;
                     let updated = PackageUpdate {
-                        notes_url: resolution.notes.notes_url.or(package.notes_url.clone()),
-                        change_items: resolution.notes.change_items,
+                        notes_url,
+                        change_items,
                         ..package
                     };
                     Ok((
@@ -1837,6 +1847,79 @@ origin = \"none\"
         assert_eq!(after.updates[0].overall, "1アプリ更新: ✨1");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    #[test]
+    fn backfill_version_only_persists_learned_registry_entries() -> Result<()> {
+        let dir = temp_dir("backfill-registry");
+        let history = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        write_document(
+            &history,
+            &HistoryDocument {
+                updates: vec![UpdateEntry {
+                    at: "2026-06-13T09:45:17Z".to_string(),
+                    cursor_old: None,
+                    cursor_new: None,
+                    nixpkgs_old: "old".to_string(),
+                    nixpkgs_new: "new".to_string(),
+                    reference: "darwinConfigurations.ci-ref".to_string(),
+                    severity: super::super::wire::Severity::None,
+                    overall: "1アプリ更新".to_string(),
+                    packages: vec![PackageUpdate {
+                        name: "codex-app".to_string(),
+                        old: Some("1.0.0".to_string()),
+                        new: Some("1.1.0".to_string()),
+                        change: super::super::wire::ChangeKind::Upgraded,
+                        declared: true,
+                        source: PackageSource::Brew,
+                        notes_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+                        change_items: Vec::new(),
+                    }],
+                }],
+            },
+        )?;
+        let extractor = FakeExtractor::with(
+            "codex-app",
+            ExtractOutcome {
+                items: vec![ChangeItem {
+                    category: super::super::wire::ChangeCategory::Feature,
+                    text: "変更".to_string(),
+                    ref_url: Some(
+                        "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
+                    ),
+                }],
+                source_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+            },
+        );
+        run_backfill_version_only_with(&history, &registry, &extractor, &|_| Ok(None), &|_| {
+            Ok(Some("https://developers.openai.com/codex/changelog".to_string()))
+        })?;
+        let after = read_registry(&registry)?;
+        let expected = entry_of(
+            Some("https://developers.openai.com/codex/changelog"),
+            NotesOrigin::AiDiscovered,
+        );
+        let mut expected = expected;
+        expected.discovered_at = Some("2026-06-13T09:45:17Z".to_string());
+        assert_eq!(
+            after.lookup("codex-app", DeltaSource::BrewTap),
+            Some(&expected)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn repo_from_github_url_strips_git_query_and_fragment() {
+        assert_eq!(
+            repo_from_github_url("https://github.com/o/r.git?tab=readme#top").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            repo_from_github_url("http://github.com/o/r/releases/tag/v1.0.0?x=1").as_deref(),
+            Some("o/r")
+        );
     }
 
     #[test]
