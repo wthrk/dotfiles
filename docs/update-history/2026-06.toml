@@ -1373,3 +1373,37 @@ declared = true
 source = "nix"
 notes_url = "https://chromedriver.chromium.org/"
 change_item = []
+
+[[update]]
+at = "2026-06-15T20:07:33Z"
+cursor_old = "50b9fa8bf687baadec3ba7992ae55488a07e00ec"
+nixpkgs_old = "9f11f828c213641c2369a9f1fa31fe31557e3156"
+nixpkgs_new = "9eac87a12312b8f60dd52e1c6e1a265f6fc7f5fc"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "1アプリ更新: 🗑️1 🐛3"
+
+[[update.package]]
+name = "vips"
+old = "8.18.2"
+new = "8.18.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/libvips/libvips/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "RAD/LABQ画像でのOOB読み取りの可能性を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "非RGB画像でのヒープバッファオーバーフローを防止"
+
+[[update.package.change_item]]
+category = "fix"
+text = "量子化バックエンドでのヌルポインタ逆参照の可能性を修正"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いスタイルのスキャンライン読み取りを非推奨化"
