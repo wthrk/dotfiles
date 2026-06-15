@@ -921,15 +921,25 @@ fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
 /// cask `url` から、AI が探索に使いやすい安定ヒント URL を導出する。
 ///
 /// GitHub の release asset URL（`releases/download/...`）や tag URL は、そのままだと版固有で長すぎるため
-/// `https://github.com/<owner>/<repo>/releases` へ正規化する。GitHub repo root / releases はそのまま使う。
-/// それ以外の URL は、homepage の方が安定な探索ヒントになりやすいためここでは採らない。
+/// `https://github.com/<owner>/<repo>/releases` へ正規化する。既に `.../releases` を指す URL はそのまま使う。
+/// それ以外の GitHub URL は homepage の方が安定な探索ヒントになりやすいため、ここでは採らない。
 fn normalize_cask_hint(url: Option<&str>) -> Option<String> {
     let url = url?;
     let rest = url.strip_prefix("https://github.com/")?;
     let (owner, after_owner) = rest.split_once('/')?;
     let owner = non_empty(Some(owner))?;
-    let repo = non_empty(after_owner.split('/').next())?;
-    Some(format!("https://github.com/{owner}/{repo}/releases"))
+    let (repo, tail) = match after_owner.split_once('/') {
+        Some((repo, tail)) => (non_empty(Some(repo))?, tail),
+        None => return None,
+    };
+    if tail == "releases"
+        || tail.starts_with("releases/tag/")
+        || tail.starts_with("releases/download/")
+    {
+        Some(format!("https://github.com/{owner}/{repo}/releases"))
+    } else {
+        None
+    }
 }
 
 fn is_cask_base(base: &str) -> bool {
@@ -1311,6 +1321,28 @@ mod tests {
         assert!(
             parse_cask_hint("cask \"x\" do\n  url_template \"https://example/#{version}\"\nend\n")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn normalize_cask_hint_only_accepts_release_urls() {
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/releases")).as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/releases/tag/v1.2.3")).as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/releases/download/v1/x.zip"))
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(normalize_cask_hint(Some("https://github.com/o/r")), None);
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/issues/1")),
+            None
         );
     }
 
