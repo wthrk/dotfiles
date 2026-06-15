@@ -570,8 +570,7 @@ fn run_backfill_version_only_with(
                         }
                         None => registry,
                     };
-                    let notes_url =
-                        resolution.notes.notes_url.or(package.notes_url.clone());
+                    let notes_url = resolution.notes.notes_url.or(package.notes_url.clone());
                     let change_items = resolution.notes.change_items;
                     let changed = changed
                         || resolution.learned.is_some()
@@ -1873,7 +1872,9 @@ origin = \"none\"
                         change: super::super::wire::ChangeKind::Upgraded,
                         declared: true,
                         source: PackageSource::Brew,
-                        notes_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+                        notes_url: Some(
+                            "https://developers.openai.com/codex/changelog".to_string(),
+                        ),
                         change_items: Vec::new(),
                     }],
                 }],
@@ -1893,7 +1894,9 @@ origin = \"none\"
             },
         );
         run_backfill_version_only_with(&history, &registry, &extractor, &|_| Ok(None), &|_| {
-            Ok(Some("https://developers.openai.com/codex/changelog".to_string()))
+            Ok(Some(
+                "https://developers.openai.com/codex/changelog".to_string(),
+            ))
         })?;
         let after = read_registry(&registry)?;
         let expected = entry_of(
