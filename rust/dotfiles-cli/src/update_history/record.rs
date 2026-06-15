@@ -88,25 +88,6 @@ fn package_source_to_delta_source(source: PackageSource) -> DeltaSource {
     }
 }
 
-fn repo_from_github_url(url: &str) -> Option<String> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))?;
-    let (owner, after_owner) = rest.split_once('/')?;
-    let owner = owner.trim();
-    let repo_raw = after_owner.split('/').next()?.trim();
-    let repo = repo_raw
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(repo_raw)
-        .trim_end_matches(".git");
-    if owner.is_empty() || repo.is_empty() {
-        None
-    } else {
-        Some(format!("{owner}/{repo}"))
-    }
-}
-
 fn version_tag(version: &str) -> String {
     let trimmed = version.trim();
     if trimmed.starts_with('v') {
@@ -202,7 +183,7 @@ fn backfill_notes_source(
 
 fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
     let notes_url = package.notes_url.clone();
-    let repo = notes_url.as_deref().and_then(repo_from_github_url);
+    let repo = notes_url.as_deref().and_then(eval::repo_from_url);
     VersionDelta {
         name: package.name.clone(),
         old: package.old.clone(),
@@ -1914,13 +1895,13 @@ origin = \"none\"
     }
 
     #[test]
-    fn repo_from_github_url_strips_git_query_and_fragment() {
+    fn package_to_backfill_delta_uses_shared_repo_parser() {
         assert_eq!(
-            repo_from_github_url("https://github.com/o/r.git?tab=readme#top").as_deref(),
+            eval::repo_from_url("https://github.com/o/r.git?tab=readme#top").as_deref(),
             Some("o/r")
         );
         assert_eq!(
-            repo_from_github_url("http://github.com/o/r/releases/tag/v1.0.0?x=1").as_deref(),
+            eval::repo_from_url("http://github.com/o/r/releases/tag/v1.0.0?x=1").as_deref(),
             Some("o/r")
         );
     }

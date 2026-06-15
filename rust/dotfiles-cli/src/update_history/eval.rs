@@ -249,7 +249,7 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
 }
 
 /// github URL 文字列から `owner/repo` を取り出す純粋関数（末尾 `.git`・クエリ/フラグメントは除く）。
-fn repo_from_url(url: &str) -> Option<String> {
+pub(crate) fn repo_from_url(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://github.com/")
         .or_else(|| url.strip_prefix("http://github.com/"))?;
