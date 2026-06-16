@@ -382,7 +382,7 @@ fn decide_provenance(
         .and_then(normalize_reusable_source_url)
         .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
     if let Some(source_url) = reusable_ai {
-        if reused && saved_source.as_deref() == Some(source_url.as_str()) {
+        if reused && saved_source == Some(source_url.as_str()) {
             return None;
         }
         return Some(NotesSourceEntry {
