@@ -9,6 +9,7 @@
     firefox-bin
     google-chrome
     iterm2
+    kicad
     kmonad
     mas
     notion-app
