@@ -356,13 +356,13 @@ fn render_json(view: &HistoryView) -> Result<String> {
 /// catch-up 区間を集約して stdout へ出力する。
 pub(crate) fn run_show(
     source: &Path,
-    rev: Option<&str>,
+    state: Option<&str>,
     limit: Option<usize>,
     json: bool,
     all: bool,
 ) -> Result<()> {
     let entries = read_entries(source)?;
-    let selected = select_entries(&entries, rev, limit);
+    let selected = select_entries(&entries, state, limit);
     let view = build_view(&selected, all);
     println!("{}", render(&view, json)?);
     Ok(())
