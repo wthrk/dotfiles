@@ -361,10 +361,10 @@ fn resolve_notes(
 
 /// 各解決フローの結果から、レジストリへ学習すべき provenance を 1 つ決める純粋関数（`None`=据え置き）。
 ///
-/// 再利用成功（`reused`）は据え置き。seed から空要約になった後でも reusable な AI source が有効
-/// change_items を伴って得られた場合は、それを機械取得元より先に採用する。そうでなければ機械解決の refetch URL
-///（無ければ origin=none）を学習し、全経路が空でも既存有効 source が在れば据え置き、無ければ origin=none を
-/// 学習して次回再探索へ戻す。
+/// 再利用成功（`reused`）でも、reusable な AI source が既存 source と異なるなら自己修復として更新する。
+/// seed から空要約になった後でも reusable な AI source が有効 change_items を伴って得られた場合は、それを
+/// 機械取得元より先に採用する。そうでなければ機械解決の refetch URL（無ければ origin=none）を学習し、全経路が
+/// 空でも既存有効 source が在れば据え置き、無ければ origin=none を学習して次回再探索へ戻す。
 fn decide_provenance(
     delta: &VersionDelta,
     at: &str,
@@ -374,22 +374,26 @@ fn decide_provenance(
     ai_source_url: Option<&str>,
     change_items_empty: bool,
 ) -> Option<NotesSourceEntry> {
-    if reused {
-        return None;
-    }
+    let saved_source = registry
+        .lookup(&delta.name, delta.source)
+        .and_then(NotesSourceEntry::reusable_source);
     let reusable_ai = ai_source_url
         .filter(|_| !change_items_empty)
         .and_then(normalize_reusable_source_url)
         .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
-    if let Some(source_url) = reusable_ai.as_deref().filter(|source_url| {
-        mechanical.and_then(mechanical_source_url).as_deref() != Some(*source_url)
-    }) {
+    if let Some(source_url) = reusable_ai {
+        if reused && saved_source.as_deref() == Some(source_url.as_str()) {
+            return None;
+        }
         return Some(NotesSourceEntry {
-            source: Some(source_url.to_string()),
+            source: Some(source_url),
             origin: NotesOrigin::AiDiscovered,
             discovered_at: Some(at.to_string()),
             note: None,
         });
+    }
+    if reused {
+        return None;
     }
     if let Some(mech) = mechanical {
         // 機械 refetch URL も版固有（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）
@@ -410,17 +414,6 @@ fn decide_provenance(
                 note: None,
             },
             None => none_provenance(at),
-        });
-    }
-    // AI が版固有 URL（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）で要約した
-    // 場合は恒久 provenance に学習しない（次回 `vX→vY` で古い版ページを seed に再利用すると誤要約/空要約になる）。
-    // 版非依存（`/releases`・`CHANGELOG`・blob の固定ファイル等）の AI source だけを再利用 provenance として学習する。
-    if let Some(source_url) = reusable_ai {
-        return Some(NotesSourceEntry {
-            source: Some(source_url),
-            origin: NotesOrigin::AiDiscovered,
-            discovered_at: Some(at.to_string()),
-            note: None,
         });
     }
     // 全経路が空 / AI が版固有 URL でしか要約できなかった → 既存有効 source を据え置くか origin=none へ戻す。
@@ -467,15 +460,25 @@ fn is_version_specific_url(url: &str, old: Option<&str>, new: Option<&str>) -> b
 }
 
 fn version_markers(version: Option<&str>) -> impl Iterator<Item = String> {
-    let version = version
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let major_minor = version
-        .as_deref()
-        .and_then(major_minor_version_marker)
-        .map(str::to_string);
-    version.into_iter().chain(major_minor)
+    let Some(version) = version.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Vec::new().into_iter();
+    };
+
+    let mut markers = vec![version.to_string()];
+    if let Some(major_minor) = major_minor_version_marker(version) {
+        markers.push(major_minor.to_string());
+    }
+    for underscored in markers
+        .clone()
+        .into_iter()
+        .map(|marker| marker.replace('.', "_"))
+        .filter(|marker| marker != version)
+    {
+        if !markers.contains(&underscored) {
+            markers.push(underscored);
+        }
+    }
+    markers.into_iter()
 }
 
 fn major_minor_version_marker(version: &str) -> Option<&str> {
@@ -497,14 +500,6 @@ fn normalize_reusable_source_url(url: &str) -> Option<String> {
     } else {
         Some(normalized.to_string())
     }
-}
-
-fn mechanical_source_url(notes: &RawReleaseNotes) -> Option<String> {
-    notes
-        .refetch_url
-        .as_deref()
-        .or(Some(notes.notes_url.as_str()))
-        .and_then(normalize_reusable_source_url)
 }
 
 fn lock_state_key(path: Option<&Path>) -> Result<Option<String>> {
@@ -1266,6 +1261,11 @@ mod tests {
             None,
             Some("1.2.3")
         ));
+        assert!(!is_reusable_ai_source(
+            "https://code.visualstudio.com/updates/v1_123",
+            Some("1.122.0"),
+            Some("1.123.0")
+        ));
         // 版非依存 URL（再利用可）: /releases・CHANGELOG・blob 固定ファイル・docs index。
         assert!(is_reusable_ai_source(
             "https://github.com/o/r/releases",
@@ -1378,6 +1378,26 @@ mod tests {
         assert!(
             learned_tag
                 .is_some_and(|entry| entry.origin == NotesOrigin::None && entry.source.is_none())
+        );
+    }
+
+    #[test]
+    fn decide_provenance_prefers_ai_source_even_when_mechanical_url_matches() {
+        let delta = delta_of("neovim", "1.2.3", "1.2.4");
+        let registry = NotesSourceRegistry::default();
+        let mech = mech_notes(None);
+        let learned = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            Some(&mech),
+            Some("https://github.com/o/r/releases"),
+            false,
+        );
+        assert!(
+            learned.is_some_and(|entry| entry.origin == NotesOrigin::AiDiscovered
+                && entry.source.as_deref() == Some("https://github.com/o/r/releases"))
         );
     }
 
@@ -1499,6 +1519,76 @@ mod tests {
         assert_eq!(
             package.notes_url.as_deref(),
             Some("https://github.com/NixOS/nix/releases")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_reuse_success_self_heals_stale_registry_source_from_ai_fallback() -> Result<()> {
+        let dir = temp_dir("reuse-self-heal");
+        let old = write_nix(
+            &dir,
+            "old.json",
+            r#"{"rust":{"version":"1.94.0","repo":"rust-lang/rust","notes_source":"https://doc.rust-lang.org/stable/releases.html#version-1-94-0"}}"#,
+        );
+        let new = write_nix(
+            &dir,
+            "new.json",
+            r#"{"rust":{"version":"1.95.0","repo":"rust-lang/rust","notes_source":"https://doc.rust-lang.org/stable/releases.html#version-1-95-0"}}"#,
+        );
+        let out = dir.join("2026-06.toml");
+        let registry_path = dir.join("notes-sources.toml");
+        let stale_url = "https://doc.rust-lang.org/stable/releases.html#version-1-95-0";
+        let registry = registry_of(vec![(
+            "rust",
+            DeltaSource::NixEval,
+            NotesSourceEntry {
+                source: Some(stale_url.to_string()),
+                origin: NotesOrigin::Mechanical,
+                discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
+                note: None,
+            },
+        )]);
+        write_registry(&registry_path, &registry)?;
+        let extract = FakeExtractor::with(
+            "rust",
+            ExtractOutcome {
+                items: vec![item(ChangeCategory::Feature, "安定化")],
+                source_url: Some("https://doc.rust-lang.org/stable/releases.html".to_string()),
+            },
+        );
+
+        run_record_with(
+            &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
+            &extract,
+            &|url| {
+                assert_eq!(url, stale_url);
+                Ok(Some(RawReleaseNotes {
+                    text: "thin seed".to_string(),
+                    notes_url: url.to_string(),
+                    refetch_url: None,
+                }))
+            },
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+
+        let after = read_registry(&registry_path)?;
+        let entry = after
+            .lookup("rust", DeltaSource::NixEval)
+            .ok_or_else(|| anyhow::anyhow!("missing learned provenance"))?;
+        assert_eq!(entry.origin, NotesOrigin::AiDiscovered);
+        assert_eq!(
+            entry.source.as_deref(),
+            Some("https://doc.rust-lang.org/stable/releases.html")
+        );
+        let entries = read_entries(&out)?;
+        let package = &entries[0].packages[0];
+        assert_eq!(
+            package.notes_url.as_deref(),
+            Some("https://doc.rust-lang.org/stable/releases.html")
         );
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
