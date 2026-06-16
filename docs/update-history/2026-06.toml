@@ -1407,3 +1407,22 @@ text = "量子化バックエンドでのヌルポインタ逆参照の可能性
 [[update.package.change_item]]
 category = "deprecation"
 text = "古いスタイルのスキャンライン読み取りを非推奨化"
+
+[[update]]
+at = "2026-06-16T19:55:55Z"
+cursor_old = "df2cf4eff1a0cdd0d98286f891cfe74df902748c"
+nixpkgs_old = "9eac87a12312b8f60dd52e1c6e1a265f6fc7f5fc"
+nixpkgs_new = "9eac87a12312b8f60dd52e1c6e1a265f6fc7f5fc"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "codex-app"
+old = "26.609.41114"
+new = "26.609.71450"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
