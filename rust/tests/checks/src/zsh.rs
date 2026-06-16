@@ -211,11 +211,7 @@ impl TestHome {
         let _ = fs::remove_dir_all(&config_dir);
         let _ = fs::remove_dir_all(&source_snapshot);
         fs::create_dir_all(&config_dir)?;
-        copy_tree_excluding(
-            &source_root,
-            &source_snapshot,
-            &[".git", ".direnv", "target"],
-        )?;
+        materialize_tracked_snapshot(&source_root, &source_snapshot)?;
         let source = source_snapshot.canonicalize()?.display().to_string();
 
         cmd!(
@@ -308,30 +304,66 @@ fn copy_with_home_rewrite(
 }
 
 /// mutable な worktree をそのまま path input に渡すと `target/` 配下の一時生成物の出入りで
-/// `nix flake lock` が壊れるため、zsh 検証用に安定した source snapshot を作る。
-fn copy_tree_excluding(source: &Path, dest: &Path, excluded_names: &[&str]) -> Result<()> {
+/// `nix flake lock` が壊れるため、`git ls-files` で列挙した tracked file だけを
+/// zsh 検証用 snapshot として materialize する。
+fn materialize_tracked_snapshot(source: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
-        if excluded_names.iter().any(|excluded| *excluded == name) {
-            continue;
+    for relative in tracked_files(source)? {
+        let source_path = source.join(&relative);
+        let dest_path = dest.join(&relative);
+        let file_type = match fs::symlink_metadata(&source_path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
         }
 
-        let source_path = entry.path();
-        let dest_path = dest.join(&file_name);
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_tree_excluding(&source_path, &dest_path, excluded_names)?;
-        } else if file_type.is_symlink() {
+        if file_type.is_symlink() {
             let target = fs::read_link(&source_path)?;
-            unix_fs::symlink(target, dest_path)?;
+            unix_fs::symlink(target, &dest_path)?;
         } else {
             fs::copy(&source_path, &dest_path)?;
         }
     }
     Ok(())
+}
+
+/// `git ls-files -z` を使い、未追跡ファイルを含まない snapshot 対象だけを返す。
+fn tracked_files(source: &Path) -> Result<Vec<PathBuf>> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["ls-files", "-z"])
+        .output()?;
+    if !output.status.success() {
+        bail!("git ls-files failed for {}", source.display());
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            tracked_relative_path(Path::new(std::str::from_utf8(entry)?)).map(PathBuf::from)
+        })
+        .collect()
+}
+
+/// `git ls-files` 出力が worktree 相対パスに閉じていることを確認する。
+fn tracked_relative_path(path: &Path) -> Result<&Path> {
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        bail!("tracked path escapes worktree: {}", path.display());
+    }
+    Ok(path)
 }
 
 /// zsh 検証用 local flake では self package を外し、不要な dotfiles CLI release build を避ける。
@@ -413,5 +445,117 @@ fn expect_absent(label: &str, actual: &str, needles: &[&str]) -> Result<()> {
     } else {
         println!("PASS {label}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check, materialize_tracked_snapshot, tracked_relative_path};
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{env, process};
+
+    type TestResult = anyhow::Result<()>;
+
+    #[test]
+    fn tracked_snapshot_excludes_untracked_env_file() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-zsh-tracked-source");
+        let snapshot = unique_temp_dir("dotfiles-zsh-tracked-dest");
+        fs::create_dir_all(repo.join("tracked"))?;
+        fs::write(repo.join("tracked/config.txt"), "tracked\n")?;
+        fs::write(repo.join(".env"), "SECRET=should-not-copy\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["config", "user.name", "dotfiles-checks"])?;
+        git(
+            &repo,
+            ["config", "user.email", "dotfiles-checks@example.com"],
+        )?;
+        git(&repo, ["add", "tracked/config.txt"])?;
+        git(&repo, ["commit", "-m", "track config"])?;
+
+        materialize_tracked_snapshot(&repo, &snapshot)?;
+
+        assert!(snapshot.join("tracked/config.txt").is_file());
+        assert!(!snapshot.join(".env").exists());
+
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_snapshot_skips_deleted_tracked_file() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-zsh-deleted-source");
+        let snapshot = unique_temp_dir("dotfiles-zsh-deleted-dest");
+        fs::create_dir_all(repo.join("tracked"))?;
+        fs::write(repo.join("tracked/keep.txt"), "keep\n")?;
+        fs::write(repo.join("tracked/deleted.txt"), "delete me\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["config", "user.name", "dotfiles-checks"])?;
+        git(
+            &repo,
+            ["config", "user.email", "dotfiles-checks@example.com"],
+        )?;
+        git(&repo, ["add", "tracked/keep.txt", "tracked/deleted.txt"])?;
+        git(&repo, ["commit", "-m", "track files"])?;
+
+        fs::remove_file(repo.join("tracked/deleted.txt"))?;
+        materialize_tracked_snapshot(&repo, &snapshot)?;
+
+        assert!(snapshot.join("tracked/keep.txt").is_file());
+        assert!(!snapshot.join("tracked/deleted.txt").exists());
+
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_relative_path_rejects_parent_escape() {
+        assert!(tracked_relative_path(Path::new("../.env")).is_err());
+        assert!(tracked_relative_path(Path::new("/tmp/secret")).is_err());
+        assert!(tracked_relative_path(Path::new("tracked/config.txt")).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires nix/cargo and runs the real zsh check path"]
+    fn zsh_check_runs_via_test_home_new_with_tracked_snapshot() -> TestResult {
+        let previous = env::current_dir()?;
+        env::set_current_dir(repo_root())?;
+        let result = check();
+        env::set_current_dir(previous)?;
+        result
+    }
+
+    fn git<const N: usize>(repo: &Path, args: [&str; N]) -> TestResult {
+        let status = Command::new("git").current_dir(repo).args(args).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io_error(format!("git command failed: {:?}", args)).into())
+        }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id()))
+    }
+
+    fn repo_root() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("dotfiles-checks manifest dir should be nested under repo root")
+    }
+
+    fn io_error(message: String) -> std::io::Error {
+        std::io::Error::other(message)
     }
 }
