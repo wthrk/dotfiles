@@ -52,8 +52,11 @@ pub(crate) fn repo_from_github_url(url: &str) -> Option<String> {
 /// GitHub release/tag/download URL から、版非依存な `.../releases` ヒント URL を導出する。
 pub(crate) fn releases_url_from_github_url(url: &str) -> Option<String> {
     let (owner, repo, tail) = parse_github_repo_url(url)?;
+    let tail = tail.split(['?', '#']).next().unwrap_or(tail);
     if tail == "releases"
+        || tail == "releases/latest"
         || tail.starts_with("releases/tag/")
+        || tail.starts_with("releases/latest/download/")
         || tail.starts_with("releases/download/")
     {
         Some(format!("https://github.com/{owner}/{repo}/releases"))
@@ -71,10 +74,10 @@ pub(crate) struct UpdateEntry {
     /// 適用時刻（RFC3339。CI が `--at` で注入する文字列をそのまま保持する）。
     pub(crate) at: String,
     /// bump 前 lock state key（`flake.lock` 内容ハッシュ。tap-only 更新でも一意な起点を持つ）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "cursor_old", skip_serializing_if = "Option::is_none")]
     pub(crate) state_old: Option<String>,
     /// bump 後 lock state key（`flake.lock` 内容ハッシュ）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "cursor_new", skip_serializing_if = "Option::is_none")]
     pub(crate) state_new: Option<String>,
     /// bump 前の nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
@@ -627,7 +630,35 @@ declared = true
             Some("https://github.com/o/r/releases")
         );
         assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases?after=v1.2.3").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases#latest").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
             releases_url_from_github_url("https://github.com/o/r/releases/tag/v1.2.3").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/latest").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/latest?after=v1")
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/latest#asset").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url(
+                "https://github.com/o/r/releases/latest/download/x86_64-apple-darwin.tar.gz"
+            )
+            .as_deref(),
             Some("https://github.com/o/r/releases")
         );
         assert_eq!(
@@ -640,6 +671,25 @@ declared = true
             releases_url_from_github_url("https://github.com/o/r/issues/1"),
             None
         );
+    }
+
+    #[test]
+    fn update_entry_reads_legacy_cursor_fields_into_state_fields() -> Result<(), toml::de::Error> {
+        let entry: UpdateEntry = toml::from_str(
+            r#"
+at = "2026-06-13T09:45:17Z"
+cursor_old = "lock-old"
+cursor_new = "lock-new"
+nixpkgs_old = "old"
+nixpkgs_new = "new"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+"#,
+        )?;
+        assert_eq!(entry.state_old.as_deref(), Some("lock-old"));
+        assert_eq!(entry.state_new.as_deref(), Some("lock-new"));
+        Ok(())
     }
 
     fn item(category: ChangeCategory) -> ChangeItem {
