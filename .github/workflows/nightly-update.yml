@@ -15,7 +15,8 @@ name: nightly update
 #     `OPEN_AI_API_KEY`** を `env` で結線し、CLI（async-openai crate）が env から読む。GitHub Models /
 #     `permissions: models: read` / GITHUB_TOKEN の LLM 用途は撤去した（PR 起票等の GITHUB_TOKEN は残す）。
 #   - record は 1 回で全変更パッケージを要約しきる。ノートが取れないものは version-only（version + notes_url のみ）
-#     としてその場で確定記録する（夜をまたいで埋める backfill は持たない）。
+#     としてその場で確定記録し、必要なら利用者向け `dotfiles update-history backfill-version-only` で既存の月次履歴を
+#     後から再処理して埋め直せる。
 #   - PR 起票・auto-merge は GITHUB_TOKEN で行う（GitHub App / 別 secret は追加しない）。GITHUB_TOKEN 起票 PR
 #     では `on: pull_request` の必須 check（static-checks.yml）が発火しないため、open-pr job が同一 run 内で
 #     ①`cargo xtask ci verify-bump-lock`（base..head の許可パス + lock 差分のセキュリティ検査）と ②実

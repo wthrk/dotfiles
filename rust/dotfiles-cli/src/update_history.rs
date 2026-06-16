@@ -41,7 +41,7 @@ pub(crate) struct UpdateHistoryOptions {
 }
 
 #[derive(Subcommand)]
-/// CI が叩く記録・eval・rev 抽出 command と、利用者が叩く閲覧 command。
+/// CI 用の記録・eval・rev 抽出 command と、利用者向けの閲覧・version-only backfill command。
 enum UpdateHistoryCommand {
     // record option は他より大幅にフィールドが多いため Box で間接化して large_enum_variant を避ける。
     Record(Box<RecordOptions>),
@@ -151,7 +151,8 @@ struct ShowOptions {
     config_dir: Option<PathBuf>,
 }
 
-/// `update-history` サブコマンドを受けて record / eval-versions / lock-rev / show を駆動する。
+/// `update-history` サブコマンドを受けて record / backfill-version-only /
+/// eval-versions / lock-rev / show を駆動する。
 pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
     match options.command {
         UpdateHistoryCommand::Record(options) => run_record(*options),
