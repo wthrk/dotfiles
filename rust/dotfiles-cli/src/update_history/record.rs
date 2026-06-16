@@ -661,8 +661,8 @@ fn run_backfill_version_only_with(
         },
     )?;
     document.updates = updates;
-    write_document(history_path, &document)?;
     if dirty {
+        write_document(history_path, &document)?;
         write_registry(registry_path, &registry)?;
     }
     Ok(())
@@ -751,14 +751,15 @@ fn run_record_with(
         write_registry(input.registry_path, &registry)?;
     }
 
-    // nixpkgs も cask も前進せず、差分素材も無い夜だけ空エントリを抑止する。
+    // nixpkgs・cask rev・lock state のいずれも前進せず、差分素材も無い夜だけ空エントリを抑止する。
     let nixpkgs_advanced = input.nixpkgs_old != input.nixpkgs_new;
     let cask_advanced = input.cask_rev_old != input.cask_rev_new;
-    if !(nixpkgs_advanced || cask_advanced) && materials.is_empty() {
-        return Ok(());
-    }
     let state_old = lock_state_key(input.lock_old)?;
     let state_new = lock_state_key(input.lock_new)?;
+    let lock_advanced = state_old != state_new;
+    if !(nixpkgs_advanced || cask_advanced || lock_advanced) && materials.is_empty() {
+        return Ok(());
+    }
 
     let entry = build_entry(
         input.at.clone(),
@@ -1168,6 +1169,43 @@ mod tests {
         assert!(pkg.change_items.is_empty(), "概要未取得は change_items 空");
         assert_eq!(pkg.old.as_deref(), Some("1.0"));
         assert_eq!(pkg.new.as_deref(), Some("1.1"));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_preserves_state_chain_for_lock_only_bump() -> Result<()> {
+        let dir = temp_dir("lock-only");
+        let old = write_nix(&dir, "old.json", "{}");
+        let new = write_nix(&dir, "new.json", "{}");
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let lock_old = dir.join("old-flake.lock");
+        let lock_new = dir.join("flake.lock");
+        std::fs::write(&lock_old, "old-lock").ok();
+        std::fs::write(&lock_new, "new-lock").ok();
+        let input = RecordInput {
+            lock_old: Some(&lock_old),
+            lock_new: Some(&lock_new),
+            nixpkgs_old: "same".to_string(),
+            nixpkgs_new: "same".to_string(),
+            ..input(&dir, &out, &registry, Some(&old), Some(&new))
+        };
+
+        run_record_with(
+            &input,
+            &FakeExtractor::new(),
+            &no_fetch_source,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+
+        let entries = read_entries(&out)?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].packages.is_empty());
+        assert_eq!(entries[0].state_old, lock_state_key(Some(&lock_old))?);
+        assert_eq!(entries[0].state_new, lock_state_key(Some(&lock_new))?);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -2026,6 +2064,56 @@ origin = \"none\"
             after.lookup("codex-app", DeltaSource::BrewTap),
             Some(&expected)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_version_only_skips_rewrite_when_nothing_changes() -> Result<()> {
+        let dir = temp_dir("backfill-noop");
+        let history = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let document = HistoryDocument {
+            updates: vec![UpdateEntry {
+                at: "2026-06-13T09:45:17Z".to_string(),
+                state_old: Some("lock-old".to_string()),
+                state_new: Some("lock-new".to_string()),
+                nixpkgs_old: "old".to_string(),
+                nixpkgs_new: "new".to_string(),
+                reference: "darwinConfigurations.ci-ref".to_string(),
+                severity: super::super::wire::Severity::None,
+                overall: "1アプリ更新".to_string(),
+                packages: vec![PackageUpdate {
+                    name: "codex-app".to_string(),
+                    old: Some("1.0.0".to_string()),
+                    new: Some("1.1.0".to_string()),
+                    change: super::super::wire::ChangeKind::Upgraded,
+                    declared: true,
+                    source: PackageSource::Brew,
+                    notes_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+                    change_items: vec![ChangeItem {
+                        category: super::super::wire::ChangeCategory::Feature,
+                        text: "変更".to_string(),
+                        ref_url: Some(
+                            "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
+                        ),
+                    }],
+                }],
+            }],
+        };
+        write_document(&history, &document)?;
+        let before_history = std::fs::read_to_string(&history)?;
+
+        run_backfill_version_only_with(
+            &history,
+            &registry,
+            &FakeExtractor::new(),
+            &|_| Ok(None),
+            &|_| Ok(None),
+        )?;
+
+        assert_eq!(std::fs::read_to_string(&history)?, before_history);
+        assert!(!registry.exists());
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
