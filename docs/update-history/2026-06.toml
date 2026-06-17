@@ -1426,3 +1426,119 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-06-17T19:50:01Z"
+cursor_old = "8eb04a0b42cffdf536e3a7fc364c6db42f738d5c"
+nixpkgs_old = "9eac87a12312b8f60dd52e1c6e1a265f6fc7f5fc"
+nixpkgs_new = "3e41b24abd260e8f71dbe2f5737d24122f972158"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "6アプリ更新: 🗑️1 ✨4 🐛5"
+
+[[update.package]]
+name = "cargo-deny"
+old = "0.19.8"
+new = "0.19.9"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/EmbarkStudios/cargo-deny/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`sources.unused-allowed-org` フィールドを追加"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/866"
+
+[[update.package.change_item]]
+category = "fix"
+text = "スレッドプールの制約が厳しい場合でも前進できるようにスコープ付きスレッドを直接生成する修正"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/870"
+
+[[update.package.change_item]]
+category = "fix"
+text = "自己依存するクレートのワイルドカードを無視する修正"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/871"
+
+[[update.package]]
+name = "firefox-bin"
+old = "151.0.4"
+new = "152.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0/releasenotes/"
+change_item = []
+
+[[update.package]]
+name = "ruff"
+old = "0.15.16"
+new = "0.15.17"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.15.17"
+
+[[update.package.change_item]]
+category = "feature"
+text = "抑制コメントに人間が読みやすい名前を許可する"
+ref = "https://github.com/astral-sh/ruff/pull/25614"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`disable`/`enable`ペア内の`ignore`コメントの処理を修正する"
+ref = "https://github.com/astral-sh/ruff/pull/25845"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`ruff:enable`または`ruff:disable`が`ruff:ignore`が期待される場所に出現した際の診断を修正する"
+ref = "https://github.com/astral-sh/ruff/pull/25700"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`ruff rule`でルール名を許可する"
+ref = "https://github.com/astral-sh/ruff/pull/25640"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`np.in1d`の自動修正を削除する"
+ref = "https://github.com/astral-sh/ruff/pull/25612"
+
+[[update.package]]
+name = "vscode"
+old = "1.123.0"
+new = "1.124.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_123"
+change_item = []
+
+[[update.package]]
+name = "codex-app"
+old = "26.609.71450"
+new = "26.611.62324"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "yubico-authenticator"
+old = "7.3.3"
+new = "7.4.0"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/Yubico/yubioath-flutter/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいアカウントアイコンのカスタマイズ機能を追加しました。"
+ref = "https://github.com/Yubico/yubioath-flutter/releases/tag/v7.4.0"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のデバイスでの認証の安定性を向上させるバグを修正しました。"
+ref = "https://github.com/Yubico/yubioath-flutter/releases/tag/v7.4.0"

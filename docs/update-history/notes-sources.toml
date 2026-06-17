@@ -11,6 +11,11 @@ source = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-12T19:19:16Z"
 
+["brew/yubico-authenticator"]
+source = "https://github.com/Yubico/yubioath-flutter/releases"
+origin = "ai-discovered"
+discovered_at = "2026-06-17T19:50:01Z"
+
 ["nix/atuin"]
 source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
@@ -31,7 +36,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/cargo-deny"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-17T19:50:01Z"
 
 ["nix/cargo-edit"]
 origin = "none"
@@ -88,7 +93,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-17T19:50:01Z"
 
 ["nix/fzf"]
 origin = "none"
@@ -165,7 +170,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-17T19:50:01Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
