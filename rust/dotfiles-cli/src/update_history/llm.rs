@@ -109,11 +109,8 @@ impl ExtractRequest {
     ) -> Self {
         let homepage = brew_homepage_hint
             .or_else(|| delta.homepage.clone())
-            .map(|url| normalize_hint_url(&url).unwrap_or(url));
-        let changelog = delta
-            .notes_source
-            .as_deref()
-            .map(|url| normalize_hint_url(url).unwrap_or_else(|| url.to_string()));
+            .and_then(|url| normalize_hint_url(&url));
+        let changelog = delta.notes_source.as_deref().and_then(normalize_hint_url);
         ExtractRequest {
             name: delta.name.clone(),
             old: delta.old.clone(),
@@ -127,7 +124,7 @@ impl ExtractRequest {
 }
 
 fn normalize_hint_url(url: &str) -> Option<String> {
-    super::wire::releases_url_from_github_url(url).or_else(|| Some(url.to_string()))
+    Some(super::wire::releases_url_from_github_url(url).unwrap_or_else(|| url.to_string()))
 }
 
 /// AI エージェント抽出の結果（構造化変更リスト + AI が採用した取得元 URL）。
@@ -916,6 +913,25 @@ mod tests {
         assert_eq!(
             request.changelog.as_deref(),
             Some("https://github.com/GoogleContainerTools/skaffold/releases")
+        );
+    }
+
+    #[test]
+    fn from_delta_preserves_non_github_hint_without_dead_fallback_paths() {
+        let delta = VersionDelta {
+            name: "nix".to_string(),
+            old: Some("2.34.6".to_string()),
+            new: Some("2.34.7".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            source: DeltaSource::NixEval,
+            repo: Some("NixOS/nix".to_string()),
+            notes_source: Some("https://nix.dev/manual/nix/2.34/release-notes/rl-2.34".to_string()),
+            homepage: Some("https://nixos.org/nix".to_string()),
+        };
+        let request = ExtractRequest::from_delta(&delta, None, None);
+        assert_eq!(
+            request.changelog.as_deref(),
+            Some("https://nix.dev/manual/nix/2.34/release-notes/rl-2.34")
         );
     }
 

@@ -494,7 +494,7 @@ fn major_minor_version_marker(version: &str) -> Option<&str> {
 }
 
 fn normalize_reusable_source_url(url: &str) -> Option<String> {
-    let normalized = url.split('#').next().unwrap_or(url).trim();
+    let normalized = url.split(['?', '#']).next().unwrap_or(url).trim();
     if normalized.is_empty() {
         None
     } else {
@@ -1879,6 +1879,19 @@ mod tests {
         assert_eq!(
             entry_of(Some("https://github.com/o/r"), NotesOrigin::None).reusable_source(),
             None
+        );
+    }
+
+    #[test]
+    fn normalize_reusable_source_url_drops_query_and_fragment() {
+        assert_eq!(
+            normalize_reusable_source_url("https://github.com/o/r/releases?after=v1.2.3")
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            normalize_reusable_source_url("https://github.com/o/r/releases#latest").as_deref(),
+            Some("https://github.com/o/r/releases")
         );
     }
 
