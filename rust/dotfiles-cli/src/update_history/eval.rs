@@ -242,9 +242,7 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
             github_release_tag_url("docker/compose", version).unwrap_or_default()
         }
         ("rustfmt", _) => rust_release_notes_url(version).unwrap_or_default(),
-        ("discord", "https://discordapp.com") => {
-            "https://discord.com/tags/patch-notes".to_string()
-        }
+        ("discord", "https://discordapp.com") => "https://discord.com/tags/patch-notes".to_string(),
         ("slack", "https://slack.com/intl/en-jp/downloads/mac")
         | ("slack", "https://slack.com") => "https://slack.com/release-notes/mac".to_string(),
         ("temurin-bin", "https://adoptium.net") => {
