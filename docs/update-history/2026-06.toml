@@ -1542,3 +1542,13 @@ ref = "https://github.com/Yubico/yubioath-flutter/releases/tag/v7.4.0"
 category = "fix"
 text = "特定のデバイスでの認証の安定性を向上させるバグを修正しました。"
 ref = "https://github.com/Yubico/yubioath-flutter/releases/tag/v7.4.0"
+
+[[update]]
+at = "2026-06-18T19:37:26Z"
+cursor_old = "aeb61cb5e6ed66fc1832d591c182a690862a15ec"
+nixpkgs_old = "3e41b24abd260e8f71dbe2f5737d24122f972158"
+nixpkgs_new = "3e41b24abd260e8f71dbe2f5737d24122f972158"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+package = []
