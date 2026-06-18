@@ -176,7 +176,7 @@ fn derive_repo(
 }
 
 fn repo_hint_for_package(name: &str, homepage: &str) -> String {
-    match (name, homepage) {
+    match (name, normalize_homepage(homepage)) {
         ("nix", "https://nixos.org/nix") => "NixOS/nix".to_string(),
         _ => String::new(),
     }
@@ -227,27 +227,27 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
     if !changelog.is_empty() {
         return changelog.to_string();
     }
-    match (name, homepage) {
-        ("coreutils", "https://www.gnu.org/software/coreutils/") => {
+    match (name, normalize_homepage(homepage)) {
+        ("coreutils", "https://www.gnu.org/software/coreutils") => {
             "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
         }
         ("nix", "https://nixos.org/nix") => nix_release_notes_url(version).unwrap_or_default(),
-        ("google-chrome", "https://www.google.com/chrome/browser/") => {
+        ("google-chrome", "https://www.google.com/chrome/browser") => {
             "https://chromereleases.googleblog.com/".to_string()
         }
-        ("chromedriver", "https://chromedriver.chromium.org/") => {
+        ("chromedriver", "https://chromedriver.chromium.org") => {
             chrome_releases_search_url(version).unwrap_or_default()
         }
         ("docker-compose", _) => {
             github_release_tag_url("docker/compose", version).unwrap_or_default()
         }
         ("rustfmt", _) => rust_release_notes_url(version).unwrap_or_default(),
-        ("discord", "https://discordapp.com/") => {
+        ("discord", "https://discordapp.com") => {
             "https://discord.com/tags/patch-notes".to_string()
         }
         ("slack", "https://slack.com/intl/en-jp/downloads/mac")
         | ("slack", "https://slack.com") => "https://slack.com/release-notes/mac".to_string(),
-        ("temurin-bin", "https://adoptium.net/") => {
+        ("temurin-bin", "https://adoptium.net") => {
             "https://adoptium.net/temurin/release-notes".to_string()
         }
         _ => String::new(),
@@ -256,6 +256,10 @@ fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &s
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn normalize_homepage(homepage: &str) -> &str {
+    homepage.trim_end_matches('/')
 }
 
 /// `serde_json::Value` を文字列へ正規化する（文字列はそのまま、list/null/非文字列は空文字）。
@@ -534,6 +538,26 @@ mod tests {
             "https://nix.dev/manual/nix/2.34/release-notes/rl-2.34"
         );
         assert_eq!(package.homepage, "https://nixos.org/nix");
+    }
+
+    #[test]
+    fn derive_package_adds_nix_fallbacks_for_trailing_slash_homepage() {
+        let raw = RawPackage {
+            version: "2.34.7+1".to_string(),
+            homepage: serde_json::json!("https://nixos.org/nix/"),
+            changelog: serde_json::Value::Null,
+            src_owner: serde_json::Value::Null,
+            src_repo: serde_json::Value::Null,
+            src_url: serde_json::Value::Null,
+            src_urls: serde_json::Value::Null,
+        };
+        let package = derive_package("nix", raw);
+        assert_eq!(package.repo, "NixOS/nix");
+        assert_eq!(
+            package.notes_source,
+            "https://nix.dev/manual/nix/2.34/release-notes/rl-2.34"
+        );
+        assert_eq!(package.homepage, "https://nixos.org/nix/");
     }
 
     #[test]

@@ -52,7 +52,11 @@ pub(crate) fn repo_from_github_url(url: &str) -> Option<String> {
 /// GitHub release/tag/download URL から、版非依存な `.../releases` ヒント URL を導出する。
 pub(crate) fn releases_url_from_github_url(url: &str) -> Option<String> {
     let (owner, repo, tail) = parse_github_repo_url(url)?;
-    let tail = tail.split(['?', '#']).next().unwrap_or(tail);
+    let tail = tail
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(tail)
+        .trim_end_matches('/');
     if tail == "releases"
         || tail == "releases/latest"
         || tail.starts_with("releases/tag/")
@@ -627,6 +631,10 @@ declared = true
     fn releases_url_from_github_url_normalizes_release_variants_only() {
         assert_eq!(
             releases_url_from_github_url("https://github.com/o/r/releases").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/").as_deref(),
             Some("https://github.com/o/r/releases")
         );
         assert_eq!(
