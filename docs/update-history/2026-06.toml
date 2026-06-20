@@ -1571,3 +1571,22 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-06-20T19:24:40Z"
+cursor_old = "0050f3c4969a4b2134c5e6e3a9ede588ce5fda6b"
+nixpkgs_old = "3e41b24abd260e8f71dbe2f5737d24122f972158"
+nixpkgs_new = "3e41b24abd260e8f71dbe2f5737d24122f972158"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "codex-app"
+old = "26.616.32156"
+new = "26.616.41845"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
