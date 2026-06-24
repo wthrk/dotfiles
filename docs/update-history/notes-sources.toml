@@ -44,7 +44,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/chromedriver"]
 origin = "none"
-discovered_at = "2026-06-14T19:13:04Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/clippy"]
 source = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
@@ -69,7 +69,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/discord"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/docker"]
 origin = "none"
@@ -85,7 +85,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/eslint"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/ffmpeg"]
 origin = "none"
@@ -93,7 +93,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-06-17T19:50:01Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/fzf"]
 origin = "none"
@@ -101,7 +101,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/git"]
 origin = "none"
@@ -118,7 +118,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/google-chrome"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/iterm2"]
 source = "https://github.com/gnachman/iTerm2/releases"
@@ -134,6 +134,10 @@ source = "https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGEL
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/markdownlint-cli"]
+origin = "none"
+discovered_at = "2026-06-24T19:32:43Z"
+
 ["nix/neovim"]
 origin = "none"
 discovered_at = "2026-06-12T19:19:16Z"
@@ -144,7 +148,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/nodejs"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/opam"]
 source = "https://opam.ocaml.org/blog/opam-2-5-1/"
@@ -209,7 +213,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/vips"]
 origin = "none"
@@ -235,7 +239,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/zsh"]
 source = "https://zsh.sourceforge.io/releases.html"
