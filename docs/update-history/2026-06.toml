@@ -1946,3 +1946,13 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-06-25T19:45:03Z"
+cursor_old = "ed7e523b17449b5e77b70d31033751fa55939c61"
+nixpkgs_old = "89570f24e97e614aa34aa9ab1c927b6578a43775"
+nixpkgs_new = "89570f24e97e614aa34aa9ab1c927b6578a43775"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+package = []
