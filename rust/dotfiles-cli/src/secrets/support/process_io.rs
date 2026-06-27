@@ -361,7 +361,7 @@ mod tests {
     //! 非秘匿 1 行読み取りの行末処理と、秘匿入力 paste 経路を byte reader で検証する。
 
     #[cfg(not(feature = "secrets-internal-test-stub"))]
-    use std::io::{self, Read};
+    use std::io::{self, IsTerminal, Read, Write};
     #[cfg(not(feature = "secrets-internal-test-stub"))]
     use std::time::{Duration, Instant};
 
@@ -377,6 +377,7 @@ mod tests {
     #[cfg(not(feature = "secrets-internal-test-stub"))]
     use super::{
         BRACKETED_PASTE_END, BRACKETED_PASTE_START, read_hidden_line, read_hidden_line_from,
+        write_secret_stdout_with,
     };
 
     const TOO_LONG: &str = "input too long";
@@ -727,6 +728,88 @@ mod tests {
         }
 
         assert_hidden_too_long(read_hidden_line("hidden-test: ", 4, TOO_LONG));
+        Ok(())
+    }
+
+    /// stdout が PTY terminal の子プロセスで、`write_secret_stdout_with` が平文出力を拒否する境界を実行する。
+    ///
+    /// integration test は piped stdout（非 terminal）で成功側だけを通すため、terminal 拒否側を
+    /// 実 terminal 上で一度実行する。子プロセスの PTY 出力に secret fixture が現れないことで、
+    /// 拒否境界が writer を実行する前に停止することも確認する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn pty_write_secret_stdout_rejects_terminal() -> Result<()> {
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut command = CommandBuilder::new(std::env::current_exe()?);
+        command.args([
+            "--exact",
+            "secrets::support::process_io::tests::pty_write_secret_child_rejects_terminal",
+            "--nocapture",
+        ]);
+        command.env(PTY_CHILD_ENV, "1");
+        let mut child = pair.slave.spawn_command(command)?;
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader()?;
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output)?;
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            !text.contains("terminal-rejected-secret"),
+            "terminal-rejected path must not emit secret material to the terminal"
+        );
+
+        let status = child.wait()?;
+        assert!(
+            status.success(),
+            "PTY terminal-rejection child test failed: {status}"
+        );
+        Ok(())
+    }
+
+    /// `pty_write_secret_stdout_rejects_terminal` の子プロセス側で terminal 拒否分岐を実行する。
+    ///
+    /// stdout が PTY slave に接続され terminal とみなされる前提で、`write_secret_stdout_with` が
+    /// 固定メッセージで失敗し、secret writer を一度も実行しないことを検証する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
+    #[test]
+    fn pty_write_secret_child_rejects_terminal() -> Result<()> {
+        if std::env::var_os(PTY_CHILD_ENV).is_none() {
+            return Ok(());
+        }
+
+        assert!(
+            io::stdout().is_terminal(),
+            "PTY child stdout must be a terminal for this assertion"
+        );
+
+        let mut writer_invoked = false;
+        let result = write_secret_stdout_with(|stdout| {
+            writer_invoked = true;
+            stdout.write_all(b"terminal-rejected-secret")?;
+            Ok(())
+        });
+
+        let error = match result {
+            Ok(()) => panic!("write_secret_stdout_with must reject terminal stdout"),
+            Err(error) => error,
+        };
+        assert!(
+            !writer_invoked,
+            "secret writer must not run when stdout is a terminal"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to write secret to terminal"),
+            "terminal rejection must use the fixed refusal message"
+        );
         Ok(())
     }
 }

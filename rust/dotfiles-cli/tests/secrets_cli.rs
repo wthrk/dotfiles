@@ -212,6 +212,29 @@ fn yubikey_get_rejects_unknown_secret_name_without_echoing_input() -> TestResult
 }
 
 #[test]
+/// `yubikey get` の成功経路が seeded secret を非 terminal/piped stdout へ平文出力することを real binary で固定する。
+fn yubikey_get_writes_seeded_secret_to_piped_stdout() -> TestResult<()> {
+    let output = dotfiles_with_env(
+        ["secrets", "yubikey", "get", "bitwarden-client-id"],
+        [(
+            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
+            r#"{"yubikeys":[{"serial":1000,"fixture":"seeded","bitwarden-client-id":"get-success-stdout-fixture","bitwarden-client-secret":"unused-get-secret"}]}"#.to_owned(),
+        )],
+    )?;
+
+    assert!(
+        output.status.success(),
+        "yubikey get should output the seeded secret over piped (non-terminal) stdout"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("get-success-stdout-fixture"),
+        "get success path must write the loaded secret to non-terminal stdout"
+    );
+    Ok(())
+}
+
+#[test]
 /// 削除済み `bw-login` command が clap 境界で拒否されることを固定する。
 fn bw_login_command_is_removed() -> TestResult<()> {
     let output = dotfiles(["secrets", "bw-login"])?;
@@ -717,7 +740,8 @@ fn restore_pass_rejects_invalid_remote_without_cloning_or_exposing_url() -> Test
     Ok(())
 }
 
-/// `enroll-primary` は binary 経路で input port 由来の 2 bootstrap secret だけを保存する。
+/// `enroll-primary` は binary 経路で input port 由来の 2 bootstrap secret だけを保存し、
+/// init で生成した slot 公開鍵を store の seal まで引き回した（Some 経路）ことを観測で固定する。
 #[test]
 fn enroll_primary_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult<()> {
     let output = dotfiles_with_env(
@@ -737,6 +761,13 @@ fn enroll_primary_stores_only_bootstrap_secrets_with_internal_stub() -> TestResu
         text.contains(r#""bitwarden-client-id":"<redacted>""#)
             && text.contains(r#""bitwarden-client-secret":"<redacted>""#),
         "YubiKey observation should contain only redacted bootstrap secret names"
+    );
+    assert!(
+        text.contains(
+            r#""sealed_with_generated_key":{"bitwarden-client-id":"stub-generated-public-key-1000","bitwarden-client-secret":"stub-generated-public-key-1000"}"#
+        ),
+        "store must seal both bootstrap secrets with the slot public key generated during init \
+         (init generate_key Some -> adapter capture -> store seal carry-through)"
     );
     assert_no_leaks(
         &text,
@@ -788,7 +819,8 @@ fn enroll_primary_rejects_multiple_yubikeys_before_secret_input() -> TestResult<
 }
 
 #[test]
-/// `enroll-spare` が input port 由来の 2 secret だけを YubiKey storage に保存することを検証する。
+/// `enroll-spare` が input port 由来の 2 secret だけを YubiKey storage に保存し、
+/// init で生成した slot 公開鍵を store の seal まで引き回した（Some 経路）ことを観測で固定する。
 fn enroll_spare_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult<()> {
     let output = dotfiles_with_env(
         ["secrets", "yubikey", "enroll-spare"],
@@ -808,6 +840,13 @@ fn enroll_spare_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult
             && text.contains(r#""bitwarden-client-secret":"<redacted>""#),
         "YubiKey observation should contain only redacted bootstrap secret names"
     );
+    assert!(
+        text.contains(
+            r#""sealed_with_generated_key":{"bitwarden-client-id":"stub-generated-public-key-1001","bitwarden-client-secret":"stub-generated-public-key-1001"}"#
+        ),
+        "store must seal both bootstrap secrets with the slot public key generated during init \
+         (init generate_key Some -> adapter capture -> store seal carry-through)"
+    );
     assert_no_leaks(
         &text,
         "enroll-spare output",
@@ -818,6 +857,41 @@ fn enroll_spare_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult
             ("removed token name", "bws-access-token"),
             ("vault remote item name", "password-store-remote"),
             ("vault backup item name", "gpg-secret-key-backup"),
+        ],
+    );
+    Ok(())
+}
+
+/// `enroll-spare` は鍵生成に PIN を要するのに供給できない場合、鍵生成前に fail-closed する。
+///
+/// production `StorageAdapter::initialize_secret_storage` の「PIN 未検証なら鍵生成しない」経路を
+/// internal backend stub（`requires_pin` 初期条件）経由で網羅し、device 肩代わり double を
+/// production adapter へ戻さずに同等の挙動網羅を保つ。
+#[test]
+fn enroll_spare_fails_closed_when_key_generation_requires_pin() -> TestResult<()> {
+    let output = dotfiles_with_env(
+        ["secrets", "yubikey", "enroll-spare"],
+        [(
+            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
+            r#"{"yubikeys":[{"serial":1001,"fixture":"fresh"}],"requires_pin":true}"#.to_owned(),
+        )],
+    )?;
+
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "enroll-spare must fail closed when key generation requires an unavailable PIN"
+    );
+    assert!(
+        text.contains("PIN is required to generate the YubiKey secret storage key"),
+        "fail-closed error must explain that key generation needs a verified PIN"
+    );
+    assert_no_leaks(
+        &text,
+        "enroll-spare fail-closed output",
+        &[
+            ("account API client id", "stub-client-id"),
+            ("account API client secret", "stub-client-secret"),
         ],
     );
     Ok(())
