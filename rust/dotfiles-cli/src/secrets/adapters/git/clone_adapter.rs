@@ -15,15 +15,19 @@
 //! 定義する SSH agent 認証 clone と `application/run_restore_pass.rs` 参照）。`Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の
 //! 特定 identity を選んで提示する API を持たないが、本 adapter の安全境界は (1) strict な gpg-agent socket 解決
 //! （`resolve_gpg_agent_socket`。通常の `ssh-agent` や `~/.ssh/id_ed25519` 等へ fallback しない）で提示元を
-//! gpg-agent の SSH socket に限定すること、(2) `certificate_check` による GitHub host key の pin 照合で接続先を
-//! `github.com` に固定すること、の 2 点に閉じる。identity 事前検証や single-key 担保はここでは行わない。clone URL
-//! の妥当性判断は domain（`PasswordStoreRemote`）に委ねる。
+//! gpg-agent の SSH socket に限定すること、(2) libgit2/libssh2 の通常の SSH host key 検証を使い、その検証が
+//! 失敗した場合にだけ `certificate_check` callback で GitHub 公表 host key pin を追加照合すること、の 2 点に
+//! 閉じる。`RemoteCallbacks::certificate_check` は git2/libgit2 の documented contract 上「証明書/host key 検証が
+//! 失敗したときだけ」呼ばれるため、この adapter は毎回 raw host key pin を再検証する保証は持たない。既定検証に
+//! 成功した接続の trust decision は libgit2/libssh2 側に委ねられ、この adapter の pin 集合は参照されない。
+//! identity 事前検証や single-key 担保はここでは行わない。clone URL の妥当性判断は domain
+//! （`PasswordStoreRemote`）に委ねる。
 //!
 //! host key 検証: 新規マシンでは `~/.ssh/known_hosts` に `github.com` の host key が無いのが通常であり、
-//! credentials だけでは MITM を防げない。`RemoteCallbacks::certificate_check` で、接続先 hostname が
-//! `github.com` であり、libssh2 が提示する SSH host key の raw bytes が GitHub 公表の既知 host key
-//! （Ed25519 / ECDSA / RSA の公開鍵）と byte 一致することを検証し、一致しなければ clone を停止する。
-//! GitHub 公表鍵は出典コメント付きの定数 [`GITHUB_SSH_HOST_KEYS`] として pin する。
+//! credentials だけでは MITM を防げない。そこで `RemoteCallbacks::certificate_check` が呼ばれた失敗経路では、
+//! 接続先 hostname が `github.com` であり、libssh2 が提示する SSH host key の raw bytes が GitHub 公表の既知
+//! host key（Ed25519 / ECDSA / RSA の公開鍵）と byte 一致する場合にだけ接続継続を許可し、それ以外は clone を
+//! 停止する。GitHub 公表鍵は出典コメント付きの定数 [`GITHUB_SSH_HOST_KEYS`] として pin する。
 
 use std::{error::Error, fmt};
 
@@ -49,9 +53,10 @@ const GITHUB_HOST: &str = "github.com";
 ///
 /// 出典: GitHub `https://api.github.com/meta` の `ssh_keys`（および GitHub docs
 /// "GitHub's SSH key fingerprints"）。2026-06-01 時点の公表値。各要素の 2 番目フィールド（base64 本体）は
-/// libssh2 が `CertHostkey::hostkey()` で返す raw host key bytes を base64 化したものと一致する。新規マシンで
-/// `known_hosts` に依存せず host を pin するためにこの定数で照合し、一致しなければ clone を停止する（MITM 防止）。
-/// `hostkey_type()` の OpenSSH 名（`name()`）と本 base64 の type prefix を併せて照合し、type と鍵の両方一致を要求する。
+/// libssh2 が `CertHostkey::hostkey()` で返す raw host key bytes を base64 化したものと一致する。
+/// `RemoteCallbacks::certificate_check` が呼ばれた失敗経路でだけこの定数と照合し、一致した場合に限って GitHub
+/// host key を追加許可する。`hostkey_type()` の OpenSSH 名（`name()`）と本 base64 の type prefix を併せて
+/// 照合し、type と鍵の両方一致を要求する。
 const GITHUB_SSH_HOST_KEYS: [&str; 3] = [
     // ssh-ed25519
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
@@ -117,12 +122,13 @@ impl GitCloneAdapter {
                 ))
             }
         });
-        // host key 検証: 新規マシンでは `known_hosts` に github.com が無いのが通常のため、GitHub 公表 host key
-        // との byte 一致で host を pin する。hostname が github.com でない、host key を取得できない、または
-        // pin 鍵と一致しない場合は MITM の可能性として clone を停止する（`CertificatePassthrough` で
-        // known_hosts へ委譲しない）。
+        // `certificate_check` は git2/libgit2 の contract 上、既定の証明書/host key 検証が失敗した場合にだけ
+        // 呼ばれる。そのためここは「常時 pinning」ではなく、new machine で `known_hosts` が未整備な場合などに
+        // GitHub 公表 host key pin で継続可否を決める失敗時 fallback である。既定検証に成功した接続はこの
+        // callback を経由せず libgit2/libssh2 の判定で進む。hostname が github.com でない、host key を取得
+        // できない、または pin 鍵と一致しない場合は MITM の可能性として clone を停止する。
         callbacks.certificate_check(|cert, hostname| {
-            match verify_github_host_key(cert, hostname) {
+            match allow_pinned_github_host_key_after_failed_verification(cert, hostname) {
                 Ok(()) => Ok(CertificateCheckStatus::CertificateOk),
                 Err(message) => Err(git2::Error::from_str(&message)),
             }
@@ -192,12 +198,17 @@ impl fmt::Display for RedactedGitCloneError {
 
 impl Error for RedactedGitCloneError {}
 
-/// 接続先 host が `github.com` であり、提示された SSH host key が GitHub 公表の pin 鍵と一致するかを検証する。
+/// `certificate_check` から、既定の host key 検証が失敗した接続だけを GitHub pin で追加判定する。
 ///
-/// hostname が `github.com` でない、提示された証明書が SSH host key でない、libssh2 が raw host key を返さない、
-/// または key type / raw bytes が pin（[`GITHUB_SSH_HOST_KEYS`]）のいずれとも一致しない場合は、MITM の可能性
-/// として `Err(message)` を返し clone を停止させる。一致した場合だけ `Ok(())` を返す。`known_hosts` へは委譲しない。
-fn verify_github_host_key(cert: &Cert<'_>, hostname: &str) -> std::result::Result<(), String> {
+/// `RemoteCallbacks::certificate_check` は成功済み接続には呼ばれないため、この関数は常時 pinning を提供しない。
+/// 既定検証に成功した接続はこの関数へ来ず、その trust decision は libgit2/libssh2 側に委ねられる。hostname
+/// が `github.com` でない、提示された証明書が SSH host key でない、libssh2 が raw host key を返さない、または
+/// key type / raw bytes が pin（[`GITHUB_SSH_HOST_KEYS`]）のいずれとも一致しない場合は、MITM の可能性として
+/// `Err(message)` を返し clone を停止させる。一致した場合だけ `Ok(())` を返す。
+fn allow_pinned_github_host_key_after_failed_verification(
+    cert: &Cert<'_>,
+    hostname: &str,
+) -> std::result::Result<(), String> {
     if hostname != GITHUB_HOST {
         return Err(format!(
             "refusing to clone: unexpected SSH host '{hostname}', only {GITHUB_HOST} is allowed"
