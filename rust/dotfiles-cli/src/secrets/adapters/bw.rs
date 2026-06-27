@@ -18,7 +18,11 @@ use bitwarden_api_api::models::{CipherCreateRequestModel, CipherRequestModel};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden_crypto::{KeyDecryptable, KeyEncryptable, SymmetricCryptoKey};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use bitwarden_vault::{CipherRepromptType, CipherType, CipherView, ClientVaultExt, SyncRequest};
+use bitwarden_vault::{
+    Cipher, CipherRepromptType, CipherType, CipherView, ClientVaultExt, SyncRequest,
+};
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use uuid::Uuid;
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::{
@@ -65,6 +69,11 @@ impl VaultClientPort for VaultClientAdapter {
         let item = SdkPersonalVaultBackend
             .fetch(credentials, secret_id.as_str())
             .await?;
+        if item.value.is_empty() {
+            return Err(
+                missing_data("Bitwarden personal vault secure note value is missing").into(),
+            );
+        }
         GpgBackupEnvelope::from_json(item.value.as_bytes())
     }
 
@@ -76,6 +85,11 @@ impl VaultClientPort for VaultClientAdapter {
         let item = SdkPersonalVaultBackend
             .fetch(credentials, secret_id.as_str())
             .await?;
+        if item.value.is_empty() {
+            return Err(
+                missing_data("Bitwarden personal vault secure note value is missing").into(),
+            );
+        }
         PasswordStoreRemote::parse(item.value.as_str())
     }
 
@@ -148,19 +162,7 @@ impl PersonalVaultBackend for SdkPersonalVaultBackend {
         credentials: &'a BitwardenVaultCredentials,
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<PersonalVaultItem>> + 'a>> {
-        Box::pin(async move {
-            load_personal_vault_items(credentials)
-                .await?
-                .into_iter()
-                .find(|item| item.id == id)
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "Bitwarden personal vault item not found",
-                    )
-                    .into()
-                })
-        })
+        Box::pin(async move { load_personal_vault_item(credentials, id).await })
     }
 
     fn create<'a>(
@@ -199,20 +201,79 @@ async fn load_personal_vault_items(
     sync.ciphers
         .into_iter()
         .filter(|cipher| cipher.deleted_date.is_none())
-        .map(|cipher| {
-            let view: CipherView = cipher
-                .decrypt_with_key(&user_key)
-                .context("Bitwarden personal vault item decrypt failed")?;
-            Ok(PersonalVaultItem {
-                id: view
-                    .id
-                    .map(|id| id.to_string())
-                    .ok_or_else(|| missing_data("Bitwarden personal vault item ID is missing"))?,
-                name: view.name,
-                value: view.notes.unwrap_or_default(),
-            })
-        })
+        .map(|cipher| personal_vault_item_from_cipher(cipher, &user_key))
+        .filter_map(filter_secure_note_item)
         .collect()
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+async fn load_personal_vault_item(
+    credentials: &BitwardenVaultCredentials,
+    id: &str,
+) -> Result<PersonalVaultItem> {
+    let client = bitwarden_account_api::authenticate_with_account_api_key(
+        credentials.api_key().client_id(),
+        credentials.api_key().client_secret(),
+        credentials.master_password(),
+    )
+    .await?;
+    let user_key = SymmetricCryptoKey::try_from(client.crypto().get_user_encryption_key().await?)
+        .context("Bitwarden personal vault user key could not be loaded")?;
+    let id = id
+        .parse::<Uuid>()
+        .context("Bitwarden personal vault item ID is not a valid UUID")?;
+    let configuration = client.internal.get_api_configurations().await;
+    let cipher = ciphers_api::ciphers_id_details_get(&configuration.api, id)
+        .await
+        .context("Bitwarden personal vault item fetch failed")?;
+    let cipher: Cipher = cipher
+        .try_into()
+        .context("Bitwarden personal vault item response parse failed")?;
+    if cipher.deleted_date.is_some() {
+        anyhow::bail!("Bitwarden personal vault item not found");
+    }
+    match personal_vault_item_from_cipher(cipher, &user_key)? {
+        Some(item) => Ok(item),
+        None => Err(missing_data("Bitwarden personal vault item is not a secure note").into()),
+    }
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn personal_vault_item_from_cipher(
+    cipher: Cipher,
+    user_key: &SymmetricCryptoKey,
+) -> Result<Option<PersonalVaultItem>> {
+    if !matches!(cipher.r#type, CipherType::SecureNote) {
+        return Ok(None);
+    }
+    let view: CipherView = cipher
+        .decrypt_with_key(user_key)
+        .context("Bitwarden personal vault item decrypt failed")?;
+    if view.name.is_empty() {
+        return Err(missing_data("Bitwarden personal vault secure note name is missing").into());
+    }
+    if cipher.notes.is_some() && view.notes.is_none() {
+        anyhow::bail!("Bitwarden personal vault secure note value decrypt failed");
+    }
+    Ok(Some(PersonalVaultItem {
+        id: view
+            .id
+            .map(|id| id.to_string())
+            .ok_or_else(|| missing_data("Bitwarden personal vault item ID is missing"))?,
+        name: view.name,
+        value: view.notes.unwrap_or_default(),
+    }))
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn filter_secure_note_item(
+    item: Result<Option<PersonalVaultItem>>,
+) -> Option<Result<PersonalVaultItem>> {
+    match item {
+        Ok(Some(item)) => Some(Ok(item)),
+        Ok(None) => None,
+        Err(err) => Some(Err(err)),
+    }
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -283,14 +344,118 @@ fn missing_data(message: &'static str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "secrets-internal-test-stub")))]
 /// Bitwarden 個人 vault adapter の inline unit test。
 mod tests {
-    use super::VaultClientAdapter;
+    use bitwarden_crypto::{KeyEncryptable, SymmetricCryptoKey};
+    use bitwarden_vault::{Cipher, CipherRepromptType, CipherType, CipherView};
+
+    use super::{VaultClientAdapter, personal_vault_item_from_cipher};
+
+    fn sample_user_key() -> SymmetricCryptoKey {
+        match "w2LO+nwV4oxwswVYCxlOfRUseXfvU03VzvKQHrqeklPgiMZrspUe6sOBToCnDn9Ay0tuCBn8ykVVRb7PWhub2Q=="
+            .to_string()
+            .try_into()
+        {
+            Ok(key) => key,
+            Err(_) => panic!("sample user key constant must be a valid SymmetricCryptoKey"),
+        }
+    }
+
+    fn alternate_user_key() -> SymmetricCryptoKey {
+        match "u4LO+nwV4oxwswVYCxlOfRUseXfvU03VzvKQHrqeklPgiMZrspUe6sOBToCnDn9Ay0tuCBn8ykVVRb7PWhub2Q=="
+            .to_string()
+            .try_into()
+        {
+            Ok(key) => key,
+            Err(_) => panic!("alternate user key constant must be a valid SymmetricCryptoKey"),
+        }
+    }
+
+    fn secure_note_view(name: &str, value: &str) -> CipherView {
+        let now = chrono::Utc::now();
+        CipherView {
+            id: Some(uuid::Uuid::new_v4()),
+            organization_id: None,
+            folder_id: None,
+            collection_ids: Vec::new(),
+            key: None,
+            name: name.to_owned(),
+            notes: Some(value.to_owned()),
+            r#type: CipherType::SecureNote,
+            login: None,
+            identity: None,
+            card: None,
+            secure_note: None,
+            favorite: false,
+            reprompt: CipherRepromptType::None,
+            organization_use_totp: false,
+            edit: true,
+            view_password: true,
+            local_data: None,
+            attachments: None,
+            fields: None,
+            password_history: None,
+            creation_date: now,
+            deleted_date: None,
+            revision_date: now,
+        }
+    }
 
     /// adapter の default 構築が runtime 状態や外部接続を開始しないことを確認する。
     #[test]
     fn adapter_constructs_with_default() {
         let _ = VaultClientAdapter;
+    }
+
+    #[test]
+    fn personal_vault_item_ignores_non_secure_note() {
+        let key = sample_user_key();
+        let mut view = secure_note_view("name", "value");
+        view.r#type = CipherType::Login;
+        let cipher = view.encrypt_with_key(&key).expect("encrypt cipher");
+
+        let item = personal_vault_item_from_cipher(cipher, &key).expect("convert item");
+
+        assert!(item.is_none());
+    }
+
+    #[test]
+    fn personal_vault_item_returns_secure_note_value() {
+        let key = sample_user_key();
+        let cipher = secure_note_view("backup", "{\"k\":\"v\"}")
+            .encrypt_with_key(&key)
+            .expect("encrypt cipher");
+
+        let item = personal_vault_item_from_cipher(cipher, &key)
+            .expect("convert item")
+            .expect("secure note item");
+
+        assert_eq!(item.name, "backup");
+        assert_eq!(item.value, "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn personal_vault_item_rejects_note_decrypt_failure() {
+        let key = sample_user_key();
+        let alternate_key = alternate_user_key();
+        let mut cipher: Cipher = secure_note_view("backup", "{\"k\":\"v\"}")
+            .encrypt_with_key(&key)
+            .expect("encrypt cipher");
+        cipher.notes = secure_note_view("backup", "{\"k\":\"v2\"}")
+            .encrypt_with_key(&alternate_key)
+            .expect("encrypt cipher with alternate key")
+            .notes;
+
+        let error: anyhow::Error = match personal_vault_item_from_cipher(cipher, &key) {
+            Ok(_) => panic!("decrypt should fail"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("Bitwarden personal vault secure note value decrypt failed")
+        );
     }
 }

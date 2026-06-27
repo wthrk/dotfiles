@@ -71,7 +71,7 @@ impl SshAgentPort for SshAgentAdapter {
         // 停止させる（識別不能を「識別可能」へ倒さない）。復元鍵と無関係な既存 identity の
         // 有無は観測しない。
         let recovery_identity_present = match socket {
-            Some(path) => inspect_agent_identities(&path, expected_public_key).unwrap_or(false),
+            Some(path) => inspect_agent_identities(&path, expected_public_key)?,
             None => false,
         };
         Ok(SshAgentReadiness {
