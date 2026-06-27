@@ -391,7 +391,6 @@ run_script_with_repo_head_env_value() {
 }
 
 run_script single >"$tmpdir/single.out" 2>"$tmpdir/single.err"
-grep -q "後続 gate: この script と enroll-spare の後" "$tmpdir/single.out"
 grep -q "この script は gpg-secret-key-backup envelope を作成・投入・照合しません" "$tmpdir/single.out"
 grep -q 'pass-init:Test User <test@example.invalid>' "$log"
 grep -q '^dotfiles:gpg export-ssh-public-key$' "$log"

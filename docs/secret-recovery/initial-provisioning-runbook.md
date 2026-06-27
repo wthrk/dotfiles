@@ -9,6 +9,8 @@ source machine script で primary YubiKey と password-store remote を登録し
 ```sh
 bash scripts/provision-secret-recovery-source.sh
 dotfiles secrets yubikey enroll-spare
+# 手動ステップ（必須・CLI 経路なし）: 下記「`gpg-secret-key-backup` envelope 投入手順」を完了してから次へ進む。
+# 個人 Bitwarden vault に 2 recipient 以上の encrypted envelope を投入していない場合、次の register は停止する。
 dotfiles secrets gpg-backup register
 dotfiles secrets verify-yubikey --all
 ```

@@ -91,7 +91,6 @@ else
   require dotfiles
 fi
 
-warn "後続 gate: この script と enroll-spare の後、個人 Bitwarden vault item 'gpg-secret-key-backup' に 2 recipient 以上の encrypted envelope を投入し、dotfiles secrets gpg-backup register で監査してください。"
 
 run_dotfiles() {
   local status
@@ -116,7 +115,7 @@ run_dotfiles() {
 
 preflight_github_ssh_key_scope() {
   gh api user/keys --paginate --jq 'length' >/dev/null 2>&1 \
-    || die "GitHub SSH public key API の事前確認に失敗しました。gh の active account に admin:public_key scope が必要です: gh auth refresh -h github.com -s admin:public_key"
+    || die "GitHub SSH public key API の事前確認に失敗しました。gh の active account には classic token なら read:public_key scope、fine-grained token なら Git SSH keys: read permission が必要です。classic token の更新例: gh auth refresh -h github.com -s read:public_key"
 }
 
 GH_LOGIN="$(gh api user --jq .login 2>/dev/null)" \
