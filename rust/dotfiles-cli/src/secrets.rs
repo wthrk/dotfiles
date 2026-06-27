@@ -219,9 +219,9 @@ pub(crate) fn run_gpg(options: GpgOptions) -> Result<()> {
 
 /// production command path の composition root が所有する実 adapter 群。
 pub(in crate::secrets) struct RuntimePorts {
+    /// serial 解決と PIN 方針を 1 つの device adapter に持たせ、`YubiKeyDevicePort` として
+    /// 両 capability を要求する use case へ単一 `&mut` で渡す。物理 device は 1 つであり、別インスタンスを設けない。
     pub(in crate::secrets) device: adapters::DeviceSelectionAdapter,
-    pub(in crate::secrets) spare_device: adapters::DeviceSelectionAdapter,
-    pub(in crate::secrets) device_pin_policy: adapters::DeviceSelectionAdapter,
     pub(in crate::secrets) process_io: adapters::ProcessIoAdapter,
     pub(in crate::secrets) storage: adapters::StorageAdapter,
     pub(in crate::secrets) report: adapters::JsonReportAdapter,
@@ -239,8 +239,6 @@ impl RuntimePorts {
     fn production() -> Self {
         Self {
             device: adapters::DeviceSelectionAdapter::default(),
-            spare_device: adapters::DeviceSelectionAdapter::default(),
-            device_pin_policy: adapters::DeviceSelectionAdapter::default(),
             process_io: adapters::ProcessIoAdapter::default(),
             storage: adapters::StorageAdapter::default(),
             report: adapters::JsonReportAdapter::default(),

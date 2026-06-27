@@ -19,8 +19,7 @@ use crate::secrets::{
 
 /// `run_provision_password_store_remote` が使う外部 capability を named field で束ねる。
 pub(crate) struct ProvisionPasswordStoreRemoteRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::yubikey::DeviceSerialPort,
-    pub(crate) pin_policy: &'a mut dyn ports::yubikey::DevicePinPolicyPort,
+    pub(crate) device: &'a mut dyn ports::yubikey::YubiKeyDevicePort,
     pub(crate) pin_input: &'a dyn ports::io::PinInputPort,
     pub(crate) secret_input: &'a dyn ports::io::SecretInputPort,
     pub(crate) storage: &'a mut dyn ports::yubikey::SecretStoragePort,
@@ -62,7 +61,6 @@ where
 {
     let ProvisionPasswordStoreRemoteRuntime {
         device,
-        pin_policy,
         pin_input,
         secret_input,
         storage,
@@ -72,7 +70,7 @@ where
     } = runtime;
     let _ = command;
     let serial = device.resolve_device_serial()?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let pin = if device.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -233,14 +231,13 @@ mod tests {
     -> crate::Result<()> {
         let serial = 7001;
         let mut sequence = mockall::Sequence::new();
-        let mut device = ports::yubikey::MockDeviceSerialPort::new();
+        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(move || Ok(serial));
-        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
-        pin_policy
+        device
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
@@ -299,7 +296,6 @@ mod tests {
             ProvisionPasswordStoreRemoteCommand,
             ProvisionPasswordStoreRemoteRuntime {
                 device: &mut device,
-                pin_policy: &mut pin_policy,
                 pin_input: &pin_input,
                 secret_input: &secret_input,
                 storage: &mut storage,

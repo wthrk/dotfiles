@@ -51,7 +51,6 @@ pub(super) async fn dispatch(
                     name: super::super::parse_secret_name(&options.name)?,
                 },
                 &mut ports.device,
-                &mut ports.device_pin_policy,
                 &ports.process_io,
                 &mut ports.storage,
                 &ports.process_io,
@@ -62,7 +61,6 @@ pub(super) async fn dispatch(
                 application::run_enroll_primary_with_prompt::run_enroll_primary_with_prompt(
                     command,
                     &mut ports.device,
-                    &mut ports.device_pin_policy,
                     &ports.process_io,
                     &ports.process_io,
                     &mut ports.storage,
@@ -75,8 +73,7 @@ pub(super) async fn dispatch(
                 let command = EnrollSpareCommand;
                 application::run_enroll_spare_with_prompt::run_enroll_spare_with_prompt(
                     command,
-                    &mut ports.spare_device,
-                    &mut ports.device_pin_policy,
+                    &mut ports.device,
                     &ports.process_io,
                     &ports.process_io,
                     &mut ports.storage,
@@ -152,8 +149,7 @@ pub(super) async fn dispatch(
                 application::run_register_gpg_backup_primary::run_register_gpg_backup_primary(
                     RegisterGpgBackupCommand,
                     application::run_register_gpg_backup_primary::RegisterGpgBackupPrimaryRuntime {
-                        device_serial: &mut ports.device,
-                        pin_policy: &mut ports.device_pin_policy,
+                        device: &mut ports.device,
                         pin_input: &ports.process_io,
                         secret_input: &ports.process_io,
                         storage: &mut ports.storage,
@@ -173,7 +169,6 @@ pub(super) async fn dispatch(
                     ProvisionPasswordStoreRemoteCommand,
                     application::run_provision_password_store_remote::ProvisionPasswordStoreRemoteRuntime {
                         device: &mut ports.device,
-                        pin_policy: &mut ports.device_pin_policy,
                         pin_input: &ports.process_io,
                         secret_input: &ports.process_io,
                         storage: &mut ports.storage,

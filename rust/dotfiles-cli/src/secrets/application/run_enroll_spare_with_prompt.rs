@@ -20,28 +20,26 @@ use crate::secrets::{
 /// primary から secret を読み出す旧設計と stdin payload を使う旧境界を廃止し、spare でも CLI の
 /// secret input port だけから値を受け取る。use case は単一接続確認と setup を secret 入力前に完了し、
 /// setup 不能な YubiKey では bootstrap secret を読まずに停止する。
-pub(crate) async fn run_enroll_spare_with_prompt<D, I, P, S, R>(
+pub(crate) async fn run_enroll_spare_with_prompt<I, P, S, R>(
     command: EnrollSpareCommand,
-    device_serial: &mut D,
-    pin_policy: &mut impl ports::yubikey::DevicePinPolicyPort,
+    device: &mut impl ports::yubikey::YubiKeyDevicePort,
     secret_input: &I,
     pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::yubikey::DeviceSerialPort,
     I: ports::io::SecretInputPort,
     P: ports::io::PinInputPort,
     S: ports::yubikey::SecretStoragePort,
     R: ports::io::ReportPort,
 {
     let _ = command;
-    let serial = device_serial.resolve_device_serial()?;
+    let serial = device.resolve_device_serial()?;
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
+    storage_port.initialize_secret_storage(serial, setup_intent.clone(), None)?;
     let bitwarden_client_id = secret_input.read_bitwarden_client_id_secret()?;
     let bitwarden_client_secret = secret_input.read_bitwarden_client_secret()?;
     let document = BootstrapSecretDocument::from_secret_materials(
@@ -53,7 +51,7 @@ where
         storage_port.store_secret(serial, intent, value)?;
     }
     storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let pin = if device.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -102,13 +100,12 @@ mod tests {
     /// spare 登録でも input port 由来の 2 bootstrap secret だけを保存する。
     #[tokio::test]
     async fn enroll_spare_prompt_stores_two_bootstrap_secrets() -> crate::Result<()> {
-        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
-        device_serial
+        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
+        device
             .expect_resolve_device_serial()
             .times(1)
             .returning(|| Ok(2002));
-        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
-        pin_policy
+        device
             .expect_device_requires_pin()
             .times(1)
             .returning(|_| Ok(false));
@@ -130,7 +127,7 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
             .times(2)
@@ -166,8 +163,7 @@ mod tests {
 
         run_enroll_spare_with_prompt(
             EnrollSpareCommand,
-            &mut device_serial,
-            &mut pin_policy,
+            &mut device,
             &secret_input,
             &pin_input,
             &mut storage,

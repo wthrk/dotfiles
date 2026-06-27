@@ -46,6 +46,10 @@ pub trait YubiKeyDevicePort {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
 }
 
+/// 単一 adapter が両 capability を実装する場合に、統合 capability として合成する blanket impl。
+///
+/// composition root は serial 解決と PIN 方針を 1 つの device adapter に持たせ、両 capability を要求する
+/// use case へ単一 `&mut dyn YubiKeyDevicePort` として渡す。
 impl<T> YubiKeyDevicePort for T
 where
     T: DeviceSerialPort + DevicePinPolicyPort,
@@ -56,20 +60,6 @@ where
 
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
         DevicePinPolicyPort::device_requires_pin(self, serial)
-    }
-}
-
-impl<D, P> YubiKeyDevicePort for (&mut D, &mut P)
-where
-    D: DeviceSerialPort,
-    P: DevicePinPolicyPort,
-{
-    fn resolve_device_serial(&mut self) -> Result<u32> {
-        self.0.resolve_device_serial()
-    }
-
-    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
-        self.1.device_requires_pin(serial)
     }
 }
 
@@ -86,10 +76,15 @@ pub trait SecretStoragePort {
         probe: &SecretStorageSetupProbe,
     ) -> Result<SecretStorageSetupInspection>;
     /// 判定済み intent に従って対象 serial の secret storage を初期化する。
-    fn initialize_secret_storage(
+    #[expect(
+        clippy::needless_lifetimes,
+        reason = "mockall::automock 展開のため named lifetime が必要"
+    )]
+    fn initialize_secret_storage<'a>(
         &mut self,
         serial: u32,
         intent: SecretStorageSetupIntent,
+        pin: Option<&'a ProtectedSecret>,
     ) -> Result<()>;
     /// 判定済み intent に従って対象 serial の manifest を確定する。
     fn finalize_secret_storage_setup(

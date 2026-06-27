@@ -7,6 +7,8 @@
 //! この stub は YubiKey port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::YUBIKEY_STUB_SPEC_ENV` の YubiKey 専用 spec から private datastore
 //! へ展開し、最終観測 JSON は stdout の sentinel line として書き出す。
+//! 観測には secret ごとに seal が受領した生成公開鍵 fingerprint（非秘密）も含め、production adapter が init の
+//! `generate_key` で得た鍵を store の seal まで引き回した（Some 経路）ことを CLI 統合テストが照合できるようにする。
 //! vault port stub とは state/schema/file を共有しない。
 
 use std::{
@@ -67,6 +69,11 @@ struct StubDeviceDatastore {
     objects: BTreeMap<String, Vec<u8>>,
     secrets: BTreeMap<String, String>,
     corrupt: Vec<String>,
+    /// `seal_for_storage` が secret ごとに受領した生成 slot 公開鍵（非秘密）。
+    /// production `StorageAdapter` が init の `generate_key` で得た鍵を capture し、store の seal へ
+    /// 引き回したことを最終観測へ反映するためだけに保持する。
+    #[serde(default)]
+    sealed_generated_keys: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(serde::Serialize)]
@@ -78,6 +85,9 @@ struct YubiKeyObservation {
 struct StubDeviceObservation {
     key_exists: bool,
     stored_secrets: BTreeMap<String, String>,
+    /// secret ごとに seal が受領した生成公開鍵 fingerprint（非秘密）。
+    /// init→store の生成鍵引き回し（Some 経路）が end-to-end で働いたことを test が照合するための観測面。
+    sealed_with_generated_key: BTreeMap<String, String>,
 }
 
 #[derive(serde::Serialize)]
@@ -173,11 +183,13 @@ impl SecretDeviceIo for TestStubSecretDevice {
         Ok(())
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Option<Vec<u8>>> {
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
-            Ok(())
+            // 生成直後の slot 公開鍵（PKCS1 DER 相当の決定的代替、非秘密）を Some で返し、
+            // production adapter が capture→store seal へ引き回す Some 経路を end-to-end で駆動する。
+            Ok(Some(stub_generated_public_key(self.serial)))
         })
     }
 
@@ -218,15 +230,24 @@ impl SecretDeviceIo for TestStubSecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
+        generated_public_key: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         let value = String::from_utf8(plaintext.to_test_bytes())
             .context("internal stub secret is not valid UTF-8")?;
+        // store が受領した生成公開鍵（init 由来の capture）を最終観測へ反映できるよう保持する。
+        // 公開鍵は非秘密であり、production cache の引き回し（Some 経路）を test が照合するための観測面。
+        let sealed_with = generated_public_key.map(<[u8]>::to_vec);
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
             device
                 .secrets
                 .insert(secret_key(storage.secret_id).to_owned(), value);
+            if let Some(public_key) = &sealed_with {
+                device
+                    .sealed_generated_keys
+                    .insert(secret_key(storage.secret_id).to_owned(), public_key.clone());
+            }
             Ok(encoded_object(storage_object_id(storage.secret_id)))
         })
     }
@@ -263,6 +284,21 @@ impl SecretDeviceIo for TestStubSecretDevice {
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
         ProtectedSecret::from_test_bytes(wrapped_dek)
     }
+}
+
+/// serial ごとに決定的な生成 slot 公開鍵（非秘密）の代替 bytes を返す。
+///
+/// 実 backend の `generate_key` が返す PKCS1 DER 公開鍵に相当する観測専用の代替であり、production には
+/// compile されない。decode せず観測へ反映するだけなので、test が照合できる決定的 ASCII で表現する。
+fn stub_generated_public_key(serial: u32) -> Vec<u8> {
+    format!("stub-generated-public-key-{serial}").into_bytes()
+}
+
+/// seal が受領した生成公開鍵（非秘密）を観測用 fingerprint へ写す。
+///
+/// 公開鍵は決定的 ASCII なのでそのまま表示し、test が serial から期待値を組み立てて照合できるようにする。
+fn generated_key_fingerprint(public_key: &[u8]) -> String {
+    String::from_utf8_lossy(public_key).into_owned()
 }
 
 /// serial を 64 文字 lowercase hex（recipient `public_key_fingerprint` 相当）へ決定的に写像する。
@@ -375,6 +411,7 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
         objects,
         secrets,
         corrupt: Vec::new(),
+        sealed_generated_keys: BTreeMap::new(),
     }
 }
 
@@ -411,6 +448,13 @@ fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
                         .secrets
                         .keys()
                         .map(|name| (name.clone(), "<redacted>".to_owned()))
+                        .collect(),
+                    sealed_with_generated_key: device
+                        .sealed_generated_keys
+                        .iter()
+                        .map(|(name, public_key)| {
+                            (name.clone(), generated_key_fingerprint(public_key))
+                        })
                         .collect(),
                 },
             )

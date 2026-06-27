@@ -19,8 +19,7 @@ use crate::secrets::{
 
 /// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
 pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
-    pub(crate) device_serial: &'a mut dyn ports::yubikey::DeviceSerialPort,
-    pub(crate) pin_policy: &'a mut dyn ports::yubikey::DevicePinPolicyPort,
+    pub(crate) device: &'a mut dyn ports::yubikey::YubiKeyDevicePort,
     pub(crate) pin_input: &'a dyn ports::io::PinInputPort,
     pub(crate) secret_input: &'a dyn ports::io::SecretInputPort,
     pub(crate) storage: &'a mut dyn ports::yubikey::SecretStoragePort,
@@ -57,8 +56,7 @@ where
     B: ports::bw::VaultClientPort,
 {
     let RegisterGpgBackupPrimaryRuntime {
-        device_serial,
-        pin_policy,
+        device,
         pin_input,
         secret_input,
         storage,
@@ -92,8 +90,8 @@ where
             .list_secret_primary_fingerprints()?
             .resolve_unique()?
     };
-    let serial = device_serial.resolve_device_serial()?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    let serial = device.resolve_device_serial()?;
+    let pin = if device.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -294,14 +292,13 @@ mod tests {
                 ))
             });
         keyring.expect_primary_fingerprint_for_recipient().times(0);
-        let mut device_serial = ports::yubikey::MockDeviceSerialPort::new();
-        device_serial
+        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
+        device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(move || Ok(serial));
-        let mut pin_policy = ports::yubikey::MockDevicePinPolicyPort::new();
-        pin_policy
+        device
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
@@ -362,8 +359,7 @@ mod tests {
         run_register_gpg_backup_primary(
             RegisterGpgBackupCommand,
             RegisterGpgBackupPrimaryRuntime {
-                device_serial: &mut device_serial,
-                pin_policy: &mut pin_policy,
+                device: &mut device,
                 pin_input: &pin_input,
                 secret_input: &secret_input,
                 storage: &mut storage,
