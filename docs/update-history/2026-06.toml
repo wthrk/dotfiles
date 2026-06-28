@@ -2004,3 +2004,285 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-06-28T19:23:59Z"
+cursor_old = "686df42f1c9bc6fcfc1b0fb77b2702d725c9196c"
+nixpkgs_old = "89570f24e97e614aa34aa9ab1c927b6578a43775"
+nixpkgs_new = "3d46470bb3030020f7e1361f33514854f5bfa86d"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "13アプリ更新: 🗑️2 ✨8 🐛24"
+
+[[update.package]]
+name = "bitwarden-cli"
+old = "2026.5.0"
+new = "2026.6.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/bitwarden/clients/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "キー回転のUIを追加"
+ref = "https://github.com/bitwarden/clients/pull/20407"
+
+[[update.package.change_item]]
+category = "feature"
+text = "公開招待リンクのステータスエンドポイント用のgetStatus APIメソッドを追加"
+ref = "https://github.com/bitwarden/clients/pull/20695"
+
+[[update.package.change_item]]
+category = "feature"
+text = "パスポート暗号タイプ用のbwi-passportアイコンを追加"
+ref = "https://github.com/bitwarden/clients/pull/20712"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Send UIリフレッシュ機能フラグを削除"
+ref = "https://github.com/bitwarden/clients/pull/20753"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "unlock-via-sdk-flagを削除"
+ref = "https://github.com/bitwarden/clients/pull/20832"
+
+[[update.package]]
+name = "chromedriver"
+old = "149.0.7827.156"
+new = "149.0.7827.201"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromedriver.chromium.org/"
+change_item = []
+
+[[update.package]]
+name = "diesel-cli"
+old = "2.3.9"
+new = "2.3.10"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "内部MYSQLフラグの誤った値を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "PostgreSQLのデシリアライズコードでのパニックを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SQLiteバックエンドでのカスタム集約SQL関数の二重呼び出しによる予期しない結果を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SQLiteバックエンドでのバイトバッファからのデータベースデシリアライズ中の使用後解放バグを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "カラムまたはテーブル名がRustコードを「注入」する場合の無効なスキーマ生成を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`diesel print-schema`によるスキーマイントロスペクション中のSQLインジェクションの可能性を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`ORDER BY`と`GROUP BY`句の有効な組み合わせを拒否する回帰を修正"
+
+[[update.package]]
+name = "docker"
+old = "29.5.3"
+new = "29.6.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.docker.com/blog/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド 'docker compose' が追加されました。"
+ref = "https://github.com/docker/cli/releases/tag/v29.6.0"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境変数が正しく処理されない問題を修正しました。"
+ref = "https://github.com/docker/cli/releases/tag/v29.6.0"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.1.4"
+new = "5.2.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose"
+change_item = []
+
+[[update.package]]
+name = "ffmpeg"
+old = "8.1"
+new = "8.1.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.1/Changelog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "attach_lsb() の OOB 修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ADPCM_N64 の符号付き整数オーバーフロー修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "heap use-after-free の修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "out-of-bounds read の修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "extradata のパディング問題修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "negative index use の修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "integer overflow の修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "use-of-uninitialized-value の修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "sscanf() return value checks の修正"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ffprobe -codec オプションの追加"
+
+[[update.package.change_item]]
+category = "feature"
+text = "EXIF メタデータ解析の追加"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Windows.Graphics.Capture によるウィンドウ/モニターキャプチャの追加"
+
+[[update.package]]
+name = "firefox-bin"
+old = "152.0.1"
+new = "152.0.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0.3/releasenotes/"
+change_item = []
+
+[[update.package]]
+name = "google-chrome"
+old = "149.0.7827.156"
+new = "149.0.7827.197"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のバグを修正しました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "mariadb-client"
+old = "11.4.9"
+new = "11.4.12"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/mariadb-corporation/mariadb-connector-c/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のバグを修正しました。"
+ref = "https://github.com/mariadb-corporation/mariadb-connector-c/releases/tag/11.4.12"
+
+[[update.package]]
+name = "nix"
+old = "2.34.7+1"
+new = "2.34.7"
+change = "downgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/NixOS/nix/releases/tag/2.34.7"
+change_item = []
+
+[[update.package]]
+name = "nodejs"
+old = "22.23.0"
+new = "22.23.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/nodejs/node/releases/tag/v22.23.1"
+
+[[update.package.change_item]]
+category = "fix"
+text = "最近のセキュリティリリースによって導入された予期しない動作の修正"
+ref = "https://github.com/nodejs/node/releases/tag/v22.23.1"
+
+[[update.package]]
+name = "ruff"
+old = "0.15.17"
+new = "0.15.18"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.15.18"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ネストした `ruff:ignore` コメントを処理する機能を追加"
+ref = "https://github.com/astral-sh/ruff/pull/25791"
+
+[[update.package.change_item]]
+category = "fix"
+text = "同等の数値マッピングキーを検出するバグを修正"
+ref = "https://github.com/astral-sh/ruff/pull/26009"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ブール値に相当するマッピングキーを検出するバグを修正"
+ref = "https://github.com/astral-sh/ruff/pull/25982"
+
+[[update.package.change_item]]
+category = "fix"
+text = "繰り返しの符号付きおよび複素辞書キーを検出するバグを修正"
+ref = "https://github.com/astral-sh/ruff/pull/26007"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`PYI033` を `legacy-type-comment` に名前変更"
+ref = "https://github.com/astral-sh/ruff/pull/26131"
+
+[[update.package]]
+name = "vscode"
+old = "1.124.2"
+new = "1.125.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_123"
+change_item = []
