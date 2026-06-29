@@ -2286,3 +2286,65 @@ declared = true
 source = "nix"
 notes_url = "https://code.visualstudio.com/updates/v1_123"
 change_item = []
+
+[[update]]
+at = "2026-06-29T20:03:01Z"
+cursor_old = "2aa79411219cac7b46a24a4b744ce75547948547"
+nixpkgs_old = "3d46470bb3030020f7e1361f33514854f5bfa86d"
+nixpkgs_new = "534ee3d8beb1737b5342995f8837e2b2705ce0d8"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "3アプリ更新: 🔒1 🗑️1 🔧1 ✨1 🐛1"
+
+[[update.package]]
+name = "ruff"
+old = "0.15.18"
+new = "0.15.20"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.15.20"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ルールセレクタに人間が読みやすい名前を許可する"
+ref = "https://github.com/astral-sh/ruff/pull/25887"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "未知のルールセレクタに対してエラーの代わりに警告を出力する"
+ref = "https://github.com/astral-sh/ruff/pull/26113"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`ruff:ignore` コメントにおける `noqa` シェバング処理を一致させる"
+ref = "https://github.com/astral-sh/ruff/pull/26286"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`pytest-fixture-autouse` (`RUF076`) を削除する"
+ref = "https://github.com/astral-sh/ruff/pull/26240"
+
+[[update.package]]
+name = "uv"
+old = "0.11.22"
+new = "0.11.25"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.11.25/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "security"
+text = "tarライブラリを更新し、パーサーの不一致に対する耐性を強化した。"
+ref = "https://github.com/astral-sh/tokio-tar"
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.42026"
+new = "26.623.61825"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []

@@ -181,7 +181,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+discovered_at = "2026-06-29T20:03:01Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
@@ -220,7 +220,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-06-24T19:32:43Z"
+discovered_at = "2026-06-29T20:03:01Z"
 
 ["nix/vips"]
 origin = "none"
