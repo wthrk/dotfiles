@@ -4,7 +4,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/bitwarden"]
 origin = "none"
-discovered_at = "2026-06-26T19:41:54Z"
+discovered_at = "2026-06-30T20:13:18Z"
 
 ["brew/codex-app"]
 source = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
@@ -86,7 +86,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/eslint"]
 origin = "none"
-discovered_at = "2026-06-24T19:32:43Z"
+discovered_at = "2026-06-30T20:13:18Z"
 
 ["nix/ffmpeg"]
 origin = "none"
@@ -246,7 +246,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-06-24T19:32:43Z"
+discovered_at = "2026-06-30T20:13:18Z"
 
 ["nix/zsh"]
 source = "https://zsh.sourceforge.io/releases.html"
