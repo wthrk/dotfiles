@@ -7,10 +7,9 @@ use anyhow::Error;
 use std::backtrace::BacktraceStatus;
 use std::process::ExitCode;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     enable_error_backtraces();
-    match dotfiles_cli::dispatch().await {
+    match dotfiles_cli::dispatch() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             render_error_chain(&err);

@@ -27,5 +27,27 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
+      # /nix/store を run 間でキャッシュする（nightly-update.yml / static-checks.yml と同 action・同 key 規約）。
+      # toolchain と `nix flake` 系 / devShell の取得物を再利用する。重い closure は無く保存物は小さい。
+      # miss/失敗は遅くなるだけで fail させない（fail-on 既定 = fail-safe）。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を run 間で再利用する。`cargo xtask check zsh` は devShell
+      # 内で `dotfiles-checks` をコンパイルするため、/nix/store キャッシュとは別に target/ の再ビルド回避が効く。
+      # static-checks（ubuntu）とは runner.os が異なり shared-key も別のためキャッシュは衝突しない。fail-safe。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: zsh-checks-${{ runner.os }}
+
       - name: zsh checks
         run: nix develop -c cargo xtask check zsh

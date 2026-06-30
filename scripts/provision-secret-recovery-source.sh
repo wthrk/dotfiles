@@ -116,6 +116,18 @@ run_dotfiles() {
 preflight_github_ssh_key_scope() {
   gh api user/keys --paginate --jq 'length' >/dev/null 2>&1 \
     || die "GitHub SSH public key API の事前確認に失敗しました。gh の active account には classic token なら read:public_key scope、fine-grained token なら Git SSH keys: read permission が必要です。classic token の更新例: gh auth refresh -h github.com -s read:public_key"
+  # 後続の `gh ssh-key add` は公開鍵登録のため write scope を要する。read だけ確認して進むと add で初めて
+  # 権限不足が露見し provisioning が途中停止するため、可能な範囲で write scope を事前確認する。classic token は
+  # OAuth scope ヘッダ（X-OAuth-Scopes）で write:public_key / admin:public_key を検証する。fine-grained token は
+  # このヘッダを返さないため事前検証できず、read 確認のみで続行する（不足時は実 add で GitHub 側が拒否する）。
+  local scope_header
+  scope_header="$(gh api -i -X GET user 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="x-oauth-scopes"{print $2; exit}')"
+  if [ -n "$scope_header" ]; then
+    case ",$(printf '%s' "$scope_header" | tr -d ' ')," in
+      *,write:public_key,*|*,admin:public_key,*) : ;;
+      *) die "GitHub SSH public key の登録に必要な write scope が gh の active account にありません。classic token なら write:public_key（または admin:public_key）scope が必要です。更新例: gh auth refresh -h github.com -s write:public_key" ;;
+    esac
+  fi
 }
 
 GH_LOGIN="$(gh api user --jq .login 2>/dev/null)" \

@@ -8,16 +8,14 @@ mod environment;
 mod init;
 mod local_flake;
 mod process;
-mod secrets;
-#[cfg(feature = "secrets-internal-test-stub")]
-pub mod secrets_internal_test_stub_contract;
 mod switch;
 mod update;
+mod update_history;
 
-/// CLI と secret-recovery の各層で共有する結果型。
+/// CLI の各 command が共有する結果型。
 pub type Result<T> = dotfiles_core::Result<T>;
 
 /// crate 公開の CLI 実行 entrypoint。
-pub async fn dispatch() -> Result<()> {
-    cli::dispatch().await
+pub fn dispatch() -> Result<()> {
+    cli::dispatch()
 }

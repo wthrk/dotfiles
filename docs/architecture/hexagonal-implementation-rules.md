@@ -93,7 +93,7 @@ test double / fixture の本体は原則として `tests/` 配下に置く。た
 
 この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入、`tests/` 側での backend state/schema/helper 保持は、この条件を満たさないため引き続き禁止する。
 
-application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-cli/src/secrets/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
+application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-secrets/src/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
 
 secret 値の test-only 観測は `support/protection::ProtectedSecret` の `#[cfg(test)]` 最小関数へ閉じる。domain value や application code に secret 生値取り出し API を増やしてはならない。この許可は `String` 変換公開、production 経路での取り出し、汎用 plaintext consumer API、または外部 SDK/API 呼び出しを protection 境界外へ移す根拠にしてはならない。
 
@@ -234,7 +234,7 @@ file-level の分割（`xxx.rs` を `xxx/` 配下へ分ける等）は責務分�
 - 乱数生成（key material、nonce、challenge、seed 等を含む）は `application` から直接呼び出してはならない。必ず `port` 契約を経由して取得すること。
 - use case は独自の型定義を持ってはならない。use case で扱う型は `domain` 層で定義された型のみを使用すること。
 - 各 use case は 1 つの `run_*` 関数として表現し、1 use case = 1 function を崩してはならない。
-- `rust/dotfiles-cli/src/secrets/application/` 配下では sibling file ごとに `run_*` 関数を 1 つだけ持たせること。複数 use case を 1 ファイルへ混在させてはならない。
+- `rust/dotfiles-secrets/src/application/` 配下では sibling file ごとに `run_*` 関数を 1 つだけ持たせること。複数 use case を 1 ファイルへ混在させてはならない。
 - `application/use_case.rs` を新設してはならない。use case 実装は `application/` 直下の sibling `run_*.rs` に限定し、疑似レイヤーを増やしてはならない。
 - `application/use_case/` ディレクトリを新設してはならない。`application` 直下の sibling file だけで構成し、`application` 配下に疑似レイヤーを増やすことを禁止する。
 - `mod.rs` を新設してはならない。`#[path = \"...\"]` による分割・配線も禁止する。標準の module 宣言だけで配線すること。

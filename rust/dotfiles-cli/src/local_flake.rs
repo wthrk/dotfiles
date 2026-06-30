@@ -3,21 +3,29 @@
 //! 生成内容は `inputs.dotfiles.url` と `dotfiles.lib.mkHome` / `dotfiles.lib.mkDarwin` だけに依存する。
 //! concrete なユーザー名、ホスト名、システム名は、このリポジトリではなく生成ファイルへ閉じ込める。
 
+/// 生成 flake が dotfiles repo を参照する input 名。
+///
+/// `dotfiles update` が「dotfiles repo の committed lock に追従」する際、
+/// この同じ input 名を `nix flake update <INPUT_NAME>` へ渡す必要がある。
+/// 名前がここと `update` 側でずれると、update が dotfiles input を更新できず
+/// 推移的 nixpkgs を repo の lock に追従させられない。
+pub(crate) const INPUT_NAME: &str = "dotfiles";
+
 /// `#<user>` で Home Manager、`#<host>` で nix-darwin を参照できる flake を描画する。
 pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> String {
     format!(
         r#"{{
-  inputs.dotfiles.url = "{source}";
+  inputs.{input}.url = "{source}";
 
-  outputs = {{ dotfiles, ... }}: {{
+  outputs = {{ {input}, ... }}: {{
     homeConfigurations."{user_attr}" =
-      dotfiles.lib.mkHome {{
+      {input}.lib.mkHome {{
         user = "{user_value}";
         system = "{system_value}";
       }};
 
     darwinConfigurations."{host_attr}" =
-      dotfiles.lib.mkDarwin {{
+      {input}.lib.mkDarwin {{
         user = "{user_value}";
         host = "{host_value}";
         system = "{system_value}";
@@ -25,6 +33,7 @@ pub(crate) fn render(source: &str, user: &str, host: &str, system: &str) -> Stri
   }};
 }}
 "#,
+        input = INPUT_NAME,
         source = escape_nix_string(source),
         user_attr = escape_nix_string(user),
         user_value = escape_nix_string(user),
@@ -44,7 +53,14 @@ fn escape_nix_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{INPUT_NAME, render};
+
+    #[test]
+    fn input_name_is_dotfiles() {
+        // `dotfiles update` は `nix flake update <INPUT_NAME>` で dotfiles input を
+        // 更新する。生成 flake の input 名がこの値からずれると update が追従に失敗する。
+        assert_eq!(INPUT_NAME, "dotfiles");
+    }
 
     #[test]
     fn renders_local_config_flake() {

@@ -862,13 +862,13 @@ fn enroll_spare_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult
     Ok(())
 }
 
-/// `enroll-spare` は鍵生成に PIN を要するのに供給できない場合、鍵生成前に fail-closed する。
+/// `enroll-spare` は鍵生成に PIN を要する fresh spare でも、CLI PIN 入力 port から PIN を取得して
+/// 鍵生成・保存まで進む（primary と同じ PIN 取得経路）。
 ///
-/// production `StorageAdapter::initialize_secret_storage` の「PIN 未検証なら鍵生成しない」経路を
-/// internal backend stub（`requires_pin` 初期条件）経由で網羅し、device 肩代わり double を
-/// production adapter へ戻さずに同等の挙動網羅を保つ。
+/// internal backend stub の `requires_pin` 初期条件で、PIN 検証つき init が生成した slot 公開鍵を
+/// store の seal まで引き回す Some 経路（`sealed_with_generated_key` 観測）を網羅する。
 #[test]
-fn enroll_spare_fails_closed_when_key_generation_requires_pin() -> TestResult<()> {
+fn enroll_spare_acquires_pin_and_generates_key_when_required() -> TestResult<()> {
     let output = dotfiles_with_env(
         ["secrets", "yubikey", "enroll-spare"],
         [(
@@ -879,20 +879,51 @@ fn enroll_spare_fails_closed_when_key_generation_requires_pin() -> TestResult<()
 
     let text = combined_output(&output);
     assert!(
-        !output.status.success(),
-        "enroll-spare must fail closed when key generation requires an unavailable PIN"
+        output.status.success(),
+        "enroll-spare must acquire the PIN and generate the key when key generation requires a PIN"
     );
     assert!(
-        text.contains("PIN is required to generate the YubiKey secret storage key"),
-        "fail-closed error must explain that key generation needs a verified PIN"
+        text.contains(
+            r#""sealed_with_generated_key":{"bitwarden-client-id":"stub-generated-public-key-1001","bitwarden-client-secret":"stub-generated-public-key-1001"}"#
+        ),
+        "store must seal both bootstrap secrets with the slot public key generated during PIN-verified init"
     );
     assert_no_leaks(
         &text,
-        "enroll-spare fail-closed output",
+        "enroll-spare requires-pin output",
         &[
             ("account API client id", "stub-client-id"),
             ("account API client secret", "stub-client-secret"),
         ],
+    );
+    Ok(())
+}
+
+/// 低水準 `yubikey setup` は鍵生成に PIN を要する fresh device で fail-closed する。
+///
+/// fresh device の PIN 取得つき初期化は公開 command `enroll-primary` / `enroll-spare` が担う
+/// （yubikey-secret-storage-design.md L15）。`setup` は最小の初期化 primitive として PIN 入力経路を持たず、
+/// production `StorageAdapter::initialize_secret_storage` の「PIN 未検証なら鍵生成しない」fail-closed 経路を
+/// internal backend stub（`requires_pin` 初期条件）経由で網羅し、device 肩代わり double を production
+/// adapter へ戻さずに同等の挙動網羅を保つ。
+#[test]
+fn setup_fails_closed_when_key_generation_requires_pin() -> TestResult<()> {
+    let output = dotfiles_with_env(
+        ["secrets", "yubikey", "setup"],
+        [(
+            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
+            r#"{"yubikeys":[{"serial":1001,"fixture":"fresh"}],"requires_pin":true}"#.to_owned(),
+        )],
+    )?;
+
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "yubikey setup must fail closed when key generation requires an unavailable PIN"
+    );
+    assert!(
+        text.contains("PIN is required to generate the YubiKey secret storage key"),
+        "fail-closed error must explain that key generation needs a verified PIN"
     );
     Ok(())
 }

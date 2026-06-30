@@ -1,0 +1,497 @@
+name: nightly update
+
+# nightly に repo の flake.lock を bump し、更新履歴（版差分＋概要）を記録して自動 PR を起票・auto-merge する。
+#
+# 設計（単純版・App 不要・GITHUB_TOKEN + OPEN_AI_API_KEY 完結）:
+#   - パイプラインのロジックは全て `dotfiles update-history`（Rust）が持つ。eval 整形・owner/repo 導出・nix 版
+#     差分・brew cask 版差分（reqwest で cask `.rb` 取得・version 解析。`homebrew.nix` の `greedyCasks = true` に
+#     合わせ `auto_updates true` の cask も追跡対象。`sha256 :no_check` の未固定成果物は fail-closed で停止）・
+#     flake.lock rev 抽出は
+#     Rust に集約し、workflow は避けられない nix tool 呼び出し（Rust が起動する `nix eval` / `nix flake update`）と
+#     薄いオーケストレーション（checkout / install nix / bump / record 起動 / upload / PR）だけを行う。
+#   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
+#     bump しない（無人で framework を動かさない）。
+#   - 概要（change_items）の LLM 抽出の正本は OpenAI API。record job に **secret
+#     `OPEN_AI_API_KEY`** を `env` で結線し、CLI（async-openai crate）が env から読む。GitHub Models /
+#     `permissions: models: read` / GITHUB_TOKEN の LLM 用途は撤去した（PR 起票等の GITHUB_TOKEN は残す）。
+#   - record は 1 回で全変更パッケージを要約しきる。ノートが取れないものは version-only（version + notes_url のみ）
+#     としてその場で確定記録する（夜をまたいで埋める backfill は持たない）。
+#   - PR 起票・auto-merge は GITHUB_TOKEN で行う（GitHub App / 別 secret は追加しない）。GITHUB_TOKEN 起票 PR
+#     では `on: pull_request` の必須 check（static-checks.yml）が発火しないため、open-pr job が同一 run 内で
+#     ①`cargo xtask ci verify-bump-lock`（base..head の許可パス + lock 差分のセキュリティ検査）と ②実
+#     `cargo xtask check static`（static-checks.yml と同一）の両方が合格した場合に限り、PR head へ
+#     `static checks` commit status を success で POST して required check を満たす（fail-closed）。
+#
+# guard（最小限）:
+#   - open-pr（非 dry-run・PR 起票/status 投稿経路）は **既定ブランチ起動に限定**する。schedule は GitHub の
+#     制約上常に既定ブランチで発火するため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定
+#     ブランチのときだけ許可する（job-level `if` + 先頭の明示ガード step で fail-closed を二重化）。これは
+#     信頼できない ref から検査主体（guard バイナリと static check）をビルドして status を詐称投稿する経路を塞ぐ。
+#   - 許可パス（flake.lock + docs/update-history/**）の強制は `cargo xtask ci verify-bump-lock` が base..head の
+#     commit パス union を検査して担う。許可外パス混入・許可外 input rev 変更・空 bump があれば非 0 終了し、
+#     後続の static checks・status 投稿・PR 起票・merge へ進まない（無人 auto-merge が許可外を入れない最低限）。
+#
+# dry_run（workflow_dispatch 既定 true）では bump と record と diff までを実行し、PR 起票・push を
+# 行わない。実発火（schedule）前に dry_run で old/new eval（ビルド非実行・数秒）と TOML 生成を検証する。
+#
+# 無更新の夜は record が TOML を書かず、open-pr の `git add` が差分無し→`has_changes=false` で PR を起票せず
+# clean no-op になる。
+
+on:
+  schedule:
+    # 18:00 UTC。マージ後の朝に各マシンが追随する想定。
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true なら PR 起票・push をせず bump/record/diff のみ検証する"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CI_REFERENCE: darwinConfigurations.ci-ref
+
+jobs:
+  # 1) bump 前の宣言パッケージ版を eval（Rust）し、lock を bump し、bump 前後の input rev を取り出して artifact に
+  #    渡す。整形・owner/repo 導出・rev 抽出のロジックは全て `dotfiles update-history`（Rust）が持ち、ここは
+  #    避けられない nix tool 呼び出し（`nix eval` は Rust が起動・`nix flake update`）と薄いオーケストレーション
+  #    だけを行う。LLM や PR 起票の権限を持たせない（contents: read のみ）。
+  bump:
+    name: bump lock and eval declared versions
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
+      nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
+      dotfiles_cursor_old: ${{ steps.revs.outputs.dotfiles_cursor_old }}
+      cask_rev_old: ${{ steps.revs.outputs.cask_rev_old }}
+      cask_rev_new: ${{ steps.revs.outputs.cask_rev_new }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      # /nix/store を run 間・job 間でキャッシュする（static-checks.yml と同 action・同 key 規約）。`nix develop` の
+      # devShell closure（rust toolchain / C lib: gpgme・libgit2・libssh2・openssl・zlib 等）と、dotfiles-cli が
+      # 起動する `nix eval` / `nix flake update` / `nix flake check` の評価物を substitute する（cargo の crate
+      # ビルドは rust-cache 側が担う）。macos runner のため runner.os は static-checks（ubuntu）と別 namespace に
+      # なり、macOS の store path を Linux と混ぜない（bump/record/open-pr のうち macOS の bump↔record が共有する）。
+      # primary-key は checkout 上の flake.lock（bump 前）＋ Cargo で安定し、ヒット時は restore のみ。devShell の
+      # closure（toolchain＋C lib）は eval だけの static-checks より大きいため gc-max-store-size を広めに取り、保存
+      # 物の eviction を避ける（repo 合計 ~10GB の GHA cache 予算内）。miss/失敗は遅くなるだけで fail させない
+      # （fail-on 既定 = fail-safe）。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
+      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-${{ runner.os }}
+
+      # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
+      # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
+      # `nix develop -c` 経由でランタイムライブラリ（gpgme/libgit2/libssh2/openssl/zlib 等）を供給する。
+      - name: dotfiles バイナリをビルド
+        id: build
+        run: |
+          set -euo pipefail
+          nix develop -c cargo build -p dotfiles-cli
+          echo "bin=$PWD/target/debug/dotfiles" >> "$GITHUB_OUTPUT"
+
+      # bump 前の宣言パッケージ版を Rust が `nix eval`（生の評価値）して owner/repo 導出まで行い JSON へ書く。
+      # 併せて bump 前 input rev を Rust（serde_json）が抽出する（jq 不使用）。
+      - name: bump 前の宣言パッケージ版を eval と rev 抽出
+        id: old
+        env:
+          DOTFILES_BIN: ${{ steps.build.outputs.bin }}
+        run: |
+          set -euo pipefail
+          nix develop -c "$DOTFILES_BIN" update-history eval-versions --reference "$CI_REFERENCE" --out nix-old.json
+          nixpkgs_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          echo "nixpkgs_old=$nixpkgs_old" >> "$GITHUB_OUTPUT"
+          dotfiles_cursor_old="$(git rev-parse HEAD)"
+          echo "dotfiles_cursor_old=$dotfiles_cursor_old" >> "$GITHUB_OUTPUT"
+          cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
+
+      - name: nixpkgs と tap input を bump
+        run: |
+          set -euo pipefail
+          # framework input（nix-darwin / home-manager / nix-homebrew）は bump しない。
+          nix flake update \
+            nixpkgs \
+            homebrew-homebrew-core \
+            homebrew-homebrew-cask \
+            homebrew-azure-bicep \
+            homebrew-hashicorp-tap
+
+      # bump 後 input rev を Rust（serde_json）が抽出する（bump 後版の eval は record が bump 済み lock で行う）。
+      - name: bump 後の input rev を抽出
+        id: revs
+        env:
+          DOTFILES_BIN: ${{ steps.build.outputs.bin }}
+        run: |
+          set -euo pipefail
+          nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
+          cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
+          {
+            echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}"
+            echo "nixpkgs_new=$nixpkgs_new"
+            echo "dotfiles_cursor_old=${{ steps.old.outputs.dotfiles_cursor_old }}"
+            echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}"
+            echo "cask_rev_new=$cask_rev_new"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: bump 済み lock と eval 版マップを artifact 化
+        uses: actions/upload-artifact@v7
+        with:
+          name: bump-state
+          retention-days: 1
+          include-hidden-files: true
+          path: |
+            flake.lock
+            nix-old.json
+          if-no-files-found: error
+
+  # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
+  #    brew cask `.rb` 取得と version 解析（reqwest）・sha256 未固定 cask の fail-closed 検査・概要抽出は全て `dotfiles update-history
+  #    record`（Rust）が行う。ここは bump 済み lock の取得と record 起動だけを行う。概要の LLM 抽出は OpenAI API
+  #    （async-openai crate）で、secret `OPEN_AI_API_KEY` を env で結線する（GitHub Models は使わない）。出力は
+  #    更新履歴 TOML（機械バリデート済み）として artifact に渡す。
+  record:
+    name: extract notes and record history
+    needs: bump
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      # record が当月 history TOML を書いた（= 更新ありで履歴 artifact が必要）かどうか。open-pr 側はこの値で
+      # history-record download を fail-closed にするか（更新ありの夜）/ 失敗許容にするか（無更新の clean no-op）を
+      # 分岐する。
+      has_history: ${{ steps.record.outputs.has_history }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      # /nix/store を run 間・job 間でキャッシュする（bump job と同 key 規約）。cache restore 時点の checkout は
+      # bump 前 flake.lock のため primary-key は bump job と一致し、bump job が温めた devShell closure（rust
+      # toolchain / C lib）と `nix eval` / `nix flake update` の評価物を restore する。record の `nix eval`（bump 後
+      # 版）は後段の artifact download で bump 後 lock に差し替えるため、bump 後 nixpkgs に依存する derivation はその
+      # 回だけ 1 度再ビルドしうる（限界として明記）。fail-safe。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
+      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-${{ runner.os }}
+
+      # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
+      - name: bump 済み lock と bump 前 eval 版マップを取得
+        uses: actions/download-artifact@v8
+        with:
+          name: bump-state
+
+      - name: record 用 dotfiles バイナリをビルド
+        run: nix develop -c cargo build -p dotfiles-cli
+
+      # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
+      # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
+      # 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv /
+      # ログに出さない）。ノートが取れないものは version-only（version + notes_url のみ）として確定記録する。
+      - name: record（nix/brew 版差分 + 概要）
+        id: record
+        env:
+          NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
+          NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
+          DOTFILES_CURSOR_OLD: ${{ needs.bump.outputs.dotfiles_cursor_old }}
+          CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
+          CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
+          # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
+          # 認証 5000 req/hr）。notes.rs::github_token() が env GITHUB_TOKEN を読む。LLM 用途ではないため
+          # permissions: models: read は不要（contents: read で public release 取得に十分）。
+          GITHUB_TOKEN: ${{ github.token }}
+          # 概要抽出の OpenAI API キー（利用者が設定済みの secret。この厳密名で CLI が env から読む）。schedule は
+          # GitHub の制約上常に既定ブランチで発火するためそのまま secret を受け取る。workflow_dispatch は
+          # repo owner が手動起動した run に限って secret を受け取り、PR ブランチ dry-run でも要約付き履歴を
+          # 検証できるようにする。repo owner 以外が起動した dispatch では空キーになり、CLI は OpenAI 抽出を skip
+          # （version-only：version + notes_url のみ）する。PR 起票・`static checks` status 投稿経路の既定
+          # ブランチ限定は open-pr job 側で別途維持する（そこが信頼境界）。
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
+        run: |
+          set -euo pipefail
+          at="$(date -u +%FT%TZ)"
+          out="docs/update-history/$(date -u +%Y-%m).toml"
+          # ノート取得元レジストリ（provenance の学習・再利用）。既存レジストリを再利用し、新規/未知の取得元だけを追記する。
+          notes_sources="docs/update-history/notes-sources.toml"
+          mkdir -p docs/update-history
+          dotfiles_bin="$PWD/target/debug/dotfiles"
+          nix develop -c "$dotfiles_bin" update-history record \
+            --nix-old nix-old.json \
+            --cursor-old "$DOTFILES_CURSOR_OLD" \
+            --nixpkgs-old "$NIXPKGS_OLD" \
+            --nixpkgs-new "$NIXPKGS_NEW" \
+            --reference "$CI_REFERENCE" \
+            --homebrew-nix nix/modules/homebrew.nix \
+            --cask-rev-old "$CASK_REV_OLD" \
+            --cask-rev-new "$CASK_REV_NEW" \
+            --at "$at" \
+            --notes-sources "$notes_sources" \
+            --out "$out"
+          # record が docs/update-history/ を変更したか（= 更新あり）を後段へ伝える。当月 TOML は既に repo に
+          # commit 済みで checkout に存在しうるため、ファイル有無ではなく checkout からの差分有無で判定する
+          # （無更新 no-op と真の download 失敗を取り違えないため）。差分があれば download を fail-closed にすべき夜。
+          if [ -n "$(git status --porcelain -- docs/update-history)" ]; then
+            echo "has_history=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_history=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 無更新の夜は record が TOML を書かず、docs/update-history/ のアップロード対象が 0 件になりうる。
+      # `if-no-files-found: error` だと無更新夜が失敗扱いになるため `warn` で安全側に倒す（clean no-op）。
+      - name: 履歴 TOML を artifact 化
+        uses: actions/upload-artifact@v7
+        with:
+          name: history-record
+          retention-days: 1
+          path: |
+            docs/update-history/
+          if-no-files-found: warn
+
+  # 3) PR 起票 + インラインセキュリティチェック（verify-bump-lock）+ 実 static checks + status 投稿 + auto-merge。
+  #    GITHUB_TOKEN で完結する（GitHub App / 別 secret は使わない）。GITHUB_TOKEN 起票 PR では
+  #    `on: pull_request` の static-checks.yml が発火しないため、この job が同一 run 内で
+  #    ①`cargo xtask ci verify-bump-lock`（許可パス + lock 差分の検査）と ②`cargo xtask check static`
+  #    （static-checks.yml と同一）の両方が合格した場合に限り `static checks` status を success で POST する。
+  open-pr:
+    name: open bump PR and enable auto-merge
+    needs: [bump, record]
+    # 非 dry-run（PR 起票・status 投稿経路）は既定ブランチ起動に限定する。schedule は常に既定ブランチで発火する
+    # ため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定ブランチ（branch かつ既定ブランチ）のとき
+    # だけ許可する。tag は許可しない: ref が `refs/heads/<既定ブランチ>` であることを `github.ref` で照合し、既定
+    # ブランチ名と同名の tag（例 tag `main`）を除外する。これは信頼できない ref から検査主体をビルドして
+    # `static checks` status を詐称投稿する経路を塞ぐ。
+    if: >-
+      ${{ github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.dry_run == 'false' &&
+           github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    steps:
+      # 明示ガード（fail-closed の二重化）: 非既定 ref からの非 dry-run 起動を checkout 前に拒否する。job-level
+      # `if` で既に skip される前提だが、評価差異で誤って到達しても信頼できない ref から検査主体をビルドする前に
+      # ここで fail させる。schedule は既定ブランチ固定のため通過する。
+      - name: 非既定 ref の非 dry-run を拒否（guard）
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            exit 0
+          fi
+          # branch かつ既定ブランチ（ref が refs/heads/<既定ブランチ>）のみ許可する。tag は除外する: ref_name
+          # 単独照合だと既定ブランチ名と同名の tag が通り得るため、ref 全体を refs/heads/<既定ブランチ> と照合する。
+          if [ "$REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::非既定 ref ($REF) からの非 dry-run open-pr は拒否します（既定ブランチ refs/heads/$DEFAULT_BRANCH からのみ許可）。" >&2
+            exit 1
+          fi
+
+      # この nightly workflow 自身の ref（信頼 ref = 上のガードと job-level `if` で既定ブランチ起動に限定済み）を
+      # checkout する。ここでビルドする `cargo xtask ci verify-bump-lock`（判定主体）も信頼コードである。
+      - name: checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      # /nix/store を run 間・job 間でキャッシュする（static-checks.yml と同 action・同 key 規約・同 OS=ubuntu）。
+      # cache restore 時点の checkout は bump 前 flake.lock のため primary-key は static-checks（既定ブランチ PR）と
+      # 一致し、static-checks が温めた devShell closure と `nix flake check` の取得物を restore して open-pr の
+      # `nix develop`（verify-bump-lock の cargo build）と `nix flake check`（cargo xtask check static 内）を
+      # substitute する（cargo の crate ビルドは rust-cache 側が担う）。後段の artifact download で bump 後 lock に
+      # 差し替えるため、bump 後 nixpkgs に依存する derivation はその回だけ 1 度再ビルドしうる（限界として明記）。
+      # fail-safe。
+      - name: /nix/store をキャッシュ
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。verify-bump-lock の cargo build と
+      # `cargo xtask check static` で target/ の再ビルド回避が効く。static-checks.yml と同一 OS（ubuntu）のため
+      # shared-key を共有する。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: static-checks-${{ runner.os }}
+
+      - name: bump 済み lock を取得
+        uses: actions/download-artifact@v8
+        with:
+          name: bump-state
+
+      # 無更新の夜（record が history を書かない）は history-record artifact が無く download が失敗するが、clean
+      # no-op にするため失敗を許容する。一方 record が history を書いた夜（has_history=true）は download の一時失敗・
+      # 権限/破損エラーを握り潰さず fail-closed にする（history 欠落のまま flake.lock 単独 bump PR が auto-merge
+      # されるのを防ぐ）。失敗許容するのは無更新夜だけに限定する。
+      - name: 履歴 TOML を取得
+        uses: actions/download-artifact@v8
+        continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}
+        with:
+          name: history-record
+          path: docs/update-history
+
+      - name: bump ブランチを作成して commit
+        id: commit
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # 検査 base は実際の PR base（既定ブランチ）の SHA に揃える（checkout HEAD ではない）。
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          base_sha="$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}")"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          branch="nightly/bump-$(date -u +%Y%m%d%H%M%S)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          git switch -c "$branch"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add flake.lock docs/update-history
+          if git diff --cached --quiet; then
+            echo "no changes to propose"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore(deps): nightly flake.lock bump と更新履歴記録"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      # セキュリティチェック本体。判定主体は信頼 ref の dotfiles（このツリーで build）、検査対象は base..head の
+      # commit パス union と両端 flake.lock 差分。許可外パス混入・許可外 input rev 変更・空 bump があれば非 0
+      # 終了し、後続の static checks・status 投稿・PR 起票・merge へ進まない（fail-closed）。
+      - name: セキュリティチェック（verify-bump-lock）をインライン実行
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        run: |
+          set -euo pipefail
+          # 判定主体（保守コマンド）を devShell 内 cargo で実行し、ランタイムライブラリを `nix develop -c` 経由で
+          # 供給する。`cargo xtask check static` と同じ xtask 起動経路に揃える。
+          nix develop -c cargo xtask ci verify-bump-lock \
+            --base "${{ steps.commit.outputs.base_sha }}" \
+            --head "${{ steps.commit.outputs.head_sha }}" \
+            --repo .
+
+      # 実 static checks を bump 後 lock で実行する。static-checks.yml と同一コマンドで、GITHUB_TOKEN 起票 bot PR
+      # では他に誰も走らせないため必須。`nix flake check --all-systems` を含み、bump で config が eval 失敗して
+      # いないかを auto-merge 前に検知する真のゲートになる。失敗すれば step 失敗で job が止まり status 投稿へ
+      # 到達しない（required check 未充足・fail-closed）。
+      - name: 実 static checks（cargo xtask check static）を bump 後 lock で実行
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        run: |
+          set -euo pipefail
+          nix develop -c cargo xtask check static
+
+      - name: bump ブランチを push して PR 起票
+        id: pr
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push origin "${{ steps.commit.outputs.branch }}"
+          pr_url="$(gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "${{ steps.commit.outputs.branch }}" \
+            --title "chore(deps): nightly flake.lock bump" \
+            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\` と実 \`cargo xtask check static\`（static-checks.yml と同一）の両方が合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      # ①verify-bump-lock と ②実 static checks の両方が合格した場合に限り PR head へ `static checks` commit
+      # status を success で POST して required check を満たす。両 step は前段にあり、いずれか失敗すれば job が
+      # 止まり本 step に到達しない。`if: success()` を併用して前段成功を明示保証する。context 名は適用済み
+      # ruleset の required context（static-checks.yml の job 名 `static checks`）と一致させる。
+      - name: required check `static checks` status を投稿
+        if: ${{ success() && steps.pr.outputs.pr_url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.commit.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+            -f state=success \
+            -f context="static checks" \
+            -f target_url="${RUN_URL}" \
+            -f description="nightly-update run の verify-bump-lock + 実 static checks 合格"
+
+      # codex 自動レビューを起動する（Copilot は GitHub 側のネイティブ code review で走る）。
+      - name: codex レビューを依頼
+        if: ${{ steps.pr.outputs.pr_url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr comment "${{ steps.pr.outputs.pr_url }}" --body "@codex review"
+
+      - name: auto-merge を有効化
+        if: ${{ steps.pr.outputs.pr_url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr merge --auto --squash "${{ steps.pr.outputs.pr_url }}"
