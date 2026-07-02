@@ -65,3 +65,32 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-07-02T20:03:35Z"
+cursor_old = "a5500cc6ac636dd047eb56c62f84ecb3e648c83e"
+nixpkgs_old = "e52c192be9d7b2c4bd4aed326c8731b35f8bb75c"
+nixpkgs_new = "e8273b29fe1390ec8d4603f2477357555291432e"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "2アプリ更新"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-06-01"
+new = "2026-06-15"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://rust-analyzer.github.io/"
+change_item = []
+
+[[update.package]]
+name = "skaffold"
+old = "2.21.0"
+new = "2.23.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/GoogleContainerTools/skaffold/releases/tag/v2.23.0"
+change_item = []
