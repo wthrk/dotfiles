@@ -94,3 +94,22 @@ declared = true
 source = "nix"
 notes_url = "https://github.com/GoogleContainerTools/skaffold/releases/tag/v2.23.0"
 change_item = []
+
+[[update]]
+at = "2026-07-03T19:52:09Z"
+cursor_old = "a293f49bb6045a395ccfd6445054e7b99f82015e"
+nixpkgs_old = "e8273b29fe1390ec8d4603f2477357555291432e"
+nixpkgs_new = "e8273b29fe1390ec8d4603f2477357555291432e"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.81905"
+new = "26.623.101652"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
