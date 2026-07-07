@@ -109,7 +109,7 @@ jobs:
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}
+          shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}
 
       # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
       # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
@@ -223,7 +223,7 @@ jobs:
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}
+          shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}
 
       # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
       - name: bump 済み lock と bump 前 eval 版マップを取得
@@ -378,7 +378,7 @@ jobs:
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}
+          shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v8

@@ -47,7 +47,7 @@ jobs:
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: zsh-checks-${{ runner.os }}
+          shared-key: zsh-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
 
       - name: zsh checks
         run: nix develop -c cargo xtask check zsh
