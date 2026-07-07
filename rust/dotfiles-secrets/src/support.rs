@@ -4,6 +4,7 @@
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod aead;
+pub(crate) mod clock;
 pub(crate) mod process_io;
 pub(crate) mod protection;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]

@@ -1,961 +1,1685 @@
 #![cfg(feature = "secrets-internal-test-stub")]
-
-//! `dotfiles secrets` の公開 CLI 面と internal stub 経由の秘密値非露出を検証する integration test。
+//! `dotfiles secrets` の CLI 境界を feature-gated internal backend stub で検証する。
+//!
+//! Production command path は runtime env による real/stub 選択を持たない。この test target は
+//! port ごとの初期条件 spec JSON を env で渡し、CLI 実行後に port ごとの最終状態観測 JSON だけを
+//! 検証する。
 
 use std::{
-    io::Write,
-    process::{Command, Output, Stdio},
+    io::{ErrorKind, Read, Write},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
-type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+use anyhow::Context;
+use dotfiles_secrets::secrets_internal_test_stub_contract::{
+    BW_LOGIN_STUB_SPEC_ENV, BWS_STUB_SPEC_ENV, GIT_STUB_SPEC_ENV, GPG_STUB_SPEC_ENV,
+    STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV,
+};
+use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
+use serde_json::{Value, json};
 
-fn dotfiles(args: impl IntoIterator<Item = &'static str>) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_dotfiles"))
-        .args(args)
-        .output()?)
+const TIMEOUT: Duration = Duration::from_secs(15);
+const PRIMARY_SERIAL: u32 = 2001;
+const SPARE_SERIAL: u32 = 2002;
+
+type TestResult<T> = anyhow::Result<T>;
+
+struct CommandRun {
+    success: bool,
+    stdout: String,
+    stderr: String,
 }
 
-fn dotfiles_with_env(
-    args: impl IntoIterator<Item = &'static str>,
-    envs: impl IntoIterator<Item = (&'static str, String)>,
-) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_dotfiles"))
-        .args(args)
-        .envs(envs)
-        .output()?)
-}
-
-fn dotfiles_with_stdin(
-    args: impl IntoIterator<Item = &'static str>,
-    stdin_payload: &'static [u8],
-) -> TestResult<Output> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dotfiles"))
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(stdin_payload)?;
+impl CommandRun {
+    fn user_stdout(&self) -> String {
+        strip_observation_lines(&self.stdout)
     }
-    Ok(child.wait_with_output()?)
+
+    fn final_yubikey(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "yubikey")
+    }
+
+    fn final_bws(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "bws")
+    }
+
+    fn has_bws_observation(&self) -> bool {
+        has_observation(&self.stdout, "bws")
+    }
+
+    fn final_gpg(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "gpg")
+    }
+
+    fn final_git(&self) -> TestResult<Value> {
+        final_observation(&self.stdout, "git")
+    }
 }
 
-fn combined_output(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
+struct PtyRun {
+    success: bool,
+    output: String,
 }
 
-fn assert_no_leaks(text: &str, context: &str, forbidden: &[(&str, &str)]) {
-    for (label, leaked) in forbidden {
-        assert!(
-            !text.contains(leaked),
-            "{context} must not leak fixture value category `{label}`"
+impl PtyRun {
+    fn final_yubikey(&self) -> TestResult<Value> {
+        final_observation(&self.output, "yubikey")
+    }
+
+    fn final_bws(&self) -> TestResult<Value> {
+        final_observation(&self.output, "bws")
+    }
+}
+
+struct StubPorts {
+    yubikey_spec: Value,
+    bws_spec_value: Value,
+    gpg_spec: Value,
+    git_spec: Value,
+    bw_login_spec: Value,
+}
+
+impl StubPorts {
+    fn new(yubikey_spec: Value, bws_spec_value: Value) -> Self {
+        Self {
+            yubikey_spec,
+            bws_spec_value,
+            gpg_spec: empty_gpg_spec(),
+            git_spec: empty_git_spec(),
+            bw_login_spec: default_bw_login_spec(),
+        }
+    }
+
+    fn with_gpg(mut self, gpg_spec: Value) -> Self {
+        self.gpg_spec = gpg_spec;
+        self
+    }
+
+    fn with_git(mut self, git_spec: Value) -> Self {
+        self.git_spec = git_spec;
+        self
+    }
+
+    fn with_bw_login(mut self, bw_login_spec: Value) -> Self {
+        self.bw_login_spec = bw_login_spec;
+        self
+    }
+
+    fn apply_to_command(&self, command: &mut Command) -> TestResult<()> {
+        command
+            .env(
+                YUBIKEY_STUB_SPEC_ENV,
+                serde_json::to_string(&self.yubikey_spec)?,
+            )
+            .env(
+                BWS_STUB_SPEC_ENV,
+                serde_json::to_string(&self.bws_spec_value)?,
+            )
+            .env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?)
+            .env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?)
+            .env(
+                BW_LOGIN_STUB_SPEC_ENV,
+                serde_json::to_string(&self.bw_login_spec)?,
+            );
+        Ok(())
+    }
+
+    fn apply_to_pty_command(&self, command: &mut CommandBuilder) -> TestResult<()> {
+        command.env(
+            YUBIKEY_STUB_SPEC_ENV,
+            serde_json::to_string(&self.yubikey_spec)?,
         );
-    }
-}
-
-fn assert_no_primary_fingerprint_fixture_leaks(text: &str, context: &str) {
-    assert_no_leaks(
-        text,
-        context,
-        &[
-            (
-                "primary fingerprint full",
-                "0123456789abcdef0123456789abcdef01234567",
-            ),
-            ("primary fingerprint prefix16", "0123456789abcdef"),
-            ("primary fingerprint prefix8", "01234567"),
-            ("primary fingerprint display", "...4567"),
-        ],
-    );
-}
-
-fn assert_no_mismatched_fingerprint_fixture_leaks(text: &str, context: &str) {
-    assert_no_leaks(
-        text,
-        context,
-        &[
-            (
-                "mismatched fingerprint full",
-                "ffffffffffffffffffffffffffffffffffffffff",
-            ),
-            ("mismatched fingerprint prefix16", "ffffffffffffffff"),
-            ("mismatched fingerprint prefix8", "ffffffff"),
-            ("mismatched fingerprint display", "...ffff"),
-        ],
-    );
-}
-
-fn assert_serial_option_rejected(args: &[&'static str], context: &str) -> TestResult<()> {
-    let mut command = args.to_vec();
-    command.extend(["--serial", "12345678"]);
-    let output = dotfiles(command)?;
-    assert!(!output.status.success(), "{context} must reject --serial");
-
-    let text = combined_output(&output);
-    assert!(
-        text.contains("unexpected argument") || text.contains("unrecognized"),
-        "{context} must reject --serial at the clap boundary"
-    );
-    assert_no_leaks(&text, context, &[("serial fixture", "12345678")]);
-    Ok(())
-}
-
-#[test]
-/// secrets help が撤去済みの管理系語彙や CLI 経路を再公開しないことを固定する。
-fn secrets_help_does_not_expose_removed_manager_or_cli_paths() -> TestResult<()> {
-    let output = dotfiles(["secrets", "--help"])?;
-    assert!(output.status.success(), "help must render successfully");
-
-    let text = combined_output(&output);
-    for forbidden in [
-        "Bitwarden Secrets Manager",
-        "Secrets Manager",
-        "BWS",
-        "bws-access-token",
-        "bw-login",
-        "bw login",
-        "bw unlock",
-        "BW_SESSION",
-        "project",
-        "organization",
-    ] {
-        assert!(
-            !text.contains(forbidden),
-            "help must not contain removed management/session term"
+        command.env(
+            BWS_STUB_SPEC_ENV,
+            serde_json::to_string(&self.bws_spec_value)?,
         );
-    }
-    Ok(())
-}
-
-#[test]
-/// `bws-access-token` が YubiKey 保存対象として復活しないことを clap/domain 境界で固定する。
-fn yubikey_put_rejects_bws_access_token_secret_name() -> TestResult<()> {
-    let output = dotfiles(["secrets", "yubikey", "put", "bws-access-token"])?;
-    assert!(
-        !output.status.success(),
-        "bws-access-token must not be accepted as a YubiKey secret name"
-    );
-
-    let text = combined_output(&output);
-    assert!(
-        text.contains("unsupported YubiKey secret name"),
-        "unsupported storage name should be rejected at the CLI boundary"
-    );
-    assert!(
-        !text.contains("Bitwarden Secrets Manager")
-            && !text.contains("project")
-            && !text.contains("organization"),
-        "rejection must not reintroduce BWS/project/organization guidance"
-    );
-    Ok(())
-}
-
-#[test]
-/// 不正な YubiKey secret name は入力値を error に echo しない。
-fn yubikey_put_rejects_unknown_secret_name_without_echoing_input() -> TestResult<()> {
-    let output = dotfiles([
-        "secrets",
-        "yubikey",
-        "put",
-        "https://example.invalid/0123456789abcdef0123456789abcdef01234567",
-    ])?;
-    assert!(
-        !output.status.success(),
-        "unsupported secret name must fail"
-    );
-
-    let text = combined_output(&output);
-    assert!(
-        text.contains("unsupported YubiKey secret name"),
-        "unsupported storage name should be rejected with a fixed message"
-    );
-    assert_no_leaks(
-        &text,
-        "unsupported secret name error",
-        &[("unsupported secret name domain", "example.invalid")],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "unsupported secret name error");
-    Ok(())
-}
-
-#[test]
-/// 不正な YubiKey get secret name も入力値を error に echo しない。
-fn yubikey_get_rejects_unknown_secret_name_without_echoing_input() -> TestResult<()> {
-    let output = dotfiles([
-        "secrets",
-        "yubikey",
-        "get",
-        "https://example.invalid/0123456789abcdef0123456789abcdef01234567",
-    ])?;
-    assert!(
-        !output.status.success(),
-        "unsupported secret name must fail"
-    );
-
-    let text = combined_output(&output);
-    assert!(
-        text.contains("unsupported YubiKey secret name"),
-        "unsupported storage name should be rejected with a fixed message"
-    );
-    assert_no_leaks(
-        &text,
-        "unsupported get secret name error",
-        &[("unsupported secret name domain", "example.invalid")],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "unsupported get secret name error");
-    Ok(())
-}
-
-#[test]
-/// `yubikey get` の成功経路が seeded secret を非 terminal/piped stdout へ平文出力することを real binary で固定する。
-fn yubikey_get_writes_seeded_secret_to_piped_stdout() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "yubikey", "get", "bitwarden-client-id"],
-        [(
-            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-            r#"{"yubikeys":[{"serial":1000,"fixture":"seeded","bitwarden-client-id":"get-success-stdout-fixture","bitwarden-client-secret":"unused-get-secret"}]}"#.to_owned(),
-        )],
-    )?;
-
-    assert!(
-        output.status.success(),
-        "yubikey get should output the seeded secret over piped (non-terminal) stdout"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("get-success-stdout-fixture"),
-        "get success path must write the loaded secret to non-terminal stdout"
-    );
-    Ok(())
-}
-
-#[test]
-/// 削除済み `bw-login` command が clap 境界で拒否されることを固定する。
-fn bw_login_command_is_removed() -> TestResult<()> {
-    let output = dotfiles(["secrets", "bw-login"])?;
-    assert!(
-        !output.status.success(),
-        "removed bw-login command must fail"
-    );
-
-    let text = combined_output(&output);
-    assert!(
-        text.contains("unrecognized subcommand") || text.contains("invalid"),
-        "clap should reject removed bw-login command"
-    );
-    assert!(
-        !text.contains("BW_SESSION") && !text.contains("bw unlock") && !text.contains("bw login"),
-        "removed command must not surface bw CLI/session details"
-    );
-    Ok(())
-}
-
-#[test]
-/// `verify-yubikey` help が個人 vault check だけを公開することを固定する。
-fn verify_yubikey_help_only_exposes_personal_vault_check() -> TestResult<()> {
-    let output = dotfiles(["secrets", "verify-yubikey", "--help"])?;
-    assert!(
-        output.status.success(),
-        "verify help must render successfully"
-    );
-
-    let text = combined_output(&output);
-    assert!(text.contains("vault"), "vault check must be documented");
-    for forbidden in [
-        "BWS",
-        "bws-access-token",
-        "bw-login",
-        "BW_SESSION",
-        "project",
-        "organization",
-    ] {
-        assert!(
-            !text.contains(forbidden),
-            "verify help must not contain removed management/session term"
+        command.env(GPG_STUB_SPEC_ENV, serde_json::to_string(&self.gpg_spec)?);
+        command.env(GIT_STUB_SPEC_ENV, serde_json::to_string(&self.git_spec)?);
+        command.env(
+            BW_LOGIN_STUB_SPEC_ENV,
+            serde_json::to_string(&self.bw_login_spec)?,
         );
+        Ok(())
     }
-    Ok(())
 }
 
 #[test]
-/// 低水準 YubiKey put command が stdin secret 入力 option を公開しないことを固定する。
-fn yubikey_put_help_does_not_expose_stdin_secret_input() -> TestResult<()> {
-    let output = dotfiles(["secrets", "yubikey", "put", "--help"])?;
-    assert!(output.status.success(), "put help must render successfully");
-
-    let text = combined_output(&output);
-    assert!(
-        !text.contains("--stdin"),
-        "put help must not expose stdin secret input"
+fn setup_runs_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
+    let run = run_pipe_with_stub(["yubikey", "setup", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
     Ok(())
 }
 
 #[test]
-/// 削除済み `--stdin` option が clap 境界で拒否され、stdin payload を処理しないことを固定する。
-fn yubikey_put_stdin_secret_input_option_is_rejected() -> TestResult<()> {
-    let output = dotfiles_with_stdin(
+fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
         [
-            "secrets",
             "yubikey",
             "put",
-            "bitwarden-client-id",
+            "bws-access-token",
+            "--serial",
+            "2001",
             "--stdin",
         ],
-        b"stdin-secret-payload-must-not-be-processed\n",
+        Some("new-token\r"),
+        &stub,
     )?;
-    assert!(!output.status.success(), "removed --stdin option must fail");
 
-    let text = combined_output(&output);
-    assert!(
-        text.contains("unexpected argument") || text.contains("unrecognized"),
-        "clap should reject removed --stdin option"
-    );
-    assert!(
-        !text.contains("stdin-secret-payload-must-not-be-processed"),
-        "removed --stdin path must not echo or process stdin payload"
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert_stored_secret(
+        &run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bws-access-token",
+        "new-token\r",
     );
     Ok(())
 }
 
 #[test]
-/// secret-recovery の公開 command が YubiKey serial 指定 option を受け付けないことを固定する。
-fn secret_recovery_commands_reject_serial_option() -> TestResult<()> {
-    assert_serial_option_rejected(&["secrets", "yubikey", "enroll-primary"], "enroll-primary")?;
-    assert_serial_option_rejected(&["secrets", "restore-gpg"], "restore-gpg")?;
-    assert_serial_option_rejected(
-        &["secrets", "gpg-backup", "register"],
-        "gpg-backup register",
+fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["yubikey", "put", "bws-access-token", "--serial", "2001"],
+        Some("new-token\n"),
+        &stub,
     )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("bws-access-token: "));
+    assert_stored_secret(
+        &run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bws-access-token",
+        "new-token",
+    );
     Ok(())
 }
 
 #[test]
-/// `pass-remote register` が個人 vault adapter 境界を使い、URL 実値を出力しないことを検証する。
-fn pass_remote_register_creates_personal_vault_item_with_internal_stub() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "pass-remote", "register"],
+fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        None,
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert_eq!(run.user_stdout(), "token");
+    Ok(())
+}
+
+#[test]
+fn get_refuses_secret_output_to_tty_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    assert!(run.output.contains("refusing to write secret to terminal"));
+    Ok(())
+}
+
+#[test]
+fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
         [
-            yubikey_stub_env(),
-            ("DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON", r#"{"secrets":{}}"#.to_owned()),
-            (
-                "DOTFILES_SECRETS_GIT_STUB_SPEC_JSON",
-                r#"{"store_exists":true,"configured_origin_remote":"https://github.com/example-owner/password-store"}"#.to_owned(),
-            ),
+            "yubikey",
+            "enroll-primary",
+            "--serial",
+            "2001",
+            "--stdin-json",
         ],
+        Some(bootstrap_json()),
+        &stub,
     )?;
 
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "pass-remote register should use personal vault stub"
-    );
-    assert!(
-        text.contains(r#""port":"bitwarden-vault""#)
-            && text.contains(r#""password-store-remote":"<redacted>""#),
-        "vault stub should observe redacted created item"
-    );
-    assert!(
-        !text.contains("example-owner/password-store"),
-        "clone URL must not be echoed through CLI output"
-    );
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"role\": \"primary\""));
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bws-access-token", "token");
     Ok(())
 }
 
 #[test]
-/// vault 認証失敗時も error chain を保ち、secret と URL fixture 値を露出しないことを検証する。
-fn pass_remote_register_failure_renders_error_chain_without_secret_values() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "pass-remote", "register"],
+fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["yubikey", "enroll-primary", "--serial", "2001"],
+        Some("u@example.com\npw\ntoken\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("bw-email: "));
+    assert!(run.output.contains("bw-password: "));
+    assert!(run.output.contains("bws-access-token: "));
+    assert!(run.output.contains("\"role\": \"primary\""));
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bws-access-token", "token");
+    Ok(())
+}
+
+#[test]
+fn enroll_spare_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([
+            fresh_device_spec(PRIMARY_SERIAL),
+            fresh_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
         [
-            yubikey_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                r#"{"auth_fails":true}"#.to_owned(),
-            ),
-            (
-                "DOTFILES_SECRETS_GIT_STUB_SPEC_JSON",
-                r#"{"store_exists":true,"configured_origin_remote":"https://github.com/example-owner/password-store"}"#.to_owned(),
-            ),
+            "yubikey",
+            "enroll-spare",
+            "--primary-serial",
+            "2001",
+            "--spare-serial",
+            "2002",
+            "--stdin-json",
         ],
+        Some(bootstrap_json()),
+        &stub,
     )?;
 
-    let text = combined_output(&output);
-    assert!(!output.status.success(), "vault auth failure should fail");
-    assert!(
-        text.contains("caused by:"),
-        "CLI must render the anyhow source chain"
-    );
-    assert!(
-        text.contains("Bitwarden vault internal stub rejected the provided account API key"),
-        "source error must be preserved"
-    );
-    assert_no_leaks(
-        &text,
-        "pass-remote register failure output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("password-store remote URL", "example-owner/password-store"),
-        ],
-    );
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"role\": \"spare\""));
+    assert!(stdout.contains("\"serial\": 2002"));
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bws-access-token", "token");
     Ok(())
 }
 
 #[test]
-/// `verify-yubikey --check vault` が個人 vault adapter 境界を使い、secret と URL を出力しないことを検証する。
-fn verify_yubikey_vault_check_uses_personal_vault_internal_stub() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "verify-yubikey", "--check", "vault"],
+fn enroll_spare_without_secret_reentry() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            fresh_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
         [
-            yubikey_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                format!(
-                    r#"{{"secrets":{{"password-store-remote":"git@github.com:example-owner/password-store.git","gpg-secret-key-backup":{}}}}}"#,
-                    serde_json::to_string(&gpg_backup_envelope_json())?
-                ),
-            ),
+            "yubikey",
+            "enroll-spare",
+            "--primary-serial",
+            "2001",
+            "--spare-serial",
+            "2002",
         ],
+        None,
+        &stub,
     )?;
 
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "verify-yubikey --check vault should pass through personal vault stub"
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(run.user_stdout().contains("\"role\": \"spare\""));
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bws-access-token", "token");
+    Ok(())
+}
+
+#[test]
+fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
     );
-    assert!(
-        text.contains(r#""port":"bitwarden-vault""#),
-        "vault stub should be exercised"
-    );
-    assert_no_leaks(
-        &text,
-        "verify-yubikey vault output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("password-store remote URL", "example-owner/password-store"),
-        ],
+    let run = run_pipe_with_stub(
+        ["yubikey", "rotate-bws-token", "--serial", "2001", "--stdin"],
+        Some("new-token\r"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"serial\": 2001"));
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    assert_stored_secret(
+        &run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bws-access-token",
+        "new-token\r",
     );
     Ok(())
 }
 
 #[test]
-/// `gpg-backup register` が既存 envelope を個人 vault adapter 境界で照合することを検証する。
-fn gpg_backup_register_uses_personal_vault_internal_stub() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "gpg-backup", "register"],
+fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["yubikey", "rotate-bws-token", "--serial", "2001"],
+        Some("new-token\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("bws-access-token: "));
+    assert!(run.output.contains("\"serial\": 2001"));
+    assert_stored_secret(
+        &run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bws-access-token",
+        "new-token",
+    );
+    Ok(())
+}
+
+#[test]
+fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["yubikey", "rotate-bws-token"],
+        Some("1\nnew-token\ny\n2\nn\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("rotate another YubiKey? [y/N]: "));
+    assert!(run.output.contains("\"serial\": 2001"));
+    assert!(run.output.contains("\"serial\": 2002"));
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bws-access-token",
+        "new-token",
+    );
+    assert_stored_secret(
+        &final_yubikey,
+        SPARE_SERIAL,
+        "bws-access-token",
+        "new-token",
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_runs_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"skipped\""));
+    assert!(!run.has_bws_observation());
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_runs_bws_external_check() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup_and_pass_remote(&envelope, RESTORE_PASS_REMOTE),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bws"],
+        None,
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["gpg-secret-key-backup"],
+        json!(envelope)
+    );
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE)
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_bws_check_reports_failed_for_invalid_backup_schema() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup_and_pass_remote("not-json", RESTORE_PASS_REMOTE),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bws"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"failed\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_bws_check_reports_failed_for_invalid_primary_fingerprint() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL).replace(
+        RESTORE_PRIMARY_FP,
+        "0123456789ABCDEF0123456789abcdef01234567",
+    );
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup_and_pass_remote(&envelope, RESTORE_PASS_REMOTE),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bws"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"failed\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_bws_check_reports_failed_for_recipient_mismatch() -> TestResult<()> {
+    let envelope = restore_envelope_json(SPARE_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup_and_pass_remote(&envelope, RESTORE_PASS_REMOTE),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bws"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"failed\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("multiple YubiKeys detected; pass --serial to select a device")
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_auto_selects_single_detected_device() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["verify-yubikey"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"serial\": 2001"));
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["verify-yubikey", "--all", "--check", "bws"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("--all and --check cannot be used together")
+    );
+    assert!(
+        !run.stderr
+            .contains("multiple YubiKeys detected; pass --serial to select a device"),
+        "input precondition must fail before device resolution: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn bw_login_reads_yubikey_secrets_and_surfaces_session() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    // OTP は単回トークンとして stdin pipe（非 TTY）から 1 行で読む。
+    let run = run_pipe_with_stub(
+        ["bw-login", "--serial", "2001"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    // stdout は単一 JSON として機械可読に保ち、session key を含める。master password は出力しない。
+    assert!(stdout.contains("\"bw_login\": \"ok\""));
+    assert!(stdout.contains("\"bw_session\": \"STUBSESSIONKEY==\""));
+    // 利用者が export できるヒント行は stderr に出し、stdout の JSON 機械可読性を保つ。
+    assert!(
+        !stdout.contains("export BW_SESSION="),
+        "export hint must not break stdout JSON: {stdout}"
+    );
+    assert!(run.stderr.contains("export BW_SESSION='STUBSESSIONKEY=='"));
+    assert!(
+        !stdout.contains("pw"),
+        "master password must not be surfaced"
+    );
+    assert!(
+        !run.stderr.contains("pw"),
+        "master password must not be surfaced"
+    );
+    // stub observation: YubiKey の bw-email と入力 OTP を観測し、unlock 済みになる。
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(final_bw_login["observed_email"], json!("u@example.com"));
+    assert_eq!(final_bw_login["observed_otp"], json!("ccccbtdvotp"));
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn bw_login_uses_email_override() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
         [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            git_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                format!(
-                    r#"{{"secrets":{{"gpg-secret-key-backup":{}}}}}"#,
-                    serde_json::to_string(&gpg_backup_envelope_json())?
-                ),
-            ),
+            "bw-login",
+            "--serial",
+            "2001",
+            "--email",
+            "override@example.com",
         ],
+        Some("ccccbtdvotp\n"),
+        &stub,
     )?;
 
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "gpg-backup register should validate existing personal vault envelope"
+    assert!(run.success, "stderr: {}", run.stderr);
+    // override 指定時は YubiKey の bw-email ではなく override が login email として使われる。
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(
+        final_bw_login["observed_email"],
+        json!("override@example.com")
     );
-    assert!(
-        text.contains(r#""port":"bitwarden-vault""#),
-        "vault stub should be exercised"
-    );
-    assert_no_leaks(
-        &text,
-        "gpg-backup register output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-        ],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "gpg-backup register output");
+    assert_eq!(final_bw_login["unlocked"], json!(true));
     Ok(())
 }
 
 #[test]
-/// `gpg-backup register` の失敗時も error chain を保ち、secret と fingerprint fixture 値を出さないことを検証する。
-fn gpg_backup_register_failure_preserves_chain_without_secret_values() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "gpg-backup", "register"],
+fn bw_login_fails_when_master_password_does_not_match() -> TestResult<()> {
+    // stub の expected_password を YubiKey 値（"pw"）と不一致にして login 失敗を再現する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    )
+    .with_bw_login(json!({
+        "expected_password": "different",
+        "session_key": "STUBSESSIONKEY=="
+    }));
+    let run = run_pipe_with_stub(
+        ["bw-login", "--serial", "2001"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    // 失敗時は session を surface しない。
+    assert!(!run.user_stdout().contains("export BW_SESSION="));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_runs_bw_login_external_check() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--check", "bw-login"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(final_bw_login["unlocked"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_bw_login_check_uses_email_override() -> TestResult<()> {
+    // `--check bw-login --email <override>` は override email で bw-login 確認を行い、YubiKey の bw-email
+    // （"u@example.com"）を login email に使わない（spec L286）。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
         [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            git_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                r#"{"auth_fails":true}"#.to_owned(),
-            ),
+            "verify-yubikey",
+            "--serial",
+            "2001",
+            "--check",
+            "bw-login",
+            "--email",
+            "override@example.com",
         ],
+        Some("ccccbtdvotp\n"),
+        &stub,
     )?;
 
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "vault auth failure should fail gpg-backup register"
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    let final_bw_login = final_observation(&run.stdout, "bw-login")?;
+    assert_eq!(
+        final_bw_login["observed_email"],
+        json!("override@example.com")
     );
-    assert!(
-        text.contains("caused by:"),
-        "CLI must render the anyhow source chain"
-    );
-    assert!(
-        text.contains("Bitwarden vault internal stub rejected the provided account API key"),
-        "source error must be preserved"
-    );
-    assert_no_leaks(
-        &text,
-        "gpg-backup register failure output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-        ],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "gpg-backup register failure output");
+    assert_eq!(final_bw_login["unlocked"], json!(true));
     Ok(())
 }
 
 #[test]
-/// `gpg-backup register` は既存 envelope の検証専用であり、missing 時は作成せず停止することを固定する。
-fn gpg_backup_register_missing_envelope_fails_without_secret_values() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "gpg-backup", "register"],
+fn verify_yubikey_all_includes_bw_login_and_bws_checks() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup_and_pass_remote(&envelope, RESTORE_PASS_REMOTE),
+    );
+    let run = run_pipe_with_stub(
+        ["verify-yubikey", "--serial", "2001", "--all"],
+        Some("ccccbtdvotp\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    // `--all` は bws と bw-login の両方の外部確認を含む（spec L107）。
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(!stdout.contains("\"status\": \"skipped\""));
+    assert!(!stdout.contains("\"status\": \"failed\""));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_no_args_leaves_bw_login_skipped() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    // 引数なし実行では bw-login 外部確認は machine-readable な skipped として残す（spec L155）。
+    assert!(stdout.contains("\"name\": \"bw-login\""));
+    assert!(stdout.contains("\"status\": \"skipped\""));
+    Ok(())
+}
+
+#[test]
+fn put_stdin_requires_serial_before_reading_secret() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["yubikey", "put", "bws-access-token", "--stdin"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stderr.contains("pass --serial in non-interactive use"));
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_audits_stub_route_in_internal_stub_build() -> TestResult<()> {
+    let run = run_pipe_without_stub(["verify-yubikey"], None)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("YubiKey internal stub spec JSON is not configured"),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()> {
+    let initial = yubikey_spec_requiring_pin([provisioned_device_spec(PRIMARY_SERIAL)]);
+    let stub = StubPorts::new(initial, bws_spec());
+    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("PIN") || run.stderr.contains("pin"),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let put_run = run_pipe_with_stub(
         [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            git_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                r#"{"secrets":{}}"#.to_owned(),
-            ),
+            "yubikey",
+            "put",
+            "bws-access-token",
+            "--serial",
+            "2001",
+            "--stdin",
         ],
+        Some("new-token\r"),
+        &stub,
     )?;
-
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "missing gpg backup envelope should fail"
-    );
-    assert!(
-        text.contains("gpg-secret-key-backup is not registered"),
-        "missing envelope failure must explain precondition without creating a backup"
-    );
-    assert_no_leaks(
-        &text,
-        "missing envelope output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-        ],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "missing envelope output");
-    Ok(())
-}
-
-#[test]
-/// `restore-gpg` が個人 vault / YubiKey / GPG stub 境界を通り、secret と fingerprint を出力しないことを検証する。
-fn restore_gpg_uses_internal_stubs_without_exposing_secret_values() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "restore-gpg"],
-        [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                format!(
-                    r#"{{"secrets":{{"gpg-secret-key-backup":{}}}}}"#,
-                    serde_json::to_string(&restore_gpg_envelope_json())?
-                ),
-            ),
-        ],
-    )?;
-
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "restore-gpg should pass through internal stubs"
-    );
-    assert!(
-        text.contains(r#""port":"bitwarden-vault""#)
-            && text.contains(r#""port":"yubikey""#)
-            && text.contains(r#""port":"gpg""#),
-        "restore-gpg should exercise vault, YubiKey, and GPG stubs"
-    );
-    assert_no_leaks(
-        &text,
-        "restore-gpg output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("master password", "stub-master-password"),
-            (
-                "decrypted backup fingerprint",
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            ),
-        ],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "restore-gpg output");
-    Ok(())
-}
-
-/// `restore-gpg` は復号済み backup と envelope metadata の primary fingerprint 不一致で停止する。
-#[test]
-fn restore_gpg_rejects_mismatched_envelope_without_exposing_secret_values() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "restore-gpg"],
-        [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                format!(
-                    r#"{{"secrets":{{"gpg-secret-key-backup":{}}}}}"#,
-                    serde_json::to_string(&restore_gpg_mismatched_envelope_json())?
-                ),
-            ),
-        ],
-    )?;
-
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "restore-gpg should reject mismatched envelope metadata"
-    );
-    assert!(
-        text.contains("decrypted gpg backup primary fingerprint does not match"),
-        "restore-gpg mismatch failure must preserve the application error"
-    );
-    assert!(
-        text.contains(r#""port":"bitwarden-vault""#) && text.contains(r#""port":"yubikey""#),
-        "restore-gpg mismatch should exercise binary vault/YubiKey stub path before import"
-    );
-    assert_no_leaks(
-        &text,
-        "restore-gpg mismatch output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("master password", "stub-master-password"),
-        ],
-    );
-    assert_no_primary_fingerprint_fixture_leaks(&text, "restore-gpg mismatch output");
-    assert_no_mismatched_fingerprint_fixture_leaks(&text, "restore-gpg mismatch output");
-    Ok(())
-}
-
-#[test]
-/// `restore-pass` が password-store remote を clone しても URL 実値を stub 観測へ出さないことを検証する。
-fn restore_pass_redacts_git_remote_in_internal_stub_observation() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "restore-pass"],
-        [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                r#"{"secrets":{"password-store-remote":"git@github.com:example-owner/password-store.git"}}"#.to_owned(),
-            ),
-            (
-                "DOTFILES_SECRETS_GIT_STUB_SPEC_JSON",
-                r#"{"store_exists":false}"#.to_owned(),
-            ),
-        ],
-    )?;
-
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "restore-pass should pass through internal stubs"
-    );
-    assert!(
-        text.contains(r#""port":"git""#) && text.contains(r#""cloned_remote_count":1"#),
-        "git stub should observe clone count without URL"
-    );
-    assert_no_leaks(
-        &text,
-        "restore-pass output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("master password", "stub-master-password"),
-            ("password-store remote URL", "example-owner/password-store"),
-        ],
-    );
-    Ok(())
-}
-
-/// `restore-pass` は vault 由来 remote が GitHub SSH clone URL でない場合に clone 前で停止する。
-#[test]
-fn restore_pass_rejects_invalid_remote_without_cloning_or_exposing_url() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "restore-pass"],
-        [
-            yubikey_stub_env(),
-            gpg_stub_env(),
-            (
-                "DOTFILES_SECRETS_VAULT_STUB_SPEC_JSON",
-                r#"{"secrets":{"password-store-remote":"https://github.com/example-owner/password-store"}}"#.to_owned(),
-            ),
-            (
-                "DOTFILES_SECRETS_GIT_STUB_SPEC_JSON",
-                r#"{"store_exists":false}"#.to_owned(),
-            ),
-        ],
-    )?;
-
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "restore-pass should reject invalid vault remote"
-    );
-    assert!(
-        text.contains("password-store-remote must be a git@github.com SSH clone URL"),
-        "restore-pass invalid remote failure must preserve the domain error"
-    );
-    assert!(
-        !text.contains(r#""port":"git""#) && !text.contains(r#""cloned_remote_count":1"#),
-        "restore-pass invalid remote must stop before clone"
-    );
-    assert_no_leaks(
-        &text,
-        "restore-pass invalid remote output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("master password", "stub-master-password"),
-            ("password-store remote URL", "example-owner/password-store"),
-        ],
-    );
-    Ok(())
-}
-
-/// `enroll-primary` は binary 経路で input port 由来の 2 bootstrap secret だけを保存し、
-/// init で生成した slot 公開鍵を store の seal まで引き回した（Some 経路）ことを観測で固定する。
-#[test]
-fn enroll_primary_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "yubikey", "enroll-primary"],
-        [(
-            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-            r#"{"yubikeys":[{"serial":1000,"fixture":"fresh"}]}"#.to_owned(),
-        )],
-    )?;
-
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "enroll-primary should store bootstrap secrets through YubiKey stub"
-    );
-    assert!(
-        text.contains(r#""bitwarden-client-id":"<redacted>""#)
-            && text.contains(r#""bitwarden-client-secret":"<redacted>""#),
-        "YubiKey observation should contain only redacted bootstrap secret names"
-    );
-    assert!(
-        text.contains(
-            r#""sealed_with_generated_key":{"bitwarden-client-id":"stub-generated-public-key-1000","bitwarden-client-secret":"stub-generated-public-key-1000"}"#
-        ),
-        "store must seal both bootstrap secrets with the slot public key generated during init \
-         (init generate_key Some -> adapter capture -> store seal carry-through)"
-    );
-    assert_no_leaks(
-        &text,
-        "enroll-primary output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("master password", "stub-master-password"),
-            ("removed token name", "bws-access-token"),
-            ("vault remote item name", "password-store-remote"),
-            ("vault backup item name", "gpg-secret-key-backup"),
-        ],
-    );
-    Ok(())
-}
-
-/// `enroll-primary` は複数 YubiKey 接続時に secret 入力や保存へ進まず停止する。
-#[test]
-fn enroll_primary_rejects_multiple_yubikeys_before_secret_input() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "yubikey", "enroll-primary"],
-        [(
-            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-            r#"{"yubikeys":[{"serial":1000,"fixture":"fresh"},{"serial":1001,"fixture":"fresh"}]}"#
-                .to_owned(),
-        )],
-    )?;
-
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "enroll-primary should reject multiple YubiKeys"
-    );
-    assert!(
-        text.contains("multiple YubiKeys detected") && text.contains("connect exactly one YubiKey"),
-        "multiple-device failure must explain the operation constraint"
-    );
-    assert_no_leaks(
-        &text,
-        "multiple-device failure output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("bootstrap client id name", "bitwarden-client-id"),
-            ("bootstrap client secret name", "bitwarden-client-secret"),
-        ],
+    assert!(put_run.success, "stderr: {}", put_run.stderr);
+    assert_stored_secret(
+        &put_run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bws-access-token",
+        "new-token\r",
     );
     Ok(())
 }
 
 #[test]
-/// `enroll-spare` が input port 由来の 2 secret だけを YubiKey storage に保存し、
-/// init で生成した slot 公開鍵を store の seal まで引き回した（Some 経路）ことを観測で固定する。
-fn enroll_spare_stores_only_bootstrap_secrets_with_internal_stub() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "yubikey", "enroll-spare"],
-        [(
-            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-            r#"{"yubikeys":[{"serial":1001,"fixture":"fresh"}]}"#.to_owned(),
-        )],
+fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
+    let initial_device =
+        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-token");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
+    let run = run_pipe_with_stub(
+        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        None,
+        &stub,
     )?;
 
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "enroll-spare should store bootstrap secrets through YubiKey stub"
-    );
-    assert!(
-        text.contains(r#""bitwarden-client-id":"<redacted>""#)
-            && text.contains(r#""bitwarden-client-secret":"<redacted>""#),
-        "YubiKey observation should contain only redacted bootstrap secret names"
-    );
-    assert!(
-        text.contains(
-            r#""sealed_with_generated_key":{"bitwarden-client-id":"stub-generated-public-key-1001","bitwarden-client-secret":"stub-generated-public-key-1001"}"#
-        ),
-        "store must seal both bootstrap secrets with the slot public key generated during init \
-         (init generate_key Some -> adapter capture -> store seal carry-through)"
-    );
-    assert_no_leaks(
-        &text,
-        "enroll-spare output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-            ("master password", "stub-master-password"),
-            ("removed token name", "bws-access-token"),
-            ("vault remote item name", "password-store-remote"),
-            ("vault backup item name", "gpg-secret-key-backup"),
-        ],
-    );
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert_eq!(run.user_stdout(), "seed-token");
     Ok(())
 }
 
-/// `enroll-spare` は鍵生成に PIN を要する fresh spare でも、CLI PIN 入力 port から PIN を取得して
-/// 鍵生成・保存まで進む（primary と同じ PIN 取得経路）。
+#[test]
+fn get_fails_when_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
+    let initial_device = storage_decode_error_device_spec(
+        provisioned_device_spec(PRIMARY_SERIAL),
+        "bws-access-token",
+    );
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
+    let run = run_pipe_with_stub(
+        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stderr.contains("failed to decode bws-access-token"));
+    Ok(())
+}
+
+#[test]
+fn rotate_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
+    let initial_device =
+        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-password");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
+    let run = run_pipe_with_stub(
+        ["yubikey", "rotate-bws-token", "--serial", "2001", "--stdin"],
+        Some("new-token\r"),
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stderr.contains("failed to decode bw-password"));
+    Ok(())
+}
+
+#[test]
+fn verify_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
+    let initial_device =
+        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-email");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
+    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stderr.contains("failed to decode bw-email"));
+    Ok(())
+}
+
+fn run_pipe_with_stub<const N: usize>(
+    args: [&str; N],
+    input: Option<&str>,
+    stub: &StubPorts,
+) -> TestResult<CommandRun> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command
+        .arg("secrets")
+        .args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    stub.apply_to_command(&mut command)?;
+
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().context("failed to open child stdin")?;
+        write_child_stdin(&mut stdin, input)?;
+    }
+
+    let output = child.wait_with_output()?;
+    Ok(CommandRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    })
+}
+
+fn run_pipe_without_stub<const N: usize>(
+    args: [&str; N],
+    input: Option<&str>,
+) -> TestResult<CommandRun> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command
+        .arg("secrets")
+        .args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().context("failed to open child stdin")?;
+        write_child_stdin(&mut stdin, input)?;
+    }
+
+    let output = child.wait_with_output()?;
+    Ok(CommandRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    })
+}
+
+fn run_pty_with_stub<const N: usize>(
+    args: [&str; N],
+    input: Option<&str>,
+    stub: &StubPorts,
+) -> TestResult<PtyRun> {
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command.arg("secrets");
+    command.args(args);
+    stub.apply_to_pty_command(&mut command)?;
+    let mut child = pair.slave.spawn_command(command)?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader()?;
+    let output_handle = thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).map(|_| output)
+    });
+
+    if let Some(input) = input {
+        let mut writer = pair.master.take_writer()?;
+        writer.write_all(input.as_bytes())?;
+        drop(writer);
+    }
+
+    let status = wait_pty_child(&mut child)?;
+    drop(pair.master);
+    let output = output_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join PTY output reader"))??;
+    Ok(PtyRun {
+        success: status.success(),
+        output,
+    })
+}
+
+fn write_child_stdin(mut stdin: impl Write, input: &str) -> TestResult<()> {
+    match stdin.write_all(input.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn wait_pty_child(
+    child: &mut Box<dyn Child + Send + Sync>,
+) -> TestResult<portable_pty::ExitStatus> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            let _ = child.wait();
+            anyhow::bail!("timed out waiting for PTY child process");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn yubikey_spec<const N: usize>(yubikeys: [Value; N]) -> Value {
+    let yubikeys = Vec::from(yubikeys);
+    json!({
+        "yubikeys": yubikeys,
+        "requires_pin": false
+    })
+}
+
+fn yubikey_spec_requiring_pin<const N: usize>(yubikeys: [Value; N]) -> Value {
+    let yubikeys = Vec::from(yubikeys);
+    json!({
+        "yubikeys": yubikeys,
+        "requires_pin": true
+    })
+}
+
+/// 既定 bw-login stub spec。provisioned fixture の `bw-password`（"pw"）と一致した場合だけ login 成功とし、
+/// 成功時に固定 session key を返す。
+fn default_bw_login_spec() -> Value {
+    json!({
+        "expected_password": "pw",
+        "session_key": "STUBSESSIONKEY=="
+    })
+}
+
+fn fresh_device_spec(serial: u32) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "fresh"
+    })
+}
+
+fn provisioned_device_spec(serial: u32) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "provisioned"
+    })
+}
+
+fn writable_bws_access_token_device_spec(serial: u32) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "writable-bws-access-token"
+    })
+}
+
+fn seeded_device_spec(
+    serial: u32,
+    bw_email: &str,
+    bw_password: &str,
+    bws_access_token: &str,
+) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "seeded",
+        "bw-email": bw_email,
+        "bw-password": bw_password,
+        "bws-access-token": bws_access_token
+    })
+}
+
+fn storage_decode_error_device_spec(mut device: Value, secret_name: &str) -> Value {
+    device["storage_decode_errors"] = json!([secret_name]);
+    device
+}
+
+fn bws_spec() -> Value {
+    json!({
+        "fixture": "default-recovery-project"
+    })
+}
+
+/// restore-gpg integration 用の primary fingerprint（lowercase hex 40）。
+const RESTORE_PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
+/// restore-gpg integration 用の authentication subkey keygrip（uppercase hex 40）。
+const RESTORE_KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
+/// restore-gpg integration 用の OpenSSH 公開鍵 1 行。
 ///
-/// internal backend stub の `requires_pin` 初期条件で、PIN 検証つき init が生成した slot 公開鍵を
-/// store の seal まで引き回す Some 経路（`sealed_with_generated_key` 観測）を網羅する。
-#[test]
-fn enroll_spare_acquires_pin_and_generates_key_when_required() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "yubikey", "enroll-spare"],
-        [(
-            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-            r#"{"yubikeys":[{"serial":1001,"fixture":"fresh"}],"requires_pin":true}"#.to_owned(),
-        )],
-    )?;
+/// base64 本体は real adapter 同様に key blob として decode できる必要があるため、padding 込みで
+/// 4 の倍数長の妥当な standard base64 を使う。
+const RESTORE_SSH_LINE: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGdvb2RrZXlibG9iZ29vZGtleWJsb2Jnb29ka2V5MDE= restore@example";
 
-    let text = combined_output(&output);
-    assert!(
-        output.status.success(),
-        "enroll-spare must acquire the PIN and generate the key when key generation requires a PIN"
-    );
-    assert!(
-        text.contains(
-            r#""sealed_with_generated_key":{"bitwarden-client-id":"stub-generated-public-key-1001","bitwarden-client-secret":"stub-generated-public-key-1001"}"#
-        ),
-        "store must seal both bootstrap secrets with the slot public key generated during PIN-verified init"
-    );
-    assert_no_leaks(
-        &text,
-        "enroll-spare requires-pin output",
-        &[
-            ("account API client id", "stub-client-id"),
-            ("account API client secret", "stub-client-secret"),
-        ],
-    );
-    Ok(())
+/// serial を stub recipient fingerprint（lowercase hex 64）へ写像する（adapter stub と同じ規約）。
+fn stub_recipient_fingerprint(serial: u32) -> String {
+    let prefix = format!("{serial:08x}");
+    let mut fingerprint = prefix.repeat(8);
+    fingerprint.truncate(64);
+    fingerprint
 }
 
-/// internal stub build の `yubikey setup` は固定 PIN で鍵生成つき初期化まで進める。
+/// GPG stub が空でも spec 未設定にしない既定値（鍵なし）。
+fn empty_gpg_spec() -> Value {
+    json!({ "existing_keys": [], "keys": {} })
+}
+
+/// import 後の鍵を解決できる GPG stub spec を作る。
+fn gpg_spec_with_importable_key() -> Value {
+    json!({
+        "existing_keys": [],
+        "keys": {
+            RESTORE_PRIMARY_FP: {
+                "capabilities": ["encryption", "authentication", "signing"],
+                "keygrip": RESTORE_KEYGRIP,
+                "ssh_public_key": RESTORE_SSH_LINE
+            }
+        }
+    })
+}
+
+/// restore-pass integration 用の `.gpg-id` recipient（Git stub 既定 recipient と整合する fingerprint）。
+const RESTORE_PASS_RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+
+/// restore-pass の clone 後可読性確認が成功する GPG stub spec を作る。
 ///
-/// production build では interactive `PinInputPort` が controlling TTY から PIN を取得するが、
-/// `secrets-internal-test-stub` feature では `ProcessIoAdapter::read_pin()` が固定 PIN を返す。
-/// したがって fresh device + `requires_pin` 条件でも CLI 公開経路が setup を完了できることを固定する。
-#[test]
-fn setup_acquires_pin_when_key_generation_requires_it() -> TestResult<()> {
-    let output = dotfiles_with_env(
-        ["secrets", "yubikey", "setup"],
-        [(
-            "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-            r#"{"yubikeys":[{"serial":1001,"fixture":"fresh"}],"requires_pin":true}"#.to_owned(),
-        )],
-    )?;
+/// restore-pass は ssh-agent を検査しない（gpg-agent SSH support の確認は restore-gpg の責務。設計 L116-124）
+/// ため、agent identity 系の設定は持たない。`held_recipients` に `.gpg-id` recipient を含み、
+/// `store_entry_decryptable` でサンプル entry の復号可否も成功させる。
+fn gpg_spec_for_restore_pass() -> Value {
+    json!({
+        "existing_keys": [],
+        "keys": {},
+        "held_recipients": [RESTORE_PASS_RECIPIENT],
+        "store_entry_decryptable": true
+    })
+}
 
-    let text = combined_output(&output);
+/// 同一 primary fingerprint の鍵が既存する GPG stub spec を作る。
+fn gpg_spec_with_existing_key() -> Value {
+    json!({
+        "existing_keys": [RESTORE_PRIMARY_FP],
+        "keys": {
+            RESTORE_PRIMARY_FP: {
+                "capabilities": ["encryption", "authentication", "signing"],
+                "keygrip": RESTORE_KEYGRIP,
+                "ssh_public_key": RESTORE_SSH_LINE
+            }
+        }
+    })
+}
+
+/// 接続中 serial の stub recipient に一致する encrypted envelope JSON を作る。
+///
+/// cipher stub は envelope body をそのまま復号済み backup として返すため、body は primary fingerprint
+/// hex 文字列の base64（`MDEy...Nw==`）とし、keyring stub がそこから fingerprint を解決できるようにする。
+fn restore_envelope_json(serial: u32) -> String {
+    let pubkey = stub_recipient_fingerprint(serial);
+    json!({
+        "version": 1,
+        "metadata": {
+            "primary_fingerprint": RESTORE_PRIMARY_FP,
+            "exported_at": "2026-05-31T00:00:00Z",
+            "dek_alg": "aes-256-gcm",
+            "recipient_kek_alg": "rsa-oaep-sha256"
+        },
+        "recipients": [
+            {
+                "yubikey_serial": serial.to_string(),
+                "piv_slot": "82",
+                "public_key_fingerprint": pubkey,
+                "wrapped_dek": "d3JhcHBlZA=="
+            }
+        ],
+        "ciphertext": {
+            "nonce": "EBESExQVFhcYGRob",
+            "body": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nw==",
+            "tag": "gIGCg4SFhoeIiYqLjI2Ojw=="
+        }
+    })
+    .to_string()
+}
+
+/// gpg-secret-key-backup envelope を override した BWS spec を作る。
+fn bws_spec_with_backup(envelope_json: &str) -> Value {
+    json!({
+        "fixture": "default-recovery-project",
+        "gpg_secret_key_backup": envelope_json
+    })
+}
+
+fn bws_spec_with_backup_and_pass_remote(envelope_json: &str, remote: &str) -> Value {
+    json!({
+        "fixture": "default-recovery-project",
+        "gpg_secret_key_backup": envelope_json,
+        "password_store_remote": remote
+    })
+}
+
+/// restore-pass integration 用の妥当な GitHub SSH clone URL。
+const RESTORE_PASS_REMOTE: &str = "git@github.com:owner/password-store.git";
+
+/// password-store-remote を妥当な clone URL へ override した BWS spec を作る。
+fn bws_spec_with_pass_remote(remote: &str) -> Value {
+    json!({
+        "fixture": "default-recovery-project",
+        "password_store_remote": remote
+    })
+}
+
+/// Git stub が空でも spec 未設定にしない既定値（store なし・clone 後 `.gpg-id` あり）。
+fn empty_git_spec() -> Value {
+    json!({ "store_exists": false, "gpg_id_present": true })
+}
+
+/// clone 前から `~/.password-store` が存在する Git stub spec を作る。
+fn git_spec_with_existing_store() -> Value {
+    json!({ "store_exists": true, "gpg_id_present": true })
+}
+
+/// clone 後 store に `.gpg-id` が無い（`pass` から読めない）Git stub spec を作る。
+fn git_spec_with_unreadable_store() -> Value {
+    json!({ "store_exists": false, "gpg_id_present": false })
+}
+
+#[test]
+fn restore_pass_clones_store_and_confirms_readability_with_stub_paths() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
+    )
+    .with_gpg(gpg_spec_for_restore_pass());
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
     assert!(
-        output.status.success(),
-        "yubikey setup must succeed in internal stub build when a fixed PIN is available"
+        stdout.contains("\"store_readable\": true"),
+        "stdout: {stdout}"
     );
-    assert_no_leaks(
-        &text,
-        "setup requires-pin output",
-        &[("fixed PIN", "123456")],
+    assert!(stdout.contains(".password-store"), "stdout: {stdout}");
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([RESTORE_PASS_REMOTE]),
+        "cloned remote must be observed"
     );
     Ok(())
 }
 
-fn yubikey_stub_env() -> (&'static str, String) {
-    (
-        "DOTFILES_SECRETS_YUBIKEY_STUB_SPEC_JSON",
-        r#"{"yubikeys":[{"serial":1000,"fixture":"seeded","bitwarden-client-id":"stub-client-id","bitwarden-client-secret":"stub-client-secret"}]}"#.to_owned(),
+#[test]
+fn restore_pass_stops_when_store_already_exists_with_stub_paths() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
     )
+    .with_git(git_spec_with_existing_store());
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("already exists"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([]),
+        "existing store must stop before clone"
+    );
+    Ok(())
 }
 
-fn gpg_stub_env() -> (&'static str, String) {
-    (
-        "DOTFILES_SECRETS_GPG_STUB_SPEC_JSON",
-        r#"{"keys":{"0123456789abcdef0123456789abcdef01234567":{"keygrip":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ssh_public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGdvdGNoYS1kdW1teS1wdWJsaWMta2V5LTAxMjM="}}}"#.to_owned(),
+#[test]
+fn restore_pass_fails_when_remote_url_is_invalid_with_stub_paths() -> TestResult<()> {
+    // 既定 fixture の password-store-remote は `https://example.invalid/repo.git` で domain 妥当でない。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("password-store-remote"),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_pass_fails_when_cloned_store_is_unreadable_with_stub_paths() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
     )
+    .with_gpg(gpg_spec_for_restore_pass())
+    .with_git(git_spec_with_unreadable_store());
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("pass cannot read the store"),
+        "stderr: {}",
+        run.stderr
+    );
+    // clone は成功するが可読性確認で失敗 → application は store を削除せず残す。再実行の安全性は既存 store
+    // 停止条件に委ねる（spec L174 に自動削除は無い）ので、clone 観測は残ったまま。
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([RESTORE_PASS_REMOTE]),
+        "unreadable cloned store must be left in place (not rolled back)"
+    );
+    Ok(())
 }
 
-fn git_stub_env() -> (&'static str, String) {
-    ("DOTFILES_SECRETS_GIT_STUB_SPEC_JSON", "{}".to_owned())
-}
-
-fn gpg_backup_envelope_json() -> String {
-    r#"{"version":1,"metadata":{"primary_fingerprint":"0123456789abcdef0123456789abcdef01234567","exported_at":"2026-01-01T00:00:00Z","dek_alg":"aes-256-gcm","recipient_kek_alg":"rsa-oaep-sha256"},"recipients":[{"piv_slot":"82","public_key_fingerprint":"000003e8000003e8000003e8000003e8000003e8000003e8000003e8000003e8","wrapped_dek":"AQ=="},{"piv_slot":"82","public_key_fingerprint":"000003e9000003e9000003e9000003e9000003e9000003e9000003e9000003e9","wrapped_dek":"Ag=="}],"ciphertext":{"nonce":"AAAAAAAAAAAAAAAA","body":"AQID","tag":"AAAAAAAAAAAAAAAAAAAAAA=="}}"#.to_owned()
-}
-
-fn restore_gpg_envelope_json() -> String {
-    r#"{"version":1,"metadata":{"primary_fingerprint":"0123456789abcdef0123456789abcdef01234567","exported_at":"2026-01-01T00:00:00Z","dek_alg":"aes-256-gcm","recipient_kek_alg":"rsa-oaep-sha256"},"recipients":[{"piv_slot":"82","public_key_fingerprint":"000003e8000003e8000003e8000003e8000003e8000003e8000003e8000003e8","wrapped_dek":"AQ=="},{"piv_slot":"82","public_key_fingerprint":"000003e9000003e9000003e9000003e9000003e9000003e9000003e9000003e9","wrapped_dek":"Ag=="}],"ciphertext":{"nonce":"AAAAAAAAAAAAAAAA","body":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nw==","tag":"AAAAAAAAAAAAAAAAAAAAAA=="}}"#.to_owned()
-}
-
-fn restore_gpg_mismatched_envelope_json() -> String {
-    restore_gpg_envelope_json().replace(
-        "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nw==",
-        "ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZg==",
+#[test]
+fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> TestResult<()> {
+    // entry が無い空 store で、`.gpg-id` recipient のいずれにも秘密鍵が無い（held_recipients を空にする）
+    // → 可読性を確定できず error（空 store フォールバック）。store は削除せず残す。
+    let mut gpg = gpg_spec_for_restore_pass();
+    gpg["held_recipients"] = json!([]);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_pass_remote(RESTORE_PASS_REMOTE),
     )
+    .with_gpg(gpg)
+    .with_git(
+        json!({ "store_exists": false, "gpg_id_present": true, "sample_entry_present": false }),
+    );
+    let run = run_pipe_with_stub(["restore-pass", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("secret keys are not in the keyring"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_git = run.final_git()?;
+    assert_eq!(
+        final_git["cloned_remotes"],
+        json!([RESTORE_PASS_REMOTE]),
+        "empty store with no held recipient secret key must be left in place (not rolled back)"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。pass-remote は YubiKey storage を読まず、BWS access
+    // token を hidden prompt から受け取る。対話 PTY で BWS access token（stub の
+    // datastore token と一致する `token`）→ 上書き確認 [y] → `--url` 未指定なので可視プロンプト（非秘匿の
+    // clone URL を通常入力でエコー）の順に入力して update する。最終観測で新値へ置換されたことを確認する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["pass-remote", "register"],
+        Some(&format!("token\ny\n{RESTORE_PASS_REMOTE}\n")),
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(
+        run.output.contains("bws-access-token (create/update): "),
+        "output: {}",
+        run.output
+    );
+    assert!(
+        run.output.contains("password-store-remote: "),
+        "output: {}",
+        run.output
+    );
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "overwritten password-store-remote must be observed"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_from_url_argument_with_yes() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（非 TTY）で `--url` 引数と `--yes` を
+    // 与えて既存 secret を update する。BWS access token は pipe（stdin）の 1 行目で
+    // 渡す（stub datastore token と一致する `token`）。非秘匿の URL は argv から取得され、可視プロンプト/pipe
+    // の URL 入力へは到達せず、最終 datastore が新値へ更新されることを観測する。
+    let initial = bws_spec_with_pass_remote("git@github.com:owner/old-store.git");
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        initial,
+    );
+    let run = run_pipe_with_stub(
+        [
+            "pass-remote",
+            "register",
+            "--url",
+            RESTORE_PASS_REMOTE,
+            "--yes",
+        ],
+        Some("token\n"),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "clone URL supplied via --url must overwrite the existing value with --yes"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestResult<()> {
+    // 非対話実行（pipe stdin）で既存 secret を上書きしようとし、`--yes` 未指定なら確認段階で停止する。
+    // BWS access token は pipe の 1 行目で渡す。確認で停止するため、URL の入力
+    // （pipe/可視プロンプト）へは到達しない。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["pass-remote", "register"], Some("token\n"), &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("was not confirmed"),
+        "stderr: {}",
+        run.stderr
+    );
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!("https://example.invalid/repo.git"),
+        "declined overwrite must leave the existing value unchanged"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_overwrites_existing_secret_via_stdin_pipe_with_yes() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（stdin pipe・非 TTY）で `--yes`
+    // を与え、pipe の 1 行目で BWS access token（stub datastore token と一致する
+    // `token`）を、2 行目で妥当な clone URL を渡して既存 secret を上書きする。pipe 入力経路（terminal で
+    // なければ stdin 1 行を読む分岐）と上書き挙動を駆動し、最終 BWS datastore が新値へ更新された
+    // ことを観測する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        ["pass-remote", "register", "--yes"],
+        Some(&format!("token\n{RESTORE_PASS_REMOTE}\n")),
+        &stub,
+    )?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!(RESTORE_PASS_REMOTE),
+        "pipe-supplied clone URL must overwrite the existing value with --yes"
+    );
+    Ok(())
+}
+
+#[test]
+fn pass_remote_register_stops_when_input_url_is_invalid() -> TestResult<()> {
+    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で BWS access token（stub
+    // datastore token と一致する `token`）→ 上書き確認 [y] → 可視プロンプトへ domain 妥当でない clone URL を
+    // 入力する。update 経路の URL 検証（application の PasswordStoreRemote::parse）で停止し、最終 datastore が
+    // 元の値のまま不変であることを観測する。
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub(
+        ["pass-remote", "register"],
+        Some("token\ny\nnot-a-valid-clone-url\n"),
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    let final_bws = run.final_bws()?;
+    assert_eq!(
+        final_bws["resolved_secrets"]["password-store-remote"],
+        json!("https://example.invalid/repo.git"),
+        "invalid clone URL must stop the update and leave the existing value unchanged"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_gpg_imports_key_and_registers_ssh_with_stub_paths() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup(&envelope),
+    )
+    .with_gpg(gpg_spec_with_importable_key());
+    let run = run_pipe_with_stub(["restore-gpg", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains(&format!(
+        "\"primary_fingerprint\": \"{RESTORE_PRIMARY_FP}\""
+    )));
+    assert!(stdout.contains("\"ssh_support_ready\": true"));
+    let final_gpg = run.final_gpg()?;
+    assert_eq!(
+        final_gpg["imported_keys"],
+        json!([RESTORE_PRIMARY_FP]),
+        "imported key must be observed"
+    );
+    assert_eq!(
+        final_gpg["registered_keygrips"],
+        json!([RESTORE_KEYGRIP]),
+        "authentication subkey keygrip must be registered"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_gpg_stops_when_existing_key_collides_with_stub_paths() -> TestResult<()> {
+    let envelope = restore_envelope_json(PRIMARY_SERIAL);
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec_with_backup(&envelope),
+    )
+    .with_gpg(gpg_spec_with_existing_key());
+    let run = run_pipe_with_stub(["restore-gpg", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr.contains("already exists"),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn export_ssh_public_key_writes_openssh_line_with_stub_paths() -> TestResult<()> {
+    let stub =
+        StubPorts::new(yubikey_spec([]), bws_spec()).with_gpg(gpg_spec_with_importable_key());
+    // `dotfiles gpg export-ssh-public-key` は top-level command なので secrets 経由ではない。
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dotfiles"));
+    command
+        .arg("gpg")
+        .args([
+            "export-ssh-public-key",
+            "--primary-fingerprint",
+            RESTORE_PRIMARY_FP,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    stub.apply_to_command(&mut command)?;
+    let output = command.spawn()?.wait_with_output()?;
+    let run = CommandRun {
+        success: output.status.success(),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    };
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(
+        run.user_stdout().contains(RESTORE_SSH_LINE),
+        "stdout: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
+fn assert_stored_secret(store: &Value, serial: u32, secret_name: &str, expected: &str) {
+    assert_eq!(
+        store["yubikeys"][serial.to_string()]["stored_secrets"][secret_name],
+        json!(expected),
+        "unexpected final YubiKey observed secret: serial={serial} name={secret_name}"
+    );
+}
+
+fn strip_observation_lines(output: &str) -> String {
+    let mut visible = String::new();
+    for segment in output.split_inclusive('\n') {
+        if !segment.starts_with(STUB_OBSERVATION_PREFIX) {
+            visible.push_str(segment);
+        }
+    }
+    visible
+}
+
+fn final_observation(output: &str, port: &str) -> TestResult<Value> {
+    observation_frames(output)
+        .filter(|frame| frame["port"] == json!(port))
+        .filter_map(|frame| frame.get("observation").cloned())
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("missing final {port} observation"))
+}
+
+fn has_observation(output: &str, port: &str) -> bool {
+    observation_frames(output).any(|frame| frame["port"] == json!(port))
+}
+
+fn observation_frames(output: &str) -> impl Iterator<Item = Value> + '_ {
+    output.lines().filter_map(|line| {
+        let body = line
+            .trim_end_matches('\r')
+            .strip_prefix(STUB_OBSERVATION_PREFIX)?;
+        serde_json::from_str(body).ok()
+    })
+}
+
+fn bootstrap_json() -> &'static str {
+    r#"{
+  "bw-email": "u@example.com",
+  "bw-password": "pw",
+  "bws-access-token": "token"
+}
+"#
 }

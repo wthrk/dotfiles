@@ -1,8 +1,8 @@
 //! gpg-agent の SSH agent socket と GnuPG home を解決する process-generic な技術 primitive。
 //!
 //! この module は use case 名や device 選択方針を知らず、環境変数（`GNUPGHOME` / `HOME` /
-//! `SSH_AUTH_SOCK`）と filesystem の socket 判定だけを扱う。`config/zsh/env.zsh` の上書き条件に合わせ、
-//! `${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を
+//! `SSH_AUTH_SOCK`）と filesystem の socket 判定だけを扱う。設計「zsh 環境変数決定」と
+//! `config/zsh/env.zsh` の上書き条件に合わせ、`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` を
 //! gpg-agent SSH support の socket として解決する。`gpgconf` CLI は使わない。
 //!
 //! 解決規則は用途で 2 種類に分ける。両者は gpg-agent socket の解決手順を共有し、fallback 可否だけ異なる。

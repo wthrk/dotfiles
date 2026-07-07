@@ -104,15 +104,12 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。Nix devShell 内でビルドした target/ の build
-      # script は `/nix/store` 依存を持つため、run 間 restore まで行うと GC 済み store path を指した古い実行ファイルを
-      # 踏んで壊れやすい。依存 crate の取得だけ共有し、workspace の成果物は各 job の devShell で再生成する。
+      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
       # bump↔record は同一 OS（macOS）のため shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          cache-targets: false
+          shared-key: nightly-${{ runner.os }}
 
       # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
       # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
@@ -221,14 +218,12 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。Nix devShell 内でビルドした target/ の build
-      # script を復元すると、現在の `/nix/store` に無い旧 path を参照して落ちうるため、workspace の成果物は毎回
-      # 再生成する。bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
+      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          cache-targets: false
+          shared-key: nightly-${{ runner.os }}
 
       # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
       - name: bump 済み lock と bump 前 eval 版マップを取得
@@ -377,15 +372,13 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。verify-bump-lock でも Nix devShell 内で
-      # ビルドした target/ の build script を restore すると `/nix/store` 依存のずれで壊れうるため、workspace
-      # の成果物はその run の devShell で再生成する。依存 crate 取得だけを共有する。static-checks.yml と同一
-      # OS（ubuntu）のため shared-key を共有する。
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。verify-bump-lock の cargo build と
+      # `cargo xtask check static` で target/ の再ビルド回避が効く。static-checks.yml と同一 OS（ubuntu）のため
+      # shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          cache-targets: false
+          shared-key: static-checks-${{ runner.os }}
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v8

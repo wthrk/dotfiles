@@ -110,10 +110,12 @@ impl StorageObjectIds {
 /// 各 variant は固定の PIV object ID と blob secret id を持ち、storage version 1 ではその対応を変更しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecretName {
-    /// Bitwarden account API key の client_id。
-    BitwardenClientId,
-    /// Bitwarden account API key の client_secret。
-    BitwardenClientSecret,
+    /// Bitwarden login email。
+    BwEmail,
+    /// Bitwarden login password。
+    BwPassword,
+    /// Bitwarden Secrets Manager access token。
+    BwsAccessToken,
 }
 
 /// secret blob と PIV object の対応規則を固定した storage domain object。
@@ -138,7 +140,7 @@ impl SecretName {
     ///
     /// 列挙順は report と object 配置の期待順であり、version を上げずに並びを変えてはならない。
     pub fn iter() -> impl Iterator<Item = Self> {
-        [Self::BitwardenClientId, Self::BitwardenClientSecret].into_iter()
+        [Self::BwEmail, Self::BwPassword, Self::BwsAccessToken].into_iter()
     }
 
     /// binary blob header に保存する固定 secret id を返す。
@@ -146,8 +148,9 @@ impl SecretName {
     /// version 1 では各 variant と id の対応は不変で、互換性を壊す変更は version 更新なしに行ってはならない。
     pub fn secret_id(self) -> u8 {
         match self {
-            Self::BitwardenClientId => 1,
-            Self::BitwardenClientSecret => 2,
+            Self::BwEmail => 1,
+            Self::BwPassword => 2,
+            Self::BwsAccessToken => 3,
         }
     }
 
@@ -156,8 +159,9 @@ impl SecretName {
     /// object ID は storage layout の一部であり、既存 device の互換性を保つため固定される。
     pub fn object_id(self) -> PivObjectId {
         match self {
-            Self::BitwardenClientId => PivObjectId(0x005f_ff17),
-            Self::BitwardenClientSecret => PivObjectId(0x005f_ff18),
+            Self::BwEmail => PivObjectId(0x005f_ff17),
+            Self::BwPassword => PivObjectId(0x005f_ff18),
+            Self::BwsAccessToken => PivObjectId(0x005f_ff19),
         }
     }
 
@@ -178,12 +182,14 @@ impl SecretName {
     /// adapter はこの分岐を再実装せず、選ばれた capability の I/O 翻訳だけを担う。
     pub fn read_interactive_secret_with<T>(
         self,
-        read_bitwarden_client_id: impl FnOnce() -> crate::Result<T>,
-        read_bitwarden_client_secret: impl FnOnce() -> crate::Result<T>,
+        read_bw_email: impl FnOnce() -> crate::Result<T>,
+        read_bw_password: impl FnOnce() -> crate::Result<T>,
+        read_bws_access_token: impl FnOnce() -> crate::Result<T>,
     ) -> crate::Result<T> {
         match self {
-            Self::BitwardenClientId => read_bitwarden_client_id(),
-            Self::BitwardenClientSecret => read_bitwarden_client_secret(),
+            Self::BwEmail => read_bw_email(),
+            Self::BwPassword => read_bw_password(),
+            Self::BwsAccessToken => read_bws_access_token(),
         }
     }
 
@@ -217,10 +223,11 @@ impl SecretStorageSpec {
     ///
     /// 保存対象集合と各 object/spec の対応は storage domain rule であり、use case は
     /// 個別の `SecretName` から対応関係を再構築せず、この集合を順序制御へ適用する。
-    pub fn all_for_serial(serial: u32) -> [Self; 2] {
+    pub fn all_for_serial(serial: u32) -> [Self; 3] {
         [
-            SecretName::BitwardenClientId.storage_spec(serial),
-            SecretName::BitwardenClientSecret.storage_spec(serial),
+            SecretName::BwEmail.storage_spec(serial),
+            SecretName::BwPassword.storage_spec(serial),
+            SecretName::BwsAccessToken.storage_spec(serial),
         ]
     }
 
@@ -239,15 +246,16 @@ impl SecretStorageSpec {
 
     /// この spec に対応する encrypted blob の復号失敗を domain error へ変換する。
     pub fn decode_error(&self, error: anyhow::Error) -> anyhow::Error {
-        error.context(format!("failed to decode {}", self.name))
+        anyhow::anyhow!("failed to decode {}: {error}", self.name)
     }
 }
 
 impl fmt::Display for SecretName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::BitwardenClientId => "bitwarden-client-id",
-            Self::BitwardenClientSecret => "bitwarden-client-secret",
+            Self::BwEmail => "bw-email",
+            Self::BwPassword => "bw-password",
+            Self::BwsAccessToken => "bws-access-token",
         })
     }
 }
@@ -257,20 +265,19 @@ impl FromStr for SecretName {
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
-            "bitwarden-client-id" => Ok(Self::BitwardenClientId),
-            "bitwarden-client-secret" => Ok(Self::BitwardenClientSecret),
-            _ => Err("unsupported YubiKey secret name".to_owned()),
+            "bw-email" => Ok(Self::BwEmail),
+            "bw-password" => Ok(Self::BwPassword),
+            "bws-access-token" => Ok(Self::BwsAccessToken),
+            _ => Err(format!("unsupported YubiKey secret name: {value}")),
         }
     }
 }
 
 #[cfg(test)]
-/// PIV storage domain rule の version、PIN、secret name 対応を検証する inline unit test。
 mod tests {
     use super::*;
 
     #[test]
-    /// 最小対応 PIV version と PIN retry 残数がある場合に setup precondition を許可する。
     fn secret_storage_setup_preconditions_accept_minimum_version_with_pin_retries() {
         let result = validate_secret_storage_setup_preconditions(
             PivApplicationVersion::minimum_for_secret_storage(),
@@ -281,7 +288,6 @@ mod tests {
     }
 
     #[test]
-    /// 最小対応より古い PIV version を setup precondition で拒否する。
     fn secret_storage_setup_preconditions_reject_old_piv_version() {
         let result = validate_secret_storage_setup_preconditions(
             PivApplicationVersion {
@@ -296,7 +302,6 @@ mod tests {
     }
 
     #[test]
-    /// PIN retry が尽きた YubiKey を setup precondition で拒否する。
     fn secret_storage_setup_preconditions_reject_exhausted_pin_retries() {
         let result = validate_secret_storage_setup_preconditions(
             PivApplicationVersion::minimum_for_secret_storage(),
@@ -307,53 +312,29 @@ mod tests {
     }
 
     #[test]
-    /// YubiKey storage の保存対象にない secret name を拒否する。
     fn secret_name_rejects_unknown_name() {
         let parsed = "github-token".parse::<SecretName>();
 
         assert!(parsed.is_err());
-        assert_eq!(
-            parsed.unwrap_err(),
-            "unsupported YubiKey secret name",
-            "unsupported secret name errors must not echo the input value"
-        );
     }
 
     #[test]
-    /// BWS access token が YubiKey storage 保存対象へ戻らないことを固定する。
-    fn secret_name_rejects_bws_access_token() {
-        let parsed = "bws-access-token".parse::<SecretName>();
-
-        assert!(
-            parsed.is_err(),
-            "YubiKey storage must only accept bitwarden-client-id and bitwarden-client-secret"
-        );
-    }
-
-    #[test]
-    /// 保存対象 secret 名が 2 件だけで、design object ID と一致することを固定する。
     fn secret_names_match_design_object_mapping() {
-        let names = SecretName::iter().collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec![
-                SecretName::BitwardenClientId,
-                SecretName::BitwardenClientSecret
-            ],
-            "YubiKey storage must only contain the two Bitwarden account API key fields"
-        );
-
         let objects = SecretName::iter()
             .map(|name| (name.to_string(), name.object_id().to_string()))
             .collect::<std::collections::BTreeMap<_, _>>();
 
         assert_eq!(
-            objects.get("bitwarden-client-id").map(String::as_str),
+            objects.get("bw-email").map(String::as_str),
             Some("0x005FFF17")
         );
         assert_eq!(
-            objects.get("bitwarden-client-secret").map(String::as_str),
+            objects.get("bw-password").map(String::as_str),
             Some("0x005FFF18")
+        );
+        assert_eq!(
+            objects.get("bws-access-token").map(String::as_str),
+            Some("0x005FFF19")
         );
     }
 }

@@ -9,7 +9,7 @@
 
 use super::super::{
     domain::{
-        gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint, SecretPrimaryKeyCandidates},
+        gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
         gpg_restore::{ImportedKeyComposition, Keygrip, OpenSshPublicKey, SshAgentReadiness},
         pass_restore::GpgRecipientId,
     },
@@ -24,11 +24,12 @@ use crate::Result;
 /// 既存鍵衝突判定や subkey 利用可能判定そのものの業務規則は再定義しない。`gpg` CLI は使わない。
 #[cfg_attr(test, mockall::automock)]
 pub trait GpgKeyringPort {
-    /// ローカル鍵リング上の使用可能な GPG secret primary key 候補を列挙する。
-    ///
-    /// implementor は revoked / expired / disabled / public-only など外部 API 上の状態を境界型へ翻訳する。
-    /// 0 件 / 1 件 / 複数件の停止条件や、`.gpg-id` など既存設定を優先するかどうかは caller 側で決める。
-    fn list_secret_primary_fingerprints(&mut self) -> Result<SecretPrimaryKeyCandidates>;
+    /// 既存環境のローカル鍵リングから、指定 primary fingerprint の OpenPGP transferable secret key を
+    /// in-memory で export し、保護値として返す。secret material は argv / log / 永続ファイルへ出さない。
+    fn export_secret_key(
+        &mut self,
+        primary_fingerprint: &PrimaryFingerprint,
+    ) -> Result<ProtectedSecret>;
 
     /// 復号済み backup bytes を OpenPGP として解析し、import 前に canonical primary fingerprint を導出する。
     ///
@@ -75,16 +76,6 @@ pub trait GpgKeyringPort {
     /// fingerprint）で秘密鍵を解決できるかだけを返し、復号可否の最終判定は caller（application）が行う。
     fn secret_key_available_for_recipient(&mut self, recipient: &GpgRecipientId) -> Result<bool>;
 
-    /// `.gpg-id` recipient が解決する secret primary fingerprint を返す。
-    ///
-    /// implementor は recipient token を鍵リング API へ渡し、見つかった secret key の primary fingerprint を
-    /// 境界型へ翻訳するだけにする。複数 recipient が同じ primary を指すか、複数 primary へ分かれて曖昧かは
-    /// caller/domain 側で判定する。
-    fn primary_fingerprint_for_recipient(
-        &mut self,
-        recipient: &GpgRecipientId,
-    ) -> Result<Option<PrimaryFingerprint>>;
-
     /// store 内サンプル entry（`*.gpg`）を gpgme で復号できることを確認する。
     ///
     /// `.gpg-id` recipient と手元秘密鍵の整合だけでなく、実際に store entry を復号できることまで確認する
@@ -95,12 +86,22 @@ pub trait GpgKeyringPort {
 
 /// use case が backup envelope の DEK 暗復号のために要求する capability 契約。
 ///
-/// caller は recipient 照合と unwrap 後の復号順序を application/domain 側で決める。
-/// implementor は DEK での envelope 本体 decrypt を `support/protection` 境界へ翻訳するだけで、
-/// envelope schema や recipient 照合の業務規則は持たない。
+/// caller は DEK の生成・recipient wrap・envelope 検証の順序を application/domain 側で決める。
+/// implementor は AES-256-GCM の DEK 生成と、DEK での envelope 本体 encrypt / decrypt を
+/// `support/protection` 境界へ翻訳するだけで、envelope schema や recipient 照合の業務規則は持たない。
 /// DEK と復号済み backup は `ProtectedSecret` の保護境界内で扱う。
 #[cfg_attr(test, mockall::automock)]
 pub trait BackupCipherPort {
+    /// AES-256-GCM の新しい DEK（32 bytes）を保護値として生成する。
+    fn generate_dek(&mut self) -> Result<ProtectedSecret>;
+
+    /// 平文 backup を DEK で AES-256-GCM 暗号化し、envelope `ciphertext`（nonce/body/tag）を返す。
+    fn encrypt_backup(
+        &mut self,
+        dek: &ProtectedSecret,
+        backup: &ProtectedSecret,
+    ) -> Result<EnvelopeCiphertext>;
+
     /// envelope `ciphertext` を DEK で AES-256-GCM 復号し、復号済み backup を保護値として返す。
     fn decrypt_backup(
         &mut self,
@@ -124,7 +125,7 @@ pub trait SshAgentPort {
     /// agent が SSH agent protocol で列挙する identity を取得し、socket 解決可否（`socket_resolved`）に加えて、
     /// 期待公開鍵（`authentication_subkey_ssh_public_key` 由来の `OpenSshPublicKey`）と key blob が byte 一致する
     /// identity が含まれるか（`recovery_identity_present`）を `SshAgentReadiness` へ翻訳する。caller は復元鍵提示の
-    /// 確認を `SshAgentReadiness::ensure_ready` で行う。復元鍵と無関係な既存 identity の有無は
+    /// 確認を `SshAgentReadiness::ensure_ready` で行う。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は
     /// 観測しない。identity comment（`cardno:` / `openpgp:` 等）は鍵同一性に使えないため照合に用いない。
     fn inspect_ssh_agent(
         &mut self,

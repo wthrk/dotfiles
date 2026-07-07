@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 /// CLI 入力の閉じた集合を表し、domain check 名への写像元として使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalCheck {
-    Vault,
+    Bws,
+    BwLogin,
 }
 
 /// 各 verification/enrollment check の結果状態。
@@ -28,10 +29,12 @@ pub enum CheckStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CheckName {
     Setup,
-    BitwardenClientId,
-    BitwardenClientSecret,
+    BwEmail,
+    BwPassword,
+    BwsAccessToken,
     LocalStorage,
-    Vault,
+    Bws,
+    BwLogin,
 }
 
 impl CheckName {
@@ -41,10 +44,12 @@ impl CheckName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Setup => "setup",
-            Self::BitwardenClientId => "bitwarden-client-id",
-            Self::BitwardenClientSecret => "bitwarden-client-secret",
+            Self::BwEmail => "bw-email",
+            Self::BwPassword => "bw-password",
+            Self::BwsAccessToken => "bws-access-token",
             Self::LocalStorage => "local-storage",
-            Self::Vault => "vault",
+            Self::Bws => "bws",
+            Self::BwLogin => "bw-login",
         }
     }
 }
@@ -54,6 +59,7 @@ impl CheckName {
 /// local storage と external checks の結果意味だけを保持し、表示仕様は外側へ出す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifySummary {
+    pub serial: u32,
     pub checks: BTreeMap<CheckName, CheckStatus>,
 }
 
@@ -61,15 +67,15 @@ impl VerifySummary {
     /// local storage 検証が成功した通常系 summary を構築する。
     ///
     /// external checks は未実施として初期化し、後続の実行結果反映を待つ。
-    pub fn local_storage_verified() -> Self {
-        Self::with_local_storage_status(CheckStatus::Ok)
+    pub fn local_storage_verified(serial: u32) -> Self {
+        Self::with_local_storage_status(serial, CheckStatus::Ok)
     }
 
     /// local storage 検証が失敗した停止系 summary を構築する。
     ///
     /// この summary は external checks を未実施のまま保持し、呼び出し側に継続不可を示す。
-    pub fn local_storage_failed() -> Self {
-        Self::with_local_storage_status(CheckStatus::Failed)
+    pub fn local_storage_failed(serial: u32) -> Self {
+        Self::with_local_storage_status(serial, CheckStatus::Failed)
     }
 
     /// external check の実行結果を summary へ反映する。
@@ -77,11 +83,13 @@ impl VerifySummary {
         self.checks.insert(check, status);
     }
 
-    fn with_local_storage_status(local_storage: CheckStatus) -> Self {
+    fn with_local_storage_status(serial: u32, local_storage: CheckStatus) -> Self {
         Self {
+            serial,
             checks: [
                 (CheckName::LocalStorage, local_storage),
-                (CheckName::Vault, CheckStatus::Skipped),
+                (CheckName::Bws, CheckStatus::Skipped),
+                (CheckName::BwLogin, CheckStatus::Skipped),
             ]
             .into_iter()
             .collect(),
@@ -96,8 +104,9 @@ mod tests {
     /// verify summary は local storage failure 状態を保持する。
     #[test]
     fn verify_summary_records_local_storage_failure() {
-        let summary = VerifySummary::local_storage_failed();
+        let summary = VerifySummary::local_storage_failed(42);
 
+        assert_eq!(summary.serial, 42);
         assert_eq!(
             summary.checks.get(&CheckName::LocalStorage),
             Some(&CheckStatus::Failed)

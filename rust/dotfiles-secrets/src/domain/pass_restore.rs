@@ -13,10 +13,9 @@ use crate::Result;
 
 /// `~/.password-store` を指す store path の業務名。
 ///
-/// `secret-recovery-spec.md` は個人 vault から `password-store-remote` を取得し、GPG authentication subkey
-/// 経由の SSH agent 認証で clone することを定義する。この実装では clone 先を home 直下の
-/// `.password-store` に固定する。実際の `$HOME` 解決と存在確認は filesystem adapter の責務であり、
-/// この定数は復旧対象 store path の実装ローカルな同一性だけを表す。
+/// 設計（spec L174）では clone 先を `~/.password-store` に固定する。実際の `$HOME` 解決と
+/// 存在確認は filesystem adapter の責務であり、この定数は復旧対象の store path の業務上の
+/// 同一性（home 直下の `.password-store`）だけを表す。
 pub const PASSWORD_STORE_DIR_NAME: &str = ".password-store";
 
 /// `pass` が store を読めることの判定に使う store 識別ファイル名。
@@ -30,12 +29,10 @@ pub const PASSWORD_STORE_GPG_ID: &str = ".gpg-id";
 
 /// `password-store-remote` が満たすべき GitHub SSH clone URL を表す検証済み値。
 ///
-/// `secret-recovery-spec.md` と `bitwarden-personal-vault-design.md` は `password-store-remote` を
-/// private password-store repository の GitHub SSH clone URL として扱う。
-/// adapter が Bitwarden vault から取得した secret value 文字列を [`PasswordStoreRemote::parse`] で検証して
-/// 構築し、domain は復旧で使う canonical な `git@github.com:<owner>/<repo>.git` 形式だけを受け入れる。
-/// URL は秘密情報ではないため domain 値として保持してよいが、GitHub SSH clone URL としての
-/// `<owner>` / `<repo>` 以外のスキーム・ホスト・余剰要素は停止条件として拒否する。
+/// 設計（spec L56 / L213、停止条件）は値を `git@github.com:<owner>/<repo>.git` 形式に限定する。
+/// adapter が BWS から取得した secret value 文字列を [`PasswordStoreRemote::parse`] で検証して
+/// 構築し、形式に合致した値だけがこの型になる。URL は秘密情報ではないため domain 値として保持
+/// してよいが、`<owner>` / `<repo>` 以外のスキーム・ホスト・余剰要素は停止条件として拒否する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordStoreRemote(String);
 
@@ -45,16 +42,16 @@ const GITHUB_SSH_PREFIX: &str = "git@github.com:";
 const GIT_SUFFIX: &str = ".git";
 
 impl PasswordStoreRemote {
-    /// Bitwarden vault 由来の `password-store-remote` 文字列を GitHub SSH clone URL として検証して構築する。
+    /// BWS 由来の `password-store-remote` 文字列を GitHub SSH clone URL として検証して構築する。
     ///
-    /// `secret-recovery-spec.md` と `bitwarden-personal-vault-design.md` が `password-store-remote` として扱う
-    /// GitHub SSH clone URL を、復旧用の canonical な `git@github.com:<owner>/<repo>.git` 形式として受け入れる。
-    /// trim による値の黙示変更を避けるため、前後・内部のいずれであれ空白や制御文字を含む値は停止条件で拒否する。
-    /// prefix/suffix 不一致、`<owner>`/`<repo>` の欠落・空・余剰 path segment も domain failure として停止する。
-    /// `<owner>` / `<repo>` は GitHub repository identity として扱える ASCII の閉じた文字集合だけを許可し、
-    /// path traversal や追加 segment（`/` を 1 つだけ含む）を作らせない。
+    /// `git@github.com:<owner>/<repo>.git` の固定形式だけを許可する。設計
+    /// （bitwarden-secrets-manager-design.md L101）は前後空白・改行を許可しないため trim せず、前後・内部の
+    /// いずれであれ空白や制御文字を含む値は停止条件で拒否する。prefix/suffix 不一致、`<owner>`/`<repo>` の
+    /// 欠落・空・余剰 path segment も domain failure として停止する。`<owner>` は同 L103 の
+    /// `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?`、`<repo>` は `[A-Za-z0-9._-]+`（`.`/`..` を除く）に
+    /// 一致する値だけを許可し、path traversal や追加 segment（`/` を 1 つだけ含む）を作らせない。
     pub fn parse(value: &str) -> Result<Self> {
-        // trim せず、空白・制御文字を含む値は前後・内部いずれでも拒否する。空白は ASCII に
+        // trim せず、空白・制御文字を含む値は前後・内部いずれでも拒否する（設計 L101）。空白は ASCII に
         // 限らず、U+2000 などの非 ASCII 空白も `char::is_whitespace` で一律に拒否する。
         if value.chars().any(|ch| ch.is_whitespace()) {
             anyhow::bail!("password-store-remote must not contain whitespace");
@@ -86,46 +83,6 @@ impl PasswordStoreRemote {
         )))
     }
 
-    /// 既存 password-store の GitHub origin remote を repository identity として受け入れ、
-    /// Bitwarden vault 登録用の SSH clone URL へ正規化する。
-    ///
-    /// 利用者の既存 `password-store` が HTTPS origin を使っている場合でも、origin は repository の同一性確認に
-    /// だけ使う。復旧時の clone は GPG authentication subkey 経由の SSH に固定するため、Bitwarden vault へ保存する値は常に
-    /// `git@github.com:<owner>/<repo>.git` 形式へ canonicalize する。CLI/shell はこの SSH URL を argv/stdin/env
-    /// で中継せず、application が観測済み origin から domain rule として導出する。
-    pub fn from_configured_origin(value: &str) -> Result<Self> {
-        if let Ok(remote) = Self::parse(value) {
-            return Ok(remote);
-        }
-        if value.chars().any(|ch| ch.is_whitespace()) {
-            anyhow::bail!("password-store origin remote must not contain whitespace");
-        }
-        if value.chars().any(|ch| ch.is_control()) {
-            anyhow::bail!("password-store origin remote must not contain control characters");
-        }
-        let Some(without_prefix) = value.strip_prefix("https://github.com/") else {
-            anyhow::bail!("password-store origin remote must be a GitHub SSH or HTTPS clone URL");
-        };
-        let owner_repo = without_prefix
-            .strip_suffix(GIT_SUFFIX)
-            .unwrap_or(without_prefix);
-        let mut segments = owner_repo.split('/');
-        let owner = segments
-            .next()
-            .filter(|owner| is_valid_owner(owner))
-            .ok_or_else(|| anyhow::anyhow!("password-store origin owner is invalid"))?;
-        let repo = segments
-            .next()
-            .filter(|repo| is_valid_repository(repo))
-            .ok_or_else(|| anyhow::anyhow!("password-store origin repository is invalid"))?;
-        if segments.next().is_some() {
-            anyhow::bail!("password-store origin remote must be exactly owner/repository");
-        }
-        Ok(Self(format!(
-            "{GITHUB_SSH_PREFIX}{owner}/{repo}{GIT_SUFFIX}"
-        )))
-    }
-
     /// 検証済み clone URL を adapter（git2）へ渡すために借用する。
     pub fn as_str(&self) -> &str {
         &self.0
@@ -134,8 +91,8 @@ impl PasswordStoreRemote {
 
 /// GitHub `<owner>` 識別子の妥当性を判定する。
 ///
-/// GitHub repository identity の owner として、先頭末尾は英数字、中間は英数字とハイフン、
-/// 全体は 1〜39 文字（先頭 1 + 中間
+/// 設計（bitwarden-secrets-manager-design.md L103）の `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?` に
+/// 一致する値だけを許可する。先頭末尾は英数字、中間は英数字とハイフン、全体は 1〜39 文字（先頭 1 + 中間
 /// 0〜37 + 末尾 1、1 文字 owner も許可）に限定し、先頭/末尾ハイフン、`_`、`.`、39 文字超は拒否する。
 fn is_valid_owner(value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -156,8 +113,8 @@ fn is_valid_owner(value: &str) -> bool {
 
 /// GitHub `<repo>` 識別子の妥当性を判定する。
 ///
-/// GitHub repository identity の repository name として、空、`.`/`..` のみ、`/` や制御文字・空白は
-/// parse 段階で拒否済みだが、ここでも
+/// 設計（bitwarden-secrets-manager-design.md L103）の `[A-Za-z0-9._-]+`（ただし `.`/`..` を除く）に
+/// 一致する値だけを許可する。空、`.`/`..` のみ、`/` や制御文字・空白は parse 段階で拒否済みだが、ここでも
 /// 英数・`-`・`_`・`.` 以外の混入と空・`.`/`..` を拒否する。
 fn is_valid_repository(value: &str) -> bool {
     if value.is_empty() || value == "." || value == ".." {
@@ -205,11 +162,11 @@ impl GpgRecipientId {
 
 /// clone 後 store が `pass` から読める構成であることを adapter が観測した結果。
 ///
-/// `secret-recovery-spec.md` が定義する SSH agent 認証 clone の後、この実装は clone 済み store を
-/// `pass` 互換に読める構成へ到達したか確認する。adapter は clone 先 directory を走査し、store 識別ファイル
-/// （`.gpg-id`）の有無・recipient 行・復号確認に使うサンプル entry path を観測してこの値へ翻訳する。
-/// recipient が非空 token であることと、サンプル entry を手元の復元済み秘密鍵で復号できることの業務判定は
-/// この module（と keyring 照合）で行い、`pass` CLI への無条件シェルアウトはしない。
+/// 設計（spec L174）は clone 後に「`pass` が store を読めること」の確認を要求する。adapter は
+/// clone 先 directory を走査し、store 識別ファイル（`.gpg-id`）の有無・recipient 行・復号確認に使う
+/// サンプル entry path を観測してこの値へ翻訳する。recipient が非空 token であることと、サンプル entry を
+/// 手元の復元済み秘密鍵で復号できることの業務判定はこの module（と keyring 照合）で行い、`pass` CLI への
+/// 無条件シェルアウトはしない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordStoreReadiness {
     /// clone 先 store root に `.gpg-id` が存在したか。
@@ -266,8 +223,8 @@ pub struct RestorePassSummary {
 mod tests {
     //! `password-store-remote` URL 妥当性・store 可読性・summary の domain 規則を検証する単体テスト。
     //!
-    //! 正本が定義する `password-store-remote` と、実装ローカルの clone URL 形式・store 可読性の
-    //! 充足/停止条件を純粋ロジックとして網羅し、test double は持ち込まない。
+    //! 設計（spec L56 / L174 / L213）の clone URL 形式と store 可読性の充足/停止条件を純粋ロジック
+    //! として網羅し、test double は持ち込まない。
 
     use super::*;
 
@@ -278,18 +235,9 @@ mod tests {
         Ok(())
     }
 
-    /// HTTPS origin は既存 repository identity として受け入れ、復旧用の SSH clone URL へ正規化する。
-    #[test]
-    fn configured_https_origin_normalizes_to_ssh_clone_url() -> Result<()> {
-        let remote =
-            PasswordStoreRemote::from_configured_origin("https://github.com/owner/repo.git")?;
-        assert_eq!(remote.as_str(), "git@github.com:owner/repo.git");
-        Ok(())
-    }
-
     #[test]
     fn parses_single_character_owner() -> Result<()> {
-        // owner は 1 文字英数字も許可する（owner 規則の先頭 1 文字 + 中間 0 + 末尾省略）。
+        // owner は 1 文字英数字も許可する（設計 L103 の先頭 1 文字 + 中間 0 + 末尾省略）。
         let remote = PasswordStoreRemote::parse("git@github.com:o/r.git")?;
         assert_eq!(remote.as_str(), "git@github.com:o/r.git");
         Ok(())
@@ -306,7 +254,7 @@ mod tests {
 
     #[test]
     fn rejects_surrounding_whitespace() {
-        // canonical URL rule は前後空白を許可しない。trim せず停止する。
+        // 設計 L101 は前後空白を許可しない。trim せず停止する。
         assert!(PasswordStoreRemote::parse("  git@github.com:o/r.git\t").is_err());
         assert!(PasswordStoreRemote::parse("git@github.com:o/r.git ").is_err());
         assert!(PasswordStoreRemote::parse(" git@github.com:o/r.git").is_err());
@@ -314,7 +262,7 @@ mod tests {
 
     #[test]
     fn rejects_internal_whitespace() {
-        // 内部の空白も拒否する（canonical URL rule と owner/repository 規則の空白禁止）。
+        // 内部の空白も拒否する（設計 L101 / L103 の空白禁止）。
         assert!(PasswordStoreRemote::parse("git@github.com:o w/r.git").is_err());
         assert!(PasswordStoreRemote::parse("git@github.com:o/r\t.git").is_err());
     }
@@ -333,7 +281,7 @@ mod tests {
 
     #[test]
     fn rejects_owner_with_underscore() {
-        // owner に `_` は許可しない（owner 規則）。
+        // owner に `_` は許可しない（設計 L103 の owner 正規表現）。
         assert!(PasswordStoreRemote::parse("git@github.com:bad_owner/repo.git").is_err());
     }
 
