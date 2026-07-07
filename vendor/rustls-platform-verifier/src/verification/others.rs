@@ -4,8 +4,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::client::WebPkiServerVerifier;
 use rustls::pki_types;
 use rustls::{
-    crypto::CryptoProvider, CertificateError, DigitallySignedStruct, Error as TlsError, OtherError,
-    SignatureScheme,
+    crypto::CryptoProvider, DigitallySignedStruct, Error as TlsError, OtherError, SignatureScheme,
 };
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};

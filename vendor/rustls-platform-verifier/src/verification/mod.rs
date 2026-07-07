@@ -37,21 +37,6 @@ mod windows;
 #[cfg(windows)]
 pub use windows::Verifier;
 
-/// An EKU was invalid for the use case of verifying a server certificate.
-///
-/// This error is used primarily for tests.
-#[cfg_attr(windows, allow(dead_code))] // not used by windows verifier
-#[derive(Debug, PartialEq)]
-pub(crate) struct EkuError;
-
-impl std::fmt::Display for EkuError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("certificate had invalid extensions")
-    }
-}
-
-impl std::error::Error for EkuError {}
-
 // Log the certificate we are verifying so that we can try and find what may be wrong with it
 // if we need to debug a user's situation.
 fn log_server_cert(_end_entity: &rustls::pki_types::CertificateDer<'_>) {
