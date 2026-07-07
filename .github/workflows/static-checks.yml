@@ -40,13 +40,15 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo build キャッシュ（~/.cargo + target/）を run 間で再利用する。`cargo xtask check static` は
-      # devShell 内で workspace をコンパイルするため、/nix/store キャッシュ（toolchain / nix 依存）とは別に
-      # target/ の再ビルド回避が効く。restore-key で前回 PR の target/ から差分ビルドに縮退する。fail-safe。
+      # cargo registry/git キャッシュ（~/.cargo）だけを run 間で再利用する。Nix devShell 内でビルドした
+      # build script は `/nix/store` 上の動的ライブラリに結び付くため、target/ 復元まで行うと GC 済み store path を
+      # 指した古い実行ファイルを踏んで `No such file or directory` で落ちうる。依存 crate の取得だけ再利用し、
+      # workspace のビルド成果物は毎回その場の devShell で再生成する。fail-safe。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cache-targets: false
 
       - name: static checks
         run: nix develop -c cargo xtask check static
