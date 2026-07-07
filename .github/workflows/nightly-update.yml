@@ -104,12 +104,14 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
-      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。Nix devShell でビルドした成果物を安全に共有する
+      # ため、cache key に flake.lock を含め、rust-cache 自身の cargo/rustc 判定も `nix develop -c` で実行して
+      # Nix shell 上の Rust 環境に合わせる。bump↔record は同一 OS（macOS）のため shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}
+          shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
 
       # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
       # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
@@ -218,12 +220,14 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo build キャッシュ（~/.cargo + target/）を再利用し、dotfiles-cli の crate 再コンパイルを無くす。
-      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。Nix devShell でビルドした成果物を安全に共有する
+      # ため、cache key に flake.lock を含め、rust-cache 自身の cargo/rustc 判定も `nix develop -c` で実行して
+      # Nix shell 上の Rust 環境に合わせる。bump↔record は同一 OS（macOS）のため shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}
+          shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
 
       # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
       - name: bump 済み lock と bump 前 eval 版マップを取得
@@ -372,13 +376,14 @@ jobs:
           purge-created: 0
           purge-primary-key: never
 
-      # cargo build キャッシュ（~/.cargo + target/）を再利用する。verify-bump-lock の cargo build と
-      # `cargo xtask check static` で target/ の再ビルド回避が効く。static-checks.yml と同一 OS（ubuntu）のため
-      # shared-key を共有する。
+      # cargo build キャッシュ（~/.cargo + target/）を再利用する。Nix devShell でビルドした成果物を安全に共有する
+      # ため、cache key に flake.lock を含め、rust-cache 自身の cargo/rustc 判定も `nix develop -c` で実行して
+      # Nix shell 上の Rust 環境に合わせる。static-checks.yml と同一 OS（ubuntu）のため shared-key を共有する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}
+          shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
 
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v8
