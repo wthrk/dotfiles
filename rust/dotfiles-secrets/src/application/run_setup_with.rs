@@ -25,7 +25,7 @@ where
     let probe = SecretStorageSetupProbe::expected();
     let inspection = storage.inspect_secret_storage_setup(serial, &probe)?;
     let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
-    storage.initialize_secret_storage(serial, intent.clone())?;
+    storage.initialize_secret_storage(serial, intent.clone(), None)?;
     storage.finalize_secret_storage_setup(serial, intent)
 }
 
@@ -70,7 +70,7 @@ mod tests {
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)

@@ -131,11 +131,11 @@ impl SecretDeviceIo for TestStubSecretDevice {
         Ok(())
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Option<Vec<u8>>> {
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
-            Ok(())
+            Ok(Some(vec![0x01]))
         })
     }
 
@@ -176,6 +176,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
+        _generated_public_key: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         let value = String::from_utf8(plaintext.to_test_bytes())
             .context("internal stub secret is not valid UTF-8")?;

@@ -39,14 +39,6 @@ where
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    let fields = document_input.read_bootstrap_secret_fields()?;
-    let document = BootstrapSecretDocument::from_field_map(fields)?;
-    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
-    for (storage, value) in document.storage_entries(serial) {
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
-        storage_port.store_secret(serial, intent, value)?;
-    }
-    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
     let pin = if pin_policy.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -54,6 +46,14 @@ where
     } else {
         None
     };
+    storage_port.initialize_secret_storage(serial, setup_intent.clone(), pin.as_ref())?;
+    let fields = document_input.read_bootstrap_secret_fields()?;
+    let document = BootstrapSecretDocument::from_field_map(fields)?;
+    for (storage, value) in document.storage_entries(serial) {
+        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
+        storage_port.store_secret(serial, intent, value)?;
+    }
+    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
     for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
         let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -143,7 +143,7 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
             .times(3)
@@ -238,12 +238,14 @@ mod tests {
             .times(1)
             .returning(|_| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
         let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
-            .times(1)
-            .returning(|| Ok(fields()));
+            .times(0);
         let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
@@ -253,7 +255,7 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Err(anyhow::anyhow!("setup failed")));
+            .returning(|_, _, _| Err(anyhow::anyhow!("setup failed")));
         storage.expect_store_secret().times(0);
         storage.expect_finalize_secret_storage_setup().times(0);
         let report = ports::MockReportPort::new();

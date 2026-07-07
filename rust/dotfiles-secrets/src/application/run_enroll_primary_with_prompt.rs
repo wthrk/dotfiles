@@ -39,17 +39,6 @@ where
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    let bw_email = secret_input.read_bw_email_secret()?;
-    let bw_password = secret_input.read_bw_password_secret()?;
-    let bws_access_token = secret_input.read_bws_access_token_secret()?;
-    let document =
-        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
-    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
-    for (storage, value) in document.storage_entries(serial) {
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
-        storage_port.store_secret(serial, intent, value)?;
-    }
-    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
     let pin = if pin_policy.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -57,6 +46,17 @@ where
     } else {
         None
     };
+    storage_port.initialize_secret_storage(serial, setup_intent.clone(), pin.as_ref())?;
+    let bw_email = secret_input.read_bw_email_secret()?;
+    let bw_password = secret_input.read_bw_password_secret()?;
+    let bws_access_token = secret_input.read_bws_access_token_secret()?;
+    let document =
+        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
+    for (storage, value) in document.storage_entries(serial) {
+        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
+        storage_port.store_secret(serial, intent, value)?;
+    }
+    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
     for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
         let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -121,6 +121,17 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
         let mut secret_input = ports::MockSecretInputPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Ok(()));
         secret_input
             .expect_read_bw_email_secret()
             .times(1)
@@ -137,11 +148,6 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"token")));
         storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(()));
-        storage
             .expect_store_secret()
             .times(3)
             .in_sequence(&mut sequence)
@@ -151,11 +157,6 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
         let pin_input = ports::MockPinInputPort::new();
         for name in [
             SecretName::BwEmail,
@@ -208,7 +209,10 @@ mod tests {
             .times(1)
             .returning(|_| Ok(2001));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
+        pin_policy
+            .expect_device_requires_pin()
+            .times(0)
+            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input.expect_read_bw_email_secret().times(0);
         let pin_input = ports::MockPinInputPort::new();
@@ -248,7 +252,7 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
             .times(3)
@@ -334,7 +338,7 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
             .times(1)
@@ -342,7 +346,10 @@ mod tests {
         storage.expect_finalize_secret_storage_setup().times(0);
         storage.expect_inspect_secret_storage_read().times(0);
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
@@ -388,7 +395,7 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
             .times(3)

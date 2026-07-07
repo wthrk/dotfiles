@@ -2,6 +2,8 @@
 //!
 //! manifest/object 読み書きと暗号化 payload の受け渡しを担当し、use case 分岐は保持しない。
 
+use std::collections::BTreeMap;
+
 use crate::{
     Result,
     domain::{
@@ -27,6 +29,7 @@ use super::{
 #[derive(Default)]
 pub(super) struct StorageAdapter {
     device: SelectedDeviceAdapter,
+    generated_public_keys: BTreeMap<u32, Vec<u8>>,
 }
 
 impl StorageAdapter {
@@ -65,11 +68,21 @@ impl SecretStoragePort for StorageAdapter {
         &mut self,
         serial: u32,
         intent: SecretStorageSetupIntent,
+        pin: Option<&ProtectedSecret>,
     ) -> Result<()> {
         let mut device = self.open_device_by_serial(serial)?;
+        if device.requires_pin_input() {
+            let Some(pin) = pin else {
+                anyhow::bail!("PIN is required for this operation");
+            };
+            device.verify_pin(pin)?;
+        }
         device.check_management_auth_preconditions()?;
         if intent.key_generation_required {
-            device.generate_key()?;
+            let generated_public_key = device.generate_key()?;
+            if let Some(public_key) = generated_public_key {
+                self.generated_public_keys.insert(serial, public_key);
+            }
         }
         Ok(())
     }
@@ -79,6 +92,7 @@ impl SecretStoragePort for StorageAdapter {
         serial: u32,
         mut intent: SecretStorageSetupIntent,
     ) -> Result<()> {
+        self.generated_public_keys.remove(&serial);
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
         device.write_object(PivObjectId::MANIFEST, &mut intent.manifest_bytes)
@@ -106,7 +120,9 @@ impl SecretStoragePort for StorageAdapter {
     ) -> Result<()> {
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
-        let mut encoded = device.seal_for_storage(intent.storage.clone(), secret)?;
+        let generated_public_key = self.generated_public_keys.get(&serial).map(Vec::as_slice);
+        let mut encoded =
+            device.seal_for_storage(intent.storage.clone(), secret, generated_public_key)?;
         device.write_object(intent.storage.object_id, &mut encoded)
     }
 
