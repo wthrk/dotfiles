@@ -11,7 +11,9 @@ use crate::Result;
 
 /// import 後の鍵が満たすべき subkey capability の閉じた集合。
 ///
-/// 設計「subkey 検証決定」は encryption / authentication / signing の 3 capability を必須とする。
+/// `gnupg-ssh-design.md` は復元後に authentication subkey の keygrip 登録と公開鍵識別を行う。
+/// この実装はそれに加え、import 済み鍵を通常利用できる状態へ限定するため、encryption /
+/// authentication / signing の 3 capability を防御的な domain 検証対象として閉じた集合にする。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubkeyCapability {
     Encryption,
@@ -50,8 +52,8 @@ pub struct ResolvedSubkey {
 /// import 後鍵の subkey 構成を集約し、利用可能状態を含めて検証する domain object。
 ///
 /// adapter が解決した primary key の存在・secret material 保持・subkey 群を受け取り、
-/// 設計「subkey 検証決定」の 4 条件（primary 1 つ・secret material 保持・3 capability が
-/// それぞれ 1 つ以上・利用可能）を業務規則として判定する。
+/// import 済み鍵に secret material があり、encryption / authentication / signing capability が
+/// それぞれ 1 つ以上利用可能であることを実装ローカルの防御的な業務規則として判定する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedKeyComposition {
     has_secret_material: bool,
@@ -139,8 +141,8 @@ impl Keygrip {
 
 /// authentication subkey 由来の OpenSSH 公開鍵 1 行を表す検証済み値。
 ///
-/// 設計「公開鍵出力契約」は「OpenSSH 公開鍵 1 行のみ、機械可読、秘密鍵素材を含めない」を
-/// 要求する。adapter が keyring から導出した行を受け取り、1 行であること・既知の OpenSSH
+/// `gnupg-ssh-design.md` は import 後に authentication subkey 公開鍵の識別を確認する。
+/// adapter が keyring から導出した OpenSSH 公開鍵行を受け取り、1 行であること・既知の OpenSSH
 /// 公開鍵 type prefix で始まること・base64 本体が存在することを domain rule として検証する。
 /// この値は秘密情報ではないため、stdout 出力境界へそのまま渡してよい。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,10 +269,10 @@ fn openssh_base64_symbol_value(symbol: u8) -> Option<u8> {
 
 /// gpg-agent SSH support が利用可能であることを adapter が報告した観測結果。
 ///
-/// 設計「gpg-agent SSH support 境界」（L116-124）は「SSH agent socket 参照先が解決でき、その socket 経路で
+/// `gnupg-ssh-design.md` の gpg-agent SSH support 経路は「SSH agent socket 参照先が解決でき、その socket 経路で
 /// authentication subkey が識別可能」を満たす状態を「利用可」とする。adapter は agent が列挙する identity を
 /// 観測し、socket 解決可否（`socket_resolved`）と、復元鍵の identity が含まれるか（`recovery_identity_present`）を
-/// この値へ翻訳する。この充足判定は `restore-gpg` が行い（設計 L34-35/L116-124）、`restore-pass` へ進ませる
+/// この値へ翻訳する。この充足判定は `restore-gpg` が行い、`restore-pass` へ進ませる
 /// gate になる。業務上の充足判定はこの module で行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SshAgentReadiness {
@@ -284,8 +286,8 @@ impl SshAgentReadiness {
     /// agent socket が解決でき、復元鍵の authentication subkey identity が agent から識別可能であることを
     /// 確認する（restore-gpg の SSH support 確認用）。
     ///
-    /// 設計「gpg-agent SSH support 境界」（L116-124）に従い、(1) socket が解決でき、(2) 復元鍵の identity が
-    /// agent から識別可能、の 2 条件を要求する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は判定
+    /// `gnupg-ssh-design.md` の gpg-agent SSH support 経路に従い、(1) socket が解決でき、(2) 復元鍵の identity が
+    /// agent から識別可能、の 2 条件を要求する。復元鍵と無関係な既存 identity の有無は判定
     /// 条件に含めない。各条件の失敗は別個の停止条件として、原因の区別できる message で失敗する。
     pub fn ensure_ready(self) -> Result<()> {
         if !self.socket_resolved {
@@ -302,12 +304,11 @@ impl SshAgentReadiness {
 
 /// `restore-gpg` の完了状態を表す domain summary。
 ///
-/// 設計「鍵リング復元契約」を満たして停止せず復元できたことの意味だけを保持し、表示仕様
-/// （JSON key 名・整形）は adapter 側の責務とする。fingerprint 以外の鍵素材はここへ載せない。
+/// `gnupg-ssh-design.md` の復元フローで、import 後の authentication subkey keygrip 登録と
+/// gpg-agent SSH support 確認まで停止せず到達したことの意味だけを保持し、表示仕様（JSON key 名・整形）は
+/// adapter 側の責務とする。鍵識別子や鍵素材は report surface に載せない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreGpgSummary {
-    /// import / subkey 検証 / keygrip 登録の対象になった primary fingerprint（lowercase hex 40）。
-    pub primary_fingerprint: String,
     /// authentication subkey の keygrip（uppercase hex 40）を SSH key list へ登録できたか。
     pub ssh_key_registered: bool,
     /// gpg-agent SSH support が利用可能（socket 解決 + authentication identity 識別）であったか。
@@ -318,8 +319,8 @@ pub struct RestoreGpgSummary {
 mod tests {
     //! subkey 構成・keygrip・OpenSSH 公開鍵・SSH agent 充足の domain 規則を検証する単体テスト。
     //!
-    //! 設計「subkey 検証決定」「公開鍵出力契約」「gpg-agent SSH support 境界」の充足/停止条件を
-    //! 純粋ロジックとして網羅し、test double は持ち込まない。
+    //! import 済み鍵の防御的な subkey 構成検証、公開鍵行、`gnupg-ssh-design.md` が述べる
+    //! gpg-agent SSH support の充足/停止条件を純粋ロジックとして網羅し、test double は持ち込まない。
 
     use super::*;
 
@@ -440,7 +441,7 @@ mod tests {
     #[test]
     fn ssh_agent_readiness_ready_requires_socket_and_recovery_identity() {
         // restore-gpg の SSH support 確認は socket 解決 + 復元鍵識別の 2 条件で成立する。
-        // 設計 L83 に従い、復元鍵と無関係な既存 identity の有無は判定条件に含めない。
+        // 復元鍵と無関係な既存 identity の有無は判定条件に含めない。
         assert!(
             SshAgentReadiness {
                 socket_resolved: true,

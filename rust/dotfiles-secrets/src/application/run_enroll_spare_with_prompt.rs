@@ -1,4 +1,4 @@
-//! enroll-spare(prompt) の順序を固定し、primary/spare 判定責務を I/O 実装から分離する。
+//! enroll-spare(prompt) の順序を固定し、spare 登録でも shell/stdin payload 経由を使わせない。
 
 use crate::Result;
 use crate::{
@@ -15,103 +15,74 @@ use crate::{
     ports,
 };
 
-/// primary YubiKey から読み出した secret を prompt 運用の spare YubiKey へ複製する。
+/// prompt 入力で spare YubiKey に bootstrap secret 一式を登録する。
 ///
-/// primary 読み出し後に spare 解決へ進む順序を固定し、1 reader で primary から spare へ
-/// 差し替える運用を保つ。secret 転送手段の詳細は port 境界で読み出しと保存を接続する。
-pub(crate) fn run_enroll_spare_with_prompt<D, P, S, R>(
+/// primary から secret を読み出す旧設計と stdin payload を使う旧境界を廃止し、spare でも CLI の
+/// secret input port だけから値を受け取る。use case は単一接続確認と setup を secret 入力前に完了し、
+/// setup 不能な YubiKey では bootstrap secret を読まずに停止する。鍵生成が PIN を要する fresh/未初期化
+/// spare では、primary と同じく initialize の前に PIN を取得し、鍵生成と検証 load の両方へ同じ PIN を渡す。
+pub(crate) async fn run_enroll_spare_with_prompt<I, P, S, R>(
     command: EnrollSpareCommand,
-    primary_device: &mut D,
-    spare_device: &mut impl ports::SpareDeviceSerialPort,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
-    process: &P,
+    device: &mut impl ports::yubikey::YubiKeyDevicePort,
+    secret_input: &I,
+    pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    P: ports::PinInputPort,
-    S: ports::SecretStoragePort,
-    R: ports::ReportPort,
+    I: ports::io::SecretInputPort,
+    P: ports::io::PinInputPort,
+    S: ports::yubikey::SecretStoragePort,
+    R: ports::io::ReportPort,
 {
-    command.ensure_requested_serials_distinct()?;
-    let primary_serial = primary_device.resolve_device_serial(command.primary_serial)?;
-    let primary_pin = if pin_policy.device_requires_pin(primary_serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
-    let [first_storage, second_storage, third_storage] =
-        SecretStorageVerificationPlan::for_serial(primary_serial).into_targets();
-    let first_inspection =
-        storage_port.inspect_secret_storage_read(primary_serial, &first_storage)?;
-    let first_intent = SecretStorageReadIntent::from_inspection(first_storage, first_inspection)?;
-    let first_document_storage = first_intent.storage.clone();
-    let first = storage_port
-        .load_secret(primary_serial, &first_intent, primary_pin.as_ref())
-        .map_err(|error| first_intent.decode_error(error))?;
-    first_intent.validate_loaded_secret(&first)?;
-    let second_inspection =
-        storage_port.inspect_secret_storage_read(primary_serial, &second_storage)?;
-    let second_intent =
-        SecretStorageReadIntent::from_inspection(second_storage, second_inspection)?;
-    let second_document_storage = second_intent.storage.clone();
-    let second = storage_port
-        .load_secret(primary_serial, &second_intent, primary_pin.as_ref())
-        .map_err(|error| second_intent.decode_error(error))?;
-    second_intent.validate_loaded_secret(&second)?;
-    let third_inspection =
-        storage_port.inspect_secret_storage_read(primary_serial, &third_storage)?;
-    let third_intent = SecretStorageReadIntent::from_inspection(third_storage, third_inspection)?;
-    let third_document_storage = third_intent.storage.clone();
-    let third = storage_port
-        .load_secret(primary_serial, &third_intent, primary_pin.as_ref())
-        .map_err(|error| third_intent.decode_error(error))?;
-    third_intent.validate_loaded_secret(&third)?;
-    let document = BootstrapSecretDocument::from_storage_materials([
-        (first_document_storage, first),
-        (second_document_storage, second),
-        (third_document_storage, third),
-    ])?;
-    let spare_serial = spare_device.resolve_spare_device_serial(command.spare_serial)?;
-    command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
+    let _ = command;
+    let serial = device.resolve_device_serial()?;
     let setup_probe = SecretStorageSetupProbe::expected();
-    let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
+    let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
-    for (storage, value) in document.storage_entries(spare_serial) {
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
-        storage_port.store_secret(spare_serial, intent, value)?;
-    }
-    storage_port.finalize_secret_storage_setup(spare_serial, setup_intent)?;
-    let spare_pin = if pin_policy.device_requires_pin(spare_serial)? {
-        let pin = process.read_pin()?;
+    // primary と同じく、鍵生成を伴う初期化が PIN を要する fresh/未初期化 spare でも登録できるよう、
+    // initialize の前に PIN を取得し、initialize（鍵生成）と検証 load の両方へ同じ PIN を渡す。
+    let pin_for_setup_and_load = if device.device_requires_pin(serial)? {
+        let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
     } else {
         None
     };
-    for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
-        let inspection = storage_port.inspect_secret_storage_read(spare_serial, &storage)?;
+    storage_port.initialize_secret_storage(
+        serial,
+        setup_intent.clone(),
+        pin_for_setup_and_load.as_ref(),
+    )?;
+    let bitwarden_client_id = secret_input.read_bitwarden_client_id_secret()?;
+    let bitwarden_client_secret = secret_input.read_bitwarden_client_secret()?;
+    let document = BootstrapSecretDocument::from_secret_materials(
+        &bitwarden_client_id,
+        &bitwarden_client_secret,
+    )?;
+    for (storage, value) in document.storage_entries(serial) {
+        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
+        storage_port.store_secret(serial, intent, value)?;
+    }
+    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
+    for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
+        let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
         let secret = storage_port
-            .load_secret(spare_serial, &intent, spare_pin.as_ref())
+            .load_secret(serial, &intent, pin_for_setup_and_load.as_ref())
             .map_err(|error| intent.decode_error(error))?;
         intent.validate_loaded_secret(&secret)?;
     }
-    report.write_enroll_report(&EnrollSummary::spare_completed(spare_serial))
+    report.write_enroll_report(&EnrollSummary::spare_completed())
 }
 
+/// enroll-spare(prompt) が primary 読み出しや stdin 経由へ戻らないことを port mock で検証する。
 #[cfg(test)]
 mod tests {
     use crate::{
         domain::{
-            commands::EnrollSpareCommand,
-            manifest::SecretManifest,
-            piv::{PivApplicationVersion, SecretName},
-            storage::{SecretStorageReadInspection, SecretStorageSetupInspection},
+            commands::EnrollSpareCommand, piv::PivApplicationVersion,
+            storage::SecretStorageSetupInspection,
         },
         ports,
         support::protection::ProtectedSecret,
@@ -133,216 +104,173 @@ mod tests {
         }
     }
 
-    fn read_inspection() -> SecretStorageReadInspection {
-        SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
-            encoded: Some(vec![1]),
-        }
-    }
-
-    #[test]
-    fn enroll_spare_prompt_rejects_same_requested_serials_before_ports() {
-        let mut primary_device = ports::MockDeviceSerialPort::new();
-        primary_device.expect_resolve_device_serial().times(0);
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device.expect_resolve_spare_device_serial().times(0);
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage.expect_inspect_secret_storage_read().times(0);
-        let report = ports::MockReportPort::new();
-
-        let result = run_enroll_spare_with_prompt(
-            EnrollSpareCommand {
-                primary_serial: Some(2001),
-                spare_serial: Some(2001),
-            },
-            &mut primary_device,
-            &mut spare_device,
-            &mut pin_policy,
-            &process,
-            &mut storage,
-            &report,
-        );
-
-        assert!(
-            result.is_err(),
-            "same requested serials must stop before ports"
-        );
-    }
-
-    #[test]
-    fn enroll_spare_prompt_reads_primary_before_spare_setup() -> crate::Result<()> {
-        let mut sequence = mockall::Sequence::new();
-        let mut primary_device = ports::MockDeviceSerialPort::new();
-        primary_device
+    /// spare 登録でも input port 由来の 2 bootstrap secret だけを保存する。
+    #[tokio::test]
+    async fn enroll_spare_prompt_stores_two_bootstrap_secrets() -> crate::Result<()> {
+        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
+        device
             .expect_resolve_device_serial()
             .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
+            .returning(|| Ok(2002));
+        device
             .expect_device_requires_pin()
-            .times(2)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BwsAccessToken,
-        ] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .in_sequence(&mut sequence)
-                .withf(move |serial, storage| *serial == 2001 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .in_sequence(&mut sequence)
-                .returning(|_, intent, _| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
-                    })
-                });
-        }
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device
-            .expect_resolve_spare_device_serial()
             .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(2002));
+            .returning(|_| Ok(false));
+        let mut secret_input = ports::io::MockSecretInputPort::new();
+        secret_input
+            .expect_read_bitwarden_client_id_secret()
+            .times(1)
+            .returning(|| Ok(material(b"email")));
+        secret_input
+            .expect_read_bitwarden_client_secret()
+            .times(1)
+            .returning(|| Ok(material(b"password")));
+        let pin_input = ports::io::MockPinInputPort::new();
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
-            .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
-            .times(3)
+            .times(2)
             .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(()));
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BwsAccessToken,
-        ] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .withf(move |serial, storage| *serial == 2002 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .returning(|_, intent, _| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
-                    })
-                });
-        }
-        let mut report = ports::MockReportPort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(2)
+            .returning(|_, _| {
+                Ok(crate::domain::storage::SecretStorageReadInspection {
+                    manifest_bytes: Some(
+                        crate::domain::manifest::SecretManifest::expected()
+                            .encode()
+                            .expect("manifest"),
+                    ),
+                    encoded: Some(vec![1]),
+                })
+            });
+        storage
+            .expect_load_secret()
+            .times(2)
+            .returning(|_, _, _| Ok(material(b"loaded")));
+        let mut report = ports::io::MockReportPort::new();
         report
             .expect_write_enroll_report()
             .times(1)
             .returning(|_| Ok(()));
 
         run_enroll_spare_with_prompt(
-            EnrollSpareCommand {
-                primary_serial: Some(2001),
-                spare_serial: Some(2002),
-            },
-            &mut primary_device,
-            &mut spare_device,
-            &mut pin_policy,
-            &process,
+            EnrollSpareCommand,
+            &mut device,
+            &secret_input,
+            &pin_input,
             &mut storage,
             &report,
         )
+        .await
     }
 
-    #[test]
-    fn enroll_spare_prompt_stops_when_spare_setup_initialization_fails() {
-        let mut primary_device = ports::MockDeviceSerialPort::new();
-        primary_device
+    /// device が PIN を要求する場合、spare でも initialize の前に PIN を取得し、鍵生成 initialize と
+    /// 検証 load の両方へ同じ PIN を渡す（fresh/未初期化 spare を鍵生成前に fail-closed させない）。
+    #[tokio::test]
+    async fn enroll_spare_prompt_reads_pin_before_initialize_when_required() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
+        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
+        device
             .expect_resolve_device_serial()
             .times(1)
-            .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BwsAccessToken,
-        ] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .withf(move |serial, storage| *serial == 2001 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .returning(|_, intent, _| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
-                    })
-                });
-        }
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device
-            .expect_resolve_spare_device_serial()
-            .times(1)
-            .returning(|_| Ok(2002));
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(2002));
+        let mut storage = ports::yubikey::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
+        device
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(true));
+        let mut pin_input = ports::io::MockPinInputPort::new();
+        pin_input
+            .expect_read_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(material(b"123456")));
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Err(anyhow::anyhow!("setup failed")));
-        storage.expect_store_secret().times(0);
-        storage.expect_finalize_secret_storage_setup().times(0);
-        let report = ports::MockReportPort::new();
+            .in_sequence(&mut sequence)
+            .withf(|_, _, pin| {
+                pin.map(ProtectedSecret::to_test_bytes).as_deref() == Some(&b"123456"[..])
+            })
+            .returning(|_, _, _| Ok(()));
+        let mut secret_input = ports::io::MockSecretInputPort::new();
+        secret_input
+            .expect_read_bitwarden_client_id_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(material(b"email")));
+        secret_input
+            .expect_read_bitwarden_client_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(material(b"password")));
+        storage
+            .expect_store_secret()
+            .times(2)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Ok(()));
+        storage
+            .expect_finalize_secret_storage_setup()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
+        // 検証 load は inspect→load を 2 secret 分 interleave するため strict sequence には載せず、
+        // PIN が検証 load へ渡ることだけを withf で固定する（primary の per-name 検証と同じ確認意図）。
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(2)
+            .returning(|_, _| {
+                Ok(crate::domain::storage::SecretStorageReadInspection {
+                    manifest_bytes: Some(
+                        crate::domain::manifest::SecretManifest::expected()
+                            .encode()
+                            .expect("manifest"),
+                    ),
+                    encoded: Some(vec![1]),
+                })
+            });
+        storage
+            .expect_load_secret()
+            .times(2)
+            .withf(|_, _, pin| {
+                pin.map(ProtectedSecret::to_test_bytes).as_deref() == Some(&b"123456"[..])
+            })
+            .returning(|_, _, _| Ok(material(b"loaded")));
+        let mut report = ports::io::MockReportPort::new();
+        report
+            .expect_write_enroll_report()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(()));
 
-        let result = run_enroll_spare_with_prompt(
-            EnrollSpareCommand {
-                primary_serial: Some(2001),
-                spare_serial: Some(2002),
-            },
-            &mut primary_device,
-            &mut spare_device,
-            &mut pin_policy,
-            &process,
+        run_enroll_spare_with_prompt(
+            EnrollSpareCommand,
+            &mut device,
+            &secret_input,
+            &pin_input,
             &mut storage,
             &report,
-        );
-
-        assert!(
-            result.is_err(),
-            "spare setup failure must stop before store"
-        );
+        )
+        .await
     }
 }

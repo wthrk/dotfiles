@@ -4,10 +4,11 @@
 //! 結合だけを扱う。payload id と AAD の値そのものの意味は呼び出し側が決め、この
 //! support 境界は与えられた識別子と AAD を AEAD 検証へ渡す責務に限定する。
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bincode::config;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use std::{error::Error, fmt};
 use zeroize::Zeroizing;
 
 use crate::support::aead::{aes_256_gcm_from_key, decrypt_detached, encrypt_detached};
@@ -66,7 +67,7 @@ struct SealedBlob {
 impl SealedBlob {
     fn encode(&self) -> Result<Vec<u8>> {
         let payload = bincode::serde::encode_to_vec(self, config::standard())
-            .map_err(|error| invalid_data(format!("failed to encode sealed blob: {error}")))?;
+            .map_err(SealedBlobCodecError::encode)?;
         let mut encoded = Vec::with_capacity(BLOB_MAGIC.len() + payload.len());
         encoded.extend_from_slice(BLOB_MAGIC);
         encoded.extend_from_slice(&payload);
@@ -80,7 +81,7 @@ impl SealedBlob {
         let payload = &input[BLOB_MAGIC.len()..];
         let (blob, read) =
             bincode::serde::decode_from_slice::<Self, _>(payload, config::standard())
-                .map_err(|error| invalid_data(format!("failed to decode sealed blob: {error}")))?;
+                .map_err(SealedBlobCodecError::decode)?;
         if read != payload.len() {
             return invalid_blob();
         }
@@ -91,12 +92,45 @@ impl SealedBlob {
     }
 
     fn decode_for_payload_id(input: &[u8], expected_payload_id: u8) -> Result<Self> {
-        let blob = Self::decode(input)
-            .map_err(|error| anyhow::anyhow!("failed to decode sealed blob: {error}"))?;
+        let blob = Self::decode(input).context("failed to decode sealed blob")?;
         if blob.payload_id != expected_payload_id {
             anyhow::bail!("sealed blob id does not match requested payload id");
         }
         Ok(blob)
+    }
+}
+
+#[derive(Debug)]
+enum SealedBlobCodecError {
+    Encode(bincode::error::EncodeError),
+    Decode(bincode::error::DecodeError),
+}
+
+impl SealedBlobCodecError {
+    fn encode(source: bincode::error::EncodeError) -> Self {
+        Self::Encode(source)
+    }
+
+    fn decode(source: bincode::error::DecodeError) -> Self {
+        Self::Decode(source)
+    }
+}
+
+impl fmt::Display for SealedBlobCodecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Encode(_) => formatter.write_str("failed to encode sealed blob"),
+            Self::Decode(_) => formatter.write_str("failed to decode sealed blob"),
+        }
+    }
+}
+
+impl Error for SealedBlobCodecError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Encode(source) => Some(source),
+            Self::Decode(source) => Some(source),
+        }
     }
 }
 
@@ -236,7 +270,7 @@ fn open_decoded(
         .with_secret_mut(|secret_bytes| {
             decrypt_detached(&cipher, &blob.nonce, aad, secret_bytes, &blob.tag)
         })
-        .map_err(|_| anyhow::anyhow!("failed to decrypt payload"))?;
+        .context("failed to decrypt payload")?;
     Ok(secret)
 }
 
@@ -492,14 +526,14 @@ mod tests {
             wrapped_key: b"wrapped".to_vec(),
             plaintext: &plaintext,
             content_key: &content_key,
-            aad: b"object=bw-email",
+            aad: b"object=bitwarden-client-id",
         })?;
 
         let result = open_with_key_unwrap(
             &encoded,
             2,
             |_| ProtectedSecret::try_clone(&content_key),
-            b"object=bw-password",
+            b"object=bitwarden-client-secret",
         );
 
         assert!(result.is_err());

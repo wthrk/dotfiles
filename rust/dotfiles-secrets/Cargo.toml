@@ -20,7 +20,11 @@ secrets-internal-test-stub = []
 aes-gcm.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
-bitwarden.workspace = true
+bitwarden-api-api.workspace = true
+bitwarden-core.workspace = true
+bitwarden-crypto.workspace = true
+bitwarden-vault.workspace = true
+chrono.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotfiles-core.workspace = true
@@ -32,6 +36,7 @@ region.workspace = true
 rand_core.workspace = true
 rlimit.workspace = true
 rsa.workspace = true
+rustls-webpki.workspace = true
 scopeguard.workspace = true
 sequoia-openpgp = { workspace = true, optional = true }
 serde.workspace = true
@@ -45,3 +50,4 @@ zeroize.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 mockall.workspace = true
+portable-pty = { workspace = true }

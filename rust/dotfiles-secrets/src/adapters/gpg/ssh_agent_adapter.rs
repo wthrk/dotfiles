@@ -7,7 +7,7 @@
 //! だけ既存環境変数 `SSH_AUTH_SOCK` が指す socket へ fallback する（`config/zsh/env.zsh` の上書き条件と同じ前提）。
 //! identity の列挙は、解決した socket へ接続して SSH agent protocol（`SSH_AGENTC_REQUEST_IDENTITIES`）で公開鍵
 //! identity を列挙し、各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合して、
-//! 復元鍵 identity が識別可能かを判定する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は観測しない。
+//! 復元鍵 identity が識別可能かを判定する。復元鍵と無関係な既存 identity の有無は観測しない。
 //! identity comment（gpg-agent は `cardno:` / `openpgp:` 等を載せ keygrip とは限らない）は鍵同一性に使えないため
 //! 照合に用いない。SSH support 充足の業務判定そのものは domain（`SshAgentReadiness::ensure_ready` /
 //! `OpenSshPublicKey::matches_agent_key_blob`）へ残す。
@@ -66,10 +66,10 @@ impl SshAgentPort for SshAgentAdapter {
         // 解決した socket へ接続して SSH agent protocol で公開鍵 identity を列挙し、各 identity の key blob を
         // 期待公開鍵の key blob と byte 一致で照合する。一致する identity があれば復元鍵が識別可能であり、
         // socket が解決できない、または接続/列挙に失敗した場合は false とし、復元鍵を識別できないことで
-        // 停止させる（識別不能を「識別可能」へ倒さない）。設計 L83 に従い、復元鍵と無関係な既存 identity の
+        // 停止させる（識別不能を「識別可能」へ倒さない）。復元鍵と無関係な既存 identity の
         // 有無は観測しない。
         let recovery_identity_present = match socket {
-            Some(path) => inspect_agent_identities(&path, expected_public_key).unwrap_or(false),
+            Some(path) => inspect_agent_identities(&path, expected_public_key)?,
             None => false,
         };
         Ok(SshAgentReadiness {
@@ -83,7 +83,7 @@ impl SshAgentPort for SshAgentAdapter {
 ///
 /// 解決済み socket へ接続し、`SSH_AGENTC_REQUEST_IDENTITIES` を送って `SSH_AGENT_IDENTITIES_ANSWER` を
 /// 解析する。各 identity の key blob を期待公開鍵（`OpenSshPublicKey`）の key blob と byte 一致で照合し、
-/// 一致する identity があれば復元鍵が識別可能と判定する。設計 L83 に従い、復元鍵と無関係な既存 identity の
+/// 一致する identity があれば復元鍵が識別可能と判定する。復元鍵と無関係な既存 identity の
 /// 有無は観測しない。gpg-agent の identity comment は keygrip とは限らない（`cardno:` / `openpgp:` 等）ため
 /// 照合に用いない。接続/送受信/解析に失敗した場合は、socket への接続可否を最低限の観測代替とせず、停止条件を
 /// 弱めないため `Err` を返して呼び出し側で false に倒す。
@@ -232,7 +232,7 @@ fn sshcontrol_contains(path: &PathBuf, keygrip: &Keygrip) -> Result<bool> {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
-            return Err(anyhow::Error::new(error).context("failed to read gpg-agent sshcontrol"));
+            return Err(error).context("failed to read gpg-agent sshcontrol");
         }
     };
     for line in BufReader::new(file).lines() {

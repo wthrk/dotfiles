@@ -6,24 +6,30 @@
 //! clone は提示する SSH identity を選べないため、socket 解決は gpg-agent socket
 //! （`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh`）を strict に使う `resolve_gpg_agent_socket` を用い、通常の
 //! `ssh-agent` を指しうる既存 `SSH_AUTH_SOCK` へは fallback しない。既存 `~/.ssh/id_ed25519` を新規運用で使わ
-//! ない仕様（spec L92 / L100 / L210）を守るためであり、gpg-agent socket が無ければ clone を停止する。
+//! ない `secret-recovery-spec.md` と `gnupg-ssh-design.md` の復旧経路を守るためであり、gpg-agent socket が無ければ clone を停止する。
 //!
 //! gpg-agent SSH support の確立（SSH agent socket の有効化）・authentication subkey の `sshcontrol` 相当への
-//! 登録・利用可否確認は `restore-gpg` の責務である（design L116-124）。本 adapter は `restore-gpg` が整えた
+//! 登録・利用可否確認は `restore-gpg` の責務である（`gnupg-ssh-design.md` の gpg-agent SSH support 経路）。本 adapter は `restore-gpg` が整えた
 //! gpg-agent の SSH agent 経由で `Cred::ssh_key_from_agent` により clone するだけであり、clone 前に agent の
-//! identity を列挙・照合・排除しない（application も同様に再検査しない。spec L174 / entrypoint doc
-//! `application/run_restore_pass.rs` 参照）。`Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の
+//! identity を列挙・照合・排除しない（application も同様に再検査しない。`secret-recovery-spec.md` が
+//! 定義する SSH agent 認証 clone と `application/run_restore_pass.rs` 参照）。`Cred::ssh_key_from_agent` は username だけを受け取り、agent 内の
 //! 特定 identity を選んで提示する API を持たないが、本 adapter の安全境界は (1) strict な gpg-agent socket 解決
 //! （`resolve_gpg_agent_socket`。通常の `ssh-agent` や `~/.ssh/id_ed25519` 等へ fallback しない）で提示元を
-//! gpg-agent の SSH socket に限定すること、(2) `certificate_check` による GitHub host key の pin 照合で接続先を
-//! `github.com` に固定すること、の 2 点に閉じる。identity 事前検証や single-key 担保はここでは行わない。clone URL
-//! の妥当性判断は domain（`PasswordStoreRemote`）に委ねる。
+//! gpg-agent の SSH socket に限定すること、(2) libgit2/libssh2 の通常の SSH host key 検証を使い、その検証が
+//! 失敗した場合にだけ `certificate_check` callback で GitHub 公表 host key pin を追加照合すること、の 2 点に
+//! 閉じる。`RemoteCallbacks::certificate_check` は git2/libgit2 の documented contract 上「証明書/host key 検証が
+//! 失敗したときだけ」呼ばれるため、この adapter は毎回 raw host key pin を再検証する保証は持たない。既定検証に
+//! 成功した接続の trust decision は libgit2/libssh2 側に委ねられ、この adapter の pin 集合は参照されない。
+//! identity 事前検証や single-key 担保はここでは行わない。clone URL の妥当性判断は domain
+//! （`PasswordStoreRemote`）に委ねる。
 //!
 //! host key 検証: 新規マシンでは `~/.ssh/known_hosts` に `github.com` の host key が無いのが通常であり、
-//! credentials だけでは MITM を防げない。`RemoteCallbacks::certificate_check` で、接続先 hostname が
-//! `github.com` であり、libssh2 が提示する SSH host key の raw bytes が GitHub 公表の既知 host key
-//! （Ed25519 / ECDSA / RSA の公開鍵）と byte 一致することを検証し、一致しなければ clone を停止する。
-//! GitHub 公表鍵は出典コメント付きの定数 [`GITHUB_SSH_HOST_KEYS`] として pin する。
+//! credentials だけでは MITM を防げない。そこで `RemoteCallbacks::certificate_check` が呼ばれた失敗経路では、
+//! 接続先 hostname が `github.com` であり、libssh2 が提示する SSH host key の raw bytes が GitHub 公表の既知
+//! host key（Ed25519 / ECDSA / RSA の公開鍵）と byte 一致する場合にだけ接続継続を許可し、それ以外は clone を
+//! 停止する。GitHub 公表鍵は出典コメント付きの定数 [`GITHUB_SSH_HOST_KEYS`] として pin する。
+
+use std::{error::Error, fmt};
 
 use anyhow::Context;
 use git2::{
@@ -44,9 +50,10 @@ const GITHUB_HOST: &str = "github.com";
 ///
 /// 出典: GitHub `https://api.github.com/meta` の `ssh_keys`（および GitHub docs
 /// "GitHub's SSH key fingerprints"）。2026-06-01 時点の公表値。各要素の 2 番目フィールド（base64 本体）は
-/// libssh2 が `CertHostkey::hostkey()` で返す raw host key bytes を base64 化したものと一致する。新規マシンで
-/// `known_hosts` に依存せず host を pin するためにこの定数で照合し、一致しなければ clone を停止する（MITM 防止）。
-/// `hostkey_type()` の OpenSSH 名（`name()`）と本 base64 の type prefix を併せて照合し、type と鍵の両方一致を要求する。
+/// libssh2 が `CertHostkey::hostkey()` で返す raw host key bytes を base64 化したものと一致する。
+/// `RemoteCallbacks::certificate_check` が呼ばれた失敗経路でだけこの定数と照合し、一致した場合に限って GitHub
+/// host key を追加許可する。`hostkey_type()` の OpenSSH 名（`name()`）と本 base64 の type prefix を併せて
+/// 照合し、type と鍵の両方一致を要求する。
 const GITHUB_SSH_HOST_KEYS: [&str; 3] = [
     // ssh-ed25519
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
@@ -75,7 +82,7 @@ impl GitCloneAdapter {
     pub(super) fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
         // clone は提示する SSH identity を選べないため、gpg-agent socket を strict に解決する。通常の `ssh-agent`
         // を指しうる `SSH_AUTH_SOCK` へは fallback せず、gpg-agent socket が無ければ clone を試みず停止する
-        // （既存 `~/.ssh` 鍵での clone を防ぐ。spec L92 / L100 / L210）。
+        // （既存 `~/.ssh` 鍵での clone を防ぐ）。
         let socket = resolve_gpg_agent_socket()?
             .context("could not resolve the gpg-agent SSH agent socket for password-store clone")?;
         // libssh2 は credentials callback で SSH agent を使う前に `SSH_AUTH_SOCK` を参照する。strict に解決した
@@ -112,12 +119,13 @@ impl GitCloneAdapter {
                 ))
             }
         });
-        // host key 検証: 新規マシンでは `known_hosts` に github.com が無いのが通常のため、GitHub 公表 host key
-        // との byte 一致で host を pin する。hostname が github.com でない、host key を取得できない、または
-        // pin 鍵と一致しない場合は MITM の可能性として clone を停止する（`CertificatePassthrough` で
-        // known_hosts へ委譲しない）。
+        // `certificate_check` は git2/libgit2 の contract 上、既定の証明書/host key 検証が失敗した場合にだけ
+        // 呼ばれる。そのためここは「常時 pinning」ではなく、new machine で `known_hosts` が未整備な場合などに
+        // GitHub 公表 host key pin で継続可否を決める失敗時 fallback である。既定検証に成功した接続はこの
+        // callback を経由せず libgit2/libssh2 の判定で進む。hostname が github.com でない、host key を取得
+        // できない、または pin 鍵と一致しない場合は MITM の可能性として clone を停止する。
         callbacks.certificate_check(|cert, hostname| {
-            match verify_github_host_key(cert, hostname) {
+            match allow_pinned_github_host_key_after_failed_verification(cert, hostname) {
                 Ok(()) => Ok(CertificateCheckStatus::CertificateOk),
                 Err(message) => Err(git2::Error::from_str(&message)),
             }
@@ -137,8 +145,7 @@ impl GitCloneAdapter {
                 anyhow::bail!("refusing to clone over an existing ~/.password-store");
             }
             Err(error) => {
-                return Err(anyhow::Error::new(error)
-                    .context("failed to claim ~/.password-store before cloning"));
+                return Err(error).context("failed to claim ~/.password-store before cloning");
             }
         }
 
@@ -150,9 +157,8 @@ impl GitCloneAdapter {
             .clone(remote.as_str(), &destination)
         {
             let _ = std::fs::remove_dir_all(&destination);
-            return Err(anyhow::anyhow!(
-                "failed to clone private password-store over SSH: {error}"
-            ));
+            return Err(redacted_clone_error(error))
+                .context("failed to clone private password-store over SSH");
         }
 
         // clone 成功時 destination は既に `~/.password-store` にあり、rename は不要。
@@ -160,12 +166,46 @@ impl GitCloneAdapter {
     }
 }
 
-/// 接続先 host が `github.com` であり、提示された SSH host key が GitHub 公表の pin 鍵と一致するかを検証する。
+/// git2 clone failure を URL 非露出の source error へ変換する。
 ///
-/// hostname が `github.com` でない、提示された証明書が SSH host key でない、libssh2 が raw host key を返さない、
-/// または key type / raw bytes が pin（[`GITHUB_SSH_HOST_KEYS`]）のいずれとも一致しない場合は、MITM の可能性
-/// として `Err(message)` を返し clone を停止させる。一致した場合だけ `Ok(())` を返す。`known_hosts` へは委譲しない。
-fn verify_github_host_key(cert: &Cert<'_>, hostname: &str) -> std::result::Result<(), String> {
+/// `git2::Error` の message は clone URL を含み得るため、表示 chain には載せない。診断性は
+/// `ErrorClass` / `ErrorCode` に限定し、`password-store-remote` 実値を stderr へ出さない。
+fn redacted_clone_error(error: git2::Error) -> RedactedGitCloneError {
+    RedactedGitCloneError {
+        class: error.class(),
+        code: error.code(),
+    }
+}
+
+#[derive(Debug)]
+struct RedactedGitCloneError {
+    class: git2::ErrorClass,
+    code: git2::ErrorCode,
+}
+
+impl fmt::Display for RedactedGitCloneError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "git clone failed with class {:?} and code {:?}",
+            self.class, self.code
+        )
+    }
+}
+
+impl Error for RedactedGitCloneError {}
+
+/// `certificate_check` から、既定の host key 検証が失敗した接続だけを GitHub pin で追加判定する。
+///
+/// `RemoteCallbacks::certificate_check` は成功済み接続には呼ばれないため、この関数は常時 pinning を提供しない。
+/// 既定検証に成功した接続はこの関数へ来ず、その trust decision は libgit2/libssh2 側に委ねられる。hostname
+/// が `github.com` でない、提示された証明書が SSH host key でない、libssh2 が raw host key を返さない、または
+/// key type / raw bytes が pin（[`GITHUB_SSH_HOST_KEYS`]）のいずれとも一致しない場合は、MITM の可能性として
+/// `Err(message)` を返し clone を停止させる。一致した場合だけ `Ok(())` を返す。
+fn allow_pinned_github_host_key_after_failed_verification(
+    cert: &Cert<'_>,
+    hostname: &str,
+) -> std::result::Result<(), String> {
     if hostname != GITHUB_HOST {
         return Err(format!(
             "refusing to clone: unexpected SSH host '{hostname}', only {GITHUB_HOST} is allowed"
@@ -263,7 +303,30 @@ mod tests {
     //! libssh2 host key 提示を伴わない純粋な decode と pin 突合だけを検証し、外部 network/git は呼ばない。
     //! `Cert` は実 git 接続なしに構築できないため、pin 突合に使う decode 関数と pin 定数の整合だけを直接検証する。
 
-    use super::{GITHUB_SSH_HOST_KEYS, standard_base64_decode};
+    use super::{GITHUB_SSH_HOST_KEYS, redacted_clone_error, standard_base64_decode};
+
+    #[test]
+    /// clone 失敗時の error chain が remote URL 実値を表示しないことを固定する。
+    fn clone_error_chain_redacts_remote_url() {
+        let remote = "git@github.com:example-owner/password-store.git";
+        let source = git2::Error::from_str(&format!("failed to connect while cloning {remote}"));
+        let error = anyhow::Error::from(redacted_clone_error(source))
+            .context("failed to clone private password-store over SSH");
+        let rendered = format!("{error:#}");
+
+        assert!(
+            rendered.contains("failed to clone private password-store over SSH"),
+            "top-level clone context must be preserved:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("git clone failed with class"),
+            "redacted source must keep git2 class/code diagnostics:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(remote) && !rendered.contains("example-owner/password-store"),
+            "clone error chain must not leak password-store-remote value:\n{rendered}"
+        );
+    }
 
     /// pin した各 GitHub host key の base64 本体が decode でき、type prefix を持つことを確認する。
     #[test]

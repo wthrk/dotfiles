@@ -1,6 +1,7 @@
 //! AES-256-GCM の暗号操作を提供する support utility。
 
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
+use anyhow::Context;
 use anyhow::bail;
 
 use crate::Result;
@@ -12,7 +13,7 @@ pub(crate) const AES_GCM_NONCE_LEN: usize = 12;
 /// caller は key bytes の ownership と保護境界を管理し、この関数には cipher 構築に必要な
 /// 一時参照だけを渡す。key 長が AES-256-GCM に適合しない場合は失敗する。
 pub(crate) fn aes_256_gcm_from_key(key: &[u8]) -> Result<Aes256Gcm> {
-    Aes256Gcm::new_from_slice(key).map_err(anyhow::Error::new)
+    Aes256Gcm::new_from_slice(key).context("invalid AES-256-GCM key length")
 }
 
 /// `buffer` を AES-256-GCM で in-place 暗号化し、detached tag を返す。
@@ -30,8 +31,10 @@ pub(crate) fn encrypt_detached(
     }
     let tag = cipher
         .encrypt_in_place_detached(aes_gcm::Nonce::from_slice(nonce), additional_data, buffer)
-        .map_err(|error| anyhow::anyhow!("AES-GCM encrypt failed: {error:?}"))?;
-    tag.as_slice().try_into().map_err(anyhow::Error::new)
+        .context("AES-GCM encrypt failed")?;
+    tag.as_slice()
+        .try_into()
+        .context("AES-GCM detached tag length was not 16 bytes")
 }
 
 /// `buffer` を AES-256-GCM detached tag と AAD で検証して in-place 復号する。
@@ -59,5 +62,5 @@ pub(crate) fn decrypt_detached(
             buffer,
             aes_gcm::Tag::from_slice(tag),
         )
-        .map_err(|error| anyhow::anyhow!("AES-GCM decrypt failed: {error:?}"))
+        .context("AES-GCM decrypt failed")
 }

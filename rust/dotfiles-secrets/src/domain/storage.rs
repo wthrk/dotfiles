@@ -63,7 +63,7 @@ pub struct SecretStorageReadIntent {
 /// 「保存済み YubiKey storage が完了している」と判定するために必要な対象集合は
 /// domain rule であり、use case はこの plan を順序制御へ適用するだけに限定する。
 pub struct SecretStorageVerificationPlan {
-    targets: [SecretStorageSpec; 3],
+    targets: [SecretStorageSpec; 2],
 }
 
 impl SecretStorageSetupProbe {
@@ -89,7 +89,7 @@ impl SecretStorageVerificationPlan {
     }
 
     /// 検証対象 storage spec を安定順で返す。
-    pub fn into_targets(self) -> [SecretStorageSpec; 3] {
+    pub fn into_targets(self) -> [SecretStorageSpec; 2] {
         self.targets
     }
 }
@@ -114,10 +114,11 @@ impl SecretStorageSetupIntent {
 }
 
 impl SecretStorageWriteIntent {
-    /// secret 長に依存しない通常保存 preflight を実行する。
+    /// manifest 初期化済みの通常保存 preflight を実行する。
     ///
-    /// rotate など入力取得前に拒否可能な storage 状態を確認したい use case は、本検査を
-    /// secret 入力より前に通し、token payload を不要に process へ取り込まない。
+    /// caller は YubiKey storage への保存 intent を作る前にこの検査を通し、保存対象の
+    /// secret 値を読む前に拒否可能な storage 状態を domain rule で確定する。
+    #[cfg(test)]
     pub fn ensure_store_preconditions(inspection: &SecretStorageWriteInspection) -> Result<()> {
         SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
         Ok(())
@@ -142,6 +143,7 @@ impl SecretStorageWriteIntent {
     ///
     /// `secret_len` は平文 bytes を domain へ露出させずに、保存対象 secret の値制約だけを
     /// domain rule として判定するために渡す。
+    #[cfg(test)]
     pub fn store(
         storage: SecretStorageSpec,
         inspection: SecretStorageWriteInspection,
@@ -200,6 +202,9 @@ impl SecretStorageReadIntent {
 
 #[cfg(test)]
 mod tests {
+    //! YubiKey secret storage の setup / write / read intent が manifest と対象 secret の domain rule を
+    //! 適用し、decode error chain を保持することを検証する。
+
     use super::*;
     use crate::domain::piv::SecretName;
 
@@ -243,7 +248,7 @@ mod tests {
     }
 
     fn storage() -> SecretStorageSpec {
-        SecretName::BwEmail.storage_spec(12_345)
+        SecretName::BitwardenClientId.storage_spec(12_345)
     }
 
     fn error_message<T>(result: Result<T>) -> Result<String> {
@@ -253,6 +258,7 @@ mod tests {
         }
     }
 
+    /// 未初期化 storage では setup intent が expected manifest を発行し、鍵生成を要求する。
     #[test]
     fn setup_intent_accepts_uninitialized_storage_and_emits_expected_manifest() -> Result<()> {
         let intent = SecretStorageSetupIntent::from_inspection(clean_setup_inspection())?;
@@ -263,6 +269,7 @@ mod tests {
         Ok(())
     }
 
+    /// 既存 manifest または予約 object がある storage では setup を拒否する。
     #[test]
     fn setup_intent_rejects_existing_manifest_or_occupied_object() -> Result<()> {
         let initialized = SecretStorageSetupInspection {
@@ -283,6 +290,7 @@ mod tests {
         Ok(())
     }
 
+    /// 予約済み storage object が存在する場合は setup を停止する。
     #[test]
     fn setup_stops_when_storage_object_exists() -> Result<()> {
         let occupied = SecretStorageSetupInspection {
@@ -296,6 +304,7 @@ mod tests {
         Ok(())
     }
 
+    /// key-only partial enrollment は鍵を再生成せずに setup を再開できる。
     #[test]
     fn setup_resumes_when_key_exists_without_manifest() -> Result<()> {
         let key_exists_without_manifest = SecretStorageSetupInspection {
@@ -312,6 +321,7 @@ mod tests {
         Ok(())
     }
 
+    /// 通常 store intent は初期化済み manifest と非空 secret を要求する。
     #[test]
     fn store_intent_requires_initialized_manifest_and_non_empty_secret() -> Result<()> {
         let storage = storage();
@@ -338,6 +348,7 @@ mod tests {
         Ok(())
     }
 
+    /// initial enrollment store は manifest 未確定の retry を許しつつ secret 長制約を維持する。
     #[test]
     fn initial_enroll_store_allows_manifestless_retry_but_keeps_secret_length_rule() -> Result<()> {
         let storage = storage();
@@ -350,6 +361,7 @@ mod tests {
         Ok(())
     }
 
+    /// put intent は既存 object を受け入れる前に force overwrite policy を適用する。
     #[test]
     fn put_intent_applies_overwrite_policy_before_accepting_existing_object() -> Result<()> {
         let storage = storage();
@@ -379,6 +391,7 @@ mod tests {
         Ok(())
     }
 
+    /// 既存 secret への put は force 指定なしでは拒否する。
     #[test]
     fn put_requires_force_for_existing_secret() -> Result<()> {
         let storage = storage();
@@ -408,6 +421,7 @@ mod tests {
         Ok(())
     }
 
+    /// read intent は初期化済み manifest と保存済み encoded blob を要求する。
     #[test]
     fn read_intent_requires_initialized_manifest_and_existing_encoded_blob() -> Result<()> {
         let storage = storage();
@@ -433,6 +447,7 @@ mod tests {
         Ok(())
     }
 
+    /// read intent は復号失敗の source chain を保ち、読み出し後の secret 長制約を検証する。
     #[test]
     fn read_intent_maps_decode_error_and_validates_loaded_secret_length() -> Result<()> {
         let intent = SecretStorageReadIntent::from_inspection(
@@ -447,9 +462,9 @@ mod tests {
         assert!(
             decode_error
                 .to_string()
-                .contains("failed to decode bw-email")
+                .contains("failed to decode bitwarden-client-id")
         );
-        assert!(decode_error.to_string().contains("ciphertext rejected"));
+        assert!(format!("{decode_error:#}").contains("ciphertext rejected"));
 
         intent.validate_loaded_secret(&secret_with_len(1))?;
         let empty_secret_error = error_message(intent.validate_loaded_secret(&secret_with_len(0)))?;

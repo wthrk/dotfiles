@@ -36,7 +36,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - この adapter は domain object のビジネスロジック（manifest/blob 整合判定、nonce/AAD 規則、`SecretName::additional_data` の意味適用、鍵生成可否判断）を直接実行していないか。実行している場合は既存規定上の該当境界に置くべきではないか。
 - adapter の処理を「低水準だから adapter」と判定していないか。SDK/PIV 呼び出しや codec 呼び出しであっても、domain object の関連づけ、保存可能条件、AAD/nonce/manifest/blob の業務意味、上書き可否、値制約を決めているなら adapter から除去すること。
 - adapter の private helper が domain object を分解して業務規則を再構築していないか。helper が private であることは business logic 混入の免除理由にならない。
-- adapter の helper が「外部 API 型と port 境界型の変換」以外の判断を持っていないか。固定 secret 名、project 名、保存モデル、0件/複数件の failure 化、利用者確認、上書き可否、外部確認 plan、command 固有手順を helper に置いている場合、private でも不合格にすること。
+- adapter の helper が「外部 API 型と port 境界型の変換」以外の判断を持っていないか。固定 secret 名、 vault item 名、保存モデル、0件/複数件の failure 化、利用者確認、上書き可否、外部確認 plan、command 固有手順を helper に置いている場合、private でも不合格にすること。
 - `pub(crate)` または `pub(super)` で公開されているシンボルについて：「これを公開しなければならない理由はポートの契約を果たすためか」と問え。「内部で使いやすいから」「呼び出し元が必要としているから」は公開の正当化にならない。後者はアーキテクチャ違反を呼び出し元が要求している状態であり、呼び出し元側の違反を意味する。
 - このコードが存在する理由を一文で言えるか。「外部技術Xとポート契約Yの間を翻訳するため」と言えるか。それ以外の理由が混在しているなら、その部分は adapter に属さない。
 - このファイルを削除して別の技術に差し替えたとき、application/ や domain/ のコードを変更する必要が生じるか。生じるなら、adapter がその依存を外に漏らしている。
@@ -141,8 +141,8 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - storage backend 内部の暗号化・復号・sealed blob 操作が support にある場合、それ自体を不合格理由にしていないか。不合格にする場合は、その処理が setup 済み判定、必須 secret の決定、固定 key/name/role の意味づけ、一意解決、0件/複数件 failure 化、取得対象の過不足判定、外部確認 plan などの業務判断を含むことを具体的に示すこと。
 - support に product-specific storage mechanism を置いていないか。暗号や binary codec を使っていても、enroll/verify/secret storage role の語彙や保存 format の業務意味を持つなら support ではない。secret 保護境界の dedicated backend 操作として YubiKey/Bitwarden などの外部処理名が現れること自体は不合格理由にしない。
 - support の関数が特定機能の domain object や adapter SDK 型を不用意に受け取っていないか。汎用 primitive と secret 保護境界の dedicated backend 操作を分離し、後者は平文 buffer の作成、外部処理呼び出し、repository 所有 buffer の zeroize を同じ protection 境界内で完了する場合に限る。
-- support の public/private 関数シグネチャに domain 型、domain enum、固定 secret 名、project 名、command 名、role 名、保存モデルの語彙が侵入していないか。secret 保護境界の dedicated backend 操作でも、受け取ってよいのは平文借用・外部 SDK 呼び出し・zeroize を閉じるための技術値に限り、domain 意味論を support API へ持ち込んではならない。
-- support 内の BWS 処理が、固定 secret key/name の意味づけ、secret ID の一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、`verify-yubikey --check bws` の外部検証 plan を決めていないか。これらは既存規定上の該当境界に属するものとして検出し、support にあれば不合格にすること。
+- support の public/private 関数シグネチャに domain 型、domain enum、固定 secret 名、 vault item 名、command 名、role 名、保存モデルの語彙が侵入していないか。secret 保護境界の dedicated backend 操作でも、受け取ってよいのは平文借用・外部 SDK 呼び出し・zeroize を閉じるための技術値に限り、domain 意味論を support API へ持ち込んではならない。
+- support 内の Bitwarden vault 処理が、固定 secret key/name の意味づけ、secret ID の一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、`verify-yubikey --check vault` の外部検証 plan を決めていないか。これらは既存規定上の該当境界に属するものとして検出し、support にあれば不合格にすること。
 - terminal I/O・prompt 周辺のコードがここにある場合は、その責務が process-generic な補助か、feature-specific な interaction 方針かを区別せよ。TTY open、echo/raw mode 制御、blocking read、interrupt-aware read、byte stream としての stdin/stdout 処理のような前者は support に置ける。specific command の prompt 文言、device 選択判断、use case 手順のような後者は support に属さない。「共通部品だから support」という判断だけで正当化してはならない。
 - このコードの名前から command 手順や domain policy を推測できるか。推測できるなら support に属さない。secret 保護境界の専用 backend 操作から外部 SDK/device 名を推測できることだけを不合格理由にしない。
 - このコードを別のまったく異なるプロダクトにそのままコピーして使えるか。使えない場合、それは secret 保護境界の dedicated backend 操作として必要な product/service-specific 処理か、単なる配置違反かを判定する。
@@ -162,15 +162,15 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 各層レビューで次を追加確認する。
 
 - application:
-  command dispatch、input modality（Prompt/Stdin/StdinJson 等）、report DTO 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装を含めていないか。
+  command dispatch、input modality（Prompt/Stdin 等）、report DTO 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装を含めていないか。
 - ports:
-  modality enum や stdin-json の手段表現を契約へ露出していないか。`read_secret_from_prompt` のように capability 名で表現されているか。
+  modality enum の手段表現を契約へ露出していないか。`read_secret_from_prompt` のように capability 名で表現されているか。
 - adapters:
   `application::...` 型へ直接依存せず、port 契約へ変換しているか。device selection と report 出力は adapter が担い、技術的な実行/翻訳以外の意味づけや use case 順序は持ち込んでいないか。
 - support:
-  protected buffer / zeroization / crypto helper / process-generic な標準入出力補助、または secret 保護境界の dedicated backend 操作に限定されているか。device 選択判断、use case 手順、固定 BWS secret の一意解決、0件/複数件の扱い、外部確認 plan、汎用 plaintext consumer API を持っていないか。
-- BWS / YubiKey / GPG backup 保存モデル:
-  [Bitwarden Secrets Manager 復旧設計](../secret-recovery/bitwarden-secrets-manager-design.md) の保存先表と [secret-recovery spec](../secret-recovery/secret-recovery-spec.md) の `Secret の置き場所` に照らし、どこに・どういう名前で・何を保存するかが実装と一致しているか。BWS project `dotfiles-secret-recovery`、BWS secret `gpg-secret-key-backup` / `password-store-remote`、YubiKey storage `bws-access-token`、Bitwarden Password Manager vault の役割を混同していないか。organization / machine account / service account / UI 画面名を実装前提または保存モデル前提として持ち込んでいないか。UI 操作案内は runbook の手動操作に限定し、実装・設計の正本は保存先/名前/値/読書き責務で照合すること。
+  protected buffer / zeroization / crypto helper / process-generic な標準入出力補助、または secret 保護境界の dedicated backend 操作に限定されているか。device 選択判断、use case 手順、固定 Bitwarden vault secret の一意解決、0件/複数件の扱い、外部確認 plan、汎用 plaintext consumer API を持っていないか。
+- Bitwarden vault / YubiKey / GPG backup 保存モデル:
+  [Bitwarden personal vault 復旧設計](../secret-recovery/bitwarden-personal-vault-design.md) の `Vault Items` と [secret-recovery spec](../secret-recovery/secret-recovery-spec.md) の冒頭保存モデルに照らし、どこに・どういう名前で・何を保存するかが実装と一致しているか。Bitwarden 個人 vault item `gpg-secret-key-backup` / `password-store-remote` と、YubiKey storage `bitwarden-client-id` / `bitwarden-client-secret` の役割を混同していないか。共有管理単位、機械用アカウント、サービス用アカウント、UI 画面名を実装前提または保存モデル前提として持ち込んでいないか。UI 操作案内は runbook の手動操作に限定し、実装・設計の正本は保存先/名前/値/読書き責務で照合すること。
 
 上記は形式チェックではなく責務判定である。`pub` 範囲や feature gate の有無は免除理由にならない。
 
@@ -186,7 +186,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - production 層（`adapters/`・`application/`・`domain/`・`ports/`・`support/`）の各ファイルに、実依存を肩代わりする責務を持つ型（Fake/Stub/Mock）が定義されていないか。その型は、テストのためだけに存在し本番経路では使われないか。そうであれば配置違反である。
 - adapter 配下の `#[cfg(feature = "secrets-internal-test-stub")]` backend stub について、それが [internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) の条件をすべて満たしているか。満たす場合は production source tree への test double 混入として扱ってはならない。
 - test 側が backend state schema・状態遷移 helper・write event helper・bincode schema・backend 内部保存形式を保持していないか。保持している場合は不合格とする。
-- BWS port stub と YubiKey port stub が独立しているか。共通巨大 state や共有 state file で結合している場合は不合格とする。
+- Bitwarden vault port stub と YubiKey port stub が独立しているか。共通巨大 state や共有 state file で結合している場合は不合格とする。
 - integration test の検証観点が「初期 datastore 定義の投入」と「CLI 実行後の最終 datastore 観測」に限定されているか。stub 内部遷移観測を assertion している場合は不合格とする。
 - production 層に置かれた `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックの中身は、(a) その module 自身の private 関数を検証する `#[test]` 関数か、(b) 実依存を肩代わりする double の**定義**か。(b) であれば配置違反である。(a) は許可される（後述）。
 - ある double の責務は「テスト時に実依存を substitute すること」か。そうであれば、それが port trait を実装していても・feature gate されていても、production 層ではなく `tests/` 層または専用 test-support crate に属する。
@@ -194,7 +194,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 ### 許可される in, 禁止される out（責務で区別する）
 
 - **許可**: production 層の `src/` ファイル内に置かれた通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`）。これはその module 自身の private 関数を検証する標準的かつ idiomatic な Rust であり、削除を要求してはならない。inline unit test を一律禁止すると、本番関数をテストのためだけに `pub` 化する圧力が生じ、公開面最小化の哲学に反する。`#[test]` 関数の存在のみを理由に `判定: 不合格` としてはならない。
-- **許可**: adapter 配下の internal backend stub は、[hexagonal-implementation-rules.md の internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) を満たす場合に限り production source tree への test double 混入として扱わない。このチェックリストでは、stub が正本節の許可対象に該当するか、stub 周辺のテスト支援責務と backend 実装責務が混在していないか、test 側が初期/最終 datastore 観測のみを扱っているか、BWS/YubiKey port stub が独立しているかを確認する。
+- **許可**: adapter 配下の internal backend stub は、[hexagonal-implementation-rules.md の internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) を満たす場合に限り production source tree への test double 混入として扱わない。このチェックリストでは、stub が正本節の許可対象に該当するか、stub 周辺のテスト支援責務と backend 実装責務が混在していないか、test 側が初期/最終 datastore 観測のみを扱っているか、Bitwarden vault/YubiKey port stub が独立しているかを確認する。
 - **許可**: application 層の use case orchestration test を internal test stub feature から切り離し、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で port trait 契約を駆動すること。port double は port trait 側から生成した test-only `mockall` mock を各テストで直接組み立てる。app 層 inline/unit test から `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照することは不許可である。`rust/dotfiles-secrets/src/application/app_test_support.rs` のような app 層共有 test support file、event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装、既存 trait method を `mock!` macro へ手で書き写す二重管理は不許可である。
 - **許可**: `ProtectedSecret` の secret 生値アクセスを `#[cfg(test)]` または `#[test]` に閉じた最小関数として用意し、unit test が値を観測すること。これは test-only の最小観測口であり、domain/application への取り出し API 追加、production 経路での plaintext 取り出し、`String` 変換公開、汎用 plaintext consumer API は引き続き不許可である。
 - **不許可**: production 層に置かれた型の責務が「テスト専用の実依存肩代わり」であり、かつ当該層の責務と一致しない場合。`#[cfg(test)]` / `#[cfg(feature = "...")]` / port trait 実装の有無だけで機械的に判定してはならない。責務の不一致を根拠として不合格にする。

@@ -26,8 +26,12 @@ anyhow = "1.0.100"
 aes-gcm = { version = "0.10.3", features = ["zeroize"] }
 async-openai = "0.28.3"
 backoff = "0.4.0"
-bitwarden = { version = "2.1.0", features = ["secrets"] }
+bitwarden-api-api = "1.0.0"
+bitwarden-core = { version = "1.0.0", features = ["internal"] }
+bitwarden-crypto = "1.0.0"
+bitwarden-vault = "1.0.0"
 bincode = { version = "2.0.1", features = ["serde"] }
+chrono = "0.4.42"
 clap = { version = "4.5.49", features = ["derive", "env"] }
 crossterm = "0.29.0"
 dotfiles-cli = { path = "rust/dotfiles-cli" }
@@ -47,6 +51,7 @@ rustix = { version = "1.1.4", features = ["process"] }
 rsa = { version = "0.9.8", features = ["sha2"] }
 percent-encoding = "2.3.2"
 portable-pty = "0.9.0"
+rustls-webpki = { version = "0.102.8", features = ["std"] }
 sequoia-openpgp = { version = "1.21.2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -55,9 +60,15 @@ signal-hook = "0.4.4"
 toml = "0.9.8"
 scopeguard = "1.2.0"
 strum = { version = "0.27.2", features = ["derive"] }
-tokio = { version = "1.48.0", features = ["rt", "net", "time"] }
+tokio = { version = "1.48.0", features = ["macros", "rt", "net", "time"] }
 url = "2.5.8"
 uuid = "1.18.1"
 xshell = "0.2"
 yubikey = { version = "0.9.0-pre.0", features = ["untested"] }
 zeroize = { version = "1.8.2", features = ["serde"] }
+
+[patch.crates-io]
+# rustls-platform-verifier 0.3.4 の Linux 経路は、`rustls-webpki` を `std` 無しで引きつつ
+# `webpki::Error` の downcast を行うため current crates.io 解決でコンパイル不能になる。
+# bitwarden-core 1.0.0 が 0.3.4 を version-pin しているので、repo 内 patch で最小修正する。
+rustls-platform-verifier = { path = "vendor/rustls-platform-verifier" }

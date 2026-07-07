@@ -1,7 +1,5 @@
 //! manifest の互換条件と bootstrap 文書対応を domain で固定し、storage 判定の揺れを防ぐ。
 
-use std::collections::BTreeMap;
-
 use anyhow::Result;
 
 use crate::support::protection::ProtectedSecret;
@@ -10,9 +8,6 @@ use super::{
     piv::{PivObjectId, SecretName, SecretStorageSpec},
     wire::ManifestWire,
 };
-
-/// bootstrap secret JSON 各 field に許可する最大 byte 長。
-pub const BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT: usize = 16 * 1024;
 
 /// manifest が dotfiles secret recovery 用であることを示す app id。
 pub(crate) const MANIFEST_APP: &str = "dotfiles.secret-recovery";
@@ -32,9 +27,8 @@ pub struct SecretManifest {
 ///
 /// 各 field は `ProtectedSecret` として保持し、平文文字列化は domain の責務に含めない。
 pub struct BootstrapSecretDocument {
-    pub bw_email: ProtectedSecret,
-    pub bw_password: ProtectedSecret,
-    pub bws_access_token: ProtectedSecret,
+    pub bitwarden_client_id: ProtectedSecret,
+    pub bitwarden_client_secret: ProtectedSecret,
 }
 
 impl SecretManifest {
@@ -133,95 +127,30 @@ impl SecretManifest {
 }
 
 impl BootstrapSecretDocument {
-    /// protected JSON field map から bootstrap document を構築する。
-    ///
-    /// JSON field 名と domain secret の対応は bootstrap document schema の業務規則であり、
-    /// adapter は JSON decode 後の map を渡すだけに限定する。
-    pub fn from_field_map(mut fields: BTreeMap<String, ProtectedSecret>) -> Result<Self> {
-        let missing = |field: &str| anyhow::anyhow!("JSON field `{field}` is missing");
-        let bw_email = fields
-            .remove("bw-email")
-            .ok_or_else(|| missing("bw-email"))?;
-        let bw_password = fields
-            .remove("bw-password")
-            .ok_or_else(|| missing("bw-password"))?;
-        let bws_access_token = fields
-            .remove("bws-access-token")
-            .ok_or_else(|| missing("bws-access-token"))?;
-
-        Ok(Self {
-            bw_email,
-            bw_password,
-            bws_access_token,
-        })
-    }
-
     /// 既に取得済みの `ProtectedSecret` 群から bootstrap document を構築する。
     pub fn from_secret_materials(
-        bw_email: &ProtectedSecret,
-        bw_password: &ProtectedSecret,
-        bws_access_token: &ProtectedSecret,
+        bitwarden_client_id: &ProtectedSecret,
+        bitwarden_client_secret: &ProtectedSecret,
     ) -> Result<Self> {
         Ok(Self {
-            bw_email: ProtectedSecret::try_clone(bw_email)?,
-            bw_password: ProtectedSecret::try_clone(bw_password)?,
-            bws_access_token: ProtectedSecret::try_clone(bws_access_token)?,
+            bitwarden_client_id: ProtectedSecret::try_clone(bitwarden_client_id)?,
+            bitwarden_client_secret: ProtectedSecret::try_clone(bitwarden_client_secret)?,
         })
     }
 
-    /// storage spec と復号済み secret の対応から bootstrap document を復元する。
-    ///
-    /// PIV object の読み出し順や変数名ではなく、`SecretStorageSpec::name` が持つ
-    /// domain 対応を正本にして document field へ戻す。
-    pub fn from_storage_materials(
-        entries: [(SecretStorageSpec, ProtectedSecret); 3],
-    ) -> Result<Self> {
-        let mut bw_email = None;
-        let mut bw_password = None;
-        let mut bws_access_token = None;
-
-        for (storage, secret) in entries {
-            let target = match storage.name {
-                SecretName::BwEmail => &mut bw_email,
-                SecretName::BwPassword => &mut bw_password,
-                SecretName::BwsAccessToken => &mut bws_access_token,
-            };
-            if target.replace(secret).is_some() {
-                return Err(invalid_data(format!(
-                    "duplicate bootstrap secret storage entry for {}",
-                    storage.name
-                ))
-                .into());
-            }
-        }
-
-        let missing = |name: SecretName| {
-            invalid_data(format!(
-                "bootstrap secret storage entry for {name} is missing"
-            ))
-        };
-        Ok(Self {
-            bw_email: bw_email.ok_or_else(|| missing(SecretName::BwEmail))?,
-            bw_password: bw_password.ok_or_else(|| missing(SecretName::BwPassword))?,
-            bws_access_token: bws_access_token
-                .ok_or_else(|| missing(SecretName::BwsAccessToken))?,
-        })
-    }
-
-    /// bootstrap document の 3 secrets を storage 固定順の `(SecretStorageSpec, value)` で返す。
+    /// bootstrap document の 2 secrets を storage 固定順の `(SecretStorageSpec, value)` で返す。
     ///
     /// document field と YubiKey storage object の対応は domain rule なので、use case は
     /// field 名から object id / AAD 規則を再構築せず、この対応を保存手順へ適用する。
-    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &ProtectedSecret); 3] {
+    pub fn storage_entries(&self, serial: u32) -> [(SecretStorageSpec, &ProtectedSecret); 2] {
         [
-            (SecretName::BwEmail.storage_spec(serial), &self.bw_email),
             (
-                SecretName::BwPassword.storage_spec(serial),
-                &self.bw_password,
+                SecretName::BitwardenClientId.storage_spec(serial),
+                &self.bitwarden_client_id,
             ),
             (
-                SecretName::BwsAccessToken.storage_spec(serial),
-                &self.bws_access_token,
+                SecretName::BitwardenClientSecret.storage_spec(serial),
+                &self.bitwarden_client_secret,
             ),
         ]
     }

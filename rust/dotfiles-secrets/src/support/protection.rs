@@ -1,13 +1,16 @@
 //! 平文 bytes の生存期間に紐づける process 保護と zeroize 境界。
 
-use std::{collections::BTreeMap, future::Future, io::Write, pin::Pin};
+use std::io::Write;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(crate) mod bitwarden_account_api;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod buffer;
-pub(crate) mod bw_login;
-pub(crate) mod bws;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod gpg_backup;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -27,6 +30,7 @@ struct SecretProcessGuard;
 
 /// 平文 bytes を読む use case 全体の process 保護境界。
 pub(crate) struct SecretSession {
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
     process: SecretProcessGuard,
 }
 
@@ -40,6 +44,51 @@ pub(crate) struct SecretSession {
 pub struct ProtectedSecret {
     value: Zeroizing<Vec<u8>>,
     _lock: Option<region::LockGuard>,
+}
+
+/// process I/O が一時的に所有する secret bytes を zeroize 境界へ置く固定長 buffer。
+///
+/// `Zeroizing` 型そのものは protection 内に閉じ、caller は read/parse の実行中だけ slice を
+/// 借用する。chunk や escape sequence 判定中の pending bytes のように、`ProtectedSecret` へ
+/// 移す前の repository-owned 平文断片を保持する用途に限定する。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(in crate::support) struct TransientSecretBytes<const N: usize> {
+    bytes: Zeroizing<[u8; N]>,
+}
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+impl<const N: usize> TransientSecretBytes<N> {
+    /// zeroize 対象の固定長 buffer を 0 初期化する。
+    pub(in crate::support) fn new() -> Self {
+        Self {
+            bytes: Zeroizing::new([0; N]),
+        }
+    }
+
+    /// I/O API へ渡すため、buffer 全体を mutable slice として一時借用する。
+    pub(in crate::support) fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.bytes[..]
+    }
+
+    /// 読み込み済み範囲の参照用に、buffer 全体を immutable slice として一時借用する。
+    pub(in crate::support) fn as_slice(&self) -> &[u8] {
+        &self.bytes[..]
+    }
+
+    /// pending sequence の 1 byte を記録する。
+    pub(in crate::support) fn set(&mut self, index: usize, byte: u8) {
+        self.bytes[index] = byte;
+    }
+
+    /// pending sequence の先頭 `len` bytes だけを判定用に借用する。
+    pub(in crate::support) fn prefix(&self, len: usize) -> &[u8] {
+        &self.bytes[..len]
+    }
+
+    /// 現在保持している一時 plaintext 断片を即時 zeroize する。
+    pub(in crate::support) fn clear(&mut self) {
+        self.bytes[..].zeroize();
+    }
 }
 
 impl PartialEq for ProtectedSecret {
@@ -104,47 +153,6 @@ impl ProtectedSecret {
         borrow(self.value.as_mut_slice())
     }
 
-    /// UTF-8 secret text を async 外部処理の完了まで借用境界内へ閉じる。
-    ///
-    /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
-    /// `.await` まで完了させ、repository 側の所有 buffer を closure 外へ持ち出さない。
-    pub(in crate::support::protection) async fn with_secret_utf8_async<R>(
-        &self,
-        borrow: impl for<'a> FnOnce(&'a str) -> Pin<Box<dyn Future<Output = Result<R>> + 'a>>,
-    ) -> Result<R> {
-        let text =
-            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
-        borrow(text).await
-    }
-
-    /// UTF-8 secret text を同期 closure の実行中だけ借用として公開する。
-    ///
-    /// `bw login` / `bw unlock` が要求する `BW_PASSWORD` env 注入のように、子プロセス起動境界が借用中の
-    /// 平文文字列だけを要求する場合に使う。closure 内でデータを外部 buffer へ複製してはならず、closure の
-    /// 返値として平文を持ち出してはならない。secret が UTF-8 でない場合は失敗する。
-    pub(in crate::support::protection) fn with_secret_password_str<R>(
-        &self,
-        borrow: impl FnOnce(&str) -> Result<R>,
-    ) -> Result<R> {
-        let text =
-            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
-        borrow(text)
-    }
-
-    /// UTF-8 secret text を protection backend closure の実行中だけ借用として公開する。
-    ///
-    /// 外部 secret datastore から返った plaintext を、用途別 backend 操作内で検証済み値へ変換するための
-    /// 境界である。closure は平文文字列を返値や外部 buffer として持ち出してはならず、検証済み value
-    /// または error だけを返す。
-    pub(in crate::support::protection) fn with_secret_utf8<R>(
-        &self,
-        borrow: impl FnOnce(&str) -> Result<R>,
-    ) -> Result<R> {
-        let text =
-            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
-        borrow(text)
-    }
-
     /// 保持中 secret の byte 長を返す。
     ///
     /// 長さ情報のみを露出し、平文 bytes 本体は返さない境界を維持する。
@@ -175,43 +183,8 @@ impl ProtectedSecret {
     ///
     /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
     #[cfg(any(test, feature = "secrets-internal-test-stub"))]
-    #[cfg_attr(
-        all(test, not(feature = "secrets-internal-test-stub")),
-        expect(dead_code)
-    )]
     pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
         self.with_secret(|bytes| bytes.to_vec())
-    }
-
-    /// secret JSON bytes を field 単位の locked `ProtectedSecret` map へ復元する。
-    ///
-    /// 入力 JSON は `with_secret` の借用中だけ parse し、serde が作る平文 `String` は
-    /// `Zeroizing<String>` としてこの関数の stack frame 内に閉じる。各 field は
-    /// `field_limit` を超えた時点で `Err` にし、長すぎる平文を protected map へ格納しない。
-    ///
-    /// 成功時は各 field value を新しい locked `ProtectedSecret` へコピーして返す。返却後に
-    /// caller が保持するのは protection 境界内の値だけであり、一時 `String` は Drop 時に
-    /// zeroize される。
-    pub(crate) fn decode_json_string_map(
-        &self,
-        field_limit: usize,
-    ) -> Result<BTreeMap<String, Self>> {
-        let object = self.with_secret(|bytes| {
-            serde_json::from_slice::<BTreeMap<String, Zeroizing<String>>>(bytes)
-                .context("failed to decode protected JSON object")
-        })?;
-
-        let mut fields = BTreeMap::new();
-        for (key, text) in object {
-            if text.len() > field_limit {
-                bail!("JSON field `{key}` exceeds maximum length");
-            }
-            let mut secret = Self::new(text.len())
-                .with_context(|| format!("failed to protect JSON field `{key}`"))?;
-            secret.with_secret_mut(|out| out.copy_from_slice(text.as_bytes()));
-            fields.insert(key, secret);
-        }
-        Ok(fields)
     }
 }
 
@@ -222,13 +195,22 @@ pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
 
 impl SecretSession {
     /// secret 入力前に core dump 抑止を確立する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
     pub(crate) fn start() -> Result<Self> {
         Ok(Self {
             process: SecretProcessGuard::prepare()?,
         })
     }
 
+    /// secret 入力前に core dump 抑止を確立する。
+    #[cfg(feature = "secrets-internal-test-stub")]
+    pub(crate) fn start() -> Result<Self> {
+        SecretProcessGuard::prepare()?;
+        Ok(Self {})
+    }
+
     /// 一時入力 buffer の memory range を best-effort で lock する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
     pub(super) fn lock_transient_buffer(
         &self,
         ptr: *const u8,
@@ -241,6 +223,7 @@ impl SecretSession {
     ///
     /// この境界で raw `Vec<u8>` は `Zeroizing` 管理へ入り、lock guard がある場合は
     /// `ProtectedSecret` の所有物として保持される。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
     pub(super) fn protect_locked_secret_value(
         &self,
         value: Vec<u8>,
@@ -261,6 +244,7 @@ impl SecretProcessGuard {
     }
 
     /// 一時入力 buffer の生メモリ範囲を best-effort で lock する。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
     fn lock_transient_buffer(&self, ptr: *const u8, len: usize) -> Option<region::LockGuard> {
         try_lock(ptr, len)
     }

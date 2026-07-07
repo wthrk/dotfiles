@@ -37,6 +37,10 @@ impl PasswordStorePort for PasswordStoreAdapter {
     fn inspect_password_store(&self) -> Result<PasswordStoreReadiness> {
         self.0.inspect_password_store()
     }
+
+    fn configured_origin_remote(&self) -> Result<Option<String>> {
+        self.0.configured_origin_remote()
+    }
 }
 
 /// Git clone backend（git2 + libssh2 / internal stub）を `GitClonePort` 契約へ翻訳する adapter。
@@ -54,13 +58,21 @@ impl GitClonePort for GitCloneAdapter {
     }
 }
 
-/// clone 先と filesystem 観測対象の `~/.password-store` path を `$HOME` から解決する。
+/// clone 先と filesystem 観測対象の `password-store` path を `pass` と同じ規則で解決する。
 ///
-/// 設計（spec L174）は store path を `~/.password-store` に固定する。clone adapter と store adapter が
-/// 同一 path を観測するための共有 path 解決であり、business 判断は持たない filesystem primitive である。
+/// `pass` 互換のため、`PASSWORD_STORE_DIR` が空でない値で設定されていればその path をそのまま使い、
+/// 未設定時のみ `$HOME/.password-store` へ fall back する。これにより custom store + 複数 primary 鍵環境でも
+/// `dotfiles gpg export-ssh-public-key` を含む全 password-store 観測が、利用者が `pass` / provisioning script
+/// （`password_store_dir()`）と同じ store を見て recipient を選ぶ。clone adapter と store adapter が同一 path を
+/// 観測するための共有 path 解決であり、business 判断は持たない filesystem primitive である。
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 fn password_store_path() -> Result<std::path::PathBuf> {
     use anyhow::Context;
+    if let Some(dir) = std::env::var_os("PASSWORD_STORE_DIR")
+        && !dir.is_empty()
+    {
+        return Ok(std::path::PathBuf::from(dir));
+    }
     let home =
         std::env::var_os("HOME").context("HOME is not set; cannot resolve ~/.password-store")?;
     Ok(std::path::PathBuf::from(home).join(crate::domain::pass_restore::PASSWORD_STORE_DIR_NAME))

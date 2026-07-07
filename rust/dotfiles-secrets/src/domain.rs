@@ -1,18 +1,17 @@
 //! `dotfiles secrets` の domain 層。
 //!
-//! PIV object に保存する値、BWS lookup の固定規則、enrollment / verification の結果意味、
+//! PIV object に保存する値、vault lookup の固定規則、enrollment / verification の結果意味、
 //! storage の状態遷移、wire format を定義する。port 契約は `ports/` 側へ置き、
 //! 端末 I/O、process 保護、実機 YubiKey discovery は外側の責務とする。
 
-pub(crate) mod bw_login;
-pub(crate) mod bws;
 pub(crate) mod commands;
 pub(crate) mod enrollment;
-pub(crate) mod gpg_backup;
-pub(crate) mod gpg_restore;
-pub(crate) mod manifest;
-pub(crate) mod pass_restore;
-pub(crate) mod piv;
-pub(crate) mod storage;
+pub mod gpg_backup;
+pub mod gpg_restore;
+pub mod manifest;
+pub mod pass_restore;
+pub mod piv;
+pub mod storage;
+pub(crate) mod vault;
 pub(crate) mod verification;
 pub(crate) mod wire;
