@@ -130,7 +130,12 @@ mod tests {
             .expect_read_pin()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|| Ok(crate::support::protection::ProtectedSecret::from_test_bytes(b"123456").expect("test pin")));
+            .returning(|| {
+                Ok(
+                    crate::support::protection::ProtectedSecret::from_test_bytes(b"123456")
+                        .expect("test pin"),
+                )
+            });
         storage
             .expect_initialize_secret_storage()
             .times(1)
