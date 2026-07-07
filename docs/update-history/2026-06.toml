@@ -2348,3 +2348,144 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-06-30T20:13:18Z"
+cursor_old = "92b8a9ad80c766d664e4b4105001f12ba00d15aa"
+nixpkgs_old = "534ee3d8beb1737b5342995f8837e2b2705ce0d8"
+nixpkgs_new = "7a1a64774a5fd0b0cd39ac95d0e170ace8b266a0"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "5アプリ更新: ✨6 🐛11"
+
+[[update.package]]
+name = "eslint"
+old = "10.5.0"
+new = "10.6.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/eslint/eslint/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "no-constant-binary-expression で Symbol() と BigInt() を検出する機能を追加"
+ref = "https://github.com/eslint/eslint/commit/b1f9106"
+
+[[update.package.change_item]]
+category = "feature"
+text = "no-constant-binary-expression に checkRelationalComparisons を追加"
+ref = "https://github.com/eslint/eslint/commit/f291007"
+
+[[update.package.change_item]]
+category = "fix"
+text = "prefer-exponentiation-operator の無効な自動修正を修正"
+ref = "https://github.com/eslint/eslint/commit/6b05784"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-extra-boolean-cast での shadowed Boolean を考慮するよう修正"
+ref = "https://github.com/eslint/eslint/commit/bb9eb2a"
+
+[[update.package.change_item]]
+category = "fix"
+text = "radix ルールで shadowed undefined を報告しないよう修正"
+ref = "https://github.com/eslint/eslint/commit/8fd8741"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-throw-literal で shadowed undefined を報告しないよう修正"
+ref = "https://github.com/eslint/eslint/commit/5784980"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-promise-executor-return で無効なクラス提案を抑制するよう修正"
+ref = "https://github.com/eslint/eslint/commit/9cd1e6d"
+
+[[update.package.change_item]]
+category = "fix"
+text = "prefer-promise-reject-errors で shadowed undefined を報告しないよう修正"
+ref = "https://github.com/eslint/eslint/commit/d4eb2dc"
+
+[[update.package.change_item]]
+category = "fix"
+text = "prefer-promise-reject-errors での false positives を修正"
+ref = "https://github.com/eslint/eslint/commit/2360464"
+
+[[update.package.change_item]]
+category = "fix"
+text = "max-classes-per-file の報告範囲を復元"
+ref = "https://github.com/eslint/eslint/commit/63d52d2"
+
+[[update.package.change_item]]
+category = "fix"
+text = "max-nested-callbacks での IIFE のコールバック検出ロジックを修正"
+ref = "https://github.com/eslint/eslint/commit/7feaff0"
+
+[[update.package.change_item]]
+category = "fix"
+text = "max-nested-callbacks で inner non-callbacks を報告しないよう修正"
+ref = "https://github.com/eslint/eslint/commit/399a2ec"
+
+[[update.package]]
+name = "google-chrome"
+old = "149.0.7827.197"
+new = "149.0.7827.201"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.7.2"
+new = "1.8.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.8.2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "サイドバーの「新しいスレッド」ボタンから新しいワークツリーを作成できる機能を追加"
+ref = "https://github.com/zed-industries/zed/pull/59341"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエージェントターミナルスレッドを開く際に自動的にコマンドを実行する設定 `agent.terminal_init_command` を追加"
+ref = "https://github.com/zed-industries/zed/pull/59374"
+
+[[update.package.change_item]]
+category = "feature"
+text = "すべてのペインのサイズを等しくする `workspace: reset pane sizes` コマンドを追加"
+ref = "https://github.com/zed-industries/zed/pull/59046"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ネストされた括弧や引用符を通じて選択を拡張するための `editor: select inside delimiters` / `editor: select around delimiters` アクションを追加"
+ref = "https://github.com/zed-industries/zed/pull/53789"
+
+[[update.package]]
+name = "bitwarden"
+old = "2026.6.0"
+new = "2026.6.1"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/bitwarden/server/releases"
+change_item = []
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.61825"
+new = "26.623.70822"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []

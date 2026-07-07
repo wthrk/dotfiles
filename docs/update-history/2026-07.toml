@@ -1,0 +1,125 @@
+[[update]]
+at = "2026-07-01T20:09:11Z"
+cursor_old = "89bbe1c6ad8591ccc5147071edd07ef448e572af"
+nixpkgs_old = "7a1a64774a5fd0b0cd39ac95d0e170ace8b266a0"
+nixpkgs_new = "e52c192be9d7b2c4bd4aed326c8731b35f8bb75c"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: 🐛5"
+
+[[update.package]]
+name = "discord"
+old = "0.0.395"
+new = "0.0.396"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discordapp.com/"
+change_item = []
+
+[[update.package]]
+name = "firefox-bin"
+old = "152.0.3"
+new = "152.0.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0.4/releasenotes/"
+change_item = []
+
+[[update.package]]
+name = "pyright"
+old = "1.1.410"
+new = "1.1.411"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/Microsoft/pyright/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "エージェントレスジョブのリリースエラーを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ジェネリックコンテキストマネージャの到達可能性を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ジェネリックNamedTupleのマッチングの狭めを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "NewTypeのアイデンティティ比較を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "KW_ONLYセパレーターを認識するように修正"
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.70822"
+new = "26.623.81905"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update]]
+at = "2026-07-02T20:03:35Z"
+cursor_old = "a5500cc6ac636dd047eb56c62f84ecb3e648c83e"
+nixpkgs_old = "e52c192be9d7b2c4bd4aed326c8731b35f8bb75c"
+nixpkgs_new = "e8273b29fe1390ec8d4603f2477357555291432e"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "2アプリ更新"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-06-01"
+new = "2026-06-15"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://rust-analyzer.github.io/"
+change_item = []
+
+[[update.package]]
+name = "skaffold"
+old = "2.21.0"
+new = "2.23.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/GoogleContainerTools/skaffold/releases/tag/v2.23.0"
+change_item = []
+
+[[update]]
+at = "2026-07-03T19:52:09Z"
+cursor_old = "a293f49bb6045a395ccfd6445054e7b99f82015e"
+nixpkgs_old = "e8273b29fe1390ec8d4603f2477357555291432e"
+nixpkgs_new = "e8273b29fe1390ec8d4603f2477357555291432e"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.81905"
+new = "26.623.101652"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update]]
+at = "2026-07-04T19:44:54Z"
+cursor_old = "f9c81fa0678b334661638c85263f70f7cdfb3e51"
+nixpkgs_old = "e8273b29fe1390ec8d4603f2477357555291432e"
+nixpkgs_new = "d33369954a67ae3322177dc9a3d564092912120c"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+package = []
