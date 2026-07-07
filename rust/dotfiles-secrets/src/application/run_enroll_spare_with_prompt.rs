@@ -87,7 +87,11 @@ where
     } else {
         None
     };
-    storage_port.initialize_secret_storage(spare_serial, setup_intent.clone(), spare_pin.as_ref())?;
+    storage_port.initialize_secret_storage(
+        spare_serial,
+        setup_intent.clone(),
+        spare_pin.as_ref(),
+    )?;
     for (storage, value) in document.storage_entries(spare_serial) {
         let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
         storage_port.store_secret(spare_serial, intent, value)?;

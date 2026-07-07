@@ -435,8 +435,9 @@ impl YubikeySecretDevice {
                 )
                 .context("failed to parse YubiKey secret-slot certificate public key")
             }
-            Err(err) => Err(anyhow::Error::from(err)
-                .context("failed to read YubiKey secret-slot metadata")),
+            Err(err) => {
+                Err(anyhow::Error::from(err).context("failed to read YubiKey secret-slot metadata"))
+            }
         }
     }
 }
