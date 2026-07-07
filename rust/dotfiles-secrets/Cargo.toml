@@ -36,6 +36,7 @@ region.workspace = true
 rand_core.workspace = true
 rlimit.workspace = true
 rsa.workspace = true
+rustls-webpki.workspace = true
 scopeguard.workspace = true
 sequoia-openpgp = { workspace = true, optional = true }
 serde.workspace = true

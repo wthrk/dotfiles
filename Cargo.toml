@@ -51,6 +51,7 @@ rustix = { version = "1.1.4", features = ["process"] }
 rsa = { version = "0.9.8", features = ["sha2"] }
 percent-encoding = "2.3.2"
 portable-pty = "0.9.0"
+rustls-webpki = { version = "0.102.8", features = ["std"] }
 sequoia-openpgp = { version = "1.21.2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -65,3 +66,9 @@ uuid = "1.18.1"
 xshell = "0.2"
 yubikey = { version = "0.9.0-pre.0", features = ["untested"] }
 zeroize = { version = "1.8.2", features = ["serde"] }
+
+[patch.crates-io]
+# rustls-platform-verifier 0.3.4 の Linux 経路は、`rustls-webpki` を `std` 無しで引きつつ
+# `webpki::Error` の downcast を行うため current crates.io 解決でコンパイル不能になる。
+# bitwarden-core 1.0.0 が 0.3.4 を version-pin しているので、repo 内 patch で最小修正する。
+rustls-platform-verifier = { path = "vendor/rustls-platform-verifier" }
