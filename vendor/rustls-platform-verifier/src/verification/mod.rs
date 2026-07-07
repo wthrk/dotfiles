@@ -37,6 +37,41 @@ mod windows;
 #[cfg(windows)]
 pub use windows::Verifier;
 
+/// An EKU was invalid for the use case of verifying a server certificate.
+///
+/// This is only needed on Apple / Android verifiers and in verifier tests.
+#[cfg(any(
+    test,
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos"
+))]
+#[derive(Debug, PartialEq)]
+pub(crate) struct EkuError;
+
+#[cfg(any(
+    test,
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos"
+))]
+impl std::fmt::Display for EkuError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("certificate had invalid extensions")
+    }
+}
+
+#[cfg(any(
+    test,
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos"
+))]
+impl std::error::Error for EkuError {}
+
 // Log the certificate we are verifying so that we can try and find what may be wrong with it
 // if we need to debug a user's situation.
 fn log_server_cert(_end_entity: &rustls::pki_types::CertificateDer<'_>) {
