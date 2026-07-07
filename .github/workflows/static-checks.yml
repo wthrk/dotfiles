@@ -30,15 +30,16 @@ jobs:
       # static checks では `/nix/store` キャッシュを使わない。toolchain / devShell は毎回取得するが、
       # job 自体は deterministic に完走させる。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを run 間で再利用する。Nix devShell 内でビルドした
-      # build script は `/nix/store` 上の動的ライブラリに結び付くため、target/ 復元まで行うと GC 済み store path を
-      # 指した古い実行ファイルを踏んで `No such file or directory` で落ちうる。依存 crate の取得だけ再利用し、
-      # workspace のビルド成果物は毎回その場の devShell で再生成する。fail-safe。
+      # cargo registry/git と target/ を run 間で再利用する。`cache-targets: false` だと static checks は毎回
+      # workspace を冷ビルドし続けて required check が過度に遅くなる。代わりに cache key を `flake.lock` /
+      # `flake.nix` に縛り、Nix devShell が変わった run と target/ を混在させない。これで同一 shell では
+      # build 成果物を再利用しつつ、shell 更新時は自動で cache miss に倒す。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: static-checks-${{ runner.os }}
-          cache-targets: false
+          key: static-checks-${{ hashFiles('flake.lock', 'flake.nix') }}
+          cache-targets: true
 
       - name: static checks
         run: nix develop -c cargo xtask check static
