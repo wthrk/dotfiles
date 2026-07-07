@@ -1,23 +1,26 @@
-//! 端末 secret I/O を process helper と port 契約の間で翻訳する adapter。
+//! 端末/標準入力の secret I/O を process helper と port 契約の間で翻訳する adapter。
 //!
 //! prompt 文言や入力上限はこの境界に閉じ、use case 手順や storage 判定は扱わない。
 
+use std::collections::BTreeMap;
+
 use crate::{
     Result,
-    domain::gpg_restore::OpenSshPublicKey,
+    domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
     ports::io::{
-        PasswordStoreRemoteInputPort, PinInputPort, SecretInputPort, SecretOutputPort,
-        SshPublicKeyOutputPort,
+        BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
+        BwsAccessTokenInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+        RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
     },
     support::{
-        process_io,
+        clock, process_io,
         protection::{ProtectedSecret, write_secret_stdout},
     },
 };
 
 /// process-generic helper と secret I/O port の間で保護値変換を集約する内部 adapter。
 ///
-/// この型は `ProcessIoAdapter` の内部委譲先であり、prompt/stdout の各 port 実装が
+/// この型は `ProcessIoAdapter` の内部委譲先であり、prompt/stdin/stdout の各 port 実装が
 /// 同じ protection 変換境界を使うために存在する。use case 手順や secret の業務意味は持たない。
 #[derive(Default)]
 struct RealSecretIoAdapter;
@@ -33,39 +36,98 @@ impl PinInputPort for RealSecretIoAdapter {
 }
 
 impl SecretInputPort for RealSecretIoAdapter {
-    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret> {
+    fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {
+        process_io::read_visible_line("bw-email: ", 16 * 1024, "visible secret input is too large")
+    }
+
+    fn read_bw_password_secret(&self) -> Result<ProtectedSecret> {
         process_io::read_hidden_line(
-            "bitwarden-client-id: ",
+            "bw-password: ",
             16 * 1024,
             "hidden secret input is too large",
         )
     }
 
-    fn read_bitwarden_client_secret(&self) -> Result<ProtectedSecret> {
+    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
         process_io::read_hidden_line(
-            "bitwarden-client-secret: ",
+            "bws-access-token: ",
             16 * 1024,
             "hidden secret input is too large",
         )
     }
 
-    fn read_bitwarden_master_password(&self) -> Result<ProtectedSecret> {
-        process_io::read_hidden_line(
-            "Bitwarden master password: ",
-            16 * 1024,
-            "hidden secret input is too large",
-        )
+    fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
+        process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")
+    }
+}
+
+impl BwsAccessTokenInputPort for RealSecretIoAdapter {
+    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
+        // BWS access token は BWS 操作に使う実 credential のため secret として扱い、
+        // stdin が terminal のとき hidden prompt（raw mode・echo なし）、非 terminal（pipe）のとき
+        // stdin 1 行を保護 buffer へ読む。いずれも平文を argv / ログ / 端末表示へ残さない。
+        const MAX_LEN: usize = 16 * 1024;
+        const TOO_LONG_MESSAGE: &str = "bws access token input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_hidden_line(
+                "bws-access-token (create/update): ",
+                MAX_LEN,
+                TOO_LONG_MESSAGE,
+            )
+        } else {
+            process_io::read_stdin_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
     }
 }
 
 impl PasswordStoreRemoteInputPort for RealSecretIoAdapter {
     fn read_password_store_remote_url(&self) -> Result<String> {
-        // clone URL は秘密情報ではないため保護 buffer・非表示入力を使わず、controlling TTY の可視入力で読む。
-        // script / 非対話経路が stdin pipe で URL を中継しないよう、stdin 状態に関わらず対話入力だけを許可する。
-        // 設定済み password-store の origin 観測は password-store port 側の責務である。
+        // clone URL は秘密情報ではないため保護 buffer・非表示入力を使わず、可視入力 / pipe で読む。
+        // stdin が terminal のとき可視プロンプト（エコーする通常入力）、非 terminal（pipe）のとき stdin 1 行。
         const MAX_LEN: usize = 16 * 1024;
         const TOO_LONG_MESSAGE: &str = "password-store-remote input is too large";
-        process_io::read_visible_plain_line("password-store-remote: ", MAX_LEN, TOO_LONG_MESSAGE)
+        if process_io::stdin_is_terminal() {
+            process_io::read_visible_plain_line(
+                "password-store-remote: ",
+                MAX_LEN,
+                TOO_LONG_MESSAGE,
+            )
+        } else {
+            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
+    }
+}
+
+impl BwOtpInputPort for RealSecretIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        // YubiKey OTP は touch 生成・単回利用で `bw login --code <otp>` の argv に載る前提（spec L178）のため、
+        // 保護 buffer・非表示入力を使わず可視入力 / pipe で読む。stdin が terminal のとき可視プロンプト
+        // （エコーする通常入力）、非 terminal（pipe）のとき stdin 1 行。OTP 妥当性判断は domain rule に委ねる。
+        const MAX_LEN: usize = 1024;
+        const TOO_LONG_MESSAGE: &str = "YubiKey OTP input is too large";
+        if process_io::stdin_is_terminal() {
+            process_io::read_visible_plain_line("yubikey-otp: ", MAX_LEN, TOO_LONG_MESSAGE)
+        } else {
+            process_io::read_stdin_plain_line(MAX_LEN, TOO_LONG_MESSAGE)
+        }
+    }
+}
+
+impl RotationContinuationPort for RealSecretIoAdapter {
+    fn continue_rotation(&self) -> Result<bool> {
+        if !process_io::stdin_is_terminal() {
+            return Ok(false);
+        }
+        let answer = process_io::read_control_line("rotate another YubiKey? [y/N]: ")?;
+        Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    }
+}
+
+impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
+    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, ProtectedSecret>> {
+        let protected =
+            process_io::read_stdin_all(64 * 1024, "bootstrap secret JSON input is too large")?;
+        protected.decode_json_string_map(BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT)
     }
 }
 
@@ -83,9 +145,51 @@ impl SshPublicKeyOutputPort for RealSecretIoAdapter {
     }
 }
 
+impl ClockPort for RealSecretIoAdapter {
+    fn now_rfc3339_utc(&self) -> Result<String> {
+        clock::now_rfc3339_utc()
+    }
+}
+
+impl BackupUpdateConfirmationPort for RealSecretIoAdapter {
+    fn confirm_backup_update(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        primary_fingerprint: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        if !process_io::stdin_is_terminal() {
+            // 非対話実行では明示的上書き許可 option がある場合だけ更新を許可する。
+            return Ok(assume_overwrite);
+        }
+        let prompt = format!(
+            "update BWS secret {secret_name} in project {project_name} \
+             (primary fingerprint {primary_fingerprint})? [y/N]: "
+        );
+        let answer = process_io::read_control_line(&prompt)?;
+        Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        if !process_io::stdin_is_terminal() {
+            // 非対話実行では明示的上書き許可 option がある場合だけ更新を許可する。
+            return Ok(assume_overwrite);
+        }
+        let prompt = format!("update BWS secret {secret_name} in project {project_name}? [y/N]: ");
+        let answer = process_io::read_control_line(&prompt)?;
+        Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    }
+}
+
 /// process/terminal I/O helper を secret 入出力 port 群へ翻訳する adapter。
 ///
-/// caller は必要な入力・出力 capability だけを呼ぶ。adapter は prompt/stdout の技術制約を
+/// caller は必要な入力・出力 capability だけを呼ぶ。adapter は prompt/stdin/stdout の技術制約を
 /// 吸収し、use case の順序や secret の業務意味を決めない。
 #[derive(Default)]
 pub(super) struct ProcessIoAdapter {
@@ -99,21 +203,50 @@ impl PinInputPort for ProcessIoAdapter {
 }
 
 impl SecretInputPort for ProcessIoAdapter {
-    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_bitwarden_client_id_secret()
+    fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bw_email_secret()
     }
 
-    fn read_bitwarden_client_secret(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_bitwarden_client_secret()
+    fn read_bw_password_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bw_password_secret()
     }
-    fn read_bitwarden_master_password(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_bitwarden_master_password()
+
+    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bws_access_token_secret()
+    }
+
+    fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_streamed_secret()
+    }
+}
+
+impl BwsAccessTokenInputPort for ProcessIoAdapter {
+    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bws_access_token_for_provisioning()
     }
 }
 
 impl PasswordStoreRemoteInputPort for ProcessIoAdapter {
     fn read_password_store_remote_url(&self) -> Result<String> {
         self.secret_io.read_password_store_remote_url()
+    }
+}
+
+impl BwOtpInputPort for ProcessIoAdapter {
+    fn read_bw_otp(&self) -> Result<String> {
+        self.secret_io.read_bw_otp()
+    }
+}
+
+impl RotationContinuationPort for ProcessIoAdapter {
+    fn continue_rotation(&self) -> Result<bool> {
+        self.secret_io.continue_rotation()
+    }
+}
+
+impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
+    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, ProtectedSecret>> {
+        self.secret_io.read_bootstrap_secret_fields()
     }
 }
 
@@ -126,5 +259,38 @@ impl SecretOutputPort for ProcessIoAdapter {
 impl SshPublicKeyOutputPort for ProcessIoAdapter {
     fn write_ssh_public_key(&self, public_key: &OpenSshPublicKey) -> Result<()> {
         self.secret_io.write_ssh_public_key(public_key)
+    }
+}
+
+impl ClockPort for ProcessIoAdapter {
+    fn now_rfc3339_utc(&self) -> Result<String> {
+        self.secret_io.now_rfc3339_utc()
+    }
+}
+
+impl BackupUpdateConfirmationPort for ProcessIoAdapter {
+    fn confirm_backup_update(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        primary_fingerprint: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        self.secret_io.confirm_backup_update(
+            project_name,
+            secret_name,
+            primary_fingerprint,
+            assume_overwrite,
+        )
+    }
+
+    fn confirm_secret_overwrite(
+        &self,
+        project_name: &str,
+        secret_name: &str,
+        assume_overwrite: bool,
+    ) -> Result<bool> {
+        self.secret_io
+            .confirm_secret_overwrite(project_name, secret_name, assume_overwrite)
     }
 }

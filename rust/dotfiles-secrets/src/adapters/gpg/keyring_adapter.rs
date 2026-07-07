@@ -1,8 +1,8 @@
 //! `GpgKeyringPort` を gpgme（鍵リング metadata I/O）と `support/protection` の secret-key backend
 //! 操作へ接続する adapter。
 //!
-//! secret key material の平文 borrow を伴う import / OpenPGP 解析は `support/protection` の専用 backend
-//! 操作（`gpg_backup`）に閉じ、この adapter は fingerprint・subkey capability・keygrip・
+//! secret key material の平文 borrow を伴う export / import / OpenPGP 解析は `support/protection` の
+//! 専用 backend 操作（`gpg_backup`）に閉じ、この adapter は fingerprint・subkey capability・keygrip・
 //! OpenSSH 公開鍵という非 secret metadata を gpgme で読み、domain 値（`ImportedKeyComposition` /
 //! `Keygrip` / `OpenSshPublicKey` / `*Fingerprint`）へ翻訳する。既存鍵衝突判定や subkey 利用可能判定
 //! そのものの業務規則は domain へ残す。`gpg` CLI は使わない。
@@ -13,7 +13,7 @@ use gpgme::{ExportMode, Protocol};
 use crate::{
     Result,
     domain::{
-        gpg_backup::{PrimaryFingerprint, SecretPrimaryKeyCandidates},
+        gpg_backup::PrimaryFingerprint,
         gpg_restore::{
             ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
         },
@@ -27,31 +27,6 @@ use crate::{
 #[derive(Default)]
 pub(super) struct GpgKeyringAdapter;
 
-#[derive(Debug)]
-struct GpgFingerprintResolutionError {
-    source: Option<std::str::Utf8Error>,
-}
-
-impl GpgFingerprintResolutionError {
-    fn from_source(source: Option<std::str::Utf8Error>) -> Self {
-        Self { source }
-    }
-}
-
-impl std::fmt::Display for GpgFingerprintResolutionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("GPG recipient primary fingerprint could not be resolved")
-    }
-}
-
-impl std::error::Error for GpgFingerprintResolutionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source
-            .as_ref()
-            .map(|source| source as &(dyn std::error::Error + 'static))
-    }
-}
-
 impl GpgKeyringAdapter {
     /// OpenPGP protocol の gpgme context を生成する（非 secret metadata 取得用）。
     fn context() -> Result<gpgme::Context> {
@@ -60,23 +35,11 @@ impl GpgKeyringAdapter {
 }
 
 impl GpgKeyringPort for GpgKeyringAdapter {
-    fn list_secret_primary_fingerprints(&mut self) -> Result<SecretPrimaryKeyCandidates> {
-        let mut context = Self::context()?;
-        let mut fingerprints = Vec::new();
-        for key in context
-            .secret_keys()
-            .context("failed to list GPG secret keys")?
-        {
-            let key = key.context("failed to read GPG secret key")?;
-            if key.is_revoked() || key.is_expired() || key.is_disabled() || !key.has_secret() {
-                continue;
-            }
-            if let Ok(fingerprint) = key.fingerprint() {
-                fingerprints.push(PrimaryFingerprint::parse(fingerprint)?);
-            }
-        }
-
-        Ok(SecretPrimaryKeyCandidates::new(fingerprints))
+    fn export_secret_key(
+        &mut self,
+        primary_fingerprint: &PrimaryFingerprint,
+    ) -> Result<ProtectedSecret> {
+        backup_protection::export_secret_key(primary_fingerprint.as_str())
     }
 
     fn parse_backup_primary_fingerprint(
@@ -97,7 +60,7 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             {
                 Ok(false)
             }
-            Err(error) => Err(error).context("failed to query GPG secret key"),
+            Err(error) => Err(anyhow::Error::new(error).context("failed to query GPG secret key")),
         }
     }
 
@@ -228,32 +191,8 @@ impl GpgKeyringPort for GpgKeyringAdapter {
             {
                 Ok(false)
             }
-            Err(error) => {
-                Err(error).context("failed to query GPG secret key for password-store recipient")
-            }
-        }
-    }
-
-    fn primary_fingerprint_for_recipient(
-        &mut self,
-        recipient: &GpgRecipientId,
-    ) -> Result<Option<PrimaryFingerprint>> {
-        let mut context = Self::context()?;
-        match context.get_secret_key(recipient.as_str()) {
-            Ok(key) => {
-                let fingerprint = key
-                    .fingerprint()
-                    .map_err(GpgFingerprintResolutionError::from_source)?;
-                Ok(Some(PrimaryFingerprint::parse(fingerprint)?))
-            }
-            Err(error)
-                if error.code() == gpgme::Error::NO_SECKEY.code()
-                    || error.code() == gpgme::Error::EOF.code() =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(error)
-                .context("failed to query GPG primary fingerprint for password-store recipient"),
+            Err(error) => Err(anyhow::Error::new(error)
+                .context("failed to query GPG secret key for password-store recipient")),
         }
     }
 

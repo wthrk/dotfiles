@@ -88,7 +88,7 @@ test double / fixture の本体は原則として `tests/` 配下に置く。た
 - 最終 datastore 観測は `secrets-internal-test-stub` feature 専用の stdout sentinel observation を基本とする。この observation は test-only の明示観測面であり、fixture/spec で与えたダミー secret 値を含めてよい。integration test が「secret として保存した値が最終 datastore に意図通り保存された」ことを検証するためであり、production build/runtime には compile されず、本物 secret の出力経路ではない。
 - hidden temp file、output path file、共有 state file に secret 値を残してはならない。
 - backend state/schema/helper は adapter 側 internal backend stub の責務とし、`tests/` 側へ複製してはならない。
-- Bitwarden vault port stub と YubiKey port stub は独立させ、共通の巨大 StubState や共有 state file で結合してはならない。port 間の結合は application/domain の通常経路でのみ発生させる。
+- BWS port stub と YubiKey port stub は独立させ、共通の巨大 StubState や共有 state file で結合してはならない。port 間の結合は application/domain の通常経路でのみ発生させる。
 - module/comment で internal test 専用 feature、production build 非混入、stdout observation 境界、compile-time selection を明記する。
 
 この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入、`tests/` 側での backend state/schema/helper 保持は、この条件を満たさないため引き続き禁止する。
@@ -142,9 +142,9 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - allowed:
   use case の順序制御、停止条件、分岐、port 呼び出しの順番
 - forbidden:
-  command dispatch、input modality の分岐詳細（Prompt/Stdin 等）、report DTO の JSON 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装、use case 独自型定義
+  command dispatch、input modality の分岐詳細（Prompt/Stdin/StdinJson 等）、report DTO の JSON 変換、protected buffer 化、crypto helper 呼び出し詳細、device selection 実装、use case 独自型定義
 - 典型的な誤配置:
-  `application` が prompt/TTY など入力方式の実装詳細を enum で保持する、`println!` で report を整形する、`YubiKey::open_*` 相当を直接呼ぶ
+  `application` が `--stdin`/`--stdin-json` の実装詳細を enum で保持する、`println!` で report を整形する、`YubiKey::open_*` 相当を直接呼ぶ
 - 判定質問:
   「このコードは手順の宣言だけか。具体 I/O 形式・デバイス選択・シリアライズ仕様を知っていないか」
 - この repo の具体例:
@@ -153,20 +153,20 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 ### ports
 
 - allowed:
-  capability 契約（例: `read_bitwarden_client_id_secret`、`read_bitwarden_client_secret`、`read_bitwarden_master_password`、`write_secret`、`write_*_report`）
+  capability 契約（例: `read_secret_from_prompt`、`read_secret_from_stdin`、`write_secret`、`write_*_report`）
 - forbidden:
-  input modality の手段表現そのもの（`Prompt/Stdin` enum）、report DTO の具体型、prompt 文言
+  input modality の手段表現そのもの（`Prompt/Stdin/StdinJson` enum）、report DTO の具体型、prompt 文言、stdin JSON parser
 - 典型的な誤配置:
   `read_secret(name, source_enum)` のように手段を port 契約へ露出する、`EnrollmentJson` DTO を ports に置く
 - 判定質問:
   「この契約は“何をしたいか”だけを表しているか。“どう入力するか/どう表示するか”を含んでいないか」
 - この repo の具体例:
-  `SecretInputPort` は modality enum や stdin capability を持たず、`read_bitwarden_client_id_secret` / `read_bitwarden_client_secret` / `read_bitwarden_master_password` のような用途別 prompt/TTY 入力 capability として宣言する
+  `SecretInputPort` は modality enum を持たず、`read_secret_from_prompt` と `read_secret_from_stdin` を別 capability として宣言する
 
 ### adapters
 
 - allowed:
-  device discovery と複数接続拒否、stdin/stdout/terminal I/O、report DTO 変換、外部 API 変換
+  device selection（serial 指定・対話選択）、stdin/stdout/terminal I/O、report DTO 変換、外部 API 変換
 - forbidden:
   application 型への直接依存、use case の順序決定、業務判断の中心化
 - 典型的な誤配置:
@@ -181,13 +181,13 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - allowed:
   protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）、secret 保護境界内で完了する外部処理向け backend 操作、storage backend 内部の暗号化・復号・sealed blob 操作
 - forbidden:
-  enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針、固定 secret key/name/role に基づく一意解決や 0件/複数件の業務判断、外部確認 plan。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
+  stdin-json、enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針、固定 secret key/name/role に基づく一意解決や 0件/複数件の業務判断、外部確認 plan。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
 - 典型的な誤配置:
-  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ、`support/protection/vault.rs` が固定 Bitwarden vault secret name の一意解決や `verify-yubikey --check vault` の成功条件を決める、storage backend の sealed blob helper が setup 済み判定や必須 secret の過不足判定を決める
+  `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ、`support/protection/bws.rs` が固定 BWS secret name の一意解決や `verify-yubikey --check bws` の成功条件を決める、storage backend の sealed blob helper が setup 済み判定や必須 secret の過不足判定を決める
 - 判定質問:
   「この部品は共通技術 primitive か、secret 保護境界を閉じる backend 操作か。storage backend 内部機能であれば暗号化・復号・sealed blob・protection・zeroize・core dump 保護に限定されているか。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か。対象同一性・一意性・0件/複数件・外部確認 plan を決めていないか」
 - この repo の具体例:
-  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。Bitwarden vault SDK/API が account API key と master password の owned plaintext を要求する呼び出し境界は `support/protection` に置ける。storage backend が sealed blob を内部保存形式として使う場合、その暗号化・復号・sealed blob 操作は `support/protection` に置けるが、`gpg-secret-key-backup` / `password-store-remote` を固定取得対象として一意解決する規則、0件/複数件の扱い、`verify-yubikey --check vault` の外部確認 plan は既存規定上の該当境界に置く。
+  `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。BWS SDK が access token の owned plaintext を要求する呼び出し境界は `support/protection` に置ける。storage backend が sealed blob を内部保存形式として使う場合、その暗号化・復号・sealed blob 操作は `support/protection` に置けるが、`gpg-secret-key-backup` / `password-store-remote` を固定取得対象として一意解決する規則、0件/複数件の扱い、`verify-yubikey --check bws` の外部確認 plan は既存規定上の該当境界に置く。
 
 ## 層ごとの禁止事項
 

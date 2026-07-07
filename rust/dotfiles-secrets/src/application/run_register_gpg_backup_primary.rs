@@ -1,189 +1,130 @@
-//! gpg-secret-key-backup の事前登録状態確認順序を固定し、export/暗号化/登録の実装詳細を port 境界へ閉じる。
-
-use anyhow::Context;
+//! gpg-secret-key-backup の primary 登録順序を固定し、export/暗号化/登録の実装詳細を port 境界へ閉じる。
 
 use crate::Result;
 use crate::{
     domain::{
+        bws::{BwsProjectName, BwsSecretName},
         commands::RegisterGpgBackupCommand,
-        gpg_backup::SecretPrimaryKeyCandidates,
-        piv::{SecretName, validate_piv_pin_len},
-        storage::SecretStorageReadIntent,
-        vault::{
-            BitwardenAccountApiKey, BitwardenVaultCredentials, VaultLookupResolution,
-            VaultSecretName,
-        },
+        gpg_backup::{EnvelopeMetadata, EnvelopeRecipient, GpgBackupEnvelope},
     },
     ports,
 };
 
 /// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
 pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::yubikey::YubiKeyDevicePort,
-    pub(crate) pin_input: &'a dyn ports::io::PinInputPort,
-    pub(crate) secret_input: &'a dyn ports::io::SecretInputPort,
-    pub(crate) storage: &'a mut dyn ports::yubikey::SecretStoragePort,
-    pub(crate) keyring: &'a mut dyn ports::gpg::GpgKeyringPort,
-    pub(crate) store: &'a dyn ports::git::PasswordStorePort,
-    pub(crate) recipient: &'a mut dyn ports::yubikey::GpgRecipientPort,
-    pub(crate) vault_client: &'a B,
+    pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
+    pub(crate) device_serial: &'a mut dyn ports::DeviceSerialPort,
+    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
+    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
+    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
+    pub(crate) clock: &'a dyn ports::ClockPort,
+    pub(crate) bws_client: &'a B,
 }
 
-/// 既存 `gpg-secret-key-backup` envelope が、この CLI で使える復旧到達状態かを確認する。
+/// 既存環境の GPG secret key を encrypted envelope 化し、Bitwarden Secrets Manager へ primary 登録する。
 ///
-/// 現行 CLI で実装済みなのは、個人 vault にある既存 envelope の照合経路だけである。
-/// Bitwarden vault の同名 backup 重複確認を secret key export より前に行い、
-/// 上書きしないと決まっているシナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない
-/// 場合でも、現行 CLI 経路では 2 recipient 以上の envelope を作れないため、secret key export と
-/// DEK 暗号化へ進む前に停止する。secret key material と DEK は port 境界の保護値として扱い、argv/log/
-/// 永続ファイルへ出さない。
+/// 設計「backup export 入力契約」「recipient 運用 / BWS 更新契約」の primary 登録経路を順序制御として
+/// 固定する。BWS の同名 backup 重複確認を secret key export より前に行い、上書きしないと決まっている
+/// シナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない場合だけ subkey 構成を検証
+/// し、export 直後の bytes を再解析して fingerprint 一致を確認したうえで envelope 化し、接続中 YubiKey の
+/// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
+/// argv/log/永続ファイルへ出さない。
 ///
-/// Bitwarden 個人 vault への接続には、YubiKey storage に保存済みの Bitwarden account API key
-/// `bitwarden-client-id` / `bitwarden-client-secret` と、CLI/app input port で取得した master password を
-/// 使う。CLI は secret・token・fingerprint を argv/stdin/env で受け取らず、既存 envelope の確認では接続中 YubiKey の recipient identity だけを解決する。
-/// 新規 envelope 作成は 2 recipient 以上を同時取得できる CLI 経路ができるまで拒否する。
+/// BWS への登録には BWS access token を使う。この登録用 token は hidden prompt / pipe から
+/// `BwsAccessTokenInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
+/// 復旧時の read 用最小権限 token を別経路で用意する。この provisioning command 自体は storage/pin 経由の
+/// token 読み出しを行わない。一方、YubiKey 本体は recipient wrap（PIV slot `82` 公開鍵で DEK を RSA-OAEP
+/// wrap）に必要なため、recipient 用の device serial 解決は残す。slot `82`
+/// 公開鍵での wrap は private key 操作を伴わないため PIN/touch を要さない。
 ///
-/// 順序を application に固定するのは「既存 envelope の primary 一致と 2 recipient 到達状態を満たすまで
-/// export・envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。
-/// 既存の同名 backup が 1 件ある場合は metadata の primary fingerprint が解決済み primary fingerprint と
-/// 一致し、2 recipient 以上かつ接続中 YubiKey の public key fingerprint recipient が含まれる場合だけ
-/// 成功扱いにする。envelope 変更はこの CLI 経路では扱わない。
+/// 順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで export・
+/// envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup がある場合は
+/// 重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
 pub(crate) async fn run_register_gpg_backup_primary<B>(
     command: RegisterGpgBackupCommand,
     runtime: RegisterGpgBackupPrimaryRuntime<'_, B>,
 ) -> Result<()>
 where
-    B: ports::bw::VaultClientPort,
+    B: ports::BwsClientPort,
 {
     let RegisterGpgBackupPrimaryRuntime {
-        device,
-        pin_input,
-        secret_input,
-        storage,
+        token_input,
+        device_serial,
         keyring,
-        store,
+        cipher,
         recipient,
-        vault_client,
+        clock,
+        bws_client,
     } = runtime;
-    let _ = command;
-    let primary_fingerprint = if store.password_store_exists()? {
-        let readiness = store.inspect_password_store()?;
-        if readiness.gpg_id_present && !readiness.gpg_id_recipients.is_empty() {
-            let mut fingerprints = Vec::new();
-            for recipient_id in readiness.parse_recipients()? {
-                let Some(fingerprint) = keyring.primary_fingerprint_for_recipient(&recipient_id)?
-                else {
-                    anyhow::bail!(
-                        "password-store recipient does not resolve to an available GPG secret key"
-                    );
-                };
-                fingerprints.push(fingerprint);
-            }
-            SecretPrimaryKeyCandidates::new(fingerprints).resolve_unique()?
-        } else {
-            keyring
-                .list_secret_primary_fingerprints()?
-                .resolve_unique()?
-        }
-    } else {
-        keyring
-            .list_secret_primary_fingerprints()?
-            .resolve_unique()?
-    };
-    let serial = device.resolve_device_serial()?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = pin_input.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
-    let credentials = (|| -> Result<BitwardenVaultCredentials> {
-        let client_id_storage = SecretName::BitwardenClientId.storage_spec(serial);
-        let client_id_inspection =
-            storage.inspect_secret_storage_read(serial, &client_id_storage)?;
-        let client_id_intent =
-            SecretStorageReadIntent::from_inspection(client_id_storage, client_id_inspection)?;
-        let client_id = storage
-            .load_secret(serial, &client_id_intent, pin.as_ref())
-            .map_err(|error| client_id_intent.decode_error(error))?;
-        client_id_intent.validate_loaded_secret(&client_id)?;
-        let client_secret_storage = SecretName::BitwardenClientSecret.storage_spec(serial);
-        let client_secret_inspection =
-            storage.inspect_secret_storage_read(serial, &client_secret_storage)?;
-        let client_secret_intent = SecretStorageReadIntent::from_inspection(
-            client_secret_storage,
-            client_secret_inspection,
-        )?;
-        let client_secret = storage
-            .load_secret(serial, &client_secret_intent, pin.as_ref())
-            .map_err(|error| client_secret_intent.decode_error(error))?;
-        client_secret_intent.validate_loaded_secret(&client_secret)?;
-        let master_password = secret_input.read_bitwarden_master_password()?;
-        Ok(BitwardenVaultCredentials::new(
-            BitwardenAccountApiKey::new(client_id, client_secret),
-            master_password,
-        ))
-    })()
-    .context("`gpg-backup register` failed while reading Bitwarden vault credentials")?;
+    // recipient wrap 対象 YubiKey の serial を解決する（slot 82 公開鍵 wrap に必要）。
+    let serial = device_serial.resolve_device_serial(command.serial)?;
 
-    // 同名 backup の有無を export より前に確認する。既存 1 件で primary が一致すれば設定済み secret を
-    // 使用し、secret key export・DEK 暗号化・recipient wrap を再実行しない。0 件は現行 CLI 経路で
-    // 2 recipient 以上の envelope を作れないため、secret key material を読む前に停止する。
-    let candidates = vault_client
-        .list_vault_secrets(&credentials)
-        .await
-        .with_context(|| {
-            format!(
-                "`gpg-backup register` failed while listing vault secret `{}`",
-                VaultSecretName::GpgSecretKeyBackup.key()
-            )
-        })?;
-    match VaultSecretName::GpgSecretKeyBackup.resolve_lookup(candidates) {
-        VaultLookupResolution::Missing => {
-            anyhow::bail!(
-                "gpg-secret-key-backup is not registered; current CLI cannot create a multi-recipient envelope"
-            )
-        }
-        VaultLookupResolution::Unique(secret_id) => {
-            let envelope = vault_client
-                .fetch_gpg_backup_envelope(&credentials, &secret_id)
-                .await
-                .with_context(|| {
-                    format!(
-                        "`gpg-backup register` failed while loading vault secret `{}`",
-                        VaultSecretName::GpgSecretKeyBackup.key()
-                    )
-                })?;
-            if envelope.metadata().primary_fingerprint().as_str() != primary_fingerprint.as_str() {
-                anyhow::bail!(
-                    "existing gpg-secret-key-backup primary fingerprint does not match the resolved key"
-                );
-            }
-            envelope.ensure_recovery_recipient_count()?;
-            let connected = recipient.resolve_connected_recipient(serial)?;
-            envelope.resolve_recipient(&connected)?;
-            Ok(())
-        }
-        VaultLookupResolution::Ambiguous => anyhow::bail!(
-            "multiple gpg-secret-key-backup secrets exist in the personal vault; refusing to provision"
-        ),
+    // BWS 登録用 access token を hidden prompt / pipe から取得し、復旧 project を解決する。
+    // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
+    let access_token = token_input.read_bws_access_token_for_provisioning()?;
+    let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
+        .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
+
+    // 同名 backup が既にある場合は重複登録を停止条件にする。上書きしないと決まっているシナリオで
+    // secret key export・DEK 暗号化・recipient wrap を発生させないよう、export より前に重複確認する。
+    // `resolve_id` は 0 件と複数件をどちらも `Err` にするため、既存重複 project を「未登録」と
+    // 誤認しないよう、同名候補の件数を数えて 1 件以上で停止する。対象同一性の exact match は domain
+    // helper に委ね、application は重複時の停止分岐だけを扱う。
+    let existing_count = bws_client
+        .list_bws_secrets(&access_token, &project_id)
+        .await?
+        .into_iter()
+        .filter(|candidate| BwsSecretName::GpgSecretKeyBackup.matches_candidate(candidate))
+        .count();
+    if existing_count >= 1 {
+        anyhow::bail!(
+            "a gpg-secret-key-backup secret already exists; refusing to overwrite on primary registration"
+        );
     }
+
+    // export 前に encryption / authentication / signing subkey の利用可能状態を検証する。
+    keyring
+        .inspect_imported_key(&command.primary_fingerprint)?
+        .ensure_usable()?;
+
+    // export 直後の bytes を再解析し、導出 fingerprint が指定値と一致する場合だけ envelope 化へ進む。
+    let backup = keyring.export_secret_key(&command.primary_fingerprint)?;
+    let parsed = keyring.parse_backup_primary_fingerprint(&backup)?;
+    if parsed.as_str() != command.primary_fingerprint.as_str() {
+        anyhow::bail!("exported gpg backup primary fingerprint does not match the requested key");
+    }
+
+    // DEK を生成して backup を暗号化し、接続中 YubiKey の recipient で DEK を wrap する。
+    let dek = cipher.generate_dek()?;
+    let ciphertext = cipher.encrypt_backup(&dek, &backup)?;
+    let recipient_entry: EnvelopeRecipient = recipient.wrap_dek_for_recipient(serial, &dek)?;
+
+    let metadata = EnvelopeMetadata::new(parsed, clock.now_rfc3339_utc()?)?;
+    let envelope = GpgBackupEnvelope::assemble(metadata, vec![recipient_entry], ciphertext)?;
+
+    bws_client
+        .create_gpg_backup_envelope(&access_token, &project_id, &envelope)
+        .await
+        .map(|_id| ())
 }
 
 #[cfg(test)]
 mod tests {
+    //! primary 登録の順序（重複確認→subkey 検証→export→fingerprint 照合→暗号化→recipient wrap→
+    //! envelope→BWS 作成）を mockall + Sequence で検証する単体テスト。
+    //!
+    //! token-input / keyring / cipher / recipient / clock / bws backend を port mock で差し替え、BWS 登録に
+    //! 使う access token を BWS access token 入力経路から取得すること、重複確認が export より前に行われること、
+    //! subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき create が呼ばれること、
+    //! 重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
+
     use crate::{
         domain::{
             commands::RegisterGpgBackupCommand,
             gpg_backup::{
-                ConnectedYubiKey, EnvelopeCiphertext, EnvelopeMetadata, EnvelopeRecipient,
-                GpgBackupEnvelope, PrimaryFingerprint, SecretPrimaryKeyCandidates,
+                ConnectedYubiKey, EnvelopeCiphertext, EnvelopeRecipient, PrimaryFingerprint,
             },
-            manifest::SecretManifest,
-            piv::SecretName,
-            storage::SecretStorageReadInspection,
-            vault::{VaultLookupCandidate, VaultSecretId, VaultSecretName},
+            gpg_restore::{ImportedKeyComposition, ResolvedSubkey, SubkeyCapability},
         },
         ports,
         support::protection::ProtectedSecret,
@@ -191,186 +132,213 @@ mod tests {
 
     use super::{RegisterGpgBackupPrimaryRuntime, run_register_gpg_backup_primary};
 
-    const PRIMARY_FINGERPRINT: &str = "1111111111111111111111111111111111111111";
-    const CONNECTED_RECIPIENT_FINGERPRINT: &str =
-        "2222222222222222222222222222222222222222222222222222222222222222";
-    const SPARE_RECIPIENT_FINGERPRINT: &str =
-        "3333333333333333333333333333333333333333333333333333333333333333";
+    const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
-    fn material(bytes: &'static [u8]) -> crate::Result<ProtectedSecret> {
-        ProtectedSecret::from_test_bytes(bytes)
+    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+        ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    fn material_for_name(name: SecretName) -> crate::Result<ProtectedSecret> {
-        match name {
-            SecretName::BitwardenClientId => material(b"client-id"),
-            SecretName::BitwardenClientSecret => material(b"client-secret"),
-        }
+    /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    ///
+    /// この mock は hidden prompt / pipe 相当の入力経路として BWS access token を返す。
+    /// pin/storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
+    fn token_input() -> ports::MockBwsAccessTokenInputPort {
+        let mut token_input = ports::MockBwsAccessTokenInputPort::new();
+        token_input
+            .expect_read_bws_access_token_for_provisioning()
+            .times(1)
+            .returning(|| Ok(material(b"provisioning-token")));
+        token_input
     }
 
-    fn read_inspection() -> crate::Result<SecretStorageReadInspection> {
-        Ok(SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode()?),
-            encoded: Some(vec![1]),
-        })
+    fn ciphertext() -> EnvelopeCiphertext {
+        EnvelopeCiphertext::new(vec![0u8; 12], b"encrypted".to_vec(), vec![0u8; 16])
+            .expect("ciphertext")
     }
 
-    fn primary_fingerprint() -> crate::Result<PrimaryFingerprint> {
-        PrimaryFingerprint::parse(PRIMARY_FINGERPRINT)
+    fn recipient_entry() -> EnvelopeRecipient {
+        let connected = ConnectedYubiKey::new(
+            "2001",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("connected");
+        EnvelopeRecipient::new(&connected, b"wrapped".to_vec()).expect("recipient")
     }
 
-    fn connected_recipient(serial: u32) -> crate::Result<ConnectedYubiKey> {
-        let _ = serial;
-        ConnectedYubiKey::new(CONNECTED_RECIPIENT_FINGERPRINT)
-    }
-
-    fn gpg_backup_envelope(serial: u32) -> crate::Result<GpgBackupEnvelope> {
-        let connected = connected_recipient(serial)?;
-        let spare = ConnectedYubiKey::new(SPARE_RECIPIENT_FINGERPRINT)?;
-        GpgBackupEnvelope::assemble(
-            EnvelopeMetadata::new(primary_fingerprint()?, "2026-01-01T00:00:00Z")?,
+    fn all_usable() -> ImportedKeyComposition {
+        ImportedKeyComposition::new(
+            true,
             vec![
-                EnvelopeRecipient::new(&connected, vec![1])?,
-                EnvelopeRecipient::new(&spare, vec![2])?,
+                ResolvedSubkey {
+                    capability: SubkeyCapability::Encryption,
+                    usable: true,
+                },
+                ResolvedSubkey {
+                    capability: SubkeyCapability::Authentication,
+                    usable: true,
+                },
+                ResolvedSubkey {
+                    capability: SubkeyCapability::Signing,
+                    usable: true,
+                },
             ],
-            EnvelopeCiphertext::new(vec![0; 12], vec![1], vec![0; 16])?,
         )
     }
 
-    fn expect_loaded_yubikey_secret(
-        storage: &mut ports::yubikey::MockSecretStoragePort,
-        sequence: &mut mockall::Sequence,
-        serial: u32,
-        name: SecretName,
-    ) {
-        storage
-            .expect_inspect_secret_storage_read()
-            .times(1)
-            .withf(move |actual_serial, storage| *actual_serial == serial && storage.name == name)
-            .in_sequence(sequence)
-            .returning(|_, _| read_inspection());
-        storage
-            .expect_load_secret()
-            .times(1)
-            .withf(move |actual_serial, intent, pin| {
-                *actual_serial == serial && intent.storage.name == name && pin.is_none()
-            })
-            .in_sequence(sequence)
-            .returning(|_, intent, _| material_for_name(intent.storage.name));
-    }
-
-    fn forbid_yubikey_storage_writes(storage: &mut ports::yubikey::MockSecretStoragePort) {
-        storage.expect_inspect_secret_storage_setup().times(0);
-        storage.expect_initialize_secret_storage().times(0);
-        storage.expect_finalize_secret_storage_setup().times(0);
-        storage.expect_inspect_secret_storage_write().times(0);
-        storage.expect_store_secret().times(0);
-    }
-
-    /// vault 照合前に master password を input port から 1 回だけ取得し、YubiKey storage へ保存しない。
     #[tokio::test]
-    async fn gpg_backup_register_reads_master_password_after_yubikey_api_key_without_storage_write()
-    -> crate::Result<()> {
-        let serial = 7002;
+    async fn register_primary_creates_envelope_when_absent() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let mut store = ports::git::MockPasswordStorePort::new();
-        store
-            .expect_password_store_exists()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|| Ok(false));
-        store.expect_inspect_password_store().times(0);
-        store.expect_configured_origin_remote().times(0);
-        let mut keyring = ports::gpg::MockGpgKeyringPort::new();
-        keyring
-            .expect_list_secret_primary_fingerprints()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|| {
-                Ok(SecretPrimaryKeyCandidates::new(
-                    vec![primary_fingerprint()?],
-                ))
-            });
-        keyring.expect_primary_fingerprint_for_recipient().times(0);
-        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(move || Ok(serial));
-        device
-            .expect_device_requires_pin()
+            .returning(|requested| Ok(requested.expect("serial")));
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::domain::bws::BwsLookupCandidate {
+                id: crate::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        // 同名 backup は未登録（list は空）。重複確認は export より前に行う。
+        bws.expect_list_bws_secrets()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let mut pin_input = ports::io::MockPinInputPort::new();
-        pin_input.expect_read_pin().times(0);
-        let mut storage = ports::yubikey::MockSecretStoragePort::new();
-        forbid_yubikey_storage_writes(&mut storage);
-        expect_loaded_yubikey_secret(
-            &mut storage,
-            &mut sequence,
-            serial,
-            SecretName::BitwardenClientId,
-        );
-        expect_loaded_yubikey_secret(
-            &mut storage,
-            &mut sequence,
-            serial,
-            SecretName::BitwardenClientSecret,
-        );
-        let mut secret_input = ports::io::MockSecretInputPort::new();
-        secret_input
-            .expect_read_bitwarden_client_id_secret()
-            .times(0);
-        secret_input.expect_read_bitwarden_client_secret().times(0);
-        secret_input
-            .expect_read_bitwarden_master_password()
+            .returning(|_, _| Ok(Vec::new()));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_inspect_imported_key()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|| material(b"master-password"));
-        let mut vault_client = ports::bw::MockVaultClientPort::new();
-        vault_client
-            .expect_list_vault_secrets()
+            .returning(|_| Ok(all_usable()));
+        keyring
+            .expect_export_secret_key()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_| {
-                Ok(vec![VaultLookupCandidate {
-                    id: VaultSecretId::new("gpg"),
-                    name: VaultSecretName::GpgSecretKeyBackup.key().to_owned(),
-                }])
-            });
-        vault_client
-            .expect_fetch_gpg_backup_envelope()
+            .returning(|_| Ok(material(b"backup")));
+        keyring
+            .expect_parse_backup_primary_fingerprint()
             .times(1)
-            .in_sequence(&mut sequence)
-            .returning(move |_, _| gpg_backup_envelope(serial));
-        vault_client.expect_fetch_password_store_remote().times(0);
-        vault_client.expect_create_password_store_remote().times(0);
-        let mut recipient = ports::yubikey::MockGpgRecipientPort::new();
+            .returning(|_| PrimaryFingerprint::parse(PRIMARY_FP));
+
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_generate_dek()
+            .times(1)
+            .returning(|| Ok(material(b"dek")));
+        cipher
+            .expect_encrypt_backup()
+            .times(1)
+            .returning(|_, _| Ok(ciphertext()));
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
-            .expect_resolve_connected_recipient()
+            .expect_wrap_dek_for_recipient()
             .times(1)
-            .withf(move |actual_serial| *actual_serial == serial)
+            .returning(|_, _| Ok(recipient_entry()));
+
+        let mut clock = ports::MockClockPort::new();
+        clock
+            .expect_now_rfc3339_utc()
+            .times(1)
+            .returning(|| Ok("2026-05-31T00:00:00Z".to_owned()));
+
+        bws.expect_create_gpg_backup_envelope()
+            .times(1)
             .in_sequence(&mut sequence)
-            .returning(move |_| connected_recipient(serial));
-        recipient.expect_unwrap_dek().times(0);
+            .returning(|_, _, _| Ok(crate::domain::bws::BwsSecretId::new("new-id")));
 
         run_register_gpg_backup_primary(
-            RegisterGpgBackupCommand,
+            RegisterGpgBackupCommand {
+                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
+                serial: Some(2001),
+            },
             RegisterGpgBackupPrimaryRuntime {
-                device: &mut device,
-                pin_input: &pin_input,
-                secret_input: &secret_input,
-                storage: &mut storage,
+                token_input: &token,
+                device_serial: &mut device,
                 keyring: &mut keyring,
-                store: &store,
+                cipher: &mut cipher,
                 recipient: &mut recipient,
-                vault_client: &vault_client,
+                clock: &clock,
+                bws_client: &bws,
             },
         )
-        .await?;
+        .await
+    }
 
-        Ok(())
+    /// 同名 backup が複数 project に重複して存在する場合は、`resolve_id` の複数件 `Err` を
+    /// 「未登録」と誤認せず、create を呼ばずに重複登録を停止することを検証する。
+    #[tokio::test]
+    async fn register_primary_stops_when_duplicate_secrets_exist() {
+        let token = token_input();
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|requested| Ok(requested.expect("serial")));
+
+        // 重複検出で export・暗号化・wrap のいずれにも進ませず、鍵素材を不要にメモリへ載せない。
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring.expect_inspect_imported_key().times(0);
+        keyring.expect_export_secret_key().times(0);
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
+
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher.expect_generate_dek().times(0);
+        cipher.expect_encrypt_backup().times(0);
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient.expect_wrap_dek_for_recipient().times(0);
+
+        let mut clock = ports::MockClockPort::new();
+        clock.expect_now_rfc3339_utc().times(0);
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().returning(|_| {
+            Ok(vec![crate::domain::bws::BwsLookupCandidate {
+                id: crate::domain::bws::BwsProjectId::new("project-1"),
+                name: "dotfiles-secret-recovery".to_owned(),
+            }])
+        });
+        // 同名 backup が複数件存在する（resolve_id だと複数件 Err になり誤認しうるケース）。
+        bws.expect_list_bws_secrets().returning(|_, _| {
+            Ok(vec![
+                crate::domain::bws::BwsLookupCandidate {
+                    id: crate::domain::bws::BwsSecretId::new("dup-1"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                },
+                crate::domain::bws::BwsLookupCandidate {
+                    id: crate::domain::bws::BwsSecretId::new("dup-2"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                },
+            ])
+        });
+        // 重複検出で create へ進ませない。
+        bws.expect_create_gpg_backup_envelope().times(0);
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand {
+                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
+                serial: Some(2001),
+            },
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                cipher: &mut cipher,
+                recipient: &mut recipient,
+                clock: &clock,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "duplicate gpg-secret-key-backup secrets must stop primary registration"
+        );
     }
 }

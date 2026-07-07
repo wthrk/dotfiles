@@ -7,9 +7,7 @@
 //! この stub は YubiKey port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::YUBIKEY_STUB_SPEC_ENV` の YubiKey 専用 spec から private datastore
 //! へ展開し、最終観測 JSON は stdout の sentinel line として書き出す。
-//! 観測には secret ごとに seal が受領した生成公開鍵 fingerprint（非秘密）も含め、production adapter が init の
-//! `generate_key` で得た鍵を store の seal まで引き回した（Some 経路）ことを CLI 統合テストが照合できるようにする。
-//! vault port stub とは state/schema/file を共有しない。
+//! BWS port stub とは state/schema/file を共有しない。
 
 use std::{
     collections::BTreeMap,
@@ -25,8 +23,9 @@ use super::{
 use crate::secrets_internal_test_stub_contract::{STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV};
 
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
-const BITWARDEN_CLIENT_ID_OBJECT_ID: u32 = 0x005f_ff17;
-const BITWARDEN_CLIENT_SECRET_OBJECT_ID: u32 = 0x005f_ff18;
+const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
+const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
+const BWS_TOKEN_OBJECT_ID: u32 = 0x005f_ff19;
 
 #[derive(serde::Deserialize)]
 struct YubiKeyStubSpec {
@@ -49,11 +48,14 @@ struct YubiKeyDeviceSpec {
 enum YubiKeyDeviceFixture {
     Fresh,
     Provisioned,
+    WritableBwsAccessToken,
     Seeded {
-        #[serde(rename = "bitwarden-client-id")]
-        bitwarden_client_id: String,
-        #[serde(rename = "bitwarden-client-secret")]
-        bitwarden_client_secret: String,
+        #[serde(rename = "bw-email")]
+        bw_email: String,
+        #[serde(rename = "bw-password")]
+        bw_password: String,
+        #[serde(rename = "bws-access-token")]
+        bws_access_token: String,
     },
 }
 
@@ -69,11 +71,6 @@ struct StubDeviceDatastore {
     objects: BTreeMap<String, Vec<u8>>,
     secrets: BTreeMap<String, String>,
     corrupt: Vec<String>,
-    /// `seal_for_storage` が secret ごとに受領した生成 slot 公開鍵（非秘密）。
-    /// production `StorageAdapter` が init の `generate_key` で得た鍵を capture し、store の seal へ
-    /// 引き回したことを最終観測へ反映するためだけに保持する。
-    #[serde(default)]
-    sealed_generated_keys: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(serde::Serialize)]
@@ -85,9 +82,6 @@ struct YubiKeyObservation {
 struct StubDeviceObservation {
     key_exists: bool,
     stored_secrets: BTreeMap<String, String>,
-    /// secret ごとに seal が受領した生成公開鍵 fingerprint（非秘密）。
-    /// init→store の生成鍵引き回し（Some 経路）が end-to-end で働いたことを test が照合するための観測面。
-    sealed_with_generated_key: BTreeMap<String, String>,
 }
 
 #[derive(serde::Serialize)]
@@ -97,52 +91,6 @@ struct YubiKeyObservationFrame<'a> {
 }
 
 static YUBIKEY_DATASTORE: OnceLock<Mutex<Option<YubiKeyDatastore>>> = OnceLock::new();
-
-#[derive(Debug)]
-struct YubikeyStubDatastoreLockPoisoned {
-    source: DatastoreLockPoisonSource,
-}
-
-impl YubikeyStubDatastoreLockPoisoned {
-    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
-        Self {
-            source: DatastoreLockPoisonSource::from_poison(source),
-        }
-    }
-}
-
-impl std::fmt::Display for YubikeyStubDatastoreLockPoisoned {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "YubiKey internal stub datastore lock is poisoned")
-    }
-}
-
-impl std::error::Error for YubikeyStubDatastoreLockPoisoned {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-#[derive(Debug)]
-struct DatastoreLockPoisonSource {
-    message: String,
-}
-
-impl DatastoreLockPoisonSource {
-    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
-        Self {
-            message: source.to_string(),
-        }
-    }
-}
-
-impl std::fmt::Display for DatastoreLockPoisonSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for DatastoreLockPoisonSource {}
 
 struct TestStubSecretDevice {
     serial: u32,
@@ -187,9 +135,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
-            // 生成直後の slot 公開鍵（PKCS1 DER 相当の決定的代替、非秘密）を Some で返し、
-            // production adapter が capture→store seal へ引き回す Some 経路を end-to-end で駆動する。
-            Ok(Some(stub_generated_public_key(self.serial)))
+            Ok(Some(vec![0x01]))
         })
     }
 
@@ -230,24 +176,16 @@ impl SecretDeviceIo for TestStubSecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
-        generated_public_key: Option<&[u8]>,
+        _generated_public_key: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         let value = String::from_utf8(plaintext.to_test_bytes())
             .context("internal stub secret is not valid UTF-8")?;
-        // store が受領した生成公開鍵（init 由来の capture）を最終観測へ反映できるよう保持する。
-        // 公開鍵は非秘密であり、production cache の引き回し（Some 経路）を test が照合するための観測面。
-        let sealed_with = generated_public_key.map(<[u8]>::to_vec);
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
             device
                 .secrets
                 .insert(secret_key(storage.secret_id).to_owned(), value);
-            if let Some(public_key) = &sealed_with {
-                device
-                    .sealed_generated_keys
-                    .insert(secret_key(storage.secret_id).to_owned(), public_key.clone());
-            }
             Ok(encoded_object(storage_object_id(storage.secret_id)))
         })
     }
@@ -270,10 +208,13 @@ impl SecretDeviceIo for TestStubSecretDevice {
                 .ok_or_else(|| anyhow::anyhow!("missing secret"))
         })?;
 
-        if value.len() > 16 * 1024 {
-            anyhow::bail!("internal stub secret is too large");
-        }
-        ProtectedSecret::from_test_bytes(value.as_bytes())
+        let session = crate::support::protection::SecretSession::start()?;
+        let buffer = crate::support::protection::buffer::ProtectedInputBuffer::read_line_from(
+            std::io::Cursor::new(value.into_bytes()),
+            16 * 1024,
+            &session,
+        )?;
+        buffer.into_protected_secret_line(&session, 16 * 1024, "internal stub secret is too large")
     }
 
     fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
@@ -281,24 +222,14 @@ impl SecretDeviceIo for TestStubSecretDevice {
         Ok(stub_recipient_fingerprint(self.serial))
     }
 
+    fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
+        // stub では DEK を平文 bytes としてそのまま wrapped value に保持し、round-trip を観測可能にする。
+        Ok(dek.to_test_bytes())
+    }
+
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {
         ProtectedSecret::from_test_bytes(wrapped_dek)
     }
-}
-
-/// serial ごとに決定的な生成 slot 公開鍵（非秘密）の代替 bytes を返す。
-///
-/// 実 backend の `generate_key` が返す PKCS1 DER 公開鍵に相当する観測専用の代替であり、production には
-/// compile されない。decode せず観測へ反映するだけなので、test が照合できる決定的 ASCII で表現する。
-fn stub_generated_public_key(serial: u32) -> Vec<u8> {
-    format!("stub-generated-public-key-{serial}").into_bytes()
-}
-
-/// seal が受領した生成公開鍵（非秘密）を観測用 fingerprint へ写す。
-///
-/// 公開鍵は決定的 ASCII なのでそのまま表示し、test が serial から期待値を組み立てて照合できるようにする。
-fn generated_key_fingerprint(public_key: &[u8]) -> String {
-    String::from_utf8_lossy(public_key).into_owned()
 }
 
 /// serial を 64 文字 lowercase hex（recipient `public_key_fingerprint` 相当）へ決定的に写像する。
@@ -334,7 +265,7 @@ fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Resu
     let datastore = YUBIKEY_DATASTORE.get_or_init(|| Mutex::new(None));
     let mut state = datastore
         .lock()
-        .map_err(YubikeyStubDatastoreLockPoisoned::from_poison)?;
+        .map_err(|_| anyhow::anyhow!("YubiKey internal stub datastore lock is poisoned"))?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }
@@ -388,13 +319,17 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
     let mut device = match spec.fixture {
         YubiKeyDeviceFixture::Fresh => StubDeviceDatastore::default(),
         YubiKeyDeviceFixture::Provisioned => provisioned_device_datastore(default_secrets()),
+        YubiKeyDeviceFixture::WritableBwsAccessToken => {
+            let mut secrets = BTreeMap::new();
+            secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
+            secrets.insert("bw-password".to_owned(), "pw".to_owned());
+            provisioned_device_datastore(secrets)
+        }
         YubiKeyDeviceFixture::Seeded {
-            bitwarden_client_id,
-            bitwarden_client_secret,
-        } => provisioned_device_datastore(seeded_secrets(
-            bitwarden_client_id,
-            bitwarden_client_secret,
-        )),
+            bw_email,
+            bw_password,
+            bws_access_token,
+        } => provisioned_device_datastore(seeded_secrets(bw_email, bw_password, bws_access_token)),
     };
     device.corrupt = spec.storage_decode_errors;
     device
@@ -411,27 +346,26 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
         objects,
         secrets,
         corrupt: Vec::new(),
-        sealed_generated_keys: BTreeMap::new(),
     }
 }
 
 fn default_secrets() -> BTreeMap<String, String> {
     let mut secrets = BTreeMap::new();
-    secrets.insert("bitwarden-client-id".to_owned(), "u@example.com".to_owned());
-    secrets.insert("bitwarden-client-secret".to_owned(), "pw".to_owned());
+    secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
+    secrets.insert("bw-password".to_owned(), "pw".to_owned());
+    secrets.insert("bws-access-token".to_owned(), "token".to_owned());
     secrets
 }
 
 fn seeded_secrets(
-    bitwarden_client_id: String,
-    bitwarden_client_secret: String,
+    bw_email: String,
+    bw_password: String,
+    bws_access_token: String,
 ) -> BTreeMap<String, String> {
     let mut seeded = BTreeMap::new();
-    seeded.insert("bitwarden-client-id".to_owned(), bitwarden_client_id);
-    seeded.insert(
-        "bitwarden-client-secret".to_owned(),
-        bitwarden_client_secret,
-    );
+    seeded.insert("bw-email".to_owned(), bw_email);
+    seeded.insert("bw-password".to_owned(), bw_password);
+    seeded.insert("bws-access-token".to_owned(), bws_access_token);
     seeded
 }
 
@@ -444,18 +378,7 @@ fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
                 serial.clone(),
                 StubDeviceObservation {
                     key_exists: device.key_exists,
-                    stored_secrets: device
-                        .secrets
-                        .keys()
-                        .map(|name| (name.clone(), "<redacted>".to_owned()))
-                        .collect(),
-                    sealed_with_generated_key: device
-                        .sealed_generated_keys
-                        .iter()
-                        .map(|(name, public_key)| {
-                            (name.clone(), generated_key_fingerprint(public_key))
-                        })
-                        .collect(),
+                    stored_secrets: device.secrets.clone(),
                 },
             )
         })
@@ -479,24 +402,27 @@ fn device_store_mut(store: &mut YubiKeyDatastore, serial: u32) -> Result<&mut St
 
 fn secret_key_for_object(object_id: u32) -> &'static str {
     match object_id {
-        BITWARDEN_CLIENT_ID_OBJECT_ID => "bitwarden-client-id",
-        BITWARDEN_CLIENT_SECRET_OBJECT_ID => "bitwarden-client-secret",
+        BW_EMAIL_OBJECT_ID => "bw-email",
+        BW_PASSWORD_OBJECT_ID => "bw-password",
+        BWS_TOKEN_OBJECT_ID => "bws-access-token",
         _ => "",
     }
 }
 
 fn secret_key(secret_id: u8) -> &'static str {
     match secret_id {
-        1 => "bitwarden-client-id",
-        2 => "bitwarden-client-secret",
+        1 => "bw-email",
+        2 => "bw-password",
+        3 => "bws-access-token",
         _ => "unknown",
     }
 }
 
 fn storage_object_id(secret_id: u8) -> u32 {
     match secret_id {
-        1 => BITWARDEN_CLIENT_ID_OBJECT_ID,
-        2 => BITWARDEN_CLIENT_SECRET_OBJECT_ID,
+        1 => BW_EMAIL_OBJECT_ID,
+        2 => BW_PASSWORD_OBJECT_ID,
+        3 => BWS_TOKEN_OBJECT_ID,
         _ => MANIFEST_OBJECT_ID,
     }
 }

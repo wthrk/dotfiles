@@ -16,20 +16,20 @@ use crate::{
 pub(crate) fn run_setup_with<D, P, S>(
     command: SetupCommand,
     device: &mut D,
+    pin_policy: &mut impl ports::DevicePinPolicyPort,
     pin_input: &P,
     storage: &mut S,
 ) -> Result<()>
 where
-    D: ports::yubikey::YubiKeyDevicePort,
-    P: ports::io::PinInputPort,
-    S: ports::yubikey::SecretStoragePort,
+    D: ports::DeviceSerialPort,
+    P: ports::PinInputPort,
+    S: ports::SecretStoragePort,
 {
-    let _ = command;
-    let serial = device.resolve_device_serial()?;
+    let serial = device.resolve_device_serial(command.serial)?;
     let probe = SecretStorageSetupProbe::expected();
     let inspection = storage.inspect_secret_storage_setup(serial, &probe)?;
     let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
-    let pin = if device.device_requires_pin(serial)? {
+    let pin = if pin_policy.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
         Some(pin)
@@ -40,7 +40,6 @@ where
     storage.finalize_secret_storage_setup(serial, intent)
 }
 
-/// setup use case が device 解決、domain intent、storage 初期化の順序だけを担うことを検証する。
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -48,8 +47,7 @@ mod tests {
             commands::SetupCommand, piv::PivApplicationVersion,
             storage::SecretStorageSetupInspection,
         },
-        ports::{self, io::MockPinInputPort},
-        support::protection::ProtectedSecret,
+        ports,
     };
 
     use super::run_setup_with;
@@ -64,24 +62,24 @@ mod tests {
         }
     }
 
-    /// serial 解決後に setup inspection から intent を作り、initialize/finalize を順に呼ぶ。
     #[test]
     fn setup_initializes_storage_after_serial_resolution() -> crate::Result<()> {
-        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
-        let pin_input = MockPinInputPort::new();
-        let mut storage = ports::yubikey::MockSecretStoragePort::new();
+        let mut device = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let pin_input = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
         let mut sequence = mockall::Sequence::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|| Ok(2001));
+            .returning(|requested| Ok(requested.unwrap_or(2001)));
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(clean_setup_inspection()));
-        device
+        pin_policy
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
@@ -97,28 +95,33 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
 
-        run_setup_with(SetupCommand, &mut device, &pin_input, &mut storage)
+        run_setup_with(
+            SetupCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &pin_input,
+            &mut storage,
+        )
     }
 
     #[test]
-    fn setup_reads_pin_before_initialize_when_required() -> crate::Result<()> {
-        let mut device = ports::yubikey::MockYubiKeyDevicePort::new();
-        let mut pin_input = MockPinInputPort::new();
-        let mut storage = ports::yubikey::MockSecretStoragePort::new();
+    fn setup_reads_pin_when_required() -> crate::Result<()> {
+        let mut device = ports::MockDeviceSerialPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        let mut pin_input = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
         let mut sequence = mockall::Sequence::new();
-        let pin = ProtectedSecret::from_test_bytes(b"123456").expect("test pin");
-
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|| Ok(2002));
+            .returning(|_| Ok(2001));
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(clean_setup_inspection()));
-        device
+        pin_policy
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
@@ -127,21 +130,30 @@ mod tests {
             .expect_read_pin()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(move || Ok(ProtectedSecret::try_clone(&pin).expect("clone pin")));
+            .returning(|| {
+                Ok(
+                    crate::support::protection::ProtectedSecret::from_test_bytes(b"123456")
+                        .expect("test pin"),
+                )
+            });
         storage
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, pin| {
-                assert!(pin.is_some(), "setup must pass PIN when device requires it");
-                Ok(())
-            });
+            .withf(|serial, _, pin| *serial == 2001 && pin.is_some())
+            .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
 
-        run_setup_with(SetupCommand, &mut device, &pin_input, &mut storage)
+        run_setup_with(
+            SetupCommand { serial: Some(2001) },
+            &mut device,
+            &mut pin_policy,
+            &pin_input,
+            &mut storage,
+        )
     }
 }

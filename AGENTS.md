@@ -39,7 +39,6 @@ Individual reviewer roles use these skill files:
 | Operational-consistency reviewer | `.agents/skills/operational-consistency-review/SKILL.md` |
 | Security reviewer | `.agents/skills/security-review/SKILL.md` |
 | Specification-conformance reviewer | `.agents/skills/specification-conformance-review/SKILL.md` |
-| External-dependency-conformance reviewer | `.agents/skills/external-dependency-conformance-review/SKILL.md` |
 | Test reviewer | `.agents/skills/test-review/SKILL.md` |
 | Documentation reviewer | `.agents/skills/documentation-review/SKILL.md` |
 | Architectural-consistency reviewer | `.agents/skills/architectural-consistency-review/SKILL.md` |

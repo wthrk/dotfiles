@@ -17,13 +17,13 @@ use super::super::{
 };
 use crate::Result;
 
-/// use case が接続中の単一 YubiKey を確定する capability 契約。
+/// use case が primary 対象の serial を確定する capability 契約。
 ///
-/// caller は device discovery の詳細を知らない。implementor は候補列挙と複数接続時の拒否を
-/// 外部 I/O 境界で完了し、storage 操作へ進まない。
+/// caller は利用者指定 serial だけを渡し、device discovery や対話選択の詳細を知らない。
+/// implementor は候補列挙・選択・非対話時の拒否を外部 I/O 境界で完了し、storage 操作へ進まない。
 #[cfg_attr(test, mockall::automock)]
 pub trait DeviceSerialPort {
-    fn resolve_device_serial(&mut self) -> Result<u32>;
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
 }
 
 /// use case が対象 device の PIN 要否を判定する capability 契約。
@@ -38,29 +38,48 @@ pub trait DevicePinPolicyPort {
 /// use case が同一 YubiKey の選択と PIN 方針確認を一体で要求する capability 契約。
 ///
 /// caller は device serial 解決と、その serial に対する PIN 要否確認だけを要求する。implementor は
-/// device discovery / 複数接続拒否 / device 状態確認を外部 I/O 境界で完了し、storage 読み書きや use case
+/// device discovery / 対話選択 / device 状態確認を外部 I/O 境界で完了し、storage 読み書きや use case
 /// 手順を隠さない。
 #[cfg_attr(test, mockall::automock)]
 pub trait YubiKeyDevicePort {
-    fn resolve_device_serial(&mut self) -> Result<u32>;
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
 }
 
-/// 単一 adapter が両 capability を実装する場合に、統合 capability として合成する blanket impl。
-///
-/// composition root は serial 解決と PIN 方針を 1 つの device adapter に持たせ、両 capability を要求する
-/// use case へ単一 `&mut dyn YubiKeyDevicePort` として渡す。
 impl<T> YubiKeyDevicePort for T
 where
     T: DeviceSerialPort + DevicePinPolicyPort,
 {
-    fn resolve_device_serial(&mut self) -> Result<u32> {
-        DeviceSerialPort::resolve_device_serial(self)
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
+        DeviceSerialPort::resolve_device_serial(self, requested)
     }
 
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
         DevicePinPolicyPort::device_requires_pin(self, serial)
     }
+}
+
+impl<D, P> YubiKeyDevicePort for (&mut D, &mut P)
+where
+    D: DeviceSerialPort,
+    P: DevicePinPolicyPort,
+{
+    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
+        self.0.resolve_device_serial(requested)
+    }
+
+    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
+        self.1.device_requires_pin(serial)
+    }
+}
+
+/// use case が spare 対象の serial を確定する capability 契約。
+///
+/// caller は spare role の候補指定だけを渡し、primary/spare の domain invariant は domain 側で
+/// 検証する。implementor は spare device の選択手段を吸収し、role 関係の業務判断を持たない。
+#[cfg_attr(test, mockall::automock)]
+pub trait SpareDeviceSerialPort {
+    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32>;
 }
 
 /// use case が YubiKey secret storage へ要求する高水準 capability 契約。
@@ -126,14 +145,23 @@ pub trait SecretStoragePort {
 
 /// use case が `gpg-secret-key-backup` recipient 運用のために接続中 YubiKey へ要求する capability 契約。
 ///
-/// caller は recipient 照合・DEK unwrap の順序と停止条件を application/domain 側で決める。
-/// implementor は PIV slot `82` 公開鍵 fingerprint の解決、recipient 照合用 identity の構築、device 内 RSA decrypt
-/// による DEK unwrap だけを担い、recipient 照合の業務規則そのものは再定義しない。secret key material や
-/// DEK は `ProtectedSecret` の借用境界内で扱う。
+/// caller は recipient 照合・DEK wrap/unwrap の順序と停止条件を application/domain 側で決める。
+/// implementor は PIV slot `82` 公開鍵の解決、recipient 照合用 identity の構築、RSA-OAEP-SHA256 での
+/// DEK wrap、device 内 RSA decrypt による DEK unwrap だけを担い、recipient 照合の業務規則そのものは
+/// 再定義しない。secret key material や DEK は `ProtectedSecret` の借用境界内で扱う。
 #[cfg_attr(test, mockall::automock)]
 pub trait GpgRecipientPort {
-    /// 接続中 YubiKey の PIV slot `82` 公開鍵 fingerprint から、recipient 照合入力を構築する。
+    /// 接続中 YubiKey の serial と PIV slot `82` 公開鍵 fingerprint から、recipient 照合入力を構築する。
     fn resolve_connected_recipient(&mut self, serial: u32) -> Result<ConnectedYubiKey>;
+
+    /// 接続中 YubiKey の PIV slot `82` 公開鍵で DEK を RSA-OAEP-SHA256 wrap し、recipient を構築する。
+    ///
+    /// backup export（primary 登録）と spare 追加で使い、同一 DEK を recipient 公開鍵で wrap する。
+    fn wrap_dek_for_recipient(
+        &mut self,
+        serial: u32,
+        dek: &ProtectedSecret,
+    ) -> Result<EnvelopeRecipient>;
 
     /// 一致した recipient の `wrapped_dek` を、接続中 YubiKey の PIV slot `82` 秘密鍵で unwrap して DEK を得る。
     #[expect(

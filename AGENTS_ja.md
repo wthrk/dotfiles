@@ -39,7 +39,6 @@
 | 運用整合レビュー担当 | `.agents/skills/operational-consistency-review/SKILL.md` |
 | セキュリティレビュー担当 | `.agents/skills/security-review/SKILL.md` |
 | 仕様適合レビュー担当 | `.agents/skills/specification-conformance-review/SKILL.md` |
-| 外部依存適合レビュー担当 | `.agents/skills/external-dependency-conformance-review/SKILL.md` |
 | テストレビュー担当 | `.agents/skills/test-review/SKILL.md` |
 | ドキュメントレビュー担当 | `.agents/skills/documentation-review/SKILL.md` |
 | アーキテクチャ整合レビュー担当 | `.agents/skills/architectural-consistency-review/SKILL.md` |

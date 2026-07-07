@@ -76,6 +76,5 @@ PR review comment への採用/不採用返信、対応済み thread の resolve
 - merge conflict がある。
 - branch protection、required approval、required check などの条件が未充足である。
 - 明示的に依頼された、または required review / required check として要求された最新 head に対する AI / Codex / Copilot review を取得できない。
-- GitHub Actions の macOS runner / instance を手動起動しないと checks を進められない。金額上の理由でその運用は許可されないため、手動起動で迂回せず blocked 条件として報告する。
 
 保留報告では、確認した head OID、未充足条件、次に必要な外部操作または待機対象を明示する。

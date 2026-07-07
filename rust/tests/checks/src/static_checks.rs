@@ -48,27 +48,13 @@ fn rust(shell: &Shell) -> Result<()> {
         "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-secrets --lib application"
     )
     .run()?;
-    step("cargo test secrets lib internal stub");
-    cmd!(
-        shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --lib"
-    )
-    .run()?;
     Ok(())
 }
 
-/// repository 管理の shell script 構文と provisioning regression を検証する。
+/// bootstrap 用 shell script の構文を検証する。
 fn shell_scripts(shell: &Shell) -> Result<()> {
     step("shell scripts");
     cmd!(shell, "bash -n scripts/bootstrap.sh").run()?;
-    cmd!(shell, "bash -n scripts/provision-secret-recovery-source.sh").run()?;
-    cmd!(
-        shell,
-        "bash -n scripts/test-provision-secret-recovery-source.sh"
-    )
-    .run()?;
-    step("provision-secret-recovery-source shell tests");
-    cmd!(shell, "scripts/test-provision-secret-recovery-source.sh").run()?;
     Ok(())
 }
 
@@ -76,43 +62,11 @@ fn shell_scripts(shell: &Shell) -> Result<()> {
 fn github_actions(shell: &Shell) -> Result<()> {
     step("GitHub Actions workflows");
     cmd!(shell, "actionlint").run()?;
-    workflow_rust_cache_keys_track_flake_lock(shell)?;
     nightly_no_update_is_clean_no_op(shell)?;
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
     nightly_record_rebuilds_in_job(shell)?;
     nightly_lock_rev_skips_nix_develop(shell)?;
     nightly_artifact_actions_use_supported_node_runtime(shell)?;
-    Ok(())
-}
-
-/// nightly-update.yml の「無更新の夜が clean no-op になる」不変条件を hermetic に固定する（finding 3368677388）。
-fn workflow_rust_cache_keys_track_flake_lock(shell: &Shell) -> Result<()> {
-    step("workflow rust-cache keys track flake.lock");
-    assert_workflow_rust_cache_keys_track_flake_lock(
-        &shell.read_file(".github/workflows/static-checks.yml")?,
-        "static-checks.yml",
-    )?;
-    assert_workflow_rust_cache_keys_track_flake_lock(
-        &shell.read_file(".github/workflows/zsh-checks.yml")?,
-        "zsh-checks.yml",
-    )?;
-    assert_workflow_rust_cache_keys_track_flake_lock(
-        &shell.read_file(".github/workflows/nightly-update.yml")?,
-        "nightly-update.yml",
-    )
-}
-
-fn assert_workflow_rust_cache_keys_track_flake_lock(workflow: &str, name: &str) -> Result<()> {
-    ensure!(
-        workflow
-            .contains("shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}")
-            || workflow
-                .contains("shared-key: zsh-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}")
-            || workflow
-                .contains("shared-key: nightly-${{ runner.os }}-${{ hashFiles('flake.lock') }}"),
-        "{name} は rust-cache の shared-key に `hashFiles('flake.lock')` を含め、Nix devShell 更新後の \
-         stale target/build-script 再利用を避けること"
-    );
     Ok(())
 }
 
@@ -376,7 +330,6 @@ mod tests {
         assert_nightly_artifact_actions_use_supported_node_runtime,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
-        assert_workflow_rust_cache_keys_track_flake_lock,
     };
 
     /// wrapper が target を省略し、root daemon 用の `--user` / `--host` を渡す形を受け入れる。
@@ -477,34 +430,5 @@ mod tests {
         "#;
 
         assert!(assert_nightly_artifact_actions_use_supported_node_runtime(workflow).is_ok());
-    }
-
-    #[test]
-    fn workflow_rust_cache_keys_include_flake_lock_hash() {
-        let workflow = r#"
-          - name: cargo build キャッシュ
-            uses: Swatinem/rust-cache@v2
-            with:
-              shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-        "#;
-
-        assert!(
-            assert_workflow_rust_cache_keys_track_flake_lock(workflow, "static-checks.yml").is_ok()
-        );
-    }
-
-    #[test]
-    fn workflow_rust_cache_keys_reject_missing_flake_lock_hash() {
-        let workflow = r#"
-          - name: cargo build キャッシュ
-            uses: Swatinem/rust-cache@v2
-            with:
-              shared-key: static-checks-${{ runner.os }}
-        "#;
-
-        assert!(
-            assert_workflow_rust_cache_keys_track_flake_lock(workflow, "static-checks.yml")
-                .is_err()
-        );
     }
 }

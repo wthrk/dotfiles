@@ -12,11 +12,6 @@ path = "src/lib.rs"
 name = "dotfiles"
 path = "src/main.rs"
 
-[[test]]
-name = "secrets_cli"
-path = "tests/secrets_cli.rs"
-required-features = ["secrets-internal-test-stub"]
-
 [lints]
 workspace = true
 

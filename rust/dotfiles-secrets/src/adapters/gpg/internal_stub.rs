@@ -7,7 +7,7 @@
 //!
 //! この stub は GPG port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::GPG_STUB_SPEC_ENV` の GPG 専用 spec から private datastore へ
-//! 展開し、最終観測 JSON は stdout の sentinel line として書き出す。YubiKey / Bitwarden vault port stub とは
+//! 展開し、最終観測 JSON は stdout の sentinel line として書き出す。YubiKey / BWS port stub とは
 //! state/schema/file を共有しない。
 //!
 //! cipher stub の backup body 規約: integration test は復号済み backup を「primary fingerprint の
@@ -24,7 +24,7 @@ use anyhow::Context;
 use crate::{
     Result,
     domain::{
-        gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint, SecretPrimaryKeyCandidates},
+        gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
         gpg_restore::{
             ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SubkeyCapability,
         },
@@ -34,6 +34,12 @@ use crate::{
     secrets_internal_test_stub_contract::{GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX},
     support::protection::ProtectedSecret,
 };
+
+/// stub DEK の固定 byte 長（real backend の AES-256-GCM DEK と同じ 32 bytes）。
+const STUB_DEK_LEN: usize = 32;
+/// stub の固定 nonce/tag（envelope schema の byte 長に合わせる）。
+const STUB_NONCE_LEN: usize = 12;
+const STUB_TAG_LEN: usize = 16;
 
 #[derive(serde::Deserialize)]
 struct GpgStubSpec {
@@ -103,8 +109,8 @@ struct StoredKey {
 
 #[derive(serde::Serialize)]
 struct GpgObservation {
-    imported_key_count: usize,
-    registered_keygrip_count: usize,
+    imported_keys: Vec<String>,
+    registered_keygrips: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -114,52 +120,6 @@ struct GpgObservationFrame<'a> {
 }
 
 static GPG_DATASTORE: OnceLock<Mutex<Option<GpgDatastore>>> = OnceLock::new();
-
-#[derive(Debug)]
-struct GpgStubDatastoreLockPoisoned {
-    source: DatastoreLockPoisonSource,
-}
-
-impl GpgStubDatastoreLockPoisoned {
-    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
-        Self {
-            source: DatastoreLockPoisonSource::from_poison(source),
-        }
-    }
-}
-
-impl std::fmt::Display for GpgStubDatastoreLockPoisoned {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "GPG internal stub datastore lock is poisoned")
-    }
-}
-
-impl std::error::Error for GpgStubDatastoreLockPoisoned {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-#[derive(Debug)]
-struct DatastoreLockPoisonSource {
-    message: String,
-}
-
-impl DatastoreLockPoisonSource {
-    fn from_poison<T>(source: std::sync::PoisonError<T>) -> Self {
-        Self {
-            message: source.to_string(),
-        }
-    }
-}
-
-impl std::fmt::Display for DatastoreLockPoisonSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for DatastoreLockPoisonSource {}
 
 /// GPG 鍵リング port の internal backend stub。
 #[derive(Default)]
@@ -174,16 +134,12 @@ pub(super) struct BackupCipherStub;
 pub(super) struct SshAgentStub;
 
 impl GpgKeyringPort for GpgKeyringStub {
-    fn list_secret_primary_fingerprints(&mut self) -> Result<SecretPrimaryKeyCandidates> {
-        with_datastore(|store| {
-            let mut keys = store.keys.keys().cloned().collect::<Vec<_>>();
-            keys.sort();
-            let fingerprints = keys
-                .into_iter()
-                .map(|key| PrimaryFingerprint::parse(&key))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(SecretPrimaryKeyCandidates::new(fingerprints))
-        })
+    fn export_secret_key(
+        &mut self,
+        primary_fingerprint: &PrimaryFingerprint,
+    ) -> Result<ProtectedSecret> {
+        // export bytes は fingerprint hex 文字列とする（cipher stub の body 規約と整合）。
+        ProtectedSecret::from_test_bytes(primary_fingerprint.as_str().as_bytes())
     }
 
     fn parse_backup_primary_fingerprint(
@@ -269,36 +225,6 @@ impl GpgKeyringPort for GpgKeyringStub {
         })
     }
 
-    fn primary_fingerprint_for_recipient(
-        &mut self,
-        recipient: &GpgRecipientId,
-    ) -> Result<Option<PrimaryFingerprint>> {
-        with_datastore(|store| {
-            let Some(held) = store
-                .held_recipients
-                .iter()
-                .find(|held| held.eq_ignore_ascii_case(recipient.as_str()))
-            else {
-                return Ok(None);
-            };
-            if let Some(key) = store
-                .keys
-                .keys()
-                .find(|key| key.eq_ignore_ascii_case(held))
-                .cloned()
-            {
-                return PrimaryFingerprint::parse(&key).map(Some);
-            }
-            if store.keys.len() == 1 {
-                let Some(key) = store.keys.keys().next().cloned() else {
-                    anyhow::bail!("single stub key must exist");
-                };
-                return PrimaryFingerprint::parse(&key).map(Some);
-            }
-            Ok(None)
-        })
-    }
-
     fn can_decrypt_store_entry(&mut self, _entry_path: &std::path::Path) -> Result<()> {
         let decryptable = with_datastore(|store| Ok(store.store_entry_decryptable))?;
         if decryptable {
@@ -310,6 +236,21 @@ impl GpgKeyringPort for GpgKeyringStub {
 }
 
 impl BackupCipherPort for BackupCipherStub {
+    fn generate_dek(&mut self) -> Result<ProtectedSecret> {
+        let bytes: Vec<u8> = (0..STUB_DEK_LEN).map(|index| index as u8).collect();
+        ProtectedSecret::from_test_bytes(&bytes)
+    }
+
+    fn encrypt_backup(
+        &mut self,
+        _dek: &ProtectedSecret,
+        backup: &ProtectedSecret,
+    ) -> Result<EnvelopeCiphertext> {
+        // stub は body をそのまま保持する（DEK round-trip の観測規約）。
+        let body = backup.to_test_bytes();
+        EnvelopeCiphertext::new(vec![0u8; STUB_NONCE_LEN], body, vec![0u8; STUB_TAG_LEN])
+    }
+
     fn decrypt_backup(
         &mut self,
         _dek: &ProtectedSecret,
@@ -338,7 +279,7 @@ impl SshAgentPort for SshAgentStub {
         expected_public_key: &OpenSshPublicKey,
     ) -> Result<SshAgentReadiness> {
         // real adapter は agent が列挙する identity の key blob を期待公開鍵の key blob と byte 一致で照合し、
-        // 復元鍵 identity が識別可能かを観測する。復元鍵と無関係な既存 identity の有無は観測
+        // 復元鍵 identity が識別可能かを観測する。設計 L83 に従い、復元鍵と無関係な既存 identity の有無は観測
         // しない。stub は restore-gpg の register→identify linkage（「期待公開鍵と同一 key blob を持つ鍵の keygrip が
         // SSH key list へ登録済み」なら、その鍵を agent 列挙 identity の 1 つとみなす）を再現し、同じ domain 照合
         // （`matches_agent_key_blob`）で復元鍵の識別可否を判定する。
@@ -384,7 +325,9 @@ fn stored_key(primary_fingerprint: &PrimaryFingerprint) -> Result<StoredKey> {
             .keys
             .get(primary_fingerprint.as_str())
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("stub gpg key not found"))
+            .ok_or_else(|| {
+                anyhow::anyhow!("stub gpg key not found: {}", primary_fingerprint.as_str())
+            })
     })
 }
 
@@ -392,7 +335,7 @@ fn with_datastore<T>(f: impl FnOnce(&mut GpgDatastore) -> Result<T>) -> Result<T
     let datastore = GPG_DATASTORE.get_or_init(|| Mutex::new(None));
     let mut state = datastore
         .lock()
-        .map_err(GpgStubDatastoreLockPoisoned::from_poison)?;
+        .map_err(|_| anyhow::anyhow!("GPG internal stub datastore lock is poisoned"))?;
     if state.is_none() {
         *state = Some(load_datastore()?);
     }
@@ -435,8 +378,8 @@ fn load_datastore() -> Result<GpgDatastore> {
 
 fn write_observation(store: &GpgDatastore) -> Result<()> {
     let observation = GpgObservation {
-        imported_key_count: store.imported.len(),
-        registered_keygrip_count: store.registered_keygrips.len(),
+        imported_keys: store.imported.clone(),
+        registered_keygrips: store.registered_keygrips.clone(),
     };
     let frame = GpgObservationFrame {
         port: "gpg",

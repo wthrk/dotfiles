@@ -1,13 +1,8 @@
-//! `PasswordStorePort` を password-store の filesystem 観測へ接続する adapter。
+//! `PasswordStorePort` を `~/.password-store` の filesystem 観測へ接続する adapter。
 //!
-//! `pass` 互換に解決した password-store path（`PASSWORD_STORE_DIR`、未設定時は `$HOME/.password-store`）の
-//! 存在確認と、clone 後 store root の識別ファイル
+//! `$HOME` を解決して `~/.password-store` の存在確認と、clone 後 store root の識別ファイル
 //! （`.gpg-id`）の有無・recipient 行・復号確認用サンプル `*.gpg` entry を観測し、domain 値
-//! （`PasswordStoreReadiness`）へ翻訳する。加えて store root の Git repository から設定済み `origin` remote
-//! URL を観測し、`PasswordStorePort` の境界値（`configured_origin_remote` → `Option<String>`）へ翻訳する。
-//! これは `PasswordStoreReadiness` には含まれない別境界値で、`.git` を `gitdir:` 参照ファイルにする
-//! gitfile / worktree 形式も `git2::Repository::open` で吸収し、`.git` 不在・origin 未設定・空 URL は origin
-//! 不在（`None`）として扱う。`.gpg-id` は regular file のときだけ有効な識別ファイルとして
+//! （`PasswordStoreReadiness`）へ翻訳する。`.gpg-id` は regular file のときだけ有効な識別ファイルとして
 //! 扱い、symlink・directory・special file は `.gpg-id` として認めない（link を辿らない）。symlink の
 //! `.gpg-id` を辿ると store 外の path（例: `/dev/zero` で hang/OOM、外部の復号可能ファイルで偽の可読性成功）
 //! へ抜けるため、symlinked `.gpg-id` は「有効な `.gpg-id` 不在」として可読性確認を失敗させる。
@@ -66,48 +61,6 @@ impl PasswordStoreAdapter {
             gpg_id_recipients,
             sample_entry,
         })
-    }
-
-    /// 設定済み `origin` remote URL を password-store の Git repository から観測する。
-    ///
-    /// store root を `git2::Repository::open` で開いてから `origin` remote を引く。`.git` を directory 前提で
-    /// `$store/.git/config` 直結する旧実装では、`.git` が `gitdir:` 参照ファイルになる gitfile / worktree 形式の
-    /// password-store で config を読めず origin 未設定と誤判定したため、repository として開いて両形式を吸収する。
-    /// Git 設定形式の詳細は `git2` に委ね、この adapter は store backend の外部状態を port 境界値へ翻訳する。
-    pub(super) fn configured_origin_remote(&self) -> Result<Option<String>> {
-        read_origin_remote(&password_store_path()?)
-    }
-}
-
-/// store root の Git repository から設定済み `origin` remote URL を読み、`PasswordStorePort` 境界値
-/// （`Option<String>`）へ翻訳する。
-///
-/// store root を `git2::Repository::open` で開いてから `origin` remote を引く。`.git` を directory 前提で
-/// `$store/.git/config` 直結する旧実装では、`.git` が `gitdir:` 参照ファイルになる gitfile / worktree 形式の
-/// password-store で config を読めず origin 未設定と誤判定したため、repository として開いて両形式を吸収する。
-/// `.git` 不在（未初期化 store）・origin 未設定・空 URL はいずれも origin 不在として `None` を返す。Git 設定
-/// 形式の詳細は `git2` に委ね、ここは store backend の外部状態を port 境界値へ翻訳するだけで業務判断は持たない。
-/// store root を引数で受けるのは、env（`PASSWORD_STORE_DIR`）解決と git2 翻訳本体を分離し、後者を filesystem
-/// 単体テストで駆動できるようにするためである。
-fn read_origin_remote(store_root: &Path) -> Result<Option<String>> {
-    // `.git`（directory でも gitfile でも）が無ければ未初期化 store として origin 不在を返す。
-    if !path_exists_including_broken_symlink(&store_root.join(".git")) {
-        return Ok(None);
-    }
-    let repo = match git2::Repository::open(store_root) {
-        Ok(repo) => repo,
-        Err(err) if err.code() == git2::ErrorCode::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(err).context("failed to open password-store Git repository");
-        }
-    };
-    match repo.find_remote("origin") {
-        Ok(remote) => Ok(remote
-            .url()
-            .filter(|url| !url.is_empty())
-            .map(str::to_owned)),
-        Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
-        Err(err) => Err(err).context("failed to read password-store origin remote"),
     }
 }
 
@@ -242,13 +195,12 @@ fn find_sample_entry(store_root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     //! filesystem adapter の安全読取り（symlink_metadata で regular file と dev/ino を確認 → `File::open` →
-    //! fd の dev/ino 一致照合 + size cap）と、`read_origin_remote` の git2 解決（通常 `.git` directory 形式と
-    //! gitfile/worktree 形式の両方、`.git` 不在・origin 未設定）の単体テスト。temp-dir dev 依存を増やさないため、
+    //! fd の dev/ino 一致照合 + size cap）の単体テスト。temp-dir dev 依存を増やさないため、
     //! `std::env::temp_dir()` 配下に一意 directory を std だけで作成し、test 終了時に削除する。
 
     use std::path::PathBuf;
 
-    use super::{GPG_ID_MAX_BYTES, read_gpg_id_recipients, read_origin_remote};
+    use super::{GPG_ID_MAX_BYTES, read_gpg_id_recipients};
 
     /// test 専用の一意 temp directory（drop 時に再帰削除）。
     struct TempDir {
@@ -322,62 +274,5 @@ mod tests {
 
         let result = read_gpg_id_recipients(&gpg_id);
         assert!(result.is_err(), "oversize .gpg-id must be refused");
-    }
-
-    const ORIGIN_URL: &str = "https://example.invalid/password-store.git";
-
-    /// `git2` repository を init し `origin` remote を設定する test helper。
-    fn init_repo_with_origin(repo_root: &std::path::Path) {
-        let repo = git2::Repository::init(repo_root).expect("init git repo");
-        repo.remote("origin", ORIGIN_URL)
-            .expect("set origin remote");
-    }
-
-    /// 通常の `.git` directory 形式 store では `origin` remote URL を解決できる。
-    #[test]
-    fn read_origin_remote_resolves_in_git_directory_store() {
-        let dir = TempDir::new("origin-dir");
-        init_repo_with_origin(dir.path());
-
-        let origin = read_origin_remote(dir.path()).expect("read origin");
-        assert_eq!(origin.as_deref(), Some(ORIGIN_URL));
-    }
-
-    /// `.git` が `gitdir:` 参照ファイルになる gitfile / worktree 形式 store でも `origin` を解決できる。
-    #[test]
-    fn read_origin_remote_resolves_in_gitfile_worktree_store() {
-        // 実体の git directory を別 path に作り、store root の `.git` は `gitdir:` 参照ファイルにする。
-        let backing = TempDir::new("origin-gitfile-backing");
-        let backing_repo = backing.path().join("repo");
-        std::fs::create_dir(&backing_repo).expect("create backing repo dir");
-        init_repo_with_origin(&backing_repo);
-        let backing_git_dir = backing_repo.join(".git");
-
-        let store = TempDir::new("origin-gitfile-store");
-        let gitfile = store.path().join(".git");
-        std::fs::write(&gitfile, format!("gitdir: {}\n", backing_git_dir.display()))
-            .expect("write .git gitfile");
-
-        let origin = read_origin_remote(store.path()).expect("read origin via gitfile");
-        assert_eq!(origin.as_deref(), Some(ORIGIN_URL));
-    }
-
-    /// `.git` が存在しない（未初期化）store では origin 不在として `None` を返す。
-    #[test]
-    fn read_origin_remote_returns_none_without_git() {
-        let dir = TempDir::new("origin-no-git");
-
-        let origin = read_origin_remote(dir.path()).expect("read origin");
-        assert_eq!(origin, None);
-    }
-
-    /// `origin` remote 未設定の store では `None` を返す。
-    #[test]
-    fn read_origin_remote_returns_none_without_origin() {
-        let dir = TempDir::new("origin-unset");
-        git2::Repository::init(dir.path()).expect("init git repo");
-
-        let origin = read_origin_remote(dir.path()).expect("read origin");
-        assert_eq!(origin, None);
     }
 }
