@@ -85,7 +85,8 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # /nix/store を run 間・job 間でキャッシュする（static-checks.yml と同 action・同 key 規約）。`nix develop` の
+      # /nix/store を run 間・job 間でキャッシュする（nightly-update 内の他 job / zsh-checks.yml と同 action・同 key 規約）。
+      # static-checks.yml は required check 安定化のため `/nix/store` をキャッシュしない。`nix develop` の
       # devShell closure（rust toolchain / C lib: gpgme・libgit2・libssh2・openssl・zlib 等）と、dotfiles-cli が
       # 起動する `nix eval` / `nix flake update` / `nix flake check` の評価物を substitute する（cargo の crate
       # ビルドは rust-cache 側が担う）。macos runner のため runner.os は static-checks（ubuntu）と別 namespace に
@@ -361,13 +362,14 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # /nix/store を run 間・job 間でキャッシュする（static-checks.yml と同 action・同 key 規約・同 OS=ubuntu）。
-      # cache restore 時点の checkout は bump 前 flake.lock のため primary-key は static-checks（既定ブランチ PR）と
-      # 一致し、static-checks が温めた devShell closure と `nix flake check` の取得物を restore して open-pr の
-      # `nix develop`（verify-bump-lock の cargo build）と `nix flake check`（cargo xtask check static 内）を
-      # substitute する（cargo の crate ビルドは rust-cache 側が担う）。後段の artifact download で bump 後 lock に
-      # 差し替えるため、bump 後 nixpkgs に依存する derivation はその回だけ 1 度再ビルドしうる（限界として明記）。
-      # fail-safe。
+      # /nix/store を run 間・job 間でキャッシュする（nightly-update の ubuntu job 群 / zsh-checks.yml と同 action・同 key
+      # 規約・同 OS=ubuntu）。static-checks.yml は required check 安定化のため `/nix/store` をキャッシュしない。
+      # cache restore 時点の checkout は bump 前 flake.lock だが、bump / record は macOS runner のため cache namespace が
+      # 異なり、open-pr が restore するのは ubuntu namespace 側で既に温まっている devShell closure と
+      # `nix flake check` の取得物に限られる。これにより open-pr の `nix develop`
+      #（verify-bump-lock の cargo build）と `nix flake check`（cargo xtask check static 内）を substitute する
+      #（cargo の crate ビルドは rust-cache 側が担う）。後段の artifact download で bump 後 lock に差し替えるため、
+      # bump 後 nixpkgs に依存する derivation はその回だけ 1 度再ビルドしうる（限界として明記）。fail-safe。
       - name: /nix/store をキャッシュ
         uses: nix-community/cache-nix-action@v7
         with:

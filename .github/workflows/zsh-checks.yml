@@ -27,8 +27,9 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # /nix/store を run 間でキャッシュする（nightly-update.yml / static-checks.yml と同 action・同 key 規約）。
-      # toolchain と `nix flake` 系 / devShell の取得物を再利用する。重い closure は無く保存物は小さい。
+      # /nix/store を run 間でキャッシュする（nightly-update.yml の同種 job と同 action・同 key 規約）。
+      # static-checks.yml は required check 安定化のため `/nix/store` をキャッシュしない。toolchain と `nix flake`
+      # 系 / devShell の取得物を再利用する。重い closure は無く保存物は小さい。
       # miss/失敗は遅くなるだけで fail させない（fail-on 既定 = fail-safe）。
       - name: /nix/store をキャッシュ
         uses: nix-community/cache-nix-action@v7
