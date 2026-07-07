@@ -899,15 +899,13 @@ fn enroll_spare_acquires_pin_and_generates_key_when_required() -> TestResult<()>
     Ok(())
 }
 
-/// 低水準 `yubikey setup` は鍵生成に PIN を要する fresh device で fail-closed する。
+/// internal stub build の `yubikey setup` は固定 PIN で鍵生成つき初期化まで進める。
 ///
-/// fresh device の PIN 取得つき初期化は公開 command `enroll-primary` / `enroll-spare` が担う
-/// （yubikey-secret-storage-design.md L15）。`setup` は最小の初期化 primitive として PIN 入力経路を持たず、
-/// production `StorageAdapter::initialize_secret_storage` の「PIN 未検証なら鍵生成しない」fail-closed 経路を
-/// internal backend stub（`requires_pin` 初期条件）経由で網羅し、device 肩代わり double を production
-/// adapter へ戻さずに同等の挙動網羅を保つ。
+/// production build では interactive `PinInputPort` が controlling TTY から PIN を取得するが、
+/// `secrets-internal-test-stub` feature では `ProcessIoAdapter::read_pin()` が固定 PIN を返す。
+/// したがって fresh device + `requires_pin` 条件でも CLI 公開経路が setup を完了できることを固定する。
 #[test]
-fn setup_fails_closed_when_key_generation_requires_pin() -> TestResult<()> {
+fn setup_acquires_pin_when_key_generation_requires_it() -> TestResult<()> {
     let output = dotfiles_with_env(
         ["secrets", "yubikey", "setup"],
         [(
@@ -918,12 +916,13 @@ fn setup_fails_closed_when_key_generation_requires_pin() -> TestResult<()> {
 
     let text = combined_output(&output);
     assert!(
-        !output.status.success(),
-        "yubikey setup must fail closed when key generation requires an unavailable PIN"
+        output.status.success(),
+        "yubikey setup must succeed in internal stub build when a fixed PIN is available"
     );
-    assert!(
-        text.contains("PIN is required to generate the YubiKey secret storage key"),
-        "fail-closed error must explain that key generation needs a verified PIN"
+    assert_no_leaks(
+        &text,
+        "setup requires-pin output",
+        &[("fixed PIN", "123456")],
     );
     Ok(())
 }

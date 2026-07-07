@@ -27,6 +27,7 @@ pub(super) async fn dispatch(
                 application::run_setup_with::run_setup_with(
                     SetupCommand,
                     &mut ports.device,
+                    &ports.process_io,
                     &mut ports.storage,
                 )
             }
