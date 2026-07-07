@@ -30,6 +30,8 @@ pub(super) async fn dispatch(
                         serial: options.serial,
                     },
                     &mut ports.device,
+                    &mut ports.device_pin_policy,
+                    &ports.process_io,
                     &mut ports.storage,
                 )
             }
