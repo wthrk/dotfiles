@@ -1318,6 +1318,7 @@ dependencies = [
  "region",
  "rlimit",
  "rsa 0.9.10",
+ "rustls-webpki 0.102.8",
  "scopeguard",
  "sequoia-openpgp",
  "serde",
@@ -3671,8 +3672,6 @@ dependencies = [
 [[package]]
 name = "rustls-platform-verifier"
 version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afbb878bdfdf63a336a5e63561b1835e7a8c91524f51621db870169eac84b490"
 dependencies = [
  "core-foundation 0.9.4",
  "core-foundation-sys",
@@ -3701,6 +3700,7 @@ version = "0.102.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9"
 dependencies = [
+ "ring",
  "rustls-pki-types",
  "untrusted",
 ]
