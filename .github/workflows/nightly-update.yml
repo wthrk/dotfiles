@@ -245,6 +245,7 @@ jobs:
           NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
           CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
           CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
+          REPO_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
           # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
           # 認証 5000 req/hr）。notes.rs::github_token() が env GITHUB_TOKEN を読む。LLM 用途ではないため
           # permissions: models: read は不要（contents: read で public release 取得に十分）。
@@ -267,6 +268,7 @@ jobs:
           nix develop -c "$dotfiles_bin" update-history record \
             --lock-old old-flake.lock \
             --lock-new flake.lock \
+            --cursor-old "$REPO_BASE_SHA" \
             --nix-old nix-old.json \
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \

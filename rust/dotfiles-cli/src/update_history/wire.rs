@@ -1,9 +1,10 @@
 //! 更新履歴 TOML の wire/ドメイン型・閉集合 enum と、その型に閉じた純粋ドメイン規則（severity 機械算出・
 //! LLM 出力/参照 URL のサニタイズ・SSRF の構造的 URL 判定）。
 //!
-//! field 名と enum 値は TOML スキーマ（`docs/update-history/<YYYY-MM>.toml`）に一致させる。`ref` は Rust
-//! 予約語のため serde rename で TOML key `ref` に対応させる。閉集合（変更種別・変更カテゴリ・重要度）は生文字列
-//! ではなく enum で表し、serde rename で TOML 値（kebab-case 含む）へ写す。
+//! field 名と enum 値は TOML スキーマ（`docs/update-history/<YYYY-MM>.toml`）に一致させる。Rust 側の内部名が
+//! 異なる field は serde rename/alias で wire key へ対応させる（例: `ref`、legacy `cursor_old`/`cursor_new`）。
+//! 閉集合（変更種別・変更カテゴリ・重要度）は生文字列ではなく enum で表し、serde rename で TOML 値
+//! （kebab-case 含む）へ写す。
 //!
 //! severity は LLM 生成の自由文ではなく変更カテゴリ（閉集合 enum）からのみ決定論的に算出する（prompt injection
 //! で severity が改変されない）。生リリースノートと LLM 出力は信頼境界外であり、TOML へ書く前に「構造的に安全な
@@ -78,11 +79,25 @@ pub(crate) struct UpdateEntry {
     /// 適用時刻（RFC3339。CI が `--at` で注入する文字列をそのまま保持する）。
     pub(crate) at: String,
     /// bump 前 lock state key（`flake.lock` 内容ハッシュ。tap-only 更新でも一意な起点を持つ）。
-    #[serde(default, alias = "cursor_old", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) state_old: Option<String>,
     /// bump 後 lock state key（`flake.lock` 内容ハッシュ）。
-    #[serde(default, alias = "cursor_new", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) state_new: Option<String>,
+    /// 旧 `show --rev` 利用者との互換用に保持する bump 前 dotfiles rev。
+    #[serde(
+        default,
+        rename = "cursor_old",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) legacy_cursor_old: Option<String>,
+    /// 互換用に保持する bump 後 dotfiles rev。
+    #[serde(
+        default,
+        rename = "cursor_new",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) legacy_cursor_new: Option<String>,
     /// bump 前の nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後の nixpkgs リビジョン。
@@ -455,6 +470,8 @@ mod tests {
             at: "2026-06-05T18:00:11Z".to_string(),
             state_old: Some("lock-old".to_string()),
             state_new: Some("lock-new".to_string()),
+            legacy_cursor_old: Some("dotfiles-old".to_string()),
+            legacy_cursor_new: Some("dotfiles-new".to_string()),
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -503,6 +520,8 @@ mod tests {
 at = \"2026-06-05T18:00:11Z\"
 state_old = \"lock-old\"
 state_new = \"lock-new\"
+cursor_old = \"dotfiles-old\"
+cursor_new = \"dotfiles-new\"
 nixpkgs_old = \"a1b2c3d\"
 nixpkgs_new = \"e4f5g6h\"
 reference = \"darwinConfigurations.ci\"
@@ -682,7 +701,7 @@ declared = true
     }
 
     #[test]
-    fn update_entry_reads_legacy_cursor_fields_into_state_fields() -> Result<(), toml::de::Error> {
+    fn update_entry_reads_legacy_cursor_fields() -> Result<(), toml::de::Error> {
         let entry: UpdateEntry = toml::from_str(
             r#"
 at = "2026-06-13T09:45:17Z"
@@ -695,8 +714,8 @@ severity = "none"
 overall = "0アプリ更新"
 "#,
         )?;
-        assert_eq!(entry.state_old.as_deref(), Some("lock-old"));
-        assert_eq!(entry.state_new.as_deref(), Some("lock-new"));
+        assert_eq!(entry.legacy_cursor_old.as_deref(), Some("lock-old"));
+        assert_eq!(entry.legacy_cursor_new.as_deref(), Some("lock-new"));
         Ok(())
     }
 

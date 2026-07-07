@@ -18,6 +18,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::diff::NixPackage;
+use super::sources;
 use crate::Result;
 use crate::process::run_capture;
 
@@ -129,7 +130,8 @@ fn escape_nix_string(value: &str) -> String {
 /// 生評価値 1 件を導出済み [`NixPackage`]（version + repo/changelog/homepage）へ翻訳する純粋関数。
 fn derive_package(name: &str, raw: RawPackage) -> NixPackage {
     let homepage = as_str(&raw.homepage);
-    let changelog = package_notes_source(name, &raw.version, &homepage, &as_str(&raw.changelog));
+    let changelog =
+        sources::package_notes_source(name, &raw.version, &homepage, &as_str(&raw.changelog));
     NixPackage {
         version: raw.version,
         repo: derive_repo(
@@ -172,92 +174,7 @@ fn derive_repo(
         return repo;
     }
     super::wire::repo_from_github_url(changelog)
-        .unwrap_or_else(|| repo_hint_for_package(name, homepage))
-}
-
-fn repo_hint_for_package(name: &str, homepage: &str) -> String {
-    match (name, normalize_homepage(homepage)) {
-        ("nix", "https://nixos.org/nix") => "NixOS/nix".to_string(),
-        _ => String::new(),
-    }
-}
-
-fn nix_release_notes_url(version: &str) -> Option<String> {
-    let version = version.trim().trim_start_matches('v');
-    let mut parts = version.split('.');
-    let major = non_empty(parts.next())?;
-    let minor = non_empty(parts.next())?;
-    Some(format!(
-        "https://nix.dev/manual/nix/{major}.{minor}/release-notes/rl-{major}.{minor}"
-    ))
-}
-
-fn rust_release_notes_url(version: &str) -> Option<String> {
-    let version = version.trim();
-    if version.is_empty() {
-        return None;
-    }
-    Some("https://doc.rust-lang.org/stable/releases.html".to_string())
-}
-
-fn github_release_tag_url(repo: &str, version: &str) -> Option<String> {
-    let version = version.trim();
-    if repo.is_empty() || version.is_empty() {
-        return None;
-    }
-    let tag = if version.starts_with('v') {
-        version.to_string()
-    } else {
-        format!("v{version}")
-    };
-    Some(format!("https://github.com/{repo}/releases/tag/{tag}"))
-}
-
-fn chrome_releases_search_url(version: &str) -> Option<String> {
-    let version = version.trim();
-    if version.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "https://chromereleases.googleblog.com/search?q={version}"
-    ))
-}
-
-fn package_notes_source(name: &str, version: &str, homepage: &str, changelog: &str) -> String {
-    if !changelog.is_empty() {
-        return changelog.to_string();
-    }
-    match (name, normalize_homepage(homepage)) {
-        ("coreutils", "https://www.gnu.org/software/coreutils") => {
-            "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string()
-        }
-        ("nix", "https://nixos.org/nix") => nix_release_notes_url(version).unwrap_or_default(),
-        ("google-chrome", "https://www.google.com/chrome/browser") => {
-            "https://chromereleases.googleblog.com/".to_string()
-        }
-        ("chromedriver", "https://chromedriver.chromium.org") => {
-            chrome_releases_search_url(version).unwrap_or_default()
-        }
-        ("docker-compose", _) => {
-            github_release_tag_url("docker/compose", version).unwrap_or_default()
-        }
-        ("rustfmt", _) => rust_release_notes_url(version).unwrap_or_default(),
-        ("discord", "https://discordapp.com") => "https://discord.com/tags/patch-notes".to_string(),
-        ("slack", "https://slack.com/intl/en-jp/downloads/mac")
-        | ("slack", "https://slack.com") => "https://slack.com/release-notes/mac".to_string(),
-        ("temurin-bin", "https://adoptium.net") => {
-            "https://adoptium.net/temurin/release-notes".to_string()
-        }
-        _ => String::new(),
-    }
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-fn normalize_homepage(homepage: &str) -> &str {
-    homepage.trim_end_matches('/')
+        .unwrap_or_else(|| sources::repo_hint_for_package(name, homepage))
 }
 
 /// `serde_json::Value` を文字列へ正規化する（文字列はそのまま、list/null/非文字列は空文字）。

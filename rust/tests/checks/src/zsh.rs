@@ -338,7 +338,11 @@ fn tracked_files(source: &Path) -> Result<Vec<PathBuf>> {
         .args(["ls-files", "-z"])
         .output()?;
     if !output.status.success() {
-        bail!("git ls-files failed for {}", source.display());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("git ls-files failed for {}", source.display());
+        }
+        bail!("git ls-files failed for {}: {stderr}", source.display());
     }
 
     output

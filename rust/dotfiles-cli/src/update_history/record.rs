@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use super::diff::{DeltaSource, NixPackage, VersionDelta, diff_versions, merge_version_deltas};
 use super::llm::{ChangeExtractor, ExtractRequest, OpenAiExtractor};
 use super::notes::{self, RawReleaseNotes};
+use super::sources;
 use super::wire::{
     ChangeItem, PackageSource, PackageUpdate, UpdateEntry, is_allowed_url, overall_headline,
     sanitize_change_items, sanitize_notes_url, severity_of,
@@ -33,6 +34,10 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) lock_old: Option<&'a Path>,
     /// bump 後 lock ファイル（state key は Rust 側で算出する）。
     pub(crate) lock_new: Option<&'a Path>,
+    /// 既存 `show --rev` 互換用の legacy cursor old。
+    pub(crate) cursor_old: Option<String>,
+    /// 必要なら保持する legacy cursor new。
+    pub(crate) cursor_new: Option<String>,
     /// bump 前 nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後 nixpkgs リビジョン。
@@ -64,6 +69,13 @@ struct PackageMaterial {
     notes_url: Option<String>,
 }
 
+struct EntryCursors {
+    state_old: Option<String>,
+    state_new: Option<String>,
+    legacy_cursor_old: Option<String>,
+    legacy_cursor_new: Option<String>,
+}
+
 /// version 差分 1 件を記録用 [`PackageUpdate`] へ変換する（nix/brew いずれも宣言アプリ＝declared=true）。
 fn to_package_update(material: PackageMaterial) -> PackageUpdate {
     let source = match material.delta.source {
@@ -89,103 +101,6 @@ fn package_source_to_delta_source(source: PackageSource) -> DeltaSource {
     }
 }
 
-fn version_tag(version: &str) -> String {
-    let trimmed = version.trim();
-    if trimmed.starts_with('v') {
-        trimmed.to_string()
-    } else {
-        format!("v{trimmed}")
-    }
-}
-
-fn github_compare_url(repo: &str, old: Option<&str>, new: Option<&str>) -> Option<String> {
-    let old = old.map(str::trim).filter(|s| !s.is_empty())?;
-    let new = new.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(format!(
-        "https://github.com/{repo}/compare/{}...{}",
-        version_tag(old),
-        version_tag(new)
-    ))
-}
-
-fn github_release_tag_url(repo: &str, version: Option<&str>) -> Option<String> {
-    let repo = repo.trim();
-    let version = version.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(format!(
-        "https://github.com/{repo}/releases/tag/{}",
-        version_tag(version)
-    ))
-}
-
-fn neovim_news_url(version: Option<&str>) -> Option<String> {
-    let version = version?;
-    let mut parts = version.trim_start_matches('v').split('.');
-    let major = parts.next()?;
-    let minor = parts.next()?;
-    Some(format!(
-        "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-{major}.{minor}.txt"
-    ))
-}
-
-fn rust_release_notes_url(version: Option<&str>) -> Option<String> {
-    let _version = version.map(str::trim).filter(|s| !s.is_empty())?;
-    Some("https://doc.rust-lang.org/stable/releases.html".to_string())
-}
-
-fn nix_release_notes_url(version: Option<&str>) -> Option<String> {
-    let version = version.map(str::trim).filter(|s| !s.is_empty())?;
-    let mut parts = version.trim_start_matches('v').split('.');
-    let major = parts.next()?;
-    let minor = parts.next()?;
-    Some(format!(
-        "https://nix.dev/manual/nix/{major}.{minor}/release-notes/rl-{major}.{minor}"
-    ))
-}
-
-fn chrome_releases_search_url(version: Option<&str>) -> Option<String> {
-    let version = version.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(format!(
-        "https://chromereleases.googleblog.com/search?q={version}"
-    ))
-}
-
-fn backfill_notes_source(
-    name: &str,
-    notes_url: Option<&str>,
-    source: PackageSource,
-    repo: Option<&str>,
-    old: Option<&str>,
-    new: Option<&str>,
-) -> Option<String> {
-    match (source, name) {
-        (PackageSource::Nix, "coreutils") => {
-            Some("https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS".to_string())
-        }
-        (PackageSource::Nix, "discord") => Some("https://discord.com/tags/patch-notes".to_string()),
-        (PackageSource::Nix, "nix") => nix_release_notes_url(new),
-        (PackageSource::Nix, "slack") => Some("https://slack.com/release-notes/mac".to_string()),
-        (PackageSource::Nix, "temurin-bin") => {
-            Some("https://adoptium.net/temurin/release-notes".to_string())
-        }
-        (PackageSource::Brew, "bitwarden") => {
-            Some("https://bitwarden.com/help/releasenotes/".to_string())
-        }
-        (PackageSource::Brew, "codex-app") => {
-            Some("https://developers.openai.com/codex/changelog".to_string())
-        }
-        (PackageSource::Nix, "chromedriver") => chrome_releases_search_url(new),
-        (PackageSource::Nix, "docker-compose") => github_release_tag_url("docker/compose", new),
-        (PackageSource::Nix, "neovim") => neovim_news_url(new),
-        (PackageSource::Nix, "docker") | (PackageSource::Nix, "docker-credential-helpers") => {
-            repo.and_then(|repo| github_compare_url(repo, old, new))
-        }
-        (PackageSource::Nix, "rustfmt") => rust_release_notes_url(new),
-        _ => notes_url
-            .filter(|url| !url.is_empty())
-            .map(std::string::ToString::to_string),
-    }
-}
-
 fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
     let notes_url = package.notes_url.clone();
     let repo = notes_url
@@ -198,7 +113,7 @@ fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
         change: package.change,
         source: package_source_to_delta_source(package.source),
         repo: repo.clone(),
-        notes_source: backfill_notes_source(
+        notes_source: sources::backfill_notes_source(
             &package.name,
             notes_url.as_deref(),
             package.source,
@@ -213,8 +128,7 @@ fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
 /// パッケージ素材列から、severity / overall を機械算出した 1 件の [`UpdateEntry`] を組み立てる。
 fn build_entry(
     at: String,
-    state_old: Option<String>,
-    state_new: Option<String>,
+    cursors: EntryCursors,
     nixpkgs_old: String,
     nixpkgs_new: String,
     reference: String,
@@ -229,8 +143,10 @@ fn build_entry(
     let overall = overall_headline(packages.len(), &all_items);
     UpdateEntry {
         at,
-        state_old,
-        state_new,
+        state_old: cursors.state_old,
+        state_new: cursors.state_new,
+        legacy_cursor_old: cursors.legacy_cursor_old,
+        legacy_cursor_new: cursors.legacy_cursor_new,
         nixpkgs_old,
         nixpkgs_new,
         reference,
@@ -379,8 +295,7 @@ fn decide_provenance(
         .and_then(NotesSourceEntry::reusable_source);
     let reusable_ai = ai_source_url
         .filter(|_| !change_items_empty)
-        .and_then(normalize_reusable_source_url)
-        .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
+        .and_then(|url| reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref()));
     if let Some(source_url) = reusable_ai {
         if reused && saved_source == Some(source_url.as_str()) {
             return None;
@@ -401,11 +316,9 @@ fn decide_provenance(
         // `v1.2.3→v1.2.4` で古い tag の changelog を seed に再利用し誤要約/空要約になるため、AI source と同じ
         // 版固有フィルタを適用する。学習に足る版非依存 refetch URL が無い（不在・版固有）場合は origin=none へ
         // 倒して次回再探索へ戻す。
-        let reusable_refetch = mech
-            .refetch_url
-            .as_deref()
-            .and_then(normalize_reusable_source_url)
-            .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
+        let reusable_refetch = mech.refetch_url.as_deref().and_then(|url| {
+            reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref())
+        });
         return Some(match reusable_refetch {
             Some(refetch_url) => NotesSourceEntry {
                 source: Some(refetch_url),
@@ -446,6 +359,14 @@ fn reuse_or_none_provenance(
 /// （`/releases`・`CHANGELOG`/`changelog`・blob の固定ファイル・docs index 等）は再利用可。
 fn is_reusable_ai_source(url: &str, old: Option<&str>, new: Option<&str>) -> bool {
     !is_version_specific_url(url, old, new)
+}
+
+fn reusable_source_candidate(url: &str, old: Option<&str>, new: Option<&str>) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || !is_reusable_ai_source(trimmed, old, new) {
+        return None;
+    }
+    normalize_reusable_source_url(trimmed)
 }
 
 /// URL が版固有（特定 tag/version に縛られ、版が進むと別ページになる）かを判定する純粋関数。
@@ -758,8 +679,12 @@ fn run_record_with(
 
     let entry = build_entry(
         input.at.clone(),
-        state_old,
-        state_new,
+        EntryCursors {
+            state_old,
+            state_new,
+            legacy_cursor_old: input.cursor_old.clone(),
+            legacy_cursor_new: input.cursor_new.clone(),
+        },
         input.nixpkgs_old.clone(),
         input.nixpkgs_new.clone(),
         input.reference.clone(),
@@ -1080,6 +1005,8 @@ mod tests {
         RecordInput {
             lock_old: None,
             lock_new: None,
+            cursor_old: None,
+            cursor_new: None,
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -1896,6 +1823,18 @@ mod tests {
     }
 
     #[test]
+    fn reusable_source_candidate_rejects_version_markers_found_only_in_query() {
+        assert_eq!(
+            reusable_source_candidate(
+                "https://chromereleases.googleblog.com/search?q=138.0.7204.183",
+                Some("138.0.7204.157"),
+                Some("138.0.7204.183")
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn registry_upserts_keeps_nix_brew_separate_and_serializes_in_name_order() -> Result<()> {
         assert!(
             NotesSourceRegistry::default()
@@ -1981,6 +1920,8 @@ origin = \"none\"
             at: at.to_string(),
             state_old: None,
             state_new: None,
+            legacy_cursor_old: None,
+            legacy_cursor_new: None,
             nixpkgs_old: "o".to_string(),
             nixpkgs_new: "n".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -2059,6 +2000,8 @@ origin = \"none\"
                     at: "2026-06-13T09:45:17Z".to_string(),
                     state_old: None,
                     state_new: None,
+                    legacy_cursor_old: None,
+                    legacy_cursor_new: None,
                     nixpkgs_old: "old".to_string(),
                     nixpkgs_new: "new".to_string(),
                     reference: "darwinConfigurations.ci-ref".to_string(),
@@ -2118,6 +2061,8 @@ origin = \"none\"
                     at: "2026-06-13T09:45:17Z".to_string(),
                     state_old: None,
                     state_new: None,
+                    legacy_cursor_old: None,
+                    legacy_cursor_new: None,
                     nixpkgs_old: "old".to_string(),
                     nixpkgs_new: "new".to_string(),
                     reference: "darwinConfigurations.ci-ref".to_string(),
@@ -2181,6 +2126,8 @@ origin = \"none\"
                 at: "2026-06-13T09:45:17Z".to_string(),
                 state_old: Some("lock-old".to_string()),
                 state_new: Some("lock-new".to_string()),
+                legacy_cursor_old: None,
+                legacy_cursor_new: None,
                 nixpkgs_old: "old".to_string(),
                 nixpkgs_new: "new".to_string(),
                 reference: "darwinConfigurations.ci-ref".to_string(),

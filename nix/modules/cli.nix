@@ -42,7 +42,7 @@ in
   programs.gh.enable = true;
   programs.atuin = {
     enable = true;
-    enableZshIntegration = false;
+    enableZshIntegration = true;
   };
   programs.zoxide.enable = true;
 

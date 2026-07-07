@@ -1,7 +1,7 @@
 //! show / applied-summary use case: 履歴を読み、`state_old` 優先の catch-up 範囲を集約し、重要度連動ビューを
 //! 出力する。
 //!
-//! 読み出し → 範囲選択（起点 state。旧履歴は `nixpkgs_old` fallback）→ catch-up 集約 → severity/overall 再算出
+//! 読み出し → 範囲選択（起点 state。旧履歴は `cursor_old`/`nixpkgs_old` fallback）→ catch-up 集約 → severity/overall 再算出
 //! → 描画（text/JSON）の順に処理する。
 //! 複数 bump を跨ぐ適用では複数エントリを跨ぐため、跨いだ全 [`UpdateEntry`] をアプリ単位で集約する: `old` は最古
 //! 適用版・`new` は最新適用版、package 集約キーは `(name, source)`、各 package 内の change_item は決定論キー
@@ -187,10 +187,10 @@ fn merge_unique_items(
         })
 }
 
-/// 表示対象エントリを起点 state（旧履歴は `nixpkgs_old` fallback）と件数上限で絞り込み、適用順
+/// 表示対象エントリを起点 state（旧履歴は `cursor_old`/`nixpkgs_old` fallback）と件数上限で絞り込み、適用順
 /// （最古→最新）の部分列を返す。
 ///
-/// `state` が `Some` のとき、その key を `state_old`（旧履歴は `nixpkgs_old` fallback）に持つ最初の
+/// `state` が `Some` のとき、その key を `state_old`（旧履歴は `cursor_old`、最後に `nixpkgs_old` fallback）に持つ最初の
 /// エントリ以降を起点にする（一致無しは空）。
 /// `None` なら全エントリ。`limit` は起点側（最古）から切る。
 fn select_entries(
@@ -216,7 +216,11 @@ fn select_entries(
 }
 
 fn entry_state_old(entry: &UpdateEntry) -> &str {
-    entry.state_old.as_deref().unwrap_or(&entry.nixpkgs_old)
+    entry
+        .state_old
+        .as_deref()
+        .or(entry.legacy_cursor_old.as_deref())
+        .unwrap_or(&entry.nixpkgs_old)
 }
 
 /// 選択済みエントリを catch-up 集約し、severity/overall を再算出した表示ビューを組み立てる。
@@ -352,7 +356,7 @@ fn render_json(view: &HistoryView) -> Result<String> {
 
 // ---- use case ----
 
-/// 利用者 `show`: 履歴 source を読み、起点 state（`state_old` 優先、旧履歴は `nixpkgs_old` fallback）からの
+/// 利用者 `show`: 履歴 source を読み、起点 state（`state_old` 優先、旧履歴は `cursor_old`/`nixpkgs_old` fallback）からの
 /// catch-up 区間を集約して stdout へ出力する。
 pub(crate) fn run_show(
     source: &Path,
@@ -387,6 +391,8 @@ mod tests {
             at: at.to_string(),
             state_old: None,
             state_new: None,
+            legacy_cursor_old: None,
+            legacy_cursor_new: None,
             nixpkgs_old: old.to_string(),
             nixpkgs_new: new.to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -600,6 +606,14 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].state_old.as_deref(), Some("lock-b"));
         assert!(select_entries(&entries, Some("nix-a"), None).is_empty());
+    }
+
+    #[test]
+    fn select_entries_falls_back_to_legacy_cursor_old() {
+        let mut entry = rev_entry("nix-a", "nix-b");
+        entry.legacy_cursor_old = Some("dotfiles-a".to_string());
+        let selected = select_entries(&[entry], Some("dotfiles-a"), None);
+        assert_eq!(selected.len(), 1);
     }
 
     #[test]

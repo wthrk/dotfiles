@@ -239,7 +239,7 @@ fn assert_nightly_record_rebuilds_in_job(workflow: &str) -> Result<()> {
 }
 
 /// nightly-update.yml の bump artifact が `old-flake.lock` と `repo_base_sha` を保持し、record/open-pr へ
-/// それぞれ `--lock-old/--lock-new` と `BUMP_BASE_SHA` で受け渡されることを静的に固定する。
+/// それぞれ `--lock-old/--lock-new` + `--cursor-old` と `BUMP_BASE_SHA` で受け渡されることを静的に固定する。
 fn nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(shell: &Shell) -> Result<()> {
     step("nightly-update bump artifact preserves old lock and base sha wiring");
     let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
@@ -297,6 +297,10 @@ fn assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(
     ensure!(
         record_step.contains("--lock-new flake.lock"),
         "record job は bump 後 `flake.lock` を `--lock-new` で渡すこと"
+    );
+    ensure!(
+        record_step.contains("--cursor-old \"$REPO_BASE_SHA\""),
+        "record job は legacy show --rev 互換のため `repo_base_sha` を `--cursor-old` で渡すこと"
     );
 
     ensure!(
@@ -566,10 +570,13 @@ mod tests {
                 old-flake.lock
                 nix-old.json
           - name: record（nix/brew 版差分 + 概要）
+            env:
+              REPO_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
             run: |
               nix develop -c "$dotfiles_bin" update-history record \
                 --lock-old old-flake.lock \
                 --lock-new flake.lock \
+                --cursor-old "$REPO_BASE_SHA" \
                 --out "$out"
           - name: bump ブランチを作成して commit
             env:

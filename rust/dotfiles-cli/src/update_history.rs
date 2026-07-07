@@ -21,6 +21,7 @@ mod llm;
 mod notes;
 mod record;
 mod show;
+mod sources;
 mod wire;
 
 use std::ffi::OsString;
@@ -60,6 +61,12 @@ struct RecordOptions {
     /// bump 後 lock ファイル（state key は Rust 側で算出する）。
     #[arg(long)]
     lock_new: Option<PathBuf>,
+    /// 既存 `show --rev` 利用者向けの legacy cursor old（通常は bump 前 repo HEAD）。
+    #[arg(long)]
+    cursor_old: Option<String>,
+    /// 必要なら保持する legacy cursor new。
+    #[arg(long)]
+    cursor_new: Option<String>,
     /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル（`eval-versions` が bump 前に書く）。
     #[arg(long, alias = "old")]
     nix_old: Option<PathBuf>,
@@ -131,7 +138,7 @@ struct LockRevOptions {
 #[derive(Args)]
 /// 適用済み pin 由来の更新履歴を閲覧する option（利用者が叩く）。
 struct ShowOptions {
-    /// 表示起点の状態キー（新形式は `state_old`、旧履歴は `nixpkgs_old`。互換 alias: `--rev`）。
+    /// 表示起点の状態キー（新形式は `state_old`、旧履歴は `cursor_old`/`nixpkgs_old`。互換 alias: `--rev`）。
     #[arg(long, alias = "rev")]
     state: Option<String>,
     /// 表示するエントリ件数の上限。
@@ -201,6 +208,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     let input = record::RecordInput {
         lock_old: options.lock_old.as_deref(),
         lock_new: options.lock_new.as_deref(),
+        cursor_old: options.cursor_old,
+        cursor_new: options.cursor_new,
         nixpkgs_old: options.nixpkgs_old,
         nixpkgs_new: options.nixpkgs_new,
         reference: options.reference,
@@ -225,7 +234,7 @@ fn run_backfill_version_only(options: BackfillVersionOnlyOptions) -> Result<()> 
     record::run_backfill_version_only(&options.history, &registry_path, &extractor)
 }
 
-/// 利用者 `show`: 履歴 source を読み、起点 state（旧履歴は `nixpkgs_old` fallback）からの catch-up 区間を
+/// 利用者 `show`: 履歴 source を読み、起点 state（旧履歴は `cursor_old`/`nixpkgs_old` fallback）からの catch-up 区間を
 /// 集約して stdout へ出力する。
 ///
 /// `--source` 省略時は適用済み dotfiles input source の更新履歴 dir を解決する（`update` と同じ stateless 経路。
