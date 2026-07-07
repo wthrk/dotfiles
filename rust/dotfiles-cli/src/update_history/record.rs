@@ -188,11 +188,7 @@ fn resolve_notes(
     registry: &NotesSourceRegistry,
 ) -> Result<NoteResolution> {
     // フロー 1（レジストリ参照）: 保存済み有効 source を直接 fetch して再利用（再探索しない）。
-    let saved_source = registry
-        .lookup(&delta.name, delta.source)
-        .and_then(NotesSourceEntry::reusable_source)
-        .filter(|url| is_allowed_url(url))
-        .map(str::to_string);
+    let saved_source = reusable_saved_source(registry, delta).filter(|url| is_allowed_url(url));
     let reused = match saved_source.as_deref() {
         Some(url) => fetch_source(url)?.map(|notes| (url.to_string(), notes)),
         None => None,
@@ -290,14 +286,12 @@ fn decide_provenance(
     ai_source_url: Option<&str>,
     change_items_empty: bool,
 ) -> Option<NotesSourceEntry> {
-    let saved_source = registry
-        .lookup(&delta.name, delta.source)
-        .and_then(NotesSourceEntry::reusable_source);
+    let saved_source = reusable_saved_source(registry, delta);
     let reusable_ai = ai_source_url
         .filter(|_| !change_items_empty)
         .and_then(|url| reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref()));
     if let Some(source_url) = reusable_ai {
-        if reused && saved_source == Some(source_url.as_str()) {
+        if reused && saved_source.as_deref() == Some(source_url.as_str()) {
             return None;
         }
         return Some(NotesSourceEntry {
@@ -342,14 +336,17 @@ fn reuse_or_none_provenance(
     at: &str,
     registry: &NotesSourceRegistry,
 ) -> Option<NotesSourceEntry> {
-    if registry
-        .lookup(&delta.name, delta.source)
-        .and_then(NotesSourceEntry::reusable_source)
-        .is_some()
-    {
+    if reusable_saved_source(registry, delta).is_some() {
         return None;
     }
     Some(none_provenance(at))
+}
+
+fn reusable_saved_source(registry: &NotesSourceRegistry, delta: &VersionDelta) -> Option<String> {
+    registry
+        .lookup(&delta.name, delta.source)
+        .and_then(NotesSourceEntry::reusable_source)
+        .and_then(|url| reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref()))
 }
 
 /// AI 由来 source_url が版非依存（恒久 provenance として再利用可能）かを判定する純粋関数。
@@ -389,14 +386,13 @@ fn version_markers(version: Option<&str>) -> impl Iterator<Item = String> {
     if let Some(major_minor) = major_minor_version_marker(version) {
         markers.push(major_minor.to_string());
     }
-    for underscored in markers
+    for derived in markers
         .clone()
         .into_iter()
-        .map(|marker| marker.replace('.', "_"))
-        .filter(|marker| marker != version)
+        .flat_map(|marker| [marker.replace('.', "_"), marker.replace('.', "-")])
     {
-        if !markers.contains(&underscored) {
-            markers.push(underscored);
+        if !markers.contains(&derived) {
+            markers.push(derived);
         }
     }
     markers.into_iter()
@@ -1309,6 +1305,37 @@ mod tests {
     }
 
     #[test]
+    fn decide_provenance_self_heals_saved_version_specific_source_to_none() {
+        let delta = delta_of("rust", "1.94.0", "1.95.0");
+        let registry = registry_of(vec![(
+            "rust",
+            DeltaSource::NixEval,
+            NotesSourceEntry {
+                source: Some(
+                    "https://doc.rust-lang.org/stable/releases.html#version-1-95-0".to_string(),
+                ),
+                origin: NotesOrigin::Mechanical,
+                discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
+                note: None,
+            },
+        )]);
+        let learned = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            None,
+            None,
+            true,
+        );
+        assert!(
+            learned
+                .is_some_and(|entry| entry.origin == NotesOrigin::None && entry.source.is_none()),
+            "保存済み版固有 source は据え置かず origin=none へ自己修復する"
+        );
+    }
+
+    #[test]
     fn decide_provenance_prefers_ai_source_even_when_mechanical_url_matches() {
         let delta = delta_of("neovim", "1.2.3", "1.2.4");
         let registry = NotesSourceRegistry::default();
@@ -1466,12 +1493,13 @@ mod tests {
         );
         let out = dir.join("2026-06.toml");
         let registry_path = dir.join("notes-sources.toml");
-        let stale_url = "https://doc.rust-lang.org/stable/releases.html#version-1-95-0";
         let registry = registry_of(vec![(
             "rust",
             DeltaSource::NixEval,
             NotesSourceEntry {
-                source: Some(stale_url.to_string()),
+                source: Some(
+                    "https://doc.rust-lang.org/stable/releases.html#version-1-95-0".to_string(),
+                ),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
                 note: None,
@@ -1489,14 +1517,7 @@ mod tests {
         run_record_with(
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &extract,
-            &|url| {
-                assert_eq!(url, stale_url);
-                Ok(Some(RawReleaseNotes {
-                    text: "thin seed".to_string(),
-                    notes_url: url.to_string(),
-                    refetch_url: None,
-                }))
-            },
+            &|_| anyhow::bail!("版固有 saved_source は再利用 fetch してはいけない"),
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1517,6 +1538,58 @@ mod tests {
             package.notes_url.as_deref(),
             Some("https://doc.rust-lang.org/stable/releases.html")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_self_heals_saved_version_specific_source_to_none_without_reuse() -> Result<()> {
+        let dir = temp_dir("saved-version-specific-none");
+        let old = write_nix(
+            &dir,
+            "old.json",
+            r#"{"rust":{"version":"1.94.0","repo":"rust-lang/rust"}}"#,
+        );
+        let new = write_nix(
+            &dir,
+            "new.json",
+            r#"{"rust":{"version":"1.95.0","repo":"rust-lang/rust"}}"#,
+        );
+        let out = dir.join("2026-06.toml");
+        let registry_path = dir.join("notes-sources.toml");
+        write_registry(
+            &registry_path,
+            &registry_of(vec![(
+                "rust",
+                DeltaSource::NixEval,
+                NotesSourceEntry {
+                    source: Some(
+                        "https://doc.rust-lang.org/stable/releases.html#version-1-95-0".to_string(),
+                    ),
+                    origin: NotesOrigin::Mechanical,
+                    discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
+                    note: None,
+                },
+            )]),
+        )?;
+
+        run_record_with(
+            &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
+            &FakeExtractor::new(),
+            &|_| anyhow::bail!("版固有 saved_source は fetch してはいけない"),
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+
+        let learned = read_registry(&registry_path)?;
+        let entry = learned.lookup("rust", DeltaSource::NixEval);
+        assert!(
+            entry.is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none()),
+            "保存済み版固有 source は origin=none へ自己修復する: {entry:?}"
+        );
+        let entries = read_entries(&out)?;
+        assert!(entries[0].packages[0].change_items.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -1829,6 +1902,18 @@ mod tests {
                 "https://chromereleases.googleblog.com/search?q=138.0.7204.183",
                 Some("138.0.7204.157"),
                 Some("138.0.7204.183")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn reusable_source_candidate_rejects_hyphenated_version_anchor() {
+        assert_eq!(
+            reusable_source_candidate(
+                "https://doc.rust-lang.org/stable/releases.html#version-1-95-0",
+                Some("1.94.0"),
+                Some("1.95.0")
             ),
             None
         );
