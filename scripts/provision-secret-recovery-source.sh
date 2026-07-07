@@ -115,7 +115,7 @@ run_dotfiles() {
 
 preflight_github_ssh_key_scope() {
   gh api user/keys --paginate --jq 'length' >/dev/null 2>&1 \
-    || die "GitHub SSH public key API の事前確認に失敗しました。gh の active account には classic token なら read:public_key scope、fine-grained token なら Git SSH keys: read permission が必要です。classic token の更新例: gh auth refresh -h github.com -s read:public_key"
+    || die "GitHub SSH public key API の事前確認に失敗しました。gh の active account には classic token なら少なくとも read:public_key scope、`gh ssh-key add` まで行うには write:public_key（または admin:public_key）scope も必要です。fine-grained token では Git SSH keys の read/write permission が必要です。classic token の更新例: gh auth refresh -h github.com -s read:public_key -s write:public_key"
   # 後続の `gh ssh-key add` は公開鍵登録のため write scope を要する。read だけ確認して進むと add で初めて
   # 権限不足が露見し provisioning が途中停止するため、可能な範囲で write scope を事前確認する。classic token は
   # OAuth scope ヘッダ（X-OAuth-Scopes）で write:public_key / admin:public_key を検証する。fine-grained token は
@@ -127,6 +127,8 @@ preflight_github_ssh_key_scope() {
       *,write:public_key,*|*,admin:public_key,*) : ;;
       *) die "GitHub SSH public key の登録に必要な write scope が gh の active account にありません。classic token なら write:public_key（または admin:public_key）scope が必要です。更新例: gh auth refresh -h github.com -s write:public_key" ;;
     esac
+  else
+    warn "gh の active account は OAuth scope header を返さないため、GitHub SSH key write permission の事前確認は省略します（fine-grained token の場合は `gh ssh-key add` 実行時に GitHub 側で権限検査されます）"
   fi
 }
 
@@ -359,9 +361,10 @@ confirm_password_store_primary_fingerprint() {
   log "password-store .gpg-id recipient の秘密鍵を再確認済み"
 }
 PASSWORD_STORE_ROOT="$(password_store_dir)"
+export PASSWORD_STORE_DIR="$PASSWORD_STORE_ROOT"
 github_repo_from_clone_url() {
   local url="$1"
-  local owner='[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?'
+  local owner='[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9]|[A-Za-z0-9]'
   local repo='[A-Za-z0-9._-]+'
   if [[ "$url" =~ ^https://github\.com/(${owner})/(${repo})(\.git)?$ ]]; then
     case "${BASH_REMATCH[2]}" in

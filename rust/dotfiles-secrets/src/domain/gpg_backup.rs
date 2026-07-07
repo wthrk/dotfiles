@@ -257,7 +257,7 @@ impl GpgBackupEnvelope {
     /// 経路を提供しない。Bitwarden vault 外部確認はこの状態を成功扱いにせず、少なくとも 2 件の
     /// recipient が事前登録済みであることを復旧可能性の到達条件として強制する。
     pub fn ensure_recovery_recipient_count(&self) -> Result<()> {
-        if self.recipients.len() < 2 {
+        if unique_recipient_fingerprint_count(&self.recipients) < 2 {
             return Err(invalid_data(
                 "gpg backup envelope must include at least two YubiKey recipients",
             ));
@@ -276,7 +276,7 @@ impl GpgBackupEnvelope {
         recipients: Vec<EnvelopeRecipient>,
         ciphertext: EnvelopeCiphertext,
     ) -> Result<Self> {
-        if recipients.len() < 2 {
+        if unique_recipient_fingerprint_count(&recipients) < 2 {
             return Err(invalid_data(
                 "gpg backup envelope must include at least two YubiKey recipients",
             ));
@@ -287,6 +287,16 @@ impl GpgBackupEnvelope {
             ciphertext,
         })
     }
+}
+
+fn unique_recipient_fingerprint_count(recipients: &[EnvelopeRecipient]) -> usize {
+    use std::collections::BTreeSet;
+
+    recipients
+        .iter()
+        .map(|recipient| recipient.public_key_fingerprint.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 impl EnvelopeMetadata {
@@ -952,6 +962,84 @@ mod tests {
         assert!(
             result.is_err(),
             "new envelope assembly must require at least two recipients"
+        );
+    }
+
+    /// 同一 recipient の重複は 2 件あっても復旧冗長性を満たさないため拒否する。
+    #[test]
+    fn spare_recipient_check_rejects_duplicate_recipient_fingerprints() {
+        let duplicate = valid_envelope_json().replace(
+            &format!(
+                r#""recipients": [
+                {{
+                  "piv_slot": "82",
+                  "public_key_fingerprint": "{PUBKEY_FP}",
+                  "wrapped_dek": "{}"
+                }}
+              ]"#,
+                base64_encode(b"wrapped-dek-bytes")
+            ),
+            &format!(
+                r#""recipients": [
+                {{
+                  "piv_slot": "82",
+                  "public_key_fingerprint": "{PUBKEY_FP}",
+                  "wrapped_dek": "{}"
+                }},
+                {{
+                  "piv_slot": "82",
+                  "public_key_fingerprint": "{PUBKEY_FP}",
+                  "wrapped_dek": "{}"
+                }}
+              ]"#,
+                base64_encode(b"wrapped-dek-bytes"),
+                base64_encode(b"wrapped-dek-bytes-2")
+            ),
+        );
+        let envelope = ok(GpgBackupEnvelope::parse(&duplicate), "parse");
+
+        assert!(
+            envelope.ensure_recovery_recipient_count().is_err(),
+            "duplicate recipient fingerprints must not satisfy recovery reachability"
+        );
+    }
+
+    /// 新規組み立てでも同一 recipient 重複だけの envelope は拒否する。
+    #[test]
+    fn assemble_rejects_duplicate_recipient_fingerprints() {
+        let metadata = ok(
+            EnvelopeMetadata::new(
+                ok(PrimaryFingerprint::parse(PRIMARY_FP), "primary fingerprint"),
+                "2026-05-31T00:00:00Z",
+            ),
+            "metadata",
+        );
+        let first = ok(
+            EnvelopeRecipient::new(
+                &ok(ConnectedYubiKey::new(PUBKEY_FP), "recipient fingerprint"),
+                b"wrapped-dek-bytes".to_vec(),
+            ),
+            "first recipient",
+        );
+        let second = ok(
+            EnvelopeRecipient::new(
+                &ok(ConnectedYubiKey::new(PUBKEY_FP), "recipient fingerprint"),
+                b"wrapped-dek-bytes-2".to_vec(),
+            ),
+            "second recipient",
+        );
+        let ciphertext = ok(
+            EnvelopeCiphertext::new(
+                nonce_bytes().to_vec(),
+                b"encrypted-backup-bytes".to_vec(),
+                tag_bytes().to_vec(),
+            ),
+            "ciphertext",
+        );
+
+        assert!(
+            GpgBackupEnvelope::assemble(metadata, vec![first, second], ciphertext).is_err(),
+            "new envelope assembly must require two unique recipient fingerprints"
         );
     }
 

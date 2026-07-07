@@ -14,7 +14,9 @@ use anyhow::Context;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden_api_api::apis::ciphers_api;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-use bitwarden_api_api::models::{CipherCreateRequestModel, CipherRequestModel};
+use bitwarden_api_api::models::{
+    CipherCreateRequestModel, CipherRequestModel, CipherSecureNoteModel, SecureNoteType,
+};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use bitwarden_crypto::{KeyDecryptable, KeyEncryptable, SymmetricCryptoKey};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -196,7 +198,7 @@ async fn load_personal_vault_items(
         .context("Bitwarden personal vault sync failed")?;
     sync.ciphers
         .into_iter()
-        .filter(|cipher| cipher.deleted_date.is_none())
+        .filter(|cipher| cipher.deleted_date.is_none() && cipher.organization_id.is_none())
         .map(|cipher| personal_vault_item_from_cipher(cipher, &user_key))
         .filter_map(filter_secure_note_item)
         .collect()
@@ -320,8 +322,11 @@ async fn create_personal_vault_secure_note(
     let encrypted = cipher
         .encrypt_with_key(&user_key)
         .context("Bitwarden personal vault item encrypt failed")?;
-    let request: CipherRequestModel = serde_json::from_value(serde_json::to_value(encrypted)?)
+    let mut request: CipherRequestModel = serde_json::from_value(serde_json::to_value(encrypted)?)
         .context("Bitwarden personal vault item request encode failed")?;
+    request.secure_note = Some(Box::new(CipherSecureNoteModel {
+        r#type: Some(SecureNoteType::Generic),
+    }));
     let created = client.internal.get_api_configurations().await;
     let created = ciphers_api::ciphers_create_post(
         &created.api,
@@ -453,5 +458,19 @@ mod tests {
                 .to_string()
                 .contains("Bitwarden personal vault secure note value decrypt failed")
         );
+    }
+
+    #[test]
+    fn personal_vault_item_keeps_personal_cipher_data_when_organization_is_absent() {
+        let key = sample_user_key();
+        let cipher = secure_note_view("backup", "{\"k\":\"v\"}")
+            .encrypt_with_key(&key)
+            .expect("encrypt cipher");
+
+        let item = personal_vault_item_from_cipher(cipher, &key)
+            .expect("convert item")
+            .expect("secure note item");
+
+        assert_eq!(item.name, "backup");
     }
 }
