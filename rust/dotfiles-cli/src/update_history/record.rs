@@ -364,10 +364,14 @@ fn is_reusable_ai_source(url: &str, old: Option<&str>, new: Option<&str>) -> boo
 
 fn reusable_source_candidate(url: &str, old: Option<&str>, new: Option<&str>) -> Option<String> {
     let trimmed = url.trim();
-    if trimmed.is_empty() || !is_reusable_ai_source(trimmed, old, new) {
+    if trimmed.is_empty() {
         return None;
     }
-    normalize_reusable_source_url(trimmed)
+    let normalized = normalize_reusable_source_url(trimmed)?;
+    if !is_reusable_ai_source(&normalized, old, new) {
+        return None;
+    }
+    Some(normalized)
 }
 
 /// URL が版固有（特定 tag/version に縛られ、版が進むと別ページになる）かを判定する純粋関数。
@@ -1330,9 +1334,7 @@ mod tests {
             "rust",
             DeltaSource::NixEval,
             NotesSourceEntry {
-                source: Some(
-                    "https://doc.rust-lang.org/stable/releases.html#version-1-95-0".to_string(),
-                ),
+                source: Some("https://github.com/rust-lang/rust/releases/tag/1.95.0".to_string()),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
                 note: None,
@@ -1519,9 +1521,7 @@ mod tests {
             "rust",
             DeltaSource::NixEval,
             NotesSourceEntry {
-                source: Some(
-                    "https://doc.rust-lang.org/stable/releases.html#version-1-95-0".to_string(),
-                ),
+                source: Some("https://github.com/rust-lang/rust/releases/tag/1.95.0".to_string()),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
                 note: None,
@@ -1587,7 +1587,7 @@ mod tests {
                 DeltaSource::NixEval,
                 NotesSourceEntry {
                     source: Some(
-                        "https://doc.rust-lang.org/stable/releases.html#version-1-95-0".to_string(),
+                        "https://github.com/rust-lang/rust/releases/tag/1.95.0".to_string(),
                     ),
                     origin: NotesOrigin::Mechanical,
                     discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
@@ -1926,26 +1926,26 @@ mod tests {
     }
 
     #[test]
-    fn reusable_source_candidate_rejects_version_markers_found_only_in_query() {
+    fn reusable_source_candidate_normalizes_before_version_specific_check() {
         assert_eq!(
             reusable_source_candidate(
                 "https://chromereleases.googleblog.com/search?q=138.0.7204.183",
                 Some("138.0.7204.157"),
                 Some("138.0.7204.183")
             ),
-            None
+            Some("https://chromereleases.googleblog.com/search".to_string())
         );
     }
 
     #[test]
-    fn reusable_source_candidate_rejects_hyphenated_version_anchor() {
+    fn reusable_source_candidate_accepts_hyphenated_version_anchor_after_normalization() {
         assert_eq!(
             reusable_source_candidate(
                 "https://doc.rust-lang.org/stable/releases.html#version-1-95-0",
                 Some("1.94.0"),
                 Some("1.95.0")
             ),
-            None
+            Some("https://doc.rust-lang.org/stable/releases.html".to_string())
         );
     }
 
