@@ -82,7 +82,12 @@ verify_password_store_recipients() {
     fingerprint="$(recipient_secret_key_fingerprint "$recipient")"
     [ -n "$fingerprint" ] \
       || die "password-store recipient の秘密鍵がローカルにありません。import/generate が必要です: $recipient"
-    [ -n "$primary_fingerprint" ] || primary_fingerprint="$fingerprint"
+    if [ -z "$primary_fingerprint" ]; then
+      primary_fingerprint="$fingerprint"
+      continue
+    fi
+    [ "$primary_fingerprint" = "$fingerprint" ] \
+      || die "password-store .gpg-id に異なる recipient が複数あります。primary fingerprint を一意に決められません"
   done < "$gpg_id_file"
   [ -n "$primary_fingerprint" ] \
     || die "password-store .gpg-id から有効な recipient を解決できません"
@@ -186,7 +191,7 @@ SPARE_SERIAL="$(optional_spare_yubikey_serial)"
 # ── 2. GitHub への SSH 公開鍵登録（authentication subkey 由来）──
 log "authentication subkey 由来 SSH 公開鍵を GitHub に登録"
 SSH_PUB="$(dotfiles gpg export-ssh-public-key --primary-fingerprint "${PRIMARY_FINGERPRINT}")"
-gh ssh-key list 2>/dev/null | grep -qF "$(printf '%s' "$SSH_PUB" | awk '{print $2}')" \
+gh ssh-key list 2>/dev/null | grep -qF "$(printf '%s' "$SSH_PUB" | awk '{print $2}')}" \
   || printf '%s\n' "$SSH_PUB" | gh ssh-key add - --title "dotfiles-gpg-auth-$(date +%Y%m%d)"
 
 # ── 3. private password-store repository の remote 設定・push ──
