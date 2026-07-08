@@ -53,7 +53,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/composer"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/coreutils"]
 origin = "none"
@@ -61,7 +61,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/delve"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/diesel-cli"]
 origin = "none"
@@ -78,7 +78,7 @@ discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/docker-credential-helpers"]
 origin = "none"
@@ -102,7 +102,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-06-24T19:32:43Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/git"]
 origin = "none"
@@ -129,7 +129,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/jujutsu"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/kubectl"]
 source = "https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md"
@@ -242,11 +242,15 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/yubikey-manager"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-06-30T20:13:18Z"
+discovered_at = "2026-07-08T20:19:09Z"
+
+["nix/zoxide"]
+origin = "none"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zsh"]
 source = "https://zsh.sourceforge.io/releases.html"

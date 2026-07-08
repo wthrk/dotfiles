@@ -123,3 +123,351 @@ reference = "darwinConfigurations.ci-ref"
 severity = "none"
 overall = "0アプリ更新"
 package = []
+
+[[update]]
+at = "2026-07-08T20:19:09Z"
+state_old = "c50b56fd83878511417c04992f09342a7010577b96927cde1db15f1148d430ff"
+state_new = "6047e8d44f8c53a9b8d3b5b6b05282a819f41442c02b14fa0795c4555ae6577e"
+cursor_old = "30121a0c35fd2192e6c73a5b35c894fd8c3516df"
+nixpkgs_old = "d33369954a67ae3322177dc9a3d564092912120c"
+nixpkgs_new = "f205b5574fd0cb7da5b702a2da51507b7f4fdd1b"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "12アプリ更新: 🔒8 ⚠️4 🔧1 ✨7 🐛27"
+
+[[update.package]]
+name = "composer"
+old = "2.10.1"
+new = "2.10.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "パッケージ名の検証を追加"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "パッケージのbinパスに対するパストラバーサルの検証を追加"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "詳細出力におけるURL埋め込みのユーザー名/トークンのサニタイズを追加"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "HTTPレスポンスからのHTTPリダイレクトのみを追従するように変更"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "安全でないPHPバージョンでのpharメタデータのunserializeを防止"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "HTTPレスポンスのJSONパースエラーをサニタイズし、レスポンスボディデータの漏洩を防止"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`audit`コマンドが監査結果をstdoutに出力するよう修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "非装飾出力におけるバックスペース文字の出力を修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "xdebugが有効な場合のセキュリティアドバイザリーブロッキングによる問題を修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "提供するパッケージ自身の提案を隠すプロバイダーパッケージの問題を修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package]]
+name = "delve"
+old = "1.26.3"
+new = "1.27.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/go-delve/delve/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "arm64 の sigpanic フレームの SP 計算を修正"
+ref = "https://github.com/go-delve/delve/pull/4319"
+
+[[update.package.change_item]]
+category = "fix"
+text = "linux/ppc64le で PtraceSetRegs エラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4321"
+
+[[update.package.change_item]]
+category = "fix"
+text = "linux/ppc64le で PtraceGetRegs エラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4322"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複合メモリ内の AddrPiece ReadMemory エラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4323"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ebpf の AddressToOffset の off-by-one を修正"
+ref = "https://github.com/go-delve/delve/pull/4324"
+
+[[update.package.change_item]]
+category = "fix"
+text = "breakpointConditionSatisfiable の OR 処理を修正"
+ref = "https://github.com/go-delve/delve/pull/4325"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Reader エントリの反復中にエラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4327"
+
+[[update.package.change_item]]
+category = "fix"
+text = "stride オーバーフロー後に loadArrayValues を中止"
+ref = "https://github.com/go-delve/delve/pull/4328"
+
+[[update.package.change_item]]
+category = "fix"
+text = "go1.27 regexp リファクタリングのテストを修正"
+ref = "https://github.com/go-delve/delve/pull/4339"
+
+[[update.package.change_item]]
+category = "fix"
+text = "go1.27 の関数ステッピングの範囲を修正"
+ref = "https://github.com/go-delve/delve/pull/4343"
+
+[[update.package.change_item]]
+category = "fix"
+text = "stacktrace の hasInlines を修正"
+ref = "https://github.com/go-delve/delve/pull/4345"
+
+[[update.package.change_item]]
+category = "fix"
+text = "go1.27 / arm64 のステッピングテストを修正"
+ref = "https://github.com/go-delve/delve/pull/4365"
+
+[[update.package]]
+name = "docker"
+old = "29.6.0"
+new = "29.6.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/cli/releases/tag/v29.6.1"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Fixes an issue where the `docker ps` command would not show the correct status of containers."
+ref = "https://github.com/docker/cli/releases/tag/v29.6.1"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Fixes a bug that caused the CLI to crash when using certain flags with the `docker run` command."
+ref = "https://github.com/docker/cli/releases/tag/v29.6.1"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.2.0"
+new = "5.3.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.3.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "init コンテナのネイティブサポートを追加"
+ref = "https://github.com/docker/compose/pull/13862"
+
+[[update.package.change_item]]
+category = "fix"
+text = "提供されたトランスポートを通じてのトークン取得の修正"
+ref = "https://github.com/docker/compose/pull/13873"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Running イベントをプロジェクトのサービスにスコープする修正"
+ref = "https://github.com/docker/compose/pull/13883"
+
+[[update.package]]
+name = "gh"
+old = "2.95.0"
+new = "2.96.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/cli/cli/releases/tag/v2.96.0"
+
+[[update.package.change_item]]
+category = "security"
+text = "悪意のある Codespace に接続時のコマンド実行の脆弱性を修正"
+ref = "https://github.com/cli/cli/security/advisories/GHSA-8cg3-r6g9-fpg2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`gh release download` がパブリックリポジトリに対して認証なしで動作するようになった"
+
+[[update.package]]
+name = "google-chrome"
+old = "149.0.7827.201"
+new = "150.0.7871.47"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "複数のセキュリティ脆弱性が修正されました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "安定性とパフォーマンスの向上が行われました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "jujutsu"
+old = "0.42.0"
+new = "0.43.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/jj-vcs/jj/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "非推奨の `git_head()` と `git_refs()` 関数が削除されました。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "Gitライクなシンボル（例: `refs/heads/main`）がリビジョンに解決されなくなりました。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "非推奨の `ui.revsets-use-glob-by-default` オプションが削除されました。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`jj bookmark track`/`untrack` が `<kind>:<bookmark>@<remote>` パターンをサポートしなくなりました。"
+ref = "https://github.com/jj-vcs/jj/issues/9226"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj show` が `--reversed` フラグをサポートしました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj` が `/etc/jj` で設定ファイルを探すようになりました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj config gc` が削除または移動したリポジトリの設定を削除します。"
+ref = "https://github.com/jj-vcs/jj/issues/9362"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj gerrit upload` が `-o` フラグをサポートしました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "WindowsでパスのファイルIDのクエリがシンボリックリンクを追跡しなくなりました。"
+ref = "https://github.com/jj-vcs/jj/issues/8924"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`jj` がスナップショット作成中に新しい作業コピーリビジョンを作成するようになりました。"
+ref = "https://github.com/jj-vcs/jj/issues/7751"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`jj git remote add` が新しいリモートが既存のリモートのURLと完全に一致する場合に警告を出すようになりました。"
+ref = "https://github.com/jj-vcs/jj/issues/413"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Intel Raptor Lake CPUおよびaarch64での壊れたGitオブジェクトの問題が修正されました。"
+
+[[update.package]]
+name = "vscode"
+old = "1.125.0"
+new = "1.127.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_127"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタのテーマが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_127#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_127#bug-fixes"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "デフォルトの設定が変更され、より良いパフォーマンスが実現されました。"
+ref = "https://code.visualstudio.com/updates/v1_127#default-settings"
+
+[[update.package]]
+name = "yubikey-manager"
+old = "5.9.1"
+new = "5.9.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/Yubico/yubikey-manager/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "YubiKey 4 FIPS CLI PIN コマンドの修正"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.8.2"
+new = "1.9.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.9.0"
+change_item = []
+
+[[update.package]]
+name = "zoxide"
+old = "0.9.9"
+new = "0.10.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/ajeetdsouza/zoxide/releases"
+change_item = []
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.101652"
+new = "26.623.141536"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
