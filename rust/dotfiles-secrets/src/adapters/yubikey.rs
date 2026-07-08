@@ -71,9 +71,8 @@ impl SecretStoragePort for StorageAdapter {
         &mut self,
         serial: u32,
         intent: SecretStorageSetupIntent,
-        pin: Option<&ProtectedSecret>,
     ) -> Result<()> {
-        self.0.initialize_secret_storage(serial, intent, pin)
+        self.0.initialize_secret_storage(serial, intent)
     }
 
     fn finalize_secret_storage_setup(
@@ -116,6 +115,10 @@ impl SecretStoragePort for StorageAdapter {
         pin: Option<&ProtectedSecret>,
     ) -> Result<ProtectedSecret> {
         self.0.load_secret(serial, intent, pin)
+    }
+
+    fn verify_pin_input(&mut self, serial: u32, pin: &ProtectedSecret) -> Result<()> {
+        self.0.verify_pin_input(serial, pin)
     }
 }
 
@@ -178,8 +181,7 @@ use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::EncodePublicKey};
 use sha2::{Digest, Sha256};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
-    Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
-    certificate::Certificate,
+    Certificate, Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 
@@ -199,7 +201,8 @@ trait SecretDeviceIo {
     fn piv_application_version(&self) -> PivApplicationVersion;
     fn pin_retries(&mut self) -> Result<u8>;
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
-    fn generate_key(&mut self) -> Result<Option<Vec<u8>>>;
+    fn generate_key(&mut self) -> Result<Vec<u8>>;
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>);
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
     fn requires_pin_input(&self) -> bool;
@@ -208,7 +211,6 @@ trait SecretDeviceIo {
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
-        generated_public_key: Option<&[u8]>,
     ) -> Result<Vec<u8>>;
     fn open_from_storage(
         &mut self,
@@ -285,8 +287,12 @@ impl SecretDeviceIo for SelectedSecretDevice {
         self.inner.check_management_auth_preconditions()
     }
 
-    fn generate_key(&mut self) -> Result<Option<Vec<u8>>> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         self.inner.generate_key()
+    }
+
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>) {
+        self.inner.remember_generated_public_key(public_key);
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
@@ -309,10 +315,8 @@ impl SecretDeviceIo for SelectedSecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
-        generated_public_key: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
-        self.inner
-            .seal_for_storage(storage, plaintext, generated_public_key)
+        self.inner.seal_for_storage(storage, plaintext)
     }
 
     fn open_from_storage(
@@ -356,6 +360,7 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
         Ok(SelectedSecretDevice::new(YubikeySecretDevice {
             yubikey: YubiKey::open_by_serial(Serial(serial))?,
             pin_verified: false,
+            generated_public_key: None,
         }))
     }
 }
@@ -369,6 +374,7 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
 struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
+    generated_public_key: Option<Vec<u8>>,
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -386,17 +392,33 @@ impl YubikeySecretDevice {
         }
     }
 
-    fn wrap_content_key(
-        &mut self,
-        key: &ProtectedSecret,
-        generated_public_key: Option<&[u8]>,
-    ) -> Result<Vec<u8>> {
-        let public = if let Some(generated_public_key) = generated_public_key {
-            RsaPublicKey::from_pkcs1_der(generated_public_key)
-                .context("failed to parse generated YubiKey secret storage public key")?
-        } else {
-            self.secret_slot_rsa_public_key()?
-        };
+    fn slot_public_key(&mut self) -> Result<RsaPublicKey> {
+        if let Some(public) = self.generated_public_key.as_deref() {
+            return RsaPublicKey::from_pkcs1_der(public)
+                .context("failed to parse cached YubiKey secret storage public key");
+        }
+        match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
+            Ok(metadata) => {
+                let public = metadata
+                    .public
+                    .context("YubiKey secret storage key has no public key metadata")?;
+                RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
+                    .context("failed to parse YubiKey secret storage public key")
+            }
+            Err(yubikey::Error::NotFound | yubikey::Error::GenericError) => {
+                let certificate = Certificate::read(&mut self.yubikey, SECRET_SLOT)
+                    .context("failed to read YubiKey secret storage certificate")?;
+                RsaPublicKey::from_pkcs1_der(
+                    certificate.subject_pki().subject_public_key.raw_bytes(),
+                )
+                .context("failed to parse YubiKey secret storage certificate public key")
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn wrap_content_key(&mut self, key: &ProtectedSecret) -> Result<Vec<u8>> {
+        let public = self.slot_public_key()?;
         secret_random::rsa_oaep_encrypt(&public, key)
     }
 
@@ -416,29 +438,6 @@ impl YubikeySecretDevice {
             },
             256,
         )
-    }
-
-    fn secret_slot_rsa_public_key(&mut self) -> Result<RsaPublicKey> {
-        match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
-            Ok(metadata) => {
-                let public = metadata
-                    .public
-                    .context("YubiKey secret storage key has no public key metadata")?;
-                RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
-                    .context("failed to parse YubiKey secret storage public key")
-            }
-            Err(yubikey::Error::GenericError) | Err(yubikey::Error::NotFound) => {
-                let certificate = Certificate::read(&mut self.yubikey, SECRET_SLOT)
-                    .context("failed to read YubiKey secret-slot certificate")?;
-                RsaPublicKey::from_pkcs1_der(
-                    certificate.subject_pki().subject_public_key.raw_bytes(),
-                )
-                .context("failed to parse YubiKey secret-slot certificate public key")
-            }
-            Err(err) => {
-                Err(anyhow::Error::from(err).context("failed to read YubiKey secret-slot metadata"))
-            }
-        }
     }
 }
 
@@ -472,7 +471,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
         Ok(())
     }
 
-    fn generate_key(&mut self) -> Result<Option<Vec<u8>>> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
         let public = piv::generate(
@@ -482,7 +481,13 @@ impl SecretDeviceIo for YubikeySecretDevice {
             PinPolicy::Once,
             TouchPolicy::Always,
         )?;
-        Ok(Some(public.subject_public_key.raw_bytes().to_vec()))
+        let encoded = public.subject_public_key.raw_bytes().to_vec();
+        self.generated_public_key = Some(encoded.clone());
+        Ok(encoded)
+    }
+
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>) {
+        self.generated_public_key = Some(public_key);
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
@@ -517,13 +522,12 @@ impl SecretDeviceIo for YubikeySecretDevice {
         &mut self,
         storage: SecretStorageSpec,
         plaintext: &ProtectedSecret,
-        generated_public_key: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         sealed_blob::seal_material_with_key_wrap(
             storage.secret_id,
             plaintext,
             &storage.additional_data,
-            |content_key| self.wrap_content_key(content_key, generated_public_key),
+            |content_key| self.wrap_content_key(content_key),
         )
     }
 
@@ -541,17 +545,17 @@ impl SecretDeviceIo for YubikeySecretDevice {
     }
 
     fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
-        let public = self.secret_slot_rsa_public_key()?;
         // 設計: recipient `public_key_fingerprint` は DER-encoded SubjectPublicKeyInfo の SHA-256。
         // slot 82 の RSA 公開鍵を SubjectPublicKeyInfo DER として再エンコードし、その digest を取る。
-        let der = public
+        let der = self
+            .slot_public_key()?
             .to_public_key_der()
             .context("failed to DER-encode YubiKey slot 82 public key")?;
         Ok(sha256_lowercase_hex(der.as_bytes()))
     }
 
     fn wrap_dek(&mut self, dek: &ProtectedSecret) -> Result<Vec<u8>> {
-        self.wrap_content_key(dek, None)
+        self.wrap_content_key(dek)
     }
 
     fn unwrap_dek(&mut self, wrapped_dek: &[u8]) -> Result<ProtectedSecret> {

@@ -16,6 +16,8 @@ jobs:
     name: static checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      CACHE_ON_FAILURE: true
 
     steps:
       - name: checkout
@@ -30,14 +32,16 @@ jobs:
       # static checks では `/nix/store` キャッシュを使わない。toolchain / devShell は毎回取得するが、
       # job 自体は deterministic に完走させる。
 
-      # cargo build キャッシュ（~/.cargo + target/）を run 間で再利用する。Nix devShell でビルドした成果物を
-      # 安全に再利用するため、cache key には flake.lock を含め、rust-cache 自身の cargo/rustc 判定も
-      # `nix develop -c` で実行して Nix shell 上の Rust 環境に合わせる。
+      # Nix devShell 内の cargo/rustc を基準に target/ まで再利用する。`cmd-format` を付けずに target を restore
+      # すると shell 外の cargo メタデータ/clean up と食い違い、stale build script を踏みやすい。rust-cache 自身の
+      # key/metadata/clean up を `nix develop -c` 側へ合わせた上で target を再利用する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           cmd-format: nix develop -c {0}
+          cache-targets: true
+          save-if: ${{ github.ref == 'refs/heads/main' || env.CACHE_ON_FAILURE == 'true' }}
 
       - name: static checks
         run: nix develop -c cargo xtask check static

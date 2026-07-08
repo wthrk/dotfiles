@@ -1,8 +1,10 @@
 # `home.packages` に入れる CLI ツール群。
 #
 # 引数 `pkgs` の属性有無を見て、Darwin/Linux や nixpkgs 更新で存在しないパッケージを落とす。
-# `inputs` が渡された場合は、この flake がビルドした `dotfiles` CLI を同じユーザー環境へ入れる。
+# `includeSelfPackage = true` かつ `inputs.self.packages` が存在する場合だけ、この flake がビルドした
+# `dotfiles` CLI を同じユーザー環境へ入れる。
 {
+  includeSelfPackage ? true,
   inputs ? null,
   lib,
   pkgs,
@@ -16,7 +18,8 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   dotfilesPackage =
     if
-      inputs != null
+      includeSelfPackage
+      && inputs != null
       && inputs ? self
       && inputs.self ? packages
       && has [ system "default" ] inputs.self.packages
@@ -37,7 +40,10 @@ let
 in
 {
   programs.gh.enable = true;
-  programs.atuin.enable = true;
+  programs.atuin = {
+    enable = true;
+    enableZshIntegration = true;
+  };
   programs.zoxide.enable = true;
 
   programs.fzf = {

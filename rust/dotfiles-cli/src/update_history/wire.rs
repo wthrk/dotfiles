@@ -1,9 +1,10 @@
 //! 更新履歴 TOML の wire/ドメイン型・閉集合 enum と、その型に閉じた純粋ドメイン規則（severity 機械算出・
 //! LLM 出力/参照 URL のサニタイズ・SSRF の構造的 URL 判定）。
 //!
-//! field 名と enum 値は TOML スキーマ（`docs/update-history/<YYYY-MM>.toml`）に一致させる。`ref` は Rust
-//! 予約語のため serde rename で TOML key `ref` に対応させる。閉集合（変更種別・変更カテゴリ・重要度）は生文字列
-//! ではなく enum で表し、serde rename で TOML 値（kebab-case 含む）へ写す。
+//! field 名と enum 値は TOML スキーマ（`docs/update-history/<YYYY-MM>.toml`）に一致させる。Rust 側の内部名が
+//! 異なる field は serde rename/alias で wire key へ対応させる（例: `ref`、legacy `cursor_old`/`cursor_new`）。
+//! 閉集合（変更種別・変更カテゴリ・重要度）は生文字列ではなく enum で表し、serde rename で TOML 値
+//! （kebab-case 含む）へ写す。
 //!
 //! severity は LLM 生成の自由文ではなく変更カテゴリ（閉集合 enum）からのみ決定論的に算出する（prompt injection
 //! で severity が改変されない）。生リリースノートと LLM 出力は信頼境界外であり、TOML へ書く前に「構造的に安全な
@@ -20,6 +21,55 @@
 
 use serde::{Deserialize, Serialize};
 
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn parse_github_repo_url(url: &str) -> Option<(&str, &str, &str)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let (owner, after_owner) = rest.split_once('/')?;
+    let owner = non_empty(Some(owner))?;
+    let repo_raw = after_owner
+        .split_once('/')
+        .map_or(after_owner, |(repo, _)| repo);
+    let repo_raw = non_empty(Some(repo_raw))?;
+    let repo = repo_raw
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(repo_raw)
+        .trim_end_matches(".git");
+    let repo = non_empty(Some(repo))?;
+    let tail = after_owner[repo_raw.len()..].trim_start_matches('/');
+    Some((owner, repo, tail))
+}
+
+/// github URL 文字列から `owner/repo` を取り出す純粋関数（末尾 `.git`・クエリ/フラグメントは除く）。
+pub(crate) fn repo_from_github_url(url: &str) -> Option<String> {
+    parse_github_repo_url(url).map(|(owner, repo, _)| format!("{owner}/{repo}"))
+}
+
+/// GitHub release/tag/download URL から、版非依存な `.../releases` ヒント URL を導出する。
+pub(crate) fn releases_url_from_github_url(url: &str) -> Option<String> {
+    let (owner, repo, tail) = parse_github_repo_url(url)?;
+    let tail = tail
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(tail)
+        .trim_end_matches('/');
+    if tail == "releases"
+        || tail == "releases/latest"
+        || tail.starts_with("releases/tag/")
+        || tail.starts_with("releases/latest/download/")
+        || tail.starts_with("releases/download/")
+    {
+        Some(format!("https://github.com/{owner}/{repo}/releases"))
+    } else {
+        None
+    }
+}
+
 /// 1 回の nightly bump で記録される更新エントリ（TOML `[[update]]` 1 件に対応）。
 ///
 /// `at` はエントリ単位の RFC3339 タイムスタンプ。`severity` / `overall` はエントリ全体の重要度・機械見出しで、
@@ -28,16 +78,26 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct UpdateEntry {
     /// 適用時刻（RFC3339。CI が `--at` で注入する文字列をそのまま保持する）。
     pub(crate) at: String,
-    /// catch-up 範囲選択用の bump 前 dotfiles input リビジョン。
-    ///
-    /// Homebrew tap だけが進む更新では `nixpkgs_old == nixpkgs_new` になりうるため、`show --rev` のカーソルは
-    /// dotfiles input rev を優先する。古い TOML はこの field を持たないため、読み取り時は `nixpkgs_old` へ
-    /// フォールバックする。
+    /// bump 前 lock state key（`flake.lock` 内容ハッシュ。tap-only 更新でも一意な起点を持つ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cursor_old: Option<String>,
-    /// catch-up 範囲選択用の bump 後 dotfiles input リビジョン。
+    pub(crate) state_old: Option<String>,
+    /// bump 後 lock state key（`flake.lock` 内容ハッシュ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cursor_new: Option<String>,
+    pub(crate) state_new: Option<String>,
+    /// 旧 `show --rev` 利用者との互換用に保持する bump 前 dotfiles rev。
+    #[serde(
+        default,
+        rename = "cursor_old",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) legacy_cursor_old: Option<String>,
+    /// 互換用に保持する bump 後 dotfiles rev。
+    #[serde(
+        default,
+        rename = "cursor_new",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) legacy_cursor_new: Option<String>,
     /// bump 前の nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
     /// bump 後の nixpkgs リビジョン。
@@ -408,8 +468,10 @@ mod tests {
     fn sample_entry() -> UpdateEntry {
         UpdateEntry {
             at: "2026-06-05T18:00:11Z".to_string(),
-            cursor_old: Some("dotfiles-old".to_string()),
-            cursor_new: None,
+            state_old: Some("lock-old".to_string()),
+            state_new: Some("lock-new".to_string()),
+            legacy_cursor_old: Some("dotfiles-old".to_string()),
+            legacy_cursor_new: Some("dotfiles-new".to_string()),
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -456,7 +518,10 @@ mod tests {
         let expected = "\
 [[update]]
 at = \"2026-06-05T18:00:11Z\"
+state_old = \"lock-old\"
+state_new = \"lock-new\"
 cursor_old = \"dotfiles-old\"
+cursor_new = \"dotfiles-new\"
 nixpkgs_old = \"a1b2c3d\"
 nixpkgs_new = \"e4f5g6h\"
 reference = \"darwinConfigurations.ci\"
@@ -564,6 +629,93 @@ declared = true
         let parsed: Wrap = toml::from_str(&rendered)?;
         assert_eq!(parsed.change, ChangeKind::Downgraded);
         assert_eq!(parsed.source, PackageSource::Brew);
+        Ok(())
+    }
+
+    #[test]
+    fn repo_from_github_url_strips_git_and_query() {
+        assert_eq!(
+            repo_from_github_url("https://github.com/o/r.git?x=1#frag").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            repo_from_github_url("http://github.com/o/r/issues/1").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(repo_from_github_url("https://gitlab.com/o/r"), None);
+        assert_eq!(repo_from_github_url("https://github.com/o"), None);
+    }
+
+    #[test]
+    fn releases_url_from_github_url_normalizes_release_variants_only() {
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases?after=v1.2.3").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases#latest").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/tag/v1.2.3").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/latest").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/latest?after=v1")
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/latest#asset").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url(
+                "https://github.com/o/r/releases/latest/download/x86_64-apple-darwin.tar.gz"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/releases/download/v1/x.zip")
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(releases_url_from_github_url("https://github.com/o/r"), None);
+        assert_eq!(
+            releases_url_from_github_url("https://github.com/o/r/issues/1"),
+            None
+        );
+    }
+
+    #[test]
+    fn update_entry_reads_legacy_cursor_fields() -> Result<(), toml::de::Error> {
+        let entry: UpdateEntry = toml::from_str(
+            r#"
+at = "2026-06-13T09:45:17Z"
+cursor_old = "lock-old"
+cursor_new = "lock-new"
+nixpkgs_old = "old"
+nixpkgs_new = "new"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+"#,
+        )?;
+        assert_eq!(entry.legacy_cursor_old.as_deref(), Some("lock-old"));
+        assert_eq!(entry.legacy_cursor_new.as_deref(), Some("lock-new"));
         Ok(())
     }
 

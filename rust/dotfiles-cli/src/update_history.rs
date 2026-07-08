@@ -21,6 +21,7 @@ mod llm;
 mod notes;
 mod record;
 mod show;
+mod sources;
 mod wire;
 
 use std::ffi::OsString;
@@ -41,10 +42,11 @@ pub(crate) struct UpdateHistoryOptions {
 }
 
 #[derive(Subcommand)]
-/// CI が叩く記録・eval・rev 抽出 command と、利用者が叩く閲覧 command。
+/// CI 用の記録・eval・rev 抽出 command と、利用者向けの閲覧・version-only backfill command。
 enum UpdateHistoryCommand {
     // record option は他より大幅にフィールドが多いため Box で間接化して large_enum_variant を避ける。
     Record(Box<RecordOptions>),
+    BackfillVersionOnly(BackfillVersionOnlyOptions),
     EvalVersions(EvalVersionsOptions),
     LockRev(LockRevOptions),
     Show(ShowOptions),
@@ -53,10 +55,16 @@ enum UpdateHistoryCommand {
 #[derive(Args)]
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option（CI が叩く）。
 struct RecordOptions {
-    /// bump 前 dotfiles input リビジョン（brew-only 更新でも前進する show 用カーソル）。
+    /// bump 前 lock ファイル（state key は Rust 側で算出する）。
+    #[arg(long, requires = "lock_new")]
+    lock_old: Option<PathBuf>,
+    /// bump 後 lock ファイル（state key は Rust 側で算出する）。
+    #[arg(long, requires = "lock_old")]
+    lock_new: Option<PathBuf>,
+    /// 既存 `show --rev` 利用者向けの legacy cursor old（通常は bump 前 repo HEAD）。
     #[arg(long)]
     cursor_old: Option<String>,
-    /// bump 後 dotfiles input リビジョン（brew-only 更新でも前進する show 用カーソル）。
+    /// 必要なら保持する legacy cursor new。
     #[arg(long)]
     cursor_new: Option<String>,
     /// bump 前 lock で eval した宣言パッケージの name→属性 JSON ファイル（`eval-versions` が bump 前に書く）。
@@ -106,6 +114,17 @@ struct EvalVersionsOptions {
 }
 
 #[derive(Args)]
+/// 既存の月次履歴 TOML に残っている version-only package を、現在の取得ロジックで再処理して埋め直す。
+struct BackfillVersionOnlyOptions {
+    /// 更新対象の月次履歴 TOML。
+    #[arg(long)]
+    history: PathBuf,
+    /// provenance レジストリ TOML（未指定なら `--history` と同じ directory の `notes-sources.toml`）。
+    #[arg(long)]
+    notes_sources: Option<PathBuf>,
+}
+
+#[derive(Args)]
 /// flake.lock の `nodes.<node>.locked.rev` を取り出して標準出力へ書く option。
 struct LockRevOptions {
     /// 読む flake.lock path。
@@ -119,9 +138,9 @@ struct LockRevOptions {
 #[derive(Args)]
 /// 適用済み pin 由来の更新履歴を閲覧する option（利用者が叩く）。
 struct ShowOptions {
-    /// 表示起点の履歴カーソル rev（新形式は dotfiles input rev、旧履歴は nixpkgs rev）。
-    #[arg(long)]
-    rev: Option<String>,
+    /// 表示起点の状態キー（新形式は `state_old`、旧履歴は `cursor_old`/`nixpkgs_old`。互換 alias: `--rev`）。
+    #[arg(long, alias = "rev")]
+    state: Option<String>,
     /// 表示するエントリ件数の上限。
     #[arg(long)]
     limit: Option<usize>,
@@ -139,10 +158,12 @@ struct ShowOptions {
     config_dir: Option<PathBuf>,
 }
 
-/// `update-history` サブコマンドを受けて record / eval-versions / lock-rev / show を駆動する。
+/// `update-history` サブコマンドを受けて record / backfill-version-only /
+/// eval-versions / lock-rev / show を駆動する。
 pub(crate) fn run(options: UpdateHistoryOptions) -> Result<()> {
     match options.command {
         UpdateHistoryCommand::Record(options) => run_record(*options),
+        UpdateHistoryCommand::BackfillVersionOnly(options) => run_backfill_version_only(options),
         UpdateHistoryCommand::EvalVersions(options) => run_eval_versions(options),
         UpdateHistoryCommand::LockRev(options) => run_lock_rev(options),
         UpdateHistoryCommand::Show(options) => run_show(options),
@@ -185,6 +206,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     });
     let extractor = llm::OpenAiExtractor::new(brew_notes_base);
     let input = record::RecordInput {
+        lock_old: options.lock_old.as_deref(),
+        lock_new: options.lock_new.as_deref(),
         cursor_old: options.cursor_old,
         cursor_new: options.cursor_new,
         nixpkgs_old: options.nixpkgs_old,
@@ -202,7 +225,17 @@ fn run_record(options: RecordOptions) -> Result<()> {
     record::run_record(input, &extractor)
 }
 
-/// 利用者 `show`: 履歴 source を読み、起点 rev からの catch-up 区間を集約して stdout へ出力する。
+fn run_backfill_version_only(options: BackfillVersionOnlyOptions) -> Result<()> {
+    let registry_path = options
+        .notes_sources
+        .clone()
+        .unwrap_or_else(|| default_registry_path(&options.history));
+    let extractor = llm::OpenAiExtractor::new(None);
+    record::run_backfill_version_only(&options.history, &registry_path, &extractor)
+}
+
+/// 利用者 `show`: 履歴 source を読み、起点 state（旧履歴は `cursor_old`/`nixpkgs_old` fallback）からの catch-up 区間を
+/// 集約して stdout へ出力する。
 ///
 /// `--source` 省略時は適用済み dotfiles input source の更新履歴 dir を解決する（`update` と同じ stateless 経路。
 /// 永続 state を参照しない）。source を解決できない（network 無し・nix 不在・archive 失敗等）場合は `Err` で止める。
@@ -221,7 +254,7 @@ fn run_show(options: ShowOptions) -> Result<()> {
     };
     show::run_show(
         &source,
-        options.rev.as_deref(),
+        options.state.as_deref(),
         options.limit,
         options.json,
         options.all,
@@ -262,4 +295,39 @@ fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<Strin
         .and_then(|node| node.get("path"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    #[test]
+    fn record_requires_both_lock_paths() -> crate::Result<()> {
+        let parsed = crate::cli::Cli::try_parse_from([
+            "dotfiles",
+            "update-history",
+            "record",
+            "--lock-old",
+            "old.lock",
+            "--nixpkgs-old",
+            "old",
+            "--nixpkgs-new",
+            "new",
+            "--reference",
+            "darwinConfigurations.ci",
+            "--at",
+            "2026-06-05T18:00:11Z",
+            "--out",
+            "2026-06.toml",
+        ]);
+        assert!(
+            parsed.is_err(),
+            "missing paired --lock-new must be rejected"
+        );
+        let err = parsed
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("asserted above: parse must fail"))?;
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        Ok(())
+    }
 }

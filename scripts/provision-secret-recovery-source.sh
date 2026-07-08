@@ -82,10 +82,12 @@ verify_password_store_recipients() {
     fingerprint="$(recipient_secret_key_fingerprint "$recipient")"
     [ -n "$fingerprint" ] \
       || die "password-store recipient の秘密鍵がローカルにありません。import/generate が必要です: $recipient"
-    if [ -n "$primary_fingerprint" ] && [ "$primary_fingerprint" != "$fingerprint" ]; then
-      die "password-store .gpg-id に複数の異なる recipient があり、primary fingerprint を一意に決定できません"
+    if [ -z "$primary_fingerprint" ]; then
+      primary_fingerprint="$fingerprint"
+      continue
     fi
-    [ -n "$primary_fingerprint" ] || primary_fingerprint="$fingerprint"
+    [ "$primary_fingerprint" = "$fingerprint" ] \
+      || die "password-store .gpg-id に異なる recipient が複数あります。primary fingerprint を一意に決められません"
   done < "$gpg_id_file"
   [ -n "$primary_fingerprint" ] \
     || die "password-store .gpg-id から有効な recipient を解決できません"
@@ -212,7 +214,7 @@ else
   log "既存 password-store Git repository を使用"
   PASS_PUSH_BRANCH="$(pass git branch --show-current 2>/dev/null || true)"
   [ -n "$PASS_PUSH_BRANCH" ] \
-    || die "既存 password-store repository の現在 branch を解決できません"
+    || die "既存 password-store repository の現在 branch を解決できません。detached HEAD の場合は push 前に branch へ checkout してください"
   if pass git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
     PASS_PUSH_MODE="current-upstream"
   else

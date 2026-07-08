@@ -194,6 +194,7 @@ struct TestHome {
     path: PathBuf,
     user: String,
     config_dir: PathBuf,
+    source_snapshot: PathBuf,
 }
 
 impl TestHome {
@@ -204,15 +205,21 @@ impl TestHome {
         let config_dir =
             env::temp_dir().join(format!("dotfiles-zsh-config-{}-{suffix}", process::id()));
         let config_dir_path = config_dir.display().to_string();
-        let source = env::current_dir()?.canonicalize()?.display().to_string();
+        let source_root = env::current_dir()?.canonicalize()?;
+        let source_snapshot =
+            env::temp_dir().join(format!("dotfiles-zsh-source-{}-{suffix}", process::id()));
         let _ = fs::remove_dir_all(&config_dir);
+        let _ = fs::remove_dir_all(&source_snapshot);
         fs::create_dir_all(&config_dir)?;
+        materialize_tracked_snapshot(&source_root, &source_snapshot)?;
+        let source = source_snapshot.canonicalize()?.display().to_string();
 
         cmd!(
             shell,
-            "env DOTFILES_CONFIG_DIR={config_dir_path} cargo run --package dotfiles-cli -- init --user {user} --host {user} --system aarch64-darwin --source {source}"
+            "env DOTFILES_CONFIG_DIR={config_dir_path} cargo run --package dotfiles-cli -- init --user {user} --host {user} --system aarch64-darwin --source {source} --skip-self-package"
         )
         .run()?;
+        assert_self_package_excluded(shell, &config_dir_path, &user)?;
 
         let activation_package = cmd!(
             shell,
@@ -260,6 +267,7 @@ impl TestHome {
             path,
             user,
             config_dir,
+            source_snapshot,
         })
     }
 
@@ -278,6 +286,7 @@ impl Drop for TestHome {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
         let _ = fs::remove_dir_all(&self.config_dir);
+        let _ = fs::remove_dir_all(&self.source_snapshot);
     }
 }
 
@@ -291,6 +300,121 @@ fn copy_with_home_rewrite(
     let text = fs::read_to_string(source)?;
     let rewritten = text.replace(generated_home, &home.display().to_string());
     fs::write(dest, rewritten)?;
+    Ok(())
+}
+
+/// mutable な worktree をそのまま path input に渡すと `target/` 配下の一時生成物の出入りで
+/// `nix flake lock` が壊れるため、`git ls-files` で列挙した tracked file だけを
+/// zsh 検証用 snapshot として materialize する。
+fn materialize_tracked_snapshot(source: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest)?;
+    let source_root = git_worktree_root(source)?;
+    for relative in tracked_files(source)? {
+        let source_path = source_root.join(&relative);
+        let dest_path = dest.join(&relative);
+        let file_type = match fs::symlink_metadata(&source_path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if file_type.is_symlink() {
+            let target = fs::read_link(&source_path)?;
+            unix_fs::symlink(target, &dest_path)?;
+        } else {
+            fs::copy(&source_path, &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// `git ls-files -z` を使い、未追跡ファイルを含まない snapshot 対象だけを返す。
+fn tracked_files(source: &Path) -> Result<Vec<PathBuf>> {
+    let source_root = git_worktree_root(source)?;
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(&source_root)
+        .args(["ls-files", "--full-name", "-z"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("git ls-files failed for {}", source_root.display());
+        }
+        bail!(
+            "git ls-files failed for {}: {stderr}",
+            source_root.display()
+        );
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            tracked_relative_path(Path::new(std::str::from_utf8(entry)?)).map(PathBuf::from)
+        })
+        .collect()
+}
+
+/// worktree 内の任意パスから git 管理ルートを解決する。
+fn git_worktree_root(source: &Path) -> Result<PathBuf> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!(
+                "git rev-parse --show-toplevel failed for {}",
+                source.display()
+            );
+        }
+        bail!(
+            "git rev-parse --show-toplevel failed for {}: {stderr}",
+            source.display()
+        );
+    }
+
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout)?.trim_end_matches('\n'),
+    ))
+}
+
+/// `git ls-files` 出力が worktree 相対パスに閉じていることを確認する。
+fn tracked_relative_path(path: &Path) -> Result<&Path> {
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        bail!("tracked path escapes worktree: {}", path.display());
+    }
+    Ok(path)
+}
+
+/// zsh 検証用 local flake では self package を外し、不要な dotfiles CLI release build を避ける。
+fn assert_self_package_excluded(shell: &Shell, config_dir_path: &str, user: &str) -> Result<()> {
+    let packages = cmd!(
+        shell,
+        "nix eval --raw --no-update-lock-file {config_dir_path}#homeConfigurations.{user}.config.home.packages --apply 'ps: builtins.concatStringsSep \",\" (builtins.map (p: p.name or \"\") ps)'"
+    )
+    .read()?;
+    if packages
+        .split(',')
+        .any(|name| name.starts_with("dotfiles-cli-"))
+    {
+        bail!("FAIL PATH:self-package-excluded\n  actual: {packages}");
+    }
+    println!("PASS PATH:self-package-excluded");
     Ok(())
 }
 
@@ -356,5 +480,143 @@ fn expect_absent(label: &str, actual: &str, needles: &[&str]) -> Result<()> {
     } else {
         println!("PASS {label}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check, materialize_tracked_snapshot, tracked_relative_path};
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{env, process};
+
+    type TestResult = anyhow::Result<()>;
+
+    #[test]
+    fn tracked_snapshot_excludes_untracked_env_file() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-zsh-tracked-source");
+        let snapshot = unique_temp_dir("dotfiles-zsh-tracked-dest");
+        fs::create_dir_all(repo.join("tracked"))?;
+        fs::write(repo.join("tracked/config.txt"), "tracked\n")?;
+        fs::write(repo.join(".env"), "SECRET=should-not-copy\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["config", "user.name", "dotfiles-checks"])?;
+        git(
+            &repo,
+            ["config", "user.email", "dotfiles-checks@example.com"],
+        )?;
+        git(&repo, ["add", "tracked/config.txt"])?;
+        git(&repo, ["commit", "-m", "track config"])?;
+
+        materialize_tracked_snapshot(&repo, &snapshot)?;
+
+        assert!(snapshot.join("tracked/config.txt").is_file());
+        assert!(!snapshot.join(".env").exists());
+
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_snapshot_skips_deleted_tracked_file() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-zsh-deleted-source");
+        let snapshot = unique_temp_dir("dotfiles-zsh-deleted-dest");
+        fs::create_dir_all(repo.join("tracked"))?;
+        fs::write(repo.join("tracked/keep.txt"), "keep\n")?;
+        fs::write(repo.join("tracked/deleted.txt"), "delete me\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["config", "user.name", "dotfiles-checks"])?;
+        git(
+            &repo,
+            ["config", "user.email", "dotfiles-checks@example.com"],
+        )?;
+        git(&repo, ["add", "tracked/keep.txt", "tracked/deleted.txt"])?;
+        git(&repo, ["commit", "-m", "track files"])?;
+
+        fs::remove_file(repo.join("tracked/deleted.txt"))?;
+        materialize_tracked_snapshot(&repo, &snapshot)?;
+
+        assert!(snapshot.join("tracked/keep.txt").is_file());
+        assert!(!snapshot.join("tracked/deleted.txt").exists());
+
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_snapshot_resolves_repo_root_from_subdirectory() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-zsh-subdir-source");
+        let snapshot = unique_temp_dir("dotfiles-zsh-subdir-dest");
+        fs::create_dir_all(repo.join("nested/work"))?;
+        fs::create_dir_all(repo.join("tracked"))?;
+        fs::write(repo.join("tracked/root.txt"), "root\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["config", "user.name", "dotfiles-checks"])?;
+        git(
+            &repo,
+            ["config", "user.email", "dotfiles-checks@example.com"],
+        )?;
+        git(&repo, ["add", "tracked/root.txt"])?;
+        git(&repo, ["commit", "-m", "track root file"])?;
+
+        materialize_tracked_snapshot(&repo.join("nested/work"), &snapshot)?;
+
+        assert!(snapshot.join("tracked/root.txt").is_file());
+
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_relative_path_rejects_parent_escape() {
+        assert!(tracked_relative_path(Path::new("../.env")).is_err());
+        assert!(tracked_relative_path(Path::new("/tmp/secret")).is_err());
+        assert!(tracked_relative_path(Path::new("tracked/config.txt")).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires nix/cargo and runs the real zsh check path"]
+    fn zsh_check_runs_via_test_home_new_with_tracked_snapshot() -> TestResult {
+        let previous = env::current_dir()?;
+        env::set_current_dir(repo_root())?;
+        let result = check();
+        env::set_current_dir(previous)?;
+        result
+    }
+
+    fn git<const N: usize>(repo: &Path, args: [&str; N]) -> TestResult {
+        let status = Command::new("git").current_dir(repo).args(args).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io_error(format!("git command failed: {:?}", args)).into())
+        }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id()))
+    }
+
+    fn repo_root() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("dotfiles-checks manifest dir should be nested under repo root")
+    }
+
+    fn io_error(message: String) -> std::io::Error {
+        std::io::Error::other(message)
     }
 }

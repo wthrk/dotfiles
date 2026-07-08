@@ -49,6 +49,8 @@ main orchestrator は、次を PR が merge 可能状態になるまで繰り返
 9. 委譲結果を集約し、新しい head OID に対して、checks、mergeability、未解決 thread、AI / Codex / Copilot review 結果を再確認する。
 10. ゴールを満たすまで手順 2 から 9 を繰り返す。
 
+GitHub Actions の macOS runner / インスタンスを手動で起動して checks を通す運用は、金額上の制約により許可しない。macOS 実行が pending / unavailable のまま mergeability が満たせない場合は、手動起動で回避せず保留条件として報告する。
+
 ## 指摘の扱い
 
 PR review comment への採用/不採用返信、対応済み thread の resolve、AI review の反復規則は `workflow.md` の `## 8. ブランチ・コミット・プルリクエスト運用` を正本とする。
@@ -76,5 +78,6 @@ PR review comment への採用/不採用返信、対応済み thread の resolve
 - merge conflict がある。
 - branch protection、required approval、required check などの条件が未充足である。
 - 明示的に依頼された、または required review / required check として要求された最新 head に対する AI / Codex / Copilot review を取得できない。
+- GitHub Actions の macOS runner / instance を手動起動しないと required checks を進められない。金額上の理由でその運用は許可されないため、手動起動で迂回せず blocked 条件として報告する。
 
 保留報告では、確認した head OID、未充足条件、次に必要な外部操作または待機対象を明示する。

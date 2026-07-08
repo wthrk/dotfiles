@@ -29,14 +29,12 @@ where
     let probe = SecretStorageSetupProbe::expected();
     let inspection = storage.inspect_secret_storage_setup(serial, &probe)?;
     let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
-    let pin = if pin_policy.device_requires_pin(serial)? {
+    if pin_policy.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
-    storage.initialize_secret_storage(serial, intent.clone(), pin.as_ref())?;
+        storage.verify_pin_input(serial, &pin)?;
+    }
+    storage.initialize_secret_storage(serial, intent.clone())?;
     storage.finalize_secret_storage_setup(serial, intent)
 }
 
@@ -84,11 +82,12 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
+        storage.expect_verify_pin_input().times(0);
         storage
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)
@@ -105,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_reads_pin_when_required() -> crate::Result<()> {
+    fn setup_verifies_pin_before_initialization_when_required() -> crate::Result<()> {
         let mut device = ports::MockDeviceSerialPort::new();
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut pin_input = ports::MockPinInputPort::new();
@@ -115,7 +114,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_| Ok(2001));
+            .returning(|requested| Ok(requested.unwrap_or(2001)));
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
@@ -137,11 +136,15 @@ mod tests {
                 )
             });
         storage
+            .expect_verify_pin_input()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
+        storage
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, _, pin| *serial == 2001 && pin.is_some())
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)

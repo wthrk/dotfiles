@@ -46,7 +46,10 @@ where
     } else {
         None
     };
-    storage_port.initialize_secret_storage(serial, setup_intent.clone(), pin.as_ref())?;
+    if let Some(pin) = pin.as_ref() {
+        storage_port.verify_pin_input(serial, pin)?;
+    }
+    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
     let bw_email = secret_input.read_bw_email_secret()?;
     let bw_password = secret_input.read_bw_password_secret()?;
     let bws_access_token = secret_input.read_bws_access_token_secret()?;
@@ -120,18 +123,19 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
-        let mut secret_input = ports::MockSecretInputPort::new();
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
+        storage.expect_verify_pin_input().times(0);
         storage
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(()));
+        let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
             .times(1)
@@ -239,20 +243,19 @@ mod tests {
 
     #[test]
     fn enroll_primary_prompt_reads_pin_when_required() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
         let mut device_serial = ports::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .returning(|_, _, _| Ok(()));
         storage
             .expect_store_secret()
             .times(3)
@@ -283,11 +286,6 @@ mod tests {
                     })
                 });
         }
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(true));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
@@ -302,10 +300,27 @@ mod tests {
             .times(1)
             .returning(|| Ok(material(b"token")));
         let mut pin_input = ports::MockPinInputPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(true));
         pin_input
             .expect_read_pin()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"123456")));
+        storage
+            .expect_verify_pin_input()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_enroll_report()
@@ -324,6 +339,107 @@ mod tests {
     }
 
     #[test]
+    fn enroll_primary_prompt_rejects_invalid_pin_before_secret_reads() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| Ok(setup_inspection()));
+        storage.expect_initialize_secret_storage().times(0);
+        storage.expect_verify_pin_input().times(0);
+        storage.expect_store_secret().times(0);
+        storage.expect_finalize_secret_storage_setup().times(0);
+        storage.expect_inspect_secret_storage_read().times(0);
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(true));
+        let mut pin_input = ports::MockPinInputPort::new();
+        pin_input
+            .expect_read_pin()
+            .times(1)
+            .returning(|| Ok(material(b"12")));
+        let mut secret_input = ports::MockSecretInputPort::new();
+        secret_input.expect_read_bw_email_secret().times(0);
+        secret_input.expect_read_bw_password_secret().times(0);
+        secret_input.expect_read_bws_access_token_secret().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut device_serial,
+            &mut pin_policy,
+            &secret_input,
+            &pin_input,
+            &mut storage,
+            &report,
+        );
+
+        assert!(
+            result.is_err(),
+            "invalid PIN must stop before reading secrets"
+        );
+    }
+
+    #[test]
+    fn enroll_primary_prompt_rejects_wrong_pin_before_secret_reads() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| Ok(setup_inspection()));
+        storage.expect_initialize_secret_storage().times(0);
+        storage
+            .expect_verify_pin_input()
+            .times(1)
+            .returning(|_, _| Err(anyhow::anyhow!("PIN verify failed")));
+        storage.expect_store_secret().times(0);
+        storage.expect_finalize_secret_storage_setup().times(0);
+        storage.expect_inspect_secret_storage_read().times(0);
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(true));
+        let mut pin_input = ports::MockPinInputPort::new();
+        pin_input
+            .expect_read_pin()
+            .times(1)
+            .returning(|| Ok(material(b"123456")));
+        let mut secret_input = ports::MockSecretInputPort::new();
+        secret_input.expect_read_bw_email_secret().times(0);
+        secret_input.expect_read_bw_password_secret().times(0);
+        secret_input.expect_read_bws_access_token_secret().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut device_serial,
+            &mut pin_policy,
+            &secret_input,
+            &pin_input,
+            &mut storage,
+            &report,
+        );
+
+        assert!(
+            result.is_err(),
+            "wrong PIN must stop before reading secrets and writes"
+        );
+    }
+
+    #[test]
     fn enroll_primary_prompt_stops_when_store_fails() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
         device_serial
@@ -338,7 +454,8 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(()));
+        storage.expect_verify_pin_input().times(0);
         storage
             .expect_store_secret()
             .times(1)
@@ -395,7 +512,8 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(()));
+        storage.expect_verify_pin_input().times(0);
         storage
             .expect_store_secret()
             .times(3)
