@@ -16,6 +16,8 @@ jobs:
     name: static checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      CACHE_ON_FAILURE: true
 
     steps:
       - name: checkout
@@ -39,6 +41,7 @@ jobs:
           shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           cmd-format: nix develop -c {0}
           cache-targets: true
+          save-if: ${{ github.ref == 'refs/heads/main' || env.CACHE_ON_FAILURE == 'true' || success() }}
 
       - name: static checks
         run: nix develop -c cargo xtask check static
