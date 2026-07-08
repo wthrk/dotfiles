@@ -243,24 +243,19 @@ mod tests {
 
     #[test]
     fn enroll_primary_prompt_reads_pin_when_required() -> crate::Result<()> {
+        let mut sequence = mockall::Sequence::new();
         let mut device_serial = ports::MockDeviceSerialPort::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .returning(|_, _| Ok(()));
-        storage
-            .expect_verify_pin_input()
-            .times(1)
-            .returning(|_, _| Ok(()));
         storage
             .expect_store_secret()
             .times(3)
@@ -291,11 +286,6 @@ mod tests {
                     })
                 });
         }
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(true));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
@@ -310,10 +300,27 @@ mod tests {
             .times(1)
             .returning(|| Ok(material(b"token")));
         let mut pin_input = ports::MockPinInputPort::new();
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(true));
         pin_input
             .expect_read_pin()
             .times(1)
+            .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"123456")));
+        storage
+            .expect_verify_pin_input()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_enroll_report()
