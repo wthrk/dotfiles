@@ -39,7 +39,6 @@ where
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
     let pin = if pin_policy.device_requires_pin(serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -50,6 +49,7 @@ where
     if let Some(pin) = pin.as_ref() {
         storage_port.verify_pin_input(serial, pin)?;
     }
+    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
     let bw_email = secret_input.read_bw_email_secret()?;
     let bw_password = secret_input.read_bw_password_secret()?;
     let bws_access_token = secret_input.read_bws_access_token_secret()?;
@@ -123,18 +123,18 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(()));
-        storage.expect_verify_pin_input().times(0);
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
             .expect_device_requires_pin()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
+        storage.expect_verify_pin_input().times(0);
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(()));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
@@ -343,10 +343,7 @@ mod tests {
             .expect_inspect_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .returning(|_, _| Ok(()));
+        storage.expect_initialize_secret_storage().times(0);
         storage.expect_verify_pin_input().times(0);
         storage.expect_store_secret().times(0);
         storage.expect_finalize_secret_storage_setup().times(0);
@@ -395,10 +392,7 @@ mod tests {
             .expect_inspect_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .returning(|_, _| Ok(()));
+        storage.expect_initialize_secret_storage().times(0);
         storage
             .expect_verify_pin_input()
             .times(1)

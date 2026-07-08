@@ -41,7 +41,6 @@ where
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     let pin = if pin_policy.device_requires_pin(spare_serial)? {
         let pin = pin_input.read_pin()?;
         validate_piv_pin_len(pin.len())?;
@@ -52,6 +51,7 @@ where
     if let Some(pin) = pin.as_ref() {
         storage_port.verify_pin_input(spare_serial, pin)?;
     }
+    storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     let fields = document_input.read_bootstrap_secret_fields()?;
     let document = BootstrapSecretDocument::from_field_map(fields)?;
     for (storage, value) in document.storage_entries(spare_serial) {
@@ -300,10 +300,7 @@ mod tests {
             .expect_inspect_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .returning(|_, _| Ok(()));
+        storage.expect_initialize_secret_storage().times(0);
         storage.expect_verify_pin_input().times(0);
         storage.expect_store_secret().times(0);
         storage.expect_finalize_secret_storage_setup().times(0);
@@ -355,10 +352,7 @@ mod tests {
             .expect_inspect_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(setup_inspection()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .returning(|_, _| Ok(()));
+        storage.expect_initialize_secret_storage().times(0);
         storage
             .expect_verify_pin_input()
             .times(1)
@@ -395,7 +389,10 @@ mod tests {
             .times(1)
             .returning(|_| Ok(2002));
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
         let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
