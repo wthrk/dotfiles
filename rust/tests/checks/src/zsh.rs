@@ -344,7 +344,10 @@ fn tracked_files(source: &Path) -> Result<Vec<PathBuf>> {
         if stderr.is_empty() {
             bail!("git ls-files failed for {}", source_root.display());
         }
-        bail!("git ls-files failed for {}: {stderr}", source_root.display());
+        bail!(
+            "git ls-files failed for {}: {stderr}",
+            source_root.display()
+        );
     }
 
     output
