@@ -162,6 +162,9 @@ fn build_entry(
 /// host allowlist 検査は呼び出し側で済むため、この seam は与えられた URL をそのまま取得する契約。
 type NotesFetch<'a> = dyn Fn(&str) -> Result<Option<RawReleaseNotes>> + 'a;
 
+/// 機械解決（repo / notes_source）で生リリースノートを得る seam。
+type ReleaseNotesFetch<'a> = dyn Fn(&VersionDelta) -> Result<Option<RawReleaseNotes>> + 'a;
+
 /// [`resolve_notes`] の結果（change_items + ノート URL）。change_items が空なら version-only。
 struct ResolvedNotes {
     change_items: Vec<ChangeItem>,
@@ -184,6 +187,7 @@ fn resolve_notes(
     at: &str,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
+    release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     registry: &NotesSourceRegistry,
 ) -> Result<NoteResolution> {
@@ -197,7 +201,7 @@ fn resolve_notes(
     // フロー 2（機械解決）: 未登録 or 自己修復なら Releases API / changelog で取得する。
     let mechanical = match &reused {
         Some(_) => None,
-        None => notes::fetch_release_notes(delta)?,
+        None => release_notes_fetch(delta)?,
     };
 
     let (seed, resolved_notes_url): (Option<RawReleaseNotes>, Option<String>) =
@@ -473,6 +477,7 @@ pub(crate) fn run_record(input: RecordInput<'_>, extract: &OpenAiExtractor) -> R
         &input,
         extract,
         &notes::fetch_from_source,
+        &notes::fetch_release_notes,
         &|name| extract.brew_homepage_hint(name),
         &|reference| eval::eval_declared_versions(reference),
         &brew::fetch_cask_rb,
@@ -489,6 +494,7 @@ pub(crate) fn run_backfill_version_only(
         registry_path,
         extract,
         &notes::fetch_from_source,
+        &notes::fetch_release_notes,
         &|name| extract.brew_homepage_hint(name),
     )
 }
@@ -498,6 +504,7 @@ fn run_backfill_version_only_with(
     registry_path: &Path,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
+    release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<()> {
     let mut document = read_document(history_path)?;
@@ -524,6 +531,7 @@ fn run_backfill_version_only_with(
                         &entry.at,
                         extract,
                         fetch_source,
+                        release_notes_fetch,
                         brew_hint,
                         &registry,
                     )?;
@@ -585,6 +593,7 @@ fn run_record_with(
     input: &RecordInput<'_>,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
+    release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     eval_new: &dyn Fn(&str) -> Result<std::collections::BTreeMap<String, NixPackage>>,
     fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
@@ -620,6 +629,7 @@ fn run_record_with(
                 &input.at,
                 extract,
                 fetch_source,
+                release_notes_fetch,
                 brew_hint,
                 &accum.registry,
             )?;
@@ -951,6 +961,11 @@ mod tests {
         Ok(None)
     }
 
+    /// 機械解決 seam（repo / notes_source）は既定で空にする（network 不要の固定）。
+    fn no_release_notes(_: &VersionDelta) -> Result<Option<RawReleaseNotes>> {
+        Ok(None)
+    }
+
     /// nix-new ファイルを与えるテストでは eval seam を踏まない（呼ばれたら空マップ）。
     fn no_eval(_: &str) -> Result<std::collections::BTreeMap<String, NixPackage>> {
         Ok(std::collections::BTreeMap::new())
@@ -1047,6 +1062,7 @@ mod tests {
             &input,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1077,6 +1093,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1114,6 +1131,7 @@ mod tests {
             &input,
             &FakeExtractor::new(),
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1148,6 +1166,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1374,6 +1393,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1411,6 +1431,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1455,6 +1476,7 @@ mod tests {
                     refetch_url: None,
                 }))
             },
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1518,6 +1540,7 @@ mod tests {
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &extract,
             &|_| anyhow::bail!("版固有 saved_source は再利用 fetch してはいけない"),
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1577,6 +1600,7 @@ mod tests {
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &FakeExtractor::new(),
             &|_| anyhow::bail!("版固有 saved_source は fetch してはいけない"),
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1605,6 +1629,7 @@ mod tests {
             &input(&dir, &out, &registry, None, None),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1634,6 +1659,7 @@ mod tests {
             &inp,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1671,6 +1697,7 @@ mod tests {
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1727,6 +1754,7 @@ mod tests {
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &extract,
             &fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1781,6 +1809,7 @@ mod tests {
             &inp,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &fetch_cask,
@@ -1822,6 +1851,7 @@ mod tests {
             &inp,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &eval_new,
             &no_cask,
@@ -2118,10 +2148,17 @@ origin = \"none\"
                 source_url: Some("https://developers.openai.com/codex/changelog".to_string()),
             },
         );
-        run_backfill_version_only_with(&history, &registry, &extractor, &|_| Ok(None), &|name| {
-            Ok((name == "codex-app")
-                .then(|| "https://developers.openai.com/codex/changelog".to_string()))
-        })?;
+        run_backfill_version_only_with(
+            &history,
+            &registry,
+            &extractor,
+            &|_| Ok(None),
+            &no_release_notes,
+            &|name| {
+                Ok((name == "codex-app")
+                    .then(|| "https://developers.openai.com/codex/changelog".to_string()))
+            },
+        )?;
         let after = read_document(&history)?;
         let package = &after.updates[0].packages[0];
         assert_eq!(
@@ -2181,11 +2218,18 @@ origin = \"none\"
                 source_url: Some("https://developers.openai.com/codex/changelog".to_string()),
             },
         );
-        run_backfill_version_only_with(&history, &registry, &extractor, &|_| Ok(None), &|_| {
-            Ok(Some(
-                "https://developers.openai.com/codex/changelog".to_string(),
-            ))
-        })?;
+        run_backfill_version_only_with(
+            &history,
+            &registry,
+            &extractor,
+            &|_| Ok(None),
+            &no_release_notes,
+            &|_| {
+                Ok(Some(
+                    "https://developers.openai.com/codex/changelog".to_string(),
+                ))
+            },
+        )?;
         let after = read_registry(&registry)?;
         let expected = entry_of(
             Some("https://developers.openai.com/codex/changelog"),
@@ -2244,6 +2288,7 @@ origin = \"none\"
             &registry,
             &FakeExtractor::new(),
             &|_| Ok(None),
+            &no_release_notes,
             &|_| Ok(None),
         )?;
 

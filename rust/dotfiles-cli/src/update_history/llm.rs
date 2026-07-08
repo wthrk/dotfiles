@@ -176,6 +176,7 @@ type ModelCall<'a> = dyn Fn(CreateChatCompletionRequest) -> Result<ResponseMessa
 struct ResponseMessage {
     content: Option<String>,
     tool_calls: Vec<ChatCompletionMessageToolCall>,
+    request_failed: bool,
 }
 
 /// OpenAI 抽出を実装する本物の extractor（`async-openai` の typed client で API を叩く）。
@@ -255,6 +256,9 @@ where
             user_message(&summarize_user_prompt(request))?,
         ];
         let response = call(summarize_request(messages)?)?;
+        if response.request_failed {
+            return Ok(ExtractOutcome::default());
+        }
         let items = parse_change_items(response.content.as_deref().unwrap_or_default());
         if !items.is_empty() {
             return Ok(ExtractOutcome {
@@ -365,6 +369,12 @@ fn summarize_after_tools(
     adopted_source: Option<String>,
 ) -> Result<ExtractOutcome> {
     let response = call(summarize_request(messages)?)?;
+    if response.request_failed {
+        return Ok(ExtractOutcome {
+            items: Vec::new(),
+            source_url: adopted_source,
+        });
+    }
     Ok(ExtractOutcome {
         items: parse_change_items(response.content.as_deref().unwrap_or_default()),
         source_url: adopted_source,
@@ -390,7 +400,10 @@ fn model_call(
                 "degraded"
             };
             eprintln!("OpenAI extract {kind}: {}", error_snippet(&error));
-            Ok(ResponseMessage::default())
+            Ok(ResponseMessage {
+                request_failed: true,
+                ..ResponseMessage::default()
+            })
         }
     }
 }
@@ -421,6 +434,7 @@ fn run_blocking(
                 .map(|choice| ResponseMessage {
                     content: choice.message.content,
                     tool_calls: choice.message.tool_calls.unwrap_or_default(),
+                    request_failed: false,
                 })
                 .unwrap_or_default();
             Ok(message)
@@ -779,6 +793,7 @@ mod tests {
         ResponseMessage {
             content: Some(json.to_string()),
             tool_calls: Vec::new(),
+            request_failed: false,
         }
     }
 
@@ -832,16 +847,14 @@ mod tests {
     fn summarize_request_uses_strict_json_schema() -> Result<()> {
         // 最終要約は strict JSON schema の structured output（手組み body ではなく typed response_format）。
         let request = summarize_request(vec![user_message("u")?])?;
-        match request.response_format {
-            Some(ResponseFormat::JsonSchema { json_schema }) => {
-                assert_eq!(json_schema.name, "release_changes");
-                assert_eq!(json_schema.strict, Some(true));
-                let schema = json_schema.schema.unwrap_or_default();
-                let required = &schema["properties"]["changes"]["items"]["required"];
-                assert_eq!(required, &serde_json::json!(["category", "text", "ref"]));
-            }
-            other => panic!("expected json_schema response_format, got {other:?}"),
-        }
+        let Some(ResponseFormat::JsonSchema { json_schema }) = request.response_format else {
+            anyhow::bail!("expected json_schema response_format");
+        };
+        assert_eq!(json_schema.name, "release_changes");
+        assert_eq!(json_schema.strict, Some(true));
+        let schema = json_schema.schema.unwrap_or_default();
+        let required = &schema["properties"]["changes"]["items"]["required"];
+        assert_eq!(required, &serde_json::json!(["category", "text", "ref"]));
         Ok(())
     }
 
@@ -1104,6 +1117,7 @@ mod tests {
                             "c1",
                             "https://github.com/docker/cli/releases",
                         )],
+                        request_failed: false,
                     })
                 }
                 _ => Ok(changes_content(
@@ -1145,6 +1159,7 @@ mod tests {
                         "c1",
                         "https://github.com/neovim/neovim/releases",
                     )],
+                    request_failed: false,
                 })
             } else {
                 Ok(changes_content(
@@ -1174,6 +1189,29 @@ mod tests {
         let outcome = run_extraction(&request_with("x", None, None), call, |_| Ok(None))?;
         assert!(outcome.items.is_empty());
         assert_eq!(outcome.source_url, None);
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_extraction_request_failure_short_circuits_without_tool_use() -> Result<()> {
+        let calls = Cell::new(0u32);
+        let call: &ModelCall<'_> = &|request| {
+            calls.set(calls.get() + 1);
+            assert!(request.tools.is_none(), "seed 要約は tool-use に進まない");
+            Ok(ResponseMessage {
+                content: None,
+                tool_calls: Vec::new(),
+                request_failed: true,
+            })
+        };
+        let outcome = run_extraction(
+            &request_with("openssl", None, Some("CVE fix")),
+            call,
+            |_| Err(anyhow::anyhow!("request failure must not reach fetch")),
+        )?;
+        assert!(outcome.items.is_empty());
+        assert_eq!(outcome.source_url, None);
+        assert_eq!(calls.get(), 1);
         Ok(())
     }
 

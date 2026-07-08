@@ -116,6 +116,10 @@ impl SecretStoragePort for StorageAdapter {
     ) -> Result<ProtectedSecret> {
         self.0.load_secret(serial, intent, pin)
     }
+
+    fn verify_pin_input(&mut self, serial: u32, pin: &ProtectedSecret) -> Result<()> {
+        self.0.verify_pin_input(serial, pin)
+    }
 }
 
 /// `gpg-secret-key-backup` recipient 運用（PIV slot 82 公開鍵）を port 契約へ翻訳する adapter。
@@ -197,7 +201,8 @@ trait SecretDeviceIo {
     fn piv_application_version(&self) -> PivApplicationVersion;
     fn pin_retries(&mut self) -> Result<u8>;
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
-    fn generate_key(&mut self) -> Result<()>;
+    fn generate_key(&mut self) -> Result<Vec<u8>>;
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>);
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
     fn requires_pin_input(&self) -> bool;
@@ -282,8 +287,12 @@ impl SecretDeviceIo for SelectedSecretDevice {
         self.inner.check_management_auth_preconditions()
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         self.inner.generate_key()
+    }
+
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>) {
+        self.inner.remember_generated_public_key(public_key);
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
@@ -351,6 +360,7 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
         Ok(SelectedSecretDevice::new(YubikeySecretDevice {
             yubikey: YubiKey::open_by_serial(Serial(serial))?,
             pin_verified: false,
+            generated_public_key: None,
         }))
     }
 }
@@ -364,6 +374,7 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
 struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
+    generated_public_key: Option<Vec<u8>>,
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -382,6 +393,10 @@ impl YubikeySecretDevice {
     }
 
     fn slot_public_key(&mut self) -> Result<RsaPublicKey> {
+        if let Some(public) = self.generated_public_key.as_deref() {
+            return RsaPublicKey::from_pkcs1_der(public)
+                .context("failed to parse cached YubiKey secret storage public key");
+        }
         match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
             Ok(metadata) => {
                 let public = metadata
@@ -456,17 +471,23 @@ impl SecretDeviceIo for YubikeySecretDevice {
         Ok(())
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
-        piv::generate(
+        let public = piv::generate(
             &mut self.yubikey,
             SECRET_SLOT,
             AlgorithmId::Rsa2048,
             PinPolicy::Once,
             TouchPolicy::Always,
         )?;
-        Ok(())
+        let encoded = public.subject_public_key.raw_bytes().to_vec();
+        self.generated_public_key = Some(encoded.clone());
+        Ok(encoded)
+    }
+
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>) {
+        self.generated_public_key = Some(public_key);
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {

@@ -56,10 +56,10 @@ enum UpdateHistoryCommand {
 /// nightly bump で更新されたアプリの version + 概要を 1 エントリ記録する option（CI が叩く）。
 struct RecordOptions {
     /// bump 前 lock ファイル（state key は Rust 側で算出する）。
-    #[arg(long)]
+    #[arg(long, requires = "lock_new")]
     lock_old: Option<PathBuf>,
     /// bump 後 lock ファイル（state key は Rust 側で算出する）。
-    #[arg(long)]
+    #[arg(long, requires = "lock_old")]
     lock_new: Option<PathBuf>,
     /// 既存 `show --rev` 利用者向けの legacy cursor old（通常は bump 前 repo HEAD）。
     #[arg(long)]
@@ -295,4 +295,39 @@ fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<Strin
         .and_then(|node| node.get("path"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    #[test]
+    fn record_requires_both_lock_paths() -> crate::Result<()> {
+        let parsed = crate::cli::Cli::try_parse_from([
+            "dotfiles",
+            "update-history",
+            "record",
+            "--lock-old",
+            "old.lock",
+            "--nixpkgs-old",
+            "old",
+            "--nixpkgs-new",
+            "new",
+            "--reference",
+            "darwinConfigurations.ci",
+            "--at",
+            "2026-06-05T18:00:11Z",
+            "--out",
+            "2026-06.toml",
+        ]);
+        assert!(
+            parsed.is_err(),
+            "missing paired --lock-new must be rejected"
+        );
+        let err = parsed
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("asserted above: parse must fail"))?;
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        Ok(())
+    }
 }
