@@ -41,7 +41,7 @@ jobs:
           shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           cmd-format: nix develop -c {0}
           cache-targets: true
-          save-if: ${{ github.ref == 'refs/heads/main' || env.CACHE_ON_FAILURE == 'true' || success() }}
+          save-if: ${{ github.ref == 'refs/heads/main' || env.CACHE_ON_FAILURE == 'true' }}
 
       - name: static checks
         run: nix develop -c cargo xtask check static
