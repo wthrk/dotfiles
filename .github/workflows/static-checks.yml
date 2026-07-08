@@ -36,7 +36,7 @@ jobs:
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}
+          shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           cmd-format: nix develop -c {0}
           cache-targets: true
 
