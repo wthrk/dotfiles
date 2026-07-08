@@ -1,3 +1,9 @@
+//! update-history の curated fallback source と provenance 正規化を集約する。
+//!
+//! `record` / `backfill-version-only` が release notes source を決める際、この module が package 名・version・
+//! homepage・changelog から安定 URL を返す。これらの入力値は外部 source 由来で信頼境界外なので、ここでは
+//! repository / notes URL のヒント化と version 固定 URL の正規化だけを担当し、取得や要約は他 module へ委譲する。
+
 use super::wire::PackageSource;
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
