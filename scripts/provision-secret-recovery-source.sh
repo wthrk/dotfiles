@@ -191,7 +191,7 @@ SPARE_SERIAL="$(optional_spare_yubikey_serial)"
 # ── 2. GitHub への SSH 公開鍵登録（authentication subkey 由来）──
 log "authentication subkey 由来 SSH 公開鍵を GitHub に登録"
 SSH_PUB="$(dotfiles gpg export-ssh-public-key --primary-fingerprint "${PRIMARY_FINGERPRINT}")"
-gh ssh-key list 2>/dev/null | grep -qF "$(printf '%s' "$SSH_PUB" | awk '{print $2}')}" \
+gh ssh-key list 2>/dev/null | grep -qF "$(printf '%s' "$SSH_PUB" | awk '{print $2}')" \
   || printf '%s\n' "$SSH_PUB" | gh ssh-key add - --title "dotfiles-gpg-auth-$(date +%Y%m%d)"
 
 # ── 3. private password-store repository の remote 設定・push ──
