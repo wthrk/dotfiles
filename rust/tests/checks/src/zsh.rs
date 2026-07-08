@@ -308,8 +308,9 @@ fn copy_with_home_rewrite(
 /// zsh 検証用 snapshot として materialize する。
 fn materialize_tracked_snapshot(source: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
+    let source_root = git_worktree_root(source)?;
     for relative in tracked_files(source)? {
-        let source_path = source.join(&relative);
+        let source_path = source_root.join(&relative);
         let dest_path = dest.join(&relative);
         let file_type = match fs::symlink_metadata(&source_path) {
             Ok(metadata) => metadata.file_type(),
@@ -332,17 +333,18 @@ fn materialize_tracked_snapshot(source: &Path, dest: &Path) -> Result<()> {
 
 /// `git ls-files -z` を使い、未追跡ファイルを含まない snapshot 対象だけを返す。
 fn tracked_files(source: &Path) -> Result<Vec<PathBuf>> {
+    let source_root = git_worktree_root(source)?;
     let output = process::Command::new("git")
         .arg("-C")
-        .arg(source)
-        .args(["ls-files", "-z"])
+        .arg(&source_root)
+        .args(["ls-files", "--full-name", "-z"])
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
-            bail!("git ls-files failed for {}", source.display());
+            bail!("git ls-files failed for {}", source_root.display());
         }
-        bail!("git ls-files failed for {}: {stderr}", source.display());
+        bail!("git ls-files failed for {}: {stderr}", source_root.display());
     }
 
     output
@@ -353,6 +355,32 @@ fn tracked_files(source: &Path) -> Result<Vec<PathBuf>> {
             tracked_relative_path(Path::new(std::str::from_utf8(entry)?)).map(PathBuf::from)
         })
         .collect()
+}
+
+/// worktree 内の任意パスから git 管理ルートを解決する。
+fn git_worktree_root(source: &Path) -> Result<PathBuf> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!(
+                "git rev-parse --show-toplevel failed for {}",
+                source.display()
+            );
+        }
+        bail!(
+            "git rev-parse --show-toplevel failed for {}: {stderr}",
+            source.display()
+        );
+    }
+
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout)?.trim_end_matches('\n'),
+    ))
 }
 
 /// `git ls-files` 出力が worktree 相対パスに閉じていることを確認する。
@@ -512,6 +540,32 @@ mod tests {
 
         assert!(snapshot.join("tracked/keep.txt").is_file());
         assert!(!snapshot.join("tracked/deleted.txt").exists());
+
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(snapshot);
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_snapshot_resolves_repo_root_from_subdirectory() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-zsh-subdir-source");
+        let snapshot = unique_temp_dir("dotfiles-zsh-subdir-dest");
+        fs::create_dir_all(repo.join("nested/work"))?;
+        fs::create_dir_all(repo.join("tracked"))?;
+        fs::write(repo.join("tracked/root.txt"), "root\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["config", "user.name", "dotfiles-checks"])?;
+        git(
+            &repo,
+            ["config", "user.email", "dotfiles-checks@example.com"],
+        )?;
+        git(&repo, ["add", "tracked/root.txt"])?;
+        git(&repo, ["commit", "-m", "track root file"])?;
+
+        materialize_tracked_snapshot(&repo.join("nested/work"), &snapshot)?;
+
+        assert!(snapshot.join("tracked/root.txt").is_file());
 
         let _ = fs::remove_dir_all(repo);
         let _ = fs::remove_dir_all(snapshot);
