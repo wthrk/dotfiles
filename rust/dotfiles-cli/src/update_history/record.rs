@@ -683,7 +683,14 @@ fn run_record_with(
     let state_old = lock_state_key(input.lock_old)?;
     let state_new = lock_state_key(input.lock_new)?;
     let lock_advanced = state_old != state_new;
-    if !(nixpkgs_advanced || cask_advanced || lock_advanced) && materials.is_empty() {
+    let legacy_cursor_advanced = input
+        .cursor_old
+        .as_deref()
+        .zip(input.cursor_new.as_deref())
+        .is_some_and(|(old, new)| old != new);
+    if !(nixpkgs_advanced || cask_advanced || lock_advanced || legacy_cursor_advanced)
+        && materials.is_empty()
+    {
         return Ok(());
     }
 
@@ -1666,6 +1673,36 @@ mod tests {
         )?;
         // rev 不変・空素材 → append しない（ファイルが存在しない）。
         assert!(read_entries(&out)?.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_appends_empty_chain_link_when_only_legacy_cursor_advances() -> Result<()> {
+        let dir = temp_dir("legacy-cursor-chain-link");
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let base = input(&dir, &out, &registry, None, None);
+        let inp = RecordInput {
+            nixpkgs_new: base.nixpkgs_old.clone(),
+            cursor_old: Some("base-sha".to_string()),
+            cursor_new: Some("next-sha".to_string()),
+            ..base
+        };
+        run_record_with(
+            &inp,
+            &FakeExtractor::new(),
+            &no_fetch_source,
+            &no_release_notes,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+        let entries = read_entries(&out)?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].packages.is_empty());
+        assert_eq!(entries[0].legacy_cursor_old.as_deref(), Some("base-sha"));
+        assert_eq!(entries[0].legacy_cursor_new.as_deref(), Some("next-sha"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
