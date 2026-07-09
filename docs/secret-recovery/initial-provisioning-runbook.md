@@ -4,7 +4,7 @@
 
 正本（挙動・停止条件・形式・token モデルの定義）:
 [secret-recovery-spec.md](secret-recovery-spec.md) /
-[bitwarden-personal-vault-design.md](bitwarden-personal-vault-design.md#初期登録手順) /
+[bitwarden-personal-vault-design.md](bitwarden-personal-vault-design.md) /
 [yubikey-secret-storage-design.md](yubikey-secret-storage-design.md) /
 [gnupg-ssh-design.md](gnupg-ssh-design.md)
 
