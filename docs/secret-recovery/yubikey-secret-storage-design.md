@@ -1,6 +1,6 @@
 # YubiKey 秘密情報保存設計
 
-この文書は、[secret-recovery-spec.md](./secret-recovery-spec.md) の [責務分担 / YubiKey](./secret-recovery-spec.md#yubikey) を具体化する到達設計仕様を定義する恒久文書である。対象は `bw-email`、`bw-password`、`bitwarden-client-secret` を YubiKey に保存し、復旧コマンドから安全に取得するための `dotfiles secrets yubikey` サブコマンドである。
+この文書は、[secret-recovery-spec.md](./secret-recovery-spec.md) の [責務分担 / YubiKey](./secret-recovery-spec.md#yubikey) を具体化する到達設計仕様を定義する恒久文書である。対象は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を YubiKey に保存し、復旧コマンドから安全に取得するための `dotfiles secrets yubikey` サブコマンドである。
 
 この文書は完成形の設計だけを扱う。
 
@@ -87,7 +87,7 @@ PIV data object は app 独自データを置けるが、今回使う object は
 
 この文書で扱うスペア YubiKey は、`dotfiles` 独自の bootstrap secret storage に限る。Bitwarden、GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F / OTP 登録は各サービス側で primary と spare を別々に登録する。OATH TOTP は同じ TOTP secret / QR code を primary と spare の両方に登録する。
 
-スペア YubiKey は事前登録を必須にする。primary YubiKey の紛失後に、primary だけに保存されていた `bw-email`、`bw-password`、`bitwarden-client-secret` からスペアを後付け作成することはできない。
+スペア YubiKey は事前登録を必須にする。primary YubiKey の紛失後に、primary だけに保存されていた `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` からスペアを後付け作成することはできない。
 
 同じ PIV 秘密鍵を複製して複数 YubiKey に入れる運用は採用しない。各 YubiKey で slot `82` に別々の non-exportable key を生成し、同じ secret をその YubiKey の public key で個別に wrap して保存する。
 
@@ -99,13 +99,13 @@ dotfiles secrets yubikey enroll-spare
 
 `enroll-spare` は次を一連の処理として実行する。
 
-1. primary YubiKey を選択し、PIN 検証 と touch を経て `bw-email`、`bw-password`、`bitwarden-client-secret` を復号する。
+1. primary YubiKey を選択し、PIN 検証 と touch を経て `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を復号する。
 2. primary 読み出しが完了した直後に spare YubiKey を選択する。primary と spare を同時接続できない場合は、この時点で primary を抜いて spare を挿し、prompt で Enter を押させる。
 3. spare の専用 PIV slot / object が未使用であることを確認し、必要なら setup を行う。
 4. primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
 5. ローカル確認 を実行し、spare 単体で 4 種類の secret を復号できることを確認する。
 
-secret はプロセスメモリ上の `ProtectedSecret` にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-email`、`bw-password`、`bitwarden-client-secret` の再入力を要求しない。
+secret はプロセスメモリ上の `ProtectedSecret` にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` の再入力を要求しない。
 
 spare に保存する blob は primary の ciphertext、nonce、wrapped key を流用しない。spare の PIV public key に対して新しい content encryption key を wrap し、AEAD additional data には spare の serial と保存先 object ID を使う。これにより、primary 由来の serial や blob を spare 側に持ち込まない。
 
@@ -307,7 +307,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 ローカル保管確認 は次を確認する。
 
 - manifest が存在し、app、version が期待値と一致する。
-- `bw-email`、`bw-password`、`bitwarden-client-secret` の blob が存在する。
+- `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` の blob が存在する。
 - blob の magic、version、algorithm、secret id、length field が妥当である。
 - PIN 検証 と touch を経て 4 種類の secret を復号できる。
 - 復号した secret は空ではない。
