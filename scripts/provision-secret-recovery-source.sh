@@ -15,7 +15,7 @@ set -euo pipefail
 # client-secret は command substitution と pipe で扱うため、`bash -x` 実行時でも値を trace へ
 # 出さない。復元はしない。
 { set +x; } 2>/dev/null || true
-trap 'unset PROVISIONING_CLIENT_SECRET RECOVERY_CLIENT_SECRET' EXIT
+trap 'unset CLIENT_ID PROVISIONING_CLIENT_SECRET RECOVERY_CLIENT_SECRET' EXIT
 
 # ─── 設定（既定値を自動導出。必要なら環境変数で上書き）───
 GPG_ALGO_PRIMARY="${GPG_ALGO_PRIMARY:-ed25519}"
@@ -212,7 +212,7 @@ fi
 confirm_password_store_primary_fingerprint
 
 # ── 4. Bitwarden vault への復旧用 secret 登録 ──
-pause "Bitwarden 個人 API キーを入力してください（Webアプリの Settings → Security → Keys → View API key から client_id / client_secret を取得）。client_secret を入力してください。"
+pause "Bitwarden 個人 API キーを入力してください（Webアプリの Settings → Security → Keys → View API key から取得）。client_secret を入力してください。"
 PROVISIONING_CLIENT_SECRET="$(read_client_secret 'client_secret: ')"
 
 log "Bitwarden vault に password-store-remote を登録"
