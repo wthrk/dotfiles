@@ -28,6 +28,7 @@
 - exact file-set、file-count、actor/run bookkeeping、current-cycle 文言、補助記録の完全同期は review gate / commit gate / PR 対応義務の代替にしない。
 - PR review comment への採用/不採用返信と resolved 状態の維持は、補助記録同期とは別の実作業義務として扱う。
 - 文書ファイル（.md を含む）の一括置換に Python スクリプト・sed スクリプトを使ってはならない。文書の変更は常に edit ツールで行う。
+- 外部 crate、特に SDK（`bitwarden`、`yubikey` 等）の実装を変更する前には、必ず当該 crate の公式ドキュメントを参照し、API 仕様・認証方式・データモデルを確認してから実装すること。ドキュメント未確認のまま API 呼び出しを推測・捏造してはならない。
 
 ## 参照規則
 
