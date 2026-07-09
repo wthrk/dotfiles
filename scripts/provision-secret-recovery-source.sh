@@ -235,17 +235,23 @@ else
   warn "spare YubiKey serial が未指定のため gpg-backup add-spare は未実行です。spare で復旧可能にするには後で dotfiles secrets gpg-backup add-spare を実行してください。"
 fi
 
-# ── 5. YubiKey への client-secret 保存 ──
+# ── 5. YubiKey への API key 保存 ──
+CLIENT_ID="$(read_client_secret 'bitwarden-client-id: ')"
+
 RECOVERY_CLIENT_SECRET="$(read_client_secret 'YubiKey 保存用 client_secret: ')"
 [ "$RECOVERY_CLIENT_SECRET" != "$PROVISIONING_CLIENT_SECRET" ] \
   || die "YubiKey 保存用 client_secret が登録・更新用 token と同一です"
+log "client-id を YubiKey に保存"
+printf '%s\n' "$CLIENT_ID" | dotfiles secrets yubikey put bitwarden-client-id --stdin ${YUBIKEY_SERIAL:+--serial "$YUBIKEY_SERIAL"}
 log "client-secret を YubiKey に保存"
 store_recovery_client_secret "$YUBIKEY_SERIAL"
 if [ -n "${SPARE_SERIAL:-}" ]; then
+  log "client-id を spare YubiKey にも保存"
+  printf '%s\n' "$CLIENT_ID" | dotfiles secrets yubikey put bitwarden-client-id --stdin ${SPARE_SERIAL:+--serial "$SPARE_SERIAL"}
   log "client-secret を spare YubiKey にも保存"
   store_recovery_client_secret "$SPARE_SERIAL"
 fi
-unset PROVISIONING_CLIENT_SECRET RECOVERY_CLIENT_SECRET
+unset CLIENT_ID PROVISIONING_CLIENT_SECRET RECOVERY_CLIENT_SECRET
 
 # ── 手動: 各サービスの YubiKey 物理登録 ──
 pause "次を各サービスの UI / 管理画面で行ってください（API でリモート登録できない物理/アカウント操作）:
