@@ -81,7 +81,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
         }
 
         if token.is_none() {
-            token = Some(secret_input.read_bws_access_token_secret()?);
+            token = Some(secret_input.read_bitwarden_client_secret_secret()?);
         }
         let Some(token) = token.as_ref() else {
             bail!("rotate token is unavailable");
@@ -161,7 +161,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -182,7 +183,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"access-token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"access-token"),
                     })
                 });
         }
@@ -218,11 +219,11 @@ mod tests {
             .expect_inspect_secret_storage_write()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BwsAccessToken)
+            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BitwardenClientSecret)
             .returning(|_, _| Ok(write_inspection(false)));
         expect_local_verify_ok(&mut storage, &mut sequence, 2001);
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_secret_secret()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"new-token")));
@@ -232,7 +233,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .withf(|serial, intent, secret| {
                 *serial == 2001
-                    && intent.storage.name == SecretName::BwsAccessToken
+                    && intent.storage.name == SecretName::BitwardenClientSecret
                     && secret.len() == b"new-token".len()
             })
             .returning(|_, _, _| Ok(()));
@@ -278,7 +279,7 @@ mod tests {
         let mut secret_input = ports::MockSecretInputPort::new();
         let mut continuation = ports::MockRotationContinuationPort::new();
         let pin_input = ports::MockPinInputPort::new();
-        secret_input.expect_read_bws_access_token_secret().times(0);
+        secret_input.expect_read_bitwarden_client_secret_secret().times(0);
         continuation.expect_continue_rotation().times(0);
 
         let mut storage = ports::MockSecretStoragePort::new();
@@ -344,7 +345,7 @@ mod tests {
             .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_secret_secret()
             .times(1)
             .returning(|| Ok(material(b"new-token")));
         let mut continuation = ports::MockRotationContinuationPort::new();
@@ -368,7 +369,7 @@ mod tests {
                 .expect_store_secret()
                 .times(1)
                 .withf(move |actual_serial, intent, _| {
-                    *actual_serial == serial && intent.storage.name == SecretName::BwsAccessToken
+                    *actual_serial == serial && intent.storage.name == SecretName::BitwardenClientSecret
                 })
                 .returning(|_, _, _| Ok(()));
             expect_local_verify_ok(&mut storage, &mut sequence, serial);
@@ -410,7 +411,7 @@ mod tests {
             .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_secret_secret()
             .times(1)
             .returning(|| Ok(material(b"new-token")));
         let mut continuation = ports::MockRotationContinuationPort::new();

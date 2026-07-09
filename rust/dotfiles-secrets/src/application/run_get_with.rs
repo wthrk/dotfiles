@@ -85,7 +85,7 @@ mod tests {
             .expect_inspect_secret_storage_read()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BwsAccessToken)
+            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BitwardenClientSecret)
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
@@ -102,7 +102,7 @@ mod tests {
 
         run_get_with(
             GetCommand {
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
                 serial: Some(2001),
             },
             &mut device_serial,
@@ -145,7 +145,7 @@ mod tests {
 
         run_get_with(
             GetCommand {
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
                 serial: Some(2001),
             },
             &mut device_serial,

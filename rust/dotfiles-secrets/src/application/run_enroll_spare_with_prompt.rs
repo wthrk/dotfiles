@@ -43,7 +43,7 @@ where
     } else {
         None
     };
-    let [first_storage, second_storage, third_storage] =
+    let [first_storage, second_storage, third_storage, fourth_storage] =
         SecretStorageVerificationPlan::for_serial(primary_serial).into_targets();
     let first_inspection =
         storage_port.inspect_secret_storage_read(primary_serial, &first_storage)?;
@@ -70,10 +70,20 @@ where
         .load_secret(primary_serial, &third_intent, primary_pin.as_ref())
         .map_err(|error| third_intent.decode_error(error))?;
     third_intent.validate_loaded_secret(&third)?;
+    let fourth_inspection =
+        storage_port.inspect_secret_storage_read(primary_serial, &fourth_storage)?;
+    let fourth_intent =
+        SecretStorageReadIntent::from_inspection(fourth_storage, fourth_inspection)?;
+    let fourth_document_storage = fourth_intent.storage.clone();
+    let fourth = storage_port
+        .load_secret(primary_serial, &fourth_intent, primary_pin.as_ref())
+        .map_err(|error| fourth_intent.decode_error(error))?;
+    fourth_intent.validate_loaded_secret(&fourth)?;
     let document = BootstrapSecretDocument::from_storage_materials([
         (first_document_storage, first),
         (second_document_storage, second),
         (third_document_storage, third),
+        (fourth_document_storage, fourth),
     ])?;
     let spare_serial = spare_device.resolve_spare_device_serial(command.spare_serial)?;
     command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
@@ -195,7 +205,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -211,7 +222,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }
@@ -232,7 +243,7 @@ mod tests {
             .returning(|_, _| Ok(()));
         storage
             .expect_store_secret()
-            .times(3)
+            .times(4)
             .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
@@ -241,7 +252,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -255,7 +267,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }
@@ -297,7 +309,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -311,7 +324,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }
@@ -372,7 +385,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -386,7 +400,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }
@@ -442,7 +456,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -456,7 +471,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }

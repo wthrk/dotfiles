@@ -30,12 +30,6 @@ pub struct PutCommand {
 }
 
 impl PutCommand {
-    /// 非対話 put use case が要求する対象 serial を返す。
-    pub fn required_serial(&self) -> Result<u32> {
-        self.serial
-            .ok_or_else(|| invalid_input("pass --serial in non-interactive use").into())
-    }
-
     /// 指定 serial に対する put 対象の storage spec を返す。
     pub fn storage_spec(&self, serial: u32) -> SecretStorageSpec {
         self.name.storage_spec(serial)
@@ -123,15 +117,9 @@ pub struct RotateBwsTokenCommand {
 }
 
 impl RotateBwsTokenCommand {
-    /// rotate-bws-token が要求する対象 serial を返す。
-    pub fn required_serial(self) -> Result<u32> {
-        self.serial
-            .ok_or_else(|| invalid_input("pass --serial in non-interactive use").into())
-    }
-
     /// rotate 対象 secret 名を返す。
     pub fn target_secret(self) -> SecretName {
-        SecretName::BwsAccessToken
+        SecretName::BitwardenClientSecret
     }
 
     /// 指定 serial に対する rotate 対象の storage spec を返す。
@@ -144,7 +132,7 @@ impl RotateBwsTokenCommand {
 ///
 /// serial 指定の有無、要求 check、`--all` 指定、bw-login 外部確認の `--email` override の有無を保持し、
 /// device 選択手段は port 境界へ委譲する。`email_override` が `Some` のときだけ bw-login 外部確認で
-/// YubiKey の `bw-email` を使わず override を使う（yubikey-secret-storage-design.md L286）。
+/// YubiKey の `bw-email` を使わず override を使う。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyYubikeyCommand {
     pub serial: Option<u32>,
@@ -188,7 +176,7 @@ impl VerifyYubikeyCommand {
 
 /// restore-gpg use case の入力 command。
 ///
-/// `bws-access-token` を読み出す対象 YubiKey の serial 指定有無だけを保持し、device 選択手段や
+/// `bitwarden-client-secret` を読み出す対象 YubiKey の serial 指定有無だけを保持し、device 選択手段や
 /// envelope 取得手段は port 境界へ委譲する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestoreGpgCommand {
@@ -197,7 +185,7 @@ pub struct RestoreGpgCommand {
 
 /// restore-pass use case の入力 command。
 ///
-/// `bws-access-token` を読み出す対象 YubiKey の serial 指定有無だけを保持し、device 選択手段や
+/// `bitwarden-client-secret` を読み出す対象 YubiKey の serial 指定有無だけを保持し、device 選択手段や
 /// remote URL 取得手段、clone 手段は port 境界へ委譲する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestorePassCommand {
@@ -285,7 +273,7 @@ impl AddGpgBackupSpareCommand {
 ///
 /// この command は YubiKey storage を読まないため device serial を保持しない。BWS 登録・更新に使う
 /// access token は hidden prompt / pipe から取得する credential であり、その取得は application が
-/// `BwsAccessTokenInputPort` 経由で行う。YubiKey へ保存する `bws-access-token` は別経路の復旧用最小権限
+/// `BitwardenClientSecretInputPort` 経由で行う。YubiKey へ保存する `bitwarden-client-secret` は別経路の復旧用最小権限
 /// token であり、この provisioning 入力と同一値にする運用を前提にしない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisionPasswordStoreRemoteCommand {

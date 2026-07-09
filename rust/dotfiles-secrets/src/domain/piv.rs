@@ -114,8 +114,10 @@ pub enum SecretName {
     BwEmail,
     /// Bitwarden login password。
     BwPassword,
-    /// Bitwarden Secrets Manager access token。
-    BwsAccessToken,
+    /// Bitwarden personal API client ID。
+    BitwardenClientId,
+    /// Bitwarden personal API client secret。
+    BitwardenClientSecret,
 }
 
 /// secret blob と PIV object の対応規則を固定した storage domain object。
@@ -140,7 +142,13 @@ impl SecretName {
     ///
     /// 列挙順は report と object 配置の期待順であり、version を上げずに並びを変えてはならない。
     pub fn iter() -> impl Iterator<Item = Self> {
-        [Self::BwEmail, Self::BwPassword, Self::BwsAccessToken].into_iter()
+        [
+            Self::BwEmail,
+            Self::BwPassword,
+            Self::BitwardenClientId,
+            Self::BitwardenClientSecret,
+        ]
+        .into_iter()
     }
 
     /// binary blob header に保存する固定 secret id を返す。
@@ -150,7 +158,8 @@ impl SecretName {
         match self {
             Self::BwEmail => 1,
             Self::BwPassword => 2,
-            Self::BwsAccessToken => 3,
+            Self::BitwardenClientId => 4,
+            Self::BitwardenClientSecret => 3,
         }
     }
 
@@ -161,7 +170,8 @@ impl SecretName {
         match self {
             Self::BwEmail => PivObjectId(0x005f_ff17),
             Self::BwPassword => PivObjectId(0x005f_ff18),
-            Self::BwsAccessToken => PivObjectId(0x005f_ff19),
+            Self::BitwardenClientId => PivObjectId(0x005f_ff1a),
+            Self::BitwardenClientSecret => PivObjectId(0x005f_ff19),
         }
     }
 
@@ -184,12 +194,14 @@ impl SecretName {
         self,
         read_bw_email: impl FnOnce() -> crate::Result<T>,
         read_bw_password: impl FnOnce() -> crate::Result<T>,
-        read_bws_access_token: impl FnOnce() -> crate::Result<T>,
+        read_bitwarden_client_id: impl FnOnce() -> crate::Result<T>,
+        read_bitwarden_client_secret: impl FnOnce() -> crate::Result<T>,
     ) -> crate::Result<T> {
         match self {
             Self::BwEmail => read_bw_email(),
             Self::BwPassword => read_bw_password(),
-            Self::BwsAccessToken => read_bws_access_token(),
+            Self::BitwardenClientId => read_bitwarden_client_id(),
+            Self::BitwardenClientSecret => read_bitwarden_client_secret(),
         }
     }
 
@@ -223,11 +235,12 @@ impl SecretStorageSpec {
     ///
     /// 保存対象集合と各 object/spec の対応は storage domain rule であり、use case は
     /// 個別の `SecretName` から対応関係を再構築せず、この集合を順序制御へ適用する。
-    pub fn all_for_serial(serial: u32) -> [Self; 3] {
+    pub fn all_for_serial(serial: u32) -> [Self; 4] {
         [
             SecretName::BwEmail.storage_spec(serial),
             SecretName::BwPassword.storage_spec(serial),
-            SecretName::BwsAccessToken.storage_spec(serial),
+            SecretName::BitwardenClientId.storage_spec(serial),
+            SecretName::BitwardenClientSecret.storage_spec(serial),
         ]
     }
 
@@ -255,7 +268,8 @@ impl fmt::Display for SecretName {
         formatter.write_str(match self {
             Self::BwEmail => "bw-email",
             Self::BwPassword => "bw-password",
-            Self::BwsAccessToken => "bws-access-token",
+            Self::BitwardenClientId => "bitwarden-client-id",
+            Self::BitwardenClientSecret => "bitwarden-client-secret",
         })
     }
 }
@@ -267,7 +281,8 @@ impl FromStr for SecretName {
         match value {
             "bw-email" => Ok(Self::BwEmail),
             "bw-password" => Ok(Self::BwPassword),
-            "bws-access-token" => Ok(Self::BwsAccessToken),
+            "bitwarden-client-id" => Ok(Self::BitwardenClientId),
+            "bitwarden-client-secret" => Ok(Self::BitwardenClientSecret),
             _ => Err(format!("unsupported YubiKey secret name: {value}")),
         }
     }
@@ -333,7 +348,11 @@ mod tests {
             Some("0x005FFF18")
         );
         assert_eq!(
-            objects.get("bws-access-token").map(String::as_str),
+            objects.get("bitwarden-client-id").map(String::as_str),
+            Some("0x005FFF1A")
+        );
+        assert_eq!(
+            objects.get("bitwarden-client-secret").map(String::as_str),
             Some("0x005FFF19")
         );
     }

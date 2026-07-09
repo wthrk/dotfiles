@@ -9,7 +9,7 @@ use crate::{
     domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
     ports::io::{
         BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
-        BwsAccessTokenInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
+        BitwardenClientSecretInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
         RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
     },
     support::{
@@ -48,9 +48,17 @@ impl SecretInputPort for RealSecretIoAdapter {
         )
     }
 
-    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
+    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret> {
         process_io::read_hidden_line(
-            "bws-access-token: ",
+            "bitwarden-client-id: ",
+            16 * 1024,
+            "hidden secret input is too large",
+        )
+    }
+
+    fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret> {
+        process_io::read_hidden_line(
+            "bitwarden-client-secret: ",
             16 * 1024,
             "hidden secret input is too large",
         )
@@ -61,16 +69,16 @@ impl SecretInputPort for RealSecretIoAdapter {
     }
 }
 
-impl BwsAccessTokenInputPort for RealSecretIoAdapter {
-    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
-        // BWS access token は BWS 操作に使う実 credential のため secret として扱い、
+impl BitwardenClientSecretInputPort for RealSecretIoAdapter {
+    fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret> {
+        // Bitwarden API client-secret は vault 操作に使う実 credential のため secret として扱い、
         // stdin が terminal のとき hidden prompt（raw mode・echo なし）、非 terminal（pipe）のとき
         // stdin 1 行を保護 buffer へ読む。いずれも平文を argv / ログ / 端末表示へ残さない。
         const MAX_LEN: usize = 16 * 1024;
-        const TOO_LONG_MESSAGE: &str = "bws access token input is too large";
+        const TOO_LONG_MESSAGE: &str = "bitwarden client-secret input is too large";
         if process_io::stdin_is_terminal() {
             process_io::read_hidden_line(
-                "bws-access-token (create/update): ",
+                "bitwarden-client-secret (create/update): ",
                 MAX_LEN,
                 TOO_LONG_MESSAGE,
             )
@@ -211,8 +219,12 @@ impl SecretInputPort for ProcessIoAdapter {
         self.secret_io.read_bw_password_secret()
     }
 
-    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_bws_access_token_secret()
+    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bitwarden_client_id_secret()
+    }
+
+    fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bitwarden_client_secret_secret()
     }
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
@@ -220,9 +232,9 @@ impl SecretInputPort for ProcessIoAdapter {
     }
 }
 
-impl BwsAccessTokenInputPort for ProcessIoAdapter {
-    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_bws_access_token_for_provisioning()
+impl BitwardenClientSecretInputPort for ProcessIoAdapter {
+    fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret> {
+        self.secret_io.read_bitwarden_client_secret_for_provisioning()
     }
 }
 

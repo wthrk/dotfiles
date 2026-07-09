@@ -4,20 +4,18 @@
 #
 # 既存 password-store の .gpg-id recipient とローカル GPG secret key を前提に、
 # password-store の GitHub remote 作成/設定/push、GitHub SSH 鍵登録、
-# BWS への復旧用 secret 登録、YubiKey への復旧用 bws-access-token 保存を扱う。
-# BWS project `dotfiles-secret-recovery` は事前に Bitwarden Secrets Manager 側で作成し、
-# provisioning token から 1 件だけ見える状態にしてからこの script の BWS 登録段階へ進む。
-# YubiKey の serial は `PROVISIONING_YUBIKEY_SERIAL` または可視プロンプトで指定する。
+# Bitwarden vault への復旧用 secret 登録、YubiKey への client-secret 保存を扱う。
+# YubiKey の serial は接続中のデバイスから自動検出する。明示指定する場合は `PROVISIONING_YUBIKEY_SERIAL` / `SPARE_YUBIKEY_SERIAL` 環境変数で指定する。
 #
 # 正本: docs/secret-recovery/initial-provisioning-runbook.md と spec/design。
 # 使い方（実端末で。PIN/secret/touch/passphrase の対話入力あり）:
 #   bash scripts/provision-secret-recovery-source.sh
 
 set -euo pipefail
-# BWS access token は command substitution と pipe で扱うため、`bash -x` 実行時でも値を trace へ
+# client-secret は command substitution と pipe で扱うため、`bash -x` 実行時でも値を trace へ
 # 出さない。復元はしない。
 { set +x; } 2>/dev/null || true
-trap 'unset PROVISIONING_BWS_TOKEN RECOVERY_BWS_TOKEN' EXIT
+trap 'unset PROVISIONING_CLIENT_SECRET RECOVERY_CLIENT_SECRET' EXIT
 
 # ─── 設定（既定値を自動導出。必要なら環境変数で上書き）───
 GPG_ALGO_PRIMARY="${GPG_ALGO_PRIMARY:-ed25519}"
@@ -102,57 +100,32 @@ confirm_password_store_primary_fingerprint() {
     || die "password-store .gpg-id の recipient が変更されています。解決済み primary fingerprint と一致しません"
   log "password-store .gpg-id recipient の秘密鍵を再確認済み"
 }
-read_bws_access_token() {
+read_client_secret() {
   local label="$1"
   if [ -t 0 ]; then
     local token
     printf '%s: ' "$label" >/dev/tty
     IFS= read -r -s token </dev/tty
     printf '\n' >/dev/tty
-    [ -n "$token" ] || die "BWS access token が空です"
+    [ -n "$token" ] || die "client-secret が空です"
     printf '%s' "$token"
   else
     local token
     IFS= read -r token
-    [ -n "$token" ] || die "stdin から BWS access token を読めません"
+    [ -n "$token" ] || die "stdin から client-secret を読めません"
     printf '%s' "$token"
   fi
 }
-run_dotfiles_with_bws_access_token() {
-  printf '%s\n' "$PROVISIONING_BWS_TOKEN" | dotfiles "$@"
+run_dotfiles_with_client_secret() {
+  printf '%s\n' "$PROVISIONING_CLIENT_SECRET" | dotfiles "$@"
 }
-store_recovery_bws_access_token() {
+store_recovery_client_secret() {
   local serial="$1"
-  printf '%s\n' "$RECOVERY_BWS_TOKEN" | dotfiles secrets yubikey put bws-access-token --stdin --serial "$serial"
-}
-provisioning_yubikey_serial() {
-  if [ -n "${PROVISIONING_YUBIKEY_SERIAL:-}" ]; then
-    printf '%s' "$PROVISIONING_YUBIKEY_SERIAL"
-    return
+  if [ -n "$serial" ]; then
+    printf '%s\n' "$RECOVERY_CLIENT_SECRET" | dotfiles secrets yubikey put bitwarden-client-secret --stdin --serial "$serial"
+  else
+    printf '%s\n' "$RECOVERY_CLIENT_SECRET" | dotfiles secrets yubikey put bitwarden-client-secret --stdin
   fi
-  local serial
-  printf 'YubiKey serial for bws-access-token storage: ' >/dev/tty
-  IFS= read -r serial </dev/tty
-  [ -n "$serial" ] || die "YubiKey serial が空です"
-  case "$serial" in
-    *[!0-9]*) die "YubiKey serial は数字で指定してください" ;;
-  esac
-  printf '%s' "$serial"
-}
-optional_spare_yubikey_serial() {
-  if [ -n "${SPARE_YUBIKEY_SERIAL:-}" ]; then
-    printf '%s' "$SPARE_YUBIKEY_SERIAL"
-    return
-  fi
-  [ -t 0 ] || return 0
-  local serial
-  printf 'Spare YubiKey serial for gpg-backup add-spare (blank to skip): ' >/dev/tty
-  IFS= read -r serial </dev/tty
-  [ -n "$serial" ] || return 0
-  case "$serial" in
-    *[!0-9]*) die "spare YubiKey serial は数字で指定してください" ;;
-  esac
-  printf '%s' "$serial"
 }
 
 [ -z "${PASS_REPO:-}" ] && PASS_REPO="${GH_LOGIN}/password-store"
@@ -185,8 +158,8 @@ have_cap a || { log "authentication subkey を追加"; gpg --quick-add-key "${PR
 have_cap s || { log "signing subkey を追加"; gpg --quick-add-key "${PRIMARY_FINGERPRINT}" "$GPG_ALGO_PRIMARY" sign never; }
 log "GPG 鍵構成を確認済み"
 warn "この鍵のバックアップと revocation certificate を別経路で保管してください。"
-YUBIKEY_SERIAL="$(provisioning_yubikey_serial)"
-SPARE_SERIAL="$(optional_spare_yubikey_serial)"
+YUBIKEY_SERIAL="${PROVISIONING_YUBIKEY_SERIAL:-}"
+SPARE_SERIAL="${SPARE_YUBIKEY_SERIAL:-}"
 
 # ── 2. GitHub への SSH 公開鍵登録（authentication subkey 由来）──
 log "authentication subkey 由来 SSH 公開鍵を GitHub に登録"
@@ -238,34 +211,41 @@ else
 fi
 confirm_password_store_primary_fingerprint
 
-# ── 4. BWS への復旧用 secret 登録 ──
-pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を作成済みで、これから入力する BWS 登録・更新用 token から同名 project が 1 件だけ見えることを確認してください。project 作成はこの script / dotfiles CLI では行いません。"
-PROVISIONING_BWS_TOKEN="$(read_bws_access_token 'BWS provisioning access token for create/update')"
+# ── 4. Bitwarden vault への復旧用 secret 登録 ──
+pause "Bitwarden 個人 API キーを入力してください（Webアプリの Settings → Security → Keys → View API key から client_id / client_secret を取得）。client_secret を入力してください。"
+PROVISIONING_CLIENT_SECRET="$(read_client_secret 'client_secret: ')"
 
-log "BWS に password-store-remote を登録"
-pause "BWS の password-store-remote をこれから設定します。既存 secret がある場合も、現在の PASS_REPO / GitHub active account から導出した復旧先が意図した private password-store repository であることを確認してください。repository 所在はログへ表示しません。"
-run_dotfiles_with_bws_access_token secrets pass-remote register --url "$PASS_CLONE_URL" --yes
+log "Bitwarden vault に password-store-remote を登録"
+pause "password-store-remote をこれから設定します。既存 secret がある場合も、現在の PASS_REPO / GitHub active account から導出した復旧先が意図した private password-store repository であることを確認してください。repository 所在はログへ表示しません。"
+run_dotfiles_with_client_secret secrets pass-remote register --url "$PASS_CLONE_URL" --yes
 
-log "BWS に gpg-secret-key-backup を登録"
-run_dotfiles_with_bws_access_token secrets gpg-backup register --primary-fingerprint "$PRIMARY_FINGERPRINT" --serial "$YUBIKEY_SERIAL"
+log "Bitwarden vault に gpg-secret-key-backup を登録"
+if [ -n "${YUBIKEY_SERIAL:-}" ]; then
+  run_dotfiles_with_client_secret secrets gpg-backup register --primary-fingerprint "$PRIMARY_FINGERPRINT" --serial "$YUBIKEY_SERIAL"
+else
+  run_dotfiles_with_client_secret secrets gpg-backup register --primary-fingerprint "$PRIMARY_FINGERPRINT"
+fi
 if [ -n "${SPARE_SERIAL:-}" ]; then
-  log "BWS の gpg-secret-key-backup に spare recipient を追加"
-  run_dotfiles_with_bws_access_token secrets gpg-backup add-spare --unwrap-serial "$YUBIKEY_SERIAL" --spare-serial "$SPARE_SERIAL" --yes
+  log "gpg-secret-key-backup に spare recipient を追加"
+  add_spare_extra_args="--yes"
+  [ -n "${YUBIKEY_SERIAL:-}" ] && add_spare_extra_args="--unwrap-serial ${YUBIKEY_SERIAL} ${add_spare_extra_args}"
+  [ -n "${SPARE_SERIAL:-}" ] && add_spare_extra_args="--spare-serial ${SPARE_SERIAL} ${add_spare_extra_args}"
+  run_dotfiles_with_client_secret secrets gpg-backup add-spare $add_spare_extra_args
 else
   warn "spare YubiKey serial が未指定のため gpg-backup add-spare は未実行です。spare で復旧可能にするには後で dotfiles secrets gpg-backup add-spare を実行してください。"
 fi
 
-# ── 5. YubiKey への復旧用 BWS read token 保存 ──
-RECOVERY_BWS_TOKEN="$(read_bws_access_token 'BWS recovery/read access token for YubiKey storage')"
-[ "$RECOVERY_BWS_TOKEN" != "$PROVISIONING_BWS_TOKEN" ] \
-  || die "復旧用 BWS access token が登録・更新用 token と同一です。YubiKey には最小権限の復旧用 token だけを保存してください"
-log "復旧用 bws-access-token を YubiKey に保存"
-store_recovery_bws_access_token "$YUBIKEY_SERIAL"
+# ── 5. YubiKey への client-secret 保存 ──
+RECOVERY_CLIENT_SECRET="$(read_client_secret 'YubiKey 保存用 client_secret: ')"
+[ "$RECOVERY_CLIENT_SECRET" != "$PROVISIONING_CLIENT_SECRET" ] \
+  || die "YubiKey 保存用 client_secret が登録・更新用 token と同一です"
+log "client-secret を YubiKey に保存"
+store_recovery_client_secret "$YUBIKEY_SERIAL"
 if [ -n "${SPARE_SERIAL:-}" ]; then
-  log "復旧用 bws-access-token を spare YubiKey にも保存"
-  store_recovery_bws_access_token "$SPARE_SERIAL"
+  log "client-secret を spare YubiKey にも保存"
+  store_recovery_client_secret "$SPARE_SERIAL"
 fi
-unset PROVISIONING_BWS_TOKEN RECOVERY_BWS_TOKEN
+unset PROVISIONING_CLIENT_SECRET RECOVERY_CLIENT_SECRET
 
 # ── 手動: 各サービスの YubiKey 物理登録 ──
 pause "次を各サービスの UI / 管理画面で行ってください（API でリモート登録できない物理/アカウント操作）:

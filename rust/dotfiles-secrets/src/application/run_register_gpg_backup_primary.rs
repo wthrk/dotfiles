@@ -12,7 +12,7 @@ use crate::{
 
 /// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
 pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
-    pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
+    pub(crate) token_input: &'a dyn ports::BitwardenClientSecretInputPort,
     pub(crate) device_serial: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
     pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
@@ -30,8 +30,8 @@ pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
 /// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
 /// argv/log/永続ファイルへ出さない。
 ///
-/// BWS への登録には BWS access token を使う。この登録用 token は hidden prompt / pipe から
-/// `BwsAccessTokenInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
+/// BWS への登録には client-secret を使う。この登録用 token は hidden prompt / pipe から
+/// `BitwardenClientSecretInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bitwarden-client-secret` は
 /// 復旧時の read 用最小権限 token を別経路で用意する。この provisioning command 自体は storage/pin 経由の
 /// token 読み出しを行わない。一方、YubiKey 本体は recipient wrap（PIV slot `82` 公開鍵で DEK を RSA-OAEP
 /// wrap）に必要なため、recipient 用の device serial 解決は残す。slot `82`
@@ -61,7 +61,7 @@ where
 
     // BWS 登録用 access token を hidden prompt / pipe から取得し、復旧 project を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
-    let access_token = token_input.read_bws_access_token_for_provisioning()?;
+    let access_token = token_input.read_bitwarden_client_secret_for_provisioning()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
@@ -114,7 +114,7 @@ mod tests {
     //! envelope→BWS 作成）を mockall + Sequence で検証する単体テスト。
     //!
     //! token-input / keyring / cipher / recipient / clock / bws backend を port mock で差し替え、BWS 登録に
-    //! 使う access token を BWS access token 入力経路から取得すること、重複確認が export より前に行われること、
+    //! 使う access token を client-secret 入力経路から取得すること、重複確認が export より前に行われること、
     //! subkey 検証成功と fingerprint 一致を満たすまで登録へ進ませないこと、未登録のとき create が呼ばれること、
     //! 重複検出時に export・暗号化・wrap のいずれにも進ませないことを確認する。
 
@@ -138,14 +138,14 @@ mod tests {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    /// client-secret を hidden prompt / pipe から取得する port mock を共通設定する。
     ///
-    /// この mock は hidden prompt / pipe 相当の入力経路として BWS access token を返す。
+    /// この mock は hidden prompt / pipe 相当の入力経路として client-secret を返す。
     /// pin/storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
-    fn token_input() -> ports::MockBwsAccessTokenInputPort {
-        let mut token_input = ports::MockBwsAccessTokenInputPort::new();
+    fn token_input() -> ports::MockBitwardenClientSecretInputPort {
+        let mut token_input = ports::MockBitwardenClientSecretInputPort::new();
         token_input
-            .expect_read_bws_access_token_for_provisioning()
+            .expect_read_bitwarden_client_secret_for_provisioning()
             .times(1)
             .returning(|| Ok(material(b"provisioning-token")));
         token_input

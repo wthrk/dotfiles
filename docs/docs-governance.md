@@ -27,6 +27,7 @@
 - 後付けの文書書換えだけで充足できる形式要件を gate にしてはならない。
 - exact file-set、file-count、actor/run bookkeeping、current-cycle 文言、補助記録の完全同期は review gate / commit gate / PR 対応義務の代替にしない。
 - PR review comment への採用/不採用返信と resolved 状態の維持は、補助記録同期とは別の実作業義務として扱う。
+- 文書ファイル（.md を含む）の一括置換に Python スクリプト・sed スクリプトを使ってはならない。文書の変更は常に edit ツールで行う。
 
 ## 参照規則
 

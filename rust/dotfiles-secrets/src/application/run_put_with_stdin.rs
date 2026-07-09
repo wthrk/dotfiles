@@ -9,16 +9,18 @@ use crate::{
 /// 非対話 stdin から受け取った secret を対象 serial の YubiKey storage へ保存する。
 ///
 /// use case は入力取得と保存順序のみを担い、stdin 条件やサイズ制約は adapter 実装側へ閉じ込める。
-pub(crate) fn run_put_with_stdin<P, S>(
+pub(crate) fn run_put_with_stdin<D, P, S>(
     command: PutCommand,
+    device: &mut D,
     process: &P,
     storage_port: &mut S,
 ) -> Result<()>
 where
+    D: ports::DeviceSerialPort,
     P: ports::SecretInputPort,
     S: ports::SecretStoragePort,
 {
-    let serial = command.required_serial()?;
+    let serial = device.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
     SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
@@ -49,6 +51,11 @@ mod tests {
 
     #[test]
     fn put_stdin_checks_storage_before_reading_secret() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
         let process = ports::MockSecretInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         let mut sequence = mockall::Sequence::new();
@@ -61,10 +68,11 @@ mod tests {
 
         let result = run_put_with_stdin(
             PutCommand {
-                serial: Some(2001),
-                name: SecretName::BwsAccessToken,
+                serial: None,
+                name: SecretName::BitwardenClientSecret,
                 force: false,
             },
+            &mut device,
             &process,
             &mut storage,
         );
@@ -77,6 +85,11 @@ mod tests {
 
     #[test]
     fn put_stdin_stores_requested_secret() -> crate::Result<()> {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
         let mut process = ports::MockSecretInputPort::new();
         process
             .expect_read_streamed_secret()
@@ -91,16 +104,17 @@ mod tests {
             .expect_store_secret()
             .times(1)
             .withf(|serial, intent, _| {
-                *serial == 2001 && intent.storage.name == SecretName::BwsAccessToken
+                *serial == 2001 && intent.storage.name == SecretName::BitwardenClientSecret
             })
             .returning(|_, _, _| Ok(()));
 
         run_put_with_stdin(
             PutCommand {
-                serial: Some(2001),
-                name: SecretName::BwsAccessToken,
+                serial: None,
+                name: SecretName::BitwardenClientSecret,
                 force: false,
             },
+            &mut device,
             &process,
             &mut storage,
         )

@@ -27,7 +27,8 @@ where
     let secret = command.name.read_interactive_secret_with(
         || process.read_bw_email_secret(),
         || process.read_bw_password_secret(),
-        || process.read_bws_access_token_secret(),
+        || process.read_bitwarden_client_id_secret(),
+        || process.read_bitwarden_client_secret_secret(),
     )?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     storage_port.store_secret(serial, intent, &secret)
@@ -67,7 +68,8 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
         let mut process = ports::MockSecretInputPort::new();
-        process.expect_read_bws_access_token_secret().times(0);
+        process.expect_read_bitwarden_client_id_secret().times(0);
+        process.expect_read_bitwarden_client_secret_secret().times(0);
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
@@ -79,7 +81,7 @@ mod tests {
         let result = run_put_with_prompt(
             PutCommand {
                 serial: Some(2001),
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
                 force: false,
             },
             &mut device,
@@ -112,7 +114,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(write_inspection(false)));
         process
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_secret_secret()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"token")));
@@ -122,7 +124,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .withf(|serial, intent, secret| {
                 *serial == 2001
-                    && intent.storage.name == SecretName::BwsAccessToken
+                    && intent.storage.name == SecretName::BitwardenClientSecret
                     && secret.len() == b"token".len()
             })
             .returning(|_, _, _| Ok(()));
@@ -130,7 +132,7 @@ mod tests {
         run_put_with_prompt(
             PutCommand {
                 serial: Some(2001),
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
                 force: false,
             },
             &mut device,
@@ -157,7 +159,7 @@ mod tests {
         storage.expect_store_secret().times(0);
         let mut process = ports::MockSecretInputPort::new();
         process
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_secret_secret()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Err(anyhow::anyhow!("prompt failed")));
@@ -165,7 +167,7 @@ mod tests {
         let result = run_put_with_prompt(
             PutCommand {
                 serial: Some(2001),
-                name: SecretName::BwsAccessToken,
+                name: SecretName::BitwardenClientSecret,
                 force: false,
             },
             &mut device,

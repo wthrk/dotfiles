@@ -79,8 +79,8 @@ where
         None
     };
 
-    // 1. bws-access-token を YubiKey storage から読み出す。
-    let access_token = load_bws_access_token(serial, storage_port, pin.as_ref())?;
+    // 1. bitwarden-client-secret を YubiKey storage から読み出す。
+    let access_token = load_bitwarden_client_secret(serial, storage_port, pin.as_ref())?;
 
     // 2. BWS から `password-store-remote` を取得する（URL 妥当性は domain 検証で確定済み）。
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
@@ -166,13 +166,13 @@ fn confirm_cloned_store_readable(
     Ok(())
 }
 
-/// bws-access-token を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
-fn load_bws_access_token(
+/// bitwarden-client-secret を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
+fn load_bitwarden_client_secret(
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
     pin: Option<&crate::support::protection::ProtectedSecret>,
 ) -> Result<crate::support::protection::ProtectedSecret> {
-    let storage = SecretName::BwsAccessToken.storage_spec(serial);
+    let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port

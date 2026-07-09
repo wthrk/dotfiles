@@ -13,7 +13,7 @@ use crate::{
 
 /// `run_add_gpg_backup_spare` が使う外部 capability を named field で束ねる。
 pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
-    pub(crate) token_input: &'a dyn ports::BwsAccessTokenInputPort,
+    pub(crate) token_input: &'a dyn ports::BitwardenClientSecretInputPort,
     pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
     pub(crate) spare_device_serial: &'a mut dyn ports::SpareDeviceSerialPort,
     pub(crate) process: &'a dyn ports::PinInputPort,
@@ -30,8 +30,8 @@ pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
 /// 更新前に取得した stale overwrite 防止 guard が更新直前の現行値と一致する場合だけ上書きする。対話実行は
 /// 明示確認後、非対話実行は明示的上書き許可がある場合だけ更新する。
 ///
-/// BWS への更新には BWS access token を使う。この更新用 token は hidden prompt / pipe から
-/// `BwsAccessTokenInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
+/// BWS への更新には client-secret を使う。この更新用 token は hidden prompt / pipe から
+/// `BitwardenClientSecretInputPort` 経由で取得し、YubiKey へ保存しない。YubiKey へ保存する `bitwarden-client-secret` は
 /// 復旧時の read 用最小権限 token を別経路で用意する。この provisioning command 自体は YubiKey storage
 /// 経由の token 読み出しを行わない。一方、YubiKey 本体は既存 recipient による DEK unwrap（PIV slot `82` 秘密鍵、
 /// PIN/touch を要する）と spare recipient wrap に必要なため、unwrap 機・spare 機の
@@ -69,7 +69,7 @@ where
 
     // BWS 更新用 access token を hidden prompt / pipe から取得し、復旧 project / secret を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
-    let access_token = token_input.read_bws_access_token_for_provisioning()?;
+    let access_token = token_input.read_bitwarden_client_secret_for_provisioning()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
     let key = BwsSecretName::GpgSecretKeyBackup.key();
@@ -131,11 +131,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! spare 追加の順序（device 解決→BWS access token 取得→envelope 取得→確認→unwrap→再 wrap→
+    //! spare 追加の順序（device 解決→client-secret 取得→envelope 取得→確認→unwrap→再 wrap→
     //! guard 更新）を mockall + Sequence で検証する単体テスト。
     //!
     //! token-input / recipient / bws / confirmation backend を port mock で差し替え、BWS 更新に使う
-    //! access token を BWS access token 入力経路から取得すること、YubiKey は recipient unwrap/wrap にのみ使うこと、
+    //! access token を client-secret 入力経路から取得すること、YubiKey は recipient unwrap/wrap にのみ使うこと、
     //! 確認が PIN 取得・unwrap/wrap より前に呼ばれ、確認を通過した場合だけ確認→PIN→unwrap→wrap→guard 付き更新の
     //! 順で進むこと、確認拒否時に PIN 取得・DEK unwrap・spare wrap・更新のいずれにも進ませないことを確認する。
 
@@ -158,14 +158,14 @@ mod tests {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
-    /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    /// client-secret を hidden prompt / pipe から取得する port mock を共通設定する。
     ///
-    /// この mock は hidden prompt / pipe 相当の入力経路として BWS access token を返す。
+    /// この mock は hidden prompt / pipe 相当の入力経路として client-secret を返す。
     /// storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
-    fn token_input() -> ports::MockBwsAccessTokenInputPort {
-        let mut token_input = ports::MockBwsAccessTokenInputPort::new();
+    fn token_input() -> ports::MockBitwardenClientSecretInputPort {
+        let mut token_input = ports::MockBitwardenClientSecretInputPort::new();
         token_input
-            .expect_read_bws_access_token_for_provisioning()
+            .expect_read_bitwarden_client_secret_for_provisioning()
             .times(1)
             .returning(|| Ok(material(b"provisioning-token")));
         token_input

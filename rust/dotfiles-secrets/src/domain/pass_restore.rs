@@ -45,9 +45,9 @@ impl PasswordStoreRemote {
     /// BWS 由来の `password-store-remote` 文字列を GitHub SSH clone URL として検証して構築する。
     ///
     /// `git@github.com:<owner>/<repo>.git` の固定形式だけを許可する。設計
-    /// （bitwarden-secrets-manager-design.md L101）は前後空白・改行を許可しないため trim せず、前後・内部の
+    /// は前後空白・改行を許可しないため trim せず、前後・内部の
     /// いずれであれ空白や制御文字を含む値は停止条件で拒否する。prefix/suffix 不一致、`<owner>`/`<repo>` の
-    /// 欠落・空・余剰 path segment も domain failure として停止する。`<owner>` は同 L103 の
+    /// 欠落・空・余剰 path segment も domain failure として停止する。`<owner>` は
     /// `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?`、`<repo>` は `[A-Za-z0-9._-]+`（`.`/`..` を除く）に
     /// 一致する値だけを許可し、path traversal や追加 segment（`/` を 1 つだけ含む）を作らせない。
     pub fn parse(value: &str) -> Result<Self> {
@@ -91,7 +91,7 @@ impl PasswordStoreRemote {
 
 /// GitHub `<owner>` 識別子の妥当性を判定する。
 ///
-/// 設計（bitwarden-secrets-manager-design.md L103）の `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?` に
+/// 設計の `[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?` に
 /// 一致する値だけを許可する。先頭末尾は英数字、中間は英数字とハイフン、全体は 1〜39 文字（先頭 1 + 中間
 /// 0〜37 + 末尾 1、1 文字 owner も許可）に限定し、先頭/末尾ハイフン、`_`、`.`、39 文字超は拒否する。
 fn is_valid_owner(value: &str) -> bool {
@@ -113,7 +113,7 @@ fn is_valid_owner(value: &str) -> bool {
 
 /// GitHub `<repo>` 識別子の妥当性を判定する。
 ///
-/// 設計（bitwarden-secrets-manager-design.md L103）の `[A-Za-z0-9._-]+`（ただし `.`/`..` を除く）に
+/// 設計の `[A-Za-z0-9._-]+`（ただし `.`/`..` を除く）に
 /// 一致する値だけを許可する。空、`.`/`..` のみ、`/` や制御文字・空白は parse 段階で拒否済みだが、ここでも
 /// 英数・`-`・`_`・`.` 以外の混入と空・`.`/`..` を拒否する。
 fn is_valid_repository(value: &str) -> bool {

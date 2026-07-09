@@ -34,22 +34,19 @@ pub trait PinInputPort {
 pub trait SecretInputPort {
     fn read_bw_email_secret(&self) -> Result<ProtectedSecret>;
     fn read_bw_password_secret(&self) -> Result<ProtectedSecret>;
-    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret>;
+    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret>;
+    fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret>;
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 
-/// use case が BWS 登録・更新用 access token を保護値として取得する capability 契約。
+/// use case が Bitwarden API client-secret を保護値として取得する capability 契約。
 ///
-/// provisioning command は YubiKey storage を読まず、この capability で受け取った BWS access token を
-/// project / secret の create・update にだけ使う。この token は YubiKey へ保存しない。YubiKey の
-/// `bws-access-token` は復旧時の read 用最小権限 token を別経路で保存するものであり、caller は同一値運用を
-/// 前提にしてはならない。BWS access token は実 credential であり secret として扱う。caller は token を
-/// 必要とする地点だけを決める。implementor は hidden prompt（TTY）または pipe（stdin）から保護 buffer へ
-/// 読み込み、取得した平文を公開 API として返さず、argv・ログ・shell history・永続環境変数・永続一時ファイルへ
-/// 残さない。
+/// provisioning command は YubiKey storage を読まず、この capability で受け取った client-secret を
+/// vault item の create・update にだけ使う。YubiKey の `bitwarden-client-secret` は復旧時の read 用に
+/// 別経路で保存するものであり、caller は同一値運用を前提にしてはならない。
 #[cfg_attr(test, mockall::automock)]
-pub trait BwsAccessTokenInputPort {
-    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret>;
+pub trait BitwardenClientSecretInputPort {
+    fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret>;
 }
 
 /// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。

@@ -63,7 +63,7 @@ pub struct SecretStorageReadIntent {
 /// 「保存済み YubiKey storage が完了している」と判定するために必要な対象集合は
 /// domain rule であり、use case はこの plan を順序制御へ適用するだけに限定する。
 pub struct SecretStorageVerificationPlan {
-    targets: [SecretStorageSpec; 3],
+    targets: [SecretStorageSpec; 4],
 }
 
 impl SecretStorageSetupProbe {
@@ -89,7 +89,7 @@ impl SecretStorageVerificationPlan {
     }
 
     /// 検証対象 storage spec を安定順で返す。
-    pub fn into_targets(self) -> [SecretStorageSpec; 3] {
+    pub fn into_targets(self) -> [SecretStorageSpec; 4] {
         self.targets
     }
 }

@@ -95,7 +95,8 @@ mod tests {
         [
             ("bw-email".to_owned(), material(b"email")),
             ("bw-password".to_owned(), material(b"password")),
-            ("bws-access-token".to_owned(), material(b"token")),
+            ("bitwarden-client-id".to_owned(), material(b"client-id")),
+            ("bitwarden-client-secret".to_owned(), material(b"client-secret")),
         ]
         .into_iter()
         .collect()
@@ -162,7 +163,7 @@ mod tests {
             .returning(|_, _| Ok(()));
         storage
             .expect_store_secret()
-            .times(3)
+            .times(4)
             .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
@@ -171,7 +172,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -186,7 +188,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }

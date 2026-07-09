@@ -44,6 +44,7 @@ pub(super) async fn dispatch(
                 if options.stdin {
                     application::run_put_with_stdin::run_put_with_stdin(
                         command,
+                        &mut ports.device,
                         &ports.process_io,
                         &mut ports.storage,
                     )

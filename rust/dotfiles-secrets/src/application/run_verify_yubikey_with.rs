@@ -58,9 +58,9 @@ where
     } else {
         None
     };
-    // local storage 検証（ローカル保管確認）: 3 secret（bw-email / bw-password / bws-access-token）すべての
+    // local storage 検証（ローカル保管確認）: 4 secret（bw-email / bw-password / bitwarden-client-id / bitwarden-client-secret）すべての
     // 存在・復号可能性を inspect → intent → load → validate で検証する（yubikey-secret-storage-design.md L280）。
-    // master password（`bw-password`）・`bw-email`・`bws-access-token` の lifetime を最小化するため、検証後は
+    // master password（`bw-password`）・`bw-email`・`bitwarden-client-secret` の lifetime を最小化するため、検証後は
     // いずれの secret も retain せず drop する。各外部確認が必要とする secret は、その分岐の直前で on-demand に
     // 読み直し、分岐を抜けると drop されるようにする。これにより master password は bw-login 確認の間だけ future
     // に存在し、BWS check の `.await` 中には保持されない。
@@ -71,7 +71,7 @@ where
             let secret = storage_port
                 .load_secret(serial, &intent, pin.as_ref())
                 .map_err(|error| intent.decode_error(error))?;
-            // local storage 検証範囲は縮小しない。3 secret すべての存在・復号可能性をここで検証する。
+            // local storage 検証範囲は縮小しない。4 secret すべての存在・復号可能性をここで検証する。
             // 検証後の secret は match で振り分けず drop し、retain しない。
             intent.validate_loaded_secret(&secret)?;
         }
@@ -90,11 +90,11 @@ where
     for check in requested {
         match check {
             CheckName::Bws => {
-                // bws-access-token をこの分岐の中で on-demand にロードし、分岐を抜けると drop されるようにする。
+                // bitwarden-client-secret をこの分岐の中で on-demand にロードし、分岐を抜けると drop されるようにする。
                 // BWS 外部確認の `.await` の間だけ access token が future に存在する。
                 let access_token = match load_yubikey_secret(
                     serial,
-                    SecretName::BwsAccessToken,
+                    SecretName::BitwardenClientSecret,
                     storage_port,
                     pin.as_ref(),
                 ) {
@@ -150,7 +150,8 @@ where
             CheckName::Setup
             | CheckName::BwEmail
             | CheckName::BwPassword
-            | CheckName::BwsAccessToken
+            | CheckName::BitwardenClientId
+            | CheckName::BitwardenClientSecret
             | CheckName::LocalStorage => {
                 unreachable!("requested_external_checks returned a non-external verification check")
             }
@@ -293,7 +294,8 @@ mod tests {
         match name {
             SecretName::BwEmail => material(b"email"),
             SecretName::BwPassword => material(b"password"),
-            SecretName::BwsAccessToken => material(b"access-token"),
+            SecretName::BitwardenClientId => material(b"client-id"),
+                    SecretName::BitwardenClientSecret => material(b"client-secret"),
         }
     }
 
@@ -359,9 +361,9 @@ mod tests {
         });
     }
 
-    /// local storage 検証（3 secret すべての inspect → load）を順序付きで 1 巡分期待する。
+    /// local storage 検証（4 secret すべての inspect → load）を順序付きで 1 巡分期待する。
     ///
-    /// local 検証範囲は縮小しないため、bw-email / bw-password / bws-access-token の 3 secret を必ず
+    /// local 検証範囲は縮小しないため、bw-email / bw-password / bitwarden-client-secret の 4 secret を必ず
     /// この順で inspect/load する。各 secret は検証後に drop され retain されない。
     fn expect_local_storage_ok(
         storage: &mut ports::MockSecretStoragePort,
@@ -371,7 +373,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             expect_secret_load(storage, sequence, serial, name);
         }
@@ -456,12 +459,12 @@ mod tests {
         let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bws-access-token を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
         expect_secret_load(
             &mut storage,
             &mut sequence,
             2001,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientSecret,
         );
 
         let mut bws = ports::MockBwsClientPort::new();
@@ -672,12 +675,12 @@ mod tests {
         let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bws-access-token を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
         expect_secret_load(
             &mut storage,
             &mut sequence,
             2001,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientSecret,
         );
         let mut bws = ports::MockBwsClientPort::new();
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
@@ -739,12 +742,12 @@ mod tests {
         let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bws-access-token を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
         expect_secret_load(
             &mut storage,
             &mut sequence,
             2001,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientSecret,
         );
         let mut bws = ports::MockBwsClientPort::new();
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
@@ -814,12 +817,12 @@ mod tests {
         let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bws-access-token を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
         expect_secret_load(
             &mut storage,
             &mut sequence,
             2001,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientSecret,
         );
         let mut bws = ports::MockBwsClientPort::new();
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
@@ -907,7 +910,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // bw-login 分岐（override 未指定）は bw-email → bw-password を on-demand ロードする。
-        // bws-access-token はロードしない。
+        // bitwarden-client-secret はロードしない。
         expect_secret_load(&mut storage, &mut sequence, 2001, SecretName::BwEmail);
         expect_secret_load(&mut storage, &mut sequence, 2001, SecretName::BwPassword);
 
@@ -969,7 +972,7 @@ mod tests {
 
     /// `--check bw-login --email <override>` は override email で bw-login 確認を行い、bw-login の email 決定に
     /// YubiKey の `bw-email`（local storage では "email"）を使わないことを検証する（yubikey-secret-storage-design.md L286）。local storage 検証
-    /// 範囲は縮小しないため、bw-email を含む 3 secret は引き続き inspect/load/validate される。
+    /// 範囲は縮小しないため、bw-email を含む 4 secret は引き続き inspect/load/validate される。
     #[tokio::test]
     async fn verify_bw_login_check_uses_email_override() -> crate::Result<()> {
         use crate::domain::bw_login::{BwLoginEmail, BwOtp, BwSessionKey};
@@ -990,7 +993,7 @@ mod tests {
 
         let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
-        // local storage 検証範囲は縮小しない: bw-email を含む 3 secret を引き続き検証する。
+        // local storage 検証範囲は縮小しない: bw-email を含む 4 secret を引き続き検証する。
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // override 指定時、bw-login 分岐は bw-email を on-demand ロードせず bw-password だけをロードする。
         // bw-email の inspect/load は local 検証の 1 回のみで、追加の on-demand 期待を置かないことで、
@@ -1115,7 +1118,7 @@ mod tests {
     }
 
     /// `--all` は Bws → BwLogin の両 check を走らせ、各分岐がその直前で必要 secret を on-demand ロードする
-    /// ことを検証する。Bws 分岐は bws-access-token を、BwLogin 分岐（override 未指定）は bw-email → bw-password
+    /// ことを検証する。Bws 分岐は bitwarden-client-secret を、BwLogin 分岐（override 未指定）は bw-email → bw-password
     /// を読む。各 secret は local 検証で一度、各分岐の on-demand で再度ロードされる。
     #[tokio::test]
     async fn verify_all_runs_both_checks_loading_secrets_per_branch() -> crate::Result<()> {
@@ -1137,14 +1140,14 @@ mod tests {
 
         let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
-        // local 検証（3 secret）→ Bws 分岐 access-token を順序付きで期待する。BwLogin 分岐の
+        // local 検証（4 secret）→ Bws 分岐 access-token を順序付きで期待する。BwLogin 分岐の
         // bw-email → bw-password は BWS port 呼び出しの後に続けて期待する（後段で sequence に追加）。
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         expect_secret_load(
             &mut storage,
             &mut sequence,
             2001,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientSecret,
         );
 
         let mut bws = ports::MockBwsClientPort::new();

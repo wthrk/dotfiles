@@ -14,14 +14,14 @@ use crate::{
 /// create または update する provisioning use case。
 ///
 /// 設計「初期登録手順」step3 が定める `password-store-remote` の保管コマンドを、`gpg-backup register`
-/// と対称な順序制御として固定する。BWS への登録には BWS access token を使い、この token を
+/// と対称な順序制御として固定する。BWS への登録には client-secret を使い、この token を
 /// hidden prompt（TTY）/ pipe（stdin）から保護値として取得したうえで、project name から project ID
 /// を解決（0件/複数件で停止）し、既存 `password-store-remote` secret の有無を確認する。不在なら入力した
 /// clone URL を create し、ちょうど 1 件存在し上書き許可がある場合だけ stale-overwrite 防止つきで update する。
 /// 複数件は domain failure として停止する。
 ///
 /// この command は YubiKey storage を読まない。provisioning で使う登録・更新用 token は
-/// `BwsAccessTokenInputPort` で受け取り、YubiKey へ保存しない。YubiKey へ保存する `bws-access-token` は
+/// `BitwardenClientSecretInputPort` で受け取り、YubiKey へ保存しない。YubiKey へ保存する `bitwarden-client-secret` は
 /// 復旧時の read 用最小権限 token を別経路で用意する。token は実 credential のため secret として保護経路で
 /// 扱い、argv / log / 永続ファイルへ出さない。
 ///
@@ -41,14 +41,14 @@ pub(crate) async fn run_provision_password_store_remote<A, B, U, F>(
     confirmation: &F,
 ) -> Result<()>
 where
-    A: ports::BwsAccessTokenInputPort,
+    A: ports::BitwardenClientSecretInputPort,
     B: ports::BwsClientPort,
     U: ports::PasswordStoreRemoteInputPort,
     F: ports::BackupUpdateConfirmationPort,
 {
     // BWS 登録・更新用 access token を hidden prompt / pipe から保護値として取得し、復旧 project を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
-    let access_token = token_input.read_bws_access_token_for_provisioning()?;
+    let access_token = token_input.read_bitwarden_client_secret_for_provisioning()?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
@@ -124,11 +124,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! provisioning の順序（BWS access token 取得→project 解決→secret 候補確認→create または確認付き
+    //! provisioning の順序（client-secret 取得→project 解決→secret 候補確認→create または確認付き
     //! guard update）を mockall + Sequence で検証する単体テスト。
     //!
     //! token-input / url-input / bws / confirmation backend を port mock で差し替え、BWS 登録に使う
-    //! access token を BWS access token 入力経路から取得すること、未登録時に確認・更新へ進ませず create が呼ばれること、
+    //! access token を client-secret 入力経路から取得すること、未登録時に確認・更新へ進ませず create が呼ばれること、
     //! ちょうど 1 件存在し確認を通過した場合だけ guard 付き update が呼ばれ、確認は値入力より前に呼ばれること、
     //! 確認拒否で値入力・update のいずれにも進ませないこと、同名複数件で create/update のいずれにも進ませず
     //! 停止すること、`--url` 指定値・可視プロンプト/pipe 入力のいずれの経路でも検証済み URL が create/update へ
@@ -173,14 +173,14 @@ mod tests {
         }
     }
 
-    /// BWS access token を hidden prompt / pipe から取得する port mock を共通設定する。
+    /// client-secret を hidden prompt / pipe から取得する port mock を共通設定する。
     ///
-    /// この mock は hidden prompt / pipe 相当の入力経路として BWS access token を返す。
+    /// この mock は hidden prompt / pipe 相当の入力経路として client-secret を返す。
     /// device/pin/storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
-    fn token_input() -> ports::MockBwsAccessTokenInputPort {
-        let mut token_input = ports::MockBwsAccessTokenInputPort::new();
+    fn token_input() -> ports::MockBitwardenClientSecretInputPort {
+        let mut token_input = ports::MockBitwardenClientSecretInputPort::new();
         token_input
-            .expect_read_bws_access_token_for_provisioning()
+            .expect_read_bitwarden_client_secret_for_provisioning()
             .times(1)
             .returning(|| Ok(material(b"provisioning-token")));
         token_input

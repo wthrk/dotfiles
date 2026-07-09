@@ -52,7 +52,8 @@ impl EnrollSummary {
                 (CheckName::Setup, CheckStatus::Ok),
                 (CheckName::BwEmail, CheckStatus::Ok),
                 (CheckName::BwPassword, CheckStatus::Ok),
-                (CheckName::BwsAccessToken, CheckStatus::Ok),
+                (CheckName::BitwardenClientId, CheckStatus::Ok),
+                (CheckName::BitwardenClientSecret, CheckStatus::Ok),
                 (CheckName::LocalStorage, CheckStatus::Skipped),
             ]
             .into_iter()

@@ -255,7 +255,7 @@ enum PassRemoteCommand {
 /// `--yes` は非対話実行での上書き更新を明示許可する。
 ///
 /// この command は YubiKey storage を読まない。BWS 登録・更新に使う access token は hidden prompt（TTY）/
-/// pipe（stdin）から保護値として受け取り、YubiKey へ保存しない。YubiKey の `bws-access-token` には
+/// pipe（stdin）から保護値として受け取り、YubiKey へ保存しない。YubiKey の `bitwarden-client-secret` には
 /// 別経路で復旧用の最小権限 token を保存する前提のため、`--serial` option は持たず、token を argv へ
 /// 載せる option も設けない。
 struct PassRemoteRegisterOptions {

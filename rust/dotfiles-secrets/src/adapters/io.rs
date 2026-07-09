@@ -17,7 +17,7 @@ use crate::{
     },
     ports::io::{
         BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
-        BwsAccessTokenInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort, ReportPort,
+        BitwardenClientSecretInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort, ReportPort,
         RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
     },
     support::protection::ProtectedSecret,
@@ -42,8 +42,12 @@ impl SecretInputPort for ProcessIoAdapter {
         self.0.read_bw_password_secret()
     }
 
-    fn read_bws_access_token_secret(&self) -> Result<ProtectedSecret> {
-        self.0.read_bws_access_token_secret()
+    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_bitwarden_client_id_secret()
+    }
+
+    fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret> {
+        self.0.read_bitwarden_client_secret_secret()
     }
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
@@ -51,9 +55,9 @@ impl SecretInputPort for ProcessIoAdapter {
     }
 }
 
-impl BwsAccessTokenInputPort for ProcessIoAdapter {
-    fn read_bws_access_token_for_provisioning(&self) -> Result<ProtectedSecret> {
-        self.0.read_bws_access_token_for_provisioning()
+impl BitwardenClientSecretInputPort for ProcessIoAdapter {
+    fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret> {
+        self.0.read_bitwarden_client_secret_for_provisioning()
     }
 }
 

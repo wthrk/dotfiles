@@ -52,9 +52,10 @@ where
     storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
     let bw_email = secret_input.read_bw_email_secret()?;
     let bw_password = secret_input.read_bw_password_secret()?;
-    let bws_access_token = secret_input.read_bws_access_token_secret()?;
+    let bitwarden_client_id = secret_input.read_bitwarden_client_id_secret()?;
+    let bitwarden_client_secret = secret_input.read_bitwarden_client_secret_secret()?;
     let document =
-        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bws_access_token)?;
+        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bitwarden_client_id, &bitwarden_client_secret)?;
     for (storage, value) in document.storage_entries(serial) {
         let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
         storage_port.store_secret(serial, intent, value)?;
@@ -147,13 +148,18 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"password")));
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_id_secret()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|| Ok(material(b"token")));
+            .returning(|| Ok(material(b"client-id")));
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Ok(material(b"client-secret")));
         storage
             .expect_store_secret()
-            .times(3)
+            .times(4)
             .in_sequence(&mut sequence)
             .returning(|_, _, _| Ok(()));
         storage
@@ -165,7 +171,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -180,7 +187,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }
@@ -258,7 +265,7 @@ mod tests {
             .returning(|_, _| Ok(setup_inspection()));
         storage
             .expect_store_secret()
-            .times(3)
+            .times(4)
             .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
@@ -267,7 +274,8 @@ mod tests {
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
-            SecretName::BwsAccessToken,
+            SecretName::BitwardenClientId,
+            SecretName::BitwardenClientSecret,
         ] {
             storage
                 .expect_inspect_secret_storage_read()
@@ -282,7 +290,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BwsAccessToken => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }
@@ -296,9 +304,13 @@ mod tests {
             .times(1)
             .returning(|| Ok(material(b"password")));
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_id_secret()
             .times(1)
-            .returning(|| Ok(material(b"token")));
+            .returning(|| Ok(material(b"client-id")));
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(1)
+            .returning(|| Ok(material(b"client-secret")));
         let mut pin_input = ports::MockPinInputPort::new();
         let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         pin_policy
@@ -368,7 +380,8 @@ mod tests {
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input.expect_read_bw_email_secret().times(0);
         secret_input.expect_read_bw_password_secret().times(0);
-        secret_input.expect_read_bws_access_token_secret().times(0);
+        secret_input.expect_read_bitwarden_client_id_secret().times(0);
+        secret_input.expect_read_bitwarden_client_secret_secret().times(0);
         let report = ports::MockReportPort::new();
 
         let result = run_enroll_primary_with_prompt(
@@ -420,7 +433,8 @@ mod tests {
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input.expect_read_bw_email_secret().times(0);
         secret_input.expect_read_bw_password_secret().times(0);
-        secret_input.expect_read_bws_access_token_secret().times(0);
+        secret_input.expect_read_bitwarden_client_id_secret().times(0);
+        secret_input.expect_read_bitwarden_client_secret_secret().times(0);
         let report = ports::MockReportPort::new();
 
         let result = run_enroll_primary_with_prompt(
@@ -477,9 +491,13 @@ mod tests {
             .times(1)
             .returning(|| Ok(material(b"password")));
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_id_secret()
             .times(1)
-            .returning(|| Ok(material(b"token")));
+            .returning(|| Ok(material(b"client-id")));
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(1)
+            .returning(|| Ok(material(b"client-secret")));
         let pin_input = ports::MockPinInputPort::new();
         let mut report = ports::MockReportPort::new();
         report.expect_write_enroll_report().times(0);
@@ -516,7 +534,7 @@ mod tests {
         storage.expect_verify_pin_input().times(0);
         storage
             .expect_store_secret()
-            .times(3)
+            .times(4)
             .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
@@ -545,9 +563,13 @@ mod tests {
             .times(1)
             .returning(|| Ok(material(b"password")));
         secret_input
-            .expect_read_bws_access_token_secret()
+            .expect_read_bitwarden_client_id_secret()
             .times(1)
-            .returning(|| Ok(material(b"token")));
+            .returning(|| Ok(material(b"client-id")));
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(1)
+            .returning(|| Ok(material(b"client-secret")));
         let pin_input = ports::MockPinInputPort::new();
         let mut report = ports::MockReportPort::new();
         report.expect_write_enroll_report().times(0);

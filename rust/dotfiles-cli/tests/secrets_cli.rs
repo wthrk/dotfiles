@@ -160,14 +160,14 @@ fn setup_runs_with_yubikey_path() -> TestResult<()> {
 #[test]
 fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
-        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let run = run_pipe_with_stub(
         [
             "yubikey",
             "put",
-            "bws-access-token",
+            "bitwarden-client-secret",
             "--serial",
             "2001",
             "--stdin",
@@ -180,7 +180,7 @@ fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
     assert_stored_secret(
         &run.final_yubikey()?,
         PRIMARY_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token\r",
     );
     Ok(())
@@ -189,21 +189,21 @@ fn put_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
 #[test]
 fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
-        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["yubikey", "put", "bws-access-token", "--serial", "2001"],
+        ["yubikey", "put", "bitwarden-client-secret", "--serial", "2001"],
         Some("new-token\n"),
         &stub,
     )?;
 
     assert!(run.success, "output: {}", run.output);
-    assert!(run.output.contains("bws-access-token: "));
+    assert!(run.output.contains("bitwarden-client-secret: "));
     assert_stored_secret(
         &run.final_yubikey()?,
         PRIMARY_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token",
     );
     Ok(())
@@ -216,7 +216,7 @@ fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
         bws_spec(),
     );
     let run = run_pipe_with_stub(
-        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
         None,
         &stub,
     )?;
@@ -233,7 +233,7 @@ fn get_refuses_secret_output_to_tty_with_yubikey_path() -> TestResult<()> {
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
         None,
         &stub,
     )?;
@@ -269,7 +269,7 @@ fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()>
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bws-access-token", "token");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bitwarden-client-secret", "token");
     Ok(())
 }
 
@@ -281,19 +281,21 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
     );
     let run = run_pty_with_stub(
         ["yubikey", "enroll-primary", "--serial", "2001"],
-        Some("u@example.com\npw\ntoken\n"),
+        Some("u@example.com\npw\nclient-id\ntoken\n"),
         &stub,
     )?;
 
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("bw-email: "));
     assert!(run.output.contains("bw-password: "));
-    assert!(run.output.contains("bws-access-token: "));
+    assert!(run.output.contains("bitwarden-client-id: "));
+    assert!(run.output.contains("bitwarden-client-secret: "));
     assert!(run.output.contains("\"role\": \"primary\""));
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bws-access-token", "token");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bitwarden-client-id", "client-id");
+    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bitwarden-client-secret", "token");
     Ok(())
 }
 
@@ -327,7 +329,7 @@ fn enroll_spare_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bws-access-token", "token");
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bitwarden-client-secret", "token");
     Ok(())
 }
 
@@ -358,7 +360,7 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bws-access-token", "token");
+    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bitwarden-client-secret", "token");
     Ok(())
 }
 
@@ -382,7 +384,7 @@ fn rotate_bws_token_reads_non_tty_stdin_with_yubikey_path() -> TestResult<()> {
     assert_stored_secret(
         &run.final_yubikey()?,
         PRIMARY_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token\r",
     );
     Ok(())
@@ -401,12 +403,12 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     )?;
 
     assert!(run.success, "output: {}", run.output);
-    assert!(run.output.contains("bws-access-token: "));
+    assert!(run.output.contains("bitwarden-client-secret: "));
     assert!(run.output.contains("\"serial\": 2001"));
     assert_stored_secret(
         &run.final_yubikey()?,
         PRIMARY_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token",
     );
     Ok(())
@@ -435,13 +437,13 @@ fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult
     assert_stored_secret(
         &final_yubikey,
         PRIMARY_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token",
     );
     assert_stored_secret(
         &final_yubikey,
         SPARE_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token",
     );
     Ok(())
@@ -805,19 +807,18 @@ fn verify_yubikey_no_args_leaves_bw_login_skipped() -> TestResult<()> {
 }
 
 #[test]
-fn put_stdin_requires_serial_before_reading_secret() -> TestResult<()> {
+fn put_stdin_auto_detects_serial_and_fails_when_stdin_is_empty() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let run = run_pipe_with_stub(
-        ["yubikey", "put", "bws-access-token", "--stdin"],
+        ["yubikey", "put", "bitwarden-client-secret", "--stdin"],
         None,
         &stub,
     )?;
 
-    assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(run.stderr.contains("pass --serial in non-interactive use"));
+    assert!(!run.success, "should fail when stdin has no data");
     Ok(())
 }
 
@@ -853,14 +854,14 @@ fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()>
 #[test]
 fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
-        yubikey_spec([writable_bws_access_token_device_spec(PRIMARY_SERIAL)]),
+        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let put_run = run_pipe_with_stub(
         [
             "yubikey",
             "put",
-            "bws-access-token",
+            "bitwarden-client-secret",
             "--serial",
             "2001",
             "--stdin",
@@ -872,7 +873,7 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
     assert_stored_secret(
         &put_run.final_yubikey()?,
         PRIMARY_SERIAL,
-        "bws-access-token",
+        "bitwarden-client-secret",
         "new-token\r",
     );
     Ok(())
@@ -881,10 +882,10 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
 #[test]
 fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
     let initial_device =
-        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-token");
+        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-id", "seed-token");
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
-        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
         None,
         &stub,
     )?;
@@ -898,17 +899,17 @@ fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
 fn get_fails_when_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
     let initial_device = storage_decode_error_device_spec(
         provisioned_device_spec(PRIMARY_SERIAL),
-        "bws-access-token",
+        "bitwarden-client-secret",
     );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
-        ["yubikey", "get", "bws-access-token", "--serial", "2001"],
+        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
         None,
         &stub,
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(run.stderr.contains("failed to decode bws-access-token"));
+    assert!(run.stderr.contains("failed to decode bitwarden-client-secret"));
     Ok(())
 }
 
@@ -1107,10 +1108,10 @@ fn provisioned_device_spec(serial: u32) -> Value {
     })
 }
 
-fn writable_bws_access_token_device_spec(serial: u32) -> Value {
+fn writable_bitwarden_client_secret_device_spec(serial: u32) -> Value {
     json!({
         "serial": serial,
-        "fixture": "writable-bws-access-token"
+        "fixture": "writable-bitwarden-client-secret"
     })
 }
 
@@ -1118,14 +1119,16 @@ fn seeded_device_spec(
     serial: u32,
     bw_email: &str,
     bw_password: &str,
-    bws_access_token: &str,
+    bitwarden_client_id: &str,
+    bitwarden_client_secret: &str,
 ) -> Value {
     json!({
         "serial": serial,
         "fixture": "seeded",
         "bw-email": bw_email,
         "bw-password": bw_password,
-        "bws-access-token": bws_access_token
+        "bitwarden-client-id": bitwarden_client_id,
+        "bitwarden-client-secret": bitwarden_client_secret
     })
 }
 
@@ -1424,7 +1427,7 @@ fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> Te
 
     assert!(run.success, "output: {}", run.output);
     assert!(
-        run.output.contains("bws-access-token (create/update): "),
+        run.output.contains("bitwarden-client-secret (create/update): "),
         "output: {}",
         run.output
     );
@@ -1679,7 +1682,8 @@ fn bootstrap_json() -> &'static str {
     r#"{
   "bw-email": "u@example.com",
   "bw-password": "pw",
-  "bws-access-token": "token"
+  "bitwarden-client-id": "client-id",
+  "bitwarden-client-secret": "token"
 }
 "#
 }
