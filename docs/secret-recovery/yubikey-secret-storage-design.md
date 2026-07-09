@@ -70,7 +70,7 @@ YubiKey adapter は次を満たす。
 
 PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。`yubikey` crate の PIV decrypt API から得た raw decrypt bytes は、secret storage adapter 境界で OAEP unpad して content key に戻す。`rsa` crate は raw RSA 復号結果に対する OAEP unpad API を公開していないため、OAEP unpad は CLI 側で最小実装を持つ。この実装は invalid padding の判定で separator 位置による短絡を避けるが、constant-time primitive として扱わない。Manger 攻撃に対する境界は、復号対象を 32-byte content encryption key に限定し、各 unwrap に YubiKey の PIN 検証、touch policy、PIV private operation を要求することで oracle としての利用回数と自動化を制限する。
 
-PIN policy は `Once`、touch policy は `Always` とする。1 コマンド内では PIN 検証 を 1 回に抑え、secret 復号操作ごとに YubiKey touch を要求する。例えば `enroll-spare` は primary 側の 4 secret 読み出しで 4 回（最大）、spare 側の ローカル確認 で 3 回の touch が発生する。連続した復旧コマンドでも touch を省略しない。
+PIN policy は `Once`、touch policy は `Always` とする。1 コマンド内では PIN 検証 を 1 回に抑え、secret 復号操作ごとに YubiKey touch を要求する。例えば `enroll-spare` は primary 側の 4 secret 読み出しで 4 回（最大）、spare 側の ローカル確認 で 4 回の touch が発生する。連続した復旧コマンドでも touch を省略しない。
 
 ### Object IDs
 
