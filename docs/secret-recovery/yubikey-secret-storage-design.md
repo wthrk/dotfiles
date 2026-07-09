@@ -254,7 +254,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
     "bw_email": "ok",
     "bw_password": "ok",
     "bitwarden_client_id": "ok",
-      "bitwarden_client_secret": "ok",
+    "bitwarden_client_secret": "ok",
     "local_storage": "ok"
   }
 }
@@ -269,7 +269,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
     "bw_email": "ok",
     "bw_password": "ok",
     "bitwarden_client_id": "ok",
-      "bitwarden_client_secret": "ok",
+    "bitwarden_client_secret": "ok",
     "local_storage": "ok"
   }
 }

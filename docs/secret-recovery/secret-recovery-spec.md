@@ -38,6 +38,7 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 - `OATH TOTP`: 同じ TOTP secret / QR code を primary と spare の両方に登録する。既存 secret を取り出せない場合は サービス側で TOTP を再設定する。TOTP secret はこの repository に保存しない。
 - `bw-email`: primary と spare の両方に同じ Bitwarden login email を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bw-password`: primary と spare の両方に同じ Bitwarden master password を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
+- `bitwarden-client-id`: primary と spare の両方に同じ Bitwarden 個人 API client ID を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bitwarden-client-secret`: primary と spare の両方に同じ Bitwarden Secrets Manager access token を保存し、復旧時の BWS 読取に使う。YubiKey に保存する値は、provisioning の登録・更新用 token ではなく、個人 vault の必要 secret を読める最小権限の復旧用 token とする。rotate 時は全 YubiKey を更新する。
 - `GPG secret key`: YubiKey には載せず、Bitwarden Secrets Manager の backup から `restore-gpg` で復元する。
 - `GitHub SSH identity`: YubiKey には載せず、復元した GPG authentication subkey 由来の SSH 公開鍵 を使う。`dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>` で出力する。
@@ -49,7 +50,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 
 保存場所ごとの secret と用途は次のとおり。
 
-- `YubiKey`: `bw-email` と `bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を保存し
+- `YubiKey`: `bw-email` と `bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を保存し、Bitwarden Password Manager の CLI login / unlock と Bitwarden Secrets Manager 読取に使う。
 - `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` と `password-store-remote` を保存する。`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope として保存し、BWS secret value 取得だけで plaintext 復旧完了にしない。`password-store-remote` は credential ではないが private repository の所在を示す値であり出力には漏らさない。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
