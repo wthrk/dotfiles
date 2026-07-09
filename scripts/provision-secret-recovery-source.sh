@@ -236,7 +236,14 @@ else
 fi
 
 # ── 5. YubiKey への API key 保存 ──
-CLIENT_ID="$(read_client_secret 'bitwarden-client-id: ')"
+if [ -t 0 ]; then
+  printf 'bitwarden-client-id: ' >/dev/tty
+  IFS= read -r CLIENT_ID </dev/tty
+  [ -n "$CLIENT_ID" ] || die "client-id が空です"
+else
+  IFS= read -r CLIENT_ID
+  [ -n "$CLIENT_ID" ] || die "stdin から client-id を読めません"
+fi
 
 RECOVERY_CLIENT_SECRET="$(read_client_secret 'YubiKey 保存用 client_secret: ')"
 [ "$RECOVERY_CLIENT_SECRET" != "$PROVISIONING_CLIENT_SECRET" ] \
