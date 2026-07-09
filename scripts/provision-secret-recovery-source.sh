@@ -214,7 +214,7 @@ fi
 confirm_password_store_primary_fingerprint
 
 # ── 4. BWS への復旧用 secret 登録 ──
-pause "Bitwarden Secrets Manager 側で 'dotfiles-secret-recovery' の保存先を準備しで、これから入力する BWS 登録・更新用 token からアクセス可能であることを確認してください。"
+pause "BWS にアクセストークンが必要です。BWS Webコンソールでサービスアカウントを作成し、そのアクセストークンタブからトークンを発行してください。'dotfiles-secret-recovery' の読み書き権限があることを確認してから Enter を押してください。"
 PROVISIONING_BWS_TOKEN="$(read_bws_access_token 'BWS provisioning access token for create/update')"
 
 log "BWS に password-store-remote を登録"
