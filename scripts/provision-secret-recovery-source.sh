@@ -215,7 +215,7 @@ confirm_password_store_primary_fingerprint
 
 # ── 4. BWS への復旧用 secret 登録 ──
 pause "BWS にアクセストークンが必要です。BWS Webコンソールでサービスアカウントを作成し、そのアクセストークンタブからトークンを発行してください。'dotfiles-secret-recovery' の読み書き権限があることを確認してから Enter を押してください。"
-PROVISIONING_BWS_TOKEN="$(read_bws_access_token 'BWS provisioning access token for create/update')"
+PROVISIONING_BWS_TOKEN="$(read_bws_access_token 'BWS アクセストークン（登録・更新用）: ')"
 
 log "BWS に password-store-remote を登録"
 pause "BWS の password-store-remote をこれから設定します。既存 secret がある場合も、現在の PASS_REPO / GitHub active account から導出した復旧先が意図した private password-store repository であることを確認してください。repository 所在はログへ表示しません。"
@@ -231,7 +231,7 @@ else
 fi
 
 # ── 5. YubiKey への復旧用 BWS read token 保存 ──
-RECOVERY_BWS_TOKEN="$(read_bws_access_token 'BWS recovery/read access token for YubiKey storage')"
+RECOVERY_BWS_TOKEN="$(read_bws_access_token 'BWS アクセストークン（YubiKey保存用・読取専用）: ')"
 [ "$RECOVERY_BWS_TOKEN" != "$PROVISIONING_BWS_TOKEN" ] \
   || die "復旧用 BWS access token が登録・更新用 token と同一です。YubiKey には最小権限の復旧用 token だけを保存してください"
 log "復旧用 bws-access-token を YubiKey に保存"
