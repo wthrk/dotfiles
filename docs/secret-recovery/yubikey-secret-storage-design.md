@@ -80,6 +80,7 @@ Object ID と用途の対応は次のとおり。
 - `0x005FFF17`: `bw-email` encrypted blob
 - `0x005FFF18`: `bw-password` encrypted blob
 - `0x005FFF19`: `bitwarden-client-secret` encrypted blob
+- `0x005FFF1a`: `bitwarden-client-id` encrypted blob
 
 PIV data object は app 独自データを置けるが、今回使う object は PIN なしで読めるものとして扱う。そのため data object に置くのは manifest と暗号化済み blob だけにする。平文 secret や平文 content encryption key を置くと、object を読めるだけで復号できるため禁止する。
 
@@ -169,7 +170,7 @@ tag: [u8; 16]
 Envelope encryption は次の役割分担にする。
 
 - `algorithm = 1` は AES-256-GCM を表す。
-- `secret_id` は `1 = bw-email`、`2 = bw-password`、`3 = bitwarden-client-secret` を表す。
+- `secret_id` は `1 = bw-email`、`2 = bw-password`、`3 = bitwarden-client-secret`、`4 = bitwarden-client-id` を表す。
 - secret 本文は secret ごとに生成するランダムな 32-byte content encryption key で AEAD 暗号化する。
 - AES-256-GCM の nonce は 12 bytes、tag は 16 bytes に固定する。format 互換性を単純に保つため、nonce / tag の可変長 field は持たない。
 - content encryption key は slot `82` の RSA public key で wrap し、平文では保存しない。
@@ -234,8 +235,8 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 {
   "bw-email": "user@example.com",
   "bw-password": "secret",
-  "bitwarden-client-id",
-    "bitwarden-client-secret": "secret"
+  "bitwarden-client-id": "client-id",
+  "bitwarden-client-secret": "secret"
 }
 ```
 
