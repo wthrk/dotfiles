@@ -93,7 +93,7 @@
 8. **[CMD][対話]** `bitwarden-client-secret` を primary / spare YubiKey へ保存する。
    - primary 登録では `dotfiles secrets yubikey enroll-primary` で `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を保存する。個別保存を使う場合は `dotfiles secrets yubikey put bw-email`、`dotfiles secrets yubikey put bw-password`、`dotfiles secrets yubikey put bitwarden-client-id`、`dotfiles secrets yubikey put bitwarden-client-secret --stdin` をそれぞれ実行する。
    - spare 登録では `dotfiles secrets yubikey enroll-spare` で primary から `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を読み出し、spare に保存する。個別保存で運用する場合も primary / spare の両方に 4 secret が揃っていることを確認する。
-   - `scripts/provision-secret-recovery-source.sh` が保存するのは復旧用 `bitwarden-client-secret` だけである。`bw-email` / `bw-password` は `enroll-primary` / `enroll-spare` または個別の `put` で保存する。
+   - `scripts/provision-secret-recovery-source.sh` が保存するのは復旧用 `bitwarden-client-secret` だけである。`bw-email` / `bw-password` / `bitwarden-client-id` は `enroll-primary` / `enroll-spare` または個別の `put` で保存する。
    - Bitwarden Password Manager 用の `bw-email` / `bw-password` と、Bitwarden Secrets Manager 用の `bitwarden-client-secret` を混同しない。Password Manager は `bw-login` の login / unlock、Secrets Manager は `restore-gpg` / `restore-pass` / `verify-yubikey --check bws` の secret 操作に使う。
 
 9. **[CMD][対話]** 検証（primary / spare 双方で実施。bw-login は無条件 `bw login`→`unlock` のため再実行前に `bw logout`）:

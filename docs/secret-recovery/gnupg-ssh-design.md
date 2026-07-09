@@ -26,7 +26,7 @@
 - `metadata` は `primary_fingerprint`（lowercase hex 40 文字、区切りなし）、`exported_at`（UTC RFC3339）、`dek_alg`（`aes-256-gcm` 固定）、`recipient_kek_alg`（`rsa-oaep-sha256` 固定）を必須とする。
 - `ciphertext` は `nonce`、`body`、`tag` を base64 文字列で保持する。`nonce` は AES-GCM nonce 12 bytes、`body` は DEK で暗号化した OpenPGP backup bytes、`tag` は AES-GCM authentication tag 16 bytes とする。`tag` を `body` へ連結しない。
 - `recipients` は 1 件以上必須とし、要素は `yubikey_serial`（10 進文字列）、`piv_slot`（string, `82` 固定）、`public_key_fingerprint`（PIV slot `82` 公開鍵の DER-encoded SubjectPublicKeyInfo を SHA-256 で digest した lowercase hex 64 文字、区切りなし）、`wrapped_dek`（base64）を必須とする。
-- `restore-gpg` は YubiKey から `bws-access-token` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
+- `restore-gpg` は YubiKey から `bitwarden-client-secret` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
 - `restore-gpg` は接続中 YubiKey と envelope recipient の照合に成功した場合のみ data encryption key を unwrap し、復号した backup を import へ渡す。
 - GPG 鍵リングの import API は `gpgme` に固定し、通常実装で `gpg` CLI は使わない。
 - import 対象は 1 つの primary key と、encryption / authentication / signing subkey を含む OpenPGP transferable secret key であることを検証する。
@@ -86,7 +86,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 
 `restore-gpg` は次の順序で処理する。
 
-1. YubiKey から `bws-access-token` を取得する。
+1. YubiKey から `bitwarden-client-secret` を取得する。
 2. Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得する。
 3. 取得値の envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient がない場合は停止する。
 4. 接続中 YubiKey で data encryption key を unwrap して復号済み backup を得る。
@@ -171,7 +171,7 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 
 ## 停止条件
 
-- `bws-access-token` が取得できない。
+- `bitwarden-client-secret` が取得できない。
 - Bitwarden Secrets Manager から `gpg-secret-key-backup` encrypted envelope を取得できない。
 - backup envelope の形式検証（version / metadata / recipients / ciphertext）に失敗する。
 - 接続中 YubiKey と一致する recipient が存在しない。

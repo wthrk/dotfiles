@@ -192,7 +192,7 @@ Envelope encryption は次の役割分担にする。
 - YubiKey が 1 本だけ接続されていればそれを対象にする。複数本ある場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` を要求する。
 - PIV application version が利用条件を満たすこと。
 - slot `82` に既存 key / certificate がないこと。
-- `0x005FFF16`、`0x005FFF17`、`0x005FFF18`、`0x005FFF19` に既存 data object がないこと。
+- `0x005FFF16`、`0x005FFF17`、`0x005FFF18`、`0x005FFF19`、`0x005FFF1a` に既存 data object がないこと。
 - PIN retries が 0 ではないこと。
 - management key authentication が可能なこと。factory-default management key 認証を暫定前提にせず、非既定 management key への切替、取得、注入が成立すること。
 
