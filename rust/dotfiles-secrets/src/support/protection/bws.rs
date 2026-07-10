@@ -119,7 +119,7 @@ pub(crate) async fn login_client_with_access_token(
                     .auth()
                     .login_access_token(request.as_request())
                     .await
-                    .map_err(|_| anyhow::anyhow!("bitwarden login failed"))?;
+                    .map_err(|error| anyhow::anyhow!("bitwarden login failed: {error}"))?;
                 drop(request);
                 Ok(client)
             })
