@@ -130,7 +130,7 @@ YubiKey から指定 secret を取得する。`<name>` は `bw-email`、`bw-pass
 
 ### `dotfiles secrets yubikey enroll-primary`
 
-primary YubiKey を復旧入口として初期登録する。接続中の YubiKey を選択し、専用 PIV 領域を setup し、`bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を prompt から受け取り、保存後に ローカル確認 を実行する。非対話または移行用途に限り stdin からの入力を許可する。
+primary YubiKey を復旧入口として初期登録する。1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を対象にし、専用 PIV 領域を setup し、`bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を prompt から受け取り、保存後に ローカル確認 を実行する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話または移行用途に限り stdin からの入力を許可する。
 `--stdin-json` で bootstrap secret を渡す場合も、PIN は JSON 用 stdin ではなく controlling terminal から読む。PIN 検証 と保存先の事前確認に失敗した場合は、JSON payload を読み始める前に停止する。
 
 ### `dotfiles secrets yubikey enroll-spare`
@@ -140,13 +140,13 @@ spare YubiKey を復旧入口として初期登録する。通常は primary Yub
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bitwarden-client-secret` を更新し、更新後に ローカル確認 を実行する。BWS 接続確認は ローカル保管 の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、利用者が更新対象の YubiKey を選ぶ。出力 要約 の serial を確認し、対象全本が更新済みになるまで選択を続ける。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
+指定 YubiKey の `bitwarden-client-secret` を更新し、更新後に ローカル確認 を実行する。BWS 接続確認は ローカル保管 の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。出力 要約 の serial を確認し、対象全本が更新済みになるまで更新する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
 token 入力前に ローカル保管 の復号可能性を確認し、更新不能な状態では新しい token を読まずに停止する。
 `--stdin` で token を渡す場合も、PIN は token 用 stdin ではなく controlling terminal から読む。
 
 ### `dotfiles secrets verify-yubikey`
 
-到達仕様では、挿さっている YubiKey が復旧入口として使えるか確認する機能として提供する。1 本だけ接続されている場合はその YubiKey を対象にし、複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` で対象を明示する。secret 本文は stdout / stderr に出力しない。
+到達仕様では、挿さっている YubiKey が復旧入口として使えるか確認する機能として提供する。1 本だけ接続されている場合はその YubiKey を対象にし、serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話実行では `--serial <serial>` で対象を明示する。secret 本文は stdout / stderr に出力しない。
 
 到達仕様の確認項目:
 

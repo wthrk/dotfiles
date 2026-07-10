@@ -54,8 +54,12 @@ where
     let bw_password = secret_input.read_bw_password_secret()?;
     let bitwarden_client_id = secret_input.read_bitwarden_client_id_secret()?;
     let bitwarden_client_secret = secret_input.read_bitwarden_client_secret_secret()?;
-    let document =
-        BootstrapSecretDocument::from_secret_materials(&bw_email, &bw_password, &bitwarden_client_id, &bitwarden_client_secret)?;
+    let document = BootstrapSecretDocument::from_secret_materials(
+        &bw_email,
+        &bw_password,
+        &bitwarden_client_id,
+        &bitwarden_client_secret,
+    )?;
     for (storage, value) in document.storage_entries(serial) {
         let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
         storage_port.store_secret(serial, intent, value)?;
@@ -187,7 +191,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }
@@ -290,7 +296,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }
@@ -380,8 +388,12 @@ mod tests {
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input.expect_read_bw_email_secret().times(0);
         secret_input.expect_read_bw_password_secret().times(0);
-        secret_input.expect_read_bitwarden_client_id_secret().times(0);
-        secret_input.expect_read_bitwarden_client_secret_secret().times(0);
+        secret_input
+            .expect_read_bitwarden_client_id_secret()
+            .times(0);
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(0);
         let report = ports::MockReportPort::new();
 
         let result = run_enroll_primary_with_prompt(
@@ -433,8 +445,12 @@ mod tests {
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input.expect_read_bw_email_secret().times(0);
         secret_input.expect_read_bw_password_secret().times(0);
-        secret_input.expect_read_bitwarden_client_id_secret().times(0);
-        secret_input.expect_read_bitwarden_client_secret_secret().times(0);
+        secret_input
+            .expect_read_bitwarden_client_id_secret()
+            .times(0);
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(0);
         let report = ports::MockReportPort::new();
 
         let result = run_enroll_primary_with_prompt(

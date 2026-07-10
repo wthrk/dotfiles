@@ -29,8 +29,8 @@ pub(crate) struct RotateBwsTokenPromptRuntime<'a> {
 
 /// prompt 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
-/// serial 未指定時は port 境界で対象 device を解決し、token 入力前に既存 local storage を
-/// read/validate する。更新不能な状態では new token を受け取らない。
+/// serial 未指定時は各更新ステップで port 境界から単一接続 device を解決し、token 入力前に
+/// 既存 local storage を read/validate する。更新不能な状態では new token を受け取らない。
 pub(crate) fn run_rotate_bws_token_with_prompt(
     command: RotateBwsTokenCommand,
     runtime: RotateBwsTokenPromptRuntime<'_>,
@@ -183,7 +183,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"access-token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"access-token")
+                        }
                     })
                 });
         }
@@ -219,7 +221,9 @@ mod tests {
             .expect_inspect_secret_storage_write()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BitwardenClientSecret)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
             .returning(|_, _| Ok(write_inspection(false)));
         expect_local_verify_ok(&mut storage, &mut sequence, 2001);
         secret_input
@@ -279,7 +283,9 @@ mod tests {
         let mut secret_input = ports::MockSecretInputPort::new();
         let mut continuation = ports::MockRotationContinuationPort::new();
         let pin_input = ports::MockPinInputPort::new();
-        secret_input.expect_read_bitwarden_client_secret_secret().times(0);
+        secret_input
+            .expect_read_bitwarden_client_secret_secret()
+            .times(0);
         continuation.expect_continue_rotation().times(0);
 
         let mut storage = ports::MockSecretStoragePort::new();
@@ -325,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn rotate_prompt_continues_to_another_interactive_device() -> crate::Result<()> {
+    fn rotate_prompt_reuses_token_for_next_single_connected_device() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
         let mut device_serial = ports::MockDeviceSerialPort::new();
         device_serial
@@ -369,7 +375,8 @@ mod tests {
                 .expect_store_secret()
                 .times(1)
                 .withf(move |actual_serial, intent, _| {
-                    *actual_serial == serial && intent.storage.name == SecretName::BitwardenClientSecret
+                    *actual_serial == serial
+                        && intent.storage.name == SecretName::BitwardenClientSecret
                 })
                 .returning(|_, _, _| Ok(()));
             expect_local_verify_ok(&mut storage, &mut sequence, serial);

@@ -150,7 +150,7 @@ mod tests {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
                         SecretName::BitwardenClientId => material(b"client-id"),
-                    SecretName::BitwardenClientSecret => material(b"client-secret"),
+                        SecretName::BitwardenClientSecret => material(b"client-secret"),
                     })
                 });
         }
@@ -205,7 +205,9 @@ mod tests {
             .expect_inspect_secret_storage_write()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BitwardenClientSecret)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
             .returning(|_, _| Ok(write_inspection(false)));
         expect_local_verify_ok(&mut storage, &mut sequence, 2001);
         secret_input

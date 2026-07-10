@@ -295,7 +295,7 @@ mod tests {
             SecretName::BwEmail => material(b"email"),
             SecretName::BwPassword => material(b"password"),
             SecretName::BitwardenClientId => material(b"client-id"),
-                    SecretName::BitwardenClientSecret => material(b"client-secret"),
+            SecretName::BitwardenClientSecret => material(b"client-secret"),
         }
     }
 

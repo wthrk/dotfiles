@@ -8,9 +8,10 @@ use crate::{
     Result,
     domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
     ports::io::{
-        BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
-        BitwardenClientSecretInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort,
-        RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+        BackupUpdateConfirmationPort, BitwardenClientSecretInputPort,
+        BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort, PasswordStoreRemoteInputPort,
+        PinInputPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+        SshPublicKeyOutputPort,
     },
     support::{
         clock, process_io,
@@ -234,7 +235,8 @@ impl SecretInputPort for ProcessIoAdapter {
 
 impl BitwardenClientSecretInputPort for ProcessIoAdapter {
     fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_bitwarden_client_secret_for_provisioning()
+        self.secret_io
+            .read_bitwarden_client_secret_for_provisioning()
     }
 }
 

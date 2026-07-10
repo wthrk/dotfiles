@@ -96,7 +96,10 @@ mod tests {
             ("bw-email".to_owned(), material(b"email")),
             ("bw-password".to_owned(), material(b"password")),
             ("bitwarden-client-id".to_owned(), material(b"client-id")),
-            ("bitwarden-client-secret".to_owned(), material(b"client-secret")),
+            (
+                "bitwarden-client-secret".to_owned(),
+                material(b"client-secret"),
+            ),
         ]
         .into_iter()
         .collect()
@@ -188,7 +191,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }

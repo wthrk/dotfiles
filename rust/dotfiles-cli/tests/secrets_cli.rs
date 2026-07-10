@@ -193,7 +193,13 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["yubikey", "put", "bitwarden-client-secret", "--serial", "2001"],
+        [
+            "yubikey",
+            "put",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+        ],
         Some("new-token\n"),
         &stub,
     )?;
@@ -216,7 +222,13 @@ fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
         bws_spec(),
     );
     let run = run_pipe_with_stub(
-        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
+        [
+            "yubikey",
+            "get",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+        ],
         None,
         &stub,
     )?;
@@ -233,7 +245,13 @@ fn get_refuses_secret_output_to_tty_with_yubikey_path() -> TestResult<()> {
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
+        [
+            "yubikey",
+            "get",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+        ],
         None,
         &stub,
     )?;
@@ -269,7 +287,12 @@ fn enroll_primary_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()>
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bitwarden-client-secret", "token");
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
     Ok(())
 }
 
@@ -294,8 +317,18 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bitwarden-client-id", "client-id");
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bitwarden-client-secret", "token");
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-id",
+        "client-id",
+    );
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
     Ok(())
 }
 
@@ -329,7 +362,12 @@ fn enroll_spare_reads_non_tty_stdin_json_with_yubikey_path() -> TestResult<()> {
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bitwarden-client-secret", "token");
+    assert_stored_secret(
+        &final_yubikey,
+        SPARE_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
     Ok(())
 }
 
@@ -360,7 +398,12 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
     assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
-    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bitwarden-client-secret", "token");
+    assert_stored_secret(
+        &final_yubikey,
+        SPARE_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
     Ok(())
 }
 
@@ -415,7 +458,26 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
 }
 
 #[test]
-fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult<()> {
+fn rotate_bws_token_fails_closed_when_multiple_yubikeys_are_detected() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([
+            provisioned_device_spec(PRIMARY_SERIAL),
+            provisioned_device_spec(SPARE_SERIAL),
+        ]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["yubikey", "rotate-bws-token"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(
+        run.stderr
+            .contains("multiple YubiKeys detected; connect exactly one YubiKey and retry")
+    );
+    Ok(())
+}
+
+#[test]
+fn rotate_bws_token_uses_explicit_serial_when_multiple_yubikeys_are_detected() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([
             provisioned_device_spec(PRIMARY_SERIAL),
@@ -424,27 +486,26 @@ fn rotate_bws_token_can_continue_to_another_tty_selected_yubikey() -> TestResult
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["yubikey", "rotate-bws-token"],
-        Some("1\nnew-token\ny\n2\nn\n"),
+        ["yubikey", "rotate-bws-token", "--serial", "2002"],
+        Some("new-token\n"),
         &stub,
     )?;
 
     assert!(run.success, "output: {}", run.output);
-    assert!(run.output.contains("rotate another YubiKey? [y/N]: "));
-    assert!(run.output.contains("\"serial\": 2001"));
     assert!(run.output.contains("\"serial\": 2002"));
+    assert!(!run.output.contains("rotate another YubiKey? [y/N]: "));
     let final_yubikey = run.final_yubikey()?;
-    assert_stored_secret(
-        &final_yubikey,
-        PRIMARY_SERIAL,
-        "bitwarden-client-secret",
-        "new-token",
-    );
     assert_stored_secret(
         &final_yubikey,
         SPARE_SERIAL,
         "bitwarden-client-secret",
         "new-token",
+    );
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "token",
     );
     Ok(())
 }
@@ -573,7 +634,7 @@ fn verify_yubikey_requires_serial_when_multiple_devices_are_detected() -> TestRe
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
         run.stderr
-            .contains("multiple YubiKeys detected; pass --serial to select a device")
+            .contains("multiple YubiKeys detected; connect exactly one YubiKey and retry")
     );
     Ok(())
 }
@@ -612,7 +673,7 @@ fn verify_yubikey_rejects_all_with_check() -> TestResult<()> {
     );
     assert!(
         !run.stderr
-            .contains("multiple YubiKeys detected; pass --serial to select a device"),
+            .contains("multiple YubiKeys detected; connect exactly one YubiKey and retry"),
         "input precondition must fail before device resolution: {}",
         run.stderr
     );
@@ -881,11 +942,22 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
-    let initial_device =
-        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-id", "seed-token");
+    let initial_device = seeded_device_spec(
+        PRIMARY_SERIAL,
+        "seed@example.com",
+        "seed-pw",
+        "seed-id",
+        "seed-token",
+    );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
-        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
+        [
+            "yubikey",
+            "get",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+        ],
         None,
         &stub,
     )?;
@@ -903,13 +975,22 @@ fn get_fails_when_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
     );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(
-        ["yubikey", "get", "bitwarden-client-secret", "--serial", "2001"],
+        [
+            "yubikey",
+            "get",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+        ],
         None,
         &stub,
     )?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(run.stderr.contains("failed to decode bitwarden-client-secret"));
+    assert!(
+        run.stderr
+            .contains("failed to decode bitwarden-client-secret")
+    );
     Ok(())
 }
 
@@ -1427,7 +1508,8 @@ fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> Te
 
     assert!(run.success, "output: {}", run.output);
     assert!(
-        run.output.contains("bitwarden-client-secret (create/update): "),
+        run.output
+            .contains("bitwarden-client-secret (create/update): "),
         "output: {}",
         run.output
     );

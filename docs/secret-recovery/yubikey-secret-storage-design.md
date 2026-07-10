@@ -100,8 +100,8 @@ dotfiles secrets yubikey enroll-spare
 
 `enroll-spare` は次を一連の処理として実行する。
 
-1. primary YubiKey を選択し、PIN 検証 と touch を経て `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を復号する。
-2. primary 読み出しが完了した直後に spare YubiKey を選択する。primary と spare を同時接続できない場合は、この時点で primary を抜いて spare を挿し、prompt で Enter を押させる。
+1. primary YubiKey を serial 明示または単一接続 device として解決し、PIN 検証 と touch を経て `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を復号する。
+2. primary 読み出しが完了した直後に spare YubiKey を serial 明示または単一接続 device として解決する。primary と spare を同時接続できない場合は、この時点で primary を抜いて spare を挿し、prompt で Enter を押させる。
 3. spare の専用 PIV slot / object が未使用であることを確認し、必要なら setup を行う。
 4. primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
 5. ローカル確認 を実行し、spare 単体で 4 種類の secret を復号できることを確認する。
@@ -112,7 +112,7 @@ spare に保存する blob は primary の ciphertext、nonce、wrapped key を�
 
 primary 読み出し後に spare へ差し替える間も、平文 secret は `ProtectedSecret` の内側だけに置く。正常終了、エラー、timeout、Ctrl-C などの path では所有値の Drop と zeroize によって破棄へ進める。panic message、debug 表示、エラー context には secret 本文を含めない。`enroll-spare` は secret を読む前に core dump を無効化する。
 
-YubiKey の選択は対話を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。複数本接続されている場合は serial と識別情報を表示して選択させる。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示する。
+YubiKey の選択は serial 明示を基本にする。1 本だけ接続されている場合はその YubiKey を対象にする。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。利用者は `--primary-serial <serial>` と `--spare-serial <serial>` で対象を明示して再実行する。
 
 primary の初期登録も同じ考え方にし、通常は次のコマンドだけを使う。
 
@@ -126,7 +126,7 @@ dotfiles secrets yubikey enroll-primary
 dotfiles secrets yubikey rotate-bws-token
 ```
 
-`rotate-bws-token` は新しい token を一度だけ受け取り、対象 YubiKey を対話的に選択させながら更新する。各 YubiKey への保存後に ローカル確認 を行う。利用者は primary とすべての spare を更新対象にし、要約 に出た serial で対象全本が更新済みであることを確認する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、ローカル保管 の検証とは別の確認として 要約 に残す。非対話実行では `--serial <serial>` を指定して 1 本ずつ更新し、token は `--stdin` で渡せる。
+`rotate-bws-token` は新しい token を一度だけ受け取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。各 YubiKey への保存後に ローカル確認 を行う。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial <serial>` を指定して 1 本ずつ実行する。利用者は 要約 に出た serial で primary とすべての spare が更新済みであることを確認する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、ローカル保管 の検証とは別の確認として 要約 に残す。非対話実行では `--serial <serial>` と `--stdin` を指定して 1 本ずつ更新する。
 
 外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `get` の成功は GitHub、Bitwarden、Google、Apple などで 予備キー が登録済みであることを保証しない。
 
@@ -189,7 +189,7 @@ Envelope encryption は次の役割分担にする。
 
 `setup` は低水準コマンドであり、通常は `enroll-primary` / `enroll-spare` から内部的に実行する。直接実行時は次を確認する。
 
-- YubiKey が 1 本だけ接続されていればそれを対象にする。複数本ある場合は serial と識別情報を表示して選択させる。非対話実行では `--serial <serial>` を要求する。
+- YubiKey が 1 本だけ接続されていればそれを対象にする。serial 未指定で複数本ある場合は一覧表示や選択へ進まず停止し、`--serial <serial>` を要求する。
 - PIV application version が利用条件を満たすこと。
 - slot `82` に既存 key / certificate がないこと。
 - `0x005FFF16`、`0x005FFF17`、`0x005FFF18`、`0x005FFF19`、`0x005FFF1a` に既存 data object がないこと。
@@ -226,7 +226,7 @@ primary YubiKey を復旧入口として登録する高水準コマンドであ�
 
 spare YubiKey を復旧入口として登録する高水準コマンドである。primary から bootstrap secret を読み出して spare に再暗号化する操作にまとめ、利用者が低水準コマンドを手順として並べたり、secret を再入力したりしなくてよいようにする。
 
-通常実行では、まず primary YubiKey を選択して 4 種類の secret を復号する。復号が終わった直後に spare YubiKey の選択へ進む。YubiKey を 1 本ずつしか接続できない環境では、この時点で primary を抜き、spare を挿して Enter を押す。同時接続できる環境では、spare の serial を対話選択するか `--spare-serial <serial>` で明示する。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。
+通常実行では、まず `--primary-serial <serial>` で明示された primary、または 1 本だけ接続されている primary YubiKey から 4 種類の secret を復号する。復号が終わった直後に spare YubiKey の解決へ進む。YubiKey を 1 本ずつしか接続できない環境では、この時点で primary を抜き、spare を挿して Enter を押す。同時接続できる環境では `--spare-serial <serial>` で spare を明示する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。
 
 `--stdin-json` は primary YubiKey が利用できないが、別経路で正本 secret を持っている場合の recovery / migration 用に限る。この場合だけ次の JSON を stdin から 1 回だけ受け取る。
 `enroll-primary` と `enroll-spare --stdin-json` は JSON payload を読む前に YubiKey PIN を要求し、PIN は JSON 用 stdin から読まず controlling terminal から読む。controlling terminal を開けない場合は JSON payload を読み始める前に停止する。
@@ -277,7 +277,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bitwarden-client-secret` だけを更新する。対話実行では新しい token を一度だけ読み取り、利用者が選択した YubiKey を更新する。同一 serial を同じ実行内で再選択した場合は停止する。primary とすべての spare を更新対象にし、出力 要約 の serial で対象全本の更新完了を確認する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に ローカル保管 が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は ローカル確認 を実行する。BWS 接続確認は ローカル保管 とは別の外部確認として扱う。
+指定 YubiKey の `bitwarden-client-secret` だけを更新する。対話実行では新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。primary とすべての spare は、出力 要約 の serial で対象全本の更新完了を確認する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に ローカル保管 が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は ローカル確認 を実行する。BWS 接続確認は ローカル保管 とは別の外部確認として扱う。
 
 ### `dotfiles secrets verify-yubikey`
 
@@ -285,7 +285,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 
 引数:
 
-- `--serial <serial>`: 非対話実行時に対象 YubiKey を指定する。対話実行では、1 本だけ接続されていれば自動選択し、複数本接続時は一覧から選択させる。
+- `--serial <serial>`: 対象 YubiKey を指定する。serial 未指定時は、1 本だけ接続されていれば自動選択し、複数本接続時は一覧表示や選択へ進まず停止する。
 - `--check bws`: `bitwarden-client-secret` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることに加え、`gpg-secret-key-backup` envelope schema（`version` / `metadata` / `recipients` / `ciphertext`）と `metadata.primary_fingerprint` 形式（lowercase hex 40 文字、区切りなし）を検証し、接続中 YubiKey に一致する recipient（`yubikey_serial` と `public_key_fingerprint` の両一致）を照合して、unwrap なしで判定できる復旧可能性（少なくとも一致 recipient の存在）を確認する外部確認項目。secret 本文の平文化や unwrap は行わず、利用できない場合は失敗する。
 - `--check bw-login`: `bw-email`、`bw-password`、入力された YubiKey OTP で Bitwarden Password Manager の login / unlock ができることを確認する外部確認項目。email override が必要な場合は `--email <email>` を使う。
 - `--all`: ローカル保管確認と外部確認を含む全確認項目を実行する。指定した確認項目のいずれかが利用できない場合は失敗する。
@@ -318,7 +318,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 ## 停止条件
 
 - YubiKey が見つからない。
-- 非対話実行で複数 YubiKey が接続され、`--serial` または用途別 serial option が指定されていない。
+- 複数 YubiKey が接続され、`--serial` または用途別 serial option が指定されていない。
 - 指定 serial の YubiKey が見つからない。
 - PIV application が利用できない。
 - PIN retries が 0。
@@ -347,8 +347,8 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 単体テスト は fake YubiKey adapter で行う。
 
 - 許可 name と拒否 name。
-- 対話実行で複数 YubiKey がある場合に一覧から選択できること。
-- 非対話実行で複数 YubiKey がある場合に serial option なしで停止すること。
+- serial 未指定で複数 YubiKey がある場合に一覧表示や選択へ進まず停止すること。
+- serial option 指定時に指定 YubiKey だけを対象にすること。
 - manifest parse / serialize。
 - manifest が slot / object mapping を持たない sentinel であること。
 - 固定 object ID mapping。

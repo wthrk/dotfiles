@@ -85,7 +85,9 @@ mod tests {
             .expect_inspect_secret_storage_read()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|serial, storage| *serial == 2001 && storage.name == SecretName::BitwardenClientSecret)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()

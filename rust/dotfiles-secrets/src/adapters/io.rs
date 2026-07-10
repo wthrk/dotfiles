@@ -16,9 +16,10 @@ use crate::{
         verification::VerifySummary,
     },
     ports::io::{
-        BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort,
-        BitwardenClientSecretInputPort, ClockPort, PasswordStoreRemoteInputPort, PinInputPort, ReportPort,
-        RotationContinuationPort, SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+        BackupUpdateConfirmationPort, BitwardenClientSecretInputPort,
+        BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort, PasswordStoreRemoteInputPort,
+        PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
+        SshPublicKeyOutputPort,
     },
     support::protection::ProtectedSecret,
 };

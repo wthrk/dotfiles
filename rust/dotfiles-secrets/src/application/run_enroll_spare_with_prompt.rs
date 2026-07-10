@@ -222,7 +222,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }
@@ -267,7 +269,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }
@@ -324,7 +328,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }
@@ -400,7 +406,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }
@@ -471,7 +479,9 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => material(b"token"),
+                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
+                            material(b"token")
+                        }
                     })
                 });
         }

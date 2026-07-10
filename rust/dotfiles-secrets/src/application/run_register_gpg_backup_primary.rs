@@ -258,7 +258,7 @@ mod tests {
 
         run_register_gpg_backup_primary(
             RegisterGpgBackupCommand {
-                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP)?,
+                primary_fingerprint: Some(PrimaryFingerprint::parse(PRIMARY_FP)?),
                 serial: Some(2001),
             },
             RegisterGpgBackupPrimaryRuntime {
@@ -274,7 +274,65 @@ mod tests {
         .await
     }
 
-    /// 同名 backup が複数 project に重複して存在する場合は、`resolve_id` の複数件 `Err` を
+    /// primary fingerprint 未指定時は必須引数エラーで停止し、鍵素材の export や BWS 作成へ進まない。
+    #[tokio::test]
+    async fn register_primary_requires_primary_fingerprint_before_backup_work() {
+        let mut token = ports::MockBitwardenClientSecretInputPort::new();
+        token
+            .expect_read_bitwarden_client_secret_for_provisioning()
+            .times(0);
+
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(0..=1)
+            .returning(|requested| Ok(requested.expect("serial")));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring.expect_inspect_imported_key().times(0);
+        keyring.expect_export_secret_key().times(0);
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
+
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher.expect_generate_dek().times(0);
+        cipher.expect_encrypt_backup().times(0);
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient.expect_wrap_dek_for_recipient().times(0);
+
+        let mut clock = ports::MockClockPort::new();
+        clock.expect_now_rfc3339_utc().times(0);
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects().times(0);
+        bws.expect_list_bws_secrets().times(0);
+        bws.expect_create_gpg_backup_envelope().times(0);
+
+        let result = run_register_gpg_backup_primary(
+            RegisterGpgBackupCommand {
+                primary_fingerprint: None,
+                serial: Some(2001),
+            },
+            RegisterGpgBackupPrimaryRuntime {
+                token_input: &token,
+                device_serial: &mut device,
+                keyring: &mut keyring,
+                cipher: &mut cipher,
+                recipient: &mut recipient,
+                clock: &clock,
+                bws_client: &bws,
+            },
+        )
+        .await;
+
+        let error = result.expect_err("missing primary fingerprint must stop registration");
+        assert_eq!(
+            error.to_string(),
+            "--primary-fingerprint is required for gpg-backup register"
+        );
+    }
+
+    /// 解決済み project 内に同名 backup secret が複数存在する場合は、`resolve_id` の複数件 `Err` を
     /// 「未登録」と誤認せず、create を呼ばずに重複登録を停止することを検証する。
     #[tokio::test]
     async fn register_primary_stops_when_duplicate_secrets_exist() {
@@ -325,7 +383,9 @@ mod tests {
 
         let result = run_register_gpg_backup_primary(
             RegisterGpgBackupCommand {
-                primary_fingerprint: PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
+                primary_fingerprint: Some(
+                    PrimaryFingerprint::parse(PRIMARY_FP).expect("fingerprint"),
+                ),
                 serial: Some(2001),
             },
             RegisterGpgBackupPrimaryRuntime {

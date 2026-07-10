@@ -19,8 +19,9 @@ use crate::Result;
 
 /// use case が primary 対象の serial を確定する capability 契約。
 ///
-/// caller は利用者指定 serial だけを渡し、device discovery や対話選択の詳細を知らない。
-/// implementor は候補列挙・選択・非対話時の拒否を外部 I/O 境界で完了し、storage 操作へ進まない。
+/// caller は利用者指定 serial だけを渡し、device discovery の詳細を知らない。
+/// implementor は明示 serial または単一接続 device を解決し、serial 未指定で複数接続された場合は
+/// 外部 I/O 境界で拒否して storage 操作へ進まない。
 #[cfg_attr(test, mockall::automock)]
 pub trait DeviceSerialPort {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
@@ -35,11 +36,11 @@ pub trait DevicePinPolicyPort {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
 }
 
-/// use case が同一 YubiKey の選択と PIN 方針確認を一体で要求する capability 契約。
+/// use case が同一 YubiKey の serial 解決と PIN 方針確認を一体で要求する capability 契約。
 ///
 /// caller は device serial 解決と、その serial に対する PIN 要否確認だけを要求する。implementor は
-/// device discovery / 対話選択 / device 状態確認を外部 I/O 境界で完了し、storage 読み書きや use case
-/// 手順を隠さない。
+/// 明示 serial または単一接続 device の解決、複数接続時の拒否、device 状態確認を外部 I/O 境界で
+/// 完了し、storage 読み書きや use case 手順を隠さない。
 #[cfg_attr(test, mockall::automock)]
 pub trait YubiKeyDevicePort {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
@@ -76,7 +77,7 @@ where
 /// use case が spare 対象の serial を確定する capability 契約。
 ///
 /// caller は spare role の候補指定だけを渡し、primary/spare の domain invariant は domain 側で
-/// 検証する。implementor は spare device の選択手段を吸収し、role 関係の業務判断を持たない。
+/// 検証する。implementor は spare device の serial 解決手段を吸収し、role 関係の業務判断を持たない。
 #[cfg_attr(test, mockall::automock)]
 pub trait SpareDeviceSerialPort {
     fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32>;

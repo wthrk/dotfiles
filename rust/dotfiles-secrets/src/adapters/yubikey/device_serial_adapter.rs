@@ -1,13 +1,13 @@
 //! YubiKey device 選択を `DeviceSerialPort`/`SpareDeviceSerialPort` へ翻訳する adapter。
 //!
-//! serial 解決と対話選択のみを担当し、secret 保存・復号・report 生成は他 adapter へ分離する。
+//! 明示 serial または単一接続 device の内部識別子解決だけを担当し、secret 保存・復号・report 生成は他
+//! adapter へ分離する。未指定時に複数接続を検出した場合は、識別子表示や番号選択に進まず停止する。
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 
 use crate::{
     Result,
     ports::yubikey::{DevicePinPolicyPort, DeviceSerialPort, SpareDeviceSerialPort},
-    support::process_io,
 };
 
 use super::{
@@ -15,10 +15,13 @@ use super::{
     SelectedSecretDevice,
 };
 
+const MULTIPLE_DEVICES_ERROR: &str =
+    "multiple YubiKeys detected; connect exactly one YubiKey and retry";
+
 /// YubiKey discovery と serial 解決 port を実 device enumeration へ翻訳する adapter。
 ///
-/// caller は serial 指定有無だけを渡す。adapter は対話選択と非対話拒否をこの境界に閉じ、
-/// storage intent や secret 読み書きの業務判断を持たない。
+/// caller は serial 指定有無だけを渡す。adapter は未指定時の単一接続解決と複数接続拒否をこの境界に
+/// 閉じ、storage intent や secret 読み書きの業務判断を持たない。
 #[derive(Default)]
 pub(super) struct DeviceSelectionAdapter {
     device: SelectedDeviceAdapter,
@@ -32,23 +35,6 @@ impl DeviceSelectionAdapter {
     fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
         SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
     }
-
-    fn select_device_interactively(&mut self, devices: &[DeviceCandidate]) -> Result<u32> {
-        eprintln!("multiple YubiKeys detected:");
-        for (index, device) in devices.iter().enumerate() {
-            let number = index + 1;
-            eprintln!("{number}: serial {} ({})", device.serial, device.label);
-        }
-        let selection = process_io::read_control_line("select YubiKey number: ")?;
-        let selection = selection
-            .trim()
-            .parse::<usize>()
-            .context("selected YubiKey number is invalid")?;
-        let Some(device) = devices.get(selection.saturating_sub(1)) else {
-            bail!("selected YubiKey number is out of range");
-        };
-        Ok(device.serial)
-    }
 }
 
 impl DeviceSerialPort for DeviceSelectionAdapter {
@@ -57,12 +43,7 @@ impl DeviceSerialPort for DeviceSelectionAdapter {
             return Ok(serial);
         }
         let devices = self.discover_devices()?;
-        match devices.as_slice() {
-            [] => bail!("no YubiKey detected"),
-            [device] => Ok(device.serial),
-            _ if process_io::stdin_is_terminal() => self.select_device_interactively(&devices),
-            _ => bail!("multiple YubiKeys detected; pass --serial to select a device"),
-        }
+        resolve_discovered_device_serial(&devices)
     }
 }
 
@@ -76,5 +57,84 @@ impl DevicePinPolicyPort for DeviceSelectionAdapter {
     fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
         let device = self.open_device_by_serial(serial)?;
         Ok(device.requires_pin_input())
+    }
+}
+
+fn resolve_discovered_device_serial(devices: &[DeviceCandidate]) -> Result<u32> {
+    match devices {
+        [] => bail!("no YubiKey detected"),
+        [device] => Ok(device.serial),
+        _ => bail!(MULTIPLE_DEVICES_ERROR),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! device selection adapter が複数接続時に識別子表示や番号選択へ進まないことを検証する。
+
+    use super::{MULTIPLE_DEVICES_ERROR, resolve_discovered_device_serial};
+    use crate::adapters::yubikey::DeviceCandidate;
+
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("expected {context} to succeed: {error}"),
+        }
+    }
+
+    /// 単一接続時は利用者選択を挟まず、その device serial を port 境界へ返す。
+    #[test]
+    fn single_discovered_device_is_selected_without_prompt() {
+        let devices = [DeviceCandidate {
+            serial: 2001,
+            label: "YubiKey 5".to_string(),
+        }];
+
+        let selected = ok(resolve_discovered_device_serial(&devices), "single device");
+
+        assert_eq!(selected, 2001);
+    }
+
+    /// 複数接続時は serial や index の選択肢を出さず、接続数を 1 件にする操作制約で停止する。
+    #[test]
+    fn multiple_devices_stop_without_identifier_or_index_selection() {
+        let devices = [
+            DeviceCandidate {
+                serial: 2001,
+                label: "first reader".to_string(),
+            },
+            DeviceCandidate {
+                serial: 2002,
+                label: "second reader".to_string(),
+            },
+        ];
+
+        let error = match resolve_discovered_device_serial(&devices) {
+            Ok(serial) => panic!("expected multiple devices to stop, selected {serial}"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(error, MULTIPLE_DEVICES_ERROR);
+        assert!(
+            error.contains("connect exactly one YubiKey"),
+            "multiple-device error must require a single connected target"
+        );
+        let identifier_word = ['s', 'e', 'r', 'i', 'a', 'l'].iter().collect::<String>();
+        let identifier_option = format!("--{identifier_word}");
+        let forbidden = [
+            identifier_word.as_str(),
+            identifier_option.as_str(),
+            "1:",
+            "2:",
+            "number",
+            "choose",
+            "select",
+        ];
+        for forbidden in forbidden {
+            assert!(
+                !error.contains(forbidden),
+                "multiple-device error must not expose identifiers or offer index selection"
+            );
+        }
     }
 }

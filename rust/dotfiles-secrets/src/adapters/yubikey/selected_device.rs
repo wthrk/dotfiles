@@ -378,7 +378,10 @@ fn seeded_secrets(
     seeded.insert("bw-email".to_owned(), bw_email);
     seeded.insert("bw-password".to_owned(), bw_password);
     seeded.insert("bitwarden-client-id".to_owned(), bitwarden_client_id);
-    seeded.insert("bitwarden-client-secret".to_owned(), bitwarden_client_secret);
+    seeded.insert(
+        "bitwarden-client-secret".to_owned(),
+        bitwarden_client_secret,
+    );
     seeded
 }
 

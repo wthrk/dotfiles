@@ -29,7 +29,7 @@
 | authentication subkey 由来 SSH 公開鍵の出力 | **[CMD]** `dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>` |
 | `password-store` の SSH clone | **[CMD]** `dotfiles secrets restore-pass` |
 | Bitwarden Password Manager login / unlock | **[CMD]** `dotfiles secrets bw-login` |
-| BWS token rotate を全 YubiKey へ反映 | **[CMD]** `dotfiles secrets yubikey rotate-bws-token` |
+| BWS token rotate を全 YubiKey へ反映 | **[CMD]** `dotfiles secrets yubikey rotate-bws-token`（各更新ステップで 1 本だけ接続、または `--serial <serial>` を指定して 1 本ずつ実行） |
 | GPG secret key の生成 | **[手動]**（`dotfiles` にコマンドなし） |
 | Bitwarden Secrets Manager Bitwarden vault の作成 | **[手動]**（`dotfiles` / script は project を作成しない） |
 | private `password-store` repo の作成と既存 store の remote 設定・push | **[CMD][対話]** `scripts/provision-secret-recovery-source.sh`、または **[手動]** |
@@ -119,4 +119,4 @@
 
 ## BWS token rotate 時
 
-Bitwarden client-secret を rotate する場合は、新 token を有効化してから `dotfiles secrets yubikey rotate-bws-token` で primary と spare の全 YubiKey に反映する。反映後に `dotfiles secrets verify-yubikey --check bws` で BWS 読取、`gpg-secret-key-backup` envelope schema、primary_fingerprint 正規化、接続中 YubiKey recipient matching、unwrap-free recoverability を確認し、全本の確認後に旧 token を失効させる。token 値や断片を runbook、shell history、ログ、永続環境変数に残さない。
+Bitwarden client-secret を rotate する場合は、新 token を有効化してから `dotfiles secrets yubikey rotate-bws-token` で primary と spare の全 YubiKey に反映する。serial 未指定の対話実行では、新 token を一度だけ入力し、各更新ステップで対象 YubiKey だけを 1 本接続して進める。同一実行内の継続 prompt で次へ進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial <serial>` で対象を明示して 1 本ずつ実行する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。反映後に `dotfiles secrets verify-yubikey --check bws` で BWS 読取、`gpg-secret-key-backup` envelope schema、primary_fingerprint 正規化、接続中 YubiKey recipient matching、unwrap-free recoverability を確認し、全本の確認後に旧 token を失効させる。token 値や断片を runbook、shell history、ログ、永続環境変数に残さない。

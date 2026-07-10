@@ -69,7 +69,9 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut process = ports::MockSecretInputPort::new();
         process.expect_read_bitwarden_client_id_secret().times(0);
-        process.expect_read_bitwarden_client_secret_secret().times(0);
+        process
+            .expect_read_bitwarden_client_secret_secret()
+            .times(0);
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()

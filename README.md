@@ -77,9 +77,9 @@ dotfiles secrets verify-yubikey
 dotfiles secrets yubikey rotate-bws-token
 ```
 
-`enroll-spare` は primary YubiKey から `bw-email`、`bw-password`、`bws-access-token` を読み出した直後に spare YubiKey を選択します。1 本ずつしか接続できない場合は、この時点で primary を抜いて spare を挿し、表示された prompt で Enter を押します。非対話実行では `--primary-serial` と `--spare-serial` を指定します。
+`enroll-spare` は `--primary-serial <serial>` で明示された primary、または 1 本だけ接続されている primary YubiKey から bootstrap secret を読み出します。読み出し直後に、1 本だけ接続されている YubiKey または `--spare-serial <serial>` で明示された YubiKey を spare として解決します。primary / spare それぞれの解決時に serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止します。1 本ずつしか接続できない場合は、この時点で primary を抜いて spare を挿し、表示された prompt で Enter を押します。非対話実行では `--primary-serial` と `--spare-serial` を指定します。
 
-`rotate-bws-token` は対話実行では新しい token を一度だけ読み取り、利用者が選択した YubiKey を更新します。primary とすべての spare を更新対象にし、summary に出た serial を見て対象全本が更新済みであることを確認してください。非対話実行では `--serial` と `--stdin` を指定して 1 本ずつ更新します。
+`rotate-bws-token` は対話実行では新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新します。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止します。serial 未指定の対話実行で継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続します。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行します。summary に出た serial を見て、primary とすべての spare が更新済みであることを確認してください。非対話実行では `--serial` と `--stdin` を指定して 1 本ずつ更新します。
 
 `setup`、`put`、`get` は低水準コマンドです。直接使う場合でも secret 本文は CLI 引数では受け取らず、prompt または stdin から読みます。`get` は stdout が terminal の場合は平文出力を拒否するため、pipe または redirect 先を明示します。
 
