@@ -2,7 +2,8 @@
 #![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
 use bitwarden::{
-    Client, auth::login::AccessTokenLoginRequest, secrets_manager::secrets::SecretGetRequest,
+    Client, ClientSettings, DeviceType, auth::login::AccessTokenLoginRequest,
+    secrets_manager::secrets::SecretGetRequest,
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -103,7 +104,16 @@ pub(crate) async fn login_client_with_access_token(
     let client = access_token
         .with_secret_utf8_async(|token| {
             Box::pin(async {
-                let client = Client::new(None);
+                let settings = ClientSettings {
+                    identity_url: "https://identity.bitwarden.eu".to_string(),
+                    api_url: "https://api.bitwarden.eu".to_string(),
+                    user_agent: "Bitwarden Rust-SDK".to_string(),
+                    device_type: DeviceType::SDK,
+                    device_identifier: None,
+                    bitwarden_package_type: None,
+                    bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                };
+                let client = Client::new(Some(settings));
                 let request = ZeroizingAccessTokenLoginRequest::new(token.trim().to_owned());
                 client
                     .auth()
