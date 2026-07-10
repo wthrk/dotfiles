@@ -64,6 +64,16 @@ for c in gpg git gh pass; do require "$c"; done
 if [ "$USE_REPO_HEAD" -eq 1 ]; then
   require cargo
   require direnv
+  dotfiles() {
+    if { exec 9</dev/tty; } 2>/dev/null; then
+      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") <&9
+      local status=$?
+      exec 9<&-
+      return "$status"
+    else
+      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") </dev/null
+    fi
+  }
 else
   require dotfiles
 fi
@@ -148,7 +158,7 @@ run_dotfiles_with_bws_access_token() {
 }
 store_recovery_bws_access_token() {
   local serial="$1"
-  printf '%s\n' "$RECOVERY_BWS_TOKEN" | dotfiles secrets yubikey put bws-access-token --stdin --serial "$serial"
+  printf '%s\n' "$RECOVERY_BWS_TOKEN" |   dotfiles secrets yubikey put bitwarden-client-secret --stdin --serial "$serial"
 }
 provisioning_yubikey_serial() {
   if [ -n "${PROVISIONING_YUBIKEY_SERIAL:-}" ]; then
