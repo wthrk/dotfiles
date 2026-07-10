@@ -233,7 +233,10 @@ pub(super) async fn dispatch(
         }
         super::super::SecretsCommand::GpgBackup(options) => match options.command {
             super::super::GpgBackupCommand::Register(options) => {
-                let primary_fingerprint = PrimaryFingerprint::parse(&options.primary_fingerprint)?;
+                let primary_fingerprint = options.primary_fingerprint
+                    .as_deref()
+                    .map(PrimaryFingerprint::parse)
+                    .transpose()?;
                 application::run_register_gpg_backup_primary::run_register_gpg_backup_primary(
                     RegisterGpgBackupCommand {
                         primary_fingerprint,

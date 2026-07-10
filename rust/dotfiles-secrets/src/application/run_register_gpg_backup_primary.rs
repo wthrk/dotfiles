@@ -58,6 +58,10 @@ where
     } = runtime;
     // recipient wrap 対象 YubiKey の serial を解決する（slot 82 公開鍵 wrap に必要）。
     let serial = device_serial.resolve_device_serial(command.serial)?;
+    let primary_fingerprint = match command.primary_fingerprint {
+        Some(fp) => fp,
+        None => anyhow::bail!("--primary-fingerprint is required for gpg-backup register"),
+    };
 
     // BWS 登録用 access token を hidden prompt / pipe から取得し、復旧 project を解決する。
     // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
@@ -84,13 +88,13 @@ where
 
     // export 前に encryption / authentication / signing subkey の利用可能状態を検証する。
     keyring
-        .inspect_imported_key(&command.primary_fingerprint)?
+        .inspect_imported_key(&primary_fingerprint)?
         .ensure_usable()?;
 
     // export 直後の bytes を再解析し、導出 fingerprint が指定値と一致する場合だけ envelope 化へ進む。
-    let backup = keyring.export_secret_key(&command.primary_fingerprint)?;
+    let backup = keyring.export_secret_key(&primary_fingerprint)?;
     let parsed = keyring.parse_backup_primary_fingerprint(&backup)?;
-    if parsed.as_str() != command.primary_fingerprint.as_str() {
+    if parsed.as_str() != primary_fingerprint.as_str() {
         anyhow::bail!("exported gpg backup primary fingerprint does not match the requested key");
     }
 

@@ -212,7 +212,7 @@ enum GpgBackupCommand {
 /// 既存環境の GPG secret key を encrypted envelope 化して primary 登録する option。
 struct GpgBackupRegisterOptions {
     #[arg(long)]
-    primary_fingerprint: String,
+    primary_fingerprint: Option<String>,
     #[arg(long)]
     serial: Option<u32>,
 }

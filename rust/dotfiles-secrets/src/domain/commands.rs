@@ -216,7 +216,7 @@ pub struct ExportSshPublicKeyCommand {
 /// export 対象の primary fingerprint と、recipient を作る対象 YubiKey の serial 指定有無を保持する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterGpgBackupCommand {
-    pub primary_fingerprint: PrimaryFingerprint,
+    pub primary_fingerprint: Option<PrimaryFingerprint>,
     pub serial: Option<u32>,
 }
 
