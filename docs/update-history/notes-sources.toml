@@ -16,6 +16,10 @@ source = "https://github.com/Yubico/yubioath-flutter/releases"
 origin = "ai-discovered"
 discovered_at = "2026-06-17T19:50:01Z"
 
+["nix/android-tools"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/atuin"]
 source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
@@ -24,6 +28,10 @@ discovered_at = "2026-06-11T19:26:39Z"
 ["nix/bitwarden-cli"]
 origin = "none"
 discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/black"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/bun"]
 origin = "none"
@@ -34,6 +42,10 @@ source = "https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/cargo-audit"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/cargo-deny"]
 origin = "none"
 discovered_at = "2026-06-17T19:50:01Z"
@@ -43,13 +55,18 @@ origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/chromedriver"]
-origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+source = "https://chromereleases.googleblog.com/"
+origin = "ai-discovered"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/clippy"]
 source = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/colima"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/composer"]
 origin = "none"
@@ -78,11 +95,16 @@ discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-07-08T20:19:09Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/docker-credential-helpers"]
+source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
+origin = "ai-discovered"
+discovered_at = "2026-07-11T20:09:39Z"
+
+["nix/dune"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/eslint"]
 origin = "none"
@@ -90,15 +112,15 @@ discovered_at = "2026-06-30T20:13:18Z"
 
 ["nix/ffmpeg"]
 origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-07-01T20:09:11Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/fzf"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/gh"]
 origin = "none"
@@ -122,10 +144,18 @@ source = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-fo
 origin = "ai-discovered"
 discovered_at = "2026-06-28T19:23:59Z"
 
+["nix/graphviz"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/iterm2"]
 source = "https://github.com/gnachman/iTerm2/releases"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/jq"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/jujutsu"]
 origin = "none"
@@ -147,11 +177,11 @@ discovered_at = "2026-06-24T19:32:43Z"
 
 ["nix/neovim"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/nix"]
 origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/nodejs"]
 origin = "none"
@@ -163,9 +193,8 @@ origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/php-with-extensions"]
-source = "https://www.php.net/releases/8_4_22.php"
-origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/postgresql"]
 origin = "none"
@@ -194,8 +223,9 @@ origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/rustfmt"]
-origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+source = "https://doc.rust-lang.org/stable/releases.html"
+origin = "ai-discovered"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/skaffold"]
 origin = "none"
@@ -204,6 +234,10 @@ discovered_at = "2026-07-02T20:03:35Z"
 ["nix/slack"]
 origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/sqlite-interactive"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/stylua"]
 origin = "none"
@@ -220,7 +254,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-06-29T20:03:01Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/vips"]
 origin = "none"
@@ -238,7 +272,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/yt-dlp"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/yubikey-manager"]
 origin = "none"
