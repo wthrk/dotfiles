@@ -135,7 +135,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 
     fn generate_key(&mut self) -> Result<Vec<u8>> {
-        with_datastore(|store| {
+        with_datastore_after_write(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
             Ok(Vec::new())
@@ -159,7 +159,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
     }
 
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()> {
-        with_datastore(|store| {
+        with_datastore_after_write(|store| {
             let device = device_store_mut(store, self.serial)?;
             device
                 .objects
@@ -184,7 +184,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
     ) -> Result<Vec<u8>> {
         let value = String::from_utf8(plaintext.to_test_bytes())
             .context("internal stub secret is not valid UTF-8")?;
-        with_datastore(|store| {
+        with_datastore_after_write(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
             device
@@ -266,6 +266,19 @@ fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
+    with_datastore_inner(f, false)
+}
+
+/// 更新 port 操作は、integration test に最終 datastore 状態を公開する。
+/// `status` を含む読み取り専用操作は、fixture の secret 値を stdout に出力してはならない。
+fn with_datastore_after_write<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
+    with_datastore_inner(f, true)
+}
+
+fn with_datastore_inner<T>(
+    f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>,
+    write_observation_after_operation: bool,
+) -> Result<T> {
     let datastore = YUBIKEY_DATASTORE.get_or_init(|| Mutex::new(None));
     let mut state = datastore
         .lock()
@@ -277,7 +290,9 @@ fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Resu
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("YubiKey internal stub datastore is not initialized"))?;
     let out = f(store)?;
-    write_observation(store)?;
+    if write_observation_after_operation {
+        write_observation(store)?;
+    }
     Ok(out)
 }
 

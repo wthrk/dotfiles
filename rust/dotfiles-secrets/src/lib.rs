@@ -77,14 +77,14 @@ struct YubikeyOptions {
 enum YubikeyCommand {
     Setup(SerialOptions),
     Put(PutOptions),
-    Get(GetOptions),
+    Status(SerialOptions),
     EnrollPrimary(EnrollPrimaryOptions),
     EnrollSpare(EnrollSpareOptions),
     RotateBwsToken(RotateBwsTokenOptions),
 }
 
 #[derive(Args)]
-/// 非対話実行では secret 入力前に対象 YubiKey を serial で固定する。
+/// 対象 YubiKey を serial で明示指定する共通 option。
 struct SerialOptions {
     #[arg(long)]
     serial: Option<u32>,
@@ -101,15 +101,6 @@ struct PutOptions {
     stdin: bool,
     #[arg(long)]
     force: bool,
-}
-
-#[derive(Args)]
-/// 1 secret を指定した YubiKey から取得する低水準 command の option。
-struct GetOptions {
-    #[arg(value_parser = parse_secret_name)]
-    name: SecretName,
-    #[arg(long)]
-    serial: Option<u32>,
 }
 
 #[derive(Args)]

@@ -216,48 +216,31 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
 }
 
 #[test]
-fn get_writes_secret_to_pipe_with_yubikey_path() -> TestResult<()> {
+fn status_lists_configured_secret_names_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
-    let run = run_pipe_with_stub(
-        [
-            "yubikey",
-            "get",
-            "bitwarden-client-secret",
-            "--serial",
-            "2001",
-        ],
-        None,
-        &stub,
-    )?;
+    let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert_eq!(run.user_stdout(), "token");
+    assert_eq!(
+        run.user_stdout(),
+        "bw-email\nbw-password\nbitwarden-client-id\nbitwarden-client-secret\n"
+    );
     Ok(())
 }
 
 #[test]
-fn get_refuses_secret_output_to_tty_with_yubikey_path() -> TestResult<()> {
+fn status_writes_configured_secret_names_to_tty_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
-    let run = run_pty_with_stub(
-        [
-            "yubikey",
-            "get",
-            "bitwarden-client-secret",
-            "--serial",
-            "2001",
-        ],
-        None,
-        &stub,
-    )?;
+    let run = run_pty_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
-    assert!(!run.success, "output: {}", run.output);
-    assert!(run.output.contains("refusing to write secret to terminal"));
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("bitwarden-client-secret"));
     Ok(())
 }
 
@@ -941,7 +924,7 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
 }
 
 #[test]
-fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
+fn status_does_not_output_seeded_secret_values_with_yubikey_path() -> TestResult<()> {
     let initial_device = seeded_device_spec(
         PRIMARY_SERIAL,
         "seed@example.com",
@@ -950,47 +933,28 @@ fn get_reads_seeded_secret_with_yubikey_path() -> TestResult<()> {
         "seed-token",
     );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
-    let run = run_pipe_with_stub(
-        [
-            "yubikey",
-            "get",
-            "bitwarden-client-secret",
-            "--serial",
-            "2001",
-        ],
-        None,
-        &stub,
-    )?;
+    let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert_eq!(run.user_stdout(), "seed-token");
+    assert_eq!(
+        run.stdout,
+        "bw-email\nbw-password\nbitwarden-client-id\nbitwarden-client-secret\n"
+    );
+    assert!(!run.stdout.contains("seed-token"));
     Ok(())
 }
 
 #[test]
-fn get_fails_when_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
+fn status_reports_present_name_without_decoding_storage_with_yubikey_path() -> TestResult<()> {
     let initial_device = storage_decode_error_device_spec(
         provisioned_device_spec(PRIMARY_SERIAL),
         "bitwarden-client-secret",
     );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
-    let run = run_pipe_with_stub(
-        [
-            "yubikey",
-            "get",
-            "bitwarden-client-secret",
-            "--serial",
-            "2001",
-        ],
-        None,
-        &stub,
-    )?;
+    let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
-    assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr
-            .contains("failed to decode bitwarden-client-secret")
-    );
+    assert!(run.success, "stderr: {}", run.stderr);
+    assert!(run.user_stdout().contains("bitwarden-client-secret"));
     Ok(())
 }
 

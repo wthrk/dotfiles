@@ -18,7 +18,7 @@ use crate::{
     ports::io::{
         BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
         PasswordStoreRemoteInputPort, PinInputPort, ReportPort, RotationContinuationPort,
-        SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+        SecretInputPort, SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
     },
     support::protection::ProtectedSecret,
 };
@@ -81,9 +81,12 @@ impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
     }
 }
 
-impl SecretOutputPort for ProcessIoAdapter {
-    fn write_secret(&self, secret: &ProtectedSecret) -> Result<()> {
-        self.0.write_secret(secret)
+impl SecretStorageStatusOutputPort for ProcessIoAdapter {
+    fn write_secret_storage_status(
+        &self,
+        status: &crate::domain::storage::SecretStorageStatus,
+    ) -> Result<()> {
+        self.0.write_secret_storage_status(status)
     }
 }
 

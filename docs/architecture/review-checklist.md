@@ -170,7 +170,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - support:
   protected buffer / zeroization / crypto helper / process-generic な標準入出力補助、または secret 保護境界の dedicated backend 操作に限定されているか。device 選択判断、use case 手順、固定 BWS secret の一意解決、0件/複数件の扱い、外部確認 plan、汎用 plaintext consumer API を持っていないか。
 - BWS / YubiKey / GPG backup 保存モデル:
-  [Bitwarden Secrets Manager 復旧設計](../secret-recovery/bitwarden-personal-vault-design.md) の保存先表と [secret-recovery spec](../secret-recovery/secret-recovery-spec.md) の `Secret の置き場所` に照らし、どこに・どういう名前で・何を保存するかが実装と一致しているか。Bitwarden vault、vault item `gpg-secret-key-backup` / `password-store-remote`、YubiKey storage `bitwarden-client-secret`、Bitwarden Password Manager vault の役割を混同していないか。organization / machine account / service account / UI 画面名を実装前提または保存モデル前提として持ち込んでいないか。UI 操作案内は runbook の手動操作に限定し、実装・設計の正本は保存先/名前/値/読書き責務で照合すること。
+  [Bitwarden Secrets Manager 復旧設計](../secret-recovery/bitwarden-personal-vault-design.md) の保存先表と [secret-recovery spec](../secret-recovery/secret-recovery-spec.md) の `Secret の置き場所` に照らし、どこに・どういう名前で・何を保存するかが実装と一致しているか。BWS project `dotfiles-secret-recovery` の secret `gpg-secret-key-backup` / `password-store-remote`、YubiKey storage `bitwarden-client-secret`、Bitwarden Password Manager vault の役割を混同していないか。organization / machine account / service account / UI 画面名を実装前提または保存モデル前提として持ち込んでいないか。UI 操作案内は runbook の手動操作に限定し、実装・設計の正本は保存先/名前/値/読書き責務で照合すること。
 
 上記は形式チェックではなく責務判定である。`pub` 範囲や feature gate の有無は免除理由にならない。
 

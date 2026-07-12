@@ -35,11 +35,11 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 - data object は YubiKey が undefined DataTag として受け付ける範囲から `0x005FFF16` から `0x005FFF1a` までを使う。
 - manifest は format sentinel としてだけ使う。slot や object ID の解釈を manifest で動的に変えない。
 - スペア YubiKey は同じ PIV 秘密鍵を複製せず、各 YubiKey で専用鍵を生成して同じ secret を個別に保存する。
-- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` / `get` を直接並べる手順にしない。
+- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` を直接並べる手順にしない。設定済みの bootstrap secret 名の確認には `status` を使う。
 - `dotfiles secrets verify-yubikey` で、挿さっている YubiKey が bootstrap secret を復号できることを確認する。
 - `dotfiles secrets yubikey setup` は既存の PIV credential や data object と衝突した場合に停止する。
 - `put` は同名 secret が存在する場合、`--force` が指定されていなければ停止する。
-- `get` は復旧コマンド内部の利用を主用途とし、直接実行時は pipe または redirect された stdout にだけ secret 本文を出力する。
+- secret 本文を stdout に出力する `get` コマンドは提供しない。設定済みの値の確認には `status` を使い、secret 名だけを出力する。
 - 書き込み操作は YubiKey の management key で認証する。既定 key のまま運用する YubiKey では、PIN と touch を通せなくても既知の management key でこの機能の PIV object を上書きできるため、非既定 management key を使う運用を前提にする。
 - factory-default management key を使う運用は暫定前提にしない。非既定 management key への切替、取得、注入は YubiKey 保存方式の安全条件として扱う。
 
@@ -128,7 +128,7 @@ dotfiles secrets yubikey rotate-bws-token
 
 `rotate-bws-token` は新しい token を一度だけ受け取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。各 YubiKey への保存後に ローカル確認 を行う。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial <serial>` を指定して 1 本ずつ実行する。利用者は 要約 に出た serial で primary とすべての spare が更新済みであることを確認する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、ローカル保管 の検証とは別の確認として 要約 に残す。非対話実行では `--serial <serial>` と `--stdin` を指定して 1 本ずつ更新する。
 
-外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `get` の成功は GitHub、Bitwarden、Google、Apple などで 予備キー が登録済みであることを保証しない。
+外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `status` の成功は GitHub、Bitwarden、Google、Apple などで 予備キー が登録済みであることを保証しない。
 
 ## 保存形式
 
@@ -174,7 +174,7 @@ Envelope encryption は次の役割分担にする。
 - secret 本文は secret ごとに生成するランダムな 32-byte content encryption key で AEAD 暗号化する。
 - AES-256-GCM の nonce は 12 bytes、tag は 16 bytes に固定する。format 互換性を単純に保つため、nonce / tag の可変長 field は持たない。
 - content encryption key は slot `82` の RSA public key で wrap し、平文では保存しない。
-- `get` は PIV private key operation で content encryption key を unwrap し、AEAD で secret 本文を復号する。
+- secret を必要とする内部の復号経路は、PIV private key operation で content encryption key を unwrap し、AEAD で secret 本文を復号する。これは公開 `status` コマンドの処理ではない。
 - AEAD additional data には `version`、`secret_id`、object ID、YubiKey serial を含め、blob の入れ替えを検出する。
 
 保存時の blob が漏れた場合でも、slot `82` の private key operation を通せなければ `wrapped_key` は content encryption key に戻せない。復号時には host memory 上に content encryption key と平文 secret が一時的に現れるため、この方式は実行中 host の compromise を防ぐものではない。
@@ -213,9 +213,9 @@ CLI 引数で secret 本文は受け取らない。`--stdin` は pipe または 
 
 保存先 object に既存 blob がある場合は `--force` がない限り停止する。`--force` がある場合も、manifest の app / version が一致しない場合は停止する。
 
-### `dotfiles secrets yubikey get <name>`
+### `dotfiles secrets yubikey status`
 
-`<name>` は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` のみ許可する。PIN 検証 と touch を経て secret を復号し、stdout に secret 本文だけを出力する。stdout が terminal の場合は、画面や scrollback に平文 secret が残るため拒否する。stderr には進行状況を出さない。取得失敗時の エラー には secret name までを含め、secret 本文、ciphertext、wrapped key は含めない。
+設定すべき bootstrap secret の全 object の存在を確認し、YubiKey に保存済みの名前を固定順で stdout に 1 行ずつ出力する。PIN 検証、touch、復号は行わず、secret 本文、ciphertext、wrapped key は出力しない。manifest が未初期化または不正な場合は停止する。
 
 ### `dotfiles secrets yubikey enroll-primary`
 

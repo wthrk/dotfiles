@@ -36,20 +36,12 @@ impl PutCommand {
     }
 }
 
-/// get use case の入力 command。
+/// status use case の入力 command。
 ///
-/// 取得対象 secret と device serial だけを保持し、出力形式は含めない。
+/// 対象 device serial だけを保持し、出力形式は含めない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GetCommand {
-    pub name: SecretName,
+pub struct StatusCommand {
     pub serial: Option<u32>,
-}
-
-impl GetCommand {
-    /// 指定 serial に対する get 対象の storage spec を返す。
-    pub fn storage_spec(&self, serial: u32) -> SecretStorageSpec {
-        self.name.storage_spec(serial)
-    }
 }
 
 /// enroll-primary use case の入力 command。

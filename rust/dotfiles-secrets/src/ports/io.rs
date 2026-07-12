@@ -11,6 +11,7 @@ use super::super::{
         enrollment::EnrollSummary,
         gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
         pass_restore::RestorePassSummary,
+        storage::SecretStorageStatus,
         verification::VerifySummary,
     },
     support::protection::ProtectedSecret,
@@ -83,13 +84,13 @@ pub trait BootstrapSecretDocumentInputPort {
     fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, ProtectedSecret>>;
 }
 
-/// use case が復号済み secret を出力境界へ渡す契約。
+/// use case が設定済み YubiKey secret 名を出力境界へ渡す契約。
 ///
-/// caller は出力すべき secret material を渡すだけで、端末直書き拒否や stdout 書き込み方式を知らない。
-/// implementor は安全な出力先判定を行い、secret を診断文脈へ混ぜない責務を負う。
+/// caller は secret 本文を渡さず、設定済み object 名だけを渡す。implementor は terminal を含む
+/// stdout へ機械可読な名前一覧を出力し、secret 値や暗号化 blob を出力しない。
 #[cfg_attr(test, mockall::automock)]
-pub trait SecretOutputPort {
-    fn write_secret(&self, secret: &ProtectedSecret) -> Result<()>;
+pub trait SecretStorageStatusOutputPort {
+    fn write_secret_storage_status(&self, status: &SecretStorageStatus) -> Result<()>;
 }
 
 /// use case が結果報告を出力境界へ渡すための契約。
@@ -153,7 +154,7 @@ pub trait ClockPort {
 
 /// use case が authentication subkey 由来の OpenSSH 公開鍵を出力境界へ渡す契約。
 ///
-/// 公開鍵は秘密情報ではないため、`SecretOutputPort` とは別 capability として stdout へ機械可読な
+/// 公開鍵は秘密情報ではないため、secret storage status 出力とは別 capability として stdout へ機械可読な
 /// 1 行を出力する。caller は domain 検証済みの公開鍵行を渡すだけで、書き込み方式を知らない。
 /// implementor は terminal でも出力を許可し、GitHub API 呼び出しや鍵サーバー参照を内部で行わない。
 #[cfg_attr(test, mockall::automock)]

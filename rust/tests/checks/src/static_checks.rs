@@ -52,10 +52,16 @@ fn rust(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// bootstrap 用 shell script の構文を検証する。
+/// shell script の構文と、外部状態に依存しない provisioning 分岐を検証する。
 fn shell_scripts(shell: &Shell) -> Result<()> {
     step("shell scripts");
     cmd!(shell, "bash -n scripts/bootstrap.sh").run()?;
+    cmd!(shell, "bash -n scripts/provision-secret-recovery-source.sh").run()?;
+    cmd!(
+        shell,
+        "bash scripts/provision-secret-recovery-source_test.sh"
+    )
+    .run()?;
     Ok(())
 }
 

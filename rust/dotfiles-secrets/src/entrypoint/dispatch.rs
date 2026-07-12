@@ -8,9 +8,9 @@ use crate::{
     domain::{
         commands::{
             AddGpgBackupSpareCommand, BwLoginCommand, EnrollPrimaryCommand, EnrollSpareCommand,
-            GetCommand, ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
+            ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
             RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
-            VerifyYubikeyCommand,
+            StatusCommand, VerifyYubikeyCommand,
         },
         gpg_backup::PrimaryFingerprint,
         verification::ExternalCheck,
@@ -57,14 +57,11 @@ pub(super) async fn dispatch(
                     )
                 }
             }
-            super::super::YubikeyCommand::Get(options) => application::run_get_with::run_get_with(
-                GetCommand {
-                    name: options.name,
+            super::super::YubikeyCommand::Status(options) => application::run_status_with::run_status_with(
+                StatusCommand {
                     serial: options.serial,
                 },
                 &mut ports.device,
-                &mut ports.device_pin_policy,
-                &ports.process_io,
                 &mut ports.storage,
                 &ports.process_io,
             ),

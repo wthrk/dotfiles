@@ -10,6 +10,16 @@
 - 意図的に宣言化する場合を除き、マシン固有の可変状態を Home Manager モジュールに入れてはならない。
 - Homebrew taps は flake inputs で固定されるため、設計変更が必要としない限り可変 tap 運用を導入してはならない。
 
+## test-only 観測の判定
+
+`secrets-internal-test-stub` のように compile-time で選択され、production build/runtime に含まれない internal test stub が、fixture/spec で与えたダミー値を stdout sentinel observation として出力することは、利用者向け production stdout への secret 出力ではない。これは integration test が最終 datastore を観測するためだけの test-only 観測チャネルである。
+
+セキュリティレビューでは、上記の出力を raw stdout の secret 漏えいとして機械的に指摘してはならない。次を区別して判定する。
+
+- production command の通常出力、ログ、エラー、引数、環境変数、一時ファイル、または production build/runtime で到達できる出力経路に secret が含まれる場合は不合格とする。
+- feature 専用の test stub observation は、[Hexagonal Implementation Rules の internal backend stub の配置](../architecture/hexagonal-implementation-rules.md#internal-backend-stub-の配置) の全条件、特に compile-time selection、production build 非混入、sentinel で明示された観測面、fixture/spec のダミー値だけを扱うことを確認できる場合に限り、production stdout と区別して合格とする。
+- feature gate の存在だけではこの例外を適用しない。runtime の real/stub 分岐、production command path の変更、本物 secret の使用、または production build/runtime から到達可能な出力経路があれば、通常の secret 出力として不合格とする。
+
 ## 役割別義務
 
 - `実装担当`: 差分作成時に秘密情報の永続化経路、出力経路、失敗時挙動を確認する。

@@ -58,6 +58,13 @@ pub struct SecretStorageReadIntent {
     pub encoded: Vec<u8>,
 }
 
+/// YubiKey に設定済みの bootstrap secret 名一覧。
+///
+/// secret 本文や暗号化 blob を保持せず、設定済み object の名前だけを表す。
+pub struct SecretStorageStatus {
+    stored: Vec<super::piv::SecretName>,
+}
+
 /// local storage 検証で読み出すべき secret 集合。
 ///
 /// 「保存済み YubiKey storage が完了している」と判定するために必要な対象集合は
@@ -195,6 +202,27 @@ impl SecretStorageReadIntent {
     /// 復号済み secret が対象 storage の値制約を満たすことを確認する。
     pub fn validate_loaded_secret(&self, secret: &ProtectedSecret) -> Result<()> {
         self.storage.ensure_plaintext_len(secret.len())
+    }
+}
+
+impl SecretStorageStatus {
+    /// manifest 初期化済み規則を確認し、各予約 object の存在から設定済み secret 名を構築する。
+    pub fn from_inspections(
+        inspections: impl IntoIterator<Item = (SecretStorageSpec, SecretStorageWriteInspection)>,
+    ) -> Result<Self> {
+        let mut stored = Vec::new();
+        for (storage, inspection) in inspections {
+            SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+            if inspection.object_exists {
+                stored.push(storage.name);
+            }
+        }
+        Ok(Self { stored })
+    }
+
+    /// 安定順で設定済みの secret 名を返す。
+    pub fn stored(&self) -> &[super::piv::SecretName] {
+        &self.stored
     }
 }
 

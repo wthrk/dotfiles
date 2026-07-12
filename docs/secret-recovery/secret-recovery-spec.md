@@ -2,7 +2,7 @@
 
 この文書は、新しい macOS マシンで `dotfiles` を導入したあと、開発に必要な秘密情報基盤を復旧する到達仕様を定義する恒久仕様文書である。ここでは完成形の仕様だけを定義する。対象は GnuPG secret key、GPG authentication subkey による GitHub SSH identity、private `password-store` repository、`pass` の利用環境、Bitwarden Password Manager の CLI login である。
 
-復旧の入口には YubiKey を使う。YubiKey には Bitwarden master password と Bitwarden 個人 API key を保存する。GPG secret key backup と `password-store` の remote URL は Bitwarden 個人 vault から取得する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
+復旧の入口には YubiKey を使う。YubiKey には Bitwarden Password Manager login 用 secret と Bitwarden Secrets Manager access token を保存する。GPG secret key backup と `password-store` の remote URL は BWS project `dotfiles-secret-recovery` から取得する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
 
 この文書で強化する要件は設計/仕様契約であり、現行 Rust 実装およびテストが本書の全要件を満たしたことを示すものではない。実装・テストでの充足は、ユーザー指定の GitHub issue、PR、または明示タスクで段階的に反映する。
 
@@ -75,7 +75,7 @@ factory-default management key を使う運用は暫定前提にしてはなら�
 
 Bitwarden Secrets Manager は、復旧に必要な取得対象を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope。認証・復号・署名能力を与える credential）と `password-store-remote`（private `password-store` repository の clone URL。credential ではないが private repository の所在を示す値であり、出力には漏らさない）である。
 
-復旧本線と provisioning 経路では公式 `bitwarden` Rust SDK を使う。`bw` CLI は vault からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。`pass-remote register`、`gpg-backup register`、`gpg-backup add-spare` など BWS を読む/書く Rust command は token を prompt / stdin で受け取らず、YubiKey storage の `bitwarden-client-secret` から取得する。
+復旧本線と provisioning 経路では公式 `bitwarden` Rust SDK を使う。`bw` CLI は BWS secret の取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。`pass-remote register`、`gpg-backup register`、`gpg-backup add-spare` など BWS を読む/書く Rust command は token を prompt / stdin で受け取らず、YubiKey storage の `bitwarden-client-secret` から取得する。
 
 詳細設計は [Bitwarden Secrets Manager 復旧設計](./bitwarden-personal-vault-design.md) に置く。
 
@@ -124,9 +124,9 @@ private `password-store` repository の clone は `git2` と SSH agent を使う
 YubiKey に secret を保存する。`<name>` は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` のみ許可する。secret 本文は hidden prompt または stdin から受け取る。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
 このコマンドは入力前に manifest と既存 object の状態を検証し、`--force` なしで上書きが必要な場合は secret を読まずに停止する。
 
-### `dotfiles secrets yubikey get <name>`
+### `dotfiles secrets yubikey status`
 
-YubiKey から指定 secret を取得する。`<name>` は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` のみ許可する。YubiKey PIV PIN を要求し、stdout に secret を出力する。stdout が terminal の場合は平文が画面や scrollback に残るため拒否し、pipe または redirect 先が明示された実行だけを許可する。通常は他の `dotfiles secrets` コマンド内部で使う。
+YubiKey に保存すべき bootstrap secret のうち、設定済みの名前を stdout へ 1 行ずつ出力する。secret 本文、encrypted blob、PIN は扱わない。manifest が未初期化または不正な場合は停止する。
 
 ### `dotfiles secrets yubikey enroll-primary`
 
@@ -161,7 +161,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 ### `dotfiles secrets restore-gpg`
 
 1. YubiKey から `bitwarden-client-secret` を取得する。
-2. Bitwarden 個人 vault から `gpg-secret-key-backup` encrypted envelope を取得する。
+2. BWS project `dotfiles-secret-recovery` から `gpg-secret-key-backup` encrypted envelope を取得する。
 3. envelope 形式（version / metadata / recipients / ciphertext）を検証し、接続中 YubiKey と一致する recipient が存在しない場合は停止する。
 4. 接続中 YubiKey で data encryption key を unwrap し、復号済み backup を得る。
 5. import 前に primary fingerprint をインメモリ導出し、envelope `metadata.primary_fingerprint` と一致しない場合は停止する。
@@ -173,7 +173,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 ### `dotfiles secrets restore-pass`
 
-YubiKey から `bitwarden-client-secret` を取得し、Bitwarden 個人 vault から `password-store-remote` を取得する。`~/.password-store` が存在しないことを確認し、GPG authentication subkey 経由の SSH で private repository を clone する。clone 後に `pass` が store を読めることを確認する。
+YubiKey から `bitwarden-client-secret` を取得し、BWS project `dotfiles-secret-recovery` から `password-store-remote` を取得する。`~/.password-store` が存在しないことを確認し、GPG authentication subkey 経由の SSH で private repository を clone する。clone 後に `pass` が store を読めることを確認する。
 
 ### `dotfiles secrets bw-login`
 
@@ -198,7 +198,7 @@ YubiKey から `bw-email` と `bw-password` を取得し、YubiKey OTP を入力
 - YubiKey の専用保存領域が利用できない、または既存 認証情報 と衝突する。
 - 許可されていない secret name が指定された。
 - 同名 secret が存在し、明示的な上書き option が指定されていない。
-- Bitwarden 個人 vault から必要な secret が取得できない。
+- BWS project `dotfiles-secret-recovery` から必要な secret が取得できない。
 - `verify-yubikey` で YubiKey 内の bootstrap secret 確認に失敗する。
 - `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。`--check bw-login` の到達確認は実際の `bw login` / `bw unlock` 実行による Bitwarden Password Manager サービス到達確認であり、到達・login・unlock のいずれかが成立しない場合に停止条件を満たす。
 - `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。

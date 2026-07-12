@@ -10,12 +10,9 @@ use crate::{
     ports::io::{
         BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
         PasswordStoreRemoteInputPort, PinInputPort, RotationContinuationPort, SecretInputPort,
-        SecretOutputPort, SshPublicKeyOutputPort,
+        SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
     },
-    support::{
-        clock, process_io,
-        protection::{ProtectedSecret, write_secret_stdout},
-    },
+    support::{clock, process_io, protection::ProtectedSecret},
 };
 
 /// process-generic helper と secret I/O port の間で保護値変換を集約する内部 adapter。
@@ -120,9 +117,15 @@ impl BootstrapSecretDocumentInputPort for RealSecretIoAdapter {
     }
 }
 
-impl SecretOutputPort for RealSecretIoAdapter {
-    fn write_secret(&self, secret: &ProtectedSecret) -> Result<()> {
-        write_secret_stdout(secret)
+impl SecretStorageStatusOutputPort for RealSecretIoAdapter {
+    fn write_secret_storage_status(
+        &self,
+        status: &crate::domain::storage::SecretStorageStatus,
+    ) -> Result<()> {
+        for name in status.stored() {
+            println!("{name}");
+        }
+        Ok(())
     }
 }
 
@@ -237,9 +240,12 @@ impl BootstrapSecretDocumentInputPort for ProcessIoAdapter {
     }
 }
 
-impl SecretOutputPort for ProcessIoAdapter {
-    fn write_secret(&self, secret: &ProtectedSecret) -> Result<()> {
-        self.secret_io.write_secret(secret)
+impl SecretStorageStatusOutputPort for ProcessIoAdapter {
+    fn write_secret_storage_status(
+        &self,
+        status: &crate::domain::storage::SecretStorageStatus,
+    ) -> Result<()> {
+        self.secret_io.write_secret_storage_status(status)
     }
 }
 

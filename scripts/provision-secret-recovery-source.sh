@@ -51,33 +51,10 @@ pause() {
   IFS= read -r -p '    完了したら Enter: ' _ </dev/tty
 }
 
-require() { command -v "$1" >/dev/null 2>&1 || die "必要なコマンドが見つかりません: $1"; }
-for c in gpg git gh pass; do require "$c"; done
-if [ "$USE_REPO_HEAD" -eq 1 ]; then
-  require cargo
-  require direnv
-  dotfiles() {
-    if { exec 9</dev/tty; } 2>/dev/null; then
-      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") <&9
-      local s=$?; exec 9<&-; return "$s"
-    else
-      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") </dev/null
-    fi
-  }
-else
-  require dotfiles
-fi
-
 preflight_github_ssh_key_scope() {
   gh api user/keys --paginate --jq 'length' >/dev/null 2>&1 \
     || die "GitHub SSH public key API の事前確認に失敗しました。gh の active account に admin:public_key scope が必要です: gh auth refresh -h github.com -s admin:public_key"
 }
-
-GH_LOGIN="$(gh api user --jq .login 2>/dev/null)" \
-  || die "gh の active account で GitHub API 認証に失敗しました（gh auth login または gh auth switch）"
-[ -n "$GH_LOGIN" ] \
-  || die "gh の active account で GitHub API 認証に失敗しました（gh auth login または gh auth switch）"
-preflight_github_ssh_key_scope
 
 password_store_dir() {
   if [ -n "${PASSWORD_STORE_DIR:-}" ]; then
@@ -156,6 +133,62 @@ store_bws_access_token() {
     printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles secrets yubikey put bitwarden-client-secret --stdin
   fi
 }
+has_stored_bws_access_token() {
+  local serial="$1"
+  local stored_names
+  if [ -n "$serial" ]; then
+    stored_names="$(dotfiles secrets yubikey status --serial "$serial")" || return 2
+  else
+    stored_names="$(dotfiles secrets yubikey status)" || return 2
+  fi
+  printf '%s\n' "$stored_names" | grep -Fxq 'bitwarden-client-secret'
+}
+ensure_bws_access_token_stored() {
+  local role="$1"
+  local serial="$2"
+  if has_stored_bws_access_token "$serial"; then
+    log "${role} YubiKey の bitwarden-client-secret は保存済みです"
+    return 0
+  else
+    local status_result=$?
+    if [ "$status_result" -ne 1 ]; then
+      die "${role} YubiKey の bitwarden-client-secret の保存状況を確認できません"
+    fi
+  fi
+  if [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
+    BWS_ACCESS_TOKEN="$(read_bws_access_token 'BWS access token for YubiKey bitwarden-client-secret storage')"
+  fi
+  log "BWS access token を ${role} YubiKey の bitwarden-client-secret に保存"
+  store_bws_access_token "$serial"
+}
+
+# shell test は production の初期化・外部コマンド呼び出しなしで保存判定の分岐だけを検証する。
+if [ "${DOTFILES_PROVISION_SOURCE_ONLY:-}" = 1 ] && [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
+
+require() { command -v "$1" >/dev/null 2>&1 || die "必要なコマンドが見つかりません: $1"; }
+for c in gpg git gh pass; do require "$c"; done
+if [ "$USE_REPO_HEAD" -eq 1 ]; then
+  require cargo
+  require direnv
+  dotfiles() {
+    if { exec 9</dev/tty; } 2>/dev/null; then
+      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") <&9
+      local s=$?; exec 9<&-; return "$s"
+    else
+      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") </dev/null
+    fi
+  }
+else
+  require dotfiles
+fi
+
+GH_LOGIN="$(gh api user --jq .login 2>/dev/null)" \
+  || die "gh の active account で GitHub API 認証に失敗しました（gh auth login または gh auth switch）"
+[ -n "$GH_LOGIN" ] \
+  || die "gh の active account で GitHub API 認証に失敗しました（gh auth login または gh auth switch）"
+preflight_github_ssh_key_scope
 
 [ -z "${PASS_REPO:-}" ] && PASS_REPO="${GH_LOGIN}/password-store"
 PASS_CLONE_URL="git@github.com:${PASS_REPO}.git"
@@ -241,13 +274,10 @@ fi
 confirm_password_store_primary_fingerprint
 
 # ── 4. YubiKey への BWS access token 保存 ──
-pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を作成済みで、これから YubiKey に保存する BWS access token から同名 project が 1 件だけ見えることを確認してください。project 作成はこの script / dotfiles CLI では行いません。"
-BWS_ACCESS_TOKEN="$(read_bws_access_token 'BWS access token for YubiKey bitwarden-client-secret storage')"
-log "BWS access token を primary YubiKey の bitwarden-client-secret に保存"
-store_bws_access_token "$YUBIKEY_SERIAL"
+pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を作成済みで、対象 YubiKey に保存済みまたはこれから保存する BWS access token から同名 project が 1 件だけ見えることを確認してください。project 作成はこの script / dotfiles CLI では行いません。"
+ensure_bws_access_token_stored "primary" "$YUBIKEY_SERIAL"
 if [ -n "${SPARE_SERIAL:-}" ]; then
-  log "BWS access token を spare YubiKey の bitwarden-client-secret にも保存"
-  store_bws_access_token "$SPARE_SERIAL"
+  ensure_bws_access_token_stored "spare" "$SPARE_SERIAL"
 fi
 unset BWS_ACCESS_TOKEN
 

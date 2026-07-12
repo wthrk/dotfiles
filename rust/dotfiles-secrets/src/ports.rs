@@ -15,7 +15,7 @@ pub(crate) use gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort};
 pub(crate) use io::{
     BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
     PasswordStoreRemoteInputPort, PinInputPort, ReportPort, RotationContinuationPort,
-    SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
+    SecretInputPort, SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
 };
 pub(crate) use yubikey::{
     DevicePinPolicyPort, DeviceSerialPort, GpgRecipientPort, SecretStoragePort,
@@ -32,7 +32,7 @@ pub(crate) use gpg::{MockBackupCipherPort, MockGpgKeyringPort, MockSshAgentPort}
 pub(crate) use io::{
     MockBackupUpdateConfirmationPort, MockBootstrapSecretDocumentInputPort, MockBwOtpInputPort,
     MockClockPort, MockPasswordStoreRemoteInputPort, MockPinInputPort, MockReportPort,
-    MockRotationContinuationPort, MockSecretInputPort, MockSecretOutputPort,
+    MockRotationContinuationPort, MockSecretInputPort, MockSecretStorageStatusOutputPort,
     MockSshPublicKeyOutputPort,
 };
 #[cfg(test)]

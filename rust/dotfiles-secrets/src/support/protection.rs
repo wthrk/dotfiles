@@ -1,6 +1,6 @@
 //! 平文 bytes の生存期間に紐づける process 保護と zeroize 境界。
 
-use std::{collections::BTreeMap, future::Future, io::Write, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use anyhow::{Context, bail};
 use zeroize::Zeroizing;
@@ -20,7 +20,6 @@ pub(crate) mod sealed_blob;
 pub(crate) mod secret_random;
 
 use crate::Result;
-use crate::support::process_io;
 
 /// core dump 抑止を secret 入力前に確立する process guard。
 struct SecretProcessGuard;
@@ -152,12 +151,6 @@ impl ProtectedSecret {
         self.value.len()
     }
 
-    /// secret を writer へ書き込む既存の明示出力境界。
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
-        self.with_secret(|bytes| writer.write_all(bytes))
-            .map_err(Into::into)
-    }
-
     /// `#[cfg(test)]` または `secrets-internal-test-stub` で使う secret 観測口として、test bytes から
     /// 保護値を作る。
     ///
@@ -213,11 +206,6 @@ impl ProtectedSecret {
         }
         Ok(fields)
     }
-}
-
-/// `ProtectedSecret` を stdout の secret 出力境界へ渡す用途別操作。
-pub(crate) fn write_secret_stdout(secret: &ProtectedSecret) -> Result<()> {
-    process_io::write_secret_stdout_with(|writer| secret.write_to(writer))
 }
 
 impl SecretSession {

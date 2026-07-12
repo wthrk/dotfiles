@@ -81,7 +81,7 @@ dotfiles secrets yubikey rotate-bws-token
 
 `rotate-bws-token` は対話実行では新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新します。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止します。serial 未指定の対話実行で継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続します。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行します。summary に出た serial を見て、primary とすべての spare が更新済みであることを確認してください。非対話実行では `--serial` と `--stdin` を指定して 1 本ずつ更新します。
 
-`setup`、`put`、`get` は低水準コマンドです。直接使う場合でも secret 本文は CLI 引数では受け取らず、prompt または stdin から読みます。`get` は stdout が terminal の場合は平文出力を拒否するため、pipe または redirect 先を明示します。
+`setup` と `put` は低水準コマンドです。`put` で secret 本文を直接指定する場合も、CLI 引数では受け取らず prompt または stdin から読みます。設定済みの bootstrap secret を確認するには `dotfiles secrets yubikey status` を使います。このコマンドは保存済みの secret 名だけを安定順で出力し、PIN、touch、復号、secret 本文の出力は行いません。
 
 ### GPG 鍵リング復元と SSH 公開鍵
 
