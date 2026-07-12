@@ -35,8 +35,8 @@
 | private `password-store` repo の作成と既存 store の remote 設定・push | **[CMD][対話]** `scripts/provision-secret-recovery-source.sh`、または **[手動]** |
 | GitHub への SSH 公開鍵登録 | **[CMD][対話]** `scripts/provision-secret-recovery-source.sh`、または **[手動]** |
 | 各サービスの YubiKey 2FA・FIDO2 登録 | **[手動]**（spec: 物理キー登録は自動化しない） |
-| Bitwarden Secrets Manager provisioning | **[CMD]** `dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register`、または **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
 | YubiKey への `bitwarden-client-secret` 保存 | **[CMD][対話]** `dotfiles secrets yubikey put bitwarden-client-secret --stdin`、または **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
+| Bitwarden Secrets Manager provisioning | **[CMD]** `dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register`、または **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
 
 ---
 
@@ -82,13 +82,12 @@
    - 既存の phone / email fallback が失効済み番号・古いメールアドレス・共有アカウントになっていないか確認し、必要なら更新する。更新後、primary / spare の両方と recovery option が同じ security 画面で有効な回復経路として残っていることを確認する。
 
 7. **[手動]→[CMD][対話]** Bitwarden Secrets Manager に復旧用 secret を登録する。
-   - **[手動]** Bitwarden vault で、Bitwarden 登録・更新用 access token から同名 project が 1 件だけ見える状態にする。`dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register` と `scripts/provision-secret-recovery-source.sh` は project を作成しない。project が存在しない、または同名 project が複数見える場合は BWS provisioning 前 gate 不成立として停止し、secret 登録へ進まない。
+   - **[手動]** Bitwarden vault で、YubiKey に保存する BWS access token から同名 project が 1 件だけ見える状態にする。`dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register` と `scripts/provision-secret-recovery-source.sh` は project を作成しない。project が存在しない、または同名 project が複数見える場合は BWS provisioning 前 gate 不成立として停止し、secret 登録へ進まない。
    - この runbook は organization / machine account / service account の作成を前提にしない。Bitwarden UI の名称は変わりうるため、手動操作では「Bitwarden vault を作り、vault に `gpg-secret-key-backup` と `password-store-remote` を保存し、その 2 secret を読める復旧用 token を YubiKey に保存する」という保存モデルだけを照合する。
-   - Bitwarden 登録・更新用 access token を `dotfiles secrets pass-remote register` と `dotfiles secrets gpg-backup register` の hidden prompt または pipe に渡す。token 値そのものを argv、log、runbook、review artifact に書かない。
-   - YubiKey に保存する `bitwarden-client-secret` は、復旧時に `dotfiles-secret-recovery` project の必要 secret を読める最小権限の復旧用 token とする。Bitwarden 登録・更新用 token と同一値にしない。
-   - `password-store-remote` は既存 password-store の GitHub SSH clone URL を使い、`dotfiles secrets pass-remote register --url git@github.com:<owner>/<repo>.git` で登録または明示確認後に更新する。
-   - `gpg-secret-key-backup` は既存 password-store recipient と一致する primary fingerprint を使い、`dotfiles secrets gpg-backup register --primary-fingerprint <fingerprint>` で YubiKey recipient 付き encrypted envelope と接続中 YubiKey recipient を登録する。BWS 取得成功だけを plaintext 復旧完了として扱わない。
-   - `scripts/provision-secret-recovery-source.sh` を使う場合は、既存 password-store `.gpg-id` recipient の GPG secret key 確認、encryption/authentication/signing subkey の不足追加、GitHub private repository 作成、既存 store の Git remote 設定 / push、authentication subkey 由来 SSH 公開鍵の GitHub 登録、Bitwarden vault の事前存在確認 gate、BWS への `password-store-remote` / `gpg-secret-key-backup` 登録、指定 YubiKey への復旧用 `bitwarden-client-secret` 保存を実行する。script は project を作成しない。script は Bitwarden 登録・更新用 token と YubiKey 保存用の復旧用 token を別々に hidden prompt または script stdin の別行から読み、前者を BWS 書込み command へ、後者を `dotfiles secrets yubikey put bitwarden-client-secret --stdin` へ pipe で渡す。環境変数、argv、shell history に token を載せない。script は未初期化 password-store から `.gpg-id` を生成しない。
+   - BWS access token の hidden prompt / stdin secret input は `dotfiles secrets yubikey put bitwarden-client-secret`、`enroll-primary`、`rotate-bws-token` など YubiKey storage へ保存・更新する経路だけで行う。`dotfiles secrets pass-remote register` と `dotfiles secrets gpg-backup register` / `add-spare` は token を prompt / stdin で受け取らず、YubiKey storage の `bitwarden-client-secret` から取得する。
+   - `password-store-remote` は既存 password-store の GitHub SSH clone URL を使い、`dotfiles secrets pass-remote register --serial <serial> --url git@github.com:<owner>/<repo>.git` で登録または明示確認後に更新する。serial 未指定時は単一接続だけを自動解決し、複数接続では停止する。
+   - `gpg-secret-key-backup` は既存 password-store recipient と一致する primary fingerprint を使い、`dotfiles secrets gpg-backup register --primary-fingerprint <fingerprint> --serial <serial>` で YubiKey recipient 付き encrypted envelope と接続中 YubiKey recipient を登録する。BWS 取得成功だけを plaintext 復旧完了として扱わない。
+   - `scripts/provision-secret-recovery-source.sh` を使う場合は、既存 password-store `.gpg-id` recipient の GPG secret key 確認、encryption/authentication/signing subkey の不足追加、GitHub private repository 作成、既存 store の Git remote 設定 / push、authentication subkey 由来 SSH 公開鍵の GitHub 登録、Bitwarden vault の事前存在確認 gate、指定 YubiKey への `bitwarden-client-secret` 保存、BWS への `password-store-remote` / `gpg-secret-key-backup` 登録を実行する。script は project を作成せず、BWS 書込み command へ token を pipe しない。環境変数、argv、shell history に token を載せない。script は未初期化 password-store から `.gpg-id` を生成しない。
 
 8. **[CMD][対話]** `bitwarden-client-secret` を primary / spare YubiKey へ保存する。
    - primary 登録では `dotfiles secrets yubikey enroll-primary` で `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を保存する。個別保存を使う場合は `dotfiles secrets yubikey put bw-email`、`dotfiles secrets yubikey put bw-password`、`dotfiles secrets yubikey put bitwarden-client-id`、`dotfiles secrets yubikey put bitwarden-client-secret --stdin` をそれぞれ実行する。

@@ -254,11 +254,13 @@ enum PassRemoteCommand {
 /// できる。`--url` 未指定時は可視プロンプト（対話・入力をエコー）または pipe（stdin）から 1 行を読む。
 /// `--yes` は非対話実行での上書き更新を明示許可する。
 ///
-/// この command は YubiKey storage を読まない。BWS 登録・更新に使う access token は hidden prompt（TTY）/
-/// pipe（stdin）から保護値として受け取り、YubiKey へ保存しない。YubiKey の `bitwarden-client-secret` には
-/// 別経路で復旧用の最小権限 token を保存する前提のため、`--serial` option は持たず、token を argv へ
-/// 載せる option も設けない。
+/// BWS 登録・更新に使う access token は YubiKey storage の `bitwarden-client-secret` から読み出す。
+/// token を argv / prompt / stdin で受け取る option は設けない。serial 未指定時は単一接続だけを自動解決し、
+/// 複数接続では fail-closed する。
 struct PassRemoteRegisterOptions {
+    /// BWS access token を読む YubiKey serial。未指定時は単一接続 YubiKey を使う。
+    #[arg(long)]
+    serial: Option<u32>,
     /// 登録する `password-store-remote` の clone URL（`git@github.com:<owner>/<repo>.git`）。
     /// 非秘匿値のため argv 指定を許可する。未指定時は可視プロンプト / pipe から読む。
     #[arg(long)]

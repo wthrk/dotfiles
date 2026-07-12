@@ -39,7 +39,7 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 - `bw-email`: primary と spare の両方に同じ Bitwarden login email を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bw-password`: primary と spare の両方に同じ Bitwarden master password を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bitwarden-client-id`: primary と spare の両方に同じ Bitwarden 個人 API client ID を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
-- `bitwarden-client-secret`: primary と spare の両方に同じ Bitwarden Secrets Manager access token を保存し、復旧時の BWS 読取に使う。YubiKey に保存する値は、provisioning の登録・更新用 token ではなく、個人 vault の必要 secret を読める最小権限の復旧用 token とする。rotate 時は全 YubiKey を更新する。
+- `bitwarden-client-secret`: primary と spare の両方に同じ Bitwarden Secrets Manager access token を保存し、BWS の読取・作成・更新に使う。token の入力は YubiKey storage へ保存・更新する経路だけで行い、BWS provisioning / recovery command は YubiKey から取得する。rotate 時は全 YubiKey を更新する。
 - `GPG secret key`: YubiKey には載せず、Bitwarden Secrets Manager の backup から `restore-gpg` で復元する。
 - `GitHub SSH identity`: YubiKey には載せず、復元した GPG authentication subkey 由来の SSH 公開鍵 を使う。`dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>` で出力する。
 - `password-store`: YubiKey には載せず、GitHub から clone し、復元した GPG key で復号する。`restore-pass` で復元する。
@@ -50,7 +50,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 
 保存場所ごとの secret と用途は次のとおり。
 
-- `YubiKey`: `bw-email` と `bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を保存し、Bitwarden Password Manager の CLI login / unlock と Bitwarden Secrets Manager 読取に使う。
+- `YubiKey`: `bw-email` と `bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を保存し、Bitwarden Password Manager の CLI login / unlock と Bitwarden Secrets Manager の読取・作成・更新に使う。
 - `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` と `password-store-remote` を保存する。`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope として保存し、BWS secret value 取得だけで plaintext 復旧完了にしない。`password-store-remote` は credential ではないが private repository の所在を示す値であり出力には漏らさない。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
@@ -62,7 +62,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 
 ### YubiKey
 
-YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` である。`bw-email` / `bw-password` は Bitwarden Password Manager login / unlock に使い、`bitwarden-client-secret` は復旧時の Bitwarden Secrets Manager 読取に使う。
+YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` である。`bw-email` / `bw-password` は Bitwarden Password Manager login / unlock に使い、`bitwarden-client-secret` は Bitwarden Secrets Manager の読取・作成・更新に使う。
 
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 を reset しない。既存領域と衝突する場合は停止する。
 書き込みは management key 認証を前提にし、既定 management key のまま運用しない。既定 key のままでは想定外の上書きリスクを抑止できないため、専用領域を運用する前に非既定 management key への変更を必須にする。
@@ -75,7 +75,7 @@ factory-default management key を使う運用は暫定前提にしてはなら�
 
 Bitwarden Secrets Manager は、復旧に必要な取得対象を保持する。対象は project `dotfiles-secret-recovery` 内の `gpg-secret-key-backup`（YubiKey recipient 付き encrypted envelope。認証・復号・署名能力を与える credential）と `password-store-remote`（private `password-store` repository の clone URL。credential ではないが private repository の所在を示す値であり、出力には漏らさない）である。
 
-復旧本線では公式 `bitwarden` Rust SDK を使う。`bw` CLI は vault からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。YubiKey に保存する token は、provisioning の登録・更新用 token とは分け、復旧時に 個人 vault の必要 secret を読める最小権限の個人用 Bitwarden 個人 API client-secret とする。
+復旧本線と provisioning 経路では公式 `bitwarden` Rust SDK を使う。`bw` CLI は vault からの取得には使わない。access token は YubiKey から取得し、必要な API 呼び出しの範囲だけで保持する。`pass-remote register`、`gpg-backup register`、`gpg-backup add-spare` など BWS を読む/書く Rust command は token を prompt / stdin で受け取らず、YubiKey storage の `bitwarden-client-secret` から取得する。
 
 詳細設計は [Bitwarden Secrets Manager 復旧設計](./bitwarden-personal-vault-design.md) に置く。
 

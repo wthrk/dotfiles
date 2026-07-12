@@ -1492,23 +1492,22 @@ fn restore_pass_errors_when_recipient_secret_key_is_absent_with_stub_paths() -> 
 
 #[test]
 fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> TestResult<()> {
-    // 既定 fixture は password-store-remote を 1 件持つ。pass-remote は YubiKey storage を読まず、BWS access
-    // token を hidden prompt から受け取る。対話 PTY で BWS access token（stub の
-    // datastore token と一致する `token`）→ 上書き確認 [y] → `--url` 未指定なので可視プロンプト（非秘匿の
-    // clone URL を通常入力でエコー）の順に入力して update する。最終観測で新値へ置換されたことを確認する。
+    // 既定 fixture は password-store-remote を 1 件持つ。pass-remote は BWS access token を YubiKey storage
+    // の `bitwarden-client-secret` から読み、対話 PTY では上書き確認 [y] → `--url` 未指定なので可視プロンプト
+    // （非秘匿の clone URL を通常入力でエコー）の順に入力して update する。最終観測で新値へ置換されたことを確認する。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["pass-remote", "register"],
-        Some(&format!("token\ny\n{RESTORE_PASS_REMOTE}\n")),
+        ["pass-remote", "register", "--serial", "2001"],
+        Some(&format!("y\n{RESTORE_PASS_REMOTE}\n")),
         &stub,
     )?;
 
     assert!(run.success, "output: {}", run.output);
     assert!(
-        run.output
+        !run.output
             .contains("bitwarden-client-secret (create/update): "),
         "output: {}",
         run.output
@@ -1530,9 +1529,8 @@ fn pass_remote_register_overwrites_existing_secret_with_tty_confirmation() -> Te
 #[test]
 fn pass_remote_register_overwrites_existing_secret_from_url_argument_with_yes() -> TestResult<()> {
     // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（非 TTY）で `--url` 引数と `--yes` を
-    // 与えて既存 secret を update する。BWS access token は pipe（stdin）の 1 行目で
-    // 渡す（stub datastore token と一致する `token`）。非秘匿の URL は argv から取得され、可視プロンプト/pipe
-    // の URL 入力へは到達せず、最終 datastore が新値へ更新されることを観測する。
+    // 与えて既存 secret を update する。BWS access token は YubiKey storage から読み、非秘匿の URL は argv
+    // から取得されるため、stdin 入力へは到達せず、最終 datastore が新値へ更新されることを観測する。
     let initial = bws_spec_with_pass_remote("git@github.com:owner/old-store.git");
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
@@ -1542,11 +1540,13 @@ fn pass_remote_register_overwrites_existing_secret_from_url_argument_with_yes() 
         [
             "pass-remote",
             "register",
+            "--serial",
+            "2001",
             "--url",
             RESTORE_PASS_REMOTE,
             "--yes",
         ],
-        Some("token\n"),
+        None,
         &stub,
     )?;
 
@@ -1563,13 +1563,12 @@ fn pass_remote_register_overwrites_existing_secret_from_url_argument_with_yes() 
 #[test]
 fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestResult<()> {
     // 非対話実行（pipe stdin）で既存 secret を上書きしようとし、`--yes` 未指定なら確認段階で停止する。
-    // BWS access token は pipe の 1 行目で渡す。確認で停止するため、URL の入力
-    // （pipe/可視プロンプト）へは到達しない。
+    // BWS access token は YubiKey storage から読む。確認で停止するため、URL の入力（pipe/可視プロンプト）へは到達しない。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
-    let run = run_pipe_with_stub(["pass-remote", "register"], Some("token\n"), &stub)?;
+    let run = run_pipe_with_stub(["pass-remote", "register", "--serial", "2001"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
     assert!(
@@ -1589,17 +1588,16 @@ fn pass_remote_register_stops_non_interactive_overwrite_without_yes() -> TestRes
 #[test]
 fn pass_remote_register_overwrites_existing_secret_via_stdin_pipe_with_yes() -> TestResult<()> {
     // 既定 fixture は password-store-remote を 1 件持つ。非対話実行（stdin pipe・非 TTY）で `--yes`
-    // を与え、pipe の 1 行目で BWS access token（stub datastore token と一致する
-    // `token`）を、2 行目で妥当な clone URL を渡して既存 secret を上書きする。pipe 入力経路（terminal で
-    // なければ stdin 1 行を読む分岐）と上書き挙動を駆動し、最終 BWS datastore が新値へ更新された
-    // ことを観測する。
+    // を与え、BWS access token は YubiKey storage から読み、pipe からは妥当な clone URL だけを渡して既存
+    // secret を上書きする。pipe 入力経路（terminal でなければ stdin 1 行を読む分岐）と上書き挙動を駆動し、
+    // 最終 BWS datastore が新値へ更新されたことを観測する。
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
     let run = run_pipe_with_stub(
-        ["pass-remote", "register", "--yes"],
-        Some(&format!("token\n{RESTORE_PASS_REMOTE}\n")),
+        ["pass-remote", "register", "--serial", "2001", "--yes"],
+        Some(&format!("{RESTORE_PASS_REMOTE}\n")),
         &stub,
     )?;
 
@@ -1615,8 +1613,8 @@ fn pass_remote_register_overwrites_existing_secret_via_stdin_pipe_with_yes() -> 
 
 #[test]
 fn pass_remote_register_stops_when_input_url_is_invalid() -> TestResult<()> {
-    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で BWS access token（stub
-    // datastore token と一致する `token`）→ 上書き確認 [y] → 可視プロンプトへ domain 妥当でない clone URL を
+    // 既定 fixture は password-store-remote を 1 件持つ。対話 PTY で BWS access token を YubiKey storage から読み、
+    // 上書き確認 [y] → 可視プロンプトへ domain 妥当でない clone URL を
     // 入力する。update 経路の URL 検証（application の PasswordStoreRemote::parse）で停止し、最終 datastore が
     // 元の値のまま不変であることを観測する。
     let stub = StubPorts::new(
@@ -1624,8 +1622,8 @@ fn pass_remote_register_stops_when_input_url_is_invalid() -> TestResult<()> {
         bws_spec(),
     );
     let run = run_pty_with_stub(
-        ["pass-remote", "register"],
-        Some("token\ny\nnot-a-valid-clone-url\n"),
+        ["pass-remote", "register", "--serial", "2001"],
+        Some("y\nnot-a-valid-clone-url\n"),
         &stub,
     )?;
 

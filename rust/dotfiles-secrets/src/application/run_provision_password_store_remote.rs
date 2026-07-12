@@ -6,6 +6,8 @@ use crate::{
         bws::{BwsProjectName, BwsSecretName},
         commands::ProvisionPasswordStoreRemoteCommand,
         pass_restore::PasswordStoreRemote,
+        piv::{SecretName, validate_piv_pin_len},
+        storage::SecretStorageReadIntent,
     },
     ports,
 };
@@ -14,16 +16,12 @@ use crate::{
 /// create または update する provisioning use case。
 ///
 /// 設計「初期登録手順」step3 が定める `password-store-remote` の保管コマンドを、`gpg-backup register`
-/// と対称な順序制御として固定する。BWS への登録には client-secret を使い、この token を
-/// hidden prompt（TTY）/ pipe（stdin）から保護値として取得したうえで、project name から project ID
+/// と対称な順序制御として固定する。BWS への登録には YubiKey storage の `bitwarden-client-secret` を
+/// 使い、明示 serial または単一接続 device から token を読み出したうえで、project name から project ID
 /// を解決（0件/複数件で停止）し、既存 `password-store-remote` secret の有無を確認する。不在なら入力した
 /// clone URL を create し、ちょうど 1 件存在し上書き許可がある場合だけ stale-overwrite 防止つきで update する。
-/// 複数件は domain failure として停止する。
-///
-/// この command は YubiKey storage を読まない。provisioning で使う登録・更新用 token は
-/// `BitwardenClientSecretInputPort` で受け取り、YubiKey へ保存しない。YubiKey へ保存する `bitwarden-client-secret` は
-/// 復旧時の read 用最小権限 token を別経路で用意する。token は実 credential のため secret として保護経路で
-/// 扱い、argv / log / 永続ファイルへ出さない。
+/// 複数件は domain failure として停止する。BWS token は prompt / stdin から受け取らず、YubiKey へ
+/// 保存・更新する経路（`yubikey put` / `enroll-primary` / `rotate-bws-token`）だけが入力を担う。
 ///
 /// 順序を application に固定するのは「token 取得・project/secret の解決と上書き確認を済ませてから値入力・
 /// 保存へ進む」停止条件の責務境界を保護するためである。update 経路では値入力より前に更新確認を行い、
@@ -33,22 +31,31 @@ use crate::{
 /// （非 terminal）」で得て、`PasswordStoreRemote::parse` の URL 形式検証（domain rule）を通してから
 /// create/update へ渡す。stale-overwrite 防止は、更新前に取得した guard が更新直前の現行値と一致する場合
 /// だけ上書きする read-modify-write として port 契約に閉じる。
-pub(crate) async fn run_provision_password_store_remote<A, B, U, F>(
+pub(crate) async fn run_provision_password_store_remote<B, U, F>(
     command: ProvisionPasswordStoreRemoteCommand,
-    token_input: &A,
+    device: &mut dyn ports::YubiKeyDevicePort,
+    process: &dyn ports::PinInputPort,
+    storage_port: &mut dyn ports::SecretStoragePort,
     bws_client: &B,
     url_input: &U,
     confirmation: &F,
 ) -> Result<()>
 where
-    A: ports::BitwardenClientSecretInputPort,
     B: ports::BwsClientPort,
     U: ports::PasswordStoreRemoteInputPort,
     F: ports::BackupUpdateConfirmationPort,
 {
-    // BWS 登録・更新用 access token を hidden prompt / pipe から保護値として取得し、復旧 project を解決する。
-    // provisioning command は YubiKey storage を読まず、YubiKey 保存用の復旧 token とは分離する。
-    let access_token = token_input.read_bitwarden_client_secret_for_provisioning()?;
+    let serial = device.resolve_device_serial(command.serial)?;
+    let pin = if device.device_requires_pin(serial)? {
+        let pin = process.read_pin()?;
+        validate_piv_pin_len(pin.len())?;
+        Some(pin)
+    } else {
+        None
+    };
+
+    // BWS 登録・更新用 access token は YubiKey storage の `bitwarden-client-secret` から取得する。
+    let access_token = load_bitwarden_client_secret(serial, storage_port, pin.as_ref())?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
@@ -122,13 +129,29 @@ where
     PasswordStoreRemote::parse(&raw)
 }
 
+/// bitwarden-client-secret を YubiKey storage の read 経路（inspect → intent → load → validate）で取得する。
+fn load_bitwarden_client_secret(
+    serial: u32,
+    storage_port: &mut dyn ports::SecretStoragePort,
+    pin: Option<&crate::support::protection::ProtectedSecret>,
+) -> Result<crate::support::protection::ProtectedSecret> {
+    let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
+    let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
+    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+    let secret = storage_port
+        .load_secret(serial, &intent, pin)
+        .map_err(|error| intent.decode_error(error))?;
+    intent.validate_loaded_secret(&secret)?;
+    Ok(secret)
+}
+
 #[cfg(test)]
 mod tests {
-    //! provisioning の順序（client-secret 取得→project 解決→secret 候補確認→create または確認付き
+    //! provisioning の順序（YubiKey token 取得→project 解決→secret 候補確認→create または確認付き
     //! guard update）を mockall + Sequence で検証する単体テスト。
     //!
-    //! token-input / url-input / bws / confirmation backend を port mock で差し替え、BWS 登録に使う
-    //! access token を client-secret 入力経路から取得すること、未登録時に確認・更新へ進ませず create が呼ばれること、
+    //! YubiKey storage / url-input / bws / confirmation backend を port mock で差し替え、BWS 登録に使う
+    //! access token を YubiKey storage の `bitwarden-client-secret` から取得すること、未登録時に確認・更新へ進ませず create が呼ばれること、
     //! ちょうど 1 件存在し確認を通過した場合だけ guard 付き update が呼ばれ、確認は値入力より前に呼ばれること、
     //! 確認拒否で値入力・update のいずれにも進ませないこと、同名複数件で create/update のいずれにも進ませず
     //! 停止すること、`--url` 指定値・可視プロンプト/pipe 入力のいずれの経路でも検証済み URL が create/update へ
@@ -137,7 +160,8 @@ mod tests {
     use crate::{
         domain::{
             bws::BwsSecretId, commands::ProvisionPasswordStoreRemoteCommand,
-            gpg_backup::BackupUpdateGuard, pass_restore::PasswordStoreRemote,
+            gpg_backup::BackupUpdateGuard, manifest::SecretManifest,
+            pass_restore::PasswordStoreRemote, storage::SecretStorageReadInspection,
         },
         ports,
         support::protection::ProtectedSecret,
@@ -162,6 +186,7 @@ mod tests {
     fn command(assume_overwrite: bool) -> ProvisionPasswordStoreRemoteCommand {
         ProvisionPasswordStoreRemoteCommand {
             assume_overwrite,
+            serial: Some(2001),
             url: None,
         }
     }
@@ -169,27 +194,59 @@ mod tests {
     fn command_with_url(assume_overwrite: bool, url: &str) -> ProvisionPasswordStoreRemoteCommand {
         ProvisionPasswordStoreRemoteCommand {
             assume_overwrite,
+            serial: Some(2001),
             url: Some(url.to_owned()),
         }
     }
 
-    /// client-secret を hidden prompt / pipe から取得する port mock を共通設定する。
-    ///
-    /// この mock は hidden prompt / pipe 相当の入力経路として client-secret を返す。
-    /// device/pin/storage port は構成へ一切渡さず、provisioning command が YubiKey storage を読まないことを固定する。
-    fn token_input() -> ports::MockBitwardenClientSecretInputPort {
-        let mut token_input = ports::MockBitwardenClientSecretInputPort::new();
-        token_input
-            .expect_read_bitwarden_client_secret_for_provisioning()
+    fn read_inspection() -> SecretStorageReadInspection {
+        SecretStorageReadInspection {
+            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            encoded: Some(vec![1]),
+        }
+    }
+
+    struct YubiKeyAccessMocks {
+        device: ports::MockDeviceSerialPort,
+        pin_policy: ports::MockDevicePinPolicyPort,
+        process: ports::MockPinInputPort,
+        storage: ports::MockSecretStoragePort,
+    }
+
+    /// BWS access token を YubiKey storage の `bitwarden-client-secret` から読む port mock を共通設定する。
+    fn yubikey_access_mocks() -> YubiKeyAccessMocks {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
             .times(1)
-            .returning(|| Ok(material(b"provisioning-token")));
-        token_input
+            .returning(|requested| Ok(requested.expect("serial")));
+        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
+        pin_policy
+            .expect_device_requires_pin()
+            .times(1)
+            .returning(|_| Ok(false));
+        let process = ports::MockPinInputPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .times(1)
+            .returning(|_, _, _| Ok(material(b"access-token")));
+        YubiKeyAccessMocks {
+            device,
+            pin_policy,
+            process,
+            storage,
+        }
     }
 
     #[tokio::test]
     async fn provision_creates_secret_when_absent() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -220,14 +277,22 @@ mod tests {
         bws.expect_update_password_store_remote_if_unchanged()
             .times(0);
 
-        run_provision_password_store_remote(command(false), &token, &bws, &url_input, &confirmation)
-            .await
+        run_provision_password_store_remote(
+            command(false),
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
+            &bws,
+            &url_input,
+            &confirmation,
+        )
+        .await
     }
 
     /// `--url` 指定値で create するとき、可視プロンプト/pipe 入力 port を呼ばずに引数値を使うことを検証する。
     #[tokio::test]
     async fn provision_creates_secret_from_url_argument() -> crate::Result<()> {
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -251,7 +316,9 @@ mod tests {
 
         run_provision_password_store_remote(
             command_with_url(false, REMOTE_URL),
-            &token,
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
             &bws,
             &url_input,
             &confirmation,
@@ -262,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn provision_updates_with_guard_after_confirmation() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -301,8 +368,16 @@ mod tests {
             .returning(|_, _, _, _, _| Ok(()));
         bws.expect_create_password_store_remote().times(0);
 
-        run_provision_password_store_remote(command(true), &token, &bws, &url_input, &confirmation)
-            .await
+        run_provision_password_store_remote(
+            command(true),
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
+            &bws,
+            &url_input,
+            &confirmation,
+        )
+        .await
     }
 
     /// 入力した clone URL が domain rule で不正なとき、application の URL 検証で停止し、`create_*` /
@@ -312,7 +387,7 @@ mod tests {
     /// port から取得した直後に停止し、BWS 保存境界へ到達しない。
     #[tokio::test]
     async fn provision_stops_when_input_url_is_invalid() {
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -340,7 +415,9 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(false),
-            &token,
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
             &bws,
             &url_input,
             &confirmation,
@@ -361,7 +438,7 @@ mod tests {
     /// 失敗で停止する停止経路を駆動する。
     #[tokio::test]
     async fn provision_stops_when_guard_mismatch_blocks_update() {
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -399,7 +476,9 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(true),
-            &token,
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
             &bws,
             &url_input,
             &confirmation,
@@ -414,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn provision_rejection_skips_value_input_and_update() {
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -444,7 +523,9 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(false),
-            &token,
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
             &bws,
             &url_input,
             &confirmation,
@@ -460,7 +541,7 @@ mod tests {
     /// 同名 secret が複数件存在する場合は、create/update のいずれにも進ませず停止することを検証する。
     #[tokio::test]
     async fn provision_stops_when_duplicate_secrets_exist() {
-        let token = token_input();
+        let mut yk = yubikey_access_mocks();
 
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects()
@@ -490,7 +571,9 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(true),
-            &token,
+            &mut (&mut yk.device, &mut yk.pin_policy),
+            &yk.process,
+            &mut yk.storage,
             &bws,
             &url_input,
             &confirmation,

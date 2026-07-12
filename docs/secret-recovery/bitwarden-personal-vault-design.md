@@ -1,10 +1,10 @@
-# Bitwarden Personal Vault Design
+# Bitwarden Secrets Manager Design
 
-復旧情報の外部保存先はユーザー個人の Bitwarden vault である。dotfiles は SDK/API adapter 境界で vault item を取得・作成・照合する。
+復旧情報の外部保存先は Bitwarden Secrets Manager project `dotfiles-secret-recovery` である。dotfiles は SDK/API adapter 境界で BWS secret を取得・作成・更新・照合する。
 
-Bitwarden SDK/API の account API key 認証は、個人 vault item を復号・作成するために master password 由来の user crypto 初期化を必要とする。dotfiles は `bitwarden-client-id` / `bitwarden-client-secret` だけを YubiKey に保存し、master password は vault 操作時の CLI/app 非表示 input port から取得して SDK/API adapter 境界へ渡す。shell は master password を argv/stdin/env で中継しない。
+Bitwarden Secrets Manager の access token は YubiKey storage の `bitwarden-client-secret` に保存する。BWS を読む/書く Rust command は token を hidden prompt / stdin secret input で受け取らず、明示 serial または単一接続で解決した YubiKey から取得する。token 入力が許可されるのは `dotfiles secrets yubikey put bitwarden-client-secret`、`enroll-primary`、`rotate-bws-token` など YubiKey storage へ保存・更新する経路だけである。
 
-## Vault Items
+## BWS Secrets
 
 - `gpg-secret-key-backup`: GPG secret key backup の encrypted envelope。
 - `password-store-remote`: private password-store repository の GitHub SSH clone URL。
@@ -13,8 +13,8 @@ URL と envelope 本文は log/error/report に出さない。adapter は外部 
 
 ## Provisioning
 
-`pass-remote register` は configured origin を優先し、origin が無い場合だけ CLI/app 側の controlling TTY input port で URL を受ける。shell から URL を argv/stdin/env で渡さない。
+`pass-remote register` は BWS access token を YubiKey storage から取得し、`password-store-remote` を create または update する。`--url` が指定された場合はその値を使い、未指定の場合だけ CLI/app 側の可視 input port で URL を受ける。URL は credential ではないが private repository の所在を示すため、log/error/report には出さない。
 
-`gpg-backup register` は既存 envelope の primary fingerprint、2 件以上の recipient、connected YubiKey recipient を照合する。新規 envelope は作成せず、`gpg-secret-key-backup` が missing の場合は停止する。初回実運用では source machine script と `enroll-spare` で 2 本以上の YubiKey を準備した後、2 件以上の recipient を含む encrypted envelope を個人 vault item `gpg-secret-key-backup` として投入する。fingerprint や vault secret 実値は出力しない。
+`gpg-backup register` は BWS access token を `--serial` または単一接続で解決した YubiKey storage から取得し、同じ YubiKey の recipient を含む encrypted envelope を `gpg-secret-key-backup` として作成する。`gpg-backup add-spare` は `--unwrap-serial` または単一接続で解決した YubiKey storage から BWS access token を取得し、同じ YubiKey で既存 recipient の DEK を unwrap して spare recipient を追加する。
 
-初回投入は [initial-provisioning-runbook.md](initial-provisioning-runbook.md) の `gpg-secret-key-backup` envelope 投入手順と gate を正本とする。dotfiles CLI は BWS、Bitwarden Secrets Manager、`bw` CLI login/unlock/session、project、organization を使わず、shell から secret/URL/fingerprint を argv/stdin/env で受け取って envelope を補完しない。gate の監査は `gpg-backup register` が既存 item を読み、primary fingerprint、2 件以上の recipient、connected YubiKey recipient を照合することで行う。YubiKey serial は envelope schema、gate、recipient 照合条件に使わない。
+project 作成は `dotfiles` CLI と script では行わない。BWS command は project `dotfiles-secret-recovery` を名前で解決し、0 件または複数件なら停止する。serial 未指定時の YubiKey 解決は単一接続だけを許可し、複数接続では一覧表示や選択へ進まず fail-closed する。

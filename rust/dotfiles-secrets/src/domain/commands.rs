@@ -265,19 +265,19 @@ impl AddGpgBackupSpareCommand {
 
 /// password-store-remote の provisioning（保管側 create/update）use case の入力 command。
 ///
-/// 非対話実行での明示上書き許可、および `--url` で明示指定された clone URL 文字列の有無を保持する。
+/// 非対話実行での明示上書き許可、BWS token を読む YubiKey serial 指定、および `--url` で明示指定された
+/// clone URL 文字列の有無を保持する。
 /// clone URL は private repo の SSH clone URL であって秘密情報ではないため、argv（`--url`）に載せてよい。
 /// `url` が `None` の場合だけ application が port 経由で可視プロンプト（対話）または pipe（非対話）から
 /// 1 行を読む。値そのものの形式検証は domain rule [`PasswordStoreRemote::parse`] に委ねる。対話実行では
 /// 上書き対象 secret name と project name を表示して明示確認する責務を port 側へ委譲する。
 ///
-/// この command は YubiKey storage を読まないため device serial を保持しない。BWS 登録・更新に使う
-/// access token は hidden prompt / pipe から取得する credential であり、その取得は application が
-/// `BitwardenClientSecretInputPort` 経由で行う。YubiKey へ保存する `bitwarden-client-secret` は別経路の復旧用最小権限
-/// token であり、この provisioning 入力と同一値にする運用を前提にしない。
+/// BWS 登録・更新に使う access token は YubiKey storage の `bitwarden-client-secret` から取得する。
+/// serial が `None` の場合、device selection port が単一接続だけを自動解決し、複数接続では fail-closed する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisionPasswordStoreRemoteCommand {
     pub assume_overwrite: bool,
+    pub serial: Option<u32>,
     pub url: Option<String>,
 }
 

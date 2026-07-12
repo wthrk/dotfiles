@@ -16,10 +16,9 @@ use crate::{
         verification::VerifySummary,
     },
     ports::io::{
-        BackupUpdateConfirmationPort, BitwardenClientSecretInputPort,
-        BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort, PasswordStoreRemoteInputPort,
-        PinInputPort, ReportPort, RotationContinuationPort, SecretInputPort, SecretOutputPort,
-        SshPublicKeyOutputPort,
+        BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
+        PasswordStoreRemoteInputPort, PinInputPort, ReportPort, RotationContinuationPort,
+        SecretInputPort, SecretOutputPort, SshPublicKeyOutputPort,
     },
     support::protection::ProtectedSecret,
 };
@@ -53,12 +52,6 @@ impl SecretInputPort for ProcessIoAdapter {
 
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         self.0.read_streamed_secret()
-    }
-}
-
-impl BitwardenClientSecretInputPort for ProcessIoAdapter {
-    fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret> {
-        self.0.read_bitwarden_client_secret_for_provisioning()
     }
 }
 

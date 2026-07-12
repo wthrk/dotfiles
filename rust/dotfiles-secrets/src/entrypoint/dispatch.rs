@@ -243,8 +243,9 @@ pub(super) async fn dispatch(
                         serial: options.serial,
                     },
                     application::run_register_gpg_backup_primary::RegisterGpgBackupPrimaryRuntime {
-                        token_input: &ports.process_io,
-                        device_serial: &mut ports.device,
+                        device: &mut ports.device,
+                        process: &ports.process_io,
+                        storage: &mut ports.storage,
                         keyring: &mut ports.gpg_keyring,
                         cipher: &mut ports.backup_cipher,
                         recipient: &mut ports.gpg_recipient,
@@ -262,10 +263,10 @@ pub(super) async fn dispatch(
                         assume_overwrite: options.yes,
                     },
                     application::run_add_gpg_backup_spare::AddGpgBackupSpareRuntime {
-                        token_input: &ports.process_io,
                         device: &mut ports.device,
                         spare_device_serial: &mut ports.spare_device,
                         process: &ports.process_io,
+                        storage: &mut ports.storage,
                         bws_client: &ports.bws_client,
                         recipient: &mut ports.gpg_recipient,
                         confirmation: &ports.process_io,
@@ -279,9 +280,12 @@ pub(super) async fn dispatch(
                 application::run_provision_password_store_remote::run_provision_password_store_remote(
                     ProvisionPasswordStoreRemoteCommand {
                         assume_overwrite: options.yes,
+                        serial: options.serial,
                         url: options.url,
                     },
+                    &mut ports.device,
                     &ports.process_io,
+                    &mut ports.storage,
                     &ports.bws_client,
                     &ports.process_io,
                     &ports.process_io,

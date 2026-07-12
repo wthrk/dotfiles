@@ -39,16 +39,6 @@ pub trait SecretInputPort {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 
-/// use case が Bitwarden API client-secret を保護値として取得する capability 契約。
-///
-/// provisioning command は YubiKey storage を読まず、この capability で受け取った client-secret を
-/// vault item の create・update にだけ使う。YubiKey の `bitwarden-client-secret` は復旧時の read 用に
-/// 別経路で保存するものであり、caller は同一値運用を前提にしてはならない。
-#[cfg_attr(test, mockall::automock)]
-pub trait BitwardenClientSecretInputPort {
-    fn read_bitwarden_client_secret_for_provisioning(&self) -> Result<ProtectedSecret>;
-}
-
 /// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。
 ///
 /// `password-store-remote` は private `password-store` repository の SSH clone URL であり、秘密情報では
