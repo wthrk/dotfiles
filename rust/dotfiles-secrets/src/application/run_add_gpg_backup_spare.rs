@@ -6,7 +6,7 @@ use crate::{
         bws::{BwsProjectName, BwsSecretName},
         commands::AddGpgBackupSpareCommand,
         gpg_backup::EnvelopeRecipient,
-        piv::{SecretName, validate_piv_pin_len},
+        piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
@@ -14,9 +14,7 @@ use crate::{
 
 /// `run_add_gpg_backup_spare` が使う外部 capability を named field で束ねる。
 pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
-    pub(crate) spare_device_serial: &'a mut dyn ports::SpareDeviceSerialPort,
-    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
     pub(crate) bws_client: &'a B,
     pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
@@ -33,13 +31,12 @@ pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
 ///
 /// BWS への更新には unwrap 機の YubiKey storage にある `bitwarden-client-secret` を使う。token は
 /// hidden prompt / pipe から受け取らない。YubiKey 本体は既存 recipient による DEK unwrap（PIV slot `82`
-/// 秘密鍵、PIN/touch を要する）と spare recipient wrap にも必要なため、unwrap 機・spare 機の device
-/// serial 解決と PIN 入力は残す。
+/// 秘密鍵と touch を要する）と spare recipient wrap にも必要なため、unwrap 機・spare 機の device
+/// serial 解決を行う。
 ///
 /// 順序を application に固定するのは「envelope 取得後に更新確認を済ませてから DEK unwrap・spare wrap を
-/// 行い、guard 一致を条件に更新する」停止条件の責務境界を保護するためである。更新確認を PIN 取得・unwrap/wrap より
-/// 前へ置くのは、拒否される更新で DEK 復号と spare wrap を発生させないためである。BWS token 取得には
-/// YubiKey storage の読み出しが必要なため、PIN が必要な device では envelope 取得前に PIN 入力が発生しうる。
+/// 行い、guard 一致を条件に更新する」停止条件の責務境界を保護するためである。更新確認を unwrap/wrap より
+/// 前へ置くのは、拒否される更新で DEK 復号と spare wrap を発生させないためである。
 /// DEK は port 境界の保護値として扱い、application 層では加工しない。
 pub(crate) async fn run_add_gpg_backup_spare<B>(
     command: AddGpgBackupSpareCommand,
@@ -50,8 +47,6 @@ where
 {
     let AddGpgBackupSpareRuntime {
         device,
-        spare_device_serial,
-        process,
         storage,
         bws_client,
         recipient,
@@ -59,19 +54,11 @@ where
     } = runtime;
     command.ensure_requested_serials_distinct()?;
     let unwrap_serial = device.resolve_device_serial(command.unwrap_serial)?;
-    let spare_serial = spare_device_serial.resolve_spare_device_serial(command.spare_serial)?;
+    let spare_serial = device.resolve_device_serial(command.spare_serial)?;
     command.ensure_distinct_resolved_serials(unwrap_serial, spare_serial)?;
 
-    let pin = if device.device_requires_pin(unwrap_serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
-
     // BWS 更新用 access token は unwrap 機の YubiKey storage から取得する。
-    let access_token = load_bitwarden_client_secret(unwrap_serial, storage, pin.as_ref())?;
+    let access_token = load_bitwarden_client_secret(unwrap_serial, storage)?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
     let key = BwsSecretName::GpgSecretKeyBackup.key();
@@ -87,7 +74,7 @@ where
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
 
-    // unwrap/wrap で PIN/touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
+    // unwrap/wrap で touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
     // envelope 取得後に判明しているため、拒否される更新で YubiKey の DEK unwrap や spare wrap を実行
     // しないよう、確認を unwrap/wrap より前へ置く。
     let confirmed = confirmation.confirm_backup_update(
@@ -103,7 +90,7 @@ where
     // unwrap 機が既存 recipient に一致することを確認し、DEK を unwrap する。
     let connected = recipient.resolve_connected_recipient(unwrap_serial)?;
     let matched = envelope.resolve_recipient(&connected)?;
-    let dek = recipient.unwrap_dek(unwrap_serial, matched, pin.as_ref())?;
+    let dek = recipient.unwrap_dek(unwrap_serial, matched)?;
 
     // 同一 DEK を spare の公開鍵で再 wrap し、recipient を追加した新しい envelope を作る。
     let spare_recipient: EnvelopeRecipient =
@@ -125,13 +112,12 @@ where
 fn load_bitwarden_client_secret(
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::support::protection::ProtectedSecret>,
 ) -> Result<crate::support::protection::ProtectedSecret> {
     let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port
-        .load_secret(serial, &intent, pin)
+        .load_secret(serial, &intent)
         .map_err(|error| intent.decode_error(error))?;
     intent.validate_loaded_secret(&secret)?;
     Ok(secret)
@@ -177,8 +163,6 @@ mod tests {
 
     struct YubiKeyAccessMocks {
         device: ports::MockDeviceSerialPort,
-        pin_policy: ports::MockDevicePinPolicyPort,
-        process: ports::MockPinInputPort,
         storage: ports::MockSecretStoragePort,
     }
 
@@ -188,13 +172,8 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .times(1)
+            .withf(|requested| *requested == Some(2001))
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
@@ -203,13 +182,8 @@ mod tests {
         storage
             .expect_load_secret()
             .times(1)
-            .returning(|_, _, _| Ok(material(b"access-token")));
-        YubiKeyAccessMocks {
-            device,
-            pin_policy,
-            process,
-            storage,
-        }
+            .returning(|_, _| Ok(material(b"access-token")));
+        YubiKeyAccessMocks { device, storage }
     }
 
     /// unwrap 機 serial 2001 に一致する recipient を 1 件持つ envelope を作る。
@@ -263,9 +237,10 @@ mod tests {
     async fn add_spare_updates_with_guard_after_confirmation() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
         let mut yk = yubikey_access_mocks();
-        let mut spare = ports::MockSpareDeviceSerialPort::new();
-        spare
-            .expect_resolve_spare_device_serial()
+        yk.device
+            .expect_resolve_device_serial()
+            .times(1)
+            .withf(|requested| *requested == Some(2002))
             .returning(|_| Ok(2002));
 
         let mut bws = ports::MockBwsClientPort::new();
@@ -302,7 +277,7 @@ mod tests {
             .expect_unwrap_dek()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Ok(material(b"dek")));
+            .returning(|_, _| Ok(material(b"dek")));
         recipient
             .expect_wrap_dek_for_recipient()
             .times(1)
@@ -325,9 +300,7 @@ mod tests {
                 assume_overwrite: true,
             },
             AddGpgBackupSpareRuntime {
-                device: &mut (&mut yk.device, &mut yk.pin_policy),
-                spare_device_serial: &mut spare,
-                process: &yk.process,
+                device: &mut yk.device,
                 storage: &mut yk.storage,
                 bws_client: &bws,
                 recipient: &mut recipient,
@@ -340,14 +313,15 @@ mod tests {
     /// 更新直前の現行 envelope が変化していて guard 不一致になった場合、stale overwrite `Err` で停止する。
     ///
     /// guard 不一致の `Err` は domain rule [`BackupUpdateGuard::ensure_matches`] が実際に生成した値を
-    /// mock から返し、確認通過・PIN 取得・DEK unwrap・spare wrap 後でも保存成立として扱わない停止経路を
+    /// mock から返し、確認通過・DEK unwrap・spare wrap 後でも保存成立として扱わない停止経路を
     /// 固定する。
     #[tokio::test]
     async fn add_spare_stops_when_guard_mismatch_blocks_update() {
         let mut yk = yubikey_access_mocks();
-        let mut spare = ports::MockSpareDeviceSerialPort::new();
-        spare
-            .expect_resolve_spare_device_serial()
+        yk.device
+            .expect_resolve_device_serial()
+            .times(1)
+            .withf(|requested| *requested == Some(2002))
             .returning(|_| Ok(2002));
 
         let mut bws = ports::MockBwsClientPort::new();
@@ -384,7 +358,7 @@ mod tests {
         recipient
             .expect_unwrap_dek()
             .times(1)
-            .returning(|_, _, _| Ok(material(b"dek")));
+            .returning(|_, _| Ok(material(b"dek")));
         recipient
             .expect_wrap_dek_for_recipient()
             .times(1)
@@ -403,9 +377,7 @@ mod tests {
                 assume_overwrite: true,
             },
             AddGpgBackupSpareRuntime {
-                device: &mut (&mut yk.device, &mut yk.pin_policy),
-                spare_device_serial: &mut spare,
-                process: &yk.process,
+                device: &mut yk.device,
                 storage: &mut yk.storage,
                 bws_client: &bws,
                 recipient: &mut recipient,
@@ -425,9 +397,10 @@ mod tests {
     #[tokio::test]
     async fn add_spare_rejection_skips_unwrap_and_update() {
         let mut yk = yubikey_access_mocks();
-        let mut spare = ports::MockSpareDeviceSerialPort::new();
-        spare
-            .expect_resolve_spare_device_serial()
+        yk.device
+            .expect_resolve_device_serial()
+            .times(1)
+            .withf(|requested| *requested == Some(2002))
             .returning(|_| Ok(2002));
 
         let mut bws = ports::MockBwsClientPort::new();
@@ -468,9 +441,7 @@ mod tests {
                 assume_overwrite: false,
             },
             AddGpgBackupSpareRuntime {
-                device: &mut (&mut yk.device, &mut yk.pin_policy),
-                spare_device_serial: &mut spare,
-                process: &yk.process,
+                device: &mut yk.device,
                 storage: &mut yk.storage,
                 bws_client: &bws,
                 recipient: &mut recipient,

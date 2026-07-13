@@ -1,19 +1,13 @@
-//! YubiKey device 選択を `DeviceSerialPort`/`SpareDeviceSerialPort` へ翻訳する adapter。
+//! YubiKey device 選択を `DeviceSerialPort` へ翻訳する adapter。
 //!
 //! 明示 serial または単一接続 device の内部識別子解決だけを担当し、secret 保存・復号・report 生成は他
 //! adapter へ分離する。未指定時に複数接続を検出した場合は、識別子表示や番号選択に進まず停止する。
 
 use anyhow::bail;
 
-use crate::{
-    Result,
-    ports::yubikey::{DevicePinPolicyPort, DeviceSerialPort, SpareDeviceSerialPort},
-};
+use crate::{Result, ports::yubikey::DeviceSerialPort};
 
-use super::{
-    DeviceCandidate, SecretDeviceIo, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo,
-    SelectedSecretDevice,
-};
+use super::{DeviceCandidate, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo};
 
 const MULTIPLE_DEVICES_ERROR: &str =
     "multiple YubiKeys detected; connect exactly one YubiKey and retry";
@@ -31,10 +25,6 @@ impl DeviceSelectionAdapter {
     fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
         SelectedDeviceDiscoveryIo::discover_devices(&mut self.device)
     }
-
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
-        SelectedDeviceDiscoveryIo::open_device_by_serial(&mut self.device, serial)
-    }
 }
 
 impl DeviceSerialPort for DeviceSelectionAdapter {
@@ -44,19 +34,6 @@ impl DeviceSerialPort for DeviceSelectionAdapter {
         }
         let devices = self.discover_devices()?;
         resolve_discovered_device_serial(&devices)
-    }
-}
-
-impl SpareDeviceSerialPort for DeviceSelectionAdapter {
-    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32> {
-        self.resolve_device_serial(requested_spare_serial)
-    }
-}
-
-impl DevicePinPolicyPort for DeviceSelectionAdapter {
-    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
-        let device = self.open_device_by_serial(serial)?;
-        Ok(device.requires_pin_input())
     }
 }
 

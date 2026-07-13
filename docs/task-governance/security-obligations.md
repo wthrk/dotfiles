@@ -20,6 +20,12 @@
 - feature 専用の test stub observation は、[Hexagonal Implementation Rules の internal backend stub の配置](../architecture/hexagonal-implementation-rules.md#internal-backend-stub-の配置) の全条件、特に compile-time selection、production build 非混入、sentinel で明示された観測面、fixture/spec のダミー値だけを扱うことを確認できる場合に限り、production stdout と区別して合格とする。
 - feature gate の存在だけではこの例外を適用しない。runtime の real/stub 分岐、production command path の変更、本物 secret の使用、または production build/runtime から到達可能な出力経路があれば、通常の secret 出力として不合格とする。
 
+## テスト fixture の扱い
+
+テストコードが明示した fixture、dummy token、固定 password、stub datastore の値は、実運用の認証情報ではなくテスト入力である。テスト入力を「秘密」として保護するために、redaction、masking、平文不在の検査、値を隠す専用 helper、またはそれらを確認するだけの assertion を追加してはならない。これは test-only の値を機密情報として扱う無意味な隠蔽であり、規約違反とする。
+
+一方、本番の秘密出力防止を検証するテスト（production command が secret 値を通常 stdout/stderr、ログ、引数、環境、一時ファイルへ出さないことの確認）は維持する。test stub の wire model は fixture/dummy 値をそのまま保存・復元してよく、値を隠すために wire model から除外してはならない。本番 secret の保全規則を test input の保存へ拡張しない。
+
 ## 役割別義務
 
 - `実装担当`: 差分作成時に秘密情報の永続化経路、出力経路、失敗時挙動を確認する。

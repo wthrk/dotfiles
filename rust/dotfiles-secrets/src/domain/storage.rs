@@ -5,6 +5,7 @@
 
 use crate::Result;
 use crate::support::protection::ProtectedSecret;
+use std::{error::Error, fmt};
 
 use super::{
     manifest::SecretManifest,
@@ -23,7 +24,6 @@ pub struct SecretStorageSetupProbe {
 pub struct SecretStorageSetupInspection {
     pub key_exists: bool,
     pub piv_version: PivApplicationVersion,
-    pub pin_retries: u8,
     pub manifest_bytes: Option<Vec<u8>>,
     pub occupied_object_ids: Vec<PivObjectId>,
 }
@@ -35,10 +35,18 @@ pub struct SecretStorageSetupIntent {
     pub key_generation_required: bool,
 }
 
+/// この機能が予約する storage だけを破棄する intent。
+#[derive(Clone)]
+pub struct SecretStorageClearIntent {
+    pub object_ids: Vec<PivObjectId>,
+}
+
 /// secret 書き込み前の storage 観測値。
 pub struct SecretStorageWriteInspection {
     pub manifest_bytes: Option<Vec<u8>>,
     pub object_exists: bool,
+    pub reserved_slot_key_exists: bool,
+    pub reserved_slot_certificate_exists: bool,
 }
 
 /// domain rule を通過した secret 書き込み intent。
@@ -64,6 +72,36 @@ pub struct SecretStorageReadIntent {
 pub struct SecretStorageStatus {
     stored: Vec<super::piv::SecretName>,
 }
+
+/// `status` が観測済みの予約 storage 不整合を検出したことを表す domain error。
+///
+/// device discovery、PC/SC、USB など観測自体の失敗には使わない。呼び出し側はこの型だけを
+/// 安定した CLI 終了コードへ変換できるため、script は観測不能な失敗を storage 不正と誤認しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretStorageStatusInvalid;
+
+impl fmt::Display for SecretStorageStatusInvalid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("YubiKey secret storage is invalid")
+    }
+}
+
+impl Error for SecretStorageStatusInvalid {}
+
+/// `put` が、予約済み領域が完全に未初期化であることを観測したことを表す domain error。
+///
+/// provisioning script はこの型だけを `setup` の許可根拠にする。manifest 欠落に予約済み
+/// object / key / certificate のいずれかが残る不正状態や、I/O 失敗はここへ写像しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretStorageUninitialized;
+
+impl fmt::Display for SecretStorageUninitialized {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("YubiKey secret storage is uninitialized")
+    }
+}
+
+impl Error for SecretStorageUninitialized {}
 
 /// local storage 検証で読み出すべき secret 集合。
 ///
@@ -101,13 +139,19 @@ impl SecretStorageVerificationPlan {
     }
 }
 
+impl SecretStorageClearIntent {
+    /// manifest と bootstrap secret object のみを clear 対象にする。
+    pub fn expected() -> Self {
+        Self {
+            object_ids: StorageObjectIds::iter().collect(),
+        }
+    }
+}
+
 impl SecretStorageSetupIntent {
     /// setup 観測値に domain の未初期化規則を適用し、書き込み intent を作る。
     pub fn from_inspection(inspection: SecretStorageSetupInspection) -> Result<Self> {
-        validate_secret_storage_setup_preconditions(
-            inspection.piv_version,
-            inspection.pin_retries,
-        )?;
+        validate_secret_storage_setup_preconditions(inspection.piv_version)?;
         SecretManifest::ensure_setup_allowed(
             inspection.key_exists,
             inspection.manifest_bytes.as_deref(),
@@ -139,6 +183,13 @@ impl SecretStorageWriteIntent {
         inspection: &SecretStorageWriteInspection,
         force: bool,
     ) -> Result<()> {
+        if inspection.manifest_bytes.is_none()
+            && !inspection.object_exists
+            && !inspection.reserved_slot_key_exists
+            && !inspection.reserved_slot_certificate_exists
+        {
+            return Err(anyhow::Error::new(SecretStorageUninitialized));
+        }
         SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
         storage
             .name
@@ -207,15 +258,42 @@ impl SecretStorageReadIntent {
 
 impl SecretStorageStatus {
     /// manifest 初期化済み規則を確認し、各予約 object の存在から設定済み secret 名を構築する。
+    ///
+    /// 正常な manifest がある storage は、予約 object の任意 subset を保存済み状態として扱う。
+    /// `status` は完了性を判定せず、実際に保存済みの名前だけを報告する。manifest 不正・欠落時の
+    /// 予約 object/slot 残存・予約 key 欠落だけを、clear 可能な storage 不正として返す。
     pub fn from_inspections(
         inspections: impl IntoIterator<Item = (SecretStorageSpec, SecretStorageWriteInspection)>,
     ) -> Result<Self> {
         let mut stored = Vec::new();
+        let mut manifest_missing = false;
+        let mut key_missing = false;
+        let mut reserved_key_exists = false;
+        let mut certificate_exists = false;
         for (storage, inspection) in inspections {
-            SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+            if inspection.manifest_bytes.is_none() {
+                manifest_missing = true;
+            } else {
+                // `status` が既に読み出した予約 manifest の形式不正は storage 不正であり、
+                // transport / device discovery 失敗とは区別する。
+                SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())
+                    .map_err(|_| anyhow::Error::new(SecretStorageStatusInvalid))?;
+            }
             if inspection.object_exists {
                 stored.push(storage.name);
             }
+            key_missing |= !inspection.reserved_slot_key_exists;
+            reserved_key_exists |= inspection.reserved_slot_key_exists;
+            certificate_exists |= inspection.reserved_slot_certificate_exists;
+        }
+        if manifest_missing {
+            if stored.is_empty() && !certificate_exists && !reserved_key_exists {
+                return Ok(Self { stored });
+            }
+            return Err(anyhow::Error::new(SecretStorageStatusInvalid));
+        }
+        if key_missing {
+            return Err(anyhow::Error::new(SecretStorageStatusInvalid));
         }
         Ok(Self { stored })
     }
@@ -247,7 +325,6 @@ mod tests {
         SecretStorageSetupInspection {
             key_exists: false,
             piv_version: minimum_piv_version(),
-            pin_retries: 1,
             manifest_bytes: None,
             occupied_object_ids: Vec::new(),
         }
@@ -257,6 +334,8 @@ mod tests {
         SecretStorageWriteInspection {
             manifest_bytes,
             object_exists: false,
+            reserved_slot_key_exists: false,
+            reserved_slot_certificate_exists: false,
         }
     }
 
@@ -384,6 +463,8 @@ mod tests {
         let existing_object = SecretStorageWriteInspection {
             manifest_bytes: Some(expected_manifest_bytes()?),
             object_exists: true,
+            reserved_slot_key_exists: true,
+            reserved_slot_certificate_exists: false,
         };
 
         let overwrite_error = error_message(SecretStorageWriteIntent::put(
@@ -399,6 +480,8 @@ mod tests {
             SecretStorageWriteInspection {
                 manifest_bytes: Some(expected_manifest_bytes()?),
                 object_exists: true,
+                reserved_slot_key_exists: true,
+                reserved_slot_certificate_exists: false,
             },
             true,
             1,
@@ -408,11 +491,43 @@ mod tests {
     }
 
     #[test]
+    fn put_preflight_identifies_only_completely_uninitialized_storage() -> Result<()> {
+        let error = SecretStorageWriteIntent::ensure_put_preconditions(
+            &storage(),
+            &write_inspection(None),
+            false,
+        )
+        .expect_err("completely empty storage must require setup");
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.is::<SecretStorageUninitialized>())
+        );
+
+        let mut manifestless_key = write_inspection(None);
+        manifestless_key.reserved_slot_key_exists = true;
+        let error = SecretStorageWriteIntent::ensure_put_preconditions(
+            &storage(),
+            &manifestless_key,
+            false,
+        )
+        .expect_err("manifestless key residue must remain an ordinary failure");
+        assert!(
+            !error
+                .chain()
+                .any(|cause| cause.is::<SecretStorageUninitialized>())
+        );
+        Ok(())
+    }
+
+    #[test]
     fn put_requires_force_for_existing_secret() -> Result<()> {
         let storage = storage();
         let existing_object = SecretStorageWriteInspection {
             manifest_bytes: Some(expected_manifest_bytes()?),
             object_exists: true,
+            reserved_slot_key_exists: true,
+            reserved_slot_certificate_exists: false,
         };
 
         let error = error_message(SecretStorageWriteIntent::put(
@@ -428,6 +543,8 @@ mod tests {
             SecretStorageWriteInspection {
                 manifest_bytes: Some(expected_manifest_bytes()?),
                 object_exists: true,
+                reserved_slot_key_exists: true,
+                reserved_slot_certificate_exists: false,
             },
             true,
             1,
@@ -458,6 +575,18 @@ mod tests {
             read_inspection(None, Some(b"encoded blob".to_vec())),
         ))?;
         assert!(missing_manifest_error.contains("manifest is missing"));
+        Ok(())
+    }
+
+    #[test]
+    fn status_rejects_manifestless_reserved_key_even_without_secret_objects() -> Result<()> {
+        let mut inspection = write_inspection(None);
+        inspection.reserved_slot_key_exists = true;
+        let error = error_message(SecretStorageStatus::from_inspections([(
+            storage(),
+            inspection,
+        )]))?;
+        assert!(error.contains("invalid"));
         Ok(())
     }
 

@@ -44,6 +44,24 @@ pub struct StatusCommand {
     pub serial: Option<u32>,
 }
 
+/// 予約済み YubiKey storage 領域を再登録可能にする command。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClearCommand {
+    pub serial: Option<u32>,
+    pub confirmed: bool,
+}
+
+impl ClearCommand {
+    /// 破壊的操作は明示確認なしに実行しない。
+    pub fn ensure_confirmed(self) -> Result<()> {
+        if self.confirmed {
+            Ok(())
+        } else {
+            Err(invalid_input("refusing to clear YubiKey secret storage without --yes").into())
+        }
+    }
+}
+
 /// enroll-primary use case の入力 command。
 ///
 /// primary 候補の serial 指定有無だけを保持する。

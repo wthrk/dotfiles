@@ -6,7 +6,7 @@ use crate::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RegisterGpgBackupCommand,
         gpg_backup::{EnvelopeMetadata, EnvelopeRecipient, GpgBackupEnvelope},
-        piv::{SecretName, validate_piv_pin_len},
+        piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
@@ -14,8 +14,7 @@ use crate::{
 
 /// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
 pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
-    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
     pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
     pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
@@ -28,7 +27,7 @@ pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
 ///
 /// 設計「backup export 入力契約」「recipient 運用 / BWS 更新契約」の primary 登録経路を順序制御として
 /// 固定する。BWS の同名 backup 重複確認を secret key export より前に行い、上書きしないと決まっている
-/// シナリオで鍵素材をメモリへ載せず pinentry/touch も発生させない。重複がない場合だけ subkey 構成を検証
+/// シナリオで鍵素材をメモリへ載せず touch も発生させない。重複がない場合だけ subkey 構成を検証
 /// し、export 直後の bytes を再解析して fingerprint 一致を確認したうえで envelope 化し、接続中 YubiKey の
 /// recipient を 1 件作って BWS へ登録する。secret key material と DEK は port 境界の保護値として扱い、
 /// argv/log/永続ファイルへ出さない。
@@ -36,7 +35,7 @@ pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
 /// BWS への登録には YubiKey storage の `bitwarden-client-secret` を使う。token は hidden prompt / pipe
 /// から受け取らず、`--serial` または単一接続で解決した YubiKey から読み出す。YubiKey 本体は recipient
 /// wrap（PIV slot `82` 公開鍵で DEK を RSA-OAEP wrap）にも必要なため、同じ device serial を使う。slot `82`
-/// 公開鍵での wrap は private key 操作を伴わないため PIN/touch を要さない。
+/// 公開鍵での wrap は touch を要さない。
 ///
 /// 順序を application に固定するのは「重複確認・subkey 検証・fingerprint 一致を満たすまで export・
 /// envelope 化・登録へ進ませない」停止条件の責務境界を保護するためである。既存の同名 backup がある場合は
@@ -50,7 +49,6 @@ where
 {
     let RegisterGpgBackupPrimaryRuntime {
         device,
-        process,
         storage,
         keyring,
         cipher,
@@ -65,16 +63,9 @@ where
 
     // recipient wrap と BWS token 読み出しに使う YubiKey の serial を解決する。
     let serial = device.resolve_device_serial(command.serial)?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
 
     // BWS 登録用 access token は YubiKey storage の `bitwarden-client-secret` から取得する。
-    let access_token = load_bitwarden_client_secret(serial, storage, pin.as_ref())?;
+    let access_token = load_bitwarden_client_secret(serial, storage)?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
@@ -125,13 +116,12 @@ where
 fn load_bitwarden_client_secret(
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::support::protection::ProtectedSecret>,
 ) -> Result<crate::support::protection::ProtectedSecret> {
     let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port
-        .load_secret(serial, &intent, pin)
+        .load_secret(serial, &intent)
         .map_err(|error| intent.decode_error(error))?;
     intent.validate_loaded_secret(&secret)?;
     Ok(secret)
@@ -178,8 +168,6 @@ mod tests {
 
     struct YubiKeyAccessMocks {
         device: ports::MockDeviceSerialPort,
-        pin_policy: ports::MockDevicePinPolicyPort,
-        process: ports::MockPinInputPort,
         storage: ports::MockSecretStoragePort,
     }
 
@@ -190,12 +178,6 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
@@ -204,13 +186,8 @@ mod tests {
         storage
             .expect_load_secret()
             .times(1)
-            .returning(|_, _, _| Ok(material(b"access-token")));
-        YubiKeyAccessMocks {
-            device,
-            pin_policy,
-            process,
-            storage,
-        }
+            .returning(|_, _| Ok(material(b"access-token")));
+        YubiKeyAccessMocks { device, storage }
     }
 
     fn ciphertext() -> EnvelopeCiphertext {
@@ -314,8 +291,7 @@ mod tests {
                 serial: Some(2001),
             },
             RegisterGpgBackupPrimaryRuntime {
-                device: &mut (&mut yk.device, &mut yk.pin_policy),
-                process: &yk.process,
+                device: &mut yk.device,
                 storage: &mut yk.storage,
                 keyring: &mut keyring,
                 cipher: &mut cipher,
@@ -332,9 +308,6 @@ mod tests {
     async fn register_primary_requires_primary_fingerprint_before_backup_work() {
         let mut device = ports::MockDeviceSerialPort::new();
         device.expect_resolve_device_serial().times(0);
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_read().times(0);
         storage.expect_load_secret().times(0);
@@ -365,8 +338,7 @@ mod tests {
                 serial: Some(2001),
             },
             RegisterGpgBackupPrimaryRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 keyring: &mut keyring,
                 cipher: &mut cipher,
@@ -437,8 +409,7 @@ mod tests {
                 serial: Some(2001),
             },
             RegisterGpgBackupPrimaryRuntime {
-                device: &mut (&mut yk.device, &mut yk.pin_policy),
-                process: &yk.process,
+                device: &mut yk.device,
                 storage: &mut yk.storage,
                 keyring: &mut keyring,
                 cipher: &mut cipher,

@@ -6,7 +6,7 @@ use crate::{
         bws::{BwsProjectName, BwsSecretName},
         commands::ProvisionPasswordStoreRemoteCommand,
         pass_restore::PasswordStoreRemote,
-        piv::{SecretName, validate_piv_pin_len},
+        piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
@@ -33,8 +33,7 @@ use crate::{
 /// だけ上書きする read-modify-write として port 契約に閉じる。
 pub(crate) async fn run_provision_password_store_remote<B, U, F>(
     command: ProvisionPasswordStoreRemoteCommand,
-    device: &mut dyn ports::YubiKeyDevicePort,
-    process: &dyn ports::PinInputPort,
+    device: &mut dyn ports::DeviceSerialPort,
     storage_port: &mut dyn ports::SecretStoragePort,
     bws_client: &B,
     url_input: &U,
@@ -46,16 +45,9 @@ where
     F: ports::BackupUpdateConfirmationPort,
 {
     let serial = device.resolve_device_serial(command.serial)?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
 
     // BWS 登録・更新用 access token は YubiKey storage の `bitwarden-client-secret` から取得する。
-    let access_token = load_bitwarden_client_secret(serial, storage_port, pin.as_ref())?;
+    let access_token = load_bitwarden_client_secret(serial, storage_port)?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
 
@@ -133,13 +125,12 @@ where
 fn load_bitwarden_client_secret(
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::support::protection::ProtectedSecret>,
 ) -> Result<crate::support::protection::ProtectedSecret> {
     let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port
-        .load_secret(serial, &intent, pin)
+        .load_secret(serial, &intent)
         .map_err(|error| intent.decode_error(error))?;
     intent.validate_loaded_secret(&secret)?;
     Ok(secret)
@@ -208,8 +199,6 @@ mod tests {
 
     struct YubiKeyAccessMocks {
         device: ports::MockDeviceSerialPort,
-        pin_policy: ports::MockDevicePinPolicyPort,
-        process: ports::MockPinInputPort,
         storage: ports::MockSecretStoragePort,
     }
 
@@ -220,12 +209,6 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
@@ -234,13 +217,8 @@ mod tests {
         storage
             .expect_load_secret()
             .times(1)
-            .returning(|_, _, _| Ok(material(b"access-token")));
-        YubiKeyAccessMocks {
-            device,
-            pin_policy,
-            process,
-            storage,
-        }
+            .returning(|_, _| Ok(material(b"access-token")));
+        YubiKeyAccessMocks { device, storage }
     }
 
     #[tokio::test]
@@ -272,15 +250,14 @@ mod tests {
         bws.expect_create_password_store_remote()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, remote: &PasswordStoreRemote| remote.as_str() == REMOTE_URL)
+            .withf(|_, _, remote| remote.as_str() == REMOTE_URL)
             .returning(|_, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
             .times(0);
 
         run_provision_password_store_remote(
             command(false),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,
@@ -316,8 +293,7 @@ mod tests {
 
         run_provision_password_store_remote(
             command_with_url(false, REMOTE_URL),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,
@@ -370,8 +346,7 @@ mod tests {
 
         run_provision_password_store_remote(
             command(true),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,
@@ -415,8 +390,7 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(false),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,
@@ -476,8 +450,7 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(true),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,
@@ -523,8 +496,7 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(false),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,
@@ -571,8 +543,7 @@ mod tests {
 
         let result = run_provision_password_store_remote(
             command(true),
-            &mut (&mut yk.device, &mut yk.pin_policy),
-            &yk.process,
+            &mut yk.device,
             &mut yk.storage,
             &bws,
             &url_input,

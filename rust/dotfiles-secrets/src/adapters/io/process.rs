@@ -9,7 +9,7 @@ use crate::{
     domain::{gpg_restore::OpenSshPublicKey, manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT},
     ports::io::{
         BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
-        PasswordStoreRemoteInputPort, PinInputPort, RotationContinuationPort, SecretInputPort,
+        PasswordStoreRemoteInputPort, RotationContinuationPort, SecretInputPort,
         SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
     },
     support::{clock, process_io, protection::ProtectedSecret},
@@ -21,16 +21,6 @@ use crate::{
 /// 同じ protection 変換境界を使うために存在する。use case 手順や secret の業務意味は持たない。
 #[derive(Default)]
 struct RealSecretIoAdapter;
-
-impl PinInputPort for RealSecretIoAdapter {
-    fn read_pin(&self) -> Result<ProtectedSecret> {
-        process_io::read_hidden_line(
-            "YubiKey PIN: ",
-            crate::domain::piv::PIV_PIN_MAX_LEN,
-            "YubiKey PIN is too long",
-        )
-    }
-}
 
 impl SecretInputPort for RealSecretIoAdapter {
     fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {
@@ -186,12 +176,6 @@ impl BackupUpdateConfirmationPort for RealSecretIoAdapter {
 #[derive(Default)]
 pub(super) struct ProcessIoAdapter {
     secret_io: RealSecretIoAdapter,
-}
-
-impl PinInputPort for ProcessIoAdapter {
-    fn read_pin(&self) -> Result<ProtectedSecret> {
-        self.secret_io.read_pin()
-    }
 }
 
 impl SecretInputPort for ProcessIoAdapter {

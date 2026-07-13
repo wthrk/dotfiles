@@ -32,3 +32,5 @@ While this skill is active, the current actor is the **test reviewer**.
 - Apply the architecture test-placement rules when judging test doubles, fixtures, inline unit tests, internal backend stubs, and test-only observation boundaries.
 - Apply the governing source for this role and avoid restating its detailed rules here.
 - Return the verdict format required by `docs/task-governance/implementation-review-judgement.md` when acting as a reviewer.
+
+If a finding concerns a test-only dummy/fixture secret printed through stdout, a sentinel, or state observation, route it through the fresh `test-secret-observation false-positive verifier` defined in [implementation-review-judgement.md](../../../docs/task-governance/implementation-review-judgement.md) before classifying it as a leak. Do not introduce redaction, masking, secrecy helpers, or assertions whose only purpose is to hide test input; those are prohibited by [security-obligations.md](../../../docs/task-governance/security-obligations.md). A verifier-confirmed production-reachable path remains a normal security finding.

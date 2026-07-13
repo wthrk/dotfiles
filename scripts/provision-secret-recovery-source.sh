@@ -11,7 +11,7 @@
 # `PROVISIONING_YUBIKEY_SERIAL` / `SPARE_YUBIKEY_SERIAL` 環境変数で指定する。
 #
 # 正本: docs/secret-recovery/initial-provisioning-runbook.md と spec/design。
-# 使い方（実端末で。PIN/secret/touch/passphrase の対話入力あり）:
+# 使い方（実端末で。secret/touch/passphrase の対話入力あり。YubiKey PIN の入力は行わない）:
 #   bash scripts/provision-secret-recovery-source.sh
 #   bash scripts/provision-secret-recovery-source.sh --repo-head
 
@@ -133,33 +133,76 @@ store_bws_access_token() {
     printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles secrets yubikey put bitwarden-client-secret --stdin
   fi
 }
-has_stored_bws_access_token() {
+inspect_bws_access_token_storage() {
   local serial="$1"
-  local stored_names
   if [ -n "$serial" ]; then
-    stored_names="$(dotfiles secrets yubikey status --serial "$serial")" || return 2
+    dotfiles secrets yubikey status --serial "$serial"
   else
-    stored_names="$(dotfiles secrets yubikey status)" || return 2
+    dotfiles secrets yubikey status
   fi
-  printf '%s\n' "$stored_names" | grep -Fxq 'bitwarden-client-secret'
+}
+initialize_bws_access_token_storage() {
+  local serial="$1"
+  if [ -n "$serial" ]; then
+    dotfiles secrets yubikey setup --serial "$serial"
+  else
+    dotfiles secrets yubikey setup
+  fi
+}
+clear_bws_access_token_storage() {
+  local serial="$1"
+  if [ -n "$serial" ]; then
+    dotfiles secrets yubikey clear --serial "$serial" --yes
+  else
+    dotfiles secrets yubikey clear --yes
+  fi
 }
 ensure_bws_access_token_stored() {
   local role="$1"
   local serial="$2"
-  if has_stored_bws_access_token "$serial"; then
-    log "${role} YubiKey の bitwarden-client-secret は保存済みです"
-    return 0
+  local stored_names
+  # `dotfiles secrets yubikey status` の予約 storage 不整合専用終了コード。
+  # stderr は分類に使わない。USB/PCSC/serial 等の任意失敗は fail-closed で停止する。
+  local readonly invalid_storage_status=42
+  # `put` が完全な未初期化を観測した専用終了コード。正常な manifest の任意 subset は
+  # `put` をそのまま許可し、setup を再実行しない。
+  local readonly uninitialized_storage_status=43
+  if stored_names="$(inspect_bws_access_token_storage "$serial")"; then
+    if printf '%s\n' "$stored_names" | grep -Fxq 'bitwarden-client-secret'; then
+      log "${role} YubiKey の bitwarden-client-secret は保存済みです"
+      return 0
+    fi
   else
     local status_result=$?
-    if [ "$status_result" -ne 1 ]; then
+    if [ "$status_result" -ne "$invalid_storage_status" ]; then
       die "${role} YubiKey の bitwarden-client-secret の保存状況を確認できません"
     fi
+    log "${role} YubiKey の不正な secret storage を clear"
+    clear_bws_access_token_storage "$serial" \
+      || die "${role} YubiKey の secret storage を clear できません"
+    log "${role} YubiKey の secret storage を初期化"
+    initialize_bws_access_token_storage "$serial" \
+      || die "${role} YubiKey の clear 後の secret storage を初期化できません"
   fi
   if [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
     BWS_ACCESS_TOKEN="$(read_bws_access_token 'BWS access token for YubiKey bitwarden-client-secret storage')"
   fi
   log "BWS access token を ${role} YubiKey の bitwarden-client-secret に保存"
-  store_bws_access_token "$serial"
+  if store_bws_access_token "$serial"; then
+    return 0
+  else
+    # `if` 複文の終了値ではなく、put 自身の失敗だけを判定する。43 以外は
+    # 初期化へ進めず fail-closed にする。
+    local put_result=$?
+  fi
+  if [ "$put_result" -ne "$uninitialized_storage_status" ]; then
+    die "${role} YubiKey の bitwarden-client-secret を保存できません"
+  fi
+  log "${role} YubiKey の完全に空の secret storage を初期化"
+  initialize_bws_access_token_storage "$serial" \
+    || die "${role} YubiKey の空の secret storage を初期化できません"
+  store_bws_access_token "$serial" \
+    || die "${role} YubiKey の初期化後に bitwarden-client-secret を保存できません"
 }
 
 # shell test は production の初期化・外部コマンド呼び出しなしで保存判定の分岐だけを検証する。

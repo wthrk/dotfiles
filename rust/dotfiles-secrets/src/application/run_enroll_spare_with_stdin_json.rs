@@ -6,7 +6,6 @@ use crate::{
         commands::EnrollSpareCommand,
         enrollment::EnrollSummary,
         manifest::BootstrapSecretDocument,
-        piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
             SecretStorageVerificationPlan, SecretStorageWriteIntent,
@@ -19,38 +18,25 @@ use crate::{
 ///
 /// primary と spare の衝突停止条件を先に評価し、device 選択・入力実装は port に委譲して
 /// use case の順序責務だけを保持する。
-pub(crate) fn run_enroll_spare_with_stdin_json<D, I, P, S, R>(
+pub(crate) fn run_enroll_spare_with_stdin_json<D, I, S, R>(
     command: EnrollSpareCommand,
     spare_device: &mut D,
-    pin_policy: &mut impl ports::DevicePinPolicyPort,
     document_input: &I,
-    pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::SpareDeviceSerialPort,
+    D: ports::DeviceSerialPort,
     I: ports::BootstrapSecretDocumentInputPort,
-    P: ports::PinInputPort,
     S: ports::SecretStoragePort,
     R: ports::ReportPort,
 {
     command.ensure_requested_serials_distinct()?;
-    let spare_serial = spare_device.resolve_spare_device_serial(command.spare_serial)?;
+    let spare_serial = spare_device.resolve_device_serial(command.spare_serial)?;
     command.ensure_requested_primary_differs_from_spare(spare_serial)?;
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    let pin = if pin_policy.device_requires_pin(spare_serial)? {
-        let pin = pin_input.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
-    if let Some(pin) = pin.as_ref() {
-        storage_port.verify_pin_input(spare_serial, pin)?;
-    }
     storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     let fields = document_input.read_bootstrap_secret_fields()?;
     let document = BootstrapSecretDocument::from_field_map(fields)?;
@@ -63,7 +49,7 @@ where
         let inspection = storage_port.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
         let secret = storage_port
-            .load_secret(spare_serial, &intent, pin.as_ref())
+            .load_secret(spare_serial, &intent)
             .map_err(|error| intent.decode_error(error))?;
         intent.validate_loaded_secret(&secret)?;
     }
@@ -76,10 +62,8 @@ mod tests {
 
     use crate::{
         domain::{
-            commands::EnrollSpareCommand,
-            manifest::SecretManifest,
-            piv::{PivApplicationVersion, SecretName},
-            storage::{SecretStorageReadInspection, SecretStorageSetupInspection},
+            commands::EnrollSpareCommand, piv::PivApplicationVersion,
+            storage::SecretStorageSetupInspection,
         },
         ports,
         support::protection::ProtectedSecret,
@@ -109,125 +93,19 @@ mod tests {
         SecretStorageSetupInspection {
             key_exists: false,
             piv_version: PivApplicationVersion::minimum_for_secret_storage(),
-            pin_retries: 3,
             manifest_bytes: None,
             occupied_object_ids: Vec::new(),
         }
     }
 
-    fn read_inspection() -> SecretStorageReadInspection {
-        SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
-            encoded: Some(vec![1]),
-        }
-    }
-
-    #[test]
-    fn enroll_spare_stdin_json_reads_pin_only_when_required() -> crate::Result<()> {
-        let mut sequence = mockall::Sequence::new();
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device
-            .expect_resolve_spare_device_serial()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(2002));
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
-        document_input
-            .expect_read_bootstrap_secret_fields()
-            .times(1)
-            .returning(|| Ok(fields()));
-        let mut pin_input = ports::MockPinInputPort::new();
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_setup()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(setup_inspection()));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(true));
-        pin_input
-            .expect_read_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|| Ok(material(b"123456")));
-        storage
-            .expect_verify_pin_input()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(()));
-        storage
-            .expect_initialize_secret_storage()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(()));
-        storage
-            .expect_store_secret()
-            .times(4)
-            .returning(|_, _, _| Ok(()));
-        storage
-            .expect_finalize_secret_storage_setup()
-            .times(1)
-            .returning(|_, _| Ok(()));
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientId,
-            SecretName::BitwardenClientSecret,
-        ] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .withf(move |serial, storage| *serial == 2002 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .withf(move |_, intent, pin| intent.storage.name == name && pin.is_some())
-                .returning(|_, intent, _| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId | SecretName::BitwardenClientSecret => {
-                            material(b"token")
-                        }
-                    })
-                });
-        }
-        let mut report = ports::MockReportPort::new();
-        report
-            .expect_write_enroll_report()
-            .times(1)
-            .returning(|_| Ok(()));
-
-        run_enroll_spare_with_stdin_json(
-            EnrollSpareCommand {
-                primary_serial: Some(2001),
-                spare_serial: Some(2002),
-            },
-            &mut spare_device,
-            &mut pin_policy,
-            &document_input,
-            &pin_input,
-            &mut storage,
-            &report,
-        )
-    }
-
     #[test]
     fn enroll_spare_stdin_json_rejects_same_requested_serials_before_ports() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device.expect_resolve_spare_device_serial().times(0);
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
+        let mut spare_device = ports::MockDeviceSerialPort::new();
+        spare_device.expect_resolve_device_serial().times(0);
         let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(0);
-        let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_setup().times(0);
         let report = ports::MockReportPort::new();
@@ -238,9 +116,7 @@ mod tests {
                 spare_serial: Some(2001),
             },
             &mut spare_device,
-            &mut pin_policy,
             &document_input,
-            &pin_input,
             &mut storage,
             &report,
         );
@@ -253,18 +129,15 @@ mod tests {
 
     #[test]
     fn enroll_spare_stdin_json_rejects_resolved_spare_collision_before_setup() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::MockDeviceSerialPort::new();
         spare_device
-            .expect_resolve_spare_device_serial()
+            .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
         let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(0);
-        let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_setup().times(0);
         let report = ports::MockReportPort::new();
@@ -275,9 +148,7 @@ mod tests {
                 spare_serial: None,
             },
             &mut spare_device,
-            &mut pin_policy,
             &document_input,
-            &pin_input,
             &mut storage,
             &report,
         );
@@ -289,130 +160,17 @@ mod tests {
     }
 
     #[test]
-    fn enroll_spare_stdin_json_rejects_invalid_pin_before_document_read() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device
-            .expect_resolve_spare_device_serial()
-            .times(1)
-            .returning(|_| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(true));
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
-        document_input
-            .expect_read_bootstrap_secret_fields()
-            .times(0);
-        let mut pin_input = ports::MockPinInputPort::new();
-        pin_input
-            .expect_read_pin()
-            .times(1)
-            .returning(|| Ok(material(b"12")));
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_setup()
-            .times(1)
-            .returning(|_, _| Ok(setup_inspection()));
-        storage.expect_initialize_secret_storage().times(0);
-        storage.expect_verify_pin_input().times(0);
-        storage.expect_store_secret().times(0);
-        storage.expect_finalize_secret_storage_setup().times(0);
-        storage.expect_inspect_secret_storage_read().times(0);
-        let report = ports::MockReportPort::new();
-
-        let result = run_enroll_spare_with_stdin_json(
-            EnrollSpareCommand {
-                primary_serial: Some(2001),
-                spare_serial: Some(2002),
-            },
-            &mut spare_device,
-            &mut pin_policy,
-            &document_input,
-            &pin_input,
-            &mut storage,
-            &report,
-        );
-
-        assert!(
-            result.is_err(),
-            "invalid PIN must stop before document read"
-        );
-    }
-
-    #[test]
-    fn enroll_spare_stdin_json_rejects_wrong_pin_before_document_read() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
-        spare_device
-            .expect_resolve_spare_device_serial()
-            .times(1)
-            .returning(|_| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(true));
-        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
-        document_input
-            .expect_read_bootstrap_secret_fields()
-            .times(0);
-        let mut pin_input = ports::MockPinInputPort::new();
-        pin_input
-            .expect_read_pin()
-            .times(1)
-            .returning(|| Ok(material(b"123456")));
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_setup()
-            .times(1)
-            .returning(|_, _| Ok(setup_inspection()));
-        storage.expect_initialize_secret_storage().times(0);
-        storage
-            .expect_verify_pin_input()
-            .times(1)
-            .returning(|_, _| Err(anyhow::anyhow!("PIN verify failed")));
-        storage.expect_store_secret().times(0);
-        storage.expect_finalize_secret_storage_setup().times(0);
-        storage.expect_inspect_secret_storage_read().times(0);
-        let report = ports::MockReportPort::new();
-
-        let result = run_enroll_spare_with_stdin_json(
-            EnrollSpareCommand {
-                primary_serial: Some(2001),
-                spare_serial: Some(2002),
-            },
-            &mut spare_device,
-            &mut pin_policy,
-            &document_input,
-            &pin_input,
-            &mut storage,
-            &report,
-        );
-
-        assert!(
-            result.is_err(),
-            "wrong PIN must stop before document read and writes"
-        );
-    }
-
-    #[test]
     fn enroll_spare_stdin_json_stops_when_setup_initialization_fails() {
-        let mut spare_device = ports::MockSpareDeviceSerialPort::new();
+        let mut spare_device = ports::MockDeviceSerialPort::new();
         spare_device
-            .expect_resolve_spare_device_serial()
+            .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
         let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
         document_input
             .expect_read_bootstrap_secret_fields()
             .times(0)
             .returning(|| Ok(fields()));
-        let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_setup()
@@ -422,7 +180,6 @@ mod tests {
             .expect_initialize_secret_storage()
             .times(1)
             .returning(|_, _| Err(anyhow::anyhow!("setup failed")));
-        storage.expect_verify_pin_input().times(0);
         storage.expect_store_secret().times(0);
         storage.expect_finalize_secret_storage_setup().times(0);
         let report = ports::MockReportPort::new();
@@ -433,9 +190,7 @@ mod tests {
                 spare_serial: Some(2002),
             },
             &mut spare_device,
-            &mut pin_policy,
             &document_input,
-            &pin_input,
             &mut storage,
             &report,
         );

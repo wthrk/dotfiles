@@ -28,7 +28,7 @@
 - 高リスク変更を含む場合は `セキュリティレビュー担当` を追加必須にする。
 - `AGENTS*`、`.agents/skills/`、`docs/task-governance/`、`docs/architecture/` を変更する場合は、文書主成果物でも `構造レビュー担当` と `アーキテクチャ整合レビュー担当` を追加必須にする。
 
-コミット着手ゲート直前に別枠の専任確認を追加してはならない。必要確認は本節で定義する必須レビュー担当の職責としてレビューサイクル内で実施する。
+レビュー指摘に test-only の dummy / fixture secret の stdout、sentinel、または state 観測が含まれる場合に限り、通常の security/test finding として確定する前に、`test-secret-observation false-positive verifier` という fresh role をレビューサイクル内で起動する。この専任確認はコミット着手ゲート直前の追加ゲートではなく、指摘の分類を確定するためのレビュー内判定である。起点 reviewer（security reviewer または test reviewer）を記録し、verifier 結果を起点 reviewer へ返す。
 
 ## 各レビュー担当の職責
 
@@ -46,6 +46,12 @@
 
 [security-obligations.md](security-obligations.md) に定義された制約を適用し、秘密情報漏えい、不正アクセス経路、権限境界逸脱、危険な失敗時挙動を確認する。
 
+レビュー指摘が test-only の dummy / fixture secret の観測を問題にしている場合、security reviewer または test reviewer はそれを通常の finding として確定せず、`test-secret-observation false-positive verifier` を fresh role で起動する。verifier は compile-time test-only 選択、production build/runtime 非混入、fixture/spec の dummy 値限定、production 到達経路なしを対象コードから直接確認する。4 条件をすべて満たす場合は `誤検知` として該当 finding を通常判定から除外し、起点 reviewer へ不採用理由と根拠を返す。当該指摘を `要修正` / `不合格` の根拠にしてはならない。いずれかを満たさない、または本番値・本番出力経路が関係する場合は `実漏えい` として起点 reviewer の finding を維持し、起点 reviewer の判定を `要修正` または `不合格` へ写像する。写像理由、verifier の4条件ごとの根拠、維持した finding を集約根拠へ記録する。
+
+### test-secret-observation false-positive verifier
+
+この role は上記の test-only 観測の分類だけを担当し、コード修正、全体レビュー判定、完了判定を行わない。判定対象は指摘された観測経路とその直接の build/runtime 条件に限定する。返答には `判定: 誤検知` または `判定: 実漏えい` を先頭に置き、4 条件ごとの根拠、起点 reviewer、起点 reviewer へ返す採用/不採用理由を記載する。`誤検知` の場合は該当 finding の通常判定からの除外を明記する。`実漏えい` の場合は起点 reviewer の finding を維持し、起点 reviewer へ戻す判定写像（`要修正` または `不合格`）と、集約根拠へ記録すべき根拠を明記する。
+
 ### 運用整合レビュー担当
 
 実行手順、役割分離、gate 条件、必要な確認結果、完了判定ロジックが実運用で強制可能かつ監査可能かを確認する。補助記録の exact 同期不足だけを不合格根拠にしてはならない。
@@ -57,6 +63,8 @@
 テストコードが仕様を実際に検証しているかを確認する。完了条件は、テストで検証すべき項目と構造確認・文書確認で満たす項目に分類し、前者に対してテスト網羅を要求する。test double / fixture の配置判定は形式ではなく責務で行う。
 
 test double / fixture の配置、inline unit test、internal backend stub、test-only secret observation の判定は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../architecture/review-checklist.md](../architecture/review-checklist.md) の test 関連規則へ照合する。
+
+YubiKey の `setup` / `clear` / `status` またはそれらを呼ぶ provisioning script が対象に含まれる場合、テストレビュー担当は PIN prompt が一度も発生しないことを必須確認項目とする。PIN policy 判定、PIN input、PIN verification の再導入を検出した場合は、回帰テストの有無にかかわらず `要修正` とし、仕様適合レビュー担当へ必須指摘として返す。
 
 ### ドキュメントレビュー担当
 

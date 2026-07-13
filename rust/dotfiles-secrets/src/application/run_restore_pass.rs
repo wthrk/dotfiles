@@ -7,7 +7,7 @@ use crate::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RestorePassCommand,
         pass_restore::{PASSWORD_STORE_DIR_NAME, RestorePassSummary},
-        piv::{SecretName, validate_piv_pin_len},
+        piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
@@ -15,8 +15,7 @@ use crate::{
 
 /// `run_restore_pass` が使う外部 capability を named field で束ねる。
 pub(crate) struct RestorePassRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
-    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
     pub(crate) bws_client: &'a B,
     pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
@@ -62,7 +61,6 @@ where
 {
     let RestorePassRuntime {
         device,
-        process,
         storage: storage_port,
         bws_client,
         keyring,
@@ -71,16 +69,9 @@ where
         report,
     } = runtime;
     let serial = device.resolve_device_serial(command.serial)?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
 
     // 1. bitwarden-client-secret を YubiKey storage から読み出す。
-    let access_token = load_bitwarden_client_secret(serial, storage_port, pin.as_ref())?;
+    let access_token = load_bitwarden_client_secret(serial, storage_port)?;
 
     // 2. BWS から `password-store-remote` を取得する（URL 妥当性は domain 検証で確定済み）。
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
@@ -170,13 +161,12 @@ fn confirm_cloned_store_readable(
 fn load_bitwarden_client_secret(
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::support::protection::ProtectedSecret>,
 ) -> Result<crate::support::protection::ProtectedSecret> {
     let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port
-        .load_secret(serial, &intent, pin)
+        .load_secret(serial, &intent)
         .map_err(|error| intent.decode_error(error))?;
     intent.validate_loaded_secret(&secret)?;
     Ok(secret)
@@ -243,7 +233,7 @@ mod tests {
             .expect_load_secret()
             .times(1)
             .in_sequence(sequence)
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
     }
 
     fn expect_bws_remote_ok(bws: &mut ports::MockBwsClientPort) {
@@ -273,13 +263,6 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence);
 
@@ -326,8 +309,7 @@ mod tests {
         run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,
@@ -345,18 +327,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         expect_bws_remote_ok(&mut bws);
 
@@ -373,8 +350,7 @@ mod tests {
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,
@@ -400,18 +376,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         expect_bws_remote_ok(&mut bws);
 
@@ -441,8 +412,7 @@ mod tests {
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,
@@ -468,18 +438,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         expect_bws_remote_ok(&mut bws);
 
@@ -504,8 +469,7 @@ mod tests {
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,
@@ -530,18 +494,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         expect_bws_remote_ok(&mut bws);
 
@@ -577,8 +536,7 @@ mod tests {
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,
@@ -603,18 +561,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         expect_bws_remote_ok(&mut bws);
 
@@ -642,8 +595,7 @@ mod tests {
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,
@@ -670,18 +622,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         expect_bws_remote_ok(&mut bws);
 
@@ -719,8 +666,7 @@ mod tests {
         run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
             RestorePassRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 keyring: &mut keyring,

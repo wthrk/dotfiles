@@ -8,7 +8,6 @@ use crate::Result;
 use crate::{
     domain::{
         commands::RotateBwsTokenCommand,
-        piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
@@ -19,10 +18,9 @@ use crate::{
 
 /// `run_rotate_bws_token_with_prompt` が使う外部 capability を named field で束ねる。
 pub(crate) struct RotateBwsTokenPromptRuntime<'a> {
-    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
+    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) secret_input: &'a dyn ports::SecretInputPort,
     pub(crate) continuation: &'a dyn ports::RotationContinuationPort,
-    pub(crate) pin_input: &'a dyn ports::PinInputPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
     pub(crate) report: &'a dyn ports::ReportPort,
 }
@@ -39,7 +37,6 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
         device,
         secret_input,
         continuation,
-        pin_input,
         storage: storage_port,
         report,
     } = runtime;
@@ -56,19 +53,12 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
         let storage = command.storage_spec(serial);
         let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
         SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
-        let pin = if device.device_requires_pin(serial)? {
-            let pin = pin_input.read_pin()?;
-            validate_piv_pin_len(pin.len())?;
-            Some(pin)
-        } else {
-            None
-        };
         let pre_update_verify: Result<()> = (|| {
             for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
                 let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
                 let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
                 let secret = storage_port
-                    .load_secret(serial, &intent, pin.as_ref())
+                    .load_secret(serial, &intent)
                     .map_err(|error| intent.decode_error(error))?;
                 intent.validate_loaded_secret(&secret)?;
             }
@@ -93,7 +83,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
                 let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
                 let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
                 let secret = storage_port
-                    .load_secret(serial, &intent, pin.as_ref())
+                    .load_secret(serial, &intent)
                     .map_err(|error| intent.decode_error(error))?;
                 intent.validate_loaded_secret(&secret)?;
             }
@@ -143,6 +133,8 @@ mod tests {
         SecretStorageWriteInspection {
             manifest_bytes: Some(manifest()),
             object_exists,
+            reserved_slot_key_exists: true,
+            reserved_slot_certificate_exists: false,
         }
     }
 
@@ -176,10 +168,10 @@ mod tests {
                 .expect_load_secret()
                 .times(1)
                 .in_sequence(sequence)
-                .withf(move |actual_serial, intent, _| {
+                .withf(move |actual_serial, intent| {
                     *actual_serial == serial && intent.storage.name == name
                 })
-                .returning(|_, intent, _| {
+                .returning(|_, intent| {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
@@ -201,16 +193,8 @@ mod tests {
             .in_sequence(&mut sequence)
             .withf(|requested| requested.is_none())
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
-
         let mut secret_input = ports::MockSecretInputPort::new();
         let mut continuation = ports::MockRotationContinuationPort::new();
-        let mut pin_input = ports::MockPinInputPort::new();
-        pin_input.expect_read_pin().times(0);
         continuation
             .expect_continue_rotation()
             .times(1)
@@ -256,10 +240,9 @@ mod tests {
         run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
             RotateBwsTokenPromptRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
+                device: &mut device_serial,
                 secret_input: &secret_input,
                 continuation: &continuation,
-                pin_input: &pin_input,
                 storage: &mut storage,
                 report: &report,
             },
@@ -275,14 +258,8 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         let mut continuation = ports::MockRotationContinuationPort::new();
-        let pin_input = ports::MockPinInputPort::new();
         secret_input
             .expect_read_bitwarden_client_secret_secret()
             .times(0);
@@ -315,10 +292,9 @@ mod tests {
         let result = run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: Some(2001) },
             RotateBwsTokenPromptRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
+                device: &mut device_serial,
                 secret_input: &secret_input,
                 continuation: &continuation,
-                pin_input: &pin_input,
                 storage: &mut storage,
                 report: &report,
             },
@@ -344,11 +320,6 @@ mod tests {
             .times(1)
             .withf(|requested| requested.is_none())
             .returning(|_| Ok(2002));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(2)
-            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bitwarden_client_secret_secret()
@@ -363,7 +334,6 @@ mod tests {
             .expect_continue_rotation()
             .times(1)
             .returning(|| Ok(false));
-        let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         for serial in [2001, 2002] {
             storage
@@ -390,10 +360,9 @@ mod tests {
         run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
             RotateBwsTokenPromptRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
+                device: &mut device_serial,
                 secret_input: &secret_input,
                 continuation: &continuation,
-                pin_input: &pin_input,
                 storage: &mut storage,
                 report: &report,
             },
@@ -411,11 +380,6 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bitwarden_client_secret_secret()
@@ -426,7 +390,6 @@ mod tests {
             .expect_continue_rotation()
             .times(1)
             .returning(|| Ok(true));
-        let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
@@ -448,10 +411,9 @@ mod tests {
         let result = run_rotate_bws_token_with_prompt(
             RotateBwsTokenCommand { serial: None },
             RotateBwsTokenPromptRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
+                device: &mut device_serial,
                 secret_input: &secret_input,
                 continuation: &continuation,
-                pin_input: &pin_input,
                 storage: &mut storage,
                 report: &report,
             },

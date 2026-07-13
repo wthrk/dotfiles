@@ -6,10 +6,13 @@
 //! 検証する。
 
 use std::{
+    fs,
     io::{ErrorKind, Read, Write},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
@@ -23,11 +26,13 @@ use serde_json::{Value, json};
 const TIMEOUT: Duration = Duration::from_secs(15);
 const PRIMARY_SERIAL: u32 = 2001;
 const SPARE_SERIAL: u32 = 2002;
+static PERSISTENT_STUB_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 type TestResult<T> = anyhow::Result<T>;
 
 struct CommandRun {
     success: bool,
+    exit_code: Option<i32>,
     stdout: String,
     stderr: String,
 }
@@ -79,6 +84,38 @@ struct StubPorts {
     gpg_spec: Value,
     git_spec: Value,
     bw_login_spec: Value,
+}
+
+/// test-only YubiKey datastore の process 間保存先。
+///
+/// テストはこのファイルを読まず、initial fixture の投入と CLI stdout sentinel による最終状態観測だけを行う。
+struct PersistentYubiKeyState {
+    path: PathBuf,
+}
+
+impl PersistentYubiKeyState {
+    fn new() -> Self {
+        let unique = PERSISTENT_STUB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        Self {
+            path: std::env::temp_dir().join(format!(
+                "dotfiles-yubikey-stub-{}-{nanos}-{unique}.json",
+                std::process::id()
+            )),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PersistentYubiKeyState {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 impl StubPorts {
@@ -232,6 +269,23 @@ fn status_lists_configured_secret_names_with_yubikey_path() -> TestResult<()> {
 }
 
 #[test]
+fn status_lists_present_names_for_manifest_with_a_missing_secret_object() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([manifest_with_missing_secret_object_device_spec(
+            PRIMARY_SERIAL,
+        )]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+    assert!(run.success, "stdout: {} stderr: {}", run.stdout, run.stderr);
+    assert_eq!(
+        run.user_stdout(),
+        "bw-email\nbw-password\nbitwarden-client-id\n"
+    );
+    Ok(())
+}
+
+#[test]
 fn status_writes_configured_secret_names_to_tty_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
@@ -241,6 +295,215 @@ fn status_writes_configured_secret_names_to_tty_with_yubikey_path() -> TestResul
 
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("bitwarden-client-secret"));
+    Ok(())
+}
+
+#[test]
+fn status_returns_the_reserved_storage_invalid_exit_code_for_observed_partial_storage()
+-> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([manifestless_bitwarden_client_secret_device_spec(
+            PRIMARY_SERIAL,
+        )]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert_eq!(
+        run.exit_code,
+        Some(i32::from(
+            dotfiles_secrets::SECRET_STORAGE_STATUS_INVALID_EXIT_CODE
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn put_returns_the_uninitialized_storage_exit_code() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_with_stub(
+        [
+            "yubikey",
+            "put",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+            "--stdin",
+        ],
+        Some("fixture-token\n"),
+        &stub,
+    )?;
+
+    assert_eq!(
+        run.exit_code,
+        Some(i32::from(
+            dotfiles_secrets::SECRET_STORAGE_UNINITIALIZED_EXIT_CODE
+        )),
+        "stderr: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn status_returns_exit_42_for_each_known_reserved_storage_invalid_state() -> TestResult<()> {
+    for device in [
+        corrupt_manifest_device_spec(PRIMARY_SERIAL),
+        manifest_without_reserved_key_device_spec(PRIMARY_SERIAL),
+        manifestless_reserved_certificate_device_spec(PRIMARY_SERIAL),
+    ] {
+        let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
+        let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+
+        assert!(!run.success, "stdout: {}", run.stdout);
+        assert_eq!(
+            run.exit_code,
+            Some(i32::from(
+                dotfiles_secrets::SECRET_STORAGE_STATUS_INVALID_EXIT_CODE
+            )),
+            "stderr: {}",
+            run.stderr
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn clear_recovers_manifestless_and_corrupt_storage_across_cli_processes() -> TestResult<()> {
+    for initial_device in [
+        manifestless_bitwarden_client_secret_device_spec(PRIMARY_SERIAL),
+        corrupt_manifest_device_spec(PRIMARY_SERIAL),
+    ] {
+        let state = PersistentYubiKeyState::new();
+        let mut initial_spec = yubikey_spec([initial_device]);
+        initial_spec["persistence_path"] = json!(state.path());
+        let stub = StubPorts::new(initial_spec, bws_spec());
+
+        let invalid = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+        assert_eq!(
+            invalid.exit_code,
+            Some(i32::from(
+                dotfiles_secrets::SECRET_STORAGE_STATUS_INVALID_EXIT_CODE
+            )),
+            "stderr: {}",
+            invalid.stderr
+        );
+
+        let cleared = run_pipe_with_stub(
+            ["yubikey", "clear", "--serial", "2001", "--yes"],
+            None,
+            &stub,
+        )?;
+        assert!(cleared.success, "stderr: {}", cleared.stderr);
+        assert_eq!(
+            cleared.final_yubikey()?["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+            json!({})
+        );
+
+        let empty = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+        assert_eq!(
+            empty.exit_code,
+            Some(i32::from(
+                dotfiles_secrets::SECRET_STORAGE_STATUS_INVALID_EXIT_CODE
+            )),
+            "stderr: {}",
+            empty.stderr
+        );
+        assert_eq!(empty.user_stdout(), "");
+
+        let setup = run_pipe_with_stub(["yubikey", "setup", "--serial", "2001"], None, &stub)?;
+        assert!(setup.success, "stderr: {}", setup.stderr);
+
+        let mut last_put = None;
+        for (name, value) in [
+            ("bw-email", "recovery-email"),
+            ("bw-password", "recovery-password"),
+            ("bitwarden-client-id", "recovery-client-id"),
+            ("bitwarden-client-secret", "recovery-test-token"),
+        ] {
+            let put = run_pipe_with_stub(
+                ["yubikey", "put", name, "--serial", "2001", "--stdin"],
+                Some(&format!("{value}\n")),
+                &stub,
+            )?;
+            assert!(put.success, "stderr: {}", put.stderr);
+            last_put = Some(put);
+        }
+        let put = last_put.expect("all reserved secrets are written");
+        assert_stored_secret(
+            &put.final_yubikey()?,
+            PRIMARY_SERIAL,
+            "bitwarden-client-secret",
+            "recovery-test-token",
+        );
+
+        let recovered = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+        assert!(recovered.success, "stderr: {}", recovered.stderr);
+        assert_eq!(
+            recovered.user_stdout(),
+            "bw-email\nbw-password\nbitwarden-client-id\nbitwarden-client-secret\n"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn persistent_partial_storage_reports_present_names_without_clear() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let mut initial_spec = yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]);
+    initial_spec["persistence_path"] = json!(state.path());
+    let stub = StubPorts::new(initial_spec, bws_spec());
+
+    let setup = run_pipe_with_stub(["yubikey", "setup", "--serial", "2001"], None, &stub)?;
+    assert!(setup.success, "stderr: {}", setup.stderr);
+
+    let put = run_pipe_with_stub(
+        [
+            "yubikey",
+            "put",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+            "--stdin",
+        ],
+        Some("recovery-test-token\n"),
+        &stub,
+    )?;
+    assert!(put.success, "stderr: {}", put.stderr);
+
+    let status = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+    assert!(status.success, "stderr: {}", status.stderr);
+    assert_eq!(status.user_stdout(), "bitwarden-client-secret\n");
+    Ok(())
+}
+
+#[test]
+fn status_returns_exit_1_for_serial_resolution_or_device_io_failure() -> TestResult<()> {
+    let serial_resolution_stub = StubPorts::new(yubikey_spec([]), bws_spec());
+    let serial_resolution =
+        run_pipe_with_stub(["yubikey", "status"], None, &serial_resolution_stub)?;
+    assert!(
+        !serial_resolution.success,
+        "stdout: {}",
+        serial_resolution.stdout
+    );
+    assert_eq!(serial_resolution.exit_code, Some(1));
+
+    let device_io_stub = StubPorts::new(
+        yubikey_spec([status_read_failure_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let device_io = run_pipe_with_stub(
+        ["yubikey", "status", "--serial", "2001"],
+        None,
+        &device_io_stub,
+    )?;
+    assert!(!device_io.success, "stdout: {}", device_io.stdout);
+    assert_eq!(device_io.exit_code, Some(1));
     Ok(())
 }
 
@@ -881,21 +1144,6 @@ fn verify_yubikey_audits_stub_route_in_internal_stub_build() -> TestResult<()> {
 }
 
 #[test]
-fn verify_yubikey_requires_pin_when_device_policy_demands_it() -> TestResult<()> {
-    let initial = yubikey_spec_requiring_pin([provisioned_device_spec(PRIMARY_SERIAL)]);
-    let stub = StubPorts::new(initial, bws_spec());
-    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
-
-    assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(
-        run.stderr.contains("PIN") || run.stderr.contains("pin"),
-        "stderr: {}",
-        run.stderr
-    );
-    Ok(())
-}
-
-#[test]
 fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
@@ -1013,6 +1261,7 @@ fn run_pipe_with_stub<const N: usize>(
     let output = child.wait_with_output()?;
     Ok(CommandRun {
         success: output.status.success(),
+        exit_code: output.status.code(),
         stdout: String::from_utf8(output.stdout)?,
         stderr: String::from_utf8(output.stderr)?,
     })
@@ -1043,6 +1292,7 @@ fn run_pipe_without_stub<const N: usize>(
     let output = child.wait_with_output()?;
     Ok(CommandRun {
         success: output.status.success(),
+        exit_code: output.status.code(),
         stdout: String::from_utf8(output.stdout)?,
         stderr: String::from_utf8(output.stderr)?,
     })
@@ -1117,16 +1367,7 @@ fn wait_pty_child(
 fn yubikey_spec<const N: usize>(yubikeys: [Value; N]) -> Value {
     let yubikeys = Vec::from(yubikeys);
     json!({
-        "yubikeys": yubikeys,
-        "requires_pin": false
-    })
-}
-
-fn yubikey_spec_requiring_pin<const N: usize>(yubikeys: [Value; N]) -> Value {
-    let yubikeys = Vec::from(yubikeys);
-    json!({
-        "yubikeys": yubikeys,
-        "requires_pin": true
+        "yubikeys": yubikeys
     })
 }
 
@@ -1153,11 +1394,41 @@ fn provisioned_device_spec(serial: u32) -> Value {
     })
 }
 
+fn manifest_with_missing_secret_object_device_spec(serial: u32) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "manifest-with-missing-secret-object"
+    })
+}
+
 fn writable_bitwarden_client_secret_device_spec(serial: u32) -> Value {
     json!({
         "serial": serial,
         "fixture": "writable-bitwarden-client-secret"
     })
+}
+
+fn manifestless_bitwarden_client_secret_device_spec(serial: u32) -> Value {
+    json!({
+        "serial": serial,
+        "fixture": "manifestless-bitwarden-client-secret"
+    })
+}
+
+fn corrupt_manifest_device_spec(serial: u32) -> Value {
+    json!({ "serial": serial, "fixture": "corrupt-manifest" })
+}
+
+fn manifest_without_reserved_key_device_spec(serial: u32) -> Value {
+    json!({ "serial": serial, "fixture": "manifest-without-reserved-key" })
+}
+
+fn manifestless_reserved_certificate_device_spec(serial: u32) -> Value {
+    json!({ "serial": serial, "fixture": "manifestless-reserved-certificate" })
+}
+
+fn status_read_failure_device_spec(serial: u32) -> Value {
+    json!({ "serial": serial, "fixture": "status-read-failure" })
 }
 
 fn seeded_device_spec(
@@ -1670,6 +1941,7 @@ fn export_ssh_public_key_writes_openssh_line_with_stub_paths() -> TestResult<()>
     let output = command.spawn()?.wait_with_output()?;
     let run = CommandRun {
         success: output.status.success(),
+        exit_code: output.status.code(),
         stdout: String::from_utf8(output.stdout)?,
         stderr: String::from_utf8(output.stderr)?,
     };

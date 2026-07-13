@@ -4,7 +4,6 @@ use crate::Result;
 use crate::{
     domain::{
         commands::RotateBwsTokenCommand,
-        piv::validate_piv_pin_len,
         storage::{
             SecretStorageReadIntent, SecretStorageVerificationPlan, SecretStorageWriteIntent,
         },
@@ -17,18 +16,16 @@ use crate::{
 ///
 /// token 読み取り方式は port 境界で差し替え、use case 側では serial 自動検出と
 /// token 入力前の既存 local storage 検証を固定する。
-pub(crate) fn run_rotate_bws_token_with_stdin<D, I, P, S, R>(
+pub(crate) fn run_rotate_bws_token_with_stdin<D, I, S, R>(
     command: RotateBwsTokenCommand,
     device: &mut D,
     secret_input: &I,
-    pin_input: &P,
     storage_port: &mut S,
     report: &R,
 ) -> Result<()>
 where
-    D: ports::YubiKeyDevicePort,
+    D: ports::DeviceSerialPort,
     I: ports::SecretInputPort,
-    P: ports::PinInputPort,
     S: ports::SecretStoragePort,
     R: ports::ReportPort,
 {
@@ -36,19 +33,12 @@ where
     let storage = command.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
     SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = pin_input.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
     let pre_update_verify: Result<()> = (|| {
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
             let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
             let secret = storage_port
-                .load_secret(serial, &intent, pin.as_ref())
+                .load_secret(serial, &intent)
                 .map_err(|error| intent.decode_error(error))?;
             intent.validate_loaded_secret(&secret)?;
         }
@@ -67,7 +57,7 @@ where
             let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
             let secret = storage_port
-                .load_secret(serial, &intent, pin.as_ref())
+                .load_secret(serial, &intent)
                 .map_err(|error| intent.decode_error(error))?;
             intent.validate_loaded_secret(&secret)?;
         }
@@ -109,6 +99,8 @@ mod tests {
         SecretStorageWriteInspection {
             manifest_bytes: Some(manifest()),
             object_exists,
+            reserved_slot_key_exists: true,
+            reserved_slot_certificate_exists: false,
         }
     }
 
@@ -142,10 +134,10 @@ mod tests {
                 .expect_load_secret()
                 .times(1)
                 .in_sequence(sequence)
-                .withf(move |actual_serial, intent, _| {
+                .withf(move |actual_serial, intent| {
                     *actual_serial == serial && intent.storage.name == name
                 })
-                .returning(|_, intent, _| {
+                .returning(|_, intent| {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
@@ -163,19 +155,15 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Err(anyhow::anyhow!("no device connected")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy.expect_device_requires_pin().times(0);
         let secret_input = ports::MockSecretInputPort::new();
-        let pin_input = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_write().times(0);
         let report = ports::MockReportPort::new();
 
         let result = run_rotate_bws_token_with_stdin(
             RotateBwsTokenCommand { serial: None },
-            &mut (&mut serial_port, &mut pin_policy),
+            &mut serial_port,
             &secret_input,
-            &pin_input,
             &mut storage,
             &report,
         );
@@ -191,15 +179,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
-        let mut pin_input = ports::MockPinInputPort::new();
-        pin_input.expect_read_pin().times(0);
-
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()
@@ -239,9 +219,8 @@ mod tests {
 
         run_rotate_bws_token_with_stdin(
             RotateBwsTokenCommand { serial: None },
-            &mut (&mut serial_port, &mut pin_policy),
+            &mut serial_port,
             &secret_input,
-            &pin_input,
             &mut storage,
             &report,
         )
@@ -255,13 +234,7 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(false));
         let mut secret_input = ports::MockSecretInputPort::new();
-        let pin_input = ports::MockPinInputPort::new();
         secret_input.expect_read_streamed_secret().times(0);
 
         let mut storage = ports::MockSecretStoragePort::new();
@@ -290,9 +263,8 @@ mod tests {
 
         let result = run_rotate_bws_token_with_stdin(
             RotateBwsTokenCommand { serial: None },
-            &mut (&mut serial_port, &mut pin_policy),
+            &mut serial_port,
             &secret_input,
-            &pin_input,
             &mut storage,
             &report,
         );
@@ -301,56 +273,5 @@ mod tests {
             result.is_err(),
             "invalid storage must stop before stdin read"
         );
-    }
-
-    #[test]
-    fn rotate_stdin_reads_pin_when_device_requires_it() -> crate::Result<()> {
-        let mut sequence = mockall::Sequence::new();
-        let mut serial_port = ports::MockDeviceSerialPort::new();
-        serial_port
-            .expect_resolve_device_serial()
-            .times(1)
-            .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .returning(|_| Ok(true));
-        let mut secret_input = ports::MockSecretInputPort::new();
-        secret_input
-            .expect_read_streamed_secret()
-            .times(1)
-            .returning(|| Ok(material(b"new-token")));
-        let mut pin_input = ports::MockPinInputPort::new();
-        pin_input
-            .expect_read_pin()
-            .times(1)
-            .returning(|| Ok(material(b"123456")));
-        let mut storage = ports::MockSecretStoragePort::new();
-        storage
-            .expect_inspect_secret_storage_write()
-            .times(1)
-            .returning(|_, _| Ok(write_inspection(false)));
-        expect_local_verify_ok(&mut storage, &mut sequence, 2001);
-        storage
-            .expect_store_secret()
-            .times(1)
-            .withf(|_, _, secret| secret.len() == b"new-token".len())
-            .returning(|_, _, _| Ok(()));
-        expect_local_verify_ok(&mut storage, &mut sequence, 2001);
-        let mut report = ports::MockReportPort::new();
-        report
-            .expect_write_verify_report()
-            .times(1)
-            .returning(|_| Ok(()));
-
-        run_rotate_bws_token_with_stdin(
-            RotateBwsTokenCommand { serial: None },
-            &mut (&mut serial_port, &mut pin_policy),
-            &secret_input,
-            &pin_input,
-            &mut storage,
-            &report,
-        )
     }
 }

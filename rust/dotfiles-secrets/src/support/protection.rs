@@ -13,8 +13,6 @@ pub(crate) mod gpg_backup;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 mod oaep;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
-pub(crate) mod piv_pin;
-#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod sealed_blob;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;

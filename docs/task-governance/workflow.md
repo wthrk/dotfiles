@@ -55,6 +55,7 @@
    - 必須レビュー役割の判定を集約し、`合格` / `要修正` / `不合格` を確定する。
    - 必須担当は [implementation-review-judgement.md](implementation-review-judgement.md) に従う。
    - 必須レビュー担当は担当ごとに fresh subagent として起動する。複数担当を単一 subagent に一括委譲してはならない。
+   - security review または test review の指摘が test-only の dummy / fixture secret の stdout、sentinel、または state 観測を問題にする場合、通常の finding を確定する前に `test-secret-observation false-positive verifier` を fresh subagent として起動する。起点が security reviewer か test reviewer か（両者が同じ指摘をした場合は両者）を記録し、verifier の結果をその起点 reviewer へ返す。verifier が compile-time test-only 選択、production build/runtime 非混入、fixture/spec の dummy 値限定、production 到達経路なしをすべて確認した場合は `誤検知` とし、該当 finding を通常判定から除外する。不採用理由と4条件の根拠を起点 reviewer へ返し、誤検知を `要修正` / `不合格` として集約してはならない。いずれかの条件を満たさない場合は `実漏えい` とし、起点 reviewer の finding を維持したまま、起点 reviewer の判定を `要修正` または `不合格` へ写像し、verifier の根拠とともに集約根拠へ記録する。
 4. `S3 -> S4`
    - コミット着手条件を満たす場合のみ進む。
 

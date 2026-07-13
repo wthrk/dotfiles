@@ -18,15 +18,6 @@ use super::super::{
 };
 use crate::Result;
 
-/// use case が PIV PIN を取得するための capability 契約。
-///
-/// caller は PIN が必要な順序を決めるだけで、端末 echo 制御や buffer 保護を知らない。
-/// implementor は入力取得と保護 backend 化を担い、PIN をログ・エラー・表示へ出さない。
-#[cfg_attr(test, mockall::automock)]
-pub trait PinInputPort {
-    fn read_pin(&self) -> Result<ProtectedSecret>;
-}
-
 /// use case が必要とする secret 入力 capability 契約。
 ///
 /// caller は必要な secret 種別または stream 入力 capability を明示して呼ぶ。implementor は prompt、

@@ -85,8 +85,9 @@ test double / fixture の本体は原則として `tests/` 配下に置く。た
 - domain/business logic を test stub 側へ移さない。
 - integration test は adapter stub module を import せず、feature 有効でビルドされた `dotfiles` binary を実行する。
 - test 側は「初期 datastore 定義」と「CLI 実行後の最終 datastore 観測」だけを扱い、backend state schema・状態遷移 helper・write event helper・bincode schema・backend 内部保存形式を保持してはならない。
+- fixture、dummy token、固定 password はテスト入力であり、テスト側で秘密として redaction・masking・不在検査する専用 helper や assertion を作ってはならない。本番 command の secret 出力防止テストとは区別する。
 - 最終 datastore 観測は `secrets-internal-test-stub` feature 専用の stdout sentinel observation を基本とする。この observation は test-only の明示観測面であり、fixture/spec で与えたダミー secret 値を含めてよい。integration test が「secret として保存した値が最終 datastore に意図通り保存された」ことを検証するためであり、production build/runtime には compile されず、本物 secret の出力経路ではない。
-- hidden temp file、output path file、共有 state file に secret 値を残してはならない。
+- production secret を hidden temp file、output path file、共有 state file に残してはならない。test fixture の dummy 値は test stub の state file にそのまま保存・復元してよく、本番 secret の保全規則を test input の保存へ拡張しない。
 - backend state/schema/helper は adapter 側 internal backend stub の責務とし、`tests/` 側へ複製してはならない。
 - BWS port stub と YubiKey port stub は独立させ、共通の巨大 StubState や共有 state file で結合してはならない。port 間の結合は application/domain の通常経路でのみ発生させる。
 - module/comment で internal test 専用 feature、production build 非混入、stdout observation 境界、compile-time selection を明記する。

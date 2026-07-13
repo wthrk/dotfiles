@@ -119,6 +119,8 @@ private `password-store` repository の clone は `git2` と SSH agent を使う
 
 到達仕様では、YubiKey 5 PIV の利用前提を確認し、この機能で使う保存領域を確認する手段として提供する。既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 は reset しない。既存領域と衝突する場合は停止する。通常の利用者向け導線では `enroll-primary` / `enroll-spare` から内部的に扱う。
 
+`setup` は PIV PIN を要求してはならない。PIN prompt が発生した場合は成功扱いにせず、実装回帰として停止する。
+
 ### `dotfiles secrets yubikey put <name>`
 
 YubiKey に secret を保存する。`<name>` は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` のみ許可する。secret 本文は hidden prompt または stdin から受け取る。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
@@ -126,23 +128,45 @@ YubiKey に secret を保存する。`<name>` は `bw-email`、`bw-password`、`
 
 ### `dotfiles secrets yubikey status`
 
-YubiKey に保存すべき bootstrap secret のうち、設定済みの名前を stdout へ 1 行ずつ出力する。secret 本文、encrypted blob、PIN は扱わない。manifest が未初期化または不正な場合は停止する。
+YubiKey に保存すべき bootstrap secret のうち、設定済みの名前を stdout へ 1 行ずつ出力する。secret 本文、encrypted blob、PIN は扱わない。専用領域が完全に空なら成功・空出力とする。正常な manifest と slot `82` の専用 key がある状態では、bootstrap secret の設定済み集合が任意の subset（空集合を含む）でも成功とし、設定済み名だけを出力する。manifest 欠落なのに予約 object、slot `82` key、または slot `82` certificate が残る状態、manifest 不正、manifest があるのに slot key がない状態は停止する。
+
+`status` は PIV PIN を要求してはならない。PIN prompt が発生した場合は成功扱いにせず、実装回帰として停止する。
+
+### provisioning script の終了コード契約
+
+provisioning script が状態遷移の根拠にしてよい公開終了コードは次だけである。
+
+- `42`: `yubikey status` が予約 storage の観測済み不整合を検出した。script はこの場合だけ `clear` へ移行してよい。
+- `43`: `yubikey put` が完全に未初期化の専用領域を検出した。script はこの場合だけ `setup` 後に同じ `put` を再試行してよい。
+
+これ以外の終了コードは状態に分類せず停止する。USB / PCSC / device discovery / serial 解決などの観測失敗を `42` または `43` に変換してはならない。
+
+### `dotfiles secrets yubikey clear --yes`
+
+再登録前の復旧コマンドである。明示した `--serial <serial>`、または serial 未指定時に単一接続として解決できる YubiKey について、この機能用の manifest / bootstrap secret custom data object と slot `82` certificate を clear し、続けて slot `82` の専用 key を再生成する。これは既存 key を消去するのではなく、再生成によって置換する操作である。予約外の PIV object / slot、FIDO2、OTP、OpenPGP は変更しない。script が `clear` へ移行するのは、manifest 欠落かつ予約 object / slot key / slot certificate のいずれかが残る場合、manifest 不正の場合、または manifest があり slot key が欠落する場合だけである。正常な manifest と slot key がある任意の bootstrap secret subset では `clear` せず、保存済み secret を維持する。
+
+`clear` は PIV PIN を要求してはならない。PIN prompt が発生した場合は成功扱いにせず、実装回帰として停止する。
+
+### YubiKey PIV PIN の禁止
+
+すべての `dotfiles` コマンドおよびすべての script 経路は、状態・操作種別・対話/非対話の別にかかわらず PIV PIN を要求してはならない。実装は PIN の入力・検証・要求を一切持たず、PIN prompt が発生した場合は成功扱いにせず実装回帰として停止する。
 
 ### `dotfiles secrets yubikey enroll-primary`
 
 primary YubiKey を復旧入口として初期登録する。1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を対象にし、専用 PIV 領域を setup し、`bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を prompt から受け取り、保存後に ローカル確認 を実行する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話または移行用途に限り stdin からの入力を許可する。
-`--stdin-json` で bootstrap secret を渡す場合も、PIN は JSON 用 stdin ではなく controlling terminal から読む。PIN 検証 と保存先の事前確認に失敗した場合は、JSON payload を読み始める前に停止する。
+
+PIV PIN 禁止は [YubiKey PIV PIN の禁止](#yubikey-piv-pin-の禁止) に従う。`enroll-primary --stdin-json` は PIV PIN を JSON 用 stdin・controlling terminal のいずれからも読まず、serial 未指定なら接続中の単一 YubiKey を直接対象にして JSON payload を通常の入力として読む。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
 spare YubiKey を復旧入口として初期登録する。通常は primary YubiKey から `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を読み出し、spare YubiKey の 公開鍵 で再暗号化して保存する。利用者に bootstrap secret の再入力を要求しない。外部サービス の FIDO2 / passkey / U2F / OTP 登録は自動化しない。
-`--stdin-json` で bootstrap secret を渡す場合も、PIN は JSON 用 stdin ではなく controlling terminal から読む。PIN 検証 と保存先の事前確認に失敗した場合は、JSON payload を読み始める前に停止する。
+`--stdin-json` で bootstrap secret を渡す場合も、PIV PIN はいかなる入力経路からも読まず、JSON payload は通常どおり読み取る。
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
 指定 YubiKey の `bitwarden-client-secret` を更新し、更新後に ローカル確認 を実行する。BWS 接続確認は ローカル保管 の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。出力 要約 の serial を確認し、対象全本が更新済みになるまで更新する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
 token 入力前に ローカル保管 の復号可能性を確認し、更新不能な状態では新しい token を読まずに停止する。
-`--stdin` で token を渡す場合も、PIN は token 用 stdin ではなく controlling terminal から読む。
+`--stdin` で token を渡す場合も、PIV PIN は token 用 stdin・controlling terminal のいずれからも読まない。
 
 ### `dotfiles secrets verify-yubikey`
 
@@ -150,7 +174,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 到達仕様の確認項目:
 
-- `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` が YubiKey に保存され、PIN 検証 と touch を経て復号できる。
+- `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` が YubiKey に保存され、touch を経て復号できる。
 
 このコマンドは ローカル保管 確認だけを実行する。`--check bws`、`--check bw-login`、`--all` は外部確認を要求する option なので、利用できない場合は明示的に失敗する。引数なし実行の 要約 では外部確認項目を機械可読状態値 `skipped` として残す。要約の状態値は `ok` と `skipped` を使い、表示文言は別層で扱う。
 
@@ -201,7 +225,6 @@ YubiKey から `bw-email` と `bw-password` を取得し、YubiKey OTP を入力
 - BWS project `dotfiles-secret-recovery` から必要な secret が取得できない。
 - `verify-yubikey` で YubiKey 内の bootstrap secret 確認に失敗する。
 - `verify-yubikey --check bws`、`verify-yubikey --check bw-login`、`verify-yubikey --all` のいずれかで、Bitwarden Secrets Manager または Bitwarden Password Manager への到達確認に失敗する。`--check bw-login` の到達確認は実際の `bw login` / `bw unlock` 実行による Bitwarden Password Manager サービス到達確認であり、到達・login・unlock のいずれかが成立しない場合に停止条件を満たす。
-- `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
 - `gpg-secret-key-backup` の envelope 形式検証（version / metadata / recipients / ciphertext）に失敗する。
 - 接続中 YubiKey と一致する recipient が存在しない。

@@ -12,7 +12,9 @@
 
 - **[CMD]**: `dotfiles` / `dotfiles secrets` のコマンド、またはこの repository の provisioning script で実現済み。手順としてはそのコマンドまたは script を実行する。
 - **[手動]**: `dotfiles` にコマンドが無い操作。spec/design が「自動化しない（手動または各サービスの公式管理 API）」と定める範囲、もしくは利用者環境固有の前提（GPG 鍵・repo 等）。
-- **[対話]**: PIN / secret / touch / passphrase の対話入力を伴うため実端末で実行する。
+- **[対話]**: secret / touch / passphrase などの対話入力を伴うため実端末で実行する。ここでいう PIN 入力は各サービスのブラウザ FIDO2 prompt における PIN 対話だけを指し、全 `dotfiles` command / provisioning script で禁止する PIV PIN 入力とは異なる。
+
+すべての `dotfiles` コマンドおよび provisioning script は、状態・操作種別にかかわらず PIV PIN prompt を出さずに完了または失敗しなければならない。実装は PIN の入力・検証・要求を一切持たず、PIN prompt が表示された場合は成功扱いにせず実行を停止して実装回帰として扱う。serial 未指定時は接続中の単一 YubiKey を共通の device discovery で直接対象にし、接続なし・複数接続では停止する。
 
 ## コマンド有無の対応表（この runbook の基準）
 
@@ -81,7 +83,7 @@
    - 登録後、各サービスの security / recovery 画面で recovery options / backup codes / account recovery contact / trusted phone number / trusted email 相当を確認する。backup code を表示または再生成した場合は、値そのものをこの repository に書かず、サービスごとの推奨に従って別経路の安全な保管先へ保存する。
    - 既存の phone / email fallback が失効済み番号・古いメールアドレス・共有アカウントになっていないか確認し、必要なら更新する。更新後、primary / spare の両方と recovery option が同じ security 画面で有効な回復経路として残っていることを確認する。
 
-7. **[CMD][対話]** `bitwarden-client-secret` を primary / spare YubiKey へ保存する。
+7. **[CMD][対話]** `bitwarden-client-secret` を primary / spare YubiKey へ保存する。secret の stdin / touch はあり得るが、PIV PIN prompt はいかなる経路でも禁止する。
    - primary 登録では `dotfiles secrets yubikey enroll-primary` で `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を保存する。個別保存を使う場合は `dotfiles secrets yubikey put bw-email`、`dotfiles secrets yubikey put bw-password`、`dotfiles secrets yubikey put bitwarden-client-id`、`dotfiles secrets yubikey put bitwarden-client-secret --stdin` をそれぞれ実行する。
    - spare 登録では `dotfiles secrets yubikey enroll-spare` で primary から `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を読み出し、spare に保存する。個別保存で運用する場合も primary / spare の両方に 4 secret が揃っていることを確認する。
    - `scripts/provision-secret-recovery-source.sh` が保存するのは復旧用 `bitwarden-client-secret` だけである。`bw-email` / `bw-password` / `bitwarden-client-id` は `enroll-primary` / `enroll-spare` または個別の `put` で保存する。
@@ -93,7 +95,7 @@
    - BWS access token の hidden prompt / stdin secret input は `dotfiles secrets yubikey put bitwarden-client-secret`、`enroll-primary`、`rotate-bws-token` など YubiKey storage へ保存・更新する経路だけで行う。`dotfiles secrets pass-remote register` と `dotfiles secrets gpg-backup register` / `add-spare` は token を prompt / stdin で受け取らず、BWS command 実行前に対象 YubiKey storage へ保存済みの `bitwarden-client-secret` から取得する。
    - `password-store-remote` は既存 password-store の GitHub SSH clone URL を使い、`dotfiles secrets pass-remote register --serial <serial> --url git@github.com:<owner>/<repo>.git` で登録または明示確認後に更新する。serial 未指定時は単一接続だけを自動解決し、複数接続では停止する。
    - `gpg-secret-key-backup` は既存 password-store recipient と一致する primary fingerprint を使い、`dotfiles secrets gpg-backup register --primary-fingerprint <fingerprint> --serial <serial>` で YubiKey recipient 付き encrypted envelope と接続中 YubiKey recipient を登録する。BWS 取得成功だけを plaintext 復旧完了として扱わない。
-   - `scripts/provision-secret-recovery-source.sh` を使う場合は、既存 password-store `.gpg-id` recipient の GPG secret key 確認、encryption/authentication/signing subkey の不足追加、authentication subkey 由来 SSH 公開鍵の GitHub 登録、GitHub private repository 作成、既存 store の Git remote 設定 / push、BWS project `dotfiles-secret-recovery` の事前存在確認 gate、指定 YubiKey の `bitwarden-client-secret` 保存確認（未保存時だけ保存）、BWS への `password-store-remote` / `gpg-secret-key-backup` 登録をこの順序で実行する。script は project を作成せず、BWS 書込み command へ token を pipe しない。環境変数、argv、shell history に token を載せない。script は未初期化 password-store から `.gpg-id` を生成しない。
+   - `scripts/provision-secret-recovery-source.sh` を使う場合は、既存 password-store `.gpg-id` recipient の GPG secret key 確認、encryption/authentication/signing subkey の不足追加、authentication subkey 由来 SSH 公開鍵の GitHub 登録、GitHub private repository 作成、既存 store の Git remote 設定 / push、BWS project `dotfiles-secret-recovery` の事前存在確認 gate、指定 YubiKey の `bitwarden-client-secret` 保存確認、BWS への `password-store-remote` / `gpg-secret-key-backup` 登録をこの順序で実行する。状態遷移に使う終了コードは [spec の provisioning script の終了コード契約](secret-recovery-spec.md) に従う。正常な manifest と slot key がある任意の bootstrap secret subset は正常状態であり、script は `clear` も `setup` も再実行せず保存済み secret を維持する。script は project を作成せず、BWS 書込み command へ token を pipe しない。環境変数、argv、shell history に token を載せない。script は未初期化 password-store から `.gpg-id` を生成しない。
 
 9. **[CMD][対話]** 検証（primary / spare 双方で実施。bw-login は無条件 `bw login`→`unlock` のため再実行前に `bw logout`）:
    ```sh

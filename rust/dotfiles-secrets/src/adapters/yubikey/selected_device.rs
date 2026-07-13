@@ -11,6 +11,8 @@
 
 use std::{
     collections::BTreeMap,
+    fs,
+    path::PathBuf,
     sync::{Mutex, OnceLock},
 };
 
@@ -31,8 +33,12 @@ const BITWARDEN_CLIENT_SECRET_OBJECT_ID: u32 = 0x005f_ff19;
 #[derive(serde::Deserialize)]
 struct YubiKeyStubSpec {
     yubikeys: Vec<YubiKeyDeviceSpec>,
+    /// 複数の CLI process をまたぐ integration test 用の datastore 保存先。
+    ///
+    /// 値を持つ場合だけ、最初の process は fixture を展開し、以後の process はこの
+    /// private datastore を再利用する。production build にはこの backend 自体が含まれない。
     #[serde(default)]
-    requires_pin: bool,
+    persistence_path: Option<PathBuf>,
 }
 
 #[derive(serde::Deserialize)]
@@ -49,7 +55,13 @@ struct YubiKeyDeviceSpec {
 enum YubiKeyDeviceFixture {
     Fresh,
     Provisioned,
+    ManifestWithMissingSecretObject,
     WritableBitwardenClientSecret,
+    ManifestlessBitwardenClientSecret,
+    CorruptManifest,
+    ManifestWithoutReservedKey,
+    ManifestlessReservedCertificate,
+    StatusReadFailure,
     Seeded {
         #[serde(rename = "bw-email")]
         bw_email: String,
@@ -65,12 +77,33 @@ enum YubiKeyDeviceFixture {
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct YubiKeyDatastore {
     devices: BTreeMap<String, StubDeviceDatastore>,
-    requires_pin: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct StubDeviceDatastore {
     key_exists: bool,
+    reserved_slot_certificate_exists: bool,
+    status_read_failure: bool,
+    objects: BTreeMap<String, Vec<u8>>,
+    secrets: BTreeMap<String, String>,
+    corrupt: Vec<String>,
+}
+
+/// process 間で test stub の backend state をそのまま保存する wire model。
+///
+/// これは compile-time test stub 専用の fixture state であり、production datastore ではない。
+/// fixture/dummy 値を含む backend state をそのまま保存・復元して、複数 CLI process にまたがる
+/// integration test の状態遷移を再現する。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistentYubiKeyDatastore {
+    devices: BTreeMap<String, PersistentStubDeviceDatastore>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistentStubDeviceDatastore {
+    key_exists: bool,
+    reserved_slot_certificate_exists: bool,
+    status_read_failure: bool,
     objects: BTreeMap<String, Vec<u8>>,
     secrets: BTreeMap<String, String>,
     corrupt: Vec<String>,
@@ -97,7 +130,6 @@ static YUBIKEY_DATASTORE: OnceLock<Mutex<Option<YubiKeyDatastore>>> = OnceLock::
 
 struct TestStubSecretDevice {
     serial: u32,
-    pin_verified: bool,
 }
 
 impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
@@ -118,16 +150,19 @@ impl SecretDeviceIo for TestStubSecretDevice {
         })
     }
 
+    fn reserved_slot_certificate_exists(&mut self) -> Result<bool> {
+        with_datastore(|store| {
+            let device = device_store(store, self.serial)?;
+            Ok(device.reserved_slot_certificate_exists)
+        })
+    }
+
     fn piv_application_version(&self) -> PivApplicationVersion {
         PivApplicationVersion {
             major: 5,
             minor: 3,
             patch: 0,
         }
-    }
-
-    fn pin_retries(&mut self) -> Result<u8> {
-        Ok(1)
     }
 
     fn check_management_auth_preconditions(&mut self) -> Result<()> {
@@ -147,6 +182,9 @@ impl SecretDeviceIo for TestStubSecretDevice {
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
         with_datastore(|store| {
             let device = device_store(store, self.serial)?;
+            if device.status_read_failure {
+                anyhow::bail!("stub YubiKey device I/O failed while reading storage object");
+            }
             let key = object_key(object_id.value());
             if device
                 .secrets
@@ -168,13 +206,23 @@ impl SecretDeviceIo for TestStubSecretDevice {
         })
     }
 
-    fn requires_pin_input(&self) -> bool {
-        with_datastore(|store| Ok(store.requires_pin)).unwrap_or(false)
+    fn clear_object(&mut self, object_id: PivObjectId) -> Result<()> {
+        with_datastore_after_write(|store| {
+            let device = device_store_mut(store, self.serial)?;
+            device.objects.remove(&object_key(object_id.value()));
+            let secret_key = secret_key_for_object(object_id.value());
+            if !secret_key.is_empty() {
+                device.secrets.remove(secret_key);
+            }
+            Ok(())
+        })
     }
 
-    fn verify_pin(&mut self, _pin: &ProtectedSecret) -> Result<()> {
-        self.pin_verified = true;
-        Ok(())
+    fn clear_reserved_slot_certificate(&mut self) -> Result<()> {
+        with_datastore_after_write(|store| {
+            device_store_mut(store, self.serial)?.reserved_slot_certificate_exists = false;
+            Ok(())
+        })
     }
 
     fn seal_for_storage(
@@ -205,11 +253,10 @@ impl SecretDeviceIo for TestStubSecretDevice {
             if device.corrupt.iter().any(|stored| stored == key) {
                 anyhow::bail!("corrupt {key}");
             }
-            device
-                .secrets
-                .get(key)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("missing secret"))
+            match device.secrets.get(key) {
+                Some(value) if !value.is_empty() => Ok(value.clone()),
+                _ => Err(anyhow::anyhow!("missing secret")),
+            }
         })?;
 
         let session = crate::support::protection::SecretSession::start()?;
@@ -259,10 +306,7 @@ fn discover_devices() -> Result<Vec<DeviceCandidate>> {
 }
 
 fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
-    Ok(SelectedSecretDevice::new(TestStubSecretDevice {
-        serial,
-        pin_verified: false,
-    }))
+    Ok(SelectedSecretDevice::new(TestStubSecretDevice { serial }))
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
@@ -291,6 +335,7 @@ fn with_datastore_inner<T>(
         .ok_or_else(|| anyhow::anyhow!("YubiKey internal stub datastore is not initialized"))?;
     let out = f(store)?;
     if write_observation_after_operation {
+        persist_datastore(store)?;
         write_observation(store)?;
     }
     Ok(out)
@@ -301,7 +346,36 @@ fn load_datastore() -> Result<YubiKeyDatastore> {
         .context("YubiKey internal stub spec JSON is not configured")?;
     let spec: YubiKeyStubSpec =
         serde_json::from_str(&body).context("failed to decode YubiKey internal stub spec JSON")?;
+    if let Some(path) = &spec.persistence_path {
+        match fs::read(path) {
+            Ok(serialized) => {
+                let persistent: PersistentYubiKeyDatastore = serde_json::from_slice(&serialized)
+                    .context("failed to decode persistent YubiKey internal stub datastore")?;
+                return datastore_from_persistent(persistent);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| "failed to read persistent YubiKey internal stub datastore");
+            }
+        }
+    }
     Ok(datastore_from_spec(spec))
+}
+
+/// 更新後の test-only datastore state を次の CLI process 用に保存する。
+fn persist_datastore(store: &YubiKeyDatastore) -> Result<()> {
+    let body = std::env::var(YUBIKEY_STUB_SPEC_ENV)
+        .context("YubiKey internal stub spec JSON is not configured")?;
+    let spec: YubiKeyStubSpec =
+        serde_json::from_str(&body).context("failed to decode YubiKey internal stub spec JSON")?;
+    let Some(path) = spec.persistence_path else {
+        return Ok(());
+    };
+    let persistent = persistent_datastore_from(store);
+    let serialized = serde_json::to_vec(&persistent)
+        .context("failed to encode persistent YubiKey internal stub datastore")?;
+    fs::write(path, serialized).context("failed to persist YubiKey internal stub datastore")
 }
 
 fn write_observation(store: &YubiKeyDatastore) -> Result<()> {
@@ -328,22 +402,97 @@ fn datastore_from_spec(spec: YubiKeyStubSpec) -> YubiKeyDatastore {
             )
         })
         .collect();
-    YubiKeyDatastore {
-        devices,
-        requires_pin: spec.requires_pin,
-    }
+    YubiKeyDatastore { devices }
+}
+
+fn persistent_datastore_from(store: &YubiKeyDatastore) -> PersistentYubiKeyDatastore {
+    let devices = store
+        .devices
+        .iter()
+        .map(|(serial, device)| {
+            (
+                serial.clone(),
+                PersistentStubDeviceDatastore {
+                    key_exists: device.key_exists,
+                    reserved_slot_certificate_exists: device.reserved_slot_certificate_exists,
+                    status_read_failure: device.status_read_failure,
+                    objects: device.objects.clone(),
+                    secrets: device.secrets.clone(),
+                    corrupt: device.corrupt.clone(),
+                },
+            )
+        })
+        .collect();
+    PersistentYubiKeyDatastore { devices }
+}
+
+fn datastore_from_persistent(persistent: PersistentYubiKeyDatastore) -> Result<YubiKeyDatastore> {
+    let devices = persistent
+        .devices
+        .into_iter()
+        .map(|(serial, persisted)| {
+            Ok((
+                serial,
+                StubDeviceDatastore {
+                    key_exists: persisted.key_exists,
+                    reserved_slot_certificate_exists: persisted.reserved_slot_certificate_exists,
+                    status_read_failure: persisted.status_read_failure,
+                    objects: persisted.objects,
+                    secrets: persisted.secrets,
+                    corrupt: persisted.corrupt,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    Ok(YubiKeyDatastore { devices })
 }
 
 fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
     let mut device = match spec.fixture {
         YubiKeyDeviceFixture::Fresh => StubDeviceDatastore::default(),
         YubiKeyDeviceFixture::Provisioned => provisioned_device_datastore(default_secrets()),
+        YubiKeyDeviceFixture::ManifestWithMissingSecretObject => {
+            let mut device = provisioned_device_datastore(default_secrets());
+            device.secrets.remove("bitwarden-client-secret");
+            device
+        }
         YubiKeyDeviceFixture::WritableBitwardenClientSecret => {
             let mut secrets = BTreeMap::new();
             secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
             secrets.insert("bw-password".to_owned(), "pw".to_owned());
             provisioned_device_datastore(secrets)
         }
+        YubiKeyDeviceFixture::ManifestlessBitwardenClientSecret => {
+            let mut device = StubDeviceDatastore {
+                key_exists: true,
+                ..StubDeviceDatastore::default()
+            };
+            device
+                .secrets
+                .insert("bitwarden-client-secret".to_owned(), "token".to_owned());
+            device
+        }
+        YubiKeyDeviceFixture::CorruptManifest => {
+            let mut device = provisioned_device_datastore(default_secrets());
+            device.objects.insert(
+                object_key(MANIFEST_OBJECT_ID),
+                b"not a dotfiles secret manifest".to_vec(),
+            );
+            device
+        }
+        YubiKeyDeviceFixture::ManifestWithoutReservedKey => {
+            let mut device = provisioned_device_datastore(default_secrets());
+            device.key_exists = false;
+            device
+        }
+        YubiKeyDeviceFixture::ManifestlessReservedCertificate => StubDeviceDatastore {
+            reserved_slot_certificate_exists: true,
+            ..StubDeviceDatastore::default()
+        },
+        YubiKeyDeviceFixture::StatusReadFailure => StubDeviceDatastore {
+            status_read_failure: true,
+            ..provisioned_device_datastore(default_secrets())
+        },
         YubiKeyDeviceFixture::Seeded {
             bw_email,
             bw_password,
@@ -368,6 +517,8 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
     );
     StubDeviceDatastore {
         key_exists: true,
+        reserved_slot_certificate_exists: false,
+        status_read_failure: false,
         objects,
         secrets,
         corrupt: Vec::new(),

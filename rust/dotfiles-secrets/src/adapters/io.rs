@@ -17,8 +17,8 @@ use crate::{
     },
     ports::io::{
         BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, BwOtpInputPort, ClockPort,
-        PasswordStoreRemoteInputPort, PinInputPort, ReportPort, RotationContinuationPort,
-        SecretInputPort, SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
+        PasswordStoreRemoteInputPort, ReportPort, RotationContinuationPort, SecretInputPort,
+        SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
     },
     support::protection::ProtectedSecret,
 };
@@ -26,12 +26,6 @@ use crate::{
 /// process I/O と secret 入出力を port 契約へ翻訳する adapter。
 #[derive(Default)]
 pub(crate) struct ProcessIoAdapter(process::ProcessIoAdapter);
-
-impl PinInputPort for ProcessIoAdapter {
-    fn read_pin(&self) -> Result<ProtectedSecret> {
-        self.0.read_pin()
-    }
-}
 
 impl SecretInputPort for ProcessIoAdapter {
     fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {

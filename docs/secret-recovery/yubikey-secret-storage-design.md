@@ -14,7 +14,7 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 
 - YubiKey PIV data object から読み出された encrypted blob。
 - blob の backup、copy、log、diagnostic dump。
-- PIN 検証 と touch を通せない状態での `wrapped_key`。
+- touch を通せない状態での `wrapped_key`。
 
 保護しないもの:
 
@@ -68,9 +68,9 @@ YubiKey adapter は次を満たす。
 
 鍵は YubiKey 上で生成する。秘密鍵 material は export しない。鍵種別は `RSA2048` とし、content encryption key の wrap / unwrap にだけ使う。host は PIV private key そのものを読まず、`wrapped_key` の unwrap に必要な private key operation だけを YubiKey に依頼する。
 
-PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。`yubikey` crate の PIV decrypt API から得た raw decrypt bytes は、secret storage adapter 境界で OAEP unpad して content key に戻す。`rsa` crate は raw RSA 復号結果に対する OAEP unpad API を公開していないため、OAEP unpad は CLI 側で最小実装を持つ。この実装は invalid padding の判定で separator 位置による短絡を避けるが、constant-time primitive として扱わない。Manger 攻撃に対する境界は、復号対象を 32-byte content encryption key に限定し、各 unwrap に YubiKey の PIN 検証、touch policy、PIV private operation を要求することで oracle としての利用回数と自動化を制限する。
+PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。`yubikey` crate の PIV decrypt API から得た raw decrypt bytes は、secret storage adapter 境界で OAEP unpad して content key に戻す。`rsa` crate は raw RSA 復号結果に対する OAEP unpad API を公開していないため、OAEP unpad は CLI 側で最小実装を持つ。この実装は invalid padding の判定で separator 位置による短絡を避けるが、constant-time primitive として扱わない。Manger 攻撃に対する境界は、復号対象を 32-byte content encryption key に限定し、YubiKey touch によって oracle としての利用回数と自動化を制限する。PIV PIN の入力・検証は行わない。
 
-PIN policy は `Once`、touch policy は `Always` とする。1 コマンド内では PIN 検証 を 1 回に抑え、secret 復号操作ごとに YubiKey touch を要求する。例えば `enroll-spare` は primary 側の 4 secret 読み出しで 4 回（最大）、spare 側の ローカル確認 で 4 回の touch が発生する。連続した復旧コマンドでも touch を省略しない。
+すべての command / script 経路で PIV PIN prompt は禁止する。実装は PIN の入力・検証・要求を一切持たない。serial 未指定時は共通の device discovery が接続中の単一 YubiKey を解決し、その同じ device を read / unwrap / storage 操作の対象にする。接続なし・複数接続は引き続き停止する。touch policy は `Always` とし、secret 復号操作ごとに YubiKey touch を要求する。
 
 ### Object IDs
 
@@ -100,7 +100,7 @@ dotfiles secrets yubikey enroll-spare
 
 `enroll-spare` は次を一連の処理として実行する。
 
-1. primary YubiKey を serial 明示または単一接続 device として解決し、PIN 検証 と touch を経て `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を復号する。
+1. primary YubiKey を serial 明示または単一接続 device として解決し、touch を経て `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を復号する。
 2. primary 読み出しが完了した直後に spare YubiKey を serial 明示または単一接続 device として解決する。primary と spare を同時接続できない場合は、この時点で primary を抜いて spare を挿し、prompt で Enter を押させる。
 3. spare の専用 PIV slot / object が未使用であることを確認し、必要なら setup を行う。
 4. primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
@@ -198,6 +198,8 @@ Envelope encryption は次の役割分担にする。
 
 確認後、slot `82` に専用鍵を生成し、manifest を保存する。既存の FIDO2 / OTP / OpenPGP / PIV credential は reset しない。衝突がある場合に自動削除や上書きはしない。
 
+`setup` を含む全 command / script 経路は PIV PIN を要求してはならない。
+
 複数本の YubiKey を運用する場合でも、`setup` は指定された 1 本だけを変更する。接続中の他 YubiKey へ同時に書き込む batch mode は実装しない。
 
 ### `dotfiles secrets yubikey put <name>`
@@ -215,12 +217,18 @@ CLI 引数で secret 本文は受け取らない。`--stdin` は pipe または 
 
 ### `dotfiles secrets yubikey status`
 
-設定すべき bootstrap secret の全 object の存在を確認し、YubiKey に保存済みの名前を固定順で stdout に 1 行ずつ出力する。PIN 検証、touch、復号は行わず、secret 本文、ciphertext、wrapped key は出力しない。manifest が未初期化または不正な場合は停止する。
+予約 bootstrap secret object を確認し、YubiKey に保存済みの名前を固定順で stdout に 1 行ずつ出力する。PIN 検証、touch、復号は行わず、secret 本文、ciphertext、wrapped key は出力しない。完全に空の専用領域は成功・空出力とする。正常な manifest と slot 82 の専用 key がある状態では、保存済み bootstrap secret が任意の subset（空集合を含む）でも成功とし、存在する名前だけを出力する。manifest 欠落なのに予約 object、slot 82 key、または slot 82 certificate が残る状態、不正 manifest、manifest があるのに slot 82 key がない状態は停止する。PIN prompt が発生した場合は成功扱いにせず、実装回帰として停止する。
+
+### clear
+
+clear は予約済み manifest / secret object と slot 82 certificate を消去し、slot 82 の専用 key を再生成して置換することで setup 可能な状態へ戻す。既存 key を消去する操作は行わない。予約外の PIV 領域および FIDO2 / OTP / OpenPGP は対象外である。PIV PIN を要求してはならず、PIN prompt が発生した場合は成功扱いにせず停止する。
+
+provisioning script が `clear` または `setup` へ移行できる終了コード契約は、設計文書では重複定義せず [secret-recovery spec](secret-recovery-spec.md) に従う。
 
 ### `dotfiles secrets yubikey enroll-primary`
 
 primary YubiKey を復旧入口として登録する高水準コマンドである。これは bootstrap secret の正本を最初に登録する操作なので、`bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を prompt から受け取る。`bw-email` は通常表示 prompt、`bw-password` と `bitwarden-client-secret` は hidden prompt にする。非対話または migration 用に限り `--stdin-json` を許可する。
-`--stdin-json` を使う場合も PIN は controlling terminal から読み、JSON 用 stdin からは読まない。
+`--stdin-json` を使う場合も PIV PIN はいかなる入力経路からも読まない。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
@@ -229,7 +237,7 @@ spare YubiKey を復旧入口として登録する高水準コマンドである
 通常実行では、まず `--primary-serial <serial>` で明示された primary、または 1 本だけ接続されている primary YubiKey から 4 種類の secret を復号する。復号が終わった直後に spare YubiKey の解決へ進む。YubiKey を 1 本ずつしか接続できない環境では、この時点で primary を抜き、spare を挿して Enter を押す。同時接続できる環境では `--spare-serial <serial>` で spare を明示する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話実行では `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。
 
 `--stdin-json` は primary YubiKey が利用できないが、別経路で正本 secret を持っている場合の recovery / migration 用に限る。この場合だけ次の JSON を stdin から 1 回だけ受け取る。
-`enroll-primary` と `enroll-spare --stdin-json` は JSON payload を読む前に YubiKey PIN を要求し、PIN は JSON 用 stdin から読まず controlling terminal から読む。controlling terminal を開けない場合は JSON payload を読み始める前に停止する。
+`enroll-primary` と `enroll-spare --stdin-json` は PIV PIN を要求せず、JSON payload を通常の入力として読む。
 
 ```json
 {
@@ -310,7 +318,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - manifest が存在し、app、version が期待値と一致する。
 - `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` の blob が存在する。
 - blob の magic、version、algorithm、secret id、length field が妥当である。
-- PIN 検証 と touch を経て 4 種類の secret を復号できる。
+- touch を経て 4 種類の secret を復号できる。
 - 復号した secret は空ではない。
 
 このコマンドは GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F 登録状況を検証しない。
@@ -330,7 +338,6 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` の差し替え待ちで spare YubiKey が検出できない、または timeout した。
 - `enroll-spare` で平文 secret を読む前に core dump 無効化に失敗した。
-- `enroll-primary --stdin-json`、`enroll-spare --stdin-json`、`rotate-bws-token --stdin` で PIN 入力に必要な controlling terminal を開けない。
 - `rotate-bws-token` の同一実行内で同一 serial を重複更新しようとした。
 - `rotate-bws-token` 後の ローカル確認 に失敗した。
 - manifest が存在するが app、version が期待値と一致しない。

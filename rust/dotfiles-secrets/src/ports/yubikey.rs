@@ -1,6 +1,6 @@
 //! YubiKey backend へ application が要求する port 契約。
 //!
-//! この module は device discovery、PIN 方針、secret storage I/O の capability だけを宣言し、
+//! この module は device discovery と secret storage I/O の capability だけを宣言し、
 //! YubiKey crate や PIV backend 型を外側へ露出しない。
 
 use super::super::{
@@ -8,16 +8,16 @@ use super::super::{
         gpg_backup::{ConnectedYubiKey, EnvelopeRecipient},
         piv::SecretStorageSpec,
         storage::{
-            SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
-            SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
-            SecretStorageWriteIntent,
+            SecretStorageClearIntent, SecretStorageReadInspection, SecretStorageReadIntent,
+            SecretStorageSetupInspection, SecretStorageSetupIntent, SecretStorageSetupProbe,
+            SecretStorageWriteInspection, SecretStorageWriteIntent,
         },
     },
     support::protection::ProtectedSecret,
 };
 use crate::Result;
 
-/// use case が primary 対象の serial を確定する capability 契約。
+/// use case が対象 YubiKey の serial を確定する capability 契約。
 ///
 /// caller は利用者指定 serial だけを渡し、device discovery の詳細を知らない。
 /// implementor は明示 serial または単一接続 device を解決し、serial 未指定で複数接続された場合は
@@ -25,62 +25,6 @@ use crate::Result;
 #[cfg_attr(test, mockall::automock)]
 pub trait DeviceSerialPort {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
-}
-
-/// use case が対象 device の PIN 要否を判定する capability 契約。
-///
-/// caller は解決済み serial だけを渡す。implementor は device API の状態確認を行い、
-/// PIN 入力そのものや secret storage の読み書きは実行しない。
-#[cfg_attr(test, mockall::automock)]
-pub trait DevicePinPolicyPort {
-    fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
-}
-
-/// use case が同一 YubiKey の serial 解決と PIN 方針確認を一体で要求する capability 契約。
-///
-/// caller は device serial 解決と、その serial に対する PIN 要否確認だけを要求する。implementor は
-/// 明示 serial または単一接続 device の解決、複数接続時の拒否、device 状態確認を外部 I/O 境界で
-/// 完了し、storage 読み書きや use case 手順を隠さない。
-#[cfg_attr(test, mockall::automock)]
-pub trait YubiKeyDevicePort {
-    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
-    fn device_requires_pin(&mut self, serial: u32) -> Result<bool>;
-}
-
-impl<T> YubiKeyDevicePort for T
-where
-    T: DeviceSerialPort + DevicePinPolicyPort,
-{
-    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
-        DeviceSerialPort::resolve_device_serial(self, requested)
-    }
-
-    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
-        DevicePinPolicyPort::device_requires_pin(self, serial)
-    }
-}
-
-impl<D, P> YubiKeyDevicePort for (&mut D, &mut P)
-where
-    D: DeviceSerialPort,
-    P: DevicePinPolicyPort,
-{
-    fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32> {
-        self.0.resolve_device_serial(requested)
-    }
-
-    fn device_requires_pin(&mut self, serial: u32) -> Result<bool> {
-        self.1.device_requires_pin(serial)
-    }
-}
-
-/// use case が spare 対象の serial を確定する capability 契約。
-///
-/// caller は spare role の候補指定だけを渡し、primary/spare の domain invariant は domain 側で
-/// 検証する。implementor は spare device の serial 解決手段を吸収し、role 関係の業務判断を持たない。
-#[cfg_attr(test, mockall::automock)]
-pub trait SpareDeviceSerialPort {
-    fn resolve_spare_device_serial(&mut self, requested_spare_serial: Option<u32>) -> Result<u32>;
 }
 
 /// use case が YubiKey secret storage へ要求する高水準 capability 契約。
@@ -107,6 +51,9 @@ pub trait SecretStoragePort {
         serial: u32,
         intent: SecretStorageSetupIntent,
     ) -> Result<()>;
+    /// 予約済み slot と custom data object だけを clear する。
+    fn clear_secret_storage(&mut self, serial: u32, intent: SecretStorageClearIntent)
+    -> Result<()>;
     /// 書き込み判定に必要な storage 状態を取得する。
     fn inspect_secret_storage_write(
         &mut self,
@@ -127,22 +74,11 @@ pub trait SecretStoragePort {
         storage: &SecretStorageSpec,
     ) -> Result<SecretStorageReadInspection>;
     /// 判定済み intent に従って対象 storage spec の secret を読み出す。
-    #[expect(
-        clippy::needless_lifetimes,
-        reason = "mockall::automock 展開のため named lifetime が必要"
-    )]
-    fn load_secret<'a>(
+    fn load_secret(
         &mut self,
         serial: u32,
         intent: &SecretStorageReadIntent,
-        pin: Option<&'a ProtectedSecret>,
     ) -> Result<ProtectedSecret>;
-    /// 対象 serial で入力済み PIN が実機に通るかを、書き込み前に検証する。
-    #[expect(
-        clippy::needless_lifetimes,
-        reason = "mockall::automock 展開のため named lifetime が必要"
-    )]
-    fn verify_pin_input<'a>(&mut self, serial: u32, pin: &'a ProtectedSecret) -> Result<()>;
 }
 
 /// use case が `gpg-secret-key-backup` recipient 運用のために接続中 YubiKey へ要求する capability 契約。
@@ -166,14 +102,6 @@ pub trait GpgRecipientPort {
     ) -> Result<EnvelopeRecipient>;
 
     /// 一致した recipient の `wrapped_dek` を、接続中 YubiKey の PIV slot `82` 秘密鍵で unwrap して DEK を得る。
-    #[expect(
-        clippy::needless_lifetimes,
-        reason = "mockall::automock 展開のため named lifetime が必要"
-    )]
-    fn unwrap_dek<'a>(
-        &mut self,
-        serial: u32,
-        recipient: &EnvelopeRecipient,
-        pin: Option<&'a ProtectedSecret>,
-    ) -> Result<ProtectedSecret>;
+    fn unwrap_dek(&mut self, serial: u32, recipient: &EnvelopeRecipient)
+    -> Result<ProtectedSecret>;
 }

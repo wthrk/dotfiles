@@ -6,7 +6,7 @@ use crate::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RestoreGpgCommand,
         gpg_restore::RestoreGpgSummary,
-        piv::{SecretName, validate_piv_pin_len},
+        piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
@@ -14,8 +14,7 @@ use crate::{
 
 /// `run_restore_gpg` が使う外部 capability を named field で束ねる。
 pub(crate) struct RestoreGpgRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
-    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
     pub(crate) bws_client: &'a B,
     pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
@@ -42,7 +41,6 @@ where
 {
     let RestoreGpgRuntime {
         device,
-        process,
         storage: storage_port,
         bws_client,
         recipient,
@@ -52,16 +50,9 @@ where
         report,
     } = runtime;
     let serial = device.resolve_device_serial(command.serial)?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
 
     // 1-2. bitwarden-client-secret を YubiKey storage から読み出し、BWS から envelope を取得する。
-    let access_token = load_bitwarden_client_secret(serial, storage_port, pin.as_ref())?;
+    let access_token = load_bitwarden_client_secret(serial, storage_port)?;
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(&access_token).await?)?;
     let secret_id = BwsSecretName::GpgSecretKeyBackup.resolve_id(
@@ -79,7 +70,7 @@ where
     // 3-4. 接続中 YubiKey に一致する recipient を解決し、DEK を unwrap して backup を復号する。
     let connected = recipient.resolve_connected_recipient(serial)?;
     let matched = envelope.resolve_recipient(&connected)?;
-    let dek = recipient.unwrap_dek(serial, matched, pin.as_ref())?;
+    let dek = recipient.unwrap_dek(serial, matched)?;
     let backup = cipher.decrypt_backup(&dek, envelope.ciphertext())?;
 
     // 5. 復号済み backup から primary fingerprint を導出し、metadata と一致を検証する。
@@ -143,13 +134,12 @@ fn restore_imported_key(
 fn load_bitwarden_client_secret(
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&crate::support::protection::ProtectedSecret>,
 ) -> Result<crate::support::protection::ProtectedSecret> {
     let storage = SecretName::BitwardenClientSecret.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port
-        .load_secret(serial, &intent, pin)
+        .load_secret(serial, &intent)
         .map_err(|error| intent.decode_error(error))?;
     intent.validate_loaded_secret(&secret)?;
     Ok(secret)
@@ -267,7 +257,7 @@ mod tests {
             .expect_load_secret()
             .times(1)
             .in_sequence(sequence)
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
     }
 
     #[tokio::test]
@@ -279,13 +269,6 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence);
 
@@ -314,7 +297,7 @@ mod tests {
         recipient
             .expect_unwrap_dek()
             .times(1)
-            .returning(|_, _, _| Ok(material(b"dek")));
+            .returning(|_, _| Ok(material(b"dek")));
 
         let mut cipher = ports::MockBackupCipherPort::new();
         cipher
@@ -377,8 +360,7 @@ mod tests {
         run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
             RestoreGpgRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 recipient: &mut recipient,
@@ -397,18 +379,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
             Ok(vec![crate::domain::bws::BwsLookupCandidate {
@@ -430,7 +407,7 @@ mod tests {
             .returning(|_| Ok(connected()));
         recipient
             .expect_unwrap_dek()
-            .returning(|_, _, _| Ok(material(b"dek")));
+            .returning(|_, _| Ok(material(b"dek")));
         let mut cipher = ports::MockBackupCipherPort::new();
         cipher
             .expect_decrypt_backup()
@@ -449,8 +426,7 @@ mod tests {
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
             RestoreGpgRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 recipient: &mut recipient,
@@ -473,18 +449,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
             Ok(vec![crate::domain::bws::BwsLookupCandidate {
@@ -506,7 +477,7 @@ mod tests {
             .returning(|_| Ok(connected()));
         recipient
             .expect_unwrap_dek()
-            .returning(|_, _, _| Ok(material(b"dek")));
+            .returning(|_, _| Ok(material(b"dek")));
         let mut cipher = ports::MockBackupCipherPort::new();
         cipher
             .expect_decrypt_backup()
@@ -557,8 +528,7 @@ mod tests {
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
             RestoreGpgRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 recipient: &mut recipient,
@@ -585,18 +555,13 @@ mod tests {
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
-        pin_policy
-            .expect_device_requires_pin()
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_read()
             .returning(|_, _| Ok(read_inspection()));
         storage
             .expect_load_secret()
-            .returning(|_, _, _| Ok(material(b"access-token")));
+            .returning(|_, _| Ok(material(b"access-token")));
         let mut bws = ports::MockBwsClientPort::new();
         bws.expect_list_bws_projects().returning(|_| {
             Ok(vec![crate::domain::bws::BwsLookupCandidate {
@@ -618,7 +583,7 @@ mod tests {
             .returning(|_| Ok(connected()));
         recipient
             .expect_unwrap_dek()
-            .returning(|_, _, _| Ok(material(b"dek")));
+            .returning(|_, _| Ok(material(b"dek")));
         let mut cipher = ports::MockBackupCipherPort::new();
         cipher
             .expect_decrypt_backup()
@@ -674,8 +639,7 @@ mod tests {
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
             RestoreGpgRuntime {
-                device: &mut (&mut device, &mut pin_policy),
-                process: &process,
+                device: &mut device,
                 storage: &mut storage,
                 bws_client: &bws,
                 recipient: &mut recipient,

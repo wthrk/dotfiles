@@ -55,6 +55,8 @@ mod tests {
         SecretStorageWriteInspection {
             manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
             object_exists,
+            reserved_slot_key_exists: true,
+            reserved_slot_certificate_exists: false,
         }
     }
 

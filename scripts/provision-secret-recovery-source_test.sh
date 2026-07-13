@@ -15,6 +15,13 @@ fail() {
   exit 1
 }
 
+test_script_never_requests_yubikey_pin() {
+  if grep -Eiq 'read[_ -]?pin|--pin|pin_input' \
+    "$REPO_ROOT/scripts/provision-secret-recovery-source.sh"; then
+    fail 'provision script に YubiKey PIN の対話または引数経路が残っている'
+  fi
+}
+
 reset_test_state() {
   unset BWS_ACCESS_TOKEN
   PUT_LOG="$TEST_DIR/put.log"
@@ -63,26 +70,187 @@ test_missing_token_prompts_and_puts() {
     || fail '未保存 token が prompt 後に対象 YubiKey へ保存されなかった'
 }
 
-test_status_failure_does_not_prompt_or_put() {
+test_repeated_run_after_single_secret_put_does_not_clear() {
+  reset_test_state
+  local mutation_log="$TEST_DIR/repeated-run-mutation.log"
+  local stored_marker="$TEST_DIR/repeated-run-stored"
+  local initialized_marker="$TEST_DIR/repeated-run-initialized"
+  : > "$mutation_log"
+  rm -f "$stored_marker"
+  rm -f "$initialized_marker"
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status')
+        if [ -e "$stored_marker" ]; then
+          printf '%s\n' 'bitwarden-client-secret'
+        fi
+        ;;
+      'secrets yubikey setup') printf '%s\n' "$*" >> "$mutation_log" ;;
+      'secrets yubikey clear') fail "正常な partial storage に clear が実行された: $*" ;;
+      'secrets yubikey put')
+        if [ ! -e "$stored_marker" ] && [ ! -e "$initialized_marker" ]; then
+          : > "$initialized_marker"
+          return 43
+        fi
+        local stored_token
+        IFS= read -r stored_token
+        printf '%s|%s\n' "$*" "$stored_token" >> "$PUT_LOG"
+        : > "$stored_marker"
+        ;;
+      *) fail "再実行時に予期しない dotfiles 呼び出し: $*" ;;
+    esac
+  }
+
+  ensure_bws_access_token_stored primary 2001
+  unset BWS_ACCESS_TOKEN
+  ensure_bws_access_token_stored primary 2001
+  grep -Fxq 'secrets yubikey setup --serial 2001' "$mutation_log" \
+    || fail '初回の空 storage に setup が実行されなかった'
+  [ "$(wc -l < "$mutation_log")" -eq 1 ] \
+    || fail '再実行時に余分な storage mutation が実行された'
+  [ "$(wc -l < "$PUT_LOG")" -eq 1 ] \
+    || fail '再実行時に token の再入力または再保存が実行された'
+}
+
+test_empty_yubikey_initializes_before_put() {
+  reset_test_state
+  local setup_log="$TEST_DIR/setup.log"
+  local initialized_marker="$TEST_DIR/empty-yubikey-initialized"
+  : > "$setup_log"
+  rm -f "$initialized_marker"
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status') ;;
+      'secrets yubikey setup') printf '%s\n' "$*" >> "$setup_log" ;;
+      'secrets yubikey put')
+        if [ ! -e "$initialized_marker" ]; then
+          : > "$initialized_marker"
+          return 43
+        fi
+        local stored_token
+        IFS= read -r stored_token
+        printf '%s|%s\n' "$*" "$stored_token" >> "$PUT_LOG"
+        ;;
+      *) fail "空 YubiKey で予期しない dotfiles 呼び出し: $*" ;;
+    esac
+  }
+
+  ensure_bws_access_token_stored primary 2001
+  grep -Fxq 'secrets yubikey setup --serial 2001' "$setup_log" \
+    || fail '空 YubiKey に setup が実行されなかった'
+  grep -Fxq 'secrets yubikey put bitwarden-client-secret --stdin --serial 2001|fixture-token' "$PUT_LOG" \
+    || fail '空 YubiKey に token が保存されなかった'
+}
+
+test_normal_empty_manifest_puts_without_setup() {
+  reset_test_state
+  local mutation_log="$TEST_DIR/normal-empty-mutation.log"
+  : > "$mutation_log"
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status') ;;
+      'secrets yubikey setup'|'secrets yubikey clear')
+        printf '%s\n' "$*" >> "$mutation_log"
+        ;;
+      'secrets yubikey put')
+        local stored_token
+        IFS= read -r stored_token
+        printf '%s|%s\n' "$*" "$stored_token" >> "$PUT_LOG"
+        ;;
+      *) fail "正常な空 manifest で予期しない dotfiles 呼び出し: $*" ;;
+    esac
+  }
+
+  ensure_bws_access_token_stored primary 2001
+  [ ! -s "$mutation_log" ] || fail '正常な空 manifest に setup/clear が実行された'
+  grep -Fxq 'secrets yubikey put bitwarden-client-secret --stdin --serial 2001|fixture-token' "$PUT_LOG" \
+    || fail '正常な空 manifest に token が保存されなかった'
+}
+
+test_put_failure_other_than_uninitialized_does_not_setup_or_retry() {
+  reset_test_state
+  local mutation_log="$TEST_DIR/put-failure-mutation.log"
+  : > "$mutation_log"
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status') ;;
+      'secrets yubikey put') return 1 ;;
+      'secrets yubikey setup'|'secrets yubikey clear')
+        printf '%s\n' "$*" >> "$mutation_log"
+        ;;
+      *) fail "put の通常失敗時に予期しない dotfiles 呼び出し: $*" ;;
+    esac
+  }
+
+  if (ensure_bws_access_token_stored primary 2001) >/dev/null 2>&1; then
+    fail 'put の通常失敗後に成功扱いになった'
+  fi
+  [ ! -s "$mutation_log" ] || fail 'put の通常失敗後に setup/clear が実行された'
+  [ ! -s "$PUT_LOG" ] || fail 'put の通常失敗後に保存済み token が記録された'
+}
+
+test_invalid_storage_clears_then_initializes_and_puts() {
+  reset_test_state
+  local mutation_log="$TEST_DIR/mutation.log"
+  : > "$mutation_log"
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status') return 42 ;;
+      'secrets yubikey clear'|'secrets yubikey setup') printf '%s\n' "$*" >> "$mutation_log" ;;
+      'secrets yubikey put')
+        local stored_token
+        IFS= read -r stored_token
+        printf '%s|%s\n' "$*" "$stored_token" >> "$PUT_LOG"
+        ;;
+      *) fail "不正 storage で予期しない dotfiles 呼び出し: $*" ;;
+    esac
+  }
+
+  ensure_bws_access_token_stored primary 2001
+  grep -Fxq 'secrets yubikey clear --serial 2001 --yes' "$mutation_log" \
+    || fail '不正 storage に clear が実行されなかった'
+  grep -Fxq 'secrets yubikey setup --serial 2001' "$mutation_log" \
+    || fail 'clear 後に setup が実行されなかった'
+}
+
+test_clear_failure_does_not_prompt_or_put() {
+  reset_test_state
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status') return 42 ;;
+      'secrets yubikey clear') return 42 ;;
+      *) fail "clear 失敗時に予期しない dotfiles 呼び出し: $*" ;;
+    esac
+  }
+
+  if (ensure_bws_access_token_stored primary 2001) >/dev/null 2>&1; then
+    fail 'clear 失敗後に保存へ進んだ'
+  fi
+  [ ! -s "$PUT_LOG" ] || fail 'clear 失敗後に put が実行された'
+}
+
+test_unobservable_status_failure_does_not_clear_prompt_or_put() {
   reset_test_state
   dotfiles() {
     if [ "$1 $2 $3" = 'secrets yubikey status' ]; then
-      return 42
+      return 1
     fi
-    fail "status 失敗時に予期しない dotfiles 呼び出し: $*"
+    fail "観測不能な status 失敗時に予期しない dotfiles 呼び出し: $*"
   }
 
-  local output
-  if output="$(ensure_bws_access_token_stored primary 2001 2>&1)"; then
-    fail 'status 失敗を未保存として処理した'
+  if (ensure_bws_access_token_stored primary 2001) >/dev/null 2>&1; then
+    fail '観測不能な status 失敗後に保存へ進んだ'
   fi
-  case "$output" in
-    *'保存状況を確認できません'*) ;;
-    *) fail 'status 失敗の停止理由が報告されない' ;;
-  esac
-  [ ! -s "$PUT_LOG" ] || fail 'status 失敗時に put が実行された'
+  [ ! -s "$PUT_LOG" ] || fail '観測不能な status 失敗後に put が実行された'
 }
 
 test_saved_token_skips_prompt_and_put
 test_missing_token_prompts_and_puts
-test_status_failure_does_not_prompt_or_put
+test_repeated_run_after_single_secret_put_does_not_clear
+test_empty_yubikey_initializes_before_put
+test_normal_empty_manifest_puts_without_setup
+test_put_failure_other_than_uninitialized_does_not_setup_or_retry
+test_invalid_storage_clears_then_initializes_and_puts
+test_clear_failure_does_not_prompt_or_put
+test_unobservable_status_failure_does_not_clear_prompt_or_put
+test_script_never_requests_yubikey_pin

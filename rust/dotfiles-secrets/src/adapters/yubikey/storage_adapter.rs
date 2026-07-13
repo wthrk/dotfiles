@@ -7,9 +7,9 @@ use crate::{
     domain::{
         piv::{PivObjectId, SecretStorageSpec},
         storage::{
-            SecretStorageReadInspection, SecretStorageReadIntent, SecretStorageSetupInspection,
-            SecretStorageSetupIntent, SecretStorageSetupProbe, SecretStorageWriteInspection,
-            SecretStorageWriteIntent,
+            SecretStorageClearIntent, SecretStorageReadInspection, SecretStorageReadIntent,
+            SecretStorageSetupInspection, SecretStorageSetupIntent, SecretStorageSetupProbe,
+            SecretStorageWriteInspection, SecretStorageWriteIntent,
         },
     },
     ports::yubikey::SecretStoragePort,
@@ -45,20 +45,18 @@ impl SecretStoragePort for StorageAdapter {
         probe: &SecretStorageSetupProbe,
     ) -> Result<SecretStorageSetupInspection> {
         let mut device = self.open_device_by_serial(serial)?;
-        let key_exists = device.key_exists()?;
+        let key_exists = device.key_exists()? || device.reserved_slot_certificate_exists()?;
         let piv_version = device.piv_application_version();
-        let pin_retries = device.pin_retries()?;
-        let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
+        let manifest_bytes = non_empty(device.read_object(PivObjectId::MANIFEST)?);
         let mut occupied_object_ids = Vec::new();
         for object_id in probe.object_ids() {
-            if device.read_object(*object_id)?.is_some() {
+            if non_empty(device.read_object(*object_id)?).is_some() {
                 occupied_object_ids.push(*object_id);
             }
         }
         Ok(SecretStorageSetupInspection {
             key_exists,
             piv_version,
-            pin_retries,
             manifest_bytes,
             occupied_object_ids,
         })
@@ -89,17 +87,34 @@ impl SecretStoragePort for StorageAdapter {
         device.write_object(PivObjectId::MANIFEST, &mut intent.manifest_bytes)
     }
 
+    fn clear_secret_storage(
+        &mut self,
+        serial: u32,
+        intent: SecretStorageClearIntent,
+    ) -> Result<()> {
+        let mut device = self.open_device_by_serial(serial)?;
+        device.check_management_auth_preconditions()?;
+        for object_id in intent.object_ids {
+            device.clear_object(object_id)?;
+        }
+        device.clear_reserved_slot_certificate()?;
+        device.generate_key()?;
+        Ok(())
+    }
+
     fn inspect_secret_storage_write(
         &mut self,
         serial: u32,
         storage: &SecretStorageSpec,
     ) -> Result<SecretStorageWriteInspection> {
         let mut device = self.open_device_by_serial(serial)?;
-        let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
-        let object_exists = device.read_object(storage.object_id)?.is_some();
+        let manifest_bytes = non_empty(device.read_object(PivObjectId::MANIFEST)?);
+        let object_exists = non_empty(device.read_object(storage.object_id)?).is_some();
         Ok(SecretStorageWriteInspection {
             manifest_bytes,
             object_exists,
+            reserved_slot_key_exists: device.key_exists()?,
+            reserved_slot_certificate_exists: device.reserved_slot_certificate_exists()?,
         })
     }
 
@@ -125,8 +140,8 @@ impl SecretStoragePort for StorageAdapter {
     ) -> Result<SecretStorageReadInspection> {
         let _session = SecretSession::start()?;
         let mut device = self.open_device_by_serial(serial)?;
-        let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
-        let encoded = device.read_object(storage.object_id)?;
+        let manifest_bytes = non_empty(device.read_object(PivObjectId::MANIFEST)?);
+        let encoded = non_empty(device.read_object(storage.object_id)?);
         Ok(SecretStorageReadInspection {
             manifest_bytes,
             encoded,
@@ -137,25 +152,14 @@ impl SecretStoragePort for StorageAdapter {
         &mut self,
         serial: u32,
         intent: &SecretStorageReadIntent,
-        pin: Option<&ProtectedSecret>,
     ) -> Result<ProtectedSecret> {
         let _session = SecretSession::start()?;
         let mut device = self.open_device_by_serial(serial)?;
-        if device.requires_pin_input() {
-            let Some(pin) = pin else {
-                anyhow::bail!("PIN is required for this operation");
-            };
-            device.verify_pin(pin)?;
-        }
         device.open_from_storage(intent.storage.clone(), &intent.encoded)
     }
+}
 
-    fn verify_pin_input(&mut self, serial: u32, pin: &ProtectedSecret) -> Result<()> {
-        let _session = SecretSession::start()?;
-        let mut device = self.open_device_by_serial(serial)?;
-        if !device.requires_pin_input() {
-            return Ok(());
-        }
-        device.verify_pin(pin)
-    }
+/// PIV object の空 payload は、backend 間で共通して「未保存」と扱う。
+fn non_empty(value: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    value.filter(|bytes| !bytes.is_empty())
 }

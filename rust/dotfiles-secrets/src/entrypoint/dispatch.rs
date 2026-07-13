@@ -7,10 +7,10 @@ use crate::{
     Result, application,
     domain::{
         commands::{
-            AddGpgBackupSpareCommand, BwLoginCommand, EnrollPrimaryCommand, EnrollSpareCommand,
-            ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
-            RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
-            StatusCommand, VerifyYubikeyCommand,
+            AddGpgBackupSpareCommand, BwLoginCommand, ClearCommand, EnrollPrimaryCommand,
+            EnrollSpareCommand, ProvisionPasswordStoreRemoteCommand, PutCommand,
+            RegisterGpgBackupCommand, RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand,
+            SetupCommand, StatusCommand, VerifyYubikeyCommand,
         },
         gpg_backup::PrimaryFingerprint,
         verification::ExternalCheck,
@@ -30,11 +30,17 @@ pub(super) async fn dispatch(
                         serial: options.serial,
                     },
                     &mut ports.device,
-                    &mut ports.device_pin_policy,
-                    &ports.process_io,
                     &mut ports.storage,
                 )
             }
+            super::super::YubikeyCommand::Clear(options) => application::run_clear_with::run_clear_with(
+                ClearCommand {
+                    serial: options.serial,
+                    confirmed: options.yes,
+                },
+                &mut ports.device,
+                &mut ports.storage,
+            ),
             super::super::YubikeyCommand::Put(options) => {
                 let command = PutCommand {
                     name: options.name,
@@ -73,8 +79,6 @@ pub(super) async fn dispatch(
                     application::run_enroll_primary_with_stdin_json::run_enroll_primary_with_stdin_json(
                         command,
                         &mut ports.device,
-                        &mut ports.device_pin_policy,
-                        &ports.process_io,
                         &ports.process_io,
                         &mut ports.storage,
                         &ports.report,
@@ -83,8 +87,6 @@ pub(super) async fn dispatch(
                     application::run_enroll_primary_with_prompt::run_enroll_primary_with_prompt(
                         command,
                         &mut ports.device,
-                        &mut ports.device_pin_policy,
-                        &ports.process_io,
                         &ports.process_io,
                         &mut ports.storage,
                         &ports.report,
@@ -99,9 +101,7 @@ pub(super) async fn dispatch(
                 if options.stdin_json {
                     application::run_enroll_spare_with_stdin_json::run_enroll_spare_with_stdin_json(
                         command,
-                        &mut ports.spare_device,
-                        &mut ports.device_pin_policy,
-                        &ports.process_io,
+                        &mut ports.device,
                         &ports.process_io,
                         &mut ports.storage,
                         &ports.report,
@@ -110,9 +110,6 @@ pub(super) async fn dispatch(
                     application::run_enroll_spare_with_prompt::run_enroll_spare_with_prompt(
                         command,
                         &mut ports.device,
-                        &mut ports.spare_device,
-                        &mut ports.device_pin_policy,
-                        &ports.process_io,
                         &mut ports.storage,
                         &ports.report,
                     )
@@ -125,8 +122,7 @@ pub(super) async fn dispatch(
                 if options.stdin {
                     application::run_rotate_bws_token_with_stdin::run_rotate_bws_token_with_stdin(
                         command,
-                        &mut ports.device_pin_policy,
-                        &ports.process_io,
+                        &mut ports.device,
                         &ports.process_io,
                         &mut ports.storage,
                         &ports.report,
@@ -138,7 +134,6 @@ pub(super) async fn dispatch(
                             device: &mut ports.device,
                             secret_input: &ports.process_io,
                             continuation: &ports.process_io,
-                            pin_input: &ports.process_io,
                             storage: &mut ports.storage,
                             report: &ports.report,
                         },
@@ -163,7 +158,6 @@ pub(super) async fn dispatch(
                 },
                 application::run_verify_yubikey_with::VerifyYubikeyRuntime {
                     device: &mut ports.device,
-                    process: &ports.process_io,
                     storage: &mut ports.storage,
                     report: &ports.report,
                     bws_client: &ports.bws_client,
@@ -182,7 +176,6 @@ pub(super) async fn dispatch(
                 },
                 application::run_bw_login::BwLoginRuntime {
                     device: &mut ports.device,
-                    process: &ports.process_io,
                     storage: &mut ports.storage,
                     otp_input: &ports.process_io,
                     bw_login: &ports.bw_login,
@@ -198,7 +191,6 @@ pub(super) async fn dispatch(
                 },
                 application::run_restore_gpg::RestoreGpgRuntime {
                     device: &mut ports.device,
-                    process: &ports.process_io,
                     storage: &mut ports.storage,
                     bws_client: &ports.bws_client,
                     recipient: &mut ports.gpg_recipient,
@@ -217,7 +209,6 @@ pub(super) async fn dispatch(
                 },
                 application::run_restore_pass::RestorePassRuntime {
                     device: &mut ports.device,
-                    process: &ports.process_io,
                     storage: &mut ports.storage,
                     bws_client: &ports.bws_client,
                     keyring: &mut ports.gpg_keyring,
@@ -241,7 +232,6 @@ pub(super) async fn dispatch(
                     },
                     application::run_register_gpg_backup_primary::RegisterGpgBackupPrimaryRuntime {
                         device: &mut ports.device,
-                        process: &ports.process_io,
                         storage: &mut ports.storage,
                         keyring: &mut ports.gpg_keyring,
                         cipher: &mut ports.backup_cipher,
@@ -261,8 +251,6 @@ pub(super) async fn dispatch(
                     },
                     application::run_add_gpg_backup_spare::AddGpgBackupSpareRuntime {
                         device: &mut ports.device,
-                        spare_device_serial: &mut ports.spare_device,
-                        process: &ports.process_io,
                         storage: &mut ports.storage,
                         bws_client: &ports.bws_client,
                         recipient: &mut ports.gpg_recipient,
@@ -281,7 +269,6 @@ pub(super) async fn dispatch(
                         url: options.url,
                     },
                     &mut ports.device,
-                    &ports.process_io,
                     &mut ports.storage,
                     &ports.bws_client,
                     &ports.process_io,

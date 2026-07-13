@@ -6,7 +6,7 @@ use crate::{
         bw_login::{BwLoginEmail, BwOtp},
         bws::{BwsProjectName, BwsSecretName},
         commands::VerifyYubikeyCommand,
-        piv::{SecretName, validate_piv_pin_len},
+        piv::SecretName,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
         verification::{CheckName, CheckStatus, VerifySummary},
     },
@@ -16,8 +16,7 @@ use crate::{
 
 /// `run_verify_yubikey_with` が使う外部 capability を named field で束ねる。
 pub(crate) struct VerifyYubikeyRuntime<'a, B, L> {
-    pub(crate) device: &'a mut dyn ports::YubiKeyDevicePort,
-    pub(crate) process: &'a dyn ports::PinInputPort,
+    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
     pub(crate) report: &'a dyn ports::ReportPort,
     pub(crate) bws_client: &'a B,
@@ -41,7 +40,6 @@ where
 {
     let VerifyYubikeyRuntime {
         device,
-        process,
         storage: storage_port,
         report,
         bws_client,
@@ -51,13 +49,6 @@ where
     } = runtime;
     let requested = command.requested_external_checks()?;
     let serial = device.resolve_device_serial(command.serial)?;
-    let pin = if device.device_requires_pin(serial)? {
-        let pin = process.read_pin()?;
-        validate_piv_pin_len(pin.len())?;
-        Some(pin)
-    } else {
-        None
-    };
     // local storage 検証（ローカル保管確認）: 4 secret（bw-email / bw-password / bitwarden-client-id / bitwarden-client-secret）すべての
     // 存在・復号可能性を inspect → intent → load → validate で検証する（yubikey-secret-storage-design.md L280）。
     // master password（`bw-password`）・`bw-email`・`bitwarden-client-secret` の lifetime を最小化するため、検証後は
@@ -69,7 +60,7 @@ where
             let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
             let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
             let secret = storage_port
-                .load_secret(serial, &intent, pin.as_ref())
+                .load_secret(serial, &intent)
                 .map_err(|error| intent.decode_error(error))?;
             // local storage 検証範囲は縮小しない。4 secret すべての存在・復号可能性をここで検証する。
             // 検証後の secret は match で振り分けず drop し、retain しない。
@@ -96,7 +87,6 @@ where
                     serial,
                     SecretName::BitwardenClientSecret,
                     storage_port,
-                    pin.as_ref(),
                 ) {
                     Ok(secret) => secret,
                     Err(error) => {
@@ -132,7 +122,6 @@ where
                     command.email_override.as_deref(),
                     serial,
                     storage_port,
-                    pin.as_ref(),
                     otp_input,
                     bw_login_port,
                 )
@@ -215,7 +204,6 @@ async fn run_bw_login_check<L>(
     email_override: Option<&str>,
     serial: u32,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&ProtectedSecret>,
     otp_input: &dyn ports::BwOtpInputPort,
     bw_login_port: &L,
 ) -> Result<()>
@@ -226,11 +214,11 @@ where
     let email: BwLoginEmail = match email_override {
         Some(value) => BwLoginEmail::parse(value)?,
         None => {
-            let bw_email = load_yubikey_secret(serial, SecretName::BwEmail, storage_port, pin)?;
+            let bw_email = load_yubikey_secret(serial, SecretName::BwEmail, storage_port)?;
             bw_login::parse_email(&bw_email)?
         }
     };
-    let bw_password = load_yubikey_secret(serial, SecretName::BwPassword, storage_port, pin)?;
+    let bw_password = load_yubikey_secret(serial, SecretName::BwPassword, storage_port)?;
     let otp = BwOtp::parse(&otp_input.read_bw_otp()?)?;
     bw_login_port
         .login_and_unlock(&email, &bw_password, &otp)
@@ -241,19 +229,18 @@ where
 /// YubiKey storage の read 経路（inspect → intent → load → validate）で指定 secret を on-demand 取得する。
 ///
 /// この helper は application 層の順序制御（必要な分岐の直前で必要 secret だけを読み、戻ると drop する）に
-/// 属するため `pub` にしない。pin はこの use case で取得済みの値を渡す（追加の touch を要しない read 操作）。
+/// 属するため `pub` にしない。read 操作は追加の入力を要求しない。
 /// `run_bw_login.rs` の同名 helper と同方針だが use case-to-use case call を避けるため本 file に閉じる。
 fn load_yubikey_secret(
     serial: u32,
     name: SecretName,
     storage_port: &mut dyn ports::SecretStoragePort,
-    pin: Option<&ProtectedSecret>,
 ) -> Result<ProtectedSecret> {
     let storage = name.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
     let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
     let secret = storage_port
-        .load_secret(serial, &intent, pin)
+        .load_secret(serial, &intent)
         .map_err(|error| intent.decode_error(error))?;
     intent.validate_loaded_secret(&secret)?;
     Ok(secret)
@@ -397,18 +384,16 @@ mod tests {
             .expect_load_secret()
             .times(1)
             .in_sequence(sequence)
-            .withf(move |actual_serial, intent, _| {
+            .withf(move |actual_serial, intent| {
                 *actual_serial == serial && intent.storage.name == name
             })
-            .returning(move |_, intent, _| Ok(secret_value(intent.storage.name)));
+            .returning(move |_, intent| Ok(secret_value(intent.storage.name)));
     }
 
     #[tokio::test]
     async fn verify_rejects_conflicting_external_check_flags_before_ports() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         device_serial.expect_resolve_device_serial().times(0);
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         storage.expect_inspect_secret_storage_read().times(0);
         let report = ports::MockReportPort::new();
@@ -425,8 +410,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -443,20 +427,12 @@ mod tests {
     #[tokio::test]
     async fn verify_bws_check_fetches_required_secrets_and_reports_ok() -> crate::Result<()> {
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
@@ -537,8 +513,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -660,19 +635,12 @@ mod tests {
     #[tokio::test]
     async fn verify_bws_check_reports_project_lookup_failure() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
@@ -709,8 +677,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -727,19 +694,12 @@ mod tests {
     #[tokio::test]
     async fn verify_bws_check_reports_secret_lookup_failure() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
@@ -784,8 +744,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -802,19 +761,12 @@ mod tests {
     #[tokio::test]
     async fn verify_bws_check_reports_fetch_failure() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
@@ -873,8 +825,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -893,20 +844,12 @@ mod tests {
         use crate::domain::bw_login::{BwLoginEmail, BwOtp, BwSessionKey};
 
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // bw-login 分岐（override 未指定）は bw-email → bw-password を on-demand ロードする。
@@ -957,8 +900,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -978,20 +920,12 @@ mod tests {
         use crate::domain::bw_login::{BwLoginEmail, BwOtp, BwSessionKey};
 
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         // local storage 検証範囲は縮小しない: bw-email を含む 4 secret を引き続き検証する。
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
@@ -1041,8 +975,7 @@ mod tests {
                 email_override: Some("  override@example.com  ".to_owned()),
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -1057,19 +990,12 @@ mod tests {
     #[tokio::test]
     async fn verify_bw_login_check_reports_failure_when_login_fails() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
         // bw-login 分岐（override 未指定）は bw-email → bw-password を on-demand ロードする。
@@ -1102,8 +1028,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,
@@ -1125,20 +1050,12 @@ mod tests {
         use crate::domain::bw_login::{BwLoginEmail, BwOtp, BwSessionKey};
 
         let mut device_serial = ports::MockDeviceSerialPort::new();
-        let mut pin_policy = ports::MockDevicePinPolicyPort::new();
         let mut sequence = mockall::Sequence::new();
         device_serial
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|requested| Ok(requested.expect("serial")));
-        pin_policy
-            .expect_device_requires_pin()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(false));
-
-        let process = ports::MockPinInputPort::new();
         let mut storage = ports::MockSecretStoragePort::new();
         // local 検証（4 secret）→ Bws 分岐 access-token を順序付きで期待する。BwLogin 分岐の
         // bw-email → bw-password は BWS port 呼び出しの後に続けて期待する（後段で sequence に追加）。
@@ -1238,8 +1155,7 @@ mod tests {
                 email_override: None,
             },
             VerifyYubikeyRuntime {
-                device: &mut (&mut device_serial, &mut pin_policy),
-                process: &process,
+                device: &mut device_serial,
                 storage: &mut storage,
                 report: &report,
                 bws_client: &bws,

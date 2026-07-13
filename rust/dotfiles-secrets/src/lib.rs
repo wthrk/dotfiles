@@ -16,6 +16,33 @@
 /// 通すため、`dotfiles_core::Result` を crate ルートへ再公開する互換 alias。
 pub type Result<T> = dotfiles_core::Result<T>;
 
+/// `yubikey status` が予約 storage の観測済み不整合を検出したときの終了コード。
+///
+/// script はこの値だけを clear の許可根拠にする。USB/PCSC/device discovery などの観測失敗は
+/// このコードに変換しない。
+pub const SECRET_STORAGE_STATUS_INVALID_EXIT_CODE: u8 = 42;
+
+/// `yubikey put` が完全に未初期化の予約領域を観測したときの終了コード。
+///
+/// provisioning script はこの値だけを `setup` 後の再試行の許可根拠にする。
+pub const SECRET_STORAGE_UNINITIALIZED_EXIT_CODE: u8 = 43;
+
+/// error chain に `status` が観測した予約 storage 不整合が含まれるかを返す。
+///
+/// CLI process boundary だけがこれを終了コードへ変換する。外部 I/O 失敗を文言で分類しない。
+pub fn is_secret_storage_status_invalid(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<domain::storage::SecretStorageStatusInvalid>())
+}
+
+/// error chain に `put` が観測した完全未初期化状態が含まれるかを返す。
+pub fn is_secret_storage_uninitialized(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<domain::storage::SecretStorageUninitialized>())
+}
+
 /// CLI integration test 専用の internal stub 配線契約。
 ///
 /// `secrets-internal-test-stub` feature でのみ compile し、production build には含めない。
@@ -76,6 +103,7 @@ struct YubikeyOptions {
 /// YubiKey PIV storage の高水準 command と低水準 command。
 enum YubikeyCommand {
     Setup(SerialOptions),
+    Clear(ClearOptions),
     Put(PutOptions),
     Status(SerialOptions),
     EnrollPrimary(EnrollPrimaryOptions),
@@ -88,6 +116,15 @@ enum YubikeyCommand {
 struct SerialOptions {
     #[arg(long)]
     serial: Option<u32>,
+}
+
+#[derive(Args)]
+/// 予約済み secret storage 領域を明示確認の上で clear する option。
+struct ClearOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(Args)]
@@ -316,8 +353,6 @@ pub fn run_gpg(options: GpgOptions) -> Result<()> {
 /// production command path の composition root が所有する実 adapter 群。
 pub(crate) struct RuntimePorts {
     pub(crate) device: adapters::DeviceSelectionAdapter,
-    pub(crate) spare_device: adapters::DeviceSelectionAdapter,
-    pub(crate) device_pin_policy: adapters::DeviceSelectionAdapter,
     pub(crate) process_io: adapters::ProcessIoAdapter,
     pub(crate) storage: adapters::StorageAdapter,
     pub(crate) report: adapters::JsonReportAdapter,
@@ -336,8 +371,6 @@ impl RuntimePorts {
     fn production() -> Self {
         Self {
             device: adapters::DeviceSelectionAdapter::default(),
-            spare_device: adapters::DeviceSelectionAdapter::default(),
-            device_pin_policy: adapters::DeviceSelectionAdapter::default(),
             process_io: adapters::ProcessIoAdapter::default(),
             storage: adapters::StorageAdapter::default(),
             report: adapters::JsonReportAdapter::default(),
