@@ -1120,3 +1120,276 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/Yubico/yubioath-flutter/releases"
 change_item = []
+
+[[update]]
+at = "2026-07-14T20:41:45Z"
+state_old = "d6269c22865f47a62d84db0dd30be0c121bb55a9cf1119e3d9ab2f5ab0de2628"
+state_new = "d124259e8ebbeefa344d54e1d5af9091bc44c69d2ece102a7ae06a2e06c5291a"
+cursor_old = "5980197e5d2a32aff8c2181c537f9bfdd8c97278"
+nixpkgs_old = "767b0d3ec98a143ad9ed7dfc0d5553510ac27133"
+nixpkgs_new = "6cdc7fc76e8bf7fde9fa43a849fcaaa70e230dee"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "12アプリ更新: 🔒1 🔧1 ✨15 🐛15"
+
+[[update.package]]
+name = "atuin"
+old = "18.16.1"
+new = "18.17.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド 'atuin import' を追加し、他のシェルからの履歴をインポート可能にした。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境でのバグを修正し、安定性を向上させた。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package]]
+name = "awscli2"
+old = "2.34.24"
+new = "2.35.11"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/aws/aws-cli/2.35.11/CHANGELOG.rst"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Amazon MSK Replicatorが外部Apache KafkaクラスターへのmTLS認証をサポート"
+
+[[update.package]]
+name = "cargo-deny"
+old = "0.19.9"
+new = "0.20.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/EmbarkStudios/cargo-deny/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい `bans.std-replacements` リントを追加し、`std` および `core` で置き換えられたクレートをチェックする機能を追加しました。"
+ref = "https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html#the-std-replacements-field-optional"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マニフェスト内の非デフォルトビルドスクリプトパスを尊重するように修正しました。"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/880"
+
+[[update.package.change_item]]
+category = "fix"
+text = "CLIをクリーンアップし、`list` サブコマンドのバグを引き起こしていたオプション/フラグの重複を解消しました。"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/881"
+
+[[update.package]]
+name = "chromedriver"
+old = "150.0.7871.101"
+new = "150.0.7871.115"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正が行われました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "discord"
+old = "0.0.396"
+new = "0.0.398"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discord.com/tags/patch-notes"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正により、特定の環境でのアプリのクラッシュを防止しました。"
+ref = "https://discord.com/tags/patch-notes"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエモジ機能が追加され、ユーザーがカスタムエモジを作成できるようになりました。"
+ref = "https://discord.com/tags/patch-notes"
+
+[[update.package]]
+name = "docker-buildx"
+old = "0.31.1"
+new = "0.35.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/buildx/releases/tag/v0.35.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいビルドオプションを追加しました。"
+ref = "https://github.com/docker/buildx/releases/tag/v0.35.0"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のプラットフォームでのビルドエラーを修正しました。"
+ref = "https://github.com/docker/buildx/releases/tag/v0.35.0"
+
+[[update.package]]
+name = "eslint"
+old = "10.6.0"
+new = "10.7.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/eslint/eslint/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "preserve-caught-error ルールに errorClassNames オプションを追加"
+ref = "https://github.com/eslint/eslint/commit/cf2a9bf2d982642f760370c15f1196f4658f4e27"
+
+[[update.package.change_item]]
+category = "feature"
+text = "constructor callbacks 用の max-nested-callbacks オプションを追加"
+ref = "https://github.com/eslint/eslint/commit/f8b873aae53610b80b5c1005606716e05ed3b91f"
+
+[[update.package.change_item]]
+category = "feature"
+text = "radix ルールで computed `Number.parseInt` メンバーアクセスをサポート"
+ref = "https://github.com/eslint/eslint/commit/557fde8bc633d26ea4fe287d4483f287e8e6080f"
+
+[[update.package.change_item]]
+category = "feature"
+text = "no-compare-neg-zero に提案を追加"
+ref = "https://github.com/eslint/eslint/commit/0b4a73b65808f5a8fd192f15db2bf5e47002b9f7"
+
+[[update.package.change_item]]
+category = "feature"
+text = "radix ルールで無効な符号付き数値基数値を報告"
+ref = "https://github.com/eslint/eslint/commit/96cdd427db5f26c6403fba92b0f7ae4556c595ec"
+
+[[update.package.change_item]]
+category = "fix"
+text = "class expressions に ignoreClassesWithImplements を適用"
+ref = "https://github.com/eslint/eslint/commit/3e7bf15e69e6d3a2c8832356bcc2e9903cc4eede"
+
+[[update.package.change_item]]
+category = "fix"
+text = "preserve-caught-error で原因をラッピングされた括弧の外に挿入"
+ref = "https://github.com/eslint/eslint/commit/0d7d70cf013ec5bf1e4f5a0fcf7128bdf059b2d4"
+
+[[update.package.change_item]]
+category = "fix"
+text = "eqeqeq ルールで静的テンプレートリテラルを処理"
+ref = "https://github.com/eslint/eslint/commit/75ec753226010867270787b412f3dae412e421e6"
+
+[[update.package.change_item]]
+category = "fix"
+text = "eqeqeq ルールで null オプションが非等価演算子を報告しないようにする"
+ref = "https://github.com/eslint/eslint/commit/b717a22e2408389a2ad40af66543e46390669eb6"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-invalid-regexp でシャドウ化された RegExp に対する誤検出を回避"
+ref = "https://github.com/eslint/eslint/commit/e35b05f1961dcd691611bd68b6ff8a87072d6f76"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-control-regex でシャドウ化された RegExp に対する誤検出を回避"
+ref = "https://github.com/eslint/eslint/commit/a3172b69c7db63ea0321355543e3f527c7d8b76a"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-implicit-coercion でシーケンス式のオペランドを括弧で囲む"
+ref = "https://github.com/eslint/eslint/commit/d1f637eca27e523d613991c6bea5b8726b810e4c"
+
+[[update.package]]
+name = "eza"
+old = "0.23.4"
+new = "0.23.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/eza-community/eza/releases/tag/v0.23.5"
+
+[[update.package.change_item]]
+category = "feature"
+text = "行数カウント機能を追加"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Clapを使用してCLI引数の解析を行うように変更"
+
+[[update.package.change_item]]
+category = "security"
+text = "crossbeam-epochとgit2のバージョンを更新"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.101"
+new = "150.0.7871.115"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数の安定性とパフォーマンスの改善が行われました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "mas"
+old = "6.0.1"
+new = "7.0.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/mas-cli/mas/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`config`, `list`, `lookup`/`info`, `outdated` & `search` のオプションJSON出力をサポート"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`uninstall`で認識されないアプリIDを一度だけ出力するよう修正"
+
+[[update.package]]
+name = "notion-app"
+old = "4.24.0"
+new = "7.24.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.notion.so/"
+change_item = []
+
+[[update.package]]
+name = "zed-editor"
+old = "1.9.0"
+new = "1.10.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.10.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい言語モデルプロバイダーとして llama.cpp を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59964"
+
+[[update.package.change_item]]
+category = "feature"
+text = "現在の行の git blame をステータスバーに表示する設定 `git.inline_blame.location` を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59696"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "保存時のフォーマットをデフォルトで無効にしました。"

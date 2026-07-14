@@ -25,6 +25,10 @@ source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/awscli2"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
+
 ["nix/bitwarden-cli"]
 origin = "none"
 discovered_at = "2026-06-28T19:23:59Z"
@@ -48,7 +52,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/cargo-deny"]
 origin = "none"
-discovered_at = "2026-06-17T19:50:01Z"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/cargo-edit"]
 origin = "none"
@@ -85,13 +89,18 @@ origin = "none"
 discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/discord"]
-origin = "none"
-discovered_at = "2026-07-01T20:09:11Z"
+source = "https://discord.com/tags/patch-notes"
+origin = "ai-discovered"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker"]
 source = "https://www.docker.com/blog/"
 origin = "ai-discovered"
 discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/docker-buildx"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker-compose"]
 origin = "none"
@@ -108,7 +117,11 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/eslint"]
 origin = "none"
-discovered_at = "2026-06-30T20:13:18Z"
+discovered_at = "2026-07-14T20:41:45Z"
+
+["nix/eza"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/ffmpeg"]
 origin = "none"
@@ -175,6 +188,10 @@ discovered_at = "2026-06-28T19:23:59Z"
 origin = "none"
 discovered_at = "2026-06-24T19:32:43Z"
 
+["nix/mas"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
+
 ["nix/neovim"]
 origin = "none"
 discovered_at = "2026-07-11T20:09:39Z"
@@ -186,6 +203,10 @@ discovered_at = "2026-07-11T20:09:39Z"
 ["nix/nodejs"]
 origin = "none"
 discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/notion-app"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/opam"]
 source = "https://opam.ocaml.org/blog/opam-2-5-1/"
@@ -280,7 +301,7 @@ discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-07-08T20:19:09Z"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/zoxide"]
 origin = "none"
