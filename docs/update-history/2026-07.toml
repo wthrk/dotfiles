@@ -1393,3 +1393,106 @@ ref = "https://github.com/zed-industries/zed/pull/59696"
 [[update.package.change_item]]
 category = "default-change"
 text = "保存時のフォーマットをデフォルトで無効にしました。"
+
+[[update]]
+at = "2026-07-15T20:33:09Z"
+state_old = "d124259e8ebbeefa344d54e1d5af9091bc44c69d2ece102a7ae06a2e06c5291a"
+state_new = "e9944db5f17d787ac850f99c605ad1d99ca61348971dc7e05dea9eab6267afc8"
+cursor_old = "9388ff07dc634d32e48524a3f7588a12026c669a"
+nixpkgs_old = "6cdc7fc76e8bf7fde9fa43a849fcaaa70e230dee"
+nixpkgs_new = "35d3407a3816f3b341d8cf1d60abaf2b7b8166ac"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "6アプリ更新: 🔒1 🐛7"
+
+[[update.package]]
+name = "chromedriver"
+old = "150.0.7871.115"
+new = "150.0.7871.125"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 150.0.7871.125 での重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "diesel-cli"
+old = "2.3.10"
+new = "2.3.11"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "PostgreSQLの（デ）シリアライズコードにおける潜在的なパニックを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = ".load()バッチ挿入とSQLiteバックエンドの返却句の使用を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SqliteConnection::deserialize_read_only_database()の使用を強化"
+
+[[update.package]]
+name = "firefox-bin"
+old = "152.0.5"
+new = "152.0.6"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0.6/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数のバグ修正が行われました。"
+ref = "https://www.firefox.com/en-US/firefox/152.0.6/releasenotes/"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.115"
+new = "150.0.7871.125"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "セキュリティ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "markdownlint-cli"
+old = "0.49.0"
+new = "0.49.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "MD029の改善"
+ref = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "webpackでのモジュール解決の修正"
+ref = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package]]
+name = "notion-app"
+old = "7.24.0"
+new = "7.25.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.notion.so/"
+change_item = []

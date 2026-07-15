@@ -86,7 +86,7 @@ discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/diesel-cli"]
 origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/discord"]
 source = "https://discord.com/tags/patch-notes"
@@ -129,7 +129,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/fzf"]
 origin = "none"
@@ -186,7 +186,7 @@ discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/markdownlint-cli"]
 origin = "none"
-discovered_at = "2026-06-24T19:32:43Z"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/mas"]
 origin = "none"
@@ -206,7 +206,7 @@ discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/notion-app"]
 origin = "none"
-discovered_at = "2026-07-14T20:41:45Z"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/opam"]
 source = "https://opam.ocaml.org/blog/opam-2-5-1/"
