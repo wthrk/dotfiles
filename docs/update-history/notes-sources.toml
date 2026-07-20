@@ -58,6 +58,10 @@ discovered_at = "2026-07-14T20:41:45Z"
 origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/cargo-llvm-cov"]
+origin = "none"
+discovered_at = "2026-07-20T20:42:57Z"
+
 ["nix/chromedriver"]
 source = "https://chromereleases.googleblog.com/"
 origin = "ai-discovered"
@@ -133,7 +137,7 @@ discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/fzf"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/gh"]
 origin = "none"
@@ -209,9 +213,9 @@ origin = "none"
 discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/opam"]
-source = "https://opam.ocaml.org/blog/opam-2-5-1/"
+source = "https://github.com/ocaml/opam/blob/master/CHANGES"
 origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/php-with-extensions"]
 origin = "none"
@@ -229,9 +233,13 @@ discovered_at = "2026-06-11T19:26:39Z"
 origin = "none"
 discovered_at = "2026-07-01T20:09:11Z"
 
+["nix/ripgrep"]
+origin = "none"
+discovered_at = "2026-07-20T20:42:57Z"
+
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-06-29T20:03:01Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
@@ -275,7 +283,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/vips"]
 origin = "none"
@@ -301,16 +309,16 @@ discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-07-14T20:41:45Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/zoxide"]
 origin = "none"
 discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zsh"]
-source = "https://zsh.sourceforge.io/releases.html"
+source = "https://zsh.sourceforge.io/News/"
 origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/zsh-completions"]
 origin = "none"
