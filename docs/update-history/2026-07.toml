@@ -1496,3 +1496,268 @@ declared = true
 source = "nix"
 notes_url = "https://www.notion.so/"
 change_item = []
+
+[[update]]
+at = "2026-07-20T20:42:57Z"
+state_old = "e9944db5f17d787ac850f99c605ad1d99ca61348971dc7e05dea9eab6267afc8"
+state_new = "251d5925e590f5423db79b1e2370c2649b30eee717795cb457da8621a3fb306b"
+cursor_old = "d3e54f2f6aaa311ce3c3dedb7142dea9f1415da8"
+nixpkgs_old = "35d3407a3816f3b341d8cf1d60abaf2b7b8166ac"
+nixpkgs_new = "421eebfd0ec7bccd4abe826ce62d7e6e83129493"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "11アプリ更新: 🔒1 🔧3 ✨16 🐛12"
+
+[[update.package]]
+name = "cargo-llvm-cov"
+old = "0.8.5"
+new = "0.8.7"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/taiki-e/cargo-llvm-cov/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`--coverage-host-only` フラグを追加"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/493"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Cargoの新しい`build-dir`レイアウトをサポート"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/483"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ファイルごとのカバレッジ閾値を設定する`--fail-under-file-lines`オプションを追加"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/486"
+
+[[update.package.change_item]]
+category = "fix"
+text = '最近のCargoでの"missing or invalid `CACHEDIR.TAG` file"エラーを修正'
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/491"
+
+[[update.package]]
+name = "chromedriver"
+old = "150.0.7871.125"
+new = "150.0.7871.129"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 150.0.7871.129 での重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "fzf"
+old = "0.74.0"
+new = "0.74.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/junegunn/fzf/refs/tags/v0.74.1/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "入力セクションがリストセクションから視覚的に分離されている場合、情報行のデフォルトセパレーターが表示されなくなった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Zellij内でのゴースト文字と色の配置ミスを修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Neovimターミナルでのカーソル復元を修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "nushell 0.114.0以上での`str downcase`の非推奨エラーを修正した。"
+
+[[update.package.change_item]]
+category = "feature"
+text = ".debパッケージがDebian系ディストリビューション向けに追加された。"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.125"
+new = "150.0.7871.129"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "opam"
+old = "2.5.1"
+new = "2.5.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/ocaml/opam/blob/master/CHANGES"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正: opam init コマンドの動作を改善しました。"
+ref = "https://github.com/ocaml/opam/releases/tag/2.5.2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新機能: opam config コマンドに新しいオプションを追加しました。"
+ref = "https://github.com/ocaml/opam/releases/tag/2.5.2"
+
+[[update.package]]
+name = "ripgrep"
+old = "15.1.0"
+new = "15.2.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/BurntSushi/ripgrep/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = ".jjの存在チェックを行わないよう修正"
+ref = "https://github.com/BurntSushi/ripgrep/pull/3212"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数ディレクトリ間でのgitignoreマッチングバグを修正"
+ref = "https://github.com/BurntSushi/ripgrep/pull/3419"
+
+[[update.package]]
+name = "ruff"
+old = "0.15.20"
+new = "0.15.22"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.15.22"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`E402`の自動修正機能を追加"
+ref = "https://github.com/astral-sh/ruff/pull/22212"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`noqa`コメントを`ruff:ignore`に置き換えるルールを追加"
+ref = "https://github.com/astral-sh/ruff/pull/26423"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`ruff:ignore`コメントで人間が読みやすい名前を使用するルールを追加"
+ref = "https://github.com/astral-sh/ruff/pull/26682"
+
+[[update.package.change_item]]
+category = "feature"
+text = "設定セレクタで人間が読みやすい名前を使用するルールを追加"
+ref = "https://github.com/astral-sh/ruff/pull/26772"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`__all__`における誤検出を修正"
+ref = "https://github.com/astral-sh/ruff/pull/26872"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "`redefined-loop-name`で可変型の更新を無視するように変更"
+ref = "https://github.com/astral-sh/ruff/pull/25733"
+
+[[update.package]]
+name = "uv"
+old = "0.11.26"
+new = "0.11.28"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.11.28/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "security"
+text = "ZIPライブラリを更新し、ZIP処理のセキュリティを強化した。"
+ref = "https://github.com/astral-sh/rs-async-zip/compare/v0.0.18...v0.0.20"
+
+[[update.package]]
+name = "vscode"
+old = "1.127.0"
+new = "1.129.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_129"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタのテーマが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_129#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_129#bug-fixes"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "新しいデフォルト設定が適用されました。"
+ref = "https://code.visualstudio.com/updates/v1_129#default-settings"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.10.0"
+new = "1.11.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.11.3"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ターミナルスレッド内での検索機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/60292"
+
+[[update.package.change_item]]
+category = "feature"
+text = "「View」メニューに「Agent Panel」と「Git Panel」項目を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/60356"
+
+[[update.package.change_item]]
+category = "feature"
+text = "専用の「Staged Changes」と「Unstaged Changes」ビューを追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/46541"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Git Graphで列の表示/非表示を右クリックで切り替えられるようにしました。"
+ref = "https://github.com/zed-industries/zed/pull/59850"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Git Graphの詳細パネルにフルコミットメッセージをMarkdown形式で表示する機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59674"
+
+[[update.package.change_item]]
+category = "feature"
+text = "プロジェクトシンボルピッカーにプレビューウィンドウを追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59863"
+
+[[update.package]]
+name = "zsh"
+old = "5.9.1"
+new = "5.9.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://zsh.sourceforge.io/News/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マイナーなバグ修正が行われた。"
+ref = "https://zsh.sourceforge.io/News/"
