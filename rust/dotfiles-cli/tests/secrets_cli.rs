@@ -1227,7 +1227,10 @@ fn rotate_fails_when_bws_recovery_secret_is_corrupt_with_yubikey_path() -> TestR
     )?;
 
     assert!(!run.success, "output: {}", run.output);
-    assert!(run.output.contains("failed to decode bitwarden-client-secret"));
+    assert!(
+        run.output
+            .contains("failed to decode bitwarden-client-secret")
+    );
     assert_stored_secret(
         &run.final_yubikey()?,
         PRIMARY_SERIAL,
@@ -1247,7 +1250,10 @@ fn verify_fails_when_bws_recovery_secret_is_corrupt_with_yubikey_path() -> TestR
     let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(run.stderr.contains("failed to decode bitwarden-client-secret"));
+    assert!(
+        run.stderr
+            .contains("failed to decode bitwarden-client-secret")
+    );
     let stdout = run.user_stdout();
     assert!(stdout.contains("\"name\": \"local-storage\""));
     assert!(stdout.contains("\"status\": \"failed\""));
