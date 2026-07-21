@@ -18,7 +18,7 @@ YubiKey の管理操作（`setup`、`put`、`clear`、enroll、rotate）は、�
 
 ### 無対話復旧の利用者操作
 
-新規マシンの復旧では、利用者は **YubiKey を挿して復旧コマンドを実行するだけ** で開始する。`dotfiles secrets verify-yubikey --check bws`（または `--all`）、`dotfiles secrets restore-gpg`、`dotfiles secrets restore-pass` は、YubiKey 保存の `bitwarden-client-id` と `bitwarden-client-secret` を内部で一時利用する。master password、session、PIV PIN、secret を渡す environment variable / argv、YubiKey OTP、または追加の対話入力を要求してはならない。これらの credential、BWS access token、BWS response、復号途中値は stdout、stderr、log、一時ファイル、永続 environment へ出力・保存せず、use 後に破棄する。
+新規マシンの復旧では、利用者は **YubiKey を挿して復旧コマンドを実行するだけ** で開始する。`dotfiles secrets verify-yubikey --check bws`（または `--all`）、`dotfiles secrets restore-gpg`、`dotfiles secrets restore-pass` は、YubiKey 保存の `bitwarden-client-secret` を内部で一時利用する。master password、session、PIV PIN、secret を渡す environment variable / argv、YubiKey OTP、または追加の対話入力を要求してはならない。これらの credential、BWS access token、BWS response、復号途中値は stdout、stderr、log、一時ファイル、永続 environment へ出力・保存せず、use 後に破棄する。
 
 `bw-email` と `bw-password` は復旧 command を実行するための値ではない。`verify-yubikey --all`、`restore-gpg`、`restore-pass` の成功条件・入力・確認項目に混在させず、OTP を自動供給する仕組みを実装・仮定しない。Bitwarden Password Manager login は repository の CLI surface 外である。正本は [secret-recovery-spec.md の無対話復旧の利用者契約](secret-recovery-spec.md#無対話復旧の利用者契約) である。
 
@@ -90,9 +90,9 @@ YubiKey の管理操作（`setup`、`put`、`clear`、enroll、rotate）は、�
    - 既存の phone / email fallback が失効済み番号・古いメールアドレス・共有アカウントになっていないか確認し、必要なら更新する。更新後、primary / spare の両方と recovery option が同じ security 画面で有効な回復経路として残っていることを確認する。
 
 7. **[CMD][対話]** `bitwarden-client-secret` を primary / spare YubiKey へ保存する。secret は所定の stdin / prompt から、PIV PIN は controlling TTY の hidden prompt から受け取る。PIN を stdin payload、argv、environment、出力、log へ渡さない。
-   - primary 登録では `dotfiles secrets yubikey enroll-primary` で `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を保存する。個別保存を使う場合は `dotfiles secrets yubikey put bw-email`、`dotfiles secrets yubikey put bw-password`、`dotfiles secrets yubikey put bitwarden-client-id`、`dotfiles secrets yubikey put bitwarden-client-secret --stdin` をそれぞれ実行する。
-   - spare 登録では `dotfiles secrets yubikey enroll-spare` で primary から `bw-email`、`bw-password`、`bitwarden-client-id`、復旧用 `bitwarden-client-secret` を読み出し、spare に保存する。個別保存で運用する場合も primary / spare の両方に 4 secret が揃っていることを確認する。
-   - `scripts/provision-secret-recovery-source.sh` が保存するのは復旧用 `bitwarden-client-secret` だけである。`bw-email` / `bw-password` / `bitwarden-client-id` は `enroll-primary` / `enroll-spare` または個別の `put` で保存する。
+   - primary 登録では `dotfiles secrets yubikey enroll-primary` で `bw-email`、`bw-password`、復旧用 `bitwarden-client-secret` を保存する。個別保存を使う場合は `dotfiles secrets yubikey put bw-email`、`dotfiles secrets yubikey put bw-password`、`dotfiles secrets yubikey put bitwarden-client-secret --stdin` をそれぞれ実行する。
+   - spare 登録では `dotfiles secrets yubikey enroll-spare` で primary から `bw-email`、`bw-password`、復旧用 `bitwarden-client-secret` を読み出し、spare に保存する。個別保存で運用する場合も primary / spare の両方にこの 3 secret が揃っていることを確認する。
+   - `scripts/provision-secret-recovery-source.sh` が保存するのは復旧用 `bitwarden-client-secret` だけである。`bw-email` / `bw-password` は `enroll-primary` / `enroll-spare` または個別の `put` で保存する。
    - Bitwarden Password Manager 用の `bw-email` / `bw-password` と、Bitwarden Secrets Manager 用の `bitwarden-client-secret` を混同しない。Password Manager login は repository の CLI surface 外であり、Secrets Manager は `restore-gpg` / `restore-pass` / `verify-yubikey --check bws` の secret 操作に使う。
 
 8. **[手動]→[CMD][対話]** Bitwarden Secrets Manager に復旧用 secret を登録する。

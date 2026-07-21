@@ -25,7 +25,6 @@ use crate::Result;
 pub trait SecretInputPort {
     fn read_bw_email_secret(&self) -> Result<ProtectedSecret>;
     fn read_bw_password_secret(&self) -> Result<ProtectedSecret>;
-    fn read_bitwarden_client_id_secret(&self) -> Result<ProtectedSecret>;
     fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret>;
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }

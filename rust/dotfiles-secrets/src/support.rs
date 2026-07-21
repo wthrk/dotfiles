@@ -6,6 +6,8 @@ pub(crate) mod adapter_backend;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod aead;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(crate) mod bws_backend;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod bws_sdk;
 pub(crate) mod clock;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
@@ -15,7 +17,11 @@ pub(crate) mod git_clone;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod github_ssh_host_key;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+pub(crate) mod gpg_cipher_backend;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod gpg_keyring;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+pub(crate) mod gpg_keyring_backend;
 #[cfg(feature = "secrets-internal-test-stub")]
 pub(crate) mod internal_stub_bws;
 #[cfg(feature = "secrets-internal-test-stub")]
@@ -24,12 +30,15 @@ pub(crate) mod internal_stub_git;
 pub(crate) mod internal_stub_gpg;
 #[cfg(feature = "secrets-internal-test-stub")]
 pub(crate) mod internal_stub_yubikey;
+pub(crate) mod io_backend;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod password_store;
 pub(crate) mod piv_storage;
 pub(crate) mod process_io;
 pub(crate) mod protection;
 pub(crate) mod report;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+pub(crate) mod ssh_agent_backend;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod ssh_agent_protocol;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]

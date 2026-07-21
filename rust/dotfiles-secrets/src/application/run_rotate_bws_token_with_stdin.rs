@@ -122,12 +122,7 @@ mod tests {
         sequence: &mut mockall::Sequence,
         serial: u32,
     ) {
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientId,
-            SecretName::BitwardenClientSecret,
-        ] {
+        for name in [SecretName::BitwardenClientSecret] {
             storage
                 .expect_inspect_secret_storage_read()
                 .times(1)
@@ -145,9 +140,6 @@ mod tests {
                 })
                 .returning(|_, intent| {
                     Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientId => material(b"client-id"),
                         SecretName::BitwardenClientSecret => material(b"client-secret"),
                     })
                 });

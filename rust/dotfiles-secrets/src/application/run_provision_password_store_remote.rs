@@ -69,7 +69,12 @@ where
             // 不在: clone URL を入力（--url ＞ 可視プロンプト/pipe）し、検証してから新規 create する。
             let remote = resolve_remote_url(&command.url, url_input)?;
             bws_client
-                .create_password_store_remote(&access_token, &project_id, &remote)
+                .create_password_store_remote(
+                    &access_token,
+                    &project_id,
+                    secret_name.key(),
+                    &remote,
+                )
                 .await
                 .map(|_id| ())
         }
@@ -93,6 +98,7 @@ where
                     &access_token,
                     &project_id,
                     &secret_id,
+                    secret_name.key(),
                     &remote,
                     &guard,
                 )
@@ -250,8 +256,10 @@ mod tests {
         bws.expect_create_password_store_remote()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, remote| remote.as_str() == REMOTE_URL)
-            .returning(|_, _, _| Ok(BwsSecretId::new("new-id")));
+            .withf(|_, _, key, remote| {
+                key == &"password-store-remote" && remote.as_str() == REMOTE_URL
+            })
+            .returning(|_, _, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
             .times(0);
 
@@ -286,8 +294,10 @@ mod tests {
 
         bws.expect_create_password_store_remote()
             .times(1)
-            .withf(|_, _, remote: &PasswordStoreRemote| remote.as_str() == REMOTE_URL)
-            .returning(|_, _, _| Ok(BwsSecretId::new("new-id")));
+            .withf(|_, _, key, remote: &PasswordStoreRemote| {
+                key == &"password-store-remote" && remote.as_str() == REMOTE_URL
+            })
+            .returning(|_, _, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
             .times(0);
 
@@ -337,11 +347,12 @@ mod tests {
         bws.expect_update_password_store_remote_if_unchanged()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, _, remote: &PasswordStoreRemote, guard| {
-                remote.as_str() == REMOTE_URL
+            .withf(|_, _, _, key, remote: &PasswordStoreRemote, guard| {
+                key == &"password-store-remote"
+                    && remote.as_str() == REMOTE_URL
                     && *guard == BackupUpdateGuard::ValueDigest("rev".to_owned())
             })
-            .returning(|_, _, _, _, _| Ok(()));
+            .returning(|_, _, _, _, _, _| Ok(()));
         bws.expect_create_password_store_remote().times(0);
 
         run_provision_password_store_remote(
@@ -442,7 +453,7 @@ mod tests {
         // 更新直前の現行値が更新前 guard と異なる → domain rule が stale-overwrite `Err` を生成する。
         bws.expect_update_password_store_remote_if_unchanged()
             .times(1)
-            .returning(|_, _, _, _, expected_guard| {
+            .returning(|_, _, _, _, _, expected_guard| {
                 let current_guard = BackupUpdateGuard::ValueDigest("changed-since-read".to_owned());
                 expected_guard.ensure_matches(&current_guard)
             });

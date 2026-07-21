@@ -2,7 +2,16 @@
 
 use crate::{
     Result,
+    domain::{
+        gpg_backup::{EnvelopeCiphertext, PrimaryFingerprint},
+        gpg_restore::{
+            ImportedKeyComposition, Keygrip, OpenSshPublicKey, ResolvedSubkey, SshAgentReadiness,
+            SubkeyCapability,
+        },
+        pass_restore::GpgRecipientId,
+    },
     secrets_internal_test_stub_contract::{GPG_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX},
+    support::protection::ProtectedSecret,
 };
 use anyhow::Context;
 use std::{
@@ -160,5 +169,94 @@ pub(crate) fn registered_ssh_public_keys() -> Result<Vec<String>> {
             .filter(|key| store.registered.iter().any(|value| value == &key.keygrip))
             .map(|key| key.ssh_public_key.clone())
             .collect())
+    })
+}
+
+pub(crate) fn export_secret_key(primary: &PrimaryFingerprint) -> Result<ProtectedSecret> {
+    ProtectedSecret::from_test_bytes(primary.as_str().as_bytes())
+}
+pub(crate) fn parse_backup_primary_fingerprint(
+    backup: &ProtectedSecret,
+) -> Result<PrimaryFingerprint> {
+    let value = String::from_utf8(backup.to_test_bytes())
+        .context("internal gpg stub backup body is not valid UTF-8")?;
+    PrimaryFingerprint::parse(value.trim())
+}
+pub(crate) fn secret_key_exists(primary: &PrimaryFingerprint) -> Result<bool> {
+    key_exists(primary.as_str())
+}
+pub(crate) fn import_secret_key(backup: &ProtectedSecret) -> Result<PrimaryFingerprint> {
+    let value = String::from_utf8(backup.to_test_bytes())
+        .context("internal gpg stub backup body is not valid UTF-8")?;
+    let primary = PrimaryFingerprint::parse(value.trim())?;
+    import_key(primary.as_str())?;
+    Ok(primary)
+}
+pub(crate) fn delete_secret_key(primary: &PrimaryFingerprint) -> Result<()> {
+    delete_key(primary.as_str())
+}
+pub(crate) fn inspect_imported_key(primary: &PrimaryFingerprint) -> Result<ImportedKeyComposition> {
+    let key = key_data(primary.as_str())?;
+    Ok(ImportedKeyComposition::new(
+        key.has_secret_material,
+        key.capabilities
+            .iter()
+            .filter_map(|value| match value.as_str() {
+                "encryption" => Some(SubkeyCapability::Encryption),
+                "authentication" => Some(SubkeyCapability::Authentication),
+                "signing" => Some(SubkeyCapability::Signing),
+                _ => None,
+            })
+            .map(|capability| ResolvedSubkey {
+                capability,
+                usable: true,
+            })
+            .collect(),
+    ))
+}
+pub(crate) fn authentication_subkey_keygrip(primary: &PrimaryFingerprint) -> Result<Keygrip> {
+    Keygrip::parse(&key_data(primary.as_str())?.keygrip)
+}
+pub(crate) fn authentication_subkey_ssh_public_key(
+    primary: &PrimaryFingerprint,
+) -> Result<OpenSshPublicKey> {
+    OpenSshPublicKey::parse(&key_data(primary.as_str())?.ssh_public_key)
+}
+pub(crate) fn secret_key_available_for_recipient(recipient: &GpgRecipientId) -> Result<bool> {
+    held_recipient(recipient.as_str())
+}
+pub(crate) fn can_decrypt_store_entry(_: &std::path::Path) -> Result<()> {
+    ensure_store_entry_decryptable()
+}
+pub(crate) fn generate_dek() -> Result<ProtectedSecret> {
+    ProtectedSecret::from_test_bytes(&test_dek())
+}
+pub(crate) fn encrypt_backup(
+    _: &ProtectedSecret,
+    backup: &ProtectedSecret,
+) -> Result<EnvelopeCiphertext> {
+    let (nonce, body, tag) = ciphertext_parts(backup.to_test_bytes());
+    EnvelopeCiphertext::new(nonce, body, tag)
+}
+pub(crate) fn decrypt_backup(
+    _: &ProtectedSecret,
+    ciphertext: &EnvelopeCiphertext,
+) -> Result<ProtectedSecret> {
+    ProtectedSecret::from_test_bytes(ciphertext.body())
+}
+pub(crate) fn register_authentication_subkey(keygrip: &Keygrip) -> Result<()> {
+    register_keygrip(keygrip.as_str())
+}
+pub(crate) fn inspect_ssh_agent(expected: &OpenSshPublicKey) -> Result<SshAgentReadiness> {
+    let mut recovery_identity_present = false;
+    for key in registered_ssh_public_keys()? {
+        let key = OpenSshPublicKey::parse(&key)?;
+        if let Some(blob) = key.key_blob() {
+            recovery_identity_present |= expected.matches_agent_key_blob(&blob);
+        }
+    }
+    Ok(SshAgentReadiness {
+        socket_resolved: true,
+        recovery_identity_present,
     })
 }

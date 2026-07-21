@@ -58,24 +58,24 @@
 
 `port` は外部依存 contract only の層であり、「何を必要とするか」の最小定義だけを担う。許可する成果物は trait、request/response 境界、capability 契約である。parser、DTO、prompt、利用者向け文言、意味づけ済みの実装詳細は置かない。
 
-`adapter` は port 実装、外部 API 変換、環境差異吸収という技術的な実行と翻訳だけを担う。許可する成果物は SDK bridge、terminal bridge、filesystem bridge、JSON decode bridge である。use case の順序制御、domain policy の決定、summary の意味づけは置かない。
+`adapter` は port trait と support-owned concrete backend を接続する**forwarding-only** の薄い実装だけを担う。各 trait method は、同じ capability を実行する support backend operation へ引数をそのまま委譲し、その結果をそのまま返す。adapter 自身は SDK/process/device/codec を直接操作せず、変換、local state、helper、分岐、error 再分類、値検証、formatting を持たない。use case の順序制御、domain policy の決定、summary の意味づけは置かない。
 
-adapter 層で domain object のビジネスロジックを直接実行してはならない。具体的には、manifest/blob の整合判定、nonce/AAD の業務規則決定、`SecretName::additional_data` の業務意味適用、鍵生成可否などの業務判断は application/domain 側の責務であり、adapter はそれらを呼び出すための外部 I/O 翻訳に限定する。
+adapter 層で domain object のビジネスロジックを直接実行してはならない。具体的には、manifest/blob の整合判定、nonce/AAD の業務規則決定、`SecretName::additional_data` の業務意味適用、鍵生成可否などの業務判断は application/domain 側の責務である。SDK 型変換、JSON decode、terminal 制御、PIV/process/device 呼び出し、technical error context といった実行詳細は support backend に置く。adapter に「翻訳」を理由にそれらのロジックを残してはならない。
 
 アダプター層に置いてよいファイルは「特定の port trait を実装するファイル」のみである。以下のファイルはシンボルの公開範囲に関わらずアダプター層に属してはならない。
 
 - 再エクスポート集約ファイル（`use` 宣言のみで構成されるファイル、または `pub(super) use` で他 adapter の関数・型を束ねるだけのファイル）はアダプター層に置いてはならない。
 - JSON パーサー・デコーダー・ファイル読み取り関数群等、port trait を実装しない純粋なユーティリティファイルはアダプター層に置いてはならない。これらは `support/` 層（業務語彙を持たない場合）または他の適切な層に属する。
 
-`support` は共通技術部品と、secret 保護境界の backend 実装を担う。許可する成果物は memory protection、clock、retry primitive、byte utility、protected secret 操作である。一般の support utility には command 名や role 名を置かない。secret 保護境界では、外部 SDK、暗号処理、device API が secret の借用または所有 plaintext buffer の move を要求する場合に限り、専用の backend 操作として product/service-specific な request 組み立てと呼び出し境界を持てる。
+`support` は共通技術部品と concrete technical backend を担う。許可する成果物は memory protection、clock、retry primitive、byte utility、protected secret 操作、SDK/process/device/filesystem/codec の実行・technical conversion である。adapter が forwarding-only であるため、外部技術の concrete receiver、SDK 型変換、technical error context、test backend の datastore/state/schema/observation も support が所有する。一般の support utility には command 名や role 名を置かない。secret 保護境界では、外部 SDK、暗号処理、device API が secret の借用または所有 plaintext buffer の move を要求する場合に限り、専用の backend 操作として product/service-specific な request 組み立てと呼び出し境界を持てる。
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
 ### internal backend stub の配置
 
-test double / fixture の本体は原則として `tests/` 配下に置く。ただし、CLI integration test が同一 `dotfiles` binary と同一 production command path を通り、外部 backend だけを compile-time で差し替える必要がある場合、adapter 配下に internal backend stub を置ける。
+test double / fixture の本体は原則として `tests/` 配下に置く。ただし、CLI integration test が同一 `dotfiles` binary と同一 production command path を通り、外部 backend だけを compile-time で差し替える必要がある場合、support 配下に internal backend stub を置ける。adapter 配下に置けるのは、その support-owned stub backend へ port trait を forwarding する trait implementation source だけである。
 
-この adapter 配下 stub は次の条件をすべて満たす場合に限り、production source tree への test double 混入とは扱わない。
+この compile-time internal backend stub は次の条件をすべて満たす場合に限り、production source tree への test double 混入とは扱わない。
 
 - production build に含まれない。
 - internal test 専用 feature に限定される。
@@ -88,11 +88,11 @@ test double / fixture の本体は原則として `tests/` 配下に置く。た
 - fixture、dummy token、固定 password はテスト入力であり、テスト側で秘密として redaction・masking・不在検査する専用 helper や assertion を作ってはならない。本番 command の secret 出力防止テストとは区別する。
 - 最終 datastore 観測は `secrets-internal-test-stub` feature 専用の stdout sentinel observation を基本とする。この observation は test-only の明示観測面であり、fixture/spec で与えたダミー secret 値を含めてよい。integration test が「secret として保存した値が最終 datastore に意図通り保存された」ことを検証するためであり、production build/runtime には compile されず、本物 secret の出力経路ではない。
 - production secret を hidden temp file、output path file、共有 state file に残してはならない。test fixture の dummy 値は test stub の state file にそのまま保存・復元してよく、本番 secret の保全規則を test input の保存へ拡張しない。
-- backend state/schema/helper は adapter 側 internal backend stub の責務とし、`tests/` 側へ複製してはならない。
+- backend state/schema/fixture decode/state transition/write helper/observation serialization は support-owned internal backend stub の責務とし、adapter と `tests/` 側へ複製してはならない。adapter stub source は production adapter と同じ forwarding-only 規則を満たす。
 - BWS port stub と YubiKey port stub は独立させ、共通の巨大 StubState や共有 state file で結合してはならない。port 間の結合は application/domain の通常経路でのみ発生させる。
 - module/comment で internal test 専用 feature、production build 非混入、stdout observation 境界、compile-time selection を明記する。
 
-この許可は external backend 翻訳の test 専用 adapter stub に限る。adapter の不要な `pub(super)` helper、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入、`tests/` 側での backend state/schema/helper 保持は、この条件を満たさないため引き続き禁止する。
+この許可は support-owned external backend substitute と、それへ委譲する test 専用 adapter trait implementation に限る。adapter の不要な `pub(super)` helper、adapter 内の state/schema/fixture/observation、runtime の real/stub 分岐、domain/business logic の stub への移動、production command path の差し替え、integration test fixture builder / assertion helper の adapter 側混入、`tests/` 側での backend state/schema/helper 保持は、この条件を満たさないため引き続き禁止する。
 
 application 層の use case orchestration test は、internal test stub feature から切り離す。`application` production code や app 層 inline test に `secrets-internal-test-stub` feature gate / bridge を置いてはならない。app 層 inline/unit test は `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照してはならない。`rust/dotfiles-secrets/src/application/app_test_support.rs` のような app 層共有 test support file を作ってはならない。private usecase を同一 module context で検査する場合は、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で、port trait から生成した `mockall` mock を直接組み立てる。event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装を作ってはならない。port trait の mock は trait 側の test-only `mockall::automock` などから生成し、既存 trait method を `mock!` macro へ手で書き写して二重管理してはならない。
 
@@ -109,8 +109,8 @@ secret-recovery では domain object / port 境界が repository 所有 secret �
 - `domain rule`: 外部実装を差し替えても変わらない業務上の意味、不変条件、整合判定、失敗条件、対象同一性、値制約。
 - `application orchestration`: domain rule と port capability を適用する順序、停止条件、分岐、外部確認 plan の進行。
 - `port contract`: application/domain が外部境界へ要求する capability と最小境界型。
-- `adapter translation`: port 境界型と外部 SDK / process / filesystem / serialization API の相互変換。
-- `support technical primitive`: product 非依存の技術 primitive、または secret 保護境界内で平文借用・外部処理呼び出し・暗号化/復号・sealed blob 操作・zeroize を閉じる専用 backend 操作。
+- `adapter forwarding`: port trait method を support-owned concrete backend operation へそのまま委譲する接続。adapter は変換を所有しない。
+- `support technical backend`: product 非依存の技術 primitive、または secret 保護境界内で平文借用・外部処理呼び出し・SDK/process/device/codec 型変換・暗号化/復号・sealed blob 操作・zeroize を閉じる concrete backend 操作。
 
 分類できない処理は、どの層へ移しても合格にしてはならない。処理を移動する前に、その処理が既存規定上どの境界の責務かを判定し、規定済みの境界に置くこと。`adapter` から `support` へ移す、ファイルを細分化する、private helper を消す、といった機械的分離は責務分離の十分条件ではない。レビューは「どの層へ移したか」ではなく、「その処理がなぜその規定済み境界の責務なのか」を根拠として要求する。
 
@@ -122,17 +122,17 @@ secret-recovery では domain object / port 境界が repository 所有 secret �
 
 storage backend が暗号化された永続化機構を内包する場合、port は暗号方式や sealed blob 形式ではなくデータストアの capability を公開する。application/domain から見える契約は「対象 secret を保存する」「保存済み secret を取得する」「必要な datastore 状態を確認する」といった外部依存要求に限定し、暗号化・復号・sealed blob encode/decode・repository 所有 buffer の zeroize は backend 内部機能として隠蔽する。これは crypto/blob 処理を port へ露出しないための責務分離であり、setup 済みか、何が不足しているか、どの secret を必須とするか、固定 key/name/role の意味、一意解決、0件/複数件の failure 化、外部確認 plan の進行を backend/support へ移す許可ではない。
 
-`adapter` は翻訳だけを行う。adapter は port で受け取った domain object / 境界型を外部 SDK、process I/O、filesystem、network、serialization API へ渡す形に変換し、外部 API から戻った値を port の返却型へ戻す。adapter 内で domain object の操作、業務判断、オブジェクト間の対応づけ、AAD/nonce/manifest/blob の意味づけ、保存可否判断、上書き判定を直接実行してはならない。adapter に許される private helper も同じ制約を受け、helper であれば business logic を持てるという例外はない。
+`adapter` は forwarding だけを行う。adapter は port trait method の引数を support-owned concrete backend operation へ渡し、返値をそのまま返す。外部 SDK、process I/O、filesystem、network、serialization API との型変換は support backend が所有する。adapter 内で domain object の操作、業務判断、オブジェクト間の対応づけ、SDK 型変換、AAD/nonce/manifest/blob の意味づけ、保存可否判断、上書き判定、error context 付与を直接実行してはならない。adapter に private helper、state、inherent impl を置く例外はない。
 
-`support` の一般 utility はプロダクト非依存の技術 primitive を基本にする。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置ける。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。例外として、storage backend が暗号化・復号・sealed blob を内部機能として隠蔽する場合、その backend 実装依存の暗号処理、sealed blob encode/decode、protection/zeroize/core dump 保護は support/protection の専用 backend 操作として置ける。技術 primitive と機能固有 storage mechanism を分け、後者が backend 内部機能を越えて業務判断を持つなら既存規定上の責務境界に合わせて配置する。
+`support` の一般 utility はプロダクト非依存の技術 primitive を基本にする。memory protection、zeroization、AEAD/OAEP などの暗号 primitive、process-generic な byte / I/O 補助は support に置ける。adapter が forwarding-only であるため、concrete backend の SDK/process/device/filesystem/codec 実装と、内部の technical state・technical conversion・technical error context も support に置く。特定機能専用の codec や storage format は、単に binary/crypto を扱うという理由だけで support に置かない。例外として、storage backend が暗号化・復号・sealed blob を内部機能として隠蔽する場合、その backend 実装依存の暗号処理、sealed blob encode/decode、protection/zeroize/core dump 保護は support/protection の専用 backend 操作として置ける。support backend が port/domain 境界型を技術的な入出力として受け渡すこと自体は不合格理由ではないが、その型から product の対象同一性、必須性、一意性、成功・停止条件を決定してはならない。技術 primitive と機能固有 storage mechanism を分け、後者が backend 内部機能を越えて業務判断を持つなら既存規定上の責務境界に合わせて配置する。
 
 secret-recovery の `support/protection` は、この一般 utility とは別に secret 保護の backend 境界実装を持てる。ここでは product/service-specific な名前が現れること自体を層違反にしない。判定基準は、その操作が secret の借用、所有 plaintext buffer の作成、外部 SDK/暗号/device API 呼び出し、repository 所有 buffer の zeroize を同じ protection 境界内で完了させるための専用 backend 操作かどうかである。application/domain/ports へ SDK 型や平文 buffer API を漏らすこと、汎用の plaintext consumer API を作ること、use case 手順や domain policy を support に移すことは引き続き禁止する。
 
-`support` は逃げ場ではない。処理が `support` 配下にあること、product/service-specific な SDK 呼び出しを protection 境界内で完了していること、または private helper になっていることは、domain/usecase logic 混入の免除理由にならない。薄い port を保つために adapter/support へ業務判断を押し込むこと、adapter を薄くするために support へ逃がすことは禁止する。ただし、backend 実装依存の技術補助、SDK 呼び出しの安全な補助、暗号化/復号/sealed blob/protection/zeroize/core dump 保護などの storage backend 内部機能、業務判断を含まない変換は support に置ける。固定 key / name / role に基づく意味づけ、一意解決の業務規則、0件/複数件の domain failure 化、外部確認の実行 plan、取得対象の過不足判定、業務上の停止条件は `support technical primitive` ではない。これらは既存規定上の該当境界に置き、support は必要な技術補助と平文保護境界だけを担う。
+`support` は逃げ場ではない。処理が `support` 配下にあること、product/service-specific な SDK 呼び出しを protection 境界内で完了していること、または private helper になっていることは、domain/usecase logic 混入の免除理由にならない。adapter が forwarding-only であるため、backend 実装依存の技術補助、SDK/process/device/filesystem/codec 呼び出し、technical conversion/error context、暗号化/復号/sealed blob/protection/zeroize/core dump 保護などの storage backend 内部機能を support に置くことは required である。ただし、固定 key / name / role に基づく意味づけ、一意解決の業務規則、0件/複数件の domain failure 化、外部確認の実行 plan、取得対象の過不足判定、業務上の停止条件は `support technical backend` ではない。これらは既存規定上の該当境界に置き、support は必要な技術実装と平文保護境界だけを担う。
 
 `support` は「外部 I/O を一切持ってはいけない」層ではない。process/terminal I/O のうち、TTY を開く、echo/raw mode を制御する、標準入出力を byte stream として読む、signal/interrupt と blocking read の安全性を扱う、といった process-generic な低レベル実装支援は support に置ける。これは外部境界の use case 方針や device 選択を support が決めることを許すものではなく、adapter など外部境界実装が利用する技術 primitive を隔離するための配置である。
 
-domain/application は support の process/terminal I/O helper を直接呼んではならない。外部 interaction を必要とする use case は port capability を通じて adapter を呼び、adapter が必要な低レベル I/O helper として support を使う。support に業務判断、domain object 操作、prompt 文言、device 選択方針、use case 手順を入れてはならない。逆に、process-generic helper を support へ分離できる場面で adapter に端末制御や blocking read の補助実装を直詰めし、port 翻訳以外の技術補助で adapter を fat にしてはならない。
+domain/application は support の process/terminal I/O helper を直接呼んではならない。外部 interaction を必要とする use case は port capability を通じて adapter を呼び、adapter は対応する support backend operation へ forwarding する。support に業務判断、prompt 文言、device 選択方針、use case 手順を入れてはならない。逆に、process-generic helper を support へ分離できる場面で adapter に端末制御や blocking read の補助実装を直詰めしてはならない。
 
 ## secret-recovery の層別判断（具体化）
 
@@ -167,32 +167,32 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 ### adapters
 
 - allowed:
-  device selection（serial 指定・対話選択）、stdin/stdout/terminal I/O、report DTO 変換、外部 API 変換
+  support-owned concrete backend への port trait forwarding
 - forbidden:
-  application 型への直接依存、use case の順序決定、業務判断の中心化
+  application 型への直接依存、use case の順序決定、業務判断、SDK/process/device/filesystem/codec 実装、変換、adapter-local state/helper
 - 典型的な誤配置:
-  adapter が `domain::...Summary` を import して report を生成せず presentation DTO を持ち込む、adapter 内で command flow の可否を決める
+  adapter が `domain::...Summary` を使って report DTO を組み立てる、adapter 内で command flow の可否を決める、PIV/SDK/process を直接呼ぶ
 - 判定質問:
-  「このコードは port 契約と外部技術の翻訳だけか。手順そのものを決めていないか」
+  「各 port trait method は support-owned backend operation への単一 forwarding expression だけか」
 - この repo の具体例:
-  `adapters/io/report.rs` は `ReportPort` の出力契約を実装し、summary の表示形式・シリアライズ形式だけを adapter 側で決める。summary 自体の意味は domain 型として保持する
+  `adapters/io.rs` は `ReportPort` を実装し、report formatting を所有する support backend operation へ委譲する。summary 自体の意味は domain 型として保持する
 
 ### support
 
 - allowed:
-  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）、secret 保護境界内で完了する外部処理向け backend 操作、storage backend 内部の暗号化・復号・sealed blob 操作
+  protected buffer 化、zeroization、暗号プリミティブ helper（AEAD/OAEP）、SDK/process/device/filesystem/codec の concrete backend 操作、test backend の state/schema/observation、secret 保護境界内で完了する外部処理、storage backend 内部の暗号化・復号・sealed blob 操作
 - forbidden:
   stdin-json、enroll/verify など command 手順の語彙、feature-specific な prompt 文言や device 選択方針、固定 secret key/name/role に基づく一意解決や 0件/複数件の業務判断、外部確認 plan。secret 保護境界の専用 backend 操作では YubiKey や Bitwarden などの外部処理名を持てるが、平文 buffer を返す public API や汎用 consumer API は持てない
 - 典型的な誤配置:
   `support/aead.rs` が「YubiKey secret」など機能固有語彙を返す、support が specific command の prompt 文言や選択方針を持つ、`support/protection/bws.rs` が固定 BWS secret name の一意解決や `verify-yubikey --check bws` の成功条件を決める、storage backend の sealed blob helper が setup 済み判定や必須 secret の過不足判定を決める
 - 判定質問:
-  「この部品は共通技術 primitive か、secret 保護境界を閉じる backend 操作か。storage backend 内部機能であれば暗号化・復号・sealed blob・protection・zeroize・core dump 保護に限定されているか。I/O を扱う場合、それは process-generic な実装支援か、feature-specific な interaction 方針か。対象同一性・一意性・0件/複数件・外部確認 plan を決めていないか」
+  「この部品は共通技術 primitive または concrete technical backend か。storage backend 内部機能であれば暗号化・復号・sealed blob・protection・zeroize・core dump 保護に限定されているか。I/O を扱う場合、それは技術実装か、feature-specific な interaction 方針か。対象同一性・一意性・0件/複数件・外部確認 plan を決めていないか」
 - この repo の具体例:
   `support/aead.rs` は `protected payload` のような汎用語彙に限定し、device 名を含めない。`support/process_io.rs` のような process-generic terminal/stdin/stdout helper は、domain/application から直接使わせず adapter から利用する支援境界として置ける。BWS SDK が access token の owned plaintext を要求する呼び出し境界は `support/protection` に置ける。storage backend が sealed blob を内部保存形式として使う場合、その暗号化・復号・sealed blob 操作は `support/protection` に置けるが、`gpg-secret-key-backup` / `password-store-remote` を固定取得対象として一意解決する規則、0件/複数件の扱い、`verify-yubikey --check bws` の外部確認 plan は既存規定上の該当境界に置く。
 
 ## 層ごとの禁止事項
 
-`port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に use case の順序制御を置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state、固定 secret key/name/role に基づく対象同一性・一意性・0件/複数件の業務判断、外部確認 plan を置いてはならない。`support` に process/terminal I/O があること自体を禁止根拠にしてはならず、禁止対象は feature-specific な interaction 方針、業務判断、domain object 操作、application からの直接利用である。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
+`port` に parser、DTO、prompt、具体的な利用者向け文言を置いてはならない。`adapter` に forwarding 以外のロジックを置いてはならない。`application` に concrete I/O を置いてはならない。`support` に業務語彙、command 名、feature 固有 state、固定 secret key/name/role に基づく対象同一性・一意性・0件/複数件の業務判断、外部確認 plan を置いてはならない。`support` に process/terminal I/O、concrete backend、port/domain 境界型の技術的受け渡しがあること自体を禁止根拠にしてはならず、禁止対象は feature-specific な interaction 方針、業務判断、application からの直接利用である。`domain` は外部 SDK 型、端末状態、プロセス状態へ依存してはならない。
 
 ## 標準モジュール構成とファイル構成
 
@@ -202,8 +202,8 @@ domain/application は support の process/terminal I/O helper を直接呼ん�
 - `application/`: use case、flow
 - `domain/`: value、policy、summary、wire-format、error
 - `port/`: 外部依存 contract
-- `adapter/`: device、terminal、filesystem、network、serialization
-- `support/`: zeroization、protection、shared primitive
+- `adapter/`: support-owned concrete backend への port trait forwarding
+- `support/`: zeroization、protection、shared primitive、device、terminal、filesystem、network、serialization の concrete backend
 - `tests/`: layer-specific test
 
 単一ファイルが terminal I/O、use case、wire format、外部 SDK 変換、test harness を同時に持ち始めた場合は、機能追加より先に責務ごとに sibling module へ分割する。
@@ -271,7 +271,7 @@ runtime/dependency bundle は `too_many_arguments` を隠すための無意味�
 
 機能内で細分化が必要な場合でも、最終的な use case 境界は外部機能単位 trait（supertrait を含む）で表現し、adapter 実装と module 分割も同じ外部機能単位へ揃えること。
 
-port 分割は「細かいほどよい」ではない。1 method ごとの trait、入力・確認・出力の偶発的な組み合わせ、同じ外部機能を使うたびに増える command 専用 trait、application の都合だけで作った wrapper trait は過分割として扱う。port は変更理由と外部機能の境界で切り、use case 側で常に同じ複数 trait を同時に要求しているなら、cohesive capability として統合するか、上位 capability 境界で要求できないかを先に検討する。逆に、統合によって use case 手順・domain rule・adapter translation を port に隠す場合は fat port として不合格にする。
+port 分割は「細かいほどよい」ではない。1 method ごとの trait、入力・確認・出力の偶発的な組み合わせ、同じ外部機能を使うたびに増える command 専用 trait、application の都合だけで作った wrapper trait は過分割として扱う。port は変更理由と外部機能の境界で切り、use case 側で常に同じ複数 trait を同時に要求しているなら、cohesive capability として統合するか、上位 capability 境界で要求できないかを先に検討する。逆に、統合によって use case 手順・domain rule・support technical backend の実装詳細を port に隠す場合は fat port として不合格にする。
 
 ## 標準シンボル構成
 

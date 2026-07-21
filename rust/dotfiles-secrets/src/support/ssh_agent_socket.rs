@@ -44,7 +44,7 @@ pub(crate) fn gnupg_home() -> Result<PathBuf> {
 /// 潰さず、その実原因を理由付き `Err` として呼び出し側へ伝播する。
 pub(crate) fn resolve_gpg_agent_socket() -> Result<Option<PathBuf>> {
     let fixed = gnupg_home()?.join("S.gpg-agent.ssh");
-    Ok(is_socket(&fixed).then_some(fixed))
+    Ok(is_socket(&fixed)?.then_some(fixed))
 }
 
 /// SSH agent socket を fallback 付きで解決する。
@@ -60,7 +60,7 @@ pub(crate) fn resolve_ssh_agent_socket() -> Result<Option<PathBuf>> {
     }
     if let Some(env) = std::env::var_os("SSH_AUTH_SOCK") {
         let env = PathBuf::from(env);
-        if is_socket(&env) {
+        if is_socket(&env)? {
             return Ok(Some(env));
         }
     }
@@ -68,17 +68,25 @@ pub(crate) fn resolve_ssh_agent_socket() -> Result<Option<PathBuf>> {
 }
 
 /// 指定 path が socket として存在するかを返す。
-fn is_socket(path: &Path) -> bool {
+///
+/// `std::fs::metadata` は path 不在を含む I/O failure を返す。`ErrorKind::NotFound` だけは
+/// 「socket が存在しない」というこの解決手順の正常な観測として `Ok(false)` にし、それ以外（permission
+/// denied 等）は失敗原因を保持して伝播する。
+/// 出典: <https://doc.rust-lang.org/std/fs/fn.metadata.html#errors>,
+/// <https://doc.rust-lang.org/std/io/enum.ErrorKind.html#variant.NotFound>。
+fn is_socket(path: &Path) -> Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
-        std::fs::metadata(path)
-            .map(|metadata| metadata.file_type().is_socket())
-            .unwrap_or(false)
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(metadata.file_type().is_socket()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).context("failed to inspect SSH agent socket path"),
+        }
     }
     #[cfg(not(unix))]
     {
         let _ = path;
-        false
+        Ok(false)
     }
 }

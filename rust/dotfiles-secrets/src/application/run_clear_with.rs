@@ -62,7 +62,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_clear_secret_storage()
-            .withf(|serial, intent| *serial == 2001 && intent.object_ids.len() == 5)
+            .withf(|serial, intent| *serial == 2001 && intent.object_ids.len() == 4)
             .returning(|_, _| {
                 Ok(crate::domain::manifest::SecretManifest::fixture_v2()
                     .slot_public_key_spki

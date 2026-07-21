@@ -18,9 +18,11 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 
 ## 無対話復旧の利用者契約
 
-利用者は **YubiKey を挿して復旧コマンドを実行するだけ** で復旧を開始できる。`restore-gpg` と `restore-pass`、および復旧前提を確認する `verify-yubikey --check bws` / `verify-yubikey --all` は、YubiKey に保存された `bitwarden-client-id` と `bitwarden-client-secret` を内部で一時利用する。利用者に master password、session、PIV PIN、environment variable、argv の secret、YubiKey OTP、またはそれらを渡す対話入力を追加で要求してはならない。
+利用者は **YubiKey を挿して復旧コマンドを実行するだけ** で復旧を開始できる。`restore-gpg` と `restore-pass`、および復旧前提を確認する `verify-yubikey --check bws` / `verify-yubikey --all` は、YubiKey に保存された `bitwarden-client-secret` を内部で一時利用する。利用者に master password、session、PIV PIN、environment variable、argv の secret、YubiKey OTP、またはそれらを渡す対話入力を追加で要求してはならない。
 
 `bw-email` と `bw-password` は無対話復旧・`verify-yubikey`・BWS recovery の入力、分岐、成功条件に混在させない。repository は Bitwarden Password Manager login command を公開しない。復旧中に読む YubiKey 保存値、BWS access token、取得した envelope、session を含む credential は stdout、stderr、log、一時ファイル、永続 environment へ出力・保存せず、必要な use の後に破棄する。CLI option の `--serial` は非秘匿の対象選択だけに使え、secret を argv に渡す許可ではない。
+
+[#11](https://github.com/wthrk/dotfiles/issues/11) の復旧到達目的（GPG、SSH、private `password-store` の復旧）を実現するための統合確認が [#17](https://github.com/wthrk/dotfiles/issues/17) である。`verify-yubikey --all` はその統合確認を BWS recovery prerequisite に限定して具体化するものであり、Password Manager login、`bw-email`、`bw-password`、OTP、session を追加必須にしてはならない。この節と「Secret の置き場所」が issue の要約・旧実装・テスト期待と矛盾する場合は本仕様を優先する。
 
 ## 復旧対象
 
@@ -43,7 +45,6 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 - `OATH TOTP`: 同じ TOTP secret / QR code を primary と spare の両方に登録する。既存 secret を取り出せない場合は サービス側で TOTP を再設定する。TOTP secret はこの repository に保存しない。
 - `bw-email`: primary と spare の両方に同じ Bitwarden login email を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bw-password`: primary と spare の両方に同じ Bitwarden master password を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
-- `bitwarden-client-id`: primary と spare の両方に同じ Bitwarden 個人 API client ID を保存する。`dotfiles secrets yubikey enroll-primary` / `enroll-spare` で登録する。
 - `bitwarden-client-secret`: primary と spare の両方に同じ Bitwarden Secrets Manager access token を保存し、BWS の読取・作成・更新に使う。token の入力は YubiKey storage へ保存・更新する経路だけで行い、BWS provisioning / recovery command は YubiKey から取得する。rotate 時は全 YubiKey を更新する。
 - `GPG secret key`: YubiKey には載せず、Bitwarden Secrets Manager の backup から `restore-gpg` で復元する。
 - `GitHub SSH identity`: YubiKey には載せず、復元した GPG authentication subkey 由来の SSH 公開鍵 を使う。`dotfiles gpg export-ssh-public-key --primary-fingerprint <40-hex-fingerprint>` で出力する。
@@ -55,7 +56,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 
 保存場所ごとの secret と用途は次のとおり。
 
-- `YubiKey`: `bw-email` と `bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を保存し、Bitwarden Password Manager の CLI email/master-password login と Bitwarden Secrets Manager の読取・作成・更新に使う。
+- `YubiKey`: `bw-email`、`bw-password`、`bitwarden-client-secret` を保存する。無対話復旧で使う値は `bitwarden-client-secret` だけであり、Bitwarden Secrets Manager の読取・作成・更新に使う。
 - `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` と `password-store-remote` を保存する。`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope として保存し、BWS secret value 取得だけで plaintext 復旧完了にしない。`password-store-remote` は credential ではないが private repository の所在を示す値であり出力には漏らさない。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
 - `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
@@ -67,7 +68,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 
 ### YubiKey
 
-YubiKey は復旧入口の bootstrap secret を保持する。対象は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` である。`bw-email` / `bw-password` は Bitwarden Password Manager email/master-password login に使い、`bitwarden-client-secret` は Bitwarden Secrets Manager の読取・作成・更新に使う。
+YubiKey は復旧入口の bootstrap secret を保持する。保存可能な値は `bw-email`、`bw-password`、`bitwarden-client-secret` である。無対話復旧で使う値は `bitwarden-client-secret` だけであり、Bitwarden Secrets Manager の読取・作成・更新に使う。
 
 YubiKey 操作は Rust crate から行い、`ykman` CLI は使わない。PIV の reset や global state を破壊する操作は実装しない。書き込み対象はこの機能用に確保した領域だけに限定し、既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 を reset しない。既存領域と衝突する場合は停止する。
 書き込みは management key 認証を前提にし、既定 management key のまま運用しない。既定 key のままでは想定外の上書きリスクを抑止できないため、専用領域を運用する前に非既定 management key への変更を必須にする。
@@ -125,7 +126,7 @@ private `password-store` repository の clone は `git2` と SSH agent を使う
 
 ### `dotfiles secrets yubikey put <name>`
 
-YubiKey に secret を保存する。`<name>` は `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` のみ許可する。secret 本文は hidden prompt または stdin から受け取る。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
+YubiKey に secret を保存する。`<name>` は `bw-email`、`bw-password`、`bitwarden-client-secret` のみ許可する。secret 本文は hidden prompt または stdin から受け取る。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
 このコマンドは入力前に manifest と既存 object の状態を検証し、`--force` なしで上書きが必要な場合は secret を読まずに停止する。
 
 ### `dotfiles secrets yubikey status`
@@ -145,7 +146,7 @@ provisioning script が状態遷移の根拠にしてよい公開終了コード
 
 ### `dotfiles secrets yubikey clear --yes`
 
-再登録前の復旧コマンドである。明示した `--serial <serial>`、または serial 未指定時に単一接続として解決できる YubiKey について、この機能用の manifest / bootstrap secret custom data object と slot `82` certificate を clear し、続けて slot `82` の専用 key を再生成する。これは既存 key を消去するのではなく、再生成によって置換する操作である。予約外の PIV object / slot、FIDO2、OTP、OpenPGP は変更しない。script が `clear` へ移行するのは、manifest 欠落かつ予約 object / slot key / slot certificate のいずれかが残る場合、manifest 不正の場合、または manifest があり slot key が欠落する場合だけである。正常な manifest と slot key がある任意の bootstrap secret subset では `clear` せず、保存済み secret を維持する。
+再登録前の管理コマンドである。明示した `--serial <serial>`、または serial 未指定時に単一接続として解決できる YubiKey について、この機能用の manifest / bootstrap secret custom data object と slot `82` certificate を clear し、続けて slot `82` の専用 key を再生成する。これは既存 key を消去するのではなく、再生成によって置換する操作である。予約外の PIV object / slot、FIDO2、OTP、OpenPGP は変更しない。無 PIN の `status` が clear の根拠にできるのは、manifest 欠落かつ予約 object が残る状態、または manifest 不正だけである。slot key/certificate の残存・欠落は `status` が観測しないため終了コード 42 に分類せず、PIN を使う管理 preflight で検出して停止する。正常な manifest の任意の bootstrap secret subset では `clear` せず、保存済み secret を維持する。
 
 `clear` は `--yes` の確認後にだけ、設定済み PIV PIN を controlling TTY の hidden prompt から受け取り、PIN-protected management key で認証する。確認不成立時は PIN を読まない。
 
@@ -157,13 +158,13 @@ PIV 管理操作である `setup`、`put`、`clear`、`enroll-primary`、`enroll
 
 ### `dotfiles secrets yubikey enroll-primary`
 
-primary YubiKey を復旧入口として初期登録する。1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を対象にし、専用 PIV 領域を setup し、`bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を prompt から受け取り、保存後に ローカル確認 を実行する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話または移行用途に限り stdin からの入力を許可する。
+primary YubiKey を復旧入口として初期登録する。1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を対象にし、専用 PIV 領域を setup し、`bw-email`、`bw-password`、`bitwarden-client-secret` を prompt から受け取り、保存後に無対話復旧に必要な `bitwarden-client-secret` のローカル確認を実行する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。非対話または移行用途に限り stdin からの入力を許可する。
 
 PIV PIN 利用は [YubiKey PIV PIN の利用境界](#yubikey-piv-pin-の利用境界) に従う。`enroll-primary --stdin-json` でも PIN は JSON 用 stdin から読まず、controlling TTY の hidden prompt だけから受け取る。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
-spare YubiKey を復旧入口として初期登録する。通常は primary YubiKey から `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` を読み出し、spare YubiKey の 公開鍵 で再暗号化して保存する。利用者に bootstrap secret の再入力を要求しない。外部サービス の FIDO2 / passkey / U2F / OTP 登録は自動化しない。
+spare YubiKey を復旧入口として初期登録する。通常は primary YubiKey から `bw-email`、`bw-password`、`bitwarden-client-secret` を読み出し、spare YubiKey の 公開鍵 で再暗号化して保存する。利用者に bootstrap secret の再入力を要求しない。外部サービス の FIDO2 / passkey / U2F / OTP 登録は自動化しない。
 `--stdin-json` で bootstrap secret を渡す場合も、PIN は JSON payload に含めず、controlling TTY の hidden prompt だけから受け取る。
 
 ### `dotfiles secrets yubikey rotate-bws-token`
@@ -178,7 +179,7 @@ token 入力前に ローカル保管 の復号可能性を確認し、更新不
 
 到達仕様の確認項目:
 
-- `bw-email`、`bw-password`、`bitwarden-client-id`、`bitwarden-client-secret` が YubiKey に保存され、touch を経て復号できる。
+- `bitwarden-client-secret` が YubiKey に保存され、touch を経て復号できる。
 
 このコマンドは ローカル保管 確認だけを実行する。`--check bws` と `--all` は無対話の BWS 外部確認を要求する option なので、利用できない場合は明示的に失敗する。引数なし実行の 要約 では BWS 外部確認を機械可読状態値 `skipped` として残す。要約の状態値は `ok` と `skipped` を使い、表示文言は別層で扱う。`bw-email`、`bw-password`、YubiKey OTP、session はこの command の外部確認に含めない。
 

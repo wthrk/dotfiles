@@ -107,7 +107,12 @@ where
     let envelope = GpgBackupEnvelope::assemble(metadata, vec![recipient_entry], ciphertext)?;
 
     bws_client
-        .create_gpg_backup_envelope(&access_token, &project_id, &envelope)
+        .create_gpg_backup_envelope(
+            &access_token,
+            &project_id,
+            BwsSecretName::GpgSecretKeyBackup.key(),
+            &envelope,
+        )
         .await
         .map(|_id| ())
 }
@@ -283,7 +288,8 @@ mod tests {
         bws.expect_create_gpg_backup_envelope()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Ok(crate::domain::bws::BwsSecretId::new("new-id")));
+            .withf(|_, _, key, _| key == &"gpg-secret-key-backup")
+            .returning(|_, _, _, _| Ok(crate::domain::bws::BwsSecretId::new("new-id")));
 
         run_register_gpg_backup_primary(
             RegisterGpgBackupCommand {

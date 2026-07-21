@@ -28,10 +28,11 @@ pub(crate) fn check() -> Result<()> {
 ///
 /// 行・brace depth・文字列検索では macro、attribute、複数行宣言、nested module を正しく
 /// 扱えない。ここでは全 adapter source を `syn::File` として構文解析し、adapter に許す
-/// item を「port trait の impl」と import / doc attribute だけへ限定する。従って free
-/// function、inherent impl、state type、const/static/type alias/internal trait、再 export
-/// aggregation、delegation-only wrapper を一律に拒否する。`#[cfg(test)]` inline test は
-/// module 自身の private test として明示的に許可する。
+/// item を「support-owned backend への forwarding-only port trait impl」と import / doc
+/// attribute だけへ限定する。従って free function、inherent impl、state type、const/static/
+/// type alias/internal trait、再 export aggregation、adapter 内の SDK/process/device/codec
+/// 実装を一律に拒否する。port trait method が support backend への単一委譲でない場合も拒否する。
+/// `#[cfg(test)]` inline test は module 自身の private test として明示的に許可する。
 ///
 /// support 側も AST で調べ、`crate::adapters` import、`super::adapters` import、adapter
 /// source を読む `#[path]` / `include!` を禁止する。これにより test stub state を support
@@ -67,7 +68,7 @@ fn adapter_boundary_is_structurally_closed(shell: &Shell) -> Result<()> {
 
     ensure!(
         violations.is_empty(),
-        "adapter boundary must contain only port trait implementations and must not be imported by support: {}",
+        "adapter boundary must contain forwarding-only port trait implementations and must not be imported by support: {}",
         violations.join(", ")
     );
     Ok(())
@@ -91,6 +92,7 @@ fn collect_adapter_item_violations(
     path: &Path,
     violations: &mut Vec<String>,
 ) {
+    let support_backend_modules = support_backend_imported_modules(items);
     for item in items {
         match item {
             syn::Item::Use(_) if !inside_inline_test => {}
@@ -115,9 +117,9 @@ fn collect_adapter_item_violations(
                         path.display()
                     ));
                 }
-                if is_delegation_only_impl(item_impl) {
+                if !is_forwarding_only_impl(item_impl, &support_backend_modules) {
                     violations.push(format!(
-                        "{}: delegation-only adapter wrapper is forbidden",
+                        "{}: adapter port implementation must forward each method directly to a support-owned backend operation",
                         path.display()
                     ));
                 }
@@ -179,30 +181,145 @@ fn adapter_item_kind(item: &syn::Item) -> &'static str {
     }
 }
 
-/// 新しい adapter は support が所有する concrete backend 型へ trait を実装する。
+/// adapter は support-owned concrete backend への forwarding-only trait implementation である。
 ///
-/// `self.0.method(...)` / `self.inner.method(...)` だけの trait method は、adapter が port
-/// translation をせず旧 inner adapter を再公開しているだけの wrapper である。AST で method
-/// body を検査し、この形を見つけたら fail-closed にする。
-fn is_delegation_only_impl(item_impl: &syn::ItemImpl) -> bool {
+/// method body は support-owned backend module の `module::operation(args...)` を呼ぶ単一
+/// expression（async の `.await` を含む）だけを許可する。`self.method()` を含む method call は、
+/// receiver が support-owned concrete backend に見えても adapter 自身の helper / state / logic を
+/// 経由する余地があるため許可しない。local state、conversion、branch、error context、SDK 呼び出しを
+/// adapter 側へ再導入しないため、少しでも複合的な body は fail-closed にする。
+fn is_forwarding_only_impl(
+    item_impl: &syn::ItemImpl,
+    support_backend_modules: &std::collections::BTreeSet<String>,
+) -> bool {
     !item_impl.items.is_empty()
         && item_impl.items.iter().all(|item| match item {
-            syn::ImplItem::Fn(method) => method_is_single_self_field_call(method),
+            syn::ImplItem::Fn(method) => {
+                method_is_direct_backend_forward(method, support_backend_modules)
+            }
             _ => false,
         })
 }
 
-fn method_is_single_self_field_call(method: &syn::ImplItemFn) -> bool {
+fn method_is_direct_backend_forward(
+    method: &syn::ImplItemFn,
+    support_backend_modules: &std::collections::BTreeSet<String>,
+) -> bool {
     let [syn::Stmt::Expr(expression, None)] = method.block.stmts.as_slice() else {
         return false;
     };
-    let syn::Expr::MethodCall(method_call) = expression else {
+    let expression = match expression {
+        syn::Expr::Await(await_expression) => await_expression.base.as_ref(),
+        expression => expression,
+    };
+    match expression {
+        syn::Expr::Call(call) => {
+            call_targets_support_backend_module(call.func.as_ref(), support_backend_modules)
+        }
+        _ => false,
+    }
+}
+
+fn call_targets_support_backend_module(
+    expression: &syn::Expr,
+    support_backend_modules: &std::collections::BTreeSet<String>,
+) -> bool {
+    let syn::Expr::Path(path) = expression else {
         return false;
     };
+    let segments = path.path.segments.iter().collect::<Vec<_>>();
+    let Some(last) = segments.last() else {
+        return false;
+    };
+    let Some(module) = segments.get(segments.len().saturating_sub(2)) else {
+        return false;
+    };
+
+    if let Some(support_index) = segments
+        .iter()
+        .position(|segment| segment.ident == "support")
+    {
+        return segments.len() >= support_index + 3
+            && is_support_backend_module_identifier(
+                &segments[support_index + 1].ident.to_string(),
+            )
+            && last.ident != "support";
+    }
+
+    support_backend_modules.contains(&module.ident.to_string())
+        && support_backend_modules.contains(&segments[0].ident.to_string())
+}
+
+/// adapter の `use` から support-owned concrete backend module のローカル名を抽出する。
+///
+/// forwarding source は `use crate::support::bws_backend; bws_backend::operation(...)` の
+/// ように support を省略して呼べる。この解決をしないと、正しい forwarding を helper 呼び出しと
+/// 誤判定する。一方、function / type の単体 import や support 以外から import した同名 module は
+/// 集合に入れない。
+fn support_backend_imported_modules(items: &[syn::Item]) -> std::collections::BTreeSet<String> {
+    let mut identifiers = std::collections::BTreeSet::new();
+    for item in items {
+        if let syn::Item::Use(item_use) = item {
+            collect_support_backend_imported_modules(&item_use.tree, false, &mut identifiers);
+        }
+    }
+    identifiers
+}
+
+fn collect_support_backend_imported_modules(
+    tree: &syn::UseTree,
+    inside_support: bool,
+    identifiers: &mut std::collections::BTreeSet<String>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let identifier = path.ident.to_string();
+            if inside_support && is_support_backend_module_identifier(&identifier) {
+                identifiers.insert(identifier.clone());
+            }
+            let next_inside_support = inside_support || identifier == "support";
+            collect_support_backend_imported_modules(
+                path.tree.as_ref(),
+                next_inside_support,
+                identifiers,
+            );
+        }
+        syn::UseTree::Name(name)
+            if inside_support && is_support_backend_module_identifier(&name.ident.to_string()) =>
+        {
+            identifiers.insert(name.ident.to_string());
+        }
+        syn::UseTree::Rename(rename)
+            if inside_support
+                && is_support_backend_module_identifier(&rename.ident.to_string()) =>
+        {
+            identifiers.insert(rename.rename.to_string());
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_support_backend_imported_modules(item, inside_support, identifiers);
+            }
+        }
+        syn::UseTree::Glob(_) | syn::UseTree::Name(_) | syn::UseTree::Rename(_) => {}
+    }
+}
+
+fn is_support_backend_module_identifier(identifier: &str) -> bool {
     matches!(
-        method_call.receiver.as_ref(),
-        syn::Expr::Field(field)
-            if matches!(field.base.as_ref(), syn::Expr::Path(path) if path.path.is_ident("self"))
+        identifier,
+        "bws_backend"
+            | "gpg_cipher_backend"
+            | "gpg_keyring_backend"
+            | "git_clone"
+            | "internal_stub_bws"
+            | "internal_stub_git"
+            | "internal_stub_gpg"
+            | "io_backend"
+            | "password_store"
+            | "ssh_agent_backend"
+            | "yubikey_backend"
+            | "yubikey_device_serial"
+            | "yubikey_storage"
     )
 }
 
@@ -213,11 +330,12 @@ fn collect_support_to_adapter_violations(
 ) {
     for item in items {
         match item {
-            syn::Item::Use(item_use) if use_tree_mentions_adapters(&item_use.tree) => violations
-                .push(format!(
+            syn::Item::Use(item_use) if use_tree_imports_adapter(&item_use.tree, false) => {
+                violations.push(format!(
                     "{}: support must not import adapters",
                     path.display()
-                )),
+                ))
+            }
             syn::Item::Mod(module) => {
                 if attribute_or_path_mentions_adapters(&module.attrs) {
                     violations.push(format!(
@@ -231,7 +349,7 @@ fn collect_support_to_adapter_violations(
             }
             syn::Item::Macro(item_macro)
                 if item_macro.mac.path.is_ident("include")
-                    && item_macro.mac.tokens.to_string().contains("adapters") =>
+                    && item_macro.mac.tokens.to_string().contains("adapter") =>
             {
                 violations.push(format!(
                     "{}: support must not include adapter source",
@@ -243,16 +361,37 @@ fn collect_support_to_adapter_violations(
     }
 }
 
-fn use_tree_mentions_adapters(tree: &syn::UseTree) -> bool {
+/// support から adapter module への reverse import を alias を含めて拒否する。
+///
+/// `crate::adapter_bw as backend` や `super::adapter_yubikey` を見逃すと、support-owned
+/// backend が adapter を経由して state/schema を持つ逆依存を作れる。`support::adapter_backend`
+/// のような support 自身の module は許可するため、`support` 配下へ入った後は判定しない。
+fn use_tree_imports_adapter(tree: &syn::UseTree, inside_support: bool) -> bool {
     match tree {
         syn::UseTree::Path(path) => {
-            path.ident == "adapters" || use_tree_mentions_adapters(path.tree.as_ref())
+            let identifier = path.ident.to_string();
+            (!inside_support && is_adapter_module_identifier(&identifier))
+                || use_tree_imports_adapter(
+                    path.tree.as_ref(),
+                    inside_support || identifier == "support",
+                )
         }
-        syn::UseTree::Name(name) => name.ident == "adapters",
-        syn::UseTree::Rename(rename) => rename.ident == "adapters",
+        syn::UseTree::Name(name) => {
+            !inside_support && is_adapter_module_identifier(&name.ident.to_string())
+        }
+        syn::UseTree::Rename(rename) => {
+            !inside_support && is_adapter_module_identifier(&rename.ident.to_string())
+        }
         syn::UseTree::Glob(_) => false,
-        syn::UseTree::Group(group) => group.items.iter().any(use_tree_mentions_adapters),
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| use_tree_imports_adapter(item, inside_support)),
     }
+}
+
+fn is_adapter_module_identifier(identifier: &str) -> bool {
+    identifier == "adapters" || identifier.starts_with("adapter_")
 }
 
 fn attribute_or_path_mentions_adapters(attributes: &[syn::Attribute]) -> bool {
@@ -843,7 +982,7 @@ mod tests {
         assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
-        collect_adapter_item_violations, collect_support_to_adapter_violations,
+        collect_adapter_item_violations, collect_rust_files, collect_support_to_adapter_violations,
         ensure_nix_source_candidates_are_tracked, record_secret_gate_allows,
         untracked_nix_source_candidates,
     };
@@ -1046,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_helpers_state_and_inherent_impls() {
+    fn adapter_ast_gate_rejects_helpers_state_inherent_impls_and_non_forwarding_port_method() {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
@@ -1061,7 +1200,7 @@ mod tests {
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
-        assert_eq!(violations.len(), 3);
+        assert_eq!(violations.len(), 4);
     }
 
     #[test]
@@ -1069,7 +1208,7 @@ mod tests {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
-                fn translate(&self) {}
+                fn translate(&self) { crate::support::bws_backend::translate(self) }
             }
             #[cfg(test)]
             mod tests {
@@ -1085,17 +1224,115 @@ mod tests {
     }
 
     #[test]
+    fn adapter_ast_gate_rejects_adapter_receiver_method_call() {
+        let source = r#"
+            use crate::ports::Port;
+            impl Port for crate::support::Backend {
+                fn translate(&self) { self.translate() }
+            }
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_support_non_backend_direct_call() {
+        let source = r#"
+            use crate::ports::Port;
+            impl Port for crate::support::Backend {
+                fn translate(&self) { crate::support::utility::translate() }
+            }
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_branching_before_backend_call() {
+        let source = r#"
+            use crate::ports::Port;
+            impl Port for crate::support::Backend {
+                fn translate(&self, branch: bool) {
+                    if branch { crate::support::bws_backend::translate() } else { crate::support::bws_backend::translate() }
+                }
+            }
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_adapter_owned_conversion_before_forwarding() {
+        let source = r#"
+            use crate::ports::Port;
+            impl Port for crate::support::Backend {
+                fn translate(&self, value: String) {
+                    let normalized = value.trim();
+                    crate::support::backend::translate(self, normalized)
+                }
+            }
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
     fn support_ast_gate_rejects_adapter_import_and_path_include() {
         let source = r#"
             use crate::adapters::Backend;
+            use crate::adapter_bw as real_backend;
+            use crate::support::adapter_backend::BwsClientBackend;
             #[path = "../adapters/backend.rs"]
             mod forbidden;
+            include!("../adapter_yubikey.rs");
         "#;
         let syntax = syn::parse_file(source).expect("test Rust source must parse");
         let path = std::path::Path::new("support.rs");
         let mut violations = Vec::new();
         collect_support_to_adapter_violations(&syntax.items, path, &mut violations);
-        assert_eq!(violations.len(), 2);
+        assert_eq!(violations.len(), 4);
+    }
+
+    /// 実 repository source も同じ AST rule を満たすことを、Cargo/Nix/full check を起動せず確認する。
+    #[test]
+    fn adapter_ast_gate_accepts_repository_sources() -> TestResult {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .ok_or_else(|| anyhow::anyhow!("workspace root must be an ancestor of checks crate"))?;
+        let adapters = root.join("rust/dotfiles-secrets/src/adapters");
+        let support = root.join("rust/dotfiles-secrets/src/support");
+        let mut adapter_files = Vec::new();
+        let mut support_files = Vec::new();
+        collect_rust_files(&adapters, &mut adapter_files)?;
+        collect_rust_files(&support, &mut support_files)?;
+        let mut violations = Vec::new();
+
+        for path in adapter_files {
+            let source = fs::read_to_string(&path)?;
+            let syntax = syn::parse_file(&source)?;
+            collect_adapter_item_violations(&syntax.items, false, &path, &mut violations);
+        }
+        for path in support_files {
+            let source = fs::read_to_string(&path)?;
+            let syntax = syn::parse_file(&source)?;
+            collect_support_to_adapter_violations(&syntax.items, &path, &mut violations);
+        }
+
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+        Ok(())
     }
 
     #[test]

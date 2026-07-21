@@ -2,6 +2,7 @@
 
 use crate::{
     Result,
+    domain::pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
     secrets_internal_test_stub_contract::{GIT_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX},
 };
 use anyhow::Context;
@@ -97,4 +98,19 @@ pub(crate) fn record_clone(remote: &str) -> Result<()> {
         store.store_exists = true;
         Ok(())
     })
+}
+
+pub(crate) fn password_store_exists() -> Result<bool> {
+    store_exists()
+}
+pub(crate) fn inspect_password_store() -> Result<PasswordStoreReadiness> {
+    let (gpg_id_present, gpg_id_recipients, sample_entry) = inspection()?;
+    Ok(PasswordStoreReadiness {
+        gpg_id_present,
+        gpg_id_recipients,
+        sample_entry,
+    })
+}
+pub(crate) fn clone_password_store(remote: &PasswordStoreRemote) -> Result<()> {
+    record_clone(remote.as_str())
 }

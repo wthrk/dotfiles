@@ -102,6 +102,7 @@ where
             &access_token,
             &project_id,
             &secret_id,
+            key,
             &updated,
             &guard,
         )
@@ -287,11 +288,12 @@ mod tests {
         bws.expect_update_gpg_backup_envelope_if_unchanged()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, _, envelope, guard| {
-                envelope.recipients().len() == 2
+            .withf(|_, _, _, key, envelope, guard| {
+                key == &"gpg-secret-key-backup"
+                    && envelope.recipients().len() == 2
                     && *guard == BackupUpdateGuard::ValueDigest("rev".to_owned())
             })
-            .returning(|_, _, _, _, _| Ok(()));
+            .returning(|_, _, _, _, _, _| Ok(()));
 
         run_add_gpg_backup_spare(
             AddGpgBackupSpareCommand {
@@ -345,7 +347,7 @@ mod tests {
         });
         bws.expect_update_gpg_backup_envelope_if_unchanged()
             .times(1)
-            .returning(|_, _, _, _, expected_guard| {
+            .returning(|_, _, _, _, _, expected_guard| {
                 let current_guard = BackupUpdateGuard::ValueDigest("changed-since-read".to_owned());
                 expected_guard.ensure_matches(&current_guard)
             });

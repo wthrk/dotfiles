@@ -44,11 +44,9 @@ where
     } = runtime;
     let requested = command.requested_external_checks()?;
     let serial = device.resolve_device_serial(command.serial)?;
-    // local storage 検証（ローカル保管確認）: 4 secret（bw-email / bw-password / bitwarden-client-id / bitwarden-client-secret）すべての
-    // 存在・復号可能性を inspect → intent → load → validate で検証する（yubikey-secret-storage-design.md L280）。
-    // 4 secret の local storage 検証後はいずれも retain せず drop する。復旧必須の外部確認は BWS だけなので、
-    // BWS credential はその分岐の直前で on-demand に読み直し、分岐を抜けると drop される。bw-email / bw-password
-    // と Password Manager login / OTP 入力は、無対話 recovery prerequisite に混在させない。
+    // local storage 検証は、無対話 BWS recovery に必要な `bitwarden-client-secret` だけを
+    // inspect → intent → load → validate する。bw-email / bw-password は Password Manager 用の
+    // 任意保存値であり、verify の入力・分岐・成功条件へ混在させない。
     let local_verify = (|| {
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
             let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
@@ -56,8 +54,7 @@ where
             let secret = storage_port
                 .load_secret(serial, &intent)
                 .map_err(|error| intent.decode_error(error))?;
-            // local storage 検証範囲は縮小しない。4 secret すべての存在・復号可能性をここで検証する。
-            // 検証後の secret は match で振り分けず drop し、retain しない。
+            // BWS recovery prerequisite の 1 値だけを検証する。検証後の secret は retain せず drop する。
             intent.validate_loaded_secret(&secret)?;
         }
         Ok(())
@@ -105,7 +102,6 @@ where
             CheckName::Setup
             | CheckName::BwEmail
             | CheckName::BwPassword
-            | CheckName::BitwardenClientId
             | CheckName::BitwardenClientSecret
             | CheckName::LocalStorage => {
                 unreachable!("requested_external_checks returned a non-external verification check")
@@ -162,7 +158,7 @@ where
 ///
 /// この helper は application 層の順序制御（必要な分岐の直前で必要 secret だけを読み、戻ると drop する）に
 /// 属するため `pub` にしない。read 操作は追加の入力を要求しない。
-/// `run_bw_login.rs` の同名 helper と同方針だが use case-to-use case call を避けるため本 file に閉じる。
+/// BWS external check の read-only helper として、この use case 内に閉じる。
 fn load_yubikey_secret(
     serial: u32,
     name: SecretName,
@@ -213,7 +209,6 @@ mod tests {
         match name {
             SecretName::BwEmail => material(b"email"),
             SecretName::BwPassword => material(b"password"),
-            SecretName::BitwardenClientId => material(b"client-id"),
             SecretName::BitwardenClientSecret => material(b"client-secret"),
         }
     }
@@ -280,21 +275,15 @@ mod tests {
         });
     }
 
-    /// local storage 検証（4 secret すべての inspect → load）を順序付きで 1 巡分期待する。
+    /// local storage 検証（`bitwarden-client-secret` の inspect → load）を順序付きで 1 回期待する。
     ///
-    /// local 検証範囲は縮小しないため、bw-email / bw-password / bitwarden-client-secret の 4 secret を必ず
-    /// この順で inspect/load する。各 secret は検証後に drop され retain されない。
+    /// 無対話 BWS recovery prerequisite の 1 値だけを inspect/load し、検証後に drop して retain しない。
     fn expect_local_storage_ok(
         storage: &mut ports::MockSecretStoragePort,
         sequence: &mut mockall::Sequence,
         serial: u32,
     ) {
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientId,
-            SecretName::BitwardenClientSecret,
-        ] {
+        for name in [SecretName::BitwardenClientSecret] {
             expect_secret_load(storage, sequence, serial, name);
         }
     }

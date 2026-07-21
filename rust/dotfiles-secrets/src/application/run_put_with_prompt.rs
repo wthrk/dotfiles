@@ -28,7 +28,6 @@ where
     let secret = command.name.read_interactive_secret_with(
         || process.read_bw_email_secret(),
         || process.read_bw_password_secret(),
-        || process.read_bitwarden_client_id_secret(),
         || process.read_bitwarden_client_secret_secret(),
     )?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
@@ -77,7 +76,6 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
         let mut process = ports::MockSecretInputPort::new();
-        process.expect_read_bitwarden_client_id_secret().times(0);
         process
             .expect_read_bitwarden_client_secret_secret()
             .times(0);

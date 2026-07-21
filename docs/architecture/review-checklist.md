@@ -5,7 +5,7 @@
 ## チェックの進め方
 
 1. レビュー対象ファイルのディレクトリ名から所属層を確定する（[ディレクトリと層の対応規則](hexagonal-implementation-rules.md#ディレクトリと層の対応規則)）。
-2. 主要な処理を [hexagonal-implementation-rules.md の責任分離の判断原則](hexagonal-implementation-rules.md#責任分離の判断原則) に従い、`domain rule` / `application orchestration` / `port contract` / `adapter translation` / `support technical primitive` のいずれかへ分類する。
+2. 主要な処理を [hexagonal-implementation-rules.md の責任分離の判断原則](hexagonal-implementation-rules.md#責任分離の判断原則) に従い、`domain rule` / `application orchestration` / `port contract` / `adapter forwarding` / `support technical backend` のいずれかへ分類する。
 3. 所属層に対応するセクションのチェック項目を適用する。
 4. ディレクトリ名と層が一致しないファイルは配置違反として記録する。
 
@@ -24,30 +24,29 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 
 ### なぜこの制約が存在するか
 
-`adapter` は外部技術とポートの契約の間を翻訳する唯一の場所である。`adapter` が port trait 実装以外の型・関数を `pub(crate)` 以上で公開した時点で、その公開面は「翻訳者」の役割を超えた結合点になる。呼び出し側がその面に依存し始めると、アダプター差し替え時にその依存が壊れる。`pub(crate)` はクレート内に見えるという意味であり、「外部公開ではない」という意味ではない。`adapters/` 配下の全関数・型・定数について、port trait を実装する型またはそのメソッド実装でなければ `pub` も `pub(crate)` も `pub(super)` も禁止である。「adapter 内部で使いやすいから」という理由は公開の正当化にならない。
+`adapter` は port trait と support-owned concrete backend の接続だけを担う。adapter が forwarding 以外の型・関数・変換・分岐を持った時点で、技術実装が別の層へ分散し、backend 差し替え時の変更境界が壊れる。`pub(crate)` はクレート内に見えるという意味であり、「外部公開ではない」という意味ではない。`adapters/` 配下の全関数・型・定数について、port trait implementation の receiver とその forwarding method 以外は `pub` も `pub(crate)` も `pub(super)` も禁止である。「adapter 内部で使いやすいから」「SDK 翻訳だから」は公開または実装の正当化にならない。
 
 - **依存方向**: `port`、`domain`、`support` にのみ依存していること。`application` の use case 型・flow 関数を import していないこと。
-- **責務**: port trait の実装、外部 API 変換、SDK bridge に限定されていること。use case の順序制御・domain policy の決定を含まないこと。
+- **責務**: support-owned concrete backend operation への port trait forwarding に限定されていること。SDK bridge、外部 API 型変換、terminal/process/device/filesystem/codec 実装も adapter ではなく support が所有する。use case の順序制御・domain policy の決定を含まないこと。
 - **公開面（絶対規則）**: `pub`・`pub(crate)`・`pub(super)` で外部に公開できるのは、port trait を実装する型（struct/enum）とそのメソッド実装のみ。stdin 読み取り関数・プロンプト関数・JSON デコード関数・terminal I/O 関数・定数は port trait 実装の一部でない限り private にとどめること。
 
 ### レビュー時の問い
 
-- このコードは「翻訳」のみをしているか。外部技術の型をポートの型に変換する以外の判断・順序制御・ポリシー決定を持ち込んでいないか。
+- 各 trait method は support-owned backend operation への単一の forwarding expression だけか。local 変数、`match` / `if`、`map` / `collect`、parse/serialize、`format!`、error context、SDK/process/device/filesystem/codec 呼び出しを adapter 自身が持っていれば不合格とする。
+- forwarding-only adapter を「実質的な翻訳がない」「単なる委譲」として不合格にしていないか。ここでの単一委譲は required architecture であり、委譲先 support backend の技術実装と domain/application の業務責務を別に判定する。
 - この adapter は domain object のビジネスロジック（manifest/blob 整合判定、nonce/AAD 規則、`SecretName::additional_data` の意味適用、鍵生成可否判断）を直接実行していないか。実行している場合は既存規定上の該当境界に置くべきではないか。
 - adapter の処理を「低水準だから adapter」と判定していないか。SDK/PIV 呼び出しや codec 呼び出しであっても、domain object の関連づけ、保存可能条件、AAD/nonce/manifest/blob の業務意味、上書き可否、値制約を決めているなら adapter から除去すること。
 - adapter の private helper が domain object を分解して業務規則を再構築していないか。helper が private であることは business logic 混入の免除理由にならない。
-- adapter の helper が「外部 API 型と port 境界型の変換」以外の判断を持っていないか。固定 secret 名、project 名、保存モデル、0件/複数件の failure 化、利用者確認、上書き可否、外部確認 plan、command 固有手順を helper に置いている場合、private でも不合格にすること。
+- adapter に helper、state、inherent impl、adapter-local stub schema/fixture/observation がないか。固定 secret 名、project 名、保存モデル、0件/複数件の failure 化、利用者確認、上書き可否、外部確認 plan、command 固有手順を adapter に置いている場合、private でも不合格にすること。
 - `pub(crate)` または `pub(super)` で公開されているシンボルについて：「これを公開しなければならない理由はポートの契約を果たすためか」と問え。「内部で使いやすいから」「呼び出し元が必要としているから」は公開の正当化にならない。後者はアーキテクチャ違反を呼び出し元が要求している状態であり、呼び出し元側の違反を意味する。
-- このコードが存在する理由を一文で言えるか。「外部技術Xとポート契約Yの間を翻訳するため」と言えるか。それ以外の理由が混在しているなら、その部分は adapter に属さない。
+- このコードが存在する理由を一文で言えるか。「port 契約Yを support-owned backend Xへ委譲するため」と言えるか。それ以外の理由が混在しているなら、その部分は adapter に属さない。
 - このファイルを削除して別の技術に差し替えたとき、application/ や domain/ のコードを変更する必要が生じるか。生じるなら、adapter がその依存を外に漏らしている。
-- このファイル内の private な関数・ロジックを含む全コードについて：外部技術とポートの契約の間の翻訳のみを行っているか。use case の順序制御・domain policy の決定・ビジネスロジックの判断が private コードとして潜り込んでいないか。
-- private helper が増殖している場合、それは port capability が粗すぎる兆候ではないか。helper 群が port 契約不足の穴埋めになっていないか。なっている場合は helper 整理ではなく port 分割を要求すること。
-- process-generic な terminal/stdin/stdout helper を adapter private へ直詰めして fat adapter 化していないか。外部技術と port 契約の翻訳ではなく、TTY 制御、blocking read、echo/raw mode、interrupt-aware read などの低レベル実装支援であれば、業務語彙を持たない support として分離できないか確認すること。
+- このファイル内の private な関数・ロジックを含む全コードについて：port forwarding だけを行っているか。use case の順序制御・domain policy の決定・SDK 型変換・ビジネスロジックの判断が private コードとして潜り込んでいないか。
+- process-generic な terminal/stdin/stdout helper、SDK/process/device/filesystem/codec 実装を adapter private へ直詰めしていないか。TTY 制御、blocking read、echo/raw mode、interrupt-aware read などの低レベル実装支援は support が所有する。
 - このファイルが独立して存在することで「特定の外部技術とポートの間の翻訳」として何が独立・差し替え可能になるか。答えられないなら分割の意義がない。
 - このファイルは複数の外部技術を1ファイルに混在させていないか。異なる外部技術の翻訳が混在しているなら分割されていなければならない。逆に単一の外部技術の翻訳が不必要に複数ファイルに断片化されていないか。
 - この分割は「特定の外部技術とポートの間に独立した責務の境界があるから」という設計上の理由によるか。「長くなったから」「再利用したいから」「まとめたいから」は分割の正当な理由にならない。
-- 再エクスポートや委譲のみで実質的な翻訳をしないファイルになっていないか。翻訳の実体を持たないファイルはアダプター層に存在してはならない
-。
+- 再エクスポート集約ファイルではないか。trait implementation が support backend への forwarding だけであることは required であり、その理由だけで不合格にしてはならない。
 
 ## application/ 配下
 
@@ -137,11 +136,10 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 ### レビュー時の問い
 
 - このコードは共通技術 primitive か、secret 保護境界を閉じる backend 操作か。どちらでもない機能固有の名前（特定のコマンド名・ロール名）が現れていたら support に置くべきではない。
-- support を adapter/domain/application 違反の逃げ場として使っていないか。薄い port を保つために adapter/support へ業務判断を押し込んでいないか、adapter を薄くするために support へ逃がしていないか。移動前の処理を `domain rule` / `application orchestration` / `port contract` / `adapter translation` / `support technical primitive` に分類し、`support technical primitive` 以外なら support 配置を不合格にしているか。
+- support を adapter/domain/application 違反の逃げ場として使っていないか。adapter は forwarding-only なので、SDK/process/device/filesystem/codec の実行を support backend へ置くこと自体は required である。一方、薄い port を保つために domain/application の業務判断を support へ押し込んでいないか。移動前の処理を `domain rule` / `application orchestration` / `port contract` / `adapter forwarding` / `support technical backend` に分類し、`support technical backend` 以外なら support 配置を不合格にしているか。
 - storage backend 内部の暗号化・復号・sealed blob 操作が support にある場合、それ自体を不合格理由にしていないか。不合格にする場合は、その処理が setup 済み判定、必須 secret の決定、固定 key/name/role の意味づけ、一意解決、0件/複数件 failure 化、取得対象の過不足判定、外部確認 plan などの業務判断を含むことを具体的に示すこと。
 - support に product-specific storage mechanism を置いていないか。暗号や binary codec を使っていても、enroll/verify/secret storage role の語彙や保存 format の業務意味を持つなら support ではない。secret 保護境界の dedicated backend 操作として YubiKey/Bitwarden などの外部処理名が現れること自体は不合格理由にしない。
-- support の関数が特定機能の domain object や adapter SDK 型を不用意に受け取っていないか。汎用 primitive と secret 保護境界の dedicated backend 操作を分離し、後者は平文 buffer の作成、外部処理呼び出し、repository 所有 buffer の zeroize を同じ protection 境界内で完了する場合に限る。
-- support の public/private 関数シグネチャに domain 型、domain enum、固定 secret 名、project 名、command 名、role 名、保存モデルの語彙が侵入していないか。secret 保護境界の dedicated backend 操作でも、受け取ってよいのは平文借用・外部 SDK 呼び出し・zeroize を閉じるための技術値に限り、domain 意味論を support API へ持ち込んではならない。
+- support backend が port/domain 境界型を technical I/O の引数・返値として受け渡すことだけを理由に不合格にしていないか。adapter が forwarding-only のため、この受け渡しは許可される。判定すべきなのは、support がその値を根拠に対象同一性、必須性、一意性、成功・停止条件、use case 順序を決めていないこと、および SDK 型を domain/application へ漏らしていないことである。
 - support 内の BWS 処理が、固定 secret key/name の意味づけ、secret ID の一意解決の業務規則、0件/複数件の domain failure 化、取得対象の過不足判定、`verify-yubikey --check bws` の外部検証 plan を決めていないか。これらは既存規定上の該当境界に属するものとして検出し、support にあれば不合格にすること。
 - terminal I/O・prompt 周辺のコードがここにある場合は、その責務が process-generic な補助か、feature-specific な interaction 方針かを区別せよ。TTY open、echo/raw mode 制御、blocking read、interrupt-aware read、byte stream としての stdin/stdout 処理のような前者は support に置ける。specific command の prompt 文言、device 選択判断、use case 手順のような後者は support に属さない。「共通部品だから support」という判断だけで正当化してはならない。
 - このコードの名前から command 手順や domain policy を推測できるか。推測できるなら support に属さない。secret 保護境界の専用 backend 操作から外部 SDK/device 名を推測できることだけを不合格理由にしない。
@@ -155,7 +153,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - **責務**: 共通技術部品（保護メモリ・暗号プリミティブ・byte utility・process-generic な標準入出力補助）または secret 保護境界の dedicated backend 操作に限定されていること。
 - **許可成果物**: backend 実装依存の技術補助、SDK 呼び出しの安全な補助、storage backend 内部の暗号化・復号・sealed blob 操作、protection / zeroize / core dump 保護などの技術境界、業務判断を含まない変換を含めてよい。
 - **禁止成果物**: feature-specific な terminal I/O 方針、prompt 文言、device 選択判断、command 名、role 名、固定 secret key/name/role に基づく対象同一性・一意性・0件/複数件の業務判断、外部確認 plan、汎用 plaintext consumer API、平文 buffer を返す public API を含まないこと。
-- **レビュー禁止**: `support` に process/terminal I/O が存在することだけを理由に `判定: 不合格` としてはならない。不合格にする場合は、業務語彙、feature-specific な interaction 方針、domain object 操作、domain/application からの直接利用、または support ではなく別層に属する責務を具体的に示すこと。
+- **レビュー禁止**: `support` に process/terminal I/O、concrete backend、port/domain 境界型の技術的受け渡しが存在することだけを理由に `判定: 不合格` としてはならない。不合格にする場合は、業務判断、feature-specific な interaction 方針、対象同一性・一意性・成功/停止条件の決定、domain/application からの直接利用、または support ではなく別層に属する責務を具体的に示すこと。
 
 ## secret-recovery 判定クイックガイド（application / ports / adapters / support）
 
@@ -166,7 +164,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - ports:
   modality enum や stdin-json の手段表現を契約へ露出していないか。`read_secret_from_prompt` のように capability 名で表現されているか。
 - adapters:
-  `application::...` 型へ直接依存せず、port 契約へ変換しているか。device selection と report 出力は adapter が担い、技術的な実行/翻訳以外の意味づけや use case 順序は持ち込んでいないか。
+  `application::...` 型へ直接依存せず、port trait の各 method を support-owned backend operation へ単一 forwarding しているか。device selection、report formatting、SDK/process/device/filesystem/codec 実装を adapter が担わず、support backend が担っているか。
 - support:
   protected buffer / zeroization / crypto helper / process-generic な標準入出力補助、または secret 保護境界の dedicated backend 操作に限定されているか。device 選択判断、use case 手順、固定 BWS secret の一意解決、0件/複数件の扱い、外部確認 plan、汎用 plaintext consumer API を持っていないか。
 - BWS / YubiKey / GPG backup 保存モデル:
@@ -184,7 +182,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 ### レビュー時の問い
 
 - production 層（`adapters/`・`application/`・`domain/`・`ports/`・`support/`）の各ファイルに、実依存を肩代わりする責務を持つ型（Fake/Stub/Mock）が定義されていないか。その型は、テストのためだけに存在し本番経路では使われないか。そうであれば配置違反である。
-- adapter 配下の `#[cfg(feature = "secrets-internal-test-stub")]` backend stub について、それが [internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) の条件をすべて満たしているか。満たす場合は production source tree への test double 混入として扱ってはならない。
+- support 配下の `#[cfg(feature = "secrets-internal-test-stub")]` backend stub と、それへ forwarding する adapter trait implementation について、[internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) の条件をすべて満たしているか。満たす場合は production source tree への test double 混入として扱ってはならない。
 - test 側が backend state schema・状態遷移 helper・write event helper・bincode schema・backend 内部保存形式を保持していないか。保持している場合は不合格とする。
 - BWS port stub と YubiKey port stub が独立しているか。共通巨大 state や共有 state file で結合している場合は不合格とする。
 - integration test の検証観点が「初期 datastore 定義の投入」と「CLI 実行後の最終 datastore 観測」に限定されているか。stub 内部遷移観測を assertion している場合は不合格とする。
@@ -194,7 +192,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 ### 許可される in, 禁止される out（責務で区別する）
 
 - **許可**: production 層の `src/` ファイル内に置かれた通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`）。これはその module 自身の private 関数を検証する標準的かつ idiomatic な Rust であり、削除を要求してはならない。inline unit test を一律禁止すると、本番関数をテストのためだけに `pub` 化する圧力が生じ、公開面最小化の哲学に反する。`#[test]` 関数の存在のみを理由に `判定: 不合格` としてはならない。
-- **許可**: adapter 配下の internal backend stub は、[hexagonal-implementation-rules.md の internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) を満たす場合に限り production source tree への test double 混入として扱わない。このチェックリストでは、stub が正本節の許可対象に該当するか、stub 周辺のテスト支援責務と backend 実装責務が混在していないか、test 側が初期/最終 datastore 観測のみを扱っているか、BWS/YubiKey port stub が独立しているかを確認する。
+- **許可**: support 配下の internal backend stub は、[hexagonal-implementation-rules.md の internal backend stub の配置](hexagonal-implementation-rules.md#internal-backend-stub-の配置) を満たす場合に限り production source tree への test double 混入として扱わない。adapter 側は同じ backend への forwarding trait implementation だけであることを確認する。このチェックリストでは、stub が正本節の許可対象に該当するか、stub 周辺のテスト支援責務と backend 実装責務が混在していないか、test 側が初期/最終 datastore 観測のみを扱っているか、BWS/YubiKey port stub が独立しているかを確認する。
 - **許可**: application 層の use case orchestration test を internal test stub feature から切り離し、各 `run_*.rs` の `#[cfg(test)] mod tests` 内で port trait 契約を駆動すること。port double は port trait 側から生成した test-only `mockall` mock を各テストで直接組み立てる。app 層 inline/unit test から `tests/` 配下の module、support、fixture、file を `#[path]`、`include!`、または test support module 経由で参照することは不許可である。`rust/dotfiles-secrets/src/application/app_test_support.rs` のような app 層共有 test support file、event recorder、巨大な状態管理 harness、port trait と別に動くテスト専用実装、既存 trait method を `mock!` macro へ手で書き写す二重管理は不許可である。
 - **許可**: `ProtectedSecret` の secret 生値アクセスを `#[cfg(test)]` または `#[test]` に閉じた最小関数として用意し、unit test が値を観測すること。これは test-only の最小観測口であり、domain/application への取り出し API 追加、production 経路での plaintext 取り出し、`String` 変換公開、汎用 plaintext consumer API は引き続き不許可である。
 - **不許可**: production 層に置かれた型の責務が「テスト専用の実依存肩代わり」であり、かつ当該層の責務と一致しない場合。`#[cfg(test)]` / `#[cfg(feature = "...")]` / port trait 実装の有無だけで機械的に判定してはならない。責務の不一致を根拠として不合格にする。

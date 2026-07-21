@@ -64,9 +64,32 @@ pub(crate) fn clone_password_store(remote: &PasswordStoreRemote) -> Result<()> {
         .clone(remote.as_str(), &destination)
     {
         let _ = std::fs::remove_dir_all(&destination);
-        return Err(anyhow::anyhow!(
-            "failed to clone private password-store over SSH: {error}"
-        ));
+        return Err(safe_clone_failure(error));
     }
     Ok(())
+}
+
+/// git2/server supplied error の文字列を利用者向け error chain へ保持しない。
+///
+/// remote URL や server diagnostic は private repository の所在を含み得るため、clone failure の
+/// presentation は固定の安全文脈に限定する。
+fn safe_clone_failure(_error: git2::Error) -> anyhow::Error {
+    anyhow::anyhow!("failed to clone private password-store over SSH")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_clone_failure;
+
+    #[test]
+    fn clone_error_with_remote_is_not_rendered_for_the_user() {
+        let remote = "git@github.com:private-owner/private-password-store.git";
+        let error = safe_clone_failure(git2::Error::from_str(&format!("server rejected {remote}")));
+
+        assert_eq!(
+            error.to_string(),
+            "failed to clone private password-store over SSH"
+        );
+        assert!(!error.to_string().contains(remote));
+    }
 }

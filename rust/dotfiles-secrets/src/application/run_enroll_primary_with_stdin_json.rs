@@ -84,7 +84,6 @@ mod tests {
         [
             ("bw-email".to_owned(), material(b"email")),
             ("bw-password".to_owned(), material(b"password")),
-            ("bitwarden-client-id".to_owned(), material(b"client-id")),
             (
                 "bitwarden-client-secret".to_owned(),
                 material(b"client-secret"),

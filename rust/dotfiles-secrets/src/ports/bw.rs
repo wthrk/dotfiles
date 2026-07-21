@@ -58,12 +58,12 @@ pub trait BwsClientPort {
     ///
     /// 実装は envelope を canonical JSON へ serialize して SDK の create 境界へ翻訳するだけで、登録対象の
     /// 同一性判断や上書き可否の業務判断は持たない。serialize 結果は暗号化済み envelope であり平文鍵素材を
-    /// 含まない。typed capability は常に `gpg-secret-key-backup` を対象にし、caller は secret key 文字列を
-    /// 渡さない。
+    /// 含まない。`secret_key` は application/domain が決めた対象同一性であり、backend は選択・再解釈しない。
     async fn create_gpg_backup_envelope(
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
+        secret_key: &str,
         envelope: &GpgBackupEnvelope,
     ) -> Result<BwsSecretId>;
 
@@ -77,6 +77,7 @@ pub trait BwsClientPort {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
+        secret_key: &str,
         envelope: &GpgBackupEnvelope,
         expected_guard: &BackupUpdateGuard,
     ) -> Result<()>;
@@ -86,12 +87,13 @@ pub trait BwsClientPort {
     /// `remote` は application が `--url` または可視プロンプト/pipe 入力を domain rule
     /// [`PasswordStoreRemote::parse`] で検証した値である。clone URL は秘密情報ではないため `ProtectedSecret`
     /// ではなく検証済み domain 値で運ぶ。implementor は検証済み URL 文字列を SDK の create 境界へ翻訳する
-    /// だけで、URL 形式の再検証や保護 buffer 化を行わない。typed capability は常に
-    /// `password-store-remote` を対象にし、caller は secret key 文字列を渡さない。
+    /// だけで、URL 形式の再検証や保護 buffer 化を行わない。`secret_key` は application/domain が決めた
+    /// 対象同一性であり、backend は選択・再解釈しない。
     async fn create_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
+        secret_key: &str,
         remote: &PasswordStoreRemote,
     ) -> Result<BwsSecretId>;
 
@@ -117,6 +119,7 @@ pub trait BwsClientPort {
         access_token: &ProtectedSecret,
         project_id: &BwsProjectId,
         secret_id: &BwsSecretId,
+        secret_key: &str,
         remote: &PasswordStoreRemote,
         expected_guard: &BackupUpdateGuard,
     ) -> Result<()>;

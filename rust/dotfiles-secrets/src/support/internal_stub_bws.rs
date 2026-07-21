@@ -2,7 +2,13 @@
 
 use crate::{
     Result,
+    domain::{
+        bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        gpg_backup::{BackupUpdateGuard, GpgBackupEnvelope},
+        pass_restore::PasswordStoreRemote,
+    },
     secrets_internal_test_stub_contract::{BWS_STUB_SPEC_ENV, STUB_OBSERVATION_PREFIX},
+    support::protection::ProtectedSecret,
 };
 use anyhow::Context;
 use std::{
@@ -170,13 +176,144 @@ pub(crate) fn create_secret(
         Ok(id)
     })
 }
-pub(crate) fn replace_secret(token: &[u8], id: &str, value: String) -> Result<()> {
+pub(crate) fn replace_secret(
+    token: &[u8],
+    project: &str,
+    id: &str,
+    name: &str,
+    value: String,
+) -> Result<()> {
     with_store(|store| {
         check(token, store)?;
-        if !store.values.contains_key(id) {
+        let secrets = store
+            .project_secrets
+            .get_mut(project)
+            .ok_or_else(|| anyhow::anyhow!("bitwarden project not found"))?;
+        if !secrets.contains_key(id) || !store.values.contains_key(id) {
             anyhow::bail!("bitwarden secret get failed")
         }
+        secrets.insert(id.into(), name.into());
         store.values.insert(id.into(), value);
         Ok(())
     })
+}
+
+pub(crate) async fn list_bws_projects(
+    access_token: &ProtectedSecret,
+) -> Result<Vec<BwsLookupCandidate<BwsProjectId>>> {
+    Ok(list_projects(&access_token.to_test_bytes())?
+        .into_iter()
+        .map(|(id, name)| BwsLookupCandidate {
+            id: BwsProjectId::new(id),
+            name,
+        })
+        .collect())
+}
+pub(crate) async fn list_bws_secrets(
+    access_token: &ProtectedSecret,
+    project_id: &BwsProjectId,
+) -> Result<Vec<BwsLookupCandidate<BwsSecretId>>> {
+    Ok(
+        list_project_secrets(&access_token.to_test_bytes(), project_id.as_str())?
+            .into_iter()
+            .map(|(id, name)| BwsLookupCandidate {
+                id: BwsSecretId::new(id),
+                name,
+            })
+            .collect(),
+    )
+}
+pub(crate) async fn fetch_gpg_backup_envelope(
+    access_token: &ProtectedSecret,
+    secret_id: &BwsSecretId,
+) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+    let value = read_secret(&access_token.to_test_bytes(), secret_id.as_str())?;
+    Ok((
+        GpgBackupEnvelope::from_json(value.as_bytes())?,
+        BackupUpdateGuard::from_value_bytes(value.as_bytes()),
+    ))
+}
+pub(crate) async fn fetch_password_store_remote(
+    access_token: &ProtectedSecret,
+    secret_id: &BwsSecretId,
+) -> Result<PasswordStoreRemote> {
+    PasswordStoreRemote::parse(&read_secret(
+        &access_token.to_test_bytes(),
+        secret_id.as_str(),
+    )?)
+}
+pub(crate) async fn create_gpg_backup_envelope(
+    access_token: &ProtectedSecret,
+    project_id: &BwsProjectId,
+    secret_key: &str,
+    envelope: &GpgBackupEnvelope,
+) -> Result<BwsSecretId> {
+    let value = String::from_utf8(envelope.to_json()?)
+        .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
+    Ok(BwsSecretId::new(create_secret(
+        &access_token.to_test_bytes(),
+        project_id.as_str(),
+        secret_key,
+        value,
+    )?))
+}
+pub(crate) async fn update_gpg_backup_envelope_if_unchanged(
+    access_token: &ProtectedSecret,
+    project_id: &BwsProjectId,
+    secret_id: &BwsSecretId,
+    secret_key: &str,
+    envelope: &GpgBackupEnvelope,
+    expected_guard: &BackupUpdateGuard,
+) -> Result<()> {
+    let token = access_token.to_test_bytes();
+    let current = read_secret(&token, secret_id.as_str())?;
+    expected_guard.ensure_matches(&BackupUpdateGuard::from_value_bytes(current.as_bytes()))?;
+    let value = String::from_utf8(envelope.to_json()?)
+        .map_err(|_| anyhow::anyhow!("gpg backup envelope is not valid UTF-8"))?;
+    replace_secret(
+        &token,
+        project_id.as_str(),
+        secret_id.as_str(),
+        secret_key,
+        value,
+    )
+}
+pub(crate) async fn create_password_store_remote(
+    access_token: &ProtectedSecret,
+    project_id: &BwsProjectId,
+    secret_key: &str,
+    remote: &PasswordStoreRemote,
+) -> Result<BwsSecretId> {
+    Ok(BwsSecretId::new(create_secret(
+        &access_token.to_test_bytes(),
+        project_id.as_str(),
+        secret_key,
+        remote.as_str().to_owned(),
+    )?))
+}
+pub(crate) async fn fetch_password_store_remote_guard(
+    access_token: &ProtectedSecret,
+    secret_id: &BwsSecretId,
+) -> Result<BackupUpdateGuard> {
+    let value = read_secret(&access_token.to_test_bytes(), secret_id.as_str())?;
+    Ok(BackupUpdateGuard::from_value_bytes(value.as_bytes()))
+}
+pub(crate) async fn update_password_store_remote_if_unchanged(
+    access_token: &ProtectedSecret,
+    project_id: &BwsProjectId,
+    secret_id: &BwsSecretId,
+    secret_key: &str,
+    remote: &PasswordStoreRemote,
+    expected_guard: &BackupUpdateGuard,
+) -> Result<()> {
+    let token = access_token.to_test_bytes();
+    let current = read_secret(&token, secret_id.as_str())?;
+    expected_guard.ensure_matches(&BackupUpdateGuard::from_value_bytes(current.as_bytes()))?;
+    replace_secret(
+        &token,
+        project_id.as_str(),
+        secret_id.as_str(),
+        secret_key,
+        remote.as_str().to_owned(),
+    )
 }

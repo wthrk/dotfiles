@@ -63,7 +63,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, _| inspection(true));
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
         output
@@ -73,7 +73,6 @@ mod tests {
                     == [
                         SecretName::BwEmail,
                         SecretName::BwPassword,
-                        SecretName::BitwardenClientId,
                         SecretName::BitwardenClientSecret,
                     ]
             })
@@ -97,7 +96,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, spec| inspection(spec.name != SecretName::BitwardenClientSecret));
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
         output
@@ -107,7 +106,6 @@ mod tests {
                     == [
                         SecretName::BwEmail,
                         SecretName::BwPassword,
-                        SecretName::BitwardenClientId,
                     ]
             })
             .returning(|_| Ok(()));
@@ -129,7 +127,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -160,7 +158,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -193,7 +191,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -224,7 +222,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -254,7 +252,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(4)
+            .times(3)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: Some(b"invalid manifest".to_vec()),

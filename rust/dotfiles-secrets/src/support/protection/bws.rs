@@ -3,14 +3,15 @@
 
 use anyhow::Context;
 use bitwarden::{
-    Client, ClientSettings, DeviceType, auth::login::AccessTokenLoginRequest,
-    secrets_manager::secrets::SecretGetRequest,
+    Client, ClientSettings, DeviceType,
+    auth::login::AccessTokenLoginRequest,
+    secrets_manager::secrets::{SecretGetRequest, SecretPutRequest},
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::SecretSession;
-use crate::{Result, support::protection::ProtectedSecret};
+use crate::{Result, domain::gpg_backup::BackupUpdateGuard, support::protection::ProtectedSecret};
 
 /// SDK login request の repository 所有 access token buffer を Drop で zeroize する guard。
 ///
@@ -78,19 +79,77 @@ impl BwsClientSession {
         protected.with_secret_utf8(|json| parse(json, revision.as_str()))
     }
 
-    /// SDK get で取得した secret value を protected buffer 外へ出せる `Zeroizing` 管理の文字列として返す。
-    ///
-    /// caller は対象値が protected borrow 境界を必要としないことを protection 外で確定してから呼び出す。
-    /// この support 境界は BWS SDK の secret value を repository 所有文字列へ移し、Drop 時の zeroize を
-    /// 保証するだけで、保存モデル上の secret 名・用途判断は持たない。
-    pub(crate) async fn get_non_secret_value(&self, id: Uuid) -> Result<Zeroizing<String>> {
+    /// SDK get の raw value を protection 内で借用し、検証済みの境界型だけを返す。
+    pub(crate) async fn parse_secret_value<R>(
+        &self,
+        id: Uuid,
+        parse: impl FnOnce(&str) -> Result<R>,
+    ) -> Result<R> {
         let secret = self
             .client
             .secrets()
             .get(&SecretGetRequest { id })
             .await
             .context("Bitwarden SDK secret get failed")?;
-        Ok(Zeroizing::new(secret.value))
+        let value = Zeroizing::new(secret.value);
+        parse(value.as_str())
+    }
+
+    /// current value を外へ出さずに stale-overwrite guard を作る。
+    pub(crate) async fn current_secret_guard(&self, id: Uuid) -> Result<BackupUpdateGuard> {
+        let secret = self
+            .client
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .context("Bitwarden SDK secret get for update guard failed")?;
+        let value = Zeroizing::new(secret.value);
+        Ok(BackupUpdateGuard::from_revision_or_value(
+            secret.revision_date.to_rfc3339(),
+            value.as_bytes(),
+        ))
+    }
+
+    /// raw value/note/project assignment をこの protection 境界に閉じた guarded update。
+    pub(crate) async fn update_secret_if_unchanged(
+        &self,
+        id: Uuid,
+        expected_project_id: Uuid,
+        key: String,
+        value: String,
+        expected_guard: &BackupUpdateGuard,
+    ) -> Result<()> {
+        let current = self
+            .client
+            .secrets()
+            .get(&SecretGetRequest { id })
+            .await
+            .context("Bitwarden SDK secret get before guarded update failed")?;
+        let current_value = Zeroizing::new(current.value);
+        let current_guard = BackupUpdateGuard::from_revision_or_value(
+            current.revision_date.to_rfc3339(),
+            current_value.as_bytes(),
+        );
+        expected_guard.ensure_matches(&current_guard)?;
+        let current_project_id = current
+            .project_id
+            .ok_or_else(|| anyhow::anyhow!("Bitwarden SDK secret response omitted project_id"))?;
+        if current_project_id != expected_project_id {
+            anyhow::bail!("Bitwarden SDK secret project changed before guarded update");
+        }
+        self.client
+            .secrets()
+            .update(&SecretPutRequest {
+                id,
+                organization_id: current.organization_id,
+                key,
+                value,
+                note: current.note,
+                project_ids: Some(vec![current_project_id]),
+            })
+            .await
+            .context("Bitwarden SDK guarded secret update failed")?;
+        Ok(())
     }
 }
 

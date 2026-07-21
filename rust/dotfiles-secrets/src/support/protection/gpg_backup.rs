@@ -70,6 +70,9 @@ pub(crate) fn parse_primary_fingerprint_hex(backup: &ProtectedSecret) -> Result<
 ///
 /// backup bytes は `ProtectedSecret` の借用中だけ gpgme `Data` へ渡し、平文 buffer を関数外へ出さない。
 /// import 対象を fingerprint で同定するため、import result の最初の imported fingerprint を返す。
+/// `gpgme` 0.11.0 `Import::fingerprint` は raw 値が無い場合を `Err(None)`、非 UTF-8 を
+/// `Err(Some(Utf8Error))` で表すため、いずれも別 fingerprint へ推測変換せず failure として伝播する。
+/// 出典: <https://docs.rs/crate/gpgme/0.11.0/source/src/results.rs#L88-L91>。
 pub(crate) fn import_secret_key(backup: &ProtectedSecret) -> Result<String> {
     let mut context = open_context()?;
     backup.with_secret(|bytes| {
@@ -78,11 +81,18 @@ pub(crate) fn import_secret_key(backup: &ProtectedSecret) -> Result<String> {
         let result = context
             .import(data)
             .context("failed to import GPG secret key")?;
-        result
+        let import = result
             .imports()
-            .filter_map(|import| import.fingerprint().ok().map(str::to_owned))
             .next()
-            .context("GPG import did not report an imported key fingerprint")
+            .context("GPG import did not report an imported key")?;
+        import
+            .fingerprint()
+            .map(str::to_owned)
+            .map_err(|error| match error {
+                Some(error) => anyhow::Error::new(error)
+                    .context("GPG imported key fingerprint is not valid UTF-8"),
+                None => anyhow::anyhow!("GPG imported key fingerprint is absent"),
+            })
     })
 }
 
