@@ -22,7 +22,7 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 
 YubiKey に保存する bootstrap secret は `bitwarden-client-secret` だけである。repository は Bitwarden Password Manager login command を公開せず、email、master password、OTP、session を YubiKey 保存・CLI recovery input・enroll 出力・spare copy・status/clear lifecycle に含めない。復旧中に読む YubiKey 保存値、BWS access token、取得した envelope、session を含む credential は stdout、stderr、log、一時ファイル、永続 environment へ出力・保存せず、必要な use の後に破棄する。CLI option の `--serial` は非秘匿の対象選択だけに使え、secret を argv に渡す許可ではない。
 
-[#11](https://github.com/wthrk/dotfiles/issues/11) の復旧到達目的（GPG、SSH、private `password-store` の復旧）を実現するための統合確認が [#17](https://github.com/wthrk/dotfiles/issues/17) である。`verify-yubikey --all` はその統合確認を BWS recovery prerequisite に限定して具体化するものであり、Password Manager login、email、master password、OTP、session を追加必須にしてはならない。この節と「Secret の置き場所」が issue の要約・旧実装・テスト期待と矛盾する場合は本仕様を優先する。
+[#11](https://github.com/wthrk/dotfiles/issues/11) の復旧到達目的（GPG、SSH、private `password-store` の復旧）を実現するための統合確認が [#17](https://github.com/wthrk/dotfiles/issues/17) である。`verify-yubikey --all` はその統合確認を BWS recovery prerequisite に限定して具体化するものであり、Password Manager login、email、master password、OTP、session を追加必須にしてはならない。issue 本文と現行契約の優先順位は、下記の [#11 / #17 の正式 supersession 記録](#11--17-の正式-supersession-記録) を正本とする。
 
 ## 復旧対象
 
@@ -236,7 +236,11 @@ YubiKey から `bitwarden-client-secret` を取得し、BWS project `dotfiles-se
 
 `bw` CLI の email/master-password login、OTP、session、credential の有無は、repository の recovery command の停止条件ではない。これらは Bitwarden Password Manager の別製品面であり、本仕様が定める BWS-only の復旧状態遷移へ入力・fallback・確認項目として混在させない。
 
-[#11](https://github.com/wthrk/dotfiles/issues/11) と [#17](https://github.com/wthrk/dotfiles/issues/17) は、GPG、SSH、private `password-store` の復旧目的および統合作業単位を示す外部 issue である。repository 内で復旧 command の保存対象、入力、停止条件、検証対象を定める正本は本仕様とここから参照する設計文書であり、issue 本文の旧記述がこの BWS-only 契約と異なる場合は本仕様が supersede する。外部 issue 本体はこの repository の変更では編集しない。したがって外部 issue を単独で読む利用者には旧記述が残るリスクがあり、実装者・レビュー担当は必ず本仕様を併読して本契約を適用する。
+## #11 / #17 の正式 supersession 記録
+
+[#11](https://github.com/wthrk/dotfiles/issues/11) と [#17](https://github.com/wthrk/dotfiles/issues/17) は、GPG、SSH、private `password-store` の復旧目的および統合作業単位を示す外部 issue である。各 issue の旧本文にある Password Manager login / unlock、`bw-email`、`bw-password`、OTP、session を復旧要件とする記述は、[#11 の正式 supersession comment](https://github.com/wthrk/dotfiles/issues/11#issuecomment-5037432015) と [#17 の正式 supersession comment](https://github.com/wthrk/dotfiles/issues/17#issuecomment-5037432321) で廃止済みである。
+
+repository 内で復旧 command の保存対象、入力、停止条件、検証対象を定める現行正本は本仕様とここから参照する設計・runbook である。実装者・レビュー担当は、現行正本と上記の正式 supersession comment を各 issue の旧本文より優先して読む。外部 issue を単独で読んだときに旧本文を現行契約と扱うことは誤りであり、「外部 issue を編集しないため旧記述が残る」という未解消リスクとして扱わない。
 
 ## 参考
 
