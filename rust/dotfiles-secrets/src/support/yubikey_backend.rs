@@ -60,19 +60,11 @@ pub(crate) struct DeviceCandidate {
     pub(crate) serial: u32,
     pub(crate) label: String,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ManagementAuthState {
-    Protected,
-}
-
 pub(crate) trait SecretDeviceIo {
     fn key_exists(&mut self) -> Result<bool>;
     fn reserved_slot_certificate_exists(&mut self) -> Result<bool>;
     fn piv_application_version(&self) -> PivApplicationVersion;
-    fn check_management_auth_preconditions(
-        &mut self,
-        pin: Option<&ProtectedSecret>,
-    ) -> Result<ManagementAuthState>;
+    fn check_management_auth_preconditions(&mut self, pin: Option<&ProtectedSecret>) -> Result<()>;
     fn generate_key(&mut self) -> Result<Vec<u8>>;
     fn slot_public_key_spki(&mut self) -> Result<Option<Vec<u8>>>;
     fn remember_generated_public_key(&mut self, key: Vec<u8>);
@@ -111,7 +103,7 @@ impl SecretDeviceIo for SelectedSecretDevice {
     fn piv_application_version(&self) -> PivApplicationVersion {
         self.inner.piv_application_version()
     }
-    delegate!(check_management_auth_preconditions(pin:Option<&ProtectedSecret>) -> Result<ManagementAuthState>);
+    delegate!(check_management_auth_preconditions(pin:Option<&ProtectedSecret>) -> Result<()>);
     delegate!(generate_key() -> Result<Vec<u8>>);
     delegate!(slot_public_key_spki() -> Result<Option<Vec<u8>>>);
     fn remember_generated_public_key(&mut self, key: Vec<u8>) {
@@ -278,10 +270,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
             patch: v.patch,
         }
     }
-    fn check_management_auth_preconditions(
-        &mut self,
-        pin: Option<&ProtectedSecret>,
-    ) -> Result<ManagementAuthState> {
+    fn check_management_auth_preconditions(&mut self, pin: Option<&ProtectedSecret>) -> Result<()> {
         let pin = pin.ok_or_else(|| {
             anyhow::anyhow!(
                 "PIV management operation requires a configured PIN-protected management session"
@@ -295,7 +284,7 @@ impl SecretDeviceIo for YubikeySecretDevice {
         if metadata.default != Some(false) {
             anyhow::bail!("YubiKey PIN-protected management key metadata is not healthy")
         }
-        Ok(ManagementAuthState::Protected)
+        Ok(())
     }
     fn generate_key(&mut self) -> Result<Vec<u8>> {
         let public = piv::generate(

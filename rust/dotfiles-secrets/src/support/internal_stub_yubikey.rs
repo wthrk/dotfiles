@@ -25,9 +25,7 @@ use std::{
 use anyhow::Context;
 
 use crate::secrets_internal_test_stub_contract::{STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV};
-use crate::support::yubikey_backend::{
-    DeviceCandidate, ManagementAuthState, SecretDeviceIo, SelectedSecretDevice,
-};
+use crate::support::yubikey_backend::{DeviceCandidate, SecretDeviceIo, SelectedSecretDevice};
 use crate::{
     Result,
     domain::{
@@ -198,10 +196,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
         }
     }
 
-    fn check_management_auth_preconditions(
-        &mut self,
-        pin: Option<&ProtectedSecret>,
-    ) -> Result<ManagementAuthState> {
+    fn check_management_auth_preconditions(&mut self, pin: Option<&ProtectedSecret>) -> Result<()> {
         let _pin = pin.ok_or_else(|| anyhow::anyhow!("stub PIV management session has no PIN"))?;
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
@@ -213,7 +208,7 @@ impl SecretDeviceIo for TestStubSecretDevice {
                 }
                 StubManagementState::Protected => {
                     self.management_authenticated = true;
-                    Ok(ManagementAuthState::Protected)
+                    Ok(())
                 }
                 StubManagementState::WrongPin => {
                     anyhow::bail!("stub YubiKey PIN verification failed")
