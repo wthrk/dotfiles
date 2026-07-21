@@ -258,11 +258,9 @@ mod tests {
             .expect_finalize_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(()));
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientSecret,
-        ] {
+        // The primary supplies all stored bootstrap values for cloning.  The
+        // spare's post-write recovery preflight checks only the BWS credential.
+        for name in [SecretName::BitwardenClientSecret] {
             storage
                 .expect_inspect_secret_storage_read()
                 .times(1)
@@ -271,13 +269,7 @@ mod tests {
             storage
                 .expect_load_secret()
                 .times(1)
-                .returning(|_, intent| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientSecret => material(b"token"),
-                    })
-                });
+                .returning(|_, _| Ok(material(b"token")));
         }
         let mut report = ports::MockReportPort::new();
         report

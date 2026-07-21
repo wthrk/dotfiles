@@ -153,11 +153,10 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientSecret,
-        ] {
+        // Enrollment stores all bootstrap values, but its local recovery preflight is
+        // intentionally limited to the BWS credential required by the no-input
+        // recovery contract.
+        for name in [SecretName::BitwardenClientSecret] {
             storage
                 .expect_inspect_secret_storage_read()
                 .times(1)
@@ -167,13 +166,7 @@ mod tests {
                 .expect_load_secret()
                 .times(1)
                 .withf(move |serial, intent| *serial == 2001 && intent.storage.name == name)
-                .returning(|_, intent| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientSecret => material(b"token"),
-                    })
-                });
+                .returning(|_, _| Ok(material(b"token")));
         }
         let mut report = ports::MockReportPort::new();
         report
