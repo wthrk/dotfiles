@@ -128,15 +128,60 @@ confirm_password_store_primary_fingerprint() {
     || die "password-store .gpg-id の recipient が変更されています。解決済み primary fingerprint と一致しません"
   log "password-store .gpg-id recipient の秘密鍵を再確認済み"
 }
+# TTY secret prompt の共通 I/O 契約。PIV PIN は子 Rust command が同じ契約で /dev/tty から受け取り、
+# この script は BWS token だけを扱う。値は mask 以外へ表示せず、stdin token とは混在させない。
+write_secret_tty() { printf '%s' "$1" >/dev/tty; }
+secret_tty_state() { stty -g </dev/tty; }
+prepare_secret_tty() { stty -echo -icanon -isig min 1 time 0 </dev/tty; }
+restore_secret_tty() { stty "$1" </dev/tty; }
+read_secret_tty_byte() { IFS= read -r -s -n 1 REPLY </dev/tty; }
+
+read_masked_tty_secret() {
+  local label="$1" token="" byte="" tty_state=""
+  tty_state="$(secret_tty_state)" || die "controlling TTY の状態を取得できません"
+  write_secret_tty "${label}: "
+  prepare_secret_tty || die "controlling TTY を secret input 用に設定できません"
+  # This function is called through command substitution, so the signal handler restores the
+  # terminal in that subshell before terminating it. No token text is sent to the display path.
+  trap 'restore_secret_tty "$tty_state"; exit 130' HUP INT TERM
+  while :; do
+    if ! read_secret_tty_byte; then
+      restore_secret_tty "$tty_state"
+      trap - HUP INT TERM
+      die "controlling TTY から BWS access token を読めません"
+    fi
+    byte="$REPLY"
+    case "$byte" in
+      '')
+        write_secret_tty $'\n'
+        break
+        ;;
+      $'\b'|$'\177')
+        if [ -n "$token" ]; then
+          token="${token%?}"
+          write_secret_tty $'\b \b'
+        fi
+        ;;
+      $'\003')
+        restore_secret_tty "$tty_state"
+        trap - HUP INT TERM
+        die "BWS access token の入力を中断しました"
+        ;;
+      *)
+        token+="$byte"
+        write_secret_tty '*'
+        ;;
+    esac
+  done
+  restore_secret_tty "$tty_state"
+  trap - HUP INT TERM
+  [ -n "$token" ] || die "BWS access token が空です"
+  printf '%s' "$token"
+}
+
 read_bws_access_token() {
-  local label="$1"
   if [ -t 0 ]; then
-    local token
-    printf '%s: ' "$label" >/dev/tty
-    IFS= read -r -s token </dev/tty
-    printf '\n' >/dev/tty
-    [ -n "$token" ] || die "BWS access token が空です"
-    printf '%s' "$token"
+    read_masked_tty_secret 'BWS access token for YubiKey bitwarden-client-secret storage'
   else
     local token
     IFS= read -r token

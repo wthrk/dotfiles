@@ -15,7 +15,6 @@ mod oaep;
 pub(crate) mod sealed_blob;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;
-#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod yubikey_piv;
 
 use crate::Result;

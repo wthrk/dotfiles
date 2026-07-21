@@ -92,6 +92,119 @@ fn read_hidden_byte(reader: &mut FileDescriptor, byte: &mut [u8; 1]) -> Result<u
     }
 }
 
+/// TTY secret prompt の hidden input に必要な byte I/O。
+///
+/// 実装は raw terminal を扱う `FileDescriptor`、test は in-memory fake を使う。PIN の入力
+/// byte 列を端末・physical YubiKey に触れずに検証可能にするための technical seam であり、
+/// command や device state の判断は持たない。
+trait HiddenSecretInput {
+    fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize>;
+    fn write_hidden_mask(&mut self) -> Result<()>;
+    fn erase_hidden_mask(&mut self) -> Result<()>;
+    fn finish_hidden_line(&mut self) -> Result<()>;
+}
+
+impl HiddenSecretInput for FileDescriptor {
+    fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize> {
+        read_hidden_byte(self, byte)
+    }
+
+    fn write_hidden_mask(&mut self) -> Result<()> {
+        self.write_all(b"*")?;
+        self.flush()?;
+        Ok(())
+    }
+
+    fn erase_hidden_mask(&mut self) -> Result<()> {
+        self.write_all(b"\x08 \x08")?;
+        self.flush()?;
+        Ok(())
+    }
+
+    fn finish_hidden_line(&mut self) -> Result<()> {
+        self.write_all(b"\n")?;
+        self.flush()?;
+        Ok(())
+    }
+}
+
+/// secret prompt の input reader と display writer を一つの hidden-input 契約に束ねる。
+///
+/// `read_hidden_line` は stdin または `/dev/tty` から読み、stderr に mask を出すため、reader と
+/// writer が別になる。一方 `read_hidden_tty_line` は `/dev/tty` の同じ descriptor を使う。両方を
+/// 同じ raw-byte / mask contract に通すための technical adapter である。
+struct HiddenPromptIo<'a, W> {
+    reader: &'a mut FileDescriptor,
+    writer: &'a mut W,
+}
+
+impl<W: Write> HiddenSecretInput for HiddenPromptIo<'_, W> {
+    fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize> {
+        read_hidden_byte(self.reader, byte)
+    }
+
+    fn write_hidden_mask(&mut self) -> Result<()> {
+        self.writer.write_all(b"*")?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn erase_hidden_mask(&mut self) -> Result<()> {
+        self.writer.write_all(b"\x08 \x08")?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn finish_hidden_line(&mut self) -> Result<()> {
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
+/// hidden controlling-TTY input を protected PIN bytes にする。
+///
+/// CR/LF は行終端としてのみ除去する。backspace と Ctrl-C は terminal interaction として処理するが、
+/// それ以外の byte は trim、drop、Unicode/encoding 変換なしにそのまま `ProtectedSecret` へ保存する。
+/// 受理した各 byte は `*` だけを TTY に出し、backspace 時は対応する mask だけを消去する。PIN
+/// 本文は stdout、stderr、log、argv、environment に出さない。この raw-byte 契約は PIV VERIFY へ
+/// 渡る PIN を変形せず、誤った byte 列による physical retry を増やさないためのものである。
+fn read_hidden_secret_input_from(
+    tty: &mut impl HiddenSecretInput,
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<ProtectedSecret> {
+    let session = SecretSession::start()?;
+    let mut input = ProtectedInputBuffer::new(max_len + 1, &session)?;
+    let mut byte = [0u8; 1];
+    loop {
+        if tty.read_hidden_byte(&mut byte)? == 0 {
+            break;
+        }
+        match byte[0] {
+            b'\r' | b'\n' => {
+                tty.finish_hidden_line()?;
+                break;
+            }
+            3 => bail!("interrupted while reading hidden input"),
+            8 | 127 => {
+                if !input.as_slice().is_empty() {
+                    input.pop_byte();
+                    tty.erase_hidden_mask()?;
+                }
+            }
+            value => {
+                input.write_all(&[value])?;
+                if input.as_slice().len() > max_len {
+                    bail!("{too_long_message}");
+                }
+                tty.write_hidden_mask()?;
+            }
+        }
+    }
+    input.into_protected_secret_line(&session, max_len, too_long_message)
+}
+
 /// 非表示入力を raw mode で読み取り、入力 bytes を保護メモリのまま返す。
 ///
 /// backspace と Ctrl-C を process I/O 境界で吸収する。
@@ -100,7 +213,6 @@ pub(crate) fn read_hidden_line(
     max_len: usize,
     too_long_message: &'static str,
 ) -> Result<ProtectedSecret> {
-    let session = SecretSession::start()?;
     eprint!("{prompt}");
     io::stderr().flush()?;
     let mut reader = stdin_or_tty_reader()?;
@@ -108,28 +220,12 @@ pub(crate) fn read_hidden_line(
     let _raw_mode = scopeguard::guard((), |_| {
         let _ = disable_raw_mode();
     });
-    let mut input = ProtectedInputBuffer::new(max_len + 1, &session)?;
-    let mut byte = [0u8; 1];
-    loop {
-        if read_hidden_byte(&mut reader, &mut byte)? == 0 {
-            break;
-        }
-        match byte[0] {
-            b'\r' | b'\n' => {
-                eprintln!();
-                break;
-            }
-            3 => bail!("interrupted while reading hidden input"),
-            8 | 127 => input.pop_byte(),
-            value => {
-                input.write_all(&[value])?;
-                if input.as_slice().len() > max_len {
-                    bail!("{too_long_message}");
-                }
-            }
-        }
-    }
-    input.into_protected_secret_line(&session, max_len, too_long_message)
+    let mut stderr = io::stderr();
+    let mut prompt_io = HiddenPromptIo {
+        reader: &mut reader,
+        writer: &mut stderr,
+    };
+    read_hidden_secret_input_from(&mut prompt_io, max_len, too_long_message)
 }
 
 /// controlling TTY だけから非表示入力を読み取る。
@@ -142,7 +238,6 @@ pub(crate) fn read_hidden_tty_line(
     max_len: usize,
     too_long_message: &'static str,
 ) -> Result<ProtectedSecret> {
-    let session = SecretSession::start()?;
     let mut tty = controlling_tty_reader()?;
     tty.write_all(prompt.as_bytes())?;
     tty.flush()?;
@@ -150,29 +245,7 @@ pub(crate) fn read_hidden_tty_line(
     let _raw_mode = scopeguard::guard((), |_| {
         let _ = disable_raw_mode();
     });
-    let mut input = ProtectedInputBuffer::new(max_len + 1, &session)?;
-    let mut byte = [0u8; 1];
-    loop {
-        if read_hidden_byte(&mut tty, &mut byte)? == 0 {
-            break;
-        }
-        match byte[0] {
-            b'\r' | b'\n' => {
-                tty.write_all(b"\n")?;
-                tty.flush()?;
-                break;
-            }
-            3 => bail!("interrupted while reading hidden input"),
-            8 | 127 => input.pop_byte(),
-            value => {
-                input.write_all(&[value])?;
-                if input.as_slice().len() > max_len {
-                    bail!("{too_long_message}");
-                }
-            }
-        }
-    }
-    input.into_protected_secret_line(&session, max_len, too_long_message)
+    read_hidden_secret_input_from(&mut tty, max_len, too_long_message)
 }
 
 /// 制御端末から非秘匿の 1 行を可視入力（通常の echo つき cooked 入力）で読み取る。
@@ -258,6 +331,113 @@ pub(crate) fn read_stdin_line(
     input.into_protected_secret_line(&session, max_len, too_long_message)
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, io::Cursor};
+
+    use crate::{Result, support::protection::yubikey_piv::verify_pin_with};
+
+    use super::{HiddenSecretInput, read_hidden_secret_input_from};
+
+    struct FakeControllingTty {
+        input: Cursor<Vec<u8>>,
+        output: Vec<u8>,
+        finished: bool,
+    }
+
+    impl FakeControllingTty {
+        fn new(input: &[u8]) -> Self {
+            Self {
+                input: Cursor::new(input.to_vec()),
+                output: Vec::new(),
+                finished: false,
+            }
+        }
+    }
+
+    impl HiddenSecretInput for FakeControllingTty {
+        fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize> {
+            Ok(std::io::Read::read(&mut self.input, byte)?)
+        }
+
+        fn write_hidden_mask(&mut self) -> Result<()> {
+            self.output.push(b'*');
+            Ok(())
+        }
+
+        fn erase_hidden_mask(&mut self) -> Result<()> {
+            self.output.extend_from_slice(b"\x08 \x08");
+            Ok(())
+        }
+
+        fn finish_hidden_line(&mut self) -> Result<()> {
+            self.finished = true;
+            self.output.push(b'\n');
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn controlling_tty_pin_bytes_reach_verify_unmodified_except_line_terminator() -> Result<()> {
+        // Include whitespace and non-UTF-8 bytes to prove the PIN path neither trims nor
+        // performs text/encoding conversion. The fake replaces both the TTY and YubiKey.
+        let expected = b" 12\x80\xffA";
+        let mut tty = FakeControllingTty::new(b" 12\x80\xffA\r");
+        let pin = read_hidden_secret_input_from(&mut tty, 64, "too large")?;
+        let observed = RefCell::new(Vec::new());
+
+        verify_pin_with(&pin, |bytes| {
+            observed.replace(bytes.to_vec());
+            Ok(())
+        })?;
+
+        assert!(tty.finished);
+        assert_eq!(observed.into_inner(), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn controlling_tty_lf_is_only_a_line_terminator() -> Result<()> {
+        let mut tty = FakeControllingTty::new(b"12 34\n");
+        let pin = read_hidden_secret_input_from(&mut tty, 64, "too large")?;
+
+        assert!(tty.finished);
+        assert_eq!(pin.to_test_bytes(), b"12 34");
+        Ok(())
+    }
+
+    #[test]
+    fn controlling_tty_masks_input_and_keeps_stdin_token_separate() -> Result<()> {
+        let stdin_token = b"stdin-token-must-not-become-a-pin";
+        let expected_pin = b"a b\x80C";
+        let mut tty = FakeControllingTty::new(b"a b\x80\xff\x08C\r");
+        let pin = read_hidden_secret_input_from(&mut tty, 64, "too large")?;
+        let observed = RefCell::new(Vec::new());
+
+        verify_pin_with(&pin, |bytes| {
+            observed.replace(bytes.to_vec());
+            Ok(())
+        })?;
+
+        assert_eq!(observed.into_inner(), expected_pin);
+        assert_ne!(expected_pin.as_slice(), stdin_token.as_slice());
+        assert_eq!(tty.output, b"*****\x08 \x08*\n");
+        assert!(
+            !tty.output
+                .windows(expected_pin.len())
+                .any(|window| window == expected_pin),
+            "TTY mask output must never contain PIN bytes"
+        );
+        assert!(
+            !tty.output
+                .windows(stdin_token.len())
+                .any(|window| window == stdin_token),
+            "TTY mask output must never contain stdin token bytes"
+        );
+        Ok(())
+    }
+}
+
 /// stdin 全体を保護バッファへ読み取り、末尾改行を保持したまま追加の平文複製なしで返す。
 pub(crate) fn read_stdin_all(
     max_len: usize,
@@ -272,7 +452,7 @@ pub(crate) fn read_stdin_all(
 }
 
 #[cfg(test)]
-mod tests {
+mod plain_line_tests {
     //! 非秘匿 1 行読み取りの行末処理（LF / CR / CRLF）が doc どおり 1 改行として扱われ、CRLF 入力で
     //! reader へ末尾 `\r` も余分な `\n` も残さないことを byte slice reader で検証する。
 

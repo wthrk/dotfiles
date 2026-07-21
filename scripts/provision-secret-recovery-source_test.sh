@@ -37,6 +37,34 @@ test_repo_head_selects_production_cli_binary() {
   unset -f direnv
 }
 
+test_tty_secret_prompt_masks_and_erases_without_outputting_token() {
+  local mask_log="$TEST_DIR/tty-mask.log"
+  local index=0
+  local -a fixture_bytes=(a b $'\177' C '')
+  : > "$mask_log"
+
+  write_secret_tty() { printf '%s' "$1" >> "$mask_log"; }
+  secret_tty_state() { printf '%s' 'fixture-terminal-state'; }
+  prepare_secret_tty() { :; }
+  restore_secret_tty() { :; }
+  read_secret_tty_byte() {
+    REPLY="${fixture_bytes[$index]}"
+    index=$((index + 1))
+  }
+
+  local token
+  token="$(read_masked_tty_secret 'fixture BWS token')"
+  [ "$token" = 'aC' ] || fail 'TTY secret prompt が backspace 後の token を返さない'
+  [ "$(<"$mask_log")" = $'fixture BWS token: **\b \b*' ] \
+    || fail 'TTY secret prompt が各受理 byte を mask し backspace の mask を消去しない'
+  if grep -Fq -- "$token" "$mask_log"; then
+    fail 'TTY secret prompt が token 本文を display 出力した'
+  fi
+  # stdin 用の値は helper に渡しておらず、TTY token へ混入しない。
+  [ "$token" != 'stdin-token-must-not-become-a-tty-token' ] \
+    || fail 'stdin token が TTY secret input に混入した'
+}
+
 reset_test_state() {
   unset BWS_ACCESS_TOKEN
   PUT_LOG="$TEST_DIR/put.log"
@@ -306,3 +334,4 @@ test_unobservable_status_failure_does_not_clear_prompt_or_put
 test_script_does_not_transport_yubikey_pin
 test_repo_head_selects_production_cli_binary
 test_repo_head_retry_preserves_piped_token
+test_tty_secret_prompt_masks_and_erases_without_outputting_token

@@ -16,6 +16,17 @@
 //! [`Error::NotFound`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/error.rs)
 //! で直接確認する。
 //!
+//! PIN VERIFY の error mapping は upstream version 固定
+//! [`Transaction::verify_pin`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
+//! と [`Error::WrongPin`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/error.rs) を直接確認する。
+//! 同 source は `0x6983` (`AuthBlockedError`) と `0x63Cx` (`VerifyFailError`) の両方を
+//! `WrongPin { tries }` に写像するため、`tries == 0` から生の status word は復元できない。
+//! [Yubico PIV VERIFY specification](https://docs.yubico.com/yesdk/users-manual/application-piv/apdu/verify.html#verify-pin)
+//! は `0x6983` について、PIN の正誤を示さず、残試行がなく認証を拒否すると定義する。従って
+//! `tries == 0` は「PIV VERIFY が残試行 0 を報告した。PIN blocked であり得、今回入力した
+//! PIN の正誤はこの結果から判定不能」とのみ表示する。`tries > 0` だけを PIN rejected として
+//! 残試行回数付きで表示する。自動 retry、fallback、PUK、reset は行わない。
+//!
 //! `MgmKey::get_protected` の固定 source は、最初に management-slot metadata を query してから
 //! protected data object を読む。両段階の `Error::NotFound` は同じ public `Result` で返され、
 //! caller が origin を区別する API はない。よってこの module は `NotFound` を protected key
@@ -29,12 +40,45 @@
 //! `default == Some(false)` をすべて確認できるまで成功を返さない。本 repository にはその
 //! 書換 flow を実装しない。
 
+#[cfg(any(test, not(feature = "secrets-internal-test-stub")))]
 use crate::{Result, support::protection::ProtectedSecret};
 use anyhow::Error;
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) fn verify_pin(yubikey: &mut yubikey::YubiKey, pin: &ProtectedSecret) -> Result<()> {
-    pin.with_secret(|bytes| yubikey.verify_pin(bytes).map_err(Error::new))
+    verify_pin_with(pin, |bytes| yubikey.verify_pin(bytes))
 }
+
+/// PIV VERIFY callback へ `ProtectedSecret` の bytes をそのまま渡す共通境界。
+///
+/// PIN reader は CR/LF の行終端だけを除き、通常の PIN bytes を trim・文字列化・encoding 変換
+/// しない。この関数も借用 bytes をそのまま VERIFY callback へ渡す。physical retry を増やさない
+/// ため、caller はこの関数を 1 回だけ呼び、retry / fallback / PUK / reset を実装しない。
+#[cfg(any(test, not(feature = "secrets-internal-test-stub")))]
+pub(crate) fn verify_pin_with(
+    pin: &ProtectedSecret,
+    verify: impl FnOnce(&[u8]) -> std::result::Result<(), yubikey::Error>,
+) -> Result<()> {
+    pin.with_secret(|bytes| verify(bytes).map_err(verify_pin_failure))
+}
+
+/// `yubikey::Error` が `anyhow` 化される前に、VERIFY の型付き結果を利用者向け失敗へ写像する。
+///
+/// `tries == 0` は crate の lossy mapping により `0x6983` と `0x63C0` を区別できない。そのため
+/// PIN が誤り、または blocked と断定せず、Yubico の VERIFY specification が定める blocked
+/// 状態の可能性と PIN 正誤の不定性だけを伝える。PIN 値はこの error に含めない。
+pub(crate) fn verify_pin_failure(error: yubikey::Error) -> Error {
+    match error {
+        yubikey::Error::WrongPin { tries: 0 } => Error::msg(
+            "PIV VERIFY reported zero retries remaining; the PIN may be blocked, and this result cannot determine whether the supplied PIN was correct",
+        ),
+        yubikey::Error::WrongPin { tries } => {
+            Error::msg(format!("PIV PIN rejected; retries remaining: {tries}"))
+        }
+        error => Error::new(error),
+    }
+}
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) fn authenticate_protected_management_key(
     yubikey: &mut yubikey::YubiKey,
     pin: &ProtectedSecret,
@@ -43,4 +87,26 @@ pub(crate) fn authenticate_protected_management_key(
     let key = yubikey::MgmKey::get_protected(yubikey).map_err(Error::new)?;
     yubikey.authenticate(&key).map_err(Error::new)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_pin_failure;
+
+    #[test]
+    fn verify_rejection_reports_remaining_retries() {
+        let error = verify_pin_failure(yubikey::Error::WrongPin { tries: 3 });
+
+        assert_eq!(error.to_string(), "PIV PIN rejected; retries remaining: 3");
+    }
+
+    #[test]
+    fn zero_retries_does_not_claim_the_supplied_pin_was_wrong() {
+        let error = verify_pin_failure(yubikey::Error::WrongPin { tries: 0 });
+
+        assert_eq!(
+            error.to_string(),
+            "PIV VERIFY reported zero retries remaining; the PIN may be blocked, and this result cannot determine whether the supplied PIN was correct"
+        );
+    }
 }

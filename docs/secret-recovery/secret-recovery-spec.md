@@ -120,11 +120,11 @@ private `password-store` repository の clone は `git2` と SSH agent を使う
 
 到達仕様では、YubiKey 5 PIV の利用前提を確認し、この機能で使う保存領域を確認する手段として提供する。既存の FIDO2 / OTP / OpenPGP（公開鍵規格） / PIV 認証情報 は reset しない。既存領域と衝突する場合は停止する。通常の利用者向け導線では `enroll-primary` / `enroll-spare` から内部的に扱う。
 
-`setup` は管理操作であるため、設定済み PIV PIN を controlling TTY の hidden prompt から 1 回だけ受け取る。PIN は同じ process の PIN-protected management key 認証だけに一時利用し、stdin、argv、environment、stdout、stderr、log、一時ファイルへ出さない。復旧 read path と異なり PIN 入力が必要である。
+`setup` は管理操作であるため、設定済み PIV PIN を controlling TTY の hidden prompt から 1 回だけ受け取る。PIN は同じ process の PIN-protected management key 認証だけに一時利用し、stdin、argv、environment、stdout、stderr、log、一時ファイルへ出さない。TTY secret input の mask、raw-byte、非混在契約は [Secret handling policy](./secret-handling.md#tty-secret-input) を正本とする。復旧 read path と異なり PIN 入力が必要である。
 
 ### `dotfiles secrets yubikey put <name>`
 
-YubiKey に secret を保存する。`<name>` は `bitwarden-client-secret` だけを許可する。secret 本文は hidden prompt または stdin から受け取る。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
+YubiKey に secret を保存する。`<name>` は `bitwarden-client-secret` だけを許可する。secret 本文は hidden prompt または stdin から受け取る。TTY prompt と stdin の表示・byte・非混在契約は [Secret handling policy](./secret-handling.md#tty-secret-input) に従う。平文を CLI 引数、ログ、一時ファイルに残さない。同名 secret の上書きには明示 option を必要とする。通常の primary / spare 登録では直接使わず、`enroll-primary` / `enroll-spare` を使う。
 このコマンドは入力前に manifest と既存 object の状態を検証し、`--force` なしで上書きが必要な場合は secret を読まずに停止する。
 
 ### `dotfiles secrets yubikey status`

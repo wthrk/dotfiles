@@ -63,6 +63,12 @@ storage backend が暗号化された永続化を内包する場合、暗号化�
 
 外部処理へ所有権を移した後の buffer、外部 SDK 内部の複製、外部 command 内部の保持は、その外部処理側の責任範囲である。repository 側の責任範囲は、移す前の secret を protection 境界に閉じること、repository 所有 buffer を zeroize すること、表示を mask / redaction すること、ログへ出さないことである。
 
+## TTY secret input
+
+TTY で受け取るすべての secret（PIV PIN、BWS token、その他の hidden prompt 値）は、受理した各 byte を `*` だけで表示する。backspace は対応する mask だけを消去し、Enter は改行だけを出す。`*` の個数以外に、secret 本文、byte 値、値を識別できる断片を stdout、stderr、log、argv、environment に出してはならない。入力は CR/LF の行終端だけを除き、trim、文字列化、Unicode/encoding 変換なしに保護 buffer から外部処理境界へ渡す。
+
+stdin / stdin JSON など TTY 以外の secret 入力は mask を表示しないが、値を表示しない原則は同じである。PIV PIN は controlling TTY だけから読み、BWS token など stdin 許可された secret と混在させない。physical device が受け取る PIN VERIFY は 1 入力につき 1 回だけとし、retry、fallback、PUK、reset を自動実行しない。
+
 ## 実装レビュー観点
 
 レビューでは次を確認する。

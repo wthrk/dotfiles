@@ -210,10 +210,19 @@ impl SecretDeviceIo for TestStubSecretDevice {
                     self.management_authenticated = true;
                     Ok(())
                 }
+                // Integration tests model the typed `yubikey::Error::WrongPin` result, rather
+                // than a display string. This exercises the production mapping before `anyhow`
+                // erases the variant and keeps zero retries deliberately ambiguous.
                 StubManagementState::WrongPin => {
-                    anyhow::bail!("stub YubiKey PIN verification failed")
+                    Err(crate::support::protection::yubikey_piv::verify_pin_failure(
+                        yubikey::Error::WrongPin { tries: 3 },
+                    ))
                 }
-                StubManagementState::PinBlocked => anyhow::bail!("stub YubiKey PIN is blocked"),
+                StubManagementState::PinBlocked => {
+                    Err(crate::support::protection::yubikey_piv::verify_pin_failure(
+                        yubikey::Error::WrongPin { tries: 0 },
+                    ))
+                }
                 StubManagementState::ProtectedNotFoundNondefault => anyhow::bail!(
                     "stub YubiKey protected management key is NotFound with non-default metadata"
                 ),

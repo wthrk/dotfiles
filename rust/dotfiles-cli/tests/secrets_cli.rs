@@ -351,6 +351,55 @@ fn management_pin_failures_do_not_fallback_or_mutate_storage() -> TestResult<()>
 }
 
 #[test]
+fn management_pin_rejection_reports_remaining_retries() -> TestResult<()> {
+    let device = json!({
+        "serial": PRIMARY_SERIAL,
+        "fixture": "fresh",
+        "management_state": "wrong-pin",
+    });
+    let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "wrong PIN must stop: {}", run.output);
+    assert!(
+        run.output
+            .contains("PIV PIN rejected; retries remaining: 3"),
+        "typed VERIFY rejection must retain the retry count: {}",
+        run.output
+    );
+    Ok(())
+}
+
+#[test]
+fn management_pin_zero_retries_does_not_claim_the_pin_was_wrong() -> TestResult<()> {
+    let device = json!({
+        "serial": PRIMARY_SERIAL,
+        "fixture": "fresh",
+        "management_state": "pin-blocked",
+    });
+    let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "zero retries must stop: {}", run.output);
+    assert!(
+        run.output.contains(
+            "PIV VERIFY reported zero retries remaining; the PIN may be blocked, and this result cannot determine whether the supplied PIN was correct"
+        ),
+        "zero retries must preserve Yubico's non-judgment of the supplied PIN: {}",
+        run.output
+    );
+    Ok(())
+}
+
+#[test]
 fn put_without_a_controlling_tty_fails_closed_before_consuming_stdin_secret() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
