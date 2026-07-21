@@ -1684,7 +1684,6 @@ dependencies = [
  "git2",
  "gpgme",
  "mockall",
- "rand 0.10.1",
  "rand 0.9.4",
  "rand_core 0.6.4",
  "region",
