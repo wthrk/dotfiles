@@ -1,4 +1,27 @@
 //! BWS SDK が要求する所有 plaintext buffer と secret 返却値を protection 境界内で扱う操作。
+//!
+//! ## 出典と適用判断
+//!
+//! repository 正本は [`secret-recovery-spec.md` の「Bitwarden Secrets Manager」](../../../../../docs/secret-recovery/secret-recovery-spec.md#bitwarden-secrets-manager)、
+//! [`bitwarden-personal-vault-design.md`](../../../../../docs/secret-recovery/bitwarden-personal-vault-design.md)、
+//! [`secret-handling.md`](../../../../../docs/secret-recovery/secret-handling.md) である。YubiKey 保存の
+//! `bitwarden-client-secret` だけで BWS を認証し、返却 value と request の所有文字列をこの
+//! protection 境界から外へ平文化しない。
+//!
+//! vendor 全体 flow / 権限境界は [Bitwarden Developer Quick Start](https://bitwarden.com/help/developer-quick-start/)、
+//! [Secrets Manager SDK](https://bitwarden.com/help/secrets-manager-sdk/)、
+//! [Machine Accounts](https://bitwarden.com/help/machine-accounts/) を直接確認する。固定 SDK source は
+//! `bitwarden` 2.1.0 [`Client::new` / `AccessTokenLoginRequest` / `AuthClient::login_access_token` sample](https://docs.rs/crate/bitwarden/2.1.0/source/src/lib.rs)、
+//! `bitwarden-sm` 3.0.0 [`SecretsClient::get` / `create` / `update`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/client_secrets.rs)、
+//! [`SecretCreateRequest`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/secrets/create.rs) /
+//! [`SecretPutRequest`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/secrets/update.rs)、
+//! [`SecretsManagerError`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/error.rs) である。
+//!
+//! `login_access_token` 完了後だけ get/create/update を呼ぶ。これらの `Result<_, SecretsManagerError>`
+//! の全 variant は context を加えても source chain を保持して failure として返し、not-found、権限、
+//! transient、空結果、success へ再分類しない。`get` の `SecretResponse` は value/key/note を
+//! `Zeroizing` / `ProtectedSecret` 内で消費し、create/update は caller が既に決めた organization / project /
+//! key を request に渡す技術操作だけを行う。project の一意解決や fallback はこの module の責務ではない。
 #![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
 use anyhow::Context;
