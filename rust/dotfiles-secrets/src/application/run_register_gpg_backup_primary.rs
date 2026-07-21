@@ -288,7 +288,7 @@ mod tests {
         bws.expect_create_gpg_backup_envelope()
             .times(1)
             .in_sequence(&mut sequence)
-            .withf(|_, _, key, _| key == &"gpg-secret-key-backup")
+            .withf(|_, _, key, _| key == "gpg-secret-key-backup")
             .returning(|_, _, _, _| Ok(crate::domain::bws::BwsSecretId::new("new-id")));
 
         run_register_gpg_backup_primary(

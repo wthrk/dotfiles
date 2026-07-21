@@ -289,7 +289,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, _, _, key, envelope, guard| {
-                key == &"gpg-secret-key-backup"
+                key == "gpg-secret-key-backup"
                     && envelope.recipients().len() == 2
                     && *guard == BackupUpdateGuard::ValueDigest("rev".to_owned())
             })

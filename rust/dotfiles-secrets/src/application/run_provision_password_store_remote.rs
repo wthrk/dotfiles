@@ -257,7 +257,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, _, key, remote| {
-                key == &"password-store-remote" && remote.as_str() == REMOTE_URL
+                key == "password-store-remote" && remote.as_str() == REMOTE_URL
             })
             .returning(|_, _, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
@@ -295,7 +295,7 @@ mod tests {
         bws.expect_create_password_store_remote()
             .times(1)
             .withf(|_, _, key, remote: &PasswordStoreRemote| {
-                key == &"password-store-remote" && remote.as_str() == REMOTE_URL
+                key == "password-store-remote" && remote.as_str() == REMOTE_URL
             })
             .returning(|_, _, _, _| Ok(BwsSecretId::new("new-id")));
         bws.expect_update_password_store_remote_if_unchanged()
@@ -348,7 +348,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, _, _, key, remote: &PasswordStoreRemote, guard| {
-                key == &"password-store-remote"
+                key == "password-store-remote"
                     && remote.as_str() == REMOTE_URL
                     && *guard == BackupUpdateGuard::ValueDigest("rev".to_owned())
             })

@@ -122,28 +122,23 @@ mod tests {
         sequence: &mut mockall::Sequence,
         serial: u32,
     ) {
-        for name in [SecretName::BitwardenClientSecret] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .in_sequence(sequence)
-                .withf(move |actual_serial, storage| {
-                    *actual_serial == serial && storage.name == name
-                })
-                .returning(|_, _| Ok(read_inspection(true)));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .in_sequence(sequence)
-                .withf(move |actual_serial, intent| {
-                    *actual_serial == serial && intent.storage.name == name
-                })
-                .returning(|_, intent| {
-                    Ok(match intent.storage.name {
-                        SecretName::BitwardenClientSecret => material(b"client-secret"),
-                    })
-                });
-        }
+        let name = SecretName::BitwardenClientSecret;
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .in_sequence(sequence)
+            .withf(move |actual_serial, storage| {
+                *actual_serial == serial && storage.name == name
+            })
+            .returning(|_, _| Ok(read_inspection(true)));
+        storage
+            .expect_load_secret()
+            .times(1)
+            .in_sequence(sequence)
+            .withf(move |actual_serial, intent| {
+                *actual_serial == serial && intent.storage.name == name
+            })
+            .returning(|_, _| Ok(material(b"client-secret")));
     }
 
     #[test]
