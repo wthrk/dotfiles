@@ -283,12 +283,7 @@ mod tests {
         sequence: &mut mockall::Sequence,
         serial: u32,
     ) {
-        expect_secret_load(
-            storage,
-            sequence,
-            serial,
-            SecretName::BitwardenClientSecret,
-        );
+        expect_secret_load(storage, sequence, serial, SecretName::BitwardenClientSecret);
     }
 
     /// 指定 secret の inspect → load を 1 回ずつ順序付きで期待する（on-demand ロード 1 回分）。

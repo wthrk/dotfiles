@@ -127,9 +127,7 @@ mod tests {
             .expect_inspect_secret_storage_read()
             .times(1)
             .in_sequence(sequence)
-            .withf(move |actual_serial, storage| {
-                *actual_serial == serial && storage.name == name
-            })
+            .withf(move |actual_serial, storage| *actual_serial == serial && storage.name == name)
             .returning(|_, _| Ok(read_inspection(true)));
         storage
             .expect_load_secret()
