@@ -174,9 +174,7 @@ mod tests {
                 })
                 .returning(|_, intent| {
                     Ok(match intent.storage.name {
-                        SecretName::BitwardenClientSecret => {
-                            material(b"access-token")
-                        }
+                        SecretName::BitwardenClientSecret => material(b"access-token"),
                     })
                 });
         }

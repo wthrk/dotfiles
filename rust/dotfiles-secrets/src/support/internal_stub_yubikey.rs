@@ -395,9 +395,9 @@ pub(crate) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
                     .parse::<u32>()
                     .context("internal YubiKey stub datastore contains an invalid serial")?;
                 Ok(DeviceCandidate {
-                serial,
-                label: format!("stub-yubikey-{serial}"),
-            })
+                    serial,
+                    label: format!("stub-yubikey-{serial}"),
+                })
             })
             .collect()
     })

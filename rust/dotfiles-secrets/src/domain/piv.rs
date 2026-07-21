@@ -120,12 +120,7 @@ impl SecretName {
     ///
     /// 列挙順は report と object 配置の期待順であり、version を上げずに並びを変えてはならない。
     pub fn iter() -> impl Iterator<Item = Self> {
-        [
-            Self::BwEmail,
-            Self::BwPassword,
-            Self::BitwardenClientSecret,
-        ]
-        .into_iter()
+        [Self::BwEmail, Self::BwPassword, Self::BitwardenClientSecret].into_iter()
     }
 
     /// binary blob header に保存する固定 secret id を返す。

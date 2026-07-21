@@ -101,13 +101,7 @@ mod tests {
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
         output
             .expect_write_secret_storage_status()
-            .withf(|status| {
-                status.stored()
-                    == [
-                        SecretName::BwEmail,
-                        SecretName::BwPassword,
-                    ]
-            })
+            .withf(|status| status.stored() == [SecretName::BwEmail, SecretName::BwPassword])
             .returning(|_| Ok(()));
 
         run_status_with(

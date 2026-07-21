@@ -89,9 +89,10 @@ pub(crate) fn authentication_subkey_keygrip(primary: &PrimaryFingerprint) -> Res
         .get_secret_key(primary.as_str())
         .context("failed to resolve imported GPG key")?;
     let selected = select_authentication_subkey(&key)?;
-    Keygrip::parse(
-        required_gpgme_text(selected.keygrip(), "GPG authentication subkey keygrip")?,
-    )
+    Keygrip::parse(required_gpgme_text(
+        selected.keygrip(),
+        "GPG authentication subkey keygrip",
+    )?)
 }
 pub(crate) fn authentication_subkey_ssh_public_key(
     primary: &PrimaryFingerprint,

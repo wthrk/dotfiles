@@ -171,9 +171,7 @@ mod tests {
                     Ok(match intent.storage.name {
                         SecretName::BwEmail => material(b"email"),
                         SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientSecret => {
-                            material(b"token")
-                        }
+                        SecretName::BitwardenClientSecret => material(b"token"),
                     })
                 });
         }

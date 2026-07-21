@@ -398,10 +398,7 @@ fn status_lists_present_names_for_manifest_with_a_missing_secret_object() -> Tes
     );
     let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
     assert!(run.success, "stdout: {} stderr: {}", run.stdout, run.stderr);
-    assert_eq!(
-        run.user_stdout(),
-        "bw-email\nbw-password\n"
-    );
+    assert_eq!(run.user_stdout(), "bw-email\nbw-password\n");
     Ok(())
 }
 
@@ -1148,12 +1145,8 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn status_does_not_output_seeded_secret_values_with_yubikey_path() -> TestResult<()> {
-    let initial_device = seeded_device_spec(
-        PRIMARY_SERIAL,
-        "seed@example.com",
-        "seed-pw",
-        "seed-token",
-    );
+    let initial_device =
+        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-token");
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
