@@ -18,7 +18,12 @@ where
 {
     command.ensure_confirmed()?;
     let serial = device_serial.resolve_device_serial(command.serial)?;
-    storage_port.clear_secret_storage(serial, SecretStorageClearIntent::expected())
+    let intent = SecretStorageClearIntent::expected();
+    let public_key_spki = storage_port.clear_secret_storage(serial, intent.clone())?;
+    storage_port.finalize_secret_storage_setup(
+        serial,
+        intent.manifest_for_generated_public_key(public_key_spki)?,
+    )
 }
 
 #[cfg(test)]
@@ -58,6 +63,14 @@ mod tests {
         storage
             .expect_clear_secret_storage()
             .withf(|serial, intent| *serial == 2001 && intent.object_ids.len() == 5)
+            .returning(|_, _| {
+                Ok(crate::domain::manifest::SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
+        storage
+            .expect_finalize_secret_storage_setup()
+            .times(1)
             .returning(|_, _| Ok(()));
 
         run_clear_with(

@@ -27,6 +27,7 @@ mod wire;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use clap::{Args, Subcommand};
 
 use crate::{Result, local_flake, process::run_capture};
@@ -244,7 +245,7 @@ fn run_show(options: ShowOptions) -> Result<()> {
         Some(source) => source,
         None => {
             let config_dir = crate::environment::config_dir(options.config_dir)?;
-            resolve_history_source(&config_dir).ok_or_else(|| {
+            resolve_history_source(&config_dir)?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "適用済み dotfiles input source の更新履歴を解決できませんでした\
                      （`--source` で履歴 dir を明示してください）"
@@ -261,20 +262,21 @@ fn run_show(options: ShowOptions) -> Result<()> {
     )
 }
 
-/// 適用済み dotfiles input source の `docs/update-history` dir を解決する（解決不能なら `None`）。
+/// 適用済み dotfiles input source の `docs/update-history` dir を解決する（input 不在なら `None`）。
 ///
 /// `show`（`--source` 未指定時）の既定 source。適用済み dotfiles flake input が指す realize 済み store path
 /// （`docs/update-history`）から offline・決定論で読み、永続 state を参照しない。
-fn resolve_history_source(config_dir: &Path) -> Option<PathBuf> {
-    resolve_input_source(config_dir).map(|source| source.join(HISTORY_SUBDIR))
+fn resolve_history_source(config_dir: &Path) -> Result<Option<PathBuf>> {
+    Ok(resolve_input_source(config_dir)?.map(|source| source.join(HISTORY_SUBDIR)))
 }
 
 /// 適用済み dotfiles flake input の **realize 済み source store path** を解決する（解決不能なら `None`）。
 ///
 /// `nix flake archive <config-dir> --json --no-write-lock-file` の `inputs.<dotfiles>.path` を返す。metadata の
 /// `locked` でなく archive を使うのは、本番の github 型 input が metadata に `path` を持たないためである。
-/// network 無し・nix 不在・archive 失敗・JSON 解析失敗はいずれも `None` へ縮退する（履歴解決は best-effort）。
-fn resolve_input_source(config_dir: &Path) -> Option<PathBuf> {
+/// network 無し・nix 不在・archive 失敗は `None` へ縮退する（履歴解決は best-effort）。一方、archive command が
+/// 成功して返した JSON の構文・構造不正は外部プロトコル異常なので伝播する。
+fn resolve_input_source(config_dir: &Path) -> Result<Option<PathBuf>> {
     let args = [
         OsString::from("flake"),
         OsString::from("archive"),
@@ -282,23 +284,30 @@ fn resolve_input_source(config_dir: &Path) -> Option<PathBuf> {
         OsString::from("--json"),
         OsString::from("--no-write-lock-file"),
     ];
-    let json = run_capture("nix", args).ok()?;
-    parse_input_source_path(&json, local_flake::INPUT_NAME).map(PathBuf::from)
+    let Ok(json) = run_capture("nix", args) else {
+        return Ok(None);
+    };
+    Ok(parse_input_source_path(&json, local_flake::INPUT_NAME)?.map(PathBuf::from))
 }
 
 /// `nix flake archive --json` 出力から指定 input の realize 済み source store path を抽出する純粋関数。
-fn parse_input_source_path(archive_json: &str, input_name: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(archive_json).ok()?;
-    value
+///
+/// JSON 構文不正は `nix` の外部プロトコル異常として伝播し、正常 JSON 内に対象 input/path が無い場合だけ
+/// `Ok(None)` を返す。
+fn parse_input_source_path(archive_json: &str, input_name: &str) -> Result<Option<String>> {
+    let value: serde_json::Value = serde_json::from_str(archive_json)
+        .context("failed to parse `nix flake archive --json` output")?;
+    Ok(value
         .get("inputs")
         .and_then(|inputs| inputs.get(input_name))
         .and_then(|node| node.get("path"))
         .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+        .map(str::to_string))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use clap::Parser;
 
     #[test]
@@ -328,6 +337,23 @@ mod tests {
             .err()
             .ok_or_else(|| anyhow::anyhow!("asserted above: parse must fail"))?;
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        Ok(())
+    }
+
+    #[test]
+    fn archive_json_parse_propagates_malformed_output() -> crate::Result<()> {
+        assert_eq!(
+            parse_input_source_path(
+                r#"{"inputs":{"dotfiles":{"path":"/nix/store/source"}}}"#,
+                "dotfiles"
+            )?,
+            Some("/nix/store/source".to_string())
+        );
+        assert_eq!(
+            parse_input_source_path(r#"{"inputs":{}}"#, "dotfiles")?,
+            None
+        );
+        assert!(parse_input_source_path("not JSON", "dotfiles").is_err());
         Ok(())
     }
 }

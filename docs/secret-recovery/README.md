@@ -11,3 +11,14 @@
 - [bitwarden-personal-vault-design.md](bitwarden-personal-vault-design.md): Bitwarden Secrets Manager 取得経路の設計を定義する。
 - [gnupg-ssh-design.md](gnupg-ssh-design.md): GPG 復元と gpg-agent SSH support 経路の設計を定義する。
 - [yubikey-secret-storage-design.md](yubikey-secret-storage-design.md): YubiKey 保存方式の設計を定義する。
+- [external-sdk-evidence.md](external-sdk-evidence.md): YubiKey PIV、Bitwarden Secrets Manager、GPG、Git の公式フロー、SDK API、sample、error handling の一次資料を対応づける。
+
+## 一次資料
+
+- [#11: 新規マシン秘密情報復旧基盤を実装する](https://github.com/wthrk/dotfiles/issues/11): YubiKey を復旧入口として GPG、SSH、private `password-store`、`pass`、Bitwarden を復旧する全体目的と完了条件。
+- [#12: YubiKey 秘密情報保存](https://github.com/wthrk/dotfiles/issues/12): YubiKey public-key fingerprint と slot 再生成検出の一次資料。
+- [#14: GPG 復元 / gpg-agent SSH 対応](https://github.com/wthrk/dotfiles/issues/14): SPKI fingerprint による recipient 照合の一次資料。
+- [#15: password-store 復元](https://github.com/wthrk/dotfiles/issues/15): GPG authentication subkey を SSH identity として private `password-store` を clone し `pass` を利用可能にする目的・完了条件。
+- [#17: 新規マシン復旧フロー統合](https://github.com/wthrk/dotfiles/issues/17): `verify-yubikey --all` を含む復旧前確認と、失敗時に安全に停止・再実行する統合フローの目的・完了条件。
+- [#38: restore-pass 実装](https://github.com/wthrk/dotfiles/issues/38): `restore-pass` の BWS 取得、SSH agent 経由 clone、停止条件、検証の実装完了条件。
+- [#40: password-store-remote の BWS provisioning](https://github.com/wthrk/dotfiles/issues/40): 復旧前提となる `password-store-remote` の BWS create/update 経路の目的・完了条件。

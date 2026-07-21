@@ -1,4 +1,9 @@
 //! AES-256-GCM の暗号操作を提供する support utility。
+//!
+//! 使用 API は `aes-gcm` 0.10.3 の `KeyInit` / `AeadInPlace`。nonce 再利用禁止、認証失敗を opaque
+//! failure として扱う根拠 URL・source version は
+//! [`external-sdk-evidence.md`](../../../../docs/secret-recovery/external-sdk-evidence.md#rust-support-crate-secret-recovery-直接利用)
+//! を参照する。
 
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
 use anyhow::bail;

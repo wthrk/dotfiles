@@ -14,9 +14,8 @@
 //! 直接読む。API キーは env `OPEN_AI_API_KEY` から読み crate の [`OpenAIConfig`] へ渡す（argv に現れない）。キー
 //! 未設定（ローカル等）なら抽出を skip して空（呼び出し側が version-only として記録する）。
 //!
-//! 一過性エラー（5xx/timeout/接続/瞬間的 rate_limit）の回復は async-openai client の指数バックオフ
-//! （[`CLIENT_BACKOFF_MAX_ELAPSED`]=20 秒上限）へ一本化し、[`model_call`] 自身は追加リトライしない。バックオフを
-//! 使い切っても失敗するエラーは空へ縮退する（呼び出し側が version-only として確定する）。同期の record 経路から
+//! async-openai client の backoff は上限を設定するが、失敗の種類・再試行可否をこの adapter が解釈しない。
+//! client が返すすべての [`OpenAIError`] は、呼出し文脈を付けてそのまま失敗として伝播する。同期の record 経路から
 //! 呼ぶため、async 呼び出しは専用スレッド上の current-thread runtime でブリッジする。
 //!
 //! **SSRF（最重要）**: AI が要求する `fetch_url` の URL は、[`super::wire::is_allowed_url`] の構造的検査
@@ -32,9 +31,9 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
+use anyhow::Context;
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
-use async_openai::error::OpenAIError;
 use async_openai::types::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
@@ -65,12 +64,8 @@ const TRUNCATION_MARKER: &str = "\n…(truncated)";
 
 /// async-openai client 内蔵バックオフの最大経過時間。
 ///
-/// async-openai 0.28 の既定 backoff は max_elapsed_time=15 分で、`billing_not_active`（429,
-/// type!=insufficient_quota）のような恒久エラーまで 15 分リトライし続け、record が 120 分タイムアウトする。一方で
-/// 0 まで縮めると一過性失敗（5xx/接続/瞬間的 rate_limit）も一切リトライされず、ノートを取得済みのパッケージでも
-/// LLM 抽出が空に落ちてカバレッジを失う。そこで **20 秒**に上限を置き、crate の指数バックオフに一過性失敗の回復を
-/// 任せつつ、恒久エラーは 20 秒で打ち切る。呼び出し側の hard timeout と揃え、worker が呼び出し側より長く
-/// 走り続けないようにする。
+/// 利用する backoff の設定値であり、エラー variant / HTTP status / error text の意味付けではない。上限後に
+/// `chat().create()` が返す [`OpenAIError`] は [`model_call`] が伝播する。
 const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(20);
 
 /// 1 パッケージの OpenAI 呼び出しを同期ブリッジで待つ最大時間。
@@ -78,7 +73,7 @@ const CLIENT_BACKOFF_MAX_ELAPSED: Duration = Duration::from_secs(20);
 /// client 内蔵バックオフと同じ 20 秒で揃え、CI 全体を引きずらない 1 パッケージ上限。
 ///
 /// record は全パッケージを逐次処理するため、1 件 90 秒でも 50 件超で 1 時間級へ膨らむ。そこで 20 秒で打ち切り、
-/// 要約が間に合わないものは version-only へ縮退して run 全体の前進を優先する。
+/// 上限に達した場合は待機失敗として伝播する。
 const OPENAI_HARD_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 1 パッケージあたりの tool_call 反復（fetch → 再 request）の最大回数。
@@ -129,8 +124,8 @@ fn normalize_hint_url(url: &str) -> Option<String> {
 
 /// AI エージェント抽出の結果（構造化変更リスト + AI が採用した取得元 URL）。
 ///
-/// `items` が空なら抽出できなかった（取得不能・変更無し・一過性失敗を run 内リトライ後も取り切れず）ことを表し、
-/// 呼び出し側（record）はそのパッケージを version-only として確定する。
+/// `items` が空ならモデルが成功応答で変更無しを返したことを表し、呼び出し側（record）はそのパッケージを
+/// version-only として確定する。外部 API / runtime の失敗はこの値に変換せず [`Result::Err`] として伝播する。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ExtractOutcome {
     pub(crate) items: Vec<ChangeItem>,
@@ -176,7 +171,6 @@ type ModelCall<'a> = dyn Fn(CreateChatCompletionRequest) -> Result<ResponseMessa
 struct ResponseMessage {
     content: Option<String>,
     tool_calls: Vec<ChatCompletionMessageToolCall>,
-    request_failed: bool,
 }
 
 /// OpenAI 抽出を実装する本物の extractor（`async-openai` の typed client で API を叩く）。
@@ -256,9 +250,6 @@ where
             user_message(&summarize_user_prompt(request))?,
         ];
         let response = call(summarize_request(messages)?)?;
-        if response.request_failed {
-            return Ok(ExtractOutcome::default());
-        }
         let items = parse_change_items(response.content.as_deref().unwrap_or_default());
         if !items.is_empty() {
             return Ok(ExtractOutcome {
@@ -332,7 +323,7 @@ where
     let executed = tool_calls.iter().take(MAX_TOOL_CALLS_PER_TURN).try_fold(
         (Vec::new(), adopted_source),
         |(results, source), call_item| -> Result<_> {
-            let (result, next_source) = match tool_call_url(call_item) {
+            let (result, next_source) = match tool_call_url(call_item)? {
                 Some(url) => match fetch(&url)? {
                     Some(text) => (truncate_notes(&text), Some(url)),
                     None => (String::from("not allowed or fetch failed"), source),
@@ -369,12 +360,6 @@ fn summarize_after_tools(
     adopted_source: Option<String>,
 ) -> Result<ExtractOutcome> {
     let response = call(summarize_request(messages)?)?;
-    if response.request_failed {
-        return Ok(ExtractOutcome {
-            items: Vec::new(),
-            source_url: adopted_source,
-        });
-    }
     Ok(ExtractOutcome {
         items: parse_change_items(response.content.as_deref().unwrap_or_default()),
         source_url: adopted_source,
@@ -383,29 +368,13 @@ fn summarize_after_tools(
 
 /// 1 model 呼び出し: async-openai client で chat completion を実行し、最小レスポンスへ射影する。
 ///
-/// 一過性エラー（rate_limit/429/5xx/接続）の回復は client 内蔵の指数バックオフ
-/// （[`CLIENT_BACKOFF_MAX_ELAPSED`]=20 秒）に委ね、ここでは追加リトライしない。
-/// バックオフを使い切っても失敗するエラー（一過性・恒久いずれも）は空レスポンス（[`ResponseMessage::default`]）へ
-/// 縮退し、上位の空判定で version-only として確定する。is_transient はログ分類のみに使う。
+/// client が返した [`OpenAIError`] は error variant・code・message から意味を推測せず、呼出し文脈を付けて
+/// 伝播する。追加リトライや一過性/恒久性の分類はこの adapter の契約に含めない。
 fn model_call(
     client: &Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
 ) -> Result<ResponseMessage> {
-    match run_blocking(client.clone(), request) {
-        Ok(message) => Ok(message),
-        Err(error) => {
-            let kind = if is_transient(&error) {
-                "transient"
-            } else {
-                "degraded"
-            };
-            eprintln!("OpenAI extract {kind}: {}", error_snippet(&error));
-            Ok(ResponseMessage {
-                request_failed: true,
-                ..ResponseMessage::default()
-            })
-        }
-    }
+    run_blocking(client.clone(), request).context("OpenAI chat completion request failed")
 }
 
 /// async-openai の chat completion を、専用スレッド上の current-thread runtime で同期実行する。
@@ -416,16 +385,14 @@ fn model_call(
 fn run_blocking(
     client: Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
-) -> std::result::Result<ResponseMessage, OpenAIError> {
+) -> Result<ResponseMessage> {
     let (sender, receiver) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let result = (|| {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|error| {
-                    OpenAIError::InvalidArgument(format!("tokio runtime build failed: {error}"))
-                })?;
+                .context("build OpenAI worker Tokio runtime")?;
             let response = runtime.block_on(async move { client.chat().create(request).await })?;
             let message = response
                 .choices
@@ -434,7 +401,6 @@ fn run_blocking(
                 .map(|choice| ResponseMessage {
                     content: choice.message.content,
                     tool_calls: choice.message.tool_calls.unwrap_or_default(),
-                    request_failed: false,
                 })
                 .unwrap_or_default();
             Ok(message)
@@ -445,45 +411,15 @@ fn run_blocking(
 }
 
 fn recv_worker_result(
-    receiver: mpsc::Receiver<std::result::Result<ResponseMessage, OpenAIError>>,
+    receiver: mpsc::Receiver<Result<ResponseMessage>>,
     timeout: Duration,
-) -> std::result::Result<ResponseMessage, OpenAIError> {
+) -> Result<ResponseMessage> {
     match receiver.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(OpenAIError::InvalidArgument(format!(
-            "openai hard timeout after {}s",
-            timeout.as_secs()
-        ))),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(OpenAIError::InvalidArgument(
-            "openai worker thread disconnected".to_string(),
-        )),
-    }
-}
-
-/// API 失敗が一過性（接続/5xx/タイムアウト）かを判定する（少数リトライ対象）。
-fn is_transient(error: &OpenAIError) -> bool {
-    match error {
-        OpenAIError::Reqwest(_) | OpenAIError::StreamError(_) => true,
-        OpenAIError::ApiError(api) => {
-            api.code
-                .as_deref()
-                .is_some_and(|code| code.contains("rate_limit"))
-                || api.message.contains("rate limit")
-                || api.message.contains("429")
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            anyhow::bail!("OpenAI worker timed out after {}s", timeout.as_secs())
         }
-        _ => false,
-    }
-}
-
-fn error_snippet(error: &OpenAIError) -> String {
-    const LIMIT: usize = 160;
-    let text = error.to_string();
-    let collapsed = text.replace(['\n', '\r'], " ");
-    let head: String = collapsed.chars().take(LIMIT).collect();
-    if collapsed.chars().count() > LIMIT {
-        format!("{head}…")
-    } else {
-        head
+        Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("OpenAI worker disconnected"),
     }
 }
 
@@ -738,12 +674,25 @@ fn fetch_allowed_note(url: &str) -> Result<Option<String>> {
     safe_https_fetch(url)
 }
 
-fn tool_call_url(call: &ChatCompletionMessageToolCall) -> Option<String> {
+/// `fetch_url` tool call の JSON arguments から URL を取り出す。
+///
+/// function arguments は OpenAI API から来る外部 JSON である。構文または `url` の型が不正なら、URL 未指定の
+/// 正常 call と同一視せず呼出元へ伝播する。`fetch_url` 以外、または `url` 不在/null は実行対象外として
+/// `Ok(None)` を返す。
+fn tool_call_url(call: &ChatCompletionMessageToolCall) -> Result<Option<String>> {
     if call.function.name != FETCH_TOOL_NAME {
-        return None;
+        return Ok(None);
     }
-    let args: serde_json::Value = serde_json::from_str(&call.function.arguments).ok()?;
-    args.get("url")?.as_str().map(str::to_string)
+    let args: serde_json::Value = serde_json::from_str(&call.function.arguments)
+        .context("failed to parse OpenAI fetch_url tool arguments")?;
+    let object = args
+        .as_object()
+        .context("OpenAI fetch_url tool arguments must be a JSON object")?;
+    match object.get("url") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(url)) => Ok(Some(url.to_string())),
+        Some(_) => anyhow::bail!("OpenAI fetch_url tool argument `url` must be a string or null"),
+    }
 }
 
 /// seed ノートが要約の根拠に足る非空テキストを持つかを判定する純粋関数。
@@ -793,7 +742,6 @@ mod tests {
         ResponseMessage {
             content: Some(json.to_string()),
             tool_calls: Vec::new(),
-            request_failed: false,
         }
     }
 
@@ -804,6 +752,17 @@ mod tests {
             function: FunctionCall {
                 name: FETCH_TOOL_NAME.to_string(),
                 arguments: serde_json::json!({ "url": url }).to_string(),
+            },
+        }
+    }
+
+    fn fetch_tool_call_with_arguments(id: &str, arguments: &str) -> ChatCompletionMessageToolCall {
+        ChatCompletionMessageToolCall {
+            id: id.to_string(),
+            r#type: ChatCompletionToolType::Function,
+            function: FunctionCall {
+                name: FETCH_TOOL_NAME.to_string(),
+                arguments: arguments.to_string(),
             },
         }
     }
@@ -840,7 +799,7 @@ mod tests {
         let (_sender, receiver) = mpsc::sync_channel(1);
         let err = recv_worker_result(receiver, Duration::from_millis(1))
             .expect_err("worker wait must time out");
-        assert!(err.to_string().contains("openai hard timeout"));
+        assert!(err.to_string().contains("OpenAI worker timed out"));
     }
 
     #[test]
@@ -876,6 +835,21 @@ mod tests {
         assert_eq!(items[1].category, ChangeCategory::Feature);
         assert_eq!(items[1].ref_url.as_deref(), Some("https://x/1"));
         assert!(parse_change_items("not json").is_empty());
+    }
+
+    #[test]
+    fn fetch_tool_arguments_propagate_malformed_external_json() -> Result<()> {
+        assert_eq!(
+            tool_call_url(&fetch_tool_call("valid", "https://example.com/releases"))?,
+            Some("https://example.com/releases".to_string())
+        );
+        assert_eq!(
+            tool_call_url(&fetch_tool_call_with_arguments("missing", "{}"))?,
+            None
+        );
+        assert!(tool_call_url(&fetch_tool_call_with_arguments("syntax", "not JSON")).is_err());
+        assert!(tool_call_url(&fetch_tool_call_with_arguments("type", r#"{"url":7}"#)).is_err());
+        Ok(())
     }
 
     #[test]
@@ -1117,7 +1091,6 @@ mod tests {
                             "c1",
                             "https://github.com/docker/cli/releases",
                         )],
-                        request_failed: false,
                     })
                 }
                 _ => Ok(changes_content(
@@ -1159,7 +1132,6 @@ mod tests {
                         "c1",
                         "https://github.com/neovim/neovim/releases",
                     )],
-                    request_failed: false,
                 })
             } else {
                 Ok(changes_content(
@@ -1193,26 +1165,21 @@ mod tests {
     }
 
     #[test]
-    fn seeded_extraction_request_failure_short_circuits_without_tool_use() -> Result<()> {
+    fn seeded_extraction_propagates_model_failure_without_tool_use() {
         let calls = Cell::new(0u32);
         let call: &ModelCall<'_> = &|request| {
             calls.set(calls.get() + 1);
             assert!(request.tools.is_none(), "seed 要約は tool-use に進まない");
-            Ok(ResponseMessage {
-                content: None,
-                tool_calls: Vec::new(),
-                request_failed: true,
-            })
+            Err(anyhow::anyhow!("OpenAI API failure"))
         };
-        let outcome = run_extraction(
+        let error = run_extraction(
             &request_with("openssl", None, Some("CVE fix")),
             call,
             |_| Err(anyhow::anyhow!("request failure must not reach fetch")),
-        )?;
-        assert!(outcome.items.is_empty());
-        assert_eq!(outcome.source_url, None);
+        )
+        .expect_err("モデル失敗を空の ExtractOutcome に縮退してはならない");
+        assert!(error.to_string().contains("OpenAI API failure"));
         assert_eq!(calls.get(), 1);
-        Ok(())
     }
 
     #[test]

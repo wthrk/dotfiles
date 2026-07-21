@@ -2,6 +2,10 @@
 //!
 //! この module は YubiKey や use case 名を知らず、端末 raw mode、stdin/stdout の TTY 判定、
 //! byte 読み取り、保護済み入力 buffer への移送だけを担当する。
+//!
+//! `crossterm` 0.29.0 と `filedescriptor` 0.8.3 の terminal / poll API は
+//! [`external-sdk-evidence.md`](../../../../docs/secret-recovery/external-sdk-evidence.md#rust-support-crate-secret-recovery-直接利用)
+//! の固定 source を根拠にする。descriptor / poll error を EOF、cancel、retryable に推測変換しない。
 
 use std::io::{self, IsTerminal, Read, Write};
 
@@ -25,6 +29,19 @@ fn stdin_or_tty_reader() -> Result<FileDescriptor> {
             .context("failed to open controlling terminal")?;
         Ok(FileDescriptor::new(tty))
     }
+}
+
+/// stdin の状態に依存せず controlling terminal だけを開く。
+///
+/// 管理 PIN は pipeline の payload と混在させない。stdin 自体が TTY に見える場合でも、
+/// controlling terminal を持たない process は PIN を受け取れず、device 操作の前に停止する。
+fn controlling_tty_reader() -> Result<FileDescriptor> {
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("failed to open controlling terminal")?;
+    Ok(FileDescriptor::new(tty))
 }
 
 /// 現在の stdin が terminal に接続されているかを返す。
@@ -100,6 +117,49 @@ pub(crate) fn read_hidden_line(
         match byte[0] {
             b'\r' | b'\n' => {
                 eprintln!();
+                break;
+            }
+            3 => bail!("interrupted while reading hidden input"),
+            8 | 127 => input.pop_byte(),
+            value => {
+                input.write_all(&[value])?;
+                if input.as_slice().len() > max_len {
+                    bail!("{too_long_message}");
+                }
+            }
+        }
+    }
+    input.into_protected_secret_line(&session, max_len, too_long_message)
+}
+
+/// controlling TTY だけから非表示入力を読み取る。
+///
+/// PIV 管理 PIN のように stdin payload と絶対に混在させない値に使う。`/dev/tty` を
+/// read/write で開くことに失敗した場合は prompt、raw mode、input read に進まないため、
+/// caller は device mutation 前に fail-closed できる。
+pub(crate) fn read_hidden_tty_line(
+    prompt: &str,
+    max_len: usize,
+    too_long_message: &'static str,
+) -> Result<ProtectedSecret> {
+    let session = SecretSession::start()?;
+    let mut tty = controlling_tty_reader()?;
+    tty.write_all(prompt.as_bytes())?;
+    tty.flush()?;
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
+    let _raw_mode = scopeguard::guard((), |_| {
+        let _ = disable_raw_mode();
+    });
+    let mut input = ProtectedInputBuffer::new(max_len + 1, &session)?;
+    let mut byte = [0u8; 1];
+    loop {
+        if read_hidden_byte(&mut tty, &mut byte)? == 0 {
+            break;
+        }
+        match byte[0] {
+            b'\r' | b'\n' => {
+                tty.write_all(b"\n")?;
+                tty.flush()?;
                 break;
             }
             3 => bail!("interrupted while reading hidden input"),

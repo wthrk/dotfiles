@@ -12,3 +12,4 @@ anyhow.workspace = true
 clap.workspace = true
 dotfiles-core.workspace = true
 xshell.workspace = true
+syn.workspace = true

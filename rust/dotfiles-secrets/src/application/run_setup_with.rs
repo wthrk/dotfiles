@@ -25,15 +25,24 @@ where
     let probe = SecretStorageSetupProbe::expected();
     let inspection = storage.inspect_secret_storage_setup(serial, &probe)?;
     let intent = SecretStorageSetupIntent::from_inspection(inspection)?;
-    storage.initialize_secret_storage(serial, intent.clone())?;
-    storage.finalize_secret_storage_setup(serial, intent)
+    if !intent.requires_public_key_spki() {
+        return Ok(());
+    }
+    let public_key_spki = storage.initialize_secret_storage(serial, intent.clone())?;
+    if intent.requires_finalization() {
+        storage.finalize_secret_storage_setup(
+            serial,
+            intent.manifest_for_public_key(public_key_spki)?,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
         domain::{
-            commands::SetupCommand, piv::PivApplicationVersion,
+            commands::SetupCommand, manifest::SecretManifest, piv::PivApplicationVersion,
             storage::SecretStorageSetupInspection,
         },
         ports,
@@ -70,7 +79,91 @@ mod tests {
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Ok(SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
+        storage
+            .expect_finalize_secret_storage_setup()
+            .times(1)
+            .in_sequence(&mut sequence)
             .returning(|_, _| Ok(()));
+
+        run_setup_with(
+            SetupCommand { serial: Some(2001) },
+            &mut device,
+            &mut storage,
+        )
+    }
+
+    #[test]
+    fn setup_is_a_noop_for_normal_empty_v2_storage() -> crate::Result<()> {
+        let mut device = ports::MockDeviceSerialPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|requested| Ok(requested.unwrap_or(2001)));
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .returning(|_, _| {
+                Ok(SecretStorageSetupInspection {
+                    key_exists: true,
+                    piv_version: PivApplicationVersion::minimum_for_secret_storage(),
+                    manifest_bytes: Some(SecretManifest::fixture_v2().encode()?),
+                    occupied_object_ids: Vec::new(),
+                })
+            });
+        storage.expect_initialize_secret_storage().times(0);
+        storage.expect_finalize_secret_storage_setup().times(0);
+
+        run_setup_with(
+            SetupCommand { serial: Some(2001) },
+            &mut device,
+            &mut storage,
+        )
+    }
+
+    #[test]
+    fn setup_migrates_v1_only_after_public_key_metadata_is_available() -> crate::Result<()> {
+        let mut device = ports::MockDeviceSerialPort::new();
+        let mut storage = ports::MockSecretStoragePort::new();
+        let mut sequence = mockall::Sequence::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|requested| Ok(requested.unwrap_or(2001)));
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Ok(SecretStorageSetupInspection {
+                    key_exists: true,
+                    piv_version: PivApplicationVersion::minimum_for_secret_storage(),
+                    manifest_bytes: Some(
+                        SecretManifest {
+                            version: 1,
+                            app: crate::domain::manifest::MANIFEST_APP.to_owned(),
+                            slot_public_key_spki: None,
+                        }
+                        .encode()?,
+                    ),
+                    occupied_object_ids: Vec::new(),
+                })
+            });
+        storage
+            .expect_initialize_secret_storage()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Ok(SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)

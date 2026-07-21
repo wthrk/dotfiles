@@ -1,8 +1,14 @@
 //! `secrets-internal-test-stub` feature 専用の YubiKey adapter backend stub。
 //!
 //! production build には compile されず、runtime flag ではなく compile-time feature selection で
-//! real YubiKey backend と差し替わる。integration test はこの module を import せず、同じ
-//! `dotfiles` binary を実行する。
+//! real YubiKey backend と差し替わる。integration test はこの module を import せず、Cargo が
+//! `secrets-internal-test-stub` feature 付きで事前に build した専用
+//! `dotfiles-secrets-internal-test-stub` binary を起動する。その binary は通常 CLI と同じ
+//! `dotfiles_cli::dispatch` entrypoint を呼ぶため、command dispatch は同一経路である。
+//!
+//! 専用 binary target はこの feature を `required-features` にしており、featureless な通常
+//! `dotfiles` artifact はその target の代替になれない。従って、この binary に link される
+//! YubiKey adapter は本 module に固定され、実機 YubiKey backend へ runtime に fallback する経路はない。
 //!
 //! この stub は YubiKey port の datastore 境界だけを受け持つ。初期条件は
 //! `secrets_internal_test_stub_contract::YUBIKEY_STUB_SPEC_ENV` の YubiKey 専用 spec から private datastore
@@ -18,11 +24,18 @@ use std::{
 
 use anyhow::Context;
 
-use super::{
-    DeviceCandidate, PivApplicationVersion, PivObjectId, ProtectedSecret, Result, SecretDeviceIo,
-    SecretStorageSpec, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
-};
 use crate::secrets_internal_test_stub_contract::{STUB_OBSERVATION_PREFIX, YUBIKEY_STUB_SPEC_ENV};
+use crate::support::yubikey_backend::{
+    DeviceCandidate, ManagementAuthState, SecretDeviceIo, SelectedSecretDevice,
+};
+use crate::{
+    Result,
+    domain::{
+        manifest::SecretManifest,
+        piv::{PivApplicationVersion, PivObjectId, SecretStorageSpec},
+    },
+    support::protection::ProtectedSecret,
+};
 
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
 const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
@@ -46,8 +59,33 @@ struct YubiKeyDeviceSpec {
     serial: u32,
     #[serde(flatten)]
     fixture: YubiKeyDeviceFixture,
+    #[serde(default)]
+    key_metadata_requires_management_auth: bool,
     #[serde(default, rename = "storage_decode_errors")]
     storage_decode_errors: Vec<String>,
+    /// PIN-protected management-key bootstrap state. This is an adapter-only
+    /// test backend model of the documented B0 flow, not a production option.
+    #[serde(default)]
+    management_state: StubManagementState,
+}
+
+/// Test-only observable management-key states. Values deliberately model only
+/// transitions proven by the Yubico PIN-protected flow: default + no PRINTED
+/// key may bootstrap once; every other failure is opaque/fail-closed.
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum StubManagementState {
+    /// B0: management metadata is default and `get_protected` is strictly
+    /// `NotFound`; bootstrap persists PIN-protected state and requires reopen.
+    #[default]
+    B0Default,
+    /// PRINTED management key is available after PIN verification.
+    Protected,
+    WrongPin,
+    PinBlocked,
+    ProtectedNotFoundNondefault,
+    OpaqueError,
+    Partial,
 }
 
 #[derive(serde::Deserialize)]
@@ -82,11 +120,16 @@ struct YubiKeyDatastore {
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct StubDeviceDatastore {
     key_exists: bool,
+    key_metadata_requires_management_auth: bool,
+    #[serde(default)]
+    slot_public_key_spki: Option<Vec<u8>>,
     reserved_slot_certificate_exists: bool,
     status_read_failure: bool,
     objects: BTreeMap<String, Vec<u8>>,
     secrets: BTreeMap<String, String>,
     corrupt: Vec<String>,
+    #[serde(default)]
+    management_state: StubManagementState,
 }
 
 /// process 間で test stub の backend state をそのまま保存する wire model。
@@ -102,11 +145,17 @@ struct PersistentYubiKeyDatastore {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistentStubDeviceDatastore {
     key_exists: bool,
+    #[serde(default)]
+    key_metadata_requires_management_auth: bool,
+    #[serde(default)]
+    slot_public_key_spki: Option<Vec<u8>>,
     reserved_slot_certificate_exists: bool,
     status_read_failure: bool,
     objects: BTreeMap<String, Vec<u8>>,
     secrets: BTreeMap<String, String>,
     corrupt: Vec<String>,
+    #[serde(default)]
+    management_state: StubManagementState,
 }
 
 #[derive(serde::Serialize)]
@@ -130,22 +179,16 @@ static YUBIKEY_DATASTORE: OnceLock<Mutex<Option<YubiKeyDatastore>>> = OnceLock::
 
 struct TestStubSecretDevice {
     serial: u32,
-}
-
-impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
-    fn discover_devices(&mut self) -> Result<Vec<DeviceCandidate>> {
-        discover_devices()
-    }
-
-    fn open_device_by_serial(&mut self, serial: u32) -> Result<SelectedSecretDevice> {
-        open_device_by_serial(serial)
-    }
+    management_authenticated: bool,
 }
 
 impl SecretDeviceIo for TestStubSecretDevice {
     fn key_exists(&mut self) -> Result<bool> {
         with_datastore(|store| {
             let device = device_store(store, self.serial)?;
+            if device.key_metadata_requires_management_auth && !self.management_authenticated {
+                anyhow::bail!("stub YubiKey slot metadata requires management authentication");
+            }
             Ok(device.key_exists)
         })
     }
@@ -165,15 +208,63 @@ impl SecretDeviceIo for TestStubSecretDevice {
         }
     }
 
-    fn check_management_auth_preconditions(&mut self) -> Result<()> {
-        Ok(())
+    fn check_management_auth_preconditions(
+        &mut self,
+        pin: Option<&ProtectedSecret>,
+    ) -> Result<ManagementAuthState> {
+        let _pin = pin.ok_or_else(|| anyhow::anyhow!("stub PIV management session has no PIN"))?;
+        with_datastore_after_write(|store| {
+            let device = device_store_mut(store, self.serial)?;
+            match device.management_state {
+                StubManagementState::B0Default => {
+                    // Model exactly the only permitted default-key path:
+                    // management metadata default=true + get_protected=NotFound
+                    // -> authenticate default -> set_protected. The next
+                    // adapter handle must authenticate the persisted protected
+                    // state, so this handle returns Bootstrapped.
+                    device.management_state = StubManagementState::Protected;
+                    Ok(ManagementAuthState::Bootstrapped)
+                }
+                StubManagementState::Protected => {
+                    self.management_authenticated = true;
+                    Ok(ManagementAuthState::Protected)
+                }
+                StubManagementState::WrongPin => {
+                    anyhow::bail!("stub YubiKey PIN verification failed")
+                }
+                StubManagementState::PinBlocked => anyhow::bail!("stub YubiKey PIN is blocked"),
+                StubManagementState::ProtectedNotFoundNondefault => anyhow::bail!(
+                    "stub YubiKey protected management key is NotFound with non-default metadata"
+                ),
+                StubManagementState::OpaqueError => {
+                    anyhow::bail!("stub YubiKey management-key operation failed")
+                }
+                StubManagementState::Partial => {
+                    anyhow::bail!("stub YubiKey PIN-only management state is partial")
+                }
+            }
+        })
     }
 
     fn generate_key(&mut self) -> Result<Vec<u8>> {
         with_datastore_after_write(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
-            Ok(Vec::new())
+            let public_key_spki = SecretManifest::fixture_v2()
+                .slot_public_key_spki
+                .expect("fixture manifest must include SPKI");
+            device.slot_public_key_spki = Some(public_key_spki.clone());
+            Ok(public_key_spki)
+        })
+    }
+
+    fn slot_public_key_spki(&mut self) -> Result<Option<Vec<u8>>> {
+        with_datastore(|store| {
+            let device = device_store(store, self.serial)?;
+            if device.key_metadata_requires_management_auth && !self.management_authenticated {
+                anyhow::bail!("stub YubiKey slot metadata requires management authentication");
+            }
+            Ok(device.slot_public_key_spki.clone())
         })
     }
 
@@ -206,10 +297,16 @@ impl SecretDeviceIo for TestStubSecretDevice {
         })
     }
 
-    fn clear_object(&mut self, object_id: PivObjectId) -> Result<()> {
+    fn empty_object(&mut self, object_id: PivObjectId) -> Result<()> {
         with_datastore_after_write(|store| {
             let device = device_store_mut(store, self.serial)?;
-            device.objects.remove(&object_key(object_id.value()));
+            // Model the fixed SDK's `save_object(id, &mut [])`: it writes an
+            // empty `53` value, rather than using a nonexistent object-delete
+            // API. The integration test therefore exercises a fresh process
+            // observing physical empty objects after clear.
+            device
+                .objects
+                .insert(object_key(object_id.value()), Vec::new());
             let secret_key = secret_key_for_object(object_id.value());
             if !secret_key.is_empty() {
                 device.secrets.remove(secret_key);
@@ -291,7 +388,7 @@ fn stub_recipient_fingerprint(serial: u32) -> String {
     fingerprint
 }
 
-fn discover_devices() -> Result<Vec<DeviceCandidate>> {
+pub(crate) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
     with_datastore(|store| {
         Ok(store
             .devices
@@ -305,8 +402,11 @@ fn discover_devices() -> Result<Vec<DeviceCandidate>> {
     })
 }
 
-fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
-    Ok(SelectedSecretDevice::new(TestStubSecretDevice { serial }))
+pub(crate) fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
+    Ok(SelectedSecretDevice::new(TestStubSecretDevice {
+        serial,
+        management_authenticated: false,
+    }))
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
@@ -414,11 +514,15 @@ fn persistent_datastore_from(store: &YubiKeyDatastore) -> PersistentYubiKeyDatas
                 serial.clone(),
                 PersistentStubDeviceDatastore {
                     key_exists: device.key_exists,
+                    key_metadata_requires_management_auth: device
+                        .key_metadata_requires_management_auth,
+                    slot_public_key_spki: device.slot_public_key_spki.clone(),
                     reserved_slot_certificate_exists: device.reserved_slot_certificate_exists,
                     status_read_failure: device.status_read_failure,
                     objects: device.objects.clone(),
                     secrets: device.secrets.clone(),
                     corrupt: device.corrupt.clone(),
+                    management_state: device.management_state,
                 },
             )
         })
@@ -435,11 +539,15 @@ fn datastore_from_persistent(persistent: PersistentYubiKeyDatastore) -> Result<Y
                 serial,
                 StubDeviceDatastore {
                     key_exists: persisted.key_exists,
+                    key_metadata_requires_management_auth: persisted
+                        .key_metadata_requires_management_auth,
+                    slot_public_key_spki: persisted.slot_public_key_spki,
                     reserved_slot_certificate_exists: persisted.reserved_slot_certificate_exists,
                     status_read_failure: persisted.status_read_failure,
                     objects: persisted.objects,
                     secrets: persisted.secrets,
                     corrupt: persisted.corrupt,
+                    management_state: persisted.management_state,
                 },
             ))
         })
@@ -448,6 +556,7 @@ fn datastore_from_persistent(persistent: PersistentYubiKeyDatastore) -> Result<Y
 }
 
 fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
+    let fresh_fixture = matches!(&spec.fixture, YubiKeyDeviceFixture::Fresh);
     let mut device = match spec.fixture {
         YubiKeyDeviceFixture::Fresh => StubDeviceDatastore::default(),
         YubiKeyDeviceFixture::Provisioned => provisioned_device_datastore(default_secrets()),
@@ -483,6 +592,13 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
         YubiKeyDeviceFixture::ManifestWithoutReservedKey => {
             let mut device = provisioned_device_datastore(default_secrets());
             device.key_exists = false;
+            // Fixed `yubikey` crate `piv::SlotMetadata::public` is the public
+            // key returned by GET METADATA.  A fixture that says the slot key
+            // is absent must not retain that observed public key: otherwise it
+            // is a contradictory physical observation rather than the known
+            // repository state "manifest exists but reserved key is missing".
+            // Source: yubikey 0.9.0-pre.0 `piv.rs` `SlotMetadata::public`.
+            device.slot_public_key_spki = None;
             device
         }
         YubiKeyDeviceFixture::ManifestlessReservedCertificate => StubDeviceDatastore {
@@ -505,23 +621,39 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
             bitwarden_client_secret,
         )),
     };
+    device.key_metadata_requires_management_auth = spec.key_metadata_requires_management_auth;
     device.corrupt = spec.storage_decode_errors;
+    device.management_state = match fresh_fixture {
+        true => spec.management_state,
+        false if matches!(spec.management_state, StubManagementState::B0Default) => {
+            StubManagementState::Protected
+        }
+        false => spec.management_state,
+    };
     device
 }
 
 fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDeviceDatastore {
+    let manifest = SecretManifest::fixture_v2();
+    let public_key_spki = manifest
+        .slot_public_key_spki
+        .clone()
+        .expect("fixture manifest must include SPKI");
     let mut objects = BTreeMap::new();
     objects.insert(
         object_key(MANIFEST_OBJECT_ID),
-        br#"{"version":1,"app":"dotfiles.secret-recovery"}"#.to_vec(),
+        manifest.encode().expect("fixture manifest"),
     );
     StubDeviceDatastore {
         key_exists: true,
+        key_metadata_requires_management_auth: false,
+        slot_public_key_spki: Some(public_key_spki),
         reserved_slot_certificate_exists: false,
         status_read_failure: false,
         objects,
         secrets,
         corrupt: Vec::new(),
+        management_state: StubManagementState::Protected,
     }
 }
 

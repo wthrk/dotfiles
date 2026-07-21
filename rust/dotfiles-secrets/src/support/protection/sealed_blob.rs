@@ -3,6 +3,10 @@
 //! この module は payload id、nonce、AAD、wrapped key、ciphertext、tag の技術的な
 //! 結合だけを扱う。payload id と AAD の値そのものの意味は呼び出し側が決め、この
 //! support 境界は与えられた識別子と AAD を AEAD 検証へ渡す責務に限定する。
+//!
+//! `bincode` 2.0.1、`rand` 0.9.4、`serde` 1.0.228、`zeroize` 1.8.2 の API / error policy は
+//! [`external-sdk-evidence.md`](../../../../../docs/secret-recovery/external-sdk-evidence.md#rust-support-crate-secret-recovery-直接利用)
+//! の固定 version source を根拠とする。decode / AEAD error を format version・鍵・ciphertext の意味へ推測変換しない。
 
 use anyhow::Result;
 use bincode::config;

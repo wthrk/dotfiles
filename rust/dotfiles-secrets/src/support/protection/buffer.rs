@@ -1,4 +1,9 @@
 //! 入力 bytes の読み込み容量と zeroize 対象 allocation を同じ所有値で管理する buffer。
+//!
+//! `zeroize` 1.8.2 と `region` 3.0.2 の allocation / lock API の出典、memory protection failure の
+//! fail-closed policy は
+//! [`external-sdk-evidence.md`](../../../../../docs/secret-recovery/external-sdk-evidence.md#rust-support-crate-secret-recovery-直接利用)
+//! を参照する。
 
 use std::io::{self, Read, Write};
 

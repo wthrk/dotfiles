@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct ManifestWire {
     pub(crate) version: u8,
     pub(crate) app: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) slot_public_key_spki: Option<Vec<u8>>,
 }
 
 impl ManifestWire {

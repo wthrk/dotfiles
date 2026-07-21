@@ -23,7 +23,8 @@ where
     let serial = device.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
-    SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
+    let _preflight =
+        SecretStorageWriteIntent::preflight_put(storage.clone(), &inspection, command.force)?;
     let secret = process.read_streamed_secret()?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     storage_port.store_secret(serial, intent, &secret)
@@ -44,10 +45,16 @@ mod tests {
 
     fn write_inspection(object_exists: bool) -> SecretStorageWriteInspection {
         SecretStorageWriteInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(SecretManifest::fixture_v2().encode().expect("manifest")),
+            object_present: object_exists,
             object_exists,
             reserved_slot_key_exists: true,
             reserved_slot_certificate_exists: false,
+            slot_public_key_spki: Some(
+                SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("SPKI"),
+            ),
         }
     }
 
@@ -120,5 +127,42 @@ mod tests {
             &process,
             &mut storage,
         )
+    }
+
+    #[test]
+    fn put_stdin_does_not_read_secret_when_metadata_preflight_fails() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|_| Ok(2001));
+        let mut process = ports::MockSecretInputPort::new();
+        process.expect_read_streamed_secret().times(0);
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_write()
+            .times(1)
+            .returning(|_, _| {
+                let mut inspection = write_inspection(false);
+                inspection.slot_public_key_spki = None;
+                Ok(inspection)
+            });
+        storage.expect_store_secret().times(0);
+
+        let result = run_put_with_stdin(
+            PutCommand {
+                serial: None,
+                name: SecretName::BitwardenClientSecret,
+                force: false,
+            },
+            &mut device,
+            &process,
+            &mut storage,
+        );
+
+        assert!(
+            result.is_err(),
+            "metadata failure must stop before stdin read"
+        );
     }
 }

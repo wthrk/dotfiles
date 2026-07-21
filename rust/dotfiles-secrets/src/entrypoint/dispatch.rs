@@ -3,19 +3,30 @@
 //! command ごとの application 呼び出し順序だけを担い、adapter 生成と support session は
 //! composition / runtime 境界へ分離する。外部 API 翻訳は adapter 側へ閉じる。
 
+use crate::ports::{PivPinInputPort, SecretStoragePort};
 use crate::{
     Result, application,
     domain::{
         commands::{
-            AddGpgBackupSpareCommand, BwLoginCommand, ClearCommand, EnrollPrimaryCommand,
-            EnrollSpareCommand, ProvisionPasswordStoreRemoteCommand, PutCommand,
-            RegisterGpgBackupCommand, RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand,
-            SetupCommand, StatusCommand, VerifyYubikeyCommand,
+            AddGpgBackupSpareCommand, ClearCommand, EnrollPrimaryCommand, EnrollSpareCommand,
+            ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
+            RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
+            StatusCommand, VerifyYubikeyCommand,
         },
         gpg_backup::PrimaryFingerprint,
         verification::ExternalCheck,
     },
 };
+
+/// 管理操作に限定して hidden PIV PIN input を protection 境界から storage adapter へ渡す。
+///
+/// 読み出し、復号、`status`、`verify-yubikey`、`restore-gpg`、`restore-pass` はこの関数を
+/// 呼ばない。PIN の平文は [`ProtectedSecret`] のまま port 境界を通り、adapter が fresh
+/// YubiKey handle 上で `verify_pin` するまで公開されない。
+fn begin_piv_management_session(ports: &mut super::super::RuntimePorts) -> Result<()> {
+    let pin = ports.process_io.read_piv_pin_secret()?;
+    ports.storage.begin_piv_management_session(pin)
+}
 
 /// parse 済み command を use case に橋渡しする。
 pub(super) async fn dispatch(
@@ -25,6 +36,7 @@ pub(super) async fn dispatch(
     match options.command {
         super::super::SecretsCommand::Yubikey(options) => match options.command {
             super::super::YubikeyCommand::Setup(options) => {
+                begin_piv_management_session(ports)?;
                 application::run_setup_with::run_setup_with(
                     SetupCommand {
                         serial: options.serial,
@@ -33,15 +45,23 @@ pub(super) async fn dispatch(
                     &mut ports.storage,
                 )
             }
-            super::super::YubikeyCommand::Clear(options) => application::run_clear_with::run_clear_with(
-                ClearCommand {
-                    serial: options.serial,
-                    confirmed: options.yes,
-                },
-                &mut ports.device,
-                &mut ports.storage,
-            ),
+            super::super::YubikeyCommand::Clear(options) => {
+                // `--yes` の確認不成立では PIN を読まず、application の fail-closed
+                // confirmation rule に委ねる。
+                if options.yes {
+                    begin_piv_management_session(ports)?;
+                }
+                application::run_clear_with::run_clear_with(
+                    ClearCommand {
+                        serial: options.serial,
+                        confirmed: options.yes,
+                    },
+                    &mut ports.device,
+                    &mut ports.storage,
+                )
+            }
             super::super::YubikeyCommand::Put(options) => {
+                begin_piv_management_session(ports)?;
                 let command = PutCommand {
                     name: options.name,
                     serial: options.serial,
@@ -72,6 +92,7 @@ pub(super) async fn dispatch(
                 &ports.process_io,
             ),
             super::super::YubikeyCommand::EnrollPrimary(options) => {
+                begin_piv_management_session(ports)?;
                 let command = EnrollPrimaryCommand {
                     serial: options.serial,
                 };
@@ -94,6 +115,7 @@ pub(super) async fn dispatch(
                 }
             }
             super::super::YubikeyCommand::EnrollSpare(options) => {
+                begin_piv_management_session(ports)?;
                 let command = EnrollSpareCommand {
                     primary_serial: options.primary_serial,
                     spare_serial: options.spare_serial,
@@ -116,6 +138,7 @@ pub(super) async fn dispatch(
                 }
             }
             super::super::YubikeyCommand::RotateBwsToken(options) => {
+                begin_piv_management_session(ports)?;
                 let command = RotateBwsTokenCommand {
                     serial: options.serial,
                 };
@@ -150,11 +173,9 @@ pub(super) async fn dispatch(
                         .into_iter()
                         .map(|check| match check {
                             super::super::VerifyCheck::Bws => ExternalCheck::Bws,
-                            super::super::VerifyCheck::BwLogin => ExternalCheck::BwLogin,
-                        })
-                        .collect(),
+                    })
+                    .collect(),
                     all: options.all,
-                    email_override: options.email,
                 },
                 application::run_verify_yubikey_with::VerifyYubikeyRuntime {
                     device: &mut ports.device,
@@ -162,24 +183,6 @@ pub(super) async fn dispatch(
                     report: &ports.report,
                     bws_client: &ports.bws_client,
                     gpg_recipient: &mut ports.gpg_recipient,
-                    otp_input: &ports.process_io,
-                    bw_login: &ports.bw_login,
-                },
-            )
-            .await
-        }
-        super::super::SecretsCommand::BwLogin(options) => {
-            application::run_bw_login::run_bw_login(
-                BwLoginCommand {
-                    serial: options.serial,
-                    email_override: options.email,
-                },
-                application::run_bw_login::BwLoginRuntime {
-                    device: &mut ports.device,
-                    storage: &mut ports.storage,
-                    otp_input: &ports.process_io,
-                    bw_login: &ports.bw_login,
-                    report: &ports.report,
                 },
             )
             .await

@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalCheck {
     Bws,
-    BwLogin,
 }
 
 /// 各 verification/enrollment check の結果状態。
@@ -35,7 +34,6 @@ pub enum CheckName {
     BitwardenClientSecret,
     LocalStorage,
     Bws,
-    BwLogin,
 }
 
 impl CheckName {
@@ -51,7 +49,6 @@ impl CheckName {
             Self::BitwardenClientSecret => "bitwarden-client-secret",
             Self::LocalStorage => "local-storage",
             Self::Bws => "bws",
-            Self::BwLogin => "bw-login",
         }
     }
 }
@@ -91,7 +88,6 @@ impl VerifySummary {
             checks: [
                 (CheckName::LocalStorage, local_storage),
                 (CheckName::Bws, CheckStatus::Skipped),
-                (CheckName::BwLogin, CheckStatus::Skipped),
             ]
             .into_iter()
             .collect(),

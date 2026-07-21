@@ -49,20 +49,35 @@ pub fn is_secret_storage_uninitialized(error: &anyhow::Error) -> bool {
 #[cfg(feature = "secrets-internal-test-stub")]
 pub mod secrets_internal_test_stub_contract;
 
-/// adapter concrete modules を composition root からだけ到達できる範囲に閉じる。
-mod adapters {
-    mod bw;
-    mod git;
-    mod gpg;
-    mod io;
-    mod yubikey;
-
-    pub(crate) use bw::{BwLoginAdapter, BwsClientAdapter};
-    pub(crate) use git::{GitCloneAdapter, PasswordStoreAdapter};
-    pub(crate) use gpg::{BackupCipherAdapter, GpgKeyringAdapter, SshAgentAdapter};
-    pub(crate) use io::{JsonReportAdapter, ProcessIoAdapter};
-    pub(crate) use yubikey::{DeviceSelectionAdapter, GpgRecipientAdapter, StorageAdapter};
-}
+// Adapter source はすべて、support-owned concrete backend に対する port trait implementation
+// だけを持つ。nested adapter module は state / helper の置き場になってしまうため使わず、
+// composition root が各 trait-implementation source を直接 compile する。
+#[path = "adapters/bw.rs"]
+mod adapter_bw;
+#[cfg(feature = "secrets-internal-test-stub")]
+#[path = "adapters/bw/internal_stub.rs"]
+mod adapter_bw_internal_stub;
+#[path = "adapters/git.rs"]
+mod adapter_git;
+#[cfg(feature = "secrets-internal-test-stub")]
+#[path = "adapters/git/internal_stub.rs"]
+mod adapter_git_internal_stub;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+#[path = "adapters/gpg/cipher_adapter.rs"]
+mod adapter_gpg_cipher;
+#[cfg(feature = "secrets-internal-test-stub")]
+#[path = "adapters/gpg/internal_stub.rs"]
+mod adapter_gpg_internal_stub;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+#[path = "adapters/gpg/keyring_adapter.rs"]
+mod adapter_gpg_keyring;
+#[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
+#[path = "adapters/gpg/ssh_agent_adapter.rs"]
+mod adapter_gpg_ssh_agent;
+#[path = "adapters/io.rs"]
+mod adapter_io;
+#[path = "adapters/yubikey.rs"]
+mod adapter_yubikey;
 mod application;
 pub(crate) mod domain;
 mod entrypoint;
@@ -87,7 +102,6 @@ enum SecretsCommand {
     VerifyYubikey(VerifyYubikeyOptions),
     RestoreGpg(RestoreGpgOptions),
     RestorePass(RestorePassOptions),
-    BwLogin(BwLoginOptions),
     GpgBackup(GpgBackupOptions),
     PassRemote(PassRemoteOptions),
 }
@@ -172,9 +186,8 @@ struct RotateBwsTokenOptions {
 #[derive(Args)]
 /// YubiKey に保存された secret と外部確認項目を検証する option。
 ///
-/// `--check bw-login`（または `--all`）の bw-login 外部確認では、通常 YubiKey の `bw-email` を使う。
-/// email override が必要な場合は `--email <email>` を使う（yubikey-secret-storage-design.md L286）。override は `bw-login` の
-/// `BwLoginOptions` の `--email` と同じ意味・体裁で、指定時は YubiKey の `bw-email` を読まない。
+/// `verify-yubikey` は無対話の BWS recovery prerequisite だけを確認する。Bitwarden Password Manager login
+/// と OTP 入力は復旧フローに不要であり、この command の option / check に含めない。
 struct VerifyYubikeyOptions {
     #[arg(long)]
     serial: Option<u32>,
@@ -182,30 +195,12 @@ struct VerifyYubikeyOptions {
     check: Vec<VerifyCheck>,
     #[arg(long)]
     all: bool,
-    /// bw-login 外部確認で YubiKey の `bw-email` を使わず、指定した login email で login する override（yubikey-secret-storage-design.md L286）。
-    #[arg(long)]
-    email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 /// `verify-yubikey --check` で追加する外部確認項目。
 enum VerifyCheck {
     Bws,
-    BwLogin,
-}
-
-#[derive(Args)]
-/// YubiKey から `bw-email` / `bw-password` を取得し Bitwarden Password Manager CLI に login / unlock する option。
-///
-/// `bw-email` は通常 YubiKey の値を使い、override が必要な場合だけ `--email <email>` を許可する（spec L178）。
-/// master password は子プロセスの `BW_PASSWORD` env でだけ渡し、argv には載せない。YubiKey OTP は実行時に
-/// 可視入力で受け取り、argv（`--code`）へ載る単回トークンとして扱う。
-struct BwLoginOptions {
-    #[arg(long)]
-    serial: Option<u32>,
-    /// YubiKey の `bw-email` を使わず、指定した login email で login する override。
-    #[arg(long)]
-    email: Option<String>,
 }
 
 #[derive(Args)]
@@ -333,8 +328,8 @@ pub async fn run(options: SecretsOptions) -> Result<()> {
 /// secret material を扱わない公開鍵出力経路であり、composition root は keyring/ssh-output adapter だけを
 /// 束ねる。command 定義と option 変換だけをここで行い、鍵リング解決と出力翻訳は adapter へ閉じる。
 pub fn run_gpg(options: GpgOptions) -> Result<()> {
-    let mut keyring = adapters::GpgKeyringAdapter::default();
-    let output = adapters::ProcessIoAdapter::default();
+    let mut keyring = support::adapter_backend::GpgKeyringBackend;
+    let output = support::adapter_backend::ProcessIoBackend;
     match options.command {
         GpgCommand::ExportSshPublicKey(options) => {
             let primary_fingerprint =
@@ -352,36 +347,34 @@ pub fn run_gpg(options: GpgOptions) -> Result<()> {
 
 /// production command path の composition root が所有する実 adapter 群。
 pub(crate) struct RuntimePorts {
-    pub(crate) device: adapters::DeviceSelectionAdapter,
-    pub(crate) process_io: adapters::ProcessIoAdapter,
-    pub(crate) storage: adapters::StorageAdapter,
-    pub(crate) report: adapters::JsonReportAdapter,
-    pub(crate) bws_client: adapters::BwsClientAdapter,
-    pub(crate) bw_login: adapters::BwLoginAdapter,
-    pub(crate) gpg_recipient: adapters::GpgRecipientAdapter,
-    pub(crate) backup_cipher: adapters::BackupCipherAdapter,
-    pub(crate) gpg_keyring: adapters::GpgKeyringAdapter,
-    pub(crate) ssh_agent: adapters::SshAgentAdapter,
-    pub(crate) password_store: adapters::PasswordStoreAdapter,
-    pub(crate) git_clone: adapters::GitCloneAdapter,
+    pub(crate) device: support::yubikey_backend::YubikeyDeviceBackend,
+    pub(crate) process_io: support::adapter_backend::ProcessIoBackend,
+    pub(crate) storage: support::yubikey_storage::YubikeyStorageBackend,
+    pub(crate) report: support::adapter_backend::JsonReportBackend,
+    pub(crate) bws_client: support::adapter_backend::BwsClientBackend,
+    pub(crate) gpg_recipient: support::yubikey_backend::YubikeyRecipientBackend,
+    pub(crate) backup_cipher: support::adapter_backend::BackupCipherBackend,
+    pub(crate) gpg_keyring: support::adapter_backend::GpgKeyringBackend,
+    pub(crate) ssh_agent: support::adapter_backend::SshAgentBackend,
+    pub(crate) password_store: support::adapter_backend::PasswordStoreBackend,
+    pub(crate) git_clone: support::adapter_backend::GitCloneBackend,
 }
 
 impl RuntimePorts {
     /// production 用の adapter concrete 群を構築する。
     fn production() -> Self {
         Self {
-            device: adapters::DeviceSelectionAdapter::default(),
-            process_io: adapters::ProcessIoAdapter::default(),
-            storage: adapters::StorageAdapter::default(),
-            report: adapters::JsonReportAdapter::default(),
-            bws_client: adapters::BwsClientAdapter,
-            bw_login: adapters::BwLoginAdapter,
-            gpg_recipient: adapters::GpgRecipientAdapter::default(),
-            backup_cipher: adapters::BackupCipherAdapter::default(),
-            gpg_keyring: adapters::GpgKeyringAdapter::default(),
-            ssh_agent: adapters::SshAgentAdapter::default(),
-            password_store: adapters::PasswordStoreAdapter::default(),
-            git_clone: adapters::GitCloneAdapter::default(),
+            device: support::yubikey_backend::YubikeyDeviceBackend,
+            process_io: support::adapter_backend::ProcessIoBackend,
+            storage: support::yubikey_storage::YubikeyStorageBackend::default(),
+            report: support::adapter_backend::JsonReportBackend,
+            bws_client: support::adapter_backend::BwsClientBackend,
+            gpg_recipient: support::yubikey_backend::YubikeyRecipientBackend,
+            backup_cipher: support::adapter_backend::BackupCipherBackend,
+            gpg_keyring: support::adapter_backend::GpgKeyringBackend,
+            ssh_agent: support::adapter_backend::SshAgentBackend,
+            password_store: support::adapter_backend::PasswordStoreBackend,
+            git_clone: support::adapter_backend::GitCloneBackend,
         }
     }
 }

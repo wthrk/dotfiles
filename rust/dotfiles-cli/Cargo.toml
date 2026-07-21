@@ -11,13 +11,35 @@ path = "src/lib.rs"
 [[bin]]
 name = "dotfiles"
 path = "src/main.rs"
+required-features = ["production-cli"]
+
+# `secrets_cli` integration test 専用の executable target。通常の `dotfiles`
+# binary と出力名を分離し、featureless Cargo build が internal stub build の
+# artifact を置換できないようにする。required feature が無い production build
+# にはこの target 自体を含めない。
+[[bin]]
+name = "dotfiles-secrets-internal-test-stub"
+path = "src/bin/dotfiles-secrets-internal-test-stub.rs"
+required-features = ["secrets-internal-test-stub"]
+test = false
+bench = false
+
+# この integration test は feature-stub 専用 binary の artifact を必要とする。
+# `required-features` により、CI が feature を明示した場合だけ compile / 実行する。
+[[test]]
+name = "secrets_cli"
+path = "tests/secrets_cli.rs"
+required-features = ["secrets-internal-test-stub"]
 
 [lints]
 workspace = true
 
 [features]
 # 既定の production build では secrets crate の GPG keyring backend を含める。
-default = ["gpg-backend"]
+default = ["gpg-backend", "production-cli"]
+# 利用者向け `dotfiles` target の compile-time marker。internal stub build は
+# `--no-default-features` でこの feature を外し、通常 target を artifact graph から除く。
+production-cli = []
 # 実 GPG / Git backend を有効にする feature は dotfiles-secrets 側へ委譲する。internal stub
 # build は外部 GPG / Git backend を要求しないため、この feature を外して compile-time で除外する。
 gpg-backend = ["dotfiles-secrets/gpg-backend"]

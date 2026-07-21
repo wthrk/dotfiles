@@ -24,7 +24,7 @@ where
 {
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let inspections = SecretStorageSpec::all_for_serial(serial).map(|storage| {
-        let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
+        let inspection = storage_port.inspect_secret_storage_status(serial, &storage)?;
         Ok((storage, inspection))
     });
     let status = SecretStorageStatus::from_inspections(
@@ -38,19 +38,19 @@ mod tests {
     use crate::{
         domain::{
             commands::StatusCommand, manifest::SecretManifest, piv::SecretName,
-            storage::SecretStorageWriteInspection,
+            storage::SecretStorageStatusInspection,
         },
         ports,
     };
 
     use super::run_status_with;
 
-    fn inspection(object_exists: bool) -> crate::Result<SecretStorageWriteInspection> {
-        Ok(SecretStorageWriteInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode()?),
+    fn inspection(object_exists: bool) -> crate::Result<SecretStorageStatusInspection> {
+        let manifest = SecretManifest::fixture_v2();
+        Ok(SecretStorageStatusInspection {
+            manifest_bytes: Some(manifest.encode()?),
+            object_present: object_exists,
             object_exists,
-            reserved_slot_key_exists: true,
-            reserved_slot_certificate_exists: false,
         })
     }
 
@@ -62,7 +62,7 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_write()
+            .expect_inspect_secret_storage_status()
             .times(4)
             .returning(|_, _| inspection(true));
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
@@ -96,7 +96,7 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_write()
+            .expect_inspect_secret_storage_status()
             .times(4)
             .returning(|_, spec| inspection(spec.name != SecretName::BitwardenClientSecret));
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
@@ -128,14 +128,13 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_write()
+            .expect_inspect_secret_storage_status()
             .times(4)
             .returning(|_, _| {
-                Ok(SecretStorageWriteInspection {
+                Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
+                    object_present: false,
                     object_exists: false,
-                    reserved_slot_key_exists: false,
-                    reserved_slot_certificate_exists: false,
                 })
             });
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
@@ -153,6 +152,39 @@ mod tests {
     }
 
     #[test]
+    fn status_rejects_manifestless_zero_length_piv_objects() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_status()
+            .times(4)
+            .returning(|_, _| {
+                Ok(SecretStorageStatusInspection {
+                    manifest_bytes: None,
+                    // A successful GET DATA with zero bytes is a physically
+                    // present object, not the SDK `NotFound` result.
+                    object_present: true,
+                    object_exists: false,
+                })
+            });
+        let mut output = ports::MockSecretStorageStatusOutputPort::new();
+        output.expect_write_secret_storage_status().never();
+
+        assert!(
+            run_status_with(
+                StatusCommand { serial: Some(2001) },
+                &mut device,
+                &mut storage,
+                &output,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn status_rejects_a_manifestless_reserved_object() {
         let mut device = ports::MockDeviceSerialPort::new();
         device
@@ -160,14 +192,13 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_write()
+            .expect_inspect_secret_storage_status()
             .times(4)
             .returning(|_, _| {
-                Ok(SecretStorageWriteInspection {
+                Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
+                    object_present: true,
                     object_exists: true,
-                    reserved_slot_key_exists: true,
-                    reserved_slot_certificate_exists: false,
                 })
             });
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
@@ -192,14 +223,13 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_write()
+            .expect_inspect_secret_storage_status()
             .times(4)
             .returning(|_, _| {
-                Ok(SecretStorageWriteInspection {
+                Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
+                    object_present: true,
                     object_exists: true,
-                    reserved_slot_key_exists: true,
-                    reserved_slot_certificate_exists: false,
                 })
             });
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
@@ -223,14 +253,13 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         storage
-            .expect_inspect_secret_storage_write()
+            .expect_inspect_secret_storage_status()
             .times(4)
             .returning(|_, _| {
-                Ok(SecretStorageWriteInspection {
+                Ok(SecretStorageStatusInspection {
                     manifest_bytes: Some(b"invalid manifest".to_vec()),
+                    object_present: true,
                     object_exists: true,
-                    reserved_slot_key_exists: true,
-                    reserved_slot_certificate_exists: false,
                 })
             });
         let mut output = ports::MockSecretStorageStatusOutputPort::new();

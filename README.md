@@ -70,6 +70,8 @@ nix run github:wthrk/dotfiles -- init --source github:wthrk/dotfiles --force
 
 新規マシン復旧用の bootstrap secret は YubiKey PIV 領域に保存します。通常は primary 登録と spare 登録だけを使います。
 
+復旧では、利用者は **YubiKey を挿して復旧コマンドを実行するだけ** です。`verify-yubikey --check bws`（または `--all`）、`restore-gpg`、`restore-pass` は YubiKey 内の BWS credentials を一時利用し、master password、session、PIV PIN、secret の environment variable / argv、YubiKey OTP、追加対話入力を要求しません。credential と復号途中値を stdout、stderr、log、一時ファイル、永続 environment に出力・保存しません。詳細は [secret recovery spec](docs/secret-recovery/secret-recovery-spec.md#無対話復旧の利用者契約) を参照してください。
+
 ```sh
 dotfiles secrets yubikey enroll-primary
 dotfiles secrets yubikey enroll-spare
@@ -77,11 +79,13 @@ dotfiles secrets verify-yubikey
 dotfiles secrets yubikey rotate-bws-token
 ```
 
-`enroll-spare` は `--primary-serial <serial>` で明示された primary、または 1 本だけ接続されている primary YubiKey から bootstrap secret を読み出します。読み出し直後に、1 本だけ接続されている YubiKey または `--spare-serial <serial>` で明示された YubiKey を spare として解決します。primary / spare それぞれの解決時に serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止します。1 本ずつしか接続できない場合は、この時点で primary を抜いて spare を挿し、表示された prompt で Enter を押します。非対話実行では `--primary-serial` と `--spare-serial` を指定します。
+`enroll-spare` は primary / spare の serial を解決し、spare の secret storage を事前検査してから、primary の bootstrap secret を読み出します。通常の prompt 実行では両方の YubiKey を同時に接続し、`--primary-serial <serial>` と `--spare-serial <serial>` を指定してください。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止します。現行の実行経路には、primary を読み出した後で spare へ差し替える prompt はないため、YubiKey を 1 本ずつしか接続できない環境では通常実行を完了できません。
 
 `rotate-bws-token` は対話実行では新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新します。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止します。serial 未指定の対話実行で継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続します。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行します。summary に出た serial を見て、primary とすべての spare が更新済みであることを確認してください。非対話実行では `--serial` と `--stdin` を指定して 1 本ずつ更新します。
 
 `setup` と `put` は低水準コマンドです。`put` で secret 本文を直接指定する場合も、CLI 引数では受け取らず prompt または stdin から読みます。設定済みの bootstrap secret を確認するには `dotfiles secrets yubikey status` を使います。このコマンドは保存済みの secret 名だけを安定順で出力し、PIN、touch、復号、secret 本文の出力は行いません。完全に空の専用領域は成功・空出力で表します。
+
+正常な version 2 storage に対する `setup` は no-op です。version 1 manifest は slot `82` の公開鍵 metadata を取得できる場合だけ version 2 へ移行します。`status` は PIN を要求しない data-object 列挙であり、slot metadata/key 整合性を観測しません。manifest/object の不整合を clear した場合、`clear --yes` 自身が空の version 2 manifest を確定するため、続けて `setup` は実行しません。
 
 ### GPG 鍵リング復元と SSH 公開鍵
 
@@ -117,30 +121,6 @@ dotfiles secrets pass-remote register [--serial <serial>] [--url git@github.com:
 `register` は既存環境の GPG secret key を encrypted envelope 化し、接続中 YubiKey の recipient を 1 件作って Bitwarden Secrets Manager へ登録します。`add-spare` は既存 envelope を復号して同一 DEK を spare YubiKey の recipient へ追加し、stale overwrite 防止の更新識別子が一致する場合だけ更新します。`gpg-backup register` は `--serial` の YubiKey から BWS token を読み、同じ YubiKey の recipient を作ります。`gpg-backup add-spare` は `--unwrap-serial` の YubiKey から BWS token を読み、既存 recipient による DEK unwrap にも同じ YubiKey を使います。`pass-remote register` は private `password-store` repository の clone URL（`git@github.com:<owner>/<repo>.git` 形式）を Bitwarden Secrets Manager の復旧 project へ create または update する保管コマンドで、`--serial` の YubiKey から BWS token を読みます。serial 未指定時はいずれも単一接続だけを自動解決し、複数接続では fail-closed します。clone URL は認証・復号・署名・外部アクセス能力を与える credential ではないため、provisioning 入力では非秘匿として扱い、`--url <value>` 引数・可視プロンプト（対話実行で入力をエコー）・pipe（stdin）のいずれの方式でも入力できます（`--url` を指定すればその値を使い、未指定なら terminal で可視プロンプト・非 terminal で pipe から読みます）。ただし private repository の所在を示す値のため、ログ・エラー本文・診断出力には含めません。既存値の上書きは stale overwrite 防止の更新識別子が一致する場合だけ行います。これらの provisioning コマンドを非対話実行で上書き更新する場合は `--yes` を指定します。
 
 gpg-agent の SSH support 設定（`gpg-agent.conf` の `enable-ssh-support` と `pinentry-program`）は Home Manager 管理です。`config/zsh/env.zsh` は `GPG_TTY` を設定し、`${GNUPGHOME:-$HOME/.gnupg}/S.gpg-agent.ssh` が socket として存在する場合だけ `SSH_AUTH_SOCK` を上書きします。
-
-### Bitwarden Password Manager login
-
-`bw-login` は Bitwarden Password Manager の CLI に login / unlock します。接続中の YubiKey から `bw-email` と `bw-password` を取得し、YubiKey OTP を入力させたうえで、`bw login <email> --passwordenv BW_PASSWORD --method 3 --code <otp>`（2FA method 3 / YubiKey OTP）と `bw unlock --passwordenv BW_PASSWORD --raw` を `bw` CLI で実行します。`bw` CLI はこの login / unlock だけに許可された唯一の外部 CLI 例外で、secret 取得や永続保存用途には使いません。
-
-```sh
-dotfiles secrets bw-login [--serial <serial>] [--email <email>]
-```
-
-master password は子プロセスの `BW_PASSWORD` 環境変数でだけ渡し、CLI 引数（argv）・ログ・永続保存には載せません。`BW_PASSWORD` は保存しません。login email は通常 YubiKey 内の `bw-email` を使い、override が必要な場合だけ `--email <email>` を指定します。複数本の YubiKey が接続されている場合は `--serial <serial>` で対象を固定します。
-
-`bw unlock --raw` が出力する `BW_SESSION` 値はコマンドが利用者へ surface するだけで、disk や dotfiles へ永続化しません。表示された値を使って `export BW_SESSION=...` を実行すれば、以降の `bw` 操作の session として使えます。
-
-`bw-login` は Bitwarden account 側の 2FA / passkey 登録を自動化しません。primary と spare の両方の YubiKey をあらかじめ Bitwarden account の 2FA（Yubico OTP）として登録しておく必要があります（spare YubiKey の Bitwarden 側登録は `bw-login` では行いません）。
-
-#### primary / spare の manual login validation
-
-primary と spare のどちらの YubiKey でも login / unlock が完了することを、次の手順で確認します。`bw-login` は status 分岐をせず無条件で `bw login` → `bw unlock` を実行するため、各 manual validation は `bw` CLI が未ログイン状態（unauthenticated）であることを前提とします。直前の validation などで既に login 済みの場合は、`bw` CLI が「already logged in」で失敗するのを避けるため、次の YubiKey を検証する前に operator が `bw logout` を実行してから再実行してください。これは operator が手動で行う検証手順上の前提を示す注記であり、tool 側の `bw` CLI 用途を login / unlock 以外へ広げるものではありません。
-
-1. primary YubiKey を接続し、`dotfiles secrets bw-login`（または `dotfiles secrets verify-yubikey --check bw-login`）を実行して、OTP 入力後に login / unlock が成功することを確認します。
-2. primary を抜いて spare YubiKey を接続します。直前の手順で `bw` CLI が login 済みのままの場合は、ここで operator が `bw logout` を実行して未ログイン状態に戻してから、同じコマンドを実行します。複数本を同時接続する場合は `--serial <serial>` で spare を対象に指定し、spare でも login / unlock が成功することを確認します。
-3. `dotfiles secrets verify-yubikey --check bw-login` と `dotfiles secrets verify-yubikey --all` は、`bw-login` と同じ Bitwarden Password Manager の login / unlock 到達確認を実行します（session key は確認専用のため surface せず破棄します）。引数なしの `dotfiles secrets verify-yubikey` は ローカル保管 確認だけを行い、外部の bw-login 項目は機械可読状態値 `skipped` のまま残します。
-
-`bw-login` が受け付けるフラグは `--serial` と `--email` だけです。`verify-yubikey` は `--serial` に加えて外部確認を要求する option `--check bws` / `--check bw-login` / `--all`（到達できない場合は明示的に失敗します）を受け付け、`--email` は bw-login 確認の login email override にのみ適用されます。
 
 ## ロールバック
 
@@ -193,6 +173,9 @@ cargo xtask check
 ```
 
 通常の静的検証を実行します。Rust、Nix、shell script、GitHub Actions workflow を確認します。
+GitHub Actions の `static checks` も同じ `cargo xtask check static` を実行し、workspace test、
+internal-stub CLI integration test、secret-recovery application test をここで担保します。`nix build`
+の package derivation は配布 artifact の build だけを担い、test suite は実行しません。
 
 すべて実行する場合:
 

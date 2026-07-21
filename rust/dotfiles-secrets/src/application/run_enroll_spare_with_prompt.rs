@@ -16,8 +16,9 @@ use crate::{
 
 /// primary YubiKey から読み出した secret を prompt 運用の spare YubiKey へ複製する。
 ///
-/// primary 読み出し後に spare 解決へ進む順序を固定し、1 reader で primary から spare へ
-/// 差し替える運用を保つ。secret 転送手段の詳細は port 境界で読み出しと保存を接続する。
+/// primary / spare の serial 解決と spare storage の事前検査を primary 読み出しより先に固定する。
+/// serial を明示する通常経路では、両 device がこの事前検査と後続の読み書きに利用可能である。
+/// secret 転送手段の詳細は port 境界で読み出しと保存を接続する。
 pub(crate) fn run_enroll_spare_with_prompt<D, S, R>(
     command: EnrollSpareCommand,
     device: &mut D,
@@ -31,6 +32,11 @@ where
 {
     command.ensure_requested_serials_distinct()?;
     let primary_serial = device.resolve_device_serial(command.primary_serial)?;
+    let spare_serial = device.resolve_device_serial(command.spare_serial)?;
+    command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
+    let setup_probe = SecretStorageSetupProbe::expected();
+    let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
+    let setup_intent = SecretStorageSetupIntent::for_enrollment(setup_inspection)?;
     let [first_storage, second_storage, third_storage, fourth_storage] =
         SecretStorageVerificationPlan::for_serial(primary_serial).into_targets();
     let first_inspection =
@@ -73,17 +79,20 @@ where
         (third_document_storage, third),
         (fourth_document_storage, fourth),
     ])?;
-    let spare_serial = device.resolve_device_serial(command.spare_serial)?;
-    command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
-    let setup_probe = SecretStorageSetupProbe::expected();
-    let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
-    let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
+    let public_key_spki =
+        storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     for (storage, value) in document.storage_entries(spare_serial) {
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
+        let intent = SecretStorageWriteIntent::initial_enroll_store(
+            storage,
+            value.len(),
+            public_key_spki.clone(),
+        )?;
         storage_port.store_secret(spare_serial, intent, value)?;
     }
-    storage_port.finalize_secret_storage_setup(spare_serial, setup_intent)?;
+    storage_port.finalize_secret_storage_setup(
+        spare_serial,
+        setup_intent.manifest_for_public_key(public_key_spki)?,
+    )?;
     for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
         let inspection = storage_port.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -125,7 +134,7 @@ mod tests {
 
     fn read_inspection() -> SecretStorageReadInspection {
         SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(SecretManifest::fixture_v2().encode().expect("manifest")),
             encoded: Some(vec![1]),
         }
     }
@@ -155,7 +164,53 @@ mod tests {
     }
 
     #[test]
-    fn enroll_spare_prompt_reads_primary_before_spare_setup() -> crate::Result<()> {
+    fn enroll_spare_prompt_rejects_existing_spare_before_primary_read() {
+        let mut device = ports::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|requested| Ok(requested.expect("explicit test serial")));
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .returning(|requested| Ok(requested.expect("explicit test serial")));
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .withf(|serial, _| *serial == 2002)
+            .returning(|_, _| {
+                Ok(SecretStorageSetupInspection {
+                    key_exists: true,
+                    piv_version: PivApplicationVersion::minimum_for_secret_storage(),
+                    manifest_bytes: Some(SecretManifest::fixture_v2().encode()?),
+                    occupied_object_ids: Vec::new(),
+                })
+            });
+        storage.expect_inspect_secret_storage_read().times(0);
+        storage.expect_load_secret().times(0);
+        storage.expect_initialize_secret_storage().times(0);
+        storage.expect_store_secret().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_enroll_spare_with_prompt(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut device,
+            &mut storage,
+            &report,
+        );
+
+        assert!(
+            result.is_err(),
+            "existing spare must stop before primary read"
+        );
+    }
+
+    #[test]
+    fn enroll_spare_prompt_preflights_spare_before_reading_primary() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
         let mut primary_device = ports::MockDeviceSerialPort::new();
         primary_device
@@ -164,6 +219,16 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
+        primary_device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2002));
+        storage
+            .expect_inspect_secret_storage_setup()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(setup_inspection()));
         for name in [
             SecretName::BwEmail,
             SecretName::BwPassword,
@@ -190,20 +255,14 @@ mod tests {
                     })
                 });
         }
-        primary_device
-            .expect_resolve_device_serial()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_| Ok(2002));
-        storage
-            .expect_inspect_secret_storage_setup()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(setup_inspection()));
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| {
+                Ok(SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
         storage
             .expect_store_secret()
             .times(4)

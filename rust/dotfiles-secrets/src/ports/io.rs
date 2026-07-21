@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 
 use super::super::{
     domain::{
-        bw_login::BwLoginSummary,
         enrollment::EnrollSummary,
         gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
         pass_restore::RestorePassSummary,
@@ -31,6 +30,17 @@ pub trait SecretInputPort {
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 
+/// PIV 管理操作のために設定済み YubiKey PIN を hidden TTY input から取得する capability。
+///
+/// この PIN は復旧 read path では使用しない。`setup`、`put`、`clear`、enroll、rotate の
+/// management-key 操作だけが、PIN-protected management key を取得する直前に要求する。
+/// 取得値は [`ProtectedSecret`] として adapter へ渡し、平文を application、argv、環境変数、
+/// 出力、ログへ出してはならない。
+#[cfg_attr(test, mockall::automock)]
+pub trait PivPinInputPort {
+    fn read_piv_pin_secret(&self) -> Result<ProtectedSecret>;
+}
+
 /// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。
 ///
 /// `password-store-remote` は private `password-store` repository の SSH clone URL であり、秘密情報では
@@ -42,19 +52,6 @@ pub trait SecretInputPort {
 #[cfg_attr(test, mockall::automock)]
 pub trait PasswordStoreRemoteInputPort {
     fn read_password_store_remote_url(&self) -> Result<String>;
-}
-
-/// use case が YubiKey OTP を非秘匿入力として取得する capability 契約。
-///
-/// YubiKey OTP は touch 生成・単回利用のトークンで、`bw login --code <otp>` の argv に載る前提（spec L178）。
-/// よって他の secret 入力（`SecretInputPort`）と異なり保護 buffer・非表示入力・zeroize を要さず、可視入力で
-/// 1 行を読む。caller は OTP を必要とする地点だけを決める。implementor は stdin が terminal のとき可視プロンプト
-/// （入力をエコーする通常入力）で、非 terminal（pipe）のとき stdin 1 行を読み、取得した生文字列を返す。OTP の
-/// 妥当性判断（空文字・制御文字の排除）は domain rule に委ね、implementor は再定義しない。OTP は単回トークンの
-/// ため永続化しないが、ログ・診断にも残さない。
-#[cfg_attr(test, mockall::automock)]
-pub trait BwOtpInputPort {
-    fn read_bw_otp(&self) -> Result<String>;
 }
 
 /// use case が対話 rotate の継続可否を外部入力から取得する capability 契約。
@@ -94,12 +91,6 @@ pub trait ReportPort {
     fn write_verify_report(&self, summary: &VerifySummary) -> Result<()>;
     fn write_restore_gpg_report(&self, summary: &RestoreGpgSummary) -> Result<()>;
     fn write_restore_pass_report(&self, summary: &RestorePassSummary) -> Result<()>;
-
-    /// bw-login の結果（surface する `BW_SESSION` 値を含む）を出力境界へ渡す。
-    ///
-    /// caller は domain summary の意味だけを渡す。implementor は利用者が `export BW_SESSION=...` できる形で
-    /// session 値を surface し、disk / dotfile へ永続化しない。master password は決して出力しない。
-    fn write_bw_login_report(&self, summary: &BwLoginSummary) -> Result<()>;
 }
 
 /// use case が gpg-secret-key-backup の上書き更新を明示確認する契約。

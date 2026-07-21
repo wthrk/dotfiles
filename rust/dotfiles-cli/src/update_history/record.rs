@@ -600,7 +600,7 @@ fn run_record_with(
     release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     eval_new: &dyn Fn(&str) -> Result<std::collections::BTreeMap<String, NixPackage>>,
-    fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
+    fetch_cask: &dyn Fn(&str) -> Result<String>,
 ) -> Result<()> {
     let old_versions = notes::read_nix_versions(input.nix_old)?;
     let new_versions = match input.nix_new {
@@ -723,7 +723,7 @@ struct RecordAccum {
 /// 検査は [`brew`]。
 fn compute_brew_deltas(
     input: &RecordInput<'_>,
-    fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
+    fetch_cask: &dyn Fn(&str) -> Result<String>,
 ) -> Result<Vec<VersionDelta>> {
     let (Some(homebrew_nix), Some(rev_old), Some(rev_new)) =
         (input.homebrew_nix, input.cask_rev_old, input.cask_rev_new)
@@ -983,8 +983,8 @@ mod tests {
     }
 
     /// cask 差分を踏まないテスト seam（homebrew_nix 未指定なら呼ばれない）。
-    fn no_cask(_: &str) -> Result<brew::CaskFetch> {
-        Ok(brew::CaskFetch::NotFound)
+    fn no_cask(_: &str) -> Result<String> {
+        anyhow::bail!("cask fetch must not run in this test")
     }
 
     fn outcome(items: Vec<ChangeItem>) -> ExtractOutcome {
@@ -1832,14 +1832,14 @@ mod tests {
             ..input(&dir, &out, &registry, None, None)
         };
         // cask fetch seam: rev に応じて azookey の version 文字列を返す（upgrade）。
-        let fetch_cask = |url: &str| -> Result<brew::CaskFetch> {
-            Ok(if url.contains("/oldrev/") {
-                brew::CaskFetch::Body("cask \"x\" do\n  version \"1.0\"\nend\n".to_string())
+        let fetch_cask = |url: &str| -> Result<String> {
+            if url.contains("/oldrev/") {
+                Ok("cask \"x\" do\n  version \"1.0\"\nend\n".to_string())
             } else if url.contains("/newrev/") {
-                brew::CaskFetch::Body("cask \"x\" do\n  version \"1.1\"\nend\n".to_string())
+                Ok("cask \"x\" do\n  version \"1.1\"\nend\n".to_string())
             } else {
-                brew::CaskFetch::NotFound
-            })
+                anyhow::bail!("unexpected cask URL `{url}`")
+            }
         };
         let extract = FakeExtractor::new();
         run_record_with(

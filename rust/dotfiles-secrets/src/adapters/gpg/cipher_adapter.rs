@@ -8,14 +8,13 @@ use crate::{
     Result,
     domain::gpg_backup::EnvelopeCiphertext,
     ports::gpg::BackupCipherPort,
-    support::protection::{ProtectedSecret, gpg_backup},
+    support::{
+        adapter_backend::BackupCipherBackend,
+        protection::{ProtectedSecret, gpg_backup},
+    },
 };
 
-/// AES-256-GCM の DEK 暗復号を `BackupCipherPort` 契約へ翻訳する adapter。
-#[derive(Default)]
-pub(super) struct BackupCipherAdapter;
-
-impl BackupCipherPort for BackupCipherAdapter {
+impl BackupCipherPort for BackupCipherBackend {
     fn generate_dek(&mut self) -> Result<ProtectedSecret> {
         gpg_backup::generate_dek()
     }

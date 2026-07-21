@@ -192,7 +192,7 @@ mod tests {
 
     fn read_inspection() -> SecretStorageReadInspection {
         SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(SecretManifest::fixture_v2().encode().expect("manifest")),
             encoded: Some(vec![1]),
         }
     }

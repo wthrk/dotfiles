@@ -1,4 +1,8 @@
 //! 保護済み secret 向けの乱数生成 utility。
+//!
+//! `rand_core` 0.6.4 `OsRng`、`rsa` 0.9.10 `Oaep`、`sha2` 0.10.9 の固定 source と error policy は
+//! [`external-sdk-evidence.md`](../../../../../docs/secret-recovery/external-sdk-evidence.md#rust-support-crate-secret-recovery-直接利用)
+//! を参照する。entropy / RSA error に固定値・未 wrap key・別原因の fallback を与えない。
 
 use rand_core::{OsRng, RngCore};
 use rsa::{Oaep, RsaPublicKey};

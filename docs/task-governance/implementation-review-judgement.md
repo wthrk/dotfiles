@@ -32,19 +32,23 @@
 
 ## 各レビュー担当の職責
 
+### 外部 SDK / crate の利用根拠（全レビュー担当共通）
+
+対象差分が外部 SDK / crate を利用、変更、またはその戻り値・失敗時挙動を扱う場合、判定に関与する各レビュー担当は [../docs-governance.md の外部 SDK / crate の利用根拠](../docs-governance.md#外部-sdk--crate-の利用根拠) と [参照資料の直接照合](../docs-governance.md#参照資料の直接照合) を直接適用する。実装担当の引用、過去のレビュー、実機観測、エラー本文の推測で代替してはならない。各担当は URL、引用、API symbol、仕様節、source location を見つけたら、対応する原文を自ら開き、主張との対応、引用範囲、版・revision、対象差分への適用範囲を照合する。URL・symbol の存在確認や実装担当の要約では足りない。担当観点に関わる API 利用、認証、データモデル、利用フロー、成功・失敗時状態遷移、全エラー値の意味・分類・retry / fallback / default / 空値化 / 握りつぶしの根拠を判定する。原文を読めない、または適用範囲を確定できない参照は根拠に採用せず、その事実を判定に明記する。根拠がない意味付けまたは遷移があれば、少なくとも `要修正` とする。
+
 ### 構造レビュー担当
 
-[../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../architecture/review-checklist.md](../architecture/review-checklist.md) に従い、層別責務、依存方向、公開範囲、処理単位の責務配置を判定する。機械的分離を合格根拠にせず、処理が正本アーキテクチャ文書で規定された境界に置かれているかを確認する。
+[../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../architecture/review-checklist.md](../architecture/review-checklist.md) に従い、層別責務、依存方向、公開範囲、処理単位の責務配置を判定する。機械的分離を合格根拠にせず、処理が正本アーキテクチャ文書で規定された境界に置かれているかを確認する。SDK / crate 利用が対象なら、公式一次資料で確認した利用フローとエラー遷移が adapter / support の翻訳に留まり、未根拠の意味付けを層へ持ち込んでいないかを確認する。
 
 ### 仕様適合レビュー担当
 
-ユーザー指定の GitHub issue / PR / 明示タスク、および領域固有仕様が定める完了条件、制約、是正対象を現行差分に対して直接照合する。サマリーや実装担当の報告で代替してはならない。
+ユーザー指定の GitHub issue / PR / 明示タスク、および領域固有仕様が定める完了条件、制約、是正対象を現行差分に対して直接照合する。サマリーや実装担当の報告で代替してはならない。SDK / crate 利用が対象なら、公式一次資料に照らし、仕様が要求する利用フローと失敗時遷移を満たすか確認する。
 
 仕様適合レビュー担当は、委譲入力から完了条件を所有する正本を特定し、その正本を読んで判定する。領域固有仕様、architecture/test 配置規則、またはユーザー指定 issue / PR が完了条件を定める場合は、それらを担当職責の入力正本として扱う。
 
 ### セキュリティレビュー担当
 
-[security-obligations.md](security-obligations.md) に定義された制約を適用し、秘密情報漏えい、不正アクセス経路、権限境界逸脱、危険な失敗時挙動を確認する。
+[security-obligations.md](security-obligations.md) に定義された制約を適用し、秘密情報漏えい、不正アクセス経路、権限境界逸脱、危険な失敗時挙動を確認する。SDK / crate 利用が対象なら、公式一次資料にないエラー分類、握りつぶし、fallback、default、状態変更を安全と扱っていないか確認する。
 
 レビュー指摘が test-only の dummy / fixture secret の観測を問題にしている場合、security reviewer または test reviewer はそれを通常の finding として確定せず、`test-secret-observation false-positive verifier` を fresh role で起動する。verifier は compile-time test-only 選択、production build/runtime 非混入、fixture/spec の dummy 値限定、production 到達経路なしを対象コードから直接確認する。4 条件をすべて満たす場合は `誤検知` として該当 finding を通常判定から除外し、起点 reviewer へ不採用理由と根拠を返す。当該指摘を `要修正` / `不合格` の根拠にしてはならない。いずれかを満たさない、または本番値・本番出力経路が関係する場合は `実漏えい` として起点 reviewer の finding を維持し、起点 reviewer の判定を `要修正` または `不合格` へ写像する。写像理由、verifier の4条件ごとの根拠、維持した finding を集約根拠へ記録する。
 
@@ -64,17 +68,19 @@
 
 test double / fixture の配置、inline unit test、internal backend stub、test-only secret observation の判定は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../architecture/review-checklist.md](../architecture/review-checklist.md) の test 関連規則へ照合する。
 
-YubiKey の `setup` / `clear` / `status` またはそれらを呼ぶ provisioning script が対象に含まれる場合、テストレビュー担当は PIN prompt が一度も発生しないことを必須確認項目とする。PIN policy 判定、PIN input、PIN verification の再導入を検出した場合は、回帰テストの有無にかかわらず `要修正` とし、仕様適合レビュー担当へ必須指摘として返す。
+SDK / crate 利用が対象なら、公式一次資料が定義する成功・失敗遷移と各エラー値の扱いを、テストが実際に検証しているか、または文書・構造確認に分類すべきかを確認する。
+
+YubiKey の `setup` / `put` / `clear` / enroll / rotate、`status`、またはそれらを呼ぶ provisioning script が対象に含まれる場合、テストレビュー担当は [secret-recovery spec の command contract](../secret-recovery/secret-recovery-spec.md#到達仕様のコマンド一覧) を直接照合する。管理操作（`setup` / `put` / `clear` / enroll / rotate）は、controlling TTY から hidden prompt で設定済み PIV PIN を 1 回だけ取得し、PIN-protected management key 認証へ限定して使うこと、TTY を取得できない場合は secret input・device mutation の前に fail-closed することを回帰テストで確認する。PIN は stdin payload、argv、environment、stdout、stderr、log、一時ファイルへ渡してはならない。復旧 read/decrypt path（`status` / `verify-yubikey` / `restore-gpg` / `restore-pass`）は PIN prompt、PIN verification、management-key authentication を発生させず、PIN を要求した場合は回帰テストの有無にかかわらず `要修正` とし、仕様適合レビュー担当へ必須指摘として返す。
 
 ### ドキュメントレビュー担当
 
-コード内ドキュメントコメントが実装と整合しているかを確認する。判定対象と必須範囲は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../docs-governance.md](../docs-governance.md) に従う。
+コード内ドキュメントコメントが実装と整合しているかを確認する。SDK / crate 利用が対象なら、コメントおよび恒久文書が公式一次資料で裏付けられない利用フロー・エラー意味付けを断定していないかを確認する。判定対象と必須範囲は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../docs-governance.md](../docs-governance.md) に従う。
 
 ### アーキテクチャ整合レビュー担当
 
 モジュールまたはコードベースを全体として読み、設計が [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) の哲学と整合しているかを判定する。個別ルールの合格総和で代替してはならない。
 
-アーキテクチャ整合レビュー担当は、責務境界がモジュール全体として一貫しているか、局所的な配置正しさが全体設計の歪みを隠していないか、複数ファイルに分散した判断が同じ設計責務として読めるかを確認する。構造レビューの checklist 判定は入力にできるが、それだけでこの職責の判定を完了してはならない。
+アーキテクチャ整合レビュー担当は、責務境界がモジュール全体として一貫しているか、局所的な配置正しさが全体設計の歪みを隠していないか、複数ファイルに分散した判断が同じ設計責務として読めるかを確認する。SDK / crate 利用が対象なら、公式一次資料に基づく外部失敗の翻訳・伝播方針がモジュール横断で一貫し、未根拠の recovery を隠していないかを確認する。構造レビューの checklist 判定は入力にできるが、それだけでこの職責の判定を完了してはならない。
 
 ### 参照整合レビュー担当
 

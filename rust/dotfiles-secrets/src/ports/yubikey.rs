@@ -10,7 +10,7 @@ use super::super::{
         storage::{
             SecretStorageClearIntent, SecretStorageReadInspection, SecretStorageReadIntent,
             SecretStorageSetupInspection, SecretStorageSetupIntent, SecretStorageSetupProbe,
-            SecretStorageWriteInspection, SecretStorageWriteIntent,
+            SecretStorageStatusInspection, SecretStorageWriteInspection, SecretStorageWriteIntent,
         },
     },
     support::protection::ProtectedSecret,
@@ -33,6 +33,11 @@ pub trait DeviceSerialPort {
 /// object 読み書き、保護境界との接続を担い、manifest/storage の業務規則を再定義しない。
 #[cfg_attr(test, mockall::automock)]
 pub trait SecretStoragePort {
+    /// この process の管理操作に使う設定済み PIV PIN を設定する。
+    ///
+    /// read/decrypt/status path は呼ばない。adapter は fresh PIV handle ごとにこの保護値を
+    /// `verify_pin` へ渡し、PIN-protected management key を取得・認証してから管理操作を行う。
+    fn begin_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()>;
     /// setup 判定に必要な storage 状態を取得する。
     fn inspect_secret_storage_setup(
         &mut self,
@@ -44,22 +49,28 @@ pub trait SecretStoragePort {
         &mut self,
         serial: u32,
         intent: SecretStorageSetupIntent,
-    ) -> Result<()>;
+    ) -> Result<Vec<u8>>;
     /// 判定済み intent に従って対象 serial の manifest を確定する。
-    fn finalize_secret_storage_setup(
+    fn finalize_secret_storage_setup(&mut self, serial: u32, manifest_bytes: Vec<u8>)
+    -> Result<()>;
+    /// 予約済み slot と custom data object だけを clear する。
+    fn clear_secret_storage(
         &mut self,
         serial: u32,
-        intent: SecretStorageSetupIntent,
-    ) -> Result<()>;
-    /// 予約済み slot と custom data object だけを clear する。
-    fn clear_secret_storage(&mut self, serial: u32, intent: SecretStorageClearIntent)
-    -> Result<()>;
+        intent: SecretStorageClearIntent,
+    ) -> Result<Vec<u8>>;
     /// 書き込み判定に必要な storage 状態を取得する。
     fn inspect_secret_storage_write(
         &mut self,
         serial: u32,
         storage: &SecretStorageSpec,
     ) -> Result<SecretStorageWriteInspection>;
+    /// read-only `status` 用の PIV PIN / management key を使わない storage 観測。
+    fn inspect_secret_storage_status(
+        &mut self,
+        serial: u32,
+        storage: &SecretStorageSpec,
+    ) -> Result<SecretStorageStatusInspection>;
     /// 判定済み intent に従って対象 storage spec の secret を保存する。
     fn store_secret(
         &mut self,

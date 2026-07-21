@@ -34,8 +34,8 @@ where
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(serial, &setup_probe)?;
-    let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
+    let setup_intent = SecretStorageSetupIntent::for_enrollment(setup_inspection)?;
+    let public_key_spki = storage_port.initialize_secret_storage(serial, setup_intent.clone())?;
     let bw_email = secret_input.read_bw_email_secret()?;
     let bw_password = secret_input.read_bw_password_secret()?;
     let bitwarden_client_id = secret_input.read_bitwarden_client_id_secret()?;
@@ -47,10 +47,17 @@ where
         &bitwarden_client_secret,
     )?;
     for (storage, value) in document.storage_entries(serial) {
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
+        let intent = SecretStorageWriteIntent::initial_enroll_store(
+            storage,
+            value.len(),
+            public_key_spki.clone(),
+        )?;
         storage_port.store_secret(serial, intent, value)?;
     }
-    storage_port.finalize_secret_storage_setup(serial, setup_intent)?;
+    storage_port.finalize_secret_storage_setup(
+        serial,
+        setup_intent.manifest_for_public_key(public_key_spki)?,
+    )?;
     for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
         let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -93,7 +100,7 @@ mod tests {
 
     fn read_inspection() -> SecretStorageReadInspection {
         SecretStorageReadInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(SecretManifest::fixture_v2().encode().expect("manifest")),
             encoded: Some(vec![1]),
         }
     }
@@ -117,7 +124,11 @@ mod tests {
             .expect_initialize_secret_storage()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| {
+                Ok(SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
         let mut secret_input = ports::MockSecretInputPort::new();
         secret_input
             .expect_read_bw_email_secret()
@@ -222,6 +233,43 @@ mod tests {
     }
 
     #[test]
+    fn enroll_primary_prompt_rejects_existing_storage_before_secret_input() {
+        let mut device_serial = ports::MockDeviceSerialPort::new();
+        device_serial
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2001));
+        let mut secret_input = ports::MockSecretInputPort::new();
+        secret_input.expect_read_bw_email_secret().times(0);
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .returning(|_, _| {
+                Ok(SecretStorageSetupInspection {
+                    key_exists: true,
+                    piv_version: PivApplicationVersion::minimum_for_secret_storage(),
+                    manifest_bytes: Some(SecretManifest::fixture_v2().encode()?),
+                    occupied_object_ids: Vec::new(),
+                })
+            });
+        storage.expect_initialize_secret_storage().times(0);
+        storage.expect_store_secret().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_enroll_primary_with_prompt(
+            EnrollPrimaryCommand { serial: Some(2001) },
+            &mut device_serial,
+            &secret_input,
+            &mut storage,
+            &report,
+        );
+
+        assert!(
+            result.is_err(),
+            "existing storage must stop before secret input"
+        );
+    }
+
+    #[test]
     fn enroll_primary_prompt_stops_when_store_fails() {
         let mut device_serial = ports::MockDeviceSerialPort::new();
         device_serial
@@ -236,7 +284,11 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| {
+                Ok(SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
         storage
             .expect_store_secret()
             .times(1)
@@ -289,7 +341,11 @@ mod tests {
         storage
             .expect_initialize_secret_storage()
             .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| {
+                Ok(SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("fixture SPKI"))
+            });
         storage
             .expect_store_secret()
             .times(4)

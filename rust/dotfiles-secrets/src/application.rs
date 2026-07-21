@@ -3,7 +3,6 @@
 //! 個別 use case の orchestration を提供し、command 選択は entrypoint 側が担う。
 
 pub(crate) mod run_add_gpg_backup_spare;
-pub(crate) mod run_bw_login;
 pub(crate) mod run_clear_with;
 pub(crate) mod run_enroll_primary_with_prompt;
 pub(crate) mod run_enroll_primary_with_stdin_json;

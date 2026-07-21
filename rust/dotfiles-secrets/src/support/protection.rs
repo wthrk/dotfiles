@@ -6,7 +6,6 @@ use anyhow::{Context, bail};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
-pub(crate) mod bw_login;
 pub(crate) mod bws;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod gpg_backup;
@@ -16,6 +15,8 @@ mod oaep;
 pub(crate) mod sealed_blob;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+pub(crate) mod yubikey_piv;
 
 use crate::Result;
 
@@ -112,20 +113,6 @@ impl ProtectedSecret {
         let text =
             std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
         borrow(text).await
-    }
-
-    /// UTF-8 secret text を同期 closure の実行中だけ借用として公開する。
-    ///
-    /// `bw login` / `bw unlock` が要求する `BW_PASSWORD` env 注入のように、子プロセス起動境界が借用中の
-    /// 平文文字列だけを要求する場合に使う。closure 内でデータを外部 buffer へ複製してはならず、closure の
-    /// 返値として平文を持ち出してはならない。secret が UTF-8 でない場合は失敗する。
-    pub(in crate::support::protection) fn with_secret_password_str<R>(
-        &self,
-        borrow: impl FnOnce(&str) -> Result<R>,
-    ) -> Result<R> {
-        let text =
-            std::str::from_utf8(self.value.as_slice()).context("secret is not valid UTF-8")?;
-        borrow(text)
     }
 
     /// UTF-8 secret text を protection backend closure の実行中だけ借用として公開する。

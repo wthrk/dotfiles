@@ -15,10 +15,10 @@ fail() {
   exit 1
 }
 
-test_script_never_requests_yubikey_pin() {
-  if grep -Eiq 'read[_ -]?pin|--pin|pin_input' \
+test_script_does_not_transport_yubikey_pin() {
+  if grep -Eiq -- '--pin|PIV_PIN|YUBIKEY_PIN|pin_input' \
     "$REPO_ROOT/scripts/provision-secret-recovery-source.sh"; then
-    fail 'provision script に YubiKey PIN の対話または引数経路が残っている'
+    fail 'provision script が YubiKey PIN を argv / environment / 独自 input として扱っている'
   fi
 }
 
@@ -189,14 +189,14 @@ test_put_failure_other_than_uninitialized_does_not_setup_or_retry() {
   [ ! -s "$PUT_LOG" ] || fail 'put の通常失敗後に保存済み token が記録された'
 }
 
-test_invalid_storage_clears_then_initializes_and_puts() {
+test_invalid_storage_clears_then_puts() {
   reset_test_state
   local mutation_log="$TEST_DIR/mutation.log"
   : > "$mutation_log"
   dotfiles() {
     case "$1 $2 $3" in
       'secrets yubikey status') return 42 ;;
-      'secrets yubikey clear'|'secrets yubikey setup') printf '%s\n' "$*" >> "$mutation_log" ;;
+      'secrets yubikey clear') printf '%s\n' "$*" >> "$mutation_log" ;;
       'secrets yubikey put')
         local stored_token
         IFS= read -r stored_token
@@ -209,8 +209,8 @@ test_invalid_storage_clears_then_initializes_and_puts() {
   ensure_bws_access_token_stored primary 2001
   grep -Fxq 'secrets yubikey clear --serial 2001 --yes' "$mutation_log" \
     || fail '不正 storage に clear が実行されなかった'
-  grep -Fxq 'secrets yubikey setup --serial 2001' "$mutation_log" \
-    || fail 'clear 後に setup が実行されなかった'
+  ! grep -Fq 'secrets yubikey setup' "$mutation_log" \
+    || fail 'clear 後の正常な空 manifest に setup が実行された'
 }
 
 test_clear_failure_does_not_prompt_or_put() {
@@ -244,13 +244,49 @@ test_unobservable_status_failure_does_not_clear_prompt_or_put() {
   [ ! -s "$PUT_LOG" ] || fail '観測不能な status 失敗後に put が実行された'
 }
 
+test_repo_head_retry_preserves_piped_token() {
+  reset_test_state
+  local event_log="$TEST_DIR/repo-head-events.log"
+  local first_put_marker="$TEST_DIR/repo-head-first-put"
+  : > "$event_log"
+  rm -f "$first_put_marker"
+  USE_REPO_HEAD=1
+  dotfiles() {
+    case "$1 $2 $3" in
+      'secrets yubikey status') ;;
+      'secrets yubikey setup') printf 'setup|0|%s\n' "$*" >> "$event_log" ;;
+      *) fail "repo-head 再試行で予期しない通常 dotfiles 呼び出し: $*" ;;
+    esac
+  }
+  run_dotfiles_from_repo_head() {
+    [ "$1 $2 $3" = 'secrets yubikey put' ] \
+      || fail "repo-head stdin 経路で予期しない呼び出し: $*"
+    local stored_token
+    IFS= read -r stored_token
+    if [ ! -e "$first_put_marker" ]; then
+      : > "$first_put_marker"
+      printf 'put|43|%s|%s\n' "$*" "$stored_token" >> "$event_log"
+      return 43
+    fi
+    printf 'put|0|%s|%s\n' "$*" "$stored_token" >> "$event_log"
+  }
+
+  ensure_bws_access_token_stored primary 2001
+  local expected_events
+  expected_events=$'put|43|secrets yubikey put bitwarden-client-secret --stdin --serial 2001|fixture-token\nsetup|0|secrets yubikey setup --serial 2001\nput|0|secrets yubikey put bitwarden-client-secret --stdin --serial 2001|fixture-token'
+  [ "$(<"$event_log")" = "$expected_events" ] \
+    || fail 'repo-head の再試行が put(43) → setup → 同じ stdin token の put(0) の順序になっていない'
+  USE_REPO_HEAD=0
+}
+
 test_saved_token_skips_prompt_and_put
 test_missing_token_prompts_and_puts
 test_repeated_run_after_single_secret_put_does_not_clear
 test_empty_yubikey_initializes_before_put
 test_normal_empty_manifest_puts_without_setup
 test_put_failure_other_than_uninitialized_does_not_setup_or_retry
-test_invalid_storage_clears_then_initializes_and_puts
+test_invalid_storage_clears_then_puts
 test_clear_failure_does_not_prompt_or_put
 test_unobservable_status_failure_does_not_clear_prompt_or_put
-test_script_never_requests_yubikey_pin
+test_repo_head_retry_preserves_piped_token
+test_script_does_not_transport_yubikey_pin

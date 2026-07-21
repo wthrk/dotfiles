@@ -36,15 +36,23 @@ where
     command.ensure_requested_primary_differs_from_spare(spare_serial)?;
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
-    let setup_intent = SecretStorageSetupIntent::from_inspection(setup_inspection)?;
-    storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
+    let setup_intent = SecretStorageSetupIntent::for_enrollment(setup_inspection)?;
+    let public_key_spki =
+        storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     let fields = document_input.read_bootstrap_secret_fields()?;
     let document = BootstrapSecretDocument::from_field_map(fields)?;
     for (storage, value) in document.storage_entries(spare_serial) {
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage, value.len())?;
+        let intent = SecretStorageWriteIntent::initial_enroll_store(
+            storage,
+            value.len(),
+            public_key_spki.clone(),
+        )?;
         storage_port.store_secret(spare_serial, intent, value)?;
     }
-    storage_port.finalize_secret_storage_setup(spare_serial, setup_intent)?;
+    storage_port.finalize_secret_storage_setup(
+        spare_serial,
+        setup_intent.manifest_for_public_key(public_key_spki)?,
+    )?;
     for storage in SecretStorageVerificationPlan::for_serial(spare_serial).into_targets() {
         let inspection = storage_port.inspect_secret_storage_read(spare_serial, &storage)?;
         let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
@@ -196,5 +204,49 @@ mod tests {
         );
 
         assert!(result.is_err(), "setup failure must stop before store");
+    }
+
+    #[test]
+    fn enroll_spare_stdin_json_rejects_existing_storage_before_document_input() {
+        let mut spare_device = ports::MockDeviceSerialPort::new();
+        spare_device
+            .expect_resolve_device_serial()
+            .returning(|_| Ok(2002));
+        let mut document_input = ports::MockBootstrapSecretDocumentInputPort::new();
+        document_input
+            .expect_read_bootstrap_secret_fields()
+            .times(0);
+        let mut storage = ports::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_setup()
+            .returning(|_, _| {
+                Ok(SecretStorageSetupInspection {
+                    key_exists: true,
+                    piv_version: PivApplicationVersion::minimum_for_secret_storage(),
+                    manifest_bytes: Some(
+                        crate::domain::manifest::SecretManifest::fixture_v2().encode()?,
+                    ),
+                    occupied_object_ids: Vec::new(),
+                })
+            });
+        storage.expect_initialize_secret_storage().times(0);
+        storage.expect_store_secret().times(0);
+        let report = ports::MockReportPort::new();
+
+        let result = run_enroll_spare_with_stdin_json(
+            EnrollSpareCommand {
+                primary_serial: Some(2001),
+                spare_serial: Some(2002),
+            },
+            &mut spare_device,
+            &document_input,
+            &mut storage,
+            &report,
+        );
+
+        assert!(
+            result.is_err(),
+            "existing storage must stop before document input"
+        );
     }
 }

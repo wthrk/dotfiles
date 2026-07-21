@@ -1,7 +1,14 @@
 //! `dotfiles` CLI のライブラリ境界。
 //!
 //! 利用者向け binary はこの crate の公開 entrypoint を呼ぶ薄い層に限定する。
-//! CLI 統合テストは `dotfiles` binary を直接実行して production 経路を検証する。
+//! CLI 統合テストは通常の `dotfiles` binary ではなく、Cargo が
+//! `secrets-internal-test-stub` feature 付きで事前に build した専用
+//! `dotfiles-secrets-internal-test-stub` binary を起動する。この binary も本 crate の
+//! `dispatch` を呼ぶため command dispatch は利用者向け binary と同一である。
+//!
+//! 専用 target は `required-features` で featureless な通常 artifact と分離される。feature により
+//! `dotfiles-secrets` の YubiKey adapter は compile-time internal stub に置換されるため、統合テストの
+//! child process が実機 YubiKey backend へ到達することはない。
 
 pub(crate) mod cli;
 mod environment;

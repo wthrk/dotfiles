@@ -2,7 +2,10 @@
 //!
 //! Rust、shell script、Nix flake などの外部検証コマンドを順に実行する。
 
-use anyhow::ensure;
+use std::path::{Path, PathBuf};
+use std::{env, fs, process};
+
+use anyhow::{bail, ensure};
 use xshell::{Shell, cmd};
 
 use crate::{Result, command::step};
@@ -15,8 +18,254 @@ pub(crate) fn check() -> Result<()> {
     github_actions(&shell)?;
     auto_update_wrapper_uses_update_all_semantics(&shell)?;
     darwin_home_manager_propagates_include_self_package(&shell)?;
+    nix_flake_source_candidates_are_tracked()?;
+    adapter_boundary_is_structurally_closed(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)
+}
+
+/// adapter/support 境界を Rust AST で fail-closed に検証する。
+///
+/// 行・brace depth・文字列検索では macro、attribute、複数行宣言、nested module を正しく
+/// 扱えない。ここでは全 adapter source を `syn::File` として構文解析し、adapter に許す
+/// item を「port trait の impl」と import / doc attribute だけへ限定する。従って free
+/// function、inherent impl、state type、const/static/type alias/internal trait、再 export
+/// aggregation、delegation-only wrapper を一律に拒否する。`#[cfg(test)]` inline test は
+/// module 自身の private test として明示的に許可する。
+///
+/// support 側も AST で調べ、`crate::adapters` import、`super::adapters` import、adapter
+/// source を読む `#[path]` / `include!` を禁止する。これにより test stub state を support
+/// に置く場合でも support -> adapter 依存を作れない。
+fn adapter_boundary_is_structurally_closed(shell: &Shell) -> Result<()> {
+    step("adapter structural boundary");
+    let root = shell
+        .current_dir()
+        .join("rust/dotfiles-secrets/src/adapters");
+    let mut files = Vec::new();
+    collect_rust_files(&root, &mut files)?;
+    let mut violations = Vec::new();
+    for path in files {
+        let source = fs::read_to_string(&path)?;
+        let syntax = syn::parse_file(&source).map_err(|error| {
+            anyhow::anyhow!("failed to parse adapter source {}: {error}", path.display())
+        })?;
+        collect_adapter_item_violations(&syntax.items, false, &path, &mut violations);
+    }
+
+    let support = shell
+        .current_dir()
+        .join("rust/dotfiles-secrets/src/support");
+    let mut support_files = Vec::new();
+    collect_rust_files(&support, &mut support_files)?;
+    for path in support_files {
+        let source = fs::read_to_string(&path)?;
+        let syntax = syn::parse_file(&source).map_err(|error| {
+            anyhow::anyhow!("failed to parse support source {}: {error}", path.display())
+        })?;
+        collect_support_to_adapter_violations(&syntax.items, &path, &mut violations);
+    }
+
+    ensure!(
+        violations.is_empty(),
+        "adapter boundary must contain only port trait implementations and must not be imported by support: {}",
+        violations.join(", ")
+    );
+    Ok(())
+}
+
+fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_rust_files(&path, files)?;
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_adapter_item_violations(
+    items: &[syn::Item],
+    inside_inline_test: bool,
+    path: &Path,
+    violations: &mut Vec<String>,
+) {
+    for item in items {
+        match item {
+            syn::Item::Use(_) if !inside_inline_test => {}
+            syn::Item::Impl(item_impl) if !inside_inline_test => {
+                if item_impl.trait_.is_none() {
+                    violations.push(format!("{}: inherent impl is forbidden", path.display()));
+                    continue;
+                }
+                if !is_port_trait_impl(item_impl) {
+                    violations.push(format!(
+                        "{}: adapter impl must implement an external-I/O Port trait",
+                        path.display()
+                    ));
+                }
+                if item_impl
+                    .items
+                    .iter()
+                    .any(|item| !matches!(item, syn::ImplItem::Fn(_)))
+                {
+                    violations.push(format!(
+                        "{}: adapter trait impl may contain methods only",
+                        path.display()
+                    ));
+                }
+                if is_delegation_only_impl(item_impl) {
+                    violations.push(format!(
+                        "{}: delegation-only adapter wrapper is forbidden",
+                        path.display()
+                    ));
+                }
+            }
+            syn::Item::Mod(module) if is_inline_test_module(module) => {
+                if let Some((_, nested)) = &module.content {
+                    collect_adapter_item_violations(nested, true, path, violations);
+                }
+            }
+            // Inline tests may contain test helpers and local test-only state; the production
+            // adapter boundary is not widened by those private test items.
+            _ if inside_inline_test => {}
+            _ => violations.push(format!(
+                "{}: forbidden adapter item `{}`",
+                path.display(),
+                adapter_item_kind(item)
+            )),
+        }
+    }
+}
+
+fn is_port_trait_impl(item_impl: &syn::ItemImpl) -> bool {
+    item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
+        path.segments
+            .last()
+            .is_some_and(|segment| segment.ident.to_string().ends_with("Port"))
+    })
+}
+
+fn is_inline_test_module(module: &syn::ItemMod) -> bool {
+    module.attrs.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .meta
+                .require_list()
+                .is_ok_and(|list| list.tokens.to_string().contains("test"))
+    })
+}
+
+fn adapter_item_kind(item: &syn::Item) -> &'static str {
+    match item {
+        syn::Item::Const(_) => "const",
+        syn::Item::Enum(_) => "enum",
+        syn::Item::ExternCrate(_) => "extern crate",
+        syn::Item::Fn(_) => "free function",
+        syn::Item::ForeignMod(_) => "foreign module",
+        syn::Item::Impl(_) => "impl",
+        syn::Item::Macro(_) => "macro",
+        syn::Item::Mod(_) => "module",
+        syn::Item::Static(_) => "static",
+        syn::Item::Struct(_) => "struct",
+        syn::Item::Trait(_) => "trait",
+        syn::Item::TraitAlias(_) => "trait alias",
+        syn::Item::Type(_) => "type alias",
+        syn::Item::Union(_) => "union",
+        syn::Item::Use(_) => "use",
+        syn::Item::Verbatim(_) => "verbatim",
+        _ => "unknown",
+    }
+}
+
+/// 新しい adapter は support が所有する concrete backend 型へ trait を実装する。
+///
+/// `self.0.method(...)` / `self.inner.method(...)` だけの trait method は、adapter が port
+/// translation をせず旧 inner adapter を再公開しているだけの wrapper である。AST で method
+/// body を検査し、この形を見つけたら fail-closed にする。
+fn is_delegation_only_impl(item_impl: &syn::ItemImpl) -> bool {
+    !item_impl.items.is_empty()
+        && item_impl.items.iter().all(|item| match item {
+            syn::ImplItem::Fn(method) => method_is_single_self_field_call(method),
+            _ => false,
+        })
+}
+
+fn method_is_single_self_field_call(method: &syn::ImplItemFn) -> bool {
+    let [syn::Stmt::Expr(expression, None)] = method.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(method_call) = expression else {
+        return false;
+    };
+    matches!(
+        method_call.receiver.as_ref(),
+        syn::Expr::Field(field)
+            if matches!(field.base.as_ref(), syn::Expr::Path(path) if path.path.is_ident("self"))
+    )
+}
+
+fn collect_support_to_adapter_violations(
+    items: &[syn::Item],
+    path: &Path,
+    violations: &mut Vec<String>,
+) {
+    for item in items {
+        match item {
+            syn::Item::Use(item_use) if use_tree_mentions_adapters(&item_use.tree) => violations
+                .push(format!(
+                    "{}: support must not import adapters",
+                    path.display()
+                )),
+            syn::Item::Mod(module) => {
+                if attribute_or_path_mentions_adapters(&module.attrs) {
+                    violations.push(format!(
+                        "{}: support must not load adapter source",
+                        path.display()
+                    ));
+                }
+                if let Some((_, nested)) = &module.content {
+                    collect_support_to_adapter_violations(nested, path, violations);
+                }
+            }
+            syn::Item::Macro(item_macro)
+                if item_macro.mac.path.is_ident("include")
+                    && item_macro.mac.tokens.to_string().contains("adapters") =>
+            {
+                violations.push(format!(
+                    "{}: support must not include adapter source",
+                    path.display()
+                ))
+            }
+            _ => {}
+        }
+    }
+}
+
+fn use_tree_mentions_adapters(tree: &syn::UseTree) -> bool {
+    match tree {
+        syn::UseTree::Path(path) => {
+            path.ident == "adapters" || use_tree_mentions_adapters(path.tree.as_ref())
+        }
+        syn::UseTree::Name(name) => name.ident == "adapters",
+        syn::UseTree::Rename(rename) => rename.ident == "adapters",
+        syn::UseTree::Glob(_) => false,
+        syn::UseTree::Group(group) => group.items.iter().any(use_tree_mentions_adapters),
+    }
+}
+
+fn attribute_or_path_mentions_adapters(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("path")
+            && attribute.meta.require_name_value().is_ok_and(|value| {
+                matches!(
+                    &value.value,
+                    syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(path), .. })
+                        if path.value().contains("adapters")
+                )
+            })
+    })
 }
 
 /// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint、テストを回す。
@@ -40,15 +289,55 @@ fn rust(shell: &Shell) -> Result<()> {
     step("cargo test secrets internal stub");
     cmd!(
         shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli"
+        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --no-default-features --features secrets-internal-test-stub --test secrets_cli"
     )
     .run()?;
+    internal_stub_observation_is_mechanically_isolated(shell)?;
     step("cargo test secrets application");
     cmd!(
         shell,
         "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-secrets --lib application"
     )
     .run()?;
+    Ok(())
+}
+
+/// internal test stub の stdout observation が production command に混入しないことを、
+/// feature 名だけでなく target 境界で検証する。
+///
+/// security-obligations の test-only 観測の4条件に対応する: (1) 専用 binary の
+/// compile-time feature selection、(2) normal target の feature 注入拒否、(3) fixture
+/// input は feature-gated integration test に閉じること、(4) production entrypoint に
+/// observation の環境変数・sentinel 到達経路が無いこと。これは実機・BWS を起動しない。
+fn internal_stub_observation_is_mechanically_isolated(shell: &Shell) -> Result<()> {
+    step("internal stub observation isolation");
+    let manifest = shell.read_file("rust/dotfiles-cli/Cargo.toml")?;
+    let production_main = shell.read_file("rust/dotfiles-cli/src/main.rs")?;
+    let integration = shell.read_file("rust/dotfiles-cli/tests/secrets_cli.rs")?;
+
+    ensure!(
+        manifest.contains("name = \"dotfiles-secrets-internal-test-stub\"")
+            && manifest.contains("required-features = [\"secrets-internal-test-stub\"]")
+            && manifest.contains("name = \"dotfiles\"\npath = \"src/main.rs\"\nrequired-features = [\"production-cli\"]"),
+        "internal stub は required-features を持つ専用 binary target だけで compile すること"
+    );
+    ensure!(
+        production_main.contains("feature = \"production-cli\"")
+            && production_main.contains("feature = \"secrets-internal-test-stub\"")
+            && production_main
+                .contains("only permitted for the dotfiles-secrets-internal-test-stub test binary"),
+        "通常 dotfiles target は internal stub feature の注入を compile-time で拒否すること"
+    );
+    ensure!(
+        integration.starts_with("#![cfg(feature = \"secrets-internal-test-stub\")]")
+            && integration.contains("feature_stub_cli_binary"),
+        "fixture と sentinel 観測は feature-gated integration test と専用 binary に閉じること"
+    );
+    ensure!(
+        !production_main.contains("DOTFILES_SECRETS_")
+            && !production_main.contains("__DOTFILES_SECRETS_STUB_OBSERVATION__"),
+        "production entrypoint は stub environment / stdout observation に到達してはならない"
+    );
     Ok(())
 }
 
@@ -402,6 +691,101 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// Git flake input は tracked file だけを取り込むため、Cargo が読む未追跡 source を
+/// package build 前に拒否する。
+///
+/// `nix build .#dotfiles-cli` は Git source filter を通す。未追跡の Rust module / binary、
+/// `Cargo.toml`、Nix source は local `cargo` では見えても derivation では消える。この
+/// preflight は source input と実行時 worktree の差を明示的に失敗にし、Nix の長い build
+/// が「file not found」で終わるまで問題を隠すことを防ぐ。対象を source 候補に限定するため、
+/// `.env` や `target/` のような未追跡のローカル状態は対象外である。
+fn nix_flake_source_candidates_are_tracked() -> Result<()> {
+    step("Nix flake source candidates are tracked");
+    let candidates = untracked_nix_source_candidates(&env::current_dir()?)?;
+    ensure_nix_source_candidates_are_tracked(&candidates)
+}
+
+/// 指定 worktree の Git source filter から脱落する Cargo / Nix source 候補を返す。
+fn untracked_nix_source_candidates(source: &Path) -> Result<Vec<PathBuf>> {
+    let worktree = git_worktree_root(source)?;
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("git ls-files failed for {}", worktree.display());
+        }
+        bail!("git ls-files failed for {}: {stderr}", worktree.display());
+    }
+
+    let candidates = output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| Ok(PathBuf::from(std::str::from_utf8(entry)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut candidates = candidates
+        .into_iter()
+        .filter(|path| is_nix_flake_source_candidate(path))
+        .collect::<Vec<_>>();
+    candidates.sort();
+    Ok(candidates)
+}
+
+/// Nix package / module evaluation に影響し、Git flake input に含まれる必要があるファイルかを判定する。
+fn is_nix_flake_source_candidate(path: &Path) -> bool {
+    let is_rust_source =
+        path.starts_with("rust") && path.extension().is_some_and(|extension| extension == "rs");
+    let is_cargo_manifest = path.file_name().is_some_and(|name| name == "Cargo.toml");
+    let is_nix_source = path.extension().is_some_and(|extension| extension == "nix");
+
+    is_rust_source || is_cargo_manifest || is_nix_source
+}
+
+/// source 候補が未追跡なら、Nix Git flake input から除外されるため package build 前に止める。
+fn ensure_nix_source_candidates_are_tracked(candidates: &[PathBuf]) -> Result<()> {
+    ensure!(
+        candidates.is_empty(),
+        "Nix Git flake source input から除外される未追跡の Cargo / Nix source がある。\n\
+         追跡対象にしてから package build を実行すること:\n  {}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n  "),
+    );
+    Ok(())
+}
+
+/// worktree 内の任意パスから Git 管理ルートを解決する。
+fn git_worktree_root(source: &Path) -> Result<PathBuf> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!(
+                "git rev-parse --show-toplevel failed for {}",
+                source.display()
+            );
+        }
+        bail!(
+            "git rev-parse --show-toplevel failed for {}: {stderr}",
+            source.display()
+        );
+    }
+
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout)?.trim_end_matches('\n'),
+    ))
+}
+
 /// root auto-update wrapper が `dotfiles update` の既定 `all` 経路を保つことを静的に検証する。
 fn auto_update_wrapper_uses_update_all_semantics(shell: &Shell) -> Result<()> {
     step("nix-darwin auto-update wrapper");
@@ -458,8 +842,16 @@ mod tests {
         assert_nightly_artifact_actions_use_supported_node_runtime,
         assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
-        assert_nightly_record_secret_gating_is_testable_and_bounded, record_secret_gate_allows,
+        assert_nightly_record_secret_gating_is_testable_and_bounded,
+        collect_adapter_item_violations, collect_support_to_adapter_violations,
+        ensure_nix_source_candidates_are_tracked, record_secret_gate_allows,
+        untracked_nix_source_candidates,
     };
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{env, process};
 
     /// wrapper が target を省略し、root daemon 用の `--user` / `--host` を渡す形を受け入れる。
     #[test]
@@ -651,5 +1043,141 @@ mod tests {
         "#;
 
         assert!(assert_nightly_artifact_actions_use_supported_node_runtime(workflow).is_ok());
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_helpers_state_and_inherent_impls() {
+        let source = r#"
+            use crate::ports::Port;
+            impl Port for crate::support::Backend {
+                fn translate(&self) {}
+            }
+            fn leaked_helper() {}
+            #[cfg(feature = "stub")]
+            struct StubState;
+            impl crate::support::Backend { fn leaked_inherent(&self) {} }
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 3);
+    }
+
+    #[test]
+    fn adapter_ast_gate_allows_port_impl_and_inline_unit_test() {
+        let source = r#"
+            use crate::ports::Port;
+            impl Port for crate::support::Backend {
+                fn translate(&self) {}
+            }
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn private_test_helper_is_local() {}
+            }
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn support_ast_gate_rejects_adapter_import_and_path_include() {
+        let source = r#"
+            use crate::adapters::Backend;
+            #[path = "../adapters/backend.rs"]
+            mod forbidden;
+        "#;
+        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let path = std::path::Path::new("support.rs");
+        let mut violations = Vec::new();
+        collect_support_to_adapter_violations(&syntax.items, path, &mut violations);
+        assert_eq!(violations.len(), 2);
+    }
+
+    #[test]
+    fn nix_flake_source_preflight_rejects_untracked_cargo_and_nix_sources() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-nix-source-preflight");
+        fs::create_dir_all(repo.join("rust/dotfiles-cli/src/bin"))?;
+        fs::create_dir_all(repo.join("nix"))?;
+        fs::create_dir_all(repo.join("docs"))?;
+        fs::write(repo.join("rust/dotfiles-cli/src/lib.rs"), "// tracked\n")?;
+        fs::write(repo.join("docs/notes.md"), "local note\n")?;
+
+        git(&repo, ["init"])?;
+        git(&repo, ["add", "rust/dotfiles-cli/src/lib.rs"])?;
+
+        fs::write(
+            repo.join("rust/dotfiles-cli/src/bin/new.rs"),
+            "fn main() {}\n",
+        )?;
+        fs::write(repo.join("rust/dotfiles-cli/Cargo.toml"), "[package]\n")?;
+        fs::write(repo.join("nix/new-module.nix"), "{}\n")?;
+
+        let candidates = untracked_nix_source_candidates(&repo)?;
+        assert_eq!(
+            candidates,
+            vec![
+                std::path::PathBuf::from("nix/new-module.nix"),
+                std::path::PathBuf::from("rust/dotfiles-cli/Cargo.toml"),
+                std::path::PathBuf::from("rust/dotfiles-cli/src/bin/new.rs"),
+            ]
+        );
+        assert!(ensure_nix_source_candidates_are_tracked(&candidates).is_err());
+
+        let _ = fs::remove_dir_all(repo);
+        Ok(())
+    }
+
+    #[test]
+    fn nix_flake_source_preflight_accepts_tracked_sources_and_ignores_local_notes() -> TestResult {
+        let repo = unique_temp_dir("dotfiles-nix-source-preflight-tracked");
+        fs::create_dir_all(repo.join("rust/dotfiles-cli/src"))?;
+        fs::create_dir_all(repo.join("nix"))?;
+        fs::create_dir_all(repo.join("docs"))?;
+        fs::write(repo.join("rust/dotfiles-cli/src/lib.rs"), "// source\n")?;
+        fs::write(repo.join("rust/dotfiles-cli/Cargo.toml"), "[package]\n")?;
+        fs::write(repo.join("nix/module.nix"), "{}\n")?;
+        fs::write(repo.join("docs/local-note.md"), "not a Nix source\n")?;
+
+        git(&repo, ["init"])?;
+        git(
+            &repo,
+            [
+                "add",
+                "rust/dotfiles-cli/src/lib.rs",
+                "rust/dotfiles-cli/Cargo.toml",
+                "nix/module.nix",
+            ],
+        )?;
+
+        let candidates = untracked_nix_source_candidates(&repo)?;
+        assert!(candidates.is_empty());
+        assert!(ensure_nix_source_candidates_are_tracked(&candidates).is_ok());
+
+        let _ = fs::remove_dir_all(repo);
+        Ok(())
+    }
+
+    type TestResult = anyhow::Result<()>;
+
+    fn git<const N: usize>(repo: &Path, args: [&str; N]) -> TestResult {
+        let status = Command::new("git").current_dir(repo).args(args).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!("git command failed: {args:?}")).into())
+        }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id()))
     }
 }

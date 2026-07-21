@@ -79,7 +79,7 @@ pub struct StorageObjectIds;
 impl StorageObjectIds {
     /// manifest と全 secret blob の object ID を列挙する。
     ///
-    /// 列挙順は `ensure_setup_allowed` と verification が参照する安定順で、呼び出し側はこの順序を変更前提に依存してはならない。
+    /// 列挙順は setup 判定と verification が参照する安定順で、呼び出し側はこの順序を変更前提に依存してはならない。
     pub fn iter() -> impl Iterator<Item = PivObjectId> {
         std::iter::once(PivObjectId::MANIFEST).chain(SecretName::iter().map(SecretName::object_id))
     }

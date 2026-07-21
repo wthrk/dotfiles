@@ -1,6 +1,7 @@
 //! BWS SDK が要求する所有 plaintext buffer と secret 返却値を protection 境界内で扱う操作。
 #![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
+use anyhow::Context;
 use bitwarden::{
     Client, ClientSettings, DeviceType, auth::login::AccessTokenLoginRequest,
     secrets_manager::secrets::SecretGetRequest,
@@ -69,7 +70,7 @@ impl BwsClientSession {
             .secrets()
             .get(&SecretGetRequest { id })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+            .context("Bitwarden SDK secret get failed")?;
         let revision = secret.revision_date.to_rfc3339();
         let value = Zeroizing::new(secret.value);
         let mut protected = ProtectedSecret::new(value.len())?;
@@ -88,7 +89,7 @@ impl BwsClientSession {
             .secrets()
             .get(&SecretGetRequest { id })
             .await
-            .map_err(|_| anyhow::anyhow!("bitwarden secret get failed"))?;
+            .context("Bitwarden SDK secret get failed")?;
         Ok(Zeroizing::new(secret.value))
     }
 }
@@ -97,6 +98,11 @@ impl BwsClientSession {
 ///
 /// ここでは SDK が要求する所有 token buffer の作成、login 呼び出し、repository 所有 buffer の
 /// zeroize だけを完了する。project/secret lookup rule や外部確認 plan は扱わない。
+///
+/// 一次資料: `Client::new` / `AuthClient::login_access_token` の SDK flow と、machine-account
+/// access token が許可された project だけを操作できる権限境界は
+/// [`external-sdk-evidence.md`](../../../../../docs/secret-recovery/external-sdk-evidence.md#bitwarden-secrets-manager-sdk)
+/// を参照する。SDK error は意味を再分類せず、source chain を保った context 付き failure として返す。
 pub(crate) async fn login_client_with_access_token(
     access_token: &ProtectedSecret,
 ) -> Result<BwsClientSession> {
@@ -114,12 +120,15 @@ pub(crate) async fn login_client_with_access_token(
                     bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 };
                 let client = Client::new(Some(settings));
-                let request = ZeroizingAccessTokenLoginRequest::new(token.trim().to_owned());
+                // Access-token bytes are credential material. Bitwarden の公開 sample / request API は trim や
+                // whitespace normalization を定義していないため、YubiKey から復号した値を変更せずに渡す。
+                // 空白除去で別 token を捏造したり、invalid token を成功扱いしたりしない。
+                let request = ZeroizingAccessTokenLoginRequest::new(token.to_owned());
                 client
                     .auth()
                     .login_access_token(request.as_request())
                     .await
-                    .map_err(|error| anyhow::anyhow!("bitwarden login failed: {error}"))?;
+                    .context("Bitwarden SDK access-token login failed")?;
                 drop(request);
                 Ok(client)
             })

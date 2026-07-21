@@ -31,8 +31,8 @@ pub struct SecretStorageSetupInspection {
 /// domain rule を通過した storage 初期化 intent。
 #[derive(Clone)]
 pub struct SecretStorageSetupIntent {
-    pub manifest_bytes: Vec<u8>,
     pub key_generation_required: bool,
+    manifest_update_required: bool,
 }
 
 /// この機能が予約する storage だけを破棄する intent。
@@ -44,14 +44,39 @@ pub struct SecretStorageClearIntent {
 /// secret 書き込み前の storage 観測値。
 pub struct SecretStorageWriteInspection {
     pub manifest_bytes: Option<Vec<u8>>,
+    /// SDK `fetch_object` が `NotFound` 以外で返したか。zero-length payload
+    /// も physical PIV object として `true` にする。
+    pub object_present: bool,
+    /// non-empty encrypted blob が存在するか。`put --force` と `status` の
+    /// 保存済み secret 判定は物理 object の存在ではなくこちらを使う。
     pub object_exists: bool,
     pub reserved_slot_key_exists: bool,
     pub reserved_slot_certificate_exists: bool,
+    /// adapter が PIV metadata から観測した slot 82 の公開鍵 SPKI。取得不能も観測値として表す。
+    pub slot_public_key_spki: Option<Vec<u8>>,
+}
+
+/// PIN も management-key authentication も行わない `status` の観測値。
+///
+/// `status` は recovery read path のまま、予約 PIV data object と manifest だけを列挙する。
+/// slot metadata / key presence は GET METADATA の authorization contract を使わずに証明できないため、
+/// この value に含めない。slot と manifest の SPKI 一致は管理 PIN を使う write/setup preflight と、
+/// actual decrypt を行う recovery/verify path が検証する。
+pub struct SecretStorageStatusInspection {
+    pub manifest_bytes: Option<Vec<u8>>,
+    /// SDK `fetch_object` が `NotFound` 以外で返したか。zero-length payload
+    /// も physical PIV object として `true` にする。
+    pub object_present: bool,
+    /// non-empty encrypted blob が存在するか。保存済み secret 判定は物理 object
+    /// の存在ではなくこちらを使う。
+    pub object_exists: bool,
 }
 
 /// domain rule を通過した secret 書き込み intent。
+#[derive(Clone)]
 pub struct SecretStorageWriteIntent {
     pub storage: SecretStorageSpec,
+    pub slot_public_key_spki: Option<Vec<u8>>,
 }
 
 /// secret 読み出し前の storage 観測値。
@@ -146,31 +171,118 @@ impl SecretStorageClearIntent {
             object_ids: StorageObjectIds::iter().collect(),
         }
     }
+
+    pub fn manifest_for_generated_public_key(&self, public_key_spki: Vec<u8>) -> Result<Vec<u8>> {
+        SecretManifest::v2(public_key_spki)?.encode()
+    }
 }
 
 impl SecretStorageSetupIntent {
     /// setup 観測値に domain の未初期化規則を適用し、書き込み intent を作る。
     pub fn from_inspection(inspection: SecretStorageSetupInspection) -> Result<Self> {
         validate_secret_storage_setup_preconditions(inspection.piv_version)?;
-        SecretManifest::ensure_setup_allowed(
+        let manifest_update_required = SecretManifest::setup_requires_manifest_update(
             inspection.key_exists,
             inspection.manifest_bytes.as_deref(),
             &inspection.occupied_object_ids,
         )?;
         Ok(Self {
-            manifest_bytes: SecretManifest::expected().encode()?,
             key_generation_required: !inspection.key_exists,
+            manifest_update_required,
         })
+    }
+
+    /// enrollment 用に、未初期化または manifest 未確定の partial storage だけを初期化対象とする。
+    ///
+    /// `setup` は正常な v2 storage に対して no-op だが、enroll は既存 bootstrap secret を
+    /// 上書きしてはならない。したがって manifest が存在する storage は format の正否に関わらず
+    /// enrollment 対象から除外する。manifest がまだ確定していない partial state は、途中失敗した
+    /// enrollment を安全に再開するために許可する。
+    pub fn for_enrollment(inspection: SecretStorageSetupInspection) -> Result<Self> {
+        validate_secret_storage_setup_preconditions(inspection.piv_version)?;
+        if inspection.manifest_bytes.is_some() {
+            anyhow::bail!(
+                "refusing to enroll into YubiKey secret storage with an existing manifest"
+            );
+        }
+        Ok(Self {
+            key_generation_required: !inspection.key_exists,
+            manifest_update_required: true,
+        })
+    }
+
+    /// 実 SPKI が必要な初期化または v1 移行かを返す。
+    pub fn requires_public_key_spki(&self) -> bool {
+        self.manifest_update_required
+    }
+
+    /// v2 manifest を確定すべきかを返す。
+    pub fn requires_finalization(&self) -> bool {
+        self.manifest_update_required
+    }
+
+    /// 実際に観測または生成した SPKI だけから v2 manifest bytes を作る。
+    pub fn manifest_for_public_key(&self, public_key_spki: Vec<u8>) -> Result<Vec<u8>> {
+        SecretManifest::v2(public_key_spki)?.encode()
     }
 }
 
 impl SecretStorageWriteIntent {
+    /// secret 入力前に、manifest と slot 公開鍵照合に必要な intent を構築する。
+    pub fn preflight_put(
+        storage: SecretStorageSpec,
+        inspection: &SecretStorageWriteInspection,
+        force: bool,
+    ) -> Result<Self> {
+        Self::ensure_put_preconditions(&storage, inspection, force)?;
+        Self::from_initialized_manifest(storage, inspection)
+    }
+
+    /// token 入力前に、通常更新の slot 公開鍵照合に必要な intent を構築する。
+    pub fn preflight_store(
+        storage: SecretStorageSpec,
+        inspection: &SecretStorageWriteInspection,
+    ) -> Result<Self> {
+        Self::ensure_store_preconditions(inspection)?;
+        Self::from_initialized_manifest(storage, inspection)
+    }
+
+    fn from_initialized_manifest(
+        storage: SecretStorageSpec,
+        inspection: &SecretStorageWriteInspection,
+    ) -> Result<Self> {
+        let manifest_spki = Self::validated_slot_public_key_spki(inspection)?;
+        Ok(Self {
+            storage,
+            slot_public_key_spki: Some(manifest_spki),
+        })
+    }
+
+    fn validated_slot_public_key_spki(
+        inspection: &SecretStorageWriteInspection,
+    ) -> Result<Vec<u8>> {
+        let manifest = SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        let manifest_spki = manifest.slot_public_key_spki().ok_or_else(|| {
+            anyhow::anyhow!("YubiKey secret storage manifest v1 cannot be used without migration")
+        })?;
+        SecretManifest::validate_slot_public_key_spki(manifest_spki)?;
+        let observed_spki = inspection
+            .slot_public_key_spki
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("YubiKey slot 82 public key metadata is unavailable"))?;
+        SecretManifest::validate_slot_public_key_spki(observed_spki)?;
+        if observed_spki != manifest_spki {
+            anyhow::bail!("YubiKey slot 82 public key does not match secret storage manifest");
+        }
+        Ok(manifest_spki.to_owned())
+    }
+
     /// secret 長に依存しない通常保存 preflight を実行する。
     ///
     /// rotate など入力取得前に拒否可能な storage 状態を確認したい use case は、本検査を
     /// secret 入力より前に通し、token payload を不要に process へ取り込まない。
     pub fn ensure_store_preconditions(inspection: &SecretStorageWriteInspection) -> Result<()> {
-        SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        Self::validated_slot_public_key_spki(inspection)?;
         Ok(())
     }
 
@@ -184,13 +296,13 @@ impl SecretStorageWriteIntent {
         force: bool,
     ) -> Result<()> {
         if inspection.manifest_bytes.is_none()
-            && !inspection.object_exists
+            && !inspection.object_present
             && !inspection.reserved_slot_key_exists
             && !inspection.reserved_slot_certificate_exists
         {
             return Err(anyhow::Error::new(SecretStorageUninitialized));
         }
-        SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())?;
+        Self::from_initialized_manifest(storage.clone(), inspection)?;
         storage
             .name
             .ensure_write_allowed(inspection.object_exists, force)
@@ -207,16 +319,24 @@ impl SecretStorageWriteIntent {
     ) -> Result<Self> {
         Self::ensure_store_preconditions(&inspection)?;
         storage.ensure_plaintext_len(secret_len)?;
-        Ok(Self { storage })
+        Self::from_initialized_manifest(storage, &inspection)
     }
 
     /// manifest 確定前の enrollment object 書き込み intent を作る。
     ///
     /// 高水準 enroll は全 secret object を上書き可能な初期書き込みとして保存してから manifest を
     /// 確定する。これにより、manifest なし partial state は同じ enroll 再実行で再開できる。
-    pub fn initial_enroll_store(storage: SecretStorageSpec, secret_len: usize) -> Result<Self> {
+    pub fn initial_enroll_store(
+        storage: SecretStorageSpec,
+        secret_len: usize,
+        slot_public_key_spki: Vec<u8>,
+    ) -> Result<Self> {
         storage.ensure_plaintext_len(secret_len)?;
-        Ok(Self { storage })
+        SecretManifest::validate_slot_public_key_spki(&slot_public_key_spki)?;
+        Ok(Self {
+            storage,
+            slot_public_key_spki: Some(slot_public_key_spki),
+        })
     }
 
     /// manifest 初期化済み規則、上書き可否規則、secret 値制約を適用する `put` intent を作る。
@@ -230,7 +350,7 @@ impl SecretStorageWriteIntent {
     ) -> Result<Self> {
         Self::ensure_put_preconditions(&storage, &inspection, force)?;
         storage.ensure_plaintext_len(secret_len)?;
-        Ok(Self { storage })
+        Self::from_initialized_manifest(storage, &inspection)
     }
 }
 
@@ -261,38 +381,34 @@ impl SecretStorageStatus {
     ///
     /// 正常な manifest がある storage は、予約 object の任意 subset を保存済み状態として扱う。
     /// `status` は完了性を判定せず、実際に保存済みの名前だけを報告する。manifest 不正・欠落時の
-    /// 予約 object/slot 残存・予約 key 欠落だけを、clear 可能な storage 不正として返す。
+    /// 予約 object の不整合を storage 不正として返す。PIN を要求しない status は slot metadata / key
+    /// presence を観測しないため、それらの整合性をここで主張しない。
     pub fn from_inspections(
-        inspections: impl IntoIterator<Item = (SecretStorageSpec, SecretStorageWriteInspection)>,
+        inspections: impl IntoIterator<Item = (SecretStorageSpec, SecretStorageStatusInspection)>,
     ) -> Result<Self> {
         let mut stored = Vec::new();
         let mut manifest_missing = false;
-        let mut key_missing = false;
-        let mut reserved_key_exists = false;
-        let mut certificate_exists = false;
+        let mut reserved_object_exists = false;
         for (storage, inspection) in inspections {
             if inspection.manifest_bytes.is_none() {
                 manifest_missing = true;
             } else {
                 // `status` が既に読み出した予約 manifest の形式不正は storage 不正であり、
                 // transport / device discovery 失敗とは区別する。
-                SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())
-                    .map_err(|_| anyhow::Error::new(SecretStorageStatusInvalid))?;
+                let manifest =
+                    SecretManifest::decode_initialized(inspection.manifest_bytes.as_deref())
+                        .map_err(|_| anyhow::Error::new(SecretStorageStatusInvalid))?;
+                let _ = manifest;
             }
             if inspection.object_exists {
                 stored.push(storage.name);
             }
-            key_missing |= !inspection.reserved_slot_key_exists;
-            reserved_key_exists |= inspection.reserved_slot_key_exists;
-            certificate_exists |= inspection.reserved_slot_certificate_exists;
+            reserved_object_exists |= inspection.object_present;
         }
         if manifest_missing {
-            if stored.is_empty() && !certificate_exists && !reserved_key_exists {
+            if stored.is_empty() && !reserved_object_exists {
                 return Ok(Self { stored });
             }
-            return Err(anyhow::Error::new(SecretStorageStatusInvalid));
-        }
-        if key_missing {
             return Err(anyhow::Error::new(SecretStorageStatusInvalid));
         }
         Ok(Self { stored })
@@ -314,7 +430,7 @@ mod tests {
     }
 
     fn expected_manifest_bytes() -> Result<Vec<u8>> {
-        SecretManifest::expected().encode()
+        SecretManifest::fixture_v2().encode()
     }
 
     fn minimum_piv_version() -> PivApplicationVersion {
@@ -333,9 +449,15 @@ mod tests {
     fn write_inspection(manifest_bytes: Option<Vec<u8>>) -> SecretStorageWriteInspection {
         SecretStorageWriteInspection {
             manifest_bytes,
+            object_present: false,
             object_exists: false,
             reserved_slot_key_exists: false,
             reserved_slot_certificate_exists: false,
+            slot_public_key_spki: Some(
+                SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("SPKI"),
+            ),
         }
     }
 
@@ -361,25 +483,38 @@ mod tests {
     }
 
     #[test]
-    fn setup_intent_accepts_uninitialized_storage_and_emits_expected_manifest() -> Result<()> {
+    fn setup_intent_requires_key_generation_for_uninitialized_storage() -> Result<()> {
         let intent = SecretStorageSetupIntent::from_inspection(clean_setup_inspection())?;
-        let manifest = SecretManifest::decode(&intent.manifest_bytes)?;
 
-        assert_eq!(manifest, SecretManifest::expected());
         assert!(intent.key_generation_required);
+        assert!(intent.requires_public_key_spki());
+        assert_eq!(
+            SecretManifest::decode(
+                &intent.manifest_for_public_key(
+                    SecretManifest::fixture_v2()
+                        .slot_public_key_spki
+                        .expect("fixture SPKI"),
+                )?
+            )?,
+            SecretManifest::fixture_v2()
+        );
         Ok(())
     }
 
     #[test]
-    fn setup_intent_rejects_existing_manifest_or_occupied_object() -> Result<()> {
+    fn setup_intent_leaves_normal_v2_storage_unchanged_but_rejects_occupied_uninitialized_storage()
+    -> Result<()> {
         let initialized = SecretStorageSetupInspection {
             key_exists: true,
             manifest_bytes: Some(expected_manifest_bytes()?),
             ..clean_setup_inspection()
         };
-        let initialized_error =
-            error_message(SecretStorageSetupIntent::from_inspection(initialized))?;
-        assert!(initialized_error.contains("already initialized"));
+        let initialized_intent = SecretStorageSetupIntent::from_inspection(initialized)?;
+        assert!(!initialized_intent.key_generation_required);
+        assert!(
+            !initialized_intent.requires_public_key_spki(),
+            "normal v2 storage must not require a metadata read or manifest rewrite"
+        );
 
         let occupied = SecretStorageSetupInspection {
             occupied_object_ids: vec![PivObjectId::MANIFEST],
@@ -387,6 +522,28 @@ mod tests {
         };
         let occupied_error = error_message(SecretStorageSetupIntent::from_inspection(occupied))?;
         assert!(occupied_error.contains("already exists"));
+        Ok(())
+    }
+
+    #[test]
+    fn enrollment_intent_rejects_manifested_storage_but_allows_manifestless_partial_state()
+    -> Result<()> {
+        let existing_manifest = SecretStorageSetupInspection {
+            key_exists: true,
+            manifest_bytes: Some(expected_manifest_bytes()?),
+            ..clean_setup_inspection()
+        };
+        let error = error_message(SecretStorageSetupIntent::for_enrollment(existing_manifest))?;
+        assert!(error.contains("refusing to enroll"));
+
+        let partial = SecretStorageSetupInspection {
+            key_exists: true,
+            occupied_object_ids: vec![SecretName::BwEmail.object_id()],
+            ..clean_setup_inspection()
+        };
+        let intent = SecretStorageSetupIntent::for_enrollment(partial)?;
+        assert!(!intent.key_generation_required);
+        assert!(intent.requires_finalization());
         Ok(())
     }
 
@@ -404,18 +561,37 @@ mod tests {
     }
 
     #[test]
-    fn setup_resumes_when_key_exists_without_manifest() -> Result<()> {
+    fn setup_rejects_key_without_manifest_instead_of_guessing_a_storage_format() -> Result<()> {
         let key_exists_without_manifest = SecretStorageSetupInspection {
             key_exists: true,
             ..clean_setup_inspection()
         };
 
-        let intent = SecretStorageSetupIntent::from_inspection(key_exists_without_manifest)?;
+        let error = error_message(SecretStorageSetupIntent::from_inspection(
+            key_exists_without_manifest,
+        ))?;
 
-        assert!(
-            !intent.key_generation_required,
-            "key-only partial enrollment should resume without regenerating key"
-        );
+        assert!(error.contains("manifest is missing"));
+        Ok(())
+    }
+
+    #[test]
+    fn setup_migrates_only_v1_manifest_with_observed_public_key_metadata() -> Result<()> {
+        let v1 = SecretManifest {
+            version: 1,
+            app: crate::domain::manifest::MANIFEST_APP.to_owned(),
+            slot_public_key_spki: None,
+        }
+        .encode()?;
+        let intent = SecretStorageSetupIntent::from_inspection(SecretStorageSetupInspection {
+            key_exists: true,
+            manifest_bytes: Some(v1),
+            ..clean_setup_inspection()
+        })?;
+
+        assert!(!intent.key_generation_required);
+        assert!(intent.requires_public_key_spki());
+        assert!(intent.requires_finalization());
         Ok(())
     }
 
@@ -448,11 +624,22 @@ mod tests {
     #[test]
     fn initial_enroll_store_allows_manifestless_retry_but_keeps_secret_length_rule() -> Result<()> {
         let storage = storage();
-        let intent = SecretStorageWriteIntent::initial_enroll_store(storage.clone(), 1)?;
+        let intent = SecretStorageWriteIntent::initial_enroll_store(
+            storage.clone(),
+            1,
+            SecretManifest::fixture_v2()
+                .slot_public_key_spki
+                .expect("SPKI"),
+        )?;
         assert_eq!(intent.storage, storage);
 
-        let empty_secret_error =
-            error_message(SecretStorageWriteIntent::initial_enroll_store(storage, 0))?;
+        let empty_secret_error = error_message(SecretStorageWriteIntent::initial_enroll_store(
+            storage,
+            0,
+            SecretManifest::fixture_v2()
+                .slot_public_key_spki
+                .expect("SPKI"),
+        ))?;
         assert!(empty_secret_error.contains("must not be empty"));
         Ok(())
     }
@@ -462,9 +649,15 @@ mod tests {
         let storage = storage();
         let existing_object = SecretStorageWriteInspection {
             manifest_bytes: Some(expected_manifest_bytes()?),
+            object_present: true,
             object_exists: true,
             reserved_slot_key_exists: true,
             reserved_slot_certificate_exists: false,
+            slot_public_key_spki: Some(
+                SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("SPKI"),
+            ),
         };
 
         let overwrite_error = error_message(SecretStorageWriteIntent::put(
@@ -479,9 +672,15 @@ mod tests {
             storage.clone(),
             SecretStorageWriteInspection {
                 manifest_bytes: Some(expected_manifest_bytes()?),
+                object_present: true,
                 object_exists: true,
                 reserved_slot_key_exists: true,
                 reserved_slot_certificate_exists: false,
+                slot_public_key_spki: Some(
+                    SecretManifest::fixture_v2()
+                        .slot_public_key_spki
+                        .expect("SPKI"),
+                ),
             },
             true,
             1,
@@ -525,9 +724,15 @@ mod tests {
         let storage = storage();
         let existing_object = SecretStorageWriteInspection {
             manifest_bytes: Some(expected_manifest_bytes()?),
+            object_present: true,
             object_exists: true,
             reserved_slot_key_exists: true,
             reserved_slot_certificate_exists: false,
+            slot_public_key_spki: Some(
+                SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("SPKI"),
+            ),
         };
 
         let error = error_message(SecretStorageWriteIntent::put(
@@ -542,9 +747,15 @@ mod tests {
             storage.clone(),
             SecretStorageWriteInspection {
                 manifest_bytes: Some(expected_manifest_bytes()?),
+                object_present: true,
                 object_exists: true,
                 reserved_slot_key_exists: true,
                 reserved_slot_certificate_exists: false,
+                slot_public_key_spki: Some(
+                    SecretManifest::fixture_v2()
+                        .slot_public_key_spki
+                        .expect("SPKI"),
+                ),
             },
             true,
             1,
@@ -575,18 +786,6 @@ mod tests {
             read_inspection(None, Some(b"encoded blob".to_vec())),
         ))?;
         assert!(missing_manifest_error.contains("manifest is missing"));
-        Ok(())
-    }
-
-    #[test]
-    fn status_rejects_manifestless_reserved_key_even_without_secret_objects() -> Result<()> {
-        let mut inspection = write_inspection(None);
-        inspection.reserved_slot_key_exists = true;
-        let error = error_message(SecretStorageStatus::from_inspections([(
-            storage(),
-            inspection,
-        )]))?;
-        assert!(error.contains("invalid"));
         Ok(())
     }
 

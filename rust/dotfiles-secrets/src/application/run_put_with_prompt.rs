@@ -23,7 +23,8 @@ where
     let serial = device.resolve_device_serial(command.serial)?;
     let storage = command.storage_spec(serial);
     let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
-    SecretStorageWriteIntent::ensure_put_preconditions(&storage, &inspection, command.force)?;
+    let _preflight =
+        SecretStorageWriteIntent::preflight_put(storage.clone(), &inspection, command.force)?;
     let secret = command.name.read_interactive_secret_with(
         || process.read_bw_email_secret(),
         || process.read_bw_password_secret(),
@@ -53,10 +54,16 @@ mod tests {
 
     fn write_inspection(object_exists: bool) -> SecretStorageWriteInspection {
         SecretStorageWriteInspection {
-            manifest_bytes: Some(SecretManifest::expected().encode().expect("manifest")),
+            manifest_bytes: Some(SecretManifest::fixture_v2().encode().expect("manifest")),
+            object_present: object_exists,
             object_exists,
             reserved_slot_key_exists: true,
             reserved_slot_certificate_exists: false,
+            slot_public_key_spki: Some(
+                SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("SPKI"),
+            ),
         }
     }
 

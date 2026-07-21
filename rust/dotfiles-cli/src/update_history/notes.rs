@@ -8,8 +8,9 @@
 //! 信頼境界外（prompt injection 源）のまま返し、構造化・要約は LLM（[`super::llm`]）の責務。
 //!
 //! ノート取得は出所で分かれる:
-//! - **nix eval 由来**: delta が運ぶ `repo`（GitHub Releases API で `(old, new]` 範囲を取得）を一次に、空振り時は
-//!   `notes_source`（changelog blob→raw / releases/tag→Releases API `.body`）へフォールバック。両方不能なら `None`。
+//! - **nix eval 由来**: delta が運ぶ `repo`（GitHub Releases API で `(old, new]` 範囲を取得）を一次に、成功応答で
+//!   該当本文が無い時だけ `notes_source`（changelog blob→raw / releases/tag→Releases API `.body`）へフォールバックする。
+//!   transport・HTTP status・応答構文の失敗は「ノート無し」へ再分類せず伝播する。
 //! - **brew tap 由来**: cask `.rb` 定義は実ノート本文でないため seed にしない。`brew_notes_hint` が cask 定義から
 //!   homepage/url を探索ヒントとして取り出し、AI tool-use 探索へ回す。
 
@@ -22,6 +23,7 @@ use super::diff::{
 };
 use super::wire::{host_of, is_allowed_url};
 use crate::Result;
+use anyhow::Context;
 
 /// 接続確立の上限。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,29 +32,14 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// 1 レスポンス本文の読み取り上限（バイト）。超過分は読まずに打ち切る。
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// GitHub ホストへの GET をレート/一過性失敗時に再試行する最大回数（初回を除く追加試行数）。
-///
-/// GitHub 以外のホストは [`NON_GITHUB_MAX_RETRIES`] に絞り、総待機が record job の `timeout-minutes:120` を
-/// 圧迫しないようにする。
-const GITHUB_MAX_RETRIES: u32 = 3;
-/// GitHub 以外のホストへの GET の追加試行数（接続失敗の取りこぼし防止に 1 回だけ。レート制限は GitHub 固有）。
-const NON_GITHUB_MAX_RETRIES: u32 = 1;
-/// 指数バックオフの初期待機（秒）。`base * 2^attempt` で増やす。
-const BACKOFF_BASE_SECS: u64 = 1;
-/// 1 回のバックオフ待機の上限（秒）。`Retry-After` も指数項もこの値で頭打ちにする。
-const BACKOFF_MAX_SECS: u64 = 30;
-/// 1 リクエストあたりのバックオフ総待機の上限（秒）。これを超える待機が必要なら諦めて縮退する。
-///
-/// 最悪ケース見積もり（GitHub host・全試行がバックオフ対象）: attempt0=1s, attempt1=2s, attempt2=4s の合計 7s。
-/// 53 パッケージが各複数 fetch（releases ページ最大 3 + フォールバック + AI fetch）でも、認証付与により
-/// レート枯渇は起きにくく、最悪でも 1 パッケージ数十秒・全体は 120 分の timeout に十分収まる。
-const BACKOFF_TOTAL_CAP_SECS: u64 = 60;
-
 /// 共有 blocking client（redirect 不追従・https 限定・有界 timeout）。初回アクセスで 1 度だけ構築する。
 static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 
-/// 全 HTTP 取得に添える固定 User-Agent。GitHub REST API は UA 無しのリクエストを 403 で拒否するため、共有
-/// client の default header として 1 箇所で付与し、GitHub API・raw.githubusercontent.com 双方の経路に効かせる。
+/// 全 HTTP 取得に添える固定 User-Agent。
+///
+/// GitHub REST API は有効な `User-Agent` がない request を reject するため、共有 client の default header として
+/// 1 箇所で付与し、GitHub API・raw.githubusercontent.com 双方の経路に効かせる。
+/// Evidence: <https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api?apiVersion=2022-11-28#user-agent-required>
 const HTTP_USER_AGENT: &str = concat!("dotfiles-update-history/", env!("CARGO_PKG_VERSION"));
 
 /// 1 リクエストに添える追加ヘッダ（名前と値の組）。
@@ -60,23 +47,8 @@ type Header<'a> = (&'a str, &'a str);
 
 /// HTTP GET の最小レスポンス（status と上限付き本文）。
 struct HttpResponse {
-    status: u16,
+    status: reqwest::StatusCode,
     body: String,
-}
-
-/// 1 回の GET 試行の結果（再試行判定・バックオフ算出に必要な最小情報）。
-///
-/// `Connected` は応答が返った（status/body と再試行に効くヘッダを保持）。`SendError` は接続/転送段の失敗。
-enum Attempt {
-    Connected {
-        status: u16,
-        body: String,
-        /// `Retry-After` ヘッダ（秒数 or HTTP-date 文字列。あれば）。
-        retry_after: Option<String>,
-        /// GitHub の `X-RateLimit-Remaining`（あれば。`0` は primary rate limit 枯渇の兆候）。
-        rate_remaining: Option<String>,
-    },
-    SendError,
 }
 
 /// 共有 client を取得する（構築失敗時は都度新規構築へフォールバックして握り潰さない）。
@@ -100,14 +72,12 @@ fn build_http_client() -> Result<reqwest::blocking::Client> {
 
 /// 許可済み https URL を redirect 不追従・有界本文で GET する（host 検査は呼び出し側責務）。
 ///
-/// GitHub 系ホスト（[`is_github_host`]）には `GITHUB_TOKEN` を `Authorization: Bearer` で添え、未認証
-/// 60req/hr ではなく認証 5000req/hr の枠で叩く（token は reqwest のヘッダ値として渡すため argv/URL/ログに
-/// 出ない）。GitHub 以外のホストには token を**絶対に付けない**（漏えい防止）。レート/一過性失敗
-/// （403 secondary・429・5xx・接続失敗）は有界バックオフで少数回再試行する（[`retry_decision`]）。
+/// GitHub 系ホスト（[`is_github_host`]）にだけ `GITHUB_TOKEN` を `Authorization: Bearer` で添える。token は
+/// reqwest のヘッダ値として渡すため argv/URL/ログに出ず、GitHub 以外のホストには**絶対に付けない**（漏えい防止）。
+/// transport error と HTTP status の再試行可否は、この generic fetcher で推測しない。transport error は伝播する。
 ///
-/// 取得成功は `Some(HttpResponse)`、接続/転送失敗・再試行枯渇は `None`（呼び出し側が縮退する）。本文は
-/// [`MAX_RESPONSE_BYTES`] までで打ち切って読む。
-fn http_get(url: &str, headers: &[Header<'_>]) -> Result<Option<HttpResponse>> {
+/// HTTP response は status と本文をそのまま返す。本文は [`MAX_RESPONSE_BYTES`] までで打ち切って読む。
+fn http_get(url: &str, headers: &[Header<'_>]) -> Result<HttpResponse> {
     let github_host = host_of(url).is_some_and(|host| is_github_host(&host));
     // GitHub 系ホストにだけ token を添える（host 一致時のみ。token 漏えい防止）。
     let authorization = if github_host {
@@ -115,77 +85,20 @@ fn http_get(url: &str, headers: &[Header<'_>]) -> Result<Option<HttpResponse>> {
     } else {
         None
     };
-    let max_retries = if github_host {
-        GITHUB_MAX_RETRIES
-    } else {
-        NON_GITHUB_MAX_RETRIES
-    };
-
-    http_get_retrying(
-        url,
-        headers,
-        authorization.as_deref(),
-        github_host,
-        max_retries,
-        0,
-        0,
-    )
+    http_get_once(url, headers, authorization.as_deref())
 }
 
-/// `http_get` の再試行を不変カウンタ（`attempt_index` / `waited_total`）の再帰で回す。
+/// 1 回だけ GET を試み、status と有界本文を返す。
 ///
-/// 1 回試行し、`retry_decision` が確定なら結果を返す。再試行対象でも試行上限到達・総待機上限超過なら縮退
-/// （`attempt_to_response`）。続行可能なら `backoff_wait_secs` 分だけ待ち、`attempt_index + 1` /
-/// `waited_total + wait` で自己再帰する（`loop` + 可変カウンタを使わない）。
-fn http_get_retrying(
-    url: &str,
-    headers: &[Header<'_>],
-    authorization: Option<&str>,
-    github_host: bool,
-    max_retries: u32,
-    attempt_index: u32,
-    waited_total: u64,
-) -> Result<Option<HttpResponse>> {
-    let attempt = http_get_once(url, headers, authorization)?;
-    if let RetryDecision::Done(response) = retry_decision(&attempt, github_host) {
-        return Ok(response);
-    }
-    if attempt_index >= max_retries {
-        return Ok(attempt_to_response(&attempt));
-    }
-    let retry_after = match &attempt {
-        Attempt::Connected { retry_after, .. } => retry_after.as_deref(),
-        Attempt::SendError => None,
-    };
-    let Some(wait) = backoff_wait_secs(
-        attempt_index,
-        retry_after,
-        waited_total,
-        BACKOFF_TOTAL_CAP_SECS,
-    ) else {
-        // これ以上待つと総待機上限を超える → 諦めて縮退する。
-        return Ok(attempt_to_response(&attempt));
-    };
-    if wait > 0 {
-        std::thread::sleep(Duration::from_secs(wait));
-    }
-    http_get_retrying(
-        url,
-        headers,
-        authorization,
-        github_host,
-        max_retries,
-        attempt_index + 1,
-        waited_total.saturating_add(wait),
-    )
-}
-
-/// 1 回だけ GET を試み、再試行判定に必要な情報を [`Attempt`] へ翻訳する。
+/// `reqwest::blocking::RequestBuilder::send` が返す transport error は再試行可否や「ノート無し」へ分類せず伝播する。
+/// `Response::status` は HTTP status を返すだけなので、その意味付けは endpoint 固有の呼出元だけが行う。
+/// - <https://docs.rs/reqwest/0.12.28/reqwest/blocking/struct.RequestBuilder.html#method.send>
+/// - <https://docs.rs/reqwest/0.12.28/reqwest/blocking/struct.Response.html#method.status>
 fn http_get_once(
     url: &str,
     headers: &[Header<'_>],
     authorization: Option<&str>,
-) -> Result<Attempt> {
+) -> Result<HttpResponse> {
     let client = http_client()?;
     let base = headers
         .iter()
@@ -196,90 +109,12 @@ fn http_get_once(
         Some(authorization) => base.header("Authorization", authorization),
         None => base,
     };
-    let response = match request.send() {
-        Ok(response) => response,
-        Err(_) => return Ok(Attempt::SendError),
-    };
-    let status = response.status().as_u16();
-    let retry_after = header_value(response.headers(), "retry-after");
-    let rate_remaining = header_value(response.headers(), "x-ratelimit-remaining");
-    let body = read_capped(response, MAX_RESPONSE_BYTES);
-    Ok(Attempt::Connected {
-        status,
-        body,
-        retry_after,
-        rate_remaining,
-    })
-}
-
-/// レスポンスヘッダから 1 値を ASCII 文字列として取り出す（非 ASCII/不在は `None`）。
-fn header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-}
-
-/// 再試行の判定結果。`Done` は確定（`Some(response)`=応答あり / `None`=接続失敗で縮退）、`Retry` は再試行対象。
-enum RetryDecision {
-    Done(Option<HttpResponse>),
-    Retry,
-}
-
-/// 1 回の試行結果を「確定（縮退含む）か再試行対象か」へ翻訳する純粋関数（network 抜きで決定論的）。
-///
-/// 再試行対象: 接続失敗（`SendError`）・429・5xx・403（secondary rate limit 兆候があるもの）。即確定:
-/// 2xx・404 等それ以外。primary rate limit（`X-RateLimit-Remaining: 0`）の 403 は reset まで待つと長すぎる
-/// ため**再試行せず縮退**する（認証付与で primary 枯渇は起きにくい前提）。GitHub 以外のホストは 403 の
-/// secondary 判定を行わず（rate limit 概念は GitHub 固有）429/5xx/接続失敗のみ再試行対象にする。
-fn retry_decision(attempt: &Attempt, github_host: bool) -> RetryDecision {
-    match attempt {
-        Attempt::SendError => RetryDecision::Retry,
-        Attempt::Connected {
-            status,
-            body,
-            rate_remaining,
-            ..
-        } => {
-            if *status == 429 || (500..600).contains(status) {
-                return RetryDecision::Retry;
-            }
-            if *status == 403 && github_host {
-                // primary rate limit（remaining=0）は reset 待ちが長すぎるため再試行せず縮退する。
-                if is_primary_rate_limited(rate_remaining.as_deref()) {
-                    return RetryDecision::Done(None);
-                }
-                if is_secondary_rate_limited(body) {
-                    return RetryDecision::Retry;
-                }
-            }
-            RetryDecision::Done(attempt_to_response(attempt))
-        }
-    }
-}
-
-/// `X-RateLimit-Remaining` が `0` なら primary rate limit 枯渇とみなす純粋判定。
-fn is_primary_rate_limited(rate_remaining: Option<&str>) -> bool {
-    rate_remaining.map(str::trim) == Some("0")
-}
-
-/// 403 本文が GitHub の secondary rate limit / abuse 検知の兆候を含むかの純粋判定（小文字化して部分一致）。
-fn is_secondary_rate_limited(body: &str) -> bool {
-    let lowered = body.to_ascii_lowercase();
-    lowered.contains("secondary rate limit")
-        || lowered.contains("abuse detection")
-        || lowered.contains("rate limit")
-}
-
-/// [`Attempt`] を呼び出し側の [`HttpResponse`] へ翻訳する（接続失敗は `None`。再試行枯渇/上限到達時の縮退に使う）。
-fn attempt_to_response(attempt: &Attempt) -> Option<HttpResponse> {
-    match attempt {
-        Attempt::SendError => None,
-        Attempt::Connected { status, body, .. } => Some(HttpResponse {
-            status: *status,
-            body: body.clone(),
-        }),
-    }
+    // reqwest の transport error は原因ごとの再試行可否をこの層で判定しない。
+    // HTTP response を受け取れない失敗は、状態へ変換せず呼び出し元へ伝播する。
+    let response = request.send()?;
+    let status = response.status();
+    let body = read_capped(response, MAX_RESPONSE_BYTES)?;
+    Ok(HttpResponse { status, body })
 }
 
 /// 指定したホストが GitHub 系（token を添えてよい・rate limit 再試行の対象）かの純粋判定。
@@ -294,45 +129,14 @@ fn is_github_host(host: &str) -> bool {
         .any(|root| host == *root || host.ends_with(&format!(".{root}")))
 }
 
-/// 次回バックオフの待機秒を算出する純粋関数（`Retry-After` 優先、無ければ指数）。
-///
-/// `attempt_index` は 0 始まり（初回失敗後の待機が index=0）。`Retry-After` が秒数としてパースできればそれを、
-/// できなければ `BACKOFF_BASE_SECS * 2^attempt_index` を採り、いずれも [`BACKOFF_MAX_SECS`] で頭打ちにする。
-/// `waited_total + wait` が `total_cap` を超える場合は `None`（これ以上待たず諦める）。
-fn backoff_wait_secs(
-    attempt_index: u32,
-    retry_after: Option<&str>,
-    waited_total: u64,
-    total_cap: u64,
-) -> Option<u64> {
-    let wait = match retry_after.and_then(parse_retry_after_secs) {
-        Some(secs) => secs.min(BACKOFF_MAX_SECS),
-        None => {
-            let factor = 1u64.checked_shl(attempt_index).unwrap_or(u64::MAX);
-            BACKOFF_BASE_SECS
-                .saturating_mul(factor)
-                .min(BACKOFF_MAX_SECS)
-        }
-    };
-    if waited_total.saturating_add(wait) > total_cap {
-        return None;
-    }
-    Some(wait)
-}
-
-/// `Retry-After` ヘッダ値を秒数として解釈する純粋関数（delta-seconds 形式のみ。HTTP-date は対象外で `None`）。
-fn parse_retry_after_secs(value: &str) -> Option<u64> {
-    value.trim().parse::<u64>().ok()
-}
-
 /// 任意の [`Read`] を `limit` バイトまで読み、UTF-8 として lossy にデコードする純粋規約。
 ///
-/// `take` で読み取り段階から上限を掛け、巨大本文を全量バッファしない（資源枯渇防止）。読み取り失敗は読めた分だけ
-/// 返す（接続途中切断でも部分本文を活かす）。`read_to_end` の宛先 Vec はこの関数内に閉じた I/O バッファである。
-fn read_capped<R: Read>(reader: R, limit: u64) -> String {
+/// `take` で読み取り段階から上限を掛け、巨大本文を全量バッファしない（資源枯渇防止）。読み取り失敗は
+/// 部分本文へ縮退せず伝播する。`read_to_end` の宛先 Vec はこの関数内に閉じた I/O バッファである。
+fn read_capped<R: Read>(reader: R, limit: u64) -> Result<String> {
     let mut buffer = Vec::new();
-    let _ = reader.take(limit).read_to_end(&mut buffer);
-    String::from_utf8_lossy(&buffer).into_owned()
+    reader.take(limit).read_to_end(&mut buffer)?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 /// GitHub Releases API のページサイズ（API 上限は 100）。
@@ -355,47 +159,27 @@ pub(crate) struct RawReleaseNotes {
 
 /// 与えた https URL を redirect 不追従・https 限定の reqwest で取得し、2xx の非空本文だけを `Some` で返す。
 ///
-/// host allowlist 検査は呼び出し側の責務（この primitive は host を再判定しない）。取得失敗・非 2xx・空本文は
-/// `None`（curl の `--fail` 相当を status で判定する）。
+/// host allowlist 検査は呼び出し側の責務（この primitive は host を再判定しない）。空本文だけを `None` とする。
+/// reqwest が返した非成功 status は、資源不在・一時障害・空取得などへ分類せず失敗として伝播する。
+///
+/// Evidence: `http::StatusCode::is_success` は 200..=299 の判定を定義するだけである。GitHub の 403/429
+/// rate-limit response は `Retry-After`、`x-ratelimit-remaining`、`x-ratelimit-reset` に従う必要があり、本文の
+/// 部分一致や固定 backoff で再試行しない。
+/// - <https://docs.rs/http/1.4.1/http/status/struct.StatusCode.html#method.is_success>
+/// - <https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api?apiVersion=2022-11-28#rate-limit-errors>
 pub(crate) fn safe_https_fetch(url: &str) -> Result<Option<String>> {
-    let Some(response) = http_get(url, &[])? else {
-        return Ok(None);
-    };
-    if (200..300).contains(&response.status) && !response.body.trim().is_empty() {
-        return Ok(Some(response.body));
-    }
-    Ok(None)
+    let response = http_get(url, &[])?;
+    require_success_status(url, response.status)?;
+    Ok((!response.body.trim().is_empty()).then_some(response.body))
 }
 
-/// `safe_https_fetch_outcome` の取得結果を「本文あり / 明確な不在(404) / それ以外の取得不能」の 3 値で表す。
-///
-/// 不在（404）と一過性失敗（接続失敗・5xx・429 等）を区別できないと、取得不能を rev 文脈に応じた判定根拠と
-/// 誤認しうる。本文の有無だけでなく status を 3 値へ翻訳し、呼び出し側（[`super::brew`]）が old/new rev の
-/// 文脈で 404 とその他取得不能を扱い分けられるようにする。
-pub(crate) enum FetchOutcome {
-    /// 2xx の非空本文を取得した。
-    Body(String),
-    /// 明確な不在（HTTP 404）。資源が存在しないことが確定した。
-    NotFound,
-    /// 取得不能（接続失敗・5xx・429・404 以外の非 2xx・空本文）。一過性失敗の可能性があり不在と区別する。
-    Unavailable,
-}
-
-/// 与えた https URL を取得し、本文 / 404 / その他取得不能の 3 値（[`FetchOutcome`]）で返す。
-///
-/// host allowlist 検査は呼び出し側の責務（この primitive は host を再判定しない）。2xx 非空本文は `Body`、
-/// HTTP 404 は `NotFound`、接続失敗・5xx・429・その他非 2xx・空本文は `Unavailable`。
-pub(crate) fn safe_https_fetch_outcome(url: &str) -> Result<FetchOutcome> {
-    let Some(response) = http_get(url, &[])? else {
-        return Ok(FetchOutcome::Unavailable);
-    };
-    if (200..300).contains(&response.status) && !response.body.trim().is_empty() {
-        return Ok(FetchOutcome::Body(response.body));
+/// reqwest が公開する `StatusCode::is_success`（2xx）の意味だけを用い、非成功 status をリソース不在などの
+/// domain 状態へ翻訳しない。
+fn require_success_status(url: &str, status: reqwest::StatusCode) -> Result<()> {
+    if !status.is_success() {
+        anyhow::bail!("HTTPS GET `{url}` returned non-success HTTP status {status}");
     }
-    if response.status == 404 {
-        return Ok(FetchOutcome::NotFound);
-    }
-    Ok(FetchOutcome::Unavailable)
+    Ok(())
 }
 
 // ---- version 差分入力の読み取り ----
@@ -423,7 +207,7 @@ pub(crate) fn read_nix_versions(
 
 /// 許可ホスト https URL から本文を取得し、`RawReleaseNotes` へ翻訳する（raw 再取得可なので refetch_url=url）。
 ///
-/// 許可外 URL・取得失敗・空本文は `None`（呼び出し側が version-only へ縮退する）。
+/// 許可外 URL と成功した空本文だけを `None` とする。transport error と non-2xx は外部 failure として伝播する。
 pub(crate) fn fetch_from_source(url: &str) -> Result<Option<RawReleaseNotes>> {
     if !is_allowed_url(url) {
         return Ok(None);
@@ -513,16 +297,18 @@ fn fetch_release_api(api_url: &str, notes_url: &str) -> Result<Option<RawRelease
     if !is_allowed_url(api_url) {
         return Ok(None);
     }
-    let json = match http_get(api_url, &[GITHUB_ACCEPT_HEADER])? {
-        Some(response)
-            if (200..300).contains(&response.status) && !response.body.trim().is_empty() =>
-        {
-            response.body
-        }
-        // 接続失敗・非 2xx・空本文は取得不能（空）。
-        _ => return Ok(None),
-    };
-    Ok(extract_release_body(&json).map(|body| RawReleaseNotes {
+    let response = http_get(api_url, &[GITHUB_ACCEPT_HEADER])?;
+    if response.status != reqwest::StatusCode::OK {
+        anyhow::bail!(
+            "GitHub release API GET `{api_url}` returned HTTP status {}",
+            response.status
+        );
+    }
+    if response.body.trim().is_empty() {
+        return Ok(None);
+    }
+    let json = response.body;
+    Ok(extract_release_body(&json)?.map(|body| RawReleaseNotes {
         text: body,
         notes_url: notes_url.to_string(),
         refetch_url: None,
@@ -535,7 +321,7 @@ fn fetch_release_api(api_url: &str, notes_url: &str) -> Result<Option<RawRelease
 /// 一件も無い場合（タグ表記揺れ・old 排他境界・新版リリース未タグ等で窓が空になる）、repo-backed パッケージが
 /// 機械 seed を全く持てず route=none に落ちるのを防ぐため、`old` より後のリリース本文だけを seed にする
 /// 緩和フォールバックを一度だけ試みる（構造化 Releases API の `.body` のみで landing page HTML は混ぜない）。
-/// API 取得そのものが失敗（[`collect_release_bodies`] が `None`）した場合はフォールバックせず `None` を返す。
+/// API の transport / status / response-shape が失敗した場合はフォールバックで隠さず error を伝播する。
 fn fetch_releases_range(
     owner: &str,
     repo: &str,
@@ -554,14 +340,11 @@ fn fetch_releases_range_with(
     repo: &str,
     old: Option<&str>,
     new: Option<&str>,
-    fetch_page: &dyn Fn(&str) -> Result<Option<String>>,
+    fetch_page: &dyn Fn(&str) -> Result<String>,
 ) -> Result<Option<RawReleaseNotes>> {
-    // 厳密 `(old, new]` 範囲を集める。`None`=API 取得そのものが失敗（緩和しても無駄＝再取得で叩かない）、
-    // `Some(空)`=取得成功だが窓が空（緩和の対象）、`Some(非空)`=本文在り（そのまま seed）。
-    let Some(strict) = collect_release_bodies(owner, repo, old, new, 1, Vec::new(), fetch_page)?
-    else {
-        return Ok(None);
-    };
+    // 厳密 `(old, new]` 範囲を集める。空=取得成功だが窓が空（緩和の対象）、非空=本文在り（そのまま seed）。
+    // transport / HTTP / JSON error は `collect_release_bodies` から伝播し、緩和 fetch を始めない。
+    let strict = collect_release_bodies(owner, repo, old, new, 1, Vec::new(), fetch_page)?;
     if !strict.is_empty() {
         return Ok(Some(release_notes_from(owner, repo, strict)));
     }
@@ -574,10 +357,7 @@ fn fetch_releases_range_with(
     if old.is_none() {
         return Ok(None);
     }
-    let Some(relaxed) = collect_release_bodies(owner, repo, old, None, 1, Vec::new(), fetch_page)?
-    else {
-        return Ok(None);
-    };
+    let relaxed = collect_release_bodies(owner, repo, old, None, 1, Vec::new(), fetch_page)?;
     if relaxed.is_empty() {
         return Ok(None);
     }
@@ -593,11 +373,11 @@ fn release_notes_from(owner: &str, repo: &str, bodies: Vec<(String, String)>) ->
     }
 }
 
-/// `(old, new]` 範囲の `(version, body)` をページ走査で集める（不変 accumulator の再帰。`None`=取得断念）。
+/// `(old, new]` 範囲の `(version, body)` をページ走査で集める（不変 accumulator の再帰）。
 ///
 /// `page` を 1 から `MAX_RELEASE_PAGES` まで進め、各ページの in-range release を `acc` に不変連結して次ページへ
-/// 渡す。許可外 URL・ページ取得失敗・JSON 解析失敗はいずれも `Ok(None)`（範囲取得そのものを断念）。短いページ
-/// （`< RELEASES_PER_PAGE`）に達するか最終ページまで進めば、集めた列を `Ok(Some(..))` で返す。
+/// 渡す。許可外 URL・ページ取得失敗・JSON 解析失敗はいずれも error として伝播する。短いページ
+/// （`< RELEASES_PER_PAGE`）に達するか最終ページまで進めば、集めた列を返す。
 fn collect_release_bodies(
     owner: &str,
     repo: &str,
@@ -605,21 +385,17 @@ fn collect_release_bodies(
     new: Option<&str>,
     page: u32,
     acc: Vec<(String, String)>,
-    fetch_page: &dyn Fn(&str) -> Result<Option<String>>,
-) -> Result<Option<Vec<(String, String)>>> {
+    fetch_page: &dyn Fn(&str) -> Result<String>,
+) -> Result<Vec<(String, String)>> {
     if page > MAX_RELEASE_PAGES {
-        return Ok(Some(acc));
+        return Ok(acc);
     }
     let api_url = releases_list_url(owner, repo, page);
     if !is_allowed_url(&api_url) {
-        return Ok(None);
+        anyhow::bail!("refusing structurally disallowed GitHub releases URL `{api_url}`");
     }
-    let Some(json) = fetch_page(&api_url)? else {
-        return Ok(None);
-    };
-    let Some(releases) = parse_releases(&json) else {
-        return Ok(None);
-    };
+    let json = fetch_page(&api_url)?;
+    let releases = parse_releases(&json)?;
     let page_len = releases.len();
     let extended: Vec<(String, String)> = acc
         .into_iter()
@@ -630,7 +406,7 @@ fn collect_release_bodies(
         }))
         .collect();
     if (page_len as u32) < RELEASES_PER_PAGE {
-        return Ok(Some(extended));
+        return Ok(extended);
     }
     collect_release_bodies(owner, repo, old, new, page + 1, extended, fetch_page)
 }
@@ -778,13 +554,25 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
 
-fn extract_release_body(json: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let body = value.get("body")?.as_str()?;
+/// GitHub Releases API の単一 release 応答から非空の本文を取り出す。
+///
+/// JSON 構文・構造の不正は外部 API 応答の異常であり、本文が無い正常な release と同一視しない。前者は
+/// 呼出元へ伝播し、後者だけを `Ok(None)` とする。
+fn extract_release_body(json: &str) -> Result<Option<String>> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).context("failed to parse GitHub release JSON")?;
+    let object = value
+        .as_object()
+        .context("GitHub release JSON must be an object")?;
+    let body = match object.get("body") {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::String(body)) => body,
+        Some(_) => anyhow::bail!("GitHub release JSON field `body` must be a string or null"),
+    };
     if body.trim().is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(body.to_string())
+        Ok(Some(body.to_string()))
     }
 }
 
@@ -814,51 +602,55 @@ fn releases_page_url(owner: &str, repo: &str) -> String {
 ///
 /// `GITHUB_TOKEN` は [`http_get`] が GitHub 系ホストにだけ `Authorization: Bearer` で添える（reqwest の
 /// ヘッダ値として渡すため process argv には一切現れない。curl `--config -` 相当の秘匿を in-process で達成）。
-/// レート/一過性失敗（403 secondary・429・5xx・接続失敗）は [`http_get`] が有界バックオフで再試行する。
-/// 2xx 非空本文だけを `Some` で返し、接続失敗・非 2xx・空本文は `None`（取得不能）。
-fn fetch_releases_page(api_url: &str, owner: &str, repo: &str) -> Result<Option<String>> {
+/// GitHub REST の `List releases` endpoint は成功時の HTTP status を 200 と定義するため、200 の本文を返す。
+/// transport error、非 200 status、空本文、JSON 異常は文脈を付けて伝播する。release 本文が無い成功状態は、
+/// 空 HTTP body ではなく endpoint が返す JSON array の空 / `body` field の空として後段で扱う。
+/// 403/429 の retry は GitHub が指定する header に従う実装を持たない限り追加しない。
+/// Evidence:
+/// - <https://docs.github.com/en/rest/releases/releases?apiVersion=2022-11-28#list-releases>
+/// - <https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api?apiVersion=2022-11-28#rate-limit-errors>
+fn fetch_releases_page(api_url: &str, owner: &str, repo: &str) -> Result<String> {
     let headers: [Header<'_>; 2] = [GITHUB_ACCEPT_HEADER, GITHUB_API_VERSION_HEADER];
-    let Some(response) = http_get(api_url, &headers)? else {
-        return Ok(None);
-    };
-    match response.status {
-        200 if !response.body.trim().is_empty() => Ok(Some(response.body)),
-        status => {
-            if status == 401 || status == 403 || status == 429 {
-                eprintln!(
-                    "update-history notes: releases API failure: HTTP {status} for {owner}/{repo}"
-                );
-            }
-            Ok(None)
-        }
+    let response = http_get(api_url, &headers)?;
+    if response.status != reqwest::StatusCode::OK {
+        anyhow::bail!(
+            "GitHub releases API GET for `{owner}/{repo}` (`{api_url}`) returned HTTP status {}",
+            response.status
+        );
     }
+    if response.body.trim().is_empty() {
+        anyhow::bail!(
+            "GitHub releases API GET for `{owner}/{repo}` (`{api_url}`) returned an empty HTTP body"
+        );
+    }
+    Ok(response.body)
 }
 
-fn parse_releases(json: &str) -> Option<Vec<Release>> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let array = value.as_array()?;
-    Some(
-        array
-            .iter()
-            .map(|item| Release {
-                tag_name: item
-                    .get("tag_name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: item
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                body: item
-                    .get("body")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-            .collect(),
-    )
+/// GitHub Releases API の配列応答を domain-local な release 表現へ翻訳する。
+///
+/// API 応答の JSON 構文・配列構造・必須 `tag_name` の不正は取得不能ではなく外部応答異常なので、候補なしへ
+/// 縮退せず `Err` として伝播する。`name` / `body` の null・不在は GitHub API が許容する「値なし」として空文字に
+/// 正規化する。
+fn parse_releases(json: &str) -> Result<Vec<Release>> {
+    #[derive(serde::Deserialize)]
+    struct GitHubRelease {
+        tag_name: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+    }
+
+    let releases: Vec<GitHubRelease> =
+        serde_json::from_str(json).context("failed to parse GitHub releases JSON")?;
+    Ok(releases
+        .into_iter()
+        .map(|release| Release {
+            tag_name: release.tag_name,
+            name: release.name.unwrap_or_default(),
+            body: release.body.unwrap_or_default(),
+        })
+        .collect())
 }
 
 struct Release {
@@ -949,12 +741,30 @@ mod tests {
         let _ = http_client()?;
         // 上限を超える本文は limit バイトで打ち切って読む（巨大本文を全読みしない）。
         let body = vec![b'x'; 100];
-        assert_eq!(read_capped(body.as_slice(), 10).len(), 10);
+        assert_eq!(read_capped(body.as_slice(), 10)?.len(), 10);
         assert_eq!(
-            read_capped([b'a', b'b', b'c'].as_slice(), MAX_RESPONSE_BYTES),
+            read_capped([b'a', b'b', b'c'].as_slice(), MAX_RESPONSE_BYTES)?,
             "abc"
         );
         Ok(())
+    }
+
+    #[test]
+    fn non_success_http_status_is_propagated_not_converted_to_missing_notes() {
+        let error = require_success_status(
+            "https://example.test/release-notes",
+            reqwest::StatusCode::NOT_FOUND,
+        )
+        .expect_err("HTTP 404 を Ok(None) へ縮退してはならない");
+        assert!(error.to_string().contains("404"));
+
+        assert!(
+            require_success_status(
+                "https://example.test/release-notes",
+                reqwest::StatusCode::OK,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1148,13 +958,29 @@ mod tests {
     }
 
     #[test]
-    fn extract_release_body_reads_body_field() {
+    fn extract_release_body_distinguishes_empty_body_from_malformed_external_json() -> Result<()> {
         assert_eq!(
-            extract_release_body(r#"{"body":"notes"}"#).as_deref(),
+            extract_release_body(r#"{"body":"notes"}"#)?.as_deref(),
             Some("notes")
         );
-        assert_eq!(extract_release_body(r#"{"body":"  "}"#), None);
-        assert_eq!(extract_release_body(r#"{}"#), None);
+        assert_eq!(extract_release_body(r#"{"body":"  "}"#)?, None);
+        assert_eq!(extract_release_body(r#"{}"#)?, None);
+        assert!(extract_release_body("not JSON").is_err());
+        assert!(extract_release_body(r#"{"body": 42}"#).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_releases_propagates_malformed_external_json() -> Result<()> {
+        let releases = parse_releases(r#"[{"tag_name":"v1.2.3","name":null,"body":null}]"#)?;
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].tag_name, "v1.2.3");
+        assert!(releases[0].name.is_empty());
+        assert!(releases[0].body.is_empty());
+        assert!(parse_releases("not JSON").is_err());
+        assert!(parse_releases(r#"{"tag_name":"v1.2.3"}"#).is_err());
+        assert!(parse_releases(r#"[{"tag_name":42}]"#).is_err());
+        Ok(())
     }
 
     #[test]
@@ -1197,9 +1023,9 @@ mod tests {
         ])
         .to_string();
         let calls = std::cell::Cell::new(0u32);
-        let fetch_page = |_url: &str| -> Result<Option<String>> {
+        let fetch_page = |_url: &str| -> Result<String> {
             calls.set(calls.get() + 1);
-            Ok(Some(page_json.clone()))
+            Ok(page_json.clone())
         };
         let notes = fetch_releases_range_with("o", "r", Some("1.5.0"), Some("2.0.0"), &fetch_page)?;
         let notes = notes.ok_or_else(|| anyhow::anyhow!("relaxed range should yield a seed"))?;
@@ -1221,9 +1047,9 @@ mod tests {
         ])
         .to_string();
         let calls = std::cell::Cell::new(0u32);
-        let fetch_page = |_url: &str| -> Result<Option<String>> {
+        let fetch_page = |_url: &str| -> Result<String> {
             calls.set(calls.get() + 1);
-            Ok(Some(page_json.clone()))
+            Ok(page_json.clone())
         };
         let notes = fetch_releases_range_with("o", "r", Some("1.0.0"), Some("2.0.0"), &fetch_page)?;
         let notes = notes.ok_or_else(|| anyhow::anyhow!("strict range should yield a seed"))?;
@@ -1236,20 +1062,18 @@ mod tests {
     }
 
     #[test]
-    fn release_range_returns_none_when_api_fetch_fails() -> Result<()> {
-        // API 取得そのものが失敗（fetch_page が None）なら緩和もせず None（機械 seed 無し → AI fetch_url 経路へ）。
+    fn release_range_propagates_api_fetch_failure_without_fallback() {
+        // API 取得 failure を「本文なし」に写像せず、緩和 fetch や AI fetch へ進めずに伝播する。
         let calls = std::cell::Cell::new(0u32);
-        let fetch_page = |_url: &str| -> Result<Option<String>> {
+        let fetch_page = |_url: &str| -> Result<String> {
             calls.set(calls.get() + 1);
-            Ok(None)
+            anyhow::bail!("fixture releases transport failure")
         };
-        assert!(
-            fetch_releases_range_with("o", "r", Some("1.0.0"), Some("2.0.0"), &fetch_page)?
-                .is_none()
-        );
-        // 厳密 1 回で取得失敗を確定し、緩和（取得成功の空窓ではない）はしない。
+        let error = fetch_releases_range_with("o", "r", Some("1.0.0"), Some("2.0.0"), &fetch_page)
+            .expect_err("API failure must be propagated");
+        assert!(error.to_string().contains("transport failure"), "{error}");
+        // 厳密 1 回で伝播し、緩和（取得成功の空窓にだけ許可）はしない。
         assert_eq!(calls.get(), 1);
-        Ok(())
     }
 
     #[test]
@@ -1258,9 +1082,9 @@ mod tests {
         let page_json =
             serde_json::Value::Array(vec![release_json("v2.0.0", "2.0.0", "")]).to_string();
         let calls = std::cell::Cell::new(0u32);
-        let fetch_page = |_url: &str| -> Result<Option<String>> {
+        let fetch_page = |_url: &str| -> Result<String> {
             calls.set(calls.get() + 1);
-            Ok(Some(page_json.clone()))
+            Ok(page_json.clone())
         };
         assert!(fetch_releases_range_with("o", "r", None, Some("2.0.0"), &fetch_page)?.is_none());
         // old=None なので緩和分岐に入らず、ページ取得は厳密 1 回のみ。
@@ -1362,11 +1186,8 @@ mod tests {
     fn fetch_nix_notes_degrades_without_network_when_no_hints() -> Result<()> {
         // repo/notes_source ともに無し → curl を踏まず空（hermetic）。
         assert!(fetch_nix_notes(None, None, None, None)?.is_none());
-        // 非 github の notes_source は機械取得 plan（github 専用の resolve_nix_notes_source）を導かず変換段で
-        // 空（curl を踏まない）。機械取得は github の構造化エンドポイントに閉じる（AI fetch のみ github 外へ広がる）。
-        assert!(
-            fetch_nix_notes(None, Some("https://example.com/changelog"), None, None)?.is_none()
-        );
+        // 構造的に許可されない notes_source は変換段で空となり、network に到達しない。
+        assert!(fetch_nix_notes(None, Some("https://localhost/changelog"), None, None)?.is_none());
         Ok(())
     }
 
@@ -1396,141 +1217,5 @@ mod tests {
         assert!(!is_github_host("notgithub.com"));
         assert!(!is_github_host("github.com.evil.com"));
         assert!(!is_github_host("evilgithub.com"));
-    }
-
-    /// テスト用に Connected な Attempt を組む。
-    fn connected(
-        status: u16,
-        body: &str,
-        retry_after: Option<&str>,
-        remaining: Option<&str>,
-    ) -> Attempt {
-        Attempt::Connected {
-            status,
-            body: body.to_string(),
-            retry_after: retry_after.map(str::to_string),
-            rate_remaining: remaining.map(str::to_string),
-        }
-    }
-
-    fn is_retry(attempt: &Attempt, github_host: bool) -> bool {
-        matches!(retry_decision(attempt, github_host), RetryDecision::Retry)
-    }
-
-    #[test]
-    fn retry_decision_retries_transient_and_finalizes_terminal() {
-        // 接続失敗・429・5xx は GitHub でも非 GitHub でも再試行対象。
-        assert!(is_retry(&Attempt::SendError, true));
-        assert!(is_retry(&Attempt::SendError, false));
-        assert!(is_retry(&connected(429, "", None, None), true));
-        assert!(is_retry(&connected(429, "", None, None), false));
-        assert!(is_retry(&connected(500, "", None, None), true));
-        assert!(is_retry(&connected(503, "", None, None), false));
-        // 200/404 は即確定（再試行しない）。
-        assert!(!is_retry(&connected(200, "ok", None, None), true));
-        assert!(!is_retry(&connected(404, "", None, None), true));
-    }
-
-    #[test]
-    fn retry_decision_handles_403_rate_limit_only_for_github() {
-        // GitHub の 403 secondary rate limit（本文兆候あり）は再試行対象。
-        assert!(is_retry(
-            &connected(403, "You have exceeded a secondary rate limit", None, None),
-            true
-        ));
-        assert!(is_retry(
-            &connected(403, "API rate limit exceeded for user", None, None),
-            true
-        ));
-        // primary rate limit 枯渇（remaining=0）の 403 は reset 待ちが長すぎるため再試行せず None へ縮退する。
-        match retry_decision(
-            &connected(403, "API rate limit exceeded", None, Some("0")),
-            true,
-        ) {
-            RetryDecision::Done(None) => {}
-            _ => panic!("primary rate limit は再試行せず縮退"),
-        }
-        // rate limit 兆候の無い 403（純粋な権限拒否）は即確定（縮退）。
-        match retry_decision(&connected(403, "forbidden", None, None), true) {
-            RetryDecision::Done(Some(response)) => assert_eq!(response.status, 403),
-            _ => panic!("rate limit 兆候の無い 403 は確定"),
-        }
-        // GitHub 以外のホストでは 403 を rate limit とみなさず即確定（rate limit 概念は GitHub 固有）。
-        assert!(!is_retry(
-            &connected(403, "secondary rate limit", None, None),
-            false
-        ));
-    }
-
-    #[test]
-    fn backoff_wait_secs_uses_exponential_then_retry_after_capped() {
-        // Retry-After 無し → 指数（1, 2, 4 ...）を上限で頭打ち。
-        assert_eq!(
-            backoff_wait_secs(0, None, 0, BACKOFF_TOTAL_CAP_SECS),
-            Some(1)
-        );
-        assert_eq!(
-            backoff_wait_secs(1, None, 0, BACKOFF_TOTAL_CAP_SECS),
-            Some(2)
-        );
-        assert_eq!(
-            backoff_wait_secs(2, None, 0, BACKOFF_TOTAL_CAP_SECS),
-            Some(4)
-        );
-        // 指数項が BACKOFF_MAX_SECS を超えても頭打ち。
-        assert_eq!(
-            backoff_wait_secs(20, None, 0, BACKOFF_TOTAL_CAP_SECS),
-            Some(BACKOFF_MAX_SECS)
-        );
-        // Retry-After（秒）優先。上限でクランプ。
-        assert_eq!(
-            backoff_wait_secs(0, Some("5"), 0, BACKOFF_TOTAL_CAP_SECS),
-            Some(5)
-        );
-        assert_eq!(
-            backoff_wait_secs(0, Some("9999"), 0, BACKOFF_TOTAL_CAP_SECS),
-            Some(BACKOFF_MAX_SECS)
-        );
-        // HTTP-date 形式の Retry-After は秒数化できず指数へフォールバック。
-        assert_eq!(
-            backoff_wait_secs(
-                0,
-                Some("Wed, 21 Oct 2026 07:28:00 GMT"),
-                0,
-                BACKOFF_TOTAL_CAP_SECS
-            ),
-            Some(1)
-        );
-        // 総待機上限を超える待機は None（諦める）。
-        assert_eq!(backoff_wait_secs(0, Some("10"), 55, 60), None);
-        assert_eq!(backoff_wait_secs(0, Some("5"), 55, 60), Some(5));
-    }
-
-    #[test]
-    fn parse_retry_after_secs_accepts_delta_seconds_only() {
-        assert_eq!(parse_retry_after_secs("0"), Some(0));
-        assert_eq!(parse_retry_after_secs("  42 "), Some(42));
-        assert_eq!(
-            parse_retry_after_secs("Wed, 21 Oct 2026 07:28:00 GMT"),
-            None
-        );
-        assert_eq!(parse_retry_after_secs(""), None);
-        assert_eq!(parse_retry_after_secs("-1"), None);
-    }
-
-    #[test]
-    fn primary_and_secondary_rate_limit_signals() {
-        assert!(is_primary_rate_limited(Some("0")));
-        assert!(is_primary_rate_limited(Some(" 0 ")));
-        assert!(!is_primary_rate_limited(Some("1")));
-        assert!(!is_primary_rate_limited(None));
-        assert!(is_secondary_rate_limited(
-            "You have exceeded a SECONDARY RATE LIMIT"
-        ));
-        assert!(is_secondary_rate_limited(
-            "triggered an abuse detection mechanism"
-        ));
-        assert!(is_secondary_rate_limited("API rate limit exceeded"));
-        assert!(!is_secondary_rate_limited("forbidden: bad credentials"));
     }
 }

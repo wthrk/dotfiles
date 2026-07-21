@@ -11,7 +11,9 @@
 # `PROVISIONING_YUBIKEY_SERIAL` / `SPARE_YUBIKEY_SERIAL` 環境変数で指定する。
 #
 # 正本: docs/secret-recovery/initial-provisioning-runbook.md と spec/design。
-# 使い方（実端末で。secret/touch/passphrase の対話入力あり。YubiKey PIN の入力は行わない）:
+# 使い方（実端末で。secret/touch/passphrase の対話入力あり。`setup` / `put` / `clear` を
+# 呼ぶ段階では、子 `dotfiles` command が controlling TTY から PIV 管理 PIN を hidden prompt
+# で読む。PIN はこの script の stdin / argv / environment では扱わない）:
 #   bash scripts/provision-secret-recovery-source.sh
 #   bash scripts/provision-secret-recovery-source.sh --repo-head
 
@@ -42,6 +44,19 @@ PASS_REPO="${PASS_REPO:-}"               # 例: <owner>/password-store。未指�
 PROVISIONING_YUBIKEY_SERIAL="${PROVISIONING_YUBIKEY_SERIAL:-}" # primary recipient と bitwarden-client-secret 保存に使う YubiKey serial
 SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}" # 任意。指定時は gpg-backup add-spare まで実行する
 # ──────────────────────────────────────────────────────
+
+# `--repo-head` 時も、`put --stdin` の標準入力だけは呼び出し元の pipe をそのまま渡す。
+# 他の CLI 呼び出しは後段の `dotfiles` wrapper が controlling terminal を使う。
+run_dotfiles_from_repo_head() {
+  (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@")
+}
+dotfiles_with_stdin() {
+  if [ "$USE_REPO_HEAD" -eq 1 ]; then
+    run_dotfiles_from_repo_head "$@"
+  else
+    dotfiles "$@"
+  fi
+}
 
 log()   { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -128,9 +143,9 @@ read_bws_access_token() {
 store_bws_access_token() {
   local serial="$1"
   if [ -n "$serial" ]; then
-    printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles secrets yubikey put bitwarden-client-secret --stdin --serial "$serial"
+    printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles_with_stdin secrets yubikey put bitwarden-client-secret --stdin --serial "$serial"
   else
-    printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles secrets yubikey put bitwarden-client-secret --stdin
+    printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles_with_stdin secrets yubikey put bitwarden-client-secret --stdin
   fi
 }
 inspect_bws_access_token_storage() {
@@ -180,9 +195,8 @@ ensure_bws_access_token_stored() {
     log "${role} YubiKey の不正な secret storage を clear"
     clear_bws_access_token_storage "$serial" \
       || die "${role} YubiKey の secret storage を clear できません"
-    log "${role} YubiKey の secret storage を初期化"
-    initialize_bws_access_token_storage "$serial" \
-      || die "${role} YubiKey の clear 後の secret storage を初期化できません"
+    # clear は slot 82 再生成と空の v2 manifest 確定までを一つの管理操作として完了する。
+    # ここで setup を続けると正常な no-op storage に余分な PIN session を要求するだけなので再実行しない。
   fi
   if [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
     BWS_ACCESS_TOKEN="$(read_bws_access_token 'BWS access token for YubiKey bitwarden-client-secret storage')"
@@ -217,10 +231,10 @@ if [ "$USE_REPO_HEAD" -eq 1 ]; then
   require direnv
   dotfiles() {
     if { exec 9</dev/tty; } 2>/dev/null; then
-      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") <&9
+      run_dotfiles_from_repo_head "$@" <&9
       local s=$?; exec 9<&-; return "$s"
     else
-      (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@") </dev/null
+      run_dotfiles_from_repo_head "$@" </dev/null
     fi
   }
 else

@@ -211,9 +211,9 @@
             "--package"
             "dotfiles-cli"
           ];
-          cargoTestFlags = [
-            "--workspace"
-          ];
+          # package は利用者に渡す artifact だけを build する。test suite の正本は
+          # CI の `cargo xtask check static` であり、Nix package checkPhase では実行しない。
+          doCheck = false;
           buildInputs = [
             # GPG keyring backend（`gpgme` crate）が link する libgpgme / libgpg-error。
             pkgs.gpgme
@@ -224,7 +224,11 @@
             pkgs.openssl
             pkgs.zlib
           ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ]
+          # `git2` -> `libgit2-sys` の vendored fallback は Darwin で `-liconv` を
+          # 明示する。Nix package build でも devShell と同じ linker input を直接
+          # 与え、transitive dependency の伝播だけに依存しない。
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           nativeBuildInputs = [
             pkgs.cmake
             pkgs.makeWrapper
@@ -285,10 +289,16 @@
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.ansible
+            # `git2` -> `libgit2-sys` の Darwin vendored fallback が `-liconv` を
+            # 要求しても、Rust の最終 link に必要な input を devShell 自身が供給する。
+            pkgs.libiconv
             pkgs.packer
             pkgs.sshpass
             pkgs.tart
           ];
+          # `packages` に置くだけでは Rust linker 用 setup hook が得られないため、
+          # Darwin の `-liconv` 解決は buildInputs としても明示する。
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
         };
       };
 

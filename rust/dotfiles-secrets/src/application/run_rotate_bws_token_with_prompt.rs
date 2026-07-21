@@ -52,7 +52,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
 
         let storage = command.storage_spec(serial);
         let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
-        SecretStorageWriteIntent::ensure_store_preconditions(&inspection)?;
+        let _preflight = SecretStorageWriteIntent::preflight_store(storage.clone(), &inspection)?;
         let pre_update_verify: Result<()> = (|| {
             for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
                 let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
@@ -126,15 +126,21 @@ mod tests {
     }
 
     fn manifest() -> Vec<u8> {
-        SecretManifest::expected().encode().expect("manifest")
+        SecretManifest::fixture_v2().encode().expect("manifest")
     }
 
     fn write_inspection(object_exists: bool) -> SecretStorageWriteInspection {
         SecretStorageWriteInspection {
             manifest_bytes: Some(manifest()),
+            object_present: object_exists,
             object_exists,
             reserved_slot_key_exists: true,
             reserved_slot_certificate_exists: false,
+            slot_public_key_spki: Some(
+                SecretManifest::fixture_v2()
+                    .slot_public_key_spki
+                    .expect("SPKI"),
+            ),
         }
     }
 
