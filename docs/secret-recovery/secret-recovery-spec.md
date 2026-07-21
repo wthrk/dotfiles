@@ -2,7 +2,7 @@
 
 この文書は、新しい macOS マシンで `dotfiles` を導入したあと、開発に必要な秘密情報基盤を復旧する到達仕様を定義する恒久仕様文書である。ここでは完成形の仕様だけを定義する。対象は GnuPG secret key、GPG authentication subkey による GitHub SSH identity、private `password-store` repository、`pass` の利用環境である。Bitwarden Password Manager の login は repository の CLI surface 外である。
 
-復旧の入口には YubiKey を使う。YubiKey には Bitwarden Password Manager login 用 secret と Bitwarden Secrets Manager access token を保存する。GPG secret key backup と `password-store` の remote URL は BWS project `dotfiles-secret-recovery` から取得する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
+復旧の入口には YubiKey を使う。YubiKey には Bitwarden Secrets Manager access token の `bitwarden-client-secret` だけを保存する。GPG secret key backup と `password-store` の remote URL は BWS project `dotfiles-secret-recovery` から取得する。GPG secret key を復元したあと、GPG authentication subkey を SSH identity として使い、GitHub から private `password-store` repository を SSH clone する。
 
 この文書で強化する要件は設計/仕様契約であり、現行 Rust 実装およびテストが本書の全要件を満たしたことを示すものではない。実装・テストでの充足は、ユーザー指定の GitHub issue、PR、または明示タスクで段階的に反映する。
 

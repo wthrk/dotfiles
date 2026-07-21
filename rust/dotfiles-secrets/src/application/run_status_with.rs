@@ -145,7 +145,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -178,7 +178,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -209,7 +209,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
@@ -239,7 +239,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: Some(b"invalid manifest".to_vec()),

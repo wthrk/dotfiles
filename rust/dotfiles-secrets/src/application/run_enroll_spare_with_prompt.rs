@@ -219,14 +219,14 @@ mod tests {
             });
         storage
             .expect_store_secret()
-            .times(3)
+            .times(1)
             .returning(|_, _, _| Ok(()));
         storage
             .expect_finalize_secret_storage_setup()
             .times(1)
             .returning(|_, _| Ok(()));
-        // The primary supplies all stored bootstrap values for cloning.  The
-        // spare's post-write recovery preflight checks only the BWS credential.
+        // primary から複製する bootstrap credential と、spare の post-write
+        // recovery preflight 対象はいずれも BWS credential だけである。
         storage
             .expect_inspect_secret_storage_read()
             .times(1)

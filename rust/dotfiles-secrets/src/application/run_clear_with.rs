@@ -28,7 +28,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{domain::commands::ClearCommand, ports};
+    use crate::{
+        domain::{
+            commands::ClearCommand,
+            piv::{PivObjectId, SecretName},
+        },
+        ports,
+    };
 
     use super::run_clear_with;
 
@@ -62,7 +68,14 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_clear_secret_storage()
-            .withf(|serial, intent| *serial == 2001 && intent.object_ids.len() == 4)
+            .withf(|serial, intent| {
+                *serial == 2001
+                    && intent.object_ids
+                        == vec![
+                            PivObjectId::MANIFEST,
+                            SecretName::BitwardenClientSecret.object_id(),
+                        ]
+            })
             .returning(|_, _| {
                 Ok(crate::domain::manifest::SecretManifest::fixture_v2()
                     .slot_public_key_spki

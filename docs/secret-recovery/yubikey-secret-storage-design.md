@@ -267,8 +267,6 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
   "role": "primary",
   "checks": {
     "setup": "ok",
-    "bw_email": "ok",
-    "bw_password": "ok",
     "bitwarden_client_secret": "ok",
     "local_storage": "ok"
   }
@@ -281,8 +279,6 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
   "role": "spare",
   "checks": {
     "setup": "ok",
-    "bw_email": "ok",
-    "bw_password": "ok",
     "bitwarden_client_secret": "ok",
     "local_storage": "ok"
   }
