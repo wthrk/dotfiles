@@ -260,17 +260,20 @@ mod tests {
             .returning(|_, _| Ok(()));
         // The primary supplies all stored bootstrap values for cloning.  The
         // spare's post-write recovery preflight checks only the BWS credential.
-        for name in [SecretName::BitwardenClientSecret] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .withf(move |serial, storage| *serial == 2002 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .returning(|_, _| Ok(material(b"token")));
-        }
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .withf(|serial, storage| {
+                *serial == 2002 && storage.name == SecretName::BitwardenClientSecret
+            })
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .times(1)
+            .withf(|serial, intent| {
+                *serial == 2002 && intent.storage.name == SecretName::BitwardenClientSecret
+            })
+            .returning(|_, _| Ok(material(b"token")));
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_enroll_report()

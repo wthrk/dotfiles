@@ -156,18 +156,20 @@ mod tests {
         // Enrollment stores all bootstrap values, but its local recovery preflight is
         // intentionally limited to the BWS credential required by the no-input
         // recovery contract.
-        for name in [SecretName::BitwardenClientSecret] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .withf(move |serial, storage| *serial == 2001 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .withf(move |serial, intent| *serial == 2001 && intent.storage.name == name)
-                .returning(|_, _| Ok(material(b"token")));
-        }
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .times(1)
+            .withf(|serial, intent| {
+                *serial == 2001 && intent.storage.name == SecretName::BitwardenClientSecret
+            })
+            .returning(|_, _| Ok(material(b"token")));
         let mut report = ports::MockReportPort::new();
         report
             .expect_write_enroll_report()
