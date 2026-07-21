@@ -12,47 +12,35 @@
 //! [YubiKey Manager PIV Commands](https://docs.yubico.com/software/yubikey/tools/ykman/PIV_Commands.html)
 //! を、固定 SDK API は `yubikey` 0.9.0-pre.0 の
 //! [`YubiKey::verify_pin` / `YubiKey::authenticate`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/yubikey.rs)、
-//! [`MgmKey::get_default` / `get_protected` / `generate_for` / `set_protected`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/mgm.rs)、
+//! [`MgmKey::get_protected`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/mgm.rs)、
 //! [`Error::NotFound`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/error.rs)
 //! で直接確認する。
 //!
-//! `verify_pin`、`authenticate`、`get_default`、`generate_for`、`set_protected` の error は意味を
-//! 再分類せず source error のまま停止する。`get_protected` の戻り値が**正確に** `Error::NotFound`
-//! の時だけ `Missing` を返し、caller が management-slot metadata の `default == Some(true)` を
-//! 確認した B0 bootstrap candidate に限って `get_default` → `authenticate` → `generate_for` →
-//! `set_protected` へ進める。その他の error、metadata の未知値、認証失敗を default-key fallback、
-//! retry、成功へ写像しない。
+//! `MgmKey::get_protected` の固定 source は、最初に management-slot metadata を query してから
+//! protected data object を読む。両段階の `Error::NotFound` は同じ public `Result` で返され、
+//! caller が origin を区別する API はない。よってこの module は `NotFound` を protected key
+//! 不在へ再分類せず、全 error を source error のまま停止する。B0 default-key bootstrap は
+//! 自動化しない。
+//!
+//! 同 source の `MgmKey::set_protected` は management key 更新後の protected/admin metadata
+//! 操作の失敗を default 化または log-only にして `Ok(())` を返し得る。将来、人間が承認した
+//! 移行 flow でこの API を使う場合も、その `Ok(())` を成功証拠にしてはならない。handle を
+//! 捨てて開き直し、PIN verify → protected key read → authenticate → management metadata
+//! `default == Some(false)` をすべて確認できるまで成功を返さない。本 repository にはその
+//! 書換 flow を実装しない。
 
 use crate::{Result, support::protection::ProtectedSecret};
 use anyhow::Error;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProtectedManagementKeyState {
-    Authenticated,
-    Missing,
-}
 pub(crate) fn verify_pin(yubikey: &mut yubikey::YubiKey, pin: &ProtectedSecret) -> Result<()> {
     pin.with_secret(|bytes| yubikey.verify_pin(bytes).map_err(Error::new))
 }
 pub(crate) fn authenticate_protected_management_key(
     yubikey: &mut yubikey::YubiKey,
     pin: &ProtectedSecret,
-) -> Result<ProtectedManagementKeyState> {
+) -> Result<()> {
     verify_pin(yubikey, pin)?;
-    match yubikey::MgmKey::get_protected(yubikey) {
-        Ok(key) => {
-            yubikey.authenticate(&key).map_err(Error::new)?;
-            Ok(ProtectedManagementKeyState::Authenticated)
-        }
-        Err(yubikey::Error::NotFound) => Ok(ProtectedManagementKeyState::Missing),
-        Err(error) => Err(Error::new(error)),
-    }
-}
-pub(crate) fn bootstrap_pin_protected_management_key(yubikey: &mut yubikey::YubiKey) -> Result<()> {
-    let default = yubikey::MgmKey::get_default(yubikey).map_err(Error::new)?;
-    yubikey.authenticate(&default).map_err(Error::new)?;
-    let protected = yubikey::MgmKey::generate_for(yubikey, &mut yubikey_rand::rngs::SysRng)
-        .map_err(Error::new)?;
-    protected.set_protected(yubikey).map_err(Error::new)?;
+    let key = yubikey::MgmKey::get_protected(yubikey).map_err(Error::new)?;
+    yubikey.authenticate(&key).map_err(Error::new)?;
     Ok(())
 }

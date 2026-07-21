@@ -60,23 +60,22 @@ struct YubiKeyDeviceSpec {
     key_metadata_requires_management_auth: bool,
     #[serde(default, rename = "storage_decode_errors")]
     storage_decode_errors: Vec<String>,
-    /// PIN-protected management-key bootstrap state. This is an adapter-only
-    /// test backend model of the documented B0 flow, not a production option.
+    /// PIN-protected management-key state。`b0-default` は production SDK の
+    /// `get_protected` error origin が曖昧な場合の fail-closed 回帰 fixture である。
     #[serde(default)]
     management_state: StubManagementState,
 }
 
-/// Test-only observable management-key states. Values deliberately model only
-/// transitions proven by the Yubico PIN-protected flow: default + no PRINTED
-/// key may bootstrap once; every other failure is opaque/fail-closed.
+/// Test-only observable management-key states。production と同じく B0 の
+/// `get_protected` `NotFound` は protected-data 不在と確定できないため、変更せず停止する。
 #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum StubManagementState {
-    /// B0: management metadata is default and `get_protected` is strictly
-    /// `NotFound`; bootstrap persists PIN-protected state and requires reopen.
-    #[default]
+    /// B0: management metadata は default だが `get_protected` の `NotFound`
+    /// origin は SDK public API から区別できない。
     B0Default,
     /// PRINTED management key is available after PIN verification.
+    #[default]
     Protected,
     WrongPin,
     PinBlocked,
@@ -204,17 +203,13 @@ impl SecretDeviceIo for TestStubSecretDevice {
         pin: Option<&ProtectedSecret>,
     ) -> Result<ManagementAuthState> {
         let _pin = pin.ok_or_else(|| anyhow::anyhow!("stub PIV management session has no PIN"))?;
-        with_datastore_after_write(|store| {
+        with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             match device.management_state {
                 StubManagementState::B0Default => {
-                    // Model exactly the only permitted default-key path:
-                    // management metadata default=true + get_protected=NotFound
-                    // -> authenticate default -> set_protected. The next
-                    // adapter handle must authenticate the persisted protected
-                    // state, so this handle returns Bootstrapped.
-                    device.management_state = StubManagementState::Protected;
-                    Ok(ManagementAuthState::Bootstrapped)
+                    anyhow::bail!(
+                        "stub YubiKey B0 management state is ambiguous and cannot bootstrap automatically"
+                    )
                 }
                 StubManagementState::Protected => {
                     self.management_authenticated = true;
@@ -551,7 +546,6 @@ fn datastore_from_persistent(persistent: PersistentYubiKeyDatastore) -> Result<Y
 }
 
 fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
-    let fresh_fixture = matches!(&spec.fixture, YubiKeyDeviceFixture::Fresh);
     let mut device = match spec.fixture {
         YubiKeyDeviceFixture::Fresh => StubDeviceDatastore::default(),
         YubiKeyDeviceFixture::Provisioned => provisioned_device_datastore(default_secrets()),
@@ -607,13 +601,7 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
     };
     device.key_metadata_requires_management_auth = spec.key_metadata_requires_management_auth;
     device.corrupt = spec.storage_decode_errors;
-    device.management_state = match fresh_fixture {
-        true => spec.management_state,
-        false if matches!(spec.management_state, StubManagementState::B0Default) => {
-            StubManagementState::Protected
-        }
-        false => spec.management_state,
-    };
+    device.management_state = spec.management_state;
     device
 }
 

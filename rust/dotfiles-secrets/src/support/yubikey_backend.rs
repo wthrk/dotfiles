@@ -27,10 +27,7 @@
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::support::{
     piv_storage::sha256_lowercase_hex,
-    protection::{
-        sealed_blob, secret_random,
-        yubikey_piv::{self, ProtectedManagementKeyState},
-    },
+    protection::{sealed_blob, secret_random, yubikey_piv},
 };
 use crate::{
     Result,
@@ -66,7 +63,6 @@ pub(crate) struct DeviceCandidate {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagementAuthState {
     Protected,
-    Bootstrapped,
 }
 
 pub(crate) trait SecretDeviceIo {
@@ -291,31 +287,15 @@ impl SecretDeviceIo for YubikeySecretDevice {
                 "PIV management operation requires a configured PIN-protected management session"
             )
         })?;
-        match yubikey_piv::authenticate_protected_management_key(&mut self.yubikey, pin)? {
-            ProtectedManagementKeyState::Authenticated => {
-                let metadata = piv::metadata(
-                    &mut self.yubikey,
-                    SlotId::Management(yubikey::piv::ManagementSlotId::Management),
-                )?;
-                if metadata.default != Some(false) {
-                    anyhow::bail!("YubiKey PIN-protected management key metadata is not healthy")
-                }
-                Ok(ManagementAuthState::Protected)
-            }
-            ProtectedManagementKeyState::Missing => {
-                let metadata = piv::metadata(
-                    &mut self.yubikey,
-                    SlotId::Management(yubikey::piv::ManagementSlotId::Management),
-                )?;
-                if metadata.default != Some(true) {
-                    anyhow::bail!(
-                        "YubiKey management key is not PIN-protected and is not a complete default bootstrap candidate"
-                    )
-                }
-                yubikey_piv::bootstrap_pin_protected_management_key(&mut self.yubikey)?;
-                Ok(ManagementAuthState::Bootstrapped)
-            }
+        yubikey_piv::authenticate_protected_management_key(&mut self.yubikey, pin)?;
+        let metadata = piv::metadata(
+            &mut self.yubikey,
+            SlotId::Management(yubikey::piv::ManagementSlotId::Management),
+        )?;
+        if metadata.default != Some(false) {
+            anyhow::bail!("YubiKey PIN-protected management key metadata is not healthy")
         }
+        Ok(ManagementAuthState::Protected)
     }
     fn generate_key(&mut self) -> Result<Vec<u8>> {
         let public = piv::generate(

@@ -13,10 +13,12 @@
 //! の PIN/touch policy、retired key-management slots、PIV metadata を直接確認する。
 //! この module が経由する version 固定 `yubikey` 0.9.0-pre.0 の操作は
 //! [`YubiKey::verify_pin` / `YubiKey::authenticate`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/yubikey.rs)、
-//! [`MgmKey::get_protected` / `MgmKey::set_protected`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/mgm.rs)、
+//! [`MgmKey::get_protected`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/mgm.rs)、
 //! [`piv::generate` / `piv::metadata`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/piv.rs)、
 //! [`Transaction::fetch_object` / `Transaction::save_object`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
-//! である。`fetch_object` 由来の `NotFound` 以外の SDK error は、この receiver で成功、
+//! である。`get_protected` は metadata query と protected-data read の `NotFound` origin を
+//! public API で区別できないため、その error を B0 bootstrap に使わず停止する。`fetch_object`
+//! 由来の `NotFound` 以外の SDK error は、この receiver で成功、
 //! 空値、再試行、別 state へ写像せず backend から伝播する。repository test/agent 作業は
 //! physical device を使わず feature 隔離 stub だけを使う。
 
@@ -33,9 +35,7 @@ use crate::{
     support::{
         piv_storage::non_empty_payload,
         protection::{ProtectedSecret, SecretSession},
-        yubikey_backend::{
-            self, ManagementAuthState, SecretDeviceIo, SelectedSecretDevice, YubikeyDeviceBackend,
-        },
+        yubikey_backend::{self, SecretDeviceIo, SelectedSecretDevice, YubikeyDeviceBackend},
     },
 };
 use std::collections::BTreeMap;
@@ -59,18 +59,7 @@ fn open_authenticated(
             )
         })?)?;
     let mut device = open_device(serial)?;
-    if device.check_management_auth_preconditions(Some(&pin))? == ManagementAuthState::Bootstrapped
-    {
-        drop(device);
-        let mut fresh = open_device(serial)?;
-        if fresh.check_management_auth_preconditions(Some(&pin))? != ManagementAuthState::Protected
-        {
-            anyhow::bail!(
-                "YubiKey PIN-protected management key bootstrap did not become healthy on a fresh handle"
-            );
-        }
-        return Ok(fresh);
-    }
+    device.check_management_auth_preconditions(Some(&pin))?;
     Ok(device)
 }
 pub(crate) fn begin_piv_management_session(

@@ -15,13 +15,16 @@
 //! `bitwarden-sm` 3.0.0 [`SecretsClient::get` / `create` / `update`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/client_secrets.rs)、
 //! [`SecretCreateRequest`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/secrets/create.rs) /
 //! [`SecretPutRequest`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/secrets/update.rs)、
+//! [`SecretResponse::project_id`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/secrets/secret_response.rs)、
 //! [`SecretsManagerError`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/error.rs) である。
 //!
 //! `login_access_token` 完了後だけ get/create/update を呼ぶ。これらの `Result<_, SecretsManagerError>`
 //! の全 variant は context を加えても source chain を保持して failure として返し、not-found、権限、
 //! transient、空結果、success へ再分類しない。`get` の `SecretResponse` は value/key/note を
-//! `Zeroizing` / `ProtectedSecret` 内で消費し、create/update は caller が既に決めた organization / project /
-//! key を request に渡す技術操作だけを行う。project の一意解決や fallback はこの module の責務ではない。
+//! `Zeroizing` / `ProtectedSecret` 内で消費する。fixed source の `SecretResponse::project_id` は
+//! `Option<Uuid>` なので `None` を caller project で補完せず failure にする。create/update は caller が
+//! 既に決めた organization / project / key を request に渡す技術操作だけを行う。project の一意解決や
+//! fallback はこの module の責務ではない。
 #![cfg_attr(feature = "secrets-internal-test-stub", allow(dead_code))]
 
 use anyhow::Context;
@@ -356,7 +359,10 @@ impl BwsClientSession {
 
 /// guarded update の停止条件を、response 由来 note の protection lifetime 内で確認する。
 ///
-/// `note` はこの関数の error return（guard 不一致、project 欠落・変更）まで `Zeroizing` のまま
+/// 固定 `bitwarden-sm` 3.0.0 source の
+/// [`SecretResponse::project_id`](https://docs.rs/crate/bitwarden-sm/3.0.0/source/src/secrets/secret_response.rs)
+/// は `Option<Uuid>` である。したがって `None` は caller の `expected_project_id` で補わず failure
+/// にする。`note` はこの関数の error return（guard 不一致、project 欠落・変更）まで `Zeroizing` のまま
 /// 保持される。caller は成功時だけ SDK request へ note を複製し、request guard が SDK update 完了まで
 /// その複製を zeroize 対象として保持する。
 fn guarded_update_preflight(

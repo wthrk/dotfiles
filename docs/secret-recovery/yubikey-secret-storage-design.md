@@ -56,7 +56,7 @@ YubiKey adapter は次を満たす。
 
 - `yubikey` の version を明示的に固定する。
 - object read/write API が feature gate を要求する場合、その feature は YubiKey adapter module だけで使う。
-- reset、PIN/PUK 変更、既存 key 削除の API は adapter から公開しない。management key は B0 bootstrap の `set_protected` を除き変更しない。
+- reset、PIN/PUK 変更、既存 key 削除、management key 変更の API は adapter から公開しない。
 - repository の test と agent 作業では物理 YubiKey / PC/SC reader を使用しない。検証は `secrets-internal-test-stub` feature で compile-time に隔離された internal backend stub だけで行い、production binary と runtime に stub を混入させない。
 - 実機への読み取り・書き込み・setup・clear・reset を「opt-in 検証」としても repository の test、agent 作業、通常の検証手順に許可しない。device-specific な確認が将来必要になっても、この設計だけを根拠に実行せず、別の明示 task と人間による承認済み手順で扱う。
 
@@ -207,7 +207,7 @@ delete API を公開しないことは [外部 SDK 統合の一次資料](extern
 
 確認後、slot `82` に `yubikey` crate `0.9.0-pre.0` の [`piv::generate`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/piv.rs) で専用鍵を生成し、manifest を保存する。既存の FIDO2 / OTP / OpenPGP / PIV credential は reset しない。衝突がある場合に自動削除や上書きはしない。
 
-`setup` を含む管理 command は PIV PIN を hidden TTY からだけ受け取り、PIN-protected management key を使う。B0 bootstrap だけは management metadata の `default == Some(true)` と protected key の厳密な `NotFound` を両方確認して default key を 1 回だけ使い、ランダム management key を `set_protected` する。切替後は fresh handle で protected key 取得、management authentication、metadata `default == Some(false)` が成功するまで slot / object 操作へ進まない。
+`setup` を含む管理 command は PIV PIN を hidden TTY からだけ受け取り、既に設定済みの PIN-protected management key を使う。固定 `yubikey` crate の `MgmKey::get_protected` は management metadata query と protected data read の error origin を public API で区別しないため、`NotFound` を B0 の protected-key 不在と断定しない。全 error で停止し、factory-default key の認証、`generate_for`、`set_protected` を自動実行しない。将来、別途承認した移行で `set_protected` を用いる場合も、その `Ok(())` は metadata 更新までの完全成功を保証しないため、fresh handle で PIN verify、protected key 取得、management authentication、metadata `default == Some(false)` をすべて確認できるまで slot / object 操作へ進まない。根拠は [外部 SDK 統合の一次資料](external-sdk-evidence.md#yubikey-piv--yubikey-crate) の固定 source 確認である。
 
 複数本の YubiKey を運用する場合でも、`setup` は指定された 1 本だけを変更する。接続中の他 YubiKey へ同時に書き込む batch mode は実装しない。
 

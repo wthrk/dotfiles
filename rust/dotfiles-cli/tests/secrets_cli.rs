@@ -264,27 +264,41 @@ fn setup_reads_hidden_piv_pin_from_pty() -> TestResult<()> {
 }
 
 #[test]
-fn b0_bootstrap_reopens_and_reauthenticates_before_metadata_access() -> TestResult<()> {
+fn ambiguous_b0_not_found_fails_closed_without_mutating_storage() -> TestResult<()> {
     let device = json!({
         "serial": PRIMARY_SERIAL,
         "fixture": "fresh",
         "management_state": "b0-default",
         "key_metadata_requires_management_auth": true,
     });
-    let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([device]);
+    spec["persistence_path"] = json!(state.path());
+    let stub = StubPorts::new(spec, bws_spec());
     let run = run_pty_with_stub_interactive(
         ["yubikey", "setup", "--serial", "2001"],
         &[("YubiKey PIV PIN: ", "123456\n")],
         &stub,
     )?;
 
-    // The fixture rejects slot metadata unless the post-`set_protected`
-    // handle authenticated again. A one-handle bootstrap regression therefore
-    // cannot reach this successful setup observation.
-    assert!(run.success, "output: {}", run.output);
-    assert_eq!(
-        run.final_yubikey()?["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
-        json!(true)
+    assert!(!run.success, "B0 state must stop: {}", run.output);
+    assert!(
+        !run.output.contains("default management key"),
+        "B0 state must not use default-key fallback: {}",
+        run.output
+    );
+
+    // A second process sees the same fixture state. The first failure must
+    // not mutate it into an apparently protected/key-initialized state.
+    let repeated = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+    assert!(
+        !repeated.success,
+        "B0 state changed after failed setup: {}",
+        repeated.output
     );
     Ok(())
 }
@@ -1542,7 +1556,7 @@ fn run_pty_with_stub_interactive<const N: usize>(
             writer.flush()?;
         }
         // The PTY writer must be closed before waiting so commands that read
-        // until EOF (including the B0 management flow) can complete.
+        // until EOF (including management PIN input) can complete.
         drop(writer);
         wait_pty_child(&mut child)
     })();
