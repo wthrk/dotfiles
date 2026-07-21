@@ -225,6 +225,28 @@ fn setup_rejects_a_tty_stdin_when_it_is_not_the_controlling_terminal() -> TestRe
 }
 
 #[test]
+fn clear_yes_without_a_controlling_tty_fails_before_stub_mutation() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([corrupt_manifest_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pipe_without_controlling_tty_with_stub(
+        ["yubikey", "clear", "--serial", "2001", "--yes"],
+        None,
+        &stub,
+    )?;
+
+    assert!(!run.success, "stdout: {}", run.stdout);
+    assert!(run.stderr.contains("failed to open controlling terminal"));
+    assert!(
+        !run.stdout.contains(STUB_OBSERVATION_PREFIX),
+        "TTY-less clear --yes must not mutate the YubiKey stub: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
+#[test]
 fn setup_reads_hidden_piv_pin_from_pty() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),

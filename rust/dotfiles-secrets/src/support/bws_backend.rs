@@ -62,27 +62,18 @@ pub(crate) async fn list_bws_secrets(
 pub(crate) async fn fetch_gpg_backup_envelope(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+) -> crate::Result<(String, BackupUpdateGuard)> {
     let session = bws::login_client_with_access_token(access_token).await?;
     let id = bws_sdk::parse_uuid(secret_id.as_str(), "bws secret id")?;
-    session
-        .parse_secret_value_with_revision(id, |json, revision| {
-            let guard =
-                BackupUpdateGuard::from_revision_or_value(revision.to_owned(), json.as_bytes());
-            let envelope = GpgBackupEnvelope::from_json(json.as_bytes())?;
-            Ok((envelope, guard))
-        })
-        .await
+    session.read_secret_value_with_revision(id).await
 }
 pub(crate) async fn fetch_password_store_remote(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> crate::Result<PasswordStoreRemote> {
+) -> crate::Result<String> {
     let session = bws::login_client_with_access_token(access_token).await?;
     let id = bws_sdk::parse_uuid(secret_id.as_str(), "bws secret id")?;
-    session
-        .parse_secret_value(id, PasswordStoreRemote::parse)
-        .await
+    session.read_secret_value(id).await
 }
 pub(crate) async fn create_gpg_backup_envelope(
     access_token: &ProtectedSecret,

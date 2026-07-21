@@ -5,6 +5,7 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RestoreGpgCommand,
+        gpg_backup::GpgBackupEnvelope,
         gpg_restore::RestoreGpgSummary,
         piv::SecretName,
         storage::SecretStorageReadIntent,
@@ -63,9 +64,10 @@ where
     )?;
 
     // 3. envelope 形式（version / metadata / recipients / ciphertext）を検証して取得する。
-    let (envelope, _guard) = bws_client
+    let (envelope_value, _guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
+    let envelope = GpgBackupEnvelope::from_json(envelope_value.as_bytes())?;
 
     // 3-4. 接続中 YubiKey に一致する recipient を解決し、DEK を unwrap して backup を復号する。
     let connected = recipient.resolve_connected_recipient(serial)?;
@@ -216,6 +218,10 @@ mod tests {
         GpgBackupEnvelope::parse(&json).expect("valid envelope")
     }
 
+    fn envelope_value() -> String {
+        envelope().to_json_string().expect("serialized envelope")
+    }
+
     fn connected() -> ConnectedYubiKey {
         ConnectedYubiKey::new(
             "2001",
@@ -287,7 +293,12 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope()
             .times(1)
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+            .returning(|_, _| {
+                Ok((
+                    envelope_value(),
+                    BackupUpdateGuard::ValueDigest("d".to_owned()),
+                ))
+            });
 
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
@@ -399,8 +410,12 @@ mod tests {
                 name: "gpg-secret-key-backup".to_owned(),
             }])
         });
-        bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+        bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
+            Ok((
+                envelope_value(),
+                BackupUpdateGuard::ValueDigest("d".to_owned()),
+            ))
+        });
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()
@@ -469,8 +484,12 @@ mod tests {
                 name: "gpg-secret-key-backup".to_owned(),
             }])
         });
-        bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+        bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
+            Ok((
+                envelope_value(),
+                BackupUpdateGuard::ValueDigest("d".to_owned()),
+            ))
+        });
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()
@@ -575,8 +594,12 @@ mod tests {
                 name: "gpg-secret-key-backup".to_owned(),
             }])
         });
-        bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("d".to_owned()))));
+        bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
+            Ok((
+                envelope_value(),
+                BackupUpdateGuard::ValueDigest("d".to_owned()),
+            ))
+        });
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()

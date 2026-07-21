@@ -184,10 +184,13 @@ fn adapter_item_kind(item: &syn::Item) -> &'static str {
 /// adapter は support-owned concrete backend への forwarding-only trait implementation である。
 ///
 /// method body は support-owned backend module の `module::operation(args...)` を呼ぶ単一
-/// expression（async の `.await` を含む）だけを許可する。`self.method()` を含む method call は、
-/// receiver が support-owned concrete backend に見えても adapter 自身の helper / state / logic を
-/// 経由する余地があるため許可しない。local state、conversion、branch、error context、SDK 呼び出しを
-/// adapter 側へ再導入しないため、少しでも複合的な body は fail-closed にする。
+/// expression（async の `.await` を含む）だけを許可する。support backend が receiver を要求する場合は
+/// call の先頭引数が同じ `self`、それ以外の引数は port method の named parameter と同じ順序・個数・
+/// identifier でなければならない。これにより fabricated/default receiver、引数省略・並替え、local
+/// conversion を adapter に潜ませない。`self.method()` を含む method call は、receiver が support-owned
+/// concrete backend に見えても adapter 自身の helper / state / logic を経由する余地があるため許可しない。
+/// local state、conversion、branch、error context、SDK 呼び出しを adapter 側へ再導入しないため、少しでも
+/// 複合的な body は fail-closed にする。
 fn is_forwarding_only_impl(
     item_impl: &syn::ItemImpl,
     support_backend_modules: &std::collections::BTreeSet<String>,
@@ -212,12 +215,61 @@ fn method_is_direct_backend_forward(
         syn::Expr::Await(await_expression) => await_expression.base.as_ref(),
         expression => expression,
     };
-    match expression {
-        syn::Expr::Call(call) => {
-            call_targets_support_backend_module(call.func.as_ref(), support_backend_modules)
-        }
-        _ => false,
-    }
+    let syn::Expr::Call(call) = expression else {
+        return false;
+    };
+    call_targets_support_backend_module(call.func.as_ref(), support_backend_modules)
+        && call_forwards_method_arguments_exactly(method, call)
+}
+
+/// backend call が port method の receiver / named parameters を加工せず渡すことを AST で確認する。
+///
+/// backend が state を持つ場合だけ先頭の `self` forwarding を許し、`Backend::default()`、別 local、
+/// `&self`、field access は拒否する。残りは method declaration の typed parameter と同一 identifier
+/// だけを同じ順序・個数で許す。support backend が receiver を取らない static operation もあるため、
+/// `self` は call に現れる場合だけ先頭で許可する。いずれの場合も adapter が値を生成・省略・変換・
+/// 並べ替える余地はない。
+fn call_forwards_method_arguments_exactly(method: &syn::ImplItemFn, call: &syn::ExprCall) -> bool {
+    let Some(expected) = method_parameter_identifiers(method) else {
+        return false;
+    };
+    let actual = call.args.iter().collect::<Vec<_>>();
+    let actual = match actual.first() {
+        Some(expression) if expression_is_ident(expression, "self") => &actual[1..],
+        _ => actual.as_slice(),
+    };
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(expression, identifier)| expression_is_ident(expression, &identifier))
+}
+
+fn method_parameter_identifiers(method: &syn::ImplItemFn) -> Option<Vec<String>> {
+    method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            syn::FnArg::Receiver(_) => None,
+            syn::FnArg::Typed(typed) => match typed.pat.as_ref() {
+                syn::Pat::Ident(identifier) if identifier.subpat.is_none() => {
+                    Some(Some(identifier.ident.to_string()))
+                }
+                _ => Some(None),
+            },
+        })
+        .collect()
+}
+
+fn expression_is_ident(expression: &syn::Expr, identifier: &str) -> bool {
+    matches!(
+        expression,
+        syn::Expr::Path(path)
+            if path.qself.is_none()
+                && path.path.segments.len() == 1
+                && path.path.segments[0].ident == identifier
+    )
 }
 
 fn call_targets_support_backend_module(
@@ -1208,7 +1260,7 @@ mod tests {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
-                fn translate(&self) { crate::support::bws_backend::translate(self) }
+                fn translate(&self, value: String) { crate::support::bws_backend::translate(self, value) }
             }
             #[cfg(test)]
             mod tests {
@@ -1286,6 +1338,46 @@ mod tests {
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_fabricated_or_reordered_forwarding_arguments() {
+        for source in [
+            r#"
+                use crate::ports::Port;
+                impl Port for crate::support::Backend {
+                    fn translate(&self, first: String, second: String) {
+                        crate::support::bws_backend::translate(first, "fabricated")
+                    }
+                }
+            "#,
+            r#"
+                use crate::ports::Port;
+                impl Port for crate::support::Backend {
+                    fn translate(&self, first: String, second: String) {
+                        crate::support::bws_backend::translate(second, first)
+                    }
+                }
+            "#,
+            r#"
+                use crate::ports::Port;
+                impl Port for crate::support::Backend {
+                    fn translate(&self, value: String) {
+                        crate::support::bws_backend::translate(crate::support::Backend::default(), value)
+                    }
+                }
+            "#,
+        ] {
+            let syntax = syn::parse_file(source).expect("test Rust source must parse");
+            let mut violations = Vec::new();
+            collect_adapter_item_violations(
+                &syntax.items,
+                false,
+                std::path::Path::new("adapter.rs"),
+                &mut violations,
+            );
+            assert_eq!(violations.len(), 1, "source: {source}");
+        }
     }
 
     #[test]

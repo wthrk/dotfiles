@@ -226,21 +226,18 @@ pub(crate) async fn list_bws_secrets(
 pub(crate) async fn fetch_gpg_backup_envelope(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+) -> Result<(String, BackupUpdateGuard)> {
     let value = read_secret(&access_token.to_test_bytes(), secret_id.as_str())?;
     Ok((
-        GpgBackupEnvelope::from_json(value.as_bytes())?,
+        value.clone(),
         BackupUpdateGuard::from_value_bytes(value.as_bytes()),
     ))
 }
 pub(crate) async fn fetch_password_store_remote(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> Result<PasswordStoreRemote> {
-    PasswordStoreRemote::parse(&read_secret(
-        &access_token.to_test_bytes(),
-        secret_id.as_str(),
-    )?)
+) -> Result<String> {
+    read_secret(&access_token.to_test_bytes(), secret_id.as_str())
 }
 pub(crate) async fn create_gpg_backup_envelope(
     access_token: &ProtectedSecret,

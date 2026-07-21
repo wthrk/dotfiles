@@ -6,7 +6,7 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RestorePassCommand,
-        pass_restore::{PASSWORD_STORE_DIR_NAME, RestorePassSummary},
+        pass_restore::{PASSWORD_STORE_DIR_NAME, PasswordStoreRemote, RestorePassSummary},
         piv::SecretName,
         storage::SecretStorageReadIntent,
     },
@@ -82,9 +82,10 @@ where
             .await?,
         &project_id,
     )?;
-    let remote = bws_client
+    let remote_value = bws_client
         .fetch_password_store_remote(&access_token, &secret_id)
         .await?;
+    let remote = PasswordStoreRemote::parse(&remote_value)?;
 
     // 3. `~/.password-store` が既に存在する場合は clone へ進まず停止する。
     if store.password_store_exists()? {
@@ -186,10 +187,8 @@ mod tests {
 
     use crate::{
         domain::{
-            commands::RestorePassCommand,
-            manifest::SecretManifest,
-            pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
-            storage::SecretStorageReadInspection,
+            commands::RestorePassCommand, manifest::SecretManifest,
+            pass_restore::PasswordStoreReadiness, storage::SecretStorageReadInspection,
         },
         ports,
         support::protection::ProtectedSecret,
@@ -251,7 +250,7 @@ mod tests {
         });
         bws.expect_fetch_password_store_remote()
             .times(1)
-            .returning(|_, _| PasswordStoreRemote::parse(REMOTE_URL));
+            .returning(|_, _| Ok(REMOTE_URL.to_owned()));
     }
 
     #[tokio::test]

@@ -5,6 +5,8 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::VerifyYubikeyCommand,
+        gpg_backup::GpgBackupEnvelope,
+        pass_restore::PasswordStoreRemote,
         piv::SecretName,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
         verification::{CheckName, CheckStatus, VerifySummary},
@@ -117,8 +119,8 @@ where
 
 /// BWS 外部確認で必要な secret 取得・envelope 検証・recipient 照合を順に実行する。
 ///
-/// `gpg-secret-key-backup` は typed port で domain envelope として取得し、schema /
-/// `metadata.primary_fingerprint` / ciphertext 構造の検証を BWS adapter + domain 境界で完了させる。
+/// `gpg-secret-key-backup` は port から opaque value として取得し、application が domain envelope
+/// として schema / `metadata.primary_fingerprint` / ciphertext 構造を検証する。
 /// application は接続中 YubiKey の recipient identity を取得して domain の matching rule を適用し、
 /// unwrap なしで一致 recipient の存在まで確認する。`password-store-remote` も typed port で取得し、
 /// raw secret fetch 成功だけを BWS check の成功条件にしない。
@@ -142,16 +144,17 @@ where
     let pass_secret_id =
         BwsSecretName::PasswordStoreRemote.resolve_id(secret_candidates, &project_id)?;
 
-    let (envelope, _guard) = bws_client
+    let (envelope_value, _guard) = bws_client
         .fetch_gpg_backup_envelope(access_token, &gpg_secret_id)
         .await?;
+    let envelope = GpgBackupEnvelope::from_json(envelope_value.as_bytes())?;
     let connected = gpg_recipient.resolve_connected_recipient(serial)?;
     envelope.resolve_recipient(&connected)?;
 
-    bws_client
+    let remote_value = bws_client
         .fetch_password_store_remote(access_token, &pass_secret_id)
-        .await
-        .map(|_| ())
+        .await?;
+    PasswordStoreRemote::parse(&remote_value).map(|_| ())
 }
 
 /// YubiKey storage の read 経路（inspect → intent → load → validate）で指定 secret を on-demand 取得する。
@@ -252,6 +255,12 @@ mod tests {
     fn valid_password_store_remote() -> PasswordStoreRemote {
         PasswordStoreRemote::parse("git@github.com:owner/password-store.git")
             .expect("valid password-store remote")
+    }
+
+    fn valid_envelope_value() -> String {
+        valid_envelope()
+            .to_json_string()
+            .expect("serialized envelope")
     }
 
     fn expect_bws_lookup(bws: &mut ports::MockBwsClientPort) {
@@ -390,7 +399,7 @@ mod tests {
             .withf(|_, secret_id| secret_id.as_str() == "gpg-id")
             .returning(|_, _| {
                 Ok((
-                    valid_envelope(),
+                    valid_envelope_value(),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -404,7 +413,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, secret_id| secret_id.as_str() == "pass-id")
-            .returning(|_, _| Ok(valid_password_store_remote()));
+            .returning(|_, _| Ok(valid_password_store_remote().as_str().to_owned()));
 
         let mut report = ports::MockReportPort::new();
         report
@@ -441,7 +450,12 @@ mod tests {
         expect_bws_lookup(&mut bws);
         bws.expect_fetch_gpg_backup_envelope()
             .times(1)
-            .returning(|_, _| anyhow::bail!("failed to parse gpg backup envelope JSON"));
+            .returning(|_, _| {
+                Ok((
+                    "not-json".to_owned(),
+                    BackupUpdateGuard::from_value_bytes(b"not-json"),
+                ))
+            });
         bws.expect_fetch_password_store_remote().times(0);
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         gpg_recipient.expect_resolve_connected_recipient().times(0);
@@ -462,9 +476,8 @@ mod tests {
         bws.expect_fetch_gpg_backup_envelope()
             .times(1)
             .returning(|_, _| {
-                anyhow::bail!(
-                    "gpg backup metadata.primary_fingerprint must be stored as exactly 40 lowercase hex characters with no separators"
-                )
+                let value = r#"{"version":1,"metadata":{"primary_fingerprint":"ABC","exported_at":"2026-05-31T00:00:00Z","dek_alg":"aes-256-gcm","recipient_kek_alg":"rsa-oaep-sha256"},"recipients":[],"ciphertext":{"nonce":"EBESExQVFhcYGRob","body":"ZW5jcnlwdGVk","tag":"gIGCg4SFhoeIiYqLjI2Ojw=="}}"#.to_owned();
+                Ok((value, BackupUpdateGuard::from_value_bytes(b"invalid-fingerprint")))
             });
         bws.expect_fetch_password_store_remote().times(0);
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
@@ -487,7 +500,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    valid_envelope(),
+                    valid_envelope_value(),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -521,7 +534,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    valid_envelope(),
+                    valid_envelope_value(),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });

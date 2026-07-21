@@ -5,7 +5,7 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::AddGpgBackupSpareCommand,
-        gpg_backup::EnvelopeRecipient,
+        gpg_backup::{EnvelopeRecipient, GpgBackupEnvelope},
         piv::SecretName,
         storage::SecretStorageReadIntent,
     },
@@ -70,9 +70,10 @@ where
     )?;
 
     // 更新前に envelope と stale overwrite 防止 guard を取得する。
-    let (envelope, guard) = bws_client
+    let (envelope_value, guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
+    let envelope = GpgBackupEnvelope::from_json(envelope_value.as_bytes())?;
 
     // unwrap/wrap で touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
     // envelope 取得後に判明しているため、拒否される更新で YubiKey の DEK unwrap や spare wrap を実行
@@ -217,6 +218,10 @@ mod tests {
         GpgBackupEnvelope::parse(&json).expect("envelope")
     }
 
+    fn envelope_value() -> String {
+        envelope().to_json_string().expect("serialized envelope")
+    }
+
     fn connected_unwrap() -> ConnectedYubiKey {
         ConnectedYubiKey::new(
             "2001",
@@ -257,8 +262,12 @@ mod tests {
                 name: "gpg-secret-key-backup".to_owned(),
             }])
         });
-        bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("rev".to_owned()))));
+        bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
+            Ok((
+                envelope_value(),
+                BackupUpdateGuard::ValueDigest("rev".to_owned()),
+            ))
+        });
 
         // 確認は unwrap/wrap より前に呼ばれる。
         let mut confirmation = ports::MockBackupUpdateConfirmationPort::new();
@@ -341,7 +350,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope(),
+                envelope_value(),
                 BackupUpdateGuard::ValueDigest("read-at-start".to_owned()),
             ))
         });
@@ -418,8 +427,12 @@ mod tests {
                 name: "gpg-secret-key-backup".to_owned(),
             }])
         });
-        bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope(), BackupUpdateGuard::ValueDigest("rev".to_owned()))));
+        bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
+            Ok((
+                envelope_value(),
+                BackupUpdateGuard::ValueDigest("rev".to_owned()),
+            ))
+        });
         // 拒否時は更新へ進ませない。
         bws.expect_update_gpg_backup_envelope_if_unchanged()
             .times(0);

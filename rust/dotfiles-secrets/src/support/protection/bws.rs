@@ -21,6 +21,15 @@ struct ZeroizingAccessTokenLoginRequest {
     inner: AccessTokenLoginRequest,
 }
 
+/// SDK update request が借用を終えるまで repository 所有の文字列を zeroize する guard。
+///
+/// `SecretPutRequest` は SDK 呼び出し中も `note` / `value` を所有する。SDK へ借用で渡す間は
+/// この guard が request を保持し、成功・SDK error・guard 一致失敗後の early return のいずれでも
+/// repository が所有する response 由来の `note` を Drop 時に zeroize する。
+struct ZeroizingSecretPutRequest {
+    inner: SecretPutRequest,
+}
+
 /// core dump 抑止を確立した BWS SDK client session。
 ///
 /// BWS SDK の login/list/get 境界へ入る前に `SecretSession` を開始し、access token と返却 secret
@@ -51,6 +60,24 @@ impl Drop for ZeroizingAccessTokenLoginRequest {
     }
 }
 
+impl ZeroizingSecretPutRequest {
+    fn new(inner: SecretPutRequest) -> Self {
+        Self { inner }
+    }
+
+    fn as_request(&self) -> &SecretPutRequest {
+        &self.inner
+    }
+}
+
+impl Drop for ZeroizingSecretPutRequest {
+    fn drop(&mut self) {
+        self.inner.key.zeroize();
+        self.inner.value.zeroize();
+        self.inner.note.zeroize();
+    }
+}
+
 impl BwsClientSession {
     /// SDK client を借用し、BWS list/get 呼び出しを session lifetime 内で実行させる。
     pub(crate) fn client(&self) -> &Client {
@@ -61,11 +88,10 @@ impl BwsClientSession {
     ///
     /// 返却 secret の plaintext はこの protection backend 操作内に閉じ、caller へ `ProtectedSecret` の
     /// 汎用 borrow API を渡さない。caller は closure で検証済み value または error だけを返す。
-    pub(crate) async fn parse_secret_value_with_revision<R>(
+    pub(crate) async fn read_secret_value_with_revision(
         &self,
         id: Uuid,
-        parse: impl FnOnce(&str, &str) -> Result<R>,
-    ) -> Result<R> {
+    ) -> Result<(String, BackupUpdateGuard)> {
         let secret = self
             .client
             .secrets()
@@ -74,17 +100,12 @@ impl BwsClientSession {
             .context("Bitwarden SDK secret get failed")?;
         let revision = secret.revision_date.to_rfc3339();
         let value = Zeroizing::new(secret.value);
-        let mut protected = ProtectedSecret::new(value.len())?;
-        protected.with_secret_mut(|out| out.copy_from_slice(value.as_bytes()));
-        protected.with_secret_utf8(|json| parse(json, revision.as_str()))
+        let guard = BackupUpdateGuard::from_revision_or_value(revision, value.as_bytes());
+        Ok((value.to_string(), guard))
     }
 
     /// SDK get の raw value を protection 内で借用し、検証済みの境界型だけを返す。
-    pub(crate) async fn parse_secret_value<R>(
-        &self,
-        id: Uuid,
-        parse: impl FnOnce(&str) -> Result<R>,
-    ) -> Result<R> {
+    pub(crate) async fn read_secret_value(&self, id: Uuid) -> Result<String> {
         let secret = self
             .client
             .secrets()
@@ -92,7 +113,7 @@ impl BwsClientSession {
             .await
             .context("Bitwarden SDK secret get failed")?;
         let value = Zeroizing::new(secret.value);
-        parse(value.as_str())
+        Ok(value.to_string())
     }
 
     /// current value を外へ出さずに stale-overwrite guard を作る。
@@ -126,30 +147,91 @@ impl BwsClientSession {
             .await
             .context("Bitwarden SDK secret get before guarded update failed")?;
         let current_value = Zeroizing::new(current.value);
+        let current_note = Zeroizing::new(current.note);
         let current_guard = BackupUpdateGuard::from_revision_or_value(
             current.revision_date.to_rfc3339(),
             current_value.as_bytes(),
         );
-        expected_guard.ensure_matches(&current_guard)?;
-        let current_project_id = current
-            .project_id
-            .ok_or_else(|| anyhow::anyhow!("Bitwarden SDK secret response omitted project_id"))?;
-        if current_project_id != expected_project_id {
-            anyhow::bail!("Bitwarden SDK secret project changed before guarded update");
-        }
+        let current_project_id = guarded_update_preflight(
+            &current_note,
+            expected_guard,
+            &current_guard,
+            current.project_id,
+            expected_project_id,
+        )?;
+        let request = ZeroizingSecretPutRequest::new(SecretPutRequest {
+            id,
+            organization_id: current.organization_id,
+            key,
+            value,
+            note: current_note.to_string(),
+            project_ids: Some(vec![current_project_id]),
+        });
         self.client
             .secrets()
-            .update(&SecretPutRequest {
-                id,
-                organization_id: current.organization_id,
-                key,
-                value,
-                note: current.note,
-                project_ids: Some(vec![current_project_id]),
-            })
+            .update(request.as_request())
             .await
             .context("Bitwarden SDK guarded secret update failed")?;
         Ok(())
+    }
+}
+
+/// guarded update の停止条件を、response 由来 note の protection lifetime 内で確認する。
+///
+/// `note` はこの関数の error return（guard 不一致、project 欠落・変更）まで `Zeroizing` のまま
+/// 保持される。caller は成功時だけ SDK request へ note を複製し、request guard が SDK update 完了まで
+/// その複製を zeroize 対象として保持する。
+fn guarded_update_preflight(
+    note: &Zeroizing<String>,
+    expected_guard: &BackupUpdateGuard,
+    current_guard: &BackupUpdateGuard,
+    current_project_id: Option<Uuid>,
+    expected_project_id: Uuid,
+) -> Result<Uuid> {
+    let _protected_note_len = note.len();
+    expected_guard.ensure_matches(current_guard)?;
+    let current_project_id = current_project_id
+        .ok_or_else(|| anyhow::anyhow!("Bitwarden SDK secret response omitted project_id"))?;
+    if current_project_id != expected_project_id {
+        anyhow::bail!("Bitwarden SDK secret project changed before guarded update");
+    }
+    Ok(current_project_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guarded_update_preflight;
+    use crate::domain::gpg_backup::BackupUpdateGuard;
+    use uuid::Uuid;
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn guarded_update_preflight_keeps_response_note_protected_on_guard_failure() {
+        let note = Zeroizing::new("response note".to_owned());
+        let result = guarded_update_preflight(
+            &note,
+            &BackupUpdateGuard::ValueDigest("expected".to_owned()),
+            &BackupUpdateGuard::ValueDigest("current".to_owned()),
+            Some(Uuid::new_v4()),
+            Uuid::new_v4(),
+        );
+        assert!(result.is_err());
+        assert_eq!(note.as_str(), "response note");
+    }
+
+    #[test]
+    fn guarded_update_preflight_keeps_response_note_protected_on_project_failure() {
+        let note = Zeroizing::new("response note".to_owned());
+        let project = Uuid::new_v4();
+        let result = guarded_update_preflight(
+            &note,
+            &BackupUpdateGuard::ValueDigest("same".to_owned()),
+            &BackupUpdateGuard::ValueDigest("same".to_owned()),
+            Some(project),
+            Uuid::new_v4(),
+        );
+        assert!(result.is_err());
+        assert_eq!(note.as_str(), "response note");
     }
 }
 

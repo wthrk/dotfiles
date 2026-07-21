@@ -1,6 +1,6 @@
 # YubiKey 秘密情報保存設計
 
-この文書は、[secret-recovery-spec.md](./secret-recovery-spec.md) の [責務分担 / YubiKey](./secret-recovery-spec.md#yubikey) を具体化する到達設計仕様を定義する恒久文書である。対象は `bw-email`、`bw-password`、`bitwarden-client-secret` を YubiKey に保存し、復旧コマンドから安全に取得するための `dotfiles secrets yubikey` サブコマンドである。
+この文書は、[secret-recovery-spec.md](./secret-recovery-spec.md) の [責務分担 / YubiKey](./secret-recovery-spec.md#yubikey) を具体化する到達設計仕様を定義する恒久文書である。復旧に保存する対象は Bitwarden Secrets Manager access token の `bitwarden-client-secret` だけであり、YubiKey を挿して復旧コマンドを実行する利用者契約を実現するために `dotfiles secrets yubikey` サブコマンドが安全に取得する。
 
 この文書は完成形の設計だけを扱う。
 
@@ -77,17 +77,15 @@ PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は hos
 Object ID と用途の対応は次のとおり。
 
 - `0x005FFF16`: dotfiles secret storage manifest
-- `0x005FFF17`: `bw-email` encrypted blob
-- `0x005FFF18`: `bw-password` encrypted blob
 - `0x005FFF19`: `bitwarden-client-secret` encrypted blob
 
 PIV data object は app 独自データを置けるが、今回使う object は PIN なしで読めるものとして扱う。そのため data object に置くのは manifest と暗号化済み blob だけにする。平文 secret や平文 content encryption key を置くと、object を読めるだけで復号できるため禁止する。
 
 ## スペア YubiKey
 
-この文書で扱うスペア YubiKey は、`dotfiles` 独自の bootstrap secret storage に限る。Bitwarden、GitHub、Google、Apple など外部サービスの FIDO2 / passkey / U2F / OTP 登録は各サービス側で primary と spare を別々に登録する。OATH TOTP は同じ TOTP secret / QR code を primary と spare の両方に登録する。
+この文書で扱うスペア YubiKey は、`dotfiles` 独自の BWS recovery credential storage に限る。外部サービスの FIDO2 / passkey / U2F / OTP / OATH TOTP 登録は repository の CLI surface 外であり、この storage の保存対象・復旧停止条件に含めない。
 
-スペア YubiKey は事前登録を必須にする。primary YubiKey の紛失後に、primary だけに保存されていた `bw-email`、`bw-password`、`bitwarden-client-secret` からスペアを後付け作成することはできない。
+スペア YubiKey は事前登録を必須にする。primary YubiKey の紛失後に、primary だけに保存されていた `bitwarden-client-secret` からスペアを後付け作成することはできない。
 
 同じ PIV 秘密鍵を複製して複数 YubiKey に入れる運用は採用しない。各 YubiKey で slot `82` に別々の non-exportable key を生成し、同じ secret をその YubiKey の public key で個別に wrap して保存する。
 
@@ -101,11 +99,11 @@ dotfiles secrets yubikey enroll-spare
 
 1. primary / spare YubiKey をそれぞれ serial 明示または単一接続 device として解決し、同一 serial でないことを確認する。
 2. primary secret を復号する前に、spare の専用 PIV slot / object が未使用であり enrollment 可能であることを事前検査する。
-3. touch を経て primary から `bw-email`、`bw-password`、`bitwarden-client-secret` を復号する。
+3. touch を経て primary から `bitwarden-client-secret` を復号する。
 4. spare の setup を行い、primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
-5. ローカル確認を実行し、spare 単体で 3 種類の保存 secret を復号できることを確認する。
+5. ローカル確認を実行し、spare 単体で `bitwarden-client-secret` を復号できることを確認する。
 
-secret はプロセスメモリ上の `ProtectedSecret` にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bw-email`、`bw-password`、`bitwarden-client-secret` の再入力を要求しない。
+secret はプロセスメモリ上の `ProtectedSecret` にだけ保持し、CLI 引数、ログ、一時ファイル、環境変数には残さない。通常の `enroll-spare` は利用者に `bitwarden-client-secret` の再入力を要求しない。
 
 spare に保存する blob は primary の ciphertext、nonce、wrapped key を流用しない。spare の PIV public key に対して新しい content encryption key を wrap し、AEAD additional data には spare の serial と保存先 object ID を使う。これにより、primary 由来の serial や blob を spare 側に持ち込まない。
 
@@ -174,7 +172,7 @@ tag: [u8; 16]
 Envelope encryption は次の役割分担にする。
 
 - `algorithm = 1` は AES-256-GCM を表す。
-- `secret_id` は `1 = bw-email`、`2 = bw-password`、`3 = bitwarden-client-secret` を表す。
+- `secret_id` は `1 = bitwarden-client-secret` を表す。
 - secret 本文は secret ごとに生成するランダムな 32-byte content encryption key で AEAD 暗号化する。
 - AES-256-GCM の nonce は 12 bytes、tag は 16 bytes に固定する。format 互換性を単純に保つため、nonce / tag の可変長 field は持たない。
 - content encryption key は slot `82` の RSA public key で wrap し、平文では保存しない。
@@ -208,7 +206,7 @@ Envelope encryption は次の役割分担にする。
 
 ### `dotfiles secrets yubikey put <name>`
 
-`put` は低水準コマンドであり、通常の primary / spare 登録では `enroll-primary` / `enroll-spare` を使う。`<name>` は `bw-email`、`bw-password`、`bitwarden-client-secret` のみ許可する。それ以外は CLI parsing 後の 検証 で拒否する。
+`put` は低水準コマンドであり、通常の primary / spare 登録では `enroll-primary` / `enroll-spare` を使う。`<name>` は `bitwarden-client-secret` だけを許可する。それ以外は CLI parsing 後の検証で拒否する。
 
 secret 入力は次の順で受け付ける。
 
@@ -233,22 +231,20 @@ provisioning script が `clear` または `setup` へ移行できる終了コー
 
 ### `dotfiles secrets yubikey enroll-primary`
 
-primary YubiKey を復旧入口として登録する高水準コマンドである。これは bootstrap secret の正本を最初に登録する操作なので、`bw-email`、`bw-password`、`bitwarden-client-secret` を prompt から受け取る。`bw-email` は通常表示 prompt、`bw-password` と `bitwarden-client-secret` は hidden prompt にする。非対話または migration 用に限り `--stdin-json` を許可する。
+primary YubiKey を復旧入口として登録する高水準コマンドである。これは BWS recovery credential の正本を最初に登録する操作なので、`bitwarden-client-secret` だけを hidden prompt から受け取る。非対話または migration 用に限り `--stdin-json` を許可する。
 `--stdin-json` を使う場合も PIV PIN は JSON payload に含めず、controlling TTY の hidden prompt だけから受け取る。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
 spare YubiKey を復旧入口として登録する高水準コマンドである。primary から bootstrap secret を読み出して spare に再暗号化する操作にまとめ、利用者が低水準コマンドを手順として並べたり、secret を再入力したりしなくてよいようにする。
 
-通常実行では、primary / spare の serial を解決し、spare の secret storage が enrollment 可能であることを事前検査してから、primary から 3 種類の保存 secret を復号する。primary と spare を同時に接続して `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。両方を接続すると複数 device となるため、serial を省略すると停止する。現行の prompt 実行は、primary の復号後に spare を接続する差し替え待ちや Enter prompt を提供しない。したがって、YubiKey を 1 本ずつしか接続できない環境では通常実行を完了できない。
+通常実行では、primary / spare の serial を解決し、spare の secret storage が enrollment 可能であることを事前検査してから、primary から `bitwarden-client-secret` を復号する。primary と spare を同時に接続して `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。両方を接続すると複数 device となるため、serial を省略すると停止する。現行の prompt 実行は、primary の復号後に spare を接続する差し替え待ちや Enter prompt を提供しない。したがって、YubiKey を 1 本ずつしか接続できない環境では通常実行を完了できない。
 
 `--stdin-json` は primary YubiKey が利用できないが、別経路で正本 secret を持っている場合の recovery / migration 用に限る。この場合だけ次の JSON を stdin から 1 回だけ受け取る。
 `enroll-primary` と `enroll-spare --stdin-json` は bootstrap secret を JSON payload から通常どおり読み、PIV PIN は payload ではなく controlling TTY の hidden prompt から受け取る。
 
 ```json
 {
-  "bw-email": "user@example.com",
-  "bw-password": "secret",
   "bitwarden-client-secret": "secret"
 }
 ```
@@ -298,7 +294,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 
 - `--serial <serial>`: 対象 YubiKey を指定する。serial 未指定時は、1 本だけ接続されていれば自動選択し、複数本接続時は一覧表示や選択へ進まず停止する。
 - `--check bws`: `bitwarden-client-secret` で Bitwarden Secrets Manager から `gpg-secret-key-backup` と `password-store-remote` を取得できることに加え、`gpg-secret-key-backup` envelope schema（`version` / `metadata` / `recipients` / `ciphertext`）と `metadata.primary_fingerprint` 形式（lowercase hex 40 文字、区切りなし）を検証し、接続中 YubiKey に一致する recipient（`yubikey_serial` と `public_key_fingerprint` の両一致）を照合して、unwrap なしで判定できる復旧可能性（少なくとも一致 recipient の存在）を確認する外部確認項目。secret 本文の平文化や unwrap は行わず、利用できない場合は失敗する。
-- `verify-yubikey` は Bitwarden Password Manager login を確認しない。`bw-email`、`bw-password`、YubiKey OTP、session は無対話復旧の前提ではない。Password Manager login は repository の CLI surface 外であり、`--check` / `--all` の対象に含めない。
+- `verify-yubikey` は BWS recovery credential と BWS recovery object だけを確認する。Bitwarden Password Manager login、email、master password、YubiKey OTP、session は無対話復旧の入力・分岐・停止条件ではなく、`--check` / `--all` の対象に含めない。
 - `--all`: ローカル保管確認と外部確認を含む全確認項目を実行する。指定した確認項目のいずれかが利用できない場合は失敗する。
 
 外部確認を明示要求した場合（`--check bws`、`--all`）は、`skipped` を成功扱いにせず、外部確認が利用できないことを エラー として返す。引数なしの `verify-yubikey` は ローカル保管 のみ検証し、BWS 外部確認を `skipped` として 要約 に残す。
@@ -363,12 +359,12 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - 固定 object ID mapping。
 - `put` の既存 blob 検出と `--force`。
 - blob parser が trailing bytes と不正 length を拒否すること。
-- `enroll-primary` が setup、3 種類の secret 保存、ローカル確認 を順に実行すること。
+- `enroll-primary` が setup、`bitwarden-client-secret` の保存、ローカル確認を順に実行すること。
 - `enroll-spare` が primary / spare serial 解決、spare storage 事前検査、primary 読み出し、spare setup、spare への再暗号化保存、ローカル確認を順に実行すること。
 - `enroll-spare` が primary / spare 同一 serial と、primary secret 読み出し前の spare storage 事前検査失敗を拒否すること。
 - `enroll-spare` が secret 読み込み前に core dump 無効化を実行すること。
 - `enroll-spare` の エラー path で `ProtectedSecret` が zeroize されること。
-- `rotate-bws-token` が `bitwarden-client-secret` だけを更新し、`bw-email` と `bw-password` を変更しないこと。
+- `rotate-bws-token` が `bitwarden-client-secret` だけを更新すること。
 - `verify-yubikey` ローカル保管確認 の正常系と missing manifest / missing blob / decrypt failure。
 - empty secret の拒否。
 - blob magic / version / secret id mismatch の拒否。

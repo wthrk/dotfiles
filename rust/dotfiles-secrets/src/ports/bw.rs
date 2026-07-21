@@ -31,28 +31,28 @@ pub trait BwsClientPort {
         project_id: &BwsProjectId,
     ) -> Result<Vec<BwsLookupCandidate<BwsSecretId>>>;
 
-    /// `gpg-secret-key-backup` の encrypted envelope と、その stale overwrite 防止 guard を取得する。
+    /// 解決済み BWS secret の opaque value と stale-overwrite 防止 guard を取得する。
     ///
-    /// implementor は取得した secret value bytes を [`GpgBackupEnvelope::from_json`] で domain 値へ
-    /// 翻訳し、SDK の revision / updatedAt / ETag 相当を [`BackupUpdateGuard::from_revision`] で、取得
-    /// できなければ exact value bytes から [`BackupUpdateGuard::from_value_bytes`] で fallback guard を作る。
-    /// secret 値は encrypted envelope であり平文鍵素材を含まない。
+    /// implementor は SDK の get と revision / value bytes からの guard 構築だけを担う。value の
+    /// schema、用途、成功条件は決めず、application が対象の domain rule
+    /// [`GpgBackupEnvelope::from_json`] / [`PasswordStoreRemote::parse`] に渡して確定する。
+    /// `gpg-secret-key-backup` の value は encrypted envelope であり平文鍵素材を含まない。
     async fn fetch_gpg_backup_envelope(
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)>;
+    ) -> Result<(String, BackupUpdateGuard)>;
 
-    /// `password-store-remote` secret value を取得し、GitHub SSH clone URL として domain 検証した値を返す。
+    /// 解決済み `password-store-remote` の opaque value を取得する。
     ///
-    /// implementor は取得した secret value 文字列を [`PasswordStoreRemote::parse`] で domain 値へ翻訳する。
-    /// clone URL は秘密情報ではないため `ProtectedSecret` ではなく検証済み domain 値として返し、URL 形式の
-    /// 妥当性判断（`git@github.com:<owner>/<repo>.git`）は domain rule に委ねて adapter で再定義しない。
+    /// implementor は SDK get だけを担う。GitHub SSH clone URL としての検証は application が
+    /// [`PasswordStoreRemote::parse`] で行う。clone URL は credential ではないが private repository の
+    /// 所在を示すため、caller は表示・log・report に出さない。
     async fn fetch_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> Result<PasswordStoreRemote>;
+    ) -> Result<String>;
 
     /// 指定 project に新しい `gpg-secret-key-backup` envelope を作成し、その ID を返す。
     ///
