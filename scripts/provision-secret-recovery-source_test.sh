@@ -22,6 +22,20 @@ test_script_does_not_transport_yubikey_pin() {
   fi
 }
 
+test_repo_head_selects_production_cli_binary() {
+  local invocation_log="$TEST_DIR/repo-head-cargo-invocation.log"
+  direnv() {
+    printf '%s\n' "$*" > "$invocation_log"
+  }
+
+  run_dotfiles_from_repo_head gpg export-ssh-public-key --primary-fingerprint fixture-fingerprint
+  grep -Fxq \
+    'exec . cargo run -p dotfiles-cli --bin dotfiles -- gpg export-ssh-public-key --primary-fingerprint fixture-fingerprint' \
+    "$invocation_log" \
+    || fail '--repo-head は feature 専用 stub ではなく production dotfiles binary を明示しなければならない'
+  unset -f direnv
+}
+
 reset_test_state() {
   unset BWS_ACCESS_TOKEN
   PUT_LOG="$TEST_DIR/put.log"
@@ -288,5 +302,6 @@ test_put_failure_other_than_uninitialized_does_not_setup_or_retry
 test_invalid_storage_clears_then_puts
 test_clear_failure_does_not_prompt_or_put
 test_unobservable_status_failure_does_not_clear_prompt_or_put
-test_repo_head_retry_preserves_piped_token
 test_script_does_not_transport_yubikey_pin
+test_repo_head_selects_production_cli_binary
+test_repo_head_retry_preserves_piped_token

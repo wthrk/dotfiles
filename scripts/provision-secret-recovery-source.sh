@@ -48,7 +48,7 @@ SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}" # 任意。指定時は gpg-bac
 # `--repo-head` 時も、`put --stdin` の標準入力だけは呼び出し元の pipe をそのまま渡す。
 # 他の CLI 呼び出しは後段の `dotfiles` wrapper が controlling terminal を使う。
 run_dotfiles_from_repo_head() {
-  (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli -- "$@")
+  (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli --bin dotfiles -- "$@")
 }
 dotfiles_with_stdin() {
   if [ "$USE_REPO_HEAD" -eq 1 ]; then
