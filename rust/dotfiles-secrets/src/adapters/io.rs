@@ -27,6 +27,9 @@ impl SecretInputPort for ProcessIoBackend {
     fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret> {
         io_backend::read_bitwarden_client_secret_secret()
     }
+    fn read_bitwarden_client_secret_tty_secret(&self) -> Result<ProtectedSecret> {
+        io_backend::read_bitwarden_client_secret_tty_secret()
+    }
     fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
         io_backend::read_streamed_secret()
     }

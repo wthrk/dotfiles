@@ -38,6 +38,12 @@ pub trait SecretStoragePort {
     /// read/decrypt/status path は呼ばない。adapter は fresh PIV handle ごとにこの保護値を
     /// `verify_pin` へ渡し、PIN-protected management key を取得・認証してから管理操作を行う。
     fn begin_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()>;
+    /// 新たに hidden TTY から読んだ PIN で、次の対象 YubiKey 用の管理 session を開始する。
+    ///
+    /// 複数 YubiKey を一 command で順番に更新する場合だけ使う。caller は先に次の serial を
+    /// 解決してから PIN を新規に入力しなければならず、前 session の PIN を別 serial へ再利用
+    /// してはならない。
+    fn begin_next_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()>;
     /// setup 判定に必要な storage 状態を取得する。
     fn inspect_secret_storage_setup(
         &mut self,

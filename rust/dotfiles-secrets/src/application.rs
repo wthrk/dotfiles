@@ -10,6 +10,7 @@ pub(crate) mod run_enroll_spare_with_prompt;
 pub(crate) mod run_enroll_spare_with_stdin_json;
 pub(crate) mod run_export_ssh_public_key;
 pub(crate) mod run_provision_password_store_remote;
+pub(crate) mod run_provision_yubikey_bws_token_with_prompt;
 pub(crate) mod run_put_with_prompt;
 pub(crate) mod run_put_with_stdin;
 pub(crate) mod run_register_gpg_backup_primary;

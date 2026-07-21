@@ -108,6 +108,10 @@ struct YubiKeyDatastore {
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct StubDeviceDatastore {
     key_exists: bool,
+    #[serde(default)]
+    connection_count: u32,
+    #[serde(default)]
+    physical_verify_count: u32,
     key_metadata_requires_management_auth: bool,
     #[serde(default)]
     slot_public_key_spki: Option<Vec<u8>>,
@@ -134,6 +138,10 @@ struct PersistentYubiKeyDatastore {
 struct PersistentStubDeviceDatastore {
     key_exists: bool,
     #[serde(default)]
+    connection_count: u32,
+    #[serde(default)]
+    physical_verify_count: u32,
+    #[serde(default)]
     key_metadata_requires_management_auth: bool,
     #[serde(default)]
     slot_public_key_spki: Option<Vec<u8>>,
@@ -154,6 +162,8 @@ struct YubiKeyObservation {
 #[derive(serde::Serialize)]
 struct StubDeviceObservation {
     key_exists: bool,
+    connection_count: u32,
+    physical_verify_count: u32,
     stored_secrets: BTreeMap<String, String>,
 }
 
@@ -200,6 +210,10 @@ impl SecretDeviceIo for TestStubSecretDevice {
         let _pin = pin.ok_or_else(|| anyhow::anyhow!("stub PIV management session has no PIN"))?;
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
+            // Test-only physical-operation counter. A management session must issue one
+            // VERIFY per selected serial, even when the subsequent command has several
+            // inspection/store/finalize calls.
+            device.physical_verify_count += 1;
             match device.management_state {
                 StubManagementState::B0Default => {
                     anyhow::bail!(
@@ -397,6 +411,10 @@ pub(crate) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
 }
 
 pub(crate) fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
+    with_datastore(|store| {
+        device_store_mut(store, serial)?.connection_count += 1;
+        Ok(())
+    })?;
     Ok(SelectedSecretDevice::new(TestStubSecretDevice {
         serial,
         management_authenticated: false,
@@ -508,6 +526,8 @@ fn persistent_datastore_from(store: &YubiKeyDatastore) -> PersistentYubiKeyDatas
                 serial.clone(),
                 PersistentStubDeviceDatastore {
                     key_exists: device.key_exists,
+                    connection_count: device.connection_count,
+                    physical_verify_count: device.physical_verify_count,
                     key_metadata_requires_management_auth: device
                         .key_metadata_requires_management_auth,
                     slot_public_key_spki: device.slot_public_key_spki.clone(),
@@ -533,6 +553,8 @@ fn datastore_from_persistent(persistent: PersistentYubiKeyDatastore) -> Result<Y
                 serial,
                 StubDeviceDatastore {
                     key_exists: persisted.key_exists,
+                    connection_count: persisted.connection_count,
+                    physical_verify_count: persisted.physical_verify_count,
                     key_metadata_requires_management_auth: persisted
                         .key_metadata_requires_management_auth,
                     slot_public_key_spki: persisted.slot_public_key_spki,
@@ -622,6 +644,8 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
     );
     StubDeviceDatastore {
         key_exists: true,
+        connection_count: 0,
+        physical_verify_count: 0,
         key_metadata_requires_management_auth: false,
         slot_public_key_spki: Some(public_key_spki),
         reserved_slot_certificate_exists: false,
@@ -657,6 +681,8 @@ fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
                 serial.clone(),
                 StubDeviceObservation {
                     key_exists: device.key_exists,
+                    connection_count: device.connection_count,
+                    physical_verify_count: device.physical_verify_count,
                     stored_secrets: device.secrets.clone(),
                 },
             )

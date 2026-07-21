@@ -133,14 +133,19 @@ YubiKey に保存すべき bootstrap secret のうち、設定済みの名前を
 
 `status` は PIV PIN を要求してはならない。PIN prompt が発生した場合は成功扱いにせず、実装回帰として停止する。
 
-### provisioning script の終了コード契約
+### provisioning source の単一 command 契約
 
-provisioning script が状態遷移の根拠にしてよい公開終了コードは次だけである。
+`scripts/provision-secret-recovery-source.sh` は `status` / `clear` / `setup` / `put` の終了コードを
+組み合わせて state transition を決めてはならない。BWS token の保存は
+`dotfiles secrets yubikey provision-bws-token [--serial <serial>]` 一回へ委譲する。この command が
+serial 解決、hidden TTY PIV PIN の一回入力、予約 storage の観測、観測済み不整合だけの clear、完全な
+空領域だけの初期化、hidden TTY BWS token 入力、保存、同一 PIV handle での local decrypt 検証を一つの
+process / management session に閉じる。
 
-- `42`: `yubikey status` が予約 storage の観測済み不整合を検出した。script はこの場合だけ `clear` へ移行してよい。
-- `43`: `yubikey put` が完全に未初期化の専用領域を検出した。script はこの場合だけ `setup` 後に同じ `put` を再試行してよい。
-
-これ以外の終了コードは状態に分類せず停止する。USB / PCSC / device discovery / serial 解決などの観測失敗を `42` または `43` に変換してはならない。
+`42`（`status` の観測済み不整合）と `43`（低水準 `put` の完全未初期化）は個別 command の互換的な
+公開終了コードとして残るが、provisioning script の遷移根拠ではない。USB / PCSC / device discovery /
+serial 解決 / SDK error をこれらの状態に変換せず、`provision-bws-token` は typed
+`SecretStorageStatusInvalid` だけを clear の根拠にし、それ以外を fail-closed で伝播する。
 
 ### `dotfiles secrets yubikey clear --yes`
 
@@ -150,7 +155,7 @@ provisioning script が状態遷移の根拠にしてよい公開終了コード
 
 ### YubiKey PIV PIN の利用境界
 
-PIV 管理操作である `setup`、`put`、`clear`、`enroll-primary`、`enroll-spare`、`rotate-bws-token` は、設定済み PIV PIN を controlling TTY の hidden prompt から受け取り、fresh handle ごとに `verify_pin`、PIN-protected management key の取得、management-key authentication を順に行う。wrong/blocked/opaque PIN error は default key、PUK、reset、retry へ fallback せず停止する。
+PIV 管理操作である `setup`、`put`、`clear`、`enroll-primary`、`enroll-spare`、`rotate-bws-token` は、設定済み PIV PIN を controlling TTY の hidden prompt から受け取り、command 内の最初に解決した対象 serial へ一つだけ開く handle で `verify_pin`、PIN-protected management key の取得、management-key authentication を順に行う。後続の inspection、保存、finalize、local verification は同じ handle を使い、PIN 一入力につき physical VERIFY は一回だけとする。`rotate-bws-token` が別 serial の更新へ継続する場合は、対象を解決してから新しい hidden TTY PIN を読み、前 session を閉じて独立した handle / authentication を作る。前 serial の PIN を別 serial に再利用してはならない。wrong/blocked/opaque PIN error は default key、PUK、reset、retry へ fallback せず停止する。
 
 `status`、`verify-yubikey`、`restore-gpg`、`restore-pass`、GPG backup/BWS provisioning の YubiKey 読み出し・復号経路は PIN を要求してはならない。特に無対話復旧の利用者契約を管理操作へ拡張しない。
 
@@ -167,7 +172,7 @@ spare YubiKey を復旧入口として初期登録する。通常は primary Yub
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bitwarden-client-secret` を更新し、更新後に ローカル確認 を実行する。BWS 接続確認は ローカル保管 の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。出力 要約 の serial を確認し、対象全本が更新済みになるまで更新する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
+指定 YubiKey の `bitwarden-client-secret` を更新し、更新後に ローカル確認 を実行する。BWS 接続確認は ローカル保管 の検証とは別の外部確認として扱う。primary と spare を複数本運用する場合は、新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続し、対象 serial の解決後にその YubiKey 用の新しい PIV PIN を controlling TTY から読む。前の YubiKey 用 PIN を再利用しない。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。出力 要約 の serial を確認し、対象全本が更新済みになるまで更新する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で渡せる。
 token 入力前に ローカル保管 の復号可能性を確認し、更新不能な状態では新しい token を読まずに停止する。
 `--stdin` で token を渡す場合も、PIN は token 用 stdin から読まず、controlling TTY の hidden prompt だけから受け取る。
 

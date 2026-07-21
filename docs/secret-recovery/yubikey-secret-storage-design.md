@@ -35,7 +35,7 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 - data object は YubiKey が undefined DataTag として受け付ける範囲から `0x005FFF16` から `0x005FFF1a` までを使う。
 - manifest は format sentinel としてだけ使う。slot や object ID の解釈を manifest で動的に変えない。
 - スペア YubiKey は同じ PIV 秘密鍵を複製せず、各 YubiKey で専用鍵を生成して同じ secret を個別に保存する。
-- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` を直接並べる手順にしない。設定済みの bootstrap secret 名の確認には `status` を使う。
+- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` を直接並べる手順にしない。provisioning source が BWS token を保存する場合は `provision-bws-token` を一回だけ呼び、script が `status` / `clear` / `setup` / `put` を別 process として組み立てない。設定済みの bootstrap secret 名の確認には `status` を使う。
 - `dotfiles secrets verify-yubikey` で、挿さっている YubiKey が bootstrap secret を復号できることを確認する。
 - `dotfiles secrets yubikey setup` は既存の PIV credential や data object と衝突した場合に停止する。
 - `put` は同名 secret が存在する場合、`--force` が指定されていなければ停止する。
@@ -70,7 +70,7 @@ YubiKey adapter は次を満たす。
 
 PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。`yubikey` crate の PIV decrypt API から得た raw decrypt bytes は、secret storage adapter 境界で OAEP unpad して content key に戻す。`rsa` crate は raw RSA 復号結果に対する OAEP unpad API を公開していないため、OAEP unpad は CLI 側で最小実装を持つ。この実装は invalid padding の判定で separator 位置による短絡を避けるが、constant-time primitive として扱わない。Manger 攻撃に対する境界は、復号対象を 32-byte content encryption key に限定し、YubiKey touch によって oracle としての利用回数と自動化を制限する。復号 read path は PIV PIN の入力・検証を行わない。
 
-管理操作（`setup`、`put`、`clear`、enroll、rotate）は hidden TTY PIN → `verify_pin` → `MgmKey::get_protected` → `YubiKey::authenticate` の順に fresh handle ごとに実行する。read / unwrap / status / verify / recovery path は PIN も management key も default key も使わない。wrong、blocked、opaque error は retry、PUK、reset、default key fallback をせず停止する。serial 未指定時は共通の device discovery が接続中の単一 YubiKey を解決し、その同じ device を read / unwrap / storage 操作の対象にする。接続なし・複数接続は引き続き停止する。touch policy は `Always` とし、secret 復号操作ごとに YubiKey touch を要求する。
+管理操作（`setup`、`put`、`clear`、enroll、rotate、`provision-bws-token`）は hidden TTY PIN → `verify_pin` → `MgmKey::get_protected` → `YubiKey::authenticate` の順に、**最初に選んだ serial へ command 内で一つだけ保持する PIV handle** で実行する。認証後の inspection、generate、store、finalize、同 command の local verification は同じ handle を使い、operation ごとに reopen / VERIFY しない。`provision-bws-token` は status 観測もこの handle で行い、typed storage invalid 時だけ clear / finalize、完全な空領域だけ setup / finalize してから token を読み、保存後に同じ handle で復号検証する。PIN 入力一回につき physical VERIFY は一回だけであり、ykman の PIN-protected flow が同一 session で行う「VERIFY を最後の APDU に戻す」second VERIFY は採用しない。serial 未指定時は共通の device discovery が接続中の単一 YubiKey を command の先頭で一回だけ解決し、その同じ device を対象にする。管理 session 開始後に別 serial が要求された場合は、その session では PIN を再利用して新しい handle / VERIFY を作らず停止する。`rotate-bws-token` の継続だけは次 serial の解決後に新しい hidden TTY PIN を読み、前 session を drop して新しい single-device session を開始する。read / unwrap / status / verify / recovery path は PIN も management key も default key も使わない。wrong、blocked、opaque error は retry、PUK、reset、default key fallback をせず停止する。slot `82` は `PinPolicy::Never` と `TouchPolicy::Always` で生成する。`Never` は復旧 private-key operation に PIN を追加要求しない policy、`Always` は各 unwrap に touch を要求する policyであり、管理操作の PIN-protected management-key 認証とは別である。接続なし・複数接続は引き続き停止する。
 
 ### Object IDs
 
@@ -123,7 +123,7 @@ dotfiles secrets yubikey enroll-primary
 dotfiles secrets yubikey rotate-bws-token
 ```
 
-`rotate-bws-token` は新しい token を一度だけ受け取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。各 YubiKey への保存後に ローカル確認 を行う。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial <serial>` を指定して 1 本ずつ実行する。利用者は 要約 に出た serial で primary とすべての spare が更新済みであることを確認する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、ローカル保管 の検証とは別の確認として 要約 に残す。非対話実行では `--serial <serial>` と `--stdin` を指定して 1 本ずつ更新する。
+`rotate-bws-token` は新しい token を一度だけ受け取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。各 YubiKey への保存後に ローカル確認 を行う。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続し、serial 解決後にその YubiKey 用の新しい PIV PIN を controlling TTY から読む。前の session の PIN を別 serial へ再利用しない。複数本を接続したまま進める場合は同一実行で継続せず、`--serial <serial>` を指定して 1 本ずつ実行する。利用者は 要約 に出た serial で primary とすべての spare が更新済みであることを確認する。BWS 接続確認は `verify-yubikey --check bws` 側の確認項目であり、ローカル保管 の検証とは別の確認として 要約 に残す。非対話実行では `--serial <serial>` と `--stdin` を指定して 1 本ずつ更新する。
 
 外部サービスの登録状況は YubiKey PIV object からは検証できないため、`setup` / `put` / `status` の成功は GitHub、Bitwarden、Google、Apple などで 予備キー が登録済みであることを保証しない。
 
@@ -234,7 +234,7 @@ CLI 引数で secret 本文は受け取らない。`--stdin` は pipe または 
 
 clear は予約済み manifest / secret object と slot 82 certificate を消去し、slot 82 の専用 key を再生成して置換し、その生成済み SPKI を持つ空の version 2 manifest を同じ管理操作で確定する。既存 key を消去する操作は行わない。予約外の PIV 領域および FIDO2 / OTP / OpenPGP は対象外である。したがって clear 成功後に `setup` を実行してはならない（正常な empty v2 storage への setup は no-op でも余分な PIN session になる）。`--yes` の確認後にだけ hidden TTY PIV PIN を受け取り、PIN-protected management key で認証する。
 
-provisioning script が `clear` または `setup` へ移行できる終了コード契約は、設計文書では重複定義せず [secret-recovery spec](secret-recovery-spec.md) に従う。
+provisioning script は `clear` または `setup` の終了コード契約を利用せず、[spec の単一 command 契約](secret-recovery-spec.md#provisioning-source-の単一-command-契約) に従って `provision-bws-token` へ状態遷移全体を委譲する。
 
 ### `dotfiles secrets yubikey enroll-primary`
 
@@ -287,7 +287,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 
 ### `dotfiles secrets yubikey rotate-bws-token`
 
-指定 YubiKey の `bitwarden-client-secret` だけを更新する。対話実行では新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続する。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。primary とすべての spare は、出力 要約 の serial で対象全本の更新完了を確認する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に ローカル保管 が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は ローカル確認 を実行する。BWS 接続確認は ローカル保管 とは別の外部確認として扱う。
+指定 YubiKey の `bitwarden-client-secret` だけを更新する。対話実行では新しい token を一度だけ読み取り、更新ステップごとに 1 本だけ接続されている YubiKey または `--serial <serial>` で明示された YubiKey を更新する。serial 未指定で複数本接続されている場合は一覧表示や選択へ進まず停止する。serial 未指定の対話実行で同一実行内の継続 prompt に進む場合も、次の更新前に対象 YubiKey だけを接続し、serial 解決後にその YubiKey 用の新しい PIV PIN を controlling TTY から読む。前 session の PIN を別 serial へ再利用しない。複数本を接続したまま進める場合は同一実行で継続せず、`--serial` を指定して 1 本ずつ実行する。primary とすべての spare は、出力 要約 の serial で対象全本の更新完了を確認する。非対話実行では `--serial` で 1 本だけを更新し、token は `--stdin` で受け取れる。更新前に ローカル保管 が復号可能な状態かを確認し、更新不能なら token を読まずに停止する。更新後は ローカル確認 を実行する。BWS 接続確認は ローカル保管 とは別の外部確認として扱う。
 
 ### `dotfiles secrets verify-yubikey`
 

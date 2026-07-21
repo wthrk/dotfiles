@@ -34,6 +34,10 @@ impl SecretStoragePort for YubikeyStorageBackend {
         yubikey_storage::begin_piv_management_session(self, pin)
     }
 
+    fn begin_next_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()> {
+        yubikey_storage::begin_next_piv_management_session(self, pin)
+    }
+
     fn inspect_secret_storage_setup(
         &mut self,
         serial: u32,

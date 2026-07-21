@@ -448,11 +448,60 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("YubiKey PIV PIN: "));
     assert!(run.output.contains("bitwarden-client-secret: "));
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(
-        &run.final_yubikey()?,
+        &final_yubikey,
         PRIMARY_SERIAL,
         "bitwarden-client-secret",
         "new-token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "put inspection/store must retain the selected PIV connection"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "put must not repeat physical VERIFY for one hidden PIN input"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_keeps_inspect_setup_store_and_verify_in_one_piv_session() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "provision-bws-token", "--serial", "2001"],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", "provisioned-token\n"),
+        ],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(run.output.contains("YubiKey PIV PIN: "));
+    assert!(run.output.contains("bitwarden-client-secret: "));
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "provisioned-token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "provision must keep inspect/setup/store/local verification on one PIV connection"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "provision must issue exactly one physical VERIFY for one hidden PIN input"
     );
     Ok(())
 }
@@ -779,6 +828,16 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
         "bitwarden-client-secret",
         "token",
     );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "setup/store/finalize/local verification must retain one PIV connection"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "one hidden PIN input must produce exactly one physical PIV VERIFY"
+    );
     Ok(())
 }
 
@@ -883,11 +942,22 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     assert!(run.output.contains("YubiKey PIV PIN: "));
     assert!(run.output.contains("bitwarden-client-secret: "));
     assert!(run.output.contains("\"serial\": 2001"));
+    let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(
-        &run.final_yubikey()?,
+        &final_yubikey,
         PRIMARY_SERIAL,
         "bitwarden-client-secret",
         "new-token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "rotate preflight/store/local verification must retain the selected PIV connection"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "rotate must not repeat physical VERIFY for one hidden PIN input"
     );
     Ok(())
 }

@@ -24,6 +24,11 @@ use crate::Result;
 #[cfg_attr(test, mockall::automock)]
 pub trait SecretInputPort {
     fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret>;
+    /// controlling TTY からだけ BWS token を hidden input として取得する。
+    ///
+    /// source provisioning は shell pipe / stdin payload に token を置かないため、この capability
+    /// を使う。`--stdin` を明示した低水準 command の streamed input とは混同しない。
+    fn read_bitwarden_client_secret_tty_secret(&self) -> Result<ProtectedSecret>;
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }
 

@@ -32,11 +32,6 @@ while [ "$#" -gt 0 ]; do
     *) die "未知の引数です: $1" ;;
   esac
 done
-# BWS access token は command substitution と pipe で扱うため、`bash -x` 実行時でも値を trace へ
-# 出さない。復元はしない。
-{ set +x; } 2>/dev/null || true
-trap 'unset BWS_ACCESS_TOKEN' EXIT
-
 # ─── 設定（既定値を自動導出。必要なら環境変数で上書き）───
 GPG_ALGO_PRIMARY="${GPG_ALGO_PRIMARY:-ed25519}"
 GPG_ALGO_ENCRYPT="${GPG_ALGO_ENCRYPT:-cv25519}"
@@ -45,8 +40,7 @@ PROVISIONING_YUBIKEY_SERIAL="${PROVISIONING_YUBIKEY_SERIAL:-}" # primary recipie
 SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}" # 任意。指定時は gpg-backup add-spare まで実行する
 # ──────────────────────────────────────────────────────
 
-# `--repo-head` 時も、`put --stdin` の標準入力だけは呼び出し元の pipe をそのまま渡す。
-# 他の CLI 呼び出しは後段の `dotfiles` wrapper が controlling terminal を使う。
+# すべての CLI 呼び出しは後段の `dotfiles` wrapper が controlling terminal を使う。
 # 正本: docs/secret-recovery/initial-provisioning-runbook.md。Cargo の binary target 選択は
 # https://doc.rust-lang.org/cargo/reference/cargo-targets.html#binaries を根拠に `--bin` で明示する。
 # feature 専用の internal test stub ではなく、利用者向け production `dotfiles` を起動して
@@ -54,14 +48,6 @@ SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}" # 任意。指定時は gpg-bac
 run_dotfiles_from_repo_head() {
   (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli --bin dotfiles -- "$@")
 }
-dotfiles_with_stdin() {
-  if [ "$USE_REPO_HEAD" -eq 1 ]; then
-    run_dotfiles_from_repo_head "$@"
-  else
-    dotfiles "$@"
-  fi
-}
-
 log()   { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die()   { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -128,144 +114,18 @@ confirm_password_store_primary_fingerprint() {
     || die "password-store .gpg-id の recipient が変更されています。解決済み primary fingerprint と一致しません"
   log "password-store .gpg-id recipient の秘密鍵を再確認済み"
 }
-# TTY secret prompt の共通 I/O 契約。PIV PIN は子 Rust command が同じ契約で /dev/tty から受け取り、
-# この script は BWS token だけを扱う。値は mask 以外へ表示せず、stdin token とは混在させない。
-write_secret_tty() { printf '%s' "$1" >/dev/tty; }
-secret_tty_state() { stty -g </dev/tty; }
-prepare_secret_tty() { stty -echo -icanon -isig min 1 time 0 </dev/tty; }
-restore_secret_tty() { stty "$1" </dev/tty; }
-read_secret_tty_byte() { IFS= read -r -s -n 1 REPLY </dev/tty; }
-
-read_masked_tty_secret() {
-  local label="$1" token="" byte="" tty_state=""
-  tty_state="$(secret_tty_state)" || die "controlling TTY の状態を取得できません"
-  write_secret_tty "${label}: "
-  prepare_secret_tty || die "controlling TTY を secret input 用に設定できません"
-  # This function is called through command substitution, so the signal handler restores the
-  # terminal in that subshell before terminating it. No token text is sent to the display path.
-  trap 'restore_secret_tty "$tty_state"; exit 130' HUP INT TERM
-  while :; do
-    if ! read_secret_tty_byte; then
-      restore_secret_tty "$tty_state"
-      trap - HUP INT TERM
-      die "controlling TTY から BWS access token を読めません"
-    fi
-    byte="$REPLY"
-    case "$byte" in
-      '')
-        write_secret_tty $'\n'
-        break
-        ;;
-      $'\b'|$'\177')
-        if [ -n "$token" ]; then
-          token="${token%?}"
-          write_secret_tty $'\b \b'
-        fi
-        ;;
-      $'\003')
-        restore_secret_tty "$tty_state"
-        trap - HUP INT TERM
-        die "BWS access token の入力を中断しました"
-        ;;
-      *)
-        token+="$byte"
-        write_secret_tty '*'
-        ;;
-    esac
-  done
-  restore_secret_tty "$tty_state"
-  trap - HUP INT TERM
-  [ -n "$token" ] || die "BWS access token が空です"
-  printf '%s' "$token"
-}
-
-read_bws_access_token() {
-  if [ -t 0 ]; then
-    read_masked_tty_secret 'BWS access token for YubiKey bitwarden-client-secret storage'
-  else
-    local token
-    IFS= read -r token
-    [ -n "$token" ] || die "stdin から BWS access token を読めません"
-    printf '%s' "$token"
-  fi
-}
-store_bws_access_token() {
-  local serial="$1"
-  if [ -n "$serial" ]; then
-    printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles_with_stdin secrets yubikey put bitwarden-client-secret --stdin --serial "$serial"
-  else
-    printf '%s\n' "$BWS_ACCESS_TOKEN" | dotfiles_with_stdin secrets yubikey put bitwarden-client-secret --stdin
-  fi
-}
-inspect_bws_access_token_storage() {
-  local serial="$1"
-  if [ -n "$serial" ]; then
-    dotfiles secrets yubikey status --serial "$serial"
-  else
-    dotfiles secrets yubikey status
-  fi
-}
-initialize_bws_access_token_storage() {
-  local serial="$1"
-  if [ -n "$serial" ]; then
-    dotfiles secrets yubikey setup --serial "$serial"
-  else
-    dotfiles secrets yubikey setup
-  fi
-}
-clear_bws_access_token_storage() {
-  local serial="$1"
-  if [ -n "$serial" ]; then
-    dotfiles secrets yubikey clear --serial "$serial" --yes
-  else
-    dotfiles secrets yubikey clear --yes
-  fi
-}
-ensure_bws_access_token_stored() {
+provision_bws_access_token_on_yubikey() {
   local role="$1"
   local serial="$2"
-  local stored_names
-  # `dotfiles secrets yubikey status` の予約 storage 不整合専用終了コード。
-  # stderr は分類に使わない。USB/PCSC/serial 等の任意失敗は fail-closed で停止する。
-  local readonly invalid_storage_status=42
-  # `put` が完全な未初期化を観測した専用終了コード。正常な manifest の任意 subset は
-  # `put` をそのまま許可し、setup を再実行しない。
-  local readonly uninitialized_storage_status=43
-  if stored_names="$(inspect_bws_access_token_storage "$serial")"; then
-    if printf '%s\n' "$stored_names" | grep -Fxq 'bitwarden-client-secret'; then
-      log "${role} YubiKey の bitwarden-client-secret は保存済みです"
-      return 0
-    fi
+  log "${role} YubiKey の BWS token storage を単一 PIV session で確認・必要時保存・検証"
+  # この一回の Rust command が status、typed invalid 時だけの clear、空領域の setup、hidden token
+  # 入力、保存、local decrypt 検証を同じ PIV handle に適用する。shell は SDK error / exit code /
+  # stderr を分類せず、別 process の status / clear / setup / put を組み合わせない。
+  if [ -n "$serial" ]; then
+    dotfiles secrets yubikey provision-bws-token --serial "$serial"
   else
-    local status_result=$?
-    if [ "$status_result" -ne "$invalid_storage_status" ]; then
-      die "${role} YubiKey の bitwarden-client-secret の保存状況を確認できません"
-    fi
-    log "${role} YubiKey の不正な secret storage を clear"
-    clear_bws_access_token_storage "$serial" \
-      || die "${role} YubiKey の secret storage を clear できません"
-    # clear は slot 82 再生成と空の v2 manifest 確定までを一つの管理操作として完了する。
-    # ここで setup を続けると正常な no-op storage に余分な PIN session を要求するだけなので再実行しない。
+    dotfiles secrets yubikey provision-bws-token
   fi
-  if [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
-    BWS_ACCESS_TOKEN="$(read_bws_access_token 'BWS access token for YubiKey bitwarden-client-secret storage')"
-  fi
-  log "BWS access token を ${role} YubiKey の bitwarden-client-secret に保存"
-  if store_bws_access_token "$serial"; then
-    return 0
-  else
-    # `if` 複文の終了値ではなく、put 自身の失敗だけを判定する。43 以外は
-    # 初期化へ進めず fail-closed にする。
-    local put_result=$?
-  fi
-  if [ "$put_result" -ne "$uninitialized_storage_status" ]; then
-    die "${role} YubiKey の bitwarden-client-secret を保存できません"
-  fi
-  log "${role} YubiKey の完全に空の secret storage を初期化"
-  initialize_bws_access_token_storage "$serial" \
-    || die "${role} YubiKey の空の secret storage を初期化できません"
-  store_bws_access_token "$serial" \
-    || die "${role} YubiKey の初期化後に bitwarden-client-secret を保存できません"
 }
 
 # shell test は production の初期化・外部コマンド呼び出しなしで保存判定の分岐だけを検証する。
@@ -381,11 +241,10 @@ confirm_password_store_primary_fingerprint
 
 # ── 4. YubiKey への BWS access token 保存 ──
 pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を作成済みで、対象 YubiKey に保存済みまたはこれから保存する BWS access token から同名 project が 1 件だけ見えることを確認してください。project 作成はこの script / dotfiles CLI では行いません。"
-ensure_bws_access_token_stored "primary" "$YUBIKEY_SERIAL"
+provision_bws_access_token_on_yubikey "primary" "$YUBIKEY_SERIAL"
 if [ -n "${SPARE_SERIAL:-}" ]; then
-  ensure_bws_access_token_stored "spare" "$SPARE_SERIAL"
+  provision_bws_access_token_on_yubikey "spare" "$SPARE_SERIAL"
 fi
-unset BWS_ACCESS_TOKEN
 
 # ── 5. BWS への復旧用 secret 登録 ──
 log "BWS に password-store-remote を登録"

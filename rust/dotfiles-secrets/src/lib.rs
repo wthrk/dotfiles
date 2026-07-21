@@ -123,6 +123,13 @@ enum YubikeyCommand {
     EnrollPrimary(EnrollPrimaryOptions),
     EnrollSpare(EnrollSpareOptions),
     RotateBwsToken(RotateBwsTokenOptions),
+    /// BWS token storage の観測・必要時修復・保存・復号検証を単一 PIV session で行う。
+    ///
+    /// PIN-protected management key の同一-session flow は [Yubico PIV PIN-only mode]
+    /// (https://docs.yubico.com/yesdk/users-manual/application-piv/pin-only.html#pin-protected)、
+    /// repository の error / ykman source evidence は
+    /// [`external-sdk-evidence.md`](../../../docs/secret-recovery/external-sdk-evidence.md) を参照する。
+    ProvisionBwsToken(SerialOptions),
 }
 
 #[derive(Args)]

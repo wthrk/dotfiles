@@ -9,9 +9,9 @@ use crate::{
     domain::{
         commands::{
             AddGpgBackupSpareCommand, ClearCommand, EnrollPrimaryCommand, EnrollSpareCommand,
-            ProvisionPasswordStoreRemoteCommand, PutCommand, RegisterGpgBackupCommand,
-            RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand, SetupCommand,
-            StatusCommand, VerifyYubikeyCommand,
+            ProvisionBwsTokenCommand, ProvisionPasswordStoreRemoteCommand, PutCommand,
+            RegisterGpgBackupCommand, RestoreGpgCommand, RestorePassCommand, RotateBwsTokenCommand,
+            SetupCommand, StatusCommand, VerifyYubikeyCommand,
         },
         gpg_backup::PrimaryFingerprint,
         verification::ExternalCheck,
@@ -138,7 +138,6 @@ pub(super) async fn dispatch(
                 }
             }
             super::super::YubikeyCommand::RotateBwsToken(options) => {
-                begin_piv_management_session(ports)?;
                 let command = RotateBwsTokenCommand {
                     serial: options.serial,
                 };
@@ -155,6 +154,7 @@ pub(super) async fn dispatch(
                         command,
                         application::run_rotate_bws_token_with_prompt::RotateBwsTokenPromptRuntime {
                             device: &mut ports.device,
+                            piv_pin: &ports.process_io,
                             secret_input: &ports.process_io,
                             continuation: &ports.process_io,
                             storage: &mut ports.storage,
@@ -162,6 +162,17 @@ pub(super) async fn dispatch(
                         },
                     )
                 }
+            }
+            super::super::YubikeyCommand::ProvisionBwsToken(options) => {
+                application::run_provision_yubikey_bws_token_with_prompt::run_provision_yubikey_bws_token_with_prompt(
+                    ProvisionBwsTokenCommand { serial: options.serial },
+                    application::run_provision_yubikey_bws_token_with_prompt::ProvisionBwsTokenRuntime {
+                        device: &mut ports.device,
+                        piv_pin: &ports.process_io,
+                        secret_input: &ports.process_io,
+                        storage: &mut ports.storage,
+                    },
+                )
             }
         },
         super::super::SecretsCommand::VerifyYubikey(options) => {

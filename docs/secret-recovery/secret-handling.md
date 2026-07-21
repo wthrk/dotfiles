@@ -67,7 +67,7 @@ storage backend が暗号化された永続化を内包する場合、暗号化�
 
 TTY で受け取るすべての secret（PIV PIN、BWS token、その他の hidden prompt 値）は、受理した各 byte を `*` だけで表示する。backspace は対応する mask だけを消去し、Enter は改行だけを出す。`*` の個数以外に、secret 本文、byte 値、値を識別できる断片を stdout、stderr、log、argv、environment に出してはならない。入力は CR/LF の行終端だけを除き、trim、文字列化、Unicode/encoding 変換なしに保護 buffer から外部処理境界へ渡す。
 
-stdin / stdin JSON など TTY 以外の secret 入力は mask を表示しないが、値を表示しない原則は同じである。PIV PIN は controlling TTY だけから読み、BWS token など stdin 許可された secret と混在させない。physical device が受け取る PIN VERIFY は 1 入力につき 1 回だけとし、retry、fallback、PUK、reset を自動実行しない。
+stdin / stdin JSON など TTY 以外の secret 入力は mask を表示しないが、値を表示しない原則は同じである。PIV PIN は controlling TTY だけから読み、BWS token など stdin 許可された secret と混在させない。physical device が受け取る PIN VERIFY は 1 入力につき 1 回だけとし、同じ command の inspection/store/finalize/local verification は認証済み PIV handle を再利用する。ykman の PIN-protected flow にある「VERIFY を最後の APDU に戻す」second VERIFY も、この契約では実行しない。retry、fallback、PUK、reset を自動実行しない。
 
 ## 実装レビュー観点
 

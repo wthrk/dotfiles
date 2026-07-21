@@ -26,6 +26,19 @@ pub(crate) fn read_bitwarden_client_secret_secret() -> Result<ProtectedSecret> {
     )
 }
 
+/// source provisioning 専用の controlling-TTY BWS token input。
+///
+/// PIV PIN と同じく stdin payload と混在させず、raw-mode mask を経由する。input policy の根拠は
+/// `docs/secret-recovery/secret-handling.md#tty-secret-input` と
+/// `docs/secret-recovery/secret-recovery-spec.md#provisioning-source-の単一-command-契約`。
+pub(crate) fn read_bitwarden_client_secret_tty_secret() -> Result<ProtectedSecret> {
+    process_io::read_hidden_tty_line(
+        "bitwarden-client-secret: ",
+        16 * 1024,
+        "hidden secret input is too large",
+    )
+}
+
 pub(crate) fn read_streamed_secret() -> Result<ProtectedSecret> {
     process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")
 }

@@ -126,6 +126,23 @@ pub struct RotateBwsTokenCommand {
     pub serial: Option<u32>,
 }
 
+/// provisioning source で BWS access token を単一の PIV 管理 session に保存する command。
+///
+/// 予約 storage の観測、必要時だけの clear / 初期化、token 保存、ローカル復号検証を一つの
+/// application transaction として実行する。shell が `status` / `clear` / `setup` / `put` を
+/// 別 process で組み合わせてはならないため、対象 serial だけを保持する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvisionBwsTokenCommand {
+    pub serial: Option<u32>,
+}
+
+impl ProvisionBwsTokenCommand {
+    /// provisioning 対象の BWS token storage spec を返す。
+    pub fn storage_spec(self, serial: u32) -> SecretStorageSpec {
+        SecretName::BitwardenClientSecret.storage_spec(serial)
+    }
+}
+
 impl RotateBwsTokenCommand {
     /// rotate 対象 secret 名を返す。
     pub fn target_secret(self) -> SecretName {
