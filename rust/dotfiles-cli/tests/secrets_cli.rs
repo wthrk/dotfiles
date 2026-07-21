@@ -1212,11 +1212,15 @@ fn rotate_fails_when_bws_recovery_secret_is_corrupt_with_yubikey_path() -> TestR
         run.output
             .contains("failed to decode bitwarden-client-secret")
     );
-    assert_stored_secret(
-        &run.final_yubikey()?,
-        PRIMARY_SERIAL,
-        "bitwarden-client-secret",
-        "token",
+    assert!(
+        !has_observation(&run.output, "yubikey"),
+        "corrupt recovery secret must stop before a YubiKey storage mutation: {}",
+        run.output
+    );
+    assert!(
+        !has_observation(&run.output, "bws"),
+        "corrupt recovery secret must stop before a BWS update: {}",
+        run.output
     );
     Ok(())
 }
