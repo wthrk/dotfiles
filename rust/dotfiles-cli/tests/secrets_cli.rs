@@ -1174,9 +1174,51 @@ fn status_reports_present_name_without_decoding_storage_with_yubikey_path() -> T
 }
 
 #[test]
-fn rotate_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
+fn rotate_ignores_corrupt_password_manager_secret_with_yubikey_path() -> TestResult<()> {
     let initial_device =
         storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-password");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "rotate-bws-token", "--serial", "2001"],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", "new-token\n"),
+        ],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert_stored_secret(
+        &run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "new-token",
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_ignores_corrupt_password_manager_secret_with_yubikey_path() -> TestResult<()> {
+    let initial_device =
+        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-email");
+    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
+    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
+
+    assert!(run.success, "stderr: {}", run.stderr);
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"ok\""));
+    assert!(stdout.contains("\"name\": \"bws\""));
+    assert!(stdout.contains("\"status\": \"skipped\""));
+    Ok(())
+}
+
+#[test]
+fn rotate_fails_when_bws_recovery_secret_is_corrupt_with_yubikey_path() -> TestResult<()> {
+    let initial_device = storage_decode_error_device_spec(
+        provisioned_device_spec(PRIMARY_SERIAL),
+        "bitwarden-client-secret",
+    );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pty_with_stub_interactive(
         ["yubikey", "rotate-bws-token", "--serial", "2001"],
@@ -1185,19 +1227,30 @@ fn rotate_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult
     )?;
 
     assert!(!run.success, "output: {}", run.output);
-    assert!(run.output.contains("failed to decode bw-password"));
+    assert!(run.output.contains("failed to decode bitwarden-client-secret"));
+    assert_stored_secret(
+        &run.final_yubikey()?,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
     Ok(())
 }
 
 #[test]
-fn verify_fails_when_seeded_storage_is_corrupt_with_yubikey_path() -> TestResult<()> {
-    let initial_device =
-        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-email");
+fn verify_fails_when_bws_recovery_secret_is_corrupt_with_yubikey_path() -> TestResult<()> {
+    let initial_device = storage_decode_error_device_spec(
+        provisioned_device_spec(PRIMARY_SERIAL),
+        "bitwarden-client-secret",
+    );
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
 
     assert!(!run.success, "stdout: {}", run.stdout);
-    assert!(run.stderr.contains("failed to decode bw-email"));
+    assert!(run.stderr.contains("failed to decode bitwarden-client-secret"));
+    let stdout = run.user_stdout();
+    assert!(stdout.contains("\"name\": \"local-storage\""));
+    assert!(stdout.contains("\"status\": \"failed\""));
     Ok(())
 }
 
