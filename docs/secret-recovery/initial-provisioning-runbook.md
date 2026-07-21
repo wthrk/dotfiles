@@ -27,7 +27,7 @@ YubiKey に保存する bootstrap secret は `bitwarden-client-secret` だけで
 | 工程 | 実現 |
 | --- | --- |
 | 環境適用（home-manager / nix-darwin） | **[CMD]** `dotfiles switch [home\|darwin\|all]` |
-| PIV management key の非既定化と PIN 保護 | **[手動]** operator が [YubiKey Manager PIV Commands: `change-management-key`](https://docs.yubico.com/software/yubikey/tools/ykman/PIV_Commands.html#ykman-piv-access-change-management-key-options) の管理手順に従って実施。`dotfiles` CLI / script は実施しない。 |
+| PIV management key の非既定化と PIN 保護 | **[手動]** operator が [YubiKey Manager PIV Commands: `change-management-key`](https://docs.yubico.com/software/yubikey/tools/ykman/PIV_Commands.html#ykman-piv-access-change-management-key-options) の管理手順に従って、各 `setup` / `clear` / enroll / `put` / rotate の前に実施。`dotfiles` CLI / script は実施しない。 |
 | YubiKey PIV 初期化 | **[CMD]** `dotfiles secrets yubikey setup` |
 | `gpg-secret-key-backup` 作成（recipient wrap） | **[CMD]** `dotfiles secrets gpg-backup register` |
 | `gpg-secret-key-backup` に spare recipient 追加 | **[CMD]** `dotfiles secrets gpg-backup add-spare` |
@@ -55,9 +55,11 @@ YubiKey に保存する bootstrap secret は `bitwarden-client-secret` だけで
 
 ### Phase A 前の必須 gate — PIV management key
 
-primary / spare の各 YubiKey について、**Phase A の `setup`、`enroll-primary`、`enroll-spare`、`put`、rotate を始める前**に、operator が公式の Yubico 管理ツールで PIV management key を既定値から変更し、PIN-protected management key として確立・確認する。この手動操作の正本は [YubiKey Manager PIV Commands の `change-management-key`](https://docs.yubico.com/software/yubikey/tools/ykman/PIV_Commands.html#ykman-piv-access-change-management-key-options) である。同資料は management key が key-pair generation などの管理機能を保護し、`--protect` が新しい management key を PIN 保護で YubiKey に保存することを定義する。firmware ごとの algorithm、現在の key / PIN の入力、確認方法、失敗時の扱いはこの一次資料の適用範囲に従う。この runbook は key 値、実機コマンド列、または reset / PUK 回復の手順を推測して再掲しない。
+primary / spare の各 YubiKey について、**Phase A の `setup`、`clear`、`enroll-primary`、`enroll-spare`、`put`、rotate を始める前**に、operator が公式の Yubico 管理ツールで PIV management key を既定値から変更し、PIN-protected management key として確立・確認する。この手動操作の正本は [YubiKey Manager PIV Commands の `change-management-key`](https://docs.yubico.com/software/yubikey/tools/ykman/PIV_Commands.html#ykman-piv-access-change-management-key-options) である。同資料は management key が key-pair generation などの管理機能を保護し、`--protect` が新しい management key を PIN 保護で YubiKey に保存することを定義する。firmware ごとの algorithm、現在の key / PIN の入力、確認方法、失敗時の扱いはこの一次資料の適用範囲に従う。この runbook は key 値、実機コマンド列、または reset / PUK 回復の手順を推測して再掲しない。
 
 `dotfiles` CLI と provisioning script は factory-default management key の認証、management key の bootstrap、`MgmKey::generate_for`、`MgmKey::set_protected` を実行しない。固定 `yubikey` source で `MgmKey::get_protected` の `NotFound` origin を区別できないため、管理 key が未設定・不明・認証不能、または metadata が健全でない場合は fallback や状態変更をせず停止する。operator が上記 gate を完了・確認してからだけ、repository の `setup` / enroll command に進む。根拠と SDK の適用範囲は [外部 SDK 統合の一次資料](external-sdk-evidence.md#yubikey-piv--yubikey-crate) を参照する。
+
+`yubikey status` の終了コード `42` は予約 storage の観測済み不整合だけを示し、management key の準備完了を示さない。[仕様の終了コード契約](secret-recovery-spec.md#provisioning-script-の終了コード契約) により script はこの場合だけ `clear` へ移行できるが、`clear` も上記 gate の完了後にだけ実行できる。management key が未設定・不明・認証不能、または metadata が健全でない場合、script / CLI は factory-default key、B0 bootstrap、reset、PUK、retry を使わず停止する。
 
 repository の test、agent 作業、通常の検証では物理 YubiKey / PCSC を使用しない。実機の観測・操作はこの runbook を根拠に実行せず、`secrets-internal-test-stub` feature で compile-time に隔離した stub だけを使う。device-specific な確認は別の明示 task と人間の承認済み手順が必要である。
 
