@@ -57,7 +57,7 @@ primary YubiKey の紛失後に、primary だけに保存されていた bootstr
 - `YubiKey`: `bitwarden-client-secret` だけを保存し、Bitwarden Secrets Manager の読取・作成・更新に使う。
 - `Bitwarden Secrets Manager`: project `dotfiles-secret-recovery` に `gpg-secret-key-backup` と `password-store-remote` を保存する。`gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope として保存し、BWS secret value 取得だけで plaintext 復旧完了にしない。`password-store-remote` は credential ではないが private repository の所在を示す値であり出力には漏らさない。
 - `Bitwarden Password Manager`: Web service passwords、passkeys、TOTP、recovery codes を保存し、利用者向け password manager として使う。
-- `pass` / `~/.password-store`: Bitwarden CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、CLI やローカル運用に使う。
+- `pass` / `~/.password-store`: Bitwarden Password Manager CLI API `client_id` / `client_secret` と UNIX 運用 secret を保存し、ローカル運用に使う。これは recovery CLI surface 外であり、復旧 command はこの値を読まず、BWS access token として代用しない。
 - `GitHub`: GPG authentication subkey 由来の SSH 公開鍵 を保持し、private repository clone に使う。
 
 この仕様の保存モデルは、保存先・名前・保存する値で定義する。organization / machine account / service account の作成や特定 UI 画面名は、この repository の実装前提ではない。Bitwarden Secrets Manager について実装・レビューで照合する正本は project `dotfiles-secret-recovery`、secret `gpg-secret-key-backup` / `password-store-remote`、YubiKey storage `bitwarden-client-secret` の関係であり、UI の導線名ではない。
@@ -210,7 +210,7 @@ YubiKey から `bitwarden-client-secret` を取得し、BWS project `dotfiles-se
 
 - `YubiKey`: Rust crate を使い、`ykman` CLI、PIV reset、既存 認証情報 削除は使わない。
 - `Bitwarden Secrets Manager`: 公式 `bitwarden` Rust SDK を使い、復旧本線で `bw` CLI は使わない。
-- `Bitwarden Password Manager`: email/master-password login 用の `bw` CLI を使い、secret 取得や永続保存用途で `bw` CLI は使わない。
+- `Bitwarden Password Manager`: repository の recovery CLI surface 外である。email/master-password login 用の `bw` CLI、OTP、session、credential は、BWS secret の取得・保存・`verify-yubikey`・復旧のいずれにも使わない。
 - `GnuPG`: `gpgme`、必要時の `sequoia-openpgp` を使い、通常実装で `gpg` CLI と鍵サーバーは使わない。
 - `Git`: `git2` と SSH agent を使い、復旧本線で `git` CLI と GitHub API は使わない。
 
@@ -233,7 +233,10 @@ YubiKey から `bitwarden-client-secret` を取得し、BWS project `dotfiles-se
 - authentication subkey 由来の SSH 公開鍵を解決できない。
 - `~/.password-store` が既に存在する。
 - `password-store-remote` が private repository の clone URL として妥当でない。
-- Bitwarden CLI email/master-password login に必要な `bw` CLI、OTP、認証情報が揃っていない。
+
+`bw` CLI の email/master-password login、OTP、session、credential の有無は、repository の recovery command の停止条件ではない。これらは Bitwarden Password Manager の別製品面であり、本仕様が定める BWS-only の復旧状態遷移へ入力・fallback・確認項目として混在させない。
+
+[#11](https://github.com/wthrk/dotfiles/issues/11) と [#17](https://github.com/wthrk/dotfiles/issues/17) は、GPG、SSH、private `password-store` の復旧目的および統合作業単位を示す外部 issue である。repository 内で復旧 command の保存対象、入力、停止条件、検証対象を定める正本は本仕様とここから参照する設計文書であり、issue 本文の旧記述がこの BWS-only 契約と異なる場合は本仕様が supersede する。外部 issue 本体はこの repository の変更では編集しない。したがって外部 issue を単独で読む利用者には旧記述が残るリスクがあり、実装者・レビュー担当は必ず本仕様を併読して本契約を適用する。
 
 ## 参考
 

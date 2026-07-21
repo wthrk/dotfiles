@@ -149,8 +149,12 @@ mod tests {
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,
-                    // A successful GET DATA with zero bytes is a physically
-                    // present object, not the SDK `NotFound` result.
+                    // `yubikey` 0.9.0-pre.0 `Transaction::fetch_object` is
+                    // the direct source: only `StatusWords::NotFoundError`
+                    // becomes `Error::NotFound`; successful zero-byte GET
+                    // DATA remains physically present. See the production
+                    // doc comment on `inspect_secret_storage_status` for the
+                    // repository contract and primary-source URL.
                     object_present: true,
                     object_exists: false,
                 })

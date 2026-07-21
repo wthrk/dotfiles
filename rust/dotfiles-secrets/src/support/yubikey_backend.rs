@@ -2,6 +2,27 @@
 //!
 //! この module は YubiKey crate handle と technical state を所有する。port trait 実装は
 //! adapter にのみ置く。
+//!
+//! ## 出典と適用判断
+//!
+//! repository の復旧契約と PIV 保存対象は
+//! [`secret-recovery-spec.md`](../../../docs/secret-recovery/secret-recovery-spec.md) の
+//! 「無対話復旧の利用者契約」および「責務分担 / YubiKey」、保存形式は
+//! [`yubikey-secret-storage-design.md`](../../../docs/secret-recovery/yubikey-secret-storage-design.md)
+//! の「PIV 領域」を正本とする。この module はその保存・復号の**技術的** backend だけを
+//! 実装し、secret の必須性、対象名の一意解決、復旧手順、成功/停止条件を決めない。
+//!
+//! vendor の全体像は [YubiKey Technical Manual の PIV section](https://docs.yubico.com/hardware/yubikey/yk-tech-manual/yk5-apps-piv.html)
+//! （PIV application、slot 82--95、PIN/touch policy、metadata）を読む。実際に直接使う
+//! `yubikey` 0.9.0-pre.0 API は version 固定の upstream source
+//! [`YubiKey::open_by_serial` / `YubiKey::authenticate` / `YubiKey::verify_pin`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/yubikey.rs)、
+//! [`piv::generate` / `piv::metadata` / `piv::decrypt_data`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/piv.rs)、
+//! [`Transaction::get_metadata` / `Transaction::fetch_object` / `Transaction::save_object`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
+//! である。適用判断は API ごとに限定する。`fetch_object` の `Error::NotFound` だけを下記
+//! `read_object` で object absence へ翻訳する。`piv::metadata` 経由の
+//! `Transaction::get_metadata` の `Error::NotFound` は、それ自体を absence の成功にせず
+//! certificate を追加観測する契機にだけ使う。他の `yubikey::Error` は意味を推測せず
+//! source error のまま伝播する。実機観測をこの判断の根拠にはしない。
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::support::{
@@ -319,6 +340,16 @@ impl SecretDeviceIo for YubikeySecretDevice {
     fn remember_generated_public_key(&mut self, key: Vec<u8>) {
         self.generated_public_key = Some(key)
     }
+    /// custom object を読み、crate が定義する absence だけを `None` にする。
+    ///
+    /// 出典: repository 正本は
+    /// [`yubikey-secret-storage-design.md` の「Object IDs」](../../../docs/secret-recovery/yubikey-secret-storage-design.md#object-ids)、
+    /// vendor / SDK の正確な根拠は `yubikey` 0.9.0-pre.0
+    /// [`Transaction::fetch_object`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
+    /// （`StatusWords::NotFoundError` を `Error::NotFound` にする分岐）である。
+    /// 適用判断: `Error::NotFound` だけを object absence として `None` にし、成功した
+    /// zero-length payload は physical object が存在する `Some(vec![])` のまま保持する。
+    /// そのほかの error は status、permission、device state 等へ再分類せず伝播する。
     fn read_object(&mut self, object: PivObjectId) -> Result<Option<Vec<u8>>> {
         match self.yubikey.fetch_object(object.value()) {
             Ok(value) => Ok(Some(value.to_vec())),

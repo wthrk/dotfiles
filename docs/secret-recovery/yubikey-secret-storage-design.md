@@ -57,8 +57,8 @@ YubiKey adapter は次を満たす。
 - `yubikey` の version を明示的に固定する。
 - object read/write API が feature gate を要求する場合、その feature は YubiKey adapter module だけで使う。
 - reset、PIN/PUK 変更、既存 key 削除の API は adapter から公開しない。management key は B0 bootstrap の `set_protected` を除き変更しない。
-- hardware なしの 単体テスト は fake adapter で行う。
-- 実機検証は 読み取り専用 確認と、この機能用 object / slot への opt-in 書き込みに限定する。
+- repository の test と agent 作業では物理 YubiKey / PC/SC reader を使用しない。検証は `secrets-internal-test-stub` feature で compile-time に隔離された internal backend stub だけで行い、production binary と runtime に stub を混入させない。
+- 実機への読み取り・書き込み・setup・clear・reset を「opt-in 検証」としても repository の test、agent 作業、通常の検証手順に許可しない。device-specific な確認が将来必要になっても、この設計だけを根拠に実行せず、別の明示 task と人間による承認済み手順で扱う。
 
 ## PIV 領域
 
@@ -352,7 +352,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 
 ## テスト方針
 
-単体テスト は fake YubiKey adapter で行う。
+単体テストと integration test は `secrets-internal-test-stub` feature で compile-time に隔離した internal backend stub だけで行う。物理 YubiKey / PC/SC reader は repository の test、agent 作業、通常の検証手順で使用しない。
 
 - 許可 name と拒否 name。
 - serial 未指定で複数 YubiKey がある場合に一覧表示や選択へ進まず停止すること。
@@ -374,7 +374,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - adapter エラー から利用者向け エラー context への変換。
 - secret 本文が エラー 表示に含まれないこと。
 
-実機 検証 は、専用 slot / object が空の検証用 YubiKey に限定する。reset、credential 削除、既存領域上書きを含む検証は行わない。
+物理 YubiKey を使う実機検証は、この repository の test、agent 作業、通常の検証手順の対象外である。将来 device-specific な確認を必要とする場合も、この文書を実行許可にせず、repository 外で人間が別途承認した手順だけを用いる。
 
 ## 参考
 

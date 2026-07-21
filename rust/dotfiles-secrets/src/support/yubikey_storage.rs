@@ -1,4 +1,24 @@
 //! YubiKey PIV storage の technical receiver と I/O sequence。
+//!
+//! ## 出典と適用判断
+//!
+//! repository 正本は [`secret-recovery-spec.md`](../../../docs/secret-recovery/secret-recovery-spec.md)
+//! の「無対話復旧の利用者契約」と
+//! [`yubikey-secret-storage-design.md`](../../../docs/secret-recovery/yubikey-secret-storage-design.md)
+//! の「PIV 領域」「保存形式」である。ここは application/domain が決定した intent を
+//! `yubikey_backend` の technical I/O へ渡すだけで、保存する secret 名、manifest の意味、
+//! setup 可否、復旧の順序・停止条件を決定しない。
+//!
+//! PIV の利用フローは [YubiKey Technical Manual: Smart Card (PIV Compatible)](https://docs.yubico.com/hardware/yubikey/yk-tech-manual/yk5-apps-piv.html)
+//! の PIN/touch policy、retired key-management slots、PIV metadata を直接確認する。
+//! この module が経由する version 固定 `yubikey` 0.9.0-pre.0 の操作は
+//! [`YubiKey::verify_pin` / `YubiKey::authenticate`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/yubikey.rs)、
+//! [`MgmKey::get_protected` / `MgmKey::set_protected`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/mgm.rs)、
+//! [`piv::generate` / `piv::metadata`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/piv.rs)、
+//! [`Transaction::fetch_object` / `Transaction::save_object`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
+//! である。`fetch_object` 由来の `NotFound` 以外の SDK error は、この receiver で成功、
+//! 空値、再試行、別 state へ写像せず backend から伝播する。repository test/agent 作業は
+//! physical device を使わず feature 隔離 stub だけを使う。
 
 use crate::{
     Result,
@@ -159,6 +179,17 @@ pub(crate) fn inspect_secret_storage_write(
         slot_public_key_spki,
     })
 }
+/// PIN を要求しない status 用の object 観測を返す。
+///
+/// 出典: repository の PIN-free status 契約は
+/// [`secret-recovery-spec.md` の `verify-yubikey`](../../../docs/secret-recovery/secret-recovery-spec.md)
+/// と [`yubikey-secret-storage-design.md` の「PIV 領域」](../../../docs/secret-recovery/yubikey-secret-storage-design.md#piv-領域)。
+/// SDK の `Transaction::fetch_object` は
+/// [`yubikey` 0.9.0-pre.0 upstream source](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
+/// で `StatusWords::NotFoundError` だけを `Error::NotFound` に翻訳する。適用判断として、
+/// `read_object` の `None` はその absence だけを表し、成功した empty payload は
+/// `object_present=true` / `object_exists=false` と区別する。その他の error は status の
+/// 正常状態に捏造せず伝播する。
 pub(crate) fn inspect_secret_storage_status(
     _: &mut YubikeyStorageBackend,
     serial: u32,
