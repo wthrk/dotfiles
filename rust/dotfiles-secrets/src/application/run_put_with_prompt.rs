@@ -8,7 +8,7 @@ use crate::{
 
 /// 対話入力で取得した secret を対象 serial の YubiKey storage へ保存する。
 ///
-/// 入力モードの可視/不可視判定は `SecretName` の domain 規則で決め、端末 I/O 実装詳細は adapter へ委譲する。
+/// BWS recovery credential の hidden input は port に委譲し、端末 I/O 実装詳細を use case へ持ち込まない。
 pub(crate) fn run_put_with_prompt<D, P, S>(
     command: PutCommand,
     device: &mut D,
@@ -25,11 +25,7 @@ where
     let inspection = storage_port.inspect_secret_storage_write(serial, &storage)?;
     let _preflight =
         SecretStorageWriteIntent::preflight_put(storage.clone(), &inspection, command.force)?;
-    let secret = command.name.read_interactive_secret_with(
-        || process.read_bw_email_secret(),
-        || process.read_bw_password_secret(),
-        || process.read_bitwarden_client_secret_secret(),
-    )?;
+    let secret = process.read_bitwarden_client_secret_secret()?;
     let intent = SecretStorageWriteIntent::put(storage, inspection, command.force, secret.len())?;
     storage_port.store_secret(serial, intent, &secret)
 }
@@ -114,8 +110,6 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
         let mut process = ports::MockSecretInputPort::new();
-        process.expect_read_bw_email_secret().times(0);
-        process.expect_read_bw_password_secret().times(0);
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_write()

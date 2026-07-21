@@ -1,7 +1,6 @@
 //! Bitwarden SDK request / identifier mapping support。
 
 use anyhow::Context;
-use bitwarden::secrets_manager::secrets::SecretCreateRequest;
 use uuid::Uuid;
 
 use crate::support::protection::bws;
@@ -18,19 +17,4 @@ pub(crate) fn parse_uuid(value: &str, label: &str) -> crate::Result<Uuid> {
     value
         .parse()
         .with_context(|| format!("{label} is not a valid UUID"))
-}
-
-pub(crate) fn secret_create_request(
-    organization_id: Uuid,
-    project_id: Uuid,
-    key: &str,
-    value: String,
-) -> SecretCreateRequest {
-    SecretCreateRequest {
-        organization_id,
-        key: key.to_owned(),
-        value,
-        note: String::new(),
-        project_ids: Some(vec![project_id]),
-    }
 }

@@ -194,7 +194,14 @@ Envelope encryption は次の役割分担にする。
 - YubiKey が 1 本だけ接続されていればそれを対象にする。serial 未指定で複数本ある場合は一覧表示や選択へ進まず停止し、`--serial <serial>` を要求する。
 - PIV application version が利用条件を満たすこと。
 - slot `82` に既存 key / certificate がないこと。
-- `0x005FFF16`、`0x005FFF17`、`0x005FFF18`、`0x005FFF19`、`0x005FFF1a` に既存 data object がないこと。
+- `0x005FFF16`（manifest）と `0x005FFF19`（`bitwarden-client-secret` blob）に、この機能が所有する既存 data object がないこと。
+
+旧 format が利用した `0x005FFF17` / `0x005FFF18` は現行 format の予約 object ではない。現行仕様は
+`bitwarden-client-secret` 一値だけを保存し、既存 device の不明な object をこの機能が所有・移行・clear
+する根拠はないため、setup/status/clear/enroll の観測・変更対象に含めない。PIV custom data object の
+`PUT DATA` は指定 object を完全置換する操作であり、固定 `yubikey` crate の `save_object` は任意 object の
+delete API を公開しないことは [外部 SDK 統合の一次資料](external-sdk-evidence.md#yubikey-piv--yubikey-crate)
+に記録した NIST / Yubico 一次資料を根拠とする。
 - PIN retries が 0 ではないこと。
 - management key authentication が可能なこと。factory-default management key 認証を暫定前提にせず、非既定 management key への切替、取得、注入が成立すること。
 

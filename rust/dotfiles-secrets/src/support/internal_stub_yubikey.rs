@@ -38,8 +38,6 @@ use crate::{
 };
 
 const MANIFEST_OBJECT_ID: u32 = 0x005f_ff16;
-const BW_EMAIL_OBJECT_ID: u32 = 0x005f_ff17;
-const BW_PASSWORD_OBJECT_ID: u32 = 0x005f_ff18;
 const BITWARDEN_CLIENT_SECRET_OBJECT_ID: u32 = 0x005f_ff19;
 
 #[derive(serde::Deserialize)]
@@ -100,10 +98,6 @@ enum YubiKeyDeviceFixture {
     ManifestlessReservedCertificate,
     StatusReadFailure,
     Seeded {
-        #[serde(rename = "bw-email")]
-        bw_email: String,
-        #[serde(rename = "bw-password")]
-        bw_password: String,
         #[serde(rename = "bitwarden-client-secret")]
         bitwarden_client_secret: String,
     },
@@ -567,10 +561,7 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
             device
         }
         YubiKeyDeviceFixture::WritableBitwardenClientSecret => {
-            let mut secrets = BTreeMap::new();
-            secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
-            secrets.insert("bw-password".to_owned(), "pw".to_owned());
-            provisioned_device_datastore(secrets)
+            provisioned_device_datastore(BTreeMap::new())
         }
         YubiKeyDeviceFixture::ManifestlessBitwardenClientSecret => {
             let mut device = StubDeviceDatastore {
@@ -611,14 +602,8 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
             ..provisioned_device_datastore(default_secrets())
         },
         YubiKeyDeviceFixture::Seeded {
-            bw_email,
-            bw_password,
             bitwarden_client_secret,
-        } => provisioned_device_datastore(seeded_secrets(
-            bw_email,
-            bw_password,
-            bitwarden_client_secret,
-        )),
+        } => provisioned_device_datastore(seeded_secrets(bitwarden_client_secret)),
     };
     device.key_metadata_requires_management_auth = spec.key_metadata_requires_management_auth;
     device.corrupt = spec.storage_decode_errors;
@@ -658,20 +643,12 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
 
 fn default_secrets() -> BTreeMap<String, String> {
     let mut secrets = BTreeMap::new();
-    secrets.insert("bw-email".to_owned(), "u@example.com".to_owned());
-    secrets.insert("bw-password".to_owned(), "pw".to_owned());
     secrets.insert("bitwarden-client-secret".to_owned(), "token".to_owned());
     secrets
 }
 
-fn seeded_secrets(
-    bw_email: String,
-    bw_password: String,
-    bitwarden_client_secret: String,
-) -> BTreeMap<String, String> {
+fn seeded_secrets(bitwarden_client_secret: String) -> BTreeMap<String, String> {
     let mut seeded = BTreeMap::new();
-    seeded.insert("bw-email".to_owned(), bw_email);
-    seeded.insert("bw-password".to_owned(), bw_password);
     seeded.insert(
         "bitwarden-client-secret".to_owned(),
         bitwarden_client_secret,
@@ -712,8 +689,6 @@ fn device_store_mut(store: &mut YubiKeyDatastore, serial: u32) -> Result<&mut St
 
 fn secret_key_for_object(object_id: u32) -> &'static str {
     match object_id {
-        BW_EMAIL_OBJECT_ID => "bw-email",
-        BW_PASSWORD_OBJECT_ID => "bw-password",
         BITWARDEN_CLIENT_SECRET_OBJECT_ID => "bitwarden-client-secret",
         _ => "",
     }
@@ -721,18 +696,14 @@ fn secret_key_for_object(object_id: u32) -> &'static str {
 
 fn secret_key(secret_id: u8) -> &'static str {
     match secret_id {
-        1 => "bw-email",
-        2 => "bw-password",
-        3 => "bitwarden-client-secret",
+        1 => "bitwarden-client-secret",
         _ => "unknown",
     }
 }
 
 fn storage_object_id(secret_id: u8) -> u32 {
     match secret_id {
-        1 => BW_EMAIL_OBJECT_ID,
-        2 => BW_PASSWORD_OBJECT_ID,
-        3 => BITWARDEN_CLIENT_SECRET_OBJECT_ID,
+        1 => BITWARDEN_CLIENT_SECRET_OBJECT_ID,
         _ => MANIFEST_OBJECT_ID,
     }
 }

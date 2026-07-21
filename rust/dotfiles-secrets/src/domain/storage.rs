@@ -472,7 +472,7 @@ mod tests {
     }
 
     fn storage() -> SecretStorageSpec {
-        SecretName::BwEmail.storage_spec(12_345)
+        SecretName::BitwardenClientSecret.storage_spec(12_345)
     }
 
     fn error_message<T>(result: Result<T>) -> Result<String> {
@@ -538,7 +538,7 @@ mod tests {
 
         let partial = SecretStorageSetupInspection {
             key_exists: true,
-            occupied_object_ids: vec![SecretName::BwEmail.object_id()],
+            occupied_object_ids: vec![SecretName::BitwardenClientSecret.object_id()],
             ..clean_setup_inspection()
         };
         let intent = SecretStorageSetupIntent::for_enrollment(partial)?;
@@ -803,7 +803,7 @@ mod tests {
         assert!(
             decode_error
                 .to_string()
-                .contains("failed to decode bw-email")
+                .contains("failed to decode bitwarden-client-secret")
         );
         assert!(decode_error.to_string().contains("ciphertext rejected"));
 

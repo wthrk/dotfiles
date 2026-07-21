@@ -47,8 +47,7 @@ where
     let requested = command.requested_external_checks()?;
     let serial = device.resolve_device_serial(command.serial)?;
     // local storage 検証は、無対話 BWS recovery に必要な `bitwarden-client-secret` だけを
-    // inspect → intent → load → validate する。bw-email / bw-password は Password Manager 用の
-    // 任意保存値であり、verify の入力・分岐・成功条件へ混在させない。
+    // inspect → intent → load → validate する。
     let local_verify = (|| {
         for storage in SecretStorageVerificationPlan::for_serial(serial).into_targets() {
             let inspection = storage_port.inspect_secret_storage_read(serial, &storage)?;
@@ -101,11 +100,7 @@ where
                     }
                 }
             }
-            CheckName::Setup
-            | CheckName::BwEmail
-            | CheckName::BwPassword
-            | CheckName::BitwardenClientSecret
-            | CheckName::LocalStorage => {
+            CheckName::Setup | CheckName::BitwardenClientSecret | CheckName::LocalStorage => {
                 unreachable!("requested_external_checks returned a non-external verification check")
             }
         }
@@ -147,14 +142,18 @@ where
     let (envelope_value, _guard) = bws_client
         .fetch_gpg_backup_envelope(access_token, &gpg_secret_id)
         .await?;
-    let envelope = GpgBackupEnvelope::from_json(envelope_value.as_bytes())?;
+    let envelope =
+        crate::support::protection::bws::parse_response_value(&envelope_value, |value| {
+            GpgBackupEnvelope::from_json(value.as_bytes())
+        })?;
     let connected = gpg_recipient.resolve_connected_recipient(serial)?;
     envelope.resolve_recipient(&connected)?;
 
     let remote_value = bws_client
         .fetch_password_store_remote(access_token, &pass_secret_id)
         .await?;
-    PasswordStoreRemote::parse(&remote_value).map(|_| ())
+    crate::support::protection::bws::parse_response_value(&remote_value, PasswordStoreRemote::parse)
+        .map(|_| ())
 }
 
 /// YubiKey storage の read 経路（inspect → intent → load → validate）で指定 secret を on-demand 取得する。
@@ -196,7 +195,7 @@ mod tests {
 
     use super::{VerifyYubikeyRuntime, run_bws_check, run_verify_yubikey_with};
 
-    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+    fn material(bytes: &[u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
@@ -210,8 +209,6 @@ mod tests {
     /// secret 名から決め打ちの test 値を返す。on-demand ロードと local 検証で同じ値を返す。
     fn secret_value(name: SecretName) -> ProtectedSecret {
         match name {
-            SecretName::BwEmail => material(b"email"),
-            SecretName::BwPassword => material(b"password"),
             SecretName::BitwardenClientSecret => material(b"client-secret"),
         }
     }
@@ -358,7 +355,7 @@ mod tests {
             .returning(|requested| Ok(requested.expect("serial")));
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand にロードする。
         expect_secret_load(
             &mut storage,
             &mut sequence,
@@ -399,7 +396,7 @@ mod tests {
             .withf(|_, secret_id| secret_id.as_str() == "gpg-id")
             .returning(|_, _| {
                 Ok((
-                    valid_envelope_value(),
+                    material(valid_envelope_value().as_bytes()),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -413,7 +410,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, secret_id| secret_id.as_str() == "pass-id")
-            .returning(|_, _| Ok(valid_password_store_remote().as_str().to_owned()));
+            .returning(|_, _| Ok(material(valid_password_store_remote().as_str().as_bytes())));
 
         let mut report = ports::MockReportPort::new();
         report
@@ -452,7 +449,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    "not-json".to_owned(),
+                    material(b"not-json"),
                     BackupUpdateGuard::from_value_bytes(b"not-json"),
                 ))
             });
@@ -477,7 +474,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 let value = r#"{"version":1,"metadata":{"primary_fingerprint":"ABC","exported_at":"2026-05-31T00:00:00Z","dek_alg":"aes-256-gcm","recipient_kek_alg":"rsa-oaep-sha256"},"recipients":[],"ciphertext":{"nonce":"EBESExQVFhcYGRob","body":"ZW5jcnlwdGVk","tag":"gIGCg4SFhoeIiYqLjI2Ojw=="}}"#.to_owned();
-                Ok((value, BackupUpdateGuard::from_value_bytes(b"invalid-fingerprint")))
+                Ok((material(value.as_bytes()), BackupUpdateGuard::from_value_bytes(b"invalid-fingerprint")))
             });
         bws.expect_fetch_password_store_remote().times(0);
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
@@ -500,7 +497,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    valid_envelope_value(),
+                    material(valid_envelope_value().as_bytes()),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -534,7 +531,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    valid_envelope_value(),
+                    material(valid_envelope_value().as_bytes()),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -565,7 +562,7 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand にロードする。
         expect_secret_load(
             &mut storage,
             &mut sequence,
@@ -619,7 +616,7 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand にロードする。
         expect_secret_load(
             &mut storage,
             &mut sequence,
@@ -681,7 +678,7 @@ mod tests {
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
         expect_local_storage_ok(&mut storage, &mut sequence, 2001);
-        // BWS 分岐は bitwarden-client-secret を on-demand ロードする（bw-password はロードしない）。
+        // BWS 分岐は bitwarden-client-secret を on-demand にロードする。
         expect_secret_load(
             &mut storage,
             &mut sequence,

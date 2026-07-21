@@ -37,38 +37,15 @@ where
     let setup_probe = SecretStorageSetupProbe::expected();
     let setup_inspection = storage_port.inspect_secret_storage_setup(spare_serial, &setup_probe)?;
     let setup_intent = SecretStorageSetupIntent::for_enrollment(setup_inspection)?;
-    let [first_storage, second_storage, third_storage] =
-        crate::domain::piv::SecretStorageSpec::all_for_serial(primary_serial);
-    let first_inspection =
-        storage_port.inspect_secret_storage_read(primary_serial, &first_storage)?;
-    let first_intent = SecretStorageReadIntent::from_inspection(first_storage, first_inspection)?;
-    let first_document_storage = first_intent.storage.clone();
-    let first = storage_port
-        .load_secret(primary_serial, &first_intent)
-        .map_err(|error| first_intent.decode_error(error))?;
-    first_intent.validate_loaded_secret(&first)?;
-    let second_inspection =
-        storage_port.inspect_secret_storage_read(primary_serial, &second_storage)?;
-    let second_intent =
-        SecretStorageReadIntent::from_inspection(second_storage, second_inspection)?;
-    let second_document_storage = second_intent.storage.clone();
-    let second = storage_port
-        .load_secret(primary_serial, &second_intent)
-        .map_err(|error| second_intent.decode_error(error))?;
-    second_intent.validate_loaded_secret(&second)?;
-    let third_inspection =
-        storage_port.inspect_secret_storage_read(primary_serial, &third_storage)?;
-    let third_intent = SecretStorageReadIntent::from_inspection(third_storage, third_inspection)?;
-    let third_document_storage = third_intent.storage.clone();
-    let third = storage_port
-        .load_secret(primary_serial, &third_intent)
-        .map_err(|error| third_intent.decode_error(error))?;
-    third_intent.validate_loaded_secret(&third)?;
-    let document = BootstrapSecretDocument::from_storage_materials([
-        (first_document_storage, first),
-        (second_document_storage, second),
-        (third_document_storage, third),
-    ])?;
+    let [storage] = crate::domain::piv::SecretStorageSpec::all_for_serial(primary_serial);
+    let inspection = storage_port.inspect_secret_storage_read(primary_serial, &storage)?;
+    let intent = SecretStorageReadIntent::from_inspection(storage, inspection)?;
+    let document_storage = intent.storage.clone();
+    let secret = storage_port
+        .load_secret(primary_serial, &intent)
+        .map_err(|error| intent.decode_error(error))?;
+    intent.validate_loaded_secret(&secret)?;
+    let document = BootstrapSecretDocument::from_storage_materials([(document_storage, secret)])?;
     let public_key_spki =
         storage_port.initialize_secret_storage(spare_serial, setup_intent.clone())?;
     for (storage, value) in document.storage_entries(spare_serial) {
@@ -219,29 +196,19 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_, _| Ok(setup_inspection()));
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientSecret,
-        ] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .in_sequence(&mut sequence)
-                .withf(move |serial, storage| *serial == 2001 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .in_sequence(&mut sequence)
-                .returning(|_, intent| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientSecret => material(b"token"),
-                    })
-                });
-        }
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Ok(material(b"token")));
         storage
             .expect_initialize_secret_storage()
             .times(1)
@@ -299,27 +266,17 @@ mod tests {
             .times(1)
             .returning(|_| Ok(2001));
         let mut storage = ports::MockSecretStoragePort::new();
-        for name in [
-            SecretName::BwEmail,
-            SecretName::BwPassword,
-            SecretName::BitwardenClientSecret,
-        ] {
-            storage
-                .expect_inspect_secret_storage_read()
-                .times(1)
-                .withf(move |serial, storage| *serial == 2001 && storage.name == name)
-                .returning(|_, _| Ok(read_inspection()));
-            storage
-                .expect_load_secret()
-                .times(1)
-                .returning(|_, intent| {
-                    Ok(match intent.storage.name {
-                        SecretName::BwEmail => material(b"email"),
-                        SecretName::BwPassword => material(b"password"),
-                        SecretName::BitwardenClientSecret => material(b"token"),
-                    })
-                });
-        }
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .withf(|serial, storage| {
+                *serial == 2001 && storage.name == SecretName::BitwardenClientSecret
+            })
+            .returning(|_, _| Ok(read_inspection()));
+        storage
+            .expect_load_secret()
+            .times(1)
+            .returning(|_, _| Ok(material(b"token")));
         primary_device
             .expect_resolve_device_serial()
             .times(1)

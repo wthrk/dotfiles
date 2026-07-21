@@ -30,14 +30,14 @@ impl BwsClientPort for BwsClientBackend {
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> crate::Result<(String, BackupUpdateGuard)> {
+    ) -> crate::Result<(ProtectedSecret, BackupUpdateGuard)> {
         bws_backend::fetch_gpg_backup_envelope(access_token, secret_id).await
     }
     async fn fetch_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> crate::Result<String> {
+    ) -> crate::Result<ProtectedSecret> {
         bws_backend::fetch_password_store_remote(access_token, secret_id).await
     }
     async fn create_gpg_backup_envelope(

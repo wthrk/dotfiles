@@ -63,19 +63,12 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, _| inspection(true));
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
         output
             .expect_write_secret_storage_status()
-            .withf(|status| {
-                status.stored()
-                    == [
-                        SecretName::BwEmail,
-                        SecretName::BwPassword,
-                        SecretName::BitwardenClientSecret,
-                    ]
-            })
+            .withf(|status| status.stored() == [SecretName::BitwardenClientSecret])
             .returning(|_| Ok(()));
 
         run_status_with(
@@ -96,12 +89,12 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, spec| inspection(spec.name != SecretName::BitwardenClientSecret));
         let mut output = ports::MockSecretStorageStatusOutputPort::new();
         output
             .expect_write_secret_storage_status()
-            .withf(|status| status.stored() == [SecretName::BwEmail, SecretName::BwPassword])
+            .withf(|status| status.stored().is_empty())
             .returning(|_| Ok(()));
 
         run_status_with(
@@ -121,7 +114,7 @@ mod tests {
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_inspect_secret_storage_status()
-            .times(3)
+            .times(1)
             .returning(|_, _| {
                 Ok(SecretStorageStatusInspection {
                     manifest_bytes: None,

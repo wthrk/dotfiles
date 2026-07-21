@@ -18,18 +18,6 @@ use crate::{
     support::{clock, process_io, protection::ProtectedSecret, report},
 };
 
-pub(crate) fn read_bw_email_secret() -> Result<ProtectedSecret> {
-    process_io::read_visible_line("bw-email: ", 16 * 1024, "visible secret input is too large")
-}
-
-pub(crate) fn read_bw_password_secret() -> Result<ProtectedSecret> {
-    process_io::read_hidden_line(
-        "bw-password: ",
-        16 * 1024,
-        "hidden secret input is too large",
-    )
-}
-
 pub(crate) fn read_bitwarden_client_secret_secret() -> Result<ProtectedSecret> {
     process_io::read_hidden_line(
         "bitwarden-client-secret: ",

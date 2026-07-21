@@ -403,10 +403,7 @@ fn status_lists_configured_secret_names_with_yubikey_path() -> TestResult<()> {
     let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert_eq!(
-        run.user_stdout(),
-        "bw-email\nbw-password\nbitwarden-client-secret\n"
-    );
+    assert_eq!(run.user_stdout(), "bitwarden-client-secret\n");
     Ok(())
 }
 
@@ -420,7 +417,7 @@ fn status_lists_present_names_for_manifest_with_a_missing_secret_object() -> Tes
     );
     let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
     assert!(run.success, "stdout: {} stderr: {}", run.stdout, run.stderr);
-    assert_eq!(run.user_stdout(), "bw-email\nbw-password\n");
+    assert_eq!(run.user_stdout(), "");
     Ok(())
 }
 
@@ -703,8 +700,6 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
         ["yubikey", "enroll-primary", "--serial", "2001"],
         &[
             ("YubiKey PIV PIN: ", "123456\n"),
-            ("bw-email: ", "u@example.com\n"),
-            ("bw-password: ", "pw\n"),
             ("bitwarden-client-secret: ", "token\n"),
         ],
         &stub,
@@ -712,13 +707,9 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
 
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("YubiKey PIV PIN: "));
-    assert!(run.output.contains("bw-email: "));
-    assert!(run.output.contains("bw-password: "));
     assert!(run.output.contains("bitwarden-client-secret: "));
     assert!(run.output.contains("\"role\": \"primary\""));
     let final_yubikey = run.final_yubikey()?;
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-email", "u@example.com");
-    assert_stored_secret(&final_yubikey, PRIMARY_SERIAL, "bw-password", "pw");
     assert_stored_secret(
         &final_yubikey,
         PRIMARY_SERIAL,
@@ -782,8 +773,6 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("\"role\": \"spare\""));
     let final_yubikey = run.final_yubikey()?;
-    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-email", "u@example.com");
-    assert_stored_secret(&final_yubikey, SPARE_SERIAL, "bw-password", "pw");
     assert_stored_secret(
         &final_yubikey,
         SPARE_SERIAL,
@@ -1167,16 +1156,12 @@ fn put_updates_final_yubikey_spec_with_yubikey_path() -> TestResult<()> {
 
 #[test]
 fn status_does_not_output_seeded_secret_values_with_yubikey_path() -> TestResult<()> {
-    let initial_device =
-        seeded_device_spec(PRIMARY_SERIAL, "seed@example.com", "seed-pw", "seed-token");
+    let initial_device = seeded_device_spec(PRIMARY_SERIAL, "seed-token");
     let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
     let run = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
 
     assert!(run.success, "stderr: {}", run.stderr);
-    assert_eq!(
-        run.stdout,
-        "bw-email\nbw-password\nbitwarden-client-secret\n"
-    );
+    assert_eq!(run.stdout, "bitwarden-client-secret\n");
     assert!(!run.stdout.contains("seed-token"));
     Ok(())
 }
@@ -1192,46 +1177,6 @@ fn status_reports_present_name_without_decoding_storage_with_yubikey_path() -> T
 
     assert!(run.success, "stderr: {}", run.stderr);
     assert!(run.user_stdout().contains("bitwarden-client-secret"));
-    Ok(())
-}
-
-#[test]
-fn rotate_ignores_corrupt_password_manager_secret_with_yubikey_path() -> TestResult<()> {
-    let initial_device =
-        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-password");
-    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
-    let run = run_pty_with_stub_interactive(
-        ["yubikey", "rotate-bws-token", "--serial", "2001"],
-        &[
-            ("YubiKey PIV PIN: ", "123456\n"),
-            ("bitwarden-client-secret: ", "new-token\n"),
-        ],
-        &stub,
-    )?;
-
-    assert!(run.success, "output: {}", run.output);
-    assert_stored_secret(
-        &run.final_yubikey()?,
-        PRIMARY_SERIAL,
-        "bitwarden-client-secret",
-        "new-token",
-    );
-    Ok(())
-}
-
-#[test]
-fn verify_ignores_corrupt_password_manager_secret_with_yubikey_path() -> TestResult<()> {
-    let initial_device =
-        storage_decode_error_device_spec(provisioned_device_spec(PRIMARY_SERIAL), "bw-email");
-    let stub = StubPorts::new(yubikey_spec([initial_device]), bws_spec());
-    let run = run_pipe_with_stub(["verify-yubikey", "--serial", "2001"], None, &stub)?;
-
-    assert!(run.success, "stderr: {}", run.stderr);
-    let stdout = run.user_stdout();
-    assert!(stdout.contains("\"name\": \"local-storage\""));
-    assert!(stdout.contains("\"status\": \"ok\""));
-    assert!(stdout.contains("\"name\": \"bws\""));
-    assert!(stdout.contains("\"status\": \"skipped\""));
     Ok(())
 }
 
@@ -1727,17 +1672,10 @@ fn status_read_failure_device_spec(serial: u32) -> Value {
     json!({ "serial": serial, "fixture": "status-read-failure" })
 }
 
-fn seeded_device_spec(
-    serial: u32,
-    bw_email: &str,
-    bw_password: &str,
-    bitwarden_client_secret: &str,
-) -> Value {
+fn seeded_device_spec(serial: u32, bitwarden_client_secret: &str) -> Value {
     json!({
         "serial": serial,
         "fixture": "seeded",
-        "bw-email": bw_email,
-        "bw-password": bw_password,
         "bitwarden-client-secret": bitwarden_client_secret
     })
 }
@@ -2284,8 +2222,6 @@ fn observation_frames(output: &str) -> impl Iterator<Item = Value> + '_ {
 
 fn bootstrap_json() -> &'static str {
     r#"{
-  "bw-email": "u@example.com",
-  "bw-password": "pw",
   "bitwarden-client-secret": "token"
 }
 "#

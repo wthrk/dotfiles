@@ -50,8 +50,6 @@ impl EnrollSummary {
             role,
             checks: [
                 (CheckName::Setup, CheckStatus::Ok),
-                (CheckName::BwEmail, CheckStatus::Ok),
-                (CheckName::BwPassword, CheckStatus::Ok),
                 (CheckName::BitwardenClientSecret, CheckStatus::Ok),
                 (CheckName::LocalStorage, CheckStatus::Skipped),
             ]

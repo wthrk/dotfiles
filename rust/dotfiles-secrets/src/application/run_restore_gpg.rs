@@ -67,7 +67,10 @@ where
     let (envelope_value, _guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
-    let envelope = GpgBackupEnvelope::from_json(envelope_value.as_bytes())?;
+    let envelope =
+        crate::support::protection::bws::parse_response_value(&envelope_value, |value| {
+            GpgBackupEnvelope::from_json(value.as_bytes())
+        })?;
 
     // 3-4. 接続中 YubiKey に一致する recipient を解決し、DEK を unwrap して backup を復号する。
     let connected = recipient.resolve_connected_recipient(serial)?;
@@ -176,7 +179,7 @@ mod tests {
     const KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
     const SSH_PUBLIC_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTBODY restore";
 
-    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+    fn material(bytes: &[u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
@@ -295,7 +298,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    envelope_value(),
+                    material(envelope_value().as_bytes()),
                     BackupUpdateGuard::ValueDigest("d".to_owned()),
                 ))
             });
@@ -412,7 +415,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope_value(),
+                material(envelope_value().as_bytes()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -486,7 +489,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope_value(),
+                material(envelope_value().as_bytes()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -596,7 +599,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope_value(),
+                material(envelope_value().as_bytes()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });

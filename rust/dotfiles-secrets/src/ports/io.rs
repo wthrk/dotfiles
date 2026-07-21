@@ -23,8 +23,6 @@ use crate::Result;
 /// stdin、保護 buffer 化を外部 I/O 境界に閉じ、取得した平文を公開 API として返さない。
 #[cfg_attr(test, mockall::automock)]
 pub trait SecretInputPort {
-    fn read_bw_email_secret(&self) -> Result<ProtectedSecret>;
-    fn read_bw_password_secret(&self) -> Result<ProtectedSecret>;
     fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret>;
     fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
 }

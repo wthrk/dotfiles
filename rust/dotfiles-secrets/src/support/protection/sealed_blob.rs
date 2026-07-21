@@ -496,14 +496,14 @@ mod tests {
             wrapped_key: b"wrapped".to_vec(),
             plaintext: &plaintext,
             content_key: &content_key,
-            aad: b"object=bw-email",
+            aad: b"object=bitwarden-client-secret",
         })?;
 
         let result = open_with_key_unwrap(
             &encoded,
             2,
             |_| ProtectedSecret::try_clone(&content_key),
-            b"object=bw-password",
+            b"object=another-object",
         );
 
         assert!(result.is_err());

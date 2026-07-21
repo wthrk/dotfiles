@@ -62,7 +62,7 @@ pub(crate) async fn list_bws_secrets(
 pub(crate) async fn fetch_gpg_backup_envelope(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> crate::Result<(String, BackupUpdateGuard)> {
+) -> crate::Result<(ProtectedSecret, BackupUpdateGuard)> {
     let session = bws::login_client_with_access_token(access_token).await?;
     let id = bws_sdk::parse_uuid(secret_id.as_str(), "bws secret id")?;
     session.read_secret_value_with_revision(id).await
@@ -70,7 +70,7 @@ pub(crate) async fn fetch_gpg_backup_envelope(
 pub(crate) async fn fetch_password_store_remote(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> crate::Result<String> {
+) -> crate::Result<ProtectedSecret> {
     let session = bws::login_client_with_access_token(access_token).await?;
     let id = bws_sdk::parse_uuid(secret_id.as_str(), "bws secret id")?;
     session.read_secret_value(id).await
@@ -85,17 +85,9 @@ pub(crate) async fn create_gpg_backup_envelope(
     let scope = bws_sdk::access_token_scope_id(&session)?;
     let project = bws_sdk::parse_uuid(project_id.as_str(), "bws project id")?;
     let created = session
-        .client()
-        .secrets()
-        .create(&bws_sdk::secret_create_request(
-            scope,
-            project,
-            secret_key,
-            envelope.to_json_string()?,
-        ))
-        .await
-        .context("Bitwarden SDK secret create failed")?;
-    Ok(BwsSecretId::new(created.id.to_string()))
+        .create_gpg_backup_envelope(scope, project, secret_key, envelope)
+        .await?;
+    Ok(BwsSecretId::new(created.to_string()))
 }
 pub(crate) async fn update_gpg_backup_envelope_if_unchanged(
     access_token: &ProtectedSecret,
@@ -107,11 +99,11 @@ pub(crate) async fn update_gpg_backup_envelope_if_unchanged(
 ) -> crate::Result<()> {
     let session = bws::login_client_with_access_token(access_token).await?;
     session
-        .update_secret_if_unchanged(
+        .update_gpg_backup_envelope_if_unchanged(
             bws_sdk::parse_uuid(secret_id.as_str(), "bws secret id")?,
             bws_sdk::parse_uuid(project_id.as_str(), "bws project id")?,
             secret_key.to_owned(),
-            envelope.to_json_string()?,
+            envelope,
             expected_guard,
         )
         .await
@@ -124,17 +116,14 @@ pub(crate) async fn create_password_store_remote(
 ) -> crate::Result<BwsSecretId> {
     let session = bws::login_client_with_access_token(access_token).await?;
     let created = session
-        .client()
-        .secrets()
-        .create(&bws_sdk::secret_create_request(
+        .create_password_store_remote(
             bws_sdk::access_token_scope_id(&session)?,
             bws_sdk::parse_uuid(project_id.as_str(), "bws project id")?,
             secret_key,
-            remote.as_str().to_owned(),
-        ))
-        .await
-        .context("Bitwarden SDK secret create failed")?;
-    Ok(BwsSecretId::new(created.id.to_string()))
+            remote,
+        )
+        .await?;
+    Ok(BwsSecretId::new(created.to_string()))
 }
 pub(crate) async fn fetch_password_store_remote_guard(
     access_token: &ProtectedSecret,
@@ -155,11 +144,11 @@ pub(crate) async fn update_password_store_remote_if_unchanged(
 ) -> crate::Result<()> {
     let session = bws::login_client_with_access_token(access_token).await?;
     session
-        .update_secret_if_unchanged(
+        .update_password_store_remote_if_unchanged(
             bws_sdk::parse_uuid(secret_id.as_str(), "bws secret id")?,
             bws_sdk::parse_uuid(project_id.as_str(), "bws project id")?,
             secret_key.to_owned(),
-            remote.as_str().to_owned(),
+            remote,
             expected_guard,
         )
         .await

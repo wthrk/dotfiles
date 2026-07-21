@@ -28,8 +28,6 @@ pub enum CheckStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CheckName {
     Setup,
-    BwEmail,
-    BwPassword,
     BitwardenClientSecret,
     LocalStorage,
     Bws,
@@ -42,8 +40,6 @@ impl CheckName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Setup => "setup",
-            Self::BwEmail => "bw-email",
-            Self::BwPassword => "bw-password",
             Self::BitwardenClientSecret => "bitwarden-client-secret",
             Self::LocalStorage => "local-storage",
             Self::Bws => "bws",

@@ -85,7 +85,10 @@ where
     let remote_value = bws_client
         .fetch_password_store_remote(&access_token, &secret_id)
         .await?;
-    let remote = PasswordStoreRemote::parse(&remote_value)?;
+    let remote = crate::support::protection::bws::parse_response_value(
+        &remote_value,
+        PasswordStoreRemote::parse,
+    )?;
 
     // 3. `~/.password-store` が既に存在する場合は clone へ進まず停止する。
     if store.password_store_exists()? {
@@ -199,7 +202,7 @@ mod tests {
     const REMOTE_URL: &str = "git@github.com:owner/password-store.git";
     const RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 
-    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+    fn material(bytes: &[u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
@@ -250,7 +253,7 @@ mod tests {
         });
         bws.expect_fetch_password_store_remote()
             .times(1)
-            .returning(|_, _| Ok(REMOTE_URL.to_owned()));
+            .returning(|_, _| Ok(material(REMOTE_URL.as_bytes())));
     }
 
     #[tokio::test]

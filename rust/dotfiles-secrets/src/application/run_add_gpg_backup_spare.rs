@@ -73,7 +73,10 @@ where
     let (envelope_value, guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
-    let envelope = GpgBackupEnvelope::from_json(envelope_value.as_bytes())?;
+    let envelope =
+        crate::support::protection::bws::parse_response_value(&envelope_value, |value| {
+            GpgBackupEnvelope::from_json(value.as_bytes())
+        })?;
 
     // unwrap/wrap で touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
     // envelope 取得後に判明しているため、拒否される更新で YubiKey の DEK unwrap や spare wrap を実行
@@ -152,7 +155,7 @@ mod tests {
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
-    fn material(bytes: &'static [u8]) -> ProtectedSecret {
+    fn material(bytes: &[u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
     }
 
@@ -264,7 +267,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope_value(),
+                material(envelope_value().as_bytes()),
                 BackupUpdateGuard::ValueDigest("rev".to_owned()),
             ))
         });
@@ -350,7 +353,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope_value(),
+                material(envelope_value().as_bytes()),
                 BackupUpdateGuard::ValueDigest("read-at-start".to_owned()),
             ))
         });
@@ -429,7 +432,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                envelope_value(),
+                material(envelope_value().as_bytes()),
                 BackupUpdateGuard::ValueDigest("rev".to_owned()),
             ))
         });

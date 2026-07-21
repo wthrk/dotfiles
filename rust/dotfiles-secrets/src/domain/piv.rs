@@ -90,11 +90,7 @@ impl StorageObjectIds {
 /// 各 variant は固定の PIV object ID と blob secret id を持ち、storage version 1 ではその対応を変更しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecretName {
-    /// Bitwarden login email。
-    BwEmail,
-    /// Bitwarden login password。
-    BwPassword,
-    /// Bitwarden personal API client secret。
+    /// Bitwarden Secrets Manager access token。
     BitwardenClientSecret,
 }
 
@@ -120,7 +116,7 @@ impl SecretName {
     ///
     /// 列挙順は report と object 配置の期待順であり、version を上げずに並びを変えてはならない。
     pub fn iter() -> impl Iterator<Item = Self> {
-        [Self::BwEmail, Self::BwPassword, Self::BitwardenClientSecret].into_iter()
+        [Self::BitwardenClientSecret].into_iter()
     }
 
     /// binary blob header に保存する固定 secret id を返す。
@@ -128,9 +124,7 @@ impl SecretName {
     /// version 1 では各 variant と id の対応は不変で、互換性を壊す変更は version 更新なしに行ってはならない。
     pub fn secret_id(self) -> u8 {
         match self {
-            Self::BwEmail => 1,
-            Self::BwPassword => 2,
-            Self::BitwardenClientSecret => 3,
+            Self::BitwardenClientSecret => 1,
         }
     }
 
@@ -139,8 +133,6 @@ impl SecretName {
     /// object ID は storage layout の一部であり、既存 device の互換性を保つため固定される。
     pub fn object_id(self) -> PivObjectId {
         match self {
-            Self::BwEmail => PivObjectId(0x005f_ff17),
-            Self::BwPassword => PivObjectId(0x005f_ff18),
             Self::BitwardenClientSecret => PivObjectId(0x005f_ff19),
         }
     }
@@ -154,23 +146,6 @@ impl SecretName {
             anyhow::bail!("{self} already exists; pass --force to replace it");
         }
         Ok(())
-    }
-
-    /// secret 名ごとの入力取得 capability を選択する。
-    ///
-    /// どの secret がどの入力 capability に対応するかは domain rule であり、
-    /// adapter はこの分岐を再実装せず、選ばれた capability の I/O 翻訳だけを担う。
-    pub fn read_interactive_secret_with<T>(
-        self,
-        read_bw_email: impl FnOnce() -> crate::Result<T>,
-        read_bw_password: impl FnOnce() -> crate::Result<T>,
-        read_bitwarden_client_secret: impl FnOnce() -> crate::Result<T>,
-    ) -> crate::Result<T> {
-        match self {
-            Self::BwEmail => read_bw_email(),
-            Self::BwPassword => read_bw_password(),
-            Self::BitwardenClientSecret => read_bitwarden_client_secret(),
-        }
     }
 
     /// AEAD additional data に使う保存 context bytes を構築する。
@@ -203,12 +178,8 @@ impl SecretStorageSpec {
     ///
     /// 保存対象集合と各 object/spec の対応は storage domain rule であり、use case は
     /// 個別の `SecretName` から対応関係を再構築せず、この集合を順序制御へ適用する。
-    pub fn all_for_serial(serial: u32) -> [Self; 3] {
-        [
-            SecretName::BwEmail.storage_spec(serial),
-            SecretName::BwPassword.storage_spec(serial),
-            SecretName::BitwardenClientSecret.storage_spec(serial),
-        ]
+    pub fn all_for_serial(serial: u32) -> [Self; 1] {
+        [SecretName::BitwardenClientSecret.storage_spec(serial)]
     }
 
     /// 保存対象 plaintext がこの spec の値制約を満たすことを確認する。
@@ -233,8 +204,6 @@ impl SecretStorageSpec {
 impl fmt::Display for SecretName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::BwEmail => "bw-email",
-            Self::BwPassword => "bw-password",
             Self::BitwardenClientSecret => "bitwarden-client-secret",
         })
     }
@@ -245,8 +214,6 @@ impl FromStr for SecretName {
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
-            "bw-email" => Ok(Self::BwEmail),
-            "bw-password" => Ok(Self::BwPassword),
             "bitwarden-client-secret" => Ok(Self::BitwardenClientSecret),
             _ => Err(format!("unsupported YubiKey secret name: {value}")),
         }
@@ -279,14 +246,6 @@ mod tests {
             .map(|name| (name.to_string(), name.object_id().to_string()))
             .collect::<std::collections::BTreeMap<_, _>>();
 
-        assert_eq!(
-            objects.get("bw-email").map(String::as_str),
-            Some("0x005FFF17")
-        );
-        assert_eq!(
-            objects.get("bw-password").map(String::as_str),
-            Some("0x005FFF18")
-        );
         assert_eq!(
             objects.get("bitwarden-client-secret").map(String::as_str),
             Some("0x005FFF19")

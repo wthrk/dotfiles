@@ -24,12 +24,6 @@ use crate::{
 };
 
 impl SecretInputPort for ProcessIoBackend {
-    fn read_bw_email_secret(&self) -> Result<ProtectedSecret> {
-        io_backend::read_bw_email_secret()
-    }
-    fn read_bw_password_secret(&self) -> Result<ProtectedSecret> {
-        io_backend::read_bw_password_secret()
-    }
     fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret> {
         io_backend::read_bitwarden_client_secret_secret()
     }

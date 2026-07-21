@@ -81,14 +81,10 @@ mod tests {
     }
 
     fn fields() -> BTreeMap<String, ProtectedSecret> {
-        [
-            ("bw-email".to_owned(), material(b"email")),
-            ("bw-password".to_owned(), material(b"password")),
-            (
-                "bitwarden-client-secret".to_owned(),
-                material(b"client-secret"),
-            ),
-        ]
+        [(
+            "bitwarden-client-secret".to_owned(),
+            material(b"client-secret"),
+        )]
         .into_iter()
         .collect()
     }

@@ -52,7 +52,7 @@ test_missing_token_prompts_and_puts() {
   dotfiles() {
     case "$1 $2 $3" in
       'secrets yubikey status')
-        printf '%s\n' 'bw-email'
+        printf '%s\n' 'unrelated-storage-name'
         ;;
       'secrets yubikey put')
         local stored_token

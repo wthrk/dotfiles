@@ -54,7 +54,7 @@ pub(crate) fn stdin_is_terminal() -> bool {
 /// 制御端末から非 secret の 1 行を読み取る。
 ///
 /// 番号選択など secret ではない入力だけに使い、secret payload は `read_hidden_line` か
-/// `read_visible_line` の protected buffer 経路へ渡す。
+/// hidden-input の protected buffer 経路へ渡す。
 pub(crate) fn read_control_line(prompt: &str) -> Result<String> {
     eprint!("{prompt}");
     io::stderr().flush()?;
@@ -172,20 +172,6 @@ pub(crate) fn read_hidden_tty_line(
             }
         }
     }
-    input.into_protected_secret_line(&session, max_len, too_long_message)
-}
-
-/// visible 入力を保護バッファへ直接取り込み、平文コピーを残さない。
-pub(crate) fn read_visible_line(
-    prompt: &str,
-    max_len: usize,
-    too_long_message: &'static str,
-) -> Result<ProtectedSecret> {
-    let session = SecretSession::start()?;
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    let mut reader = stdin_or_tty_reader()?;
-    let input = ProtectedInputBuffer::read_line_from(&mut reader, max_len, &session)?;
     input.into_protected_secret_line(&session, max_len, too_long_message)
 }
 
