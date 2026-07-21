@@ -47,6 +47,10 @@ SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}" # 任意。指定時は gpg-bac
 
 # `--repo-head` 時も、`put --stdin` の標準入力だけは呼び出し元の pipe をそのまま渡す。
 # 他の CLI 呼び出しは後段の `dotfiles` wrapper が controlling terminal を使う。
+# 正本: docs/secret-recovery/initial-provisioning-runbook.md。Cargo の binary target 選択は
+# https://doc.rust-lang.org/cargo/reference/cargo-targets.html#binaries を根拠に `--bin` で明示する。
+# feature 専用の internal test stub ではなく、利用者向け production `dotfiles` を起動して
+# プロビジョニングの実経路を選ぶためである。
 run_dotfiles_from_repo_head() {
   (cd "$REPO_ROOT" && direnv exec . cargo run -p dotfiles-cli --bin dotfiles -- "$@")
 }

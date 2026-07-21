@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# provision-secret-recovery-source.sh の BWS token 保存判定を、外部コマンドを起動せず検証する。
+# provision-secret-recovery-source.sh の BWS token 保存判定と、`--repo-head` が production
+# `dotfiles` target を選ぶことを、実機・外部コマンドを起動せず検証する。
 
 set -euo pipefail
 
