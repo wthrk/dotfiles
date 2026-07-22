@@ -40,6 +40,7 @@ use crate::{
         },
     },
     support::{
+        piv_debug,
         piv_storage::non_empty_payload,
         protection::{ProtectedSecret, SecretSession},
         yubikey_backend::{self, SecretDeviceIo, SelectedSecretDevice, YubikeyDeviceBackend},
@@ -137,7 +138,10 @@ fn open_piv_management_session(backend: &mut YubikeyStorageBackend, serial: u32)
     if backend.piv_management_session.is_some() {
         anyhow::bail!("PIV management session is already configured")
     }
-    let device = open_device(serial)?;
+    piv_debug::started("piv-session-open");
+    let device = open_device(serial);
+    piv_debug::returned("piv-session-open", &device);
+    let device = device?;
     backend.piv_management_session = Some(PivManagementSession {
         serial,
         device,
@@ -166,7 +170,10 @@ fn verify_piv_management_pin(
     if session.state != PivManagementSessionState::Opened {
         anyhow::bail!("PIV management PIN VERIFY requires a newly opened session")
     }
-    session.device.verify_management_pin(&pin)?;
+    piv_debug::started("piv-verify-invocation");
+    let result = session.device.verify_management_pin(&pin);
+    piv_debug::returned("piv-verify-invocation", &result);
+    result?;
     session.state = PivManagementSessionState::Verified;
     Ok(())
 }
@@ -187,7 +194,10 @@ fn authenticate_piv_management_key(backend: &mut YubikeyStorageBackend, serial: 
     if session.state != PivManagementSessionState::Verified {
         anyhow::bail!("PIV management-key authentication requires a successful PIN VERIFY")
     }
-    session.device.authenticate_protected_management_key()?;
+    piv_debug::started("piv-management-key-authentication");
+    let result = session.device.authenticate_protected_management_key();
+    piv_debug::returned("piv-management-key-authentication", &result);
+    result?;
     session.state = PivManagementSessionState::Authenticated;
     Ok(())
 }

@@ -691,8 +691,10 @@ fn provision_bws_token_debug_reports_lossy_verify_without_secret_or_mutation() -
             "dotfiles-piv-debug phase=target-resolved serial=2001",
             "dotfiles-piv-debug phase=tty-pin-input-started",
             "dotfiles-piv-debug phase=tty-pin-input-accepted",
-            "dotfiles-piv-debug phase=piv-management-session-started",
-            "dotfiles-piv-debug phase=piv-management-session-returned result=opaque-error",
+            "dotfiles-piv-debug phase=piv-session-open-started",
+            "dotfiles-piv-debug phase=piv-session-open-succeeded",
+            "dotfiles-piv-debug phase=piv-verify-invocation-started",
+            "dotfiles-piv-debug phase=piv-verify-invocation-returned result=opaque-error",
             "dotfiles-piv-debug phase=subsequent-phase-not-reached",
         ]
     );
@@ -783,8 +785,12 @@ fn provision_bws_token_debug_reports_management_key_authentication_failure_witho
             "dotfiles-piv-debug phase=target-resolved serial=2001",
             "dotfiles-piv-debug phase=tty-pin-input-started",
             "dotfiles-piv-debug phase=tty-pin-input-accepted",
-            "dotfiles-piv-debug phase=piv-management-session-started",
-            "dotfiles-piv-debug phase=piv-management-session-returned result=opaque-error",
+            "dotfiles-piv-debug phase=piv-session-open-started",
+            "dotfiles-piv-debug phase=piv-session-open-succeeded",
+            "dotfiles-piv-debug phase=piv-verify-invocation-started",
+            "dotfiles-piv-debug phase=piv-verify-invocation-succeeded",
+            "dotfiles-piv-debug phase=piv-management-key-authentication-started",
+            "dotfiles-piv-debug phase=piv-management-key-authentication-returned result=opaque-error",
             "dotfiles-piv-debug phase=subsequent-phase-not-reached",
         ]
     );
@@ -848,8 +854,12 @@ fn provision_bws_token_debug_reports_every_success_phase_with_fixed_schema() -> 
             "dotfiles-piv-debug phase=target-resolved serial=2001",
             "dotfiles-piv-debug phase=tty-pin-input-started",
             "dotfiles-piv-debug phase=tty-pin-input-accepted",
-            "dotfiles-piv-debug phase=piv-management-session-started",
-            "dotfiles-piv-debug phase=piv-management-session-succeeded",
+            "dotfiles-piv-debug phase=piv-session-open-started",
+            "dotfiles-piv-debug phase=piv-session-open-succeeded",
+            "dotfiles-piv-debug phase=piv-verify-invocation-started",
+            "dotfiles-piv-debug phase=piv-verify-invocation-succeeded",
+            "dotfiles-piv-debug phase=piv-management-key-authentication-started",
+            "dotfiles-piv-debug phase=piv-management-key-authentication-succeeded",
             "dotfiles-piv-debug phase=storage-status-inspection-started",
             "dotfiles-piv-debug phase=storage-status-inspection-succeeded",
             "dotfiles-piv-debug phase=storage-setup-inspection-started",
@@ -1004,8 +1014,12 @@ fn provision_bws_token_debug_token_input_rejection_adds_only_fixed_diagnostic() 
             "dotfiles-piv-debug phase=target-resolved serial=2001",
             "dotfiles-piv-debug phase=tty-pin-input-started",
             "dotfiles-piv-debug phase=tty-pin-input-accepted",
-            "dotfiles-piv-debug phase=piv-management-session-started",
-            "dotfiles-piv-debug phase=piv-management-session-succeeded",
+            "dotfiles-piv-debug phase=piv-session-open-started",
+            "dotfiles-piv-debug phase=piv-session-open-succeeded",
+            "dotfiles-piv-debug phase=piv-verify-invocation-started",
+            "dotfiles-piv-debug phase=piv-verify-invocation-succeeded",
+            "dotfiles-piv-debug phase=piv-management-key-authentication-started",
+            "dotfiles-piv-debug phase=piv-management-key-authentication-succeeded",
             "dotfiles-piv-debug phase=storage-status-inspection-started",
             "dotfiles-piv-debug phase=storage-status-inspection-succeeded",
             "dotfiles-piv-debug phase=storage-setup-inspection-started",
@@ -1147,11 +1161,14 @@ fn assert_debug_schema_is_secret_safe(phases: &[&str]) -> TestResult<()> {
                 "discovery-",
                 "target-resolved",
                 "tty-pin-input-",
-                "piv-management-session-",
+                "piv-session-open-",
+                "piv-verify-invocation-",
+                "piv-management-key-authentication-",
                 "storage-status-inspection-",
                 "storage-setup-inspection-",
                 "storage-initialization-",
                 "storage-setup-finalization-",
+                "storage-clear-",
                 "storage-write-preflight-inspection-",
                 "tty-token-input-",
                 "storage-store-",
@@ -1446,8 +1463,7 @@ fn provision_bws_token_fails_closed_when_an_existing_token_cannot_be_decrypted()
 }
 
 #[test]
-fn provision_bws_token_clears_only_typed_invalid_storage_and_never_traces_clear() -> TestResult<()>
-{
+fn provision_bws_token_clears_only_typed_invalid_storage_and_traces_clear() -> TestResult<()> {
     let state = PersistentYubiKeyState::new();
     let mut spec = yubikey_spec([manifestless_bitwarden_client_secret_device_spec(
         PRIMARY_SERIAL,
@@ -1472,11 +1488,21 @@ fn provision_bws_token_clears_only_typed_invalid_storage_and_never_traces_clear(
     )?;
 
     assert!(run.success, "output: {}", run.output);
+    let phases: Vec<_> = run
+        .output
+        .lines()
+        .filter(|line| line.starts_with("dotfiles-piv-debug "))
+        .collect();
     assert!(
-        !run.output.contains("storage-clear"),
-        "clear is an intentional typed-invalid mutation, not a debug phase: {}",
+        phases.windows(2).any(|pair| pair
+            == [
+                "dotfiles-piv-debug phase=storage-clear-started",
+                "dotfiles-piv-debug phase=storage-clear-succeeded",
+            ]),
+        "typed-invalid clear must be observable with the fixed non-secret phase pair: {}",
         run.output
     );
+    assert_debug_schema_is_secret_safe(&phases)?;
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(
         &final_yubikey,

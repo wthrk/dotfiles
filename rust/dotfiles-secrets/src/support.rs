@@ -33,6 +33,7 @@ pub(crate) mod internal_stub_yubikey;
 pub(crate) mod io_backend;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod password_store;
+pub(crate) mod piv_debug;
 pub(crate) mod piv_storage;
 pub(crate) mod process_io;
 pub(crate) mod protection;

@@ -123,6 +123,7 @@ fn run_provision_bws_token(
     command: ProvisionBwsTokenCommand,
     debug: bool,
 ) -> Result<()> {
+    let _piv_debug_scope = crate::support::piv_debug::PivDebugScope::new(debug);
     let presentation = ProvisionDebugPresentation { enabled: debug };
     let mut device = ProvisionDebugDevice {
         inner: &mut runtime.device,
@@ -256,18 +257,14 @@ struct ProvisionDebugStorage<'a> {
 }
 impl SecretStoragePort for ProvisionDebugStorage<'_> {
     fn begin_piv_management_session(&mut self, serial: u32, pin: ProtectedSecret) -> Result<()> {
-        self.presentation.trace("piv-management-session", || {
-            self.inner.begin_piv_management_session(serial, pin)
-        })
+        self.inner.begin_piv_management_session(serial, pin)
     }
     fn begin_next_piv_management_session(
         &mut self,
         serial: u32,
         pin: ProtectedSecret,
     ) -> Result<()> {
-        self.presentation.trace("piv-management-session", || {
-            self.inner.begin_next_piv_management_session(serial, pin)
-        })
+        self.inner.begin_next_piv_management_session(serial, pin)
     }
     fn inspect_secret_storage_setup(
         &mut self,
@@ -302,7 +299,9 @@ impl SecretStoragePort for ProvisionDebugStorage<'_> {
         serial: u32,
         intent: SecretStorageClearIntent,
     ) -> Result<Vec<u8>> {
-        self.inner.clear_secret_storage(serial, intent)
+        self.presentation.trace("storage-clear", || {
+            self.inner.clear_secret_storage(serial, intent)
+        })
     }
     fn inspect_secret_storage_write(
         &mut self,
