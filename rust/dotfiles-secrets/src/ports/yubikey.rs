@@ -35,15 +35,20 @@ pub trait DeviceSerialPort {
 pub trait SecretStoragePort {
     /// この process の管理操作に使う設定済み PIV PIN を設定する。
     ///
-    /// read/decrypt/status path は呼ばない。adapter は fresh PIV handle ごとにこの保護値を
-    /// `verify_pin` へ渡し、PIN-protected management key を取得・認証してから管理操作を行う。
-    fn begin_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()>;
+    /// read/decrypt/status path は呼ばない。application が解決済みの対象 serial とこの保護値を
+    /// 渡す。adapter はその serial の fresh PIV handle を直ちに開き、一回の `verify_pin`、
+    /// PIN-protected management key の取得、認証を完了してから管理操作を行う。
+    fn begin_piv_management_session(&mut self, serial: u32, pin: ProtectedSecret) -> Result<()>;
     /// 新たに hidden TTY から読んだ PIN で、次の対象 YubiKey 用の管理 session を開始する。
     ///
-    /// 複数 YubiKey を一 command で順番に更新する場合だけ使う。caller は先に次の serial を
-    /// 解決してから PIN を新規に入力しなければならず、前 session の PIN を別 serial へ再利用
+    /// 複数 YubiKey を一 command で順番に更新する場合だけ使う。caller は解決済みの次 serial と
+    /// 新規 PIN を渡す。前 session の device/PIN は置換時に drop され、別 serial へ再利用
     /// してはならない。
-    fn begin_next_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()>;
+    fn begin_next_piv_management_session(
+        &mut self,
+        serial: u32,
+        pin: ProtectedSecret,
+    ) -> Result<()>;
     /// setup 判定に必要な storage 状態を取得する。
     fn inspect_secret_storage_setup(
         &mut self,

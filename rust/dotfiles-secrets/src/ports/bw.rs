@@ -31,28 +31,28 @@ pub trait BwsClientPort {
         project_id: &BwsProjectId,
     ) -> Result<Vec<BwsLookupCandidate<BwsSecretId>>>;
 
-    /// 解決済み BWS secret の保護済み value と stale-overwrite 防止 guard を取得する。
+    /// 解決済み BWS secret を検証済み GPG backup envelope と stale-overwrite 防止 guard として取得する。
     ///
-    /// implementor は SDK の get と revision / value bytes からの guard 構築だけを担う。value の
-    /// schema、用途、成功条件は決めない。application が選んだ domain parser は protection 境界内で
-    /// 実行し、SDK response の `String` を port/application へ返さない。
+    /// implementor は SDK の get、revision / value bytes からの guard 構築、保護境界内での UTF-8
+    /// validation を担う。envelope の wire-format 検証は [`GpgBackupEnvelope::from_json`] という
+    /// domain contract に従い、SDK response の `String` と `ProtectedSecret` を application へ返さない。
     /// `gpg-secret-key-backup` の value は encrypted envelope であり平文鍵素材を含まない。
     async fn fetch_gpg_backup_envelope(
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> Result<(ProtectedSecret, BackupUpdateGuard)>;
+    ) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)>;
 
-    /// 解決済み `password-store-remote` の保護済み value を取得する。
+    /// 解決済み `password-store-remote` を検証済み domain 値として取得する。
     ///
-    /// implementor は SDK get だけを担う。GitHub SSH clone URL としての検証は application が選んだ
-    /// domain parser を protection 境界内で実行して行う。clone URL は credential ではないが private
-    /// repository の所在を示すため、caller は表示・log・report に出さない。
+    /// implementor は SDK get と保護境界内の UTF-8 validation を担い、GitHub SSH clone URL の検証は
+    /// [`PasswordStoreRemote::parse`] という domain contract に従う。clone URL は credential ではないが
+    /// private repository の所在を示すため、caller は表示・log・report に出さない。
     async fn fetch_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> Result<ProtectedSecret>;
+    ) -> Result<PasswordStoreRemote>;
 
     /// 指定 project に新しい `gpg-secret-key-backup` envelope を作成し、その ID を返す。
     ///

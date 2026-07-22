@@ -7,7 +7,10 @@
 //! [`external-sdk-evidence.md`](../../../../docs/secret-recovery/external-sdk-evidence.md#rust-support-crate-secret-recovery-直接利用)
 //! の固定 source を根拠にする。descriptor / poll error を EOF、cancel、retryable に推測変換しない。
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::{
+    cell::Cell,
+    io::{self, IsTerminal, Read, Write},
+};
 
 use anyhow::{Context, bail};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -99,14 +102,42 @@ fn read_hidden_byte(reader: &mut FileDescriptor, byte: &mut [u8; 1]) -> Result<u
 /// command や device state の判断は持たない。
 trait HiddenSecretInput {
     fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize>;
+    /// CR を line terminator として受理したことを記録する。
+    ///
+    /// 次の hidden input の先頭で stream 順序どおりに到着する LF だけを捨てる。timeout 付き poll
+    /// で CRLF を推測すると、遅延した LF が次 prompt の空入力になるため使わない。
+    fn finish_cr_terminated_line(&mut self);
     fn write_hidden_mask(&mut self) -> Result<()>;
     fn erase_hidden_mask(&mut self) -> Result<()>;
     fn finish_hidden_line(&mut self) -> Result<()>;
 }
 
+thread_local! {
+    /// controlling TTY の CRLF を prompt 境界をまたいで扱うための process-local state。
+    ///
+    /// raw mode では CR と LF が別 read で届くことがあり、CR の時点で LF の到着を待つと CR-only
+    /// terminal の submit を停止させる。stream は順序を保つため、次の hidden read が最初に LF を
+    /// 観測したときだけここで捨てれば、遅延 LF を次の secret として解釈しない。
+    static DISCARD_LF_AFTER_CR: Cell<bool> = const { Cell::new(false) };
+}
+
 impl HiddenSecretInput for FileDescriptor {
     fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize> {
-        read_hidden_byte(self, byte)
+        loop {
+            let read = read_hidden_byte(self, byte)?;
+            if read == 0 {
+                return Ok(0);
+            }
+            let discard_lf = DISCARD_LF_AFTER_CR.replace(false);
+            if discard_lf && byte[0] == b'\n' {
+                continue;
+            }
+            return Ok(read);
+        }
+    }
+
+    fn finish_cr_terminated_line(&mut self) {
+        DISCARD_LF_AFTER_CR.set(true);
     }
 
     fn write_hidden_mask(&mut self) -> Result<()> {
@@ -141,6 +172,10 @@ struct HiddenPromptIo<'a, W> {
 impl<W: Write> HiddenSecretInput for HiddenPromptIo<'_, W> {
     fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize> {
         read_hidden_byte(self.reader, byte)
+    }
+
+    fn finish_cr_terminated_line(&mut self) {
+        self.reader.finish_cr_terminated_line()
     }
 
     fn write_hidden_mask(&mut self) -> Result<()> {
@@ -182,11 +217,19 @@ fn read_hidden_secret_input_from(
             break;
         }
         match byte[0] {
-            b'\r' | b'\n' => {
+            b'\r' => {
+                tty.finish_cr_terminated_line();
                 tty.finish_hidden_line()?;
                 break;
             }
-            3 => bail!("interrupted while reading hidden input"),
+            b'\n' => {
+                tty.finish_hidden_line()?;
+                break;
+            }
+            3 => {
+                tty.finish_hidden_line()?;
+                bail!("interrupted while reading hidden input");
+            }
             8 | 127 => {
                 if !input.as_slice().is_empty() {
                     input.pop_byte();
@@ -196,6 +239,7 @@ fn read_hidden_secret_input_from(
             value => {
                 input.write_all(&[value])?;
                 if input.as_slice().len() > max_len {
+                    tty.finish_hidden_line()?;
                     bail!("{too_long_message}");
                 }
                 tty.write_hidden_mask()?;
@@ -203,6 +247,21 @@ fn read_hidden_secret_input_from(
         }
     }
     input.into_protected_secret_line(&session, max_len, too_long_message)
+}
+
+const PIV_PIN_MINIMUM_BYTES: usize = 6;
+const PIV_PIN_MAXIMUM_BYTES: usize = 8;
+
+fn read_piv_pin_from(tty: &mut impl HiddenSecretInput) -> Result<ProtectedSecret> {
+    let pin = read_hidden_secret_input_from(
+        tty,
+        PIV_PIN_MAXIMUM_BYTES,
+        "YubiKey PIV PIN must contain 6 to 8 bytes",
+    )?;
+    if !(PIV_PIN_MINIMUM_BYTES..=PIV_PIN_MAXIMUM_BYTES).contains(&pin.len()) {
+        bail!("YubiKey PIV PIN must contain 6 to 8 bytes");
+    }
+    Ok(pin)
 }
 
 /// 非表示入力を raw mode で読み取り、入力 bytes を保護メモリのまま返す。
@@ -213,14 +272,16 @@ pub(crate) fn read_hidden_line(
     max_len: usize,
     too_long_message: &'static str,
 ) -> Result<ProtectedSecret> {
-    eprint!("{prompt}");
-    io::stderr().flush()?;
     let mut reader = stdin_or_tty_reader()?;
+    // prompt を出す前に raw mode を設定する。canonical echo が有効なまま prompt が見えると、直後の
+    // 入力 byte がこの process の mask 開始前に terminal から echo され得る。
     enable_raw_mode().context("failed to enable terminal raw mode")?;
     let _raw_mode = scopeguard::guard((), |_| {
         let _ = disable_raw_mode();
     });
     let mut stderr = io::stderr();
+    stderr.write_all(prompt.as_bytes())?;
+    stderr.flush()?;
     let mut prompt_io = HiddenPromptIo {
         reader: &mut reader,
         writer: &mut stderr,
@@ -239,13 +300,33 @@ pub(crate) fn read_hidden_tty_line(
     too_long_message: &'static str,
 ) -> Result<ProtectedSecret> {
     let mut tty = controlling_tty_reader()?;
-    tty.write_all(prompt.as_bytes())?;
-    tty.flush()?;
+    // `read_hidden_line` と同様に、visible prompt より raw mode を先に設定し、prompt flush と raw-mode
+    // activation の間に入力 byte が terminal echo と競合しないようにする。
     enable_raw_mode().context("failed to enable terminal raw mode")?;
     let _raw_mode = scopeguard::guard((), |_| {
         let _ = disable_raw_mode();
     });
+    tty.write_all(prompt.as_bytes())?;
+    tty.flush()?;
     read_hidden_secret_input_from(&mut tty, max_len, too_long_message)
+}
+
+/// controlling TTY から PIV PIN の指定 byte 範囲だけを受け取る。
+///
+/// [Yubico PIV VERIFY specification](https://docs.yubico.com/yesdk/users-manual/application-piv/apdu/verify.html#verify-pin)
+/// が定める PIN の 6--8 byte 制約を device/session 開始前に適用する。EOF、空入力、範囲外入力は
+/// VERIFY へ渡さない。
+pub(crate) fn read_hidden_tty_piv_pin() -> Result<ProtectedSecret> {
+    let mut tty = controlling_tty_reader()?;
+    // `read_hidden_line` と同様に、visible prompt より raw mode を先に設定し、prompt flush と raw-mode
+    // activation の間に入力 byte が terminal echo と競合しないようにする。
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
+    let _raw_mode = scopeguard::guard((), |_| {
+        let _ = disable_raw_mode();
+    });
+    tty.write_all(b"YubiKey PIV PIN: ")?;
+    tty.flush()?;
+    read_piv_pin_from(&mut tty)
 }
 
 /// 制御端末から非秘匿の 1 行を可視入力（通常の echo つき cooked 入力）で読み取る。
@@ -337,12 +418,13 @@ mod tests {
 
     use crate::{Result, support::protection::yubikey_piv::verify_pin_with};
 
-    use super::{HiddenSecretInput, read_hidden_secret_input_from};
+    use super::{HiddenSecretInput, read_hidden_secret_input_from, read_piv_pin_from};
 
     struct FakeControllingTty {
         input: Cursor<Vec<u8>>,
         output: Vec<u8>,
         finished: bool,
+        discard_lf_after_cr: bool,
     }
 
     impl FakeControllingTty {
@@ -351,13 +433,28 @@ mod tests {
                 input: Cursor::new(input.to_vec()),
                 output: Vec::new(),
                 finished: false,
+                discard_lf_after_cr: false,
             }
         }
     }
 
     impl HiddenSecretInput for FakeControllingTty {
         fn read_hidden_byte(&mut self, byte: &mut [u8; 1]) -> Result<usize> {
-            Ok(std::io::Read::read(&mut self.input, byte)?)
+            loop {
+                let read = std::io::Read::read(&mut self.input, byte)?;
+                if read == 0 {
+                    return Ok(0);
+                }
+                let discard_lf = std::mem::take(&mut self.discard_lf_after_cr);
+                if discard_lf && byte[0] == b'\n' {
+                    continue;
+                }
+                return Ok(read);
+            }
+        }
+
+        fn finish_cr_terminated_line(&mut self) {
+            self.discard_lf_after_cr = true;
         }
 
         fn write_hidden_mask(&mut self) -> Result<()> {
@@ -403,6 +500,52 @@ mod tests {
 
         assert!(tty.finished);
         assert_eq!(pin.to_test_bytes(), b"12 34");
+        Ok(())
+    }
+
+    #[test]
+    fn delayed_crlf_is_not_interpreted_as_the_next_hidden_prompt_input() -> Result<()> {
+        let mut tty = FakeControllingTty::new(b"123456\r\nnext-token");
+        let pin = read_piv_pin_from(&mut tty)?;
+        let token = read_hidden_secret_input_from(&mut tty, 64, "too large")?;
+
+        assert!(tty.finished);
+        assert_eq!(pin.to_test_bytes(), b"123456");
+        assert_eq!(token.to_test_bytes(), b"next-token");
+        let position = tty.input.position() as usize;
+        assert_eq!(&tty.input.get_ref()[position..], b"");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_piv_pin_never_reaches_verify_callback() {
+        for input in [b"12345\n".as_slice(), b"", b"123456789\n"] {
+            let mut tty = FakeControllingTty::new(input);
+            let verify_calls = RefCell::new(0usize);
+            let result = read_piv_pin_from(&mut tty).and_then(|pin| {
+                verify_pin_with(&pin, |_| {
+                    *verify_calls.borrow_mut() += 1;
+                    Ok(())
+                })
+            });
+
+            assert!(result.is_err(), "invalid PIN input must fail closed");
+            assert_eq!(*verify_calls.borrow(), 0, "VERIFY must not be called");
+        }
+    }
+
+    #[test]
+    fn eight_byte_piv_pin_reaches_verify_once_without_transformation() -> Result<()> {
+        let mut tty = FakeControllingTty::new(b"12345678\n");
+        let pin = read_piv_pin_from(&mut tty)?;
+        let calls = RefCell::new(0_usize);
+        verify_pin_with(&pin, |bytes| {
+            *calls.borrow_mut() += 1;
+            assert_eq!(bytes, b"12345678");
+            Ok(())
+        })?;
+
+        assert_eq!(*calls.borrow(), 1);
         Ok(())
     }
 

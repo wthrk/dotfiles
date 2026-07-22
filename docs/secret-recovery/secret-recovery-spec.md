@@ -147,6 +147,25 @@ process / management session に閉じる。
 serial 解決 / SDK error をこれらの状態に変換せず、`provision-bws-token` は typed
 `SecretStorageStatusInvalid` だけを clear の根拠にし、それ以外を fail-closed で伝播する。
 
+`--debug` は opt-in の stderr diagnostic である。通常実行と同じ一回の discovery、PIN input、
+高水準 PIV management session、storage operation を使い、diagnostic のためだけに discovery、
+PIV open、VERIFY、authentication、書込みを増やさない。許可する出力は固定 `key=value` schema の
+`phase`、解決済み `serial`、opaque `result` だけである。`phase` は通常 use case の到達・停止地点を表す
+次の固定値だけとする: discovery、target resolution、TTY PIN input、PIV management session、storage status
+inspection、storage setup inspection / initialization / finalization、storage write-preflight inspection、TTY token
+input、storage store、local verification inspection / load、provisioning completion、後続 phase 未到達。各 failure
+は該当 phase の `result=opaque-error` だけを追加する。PIN、BWS token、保存 secret、長さ、hash、derived bytes、raw
+APDU、raw card status、任意 error text は出さない。SDK failure は raw status に復元・分類せず
+`opaque-error` として表示し、retry、fallback、PUK、reset、追加 mutation は行わない。
+
+TTY input phase が成功したときの suffix は `accepted` とする。これは hidden reader が値を受理して
+`ProtectedSecret` を後続へ渡した事実だけを表し、PIN の正誤、PIV VERIFY、PIN-protected management key の取得、
+management-key authentication、storage operation の成功を意味しない。これらは後続の各 phase だけが表す。
+PIV PIN-only の一次資料が PIN verify 後に protected data object から management key を取得して同じ session の
+management operation を行うと定義しているため、TTY 入力とその後の認証を同一の `succeeded` と混同しない。
+根拠は [Yubico PIV PIN-only mode](https://docs.yubico.com/yesdk/users-manual/application-piv/pin-only.html#pin-protected)
+および [Yubico VERIFY specification](https://docs.yubico.com/yesdk/users-manual/application-piv/apdu/verify.html#verify-pin) である。
+
 ### `dotfiles secrets yubikey clear --yes`
 
 再登録前の管理コマンドである。明示した `--serial <serial>`、または serial 未指定時に単一接続として解決できる YubiKey について、この機能用の manifest / bootstrap secret custom data object と slot `82` certificate を clear し、続けて slot `82` の専用 key を再生成する。これは既存 key を消去するのではなく、再生成によって置換する操作である。予約外の PIV object / slot、FIDO2、OTP、OpenPGP は変更しない。無 PIN の `status` が clear の根拠にできるのは、manifest 欠落かつ予約 object が残る状態、または manifest 不正だけである。slot key/certificate の残存・欠落は `status` が観測しないため終了コード 42 に分類せず、PIN を使う管理 preflight で検出して停止する。正常な manifest の任意の bootstrap secret subset では `clear` せず、保存済み secret を維持する。
@@ -155,7 +174,7 @@ serial 解決 / SDK error をこれらの状態に変換せず、`provision-bws-
 
 ### YubiKey PIV PIN の利用境界
 
-PIV 管理操作である `setup`、`put`、`clear`、`enroll-primary`、`enroll-spare`、`rotate-bws-token` は、設定済み PIV PIN を controlling TTY の hidden prompt から受け取り、command 内の最初に解決した対象 serial へ一つだけ開く handle で `verify_pin`、PIN-protected management key の取得、management-key authentication を順に行う。後続の inspection、保存、finalize、local verification は同じ handle を使い、PIN 一入力につき physical VERIFY は一回だけとする。`rotate-bws-token` が別 serial の更新へ継続する場合は、対象を解決してから新しい hidden TTY PIN を読み、前 session を閉じて独立した handle / authentication を作る。前 serial の PIN を別 serial に再利用してはならない。wrong/blocked/opaque PIN error は default key、PUK、reset、retry へ fallback せず停止する。
+PIV 管理操作である `setup`、`put`、`clear`、`enroll-primary`、`enroll-spare`、`rotate-bws-token`、`provision-bws-token` は、設定済み PIV PIN を controlling TTY の hidden prompt から受け取り、command 内の最初に解決した対象 serial へ一つだけ開く handle で `verify_pin`、PIN-protected management key の取得、management-key authentication を順に行う。後続の inspection、保存、finalize、local verification は同じ handle を使い、PIN 一入力につき physical VERIFY は一回だけとする。`rotate-bws-token` が別 serial の更新へ継続する場合は、対象を解決してから新しい hidden TTY PIN を読み、前 session を閉じて独立した handle / authentication を作る。前 serial の PIN を別 serial に再利用してはならない。wrong/blocked/opaque PIN error は default key、PUK、reset、retry へ fallback せず停止する。
 
 `status`、`verify-yubikey`、`restore-gpg`、`restore-pass`、GPG backup/BWS provisioning の YubiKey 読み出し・復号経路は PIN を要求してはならない。特に無対話復旧の利用者契約を管理操作へ拡張しない。
 

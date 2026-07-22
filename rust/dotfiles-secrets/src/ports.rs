@@ -13,9 +13,9 @@ pub(crate) use bw::BwsClientPort;
 pub(crate) use git::{GitClonePort, PasswordStorePort};
 pub(crate) use gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort};
 pub(crate) use io::{
-    BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-    PasswordStoreRemoteInputPort, PivPinInputPort, ReportPort, RotationContinuationPort,
-    SecretInputPort, SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
+    BackupUpdateConfirmationPort, BitwardenClientSecretInputPort, BootstrapDocumentInputPort,
+    ClockPort, PasswordStoreRemoteInputPort, PivPinInputPort, ReportPort, RotationContinuationPort,
+    SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
 };
 pub(crate) use yubikey::{DeviceSerialPort, GpgRecipientPort, SecretStoragePort};
 
@@ -27,9 +27,10 @@ pub(crate) use git::{MockGitClonePort, MockPasswordStorePort};
 pub(crate) use gpg::{MockBackupCipherPort, MockGpgKeyringPort, MockSshAgentPort};
 #[cfg(test)]
 pub(crate) use io::{
-    MockBackupUpdateConfirmationPort, MockBootstrapSecretDocumentInputPort, MockClockPort,
-    MockPasswordStoreRemoteInputPort, MockReportPort, MockRotationContinuationPort,
-    MockSecretInputPort, MockSecretStorageStatusOutputPort, MockSshPublicKeyOutputPort,
+    MockBackupUpdateConfirmationPort, MockBitwardenClientSecretInputPort,
+    MockBootstrapDocumentInputPort, MockClockPort, MockPasswordStoreRemoteInputPort,
+    MockReportPort, MockRotationContinuationPort, MockSecretStorageStatusOutputPort,
+    MockSshPublicKeyOutputPort,
 };
 #[cfg(test)]
 pub(crate) use yubikey::{MockDeviceSerialPort, MockGpgRecipientPort, MockSecretStoragePort};

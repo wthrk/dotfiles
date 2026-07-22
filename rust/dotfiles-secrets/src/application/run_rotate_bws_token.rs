@@ -16,32 +16,19 @@ use crate::{
     ports,
 };
 
-/// `run_rotate_bws_token_with_prompt` が使う外部 capability を named field で束ねる。
-pub(crate) struct RotateBwsTokenPromptRuntime<'a> {
-    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
-    pub(crate) piv_pin: &'a dyn ports::PivPinInputPort,
-    pub(crate) secret_input: &'a dyn ports::SecretInputPort,
-    pub(crate) continuation: &'a dyn ports::RotationContinuationPort,
-    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
-    pub(crate) report: &'a dyn ports::ReportPort,
-}
-
-/// prompt 入力で BWS token を更新し、YubiKey 保存状態を再検証する。
+/// BWS token を更新し、YubiKey 保存状態を再検証する。
 ///
 /// serial 未指定時は各更新ステップで port 境界から単一接続 device を解決し、token 入力前に
 /// 既存 local storage を read/validate する。更新不能な状態では new token を受け取らない。
-pub(crate) fn run_rotate_bws_token_with_prompt(
+pub(crate) fn run_rotate_bws_token(
     command: RotateBwsTokenCommand,
-    runtime: RotateBwsTokenPromptRuntime<'_>,
+    device: &mut dyn ports::DeviceSerialPort,
+    piv_pin: &dyn ports::PivPinInputPort,
+    token_input: &dyn ports::BitwardenClientSecretInputPort,
+    continuation: &dyn ports::RotationContinuationPort,
+    storage_port: &mut dyn ports::SecretStoragePort,
+    report: &dyn ports::ReportPort,
 ) -> Result<()> {
-    let RotateBwsTokenPromptRuntime {
-        device,
-        piv_pin,
-        secret_input,
-        continuation,
-        storage: storage_port,
-        report,
-    } = runtime;
     let mut updated_serials = BTreeSet::new();
     let mut next_requested_serial = command.serial;
     let mut token = None;
@@ -55,9 +42,9 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
         // every later YubiKey requires a fresh hidden-TTY PIN and a separate PIV session.
         let pin = piv_pin.read_piv_pin_secret()?;
         if updated_serials.len() == 1 {
-            storage_port.begin_piv_management_session(pin)?;
+            storage_port.begin_piv_management_session(serial, pin)?;
         } else {
-            storage_port.begin_next_piv_management_session(pin)?;
+            storage_port.begin_next_piv_management_session(serial, pin)?;
         }
 
         let storage = command.storage_spec(serial);
@@ -81,7 +68,7 @@ pub(crate) fn run_rotate_bws_token_with_prompt(
         }
 
         if token.is_none() {
-            token = Some(secret_input.read_bitwarden_client_secret_secret()?);
+            token = Some(token_input.read_bitwarden_client_secret()?);
         }
         let Some(token) = token.as_ref() else {
             bail!("rotate token is unavailable");
@@ -129,7 +116,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::{RotateBwsTokenPromptRuntime, run_rotate_bws_token_with_prompt};
+    use super::run_rotate_bws_token;
 
     fn material(bytes: &'static [u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -184,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn rotate_prompt_verifies_before_token_read_stores_and_reports() -> crate::Result<()> {
+    fn rotate_streamed_token_uses_the_same_piv_lifecycle_and_reports() -> crate::Result<()> {
         let mut sequence = mockall::Sequence::new();
         let mut device_serial = ports::MockDeviceSerialPort::new();
         device_serial
@@ -193,7 +180,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .withf(|requested| requested.is_none())
             .returning(|_| Ok(2001));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::MockBitwardenClientSecretInputPort::new();
         let mut piv_pin = ports::io::MockPivPinInputPort::new();
         piv_pin
             .expect_read_piv_pin_secret()
@@ -209,7 +196,8 @@ mod tests {
         storage
             .expect_begin_piv_management_session()
             .times(1)
-            .returning(|_| Ok(()));
+            .withf(|serial, _| *serial == 2001)
+            .returning(|_, _| Ok(()));
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -220,7 +208,7 @@ mod tests {
             .returning(|_, _| Ok(write_inspection(false)));
         expect_local_verify_ok(&mut storage, &mut sequence, 2001);
         secret_input
-            .expect_read_bitwarden_client_secret_secret()
+            .expect_read_bitwarden_client_secret()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|| Ok(material(b"new-token")));
@@ -246,16 +234,14 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
-        run_rotate_bws_token_with_prompt(
+        run_rotate_bws_token(
             RotateBwsTokenCommand { serial: None },
-            RotateBwsTokenPromptRuntime {
-                device: &mut device_serial,
-                piv_pin: &piv_pin,
-                secret_input: &secret_input,
-                continuation: &continuation,
-                storage: &mut storage,
-                report: &report,
-            },
+            &mut device_serial,
+            &piv_pin,
+            &secret_input,
+            &continuation,
+            &mut storage,
+            &report,
         )
     }
 
@@ -268,23 +254,21 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::MockBitwardenClientSecretInputPort::new();
         let mut piv_pin = ports::io::MockPivPinInputPort::new();
         piv_pin
             .expect_read_piv_pin_secret()
             .times(1)
             .returning(|| Ok(material(b"123456")));
         let mut continuation = ports::MockRotationContinuationPort::new();
-        secret_input
-            .expect_read_bitwarden_client_secret_secret()
-            .times(0);
+        secret_input.expect_read_bitwarden_client_secret().times(0);
         continuation.expect_continue_rotation().times(0);
 
         let mut storage = ports::MockSecretStoragePort::new();
         storage
             .expect_begin_piv_management_session()
             .times(1)
-            .returning(|_| Ok(()));
+            .returning(|_, _| Ok(()));
         storage
             .expect_inspect_secret_storage_write()
             .times(1)
@@ -308,16 +292,14 @@ mod tests {
             })
             .returning(|_| Ok(()));
 
-        let result = run_rotate_bws_token_with_prompt(
+        let result = run_rotate_bws_token(
             RotateBwsTokenCommand { serial: Some(2001) },
-            RotateBwsTokenPromptRuntime {
-                device: &mut device_serial,
-                piv_pin: &piv_pin,
-                secret_input: &secret_input,
-                continuation: &continuation,
-                storage: &mut storage,
-                report: &report,
-            },
+            &mut device_serial,
+            &piv_pin,
+            &secret_input,
+            &continuation,
+            &mut storage,
+            &report,
         );
 
         assert!(
@@ -341,14 +323,14 @@ mod tests {
             .times(1)
             .withf(|requested| requested.is_none())
             .returning(|_| Ok(2002));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::MockBitwardenClientSecretInputPort::new();
         let mut piv_pin = ports::io::MockPivPinInputPort::new();
         piv_pin
             .expect_read_piv_pin_secret()
             .times(2)
             .returning(|| Ok(material(b"123456")));
         secret_input
-            .expect_read_bitwarden_client_secret_secret()
+            .expect_read_bitwarden_client_secret()
             .times(1)
             .returning(|| Ok(material(b"new-token")));
         let mut continuation = ports::MockRotationContinuationPort::new();
@@ -364,11 +346,13 @@ mod tests {
         storage
             .expect_begin_piv_management_session()
             .times(1)
-            .returning(|_| Ok(()));
+            .withf(|serial, _| *serial == 2001)
+            .returning(|_, _| Ok(()));
         storage
             .expect_begin_next_piv_management_session()
             .times(1)
-            .returning(|_| Ok(()));
+            .withf(|serial, _| *serial == 2002)
+            .returning(|_, _| Ok(()));
         for serial in [2001, 2002] {
             storage
                 .expect_inspect_secret_storage_write()
@@ -391,16 +375,14 @@ mod tests {
             .times(2)
             .returning(|_| Ok(()));
 
-        run_rotate_bws_token_with_prompt(
+        run_rotate_bws_token(
             RotateBwsTokenCommand { serial: None },
-            RotateBwsTokenPromptRuntime {
-                device: &mut device_serial,
-                piv_pin: &piv_pin,
-                secret_input: &secret_input,
-                continuation: &continuation,
-                storage: &mut storage,
-                report: &report,
-            },
+            &mut device_serial,
+            &piv_pin,
+            &secret_input,
+            &continuation,
+            &mut storage,
+            &report,
         )
     }
 
@@ -415,14 +397,14 @@ mod tests {
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2001));
-        let mut secret_input = ports::MockSecretInputPort::new();
+        let mut secret_input = ports::MockBitwardenClientSecretInputPort::new();
         let mut piv_pin = ports::io::MockPivPinInputPort::new();
         piv_pin
             .expect_read_piv_pin_secret()
             .times(1)
             .returning(|| Ok(material(b"123456")));
         secret_input
-            .expect_read_bitwarden_client_secret_secret()
+            .expect_read_bitwarden_client_secret()
             .times(1)
             .returning(|| Ok(material(b"new-token")));
         let mut continuation = ports::MockRotationContinuationPort::new();
@@ -434,7 +416,7 @@ mod tests {
         storage
             .expect_begin_piv_management_session()
             .times(1)
-            .returning(|_| Ok(()));
+            .returning(|_, _| Ok(()));
         storage.expect_begin_next_piv_management_session().times(0);
         storage
             .expect_inspect_secret_storage_write()
@@ -453,16 +435,14 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        let result = run_rotate_bws_token_with_prompt(
+        let result = run_rotate_bws_token(
             RotateBwsTokenCommand { serial: None },
-            RotateBwsTokenPromptRuntime {
-                device: &mut device_serial,
-                piv_pin: &piv_pin,
-                secret_input: &secret_input,
-                continuation: &continuation,
-                storage: &mut storage,
-                report: &report,
-            },
+            &mut device_serial,
+            &piv_pin,
+            &secret_input,
+            &continuation,
+            &mut storage,
+            &report,
         );
 
         assert!(result.is_err(), "same device must not be rotated twice");

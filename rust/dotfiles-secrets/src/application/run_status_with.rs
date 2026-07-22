@@ -18,9 +18,9 @@ pub(crate) fn run_status_with<D, S, O>(
     output: &O,
 ) -> Result<()>
 where
-    D: ports::DeviceSerialPort,
-    S: ports::SecretStoragePort,
-    O: ports::SecretStorageStatusOutputPort,
+    D: ports::DeviceSerialPort + ?Sized,
+    S: ports::SecretStoragePort + ?Sized,
+    O: ports::SecretStorageStatusOutputPort + ?Sized,
 {
     let serial = device_serial.resolve_device_serial(command.serial)?;
     let inspections = SecretStorageSpec::all_for_serial(serial).map(|storage| {

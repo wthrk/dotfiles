@@ -138,10 +138,6 @@ impl ProtectedSecret {
     ///
     /// production build では公開されず、外部処理境界での plaintext 取り出し許可ではない。
     #[cfg(any(test, feature = "secrets-internal-test-stub"))]
-    #[cfg_attr(
-        all(test, not(feature = "secrets-internal-test-stub")),
-        expect(dead_code)
-    )]
     pub(crate) fn to_test_bytes(&self) -> Vec<u8> {
         self.with_secret(|bytes| bytes.to_vec())
     }

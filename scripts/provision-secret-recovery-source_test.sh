@@ -12,62 +12,86 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 DOTFILES_PROVISION_SOURCE_ONLY=1 source "$REPO_ROOT/scripts/provision-secret-recovery-source.sh"
 
 fail() {
-  printf 'test failure: %s\n' "$*" >&2
-  exit 1
+	printf 'test failure: %s\n' "$*" >&2
+	exit 1
 }
 
 test_script_does_not_transport_yubikey_pin_or_bws_token() {
-  if grep -Eq -- '--pin|PIV_PIN|YUBIKEY_PIN|pin_input|BWS_ACCESS_TOKEN|read_bws_access_token' \
-    "$REPO_ROOT/scripts/provision-secret-recovery-source.sh"; then
-    fail 'provision script が PIV PIN または BWS token を argv / environment / 独自 input として扱っている'
-  fi
+	if grep -Eq -- '--pin|PIV_PIN|YUBIKEY_PIN|pin_input|BWS_ACCESS_TOKEN|read_bws_access_token' \
+		"$REPO_ROOT/scripts/provision-secret-recovery-source.sh"; then
+		fail 'provision script が PIV PIN または BWS token を argv / environment / 独自 input として扱っている'
+	fi
 }
 
 test_script_has_no_split_yubikey_storage_transition() {
-  if grep -Eq -- 'secrets yubikey (status|clear|setup|put)( |$)' \
-    "$REPO_ROOT/scripts/provision-secret-recovery-source.sh"; then
-    fail 'provision script が YubiKey storage transition を別 CLI process に分割している'
-  fi
+	if grep -Eq -- 'secrets yubikey (status|clear|setup|put)( |$)' \
+		"$REPO_ROOT/scripts/provision-secret-recovery-source.sh"; then
+		fail 'provision script が YubiKey storage transition を別 CLI process に分割している'
+	fi
 }
 
 test_repo_head_selects_production_cli_binary() {
-  local invocation_log="$TEST_DIR/repo-head-cargo-invocation.log"
-  direnv() {
-    printf '%s\n' "$*" > "$invocation_log"
-  }
+	local invocation_log="$TEST_DIR/repo-head-cargo-invocation.log"
+	direnv() {
+		printf '%s\n' "$*" >"$invocation_log"
+	}
 
-  run_dotfiles_from_repo_head gpg export-ssh-public-key --primary-fingerprint fixture-fingerprint
-  grep -Fxq \
-    'exec . cargo run -p dotfiles-cli --bin dotfiles -- gpg export-ssh-public-key --primary-fingerprint fixture-fingerprint' \
-    "$invocation_log" \
-    || fail '--repo-head は feature 専用 stub ではなく production dotfiles binary を明示しなければならない'
-  unset -f direnv
+	run_dotfiles_from_repo_head gpg export-ssh-public-key --primary-fingerprint fixture-fingerprint
+	grep -Fxq \
+		'exec . cargo run -p dotfiles-cli --bin dotfiles -- gpg export-ssh-public-key --primary-fingerprint fixture-fingerprint' \
+		"$invocation_log" ||
+		fail '--repo-head は feature 専用 stub ではなく production dotfiles binary を明示しなければならない'
+	unset -f direnv
+}
+
+test_help_lists_debug_option() {
+	local help_output
+	help_output="$(bash "$REPO_ROOT/scripts/provision-secret-recovery-source.sh" --help)"
+	[ "$help_output" = "Usage: $REPO_ROOT/scripts/provision-secret-recovery-source.sh [--repo-head] [--debug]" ] ||
+		fail '--help は --debug を利用者向け option として表示しなければならない'
 }
 
 test_primary_serial_uses_one_provision_command() {
-  local invocation_log="$TEST_DIR/primary-invocation.log"
-  dotfiles() {
-    printf '%s\n' "$*" > "$invocation_log"
-  }
+	local invocation_log="$TEST_DIR/primary-invocation.log"
+	dotfiles() {
+		printf '%s\n' "$*" >"$invocation_log"
+	}
 
-  provision_bws_access_token_on_yubikey primary 2001
-  [ "$(<"$invocation_log")" = 'secrets yubikey provision-bws-token --serial 2001' ] \
-    || fail 'primary は serial 付き provision-bws-token 一回だけを呼ばなければならない'
+	provision_bws_access_token_on_yubikey primary 2001
+	[ "$(<"$invocation_log")" = 'secrets yubikey provision-bws-token --serial 2001' ] ||
+		fail 'primary は serial 付き provision-bws-token 一回だけを呼ばなければならない'
 }
 
 test_implicit_serial_uses_one_provision_command() {
-  local invocation_log="$TEST_DIR/implicit-invocation.log"
-  dotfiles() {
-    printf '%s\n' "$*" > "$invocation_log"
-  }
+	local invocation_log="$TEST_DIR/implicit-invocation.log"
+	dotfiles() {
+		printf '%s\n' "$*" >"$invocation_log"
+	}
 
-  provision_bws_access_token_on_yubikey primary ''
-  [ "$(<"$invocation_log")" = 'secrets yubikey provision-bws-token' ] \
-    || fail 'serial 未指定は provision-bws-token 一回に委譲しなければならない'
+	provision_bws_access_token_on_yubikey primary ''
+	[ "$(<"$invocation_log")" = 'secrets yubikey provision-bws-token' ] ||
+		fail 'serial 未指定は provision-bws-token 一回に委譲しなければならない'
+}
+
+test_debug_forwards_to_the_single_provision_command() {
+	local invocation_log="$TEST_DIR/debug-invocation.log"
+	(
+		set -- --debug
+		DOTFILES_PROVISION_SOURCE_ONLY=1 source "$REPO_ROOT/scripts/provision-secret-recovery-source.sh"
+		dotfiles() {
+			printf '%s\n' "$*" >"$invocation_log"
+		}
+
+		provision_bws_access_token_on_yubikey primary 2001
+	)
+	[ "$(<"$invocation_log")" = 'secrets yubikey provision-bws-token --serial 2001 --debug' ] ||
+		fail '--debug は BWS token provisioning の一回の Rust command だけへそのまま転送しなければならない'
 }
 
 test_script_does_not_transport_yubikey_pin_or_bws_token
 test_script_has_no_split_yubikey_storage_transition
 test_repo_head_selects_production_cli_binary
+test_help_lists_debug_option
 test_primary_serial_uses_one_provision_command
 test_implicit_serial_uses_one_provision_command
+test_debug_forwards_to_the_single_provision_command

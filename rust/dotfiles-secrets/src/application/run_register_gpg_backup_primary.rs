@@ -12,15 +12,12 @@ use crate::{
     ports,
 };
 
-/// `run_register_gpg_backup_primary` が使う外部 capability を named field で束ねる。
-pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
+/// gpg backup primary 登録が一回の実行で借用する YubiKey storage capability。
+///
+/// field は既存 port trait 参照だけであり、backup の重複確認、export、envelope 化、登録の順序を持たない。
+pub(crate) struct RegisterGpgBackupYubikeyRuntime<'a> {
     pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
-    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
-    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
-    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
-    pub(crate) clock: &'a dyn ports::ClockPort,
-    pub(crate) bws_client: &'a B,
 }
 
 /// 既存環境の GPG secret key を encrypted envelope 化し、Bitwarden Secrets Manager へ primary 登録する。
@@ -42,20 +39,17 @@ pub(crate) struct RegisterGpgBackupPrimaryRuntime<'a, B> {
 /// 重複登録を停止条件とする（recipient 追加・更新は spare 追加 use case が扱う）。
 pub(crate) async fn run_register_gpg_backup_primary<B>(
     command: RegisterGpgBackupCommand,
-    runtime: RegisterGpgBackupPrimaryRuntime<'_, B>,
+    yubikey: RegisterGpgBackupYubikeyRuntime<'_>,
+    keyring: &mut dyn ports::GpgKeyringPort,
+    cipher: &mut dyn ports::BackupCipherPort,
+    recipient: &mut dyn ports::GpgRecipientPort,
+    clock: &dyn ports::ClockPort,
+    bws_client: &B,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
+    B: ports::BwsClientPort + ?Sized,
 {
-    let RegisterGpgBackupPrimaryRuntime {
-        device,
-        storage,
-        keyring,
-        cipher,
-        recipient,
-        clock,
-        bws_client,
-    } = runtime;
+    let RegisterGpgBackupYubikeyRuntime { device, storage } = yubikey;
     let primary_fingerprint = match command.primary_fingerprint {
         Some(fp) => fp,
         None => anyhow::bail!("--primary-fingerprint is required for gpg-backup register"),
@@ -156,7 +150,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::{RegisterGpgBackupPrimaryRuntime, run_register_gpg_backup_primary};
+    use super::{RegisterGpgBackupYubikeyRuntime, run_register_gpg_backup_primary};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -296,15 +290,15 @@ mod tests {
                 primary_fingerprint: Some(PrimaryFingerprint::parse(PRIMARY_FP)?),
                 serial: Some(2001),
             },
-            RegisterGpgBackupPrimaryRuntime {
+            RegisterGpgBackupYubikeyRuntime {
                 device: &mut yk.device,
                 storage: &mut yk.storage,
-                keyring: &mut keyring,
-                cipher: &mut cipher,
-                recipient: &mut recipient,
-                clock: &clock,
-                bws_client: &bws,
             },
+            &mut keyring,
+            &mut cipher,
+            &mut recipient,
+            &clock,
+            &bws,
         )
         .await
     }
@@ -343,15 +337,15 @@ mod tests {
                 primary_fingerprint: None,
                 serial: Some(2001),
             },
-            RegisterGpgBackupPrimaryRuntime {
+            RegisterGpgBackupYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                keyring: &mut keyring,
-                cipher: &mut cipher,
-                recipient: &mut recipient,
-                clock: &clock,
-                bws_client: &bws,
             },
+            &mut keyring,
+            &mut cipher,
+            &mut recipient,
+            &clock,
+            &bws,
         )
         .await;
 
@@ -414,15 +408,15 @@ mod tests {
                 ),
                 serial: Some(2001),
             },
-            RegisterGpgBackupPrimaryRuntime {
+            RegisterGpgBackupYubikeyRuntime {
                 device: &mut yk.device,
                 storage: &mut yk.storage,
-                keyring: &mut keyring,
-                cipher: &mut cipher,
-                recipient: &mut recipient,
-                clock: &clock,
-                bws_client: &bws,
             },
+            &mut keyring,
+            &mut cipher,
+            &mut recipient,
+            &clock,
+            &bws,
         )
         .await;
 

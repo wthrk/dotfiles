@@ -47,6 +47,10 @@ struct YubiKeyStubSpec {
     /// private datastore を再利用する。production build にはこの backend 自体が含まれない。
     #[serde(default)]
     persistence_path: Option<PathBuf>,
+    /// integration test が device open 直後の final datastore を sentinel 観測するための fixture
+    /// option。production backend には存在せず、state transition を変えない。
+    #[serde(default)]
+    observe_on_open: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -62,6 +66,9 @@ struct YubiKeyDeviceSpec {
     /// `get_protected` error origin が曖昧な場合の fail-closed 回帰 fixture である。
     #[serde(default)]
     management_state: StubManagementState,
+    /// feature-only fixture が期待する management PIN。値は observation へ出力しない。
+    #[serde(default)]
+    expected_management_pin: Option<String>,
 }
 
 /// Test-only observable management-key states。production と同じく B0 の
@@ -122,6 +129,10 @@ struct StubDeviceDatastore {
     corrupt: Vec<String>,
     #[serde(default)]
     management_state: StubManagementState,
+    #[serde(default)]
+    expected_management_pin: Option<String>,
+    #[serde(default)]
+    management_pin_matched: bool,
 }
 
 /// process 間で test stub の backend state をそのまま保存する wire model。
@@ -152,6 +163,10 @@ struct PersistentStubDeviceDatastore {
     corrupt: Vec<String>,
     #[serde(default)]
     management_state: StubManagementState,
+    #[serde(default)]
+    expected_management_pin: Option<String>,
+    #[serde(default)]
+    management_pin_matched: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -164,6 +179,7 @@ struct StubDeviceObservation {
     key_exists: bool,
     connection_count: u32,
     physical_verify_count: u32,
+    management_pin_matched: bool,
     stored_secrets: BTreeMap<String, String>,
 }
 
@@ -206,27 +222,21 @@ impl SecretDeviceIo for TestStubSecretDevice {
         }
     }
 
-    fn check_management_auth_preconditions(&mut self, pin: Option<&ProtectedSecret>) -> Result<()> {
-        let _pin = pin.ok_or_else(|| anyhow::anyhow!("stub PIV management session has no PIN"))?;
-        with_datastore(|store| {
+    fn verify_management_pin(&mut self, pin: &ProtectedSecret) -> Result<()> {
+        let operation = |store: &mut YubiKeyDatastore| {
             let device = device_store_mut(store, self.serial)?;
-            // Test-only physical-operation counter. A management session must issue one
-            // VERIFY per selected serial, even when the subsequent command has several
-            // inspection/store/finalize calls.
+            if let Some(expected_pin) = device.expected_management_pin.as_deref() {
+                // fixture の期待値とは ProtectedSecret 同士でだけ比較する。PIN bytes を observation、
+                // stdout、log に出さず、application→VERIFY の受け渡しだけを test-only に観測する。
+                let expected = ProtectedSecret::from_test_bytes(expected_pin.as_bytes())?;
+                device.management_pin_matched = pin == &expected;
+                if !device.management_pin_matched {
+                    anyhow::bail!("stub management PIN does not match the fixture expectation")
+                }
+            }
+            // test-only physical-operation counter。一つの management session は VERIFY を一回送る。
             device.physical_verify_count += 1;
             match device.management_state {
-                StubManagementState::B0Default => {
-                    anyhow::bail!(
-                        "stub YubiKey B0 management state is ambiguous and cannot bootstrap automatically"
-                    )
-                }
-                StubManagementState::Protected => {
-                    self.management_authenticated = true;
-                    Ok(())
-                }
-                // Integration tests model the typed `yubikey::Error::WrongPin` result, rather
-                // than a display string. This exercises the production mapping before `anyhow`
-                // erases the variant and keeps zero retries deliberately ambiguous.
                 StubManagementState::WrongPin => {
                     Err(crate::support::protection::yubikey_piv::verify_pin_failure(
                         yubikey::Error::WrongPin { tries: 3 },
@@ -237,17 +247,40 @@ impl SecretDeviceIo for TestStubSecretDevice {
                         yubikey::Error::WrongPin { tries: 0 },
                     ))
                 }
-                StubManagementState::ProtectedNotFoundNondefault => anyhow::bail!(
-                    "stub YubiKey protected management key is NotFound with non-default metadata"
-                ),
-                StubManagementState::OpaqueError => {
-                    anyhow::bail!("stub YubiKey management-key operation failed")
-                }
-                StubManagementState::Partial => {
-                    anyhow::bail!("stub YubiKey PIN-only management state is partial")
-                }
+                _ => Ok(()),
             }
-        })
+        };
+        if stub_observes_on_open()? {
+            // PIN bytes を露出せず VERIFY counter を observation fixture へ保存する。
+            with_datastore_after_write(operation)
+        } else {
+            with_datastore(operation)
+        }
+    }
+
+    fn authenticate_protected_management_key(&mut self) -> Result<()> {
+        let state = with_datastore(|store| Ok(device_store(store, self.serial)?.management_state))?;
+        match state {
+            StubManagementState::Protected => {
+                self.management_authenticated = true;
+                Ok(())
+            }
+            StubManagementState::B0Default => anyhow::bail!(
+                "stub YubiKey B0 management state is ambiguous and cannot bootstrap automatically"
+            ),
+            StubManagementState::ProtectedNotFoundNondefault => anyhow::bail!(
+                "stub YubiKey protected management key is NotFound with non-default metadata"
+            ),
+            StubManagementState::OpaqueError => {
+                anyhow::bail!("stub YubiKey management-key operation failed")
+            }
+            StubManagementState::Partial => {
+                anyhow::bail!("stub YubiKey PIN-only management state is partial")
+            }
+            StubManagementState::WrongPin | StubManagementState::PinBlocked => {
+                anyhow::bail!("stub management-key authentication reached after failed PIN VERIFY")
+            }
+        }
     }
 
     fn generate_key(&mut self) -> Result<Vec<u8>> {
@@ -404,6 +437,11 @@ pub(crate) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
                 Ok(DeviceCandidate {
                     serial,
                     label: format!("stub-yubikey-{serial}"),
+                    piv_version: PivApplicationVersion {
+                        major: 5,
+                        minor: 3,
+                        patch: 0,
+                    },
                 })
             })
             .collect()
@@ -411,14 +449,29 @@ pub(crate) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
 }
 
 pub(crate) fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice> {
-    with_datastore(|store| {
-        device_store_mut(store, serial)?.connection_count += 1;
-        Ok(())
-    })?;
+    if stub_observes_on_open()? {
+        with_datastore_after_write(|store| {
+            device_store_mut(store, serial)?.connection_count += 1;
+            Ok(())
+        })?;
+    } else {
+        with_datastore(|store| {
+            device_store_mut(store, serial)?.connection_count += 1;
+            Ok(())
+        })?;
+    }
     Ok(SelectedSecretDevice::new(TestStubSecretDevice {
         serial,
         management_authenticated: false,
     }))
+}
+
+fn stub_observes_on_open() -> Result<bool> {
+    let body = std::env::var(YUBIKEY_STUB_SPEC_ENV)
+        .context("YubiKey internal stub spec JSON is not configured")?;
+    Ok(serde_json::from_str::<YubiKeyStubSpec>(&body)
+        .context("failed to decode YubiKey internal stub spec JSON")?
+        .observe_on_open)
 }
 
 fn with_datastore<T>(f: impl FnOnce(&mut YubiKeyDatastore) -> Result<T>) -> Result<T> {
@@ -445,12 +498,16 @@ fn with_datastore_inner<T>(
     let store = state
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("YubiKey internal stub datastore is not initialized"))?;
-    let out = f(store)?;
+    // `observe_on_open` は integration fixture 専用の final-state channel である。mutating operation が
+    // error を返しても試行後 datastore を保存・出力する。失敗した PIV VERIFY も physical operation counter
+    // には到達し得るため、test は key/object/token mutation 前に停止したことを確認できる。production behavior
+    // は変えず、この module 全体は feature-isolated test backend code である。
+    let out = f(store);
     if write_observation_after_operation {
         persist_datastore(store)?;
         write_observation(store)?;
     }
-    Ok(out)
+    out
 }
 
 fn load_datastore() -> Result<YubiKeyDatastore> {
@@ -537,6 +594,8 @@ fn persistent_datastore_from(store: &YubiKeyDatastore) -> PersistentYubiKeyDatas
                     secrets: device.secrets.clone(),
                     corrupt: device.corrupt.clone(),
                     management_state: device.management_state,
+                    expected_management_pin: device.expected_management_pin.clone(),
+                    management_pin_matched: device.management_pin_matched,
                 },
             )
         })
@@ -564,6 +623,8 @@ fn datastore_from_persistent(persistent: PersistentYubiKeyDatastore) -> Result<Y
                     secrets: persisted.secrets,
                     corrupt: persisted.corrupt,
                     management_state: persisted.management_state,
+                    expected_management_pin: persisted.expected_management_pin,
+                    management_pin_matched: persisted.management_pin_matched,
                 },
             ))
         })
@@ -628,6 +689,7 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> StubDeviceDatastore {
     device.key_metadata_requires_management_auth = spec.key_metadata_requires_management_auth;
     device.corrupt = spec.storage_decode_errors;
     device.management_state = spec.management_state;
+    device.expected_management_pin = spec.expected_management_pin;
     device
 }
 
@@ -654,6 +716,8 @@ fn provisioned_device_datastore(secrets: BTreeMap<String, String>) -> StubDevice
         secrets,
         corrupt: Vec::new(),
         management_state: StubManagementState::Protected,
+        expected_management_pin: None,
+        management_pin_matched: false,
     }
 }
 
@@ -683,6 +747,7 @@ fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
                     key_exists: device.key_exists,
                     connection_count: device.connection_count,
                     physical_verify_count: device.physical_verify_count,
+                    management_pin_matched: device.management_pin_matched,
                     stored_secrets: device.secrets.clone(),
                 },
             )

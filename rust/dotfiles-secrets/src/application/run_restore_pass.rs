@@ -6,22 +6,20 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RestorePassCommand,
-        pass_restore::{PASSWORD_STORE_DIR_NAME, PasswordStoreRemote, RestorePassSummary},
+        pass_restore::{PASSWORD_STORE_DIR_NAME, RestorePassSummary},
         piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
 };
 
-/// `run_restore_pass` が使う外部 capability を named field で束ねる。
-pub(crate) struct RestorePassRuntime<'a, B> {
+/// restore-pass が一回の実行で借用する YubiKey storage capability。
+///
+/// port trait 参照だけを named field で保持し、device 選択、secret の読み出し順序、clone の停止条件は
+/// use case 本体へ残す。port module に use case 固有の dependency bundle を置かない。
+pub(crate) struct RestorePassYubikeyRuntime<'a> {
     pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
-    pub(crate) bws_client: &'a B,
-    pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
-    pub(crate) store: &'a mut dyn ports::PasswordStorePort,
-    pub(crate) git_clone: &'a mut dyn ports::GitClonePort,
-    pub(crate) report: &'a dyn ports::ReportPort,
 }
 
 /// `password-store-remote` を取得し、`~/.password-store` 不存在を確認してから private repository を
@@ -54,20 +52,20 @@ pub(crate) struct RestorePassRuntime<'a, B> {
 /// filesystem 走査 / 鍵リング照合は adapter が担い、application は順序と停止条件だけを持つ。
 pub(crate) async fn run_restore_pass<B>(
     command: RestorePassCommand,
-    runtime: RestorePassRuntime<'_, B>,
+    yubikey: RestorePassYubikeyRuntime<'_>,
+    bws_client: &B,
+    keyring: &mut dyn ports::GpgKeyringPort,
+    store: &mut dyn ports::PasswordStorePort,
+    git_clone: &mut dyn ports::GitClonePort,
+    report: &dyn ports::ReportPort,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
+    B: ports::BwsClientPort + ?Sized,
 {
-    let RestorePassRuntime {
+    let RestorePassYubikeyRuntime {
         device,
         storage: storage_port,
-        bws_client,
-        keyring,
-        store,
-        git_clone,
-        report,
-    } = runtime;
+    } = yubikey;
     let serial = device.resolve_device_serial(command.serial)?;
 
     // 1. bitwarden-client-secret を YubiKey storage から読み出す。
@@ -82,13 +80,9 @@ where
             .await?,
         &project_id,
     )?;
-    let remote_value = bws_client
+    let remote = bws_client
         .fetch_password_store_remote(&access_token, &secret_id)
         .await?;
-    let remote = crate::support::protection::bws::parse_response_value(
-        &remote_value,
-        PasswordStoreRemote::parse,
-    )?;
 
     // 3. `~/.password-store` が既に存在する場合は clone へ進まず停止する。
     if store.password_store_exists()? {
@@ -190,14 +184,16 @@ mod tests {
 
     use crate::{
         domain::{
-            commands::RestorePassCommand, manifest::SecretManifest,
-            pass_restore::PasswordStoreReadiness, storage::SecretStorageReadInspection,
+            commands::RestorePassCommand,
+            manifest::SecretManifest,
+            pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
+            storage::SecretStorageReadInspection,
         },
         ports,
         support::protection::ProtectedSecret,
     };
 
-    use super::{RestorePassRuntime, run_restore_pass};
+    use super::{RestorePassYubikeyRuntime, run_restore_pass};
 
     const REMOTE_URL: &str = "git@github.com:owner/password-store.git";
     const RECIPIENT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
@@ -253,7 +249,7 @@ mod tests {
         });
         bws.expect_fetch_password_store_remote()
             .times(1)
-            .returning(|_, _| Ok(material(REMOTE_URL.as_bytes())));
+            .returning(|_, _| PasswordStoreRemote::parse(REMOTE_URL));
     }
 
     #[tokio::test]
@@ -310,15 +306,15 @@ mod tests {
 
         run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await
     }
@@ -351,15 +347,15 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await;
 
@@ -413,15 +409,15 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await;
 
@@ -470,15 +466,15 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await;
 
@@ -537,15 +533,15 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await;
 
@@ -596,15 +592,15 @@ mod tests {
 
         let result = run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await;
 
@@ -667,15 +663,15 @@ mod tests {
 
         run_restore_pass(
             RestorePassCommand { serial: Some(2001) },
-            RestorePassRuntime {
+            RestorePassYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                keyring: &mut keyring,
-                store: &mut store,
-                git_clone: &mut git_clone,
-                report: &report,
             },
+            &bws,
+            &mut keyring,
+            &mut store,
+            &mut git_clone,
+            &report,
         )
         .await
     }

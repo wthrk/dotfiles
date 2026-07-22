@@ -48,9 +48,9 @@ use crate::{
 
 /// BWS response value を protection 借用内で domain parser に渡す。
 ///
-/// parser の選択と返却 domain 値の意味づけは application/domain の責務である。この操作は SDK が
-/// 返した `String` を平文のまま port/application へ渡さず、UTF-8 validation と parser 呼び出しを
-/// protected borrow 内で終える技術境界だけを提供する。
+/// domain constructor の選択は port contract ごとに固定し、backend はその constructor をこの境界へ
+/// 渡す。この操作は SDK が返した `String` を平文のまま port/application へ渡さず、UTF-8 validation と
+/// domain constructor 呼び出しを protected borrow 内で終える技術境界だけを提供する。
 pub(crate) fn parse_response_value<T>(
     value: &ProtectedSecret,
     parse: impl FnOnce(&str) -> Result<T>,

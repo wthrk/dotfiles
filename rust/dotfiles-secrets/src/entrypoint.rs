@@ -5,14 +5,15 @@
 //! domain rule と外部 API 翻訳は持たない。
 
 mod dispatch;
-mod runtime;
 
 use crate::Result;
 
-/// composition root が用意した runtime ports で parse 済み command を application へ渡す。
+/// parse 済み command を domain command に変換し、composition が生成した port 群で起動する。
+///
+/// concrete backend の生成・所有は composition に限り、ここは CLI 入力境界と command mapping だけを担う。
 pub(super) async fn run(
     options: super::SecretsOptions,
-    ports: &mut super::RuntimePorts,
+    runtime: &mut crate::composition::SecretsRuntime,
 ) -> Result<()> {
-    runtime::run(options, ports).await
+    dispatch::dispatch(options, runtime).await
 }

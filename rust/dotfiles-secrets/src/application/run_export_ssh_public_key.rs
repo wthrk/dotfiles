@@ -16,8 +16,8 @@ pub(crate) fn run_export_ssh_public_key<K, O>(
     output: &O,
 ) -> Result<()>
 where
-    K: ports::GpgKeyringPort,
-    O: ports::SshPublicKeyOutputPort,
+    K: ports::GpgKeyringPort + ?Sized,
+    O: ports::SshPublicKeyOutputPort + ?Sized,
 {
     let public_key = keyring.authentication_subkey_ssh_public_key(&command.primary_fingerprint)?;
     output.write_ssh_public_key(&public_key)

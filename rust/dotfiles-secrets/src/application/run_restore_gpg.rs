@@ -5,7 +5,6 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::RestoreGpgCommand,
-        gpg_backup::GpgBackupEnvelope,
         gpg_restore::RestoreGpgSummary,
         piv::SecretName,
         storage::SecretStorageReadIntent,
@@ -13,16 +12,20 @@ use crate::{
     ports,
 };
 
-/// `run_restore_gpg` が使う外部 capability を named field で束ねる。
-pub(crate) struct RestoreGpgRuntime<'a, B> {
+/// restore-gpg が一回の実行で借用する YubiKey storage capability。
+///
+/// field は既存 port trait 参照だけであり、recipient 照合、復号、rollback の順序は use case 本体が担う。
+pub(crate) struct RestoreGpgYubikeyRuntime<'a> {
     pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
     pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
-    pub(crate) bws_client: &'a B,
-    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
-    pub(crate) cipher: &'a mut dyn ports::BackupCipherPort,
+}
+
+/// restore-gpg が一回の実行で借用する local GnuPG identity capability。
+///
+/// field は既存 port trait 参照だけであり、import 後の検証・SSH 登録の停止条件をこの bundle は決めない。
+pub(crate) struct RestoreGpgIdentityRuntime<'a> {
     pub(crate) keyring: &'a mut dyn ports::GpgKeyringPort,
     pub(crate) ssh_agent: &'a mut dyn ports::SshAgentPort,
-    pub(crate) report: &'a dyn ports::ReportPort,
 }
 
 /// `gpg-secret-key-backup` encrypted envelope を接続中 YubiKey で復号して鍵リングへ復元する。
@@ -35,21 +38,21 @@ pub(crate) struct RestoreGpgRuntime<'a, B> {
 /// という停止条件の責務境界を保護するためである。
 pub(crate) async fn run_restore_gpg<B>(
     command: RestoreGpgCommand,
-    runtime: RestoreGpgRuntime<'_, B>,
+    yubikey: RestoreGpgYubikeyRuntime<'_>,
+    bws_client: &B,
+    recipient: &mut dyn ports::GpgRecipientPort,
+    cipher: &mut dyn ports::BackupCipherPort,
+    gpg_identity: RestoreGpgIdentityRuntime<'_>,
+    report: &dyn ports::ReportPort,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
+    B: ports::BwsClientPort + ?Sized,
 {
-    let RestoreGpgRuntime {
+    let RestoreGpgYubikeyRuntime {
         device,
         storage: storage_port,
-        bws_client,
-        recipient,
-        cipher,
-        keyring,
-        ssh_agent,
-        report,
-    } = runtime;
+    } = yubikey;
+    let RestoreGpgIdentityRuntime { keyring, ssh_agent } = gpg_identity;
     let serial = device.resolve_device_serial(command.serial)?;
 
     // 1-2. bitwarden-client-secret を YubiKey storage から読み出し、BWS から envelope を取得する。
@@ -64,13 +67,9 @@ where
     )?;
 
     // 3. envelope 形式（version / metadata / recipients / ciphertext）を検証して取得する。
-    let (envelope_value, _guard) = bws_client
+    let (envelope, _guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
-    let envelope =
-        crate::support::protection::bws::parse_response_value(&envelope_value, |value| {
-            GpgBackupEnvelope::from_json(value.as_bytes())
-        })?;
 
     // 3-4. 接続中 YubiKey に一致する recipient を解決し、DEK を unwrap して backup を復号する。
     let connected = recipient.resolve_connected_recipient(serial)?;
@@ -173,7 +172,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::{RestoreGpgRuntime, run_restore_gpg};
+    use super::{RestoreGpgIdentityRuntime, RestoreGpgYubikeyRuntime, run_restore_gpg};
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
     const KEYGRIP: &str = "AABBCCDDEEFF00112233445566778899AABBCCDD";
@@ -298,7 +297,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    material(envelope_value().as_bytes()),
+                    GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                     BackupUpdateGuard::ValueDigest("d".to_owned()),
                 ))
             });
@@ -373,16 +372,18 @@ mod tests {
 
         run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            RestoreGpgRuntime {
+            RestoreGpgYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                cipher: &mut cipher,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
                 keyring: &mut keyring,
                 ssh_agent: &mut ssh_agent,
-                report: &report,
             },
+            &report,
         )
         .await
     }
@@ -415,7 +416,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                material(envelope_value().as_bytes()),
+                GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -443,16 +444,18 @@ mod tests {
 
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            RestoreGpgRuntime {
+            RestoreGpgYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                cipher: &mut cipher,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
                 keyring: &mut keyring,
                 ssh_agent: &mut ssh_agent,
-                report: &report,
             },
+            &report,
         )
         .await;
 
@@ -489,7 +492,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                material(envelope_value().as_bytes()),
+                GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -549,16 +552,18 @@ mod tests {
 
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            RestoreGpgRuntime {
+            RestoreGpgYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                cipher: &mut cipher,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
                 keyring: &mut keyring,
                 ssh_agent: &mut ssh_agent,
-                report: &report,
             },
+            &report,
         )
         .await;
 
@@ -599,7 +604,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                material(envelope_value().as_bytes()),
+                GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -664,16 +669,18 @@ mod tests {
 
         let result = run_restore_gpg(
             RestoreGpgCommand { serial: Some(2001) },
-            RestoreGpgRuntime {
+            RestoreGpgYubikeyRuntime {
                 device: &mut device,
                 storage: &mut storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                cipher: &mut cipher,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
                 keyring: &mut keyring,
                 ssh_agent: &mut ssh_agent,
-                report: &report,
             },
+            &report,
         )
         .await;
 

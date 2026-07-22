@@ -1,7 +1,5 @@
 //! Process/terminal/report ports の forwarding-only adapter。
 
-use std::collections::BTreeMap;
-
 use crate::{
     Result,
     domain::{
@@ -12,26 +10,42 @@ use crate::{
         verification::VerifySummary,
     },
     ports::io::{
-        BackupUpdateConfirmationPort, BootstrapSecretDocumentInputPort, ClockPort,
-        PasswordStoreRemoteInputPort, PivPinInputPort, ReportPort, RotationContinuationPort,
-        SecretInputPort, SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
+        BackupUpdateConfirmationPort, BitwardenClientSecretInputPort, BootstrapDocumentInputPort,
+        ClockPort, PasswordStoreRemoteInputPort, PivPinInputPort, ReportPort,
+        RotationContinuationPort, SecretStorageStatusOutputPort, SshPublicKeyOutputPort,
     },
     support::{
-        adapter_backend::{JsonReportBackend, ProcessIoBackend},
+        adapter_backend::{
+            HiddenBootstrapDocumentInputBackend, HiddenTokenInputBackend, JsonReportBackend,
+            ProcessIoBackend, StreamedBootstrapDocumentInputBackend, StreamedTokenInputBackend,
+        },
         io_backend,
         protection::ProtectedSecret,
     },
 };
 
-impl SecretInputPort for ProcessIoBackend {
-    fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret> {
-        io_backend::read_bitwarden_client_secret_secret()
-    }
-    fn read_bitwarden_client_secret_tty_secret(&self) -> Result<ProtectedSecret> {
+impl BitwardenClientSecretInputPort for HiddenTokenInputBackend {
+    fn read_bitwarden_client_secret(&self) -> Result<ProtectedSecret> {
         io_backend::read_bitwarden_client_secret_tty_secret()
     }
-    fn read_streamed_secret(&self) -> Result<ProtectedSecret> {
+}
+impl BitwardenClientSecretInputPort for StreamedTokenInputBackend {
+    fn read_bitwarden_client_secret(&self) -> Result<ProtectedSecret> {
         io_backend::read_streamed_secret()
+    }
+}
+impl BootstrapDocumentInputPort for HiddenBootstrapDocumentInputBackend {
+    fn read_bootstrap_secret_document_input(
+        &mut self,
+    ) -> Result<crate::domain::manifest::BootstrapSecretDocumentInput> {
+        io_backend::read_hidden_bootstrap_secret_document_input()
+    }
+}
+impl BootstrapDocumentInputPort for StreamedBootstrapDocumentInputBackend {
+    fn read_bootstrap_secret_document_input(
+        &mut self,
+    ) -> Result<crate::domain::manifest::BootstrapSecretDocumentInput> {
+        io_backend::read_streamed_bootstrap_secret_document_input()
     }
 }
 impl PivPinInputPort for ProcessIoBackend {
@@ -47,11 +61,6 @@ impl PasswordStoreRemoteInputPort for ProcessIoBackend {
 impl RotationContinuationPort for ProcessIoBackend {
     fn continue_rotation(&self) -> Result<bool> {
         io_backend::continue_rotation()
-    }
-}
-impl BootstrapSecretDocumentInputPort for ProcessIoBackend {
-    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, ProtectedSecret>> {
-        io_backend::read_bootstrap_secret_fields()
     }
 }
 impl SecretStorageStatusOutputPort for ProcessIoBackend {

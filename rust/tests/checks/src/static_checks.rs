@@ -368,6 +368,7 @@ fn is_support_backend_module_identifier(identifier: &str) -> bool {
             | "internal_stub_gpg"
             | "io_backend"
             | "password_store"
+            | "primary_bootstrap_document"
             | "ssh_agent_backend"
             | "yubikey_backend"
             | "yubikey_device_serial"

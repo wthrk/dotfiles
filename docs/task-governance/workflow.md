@@ -51,15 +51,17 @@
 2. `S1 -> S2`
    - 実装担当が変更差分を作成し、必要な確認を記録する。
    - レビュー前に差分識別子（作業ブランチ、比較範囲、確認結果）を固定する。
+   - 必須 reviewer は S2 開始時に、利用可能な並列枠の範囲で互いに独立な role を同時に起動する。slot 不足時だけ、完了した role の slot へ残る独立 role を直ちに起動する。独立 review を番号順や到着順に直列化してはならない。
 3. `S2 -> S3`
-   - 必須レビュー役割の判定を集約し、`合格` / `要修正` / `不合格` を確定する。
+   - `S2` の開始から `S3` の集約確定まで、固定した比較対象と worktree をレビュー対象として凍結する。個別 reviewer の finding、途中 verdict、チャット上の所見を受けても、実装、format、生成、source 変更、commit を開始してはならない。
+   - 必須レビュー役割の**全員**の判定を収集してから、`合格` / `要修正` / `不合格` を一度だけ集約確定する。個別 reviewer が返答したことは review cycle の終了条件ではない。
    - 必須担当は [implementation-review-judgement.md](implementation-review-judgement.md) に従う。
    - 必須レビュー担当は担当ごとに fresh subagent として起動する。複数担当を単一 subagent に一括委譲してはならない。
    - security review または test review の指摘が test-only の dummy / fixture secret の stdout、sentinel、または state 観測を問題にする場合、通常の finding を確定する前に `test-secret-observation false-positive verifier` を fresh subagent として起動する。起点が security reviewer か test reviewer か（両者が同じ指摘をした場合は両者）を記録し、verifier の結果をその起点 reviewer へ返す。verifier が compile-time test-only 選択、production build/runtime 非混入、fixture/spec の dummy 値限定、production 到達経路なしをすべて確認した場合は `誤検知` とし、該当 finding を通常判定から除外する。不採用理由と4条件の根拠を起点 reviewer へ返し、誤検知を `要修正` / `不合格` として集約してはならない。いずれかの条件を満たさない場合は `実漏えい` とし、起点 reviewer の finding を維持したまま、起点 reviewer の判定を `要修正` または `不合格` へ写像し、verifier の根拠とともに集約根拠へ記録する。
 4. `S3 -> S4`
    - コミット着手条件を満たす場合のみ進む。
 
-`要修正` または `不合格` がある場合は `S1` に戻る。
+`要修正` または `不合格` がある場合は、集約済みの未解消 finding 全件を lossless に一つの remediation task へ渡してから `S1` に戻る。remediation 完了後は新しい比較対象を固定し、必須 reviewer 全員を fresh subagent で再起動して `S2` から全 review を一巡する。個別 finding ごとの即時修正、review 中の差分更新、部分的な再レビューをしてはならない。
 
 ## 5. 記録
 
@@ -98,7 +100,7 @@
 - 必須役割を起動できない場合は、その事実と扱いを利用者へ報告し、可能な最小記録を残す。
 - 実装差分や高リスク変更で要求される複数レビュー役割は省略しない。
 - `cargo check` の合格、テストの通過、ビルド成功はレビュー合格の代替にならない。
-- 複数の番号付き項目を含む指示は、項目1から順に実行する。
+- 番号付き項目の順序は、前項の出力・判定・権限が次項の前提になる依存関係を示す場合だけ強制する。独立した review、検証、調査を番号だけを根拠に直列化してはならない。
 
 ## 8. ブランチ・コミット・プルリクエスト運用
 

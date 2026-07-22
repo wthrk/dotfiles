@@ -6,6 +6,22 @@
 #[derive(Default)]
 pub(crate) struct ProcessIoBackend;
 
+/// hidden TTY から BWS token を読む input backend marker。
+#[derive(Default)]
+pub(crate) struct HiddenTokenInputBackend;
+
+/// pipe stdin から BWS token を読む input backend marker。
+#[derive(Default)]
+pub(crate) struct StreamedTokenInputBackend;
+
+/// hidden TTY の bootstrap document input backend marker。
+#[derive(Default)]
+pub(crate) struct HiddenBootstrapDocumentInputBackend;
+
+/// stdin JSON の bootstrap document input backend marker。
+#[derive(Default)]
+pub(crate) struct StreamedBootstrapDocumentInputBackend;
+
 #[derive(Default)]
 pub(crate) struct JsonReportBackend;
 

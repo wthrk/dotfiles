@@ -113,10 +113,24 @@ impl fmt::Display for SecretStorageStatusInvalid {
 
 impl Error for SecretStorageStatusInvalid {}
 
+/// 観測済み予約 storage 不整合だけを表す typed error かを判定する。
+///
+/// この判定は `status` inspection を最後まで取得して domain rule が不整合と確定した場合だけに
+/// 使う。device discovery、PC/SC / USB transport、SDK error、slot preflight の失敗を clear の
+/// 根拠へ変換してはならない。provisioning と明示 `clear --yes` は、この型だけを destructive
+/// transition の許可根拠にする。
+pub fn is_observed_storage_invalid(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<SecretStorageStatusInvalid>())
+}
+
 /// `put` が、予約済み領域が完全に未初期化であることを観測したことを表す domain error。
 ///
-/// provisioning script はこの型だけを `setup` の許可根拠にする。manifest 欠落に予約済み
-/// object / key / certificate のいずれかが残る不正状態や、I/O 失敗はここへ写像しない。
+/// これは低水準 `put` の互換的な public exit-code 用の型であり、provisioning script は
+/// `setup` の許可根拠に使わない。script は状態遷移全体を一回の `provision-bws-token` command に
+/// 委譲する。manifest 欠落に予約済み object / key / certificate のいずれかが残る不正状態や、
+/// I/O 失敗はこの型へ写像しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SecretStorageUninitialized;
 

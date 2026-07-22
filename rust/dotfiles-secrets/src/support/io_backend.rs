@@ -1,7 +1,7 @@
 //! Process/terminal/report concrete backend operations.
 //!
-//! This module owns all terminal selection, prompt wording, JSON decoding and report
-//! serialization.  Adapters only forward the corresponding port calls here.
+//! この module は terminal 選択、prompt 文言、JSON decode、report serialization を所有する。
+//! adapter は対応する port 呼び出しをここへ直接 forwarding するだけである。
 
 use std::collections::BTreeMap;
 
@@ -10,7 +10,7 @@ use crate::{
     domain::{
         enrollment::EnrollSummary,
         gpg_restore::{OpenSshPublicKey, RestoreGpgSummary},
-        manifest::BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT,
+        manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocumentInput},
         pass_restore::RestorePassSummary,
         storage::SecretStorageStatus,
         verification::VerifySummary,
@@ -27,10 +27,6 @@ pub(crate) fn read_bitwarden_client_secret_secret() -> Result<ProtectedSecret> {
 }
 
 /// source provisioning 専用の controlling-TTY BWS token input。
-///
-/// PIV PIN と同じく stdin payload と混在させず、raw-mode mask を経由する。input policy の根拠は
-/// `docs/secret-recovery/secret-handling.md#tty-secret-input` と
-/// `docs/secret-recovery/secret-recovery-spec.md#provisioning-source-の単一-command-契約`。
 pub(crate) fn read_bitwarden_client_secret_tty_secret() -> Result<ProtectedSecret> {
     process_io::read_hidden_tty_line(
         "bitwarden-client-secret: ",
@@ -43,8 +39,18 @@ pub(crate) fn read_streamed_secret() -> Result<ProtectedSecret> {
     process_io::read_stdin_line(16 * 1024, "stdin secret input is too large")
 }
 
+pub(crate) fn read_hidden_bootstrap_secret_document_input() -> Result<BootstrapSecretDocumentInput>
+{
+    read_bitwarden_client_secret_secret().map(BootstrapSecretDocumentInput::BitwardenClientSecret)
+}
+
+pub(crate) fn read_streamed_bootstrap_secret_document_input() -> Result<BootstrapSecretDocumentInput>
+{
+    read_bootstrap_secret_fields().map(BootstrapSecretDocumentInput::FieldMap)
+}
+
 pub(crate) fn read_piv_pin_secret() -> Result<ProtectedSecret> {
-    process_io::read_hidden_tty_line("YubiKey PIV PIN: ", 64, "YubiKey PIV PIN is too large")
+    process_io::read_hidden_tty_piv_pin()
 }
 
 pub(crate) fn read_password_store_remote_url() -> Result<String> {

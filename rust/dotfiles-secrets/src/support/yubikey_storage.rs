@@ -45,11 +45,8 @@ use crate::{
         yubikey_backend::{self, SecretDeviceIo, SelectedSecretDevice, YubikeyDeviceBackend},
     },
 };
-use std::collections::BTreeMap;
-
 #[derive(Default)]
 pub(crate) struct YubikeyStorageBackend {
-    generated_public_keys: BTreeMap<u32, Vec<u8>>,
     piv_management_session: Option<PivManagementSession>,
 }
 
@@ -59,10 +56,24 @@ pub(crate) struct YubikeyStorageBackend {
 /// 一回だけ送る。そのため管理 I/O の inspection、生成、保存、finalize、ローカル確認は同じ
 /// `SelectedSecretDevice` を借用する。最初に選ばれた serial だけを command の対象とし、
 /// 別 serial は PIN を再利用して reopen / VERIFY せず fail-closed にする。
+/// session 開始時の open、VERIFY、protected management key 取得、authenticate の失敗では
+/// session を保持せず後続操作を停止する。retry、fallback、PUK、reset は実行しない。
 struct PivManagementSession {
-    pin: ProtectedSecret,
-    serial: Option<u32>,
-    device: Option<SelectedSecretDevice>,
+    serial: u32,
+    device: SelectedSecretDevice,
+    state: PivManagementSessionState,
+}
+
+/// PIV handle 内で許可する technical な APDU 順序。
+///
+/// これは use case の成功条件を決める state machine ではない。open 済み handle に対して
+/// VERIFY と protected management-key authentication を取り違えたり、認証前に storage
+/// operation を通したりしないための backend 側 safety guard である。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PivManagementSessionState {
+    Opened,
+    Verified,
+    Authenticated,
 }
 
 fn open_device(serial: u32) -> Result<SelectedSecretDevice> {
@@ -78,29 +89,18 @@ fn with_authenticated_device<T>(
             "PIV management operation requires a configured PIN-protected management session"
         )
     })?;
-    if let Some(selected_serial) = session.serial {
-        if selected_serial != serial {
-            anyhow::bail!(
-                "PIV management session is bound to YubiKey serial {selected_serial}; refusing to reuse its PIN for serial {serial}"
-            )
-        }
+    if session.serial != serial {
+        anyhow::bail!(
+            "PIV management session is bound to YubiKey serial {}; refusing operation for serial {serial}",
+            session.serial
+        )
     }
-    if session.device.is_none() {
-        let mut device = open_device(serial)?;
-        // `verify_pin` → protected management-key read → authenticate は、この device の
-        // command-local first management I/O で一度だけ行う。ykman の PIN-protected flow が
-        // 同じ session を継続することは参照するが、同 tool の「VERIFY を最後の APDU にする」
-        // ための second VERIFY は、repository 正本の one input/one physical VERIFY に反する
-        // ため実装しない。
-        device.check_management_auth_preconditions(Some(&session.pin))?;
-        session.serial = Some(serial);
-        session.device = Some(device);
+    if session.state != PivManagementSessionState::Authenticated {
+        anyhow::bail!(
+            "PIV management storage operation requires protected management-key authentication"
+        )
     }
-    let device = session
-        .device
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("PIV management session device was not retained"))?;
-    operation(device)
+    operation(&mut session.device)
 }
 
 fn with_read_device<T>(
@@ -111,7 +111,7 @@ fn with_read_device<T>(
     if backend
         .piv_management_session
         .as_ref()
-        .is_some_and(|session| session.serial == Some(serial))
+        .is_some_and(|session| session.serial == serial)
     {
         return with_authenticated_device(backend, serial, operation);
     }
@@ -120,36 +120,100 @@ fn with_read_device<T>(
 }
 pub(crate) fn begin_piv_management_session(
     backend: &mut YubikeyStorageBackend,
+    serial: u32,
     pin: ProtectedSecret,
 ) -> Result<()> {
+    open_piv_management_session(backend, serial)?;
+    verify_piv_management_pin(backend, serial, pin)?;
+    authenticate_piv_management_key(backend, serial)
+}
+
+/// 選択済み serial の PIV handle を開き、未認証 session として保持する。
+///
+/// `begin_piv_management_session` だけがこの handle に VERIFY と protected management-key
+/// authentication を同じ順で適用する。application はその高水準 capability 以外の PIV protocol
+/// step を要求できない。失敗時に retry、fallback、別 serial への reopen はしない。
+fn open_piv_management_session(backend: &mut YubikeyStorageBackend, serial: u32) -> Result<()> {
     if backend.piv_management_session.is_some() {
         anyhow::bail!("PIV management session is already configured")
     }
+    let device = open_device(serial)?;
     backend.piv_management_session = Some(PivManagementSession {
-        pin,
-        serial: None,
-        device: None,
+        serial,
+        device,
+        state: PivManagementSessionState::Opened,
     });
+    Ok(())
+}
+
+/// 開始済み session の handle へ PIN VERIFY を一回だけ適用する。
+fn verify_piv_management_pin(
+    backend: &mut YubikeyStorageBackend,
+    serial: u32,
+    pin: ProtectedSecret,
+) -> Result<()> {
+    let session = backend.piv_management_session.as_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "PIV management operation requires a configured PIN-protected management session"
+        )
+    })?;
+    if session.serial != serial {
+        anyhow::bail!(
+            "PIV management session is bound to YubiKey serial {}; refusing operation for serial {serial}",
+            session.serial
+        )
+    }
+    if session.state != PivManagementSessionState::Opened {
+        anyhow::bail!("PIV management PIN VERIFY requires a newly opened session")
+    }
+    session.device.verify_management_pin(&pin)?;
+    session.state = PivManagementSessionState::Verified;
+    Ok(())
+}
+
+/// VERIFY 済み同一 handle で protected management key を取得・認証する。
+fn authenticate_piv_management_key(backend: &mut YubikeyStorageBackend, serial: u32) -> Result<()> {
+    let session = backend.piv_management_session.as_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "PIV management operation requires a configured PIN-protected management session"
+        )
+    })?;
+    if session.serial != serial {
+        anyhow::bail!(
+            "PIV management session is bound to YubiKey serial {}; refusing operation for serial {serial}",
+            session.serial
+        )
+    }
+    if session.state != PivManagementSessionState::Verified {
+        anyhow::bail!("PIV management-key authentication requires a successful PIN VERIFY")
+    }
+    session.device.authenticate_protected_management_key()?;
+    session.state = PivManagementSessionState::Authenticated;
     Ok(())
 }
 /// 別 serial を更新する前に、利用者が新たに入力した PIN で前 session を置き換える。
 ///
-/// 前 session の `ProtectedSecret` と device handle は replacement 時に drop される。caller は
-/// device serial を解決し、その serial が first operation で bind されるまでこの関数だけで
-/// physical device operation を発生させない。
+/// 前 session の device handle と PIN は replacement 時に drop される。新 serial はこの関数内で
+/// 直ちに open/VERIFY/authenticate され、first arbitrary operation まで bind を遅延しない。
 pub(crate) fn begin_next_piv_management_session(
     backend: &mut YubikeyStorageBackend,
+    serial: u32,
     pin: ProtectedSecret,
 ) -> Result<()> {
-    if backend.piv_management_session.is_none() {
-        anyhow::bail!("PIV management session has not been started")
+    let previous_serial = backend
+        .piv_management_session
+        .as_ref()
+        .map(|session| session.serial)
+        .ok_or_else(|| anyhow::anyhow!("PIV management session has not been started"))?;
+    if previous_serial == serial {
+        anyhow::bail!(
+            "next PIV management session requires a new YubiKey serial; current serial is {serial}"
+        )
     }
-    backend.piv_management_session = Some(PivManagementSession {
-        pin,
-        serial: None,
-        device: None,
-    });
-    Ok(())
+    backend.piv_management_session = None;
+    open_piv_management_session(backend, serial)?;
+    verify_piv_management_pin(backend, serial, pin)?;
+    authenticate_piv_management_key(backend, serial)
 }
 pub(crate) fn inspect_secret_storage_setup(
     backend: &mut YubikeyStorageBackend,
@@ -195,10 +259,6 @@ pub(crate) fn initialize_secret_storage(
             .transpose()
     })?;
     if let Some(key) = generated_key {
-        backend.generated_public_keys.insert(serial, key.clone());
-        return Ok(key);
-    }
-    if let Some(key) = backend.generated_public_keys.get(&serial).cloned() {
         return Ok(key);
     }
     with_authenticated_device(backend, serial, |device| {
@@ -215,7 +275,6 @@ pub(crate) fn finalize_secret_storage_setup(
     with_authenticated_device(backend, serial, |device| {
         device.write_object(PivObjectId::MANIFEST, &mut manifest)
     })?;
-    backend.generated_public_keys.remove(&serial);
     Ok(())
 }
 pub(crate) fn clear_secret_storage(
@@ -277,9 +336,8 @@ pub(crate) fn inspect_secret_storage_status(
     serial: u32,
     storage: &SecretStorageSpec,
 ) -> Result<SecretStorageStatusInspection> {
-    // Ordinary `status` has no management session and remains PIN-free. The provisioning use
-    // case has already established one, so its initial observation must bind and retain that
-    // same device instead of opening an unauthenticated throwaway connection before clear/setup.
+    // 通常の `status` は management session を開始せず PIN-free のままにする。provisioning は選択済み
+    // serial の session を開始・認証済みなので、その同じ device handle を保持して利用する。
     let inspect = |device: &mut SelectedSecretDevice| -> Result<SecretStorageStatusInspection> {
         let manifest_bytes = device.read_object(PivObjectId::MANIFEST)?;
         let object = device.read_object(storage.object_id)?;

@@ -5,21 +5,12 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::AddGpgBackupSpareCommand,
-        gpg_backup::{EnvelopeRecipient, GpgBackupEnvelope},
+        gpg_backup::EnvelopeRecipient,
         piv::SecretName,
         storage::SecretStorageReadIntent,
     },
     ports,
 };
-
-/// `run_add_gpg_backup_spare` が使う外部 capability を named field で束ねる。
-pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
-    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
-    pub(crate) bws_client: &'a B,
-    pub(crate) recipient: &'a mut dyn ports::GpgRecipientPort,
-    pub(crate) confirmation: &'a dyn ports::BackupUpdateConfirmationPort,
-}
 
 /// 既存 envelope を復号して同一 DEK を取り出し、spare YubiKey の recipient を追加して BWS を更新する。
 ///
@@ -40,18 +31,15 @@ pub(crate) struct AddGpgBackupSpareRuntime<'a, B> {
 /// DEK は port 境界の保護値として扱い、application 層では加工しない。
 pub(crate) async fn run_add_gpg_backup_spare<B>(
     command: AddGpgBackupSpareCommand,
-    runtime: AddGpgBackupSpareRuntime<'_, B>,
+    device: &mut dyn ports::DeviceSerialPort,
+    storage: &mut dyn ports::SecretStoragePort,
+    bws_client: &B,
+    recipient: &mut dyn ports::GpgRecipientPort,
+    confirmation: &dyn ports::BackupUpdateConfirmationPort,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
+    B: ports::BwsClientPort + ?Sized,
 {
-    let AddGpgBackupSpareRuntime {
-        device,
-        storage,
-        bws_client,
-        recipient,
-        confirmation,
-    } = runtime;
     command.ensure_requested_serials_distinct()?;
     let unwrap_serial = device.resolve_device_serial(command.unwrap_serial)?;
     let spare_serial = device.resolve_device_serial(command.spare_serial)?;
@@ -70,13 +58,9 @@ where
     )?;
 
     // 更新前に envelope と stale overwrite 防止 guard を取得する。
-    let (envelope_value, guard) = bws_client
+    let (envelope, guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
-    let envelope =
-        crate::support::protection::bws::parse_response_value(&envelope_value, |value| {
-            GpgBackupEnvelope::from_json(value.as_bytes())
-        })?;
 
     // unwrap/wrap で touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
     // envelope 取得後に判明しているため、拒否される更新で YubiKey の DEK unwrap や spare wrap を実行
@@ -151,7 +135,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::{AddGpgBackupSpareRuntime, run_add_gpg_backup_spare};
+    use super::run_add_gpg_backup_spare;
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -267,7 +251,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                material(envelope_value().as_bytes()),
+                GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                 BackupUpdateGuard::ValueDigest("rev".to_owned()),
             ))
         });
@@ -313,13 +297,11 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: true,
             },
-            AddGpgBackupSpareRuntime {
-                device: &mut yk.device,
-                storage: &mut yk.storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                confirmation: &confirmation,
-            },
+            &mut yk.device,
+            &mut yk.storage,
+            &bws,
+            &mut recipient,
+            &confirmation,
         )
         .await
     }
@@ -353,7 +335,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                material(envelope_value().as_bytes()),
+                GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                 BackupUpdateGuard::ValueDigest("read-at-start".to_owned()),
             ))
         });
@@ -390,13 +372,11 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: true,
             },
-            AddGpgBackupSpareRuntime {
-                device: &mut yk.device,
-                storage: &mut yk.storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                confirmation: &confirmation,
-            },
+            &mut yk.device,
+            &mut yk.storage,
+            &bws,
+            &mut recipient,
+            &confirmation,
         )
         .await;
 
@@ -432,7 +412,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                material(envelope_value().as_bytes()),
+                GpgBackupEnvelope::from_json(envelope_value().as_bytes()).expect("fixture"),
                 BackupUpdateGuard::ValueDigest("rev".to_owned()),
             ))
         });
@@ -458,13 +438,11 @@ mod tests {
                 spare_serial: Some(2002),
                 assume_overwrite: false,
             },
-            AddGpgBackupSpareRuntime {
-                device: &mut yk.device,
-                storage: &mut yk.storage,
-                bws_client: &bws,
-                recipient: &mut recipient,
-                confirmation: &confirmation,
-            },
+            &mut yk.device,
+            &mut yk.storage,
+            &bws,
+            &mut recipient,
+            &confirmation,
         )
         .await;
 

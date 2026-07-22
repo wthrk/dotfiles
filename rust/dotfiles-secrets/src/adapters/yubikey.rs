@@ -30,12 +30,16 @@ impl DeviceSerialPort for YubikeyDeviceBackend {
 }
 
 impl SecretStoragePort for YubikeyStorageBackend {
-    fn begin_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()> {
-        yubikey_storage::begin_piv_management_session(self, pin)
+    fn begin_piv_management_session(&mut self, serial: u32, pin: ProtectedSecret) -> Result<()> {
+        yubikey_storage::begin_piv_management_session(self, serial, pin)
     }
 
-    fn begin_next_piv_management_session(&mut self, pin: ProtectedSecret) -> Result<()> {
-        yubikey_storage::begin_next_piv_management_session(self, pin)
+    fn begin_next_piv_management_session(
+        &mut self,
+        serial: u32,
+        pin: ProtectedSecret,
+    ) -> Result<()> {
+        yubikey_storage::begin_next_piv_management_session(self, serial, pin)
     }
 
     fn inspect_secret_storage_setup(

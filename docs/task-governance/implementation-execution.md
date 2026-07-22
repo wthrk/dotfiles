@@ -41,6 +41,10 @@
 
 前回読んだ記憶だけで編集してはならない。
 
+S1 の通常確認として、実装担当は完了報告の直前に、task・領域の正本仕様/基本設計/runbook・適用 architecture 規約・差分の根拠資料・変更後の全差分と直接の呼び出し元/先・対応テスト・verification の結果/未実施項目を直接再読する。外部 SDK / crate を扱う場合は、[../docs-governance.md の参照資料の直接照合](../docs-governance.md#参照資料の直接照合) と [外部 SDK / crate の利用根拠](../docs-governance.md#外部-sdk--crate-の利用根拠) に従い、利用 flow と全 error 面の一次資料を確認する。
+
+この確認で未読、未確認、未解決 finding があれば S1 内で remediation し、完了報告を行わない。これは追加 stage や独立 gate ではなく、必須の独立 reviewer と [implementation-review-judgement.md](implementation-review-judgement.md) の review/集約/remediation を代替・緩和しない。
+
 ## 実装時の判断規則
 
 - 完了条件を満たすために必要な実装を省略してはならない。
@@ -57,6 +61,7 @@
 - 実行コマンドと結果。
 - 未実施確認と理由。
 - セキュリティ観点の確認結果。
+- S1 通常確認として直接再読した対象、対象ごとの判定、未解決 finding（なければ「なし」）。
 - 外部 SDK / crate を扱った場合は、確認した一次資料の URL と位置、および各利用フロー・エラー判断への対応。
 - 実装差分がない場合は、その理由と確認範囲。
 

@@ -19,12 +19,16 @@
 //! PIN VERIFY の error mapping は upstream version 固定
 //! [`Transaction::verify_pin`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs)
 //! と [`Error::WrongPin`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/error.rs) を直接確認する。
-//! 同 source は `0x6983` (`AuthBlockedError`) と `0x63Cx` (`VerifyFailError`) の両方を
-//! `WrongPin { tries }` に写像するため、`tries == 0` から生の status word は復元できない。
+//! [NIST SP 800-73pt2-5 §3.2.1](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73pt2-5.pdf)
+//! は raw status word `0x6983` を `authentication method blocked` と定義する。一方、固定 crate source
+//! はその `0x6983` (`AuthBlockedError`) と `0x63Cx` (`VerifyFailError`) の両方を `WrongPin { tries }` に
+//! 写像するため、`tries == 0` から生の status word は復元できない。
 //! [Yubico PIV VERIFY specification](https://docs.yubico.com/yesdk/users-manual/application-piv/apdu/verify.html#verify-pin)
-//! は `0x6983` について、PIN の正誤を示さず、残試行がなく認証を拒否すると定義する。従って
-//! `tries == 0` は「PIV VERIFY が残試行 0 を報告した。PIN blocked であり得、今回入力した
-//! PIN の正誤はこの結果から判定不能」とのみ表示する。`tries > 0` だけを PIN rejected として
+//! が定義する応答は成功の `0x9000` と PIN 不一致の `0x63CX` である。`0x6983` の raw 意味は前記 NIST、
+//! `0x6983` と `0x63C0` を同じ crate 値へ写像する根拠は上記の固定 `Transaction::verify_pin` source
+//! と区別する。従って
+//! `tries == 0` は raw status を失った opaque failure として停止する。PIN の正誤、残試行数、
+//! blocked 状態のいずれもこの SDK 値からは表示・判定しない。`tries > 0` だけを PIN rejected として
 //! 残試行回数付きで表示する。自動 retry、fallback、PUK、reset は行わない。
 //!
 //! `MgmKey::get_protected` の固定 source は、最初に management-slot metadata を query してから
@@ -65,30 +69,30 @@ pub(crate) fn verify_pin_with(
 /// `yubikey::Error` が `anyhow` 化される前に、VERIFY の型付き結果を利用者向け失敗へ写像する。
 ///
 /// `tries == 0` は crate の lossy mapping により `0x6983` と `0x63C0` を区別できない。そのため
-/// PIN が誤り、または blocked と断定せず、Yubico の VERIFY specification が定める blocked
-/// 状態の可能性と PIN 正誤の不定性だけを伝える。PIN 値はこの error に含めない。
+/// PIN が誤り、blocked、残試行ゼロのいずれとも断定せず opaque failure として伝播する。PIN 値は
+/// この error に含めない。
 pub(crate) fn verify_pin_failure(error: yubikey::Error) -> Error {
     match error {
-        yubikey::Error::WrongPin { tries: 0 } => Error::msg(
-            "PIV VERIFY reported zero retries remaining; the PIN may be blocked, and this result cannot determine whether the supplied PIN was correct",
-        ),
+        yubikey::Error::WrongPin { tries: 0 } => Error::new(RawPivStatusUnavailable),
         yubikey::Error::WrongPin { tries } => {
             Error::msg(format!("PIV PIN rejected; retries remaining: {tries}"))
         }
         error => Error::new(error),
     }
 }
-#[cfg(not(feature = "secrets-internal-test-stub"))]
-pub(crate) fn authenticate_protected_management_key(
-    yubikey: &mut yubikey::YubiKey,
-    pin: &ProtectedSecret,
-) -> Result<()> {
-    verify_pin(yubikey, pin)?;
-    let key = yubikey::MgmKey::get_protected(yubikey).map_err(Error::new)?;
-    yubikey.authenticate(&key).map_err(Error::new)?;
-    Ok(())
+
+#[derive(Debug)]
+struct RawPivStatusUnavailable;
+
+impl std::fmt::Display for RawPivStatusUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "PIV VERIFY failed; this YubiKey SDK result does not preserve the raw card status, so PIN correctness and device state are undetermined",
+        )
+    }
 }
 
+impl std::error::Error for RawPivStatusUnavailable {}
 #[cfg(test)]
 mod tests {
     use super::verify_pin_failure;
@@ -101,12 +105,12 @@ mod tests {
     }
 
     #[test]
-    fn zero_retries_does_not_claim_the_supplied_pin_was_wrong() {
+    fn zero_retries_is_an_opaque_failure() {
         let error = verify_pin_failure(yubikey::Error::WrongPin { tries: 0 });
 
         assert_eq!(
             error.to_string(),
-            "PIV VERIFY reported zero retries remaining; the PIN may be blocked, and this result cannot determine whether the supplied PIN was correct"
+            "PIV VERIFY failed; this YubiKey SDK result does not preserve the raw card status, so PIN correctness and device state are undetermined"
         );
     }
 }

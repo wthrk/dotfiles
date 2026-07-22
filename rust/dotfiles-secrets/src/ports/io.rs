@@ -3,8 +3,6 @@
 //! この module は入力取得、継続確認、secret 出力、report 出力の capability を宣言し、
 //! prompt 文言や JSON 表現、端末制御の実装を adapter 側へ閉じる。
 
-use std::collections::BTreeMap;
-
 use super::super::{
     domain::{
         enrollment::EnrollSummary,
@@ -17,19 +15,24 @@ use super::super::{
 };
 use crate::Result;
 
-/// use case が必要とする secret 入力 capability 契約。
+/// entrypoint が選んだ一つの BWS token input boundary。
 ///
-/// caller は必要な secret 種別または stream 入力 capability を明示して呼ぶ。implementor は prompt、
-/// stdin、保護 buffer 化を外部 I/O 境界に閉じ、取得した平文を公開 API として返さない。
+/// use case は hidden TTY / stdin の手段を知覚せず、この capability だけを要求する。
 #[cfg_attr(test, mockall::automock)]
-pub trait SecretInputPort {
-    fn read_bitwarden_client_secret_secret(&self) -> Result<ProtectedSecret>;
-    /// controlling TTY からだけ BWS token を hidden input として取得する。
-    ///
-    /// source provisioning は shell pipe / stdin payload に token を置かないため、この capability
-    /// を使う。`--stdin` を明示した低水準 command の streamed input とは混同しない。
-    fn read_bitwarden_client_secret_tty_secret(&self) -> Result<ProtectedSecret>;
-    fn read_streamed_secret(&self) -> Result<ProtectedSecret>;
+pub trait BitwardenClientSecretInputPort {
+    fn read_bitwarden_client_secret(&self) -> Result<ProtectedSecret>;
+}
+
+/// entrypoint が選んだ一つの process bootstrap document input boundary。
+///
+/// primary YubiKey storage からの read はこの process input capability に含めない。application が
+/// storage capability と domain read plan を使い、serial 解決、spare との同一性判定、spare の
+/// 事前検査、primary read の順序を制御する。
+#[cfg_attr(test, mockall::automock)]
+pub trait BootstrapDocumentInputPort {
+    fn read_bootstrap_secret_document_input(
+        &mut self,
+    ) -> Result<crate::domain::manifest::BootstrapSecretDocumentInput>;
 }
 
 /// PIV 管理操作のために設定済み YubiKey PIN を hidden TTY input から取得する capability。
@@ -46,7 +49,7 @@ pub trait PivPinInputPort {
 /// use case が `password-store-remote` の clone URL を非秘匿入力として取得する capability 契約。
 ///
 /// `password-store-remote` は private `password-store` repository の SSH clone URL であり、秘密情報では
-/// ない。よって他の secret 入力（`SecretInputPort`）と異なり保護 buffer・非表示入力・zeroize を要さず、
+/// ない。よって他の secret 入力（[`BitwardenClientSecretInputPort`]）と異なり保護 buffer・非表示入力・zeroize を要さず、
 /// caller は `--url` 未指定時にこの port で 1 行の URL を取得する。implementor は stdin が terminal のとき
 /// 可視プロンプト（入力をエコーする通常入力）で、非 terminal（pipe）のとき stdin 1 行を読み、取得した
 /// 生文字列を返す。URL 形式の妥当性判断（`git@github.com:<owner>/<repo>.git`）は domain rule に委ね、
@@ -63,15 +66,6 @@ pub trait PasswordStoreRemoteInputPort {
 #[cfg_attr(test, mockall::automock)]
 pub trait RotationContinuationPort {
     fn continue_rotation(&self) -> Result<bool>;
-}
-
-/// bootstrap secret 文書を取得する capability 契約。
-///
-/// caller は bootstrap field map を要求するだけで JSON 入力手段や byte 上限を知らない。
-/// implementor は入力 decode と secret backend 化を担い、wire/domain の妥当性判断は外へ漏らさない。
-#[cfg_attr(test, mockall::automock)]
-pub trait BootstrapSecretDocumentInputPort {
-    fn read_bootstrap_secret_fields(&self) -> Result<BTreeMap<String, ProtectedSecret>>;
 }
 
 /// use case が設定済み YubiKey secret 名を出力境界へ渡す契約。

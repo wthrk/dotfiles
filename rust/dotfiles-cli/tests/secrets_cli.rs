@@ -133,6 +133,39 @@ impl Drop for PersistentYubiKeyState {
     }
 }
 
+/// controlling TTY と pipe stdin を同時に持つ CLI integration 用の stdin source。
+///
+/// child は PTY を controlling terminal として維持したまま、shell の `exec 0<...` で stdin
+/// だけを FIFO に差し替える。従って PIV PIN は `/dev/tty`、`--stdin` / `--stdin-json` payload
+/// は pipe 相当の stdin から得る。本番 binary に test protocol を追加しない。
+struct PipeStdinFifo {
+    path: PathBuf,
+}
+
+impl PipeStdinFifo {
+    fn new() -> TestResult<Self> {
+        let unique = PERSISTENT_STUB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let path = std::env::temp_dir().join(format!(
+            "dotfiles-test-stdin-fifo-{}-{nanos}-{unique}",
+            std::process::id()
+        ));
+        let status = Command::new("mkfifo").arg(&path).status()?;
+        if !status.success() {
+            anyhow::bail!("failed to create test stdin FIFO at {}", path.display());
+        }
+        Ok(Self { path })
+    }
+}
+
+impl Drop for PipeStdinFifo {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl StubPorts {
     fn new(yubikey_spec: Value, bws_spec_value: Value) -> Self {
         Self {
@@ -225,6 +258,64 @@ fn setup_rejects_a_tty_stdin_when_it_is_not_the_controlling_terminal() -> TestRe
 }
 
 #[test]
+fn setup_accepts_eight_byte_piv_pin_and_starts_exactly_one_verify() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "12345678\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn setup_rejects_eof_piv_pin_before_starting_device_verify() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+    let rejected =
+        run_pty_with_stub_interactive(["yubikey", "setup", "--serial", "2001"], &[], &stub)?;
+
+    assert!(!rejected.success, "output: {}", rejected.output);
+    assert!(
+        rejected
+            .output
+            .contains("YubiKey PIV PIN must contain 6 to 8 bytes"),
+        "EOF must be rejected at the PIN boundary: {}",
+        rejected.output
+    );
+
+    // 拒否された process は device を開かないため observation を出さない。後続の PIN-free status は
+    // feature-stub fixture だけを開き、VERIFY や storage mutation をせず永続 datastore を観測する。
+    let observed = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+    assert!(observed.success, "stderr: {}", observed.stderr);
+    let final_yubikey = final_observation(&observed.stdout, "yubikey")?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(0),
+        "open observation happens before the rejected command can VERIFY"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
+        json!(false),
+        "EOF must stop before device access"
+    );
+    Ok(())
+}
+
+#[test]
 fn clear_yes_without_a_controlling_tty_fails_before_stub_mutation() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([corrupt_manifest_device_spec(PRIMARY_SERIAL)]),
@@ -260,6 +351,74 @@ fn setup_reads_hidden_piv_pin_from_pty() -> TestResult<()> {
 
     assert!(run.success, "output: {}", run.output);
     assert!(run.output.contains("YubiKey PIV PIN: "));
+    Ok(())
+}
+
+#[test]
+fn setup_passes_hidden_piv_pin_bytes_to_the_feature_stub_session() -> TestResult<()> {
+    let device = json!({
+        "serial": PRIMARY_SERIAL,
+        "fixture": "fresh",
+        "expected_management_pin": "123456",
+    });
+    let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["management_pin_matched"],
+        json!(true),
+        "feature-only fixture must observe the hidden PIN at management-session start without emitting it"
+    );
+    assert!(!run.output.contains("123456"), "PIN must not be output");
+    Ok(())
+}
+
+#[test]
+fn invalid_length_piv_pin_stops_before_feature_stub_verify() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+    let rejected = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "12345\n")],
+        &stub,
+    )?;
+
+    assert!(
+        !rejected.success,
+        "short PIN must fail: {}",
+        rejected.output
+    );
+    assert!(
+        rejected
+            .output
+            .contains("YubiKey PIV PIN must contain 6 to 8 bytes"),
+        "invalid PIN length must fail locally: {}",
+        rejected.output
+    );
+
+    // 後続の有効な管理 command は最終 feature-stub datastore を出す。その一回の VERIFY により、
+    // 拒否入力が前の session/VERIFY を開始していないことを確認する。
+    let observed = run_pty_with_stub_interactive(
+        ["yubikey", "setup", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+    assert!(observed.success, "valid retry setup: {}", observed.output);
+    let final_yubikey = observed.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "only the valid PIN must start a physical PIV VERIFY"
+    );
     Ok(())
 }
 
@@ -391,7 +550,7 @@ fn management_pin_zero_retries_does_not_claim_the_pin_was_wrong() -> TestResult<
     assert!(!run.success, "zero retries must stop: {}", run.output);
     assert!(
         run.output.contains(
-            "PIV VERIFY reported zero retries remaining; the PIN may be blocked, and this result cannot determine whether the supplied PIN was correct"
+            "PIV VERIFY failed; this YubiKey SDK result does not preserve the raw card status, so PIN correctness and device state are undetermined"
         ),
         "zero retries must preserve Yubico's non-judgment of the supplied PIN: {}",
         run.output
@@ -426,10 +585,9 @@ fn put_without_a_controlling_tty_fails_closed_before_consuming_stdin_secret() ->
 
 #[test]
 fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
-    let stub = StubPorts::new(
-        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
-        bws_spec(),
-    );
+    let mut device = writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL);
+    device["expected_management_pin"] = json!("123456");
+    let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
     let run = run_pty_with_stub_interactive(
         [
             "yubikey",
@@ -446,8 +604,19 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
     )?;
 
     assert!(run.success, "output: {}", run.output);
-    assert!(run.output.contains("YubiKey PIV PIN: "));
-    assert!(run.output.contains("bitwarden-client-secret: "));
+    let visible = strip_observation_lines(&run.output);
+    assert!(visible.contains("YubiKey PIV PIN: ******"));
+    assert!(visible.contains("bitwarden-client-secret: *********"));
+    assert!(
+        !visible.contains("123456") && !visible.contains("new-token"),
+        "default hidden-prompt path must never echo PIN or token: {}",
+        run.output
+    );
+    assert!(
+        !run.output.contains("dotfiles-piv-debug"),
+        "normal provision output must not contain opt-in debug events: {}",
+        run.output
+    );
     let final_yubikey = run.final_yubikey()?;
     assert_stored_secret(
         &final_yubikey,
@@ -465,15 +634,677 @@ fn put_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
         json!(1),
         "put must not repeat physical VERIFY for one hidden PIN input"
     );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["management_pin_matched"],
+        json!(true),
+        "the default prompt must pass the accepted PIV PIN through to the management session"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_debug_reports_lossy_verify_without_secret_or_mutation() -> TestResult<()> {
+    let device = json!({
+        "serial": PRIMARY_SERIAL,
+        "fixture": "fresh",
+        "management_state": "pin-blocked",
+    });
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([device]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+    let run = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    let phases: Vec<_> = run
+        .output
+        .lines()
+        .filter(|line| line.starts_with("dotfiles-piv-debug "))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            "dotfiles-piv-debug phase=discovery-started",
+            "dotfiles-piv-debug phase=target-resolved serial=2001",
+            "dotfiles-piv-debug phase=tty-pin-input-started",
+            "dotfiles-piv-debug phase=tty-pin-input-accepted",
+            "dotfiles-piv-debug phase=piv-management-session-started",
+            "dotfiles-piv-debug phase=piv-management-session-returned result=opaque-error",
+            "dotfiles-piv-debug phase=subsequent-phase-not-reached",
+        ]
+    );
+    for line in &phases {
+        for field in line.split_whitespace().skip(1) {
+            let key = field
+                .split_once('=')
+                .map(|(key, _)| key)
+                .context("debug field must use fixed key=value schema")?;
+            assert!(
+                ["phase", "serial", "result"].contains(&key),
+                "unexpected debug schema key {key:?}: {line}"
+            );
+            assert!(
+                ![
+                    "pin", "token", "secret", "length", "len", "hash", "digest", "raw", "apdu",
+                    "response", "payload"
+                ]
+                .contains(&key),
+                "forbidden debug schema key {key:?}: {line}"
+            );
+        }
+    }
+    let visible = strip_observation_lines(&run.output);
+    assert!(
+        !visible.contains("123456") && !visible.contains("provisioned-token"),
+        "debug must not expose fixture PIN/token: {}",
+        run.output
+    );
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
+        json!(false),
+        "lossy VERIFY failure must not initialize the reserved slot"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({}),
+        "lossy VERIFY failure must not write a token"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "lossy VERIFY failure must issue exactly the attempted physical VERIFY and stop"
+    );
+
+    let status = run_pipe_with_stub(["yubikey", "status", "--serial", "2001"], None, &stub)?;
+    assert!(status.success, "stderr: {}", status.stderr);
+    assert_eq!(status.user_stdout(), "");
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_debug_reports_management_key_authentication_failure_without_token_prompt_or_mutation()
+-> TestResult<()> {
+    let device = json!({
+        "serial": PRIMARY_SERIAL,
+        "fixture": "fresh",
+        "management_state": "opaque-error",
+    });
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([device]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+    let run = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    let phases: Vec<_> = run
+        .output
+        .lines()
+        .filter(|line| line.starts_with("dotfiles-piv-debug "))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            "dotfiles-piv-debug phase=discovery-started",
+            "dotfiles-piv-debug phase=target-resolved serial=2001",
+            "dotfiles-piv-debug phase=tty-pin-input-started",
+            "dotfiles-piv-debug phase=tty-pin-input-accepted",
+            "dotfiles-piv-debug phase=piv-management-session-started",
+            "dotfiles-piv-debug phase=piv-management-session-returned result=opaque-error",
+            "dotfiles-piv-debug phase=subsequent-phase-not-reached",
+        ]
+    );
+    assert_debug_schema_is_secret_safe(&phases)?;
+    assert!(
+        !run.output.contains("bitwarden-client-secret: "),
+        "generic management failure must stop before the token prompt: {}",
+        run.output
+    );
+    let visible = strip_observation_lines(&run.output);
+    assert!(
+        !visible.contains("123456") && !visible.contains("provisioned-token"),
+        "debug must not expose fixture PIN/token: {}",
+        run.output
+    );
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
+        json!(false),
+        "generic management failure must not initialize the reserved slot"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({}),
+        "generic management failure must not write a token"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_debug_reports_every_success_phase_with_fixed_schema() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", "provisioned-token\n"),
+        ],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let phases: Vec<_> = run
+        .output
+        .lines()
+        .filter(|line| line.starts_with("dotfiles-piv-debug "))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            "dotfiles-piv-debug phase=discovery-started",
+            "dotfiles-piv-debug phase=target-resolved serial=2001",
+            "dotfiles-piv-debug phase=tty-pin-input-started",
+            "dotfiles-piv-debug phase=tty-pin-input-accepted",
+            "dotfiles-piv-debug phase=piv-management-session-started",
+            "dotfiles-piv-debug phase=piv-management-session-succeeded",
+            "dotfiles-piv-debug phase=storage-status-inspection-started",
+            "dotfiles-piv-debug phase=storage-status-inspection-succeeded",
+            "dotfiles-piv-debug phase=storage-setup-inspection-started",
+            "dotfiles-piv-debug phase=storage-setup-inspection-succeeded",
+            "dotfiles-piv-debug phase=storage-initialization-started",
+            "dotfiles-piv-debug phase=storage-initialization-succeeded",
+            "dotfiles-piv-debug phase=storage-setup-finalization-started",
+            "dotfiles-piv-debug phase=storage-setup-finalization-succeeded",
+            "dotfiles-piv-debug phase=storage-write-preflight-inspection-started",
+            "dotfiles-piv-debug phase=storage-write-preflight-inspection-succeeded",
+            "dotfiles-piv-debug phase=tty-token-input-started",
+            "dotfiles-piv-debug phase=tty-token-input-accepted",
+            "dotfiles-piv-debug phase=storage-store-started",
+            "dotfiles-piv-debug phase=storage-store-succeeded",
+            "dotfiles-piv-debug phase=local-verification-inspection-started",
+            "dotfiles-piv-debug phase=local-verification-inspection-succeeded",
+            "dotfiles-piv-debug phase=local-verification-load-started",
+            "dotfiles-piv-debug phase=local-verification-load-succeeded",
+            "dotfiles-piv-debug phase=provisioning-completed",
+        ]
+    );
+    assert_debug_schema_is_secret_safe(&phases)?;
+    let visible = strip_observation_lines(&run.output);
+    assert!(
+        !visible.contains("123456") && !visible.contains("provisioned-token"),
+        "debug success transcript must not expose fixture PIN/token: {}",
+        run.output
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_debug_writes_diagnostics_only_to_stderr() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    // child に controlling TTY がないため management PIN を受け取れず、device mutation の前に
+    // 停止する。PTY transcript と異なり stdout/stderr を分離し、診断の出力先契約自体を確認する。
+    let run = run_pipe_without_controlling_tty_with_stub(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        None,
+        &stub,
+    )?;
+
+    assert!(
+        !run.success,
+        "stdout: {}; stderr: {}",
+        run.stdout, run.stderr
+    );
+    let phases: Vec<_> = run
+        .stderr
+        .lines()
+        .filter(|line| line.starts_with("dotfiles-piv-debug "))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            "dotfiles-piv-debug phase=discovery-started",
+            "dotfiles-piv-debug phase=target-resolved serial=2001",
+            "dotfiles-piv-debug phase=tty-pin-input-started",
+            "dotfiles-piv-debug phase=tty-pin-input-returned result=opaque-error",
+            "dotfiles-piv-debug phase=subsequent-phase-not-reached",
+        ]
+    );
+    assert_debug_schema_is_secret_safe(&phases)?;
+    assert!(
+        !run.stdout.contains("dotfiles-piv-debug"),
+        "diagnostics must not contaminate stdout: {}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("123456")
+            && !run.stderr.contains("123456")
+            && !run.stdout.contains("provisioned-token")
+            && !run.stderr.contains("provisioned-token"),
+        "separate diagnostic streams must not expose fixture PIN/token; stdout: {}; stderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("length=")
+            && !run.stderr.contains("len=")
+            && !run.stderr.contains("hash=")
+            && !run.stderr.contains("raw-status="),
+        "diagnostic stderr must not contain secret-derived or raw-status fields: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_debug_token_input_rejection_adds_only_fixed_diagnostic() -> TestResult<()> {
+    // BWS token input の最大長を 1 byte 超える。terminal signal になる Ctrl-C ではなく、input
+    // backend が error を返す経路を駆動し、入力境界の failure schema を検証する。
+    let rejected_token = "x".repeat(16 * 1024 + 1);
+    let mut normal_spec =
+        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]);
+    normal_spec["observe_on_open"] = json!(true);
+    let normal_stub = StubPorts::new(normal_spec, bws_spec());
+    let normal = run_pty_with_stub_interactive(
+        ["yubikey", "provision-bws-token", "--serial", "2001"],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", rejected_token.as_str()),
+        ],
+        &normal_stub,
+    )?;
+
+    assert!(!normal.success, "output: {}", normal.output);
+    assert!(
+        !normal.output.contains("dotfiles-piv-debug"),
+        "normal input rejection must not emit opt-in diagnostics: {}",
+        normal.output
+    );
+
+    let mut debug_spec =
+        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]);
+    debug_spec["observe_on_open"] = json!(true);
+    let debug_stub = StubPorts::new(debug_spec, bws_spec());
+    let debug = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", rejected_token.as_str()),
+        ],
+        &debug_stub,
+    )?;
+
+    assert!(!debug.success, "output: {}", debug.output);
+    let phases: Vec<_> = debug
+        .output
+        .lines()
+        .filter(|line| line.starts_with("dotfiles-piv-debug "))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            "dotfiles-piv-debug phase=discovery-started",
+            "dotfiles-piv-debug phase=target-resolved serial=2001",
+            "dotfiles-piv-debug phase=tty-pin-input-started",
+            "dotfiles-piv-debug phase=tty-pin-input-accepted",
+            "dotfiles-piv-debug phase=piv-management-session-started",
+            "dotfiles-piv-debug phase=piv-management-session-succeeded",
+            "dotfiles-piv-debug phase=storage-status-inspection-started",
+            "dotfiles-piv-debug phase=storage-status-inspection-succeeded",
+            "dotfiles-piv-debug phase=storage-setup-inspection-started",
+            "dotfiles-piv-debug phase=storage-setup-inspection-succeeded",
+            "dotfiles-piv-debug phase=storage-write-preflight-inspection-started",
+            "dotfiles-piv-debug phase=storage-write-preflight-inspection-succeeded",
+            "dotfiles-piv-debug phase=tty-token-input-started",
+            "dotfiles-piv-debug phase=tty-token-input-returned result=opaque-error",
+            "dotfiles-piv-debug phase=subsequent-phase-not-reached",
+        ]
+    );
+    assert_debug_schema_is_secret_safe(&phases)?;
+    let debug_without_diagnostics = strip_observation_lines(&debug.output)
+        .lines()
+        .filter(|line| !line.starts_with("dotfiles-piv-debug "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        strip_observation_lines(&normal.output)
+            .lines()
+            .collect::<Vec<_>>()
+            .join("\n"),
+        debug_without_diagnostics,
+        "--debug must add only fixed diagnostics when token input is rejected"
+    );
+    let visible = strip_observation_lines(&debug.output);
+    assert!(
+        !visible.contains("123456") && !visible.contains(&rejected_token),
+        "debug input-rejection transcript must not expose the PIV PIN or rejected token: {}",
+        debug.output
+    );
+    assert_eq!(
+        normal.final_yubikey()?,
+        debug.final_yubikey()?,
+        "--debug must not change the input-rejection storage operation"
+    );
+    assert_eq!(
+        debug.final_yubikey()?["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({}),
+        "token input rejection must not store a secret"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_without_debug_preserves_the_normal_transcript() -> TestResult<()> {
+    let normal_stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let normal = run_pty_with_stub_interactive(
+        ["yubikey", "provision-bws-token", "--serial", "2001"],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", "provisioned-token\n"),
+        ],
+        &normal_stub,
+    )?;
+    assert!(normal.success, "output: {}", normal.output);
+    assert!(!normal.output.contains("dotfiles-piv-debug"));
+
+    let debug_stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let debug = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", "provisioned-token\n"),
+        ],
+        &debug_stub,
+    )?;
+    assert!(debug.success, "output: {}", debug.output);
+    let normal_visible = strip_observation_lines(&normal.output);
+    let debug_without_diagnostics = strip_observation_lines(&debug.output)
+        .lines()
+        .filter(|line| !line.starts_with("dotfiles-piv-debug "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        normal_visible.lines().collect::<Vec<_>>().join("\n"),
+        debug_without_diagnostics,
+        "--debug must add only diagnostic lines and must not alter the normal transcript"
+    );
+    assert_eq!(
+        normal.final_yubikey()?,
+        debug.final_yubikey()?,
+        "--debug must not change the successful storage operation"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_masks_piv_pin_and_token_without_echo_race_in_repeated_pty_runs()
+-> TestResult<()> {
+    for _ in 0..3 {
+        let stub = StubPorts::new(
+            yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+            bws_spec(),
+        );
+        let run = run_pty_with_stub_interactive(
+            ["yubikey", "provision-bws-token", "--serial", "2001"],
+            &[
+                ("YubiKey PIV PIN: ", "123456\n"),
+                ("bitwarden-client-secret: ", "masked-token\n"),
+            ],
+            &stub,
+        )?;
+
+        assert!(run.success, "output: {}", run.output);
+        let visible = strip_observation_lines(&run.output);
+        assert!(visible.contains("YubiKey PIV PIN: ******"));
+        assert!(visible.contains("bitwarden-client-secret: ************"));
+        assert!(
+            !visible.contains("123456") && !visible.contains("masked-token"),
+            "hidden TTY transcript must never echo PIN or token: {}",
+            run.output
+        );
+    }
+    Ok(())
+}
+
+fn assert_debug_schema_is_secret_safe(phases: &[&str]) -> TestResult<()> {
+    for line in phases {
+        let phase = line
+            .split_whitespace()
+            .skip(1)
+            .find_map(|field| field.strip_prefix("phase="))
+            .context("debug line must contain phase")?;
+        assert!(
+            [
+                "discovery-",
+                "target-resolved",
+                "tty-pin-input-",
+                "piv-management-session-",
+                "storage-status-inspection-",
+                "storage-setup-inspection-",
+                "storage-initialization-",
+                "storage-setup-finalization-",
+                "storage-write-preflight-inspection-",
+                "tty-token-input-",
+                "storage-store-",
+                "local-verification-inspection-",
+                "local-verification-load-",
+                "provisioning-completed",
+                "subsequent-phase-not-reached",
+            ]
+            .iter()
+            .any(|allowed| phase == *allowed || phase.starts_with(allowed)),
+            "debug phase must be in the fixed non-secret allowlist: {phase:?}"
+        );
+        for field in line.split_whitespace().skip(1) {
+            let key = field
+                .split_once('=')
+                .map(|(key, _)| key)
+                .context("debug field must use fixed key=value schema")?;
+            assert!(
+                ["phase", "serial", "result"].contains(&key),
+                "unexpected debug schema key {key:?}: {line}"
+            );
+            assert!(
+                ![
+                    "pin", "token", "secret", "length", "len", "hash", "digest", "raw", "apdu",
+                    "response", "payload"
+                ]
+                .contains(&key),
+                "forbidden debug schema key {key:?}: {line}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_debug_reports_discovery_identity_and_status_failures() -> TestResult<()> {
+    let discovery_stub = StubPorts::new(yubikey_spec([]), bws_spec());
+    let discovery = run_pty_with_stub(
+        ["yubikey", "provision-bws-token", "--debug"],
+        None,
+        &discovery_stub,
+    )?;
+    assert!(!discovery.success, "output: {}", discovery.output);
+    assert!(
+        discovery
+            .output
+            .contains("dotfiles-piv-debug phase=discovery-started")
+    );
+    assert!(
+        discovery
+            .output
+            .contains("dotfiles-piv-debug phase=discovery-returned result=opaque-error")
+    );
+    assert!(
+        discovery
+            .output
+            .contains("dotfiles-piv-debug phase=subsequent-phase-not-reached")
+    );
+    assert!(!discovery.output.contains("YubiKey PIV PIN: "));
+
+    let identity_stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let identity = run_pty_with_stub(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "9999",
+            "--debug",
+        ],
+        None,
+        &identity_stub,
+    )?;
+    assert!(!identity.success, "output: {}", identity.output);
+    assert!(
+        identity
+            .output
+            .contains("dotfiles-piv-debug phase=discovery-returned result=opaque-error")
+    );
+    assert!(
+        identity
+            .output
+            .contains("dotfiles-piv-debug phase=subsequent-phase-not-reached")
+    );
+    assert!(!identity.output.contains("YubiKey PIV PIN: "));
+
+    let status_stub = StubPorts::new(
+        yubikey_spec([status_read_failure_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let status = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &status_stub,
+    )?;
+    assert!(!status.success, "output: {}", status.output);
+    assert!(
+        status
+            .output
+            .contains("dotfiles-piv-debug phase=storage-status-inspection-started")
+    );
+    assert!(status.output.contains(
+        "dotfiles-piv-debug phase=storage-status-inspection-returned result=opaque-error"
+    ));
+    assert!(
+        status
+            .output
+            .contains("dotfiles-piv-debug phase=subsequent-phase-not-reached")
+    );
+    assert!(!status.output.contains("bitwarden-client-secret: "));
+    Ok(())
+}
+
+#[test]
+fn put_stdin_keeps_piv_pin_on_controlling_tty_and_token_on_pipe_stdin() -> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([writable_bitwarden_client_secret_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
+        [
+            "yubikey",
+            "put",
+            "bitwarden-client-secret",
+            "--serial",
+            "2001",
+            "--stdin",
+        ],
+        b"pipe-token\n",
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "pipe-token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1)
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1)
+    );
     Ok(())
 }
 
 #[test]
 fn provision_bws_token_keeps_inspect_setup_store_and_verify_in_one_piv_session() -> TestResult<()> {
-    let stub = StubPorts::new(
-        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
-        bws_spec(),
-    );
+    let mut device = fresh_device_spec(PRIMARY_SERIAL);
+    device["expected_management_pin"] = json!("123456");
+    let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
     let run = run_pty_with_stub_interactive(
         ["yubikey", "provision-bws-token", "--serial", "2001"],
         &[
@@ -502,6 +1333,154 @@ fn provision_bws_token_keeps_inspect_setup_store_and_verify_in_one_piv_session()
         final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
         json!(1),
         "provision must issue exactly one physical VERIFY for one hidden PIN input"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["management_pin_matched"],
+        json!(true),
+        "provision must pass the accepted PIV PIN into the same management session"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_validates_an_existing_token_without_reprompt_or_mutation() -> TestResult<()>
+{
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "provision-bws-token", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(
+        !run.output
+            .lines()
+            .any(|line| line.starts_with("bitwarden-client-secret: ")),
+        "a valid existing token must not cause a replacement-token prompt: {}",
+        run.output
+    );
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({ "bitwarden-client-secret": "token" }),
+        "valid existing storage must remain unchanged after local decrypt validation"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "status and local decrypt validation must share one selected PIV connection"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "one hidden PIN input must issue one physical VERIFY"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_fails_closed_when_an_existing_token_cannot_be_decrypted() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let device = storage_decode_error_device_spec(
+        provisioned_device_spec(PRIMARY_SERIAL),
+        "bitwarden-client-secret",
+    );
+    let mut spec = yubikey_spec([device]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "provision-bws-token", "--serial", "2001"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(
+        !run.success,
+        "a stored token whose local decrypt fails must stop: {}",
+        run.output
+    );
+    assert!(
+        !run.output
+            .lines()
+            .any(|line| line.starts_with("bitwarden-client-secret: ")),
+        "a corrupt stored token must not cause a replacement-token prompt: {}",
+        run.output
+    );
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({ "bitwarden-client-secret": "token" }),
+        "a local decrypt failure must not clear or rewrite the existing storage"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "status and local decrypt validation must share one selected PIV connection"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "one hidden PIN input must issue one physical VERIFY even when validation fails"
+    );
+    Ok(())
+}
+
+#[test]
+fn provision_bws_token_clears_only_typed_invalid_storage_and_never_traces_clear() -> TestResult<()>
+{
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([manifestless_bitwarden_client_secret_device_spec(
+        PRIMARY_SERIAL,
+    )]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+
+    let run = run_pty_with_stub_interactive(
+        [
+            "yubikey",
+            "provision-bws-token",
+            "--serial",
+            "2001",
+            "--debug",
+        ],
+        &[
+            ("YubiKey PIV PIN: ", "123456\n"),
+            ("bitwarden-client-secret: ", "recovered-token\n"),
+        ],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    assert!(
+        !run.output.contains("storage-clear"),
+        "clear is an intentional typed-invalid mutation, not a debug phase: {}",
+        run.output
+    );
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "recovered-token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1),
+        "typed-invalid recovery must retain one discovery/session path"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "typed-invalid recovery must perform one physical VERIFY"
     );
     Ok(())
 }
@@ -717,6 +1696,83 @@ fn clear_reads_hidden_piv_pin_after_explicit_confirmation() -> TestResult<()> {
 }
 
 #[test]
+fn clear_yes_refuses_normal_and_empty_storage_without_mutation() -> TestResult<()> {
+    for (device, expected_secrets, expected_key_exists) in [
+        (
+            provisioned_device_spec(PRIMARY_SERIAL),
+            json!({ "bitwarden-client-secret": "token" }),
+            json!(true),
+        ),
+        (fresh_device_spec(PRIMARY_SERIAL), json!({}), json!(false)),
+    ] {
+        let state = PersistentYubiKeyState::new();
+        let mut spec = yubikey_spec([device]);
+        spec["persistence_path"] = json!(state.path());
+        spec["observe_on_open"] = json!(true);
+        let stub = StubPorts::new(spec, bws_spec());
+
+        let run = run_pty_with_stub_interactive(
+            ["yubikey", "clear", "--serial", "2001", "--yes"],
+            &[("YubiKey PIV PIN: ", "123456\n")],
+            &stub,
+        )?;
+
+        assert!(
+            !run.success,
+            "normal/empty reserved storage must not be a clear target: {}",
+            run.output
+        );
+        let final_yubikey = run.final_yubikey()?;
+        assert_eq!(
+            final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+            expected_secrets,
+            "clear --yes must preserve normal/empty storage"
+        );
+        assert_eq!(
+            final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
+            expected_key_exists,
+            "clear --yes must not generate a replacement slot key without typed invalid storage"
+        );
+        assert_eq!(
+            final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+            json!(1),
+            "the explicit management command performs only its one PIN VERIFY before failing closed"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn clear_yes_propagates_storage_observation_error_without_mutation() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([status_read_failure_device_spec(PRIMARY_SERIAL)]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+
+    let run = run_pty_with_stub_interactive(
+        ["yubikey", "clear", "--serial", "2001", "--yes"],
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "transport failure must stop: {}", run.output);
+    assert!(run.output.contains("stub YubiKey device I/O failed"));
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({ "bitwarden-client-secret": "token" }),
+        "transport failure must not clear the existing reserved secret"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
+        json!(true),
+        "transport failure must not regenerate the reserved slot key"
+    );
+    Ok(())
+}
+
+#[test]
 fn persistent_partial_storage_reports_present_names_without_clear() -> TestResult<()> {
     let state = PersistentYubiKeyState::new();
     let mut initial_spec = yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]);
@@ -842,6 +1898,87 @@ fn enroll_primary_reads_tty_prompts_with_yubikey_path() -> TestResult<()> {
 }
 
 #[test]
+fn enroll_primary_stdin_json_keeps_piv_pin_on_controlling_tty_and_document_on_pipe_stdin()
+-> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
+        [
+            "yubikey",
+            "enroll-primary",
+            "--serial",
+            "2001",
+            "--stdin-json",
+        ],
+        bootstrap_json().as_bytes(),
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1)
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn enroll_primary_stdin_json_schema_failure_stops_before_storage_mutation() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([fresh_device_spec(PRIMARY_SERIAL)]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
+        [
+            "yubikey",
+            "enroll-primary",
+            "--serial",
+            "2001",
+            "--stdin-json",
+        ],
+        br#"{"unexpected-bootstrap-field":"token"}"#,
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    // `observe_on_open` は compile-time stub fixture option である。open 後だけ最終 datastore
+    // sentinel を書くため、schema rejection を後続 storage mutation や test persistence file の読取
+    // なしに観測できる。
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["key_exists"],
+        json!(false),
+        "schema failure must precede key generation/object writes/finalization"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["stored_secrets"],
+        json!({})
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "schema parsing occurs after exactly one accepted PIN/VERIFY but before storage mutation"
+    );
+    Ok(())
+}
+
+#[test]
 fn enroll_spare_without_a_controlling_tty_fails_closed_before_json_input() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([
@@ -905,6 +2042,85 @@ fn enroll_spare_without_secret_reentry() -> TestResult<()> {
 }
 
 #[test]
+fn enroll_spare_stdin_json_keeps_piv_pin_on_controlling_tty_and_document_on_pipe_stdin()
+-> TestResult<()> {
+    let stub = StubPorts::new(yubikey_spec([fresh_device_spec(SPARE_SERIAL)]), bws_spec());
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
+        [
+            "yubikey",
+            "enroll-spare",
+            "--primary-serial",
+            "2001",
+            "--spare-serial",
+            "2002",
+            "--stdin-json",
+        ],
+        bootstrap_json().as_bytes(),
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        SPARE_SERIAL,
+        "bitwarden-client-secret",
+        "token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][SPARE_SERIAL.to_string()]["connection_count"],
+        json!(1)
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][SPARE_SERIAL.to_string()]["physical_verify_count"],
+        json!(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn enroll_spare_stdin_json_schema_failure_stops_before_storage_mutation() -> TestResult<()> {
+    let state = PersistentYubiKeyState::new();
+    let mut spec = yubikey_spec([fresh_device_spec(SPARE_SERIAL)]);
+    spec["persistence_path"] = json!(state.path());
+    spec["observe_on_open"] = json!(true);
+    let stub = StubPorts::new(spec, bws_spec());
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
+        [
+            "yubikey",
+            "enroll-spare",
+            "--primary-serial",
+            "2001",
+            "--spare-serial",
+            "2002",
+            "--stdin-json",
+        ],
+        br#"{"unexpected-bootstrap-field":"token"}"#,
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(!run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_eq!(
+        final_yubikey["yubikeys"][SPARE_SERIAL.to_string()]["key_exists"],
+        json!(false),
+        "schema failure must precede spare key generation/object writes/finalization"
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][SPARE_SERIAL.to_string()]["stored_secrets"],
+        json!({})
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][SPARE_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "schema parsing occurs after exactly one accepted PIN/VERIFY but before storage mutation"
+    );
+    Ok(())
+}
+
+#[test]
 fn rotate_bws_token_without_a_controlling_tty_fails_closed_before_consuming_stdin_secret()
 -> TestResult<()> {
     let stub = StubPorts::new(
@@ -963,6 +2179,39 @@ fn rotate_bws_token_reads_tty_prompt_with_yubikey_path() -> TestResult<()> {
 }
 
 #[test]
+fn rotate_bws_token_stdin_keeps_piv_pin_on_controlling_tty_and_token_on_pipe_stdin()
+-> TestResult<()> {
+    let stub = StubPorts::new(
+        yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
+        bws_spec(),
+    );
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
+        ["yubikey", "rotate-bws-token", "--serial", "2001", "--stdin"],
+        b"rotated-pipe-token\n",
+        &[("YubiKey PIV PIN: ", "123456\n")],
+        &stub,
+    )?;
+
+    assert!(run.success, "output: {}", run.output);
+    let final_yubikey = run.final_yubikey()?;
+    assert_stored_secret(
+        &final_yubikey,
+        PRIMARY_SERIAL,
+        "bitwarden-client-secret",
+        "rotated-pipe-token",
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["connection_count"],
+        json!(1)
+    );
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1)
+    );
+    Ok(())
+}
+
+#[test]
 fn rotate_bws_token_fails_closed_when_multiple_yubikeys_are_detected() -> TestResult<()> {
     let stub = StubPorts::new(
         yubikey_spec([
@@ -971,11 +2220,7 @@ fn rotate_bws_token_fails_closed_when_multiple_yubikeys_are_detected() -> TestRe
         ]),
         bws_spec(),
     );
-    let run = run_pty_with_stub_interactive(
-        ["yubikey", "rotate-bws-token"],
-        &[("YubiKey PIV PIN: ", "123456\n")],
-        &stub,
-    )?;
+    let run = run_pty_with_stub(["yubikey", "rotate-bws-token"], None, &stub)?;
 
     assert!(!run.success, "output: {}", run.output);
     assert!(
@@ -1233,9 +2478,12 @@ fn put_stdin_auto_detects_serial_and_fails_when_stdin_is_empty() -> TestResult<(
         yubikey_spec([provisioned_device_spec(PRIMARY_SERIAL)]),
         bws_spec(),
     );
-    let run = run_pipe_with_stub(
+    // 管理操作の PIN は controlling TTY、`--stdin` の token は stdin と、実際の process 境界どおり
+    // 分離する。空 payload は stdin EOF として渡し、PIN の未供給を理由に停止する偽陽性を防ぐ。
+    let run = run_pty_with_stub_interactive_and_pipe_stdin(
         ["yubikey", "put", "bitwarden-client-secret", "--stdin"],
-        None,
+        b"",
+        &[("YubiKey PIV PIN: ", "123456\n")],
         &stub,
     )?;
 
@@ -1545,6 +2793,10 @@ fn run_pty_with_stub<const N: usize>(
             let mut writer = pair.master.take_writer()?;
             writer.write_all(input.as_bytes())?;
             drop(writer);
+        } else {
+            // 入力なしの PTY case も EOF を明示する。writer を開いたまま待つと、誤って入力へ到達した
+            // child が EOF を受け取れず、discovery/validation failure を timeout へすり替えてしまう。
+            drop(pair.master.take_writer()?);
         }
         wait_pty_child(&mut child)
     })();
@@ -1698,6 +2950,111 @@ fn run_pty_with_stub_interactive<const N: usize>(
     })
 }
 
+/// PTY の controlling terminal と FIFO-backed stdin を同時に渡す interactive runner。
+///
+/// `--stdin` / `--stdin-json` の payload を PTY queue へ混ぜると、PIV PIN が stdin fallback
+/// しても見かけ上成功してしまう。この helper は PIV PIN が `/dev/tty` からしか読めず、payload
+/// が stdin からしか読めない production process topology を feature-isolated stub で再現する。
+fn run_pty_with_stub_interactive_and_pipe_stdin<const N: usize>(
+    args: [&str; N],
+    stdin_payload: &[u8],
+    interactions: &[(&str, &str)],
+    stub: &StubPorts,
+) -> TestResult<PtyRun> {
+    let _pty_guard = PTY_TEST_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("PTY test lock is poisoned"))?;
+    let fifo = PipeStdinFifo::new()?;
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.arg("-c");
+    command.arg("exec 0<\"$DOTFILES_TEST_STDIN_FIFO\"; exec \"$DOTFILES_TEST_STUB_BINARY\" \"$@\"");
+    command.arg("dotfiles-pty-pipe-stdin");
+    command.arg("secrets");
+    command.args(args);
+    command.env("DOTFILES_TEST_STDIN_FIFO", fifo.path.as_os_str());
+    command.env("DOTFILES_TEST_STUB_BINARY", feature_stub_cli_binary());
+    stub.apply_to_pty_command(&mut command)?;
+    let mut child = pair.slave.spawn_command(command)?;
+    drop(pair.slave);
+
+    let payload_path = fifo.path.clone();
+    let payload = stdin_payload.to_vec();
+    let stdin_writer = thread::spawn(move || -> std::io::Result<()> {
+        let mut writer = fs::OpenOptions::new().write(true).open(payload_path)?;
+        match writer.write_all(&payload) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+            Err(error) => Err(error),
+        }
+    });
+
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_pty_child(&mut child);
+            return Err(error.into());
+        }
+    };
+    let (chunks, chunk_receiver) = mpsc::channel();
+    let output_handle = thread::spawn(move || {
+        let mut output = String::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            output.push_str(&chunk);
+            if chunks.send(chunk).is_err() {
+                break;
+            }
+        }
+        Ok::<_, std::io::Error>(output)
+    });
+
+    let status = (|| -> TestResult<portable_pty::ExitStatus> {
+        let mut observed = String::new();
+        let mut writer = pair.master.take_writer()?;
+        for (prompt, input) in interactions {
+            while !observed.contains(prompt) {
+                let chunk = chunk_receiver
+                    .recv_timeout(TIMEOUT)
+                    .with_context(|| format!("timed out waiting for PTY prompt {prompt:?}"))?;
+                observed.push_str(&chunk);
+            }
+            writer.write_all(input.as_bytes())?;
+            writer.flush()?;
+        }
+        drop(writer);
+        wait_pty_child(&mut child)
+    })();
+    if status.is_err() {
+        terminate_pty_child(&mut child);
+    }
+    drop(pair.master);
+    let stdin_result = stdin_writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join FIFO stdin writer"))?;
+    let output = output_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join PTY output reader"))??;
+    stdin_result?;
+    let status = status?;
+    Ok(PtyRun {
+        success: status.success(),
+        exit_code: status.exit_code(),
+        output,
+    })
+}
+
 fn write_child_stdin(mut stdin: impl Write, input: &str) -> TestResult<()> {
     match stdin.write_all(input.as_bytes()) {
         Ok(()) => Ok(()),
@@ -1744,8 +3101,9 @@ fn terminate_standard_child(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-/// See [`terminate_standard_child`]. PTY children need the same kill-and-reap
-/// invariant when prompt delivery or output collection fails.
+/// [`terminate_standard_child`] と同じ kill-and-reap 不変条件を適用する。
+///
+/// PTY child でも prompt delivery または output collection が失敗した場合に同じ回収を要する。
 fn terminate_pty_child(child: &mut Box<dyn Child + Send + Sync>) {
     let _ = child.kill();
     let _ = child.wait();

@@ -95,6 +95,12 @@ YubiKey の `setup` / `put` / `clear` / enroll / rotate、`status`、または�
 
 文書是正・文書主成果物では、exact tracked-file set、file-count、補助記録の完全同期を開始条件にしない。
 
+## レビュー対象の凍結と remediation
+
+レビュー開始時に固定した差分識別子、比較範囲、worktree は、全必須 reviewer の verdict を収集して集約判定を確定するまで変更してはならない。review 中に個別 finding が届いても、実装、format、生成、source 変更、commit を開始してはならない。個別 reviewer の返答は cycle 完了を意味せず、必須 reviewer **全員**の verdict が集まることだけが集約開始条件である。
+
+集約後レビュー判定が `要修正` または `不合格` の場合、オーケストレーターは未解消 finding 全件を [差し戻し時の受け渡し規則](#差し戻し時の受け渡し規則) に従って lossless に一つの remediation task へ渡す。その remediation 完了後は、固定済みの旧レビュー対象を継続使用せず、新しい比較対象を固定して必須 reviewer 全員による fresh な review cycle を最初から実施する。個別 finding ごとの即時修正、review 中の source 更新、部分的な再レビューは禁止する。
+
 ## 判定表示規則
 
 - 各レビュー担当の返答は、先頭に `判定: <合格|要修正|不合格>` を 1 行で記録する。

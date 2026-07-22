@@ -282,6 +282,7 @@
             pkgs.rustc
             pkgs.rustfmt
             pkgs.shellcheck
+            pkgs.shfmt
             pkgs.zsh
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [

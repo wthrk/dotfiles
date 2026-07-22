@@ -15,10 +15,13 @@ pub(crate) fn resolve_device_serial(
     backend: &mut YubikeyDeviceBackend,
     requested: Option<u32>,
 ) -> Result<u32> {
-    if let Some(serial) = requested {
-        return Ok(serial);
-    }
     let devices = yubikey_backend::discover_devices(backend)?;
+    if let Some(serial) = requested {
+        if devices.iter().any(|device| device.serial == serial) {
+            return Ok(serial);
+        }
+        anyhow::bail!("requested YubiKey serial is not connected");
+    }
     resolve_exactly_one_serial(
         &devices
             .iter()

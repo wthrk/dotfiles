@@ -5,8 +5,6 @@ use crate::{
     domain::{
         bws::{BwsProjectName, BwsSecretName},
         commands::VerifyYubikeyCommand,
-        gpg_backup::GpgBackupEnvelope,
-        pass_restore::PasswordStoreRemote,
         piv::SecretName,
         storage::{SecretStorageReadIntent, SecretStorageVerificationPlan},
         verification::{CheckName, CheckStatus, VerifySummary},
@@ -15,15 +13,6 @@ use crate::{
     support::protection::ProtectedSecret,
 };
 
-/// `run_verify_yubikey_with` が使う外部 capability を named field で束ねる。
-pub(crate) struct VerifyYubikeyRuntime<'a, B> {
-    pub(crate) device: &'a mut dyn ports::DeviceSerialPort,
-    pub(crate) storage: &'a mut dyn ports::SecretStoragePort,
-    pub(crate) report: &'a dyn ports::ReportPort,
-    pub(crate) bws_client: &'a B,
-    pub(crate) gpg_recipient: &'a mut dyn ports::GpgRecipientPort,
-}
-
 /// 保存済み secret の存在と、要求された外部確認項目を検証する。
 ///
 /// serial 未指定時の自動選択を device port 境界へ委譲し、local storage 検証を完了条件の
@@ -31,19 +20,15 @@ pub(crate) struct VerifyYubikeyRuntime<'a, B> {
 /// 曖昧にしない。
 pub(crate) async fn run_verify_yubikey_with<B>(
     command: VerifyYubikeyCommand,
-    runtime: VerifyYubikeyRuntime<'_, B>,
+    device: &mut dyn ports::DeviceSerialPort,
+    storage_port: &mut dyn ports::SecretStoragePort,
+    report: &dyn ports::ReportPort,
+    bws_client: &B,
+    gpg_recipient: &mut dyn ports::GpgRecipientPort,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
+    B: ports::BwsClientPort + ?Sized,
 {
-    let VerifyYubikeyRuntime {
-        device,
-        storage: storage_port,
-        report,
-        bws_client,
-        gpg_recipient,
-        ..
-    } = runtime;
     let requested = command.requested_external_checks()?;
     let serial = device.resolve_device_serial(command.serial)?;
     // local storage 検証は、無対話 BWS recovery に必要な `bitwarden-client-secret` だけを
@@ -126,7 +111,7 @@ async fn run_bws_check<B>(
     gpg_recipient: &mut dyn ports::GpgRecipientPort,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
+    B: ports::BwsClientPort + ?Sized,
 {
     let project_id = BwsProjectName::DOTFILES_SECRET_RECOVERY
         .resolve_id(bws_client.list_bws_projects(access_token).await?)?;
@@ -139,21 +124,16 @@ where
     let pass_secret_id =
         BwsSecretName::PasswordStoreRemote.resolve_id(secret_candidates, &project_id)?;
 
-    let (envelope_value, _guard) = bws_client
+    let (envelope, _guard) = bws_client
         .fetch_gpg_backup_envelope(access_token, &gpg_secret_id)
         .await?;
-    let envelope =
-        crate::support::protection::bws::parse_response_value(&envelope_value, |value| {
-            GpgBackupEnvelope::from_json(value.as_bytes())
-        })?;
     let connected = gpg_recipient.resolve_connected_recipient(serial)?;
     envelope.resolve_recipient(&connected)?;
 
-    let remote_value = bws_client
+    let _remote = bws_client
         .fetch_password_store_remote(access_token, &pass_secret_id)
         .await?;
-    crate::support::protection::bws::parse_response_value(&remote_value, PasswordStoreRemote::parse)
-        .map(|_| ())
+    Ok(())
 }
 
 /// YubiKey storage の read 経路（inspect → intent → load → validate）で指定 secret を on-demand 取得する。
@@ -193,7 +173,7 @@ mod tests {
         support::protection::ProtectedSecret,
     };
 
-    use super::{VerifyYubikeyRuntime, run_bws_check, run_verify_yubikey_with};
+    use super::{run_bws_check, run_verify_yubikey_with};
 
     fn material(bytes: &[u8]) -> ProtectedSecret {
         ProtectedSecret::from_test_bytes(bytes).expect("test secret")
@@ -331,13 +311,11 @@ mod tests {
                 checks: vec![ExternalCheck::Bws],
                 all: true,
             },
-            VerifyYubikeyRuntime {
-                device: &mut device_serial,
-                storage: &mut storage,
-                report: &report,
-                bws_client: &bws,
-                gpg_recipient: &mut gpg_recipient,
-            },
+            &mut device_serial,
+            &mut storage,
+            &report,
+            &bws,
+            &mut gpg_recipient,
         )
         .await;
 
@@ -396,7 +374,8 @@ mod tests {
             .withf(|_, secret_id| secret_id.as_str() == "gpg-id")
             .returning(|_, _| {
                 Ok((
-                    material(valid_envelope_value().as_bytes()),
+                    GpgBackupEnvelope::from_json(valid_envelope_value().as_bytes())
+                        .expect("fixture"),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -410,7 +389,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, secret_id| secret_id.as_str() == "pass-id")
-            .returning(|_, _| Ok(material(valid_password_store_remote().as_str().as_bytes())));
+            .returning(|_, _| Ok(valid_password_store_remote()));
 
         let mut report = ports::MockReportPort::new();
         report
@@ -429,13 +408,11 @@ mod tests {
                 checks: vec![ExternalCheck::Bws],
                 all: false,
             },
-            VerifyYubikeyRuntime {
-                device: &mut device_serial,
-                storage: &mut storage,
-                report: &report,
-                bws_client: &bws,
-                gpg_recipient: &mut gpg_recipient,
-            },
+            &mut device_serial,
+            &mut storage,
+            &report,
+            &bws,
+            &mut gpg_recipient,
         )
         .await
     }
@@ -447,12 +424,7 @@ mod tests {
         expect_bws_lookup(&mut bws);
         bws.expect_fetch_gpg_backup_envelope()
             .times(1)
-            .returning(|_, _| {
-                Ok((
-                    material(b"not-json"),
-                    BackupUpdateGuard::from_value_bytes(b"not-json"),
-                ))
-            });
+            .returning(|_, _| Err(anyhow::anyhow!("invalid gpg backup envelope response")));
         bws.expect_fetch_password_store_remote().times(0);
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         gpg_recipient.expect_resolve_connected_recipient().times(0);
@@ -472,10 +444,7 @@ mod tests {
         expect_bws_lookup(&mut bws);
         bws.expect_fetch_gpg_backup_envelope()
             .times(1)
-            .returning(|_, _| {
-                let value = r#"{"version":1,"metadata":{"primary_fingerprint":"ABC","exported_at":"2026-05-31T00:00:00Z","dek_alg":"aes-256-gcm","recipient_kek_alg":"rsa-oaep-sha256"},"recipients":[],"ciphertext":{"nonce":"EBESExQVFhcYGRob","body":"ZW5jcnlwdGVk","tag":"gIGCg4SFhoeIiYqLjI2Ojw=="}}"#.to_owned();
-                Ok((material(value.as_bytes()), BackupUpdateGuard::from_value_bytes(b"invalid-fingerprint")))
-            });
+            .returning(|_, _| Err(anyhow::anyhow!("invalid gpg backup envelope response")));
         bws.expect_fetch_password_store_remote().times(0);
         let mut gpg_recipient = ports::MockGpgRecipientPort::new();
         gpg_recipient.expect_resolve_connected_recipient().times(0);
@@ -497,7 +466,8 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    material(valid_envelope_value().as_bytes()),
+                    GpgBackupEnvelope::from_json(valid_envelope_value().as_bytes())
+                        .expect("fixture"),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -531,7 +501,8 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    material(valid_envelope_value().as_bytes()),
+                    GpgBackupEnvelope::from_json(valid_envelope_value().as_bytes())
+                        .expect("fixture"),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -592,13 +563,11 @@ mod tests {
                 checks: vec![ExternalCheck::Bws],
                 all: false,
             },
-            VerifyYubikeyRuntime {
-                device: &mut device_serial,
-                storage: &mut storage,
-                report: &report,
-                bws_client: &bws,
-                gpg_recipient: &mut gpg_recipient,
-            },
+            &mut device_serial,
+            &mut storage,
+            &report,
+            &bws,
+            &mut gpg_recipient,
         )
         .await;
 
@@ -654,13 +623,11 @@ mod tests {
                 checks: vec![ExternalCheck::Bws],
                 all: false,
             },
-            VerifyYubikeyRuntime {
-                device: &mut device_serial,
-                storage: &mut storage,
-                report: &report,
-                bws_client: &bws,
-                gpg_recipient: &mut gpg_recipient,
-            },
+            &mut device_serial,
+            &mut storage,
+            &report,
+            &bws,
+            &mut gpg_recipient,
         )
         .await;
 
@@ -730,13 +697,11 @@ mod tests {
                 checks: vec![ExternalCheck::Bws],
                 all: false,
             },
-            VerifyYubikeyRuntime {
-                device: &mut device_serial,
-                storage: &mut storage,
-                report: &report,
-                bws_client: &bws,
-                gpg_recipient: &mut gpg_recipient,
-            },
+            &mut device_serial,
+            &mut storage,
+            &report,
+            &bws,
+            &mut gpg_recipient,
         )
         .await;
 

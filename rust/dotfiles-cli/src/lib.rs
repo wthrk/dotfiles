@@ -24,8 +24,10 @@ pub type Result<T> = dotfiles_core::Result<T>;
 
 /// command error を利用者向け終了コードへ変換する。
 ///
-/// `yubikey status` が観測済みの予約 storage 不整合を報告した場合だけ、provisioning script
-/// が clear を許可できる専用コードを返す。その他の失敗は fail-closed で通常の失敗コードにする。
+/// `42` は低水準 `yubikey status` の観測済み予約 storage 不整合、`43` は低水準
+/// `yubikey put` の完全未初期化を表す互換的な公開終了コードとして返す。provisioning script は
+/// これらを state transition の根拠にせず、`provision-bws-token` 一回へ遷移全体を委譲する。
+/// その他の失敗は fail-closed で通常の失敗コードにする。
 pub fn exit_code_for_error(error: &anyhow::Error) -> u8 {
     if dotfiles_secrets::is_secret_storage_status_invalid(error) {
         dotfiles_secrets::SECRET_STORAGE_STATUS_INVALID_EXIT_CODE

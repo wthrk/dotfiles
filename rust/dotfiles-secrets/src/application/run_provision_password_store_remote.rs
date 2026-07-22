@@ -40,9 +40,9 @@ pub(crate) async fn run_provision_password_store_remote<B, U, F>(
     confirmation: &F,
 ) -> Result<()>
 where
-    B: ports::BwsClientPort,
-    U: ports::PasswordStoreRemoteInputPort,
-    F: ports::BackupUpdateConfirmationPort,
+    B: ports::BwsClientPort + ?Sized,
+    U: ports::PasswordStoreRemoteInputPort + ?Sized,
+    F: ports::BackupUpdateConfirmationPort + ?Sized,
 {
     let serial = device.resolve_device_serial(command.serial)?;
 
@@ -118,7 +118,7 @@ where
 /// 委ねる。検証失敗は停止条件として呼び出し元へ伝播する。
 fn resolve_remote_url<U>(url: &Option<String>, url_input: &U) -> Result<PasswordStoreRemote>
 where
-    U: ports::PasswordStoreRemoteInputPort,
+    U: ports::PasswordStoreRemoteInputPort + ?Sized,
 {
     let raw = match url {
         Some(value) => value.clone(),

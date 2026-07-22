@@ -59,12 +59,14 @@ pub(crate) struct YubikeyRecipientBackend;
 pub(crate) struct DeviceCandidate {
     pub(crate) serial: u32,
     pub(crate) label: String,
+    pub(crate) piv_version: PivApplicationVersion,
 }
 pub(crate) trait SecretDeviceIo {
     fn key_exists(&mut self) -> Result<bool>;
     fn reserved_slot_certificate_exists(&mut self) -> Result<bool>;
     fn piv_application_version(&self) -> PivApplicationVersion;
-    fn check_management_auth_preconditions(&mut self, pin: Option<&ProtectedSecret>) -> Result<()>;
+    fn verify_management_pin(&mut self, pin: &ProtectedSecret) -> Result<()>;
+    fn authenticate_protected_management_key(&mut self) -> Result<()>;
     fn generate_key(&mut self) -> Result<Vec<u8>>;
     fn slot_public_key_spki(&mut self) -> Result<Option<Vec<u8>>>;
     fn remember_generated_public_key(&mut self, key: Vec<u8>);
@@ -103,7 +105,8 @@ impl SecretDeviceIo for SelectedSecretDevice {
     fn piv_application_version(&self) -> PivApplicationVersion {
         self.inner.piv_application_version()
     }
-    delegate!(check_management_auth_preconditions(pin:Option<&ProtectedSecret>) -> Result<()>);
+    delegate!(verify_management_pin(pin:&ProtectedSecret) -> Result<()>);
+    delegate!(authenticate_protected_management_key() -> Result<()>);
     delegate!(generate_key() -> Result<Vec<u8>>);
     delegate!(slot_public_key_spki() -> Result<Option<Vec<u8>>>);
     fn remember_generated_public_key(&mut self, key: Vec<u8>) {
@@ -131,6 +134,11 @@ pub(crate) fn discover_devices(_: &mut YubikeyDeviceBackend) -> Result<Vec<Devic
             devices.push(DeviceCandidate {
                 serial: key.serial().0,
                 label,
+                piv_version: PivApplicationVersion {
+                    major: key.version().major,
+                    minor: key.version().minor,
+                    patch: key.version().patch,
+                },
             });
         }
         Ok(devices)
@@ -270,13 +278,14 @@ impl SecretDeviceIo for YubikeySecretDevice {
             patch: v.patch,
         }
     }
-    fn check_management_auth_preconditions(&mut self, pin: Option<&ProtectedSecret>) -> Result<()> {
-        let pin = pin.ok_or_else(|| {
-            anyhow::anyhow!(
-                "PIV management operation requires a configured PIN-protected management session"
-            )
-        })?;
-        yubikey_piv::authenticate_protected_management_key(&mut self.yubikey, pin)?;
+    fn verify_management_pin(&mut self, pin: &ProtectedSecret) -> Result<()> {
+        yubikey_piv::verify_pin(&mut self.yubikey, pin)
+    }
+    fn authenticate_protected_management_key(&mut self) -> Result<()> {
+        let key = yubikey::MgmKey::get_protected(&mut self.yubikey).map_err(anyhow::Error::new)?;
+        self.yubikey
+            .authenticate(&key)
+            .map_err(anyhow::Error::new)?;
         let metadata = piv::metadata(
             &mut self.yubikey,
             SlotId::Management(yubikey::piv::ManagementSlotId::Management),

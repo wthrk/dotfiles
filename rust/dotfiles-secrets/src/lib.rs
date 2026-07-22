@@ -18,13 +18,15 @@ pub type Result<T> = dotfiles_core::Result<T>;
 
 /// `yubikey status` が予約 storage の観測済み不整合を検出したときの終了コード。
 ///
-/// script はこの値だけを clear の許可根拠にする。USB/PCSC/device discovery などの観測失敗は
-/// このコードに変換しない。
+/// 低水準 command の互換的な公開終了コードである。provisioning script はこの値を clear または
+/// 他の state transition の根拠にせず、`provision-bws-token` 一回へ遷移全体を委譲する。
+/// USB/PCSC/device discovery などの観測失敗はこのコードに変換しない。
 pub const SECRET_STORAGE_STATUS_INVALID_EXIT_CODE: u8 = 42;
 
 /// `yubikey put` が完全に未初期化の予約領域を観測したときの終了コード。
 ///
-/// provisioning script はこの値だけを `setup` 後の再試行の許可根拠にする。
+/// 低水準 command の互換的な公開終了コードである。provisioning script はこの値を `setup`、
+/// 再試行、または他の state transition の根拠にしない。
 pub const SECRET_STORAGE_UNINITIALIZED_EXIT_CODE: u8 = 43;
 
 /// error chain に `status` が観測した予約 storage 不整合が含まれるかを返す。
@@ -79,6 +81,7 @@ mod adapter_io;
 #[path = "adapters/yubikey.rs"]
 mod adapter_yubikey;
 mod application;
+mod composition;
 pub(crate) mod domain;
 mod entrypoint;
 pub(crate) mod ports;
@@ -129,7 +132,7 @@ enum YubikeyCommand {
     /// (https://docs.yubico.com/yesdk/users-manual/application-piv/pin-only.html#pin-protected)、
     /// repository の error / ykman source evidence は
     /// [`external-sdk-evidence.md`](../../../docs/secret-recovery/external-sdk-evidence.md) を参照する。
-    ProvisionBwsToken(SerialOptions),
+    ProvisionBwsToken(ProvisionBwsTokenOptions),
 }
 
 #[derive(Args)]
@@ -137,6 +140,24 @@ enum YubikeyCommand {
 struct SerialOptions {
     #[arg(long)]
     serial: Option<u32>,
+}
+
+#[derive(Args)]
+/// source provisioning の BWS token storage を単一 PIV session で確認・必要時保存・検証する option。
+///
+/// `--debug` は通常出力を変えず、通常 flow の fixed non-secret phase、解決済み serial、opaque result
+/// だけを stderr へ出す。PIV VERIFY failure は raw card status を復元・分類せず、`opaque-error` と
+/// 表示する。PIN/token/secret、長さ、hash、raw APDU/status は出さない。repository の one input /
+/// one physical VERIFY 契約は
+/// [`secret-handling.md`](../../../docs/secret-recovery/secret-handling.md#tty-secret-input)、
+/// PIV PIN-only の同一-session flow は
+/// [Yubico PIV PIN-only mode](https://docs.yubico.com/yesdk/users-manual/application-piv/pin-only.html#pin-protected)
+/// を根拠とする。
+struct ProvisionBwsTokenOptions {
+    #[arg(long)]
+    serial: Option<u32>,
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Args)]
@@ -326,17 +347,18 @@ struct GpgExportSshPublicKeyOptions {
 /// composition root へ閉じる。
 pub async fn run(options: SecretsOptions) -> Result<()> {
     let _session = SecretSession::start()?;
-    let mut ports = RuntimePorts::production();
-    entrypoint::run(options, &mut ports).await
+    let mut runtime = composition::SecretsRuntime::production();
+    entrypoint::run(options, &mut runtime).await
 }
 
 /// CLI で parse 済みの `dotfiles gpg` command を application use case へ渡す。
 ///
-/// secret material を扱わない公開鍵出力経路であり、composition root は keyring/ssh-output adapter だけを
-/// 束ねる。command 定義と option 変換だけをここで行い、鍵リング解決と出力翻訳は adapter へ閉じる。
+/// secret material を扱わない公開鍵出力経路である。concrete keyring/output backend は composition が
+/// 生成・所有し、この公開入口は command を domain 値へ変換して application use case へ渡す。鍵リング
+/// 解決と出力の技術操作は port 実装へ閉じる。
 pub fn run_gpg(options: GpgOptions) -> Result<()> {
-    let mut keyring = support::adapter_backend::GpgKeyringBackend;
-    let output = support::adapter_backend::ProcessIoBackend;
+    let mut runtime = composition::GpgRuntime::production();
+    let (keyring, output) = runtime.ports();
     match options.command {
         GpgCommand::ExportSshPublicKey(options) => {
             let primary_fingerprint =
@@ -345,43 +367,9 @@ pub fn run_gpg(options: GpgOptions) -> Result<()> {
                 domain::commands::ExportSshPublicKeyCommand {
                     primary_fingerprint,
                 },
-                &mut keyring,
-                &output,
+                keyring,
+                output,
             )
-        }
-    }
-}
-
-/// production command path の composition root が所有する実 adapter 群。
-pub(crate) struct RuntimePorts {
-    pub(crate) device: support::yubikey_backend::YubikeyDeviceBackend,
-    pub(crate) process_io: support::adapter_backend::ProcessIoBackend,
-    pub(crate) storage: support::yubikey_storage::YubikeyStorageBackend,
-    pub(crate) report: support::adapter_backend::JsonReportBackend,
-    pub(crate) bws_client: support::adapter_backend::BwsClientBackend,
-    pub(crate) gpg_recipient: support::yubikey_backend::YubikeyRecipientBackend,
-    pub(crate) backup_cipher: support::adapter_backend::BackupCipherBackend,
-    pub(crate) gpg_keyring: support::adapter_backend::GpgKeyringBackend,
-    pub(crate) ssh_agent: support::adapter_backend::SshAgentBackend,
-    pub(crate) password_store: support::adapter_backend::PasswordStoreBackend,
-    pub(crate) git_clone: support::adapter_backend::GitCloneBackend,
-}
-
-impl RuntimePorts {
-    /// production 用の adapter concrete 群を構築する。
-    fn production() -> Self {
-        Self {
-            device: support::yubikey_backend::YubikeyDeviceBackend,
-            process_io: support::adapter_backend::ProcessIoBackend,
-            storage: support::yubikey_storage::YubikeyStorageBackend::default(),
-            report: support::adapter_backend::JsonReportBackend,
-            bws_client: support::adapter_backend::BwsClientBackend,
-            gpg_recipient: support::yubikey_backend::YubikeyRecipientBackend,
-            backup_cipher: support::adapter_backend::BackupCipherBackend,
-            gpg_keyring: support::adapter_backend::GpgKeyringBackend,
-            ssh_agent: support::adapter_backend::SshAgentBackend,
-            password_store: support::adapter_backend::PasswordStoreBackend,
-            git_clone: support::adapter_backend::GitCloneBackend,
         }
     }
 }

@@ -16,6 +16,7 @@ use super::{
     piv::{PivObjectId, SecretName, SecretStorageSpec},
     wire::ManifestWire,
 };
+use crate::domain::storage::{SecretStorageReadInspection, SecretStorageReadIntent};
 
 /// bootstrap secret JSON 各 field に許可する最大 byte 長。
 pub const BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT: usize = 16 * 1024;
@@ -41,6 +42,51 @@ pub struct SecretManifest {
 /// 各 field は `ProtectedSecret` として保持し、平文文字列化は domain の責務に含めない。
 pub struct BootstrapSecretDocument {
     pub bitwarden_client_secret: ProtectedSecret,
+}
+
+/// bootstrap enrollment 入力の未検証 carrier。
+///
+/// entrypoint は入力 source ごとにこの carrier を作るだけに留める。field 名の必須性と
+/// storage へ保存する document への対応は [`BootstrapSecretDocument`] の domain rule であり、
+/// application use case が [`BootstrapSecretDocument::from_input`] を呼んで確定する。
+pub enum BootstrapSecretDocumentInput {
+    FieldMap(BTreeMap<String, ProtectedSecret>),
+    BitwardenClientSecret(ProtectedSecret),
+}
+
+/// bootstrap secret document を得るための domain read plan。
+///
+/// bootstrap credential の storage 対応、inspection からの read intent、decode failure の意味付け、
+/// loaded secret の妥当性、document carrier 化は外部 PIV backend に依存しない業務規則である。
+pub struct BootstrapSecretDocumentReadPlan {
+    storage: SecretStorageSpec,
+}
+
+impl BootstrapSecretDocumentReadPlan {
+    pub fn for_storage(storage: SecretStorageSpec) -> Self {
+        Self { storage }
+    }
+
+    pub fn storage(&self) -> &SecretStorageSpec {
+        &self.storage
+    }
+
+    pub fn read_intent(
+        &self,
+        inspection: SecretStorageReadInspection,
+    ) -> Result<SecretStorageReadIntent> {
+        SecretStorageReadIntent::from_inspection(self.storage.clone(), inspection)
+    }
+
+    pub fn document(
+        self,
+        intent: &SecretStorageReadIntent,
+        loaded: Result<ProtectedSecret>,
+    ) -> Result<BootstrapSecretDocumentInput> {
+        let secret = loaded.map_err(|error| intent.decode_error(error))?;
+        intent.validate_loaded_secret(&secret)?;
+        Ok(BootstrapSecretDocumentInput::BitwardenClientSecret(secret))
+    }
 }
 
 impl SecretManifest {
@@ -205,11 +251,24 @@ impl SecretManifest {
 }
 
 impl BootstrapSecretDocument {
+    /// 未検証の入力 carrier を bootstrap document へ正規化する。
+    ///
+    /// JSON field の必須性と prompt で得た token の document field 対応をここで一元的に
+    /// 確定する。entrypoint は入力 source 選択だけを行い、この domain rule を実行しない。
+    pub fn from_input(input: BootstrapSecretDocumentInput) -> Result<Self> {
+        match input {
+            BootstrapSecretDocumentInput::FieldMap(fields) => Self::from_field_map(fields),
+            BootstrapSecretDocumentInput::BitwardenClientSecret(secret) => {
+                Self::from_secret_materials(&secret)
+            }
+        }
+    }
+
     /// protected JSON field map から bootstrap document を構築する。
     ///
     /// JSON field 名と domain secret の対応は bootstrap document schema の業務規則であり、
     /// adapter は JSON decode 後の map を渡すだけに限定する。
-    pub fn from_field_map(mut fields: BTreeMap<String, ProtectedSecret>) -> Result<Self> {
+    fn from_field_map(mut fields: BTreeMap<String, ProtectedSecret>) -> Result<Self> {
         let missing = |field: &str| anyhow::anyhow!("JSON field `{field}` is missing");
         let bitwarden_client_secret = fields
             .remove("bitwarden-client-secret")
@@ -221,42 +280,9 @@ impl BootstrapSecretDocument {
     }
 
     /// 既に取得済みの `ProtectedSecret` 群から bootstrap document を構築する。
-    pub fn from_secret_materials(bitwarden_client_secret: &ProtectedSecret) -> Result<Self> {
+    fn from_secret_materials(bitwarden_client_secret: &ProtectedSecret) -> Result<Self> {
         Ok(Self {
             bitwarden_client_secret: ProtectedSecret::try_clone(bitwarden_client_secret)?,
-        })
-    }
-
-    /// storage spec と復号済み secret の対応から bootstrap document を復元する。
-    ///
-    /// PIV object の読み出し順や変数名ではなく、`SecretStorageSpec::name` が持つ
-    /// domain 対応を正本にして document field へ戻す。
-    pub fn from_storage_materials(
-        entries: [(SecretStorageSpec, ProtectedSecret); 1],
-    ) -> Result<Self> {
-        let mut bitwarden_client_secret = None;
-
-        for (storage, secret) in entries {
-            let target = match storage.name {
-                SecretName::BitwardenClientSecret => &mut bitwarden_client_secret,
-            };
-            if target.replace(secret).is_some() {
-                return Err(invalid_data(format!(
-                    "duplicate bootstrap secret storage entry for {}",
-                    storage.name
-                ))
-                .into());
-            }
-        }
-
-        let missing = |name: SecretName| {
-            invalid_data(format!(
-                "bootstrap secret storage entry for {name} is missing"
-            ))
-        };
-        Ok(Self {
-            bitwarden_client_secret: bitwarden_client_secret
-                .ok_or_else(|| missing(SecretName::BitwardenClientSecret))?,
         })
     }
 
@@ -278,6 +304,8 @@ fn invalid_data(message: impl Into<String>) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -308,5 +336,19 @@ mod tests {
             .to_vec();
 
         assert!(SecretManifest::v2(public_key_spki).is_err());
+    }
+
+    #[test]
+    fn bootstrap_document_input_keeps_required_field_validation_in_domain() {
+        let error = match BootstrapSecretDocument::from_input(
+            BootstrapSecretDocumentInput::FieldMap(BTreeMap::new()),
+        ) {
+            Ok(_) => {
+                panic!("missing bootstrap credential must be rejected by the domain constructor")
+            }
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("bitwarden-client-secret"));
     }
 }
