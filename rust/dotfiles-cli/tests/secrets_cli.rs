@@ -355,16 +355,24 @@ fn setup_reads_hidden_piv_pin_from_pty() -> TestResult<()> {
 }
 
 #[test]
-fn setup_passes_hidden_piv_pin_bytes_to_the_feature_stub_session() -> TestResult<()> {
+fn setup_delivers_exact_hidden_piv_pin_bytes_once_to_the_feature_stub_verify() -> TestResult<()> {
+    // This is a test-only fixed fixture, deliberately at the PIV maximum length.  The
+    // feature stub compares the protected value passed to its `verify_management_pin`
+    // receiver byte-for-byte and records the physical VERIFY count.  Together with the
+    // fake-tty unit test in `process_io`, this covers the entire production path:
+    // controlling TTY -> protected buffer -> application port -> PIV session -> SDK
+    // backend receiver.  It does not expose a production PIN.
+    const FIXTURE_PIN: &str = "73196285";
     let device = json!({
         "serial": PRIMARY_SERIAL,
         "fixture": "fresh",
-        "expected_management_pin": "123456",
+        "expected_management_pin": FIXTURE_PIN,
     });
     let stub = StubPorts::new(yubikey_spec([device]), bws_spec());
+    let pin_input = format!("{FIXTURE_PIN}\n");
     let run = run_pty_with_stub_interactive(
         ["yubikey", "setup", "--serial", "2001"],
-        &[("YubiKey PIV PIN: ", "123456\n")],
+        &[("YubiKey PIV PIN: ", &pin_input)],
         &stub,
     )?;
 
@@ -375,7 +383,11 @@ fn setup_passes_hidden_piv_pin_bytes_to_the_feature_stub_session() -> TestResult
         json!(true),
         "feature-only fixture must observe the hidden PIN at management-session start without emitting it"
     );
-    assert!(!run.output.contains("123456"), "PIN must not be output");
+    assert_eq!(
+        final_yubikey["yubikeys"][PRIMARY_SERIAL.to_string()]["physical_verify_count"],
+        json!(1),
+        "one hidden PIN input must invoke the stub PIV VERIFY exactly once"
+    );
     Ok(())
 }
 
