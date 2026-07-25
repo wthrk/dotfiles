@@ -1,0 +1,95 @@
+{
+  "schema": "architecture-boundaries/v1",
+  "crate": "dotfiles-secrets",
+  "source_root": "rust/dotfiles-secrets/src",
+  "checker": "cargo xtask check static",
+  "ci_required_check": ".github/workflows/static-checks.yml:static checks",
+  "bootstrap": {
+    "root_entry": {
+      "module_path": "crate",
+      "source_path": "rust/dotfiles-secrets/src/lib.rs",
+      "symbol": "run"
+    },
+    "bootstrap_module": {
+      "module_path": "crate::composition::bootstrap",
+      "source_path": "rust/dotfiles-secrets/src/composition/bootstrap.rs",
+      "start_symbol": "start"
+    },
+    "entrypoint_starts": [
+      {
+        "feature": "command_facade",
+        "module_path": "crate::features::command_facade::entrypoint",
+        "start_symbol": "start",
+        "allowed_direct_callers": ["crate::composition::bootstrap"],
+        "allowed_importers": ["crate::composition::bootstrap"],
+        "allowed_reexporters": [],
+        "invocation_boundary_owner": "entrypoint",
+        "concrete_public_export": false
+      }
+    ],
+    "allowed_direct_edges": [
+      "crate::run->crate::composition::bootstrap::start",
+      "crate::composition::bootstrap::start->crate::features::command_facade::entrypoint::start"
+    ]
+  },
+  "owners": [
+    {"path_prefix": "features/bws_secrets/ports/public/", "kind": "feature", "feature": "bws_secrets", "layer": "public_contract", "allow_layers": ["application", "domain", "ports", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/bws_secrets/adapters/", "kind": "feature", "feature": "bws_secrets", "layer": "adapters", "allow_layers": ["ports", "domain", "support", "foundation"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/bws_secrets/domain/", "kind": "feature", "feature": "bws_secrets", "layer": "domain", "allow_layers": ["foundation", "shared"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/bws_secrets/ports/", "kind": "feature", "feature": "bws_secrets", "layer": "ports", "allow_layers": ["domain", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/bws_secrets/support/", "kind": "feature", "feature": "bws_secrets", "layer": "support", "allow_layers": ["foundation", "domain", "ports"], "allow_external_crates": ["anyhow", "bitwarden", "serde", "serde_json", "uuid", "zeroize"]},
+    {"path_prefix": "features/gpg_backup_recovery/adapters/", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "adapters", "allow_layers": ["ports", "domain", "support", "foundation"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/gpg_backup_recovery/ports/public/", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "public_contract", "allow_layers": ["application", "domain", "ports", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/gpg_backup_recovery/application/", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "application", "allow_layers": ["domain", "ports", "foundation"], "allow_external_crates": ["anyhow", "mockall", "tokio"]},
+    {"path_prefix": "features/gpg_backup_recovery/domain/", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "domain", "allow_layers": ["foundation", "shared"], "allow_external_crates": ["anyhow", "serde", "serde_json", "sha2"]},
+    {"path_prefix": "features/gpg_backup_recovery/ports/", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "ports", "allow_layers": ["application", "domain", "foundation", "shared", "support"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/gpg_backup_recovery/support/", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "support", "allow_layers": ["foundation", "domain", "ports"], "allow_external_crates": ["anyhow", "gpgme", "rand_chacha", "rand_core", "rsa", "rustix", "sequoia_openpgp", "serde_json", "sha2", "zeroize"]},
+    {"path_prefix": "features/password_store/adapters/", "kind": "feature", "feature": "password_store", "layer": "adapters", "allow_layers": ["ports", "domain", "support", "foundation"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/password_store/ports/public/", "kind": "feature", "feature": "password_store", "layer": "public_contract", "allow_layers": ["application", "domain", "ports", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/password_store/application/", "kind": "feature", "feature": "password_store", "layer": "application", "allow_layers": ["domain", "ports", "foundation"], "allow_external_crates": ["anyhow", "mockall", "tokio"]},
+    {"path_prefix": "features/password_store/domain/", "kind": "feature", "feature": "password_store", "layer": "domain", "allow_layers": ["foundation", "shared"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/password_store/ports/", "kind": "feature", "feature": "password_store", "layer": "ports", "allow_layers": ["application", "domain", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/password_store/support/", "kind": "feature", "feature": "password_store", "layer": "support", "allow_layers": ["foundation", "domain", "ports"], "allow_external_crates": ["anyhow", "git2", "scopeguard", "serde", "serde_json"]},
+    {"path_prefix": "features/provisioning_verification/application/", "kind": "feature", "feature": "provisioning_verification", "layer": "application", "allow_layers": ["domain", "ports", "foundation"], "allow_external_crates": ["anyhow", "mockall", "tokio"]},
+    {"path_prefix": "features/provisioning_verification/ports/public/", "kind": "feature", "feature": "provisioning_verification", "layer": "public_contract", "allow_layers": ["application", "domain", "ports", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/provisioning_verification/domain/", "kind": "feature", "feature": "provisioning_verification", "layer": "domain", "allow_layers": ["foundation", "shared"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/provisioning_verification/support/", "kind": "feature", "feature": "provisioning_verification", "layer": "support", "allow_layers": ["foundation", "domain", "ports"], "allow_external_crates": ["anyhow", "serde"]},
+    {"path_prefix": "features/provisioning_verification/ports/", "kind": "feature", "feature": "provisioning_verification", "layer": "ports", "allow_layers": ["application", "domain", "foundation", "shared"], "allow_external_crates": []},
+    {"path_prefix": "features/yubikey_lifecycle/adapters/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "adapters", "allow_layers": ["ports", "domain", "support", "presentation", "foundation"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/yubikey_lifecycle/ports/public/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "public_contract", "allow_layers": ["application", "domain", "ports", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/yubikey_lifecycle/application/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "application", "allow_layers": ["domain", "ports", "foundation"], "allow_external_crates": ["anyhow", "mockall"]},
+    {"path_prefix": "features/yubikey_lifecycle/domain/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "domain", "allow_layers": ["foundation", "shared"], "allow_external_crates": ["anyhow", "rsa", "serde", "serde_json"]},
+    {"path_prefix": "features/yubikey_lifecycle/ports/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "ports", "allow_layers": ["application", "domain", "foundation", "shared"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/yubikey_lifecycle/presentation/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "presentation", "allow_layers": ["ports", "domain", "foundation"], "allow_external_crates": ["anyhow"]},
+    {"path_prefix": "features/yubikey_lifecycle/support/", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "support", "allow_layers": ["foundation", "domain", "ports"], "allow_external_crates": ["anyhow", "pcsc", "rsa", "serde", "serde_json", "sha2", "yubikey"]},
+    {"path_prefix": "composition/", "kind": "composition", "feature": null, "layer": "composition", "allow_layers": ["entrypoint", "composition", "shared"], "allow_external_crates": []},
+    {"path_prefix": "foundation/", "kind": "foundation", "feature": null, "layer": "foundation", "allow_layers": [], "allow_external_crates": ["anyhow", "aes_gcm", "bincode", "rand_chacha", "rand_core", "region", "rlimit", "rsa", "rustix", "serde", "serde_json", "sha2", "zeroize"]},
+    {"path_prefix": "shared/", "kind": "shared", "feature": null, "layer": "shared", "allow_layers": ["foundation"], "allow_external_crates": ["anyhow", "rsa", "serde", "serde_json", "sha2", "uuid"]},
+    {"path_prefix": "features/command_facade/entrypoint/", "kind": "feature", "feature": "command_facade", "layer": "entrypoint", "allow_layers": ["application", "ports", "presentation"], "allow_external_crates": ["clap"]},
+    {"path_prefix": "features/cli_interaction/presentation/", "kind": "feature", "feature": "cli_interaction", "layer": "presentation", "allow_layers": ["ports"], "allow_external_crates": ["serde_json"]},
+    {"path_prefix": "features/cli_interaction/adapters/", "kind": "feature", "feature": "cli_interaction", "layer": "adapters", "allow_layers": ["ports", "presentation"], "allow_external_crates": []},
+    {"path_prefix": "features/cli_interaction/ports/", "kind": "feature", "feature": "cli_interaction", "layer": "ports", "allow_layers": [], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/cli_interaction/ports/public/", "kind": "feature", "feature": "cli_interaction", "layer": "public_contract", "allow_layers": ["ports"], "allow_external_crates": ["mockall"]},
+    {"path_prefix": "features/cli_interaction/support/", "kind": "feature", "feature": "cli_interaction", "layer": "support", "allow_layers": ["ports"], "allow_external_crates": ["anyhow", "crossterm", "filedescriptor"]},
+    {"path_prefix": "features/bws_secrets.rs", "kind": "feature", "feature": "bws_secrets", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features/cli_interaction.rs", "kind": "feature", "feature": "cli_interaction", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features/command_facade.rs", "kind": "feature", "feature": "command_facade", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features/gpg_backup_recovery.rs", "kind": "feature", "feature": "gpg_backup_recovery", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features/password_store.rs", "kind": "feature", "feature": "password_store", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features/provisioning_verification.rs", "kind": "feature", "feature": "provisioning_verification", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features/yubikey_lifecycle.rs", "kind": "feature", "feature": "yubikey_lifecycle", "layer": "feature_root", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "features.rs", "kind": "feature-index", "feature": null, "layer": "feature_index", "allow_layers": [], "allow_external_crates": []},
+    {"path_prefix": "", "kind": "root", "feature": null, "layer": "root", "allow_layers": ["composition", "entrypoint", "presentation", "support"], "allow_external_crates": ["anyhow", "clap", "dotfiles_core"]}
+  ],
+  "public_contracts": [
+    {"stable_identifier": "bws-secrets/capability", "version": "v1", "owner_feature": "bws_secrets", "module_path": "features/bws_secrets/ports/public", "registered_consumers": ["command_facade", "gpg_backup_recovery", "password_store", "provisioning_verification"]},
+    {"stable_identifier": "cli-interaction/capability", "version": "v1", "owner_feature": "cli_interaction", "module_path": "features/cli_interaction/ports/public", "registered_consumers": ["command_facade", "gpg_backup_recovery", "password_store", "provisioning_verification", "yubikey_lifecycle"]},
+    {"stable_identifier": "gpg-backup-recovery/capability", "version": "v1", "owner_feature": "gpg_backup_recovery", "module_path": "features/gpg_backup_recovery/ports/public", "registered_consumers": ["command_facade", "bws_secrets", "cli_interaction", "password_store", "yubikey_lifecycle"]},
+    {"stable_identifier": "password-store/capability", "version": "v1", "owner_feature": "password_store", "module_path": "features/password_store/ports/public", "registered_consumers": ["command_facade", "bws_secrets", "cli_interaction", "gpg_backup_recovery"]},
+    {"stable_identifier": "provisioning-verification/value", "version": "v1", "owner_feature": "provisioning_verification", "module_path": "features/provisioning_verification/ports/public", "registered_consumers": ["command_facade", "cli_interaction"]},
+    {"stable_identifier": "yubikey-lifecycle/capability", "version": "v1", "owner_feature": "yubikey_lifecycle", "module_path": "features/yubikey_lifecycle/ports/public", "registered_consumers": ["command_facade", "cli_interaction", "gpg_backup_recovery", "password_store", "provisioning_verification"]}
+  ],
+  "exclusions": [
+    {"path_prefix": "secrets_internal_test_stub_contract.rs", "reason": "feature-gated integration stub command contract; it is neither a production layer nor a cross-feature contract", "owner": "secret_recovery", "expiry": "remove when the integration harness is replaced"}
+  ]
+}
