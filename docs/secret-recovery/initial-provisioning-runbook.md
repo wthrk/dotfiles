@@ -12,13 +12,15 @@
 
 - **[CMD]**: `dotfiles` / `dotfiles secrets` のコマンド、またはこの repository の provisioning script で実現済み。手順としてはそのコマンドまたは script を実行する。
 - **[手動]**: `dotfiles` にコマンドが無い操作。spec/design が「自動化しない（手動または各サービスの公式管理 API）」と定める範囲、もしくは利用者環境固有の前提（GPG 鍵・repo 等）。
-- **[対話]**: secret / touch / passphrase / PIV 管理 PIN などの対話入力を伴うため実端末で実行する。PIV 管理操作だけは設定済み PIN を controlling TTY の hidden prompt から受け取る。復旧 read/decrypt 操作では PIV PIN を要求しない。
+- **[対話]**: secret / touch / passphrase / PIV 管理 PIN などの対話入力を伴うため実端末で実行する。PIV 管理操作は controlling TTY の hidden prompt を使う。`setup` と物理的に完全な fresh storage を初期化する enrollment は current/new/confirmation でこの機能の PIV PIN を変更し、initialized storage の管理操作は設定済み PIN を受け取る。復旧 read/decrypt 操作では PIV PIN を要求しない。
 
-YubiKey の管理操作（`setup`、`put`、`clear`、enroll、rotate）は、設定済み PIV PIN を controlling TTY の hidden prompt から一時取得し、PIN-protected management key で認証して実行する。復旧 read/decrypt 操作（`status`、`verify-yubikey`、`restore-gpg`、`restore-pass`）は PIN prompt を出さずに完了または失敗しなければならない。PIN は stdin、argv、environment、stdout、stderr、log、一時ファイルへ出さない。serial 未指定時は接続中の単一 YubiKey を共通の device discovery で直接対象にし、接続なし・複数接続では停止する。
+YubiKey の initialized storage 管理操作（`put`、`clear`、enroll、rotate）は、設定済み PIV PIN を controlling TTY の hidden prompt から一時取得し、PIN-protected management key で認証して実行する。`setup` は current/new/confirmation を PIV mutation 前に検証する。物理的に完全な fresh storage を初期化する enrollment は current PIN だけを hidden input し、同一 handle で current PIN VERIFY、**既存** PIN-protected management-key authentication、PIV version・slot `82` key/certificate・manifest・全予約 object の完全 inspection を行う。fresh と判明した場合だけ new/confirmation を hidden input して検証し、保持済み current と三値をそろえて完全に空の場合だけ PIV application-wide PIN を変更する。続けて同じ handle で new PIN VERIFY、**既存** management-key authentication、鍵生成・manifest 確定を行い、PIN 変更後に gate を残さない。initialized enrollment は new/confirmation を読まず current-PIN session を継続する。PIN-free status はこの変更許可に使わない。management key は手動 gate の既存値を使い、default key、bootstrap、`set_protected`、PUK、unblock、reset、retry は使わない。復旧 read/decrypt 操作（`status`、`verify-yubikey`、`restore-gpg`、`restore-pass`）は PIN prompt、VERIFY、management-key authentication を出さずに完了または失敗しなければならない。PIN は stdin、argv、environment、stdout、stderr、log、一時ファイルへ出さない。serial 未指定時は接続中の単一 YubiKey を共通の device discovery で直接対象にし、接続なし・複数接続では停止する。
+
+PIN-free status は slot を観測せず、storage invalid や repository ownership を主張しない。認証済み完全 inspection で manifest/object 空かつ slot `82` key/certificate ありを検出した場合、`setup`、enroll、`provision-bws-token`、`clear --yes` は fixed opaque failure と manual administrator escalation で停止し、retry/resume/clear/overwrite/delete/再初期化を行わない。管理者は別途 repository ownership と backup の有無を確認し、その結果に基づく repository 外の手順を選ぶ。
 
 ### 無対話復旧の利用者操作
 
-新規マシンの復旧では、利用者は **YubiKey を挿して復旧コマンドを実行するだけ** で開始する。`dotfiles secrets verify-yubikey --check bws`（または `--all`）、`dotfiles secrets restore-gpg`、`dotfiles secrets restore-pass` は、YubiKey 保存の `bitwarden-client-secret` を内部で一時利用する。master password、session、PIV PIN、secret を渡す environment variable / argv、YubiKey OTP、または追加の対話入力を要求してはならない。これらの credential、BWS access token、BWS response、復号途中値は stdout、stderr、log、一時ファイル、永続 environment へ出力・保存せず、use 後に破棄する。
+新規マシンの復旧では、利用者は **YubiKey を挿して復旧コマンドを実行するだけ** で開始する。`dotfiles secrets verify-yubikey --check bws`（または `--all`）、`dotfiles secrets restore-gpg`、`dotfiles secrets restore-pass` は、YubiKey 保存の `bitwarden-client-secret` を内部で一時利用する。slot `82` の private-key unwrap は `TouchPolicy::Always` により physical touch を要求する。この touch は許容された physical-presence boundary であり、PIN/passphrase/token などの secret input ではない。master password、session、PIV PIN、OpenPGP PIN、GPG passphrase、pinentry、secret を渡す environment variable / argv、YubiKey OTP、または追加の secret input を要求してはならない。これらの credential、BWS access token、BWS response、復号途中値は stdout、stderr、log、一時ファイル、永続 environment へ出力・保存せず、use 後に破棄する。
 
 YubiKey に保存する bootstrap secret は `bitwarden-client-secret` だけである。`verify-yubikey --all`、`restore-gpg`、`restore-pass` は email、master password、OTP、session を入力・成功条件・確認項目に混在させず、OTP を自動供給する仕組みを実装・仮定しない。Bitwarden Password Manager login は repository の CLI surface 外である。正本は [secret-recovery-spec.md の無対話復旧の利用者契約](secret-recovery-spec.md#無対話復旧の利用者契約) である。
 
@@ -41,10 +43,10 @@ YubiKey に保存する bootstrap secret は `bitwarden-client-secret` だけで
 | BWS token rotate を全 YubiKey へ反映 | **[CMD]** `dotfiles secrets yubikey rotate-bws-token`（各更新ステップで 1 本だけ接続、または `--serial <serial>` を指定して 1 本ずつ実行） |
 | GPG secret key の生成 | **[手動]**（`dotfiles` にコマンドなし） |
 | BWS project `dotfiles-secret-recovery` の作成 | **[手動]**（`dotfiles` / script は project を作成しない） |
-| private `password-store` repo の作成と既存 store の remote 設定・push | **[CMD][対話]** `scripts/provision-secret-recovery-source.sh`、または **[手動]** |
+| private `password-store` repo の事前作成と既存 store の remote 設定・push | repo 作成は **[手動]**、存在・権限・private visibility 確認と remote/push は **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
 | GitHub への SSH 公開鍵登録 | **[CMD][対話]** `scripts/provision-secret-recovery-source.sh`、または **[手動]** |
 | 各サービスの YubiKey 2FA・FIDO2 登録 | **[手動]**（spec: 物理キー登録は自動化しない） |
-| YubiKey への `bitwarden-client-secret` 保存 | **[CMD][対話]** `dotfiles secrets yubikey provision-bws-token`、または **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
+| YubiKey への `bitwarden-client-secret` 保存 | **[CMD][対話]** `dotfiles secrets yubikey enroll-primary` / `enroll-spare`、または **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
 | Bitwarden Secrets Manager provisioning | **[CMD]** `dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register`、または **[CMD][対話]** `scripts/provision-secret-recovery-source.sh` |
 
 ---
@@ -59,7 +61,7 @@ primary / spare の各 YubiKey について、**Phase A の `setup`、`clear`、
 
 `dotfiles` CLI と provisioning script は factory-default management key の認証、management key の bootstrap、`MgmKey::generate_for`、`MgmKey::set_protected` を実行しない。固定 `yubikey` source で `MgmKey::get_protected` の `NotFound` origin を区別できないため、管理 key が未設定・不明・認証不能、または metadata が健全でない場合は fallback や状態変更をせず停止する。operator が上記 gate を完了・確認してからだけ、repository の `setup` / enroll command に進む。根拠と SDK の適用範囲は [外部 SDK 統合の一次資料](external-sdk-evidence.md#yubikey-piv--yubikey-crate) を参照する。
 
-`yubikey status` の終了コード `42` は予約 storage の観測済み不整合だけを示し、management key の準備完了を示さない。provisioning script はこの終了コードを解釈せず、[仕様の単一 command 契約](secret-recovery-spec.md#provisioning-source-の単一-command-契約) により `provision-bws-token` 一回へ遷移全体を委譲する。typed invalid の clear も上記 gate の完了後にだけ実行できる。management key が未設定・不明・認証不能、または metadata が健全でない場合、script / CLI は factory-default key、B0 bootstrap、reset、PUK、retry を使わず停止する。
+`yubikey status` の終了コード `42` は予約 manifest/object の観測済み不整合だけを示し、slot 状態、repository ownership、management key の準備完了を示さない。provisioning script はこの終了コードを解釈せず、[仕様の高水準 enrollment 契約](secret-recovery-spec.md#provisioning-source-の高水準-enrollment-契約) により primary を `enroll-primary`、spare を `enroll-spare` で登録する。`provision-bws-token` は InitializedV2 の確認・logical-empty object 保存専用であり、typed invalid、fresh、version 1、partial state を clear/setup/repair しない。management key が未設定・不明・認証不能、metadata が健全でない、または ownership が確認できない場合、script / CLI は factory-default key、B0 bootstrap、reset、PUK、retry を使わず停止する。
 
 repository の test、agent 作業、通常の検証では物理 YubiKey / PCSC を使用しない。実機の観測・操作はこの runbook を根拠に実行せず、`secrets-internal-test-stub` feature で compile-time に隔離した stub だけを使う。device-specific な確認は別の明示 task と人間の承認済み手順が必要である。
 
@@ -74,8 +76,8 @@ repository の test、agent 作業、通常の検証では物理 YubiKey / PCSC 
    - いったん Web vault から logout し、login email / master password と primary YubiKey で再 login できることを確認する。spare も別ブラウザ session または再 logout 後の login で確認し、両方の key が実際の 2FA prompt で使える状態にする。
    - login email / master password と 2FA 登録状態を service 側で再確認する。これらを YubiKey へ保存しない。`verify-yubikey --all` は BWS recovery prerequisite だけを確認し、Bitwarden Password Manager login・OTP・spare security key 登録を確認しない。
 
-3. **[手動]** GPG secret key を用意する。要件: 1 つの primary key と **encryption / authentication / signing** capability の subkey をそれぞれ持ち、いずれも revoked/expired/disabled でないこと（gnupg-ssh-design L32/L80-81）。
-   - 実端末で GnuPG の key generation / edit-key 相当の操作を行い、primary key を作成した後、encryption / authentication / signing の用途ごとに subkey を追加する。UI やコマンドの表記は GnuPG の版で揺れるため、capability 表示で `E` / `A` / `S` 相当がそれぞれ別 subkey に付いていることを確認する。
+3. **[手動]** GPG secret key を用意する。要件: passphrase を設定しない software primary key と **encryption / authentication / signing** capability の secret subkey をそれぞれ持ち、いずれも revoked/expired/disabled でないこと（[GnuPG/SSH 設計の「決定事項」](gnupg-ssh-design.md#決定事項)、[「subkey 検証決定」](gnupg-ssh-design.md#subkey-検証決定)、[「停止条件」](gnupg-ssh-design.md#停止条件)）。OpenPGP card へ key を移さない。
+   - 実端末で GnuPG の key generation / edit-key 相当の操作を行い、passphrase を設定せず primary key を作成した後、encryption / authentication / signing の用途ごとに subkey を追加する。UI やコマンドの表記は GnuPG の版で揺れるため、capability 表示で `E` / `A` / `S` 相当がそれぞれ別 subkey に付いていることを確認する。`gpg-backup register` は export packet を再検査し、protected/unknown packet または pinentry が必要な export を BWS 保存前に停止する。
    - `gpg --list-secret-keys --with-subkey-fingerprint --keyid-format long` 相当で対象 key を表示し、primary fingerprint が lowercase hex 40 文字として控えられること、各 subkey が revoked / expired / disabled になっていないことを確認する。
    - 鍵バックアップ操作と revocation certificate 作成操作を実行し、secret key backup と revocation certificate を repository 外の安全な保管先へ保存する。保管先名、作成日、primary fingerprint だけを作業メモに残し、secret key material や passphrase はこの repository に書かない。
 
@@ -100,19 +102,19 @@ repository の test、agent 作業、通常の検証では物理 YubiKey / PCSC 
    - 登録後、各サービスの security / recovery 画面で recovery options / backup codes / account recovery contact / trusted phone number / trusted email 相当を確認する。backup code を表示または再生成した場合は、値そのものをこの repository に書かず、サービスごとの推奨に従って別経路の安全な保管先へ保存する。
    - 既存の phone / email fallback が失効済み番号・古いメールアドレス・共有アカウントになっていないか確認し、必要なら更新する。更新後、primary / spare の両方と recovery option が同じ security 画面で有効な回復経路として残っていることを確認する。
 
-7. **[CMD][対話]** `bitwarden-client-secret` を primary / spare YubiKey へ保存する。source provisioning では `dotfiles secrets yubikey provision-bws-token [--serial <serial>]` が、PIV PIN と BWS token を controlling TTY の hidden prompt から受け取り、観測から必要時の clear/init、保存、local decrypt 検証までを一 process / 一 session で完了する。`--debug` は同じ操作を再実行せず、[仕様の固定 allow-list](secret-recovery-spec.md#provisioning-source-の単一-command-契約) にある non-secret な `phase` / `serial` / opaque `result` だけを stderr に追加する。TTY PIN/token input の `accepted` は値が reader に受理されたことだけを示す。PIV handle open、VERIFY API への PIN 引渡しと復帰、management-key authentication は後続の `piv-session-open-*`、`piv-verify-invocation-*`、`piv-management-key-authentication-*` を確認する。PIN と token を stdin payload、argv、environment、出力、log へ渡さない。
-   - primary 登録では `dotfiles secrets yubikey enroll-primary` で復旧用 `bitwarden-client-secret` だけを保存する。既存 source storage を安全に確認・補完する個別経路は `dotfiles secrets yubikey provision-bws-token` を実行する。
-   - spare 登録では `dotfiles secrets yubikey enroll-spare` で primary から復旧用 `bitwarden-client-secret` を読み出して spare に保存する。primary / spare の両方にこの 1 secret が揃っていることを確認する。
+7. **[手動 gate]→[CMD][対話]** 先に Bitwarden Secrets Manager で BWS project `dotfiles-secret-recovery` が一意に 1 件だけ存在することを確認し、その project に割り当てた recovery 用 machine account から access token を発行する。machine account が project の `gpg-secret-key-backup` / `password-store-remote` を読む権限と、初期 provisioning で必要な create/update 権限を持つことを確認してからだけ、その token を `bitwarden-client-secret` として primary / spare YubiKey へ保存する。project が 0 件/複数件、token 未発行、project assignment 不在、必要権限不足のいずれかなら gate 不成立として停止し、YubiKey token input/save へ進まない。repository の CLI / script は project、machine account、token を作成しない。source provisioning は primary を `enroll-primary` で登録し、BWS token を hidden prompt から一度だけ受け取る。spare は `enroll-spare` が primary から token を復号し、shell へ返さず再暗号化するため token の再入力はない。各 command は PIN lifecycle、完全 inspection、必要な fresh 初期化、保存、local decrypt 検証を一 process / 一 session で完了する。PIN と token を stdin payload、argv、environment、出力、log へ渡さない。
+   - primary 登録では `dotfiles secrets yubikey enroll-primary` で復旧用 `bitwarden-client-secret` だけを保存する。物理的に完全な fresh storage は enrollment 自身が順序制御する setup と同等の PIN-change lifecycle（current/new/confirmation）を通る。`clear` 後の空 v2 manifest は initialized storage なので設定済み PIN の管理 session だけを使い、setup command/PIN 変更を再実行しない。既存 source storage を安全に確認・補完する個別経路は `dotfiles secrets yubikey provision-bws-token` を実行する。
+   - spare 登録では `dotfiles secrets yubikey enroll-spare` で primary から復旧用 `bitwarden-client-secret` を読み出して spare に保存する。fresh spare は enrollment 自身が順序制御する setup と同等の PIN-change lifecycle を通り、initialized spare は設定済み PIN のみを使う。primary / spare の両方にこの 1 secret が揃っていることを確認する。
    - `scripts/provision-secret-recovery-source.sh` が保存するのは復旧用 `bitwarden-client-secret` だけである。
    - Bitwarden Password Manager login は repository の CLI surface 外であり、Secrets Manager は `restore-gpg` / `restore-pass` / `verify-yubikey --check bws` の secret 操作に使う。
 
-8. **[手動]→[CMD][対話]** Bitwarden Secrets Manager に復旧用 secret を登録する。
-   - **[手動]** Bitwarden Secrets Manager で、YubiKey storage の `bitwarden-client-secret` から BWS project `dotfiles-secret-recovery` が 1 件だけ見える状態にする。`dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register` と `scripts/provision-secret-recovery-source.sh` は project を作成しない。project が存在しない、または同名 project が複数見える場合は BWS provisioning 前 gate 不成立として停止し、secret 登録へ進まない。
-   - この runbook は organization / machine account / service account の作成を前提にしない。Bitwarden UI の名称は変わりうるため、手動操作では「BWS project `dotfiles-secret-recovery` を作り、project に `gpg-secret-key-backup` と `password-store-remote` を保存し、その 2 secret を読める復旧用 token を YubiKey storage の `bitwarden-client-secret` に保存する」という保存モデルだけを照合する。
+8. **[CMD][対話]** gate 済みの Bitwarden Secrets Manager project に復旧用 secret を登録する。
+   - `dotfiles secrets gpg-backup register` / `add-spare` / `pass-remote register` と `scripts/provision-secret-recovery-source.sh` は project、machine account、token を作成しない。各 command は YubiKey に保存済みの token で project `dotfiles-secret-recovery` を一意解決できない場合、または必要権限がなく BWS operation が失敗した場合に停止する。
    - BWS access token の hidden prompt は `dotfiles secrets yubikey provision-bws-token`、`enroll-primary`、`rotate-bws-token` など YubiKey storage へ保存・更新する経路だけで行う。`dotfiles secrets pass-remote register` と `dotfiles secrets gpg-backup register` / `add-spare` は token を prompt / stdin で受け取らず、BWS command 実行前に対象 YubiKey storage へ保存済みの `bitwarden-client-secret` から取得する。
    - `password-store-remote` は既存 password-store の GitHub SSH clone URL を使い、`dotfiles secrets pass-remote register --serial <serial> --url git@github.com:<owner>/<repo>.git` で登録または明示確認後に更新する。serial 未指定時は単一接続だけを自動解決し、複数接続では停止する。
    - `gpg-secret-key-backup` は既存 password-store recipient と一致する primary fingerprint を使い、`dotfiles secrets gpg-backup register --primary-fingerprint <fingerprint> --serial <serial>` で YubiKey recipient 付き encrypted envelope と接続中 YubiKey recipient を登録する。BWS 取得成功だけを plaintext 復旧完了として扱わない。
-   - `scripts/provision-secret-recovery-source.sh` を使う場合は、既存 password-store `.gpg-id` recipient の GPG secret key 確認、encryption/authentication/signing subkey の不足追加、authentication subkey 由来 SSH 公開鍵の GitHub 登録、GitHub private repository 作成、既存 store の Git remote 設定 / push、BWS project `dotfiles-secret-recovery` の事前存在確認 gate、指定 YubiKey の `provision-bws-token`、BWS への `password-store-remote` / `gpg-secret-key-backup` 登録をこの順序で実行する。script は state / SDK error / exit code を分類せず、[spec の単一 command 契約](secret-recovery-spec.md#provisioning-source-の単一-command-契約) に従って一回の Rust command へ委譲する。正常な manifest の任意の bootstrap secret subset は正常状態であり、保存済み token は維持する。typed manifest/object 不整合を clear した場合も command 自身が空の version 2 manifest を確定し、同じ session で保存と検証を続ける。script は project を作成せず、BWS token を pipe せず、環境変数、argv、shell history に token を載せない。script は未初期化 password-store から `.gpg-id` を生成しない。
+   - `scripts/provision-secret-recovery-source.sh` を使う場合は、既存 password-store `.gpg-id` recipient の GPG secret key 確認、encryption/authentication/signing subkey の不足追加、**source key の passphrase-free transferable secret-key packet を非変更で検証**、authentication subkey 由来 SSH 公開鍵の GitHub 登録、利用者が事前作成した GitHub private repository の存在・権限・private visibility 確認、既存 store の Git remote 設定 / push、BWS project `dotfiles-secret-recovery` の一意存在・machine-account token 発行済み・project assignment/必要権限の手動 gate、primary の `enroll-primary`、token 再入力なしの spare `enroll-spare`、BWS への `password-store-remote` / `gpg-secret-key-backup` 登録、primary/spare 双方の `verify-yubikey --all` をこの順序で実行する。packet 検証が失敗した場合は、この時点で停止し、GitHub SSH key、Git remote/push、YubiKey、BWS を変更しない。script は state / SDK error / exit code を分類せず、高水準 command の失敗をそのまま伝播する。key-only ownership 不明状態は manual administrator escalation 後に別途 ownership/backup を確認して外部手順を選ぶ。script は GitHub repository、BWS project/machine account/token を作成せず、BWS token を pipe せず、環境変数、argv、shell history に token を載せない。script は未初期化 password-store から `.gpg-id` を生成しない。
+   - 通常は serial を指定せず単一接続の primary を自動解決する。複数接続や明示固定が必要な場合だけ `--primary-serial <serial>`、spare も登録する場合は `--spare-serial <serial>` を使う。CLI option は `PROVISIONING_YUBIKEY_SERIAL` / `SPARE_YUBIKEY_SERIAL` の environment default より優先する。
 
 9. **[CMD]** 無対話復旧前提の検証（primary / spare 双方で実施。BWS credential と recovery object だけを確認し、OTP / session を要求しない）:
    ```sh
@@ -121,7 +123,7 @@ repository の test、agent 作業、通常の検証では物理 YubiKey / PCSC 
 
 ---
 
-## Phase B — 新規マシンでの復旧（spec「到達仕様の復旧フロー」L102-112）
+## Phase B — 新規マシンでの復旧（spec「[到達仕様の復旧フロー](secret-recovery-spec.md#到達仕様の復旧フロー)」）
 
 1. **[CMD]** `dotfiles switch`（または `scripts/bootstrap.sh`）で環境を適用し gpg-agent SSH support を有効化する。
 2. **[CMD]** `dotfiles secrets verify-yubikey --all`（必要に応じ `--check bws` を個別指定）。YubiKey を挿して実行するだけで、OTP / master password / session / PIV PIN の入力を要求しない。

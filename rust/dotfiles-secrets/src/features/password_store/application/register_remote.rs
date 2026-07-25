@@ -161,13 +161,11 @@ mod tests {
     use crate::{
         features::{
             bws_secrets::ports::public::BwsSecretId,
-            gpg_backup_recovery::domain::gpg_backup::BackupUpdateGuard,
+            gpg_backup_recovery::ports::public::BackupUpdateGuard,
             password_store::domain::{
                 commands::ProvisionPasswordStoreRemoteCommand, pass_restore::PasswordStoreRemote,
             },
-            yubikey_lifecycle::domain::{
-                manifest::SecretManifest, storage::SecretStorageReadInspection,
-            },
+            yubikey_lifecycle::ports::public::{SecretManifest, SecretStorageReadInspection},
         },
         foundation::protection::ProtectedSecret,
     };

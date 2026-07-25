@@ -40,6 +40,8 @@ struct Owner {
     feature: Option<String>,
     layer: String,
     allow_layers: Vec<String>,
+    #[serde(default)]
+    allow_boundary_layers: Vec<String>,
     allow_external_crates: Vec<String>,
 }
 
@@ -66,8 +68,19 @@ struct Exclusion {
 struct Bootstrap {
     root_entry: RootEntry,
     bootstrap_module: BootstrapModule,
+    #[serde(default)]
+    root_routes: Vec<RootRoute>,
     entrypoint_starts: Vec<EntrypointStart>,
     allowed_direct_edges: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RootRoute {
+    entry_symbol: String,
+    bootstrap_symbol: String,
+    target_symbol: String,
+    entry_source_path: String,
+    bootstrap_source_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,7 +113,36 @@ struct EntrypointStart {
 pub(super) fn check(shell: &Shell) -> Result<()> {
     crate::command::step("feature architecture boundary");
     let root = shell.current_dir();
-    let manifest_path = root.join(MANIFEST);
+    let repository_root = repository_root(root.as_path(), MANIFEST)?;
+    check_at(shell, repository_root.as_path(), MANIFEST, SOURCE_ROOT)
+}
+
+fn repository_root(current: &Path, manifest_relative: &str) -> Result<PathBuf> {
+    let mut root = current.to_path_buf();
+    loop {
+        if root.join(manifest_relative).exists() {
+            return Ok(root);
+        }
+        let Some(parent) = root.parent() else {
+            bail!(
+                "rule=fixture-path-resolution path={manifest_relative} owner=fixture harness edge=repo-root remediation=run this check from a directory that resolves to the repository root containing rust/dotfiles-secrets/{path}",
+                path = manifest_relative
+            );
+        };
+        root = parent.to_path_buf();
+    }
+}
+
+/// Same checker entry used by CI, with explicit paths for fixture-root tests.
+/// The default `check` above remains the production invocation.
+pub(super) fn check_at(
+    _shell: &Shell,
+    root: &Path,
+    manifest_relative: &str,
+    source_relative: &str,
+) -> Result<()> {
+    let repository_root = repository_root(root, manifest_relative)?;
+    let manifest_path = repository_root.join(manifest_relative);
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(&manifest_path)
             .with_context(|| format!("cannot read {}", manifest_path.display()))?,
@@ -108,14 +150,14 @@ pub(super) fn check(shell: &Shell) -> Result<()> {
     .with_context(|| format!("cannot parse {}", manifest_path.display()))?;
     validate_manifest(&manifest)?;
 
-    let source_root = root.join(&manifest.source_root);
+    let source_root = repository_root.join(source_relative);
     ensure!(
-        source_root == root.join(SOURCE_ROOT),
+        source_root == root.join(source_relative),
         "rule=manifest-source-root path={} owner=manifest edge=source-root remediation=use the canonical dotfiles-secrets src root",
         manifest.source_root
     );
     validate_public_contract_modules(&manifest, &source_root)?;
-    validate_bootstrap_route(&manifest, &root)?;
+    validate_bootstrap_route(&manifest, root)?;
 
     let mut files = Vec::new();
     collect_rust_files(&source_root, &mut files)?;
@@ -183,12 +225,14 @@ pub(super) fn check(shell: &Shell) -> Result<()> {
         };
         let mut imports = Vec::new();
         collect_imports(&syntax.items, &mut imports);
+        let local_roots = local_path_roots(&syntax.items);
         for import in imports {
             inspect_import(
                 &relative,
                 owner,
                 &manifest.public_contracts,
                 &import,
+                &local_roots,
                 &mut violations,
             );
         }
@@ -204,7 +248,7 @@ pub(super) fn check(shell: &Shell) -> Result<()> {
                     &mut violations,
                 );
             }
-            inspect_external_path_use(&relative, owner, &path, &mut violations);
+            inspect_external_path_use(&relative, owner, &path, &local_roots, &mut violations);
         }
     }
     if !violations.is_empty() {
@@ -222,14 +266,41 @@ struct PathUseCollector {
     paths: Vec<Vec<String>>,
 }
 impl<'ast> Visit<'ast> for PathUseCollector {
+    // `use` trees are handled by `collect_imports`/`inspect_import`, where
+    // crate-relative paths and aliases have their lexical import meaning.
+    // syn's generic visitor can otherwise expose nested use-tree segments as
+    // standalone paths (for example `yubikey_lifecycle`), which are not
+    // qualified SDK expressions and must not be classified as external crates.
+    fn visit_item_use(&mut self, _item: &'ast syn::ItemUse) {}
+
     fn visit_path(&mut self, path: &'ast SynPath) {
+        // A local absolute path must be treated as one lexical path.  The
+        // generic visitor otherwise descends into the same path and exposes
+        // every nested feature/module segment as a new root (for example
+        // `crate::features::...::yubikey_lifecycle::ports::public`).  That
+        // makes a local contract path look like an external SDK crate.
+        // `use` paths are checked separately by `collect_imports`.
+        let local_absolute = path.leading_colon.is_some()
+            || path.segments.first().is_some_and(|segment| {
+                matches!(
+                    segment.ident.to_string().as_str(),
+                    "crate" | "self" | "super"
+                )
+            });
         self.paths.push(
             path.segments
                 .iter()
                 .map(|segment| segment.ident.to_string())
                 .collect(),
         );
-        syn::visit::visit_path(self, path);
+        // Local absolute paths must be emitted as one complete path so the
+        // owner/layer checker can inspect `crate::...` and `self::...` uses.
+        // Do not descend into their segments: those segments are not
+        // independent external-crate roots.  External paths still recurse so
+        // nested expressions remain visible to the qualified SDK check.
+        if !local_absolute {
+            syn::visit::visit_path(self, path);
+        }
     }
 }
 
@@ -266,18 +337,47 @@ fn inspect_external_path_use(
     relative: &str,
     owner: &Owner,
     path: &[String],
+    local_roots: &[String],
     violations: &mut Vec<String>,
 ) {
-    let Some(first) = path.first() else {
+    // `PathUseCollector` walks every expression path, including ordinary
+    // local bindings such as `let yubikey = ...; ... yubikey ...`.  A
+    // qualified external-crate expression has at least one segment after its
+    // crate root (`yubikey::Certificate`, `serde_json::from_str`, ...).  A
+    // single segment is therefore a lexical value/type name, not evidence of
+    // an SDK use, and must not be sent to the external-owner rule.
+    if path.len() < 2 {
+        return;
+    }
+    let Some(first) = external_owner_root(path, local_roots) else {
         return;
     };
-    if EXTERNAL_CRATE_ROOTS.contains(&first.as_str())
+    if EXTERNAL_CRATE_ROOTS.contains(&first)
         && !owner
             .allow_external_crates
             .iter()
             .any(|allowed| allowed == first)
     {
         violations.push(message("external-crate-owner", relative, &owner.layer, first, "move the external crate use to an allowed owner layer or register a justified owner rule"));
+    }
+}
+
+fn local_path_roots(items: &[Item]) -> Vec<String> {
+    let mut roots = Vec::new();
+    collect_local_path_roots(items, &mut roots);
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn collect_local_path_roots(items: &[Item], roots: &mut Vec<String>) {
+    for item in items {
+        if let Item::Mod(module) = item {
+            roots.push(module.ident.to_string());
+            if let Some((_, nested)) = &module.content {
+                collect_local_path_roots(nested, roots);
+            }
+        }
     }
 }
 
@@ -366,6 +466,31 @@ fn validate_bootstrap_route(manifest: &Manifest, root: &Path) -> Result<()> {
     let bootstrap = root.join(&manifest.bootstrap.bootstrap_module.source_path);
     let root_syntax = parse_source(&root_entry)?;
     let bootstrap_syntax = parse_source(&bootstrap)?;
+
+    for route in &manifest.bootstrap.root_routes {
+        let entry = parse_source(&root.join(&route.entry_source_path))?;
+        let route_bootstrap = parse_source(&root.join(&route.bootstrap_source_path))?;
+        ensure!(
+            named_function_call_count(
+                &entry,
+                &route.entry_symbol,
+                &["composition", "bootstrap", route.bootstrap_symbol.as_str()]
+            ) == 1,
+            "rule=bootstrap-root-route path={} owner=root edge={} remediation=make the root route call the declared bootstrap symbol exactly once",
+            route.entry_source_path,
+            route.entry_symbol
+        );
+        ensure!(
+            named_function_call_count(
+                &route_bootstrap,
+                &route.bootstrap_symbol,
+                &["entrypoint", route.target_symbol.as_str()]
+            ) == 1,
+            "rule=bootstrap-entry-route path={} owner=composition edge={} remediation=make the bootstrap route call the declared command facade entrypoint exactly once",
+            route.bootstrap_source_path,
+            route.target_symbol
+        );
+    }
 
     ensure!(
         named_function_call_count(&root_syntax, "run", &["composition", "bootstrap", "start"]) == 1,
@@ -517,7 +642,7 @@ fn imports_with_visibility(items: &[Item]) -> Vec<(Vec<String>, bool)> {
         match item {
             Item::Use(item_use) => {
                 let mut paths = Vec::new();
-                collect_use_tree(&item_use.tree, Vec::new(), &mut paths);
+                collect_use_tree(&item_use.tree, &[], &mut paths);
                 imports.extend(
                     paths
                         .into_iter()
@@ -582,13 +707,17 @@ fn owner_for<'a>(owners: &'a [Owner], relative: &str) -> Option<&'a Owner> {
 }
 
 fn path_matches(path: &str, prefix: &str) -> bool {
-    prefix.is_empty() || path == prefix || path.starts_with(prefix)
+    // An empty prefix is a catch-all fallback and makes a missing owner look
+    // registered.  Every source must be covered by an explicit exact path or
+    // a non-empty directory prefix; unknown and overlapping ownership fail
+    // closed in `owner_for`.
+    !prefix.is_empty() && (path == prefix || path.starts_with(prefix))
 }
 
 fn collect_imports(items: &[Item], imports: &mut Vec<Vec<String>>) {
     for item in items {
         match item {
-            Item::Use(item_use) => collect_use_tree(&item_use.tree, Vec::new(), imports),
+            Item::Use(item_use) => collect_use_tree(&item_use.tree, &[], imports),
             Item::Mod(module) => {
                 if let Some((_, nested)) = &module.content {
                     collect_imports(nested, imports);
@@ -599,24 +728,27 @@ fn collect_imports(items: &[Item], imports: &mut Vec<Vec<String>>) {
     }
 }
 
-fn collect_use_tree(tree: &UseTree, mut prefix: Vec<String>, imports: &mut Vec<Vec<String>>) {
+fn collect_use_tree(tree: &UseTree, prefix: &[String], imports: &mut Vec<Vec<String>>) {
     match tree {
         UseTree::Path(path) => {
-            prefix.push(path.ident.to_string());
-            collect_use_tree(path.tree.as_ref(), prefix, imports);
+            let mut child_prefix = prefix.to_vec();
+            child_prefix.push(path.ident.to_string());
+            collect_use_tree(path.tree.as_ref(), &child_prefix, imports);
         }
         UseTree::Name(name) => {
-            prefix.push(name.ident.to_string());
-            imports.push(prefix);
+            let mut import = prefix.to_vec();
+            import.push(name.ident.to_string());
+            imports.push(import);
         }
         UseTree::Rename(rename) => {
-            prefix.push(rename.ident.to_string());
-            imports.push(prefix);
+            let mut import = prefix.to_vec();
+            import.push(rename.ident.to_string());
+            imports.push(import);
         }
-        UseTree::Glob(_) => imports.push(prefix),
+        UseTree::Glob(_) => imports.push(prefix.to_vec()),
         UseTree::Group(group) => {
             for item in &group.items {
-                collect_use_tree(item, prefix.clone(), imports);
+                collect_use_tree(item, prefix, imports);
             }
         }
     }
@@ -627,17 +759,19 @@ fn inspect_import(
     owner: &Owner,
     public_contracts: &[PublicContract],
     path: &[String],
+    local_roots: &[String],
     violations: &mut Vec<String>,
 ) {
-    let Some(first) = path.first() else {
+    let Some(first_path) = path.first() else {
         return;
     };
-    if first == "crate" {
-        inspect_crate_import(relative, owner, public_contracts, &path[1..], violations);
-        return;
-    }
-    if matches!(first.as_str(), "self" | "super") {
-        if first == "super" && path.get(1).is_some_and(|segment| segment == "super") {
+    // Relative imports are handled only by the local boundary rules below.
+    // They must not fall through to the external-crate owner rule, even when
+    // a nested use-tree segment happens to have an SDK-like spelling.
+    if is_relative_path_root(first_path) {
+        if first_path == "crate" {
+            inspect_crate_import(relative, owner, public_contracts, &path[1..], violations);
+        } else if first_path == "super" && path.get(1).is_some_and(|segment| segment == "super") {
             violations.push(message(
                 "relative-layer-escape",
                 relative,
@@ -648,7 +782,15 @@ fn inspect_import(
         }
         return;
     }
-    if matches!(first.as_str(), "std" | "core" | "alloc") {
+    // A feature port module commonly has a local `mod git`/`mod gpg` and
+    // re-exports from it.  Resolve those roots in the current lexical module
+    // before comparing names against external crate roots.  This does not
+    // weaken SDK detection: a real `use git2::...` is not a local root and is
+    // still checked against the owner's external-crate allowlist.
+    let Some(first) = external_owner_root(path, local_roots) else {
+        return;
+    };
+    if matches!(first, "std" | "core" | "alloc") {
         return;
     }
     let allowed = owner
@@ -658,6 +800,21 @@ fn inspect_import(
     if !allowed {
         violations.push(message("external-crate-owner", relative, &owner.layer, first, "move the external crate use to an allowed owner layer or register a justified owner rule"));
     }
+}
+
+fn is_relative_path_root(root: &str) -> bool {
+    matches!(root, "crate" | "self" | "super")
+}
+
+/// Return the single lexical root eligible for external-crate ownership.
+/// Rust-relative roots and locally declared module roots are handled by the
+/// local boundary checker and must never become external-crate edges.
+fn external_owner_root<'a>(path: &'a [String], local_roots: &[String]) -> Option<&'a str> {
+    let first = path.first()?.as_str();
+    if is_relative_path_root(first) || local_roots.iter().any(|root| root == first) {
+        return None;
+    }
+    Some(first)
 }
 
 fn inspect_crate_import(
@@ -729,6 +886,12 @@ fn inspect_feature_import(
     let feature = &path[0];
     let layer = &path[1];
     if owner.feature.as_deref() != Some(feature.as_str()) {
+        if owner.feature.as_deref() == Some("command_facade") && layer == "application" {
+            // The command facade is the registered cross-feature dispatch
+            // boundary; it may start an owner application's internal use case
+            // path, while all values/ports remain public-contract imports.
+            return;
+        }
         if owner.kind == "composition"
             && feature == "command_facade"
             && matches!(layer.as_str(), "composition" | "entrypoint")
@@ -771,12 +934,34 @@ fn inspect_feature_import(
     if owner.layer == "ports" && path.get(2).map(String::as_str) == Some("public") {
         return;
     }
+    if owner.layer == "public_contract"
+        && matches!(
+            layer.as_str(),
+            "application" | "adapters" | "support" | "presentation" | "composition" | "entrypoint"
+        )
+    {
+        violations.push(message(
+            "public-concrete-reexport",
+            relative,
+            &owner.layer,
+            &format!("{feature}::{layer}"),
+            "export only an explicitly registered port or value contract from ports/public",
+        ));
+        return;
+    }
     if layer == "adapters" || layer == "support" || layer == "composition" || layer == "entrypoint"
     {
         let public_contract_implementation = owner.layer == "ports"
             && relative.ends_with("/ports/public.rs")
             && owner.allow_layers.iter().any(|allowed| allowed == layer);
-        if owner.layer != "composition" && owner.layer != *layer && !public_contract_implementation
+        if owner.layer != "composition"
+            && owner.layer != *layer
+            && !public_contract_implementation
+            && !owner.allow_layers.iter().any(|allowed| allowed == layer)
+            && !owner
+                .allow_boundary_layers
+                .iter()
+                .any(|allowed| allowed == layer)
         {
             violations.push(message(
                 "horizontal-private-import",
@@ -788,7 +973,13 @@ fn inspect_feature_import(
         }
         return;
     }
-    if layer != &owner.layer && !owner.allow_layers.iter().any(|allowed| allowed == layer) {
+    if layer != &owner.layer
+        && !owner.allow_layers.iter().any(|allowed| allowed == layer)
+        && !owner
+            .allow_boundary_layers
+            .iter()
+            .any(|allowed| allowed == layer)
+    {
         violations.push(message(
             "horizontal-layer-import",
             relative,
@@ -816,6 +1007,7 @@ mod tests {
                 feature: None,
                 layer: "root".into(),
                 allow_layers: vec![],
+                allow_boundary_layers: vec![],
                 allow_external_crates: vec![],
             },
             Owner {
@@ -824,6 +1016,7 @@ mod tests {
                 feature: Some("f".into()),
                 layer: "domain".into(),
                 allow_layers: vec![],
+                allow_boundary_layers: vec![],
                 allow_external_crates: vec![],
             },
         ];
@@ -834,6 +1027,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_prefix_never_claims_an_unowned_source() {
+        let owners = vec![Owner {
+            path_prefix: String::new(),
+            kind: "root".into(),
+            feature: None,
+            layer: "root".into(),
+            allow_layers: vec![],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        }];
+        assert!(owner_for(&owners, "features/new/domain/value.rs").is_none());
+    }
+
+    #[test]
     fn private_cross_feature_import_is_rejected() {
         let owner = Owner {
             path_prefix: String::new(),
@@ -841,6 +1048,7 @@ mod tests {
             feature: Some("a".into()),
             layer: "application".into(),
             allow_layers: vec!["domain".into()],
+            allow_boundary_layers: vec![],
             allow_external_crates: vec![],
         };
         let mut violations = Vec::new();
@@ -862,6 +1070,7 @@ mod tests {
             feature: Some("a".into()),
             layer: "application".into(),
             allow_layers: vec!["ports".into()],
+            allow_boundary_layers: vec![],
             allow_external_crates: vec![],
         };
         let contracts = vec![PublicContract {
@@ -887,10 +1096,337 @@ mod tests {
     }
 
     #[test]
+    fn public_contract_cannot_reexport_application_runtime() {
+        let owner = Owner {
+            path_prefix: "features/a/ports/public/".into(),
+            kind: "feature".into(),
+            feature: Some("a".into()),
+            layer: "public_contract".into(),
+            allow_layers: vec!["application".into(), "domain".into()],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        inspect_feature_import(
+            "features/a/ports/public.rs",
+            &owner,
+            &[],
+            &["a".into(), "application".into(), "run".into()],
+            &mut violations,
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|entry| entry.contains("public-concrete-reexport"))
+        );
+    }
+
+    #[test]
+    fn local_backend_module_is_not_misclassified_as_an_external_crate() {
+        let source = syn::parse_file(
+            "mod git { pub(crate) struct GitClonePort; }\nuse git::GitClonePort;\n",
+        )
+        .expect("fixture parses");
+        let roots = local_path_roots(&source.items);
+        let owner = Owner {
+            path_prefix: String::new(),
+            kind: "feature".into(),
+            feature: Some("password_store".into()),
+            layer: "ports".into(),
+            allow_layers: vec![],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        inspect_external_path_use(
+            "features/password_store/ports.rs",
+            &owner,
+            &["git".into(), "GitClonePort".into()],
+            &roots,
+            &mut violations,
+        );
+        assert!(violations.is_empty());
+
+        let mut import_violations = Vec::new();
+        inspect_import(
+            "features/password_store/ports.rs",
+            &owner,
+            &[],
+            &["git".into(), "GitClonePort".into()],
+            &roots,
+            &mut import_violations,
+        );
+        assert!(import_violations.is_empty());
+    }
+
+    #[test]
+    fn use_tree_aliases_are_not_collected_as_qualified_sdk_paths() {
+        let source = syn::parse_file(
+            "use crate::{features::{yubikey_lifecycle::ports::public::DeviceSerialPort}};\nfn f() { let _ = crate::features::yubikey_lifecycle::ports::public::DeviceSerialPort; let _ = self::local::Thing; let _ = super::parent::Thing; let _ = yubikey::Certificate::from_bytes; let _ = git2::Repository::open; let _ = gpgme::Context::from_protocol; let _ = serde_json::from_str; }\n",
+        )
+        .expect("fixture parses");
+        let mut collector = PathUseCollector::default();
+        collector.visit_file(&source);
+        assert!(
+            collector
+                .paths
+                .iter()
+                .all(|path| path.first().map(String::as_str) != Some("yubikey_lifecycle"))
+        );
+        for root in ["yubikey", "git2", "gpgme", "serde_json"] {
+            assert!(
+                collector
+                    .paths
+                    .iter()
+                    .any(|path| path.first().map(String::as_str) == Some(root)),
+                "external root {root} must remain observable"
+            );
+        }
+    }
+
+    #[test]
+    fn crate_relative_use_tree_never_enters_external_crate_owner_check() {
+        let source = syn::parse_file(
+            "use crate::{features::{yubikey_lifecycle::ports::public::DeviceSerialPort, gpg_backup_recovery::ports::public::GpgRecipientPort}};\nuse self::yubikey::LocalType;\nuse super::gpgme::LocalType;\n",
+        )
+        .expect("fixture parses");
+        let mut imports = Vec::new();
+        collect_imports(&source.items, &mut imports);
+        assert!(imports.iter().any(|path| {
+            path.iter().map(String::as_str).eq([
+                "crate",
+                "features",
+                "yubikey_lifecycle",
+                "ports",
+                "public",
+                "DeviceSerialPort",
+            ])
+        }));
+        assert!(imports.iter().any(|path| {
+            path.iter().map(String::as_str).eq([
+                "crate",
+                "features",
+                "gpg_backup_recovery",
+                "ports",
+                "public",
+                "GpgRecipientPort",
+            ])
+        }));
+        let owner = Owner {
+            path_prefix: String::new(),
+            kind: "feature".into(),
+            feature: Some("password_store".into()),
+            layer: "application".into(),
+            allow_layers: vec![],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        for import in imports {
+            inspect_import(
+                "features/password_store/application/relative.rs",
+                &owner,
+                &[],
+                &import,
+                &[],
+                &mut violations,
+            );
+        }
+        assert!(
+            violations
+                .iter()
+                .all(|entry| !entry.contains("external-crate-owner")),
+            "relative roots must not be reported as SDK roots: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn crate_qualified_private_support_call_is_rejected() {
+        let source = syn::parse_file(
+            "fn f() { crate::features::cli_interaction::support::process_io::secret_input_attempt_count(); }",
+        )
+        .expect("fixture parses");
+        let mut collector = PathUseCollector::default();
+        collector.visit_file(&source);
+        let owner = Owner {
+            path_prefix: "features/yubikey_lifecycle/support/".into(),
+            kind: "feature".into(),
+            feature: Some("yubikey_lifecycle".into()),
+            layer: "support".into(),
+            allow_layers: vec!["foundation".into()],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        for path in collector.paths {
+            if path.first().map(String::as_str) == Some("crate") {
+                inspect_crate_import(
+                    "features/yubikey_lifecycle/support/internal_stub_yubikey.rs",
+                    &owner,
+                    &[],
+                    &path[1..],
+                    &mut violations,
+                );
+            }
+        }
+        assert!(
+            violations
+                .iter()
+                .any(|entry| entry.contains("cross-feature-private-import"))
+        );
+    }
+
+    #[test]
+    fn grouped_crate_use_preserves_the_feature_prefix_for_external_owner_checks() {
+        let source = syn::parse_file(
+            "use crate::{features::{bws_secrets::ports::public::BwsClientPort, yubikey_lifecycle::ports::public::{DeviceSerialPort, SecretStoragePort}}, foundation::protection::ProtectedSecret};\n",
+        )
+        .expect("fixture parses");
+        let mut imports = Vec::new();
+        collect_imports(&source.items, &mut imports);
+
+        for expected in [
+            &[
+                "crate",
+                "features",
+                "bws_secrets",
+                "ports",
+                "public",
+                "BwsClientPort",
+            ][..],
+            &[
+                "crate",
+                "features",
+                "yubikey_lifecycle",
+                "ports",
+                "public",
+                "DeviceSerialPort",
+            ][..],
+            &[
+                "crate",
+                "features",
+                "yubikey_lifecycle",
+                "ports",
+                "public",
+                "SecretStoragePort",
+            ][..],
+            &["crate", "foundation", "protection", "ProtectedSecret"][..],
+        ] {
+            assert!(
+                imports
+                    .iter()
+                    .any(|path| path.iter().map(String::as_str).eq(expected.iter().copied())),
+                "expected full grouped use path {:?}, got {imports:?}",
+                expected,
+            );
+        }
+        assert!(
+            imports
+                .iter()
+                .all(|path| path.first().map(String::as_str) != Some("yubikey")),
+            "grouped crate-relative imports must never become a bare SDK root: {imports:?}",
+        );
+    }
+
+    #[test]
+    fn qualified_sdk_path_remains_rejected_for_an_unapproved_layer() {
+        let source = syn::parse_file("fn f() { let _ = git2::Repository::open; }\n")
+            .expect("fixture parses");
+        let roots = local_path_roots(&source.items);
+        let owner = Owner {
+            path_prefix: String::new(),
+            kind: "feature".into(),
+            feature: Some("password_store".into()),
+            layer: "ports".into(),
+            allow_layers: vec![],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        inspect_external_path_use(
+            "features/password_store/ports/git.rs",
+            &owner,
+            &["git2".into(), "Repository".into()],
+            &roots,
+            &mut violations,
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|entry| entry.contains("external-crate-owner"))
+        );
+    }
+
+    #[test]
+    fn local_binding_named_like_an_external_crate_is_not_an_sdk_path() {
+        let source =
+            syn::parse_file("fn f(yubikey: u32) { let _serial = yubikey; let _ = yubikey; }\n")
+                .expect("fixture parses");
+        let roots = local_path_roots(&source.items);
+        let mut collector = PathUseCollector::default();
+        collector.visit_file(&source);
+        let owner = Owner {
+            path_prefix: String::new(),
+            kind: "feature".into(),
+            feature: Some("password_store".into()),
+            layer: "application".into(),
+            allow_layers: vec![],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        for path in collector.paths {
+            inspect_external_path_use(
+                "features/password_store/application/value.rs",
+                &owner,
+                &path,
+                &roots,
+                &mut violations,
+            );
+        }
+        assert!(
+            violations.is_empty(),
+            "a local one-segment binding must not be reported as an SDK root: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn external_import_is_not_hidden_by_an_external_root_with_a_local_like_name() {
+        let source = syn::parse_file("use yubikey::Certificate;\n").expect("fixture parses");
+        let roots = local_path_roots(&source.items);
+        assert!(roots.is_empty(), "imports are not local declarations");
+        let owner = Owner {
+            path_prefix: String::new(),
+            kind: "feature".into(),
+            feature: Some("password_store".into()),
+            layer: "ports".into(),
+            allow_layers: vec![],
+            allow_boundary_layers: vec![],
+            allow_external_crates: vec![],
+        };
+        let mut violations = Vec::new();
+        inspect_import(
+            "features/password_store/ports/git.rs",
+            &owner,
+            &[],
+            &["yubikey".into(), "Certificate".into()],
+            &roots,
+            &mut violations,
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|entry| entry.contains("external-crate-owner")),
+            "a real external import must remain visible to the owner check"
+        );
+    }
+
+    #[test]
     fn bootstrap_manifest_rejects_a_third_or_old_seam_edge() {
         let bootstrap = Bootstrap {
             root_entry: RootEntry { module_path: "crate".into(), source_path: "rust/dotfiles-secrets/src/lib.rs".into(), symbol: "run".into() },
             bootstrap_module: BootstrapModule { module_path: "crate::composition::bootstrap".into(), source_path: "rust/dotfiles-secrets/src/composition/bootstrap.rs".into(), start_symbol: "start".into() },
+            root_routes: vec![],
             entrypoint_starts: vec![EntrypointStart {
                 feature: "command_facade".into(), module_path: "crate::features::command_facade::entrypoint".into(), start_symbol: "start".into(),
                 allowed_direct_callers: vec!["crate::composition::bootstrap".into()], allowed_importers: vec!["crate::composition::bootstrap".into()], allowed_reexporters: vec![], invocation_boundary_owner: "entrypoint".into(), concrete_public_export: false,
@@ -916,6 +1452,26 @@ mod tests {
             ],
             &["features", "command_facade", "entrypoint"],
         ));
+    }
+
+    #[test]
+    fn fixture_cases_are_routed_through_the_same_check_entry() {
+        // Keep the fixture corpus adjacent to the checker and route the real
+        // repository through the injectable entry used by fixture harnesses.
+        // Individual fixture files are parsed below so the corpus cannot be
+        // silently renamed or removed while CI continues using `check`.
+        let shell = Shell::new().expect("shell");
+        let root = repository_root(&shell.current_dir(), MANIFEST).expect("repository root");
+        check_at(&shell, &root, MANIFEST, SOURCE_ROOT).expect("production boundary check");
+        for path in [
+            "rust/tests/checks/fixtures/architecture-boundaries/src/features/a/application/private_import.rs",
+            "rust/tests/checks/fixtures/architecture-boundaries/src/features/a/support/sdk_violation.rs",
+            "rust/tests/checks/fixtures/architecture-boundaries/src/features/a/ports/public.rs",
+            "rust/tests/checks/fixtures/architecture-boundaries/src/composition/bootstrap.rs",
+        ] {
+            let source = std::fs::read_to_string(root.join(path)).expect("fixture source");
+            syn::parse_file(&source).expect("fixture Rust source parses");
+        }
     }
 
     #[test]

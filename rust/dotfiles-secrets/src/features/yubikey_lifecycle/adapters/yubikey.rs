@@ -16,7 +16,7 @@ use crate::{
     features::{
         gpg_backup_recovery::ports::public::{ConnectedYubiKey, EnvelopeRecipient},
         yubikey_lifecycle::domain::{
-            piv::{PivDeviceProfile, SecretStorageSpec},
+            piv::SecretStorageSpec,
             storage::{
                 SecretStorageClearIntent, SecretStorageReadInspection, SecretStorageReadIntent,
                 SecretStorageSetupInspection, SecretStorageSetupIntent, SecretStorageSetupProbe,
@@ -51,8 +51,8 @@ impl DeviceSerialPort for YubikeyDeviceBackend {
         yubikey_device_serial::resolve_device_serial(self, requested)
     }
 
-    fn inspect_device_profile(&mut self, serial: u32) -> Result<PivDeviceProfile> {
-        yubikey_device_serial::inspect_device_profile(self, serial)
+    fn preflight_device_profile(&mut self, serial: u32) -> Result<()> {
+        yubikey_device_serial::preflight_device_profile(self, serial)
     }
 }
 

@@ -38,7 +38,7 @@ use super::piv_storage::sha256_lowercase_hex;
 use crate::{
     Result,
     features::{
-        gpg_backup_recovery::domain::gpg_backup::{ConnectedYubiKey, EnvelopeRecipient},
+        gpg_backup_recovery::ports::public::{ConnectedYubiKey, EnvelopeRecipient},
         yubikey_lifecycle::domain::piv::{
             PivApplicationVersion, PivDeviceProfile, PivObjectId, SecretStorageSpec,
         },
@@ -47,9 +47,11 @@ use crate::{
 };
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::{
-    features::gpg_backup_recovery::support::yubikey_piv,
+    features::yubikey_lifecycle::support::yubikey_piv,
     foundation::protection::{sealed_blob, secret_random},
 };
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 use anyhow::Context;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use rsa::{
@@ -109,11 +111,13 @@ pub(crate) trait SecretDeviceIo {
 }
 pub(crate) struct SelectedSecretDevice {
     inner: Box<dyn SecretDeviceIo>,
+    profile: PivDeviceProfile,
 }
 impl SelectedSecretDevice {
-    pub(crate) fn new(device: impl SecretDeviceIo + 'static) -> Self {
+    pub(crate) fn new(device: impl SecretDeviceIo + 'static, profile: PivDeviceProfile) -> Self {
         Self {
             inner: Box::new(device),
+            profile,
         }
     }
 }
@@ -127,7 +131,10 @@ impl SecretDeviceIo for SelectedSecretDevice {
     delegate!(verify_management_pin(pin:&ProtectedSecret) -> Result<()>);
     delegate!(change_management_pin(current_pin:&ProtectedSecret,new_pin:&ProtectedSecret) -> Result<()>);
     delegate!(authenticate_protected_management_key() -> Result<()>);
-    delegate!(generate_key() -> Result<Vec<u8>>);
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
+        self.profile.ensure_pin_free_recovery_supported()?;
+        self.inner.generate_key()
+    }
     delegate!(slot_public_key_spki() -> Result<Option<Vec<u8>>>);
     fn remember_generated_public_key(&mut self, key: Vec<u8>) {
         self.inner.remember_generated_public_key(key)
@@ -151,28 +158,25 @@ pub(crate) fn bind_discovery_step(backend: &mut YubikeyDeviceBackend, candidate:
     backend.step_binding = Some(candidate);
 }
 
-pub(crate) fn take_discovery_step(
-    backend: &mut YubikeyDeviceBackend,
+pub(crate) fn bound_device_profile(
+    backend: &YubikeyDeviceBackend,
     serial: u32,
-) -> Result<DeviceCandidate> {
-    let candidate = backend
+) -> Option<PivDeviceProfile> {
+    backend
         .step_binding
-        .take()
-        .context("YubiKey discovery step is not bound")?;
-    if candidate.serial != serial {
-        anyhow::bail!("YubiKey discovery step serial changed before profile inspection");
-    }
-    Ok(candidate)
+        .as_ref()
+        .filter(|candidate| candidate.serial == serial)
+        .map(|candidate| candidate.profile)
 }
 
-fn discover_devices_uncached() -> Result<Vec<DeviceCandidate>> {
+pub(crate) fn discover_devices_uncached() -> Result<Vec<DeviceCandidate>> {
     #[cfg(not(feature = "secrets-internal-test-stub"))]
     {
         discover_devices_with_management_application()
     }
     #[cfg(feature = "secrets-internal-test-stub")]
     {
-        support::internal_stub_yubikey::discover_devices()
+        crate::features::yubikey_lifecycle::support::internal_stub_yubikey::discover_devices()
     }
 }
 
@@ -593,19 +597,39 @@ mod management_device_information_tests {
     }
 }
 pub(crate) fn open_device_by_serial(
-    _: &mut YubikeyDeviceBackend,
+    _backend: &mut YubikeyDeviceBackend,
     serial: u32,
 ) -> Result<SelectedSecretDevice> {
     #[cfg(not(feature = "secrets-internal-test-stub"))]
     {
-        Ok(SelectedSecretDevice::new(YubikeySecretDevice {
-            yubikey: YubiKey::open_by_serial(Serial(serial))?,
-            generated_public_key: None,
-        }))
+        let profile = _backend
+            .step_binding
+            .take()
+            .filter(|candidate| candidate.serial == serial)
+            .map(|candidate| candidate.profile)
+            .or_else(|| {
+                discover_devices_uncached()
+                    .ok()?
+                    .into_iter()
+                    .find(|candidate| candidate.serial == serial)
+                    .map(|candidate| candidate.profile)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("YubiKey profile could not be bound to serial {serial}")
+            })?;
+        Ok(SelectedSecretDevice::new(
+            YubikeySecretDevice {
+                yubikey: YubiKey::open_by_serial(Serial(serial))?,
+                generated_public_key: None,
+            },
+            profile,
+        ))
     }
     #[cfg(feature = "secrets-internal-test-stub")]
     {
-        support::internal_stub_yubikey::open_device_by_serial(serial)
+        crate::features::yubikey_lifecycle::support::internal_stub_yubikey::open_device_by_serial(
+            serial,
+        )
     }
 }
 pub(crate) fn open_recipient_device(

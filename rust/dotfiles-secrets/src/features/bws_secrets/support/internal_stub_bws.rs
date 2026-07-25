@@ -3,7 +3,7 @@
 use crate::{
     Result,
     features::{
-        bws_secrets::domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        bws_secrets::domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId, BwsSecretValue},
         gpg_backup_recovery::ports::public::{BackupUpdateGuard, GpgBackupEnvelope},
         password_store::ports::public::PasswordStoreRemote,
     },
@@ -228,17 +228,17 @@ pub(crate) async fn list_bws_secrets(
 pub(crate) async fn fetch_gpg_backup_envelope(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+) -> Result<(BwsSecretValue, BackupUpdateGuard)> {
     let value = read_secret(&access_token.to_test_bytes(), secret_id.as_str())?;
     let guard = BackupUpdateGuard::from_value_bytes(value.as_bytes());
-    Ok((GpgBackupEnvelope::from_json(value.as_bytes())?, guard))
+    Ok((BwsSecretValue::from_bytes(value.as_bytes().to_vec()), guard))
 }
 pub(crate) async fn fetch_password_store_remote(
     access_token: &ProtectedSecret,
     secret_id: &BwsSecretId,
-) -> Result<PasswordStoreRemote> {
+) -> Result<BwsSecretValue> {
     let value = read_secret(&access_token.to_test_bytes(), secret_id.as_str())?;
-    PasswordStoreRemote::parse(&value)
+    Ok(BwsSecretValue::from_bytes(value.as_bytes().to_vec()))
 }
 pub(crate) async fn create_gpg_backup_envelope(
     access_token: &ProtectedSecret,

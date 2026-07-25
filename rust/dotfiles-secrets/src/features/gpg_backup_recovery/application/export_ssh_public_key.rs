@@ -37,7 +37,7 @@ mod tests {
     //! 解決され出力 port へ渡ることを確認する。test double は持ち込まない。
 
     use crate::features::{
-        cli_interaction::ports::io::MockSshPublicKeyOutputPort,
+        cli_interaction::ports::public::MockSshPublicKeyOutputPort,
         gpg_backup_recovery::{
             domain::{
                 commands::ExportSshPublicKeyCommand, gpg_backup::PrimaryFingerprint,

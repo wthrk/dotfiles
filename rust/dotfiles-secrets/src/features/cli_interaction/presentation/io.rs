@@ -235,7 +235,7 @@ impl JsonReport {
     }
 
     fn write_json(&self, value: &serde_json::Value) -> Result<()> {
-        let line = serde_json::to_string_pretty(value).map_err(anyhow::Error::new)?;
+        let line = serde_json::to_string_pretty(value)?;
         (self.write_line)(&line)
     }
 }

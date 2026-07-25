@@ -4,8 +4,8 @@ use crate::{
     Result,
     features::password_store::domain::pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
     features::password_store::ports::git::{GitClonePort, PasswordStorePort},
+    features::password_store::support::backend::{GitCloneBackend, PasswordStoreBackend},
     features::password_store::support::internal_stub_git,
-    shared::contracts::adapter_backend::{GitCloneBackend, PasswordStoreBackend},
 };
 
 impl PasswordStorePort for PasswordStoreBackend {

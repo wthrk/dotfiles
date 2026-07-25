@@ -1,14 +1,19 @@
 //! 平文 bytes の生存期間に紐づける process 保護と zeroize 境界。
 
-use std::{collections::BTreeMap, future::Future, pin::Pin};
+use std::collections::BTreeMap;
+
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use std::{future::Future, pin::Pin};
 
 use anyhow::{Context, bail};
 use zeroize::Zeroizing;
 
 pub(crate) mod buffer;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod oaep;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod sealed_blob;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod secret_random;
 
 use crate::Result;
@@ -93,6 +98,7 @@ impl ProtectedSecret {
     ///
     /// SDK などが owned plaintext buffer を要求する場合、この closure 内で buffer 作成と
     /// `.await` まで完了させ、repository 側の所有 buffer を closure 外へ持ち出さない。
+    #[cfg(not(feature = "secrets-internal-test-stub"))]
     pub(crate) async fn with_secret_utf8_async<R>(
         &self,
         borrow: impl for<'a> FnOnce(&'a str) -> Pin<Box<dyn Future<Output = Result<R>> + 'a>>,

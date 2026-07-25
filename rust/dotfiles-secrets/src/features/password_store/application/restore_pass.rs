@@ -2,6 +2,7 @@
 //! 外へ閉じる。
 
 use crate::Result;
+use crate::features::gpg_backup_recovery::ports::public::GpgAgentSocketPort;
 use crate::{
     features::password_store::domain::commands::RestorePassCommand,
     features::{
@@ -25,6 +26,25 @@ use crate::{
 pub(crate) struct RestorePassYubikeyRuntime<'a> {
     pub(crate) device: &'a mut dyn DeviceSerialPort,
     pub(crate) storage: &'a mut dyn SecretStoragePort,
+}
+
+/// `restore-pass` が必要とする application-facing capability の束。
+///
+/// これは単なる引数削減用の汎用 context ではなく、この use case の caller が一つの
+/// invocation boundary で所有する port capability を明示する入力である。各 capability は
+/// owner feature の public port contract のまま保持し、順序・停止条件・業務判断は use case
+/// 本体に残す。
+pub(crate) struct RestorePassRuntime<'a, 'b, B>
+where
+    B: BwsClientPort + ?Sized,
+{
+    pub(crate) yubikey: RestorePassYubikeyRuntime<'a>,
+    pub(crate) bws_client: &'a B,
+    pub(crate) keyring: &'a mut dyn GpgKeyringPort,
+    pub(crate) store: &'a mut dyn PasswordStorePort,
+    pub(crate) git_clone: &'a mut dyn GitClonePort,
+    pub(crate) gpg_agent_socket: &'b mut dyn GpgAgentSocketPort,
+    pub(crate) report: &'a dyn ReportPort,
 }
 
 /// `password-store-remote` を取得し、`~/.password-store` 不存在を確認してから private repository を
@@ -55,18 +75,59 @@ pub(crate) struct RestorePassYubikeyRuntime<'a> {
 ///
 /// 各停止条件で停止し、後続処理へ進ませない。clone URL / recipient / 可読性の業務判断は domain rule、clone /
 /// filesystem 走査 / 鍵リング照合は adapter が担い、application は順序と停止条件だけを持つ。
-pub(crate) async fn run_restore_pass<B>(
+#[cfg(test)]
+pub(crate) async fn run_restore_pass<'a, B>(
     command: RestorePassCommand,
-    yubikey: RestorePassYubikeyRuntime<'_>,
-    bws_client: &B,
-    keyring: &mut dyn GpgKeyringPort,
-    store: &mut dyn PasswordStorePort,
-    git_clone: &mut dyn GitClonePort,
-    report: &dyn ReportPort,
+    yubikey: RestorePassYubikeyRuntime<'a>,
+    bws_client: &'a B,
+    keyring: &'a mut dyn GpgKeyringPort,
+    store: &'a mut dyn PasswordStorePort,
+    git_clone: &'a mut dyn GitClonePort,
+    report: &'a dyn ReportPort,
 ) -> Result<()>
 where
     B: BwsClientPort + ?Sized,
 {
+    let mut unavailable = UnavailableGpgAgentSocket;
+    run_restore_pass_with_socket(
+        command,
+        RestorePassRuntime {
+            yubikey,
+            bws_client,
+            keyring,
+            store,
+            git_clone,
+            gpg_agent_socket: &mut unavailable,
+            report,
+        },
+    )
+    .await
+}
+
+#[cfg(test)]
+struct UnavailableGpgAgentSocket;
+#[cfg(test)]
+impl crate::features::gpg_backup_recovery::ports::public::GpgAgentSocketPort
+    for UnavailableGpgAgentSocket
+{
+}
+
+pub(crate) async fn run_restore_pass_with_socket<B>(
+    command: RestorePassCommand,
+    runtime: RestorePassRuntime<'_, '_, B>,
+) -> Result<()>
+where
+    B: BwsClientPort + ?Sized,
+{
+    let RestorePassRuntime {
+        yubikey,
+        bws_client,
+        keyring,
+        store,
+        git_clone,
+        gpg_agent_socket: _gpg_agent_socket,
+        report,
+    } = runtime;
     let RestorePassYubikeyRuntime {
         device,
         storage: storage_port,
@@ -85,9 +146,16 @@ where
             .await?,
         &project_id,
     )?;
-    let remote = bws_client
+    let raw_remote = bws_client
         .fetch_password_store_remote(&access_token, &secret_id)
         .await?;
+    let remote = String::from_utf8(raw_remote.as_bytes().to_vec())
+        .map_err(|_| anyhow::anyhow!("password-store-remote is not valid UTF-8"))
+        .and_then(|value| {
+            crate::features::password_store::domain::pass_restore::PasswordStoreRemote::parse(
+                &value,
+            )
+        })?;
 
     // 3. `~/.password-store` が既に存在する場合は clone へ進まず停止する。
     if store.password_store_exists()? {
@@ -101,7 +169,10 @@ where
     //    削除して残さない（既存 store は決して上書き・削除しない）。そのため clone 失敗時の application 側 rollback は
     //    行わず、error をそのまま伝播する（手順 3 の不存在確認後に別 process が作った既存 store を誤削除しうる
     //    TOCTOU を避けるため）。
+    #[cfg(test)]
     git_clone.clone_password_store(&remote)?;
+    #[cfg(not(test))]
+    git_clone.clone_password_store_with_socket(&remote, _gpg_agent_socket)?;
 
     // 5. clone 後 store が `pass` から実際に読めることを確認する。可読性確認で失敗した場合は clone 済み store を
     //    application からは削除せず、そのまま残してエラーを返す。設計（spec L174）に可読性失敗時の自動削除は無く、
@@ -187,15 +258,14 @@ mod tests {
     //! 既存 store 停止条件に委ねる（設計 spec L174 に自動削除は無い）。gpg-agent SSH support の確認は
     //! restore-gpg の責務であり restore-pass は ssh-agent を検査しない（設計 L116-124）。test double は持ち込まない。
 
+    use crate::features::bws_secrets::ports::public::BwsSecretValue;
+
     use crate::{
         features::{
             password_store::domain::{
-                commands::RestorePassCommand,
-                pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
+                commands::RestorePassCommand, pass_restore::PasswordStoreReadiness,
             },
-            yubikey_lifecycle::domain::{
-                manifest::SecretManifest, storage::SecretStorageReadInspection,
-            },
+            yubikey_lifecycle::ports::public::{SecretManifest, SecretStorageReadInspection},
         },
         foundation::protection::ProtectedSecret,
     };
@@ -271,7 +341,7 @@ mod tests {
         });
         bws.expect_fetch_password_store_remote()
             .times(1)
-            .returning(|_, _| PasswordStoreRemote::parse(REMOTE_URL));
+            .returning(|_, _| Ok(BwsSecretValue::from_bytes(REMOTE_URL.as_bytes())));
     }
 
     #[tokio::test]

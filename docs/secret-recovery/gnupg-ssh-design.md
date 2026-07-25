@@ -22,6 +22,7 @@
 ## 決定事項
 
 - `gpg-secret-key-backup` は YubiKey recipient 付き encrypted envelope で保持し、平文の ASCII-armored OpenPGP secret key block をそのまま保存しない。
+- recovery 対象の software OpenPGP secret key は passphrase を設定しない。primary key と全 secret subkey の packet は unencrypted secret material を持つことを、source export 後と target import 前に Sequoia で検査する。protected または secret material を確認できない packet は、pinentry・空 passphrase・PIV/OpenPGP PIN・環境変数による補完をせず、BWS 保存または import より前に停止する。
 - encrypted envelope は UTF-8 JSON で保存し、`version: 1` を固定する。top-level は `version` / `metadata` / `recipients` / `ciphertext` の 4 要素とする。
 - `metadata` は `primary_fingerprint`（lowercase hex 40 文字、区切りなし）、`exported_at`（UTC RFC3339）、`dek_alg`（`aes-256-gcm` 固定）、`recipient_kek_alg`（`rsa-oaep-sha256` 固定）を必須とする。
 - `ciphertext` は `nonce`、`body`、`tag` を base64 文字列で保持する。`nonce` は AES-GCM nonce 12 bytes、`body` は DEK で暗号化した OpenPGP backup bytes、`tag` は AES-GCM authentication tag 16 bytes とする。`tag` を `body` へ連結しない。
@@ -29,7 +30,7 @@
 - `restore-gpg` は YubiKey から `bitwarden-client-secret` を取得し、Bitwarden Secrets Manager SDK で `gpg-secret-key-backup` encrypted envelope を取得する。
 - `restore-gpg` は接続中 YubiKey と envelope recipient の照合に成功した場合のみ data encryption key を unwrap し、復号した backup を import へ渡す。
 - GPG 鍵リングの import API は `gpgme` に固定し、通常実装で `gpg` CLI は使わない。
-- import 対象は 1 つの primary key と、encryption / authentication / signing subkey を含む OpenPGP transferable secret key であることを検証する。
+- import 対象は入力全体を `CertParser` で消費した exactly one OpenPGP transferable secret key に限定する。certificate revocation が `NotAsFarAsWeKnow` であり、`StandardPolicy` / 現在時刻で supported、alive、non-revoked、secret と確認できる signing subkey、authentication subkey、さらに storage encryption または transport encryption subkey をそれぞれ一つ以上持つことを import 前に検証する。
 - `export-ssh-public-key` は authentication subkey 由来の公開鍵を OpenSSH 形式で stdout に出力し、秘密鍵素材は出力しない。
 - `restore-gpg` は import 成功後に gpg-agent SSH support 利用可否を確認し、利用不能なら停止する。
 - gpg-agent SSH support 利用可否の確認では、SSH agent socket が有効であり、authentication subkey を参照できることを確認する。
@@ -40,9 +41,15 @@
 
 ## backup export 入力契約
 
-`gpg-secret-key-backup` の envelope 作成入力は、既存環境のローカル鍵リングから得た OpenPGP transferable secret key bytes とする。export 対象は利用者が指定した primary fingerprint 1 件に限定し、export 前に encryption / authentication / signing subkey が揃っていることを検証する。
+`dotfiles secrets gpg-backup validate --primary-fingerprint <fingerprint>` は、BWS / YubiKey / GitHub /
+Git mutation より前に source key を non-mutating に検査する公開 preflight command である。gpgme export と
+Sequoia packet parser は memory 内だけで実行し、passphrase-free primary/subkey packet と E/A/S capability を
+確認する。protected / unknown packet は pinentry や PIN で補完せず停止する。これは provisioning source の
+入力契約であり、YubiKey を挿して実行するだけの新規マシン recovery contract を変更しない。
 
-export は `gpgme` の in-memory export API を使う。通常実装で `gpg --export-secret-keys` などの外部 CLI は使わず、secret key material を argv、shell history、ログ、永続一時ファイルへ出さない。export 直後の bytes は `sequoia-openpgp` で再解析し、導出した primary fingerprint が指定値と一致する場合だけ envelope 化へ進む。
+`gpg-secret-key-backup` の envelope 作成入力は、既存環境のローカル鍵リングから得た OpenPGP transferable secret key bytes とする。export 対象は利用者が指定した primary fingerprint 1 件に限定し、export bytes を上記 exactly-one certificate / passphrase-free secret packet / revocation / supported / alive / secret / capability policy で再検査する。
+
+export は `gpgme` の in-memory export API を使う。通常実装で `gpg --export-secret-keys` などの外部 CLI は使わず、secret key material を argv、shell history、ログ、永続一時ファイルへ出さない。export 直後の bytes は `sequoia-openpgp` で再解析し、primary key と全 secret subkey が non-encrypted で、導出した primary fingerprint が指定値と一致する場合だけ envelope 化へ進む。protected/unknown packet または pinentry が必要な export は BWS mutation 前に停止する。source host の鍵生成は repository CLI の責務ではなく、operator が passphrase なしの software key と E/A/S subkey を手動で準備する。
 
 envelope 化では、export bytes をそのまま ASCII armor へ変換せず、AES-256-GCM の DEK で暗号化する。DEK は接続中 YubiKey の slot `82` 公開鍵 recipient ごとに RSA-OAEP-SHA256 で wrap し、`recipients` に保存する。DEK、復号済み backup、export bytes は保護境界内の一時値として扱い、外部 command や永続ファイルへ渡さない。
 
@@ -61,7 +68,7 @@ envelope 化では、export bytes をそのまま ASCII armor へ変換せず、
 1. `gpgme` の OpenPGP context を生成する。
 2. BWS から取得した `gpg-secret-key-backup` encrypted envelope をメモリ上で検証する（version / metadata / recipients / ciphertext）。
 3. 接続中 YubiKey と一致する recipient で data encryption key を unwrap し、復号した backup バイト列を得る。
-4. `sequoia-openpgp` で復号済みバイト列をインメモリ解析し、import 前に primary fingerprint を導出する。比較に使う fingerprint は、後続の既存鍵照合と import 後再取得でそのまま使える canonical な 16 進文字列表現とする。
+4. `sequoia-openpgp` で復号済みバイト列をインメモリ解析し、import 前に primary fingerprint を導出する。比較に使う fingerprint は、後続の既存鍵照合と import 後再取得でそのまま使える canonical な 16 進文字列表現とする。同じ解析で primary key と全 secret subkey が passphrase-free packet であることを確認し、protected/unknown packet は `gpgme::Context::import` より前に停止する。
 5. 復号済み backup から導出した primary fingerprint が envelope `metadata.primary_fingerprint` と一致しない場合は停止する。
 6. 同一 primary fingerprint の secret key が既存の鍵リングにある場合は停止する。
 7. 復号済みバイト列を `gpgme::Data` に変換し、`Context::import` で鍵リングへ投入する。
@@ -94,7 +101,7 @@ subkey 検証は「存在する」だけではなく、利用可能状態を確�
 6. import 前に、同一 primary fingerprint の secret key が既存の鍵リングにあるか確認し、存在する場合は停止する。
 7. 復号済み backup を import 入力として `gpgme` へ渡す。
 8. import 後に対象鍵の subkey 構成（encryption / authentication / signing）を検証する。
-9. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する（既登録の場合は冪等）。
+9. authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録する（既登録の場合は冪等）。この invocation が新設した entry だけは、手順 10 の failure 時に rollback で除去する。
 10. gpg-agent SSH support が有効で、authentication subkey が SSH identity として利用可能であることを確認する。
 
 復元処理は以下を満たす。
@@ -154,6 +161,15 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 
 ## コマンド境界
 
+### `dotfiles secrets gpg-backup validate`
+
+- source provisioning の non-mutating preflight として、指定 primary fingerprint の keyring inspection、
+  in-memory secret-key export、transferable secret packet parser、E/A/S capability validation をこの順に行う。
+- protected / unknown packet、fingerprint 不一致、capability 不足では BWS、YubiKey、GitHub、Git、鍵リングを
+  mutation せず停止する。passphrase、pinentry、PIV/OpenPGP PIN を追加入力として要求しない。
+- source provisioning だけがこの command を呼ぶ。新規マシン recovery の public contract は
+  [spec の無対話復旧の利用者契約](./secret-recovery-spec.md#無対話復旧の利用者契約) のままである。
+
 ### `dotfiles secrets restore-gpg`
 
 - `gpg-secret-key-backup` encrypted envelope を取得し、`version` / `metadata` / `recipients` / `ciphertext` を検証する。
@@ -161,7 +177,7 @@ authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 
 - 導出した primary fingerprint が envelope `metadata.primary_fingerprint` と一致することを検証する。
 - 同一 primary fingerprint の既存鍵リング衝突を確認し、衝突がなければ復号済み backup を GPG secret key として import する。
 - encryption / authentication / signing subkey の存在と利用可能状態（revoked / expired / disabled でないこと）を検証する。
-- authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録し、既登録ならその状態を維持する（冪等）。
+- authentication subkey の keygrip を gpg-agent の SSH key list（`sshcontrol` 相当）へ登録し、既登録ならその状態を維持する（冪等）。SSH support failure では invocation が追加した entry だけを除去し、import した secret key とともに rollback する。
 - gpg-agent SSH support 利用可否を確認する。
 
 ### `dotfiles gpg export-ssh-public-key`

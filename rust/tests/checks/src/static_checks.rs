@@ -1,14 +1,19 @@
 //! VM を使わずに実行できる静的検証。
 //!
-//! Rust、shell script、Nix flake などの外部検証コマンドを順に実行する。
+//! Rust、shell 構文、Nix flake、workflow、AST 境界などの静的検証を実行する。
 
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
 
 use anyhow::{bail, ensure};
+use proc_macro2::TokenStream;
+use syn::parse::Parser;
 use xshell::{Shell, cmd};
 
 use crate::{Result, command::step};
+
+mod architecture_boundaries;
+mod documentation_comments;
 
 /// dirty な実マシン状態に依存しない、リポジトリ内だけで完結する検証を実行する。
 pub(crate) fn check() -> Result<()> {
@@ -19,7 +24,10 @@ pub(crate) fn check() -> Result<()> {
     auto_update_wrapper_uses_update_all_semantics(&shell)?;
     darwin_home_manager_propagates_include_self_package(&shell)?;
     nix_flake_source_candidates_are_tracked()?;
+    architecture_boundaries::check(&shell)?;
+    documentation_comments::check(&shell)?;
     adapter_boundary_is_structurally_closed(&shell)?;
+    internal_stub_observation_is_mechanically_isolated(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)
 }
@@ -39,13 +47,18 @@ pub(crate) fn check() -> Result<()> {
 /// に置く場合でも support -> adapter 依存を作れない。
 fn adapter_boundary_is_structurally_closed(shell: &Shell) -> Result<()> {
     step("adapter structural boundary");
-    let root = shell
+    let feature_root = shell
         .current_dir()
-        .join("rust/dotfiles-secrets/src/adapters");
-    let mut files = Vec::new();
-    collect_rust_files(&root, &mut files)?;
+        .join("rust/dotfiles-secrets/src/features");
+    let files = feature_layer_files(&feature_root, "adapters")?;
     let mut violations = Vec::new();
     for path in files {
+        // `adapters.rs` is the feature-private module declaration, not an
+        // adapter implementation source.  The manifest checker owns its
+        // visibility/import rule; forwarding shape applies to leaf files.
+        if path.file_stem().is_some_and(|stem| stem == "adapters") {
+            continue;
+        }
         let source = fs::read_to_string(&path)?;
         let syntax = syn::parse_file(&source).map_err(|error| {
             anyhow::anyhow!("failed to parse adapter source {}: {error}", path.display())
@@ -53,11 +66,7 @@ fn adapter_boundary_is_structurally_closed(shell: &Shell) -> Result<()> {
         collect_adapter_item_violations(&syntax.items, false, &path, &mut violations);
     }
 
-    let support = shell
-        .current_dir()
-        .join("rust/dotfiles-secrets/src/support");
-    let mut support_files = Vec::new();
-    collect_rust_files(&support, &mut support_files)?;
+    let support_files = feature_layer_files(&feature_root, "support")?;
     for path in support_files {
         let source = fs::read_to_string(&path)?;
         let syntax = syn::parse_file(&source).map_err(|error| {
@@ -72,6 +81,23 @@ fn adapter_boundary_is_structurally_closed(shell: &Shell) -> Result<()> {
         violations.join(", ")
     );
     Ok(())
+}
+
+/// feature-first source layout の指定 layer 配下だけを収集する。
+///
+/// `features/<feature>/<layer>.rs` は module declaration であり、実装 source
+/// は `features/<feature>/<layer>/**/*.rs` に置く。層名を path component として
+/// 判定することで、旧 flat `src/adapters` / `src/support` path へ戻ることを防ぐ。
+fn feature_layer_files(feature_root: &Path, layer: &str) -> Result<Vec<PathBuf>> {
+    let mut all_feature_files = Vec::new();
+    collect_rust_files(feature_root, &mut all_feature_files)?;
+    Ok(all_feature_files
+        .into_iter()
+        .filter(|path| {
+            path.components()
+                .any(|component| component.as_os_str() == layer)
+        })
+        .collect())
 }
 
 fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
@@ -92,11 +118,20 @@ fn collect_adapter_item_violations(
     path: &Path,
     violations: &mut Vec<String>,
 ) {
-    let support_backend_modules = support_backend_imported_modules(items);
+    let owned_backends = forwarding_backend_imported_identifiers(items);
     for item in items {
         match item {
             syn::Item::Use(_) if !inside_inline_test => {}
-            syn::Item::Impl(item_impl) if !inside_inline_test => {
+            // A test-only port implementation is intentionally absent from
+            // the production adapter surface.  It must be skipped before
+            // the production impl arm; otherwise the guarded arm does not
+            // match and the catch-all below reports a false forbidden-item
+            // violation.
+            syn::Item::Impl(item_impl)
+                if !inside_inline_test && is_test_only_cfg(&item_impl.attrs) => {}
+            syn::Item::Impl(item_impl)
+                if !inside_inline_test && !is_test_only_cfg(&item_impl.attrs) =>
+            {
                 if item_impl.trait_.is_none() {
                     violations.push(format!("{}: inherent impl is forbidden", path.display()));
                     continue;
@@ -117,9 +152,9 @@ fn collect_adapter_item_violations(
                         path.display()
                     ));
                 }
-                if !is_forwarding_only_impl(item_impl, &support_backend_modules) {
+                if !is_forwarding_only_impl(item_impl, &owned_backends) {
                     violations.push(format!(
-                        "{}: adapter port implementation must forward each method directly to a support-owned backend operation",
+                        "{}: adapter port implementation must forward each method directly to an owned backend operation",
                         path.display()
                     ));
                 }
@@ -159,6 +194,63 @@ fn is_inline_test_module(module: &syn::ItemMod) -> bool {
     })
 }
 
+/// A `#[cfg(test)]` impl or an explicitly designated internal test-stub
+/// feature is not a production adapter implementation. In particular, an
+/// empty impl may be required to satisfy a test-only port surface while the
+/// real `#[cfg(not(test))]` implementation remains subject to the forwarding
+/// gate. Arbitrary features and compound predicates remain checked.
+fn is_test_only_cfg(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute.meta.require_list().is_ok_and(|list| {
+                // Parse the predicate instead of comparing TokenStream text.
+                // `all(test, ...)` is still test-only: every configuration
+                // satisfying it has `test` enabled.  Conversely, `any(...)`
+                // is exempt only when every branch is explicitly test-only;
+                // this keeps `any(test, production_feature)` in the checked
+                // production surface.  The same recursive rule covers the
+                // compound cfg used by the gpg-agent adapter's test stub.
+                cfg_predicate_is_test_only(&list.tokens)
+            })
+    })
+}
+
+fn cfg_predicate_is_test_only(tokens: &TokenStream) -> bool {
+    let Ok(predicate) = syn::parse2::<syn::Meta>(tokens.clone()) else {
+        return false;
+    };
+    cfg_meta_is_test_only(&predicate)
+}
+
+fn cfg_meta_is_test_only(predicate: &syn::Meta) -> bool {
+    match predicate {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::NameValue(name_value) => {
+            name_value.path.is_ident("feature")
+                && matches!(
+                    &name_value.value,
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(value),
+                        ..
+                    }) if value.value() == "secrets-internal-test-stub"
+                )
+        }
+        syn::Meta::List(list) if list.path.is_ident("all") => {
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+                .parse2(list.tokens.clone())
+                .is_ok_and(|predicates| predicates.iter().any(cfg_meta_is_test_only))
+        }
+        syn::Meta::List(list) if list.path.is_ident("any") => {
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+                .parse2(list.tokens.clone())
+                .is_ok_and(|predicates| {
+                    !predicates.is_empty() && predicates.iter().all(cfg_meta_is_test_only)
+                })
+        }
+        _ => false,
+    }
+}
+
 fn adapter_item_kind(item: &syn::Item) -> &'static str {
     match item {
         syn::Item::Const(_) => "const",
@@ -181,10 +273,11 @@ fn adapter_item_kind(item: &syn::Item) -> &'static str {
     }
 }
 
-/// adapter は support-owned concrete backend への forwarding-only trait implementation である。
+/// adapter は support-owned concrete backend または presentation-owned feature I/O backend
+/// への forwarding-only trait implementation である。
 ///
-/// method body は support-owned backend module の `module::operation(args...)` を呼ぶ単一
-/// expression（async の `.await` を含む）だけを許可する。support backend が receiver を要求する場合は
+/// method body は backend module/type の `Backend::operation(args...)` を呼ぶ単一
+/// expression（async の `.await` を含む）だけを許可する。backend が receiver を要求する場合は
 /// call の先頭引数が同じ `self`、それ以外の引数は port method の named parameter と同じ順序・個数・
 /// identifier でなければならない。これにより fabricated/default receiver、引数省略・並替え、local
 /// conversion を adapter に潜ませない。`self.method()` を含む method call は、receiver が support-owned
@@ -193,20 +286,18 @@ fn adapter_item_kind(item: &syn::Item) -> &'static str {
 /// 複合的な body は fail-closed にする。
 fn is_forwarding_only_impl(
     item_impl: &syn::ItemImpl,
-    support_backend_modules: &std::collections::BTreeSet<String>,
+    owned_backends: &std::collections::BTreeSet<String>,
 ) -> bool {
     !item_impl.items.is_empty()
         && item_impl.items.iter().all(|item| match item {
-            syn::ImplItem::Fn(method) => {
-                method_is_direct_backend_forward(method, support_backend_modules)
-            }
+            syn::ImplItem::Fn(method) => method_is_direct_backend_forward(method, owned_backends),
             _ => false,
         })
 }
 
 fn method_is_direct_backend_forward(
     method: &syn::ImplItemFn,
-    support_backend_modules: &std::collections::BTreeSet<String>,
+    owned_backends: &std::collections::BTreeSet<String>,
 ) -> bool {
     let [syn::Stmt::Expr(expression, None)] = method.block.stmts.as_slice() else {
         return false;
@@ -218,7 +309,7 @@ fn method_is_direct_backend_forward(
     let syn::Expr::Call(call) = expression else {
         return false;
     };
-    call_targets_support_backend_module(call.func.as_ref(), support_backend_modules)
+    call_targets_owned_backend(call.func.as_ref(), owned_backends)
         && call_forwards_method_arguments_exactly(method, call)
 }
 
@@ -272,9 +363,9 @@ fn expression_is_ident(expression: &syn::Expr, identifier: &str) -> bool {
     )
 }
 
-fn call_targets_support_backend_module(
+fn call_targets_owned_backend(
     expression: &syn::Expr,
-    support_backend_modules: &std::collections::BTreeSet<String>,
+    owned_backends: &std::collections::BTreeSet<String>,
 ) -> bool {
     let syn::Expr::Path(path) = expression else {
         return false;
@@ -298,21 +389,25 @@ fn call_targets_support_backend_module(
             && last.ident != "support";
     }
 
-    support_backend_modules.contains(&module.ident.to_string())
-        && support_backend_modules.contains(&segments[0].ident.to_string())
+    owned_backends.contains(&module.ident.to_string())
+        && owned_backends.contains(&segments[0].ident.to_string())
 }
 
-/// adapter の `use` から support-owned concrete backend module のローカル名を抽出する。
+/// adapter の `use` から forwarding 先として許可する backend module/type のローカル名を抽出する。
 ///
 /// forwarding source は `use crate::support::bws_backend; bws_backend::operation(...)` の
 /// ように support を省略して呼べる。この解決をしないと、正しい forwarding を helper 呼び出しと
 /// 誤判定する。一方、function / type の単体 import や support 以外から import した同名 module は
-/// 集合に入れない。
-fn support_backend_imported_modules(items: &[syn::Item]) -> std::collections::BTreeSet<String> {
+/// 集合に入れない。feature I/O は architecture 上 presentation 所有なので、
+/// `crate::features::<feature>::presentation::*` から import した明示許可型だけを同じ集合へ加える。
+fn forwarding_backend_imported_identifiers(
+    items: &[syn::Item],
+) -> std::collections::BTreeSet<String> {
     let mut identifiers = std::collections::BTreeSet::new();
     for item in items {
         if let syn::Item::Use(item_use) = item {
             collect_support_backend_imported_modules(&item_use.tree, false, &mut identifiers);
+            collect_presentation_backend_imported_types(&item_use.tree, false, &mut identifiers);
         }
     }
     identifiers
@@ -356,10 +451,58 @@ fn collect_support_backend_imported_modules(
     }
 }
 
+fn collect_presentation_backend_imported_types(
+    tree: &syn::UseTree,
+    inside_presentation: bool,
+    identifiers: &mut std::collections::BTreeSet<String>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let identifier = path.ident.to_string();
+            let next_inside_presentation = inside_presentation || identifier == "presentation";
+            collect_presentation_backend_imported_types(
+                path.tree.as_ref(),
+                next_inside_presentation,
+                identifiers,
+            );
+        }
+        syn::UseTree::Name(name)
+            if inside_presentation && is_presentation_backend_type(&name.ident.to_string()) =>
+        {
+            identifiers.insert(name.ident.to_string());
+        }
+        syn::UseTree::Rename(rename)
+            if inside_presentation && is_presentation_backend_type(&rename.ident.to_string()) =>
+        {
+            identifiers.insert(rename.rename.to_string());
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_presentation_backend_imported_types(item, inside_presentation, identifiers);
+            }
+        }
+        syn::UseTree::Glob(_) | syn::UseTree::Name(_) | syn::UseTree::Rename(_) => {}
+    }
+}
+
+fn is_presentation_backend_type(identifier: &str) -> bool {
+    matches!(
+        identifier,
+        "HiddenBootstrapDocumentInput"
+            | "HiddenTokenInput"
+            | "JsonReport"
+            | "ProcessPresentation"
+            | "StreamedBootstrapDocumentInput"
+            | "StreamedTokenInput"
+            | "TerminalPivPinInput"
+    )
+}
+
 fn is_support_backend_module_identifier(identifier: &str) -> bool {
     matches!(
         identifier,
         "bws_backend"
+            | "clock"
             | "gpg_cipher_backend"
             | "gpg_keyring_backend"
             | "git_clone"
@@ -460,37 +603,14 @@ fn attribute_or_path_mentions_adapters(attributes: &[syn::Attribute]) -> bool {
     })
 }
 
-/// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint、テストを回す。
+/// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint を回す。
 fn rust(shell: &Shell) -> Result<()> {
     step("cargo fmt");
     cmd!(shell, "cargo fmt --all -- --check").run()?;
     step("cargo check");
     cmd!(shell, "env RUSTFLAGS='-D warnings' cargo check --workspace").run()?;
     step("cargo clippy");
-    cmd!(
-        shell,
-        "cargo clippy --workspace --all-targets -- -D warnings"
-    )
-    .run()?;
-    step("cargo test");
-    cmd!(
-        shell,
-        "env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets"
-    )
-    .run()?;
-    step("cargo test secrets internal stub");
-    cmd!(
-        shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --no-default-features --features secrets-internal-test-stub --test secrets_cli"
-    )
-    .run()?;
-    internal_stub_observation_is_mechanically_isolated(shell)?;
-    step("cargo test secrets application");
-    cmd!(
-        shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-secrets --lib application"
-    )
-    .run()?;
+    cmd!(shell, "cargo clippy --workspace -- -D warnings").run()?;
     Ok(())
 }
 
@@ -533,16 +653,11 @@ fn internal_stub_observation_is_mechanically_isolated(shell: &Shell) -> Result<(
     Ok(())
 }
 
-/// shell script の構文と、外部状態に依存しない provisioning 分岐を検証する。
+/// shell script の構文だけを検証する。実行 fixture は `test` が所有する。
 fn shell_scripts(shell: &Shell) -> Result<()> {
     step("shell scripts");
     cmd!(shell, "bash -n scripts/bootstrap.sh").run()?;
     cmd!(shell, "bash -n scripts/provision-secret-recovery-source.sh").run()?;
-    cmd!(
-        shell,
-        "bash scripts/provision-secret-recovery-source_test.sh"
-    )
-    .run()?;
     Ok(())
 }
 
@@ -1035,8 +1150,8 @@ mod tests {
         assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
         assert_nightly_record_secret_gating_is_testable_and_bounded,
-        collect_adapter_item_violations, collect_rust_files, collect_support_to_adapter_violations,
-        ensure_nix_source_candidates_are_tracked, record_secret_gate_allows,
+        collect_adapter_item_violations, collect_support_to_adapter_violations,
+        ensure_nix_source_candidates_are_tracked, feature_layer_files, record_secret_gate_allows,
         untracked_nix_source_candidates,
     };
     use std::fs;
@@ -1238,7 +1353,8 @@ mod tests {
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_helpers_state_inherent_impls_and_non_forwarding_port_method() {
+    fn adapter_ast_gate_rejects_helpers_state_inherent_impls_and_non_forwarding_port_method()
+    -> TestResult {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
@@ -1249,15 +1365,16 @@ mod tests {
             struct StubState;
             impl crate::support::Backend { fn leaked_inherent(&self) {} }
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert_eq!(violations.len(), 4);
+        Ok(())
     }
 
     #[test]
-    fn adapter_ast_gate_allows_port_impl_and_inline_unit_test() {
+    fn adapter_ast_gate_allows_port_impl_and_inline_unit_test() -> TestResult {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
@@ -1269,45 +1386,163 @@ mod tests {
                 fn private_test_helper_is_local() {}
             }
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert!(violations.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_adapter_receiver_method_call() {
+    fn adapter_ast_gate_allows_cfg_test_only_empty_port_impl_but_checks_production_impl()
+    -> TestResult {
+        let source = r#"
+            use crate::ports::Port;
+            #[cfg(not(test))]
+            impl Port for crate::support::Backend {
+                fn translate(&self) { crate::support::bws_backend::translate(self) }
+            }
+            #[cfg( test )]
+            impl Port for crate::support::Backend {}
+        "#;
+        let syntax = syn::parse_file(source)?;
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert!(violations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_ast_gate_recognizes_compound_test_only_cfg() -> TestResult {
+        let source = r#"
+            use crate::ports::Port;
+            #[cfg(all(test, not(feature = "secrets-internal-test-stub")))]
+            impl Port for crate::support::Backend {}
+            #[cfg(any(test, feature = "production"))]
+            impl Port for crate::support::Backend {}
+        "#;
+        let syntax = syn::parse_file(source)?;
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_ast_gate_does_not_skip_cfg_not_test_non_forwarding_impl() -> TestResult {
+        let source = r#"
+            use crate::ports::Port;
+            #[cfg(not(test))]
+            impl Port for crate::support::Backend {
+                fn translate(&self) { self.translate() }
+            }
+            #[cfg(test)]
+            impl Port for crate::support::Backend {}
+        "#;
+        let syntax = syn::parse_file(source)?;
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_ast_gate_allows_only_explicit_internal_stub_feature() -> TestResult {
+        let source = r#"
+            use crate::ports::Port;
+            #[cfg(feature = "secrets-internal-test-stub")]
+            impl Port for crate::support::Backend {
+                fn translate(&self) { self.translate() }
+            }
+            #[cfg(feature = "other-test-double")]
+            impl Port for crate::support::Backend {
+                fn translate(&self) { self.translate() }
+            }
+        "#;
+        let syntax = syn::parse_file(source)?;
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_ast_gate_allows_presentation_owned_io_backend_type() -> TestResult {
+        let source = r#"
+            use crate::ports::Port;
+            use crate::presentation::io::ProcessPresentation;
+            impl Port for ProcessPresentation {
+                fn translate(&self, value: String) {
+                    ProcessPresentation::translate(self, value)
+                }
+            }
+        "#;
+        let syntax = syn::parse_file(source)?;
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert!(violations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_non_presentation_backend_with_allowed_type_name() -> TestResult {
+        let source = r#"
+            use crate::ports::Port;
+            use crate::domain::ProcessPresentation;
+            impl Port for ProcessPresentation {
+                fn translate(&self, value: String) {
+                    ProcessPresentation::translate(self, value)
+                }
+            }
+        "#;
+        let syntax = syn::parse_file(source)?;
+        let path = std::path::Path::new("adapter.rs");
+        let mut violations = Vec::new();
+        collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
+        assert_eq!(violations.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_ast_gate_rejects_adapter_receiver_method_call() -> TestResult {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
                 fn translate(&self) { self.translate() }
             }
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert_eq!(violations.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_support_non_backend_direct_call() {
+    fn adapter_ast_gate_rejects_support_non_backend_direct_call() -> TestResult {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
                 fn translate(&self) { crate::support::utility::translate() }
             }
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert_eq!(violations.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_branching_before_backend_call() {
+    fn adapter_ast_gate_rejects_branching_before_backend_call() -> TestResult {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
@@ -1316,15 +1551,16 @@ mod tests {
                 }
             }
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert_eq!(violations.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_adapter_owned_conversion_before_forwarding() {
+    fn adapter_ast_gate_rejects_adapter_owned_conversion_before_forwarding() -> TestResult {
         let source = r#"
             use crate::ports::Port;
             impl Port for crate::support::Backend {
@@ -1334,15 +1570,16 @@ mod tests {
                 }
             }
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("adapter.rs");
         let mut violations = Vec::new();
         collect_adapter_item_violations(&syntax.items, false, path, &mut violations);
         assert_eq!(violations.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn adapter_ast_gate_rejects_fabricated_or_reordered_forwarding_arguments() {
+    fn adapter_ast_gate_rejects_fabricated_or_reordered_forwarding_arguments() -> TestResult {
         for source in [
             r#"
                 use crate::ports::Port;
@@ -1369,7 +1606,7 @@ mod tests {
                 }
             "#,
         ] {
-            let syntax = syn::parse_file(source).expect("test Rust source must parse");
+            let syntax = syn::parse_file(source)?;
             let mut violations = Vec::new();
             collect_adapter_item_violations(
                 &syntax.items,
@@ -1379,10 +1616,11 @@ mod tests {
             );
             assert_eq!(violations.len(), 1, "source: {source}");
         }
+        Ok(())
     }
 
     #[test]
-    fn support_ast_gate_rejects_adapter_import_and_path_include() {
+    fn support_ast_gate_rejects_adapter_import_and_path_include() -> TestResult {
         let source = r#"
             use crate::adapters::Backend;
             use crate::adapter_bw as real_backend;
@@ -1391,11 +1629,12 @@ mod tests {
             mod forbidden;
             include!("../adapter_yubikey.rs");
         "#;
-        let syntax = syn::parse_file(source).expect("test Rust source must parse");
+        let syntax = syn::parse_file(source)?;
         let path = std::path::Path::new("support.rs");
         let mut violations = Vec::new();
         collect_support_to_adapter_violations(&syntax.items, path, &mut violations);
         assert_eq!(violations.len(), 4);
+        Ok(())
     }
 
     /// 実 repository source も同じ AST rule を満たすことを、Cargo/Nix/full check を起動せず確認する。
@@ -1405,12 +1644,9 @@ mod tests {
             .ancestors()
             .nth(3)
             .ok_or_else(|| anyhow::anyhow!("workspace root must be an ancestor of checks crate"))?;
-        let adapters = root.join("rust/dotfiles-secrets/src/adapters");
-        let support = root.join("rust/dotfiles-secrets/src/support");
-        let mut adapter_files = Vec::new();
-        let mut support_files = Vec::new();
-        collect_rust_files(&adapters, &mut adapter_files)?;
-        collect_rust_files(&support, &mut support_files)?;
+        let feature_root = root.join("rust/dotfiles-secrets/src/features");
+        let adapter_files = feature_layer_files(&feature_root, "adapters")?;
+        let support_files = feature_layer_files(&feature_root, "support")?;
         let mut violations = Vec::new();
 
         for path in adapter_files {
@@ -1430,7 +1666,7 @@ mod tests {
 
     #[test]
     fn nix_flake_source_preflight_rejects_untracked_cargo_and_nix_sources() -> TestResult {
-        let repo = unique_temp_dir("dotfiles-nix-source-preflight");
+        let repo = unique_temp_dir("dotfiles-nix-source-preflight")?;
         fs::create_dir_all(repo.join("rust/dotfiles-cli/src/bin"))?;
         fs::create_dir_all(repo.join("nix"))?;
         fs::create_dir_all(repo.join("docs"))?;
@@ -1464,7 +1700,7 @@ mod tests {
 
     #[test]
     fn nix_flake_source_preflight_accepts_tracked_sources_and_ignores_local_notes() -> TestResult {
-        let repo = unique_temp_dir("dotfiles-nix-source-preflight-tracked");
+        let repo = unique_temp_dir("dotfiles-nix-source-preflight-tracked")?;
         fs::create_dir_all(repo.join("rust/dotfiles-cli/src"))?;
         fs::create_dir_all(repo.join("nix"))?;
         fs::create_dir_all(repo.join("docs"))?;
@@ -1503,11 +1739,11 @@ mod tests {
         }
     }
 
-    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    fn unique_temp_dir(prefix: &str) -> anyhow::Result<std::path::PathBuf> {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .map_err(|error| anyhow::anyhow!("system time before unix epoch: {error}"))?
             .as_nanos();
-        env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id()))
+        Ok(env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id())))
     }
 }

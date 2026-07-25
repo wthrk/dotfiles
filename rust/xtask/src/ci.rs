@@ -2,14 +2,14 @@
 //!
 //! nightly bump PR を無人 auto-merge してよいかを決めるセキュリティチェック `verify-bump-lock` の実体を
 //! ここに置く。`nightly-update.yml` の open-pr job が同一 run 内でこれをインライン実行し、合格時のみ PR head
-//! へ `static checks` commit status を投稿して required check を満たす。判定ロジック自体は I/O を持たない
+//! へ `static checks` / `test checks` commit status を投稿して required check を満たす。判定ロジック自体は I/O を持たない
 //! [`bump_lock`] に閉じ、本 module は CI から「PR の全 commit を union した変更パス」「base / head の
 //! `flake.lock` 内容」を集めて純粋核へ渡す薄い層に限定する。shell の中に判定を再実装せず、Rust unit test で
 //! 固定した規則を CI から呼ぶことで、gate の fail-open を避ける。
 //!
 //! 配置は xtask（保守コマンド）に固定する。これは利用者が直接実行する操作ではなく、リポジトリ CI / 保守の
-//! 機械判定であり、nightly-update workflow は同一 job 内で既に `cargo xtask check static` を `nix develop -c`
-//! 経由で呼ぶため、xtask の cargo ビルド経路へ追加で依存させることはない。
+//! 機械判定であり、nightly-update workflow は同一 job 内で `cargo xtask check static` と
+//! `cargo xtask check test` を `nix develop -c` 経由で呼ぶため、xtask の cargo ビルド経路へ追加で依存させることはない。
 //!
 //! 変更パス収集は `git diff --name-only base..head`（両端 tree の net 差分）ではなく
 //! `git log --no-renames --name-only --pretty=format: base..head`（範囲内 **全 commit** の変更ファイル）を

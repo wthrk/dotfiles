@@ -27,9 +27,6 @@ pub(crate) fn run_clear(
 ) -> Result<()> {
     command.ensure_confirmed()?;
     let serial = device.resolve_device_serial(command.serial)?;
-    device
-        .inspect_device_profile(serial)?
-        .ensure_pin_free_recovery_supported()?;
     let pin = piv_pin.read_piv_pin_secret()?;
     storage.begin_piv_management_session(serial, pin)?;
 
@@ -73,7 +70,6 @@ mod tests {
     use crate::{
         features::yubikey_lifecycle::{
             domain::{
-                self as domain,
                 commands::ClearCommand,
                 manifest::SecretManifest,
                 piv::{PivApplicationVersion, SecretName},
@@ -86,17 +82,8 @@ mod tests {
 
     use super::run_clear;
 
-    fn expect_pin_free_device_profile(device: &mut MockDeviceSerialPort) {
-        device.expect_inspect_device_profile().returning(|_| {
-            Ok(domain::piv::PivDeviceProfile {
-                version: domain::piv::PivApplicationVersion {
-                    major: 5,
-                    minor: 7,
-                    patch: 1,
-                },
-                fips_series: false,
-            })
-        });
+    fn configure_management_device_fixture(device: &mut MockDeviceSerialPort) {
+        let _ = device;
     }
 
     #[test]
@@ -146,7 +133,7 @@ mod tests {
         pin: &mut crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort,
         storage: &mut MockSecretStoragePort,
     ) {
-        expect_pin_free_device_profile(device);
+        configure_management_device_fixture(device);
         device
             .expect_resolve_device_serial()
             .times(1)

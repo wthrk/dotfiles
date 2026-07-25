@@ -29,7 +29,8 @@ pub fn run(target: ApplyTarget) -> Result<()> {
     }
 }
 
-/// 適用前検証は runtime VM を起動しない `dotfiles-checks static` に限定する。
+/// 適用前検証は runtime VM と実行テストを起動しない `dotfiles-checks static` に限定する。
+/// workspace test や CLI/shell fixture は明示的な `cargo xtask check test` の責務であり、適用経路へ混ぜない。
 fn run_checks() -> Result<()> {
     let status = Command::new("cargo")
         .args(["run", "--package", "dotfiles-checks", "--", "static"])

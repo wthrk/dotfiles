@@ -1,3 +1,4 @@
+pub(crate) mod backend;
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 pub(crate) mod bws_backend;
 #[cfg(not(feature = "secrets-internal-test-stub"))]

@@ -22,11 +22,16 @@ pub struct PivDeviceProfile {
 }
 
 impl PivDeviceProfile {
-    /// PIN-free recovery key を生成・利用できる device range であることを確認する。
+    /// PIN-free recovery private-key を生成できる device range であることを確認する。
     ///
     /// Yubico は FIPS Series firmware 5.7.1 以降で `PinPolicy::Never` を禁止している。
-    /// 本 repository の recovery unwrap は追加入力なしを必須とするため、この組合せは fallback
-    /// せず typed failure にする。version 単独、reader 名、serial から FIPS を推測しない。
+    /// 根拠は [Yubico PIV PIN/touch policies](https://docs.yubico.com/yesdk/users-manual/application-piv/pin-touch-policies.html)
+    /// の PIN policy compatibility 規定であり、SDK の opaque error から推測しない。
+    /// 本 repository の recovery unwrap は追加入力なしを必須とするため、この組合せは key
+    /// generation 前に fallback せず typed failure にする。これは管理操作の設定済み PIV PIN →
+    /// VERIFY → protected management-key authentication を拒否する判定ではなく、管理 caller は
+    /// この関数を PIN入力前の preflight として呼んではならない。version 単独、reader 名、serial
+    /// から FIPS を推測しない。
     pub fn ensure_pin_free_recovery_supported(self) -> crate::Result<()> {
         if self.fips_series && self.version >= FIPS_PIN_NEVER_UNSUPPORTED_FROM {
             return Err(anyhow::Error::new(PivPinFreeRecoveryUnsupported {

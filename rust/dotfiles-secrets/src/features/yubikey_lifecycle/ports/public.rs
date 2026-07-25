@@ -13,9 +13,29 @@ pub(crate) use crate::features::yubikey_lifecycle::application::{
 };
 pub(crate) use crate::features::yubikey_lifecycle::domain::{
     commands::{ClearCommand, PutCommand, SetupCommand, StatusCommand},
-    manifest::{BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocumentInput},
+    manifest::{
+        BOOTSTRAP_SECRET_DOCUMENT_FIELD_LIMIT, BootstrapSecretDocument,
+        BootstrapSecretDocumentInput, BootstrapSecretDocumentReadPlan,
+    },
     piv::{SecretName, SecretStorageSpec},
-    storage::{SecretStorageReadIntent, SecretStorageStatus, SecretStorageVerificationPlan},
+    storage::{
+        SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
+        SecretStorageStatus, SecretStorageVerificationPlan, SecretStorageWriteIntent,
+        is_secret_storage_ownership_unknown,
+    },
+};
+
+// These domain values are consumed only by this crate's feature-gated unit tests.  Keeping the
+// test-only contract behind `cfg(test)` avoids advertising it as a production cross-feature
+// contract while preserving the test boundary used by provisioning/recovery fixtures.
+#[cfg(test)]
+pub(crate) use crate::features::yubikey_lifecycle::domain::{
+    manifest::{MANIFEST_APP, SecretManifest},
+    piv::{PivApplicationVersion, PivObjectId},
+    storage::{
+        SecretStorageReadInspection, SecretStorageSetupInspection, SecretStorageStatusInspection,
+        SecretStorageWriteInspection,
+    },
 };
 
 pub(crate) fn is_status_invalid_cause(cause: &(dyn std::error::Error + 'static)) -> bool {

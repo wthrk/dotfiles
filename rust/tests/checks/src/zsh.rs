@@ -17,9 +17,20 @@ use crate::{Result, command::current_user};
 /// 一時ホームを作り、ショートカットとキー操作の両方を検証する。
 pub fn check() -> Result<()> {
     let shell = Shell::new()?;
-    let home = TestHome::new(&shell)?;
-    shortcuts(&shell, &home)?;
-    key_operations(&shell, &home)
+    let mut home = TestHome::new(&shell)?;
+    let check_result = (|| {
+        shortcuts(&shell, &home)?;
+        key_operations(&shell, &home)
+    })();
+    let cleanup_result = home.cleanup();
+    match (check_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(check_error), Ok(())) => Err(check_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(check_error), Err(cleanup_error)) => Err(anyhow::anyhow!(
+            "zsh check failed: {check_error:#}; temporary-home cleanup failed: {cleanup_error:#}"
+        )),
+    }
 }
 
 /// zsh モジュールが利用者に約束する補完、ウィジェット、PATH の不変条件を検証する。
@@ -195,6 +206,7 @@ struct TestHome {
     user: String,
     config_dir: PathBuf,
     source_snapshot: PathBuf,
+    cleaned: bool,
 }
 
 impl TestHome {
@@ -208,8 +220,8 @@ impl TestHome {
         let source_root = env::current_dir()?.canonicalize()?;
         let source_snapshot =
             env::temp_dir().join(format!("dotfiles-zsh-source-{}-{suffix}", process::id()));
-        let _ = fs::remove_dir_all(&config_dir);
-        let _ = fs::remove_dir_all(&source_snapshot);
+        remove_if_present(&config_dir)?;
+        remove_if_present(&source_snapshot)?;
         fs::create_dir_all(&config_dir)?;
         materialize_tracked_snapshot(&source_root, &source_snapshot)?;
         let source = source_snapshot.canonicalize()?.display().to_string();
@@ -268,6 +280,7 @@ impl TestHome {
             user,
             config_dir,
             source_snapshot,
+            cleaned: false,
         })
     }
 
@@ -280,13 +293,42 @@ impl TestHome {
     fn user(&self) -> &str {
         &self.user
     }
+
+    /// 一時ホームと生成物を全て削除し、後片付け失敗を呼び出し元の判定へ返す。
+    fn cleanup(&mut self) -> Result<()> {
+        if self.cleaned {
+            return Ok(());
+        }
+        self.cleaned = true;
+        let mut failures = Vec::new();
+        for path in [&self.path, &self.config_dir, &self.source_snapshot] {
+            if let Err(error) = remove_if_present(path) {
+                failures.push(format!("{}: {error:#}", path.display()));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("temporary-home cleanup failed: {}", failures.join("; "))
+        }
+    }
 }
 
 impl Drop for TestHome {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-        let _ = fs::remove_dir_all(&self.config_dir);
-        let _ = fs::remove_dir_all(&self.source_snapshot);
+        if !self.cleaned
+            && let Err(error) = self.cleanup()
+        {
+            eprintln!("zsh check cleanup failure: {error:#}");
+        }
+    }
+}
+
+fn remove_if_present(path: &Path) -> Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -496,8 +538,8 @@ mod tests {
 
     #[test]
     fn tracked_snapshot_excludes_untracked_env_file() -> TestResult {
-        let repo = unique_temp_dir("dotfiles-zsh-tracked-source");
-        let snapshot = unique_temp_dir("dotfiles-zsh-tracked-dest");
+        let repo = unique_temp_dir("dotfiles-zsh-tracked-source")?;
+        let snapshot = unique_temp_dir("dotfiles-zsh-tracked-dest")?;
         fs::create_dir_all(repo.join("tracked"))?;
         fs::write(repo.join("tracked/config.txt"), "tracked\n")?;
         fs::write(repo.join(".env"), "SECRET=should-not-copy\n")?;
@@ -523,8 +565,8 @@ mod tests {
 
     #[test]
     fn tracked_snapshot_skips_deleted_tracked_file() -> TestResult {
-        let repo = unique_temp_dir("dotfiles-zsh-deleted-source");
-        let snapshot = unique_temp_dir("dotfiles-zsh-deleted-dest");
+        let repo = unique_temp_dir("dotfiles-zsh-deleted-source")?;
+        let snapshot = unique_temp_dir("dotfiles-zsh-deleted-dest")?;
         fs::create_dir_all(repo.join("tracked"))?;
         fs::write(repo.join("tracked/keep.txt"), "keep\n")?;
         fs::write(repo.join("tracked/deleted.txt"), "delete me\n")?;
@@ -551,8 +593,8 @@ mod tests {
 
     #[test]
     fn tracked_snapshot_resolves_repo_root_from_subdirectory() -> TestResult {
-        let repo = unique_temp_dir("dotfiles-zsh-subdir-source");
-        let snapshot = unique_temp_dir("dotfiles-zsh-subdir-dest");
+        let repo = unique_temp_dir("dotfiles-zsh-subdir-source")?;
+        let snapshot = unique_temp_dir("dotfiles-zsh-subdir-dest")?;
         fs::create_dir_all(repo.join("nested/work"))?;
         fs::create_dir_all(repo.join("tracked"))?;
         fs::write(repo.join("tracked/root.txt"), "root\n")?;
@@ -586,7 +628,7 @@ mod tests {
     #[ignore = "requires nix/cargo and runs the real zsh check path"]
     fn zsh_check_runs_via_test_home_new_with_tracked_snapshot() -> TestResult {
         let previous = env::current_dir()?;
-        env::set_current_dir(repo_root())?;
+        env::set_current_dir(repo_root()?)?;
         let result = check();
         env::set_current_dir(previous)?;
         result
@@ -601,19 +643,21 @@ mod tests {
         }
     }
 
-    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    fn unique_temp_dir(prefix: &str) -> anyhow::Result<std::path::PathBuf> {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .map_err(|error| anyhow::anyhow!("system time before unix epoch: {error}"))?
             .as_nanos();
-        env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id()))
+        Ok(env::temp_dir().join(format!("{prefix}-{}-{suffix}", process::id())))
     }
 
-    fn repo_root() -> &'static Path {
+    fn repo_root() -> anyhow::Result<&'static Path> {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
-            .expect("dotfiles-checks manifest dir should be nested under repo root")
+            .ok_or_else(|| {
+                anyhow::anyhow!("dotfiles-checks manifest dir must be nested under repo root")
+            })
     }
 
     fn io_error(message: String) -> std::io::Error {

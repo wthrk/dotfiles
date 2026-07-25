@@ -50,6 +50,8 @@ where
     pub(crate) ssh_agent: &'a mut dyn SshAgentPort,
     pub(crate) password_store: &'a mut dyn PasswordStorePort,
     pub(crate) git_clone: &'a mut dyn GitClonePort,
+    pub(crate) gpg_agent_socket:
+        &'a mut dyn crate::features::gpg_backup_recovery::ports::public::GpgAgentSocketPort,
     pub(crate) status_output: &'a dyn SecretStorageStatusOutputPort,
     pub(crate) rotation_continuation: &'a dyn RotationContinuationPort,
     pub(crate) clock: &'a dyn ClockPort,

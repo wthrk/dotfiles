@@ -9,7 +9,7 @@ Bitwarden Secrets Manager の access token は YubiKey storage の `bitwarden-cl
 - `gpg-secret-key-backup`: GPG secret key backup の encrypted envelope。
 - `password-store-remote`: private password-store repository の GitHub SSH clone URL。
 
-URL と envelope 本文は log/error/report に出さない。adapter は外部 API 型と repository domain 型の変換だけを担い、lookup の 0 件・1 件・複数件判定は domain/application 側に置く。
+URL と envelope 本文は log/error/report に出さない。support-owned BWS concrete receiver が SDK API 型と repository 境界型の technical conversion・error observation を担い、adapter は port trait の forwarding だけを担う。lookup の 0 件・1 件・複数件判定は domain/application 側に置く。
 
 ## Provisioning
 

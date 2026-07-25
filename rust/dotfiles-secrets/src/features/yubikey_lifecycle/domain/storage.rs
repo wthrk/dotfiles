@@ -612,8 +612,8 @@ impl SecretStorageStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::super::piv::SecretName;
     use super::*;
+    use crate::features::yubikey_lifecycle::domain::piv::SecretName;
 
     fn secret_with_len(len: usize) -> Result<ProtectedSecret> {
         ProtectedSecret::from_test_bytes(&vec![0; len])
@@ -736,7 +736,7 @@ mod tests {
 
         let v1 = SecretManifest {
             version: 1,
-            app: super::super::manifest::MANIFEST_APP.to_owned(),
+            app: crate::features::yubikey_lifecycle::domain::manifest::MANIFEST_APP.to_owned(),
             slot_public_key_spki: None,
         }
         .encode()?;
@@ -833,7 +833,7 @@ mod tests {
     fn version_one_manifest_is_never_migrated_by_setup_enrollment_or_provisioning() -> Result<()> {
         let v1 = SecretManifest {
             version: 1,
-            app: super::super::manifest::MANIFEST_APP.to_owned(),
+            app: crate::features::yubikey_lifecycle::domain::manifest::MANIFEST_APP.to_owned(),
             slot_public_key_spki: None,
         }
         .encode()?;

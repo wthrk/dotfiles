@@ -25,9 +25,7 @@ pub(crate) fn run_setup(
     storage: &mut dyn SecretStoragePort,
 ) -> Result<()> {
     let serial = device.resolve_device_serial(command.serial)?;
-    device
-        .inspect_device_profile(serial)?
-        .ensure_pin_free_recovery_supported()?;
+    device.preflight_device_profile(serial)?;
     let current_pin = piv_pin.read_current_piv_pin_secret()?;
     storage
         .begin_piv_pin_setup_preflight(serial, &current_pin)
@@ -82,10 +80,9 @@ mod tests {
     use crate::{
         features::yubikey_lifecycle::{
             domain::{
-                self as domain,
                 commands::SetupCommand,
                 manifest::SecretManifest,
-                piv::{PivApplicationVersion, PivDeviceProfile},
+                piv::PivApplicationVersion,
                 storage::{SecretStorageSetupInspection, SecretStorageSetupProbe},
             },
             ports::public::{MockDeviceSerialPort, MockSecretStoragePort},
@@ -96,17 +93,8 @@ mod tests {
 
     use super::run_setup;
 
-    fn expect_pin_free_device_profile(device: &mut MockDeviceSerialPort) {
-        device.expect_inspect_device_profile().returning(|_| {
-            Ok(domain::piv::PivDeviceProfile {
-                version: PivApplicationVersion {
-                    major: 5,
-                    minor: 7,
-                    patch: 1,
-                },
-                fips_series: false,
-            })
-        });
+    fn configure_management_device_fixture(device: &mut MockDeviceSerialPort) {
+        let _ = device;
     }
 
     fn fresh_inspection() -> SecretStorageSetupInspection {
@@ -132,7 +120,7 @@ mod tests {
     #[test]
     fn setup_runner_applies_the_confirmed_pins_in_order() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         let mut storage = MockSecretStoragePort::new();
         let mut sequence = Sequence::new();
@@ -142,6 +130,12 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(()));
         pin.expect_read_current_piv_pin_secret()
             .times(1)
             .in_sequence(&mut sequence)
@@ -210,47 +204,16 @@ mod tests {
     }
 
     #[test]
-    fn setup_rejects_fips_571_before_any_pin_input_or_storage_operation() {
-        let mut device = MockDeviceSerialPort::new();
-        device
-            .expect_resolve_device_serial()
-            .once()
-            .returning(|_| Ok(2001));
-        device
-            .expect_inspect_device_profile()
-            .once()
-            .returning(|_| {
-                Ok(PivDeviceProfile {
-                    version: PivApplicationVersion {
-                        major: 5,
-                        minor: 7,
-                        patch: 1,
-                    },
-                    fips_series: true,
-                })
-            });
-        let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
-        pin.expect_read_current_piv_pin_secret().never();
-        let mut storage = MockSecretStoragePort::new();
-        storage.expect_begin_piv_pin_setup_preflight().never();
-
-        let error = run_setup(
-            SetupCommand { serial: Some(2001) },
-            &mut device,
-            &pin,
-            &mut storage,
-        )
-        .expect_err("FIPS preflight must stop before PIN input");
-        assert!(error.to_string().contains("FIPS Series firmware 5.7.1"));
-    }
-
-    #[test]
     fn setup_runner_stops_after_inspection_failure_with_an_opaque_error() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(()));
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         pin.expect_read_current_piv_pin_secret()
             .returning(current_pin);
@@ -278,10 +241,14 @@ mod tests {
     #[test]
     fn setup_runner_stops_after_domain_intent_failure_with_an_opaque_error() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(()));
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         pin.expect_read_current_piv_pin_secret()
             .returning(current_pin);
@@ -318,10 +285,14 @@ mod tests {
     #[test]
     fn setup_runner_stops_after_pin_change_failure_with_an_opaque_error() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(()));
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         pin.expect_read_current_piv_pin_secret()
             .returning(current_pin);

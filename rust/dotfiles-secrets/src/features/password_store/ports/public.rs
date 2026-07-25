@@ -4,7 +4,7 @@ pub(crate) use super::git::{GitClonePort, PasswordStorePort};
 pub(crate) use super::git::{MockGitClonePort, MockPasswordStorePort};
 pub(crate) use crate::features::password_store::application::{
     register_remote::run_provision_password_store_remote,
-    restore_pass::{RestorePassYubikeyRuntime, run_restore_pass},
+    restore_pass::{RestorePassRuntime, RestorePassYubikeyRuntime, run_restore_pass_with_socket},
 };
 pub(crate) use crate::features::password_store::domain::{
     commands::{ProvisionPasswordStoreRemoteCommand, RestorePassCommand},

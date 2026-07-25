@@ -8,3 +8,6 @@ pub(crate) struct GpgKeyringBackend;
 
 #[derive(Default)]
 pub(crate) struct SshAgentBackend;
+
+#[derive(Default)]
+pub(crate) struct GpgAgentSocketBackend;

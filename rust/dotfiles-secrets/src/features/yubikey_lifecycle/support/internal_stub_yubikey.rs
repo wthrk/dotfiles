@@ -287,16 +287,16 @@ impl SecretDeviceIo for TestStubSecretDevice {
             // test-only physical-operation counter。一つの management session は VERIFY を一回送る。
             device.physical_verify_count += 1;
             match device.management_state {
-                StubManagementState::WrongPin => {
-                    Err(support::protection::yubikey_piv::verify_pin_failure(
+                StubManagementState::WrongPin => Err(
+                    crate::features::yubikey_lifecycle::support::yubikey_piv::verify_pin_failure(
                         yubikey::Error::WrongPin { tries: 3 },
-                    ))
-                }
-                StubManagementState::PinBlocked => {
-                    Err(support::protection::yubikey_piv::verify_pin_failure(
+                    ),
+                ),
+                StubManagementState::PinBlocked => Err(
+                    crate::features::yubikey_lifecycle::support::yubikey_piv::verify_pin_failure(
                         yubikey::Error::WrongPin { tries: 0 },
-                    ))
-                }
+                    ),
+                ),
                 _ => Ok(()),
             }
         };
@@ -474,8 +474,8 @@ impl SecretDeviceIo for TestStubSecretDevice {
             }
         })?;
 
-        let session = support::protection::SecretSession::start()?;
-        let buffer = support::protection::buffer::ProtectedInputBuffer::read_line_from(
+        let session = crate::foundation::protection::SecretSession::start()?;
+        let buffer = crate::foundation::protection::buffer::ProtectedInputBuffer::read_line_from(
             std::io::Cursor::new(value.into_bytes()),
             16 * 1024,
             &session,
@@ -522,7 +522,7 @@ pub(crate) fn discover_devices() -> Result<Vec<DeviceCandidate>> {
                 Ok(DeviceCandidate {
                     serial,
                     label: format!("stub-yubikey-{serial}"),
-                    profile: domain::piv::PivDeviceProfile {
+                    profile: crate::features::yubikey_lifecycle::domain::piv::PivDeviceProfile {
                         version: if device.fips_series {
                             PivApplicationVersion {
                                 major: 5,
@@ -556,10 +556,18 @@ pub(crate) fn open_device_by_serial(serial: u32) -> Result<SelectedSecretDevice>
             Ok(())
         })?;
     }
-    Ok(SelectedSecretDevice::new(TestStubSecretDevice {
-        serial,
-        management_authenticated: false,
-    }))
+    let profile = discover_devices()?
+        .into_iter()
+        .find(|candidate| candidate.serial == serial)
+        .map(|candidate| candidate.profile)
+        .ok_or_else(|| anyhow::anyhow!("stub YubiKey profile not found for serial {serial}"))?;
+    Ok(SelectedSecretDevice::new(
+        TestStubSecretDevice {
+            serial,
+            management_authenticated: false,
+        },
+        profile,
+    ))
 }
 
 fn stub_observes_on_open() -> Result<bool> {
@@ -774,7 +782,7 @@ fn device_datastore_from_spec(spec: YubiKeyDeviceSpec) -> Result<StubDeviceDatas
             let mut device = provisioned_device_datastore(default_secrets())?;
             let manifest = SecretManifest {
                 version: 1,
-                app: domain::manifest::MANIFEST_APP.to_owned(),
+                app: crate::features::yubikey_lifecycle::domain::manifest::MANIFEST_APP.to_owned(),
                 slot_public_key_spki: None,
             };
             device
@@ -914,7 +922,8 @@ fn observation_from_datastore(store: &YubiKeyDatastore) -> YubiKeyObservation {
         })
         .collect();
     YubiKeyObservation {
-        secret_input_attempt_count: support::process_io::secret_input_attempt_count(),
+        secret_input_attempt_count:
+            crate::secrets_internal_test_stub_contract::secret_input_attempt_count(),
         yubikeys,
     }
 }

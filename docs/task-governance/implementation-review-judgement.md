@@ -6,7 +6,7 @@
 
 レビューサイクルは次の3段階に分離する。
 
-1. **レビュー開始**: 差分識別子、必要な確認結果、必須担当の割当を確認する。
+1. **レビュー開始**: [比較 identity](implementation-execution.md#比較-identity) の差分識別子、必要な確認結果、必須担当の割当を確認する。
 2. **集約**: 必須担当の全判定を収集し、集約後レビュー判定を確定する。
 3. **完了判定への接続**: 集約判定 `合格` を前提に、コミット着手条件と完了判定担当への引き渡しを確認する。
 
@@ -70,7 +70,7 @@ test double / fixture の配置、inline unit test、internal backend stub、tes
 
 SDK / crate 利用が対象なら、公式一次資料が定義する成功・失敗遷移と各エラー値の扱いを、テストが実際に検証しているか、または文書・構造確認に分類すべきかを確認する。
 
-YubiKey の `setup` / `put` / `clear` / enroll / rotate、`status`、またはそれらを呼ぶ provisioning script が対象に含まれる場合、テストレビュー担当は [secret-recovery spec の command contract](../secret-recovery/secret-recovery-spec.md#到達仕様のコマンド一覧) を直接照合する。管理操作（`setup` / `put` / `clear` / enroll / rotate）は、controlling TTY から hidden prompt で設定済み PIV PIN を 1 回だけ取得し、PIN-protected management key 認証へ限定して使うこと、TTY を取得できない場合は secret input・device mutation の前に fail-closed することを回帰テストで確認する。PIN は stdin payload、argv、environment、stdout、stderr、log、一時ファイルへ渡してはならない。復旧 read/decrypt path（`status` / `verify-yubikey` / `restore-gpg` / `restore-pass`）は PIN prompt、PIN verification、management-key authentication を発生させず、PIN を要求した場合は回帰テストの有無にかかわらず `要修正` とし、仕様適合レビュー担当へ必須指摘として返す。
+YubiKey の `setup` / `put` / `clear` / enroll / rotate、`status`、またはそれらを呼ぶ provisioning script が対象に含まれる場合、テストレビュー担当は [secret-recovery spec の command contract](../secret-recovery/secret-recovery-spec.md#到達仕様のコマンド一覧) を直接照合する。`setup` と物理的に完全な fresh storage を初期化する enrollment は、controlling TTY の hidden prompt から current/new/confirmation を mutation 前に揃え、current PIN VERIFY、既存 PIN-protected management-key authentication、完全 inspection、PIN change、new PIN VERIFY、再認証を同一 handle で順に行うことを port mock unit test で確認する。`put`、`clear`、rotate、および initialized storage（`clear` 後を含む）の enrollment は、設定済み PIV PIN を 1 回だけ取得して PIN-protected management key 認証だけに使い、PIN change を行わないことを確認する。どの管理操作も TTY を取得できない場合は secret input・device mutation の前に fail-closed し、PIN を stdin payload、argv、environment、stdout、stderr、log、一時ファイルへ渡してはならない。復旧 read/decrypt path（`status` / `verify-yubikey` / `restore-gpg` / `restore-pass`）は PIN prompt、PIN verification、management-key authentication を発生させず、PIN を要求した場合は回帰テストの有無にかかわらず `要修正` とし、仕様適合レビュー担当へ必須指摘として返す。
 
 ### ドキュメントレビュー担当
 
@@ -88,10 +88,11 @@ YubiKey の `setup` / `put` / `clear` / enroll / rotate、`status`、または�
 
 ## レビュー開始条件
 
-- 対象差分識別子がある。
+- 対象差分識別子と、開始/S1 完了/S2 開始で一致した [比較 identity](implementation-execution.md#比較-identity) がある。
 - 比較範囲またはレビュー対象が固定されている。
 - 必要な確認結果があり、対象差分に対して何を確認したか追跡できる。
 - 必須レビュー担当が割り当て済みである。
+- [implementation-execution.md の全経路閉鎖不変条件](implementation-execution.md#全経路閉鎖不変条件) に従う、handoff へ統合済みの全影響 coverage、counterexample、S1 自己照合の証跡がある。文書主成果物では、文書 flow、利用者・役割、参照経路、必要証跡、明示除外を同じ coverage で確認する。
 
 文書是正・文書主成果物では、exact tracked-file set、file-count、補助記録の完全同期を開始条件にしない。
 
@@ -128,8 +129,10 @@ YubiKey の `setup` / `put` / `clear` / enroll / rotate、`status`、または�
 - 必須担当が全員 `合格` の場合のみ `集約後レビュー判定: 合格`。
 - 具体的懸念、残留リスク、未解消疑義、要追跡事項、運用依存の注意事項を記録したレビューは finding ありと扱う。
 - finding ありの記録が残る場合、当該レビュー担当判定は少なくとも `要修正` とし、集約後レビュー判定を `合格` にしてはならない。
+- 全経路閉鎖不変条件に反する穴、または coverage / counterexample / 自己照合の証跡欠落を検出した reviewer は、部分合格、局所 pass、条件付きの `合格` を出してはならない。当該 reviewer の判定は少なくとも `要修正` とし、集約者は必須担当全員の `合格` があっても、穴または証跡欠落が残る差分を `集約後レビュー判定: 合格` にしてはならない。
 
 ## コミット連動規則
 
 - コミット関連作業は `集約後レビュー判定: 合格` の記録後に限り開始できる。
 - 個別メッセージやチャット上の宣言のみで完了扱いにしてはならない。
+- 集約者は、全経路閉鎖不変条件の証跡なしに差分を合格・受入れしてはならない。変更を「一括」等と呼ぶこと、局所 pass、test の一部通過、または reviewer の要約は、この証跡または集約判定の代替にならない。

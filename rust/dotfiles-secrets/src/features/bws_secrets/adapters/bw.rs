@@ -3,14 +3,14 @@
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use crate::{
     features::bws_secrets::ports::bw::BwsClientPort,
+    features::bws_secrets::support::backend::BwsClientBackend,
     features::bws_secrets::support::bws_backend,
     features::{
-        bws_secrets::domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
+        bws_secrets::domain::bws::{BwsLookupCandidate, BwsProjectId, BwsSecretId, BwsSecretValue},
         gpg_backup_recovery::ports::public::{BackupUpdateGuard, GpgBackupEnvelope},
         password_store::ports::public::PasswordStoreRemote,
     },
     foundation::protection::ProtectedSecret,
-    shared::contracts::adapter_backend::BwsClientBackend,
 };
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -32,14 +32,14 @@ impl BwsClientPort for BwsClientBackend {
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> crate::Result<(GpgBackupEnvelope, BackupUpdateGuard)> {
+    ) -> crate::Result<(BwsSecretValue, BackupUpdateGuard)> {
         bws_backend::fetch_gpg_backup_envelope(access_token, secret_id).await
     }
     async fn fetch_password_store_remote(
         &self,
         access_token: &ProtectedSecret,
         secret_id: &BwsSecretId,
-    ) -> crate::Result<PasswordStoreRemote> {
+    ) -> crate::Result<BwsSecretValue> {
         bws_backend::fetch_password_store_remote(access_token, secret_id).await
     }
     async fn create_gpg_backup_envelope(

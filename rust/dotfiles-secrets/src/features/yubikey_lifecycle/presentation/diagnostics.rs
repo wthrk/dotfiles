@@ -12,7 +12,7 @@ use crate::{
         },
         yubikey_lifecycle::{
             domain::{
-                piv::{PivDeviceProfile, SecretStorageSpec},
+                piv::SecretStorageSpec,
                 storage::{
                     SecretStorageClearIntent, SecretStorageReadInspection, SecretStorageReadIntent,
                     SecretStorageSetupInspection, SecretStorageSetupIntent,
@@ -102,9 +102,9 @@ impl Drop for RunToken {
 
 #[derive(Clone, Copy)]
 enum Phase {
+    DeviceProfilePreflight,
     Discovery,
     TargetResolved(u32),
-    DeviceProfilePreflight,
     TtyPinInput,
     TtyNewPinInput,
     TtyTokenInput,
@@ -192,7 +192,6 @@ fn emit(phase: Phase, observation: Observation) {
         phase => {
             let name = match phase {
                 Phase::Discovery => "discovery",
-                Phase::DeviceProfilePreflight => "device-profile-preflight",
                 Phase::TtyPinInput => "tty-pin-input",
                 Phase::TtyNewPinInput => "tty-new-pin-input",
                 Phase::TtyTokenInput => "tty-token-input",
@@ -208,6 +207,7 @@ fn emit(phase: Phase, observation: Observation) {
                 Phase::StorageStore => "storage-store",
                 Phase::LocalVerificationInspection => "local-verification-inspection",
                 Phase::LocalVerificationLoad => "local-verification-load",
+                Phase::DeviceProfilePreflight => "device-profile-preflight",
                 Phase::TargetResolved(_) | Phase::Provisioning => return,
             };
             let suffix = match observation {
@@ -250,10 +250,18 @@ impl DeviceSerialPort for DiagnosticDevice<'_> {
         }
     }
 
-    fn inspect_device_profile(&mut self, serial: u32) -> Result<PivDeviceProfile> {
-        traced(Phase::DeviceProfilePreflight, || {
-            self.inner.inspect_device_profile(serial)
-        })
+    fn preflight_device_profile(&mut self, serial: u32) -> Result<()> {
+        emit(Phase::DeviceProfilePreflight, Observation::Started);
+        let result = self.inner.preflight_device_profile(serial);
+        emit(
+            Phase::DeviceProfilePreflight,
+            if result.is_ok() {
+                Observation::Succeeded
+            } else {
+                Observation::OpaqueFailure
+            },
+        );
+        result
     }
 }
 
@@ -316,7 +324,7 @@ pub(crate) fn document(inner: &mut dyn BootstrapDocumentInputPort) -> Diagnostic
 impl BootstrapDocumentInputPort for DiagnosticDocument<'_> {
     fn read_bootstrap_secret_document_input(
         &mut self,
-    ) -> Result<crate::features::yubikey_lifecycle::domain::manifest::BootstrapSecretDocumentInput>
+    ) -> Result<crate::features::yubikey_lifecycle::ports::public::BootstrapSecretDocumentInput>
     {
         emit(Phase::TtyTokenInput, Observation::Started);
         let result = self.inner.read_bootstrap_secret_document_input();

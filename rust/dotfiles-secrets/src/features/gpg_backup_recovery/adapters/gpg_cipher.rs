@@ -2,9 +2,9 @@
 use crate::{
     Result, features::gpg_backup_recovery::domain::gpg_backup::EnvelopeCiphertext,
     features::gpg_backup_recovery::ports::gpg::BackupCipherPort,
+    features::gpg_backup_recovery::support::backend::BackupCipherBackend,
     features::gpg_backup_recovery::support::gpg_cipher_backend,
     foundation::protection::ProtectedSecret,
-    shared::contracts::adapter_backend::BackupCipherBackend,
 };
 impl BackupCipherPort for BackupCipherBackend {
     fn generate_dek(&mut self) -> Result<ProtectedSecret> {

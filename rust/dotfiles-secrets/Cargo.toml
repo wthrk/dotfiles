@@ -23,6 +23,7 @@ bincode.workspace = true
 bitwarden.workspace = true
 clap.workspace = true
 crossterm.workspace = true
+pcsc.workspace = true
 dotfiles-core.workspace = true
 filedescriptor.workspace = true
 git2 = { workspace = true, optional = true }
@@ -30,7 +31,9 @@ gpgme = { workspace = true, optional = true }
 rand.workspace = true
 region.workspace = true
 rand_core.workspace = true
+rand_chacha.workspace = true
 rlimit.workspace = true
+rustix.workspace = true
 rsa.workspace = true
 scopeguard.workspace = true
 sequoia-openpgp = { workspace = true, optional = true }

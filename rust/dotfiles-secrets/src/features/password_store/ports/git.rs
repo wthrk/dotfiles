@@ -8,6 +8,8 @@
 //! 委ね、port は外部依存 capability の宣言にとどめる。
 
 use crate::Result;
+#[cfg(not(test))]
+use crate::features::gpg_backup_recovery::ports::public::GpgAgentSocketPort;
 use crate::features::password_store::domain::pass_restore::{
     PasswordStoreReadiness, PasswordStoreRemote,
 };
@@ -52,4 +54,13 @@ pub trait GitClonePort {
     /// destination を削除して残さない。既存 store は決して上書き・削除しない。したがって caller は clone
     /// 失敗時に destination の rollback 削除を行ってはならない（TOCTOU で他 process の store を誤削除しうるため）。
     fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()>;
+
+    #[cfg(not(test))]
+    fn clone_password_store_with_socket(
+        &mut self,
+        remote: &PasswordStoreRemote,
+        _gpg_agent_socket: &mut dyn GpgAgentSocketPort,
+    ) -> Result<()> {
+        self.clone_password_store(remote)
+    }
 }

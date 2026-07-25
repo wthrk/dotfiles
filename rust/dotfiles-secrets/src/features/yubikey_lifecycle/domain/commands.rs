@@ -15,6 +15,17 @@ pub(crate) struct PutCommand {
     pub(crate) force: bool,
 }
 impl PutCommand {
+    pub(crate) fn from_cli_name(name: &str, serial: Option<u32>, force: bool) -> Result<Self> {
+        let name = name
+            .parse()
+            .map_err(|error: String| anyhow::anyhow!("{error}"))?;
+        Ok(Self {
+            name,
+            serial,
+            force,
+        })
+    }
+
     pub(crate) fn storage_spec(&self, serial: u32) -> SecretStorageSpec {
         self.name.storage_spec(serial)
     }

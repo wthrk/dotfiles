@@ -15,8 +15,8 @@ use crate::{
     Result,
     features::password_store::domain::pass_restore::{PasswordStoreReadiness, PasswordStoreRemote},
     features::password_store::ports::git::{GitClonePort, PasswordStorePort},
+    features::password_store::support::backend::{GitCloneBackend, PasswordStoreBackend},
     features::password_store::support::{git_clone, password_store},
-    shared::contracts::adapter_backend::{GitCloneBackend, PasswordStoreBackend},
 };
 
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
@@ -34,5 +34,13 @@ impl PasswordStorePort for PasswordStoreBackend {
 impl GitClonePort for GitCloneBackend {
     fn clone_password_store(&mut self, remote: &PasswordStoreRemote) -> Result<()> {
         git_clone::clone_password_store(remote)
+    }
+    #[cfg(not(test))]
+    fn clone_password_store_with_socket(
+        &mut self,
+        remote: &PasswordStoreRemote,
+        gpg_agent_socket: &mut dyn crate::features::gpg_backup_recovery::ports::public::GpgAgentSocketPort,
+    ) -> Result<()> {
+        git_clone::clone_password_store_with_socket(remote, gpg_agent_socket)
     }
 }

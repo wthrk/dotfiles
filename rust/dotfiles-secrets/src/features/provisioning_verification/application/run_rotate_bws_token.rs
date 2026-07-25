@@ -13,11 +13,11 @@ use crate::{
         },
         provisioning_verification::domain::verification::VerifySummary,
         yubikey_lifecycle::{
-            domain::storage::{
+            ports::public::piv_pin_input::PivPinInputPort,
+            ports::public::{DeviceSerialPort, SecretStoragePort},
+            ports::public::{
                 SecretStorageReadIntent, SecretStorageVerificationPlan, SecretStorageWriteIntent,
             },
-            ports::public::piv_pin_input::PivPinInputPort,
-            ports::{DeviceSerialPort, SecretStoragePort},
         },
     },
 };
@@ -41,9 +41,6 @@ pub(crate) fn run_rotate_bws_token(
 
     loop {
         let serial = device.resolve_device_serial(next_requested_serial)?;
-        device
-            .inspect_device_profile(serial)?
-            .ensure_pin_free_recovery_supported()?;
         if !updated_serials.insert(serial) {
             bail!("selected YubiKey was already updated");
         }
@@ -119,11 +116,9 @@ mod tests {
                 commands::RotateBwsTokenCommand,
                 verification::{CheckName, CheckStatus},
             },
-            yubikey_lifecycle::domain::{
-                self as domain,
-                manifest::SecretManifest,
-                piv::SecretName,
-                storage::{SecretStorageReadInspection, SecretStorageWriteInspection},
+            yubikey_lifecycle::ports::public::{
+                SecretManifest, SecretName, SecretStorageReadInspection,
+                SecretStorageWriteInspection,
             },
         },
         foundation::protection::ProtectedSecret,
@@ -139,19 +134,10 @@ mod tests {
 
     use super::run_rotate_bws_token;
 
-    fn expect_pin_free_device_profile(
+    fn configure_management_device_fixture(
         device: &mut crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort,
     ) {
-        device.expect_inspect_device_profile().returning(|_| {
-            Ok(domain::piv::PivDeviceProfile {
-                version: domain::piv::PivApplicationVersion {
-                    major: 5,
-                    minor: 7,
-                    patch: 1,
-                },
-                fips_series: false,
-            })
-        });
+        let _ = device;
     }
 
     fn material(bytes: &'static [u8]) -> crate::Result<ProtectedSecret> {
@@ -208,7 +194,7 @@ mod tests {
         let mut sequence = mockall::Sequence::new();
         let mut device_serial =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device_serial);
+        configure_management_device_fixture(&mut device_serial);
         device_serial
             .expect_resolve_device_serial()
             .times(1)
@@ -286,7 +272,7 @@ mod tests {
         let mut sequence = mockall::Sequence::new();
         let mut device_serial =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device_serial);
+        configure_management_device_fixture(&mut device_serial);
         device_serial
             .expect_resolve_device_serial()
             .times(1)
@@ -353,7 +339,7 @@ mod tests {
         let mut sequence = mockall::Sequence::new();
         let mut device_serial =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device_serial);
+        configure_management_device_fixture(&mut device_serial);
         device_serial
             .expect_resolve_device_serial()
             .times(1)
@@ -432,7 +418,7 @@ mod tests {
     fn rotate_prompt_rejects_already_updated_device() {
         let mut device_serial =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device_serial);
+        configure_management_device_fixture(&mut device_serial);
         device_serial
             .expect_resolve_device_serial()
             .times(1)

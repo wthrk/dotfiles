@@ -4,4 +4,5 @@ pub(crate) mod piv_storage;
 pub(crate) mod process_diagnostic;
 pub(crate) mod yubikey_backend;
 pub(crate) mod yubikey_device_serial;
+pub(crate) mod yubikey_piv;
 pub(crate) mod yubikey_storage;

@@ -8,7 +8,7 @@ use crate::{
     features::{
         gpg_backup_recovery::ports::public::{ConnectedYubiKey, EnvelopeRecipient},
         yubikey_lifecycle::domain::{
-            piv::{PivDeviceProfile, SecretStorageSpec},
+            piv::SecretStorageSpec,
             storage::{
                 SecretStorageClearIntent, SecretStorageReadInspection, SecretStorageReadIntent,
                 SecretStorageSetupInspection, SecretStorageSetupIntent, SecretStorageSetupProbe,
@@ -28,7 +28,8 @@ use crate::{
 #[cfg_attr(test, mockall::automock)]
 pub trait DeviceSerialPort {
     fn resolve_device_serial(&mut self, requested: Option<u32>) -> Result<u32>;
-    fn inspect_device_profile(&mut self, serial: u32) -> Result<PivDeviceProfile>;
+
+    fn preflight_device_profile(&mut self, serial: u32) -> Result<()>;
 }
 
 /// use case が YubiKey secret storage へ要求する高水準 capability 契約。

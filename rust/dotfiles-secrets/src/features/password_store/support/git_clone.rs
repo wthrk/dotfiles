@@ -1,23 +1,34 @@
 //! private password-store の git2/libssh2 SSH-agent clone を閉じる technical backend。
 
+#[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
 use anyhow::Context;
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+use git2::Error as GitError;
+#[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
 use git2::{
     CertificateCheckStatus, Cred, CredentialType, FetchOptions, RemoteCallbacks, build::RepoBuilder,
 };
 
-use crate::{
-    Result,
-    features::password_store::domain::pass_restore::{
-        PASSWORD_STORE_DIR_NAME, PasswordStoreRemote,
-    },
-    features::{
-        gpg_backup_recovery::ports::public::resolve_strict_gpg_ssh_agent_socket,
-        password_store::support::{filesystem::home_child, github_ssh_host_key},
-    },
-};
+#[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
+use crate::features::password_store::domain::pass_restore::PASSWORD_STORE_DIR_NAME;
+#[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
+use crate::features::password_store::support::filesystem::home_child;
+#[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
+use crate::features::password_store::support::github_ssh_host_key;
+use crate::{Result, features::password_store::domain::pass_restore::PasswordStoreRemote};
 
 pub(crate) fn clone_password_store(remote: &PasswordStoreRemote) -> Result<()> {
-    let socket = resolve_strict_gpg_ssh_agent_socket()?
+    let _ = remote;
+    anyhow::bail!("password-store clone requires the gpg-agent socket capability")
+}
+
+#[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
+pub(crate) fn clone_password_store_with_socket(
+    remote: &PasswordStoreRemote,
+    gpg_agent_socket: &mut dyn crate::features::gpg_backup_recovery::ports::public::GpgAgentSocketPort,
+) -> Result<()> {
+    let socket = gpg_agent_socket
+        .resolve_strict_socket()?
         .context("could not resolve the gpg-agent SSH agent socket for password-store clone")?;
     let previous_sock = std::env::var_os("SSH_AUTH_SOCK");
     // SAFETY: this single-threaded command temporarily selects the non-secret, strict gpg-agent socket.
@@ -76,7 +87,8 @@ pub(crate) fn clone_password_store(remote: &PasswordStoreRemote) -> Result<()> {
 ///
 /// remote URL や server diagnostic は private repository の所在を含み得るため、clone failure の
 /// presentation は固定の安全文脈に限定する。
-fn safe_clone_failure(error: git2::Error, cleanup: Option<std::io::Error>) -> anyhow::Error {
+#[cfg(not(feature = "secrets-internal-test-stub"))]
+fn safe_clone_failure(error: GitError, cleanup: Option<std::io::Error>) -> anyhow::Error {
     let source = anyhow::Error::new(error);
     let source = match cleanup {
         Some(cleanup) => {
@@ -88,17 +100,20 @@ fn safe_clone_failure(error: git2::Error, cleanup: Option<std::io::Error>) -> an
 }
 
 /// 外部の clone / cleanup 原因を source chain に保持しつつ、利用者へは private remote を含まない固定文言だけを出す。
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 #[derive(Debug)]
 struct PrivateCloneFailure {
     source: anyhow::Error,
 }
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl std::fmt::Display for PrivateCloneFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "failed to clone private password-store over SSH")
     }
 }
 
+#[cfg(not(feature = "secrets-internal-test-stub"))]
 impl std::error::Error for PrivateCloneFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.source.as_ref())

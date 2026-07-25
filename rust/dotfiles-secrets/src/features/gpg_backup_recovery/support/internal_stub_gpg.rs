@@ -53,11 +53,13 @@ enum RevocationProfile {
 }
 
 impl RevocationProfile {
-    fn domain(self) -> domain::gpg_restore::OpenPgpRevocation {
+    fn domain(
+        self,
+    ) -> crate::features::gpg_backup_recovery::domain::gpg_restore::OpenPgpRevocation {
         match self {
-            Self::Revoked => domain::gpg_restore::OpenPgpRevocation::Revoked,
-            Self::CouldBe => domain::gpg_restore::OpenPgpRevocation::CouldBe,
-            Self::NotRevoked => domain::gpg_restore::OpenPgpRevocation::NotAsFarAsWeKnow,
+            Self::Revoked => crate::features::gpg_backup_recovery::domain::gpg_restore::OpenPgpRevocation::Revoked,
+            Self::CouldBe => crate::features::gpg_backup_recovery::domain::gpg_restore::OpenPgpRevocation::CouldBe,
+            Self::NotRevoked => crate::features::gpg_backup_recovery::domain::gpg_restore::OpenPgpRevocation::NotAsFarAsWeKnow,
         }
     }
 }
@@ -220,8 +222,8 @@ pub(crate) fn parse_backup_primary_fingerprint(
         .context("internal gpg stub backup body is not valid UTF-8")?;
     let primary_fingerprint = PrimaryFingerprint::parse(value.trim())?;
     with_store(|store| {
-        let usable =
-            |signing, authentication, storage_encryption| domain::gpg_restore::OpenPgpSubkeyFacts {
+        let usable = |signing, authentication, storage_encryption| {
+            crate::features::gpg_backup_recovery::domain::gpg_restore::OpenPgpSubkeyFacts {
                 supported: true,
                 alive: true,
                 revocation: store.backup_subkey_revocation.domain(),
@@ -230,16 +232,19 @@ pub(crate) fn parse_backup_primary_fingerprint(
                 authentication,
                 storage_encryption,
                 transport_encryption: false,
-            };
-        Ok(domain::gpg_restore::OpenPgpBackupFacts {
-            primary_fingerprint,
-            certificate_revocation: store.backup_certificate_revocation.domain(),
-            subkeys: vec![
-                usable(true, false, false),
-                usable(false, true, false),
-                usable(false, false, true),
-            ],
-        })
+            }
+        };
+        Ok(
+            crate::features::gpg_backup_recovery::domain::gpg_restore::OpenPgpBackupFacts {
+                primary_fingerprint,
+                certificate_revocation: store.backup_certificate_revocation.domain(),
+                subkeys: vec![
+                    usable(true, false, false),
+                    usable(false, true, false),
+                    usable(false, false, true),
+                ],
+            },
+        )
     })
 }
 pub(crate) fn secret_key_exists(primary: &PrimaryFingerprint) -> Result<bool> {

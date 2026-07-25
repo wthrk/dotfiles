@@ -47,13 +47,22 @@
 1. `S0 -> S1`
    - オーケストレーターが作業単位と担当を確定する。
    - 指定 GitHub issue / PR / 明示タスクを読み、委譲に必要な範囲で着手前要件、対象パス、完了条件、レビュー要求を抽出する。
-   - 実装担当・レビュー担当・進捗判定担当（必要時は完了判定担当）へ委譲する。
+   - [implementation-execution.md の不変 implementation handoff と Design artifact](implementation-execution.md#不変-implementation-handoff-と-design-artifact) が外部 issue / PR、明示タスク、または委譲 handoff に存在し、その identity、承認、baseline/design identity、取得時点、必須項目が委譲入力に記録されていることを確認する。handoff が未固定、存在しない、必須項目が欠ける、または利用者もしくは委譲元オーケストレーターによる承認が記録されていない場合は `S0` に留まり、repository-authored 成果物の編集、review、commit、push、重い全体検証を開始させてはならない。S1 の意図済み編集は baseline/design identity を失効させない。
+   - 実装担当だけを委譲する。レビュー担当、進捗判定担当、完了判定担当は、未解消 finding のない
+     S1 自己照合と固定比較対象が揃うまで起動しない。S1 の途中差分を読む reviewer を起動して
+     実装と並走させることは、レビュー対象の固定性を失わせるため禁止する。
+   - 実装担当は、編集を始める前に [implementation-execution.md の実装開始条件](implementation-execution.md#実装開始条件) を満たす。S2 の事後レビューは、この着手前設計照合の代替にならない。
 2. `S1 -> S2`
-   - 実装担当が変更差分を作成し、必要な確認を記録する。
-   - レビュー前に差分識別子（作業ブランチ、比較範囲、確認結果）を固定する。
-   - 必須 reviewer は S2 開始時に、利用可能な並列枠の範囲で互いに独立な role を同時に起動する。slot 不足時だけ、完了した role の slot へ残る独立 role を直ちに起動する。独立 review を番号順や到着順に直列化してはならない。
+   - 実装担当が変更差分を作成し、不変 handoff の coverage table を全行自己照合して必要な確認を記録する。[implementation-execution.md の全経路閉鎖不変条件](implementation-execution.md#全経路閉鎖不変条件) に従い、統合済み coverage と counterexample が全影響経路を閉じる証跡を確認する。coverage 未充足、未否定 counterexample、未解消 finding、または未完の success/error/failure/cleanup/caller/state mutation/test/direct observation/document evidence が一つでもあれば S2 を開始してはならない。文書主成果物では文書 flow、役割、参照経路、必要証跡、理由と正本根拠を伴う明示除外も必須である。変更を「一括」等と呼ぶこと、局所 pass、または test の一部通過は代替にならない。
+   - 最終検証を必要とする場合は、[implementation-execution.md の検証選択](implementation-execution.md#検証選択) に従い、固定した execution/cache identity の一 command のみを根拠にする。
+   - レビュー前に [比較 identity](implementation-execution.md#比較-identity) の同一形式で S1 完了 review-candidate identity（作業ブランチ、比較範囲、全値、確認結果、取得時点）を固定する。S2、S3、S4 では baseline/design identity ではなくこの review-candidate の全値を比較し、source、index、worktree、比較範囲または取得方法が変化した場合は全根拠を破棄して `S1` に戻る。
+   - 上記の S1 完了報告を受けたオーケストレーターだけが、S2 開始時に必須 reviewer を起動する。
+     reviewer は、固定した差分識別子・比較範囲・S1 の確認結果を同じ入力として受け取る。利用可能な
+     並列枠の範囲で互いに独立な role を同時に起動する。slot 不足時だけ、完了した role の slot へ
+     残る独立 role を直ちに起動する。独立 review を番号順や到着順に直列化してはならない。
 3. `S2 -> S3`
-   - `S2` の開始から `S3` の集約確定まで、固定した比較対象と worktree をレビュー対象として凍結する。個別 reviewer の finding、途中 verdict、チャット上の所見を受けても、実装、format、生成、source 変更、commit を開始してはならない。
+   - `S2` の開始から `S3` の集約確定まで、固定した review-candidate と worktree をレビュー対象として凍結する。個別 reviewer の finding、途中 verdict、チャット上の所見を受けても、実装、format、生成、source 変更、commit を開始してはならない。source、index、worktree の変更を検出した場合は S1 に戻る。
+   - 各 reviewer は、handoff・コード・文書に引用された repository 正本、URL、API symbol、仕様節、source location の原文を [docs-governance.md の参照資料の直接照合](../docs-governance.md#参照資料の直接照合) に従って直接読む。要約、リンク存在確認、過去の報告は verdict の根拠にしない。全経路閉鎖不変条件に反する穴を検出した reviewer は、局所 pass や部分合格を出さず、`要修正` または `不合格` として受入れを拒否する。
    - 必須レビュー役割の**全員**の判定を収集してから、`合格` / `要修正` / `不合格` を一度だけ集約確定する。個別 reviewer が返答したことは review cycle の終了条件ではない。
    - 必須担当は [implementation-review-judgement.md](implementation-review-judgement.md) に従う。
    - 必須レビュー担当は担当ごとに fresh subagent として起動する。複数担当を単一 subagent に一括委譲してはならない。
@@ -61,7 +70,7 @@
 4. `S3 -> S4`
    - コミット着手条件を満たす場合のみ進む。
 
-`要修正` または `不合格` がある場合は、集約済みの未解消 finding 全件を lossless に一つの remediation task へ渡してから `S1` に戻る。remediation 完了後は新しい比較対象を固定し、必須 reviewer 全員を fresh subagent で再起動して `S2` から全 review を一巡する。個別 finding ごとの即時修正、review 中の差分更新、部分的な再レビューをしてはならない。
+`要修正` または `不合格` がある場合は、集約済みの未解消 finding 全件を lossless に一つの remediation task へ渡してから `S1` に戻る。remediation は、既存 handoff への追記でも finding 要約でもなく、全必須項目と新旧 finding を再統合し承認した新しい不変 handoff から開始する。remediation 完了後は新しい比較対象を固定し、必須 reviewer 全員を fresh subagent で再起動して `S2` から全 review を一巡する。個別 finding ごとの即時修正、review 中の差分更新、部分的な再レビューをしてはならない。
 
 ## 5. 記録
 
@@ -84,6 +93,7 @@
 - 対象差分が特定できる。
 - 必要レビュー役割の結果が揃い、集約後レビュー判定が `合格`。
 - 必要な実検証が確認できる。
+- [implementation-execution.md の全経路閉鎖不変条件](implementation-execution.md#全経路閉鎖不変条件) を満たす coverage、counterexample、自己照合、review 集約の証跡が対象差分に対応付けられている。名称、局所 pass、test の一部通過は証跡の代替にならない。
 - チャットや口頭報告のみを根拠にしていない。
 - 領域固有文書または指定 issue / PR がより厳格な条件を定める場合は、その条件を満たしている。
 
@@ -97,6 +107,7 @@
 - subagent は異なる作業単位、異なる役割、同一作業単位の異なるサイクル間で再利用してはならない。
 - オーケストレーターは自己実行を行ってはならない。
 - fresh subagent として委譲を受けた子エージェントは、委譲された担当役割を直接実行する。
+- オーケストレーターは、役割の完了・中断・差戻し・review cycle の終了ごとに、不要になった subagent を終了して整理しなければならない。自ら起動した `cargo` 等のプロセスは、対象 PID と親子関係を確認したうえで終了し、他の役割・利用者・独立した作業のプロセスを終了してはならない。次の委譲を始める前に live agent と自ら起動したプロセスを点検し、不要な実行枠を回収することを必須とする。ただし、同一の固定比較対象を読んでいる進行中の独立 `S2` review は、この整理の対象にせず中断してはならない。
 - 必須役割を起動できない場合は、その事実と扱いを利用者へ報告し、可能な最小記録を残す。
 - 実装差分や高リスク変更で要求される複数レビュー役割は省略しない。
 - `cargo check` の合格、テストの通過、ビルド成功はレビュー合格の代替にならない。
@@ -112,3 +123,7 @@
 - PR には恒久的な変更内容、必要性、実施検証を記述し、チャット履歴や作業実況は書かない。
 - PR review thread には採用/不採用の理由を返信し、対応済み thread を resolve する。
 - AI review で新規指摘が出た場合は、修正または不採用理由を示し、最新 head で no-issue になるまで繰り返す。
+
+### 検証プロセスの競合防止
+
+検証起動前に自分の cargo/nix/test process を PID・PPID・command 付きで列挙し、stale は子から親の順に終了する。artifact/target lock 消失を確認後、target directory、toolchain、profile、package、features、command を固定して単一実行する。同じ検証の並列起動、lock 待ち・未完了の合格扱いを禁止する。終了後は子プロセスと lock を再確認し、残存時は未完了として記録する。

@@ -13,23 +13,8 @@ use std::{
 };
 
 #[cfg(feature = "secrets-internal-test-stub")]
-use std::sync::atomic::{AtomicU32, Ordering};
-
-/// feature-isolated internal stub が secret input attempt を値なしで観測する counter。
-///
-/// production build/runtime には存在せず、PIN bytes、length、prompt text を保存しない。CLI integration
-/// test が recovery command の PIN-free contract を直接観測するためだけの technical observation である。
-#[cfg(feature = "secrets-internal-test-stub")]
-static SECRET_INPUT_ATTEMPT_COUNT: AtomicU32 = AtomicU32::new(0);
-
-#[cfg(feature = "secrets-internal-test-stub")]
 fn record_secret_input_attempt() {
-    SECRET_INPUT_ATTEMPT_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(feature = "secrets-internal-test-stub")]
-pub(crate) fn secret_input_attempt_count() -> u32 {
-    SECRET_INPUT_ATTEMPT_COUNT.load(Ordering::Relaxed)
+    crate::secrets_internal_test_stub_contract::record_secret_input_attempt();
 }
 
 /// presentation が構築済みの非秘匿な一行を process stderr へ書く。

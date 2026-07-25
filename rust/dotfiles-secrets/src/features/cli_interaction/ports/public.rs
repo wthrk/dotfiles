@@ -9,4 +9,5 @@ pub(crate) use super::io::{
     MockBackupUpdateConfirmationPort, MockBitwardenClientSecretInputPort,
     MockBootstrapDocumentInputPort, MockClockPort, MockPasswordStoreRemoteInputPort,
     MockReportPort, MockRotationContinuationPort, MockSecretStorageStatusOutputPort,
+    MockSshPublicKeyOutputPort,
 };

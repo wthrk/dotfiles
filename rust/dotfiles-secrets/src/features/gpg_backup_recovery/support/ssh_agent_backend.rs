@@ -111,6 +111,11 @@ pub(crate) fn inspect_ssh_agent(
     })
 }
 
+#[cfg(not(test))]
+pub(crate) fn resolve_gpg_agent_socket() -> Result<Option<std::path::PathBuf>> {
+    crate::features::gpg_backup_recovery::support::ssh_agent_socket::resolve_gpg_agent_socket()
+}
+
 #[cfg(test)]
 mod tests {
     //! 新設 `sshcontrol` の mode と既存 unsafe file の fail-closed 境界を検査する。

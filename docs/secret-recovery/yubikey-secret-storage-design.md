@@ -1,6 +1,6 @@
 # YubiKey 秘密情報保存設計
 
-この文書は、[secret-recovery-spec.md](./secret-recovery-spec.md) の [責務分担 / YubiKey](./secret-recovery-spec.md#yubikey) を具体化する到達設計仕様を定義する恒久文書である。復旧に保存する対象は Bitwarden Secrets Manager access token の `bitwarden-client-secret` だけであり、YubiKey を挿して復旧コマンドを実行する利用者契約を実現するために `dotfiles secrets yubikey` サブコマンドが安全に取得する。
+この文書は、[secret-recovery-spec.md](./secret-recovery-spec.md) の [責務分担 / YubiKey](./secret-recovery-spec.md#yubikey) を具体化する到達設計仕様を定義する恒久文書である。復旧に保存する対象は Bitwarden Secrets Manager access token の `bitwarden-client-secret` だけであり、YubiKey を挿して復旧コマンドを実行する利用者契約を実現するために `dotfiles secrets yubikey` サブコマンドが安全に取得する。slot `82` の `TouchPolicy::Always` による physical touch は許容するが、recovery は PIV/OpenPGP PIN、GPG passphrase、pinentry、token 入力を要求しない。
 
 この文書は完成形の設計だけを扱う。
 
@@ -35,7 +35,7 @@ secret の保護境界、core dump 無効化、paging / memory lock / signal tra
 - data object は YubiKey が undefined DataTag として受け付ける範囲から `0x005FFF16` から `0x005FFF1a` までを使う。
 - manifest は format sentinel としてだけ使う。slot や object ID の解釈を manifest で動的に変えない。
 - スペア YubiKey は同じ PIV 秘密鍵を複製せず、各 YubiKey で専用鍵を生成して同じ secret を個別に保存する。
-- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` を直接並べる手順にしない。provisioning source が BWS token を保存する場合は `provision-bws-token` を一回だけ呼び、script が `status` / `clear` / `setup` / `put` を別 process として組み立てない。設定済みの bootstrap secret 名の確認には `status` を使う。
+- 通常の primary / spare 登録には `enroll-primary` / `enroll-spare` を使い、低水準の `setup` / `put` を直接並べる手順にしない。primary で一度だけ入力した BWS token は `enroll-spare` が primary から読み、再入力せず spare へ再暗号化する。`provision-bws-token` は InitializedV2 の既存 source storage 確認・logical-empty object 保存に限り、repair/setup/clear を行わない。
 - `dotfiles secrets verify-yubikey` で、挿さっている YubiKey が bootstrap secret を復号できることを確認する。
 - `dotfiles secrets yubikey setup` は既存の PIV credential や data object と衝突した場合に停止する。
 - `put` は同名 secret が存在する場合、`--force` が指定されていなければ停止する。
@@ -56,11 +56,42 @@ YubiKey adapter は次を満たす。
 
 - `yubikey` の version を明示的に固定する。
 - object read/write API が feature gate を要求する場合、その feature は YubiKey adapter module だけで使う。
-- reset、PIN/PUK 変更、既存 key 削除、management key 変更の API は adapter から公開しない。
+- `setup` と物理的に完全な fresh storage を初期化する enrollment の PIN 変更以外では、reset、PIN/PUK 変更、既存 key 削除、management key 変更の API は adapter から公開しない。この lifecycle は既存 PIN-protected management key を前提に PIV application-wide PIN だけを変更し、management key 自体を置換しない。
 - repository の test と agent 作業では物理 YubiKey / PC/SC reader を使用しない。検証は `secrets-internal-test-stub` feature で compile-time に隔離された internal backend stub だけで行い、production binary と runtime に stub を混入させない。
 - 実機への読み取り・書き込み・setup・clear・reset を「opt-in 検証」としても repository の test、agent 作業、通常の検証手順に許可しない。device-specific な確認が将来必要になっても、この設計だけを根拠に実行せず、別の明示 task と人間による承認済み手順で扱う。
 
 ## PIV 領域
+
+### 管理フローの状態・操作モデル
+
+管理 command は次の状態と操作順だけを許可する。矢印の途中で失敗した場合は後続入力・操作へ進まず、
+同一 command で retry、resume、clear、fallback を行わない。
+
+```text
+resolved device
+  -> read-only device capability preflight
+  -> current PIN input
+  -> one PIV handle: VERIFY -> protected management-key authentication
+  -> complete raw inspection:
+       PIV version + slot key + slot certificate + slot SPKI
+       + manifest physical/non-empty state + every reserved object
+  -> domain state:
+       Fresh | InitializedV2 | Unsupported | OwnershipUnknown | Invalid
+
+Fresh:
+  -> new PIN input -> confirmation
+  -> change PIN -> new PIN VERIFY -> protected management-key authentication
+  -> key generation -> secret store -> manifest finalization -> local verification
+
+InitializedV2:
+  -> write preflight -> secret store -> local verification
+```
+
+support backend は slot key、certificate、SPKI を独立した raw fact として返し、`material exists` のような
+合成判定を行わない。fresh、repository ownership、manifest/SPKI 整合、initialized 判定は domain が行う。
+device capability preflight は Yubico Management application の read-only GET DEVICE INFORMATION を使い、
+serial、firmware version、form factor を同一 response から取得する。form factor の FIPS bit を firmware
+version や reader 名から推測してはならない。
 
 ### Slot
 
@@ -70,7 +101,9 @@ YubiKey adapter は次を満たす。
 
 PIV の RSA decrypt operation は raw RSA として扱い、OAEP padding は host 側で処理する。OAEP の hash と MGF1 hash は SHA-256 に固定する。`yubikey` crate の PIV decrypt API から得た raw decrypt bytes は、secret storage adapter 境界で OAEP unpad して content key に戻す。`rsa` crate は raw RSA 復号結果に対する OAEP unpad API を公開していないため、OAEP unpad は CLI 側で最小実装を持つ。この実装は invalid padding の判定で separator 位置による短絡を避けるが、constant-time primitive として扱わない。Manger 攻撃に対する境界は、復号対象を 32-byte content encryption key に限定し、YubiKey touch によって oracle としての利用回数と自動化を制限する。復号 read path は PIV PIN の入力・検証を行わない。
 
-管理操作（`setup`、`put`、`clear`、enroll、rotate、`provision-bws-token`）は hidden TTY PIN → `verify_pin` → `MgmKey::get_protected` → `YubiKey::authenticate` の順に、**最初に選んだ serial へ command 内で一つだけ保持する PIV handle** で実行する。認証後の inspection、generate、store、finalize、同 command の local verification は同じ handle を使い、operation ごとに reopen / VERIFY しない。`provision-bws-token` は status 観測もこの handle で行い、typed storage invalid 時だけ clear / finalize、完全な空領域だけ setup / finalize してから token を読み、保存後に同じ handle で復号検証する。PIN 入力一回につき physical VERIFY は一回だけであり、ykman の PIN-protected flow が同一 session で行う「VERIFY を最後の APDU に戻す」second VERIFY は採用しない。serial 未指定時は共通の device discovery が接続中の単一 YubiKey を command の先頭で一回だけ解決し、その同じ device を対象にする。管理 session 開始後に別 serial が要求された場合は、その session では PIN を再利用して新しい handle / VERIFY を作らず停止する。`rotate-bws-token` の継続だけは次 serial の解決後に新しい hidden TTY PIN を読み、前 session を drop して新しい single-device session を開始する。read / unwrap / status / verify / recovery path は PIN も management key も default key も使わない。wrong、blocked、opaque error は retry、PUK、reset、default key fallback をせず停止する。slot `82` は `PinPolicy::Never` と `TouchPolicy::Always` で生成する。`Never` は復旧 private-key operation に PIN を追加要求しない policy、`Always` は各 unwrap に touch を要求する policyであり、管理操作の PIN-protected management-key 認証とは別である。接続なし・複数接続は引き続き停止する。
+管理操作（`put`、`clear`、enroll、rotate、`provision-bws-token`）は hidden TTY PIN → `verify_pin` → `MgmKey::get_protected` → `YubiKey::authenticate` の順に、**最初に選んだ serial へ command 内で一つだけ保持する PIV handle** で実行する。`setup` は current/new/confirmation の hidden TTY PIN（6--8 ASCII alphanumeric bytes）を device mutation 前に検証する。物理的に完全な fresh storage を初期化する enrollment は current PIN だけを先に hidden input し、同じ handle で current PIN VERIFY →既存 `MgmKey::get_protected` →`YubiKey::authenticate` →PIV version、slot `82` key/certificate、manifest、全予約 object の完全管理 inspection を行う。完全な空領域と判定した場合だけ new/confirmation を hidden input して検証し、保持済み current と三値をそろえて `YubiKey::change_pin` を一回適用する。続けて new PIN VERIFY 一回、既存 `MgmKey::get_protected`、`YubiKey::authenticate`、generate、finalize を同じ handle で行う。initialized enrollment は new/confirmation と PIN change を行わず、current-PIN session を継続する。PIN 変更後に inspection/gate を残さない。PIV PIN は application-wide state であり slot 82 専用ではないため、PIN-free status の不完全観測を変更許可に使わない。`change_pin` failure を含む SDK error は retry/PUK/reset/default-key fallback/partial-state resume に写像せず停止し、management key を generate、`set_protected`、置換しない。認証後の inspection、generate、store、finalize、同 command の local verification は同じ handle を使い、operation ごとに reopen / VERIFY しない。`provision-bws-token` は InitializedV2 の完全 inspection、status、必要時保存、同じ handle での復号検証だけを行い、fresh、version 1、zero-length/manifestless partial、ownership 不明、typed invalid を clear/setup/repair しない。PIN 入力一回につき physical VERIFY は一回だけであり、ykman の PIN-protected flow が同一 session で行う「VERIFY を最後の APDU に戻す」second VERIFY は採用しない。serial 未指定時は共通の device discovery が接続中の単一 YubiKey を command の先頭で一回だけ解決し、その同じ device を対象にする。管理 session 開始後に別 serial が要求された場合は、その session では PIN を再利用して新しい handle / VERIFY を作らず停止する。`rotate-bws-token` の継続だけは次 serial の解決後に新しい hidden TTY PIN を読み、前 session を drop して新しい single-device session を開始する。read / unwrap / status / verify / recovery path は PIN も management key も default key も使わない。wrong、blocked、opaque error は retry、PUK、reset、default key fallback をせず停止する。slot `82` は `PinPolicy::Never` と `TouchPolicy::Always` で生成する。`Never` は復旧 private-key operation に PIN を追加要求しない policy、`Always` は各 unwrap に touch を要求する policyであり、管理操作の PIN-protected management-key 認証とは別である。接続なし・複数接続は引き続き停止する。
+
+PIN-free status は slot を観測せず、storage invalid や repository ownership を主張しない。認証済み完全 inspection で manifest/object 空かつ slot `82` key/certificate ありを検出した場合は ownership 不明の固定 opaque failure と manual administrator escalation で停止する。`setup`、enroll、`provision-bws-token`、`clear --yes` は同一 command で retry、resume、clear、slot overwrite/delete、再初期化へ進まない。`put --force` も valid initialized storage の既存 blob 上書きだけを許可し、この partial state の回復には使わない。
 
 ### Object IDs
 
@@ -98,7 +131,7 @@ dotfiles secrets yubikey enroll-spare
 `enroll-spare` は次を一連の処理として実行する。
 
 1. primary / spare YubiKey をそれぞれ serial 明示または単一接続 device として解決し、同一 serial でないことを確認する。
-2. primary secret を復号する前に、spare の専用 PIV slot / object が未使用であり enrollment 可能であることを事前検査する。
+2. primary secret を復号する前に、spare の current PIN VERIFY と既存 protected management-key authentication を完了し、PIV version、slot `82` key/certificate、manifest version、対象 object、slot SPKI を完全 inspection する。許可状態は physical fresh、または対象 object が logical empty で manifest/slot SPKI が一致する initialized version 2 だけとする。
 3. touch を経て primary から `bitwarden-client-secret` を復号する。
 4. spare の setup を行い、primary から読み出した secret を、spare 用の新しい content encryption key と nonce で再暗号化し、spare の public key で key wrap して保存する。
 5. ローカル確認を実行し、spare 単体で `bitwarden-client-secret` を復号できることを確認する。
@@ -138,7 +171,7 @@ slot、object ID、secret id の対応は実装側の固定仕様であり、man
 
 Manifest は JSON とし、UTF-8 bytes を PIV data object に保存する。version 2 では slot `82` の DER-encoded SubjectPublicKeyInfo (SPKI) を非 secret metadata として持つ。これは別 process の `setup` / `put` が同じ non-exportable key を使うための公開鍵復元情報であり、private key、content encryption key、secret 本文は含まない。通常の `put` / token 更新では manifest の SPKI と、`yubikey` crate `0.9.0-pre.0` の [`piv::metadata`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/piv.rs) が返す現在の slot 公開鍵がともに必須であり、両者を検証して一致させる。
 
-既存 version 1 manifest は、PIV metadata から slot `82` public SPKI を取得できる場合だけ version 2 へ安全に移行する。通常の secret 書込みでは metadata または manifest SPKI の不在、不正、あるいは不一致を検出した時点で fail-closed とし、secret 入力・暗号化・object 書込みの前へ進まない。`clear` は custom object を物理 delete したと仮定しない。固定 `yubikey` crate の [`Transaction::save_object`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs) は NIST [SP 800-73pt2-5 §3.3.1 / Table 10](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73pt2-5.pdf) の `PUT DATA` tag `53` replacement を送るため、clear は zero-length value で各 custom object の content を置換する。この成功 empty payload は SDK `NotFound` と同一ではない。`setup` の衝突検査は physical object presence を用い、`put` / `status` が報告する保存済み secret は non-empty encrypted blob を用いる。clear は新しい slot `82` key の生成戻り SPKI で空の version 2 manifest を確定するため、正常な空 version 2 storage に対する次 process の `setup` は no-op 成功とする。certificate、追加 PIV data object、slot `82` の署名操作は public key の保存・復元に使わない。
+version 1 manifest は低水準 `setup` を含む全現行 management write / enrollment command で停止し、暗黙 migration しない。通常の secret 書込みでは metadata または manifest SPKI の不在、不正、あるいは不一致を検出した時点で fail-closed とし、secret 入力・暗号化・object 書込みの前へ進まない。`clear` は custom object を物理 delete したと仮定しない。固定 `yubikey` crate の [`Transaction::save_object`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/transaction.rs) は NIST [SP 800-73pt2-5 §3.3.1 / Table 10](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73pt2-5.pdf) の `PUT DATA` tag `53` replacement を送るため、clear は zero-length value で各 custom object の content を置換する。この成功 empty payload は SDK `NotFound` と同一ではない。`setup` の衝突検査は physical object presence を用い、`put` / `status` が報告する保存済み secret は non-empty encrypted blob を用いる。clear は新しい slot `82` key の生成戻り SPKI で空の version 2 manifest を確定するため、以後は initialized enrollment/provisioning を使い、`setup` を再実行しない。certificate、追加 PIV data object、slot `82` の署名操作は public key の保存・復元に使わない。
 
 ```json
 {
@@ -189,7 +222,7 @@ Envelope encryption は次の役割分担にする。
 
 ### `dotfiles secrets yubikey setup`
 
-`setup` は低水準コマンドであり、通常は `enroll-primary` / `enroll-spare` から内部的に実行する。直接実行時は次を確認する。
+`setup` は低水準コマンドである。`enroll-primary` / `enroll-spare` はこの command を内部呼出しせず、同じ initialization lifecycle を各 use case の順序制御として実行する。`setup` の直接実行時は次を確認する。
 
 - YubiKey が 1 本だけ接続されていればそれを対象にする。serial 未指定で複数本ある場合は一覧表示や選択へ進まず停止し、`--serial <serial>` を要求する。
 - PIV application version が利用条件を満たすこと。
@@ -207,7 +240,7 @@ delete API を公開しないことは [外部 SDK 統合の一次資料](extern
 
 確認後、slot `82` に `yubikey` crate `0.9.0-pre.0` の [`piv::generate`](https://docs.rs/crate/yubikey/0.9.0-pre.0/source/src/piv.rs) で専用鍵を生成し、manifest を保存する。既存の FIDO2 / OTP / OpenPGP / PIV credential は reset しない。衝突がある場合に自動削除や上書きはしない。
 
-`setup` を含む管理 command は PIV PIN を hidden TTY からだけ受け取り、既に設定済みの PIN-protected management key を使う。固定 `yubikey` crate の `MgmKey::get_protected` は management metadata query と protected data read の error origin を public API で区別しないため、`NotFound` を B0 の protected-key 不在と断定しない。全 error で停止し、factory-default key の認証、`generate_for`、`set_protected` を自動実行しない。将来、別途承認した移行で `set_protected` を用いる場合も、その `Ok(())` は metadata 更新までの完全成功を保証しないため、fresh handle で PIN verify、protected key 取得、management authentication、metadata `default == Some(false)` をすべて確認できるまで slot / object 操作へ進まない。根拠は [外部 SDK 統合の一次資料](external-sdk-evidence.md#yubikey-piv--yubikey-crate) の固定 source 確認である。
+`setup` は current/new/confirmation の hidden TTY PIN を mutation 前に検証する。物理的に完全な fresh storage を初期化する enrollment は current PIN だけを hidden input し、同一 handle で current PIN VERIFY、既存 protected management-key authentication、PIV version・slot `82` key/certificate・manifest・全予約 object の完全 inspection を通過する。fresh と確定した場合だけ new/confirmation を検証し、保持済み current と三値をそろえて PIV application-wide PIN を `change_pin` する。PIN-free `status` はこの global mutation の許可根拠にしない。PIN 変更後は同じ handle で new PIN VERIFY、既存 protected management-key authentication、鍵生成、manifest 確定だけを行う。initialized enrollment は new/confirmation を読まず、設定済み PIN による management session を継続する。initialized storage の他の管理 command も設定済み PIN を hidden TTY からだけ受け取り、いずれも既に設定済みの PIN-protected management key を使う。固定 `yubikey` crate の `MgmKey::get_protected` は management metadata query と protected data read の error origin を public API で区別しないため、`NotFound` を B0 の protected-key 不在と断定しない。全 error で停止し、factory-default key の認証、`generate_for`、`set_protected` を自動実行しない。将来、別途承認した移行で `set_protected` を用いる場合も、その `Ok(())` は metadata 更新までの完全成功を保証しないため、fresh handle で PIN verify、protected key 取得、management authentication、metadata `default == Some(false)` をすべて確認できるまで slot / object 操作へ進まない。根拠は [外部 SDK 統合の一次資料](external-sdk-evidence.md#yubikey-piv--yubikey-crate) の固定 source 確認である。
 
 複数本の YubiKey を運用する場合でも、`setup` は指定された 1 本だけを変更する。接続中の他 YubiKey へ同時に書き込む batch mode は実装しない。
 
@@ -232,18 +265,18 @@ CLI 引数で secret 本文は受け取らない。`--stdin` は pipe または 
 
 ### clear
 
-clear は予約済み manifest / secret object と slot 82 certificate を消去し、slot 82 の専用 key を再生成して置換し、その生成済み SPKI を持つ空の version 2 manifest を同じ管理操作で確定する。既存 key を消去する操作は行わない。予約外の PIV 領域および FIDO2 / OTP / OpenPGP は対象外である。したがって clear 成功後に `setup` を実行してはならない（正常な empty v2 storage への setup は no-op でも余分な PIN session になる）。`--yes` の確認後にだけ hidden TTY PIV PIN を受け取り、PIN-protected management key で認証する。
+clear は予約済み manifest / secret object と slot 82 certificate を消去し、slot 82 の専用 key を再生成して置換し、その生成済み SPKI を持つ空の version 2 manifest を同じ管理操作で確定する。既存 key を消去する操作は行わない。予約外の PIV 領域および FIDO2 / OTP / OpenPGP は対象外である。したがって clear 成功後に `setup` を実行してはならず、実行した場合は initialized state の衝突として停止する。`--yes` の確認後にだけ hidden TTY PIV PIN を受け取り、PIN-protected management key で認証する。
 
-provisioning script は `clear` または `setup` の終了コード契約を利用せず、[spec の単一 command 契約](secret-recovery-spec.md#provisioning-source-の単一-command-契約) に従って `provision-bws-token` へ状態遷移全体を委譲する。
+provisioning script は `clear` または `setup` の終了コード契約を利用せず、[spec の高水準 enrollment 契約](secret-recovery-spec.md#provisioning-source-の高水準-enrollment-契約) に従って primary を `enroll-primary`、spare を `enroll-spare` で登録する。
 
 ### `dotfiles secrets yubikey enroll-primary`
 
-primary YubiKey を復旧入口として登録する高水準コマンドである。これは BWS recovery credential の正本を最初に登録する操作なので、`bitwarden-client-secret` だけを hidden prompt から受け取る。非対話または migration 用に限り `--stdin-json` を許可する。
+primary YubiKey を復旧入口として登録する高水準コマンドである。これは BWS recovery credential の正本を最初に登録する操作なので、`bitwarden-client-secret` だけを hidden prompt から受け取る。token input より前に current PIN VERIFY、既存 protected management-key authentication、完全 inspection を通し、physical fresh または対象 object が logical empty で manifest/slot SPKI が一致する initialized version 2 だけを許可する。non-empty `bitwarden-client-secret`、version 1、manifestless partial state は token を読まず停止する。物理的に完全な fresh storage では token の取得、decode、document parse、全 field/domain validation を先に完了し、その後だけ new/confirmation input、PIN change、新 PIN authentication、initialize/store/finalize を連続して行う。入力不正によって PIN 変更済みの partial state を作らない。`clear` 後を含む initialized storage では設定済み PIN の management session だけを使い、PIN を変更せず token 保存へ進む。非対話または migration 用に限り `--stdin-json` を許可する。
 `--stdin-json` を使う場合も PIV PIN は JSON payload に含めず、controlling TTY の hidden prompt だけから受け取る。
 
 ### `dotfiles secrets yubikey enroll-spare`
 
-spare YubiKey を復旧入口として登録する高水準コマンドである。primary から bootstrap secret を読み出して spare に再暗号化する操作にまとめ、利用者が低水準コマンドを手順として並べたり、secret を再入力したりしなくてよいようにする。
+spare YubiKey を復旧入口として登録する高水準コマンドである。primary から bootstrap secret を読み出して spare に再暗号化して保存し、利用者が低水準コマンドを並べたり secret を再入力したりしない高水準操作である。primary decrypt より前に spare の current PIN VERIFY、既存 protected management-key authentication、完全 inspection を通し、physical fresh または対象 object が logical empty で manifest/slot SPKI が一致する initialized version 2 だけを許可する。non-empty `bitwarden-client-secret`、version 1、manifestless partial state は primary secret を読まず停止する。spare が物理的に完全な fresh storage の場合は、primary read/decrypt または supplied JSON の decode、document parse、全 field/domain validation を先に完了し、その後だけ new/confirmation input、PIN change、新 PIN authentication、initialize/store/finalize を連続して行う。`clear` 後を含む initialized storage では設定済み PIN の management session のみを使う。
 
 通常実行では、primary / spare の serial を解決し、spare の secret storage が enrollment 可能であることを事前検査してから、primary から `bitwarden-client-secret` を復号する。primary と spare を同時に接続して `--primary-serial <serial>` と `--spare-serial <serial>` を指定する。両方を接続すると複数 device となるため、serial を省略すると停止する。現行の prompt 実行は、primary の復号後に spare を接続する差し替え待ちや Enter prompt を提供しない。したがって、YubiKey を 1 本ずつしか接続できない環境では通常実行を完了できない。
 
@@ -335,7 +368,7 @@ JSON 文字列の値は JSON escape（`\n`、`\\`、`\uXXXX` など）を decode
 - slot `82` に既存 key または certificate がある。
 - 使用予定 object ID に既存 data object がある。
 - `enroll-primary` / `enroll-spare` の途中で setup、保存、ローカル確認 のいずれかに失敗した。
-- `enroll-primary` / `enroll-spare` の途中失敗で setup 済みの部分状態（manifest または一部 secret object）が残ることがある。この状態は回復可能で、同一 YubiKey では `put --force` で不足分を埋めるか、運用手順として専用領域を初期化して再 enroll する。
+- `enroll-primary` / `enroll-spare` の途中失敗で setup 済みの部分状態（slot key、manifest、または secret object）が残ることがある。通常 enrollment はこれを暗黙 resume、`put --force` 相当の上書き、clear、slot overwrite/delete、再初期化、reset/PUK/default-key fallback へ写像せず停止する。特に manifest/object 空かつ slot `82` key/certificate ありの key-only state は、ownership marker がなく既存他用途 key と直前生成 key を一意に区別できないため、`setup` / enroll / `provision-bws-token` / `clear --yes` のすべてで固定 opaque failure と manual administrator escalation にする。管理者は別途 repository ownership と backup を確認して repository 外の手順を選び、CLI は同一 command の retry/resume や回復操作を自動実行しない。
 - `enroll-spare` で primary と spare の serial が同一である。
 - `enroll-spare` で primary / spare の serial 解決、または primary secret を読む前の spare storage 事前検査に失敗した。
 - `enroll-spare` で平文 secret を読む前に core dump 無効化に失敗した。

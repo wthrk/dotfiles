@@ -46,22 +46,6 @@ use crate::{
     foundation::protection::ProtectedSecret,
 };
 
-/// BWS response value を protection 借用内で domain parser に渡す。
-///
-/// domain constructor の選択は port contract ごとに固定し、backend はその constructor をこの境界へ
-/// 渡す。この操作は SDK が返した `String` を平文のまま port/application へ渡さず、UTF-8 validation と
-/// domain constructor 呼び出しを protected borrow 内で終える技術境界だけを提供する。
-pub(crate) fn parse_response_value<T>(
-    value: &ProtectedSecret,
-    parse: impl FnOnce(&str) -> Result<T>,
-) -> Result<T> {
-    value.with_secret(|bytes| {
-        let text =
-            std::str::from_utf8(bytes).context("Bitwarden SDK secret value is not valid UTF-8")?;
-        parse(text)
-    })
-}
-
 fn protect_response_string(value: Zeroizing<String>) -> Result<ProtectedSecret> {
     let mut protected = ProtectedSecret::new(value.len())?;
     protected.with_secret_mut(|out| out.copy_from_slice(value.as_bytes()));
@@ -394,7 +378,7 @@ fn guarded_update_preflight(
 #[cfg(test)]
 mod tests {
     use super::guarded_update_preflight;
-    use crate::features::gpg_backup_recovery::domain::gpg_backup::BackupUpdateGuard;
+    use crate::features::gpg_backup_recovery::ports::public::BackupUpdateGuard;
     use uuid::Uuid;
     use zeroize::Zeroizing;
 

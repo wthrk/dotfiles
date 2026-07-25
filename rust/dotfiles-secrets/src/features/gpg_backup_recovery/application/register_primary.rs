@@ -158,9 +158,7 @@ mod tests {
                     OpenPgpSubkeyFacts, ResolvedSubkey, SubkeyCapability,
                 },
             },
-            yubikey_lifecycle::domain::{
-                manifest::SecretManifest, storage::SecretStorageReadInspection,
-            },
+            yubikey_lifecycle::ports::public::{SecretManifest, SecretStorageReadInspection},
         },
         foundation::protection::ProtectedSecret,
     };

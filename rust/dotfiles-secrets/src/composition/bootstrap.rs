@@ -6,6 +6,13 @@
 
 use crate::{
     features::{
+        bws_secrets::support::backend::BwsClientBackend,
+        gpg_backup_recovery::support::backend::{
+            BackupCipherBackend, GpgKeyringBackend, SshAgentBackend,
+        },
+        password_store::support::backend::{GitCloneBackend, PasswordStoreBackend},
+    },
+    features::{
         cli_interaction::{
             presentation::io,
             support::{clock, process_io},
@@ -16,7 +23,6 @@ use crate::{
             support::{process_diagnostic, yubikey_backend, yubikey_storage},
         },
     },
-    shared::contracts::adapter_backend,
 };
 
 fn write_process_diagnostic_line(line: &str) {
@@ -56,13 +62,14 @@ struct SecretsRuntime {
     streamed_bootstrap_document_input: io::StreamedBootstrapDocumentInput,
     storage: yubikey_storage::YubikeyStorageBackend,
     report: io::JsonReport,
-    bws_client: adapter_backend::BwsClientBackend,
+    bws_client: BwsClientBackend,
     gpg_recipient: yubikey_backend::YubikeyRecipientBackend,
-    backup_cipher: adapter_backend::BackupCipherBackend,
-    gpg_keyring: adapter_backend::GpgKeyringBackend,
-    ssh_agent: adapter_backend::SshAgentBackend,
-    password_store: adapter_backend::PasswordStoreBackend,
-    git_clone: adapter_backend::GitCloneBackend,
+    backup_cipher: BackupCipherBackend,
+    gpg_keyring: GpgKeyringBackend,
+    ssh_agent: SshAgentBackend,
+    password_store: PasswordStoreBackend,
+    git_clone: GitCloneBackend,
+    gpg_agent_socket: crate::features::gpg_backup_recovery::support::backend::GpgAgentSocketBackend,
 }
 
 impl SecretsRuntime {
@@ -78,19 +85,21 @@ impl SecretsRuntime {
             streamed_bootstrap_document_input: io::StreamedBootstrapDocumentInput::new(process_io::read_stdin_all),
             storage: yubikey_storage::YubikeyStorageBackend::default(),
             report: io::JsonReport::new(process_io::write_stdout_line),
-            bws_client: adapter_backend::BwsClientBackend,
+            bws_client: BwsClientBackend,
             gpg_recipient: yubikey_backend::YubikeyRecipientBackend,
-            backup_cipher: adapter_backend::BackupCipherBackend,
-            gpg_keyring: adapter_backend::GpgKeyringBackend,
-            ssh_agent: adapter_backend::SshAgentBackend,
-            password_store: adapter_backend::PasswordStoreBackend,
-            git_clone: adapter_backend::GitCloneBackend,
+            backup_cipher: BackupCipherBackend,
+            gpg_keyring: GpgKeyringBackend,
+            ssh_agent: SshAgentBackend,
+            password_store: PasswordStoreBackend,
+            git_clone: GitCloneBackend,
+            gpg_agent_socket: crate::features::gpg_backup_recovery::support::backend::GpgAgentSocketBackend,
         }
     }
 }
 
 /// Construct the entrypoint invocation from root-owned concrete receivers and start it directly.
 pub(crate) async fn start(options: crate::SecretsOptions) -> crate::Result<()> {
+    let _session = crate::foundation::protection::SecretSession::start()?;
     let mut runtime = SecretsRuntime::production();
     let controller = diagnostics::DiagnosticController::new(write_process_diagnostic_line);
     let _backend_observation = process_diagnostic::Scope::new(observe_backend_operation);
@@ -120,6 +129,7 @@ pub(crate) async fn start(options: crate::SecretsOptions) -> crate::Result<()> {
             ssh_agent: &mut runtime.ssh_agent,
             password_store: &mut runtime.password_store,
             git_clone: &mut runtime.git_clone,
+            gpg_agent_socket: &mut runtime.gpg_agent_socket,
             status_output: &runtime.process_io,
             rotation_continuation: &runtime.process_io,
             clock: &runtime.clock,
@@ -133,7 +143,7 @@ pub(crate) async fn start(options: crate::SecretsOptions) -> crate::Result<()> {
 
 /// Construct the `dotfiles gpg` receiver set and start its entrypoint directly.
 pub(crate) fn start_gpg(options: crate::GpgOptions) -> crate::Result<()> {
-    let mut keyring = adapter_backend::GpgKeyringBackend;
+    let mut keyring = GpgKeyringBackend;
     let output = io::ProcessPresentation::new(
         process_io::stdin_is_terminal,
         process_io::read_control_line,

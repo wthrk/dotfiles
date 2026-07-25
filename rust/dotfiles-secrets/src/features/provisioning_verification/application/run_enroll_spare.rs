@@ -7,17 +7,14 @@ use crate::{
         cli_interaction::ports::public::{BootstrapDocumentInputPort, ReportPort},
         provisioning_verification::domain::enrollment::EnrollSummary,
         yubikey_lifecycle::{
-            domain::{
-                manifest::{BootstrapSecretDocument, BootstrapSecretDocumentReadPlan},
-                piv::SecretName,
-                storage::{
-                    SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
-                    SecretStorageVerificationPlan, SecretStorageWriteIntent,
-                    is_secret_storage_ownership_unknown,
-                },
-            },
             ports::public::piv_pin_input::PivPinInputPort,
-            ports::{DeviceSerialPort, SecretStoragePort},
+            ports::public::{
+                BootstrapSecretDocument, BootstrapSecretDocumentReadPlan, SecretName,
+                SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
+                SecretStorageVerificationPlan, SecretStorageWriteIntent,
+                is_secret_storage_ownership_unknown,
+            },
+            ports::public::{DeviceSerialPort, SecretStoragePort},
         },
     },
 };
@@ -33,15 +30,10 @@ pub(crate) fn run_enroll_spare(
 ) -> Result<()> {
     command.ensure_requested_serials_distinct()?;
     let spare_serial = device.resolve_device_serial(command.spare_serial)?;
-    device
-        .inspect_device_profile(spare_serial)?
-        .ensure_pin_free_recovery_supported()?;
+    device.preflight_device_profile(spare_serial)?;
     command.ensure_requested_primary_differs_from_spare(spare_serial)?;
     let primary_serial = if document_input.is_none() {
         let primary_serial = device.resolve_device_serial(command.primary_serial)?;
-        device
-            .inspect_device_profile(primary_serial)?
-            .ensure_pin_free_recovery_supported()?;
         command.ensure_distinct_resolved_serials(primary_serial, spare_serial)?;
         Some(primary_serial)
     } else {
@@ -152,7 +144,7 @@ fn opaque_enrollment_failure(error: anyhow::Error) -> anyhow::Error {
 fn read_primary_bootstrap_document(
     primary_serial: u32,
     storage: &mut dyn SecretStoragePort,
-) -> Result<crate::features::yubikey_lifecycle::domain::manifest::BootstrapSecretDocumentInput> {
+) -> Result<crate::features::yubikey_lifecycle::ports::public::BootstrapSecretDocumentInput> {
     let plan = BootstrapSecretDocumentReadPlan::for_storage(
         SecretName::BitwardenClientSecret.storage_spec(primary_serial),
     );
@@ -179,14 +171,10 @@ mod tests {
     use crate::{
         features::{
             provisioning_verification::domain::commands::EnrollSpareCommand,
-            yubikey_lifecycle::domain::{
-                self as domain,
-                manifest::SecretManifest,
-                piv::{PivApplicationVersion, SecretName},
-                storage::{
-                    SecretStorageReadInspection, SecretStorageSetupInspection,
-                    SecretStorageWriteInspection,
-                },
+            yubikey_lifecycle::ports::public::{
+                BootstrapSecretDocumentInput, MANIFEST_APP, PivApplicationVersion, PivObjectId,
+                SecretManifest, SecretName, SecretStorageReadInspection,
+                SecretStorageSetupInspection, SecretStorageWriteInspection,
             },
         },
         foundation::protection::ProtectedSecret,
@@ -203,44 +191,39 @@ mod tests {
 
     use super::run_enroll_spare;
 
-    fn expect_pin_free_device_profile(
+    fn configure_management_device_fixture(
         device: &mut crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort,
     ) {
-        device.expect_inspect_device_profile().returning(|_| {
-            Ok(domain::piv::PivDeviceProfile {
-                version: PivApplicationVersion {
-                    major: 5,
-                    minor: 7,
-                    patch: 1,
-                },
-                fips_series: false,
-            })
-        });
+        let _ = device;
     }
 
     fn material(bytes: &'static [u8]) -> crate::Result<ProtectedSecret> {
         ProtectedSecret::from_test_bytes(bytes)
     }
 
-    fn document() -> crate::Result<domain::manifest::BootstrapSecretDocumentInput> {
-        Ok(
-            domain::manifest::BootstrapSecretDocumentInput::BitwardenClientSecret(material(
-                b"token",
-            )?),
-        )
+    fn document() -> crate::Result<BootstrapSecretDocumentInput> {
+        Ok(BootstrapSecretDocumentInput::BitwardenClientSecret(
+            material(b"token")?,
+        ))
     }
 
     #[test]
     fn spare_runner_uses_one_session_for_a_supplied_document() -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         let mut sequence = Sequence::new();
         device
             .expect_resolve_device_serial()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2002));
+        device
+            .expect_preflight_device_profile()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|serial| *serial == 2002)
+            .returning(|_| Ok(()));
         let mut pin = ports::io::MockPivPinInputPort::new();
         pin.expect_read_current_piv_pin_secret()
             .times(1)
@@ -354,7 +337,7 @@ mod tests {
     fn fresh_spare_pin_change_failure_occurs_after_document_validation() -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         let mut pin = ports::io::MockPivPinInputPort::new();
         let mut storage =
             crate::features::yubikey_lifecycle::ports::public::MockSecretStoragePort::new();
@@ -366,6 +349,12 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(2002));
+        device
+            .expect_preflight_device_profile()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|serial| *serial == 2002)
+            .returning(|_| Ok(()));
         pin.expect_read_current_piv_pin_secret()
             .times(1)
             .in_sequence(&mut sequence)
@@ -438,11 +427,15 @@ mod tests {
     fn key_only_spare_escalates_before_document_or_storage_mutation() -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .times(1)
             .returning(|_| Ok(2002));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2002)
+            .returning(|_| Ok(()));
         let mut pin = ports::io::MockPivPinInputPort::new();
         pin.expect_read_current_piv_pin_secret()
             .times(1)
@@ -505,10 +498,14 @@ mod tests {
     ) -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2002));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2002)
+            .returning(|_| Ok(()));
         let mut pin = ports::io::MockPivPinInputPort::new();
         pin.expect_read_current_piv_pin_secret()
             .returning(|| material(b"123456"));
@@ -581,11 +578,11 @@ mod tests {
                 piv_version: PivApplicationVersion::minimum_for_secret_storage(),
                 manifest_bytes: Some(SecretManifest::fixture_v2().encode()?),
                 present_object_ids: vec![
-                    domain::piv::PivObjectId::MANIFEST,
+                    PivObjectId::MANIFEST,
                     SecretName::BitwardenClientSecret.object_id(),
                 ],
                 nonempty_object_ids: vec![
-                    domain::piv::PivObjectId::MANIFEST,
+                    PivObjectId::MANIFEST,
                     SecretName::BitwardenClientSecret.object_id(),
                 ],
             },
@@ -593,7 +590,7 @@ mod tests {
         )?;
         let v1 = SecretManifest {
             version: 1,
-            app: domain::manifest::MANIFEST_APP.to_owned(),
+            app: MANIFEST_APP.to_owned(),
             slot_public_key_spki: None,
         }
         .encode()?;
@@ -604,8 +601,8 @@ mod tests {
                 slot_public_key_spki: SecretManifest::fixture_v2().slot_public_key_spki,
                 piv_version: PivApplicationVersion::minimum_for_secret_storage(),
                 manifest_bytes: Some(v1),
-                present_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
-                nonempty_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
+                present_object_ids: vec![PivObjectId::MANIFEST],
+                nonempty_object_ids: vec![PivObjectId::MANIFEST],
             },
             false,
         )

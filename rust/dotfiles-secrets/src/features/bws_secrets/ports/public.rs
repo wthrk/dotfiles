@@ -7,5 +7,5 @@ pub(crate) use super::bw::MockBwsClientPort;
 /// これらは BWS feature が所有する public contract である。consumer は owner の private
 /// domain module を import せず、この module だけを通じて候補と opaque ID を扱う。
 pub use crate::features::bws_secrets::domain::bws::{
-    BwsLookupCandidate, BwsProjectId, BwsProjectName, BwsSecretId, BwsSecretName,
+    BwsLookupCandidate, BwsProjectId, BwsProjectName, BwsSecretId, BwsSecretName, BwsSecretValue,
 };

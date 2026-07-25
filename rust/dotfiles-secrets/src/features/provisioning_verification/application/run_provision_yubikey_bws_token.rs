@@ -9,12 +9,12 @@ use crate::{
     features::{
         cli_interaction::ports::public::BitwardenClientSecretInputPort,
         yubikey_lifecycle::{
-            domain::storage::{
+            ports::public::piv_pin_input::PivPinInputPort,
+            ports::public::{DeviceSerialPort, SecretStoragePort},
+            ports::public::{
                 SecretStorageReadIntent, SecretStorageSetupIntent, SecretStorageSetupProbe,
                 SecretStorageStatus, SecretStorageVerificationPlan, SecretStorageWriteIntent,
             },
-            ports::public::piv_pin_input::PivPinInputPort,
-            ports::{DeviceSerialPort, SecretStoragePort},
         },
     },
 };
@@ -35,9 +35,7 @@ pub(crate) fn run_provision_yubikey_bws_token(
     storage: &mut dyn SecretStoragePort,
 ) -> Result<()> {
     let serial = device.resolve_device_serial(command.serial)?;
-    device
-        .inspect_device_profile(serial)?
-        .ensure_pin_free_recovery_supported()?;
+    device.preflight_device_profile(serial)?;
     let pin = piv_pin.read_piv_pin_secret()?;
     storage.begin_piv_management_session(serial, pin)?;
 
@@ -84,16 +82,12 @@ mod tests {
 
     use crate::{
         features::{
-            cli_interaction::ports::io::MockBitwardenClientSecretInputPort,
+            cli_interaction::ports::public::MockBitwardenClientSecretInputPort,
             provisioning_verification::domain::commands::ProvisionBwsTokenCommand,
-            yubikey_lifecycle::domain::{
-                self as domain,
-                manifest::SecretManifest,
-                piv::{PivApplicationVersion, SecretName},
-                storage::{
-                    SecretStorageReadInspection, SecretStorageSetupInspection,
-                    SecretStorageStatusInspection, SecretStorageWriteInspection,
-                },
+            yubikey_lifecycle::ports::public::{
+                MANIFEST_APP, PivApplicationVersion, PivObjectId, SecretManifest, SecretName,
+                SecretStorageReadInspection, SecretStorageSetupInspection,
+                SecretStorageStatusInspection, SecretStorageWriteInspection,
             },
         },
         foundation::protection::ProtectedSecret,
@@ -101,19 +95,10 @@ mod tests {
 
     use super::run_provision_yubikey_bws_token;
 
-    fn expect_pin_free_device_profile(
+    fn configure_management_device_fixture(
         device: &mut crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort,
     ) {
-        device.expect_inspect_device_profile().returning(|_| {
-            Ok(domain::piv::PivDeviceProfile {
-                version: domain::piv::PivApplicationVersion {
-                    major: 5,
-                    minor: 7,
-                    patch: 1,
-                },
-                fips_series: false,
-            })
-        });
+        let _ = device;
     }
 
     fn initialized_setup() -> crate::Result<SecretStorageSetupInspection> {
@@ -123,8 +108,8 @@ mod tests {
             slot_public_key_spki: SecretManifest::fixture_v2().slot_public_key_spki,
             piv_version: PivApplicationVersion::minimum_for_secret_storage(),
             manifest_bytes: Some(SecretManifest::fixture_v2().encode()?),
-            present_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
-            nonempty_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
+            present_object_ids: vec![PivObjectId::MANIFEST],
+            nonempty_object_ids: vec![PivObjectId::MANIFEST],
         })
     }
 
@@ -144,10 +129,14 @@ mod tests {
     fn existing_token_is_verified_without_token_input_or_mutation() -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(()));
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         pin.expect_read_piv_pin_secret()
             .returning(|| ProtectedSecret::from_test_bytes(b"123456"));
@@ -199,10 +188,14 @@ mod tests {
     fn key_only_partial_state_escalates_without_token_input_or_mutation() -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(()));
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         pin.expect_read_piv_pin_secret()
             .returning(|| ProtectedSecret::from_test_bytes(b"123456"));
@@ -253,7 +246,7 @@ mod tests {
     -> crate::Result<()> {
         let v1 = SecretManifest {
             version: 1,
-            app: domain::manifest::MANIFEST_APP.to_owned(),
+            app: MANIFEST_APP.to_owned(),
             slot_public_key_spki: None,
         }
         .encode()?;
@@ -272,8 +265,8 @@ mod tests {
                 slot_public_key_spki: Some(fixture_spki.clone()),
                 piv_version: PivApplicationVersion::minimum_for_secret_storage(),
                 manifest_bytes: Some(v1),
-                present_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
-                nonempty_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
+                present_object_ids: vec![PivObjectId::MANIFEST],
+                nonempty_object_ids: vec![PivObjectId::MANIFEST],
             },
             SecretStorageSetupInspection {
                 reserved_slot_key_exists: false,
@@ -290,8 +283,8 @@ mod tests {
                 slot_public_key_spki: Some(mismatched_spki),
                 piv_version: PivApplicationVersion::minimum_for_secret_storage(),
                 manifest_bytes: Some(SecretManifest::fixture_v2().encode()?),
-                present_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
-                nonempty_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
+                present_object_ids: vec![PivObjectId::MANIFEST],
+                nonempty_object_ids: vec![PivObjectId::MANIFEST],
             },
             SecretStorageSetupInspection {
                 reserved_slot_key_exists: true,
@@ -299,16 +292,20 @@ mod tests {
                 slot_public_key_spki: Some(fixture_spki.clone()),
                 piv_version: PivApplicationVersion::minimum_for_secret_storage(),
                 manifest_bytes: None,
-                present_object_ids: vec![domain::piv::PivObjectId::MANIFEST],
+                present_object_ids: vec![PivObjectId::MANIFEST],
                 nonempty_object_ids: Vec::new(),
             },
         ] {
             let mut device =
                 crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-            expect_pin_free_device_profile(&mut device);
+            configure_management_device_fixture(&mut device);
             device
                 .expect_resolve_device_serial()
                 .returning(|_| Ok(2001));
+            device
+                .expect_preflight_device_profile()
+                .withf(|serial| *serial == 2001)
+                .returning(|_| Ok(()));
             let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
             pin.expect_read_piv_pin_secret()
                 .returning(|| ProtectedSecret::from_test_bytes(b"123456"));
@@ -351,10 +348,14 @@ mod tests {
     fn initialized_empty_storage_reads_token_once_then_stores_and_verifies() -> crate::Result<()> {
         let mut device =
             crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
+        device
+            .expect_preflight_device_profile()
+            .withf(|serial| *serial == 2001)
+            .returning(|_| Ok(()));
         let mut pin = crate::features::yubikey_lifecycle::ports::public::piv_pin_input::MockPivPinInputPort::new();
         pin.expect_read_piv_pin_secret()
             .returning(|| ProtectedSecret::from_test_bytes(b"123456"));

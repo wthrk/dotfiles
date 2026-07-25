@@ -16,8 +16,9 @@ use crate::{
             run_restore_gpg, run_validate_gpg_backup_source,
         },
         password_store::ports::public::{
-            ProvisionPasswordStoreRemoteCommand, RestorePassCommand, RestorePassYubikeyRuntime,
-            run_provision_password_store_remote, run_restore_pass,
+            ProvisionPasswordStoreRemoteCommand, RestorePassCommand, RestorePassRuntime,
+            RestorePassYubikeyRuntime, run_provision_password_store_remote,
+            run_restore_pass_with_socket,
         },
         provisioning_verification::ports::public::{
             EnrollPrimaryCommand, EnrollSpareCommand, ExternalCheck, ProvisionBwsTokenCommand,
@@ -62,14 +63,7 @@ where
                 invocation.storage,
             ),
             crate::YubikeyCommand::Put(options) => run_put(
-                PutCommand {
-                    name: options
-                        .name
-                        .parse()
-                        .map_err(|_| anyhow::anyhow!("unsupported YubiKey secret name"))?,
-                    serial: options.serial,
-                    force: options.force,
-                },
+                PutCommand::from_cli_name(&options.name, options.serial, options.force)?,
                 invocation.device,
                 invocation.piv_pin,
                 if options.stdin {
@@ -204,19 +198,22 @@ where
             .await
         }
         crate::SecretsCommand::RestorePass(options) => {
-            run_restore_pass(
+            run_restore_pass_with_socket(
                 RestorePassCommand {
                     serial: options.serial,
                 },
-                RestorePassYubikeyRuntime {
-                    device: invocation.device,
-                    storage: invocation.storage,
+                RestorePassRuntime {
+                    yubikey: RestorePassYubikeyRuntime {
+                        device: invocation.device,
+                        storage: invocation.storage,
+                    },
+                    bws_client: invocation.bws_client,
+                    keyring: invocation.gpg_keyring,
+                    store: invocation.password_store,
+                    git_clone: invocation.git_clone,
+                    gpg_agent_socket: invocation.gpg_agent_socket,
+                    report: invocation.report,
                 },
-                invocation.bws_client,
-                invocation.gpg_keyring,
-                invocation.password_store,
-                invocation.git_clone,
-                invocation.report,
             )
             .await
         }

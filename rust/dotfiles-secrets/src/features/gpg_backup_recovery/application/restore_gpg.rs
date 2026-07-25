@@ -7,7 +7,10 @@ use crate::{
         bws_secrets::ports::public::{BwsClientPort, BwsProjectName, BwsSecretName},
         cli_interaction::ports::public::ReportPort,
         gpg_backup_recovery::{
-            domain::{gpg_backup::PrimaryFingerprint, gpg_restore::RestoreGpgSummary},
+            domain::{
+                gpg_backup::{GpgBackupEnvelope, PrimaryFingerprint},
+                gpg_restore::RestoreGpgSummary,
+            },
             ports::{BackupCipherPort, GpgKeyringPort, SshAgentPort},
         },
         yubikey_lifecycle::ports::public::{
@@ -73,9 +76,10 @@ where
     )?;
 
     // 3. envelope 形式（version / metadata / recipients / ciphertext）を検証して取得する。
-    let (envelope, _guard) = bws_client
+    let (raw_envelope, _guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
+    let envelope = GpgBackupEnvelope::from_json(raw_envelope.as_bytes())?;
 
     // 3-4. 接続中 YubiKey に一致する recipient を解決し、DEK を unwrap して backup を復号する。
     let connected = recipient.resolve_connected_recipient(serial)?;
@@ -214,6 +218,8 @@ mod tests {
     //! envelope 取得→recipient 照合→DEK unwrap→backup 復号→fingerprint 照合→既存鍵衝突→import→subkey
     //! 検証→keygrip 登録→SSH support 充足という順序と、各停止条件を検証する。test double は持ち込まない。
 
+    use crate::features::bws_secrets::ports::public::BwsSecretValue;
+
     use crate::{
         features::{
             gpg_backup_recovery::domain::{
@@ -225,9 +231,7 @@ mod tests {
                     SubkeyCapability,
                 },
             },
-            yubikey_lifecycle::domain::{
-                manifest::SecretManifest, storage::SecretStorageReadInspection,
-            },
+            yubikey_lifecycle::ports::public::{SecretManifest, SecretStorageReadInspection},
         },
         foundation::protection::ProtectedSecret,
     };
@@ -238,7 +242,7 @@ mod tests {
             };
         }
         pub(crate) mod gpg_backup {
-            pub(crate) use crate::features::gpg_backup_recovery::domain::gpg_backup::PrimaryFingerprint;
+            pub(crate) use crate::features::gpg_backup_recovery::ports::public::PrimaryFingerprint;
         }
     }
     mod ports {
@@ -420,7 +424,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                    BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                     BackupUpdateGuard::ValueDigest("d".to_owned()),
                 ))
             });
@@ -541,7 +545,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -623,7 +627,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -719,8 +723,12 @@ mod tests {
                 name: "gpg-secret-key-backup".to_owned(),
             }])
         });
-        bws.expect_fetch_gpg_backup_envelope()
-            .returning(|_, _| Ok((envelope()?, BackupUpdateGuard::ValueDigest("d".to_owned()))));
+        bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
+            Ok((
+                BwsSecretValue::from_bytes(envelope()?.to_json()?),
+                BackupUpdateGuard::ValueDigest("d".to_owned()),
+            ))
+        });
         let mut recipient = ports::MockGpgRecipientPort::new();
         recipient
             .expect_resolve_connected_recipient()
@@ -812,7 +820,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });
@@ -926,7 +934,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("d".to_owned()),
             ))
         });

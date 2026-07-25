@@ -22,9 +22,6 @@ pub(crate) fn run_put(
     storage: &mut dyn SecretStoragePort,
 ) -> Result<()> {
     let serial = device.resolve_device_serial(command.serial)?;
-    device
-        .inspect_device_profile(serial)?
-        .ensure_pin_free_recovery_supported()?;
     let pin = piv_pin.read_piv_pin_secret()?;
     storage.begin_piv_management_session(serial, pin)?;
 
@@ -58,20 +55,8 @@ mod tests {
 
     use super::run_put;
 
-    fn expect_pin_free_device_profile(device: &mut MockDeviceSerialPort) {
-        device.expect_inspect_device_profile().returning(|_| {
-            Ok(
-                crate::features::yubikey_lifecycle::domain::piv::PivDeviceProfile {
-                    version:
-                        crate::features::yubikey_lifecycle::domain::piv::PivApplicationVersion {
-                            major: 5,
-                            minor: 7,
-                            patch: 1,
-                        },
-                    fips_series: false,
-                },
-            )
-        });
+    fn configure_management_device_fixture(device: &mut MockDeviceSerialPort) {
+        let _ = device;
     }
 
     fn material(bytes: &'static [u8]) -> crate::Result<ProtectedSecret> {
@@ -93,7 +78,7 @@ mod tests {
     #[test]
     fn put_runner_stops_before_reader_when_preflight_rejects_write() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
@@ -131,7 +116,7 @@ mod tests {
     #[test]
     fn put_force_rejects_zero_length_manifest_partial_before_secret_input() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));
@@ -179,7 +164,7 @@ mod tests {
     #[test]
     fn put_runner_accepts_a_streamed_reader_without_a_second_lifecycle() -> crate::Result<()> {
         let mut device = MockDeviceSerialPort::new();
-        expect_pin_free_device_profile(&mut device);
+        configure_management_device_fixture(&mut device);
         device
             .expect_resolve_device_serial()
             .returning(|_| Ok(2001));

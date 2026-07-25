@@ -1,7 +1,12 @@
 //! `secrets-internal-test-stub` GPG port の forwarding-only adapter。
 use crate::{
     Result,
-    features::gpg_backup_recovery::ports::gpg::{BackupCipherPort, GpgKeyringPort, SshAgentPort},
+    features::gpg_backup_recovery::ports::gpg::{
+        BackupCipherPort, GpgAgentSocketPort, GpgKeyringPort, SshAgentPort,
+    },
+    features::gpg_backup_recovery::support::backend::{
+        BackupCipherBackend, GpgKeyringBackend, SshAgentBackend,
+    },
     features::gpg_backup_recovery::support::internal_stub_gpg,
     features::{
         gpg_backup_recovery::domain::{
@@ -14,8 +19,8 @@ use crate::{
         password_store::ports::public::GpgRecipientId,
     },
     foundation::protection::ProtectedSecret,
-    shared::contracts::adapter_backend::{BackupCipherBackend, GpgKeyringBackend, SshAgentBackend},
 };
+#[cfg(feature = "secrets-internal-test-stub")]
 impl GpgKeyringPort for GpgKeyringBackend {
     fn export_secret_key(&mut self, value: &PrimaryFingerprint) -> Result<ProtectedSecret> {
         internal_stub_gpg::export_secret_key(value)
@@ -57,6 +62,7 @@ impl GpgKeyringPort for GpgKeyringBackend {
         internal_stub_gpg::can_decrypt_store_entry(value)
     }
 }
+#[cfg(feature = "secrets-internal-test-stub")]
 impl BackupCipherPort for BackupCipherBackend {
     fn generate_dek(&mut self) -> Result<ProtectedSecret> {
         internal_stub_gpg::generate_dek()
@@ -76,6 +82,7 @@ impl BackupCipherPort for BackupCipherBackend {
         internal_stub_gpg::decrypt_backup(dek, ciphertext)
     }
 }
+#[cfg(feature = "secrets-internal-test-stub")]
 impl SshAgentPort for SshAgentBackend {
     fn register_authentication_subkey(&mut self, value: &Keygrip) -> Result<bool> {
         internal_stub_gpg::register_authentication_subkey(value)
@@ -86,4 +93,10 @@ impl SshAgentPort for SshAgentBackend {
     fn inspect_ssh_agent(&mut self, value: &OpenSshPublicKey) -> Result<SshAgentReadiness> {
         internal_stub_gpg::inspect_ssh_agent(value)
     }
+}
+
+#[cfg(feature = "secrets-internal-test-stub")]
+impl GpgAgentSocketPort
+    for crate::features::gpg_backup_recovery::support::backend::GpgAgentSocketBackend
+{
 }

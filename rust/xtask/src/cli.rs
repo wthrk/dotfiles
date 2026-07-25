@@ -40,9 +40,10 @@ pub(crate) enum RuntimeScenario {
 }
 
 #[derive(Subcommand)]
-/// `dotfiles-checks` へ渡す検証対象。runtime は VM が必要なため明示選択にする。
+/// `dotfiles-checks` へ渡す検証対象。static と test は責務を分離し、runtime は VM が必要なため明示選択にする。
 pub(crate) enum CheckTarget {
     Static,
+    Test,
     Zsh,
     Runtime {
         #[arg(value_enum)]

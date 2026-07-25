@@ -100,6 +100,21 @@ impl BwsSecretId {
     }
 }
 
+/// BWS SDK から取得した raw secret value の opaque carrier。
+/// SDK/backend は bytes を封入するだけで、consumer が wire-format を domain 値へ変換する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BwsSecretValue(Vec<u8>);
+
+impl BwsSecretValue {
+    pub fn from_bytes(value: impl Into<Vec<u8>>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// Bitwarden Secrets Manager の復旧用 project 名。
 ///
 /// project 名の固定値と一意解決規則は、SDK 実装詳細ではなく復旧対象の同一性を表す

@@ -6,3 +6,4 @@
 
 - [hexagonal-implementation-rules.md](hexagonal-implementation-rules.md): hexagonal 実装規約を定義する。
 - [review-checklist.md](review-checklist.md): 構造レビューで使う恒久的な確認観点を定義する。
+- [feature-boundary-design.md](feature-boundary-design.md): feature-first の物理配置、境界設計工程、機械的 boundary linter を定義する。

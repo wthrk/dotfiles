@@ -22,6 +22,13 @@ use crate::{
     foundation::protection::ProtectedSecret,
 };
 
+/// gpg-agent の strict SSH socket 解決 capability。実装は support、接続は adapter が所有する。
+#[cfg_attr(test, mockall::automock)]
+pub trait GpgAgentSocketPort {
+    #[cfg(all(not(test), not(feature = "secrets-internal-test-stub")))]
+    fn resolve_strict_socket(&mut self) -> Result<Option<std::path::PathBuf>>;
+}
+
 /// use case が GPG 鍵リング backend（gpgme + OpenPGP 解析）へ要求する capability 契約。
 ///
 /// caller は backup export / import / subkey 検証の順序と停止条件を application/domain 側で決める。

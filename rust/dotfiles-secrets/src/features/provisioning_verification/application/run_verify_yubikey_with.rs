@@ -6,6 +6,8 @@ use crate::{
     features::{
         bws_secrets::ports::public::{BwsClientPort, BwsProjectName, BwsSecretName},
         cli_interaction::ports::public::ReportPort,
+        gpg_backup_recovery::ports::public::GpgBackupEnvelope,
+        password_store::ports::public::PasswordStoreRemote,
         provisioning_verification::domain::verification::{CheckName, CheckStatus, VerifySummary},
         yubikey_lifecycle::ports::public::{
             DeviceSerialPort, GpgRecipientPort, SecretName, SecretStoragePort,
@@ -126,15 +128,19 @@ where
     let pass_secret_id =
         BwsSecretName::PasswordStoreRemote.resolve_id(secret_candidates, &project_id)?;
 
-    let (envelope, _guard) = bws_client
+    let (raw_envelope, _guard) = bws_client
         .fetch_gpg_backup_envelope(access_token, &gpg_secret_id)
         .await?;
+    let envelope = GpgBackupEnvelope::from_json(raw_envelope.as_bytes())?;
     let connected = gpg_recipient.resolve_connected_recipient(serial)?;
     envelope.resolve_recipient(&connected)?;
 
-    let _remote = bws_client
+    let raw_remote = bws_client
         .fetch_password_store_remote(access_token, &pass_secret_id)
         .await?;
+    let _remote = String::from_utf8(raw_remote.as_bytes().to_vec())
+        .map_err(|_| anyhow::anyhow!("password-store-remote is not valid UTF-8"))
+        .and_then(|value| PasswordStoreRemote::parse(&value))?;
     Ok(())
 }
 
@@ -160,19 +166,19 @@ fn load_yubikey_secret(
 
 #[cfg(test)]
 mod tests {
+    use crate::features::bws_secrets::ports::public::BwsSecretValue;
     use crate::{
         features::{
             bws_secrets::ports::public::{BwsLookupCandidate, BwsProjectId, BwsSecretId},
-            gpg_backup_recovery::domain::gpg_backup::{
+            gpg_backup_recovery::ports::public::{
                 BackupUpdateGuard, ConnectedYubiKey, GpgBackupEnvelope,
             },
-            password_store::domain::pass_restore::PasswordStoreRemote,
             provisioning_verification::domain::{
                 commands::VerifyYubikeyCommand,
                 verification::{CheckName, CheckStatus, ExternalCheck},
             },
-            yubikey_lifecycle::domain::{
-                manifest::SecretManifest, piv::SecretName, storage::SecretStorageReadInspection,
+            yubikey_lifecycle::ports::public::{
+                SecretManifest, SecretName, SecretStorageReadInspection,
             },
         },
         foundation::protection::ProtectedSecret,
@@ -236,10 +242,6 @@ mod tests {
             "2001",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         )
-    }
-
-    fn valid_password_store_remote() -> crate::Result<PasswordStoreRemote> {
-        PasswordStoreRemote::parse("git@github.com:owner/password-store.git")
     }
 
     fn valid_envelope_value() -> crate::Result<String> {
@@ -386,7 +388,7 @@ mod tests {
             .withf(|_, secret_id| secret_id.as_str() == "gpg-id")
             .returning(|_, _| {
                 Ok((
-                    GpgBackupEnvelope::from_json(valid_envelope_value()?.as_bytes())?,
+                    BwsSecretValue::from_bytes(valid_envelope_value()?.as_bytes().to_vec()),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -400,7 +402,13 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|_, secret_id| secret_id.as_str() == "pass-id")
-            .returning(|_, _| valid_password_store_remote());
+            .returning(|_, _| {
+                Ok(BwsSecretValue::from_bytes(
+                    "git@github.com:owner/password-store.git"
+                        .as_bytes()
+                        .to_vec(),
+                ))
+            });
 
         let mut report = ports::MockReportPort::new();
         report
@@ -481,7 +489,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    GpgBackupEnvelope::from_json(valid_envelope_value()?.as_bytes())?,
+                    BwsSecretValue::from_bytes(valid_envelope_value()?.as_bytes().to_vec()),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });
@@ -517,7 +525,7 @@ mod tests {
             .times(1)
             .returning(|_, _| {
                 Ok((
-                    GpgBackupEnvelope::from_json(valid_envelope_value()?.as_bytes())?,
+                    BwsSecretValue::from_bytes(valid_envelope_value()?.as_bytes().to_vec()),
                     BackupUpdateGuard::from_value_bytes(b"envelope"),
                 ))
             });

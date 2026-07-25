@@ -6,7 +6,8 @@ use crate::{
         bws_secrets::ports::public::{BwsClientPort, BwsProjectName, BwsSecretName},
         cli_interaction::ports::public::BackupUpdateConfirmationPort,
         gpg_backup_recovery::domain::{
-            commands::AddGpgBackupSpareCommand, gpg_backup::EnvelopeRecipient,
+            commands::AddGpgBackupSpareCommand,
+            gpg_backup::{EnvelopeRecipient, GpgBackupEnvelope},
         },
         yubikey_lifecycle::ports::public::{
             DeviceSerialPort, GpgRecipientPort, SecretName, SecretStoragePort,
@@ -62,9 +63,10 @@ where
     )?;
 
     // 更新前に envelope と stale overwrite 防止 guard を取得する。
-    let (envelope, guard) = bws_client
+    let (raw_envelope, guard) = bws_client
         .fetch_gpg_backup_envelope(&access_token, &secret_id)
         .await?;
+    let envelope = GpgBackupEnvelope::from_json(raw_envelope.as_bytes())?;
 
     // unwrap/wrap で touch と DEK 復号を発生させる前に更新確認を行う。確認に必要な fingerprint は
     // envelope 取得後に判明しているため、拒否される更新で YubiKey の DEK unwrap や spare wrap を実行
@@ -126,6 +128,8 @@ mod tests {
     //! 確認→unwrap→wrap→guard 付き更新の順で進むこと、確認拒否時に DEK unwrap・spare wrap・更新の
     //! いずれにも進ませないことを確認する。
 
+    use crate::features::bws_secrets::ports::public::BwsSecretValue;
+
     use crate::{
         features::{
             gpg_backup_recovery::domain::{
@@ -134,9 +138,7 @@ mod tests {
                     BackupUpdateGuard, ConnectedYubiKey, EnvelopeRecipient, GpgBackupEnvelope,
                 },
             },
-            yubikey_lifecycle::domain::{
-                manifest::SecretManifest, storage::SecretStorageReadInspection,
-            },
+            yubikey_lifecycle::ports::public::{SecretManifest, SecretStorageReadInspection},
         },
         foundation::protection::ProtectedSecret,
     };
@@ -269,7 +271,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("rev".to_owned()),
             ))
         });
@@ -353,7 +355,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("read-at-start".to_owned()),
             ))
         });
@@ -431,7 +433,7 @@ mod tests {
         });
         bws.expect_fetch_gpg_backup_envelope().returning(|_, _| {
             Ok((
-                GpgBackupEnvelope::from_json(envelope_value()?.as_bytes())?,
+                BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
                 BackupUpdateGuard::ValueDigest("rev".to_owned()),
             ))
         });

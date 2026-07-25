@@ -3,26 +3,34 @@
 # secret-recovery のソース（プロビジョニング元）環境での初期登録を補助するスクリプト。
 #
 # 既存 password-store の .gpg-id recipient とローカル GPG secret key を前提に、
-# password-store の GitHub remote 作成/設定/push、GitHub SSH 鍵登録、
-# YubiKey への BWS access token 保存、BWS への復旧用 secret 登録を扱う。
+# 利用者が事前作成した private password-store GitHub repository の確認・remote 設定/push、GitHub SSH 鍵登録、
+# primary YubiKey への BWS access token 登録、primary から spare への再暗号化、
+# BWS への復旧用 secret 登録、各 YubiKey の復旧前提検証を扱う。
 # BWS project `dotfiles-secret-recovery` は事前に Bitwarden Secrets Manager 側で作成し、
 # YubiKey に保存する token から 1 件だけ見える状態にしてからこの script の BWS 登録段階へ進む。
 # YubiKey の serial は接続中のデバイスから自動検出する。明示指定する場合は
 # `PROVISIONING_YUBIKEY_SERIAL` / `SPARE_YUBIKEY_SERIAL` 環境変数で指定する。
 #
 # 正本: docs/secret-recovery/initial-provisioning-runbook.md と spec/design。
-# 使い方（実端末で。secret/touch/passphrase の対話入力あり。BWS token 保存は子
-# `provision-bws-token` 一回だけへ委譲し、その command が controlling TTY から PIV 管理 PIN と
-# 必要時の token を hidden prompt で読む。PIN/token はこの script の stdin / argv / environment
-# では扱わない）:
+# 使い方（実端末で。YubiKey touch の対話入力あり。source GPG key は passphrase-free であることを
+# mutation 前の `gpg-backup validate` が検査する。BWS token 保存は子
+# `enroll-primary` が controlling TTY から PIV 管理 PIN と token を hidden prompt で一度だけ読む。
+# `enroll-spare` は primary から token を復号して spare に再暗号化するため token の再入力はない。
+# PIN/token はこの script の stdin / argv / environment では扱わない）:
 #   bash scripts/provision-secret-recovery-source.sh
 #   bash scripts/provision-secret-recovery-source.sh --repo-head
 #   bash scripts/provision-secret-recovery-source.sh --debug
 
 set -euo pipefail
+die() {
+	printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2
+	exit 1
+}
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USE_REPO_HEAD=0
-PROVISION_BWS_TOKEN_DEBUG=0
+PROVISION_DEBUG=0
+PROVISIONING_YUBIKEY_SERIAL="${PROVISIONING_YUBIKEY_SERIAL:-}"
+SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}"
 case "${DOTFILES_PROVISION_USE_REPO_HEAD:-}" in
 1) USE_REPO_HEAD=1 ;;
 "") ;;
@@ -35,11 +43,21 @@ while [ "$#" -gt 0 ]; do
 		shift
 		;;
 	--debug)
-		PROVISION_BWS_TOKEN_DEBUG=1
+		PROVISION_DEBUG=1
 		shift
 		;;
+	--primary-serial)
+		[ "$#" -ge 2 ] || die "--primary-serial には serial が必要です"
+		PROVISIONING_YUBIKEY_SERIAL="$2"
+		shift 2
+		;;
+	--spare-serial)
+		[ "$#" -ge 2 ] || die "--spare-serial には serial が必要です"
+		SPARE_YUBIKEY_SERIAL="$2"
+		shift 2
+		;;
 	-h | --help)
-		printf 'Usage: %s [--repo-head] [--debug]\n' "$0"
+		printf 'Usage: %s [--repo-head] [--debug] [--primary-serial SERIAL] [--spare-serial SERIAL]\n' "$0"
 		exit 0
 		;;
 	*) die "未知の引数です: $1" ;;
@@ -48,9 +66,8 @@ done
 # ─── 設定（既定値を自動導出。必要なら環境変数で上書き）───
 GPG_ALGO_PRIMARY="${GPG_ALGO_PRIMARY:-ed25519}"
 GPG_ALGO_ENCRYPT="${GPG_ALGO_ENCRYPT:-cv25519}"
-PASS_REPO="${PASS_REPO:-}"                                     # 例: <owner>/password-store。未指定なら GitHub ユーザーから導出
-PROVISIONING_YUBIKEY_SERIAL="${PROVISIONING_YUBIKEY_SERIAL:-}" # primary recipient と bitwarden-client-secret 保存に使う YubiKey serial
-SPARE_YUBIKEY_SERIAL="${SPARE_YUBIKEY_SERIAL:-}"               # 任意。指定時は gpg-backup add-spare まで実行する
+PASS_REPO="${PASS_REPO:-}" # 例: <owner>/password-store。未指定なら GitHub ユーザーから導出
+# `--primary-serial` / `--spare-serial` が同名 environment の既定値を上書きする。
 # ──────────────────────────────────────────────────────
 
 # すべての CLI 呼び出しは後段の `dotfiles` wrapper が controlling terminal を使う。
@@ -63,17 +80,13 @@ run_dotfiles_from_repo_head() {
 }
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
-die() {
-	printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2
-	exit 1
-}
 pause() {
 	printf '\n\033[1;35m[手動]\033[0m %s\n' "$*"
 	IFS= read -r -p '    完了したら Enter: ' _ </dev/tty
 }
 
 preflight_github_ssh_key_scope() {
-	gh api user/keys --paginate --jq 'length' >/dev/null 2>&1 ||
+	gh api user/keys --paginate --jq 'length' >/dev/null ||
 		die "GitHub SSH public key API の事前確認に失敗しました。gh の active account に admin:public_key scope が必要です: gh auth refresh -h github.com -s admin:public_key"
 }
 
@@ -89,12 +102,18 @@ password_store_gpg_id_file() {
 	printf '%s/.gpg-id' "$(password_store_dir)"
 }
 recipient_secret_key_fingerprint() {
-	gpg --list-secret-keys --with-colons --fingerprint "$1" 2>/dev/null |
-		awk -F: '/^fpr:/{ print $10; exit }'
+	local listing
+	if ! listing="$(gpg --list-secret-keys --with-colons --fingerprint "$1")"; then
+		die "GPG secret key の fingerprint 取得に失敗しました: $1"
+	fi
+	awk -F: '/^fpr:/{ print $10; exit }' <<<"$listing"
 }
 gpg_uid_for_fingerprint() {
-	gpg --list-secret-keys --with-colons "$1" 2>/dev/null |
-		awk -F: '/^uid:/{ print $10; exit }'
+	local listing
+	if ! listing="$(gpg --list-secret-keys --with-colons "$1")"; then
+		die "GPG secret key の UID 取得に失敗しました: $1"
+	fi
+	awk -F: '/^uid:/{ print $10; exit }' <<<"$listing"
 }
 verify_password_store_recipients() {
 	local gpg_id_file
@@ -130,20 +149,24 @@ confirm_password_store_primary_fingerprint() {
 		die "password-store .gpg-id の recipient が変更されています。解決済み primary fingerprint と一致しません"
 	log "password-store .gpg-id recipient の秘密鍵を再確認済み"
 }
-provision_bws_access_token_on_yubikey() {
-	local role="$1"
-	local serial="$2"
-	local -a command=(secrets yubikey provision-bws-token)
-	log "${role} YubiKey の BWS token storage を単一 PIV session で確認・必要時保存・検証"
-	# この一回の Rust command が status、typed invalid 時だけの clear、空領域の setup、hidden token
-	# 入力、保存、local decrypt 検証を同じ PIV handle に適用する。shell は SDK error / exit code /
-	# stderr を分類せず、別 process の status / clear / setup / put を組み合わせない。
+enroll_primary_yubikey() {
+	local serial="$1"
+	local -a command=(secrets yubikey enroll-primary)
+	[ "$PROVISION_DEBUG" -eq 0 ] || command+=(--debug)
+	log "primary YubiKey を登録（BWS token はこの一回だけ hidden input）"
 	if [ -n "$serial" ]; then
 		command+=(--serial "$serial")
 	fi
-	if [ "$PROVISION_BWS_TOKEN_DEBUG" -eq 1 ]; then
-		command+=(--debug)
-	fi
+	dotfiles "${command[@]}"
+}
+enroll_spare_yubikey() {
+	local primary_serial="$1"
+	local spare_serial="$2"
+	local -a command=(secrets yubikey enroll-spare
+		--primary-serial "$primary_serial"
+		--spare-serial "$spare_serial")
+	[ "$PROVISION_DEBUG" -eq 0 ] || command+=(--debug)
+	log "primary の BWS token を再入力せず spare YubiKey へ再暗号化して登録"
 	dotfiles "${command[@]}"
 }
 
@@ -158,20 +181,22 @@ if [ "$USE_REPO_HEAD" -eq 1 ]; then
 	require cargo
 	require direnv
 	dotfiles() {
-		if { exec 9</dev/tty; } 2>/dev/null; then
-			run_dotfiles_from_repo_head "$@" <&9
-			local s=$?
-			exec 9<&-
-			return "$s"
+		{ exec 9</dev/tty; } ||
+			die "--repo-head の対話入力に必要な controlling terminal を開けません"
+		local s
+		if run_dotfiles_from_repo_head "$@" <&9; then
+			s=0
 		else
-			run_dotfiles_from_repo_head "$@" </dev/null
+			s=$?
 		fi
+		exec 9<&-
+		return "$s"
 	}
 else
 	require dotfiles
 fi
 
-GH_LOGIN="$(gh api user --jq .login 2>/dev/null)" ||
+GH_LOGIN="$(gh api user --jq .login)" ||
 	die "gh の active account で GitHub API 認証に失敗しました（gh auth login または gh auth switch）"
 [ -n "$GH_LOGIN" ] ||
 	die "gh の active account で GitHub API 認証に失敗しました（gh auth login または gh auth switch）"
@@ -181,12 +206,14 @@ preflight_github_ssh_key_scope
 PASS_CLONE_URL="git@github.com:${PASS_REPO}.git"
 PASSWORD_STORE_ROOT="$(password_store_dir)"
 ensure_password_store_remote() {
-	if pass git remote get-url origin >/dev/null 2>&1; then
-		local current_origin
-		current_origin="$(pass git remote get-url origin)"
+	local current_origin status
+	if current_origin="$(pass git config --get remote.origin.url)"; then
 		[ "$current_origin" = "$PASS_CLONE_URL" ] ||
 			die "password-store の origin remote が想定と異なります"
 	else
+		status=$?
+		[ "$status" -eq 1 ] ||
+			die "password-store の origin remote 確認に失敗しました"
 		pass git remote add origin "$PASS_CLONE_URL"
 	fi
 }
@@ -195,13 +222,20 @@ ensure_password_store_remote() {
 PRIMARY_FINGERPRINT="$(verify_password_store_recipients)"
 [ -n "${PRIMARY_FINGERPRINT:-}" ] ||
 	die "password-store .gpg-id から primary fingerprint を解決できません"
+
 GPG_OWNER="$(gpg_uid_for_fingerprint "$PRIMARY_FINGERPRINT")"
 if [ -n "${GPG_OWNER:-}" ]; then
 	log "password-store .gpg-id recipient の秘密鍵を使用: ${PRIMARY_FINGERPRINT} （${GPG_OWNER}）"
 else
 	log "password-store .gpg-id recipient の秘密鍵を使用: ${PRIMARY_FINGERPRINT}"
 fi
-have_cap() { gpg --list-keys --with-colons "${PRIMARY_FINGERPRINT}" | awk -F: -v c="$1" '/^sub:/{ if (index($12,c)) f=1 } END{ exit f?0:1 }'; }
+have_cap() {
+	local listing
+	if ! listing="$(gpg --list-keys --with-colons "${PRIMARY_FINGERPRINT}")"; then
+		die "GPG public key capability の取得に失敗しました"
+	fi
+	awk -F: -v c="$1" '/^sub:/{ if (index($12,c)) f=1 } END{ exit f?0:1 }' <<<"$listing"
+}
 have_cap e || {
 	log "encryption subkey を追加"
 	gpg --quick-add-key "${PRIMARY_FINGERPRINT}" "$GPG_ALGO_ENCRYPT" encrypt never
@@ -214,66 +248,98 @@ have_cap s || {
 	log "signing subkey を追加"
 	gpg --quick-add-key "${PRIMARY_FINGERPRINT}" "$GPG_ALGO_PRIMARY" sign never
 }
+# E/A/S の不足を補った後、GitHub/Git/YubiKey/BWS を変更する前に production と同じ gpgme export +
+# Sequoia packet validator を非変更で通す。protected/unknown packet は pinentry を起動せずこの地点で停止する。
+log "source GPG backup の passphrase-free E/A/S packet を非変更で検証"
+dotfiles secrets gpg-backup validate --primary-fingerprint "$PRIMARY_FINGERPRINT"
 log "GPG 鍵構成を確認済み"
 warn "この鍵のバックアップと revocation certificate を別経路で保管してください。"
 YUBIKEY_SERIAL="${PROVISIONING_YUBIKEY_SERIAL:-}"
 SPARE_SERIAL="${SPARE_YUBIKEY_SERIAL:-}"
+if [ -n "$SPARE_SERIAL" ] && [ -z "$YUBIKEY_SERIAL" ]; then
+	die "SPARE_YUBIKEY_SERIAL を指定する場合は primary を一意に参照する PROVISIONING_YUBIKEY_SERIAL も指定してください"
+fi
 
 # ── 2. GitHub への SSH 公開鍵登録（authentication subkey 由来）──
 log "authentication subkey 由来 SSH 公開鍵を GitHub に登録"
 SSH_PUB="$(dotfiles gpg export-ssh-public-key --primary-fingerprint "${PRIMARY_FINGERPRINT}")"
-gh ssh-key list 2>/dev/null | grep -qF "$(printf '%s' "$SSH_PUB" | awk '{print $2}')" ||
-	printf '%s\n' "$SSH_PUB" | gh ssh-key add - --title "dotfiles-gpg-auth-$(date +%Y%m%d)"
+SSH_KEY_BODY="$(printf '%s' "$SSH_PUB" | awk '{print $2}')"
+[ -n "$SSH_KEY_BODY" ] || die "export した SSH 公開鍵を解釈できません"
+if ! GH_SSH_KEYS="$(gh ssh-key list)"; then
+	die "GitHub SSH public key 一覧の取得に失敗しました"
+fi
+if ! grep -qF "$SSH_KEY_BODY" <<<"$GH_SSH_KEYS"; then
+	printf '%s\n' "$SSH_PUB" |
+		gh ssh-key add - --title "dotfiles-gpg-auth-$(date +%Y%m%d)" ||
+		die "GitHub SSH public key の登録に失敗しました"
+fi
 
 # ── 3. private password-store repository の remote 設定・push ──
-gh repo view "$PASS_REPO" >/dev/null 2>&1 || {
-	log "GitHub に private password-store repository を作成"
-	gh repo create "$PASS_REPO" --private --disable-issues --disable-wiki >/dev/null 2>&1 ||
-		die "GitHub private password-store repository の作成に失敗しました"
-}
-REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate 2>/dev/null)" ||
-	die "GitHub password-store repository の visibility 確認に失敗しました"
+# GitHub REST の repository 404 は private resource の不存在と認証/permission 不足を区別しない。
+# script は 404 を create 許可へ変換せず、owner の private repository を人間が事前作成した後だけ進む。
+pause "GitHub active account '${GH_LOGIN}' の owner 配下に private repository '${PASS_REPO}' を事前作成し、この account から閲覧・push できることを確認してください。この script は repository を作成しません。"
+REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate)" ||
+	die "GitHub password-store repository の存在・認証・permission・visibility を確認できません。repository を手動作成し、active account の権限を確認してください"
 [ "$REPO_IS_PRIVATE" = "true" ] ||
 	die "GitHub password-store repository が private ではありません。private repository を指定してください"
 if [ ! -d "$PASSWORD_STORE_ROOT/.git" ]; then
 	log "既存 password-store を Git repository として初期化して remote へ push"
-	pass git init >/dev/null 2>&1 || true
-	pass git branch -M main >/dev/null 2>&1 || true
+	pass git init >/dev/null ||
+		die "password-store Git repository の初期化に失敗しました"
+	pass git branch -M main >/dev/null ||
+		die "password-store Git repository の main branch 設定に失敗しました"
 	PASS_PUSH_BRANCH="main"
 	PASS_PUSH_MODE="set-upstream"
 else
 	log "既存 password-store Git repository を使用"
-	PASS_PUSH_BRANCH="$(pass git branch --show-current 2>/dev/null || true)"
+	PASS_PUSH_BRANCH="$(pass git branch --show-current)" ||
+		die "既存 password-store repository の現在 branch の取得に失敗しました"
 	[ -n "$PASS_PUSH_BRANCH" ] ||
 		die "既存 password-store repository の現在 branch を解決できません。detached HEAD の場合は push 前に branch へ checkout してください"
-	if pass git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+	if PASS_UPSTREAM_MERGE="$(pass git config --get "branch.${PASS_PUSH_BRANCH}.merge")"; then
+		[ -n "$PASS_UPSTREAM_MERGE" ] ||
+			die "password-store repository の upstream merge ref が空です"
 		PASS_PUSH_MODE="current-upstream"
 	else
-		PASS_PUSH_MODE="set-upstream"
+		status=$?
+		if [ "$status" -eq 1 ]; then
+			PASS_PUSH_MODE="set-upstream"
+		else
+			die "password-store repository の upstream 設定確認に失敗しました"
+		fi
 	fi
 fi
 ensure_password_store_remote
-pass git add -A >/dev/null 2>&1 || true
-if pass git diff --cached --quiet >/dev/null 2>&1; then
+pass git add -A >/dev/null ||
+	die "password-store の Git index 更新に失敗しました"
+if pass git diff --cached --quiet; then
 	log "password-store に新規 commit 対象はありません"
 else
-	pass git commit -m "Initialize password-store" >/dev/null 2>&1 ||
+	status=$?
+	[ "$status" -eq 1 ] ||
+		die "password-store の staged diff 確認に失敗しました"
+	pass git commit -m "Initialize password-store" >/dev/null ||
 		die "password-store Git commit に失敗しました。user.name/user.email/signing/hook 設定を確認してください"
 fi
 if [ "$PASS_PUSH_MODE" = "current-upstream" ]; then
-	pass git push >/dev/null 2>&1 ||
+	pass git push >/dev/null ||
 		die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
 else
-	pass git push -u origin "$PASS_PUSH_BRANCH" >/dev/null 2>&1 ||
+	pass git push -u origin "$PASS_PUSH_BRANCH" >/dev/null ||
 		die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
 fi
 confirm_password_store_primary_fingerprint
 
-# ── 4. YubiKey への BWS access token 保存 ──
-pause "Bitwarden Secrets Manager 側で project 'dotfiles-secret-recovery' を作成済みで、対象 YubiKey に保存済みまたはこれから保存する BWS access token から同名 project が 1 件だけ見えることを確認してください。project 作成はこの script / dotfiles CLI では行いません。"
-provision_bws_access_token_on_yubikey "primary" "$YUBIKEY_SERIAL"
+# ── 4. YubiKey への BWS access token 登録 ──
+pause "Bitwarden Secrets Manager 側で次の gate をすべて確認してください:
+    - project 'dotfiles-secret-recovery' が一意に 1 件だけ存在する
+    - recovery 用 machine account を作成し、access token を発行済みである
+    - machine account をその project に割り当て済みである
+    - token に project の secret を read/create/update する権限がある
+project / machine account / token の作成はこの script / dotfiles CLI では行いません。1 項目でも未確認なら Enter を押さず停止してください。"
+enroll_primary_yubikey "$YUBIKEY_SERIAL"
 if [ -n "${SPARE_SERIAL:-}" ]; then
-	provision_bws_access_token_on_yubikey "spare" "$SPARE_SERIAL"
+	enroll_spare_yubikey "$YUBIKEY_SERIAL" "$SPARE_SERIAL"
 fi
 
 # ── 5. BWS への復旧用 secret 登録 ──
@@ -300,6 +366,18 @@ if [ -n "${SPARE_SERIAL:-}" ]; then
 	fi
 else
 	warn "spare YubiKey serial が未指定のため gpg-backup add-spare は未実行です。spare で復旧可能にするには後で dotfiles secrets gpg-backup add-spare を実行してください。"
+fi
+
+# ── 6. primary / spare の無対話復旧前提を検証 ──
+log "primary YubiKey の無対話復旧前提を検証"
+if [ -n "${YUBIKEY_SERIAL:-}" ]; then
+	dotfiles secrets verify-yubikey --serial "$YUBIKEY_SERIAL" --all
+else
+	dotfiles secrets verify-yubikey --all
+fi
+if [ -n "${SPARE_SERIAL:-}" ]; then
+	log "spare YubiKey の無対話復旧前提を検証"
+	dotfiles secrets verify-yubikey --serial "$SPARE_SERIAL" --all
 fi
 
 # ── 手動: 各サービスの YubiKey 物理登録 ──

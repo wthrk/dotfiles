@@ -2,6 +2,7 @@
 use crate::{
     Result,
     features::gpg_backup_recovery::ports::gpg::GpgKeyringPort,
+    features::gpg_backup_recovery::support::backend::GpgKeyringBackend,
     features::gpg_backup_recovery::support::gpg_keyring_backend,
     features::{
         gpg_backup_recovery::domain::{
@@ -11,7 +12,6 @@ use crate::{
         password_store::ports::public::GpgRecipientId,
     },
     foundation::protection::ProtectedSecret,
-    shared::contracts::adapter_backend::GpgKeyringBackend,
 };
 impl GpgKeyringPort for GpgKeyringBackend {
     fn export_secret_key(&mut self, primary: &PrimaryFingerprint) -> Result<ProtectedSecret> {

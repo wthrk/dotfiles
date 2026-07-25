@@ -1,3 +1,4 @@
+pub(crate) mod backend;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod gpg_backup;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
@@ -16,4 +17,3 @@ pub(crate) mod ssh_agent_backend;
 pub(crate) mod ssh_agent_protocol;
 #[cfg(all(feature = "gpg-backend", not(feature = "secrets-internal-test-stub")))]
 pub(crate) mod ssh_agent_socket;
-pub(crate) mod yubikey_piv;

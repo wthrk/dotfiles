@@ -173,9 +173,11 @@ cargo xtask check
 ```
 
 通常の静的検証を実行します。Rust、Nix、shell script、GitHub Actions workflow を確認します。
-GitHub Actions の `static checks` も同じ `cargo xtask check static` を実行し、workspace test、
-internal-stub CLI integration test、secret-recovery application test をここで担保します。`nix build`
-の package derivation は配布 artifact の build だけを担い、test suite は実行しません。
+GitHub Actions の `static checks` も同じ `cargo xtask check static` を実行し、Rust の fmt/check/clippy
+（test target は含めない）、shell 構文、workflow、Nix、AST boundary/adapter gate だけを担保します。
+実行を伴う workspace test、internal-stub CLI integration、provision shell fixture は
+`cargo xtask check test` が各一回だけ担います。`nix build` の package derivation は配布 artifact の
+build だけを担い、test suite は実行しません。
 
 すべて実行する場合:
 
@@ -187,6 +189,7 @@ cargo xtask check all
 
 ```sh
 cargo xtask check static
+cargo xtask check test
 cargo xtask check zsh
 ```
 
@@ -219,9 +222,9 @@ PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**しま
 仕込む必要はありません。GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow
 （必須 check）を発火しない既知の制約があるため、`nightly-update.yml` の open-pr job が **同一 run 内で
 セキュリティチェック `cargo xtask ci verify-bump-lock` をインライン実行**し、合格時のみ PR head commit へ
-`static checks` という commit status を投稿して required check を満たします。`static checks` は
-`.github/workflows/static-checks.yml` の job 名であり、適用済み「main」ruleset の required context と context 名で
-突合します。
+`static checks` と `test checks` の commit status を投稿して required check を満たします。前者は
+`.github/workflows/static-checks.yml`、後者は `.github/workflows/test-checks.yml` の job 名であり、適用済み
+「main」ruleset の required context と各 context 名で突合します。
 
 インラインのセキュリティチェックは、PR の base..head 全 commit 履歴に対して次を機械判定します。
 
@@ -234,21 +237,21 @@ PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**しま
 workflow 自身の信頼 ref の checkout からビルドし、検査対象は base..head の lock 差分（git データ）です。PR 作業
 ツリーの dotfiles を検査主体にしないため、悪意ある lock 改変があっても判定主体は信頼コードのままです。判定
 ロジックは Rust の純粋核（`rust/xtask/src/ci/bump_lock.rs`）に置き、unit test で固定しています。チェックが fail すると
-`static checks` status は投稿されず、required check が満たされないため無人 auto-merge は成立しません
+`static checks` / `test checks` status は投稿されず、required check が満たされないため無人 auto-merge は成立しません
 （fail-closed・人手レビュー経路へ送られます）。許可パスが `flake.lock` + `docs/update-history/**` に限定される
 ため、nightly PR が `.github/**`（workflow/guard）を変更しようとしてもこのチェックで fail します。
 
 合格後、open-pr job は `@codex review` コメントで codex 自動レビューを起動し（Copilot は GitHub 側のネイティブ
 code review で走ります）、`gh pr merge --auto --squash` で auto-merge を有効化します。Copilot/Codex のレビュー
-充足と required status（`static checks`）満了でマージされます。
+充足と required status（`static checks` / `test checks`）満了でマージされます。
 
 ### 残留制約（実 GitHub でのみ最終確認できる）
 
 この App 不要フローには、実 GitHub でしか確定できない前提があります（マージ後に `workflow_dispatch`
 `dry_run=false` で検証します）。
 
-- GITHUB_TOKEN で POST した commit status `static checks` が、適用済み ruleset の required context と確実に
-  名前突合してマージ条件を満たすか。
+- GITHUB_TOKEN で POST した commit status `static checks` / `test checks` が、適用済み ruleset の required context
+  と確実に名前突合してマージ条件を満たすか。
 - `gh pr merge --auto` を GITHUB_TOKEN 権限（`pull-requests: write`）で有効化できるか（repo 設定で
   auto-merge が有効である必要があります）。
 - `copilot_code_review` が bot / GITHUB_TOKEN 起票 PR で発火するか。

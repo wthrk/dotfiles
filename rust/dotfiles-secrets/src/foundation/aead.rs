@@ -6,7 +6,7 @@
 //! を参照する。
 
 use aes_gcm::{Aes256Gcm, KeyInit, aead::AeadInPlace};
-use anyhow::{Context, bail};
+use anyhow::bail;
 
 use crate::Result;
 
@@ -35,8 +35,7 @@ pub(crate) fn encrypt_detached(
     }
     let tag = cipher
         .encrypt_in_place_detached(aes_gcm::Nonce::from_slice(nonce), additional_data, buffer)
-        .map_err(anyhow::Error::new)
-        .context("AES-GCM encrypt failed")?;
+        .map_err(|_| anyhow::anyhow!("AES-GCM encrypt failed"))?;
     tag.as_slice().try_into().map_err(anyhow::Error::new)
 }
 
@@ -65,6 +64,5 @@ pub(crate) fn decrypt_detached(
             buffer,
             aes_gcm::Tag::from_slice(tag),
         )
-        .map_err(anyhow::Error::new)
-        .context("AES-GCM decrypt failed")
+        .map_err(|_| anyhow::anyhow!("AES-GCM decrypt failed"))
 }
