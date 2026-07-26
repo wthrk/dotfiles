@@ -218,6 +218,8 @@ mod tests {
     //! envelope 取得→recipient 照合→DEK unwrap→backup 復号→fingerprint 照合→既存鍵衝突→import→subkey
     //! 検証→keygrip 登録→SSH support 充足という順序と、各停止条件を検証する。test double は持ち込まない。
 
+    use std::sync::{Arc, Mutex};
+
     use crate::features::bws_secrets::ports::public::BwsSecretValue;
 
     use crate::{
@@ -255,8 +257,8 @@ mod tests {
     }
 
     use super::{
-        RestoreGpgIdentityRuntime, RestoreGpgYubikeyRuntime, combine_main_and_cleanup,
-        run_restore_gpg,
+        restore_imported_key, RestoreGpgIdentityRuntime, RestoreGpgYubikeyRuntime,
+        combine_main_and_cleanup, run_restore_gpg,
     };
 
     const PRIMARY_FP: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -513,6 +515,735 @@ mod tests {
             &report,
         )
         .await
+    }
+
+    /// run_restore_gpg の順序を deterministic transcript で固定する最小比較テスト。
+    #[tokio::test]
+    async fn restore_gpg_records_deterministic_success_transcript() -> crate::Result<()> {
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let mut sequence = mockall::Sequence::new();
+        let mut device =
+            crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |requested| {
+                    events.lock().unwrap().push("resolve_device_serial");
+                    requested.ok_or_else(|| anyhow::anyhow!("test requires an explicit serial"))
+                }
+            });
+        let mut storage =
+            crate::features::yubikey_lifecycle::ports::public::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_, _| {
+                    events.lock().unwrap().push("inspect_secret_storage_read");
+                    read_inspection()
+                }
+            });
+        storage
+            .expect_load_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_, _| {
+                    events.lock().unwrap().push("load_secret");
+                    material(b"access-token")
+                }
+            });
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("list_bws_projects");
+                    Ok(vec![domain::bws::BwsLookupCandidate {
+                        id: domain::bws::BwsProjectId::new("project-1"),
+                        name: "dotfiles-secret-recovery".to_owned(),
+                    }])
+                }
+            });
+        bws.expect_list_bws_secrets()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_, _| {
+                    events.lock().unwrap().push("list_bws_secrets");
+                    Ok(vec![domain::bws::BwsLookupCandidate {
+                        id: domain::bws::BwsSecretId::new("gpg-id"),
+                        name: "gpg-secret-key-backup".to_owned(),
+                    }])
+                }
+            });
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_, _| {
+                    events.lock().unwrap().push("fetch_gpg_backup_envelope");
+                    Ok((
+                        BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
+                        BackupUpdateGuard::ValueDigest("d".to_owned()),
+                    ))
+                }
+            });
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("resolve_connected_recipient");
+                    connected()
+                }
+            });
+        recipient
+            .expect_unwrap_dek()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_, _| {
+                    events.lock().unwrap().push("unwrap_dek");
+                    material(b"dek")
+                }
+            });
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_decrypt_backup()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_, _| {
+                    events.lock().unwrap().push("decrypt_backup");
+                    material(b"backup")
+                }
+            });
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("parse_backup_primary_fingerprint");
+                    backup_facts()
+                }
+            });
+        keyring
+            .expect_secret_key_exists()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("secret_key_exists");
+                    Ok(false)
+                }
+            });
+        keyring
+            .expect_import_secret_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("import_secret_key");
+                    domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+                }
+            });
+        keyring
+            .expect_inspect_imported_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("inspect_imported_key");
+                    Ok(all_usable_composition())
+                }
+            });
+        keyring
+            .expect_authentication_subkey_keygrip()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("authentication_subkey_keygrip");
+                    Keygrip::parse(KEYGRIP)
+                }
+            });
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent
+            .expect_register_authentication_subkey()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("register_authentication_subkey");
+                    Ok(true)
+                }
+            });
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("authentication_subkey_ssh_public_key");
+                    OpenSshPublicKey::parse(SSH_PUBLIC_KEY)
+                }
+            });
+        ssh_agent
+            .expect_inspect_ssh_agent()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("inspect_ssh_agent");
+                    Ok(SshAgentReadiness {
+                        socket_resolved: true,
+                        recovery_identity_present: true,
+                    })
+                }
+            });
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_restore_gpg_report()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|summary| {
+                summary.primary_fingerprint == PRIMARY_FP
+                    && summary.ssh_key_registered
+                    && summary.ssh_support_ready
+            })
+            .returning({
+                let events = Arc::clone(&events);
+                move |_| {
+                    events.lock().unwrap().push("write_restore_gpg_report");
+                    Ok(())
+                }
+            });
+
+        run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgYubikeyRuntime {
+                device: &mut device,
+                storage: &mut storage,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+            },
+            &report,
+        )
+        .await?;
+
+        assert_eq!(
+            events.lock().unwrap().clone(),
+            vec![
+                "resolve_device_serial",
+                "inspect_secret_storage_read",
+                "load_secret",
+                "list_bws_projects",
+                "list_bws_secrets",
+                "fetch_gpg_backup_envelope",
+                "resolve_connected_recipient",
+                "unwrap_dek",
+                "decrypt_backup",
+                "parse_backup_primary_fingerprint",
+                "secret_key_exists",
+                "import_secret_key",
+                "inspect_imported_key",
+                "authentication_subkey_keygrip",
+                "register_authentication_subkey",
+                "authentication_subkey_ssh_public_key",
+                "inspect_ssh_agent",
+                "write_restore_gpg_report"
+            ]
+        );
+        Ok(())
+    }
+
+    /// `restore_imported_key` の ready 判定失敗時、keygrip が既存登録 (`register=false`) の場合は
+    /// `unregister_authentication_subkey` を呼び出さないことを確認する（sshcontrol rollback 最小化）。
+    #[test]
+    fn restore_imported_key_skips_unregister_when_keygrip_preexisted() {
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        let imported = domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+            .expect("fixture primary");
+
+        keyring
+            .expect_inspect_imported_key()
+            .times(1)
+            .returning(|_| Ok(all_usable_composition()));
+        keyring
+            .expect_authentication_subkey_keygrip()
+            .times(1)
+            .returning(|_| Keygrip::parse(KEYGRIP));
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .returning(|_| OpenSshPublicKey::parse(SSH_PUBLIC_KEY));
+        ssh_agent
+            .expect_register_authentication_subkey()
+            .times(1)
+            .returning(|_| Ok(false));
+        ssh_agent
+            .expect_unregister_authentication_subkey()
+            .times(0);
+        ssh_agent.expect_inspect_ssh_agent().times(1).returning(|_| {
+            Ok(SshAgentReadiness {
+                socket_resolved: true,
+                recovery_identity_present: false,
+            })
+        });
+
+        let result = restore_imported_key(&imported, &mut keyring, &mut ssh_agent);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn restore_gpg_fails_early_when_bws_project_lookup_fails_and_state_remains_clean() {
+        let mut sequence = mockall::Sequence::new();
+        let mut device =
+            crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        let mut storage =
+            crate::features::yubikey_lifecycle::ports::public::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| read_inspection());
+        storage
+            .expect_load_secret()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| material(b"access-token"));
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Err(anyhow::anyhow!("project list network fail")));
+        bws.expect_list_bws_secrets().times(0);
+        bws.expect_fetch_gpg_backup_envelope().times(0);
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient.expect_resolve_connected_recipient().times(0);
+        recipient.expect_unwrap_dek().times(0);
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring.expect_secret_key_exists().times(0);
+        keyring.expect_import_secret_key().times(0);
+        keyring.expect_parse_backup_primary_fingerprint().times(0);
+        keyring.expect_inspect_imported_key().times(0);
+        keyring.expect_delete_secret_key().times(0);
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher.expect_decrypt_backup().times(0);
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent.expect_register_authentication_subkey().times(0);
+        ssh_agent.expect_inspect_ssh_agent().times(0);
+        ssh_agent.expect_unregister_authentication_subkey().times(0);
+        let mut report = ports::MockReportPort::new();
+        report.expect_write_restore_gpg_report().times(0);
+
+        let error = run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgYubikeyRuntime {
+                device: &mut device,
+                storage: &mut storage,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+            },
+            &report,
+        )
+        .await
+        .expect_err("project lookup failure must fail before import");
+
+        assert!(error.to_string().contains("project list network fail"));
+    }
+
+    #[tokio::test]
+    async fn restore_gpg_rolls_back_when_ssh_support_fails_and_unregister_cleanup_fails() {
+        let mut sequence = mockall::Sequence::new();
+        let mut device =
+            crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
+        device
+            .expect_resolve_device_serial()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(2001));
+        let mut storage =
+            crate::features::yubikey_lifecycle::ports::public::MockSecretStoragePort::new();
+        expect_local_storage_ok(&mut storage, &mut sequence);
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| {
+                Ok(vec![domain::bws::BwsLookupCandidate {
+                    id: domain::bws::BwsProjectId::new("project-1"),
+                    name: "dotfiles-secret-recovery".to_owned(),
+                }])
+            });
+        bws.expect_list_bws_secrets()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Ok(vec![domain::bws::BwsLookupCandidate {
+                    id: domain::bws::BwsSecretId::new("gpg-id"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                }])
+            });
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Ok((
+                    BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
+                    BackupUpdateGuard::ValueDigest("d".to_owned()),
+                ))
+            });
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| connected());
+        recipient
+            .expect_unwrap_dek()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| material(b"dek"));
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_decrypt_backup()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| material(b"backup"));
+
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| backup_facts());
+        keyring
+            .expect_secret_key_exists()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(false));
+        keyring
+            .expect_import_secret_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP));
+        keyring
+            .expect_inspect_imported_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(all_usable_composition()));
+        keyring
+            .expect_authentication_subkey_keygrip()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Keygrip::parse(KEYGRIP));
+
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent
+            .expect_register_authentication_subkey()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Ok(true));
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| OpenSshPublicKey::parse(SSH_PUBLIC_KEY));
+        ssh_agent
+            .expect_inspect_ssh_agent()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| {
+                Ok(SshAgentReadiness {
+                    socket_resolved: true,
+                    recovery_identity_present: false,
+                })
+            });
+        ssh_agent
+            .expect_unregister_authentication_subkey()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|keygrip| keygrip.as_str() == KEYGRIP)
+            .returning(|_| Err(anyhow::anyhow!("unregister failed")));
+        keyring
+            .expect_delete_secret_key()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
+            .returning(|_| Ok(()));
+
+        let mut report = ports::MockReportPort::new();
+        report.expect_write_restore_gpg_report().times(0);
+
+        let error = run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgYubikeyRuntime {
+                device: &mut device,
+                storage: &mut storage,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+            },
+            &report,
+        )
+        .await
+        .expect_err("cleanup failure must be propagated as rollback failure");
+
+        assert!(
+            error.to_string().contains("GPG restore rollback cleanup failed")
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("gpg-agent does not offer the recovery GPG authentication subkey as an SSH identity")
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_gpg_retry_after_verification_rollback_stays_transparent() {
+        #[derive(Default)]
+        struct State {
+            runs: usize,
+            imported: bool,
+        }
+        let state = Arc::new(Mutex::new(State::default()));
+
+        let mut device =
+            crate::features::yubikey_lifecycle::ports::public::MockDeviceSerialPort::new();
+        device.expect_resolve_device_serial().times(2).returning(|_| Ok(2001));
+        let mut storage =
+            crate::features::yubikey_lifecycle::ports::public::MockSecretStoragePort::new();
+        storage
+            .expect_inspect_secret_storage_read()
+            .times(2)
+            .returning(|_, _| read_inspection());
+        storage
+            .expect_load_secret()
+            .times(2)
+            .returning(|_, _| material(b"access-token"));
+
+        let mut bws = ports::MockBwsClientPort::new();
+        bws.expect_list_bws_projects()
+            .times(2)
+            .returning(|_| {
+                Ok(vec![domain::bws::BwsLookupCandidate {
+                    id: domain::bws::BwsProjectId::new("project-1"),
+                    name: "dotfiles-secret-recovery".to_owned(),
+                }])
+            });
+        bws.expect_list_bws_secrets()
+            .times(2)
+            .returning(|_, _| {
+                Ok(vec![domain::bws::BwsLookupCandidate {
+                    id: domain::bws::BwsSecretId::new("gpg-id"),
+                    name: "gpg-secret-key-backup".to_owned(),
+                }])
+            });
+        bws.expect_fetch_gpg_backup_envelope()
+            .times(2)
+            .returning(|_, _| {
+                Ok((
+                    BwsSecretValue::from_bytes(envelope_value()?.as_bytes().to_vec()),
+                    BackupUpdateGuard::ValueDigest("d".to_owned()),
+                ))
+            });
+
+        let mut recipient = ports::MockGpgRecipientPort::new();
+        recipient
+            .expect_resolve_connected_recipient()
+            .times(2)
+            .returning(|_| connected());
+        recipient
+            .expect_unwrap_dek()
+            .times(2)
+            .returning(|_, _| material(b"dek"));
+        let mut cipher = ports::MockBackupCipherPort::new();
+        cipher
+            .expect_decrypt_backup()
+            .times(2)
+            .returning(|_, _| material(b"backup"));
+
+        let state_for_exists = Arc::clone(&state);
+        let state_for_imported = Arc::clone(&state);
+        let state_for_inspect = Arc::clone(&state);
+        let state_for_delete = Arc::clone(&state);
+        let mut keyring = ports::MockGpgKeyringPort::new();
+        keyring
+            .expect_parse_backup_primary_fingerprint()
+            .times(2)
+            .returning(|_| backup_facts());
+        keyring
+            .expect_secret_key_exists()
+            .times(2)
+            .returning(move |_| Ok(state_for_exists.lock().unwrap().imported));
+        keyring
+            .expect_import_secret_key()
+            .times(2)
+            .returning(move |_| {
+                let mut state = state_for_imported.lock().unwrap();
+                state.runs += 1;
+                state.imported = true;
+                domain::gpg_backup::PrimaryFingerprint::parse(PRIMARY_FP)
+            });
+        keyring
+            .expect_inspect_imported_key()
+            .times(2)
+            .returning(move |_| {
+                let state = state_for_inspect.lock().unwrap();
+                if state.runs == 1 {
+                    Ok(ImportedKeyComposition::new(
+                        true,
+                        vec![
+                            ResolvedSubkey {
+                                capability: SubkeyCapability::Encryption,
+                                usable: true,
+                            },
+                            ResolvedSubkey {
+                                capability: SubkeyCapability::Authentication,
+                                usable: true,
+                            },
+                        ],
+                    ))
+                } else {
+                    Ok(all_usable_composition())
+                }
+            });
+        keyring
+            .expect_delete_secret_key()
+            .times(1)
+            .withf(|fingerprint| fingerprint.as_str() == PRIMARY_FP)
+            .returning(move |_| {
+                let mut state = state_for_delete.lock().unwrap();
+                state.imported = false;
+                Ok(())
+            });
+        keyring
+            .expect_authentication_subkey_keygrip()
+            .times(1)
+            .returning(|_| Keygrip::parse(KEYGRIP));
+        keyring
+            .expect_authentication_subkey_ssh_public_key()
+            .times(1)
+            .returning(|_| OpenSshPublicKey::parse(SSH_PUBLIC_KEY));
+
+        let mut ssh_agent = ports::MockSshAgentPort::new();
+        ssh_agent
+            .expect_register_authentication_subkey()
+            .times(1)
+            .returning(|_| Ok(true));
+        ssh_agent
+            .expect_inspect_ssh_agent()
+            .times(1)
+            .returning(|_| {
+                Ok(SshAgentReadiness {
+                    socket_resolved: true,
+                    recovery_identity_present: true,
+                })
+            });
+        let mut report = ports::MockReportPort::new();
+        report
+            .expect_write_restore_gpg_report()
+            .times(1)
+            .returning(|_| Ok(()));
+
+        assert!(!state.lock().unwrap().imported, "initial state");
+        let first_error = run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgYubikeyRuntime {
+                device: &mut device,
+                storage: &mut storage,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+            },
+            &report,
+        )
+        .await
+        .expect_err("first run must fail");
+        assert!(
+            first_error
+                .to_string()
+                .contains("imported GPG key is missing a signing subkey")
+        );
+        assert!(!state.lock().unwrap().imported, "state after rollback");
+
+        run_restore_gpg(
+            RestoreGpgCommand { serial: Some(2001) },
+            RestoreGpgYubikeyRuntime {
+                device: &mut device,
+                storage: &mut storage,
+            },
+            &bws,
+            &mut recipient,
+            &mut cipher,
+            RestoreGpgIdentityRuntime {
+                keyring: &mut keyring,
+                ssh_agent: &mut ssh_agent,
+            },
+            &report,
+        )
+        .await
+        .expect("second run should succeed");
+        assert!(
+            state.lock().unwrap().imported,
+            "state after successful retry"
+        );
+        assert_eq!(state.lock().unwrap().runs, 2);
     }
 
     #[tokio::test]
