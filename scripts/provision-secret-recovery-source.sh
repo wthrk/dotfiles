@@ -296,17 +296,35 @@ else
 		die "既存 password-store repository の現在 branch の取得に失敗しました"
 	[ -n "$PASS_PUSH_BRANCH" ] ||
 		die "既存 password-store repository の現在 branch を解決できません。detached HEAD の場合は push 前に branch へ checkout してください"
-	if PASS_UPSTREAM_MERGE="$(pass git config --get "branch.${PASS_PUSH_BRANCH}.merge")"; then
-		[ -n "$PASS_UPSTREAM_MERGE" ] ||
-			die "password-store repository の upstream merge ref が空です"
-		PASS_PUSH_MODE="current-upstream"
+	if PASS_UPSTREAM_REMOTE="$(pass git config --get "branch.${PASS_PUSH_BRANCH}.remote")"; then
+		:
 	else
 		status=$?
 		if [ "$status" -eq 1 ]; then
-			PASS_PUSH_MODE="set-upstream"
+			PASS_UPSTREAM_REMOTE=""
 		else
-			die "password-store repository の upstream 設定確認に失敗しました"
+			die "password-store repository の upstream remote 設定確認に失敗しました"
 		fi
+	fi
+	if PASS_UPSTREAM_MERGE="$(pass git config --get "branch.${PASS_PUSH_BRANCH}.merge")"; then
+		:
+	else
+		status=$?
+		if [ "$status" -eq 1 ]; then
+			PASS_UPSTREAM_MERGE=""
+		else
+			die "password-store repository の upstream merge 設定確認に失敗しました"
+		fi
+	fi
+	if [ -n "$PASS_UPSTREAM_REMOTE" ] && [ -n "$PASS_UPSTREAM_MERGE" ]; then
+		PASS_UPSTREAM_MERGE_BRANCH="${PASS_UPSTREAM_MERGE#refs/heads/}"
+		if pass git show-ref --verify --quiet "refs/remotes/${PASS_UPSTREAM_REMOTE}/${PASS_UPSTREAM_MERGE_BRANCH}" >/dev/null 2>&1; then
+			PASS_PUSH_MODE="current-upstream"
+		else
+			PASS_PUSH_MODE="set-upstream"
+		fi
+	else
+		PASS_PUSH_MODE="set-upstream"
 	fi
 fi
 ensure_password_store_remote
