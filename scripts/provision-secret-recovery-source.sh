@@ -207,14 +207,14 @@ PASS_CLONE_URL="git@github.com:${PASS_REPO}.git"
 PASSWORD_STORE_ROOT="$(password_store_dir)"
 ensure_password_store_remote() {
 	local current_origin status
-	if current_origin="$(pass git config --get remote.origin.url)"; then
+	if current_origin="$(git -C "$PASSWORD_STORE_ROOT" config --get remote.origin.url)"; then
 		[ "$current_origin" = "$PASS_CLONE_URL" ] ||
 			die "password-store の origin remote が想定と異なります"
 	else
 		status=$?
 		[ "$status" -eq 1 ] ||
 			die "password-store の origin remote 確認に失敗しました"
-		pass git remote add origin "$PASS_CLONE_URL"
+		git -C "$PASSWORD_STORE_ROOT" remote add origin "$PASS_CLONE_URL"
 	fi
 }
 
@@ -284,19 +284,19 @@ REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate)" 
 	die "GitHub password-store repository が private ではありません。private repository を指定してください"
 if [ ! -d "$PASSWORD_STORE_ROOT/.git" ]; then
 	log "既存 password-store を Git repository として初期化して remote へ push"
-	pass git init >/dev/null ||
+	git -C "$PASSWORD_STORE_ROOT" init >/dev/null ||
 		die "password-store Git repository の初期化に失敗しました"
-	pass git branch -M main >/dev/null ||
+	git -C "$PASSWORD_STORE_ROOT" branch -M main >/dev/null ||
 		die "password-store Git repository の main branch 設定に失敗しました"
 	PASS_PUSH_BRANCH="main"
 	PASS_PUSH_MODE="set-upstream"
 else
 	log "既存 password-store Git repository を使用"
-	PASS_PUSH_BRANCH="$(pass git branch --show-current)" ||
+	PASS_PUSH_BRANCH="$(git -C "$PASSWORD_STORE_ROOT" branch --show-current)" ||
 		die "既存 password-store repository の現在 branch の取得に失敗しました"
 	[ -n "$PASS_PUSH_BRANCH" ] ||
 		die "既存 password-store repository の現在 branch を解決できません。detached HEAD の場合は push 前に branch へ checkout してください"
-	if PASS_UPSTREAM_REMOTE="$(pass git config --get "branch.${PASS_PUSH_BRANCH}.remote")"; then
+	if PASS_UPSTREAM_REMOTE="$(git -C "$PASSWORD_STORE_ROOT" config --get "branch.${PASS_PUSH_BRANCH}.remote")"; then
 		:
 	else
 		status=$?
@@ -306,7 +306,7 @@ else
 			die "password-store repository の upstream remote 設定確認に失敗しました"
 		fi
 	fi
-	if PASS_UPSTREAM_MERGE="$(pass git config --get "branch.${PASS_PUSH_BRANCH}.merge")"; then
+	if PASS_UPSTREAM_MERGE="$(git -C "$PASSWORD_STORE_ROOT" config --get "branch.${PASS_PUSH_BRANCH}.merge")"; then
 		:
 	else
 		status=$?
@@ -318,7 +318,7 @@ else
 	fi
 	if [ -n "$PASS_UPSTREAM_REMOTE" ] && [ -n "$PASS_UPSTREAM_MERGE" ]; then
 		PASS_UPSTREAM_MERGE_BRANCH="${PASS_UPSTREAM_MERGE#refs/heads/}"
-		if pass git show-ref --verify --quiet "refs/remotes/${PASS_UPSTREAM_REMOTE}/${PASS_UPSTREAM_MERGE_BRANCH}" >/dev/null 2>&1; then
+		if git -C "$PASSWORD_STORE_ROOT" show-ref --verify --quiet "refs/remotes/${PASS_UPSTREAM_REMOTE}/${PASS_UPSTREAM_MERGE_BRANCH}"; then
 			PASS_PUSH_MODE="current-upstream"
 		else
 			PASS_PUSH_MODE="set-upstream"
@@ -328,22 +328,22 @@ else
 	fi
 fi
 ensure_password_store_remote
-pass git add -A >/dev/null ||
+git -C "$PASSWORD_STORE_ROOT" add -A >/dev/null ||
 	die "password-store の Git index 更新に失敗しました"
-if pass git diff --cached --quiet; then
+if git -C "$PASSWORD_STORE_ROOT" diff --cached --quiet; then
 	log "password-store に新規 commit 対象はありません"
 else
 	status=$?
 	[ "$status" -eq 1 ] ||
 		die "password-store の staged diff 確認に失敗しました"
-	pass git commit -m "Initialize password-store" >/dev/null ||
+	git -C "$PASSWORD_STORE_ROOT" commit -m "Initialize password-store" >/dev/null ||
 		die "password-store Git commit に失敗しました。user.name/user.email/signing/hook 設定を確認してください"
 fi
 if [ "$PASS_PUSH_MODE" = "current-upstream" ]; then
-	pass git push >/dev/null ||
+	git -C "$PASSWORD_STORE_ROOT" push >/dev/null ||
 		die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
 else
-	pass git push -u origin "$PASS_PUSH_BRANCH" >/dev/null ||
+	git -C "$PASSWORD_STORE_ROOT" push -u origin "$PASS_PUSH_BRANCH" >/dev/null ||
 		die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
 fi
 confirm_password_store_primary_fingerprint
