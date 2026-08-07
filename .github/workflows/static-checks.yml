@@ -45,3 +45,8 @@ jobs:
 
       - name: static checks
         run: nix develop -c cargo xtask check static
+
+      # static checks は devShell 内で走るため、build sandbox でしか露見しない依存欠落を検出できない。
+      # bootstrap が叩く derivation そのものを PR でも build する。
+      - name: dotfiles-cli の nix build
+        run: nix build .#dotfiles-cli --no-link --print-build-logs
