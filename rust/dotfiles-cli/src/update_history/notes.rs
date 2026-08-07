@@ -950,10 +950,7 @@ mod tests {
         // 上限を超える本文は limit バイトで打ち切って読む（巨大本文を全読みしない）。
         let body = vec![b'x'; 100];
         assert_eq!(read_capped(body.as_slice(), 10).len(), 10);
-        assert_eq!(
-            read_capped([b'a', b'b', b'c'].as_slice(), MAX_RESPONSE_BYTES),
-            "abc"
-        );
+        assert_eq!(read_capped(b"abc".as_slice(), MAX_RESPONSE_BYTES), "abc");
         Ok(())
     }
 
