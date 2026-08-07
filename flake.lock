@@ -60,11 +60,11 @@
     "homebrew-azure-bicep": {
       "flake": false,
       "locked": {
-        "lastModified": 1784055078,
-        "narHash": "sha256-+MyKcfiUdSqxbbOFsn3Awt5+MwC8lKG801VDCBAL4Us=",
+        "lastModified": 1785516471,
+        "narHash": "sha256-ERCqkhGtjnGHxVshsDyX+WI54IspkosO0OjFBEGgq38=",
         "owner": "Azure",
         "repo": "homebrew-bicep",
-        "rev": "9db1b9a07b3fe70b58473c042be0cf08db6a5112",
+        "rev": "f50f73f29215bc752c058b108cc3fc4f006c0e07",
         "type": "github"
       },
       "original": {
@@ -76,11 +76,11 @@
     "homebrew-hashicorp-tap": {
       "flake": false,
       "locked": {
-        "lastModified": 1784049480,
-        "narHash": "sha256-qbkQ40SMhBqB4JnitdyKBT4onmbar1frrNLevOinnvg=",
+        "lastModified": 1785845491,
+        "narHash": "sha256-6VsYiqbaVRiloyQMRxXJiDJnnvShddgnwFeoXY8FiQg=",
         "owner": "hashicorp",
         "repo": "homebrew-tap",
-        "rev": "3923c7c647e8cebcc09d900240aee4e1b1b26478",
+        "rev": "b7f5123d0d45cca02dc9b09e837f8b112fcd9e32",
         "type": "github"
       },
       "original": {
@@ -92,11 +92,11 @@
     "homebrew-homebrew-cask": {
       "flake": false,
       "locked": {
-        "lastModified": 1784574106,
-        "narHash": "sha256-UA/gmhH3WQJXLT2UN6l3Ngq9yvTNoJaf5nRdeoLhLlY=",
+        "lastModified": 1786124813,
+        "narHash": "sha256-sbG6aDjoc3lB2ug/WzngyOVLpl4XjpL5L8BPPjRJtgc=",
         "owner": "homebrew",
         "repo": "homebrew-cask",
-        "rev": "28dd46e641e3a97a6aad416186f2c782679d9d6c",
+        "rev": "b24b88f7742a86b81f6ab73eea316949b7fd22fa",
         "type": "github"
       },
       "original": {
@@ -108,11 +108,11 @@
     "homebrew-homebrew-core": {
       "flake": false,
       "locked": {
-        "lastModified": 1784574764,
-        "narHash": "sha256-y/m/8QUAuGpODleS4qn7J/WLdWzzxOR4nT74+i3xGeM=",
+        "lastModified": 1786126083,
+        "narHash": "sha256-ARIWjs23H1NpC5htVL2xFW9Yw4rPQYE8HFZujxLGQVk=",
         "owner": "homebrew",
         "repo": "homebrew-core",
-        "rev": "15dbc1272c8d596bb846055e84af1a1013c8d598",
+        "rev": "26be480ae78e29c0d9fe67c4d575c0c4cd3f2ab9",
         "type": "github"
       },
       "original": {
