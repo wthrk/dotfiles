@@ -40,11 +40,16 @@ let
 in
 {
   programs.gh.enable = true;
+  # zsh 統合は `config/zsh/completion.zsh` の guard 付き init に一本化する。Home Manager 側の
+  # 統合も有効にすると init が二重に走り、後勝ちで `--disable-up-arrow` のような指定が消える。
   programs.atuin = {
     enable = true;
-    enableZshIntegration = true;
+    enableZshIntegration = false;
   };
-  programs.zoxide.enable = true;
+  programs.zoxide = {
+    enable = true;
+    enableZshIntegration = false;
+  };
 
   programs.fzf = {
     enable = true;

@@ -227,6 +227,8 @@
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
           nativeBuildInputs = [
             pkgs.cmake
+            # checkPhase の `dotfiles-checks` が tracked snapshot 生成に起動する git。
+            pkgs.git
             pkgs.makeWrapper
             pkgs.pkg-config
           ];
