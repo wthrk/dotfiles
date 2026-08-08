@@ -56,14 +56,15 @@ fn home_configuration_evaluates_for_every_system(shell: &Shell) -> Result<()> {
             "system {system} の home ディレクトリが {actual}。{expected} を期待する"
         );
 
-        // store パスの一覧をそのまま返して `--json` で直列化させる。`builtins.length` などリストの spine
-        // しか触らない式では要素が thunk のまま残り、評価拒否が現れない。
-        let packages = format!(
-            "f: map (p: p.outPath) (f {{ user = \"runner\"; system = \"{system}\"; }}).config.home.packages"
+        // activation package の `drvPath` は全モジュールの評価結果を入力に持つ。これを引けば
+        // `home.packages` も `home.file` も forcing され、片方の system だけで通る宣言が落ちる。
+        // ビルドは伴わないので runner の OS を問わない。
+        let activation = format!(
+            "f: (f {{ user = \"runner\"; system = \"{system}\"; }}).activationPackage.drvPath"
         );
         cmd!(
             shell,
-            "nix eval --json --no-update-lock-file .#lib.mkHome --apply {packages}"
+            "nix eval --raw --no-update-lock-file .#lib.mkHome --apply {activation}"
         )
         .read()?;
     }
