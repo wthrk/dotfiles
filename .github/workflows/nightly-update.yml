@@ -11,7 +11,7 @@ name: nightly update
 #     薄いオーケストレーション（checkout / install nix / bump / record 起動 / upload / PR）だけを行う。
 #   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
 #     bump しない（無人で framework を動かさない）。
-#   - 概要（change_items）の LLM 抽出の正本は OpenAI API。record job に **secret
+#   - 概要（change_items）の LLM 抽出の正本は OpenAI API。record step に **secret
 #     `OPEN_AI_API_KEY`** を `env` で結線し、CLI（async-openai crate）が env から読む。GitHub Models /
 #     `permissions: models: read` / GITHUB_TOKEN の LLM 用途は撤去した（PR 起票等の GITHUB_TOKEN は残す）。
 #   - record は 1 回で全変更パッケージを要約しきる。ノートが取れないものは version-only（version + notes_url のみ）
@@ -62,22 +62,26 @@ env:
   CI_REFERENCE: darwinConfigurations.ci-ref
 
 jobs:
-  # 1) bump 前の宣言パッケージ版を eval（Rust）し、lock を bump し、bump 前後の rev を取り出して artifact に渡す。
-  #    整形・owner/repo 導出・rev 抽出のロジックは全て `dotfiles update-history`（Rust）が持ち、ここは
-  #    避けられない nix tool 呼び出し（`nix eval` は Rust が起動・`nix flake update`）と薄いオーケストレーション
-  #    だけを行う。LLM や PR 起票の権限を持たせない（contents: read のみ）。
+  # 1) bump 前の宣言パッケージ版を eval（Rust）し、lock を bump し、bump 後の版差分と概要を記録するまでを
+  #    1 job で完結させる。判定主体の dotfiles バイナリは bump 前 devShell で 1 回だけビルドし、bump 前 eval と
+  #    record の両方がそれを使う。bump と record を別 job に分けると同じバイナリを 2 回ビルドすることになり、
+  #    macOS runner ではそれだけで 1 晩あたり 9 分規模の重複になる（分けても後段へ渡せるのは lock と JSON だけで、
+  #    ビルド成果物は渡らない）。
+  #    整形・owner/repo 導出・rev 抽出・nix/brew 版差分・概要抽出のロジックは全て `dotfiles update-history`（Rust）が
+  #    持ち、ここは避けられない nix tool 呼び出し（Rust が起動する `nix eval` / `nix flake update`）と薄い
+  #    オーケストレーションだけを行う。PR 起票の権限は持たせない（contents: read のみ）。
   bump:
-    name: bump lock and eval declared versions
+    name: bump lock and record history
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     outputs:
       repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}
-      nixpkgs_old: ${{ steps.revs.outputs.nixpkgs_old }}
-      nixpkgs_new: ${{ steps.revs.outputs.nixpkgs_new }}
-      cask_rev_old: ${{ steps.revs.outputs.cask_rev_old }}
-      cask_rev_new: ${{ steps.revs.outputs.cask_rev_new }}
+      # record が当月 history TOML を書いた（= 更新ありで履歴 artifact が必要）かどうか。open-pr 側はこの値で
+      # history-record download を fail-closed にするか（更新ありの夜）/ 失敗許容にするか（無更新の clean no-op）を
+      # 分岐する。
+      has_history: ${{ steps.record.outputs.has_history }}
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -102,9 +106,15 @@ jobs:
           cmd-format: nix develop -c {0}
           cache-targets: true
 
-      # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
-      # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
-      # `nix develop -c` 経由でランタイムライブラリ（gpgme/libgit2/libssh2/openssl/zlib 等）を供給する。
+      # 判定主体（eval/導出/rev 抽出/版差分/概要記録）を担う dotfiles バイナリを devShell 内 cargo でビルドする。
+      # `nix eval` 起動・owner/repo 導出・flake.lock rev 抽出・brew cask 版解析は全てこのバイナリ（Rust）が行う。
+      # devShell 内ビルドのため実行も `nix develop -c` 経由でランタイムライブラリ（gpgme/libgit2/libssh2/openssl/
+      # zlib 等）を供給する。
+      #
+      # このビルドと直後の bump 前 eval は `nix flake update` より前で完結させる。後ろへ移すとバイナリは
+      # bump 後 devShell でビルドされ、bump 前 lock の snapshot（`cp flake.lock old-flake.lock`）と bump 前
+      # 版の eval も bump 後 lock を見ることになり、版差分の基準が消える。下の record も同じバイナリを
+      # `--reference-lock-file old-flake.lock` で bump 前 closure に固定して実行する。
       - name: dotfiles バイナリをビルド
         id: build
         run: |
@@ -138,7 +148,7 @@ jobs:
             homebrew-azure-bicep \
             homebrew-hashicorp-tap
 
-      # bump 後 input rev を Rust（serde_json）が抽出する（bump 後版の eval は record が bump 済み lock で行う）。
+      # bump 後 input rev を Rust（serde_json）が抽出する（bump 後版の eval は下の record が bump 済み lock で行う）。
       - name: bump 後の input rev を抽出
         id: revs
         env:
@@ -148,90 +158,23 @@ jobs:
           nixpkgs_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node nixpkgs)"
           cask_rev_new="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           {
-            echo "nixpkgs_old=${{ steps.old.outputs.nixpkgs_old }}"
             echo "nixpkgs_new=$nixpkgs_new"
-            echo "cask_rev_old=${{ steps.old.outputs.cask_rev_old }}"
             echo "cask_rev_new=$cask_rev_new"
           } >> "$GITHUB_OUTPUT"
 
-      - name: bump 済み lock と eval 版マップを artifact 化
-        uses: actions/upload-artifact@v7
-        with:
-          name: bump-state
-          retention-days: 1
-          include-hidden-files: true
-          path: |
-            flake.lock
-            old-flake.lock
-            nix-old.json
-          if-no-files-found: error
-
-  # 2) record（nix 版差分 + brew cask 版差分 + 概要を 1 回で完結）。bump 後 nix 版の eval（`nix eval` 起動）・
-  #    brew cask `.rb` 取得と version 解析（reqwest）・sha256 未固定 cask の fail-closed 検査・概要抽出は全て `dotfiles update-history
-  #    record`（Rust）が行う。ここは bump 済み lock の取得と record 起動だけを行う。概要の LLM 抽出は OpenAI API
-  #    （async-openai crate）で、secret `OPEN_AI_API_KEY` を env で結線する（GitHub Models は使わない）。出力は
-  #    更新履歴 TOML（機械バリデート済み）として artifact に渡す。
-  record:
-    name: extract notes and record history
-    needs: bump
-    runs-on: macos-15
-    timeout-minutes: 120
-    permissions:
-      contents: read
-    outputs:
-      # record が当月 history TOML を書いた（= 更新ありで履歴 artifact が必要）かどうか。open-pr 側はこの値で
-      # history-record download を fail-closed にするか（更新ありの夜）/ 失敗許容にするか（無更新の clean no-op）を
-      # 分岐する。
-      has_history: ${{ steps.record.outputs.has_history }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v5
-
-      - name: Nix を導入
-        uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ github.token }}
-
-      # `/nix/store` はキャッシュしない（bump job と同じ判断）。store path は cache.nixos.org から substitute する。
-
-      # バイナリのビルドは下で download-artifact より前に置いてある。よってこの時点の checkout の flake.lock は
-      # bump 前 lock であり、キャッシュキーの flake.lock ハッシュはビルドに使う devShell の `/nix/store` closure と
-      # 必ず一致する（GC 済み path を指す build script を踏まない）。bump job と同一 lock・同一 OS のため
-      # shared-key を共有し、依存 427 crate の再ビルドを両 job で消す。
-      - name: cargo build キャッシュ
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: nightly-bump-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          cmd-format: nix develop -c {0}
-          cache-targets: true
-
-      # bump 済み lock を展開する前にビルドする。展開後にビルドすると devShell が毎晩必ず変わって target/ キャッシュが
-      # 原理的に当たらず、依存 427 crate を毎回積み直すことになる（実測 9 分）。バイナリは bump 前 devShell で
-      # ビルドし、下の record step も同じ closure（`--reference-lock-file old-flake.lock`）で実行するため、
-      # job 間持ち回りで問題になる動的ライブラリ参照切れは起きない。
-      - name: record 用 dotfiles バイナリをビルド
-        run: nix develop -c cargo build -p dotfiles-cli
-
-      # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。ここで tree の flake.lock は
-      # bump 後のものに置き換わる（バイナリが起動する `nix eval` はこれを見る）。bump 前 lock は同じ artifact の
-      # `old-flake.lock` として残るので、devShell の固定に使える。
-      - name: bump 済み lock と bump 前 eval 版マップを取得
-        uses: actions/download-artifact@v8
-        with:
-          name: bump-state
-
       # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
-      # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
-      # 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から読み、argv /
-      # ログに出さない）。ノートが取れないものは version-only（version + notes_url のみ）として確定記録する。
+      # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・
+      # TOML 記録までを 1 回で完結する。概要抽出の API キーは secret `OPEN_AI_API_KEY` を env で渡す（CLI が env から
+      # 読み、argv / ログに出さない）。ノートが取れないものは version-only（version + notes_url のみ）として確定記録する。
       - name: record（nix/brew 版差分 + 概要）
         id: record
         env:
-          NIXPKGS_OLD: ${{ needs.bump.outputs.nixpkgs_old }}
-          NIXPKGS_NEW: ${{ needs.bump.outputs.nixpkgs_new }}
-          CASK_REV_OLD: ${{ needs.bump.outputs.cask_rev_old }}
-          CASK_REV_NEW: ${{ needs.bump.outputs.cask_rev_new }}
-          REPO_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
+          DOTFILES_BIN: ${{ steps.build.outputs.bin }}
+          NIXPKGS_OLD: ${{ steps.old.outputs.nixpkgs_old }}
+          NIXPKGS_NEW: ${{ steps.revs.outputs.nixpkgs_new }}
+          CASK_REV_OLD: ${{ steps.old.outputs.cask_rev_old }}
+          CASK_REV_NEW: ${{ steps.revs.outputs.cask_rev_new }}
+          REPO_BASE_SHA: ${{ steps.old.outputs.repo_base_sha }}
           # nix パッケージのリリースノートを GitHub Releases API から取得する際の認証用 token（未認証 60 req/hr →
           # 認証 5000 req/hr）。notes.rs::github_token() が env GITHUB_TOKEN を読む。LLM 用途ではないため
           # permissions: models: read は不要（contents: read で public release 取得に十分）。
@@ -250,15 +193,10 @@ jobs:
           # ノート取得元レジストリ（provenance の学習・再利用）。既存レジストリを再利用し、新規/未知の取得元だけを追記する。
           notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
-          dotfiles_bin="$PWD/target/debug/dotfiles"
-          # devShell は bump 前 lock（`old-flake.lock`）に固定する。バイナリはその closure でビルドされているため、
-          # bump 後 devShell で実行すると `/nix/store` の動的ライブラリ参照が食い違いうる。一方この record が
-          # 比較対象として起動する `nix eval` は別プロセスで tree の flake.lock（= bump 後）を読むため、
-          # devShell の固定は「bump 後の版を評価する」という本来の役割を一切変えない。
-          # `--no-write-lock-file`: 参照 lock は tree の bump 後 flake.lock と当然食い違うため、これが無いと nix が
-          # lock 書き戻しを試みて "cannot write modified lock file" を出す。tree の lock は bump 結果そのもので
-          # あり書き換えてはならない。
-          nix develop --reference-lock-file old-flake.lock --no-write-lock-file -c "$dotfiles_bin" update-history record \
+          # devShell はバイナリをビルドした closure（bump 前 lock）に固定する。バイナリが起動する `nix eval` は
+          # 別プロセスで tree の bump 後 flake.lock を読むため、評価対象は変わらない。`--no-write-lock-file` が
+          # 無いと nix が参照 lock と tree の食い違いを書き戻そうとする。
+          nix develop --reference-lock-file old-flake.lock --no-write-lock-file -c "$DOTFILES_BIN" update-history record \
             --lock-old old-flake.lock \
             --lock-new flake.lock \
             --cursor-old "$REPO_BASE_SHA" \
@@ -281,6 +219,17 @@ jobs:
             echo "has_history=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # open-pr が commit するのは bump 後 flake.lock と履歴 TOML だけなので、job をまたぐ artifact もその 2 つに
+      # 絞る。bump 前 lock（old-flake.lock）と bump 前 eval 版マップ（nix-old.json）は record と同一 job 内で
+      # 完結するため渡さない。
+      - name: bump 済み lock を artifact 化
+        uses: actions/upload-artifact@v7
+        with:
+          name: bump-state
+          retention-days: 1
+          path: flake.lock
+          if-no-files-found: error
+
       # 無更新の夜は record が TOML を書かず、docs/update-history/ のアップロード対象が 0 件になりうる。
       # `if-no-files-found: error` だと無更新夜が失敗扱いになるため `warn` で安全側に倒す（clean no-op）。
       - name: 履歴 TOML を artifact 化
@@ -292,7 +241,7 @@ jobs:
             docs/update-history/
           if-no-files-found: warn
 
-  # 3) PR 起票 + インラインセキュリティチェック（verify-bump-lock）+ 実 static checks + nix build + status 投稿
+  # 2) PR 起票 + インラインセキュリティチェック（verify-bump-lock）+ 実 static checks + nix build + status 投稿
   #    + auto-merge。GITHUB_TOKEN で完結する（GitHub App / 別 secret は使わない）。GITHUB_TOKEN 起票 PR では
   #    `on: pull_request` の static-checks.yml が発火しないため、この job が同一 run 内で
   #    ①`cargo xtask ci verify-bump-lock`（許可パス + lock 差分の検査）、②`cargo xtask check static`、
@@ -301,7 +250,7 @@ jobs:
   #    `static checks` status を success で POST する。
   open-pr:
     name: open bump PR and enable auto-merge
-    needs: [bump, record]
+    needs: bump
     # 非 dry-run（PR 起票・status 投稿経路）は既定ブランチ起動に限定する。schedule は常に既定ブランチで発火する
     # ため許可し、workflow_dispatch は dry_run=false かつ起動 ref が既定ブランチ（branch かつ既定ブランチ）のとき
     # だけ許可する。tag は許可しない: ref が `refs/heads/<既定ブランチ>` であることを `github.ref` で照合し、既定
@@ -378,7 +327,7 @@ jobs:
       # されるのを防ぐ）。失敗許容するのは無更新夜だけに限定する。
       - name: 履歴 TOML を取得
         uses: actions/download-artifact@v8
-        continue-on-error: ${{ needs.record.outputs.has_history != 'true' }}
+        continue-on-error: ${{ needs.bump.outputs.has_history != 'true' }}
         with:
           name: history-record
           path: docs/update-history
