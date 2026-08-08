@@ -349,6 +349,19 @@ jobs:
           set -euo pipefail
           nix build .#dotfiles-cli --no-link --print-build-logs
 
+      # bot PR では `on: pull_request` が発火せず static-checks.yml が代替実行されない。この job が投稿する
+      # `static checks` status の意味を揃えるため、同 workflow が持つ実挙動 gate もここで実行する。
+      # 省くと、activation か zsh の実挙動だけを壊す bump がこの gate を通らずに auto-merge される。
+      - name: 構成を適用して zsh checks を bump 後 lock で実行
+        if: ${{ steps.commit.outputs.has_changes == 'true' }}
+        env:
+          HOME_MANAGER_BACKUP_EXT: before-home-manager
+        run: |
+          set -euo pipefail
+          nix run .#default -- init --source "path:$PWD"
+          nix run .#default -- switch home
+          nix develop -c bats --print-output-on-failure tests/zsh
+
       # cache scope の条件を投稿経路の gate に暗黙依存させない。
       - name: 成果物をキャッシュへ書き出し
         if: ${{ steps.commit.outputs.has_changes == 'true' && steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
@@ -373,7 +386,7 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`（後 2 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
+            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`、構成適用後の \`bats tests/zsh\`（後 3 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
       # 前段ゲートが全て合格した場合に限り status を投稿する（`if: success()` で明示保証する）。context 名は
@@ -391,7 +404,7 @@ jobs:
             -f state=success \
             -f context="static checks" \
             -f target_url="${RUN_URL}" \
-            -f description="nightly-update run の verify-bump-lock + 実 static checks + nix build 合格"
+            -f description="nightly-update run の verify-bump-lock + 実 static checks + nix build + zsh checks 合格"
 
       # codex 自動レビューを起動する（Copilot は GitHub 側のネイティブ code review で走る）。
       - name: codex レビューを依頼
