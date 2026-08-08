@@ -3,6 +3,10 @@ name: Zsh checks
 on:
   workflow_dispatch:
   pull_request:
+  # PR が読める cache は既定ブランチ scope のものだけ。main でも走らせて populate する。
+  push:
+    branches:
+      - main
   schedule:
     - cron: "0 15 * * 0"
 
@@ -16,7 +20,9 @@ concurrency:
 jobs:
   zsh:
     name: zsh checks
-    runs-on: macos-latest
+    # 検証対象の zsh 挙動は利用者の実機（macOS 26）上のものなので runner も同じ版に固定する。`macos-latest` は
+    # GitHub が指す先を移すたびに image が変わり、復元する `target/` の前提（アーキテクチャ・SDK）が黙って動く。
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
@@ -31,15 +37,30 @@ jobs:
       # `/nix/store` はキャッシュしない。PR gate になったため static-checks.yml と同じ判断を採る。macOS runner の
       # 復元は 1 時間規模に達しうる。store path は cache.nixos.org から substitute する。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを run 間で再利用する。Nix devShell 内でビルドした
-      # build script を target/ ごと復元すると、現在の `/nix/store` に存在しない旧 path を参照した実行ファイルを
-      # 踏んで落ちうるため、workspace の成果物は毎回再生成する。static-checks（ubuntu）とは runner.os が異なり
-      # shared-key も別のため registry cache だけを安全に共有する。fail-safe。
+      # 復元する target/ の正しさを縛るのは、build script が link した C ライブラリと使った toolchain の
+      # store path だけである。`.#cargo-build-inputs` はその集合だけを入力に持つ derivation で、drv hash は
+      # 入力の関数なのでそのまま cache key にできる。`flake.lock` のハッシュだと nixpkgs が動いた晩は
+      # 成果物と無関係な入力の差でも必ず別キーになる。
+      - name: cargo build closure の derivation を確定
+        id: closure
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#cargo-build-inputs)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      # toolchain 不一致の target/ を復元しないことは shared-key の `.#cargo-build-inputs` drv 名が担う
+      # （rust-cache のフォールバックキーは shared-key を落とさない）。`cmd-format` はヒット率のために要る。
+      # これが無いとキーの rust environment hash が runner 側 rustup の `rustc -vV` で決まり、runner image が
+      # toolchain を入れ替えるたびに、devShell が同じでもキーが動く。この job は lock を書き換えないため、
+      # `nix develop` は job 中ずっと同じ devShell を解決する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: zsh-checks-${{ runner.os }}
-          cache-targets: false
+          shared-key: zsh-checks-${{ runner.os }}-${{ steps.closure.outputs.key }}
+          cmd-format: nix develop -c {0}
+          cache-targets: true
+          # PR scope の cache は他 PR から読めず、target/ を含むと 10GB 上限を圧迫して main の分を evict する。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: zsh checks
         run: nix develop -c cargo xtask check zsh

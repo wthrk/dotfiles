@@ -214,10 +214,61 @@
           ];
         };
 
+      # cargo のビルド成果物が link する C ライブラリ。この集合を消費するのは実ビルド（`mkDotfilesCli`）、
+      # CI が `target/` を生成する devShell（`mkDevShell`）、CI の cache key（`mkCargoBuildInputs`）の 3 箇所で、
+      # どれかが別の集合を指すと cache key が `target/` の実際のビルド closure を追わなくなる。定義はここ
+      # 1 箇所に置き、3 箇所とも同じ関数を参照する。
+      cargoLinkLibraries =
+        pkgs:
+        [
+          # GPG keyring backend（`gpgme` crate）が link する libgpgme / libgpg-error。
+          pkgs.gpgme
+          # password-store clone backend（`git2` crate）が link する libgit2 / libssh2 と、
+          # libssh2 / libgit2 が要求する OpenSSL / zlib。
+          pkgs.libgit2
+          pkgs.libssh2
+          pkgs.openssl
+          pkgs.zlib
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
+
+      # vendored libgit2 / libssh2 を build script が組み立てるときに起動する native ツール。
+      cargoBuildTools = pkgs: [
+        pkgs.cmake
+        pkgs.pkg-config
+      ];
+
+      # `target/` を生成する Rust toolchain。cache key と devShell が別の rustc を指さないよう、
+      # `cargoLinkLibraries` と同じ理由でここ 1 箇所に置く。供給元は rust-overlay 由来の
+      # `rustToolchainFor` 1 パッケージだけにする。nixpkgs 側の `pkgs.cargo` / `pkgs.rustc` を併置すると
+      # PATH 上で衝突し、どちらが使われるか不定になる。
+      cargoToolchain = pkgs: [ (rustToolchainFor pkgs) ];
+
+      # CI の rust-cache が復元する `target/` の正しさを縛るのは、build script が link した C ライブラリと
+      # ビルドに使った toolchain の store path だけである。この derivation はその集合だけを入力に持ち、CI は
+      # `nix path-info --derivation` で得た drv 名を rust-cache の shared-key に使う。`flake.lock` のハッシュを
+      # キーにすると nightly bump のたびに必ず別キーになり、devShell 全体をキーにすると rust-analyzer や
+      # actionlint のような成果物と無関係なツールの bump でも別キーになる。キーの導出にしか使わないため
+      # 成果物は空でよい。
+      #
+      # CI が `target/` を作るのは `mkDevShell` の devShell であり、その devShell は下で同じ 3 関数から
+      # 組む。したがってこの derivation の入力は devShell が持つ link 対象と toolchain の上位集合であり、
+      # devShell へライブラリを足せばキーも動く。
+      mkCargoBuildInputs =
+        pkgs:
+        pkgs.runCommand "cargo-build-inputs"
+          {
+            buildInputs = cargoLinkLibraries pkgs ++ cargoBuildTools pkgs ++ cargoToolchain pkgs;
+          }
+          ''
+            touch "$out"
+          '';
+
       mkDotfilesCli =
         pkgs:
         let
           system = pkgs.stdenv.hostPlatform.system;
+          inherit (pkgs.lib) fileset;
           rustToolchain = rustToolchainFor pkgs;
           # devShell と同じツールチェーンでビルドする。nixpkgs 既定の `rustPlatform` を使うと
           # 開発時の rustc と成果物の rustc が食い違い、devShell で通った lint/edition がビルドで落ちる。
@@ -229,33 +280,31 @@
         rustPlatform.buildRustPackage {
           pname = "dotfiles-cli";
           version = "0.0.0";
-          src = ./.;
+          # src は Rust ビルドが読む範囲に限定する。`./.` にすると derivation hash が全 tracked file の関数に
+          # なり、docs / workflow / nix module だけの変更でも別 derivation になる。CI は derivation 名を
+          # ビルド成果物キャッシュのキーにしているため、この限定が外れると Rust を触らない PR でも
+          # 必ず cache miss してフルビルドに戻る。
+          src = fileset.toSource {
+            root = ./.;
+            fileset = fileset.unions [
+              ./.cargo
+              ./Cargo.lock
+              ./Cargo.toml
+              ./rust
+            ];
+          };
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [
             "--package"
             "dotfiles-cli"
           ];
-          cargoTestFlags = [
-            "--workspace"
-          ];
-          buildInputs = [
-            # GPG keyring backend（`gpgme` crate）が link する libgpgme / libgpg-error。
-            pkgs.gpgme
-            # password-store clone backend（`git2` crate）が link する libgit2 / libssh2 と、
-            # libssh2 / libgit2 が要求する OpenSSL / zlib。
-            pkgs.libgit2
-            pkgs.libssh2
-            pkgs.openssl
-            pkgs.zlib
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
-          nativeBuildInputs = [
-            pkgs.cmake
-            # checkPhase の `dotfiles-checks` が tracked snapshot 生成に起動する git。
-            pkgs.git
-            pkgs.makeWrapper
-            pkgs.pkg-config
-          ];
+          # checkPhase は走らせない。テストは devShell 側の `cargo xtask check static` と重複する。
+          # この derivation が検出する依存欠落は buildPhase が compile / link する範囲、すなわち下の
+          # buildInputs のライブラリと buildPhase が起動する nativeBuildInputs までである。#84 の git の
+          # ように checkPhase だけが起動する実行時依存の欠落は、ここでは検出できない。
+          doCheck = false;
+          buildInputs = cargoLinkLibraries pkgs;
+          nativeBuildInputs = cargoBuildTools pkgs ++ [ pkgs.makeWrapper ];
           postInstall = ''
             wrapProgram $out/bin/dotfiles \
               --set-default DOTFILES_HOME_MANAGER ${
@@ -271,49 +320,39 @@
           };
         };
 
-      # 開発用シェルは検証コマンドが要求するツールを固定する。Darwin 専用の VM 検証ツールは
+      # 開発用シェルは検証コマンドが要求するツールを固定する。cargo が link するライブラリ、build script が
+      # 起動する native ツール、Rust toolchain は上の 3 関数から取り、`mkCargoBuildInputs` が導出する cache key
+      # と同じ集合にする（ここへ直接書き足すとキーが追わない依存ができる）。Darwin 専用の VM 検証ツールは
       # Linux 評価に混ぜず、対応プラットフォームでだけ入れる。
       mkDevShell = pkgs: {
         default = pkgs.mkShell {
-          packages = [
-            pkgs.actionlint
-            pkgs.bash
-            # rustc / cargo / clippy / rustfmt はこの 1 パッケージだけから供給する。
-            # nixpkgs 側の同名パッケージを併置すると PATH 上で衝突し、どちらが使われるか不定になる。
-            (rustToolchainFor pkgs)
-            pkgs.coreutils
-            pkgs.git
-            pkgs.gnugrep
-            pkgs.gnupg
-            pkgs.gnused
-            # GPG keyring backend（`gpgme` crate）の link / pkg-config 解決に必要。
-            pkgs.gpgme
-            # password-store clone backend（`git2` crate）の libgit2 / libssh2 link と、
-            # vendored libgit2 / libssh2 build が要求する cmake / OpenSSL / zlib。
-            pkgs.cmake
-            pkgs.libgit2
-            pkgs.libssh2
-            pkgs.openssl
-            pkgs.zlib
-            pkgs.jq
-            pkgs.nil
-            pkgs.nix
-            pkgs.nixd
-            pkgs.pkg-config
-            pkgs.ripgrep
-            pkgs.rust-analyzer
-            pkgs.shellcheck
-            pkgs.zsh
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.pcsclite
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.ansible
-            pkgs.packer
-            pkgs.sshpass
-            pkgs.tart
-          ];
+          packages =
+            cargoLinkLibraries pkgs
+            ++ cargoBuildTools pkgs
+            ++ cargoToolchain pkgs
+            ++ [
+              pkgs.actionlint
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.git
+              pkgs.gnugrep
+              pkgs.gnupg
+              pkgs.gnused
+              pkgs.jq
+              pkgs.nil
+              pkgs.nix
+              pkgs.nixd
+              pkgs.ripgrep
+              pkgs.rust-analyzer
+              pkgs.shellcheck
+              pkgs.zsh
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.ansible
+              pkgs.packer
+              pkgs.sshpass
+              pkgs.tart
+            ];
         };
       };
 
@@ -343,6 +382,13 @@
           ansible = pkgs.ansible;
         }
       );
+
+      # cache key の導出にしか使わない CI 内部成果物なので、利用者向けの `packages` 面には出さない。
+      # installable の属性解決は `packages.<system>` の次に `legacyPackages.<system>` を見るため、
+      # workflow の `nix path-info --derivation .#cargo-build-inputs` はこの配置でも解決する。
+      legacyPackages = forSystems (system: {
+        cargo-build-inputs = mkCargoBuildInputs (pkgsFor system);
+      });
 
       apps = forSystems (system: {
         default = {

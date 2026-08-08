@@ -1,49 +1,21 @@
 //! nightly bump PR を無人 auto-merge してよいかを機械判定する純粋規則。
 //!
 //! この module は I/O を持たず、CI が収集した「PR の全 commit を base..head で union した変更パス集合」と
-//! 「base / head の `flake.lock` 内容」を受け取り、許可された bump だけかを決める。判定ロジックを保守 CLI
-//! （`cargo xtask ci verify-bump-lock`）の純粋核に置くことで、nightly-update workflow が同一 run 内でインライン
-//! 実行するセキュリティチェックの実体を Rust unit test で固定し、shell の中で再実装しない。合格すると
-//! workflow は PR head へ `static checks` commit status を投稿し、それが適用済み ruleset の required check を
-//! 満たす（不合格なら非 0 終了し status 投稿・PR 起票・merge を行わない）。
+//! 「base / head の `flake.lock` 内容」を受け取り、許可された bump だけかを決める。判定する不変条件は 2 つ。
 //!
-//! 判定する不変条件は 2 つだけである。
+//! 1. **変更パス限定**: PR が触ってよいのは `flake.lock` と `docs/update-history/**` だけで、nightly PR が
+//!    workflow / コードを自己改変して無人で main へ入る経路を塞ぐ。net diff ではなく **全 commit の union** を
+//!    検査するのは、途中 commit で逸脱パスを足して最終 head で消す add-then-remove を防ぐためであり、
+//!    `--squash` マージ運用の有無に依存しない。union パス集合の収集は CLI 側の責務で、本 module は与えられた
+//!    集合を判定する。
 //!
-//! 1. **変更パス限定**: PR が触ってよいのは `flake.lock` と `docs/update-history/**` だけ。`.github/**`、
-//!    workflow 定義、ソース、その他いずれかが base..head の union 差分に 1 つでも混ざれば fail。これにより
-//!    nightly PR が workflow / コードを自己改変して無人で main へ入れる経路を塞ぐ。
-//!    base..head の net diff ではなく **全 commit の union** を検査するのは、途中 commit で逸脱パスを足して
-//!    最終 head で消す回避（net diff は綺麗だが履歴は汚い add-then-remove）を防ぐためである。この union 検査が
-//!    一次防御であり、`--squash` マージ運用の有無には依存しない。union パス集合の収集は CLI 側
-//!    （`git log --name-only` の全 commit union 由来）の責務で、本 module は与えられた集合を判定する。
+//! 2. **lock 差分限定**: `flake.lock` の差分は、[`EXPECTED_LOCK_INPUT_SOURCES`] に期待取得先を持つ node の
+//!    **rev 変更のみ**。取得先の同一性（owner/repo 厳密一致、type / url / host / dir、node 追加削除、
+//!    node 間 wiring、`flake` フラグ）は厳密一致を要求する。唯一の例外は推移 input の `ref` で、親 flake の
+//!    宣言に従って動くため無条件に許可する（[`SourceCoords::ignoring_reference`]）。加えて、期待取得先を持つ
+//!    input の rev 変更が少なくとも 1 件あることを要求し、実体のない空 bump を無人 merge させない。
 //!
-//! 2. **lock 差分限定**: `flake.lock` の差分は **rev 変更のみ**。nightly は `nix flake update` で全 input を
-//!    bump するため、[`EXPECTED_LOCK_INPUT_SOURCES`] は「bump してよい input の真部分集合」ではなく
-//!    **lock の全 node の取得先期待値表**（root input 9 本 + 推移 input `brew-src` の owner/repo）である。
-//!    この表は「どの input が bump 可か」ではなく「各 node がどこから取得されるべきか」を固定する。
-//!    緩めたのは「どの input の rev が動いてよいか」だけであり、取得先の同一性検査（owner/repo 厳密一致、
-//!    type / url / host / dir、node 追加削除、node 間 wiring、`flake` フラグ）は従来どおり厳密に保つ。
-//!    想定外 input の追加・削除、表に期待値を持たない node の locked 変更、source の改変はすべて fail。
-//!
-//!    唯一の例外が **推移 input の `ref`** である。親 flake を bump すると親の `flake.nix` が宣言する
-//!    input 座標が動きうる（例: nix-homebrew を bump すると `brew-src` の `original.ref` が `5.1.1` →
-//!    `6.0.13` へ進む）。この正当な変更を通すため、推移 input の `original` / `locked` の `ref` 差分は
-//!    **無条件に**許可する。親 node の rev が動いたかは参照せず、`ref` の前後関係（前進 / 後退）も判定
-//!    しない。したがって版を下げる方向の `ref` 変更も本 module は通す。下限割れの実害（`cleanup =
-//!    "uninstall"` が要求する brew の `--force-cleanup`）を止めるのは `cargo xtask check static` の
-//!    `homebrew_cleanup_matches_locked_brew_capability` であり、本 module ではない。root input の
-//!    `original` は本 repo の `flake.nix` 由来であり、nightly PR は `flake.nix` を変更できない
-//!    （許可パス外）ため、従来どおり完全一致を要求する。
-//!
-//!    version / root / 既存 input の source 同一性も検査し、lock 全体が「期待取得先が一致する input の rev
-//!    （と推移 input の親由来 ref）だけが動いた」状態であることを確認する。**加えて、期待取得先を持つ input の
-//!    rev 変更が少なくとも 1 件あること**を要求する。lock が実際に bump されていない（rev が 1 件も動いていない）
-//!    PR は、たとえ docs/update-history だけを変える「逸脱 lock 変更なし」状態でも nightly bump として
-//!    auto-merge させない（実体のない空 bump を無人 merge する経路を塞ぐ）。
-//!
-//! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。インライン
-//! 実行はこの非 0 終了で fail し、`static checks` status を投稿しないため required check が満たされず
-//! auto-merge は成立しない（fail-closed）。
+//! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。
 
 use std::collections::BTreeSet;
 
@@ -59,22 +31,14 @@ const ALLOWED_HISTORY_PREFIX: &str = "docs/update-history/";
 
 /// lock の全 node について期待する取得先の表（lock node の input 名 → 期待 owner/repo）。
 ///
-/// nightly は `nix flake update`（引数なし）で全 input を bump するため、本表は「bump してよい input を
-/// 選ぶ表」ではない。現行 `flake.nix` が宣言する root input と、その推移 input（nix-homebrew の
-/// `brew-src`）を網羅する **実在 input の写し**であり、各 node が「どこから取得されるべきか」だけを固定
-/// する。framework input を bump 対象から外していた頃は、除外に対応する有人 bump 経路が無く「更新され
-/// ない」と同義になり、据え置かれた brew と前進した cask tap の組み合わせで `dotfiles update` が停止した。
-/// 「この input は nightly で bump したくないから表に足さない」という運用は、本表の責務ではない
-/// （bump 対象の選択は `nix flake update` の引数を持たないこと自体で表現する）。
-///
-/// owner/repo は **厳密一致**で照合し、prefix 一致や input 名だけの一致では通さない。本表に期待値を持た
-/// ない node の `locked` が動けば、取得先同一性を検証できない変更として fail する（fail-closed）。緩めたの
-/// は「どの input の rev が動いてよいか」だけで、取得先の同一性検査は緩めない。
+/// 本表は「bump してよい input を選ぶ表」ではなく、各 node が「どこから取得されるべきか」だけを固定する
+/// 実在 input の写しである。owner/repo は **厳密一致**で照合し、本表に期待値を持たない node の `locked` が
+/// 動けば取得先同一性を検証できない変更として fail する（fail-closed）。
 ///
 /// **保守義務**: `flake.nix` へ input を追加・削除・rename したら、同じ差分で本表も更新すること。更新漏れは
-/// `cargo xtask check static` の `nightly_lock_input_sources_match_expected_table`
-/// （`rust/tests/checks/src/static_checks.rs`）が実 `flake.lock` と突合して止める。上流 flake の input graph が
-/// 変わって本表と乖離した場合の復旧手順は `docs/automation/nightly-lock-bump.md` を正本とする。
+/// `cargo xtask check static` の `nightly_lock_input_sources_match_expected_table` が実 `flake.lock` と突合
+/// して止める。上流 flake の input graph が変わって本表と乖離した場合の復旧手順は
+/// `docs/automation/nightly-lock-bump.md` を正本とする。
 const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 10] = [
     ("nixpkgs", "NixOS", "nixpkgs"),
     ("darwin", "LnL7", "nix-darwin"),
@@ -91,16 +55,12 @@ const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 10] = [
 /// 1 つの lock node の同一性を決める source 座標（rev を除く）。
 ///
 /// rev だけが変わったことを確かめるため、rev 以外（owner / repo / type / ref / url / host / dir / flake
-/// フラグ）をまとめて比較する。期待取得先を持つ root input（`flake.nix` 宣言）はこの座標が完全一致した上で
-/// rev だけ異なることを要求し、期待取得先を持たない node は rev を含む全フィールドが一致することを要求する。
-/// 推移 input（親 flake が宣言する input）だけは `ref` 差分を通すため [`SourceCoords::ignoring_reference`]
-/// で `ref` を除いた座標を比較する。
+/// フラグ）をまとめて比較する。期待取得先を持つ root input はこの座標が完全一致した上で rev だけ異なることを
+/// 要求し、期待取得先を持たない node は rev を含む全フィールドが一致することを要求する。
 ///
-/// `host` を含める理由（信頼境界の拡張）: Nix の github flake ref は `host` 属性で取得先ホスト（既定
-/// `github.com`）を上書きでき、`host` だけを GitHub Enterprise 等へ差し替えると owner/repo/type/ref/rev が
-/// すべて期待値どおりに見えるのに、実際の取得先 host が許可された github.com から逸脱する。`host` を座標に
-/// 含めて比較することで、owner/repo 厳密一致の信頼境界を取得先 host まで拡張し、host drift を
-/// fail-closed にする。`dir`（subflake のサブディレクトリ指定）も同様に fetch 対象を変えうるため座標へ含める。
+/// `host` と `dir` を座標へ含めるのは、owner/repo/type/ref/rev がすべて期待値どおりでも fetch 先が動きうる
+/// ためである。github flake ref の `host` は取得先ホスト（既定 `github.com`）を GitHub Enterprise 等へ
+/// 上書きでき、`dir` は subflake のサブディレクトリを変える。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceCoords {
     owner: Option<String>,
@@ -118,10 +78,9 @@ struct SourceCoords {
 impl SourceCoords {
     /// `ref`（同一 repo 内の tag / branch 指定）を落とした座標を返す。
     ///
-    /// 推移 input の `ref` は親 flake の宣言に従って動くため、比較対象から `ref` を外す。本メソッドは親 node の
-    /// rev が実際に動いたかを参照せず、`ref` の前後関係（前進 / 後退）も判定しない。つまり比較する側は
-    /// 「親 bump が起きていない `ref` 書き換え」も「版を下げる `ref` 変更」も差分なしとして扱う。落とすのは
-    /// `ref` だけで、取得先 repo そのものを決める owner / repo / type / url / host / dir は残す。呼び出し側は
+    /// 推移 input の `ref` は親 flake の宣言に従って動くため、比較対象から外す。本メソッドは親 node の rev が
+    /// 実際に動いたかを参照せず、`ref` の前後関係（前進 / 後退）も判定しない。落とすのは `ref` だけで、
+    /// 取得先 repo そのものを決める owner / repo / type / url / host / dir は残す。caller responsibility:
     /// 本メソッドで比較する場合でも owner/repo の期待値厳密一致を別途要求すること。
     fn ignoring_reference(&self) -> Self {
         Self {
@@ -276,11 +235,9 @@ fn root_input_node_names<'a>(lock: &'a Value, label: &str) -> Result<BTreeSet<&'
 ///
 /// `is_root_input` は当該 node が本 repo の `flake.nix` 直下の宣言かどうか。`true` なら `original` と
 /// source 座標（`ref` を含む）の完全一致を要求する。`false`（推移 input）なら `ref` の差分を**方向を問わず
-/// 無条件に**許容する。親 node の rev が動いたかは参照せず、`ref` の前進 / 後退も判定しないため、版を下げる
-/// 方向の `ref` 変更もここは通る（下限割れを止めるのは `cargo xtask check static` の
-/// `homebrew_cleanup_matches_locked_brew_capability` であり、本関数ではない）。`ref` 以外の
-/// owner / repo / type / url / host / dir の差分は推移 input でも許容しない。caller responsibility:
-/// `is_root_input` は head 側 lock の root node から導出すること（base 側の古い wiring で判定しない）。
+/// 無条件に**許容し、版を下げる方向の `ref` 変更もここは通る。`ref` 以外の owner / repo / type / url /
+/// host / dir の差分は推移 input でも許容しない。caller responsibility: `is_root_input` は head 側 lock の
+/// root node から導出すること（base 側の古い wiring で判定しない）。
 fn verify_node(
     name: &str,
     old_node: &Value,
@@ -365,14 +322,11 @@ fn verify_node(
 /// root input の `original` は本 repo の `flake.nix` の宣言そのものであり、nightly PR の許可パスに
 /// `flake.nix` は含まれないため base→head で変わりえない。よって完全一致を要求する。
 ///
-/// 推移 input（親 flake が宣言する input。例: nix-homebrew の `brew-src`）は、親を bump すると親側の宣言が
-/// 動くため `ref`（同一 repo 内の tag / branch 指定）が動きうる。実例として nix-homebrew の bump で
-/// `brew-src` の `ref` が `5.1.1` → `6.0.13` へ動く。本関数はこの `ref` 差分を **方向を問わず無条件に**
-/// 許可する。親 node の rev が実際に動いたかは参照せず、`ref` の前進 / 後退も判定しないため、`6.0.13` →
-/// `5.1.1` のような後退も、親 bump を伴わない `ref` 書き換えも通る（後退方向の実害を止めるのは
-/// `cargo xtask check static` の `homebrew_cleanup_matches_locked_brew_capability` であり、本関数ではない）。
-/// owner / repo / type / url / host / dir / flake など取得先そのものを決めるフィールドの差分は許可しない。
-/// 取得先 repo の差し替えは呼び出し側の owner/repo 厳密一致検査と合わせて二重に塞ぐ。
+/// 推移 input（親 flake が宣言する input）は、親を bump すると親側の宣言が動くため `ref`（同一 repo 内の
+/// tag / branch 指定）が動きうる。本関数はこの `ref` 差分を **方向を問わず無条件に** 許可する。親 node の
+/// rev が実際に動いたかは参照せず、`ref` の前進 / 後退も判定しないため、後退も親 bump を伴わない `ref`
+/// 書き換えも通る。owner / repo / type / url / host / dir / flake など取得先そのものを決めるフィールドの
+/// 差分は許可しない。取得先 repo の差し替えは呼び出し側の owner/repo 厳密一致検査と合わせて二重に塞ぐ。
 fn verify_original(
     name: &str,
     old_node: &Value,
@@ -418,24 +372,13 @@ fn original_without_reference(original: Option<&Value>) -> Option<serde_json::Ma
 /// 期待取得先が一致した input の `locked` 整合を検査する: rev 変化と narHash / lastModified 変化を連動させる。
 /// rev が変わったら `true` を返す（呼び出し側が lock 実 bump の有無を集計する）。
 ///
-/// rev bump 自体は許すが、その rev に対応する取得物の同一性（`narHash`）と取得時刻
-/// （`lastModified`）は rev に連動して動くのが正当な bump である。`rev` が変わらないのに `narHash` または
-/// `lastModified` だけが変われば、同一 rev のまま固定対象の内容がすり替わった content swap であり、rev bump の
-/// 許可範囲を超える。よって「rev 不変かつ narHash/lastModified 変化」を fail にする。
+/// `rev` が変わらないのに `narHash` または `lastModified` だけが変われば、同一 rev のまま固定対象の内容が
+/// すり替わった content swap であり、rev bump の許可範囲を超えるため fail にする。
 ///
-/// 加えて、**`locked.rev` が old/head 双方で文字列として存在することを必須**とする。
-/// `locked.rev` が削除されたり文字列以外（数値・null・object 等）へ壊れると、`field(...,"rev")` が `None` を返し、
-/// `old==new`（ともに `None`）で「rev 変化なし」と誤認したまま narHash/lastModified も一致すれば guard を素通り
-/// する。これは rev 欠落・rev 破壊の lock を無人 auto-merge へ通す抜けになるため、欠落/非文字列を明示的に fail に
-/// する（fail-closed）。これにより guard は「rev が文字列で実在し、かつ rev 連動で内容が動いた」
-/// 状態だけを許可する。
-///
-/// **rev 変更時も lock identity を fail-closed 検証**: GitHub input の正当な lock node は `narHash`（fixed-output
-/// 同一性）を文字列で、`lastModified`（取得時刻）を整数で必ず持つ。rev が動いたとき、これらが head 側で削除・
-/// 非文字列化（narHash）・非整数化（lastModified）されても rev 変化だけで `Ok(true)` を返していると、identity を
-/// 欠いた壊れた lock を「実 bump」として static checks success にしてしまう。rev が変わった場合も head の
-/// `narHash` が非空文字列、`lastModified` が整数で存在することを要求し、欠落/型崩れを fail にする（壊れた lock を
-/// auto-merge へ通さない）。
+/// `locked.rev` は base / head 双方で文字列として存在することを必須とする。欠落や非文字列を許すと双方 `None`
+/// で「rev 変化なし」と誤認し、rev を欠いた lock が guard を素通りする。rev が変わった場合も head 側に
+/// lock identity（`narHash` 非空文字列 + `lastModified` 整数）が存在することを要求し、identity を削った
+/// 壊れた lock を「実 bump」として通さない（fail-closed）。
 fn verify_locked_integrity(name: &str, old_locked: &Value, new_locked: &Value) -> Result<bool> {
     let str_field =
         |locked: &Value, key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
