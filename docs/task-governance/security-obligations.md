@@ -10,6 +10,14 @@
 - 意図的に宣言化する場合を除き、マシン固有の可変状態を Home Manager モジュールに入れてはならない。
 - Homebrew taps は flake inputs で固定されるため、設計変更が必要としない限り可変 tap 運用を導入してはならない。
 
+## 自動検査が届かない権限境界
+
+`nix/darwin.nix` の `autoUpdateWrapper` が生成する root LaunchDaemon の argv 構成（target を省略して `dotfiles update` の既定 `all` を使うこと、`--user` を渡すこと、`--host` を渡すこと）を検証する自動検査は存在しない。
+
+- 降格の意味そのものは `dotfiles-cli` の unit test が担保するが、wrapper がどの引数を渡すかは Rust のテストからも `darwinConfigurations` の評価からも見えない。設定ファイルのテキストを文字列照合する検査は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md#設定ファイルの文字列照合検査の禁止) で禁止しており、この配線に対する自動検査の不在は受容済みリスクとして扱う。
+- `--user` が欠落すると CLI は対象ユーザーへ降格せず、root のまま `nix flake update` と Home Manager を実行する。結果として利用者所有ファイルが root 所有へ変わる。この退行は既存の自動検査をすべて通過する。
+- したがって `autoUpdateWrapper` と、`nix/darwin.nix` および `nix/modules/launchagents.nix` の launchd 定義を変更する場合は、生成される argv を人手で確認する。
+
 ## 役割別義務
 
 - `実装担当`: 差分作成時に秘密情報の永続化経路、出力経路、失敗時挙動を確認する。
