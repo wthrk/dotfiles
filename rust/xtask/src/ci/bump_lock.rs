@@ -10,9 +10,9 @@
 //!    集合を判定する。
 //!
 //! 2. **lock 差分限定**: `flake.lock` の差分は、[`EXPECTED_LOCK_INPUT_SOURCES`] に期待取得先を持つ node の
-//!    **rev 変更のみ**。取得先の同一性（owner/repo 厳密一致、type / url / host / dir、node 追加削除、
-//!    node 間 wiring、`flake` フラグ）は厳密一致を要求する。唯一の例外は推移 input の `ref` で、親 flake の
-//!    宣言に従って動くため無条件に許可する（[`SourceCoords::ignoring_reference`]）。加えて、期待取得先を持つ
+//!    **rev 変更のみ**。`locked` は `rev` / `narHash` / `lastModified` を除いた残り全体の一致を要求するため、
+//!    未列挙フィールドの追加・変更も拒否する（owner/repo は加えて期待値へ厳密一致）。唯一の例外は推移
+//!    input の `ref` で、親 flake の宣言に従って動くため無条件に許可する。加えて、期待取得先を持つ
 //!    input の rev 変更が少なくとも 1 件あることを要求し、実体のない空 bump を無人 merge させない。
 //!
 //! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。
@@ -52,15 +52,10 @@ const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 10] = [
     ("homebrew-hashicorp-tap", "hashicorp", "homebrew-tap"),
 ];
 
-/// 1 つの lock node の同一性を決める source 座標（rev を除く）。
+/// 1 つの lock node の source 座標を型付きで取り出したもの。
 ///
-/// rev だけが変わったことを確かめるため、rev 以外（owner / repo / type / ref / url / host / dir / flake
-/// フラグ）をまとめて比較する。期待取得先を持つ root input はこの座標が完全一致した上で rev だけ異なることを
-/// 要求し、期待取得先を持たない node は rev を含む全フィールドが一致することを要求する。
-///
-/// `host` と `dir` を座標へ含めるのは、owner/repo/type/ref/rev がすべて期待値どおりでも fetch 先が動きうる
-/// ためである。github flake ref の `host` は取得先ホスト（既定 `github.com`）を GitHub Enterprise 等へ
-/// 上書きでき、`dir` は subflake のサブディレクトリを変える。
+/// base→head の差分検査は [`locked_without_mutable_fields`] による全体比較が担う。本型は
+/// [`EXPECTED_LOCK_INPUT_SOURCES`] との owner/repo 厳密一致を照合するために使う。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceCoords {
     owner: Option<String>,
@@ -75,19 +70,23 @@ struct SourceCoords {
     flake: Option<bool>,
 }
 
-impl SourceCoords {
-    /// `ref`（同一 repo 内の tag / branch 指定）を落とした座標を返す。
-    ///
-    /// 推移 input の `ref` は親 flake の宣言に従って動くため、比較対象から外す。本メソッドは親 node の rev が
-    /// 実際に動いたかを参照せず、`ref` の前後関係（前進 / 後退）も判定しない。落とすのは `ref` だけで、
-    /// 取得先 repo そのものを決める owner / repo / type / url / host / dir は残す。caller responsibility:
-    /// 本メソッドで比較する場合でも owner/repo の期待値厳密一致を別途要求すること。
-    fn ignoring_reference(&self) -> Self {
-        Self {
-            reference: None,
-            ..self.clone()
+/// `locked` から bump で変わってよいフィールドだけを取り除いた残りを返す。
+///
+/// 既知フィールドの射影で比較すると、`submodules` のような未列挙フィールドの追加・変更が素通りする。
+/// 除去して残り全体を比較することで、未知フィールドを fail-closed に扱う。`ignore_reference` は推移 input
+/// 用で、`ref` は親 flake の宣言に従って動くため比較から外す。caller responsibility: `ref` を落とす場合でも
+/// owner/repo の期待値厳密一致を別途要求すること。
+fn locked_without_mutable_fields(locked: &Value, ignore_reference: bool) -> Value {
+    let mut value = locked.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("rev");
+        object.remove("narHash");
+        object.remove("lastModified");
+        if ignore_reference {
+            object.remove("ref");
         }
     }
+    value
 }
 
 /// 与えられた変更パス集合と base/head の `flake.lock` 内容から、無人 auto-merge 可否を判定する。
@@ -288,20 +287,18 @@ fn verify_node(
 
     verify_original(name, old_node, new_node, is_root_input)?;
 
-    // 期待取得先を持つ input: source 座標（rev 以外）一致 + owner/repo が期待値に厳密一致。rev は変わってよい。
-    // 推移 input だけは親由来の `ref` 差分を通すため、`ref` を除いた座標で比較する。
-    let old_coords = source_coords(old_locked);
-    let new_coords = source_coords(new_locked);
-    let coords_match = if is_root_input {
-        old_coords == new_coords
-    } else {
-        old_coords.ignoring_reference() == new_coords.ignoring_reference()
-    };
-    if !coords_match {
+    // 期待取得先を持つ input: `locked` から可変フィールドを除いた残りが一致 + owner/repo が期待値に厳密一致。
+    // 推移 input だけは親由来の `ref` 差分を通すため、`ref` も除いて比較する。
+    let ignore_reference = !is_root_input;
+    if locked_without_mutable_fields(old_locked, ignore_reference)
+        != locked_without_mutable_fields(new_locked, ignore_reference)
+    {
         bail!(
-            "flake.lock node `{name}` source coordinates changed (not just rev); not an allowed bump"
+            "flake.lock node `{name}` locked source changed beyond rev/narHash/lastModified; \
+             not an allowed bump"
         );
     }
+    let new_coords = source_coords(new_locked);
     match (new_coords.owner.as_deref(), new_coords.repo.as_deref()) {
         (Some(o), Some(r)) if o == *owner && r == *repo => {}
         other => bail!(
@@ -646,8 +643,8 @@ mod tests {
     #[test]
     fn accepts_transitive_input_locked_ref_bump_from_parent() -> Result<()> {
         // `ref` 緩和の許可側境界: `locked.ref` が実体を持つ推移 input でも、親 bump に伴う `ref` の前進は
-        // 通す。`SourceCoords::ignoring_reference` を厳密比較（`self.clone()`）へ戻すとこの test は
-        // `source coordinates changed` で fail するため、緩和の有無をテストが区別できる。
+        // 通す。`locked_without_mutable_fields` の `ignore_reference` を落とすとこの test は
+        // `locked source changed beyond` で fail するため、緩和の有無をテストが区別できる。
         let old = lock_with_transitive_locked_ref("1111", "aaaa", "5.1.1");
         let new = lock_with_transitive_locked_ref("2222", "bbbb", "6.0.13");
         assert!(old.contains(r#""ref": "5.1.1", "rev": "aaaa""#), "{old}");
@@ -657,8 +654,8 @@ mod tests {
     #[test]
     fn rejects_transitive_input_locked_host_drift_despite_ref_relaxation() {
         // `ref` 緩和の拒否側境界: 緩和で落とすのは `ref` だけであり、同じ推移 input でも `host` のように
-        // 取得先を決める座標が動けば fail する。`ignoring_reference` が `ref` 以外まで落とす実装へ広がれば
-        // この test が緑のまま通ってしまうため、緩和の範囲をここで固定する。
+        // 取得先を決めるフィールドが動けば fail する。緩和が `ref` 以外まで広がればこの test が緑のまま
+        // 通ってしまうため、緩和の範囲をここで固定する。
         let old = lock_with_transitive_locked_ref("1111", "aaaa", "5.1.1");
         let new = lock_with_transitive_locked_ref("2222", "bbbb", "6.0.13").replace(
             r#""owner": "Homebrew", "repo": "brew", "ref": "6.0.13", "rev": "bbbb""#,
@@ -670,7 +667,28 @@ mod tests {
         );
         let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
         assert!(
-            err.to_string().contains("source coordinates changed"),
+            err.to_string().contains("locked source changed beyond"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_locked_field_outside_the_known_projection() {
+        // 未列挙フィールドの fail-closed 化。既知フィールドの射影で比較していた頃は、`submodules` のような
+        // 取得条件を変えうるフィールドが増減しても通っていた。ここが緑のまま通る実装へ戻ると、
+        // auto-merge gate が取得条件の差分を見逃す。
+        let old = lock_with_transitive_locked_ref("1111", "aaaa", "5.1.1");
+        let new = lock_with_transitive_locked_ref("2222", "bbbb", "6.0.13").replace(
+            r#""owner": "Homebrew", "repo": "brew", "ref": "6.0.13", "rev": "bbbb""#,
+            r#""owner": "Homebrew", "repo": "brew", "ref": "6.0.13", "submodules": true, "rev": "bbbb""#,
+        );
+        assert!(
+            new.contains("submodules"),
+            "未列挙フィールド注入が効いていること"
+        );
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(
+            err.to_string().contains("locked source changed beyond"),
             "{err}"
         );
     }
@@ -693,7 +711,7 @@ mod tests {
     #[test]
     fn rejects_transitive_input_locked_owner_swap_with_intact_original() {
         // `original` は正当なまま `locked.owner` だけをすり替える経路。`verify_original` は通過するため、
-        // 推移 input の `locked` 側 source 座標比較（`ignoring_reference` 経由）が唯一のガードになる。
+        // 推移 input の `locked` 側比較（`locked_without_mutable_fields`）が唯一のガードになる。
         // この経路を通すテストが無いと、`locked` 側比較を落としても全 test が緑のままになる。
         let old = lock_with_transitive("1111", "aaaa", "5.1.1");
         let new = lock_with_transitive("2222", "bbbb", "6.0.13").replace(
@@ -706,9 +724,19 @@ mod tests {
         );
         let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
         assert!(
-            err.to_string().contains("source coordinates changed"),
+            err.to_string().contains("locked source changed beyond"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_expected_owner_mismatch_present_on_both_sides() {
+        // owner/repo の期待値照合が単独で働く経路。base と head の双方が同じ非期待 owner を持つと
+        // `locked` 差分比較は通過するため、ここを落とすと表と実 lock の乖離を検出できなくなる。
+        let old = lock_with("aaaa", "dddd").replace(r#""owner": "NixOS""#, r#""owner": "evil""#);
+        let new = lock_with("bbbb", "dddd").replace(r#""owner": "NixOS""#, r#""owner": "evil""#);
+        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
+        assert!(err.to_string().contains("owner/repo"), "{err}");
     }
 
     #[test]
@@ -862,8 +890,7 @@ mod tests {
         );
         let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
         assert!(
-            err.to_string().contains("source coordinates changed")
-                || err.to_string().contains("owner/repo"),
+            err.to_string().contains("locked source changed beyond"),
             "{err}"
         );
     }
@@ -964,8 +991,8 @@ mod tests {
     fn rejects_host_drift_on_allowed_input() {
         // host 退行固定: bump 対象 input（nixpkgs）の owner/repo/type/ref/rev をすべて期待値どおりに保ったまま、
         // `locked.host` だけを GitHub Enterprise 等へ差し替えると取得先 host が github.com から逸脱する。
-        // host を source 座標に含めることで、rev を動かしても host drift を「source coordinates changed」で fail
-        // にする（owner/repo 厳密一致の信頼境界を host まで拡張）。
+        // `locked` の可変フィールド以外を全比較することで、rev を動かしても host drift を fail にする
+        // （owner/repo 厳密一致の信頼境界を host まで拡張）。
         let old = lock_with("aaaa", "dddd");
         // nixpkgs に host を足し（base には無い→head で github.example.com を注入）、rev も動かす。
         let new = lock_with("bbbb", "dddd").replace(
@@ -975,7 +1002,7 @@ mod tests {
         assert_ne!(old, new, "host 注入が lock 本文を変えていること");
         let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
         assert!(
-            err.to_string().contains("source coordinates changed"),
+            err.to_string().contains("locked source changed beyond"),
             "{err}"
         );
     }

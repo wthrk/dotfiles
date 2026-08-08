@@ -262,7 +262,17 @@ fn parse_expected_lock_input_sources(guard: &str) -> Result<BTreeMap<String, (St
                 "`EXPECTED_LOCK_INPUT_SOURCES` の要素 `{entry}` が (input 名, owner, repo) の 3 要素ではない"
             ));
         };
-        parsed.insert(name.to_owned(), (owner.to_owned(), repo.to_owned()));
+        // 重複キーを黙って上書きすると、この検査は後勝ちで解釈する一方 `verify_node` は `.find()` の
+        // 先勝ちで解釈する。両者が別の表を見るため、網羅性が緑でも nightly が正当な lock を拒否し続ける。
+        if let Some((existing_owner, existing_repo)) =
+            parsed.insert(name.to_owned(), (owner.to_owned(), repo.to_owned()))
+        {
+            return Err(anyhow!(
+                "`EXPECTED_LOCK_INPUT_SOURCES` に input 名 `{name}` が重複している\
+                 （{existing_owner}/{existing_repo} と {owner}/{repo}）。`verify_node` は先勝ちで解釈するため、\
+                 重複は本検査と nightly が別の表を見る原因になる"
+            ));
+        }
     }
     ensure!(
         !parsed.is_empty(),
@@ -862,6 +872,25 @@ const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 1] = [
         let err =
             assert_lock_input_sources_match_expected_table(lock_fixture(), guard).unwrap_err();
         assert!(err.to_string().contains("brew-src"), "{err}");
+    }
+
+    /// 同じ input 名が表に重複していれば検出する。
+    ///
+    /// 本検査は後勝ち、`verify_node` は `.find()` の先勝ちで解釈するため、重複を通すと両者が別の表を見る。
+    /// 網羅性が緑のまま nightly だけが owner/repo 不一致で正当な lock を拒否し続ける状態になる。
+    #[test]
+    fn expected_source_table_rejects_duplicate_input_name() {
+        let guard = r#"
+const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 3] = [
+    ("nix-homebrew", "evil", "fork"),
+    ("nix-homebrew", "zhaofengli-wip", "nix-homebrew"),
+    ("brew-src", "Homebrew", "brew"),
+];
+"#;
+
+        let err =
+            assert_lock_input_sources_match_expected_table(lock_fixture(), guard).unwrap_err();
+        assert!(err.to_string().contains("重複"), "{err}");
     }
 
     /// input を削除・rename したのに期待取得先表へ残っている状態も検出する。
