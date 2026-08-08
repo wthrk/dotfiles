@@ -1,6 +1,6 @@
 # nightly 自動 bump とゲート
 
-この文書は、nightly が `flake.lock` を無人 bump して auto-merge するまでの方針と threat model の正本である。
+この文書は、nightly が `flake.lock` を無人 bump して auto-merge するまでの方針とゲートの正本である。
 
 [`.github/workflows/nightly-update.yml`](../../.github/workflows/nightly-update.yml) が nightly に repo の
 `flake.lock` を bump し、更新履歴を [`docs/update-history/<YYYY-MM>.toml`](../update-history/README.md) へ記録して
@@ -51,47 +51,40 @@ log の `added:` / `removed:` と、bump job の artifact `bump-state`（`retent
 突合するため、表だけを更新すると `check static` が fail する。root input の `original` が動いている、または追加
 node の取得先が上流宣言と一致しない場合は攻撃を疑って調査する。
 
-## 更新概要（change_items）の取得
-
-概要は上流のリリースノートから取得するが、ノートの置き場は一律に機械取得できないため、機械的に取れるものは
-Releases API / changelog から取得し、取れないものは OpenAI API（`async-openai` crate）の AI エージェントに
-探させる。API キーが無い場合やノートが取れない場合は、そのパッケージを version-only（version old→new +
-notes_url のみ）としてその場で確定記録する。
-
-どこからノートを取得したか（provenance）は `docs/update-history/notes-sources.toml` に保存し、次回以降の record は
-このレジストリを最優先参照して同じ取得元を再利用する。これにより AI 探索は新規/未知パッケージと自己修復
-（取得元が移動した等）に限定される。AI 由来の取得元 URL も含め、保存・再取得時は許可ホスト https に限定して
-検証する。
-
-## インライン `verify-bump-lock` の判定内容
+## インライン `verify-bump-lock` の判定内容と適用範囲
 
 判定規則と反例は [`rust/xtask/src/ci/bump_lock.rs`](../../rust/xtask/src/ci/bump_lock.rs) の module doc と
 unit test を正本とする。
 
-## 検査者と検査対象の分離
+この検査は nightly workflow の open-pr job が同一 run 内で実行するため、nightly が自分で起票した bump PR にのみ
+適用される。第三者が同じ branch prefix（`nightly/bump-*`）で直接起票した PR には走らない。
 
-このチェックは **検査者と検査対象を分離**する。判定バイナリ（`cargo xtask ci verify-bump-lock`）は nightly
-workflow 自身の信頼 ref の checkout からビルドし、検査対象は base..head の lock 差分（git データ）である。PR 作業
-ツリーの dotfiles を検査主体にしないため、悪意ある lock 改変があっても判定主体は信頼コードのままである。
+## auto-merge の成立条件
 
 合格後、open-pr job は `@codex review` コメントで codex 自動レビューを起動し（Copilot は GitHub 側のネイティブ
-code review で走る）、`gh pr merge --auto --squash` で auto-merge を有効化する。Copilot/Codex のレビュー
-充足と required status（`static checks`）満了でマージされる。
+code review で走る）、`gh pr merge --auto --squash` で auto-merge を有効化する。`--auto` は ruleset の required
+requirement が揃った時点でマージするため、マージ条件は「main」ruleset が強制するものに一致する。すなわち
+required status `static checks`（`strict_required_status_checks_policy` により base 追随も必須）、code scanning
+（CodeQL）、code quality、および未解決 review thread が無いこと（`required_review_thread_resolution`）であり、
+必要承認数は 0 である。`non_fast_forward` は force-push を止める branch 規則でマージ条件ではなく、実マージ形態を
+縛るのは `allowed_merge_methods: ["squash"]` である。
+
+AI レビューの完了はこの条件に含まれない。ruleset の `copilot_code_review` は「push で Copilot レビューを
+起票する」規則であってレビュー完了を待たせず、codex は required check でも required reviewer でもない。
+Copilot / codex が指摘を review thread として投稿した後であれば `required_review_thread_resolution` が未解決
+スレッドの残る PR のマージを止めるが、投稿前に上記 requirement が揃えば auto-merge はレビュー応答を待たずに
+成立する。この受容は「残留制約」節に置く。
 
 ## 残留制約
 
-### 実 GitHub でのみ最終確認できる前提
+### AI レビュー未応答での merge（明示受容）
 
-この App 不要フローには、実 GitHub でしか確定できない前提がある（マージ後に `workflow_dispatch`
-`dry_run=false` で検証する）。
-
-- GITHUB_TOKEN で POST した commit status `static checks` が、適用済み ruleset の required context と確実に
-  名前突合してマージ条件を満たすか。
-- `gh pr merge --auto` を GITHUB_TOKEN 権限（`pull-requests: write`）で有効化できるか（repo 設定で
-  auto-merge が有効である必要がある）。
-- `copilot_code_review` が bot / GITHUB_TOKEN 起票 PR で発火するか。
-
-いずれも未充足ならマージは保留され、無人で main に入らない（人手レビューへ送られる）。
+前節のとおり auto-merge の条件に AI レビューの完了は含まれないため、Copilot / codex の応答が required status の
+充足より遅い夜、および codex が usage limit 等で応答しない夜は、AI レビュー無しで bump が main に入る。codex は
+commit status を出さないので required check 化する経路が無く、workflow 側で応答を待たせると「応答しない夜は
+nightly が進まない」と引き換えになる。bump の内容は許可パスが `flake.lock` と更新履歴に限られ、機械ゲート
+（`verify-bump-lock` / `check static` / `nix build`）は AI レビューと独立に効くため、この残留リスクを明示受容
+する。復旧は下記の runtime 非互換と同じく `flake.lock` の revert で行う。
 
 ### 無人 bump の runtime 非互換（明示受容）
 
@@ -105,13 +98,3 @@ auto-merge 前には検出できない。検出経路は
 既知の依存は個別に機械化する。`verify-bump-lock` は推移 input の `ref` 差分を方向を問わず通すため、
 [`nix/modules/homebrew.nix`](../../nix/modules/homebrew.nix) の `cleanup` が要求する brew 側 capability の下限は
 `cargo xtask check static` の `homebrew_cleanup_matches_locked_brew_capability` が `flake.lock` 上で強制する。
-
-## インライン `verify-bump-lock` の適用範囲（threat-model）
-
-インラインの `cargo xtask ci verify-bump-lock` は、**nightly workflow が自分で起票する bump PR にのみ適用**される
-（open-pr job が同一 run 内で実行するため）。第三者が `nightly/bump-*` prefix で**直接起票した PR には
-`verify-bump-lock` は走らない**。そうした攻撃者起票 PR のマージ阻止は、bypass 不能な「main」ruleset の必須
-`static checks` と Copilot/Codex の自動レビューに依存する（加えて `.github/**` の改変はそもそも許可パス外として
-弾かれる）。より強い保護が必要なら、App 不要の per-PR guard workflow（`on: pull_request` で nightly-prefix PR に
-`verify-bump-lock` を実行し、その結果を「main」ruleset の required check に加える）を別途有効化できる。本仕様は
-App / secret 不要を維持するため、この per-PR guard は既定では有効化していない。

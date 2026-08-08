@@ -302,7 +302,11 @@ fn cask_rb_url(rev: &str, name: &str) -> String {
     )
 }
 
-/// cask `.rb` 本文から最初の `version "..."` を取り出す純粋関数（`version :latest` 等は数十行ルールで非対象）。
+/// cask `.rb` 本文から最初の `version "..."` を取り出す純粋関数（`version :latest` 等は非対象）。
+///
+/// `version :latest` を版差分に翻訳できないことは可視化の穴にならない。Homebrew の cask audit は
+/// `version :latest` に `sha256 :no_check` を要求するため、`:latest` の cask は [`assert_pinned`] で
+/// fail-closed になり、宣言 cask（`homebrew.nix` の `casks`）として存在できない。
 fn parse_cask_version(rb: &str) -> Option<String> {
     for line in rb.lines() {
         let trimmed = line.trim_start();

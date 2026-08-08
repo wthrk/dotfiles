@@ -2,7 +2,7 @@ name: nightly update
 
 # nightly に repo の flake.lock を bump し、更新履歴（版差分＋概要）を記録して自動 PR を起票・auto-merge する。
 #
-# 無人 bump の方針、auto-merge を止めるゲートの検査範囲、threat model、明示受容した残留リスクは
+# 無人 bump の方針、auto-merge を止めるゲートの検査範囲、明示受容した残留リスクは
 # docs/automation/nightly-lock-bump.md を正本とする。
 
 on:
@@ -373,7 +373,7 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`（後 2 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
+            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`（後 2 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
       # 前段ゲートが全て合格した場合に限り status を投稿する（`if: success()` で明示保証する）。context 名は
@@ -402,6 +402,8 @@ jobs:
           set -euo pipefail
           gh pr comment "${{ steps.pr.outputs.pr_url }}" --body "@codex review"
 
+      # 成立条件は「main」ruleset の required requirement だけで、直前の codex 依頼への応答は待たない。
+      # AI レビュー未応答での merge は docs/automation/nightly-lock-bump.md の「残留制約」で明示受容している。
       - name: auto-merge を有効化
         if: ${{ steps.pr.outputs.pr_url != '' }}
         env:
