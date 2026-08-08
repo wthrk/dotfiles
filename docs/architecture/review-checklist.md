@@ -190,6 +190,7 @@ repository-authored Rust source/test source に `clippy::too_many_arguments` の
 - integration test の検証観点が「初期 datastore 定義の投入」と「CLI 実行後の最終 datastore 観測」に限定されているか。stub 内部遷移観測を assertion している場合は不合格とする。
 - production 層に置かれた `#[cfg(test)]`/`#[cfg(feature = "...")]` ブロックの中身は、(a) その module 自身の private 関数を検証する `#[test]` 関数か、(b) 実依存を肩代わりする double の**定義**か。(b) であれば配置違反である。(a) は許可される（後述）。
 - ある double の責務は「テスト時に実依存を substitute すること」か。そうであれば、それが port trait を実装していても・feature gate されていても、production 層ではなく `tests/` 層または専用 test-support crate に属する。
+- 新設・変更されたテストが、宣言的設定ファイル（GitHub Actions workflow、Nix モジュール等）のテキストを自前で文字列照合していないか。照合しているなら [設定ファイルの文字列照合検査の禁止](hexagonal-implementation-rules.md#設定ファイルの文字列照合検査の禁止) に照らして判定する。
 
 ### 許可される in, 禁止される out（責務で区別する）
 

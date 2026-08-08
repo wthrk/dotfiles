@@ -71,6 +71,12 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
+### 設定ファイルの文字列照合検査の禁止
+
+GitHub Actions workflow、Nix モジュール、その他の宣言的設定ファイルのテキストを自前で文字列照合し、不変条件を固定する検査を新設してはならない。設定の検証は、その設定を解釈する実在のツール（`actionlint`、`nil`、`nix flake check` 等）に委ねる。
+
+`tests` が担うのは実行される挙動の契約確認である。テスト網羅は実行される挙動に対して要求し、設定ファイルの記述内容に対しては要求しない。
+
 ### internal backend stub の配置
 
 test double / fixture の本体は原則として `tests/` 配下に置く。ただし、CLI integration test が同一 `dotfiles` binary と同一 production command path を通り、外部 backend だけを compile-time で差し替える必要がある場合、adapter 配下に internal backend stub を置ける。
