@@ -63,9 +63,9 @@ origin = "none"
 discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/chromedriver"]
-source = "https://chromereleases.googleblog.com/"
-origin = "ai-discovered"
-discovered_at = "2026-07-11T20:09:39Z"
+source = "https://chromereleases.googleblog.com/search"
+origin = "mechanical"
+discovered_at = "2026-08-08T18:28:18Z"
 
 ["nix/clippy"]
 source = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
@@ -93,9 +93,9 @@ origin = "none"
 discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/discord"]
-source = "https://discord.com/tags/patch-notes"
+source = "https://discord.com/"
 origin = "ai-discovered"
-discovered_at = "2026-07-14T20:41:45Z"
+discovered_at = "2026-08-08T18:28:18Z"
 
 ["nix/docker"]
 source = "https://www.docker.com/blog/"
@@ -108,7 +108,7 @@ discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-08-08T18:28:18Z"
 
 ["nix/docker-credential-helpers"]
 source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
@@ -133,7 +133,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-07-15T20:33:09Z"
+discovered_at = "2026-08-08T18:28:18Z"
 
 ["nix/fzf"]
 origin = "none"
@@ -287,7 +287,7 @@ discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/vips"]
 origin = "none"
-discovered_at = "2026-06-15T20:07:33Z"
+discovered_at = "2026-08-08T18:28:18Z"
 
 ["nix/vscode"]
 source = "https://code.visualstudio.com/updates/v1_123"
@@ -309,7 +309,7 @@ discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-07-20T20:42:57Z"
+discovered_at = "2026-08-08T18:28:18Z"
 
 ["nix/zoxide"]
 origin = "none"
