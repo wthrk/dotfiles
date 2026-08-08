@@ -102,10 +102,17 @@
             description = "User name for the dotfiles Home Manager configuration.";
           };
 
+          options.dotfiles.includeSelfPackage = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Whether the dotfiles CLI package is added to home.packages.";
+          };
+
           config = {
             _module.args = {
               inherit inputs root;
               user = cfg.user;
+              includeSelfPackage = cfg.includeSelfPackage;
             };
           };
         };
@@ -131,6 +138,11 @@
               type = lib.types.str;
               description = "Host name for the dotfiles nix-darwin configuration.";
             };
+            includeSelfPackage = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Whether the dotfiles CLI package is added to user packages.";
+            };
           };
 
           config = {
@@ -138,6 +150,7 @@
               inherit inputs root homebrewTaps;
               user = cfg.user;
               host = cfg.host;
+              includeSelfPackage = cfg.includeSelfPackage;
             };
           };
         };
@@ -148,12 +161,17 @@
         {
           user,
           system,
+          includeSelfPackage ? true,
         }:
         home-manager.lib.homeManagerConfiguration {
           pkgs = pkgsFor system;
           modules = [
             homeManagerModule
-            { dotfiles.user = user; }
+            {
+              dotfiles = {
+                inherit user includeSelfPackage;
+              };
+            }
           ];
         };
 
@@ -165,6 +183,7 @@
           user,
           host,
           system,
+          includeSelfPackage ? true,
         }:
         darwin.lib.darwinSystem {
           inherit system;
@@ -172,7 +191,7 @@
             darwinModule
             {
               dotfiles = {
-                inherit user host;
+                inherit user host includeSelfPackage;
               };
             }
           ];
@@ -208,6 +227,8 @@
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
           nativeBuildInputs = [
             pkgs.cmake
+            # checkPhase の `dotfiles-checks` が tracked snapshot 生成に起動する git。
+            pkgs.git
             pkgs.makeWrapper
             pkgs.pkg-config
           ];

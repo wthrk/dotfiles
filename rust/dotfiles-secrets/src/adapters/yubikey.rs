@@ -116,6 +116,10 @@ impl SecretStoragePort for StorageAdapter {
     ) -> Result<ProtectedSecret> {
         self.0.load_secret(serial, intent, pin)
     }
+
+    fn verify_pin_input(&mut self, serial: u32, pin: &ProtectedSecret) -> Result<()> {
+        self.0.verify_pin_input(serial, pin)
+    }
 }
 
 /// `gpg-secret-key-backup` recipient 運用（PIV slot 82 公開鍵）を port 契約へ翻訳する adapter。
@@ -177,7 +181,7 @@ use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::EncodePublicKey};
 use sha2::{Digest, Sha256};
 #[cfg(not(feature = "secrets-internal-test-stub"))]
 use yubikey::{
-    Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
+    Certificate, Context as YubikeyContext, MgmKey, PinPolicy, Serial, TouchPolicy, YubiKey,
     piv::{self, AlgorithmId, RetiredSlotId, SlotId},
 };
 
@@ -197,7 +201,8 @@ trait SecretDeviceIo {
     fn piv_application_version(&self) -> PivApplicationVersion;
     fn pin_retries(&mut self) -> Result<u8>;
     fn check_management_auth_preconditions(&mut self) -> Result<()>;
-    fn generate_key(&mut self) -> Result<()>;
+    fn generate_key(&mut self) -> Result<Vec<u8>>;
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>);
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>>;
     fn write_object(&mut self, object_id: PivObjectId, value: &mut [u8]) -> Result<()>;
     fn requires_pin_input(&self) -> bool;
@@ -282,8 +287,12 @@ impl SecretDeviceIo for SelectedSecretDevice {
         self.inner.check_management_auth_preconditions()
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         self.inner.generate_key()
+    }
+
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>) {
+        self.inner.remember_generated_public_key(public_key);
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
@@ -351,6 +360,7 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
         Ok(SelectedSecretDevice::new(YubikeySecretDevice {
             yubikey: YubiKey::open_by_serial(Serial(serial))?,
             pin_verified: false,
+            generated_public_key: None,
         }))
     }
 }
@@ -364,6 +374,7 @@ impl SelectedDeviceDiscoveryIo for SelectedDeviceAdapter {
 struct YubikeySecretDevice {
     yubikey: YubiKey,
     pin_verified: bool,
+    generated_public_key: Option<Vec<u8>>,
 }
 
 #[cfg(not(feature = "secrets-internal-test-stub"))]
@@ -381,13 +392,33 @@ impl YubikeySecretDevice {
         }
     }
 
+    fn slot_public_key(&mut self) -> Result<RsaPublicKey> {
+        if let Some(public) = self.generated_public_key.as_deref() {
+            return RsaPublicKey::from_pkcs1_der(public)
+                .context("failed to parse cached YubiKey secret storage public key");
+        }
+        match piv::metadata(&mut self.yubikey, SECRET_SLOT) {
+            Ok(metadata) => {
+                let public = metadata
+                    .public
+                    .context("YubiKey secret storage key has no public key metadata")?;
+                RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
+                    .context("failed to parse YubiKey secret storage public key")
+            }
+            Err(yubikey::Error::NotFound | yubikey::Error::GenericError) => {
+                let certificate = Certificate::read(&mut self.yubikey, SECRET_SLOT)
+                    .context("failed to read YubiKey secret storage certificate")?;
+                RsaPublicKey::from_pkcs1_der(
+                    certificate.subject_pki().subject_public_key.raw_bytes(),
+                )
+                .context("failed to parse YubiKey secret storage certificate public key")
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn wrap_content_key(&mut self, key: &ProtectedSecret) -> Result<Vec<u8>> {
-        let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
-        let public = metadata
-            .public
-            .context("YubiKey secret storage key has no public key metadata")?;
-        let public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
-            .context("failed to parse YubiKey secret storage public key")?;
+        let public = self.slot_public_key()?;
         secret_random::rsa_oaep_encrypt(&public, key)
     }
 
@@ -440,17 +471,23 @@ impl SecretDeviceIo for YubikeySecretDevice {
         Ok(())
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         let key = self.default_management_key()?;
         self.yubikey.authenticate(&key)?;
-        piv::generate(
+        let public = piv::generate(
             &mut self.yubikey,
             SECRET_SLOT,
             AlgorithmId::Rsa2048,
             PinPolicy::Once,
             TouchPolicy::Always,
         )?;
-        Ok(())
+        let encoded = public.subject_public_key.raw_bytes().to_vec();
+        self.generated_public_key = Some(encoded.clone());
+        Ok(encoded)
+    }
+
+    fn remember_generated_public_key(&mut self, public_key: Vec<u8>) {
+        self.generated_public_key = Some(public_key);
     }
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
@@ -508,15 +545,10 @@ impl SecretDeviceIo for YubikeySecretDevice {
     }
 
     fn recipient_public_key_fingerprint(&mut self) -> Result<String> {
-        let metadata = piv::metadata(&mut self.yubikey, SECRET_SLOT)?;
-        let public = metadata
-            .public
-            .context("YubiKey secret storage key has no public key metadata")?;
         // 設計: recipient `public_key_fingerprint` は DER-encoded SubjectPublicKeyInfo の SHA-256。
         // slot 82 の RSA 公開鍵を SubjectPublicKeyInfo DER として再エンコードし、その digest を取る。
-        let rsa_public = RsaPublicKey::from_pkcs1_der(public.subject_public_key.raw_bytes())
-            .context("failed to parse YubiKey slot 82 public key")?;
-        let der = rsa_public
+        let der = self
+            .slot_public_key()?
             .to_public_key_der()
             .context("failed to DER-encode YubiKey slot 82 public key")?;
         Ok(sha256_lowercase_hex(der.as_bytes()))

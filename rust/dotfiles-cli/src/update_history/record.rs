@@ -15,10 +15,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::diff::{DeltaSource, NixPackage, VersionDelta, diff_versions, merge_version_deltas};
 use super::llm::{ChangeExtractor, ExtractRequest, OpenAiExtractor};
 use super::notes::{self, RawReleaseNotes};
+use super::sources;
 use super::wire::{
     ChangeItem, PackageSource, PackageUpdate, UpdateEntry, is_allowed_url, overall_headline,
     sanitize_change_items, sanitize_notes_url, severity_of,
@@ -28,9 +30,13 @@ use crate::Result;
 
 /// record use case の入力（記録する rev・時刻・参照と版差分入力）。
 pub(crate) struct RecordInput<'a> {
-    /// bump 前 dotfiles input リビジョン（show の範囲カーソル）。
+    /// bump 前 lock ファイル（state key は Rust 側で算出する）。
+    pub(crate) lock_old: Option<&'a Path>,
+    /// bump 後 lock ファイル（state key は Rust 側で算出する）。
+    pub(crate) lock_new: Option<&'a Path>,
+    /// 既存 `show --rev` 互換用の legacy cursor old。
     pub(crate) cursor_old: Option<String>,
-    /// bump 後 dotfiles input リビジョン（show の範囲カーソル）。
+    /// 必要なら保持する legacy cursor new。
     pub(crate) cursor_new: Option<String>,
     /// bump 前 nixpkgs リビジョン。
     pub(crate) nixpkgs_old: String,
@@ -63,6 +69,13 @@ struct PackageMaterial {
     notes_url: Option<String>,
 }
 
+struct EntryCursors {
+    state_old: Option<String>,
+    state_new: Option<String>,
+    legacy_cursor_old: Option<String>,
+    legacy_cursor_new: Option<String>,
+}
+
 /// version 差分 1 件を記録用 [`PackageUpdate`] へ変換する（nix/brew いずれも宣言アプリ＝declared=true）。
 fn to_package_update(material: PackageMaterial) -> PackageUpdate {
     let source = match material.delta.source {
@@ -81,11 +94,41 @@ fn to_package_update(material: PackageMaterial) -> PackageUpdate {
     }
 }
 
+fn package_source_to_delta_source(source: PackageSource) -> DeltaSource {
+    match source {
+        PackageSource::Nix => DeltaSource::NixEval,
+        PackageSource::Brew => DeltaSource::BrewTap,
+    }
+}
+
+fn package_to_backfill_delta(package: &PackageUpdate) -> VersionDelta {
+    let notes_url = package.notes_url.clone();
+    let repo = notes_url
+        .as_deref()
+        .and_then(super::wire::repo_from_github_url);
+    VersionDelta {
+        name: package.name.clone(),
+        old: package.old.clone(),
+        new: package.new.clone(),
+        change: package.change,
+        source: package_source_to_delta_source(package.source),
+        repo: repo.clone(),
+        notes_source: sources::backfill_notes_source(
+            &package.name,
+            notes_url.as_deref(),
+            package.source,
+            repo.as_deref(),
+            package.old.as_deref(),
+            package.new.as_deref(),
+        ),
+        homepage: notes_url,
+    }
+}
+
 /// パッケージ素材列から、severity / overall を機械算出した 1 件の [`UpdateEntry`] を組み立てる。
 fn build_entry(
     at: String,
-    cursor_old: Option<String>,
-    cursor_new: Option<String>,
+    cursors: EntryCursors,
     nixpkgs_old: String,
     nixpkgs_new: String,
     reference: String,
@@ -100,8 +143,10 @@ fn build_entry(
     let overall = overall_headline(packages.len(), &all_items);
     UpdateEntry {
         at,
-        cursor_old,
-        cursor_new,
+        state_old: cursors.state_old,
+        state_new: cursors.state_new,
+        legacy_cursor_old: cursors.legacy_cursor_old,
+        legacy_cursor_new: cursors.legacy_cursor_new,
         nixpkgs_old,
         nixpkgs_new,
         reference,
@@ -116,6 +161,9 @@ fn build_entry(
 /// 本番経路は [`notes::fetch_from_source`]（reqwest）に解決し、テストは network 不要な fake へ差し替える。
 /// host allowlist 検査は呼び出し側で済むため、この seam は与えられた URL をそのまま取得する契約。
 type NotesFetch<'a> = dyn Fn(&str) -> Result<Option<RawReleaseNotes>> + 'a;
+
+/// 機械解決（repo / notes_source）で生リリースノートを得る seam。
+type ReleaseNotesFetch<'a> = dyn Fn(&VersionDelta) -> Result<Option<RawReleaseNotes>> + 'a;
 
 /// [`resolve_notes`] の結果（change_items + ノート URL）。change_items が空なら version-only。
 struct ResolvedNotes {
@@ -139,15 +187,12 @@ fn resolve_notes(
     at: &str,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
+    release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     registry: &NotesSourceRegistry,
 ) -> Result<NoteResolution> {
     // フロー 1（レジストリ参照）: 保存済み有効 source を直接 fetch して再利用（再探索しない）。
-    let saved_source = registry
-        .lookup(&delta.name, delta.source)
-        .and_then(NotesSourceEntry::reusable_source)
-        .filter(|url| is_allowed_url(url))
-        .map(str::to_string);
+    let saved_source = reusable_saved_source(registry, delta).filter(|url| is_allowed_url(url));
     let reused = match saved_source.as_deref() {
         Some(url) => fetch_source(url)?.map(|notes| (url.to_string(), notes)),
         None => None,
@@ -156,7 +201,7 @@ fn resolve_notes(
     // フロー 2（機械解決）: 未登録 or 自己修復なら Releases API / changelog で取得する。
     let mechanical = match &reused {
         Some(_) => None,
-        None => notes::fetch_release_notes(delta)?,
+        None => release_notes_fetch(delta)?,
     };
 
     let (seed, resolved_notes_url): (Option<RawReleaseNotes>, Option<String>) =
@@ -194,8 +239,11 @@ fn resolve_notes(
     );
 
     let notes_url = sanitize_notes_url(
-        resolved_notes_url
-            .or_else(|| outcome.source_url.clone())
+        outcome
+            .source_url
+            .clone()
+            .filter(|_| !change_items.is_empty())
+            .or(resolved_notes_url)
             .or_else(|| delta.notes_source.clone())
             .or_else(|| delta.homepage.clone()),
     );
@@ -229,9 +277,10 @@ fn resolve_notes(
 
 /// 各解決フローの結果から、レジストリへ学習すべき provenance を 1 つ決める純粋関数（`None`=据え置き）。
 ///
-/// 再利用成功（`reused`）は据え置き。機械解決成功は refetch URL（無ければ origin=none）を学習。AI 探索が有効
-/// change_items を伴う取得元を採用したならそれを学習。全経路が空でも既存有効 source が在れば据え置き、無ければ
-/// origin=none を学習して次回再探索へ戻す。
+/// 再利用成功（`reused`）でも、reusable な AI source が既存 source と異なるなら自己修復として更新する。
+/// seed から空要約になった後でも reusable な AI source が有効 change_items を伴って得られた場合は、それを
+/// 機械取得元より先に採用する。そうでなければ機械解決の refetch URL（無ければ origin=none）を学習し、全経路が
+/// 空でも既存有効 source が在れば据え置き、無ければ origin=none を学習して次回再探索へ戻す。
 fn decide_provenance(
     delta: &VersionDelta,
     at: &str,
@@ -241,6 +290,21 @@ fn decide_provenance(
     ai_source_url: Option<&str>,
     change_items_empty: bool,
 ) -> Option<NotesSourceEntry> {
+    let saved_source = reusable_saved_source(registry, delta);
+    let reusable_ai = ai_source_url
+        .filter(|_| !change_items_empty)
+        .and_then(|url| reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref()));
+    if let Some(source_url) = reusable_ai {
+        if reused && saved_source.as_deref() == Some(source_url.as_str()) {
+            return None;
+        }
+        return Some(NotesSourceEntry {
+            source: Some(source_url),
+            origin: NotesOrigin::AiDiscovered,
+            discovered_at: Some(at.to_string()),
+            note: None,
+        });
+    }
     if reused {
         return None;
     }
@@ -250,32 +314,17 @@ fn decide_provenance(
         // `v1.2.3→v1.2.4` で古い tag の changelog を seed に再利用し誤要約/空要約になるため、AI source と同じ
         // 版固有フィルタを適用する。学習に足る版非依存 refetch URL が無い（不在・版固有）場合は origin=none へ
         // 倒して次回再探索へ戻す。
-        let reusable_refetch = mech
-            .refetch_url
-            .as_deref()
-            .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()));
+        let reusable_refetch = mech.refetch_url.as_deref().and_then(|url| {
+            reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref())
+        });
         return Some(match reusable_refetch {
             Some(refetch_url) => NotesSourceEntry {
-                source: Some(refetch_url.to_string()),
+                source: Some(refetch_url),
                 origin: NotesOrigin::Mechanical,
                 discovered_at: Some(at.to_string()),
                 note: None,
             },
             None => none_provenance(at),
-        });
-    }
-    // AI が版固有 URL（`releases/tag/<tag>`・`releases/download/...`・old/new version 文字列を含む等）で要約した
-    // 場合は恒久 provenance に学習しない（次回 `vX→vY` で古い版ページを seed に再利用すると誤要約/空要約になる）。
-    // 版非依存（`/releases`・`CHANGELOG`・blob の固定ファイル等）の AI source だけを再利用 provenance として学習する。
-    if let Some(source_url) = ai_source_url
-        .filter(|_| !change_items_empty)
-        .filter(|url| is_reusable_ai_source(url, delta.old.as_deref(), delta.new.as_deref()))
-    {
-        return Some(NotesSourceEntry {
-            source: Some(source_url.to_string()),
-            origin: NotesOrigin::AiDiscovered,
-            discovered_at: Some(at.to_string()),
-            note: None,
         });
     }
     // 全経路が空 / AI が版固有 URL でしか要約できなかった → 既存有効 source を据え置くか origin=none へ戻す。
@@ -291,14 +340,17 @@ fn reuse_or_none_provenance(
     at: &str,
     registry: &NotesSourceRegistry,
 ) -> Option<NotesSourceEntry> {
-    if registry
-        .lookup(&delta.name, delta.source)
-        .and_then(NotesSourceEntry::reusable_source)
-        .is_some()
-    {
+    if reusable_saved_source(registry, delta).is_some() {
         return None;
     }
     Some(none_provenance(at))
+}
+
+fn reusable_saved_source(registry: &NotesSourceRegistry, delta: &VersionDelta) -> Option<String> {
+    registry
+        .lookup(&delta.name, delta.source)
+        .and_then(NotesSourceEntry::reusable_source)
+        .and_then(|url| reusable_source_candidate(url, delta.old.as_deref(), delta.new.as_deref()))
 }
 
 /// AI 由来 source_url が版非依存（恒久 provenance として再利用可能）かを判定する純粋関数。
@@ -310,18 +362,78 @@ fn is_reusable_ai_source(url: &str, old: Option<&str>, new: Option<&str>) -> boo
     !is_version_specific_url(url, old, new)
 }
 
+fn reusable_source_candidate(url: &str, old: Option<&str>, new: Option<&str>) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = normalize_reusable_source_url(trimmed)?;
+    if !is_reusable_ai_source(&normalized, old, new) {
+        return None;
+    }
+    Some(normalized)
+}
+
 /// URL が版固有（特定 tag/version に縛られ、版が進むと別ページになる）かを判定する純粋関数。
 fn is_version_specific_url(url: &str, old: Option<&str>, new: Option<&str>) -> bool {
     let lowered = url.to_ascii_lowercase();
     if lowered.contains("/releases/tag/") || lowered.contains("/releases/download/") {
         return true;
     }
-    [old, new]
+    version_markers(old)
+        .chain(version_markers(new))
+        .any(|marker| url.contains(&marker))
+}
+
+fn version_markers(version: Option<&str>) -> impl Iterator<Item = String> {
+    let Some(version) = version.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Vec::new().into_iter();
+    };
+
+    let mut markers = vec![version.to_string()];
+    if let Some(major_minor) = major_minor_version_marker(version) {
+        markers.push(major_minor.to_string());
+    }
+    for derived in markers
+        .clone()
         .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|version| !version.is_empty())
-        .any(|version| url.contains(version))
+        .flat_map(|marker| [marker.replace('.', "_"), marker.replace('.', "-")])
+    {
+        if !markers.contains(&derived) {
+            markers.push(derived);
+        }
+    }
+    markers.into_iter()
+}
+
+fn major_minor_version_marker(version: &str) -> Option<&str> {
+    let version = version.trim_start_matches('v');
+    let mut parts = version.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if major.is_empty() || minor.is_empty() {
+        return None;
+    }
+    let marker_len = major.len() + 1 + minor.len();
+    Some(&version[..marker_len])
+}
+
+fn normalize_reusable_source_url(url: &str) -> Option<String> {
+    let normalized = url.split(['?', '#']).next().unwrap_or(url).trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn lock_state_key(path: Option<&Path>) -> Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path)?;
+    let digest = Sha256::digest(bytes);
+    Ok(Some(format!("{digest:x}")))
 }
 
 /// 有効な取得元が無いことを表す provenance（origin=none。次回再探索へ戻す）。
@@ -369,10 +481,115 @@ pub(crate) fn run_record(input: RecordInput<'_>, extract: &OpenAiExtractor) -> R
         &input,
         extract,
         &notes::fetch_from_source,
+        &notes::fetch_release_notes,
         &|name| extract.brew_homepage_hint(name),
         &|reference| eval::eval_declared_versions(reference),
         &brew::fetch_cask_rb,
     )
+}
+
+pub(crate) fn run_backfill_version_only(
+    history_path: &Path,
+    registry_path: &Path,
+    extract: &OpenAiExtractor,
+) -> Result<()> {
+    run_backfill_version_only_with(
+        history_path,
+        registry_path,
+        extract,
+        &notes::fetch_from_source,
+        &notes::fetch_release_notes,
+        &|name| extract.brew_homepage_hint(name),
+    )
+}
+
+fn run_backfill_version_only_with(
+    history_path: &Path,
+    registry_path: &Path,
+    extract: &dyn ChangeExtractor,
+    fetch_source: &NotesFetch<'_>,
+    release_notes_fetch: &ReleaseNotesFetch<'_>,
+    brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
+) -> Result<()> {
+    let mut document = read_document(history_path)?;
+    let initial_registry = read_registry(registry_path)?;
+    let (updates, registry, dirty) = document.updates.into_iter().try_fold(
+        (Vec::new(), initial_registry, false),
+        |(updates, registry, dirty), mut entry| -> Result<_> {
+            let (packages, registry, changed) = entry.packages.into_iter().try_fold(
+                (Vec::new(), registry, false),
+                |(packages, registry, changed), package| -> Result<_> {
+                    if !package.change_items.is_empty() {
+                        return Ok((
+                            packages
+                                .into_iter()
+                                .chain(std::iter::once(package))
+                                .collect::<Vec<_>>(),
+                            registry,
+                            changed,
+                        ));
+                    }
+                    let delta = package_to_backfill_delta(&package);
+                    let resolution = resolve_notes(
+                        &delta,
+                        &entry.at,
+                        extract,
+                        fetch_source,
+                        release_notes_fetch,
+                        brew_hint,
+                        &registry,
+                    )?;
+                    let registry = match &resolution.learned {
+                        Some(learned) => {
+                            learn_provenance(registry, &delta.name, delta.source, learned.clone())
+                        }
+                        None => registry,
+                    };
+                    let notes_url = resolution.notes.notes_url.or(package.notes_url.clone());
+                    let change_items = resolution.notes.change_items;
+                    let changed = changed
+                        || resolution.learned.is_some()
+                        || notes_url != package.notes_url
+                        || change_items != package.change_items;
+                    let updated = PackageUpdate {
+                        notes_url,
+                        change_items,
+                        ..package
+                    };
+                    Ok((
+                        packages
+                            .into_iter()
+                            .chain(std::iter::once(updated))
+                            .collect::<Vec<_>>(),
+                        registry,
+                        changed,
+                    ))
+                },
+            )?;
+            entry.packages = packages;
+            let all_items: Vec<ChangeItem> = entry
+                .packages
+                .iter()
+                .flat_map(|package| package.change_items.clone())
+                .collect();
+            entry.severity = severity_of(&all_items);
+            entry.overall = overall_headline(entry.packages.len(), &all_items);
+            Ok((
+                updates
+                    .into_iter()
+                    .chain(std::iter::once(entry))
+                    .collect::<Vec<_>>(),
+                registry,
+                dirty || changed,
+            ))
+        },
+    )?;
+    document.updates = updates;
+    if dirty {
+        write_document(history_path, &document)?;
+        write_registry(registry_path, &registry)?;
+    }
+    Ok(())
 }
 
 /// テスト可能な record 本体（LLM seam・registry 再利用 fetch seam・brew ヒント・nix eval・cask fetch を注入する）。
@@ -380,6 +597,7 @@ fn run_record_with(
     input: &RecordInput<'_>,
     extract: &dyn ChangeExtractor,
     fetch_source: &NotesFetch<'_>,
+    release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     eval_new: &dyn Fn(&str) -> Result<std::collections::BTreeMap<String, NixPackage>>,
     fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
@@ -415,6 +633,7 @@ fn run_record_with(
                 &input.at,
                 extract,
                 fetch_source,
+                release_notes_fetch,
                 brew_hint,
                 &accum.registry,
             )?;
@@ -458,18 +677,31 @@ fn run_record_with(
         write_registry(input.registry_path, &registry)?;
     }
 
-    // どの tracked cursor も前進せず、差分素材も無い夜だけ空エントリを抑止する。
-    let cursor_advanced = input.cursor_old != input.cursor_new;
+    // nixpkgs・cask rev・lock state のいずれも前進せず、差分素材も無い夜だけ空エントリを抑止する。
     let nixpkgs_advanced = input.nixpkgs_old != input.nixpkgs_new;
     let cask_advanced = input.cask_rev_old != input.cask_rev_new;
-    if !(cursor_advanced || nixpkgs_advanced || cask_advanced) && materials.is_empty() {
+    let state_old = lock_state_key(input.lock_old)?;
+    let state_new = lock_state_key(input.lock_new)?;
+    let lock_advanced = state_old != state_new;
+    let legacy_cursor_advanced = input
+        .cursor_old
+        .as_deref()
+        .zip(input.cursor_new.as_deref())
+        .is_some_and(|(old, new)| old != new);
+    if !(nixpkgs_advanced || cask_advanced || lock_advanced || legacy_cursor_advanced)
+        && materials.is_empty()
+    {
         return Ok(());
     }
 
     let entry = build_entry(
         input.at.clone(),
-        input.cursor_old.clone(),
-        input.cursor_new.clone(),
+        EntryCursors {
+            state_old,
+            state_new,
+            legacy_cursor_old: input.cursor_old.clone(),
+            legacy_cursor_new: input.cursor_new.clone(),
+        },
         input.nixpkgs_old.clone(),
         input.nixpkgs_new.clone(),
         input.reference.clone(),
@@ -740,6 +972,11 @@ mod tests {
         Ok(None)
     }
 
+    /// 機械解決 seam（repo / notes_source）は既定で空にする（network 不要の固定）。
+    fn no_release_notes(_: &VersionDelta) -> Result<Option<RawReleaseNotes>> {
+        Ok(None)
+    }
+
     /// nix-new ファイルを与えるテストでは eval seam を踏まない（呼ばれたら空マップ）。
     fn no_eval(_: &str) -> Result<std::collections::BTreeMap<String, NixPackage>> {
         Ok(std::collections::BTreeMap::new())
@@ -788,8 +1025,10 @@ mod tests {
     ) -> RecordInput<'a> {
         let _ = dir;
         RecordInput {
-            cursor_old: Some("dotfiles-old".to_string()),
-            cursor_new: Some("dotfiles-new".to_string()),
+            lock_old: None,
+            lock_new: None,
+            cursor_old: None,
+            cursor_new: None,
             nixpkgs_old: "a1b2c3d".to_string(),
             nixpkgs_new: "e4f5g6h".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -820,11 +1059,21 @@ mod tests {
             "neovim",
             outcome(vec![item(ChangeCategory::Feature, "新機能")]),
         );
+        let lock_old = dir.join("old-flake.lock");
+        let lock_new = dir.join("flake.lock");
+        std::fs::write(&lock_old, "old-lock").ok();
+        std::fs::write(&lock_new, "new-lock").ok();
+        let input = RecordInput {
+            lock_old: Some(&lock_old),
+            lock_new: Some(&lock_new),
+            ..input(&dir, &out, &registry, Some(&old), Some(&new))
+        };
 
         run_record_with(
-            &input(&dir, &out, &registry, Some(&old), Some(&new)),
+            &input,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -832,7 +1081,8 @@ mod tests {
 
         let entries = read_entries(&out)?;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].cursor_old.as_deref(), Some("dotfiles-old"));
+        assert_eq!(entries[0].state_old, lock_state_key(Some(&lock_old))?);
+        assert_eq!(entries[0].state_new, lock_state_key(Some(&lock_new))?);
         let pkg = &entries[0].packages[0];
         assert_eq!(pkg.name, "neovim");
         assert_eq!(pkg.change_items.len(), 1);
@@ -854,6 +1104,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -864,6 +1115,44 @@ mod tests {
         assert!(pkg.change_items.is_empty(), "概要未取得は change_items 空");
         assert_eq!(pkg.old.as_deref(), Some("1.0"));
         assert_eq!(pkg.new.as_deref(), Some("1.1"));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_preserves_state_chain_for_lock_only_bump() -> Result<()> {
+        let dir = temp_dir("lock-only");
+        let old = write_nix(&dir, "old.json", "{}");
+        let new = write_nix(&dir, "new.json", "{}");
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let lock_old = dir.join("old-flake.lock");
+        let lock_new = dir.join("flake.lock");
+        std::fs::write(&lock_old, "old-lock").ok();
+        std::fs::write(&lock_new, "new-lock").ok();
+        let input = RecordInput {
+            lock_old: Some(&lock_old),
+            lock_new: Some(&lock_new),
+            nixpkgs_old: "same".to_string(),
+            nixpkgs_new: "same".to_string(),
+            ..input(&dir, &out, &registry, Some(&old), Some(&new))
+        };
+
+        run_record_with(
+            &input,
+            &FakeExtractor::new(),
+            &no_fetch_source,
+            &no_release_notes,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+
+        let entries = read_entries(&out)?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].packages.is_empty());
+        assert_eq!(entries[0].state_old, lock_state_key(Some(&lock_old))?);
+        assert_eq!(entries[0].state_new, lock_state_key(Some(&lock_new))?);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -888,6 +1177,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -923,6 +1213,11 @@ mod tests {
             "https://example.com/notes?version=1.2.3",
             None,
             Some("1.2.3")
+        ));
+        assert!(!is_reusable_ai_source(
+            "https://code.visualstudio.com/updates/v1_123",
+            Some("1.122.0"),
+            Some("1.123.0")
         ));
         // 版非依存 URL（再利用可）: /releases・CHANGELOG・blob 固定ファイル・docs index。
         assert!(is_reusable_ai_source(
@@ -1040,6 +1335,55 @@ mod tests {
     }
 
     #[test]
+    fn decide_provenance_self_heals_saved_version_specific_source_to_none() {
+        let delta = delta_of("rust", "1.94.0", "1.95.0");
+        let registry = registry_of(vec![(
+            "rust",
+            DeltaSource::NixEval,
+            NotesSourceEntry {
+                source: Some("https://github.com/rust-lang/rust/releases/tag/1.95.0".to_string()),
+                origin: NotesOrigin::Mechanical,
+                discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
+                note: None,
+            },
+        )]);
+        let learned = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            None,
+            None,
+            true,
+        );
+        assert!(
+            learned
+                .is_some_and(|entry| entry.origin == NotesOrigin::None && entry.source.is_none()),
+            "保存済み版固有 source は据え置かず origin=none へ自己修復する"
+        );
+    }
+
+    #[test]
+    fn decide_provenance_prefers_ai_source_even_when_mechanical_url_matches() {
+        let delta = delta_of("neovim", "1.2.3", "1.2.4");
+        let registry = NotesSourceRegistry::default();
+        let mech = mech_notes(None);
+        let learned = decide_provenance(
+            &delta,
+            "2026-06-11T00:00:00Z",
+            &registry,
+            false,
+            Some(&mech),
+            Some("https://github.com/o/r/releases"),
+            false,
+        );
+        assert!(
+            learned.is_some_and(|entry| entry.origin == NotesOrigin::AiDiscovered
+                && entry.source.as_deref() == Some("https://github.com/o/r/releases"))
+        );
+    }
+
+    #[test]
     fn record_does_not_learn_version_specific_ai_source() -> Result<()> {
         let dir = temp_dir("provenance-version-specific");
         let old = write_nix(&dir, "old.json", r#"{"neovim":{"version":"0.10"}}"#);
@@ -1058,6 +1402,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1095,6 +1440,7 @@ mod tests {
             &input(&dir, &out, &registry, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1107,16 +1453,190 @@ mod tests {
     }
 
     #[test]
-    fn record_appends_empty_chain_link_when_rev_advanced_but_no_deltas() -> Result<()> {
+    fn record_prefers_ai_discovered_source_after_empty_seeded_summary_fallback() -> Result<()> {
+        let dir = temp_dir("provenance-seeded-fallback");
+        let old = write_nix(
+            &dir,
+            "old.json",
+            r#"{"nix":{"version":"2.34.6","repo":"NixOS/nix"}}"#,
+        );
+        let new = write_nix(
+            &dir,
+            "new.json",
+            r#"{"nix":{"version":"2.34.7","repo":"NixOS/nix","notes_source":"https://github.com/NixOS/nix/releases/tag/2.34.7"}}"#,
+        );
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let extract = FakeExtractor::with(
+            "nix",
+            ExtractOutcome {
+                items: vec![item(ChangeCategory::Feature, "新機能")],
+                source_url: Some("https://github.com/NixOS/nix/releases".to_string()),
+            },
+        );
+        run_record_with(
+            &input(&dir, &out, &registry, Some(&old), Some(&new)),
+            &extract,
+            &|url| {
+                assert_eq!(url, "https://github.com/NixOS/nix/releases/tag/2.34.7");
+                Ok(Some(RawReleaseNotes {
+                    text: "thin seed".to_string(),
+                    notes_url: url.to_string(),
+                    refetch_url: None,
+                }))
+            },
+            &no_release_notes,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+        let learned = read_registry(&registry)?;
+        let entry = learned
+            .lookup("nix", DeltaSource::NixEval)
+            .ok_or_else(|| anyhow::anyhow!("missing learned provenance"))?;
+        assert_eq!(entry.origin, NotesOrigin::AiDiscovered);
+        assert_eq!(
+            entry.source.as_deref(),
+            Some("https://github.com/NixOS/nix/releases")
+        );
+        let entries = read_entries(&out)?;
+        let package = &entries[0].packages[0];
+        assert_eq!(
+            package.notes_url.as_deref(),
+            Some("https://github.com/NixOS/nix/releases")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_reuse_success_self_heals_stale_registry_source_from_ai_fallback() -> Result<()> {
+        let dir = temp_dir("reuse-self-heal");
+        let old = write_nix(
+            &dir,
+            "old.json",
+            r#"{"rust":{"version":"1.94.0","repo":"rust-lang/rust","notes_source":"https://doc.rust-lang.org/stable/releases.html#version-1-94-0"}}"#,
+        );
+        let new = write_nix(
+            &dir,
+            "new.json",
+            r#"{"rust":{"version":"1.95.0","repo":"rust-lang/rust","notes_source":"https://doc.rust-lang.org/stable/releases.html#version-1-95-0"}}"#,
+        );
+        let out = dir.join("2026-06.toml");
+        let registry_path = dir.join("notes-sources.toml");
+        let registry = registry_of(vec![(
+            "rust",
+            DeltaSource::NixEval,
+            NotesSourceEntry {
+                source: Some("https://github.com/rust-lang/rust/releases/tag/1.95.0".to_string()),
+                origin: NotesOrigin::Mechanical,
+                discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
+                note: None,
+            },
+        )]);
+        write_registry(&registry_path, &registry)?;
+        let extract = FakeExtractor::with(
+            "rust",
+            ExtractOutcome {
+                items: vec![item(ChangeCategory::Feature, "安定化")],
+                source_url: Some("https://doc.rust-lang.org/stable/releases.html".to_string()),
+            },
+        );
+
+        run_record_with(
+            &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
+            &extract,
+            &|_| anyhow::bail!("版固有 saved_source は再利用 fetch してはいけない"),
+            &no_release_notes,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+
+        let after = read_registry(&registry_path)?;
+        let entry = after
+            .lookup("rust", DeltaSource::NixEval)
+            .ok_or_else(|| anyhow::anyhow!("missing learned provenance"))?;
+        assert_eq!(entry.origin, NotesOrigin::AiDiscovered);
+        assert_eq!(
+            entry.source.as_deref(),
+            Some("https://doc.rust-lang.org/stable/releases.html")
+        );
+        let entries = read_entries(&out)?;
+        let package = &entries[0].packages[0];
+        assert_eq!(
+            package.notes_url.as_deref(),
+            Some("https://doc.rust-lang.org/stable/releases.html")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_self_heals_saved_version_specific_source_to_none_without_reuse() -> Result<()> {
+        let dir = temp_dir("saved-version-specific-none");
+        let old = write_nix(
+            &dir,
+            "old.json",
+            r#"{"rust":{"version":"1.94.0","repo":"rust-lang/rust"}}"#,
+        );
+        let new = write_nix(
+            &dir,
+            "new.json",
+            r#"{"rust":{"version":"1.95.0","repo":"rust-lang/rust"}}"#,
+        );
+        let out = dir.join("2026-06.toml");
+        let registry_path = dir.join("notes-sources.toml");
+        write_registry(
+            &registry_path,
+            &registry_of(vec![(
+                "rust",
+                DeltaSource::NixEval,
+                NotesSourceEntry {
+                    source: Some(
+                        "https://github.com/rust-lang/rust/releases/tag/1.95.0".to_string(),
+                    ),
+                    origin: NotesOrigin::Mechanical,
+                    discovered_at: Some("2026-06-01T00:00:00Z".to_string()),
+                    note: None,
+                },
+            )]),
+        )?;
+
+        run_record_with(
+            &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
+            &FakeExtractor::new(),
+            &|_| anyhow::bail!("版固有 saved_source は fetch してはいけない"),
+            &no_release_notes,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+
+        let learned = read_registry(&registry_path)?;
+        let entry = learned.lookup("rust", DeltaSource::NixEval);
+        assert!(
+            entry.is_some_and(|e| e.origin == NotesOrigin::None && e.source.is_none()),
+            "保存済み版固有 source は origin=none へ自己修復する: {entry:?}"
+        );
+        let entries = read_entries(&out)?;
+        assert!(entries[0].packages[0].change_items.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_appends_empty_chain_link_when_nixpkgs_advanced_but_no_deltas() -> Result<()> {
         let dir = temp_dir("chain-link");
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
-        // nix old/new 無し → 差分なし。rev 前進あり（a1b2c3d != e4f5g6h）→ 空 chain link を追記する。
+        // nix old/new 無し → 差分なし。nixpkgs 前進あり（a1b2c3d != e4f5g6h）→ 空 chain link を追記する。
         let extract = FakeExtractor::new();
         run_record_with(
             &input(&dir, &out, &registry, None, None),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1136,7 +1656,6 @@ mod tests {
         let registry = dir.join("notes-sources.toml");
         let base = input(&dir, &out, &registry, None, None);
         let inp = RecordInput {
-            cursor_new: base.cursor_old.clone(),
             nixpkgs_new: base.nixpkgs_old.clone(),
             cask_rev_old: Some("cask-same"),
             cask_rev_new: Some("cask-same"),
@@ -1147,12 +1666,43 @@ mod tests {
             &inp,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
         )?;
         // rev 不変・空素材 → append しない（ファイルが存在しない）。
         assert!(read_entries(&out)?.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn record_appends_empty_chain_link_when_only_legacy_cursor_advances() -> Result<()> {
+        let dir = temp_dir("legacy-cursor-chain-link");
+        let out = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let base = input(&dir, &out, &registry, None, None);
+        let inp = RecordInput {
+            nixpkgs_new: base.nixpkgs_old.clone(),
+            cursor_old: Some("base-sha".to_string()),
+            cursor_new: Some("next-sha".to_string()),
+            ..base
+        };
+        run_record_with(
+            &inp,
+            &FakeExtractor::new(),
+            &no_fetch_source,
+            &no_release_notes,
+            &no_brew_hint,
+            &no_eval,
+            &no_cask,
+        )?;
+        let entries = read_entries(&out)?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].packages.is_empty());
+        assert_eq!(entries[0].legacy_cursor_old.as_deref(), Some("base-sha"));
+        assert_eq!(entries[0].legacy_cursor_new.as_deref(), Some("next-sha"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -1184,6 +1734,7 @@ mod tests {
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1240,6 +1791,7 @@ mod tests {
             &input(&dir, &out, &registry_path, Some(&old), Some(&new)),
             &extract,
             &fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &no_cask,
@@ -1294,6 +1846,7 @@ mod tests {
             &inp,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &no_eval,
             &fetch_cask,
@@ -1335,6 +1888,7 @@ mod tests {
             &inp,
             &extract,
             &no_fetch_source,
+            &no_release_notes,
             &no_brew_hint,
             &eval_new,
             &no_cask,
@@ -1392,6 +1946,43 @@ mod tests {
         assert_eq!(
             entry_of(Some("https://github.com/o/r"), NotesOrigin::None).reusable_source(),
             None
+        );
+    }
+
+    #[test]
+    fn normalize_reusable_source_url_drops_query_and_fragment() {
+        assert_eq!(
+            normalize_reusable_source_url("https://github.com/o/r/releases?after=v1.2.3")
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            normalize_reusable_source_url("https://github.com/o/r/releases#latest").as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+    }
+
+    #[test]
+    fn reusable_source_candidate_normalizes_before_version_specific_check() {
+        assert_eq!(
+            reusable_source_candidate(
+                "https://chromereleases.googleblog.com/search?q=138.0.7204.183",
+                Some("138.0.7204.157"),
+                Some("138.0.7204.183")
+            ),
+            Some("https://chromereleases.googleblog.com/search".to_string())
+        );
+    }
+
+    #[test]
+    fn reusable_source_candidate_accepts_hyphenated_version_anchor_after_normalization() {
+        assert_eq!(
+            reusable_source_candidate(
+                "https://doc.rust-lang.org/stable/releases.html#version-1-95-0",
+                Some("1.94.0"),
+                Some("1.95.0")
+            ),
+            Some("https://doc.rust-lang.org/stable/releases.html".to_string())
         );
     }
 
@@ -1479,8 +2070,10 @@ origin = \"none\"
     fn store_sample(at: &str, name: &str) -> UpdateEntry {
         UpdateEntry {
             at: at.to_string(),
-            cursor_old: None,
-            cursor_new: None,
+            state_old: None,
+            state_new: None,
+            legacy_cursor_old: None,
+            legacy_cursor_new: None,
             nixpkgs_old: "o".to_string(),
             nixpkgs_new: "n".to_string(),
             reference: "darwinConfigurations.ci".to_string(),
@@ -1545,5 +2138,403 @@ origin = \"none\"
         assert_eq!(read_registry(&path)?, registry);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    #[test]
+    fn backfill_version_only_rewrites_history_entry_and_overall() -> Result<()> {
+        let dir = temp_dir("backfill-history");
+        let history = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        write_document(
+            &history,
+            &HistoryDocument {
+                updates: vec![UpdateEntry {
+                    at: "2026-06-13T09:45:17Z".to_string(),
+                    state_old: None,
+                    state_new: None,
+                    legacy_cursor_old: None,
+                    legacy_cursor_new: None,
+                    nixpkgs_old: "old".to_string(),
+                    nixpkgs_new: "new".to_string(),
+                    reference: "darwinConfigurations.ci-ref".to_string(),
+                    severity: super::super::wire::Severity::None,
+                    overall: "1アプリ更新".to_string(),
+                    packages: vec![PackageUpdate {
+                        name: "codex-app".to_string(),
+                        old: Some("1.0.0".to_string()),
+                        new: Some("1.1.0".to_string()),
+                        change: super::super::wire::ChangeKind::Upgraded,
+                        declared: true,
+                        source: PackageSource::Brew,
+                        notes_url: None,
+                        change_items: Vec::new(),
+                    }],
+                }],
+            },
+        )?;
+        let extractor = FakeExtractor::with(
+            "codex-app",
+            ExtractOutcome {
+                items: vec![ChangeItem {
+                    category: super::super::wire::ChangeCategory::Feature,
+                    text: "変更".to_string(),
+                    ref_url: Some(
+                        "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
+                    ),
+                }],
+                source_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+            },
+        );
+        run_backfill_version_only_with(
+            &history,
+            &registry,
+            &extractor,
+            &|_| Ok(None),
+            &no_release_notes,
+            &|name| {
+                Ok((name == "codex-app")
+                    .then(|| "https://developers.openai.com/codex/changelog".to_string()))
+            },
+        )?;
+        let after = read_document(&history)?;
+        let package = &after.updates[0].packages[0];
+        assert_eq!(
+            package.notes_url.as_deref(),
+            Some("https://developers.openai.com/codex/changelog")
+        );
+        assert_eq!(package.change_items.len(), 1);
+        assert_eq!(after.updates[0].overall, "1アプリ更新: ✨1");
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_version_only_persists_learned_registry_entries() -> Result<()> {
+        let dir = temp_dir("backfill-registry");
+        let history = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        write_document(
+            &history,
+            &HistoryDocument {
+                updates: vec![UpdateEntry {
+                    at: "2026-06-13T09:45:17Z".to_string(),
+                    state_old: None,
+                    state_new: None,
+                    legacy_cursor_old: None,
+                    legacy_cursor_new: None,
+                    nixpkgs_old: "old".to_string(),
+                    nixpkgs_new: "new".to_string(),
+                    reference: "darwinConfigurations.ci-ref".to_string(),
+                    severity: super::super::wire::Severity::None,
+                    overall: "1アプリ更新".to_string(),
+                    packages: vec![PackageUpdate {
+                        name: "codex-app".to_string(),
+                        old: Some("1.0.0".to_string()),
+                        new: Some("1.1.0".to_string()),
+                        change: super::super::wire::ChangeKind::Upgraded,
+                        declared: true,
+                        source: PackageSource::Brew,
+                        notes_url: Some(
+                            "https://developers.openai.com/codex/changelog".to_string(),
+                        ),
+                        change_items: Vec::new(),
+                    }],
+                }],
+            },
+        )?;
+        let extractor = FakeExtractor::with(
+            "codex-app",
+            ExtractOutcome {
+                items: vec![ChangeItem {
+                    category: super::super::wire::ChangeCategory::Feature,
+                    text: "変更".to_string(),
+                    ref_url: Some(
+                        "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
+                    ),
+                }],
+                source_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+            },
+        );
+        run_backfill_version_only_with(
+            &history,
+            &registry,
+            &extractor,
+            &|_| Ok(None),
+            &no_release_notes,
+            &|_| {
+                Ok(Some(
+                    "https://developers.openai.com/codex/changelog".to_string(),
+                ))
+            },
+        )?;
+        let after = read_registry(&registry)?;
+        let expected = entry_of(
+            Some("https://developers.openai.com/codex/changelog"),
+            NotesOrigin::AiDiscovered,
+        );
+        let mut expected = expected;
+        expected.discovered_at = Some("2026-06-13T09:45:17Z".to_string());
+        assert_eq!(
+            after.lookup("codex-app", DeltaSource::BrewTap),
+            Some(&expected)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_version_only_skips_rewrite_when_nothing_changes() -> Result<()> {
+        let dir = temp_dir("backfill-noop");
+        let history = dir.join("2026-06.toml");
+        let registry = dir.join("notes-sources.toml");
+        let document = HistoryDocument {
+            updates: vec![UpdateEntry {
+                at: "2026-06-13T09:45:17Z".to_string(),
+                state_old: Some("lock-old".to_string()),
+                state_new: Some("lock-new".to_string()),
+                legacy_cursor_old: None,
+                legacy_cursor_new: None,
+                nixpkgs_old: "old".to_string(),
+                nixpkgs_new: "new".to_string(),
+                reference: "darwinConfigurations.ci-ref".to_string(),
+                severity: super::super::wire::Severity::None,
+                overall: "1アプリ更新".to_string(),
+                packages: vec![PackageUpdate {
+                    name: "codex-app".to_string(),
+                    old: Some("1.0.0".to_string()),
+                    new: Some("1.1.0".to_string()),
+                    change: super::super::wire::ChangeKind::Upgraded,
+                    declared: true,
+                    source: PackageSource::Brew,
+                    notes_url: Some("https://developers.openai.com/codex/changelog".to_string()),
+                    change_items: vec![ChangeItem {
+                        category: super::super::wire::ChangeCategory::Feature,
+                        text: "変更".to_string(),
+                        ref_url: Some(
+                            "https://github.com/openai/codex/releases/tag/v1.1.0".to_string(),
+                        ),
+                    }],
+                }],
+            }],
+        };
+        write_document(&history, &document)?;
+        let before_history = std::fs::read_to_string(&history)?;
+
+        run_backfill_version_only_with(
+            &history,
+            &registry,
+            &FakeExtractor::new(),
+            &|_| Ok(None),
+            &no_release_notes,
+            &|_| Ok(None),
+        )?;
+
+        assert_eq!(std::fs::read_to_string(&history)?, before_history);
+        assert!(!registry.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_shared_repo_parser() {
+        assert_eq!(
+            crate::update_history::wire::repo_from_github_url(
+                "https://github.com/o/r.git?tab=readme#top"
+            )
+            .as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            crate::update_history::wire::repo_from_github_url(
+                "http://github.com/o/r/releases/tag/v1.0.0?x=1"
+            )
+            .as_deref(),
+            Some("o/r")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_adds_official_notes_fallbacks() {
+        let package = PackageUpdate {
+            name: "slack".to_string(),
+            old: Some("4.48.100".to_string()),
+            new: Some("4.49.89".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://slack.com/release-notes".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://slack.com/release-notes/mac")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_cgit_coreutils_news_url() {
+        let package = PackageUpdate {
+            name: "coreutils".to_string(),
+            old: Some("9.10".to_string()),
+            new: Some("9.11".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://www.gnu.org/software/coreutils/".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_prefers_curated_source_over_stale_notes_url() {
+        let package = PackageUpdate {
+            name: "discord".to_string(),
+            old: Some("0.0.382".to_string()),
+            new: Some("0.0.393".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://discordapp.com/".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://discord.com/tags/patch-notes")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_raw_nix_release_notes() {
+        let package = PackageUpdate {
+            name: "nix".to_string(),
+            old: Some("2.34.6+1".to_string()),
+            new: Some("2.34.7+1".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/NixOS/nix/releases/tag/2.34.7".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.repo.as_deref(), Some("NixOS/nix"));
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://nix.dev/manual/nix/2.34/release-notes/rl-2.34")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_recovers_repo_from_github_releases_url() {
+        let package = PackageUpdate {
+            name: "docker".to_string(),
+            old: Some("29.4.0".to_string()),
+            new: Some("29.5.3".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/docker/cli/releases".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.repo.as_deref(), Some("docker/cli"));
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://github.com/docker/cli/compare/v29.4.0...v29.5.3")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_neovim_news_file() {
+        let package = PackageUpdate {
+            name: "neovim".to_string(),
+            old: Some("0.12.2".to_string()),
+            new: Some("0.12.3".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/neovim/neovim/releases/tag/v0.12.3".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(delta.repo.as_deref(), Some("neovim/neovim"));
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-0.12.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_chromedriver_version_search() {
+        let package = PackageUpdate {
+            name: "chromedriver".to_string(),
+            old: Some("147.0.7727.102".to_string()),
+            new: Some("149.0.7827.103".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://developer.chrome.com/docs/chromedriver/downloads".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://chromereleases.googleblog.com/search?q=149.0.7827.103")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_docker_compose_release_tag() {
+        let package = PackageUpdate {
+            name: "docker-compose".to_string(),
+            old: Some("5.0.2".to_string()),
+            new: Some("5.1.4".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/docker/compose".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://github.com/docker/compose/releases/tag/v5.1.4")
+        );
+    }
+
+    #[test]
+    fn package_to_backfill_delta_uses_rust_release_notes_for_rustfmt() {
+        let package = PackageUpdate {
+            name: "rustfmt".to_string(),
+            old: Some("1.94.0".to_string()),
+            new: Some("1.95.0".to_string()),
+            change: super::super::wire::ChangeKind::Upgraded,
+            declared: true,
+            source: PackageSource::Nix,
+            notes_url: Some("https://github.com/rust-lang-nursery/rustfmt".to_string()),
+            change_items: Vec::new(),
+        };
+        let delta = package_to_backfill_delta(&package);
+        assert_eq!(
+            delta.notes_source.as_deref(),
+            Some("https://doc.rust-lang.org/stable/releases.html")
+        );
+    }
+
+    #[test]
+    fn neovim_minor_specific_news_url_is_version_specific() {
+        assert!(is_version_specific_url(
+            "https://raw.githubusercontent.com/neovim/neovim/master/runtime/doc/news-0.12.txt",
+            Some("0.12.2"),
+            Some("0.13.0")
+        ));
     }
 }

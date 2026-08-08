@@ -452,13 +452,24 @@ pub(crate) fn fetch_release_notes(delta: &VersionDelta) -> Result<Option<RawRele
 /// brew cask `.rb` 定義を取得し、`homepage`（無ければ `url`）を探索ヒント URL として 1 件取り出す。
 pub(crate) fn brew_notes_hint(brew_notes_base: Option<&str>, name: &str) -> Result<Option<String>> {
     let Some(base) = brew_notes_base else {
-        return Ok(None);
+        return Ok(package_brew_hint(name));
     };
     let url = resolve_cask_url(base, name);
     if !is_allowed_url(&url) {
-        return Ok(None);
+        return Ok(package_brew_hint(name));
     }
-    Ok(safe_https_fetch(&url)?.as_deref().and_then(parse_cask_hint))
+    Ok(safe_https_fetch(&url)?
+        .as_deref()
+        .and_then(parse_cask_hint)
+        .or_else(|| package_brew_hint(name)))
+}
+
+fn package_brew_hint(name: &str) -> Option<String> {
+    match name {
+        "bitwarden" => Some("https://bitwarden.com/help/releasenotes/".to_string()),
+        "codex-app" => Some("https://developers.openai.com/codex/changelog".to_string()),
+        _ => None,
+    }
 }
 
 fn fetch_nix_notes(
@@ -676,6 +687,9 @@ const GITHUB_API_VERSION_HEADER: Header<'static> = ("X-GitHub-Api-Version", "202
 /// 含まない（先頭を [`super::llm`] が切り詰めると chrome だけが残り抽出 0 件に倒れる）。landing page は seed を
 /// `None` にして AI の `fetch_url` 探索へ回す（agent は `/releases` 等を自分で組み立てて実ノート本文を読む）。
 fn resolve_nix_notes_source(url: &str) -> Option<NotesFetchPlan> {
+    if url == "https://developer.chrome.com/docs/chromedriver/downloads" {
+        return None;
+    }
     // github.com の URL は構造化変換（blob→raw / releases-tag→API）に当たるものだけ機械 seed にする。
     // それ以外の github.com URL（bare repo root `/owner/repo`・issues・wiki 等）は landing page（HTML chrome）で
     // あり生本文を Raw 取得すると先頭が chrome だけになり抽出 0 件に倒れるため、機械 seed にせず None を返す
@@ -875,7 +889,9 @@ fn resolve_cask_url(base: &str, name: &str) -> String {
 }
 
 fn parse_cask_hint(rb: &str) -> Option<String> {
-    extract_dsl_string(rb, "homepage").or_else(|| extract_dsl_string(rb, "url"))
+    let homepage = extract_dsl_string(rb, "homepage");
+    let url = extract_dsl_string(rb, "url");
+    normalize_cask_hint(url.as_deref()).or(homepage).or(url)
 }
 
 fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
@@ -902,6 +918,15 @@ fn extract_dsl_string(rb: &str, key: &str) -> Option<String> {
     None
 }
 
+/// cask `url` から、AI が探索に使いやすい安定ヒント URL を導出する。
+///
+/// GitHub の release asset URL（`releases/download/...`）や tag URL は、そのままだと版固有で長すぎるため
+/// `https://github.com/<owner>/<repo>/releases` へ正規化する。既に `.../releases` を指す URL はそのまま使う。
+/// それ以外の GitHub URL は homepage の方が安定な探索ヒントになりやすいため、ここでは採らない。
+fn normalize_cask_hint(url: Option<&str>) -> Option<String> {
+    url.and_then(super::wire::releases_url_from_github_url)
+}
+
 fn is_cask_base(base: &str) -> bool {
     base.ends_with("/Casks/") || base == "Casks/"
 }
@@ -925,10 +950,7 @@ mod tests {
         // 上限を超える本文は limit バイトで打ち切って読む（巨大本文を全読みしない）。
         let body = vec![b'x'; 100];
         assert_eq!(read_capped(body.as_slice(), 10).len(), 10);
-        assert_eq!(
-            read_capped([b'a', b'b', b'c'].as_slice(), MAX_RESPONSE_BYTES),
-            "abc"
-        );
+        assert_eq!(read_capped(b"abc".as_slice(), MAX_RESPONSE_BYTES), "abc");
         Ok(())
     }
 
@@ -1096,6 +1118,14 @@ mod tests {
     }
 
     #[test]
+    fn chromedriver_downloads_page_is_not_used_as_mechanical_seed() {
+        assert!(
+            resolve_nix_notes_source("https://developer.chrome.com/docs/chromedriver/downloads")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn release_tag_with_slash_is_percent_encoded_in_api_url() {
         // slash 入り tag（`foo/bar`）は path segment を壊すため `%2F` へ encode してから API URL を組む。
         match resolve_nix_notes_source("https://github.com/o/r/releases/tag/foo/bar") {
@@ -1253,22 +1283,76 @@ mod tests {
     }
 
     #[test]
-    fn parse_cask_hint_prefers_homepage_then_url() {
-        let rb = "cask \"firefox\" do\n  url \"https://download.example/firefox.dmg\"\n  homepage \"https://www.mozilla.org/firefox/\"\nend\n";
+    fn parse_cask_hint_prefers_github_release_url_over_generic_homepage() {
+        let rb = "cask \"bitwarden\" do\n  url \"https://github.com/bitwarden/clients/releases/download/desktop-v#{version}/Bitwarden-#{version}-universal.dmg\"\n  homepage \"https://bitwarden.com/\"\nend\n";
         assert_eq!(
             parse_cask_hint(rb).as_deref(),
-            Some("https://www.mozilla.org/firefox/")
+            Some("https://github.com/bitwarden/clients/releases")
         );
         let rb_no_home =
             "cask \"x\" do\n  url \"https://github.com/o/r/releases/download/v1/x.zip\"\nend\n";
         assert_eq!(
             parse_cask_hint(rb_no_home).as_deref(),
-            Some("https://github.com/o/r/releases/download/v1/x.zip")
+            Some("https://github.com/o/r/releases")
+        );
+        let rb_home_only = "cask \"firefox\" do\n  url \"https://download.example/firefox.dmg\"\n  homepage \"https://www.mozilla.org/firefox/\"\nend\n";
+        assert_eq!(
+            parse_cask_hint(rb_home_only).as_deref(),
+            Some("https://www.mozilla.org/firefox/")
         );
         assert!(
             parse_cask_hint("cask \"x\" do\n  url_template \"https://example/#{version}\"\nend\n")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn normalize_cask_hint_only_accepts_release_urls() {
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/releases")).as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/releases/tag/v1.2.3")).as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/releases/download/v1/x.zip"))
+                .as_deref(),
+            Some("https://github.com/o/r/releases")
+        );
+        assert_eq!(normalize_cask_hint(Some("https://github.com/o/r")), None);
+        assert_eq!(
+            normalize_cask_hint(Some("https://github.com/o/r/issues/1")),
+            None
+        );
+    }
+
+    #[test]
+    fn brew_notes_hint_falls_back_to_package_specific_hint_when_cask_has_no_hint() -> Result<()> {
+        let temp =
+            std::env::temp_dir().join(format!("dotfiles-codex-app-hint-{}", std::process::id()));
+        std::fs::create_dir_all(&temp)?;
+        let rb = temp.join("codex-app.rb");
+        std::fs::write(&rb, "cask \"codex-app\" do\n  version \"1.0.0\"\nend\n")?;
+        let base = format!("file://{}", temp.display());
+        let hint = brew_notes_hint(Some(&base), "codex-app")?;
+        std::fs::remove_file(&rb)?;
+        std::fs::remove_dir(&temp)?;
+        assert_eq!(
+            hint,
+            Some("https://developers.openai.com/codex/changelog".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn brew_notes_hint_uses_official_bitwarden_release_notes_fallback() -> Result<()> {
+        assert_eq!(
+            brew_notes_hint(None, "bitwarden")?,
+            Some("https://bitwarden.com/help/releasenotes/".to_string())
+        );
+        Ok(())
     }
 
     #[test]

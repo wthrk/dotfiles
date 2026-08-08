@@ -82,7 +82,12 @@ verify_password_store_recipients() {
     fingerprint="$(recipient_secret_key_fingerprint "$recipient")"
     [ -n "$fingerprint" ] \
       || die "password-store recipient の秘密鍵がローカルにありません。import/generate が必要です: $recipient"
-    [ -n "$primary_fingerprint" ] || primary_fingerprint="$fingerprint"
+    if [ -z "$primary_fingerprint" ]; then
+      primary_fingerprint="$fingerprint"
+      continue
+    fi
+    [ "$primary_fingerprint" = "$fingerprint" ] \
+      || die "password-store .gpg-id に異なる recipient が複数あります。primary fingerprint を一意に決められません"
   done < "$gpg_id_file"
   [ -n "$primary_fingerprint" ] \
     || die "password-store .gpg-id から有効な recipient を解決できません"
@@ -202,8 +207,19 @@ REPO_IS_PRIVATE="$(gh repo view "$PASS_REPO" --json isPrivate --jq .isPrivate 2>
 if [ ! -d "$PASSWORD_STORE_ROOT/.git" ]; then
   log "既存 password-store を Git repository として初期化して remote へ push"
   pass git init >/dev/null 2>&1 || true
+  pass git branch -M main >/dev/null 2>&1 || true
+  PASS_PUSH_BRANCH="main"
+  PASS_PUSH_MODE="set-upstream"
 else
   log "既存 password-store Git repository を使用"
+  PASS_PUSH_BRANCH="$(pass git branch --show-current 2>/dev/null || true)"
+  [ -n "$PASS_PUSH_BRANCH" ] \
+    || die "既存 password-store repository の現在 branch を解決できません。detached HEAD の場合は push 前に branch へ checkout してください"
+  if pass git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+    PASS_PUSH_MODE="current-upstream"
+  else
+    PASS_PUSH_MODE="set-upstream"
+  fi
 fi
 ensure_password_store_remote
 pass git add -A >/dev/null 2>&1 || true
@@ -213,9 +229,13 @@ else
   pass git commit -m "Initialize password-store" >/dev/null 2>&1 \
     || die "password-store Git commit に失敗しました。user.name/user.email/signing/hook 設定を確認してください"
 fi
-pass git branch -M main >/dev/null 2>&1 || true
-pass git push -u origin main >/dev/null 2>&1 \
-  || die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
+if [ "$PASS_PUSH_MODE" = "current-upstream" ]; then
+  pass git push >/dev/null 2>&1 \
+    || die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
+else
+  pass git push -u origin "$PASS_PUSH_BRANCH" >/dev/null 2>&1 \
+    || die "password-store Git repository の push に失敗しました。remote 設定と GitHub SSH 認証を確認してください"
+fi
 confirm_password_store_primary_fingerprint
 
 # ── 4. BWS への復旧用 secret 登録 ──
@@ -241,6 +261,10 @@ RECOVERY_BWS_TOKEN="$(read_bws_access_token 'BWS recovery/read access token for 
   || die "復旧用 BWS access token が登録・更新用 token と同一です。YubiKey には最小権限の復旧用 token だけを保存してください"
 log "復旧用 bws-access-token を YubiKey に保存"
 store_recovery_bws_access_token "$YUBIKEY_SERIAL"
+if [ -n "${SPARE_SERIAL:-}" ]; then
+  log "復旧用 bws-access-token を spare YubiKey にも保存"
+  store_recovery_bws_access_token "$SPARE_SERIAL"
+fi
 unset PROVISIONING_BWS_TOKEN RECOVERY_BWS_TOKEN
 
 # ── 手動: 各サービスの YubiKey 物理登録 ──

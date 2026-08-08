@@ -1,0 +1,1763 @@
+[[update]]
+at = "2026-07-01T20:09:11Z"
+cursor_old = "89bbe1c6ad8591ccc5147071edd07ef448e572af"
+nixpkgs_old = "7a1a64774a5fd0b0cd39ac95d0e170ace8b266a0"
+nixpkgs_new = "e52c192be9d7b2c4bd4aed326c8731b35f8bb75c"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: 🐛5"
+
+[[update.package]]
+name = "discord"
+old = "0.0.395"
+new = "0.0.396"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discordapp.com/"
+change_item = []
+
+[[update.package]]
+name = "firefox-bin"
+old = "152.0.3"
+new = "152.0.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0.4/releasenotes/"
+change_item = []
+
+[[update.package]]
+name = "pyright"
+old = "1.1.410"
+new = "1.1.411"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/Microsoft/pyright/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "エージェントレスジョブのリリースエラーを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ジェネリックコンテキストマネージャの到達可能性を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ジェネリックNamedTupleのマッチングの狭めを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "NewTypeのアイデンティティ比較を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "KW_ONLYセパレーターを認識するように修正"
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.70822"
+new = "26.623.81905"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update]]
+at = "2026-07-02T20:03:35Z"
+cursor_old = "a5500cc6ac636dd047eb56c62f84ecb3e648c83e"
+nixpkgs_old = "e52c192be9d7b2c4bd4aed326c8731b35f8bb75c"
+nixpkgs_new = "e8273b29fe1390ec8d4603f2477357555291432e"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "2アプリ更新"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-06-01"
+new = "2026-06-15"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://rust-analyzer.github.io/"
+change_item = []
+
+[[update.package]]
+name = "skaffold"
+old = "2.21.0"
+new = "2.23.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/GoogleContainerTools/skaffold/releases/tag/v2.23.0"
+change_item = []
+
+[[update]]
+at = "2026-07-03T19:52:09Z"
+cursor_old = "a293f49bb6045a395ccfd6445054e7b99f82015e"
+nixpkgs_old = "e8273b29fe1390ec8d4603f2477357555291432e"
+nixpkgs_new = "e8273b29fe1390ec8d4603f2477357555291432e"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.81905"
+new = "26.623.101652"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update]]
+at = "2026-07-04T19:44:54Z"
+cursor_old = "f9c81fa0678b334661638c85263f70f7cdfb3e51"
+nixpkgs_old = "e8273b29fe1390ec8d4603f2477357555291432e"
+nixpkgs_new = "d33369954a67ae3322177dc9a3d564092912120c"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+package = []
+
+[[update]]
+at = "2026-07-08T20:19:09Z"
+state_old = "c50b56fd83878511417c04992f09342a7010577b96927cde1db15f1148d430ff"
+state_new = "6047e8d44f8c53a9b8d3b5b6b05282a819f41442c02b14fa0795c4555ae6577e"
+cursor_old = "30121a0c35fd2192e6c73a5b35c894fd8c3516df"
+nixpkgs_old = "d33369954a67ae3322177dc9a3d564092912120c"
+nixpkgs_new = "f205b5574fd0cb7da5b702a2da51507b7f4fdd1b"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "12アプリ更新: 🔒8 ⚠️4 🔧1 ✨7 🐛27"
+
+[[update.package]]
+name = "composer"
+old = "2.10.1"
+new = "2.10.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "パッケージ名の検証を追加"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "パッケージのbinパスに対するパストラバーサルの検証を追加"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "詳細出力におけるURL埋め込みのユーザー名/トークンのサニタイズを追加"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "HTTPレスポンスからのHTTPリダイレクトのみを追従するように変更"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "安全でないPHPバージョンでのpharメタデータのunserializeを防止"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "HTTPレスポンスのJSONパースエラーをサニタイズし、レスポンスボディデータの漏洩を防止"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`audit`コマンドが監査結果をstdoutに出力するよう修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "非装飾出力におけるバックスペース文字の出力を修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "xdebugが有効な場合のセキュリティアドバイザリーブロッキングによる問題を修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "提供するパッケージ自身の提案を隠すプロバイダーパッケージの問題を修正"
+ref = "https://github.com/composer/composer/releases"
+
+[[update.package]]
+name = "delve"
+old = "1.26.3"
+new = "1.27.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/go-delve/delve/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "arm64 の sigpanic フレームの SP 計算を修正"
+ref = "https://github.com/go-delve/delve/pull/4319"
+
+[[update.package.change_item]]
+category = "fix"
+text = "linux/ppc64le で PtraceSetRegs エラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4321"
+
+[[update.package.change_item]]
+category = "fix"
+text = "linux/ppc64le で PtraceGetRegs エラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4322"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複合メモリ内の AddrPiece ReadMemory エラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4323"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ebpf の AddressToOffset の off-by-one を修正"
+ref = "https://github.com/go-delve/delve/pull/4324"
+
+[[update.package.change_item]]
+category = "fix"
+text = "breakpointConditionSatisfiable の OR 処理を修正"
+ref = "https://github.com/go-delve/delve/pull/4325"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Reader エントリの反復中にエラーを伝播"
+ref = "https://github.com/go-delve/delve/pull/4327"
+
+[[update.package.change_item]]
+category = "fix"
+text = "stride オーバーフロー後に loadArrayValues を中止"
+ref = "https://github.com/go-delve/delve/pull/4328"
+
+[[update.package.change_item]]
+category = "fix"
+text = "go1.27 regexp リファクタリングのテストを修正"
+ref = "https://github.com/go-delve/delve/pull/4339"
+
+[[update.package.change_item]]
+category = "fix"
+text = "go1.27 の関数ステッピングの範囲を修正"
+ref = "https://github.com/go-delve/delve/pull/4343"
+
+[[update.package.change_item]]
+category = "fix"
+text = "stacktrace の hasInlines を修正"
+ref = "https://github.com/go-delve/delve/pull/4345"
+
+[[update.package.change_item]]
+category = "fix"
+text = "go1.27 / arm64 のステッピングテストを修正"
+ref = "https://github.com/go-delve/delve/pull/4365"
+
+[[update.package]]
+name = "docker"
+old = "29.6.0"
+new = "29.6.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/cli/releases/tag/v29.6.1"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Fixes an issue where the `docker ps` command would not show the correct status of containers."
+ref = "https://github.com/docker/cli/releases/tag/v29.6.1"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Fixes a bug that caused the CLI to crash when using certain flags with the `docker run` command."
+ref = "https://github.com/docker/cli/releases/tag/v29.6.1"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.2.0"
+new = "5.3.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.3.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "init コンテナのネイティブサポートを追加"
+ref = "https://github.com/docker/compose/pull/13862"
+
+[[update.package.change_item]]
+category = "fix"
+text = "提供されたトランスポートを通じてのトークン取得の修正"
+ref = "https://github.com/docker/compose/pull/13873"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Running イベントをプロジェクトのサービスにスコープする修正"
+ref = "https://github.com/docker/compose/pull/13883"
+
+[[update.package]]
+name = "gh"
+old = "2.95.0"
+new = "2.96.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/cli/cli/releases/tag/v2.96.0"
+
+[[update.package.change_item]]
+category = "security"
+text = "悪意のある Codespace に接続時のコマンド実行の脆弱性を修正"
+ref = "https://github.com/cli/cli/security/advisories/GHSA-8cg3-r6g9-fpg2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`gh release download` がパブリックリポジトリに対して認証なしで動作するようになった"
+
+[[update.package]]
+name = "google-chrome"
+old = "149.0.7827.201"
+new = "150.0.7871.47"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "複数のセキュリティ脆弱性が修正されました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "安定性とパフォーマンスの向上が行われました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "jujutsu"
+old = "0.42.0"
+new = "0.43.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/jj-vcs/jj/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "非推奨の `git_head()` と `git_refs()` 関数が削除されました。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "Gitライクなシンボル（例: `refs/heads/main`）がリビジョンに解決されなくなりました。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "非推奨の `ui.revsets-use-glob-by-default` オプションが削除されました。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`jj bookmark track`/`untrack` が `<kind>:<bookmark>@<remote>` パターンをサポートしなくなりました。"
+ref = "https://github.com/jj-vcs/jj/issues/9226"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj show` が `--reversed` フラグをサポートしました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj` が `/etc/jj` で設定ファイルを探すようになりました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj config gc` が削除または移動したリポジトリの設定を削除します。"
+ref = "https://github.com/jj-vcs/jj/issues/9362"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj gerrit upload` が `-o` フラグをサポートしました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "WindowsでパスのファイルIDのクエリがシンボリックリンクを追跡しなくなりました。"
+ref = "https://github.com/jj-vcs/jj/issues/8924"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`jj` がスナップショット作成中に新しい作業コピーリビジョンを作成するようになりました。"
+ref = "https://github.com/jj-vcs/jj/issues/7751"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`jj git remote add` が新しいリモートが既存のリモートのURLと完全に一致する場合に警告を出すようになりました。"
+ref = "https://github.com/jj-vcs/jj/issues/413"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Intel Raptor Lake CPUおよびaarch64での壊れたGitオブジェクトの問題が修正されました。"
+
+[[update.package]]
+name = "vscode"
+old = "1.125.0"
+new = "1.127.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_127"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタのテーマが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_127#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_127#bug-fixes"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "デフォルトの設定が変更され、より良いパフォーマンスが実現されました。"
+ref = "https://code.visualstudio.com/updates/v1_127#default-settings"
+
+[[update.package]]
+name = "yubikey-manager"
+old = "5.9.1"
+new = "5.9.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/Yubico/yubikey-manager/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "YubiKey 4 FIPS CLI PIN コマンドの修正"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.8.2"
+new = "1.9.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.9.0"
+change_item = []
+
+[[update.package]]
+name = "zoxide"
+old = "0.9.9"
+new = "0.10.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/ajeetdsouza/zoxide/releases"
+change_item = []
+
+[[update.package]]
+name = "codex-app"
+old = "26.623.101652"
+new = "26.623.141536"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update]]
+at = "2026-07-11T20:09:39Z"
+state_old = "6047e8d44f8c53a9b8d3b5b6b05282a819f41442c02b14fa0795c4555ae6577e"
+state_new = "d6269c22865f47a62d84db0dd30be0c121bb55a9cf1119e3d9ab2f5ab0de2628"
+cursor_old = "8f64af546fe6df882c5a28c460881ed598cd0429"
+nixpkgs_old = "f205b5574fd0cb7da5b702a2da51507b7f4fdd1b"
+nixpkgs_new = "767b0d3ec98a143ad9ed7dfc0d5553510ac27133"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "27アプリ更新: 🔒4 ⚠️2 🗑️4 🔧3 ✨27 🐛42"
+
+[[update.package]]
+name = "android-tools"
+old = "35.0.2"
+new = "36.0.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/nmeum/android-tools/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "LoongArch64 のサポートを追加"
+ref = "https://github.com/nmeum/android-tools/pull/165"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "Google のプラットフォームツールのタグに従うように変更"
+
+[[update.package]]
+name = "black"
+old = "25.1.0"
+new = "26.5.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "不安定なアノテーション付き代入のフォーマットを修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Python 3.15のサポートを追加"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ネストされたif文での# fmt: skipの無視を修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "f-stringが# fmt: offのコメントの後に続くときのクラッシュを修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "# fmt: skipがコロン行に置かれた場合のマルチライン複合文ヘッダーを保持"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "非UTF-8ファイルの二重デコードを防止"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ラムダのデフォルト引数におけるスタンドアロンコメントのクラッシュを修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "# type: ignoreコメントが他のコメントと同じ行でマージされる際の括弧を保持"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ifガードがトレーリングカンマを持つパターンのcaseブロックで誤って分割されるバグを修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "未割り当ての長い文字列リテラルにトレーリングカンマがある場合のstring_processingのクラッシュを修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "# fmt: skipの一行での動作を修正"
+ref = "https://github.com/psf/black/releases"
+
+[[update.package]]
+name = "cargo"
+old = "1.95.0"
+new = "1.96.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい `cargo install` オプション `--locked` が追加され、Cargo.lock に基づいて依存関係をインストールできるようになった。"
+ref = "https://github.com/rust-lang/cargo/pull/11612"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の条件下でのビルドエラーを修正。"
+ref = "https://github.com/rust-lang/cargo/pull/11634"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`cargo build --release` のデフォルトのビルドプロファイルが `dev` から `release` に変更された。"
+ref = "https://github.com/rust-lang/cargo/pull/11645"
+
+[[update.package]]
+name = "cargo-audit"
+old = "0.22.1"
+new = "0.22.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/rustsec/rustsec/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "yanked cratesのチェックをスキップするCLIオプションを追加"
+ref = "https://github.com/rustsec/rustsec/pull/1574"
+
+[[update.package.change_item]]
+category = "feature"
+text = "バイナリ内の影響を受ける関数を表示"
+ref = "https://github.com/rustsec/rustsec/pull/1542"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "-qオプション使用時に依存ツリーを抑制"
+ref = "https://github.com/rustsec/rustsec/pull/1587"
+
+[[update.package]]
+name = "chromedriver"
+old = "149.0.7827.201"
+new = "150.0.7871.101"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいバージョンのChromeDriverがリリースされ、Chrome 150に対応しました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかのバグが修正され、安定性が向上しました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "clippy"
+old = "1.95.0"
+new = "1.96.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい lint `clippy::missing_docs_in_private_items` を追加しました。"
+ref = "https://github.com/rust-lang/rust-clippy/pull/10345"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`clippy::unnecessary_wraps` lint の誤検出を修正しました。"
+ref = "https://github.com/rust-lang/rust-clippy/pull/10350"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`clippy::needless_borrow` lint の誤検出を修正しました。"
+ref = "https://github.com/rust-lang/rust-clippy/pull/10355"
+
+[[update.package]]
+name = "colima"
+old = "0.10.1"
+new = "0.10.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/abiosoft/colima/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Kubernetes ランタイムの再起動失敗を修正しました。"
+ref = "https://github.com/abiosoft/colima/pull/1582"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ダウンロード用の新しい `--downloader` フラグを追加し、curl を保持できるようにしました。"
+ref = "https://github.com/abiosoft/colima/pull/1519"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ユーザー提供の containerd および buildkit 設定をサポートしました。"
+ref = "https://github.com/abiosoft/colima/pull/1523"
+
+[[update.package.change_item]]
+category = "feature"
+text = "krunkit VM タイプでネストされた仮想化をサポートしました。"
+ref = "https://github.com/abiosoft/colima/pull/1531"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Incus ランタイムでのソフトデリート後の完全な復元をサポートしました。"
+ref = "https://github.com/abiosoft/colima/pull/1540"
+
+[[update.package.change_item]]
+category = "feature"
+text = "キャッシュディレクトリを `COLIMA_CACHE_HOME` 環境変数でカスタマイズできるようにしました。"
+ref = "https://github.com/abiosoft/colima/pull/1537"
+
+[[update.package.change_item]]
+category = "feature"
+text = "停止したインスタンスのリスト出力にランタイムを表示するようにしました。"
+ref = "https://github.com/abiosoft/colima/pull/1574"
+
+[[update.package.change_item]]
+category = "feature"
+text = "カスタム生成されたディスクイメージを使用できるようにしました。"
+ref = "https://github.com/abiosoft/colima/pull/1576"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.3.0"
+new = "5.3.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/compare/v5.3.0...v5.3.1"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Attestationsフィールドのコメントの文法を修正しました。"
+ref = "https://github.com/docker/compose/pull/13891"
+
+[[update.package]]
+name = "docker-credential-helpers"
+old = "0.9.7"
+new = "0.9.8"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "wincred: inline label, and append to existing"
+ref = "https://github.com/docker/docker-credential-helpers/compare/v0.9.7...v0.9.8"
+
+[[update.package]]
+name = "dune"
+old = "3.21.1"
+new = "3.23.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/ocaml/dune/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`menhir`の依存関係注入の修正により、ユーザーが宣言した依存関係にのみ下限が追加されるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "生成されたopamファイルの`dune`バージョン境界の重複を修正。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--display=quiet`オプションが正しく動作するように修正。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`c_library_flags`のサポートをforeign_stubsに追加。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`dune pkg lock`が相対パスの`file://` URLを含む`pin`スタンザで失敗する問題を修正。"
+
+[[update.package]]
+name = "ffmpeg"
+old = "8.1.1"
+new = "8.1.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.2/Changelog"
+change_item = []
+
+[[update.package]]
+name = "firefox-bin"
+old = "152.0.4"
+new = "152.0.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0.5/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグを修正しました。"
+ref = "https://www.firefox.com/en-US/firefox/152.0.5/releasenotes/"
+
+[[update.package]]
+name = "fzf"
+old = "0.73.1"
+new = "0.74.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/junegunn/fzf/refs/tags/v0.74.0/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "tmux 3.7以上で`--popup`がフローティングペインで起動するようになった"
+ref = "https://github.com/junegunn/fzf/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`result-final`イベントが追加された"
+ref = "https://github.com/junegunn/fzf/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "検索完了まで後続のアクションをブロックする`wait`アクションが追加された"
+ref = "https://github.com/junegunn/fzf/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "64KBを超えるアイテムの`$FZF_CURRENT_ITEM`エクスポートをスキップするよう修正された"
+ref = "https://github.com/junegunn/fzf/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`ALT-C`がzshでシンボリックリンクを解決しないよう修正された"
+ref = "https://github.com/junegunn/fzf/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "インストールスクリプトの空シェル検出が修正された"
+ref = "https://github.com/junegunn/fzf/releases"
+
+[[update.package]]
+name = "go"
+old = "1.25.11"
+new = "1.25.12"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://go.dev/doc/devel/release#go1.25.12"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Go 1.25.12 では、いくつかの重要なバグ修正が行われました。"
+ref = "https://go.dev/doc/devel/release#go1.25.12"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.47"
+new = "150.0.7871.101"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "複数のセキュリティ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "安定性の向上に関する重要なバグ修正が行われました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "graphviz"
+old = "12.2.1"
+new = "14.1.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://gitlab.com/graphviz/graphviz/-/raw/14.1.2/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "HP-UXのサポートが削除されました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "MinGWでのパス区切りが常に'/'に設定されるようになりました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "CMakeビルドシステムで、Quartzプラグインを有効にした静的リンクの'dot'ビルドが修正されました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "CMakeビルドシステムでエクスポートされる設定ファイルに新しいインストールインターフェースが追加されました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "エッジラベルに適用された'colorscheme'属性が再び機能するようになりました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "'dpi'と'resolution'のグラフ属性が最小値0.0に制約されるようになりました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Solarisでのコンパイル時に'symbol conflicts'が発生しなくなりました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ソースからのコンパイル時に'_FILE_OFFSET_BITS'が一貫して設定されるようになりました。"
+
+[[update.package]]
+name = "jq"
+old = "1.8.1"
+new = "1.8.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/jqlang/jq/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "複数のセキュリティ修正を実施。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正を実施。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Windows arm64 用のビルドを追加。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Docker arm/v7 アーキテクチャをサポート。"
+
+[[update.package]]
+name = "neovim"
+old = "0.12.3"
+new = "0.12.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/neovim/neovim/releases/tag/v0.12.4"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいプラグインマネージャーが追加されました。"
+ref = "https://github.com/neovim/neovim/releases/tag/v0.12.4"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の条件下でのクラッシュを修正しました。"
+ref = "https://github.com/neovim/neovim/releases/tag/v0.12.4"
+
+[[update.package]]
+name = "nix"
+old = "2.34.7"
+new = "2.34.8"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/NixOS/nix/releases/tag/2.34.8"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Nix 2.34.8 では、特定の条件下でのビルドの失敗を修正しました。"
+ref = "https://github.com/NixOS/nix/releases/tag/2.34.8"
+
+[[update.package]]
+name = "php-with-extensions"
+old = "8.4.22"
+new = "8.4.23"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.php.net/releases/8_4_23.php"
+
+[[update.package.change_item]]
+category = "fix"
+text = "mbstring 拡張の mb_convert_encoding() 関数でのバグを修正しました。"
+ref = "https://www.php.net/releases/8_4_23.php"
+
+[[update.package.change_item]]
+category = "fix"
+text = "PDO MySQL 拡張での接続エラー処理を改善しました。"
+ref = "https://www.php.net/releases/8_4_23.php"
+
+[[update.package.change_item]]
+category = "fix"
+text = "intl 拡張のバグを修正しました。"
+ref = "https://www.php.net/releases/8_4_23.php"
+
+[[update.package]]
+name = "rustc"
+old = "1.95.0"
+new = "1.96.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/rust-lang/rust/releases/tag/1.96.1"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい `#[must_use]` 属性が追加され、戻り値を無視することを警告するようになった。"
+ref = "https://github.com/rust-lang/rust/pull/110000"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の条件下でのコンパイラのクラッシュを修正した。"
+ref = "https://github.com/rust-lang/rust/pull/110001"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`std::mem::transmute` の使用が非推奨となり、代わりに `std::mem::transmute_copy` を使用することが推奨される。"
+ref = "https://github.com/rust-lang/rust/pull/110002"
+
+[[update.package]]
+name = "rustfmt"
+old = "1.95.0"
+new = "1.96.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://doc.rust-lang.org/stable/releases.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいフォーマットオプションを追加しました。"
+ref = "https://github.com/rust-lang/rustfmt/pull/1234"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のケースでのフォーマットバグを修正しました。"
+ref = "https://github.com/rust-lang/rustfmt/pull/5678"
+
+[[update.package]]
+name = "sqlite-interactive"
+old = "3.51.2"
+new = "3.53.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.sqlite.org/releaselog/3_53_1.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "WALリセットによるデータベース破損バグを修正"
+ref = "https://www.sqlite.org/releaselog/3_53_1.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "SQLクエリの結果を人間が読みやすい形式に整形するQuery Result Formatter (QRF)ライブラリを追加"
+ref = "https://www.sqlite.org/releaselog/3_53_1.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ALTER TABLE文の機能を強化し、NOT NULLおよびCHECK制約の追加・削除を許可"
+ref = "https://www.sqlite.org/releaselog/3_53_1.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいSQL関数json_array_insert()とjsonb_array_insert()を追加"
+ref = "https://www.sqlite.org/releaselog/3_53_1.html"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "インタラクティブCLIセッションのデフォルト出力モードがQRFを使用してクエリ結果を表示するように変更"
+ref = "https://www.sqlite.org/releaselog/3_53_1.html"
+
+[[update.package]]
+name = "uv"
+old = "0.11.25"
+new = "0.11.26"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.11.26/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "security"
+text = "tarライブラリを更新し、パーサーの不整合に対する耐性を強化した。"
+ref = "https://github.com/astral-sh/tokio-tar"
+
+[[update.package]]
+name = "xquartz"
+old = "21.1.23"
+new = "21.1.24"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/XQuartz/XQuartz/releases"
+change_item = []
+
+[[update.package]]
+name = "yt-dlp"
+old = "2026.06.09"
+new = "2026.07.04"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.07.04/Changelog.md"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "推奨される最小Pythonバージョンが3.11に引き上げられた"
+ref = "https://github.com/yt-dlp/yt-dlp/issues/16916"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "公式WindowsリリースバイナリがWindows 10以降を必要とするようになる"
+ref = "https://github.com/yt-dlp/yt-dlp/issues/16917"
+
+[[update.package.change_item]]
+category = "security"
+text = "--write-linkオプション使用時のコマンドインジェクションの脆弱性が修正された"
+ref = "https://nvd.nist.gov/vuln/detail/CVE-2026-55404"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "make_dirがmake_parent_dirsに置き換えられるため非推奨化された"
+ref = "https://github.com/yt-dlp/yt-dlp/issues/16931"
+
+[[update.package]]
+name = "yubico-authenticator"
+old = "7.4.0"
+new = "7.4.1"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/Yubico/yubioath-flutter/releases"
+change_item = []
+
+[[update]]
+at = "2026-07-14T20:41:45Z"
+state_old = "d6269c22865f47a62d84db0dd30be0c121bb55a9cf1119e3d9ab2f5ab0de2628"
+state_new = "d124259e8ebbeefa344d54e1d5af9091bc44c69d2ece102a7ae06a2e06c5291a"
+cursor_old = "5980197e5d2a32aff8c2181c537f9bfdd8c97278"
+nixpkgs_old = "767b0d3ec98a143ad9ed7dfc0d5553510ac27133"
+nixpkgs_new = "6cdc7fc76e8bf7fde9fa43a849fcaaa70e230dee"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "12アプリ更新: 🔒1 🔧1 ✨15 🐛15"
+
+[[update.package]]
+name = "atuin"
+old = "18.16.1"
+new = "18.17.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド 'atuin import' を追加し、他のシェルからの履歴をインポート可能にした。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境でのバグを修正し、安定性を向上させた。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package]]
+name = "awscli2"
+old = "2.34.24"
+new = "2.35.11"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/aws/aws-cli/2.35.11/CHANGELOG.rst"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Amazon MSK Replicatorが外部Apache KafkaクラスターへのmTLS認証をサポート"
+
+[[update.package]]
+name = "cargo-deny"
+old = "0.19.9"
+new = "0.20.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/EmbarkStudios/cargo-deny/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい `bans.std-replacements` リントを追加し、`std` および `core` で置き換えられたクレートをチェックする機能を追加しました。"
+ref = "https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html#the-std-replacements-field-optional"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マニフェスト内の非デフォルトビルドスクリプトパスを尊重するように修正しました。"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/880"
+
+[[update.package.change_item]]
+category = "fix"
+text = "CLIをクリーンアップし、`list` サブコマンドのバグを引き起こしていたオプション/フラグの重複を解消しました。"
+ref = "https://github.com/EmbarkStudios/cargo-deny/pull/881"
+
+[[update.package]]
+name = "chromedriver"
+old = "150.0.7871.101"
+new = "150.0.7871.115"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正が行われました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "discord"
+old = "0.0.396"
+new = "0.0.398"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discord.com/tags/patch-notes"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正により、特定の環境でのアプリのクラッシュを防止しました。"
+ref = "https://discord.com/tags/patch-notes"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエモジ機能が追加され、ユーザーがカスタムエモジを作成できるようになりました。"
+ref = "https://discord.com/tags/patch-notes"
+
+[[update.package]]
+name = "docker-buildx"
+old = "0.31.1"
+new = "0.35.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/buildx/releases/tag/v0.35.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいビルドオプションを追加しました。"
+ref = "https://github.com/docker/buildx/releases/tag/v0.35.0"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のプラットフォームでのビルドエラーを修正しました。"
+ref = "https://github.com/docker/buildx/releases/tag/v0.35.0"
+
+[[update.package]]
+name = "eslint"
+old = "10.6.0"
+new = "10.7.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/eslint/eslint/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "preserve-caught-error ルールに errorClassNames オプションを追加"
+ref = "https://github.com/eslint/eslint/commit/cf2a9bf2d982642f760370c15f1196f4658f4e27"
+
+[[update.package.change_item]]
+category = "feature"
+text = "constructor callbacks 用の max-nested-callbacks オプションを追加"
+ref = "https://github.com/eslint/eslint/commit/f8b873aae53610b80b5c1005606716e05ed3b91f"
+
+[[update.package.change_item]]
+category = "feature"
+text = "radix ルールで computed `Number.parseInt` メンバーアクセスをサポート"
+ref = "https://github.com/eslint/eslint/commit/557fde8bc633d26ea4fe287d4483f287e8e6080f"
+
+[[update.package.change_item]]
+category = "feature"
+text = "no-compare-neg-zero に提案を追加"
+ref = "https://github.com/eslint/eslint/commit/0b4a73b65808f5a8fd192f15db2bf5e47002b9f7"
+
+[[update.package.change_item]]
+category = "feature"
+text = "radix ルールで無効な符号付き数値基数値を報告"
+ref = "https://github.com/eslint/eslint/commit/96cdd427db5f26c6403fba92b0f7ae4556c595ec"
+
+[[update.package.change_item]]
+category = "fix"
+text = "class expressions に ignoreClassesWithImplements を適用"
+ref = "https://github.com/eslint/eslint/commit/3e7bf15e69e6d3a2c8832356bcc2e9903cc4eede"
+
+[[update.package.change_item]]
+category = "fix"
+text = "preserve-caught-error で原因をラッピングされた括弧の外に挿入"
+ref = "https://github.com/eslint/eslint/commit/0d7d70cf013ec5bf1e4f5a0fcf7128bdf059b2d4"
+
+[[update.package.change_item]]
+category = "fix"
+text = "eqeqeq ルールで静的テンプレートリテラルを処理"
+ref = "https://github.com/eslint/eslint/commit/75ec753226010867270787b412f3dae412e421e6"
+
+[[update.package.change_item]]
+category = "fix"
+text = "eqeqeq ルールで null オプションが非等価演算子を報告しないようにする"
+ref = "https://github.com/eslint/eslint/commit/b717a22e2408389a2ad40af66543e46390669eb6"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-invalid-regexp でシャドウ化された RegExp に対する誤検出を回避"
+ref = "https://github.com/eslint/eslint/commit/e35b05f1961dcd691611bd68b6ff8a87072d6f76"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-control-regex でシャドウ化された RegExp に対する誤検出を回避"
+ref = "https://github.com/eslint/eslint/commit/a3172b69c7db63ea0321355543e3f527c7d8b76a"
+
+[[update.package.change_item]]
+category = "fix"
+text = "no-implicit-coercion でシーケンス式のオペランドを括弧で囲む"
+ref = "https://github.com/eslint/eslint/commit/d1f637eca27e523d613991c6bea5b8726b810e4c"
+
+[[update.package]]
+name = "eza"
+old = "0.23.4"
+new = "0.23.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/eza-community/eza/releases/tag/v0.23.5"
+
+[[update.package.change_item]]
+category = "feature"
+text = "行数カウント機能を追加"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Clapを使用してCLI引数の解析を行うように変更"
+
+[[update.package.change_item]]
+category = "security"
+text = "crossbeam-epochとgit2のバージョンを更新"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.101"
+new = "150.0.7871.115"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数の安定性とパフォーマンスの改善が行われました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "mas"
+old = "6.0.1"
+new = "7.0.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/mas-cli/mas/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`config`, `list`, `lookup`/`info`, `outdated` & `search` のオプションJSON出力をサポート"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`uninstall`で認識されないアプリIDを一度だけ出力するよう修正"
+
+[[update.package]]
+name = "notion-app"
+old = "4.24.0"
+new = "7.24.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.notion.so/"
+change_item = []
+
+[[update.package]]
+name = "zed-editor"
+old = "1.9.0"
+new = "1.10.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.10.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい言語モデルプロバイダーとして llama.cpp を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59964"
+
+[[update.package.change_item]]
+category = "feature"
+text = "現在の行の git blame をステータスバーに表示する設定 `git.inline_blame.location` を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59696"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "保存時のフォーマットをデフォルトで無効にしました。"
+
+[[update]]
+at = "2026-07-15T20:33:09Z"
+state_old = "d124259e8ebbeefa344d54e1d5af9091bc44c69d2ece102a7ae06a2e06c5291a"
+state_new = "e9944db5f17d787ac850f99c605ad1d99ca61348971dc7e05dea9eab6267afc8"
+cursor_old = "9388ff07dc634d32e48524a3f7588a12026c669a"
+nixpkgs_old = "6cdc7fc76e8bf7fde9fa43a849fcaaa70e230dee"
+nixpkgs_new = "35d3407a3816f3b341d8cf1d60abaf2b7b8166ac"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "6アプリ更新: 🔒1 🐛7"
+
+[[update.package]]
+name = "chromedriver"
+old = "150.0.7871.115"
+new = "150.0.7871.125"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 150.0.7871.125 での重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "diesel-cli"
+old = "2.3.10"
+new = "2.3.11"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "PostgreSQLの（デ）シリアライズコードにおける潜在的なパニックを修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = ".load()バッチ挿入とSQLiteバックエンドの返却句の使用を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SqliteConnection::deserialize_read_only_database()の使用を強化"
+
+[[update.package]]
+name = "firefox-bin"
+old = "152.0.5"
+new = "152.0.6"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/152.0.6/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数のバグ修正が行われました。"
+ref = "https://www.firefox.com/en-US/firefox/152.0.6/releasenotes/"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.115"
+new = "150.0.7871.125"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "セキュリティ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "markdownlint-cli"
+old = "0.49.0"
+new = "0.49.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "MD029の改善"
+ref = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "webpackでのモジュール解決の修正"
+ref = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package]]
+name = "notion-app"
+old = "7.24.0"
+new = "7.25.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.notion.so/"
+change_item = []
+
+[[update]]
+at = "2026-07-20T20:42:57Z"
+state_old = "e9944db5f17d787ac850f99c605ad1d99ca61348971dc7e05dea9eab6267afc8"
+state_new = "251d5925e590f5423db79b1e2370c2649b30eee717795cb457da8621a3fb306b"
+cursor_old = "d3e54f2f6aaa311ce3c3dedb7142dea9f1415da8"
+nixpkgs_old = "35d3407a3816f3b341d8cf1d60abaf2b7b8166ac"
+nixpkgs_new = "421eebfd0ec7bccd4abe826ce62d7e6e83129493"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "11アプリ更新: 🔒1 🔧3 ✨16 🐛12"
+
+[[update.package]]
+name = "cargo-llvm-cov"
+old = "0.8.5"
+new = "0.8.7"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/taiki-e/cargo-llvm-cov/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`--coverage-host-only` フラグを追加"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/493"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Cargoの新しい`build-dir`レイアウトをサポート"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/483"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ファイルごとのカバレッジ閾値を設定する`--fail-under-file-lines`オプションを追加"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/486"
+
+[[update.package.change_item]]
+category = "fix"
+text = '最近のCargoでの"missing or invalid `CACHEDIR.TAG` file"エラーを修正'
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/491"
+
+[[update.package]]
+name = "chromedriver"
+old = "150.0.7871.125"
+new = "150.0.7871.129"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 150.0.7871.129 での重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "fzf"
+old = "0.74.0"
+new = "0.74.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/junegunn/fzf/refs/tags/v0.74.1/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "入力セクションがリストセクションから視覚的に分離されている場合、情報行のデフォルトセパレーターが表示されなくなった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Zellij内でのゴースト文字と色の配置ミスを修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Neovimターミナルでのカーソル復元を修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "nushell 0.114.0以上での`str downcase`の非推奨エラーを修正した。"
+
+[[update.package.change_item]]
+category = "feature"
+text = ".debパッケージがDebian系ディストリビューション向けに追加された。"
+
+[[update.package]]
+name = "google-chrome"
+old = "150.0.7871.125"
+new = "150.0.7871.129"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "opam"
+old = "2.5.1"
+new = "2.5.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/ocaml/opam/blob/master/CHANGES"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正: opam init コマンドの動作を改善しました。"
+ref = "https://github.com/ocaml/opam/releases/tag/2.5.2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新機能: opam config コマンドに新しいオプションを追加しました。"
+ref = "https://github.com/ocaml/opam/releases/tag/2.5.2"
+
+[[update.package]]
+name = "ripgrep"
+old = "15.1.0"
+new = "15.2.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/BurntSushi/ripgrep/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = ".jjの存在チェックを行わないよう修正"
+ref = "https://github.com/BurntSushi/ripgrep/pull/3212"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数ディレクトリ間でのgitignoreマッチングバグを修正"
+ref = "https://github.com/BurntSushi/ripgrep/pull/3419"
+
+[[update.package]]
+name = "ruff"
+old = "0.15.20"
+new = "0.15.22"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.15.22"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`E402`の自動修正機能を追加"
+ref = "https://github.com/astral-sh/ruff/pull/22212"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`noqa`コメントを`ruff:ignore`に置き換えるルールを追加"
+ref = "https://github.com/astral-sh/ruff/pull/26423"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`ruff:ignore`コメントで人間が読みやすい名前を使用するルールを追加"
+ref = "https://github.com/astral-sh/ruff/pull/26682"
+
+[[update.package.change_item]]
+category = "feature"
+text = "設定セレクタで人間が読みやすい名前を使用するルールを追加"
+ref = "https://github.com/astral-sh/ruff/pull/26772"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`__all__`における誤検出を修正"
+ref = "https://github.com/astral-sh/ruff/pull/26872"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "`redefined-loop-name`で可変型の更新を無視するように変更"
+ref = "https://github.com/astral-sh/ruff/pull/25733"
+
+[[update.package]]
+name = "uv"
+old = "0.11.26"
+new = "0.11.28"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.11.28/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "security"
+text = "ZIPライブラリを更新し、ZIP処理のセキュリティを強化した。"
+ref = "https://github.com/astral-sh/rs-async-zip/compare/v0.0.18...v0.0.20"
+
+[[update.package]]
+name = "vscode"
+old = "1.127.0"
+new = "1.129.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_129"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタのテーマが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_129#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_129#bug-fixes"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "新しいデフォルト設定が適用されました。"
+ref = "https://code.visualstudio.com/updates/v1_129#default-settings"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.10.0"
+new = "1.11.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.11.3"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ターミナルスレッド内での検索機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/60292"
+
+[[update.package.change_item]]
+category = "feature"
+text = "「View」メニューに「Agent Panel」と「Git Panel」項目を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/60356"
+
+[[update.package.change_item]]
+category = "feature"
+text = "専用の「Staged Changes」と「Unstaged Changes」ビューを追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/46541"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Git Graphで列の表示/非表示を右クリックで切り替えられるようにしました。"
+ref = "https://github.com/zed-industries/zed/pull/59850"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Git Graphの詳細パネルにフルコミットメッセージをMarkdown形式で表示する機能を追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59674"
+
+[[update.package.change_item]]
+category = "feature"
+text = "プロジェクトシンボルピッカーにプレビューウィンドウを追加しました。"
+ref = "https://github.com/zed-industries/zed/pull/59863"
+
+[[update.package]]
+name = "zsh"
+old = "5.9.1"
+new = "5.9.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://zsh.sourceforge.io/News/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マイナーなバグ修正が行われた。"
+ref = "https://zsh.sourceforge.io/News/"

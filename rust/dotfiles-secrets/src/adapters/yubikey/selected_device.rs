@@ -131,13 +131,15 @@ impl SecretDeviceIo for TestStubSecretDevice {
         Ok(())
     }
 
-    fn generate_key(&mut self) -> Result<()> {
+    fn generate_key(&mut self) -> Result<Vec<u8>> {
         with_datastore(|store| {
             let device = device_store_mut(store, self.serial)?;
             device.key_exists = true;
-            Ok(())
+            Ok(Vec::new())
         })
     }
+
+    fn remember_generated_public_key(&mut self, _public_key: Vec<u8>) {}
 
     fn read_object(&mut self, object_id: PivObjectId) -> Result<Option<Vec<u8>>> {
         with_datastore(|store| {

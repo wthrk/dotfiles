@@ -21,11 +21,16 @@ path=(
 )
 
 # rbenv、pyenv、nodebrew などの可変 shim が Nix 管理ツールより先に来ることを防ぐ。
-path=(${path:#$HOME/.nodebrew/current/bin})
-path=(${path:#$HOME/.bun/bin})
-path=(${path:#$HOME/.cargo/bin})
-path=(${path:#$HOME/.pyenv/bin})
-path=(${path:#$HOME/.rbenv/bin})
+#
+# `$HOME` 完全一致では落とし切れない。継承した PATH には別ホーム配下の shim
+#（CI runner の `/Users/runner/.cargo/bin`、sudo 経由や旧ユーザー名の残骸など）が混ざりうる。
+# それらも Nix 管理ツールより先に来れば同じ事故になるため、ホーム位置に依存しない
+# 末尾一致で落とす。`*` は path 要素全体に対する glob。
+path=(${path:#*/.nodebrew/current/bin})
+path=(${path:#*/.bun/bin})
+path=(${path:#*/.cargo/bin})
+path=(${path:#*/.pyenv/bin})
+path=(${path:#*/.rbenv/bin})
 
 export PATH
 

@@ -4,21 +4,38 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/bitwarden"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-08-07T18:41:19Z"
 
 ["brew/codex-app"]
 source = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-12T19:19:16Z"
 
+["brew/yubico-authenticator"]
+source = "https://github.com/Yubico/yubioath-flutter/releases"
+origin = "ai-discovered"
+discovered_at = "2026-06-17T19:50:01Z"
+
+["nix/android-tools"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/atuin"]
 source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/awscli2"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
+
 ["nix/bitwarden-cli"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/black"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/bun"]
 origin = "none"
@@ -29,26 +46,39 @@ source = "https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/cargo-audit"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/cargo-deny"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/cargo-edit"]
 origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
 
-["nix/chromedriver"]
+["nix/cargo-llvm-cov"]
 origin = "none"
-discovered_at = "2026-06-14T19:13:04Z"
+discovered_at = "2026-07-20T20:42:57Z"
+
+["nix/chromedriver"]
+source = "https://chromereleases.googleblog.com/"
+origin = "ai-discovered"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/clippy"]
 source = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/colima"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/composer"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/coreutils"]
 origin = "none"
@@ -56,47 +86,62 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/delve"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/diesel-cli"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/discord"]
-origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+source = "https://discord.com/tags/patch-notes"
+origin = "ai-discovered"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker"]
+source = "https://www.docker.com/blog/"
+origin = "ai-discovered"
+discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/docker-buildx"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/docker-credential-helpers"]
+source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
+origin = "ai-discovered"
+discovered_at = "2026-07-11T20:09:39Z"
+
+["nix/dune"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/eslint"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-14T20:41:45Z"
+
+["nix/eza"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/ffmpeg"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/fzf"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/git"]
 origin = "none"
@@ -112,44 +157,69 @@ origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/google-chrome"]
+source = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+origin = "ai-discovered"
+discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/graphviz"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/iterm2"]
 source = "https://github.com/gnachman/iTerm2/releases"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/jq"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
+
 ["nix/jujutsu"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/kubectl"]
 source = "https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/mariadb-client"]
+source = "https://github.com/mariadb-corporation/mariadb-connector-c/releases"
+origin = "ai-discovered"
+discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/markdownlint-cli"]
+origin = "none"
+discovered_at = "2026-07-15T20:33:09Z"
+
+["nix/mas"]
+origin = "none"
+discovered_at = "2026-07-14T20:41:45Z"
+
 ["nix/neovim"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/nix"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/nodejs"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-06-28T19:23:59Z"
+
+["nix/notion-app"]
+origin = "none"
+discovered_at = "2026-07-15T20:33:09Z"
 
 ["nix/opam"]
-source = "https://opam.ocaml.org/blog/opam-2-5-1/"
+source = "https://github.com/ocaml/opam/blob/master/CHANGES"
 origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/php-with-extensions"]
-source = "https://www.php.net/releases/8_4_22.php"
-origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/postgresql"]
 origin = "none"
@@ -161,11 +231,15 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/pyright"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-01T20:09:11Z"
+
+["nix/ripgrep"]
+origin = "none"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
@@ -178,16 +252,21 @@ origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/rustfmt"]
-origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+source = "https://doc.rust-lang.org/stable/releases.html"
+origin = "ai-discovered"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/skaffold"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-02T20:03:35Z"
 
 ["nix/slack"]
 origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/sqlite-interactive"]
+origin = "none"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/stylua"]
 origin = "none"
@@ -204,7 +283,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/vips"]
 origin = "none"
@@ -222,20 +301,24 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/yt-dlp"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/yubikey-manager"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-06-12T19:19:16Z"
+discovered_at = "2026-07-20T20:42:57Z"
+
+["nix/zoxide"]
+origin = "none"
+discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zsh"]
-source = "https://zsh.sourceforge.io/releases.html"
+source = "https://zsh.sourceforge.io/News/"
 origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/zsh-completions"]
 origin = "none"

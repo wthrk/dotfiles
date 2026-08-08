@@ -18,6 +18,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::diff::NixPackage;
+use super::sources;
 use crate::Result;
 use crate::process::run_capture;
 
@@ -103,7 +104,10 @@ fn eval_package_list(attr: &str) -> Result<BTreeMap<String, NixPackage>> {
     let raw: BTreeMap<String, RawPackage> = serde_json::from_str(&json)?;
     Ok(raw
         .into_iter()
-        .map(|(name, package)| (name, derive_package(package)))
+        .map(|(name, package)| {
+            let derived = derive_package(&name, package);
+            (name, derived)
+        })
         .collect())
 }
 
@@ -124,12 +128,14 @@ fn escape_nix_string(value: &str) -> String {
 }
 
 /// 生評価値 1 件を導出済み [`NixPackage`]（version + repo/changelog/homepage）へ翻訳する純粋関数。
-fn derive_package(raw: RawPackage) -> NixPackage {
+fn derive_package(name: &str, raw: RawPackage) -> NixPackage {
     let homepage = as_str(&raw.homepage);
-    let changelog = as_str(&raw.changelog);
+    let changelog =
+        sources::package_notes_source(name, &raw.version, &homepage, &as_str(&raw.changelog));
     NixPackage {
         version: raw.version,
         repo: derive_repo(
+            name,
             &homepage,
             &as_str(&raw.src_owner),
             &as_str(&raw.src_repo),
@@ -144,8 +150,10 @@ fn derive_package(raw: RawPackage) -> NixPackage {
     }
 }
 
-/// owner/repo を homepage(github) → src → changelog(github) の優先で導出する純粋関数（取れなければ空文字）。
+/// owner/repo を homepage(github) → src → changelog(github) → package 固有 fallback の優先で導出する純粋関数
+/// （取れなければ空文字）。
 fn derive_repo(
+    name: &str,
     homepage: &str,
     src_owner: &str,
     src_repo: &str,
@@ -153,44 +161,20 @@ fn derive_repo(
     src_first_url: Option<&str>,
     changelog: &str,
 ) -> String {
-    if let Some(repo) = repo_from_url(homepage) {
+    if let Some(repo) = super::wire::repo_from_github_url(homepage) {
         return repo;
     }
     if !src_owner.is_empty() && !src_repo.is_empty() {
         return format!("{src_owner}/{src_repo}");
     }
-    if let Some(repo) = repo_from_url(src_url) {
+    if let Some(repo) = super::wire::repo_from_github_url(src_url) {
         return repo;
     }
-    if let Some(repo) = src_first_url.and_then(repo_from_url) {
+    if let Some(repo) = src_first_url.and_then(super::wire::repo_from_github_url) {
         return repo;
     }
-    repo_from_url(changelog).unwrap_or_default()
-}
-
-/// github URL 文字列から `owner/repo` を取り出す純粋関数（末尾 `.git`・クエリ/フラグメントは除く）。
-fn repo_from_url(url: &str) -> Option<String> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))?;
-    let (owner, after_owner) = rest.split_once('/')?;
-    let owner = Some(owner).filter(|s| !s.is_empty())?;
-    // repo は owner の次の segment（さらに `/` があればそこまで）。
-    let repo_raw = after_owner
-        .split_once('/')
-        .map_or(after_owner, |(repo, _)| repo);
-    let repo_raw = Some(repo_raw).filter(|s| !s.is_empty())?;
-    // 末尾のクエリ/フラグメント（`?`/`#` 以降）を落とし、続く `.git` を剥がす。
-    let repo = repo_raw
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(repo_raw)
-        .trim_end_matches(".git");
-    if repo.is_empty() {
-        None
-    } else {
-        Some(format!("{owner}/{repo}"))
-    }
+    super::wire::repo_from_github_url(changelog)
+        .unwrap_or_else(|| sources::repo_hint_for_package(name, homepage))
 }
 
 /// `serde_json::Value` を文字列へ正規化する（文字列はそのまま、list/null/非文字列は空文字）。
@@ -259,6 +243,7 @@ mod tests {
         // ① homepage が github → そこから（src/changelog より優先）。
         assert_eq!(
             derive_repo(
+                "ignored",
                 "https://github.com/neovim/neovim",
                 "src-owner",
                 "src-repo",
@@ -271,6 +256,7 @@ mod tests {
         // ② homepage 非 github → src の owner+repo。
         assert_eq!(
             derive_repo(
+                "ignored",
                 "https://example.com/home",
                 "BurntSushi",
                 "ripgrep",
@@ -282,22 +268,39 @@ mod tests {
         );
         // ②' src owner+repo 無し → src.url の github。
         assert_eq!(
-            derive_repo("", "", "", "https://github.com/o/r", None, ""),
+            derive_repo("ignored", "", "", "", "https://github.com/o/r", None, ""),
             "o/r"
         );
         // ②'' src.url 無し → src.urls 先頭の github。
         assert_eq!(
-            derive_repo("", "", "", "", Some("https://github.com/o/r2"), ""),
+            derive_repo(
+                "ignored",
+                "",
+                "",
+                "",
+                "",
+                Some("https://github.com/o/r2"),
+                ""
+            ),
             "o/r2"
         );
         // ③ homepage/src 無し → changelog の github、末尾 `.git` 剥がし。
         assert_eq!(
-            derive_repo("", "", "", "", None, "https://github.com/owner/proj.git"),
+            derive_repo(
+                "ignored",
+                "",
+                "",
+                "",
+                "",
+                None,
+                "https://github.com/owner/proj.git",
+            ),
             "owner/proj"
         );
         // ④ いずれも非 github → 空文字。
         assert_eq!(
             derive_repo(
+                "ignored",
                 "https://gitlab.com/o/r",
                 "",
                 "",
@@ -307,25 +310,46 @@ mod tests {
             ),
             ""
         );
+        // ⑤ package 固有 fallback。
+        assert_eq!(
+            derive_repo("nix", "https://nixos.org/nix", "", "", "", None, ""),
+            "NixOS/nix"
+        );
     }
 
     #[test]
-    fn repo_from_url_strips_git_and_query() {
+    fn releases_url_from_github_url_normalizes_release_variants_only() {
         assert_eq!(
-            repo_from_url("https://github.com/o/r.git").as_deref(),
-            Some("o/r")
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/releases"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
         );
         assert_eq!(
-            repo_from_url("https://github.com/o/r/releases/tag/v1").as_deref(),
-            Some("o/r")
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/releases/tag/v1.2.3"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
         );
         assert_eq!(
-            repo_from_url("https://github.com/o/r?tab=x").as_deref(),
-            Some("o/r")
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/releases/download/v1/x.zip"
+            )
+            .as_deref(),
+            Some("https://github.com/o/r/releases")
         );
-        assert_eq!(repo_from_url("https://gitlab.com/o/r"), None);
-        assert_eq!(repo_from_url("not a url"), None);
-        assert_eq!(repo_from_url("https://github.com/o"), None);
+        assert_eq!(
+            crate::update_history::wire::releases_url_from_github_url("https://github.com/o/r"),
+            None
+        );
+        assert_eq!(
+            crate::update_history::wire::releases_url_from_github_url(
+                "https://github.com/o/r/issues/1"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -359,7 +383,7 @@ mod tests {
             src_url: serde_json::Value::Null,
             src_urls: serde_json::Value::Null,
         };
-        let package = derive_package(raw);
+        let package = derive_package("ignored", raw);
         assert_eq!(package.version, "1.2.3");
         // changelog 無し → notes_source は空のまま（homepage の HTML を生ノート seed に固定しない）。
         assert_eq!(package.notes_source, "");
@@ -382,7 +406,7 @@ mod tests {
             src_url: serde_json::Value::Null,
             src_urls: serde_json::Value::Null,
         };
-        let package = derive_package(raw);
+        let package = derive_package("ignored", raw);
         // homepage HTML を notes seed にしない一方で owner/repo は homepage(github) から導出する。
         assert_eq!(package.repo, "astral-sh/uv");
         // changelog 不在でも homepage HTML を機械 seed に固定しない（notes_source は空）。
@@ -402,13 +426,189 @@ mod tests {
             src_url: serde_json::Value::Null,
             src_urls: serde_json::Value::Null,
         };
-        let package = derive_package(raw);
+        let package = derive_package("ignored", raw);
         // changelog あり → notes_source は changelog（homepage は別途ヒントに残る）。
         assert_eq!(
             package.notes_source,
             "https://github.com/o/r/blob/main/CHANGELOG.md"
         );
         assert_eq!(package.homepage, "https://homepage.example/");
+    }
+
+    #[test]
+    fn derive_package_adds_repo_fallback_for_nix_homepage() {
+        let raw = RawPackage {
+            version: "2.34.7+1".to_string(),
+            homepage: serde_json::json!("https://nixos.org/nix"),
+            changelog: serde_json::Value::Null,
+            src_owner: serde_json::Value::Null,
+            src_repo: serde_json::Value::Null,
+            src_url: serde_json::Value::Null,
+            src_urls: serde_json::Value::Null,
+        };
+        let package = derive_package("nix", raw);
+        assert_eq!(package.repo, "NixOS/nix");
+        assert_eq!(
+            package.notes_source,
+            "https://nix.dev/manual/nix/2.34/release-notes/rl-2.34"
+        );
+        assert_eq!(package.homepage, "https://nixos.org/nix");
+    }
+
+    #[test]
+    fn derive_package_adds_nix_fallbacks_for_trailing_slash_homepage() {
+        let raw = RawPackage {
+            version: "2.34.7+1".to_string(),
+            homepage: serde_json::json!("https://nixos.org/nix/"),
+            changelog: serde_json::Value::Null,
+            src_owner: serde_json::Value::Null,
+            src_repo: serde_json::Value::Null,
+            src_url: serde_json::Value::Null,
+            src_urls: serde_json::Value::Null,
+        };
+        let package = derive_package("nix", raw);
+        assert_eq!(package.repo, "NixOS/nix");
+        assert_eq!(
+            package.notes_source,
+            "https://nix.dev/manual/nix/2.34/release-notes/rl-2.34"
+        );
+        assert_eq!(package.homepage, "https://nixos.org/nix/");
+    }
+
+    #[test]
+    fn derive_package_adds_notes_source_fallbacks_for_chrome_family() {
+        let google_chrome = derive_package(
+            "google-chrome",
+            RawPackage {
+                version: "149.0.7827.115".to_string(),
+                homepage: serde_json::json!("https://www.google.com/chrome/browser/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            google_chrome.notes_source,
+            "https://chromereleases.googleblog.com/"
+        );
+
+        let chromedriver = derive_package(
+            "chromedriver",
+            RawPackage {
+                version: "149.0.7827.103".to_string(),
+                homepage: serde_json::json!("https://chromedriver.chromium.org/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            chromedriver.notes_source,
+            "https://chromereleases.googleblog.com/search?q=149.0.7827.103"
+        );
+    }
+
+    #[test]
+    fn derive_package_adds_notes_source_fallbacks_for_desktop_apps() {
+        let coreutils = derive_package(
+            "coreutils",
+            RawPackage {
+                version: "9.11".to_string(),
+                homepage: serde_json::json!("https://www.gnu.org/software/coreutils/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            coreutils.notes_source,
+            "https://cgit.git.savannah.gnu.org/cgit/coreutils.git/plain/NEWS"
+        );
+
+        let discord = derive_package(
+            "discord",
+            RawPackage {
+                version: "0.0.393".to_string(),
+                homepage: serde_json::json!("https://discordapp.com/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(discord.notes_source, "https://discord.com/tags/patch-notes");
+
+        let slack = derive_package(
+            "slack",
+            RawPackage {
+                version: "4.49.89".to_string(),
+                homepage: serde_json::json!("https://slack.com"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(slack.notes_source, "https://slack.com/release-notes/mac");
+
+        let docker_compose = derive_package(
+            "docker-compose",
+            RawPackage {
+                version: "5.1.4".to_string(),
+                homepage: serde_json::json!("https://github.com/docker/compose"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            docker_compose.notes_source,
+            "https://github.com/docker/compose/releases/tag/v5.1.4"
+        );
+
+        let rustfmt = derive_package(
+            "rustfmt",
+            RawPackage {
+                version: "1.95.0".to_string(),
+                homepage: serde_json::json!("https://github.com/rust-lang-nursery/rustfmt"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            rustfmt.notes_source,
+            "https://doc.rust-lang.org/stable/releases.html"
+        );
+
+        let temurin = derive_package(
+            "temurin-bin",
+            RawPackage {
+                version: "21.0.11".to_string(),
+                homepage: serde_json::json!("https://adoptium.net/"),
+                changelog: serde_json::Value::Null,
+                src_owner: serde_json::Value::Null,
+                src_repo: serde_json::Value::Null,
+                src_url: serde_json::Value::Null,
+                src_urls: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(
+            temurin.notes_source,
+            "https://adoptium.net/temurin/release-notes"
+        );
     }
 
     #[test]

@@ -16,6 +16,8 @@ jobs:
     name: static checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      CACHE_ON_FAILURE: true
 
     steps:
       - name: checkout
@@ -26,27 +28,25 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # /nix/store を run 間でキャッシュする（nightly-update.yml と同 action・同 key 規約）。toolchain と
-      # `nix flake check` / devShell の取得物を再利用して install/eval を高速化する。eval ベース化で
-      # 重い closure は無く保存物は小さい。miss/失敗は遅くなるだけで fail させない（fail-on 既定 = fail-safe）。
-      - name: /nix/store をキャッシュ
-        uses: nix-community/cache-nix-action@v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust/dotfiles-cli/Cargo.toml', 'Cargo.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size: 3G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-primary-key: never
+      # `cache-nix-action` の post-step が required check を長時間 pending のまま残す事例があったため、
+      # static checks では `/nix/store` キャッシュを使わない。toolchain / devShell は毎回取得するが、
+      # job 自体は deterministic に完走させる。
 
-      # cargo build キャッシュ（~/.cargo + target/）を run 間で再利用する。`cargo xtask check static` は
-      # devShell 内で workspace をコンパイルするため、/nix/store キャッシュ（toolchain / nix 依存）とは別に
-      # target/ の再ビルド回避が効く。restore-key で前回 PR の target/ から差分ビルドに縮退する。fail-safe。
+      # Nix devShell 内の cargo/rustc を基準に target/ まで再利用する。`cmd-format` を付けずに target を restore
+      # すると shell 外の cargo メタデータ/clean up と食い違い、stale build script を踏みやすい。rust-cache 自身の
+      # key/metadata/clean up を `nix develop -c` 側へ合わせた上で target を再利用する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}
+          shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
+          cache-targets: true
+          save-if: ${{ github.ref == 'refs/heads/main' || env.CACHE_ON_FAILURE == 'true' }}
 
       - name: static checks
         run: nix develop -c cargo xtask check static
+
+      # static checks は devShell 内で走るため、build sandbox でしか露見しない依存欠落を検出できない。
+      # bootstrap が叩く derivation そのものを PR でも build する。
+      - name: dotfiles-cli の nix build
+        run: nix build .#dotfiles-cli --no-link --print-build-logs

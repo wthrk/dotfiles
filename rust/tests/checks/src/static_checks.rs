@@ -14,6 +14,7 @@ pub(crate) fn check() -> Result<()> {
     shell_scripts(&shell)?;
     github_actions(&shell)?;
     auto_update_wrapper_uses_update_all_semantics(&shell)?;
+    darwin_home_manager_propagates_include_self_package(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)
 }
@@ -65,8 +66,35 @@ fn github_actions(shell: &Shell) -> Result<()> {
     nightly_no_update_is_clean_no_op(shell)?;
     nightly_record_secret_gating_is_testable_and_bounded(shell)?;
     nightly_record_rebuilds_in_job(shell)?;
+    nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(shell)?;
     nightly_lock_rev_skips_nix_develop(shell)?;
     nightly_artifact_actions_use_supported_node_runtime(shell)?;
+    Ok(())
+}
+
+/// `mkDarwin` から Home Manager の子モジュールへ `includeSelfPackage` が落ちずに届くことを固定する。
+///
+/// `darwinModule` 自体で `_module.args.includeSelfPackage` を持っていても、`nix/darwin.nix` が
+/// `home-manager.extraSpecialArgs` へ同値を渡し忘れると、`home.nix -> modules/cli.nix` の評価だけが
+/// `attribute 'includeSelfPackage' missing` で落ちる。nightly の `darwinConfigurations.ci-ref` eval は
+/// まさにこの経路を踏むため、静的検査で配線抜けを止める。
+fn darwin_home_manager_propagates_include_self_package(shell: &Shell) -> Result<()> {
+    step("darwin home-manager includeSelfPackage propagation");
+    let darwin = shell.read_file("nix/darwin.nix")?;
+    ensure!(
+        darwin.contains("includeSelfPackage ? true,"),
+        "nix/darwin.nix は `includeSelfPackage` をモジュール引数で受け取り、mkDarwin 既定値を保持すること"
+    );
+    let extra_special_args = darwin
+        .split("home-manager.extraSpecialArgs =")
+        .nth(1)
+        .and_then(|section| section.split("home-manager.users.").next())
+        .unwrap_or_default();
+    ensure!(
+        extra_special_args.contains("includeSelfPackage"),
+        "nix/darwin.nix は `home-manager.extraSpecialArgs` へ `includeSelfPackage` を渡し、\
+         home.nix -> modules/cli.nix の評価で欠落させないこと"
+    );
     Ok(())
 }
 
@@ -132,26 +160,40 @@ fn nightly_no_update_is_clean_no_op(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// nightly-update.yml の record 要約経路が「PR 段階で検証可能だが無制限には開かない」ことを静的に固定する。
+/// nightly-update.yml の record 要約経路が「default branch ref に限定された secret 注入」になっていることを固定する。
 ///
-/// `OPEN_AI_API_KEY` を既定ブランチ ref 限定にすると、未マージ PR の workflow では要約付き履歴を検証できない。
-/// 一方で常時注入へ戻すと、workflow_dispatch を叩ける任意 actor へ secret を広げる。そこで record job の
-/// secret 注入は `schedule` または `workflow_dispatch && github.actor == github.repository_owner` に限定し、
-/// repo owner の手動検証 run だけ要約付き履歴を許可する。PR 起票/status 投稿の信頼境界は open-pr job の
-/// 既定ブランチ制限が継続して担う。
+/// `OPEN_AI_API_KEY` を workflow_dispatch の任意 ref に戻すと、未審査 ref の Rust/Nix コードへ secret を
+/// 渡せる。そこで record job の secret 注入は `schedule` または `workflow_dispatch && github.actor ==
+/// github.repository_owner && github.ref == default_branch` に限定し、未審査 ref の dry-run では version-only
+/// に倒す。open-pr job 側の既定ブランチ制限と合わせて、secret を使う build/record 経路全体を既定ブランチへ
+/// 閉じ込める。
 fn nightly_record_secret_gating_is_testable_and_bounded(shell: &Shell) -> Result<()> {
     step("nightly-update record secret gating");
     let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
     assert_nightly_record_secret_gating_is_testable_and_bounded(&workflow)
 }
 
+#[cfg(test)]
+fn record_secret_gate_allows(
+    event_name: &str,
+    actor: &str,
+    repository_owner: &str,
+    git_ref: &str,
+    default_branch: &str,
+) -> bool {
+    event_name == "schedule"
+        || (event_name == "workflow_dispatch"
+            && actor == repository_owner
+            && git_ref == format!("refs/heads/{default_branch}"))
+}
+
 fn assert_nightly_record_secret_gating_is_testable_and_bounded(workflow: &str) -> Result<()> {
     ensure!(
         workflow.contains(
-            "OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}"
+            "OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && secrets.OPEN_AI_API_KEY || '' }}"
         ),
-        "record job の OPEN_AI_API_KEY は schedule または repo owner の workflow_dispatch に限定し、\
-         PR ブランチ dry-run でも要約付き履歴を検証できる形を維持すること"
+        "record job の OPEN_AI_API_KEY は schedule または repo owner の default branch workflow_dispatch に限定し、\
+         未審査 ref の dry-run へ secret を渡さないこと"
     );
     ensure!(
         workflow.contains(
@@ -192,6 +234,86 @@ fn assert_nightly_record_rebuilds_in_job(workflow: &str) -> Result<()> {
     ensure!(
         !workflow.contains("bump 前 eval 版マップと dotfiles binary を取得"),
         "record job の artifact download は binary を前提にしてはならない"
+    );
+    Ok(())
+}
+
+/// nightly-update.yml の bump artifact が `old-flake.lock` と `repo_base_sha` を保持し、record/open-pr へ
+/// それぞれ `--lock-old/--lock-new` + `--cursor-old` と `BUMP_BASE_SHA` で受け渡されることを静的に固定する。
+fn nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(shell: &Shell) -> Result<()> {
+    step("nightly-update bump artifact preserves old lock and base sha wiring");
+    let workflow = shell.read_file(".github/workflows/nightly-update.yml")?;
+    assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(&workflow)
+}
+
+fn assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(
+    workflow: &str,
+) -> Result<()> {
+    let old_eval_section = workflow
+        .split("- name: bump 前の宣言パッケージ版を eval と rev 抽出")
+        .nth(1)
+        .unwrap_or_default();
+    let old_eval_step = old_eval_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        old_eval_step.contains("cp flake.lock old-flake.lock"),
+        "bump job は flake update 前に `cp flake.lock old-flake.lock` で旧 lock を保存すること"
+    );
+    ensure!(
+        old_eval_step
+            .contains("echo \"repo_base_sha=$(git rev-parse HEAD)\" >> \"$GITHUB_OUTPUT\""),
+        "bump job は artifact 作成時点の checkout HEAD を `repo_base_sha` output として公開すること"
+    );
+
+    let bump_artifact_section = workflow
+        .split("- name: bump 済み lock と eval 版マップを artifact 化")
+        .nth(1)
+        .unwrap_or_default();
+    let bump_artifact_step = bump_artifact_section
+        .split("- name:")
+        .next()
+        .unwrap_or_default();
+    ensure!(
+        bump_artifact_step.contains("name: bump-state"),
+        "bump job は record/open-pr 共有用に `bump-state` artifact を publish すること"
+    );
+    ensure!(
+        bump_artifact_step.contains("old-flake.lock"),
+        "bump-state artifact は `old-flake.lock` を含み、record job へ旧 lock を渡すこと"
+    );
+    ensure!(
+        bump_artifact_step.contains("flake.lock"),
+        "bump-state artifact は bump 後 `flake.lock` も含むこと"
+    );
+
+    let record_section = workflow
+        .split("- name: record（nix/brew 版差分 + 概要）")
+        .nth(1)
+        .unwrap_or_default();
+    let record_step = record_section.split("- name:").next().unwrap_or_default();
+    ensure!(
+        record_step.contains("--lock-old old-flake.lock"),
+        "record job は bump artifact から展開した `old-flake.lock` を `--lock-old` で渡すこと"
+    );
+    ensure!(
+        record_step.contains("--lock-new flake.lock"),
+        "record job は bump 後 `flake.lock` を `--lock-new` で渡すこと"
+    );
+    ensure!(
+        record_step.contains("--cursor-old \"$REPO_BASE_SHA\""),
+        "record job は legacy show --rev 互換のため `repo_base_sha` を `--cursor-old` で渡すこと"
+    );
+
+    ensure!(
+        workflow.contains("repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}"),
+        "bump job outputs は `steps.old.outputs.repo_base_sha` を `repo_base_sha` として公開すること"
+    );
+    ensure!(
+        workflow.contains("BUMP_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}"),
+        "open-pr job は `needs.bump.outputs.repo_base_sha` を `BUMP_BASE_SHA` へ配線すること"
+    );
+    ensure!(
+        workflow.contains("if [ \"$base_sha\" != \"$BUMP_BASE_SHA\" ]; then"),
+        "open-pr job は `BUMP_BASE_SHA` と現在の default branch HEAD を比較して fail-closed にすること"
     );
     Ok(())
 }
@@ -328,8 +450,9 @@ mod tests {
     use super::{
         assert_auto_update_wrapper_uses_update_all_semantics,
         assert_nightly_artifact_actions_use_supported_node_runtime,
+        assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring,
         assert_nightly_lock_rev_skips_nix_develop, assert_nightly_record_rebuilds_in_job,
-        assert_nightly_record_secret_gating_is_testable_and_bounded,
+        assert_nightly_record_secret_gating_is_testable_and_bounded, record_secret_gate_allows,
     };
 
     /// wrapper が target を省略し、root daemon 用の `--user` / `--host` を渡す形を受け入れる。
@@ -362,12 +485,11 @@ mod tests {
         assert!(assert_auto_update_wrapper_uses_update_all_semantics(module).is_err());
     }
 
-    /// record job の OpenAI secret は repo owner の manual dispatch でも使える一方、open-pr の default-branch
-    /// gate は維持されることを受け入れる。
+    /// record job の OpenAI secret は repo owner の manual dispatch でも default branch ref に限定される。
     #[test]
-    fn nightly_record_secret_gating_accepts_owner_dispatch_and_keeps_open_pr_gate() {
+    fn nightly_record_secret_gating_accepts_owner_default_branch_dispatch_and_keeps_open_pr_gate() {
         let workflow = r#"
-          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && secrets.OPEN_AI_API_KEY || '' }}
           if: >-
             ${{ github.event_name == 'schedule' ||
                 (github.event_name == 'workflow_dispatch' &&
@@ -378,12 +500,33 @@ mod tests {
         assert!(assert_nightly_record_secret_gating_is_testable_and_bounded(workflow).is_ok());
     }
 
-    /// record job の OpenAI secret を default branch ref 限定へ戻す退行は、PR 段階で要約付き履歴を検証できないため
-    /// 拒否する。
     #[test]
-    fn nightly_record_secret_gating_rejects_default_branch_only_regression() {
+    fn record_secret_gate_rejects_owner_non_default_branch_dispatch() {
+        assert!(!record_secret_gate_allows(
+            "workflow_dispatch",
+            "owner",
+            "owner",
+            "refs/heads/feature",
+            "main"
+        ));
+    }
+
+    #[test]
+    fn record_secret_gate_accepts_owner_default_branch_dispatch() {
+        assert!(record_secret_gate_allows(
+            "workflow_dispatch",
+            "owner",
+            "owner",
+            "refs/heads/main",
+            "main"
+        ));
+    }
+
+    /// record job の OpenAI secret を owner の任意 dispatch へ戻す退行は、未審査 ref へ secret が流れるため拒否する。
+    #[test]
+    fn nightly_record_secret_gating_rejects_non_default_branch_dispatch_regression() {
         let workflow = r#"
-          OPEN_AI_API_KEY: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && secrets.OPEN_AI_API_KEY || '' }}
+          OPEN_AI_API_KEY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner)) && secrets.OPEN_AI_API_KEY || '' }}
           if: >-
             ${{ github.event_name == 'schedule' ||
                 (github.event_name == 'workflow_dispatch' &&
@@ -408,6 +551,78 @@ mod tests {
         "#;
 
         assert!(assert_nightly_record_rebuilds_in_job(workflow).is_ok());
+    }
+
+    #[test]
+    fn nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring() {
+        let workflow = r#"
+          outputs:
+            repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}
+          - name: bump 前の宣言パッケージ版を eval と rev 抽出
+            run: |
+              cp flake.lock old-flake.lock
+              echo "repo_base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          - name: bump 済み lock と eval 版マップを artifact 化
+            with:
+              name: bump-state
+              path: |
+                flake.lock
+                old-flake.lock
+                nix-old.json
+          - name: record（nix/brew 版差分 + 概要）
+            env:
+              REPO_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
+            run: |
+              nix develop -c "$dotfiles_bin" update-history record \
+                --lock-old old-flake.lock \
+                --lock-new flake.lock \
+                --cursor-old "$REPO_BASE_SHA" \
+                --out "$out"
+          - name: bump ブランチを作成して commit
+            env:
+              BUMP_BASE_SHA: ${{ needs.bump.outputs.repo_base_sha }}
+            run: |
+              if [ "$base_sha" != "$BUMP_BASE_SHA" ]; then
+                exit 1
+              fi
+        "#;
+
+        assert!(
+            assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(workflow).is_ok()
+        );
+    }
+
+    #[test]
+    fn nightly_bump_artifact_rejects_missing_old_lock_and_base_sha_wiring() {
+        let workflow = r#"
+          outputs:
+            repo_base_sha: ${{ steps.old.outputs.repo_base_sha }}
+          - name: bump 前の宣言パッケージ版を eval と rev 抽出
+            run: |
+              echo "repo_base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          - name: bump 済み lock と eval 版マップを artifact 化
+            with:
+              name: bump-state
+              path: |
+                flake.lock
+                nix-old.json
+          - name: record（nix/brew 版差分 + 概要）
+            run: |
+              nix develop -c "$dotfiles_bin" update-history record \
+                --lock-new flake.lock \
+                --out "$out"
+          - name: bump ブランチを作成して commit
+            env:
+              BUMP_BASE_SHA: ${{ github.sha }}
+            run: |
+              if [ "$base_sha" != "$BUMP_BASE_SHA" ]; then
+                exit 1
+              fi
+        "#;
+
+        assert!(
+            assert_nightly_bump_artifact_preserves_old_lock_and_base_sha_wiring(workflow).is_err()
+        );
     }
 
     #[test]

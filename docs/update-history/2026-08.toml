@@ -1,0 +1,19 @@
+[[update]]
+at = "2026-08-07T18:41:19Z"
+state_old = "5c848ba9aa57421467e45466c061b5187058bfa1052d28f8b2579cf17b1a07e9"
+state_new = "cd04971604cdc74631759b219b5b27f80258652ca459a3a43fa4df36cbb52119"
+cursor_old = "db251c01bc382119e8266e70efc763b47a5b2f5d"
+nixpkgs_old = "104240a772428cc2e20d8fd86c9ddbb886bbaff2"
+nixpkgs_new = "104240a772428cc2e20d8fd86c9ddbb886bbaff2"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "bitwarden"
+old = "2026.6.1"
+new = "2026.7.0"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []

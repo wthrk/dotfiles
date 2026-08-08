@@ -16,6 +16,8 @@ use crate::{
     support::protection::{ProtectedSecret, SecretSession},
 };
 
+use std::collections::BTreeMap;
+
 use super::{
     SecretDeviceIo, SelectedDeviceAdapter, SelectedDeviceDiscoveryIo, SelectedSecretDevice,
 };
@@ -27,6 +29,7 @@ use super::{
 #[derive(Default)]
 pub(super) struct StorageAdapter {
     device: SelectedDeviceAdapter,
+    generated_public_keys: BTreeMap<u32, Vec<u8>>,
 }
 
 impl StorageAdapter {
@@ -69,7 +72,8 @@ impl SecretStoragePort for StorageAdapter {
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
         if intent.key_generation_required {
-            device.generate_key()?;
+            let public_key = device.generate_key()?;
+            self.generated_public_keys.insert(serial, public_key);
         }
         Ok(())
     }
@@ -79,6 +83,7 @@ impl SecretStoragePort for StorageAdapter {
         serial: u32,
         mut intent: SecretStorageSetupIntent,
     ) -> Result<()> {
+        self.generated_public_keys.remove(&serial);
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
         device.write_object(PivObjectId::MANIFEST, &mut intent.manifest_bytes)
@@ -106,6 +111,9 @@ impl SecretStoragePort for StorageAdapter {
     ) -> Result<()> {
         let mut device = self.open_device_by_serial(serial)?;
         device.check_management_auth_preconditions()?;
+        if let Some(public_key) = self.generated_public_keys.get(&serial).cloned() {
+            device.remember_generated_public_key(public_key);
+        }
         let mut encoded = device.seal_for_storage(intent.storage.clone(), secret)?;
         device.write_object(intent.storage.object_id, &mut encoded)
     }
@@ -140,5 +148,14 @@ impl SecretStoragePort for StorageAdapter {
             device.verify_pin(pin)?;
         }
         device.open_from_storage(intent.storage.clone(), &intent.encoded)
+    }
+
+    fn verify_pin_input(&mut self, serial: u32, pin: &ProtectedSecret) -> Result<()> {
+        let _session = SecretSession::start()?;
+        let mut device = self.open_device_by_serial(serial)?;
+        if !device.requires_pin_input() {
+            return Ok(());
+        }
+        device.verify_pin(pin)
     }
 }

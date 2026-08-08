@@ -136,6 +136,12 @@ pub trait SecretStoragePort {
         intent: &SecretStorageReadIntent,
         pin: Option<&'a ProtectedSecret>,
     ) -> Result<ProtectedSecret>;
+    /// 対象 serial で入力済み PIN が実機に通るかを、書き込み前に検証する。
+    #[expect(
+        clippy::needless_lifetimes,
+        reason = "mockall::automock 展開のため named lifetime が必要"
+    )]
+    fn verify_pin_input<'a>(&mut self, serial: u32, pin: &'a ProtectedSecret) -> Result<()>;
 }
 
 /// use case が `gpg-secret-key-backup` recipient 運用のために接続中 YubiKey へ要求する capability 契約。
