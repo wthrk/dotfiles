@@ -103,11 +103,14 @@ fn assert_nightly_bump_updates_every_input(workflow: &str) -> Result<()> {
         )
     })?;
     let bump_step = bump_section.split("- name:").next().unwrap_or_default();
-    // コメント行を除いた実行行だけを見る。`nix flake update` を含む実行行は引数なしの 1 行に限る。
+    // 実行行だけを見るため、行末コメントを落としてから判定する。行頭 `#` の説明行は全体が落ちて空になり、
+    // これまでどおり実行行から外れる。`run:` は shell なので `#` が常にコメント開始とは限らないが、落とした
+    // 残りが `nix flake update` そのものでなければ不一致で fail するため、判定は fail-closed のまま保たれる。
+    // `nix flake update` を含む実行行は引数なしの 1 行に限る。
     let update_lines: Vec<&str> = bump_step
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with('#') && line.contains("nix flake update"))
+        .map(|line| line.split_once('#').map_or(line, |(code, _)| code).trim())
+        .filter(|line| line.contains("nix flake update"))
         .collect();
     ensure!(
         update_lines == ["nix flake update"],
@@ -631,6 +634,23 @@ const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 2] = [
           set -euo pipefail
           # 引数を渡さず flake.lock の全 input を bump する。
           nix flake update
+
+      - name: bump 後の input rev を抽出
+"#;
+
+        assert!(assert_nightly_bump_updates_every_input(workflow).is_ok());
+    }
+
+    /// 実行行に行末コメントを付けても受理する（コメント追加では実行内容が変わらないため）。行頭 `#` の
+    /// 説明行は、本文が `nix flake update` に触れていても実行行として数えない。
+    #[test]
+    fn nightly_bump_accepts_trailing_comment_on_update_line() {
+        let workflow = r#"
+      - name: 全 input を bump
+        run: |
+          set -euo pipefail
+          # nix flake update に引数を渡さない。
+          nix flake update  # 引数なしで flake.lock の全 input を bump する。
 
       - name: bump 後の input rev を抽出
 "#;
