@@ -43,9 +43,8 @@ jobs:
           # この指定が無いと既存ファイルを前にして止まる。
           HOME_MANAGER_BACKUP_EXT: before-home-manager
         run: |
-          expr="(builtins.getFlake \"path:$PWD\").lib.mkHome { user = \"$(id -un)\"; system = builtins.currentSystem; }.activationPackage"
-          package="$(nix build --impure --no-link --print-out-paths --expr "$expr")"
-          "$package/activate"
+          nix run .#default -- init --source "path:$PWD"
+          nix run .#default -- switch home
 
       - name: zsh checks
         run: nix develop -c bats --print-output-on-failure tests/zsh
