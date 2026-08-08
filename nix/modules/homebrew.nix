@@ -22,8 +22,7 @@
     greedyCasks = true;
 
     # `kicad` は nixpkgs 側が `broken = stdenv.hostPlatform.isDarwin` のため macOS では評価に通らず、cask で
-    # 宣言する。nixpkgs と cask のどちらで宣言するかの規約は docs/automation/homebrew-cask-pinning.md を
-    # 正本とする。
+    # 宣言する。
     casks = [
       "azookey"
       "bitwarden"

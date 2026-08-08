@@ -23,19 +23,11 @@ greedy 有効化の前提「全 cask が sha256 固定」は、`dotfiles update-
 `casks` へ足すと nightly の record が止まるため、固定できない cask は `homebrew.nix` の `casks` から外し、
 必要なら手動更新へ寄せる。
 
-## nixpkgs ではなく cask で宣言する条件
-
-そもそも cask を選ぶのは、対象が nixpkgs に無いか、nixpkgs にあっても darwin 評価が通らない（例:
-`broken = stdenv.hostPlatform.isDarwin`）場合に限る。どちらにも当たらないものは nixpkgs 側で宣言する。
-
 ## 無人差し替えの可視化
 
 auto-update が cask を上げた事実は、nightly CI が記録する
 [`docs/update-history/*.toml`](../update-history/README.md)（`dotfiles update-history show` で閲覧）に更新
 アプリとして現れ、無人差し替えが不可視にならないようにしている。
 
-差分の単位は tap rev 間の `version "..."` 変化であり、`version :latest` の cask は履歴に現れない。ただしこれは
-可視化の穴にはならない。Homebrew の cask audit は `version :latest` に `sha256 :no_check` を要求するため、
-`:latest` の cask は上記の前提「全 cask が sha256 固定」を満たせず、`casks` に足した時点で record が
-fail-closed で止まる。強制の実体は次回 record 実行時の停止なので追加から検出までには時間差があるが、`:latest` の
-cask は宣言 cask として定着せず、可視化の保証は宣言 cask 全体に対して成立する。
+差分の単位は tap rev 間の `version "..."` 変化であり、`version :latest` の cask は履歴に現れない。強制が働くのは
+次回 record 実行時であり、PR gate は record を実行しないため、追加から検出までには時間差がある。
