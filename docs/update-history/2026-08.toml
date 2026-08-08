@@ -17,3 +17,199 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-08-08T18:28:18Z"
+state_old = "cd04971604cdc74631759b219b5b27f80258652ca459a3a43fa4df36cbb52119"
+state_new = "b718368055dde5567daa0d93ac98335e8eb4efa122812517a88d475112817d22"
+cursor_old = "e1cc6f8c0b403122ecce8d88541d3fdbb691da8d"
+nixpkgs_old = "104240a772428cc2e20d8fd86c9ddbb886bbaff2"
+nixpkgs_new = "70ce234312134a463ba7728e94da2486a1d237ac"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "7アプリ更新: 🔒1 ✨5 🐛18"
+
+[[update.package]]
+name = "chromedriver"
+old = "151.0.7922.72"
+new = "151.0.7922.76"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/search?q=151.0.7922.76"
+change_item = []
+
+[[update.package]]
+name = "discord"
+old = "0.0.398"
+new = "0.0.405"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discord.com/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいボイスチャット機能が追加されました。"
+ref = "https://discord.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "メッセージ送信時のバグが修正されました。"
+ref = "https://discord.com/"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.3.1"
+new = "5.4.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.4.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ボリューム再作成を計画にモデル化する新機能を追加"
+ref = "https://github.com/docker/compose/pull/13962"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ネットワークライフサイクルを計画にモデル化する新機能を追加"
+ref = "https://github.com/docker/compose/pull/13966"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ハッシュ処理中にゼロレプリカサービスを保持するバグを修正"
+ref = "https://github.com/docker/compose/pull/13931"
+
+[[update.package.change_item]]
+category = "fix"
+text = "サービス選択が無視された場合に警告を出すよう修正"
+ref = "https://github.com/docker/compose/pull/13950"
+
+[[update.package.change_item]]
+category = "fix"
+text = "プラットフォームイメージマニフェストダイジェストを使用するよう修正"
+ref = "https://github.com/docker/compose/pull/13949"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`up`コマンドでモデルを再読み込みする際に--insecure-registryを尊重するよう修正"
+ref = "https://github.com/docker/compose/pull/13894"
+
+[[update.package.change_item]]
+category = "fix"
+text = "type:imageボリュームソースとpre_startフックイメージを固定するよう修正"
+ref = "https://github.com/docker/compose/pull/13956"
+
+[[update.package.change_item]]
+category = "fix"
+text = "より多くのランタイムコマンドでenvファイルの欠如を許容するよう修正"
+ref = "https://github.com/docker/compose/pull/13603"
+
+[[update.package.change_item]]
+category = "fix"
+text = "サービスイメージとともに`pre_start`フックイメージを解決するよう修正"
+ref = "https://github.com/docker/compose/pull/13937"
+
+[[update.package.change_item]]
+category = "fix"
+text = "dry-run CopyFromContainerから非nilのContentを返すよう修正"
+ref = "https://github.com/docker/compose/pull/13982"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--services`/`--volumes`/`--networks`/`--models`/`--hash`にconfigフラグを適用するよう修正"
+ref = "https://github.com/docker/compose/pull/13979"
+
+[[update.package.change_item]]
+category = "fix"
+text = "スケール、ウォッチ、シェル補完でenvファイルの欠如を許容するよう修正"
+ref = "https://github.com/docker/compose/pull/13973"
+
+[[update.package]]
+name = "firefox-bin"
+old = "153.0.1"
+new = "153.0.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/153.0.3/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグを修正しました。"
+ref = "https://www.firefox.com/en-US/firefox/153.0.3/releasenotes/"
+
+[[update.package]]
+name = "google-chrome"
+old = "151.0.7922.72"
+new = "151.0.7922.76"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+change_item = []
+
+[[update.package]]
+name = "vips"
+old = "8.18.3"
+new = "8.18.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/libvips/libvips/releases"
+
+[[update.package.change_item]]
+category = "security"
+text = "heifload: セキュリティ制限を引き上げ"
+ref = "https://github.com/libvips/libvips/releases"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.13.1"
+new = "1.14.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.14.2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "エージェントのターミナルコマンドとウェブフェッチのサンドボックス化を追加"
+ref = "https://zed.dev/blog/sandboxing"
+
+[[update.package.change_item]]
+category = "feature"
+text = "プロジェクトパネルでファイル操作の元に戻す・やり直す機能を追加"
+ref = "https://zed.dev/docs/project-panel#undo-and-redo"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ターミナルを閉じた際にプロセスが残る問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/61467"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`git`コマンド実行時にハングする問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/61999"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`editor: find all references`のプレビュータブが永久タブになる問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/61021"
+
+[[update.package.change_item]]
+category = "fix"
+text = "「エージェントスレッドに追加」で選択したメンションが参照ファイルを開かない問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/61621"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数カーソルを使用した際のコピー＆ペーストでクラッシュする問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/61545"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Gitクローンエラーメッセージに余分な空行が表示される問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/61674"
