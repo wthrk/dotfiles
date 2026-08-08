@@ -21,7 +21,9 @@ concurrency:
 jobs:
   zsh:
     name: zsh checks
-    runs-on: macos-latest
+    # 検証対象の zsh 挙動は利用者の実機（macOS 26）上のものなので runner も同じ版に固定する。`macos-latest` は
+    # GitHub が指す先を移すたびに image が変わり、復元する `target/` の前提（アーキテクチャ・SDK）が黙って動く。
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:

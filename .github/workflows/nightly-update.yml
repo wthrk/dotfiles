@@ -72,7 +72,10 @@ jobs:
   #    オーケストレーションだけを行う。PR 起票の権限は持たせない（contents: read のみ）。
   bump:
     name: bump lock and record history
-    runs-on: macos-15
+    # darwin 設定（`darwinConfigurations.ci-ref`）を eval する job なので macOS runner を使う。版は構成対象の
+    # 実機と同じ macOS 26 に固定する。`macos-latest` は GitHub が指す先を移すたびに image が変わり、
+    # runner 側 toolchain と SDK の前提が黙って動くため使わない。
+    runs-on: macos-26
     timeout-minutes: 120
     permissions:
       contents: read

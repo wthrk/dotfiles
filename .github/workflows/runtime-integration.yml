@@ -21,7 +21,8 @@ env:
 jobs:
   runtime:
     name: bootstrap から darwin switch まで検証
-    runs-on: macos-15
+    # bootstrap と darwin switch は OS 版に依存するため、構成対象の実機と同じ macOS 26 に固定する。
+    runs-on: macos-26
     timeout-minutes: 180
 
     steps:
