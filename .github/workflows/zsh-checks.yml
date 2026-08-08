@@ -36,7 +36,12 @@ jobs:
       # `/nix/store` はキャッシュしない。PR gate になったため static-checks.yml と同じ判断を採る。macOS runner の
       # 復元は 1 時間規模に達しうる。store path は cache.nixos.org から substitute する。
 
-      # cargo のビルド成果物キャッシュは持たない。この job が build するのは Home Manager の activation package
-      # だけであり、Rust の成果物を必要としないため、復元する `target/` が無い。
+      # 検証は適用済み環境を起動するだけなので、runner をここで実機と同じ状態にする。
+      - name: 構成を適用
+        run: |
+          expr="(builtins.getFlake \"path:$PWD\").lib.mkHome { user = \"$(id -un)\"; system = builtins.currentSystem; }.activationPackage"
+          package="$(nix build --impure --no-link --print-out-paths --expr "$expr")"
+          "$package/activate"
+
       - name: zsh checks
         run: nix develop -c bats --print-output-on-failure tests/zsh
