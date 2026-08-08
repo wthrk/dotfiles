@@ -27,7 +27,7 @@ pub(crate) fn check() -> Result<()> {
     homebrew_cleanup_matches_locked_brew_capability(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)?;
-    auto_update_daemon_drops_root_privileges(&shell)
+    auto_update_daemon_argv_is_expected(&shell)
 }
 
 /// Rust ワークスペース全体で、警告を失敗扱いにして整形、lint、テストを回す。型検査は lint に内包する。
@@ -467,14 +467,16 @@ fn nix(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// root LaunchDaemon（auto-update）が起動する argv が、`dotfiles update` へ権限降格を渡すことを確認する。
+/// root LaunchDaemon（auto-update）が起動する argv が、権限降格・既定 target・対象 host を保つことを確認する。
 ///
 /// この daemon は root で走る。argv から `--user` が落ちると Home Manager が root のまま実行され、利用者所有
-/// ファイルの所有者が root へ変わる。この退行は評価も `nix flake check` も `nil` も通過するため、ここで固定
-/// する。検査対象は `nix/darwin.nix` のソーステキストではなく `darwinConfigurations.ci-ref` の評価値であり、
-/// wrapper は評価時に書き出された derivation から読むためビルドを要さない（darwin 以外の runner でも動く）。
-fn auto_update_daemon_drops_root_privileges(shell: &Shell) -> Result<()> {
-    step("auto-update daemon argv drops root privileges");
+/// ファイルの所有者が root へ変わる。`update` に positional target が付くと指定した target 以外が適用されなく
+/// なり（`darwin` なら Home Manager が適用されない）、`--host` が落ちる・別名になると別構成を無人適用する。
+/// いずれの退行も評価も `nix flake check` も `nil` も通過するため、ここで固定する。検査対象は
+/// `nix/darwin.nix` のソーステキストではなく `darwinConfigurations.ci-ref` の評価値であり、wrapper は評価時に
+/// 書き出された derivation から読むためビルドを要さない（darwin 以外の runner でも動く）。
+fn auto_update_daemon_argv_is_expected(shell: &Shell) -> Result<()> {
+    step("auto-update daemon argv keeps downgrade, default target, host");
     let attribute = format!(
         ".#{CI_REFERENCE}.config.launchd.daemons.\"{AUTO_UPDATE_DAEMON_LABEL}\".serviceConfig.ProgramArguments"
     );
@@ -484,7 +486,14 @@ fn auto_update_daemon_drops_root_privileges(shell: &Shell) -> Result<()> {
     let derivation = auto_update_wrapper_derivation(&referenced)?;
     let shown = cmd!(shell, "nix derivation show {derivation}").read()?;
     let script = auto_update_wrapper_script(&shown)?;
-    assert_auto_update_daemon_drops_root_privileges(&script)
+    // 期待する `--host` は評価した構成そのものの名前。daemon はこの値で `#<host>` を引くため、attribute 名と
+    // ずれた瞬間に別構成を適用する。
+    let host = CI_REFERENCE
+        .strip_prefix("darwinConfigurations.")
+        .ok_or_else(|| {
+            anyhow!("`CI_REFERENCE`（{CI_REFERENCE}）から対象構成の host 名を切り出せない")
+        })?;
+    assert_auto_update_daemon_argv(&script, host)
 }
 
 /// daemon の argv が参照する derivation を 1 件に確定する。
@@ -534,11 +543,12 @@ fn auto_update_wrapper_script(shown: &str) -> Result<String> {
         })
 }
 
-/// wrapper script が起動する `dotfiles update` の argv に、root 以外への降格指定が含まれることを判定する純関数。
+/// wrapper script が起動する `dotfiles update` の argv を判定する純関数。
 ///
-/// 行継続を畳んでから `dotfiles update` の起動行を 1 件に確定し、その argv の `--user` の値を見る。起動行が
-/// 確定できない、`--user` が無い、値が空か `root` の場合はいずれも `Err`（fail-closed）。
-fn assert_auto_update_daemon_drops_root_privileges(script: &str) -> Result<()> {
+/// 行継続を畳んでから `dotfiles update` の起動行を 1 件に確定し、その argv について
+/// positional target が無いこと、`--user` が root 以外であること、`--host` が `expected_host` であることを見る。
+/// 起動行が確定できない、subcommand が `update` でない、値が取れない場合はいずれも `Err`（fail-closed）。
+fn assert_auto_update_daemon_argv(script: &str, expected_host: &str) -> Result<()> {
     let joined = script.replace("\\\n", " ");
     let invocations: Vec<&str> = joined
         .lines()
@@ -551,26 +561,83 @@ fn assert_auto_update_daemon_drops_root_privileges(script: &str) -> Result<()> {
         ));
     };
     let arguments: Vec<&str> = invocation.split_whitespace().collect();
-    let user = arguments
-        .iter()
-        .enumerate()
-        .find_map(|(index, argument)| {
-            argument
-                .strip_prefix("--user=")
-                .or_else(|| (*argument == "--user").then(|| arguments.get(index + 1).copied())?)
-        })
-        .ok_or_else(|| {
-            anyhow!(
-                "root LaunchDaemon が起動する `dotfiles update` の argv に `--user` が無い。権限降格が \
-                 落ちると Home Manager が root のまま走り、利用者所有ファイルが root 所有へ変わる"
-            )
-        })?;
+    assert_update_keeps_default_target(&arguments)?;
+    let user = option_value(&arguments, "--user").ok_or_else(|| {
+        anyhow!(
+            "root LaunchDaemon が起動する `dotfiles update` の argv に `--user` が無い。権限降格が \
+             落ちると Home Manager が root のまま走り、利用者所有ファイルが root 所有へ変わる"
+        )
+    })?;
     ensure!(
         !user.is_empty() && user != "root",
         "root LaunchDaemon が起動する `dotfiles update` の `--user` が `{user}` で、root からの降格に \
          なっていない"
     );
+    let host = option_value(&arguments, "--host").ok_or_else(|| {
+        anyhow!(
+            "root LaunchDaemon が起動する `dotfiles update` の argv に `--host` が無い。`--host` が落ちると \
+             短縮 hostname で `#<host>` を引き、対象と別の構成を無人適用しうる"
+        )
+    })?;
+    ensure!(
+        host == expected_host,
+        "root LaunchDaemon が起動する `dotfiles update` の `--host` が `{host}` で、対象構成 \
+         `{expected_host}` を指していない"
+    );
     Ok(())
+}
+
+/// 起動行の subcommand が `update` で、その直後に positional target が付いていないことを判定する。
+///
+/// wrapper は手動実行と同じ既定 target（`all`）で、lock 更新に続けて Home Manager と nix-darwin を適用する。
+/// lock 更新は target に依らず走るが、`darwin` などの target が付くと指定した target 以外が適用されなくなり
+/// （`darwin` なら Home Manager が適用されない）、`--user` が残っていても無人収束が部分適用へ退行する。
+/// `update` の直後は option だけが続くことを見る。
+fn assert_update_keeps_default_target(arguments: &[&str]) -> Result<()> {
+    let binary = arguments
+        .iter()
+        .position(|argument| argument.ends_with("/bin/dotfiles"))
+        .ok_or_else(|| {
+            anyhow!("auto-update wrapper の起動行から `dotfiles` binary の位置を特定できない")
+        })?;
+    let subcommand = arguments
+        .get(binary + 1)
+        .copied()
+        .ok_or_else(|| anyhow!("auto-update wrapper の起動行に `dotfiles` の subcommand が無い"))?;
+    ensure!(
+        subcommand == "update",
+        "auto-update wrapper が起動する subcommand が `{subcommand}` で、`update` ではない"
+    );
+    match arguments.get(binary + 2) {
+        Some(target) if !target.starts_with('-') => Err(anyhow!(
+            "root LaunchDaemon が起動する `dotfiles update` に positional target `{target}` が付いている。\
+             既定 target（all）以外では指定した target 以外が適用されない（`darwin` なら Home Manager が \
+             適用されない）"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// 起動行の argv から option の値を引く。
+///
+/// `--name value` と `--name=value` の両形を受ける。評価済み wrapper では値が `lib.escapeShellArg` で単一引用符に
+/// 包まれるため、比較前にその引用符を外す（外れない形は値がそのまま残り、期待値照合側で落ちる）。
+fn option_value<'a>(arguments: &[&'a str], name: &str) -> Option<&'a str> {
+    let joined = format!("{name}=");
+    arguments
+        .iter()
+        .enumerate()
+        .find_map(|(index, argument)| {
+            argument
+                .strip_prefix(joined.as_str())
+                .or_else(|| (*argument == name).then(|| arguments.get(index + 1).copied())?)
+        })
+        .map(|value| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+                .unwrap_or(value)
+        })
 }
 
 /// `rust()` の workspace ビルドが uplift した `dotfiles` binary を、自分と同じ target directory から引く。
@@ -613,21 +680,24 @@ fn nix_files(shell: &Shell) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_auto_update_daemon_drops_root_privileges,
-        assert_homebrew_cleanup_matches_locked_brew_capability,
+        assert_auto_update_daemon_argv, assert_homebrew_cleanup_matches_locked_brew_capability,
         assert_lock_input_sources_match_expected_table, assert_nightly_bump_updates_every_input,
         auto_update_wrapper_derivation, auto_update_wrapper_script, parse_dotted_version,
     };
 
-    /// 評価済み wrapper script の骨格。`--user` の行（継続行込み、無い場合は空文字列）だけを差し替える。
-    fn wrapper_fixture(user_line: &str) -> String {
+    /// 検査対象の構成名。評価済み wrapper が `--host` に渡すべき値。
+    const EXPECTED_HOST: &str = "ci-ref";
+
+    /// 評価済み wrapper script の骨格。`update` 直後の target、`--user` の行（継続行込み、無い場合は空文字列）、
+    /// `--host` の行（無い場合は空文字列）を差し替える。値は `lib.escapeShellArg` と同じく単一引用符に包む。
+    fn wrapper_fixture(target: &str, user_line: &str, host_line: &str) -> String {
         format!(
             "#!/nix/store/aaaa-bash/bin/bash\n\
              set -euo pipefail\n\n\
              export PATH=/nix/store/bbbb-nix/bin\n\n\
-             exec env HOME=/Users/ci /nix/store/cccc-dotfiles-cli/bin/dotfiles update \\\n  \
-             --config-dir /Users/ci/.config/dotfiles \\\n\
-             {user_line}  --host ci-ref\n"
+             exec env HOME='/Users/ci' /nix/store/cccc-dotfiles-cli/bin/dotfiles update{target} \\\n  \
+             --config-dir '/Users/ci/.config/dotfiles' \\\n\
+             {user_line}{host_line}\n"
         )
     }
 
@@ -988,41 +1058,64 @@ const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str); 1] = [
         assert!(parse_dotted_version("6.0.13.1").is_none());
     }
 
-    /// root daemon の argv が対象ユーザーへ降格していれば受理する。
+    /// 降格・既定 target・対象 host がそろった argv を受理する。
     #[test]
-    fn auto_update_daemon_accepts_argv_with_user_downgrade() {
-        let script = wrapper_fixture("  --user ci \\\n");
-        assert!(assert_auto_update_daemon_drops_root_privileges(&script).is_ok());
+    fn auto_update_daemon_accepts_expected_argv() {
+        let script = wrapper_fixture("", "  --user 'ci' \\\n", "  --host 'ci-ref'");
+        assert!(assert_auto_update_daemon_argv(&script, EXPECTED_HOST).is_ok());
     }
 
-    /// `--user=<user>` 形式も同じ降格として受理する。
+    /// `--user=<user>` / `--host=<host>` 形式も同じ argv として受理する。
     #[test]
-    fn auto_update_daemon_accepts_joined_user_option_form() {
-        let script = wrapper_fixture("  --user=ci \\\n");
-        assert!(assert_auto_update_daemon_drops_root_privileges(&script).is_ok());
+    fn auto_update_daemon_accepts_joined_option_form() {
+        let script = wrapper_fixture("", "  --user='ci' \\\n", "  --host='ci-ref'");
+        assert!(assert_auto_update_daemon_argv(&script, EXPECTED_HOST).is_ok());
     }
 
     /// `--user` が落ちると Home Manager が root のまま走るため拒否する。
     #[test]
     fn auto_update_daemon_rejects_argv_without_user_downgrade() {
-        let script = wrapper_fixture("");
-        let err = assert_auto_update_daemon_drops_root_privileges(&script).unwrap_err();
+        let script = wrapper_fixture("", "", "  --host 'ci-ref'");
+        let err = assert_auto_update_daemon_argv(&script, EXPECTED_HOST).unwrap_err();
         assert!(err.to_string().contains("--user"), "{err}");
     }
 
     /// `--user root` は形の上では降格指定だが root のままなので拒否する。
     #[test]
     fn auto_update_daemon_rejects_root_as_downgrade_target() {
-        let script = wrapper_fixture("  --user root \\\n");
-        let err = assert_auto_update_daemon_drops_root_privileges(&script).unwrap_err();
+        let script = wrapper_fixture("", "  --user 'root' \\\n", "  --host 'ci-ref'");
+        let err = assert_auto_update_daemon_argv(&script, EXPECTED_HOST).unwrap_err();
         assert!(err.to_string().contains("root"), "{err}");
+    }
+
+    /// `update` に positional target が付くと、非 root ユーザー指定のままでも適用対象が欠けるため拒否する。
+    #[test]
+    fn auto_update_daemon_rejects_positional_update_target() {
+        let script = wrapper_fixture(" darwin", "  --user 'ci' \\\n", "  --host 'ci-ref'");
+        let err = assert_auto_update_daemon_argv(&script, EXPECTED_HOST).unwrap_err();
+        assert!(err.to_string().contains("positional target"), "{err}");
+    }
+
+    /// `--host` が落ちると短縮 hostname 依存に戻るため拒否する。
+    #[test]
+    fn auto_update_daemon_rejects_argv_without_host() {
+        let script = wrapper_fixture("", "  --user 'ci'", "");
+        let err = assert_auto_update_daemon_argv(&script, EXPECTED_HOST).unwrap_err();
+        assert!(err.to_string().contains("--host"), "{err}");
+    }
+
+    /// `--host` が対象構成以外を指す argv は、別構成の無人適用になるため拒否する。
+    #[test]
+    fn auto_update_daemon_rejects_unexpected_host() {
+        let script = wrapper_fixture("", "  --user 'ci' \\\n", "  --host 'other-host'");
+        let err = assert_auto_update_daemon_argv(&script, EXPECTED_HOST).unwrap_err();
+        assert!(err.to_string().contains("other-host"), "{err}");
     }
 
     /// `dotfiles update` の起動行を確定できない argv は、検査対象を失うため拒否する。
     #[test]
     fn auto_update_daemon_rejects_script_without_update_invocation() {
-        let err =
-            assert_auto_update_daemon_drops_root_privileges("set -euo pipefail\n").unwrap_err();
+        let err = assert_auto_update_daemon_argv("set -euo pipefail\n", EXPECTED_HOST).unwrap_err();
         assert!(err.to_string().contains("1 件に確定できない"), "{err}");
     }
 
