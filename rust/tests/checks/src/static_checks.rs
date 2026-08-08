@@ -19,22 +19,20 @@ pub(crate) fn check() -> Result<()> {
     nix(&shell)
 }
 
-/// Rust ワークスペース全体で、警告を失敗扱いにして整形、型検査、lint、テストを回す。
+/// Rust ワークスペース全体で、警告を失敗扱いにして整形、lint、テストを回す。型検査は lint に内包する。
 fn rust(shell: &Shell) -> Result<()> {
     step("cargo fmt");
     cmd!(shell, "cargo fmt --all -- --check").run()?;
-    // clippy は `cargo check` の上位互換（同じ型検査に lint を足す）なので check は走らせない。RUSTFLAGS は
-    // cargo の fingerprint に入るため、後続の `cargo test` と同じ `-D warnings` を必ず揃える。揃えないと
-    // 依存 427 crate が pass ごとに丸ごと再ビルドされる。
+    // clippy は `cargo check` の上位互換なので check は走らせない。RUSTFLAGS は cargo の fingerprint に
+    // 入るため、後続の `cargo test` と揃えないと依存が pass ごとに再ビルドされる。
     step("cargo clippy");
     cmd!(
         shell,
         "env RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets -- -D warnings"
     )
     .run()?;
-    // `--workspace --all-targets` は dotfiles-secrets の lib テストも含むため、個別の `-p dotfiles-secrets`
-    // 実行は追加しない。`-p` 単体は依存 crate の feature 解決が workspace 統合時と変わり、同じテストのために
-    // 依存ツリーを丸ごと再ビルドするだけになる。
+    // `--all-targets` が lib テストを含むので個別の `-p` 実行は足さない。`-p` 単体は依存の feature 解決が
+    // 変わり、同じテストのために依存ツリーを再ビルドするだけになる。
     step("cargo test");
     cmd!(
         shell,
