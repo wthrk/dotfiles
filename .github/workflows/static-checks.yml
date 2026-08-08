@@ -65,8 +65,10 @@ jobs:
       - name: static checks
         run: nix develop -c cargo xtask check static
 
-      # derivation path を先に確定させる。この hash は全入力（Rust ソース・Cargo.lock・flake.lock・
-      # buildInputs / nativeBuildInputs）の関数なので、そのままキャッシュキーとして使える。
+      # derivation hash は build 入力の関数なので、そのまま cache key にできる。flake.nix が src を
+      # `rust/` / `Cargo.toml` / `Cargo.lock` / `.cargo/` へ絞っているため、docs・workflow・nix module
+      # だけの変更ではキーが動かず PR でも命中する。Rust workspace を触る PR は derivation が変わるので
+      # 必ず miss し、下の nix build が実ビルドになる（それが gate の意味）。
       - name: dotfiles-cli の derivation を確定
         id: cli
         run: |
@@ -74,42 +76,35 @@ jobs:
           drv="$(nix path-info --derivation .#dotfiles-cli)"
           echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
 
-      # ランナーの `/nix/store` は毎回空なので、何もしないと 427 crate を毎回コンパイルし直すことになる
-      # （実測 7〜12 分）。dotfiles-cli の closure を run 間で持ち回ってこれを消す。closure は 178 path・
-      # zstd 圧縮で約 370MB（うち dotfiles-cli 自身は 5MB、残りは cache.nixos.org にもある標準 path）。
-      # 単体 path だけを持ち回る手もあるが、復元時に参照先が store に無く import が通らないため closure ごと運ぶ。
+      # ランナーの `/nix/store` は毎回空。closure を持ち回らないと毎回フルビルドになる。cache 置き場は
+      # 作業ツリー外に取り、checkout を汚さない。
       - name: dotfiles-cli ビルド成果物キャッシュを復元
         id: cli-cache
         uses: actions/cache/restore@v4
         with:
-          path: .nixcache
+          path: ~/.cache/dotfiles-nixcache
           key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
 
       - name: 成果物を store へ復元
         if: steps.cli-cache.outputs.cache-hit == 'true'
-        run: nix copy --from "file://$PWD/.nixcache" --no-check-sigs .#dotfiles-cli
+        run: nix copy --from "file://$HOME/.cache/dotfiles-nixcache" --no-check-sigs .#dotfiles-cli
 
       # static checks は devShell 内で走るため、build sandbox でしか露見しない依存欠落を検出できない。
       # bootstrap が叩く derivation そのものを PR でも build する。derivation は `doCheck = false` なので
       # ここで検出できるのは buildPhase の compile / link に現れる欠落までで、checkPhase だけが起動する
-      # 依存（#84 の git がそれ）は対象外。
-      #
-      # 上で成果物を復元できた場合、nix は out path が既に valid なのを見てビルドを省く。これは検出力を
-      # 落とさない: キーは全入力の関数なので、`db251c0` のように buildInputs / nativeBuildInputs へ穴が開く
-      # 変更をすれば必ず別キーになり、cache miss → 実ビルドで欠落が露見する。
+      # 依存（#84 の git がそれ）は対象外。復元できていれば nix はビルドを省くが、key は derivation 名なので
+      # build 入力を変えれば必ず miss して実ビルドになる。
       - name: dotfiles-cli の nix build
         run: nix build .#dotfiles-cli --no-link --print-build-logs
 
-      # 保存は main scope 限定（cargo cache と同じ理由）。PR 側が保存しても、その cache は同じ PR からしか
-      # 読めない上に 1 件 370MB あり、Rust ソースを触った PR は次 run で必ず別キーになるため再利用もされない。
-      # 全 PR が読める main scope の entry を 1 commit につき 1 件だけ積む。
+      # 保存は main scope 限定（cargo cache と同じ理由）。
       - name: 成果物をキャッシュへ書き出し
         if: ${{ steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
-        run: nix copy --to "file://$PWD/.nixcache?compression=zstd" --no-check-sigs .#dotfiles-cli
+        run: nix copy --to "file://$HOME/.cache/dotfiles-nixcache?compression=zstd" --no-check-sigs .#dotfiles-cli
 
       - name: 成果物キャッシュを保存
         if: ${{ steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
-          path: .nixcache
+          path: ~/.cache/dotfiles-nixcache
           key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
