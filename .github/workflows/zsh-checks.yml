@@ -3,6 +3,11 @@ name: Zsh checks
 on:
   workflow_dispatch:
   pull_request:
+  # PR run が読めるキャッシュは既定ブランチ scope のものだけ。main への push でも走らせて初めて
+  # `refs/heads/main` scope の target/ キャッシュが populate され、以降の PR がそれを restore できる。
+  push:
+    branches:
+      - main
   schedule:
     - cron: "0 15 * * 0"
 
@@ -31,15 +36,19 @@ jobs:
       # `/nix/store` はキャッシュしない。PR gate になったため static-checks.yml と同じ判断を採る。macOS runner の
       # 復元は 1 時間規模に達しうる。store path は cache.nixos.org から substitute する。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを run 間で再利用する。Nix devShell 内でビルドした
-      # build script を target/ ごと復元すると、現在の `/nix/store` に存在しない旧 path を参照した実行ファイルを
-      # 踏んで落ちうるため、workspace の成果物は毎回再生成する。static-checks（ubuntu）とは runner.os が異なり
-      # shared-key も別のため registry cache だけを安全に共有する。fail-safe。
+      # この job は checkout した flake.lock の devShell だけでビルドし、lock を書き換えない。よってキャッシュ
+      # キーに flake.lock ハッシュを含めれば、復元する target/ の build script が参照する `/nix/store` closure は
+      # 必ず一致する（GC 済み path を踏む事故が起きない）。依存 427 crate の再ビルドが消えるので target/ まで
+      # 再利用する。static-checks（ubuntu）とは runner.os が異なるためキーは自然に分かれる。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: zsh-checks-${{ runner.os }}
-          cache-targets: false
+          shared-key: zsh-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
+          cache-targets: true
+          # 保存は main scope だけに限る（static-checks.yml と同じ理由）。PR scope の cache は他 PR から読めず、
+          # target/ を含むと 10GB 上限を圧迫して main scope の cache を evict する。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: zsh checks
         run: nix develop -c cargo xtask check zsh

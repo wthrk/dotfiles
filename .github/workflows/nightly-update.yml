@@ -90,15 +90,16 @@ jobs:
       # 消費して job の timeout-minutes を食い潰し、bump 本体へ到達できなくなる。store path は cache.nixos.org
       # から substitute する。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。Nix devShell 内でビルドした target/ の build
-      # script は `/nix/store` 依存を持つため、run 間 restore まで行うと GC 済み store path を指した古い実行ファイルを
-      # 踏んで壊れやすい。依存 crate の取得だけ共有し、workspace の成果物は各 job の devShell で再生成する。
-      # bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      # この job のビルドは `nix flake update` より前、= checkout した flake.lock の devShell で走る。よって
+      # キャッシュキーに flake.lock ハッシュを含めれば、restore する target/ の build script が参照する
+      # `/nix/store` closure は必ず一致する（GC 済み path を踏む事故が起きない）。依存 427 crate の再ビルドが
+      # 消えるのでここは target/ まで再利用する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}
-          cache-targets: false
+          shared-key: nightly-bump-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
+          cache-targets: true
 
       # 判定主体（eval/導出/rev 抽出）を担う dotfiles バイナリを devShell 内 cargo でビルドする。`nix eval` 起動・
       # owner/repo 導出・flake.lock rev 抽出は全てこのバイナリ（Rust）が行う。devShell 内ビルドのため実行も
@@ -192,23 +193,31 @@ jobs:
 
       # `/nix/store` はキャッシュしない（bump job と同じ判断）。store path は cache.nixos.org から substitute する。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。Nix devShell 内でビルドした target/ の build
-      # script を復元すると、現在の `/nix/store` に無い旧 path を参照して落ちうるため、workspace の成果物は毎回
-      # 再生成する。bump↔record は同一 OS（macOS）のため shared-key を共有する。
+      # バイナリのビルドは下で download-artifact より前に置いてある。よってこの時点の checkout の flake.lock は
+      # bump 前 lock であり、キャッシュキーの flake.lock ハッシュはビルドに使う devShell の `/nix/store` closure と
+      # 必ず一致する（GC 済み path を指す build script を踏まない）。bump job と同一 lock・同一 OS のため
+      # shared-key を共有し、依存 427 crate の再ビルドを両 job で消す。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-${{ runner.os }}
-          cache-targets: false
+          shared-key: nightly-bump-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          cmd-format: nix develop -c {0}
+          cache-targets: true
 
-      # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。
+      # bump 済み lock を展開する前にビルドする。展開後にビルドすると devShell が毎晩必ず変わって target/ キャッシュが
+      # 原理的に当たらず、依存 427 crate を毎回積み直すことになる（実測 9 分）。バイナリは bump 前 devShell で
+      # ビルドし、下の record step も同じ closure（`--reference-lock-file old-flake.lock`）で実行するため、
+      # job 間持ち回りで問題になる動的ライブラリ参照切れは起きない。
+      - name: record 用 dotfiles バイナリをビルド
+        run: nix develop -c cargo build -p dotfiles-cli
+
+      # bump 済み flake.lock と bump 前 eval 版マップを checkout 上に展開する。ここで tree の flake.lock は
+      # bump 後のものに置き換わる（バイナリが起動する `nix eval` はこれを見る）。bump 前 lock は同じ artifact の
+      # `old-flake.lock` として残るので、devShell の固定に使える。
       - name: bump 済み lock と bump 前 eval 版マップを取得
         uses: actions/download-artifact@v8
         with:
           name: bump-state
-
-      - name: record 用 dotfiles バイナリをビルド
-        run: nix develop -c cargo build -p dotfiles-cli
 
       # record は bump 後 nix 版を bump 済み lock で `nix eval` し、nix 版差分・brew cask 版差分（reqwest で cask
       # `.rb` を取得し version 解析、sha256 未固定 cask の fail-closed 検査、subdir 解決）・ノート取得・OpenAI 要約・TOML 記録までを
@@ -241,7 +250,14 @@ jobs:
           notes_sources="docs/update-history/notes-sources.toml"
           mkdir -p docs/update-history
           dotfiles_bin="$PWD/target/debug/dotfiles"
-          nix develop -c "$dotfiles_bin" update-history record \
+          # devShell は bump 前 lock（`old-flake.lock`）に固定する。バイナリはその closure でビルドされているため、
+          # bump 後 devShell で実行すると `/nix/store` の動的ライブラリ参照が食い違いうる。一方この record が
+          # 比較対象として起動する `nix eval` は別プロセスで tree の flake.lock（= bump 後）を読むため、
+          # devShell の固定は「bump 後の版を評価する」という本来の役割を一切変えない。
+          # `--no-write-lock-file`: 参照 lock は tree の bump 後 flake.lock と当然食い違うため、これが無いと nix が
+          # lock 書き戻しを試みて "cannot write modified lock file" を出す。tree の lock は bump 結果そのもので
+          # あり書き換えてはならない。
+          nix develop --reference-lock-file old-flake.lock --no-write-lock-file -c "$dotfiles_bin" update-history record \
             --lock-old old-flake.lock \
             --lock-new flake.lock \
             --cursor-old "$REPO_BASE_SHA" \
@@ -336,14 +352,17 @@ jobs:
       # `/nix/store` はキャッシュしない。この job は static-checks.yml と同じ `cargo xtask check static` を走らせ、
       # その required check 相当の status を投稿するため、キャッシュ構成も static-checks.yml に揃える。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。verify-bump-lock でも Nix devShell 内で
-      # ビルドした target/ の build script を restore すると `/nix/store` 依存のずれで壊れうるため、workspace
-      # の成果物はその run の devShell で再生成する。依存 crate 取得だけを共有する。static-checks.yml と同一
-      # OS（ubuntu）のため shared-key を共有する。
+      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。この job は bump 済み lock（後段の
+      # download-artifact で展開）の devShell でビルドするが、キャッシュ復元時点の checkout はまだ bump 前 lock
+      # であるため、flake.lock ハッシュで `/nix/store` closure の一致を保証できない。target/ を復元すると GC 済み
+      # store path を指した build script を踏みうるので registry/git だけ共有する。
+      #
+      # shared-key は static-checks.yml と分ける。あちらは closure 一致を保証できる（同一 lock でビルドする）ため
+      # target/ まで載せたキーになっており、同じキーを共有すると復元できない target/ を巡って互いを潰し合う。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}
+          shared-key: nightly-open-pr-${{ runner.os }}
           cache-targets: false
 
       - name: bump 済み lock を取得

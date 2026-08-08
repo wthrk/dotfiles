@@ -23,30 +23,29 @@ pub(crate) fn check() -> Result<()> {
 fn rust(shell: &Shell) -> Result<()> {
     step("cargo fmt");
     cmd!(shell, "cargo fmt --all -- --check").run()?;
-    step("cargo check");
-    cmd!(shell, "env RUSTFLAGS='-D warnings' cargo check --workspace").run()?;
+    // clippy は `cargo check` の上位互換（同じ型検査に lint を足す）なので check は走らせない。RUSTFLAGS は
+    // cargo の fingerprint に入るため、後続の `cargo test` と同じ `-D warnings` を必ず揃える。揃えないと
+    // 依存 427 crate が pass ごとに丸ごと再ビルドされる。
     step("cargo clippy");
     cmd!(
         shell,
-        "cargo clippy --workspace --all-targets -- -D warnings"
+        "env RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets -- -D warnings"
     )
     .run()?;
+    // `--workspace --all-targets` は dotfiles-secrets の lib テストも含むため、個別の `-p dotfiles-secrets`
+    // 実行は追加しない。`-p` 単体は依存 crate の feature 解決が workspace 統合時と変わり、同じテストのために
+    // 依存ツリーを丸ごと再ビルドするだけになる。
     step("cargo test");
     cmd!(
         shell,
         "env RUSTFLAGS='-D warnings' cargo test --workspace --all-targets"
     )
     .run()?;
+    // これは feature 構成が既定と異なる（stub backend）ため workspace 実行に包含されない。
     step("cargo test secrets internal stub");
     cmd!(
         shell,
         "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-cli --features secrets-internal-test-stub --test secrets_cli"
-    )
-    .run()?;
-    step("cargo test secrets application");
-    cmd!(
-        shell,
-        "env RUSTFLAGS='-D warnings' cargo test -p dotfiles-secrets --lib application"
     )
     .run()?;
     Ok(())
