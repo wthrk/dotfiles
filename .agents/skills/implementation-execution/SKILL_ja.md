@@ -14,7 +14,6 @@ description: サブエージェントが実装作業を割り当てられ、リ�
 - `docs/task-governance/implementation-execution.md`
 - `docs/task-governance/security-obligations.md`
 - `docs/architecture/hexagonal-implementation-rules.md`
-- `docs/architecture/review-checklist.md`
 
 ## Required Reading Order
 
@@ -23,10 +22,8 @@ description: サブエージェントが実装作業を割り当てられ、リ�
 3. `docs/task-governance/implementation-execution.md`
 4. `docs/task-governance/security-obligations.md`
 5. `docs/architecture/hexagonal-implementation-rules.md`
-6. `docs/architecture/review-checklist.md`
-7. 委譲された GitHub issue、PR、明示タスク、または handoff
-8. 委譲作業が要求する領域正本文書
-9. コード構造が対象の場合は architecture 文書
+6. 委譲された GitHub issue、PR、明示タスク、または handoff
+7. 委譲作業が要求する領域正本文書
 
 ## Rules
 

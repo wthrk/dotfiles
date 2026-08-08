@@ -29,14 +29,14 @@ secret-recovery の作業は、ユーザー指定の GitHub issue、PR、また�
 - オーケストレーターは、指定作業単位と委譲パラメーターを確定し、必要役割を起動する。
 - 実装担当は、指定された仕様・設計・対象パスを直接読み、差分と検証結果を作る。
 - レビュー担当は、対象差分と指定仕様を直接読み、担当観点の判定を返す。
-- 進捗判定担当と完了判定担当は、対象差分、検証結果、レビュー結果、PR review thread 対応状態を根拠に判定する。
+- 完了判定担当は、対象差分、検証結果、レビュー結果、PR review thread 対応状態を根拠に判定する。
 
 ## 実装方針
 
 - secret の平文は CLI 引数、ログ、エラー本文、一時ファイル、review 記録へ残さない。
 - secret の保護境界、core dump 抑止、plaintext buffer の借用/所有境界は [secret-handling.md](secret-handling.md) を正本とする。
 - BWS / YubiKey / GPG / Bitwarden Password Manager の保存モデルと責務分担は、各設計文書と [secret-recovery-spec.md](secret-recovery-spec.md) を正本とする。
-- 実装は現行の hexagonal layer boundary に従う。層責務、依存方向、公開面は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../architecture/review-checklist.md](../architecture/review-checklist.md) を適用する。
+- 実装は現行の hexagonal layer boundary に従う。層責務、依存方向、公開面は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) を適用する。
 - test double / fixture の配置は責務で判断する。形式や feature gate だけで許可または禁止を決めない。
 
 ## 確認とレビュー

@@ -31,7 +31,7 @@ While this skill is active, the current actor is the orchestrator.
 
 - Select exactly one work unit from the user-specified GitHub issue, PR, or explicit task.
 - Extract only the delegation parameters needed to launch roles.
-- Launch required fresh role agents; do not self-execute implementation, review, progress judgement, completion judgement, tests, builds, or file edits.
+- Launch required fresh role agents; do not self-execute implementation, review, completion judgement, tests, builds, or file edits.
 - Do not ask for extra delegation permission when the user request is already a task-execution command.
 - Record launch/use failure only when a required role cannot be launched.
 - Detailed prohibitions and branch/PR gates are owned by `docs/task-governance/workflow.md`.

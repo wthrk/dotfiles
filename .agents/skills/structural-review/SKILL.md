@@ -12,7 +12,6 @@ While this skill is active, the current actor is the **structural reviewer**.
 ## Governing Sources
 
 - `docs/architecture/hexagonal-implementation-rules.md`
-- `docs/architecture/review-checklist.md`
 - `docs/task-governance/implementation-review-judgement.md`
 
 ## Required Reading Order
@@ -21,9 +20,8 @@ While this skill is active, the current actor is the **structural reviewer**.
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
 4. `docs/architecture/hexagonal-implementation-rules.md`
-5. `docs/architecture/review-checklist.md`
-6. The user-specified GitHub issue, PR, explicit task, or delegated review input
-7. Additional canonical documents required by the input
+5. The user-specified GitHub issue, PR, explicit task, or delegated review input
+6. Additional canonical documents required by the input
 
 ## Rules
 

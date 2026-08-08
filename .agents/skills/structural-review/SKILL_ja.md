@@ -12,7 +12,6 @@ description: 構造レビュー担当として判定するときに使う。
 ## Governing Sources
 
 - `docs/architecture/hexagonal-implementation-rules.md`
-- `docs/architecture/review-checklist.md`
 - `docs/task-governance/implementation-review-judgement.md`
 
 ## Required Reading Order
@@ -21,9 +20,8 @@ description: 構造レビュー担当として判定するときに使う。
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
 4. `docs/architecture/hexagonal-implementation-rules.md`
-5. `docs/architecture/review-checklist.md`
-6. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
-7. 入力が要求する追加正本文書
+5. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+6. 入力が要求する追加正本文書
 
 ## Rules
 

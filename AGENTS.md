@@ -36,13 +36,11 @@ Individual reviewer roles use these skill files:
 | Reviewer role | Skill file |
 |---|---|
 | Structural reviewer | `.agents/skills/structural-review/SKILL.md` |
-| Operational-consistency reviewer | `.agents/skills/operational-consistency-review/SKILL.md` |
 | Security reviewer | `.agents/skills/security-review/SKILL.md` |
 | Specification-conformance reviewer | `.agents/skills/specification-conformance-review/SKILL.md` |
-| Test reviewer | `.agents/skills/test-review/SKILL.md` |
-| Documentation reviewer | `.agents/skills/documentation-review/SKILL.md` |
-| Architectural-consistency reviewer | `.agents/skills/architectural-consistency-review/SKILL.md` |
-| Reference-integrity reviewer | `.agents/skills/reference-integrity-review/SKILL.md` |
+| Operational-consistency reviewer | `.agents/skills/operational-consistency-review/SKILL.md` |
+
+Reviewer roles are fixed to this set. Do not add new reviewer roles, judgement stages, or dedicated pre-commit confirmations.
 
 Delegated role agents do not become the main agent for the delegated task. A delegated implementation executor starts with `/implementation-execution`, does not invoke `/orchestration` for the same delegated task, and does not launch further subagents for that delegated implementation assignment.
 

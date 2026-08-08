@@ -1,0 +1,14 @@
+# 無人更新の自動化
+
+このディレクトリは、利用者の操作を介さずに依存 pin と installed パッケージを前進させる経路（nightly の
+`flake.lock` bump と、switch 時の Homebrew 無人 upgrade）の運用規約・安全ゲート・明示受容をまとめる入口である。
+
+利用者向けの `dotfiles update` / `dotfiles switch` の使い方は repository root の
+[`README.md`](../../README.md) を参照する。
+
+## 配下の項目
+
+- [nightly-lock-bump.md](nightly-lock-bump.md): nightly の `flake.lock` 全 input bump、auto-merge を
+  fail-closed に保つゲート、取得先期待値表の保守義務、threat model、残留制約。
+- [homebrew-cask-pinning.md](homebrew-cask-pinning.md): `greedyCasks` による無人 cask upgrade の前提と、
+  宣言 cask の成果物固定状況の明示受容。

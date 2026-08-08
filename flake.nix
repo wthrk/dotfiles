@@ -16,6 +16,11 @@
     home-manager.url = "github:nix-community/home-manager";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
 
+    # Rust ツールチェーンの取得元。nixpkgs の rustc/cargo は channel の都合で stable 最新から遅れるため、
+    # upstream の release manifest をそのまま提供する rust-overlay を単一の供給元にする。
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+
     nix-homebrew.url = "github:zhaofengli-wip/nix-homebrew";
 
     homebrew-homebrew-core = {
@@ -82,12 +87,24 @@
 
       # flake 出力を作るときに使う nixpkgs。CLI は macOS と Linux の両方で評価するため、
       # allowUnfree はここで揃えて、各モジュール側で再指定しない。
+      # rust-overlay を適用して `pkgs.rust-bin` を生やし、devShell・buildRustPackage・利用者環境が
+      # 同じ Rust ツールチェーンを参照できるようにする。
       pkgsFor =
         system:
         import nixpkgs {
           inherit system;
           config.allowUnfree = true;
+          overlays = [ inputs.rust-overlay.overlays.default ];
         };
+
+      # repo 全体で使う Rust ツールチェーン。`stable.latest` は rust-overlay が持つ release manifest の
+      # 最新 stable を指すため、nightly の `nix flake update` で rust-overlay の rev が進むたびに
+      # 新しい stable 版へ追従する。`default` profile は rustc / cargo / rustfmt / clippy / rust-std を含み、
+      # `cargo xtask check static` が使う `cargo fmt` と `cargo clippy` をこの 1 パッケージで賄う。
+      # 利用者環境（`nix/modules/languages.nix`）は同じ `stable.latest.default` を overlay 非依存の
+      # `rust-overlay.lib.mkRustBin` から取る。公開している `lib.homeManagerModules.default` に
+      # 「overlay 適用済み pkgs」という新しい前提を課さないためで、選ぶツールチェーンは同一である。
+      rustToolchainFor = pkgs: pkgs.rust-bin.stable.latest.default;
 
       homeManagerModule =
         { config, lib, ... }:
@@ -201,8 +218,15 @@
         pkgs:
         let
           system = pkgs.stdenv.hostPlatform.system;
+          rustToolchain = rustToolchainFor pkgs;
+          # devShell と同じツールチェーンでビルドする。nixpkgs 既定の `rustPlatform` を使うと
+          # 開発時の rustc と成果物の rustc が食い違い、devShell で通った lint/edition がビルドで落ちる。
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
         in
-        pkgs.rustPlatform.buildRustPackage {
+        rustPlatform.buildRustPackage {
           pname = "dotfiles-cli";
           version = "0.0.0";
           src = ./.;
@@ -254,8 +278,9 @@
           packages = [
             pkgs.actionlint
             pkgs.bash
-            pkgs.cargo
-            pkgs.clippy
+            # rustc / cargo / clippy / rustfmt はこの 1 パッケージだけから供給する。
+            # nixpkgs 側の同名パッケージを併置すると PATH 上で衝突し、どちらが使われるか不定になる。
+            (rustToolchainFor pkgs)
             pkgs.coreutils
             pkgs.git
             pkgs.gnugrep
@@ -277,8 +302,6 @@
             pkgs.pkg-config
             pkgs.ripgrep
             pkgs.rust-analyzer
-            pkgs.rustc
-            pkgs.rustfmt
             pkgs.shellcheck
             pkgs.zsh
           ]

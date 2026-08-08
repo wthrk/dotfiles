@@ -9,8 +9,19 @@ name: nightly update
 #     flake.lock rev 抽出は
 #     Rust に集約し、workflow は避けられない nix tool 呼び出し（Rust が起動する `nix eval` / `nix flake update`）と
 #     薄いオーケストレーション（checkout / install nix / bump / record 起動 / upload / PR）だけを行う。
-#   - bump は nixpkgs と brew tap 4 本のみ。framework input（nix-darwin / home-manager / nix-homebrew）は
-#     bump しない（無人で framework を動かさない）。
+#   - bump は `nix flake update`（引数なし）で **flake.lock の全 input** を対象にする。framework input
+#     （nix-darwin / home-manager / nix-homebrew）とその推移 input（nix-homebrew の brew-src）も含む。
+#     一部 input を除外すると、除外された input だけが据え置かれたまま他が前進し、上流が検証していない
+#     組み合わせに収束する。実際に brew-src が 5.1.1 に据え置かれたまま homebrew-cask だけ前進した結果、
+#     `dotfiles update` の brew bundle 段が停止した（cask の `depends_on :macos` を旧 brew が解釈できない、
+#     brew に `--force-cleanup` が無い）。除外に対応する有人 bump 経路も存在しなかったため、除外は
+#     「更新されない」と同義だった。無人で framework を動かす代わりに、①open-pr job の verify-bump-lock、
+#     ②実 static checks、③nix build .#dotfiles-cli、④record job の `nix eval .#darwinConfigurations.ci-ref...`
+#     （open-pr は needs: [bump, record] なので実質ゲート）で auto-merge を fail-closed に保つ。①〜③は
+#     nix-darwin / home-manager のモジュール評価を強制せず、それを止めているのは④である。4 つとも実機
+#     activation（darwin-rebuild switch / brew bundle）は実行しないため、activation 経路だけを壊す bump は
+#     auto-merge 前に検出できない。この残留リスクの明示受容と各ゲートの検査範囲は
+#     docs/automation/nightly-lock-bump.md を正本とする。
 #   - 概要（change_items）の LLM 抽出の正本は OpenAI API。record job に **secret
 #     `OPEN_AI_API_KEY`** を `env` で結線し、CLI（async-openai crate）が env から読む。GitHub Models /
 #     `permissions: models: read` / GITHUB_TOKEN の LLM 用途は撤去した（PR 起票等の GITHUB_TOKEN は残す）。
@@ -68,7 +79,19 @@ jobs:
   bump:
     name: bump lock and eval declared versions
     runs-on: macos-15
-    timeout-minutes: 60
+    # 60 -> 90。60 では 2026-07-21〜08-05 の 16 夜（schedule run 16 件）が連続で cancelled になった。両端と中間の
+    # bump job はいずれもちょうど 60 分で打ち切られている（run 29857813448 = 07-21: 18:34:45 開始 19:34:52 終了、
+    # run 30169532326 = 07-25: 18:23:38 開始 19:23:41 終了、run 31035607815 = 08-05: 18:37:35 開始 19:37:53 終了。
+    # 直前夜の run 29768941343 = 07-20 と直後夜の run 31126054629 = 08-06 は打ち切られていない）。当時の主因だった
+    # `/nix/store` キャッシュ復元 step は
+    # db251c0 で削除済みで、削除後の実測は run 31206501105 の bump が 10m48s（内訳: devShell 実体化込みの
+    # 「dotfiles バイナリをビルド」9m13s、`nix flake update` 24s）、run 31181935539 の bump が 10m15s。
+    # 現状は 60 分の 18% しか使っていないが、この差分で (a) bump 対象が 5 input から全 input へ広がり framework
+    # input の前進が devShell closure 全体を無効化しうること、(b) rust-overlay の stable toolchain が
+    # cache.nixos.org に無く static.rust-lang.org からの取得と展開を devShell 実体化のたびに要すること、の 2 点で
+    # 支配的 step の実行時間が伸びる。60 分の崖は「無人で 16 夜静かに止まる」障害モードそのものなので、上限自体は
+    # 残しつつ実測比 8 倍以上の余裕を取る。
+    timeout-minutes: 90
     permissions:
       contents: read
     outputs:
@@ -125,16 +148,14 @@ jobs:
           cask_rev_old="$("$DOTFILES_BIN" update-history lock-rev --lock flake.lock --node homebrew-homebrew-cask)"
           echo "cask_rev_old=$cask_rev_old" >> "$GITHUB_OUTPUT"
 
-      - name: nixpkgs と tap input を bump
+      - name: 全 input を bump
         run: |
           set -euo pipefail
-          # framework input（nix-darwin / home-manager / nix-homebrew）は bump しない。
-          nix flake update \
-            nixpkgs \
-            homebrew-homebrew-core \
-            homebrew-homebrew-cask \
-            homebrew-azure-bicep \
-            homebrew-hashicorp-tap
+          # 引数を渡さず flake.lock の全 input を bump する。framework input（nix-darwin / home-manager /
+          # nix-homebrew）と推移 input（nix-homebrew の brew-src）も対象に含める。input を列挙して除外すると
+          # 除外分だけが据え置かれ、上流が検証していない組み合わせへ収束する（brew 据え置き × cask tap 前進で
+          # `dotfiles update` が停止した事例）。許可範囲の強制は verify-bump-lock 側が担う。
+          nix flake update
 
       # bump 後 input rev を Rust（serde_json）が抽出する（bump 後版の eval は record が bump 済み lock で行う）。
       - name: bump 後の input rev を抽出
@@ -173,6 +194,11 @@ jobs:
     name: extract notes and record history
     needs: bump
     runs-on: macos-15
+    # 120 のまま据え置く。run 31206501105 の record は 10m21s（devShell 実体化込みの「record 用 dotfiles バイナリを
+    # ビルド」9m01s、`nix eval .#darwinConfigurations.ci-ref` を含む record 本体 26s）で予算の 9%。`/nix/store`
+    # キャッシュ復元 step があった頃の最悪値（run 29768941343 の record が 64m07s）でも 120 に収まっており、
+    # この差分で増えるのは bump 対象拡大に伴う ci-ref 評価範囲と rust-overlay toolchain の取得ぶんだけなので
+    # 引き上げる根拠がない。
     timeout-minutes: 120
     permissions:
       contents: read
@@ -295,7 +321,12 @@ jobs:
            github.event.inputs.dry_run == 'false' &&
            github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 60 -> 90。run 31206501105 の open-pr は 23m09s で、その大半が実ゲート 2 本（`cargo xtask check static`
+    # 10m44s、`nix build .#dotfiles-cli` 11m19s）。この 2 本はどちらも rust-overlay の stable toolchain を
+    # x86_64-linux で実体化する必要があり、cache.nixos.org に無いぶん取得と展開が上乗せされる。予算比は現状
+    # 39% だが、この job が timeout で落ちると status 未投稿＝ PR も auto-merge も成立せず、bump job が 16 夜
+    # 止まったのと同じ「無人で静かに止まる」障害モードになるため、bump と同じ 90 分へ揃える。
+    timeout-minutes: 90
     permissions:
       contents: write
       pull-requests: write
@@ -407,9 +438,12 @@ jobs:
             --repo .
 
       # 実 static checks を bump 後 lock で実行する。static-checks.yml と同一コマンドで、GITHUB_TOKEN 起票 bot PR
-      # では他に誰も走らせないため必須。`nix flake check --all-systems` を含み、bump で config が eval 失敗して
-      # いないかを auto-merge 前に検知する真のゲートになる。失敗すれば step 失敗で job が止まり status 投稿へ
-      # 到達しない（required check 未充足・fail-closed）。
+      # では他に誰も走らせないため必須。`nix flake check --all-systems` を含むが、これが評価するのは nix の既知
+      # flake output までであり、`darwinConfigurations` は既知 output でないため nix-darwin / home-manager の
+      # モジュール評価は含まない。そのモジュール評価を fail-closed で止めるのは record job の④
+      # （`nix eval .#darwinConfigurations.ci-ref...`）である。各ゲートが何を検査し何を検査しないかは
+      # docs/automation/nightly-lock-bump.md の「auto-merge を止めるゲート」節を正本とする。
+      # 失敗すれば step 失敗で job が止まり status 投稿へ到達しない（required check 未充足・fail-closed）。
       - name: 実 static checks（cargo xtask check static）を bump 後 lock で実行
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
         run: |
@@ -438,7 +472,7 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。nixpkgs と brew tap input の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`（後 2 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
+            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`（後 2 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。Copilot/Codex の自動レビュー充足後に auto-merge されます。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
       # ①verify-bump-lock、②実 static checks、③dotfiles-cli の nix build の全てが合格した場合に限り PR head へ

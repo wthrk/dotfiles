@@ -12,14 +12,16 @@ description: 運用整合レビュー担当として判定するときに使う�
 ## Governing Sources
 
 - `docs/task-governance/implementation-review-judgement.md`
+- `docs/docs-governance.md`
 
 ## Required Reading Order
 
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
-4. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
-5. 入力が要求する追加正本文書
+4. `docs/docs-governance.md`
+5. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+6. 入力が要求する追加正本文書
 
 ## Rules
 

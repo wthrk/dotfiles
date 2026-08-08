@@ -71,6 +71,8 @@ adapter 層で domain object のビジネスロジックを直接実行しては
 
 `tests` は層契約確認と回帰検知を担う。許可する成果物は unit test、integration test、test double、fixture である。本番公開 API やレビュー代替の設計判断は置かない。
 
+production 層の `src/` ファイルに置かれた通常の inline unit test（`#[cfg(test)] mod tests { #[test] fn ... }`）は許可する。これはその module 自身の private 関数を検証する標準的な Rust であり、削除を要求してはならない。inline unit test を一律禁止すると、本番関数をテストのためだけに `pub` 化する圧力が生じ、公開面最小化に反する。`#[test]` の存在だけを理由に配置違反としてはならない。禁止対象は、実依存を肩代わりする test double の**定義**が production 層に置かれることであり、判定は形式（`#[cfg(test)]` か `#[cfg(feature)]` か）ではなく責務で行う。
+
 ### internal backend stub の配置
 
 test double / fixture の本体は原則として `tests/` 配下に置く。ただし、CLI integration test が同一 `dotfiles` binary と同一 production command path を通り、外部 backend だけを compile-time で差し替える必要がある場合、adapter 配下に internal backend stub を置ける。
@@ -370,12 +372,8 @@ Lua/Neovim:
 
 ディレクトリ名と層が一致しないファイルは配置違反とみなす。配置違反の解消は、ファイルを正しいディレクトリへ移動することで行う。個別機能の違反一覧は、対象の GitHub issue、PR、明示タスク、または領域仕様文書で管理する。
 
-## レビュー観点
-
-ディレクトリ別のチェック観点は [review-checklist.md](review-checklist.md) を参照する。層ごとの責務・禁止事項・依存方向・公開範囲はこの文書の各セクションを正本とし、review-checklist.md はその正本を引用してチェック項目を導く。
-
 ## エージェント運用とレビューの参照先
 
-secret-recovery 固有の役割分担、段階運用、差戻し経路は [implementation-guidelines.md](../secret-recovery/implementation-guidelines.md) を単一正本として参照する。この文書に secret-recovery 固有の進捗運用を定義しない。
+secret-recovery 固有の役割境界、実装単位、完了条件は [implementation-guidelines.md](../secret-recovery/implementation-guidelines.md) を単一正本として参照する。この文書に secret-recovery 固有の運用を定義しない。
 
-hexagonal review で確認するのは、層責務、依存方向、公開面、禁止成果物、comment 規則、正本参照整合である。secret-recovery のレビュー担当、進捗更新、記録契約の扱いは [implementation-guidelines.md](../secret-recovery/implementation-guidelines.md) とその参照文書に従う。
+hexagonal review で確認するのは、層責務、依存方向、公開面、禁止成果物、comment 規則、正本参照整合である。secret-recovery のレビュー担当と記録義務の扱いは [implementation-guidelines.md](../secret-recovery/implementation-guidelines.md) とその参照文書に従う。
