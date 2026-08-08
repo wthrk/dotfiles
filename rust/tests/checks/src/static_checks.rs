@@ -27,7 +27,35 @@ pub(crate) fn check() -> Result<()> {
     homebrew_cleanup_matches_locked_brew_capability(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)?;
+    home_directory_matches_platform(&shell)?;
     auto_update_daemon_argv_is_expected(&shell)
+}
+
+/// `lib.mkHome` が評価対象 system のホーム配置を返すことを確認する。
+///
+/// この値は生成物へ焼き込まれる。実行環境の実ホームと食い違うと、起動した zsh が存在しないパスへ
+/// 書きに行く。macOS 決め打ちへ戻すと Linux 上の検証がその不整合をそのまま再現するため、両 system を
+/// 評価して固定する。評価だけで済むので darwin 以外の runner でも動く。
+fn home_directory_matches_platform(shell: &Shell) -> Result<()> {
+    step("lib.mkHome の home ディレクトリが system に追従する");
+    for (system, expected) in [
+        ("aarch64-darwin", "/Users/runner"),
+        ("x86_64-linux", "/home/runner"),
+    ] {
+        let apply = format!(
+            "f: (f {{ user = \"runner\"; system = \"{system}\"; }}).config.home.homeDirectory"
+        );
+        let actual = cmd!(
+            shell,
+            "nix eval --raw --no-update-lock-file .#lib.mkHome --apply {apply}"
+        )
+        .read()?;
+        ensure!(
+            actual == expected,
+            "system {system} の home ディレクトリが {actual}。{expected} を期待する"
+        );
+    }
+    Ok(())
 }
 
 /// Rust ワークスペース全体で、警告を失敗扱いにして整形、lint、テストを回す。型検査は lint に内包する。

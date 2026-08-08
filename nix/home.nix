@@ -1,10 +1,10 @@
 # Home Manager で管理するユーザー環境の最上位モジュール。
 #
-# 引数 `user` は `home.username` と `/Users/<user>` のホームパスに使う。`root` と `inputs` は
+# 引数 `user` は `home.username` とホームパスに使う。`root` と `inputs` は
 # `shell-files.nix` や `cli.nix` など、必要な子モジュールへ flake ラッパー経由で渡される。
 # このモジュールを評価すると、シェル、Git、Neovim、言語ツール、設定ファイルリンクが
 # そのユーザーの Home Manager 設定として有効になる。
-{ user, ... }:
+{ pkgs, user, ... }:
 {
   imports = [
     ./modules/cli.nix
@@ -20,7 +20,9 @@
   ];
 
   home.username = user;
-  home.homeDirectory = "/Users/${user}";
+  # ホームの置き場は OS で違う。生成物にはこの値が焼き込まれるので、実行環境の実ホームと
+  # 食い違うと起動した zsh が存在しないパスへ書きに行く。
+  home.homeDirectory = if pkgs.stdenv.isDarwin then "/Users/${user}" else "/home/${user}";
   home.stateVersion = "24.11";
 
   programs.home-manager.enable = true;

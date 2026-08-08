@@ -32,8 +32,20 @@ setup_file() {
 # 環境は `env -i` から組む。継承すると `hm-session-vars.sh` の再実行 guard と `XDG_*` が
 # 呼び出し元の値で潰れ、生成された設定が何を export するかを見なくなる。
 zsh_probe() {
-    local raw
-    raw="$(env -i \
+    local raw code_file="${BATS_TEST_TMPDIR}/probe.zsh"
+    printf '%s\n' "$1" >"${code_file}"
+    # `script(1)` の引数の並びは BSD 版と util-linux 版で違う。実行環境のものに合わせる。
+    if script --version 2>/dev/null | grep -q util-linux; then
+        raw="$(zsh_probe_env script -qec "zsh -ic 'source ${code_file}'" /dev/null)"
+    else
+        raw="$(zsh_probe_env script -q /dev/null zsh -ic "source ${code_file}")"
+    fi
+    strip_terminal_control "${raw}"
+}
+
+# 実機のログイン環境に相当する最小の変数だけを渡して起動する。
+zsh_probe_env() {
+    env -i \
         HOME="${HOME}" \
         USER="${ZSH_CHECK_USER}" \
         LOGNAME="${ZSH_CHECK_USER}" \
@@ -41,8 +53,7 @@ zsh_probe() {
         TERM=xterm-256color \
         LANG=en_US.UTF-8 \
         PATH="$(zsh_probe_path)" \
-        script -q /dev/null zsh -ic "$1")"
-    strip_terminal_control "${raw}"
+        "$@"
 }
 
 # 起動前から PATH にあった要素。`ZSH_CHECK_INHERITED_PATH` は除外規則の検証だけが使う。

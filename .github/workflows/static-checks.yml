@@ -30,9 +30,28 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # `cache-nix-action` の post-step が required check を長時間 pending のまま残す事例があったため、
-      # static checks では `/nix/store` キャッシュを使わない。toolchain / devShell は毎回取得するが、
-      # job 自体は deterministic に完走させる。
+      # `/nix/store` 全体を持ち回る `cache-nix-action` は使わない。post-step が required check を長時間
+      # pending のまま残す事例があったためで、この判断は変えない。代わりに、実測で job の支配項だった
+      # devShell の closure だけを dotfiles-cli と同じ方式で持ち回る。`inputDerivation` は devShell の
+      # 全入力を依存に持つ derivation なので、これを copy すれば `nix develop` が実体化する集合が揃う。
+      # runner は `ubuntu-latest` 固定なので system も固定で指す。
+      - name: devShell の derivation を確定
+        id: devshell
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#devShells.x86_64-linux.default)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      - name: devShell closure キャッシュを復元
+        id: devshell-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/dotfiles-devshell
+          key: devshell-nix-${{ runner.os }}-${{ steps.devshell.outputs.key }}
+
+      - name: devShell を store へ復元
+        if: steps.devshell-cache.outputs.cache-hit == 'true'
+        run: nix copy --from "file://$HOME/.cache/dotfiles-devshell" --no-check-sigs .#devShells.x86_64-linux.default.inputDerivation
 
       # 復元する target/ の正しさを縛るのは、build script が link した C ライブラリと使った toolchain の
       # store path だけである。`.#cargo-build-inputs` はその集合だけを入力に持つ derivation で、drv hash は
@@ -97,6 +116,20 @@ jobs:
       - name: dotfiles-cli の nix build
         run: nix build .#dotfiles-cli --no-link --print-build-logs
 
+      # zsh 設定の実挙動は、構成を適用したマシンでしか観測できない。runner をここで実機と同じ状態にする。
+      # 適用経路は利用者が叩くのと同じ `dotfiles init` / `dotfiles switch` であり、CI 専用の経路を持たない。
+      - name: 構成を適用
+        env:
+          # 実フリートの `home-manager.backupFileExtension` と同じ値。standalone activation では
+          # この指定が無いと既存ファイルを前にして止まる。
+          HOME_MANAGER_BACKUP_EXT: before-home-manager
+        run: |
+          nix run .#default -- init --source "path:$PWD"
+          nix run .#default -- switch home
+
+      - name: zsh checks
+        run: nix develop -c bats --print-output-on-failure tests/zsh
+
       # 保存は main scope 限定（cargo cache と同じ理由）。
       - name: 成果物をキャッシュへ書き出し
         if: ${{ steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
@@ -108,3 +141,16 @@ jobs:
         with:
           path: ~/.cache/dotfiles-nixcache
           key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
+
+      - name: devShell をキャッシュへ書き出し
+        if: ${{ steps.devshell-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
+        run: |
+          nix build --no-link .#devShells.x86_64-linux.default.inputDerivation
+          nix copy --to "file://$HOME/.cache/dotfiles-devshell?compression=zstd" --no-check-sigs .#devShells.x86_64-linux.default.inputDerivation
+
+      - name: devShell closure キャッシュを保存
+        if: ${{ steps.devshell-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/dotfiles-devshell
+          key: devshell-nix-${{ runner.os }}-${{ steps.devshell.outputs.key }}
