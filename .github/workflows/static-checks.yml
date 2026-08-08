@@ -78,11 +78,13 @@ jobs:
         run: nix copy --from "file://$PWD/.nixcache" --no-check-sigs .#dotfiles-cli
 
       # static checks は devShell 内で走るため、build sandbox でしか露見しない依存欠落を検出できない。
-      # bootstrap が叩く derivation そのものを PR でも build する。
+      # bootstrap が叩く derivation そのものを PR でも build する。derivation は `doCheck = false` なので
+      # ここで検出できるのは buildPhase の compile / link に現れる欠落までで、checkPhase だけが起動する
+      # 依存（#84 の git がそれ）は対象外。
       #
       # 上で成果物を復元できた場合、nix は out path が既に valid なのを見てビルドを省く。これは検出力を
-      # 落とさない: キーは全入力の関数なので、`db251c0` のように nativeBuildInputs へ穴が開く変更をすれば
-      # 必ず別キーになり、cache miss → 実ビルド → checkPhase が走って欠落が露見する。
+      # 落とさない: キーは全入力の関数なので、`db251c0` のように buildInputs / nativeBuildInputs へ穴が開く
+      # 変更をすれば必ず別キーになり、cache miss → 実ビルドで欠落が露見する。
       - name: dotfiles-cli の nix build
         run: nix build .#dotfiles-cli --no-link --print-build-logs
 

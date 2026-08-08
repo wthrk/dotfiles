@@ -22,7 +22,8 @@ name: nightly update
 #     ①`cargo xtask ci verify-bump-lock`（base..head の許可パス + lock 差分のセキュリティ検査）、②実
 #     `cargo xtask check static`、③`nix build .#dotfiles-cli`（②③は static-checks.yml と同一）の全てが
 #     合格した場合に限り、PR head へ `static checks` commit status を success で POST して required check を
-#     満たす（fail-closed）。
+#     満たす（fail-closed）。③の derivation は `doCheck = false` のため、検証範囲は buildPhase の
+#     compile / link に現れる依存欠落までであり、checkPhase だけが起動する依存は含まない。
 #
 # guard（最小限）:
 #   - open-pr（非 dry-run・PR 起票/status 投稿経路）は **既定ブランチ起動に限定**する。schedule は GitHub の
@@ -295,7 +296,8 @@ jobs:
   #    + auto-merge。GITHUB_TOKEN で完結する（GitHub App / 別 secret は使わない）。GITHUB_TOKEN 起票 PR では
   #    `on: pull_request` の static-checks.yml が発火しないため、この job が同一 run 内で
   #    ①`cargo xtask ci verify-bump-lock`（許可パス + lock 差分の検査）、②`cargo xtask check static`、
-  #    ③`nix build .#dotfiles-cli`（②③は static-checks.yml と同一）の全てが合格した場合に限り
+  #    ③`nix build .#dotfiles-cli`（②③は static-checks.yml と同一。③は `doCheck = false` の derivation を
+  #    build するため検証範囲は buildPhase の compile / link までである）の全てが合格した場合に限り
   #    `static checks` status を success で POST する。
   open-pr:
     name: open bump PR and enable auto-merge
@@ -436,9 +438,10 @@ jobs:
           nix develop -c cargo xtask check static
 
       # static-checks.yml の同名 step と同一。前段の static checks は devShell 内で走るため、build sandbox で
-      # しか露見しない依存欠落（bootstrap が叩く derivation の nativeBuildInputs 漏れ等）を検出できない。
-      # bump 後 lock でその derivation 自体を build し、`static checks` status の意味を static-checks.yml と
-      # 揃える。失敗すれば status 投稿へ到達しない（fail-closed）。
+      # しか露見しない依存欠落（bootstrap が叩く derivation の buildInputs / nativeBuildInputs 漏れ等）を
+      # 検出できない。bump 後 lock でその derivation 自体を build し、`static checks` status の意味を
+      # static-checks.yml と揃える。derivation は `doCheck = false` なので検出できるのは buildPhase の
+      # compile / link に現れる欠落までである。失敗すれば status 投稿へ到達しない（fail-closed）。
       - name: dotfiles-cli の nix build を bump 後 lock で実行
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
         run: |

@@ -277,15 +277,13 @@
             "--package"
             "dotfiles-cli"
           ];
-          cargoTestFlags = [
-            "--workspace"
-          ];
+          # checkPhase は走らせない。テストは devShell 側の `cargo xtask check static` と重複する。
+          # この derivation が検出する依存欠落は buildPhase が compile / link する範囲、すなわち下の
+          # buildInputs のライブラリと buildPhase が起動する nativeBuildInputs までである。#84 の git の
+          # ように checkPhase だけが起動する実行時依存の欠落は、ここでは検出できない。
+          doCheck = false;
           buildInputs = cargoLinkLibraries pkgs;
-          nativeBuildInputs = cargoBuildTools pkgs ++ [
-            # checkPhase の `dotfiles-checks` が tracked snapshot 生成に起動する git。
-            pkgs.git
-            pkgs.makeWrapper
-          ];
+          nativeBuildInputs = cargoBuildTools pkgs ++ [ pkgs.makeWrapper ];
           postInstall = ''
             wrapProgram $out/bin/dotfiles \
               --set-default DOTFILES_HOME_MANAGER ${
