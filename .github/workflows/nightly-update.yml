@@ -117,6 +117,17 @@ jobs:
             echo "cask_rev_new=$cask_rev_new"
           } >> "$GITHUB_OUTPUT"
 
+      # bump 後 lock の回収は record より前に済ませる。後ろに置くと暗黙の `success()` により record 以降で
+      # 落ちた夜は upload 自体が skip され、その夜の bump 後 lock を回収できない。前に置けば bump job が
+      # 途中で落ちた夜も lock が残る。以降の step は flake.lock を書き換えないため内容は job 末尾と同じ。
+      - name: bump 済み lock を artifact 化
+        uses: actions/upload-artifact@v7
+        with:
+          name: bump-state
+          retention-days: 1
+          path: flake.lock
+          if-no-files-found: error
+
       # 概要抽出の API キーは secret を env で渡す（CLI が env から読み、argv / ログに出さない）。
       - name: record（nix/brew 版差分 + 概要）
         id: record
@@ -163,14 +174,6 @@ jobs:
           else
             echo "has_history=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: bump 済み lock を artifact 化
-        uses: actions/upload-artifact@v7
-        with:
-          name: bump-state
-          retention-days: 1
-          path: flake.lock
-          if-no-files-found: error
 
       # 無更新の夜はアップロード対象が 0 件になりうるため `warn` にする（clean no-op）。
       - name: 履歴 TOML を artifact 化
