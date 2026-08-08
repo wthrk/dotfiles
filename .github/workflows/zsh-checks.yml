@@ -38,6 +38,10 @@ jobs:
 
       # 検証は適用済み環境を起動するだけなので、runner をここで実機と同じ状態にする。
       - name: 構成を適用
+        env:
+          # 実フリートの `home-manager.backupFileExtension` と同じ値。standalone activation では
+          # この指定が無いと既存ファイルを前にして止まる。
+          HOME_MANAGER_BACKUP_EXT: before-home-manager
         run: |
           expr="(builtins.getFlake \"path:$PWD\").lib.mkHome { user = \"$(id -un)\"; system = builtins.currentSystem; }.activationPackage"
           package="$(nix build --impure --no-link --print-out-paths --expr "$expr")"
