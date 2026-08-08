@@ -254,11 +254,24 @@
         pkgs:
         let
           system = pkgs.stdenv.hostPlatform.system;
+          inherit (pkgs.lib) fileset;
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "dotfiles-cli";
           version = "0.0.0";
-          src = ./.;
+          # src は Rust ビルドが読む範囲に限定する。`./.` にすると derivation hash が全 tracked file の関数に
+          # なり、docs / workflow / nix module だけの変更でも別 derivation になる。CI は derivation 名を
+          # ビルド成果物キャッシュのキーにしているため、この限定が外れると Rust を触らない PR でも
+          # 必ず cache miss してフルビルドに戻る。
+          src = fileset.toSource {
+            root = ./.;
+            fileset = fileset.unions [
+              ./.cargo
+              ./Cargo.lock
+              ./Cargo.toml
+              ./rust
+            ];
+          };
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [
             "--package"
