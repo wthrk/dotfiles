@@ -14,7 +14,14 @@ let
   has = lib.hasAttrByPath;
   get = lib.getAttrFromPath;
 
-  optionalPkg = path: if has path pkgs then [ (get path pkgs) ] else [ ];
+  # 属性が在っても `meta.platforms` の外なら nixpkgs が評価を拒否する。`tart` のように macOS だけの
+  # パッケージがこれに当たるため、属性の有無ではなく評価対象 system で使えるかで採否を決める。
+  optionalPkg =
+    path:
+    let
+      package = get path pkgs;
+    in
+    lib.optionals (has path pkgs && lib.meta.availableOn pkgs.stdenv.hostPlatform package) [ package ];
   system = pkgs.stdenv.hostPlatform.system;
   dotfilesPackage =
     if

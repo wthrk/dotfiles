@@ -27,33 +27,45 @@ pub(crate) fn check() -> Result<()> {
     homebrew_cleanup_matches_locked_brew_capability(&shell)?;
     nix_diagnostics(&shell)?;
     nix(&shell)?;
-    home_directory_matches_platform(&shell)?;
+    home_configuration_evaluates_for_every_system(&shell)?;
     auto_update_daemon_argv_is_expected(&shell)
 }
 
-/// `lib.mkHome` が評価対象 system のホーム配置を返すことを確認する。
+/// `lib.mkHome` が評価対象 system で成立することを、ホーム配置とパッケージ集合の両方で確認する。
 ///
-/// この値は生成物へ焼き込まれる。実行環境の実ホームと食い違うと、起動した zsh が存在しないパスへ
-/// 書きに行く。macOS 決め打ちへ戻すと Linux 上の検証がその不整合をそのまま再現するため、両 system を
-/// 評価して固定する。評価だけで済むので darwin 以外の runner でも動く。
-fn home_directory_matches_platform(shell: &Shell) -> Result<()> {
-    step("lib.mkHome の home ディレクトリが system に追従する");
+/// ホーム配置は生成物へ焼き込まれる。実行環境の実ホームと食い違うと、起動した zsh が存在しないパスへ
+/// 書きに行く。パッケージ集合は、属性が在っても `meta.platforms` の外なら nixpkgs が評価を拒否するため、
+/// 全要素を forcing して片方の system だけで通る宣言を弾く。どちらも評価だけで済むので runner の OS を
+/// 問わない。
+fn home_configuration_evaluates_for_every_system(shell: &Shell) -> Result<()> {
+    step("lib.mkHome が両 system で成立する");
     for (system, expected) in [
         ("aarch64-darwin", "/Users/runner"),
         ("x86_64-linux", "/home/runner"),
     ] {
-        let apply = format!(
+        let home = format!(
             "f: (f {{ user = \"runner\"; system = \"{system}\"; }}).config.home.homeDirectory"
         );
         let actual = cmd!(
             shell,
-            "nix eval --raw --no-update-lock-file .#lib.mkHome --apply {apply}"
+            "nix eval --raw --no-update-lock-file .#lib.mkHome --apply {home}"
         )
         .read()?;
         ensure!(
             actual == expected,
             "system {system} の home ディレクトリが {actual}。{expected} を期待する"
         );
+
+        // store パスの一覧をそのまま返して `--json` で直列化させる。`builtins.length` などリストの spine
+        // しか触らない式では要素が thunk のまま残り、評価拒否が現れない。
+        let packages = format!(
+            "f: map (p: p.outPath) (f {{ user = \"runner\"; system = \"{system}\"; }}).config.home.packages"
+        );
+        cmd!(
+            shell,
+            "nix eval --json --no-update-lock-file .#lib.mkHome --apply {packages}"
+        )
+        .read()?;
     }
     Ok(())
 }
