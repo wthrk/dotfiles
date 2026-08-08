@@ -17,7 +17,7 @@
     };
 
     # `auto_updates true` / `version :latest` の cask も含め、全 cask を tap pin 追従の無人 upgrade 対象に
-    # する。前提となる「全 cask が sha256 固定」の受容根拠と確認手順は
+    # する。前提となる「全 cask が sha256 固定」の受容根拠と強制機構は
     # docs/automation/homebrew-cask-pinning.md を正本とする。
     greedyCasks = true;
 

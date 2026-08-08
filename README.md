@@ -190,7 +190,7 @@ cargo xtask check
 
 通常の静的検証を実行します。Rust、Nix、shell script、GitHub Actions workflow を確認します。
 
-すべて実行する場合:
+静的検証と Tart VM 統合検証をまとめて実行する場合:
 
 ```sh
 cargo xtask check all
@@ -200,7 +200,6 @@ cargo xtask check all
 
 ```sh
 cargo xtask check static
-cargo xtask check zsh
 ```
 
 Tart VM を使う runtime 検証:
@@ -209,10 +208,17 @@ Tart VM を使う runtime 検証:
 cargo xtask check runtime
 ```
 
+zsh 設定の実挙動検証（補完、キーバインド、PATH、起動時出力）は devShell 内で bats を直接起動します。
+Rust のビルド成果物を必要としないため `cargo xtask check` の下には置いていません。
+
+```sh
+bats tests/zsh
+```
+
 ## 無人更新の運用
 
 nightly の `flake.lock` 全 input bump と auto-merge ゲート、switch 時の Homebrew 無人 upgrade の前提は
 [`docs/automation/README.md`](docs/automation/README.md) を参照してください。
 
 - nightly bump の対象・補償制御・threat model: [`docs/automation/nightly-lock-bump.md`](docs/automation/nightly-lock-bump.md)
-- 宣言 cask の成果物固定状況と cask 追加時の確認手順: [`docs/automation/homebrew-cask-pinning.md`](docs/automation/homebrew-cask-pinning.md)
+- 無人 cask upgrade の明示受容と成果物固定の強制機構: [`docs/automation/homebrew-cask-pinning.md`](docs/automation/homebrew-cask-pinning.md)

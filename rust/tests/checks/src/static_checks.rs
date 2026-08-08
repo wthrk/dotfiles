@@ -7,10 +7,15 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, bail, ensure};
 use xshell::{Shell, cmd};
 
-use crate::{Result, command::step};
+use crate::Result;
 
 /// nightly bump が版差分の算出対象にする参照構成。`nightly-update.yml` の `CI_REFERENCE` と同じ値を指す。
 const CI_REFERENCE: &str = "darwinConfigurations.ci-ref";
+
+/// 長い検証ログで失敗位置を追えるよう、各検証ブロックの開始を同じ形式で出力する。
+fn step(label: &str) {
+    println!("==> {label}");
+}
 
 /// dirty な実マシン状態に依存しない、リポジトリ内だけで完結する検証を実行する。
 pub(crate) fn check() -> Result<()> {
@@ -272,19 +277,45 @@ const BREW_REF_WITH_FORCE_CLEANUP: [u64; 3] = [6, 0, 13];
 /// root LaunchDaemon（auto-update）が起動する wrapper を評価値から引くための daemon label。
 const AUTO_UPDATE_DAEMON_LABEL: &str = "org.dotfiles.auto-update";
 
-/// nix-darwin が `brew bundle` へ `--force-cleanup` を生成する `onActivation.cleanup` の値の集合。
+/// `homebrew.nix` の `onActivation.cleanup` として本検査が brew 依存を確認済みの方針（閉集合）。
 ///
 /// nix-darwin の `modules/homebrew.nix` は `optional (cleanup == "uninstall") "--force-cleanup"` と
 /// `optional (cleanup == "zap") "--zap --force-cleanup"` の 2 分岐でこのフラグを足す。したがって brew 版の
-/// 下限は `uninstall` だけでなく `zap` にも掛かり、判定条件は個別の値ではなくこの集合で表す。
-const CLEANUP_MODES_REQUIRING_FORCE_CLEANUP: [&str; 2] = ["uninstall", "zap"];
-
-/// `--force-cleanup` を生成しない cleanup 方針として識別済みの値。
+/// 下限は `uninstall` だけでなく `zap` にも掛かる。`--force-cleanup` を生成しない方針のうち、brew 版下限と
+/// 無関係だと確認済みなのは `cleanup = "none"` + `extraFlags = [ "--cleanup" ]` の形だけである。
 ///
-/// 現行 enum（`none` / `check` / `uninstall` / `zap`）のうち、brew 版下限と無関係だと確認済みなのは
-/// `cleanup = "none"` + `extraFlags = [ "--cleanup" ]` の形だけである。それ以外の値は「brew のどの
-/// capability に依存するか未確認」として fail-closed にする。
-const CLEANUP_MODE_WITHOUT_FORCE_CLEANUP: &str = "none";
+/// 既知集合の外（現行 enum の `check` を含む）は「brew のどの capability に依存するか未確認」なので、
+/// この型を構築できない値として [`declared_homebrew_cleanup_mode`] が `Err` にする。既知集合を生文字列で
+/// 持つと、集合との突合が呼び出し側の文字列比較に散り、未確認の方針が判定を素通りしうる。
+enum HomebrewCleanupMode {
+    /// 宣言外パッケージをアンインストールする方針。nix-darwin が `--force-cleanup` を生成する。
+    Uninstall,
+    /// `zap` 付きでアンインストールする方針。`--zap --force-cleanup` を生成するため下限は `Uninstall` と同じ。
+    Zap,
+    /// `--force-cleanup` を持たない brew 向けの迂回として識別済みの形（`none` + `extraFlags` の `--cleanup`）。
+    NoneWithCleanupFlag,
+}
+
+impl HomebrewCleanupMode {
+    /// nix-darwin がこの方針から `--force-cleanup` を生成するか（＝lock 済み brew 版の下限が掛かるか）。
+    fn requires_force_cleanup(&self) -> bool {
+        match self {
+            HomebrewCleanupMode::Uninstall | HomebrewCleanupMode::Zap => true,
+            HomebrewCleanupMode::NoneWithCleanupFlag => false,
+        }
+    }
+}
+
+impl std::fmt::Display for HomebrewCleanupMode {
+    /// `homebrew.nix` が宣言している `cleanup` の値そのものを表示し、診断文を宣言と直接突合させる。
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            HomebrewCleanupMode::Uninstall => "uninstall",
+            HomebrewCleanupMode::Zap => "zap",
+            HomebrewCleanupMode::NoneWithCleanupFlag => "none",
+        })
+    }
+}
 
 /// `homebrew.nix` の cleanup 方針と lock 済み brew の版が両立していることを静的に固定する。
 ///
@@ -308,15 +339,7 @@ fn assert_homebrew_cleanup_matches_locked_brew_capability(module: &str, lock: &s
     let declarations = strip_nix_line_comments(module);
     let mode = declared_homebrew_cleanup_mode(&declarations)?;
 
-    if !CLEANUP_MODES_REQUIRING_FORCE_CLEANUP.contains(&mode.as_str()) {
-        ensure!(
-            mode == CLEANUP_MODE_WITHOUT_FORCE_CLEANUP && declarations.contains(r#""--cleanup""#),
-            "nix/modules/homebrew.nix の cleanup 方針 `{mode}` を本検査の既知集合\
-             （{CLEANUP_MODES_REQUIRING_FORCE_CLEANUP:?} / `{CLEANUP_MODE_WITHOUT_FORCE_CLEANUP}` + \
-             `--cleanup`）のどれとしても識別できない。この方針が brew のどの capability に依存するかを判断し、\
-             依存するなら下限判定側へ、依存しないなら既知集合へ同じ差分で追加すること（未確認の方針を \
-             無検査で通さないため fail-closed）"
-        );
+    if !mode.requires_force_cleanup() {
         return Ok(());
     }
 
@@ -351,12 +374,14 @@ fn strip_nix_line_comments(module: &str) -> String {
         .join("\n")
 }
 
-/// `homebrew.nix` が実際に宣言している `onActivation.cleanup` の値を 1 件だけ取り出す。
+/// `homebrew.nix` が実際に宣言している `onActivation.cleanup` を [`HomebrewCleanupMode`] として 1 件だけ取り出す。
 ///
-/// 0 件（整形差・別ファイルへの分割・let 束縛経由などでアンカーが外れた）でも複数件でも `Err` にする。
-/// ここを `Ok` で通すと、`verify-bump-lock` が推移 input の `ref` 差分を方向を問わず通すことへの唯一の
-/// 補償制御が無言で dormant になる。
-fn declared_homebrew_cleanup_mode(declarations: &str) -> Result<String> {
+/// 宣言が 0 件（整形差・別ファイルへの分割・let 束縛経由などでアンカーが外れた）でも複数件でも `Err` にする。
+/// 既知集合に無い値も、brew 依存が未確認のまま下限判定を素通りさせないため `Err` にする。ここを `Ok` で通すと、
+/// `verify-bump-lock` が推移 input の `ref` 差分を方向を問わず通すことへの唯一の補償制御が無言で dormant になる。
+/// caller responsibility: `declarations` は [`strip_nix_line_comments`] 済みの `homebrew.nix` 全文であること
+/// （迂回形の識別に `extraFlags` の `--cleanup` を同じ文字列から読むため、宣言行だけを渡すと識別できない）。
+fn declared_homebrew_cleanup_mode(declarations: &str) -> Result<HomebrewCleanupMode> {
     const MARKER: &str = r#"cleanup = ""#;
     let modes: Vec<&str> = declarations
         .match_indices(MARKER)
@@ -370,7 +395,19 @@ fn declared_homebrew_cleanup_mode(declarations: &str) -> Result<String> {
             modes.len()
         ));
     };
-    Ok(mode.to_owned())
+    match mode {
+        "uninstall" => Ok(HomebrewCleanupMode::Uninstall),
+        "zap" => Ok(HomebrewCleanupMode::Zap),
+        "none" if declarations.contains(r#""--cleanup""#) => {
+            Ok(HomebrewCleanupMode::NoneWithCleanupFlag)
+        }
+        _ => Err(anyhow!(
+            "nix/modules/homebrew.nix の cleanup 方針 `{mode}` を本検査の既知集合（`uninstall` / `zap` / \
+             `none` + `--cleanup`）のどれとしても識別できない。この方針が brew のどの capability に依存するかを \
+             判断し、依存するなら下限判定側へ、依存しないなら既知集合へ同じ差分で追加すること（未確認の方針を \
+             無検査で通さないため fail-closed）"
+        )),
+    }
 }
 
 /// `flake.lock` の `brew-src` node が宣言する `original.ref`（親 flake 由来の brew tag）を取り出す。

@@ -41,9 +41,10 @@ pub(crate) enum RuntimeScenario {
 
 #[derive(Subcommand)]
 /// `dotfiles-checks` へ渡す検証対象。runtime は VM が必要なため明示選択にする。
+///
+/// zsh 設定の実挙動検証はここに無い。`tests/zsh` の bats suite が持ち、devShell から直接起動する。
 pub(crate) enum CheckTarget {
     Static,
-    Zsh,
     Runtime {
         #[arg(value_enum)]
         scenario: Option<RuntimeScenario>,

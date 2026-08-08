@@ -10,7 +10,7 @@
   - `仕様適合レビュー担当`
 - 文書是正・文書主成果物:
   - `仕様適合レビュー担当`
-- `AGENTS*`、`.agents/skills/`、`docs/task-governance/`、`docs/architecture/`、`docs/` 配下のその他の規約文書（`docs/docs-governance.md` および各領域の運用規約・ゲート条件を定める文書）、`rust/tests/checks/` を変更する場合、および高リスク変更を含む場合は `運用整合レビュー担当` を追加必須にする。
+- `AGENTS*`、`.agents/skills/`、`docs/task-governance/`、`docs/architecture/`、`docs/` 配下のその他の規約文書（`docs/docs-governance.md` および各領域の運用規約・ゲート条件を定める文書）、`rust/tests/checks/`、`.github/workflows/`、`rust/xtask/src/ci/` を変更する場合、および高リスク変更を含む場合は `運用整合レビュー担当` を追加必須にする。
 
 役割はこの 4 つで固定する。レビュー観点が足りないと感じても、新しいレビュー役割・判定段階・専任確認を追加してはならない。既存担当の職責として扱うか、指摘を不採用にすることで解決する。
 

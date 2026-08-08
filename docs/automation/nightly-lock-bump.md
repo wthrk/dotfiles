@@ -46,8 +46,10 @@ PR の時点で止める。
 log の `added:` / `removed:` と、bump job の artifact `bump-state`（`retention-days: 1`）に含まれる bump 後 lock を、
 既定ブランチの `flake.lock`（bump 前 lock。同 job の `repo_base_sha` output が指す commit のもの）と比較する。
 変化が上流宣言どおりで root input（`flake.nix` 直下）が動いていなければ正当な上流変化であり、
-`EXPECTED_LOCK_INPUT_SOURCES` を通常の PR で更新する。root input の `original` が動いている、または追加 node の
-取得先が上流宣言と一致しない場合は攻撃を疑って調査する。
+`EXPECTED_LOCK_INPUT_SOURCES` を通常の PR で更新する。このとき artifact の bump 後 `flake.lock` も同じ PR へ
+取り込む。`nightly_lock_input_sources_match_expected_table` は表と実 `flake.lock` の input 集合を完全一致で
+突合するため、表だけを更新すると `check static` が fail する。root input の `original` が動いている、または追加
+node の取得先が上流宣言と一致しない場合は攻撃を疑って調査する。
 
 ## 更新概要（change_items）の取得
 

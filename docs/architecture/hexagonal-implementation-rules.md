@@ -348,7 +348,7 @@ Nix:
 Shell/zsh:
 
 - `scripts/bootstrap.sh` は導入クリティカルとして扱い、可搬に保ち `bash -n` で構文検証できる状態を維持する。
-- zsh 挙動は `rust/tests/checks/src/zsh.rs` の前提（TAB、fzf-tab、autosuggestions、syntax highlighting、PATH 除外）と整合させる。
+- zsh 挙動は `tests/zsh` の前提（TAB、fzf-tab、autosuggestions、syntax highlighting、PATH 除外）と整合させる。
 - アプリ管理の shell 注入や Docker 認証など、利用者ローカル可変状態はリポジトリ外に置く。
 
 Lua/Neovim:

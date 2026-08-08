@@ -333,6 +333,12 @@
             ++ [
               pkgs.actionlint
               pkgs.bash
+              # zsh 設定の実挙動検証（`tests/zsh`）の実行系。assertion library まで含めて固定し、
+              # 検証側が runner 上の任意の bats 環境に依存しないようにする。
+              (pkgs.bats.withLibraries (libraries: [
+                libraries.bats-support
+                libraries.bats-assert
+              ]))
               pkgs.coreutils
               pkgs.git
               pkgs.gnugrep
@@ -412,6 +418,23 @@
         user = "ci";
         host = "ci-ref";
         system = "aarch64-darwin";
+      };
+
+      # zsh 設定の実挙動検証（`tests/zsh`）が起動する Home Manager 構成。
+      #
+      # 各マシンの concrete な `homeConfigurations` は利用側 flake に置くため、本 repo 単体には
+      # 検証が build できる評価済み home 構成が無い。`dotfiles init` が生成する flake を検証のたびに
+      # 作って評価する方式だと、検証経路が dotfiles CLI のビルドを要求し、zsh 挙動の検証に Rust の
+      # ビルド成果物が必要になる。`dotfiles init` 経路自体は runtime 統合検証（VM）が実行するため、
+      # zsh 検証はこの参照構成だけを見る。
+      #
+      # `includeSelfPackage = false` は、この検証が dotfiles CLI の release build を払わないための
+      # 宣言であり、`tests/zsh` がその不変条件を検査する。利用者名は CI 内の固定値であり、実フリート
+      # とは独立した参照専用構成である。
+      homeConfigurations.ci-ref = mkHome {
+        user = "ci";
+        system = "aarch64-darwin";
+        includeSelfPackage = false;
       };
 
       lib = {
