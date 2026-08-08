@@ -30,7 +30,11 @@
       # `autoUpdate` は引き続き無効にして switch 時の暗黙 tap 取得を避ける（tap は flake input rev で固定）。
       autoUpdate = false;
       upgrade = true;
-      cleanup = "uninstall";
+      # nix-darwin は cleanup = "uninstall" のとき廃止済みの --force-cleanup を brew bundle に渡す。
+      # brew 5.1.1 は --force-cleanup を持たないため、cleanup = "none" + extraFlags で --cleanup を
+      # 直接渡し同等の挙動（宣言外パッケージをアンインストール）を得る。
+      cleanup = "none";
+      extraFlags = [ "--cleanup" ];
     };
 
     # 全 cask を tap pin 追従の無人 upgrade 対象にする（`auto_updates true` / `version :latest` も含む）。
