@@ -3,8 +3,7 @@ name: Zsh checks
 on:
   workflow_dispatch:
   pull_request:
-  # PR run が読めるキャッシュは既定ブランチ scope のものだけ。main への push でも走らせて初めて
-  # `refs/heads/main` scope の target/ キャッシュが populate され、以降の PR がそれを restore できる。
+  # PR が読める cache は既定ブランチ scope のものだけ。main でも走らせて populate する。
   push:
     branches:
       - main
@@ -38,18 +37,29 @@ jobs:
       # `/nix/store` はキャッシュしない。PR gate になったため static-checks.yml と同じ判断を採る。macOS runner の
       # 復元は 1 時間規模に達しうる。store path は cache.nixos.org から substitute する。
 
-      # この job は checkout した flake.lock の devShell だけでビルドし、lock を書き換えない。よってキャッシュ
-      # キーに flake.lock ハッシュを含めれば、復元する target/ の build script が参照する `/nix/store` closure は
-      # 必ず一致する（GC 済み path を踏む事故が起きない）。依存 427 crate の再ビルドが消えるので target/ まで
-      # 再利用する。static-checks（ubuntu）とは runner.os が異なるためキーは自然に分かれる。
+      # 復元する target/ の正しさを縛るのは、build script が link した C ライブラリと使った toolchain の
+      # store path だけである。`.#cargo-build-inputs` はその集合だけを入力に持つ derivation で、drv hash は
+      # 入力の関数なのでそのまま cache key にできる。`flake.lock` のハッシュだと nixpkgs が動いた晩は
+      # 成果物と無関係な入力の差でも必ず別キーになる。
+      - name: cargo build closure の derivation を確定
+        id: closure
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#cargo-build-inputs)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      # toolchain 不一致の target/ を復元しないことは shared-key の `.#cargo-build-inputs` drv 名が担う
+      # （rust-cache のフォールバックキーは shared-key を落とさない）。`cmd-format` はヒット率のために要る。
+      # これが無いとキーの rust environment hash が runner 側 rustup の `rustc -vV` で決まり、runner image が
+      # toolchain を入れ替えるたびに、devShell が同じでもキーが動く。この job は lock を書き換えないため、
+      # `nix develop` は job 中ずっと同じ devShell を解決する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: zsh-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          shared-key: zsh-checks-${{ runner.os }}-${{ steps.closure.outputs.key }}
           cmd-format: nix develop -c {0}
           cache-targets: true
-          # 保存は main scope だけに限る（static-checks.yml と同じ理由）。PR scope の cache は他 PR から読めず、
-          # target/ を含むと 10GB 上限を圧迫して main scope の cache を evict する。
+          # PR scope の cache は他 PR から読めず、target/ を含むと 10GB 上限を圧迫して main の分を evict する。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: zsh checks

@@ -98,16 +98,37 @@ jobs:
       # 消費して job の timeout-minutes を食い潰し、bump 本体へ到達できなくなる。store path は cache.nixos.org
       # から substitute する。
 
-      # この job のビルドは `nix flake update` より前、= checkout した flake.lock の devShell で走る。よって
-      # キャッシュキーに flake.lock ハッシュを含めれば、restore する target/ の build script が参照する
-      # `/nix/store` closure は必ず一致する（GC 済み path を踏む事故が起きない）。依存 427 crate の再ビルドが
-      # 消えるのでここは target/ まで再利用する。
+      # この job の cargo ビルドは全て bump 前 devShell で走る（下のビルド step は `nix flake update` より前に
+      # 置いてある）。したがって復元する target/ の正しさを縛るのは bump 前 lock の `.#cargo-build-inputs`、
+      # すなわち build script が link した C ライブラリと使った toolchain の store path だけである。導出は
+      # `nix flake update` より前で行い、bump 後 lock の closure をキーにしない。
+      - name: cargo build closure の derivation を確定
+        id: closure
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#cargo-build-inputs)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      # 上のキーは lock 世代ではなく closure を指すため、bump で closure が動かない限り翌晩の run にも当たる。
+      # `flake.lock` ハッシュでは毎晩必ず別世代になり target/ を載せる意味が無かったが、この job は同じ
+      # closure で同じ `cargo build -p dotfiles-cli` を毎晩繰り返すので、載せれば当たる。
+      #
+      # `cmd-format` は置かない。置くと rust-cache は `rustc -vV` と `cargo metadata` を `nix develop -c` で実行
+      # するが、post step の分は `nix flake update` の後に走るため tree は bump 後 lock であり、この job が他では
+      # 一度も使わない bump 後 devShell の実体化を macOS runner で毎晩余計に走らせる。代わりにキーの rust
+      # environment hash は runner 側 rustup の `rustc -vV` で決まる。それでも target/ の一致は保たれる。
+      # rust-cache が渡すフォールバックキーは prefix + shared-key + OS/arch + その hash までで shared-key を
+      # 落とさず、shared-key の `.#cargo-build-inputs` drv 名がビルドに使う devShell の rustc と link 対象を
+      # 押さえているためである（runner 側 rustup が動いた晩は miss するだけで、不一致の target/ は復元しない）。
+      #
+      # 保存は既定ブランチ起動だけに絞る。この job には job-level gate が無く任意 ref の dry_run dispatch でも
+      # 走るため、絞らないと非既定ブランチ scope の cache が 10GB 上限を消費し、PR と main が読む分を evict する。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: nightly-bump-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          cmd-format: nix develop -c {0}
+          shared-key: nightly-bump-${{ runner.os }}-${{ steps.closure.outputs.key }}
           cache-targets: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # 判定主体（eval/導出/rev 抽出/版差分/概要記録）を担う dotfiles バイナリを devShell 内 cargo でビルドする。
       # `nix eval` 起動・owner/repo 導出・flake.lock rev 抽出・brew cask 版解析は全てこのバイナリ（Rust）が行う。
@@ -303,26 +324,42 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      # `/nix/store` はキャッシュしない。この job は static-checks.yml と同じ `cargo xtask check static` を走らせ、
-      # その required check 相当の status を投稿するため、キャッシュ構成も static-checks.yml に揃える。
+      # `/nix/store` 全体はキャッシュしない（static-checks.yml と同じ判断）。持ち回るのは cargo の
+      # registry/git/target で、derivation 名をキーにして bump 後 lock でも main scope の cache に到達させる。
 
-      # cargo registry/git キャッシュ（~/.cargo）だけを再利用する。この job は bump 済み lock（後段の
-      # download-artifact で展開）の devShell でビルドするが、キャッシュ復元時点の checkout はまだ bump 前 lock
-      # であるため、flake.lock ハッシュで `/nix/store` closure の一致を保証できない。target/ を復元すると GC 済み
-      # store path を指した build script を踏みうるので registry/git だけ共有する。
-      #
-      # shared-key は static-checks.yml と分ける。あちらは closure 一致を保証できる（同一 lock でビルドする）ため
-      # target/ まで載せたキーになっており、同じキーを共有すると復元できない target/ を巡って互いを潰し合う。
-      - name: cargo build キャッシュ
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: nightly-open-pr-${{ runner.os }}
-          cache-targets: false
-
+      # cargo キャッシュより前に bump 済み lock をツリーへ展開する。この job がビルドに使う devShell は
+      # bump 後 lock のものなので、キーもそこから導出しなければ復元した target/ の前提と食い違う。
       - name: bump 済み lock を取得
         uses: actions/download-artifact@v8
         with:
           name: bump-state
+
+      # bump 後 lock の `.#cargo-build-inputs`、すなわち build script が link する C ライブラリと使う toolchain
+      # の store path だけを入力に持つ derivation をキーにする。bump が rustc と link 対象ライブラリを動かさない
+      # 晩はこの drv が main と同じになり、下の shared-key が static-checks.yml と一致して main が populate した
+      # target/ に命中する。動いた晩は必ず別キーになり、closure の合わない target/ は復元しない。
+      - name: cargo build closure の derivation を確定
+        id: closure
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#cargo-build-inputs)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      # shared-key は static-checks.yml と同一文字列にする。同じ `cargo xtask check static` を同じ runner OS で
+      # 走らせるため、closure が一致する晩は main scope の cache をそのまま使える。`cmd-format` も置く。これが
+      # 無いとキーの rust environment hash が runner 側 rustup の `rustc -vV` で決まり、static-checks.yml 側の
+      # キー（devShell の rustc で決まる）と一致しなくなって共有できない。この job は展開済みの bump 後 lock で
+      # `nix develop` を何度も使うため、`cargo metadata` が `nix develop -c` になっても追加の devShell 実体化を
+      # 招くことはない（bump job で `cmd-format` を置かない理由はそこに無い）。
+      - name: cargo build キャッシュ
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: static-checks-${{ runner.os }}-${{ steps.closure.outputs.key }}
+          cmd-format: nix develop -c {0}
+          cache-targets: true
+          # 保存は既定ブランチ起動限定（static-checks.yml と同じ理由）。job-level `if` で既に限定済みだが、
+          # cache scope の条件を投稿経路の gate に暗黙依存させない。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # 無更新の夜（record が history を書かない）は history-record artifact が無く download が失敗するが、clean
       # no-op にするため失敗を許容する。一方 record が history を書いた夜（has_history=true）は download の一時失敗・

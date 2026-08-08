@@ -3,9 +3,7 @@ name: Static checks
 on:
   workflow_dispatch:
   pull_request:
-  # PR run が読めるキャッシュは既定ブランチ scope のものだけ。main への push でも走らせて初めて
-  # `refs/heads/main` scope の target/ キャッシュが populate され、以降の PR がそれを restore できる。
-  # これが無いと PR は毎回 `No cache found.` から 427 crate を積み直す。
+  # PR が読める cache は既定ブランチ scope のものだけ。main でも走らせて populate する。
   push:
     branches:
       - main
@@ -36,18 +34,32 @@ jobs:
       # static checks では `/nix/store` キャッシュを使わない。toolchain / devShell は毎回取得するが、
       # job 自体は deterministic に完走させる。
 
-      # Nix devShell 内の cargo/rustc を基準に target/ まで再利用する。`cmd-format` を付けずに target を restore
-      # すると shell 外の cargo メタデータ/clean up と食い違い、stale build script を踏みやすい。rust-cache 自身の
-      # key/metadata/clean up を `nix develop -c` 側へ合わせた上で target を再利用する。
+      # 復元する target/ の正しさを縛るのは、build script が link した C ライブラリと使った toolchain の
+      # store path だけである。`.#cargo-build-inputs` はその集合だけを入力に持つ derivation で、drv hash は
+      # 入力の関数なのでそのまま cache key にできる。`flake.lock` のハッシュをキーにすると nightly bump の
+      # たびに必ず別キーになり、bump 後 lock で走る nightly open-pr がこの cache へ到達できない。
+      - name: cargo build closure の derivation を確定
+        id: closure
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#cargo-build-inputs)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      # Nix devShell 内の cargo/rustc を基準に target/ まで再利用する。toolchain 不一致の target/ を復元しない
+      # ことは shared-key の `.#cargo-build-inputs` drv 名が担う。rust-cache が渡すフォールバックキーは
+      # prefix + shared-key + OS/arch + rust environment hash までで shared-key を落とさないため、drv が違う
+      # 世代の target/ には到達しない。`cmd-format` はヒット率のために要る。これが無いと rust environment hash が
+      # runner 側 rustup の `rustc -vV` で決まり、runner image が toolchain を入れ替えるたびにキーが動く。
+      # この job は lock を書き換えないため、`nix develop` は job 中ずっと同じ devShell を解決する。
+      # shared-key は nightly-update.yml の open-pr job と共有する（同じ `cargo xtask check static` を走らせ、
+      # bump で closure が動かない晩は同じキーになる）。
       - name: cargo build キャッシュ
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: static-checks-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          shared-key: static-checks-${{ runner.os }}-${{ steps.closure.outputs.key }}
           cmd-format: nix develop -c {0}
           cache-targets: true
-          # 保存は main scope だけに限る。PR run が保存しても、その cache は同じ PR からしか読めず他 PR の役に
-          # 立たない一方、target/ を含むと 1 run あたり GB 級になりリポジトリの 10GB 上限を圧迫して、全 PR が
-          # 参照すべき main scope の cache を evict してしまう。読み手のいない cache は保存しない。
+          # PR scope の cache は他 PR から読めず、target/ を含むと 10GB 上限を圧迫して main の分を evict する。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: static checks
