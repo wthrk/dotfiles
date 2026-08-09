@@ -36,9 +36,9 @@ zsh_probe() {
     printf '%s\n' "$1" >"${code_file}"
     # `script(1)` の引数の並びは BSD 版と util-linux 版で違う。実行環境のものに合わせる。
     if script --version 2>/dev/null | grep -q util-linux; then
-        raw="$(zsh_probe_env script -qec "zsh -ic 'source ${code_file}'" /dev/null)"
+        raw="$(zsh_probe_env script -qec "zsh -ic 'source \"${code_file}\"'" /dev/null)"
     else
-        raw="$(zsh_probe_env script -q /dev/null zsh -ic "source ${code_file}")"
+        raw="$(zsh_probe_env script -q /dev/null zsh -ic "source \"${code_file}\"")"
     fi
     strip_terminal_control "${raw}"
 }

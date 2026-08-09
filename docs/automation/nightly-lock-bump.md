@@ -20,15 +20,21 @@ GITHUB_TOKEN が起票・push した PR では GitHub が `on: pull_request` の
 check（`static-checks.yml` の job 名 `static checks`）を満たす commit status は nightly の open-pr job が自分で
 投稿する。投稿は次のすべてが同一 run 内で合格した場合に限る（fail-closed）。
 
-| ゲート | 検査しないもの |
-|---|---|
-| `cargo xtask ci verify-bump-lock` | lock 内容の妥当性（許可パスと取得先同一性だけを見る） |
-| `cargo xtask check static`（`darwinConfigurations.ci-ref` のモジュール評価を含む） | derivation の build（devShell 内で走るため build sandbox でだけ露見する依存欠落） |
-| `nix build .#dotfiles-cli` | checkPhase だけが起動する実行時依存（derivation は `doCheck = false`） |
-| 構成適用後の `bats tests/zsh`（`static-checks.yml` と同一） | macOS 固有の挙動（runner は ubuntu） |
-| bump job の `nix eval .#darwinConfigurations.ci-ref...`（`check static` と同じ評価を bump 直後に行う） | 実機 activation |
+| ゲート | 実行 job | 検査しないもの |
+|---|---|---|
+| `cargo xtask ci verify-bump-lock` | open-pr | lock 内容の妥当性（許可パスと取得先同一性だけを見る） |
+| `cargo xtask check static`（`darwinConfigurations.ci-ref` のモジュール評価を含む） | open-pr | derivation の build（devShell 内で走るため build sandbox でだけ露見する依存欠落） |
+| `nix build .#dotfiles-cli` | open-pr | checkPhase だけが起動する実行時依存（derivation は `doCheck = false`） |
+| 構成適用後の `bats tests/zsh`（`static-checks.yml` と同一） | runtime-gate | macOS 固有の挙動（runner は ubuntu） |
+| `nix eval .#darwinConfigurations.ci-ref...`（`check static` と同じ評価を bump 直後に行う） | bump | 実機 activation |
 
-open-pr は `needs: bump` なので、最後の eval が fail した夜も status は投稿されない。
+open-pr は `needs: [bump, runtime-gate]` なので、bump job の eval か runtime-gate の実挙動 gate が fail した夜も
+status は投稿されない。
+
+構成適用と `bats tests/zsh` を open-pr ではなく runtime-gate に置くのは、権限の分離のためである。open-pr は
+PR の push と status 投稿のために `contents` / `pull-requests` / `statuses` を write で持ち、`Nix を導入` step で
+`cachix/install-nix-action` へ `github_access_token` を渡す。bump 後 lock の Nix コードを実行する gate は、
+`contents: read` だけを持つ runtime-gate 側で走らせる。
 
 Home Manager の activation は runner 上で実行するが、darwin activation（`darwin-rebuild switch` / `brew bundle`）
 は実行しない。darwin activation を実行するのは

@@ -184,11 +184,90 @@ jobs:
             docs/update-history/
           if-no-files-found: warn
 
+  # bot PR では `on: pull_request` が発火せず static-checks.yml が代替実行されないため、同 workflow が持つ
+  # 実挙動 gate（構成適用 + zsh checks）を同一 run 内でここが実行する。open-pr から分けるのは、open-pr が
+  # PR push と status 投稿のため write 権限を持ち `cachix/install-nix-action` へ `github_access_token` を
+  # 渡す job だからで、bump 後 lock の Nix コードを実行する gate は write token の無いこの job に置く。
+  runtime-gate:
+    name: apply configuration and run zsh checks
+    needs: bump
+    # 起動条件は open-pr と同一にする。この job が gate するのは open-pr が投稿する `static checks` status
+    # だけなので、open-pr が走らない起動では実行する対象も無い。
+    if: >-
+      ${{ github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.dry_run == 'false' &&
+           github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Nix を導入
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      # gate の対象は bump 後 lock の構成なので、適用より前に bump 済み lock をツリーへ展開する。
+      - name: bump 済み lock を取得
+        uses: actions/download-artifact@v8
+        with:
+          name: bump-state
+
+      # derivation hash は build 入力の関数なので、そのまま cache key にできる。key は open-pr と同一で、
+      # この job が実ビルドした晩は open-pr 側の復元が命中する。
+      - name: dotfiles-cli の derivation を確定
+        id: cli
+        run: |
+          set -euo pipefail
+          drv="$(nix path-info --derivation .#dotfiles-cli)"
+          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
+
+      # `nix run .#default` は dotfiles-cli（`packages.default`）を要求する。cache 置き場は作業ツリー外に取る。
+      - name: dotfiles-cli ビルド成果物キャッシュを復元
+        id: cli-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/dotfiles-nixcache
+          key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
+
+      - name: 成果物を store へ復元
+        if: ${{ steps.cli-cache.outputs.cache-hit == 'true' }}
+        run: nix copy --from "file://$HOME/.cache/dotfiles-nixcache" --no-check-sigs .#dotfiles-cli
+
+      # 適用経路は static-checks.yml と同一で、利用者が叩くのと同じ `dotfiles init` / `dotfiles switch`。
+      - name: 構成を適用して zsh checks を bump 後 lock で実行
+        env:
+          # 実フリートの `home-manager.backupFileExtension` と同じ値。standalone activation では
+          # この指定が無いと既存ファイルを前にして止まる。
+          HOME_MANAGER_BACKUP_EXT: before-home-manager
+        run: |
+          set -euo pipefail
+          nix run .#default -- init --source "path:$PWD"
+          nix run .#default -- switch home
+          nix develop -c bats --print-output-on-failure tests/zsh
+
+      # cache scope の条件を投稿経路の gate に暗黙依存させない。
+      - name: 成果物をキャッシュへ書き出し
+        if: ${{ steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
+        run: nix copy --to "file://$HOME/.cache/dotfiles-nixcache?compression=zstd" --no-check-sigs .#dotfiles-cli
+
+      - name: 成果物キャッシュを保存
+        if: ${{ steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/dotfiles-nixcache
+          key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
+
   # GITHUB_TOKEN が起票した PR では `on: pull_request` の static-checks.yml が発火しないため、この job が
-  # 同一 run 内でゲートを実行し、全て合格した場合に限り `static checks` status を投稿する。
+  # 同一 run 内で残りのゲートを実行し、runtime-gate を含め全て合格した場合に限り `static checks` status を
+  # 投稿する。
   open-pr:
     name: open bump PR and enable auto-merge
-    needs: bump
+    needs: [bump, runtime-gate]
     # 非 dry-run（PR 起票・status 投稿経路）は既定ブランチ起動に限定し、信頼できない ref から検査主体を
     # ビルドして `static checks` status を詐称投稿する経路を塞ぐ。tag は許可しない: ref 全体を
     # `refs/heads/<既定ブランチ>` と照合し、既定ブランチ名と同名の tag を除外する。
@@ -351,19 +430,6 @@ jobs:
           set -euo pipefail
           nix build .#dotfiles-cli --no-link --print-build-logs
 
-      # bot PR では `on: pull_request` が発火せず static-checks.yml が代替実行されない。この job が投稿する
-      # `static checks` status の意味を揃えるため、同 workflow が持つ実挙動 gate もここで実行する。
-      # 省くと、activation か zsh の実挙動だけを壊す bump がこの gate を通らずに auto-merge される。
-      - name: 構成を適用して zsh checks を bump 後 lock で実行
-        if: ${{ steps.commit.outputs.has_changes == 'true' }}
-        env:
-          HOME_MANAGER_BACKUP_EXT: before-home-manager
-        run: |
-          set -euo pipefail
-          nix run .#default -- init --source "path:$PWD"
-          nix run .#default -- switch home
-          nix develop -c bats --print-output-on-failure tests/zsh
-
       # cache scope の条件を投稿経路の gate に暗黙依存させない。
       - name: 成果物をキャッシュへ書き出し
         if: ${{ steps.commit.outputs.has_changes == 'true' && steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
@@ -391,11 +457,12 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`、構成適用後の \`bats tests/zsh\`（後 3 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
+            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`、runtime-gate job での構成適用後の \`bats tests/zsh\`（後 3 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
-      # 前段ゲートが全て合格した場合に限り status を投稿する（`if: success()` で明示保証する）。context 名は
-      # 適用済み ruleset の required context（static-checks.yml の job 名）と一致させる。
+      # 全ゲートが合格した場合に限り status を投稿する。同 job 内のゲートは `if: success()` が、構成適用と
+      # zsh checks は `needs: runtime-gate` が担保する。context 名は適用済み ruleset の required context
+      # （static-checks.yml の job 名）と一致させる。
       - name: required check `static checks` status を投稿
         if: ${{ success() && steps.pr.outputs.pr_url != '' }}
         env:
@@ -409,7 +476,7 @@ jobs:
             -f state=success \
             -f context="static checks" \
             -f target_url="${RUN_URL}" \
-            -f description="nightly-update run の verify-bump-lock + 実 static checks + nix build + zsh checks 合格"
+            -f description="nightly-update run の verify-bump-lock + 実 static checks + nix build + runtime-gate の zsh checks 合格"
 
       # codex 自動レビューを起動する（Copilot は GitHub 側のネイティブ code review で走る）。
       - name: codex レビューを依頼

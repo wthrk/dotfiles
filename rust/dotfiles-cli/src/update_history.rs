@@ -204,6 +204,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     });
     let extractor = llm::OpenAiExtractor::new(brew_notes_base);
     let input = record::RecordInput {
+        // 宣言 cask は `run_record` が `reference` から評価して載せる。
+        declared_casks: None,
         lock_old: options.lock_old.as_deref(),
         lock_new: options.lock_new.as_deref(),
         cursor_old: options.cursor_old,

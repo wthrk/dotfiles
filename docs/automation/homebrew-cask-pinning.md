@@ -6,8 +6,7 @@
 
 auto-update 経路は switch 時に `brew upgrade` を実行して installed cask/formula を tap rev の pin へ追従させる。
 `homebrew.nix` で `greedyCasks = true` を有効化しているため、既定では upgrade を素通りする `auto_updates true` の
-cask も upgrade 対象になり、全 cask が tap pin へ決定論的に収束する（greedy は `version :latest` も対象にするが、
-その cask は後述のとおり宣言 cask として定着しない）。
+cask も upgrade 対象になり、全 cask が tap pin へ決定論的に収束する。
 tap rev は cask の「定義」を固定し、ダウンロード成果物の固定性は cask 側の `sha256` 指定に依存する。宣言 cask が
 `auto_updates true` のものも含め全て `sha256` で成果物を明示固定している限り、greedy 有効下でも無人 upgrade が
 差し替える成果物は tap rev で再現的に固定される。
