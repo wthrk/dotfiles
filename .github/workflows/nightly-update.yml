@@ -186,8 +186,8 @@ jobs:
 
   # bot PR では `on: pull_request` が発火せず static-checks.yml が代替実行されないため、同 workflow が持つ
   # 実挙動 gate（構成適用 + zsh checks）を同一 run 内でここが実行する。open-pr から分けるのは、open-pr が
-  # PR push と status 投稿のため write 権限を持ち `cachix/install-nix-action` へ `github_access_token` を
-  # 渡す job だからである。gate ごとの実行 job は docs/automation/nightly-lock-bump.md の表を正本とする。
+  # PR push と status 投稿のため write 権限を持つ job だからである。gate ごとの実行 job は
+  # docs/automation/nightly-lock-bump.md の表を正本とする。
   runtime-gate:
     name: apply configuration and run zsh checks
     needs: bump
