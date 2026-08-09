@@ -398,10 +398,6 @@ jobs:
           set -euo pipefail
           nix develop -c cargo xtask check static
 
-      # `nix build .#dotfiles-cli` は runtime-gate が `nix run .#default` で実行する（同一 derivation）。
-      # ここへ置くと、runtime-gate が同じ key で保存した cache を必ず復元して store path 確認へ退化し、
-      # build sandbox でしか露見しない依存欠落を検出しなくなる。
-
       - name: bump ブランチを push して PR 起票
         id: pr
         if: ${{ steps.commit.outputs.has_changes == 'true' }}
@@ -420,8 +416,8 @@ jobs:
             --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、runtime-gate job での \`dotfiles-cli\` の build と構成適用後の \`bats tests/zsh\`（後 3 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
-      # 全ゲートが合格した場合に限り status を投稿する。同 job 内のゲートは `if: success()` が、構成適用と
-      # zsh checks は `needs: runtime-gate` が担保する。context 名は適用済み ruleset の required context
+      # 全ゲートが合格した場合に限り status を投稿する。同 job 内のゲートは `if: success()` が、他 job の
+      # ゲートは `needs: runtime-gate` が担保する。context 名は適用済み ruleset の required context
       # （static-checks.yml の job 名）と一致させる。
       - name: required check `static checks` status を投稿
         if: ${{ success() && steps.pr.outputs.pr_url != '' }}
