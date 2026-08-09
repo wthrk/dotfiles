@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn diff_casks_tracks_auto_updates_and_computes_changes() -> Result<()> {
         // azookey: upgrade、yubico-authenticator: 版不変→除外、bitwarden（auto_updates 相当）: upgrade で追跡。
-        let nix = casks(&["azookey", "bitwarden", "yubico-authenticator"]);
+        let declared = casks(&["azookey", "bitwarden", "yubico-authenticator"]);
         let old: BTreeMap<String, String> = [
             (cask_rb_url("old", "azookey"), version_rb("1.0")),
             (cask_rb_url("old", "bitwarden"), version_rb("2024.1")),
@@ -410,7 +410,7 @@ mod tests {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let fetch = |url: &str| -> Result<CaskFetch> { Ok(body_or_not_found(&merged, url)) };
-        let deltas = diff_casks(&nix, "old", "new", &fetch)?;
+        let deltas = diff_casks(&declared, "old", "new", &fetch)?;
         // azookey と bitwarden（auto_updates）の双方が追跡される。yubico-authenticator は版不変で除外。
         assert_eq!(deltas.len(), 2);
         let azookey = deltas
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn diff_casks_fails_closed_on_no_check_sha256() {
         // new rev の `.rb` が `sha256 :no_check`（未固定成果物）なら greedy 前提に反するため停止する。
-        let nix = casks(&["loose"]);
+        let declared = casks(&["loose"]);
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "loose") {
                 CaskFetch::Body(
@@ -444,7 +444,7 @@ mod tests {
                 CaskFetch::NotFound
             })
         };
-        let error = diff_casks(&nix, "old", "new", &fetch)
+        let error = diff_casks(&declared, "old", "new", &fetch)
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn diff_casks_marks_added_from_old_not_found() -> Result<()> {
         // old 不在(404)→new 版ありは Added。new 側 404 は宣言 cask 欠落として別テストで fail-closed にする。
-        let nix = casks(&["newcask"]);
+        let declared = casks(&["newcask"]);
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "newcask") {
                 CaskFetch::Body(version_rb("3.0"))
@@ -500,7 +500,7 @@ mod tests {
                 CaskFetch::NotFound
             })
         };
-        let deltas = diff_casks(&nix, "old", "new", &fetch)?;
+        let deltas = diff_casks(&declared, "old", "new", &fetch)?;
         let added = deltas.iter().find(|d| d.name == "newcask");
         assert_eq!(added.map(|d| d.change), Some(ChangeKind::Added));
         Ok(())
@@ -510,7 +510,7 @@ mod tests {
     fn diff_casks_fails_closed_when_new_rev_unavailable() {
         // new rev の `.rb` が取得不能（5xx/429/接続失敗＝`Unavailable`）なら、固定性（`sha256 :no_check` 検査）を
         // 確認できないため record を失敗させる（fail-closed: 取得障害の夜に未固定 cask の混入を許さない）。
-        let nix = casks(&["flaky"]);
+        let declared = casks(&["flaky"]);
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("old", "flaky") {
                 CaskFetch::Body(version_rb("1.0"))
@@ -519,7 +519,7 @@ mod tests {
                 CaskFetch::Unavailable
             })
         };
-        let error = diff_casks(&nix, "old", "new", &fetch)
+        let error = diff_casks(&declared, "old", "new", &fetch)
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn diff_casks_fails_closed_when_declared_cask_is_not_found_at_new_rev() {
         // new rev が明確な不在（404＝`NotFound`）なら、宣言 cask を Removed として履歴記録せず停止する。
-        let nix = casks(&["gone"]);
+        let declared = casks(&["gone"]);
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("old", "gone") {
                 CaskFetch::Body(version_rb("1.0"))
@@ -544,7 +544,7 @@ mod tests {
                 CaskFetch::NotFound
             })
         };
-        let error = diff_casks(&nix, "old", "new", &fetch)
+        let error = diff_casks(&declared, "old", "new", &fetch)
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn diff_casks_fails_closed_when_old_rev_unavailable() {
         // old rev が取得不能なら、new に版があっても差分なしとして silent skip せず fail-closed にする。
-        let nix = casks(&["flaky"]);
+        let declared = casks(&["flaky"]);
         let fetch = |url: &str| -> Result<CaskFetch> {
             Ok(if url == cask_rb_url("new", "flaky") {
                 CaskFetch::Body(version_rb("2.0"))
@@ -573,7 +573,7 @@ mod tests {
                 CaskFetch::Unavailable
             })
         };
-        let error = diff_casks(&nix, "old", "new", &fetch)
+        let error = diff_casks(&declared, "old", "new", &fetch)
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
