@@ -187,8 +187,7 @@ jobs:
   # bot PR では `on: pull_request` が発火せず static-checks.yml が代替実行されないため、同 workflow が持つ
   # 実挙動 gate（構成適用 + zsh checks）を同一 run 内でここが実行する。open-pr から分けるのは、open-pr が
   # PR push と status 投稿のため write 権限を持ち `cachix/install-nix-action` へ `github_access_token` を
-  # 渡す job だからである。分離したのは activation（`dotfiles switch home`）と bats であって、bump 後 lock の
-  # Nix コード実行一般ではない。`verify-bump-lock` / `check static` / `nix build` は open-pr 側に残る。
+  # 渡す job だからである。gate ごとの実行 job は docs/automation/nightly-lock-bump.md の表を正本とする。
   runtime-gate:
     name: apply configuration and run zsh checks
     needs: bump
@@ -218,8 +217,7 @@ jobs:
         with:
           name: bump-state
 
-      # derivation hash は build 入力の関数なので、そのまま cache key にできる。key は open-pr と同一で、
-      # この job が実ビルドした晩は open-pr 側の復元が命中する。
+      # derivation hash は build 入力の関数なので、そのまま cache key にできる。
       - name: dotfiles-cli の derivation を確定
         id: cli
         run: |
