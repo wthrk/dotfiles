@@ -18,6 +18,7 @@
 - 親オーケストレーターから渡された対象パス、完了条件、差戻し条件、未解消 finding。
 - [security-obligations.md](security-obligations.md)。
 - コード変更の場合は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md)。
+- 文書または skill を変更する場合は [../docs-governance.md](../docs-governance.md)。
 - secret-recovery が対象の場合は [../secret-recovery/README.md](../secret-recovery/README.md) から必要な仕様・設計・runbook。
 
 ## 再読義務
@@ -39,14 +40,6 @@
 - 修正範囲に新規の層違反、責務混在、公開面違反を持ち込んではならない。
 - 既存コードの流用可否は、動作有無だけではなく規約適合性で判断する。
 - レビュー指摘対応では、指摘箇所だけでなく同一変更セット内の同種欠陥を確認し、見えている未解消欠陥を残さない。
-
-## 削除時の参照追従
-
-- 識別子、step、節、ファイルを削除したら、同じ変更の中でその名前を repo 全体（コード、文書、workflow、コメント、skill、PR 本文）で検索し、参照を残さない。
-- 英日で対になる成果物（`SKILL.md` / `SKILL_ja.md`、`AGENTS.md` / `AGENTS_ja.md`）は同じ変更で更新する。
-- 削除の代替を説明する記述を新たに書く場合、その記述自体が次の削除対象になっていないかを確認する。
-
-この規則の強制機構は既存のレビュー 4 担当とする。専用の検査やレビュー役割を追加しない。
 
 ## 記録義務
 

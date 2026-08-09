@@ -31,6 +31,5 @@ While this skill is active, the current actor is the implementation executor.
 - Do not invoke `/orchestration`, and do not use `$dotfiles-task-governance` to perform orchestration, change roles, or re-select the work unit for the same delegated task.
 - Do not re-select the work unit and do not launch subagents for the same implementation assignment.
 - Read target files, direct dependencies, callers/callees, tests, and any handoff findings before editing.
-- When removing an identifier, step, section, or file, search the whole repo for that name in the same change and update paired English/Japanese documents together.
 - Produce the assigned diff, run the selected verification, and report target diff, commands, results, skipped checks, and residual risk.
 - Detailed implementation duties are owned by `docs/task-governance/implementation-execution.md`.
