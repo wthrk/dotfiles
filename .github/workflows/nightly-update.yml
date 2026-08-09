@@ -300,10 +300,8 @@ jobs:
             exit 1
           fi
 
-      # この job は write token を持つ。checkout の既定はそれをローカル Git 設定へ、`install-nix-action` の
-      # `github_access_token` は `/etc/nix/nix.conf` の `access-tokens` へ書き、いずれも以降の全 step から
+      # この job は write token を持つ。checkout の既定はそれをローカル Git 設定へ書き、以降の全 step から
       # 読める状態にする。token を使うのは push step だけなので、そこへ credential helper 経由で渡す。
-      # この job が評価する input は lock 済みで narHash 固定のため、nix 側の token は要らない。
       - name: checkout
         uses: actions/checkout@v5
         with:
