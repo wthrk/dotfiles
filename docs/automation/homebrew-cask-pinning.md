@@ -18,7 +18,8 @@ tap rev は cask の「定義」を固定し、ダウンロード成果物の固
 
 greedy 有効化の前提「全 cask が sha256 固定」は、`dotfiles update-history record` 経路の brew モジュール
 （[`rust/dotfiles-cli/src/update_history/brew.rs`](../../rust/dotfiles-cli/src/update_history/brew.rs)）が強制する。
-このモジュールは `homebrew.nix` の `casks` 宣言を唯一の対象源として tap rev の cask `.rb` を検査し、
+このモジュールは参照構成の `config.homebrew.casks` を `nix eval` した評価値を唯一の対象源として tap rev の
+cask `.rb` を検査し、
 `sha256 :no_check`（未固定成果物）があれば cask 名を添えて fail-closed で停止する。前提を満たさない cask を
 `casks` へ足すと nightly の record が止まるため、固定できない cask は `homebrew.nix` の `casks` から外し、
 必要なら手動更新へ寄せる。

@@ -54,8 +54,6 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) nix_old: Option<&'a Path>,
     /// bump 後 lock の eval JSON ファイル（無ければ `reference` を `nix eval` して導出する）。
     pub(crate) nix_new: Option<&'a Path>,
-    /// 宣言 cask を読む `homebrew.nix` path（cask rev と対で brew 版差分を算出する）。
-    pub(crate) homebrew_nix: Option<&'a Path>,
     /// brew cask tap の bump 前 rev（cask 版差分に使う）。
     pub(crate) cask_rev_old: Option<&'a str>,
     /// brew cask tap の bump 後 rev（cask 版差分に使う）。
@@ -484,7 +482,10 @@ pub(crate) fn run_record(input: RecordInput<'_>, extract: &OpenAiExtractor) -> R
         &notes::fetch_release_notes,
         &|name| extract.brew_homepage_hint(name),
         &|reference| eval::eval_declared_versions(reference),
-        &brew::fetch_cask_rb,
+        &CaskSeams {
+            list: &|reference| eval::eval_declared_casks(reference),
+            fetch: &brew::fetch_cask_rb,
+        },
     )
 }
 
@@ -600,7 +601,7 @@ fn run_record_with(
     release_notes_fetch: &ReleaseNotesFetch<'_>,
     brew_hint: &dyn Fn(&str) -> Result<Option<String>>,
     eval_new: &dyn Fn(&str) -> Result<std::collections::BTreeMap<String, NixPackage>>,
-    fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
+    casks: &CaskSeams<'_>,
 ) -> Result<()> {
     let old_versions = notes::read_nix_versions(input.nix_old)?;
     let new_versions = match input.nix_new {
@@ -608,7 +609,7 @@ fn run_record_with(
         None => eval_new(&input.reference)?,
     };
     let nix_deltas = diff_versions(&old_versions, &new_versions);
-    let brew_deltas = compute_brew_deltas(input, fetch_cask)?;
+    let brew_deltas = compute_brew_deltas(input, casks)?;
     let deltas = merge_version_deltas(nix_deltas, brew_deltas);
     let total = deltas.len();
 
@@ -717,21 +718,27 @@ struct RecordAccum {
     materials: Vec<PackageMaterial>,
 }
 
-/// `homebrew.nix` + 両 cask rev が揃うときだけ、reqwest で cask `.rb` を取得して brew 版差分を算出する。
+/// 両 cask rev が揃うときだけ、宣言 cask を評価して reqwest で cask `.rb` を取得し brew 版差分を算出する。
 ///
-/// いずれかが欠ける（cask 差分不要 / テスト）なら空。cask list と version 解析・`sha256 :no_check` の fail-closed
-/// 検査は [`brew`]。
+/// rev が欠ける（cask 差分不要 / テスト）なら空。version 解析・`sha256 :no_check` の fail-closed 検査は [`brew`]。
 fn compute_brew_deltas(
     input: &RecordInput<'_>,
-    fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
+    seams: &CaskSeams<'_>,
 ) -> Result<Vec<VersionDelta>> {
-    let (Some(homebrew_nix), Some(rev_old), Some(rev_new)) =
-        (input.homebrew_nix, input.cask_rev_old, input.cask_rev_new)
-    else {
+    let (Some(rev_old), Some(rev_new)) = (input.cask_rev_old, input.cask_rev_new) else {
         return Ok(Vec::new());
     };
-    let casks_nix = std::fs::read_to_string(homebrew_nix)?;
-    brew::diff_casks(&casks_nix, rev_old, rev_new, fetch_cask)
+    let casks = (seams.list)(&input.reference)?;
+    brew::diff_casks(&casks, rev_old, rev_new, seams.fetch)
+}
+
+/// cask 版差分が触る外部依存（宣言 cask の評価と cask `.rb` の取得）。
+///
+/// 本番は `nix eval` と reqwest、テストは fake を差す。1 つにまとめるのは、両者が同じ「cask 版差分を
+/// 算出する」経路でしか使われず、片方だけ差し替える呼び出しが無いため。
+pub(crate) struct CaskSeams<'a> {
+    pub(crate) list: &'a dyn Fn(&str) -> Result<Vec<String>>,
+    pub(crate) fetch: &'a dyn Fn(&str) -> Result<brew::CaskFetch>,
 }
 
 // ---- provenance レジストリ（学習・再利用の wire/ドメイン型と決定論規則） ----
@@ -982,9 +989,14 @@ mod tests {
         Ok(std::collections::BTreeMap::new())
     }
 
-    /// cask 差分を踏まないテスト seam（homebrew_nix 未指定なら呼ばれない）。
+    /// cask 差分を踏まないテスト seam（cask rev 未指定なら呼ばれない）。
     fn no_cask(_: &str) -> Result<brew::CaskFetch> {
         Ok(brew::CaskFetch::NotFound)
+    }
+
+    /// 宣言 cask 評価を踏まないテスト seam（cask rev 未指定なら呼ばれない）。
+    fn no_casks(_: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     fn outcome(items: Vec<ChangeItem>) -> ExtractOutcome {
@@ -1037,7 +1049,6 @@ mod tests {
             registry_path: registry,
             nix_old,
             nix_new,
-            homebrew_nix: None,
             cask_rev_old: None,
             cask_rev_new: None,
         }
@@ -1076,7 +1087,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         let entries = read_entries(&out)?;
@@ -1107,7 +1121,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         let entries = read_entries(&out)?;
@@ -1145,7 +1162,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         let entries = read_entries(&out)?;
@@ -1180,7 +1200,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         let learned = read_registry(&registry)?;
@@ -1405,7 +1428,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let learned = read_registry(&registry)?;
         let entry = learned.lookup("neovim", DeltaSource::NixEval);
@@ -1443,7 +1469,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let learned = read_registry(&registry)?;
         let entry = learned.lookup("neovim", DeltaSource::NixEval);
@@ -1488,7 +1517,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let learned = read_registry(&registry)?;
         let entry = learned
@@ -1550,7 +1582,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         let after = read_registry(&registry_path)?;
@@ -1610,7 +1645,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         let learned = read_registry(&registry_path)?;
@@ -1639,7 +1677,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let entries = read_entries(&out)?;
         assert_eq!(entries.len(), 1);
@@ -1669,7 +1710,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         // rev 不変・空素材 → append しない（ファイルが存在しない）。
         assert!(read_entries(&out)?.is_empty());
@@ -1696,7 +1740,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let entries = read_entries(&out)?;
         assert_eq!(entries.len(), 1);
@@ -1737,7 +1784,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let entries = read_entries(&out)?;
         assert!(entries[0].packages[0].change_items.is_empty());
@@ -1794,7 +1844,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
 
         // 再利用 fetch は保存済み URL に対し 1 回だけ（機械解決の追加 fetch は踏まない）。
@@ -1819,18 +1872,17 @@ mod tests {
 
     #[test]
     fn record_computes_brew_cask_delta_and_records_version_only() -> Result<()> {
-        // homebrew.nix + 両 cask rev から cask 版差分を Rust（reqwest seam）で算出し、ノート未取得は
+        // 宣言 cask の評価値 + 両 cask rev から cask 版差分を Rust（reqwest seam）で算出し、ノート未取得は
         // version-only として記録する経路を network 抜きで固定する。
         let dir = temp_dir("brew");
-        let homebrew = write_nix(&dir, "homebrew.nix", "casks = [ \"azookey\" ];");
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
         let inp = RecordInput {
-            homebrew_nix: Some(&homebrew),
             cask_rev_old: Some("oldrev"),
             cask_rev_new: Some("newrev"),
             ..input(&dir, &out, &registry, None, None)
         };
+        let list_casks = |_: &str| -> Result<Vec<String>> { Ok(vec!["azookey".to_string()]) };
         // cask fetch seam: rev に応じて azookey の version 文字列を返す（upgrade）。
         let fetch_cask = |url: &str| -> Result<brew::CaskFetch> {
             Ok(if url.contains("/oldrev/") {
@@ -1849,7 +1901,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &no_eval,
-            &fetch_cask,
+            &CaskSeams {
+                list: &list_casks,
+                fetch: &fetch_cask,
+            },
         )?;
         let entries = read_entries(&out)?;
         let pkg = &entries[0].packages[0];
@@ -1891,7 +1946,10 @@ mod tests {
             &no_release_notes,
             &no_brew_hint,
             &eval_new,
-            &no_cask,
+            &CaskSeams {
+                list: &no_casks,
+                fetch: &no_cask,
+            },
         )?;
         let entries = read_entries(&out)?;
         let pkg = &entries[0].packages[0];

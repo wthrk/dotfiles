@@ -161,7 +161,6 @@ jobs:
             --nixpkgs-old "$NIXPKGS_OLD" \
             --nixpkgs-new "$NIXPKGS_NEW" \
             --reference "$CI_REFERENCE" \
-            --homebrew-nix nix/modules/homebrew.nix \
             --cask-rev-old "$CASK_REV_OLD" \
             --cask-rev-new "$CASK_REV_NEW" \
             --at "$at" \
