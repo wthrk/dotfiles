@@ -310,7 +310,7 @@ impl HomeApplyUser {
     pub(crate) fn resolve(explicit: Option<String>, is_root: bool) -> Result<Self> {
         match (is_root, explicit) {
             (true, None) => bail!(
-                "root で Home Manager を適用するには `--user` が必要（省略すると利用者所有ファイルが root 所有になる）"
+                "root で利用者所有ファイルを書くには `--user` が必要（省略すると Home Manager の生成物や `flake.lock` が root 所有になる）"
             ),
             (true, Some(name)) => Ok(Self {
                 name,
