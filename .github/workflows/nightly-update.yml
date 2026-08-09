@@ -300,8 +300,10 @@ jobs:
             exit 1
           fi
 
-      # checkout の既定は write token をローカル Git 設定へ書き込み、以降の全 step から読める状態にする。
-      # token を使うのは push step だけなので、そこへ credential helper 経由で渡す。
+      # この job は write token を持つ。checkout の既定はそれをローカル Git 設定へ、`install-nix-action` の
+      # `github_access_token` は `/etc/nix/nix.conf` の `access-tokens` へ書き、いずれも以降の全 step から
+      # 読める状態にする。token を使うのは push step だけなので、そこへ credential helper 経由で渡す。
+      # この job が評価する input は lock 済みで narHash 固定のため、nix 側の token は要らない。
       - name: checkout
         uses: actions/checkout@v5
         with:
@@ -310,8 +312,6 @@ jobs:
 
       - name: Nix を導入
         uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ github.token }}
 
       # cargo キャッシュより前に bump 済み lock をツリーへ展開する。この job がビルドに使う devShell は
       # bump 後 lock のものなので、キーもそこから導出しなければ復元した target/ の前提と食い違う。

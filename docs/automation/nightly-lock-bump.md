@@ -32,10 +32,7 @@ open-pr は `needs: [bump, runtime-gate]` なので、bump job の eval か runt
 status は投稿されない。
 
 構成適用と `bats tests/zsh` を open-pr ではなく runtime-gate に置くのは、権限の分離のためである。open-pr は
-PR の push と status 投稿のために `contents` / `pull-requests` / `statuses` を write で持ち、`Nix を導入` step で
-`cachix/install-nix-action` へ `github_access_token` を渡す。分離したのは activation（`dotfiles switch home`）と
-`bats tests/zsh` であり、上表のとおり `verify-bump-lock` と `check static` は open-pr で bump 後 lock の devShell を
-実体化して走る。
+PR の push と status 投稿のために `contents` / `pull-requests` / `statuses` を write で持つ。
 
 Home Manager の activation は runner 上で実行するが、darwin activation（`darwin-rebuild switch` / `brew bundle`）
 は実行しない。darwin activation を実行するのは
