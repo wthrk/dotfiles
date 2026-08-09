@@ -268,15 +268,11 @@ impl SwitchOptions {
         self.dry_run
     }
 
-    /// root 実行時に利用者所有ファイルを更新する対象ユーザーを返す。
+    /// 利用者所有ファイルを触る処理の対象ユーザーを解決する。
     ///
-    /// 明示 `--user` がある場合だけ root から対象ユーザーへ降格する。
-    pub(crate) fn root_user_override(&self) -> Option<&str> {
-        if is_effective_root() {
-            self.user.as_deref()
-        } else {
-            None
-        }
+    /// `update` は lock 更新で config dir へ書くため、target に関わらずこれを先に解決する。
+    pub(crate) fn home_apply_user(&self) -> Result<HomeApplyUser> {
+        HomeApplyUser::resolve(self.user.clone(), is_effective_root())
     }
 }
 
@@ -297,11 +293,11 @@ fn switch_order(target: SwitchTarget) -> &'static [SwitchTarget] {
     }
 }
 
-/// Home Manager を適用する対象ユーザー。
+/// 利用者所有ファイルを触る処理の対象ユーザー。
 ///
-/// root 実行で `--user` を省略した状態はこの型を構築できない。省略を現在ユーザー（root）へ倒すと Home Manager
-/// が root のまま走り、利用者所有ファイルの所有者が root へ変わる。その状態を表現できなくすることで、
-/// 呼び出し側が降格を落としても無言で通ることはなくなる。
+/// root 実行で `--user` を省略した状態はこの型を構築できない。省略を現在ユーザー（root）へ倒すと処理が root の
+/// まま走り、利用者所有ファイル（Home Manager の生成物、`update` が書く `flake.lock`）の所有者が root へ変わる。
+/// caller responsibility: 最初の特権コマンドより前に構築すること。後ろに置くと、拒む前に root で書き込みが済む。
 #[derive(Debug)]
 pub(crate) struct HomeApplyUser {
     name: String,

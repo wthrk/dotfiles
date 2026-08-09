@@ -20,8 +20,15 @@ const DEFAULT_NIX_PROGRAM: &str = "/nix/var/nix/profiles/default/bin/nix";
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     let config_dir = options.switch.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
-    let lock_owner = options.switch.root_user_override().map(str::to_owned);
-    update_lock(&config_dir, options.switch.dry_run(), lock_owner.as_deref())?;
+    // 降格対象は最初の特権コマンドより前に解決する。lock 更新は config dir へ書くため、root 実行で
+    // 降格対象が無いまま進むと利用者所有の `flake.lock` が root 所有へ変わる。`HomeApplyUser` は
+    // その組み合わせで構築を拒むので、ここで解決しておけば argv を組み立てる前に落ちる。
+    let target_user = options.switch.home_apply_user()?;
+    update_lock(
+        &config_dir,
+        options.switch.dry_run(),
+        target_user.downgrade_target(),
+    )?;
     switch::run(options.switch)
 }
 
