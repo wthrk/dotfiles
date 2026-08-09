@@ -39,24 +39,6 @@ Home Manager の activation は runner 上で実行するが、darwin activation
 [`runtime-integration.yml`](../../.github/workflows/runtime-integration.yml)（週次 cron / `workflow_dispatch`）と
 各マシンの `dotfiles update` である。
 
-## 取得先期待値表の保守義務
-
-`verify-bump-lock` は取得先期待値表（[`rust/xtask/src/ci/bump_lock.rs`](../../rust/xtask/src/ci/bump_lock.rs) の
-`EXPECTED_LOCK_INPUT_SOURCES`）に期待値を持たない node の `locked` が動くと fail する。
-
-`flake.nix` に input を追加・削除・rename したら、同じ差分で `EXPECTED_LOCK_INPUT_SOURCES` も更新する。更新漏れは
-当該 PR の時点では止まらない。その input が bump された翌晩に `verify-bump-lock` が
-`has no expected source identity entry` で fail し、nightly PR が毎晩失敗する形で現れる。
-
-上流 flake が自身の input を追加・削除・rename した夜は、`verify-bump-lock` の node 集合一致検査が
-`flake.lock node set changed` で fail する。bump ブランチは push 前に fail するため remote に残らない。失敗 run の
-log の `added:` / `removed:` と、bump job の artifact `bump-state`（`retention-days: 1`）に含まれる bump 後 lock を、
-既定ブランチの `flake.lock`（bump 前 lock。同 job の `repo_base_sha` output が指す commit のもの）と比較する。
-変化が上流宣言どおりで root input（`flake.nix` 直下）が動いていなければ正当な上流変化であり、
-`EXPECTED_LOCK_INPUT_SOURCES` を通常の PR で更新する。このとき artifact の bump 後 `flake.lock` も同じ PR へ
-取り込む。root input の `original` が動いている、または追加
-node の取得先が上流宣言と一致しない場合は攻撃を疑って調査する。
-
 ## インライン `verify-bump-lock` の判定内容と適用範囲
 
 判定規則と反例は [`rust/xtask/src/ci/bump_lock.rs`](../../rust/xtask/src/ci/bump_lock.rs) の module doc と

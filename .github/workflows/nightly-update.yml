@@ -2,7 +2,7 @@ name: nightly update
 
 # nightly に repo の flake.lock を bump し、更新履歴（版差分＋概要）を記録して自動 PR を起票・auto-merge する。
 #
-# 無人 bump の対象、auto-merge を止めるゲートの検査範囲、取得先期待値表の保守義務は
+# 無人 bump の対象、auto-merge を止めるゲートの検査範囲は
 # docs/automation/nightly-lock-bump.md を正本とする。
 
 on:

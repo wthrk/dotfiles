@@ -9,11 +9,10 @@
 //!    `--squash` マージ運用の有無に依存しない。union パス集合の収集は CLI 側の責務で、本 module は与えられた
 //!    集合を判定する。
 //!
-//! 2. **lock 差分限定**: `flake.lock` の差分は、[`EXPECTED_LOCK_INPUT_SOURCES`] に期待取得先を持つ node の
-//!    **rev 変更のみ**。`locked` は `rev` / `narHash` / `lastModified` を除いた残り全体の一致を要求するため、
-//!    未列挙フィールドの追加・変更も拒否する（owner/repo は加えて期待値へ厳密一致）。唯一の例外は推移
-//!    input の `ref` で、親 flake の宣言に従って動くため無条件に許可する。加えて、期待取得先を持つ
-//!    input の rev 変更が少なくとも 1 件あることを要求し、実体のない空 bump を無人 merge させない。
+//! 2. **lock 差分限定**: `flake.lock` の差分は node の **rev 変更のみ**。`locked` は `rev` / `narHash` /
+//!    `lastModified` を除いた残り全体の一致を要求するため、未列挙フィールドの追加・変更も拒否する。唯一の
+//!    例外は推移 input の `ref` で、親 flake の宣言に従って動くため無条件に許可する。加えて、rev 変更が
+//!    少なくとも 1 件あることを要求し、実体のない空 bump を無人 merge させない。
 //!
 //! どちらかに違反すれば [`verify_bump`] は違反理由を載せた `Err` を返し、CLI は非 0 で終了する。
 
@@ -29,42 +28,11 @@ const ALLOWED_LOCK_PATH: &str = "flake.lock";
 /// nightly が記録を追記してよい履歴ディレクトリ prefix。
 const ALLOWED_HISTORY_PREFIX: &str = "docs/update-history/";
 
-/// lock の全 node について期待する取得先の表（lock node の input 名 → 期待 owner/repo）。
-///
-/// 本表は「bump してよい input を選ぶ表」ではなく、各 node が「どこから取得されるべきか」だけを固定する
-/// 実在 input の写しである。owner/repo は **厳密一致**で照合し、本表に期待値を持たない node の `locked` が
-/// 動けば取得先同一性を検証できない変更として fail する（fail-closed）。
-///
-/// **保守義務**: `flake.nix` へ input を追加・削除・rename したら、同じ差分で本表も更新すること。更新漏れは
-/// PR の時点では止まらず、その input が bump された翌晩の `verify-bump-lock` が
-/// `has no expected source identity entry` で fail する。上流 flake の input graph が変わって本表と乖離した
-/// 場合の復旧手順は `docs/automation/nightly-lock-bump.md` を正本とする。
-const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 10] = [
-    ("nixpkgs", "NixOS", "nixpkgs"),
-    ("darwin", "LnL7", "nix-darwin"),
-    ("home-manager", "nix-community", "home-manager"),
-    ("rust-overlay", "oxalica", "rust-overlay"),
-    ("nix-homebrew", "zhaofengli-wip", "nix-homebrew"),
-    ("brew-src", "Homebrew", "brew"),
-    ("homebrew-homebrew-core", "homebrew", "homebrew-core"),
-    ("homebrew-homebrew-cask", "homebrew", "homebrew-cask"),
-    ("homebrew-azure-bicep", "Azure", "homebrew-bicep"),
-    ("homebrew-hashicorp-tap", "hashicorp", "homebrew-tap"),
-];
-
-/// [`EXPECTED_LOCK_INPUT_SOURCES`] と照合する取得先。base→head の差分検査は
-/// [`locked_without_mutable_fields`] による全体比較が担う。
-struct SourceCoords {
-    owner: Option<String>,
-    repo: Option<String>,
-}
-
 /// `locked` から bump で変わってよいフィールドだけを取り除いた残りを返す。
 ///
 /// 既知フィールドの射影で比較すると、`submodules` のような未列挙フィールドの追加・変更が素通りする。
 /// 除去して残り全体を比較することで、未知フィールドを fail-closed に扱う。`ignore_reference` は推移 input
-/// 用で、`ref` は親 flake の宣言に従って動くため比較から外す。caller responsibility: `ref` を落とす場合でも
-/// owner/repo の期待値厳密一致を別途要求すること。
+/// 用で、`ref` は親 flake の宣言に従って動くため比較から外す。
 fn locked_without_mutable_fields(locked: &Value, ignore_reference: bool) -> Value {
     let mut value = locked.clone();
     if let Some(object) = value.as_object_mut() {
@@ -111,7 +79,7 @@ fn verify_changed_paths(changed_paths: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
-/// `flake.lock` の base→head 差分が「期待取得先が一致する input の rev 変更だけ」かを検査する。
+/// `flake.lock` の base→head 差分が「input の rev 変更だけ」かを検査する。
 fn verify_lock_diff(old_lock: &str, new_lock: &str) -> Result<()> {
     let old: Value = serde_json::from_str(old_lock).context("base flake.lock is not valid JSON")?;
     let new: Value = serde_json::from_str(new_lock).context("head flake.lock is not valid JSON")?;
@@ -161,13 +129,13 @@ fn verify_lock_diff(old_lock: &str, new_lock: &str) -> Result<()> {
         }
     }
 
-    // lock が実際に bump されていること（期待取得先を持つ input の rev 変更が少なくとも 1 件ある）を要求する。逸脱 lock
+    // lock が実際に bump されていること（rev が変わった node が少なくとも 1 件ある）を要求する。逸脱 lock
     // 変更が無くても、rev 変更ゼロ（docs/update-history だけ変える等の実体のない nightly PR）は無人 auto-merge
     // させない。これにより「許可パス内・逸脱 lock 変更なし」だが lock 無更新の空 bump PR を fail させる。
     if bumped_rev_count == 0 {
         bail!(
             "nightly bump PR changes no input rev; flake.lock is not actually bumped \
-             (expected at least one rev change in an input with a known expected source)"
+             (expected at least one input rev change)"
         );
     }
     Ok(())
@@ -213,13 +181,12 @@ fn root_input_node_names<'a>(lock: &'a Value, label: &str) -> Result<BTreeSet<&'
         .collect()
 }
 
-/// 単一 node の base→head 差分を許可規則に照らす。期待取得先を持つ input の rev が実際に変わったら `true` を返す。
+/// 単一 node の base→head 差分を許可規則に照らす。input の rev が実際に変わったら `true` を返す。
 ///
-/// [`EXPECTED_LOCK_INPUT_SOURCES`] に期待取得先を持つ node は source 座標（rev 以外）一致を要求し、rev は
-/// 変わってよい。期待取得先を持たない node は rev を含め全フィールド一致を要求する。`locked` を持たない node
-/// （`root`）は source 座標を持たないため、node 同士の厳密一致だけを要求する。戻り値の `bool` は「期待取得先を
-/// 持つ input の rev が変わったか」で、呼び出し側が lock 実 bump（rev 変更 1 件以上）の有無を集計するのに使う。
-/// 期待取得先を持たない node や rev 不変の input は `false` を返す。
+/// `locked` を持つ node は source 座標（rev 以外）一致を要求し、rev は変わってよい。`locked` を持たない node
+/// （`root`）は source 座標を持たないため、node 同士の厳密一致だけを要求する。戻り値の `bool` は「input の
+/// rev が変わったか」で、呼び出し側が lock 実 bump（rev 変更 1 件以上）の有無を集計するのに使う。
+/// rev 不変の input は `false` を返す。
 ///
 /// `is_root_input` は当該 node が本 repo の `flake.nix` 直下の宣言かどうか。`true` なら `original` と
 /// source 座標（`ref` を含む）の完全一致を要求する。`false`（推移 input）なら `ref` の差分を**方向を問わず
@@ -254,29 +221,9 @@ fn verify_node(
         bail!("flake.lock node `{name}` flake flag changed; not an allowed bump");
     }
 
-    let Some((_, owner, repo)) = EXPECTED_LOCK_INPUT_SOURCES
-        .iter()
-        .find(|(n, _, _)| *n == name)
-    else {
-        // 期待取得先を持たない node: source identity を照合できないため、original も locked も rev を含めて
-        // 不変でなければならない。
-        if old_node.get("original") != new_node.get("original") {
-            bail!(
-                "flake.lock node `{name}` original source declaration changed; not an allowed bump"
-            );
-        }
-        if old_locked != new_locked {
-            bail!(
-                "flake.lock node `{name}` has no expected source identity entry but its locked source changed; \
-                 add its expected owner/repo to the lock input source table first; not an allowed bump"
-            );
-        }
-        return Ok(false);
-    };
-
     verify_original(name, old_node, new_node, is_root_input)?;
 
-    // 期待取得先を持つ input: `locked` から可変フィールドを除いた残りが一致 + owner/repo が期待値に厳密一致。
+    // `locked` から可変フィールドを除いた残りが一致すること。
     // 推移 input だけは親由来の `ref` 差分を通すため、`ref` も除いて比較する。
     let ignore_reference = !is_root_input;
     if locked_without_mutable_fields(old_locked, ignore_reference)
@@ -287,15 +234,7 @@ fn verify_node(
              not an allowed bump"
         );
     }
-    let new_coords = source_coords(new_locked);
-    match (new_coords.owner.as_deref(), new_coords.repo.as_deref()) {
-        (Some(o), Some(r)) if o == *owner && r == *repo => {}
-        other => bail!(
-            "flake.lock node `{name}` owner/repo {other:?} does not match \
-             expected source {owner}/{repo}; not an allowed bump"
-        ),
-    }
-    // content swap 防御: 期待取得先が一致していても、rev が **変わらないまま** narHash / lastModified だけが
+    // content swap 防御: 取得先が一致していても、rev が **変わらないまま** narHash / lastModified だけが
     // 動く（= 同一 rev の取得物すり替え）変更は許可しない。nightly bump の正当な変更は「rev が進み、
     // それに伴って narHash / lastModified も整合的に更新される」ものだけである。rev 不変で内容ハッシュや
     // 取得時刻だけが変われば、source 座標も rev も同じに見えるのに固定対象の内容が差し替わっており、
@@ -303,7 +242,7 @@ fn verify_node(
     verify_locked_integrity(name, old_locked, new_locked)
 }
 
-/// 期待取得先を持つ input の `original`（input が宣言する原座標）差分を許可規則に照らす。
+/// input の `original`（input が宣言する原座標）差分を許可規則に照らす。
 ///
 /// root input の `original` は本 repo の `flake.nix` の宣言そのものであり、nightly PR の許可パスに
 /// `flake.nix` は含まれないため base→head で変わりえない。よって完全一致を要求する。
@@ -312,7 +251,7 @@ fn verify_node(
 /// tag / branch 指定）が動きうる。本関数はこの `ref` 差分を **方向を問わず無条件に** 許可する。親 node の
 /// rev が実際に動いたかは参照せず、`ref` の前進 / 後退も判定しないため、後退も親 bump を伴わない `ref`
 /// 書き換えも通る。owner / repo / type / url / host / dir / flake など取得先そのものを決めるフィールドの
-/// 差分は許可しない。取得先 repo の差し替えは呼び出し側の owner/repo 厳密一致検査と合わせて二重に塞ぐ。
+/// 差分は許可しない。
 fn verify_original(
     name: &str,
     old_node: &Value,
@@ -355,7 +294,7 @@ fn original_without_reference(original: Option<&Value>) -> Option<serde_json::Ma
     Some(fields)
 }
 
-/// 期待取得先が一致した input の `locked` 整合を検査する: rev 変化と narHash / lastModified 変化を連動させる。
+/// input の `locked` 整合を検査する: rev 変化と narHash / lastModified 変化を連動させる。
 /// rev が変わったら `true` を返す（呼び出し側が lock 実 bump の有無を集計する）。
 ///
 /// `rev` が変わらないのに `narHash` または `lastModified` だけが変われば、同一 rev のまま固定対象の内容が
@@ -426,21 +365,11 @@ fn require_lock_identity(name: &str, locked: &Value) -> Result<()> {
     Ok(())
 }
 
-/// `locked` オブジェクトから照合対象の取得先を取り出す。
-fn source_coords(locked: &Value) -> SourceCoords {
-    let str_field = |key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
-    SourceCoords {
-        owner: str_field("owner"),
-        repo: str_field("repo"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    //! 許可パス限定と「期待取得先が一致する input の rev だけが動いた lock」判定を固定する。許可外パス・
-    //! input 追加削除・期待取得先を持たない node の rev 変更・source 座標改変・owner/repo すり替えが
-    //! すべて fail すること、および framework input の rev bump と推移 input の親由来 `ref` 差分が
-    //! 通ることを確認する。
+    //! 許可パス限定と「input の rev だけが動いた lock」判定を固定する。許可外パス・input 追加削除・
+    //! source 座標改変・owner/repo すり替えがすべて fail すること、および framework input の rev bump と
+    //! 推移 input の親由来 `ref` 差分が通ることを確認する。
 
     use super::*;
 
@@ -533,28 +462,6 @@ mod tests {
         )
     }
 
-    /// 期待取得先表に無い node（`mystery`）を含む lock。期待取得先を持たない node の rev 変更が fail する
-    /// ことの検査に使う。
-    fn lock_with_unlisted_input(mystery_rev: &str) -> String {
-        format!(
-            r#"{{
-  "nodes": {{
-    "mystery": {{
-      "locked": {{ "owner": "someone", "repo": "mystery", "rev": "{mystery_rev}", "narHash": "sha256-{mystery_rev}", "lastModified": 1700000000, "type": "github" }},
-      "original": {{ "owner": "someone", "repo": "mystery", "type": "github" }}
-    }},
-    "nixpkgs": {{
-      "locked": {{ "owner": "NixOS", "repo": "nixpkgs", "rev": "aaaa", "narHash": "sha256-aaaa", "lastModified": 1700000000, "type": "github" }},
-      "original": {{ "owner": "NixOS", "ref": "nixpkgs-unstable", "repo": "nixpkgs", "type": "github" }}
-    }},
-    "root": {{ "inputs": {{ "mystery": "mystery", "nixpkgs": "nixpkgs" }} }}
-  }},
-  "root": "root",
-  "version": 7
-}}"#
-        )
-    }
-
     #[test]
     fn accepts_allowed_paths() -> Result<()> {
         verify_changed_paths(&paths(&[
@@ -598,20 +505,6 @@ mod tests {
         let old = lock_with("aaaa", "dddd");
         let new = lock_with("aaaa", "eeee");
         verify_bump(&paths(&["flake.lock"]), &old, &new)
-    }
-
-    #[test]
-    fn rejects_rev_bump_of_node_without_expected_source() {
-        // 表が実在 input の写しになった後も fail-closed であることの固定: 期待取得先を持たない node の
-        // locked が動けば、取得先同一性を照合できない変更として fail する。
-        let old = lock_with_unlisted_input("1111");
-        let new = lock_with_unlisted_input("2222");
-        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("has no expected source identity entry"),
-            "{err}"
-        );
     }
 
     #[test]
@@ -710,16 +603,6 @@ mod tests {
             err.to_string().contains("locked source changed beyond"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn rejects_expected_owner_mismatch_present_on_both_sides() {
-        // owner/repo の期待値照合が単独で働く経路。base と head の双方が同じ非期待 owner を持つと
-        // `locked` 差分比較は通過するため、ここを落とすと表と実 lock の乖離を検出できなくなる。
-        let old = lock_with("aaaa", "dddd").replace(r#""owner": "NixOS""#, r#""owner": "evil""#);
-        let new = lock_with("bbbb", "dddd").replace(r#""owner": "NixOS""#, r#""owner": "evil""#);
-        let err = verify_bump(&paths(&["flake.lock"]), &old, &new).unwrap_err();
-        assert!(err.to_string().contains("owner/repo"), "{err}");
     }
 
     #[test]
@@ -972,10 +855,9 @@ mod tests {
 
     #[test]
     fn rejects_host_drift_on_allowed_input() {
-        // host 退行固定: bump 対象 input（nixpkgs）の owner/repo/type/ref/rev をすべて期待値どおりに保ったまま、
+        // host 退行固定: bump 対象 input（nixpkgs）の owner/repo/type/ref/rev をすべて base と同一に保ったまま、
         // `locked.host` だけを GitHub Enterprise 等へ差し替えると取得先 host が github.com から逸脱する。
-        // `locked` の可変フィールド以外を全比較することで、rev を動かしても host drift を fail にする
-        // （owner/repo 厳密一致の信頼境界を host まで拡張）。
+        // `locked` の可変フィールド以外を全比較することで、rev を動かしても host drift を fail にする。
         let old = lock_with("aaaa", "dddd");
         // nixpkgs に host を足し（base には無い→head で github.example.com を注入）、rev も動かす。
         let new = lock_with("bbbb", "dddd").replace(
@@ -1096,7 +978,7 @@ mod tests {
 
     #[test]
     fn accepts_when_at_least_one_input_rev_changes() -> Result<()> {
-        // N6: 期待取得先を持つ input（nixpkgs）の rev が 1 件でも動いていれば lock 実 bump として pass する。
+        // N6: input（nixpkgs）の rev が 1 件でも動いていれば lock 実 bump として pass する。
         let old = lock_with("aaaa", "dddd");
         let new = lock_with("bbbb", "dddd");
         verify_bump(&paths(&["flake.lock"]), &old, &new)

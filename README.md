@@ -220,5 +220,5 @@ bats tests/zsh
 nightly の `flake.lock` 全 input bump と auto-merge ゲート、switch 時の Homebrew 無人 upgrade の前提は
 [`docs/automation/README.md`](docs/automation/README.md) を参照してください。
 
-- nightly bump の対象・auto-merge を止めるゲート・取得先期待値表の保守義務: [`docs/automation/nightly-lock-bump.md`](docs/automation/nightly-lock-bump.md)
+- nightly bump の対象・auto-merge を止めるゲート: [`docs/automation/nightly-lock-bump.md`](docs/automation/nightly-lock-bump.md)
 - 無人 cask upgrade の明示受容と成果物固定の強制機構: [`docs/automation/homebrew-cask-pinning.md`](docs/automation/homebrew-cask-pinning.md)

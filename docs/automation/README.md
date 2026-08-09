@@ -9,6 +9,6 @@
 ## 配下の項目
 
 - [nightly-lock-bump.md](nightly-lock-bump.md): nightly の `flake.lock` 全 input bump、auto-merge を
-  fail-closed に保つゲート、取得先期待値表の保守義務。
+  fail-closed に保つゲート。
 - [homebrew-cask-pinning.md](homebrew-cask-pinning.md): `greedyCasks` による無人 cask upgrade の明示受容と、
   前提（全 cask が sha256 固定）を守る強制機構。
