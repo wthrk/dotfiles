@@ -78,6 +78,7 @@ pub(crate) fn eval_declared_versions(reference: &str) -> Result<BTreeMap<String,
         "nix",
         [
             "eval".into(),
+            "--no-update-lock-file".into(),
             "--raw".into(),
             format!(".#{reference}.config.system.primaryUser").into(),
         ],
@@ -98,6 +99,7 @@ pub(crate) fn eval_declared_casks(reference: &str) -> Result<Vec<String>> {
         "nix",
         [
             "eval".into(),
+            "--no-update-lock-file".into(),
             "--json".into(),
             format!(".#{reference}.config.homebrew.casks").into(),
         ],
@@ -111,6 +113,7 @@ fn eval_package_list(attr: &str) -> Result<BTreeMap<String, NixPackage>> {
         "nix",
         [
             "eval".into(),
+            "--no-update-lock-file".into(),
             "--json".into(),
             attr.into(),
             "--apply".into(),
