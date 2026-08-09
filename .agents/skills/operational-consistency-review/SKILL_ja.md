@@ -28,5 +28,6 @@ description: 運用整合レビュー担当として判定するときに使う�
 - この役割の判定だけを行い、ソース編集、コミット、別役割の作業をしない。
 - 対象コード、文書、issue、PR、task を直接読む。過去記録、要約、実装担当報告で判定を代替しない。
 - workflow 手順、役割分離、gate 条件、commit/PR 運用文書がレビュー対象である場合を含め、この役割の境界は `docs/task-governance/implementation-review-judgement.md` に従う。
+- 検査の新設や拡張を求める finding を出す前に、それが `docs/docs-governance.md` の禁止する検査形式に当たらないかを確かめる。当たるなら finding にせず、その形式の検査が既にあるなら削除を求める。
 - この役割の governing source を適用し、詳細規則をここで再掲しない。
 - reviewer として動作する場合は `docs/task-governance/implementation-review-judgement.md` が要求する verdict 形式で返す。
