@@ -36,13 +36,11 @@
 | レビュー担当 | スキルファイル |
 |---|---|
 | 構造レビュー担当 | `.agents/skills/structural-review/SKILL.md` |
-| 運用整合レビュー担当 | `.agents/skills/operational-consistency-review/SKILL.md` |
 | セキュリティレビュー担当 | `.agents/skills/security-review/SKILL.md` |
 | 仕様適合レビュー担当 | `.agents/skills/specification-conformance-review/SKILL.md` |
-| テストレビュー担当 | `.agents/skills/test-review/SKILL.md` |
-| ドキュメントレビュー担当 | `.agents/skills/documentation-review/SKILL.md` |
-| アーキテクチャ整合レビュー担当 | `.agents/skills/architectural-consistency-review/SKILL.md` |
-| 参照整合レビュー担当 | `.agents/skills/reference-integrity-review/SKILL.md` |
+| 運用整合レビュー担当 | `.agents/skills/operational-consistency-review/SKILL.md` |
+
+レビュー担当はこの集合で固定する。新しいレビュー役割、判定段階、コミット直前の専任確認を追加しない。
 
 委譲された役割エージェントは、その delegated task についてメインエージェントにはならない。委譲された実装担当は `/implementation-execution` から開始し、同じ delegated task について `/orchestration` を起動せず、その委譲済み実装割当に対して追加のサブエージェントを起動しない。
 

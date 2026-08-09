@@ -17,7 +17,8 @@
 - ユーザー指定の GitHub issue / PR / 明示タスク。
 - 親オーケストレーターから渡された対象パス、完了条件、差戻し条件、未解消 finding。
 - [security-obligations.md](security-obligations.md)。
-- コード変更の場合は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) と [../architecture/review-checklist.md](../architecture/review-checklist.md)。
+- コード変更の場合は [../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md)。
+- 文書または skill を変更する場合は [../docs-governance.md](../docs-governance.md)。
 - secret-recovery が対象の場合は [../secret-recovery/README.md](../secret-recovery/README.md) から必要な仕様・設計・runbook。
 
 ## 再読義務

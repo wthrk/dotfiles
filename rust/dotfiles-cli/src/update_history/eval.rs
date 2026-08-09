@@ -78,6 +78,7 @@ pub(crate) fn eval_declared_versions(reference: &str) -> Result<BTreeMap<String,
         "nix",
         [
             "eval".into(),
+            "--no-update-lock-file".into(),
             "--raw".into(),
             format!(".#{reference}.config.system.primaryUser").into(),
         ],
@@ -89,12 +90,30 @@ pub(crate) fn eval_declared_versions(reference: &str) -> Result<BTreeMap<String,
     Ok(home.into_iter().chain(system).collect())
 }
 
+/// 参照構成が宣言する Homebrew cask 名を `nix eval` で取得する。
+///
+/// `nix/modules/homebrew.nix` のソーステキストを解析すると、整形や宣言形の変更だけで壊れる。評価値なら
+/// 宣言の書き方に依らず、実際に nix-darwin へ渡る集合そのものが得られる。
+pub(crate) fn eval_declared_casks(reference: &str) -> Result<Vec<String>> {
+    let json = run_capture(
+        "nix",
+        [
+            "eval".into(),
+            "--no-update-lock-file".into(),
+            "--json".into(),
+            format!(".#{reference}.config.homebrew.casks").into(),
+        ],
+    )?;
+    Ok(serde_json::from_str(&json)?)
+}
+
 /// 1 つのパッケージ list attribute を `nix eval --json --apply` で評価し、導出済み name→[`NixPackage`] を返す。
 fn eval_package_list(attr: &str) -> Result<BTreeMap<String, NixPackage>> {
     let json = run_capture(
         "nix",
         [
             "eval".into(),
+            "--no-update-lock-file".into(),
             "--json".into(),
             attr.into(),
             "--apply".into(),

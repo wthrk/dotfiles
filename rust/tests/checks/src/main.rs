@@ -1,14 +1,13 @@
 //! `cargo xtask check` から呼ばれる検証 CLI。
 //!
 //! この crate は xtask から起動される検証本体を持つ。main は引数を解釈して各検証 module へ
-//! 委譲し、個別の検証手順は `static_checks`、`zsh`、`integration` に分ける。
+//! 委譲し、個別の検証手順は `static_checks`、`integration` に分ける。zsh 設定の実挙動検証は
+//! Rust ではなく `tests/zsh` の bats suite が持つ（この crate を経由しない）。
 
 use clap::{Parser, Subcommand};
 
-mod command;
 mod integration;
 mod static_checks;
-mod zsh;
 
 use integration::RuntimeScenario;
 
@@ -26,7 +25,6 @@ struct Cli {
 /// VM なしで実行できる検証と、VM が必要な統合検証を分ける。
 enum CheckTarget {
     Static,
-    Zsh,
     Integration {
         #[arg(value_enum)]
         scenario: Option<RuntimeScenario>,
@@ -52,7 +50,6 @@ fn run(target: Option<CheckTarget>) -> Result<()> {
     match target {
         None => default_checks(),
         Some(CheckTarget::Static) => static_checks::check(),
-        Some(CheckTarget::Zsh) => zsh::check(),
         Some(CheckTarget::All) => all_checks(),
         Some(CheckTarget::Integration {
             scenario,
@@ -61,14 +58,16 @@ fn run(target: Option<CheckTarget>) -> Result<()> {
     }
 }
 
-/// 開発時の既定検証は、重い zsh 起動確認を含めず静的検証だけを行う。
+/// 開発時の既定検証は、VM を要求しない静的検証だけを行う。
 fn default_checks() -> Result<()> {
     static_checks::check()
 }
 
 /// VM 内での初期導入シナリオまで含めて実行する。
+///
+/// zsh 設定の実挙動検証は含まない。あれは `tests/zsh` の bats suite が持ち、cargo を経由せずに
+/// 起動する（README の検証節を参照）。
 fn all_checks() -> Result<()> {
     static_checks::check()?;
-    zsh::check()?;
     integration::run(RuntimeScenario::Full, None)
 }

@@ -14,7 +14,6 @@ While this skill is active, the current actor is the implementation executor.
 - `docs/task-governance/implementation-execution.md`
 - `docs/task-governance/security-obligations.md`
 - `docs/architecture/hexagonal-implementation-rules.md`
-- `docs/architecture/review-checklist.md`
 
 ## Required Reading Order
 
@@ -23,10 +22,8 @@ While this skill is active, the current actor is the implementation executor.
 3. `docs/task-governance/implementation-execution.md`
 4. `docs/task-governance/security-obligations.md`
 5. `docs/architecture/hexagonal-implementation-rules.md`
-6. `docs/architecture/review-checklist.md`
-7. The delegated GitHub issue, PR, explicit task, or handoff
-8. Canonical area documents required by the delegated work
-9. Architecture documents when code structure is in scope
+6. The delegated GitHub issue, PR, explicit task, or handoff
+7. Canonical area documents required by the delegated work
 
 ## Rules
 

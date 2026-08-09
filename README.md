@@ -28,7 +28,7 @@ sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になり
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
 flake の `dotfiles` input だけを更新（`nix flake update dotfiles --flake <config_dir>`）し、repo の committed
-lock にある nixpkgs / Homebrew tap pin へ追随してから、既存の `switch` と同じ適用処理を行います（対象省略時は
+lock にある全 input の pin へ追随してから、既存の `switch` と同じ適用処理を行います（対象省略時は
 `all` として Home Manager、続いて nix-darwin を適用。非 macOS では `dotfiles update home` を使ってください）。
 
 ```sh
@@ -132,13 +132,9 @@ master password は子プロセスの `BW_PASSWORD` 環境変数でだけ渡し�
 
 `bw-login` は Bitwarden account 側の 2FA / passkey 登録を自動化しません。primary と spare の両方の YubiKey をあらかじめ Bitwarden account の 2FA（Yubico OTP）として登録しておく必要があります（spare YubiKey の Bitwarden 側登録は `bw-login` では行いません）。
 
-#### primary / spare の manual login validation
-
-primary と spare のどちらの YubiKey でも login / unlock が完了することを、次の手順で確認します。`bw-login` は status 分岐をせず無条件で `bw login` → `bw unlock` を実行するため、各 manual validation は `bw` CLI が未ログイン状態（unauthenticated）であることを前提とします。直前の validation などで既に login 済みの場合は、`bw` CLI が「already logged in」で失敗するのを避けるため、次の YubiKey を検証する前に operator が `bw logout` を実行してから再実行してください。これは operator が手動で行う検証手順上の前提を示す注記であり、tool 側の `bw` CLI 用途を login / unlock 以外へ広げるものではありません。
-
-1. primary YubiKey を接続し、`dotfiles secrets bw-login`（または `dotfiles secrets verify-yubikey --check bw-login`）を実行して、OTP 入力後に login / unlock が成功することを確認します。
-2. primary を抜いて spare YubiKey を接続します。直前の手順で `bw` CLI が login 済みのままの場合は、ここで operator が `bw logout` を実行して未ログイン状態に戻してから、同じコマンドを実行します。複数本を同時接続する場合は `--serial <serial>` で spare を対象に指定し、spare でも login / unlock が成功することを確認します。
-3. `dotfiles secrets verify-yubikey --check bw-login` と `dotfiles secrets verify-yubikey --all` は、`bw-login` と同じ Bitwarden Password Manager の login / unlock 到達確認を実行します（session key は確認専用のため surface せず破棄します）。引数なしの `dotfiles secrets verify-yubikey` は ローカル保管 確認だけを行い、外部の bw-login 項目は機械可読状態値 `skipped` のまま残します。
+primary / spare 双方での login / unlock 検証手順は
+[`docs/secret-recovery/initial-provisioning-runbook.md`](docs/secret-recovery/initial-provisioning-runbook.md)
+を参照してください。
 
 `bw-login` が受け付けるフラグは `--serial` と `--email` だけです。`verify-yubikey` は `--serial` に加えて外部確認を要求する option `--check bws` / `--check bw-login` / `--all`（到達できない場合は明示的に失敗します）を受け付け、`--email` は bw-login 確認の login email override にのみ適用されます。
 
@@ -194,7 +190,7 @@ cargo xtask check
 
 通常の静的検証を実行します。Rust、Nix、shell script、GitHub Actions workflow を確認します。
 
-すべて実行する場合:
+静的検証と Tart VM 統合検証をまとめて実行する場合:
 
 ```sh
 cargo xtask check all
@@ -204,7 +200,6 @@ cargo xtask check all
 
 ```sh
 cargo xtask check static
-cargo xtask check zsh
 ```
 
 Tart VM を使う runtime 検証:
@@ -213,100 +208,26 @@ Tart VM を使う runtime 検証:
 cargo xtask check runtime
 ```
 
-## nightly 自動 bump とゲート
+zsh 設定の実挙動検証（補完、キーバインド、PATH、起動時出力）は devShell 内で bats を直接起動します。
+Rust のビルド成果物を必要としないため `cargo xtask check` の下には置いていません。
 
-`.github/workflows/nightly-update.yml` が nightly に repo の `flake.lock` を bump（nixpkgs と
-Homebrew tap input のみ。framework input は bump しない）し、更新履歴を `docs/update-history/<YYYY-MM>.toml`
-へ記録して自動 PR を起票・auto-merge します。各マシンはこの bump 済み pin に `dotfiles update` で追随します。
+bats は適用済みの構成を起動して観測します。作業ツリーの変更を見るには、作業ツリーを参照元にして適用してから
+起動します。
 
-各アプリの「何が変わったか」概要は上流のリリースノートから取得しますが、ノートの置き場は一律に機械取得
-できないため、(1) 機械的に取れるものは Releases API / changelog から取得し、(2) 取れないものは GitHub
-Models ではなく OpenAI API（`async-openai` crate）の AI エージェントに探させます。概要取得は nightly の GitHub secret
-`OPEN_AI_API_KEY` を要し、未設定（ローカル等）やノートが取れない場合はそのパッケージを version-only
-（version old→new + notes_url のみ）としてその場で確定記録します（1 回の record で全変更パッケージを処理し
-きり、夜をまたいで埋め直しません）。さらに、**どこからノートを取得したか
-（provenance）を `docs/update-history/notes-sources.toml`（ノート取得元レジストリ）に保存**し、次回以降の
-record はこのレジストリを最優先参照して同じ取得元を再利用します（再探索しません）。これにより AI 探索は
-新規/未知パッケージと自己修復（取得元が移動した等）に限定され、回を追って OpenAI API の呼び出しが逓減します。
-レジストリはパッケージ名昇順の決定論ソートで diff を最小化し、`docs/update-history/**` 配下にあるため nightly
-の commit 許可パス内で repo に入ります。AI 由来の取得元 URL も含め、保存・再取得時は必ず許可ホスト https に
-限定して検証します。
+```sh
+dotfiles init --source "path:$PWD" --force
+dotfiles switch home
+bats tests/zsh
+```
 
-PR 起票・auto-merge は **`GITHUB_TOKEN`（`github.token`）で完結**します。別途 GitHub App を作って secret を
-仕込む必要はありません。GITHUB_TOKEN が起票/push した PR では GitHub が `on: pull_request` の workflow
-（必須 check）を発火しない既知の制約があるため、`nightly-update.yml` の open-pr job が **同一 run 内で
-セキュリティチェック `cargo xtask ci verify-bump-lock` をインライン実行**し、合格時のみ PR head commit へ
-`static checks` という commit status を投稿して required check を満たします。`static checks` は
-`.github/workflows/static-checks.yml` の job 名であり、適用済み「main」ruleset の required context と context 名で
-突合します。
+`--force` は既存の `~/.config/dotfiles/flake.nix` を置き換えるために要ります。検証後は
+`--source github:wthrk/dotfiles --force` で参照元を戻します。戻さないと `dotfiles update` が作業ツリーを
+追い続けます。
 
-インラインのセキュリティチェックは、PR の base..head 全 commit 履歴に対して次を機械判定します。
+## 無人更新の運用
 
-- 変更パスが `flake.lock` と `docs/update-history/**` だけであること（`.github/**`・ソースが混ざれば fail）。
-- `flake.lock` 差分が許可 input 集合（nixpkgs と tap 4 本）の rev 変更だけで、想定外 input の追加・
-  source 改変・framework input の rev 変更が無いこと。加えて、許可 input でも rev が変わらないまま
-  `narHash` / `lastModified` だけが動く（同一 rev の取得物すり替え＝content swap）変更は fail にします。
+nightly の `flake.lock` 全 input bump と auto-merge ゲート、switch 時の Homebrew 無人 upgrade の前提は
+[`docs/automation/README.md`](docs/automation/README.md) を参照してください。
 
-このチェックは **検査者と検査対象を分離**します。判定バイナリ（`cargo xtask ci verify-bump-lock`）は nightly
-workflow 自身の信頼 ref の checkout からビルドし、検査対象は base..head の lock 差分（git データ）です。PR 作業
-ツリーの dotfiles を検査主体にしないため、悪意ある lock 改変があっても判定主体は信頼コードのままです。判定
-ロジックは Rust の純粋核（`rust/xtask/src/ci/bump_lock.rs`）に置き、unit test で固定しています。チェックが fail すると
-`static checks` status は投稿されず、required check が満たされないため無人 auto-merge は成立しません
-（fail-closed・人手レビュー経路へ送られます）。許可パスが `flake.lock` + `docs/update-history/**` に限定される
-ため、nightly PR が `.github/**`（workflow/guard）を変更しようとしてもこのチェックで fail します。
-
-合格後、open-pr job は `@codex review` コメントで codex 自動レビューを起動し（Copilot は GitHub 側のネイティブ
-code review で走ります）、`gh pr merge --auto --squash` で auto-merge を有効化します。Copilot/Codex のレビュー
-充足と required status（`static checks`）満了でマージされます。
-
-### 残留制約（実 GitHub でのみ最終確認できる）
-
-この App 不要フローには、実 GitHub でしか確定できない前提があります（マージ後に `workflow_dispatch`
-`dry_run=false` で検証します）。
-
-- GITHUB_TOKEN で POST した commit status `static checks` が、適用済み ruleset の required context と確実に
-  名前突合してマージ条件を満たすか。
-- `gh pr merge --auto` を GITHUB_TOKEN 権限（`pull-requests: write`）で有効化できるか（repo 設定で
-  auto-merge が有効である必要があります）。
-- `copilot_code_review` が bot / GITHUB_TOKEN 起票 PR で発火するか。
-
-いずれも未充足ならマージは保留され、無人で main に入りません（人手レビューへ送られます）。
-
-#### インライン `verify-bump-lock` の適用範囲（threat-model）
-
-インラインの `cargo xtask ci verify-bump-lock` は、**nightly workflow が自分で起票する bump PR にのみ適用**されます
-（open-pr job が同一 run 内で実行するため）。第三者が `nightly/bump-*` prefix で**直接起票した PR には
-`verify-bump-lock` は走りません**（全 PR を横断検査していた `nightly-bump-guard.yml` の required check は App 廃止に
-伴い削除済みです）。そうした攻撃者起票 PR のマージ阻止は、bypass 不能な「main」ruleset の必須 `static checks` と
-Copilot/Codex の自動レビューに依存します（加えて `.github/**` の改変はそもそも許可パス外として弾かれます）。より
-強い保護が必要なら、App 不要の per-PR guard workflow（`on: pull_request` で nightly-prefix PR に `verify-bump-lock`
-を実行し、その結果を「main」ruleset の required check に加える）を別途有効化できます。本仕様は App / secret 不要を
-維持するため、この per-PR guard は既定では有効化していません。
-
-## Homebrew cask の固定状況（無人 upgrade の明示受容）
-
-auto-update 経路は switch 時に `brew upgrade` を実行して installed cask/formula を tap rev の pin へ追従させます。
-`homebrew.nix` で `greedyCasks = true` を有効化しているため、`auto_updates true` / `version :latest` の cask も
-upgrade 対象になり、全 cask が tap pin へ決定論的に収束します（`dotfiles update-history` の差分にも現れます）。
-tap rev は cask の「定義」を固定し、ダウンロード成果物の固定性は cask 側の `sha256` 指定に依存します。現在の
-宣言 cask は `auto_updates true` のものも含め全て `sha256` で成果物を明示固定しているため、greedy 有効下でも無人
-upgrade が差し替える成果物は tap rev で再現的に固定されます。
-
-現在の宣言 cask の固定状況を明示受容します。
-
-| cask | tap | sha256 固定 | auto_updates | 無人 upgrade 対象 | 成果物の固定 |
-|---|---|---|---|---|---|
-| `azookey` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
-| `font-cica` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
-| `yubico-authenticator` | homebrew/cask | あり | なし | 対象 | tap rev で固定（再現的） |
-| `bitwarden` | homebrew/cask | あり | **true** | 対象（greedy） | tap rev で固定（再現的） |
-| `codex-app` | homebrew/cask | あり（arm） | **true** | 対象（greedy） | tap rev で固定（再現的） |
-| `ghostty` | homebrew/cask | あり | **true** | 対象（greedy） | tap rev で固定（再現的） |
-
-greedy 有効化の前提は「全 cask が sha256 固定」です。`sha256 :no_check`（未固定成果物）の cask を足すと、greedy
-有効下では未固定成果物が無人差し替えされうるため、`dotfiles update-history record` 経路の brew モジュールが tap
-rev の cask `.rb` を検査し、`sha256 :no_check` があれば fail-closed で停止します（cask 名を添えて中断）。cask を
-追加する際は、対象 cask の `.rb` が `sha256 "<hash>"` で固定されている（`sha256 :no_check` でない）ことを確認して
-ください。固定できない cask は `homebrew.nix` の `casks` から外し、必要なら手動更新へ寄せます。auto-update が cask
-を上げた事実は、nightly CI が記録する `docs/update-history/*.toml`（`dotfiles update-history show` で閲覧）に更新
-アプリとして現れ、無人差し替えが不可視にならないようにしています。
+- nightly bump の対象・auto-merge を止めるゲート: [`docs/automation/nightly-lock-bump.md`](docs/automation/nightly-lock-bump.md)
+- 無人 cask upgrade の明示受容と成果物固定の強制機構: [`docs/automation/homebrew-cask-pinning.md`](docs/automation/homebrew-cask-pinning.md)

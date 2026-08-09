@@ -22,8 +22,11 @@ pub(crate) fn run(options: SwitchOptions) -> Result<()> {
     let config_dir = options.config_dir()?;
     ensure_config_exists(&config_dir)?;
     let target = options.target();
-    let user = if switch_order(target).contains(&SwitchTarget::Home) {
-        Some(options.user.clone().map_or_else(current_user, Ok)?)
+    let home_user = if switch_order(target).contains(&SwitchTarget::Home) {
+        Some(HomeApplyUser::resolve(
+            options.user.clone(),
+            is_effective_root(),
+        )?)
     } else {
         None
     };
@@ -35,9 +38,9 @@ pub(crate) fn run(options: SwitchOptions) -> Result<()> {
     let invocations = switch_invocations(SwitchInvocationInput {
         target,
         config_dir: &config_dir,
-        user: user.as_deref().unwrap_or(""),
+        user: home_user.as_ref().map_or("", HomeApplyUser::name),
         host: host.as_deref().unwrap_or(""),
-        user_override: options.user.as_deref(),
+        downgrade_to: home_user.as_ref().and_then(HomeApplyUser::downgrade_target),
         home_manager: &options.home_manager,
         darwin_rebuild: &options.darwin_rebuild,
         is_root: is_effective_root(),
@@ -66,23 +69,24 @@ pub(crate) fn ensure_config_exists(config_dir: &Path) -> Result<()> {
 }
 
 /// `home-manager switch --flake <config-dir>#<user>` の実行プログラムと引数を組み立てる。
+/// 降格の要否は [`HomeApplyUser`] が決める。root で降格対象が無い状態はその型が構築を拒むため、
+/// ここでは降格対象の有無だけを見る。
 fn home_manager_invocation(
     config_dir: &Path,
     user: &str,
-    user_override: Option<&str>,
+    downgrade_to: Option<&str>,
     home_manager: &OsString,
-    is_root: bool,
 ) -> SwitchInvocation {
     let args = [
         OsString::from("switch"),
         OsString::from("--flake"),
         flake_ref(config_dir, user),
     ];
-    if should_run_as_target_user(is_root, user_override) {
+    if let Some(target_user) = downgrade_to {
         SwitchInvocation {
             target: SwitchTarget::Home,
             program: OsString::from("sudo"),
-            args: sudo_as_user_args(user, home_manager.clone(), args),
+            args: sudo_as_user_args(target_user, home_manager.clone(), args),
         }
     } else {
         SwitchInvocation {
@@ -132,9 +136,8 @@ fn switch_invocations(input: SwitchInvocationInput<'_>) -> Vec<SwitchInvocation>
             SwitchTarget::Home => home_manager_invocation(
                 input.config_dir,
                 input.user,
-                input.user_override,
+                input.downgrade_to,
                 input.home_manager,
-                input.is_root,
             ),
             SwitchTarget::Darwin => darwin_rebuild_invocation(
                 input.darwin_rebuild,
@@ -151,7 +154,9 @@ struct SwitchInvocationInput<'a> {
     config_dir: &'a Path,
     user: &'a str,
     host: &'a str,
-    user_override: Option<&'a str>,
+    /// root から降格して Home Manager を走らせる対象。降格しないなら `None`。
+    /// 値は [`HomeApplyUser::downgrade_target`] が決める。
+    downgrade_to: Option<&'a str>,
     home_manager: &'a OsString,
     darwin_rebuild: &'a OsString,
     is_root: bool,
@@ -263,16 +268,11 @@ impl SwitchOptions {
         self.dry_run
     }
 
-    /// root 実行時に利用者所有ファイルを更新する対象ユーザーを返す。
+    /// 利用者所有ファイルを触る処理の対象ユーザーを解決する。
     ///
-    /// 明示 `--user` がある場合だけ root から対象ユーザーへ降格する。通常の root shell で `--user` を
-    /// 指定しない実行は従来どおり現在ユーザー（root）を対象にする。
-    pub(crate) fn root_user_override(&self) -> Option<&str> {
-        if should_run_as_target_user(is_effective_root(), self.user.as_deref()) {
-            self.user.as_deref()
-        } else {
-            None
-        }
+    /// `update` は lock 更新で config dir へ書くため、target に関わらずこれを先に解決する。
+    pub(crate) fn home_apply_user(&self) -> Result<HomeApplyUser> {
+        HomeApplyUser::resolve(self.user.clone(), is_effective_root())
     }
 }
 
@@ -293,9 +293,45 @@ fn switch_order(target: SwitchTarget) -> &'static [SwitchTarget] {
     }
 }
 
-/// root かつ対象ユーザーが明示されたときだけ、利用者所有の処理を対象ユーザー権限で実行する。
-fn should_run_as_target_user(is_root: bool, user_override: Option<&str>) -> bool {
-    is_root && user_override.is_some()
+/// 利用者所有ファイルを触る処理の対象ユーザー。
+///
+/// root 実行で `--user` を省略した状態はこの型を構築できない。省略を現在ユーザー（root）へ倒すと処理が root の
+/// まま走り、利用者所有ファイル（Home Manager の生成物、`update` が書く `flake.lock`）の所有者が root へ変わる。
+/// caller responsibility: 最初の特権コマンドより前に構築すること。後ろに置くと、拒む前に root で書き込みが済む。
+#[derive(Debug)]
+pub(crate) struct HomeApplyUser {
+    name: String,
+    /// root からこのユーザーへ降格して実行するか。
+    downgrade_from_root: bool,
+}
+
+impl HomeApplyUser {
+    /// 明示指定と実行時 euid から対象ユーザーを決める。root かつ未指定は `Err`。
+    pub(crate) fn resolve(explicit: Option<String>, is_root: bool) -> Result<Self> {
+        match (is_root, explicit) {
+            (true, None) => bail!(
+                "root で利用者所有ファイルを書くには `--user` が必要（省略すると Home Manager の生成物や `flake.lock` が root 所有になる）"
+            ),
+            (true, Some(name)) => Ok(Self {
+                name,
+                downgrade_from_root: true,
+            }),
+            (false, explicit) => Ok(Self {
+                name: explicit.map_or_else(current_user, Ok)?,
+                downgrade_from_root: false,
+            }),
+        }
+    }
+
+    /// `#<user>` として flake 属性名に使う対象ユーザー名。
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// root から降格する場合の対象ユーザー。降格しないなら `None`。
+    pub(crate) fn downgrade_target(&self) -> Option<&str> {
+        self.downgrade_from_root.then_some(self.name.as_str())
+    }
 }
 
 /// 実行時の euid を root 判定へ正規化する。
@@ -307,7 +343,7 @@ fn is_effective_root() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        SwitchInvocationInput, SwitchTarget, darwin_rebuild_invocation, should_run_as_target_user,
+        HomeApplyUser, SwitchInvocationInput, SwitchTarget, darwin_rebuild_invocation,
         switch_invocations, switch_order,
     };
     use std::ffi::OsString;
@@ -354,12 +390,32 @@ mod tests {
         );
     }
 
-    /// root daemon が `--user` を明示したときだけ Home Manager と lock 更新を降格する。
+    /// root 実行で `--user` を省略した状態は構築できない。降格が落ちたまま Home Manager が root で走る
+    /// argv を組み立てられないことを、型の構築側で固定する。
     #[test]
-    fn user_context_is_only_for_root_with_explicit_user() {
-        assert!(should_run_as_target_user(true, Some("alice")));
-        assert!(!should_run_as_target_user(true, None));
-        assert!(!should_run_as_target_user(false, Some("alice")));
+    fn root_without_explicit_user_cannot_be_resolved() {
+        let err = HomeApplyUser::resolve(None, true)
+            .expect_err("root で --user 省略は構築できない")
+            .to_string();
+        assert!(err.contains("--user"), "{err}");
+    }
+
+    /// root で `--user` を明示した場合だけ、その利用者へ降格する。
+    #[test]
+    fn root_with_explicit_user_downgrades_to_that_user() -> anyhow::Result<()> {
+        let resolved = HomeApplyUser::resolve(Some("alice".to_string()), true)?;
+        assert_eq!(resolved.name(), "alice");
+        assert_eq!(resolved.downgrade_target(), Some("alice"));
+        Ok(())
+    }
+
+    /// 非 root では降格しない。
+    #[test]
+    fn non_root_does_not_downgrade() -> anyhow::Result<()> {
+        let resolved = HomeApplyUser::resolve(Some("alice".to_string()), false)?;
+        assert_eq!(resolved.name(), "alice");
+        assert_eq!(resolved.downgrade_target(), None);
+        Ok(())
     }
 
     /// 既定 target の `all` は standalone Home Manager を先に適用してから nix-darwin を適用する。
@@ -381,7 +437,7 @@ mod tests {
             config_dir: Path::new("/cfg"),
             user: "alice",
             host: "mac",
-            user_override: Some("alice"),
+            downgrade_to: None,
             home_manager: &home_manager,
             darwin_rebuild: &darwin_rebuild,
             is_root: false,

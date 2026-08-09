@@ -54,8 +54,8 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) nix_old: Option<&'a Path>,
     /// bump 後 lock の eval JSON ファイル（無ければ `reference` を `nix eval` して導出する）。
     pub(crate) nix_new: Option<&'a Path>,
-    /// 宣言 cask を読む `homebrew.nix` path（cask rev と対で brew 版差分を算出する）。
-    pub(crate) homebrew_nix: Option<&'a Path>,
+    /// 参照構成が宣言する cask 名（`config.homebrew.casks` の評価値）。無ければ cask 版差分を算出しない。
+    pub(crate) declared_casks: Option<&'a [String]>,
     /// brew cask tap の bump 前 rev（cask 版差分に使う）。
     pub(crate) cask_rev_old: Option<&'a str>,
     /// brew cask tap の bump 後 rev（cask 版差分に使う）。
@@ -475,8 +475,18 @@ fn sanitize_provenance(entry: NotesSourceEntry) -> NotesSourceEntry {
 /// record use case: 版差分 → ノート取得・抽出 → 履歴追記（取れないものは version-only 確定）。provenance を学習する。
 ///
 /// bump 後 nix 版は `--nix-new` ファイルがあればそれを、無ければ `reference` を `nix eval` して Rust で導出する。
-/// brew cask 版差分は `homebrew.nix` + 両 cask rev から reqwest で算出する。
+/// brew cask 版差分は `reference` の評価値（宣言 cask）+ 両 cask rev から reqwest で算出する。
 pub(crate) fn run_record(input: RecordInput<'_>, extract: &OpenAiExtractor) -> Result<()> {
+    // 宣言 cask は評価結果（データ）なので、seam ではなくここで解決して入力へ載せる。cask rev が無い夜は
+    // 版差分を算出しないため評価もしない。
+    let casks = match (input.cask_rev_old, input.cask_rev_new) {
+        (Some(_), Some(_)) => Some(eval::eval_declared_casks(&input.reference)?),
+        _ => None,
+    };
+    let input = RecordInput {
+        declared_casks: casks.as_deref(),
+        ..input
+    };
     run_record_with(
         &input,
         extract,
@@ -717,21 +727,20 @@ struct RecordAccum {
     materials: Vec<PackageMaterial>,
 }
 
-/// `homebrew.nix` + 両 cask rev が揃うときだけ、reqwest で cask `.rb` を取得して brew 版差分を算出する。
+/// 宣言 cask と両 cask rev が揃うときだけ、reqwest で cask `.rb` を取得して brew 版差分を算出する。
 ///
-/// いずれかが欠ける（cask 差分不要 / テスト）なら空。cask list と version 解析・`sha256 :no_check` の fail-closed
-/// 検査は [`brew`]。
+/// いずれかが欠ける（cask 差分不要 / テスト）なら空。version 解析・`sha256 :no_check` の fail-closed 検査は
+/// [`brew`]。宣言 cask は評価結果（データ）なので seam ではなく [`RecordInput`] から受け取る。
 fn compute_brew_deltas(
     input: &RecordInput<'_>,
     fetch_cask: &dyn Fn(&str) -> Result<brew::CaskFetch>,
 ) -> Result<Vec<VersionDelta>> {
-    let (Some(homebrew_nix), Some(rev_old), Some(rev_new)) =
-        (input.homebrew_nix, input.cask_rev_old, input.cask_rev_new)
+    let (Some(casks), Some(rev_old), Some(rev_new)) =
+        (input.declared_casks, input.cask_rev_old, input.cask_rev_new)
     else {
         return Ok(Vec::new());
     };
-    let casks_nix = std::fs::read_to_string(homebrew_nix)?;
-    brew::diff_casks(&casks_nix, rev_old, rev_new, fetch_cask)
+    brew::diff_casks(casks, rev_old, rev_new, fetch_cask)
 }
 
 // ---- provenance レジストリ（学習・再利用の wire/ドメイン型と決定論規則） ----
@@ -982,7 +991,7 @@ mod tests {
         Ok(std::collections::BTreeMap::new())
     }
 
-    /// cask 差分を踏まないテスト seam（homebrew_nix 未指定なら呼ばれない）。
+    /// cask 差分を踏まないテスト seam（cask rev 未指定なら呼ばれない）。
     fn no_cask(_: &str) -> Result<brew::CaskFetch> {
         Ok(brew::CaskFetch::NotFound)
     }
@@ -1037,7 +1046,7 @@ mod tests {
             registry_path: registry,
             nix_old,
             nix_new,
-            homebrew_nix: None,
+            declared_casks: None,
             cask_rev_old: None,
             cask_rev_new: None,
         }
@@ -1819,14 +1828,14 @@ mod tests {
 
     #[test]
     fn record_computes_brew_cask_delta_and_records_version_only() -> Result<()> {
-        // homebrew.nix + 両 cask rev から cask 版差分を Rust（reqwest seam）で算出し、ノート未取得は
+        // 宣言 cask の評価値 + 両 cask rev から cask 版差分を Rust（reqwest seam）で算出し、ノート未取得は
         // version-only として記録する経路を network 抜きで固定する。
         let dir = temp_dir("brew");
-        let homebrew = write_nix(&dir, "homebrew.nix", "casks = [ \"azookey\" ];");
         let out = dir.join("2026-06.toml");
         let registry = dir.join("notes-sources.toml");
+        let casks = vec!["azookey".to_string()];
         let inp = RecordInput {
-            homebrew_nix: Some(&homebrew),
+            declared_casks: Some(&casks),
             cask_rev_old: Some("oldrev"),
             cask_rev_new: Some("newrev"),
             ..input(&dir, &out, &registry, None, None)

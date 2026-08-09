@@ -91,10 +91,8 @@ struct RecordOptions {
     /// ノート取得元レジストリ TOML（未指定なら `--out` と同じ directory の `notes-sources.toml`）。
     #[arg(long)]
     notes_sources: Option<PathBuf>,
-    /// 宣言 cask を読む `homebrew.nix` path（指定時、両 cask rev から版差分を Rust で算出する）。
-    #[arg(long)]
-    homebrew_nix: Option<PathBuf>,
-    /// brew cask tap の bump 前 rev（`--homebrew-nix` と対で cask 版差分に使う）。
+    /// brew cask tap の bump 前 rev（`--cask-rev-new` と対で cask 版差分に使う。宣言 cask は
+    /// `--reference` の評価値から取る）。
     #[arg(long)]
     cask_rev_old: Option<String>,
     /// brew cask tap の bump 後 rev（cask 版差分と、cask 探索ヒントの `Casks/` 基底に使う）。
@@ -206,6 +204,8 @@ fn run_record(options: RecordOptions) -> Result<()> {
     });
     let extractor = llm::OpenAiExtractor::new(brew_notes_base);
     let input = record::RecordInput {
+        // 宣言 cask は `run_record` が `reference` から評価して載せる。
+        declared_casks: None,
         lock_old: options.lock_old.as_deref(),
         lock_new: options.lock_new.as_deref(),
         cursor_old: options.cursor_old,
@@ -218,7 +218,6 @@ fn run_record(options: RecordOptions) -> Result<()> {
         registry_path: &registry_path,
         nix_old: options.nix_old.as_deref(),
         nix_new: options.nix_new.as_deref(),
-        homebrew_nix: options.homebrew_nix.as_deref(),
         cask_rev_old: options.cask_rev_old.as_deref(),
         cask_rev_new: options.cask_rev_new.as_deref(),
     };

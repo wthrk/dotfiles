@@ -11,11 +11,13 @@
 }:
 let
   # macOS で利用する pinentry 実体。`cli.nix` が `pinentry_mac` を packages に入れる前提に揃える。
+  # それ以外では端末版を使う。nixpkgs の `pinentry` は変種を選ぶよう削除されており、`pinentry-curses` は
+  # `bin/pinentry` を symlink で提供する。
   pinentryProgram =
     if pkgs.stdenv.isDarwin && (lib.hasAttrByPath [ "pinentry_mac" ] pkgs) then
       "${pkgs.pinentry_mac}/Applications/pinentry-mac.app/Contents/MacOS/pinentry-mac"
     else
-      "${pkgs.pinentry}/bin/pinentry";
+      "${pkgs.pinentry-curses}/bin/pinentry";
 in
 {
   # gpg-agent.conf を生成し、SSH support と pinentry を恒久設定する。

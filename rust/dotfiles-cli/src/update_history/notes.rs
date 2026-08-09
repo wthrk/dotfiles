@@ -32,8 +32,8 @@ const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// GitHub ホストへの GET をレート/一過性失敗時に再試行する最大回数（初回を除く追加試行数）。
 ///
-/// GitHub 以外のホストは [`NON_GITHUB_MAX_RETRIES`] に絞り、総待機が record job の `timeout-minutes:120` を
-/// 圧迫しないようにする。
+/// GitHub 以外のホストは [`NON_GITHUB_MAX_RETRIES`] に絞り、総待機が record を含む bump job の
+/// `timeout-minutes:120` を圧迫しないようにする。
 const GITHUB_MAX_RETRIES: u32 = 3;
 /// GitHub 以外のホストへの GET の追加試行数（接続失敗の取りこぼし防止に 1 回だけ。レート制限は GitHub 固有）。
 const NON_GITHUB_MAX_RETRIES: u32 = 1;

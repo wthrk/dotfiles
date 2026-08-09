@@ -7,7 +7,6 @@
 - [workflow.md](workflow.md): タスク実行フロー、役割分離、委譲、コミット/PR 運用。
 - [implementation-execution.md](implementation-execution.md): 実装担当の実行規則。
 - [implementation-review-judgement.md](implementation-review-judgement.md): 必須レビュー役割と集約規則。
-- [progress-judgement.md](progress-judgement.md): 進捗前進の最小根拠要件。
 - [task-completion-judgement.md](task-completion-judgement.md): 完了判定とコミット許可条件。
 - [security-obligations.md](security-obligations.md): セキュリティ共通義務。
 - [pr-mergeability-loop.md](pr-mergeability-loop.md): main orchestrator が PR review 対応、checks、mergeability 確認を反復して PR を merge 可能状態にするためのオーケストレーション拡張。
