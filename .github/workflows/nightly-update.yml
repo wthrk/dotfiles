@@ -2,7 +2,7 @@ name: nightly update
 
 # nightly に repo の flake.lock を bump し、更新履歴（版差分＋概要）を記録して自動 PR を起票・auto-merge する。
 #
-# 無人 bump の方針、auto-merge を止めるゲートの検査範囲、明示受容した残留リスクは
+# 無人 bump の対象、auto-merge を止めるゲートの検査範囲、取得先期待値表の保守義務は
 # docs/automation/nightly-lock-bump.md を正本とする。
 
 on:
@@ -415,7 +415,6 @@ jobs:
           gh pr comment "${{ steps.pr.outputs.pr_url }}" --body "@codex review"
 
       # 成立条件は「main」ruleset の required requirement だけで、直前の codex 依頼への応答は待たない。
-      # AI レビュー未応答での merge は docs/automation/nightly-lock-bump.md の「残留制約」で明示受容している。
       - name: auto-merge を有効化
         if: ${{ steps.pr.outputs.pr_url != '' }}
         env:

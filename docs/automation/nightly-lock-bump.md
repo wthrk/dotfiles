@@ -31,7 +31,9 @@ check（`static-checks.yml` の job 名 `static checks`）を満たす commit st
 open-pr は `needs: bump` なので、最後の eval が fail した夜も status は投稿されない。
 
 Home Manager の activation は runner 上で実行するが、darwin activation（`darwin-rebuild switch` / `brew bundle`）
-は実行しない。
+は実行しない。darwin activation を実行するのは
+[`runtime-integration.yml`](../../.github/workflows/runtime-integration.yml)（週次 cron / `workflow_dispatch`）と
+各マシンの `dotfiles update` である。
 
 ## 取得先期待値表の保守義務
 
