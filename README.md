@@ -211,9 +211,18 @@ cargo xtask check runtime
 zsh 設定の実挙動検証（補完、キーバインド、PATH、起動時出力）は devShell 内で bats を直接起動します。
 Rust のビルド成果物を必要としないため `cargo xtask check` の下には置いていません。
 
+bats は適用済みの構成を起動して観測します。作業ツリーの変更を見るには、作業ツリーを参照元にして適用してから
+起動します。
+
 ```sh
+dotfiles init --source "path:$PWD" --force
+dotfiles switch home
 bats tests/zsh
 ```
+
+`--force` は既存の `~/.config/dotfiles/flake.nix` を置き換えるために要ります。検証後は
+`--source github:wthrk/dotfiles --force` で参照元を戻します。戻さないと `dotfiles update` が作業ツリーを
+追い続けます。
 
 ## 無人更新の運用
 
