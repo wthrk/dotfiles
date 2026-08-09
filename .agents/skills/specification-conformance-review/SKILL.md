@@ -12,6 +12,7 @@ While this skill is active, the current actor is the **specification-conformance
 ## Governing Sources
 
 - `docs/task-governance/implementation-review-judgement.md`
+- `docs/docs-governance.md`
 - The user-specified GitHub issue, PR, explicit task, and canonical area specifications required by the delegated input
 
 ## Required Reading Order
@@ -19,8 +20,9 @@ While this skill is active, the current actor is the **specification-conformance
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
-4. The user-specified GitHub issue, PR, explicit task, or delegated review input
-5. Additional canonical documents required by the input
+4. `docs/docs-governance.md`
+5. The user-specified GitHub issue, PR, explicit task, or delegated review input
+6. Additional canonical documents required by the input
 
 ## Rules
 

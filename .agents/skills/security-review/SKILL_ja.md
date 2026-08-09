@@ -13,6 +13,7 @@ description: セキュリティレビュー担当として判定するときに�
 
 - `docs/task-governance/security-obligations.md`
 - `docs/task-governance/implementation-review-judgement.md`
+- `docs/docs-governance.md`
 
 ## Required Reading Order
 
@@ -20,8 +21,9 @@ description: セキュリティレビュー担当として判定するときに�
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
 4. `docs/task-governance/security-obligations.md`
-5. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
-6. 入力が要求する追加正本文書
+5. `docs/docs-governance.md`
+6. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+7. 入力が要求する追加正本文書
 
 ## Rules
 

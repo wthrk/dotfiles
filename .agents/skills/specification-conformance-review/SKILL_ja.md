@@ -12,6 +12,7 @@ description: 仕様適合レビュー担当として判定するときに使う�
 ## Governing Sources
 
 - `docs/task-governance/implementation-review-judgement.md`
+- `docs/docs-governance.md`
 - 委譲入力が要求するユーザー指定 GitHub issue、PR、明示タスク、および領域固有仕様
 
 ## Required Reading Order
@@ -19,8 +20,9 @@ description: 仕様適合レビュー担当として判定するときに使う�
 1. `docs/README.md`
 2. `docs/task-governance/README.md`
 3. `docs/task-governance/implementation-review-judgement.md`
-4. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
-5. 入力が要求する追加正本文書
+4. `docs/docs-governance.md`
+5. ユーザー指定の GitHub issue、PR、明示タスク、または委譲されたレビュー入力
+6. 入力が要求する追加正本文書
 
 ## Rules
 

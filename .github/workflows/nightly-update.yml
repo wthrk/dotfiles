@@ -222,10 +222,13 @@ jobs:
             exit 1
           fi
 
+      # checkout の既定は write token をローカル Git 設定へ書き込み、以降の全 step から読める状態にする。
+      # token を使うのは push step だけなので、そこへ credential helper 経由で渡す。
       - name: checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Nix を導入
         uses: cachix/install-nix-action@v31
@@ -380,6 +383,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # credential helper は呼ばれた時点で env から token を読むため、設定値に secret が残らない。
+          # shellcheck disable=SC2016 # 展開させないのが目的（helper 実行時に git が展開する）
+          git config --local credential.helper '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
           git push origin "${{ steps.commit.outputs.branch }}"
           pr_url="$(gh pr create \
             --base "${{ github.event.repository.default_branch }}" \
