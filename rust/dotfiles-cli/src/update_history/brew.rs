@@ -9,7 +9,7 @@
 //! あれば、無人 upgrade が外部成果物を再現性なく差し替えうるため fail-closed にする（[`assert_pinned`]）。
 //!
 //! cask 一覧は参照構成の `config.homebrew.casks` を `nix eval` した評価値を受け取る（switch が導入する cask と
-//! 同一源）。呼び出し側の seam は [`crate::update_history::eval::eval_declared_casks`]。
+//! 同一源）。
 
 use anyhow::bail;
 

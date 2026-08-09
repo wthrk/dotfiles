@@ -24,7 +24,7 @@ check（`static-checks.yml` の job 名 `static checks`）を満たす commit st
 |---|---|---|
 | `cargo xtask ci verify-bump-lock` | open-pr | lock 内容の妥当性（許可パスと取得先同一性だけを見る） |
 | `cargo xtask check static`（`darwinConfigurations.ci-ref` のモジュール評価を含む） | open-pr | derivation の build（devShell 内で走るため build sandbox でだけ露見する依存欠落） |
-| `nix build .#dotfiles-cli` | open-pr | checkPhase だけが起動する実行時依存（derivation は `doCheck = false`） |
+| `nix build .#dotfiles-cli`（runtime-gate の `nix run .#default` が同一 derivation を build する） | runtime-gate | checkPhase だけが起動する実行時依存（derivation は `doCheck = false`） |
 | 構成適用後の `bats tests/zsh`（`static-checks.yml` と同一） | runtime-gate | macOS 固有の挙動（runner は ubuntu） |
 | `nix eval .#darwinConfigurations.ci-ref...`（`check static` と同じ評価を bump 直後に行う） | bump | 実機 activation |
 
@@ -33,8 +33,9 @@ status は投稿されない。
 
 構成適用と `bats tests/zsh` を open-pr ではなく runtime-gate に置くのは、権限の分離のためである。open-pr は
 PR の push と status 投稿のために `contents` / `pull-requests` / `statuses` を write で持ち、`Nix を導入` step で
-`cachix/install-nix-action` へ `github_access_token` を渡す。bump 後 lock の Nix コードを実行する gate は、
-`contents: read` だけを持つ runtime-gate 側で走らせる。
+`cachix/install-nix-action` へ `github_access_token` を渡す。分離したのは activation（`dotfiles switch home`）と
+`bats tests/zsh` であり、上表のとおり `verify-bump-lock` と `check static` は open-pr で bump 後 lock の devShell を
+実体化して走る。
 
 Home Manager の activation は runner 上で実行するが、darwin activation（`darwin-rebuild switch` / `brew bundle`）
 は実行しない。darwin activation を実行するのは

@@ -187,7 +187,8 @@ jobs:
   # bot PR では `on: pull_request` が発火せず static-checks.yml が代替実行されないため、同 workflow が持つ
   # 実挙動 gate（構成適用 + zsh checks）を同一 run 内でここが実行する。open-pr から分けるのは、open-pr が
   # PR push と status 投稿のため write 権限を持ち `cachix/install-nix-action` へ `github_access_token` を
-  # 渡す job だからで、bump 後 lock の Nix コードを実行する gate は write token の無いこの job に置く。
+  # 渡す job だからである。分離したのは activation（`dotfiles switch home`）と bats であって、bump 後 lock の
+  # Nix コード実行一般ではない。`verify-bump-lock` / `check static` / `nix build` は open-pr 側に残る。
   runtime-gate:
     name: apply configuration and run zsh checks
     needs: bump
@@ -399,48 +400,9 @@ jobs:
           set -euo pipefail
           nix develop -c cargo xtask check static
 
-      # derivation hash は build 入力の関数なので、そのまま cache key にできる。build 入力が動いた晩は必ず
-      # miss して実ビルドになる（それが gate の意味）。
-      - name: dotfiles-cli の derivation を確定
-        id: cli
-        if: ${{ steps.commit.outputs.has_changes == 'true' }}
-        run: |
-          set -euo pipefail
-          drv="$(nix path-info --derivation .#dotfiles-cli)"
-          echo "key=$(basename "$drv" .drv)" >> "$GITHUB_OUTPUT"
-
-      # cache 置き場は作業ツリー外に取り、commit 済み bump ブランチの checkout を汚さない。
-      - name: dotfiles-cli ビルド成果物キャッシュを復元
-        id: cli-cache
-        if: ${{ steps.commit.outputs.has_changes == 'true' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/dotfiles-nixcache
-          key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
-
-      - name: 成果物を store へ復元
-        if: ${{ steps.cli-cache.outputs.cache-hit == 'true' }}
-        run: nix copy --from "file://$HOME/.cache/dotfiles-nixcache" --no-check-sigs .#dotfiles-cli
-
-      # 前段の static checks は devShell 内で走るため、build sandbox でしか露見しない依存欠落を検出できない。
-      # derivation 自体を build して `static checks` status の意味を static-checks.yml と揃える。
-      - name: dotfiles-cli の nix build を bump 後 lock で実行
-        if: ${{ steps.commit.outputs.has_changes == 'true' }}
-        run: |
-          set -euo pipefail
-          nix build .#dotfiles-cli --no-link --print-build-logs
-
-      # cache scope の条件を投稿経路の gate に暗黙依存させない。
-      - name: 成果物をキャッシュへ書き出し
-        if: ${{ steps.commit.outputs.has_changes == 'true' && steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
-        run: nix copy --to "file://$HOME/.cache/dotfiles-nixcache?compression=zstd" --no-check-sigs .#dotfiles-cli
-
-      - name: 成果物キャッシュを保存
-        if: ${{ steps.commit.outputs.has_changes == 'true' && steps.cli-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/dotfiles-nixcache
-          key: dotfiles-cli-nix-${{ runner.os }}-${{ steps.cli.outputs.key }}
+      # `nix build .#dotfiles-cli` は runtime-gate が `nix run .#default` で実行する（同一 derivation）。
+      # ここへ置くと、runtime-gate が同じ key で保存した cache を必ず復元して store path 確認へ退化し、
+      # build sandbox でしか露見しない依存欠落を検出しなくなる。
 
       - name: bump ブランチを push して PR 起票
         id: pr
@@ -457,7 +419,7 @@ jobs:
             --base "${{ github.event.repository.default_branch }}" \
             --head "${{ steps.commit.outputs.branch }}" \
             --title "chore(deps): nightly flake.lock bump" \
-            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、\`nix build .#dotfiles-cli\`、runtime-gate job での構成適用後の \`bats tests/zsh\`（後 3 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
+            --body "nightly 自動 bump。flake.lock の全 input（framework input と推移 input を含む）の rev を更新し、更新履歴（版差分＋概要）を記録します。同一 run で \`cargo xtask ci verify-bump-lock\`、実 \`cargo xtask check static\`、runtime-gate job での \`dotfiles-cli\` の build と構成適用後の \`bats tests/zsh\`（後 3 者は static-checks.yml と同一）の全てが合格した場合のみ \`static checks\` status が投稿されます。auto-merge は「main」ruleset の required requirement が揃った時点で成立します（AI レビューの完了は条件に含まれません。docs/automation/nightly-lock-bump.md を参照）。")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
       # 全ゲートが合格した場合に限り status を投稿する。同 job 内のゲートは `if: success()` が、構成適用と
@@ -476,7 +438,7 @@ jobs:
             -f state=success \
             -f context="static checks" \
             -f target_url="${RUN_URL}" \
-            -f description="nightly-update run の verify-bump-lock + 実 static checks + nix build + runtime-gate の zsh checks 合格"
+            -f description="nightly-update run の verify-bump-lock + 実 static checks + runtime-gate の build と zsh checks 合格"
 
       # codex 自動レビューを起動する（Copilot は GitHub 側のネイティブ code review で走る）。
       - name: codex レビューを依頼
