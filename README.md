@@ -24,6 +24,17 @@ bootstrap は必要に応じて Nix を用意し、ローカル flake の生成�
 
 sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になります。初回 bootstrap で Nix や nix-darwin を入れる前の sudo 認証は、通常のパスワード入力が必要になる場合があります。
 
+## キーリマップ（Karabiner-Elements）
+
+CapsLock→Ctrl の割り当ては `config/karabiner/karabiner.json` にあり、`services.karabiner-elements` が
+driver と daemon を配線します。次の 2 つは macOS の承認が要るため宣言できません。
+
+- 初回 switch 後、システム設定 → プライバシーとセキュリティ で Karabiner の system extension の読み込みを承認します。
+- システム設定 → プライバシーとセキュリティ → 入力監視 で `karabiner_grabber` を許可します。
+
+`karabiner.json` はリポジトリ側が正本です。Karabiner の GUI から設定を変えると symlink が実ファイルに
+置き換わりますが、次の適用で宣言側に戻ります。変更はリポジトリに入れてください。
+
 ## 更新と適用
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル

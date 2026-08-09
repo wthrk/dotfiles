@@ -2,6 +2,10 @@
 #
 # nixpkgs の属性名が更新で変わるものは候補を順に選ぶ。rbenv、pyenv、nodebrew などの
 # ホーム配下 shim に頼らず、PATH は Nix 由来のツールを優先する前提にする。
+#
+# nixpkgs 版を入れていた npm 配布の言語ツール（`tsc` / `prettier` / `eslint` / `markdownlint`）は
+# `bunxTool` の wrapper へ置き換える（理由は `bunxTool` のコメント）。`bunxTool` 自体は bun を宣言する
+# このモジュールが持ち、`_module.args` で兄弟モジュールへ渡す。
 {
   inputs,
   lib,
@@ -12,6 +16,47 @@ let
   has = lib.hasAttrByPath;
   get = lib.getAttrFromPath;
   optionalPkg = path: if has path pkgs then [ (get path pkgs) ] else [ ];
+
+  # npm 配布の CLI を `bunx` 呼び出しの薄い wrapper として PATH 上に置く。
+  #
+  # alias ではなく PATH 上の実体にする。`nix develop` / direnv でプロジェクトの devShell に入ったとき、
+  # プロジェクト側が固定した同名 binary が PATH 前方に来てそのまま優先されてほしいためである。alias は
+  # PATH 解決より先に効くので、devShell に入っても利用者環境側を掴み続けてプロジェクトの固定版を潰す。
+  # bunx 自身も `node_modules/.bin` を先に見るため、プロジェクトが版を固定していればそれが使われる。
+  #
+  # `--package` は常に明示する。bin 名と npm package 名が一致しない CLI があり、省略すると bunx が
+  # bin 名と同名の別 package を registry から引く。
+  bunxTool =
+    {
+      bin,
+      package ? bin,
+      env ? { },
+    }:
+    pkgs.writeShellScriptBin bin ''
+      ${lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") env
+      )}
+      exec ${lib.getExe' pkgs.bun "bunx"} --package ${lib.escapeShellArg package} ${lib.escapeShellArg bin} "$@"
+    '';
+
+  # bunx へ寄せる npm 由来の言語ツール。flake.lock による版固定と nightly の版差分追跡からは外れる。
+  # ここに置くのは、同じ位置にあった nixpkgs 版（typescript / prettier / eslint / markdownlint-cli）の
+  # 置換だけである。言語ツールチェーンでない npm 由来 CLI は `nix/modules/cli.nix` が持つ。
+  #
+  # `node` / `npm` / `npx` はここに含めない。`npx` を wrapper で潰すと npx 固有の挙動が要る場面の逃げ道が
+  # 無くなる。`typescript-language-server` も含めない。mason が自前で取得・管理する層で、二重管理になる。
+  npmTools = [
+    (bunxTool { bin = "prettier"; })
+    (bunxTool { bin = "eslint"; })
+    (bunxTool {
+      bin = "tsc";
+      package = "typescript";
+    })
+    (bunxTool {
+      bin = "markdownlint";
+      package = "markdownlint-cli";
+    })
+  ];
 
   node = if has [ "nodejs_22" ] pkgs then pkgs.nodejs_22 else pkgs.nodejs;
   pythonBase =
@@ -44,6 +89,11 @@ let
   rustToolchain = (inputs.rust-overlay.lib.mkRustBin { } pkgs).stable.latest.default;
 in
 {
+  # `bunxTool` は bun を宣言するこのモジュールが持ち、npm 由来 CLI を宣言する `cli.nix` へ引数として渡す。
+  # wrapper の呼び出し規約（`--package` 明示、env の export 位置）を 1 箇所に保ち、モジュールごとに
+  # 同じ定義が分岐するのを防ぐ。
+  _module.args.bunxTool = bunxTool;
+
   home.packages = [
     node
     python
@@ -68,10 +118,7 @@ in
     pkgs.opam
     pkgs.ocamlPackages.utop
   ]
-  ++ optionalPkg [ "typescript" ]
-  ++ optionalPkg [ "prettier" ]
-  ++ optionalPkg [ "eslint" ]
-  ++ optionalPkg [ "markdownlint-cli" ]
+  ++ npmTools
   ++ optionalPkg [ "diesel-cli" ]
   ++ optionalPkg [
     "rubyPackages_3_3"

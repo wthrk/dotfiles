@@ -117,6 +117,17 @@ in
 
   programs.zsh.enable = true;
 
+  # CapsLock→Ctrl の remap は Karabiner-Elements に持たせる。nix-darwin の
+  # `system.keyboard.remapCapsLockToControl` は activation 時に `hidutil property --set` を 1 回打つだけで、
+  # 再起動やキーボードの再接続で設定が消える。Karabiner は DriverKit の仮想 HID デバイスを常駐させるため、
+  # 接続のたびに掛け直す必要がない。
+  #
+  # このオプションは driver の `/Applications/.Nix-Karabiner` への実体コピー、system extension の activate、
+  # `karabiner_grabber` / `karabiner_observer` / `Karabiner-DriverKit-VirtualHIDDeviceClient` /
+  # `karabiner_session_monitor` の launchd 配線までを持つ。キー割り当て自体は管理対象外なので、
+  # `config/karabiner/karabiner.json` を `nix/modules/shell-files.nix` からリンクして宣言側に置く。
+  services.karabiner-elements.enable = true;
+
   # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
   security.pam.services.sudo_local = {
     touchIdAuth = true;
