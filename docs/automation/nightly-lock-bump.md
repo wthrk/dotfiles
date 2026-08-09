@@ -12,8 +12,7 @@ bump は `nix flake update` を引数なしで実行し、**`flake.lock` の全 
 （nix-darwin / home-manager / nix-homebrew）とその推移 input（nix-homebrew の `brew-src`）も含む。
 
 一部 input を bump 対象から外すと、除外分だけが据え置かれたまま他が前進し、上流が検証していない組み合わせへ
-収束する。除外に対応する有人 bump 経路も無いため、除外は実質「更新されない」と同義になる。列挙形式への退行は
-`cargo xtask check static` の `nightly_bump_updates_every_input` が止める。
+収束する。除外に対応する有人 bump 経路も無いため、除外は実質「更新されない」と同義になる。
 
 ## auto-merge を止めるゲート
 
@@ -26,11 +25,13 @@ check（`static-checks.yml` の job 名 `static checks`）を満たす commit st
 | `cargo xtask ci verify-bump-lock` | lock 内容の妥当性（許可パスと取得先同一性だけを見る） |
 | `cargo xtask check static`（`darwinConfigurations.ci-ref` のモジュール評価を含む） | derivation の build（devShell 内で走るため build sandbox でだけ露見する依存欠落） |
 | `nix build .#dotfiles-cli` | checkPhase だけが起動する実行時依存（derivation は `doCheck = false`） |
+| 構成適用後の `bats tests/zsh`（`static-checks.yml` と同一） | macOS 固有の挙動（runner は ubuntu） |
 | bump job の `nix eval .#darwinConfigurations.ci-ref...`（`check static` と同じ評価を bump 直後に行う） | 実機 activation |
 
 open-pr は `needs: bump` なので、最後の eval が fail した夜も status は投稿されない。
 
-いずれも実機 activation（`darwin-rebuild switch` / `brew bundle`）は実行しない。受容条件は「残留制約」節に置く。
+Home Manager の activation は runner 上で実行するが、darwin activation（`darwin-rebuild switch` / `brew bundle`）
+は実行しない。
 
 ## 取得先期待値表の保守義務
 
@@ -38,8 +39,8 @@ open-pr は `needs: bump` なので、最後の eval が fail した夜も statu
 `EXPECTED_LOCK_INPUT_SOURCES`）に期待値を持たない node の `locked` が動くと fail する。
 
 `flake.nix` に input を追加・削除・rename したら、同じ差分で `EXPECTED_LOCK_INPUT_SOURCES` も更新する。更新漏れは
-`cargo xtask check static` の `nightly_lock_input_sources_match_expected_table` が実 `flake.lock` と突合して当該
-PR の時点で止める。
+当該 PR の時点では止まらない。その input が bump された翌晩に `verify-bump-lock` が
+`has no expected source identity entry` で fail し、nightly PR が毎晩失敗する形で現れる。
 
 上流 flake が自身の input を追加・削除・rename した夜は、`verify-bump-lock` の node 集合一致検査が
 `flake.lock node set changed` で fail する。bump ブランチは push 前に fail するため remote に残らない。失敗 run の
@@ -47,8 +48,7 @@ log の `added:` / `removed:` と、bump job の artifact `bump-state`（`retent
 既定ブランチの `flake.lock`（bump 前 lock。同 job の `repo_base_sha` output が指す commit のもの）と比較する。
 変化が上流宣言どおりで root input（`flake.nix` 直下）が動いていなければ正当な上流変化であり、
 `EXPECTED_LOCK_INPUT_SOURCES` を通常の PR で更新する。このとき artifact の bump 後 `flake.lock` も同じ PR へ
-取り込む。`nightly_lock_input_sources_match_expected_table` は表と実 `flake.lock` の input 集合を完全一致で
-突合するため、表だけを更新すると `check static` が fail する。root input の `original` が動いている、または追加
+取り込む。root input の `original` が動いている、または追加
 node の取得先が上流宣言と一致しない場合は攻撃を疑って調査する。
 
 ## インライン `verify-bump-lock` の判定内容と適用範囲
@@ -73,28 +73,4 @@ AI レビューの完了はこの条件に含まれない。ruleset の `copilot
 起票する」規則であってレビュー完了を待たせず、codex は required check でも required reviewer でもない。
 Copilot / codex が指摘を review thread として投稿した後であれば `required_review_thread_resolution` が未解決
 スレッドの残る PR のマージを止めるが、投稿前に上記 requirement が揃えば auto-merge はレビュー応答を待たずに
-成立する。この受容は「残留制約」節に置く。
-
-## 残留制約
-
-### AI レビュー未応答での merge（明示受容）
-
-前節のとおり auto-merge の条件に AI レビューの完了は含まれないため、Copilot / codex の応答が required status の
-充足より遅い夜、および codex が usage limit 等で応答しない夜は、AI レビュー無しで bump が main に入る。codex は
-commit status を出さないので required check 化する経路が無く、workflow 側で応答を待たせると「応答しない夜は
-nightly が進まない」と引き換えになる。bump の内容は許可パスが `flake.lock` と更新履歴に限られ、機械ゲート
-（`verify-bump-lock` / `check static` / `nix build`）は AI レビューと独立に効くため、この残留リスクを明示受容
-する。復旧は下記の runtime 非互換と同じく `flake.lock` の revert で行う。
-
-### 無人 bump の runtime 非互換（明示受容）
-
-ゲートはいずれも実機 activation を実行しないため、framework input の無人 bump が activation 経路だけを壊す変更は
-auto-merge 前には検出できない。検出経路は
-[`runtime-integration.yml`](../../.github/workflows/runtime-integration.yml)（週次 cron / `workflow_dispatch`）と
-各マシンの `dotfiles update` 実行時であり、無人 merge から検出までの遅延は最大 1 週間になる。この残留リスクを
-明示受容する。復旧は `flake.lock` の revert または該当モジュール側の迂回で行い、いずれも nightly の許可パス外
-なので通常の PR 経路を通る。
-
-既知の依存は個別に機械化する。`verify-bump-lock` は推移 input の `ref` 差分を方向を問わず通すため、
-[`nix/modules/homebrew.nix`](../../nix/modules/homebrew.nix) の `cleanup` が要求する brew 側 capability の下限は
-`cargo xtask check static` の `homebrew_cleanup_matches_locked_brew_capability` が `flake.lock` 上で強制する。
+成立する。

@@ -1618,7 +1618,6 @@ dependencies = [
  "anyhow",
  "clap",
  "dotfiles-core",
- "serde_json",
  "xshell",
 ]
 

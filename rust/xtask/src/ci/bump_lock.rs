@@ -36,9 +36,9 @@ const ALLOWED_HISTORY_PREFIX: &str = "docs/update-history/";
 /// 動けば取得先同一性を検証できない変更として fail する（fail-closed）。
 ///
 /// **保守義務**: `flake.nix` へ input を追加・削除・rename したら、同じ差分で本表も更新すること。更新漏れは
-/// `cargo xtask check static` の `nightly_lock_input_sources_match_expected_table` が実 `flake.lock` と突合
-/// して止める。上流 flake の input graph が変わって本表と乖離した場合の復旧手順は
-/// `docs/automation/nightly-lock-bump.md` を正本とする。
+/// PR の時点では止まらず、その input が bump された翌晩の `verify-bump-lock` が
+/// `has no expected source identity entry` で fail する。上流 flake の input graph が変わって本表と乖離した
+/// 場合の復旧手順は `docs/automation/nightly-lock-bump.md` を正本とする。
 const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 10] = [
     ("nixpkgs", "NixOS", "nixpkgs"),
     ("darwin", "LnL7", "nix-darwin"),
@@ -52,22 +52,11 @@ const EXPECTED_LOCK_INPUT_SOURCES: [(&str, &str, &str); 10] = [
     ("homebrew-hashicorp-tap", "hashicorp", "homebrew-tap"),
 ];
 
-/// 1 つの lock node の source 座標を型付きで取り出したもの。
-///
-/// base→head の差分検査は [`locked_without_mutable_fields`] による全体比較が担う。本型は
-/// [`EXPECTED_LOCK_INPUT_SOURCES`] との owner/repo 厳密一致を照合するために使う。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// [`EXPECTED_LOCK_INPUT_SOURCES`] と照合する取得先。base→head の差分検査は
+/// [`locked_without_mutable_fields`] による全体比較が担う。
 struct SourceCoords {
     owner: Option<String>,
     repo: Option<String>,
-    node_type: Option<String>,
-    reference: Option<String>,
-    url: Option<String>,
-    /// 取得先ホスト（github ref の `host`、既定 github.com）。GitHub Enterprise 等への drift を検出するため。
-    host: Option<String>,
-    /// subflake のサブディレクトリ指定（`dir`）。fetch 対象パスを変えうるため座標へ含める。
-    dir: Option<String>,
-    flake: Option<bool>,
 }
 
 /// `locked` から bump で変わってよいフィールドだけを取り除いた残りを返す。
@@ -437,18 +426,12 @@ fn require_lock_identity(name: &str, locked: &Value) -> Result<()> {
     Ok(())
 }
 
-/// `locked` オブジェクトから rev を除いた source 座標を取り出す。
+/// `locked` オブジェクトから照合対象の取得先を取り出す。
 fn source_coords(locked: &Value) -> SourceCoords {
     let str_field = |key: &str| locked.get(key).and_then(Value::as_str).map(str::to_string);
     SourceCoords {
         owner: str_field("owner"),
         repo: str_field("repo"),
-        node_type: str_field("type"),
-        reference: str_field("ref"),
-        url: str_field("url"),
-        host: str_field("host"),
-        dir: str_field("dir"),
-        flake: locked.get("flake").and_then(Value::as_bool),
     }
 }
 
@@ -520,8 +503,8 @@ mod tests {
 
     /// 推移 input の `locked` にも `ref` を持つ lock。
     ///
-    /// [`lock_with_transitive`] は `original` にだけ `ref` を持つため、[`SourceCoords::ignoring_reference`] が
-    /// no-op になり、緩和を厳密比較へ戻しても等値比較が成立してしまう（緩和の有無をテストが区別できない）。
+    /// [`lock_with_transitive`] は `original` にだけ `ref` を持つため、`ignore_reference` の除去が no-op になり、
+    /// 緩和を落としても等値比較が成立してしまう（緩和の有無をテストが区別できない）。
     /// tag 指定つき input のように `locked.ref` が実体を持つ node を模して、`ref` 緩和の許可側・拒否側の
     /// 境界をこの fixture で固定する。
     fn lock_with_transitive_locked_ref(

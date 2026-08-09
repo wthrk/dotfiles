@@ -10,9 +10,7 @@
       autoUpdate = false;
       # auto-update daemon の `dotfiles update` から実機の installed を tap pin へ収束させる。
       upgrade = true;
-      # 宣言外パッケージをアンインストールする。nix-darwin はこの値のとき brew bundle へ --force-cleanup を
-      # 渡すため、lock 済み brew がそのフラグを持つことが前提になる（下限は
-      # `cargo xtask check static` の BREW_REF_WITH_FORCE_CLEANUP）。
+      # 宣言外パッケージをアンインストールする。nix-darwin はこの値のとき brew bundle へ --force-cleanup を渡す。
       cleanup = "uninstall";
     };
 
