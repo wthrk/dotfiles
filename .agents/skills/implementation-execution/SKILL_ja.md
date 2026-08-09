@@ -31,5 +31,6 @@ description: サブエージェントが実装作業を割り当てられ、リ�
 - 同じ delegated task について `/orchestration` を起動せず、`$dotfiles-task-governance` を orchestration、役割変更、作業単位の再選定に使わない。
 - 作業単位を再選定せず、同じ実装割当に対して subagent を起動しない。
 - 編集前に対象ファイル、直接依存、呼び出し元/呼び出し先、テスト、handoff finding を読む。
+- 識別子、step、節、ファイルを削除したら、同じ変更の中で repo 全体をその名前で検索して参照を残さず、英日で対になる文書も同時に更新する。
 - 割り当て差分を作成し、選択した検証を実行し、対象差分・コマンド・結果・未実施確認・残リスクを報告する。
 - 詳細な実装義務は `docs/task-governance/implementation-execution.md` が所有する。
