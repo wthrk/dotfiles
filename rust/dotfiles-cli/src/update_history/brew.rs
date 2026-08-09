@@ -52,7 +52,7 @@ pub(crate) fn diff_casks(
     // 版変化なし（`None`）の除去（`flatten`）を分けて行う。
     casks
         .iter()
-        .map(|name| cask_delta(rev_old, rev_new, name.clone(), fetch))
+        .map(|name| cask_delta(rev_old, rev_new, name, fetch))
         .collect::<Result<Vec<Option<VersionDelta>>>>()
         .map(|deltas| deltas.into_iter().flatten().collect())
 }
@@ -68,10 +68,10 @@ pub(crate) fn diff_casks(
 fn cask_delta(
     rev_old: &str,
     rev_new: &str,
-    name: String,
+    name: &str,
     fetch: &dyn Fn(&str) -> Result<CaskFetch>,
 ) -> Result<Option<VersionDelta>> {
-    let Some(new) = cask_version_pinned(rev_new, &name, fetch)? else {
+    let Some(new) = cask_version_pinned(rev_new, name, fetch)? else {
         // new rev が取得不能（`Unavailable`）→ 固定性を確認できないため record を失敗させる（fail-closed）。
         bail!(
             "cask `{name}` の new rev `.rb` を取得できなかった（接続失敗・5xx・429 等）。固定性\
@@ -79,7 +79,7 @@ fn cask_delta(
              混入を許さない）"
         );
     };
-    let Some(old) = cask_version(rev_old, &name, fetch)? else {
+    let Some(old) = cask_version(rev_old, name, fetch)? else {
         bail!(
             "cask `{name}` の old rev `.rb` を取得できなかった（接続失敗・5xx・429 等）。\
              old version を確定できず brew 更新履歴が欠落しうるため停止する（fail-closed）"
@@ -98,7 +98,7 @@ fn cask_delta(
         }
     };
     Ok(Some(VersionDelta {
-        name,
+        name: name.to_string(),
         old: old.into_version(),
         new: new.into_version(),
         change,
