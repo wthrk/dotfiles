@@ -22,11 +22,10 @@
     # `kicad` は nixpkgs 側が `broken = stdenv.hostPlatform.isDarwin` のため macOS では評価に通らず、cask で
     # 宣言する。
     #
-    # `claude-code@latest` は `nix/modules/cli.nix` の bunx wrapper に載せられないため cask で宣言する。
-    # npm 版の中身は platform 別 optional dependency に入った native binary を postinstall がリンクする方式で、
-    # bun は lifecycle script を既定で実行しないためリンクが走らない。加えて Claude Code は自前でバックグラウンド
-    # 自動更新するので、bunx のキャッシュ管理と衝突する。cask 名の `@latest` は latest チャンネルを指す
-    # （`claude-code` は stable チャンネル）。
+    # `claude-code@latest` は cask で宣言する。Claude Code は導入経路を見て自動更新の可否を決めるため、cask 版だけが
+    # 自動更新を止めて `onActivation.upgrade` と `greedyCasks` の無人 upgrade に乗る。`nix/modules/cli.nix` の bunx
+    # wrapper に載せた版は自動更新を試みて更新先が書けずに失敗し、版が固定される。
+    # cask 名の `@latest` は latest チャンネルを指す（`claude-code` は stable チャンネル）。
     casks = [
       "azookey"
       "bitwarden"
