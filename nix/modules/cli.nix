@@ -35,6 +35,93 @@ let
     else
       null;
 
+  # npm 配布の CLI を `bunx` 呼び出しの薄い wrapper として PATH 上に置く。
+  #
+  # alias ではなく PATH 上の実体にする。`nix develop` / direnv でプロジェクトの devShell に入ったとき、
+  # プロジェクト側が固定した同名 binary が PATH 前方に来てそのまま優先されてほしいためである。alias は
+  # PATH 解決より先に効くので、devShell に入っても利用者環境側を掴み続けてプロジェクトの固定版を潰す。
+  #
+  # bin 名と npm package 名が一致しない CLI があるため、`--package` で package 名を明示する。
+  #
+  # exec の前に wrapper 自身のディレクトリを PATH から外す。版指定のない `bunx` は `--package` を
+  # 付けていても PATH 上の同名 binary を先に exec するため（bun 1.3.13 で確認）、`home.packages` 経由で
+  # `~/.nix-profile/bin/<bin>` や `/etc/profiles/per-user/<user>/bin/<bin>` に置かれた wrapper 自身を
+  # bunx が掴み、wrapper が自分を再実行し続ける。除去は PATH 要素、すなわちディレクトリ単位で行い、`<bin>` を
+  # 辿るとこの wrapper と同じ store path へ行き着く要素を丸ごと落とす。この構成では `~/.nix-profile/bin` と
+  # `/etc/profiles/per-user/<user>/bin` がそれに当たり、同じディレクトリに同居する git や ripgrep も、
+  # 起動される CLI からは見えない。同名 binary を持たない残りの PATH 要素は保つ。
+  bunxTool =
+    {
+      bin,
+      package ? bin,
+      env ? { },
+    }:
+    let
+      # 判定に使うコマンドは PATH に依存しない store path で参照する。
+      realpath = lib.getExe' pkgs.coreutils "realpath";
+    in
+    pkgs.writeShellScriptBin bin ''
+      ${lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") env
+      )}
+      self=$(${realpath} -- ${lib.escapeShellArg "${builtins.placeholder "out"}/bin/${bin}"})
+      IFS=':' read -r -a pathElements <<< "$PATH"
+      filteredPath=
+      for pathElement in "''${pathElements[@]}"; do
+        sibling="$pathElement/"${lib.escapeShellArg bin}
+        if [ -e "$sibling" ] && [ "$(${realpath} -- "$sibling")" = "$self" ]; then
+          continue
+        fi
+        filteredPath="$filteredPath:$pathElement"
+      done
+      export PATH="''${filteredPath#:}"
+      exec ${lib.getExe' pkgs.bun "bunx"} --package ${lib.escapeShellArg package} ${lib.escapeShellArg bin} "$@"
+    '';
+
+  # `mmdc`（`@mermaid-js/mermaid-cli`）へ渡す Chrome の実行ファイル。
+  #
+  # `pkgs.google-chrome` は unfree で、`meta.platforms` も aarch64-darwin / aarch64-linux / x86_64-linux に
+  # 限られる。無条件に参照すると次の 3 つが同時に壊れる。
+  #   1. x86_64-linux の activation closure に unfree Chrome が入り、`switch home` を走らせる CI 2 本
+  #      （`static-checks.yml` / `nightly-update.yml`）が Chrome の実ビルドを踏む。
+  #   2. `meta.platforms` に含まれない x86_64-darwin で評価が落ちる。
+  #   3. `allowUnfree = false` の `pkgs` を渡す利用側 flake で、`home.packages` リスト全体が
+  #      「Refusing to evaluate package 'google-chrome-…'」で評価不能になる。
+  # そのため Darwin、unfree 許可、対象 system で利用可能の 3 条件が揃った層でだけ参照する。判定順は
+  # `&&` の短絡に依存しており、unfree 不許可の層では `meta` にも触れない。
+  puppeteerChrome =
+    if
+      pkgs.stdenv.isDarwin
+      && (pkgs.config.allowUnfree or false)
+      && has [ "google-chrome" ] pkgs
+      && lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.google-chrome
+    then
+      pkgs.google-chrome
+    else
+      null;
+
+  # bunx wrapper として PATH に置く npm 配布の CLI。
+  # `mmdc` は Chrome を解決できた層でだけ入れる。渡せないまま wrapper を置いても puppeteer が
+  # 起動時に Chrome を見つけられず必ず失敗するため、宣言ごと落とす。
+  npmTools = [
+    (bunxTool {
+      bin = "codex";
+      package = "@openai/codex";
+    })
+    (bunxTool { bin = "difit"; })
+  ]
+  ++ lib.optional (puppeteerChrome != null) (bunxTool {
+    bin = "mmdc";
+    package = "@mermaid-js/mermaid-cli";
+    # `@mermaid-js/mermaid-cli` は描画に puppeteer の Chromium を使うが、その取得は puppeteer の
+    # postinstall で走る。bun は lifecycle script を既定で実行しないため取得自体が起きない。
+    # 解決済み Chrome を実行ファイルとして渡し、取得を止める。
+    env = {
+      PUPPETEER_SKIP_DOWNLOAD = "1";
+      PUPPETEER_EXECUTABLE_PATH = lib.getExe' puppeteerChrome "google-chrome-stable";
+    };
+  });
+
   gcloudPackage =
     if has [ "google-cloud-sdk" "components" "gke-gcloud-auth-plugin" ] pkgs then
       pkgs.google-cloud-sdk.withExtraComponents (
@@ -108,6 +195,7 @@ in
       chromedriver
       gnumake
     ]
+    ++ npmTools
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
     ++ lib.optional (gcloudPackage != null) gcloudPackage
     ++ lib.optionals pkgs.stdenv.isDarwin [

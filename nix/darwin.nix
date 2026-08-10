@@ -25,6 +25,10 @@ let
   # wrapper は対象ユーザー・HOME・config-dir・host を明示し、適用順序や target semantics は CLI の `update` / `switch`
   # と同じ実装に委ねる。
   autoUpdateLabel = "org.dotfiles.auto-update";
+
+  # login のたびに CapsLock→Ctrl の HID mapping を掛け直す user agent の label。
+  keyboardRemapLabel = "org.dotfiles.keyboard-remap";
+
   homeDir = "/Users/${user}";
   configDir = "${homeDir}/.config/dotfiles";
 
@@ -116,6 +120,37 @@ in
   networking.hostName = lib.mkDefault host;
 
   programs.zsh.enable = true;
+
+  # CapsLock→Ctrl の remap は macOS の HID key mapping（`hidutil`）に持たせる。
+  #
+  # `services.karabiner-elements.enable` は pin 済み nixpkgs では成立しない。
+  # `karabiner-elements-15.7.0` に `Library/LaunchAgents/` は無く、`karabiner_grabber` と
+  # `karabiner_observer` も含まれないので remap の実体が存在しない。上流 nix-darwin モジュールは
+  # その 3 つの plist を `environment.userLaunchAgents` へ載せるため、activation の `cp -f` が
+  # dangling symlink を掴んで失敗する。activation script は `set -e` で走るので `userLaunchd` で
+  # 止まり、`homebrew` と `postActivation` に到達しない。
+  system.keyboard.enableKeyMapping = true;
+  system.keyboard.remapCapsLockToControl = true;
+
+  # 上の `system.keyboard` は activation 時に `hidutil property --set` を 1 回実行するだけで、この設定は
+  # 再起動とキーボードの再接続で失われる。login のたびに同じ mapping を掛け直す user agent を置く。
+  # mapping の値は `system.keyboard.userKeyMapping` から生成し、HID の数値は書き写さない（nix-darwin と
+  # 二重管理にすると、片方だけが変わったときに気付けないため）。launchd の最小環境では PATH に依存できないので
+  # `/usr/bin/hidutil` を絶対パスで呼ぶ。掛け直しの契機は login であり、`RunAtLoad` だけを立てる。
+  # 終了後に再起動させないよう `KeepAlive` は false にする。
+  launchd.user.agents.${keyboardRemapLabel} = {
+    serviceConfig = {
+      Label = keyboardRemapLabel;
+      ProgramArguments = [
+        "/usr/bin/hidutil"
+        "property"
+        "--set"
+        (builtins.toJSON { UserKeyMapping = config.system.keyboard.userKeyMapping; })
+      ];
+      RunAtLoad = true;
+      KeepAlive = false;
+    };
+  };
 
   # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
   security.pam.services.sudo_local = {

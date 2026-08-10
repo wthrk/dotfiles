@@ -9,7 +9,6 @@
     firefox-bin
     google-chrome
     iterm2
-    kmonad
     mas
     notion-app
     slack
