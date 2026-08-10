@@ -73,12 +73,17 @@ let
     (bunxTool {
       bin = "codex";
       package = "@openai/codex";
+      version = "0.147.0";
     })
-    (bunxTool { bin = "difit"; })
+    (bunxTool {
+      bin = "difit";
+      version = "5.0.11";
+    })
   ]
   ++ lib.optional (puppeteerChrome != null) (bunxTool {
     bin = "mmdc";
     package = "@mermaid-js/mermaid-cli";
+    version = "11.16.0";
     # `@mermaid-js/mermaid-cli` は描画に puppeteer の Chromium を使うが、その取得は puppeteer の
     # postinstall で走る。bun は lifecycle script を既定で実行しないため取得自体が起きない。
     # 解決済み Chrome を実行ファイルとして渡し、取得を止める。
