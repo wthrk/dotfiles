@@ -3,11 +3,7 @@
 # 引数 `pkgs` の属性有無を見て、Darwin/Linux や nixpkgs 更新で存在しないパッケージを落とす。
 # `includeSelfPackage = true` かつ `inputs.self.packages` が存在する場合だけ、この flake がビルドした
 # `dotfiles` CLI を同じユーザー環境へ入れる。
-#
-# 引数 `bunxTool` は `nix/modules/languages.nix` が `_module.args` で渡す bunx wrapper 生成器で、
-# nixpkgs に無い npm 配布の CLI をここで宣言するために使う。
 {
-  bunxTool,
   includeSelfPackage ? true,
   inputs ? null,
   lib,
@@ -39,6 +35,26 @@ let
     else
       null;
 
+  # npm 配布の CLI を `bunx` 呼び出しの薄い wrapper として PATH 上に置く。
+  #
+  # alias ではなく PATH 上の実体にする。`nix develop` / direnv でプロジェクトの devShell に入ったとき、
+  # プロジェクト側が固定した同名 binary が PATH 前方に来てそのまま優先されてほしいためである。alias は
+  # PATH 解決より先に効くので、devShell に入っても利用者環境側を掴み続けてプロジェクトの固定版を潰す。
+  #
+  # bin 名と npm package 名が一致しない CLI があるため、`--package` で package 名を明示する。
+  bunxTool =
+    {
+      bin,
+      package ? bin,
+      env ? { },
+    }:
+    pkgs.writeShellScriptBin bin ''
+      ${lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") env
+      )}
+      exec ${lib.getExe' pkgs.bun "bunx"} --package ${lib.escapeShellArg package} ${lib.escapeShellArg bin} "$@"
+    '';
+
   # `mmdc`（`@mermaid-js/mermaid-cli`）へ渡す Chrome の実行ファイル。
   #
   # `pkgs.google-chrome` は unfree で、`meta.platforms` も aarch64-darwin / aarch64-linux / x86_64-linux に
@@ -66,24 +82,19 @@ let
     else
       null;
 
-  # nixpkgs に無い、または nixpkgs 版を採らない npm 配布の CLI。bunx wrapper として PATH に置く。
+  # bunx wrapper として PATH に置く npm 配布の CLI。
   # `mmdc` は Chrome を解決できた層でだけ入れる。渡せないまま wrapper を置いても puppeteer が
   # 起動時に Chrome を見つけられず必ず失敗するため、宣言ごと落とす。
   npmTools = [
     (bunxTool {
       bin = "codex";
       package = "@openai/codex";
-      version = "0.147.0";
     })
-    (bunxTool {
-      bin = "difit";
-      version = "5.0.11";
-    })
+    (bunxTool { bin = "difit"; })
   ]
   ++ lib.optional (puppeteerChrome != null) (bunxTool {
     bin = "mmdc";
     package = "@mermaid-js/mermaid-cli";
-    version = "11.16.0";
     # `@mermaid-js/mermaid-cli` は描画に puppeteer の Chromium を使うが、その取得は puppeteer の
     # postinstall で走る。bun は lifecycle script を既定で実行しないため取得自体が起きない。
     # 解決済み Chrome を実行ファイルとして渡し、取得を止める。
