@@ -46,8 +46,10 @@ let
   # exec の前に wrapper 自身のディレクトリを PATH から外す。版指定のない `bunx` は `--package` を
   # 付けていても PATH 上の同名 binary を先に exec するため（bun 1.3.13 で確認）、`home.packages` 経由で
   # `~/.nix-profile/bin/<bin>` や `/etc/profiles/per-user/<user>/bin/<bin>` に置かれた wrapper 自身を
-  # bunx が掴み、wrapper が自分を再実行し続ける。除去対象は `<bin>` を辿るとこの wrapper と同じ store path に
-  # 行き着く PATH 要素だけに限る。起動される CLI は PATH 上の他のコマンドを使うため、残りの要素は保つ。
+  # bunx が掴み、wrapper が自分を再実行し続ける。除去は PATH 要素、すなわちディレクトリ単位で行い、`<bin>` を
+  # 辿るとこの wrapper と同じ store path へ行き着く要素を丸ごと落とす。この構成では `~/.nix-profile/bin` と
+  # `/etc/profiles/per-user/<user>/bin` がそれに当たり、同じディレクトリに同居する git や ripgrep も、
+  # 起動される CLI からは見えない。同名 binary を持たない残りの PATH 要素は保つ。
   bunxTool =
     {
       bin,
