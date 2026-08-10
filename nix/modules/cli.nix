@@ -42,16 +42,37 @@ let
   # PATH 解決より先に効くので、devShell に入っても利用者環境側を掴み続けてプロジェクトの固定版を潰す。
   #
   # bin 名と npm package 名が一致しない CLI があるため、`--package` で package 名を明示する。
+  #
+  # exec の前に wrapper 自身のディレクトリを PATH から外す。版指定のない `bunx` は `--package` を
+  # 付けていても PATH 上の同名 binary を先に exec するため（bun 1.3.13 で確認）、`home.packages` 経由で
+  # `~/.nix-profile/bin/<bin>` や `/etc/profiles/per-user/<user>/bin/<bin>` に置かれた wrapper 自身を
+  # bunx が掴み、wrapper が自分を再実行し続ける。除去対象は `<bin>` を辿るとこの wrapper と同じ store path に
+  # 行き着く PATH 要素だけに限る。起動される CLI は PATH 上の他のコマンドを使うため、残りの要素は保つ。
   bunxTool =
     {
       bin,
       package ? bin,
       env ? { },
     }:
+    let
+      # 判定に使うコマンドは PATH に依存しない store path で参照する。
+      realpath = lib.getExe' pkgs.coreutils "realpath";
+    in
     pkgs.writeShellScriptBin bin ''
       ${lib.concatStringsSep "\n" (
         lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") env
       )}
+      self=$(${realpath} -- ${lib.escapeShellArg "${builtins.placeholder "out"}/bin/${bin}"})
+      IFS=':' read -r -a pathElements <<< "$PATH"
+      filteredPath=
+      for pathElement in "''${pathElements[@]}"; do
+        sibling="$pathElement/"${lib.escapeShellArg bin}
+        if [ -e "$sibling" ] && [ "$(${realpath} -- "$sibling")" = "$self" ]; then
+          continue
+        fi
+        filteredPath="$filteredPath:$pathElement"
+      done
+      export PATH="''${filteredPath#:}"
       exec ${lib.getExe' pkgs.bun "bunx"} --package ${lib.escapeShellArg package} ${lib.escapeShellArg bin} "$@"
     '';
 
@@ -66,11 +87,6 @@ let
   #      「Refusing to evaluate package 'google-chrome-…'」で評価不能になる。
   # そのため Darwin、unfree 許可、対象 system で利用可能の 3 条件が揃った層でだけ参照する。判定順は
   # `&&` の短絡に依存しており、unfree 不許可の層では `meta` にも触れない。
-  #
-  # 焼き込まれるのは `nix/modules/macos.nix` が `environment.systemPackages` に入れている実体ではなく、
-  # ここで解決した `pkgs.google-chrome` 自身の store path である（`macos.nix` は nix-darwin 側のモジュールで、
-  # この Home Manager モジュールの評価には関与しない）。実機の aarch64-darwin は 3 条件を満たすため、
-  # 従来どおり `mmdc` へ Chrome が渡る。
   puppeteerChrome =
     if
       pkgs.stdenv.isDarwin
