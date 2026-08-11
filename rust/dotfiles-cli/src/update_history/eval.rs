@@ -104,7 +104,22 @@ pub(crate) fn eval_declared_casks(reference: &str) -> Result<Vec<String>> {
             format!(".#{reference}.config.homebrew.casks").into(),
         ],
     )?;
-    Ok(serde_json::from_str(&json)?)
+    parse_declared_casks(&json)
+}
+
+/// `config.homebrew.casks` の評価値 JSON から cask 名の list を取り出す純粋関数。
+///
+/// nix-darwin の `homebrew.casks` は文字列宣言を submodule へ coerce するため、評価値は文字列の list ではなく
+/// `name`/`greedy`/`args` 等を持つ attrset の list になる。宣言を文字列で書いていても評価値はこの形なので、
+/// `name` だけを読む。
+fn parse_declared_casks(json: &str) -> Result<Vec<String>> {
+    /// 評価値 cask 1 件のうち、版差分に必要な名前だけを読む。
+    #[derive(Deserialize)]
+    struct DeclaredCask {
+        name: String,
+    }
+    let casks: Vec<DeclaredCask> = serde_json::from_str(json)?;
+    Ok(casks.into_iter().map(|cask| cask.name).collect())
 }
 
 /// 1 つのパッケージ list attribute を `nix eval --json --apply` で評価し、導出済み name→[`NixPackage`] を返す。
@@ -236,10 +251,26 @@ pub(crate) fn lock_node_rev(lock_path: &Path, node: &str) -> Result<Option<Strin
 #[cfg(test)]
 mod tests {
     //! owner/repo 導出の 4 分岐（homepage→src→changelog・`.git` 剥がし・非 github 空）・文字列正規化
-    //! （list/非文字列→空）・Home Manager attr path の文字列キー化と escape・flake.lock rev 抽出を
-    //! network/nix 抜きで固定する。
+    //! （list/非文字列→空）・Home Manager attr path の文字列キー化と escape・宣言 cask 評価値からの名前抽出・
+    //! flake.lock rev 抽出を network/nix 抜きで固定する。
 
     use super::*;
+
+    #[test]
+    fn parse_declared_casks_reads_names_from_coerced_submodules() -> Result<()> {
+        // nix-darwin が文字列宣言を coerce した後の実際の評価値の形（attrset の list）。
+        let json = r#"[
+          {"args":null,"brewfileLine":"cask \"azookey\", greedy: true","greedy":true,
+           "name":"azookey","postinstall":null,"trusted":true},
+          {"args":null,"brewfileLine":"cask \"claude-code@latest\", greedy: true","greedy":true,
+           "name":"claude-code@latest","postinstall":null,"trusted":true}
+        ]"#;
+        assert_eq!(
+            parse_declared_casks(json)?,
+            vec!["azookey".to_string(), "claude-code@latest".to_string()]
+        );
+        Ok(())
+    }
 
     #[test]
     fn home_manager_packages_attr_path_quotes_user_as_string_key() {
