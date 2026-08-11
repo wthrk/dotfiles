@@ -213,3 +213,253 @@ ref = "https://github.com/zed-industries/zed/pull/61545"
 category = "fix"
 text = "Gitクローンエラーメッセージに余分な空行が表示される問題を修正"
 ref = "https://github.com/zed-industries/zed/pull/61674"
+
+[[update]]
+at = "2026-08-11T18:34:04Z"
+state_old = "ab36e99ba688b3713267221e64dfa4936288266e79ee616d2a1e271c7b386a8e"
+state_new = "19620fcb26648c47bdd20e7ec0209d268358c499023244073d31ce15dbcae494"
+cursor_old = "becba5fd02fe683e38e3d6b68b0e60b79d9145e9"
+nixpkgs_old = "70ce234312134a463ba7728e94da2486a1d237ac"
+nixpkgs_new = "d482ef84049d9b7276b83a06e4e4d76983830097"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "9アプリ更新: ⚠️2 🔧1 ✨7 🐛25"
+
+[[update.package]]
+name = "chromedriver"
+old = "151.0.7922.76"
+new = "151.0.7922.109"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/search?q=151.0.7922.109"
+change_item = []
+
+[[update.package]]
+name = "delve"
+old = "1.27.0"
+new = "1.27.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/go-delve/delve/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Cフレームの属性付けに関するバグを修正"
+ref = "https://github.com/go-delve/delve/pull/4374"
+
+[[update.package.change_item]]
+category = "fix"
+text = "arm64向けのステッピングテストの範囲を修正"
+ref = "https://github.com/go-delve/delve/pull/4378"
+
+[[update.package.change_item]]
+category = "fix"
+text = "follow-execプロセスの終了時にパニックを修正"
+ref = "https://github.com/go-delve/delve/pull/4383"
+
+[[update.package.change_item]]
+category = "fix"
+text = "cgoスタックトレースのSP復元に関するバグを修正"
+ref = "https://github.com/go-delve/delve/pull/4399"
+
+[[update.package]]
+name = "eslint"
+old = "10.8.0"
+new = "10.8.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/eslint/eslint/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`no-unused-labels` の自動修正で ASI ハザードを防止する修正"
+ref = "https://github.com/eslint/eslint/commit/18eb0a7e787b9fac3049ef3dad0e845d2bd940a4"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`getter-return` と `accessor-pairs` の誤検出を修正"
+ref = "https://github.com/eslint/eslint/commit/151ba3f5834a0909e8b9b1736f4889ac694c0104"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`id-denylist` でメタプロパティ名を無視する修正"
+ref = "https://github.com/eslint/eslint/commit/6898df9364639ee64b9448a4cb6b08a30c16bd37"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`id-match` でメタプロパティ名を無視する修正"
+ref = "https://github.com/eslint/eslint/commit/4d7db6628e2badf0857cb88734fe641c3874bce9"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`no-unused-vars` の removeVar 提案で ASI ハザードを処理する修正"
+ref = "https://github.com/eslint/eslint/commit/677214e7eea83d8bc6e4b79eea871577e1369d5f"
+
+[[update.package]]
+name = "google-chrome"
+old = "151.0.7922.76"
+new = "151.0.7922.109"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+change_item = []
+
+[[update.package]]
+name = "jujutsu"
+old = "0.43.0"
+new = "0.44.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/jj-vcs/jj/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`jj git fetch`がタグをブックマークと同様に取得するように変更された。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`jj git clone --fetch-tags`オプションが削除され、`--tag=PATTERN`に置き換えられた。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい`merge_point()` revset関数が追加された。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj workspace list`がデフォルトでワークスペースのルートを表示するようになった。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`jj run`がデフォルトで古いリビジョンから新しいリビジョンへ処理するようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "再帰的エイリアス定義がより正確に検出されるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Gitの一時ファイルが信号の存在下でより確実にクリーンアップされるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "作業コピーが不変になった後のGit HEADの不一致が修正された。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "作業コピーが不変になるとすぐに新しい作業コピーのリビジョンが作成されるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "スナップショット作成が無効なUTF-8のパスを含む作業コピーでも失敗しなくなった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`jj diff`と`jj status`がマージコミット内のリネームやコピーを正しく表示するようになった。"
+
+[[update.package]]
+name = "ruff"
+old = "0.16.1"
+new = "0.16.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.16.2"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`flake8-pyi` で `singledispatch` 関数に対する誤検出を回避する修正を行った。"
+ref = "https://github.com/astral-sh/ruff/pull/27335"
+
+[[update.package.change_item]]
+category = "feature"
+text = "TOMLファイルを除外するために、フォーマット機能を動的に登録する機能を追加した。"
+ref = "https://github.com/astral-sh/ruff/pull/27332"
+
+[[update.package]]
+name = "vips"
+old = "8.18.4"
+new = "8.18.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/libvips/libvips/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "maplut: 複雑な画像でのOOB読み取りの可能性を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "measure: パッチ数よりも画像領域が大きいことを確認"
+
+[[update.package.change_item]]
+category = "fix"
+text = "reduceh: Highway < 1.1.0での潜在的な不正出力を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "jxlsave: エラー時にEXIFデータが解放されることを保証"
+
+[[update.package.change_item]]
+category = "fix"
+text = "icc_ac2rc: エラー時にICCプロファイルが閉じられることを保証"
+
+[[update.package.change_item]]
+category = "fix"
+text = "buildlut: NaN値に対するガードを追加"
+
+[[update.package.change_item]]
+category = "fix"
+text = "tiffsave: xyz処理を改善"
+
+[[update.package.change_item]]
+category = "feature"
+text = "jp2kload: パレット画像のサポートを追加"
+
+[[update.package]]
+name = "vscode"
+old = "1.130.0"
+new = "1.132.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_132"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタのテーマが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_132#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_132#bug-fixes"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "新しいデフォルト設定が適用されました。"
+ref = "https://code.visualstudio.com/updates/v1_132#default-settings"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.226"
+new = "2.1.227"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の条件下でのクラッシュを修正しました。"
+ref = "https://github.com/anthropics/claude-code/releases/tag/v2.1.227"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコード補完機能を追加しました。"
+ref = "https://github.com/anthropics/claude-code/releases/tag/v2.1.227"

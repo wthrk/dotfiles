@@ -6,6 +6,11 @@ discovered_at = "2026-06-11T19:26:39Z"
 origin = "none"
 discovered_at = "2026-08-07T18:41:19Z"
 
+["brew/claude-code@latest"]
+source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+origin = "ai-discovered"
+discovered_at = "2026-08-11T18:34:04Z"
+
 ["brew/codex-app"]
 source = "https://github.com/openai/codex/blob/main/CHANGELOG.md"
 origin = "ai-discovered"
@@ -86,7 +91,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/delve"]
 origin = "none"
-discovered_at = "2026-07-08T20:19:09Z"
+discovered_at = "2026-08-11T18:34:04Z"
 
 ["nix/diesel-cli"]
 origin = "none"
@@ -121,7 +126,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/eslint"]
 origin = "none"
-discovered_at = "2026-07-14T20:41:45Z"
+discovered_at = "2026-08-11T18:34:04Z"
 
 ["nix/eza"]
 origin = "none"
@@ -176,7 +181,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/jujutsu"]
 origin = "none"
-discovered_at = "2026-07-08T20:19:09Z"
+discovered_at = "2026-08-11T18:34:04Z"
 
 ["nix/kubectl"]
 source = "https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.36.md"
@@ -239,7 +244,7 @@ discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-07-20T20:42:57Z"
+discovered_at = "2026-08-11T18:34:04Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
@@ -287,7 +292,7 @@ discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/vips"]
 origin = "none"
-discovered_at = "2026-08-08T18:28:18Z"
+discovered_at = "2026-08-11T18:34:04Z"
 
 ["nix/vscode"]
 source = "https://code.visualstudio.com/updates/v1_123"
