@@ -113,7 +113,6 @@ pub(crate) fn eval_declared_casks(reference: &str) -> Result<Vec<String>> {
 /// `name`/`greedy`/`args` 等を持つ attrset の list になる。宣言を文字列で書いていても評価値はこの形なので、
 /// `name` だけを読む。
 fn parse_declared_casks(json: &str) -> Result<Vec<String>> {
-    /// 評価値 cask 1 件のうち、版差分に必要な名前だけを読む。
     #[derive(Deserialize)]
     struct DeclaredCask {
         name: String,
