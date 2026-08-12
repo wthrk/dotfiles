@@ -463,3 +463,109 @@ ref = "https://github.com/anthropics/claude-code/releases/tag/v2.1.227"
 category = "feature"
 text = "新しいコード補完機能を追加しました。"
 ref = "https://github.com/anthropics/claude-code/releases/tag/v2.1.227"
+
+[[update]]
+at = "2026-08-12T18:31:14Z"
+state_old = "19620fcb26648c47bdd20e7ec0209d268358c499023244073d31ce15dbcae494"
+state_new = "a3bc5c3cf04197b0bb7352c4481b5da237b163a77fd91a6c4d5e968482a7f28e"
+cursor_old = "afeeb795eb26035def4f15c4fcbc99b02dddd312"
+nixpkgs_old = "d482ef84049d9b7276b83a06e4e4d76983830097"
+nixpkgs_new = "8e2eeb9477c9d40009a5bd51cd3eef2f5abb26f1"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: ✨2 🐛10"
+
+[[update.package]]
+name = "diesel-cli"
+old = "2.3.11"
+new = "2.3.12"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "MySQLのchrono::NaiveTimeに関するFromSql/ToSqlの修正で、TIME値の小数秒成分が正しく処理されるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "libsqlite3-sysのサポートが0.38を含むように拡張された。"
+
+[[update.package]]
+name = "discord"
+old = "0.0.405"
+new = "0.0.406"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discord.com/blog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいボイスチャット機能が追加されました。"
+ref = "https://discord.com/blog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正により、アプリの安定性が向上しました。"
+ref = "https://discord.com/blog"
+
+[[update.package]]
+name = "tesseract"
+old = "5.5.2"
+new = "5.5.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/tesseract-ocr/tesseract/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マルチページPAGE XML出力の閉じタグが欠落していた問題を修正"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4506"
+
+[[update.package.change_item]]
+category = "fix"
+text = "クロスコンパイル時にAppleのCMAKE_SYSTEM_PROCESSORが設定されていなかった問題を修正"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4503"
+
+[[update.package.change_item]]
+category = "fix"
+text = "LANGIDを16ビットにマスクして自動検出の信頼性を向上"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4513"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ポルトガル語の言語サポートを追加"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4516"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数インスタンスを防ぐためのmutex呼び出しを修正"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4517"
+
+[[update.package.change_item]]
+category = "fix"
+text = "レガシービルドでLSTMが欠落しているときのクラッシュを修正"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4563"
+
+[[update.package.change_item]]
+category = "fix"
+text = ".traineddataのデシリアライズにおけるメモリ安全性の問題を修正"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4581"
+
+[[update.package.change_item]]
+category = "fix"
+text = "LSTMのConvolveおよびReconfigデシリアライズにおける整数オーバーフローを修正"
+ref = "https://github.com/tesseract-ocr/tesseract/pull/4588"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.227"
+new = "2.1.228"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
