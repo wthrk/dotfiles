@@ -39,10 +39,23 @@ pub(crate) fn ensure_local_user(
 /// 実行環境で走るため、パスワード入力を求められた時点でその経路を検証できない。付与対象は
 /// 同じハーネスが作った使い捨てアカウントに限り、sub user 側には付与しない。sub user が
 /// sudo を要求しないことは検証対象そのものなので、与えると退行を隠す。
+///
+/// `visudo -c` は一時ファイルに対して行い、通ったものだけを `/etc/sudoers.d/` へ置く。設置後に
+/// 読み返す形では、検査が落ちる時点で既に sudo の設定が壊れている。
+///
+/// 置いた sudoers は削除しない。シナリオはこのアカウントと適用済みの nix-darwin system 層を
+/// そのまま残して終わるので、この 1 ファイルだけを消してもゲストは再利用できる状態に戻らない。
+/// 実行先を使い捨てにするのはハーネス側（ホスト runner の VM 破棄、CI runner の job 終了）の責務で
+/// あり、この関数は担保しない。
 pub(crate) fn grant_noninteractive_sudo(runner: &ScenarioRunner, user: &str) -> Result<()> {
     let path = format!("/etc/sudoers.d/dotfiles-integration-{user}");
     let script = format!(
-        "set -eu; printf '%s ALL=(ALL) NOPASSWD: ALL\\n' '{user}' > '{path}'; chmod 0440 '{path}'; /usr/sbin/visudo -c -f '{path}'"
+        "set -eu; \
+         candidate=\"$(mktemp)\"; \
+         printf '%s ALL=(ALL) NOPASSWD: ALL\\n' '{user}' > \"$candidate\"; \
+         /usr/sbin/visudo -c -f \"$candidate\"; \
+         /usr/bin/install -m 0440 -o root -g wheel \"$candidate\" '{path}'; \
+         rm -f \"$candidate\""
     );
     runner.run("sudo", &["/bin/sh", "-c", script.as_str()])
 }

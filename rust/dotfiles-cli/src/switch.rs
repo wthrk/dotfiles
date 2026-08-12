@@ -295,8 +295,11 @@ impl SwitchOptions {
     /// 条件に含めない。target・`--user`・`--config-dir` は 1 ユーザー分の実行を指す指定であり、走査は
     /// [`Self::for_user`] でそれらを上書きする。1 つでも明示されていれば走査へ倒さず、明示された値を
     /// 捨てて要求より広い範囲を root 権限で適用しない。
-    pub(crate) fn sweeps_all_users(&self) -> Result<bool> {
-        Ok(self.scope_user()?.is_none() && self.target.is_none() && self.config_dir.is_none())
+    ///
+    /// euid は引数で受け取る。判定を副作用なしにし、`--host` を含む argv の組み合わせを単体テストで
+    /// 固定できるようにする。
+    pub(crate) fn sweeps_all_users(&self, is_root: bool) -> bool {
+        is_root && self.user.is_none() && self.target.is_none() && self.config_dir.is_none()
     }
 
     /// `update` が lock 更新と switch の両方を同じ予行実行モードで扱う。
@@ -410,20 +413,40 @@ impl HomeApplyUser {
 }
 
 /// 実行時の euid を root 判定へ正規化する。
-fn is_effective_root() -> bool {
+pub(crate) fn is_effective_root() -> bool {
     rustix::process::geteuid().is_root()
 }
 
-/// `darwin_rebuild_invocation` が euid に応じて sudo 前置の有無を切り替えること、および
-/// 適用範囲が対象ユーザーの scope から決まることを検証する。
+/// `darwin_rebuild_invocation` が euid に応じて sudo 前置の有無を切り替えること、適用範囲が対象
+/// ユーザーの scope から決まること、および全ユーザー走査へ倒す条件を検証する。
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigScope, HomeApplyUser, SwitchInvocationInput, SwitchTarget, darwin_rebuild_invocation,
-        resolve_target, switch_invocations, switch_order,
+        ConfigScope, HomeApplyUser, SwitchInvocationInput, SwitchOptions, SwitchTarget,
+        darwin_rebuild_invocation, resolve_target, switch_invocations, switch_order,
     };
     use std::ffi::OsString;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    /// 走査条件に関わる指定だけを差し替えた `SwitchOptions` を作る。
+    ///
+    /// 外部コマンド名と予行実行は走査条件に入らないので既定値で固定する。
+    fn options(
+        target: Option<SwitchTarget>,
+        user: Option<&str>,
+        host: Option<&str>,
+        config_dir: Option<&str>,
+    ) -> SwitchOptions {
+        SwitchOptions {
+            target,
+            user: user.map(str::to_string),
+            host: host.map(str::to_string),
+            config_dir: config_dir.map(PathBuf::from),
+            home_manager: OsString::from("home-manager"),
+            darwin_rebuild: OsString::from("darwin-rebuild"),
+            dry_run: false,
+        }
+    }
 
     /// root 実行では sudo を前置せず `darwin-rebuild switch` を直接起動する。
     #[test]
@@ -545,7 +568,52 @@ mod tests {
         Ok(())
     }
 
-    /// 既定 target の `all` は standalone Home Manager を先に適用してから nix-darwin を適用する。
+    /// root 実行で 1 ユーザー分を指す指定が 1 つも無いときだけ、全ユーザー走査へ倒す。
+    ///
+    /// `--host` はマシン単位の値なので走査条件に入らない。auto-update daemon が渡す argv 形が
+    /// `dotfiles update --host <host>` であり、これを 1 ユーザー分の指定として扱うと daemon が
+    /// 所有者 1 人しか更新しなくなる。
+    #[test]
+    fn root_without_narrowing_options_sweeps_all_users() {
+        assert!(options(None, None, None, None).sweeps_all_users(true));
+        assert!(options(None, None, Some("mac"), None).sweeps_all_users(true));
+    }
+
+    /// 1 ユーザー分を指す指定が 1 つでもあれば走査へ倒さない。明示された値を捨てて要求より広い
+    /// 範囲を root 権限で適用しない。`--host` の有無は結果を変えない。
+    #[test]
+    fn root_with_narrowing_option_does_not_sweep() {
+        for host in [None, Some("mac")] {
+            for narrowed in [
+                options(Some(SwitchTarget::Darwin), None, host, None),
+                options(Some(SwitchTarget::Home), None, host, None),
+                options(Some(SwitchTarget::All), None, host, None),
+                options(None, Some("alice"), host, None),
+                options(None, None, host, Some("/cfg")),
+            ] {
+                assert!(!narrowed.sweeps_all_users(true));
+            }
+        }
+    }
+
+    /// 非 root 実行は指定の有無にかかわらず自分だけを対象にする。
+    #[test]
+    fn non_root_never_sweeps_all_users() {
+        for narrowed in [
+            options(None, None, None, None),
+            options(None, None, Some("mac"), None),
+            options(
+                Some(SwitchTarget::All),
+                Some("alice"),
+                Some("mac"),
+                Some("/cfg"),
+            ),
+        ] {
+            assert!(!narrowed.sweeps_all_users(false));
+        }
+    }
+
+    /// `all` は standalone Home Manager を先に適用してから nix-darwin を適用する。
     #[test]
     fn all_expands_to_home_manager_then_darwin() {
         assert_eq!(

@@ -1,16 +1,20 @@
 //! host 側 integration runner が使う filesystem helper。
 
 use std::{
+    collections::HashSet,
+    ffi::OsStr,
     fs,
+    os::unix::ffi::OsStrExt,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    process::Command,
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 
 use crate::Result;
 
-/// repository の `.gitignore` に従って runtime source tree を作る。
+/// repository が無視しないファイルだけを runtime source tree として複製する。
 pub(crate) fn copy_repo_source(source: &Path, destination: &Path) -> Result<()> {
     if destination == source || destination.starts_with(source) {
         return Err(anyhow!(
@@ -18,7 +22,7 @@ pub(crate) fn copy_repo_source(source: &Path, destination: &Path) -> Result<()> 
             destination.display()
         ));
     }
-    let ignore = GitIgnore::read(source)?;
+    let ignore = IgnoredPaths::read(source)?;
     copy_dir_filtered(source, source, destination, &ignore)
 }
 
@@ -26,7 +30,7 @@ fn copy_dir_filtered(
     root: &Path,
     source: &Path,
     destination: &Path,
-    ignore: &GitIgnore,
+    ignore: &IgnoredPaths,
 ) -> Result<()> {
     if destination.exists() {
         fs::remove_dir_all(destination).with_context(|| {
@@ -101,67 +105,54 @@ fn copy_dir_filtered(
     Ok(())
 }
 
-struct GitIgnore {
-    patterns: Vec<IgnorePattern>,
+/// repository root からの相対パスで表した、複製対象から外す entry の集合。
+///
+/// 判定は git 自身に委ねる。`.gitignore` の否定パターン、入れ子の `.gitignore`、
+/// `.git/info/exclude` を repository 側で再実装すると、実際の追跡対象と食い違ったまま
+/// 複製が進む。`--directory` を渡すので、丸ごと無視される directory は 1 entry として返り、
+/// その配下を歩く前に打ち切れる。
+struct IgnoredPaths {
+    paths: HashSet<PathBuf>,
 }
 
-impl GitIgnore {
+impl IgnoredPaths {
     fn read(root: &Path) -> Result<Self> {
-        let gitignore = root.join(".gitignore");
-        let text = fs::read_to_string(&gitignore)
-            .with_context(|| format!("{} を読めません", gitignore.display()))?;
-        let patterns = text
-            .lines()
-            .filter_map(IgnorePattern::parse)
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Self { patterns })
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "ls-files",
+                "-z",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--directory",
+            ])
+            .output()
+            .with_context(|| format!("git ls-files を起動できません: {}", root.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git ls-files が失敗しました: {}: {}",
+                root.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(Self {
+            paths: output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    // directory entry は末尾の `/` 付きで返るため、walk 側の相対パス表現へ揃える。
+                    let entry = entry.strip_suffix(b"/").unwrap_or(entry);
+                    PathBuf::from(OsStr::from_bytes(entry))
+                })
+                .collect(),
+        })
     }
 
     fn matches(&self, path: &Path) -> bool {
-        let path = path.to_string_lossy().replace('\\', "/");
-        self.patterns.iter().any(|pattern| pattern.matches(&path))
-    }
-}
-
-struct IgnorePattern {
-    value: String,
-    anchored: bool,
-    directory: bool,
-}
-
-impl IgnorePattern {
-    fn parse(line: &str) -> Option<Result<Self>> {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            return None;
-        }
-        if line.starts_with('!') {
-            return Some(Err(anyhow!(
-                "negated .gitignore patterns are not supported"
-            )));
-        }
-        let directory = line.ends_with('/');
-        let anchored = line.starts_with('/');
-        let value = line.trim_start_matches('/').trim_end_matches('/');
-        Some(Ok(Self {
-            value: value.to_string(),
-            anchored,
-            directory,
-        }))
-    }
-
-    fn matches(&self, path: &str) -> bool {
-        if self.anchored {
-            return path == self.value
-                || path
-                    .strip_prefix(&self.value)
-                    .is_some_and(|rest| rest.starts_with('/'));
-        }
-        if self.directory {
-            path.split('/').any(|component| component == self.value)
-        } else {
-            path == self.value || path.ends_with(&format!("/{}", self.value))
-        }
+        self.paths.contains(path)
     }
 }
 

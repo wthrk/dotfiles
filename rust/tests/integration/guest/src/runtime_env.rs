@@ -197,7 +197,10 @@ pub(crate) fn dotfilesci_env(nix_config: &str) -> Result<Vec<(String, String)>> 
     user_env("dotfilesci", "/bin/zsh", nix_config, None)
 }
 
-/// auto-update daemon と同じ root 実行の環境を作る。対象ユーザーは渡さない。
+/// root として実行するコマンドへ渡す環境を作る。対象ユーザーは渡さない。
+///
+/// PATH は nix-darwin 適用後の system profile を先頭に置く。auto-update daemon と同じ全ユーザー
+/// 走査も、root が checkout を扱うための準備も、この環境で実行する。
 pub(crate) fn root_env(nix_config: &str) -> Result<Vec<(String, String)>> {
     user_env(
         "root",

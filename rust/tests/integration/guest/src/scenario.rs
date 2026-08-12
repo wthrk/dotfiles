@@ -462,7 +462,7 @@ impl ScenarioRunner {
         )
     }
 
-    /// auto-update daemon と同じ root 環境で実行する。対象ユーザーは渡さない。
+    /// root として実行する。対象ユーザーは渡さない。
     fn run_as_root(&self, program: &str, args: &[&str]) -> Result<()> {
         self.run_sudo_user("root", &root_env(&self.env.nix_config)?, program, args)
     }

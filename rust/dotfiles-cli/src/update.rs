@@ -38,7 +38,7 @@ const USER_UPDATE_TIMEOUT: Duration = Duration::from_secs(120 * 60);
 
 /// 既存の `switch` と同じオプションを受け取り、先に flake.lock を更新する。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
-    if options.switch.sweeps_all_users()? {
+    if options.switch.sweeps_all_users(switch::is_effective_root()) {
         return run_all_users(&options.switch);
     }
     // 利用者自身の実行は中断できるので期限を置かない。
@@ -70,14 +70,9 @@ fn run_one_user(options: switch::SwitchOptions, deadline: Option<Instant>) -> Re
 /// 他ユーザーの flake を評価・ビルドしない。system 層はそのユーザーの scope が `Full` のとき、
 /// すなわち `/etc/profiles/per-user/` が所有者として示すユーザーのときだけ適用される。
 ///
-/// 1 ユーザーの失敗で走査を打ち切らない。走査順はユーザー名の昇順なので、途中で伝播させると
-/// 名前が先に来るユーザーの flake が壊れているだけで、後続ユーザーの更新も所有者の system 層適用も
-/// 実行されなくなる。失敗は記録して全ユーザーを試行し、1 件でもあれば最後に非 0 で終了する。
-///
-/// 停止したユーザーも同じ扱いにする。各ローカルユーザーは自分の flake を編集できるため、期限を
-/// 置かないと非特権ユーザーが終わらない評価を仕込むだけで、この root daemon の走査を後続ユーザーと
-/// 所有者の system 層更新ごと無期限に止められる。[`USER_UPDATE_TIMEOUT`] を 1 ユーザーごとの期限に
-/// 使い、超過は失敗として記録して次のユーザーへ進む。
+/// 走査はユーザー名の昇順で、1 ユーザーの失敗では止めない。失敗は記録して次のユーザーへ進み、
+/// 1 件でもあれば最後に非 0 で終了する。1 ユーザーに与える時間は [`USER_UPDATE_TIMEOUT`] までで、
+/// 超過も失敗として記録する。
 fn run_all_users(base: &switch::SwitchOptions) -> Result<()> {
     let mut failed = Vec::new();
     for account in local_flake_accounts()? {
