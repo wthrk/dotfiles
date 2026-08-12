@@ -132,18 +132,11 @@ pub(crate) fn current_user() -> String {
         .unwrap_or_else(|_| "admin".to_string())
 }
 
-/// `dotfiles init` と `dotfiles switch darwin` が同じ出力名を使うよう、短いホスト名を返す。
+/// `dotfiles init` が `--host` 省略時に書く出力名と同じ短いホスト名を返す。
+///
+/// CLI は `hostname` だけを見る。シナリオは `--host` を渡さずに生成した flake の出力名を参照するので、
+/// ここで環境変数を優先すると CLI が書いた名前と食い違い、存在しない属性を検査することになる。
 pub(crate) fn current_host() -> Result<String> {
-    if let Ok(host) = env::var("HOST")
-        && !host.is_empty()
-    {
-        return Ok(host::short(&host).to_string());
-    }
-    if let Ok(host) = env::var("HOSTNAME")
-        && !host.is_empty()
-    {
-        return Ok(host::short(&host).to_string());
-    }
     let output = Command::new("hostname").output()?;
     if !output.status.success() {
         bail!("hostname command failed");
@@ -202,6 +195,18 @@ fn local_config_flake_in(home: PathBuf) -> PathBuf {
 /// 2 人目の Home Manager 検証で使う、ログインに近い最小環境を作る。
 pub(crate) fn dotfilesci_env(nix_config: &str) -> Result<Vec<(String, String)>> {
     user_env("dotfilesci", "/bin/zsh", nix_config, None)
+}
+
+/// auto-update daemon と同じ root 実行の環境を作る。対象ユーザーは渡さない。
+pub(crate) fn root_env(nix_config: &str) -> Result<Vec<(String, String)>> {
+    user_env(
+        "root",
+        "/bin/sh",
+        nix_config,
+        Some(
+            "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        ),
+    )
 }
 
 /// Darwin switch 後のユーザー環境に近い PATH を渡し、対象ユーザーとして評価と確認を行う。

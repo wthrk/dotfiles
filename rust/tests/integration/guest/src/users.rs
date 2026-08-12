@@ -32,3 +32,17 @@ pub(crate) fn ensure_local_user(
     .collect::<Vec<_>>();
     runner.run("sudo", &args)
 }
+
+/// ハーネスが作ったアカウントに、このゲスト内だけの非対話 sudo を与える。
+///
+/// bootstrap の sudo 判定と nix-darwin 適用は実際に `sudo` を通る。シナリオは端末を持たない
+/// 実行環境で走るため、パスワード入力を求められた時点でその経路を検証できない。付与対象は
+/// 同じハーネスが作った使い捨てアカウントに限り、sub user 側には付与しない。sub user が
+/// sudo を要求しないことは検証対象そのものなので、与えると退行を隠す。
+pub(crate) fn grant_noninteractive_sudo(runner: &ScenarioRunner, user: &str) -> Result<()> {
+    let path = format!("/etc/sudoers.d/dotfiles-integration-{user}");
+    let script = format!(
+        "set -eu; printf '%s ALL=(ALL) NOPASSWD: ALL\\n' '{user}' > '{path}'; chmod 0440 '{path}'; /usr/sbin/visudo -c -f '{path}'"
+    );
+    runner.run("sudo", &["/bin/sh", "-c", script.as_str()])
+}

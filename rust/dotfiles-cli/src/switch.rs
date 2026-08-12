@@ -13,7 +13,7 @@ use clap::{Args, ValueEnum};
 
 use crate::{
     Result,
-    environment::{config_dir, current_host, current_user},
+    environment::{ConfigScope, config_dir, config_scope, current_host, current_user},
     process::{run as run_process, sudo_as_user_args},
 };
 
@@ -21,15 +21,19 @@ use crate::{
 pub(crate) fn run(options: SwitchOptions) -> Result<()> {
     let config_dir = options.config_dir()?;
     ensure_config_exists(&config_dir)?;
-    let target = options.target();
-    let home_user = if switch_order(target).contains(&SwitchTarget::Home) {
-        Some(HomeApplyUser::resolve(
-            options.user.clone(),
-            is_effective_root(),
-        )?)
-    } else {
-        None
-    };
+    // 適用範囲は対象ユーザーがこのマシンで持つ層から決まる。scope はそのユーザーに紐づくので、
+    // 対象ユーザーが決まらない実行では解決しない。
+    let scope = options
+        .scope_user()?
+        .map(|user| config_scope(&user))
+        .transpose()?;
+    let target = resolve_target(options.target, scope)?;
+    // 利用者所有ファイルを書く Home 適用を含むときだけ対象ユーザーを要求する。降格対象は最初の
+    // 特権コマンドより前に解決する。Darwin 単独 target は利用者所有ファイルを書かない。
+    let home_user = switch_order(target)
+        .contains(&SwitchTarget::Home)
+        .then(|| options.home_apply_user())
+        .transpose()?;
     let host = if switch_order(target).contains(&SwitchTarget::Darwin) {
         Some(options.host.clone().map_or_else(current_host, Ok)?)
     } else {
@@ -230,7 +234,7 @@ fn flake_ref(path: &Path, output: &str) -> OsString {
     OsString::from(format!("{}#{}", path.display(), output))
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 /// 適用対象、出力名の上書き、外部コマンドのパス、予行実行を受け取る。
 pub(crate) struct SwitchOptions {
     target: Option<SwitchTarget>,
@@ -258,9 +262,27 @@ impl SwitchOptions {
         config_dir(self.config_dir.clone())
     }
 
-    /// 対象省略時は、日常利用で期待する Home Manager と Darwin の両方を適用する。
-    fn target(&self) -> SwitchTarget {
-        self.target.unwrap_or(SwitchTarget::All)
+    /// root daemon の全ユーザー走査が、1 ユーザー分の適用を同じ実装で実行するための構築口。
+    ///
+    /// target は指定せず、対象ユーザーと設定ディレクトリだけを差し替える。適用範囲は
+    /// [`resolve_target`] がそのユーザーの scope から決める。
+    pub(crate) fn for_user(&self, user: &str, config_dir: PathBuf) -> Self {
+        Self {
+            target: None,
+            user: Some(user.to_string()),
+            config_dir: Some(config_dir),
+            ..self.clone()
+        }
+    }
+
+    /// 1 ユーザー分を指す指定が 1 つも無い root 実行だけを、このマシンの全ユーザー走査に倒す。
+    ///
+    /// auto-update daemon は `--host` だけを渡してこの形で起動する。`--host` はマシン単位の値なので
+    /// 条件に含めない。target・`--user`・`--config-dir` は 1 ユーザー分の実行を指す指定であり、走査は
+    /// [`Self::for_user`] でそれらを上書きする。1 つでも明示されていれば走査へ倒さず、明示された値を
+    /// 捨てて要求より広い範囲を root 権限で適用しない。
+    pub(crate) fn sweeps_all_users(&self) -> Result<bool> {
+        Ok(self.scope_user()?.is_none() && self.target.is_none() && self.config_dir.is_none())
     }
 
     /// `update` が lock 更新と switch の両方を同じ予行実行モードで扱う。
@@ -274,6 +296,11 @@ impl SwitchOptions {
     pub(crate) fn home_apply_user(&self) -> Result<HomeApplyUser> {
         HomeApplyUser::resolve(self.user.clone(), is_effective_root())
     }
+
+    /// この実行で対象ユーザーが決まるならその名前、決まらないなら `None`。
+    fn scope_user(&self) -> Result<Option<String>> {
+        HomeApplyUser::scope_user(self.user.clone(), is_effective_root())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -282,6 +309,31 @@ enum SwitchTarget {
     Home,
     Darwin,
     All,
+}
+
+/// 適用対象を、明示指定と対象ユーザーの scope から決める。
+///
+/// 省略時はそのユーザーがこのマシンで持つ層をそのまま適用する。system 層を別ユーザーが持つ
+/// マシンでは、Darwin を含む target を明示されても止める。生成 flake に darwin 出力が無いことに
+/// よる nix の属性解決エラーへ委ねると、止まった理由が利用者に伝わらない。
+///
+/// scope が `None` になるのは対象ユーザーが決まらない実行（root で `--user` 省略）だけである。この
+/// 場合は誰の層かを問えないので scope による絞り込みを行わず、省略時は `All` のままにする。Home を
+/// 含む target は [`HomeApplyUser`] が対象ユーザー不在として止め、Darwin 単独 target はそのまま通す。
+fn resolve_target(
+    explicit: Option<SwitchTarget>,
+    scope: Option<ConfigScope>,
+) -> Result<SwitchTarget> {
+    let target = explicit.unwrap_or(match scope {
+        Some(ConfigScope::Home) => SwitchTarget::Home,
+        Some(ConfigScope::Full) | None => SwitchTarget::All,
+    });
+    if scope == Some(ConfigScope::Home) && switch_order(target).contains(&SwitchTarget::Darwin) {
+        bail!(
+            "system 層はこのマシンの別のユーザーが管理しているため適用できない（target を省略すると home 層だけを適用する）"
+        );
+    }
+    Ok(target)
 }
 
 /// `all` を Home Manager -> Darwin の適用順序へ展開する。
@@ -308,18 +360,27 @@ pub(crate) struct HomeApplyUser {
 impl HomeApplyUser {
     /// 明示指定と実行時 euid から対象ユーザーを決める。root かつ未指定は `Err`。
     pub(crate) fn resolve(explicit: Option<String>, is_root: bool) -> Result<Self> {
-        match (is_root, explicit) {
-            (true, None) => bail!(
+        let Some(name) = Self::scope_user(explicit, is_root)? else {
+            bail!(
                 "root で利用者所有ファイルを書くには `--user` が必要（省略すると Home Manager の生成物や `flake.lock` が root 所有になる）"
-            ),
-            (true, Some(name)) => Ok(Self {
-                name,
-                downgrade_from_root: true,
-            }),
-            (false, explicit) => Ok(Self {
-                name: explicit.map_or_else(current_user, Ok)?,
-                downgrade_from_root: false,
-            }),
+            )
+        };
+        Ok(Self {
+            name,
+            downgrade_from_root: is_root,
+        })
+    }
+
+    /// 利用者所有ファイルを書かない処理が、同じ入力から対象ユーザー名だけを得るための入口。
+    ///
+    /// root で `--user` を省略した状態は誰の flake を扱うかが決まらない状態であり、[`Self::resolve`]
+    /// が構築を拒む状態と同じである。名前が要るだけの呼び出し側はここで `None` を受け取り、対象
+    /// ユーザーに紐づく判断（scope による適用範囲の絞り込み）を行わない。
+    fn scope_user(explicit: Option<String>, is_root: bool) -> Result<Option<String>> {
+        match (is_root, explicit) {
+            (true, None) => Ok(None),
+            (_, Some(name)) => Ok(Some(name)),
+            (false, None) => current_user().map(Some),
         }
     }
 
@@ -339,12 +400,13 @@ fn is_effective_root() -> bool {
     rustix::process::geteuid().is_root()
 }
 
-/// `darwin_rebuild_invocation` が euid に応じて sudo 前置の有無を切り替えることを検証する。
+/// `darwin_rebuild_invocation` が euid に応じて sudo 前置の有無を切り替えること、および
+/// 適用範囲が対象ユーザーの scope から決まることを検証する。
 #[cfg(test)]
 mod tests {
     use super::{
-        HomeApplyUser, SwitchInvocationInput, SwitchTarget, darwin_rebuild_invocation,
-        switch_invocations, switch_order,
+        ConfigScope, HomeApplyUser, SwitchInvocationInput, SwitchTarget, darwin_rebuild_invocation,
+        resolve_target, switch_invocations, switch_order,
     };
     use std::ffi::OsString;
     use std::path::Path;
@@ -415,6 +477,57 @@ mod tests {
         let resolved = HomeApplyUser::resolve(Some("alice".to_string()), false)?;
         assert_eq!(resolved.name(), "alice");
         assert_eq!(resolved.downgrade_target(), None);
+        Ok(())
+    }
+
+    /// system 層を自分が持つマシンでは、target 省略で Home Manager と nix-darwin の両方を適用する。
+    #[test]
+    fn full_scope_defaults_to_all() -> anyhow::Result<()> {
+        assert_eq!(
+            resolve_target(None, Some(ConfigScope::Full))?,
+            SwitchTarget::All
+        );
+        Ok(())
+    }
+
+    /// system 層を別ユーザーが持つマシンでは、target 省略で Home Manager だけを適用する。
+    #[test]
+    fn home_scope_defaults_to_home() -> anyhow::Result<()> {
+        assert_eq!(
+            resolve_target(None, Some(ConfigScope::Home))?,
+            SwitchTarget::Home
+        );
+        Ok(())
+    }
+
+    /// home scope で Darwin を含む target を明示しても、理由を示して止める。
+    #[test]
+    fn home_scope_refuses_targets_that_include_darwin() {
+        for target in [SwitchTarget::Darwin, SwitchTarget::All] {
+            let err = resolve_target(Some(target), Some(ConfigScope::Home))
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default();
+            assert!(err.contains("system 層"), "{err}");
+        }
+    }
+
+    /// 対象ユーザーが決まらない実行では scope で絞り込まない。Darwin 単独 target は利用者所有
+    /// ファイルを書かないので、`sudo dotfiles switch darwin` をここで止めない。
+    #[test]
+    fn unknown_scope_keeps_explicit_darwin() -> anyhow::Result<()> {
+        assert_eq!(
+            resolve_target(Some(SwitchTarget::Darwin), None)?,
+            SwitchTarget::Darwin
+        );
+        Ok(())
+    }
+
+    /// 対象ユーザーが決まらない実行の target 省略時は `All` のままにし、Home を含めることで
+    /// `HomeApplyUser` 側に対象ユーザー不在として止めさせる。
+    #[test]
+    fn unknown_scope_defaults_to_all() -> anyhow::Result<()> {
+        assert_eq!(resolve_target(None, None)?, SwitchTarget::All);
         Ok(())
     }
 

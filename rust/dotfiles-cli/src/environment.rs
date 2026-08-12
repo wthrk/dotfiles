@@ -2,8 +2,12 @@
 //!
 //! ユーザー名、ホスト名、システム名、設定ディレクトリは `init` と `switch` の両方で使う。
 //! 取得方法をここに閉じ込め、生成される flake の出力名と CLI が参照する出力名を一致させる。
+//!
+//! system 層をこのマシンで誰が持っているかもここで解決する。判定材料は nix-darwin が既に
+//! 作っている成果物 `/etc/profiles/per-user/` だけにし、所有者名の写しを別ファイルへ書き出さない。
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Result;
@@ -12,6 +16,9 @@ use dotfiles_core::host;
 
 const CONFIG_SUBDIR: &str = ".config/dotfiles";
 const CONFIG_FILE: &str = "flake.nix";
+
+/// nix-darwin の `home-manager.useUserPackages` が管理対象ユーザーごとに作るディレクトリ。
+const SYSTEM_PROFILES_DIR: &str = "/etc/profiles/per-user";
 
 /// 明示された設定ディレクトリを優先し、省略時は `$HOME/.config/dotfiles` を返す。
 pub(crate) fn config_dir(override_dir: Option<PathBuf>) -> Result<PathBuf> {
@@ -48,6 +55,60 @@ pub(crate) fn current_host() -> Result<String> {
     }
 }
 
+/// ローカル flake から適用してよい層の範囲。
+///
+/// nix-darwin の system 層はマシンに 1 つで、`system.primaryUser`、`users.users`、nix-homebrew の
+/// 所有者を 1 人のユーザーへ結び付ける。別のユーザーがその層を適用すると結び付きがそのユーザーへ
+/// 移り、元の所有者の宣言が消える。scope はその適用を止めるために使う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfigScope {
+    /// home 層と system 層の両方を、そのユーザーの flake が持つ。
+    Full,
+    /// home 層だけを持つ。system 層はこのマシンの別ユーザーが持っている。
+    Home,
+}
+
+/// このマシンの system 層が誰を管理しているかから、対象ユーザーの scope を決める。
+///
+/// `/etc/profiles/per-user/` のエントリは system 層の管理対象ユーザーと 1 対 1 で対応する。
+/// ディレクトリ自体が無ければ system 層は未適用なので、そのユーザーが 1 人目として持つ。
+pub(crate) fn config_scope(user: &str) -> Result<ConfigScope> {
+    Ok(scope_from(
+        system_profile_users(Path::new(SYSTEM_PROFILES_DIR))?.as_deref(),
+        user,
+    ))
+}
+
+/// このマシンでローカル flake を持つユーザーと、その設定ディレクトリ。
+pub(crate) struct LocalFlakeAccount {
+    pub(crate) user: String,
+    pub(crate) config_dir: PathBuf,
+}
+
+/// ローカル flake を持つユーザーを、macOS のユーザーレコードから列挙する。
+///
+/// auto-update daemon が root から全ユーザーを更新するときの対象集合であり、ホームの位置を
+/// `/Users/<name>` と仮定せずディレクトリサービスから引く。結果はユーザー名の昇順で返す。
+pub(crate) fn local_flake_accounts() -> Result<Vec<LocalFlakeAccount>> {
+    let output = Command::new("dscl")
+        .args([".", "-list", "/Users", "NFSHomeDirectory"])
+        .output()?;
+    if !output.status.success() {
+        bail!("dscl -list /Users NFSHomeDirectory command failed");
+    }
+    let listing = String::from_utf8(output.stdout)?;
+    let mut accounts = parse_user_homes(&listing)
+        .into_iter()
+        .map(|(user, home)| LocalFlakeAccount {
+            user,
+            config_dir: home.join(CONFIG_SUBDIR),
+        })
+        .filter(|account| account.config_dir.join(CONFIG_FILE).is_file())
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| left.user.cmp(&right.user));
+    Ok(accounts)
+}
+
 /// 現在の OS と CPU から、ローカル flake に記録する既定の Nix system 文字列を作る。
 pub(crate) fn default_system() -> String {
     let arch = std::env::consts::ARCH;
@@ -57,6 +118,43 @@ pub(crate) fn default_system() -> String {
         other => other,
     };
     format!("{arch}-{os}")
+}
+
+/// system 層が管理するユーザー名の一覧。ディレクトリが無ければ system 層は未適用で `None`。
+fn system_profile_users(dir: &Path) -> Result<Option<Vec<OsString>>> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut users = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        users.push(entry?.file_name());
+    }
+    Ok(Some(users))
+}
+
+/// system 層の管理対象ユーザー一覧から scope を決める。
+fn scope_from(managed: Option<&[OsString]>, user: &str) -> ConfigScope {
+    match managed {
+        None => ConfigScope::Full,
+        Some(users) if users.iter().any(|managed| managed == user) => ConfigScope::Full,
+        Some(_) => ConfigScope::Home,
+    }
+}
+
+/// `dscl . -list /Users NFSHomeDirectory` の出力からユーザー名とホームを取り出す。
+///
+/// 1 行目のホーム位置だけを使う。`root` のように複数のホームを持つレコードがあるため、
+/// 2 列目より後ろは読み捨てる。ホームを持たないレコードは対象から外す。
+fn parse_user_homes(listing: &str) -> Vec<(String, PathBuf)> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let user = fields.next()?;
+            let home = fields.next()?;
+            Some((user.to_string(), PathBuf::from(home)))
+        })
+        .collect()
 }
 
 /// 設定ファイルの配置先を決めるため `$HOME` を必須値として読む。
@@ -78,9 +176,13 @@ fn nonempty(name: &'static str) -> impl FnOnce(String) -> Result<String> {
     }
 }
 
+/// ホスト名の正規化と、system 層の所有者判定に使う入力の解釈を検証する。
 #[cfg(test)]
 mod tests {
+    use super::{ConfigScope, parse_user_homes, scope_from};
     use dotfiles_core::host;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
 
     #[test]
     fn uses_short_hostname() {
@@ -88,5 +190,40 @@ mod tests {
         // ここがずれると `dotfiles switch darwin` が別の属性を参照する。
         assert_eq!(host::short("macbook.local"), "macbook");
         assert_eq!(host::short("macbook"), "macbook");
+    }
+
+    /// system 層が未適用のマシンでは、最初に導入するユーザーが system 層まで持つ。
+    #[test]
+    fn missing_system_profiles_dir_means_full_scope() {
+        assert_eq!(scope_from(None, "alice"), ConfigScope::Full);
+    }
+
+    /// 自分のエントリがあるなら、そのユーザーが system 層の所有者である。
+    #[test]
+    fn own_entry_means_full_scope() {
+        let managed = [OsString::from("alice")];
+        assert_eq!(scope_from(Some(&managed), "alice"), ConfigScope::Full);
+    }
+
+    /// 別ユーザーが所有するマシンでは home 層だけを持つ。
+    #[test]
+    fn other_users_entry_means_home_scope() {
+        let managed = [OsString::from("alice")];
+        assert_eq!(scope_from(Some(&managed), "bob"), ConfigScope::Home);
+    }
+
+    /// `root` のようにホームを複数持つレコードは 1 列目のホームだけを採り、
+    /// ホームを持たないレコードは対象から外す。
+    #[test]
+    fn parses_user_homes_from_directory_service_listing() {
+        let listing = "alice /Users/alice\nroot /var/root /private/var/root\nnohome\n";
+
+        assert_eq!(
+            parse_user_homes(listing),
+            vec![
+                ("alice".to_string(), PathBuf::from("/Users/alice")),
+                ("root".to_string(), PathBuf::from("/var/root")),
+            ]
+        );
     }
 }

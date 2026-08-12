@@ -11,7 +11,6 @@ if [[ -n "${DOTFILES_BOOTSTRAP_SOURCE_REF:-}" ]]; then
 fi
 dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-$default_dotfiles_source}"
 nix_installer_url="${DOTFILES_NIX_INSTALLER_URL:-https://releases.nixos.org/nix/nix-2.34.6/install}"
-switch_mode="darwin"
 run_switch=1
 user=""
 host=""
@@ -29,8 +28,6 @@ Options:
   --user USER                生成する flake に書くユーザー名
   --host HOST                生成する flake に書くホスト名
   --system SYSTEM            生成 flake に書く system（例: aarch64-darwin）
-  --mode darwin|home-manager|all
-                             適用モード（既定: darwin）
   --force                    既存 ~/.config/dotfiles/flake.nix を上書きする
   --no-switch                init 後に終了する
   -h, --help                 このヘルプを表示する
@@ -53,10 +50,6 @@ while (($#)); do
       ;;
     --system)
       system="$2"
-      shift 2
-      ;;
-    --mode)
-      switch_mode="$2"
       shift 2
       ;;
     --force)
@@ -171,27 +164,16 @@ if [[ "$run_switch" == "0" ]]; then
   exit 0
 fi
 
-case "$switch_mode" in
-  darwin)
-    switch_target="darwin"
-    ;;
-  home-manager)
-    switch_target="home"
-    ;;
-  all)
-    switch_target="all"
-    ;;
-  *)
-    echo "未対応の適用モード: $switch_mode" >&2
-    exit 1
-    ;;
-esac
-
-if [[ "$switch_target" == "darwin" || "$switch_target" == "all" ]]; then
+# sudo を要求するのは system 層（nix-darwin）を適用するときだけ。適用対象は CLI が決めるため、
+# ここでは CLI と同じ `/etc/profiles/per-user/` を見て、判断がずれないようにする。所有者が再実行
+# する場合もディレクトリは在るので、存在確認だけでは sudo の要否を決められない。
+system_profiles_dir="/etc/profiles/per-user"
+target_user="${user:-$(id -un)}"
+if [[ ! -d "$system_profiles_dir" || -e "$system_profiles_dir/$target_user" ]]; then
   require_sudo "nix-darwin switch"
 fi
 
-echo "dotfiles switch ${switch_target} を実行します"
+echo "dotfiles switch を実行します"
 switch_env=()
 if [[ -n "$user" ]]; then
   switch_env+=(DOTFILES_USER="$user")
@@ -201,4 +183,4 @@ if [[ -n "$host" ]]; then
 fi
 switch_env+=(DOTFILES_SOURCE="$dotfiles_source")
 
-env "${switch_env[@]}" nix run "${NIX_FLAKE_ARGS[@]}" "$dotfiles_source" -- switch "$switch_target"
+env "${switch_env[@]}" nix run "${NIX_FLAKE_ARGS[@]}" "$dotfiles_source" -- switch

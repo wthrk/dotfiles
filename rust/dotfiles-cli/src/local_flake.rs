@@ -3,6 +3,8 @@
 //! 生成内容は `inputs.dotfiles.url` と `dotfiles.lib.mkHome` / `dotfiles.lib.mkDarwin` だけに依存する。
 //! concrete なユーザー名、ホスト名、システム名は、このリポジトリではなく生成ファイルへ閉じ込める。
 
+use crate::environment::ConfigScope;
+
 /// 生成 flake が dotfiles repo を参照する input 名。
 ///
 /// `dotfiles update` が「dotfiles repo の committed lock に追従」する際、
@@ -12,12 +14,16 @@
 pub(crate) const INPUT_NAME: &str = "dotfiles";
 
 /// `#<user>` で Home Manager、`#<host>` で nix-darwin を参照できる flake を描画する。
+///
+/// `scope` が [`ConfigScope::Home`] のときは `darwinConfigurations` を出力しない。system 層を
+/// 別ユーザーが持つマシンでは、その出力があるだけで `darwin-rebuild` の適用先になりうる。
 pub(crate) fn render(
     source: &str,
     user: &str,
     host: &str,
     system: &str,
     include_self_package: bool,
+    scope: ConfigScope,
 ) -> String {
     let include_self_package = if include_self_package {
         String::new()
@@ -25,6 +31,26 @@ pub(crate) fn render(
         r#"
         includeSelfPackage = false;"#
             .to_string()
+    };
+    let darwin_configurations = match scope {
+        ConfigScope::Home => String::new(),
+        ConfigScope::Full => format!(
+            r#"
+    darwinConfigurations."{host_attr}" =
+      {input}.lib.mkDarwin {{
+        user = "{user_value}";
+        host = "{host_value}";
+        system = "{system_value}";
+{include_self_package}
+      }};
+"#,
+            input = INPUT_NAME,
+            host_attr = escape_nix_string(host),
+            user_value = escape_nix_string(user),
+            host_value = escape_nix_string(host),
+            system_value = escape_nix_string(system),
+            include_self_package = include_self_package.clone()
+        ),
     };
     format!(
         r#"{{
@@ -37,26 +63,16 @@ pub(crate) fn render(
         system = "{system_value}";
 {home_include_self_package}
       }};
-
-    darwinConfigurations."{host_attr}" =
-      {input}.lib.mkDarwin {{
-        user = "{user_value}";
-        host = "{host_value}";
-        system = "{system_value}";
-{darwin_include_self_package}
-      }};
-  }};
+{darwin_configurations}  }};
 }}
 "#,
         input = INPUT_NAME,
         source = escape_nix_string(source),
         user_attr = escape_nix_string(user),
         user_value = escape_nix_string(user),
-        host_attr = escape_nix_string(host),
-        host_value = escape_nix_string(host),
         system_value = escape_nix_string(system),
-        home_include_self_package = include_self_package.clone(),
-        darwin_include_self_package = include_self_package
+        home_include_self_package = include_self_package,
+        darwin_configurations = darwin_configurations
     )
 }
 
@@ -68,9 +84,10 @@ fn escape_nix_string(value: &str) -> String {
         .replace("${", "\\${")
 }
 
+/// 生成 flake の出力名、文字列エスケープ、scope ごとの出力範囲を検証する。
 #[cfg(test)]
 mod tests {
-    use super::{INPUT_NAME, render};
+    use super::{ConfigScope, INPUT_NAME, render};
 
     #[test]
     fn input_name_is_dotfiles() {
@@ -87,6 +104,7 @@ mod tests {
             "macbook",
             "aarch64-darwin",
             true,
+            ConfigScope::Full,
         );
 
         // 生成 flake は指定された dotfiles 参照を使う必要がある。
@@ -115,6 +133,7 @@ mod tests {
             "h\"ost/${host}",
             "x86_64-linux",
             true,
+            ConfigScope::Full,
         );
 
         // 動的な参照、ユーザー名、ホスト名は Nix 文字列に埋め込むため、
@@ -132,8 +151,26 @@ mod tests {
             "macbook",
             "aarch64-darwin",
             false,
+            ConfigScope::Full,
         );
 
         assert_eq!(flake.matches("includeSelfPackage = false;").count(), 2);
+    }
+
+    /// system 層を別ユーザーが持つマシンでは、生成 flake に nix-darwin の適用先を作らない。
+    #[test]
+    fn home_scope_renders_no_darwin_configuration() {
+        let flake = render(
+            "github:wthrk/dotfiles",
+            "bob",
+            "macbook",
+            "aarch64-darwin",
+            true,
+            ConfigScope::Home,
+        );
+
+        assert!(flake.contains(r#"homeConfigurations."bob""#));
+        assert!(!flake.contains("darwinConfigurations"));
+        assert!(!flake.contains("mkDarwin"));
     }
 }

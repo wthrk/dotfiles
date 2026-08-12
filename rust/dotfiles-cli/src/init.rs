@@ -12,7 +12,9 @@ use clap::Args;
 
 use crate::{
     Result,
-    environment::{config_path, current_host, current_user, default_system},
+    environment::{
+        ConfigScope, config_path, config_scope, current_host, current_user, default_system,
+    },
     local_flake,
     process::run as run_process,
 };
@@ -20,6 +22,9 @@ use crate::{
 const DEFAULT_SOURCE: &str = "github:wthrk/dotfiles";
 
 /// 既存ファイルは `--force` なしでは上書きせず、生成後に lock file を具体化する。
+///
+/// 生成する出力の範囲は利用者に指定させず、このマシンの system 層を誰が持っているかから決める。
+/// これにより、導入手順はユーザーの種類で分かれない。
 pub(crate) fn run(options: InitOptions) -> Result<()> {
     let config_path = config_path(options.config_dir.clone())?;
     if config_path.exists() && !options.force {
@@ -32,6 +37,7 @@ pub(crate) fn run(options: InitOptions) -> Result<()> {
     let user = options.user.unwrap_or(current_user()?);
     let host = options.host.unwrap_or(current_host()?);
     let system = options.system.unwrap_or_else(default_system);
+    let scope = config_scope(&user)?;
 
     let config_dir = config_path
         .parent()
@@ -45,12 +51,21 @@ pub(crate) fn run(options: InitOptions) -> Result<()> {
             &host,
             &system,
             !options.skip_self_package,
+            scope,
         ),
     )?;
     lock_config(config_dir)?;
 
-    println!("wrote {}", config_path.display());
+    println!("wrote {} ({})", config_path.display(), scope_summary(scope));
     Ok(())
+}
+
+/// 生成した出力の範囲を、そう決まった理由と一緒に 1 行で伝える。
+fn scope_summary(scope: ConfigScope) -> &'static str {
+    match scope {
+        ConfigScope::Full => "home 層と system 層",
+        ConfigScope::Home => "home 層のみ: system 層はこのマシンの別ユーザーが管理している",
+    }
 }
 
 /// 生成先ディレクトリで `nix flake lock` を実行し、dirty な local input も lock file に固定する。

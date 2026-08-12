@@ -32,6 +32,28 @@ pub(crate) fn assert_managed_links(home: &str, paths: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// nix-darwin が管理するユーザーが、期待した集合とちょうど一致することを検証する。
+///
+/// `/etc/profiles/per-user/` は `home-manager.useUserPackages` が system 層の管理対象ユーザーに
+/// ついて作るディレクトリで、`dotfiles` CLI が scope 判定に使う唯一の材料でもある。ここに 2 人目の
+/// エントリが現れることは、そのユーザーの flake が system 層を置き換えたことを意味する。
+pub(crate) fn assert_system_profile_users(expected: &[&str]) -> Result<()> {
+    let mut found = fs::read_dir("/etc/profiles/per-user")?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>>>()?;
+    found.sort();
+    let mut expected = expected
+        .iter()
+        .map(|user| (*user).to_string())
+        .collect::<Vec<_>>();
+    expected.sort();
+    if found == expected {
+        Ok(())
+    } else {
+        bail!("/etc/profiles/per-user has {found:?}, expected {expected:?}")
+    }
+}
+
 /// シナリオの前提または成果物として必要なパスが存在することを検証する。
 pub(crate) fn ensure_exists(path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();

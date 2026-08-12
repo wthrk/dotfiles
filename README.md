@@ -20,6 +20,11 @@ curl -fsSL https://raw.githubusercontent.com/wthrk/dotfiles/<tag-or-commit>/scri
 
 bootstrap は必要に応じて Nix を用意し、ローカル flake の生成と適用まで実行します。
 
+このコマンドは全ユーザー共通です。何が入るかはマシンの状態で決まり、指定は要りません。まだ誰も
+nix-darwin を適用していないマシンと、既に自分が適用しているマシンでは、home 層と system 層の両方が
+入ります。既に別のユーザーが nix-darwin を適用しているマシンでは、自分の home 層だけが入り、sudo は
+訊かれません。
+
 既存の Home Manager 管理対象ファイルは `*.before-home-manager` に退避してから置き換えます。
 
 sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になります。初回 bootstrap で Nix や nix-darwin を入れる前の sudo 認証は、通常のパスワード入力が必要になる場合があります。
@@ -46,8 +51,8 @@ macOS 26 のシステム設定のペイン名です。
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
 flake の `dotfiles` input だけを更新（`nix flake update dotfiles --flake <config_dir>`）し、repo の committed
-lock にある全 input の pin へ追随してから、既存の `switch` と同じ適用処理を行います（対象省略時は
-`all` として Home Manager、続いて nix-darwin を適用。非 macOS では `dotfiles update home` を使ってください）。
+lock にある全 input の pin へ追随してから、既存の `switch` と同じ適用処理を行います。非 macOS では
+`dotfiles update home` を使ってください。
 
 ```sh
 dotfiles update
@@ -58,7 +63,12 @@ dotfiles update
 にあり、`dotfiles update-history show` でいつでも閲覧できます。
 
 更新せずに、現在のローカル flake のまま再適用する場合は `switch` を使います。`update` / `switch` はいずれも
-適用対象を取り、`home` / `darwin` で部分適用できます（対象省略時は `all`）。
+適用対象を取り、`home` / `darwin` で部分適用できます。
+
+対象を省略したときに何が適用されるかは、導入時と同じくマシンの状態で決まります。system 層を自分が
+持つマシンでは Home Manager に続いて nix-darwin を適用し、別のユーザーが持つマシンでは Home Manager
+だけを適用します。後者で nix-darwin を含む対象（`darwin` と `all`）を明示した場合は、理由を表示して
+止まります。
 
 ```sh
 dotfiles switch
@@ -66,6 +76,10 @@ dotfiles switch home
 dotfiles switch darwin
 dotfiles switch all
 ```
+
+自動更新はマシンに 1 つの daemon（`org.dotfiles.auto-update`）が担い、そのマシンでローカル flake を
+持つ全ユーザーを更新します。各ユーザーの lock 更新と Home Manager はそのユーザー権限で実行し、
+system 層は所有者の flake からだけ適用します。
 
 適用時に呼ばれるコマンド:
 
