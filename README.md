@@ -24,6 +24,24 @@ bootstrap は必要に応じて Nix を用意し、ローカル flake の生成�
 
 sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になります。初回 bootstrap で Nix や nix-darwin を入れる前の sudo 認証は、通常のパスワード入力が必要になる場合があります。
 
+## キーリマップ（Karabiner-Elements）
+
+CapsLock→Ctrl の割り当ては `config/karabiner/karabiner.json` にあり、Karabiner-Elements 本体は Homebrew
+cask で入ります。[上流の導入手順](https://karabiner-elements.pqrs.org/docs/getting-started/installation/)は
+次の 4 つの許可を要求します。いずれも macOS の承認が要るため宣言できず、初回適用後に手で与えます。以下は
+macOS 26 のシステム設定のペイン名です。
+
+- 一般 → ログイン項目と機能拡張 → アプリのバックグラウンドでのアクティビティ で、Karabiner の特権/非特権の
+  バックグラウンドサービスを許可します。
+- プライバシーとセキュリティ → アクセシビリティ で Karabiner-Elements を許可します。macOS の説明どおり
+  「コンピュータの制御」を許可するもので、この 4 つで最も広い権限です。
+- プライバシーとセキュリティ → 入力監視 で Karabiner-Elements を許可します（上流によればアクセシビリティを
+  許可すると自動で付きます）。
+- 一般 → ログイン項目と機能拡張 → 機能拡張 で、仮想キーボード/マウスの「ドライバ機能拡張」を許可します。
+
+`karabiner.json` はリポジトリ側が正本です。Karabiner の GUI から設定を変えると symlink が実ファイルに
+置き換わりますが、次の適用で宣言側に戻ります。変更はリポジトリに入れてください。
+
 ## 更新と適用
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
