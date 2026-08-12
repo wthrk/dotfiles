@@ -225,7 +225,7 @@ cargo xtask check
 静的検証と Tart VM 統合検証をまとめて実行する場合:
 
 ```sh
-cargo xtask check all
+cargo xtask check all --source-hash "$(git rev-parse HEAD)"
 ```
 
 個別に実行する場合:
@@ -237,8 +237,15 @@ cargo xtask check static
 Tart VM を使う runtime 検証:
 
 ```sh
-cargo xtask check runtime
+cargo xtask check runtime --source-hash "$(git rev-parse HEAD)"
 ```
+
+ゲストは渡した commit を GitHub から checkout し、そこでゲスト実行器をビルドして起動します。push 済みの
+commit を渡してください。`runtime-integration.yml` の runner も同じ commit を checkout し、ゲスト上で同じ
+手順を踏みます。一致するのはここまでで、ゲスト OS の版は既定では揃いません。CI は macOS 26 の runner、
+手元の既定イメージ `sequoia-vanilla` は macOS 15 系です。検証対象が bootstrap と darwin switch である以上
+この版差は検証内容の差になるため、CI と同じ版で確認する場合は `DOTFILES_TART_IMAGE` に macOS 26 のイメージを
+指定してください。
 
 zsh 設定の実挙動検証（補完、キーバインド、PATH、起動時出力）は devShell 内で bats を直接起動します。
 Rust のビルド成果物を必要としないため `cargo xtask check` の下には置いていません。

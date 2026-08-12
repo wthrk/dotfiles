@@ -28,10 +28,14 @@ enum CheckTarget {
     Integration {
         #[arg(value_enum)]
         scenario: Option<RuntimeScenario>,
+        /// 検証対象 commit。ゲストはこれを checkout し、bootstrap も同じ commit を参照する。
         #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
-        source_hash: Option<String>,
+        source_hash: String,
     },
-    All,
+    All {
+        #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
+        source_hash: String,
+    },
 }
 
 /// anyhow の失敗を標準エラーへ出し、xtask へ非 0 終了として返す。
@@ -50,11 +54,11 @@ fn run(target: Option<CheckTarget>) -> Result<()> {
     match target {
         None => default_checks(),
         Some(CheckTarget::Static) => static_checks::check(),
-        Some(CheckTarget::All) => all_checks(),
+        Some(CheckTarget::All { source_hash }) => all_checks(&source_hash),
         Some(CheckTarget::Integration {
             scenario,
             source_hash,
-        }) => integration::run(scenario.unwrap_or(RuntimeScenario::Full), source_hash),
+        }) => integration::run(scenario.unwrap_or(RuntimeScenario::Full), &source_hash),
     }
 }
 
@@ -67,7 +71,7 @@ fn default_checks() -> Result<()> {
 ///
 /// zsh 設定の実挙動検証は含まない。あれは `tests/zsh` の bats suite が持ち、cargo を経由せずに
 /// 起動する（README の検証節を参照）。
-fn all_checks() -> Result<()> {
+fn all_checks(source_hash: &str) -> Result<()> {
     static_checks::check()?;
-    integration::run(RuntimeScenario::Full, None)
+    integration::run(RuntimeScenario::Full, source_hash)
 }

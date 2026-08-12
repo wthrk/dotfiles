@@ -73,7 +73,7 @@ pub(crate) struct ScenarioRunner {
 
 impl ScenarioRunner {
     /// 現在のゲスト環境を 1 回だけ検出し、以後の手順で共有する。
-    pub(crate) fn new(source_hash: Option<String>) -> Result<Self> {
+    pub(crate) fn new(source_hash: &str) -> Result<Self> {
         Ok(Self {
             env: ScenarioEnv::current(source_hash)?,
         })
@@ -143,7 +143,7 @@ impl ScenarioRunner {
             "rm",
             &[
                 "-rf",
-                path_str(local_config_dir_for_user(current_user().as_str())?).as_str(),
+                path_str(local_config_dir_for_user(current_user()?.as_str())?).as_str(),
             ],
         )
     }
@@ -167,18 +167,6 @@ impl ScenarioRunner {
             self.run("sudo", &["chown", "-R", "ya:admin", "/opt/homebrew"])?;
         }
 
-        // `sudo darwin-rebuild` は root が checkout を flake として評価する。root が使うのと同じ
-        // HOME で safe.directory を登録し、git の所有者検査で評価が止まらないようにする。
-        self.run_as_root(
-            "/usr/bin/git",
-            &[
-                "config",
-                "--global",
-                "--add",
-                "safe.directory",
-                self.workspace_str().as_str(),
-            ],
-        )?;
         // 2 人目と同じ呼び出し。`--user` も `--host` も `--no-switch` も渡さず、適用範囲は
         // マシンの状態から決まるものに任せる。
         self.run_bootstrap_sudo_user("ya", &["--force"])?;
@@ -345,7 +333,8 @@ impl ScenarioRunner {
         self.run_bootstrap(&["--no-switch", "--force"])
     }
 
-    /// checkout 内の前提ファイルが空でないことを確認し、壊れた共有マウントを早めに検出する。
+    /// 作業ディレクトリ直下の前提ファイルが空でないことを確認し、checkout が揃っていない状態を
+    /// 手順の実行前に検出する。
     fn ensure_nonempty(&self, path: &str) -> Result<()> {
         ensure_nonempty_path(self.env.workspace.join(path))
     }
@@ -365,11 +354,6 @@ impl ScenarioRunner {
         ensure_absent_path(path)
     }
 
-    /// guest 内で見えている checkout パスを、bootstrap の `--source` に渡す文字列へ変換する。
-    fn workspace_str(&self) -> String {
-        path_str(&self.env.workspace)
-    }
-
     fn bootstrap_script_str(&self) -> String {
         path_str(&self.env.bootstrap_script)
     }
@@ -378,34 +362,13 @@ impl ScenarioRunner {
         &self.env.dotfiles_source
     }
 
-    fn bootstrap_args(&self, args: &[&str]) -> Vec<String> {
-        self.env
-            .pass_source_to_bootstrap
-            .then(|| {
-                [
-                    "--source".to_string(),
-                    self.dotfiles_source_str().to_string(),
-                ]
-            })
-            .into_iter()
-            .flatten()
-            .chain(args.iter().map(|arg| (*arg).to_string()))
-            .collect()
-    }
-
     fn run_bootstrap(&self, args: &[&str]) -> Result<()> {
-        run_with_env(
-            Some(&self.env),
-            self.bootstrap_script_str().as_str(),
-            self.bootstrap_args(args),
-        )
+        run_with_env(Some(&self.env), self.bootstrap_script_str().as_str(), args)
     }
 
     fn run_bootstrap_sudo_user(&self, user: &str, args: &[&str]) -> Result<()> {
         let program = self.bootstrap_script_str();
-        let args = self.bootstrap_args(args);
-        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        self.run_sudo_user(user, program.as_str(), &arg_refs)
+        self.run_sudo_user(user, program.as_str(), args)
     }
 
     /// 対象ユーザーのログインシェル経由で実行し、実ログインと同じ環境で検証する。

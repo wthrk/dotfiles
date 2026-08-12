@@ -52,7 +52,7 @@ const EXEC_POSITIONAL_ARGS: &str = r#"exec -- "$@""#;
 /// 挟むことで、これらは起動ファイル（zsh なら `/etc/zshenv`、sh なら `/etc/bashrc`）が読む
 /// nix-darwin の `set-environment` から来るようになり、ハーネス側に写しを持たなくて済む。
 ///
-/// `test_inputs` は `sudo` の env_reset で消える、CI から与える必要のある入力に限る。シェルの起動
+/// `test_inputs` は `sudo` の env_reset で消える、テストが与えないと成立しない入力に限る。シェルの起動
 /// ファイルより先に置くが、`set-environment` が上書きするのは PATH と Nix の profile 変数だけなので
 /// 打ち消されない。
 ///

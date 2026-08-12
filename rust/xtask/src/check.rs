@@ -26,14 +26,14 @@ pub fn run(target: Option<CheckTarget>) -> Result<()> {
             source_hash,
         }) => match scenario {
             Some(RuntimeScenario::Full) | None => {
-                command.arg("integration");
-                if let Some(source_hash) = source_hash {
-                    command.arg("--source-hash").arg(source_hash);
-                }
+                command
+                    .arg("integration")
+                    .arg("--source-hash")
+                    .arg(source_hash);
             }
         },
-        Some(CheckTarget::All) => {
-            command.arg("all");
+        Some(CheckTarget::All { source_hash }) => {
+            command.arg("all").arg("--source-hash").arg(source_hash);
         }
     }
     let status = command.status()?;

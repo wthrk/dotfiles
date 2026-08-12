@@ -48,10 +48,15 @@ pub(crate) enum CheckTarget {
     Runtime {
         #[arg(value_enum)]
         scenario: Option<RuntimeScenario>,
+        /// 検証対象 commit。ゲストはこれを checkout し、bootstrap も同じ commit を参照する。
+        /// GitHub から取得するため、push 済みである必要がある。
         #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
-        source_hash: Option<String>,
+        source_hash: String,
     },
-    All,
+    All {
+        #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
+        source_hash: String,
+    },
 }
 
 /// clap の結果を `check` / `apply` の実装へ渡し、ここでは外部コマンドを直接起動しない。
