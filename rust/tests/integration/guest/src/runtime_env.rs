@@ -244,6 +244,24 @@ fn user_env(
         .collect())
 }
 
+/// macOS のユーザーレコードに記録されたログインシェルを読む。
+///
+/// `$SHELL` は呼び出し元が渡した値なので、対象ユーザーが実際にログインするシェルの確認には使えない。
+pub(crate) fn login_shell(user: &str) -> Result<String> {
+    let output = Command::new("dscl")
+        .args([".", "-read", &format!("/Users/{user}"), "UserShell"])
+        .output()?;
+    if !output.status.success() {
+        bail!("failed to read UserShell for user {user}");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    stdout
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+        .with_context(|| format!("UserShell is required for user {user}"))
+}
+
 /// `/Users/<name>` を仮定せず、macOS が持つユーザーレコードからホームを読む。
 fn dscl_home(user: &str) -> Result<Option<PathBuf>> {
     let output = Command::new("dscl")

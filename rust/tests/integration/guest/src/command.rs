@@ -1,7 +1,7 @@
 //! ゲスト内で起動するコマンドに、シナリオ共通の環境とログ形式を適用する。
 
 use std::ffi::OsStr;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::{Result, runtime_env::ScenarioEnv};
 use anyhow::bail;
@@ -40,6 +40,37 @@ where
         env.apply_to(&mut command);
     }
     Ok(command.status()?)
+}
+
+/// 出力そのものが観測対象になるコマンドを実行し、標準出力を返す。
+///
+/// 標準エラーは呼び出し元へ流したままにする。観測対象のシェルが起動時に出す警告は失敗時の診断に
+/// 要るので、CI ログへ残す。
+pub(crate) fn output_with_env<I, S>(
+    env: Option<&ScenarioEnv>,
+    program: &str,
+    args: I,
+) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = command_format::os_strings(args);
+    let label = command_format::display(program, &args);
+    println!("$ {label}");
+    let mut command = Command::new(program);
+    command.args(&args);
+    if let Some(env) = env {
+        env.apply_to(&mut command);
+    }
+    // `apply_to` は継承を設定するので、捕捉したい標準出力だけをここで上書きする。
+    command.stdout(Stdio::piped());
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(String::from_utf8(output.stdout)?)
+    } else {
+        bail!("command failed: {label}: {}", output.status)
+    }
 }
 
 /// 別ユーザーの HOME/USER/PATH を明示して実行するための `sudo -H -u ... env ...` 引数を作る。

@@ -21,11 +21,11 @@ use crate::{
         assert_managed_links, assert_system_profile_users, ensure_absent_path, ensure_exists,
         ensure_nonempty_path,
     },
-    command::{run_with_env, status_with_env, sudo_user_args},
+    command::{output_with_env, run_with_env, status_with_env, sudo_user_args},
     runtime_env::{
         ScenarioEnv, current_host, current_user, dotfilesci_env, local_config_dir_for_user,
         local_config_flake_for_current_user, local_config_flake_for_user, local_config_ref,
-        root_env, user_home, ya_env,
+        login_shell, root_env, user_home, ya_env,
     },
     users::{ensure_local_user, grant_noninteractive_sudo},
 };
@@ -260,6 +260,7 @@ impl ScenarioRunner {
             path_str(&dotfilesci_home).as_str(),
             &[".config/zsh", ".config/nvim/lua", ".zshrc", ".zshenv"],
         )?;
+        self.observe_second_user_login_environment(&dotfilesci_home, &dotfilesci_env)?;
         let dotfilesci_activation = local_config_ref(
             "dotfilesci",
             "homeConfigurations.dotfilesci.activationPackage.drvPath",
@@ -322,6 +323,62 @@ impl ScenarioRunner {
             path_str(&ya_home).as_str(),
             &[".config/zsh", ".config/nvim/lua", ".zshrc", ".zshenv"],
         )
+    }
+
+    /// system 層を持たない 2 人目が、実際にログインしたときのシェルと PATH を観測する。
+    ///
+    /// nix-darwin の `users.users.<user>.shell` も `/etc/profiles/per-user/` も system 層の所有者に
+    /// しか及ばない。2 人目のログイン環境がその不在で何を失うかは推測できないので、シェル、per-user
+    /// profile の不在、起動後の PATH を実行結果として記録する。ここでは観測だけを行い、不足を home
+    /// 層で補うかは観測結果を見てから決める。
+    fn observe_second_user_login_environment(
+        &self,
+        home: &Path,
+        envs: &[(String, String)],
+    ) -> Result<()> {
+        // ログインシェルは OS 同梱の `/bin/zsh` のままになる。
+        let shell = login_shell("dotfilesci")?;
+        println!("dotfilesci login shell: {shell}");
+        if shell != "/bin/zsh" {
+            bail!("2 人目のログインシェルが /bin/zsh ではない: {shell}");
+        }
+        // per-user profile は system 層の所有者の分しか作られない。
+        self.ensure_absent("/etc/profiles/per-user/dotfilesci")?;
+
+        let path = self.login_shell_path("dotfilesci", shell.as_str(), envs)?;
+        println!("dotfilesci login PATH: {path}");
+        // per-user profile が無くても、home 層が入れた profile は PATH に乗る必要がある。
+        let nix_profile_bin = path_str(home.join(".nix-profile/bin"));
+        if !path.split(':').any(|entry| entry == nix_profile_bin) {
+            bail!("2 人目のログイン PATH に {nix_profile_bin} が無い: {path}");
+        }
+        Ok(())
+    }
+
+    /// 対象ユーザーのログインシェルを対話ログインとして起動し、そこで組み上がった PATH を返す。
+    ///
+    /// `-l` と `-i` の両方を渡すのは、この構成が PATH を組む `.zshrc` がログイン専用起動では読まれない
+    /// ためである。制御端末が無いので compinit と zle は初期化されないが、PATH は起動ファイルの評価
+    /// だけで決まる。
+    fn login_shell_path(
+        &self,
+        user: &str,
+        shell: &str,
+        envs: &[(String, String)],
+    ) -> Result<String> {
+        // 起動ファイルはプロンプトの初期化で `TERM` を読む。未設定のまま起動すると、観測したい PATH
+        // ではなく端末種別の解決が失敗要因になる。
+        let envs = envs
+            .iter()
+            .cloned()
+            .chain([("TERM".to_string(), "dumb".to_string())])
+            .collect::<Vec<_>>();
+        let stdout = output_with_env(
+            Some(&self.env),
+            "sudo",
+            sudo_user_args(user, &envs, shell, &["-lic", "print -r -- $PATH"]),
+        )?;
+        Ok(stdout.trim().to_string())
     }
 
     /// 全ユーザー走査の対象になったかを観測するため、指定ユーザーのホームから管理リンクを外す。

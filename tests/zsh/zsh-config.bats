@@ -1,15 +1,10 @@
 #!/usr/bin/env bats
 #
-# 構成を適用済みのマシンで zsh をログインシェルとして（`-l`）起動し、その環境を検証する。適用は
-# 検証の外側で済ませる。起動を `script(1)` 経由にするのは、制御端末が無いと compinit と zle が
-# 初期化されないため。
+# 構成を適用済みのマシンで、この構成が入れた zsh をログインシェルとして（`-l`）起動し、その環境を
+# 検証する。適用は検証の外側で済ませる。起動を `script(1)` 経由にするのは、制御端末が無いと compinit
+# と zle が初期化されないため。
 #
-# 起動する zsh は実行環境から決める。実行ユーザーのログインシェルが zsh ならそれ自身を起動し、その
-# ユーザーが実際にログインしたときの環境をそのまま観測する。system 層を持たないサブユーザーで走らせた
-# ときに `/etc/profiles/per-user/<user>/bin` が無い状態で何が成立するかは、これでしか見られない。
-#
-# ログインシェルが zsh でない環境（CI runner の `runner` は `/bin/bash`）には観測できるログイン環境が
-# 無いので、構成が入れた zsh を同じ形で起動し、設定そのものの検証だけを行う。
+# 起動先は構成が入れた zsh に固定する。実行ユーザーのログインシェルが何であっても検証対象は変わらない。
 
 setup() {
     bats_load_library bats-support
@@ -18,9 +13,9 @@ setup() {
 
 setup_file() {
     ZSH_CHECK_USER="$(id -un)"
-    ZSH_CHECK_SHELL="$(zsh_probe_shell "${ZSH_CHECK_USER}")"
+    ZSH_CHECK_SHELL="$(zsh_configured_shell "${ZSH_CHECK_USER}")"
     if [ -z "${ZSH_CHECK_SHELL}" ]; then
-        echo "${ZSH_CHECK_USER} が起動できる zsh が無い。構成を適用してから実行する" >&2
+        echo "構成が入れた zsh が見つからない。構成を適用してから実行する" >&2
         return 1
     fi
 
@@ -39,30 +34,19 @@ setup_file() {
     export ZSH_CHECK_USER ZSH_CHECK_SHELL
 }
 
-# 起動する zsh を決める。ログインシェルが zsh のユーザーではそれ自身を返し、実際のログイン環境を
-# 観測する。そうでなければ構成が入れた zsh を返す。どちらも無ければ空を返し、setup_file が止める。
-zsh_probe_shell() {
-    local login_shell
-    login_shell="$(zsh_login_shell "$1")"
-    if [ "${login_shell##*/}" = 'zsh' ] && [ -x "${login_shell}" ]; then
-        printf '%s' "${login_shell}"
-        return 0
-    fi
-    if [ -x "${HOME}/.nix-profile/bin/zsh" ]; then
-        printf '%s' "${HOME}/.nix-profile/bin/zsh"
-    fi
-}
-
-# 対象ユーザーのログインシェルを、実行環境のユーザーデータベースから読む。
+# 構成が入れた zsh の所在を返す。system 層を持つユーザーでは per-user profile、home 層だけのユーザー
+# では `~/.nix-profile` に置かれる。同一の検証対象の設置場所の違いなので両方を見る。
 #
-# `$SHELL` は呼び出し元の値なので使えない。ログインシェルはユーザーごとに違うため、実際に
-# 記録されているものを読む。macOS には `getent` が無く Linux には `dscl` が無いので、在る方を使う。
-zsh_login_shell() {
-    if command -v getent >/dev/null 2>&1; then
-        getent passwd "$1" | awk -F: '{ print $7 }'
-    else
-        dscl . -read "/Users/$1" UserShell 2>/dev/null | awk '/^UserShell:/ { print $2 }'
-    fi
+# どちらにも無ければ空を返し、setup_file が止める。`/bin/zsh` へ落とすと OS 同梱の zsh を検証対象に
+# すり替えることになるので、候補に入れない。
+zsh_configured_shell() {
+    local candidate
+    for candidate in "/etc/profiles/per-user/$1/bin/zsh" "${HOME}/.nix-profile/bin/zsh"; do
+        if [ -x "${candidate}" ]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
 }
 
 # 渡した zsh コードの出力を制御文字除去済みで返す。終了 status は判定に使わない
