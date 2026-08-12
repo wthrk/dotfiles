@@ -95,12 +95,12 @@ discovered_at = "2026-08-11T18:34:04Z"
 
 ["nix/diesel-cli"]
 origin = "none"
-discovered_at = "2026-07-15T20:33:09Z"
+discovered_at = "2026-08-12T18:31:14Z"
 
 ["nix/discord"]
-source = "https://discord.com/"
+source = "https://discord.com/blog"
 origin = "ai-discovered"
-discovered_at = "2026-08-08T18:28:18Z"
+discovered_at = "2026-08-12T18:31:14Z"
 
 ["nix/docker"]
 source = "https://www.docker.com/blog/"
@@ -280,6 +280,10 @@ discovered_at = "2026-06-11T19:26:39Z"
 ["nix/temurin-bin"]
 origin = "none"
 discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/tesseract"]
+origin = "none"
+discovered_at = "2026-08-12T18:31:14Z"
 
 ["nix/tree"]
 source = "https://oldmanprogrammer.net/source.php?dir=projects/tree/CHANGES"
