@@ -4,7 +4,7 @@
 # 引数 `host` は `networking.hostName` に使う。`includeSelfPackage` は Home Manager 側へそのまま渡し、
 # `home.packages` へ repo 自身の `dotfiles` CLI を含めるかを制御する。`root` は設定ファイルのリンク元、
 # `inputs` と `homebrewTaps` は Home Manager / nix-homebrew 連携と pin 済み tap の生成に使う。
-# 評価結果は Nix 設定、macOS defaults、Homebrew、launch agent、Home Manager をまとめた
+# 評価結果は Nix 設定、macOS defaults、Homebrew、launchd daemon、Home Manager をまとめた
 # `darwinConfigurations.<host>` 用の構成になる。
 {
   homebrewTaps,
@@ -26,11 +26,12 @@ let
   # と同じ実装に委ねる。
   autoUpdateLabel = "org.dotfiles.auto-update";
 
-  # login のたびに CapsLock→Ctrl の HID mapping を掛け直す user agent の label。
-  keyboardRemapLabel = "org.dotfiles.keyboard-remap";
-
   homeDir = "/Users/${user}";
   configDir = "${homeDir}/.config/dotfiles";
+
+  # 退役した CapsLock→Ctrl 実装（login のたびに `hidutil` で HID mapping を掛け直していた user agent）。
+  retiredKeyboardRemapLabel = "org.dotfiles.keyboard-remap";
+  retiredKeyboardRemapPlist = "${homeDir}/Library/LaunchAgents/${retiredKeyboardRemapLabel}.plist";
 
   autoUpdateSystem = pkgs.stdenv.hostPlatform.system;
   # x86_64-darwin 等、flake の `packageSystems` に含まれない system では `packages.${system}` が存在しない。その
@@ -83,6 +84,10 @@ in
     ./modules/launchagents.nix
   ];
 
+  # launchd 宣言はこの daemon だけに保ち、`launchd.user.agents` は空にする。user agent が 0 件だと上流の
+  # `userLaunchd`（`modules/system/launchd.nix`）が旧世代の user agent を撤去するループごと生成されないため、
+  # 一度足した user agent は後で宣言を消しても適用済みマシンに残る。
+  #
   # x86_64-darwin 等 `packageSystems` 外の system では `packages.${system}` が無いため daemon を定義しない。条件は
   # モジュールの **構造**（宣言する option 集合）ではなく option の **値** に `mkIf` で寄せる。`mkIf false` は遅延
   # 評価のため、package が無い system では内側の `autoUpdateWrapper`（=`dotfilesBin` の force）も評価されない。
@@ -121,36 +126,20 @@ in
 
   programs.zsh.enable = true;
 
-  # CapsLock→Ctrl の remap は macOS の HID key mapping（`hidutil`）に持たせる。
-  #
-  # `services.karabiner-elements.enable` は pin 済み nixpkgs では成立しない。
-  # `karabiner-elements-15.7.0` に `Library/LaunchAgents/` は無く、`karabiner_grabber` と
-  # `karabiner_observer` も含まれないので remap の実体が存在しない。上流 nix-darwin モジュールは
-  # その 3 つの plist を `environment.userLaunchAgents` へ載せるため、activation の `cp -f` が
-  # dangling symlink を掴んで失敗する。activation script は `set -e` で走るので `userLaunchd` で
-  # 止まり、`homebrew` と `postActivation` に到達しない。
-  system.keyboard.enableKeyMapping = true;
-  system.keyboard.remapCapsLockToControl = true;
+  # 旧 CapsLock→Ctrl 実装の退役。宣言を消すだけでは適用済みマシンから消えないため、activation で撤去する。
+  # user agent は上流の退役ループが走らないので残り、`hidutil` の `UserKeyMapping` は
+  # `system.keyboard.enableKeyMapping` を落としてもクリアされない。旧 plist が残っているマシンでだけ走らせ、
+  # 撤去済みのマシンで `UserKeyMapping` を触り続けないようにする。旧 agent が残る実マシンが無くなったら
+  # この宣言ごと削除してよい。
+  system.activationScripts.postActivation.text = lib.mkAfter ''
+    uid="$(id -u ${lib.escapeShellArg user})"
 
-  # 上の `system.keyboard` は activation 時に `hidutil property --set` を 1 回実行するだけで、この設定は
-  # 再起動とキーボードの再接続で失われる。login のたびに同じ mapping を掛け直す user agent を置く。
-  # mapping の値は `system.keyboard.userKeyMapping` から生成し、HID の数値は書き写さない（nix-darwin と
-  # 二重管理にすると、片方だけが変わったときに気付けないため）。launchd の最小環境では PATH に依存できないので
-  # `/usr/bin/hidutil` を絶対パスで呼ぶ。掛け直しの契機は login であり、`RunAtLoad` だけを立てる。
-  # 終了後に再起動させないよう `KeepAlive` は false にする。
-  launchd.user.agents.${keyboardRemapLabel} = {
-    serviceConfig = {
-      Label = keyboardRemapLabel;
-      ProgramArguments = [
-        "/usr/bin/hidutil"
-        "property"
-        "--set"
-        (builtins.toJSON { UserKeyMapping = config.system.keyboard.userKeyMapping; })
-      ];
-      RunAtLoad = true;
-      KeepAlive = false;
-    };
-  };
+    if [ -e ${lib.escapeShellArg retiredKeyboardRemapPlist} ]; then
+      launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- launchctl bootout "gui/$uid/${retiredKeyboardRemapLabel}" >/dev/null 2>&1 || true
+      sudo --user=${lib.escapeShellArg user} -- rm -f ${lib.escapeShellArg retiredKeyboardRemapPlist}
+      hidutil property --set '{"UserKeyMapping":[]}' > /dev/null
+    fi
+  '';
 
   # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
   security.pam.services.sudo_local = {

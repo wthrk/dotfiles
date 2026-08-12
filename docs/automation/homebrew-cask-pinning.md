@@ -29,5 +29,8 @@ auto-update が cask を上げた事実は、nightly CI が記録する
 [`docs/update-history/*.toml`](../update-history/README.md)（`dotfiles update-history show` で閲覧）に更新
 アプリとして現れ、無人差し替えが不可視にならないようにしている。
 
-差分の単位は tap rev 間の `version "..."` 変化であり、`version :latest` の cask は履歴に現れない。強制が働くのは
+差分の単位は tap rev 間の `version "..."` 変化であり、次の cask は履歴に現れない。`version :latest` の cask と、
+OS 条件分岐（`on_ventura :or_newer` 等）で `version` スタンザを複数持つ cask である。後者は `.rb` 本文中の最初の
+スタンザだけを追跡するため、実機に入る分岐の版が上がっても差分にならない。成果物固定の検査は `.rb` 本文全体を
+対象にするので、分岐版も含めて「全 cask が sha256 固定」の強制は効く。強制が働くのは
 次回 record 実行時であり、PR gate は record を実行しないため、追加から検出までには時間差がある。
