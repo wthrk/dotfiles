@@ -337,7 +337,7 @@ impl ScenarioRunner {
         )
     }
 
-    /// 2 人目のログイン環境を記録し、home 層が入れた profile が PATH に乗ることだけを検査する。
+    /// 2 人目のログイン環境を記録し、その記録が実ログインのものであることを先に確かめる。
     ///
     /// `/etc/profiles/per-user/` は system 層の所有者にしか作られない。それが無いログインで補完と
     /// キーバインドがどこまで成立するかは未測定なので、2 人目の実ログインシェルを pty 経由で起動し、
@@ -354,7 +354,9 @@ impl ScenarioRunner {
         let path =
             self.login_shell_probe("dotfilesci", shell.as_str(), envs, "print -r -- $PATH")?;
         println!("dotfilesci login PATH: {path}");
-        // per-user profile が無くても、home 層が入れた profile は PATH に乗る必要がある。
+        // この entry は nix-darwin の `/etc/zshenv` が `$HOME` を展開して入れる。一致は、2 人目の
+        // ログインシェルが pty 上で実際に起動し、自分の HOME で nix-darwin の環境まで届いたことを
+        // 示す。出力が空なら一致せず止まるので、後続の probe は実ログインの記録に限られる。
         let nix_profile_bin = path_str(home.join(".nix-profile/bin"));
         if !path.split(':').any(|entry| entry == nix_profile_bin) {
             bail!("2 人目のログイン PATH に {nix_profile_bin} が無い: {path}");
