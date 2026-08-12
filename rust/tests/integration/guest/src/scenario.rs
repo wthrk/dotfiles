@@ -35,6 +35,18 @@ use dotfiles_core::path::{display as path_str, find_executable};
 
 const NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
 
+/// 2 人目のログインシェルで記録する probe のラベルとコード。
+///
+/// 項目は `tests/zsh/zsh-config.bats` が構成の zsh に対して固定している検査と揃える。per-user profile
+/// を持たないログインで何が成立するかを、同じ観点で比べられるようにするためである。期待値は未測定な
+/// ので、記録するだけで内容は判定しない。
+const LOGIN_SHELL_PROBES: &[(&str, &str)] = &[
+    ("zle widgets", "zle -la"),
+    ("completion", r#"print -r -- "comps=${#_comps}""#),
+    ("bindkey emacs ^I", "bindkey -M emacs '^I'"),
+    ("bindkey emacs ^X^I", "bindkey -M emacs '^X^I'"),
+];
+
 const FULL_SCENARIO: &[RuntimeStep] = &[
     RuntimeStep::FreshBootstrap,
     RuntimeStep::DarwinSwitchYa,
@@ -260,7 +272,7 @@ impl ScenarioRunner {
             path_str(&dotfilesci_home).as_str(),
             &[".config/zsh", ".config/nvim/lua", ".zshrc", ".zshenv"],
         )?;
-        self.observe_second_user_login_environment(&dotfilesci_home, &dotfilesci_env)?;
+        self.check_second_user_login_environment(&dotfilesci_home, &dotfilesci_env)?;
         let dotfilesci_activation = local_config_ref(
             "dotfilesci",
             "homeConfigurations.dotfilesci.activationPackage.drvPath",
@@ -325,60 +337,67 @@ impl ScenarioRunner {
         )
     }
 
-    /// system 層を持たない 2 人目が、実際にログインしたときのシェルと PATH を観測する。
+    /// 2 人目のログイン環境を記録し、home 層が入れた profile が PATH に乗ることだけを検査する。
     ///
-    /// nix-darwin の `users.users.<user>.shell` も `/etc/profiles/per-user/` も system 層の所有者に
-    /// しか及ばない。2 人目のログイン環境がその不在で何を失うかは推測できないので、シェル、per-user
-    /// profile の不在、起動後の PATH を実行結果として記録する。ここでは観測だけを行い、不足を home
-    /// 層で補うかは観測結果を見てから決める。
-    fn observe_second_user_login_environment(
+    /// `/etc/profiles/per-user/` は system 層の所有者にしか作られない。それが無いログインで補完と
+    /// キーバインドがどこまで成立するかは未測定なので、2 人目の実ログインシェルを pty 経由で起動し、
+    /// `tests/zsh/zsh-config.bats` と同じ観点の probe を記録するにとどめる。記録した不足を home 層で
+    /// 補うかは、測った結果を見てから決める（issue #102）。
+    fn check_second_user_login_environment(
         &self,
         home: &Path,
         envs: &[(String, String)],
     ) -> Result<()> {
-        // ログインシェルは OS 同梱の `/bin/zsh` のままになる。
         let shell = login_shell("dotfilesci")?;
         println!("dotfilesci login shell: {shell}");
-        if shell != "/bin/zsh" {
-            bail!("2 人目のログインシェルが /bin/zsh ではない: {shell}");
-        }
-        // per-user profile は system 層の所有者の分しか作られない。
-        self.ensure_absent("/etc/profiles/per-user/dotfilesci")?;
 
-        let path = self.login_shell_path("dotfilesci", shell.as_str(), envs)?;
+        let path =
+            self.login_shell_probe("dotfilesci", shell.as_str(), envs, "print -r -- $PATH")?;
         println!("dotfilesci login PATH: {path}");
         // per-user profile が無くても、home 層が入れた profile は PATH に乗る必要がある。
         let nix_profile_bin = path_str(home.join(".nix-profile/bin"));
         if !path.split(':').any(|entry| entry == nix_profile_bin) {
             bail!("2 人目のログイン PATH に {nix_profile_bin} が無い: {path}");
         }
+
+        for (label, code) in LOGIN_SHELL_PROBES {
+            let observed = self.login_shell_probe("dotfilesci", shell.as_str(), envs, code)?;
+            println!("dotfilesci login {label}:\n{observed}");
+        }
         Ok(())
     }
 
-    /// 対象ユーザーのログインシェルを対話ログインとして起動し、そこで組み上がった PATH を返す。
+    /// 対象ユーザーのログインシェルを pty 上の対話ログインとして起動し、probe の出力を返す。
     ///
     /// `-l` と `-i` の両方を渡すのは、この構成が PATH を組む `.zshrc` がログイン専用起動では読まれない
-    /// ためである。制御端末が無いので compinit と zle は初期化されないが、PATH は起動ファイルの評価
-    /// だけで決まる。
-    fn login_shell_path(
+    /// ためである。`script(1)` を挟むのは、制御端末が無いと compinit と zle が初期化されず補完と
+    /// キーバインドを観測できないためで、引数の並びは macOS の BSD 版に合わせる。終了 status は
+    /// 判定に使わない。観測対象が存在しない probe も同じ経路へ渡すので、判定は呼び出し元が出力で行う。
+    fn login_shell_probe(
         &self,
         user: &str,
         shell: &str,
         envs: &[(String, String)],
+        code: &str,
     ) -> Result<String> {
-        // 起動ファイルはプロンプトの初期化で `TERM` を読む。未設定のまま起動すると、観測したい PATH
-        // ではなく端末種別の解決が失敗要因になる。
+        // `TERM` は `tests/zsh/zsh-config.bats` と同じ値にする。起動ファイルはプロンプトの初期化で
+        // これを読むので、記録した項目を bats の固定値と比較するには同じ端末種別で起動する必要がある。
         let envs = envs
             .iter()
             .cloned()
-            .chain([("TERM".to_string(), "dumb".to_string())])
+            .chain([("TERM".to_string(), "xterm-256color".to_string())])
             .collect::<Vec<_>>();
         let stdout = output_with_env(
             Some(&self.env),
             "sudo",
-            sudo_user_args(user, &envs, shell, &["-lic", "print -r -- $PATH"]),
+            sudo_user_args(
+                user,
+                &envs,
+                "/usr/bin/script",
+                &["-q", "/dev/null", shell, "-lic", code],
+            ),
         )?;
-        Ok(stdout.trim().to_string())
+        Ok(strip_terminal_control(&stdout))
     }
 
     /// 全ユーザー走査の対象になったかを観測するため、指定ユーザーのホームから管理リンクを外す。
@@ -528,4 +547,16 @@ impl ScenarioRunner {
     fn run_as_ya(&self, program: &str, args: &[&str]) -> Result<()> {
         self.run_sudo_user("ya", &ya_env(&self.env.nix_config)?, program, args)
     }
+}
+
+/// `script(1)` が pty 出力へ混ぜる制御文字と前後の空白を落とす。
+///
+/// 落とす対象は `tests/zsh/zsh-config.bats` の同名関数と同じにする。同じ probe の出力を突き合わせる
+/// ので、整形が違えば比較にならない。
+fn strip_terminal_control(raw: &str) -> String {
+    raw.replace('\r', "")
+        .replace("\u{4}\u{8}\u{8}", "")
+        .replace("^D\u{8}\u{8}", "")
+        .trim()
+        .to_string()
 }

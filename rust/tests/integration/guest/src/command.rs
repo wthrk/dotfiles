@@ -44,8 +44,9 @@ where
 
 /// 出力そのものが観測対象になるコマンドを実行し、標準出力を返す。
 ///
-/// 標準エラーは呼び出し元へ流したままにする。観測対象のシェルが起動時に出す警告は失敗時の診断に
-/// 要るので、CI ログへ残す。
+/// 終了 status は判定に使わない。観測対象が存在しないときに非 0 で終わる probe も同じ経路へ渡すため
+/// であり、成否の判定は呼び出し元が出力内容で行う。標準エラーは呼び出し元へ流したままにする。観測
+/// 対象のシェルが起動時に出す警告は失敗時の診断に要るので、CI ログへ残す。
 pub(crate) fn output_with_env<I, S>(
     env: Option<&ScenarioEnv>,
     program: &str,
@@ -66,11 +67,7 @@ where
     // `apply_to` は継承を設定するので、捕捉したい標準出力だけをここで上書きする。
     command.stdout(Stdio::piped());
     let output = command.output()?;
-    if output.status.success() {
-        Ok(String::from_utf8(output.stdout)?)
-    } else {
-        bail!("command failed: {label}: {}", output.status)
-    }
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 /// 別ユーザーの HOME/USER/PATH を明示して実行するための `sudo -H -u ... env ...` 引数を作る。
