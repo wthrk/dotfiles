@@ -128,14 +128,17 @@ in
 
   # 旧 CapsLock→Ctrl 実装の退役。宣言を消すだけでは適用済みマシンから消えないため、activation で撤去する。
   # user agent は上流の退役ループが走らないので残り、`hidutil` の `UserKeyMapping` は
-  # `system.keyboard.enableKeyMapping` を落としてもクリアされない。旧 agent が残る実マシンが無くなったら
+  # `system.keyboard.enableKeyMapping` を落としてもクリアされない。旧 plist が残っているマシンでだけ走らせ、
+  # 撤去済みのマシンで `UserKeyMapping` を触り続けないようにする。旧 agent が残る実マシンが無くなったら
   # この宣言ごと削除してよい。
   system.activationScripts.postActivation.text = lib.mkAfter ''
     uid="$(id -u ${lib.escapeShellArg user})"
 
-    launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- launchctl bootout "gui/$uid/${retiredKeyboardRemapLabel}" >/dev/null 2>&1 || true
-    sudo --user=${lib.escapeShellArg user} -- rm -f ${lib.escapeShellArg retiredKeyboardRemapPlist}
-    hidutil property --set '{"UserKeyMapping":[]}' > /dev/null
+    if [ -e ${lib.escapeShellArg retiredKeyboardRemapPlist} ]; then
+      launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- launchctl bootout "gui/$uid/${retiredKeyboardRemapLabel}" >/dev/null 2>&1 || true
+      sudo --user=${lib.escapeShellArg user} -- rm -f ${lib.escapeShellArg retiredKeyboardRemapPlist}
+      hidutil property --set '{"UserKeyMapping":[]}' > /dev/null
+    fi
   '';
 
   # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
