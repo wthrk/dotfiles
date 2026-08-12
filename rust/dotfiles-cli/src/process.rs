@@ -2,16 +2,35 @@
 //!
 //! `dry_run` では実行せず、実行予定のコマンドだけを shell 風に出力する。実行時は終了状態を見て、
 //! 失敗したプログラム名をエラーに含める。
+//!
+//! 無人実行の呼び出し側は期限を渡せる。期限を過ぎたコマンドは打ち切って失敗にし、停止した 1 件が
+//! 後続の処理を無期限に止めないようにする。
 
 use std::ffi::OsString;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus};
+use std::time::{Duration, Instant};
 
 use crate::Result;
 use anyhow::bail;
 use dotfiles_core::command;
 
+/// 期限付き実行で子プロセスの終了を確認する間隔。
+///
+/// 期限は時間単位なので取りこぼしの粒度は問題にならない。短くしているのは、期限より先に終わる
+/// 通常のコマンドで待ち時間を足さないためである。
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
 /// `dry_run` なら表示のみ、通常時は同じ表示形式で実行して非 0 終了を失敗にする。
-pub(crate) fn run<I>(program: impl Into<OsString>, args: I, dry_run: bool) -> Result<()>
+///
+/// `deadline` を渡すと、その時刻までに終わらないコマンドを打ち切って失敗にする。利用者が対話的に
+/// 起動する経路は自分で中断できるので `None` を渡し、途中のビルドを勝手に殺さない。期限を渡すのは
+/// 無人で複数対象を順に処理する経路だけである。
+pub(crate) fn run<I>(
+    program: impl Into<OsString>,
+    args: I,
+    dry_run: bool,
+    deadline: Option<Instant>,
+) -> Result<()>
 where
     I: IntoIterator<Item = OsString>,
 {
@@ -22,11 +41,33 @@ where
         return Ok(());
     }
 
-    let status = Command::new(&program).args(&args).status()?;
+    let mut child = Command::new(&program).args(&args).spawn()?;
+    let status = match deadline {
+        None => child.wait()?,
+        Some(deadline) => wait_until(&mut child, deadline, &program)?,
+    };
     if status.success() {
         Ok(())
     } else {
         bail!("command failed: {}: {status}", program.to_string_lossy())
+    }
+}
+
+/// 期限まで終了を待ち、超過したら子プロセスを kill して失敗として返す。
+///
+/// 送るシグナルは起動した子プロセス自身にだけ届く。`sudo` 越しに起動した `nix` のような孫プロセスは
+/// 残るため、これは資源の回収手段ではなく、呼び出し側の走査を先へ進めるための打ち切りである。
+fn wait_until(child: &mut Child, deadline: Instant, program: &OsString) -> Result<ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            child.kill()?;
+            child.wait()?;
+            bail!("command timed out: {}", program.to_string_lossy())
+        };
+        std::thread::sleep(remaining.min(WAIT_POLL_INTERVAL));
     }
 }
 
@@ -85,11 +126,42 @@ where
     Ok(stdout)
 }
 
-/// ユーザー権限実行の sudo 引数が HOME を対象ユーザーへ寄せることを検証する。
+/// ユーザー権限実行の sudo 引数が HOME を対象ユーザーへ寄せること、および期限付き実行が停止した
+/// コマンドを打ち切ることを検証する。
 #[cfg(test)]
 mod tests {
-    use super::sudo_as_user_args;
+    use super::{run, sudo_as_user_args};
     use std::ffi::OsString;
+    use std::time::{Duration, Instant};
+
+    /// 期限を過ぎても終わらないコマンドは、待ち続けずに失敗として返る。
+    #[test]
+    fn run_with_deadline_stops_a_command_that_does_not_finish() {
+        let started = Instant::now();
+        let err = run(
+            "sleep",
+            [OsString::from("30")],
+            false,
+            Some(Instant::now() + Duration::from_millis(100)),
+        )
+        .err()
+        .map(|err| err.to_string())
+        .unwrap_or_default();
+
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(30), "{err}");
+    }
+
+    /// 期限を渡さない実行は従来どおり終了状態だけを見る。
+    #[test]
+    fn run_without_deadline_reports_command_failure() {
+        let err = run("sleep", [OsString::from("--dotfiles-invalid")], false, None)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+
+        assert!(err.contains("command failed"), "{err}");
+    }
 
     /// root daemon から呼ぶ外部コマンドは `sudo -H -u <user> env PATH=...` で包み、呼び出し元 PATH を渡す。
     #[test]

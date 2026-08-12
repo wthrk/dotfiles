@@ -7,6 +7,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::bail;
 use clap::{Args, ValueEnum};
@@ -18,7 +19,10 @@ use crate::{
 };
 
 /// 指定された対象を、生成済みローカル flake の属性名規約に従って適用する。
-pub(crate) fn run(options: SwitchOptions) -> Result<()> {
+///
+/// `deadline` は無人実行で 1 対象に与える打ち切り時刻で、外部コマンドの実行へそのまま渡す。利用者
+/// 自身の実行は `None` で呼び、途中のビルドを打ち切らない。
+pub(crate) fn run(options: SwitchOptions, deadline: Option<Instant>) -> Result<()> {
     let config_dir = options.config_dir()?;
     ensure_config_exists(&config_dir)?;
     // 適用範囲は対象ユーザーがこのマシンで持つ層から決まる。scope はそのユーザーに紐づくので、
@@ -52,9 +56,14 @@ pub(crate) fn run(options: SwitchOptions) -> Result<()> {
 
     for invocation in invocations {
         if invocation.target == SwitchTarget::Darwin {
-            prepare_nix_darwin_etc(options.dry_run)?;
+            prepare_nix_darwin_etc(options.dry_run, deadline)?;
         }
-        run_process(invocation.program, invocation.args, options.dry_run)?;
+        run_process(
+            invocation.program,
+            invocation.args,
+            options.dry_run,
+            deadline,
+        )?;
     }
     Ok(())
 }
@@ -174,13 +183,13 @@ struct SwitchInvocation {
 }
 
 /// nix-darwin が `/etc/static` リンクを作る前に、衝突する既存シェル起動ファイルだけを退避する。
-fn prepare_nix_darwin_etc(dry_run: bool) -> Result<()> {
+fn prepare_nix_darwin_etc(dry_run: bool, deadline: Option<Instant>) -> Result<()> {
     if std::env::consts::OS != "macos" {
         return Ok(());
     }
 
     for path in [Path::new("/etc/bashrc"), Path::new("/etc/zshrc")] {
-        move_etc_file_before_nix_darwin(path, dry_run)?;
+        move_etc_file_before_nix_darwin(path, dry_run, deadline)?;
     }
 
     Ok(())
@@ -188,7 +197,11 @@ fn prepare_nix_darwin_etc(dry_run: bool) -> Result<()> {
 
 /// 管理済みリンクは触らず、それ以外（通常ファイル・未管理シンボリックリンク）を
 /// `<name>.before-nix-darwin` へ移動する。
-fn move_etc_file_before_nix_darwin(path: &Path, dry_run: bool) -> Result<()> {
+fn move_etc_file_before_nix_darwin(
+    path: &Path,
+    dry_run: bool,
+    deadline: Option<Instant>,
+) -> Result<()> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
     };
@@ -218,6 +231,7 @@ fn move_etc_file_before_nix_darwin(path: &Path, dry_run: bool) -> Result<()> {
             backup.as_os_str().to_os_string(),
         ],
         dry_run,
+        deadline,
     )
 }
 

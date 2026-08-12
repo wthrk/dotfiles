@@ -20,6 +20,13 @@ const CONFIG_FILE: &str = "flake.nix";
 /// nix-darwin の `home-manager.useUserPackages` が管理対象ユーザーごとに作るディレクトリ。
 const SYSTEM_PROFILES_DIR: &str = "/etc/profiles/per-user";
 
+/// `dscl -readall` がレコードの区切りに使う行。
+const RECORD_SEPARATOR: &str = "-";
+/// ログイン名を持つ `dscl` 属性。別名を持つレコードでは先頭値が短い名前になる。
+const RECORD_NAME_ATTRIBUTE: &str = "RecordName";
+/// ホームディレクトリを持つ `dscl` 属性。
+const HOME_DIRECTORY_ATTRIBUTE: &str = "NFSHomeDirectory";
+
 /// 明示された設定ディレクトリを優先し、省略時は `$HOME/.config/dotfiles` を返す。
 pub(crate) fn config_dir(override_dir: Option<PathBuf>) -> Result<PathBuf> {
     Ok(override_dir.unwrap_or(home_dir()?.join(CONFIG_SUBDIR)))
@@ -89,12 +96,20 @@ pub(crate) struct LocalFlakeAccount {
 ///
 /// auto-update daemon が root から全ユーザーを更新するときの対象集合であり、ホームの位置を
 /// `/Users/<name>` と仮定せずディレクトリサービスから引く。結果はユーザー名の昇順で返す。
+///
+/// 列挙は macOS のディレクトリサービス（`dscl`）に依存するため macOS 専用である。他 OS では
+/// `dscl` の起動失敗を素の OS エラーとして見せず、対象を 1 人に絞る指定が要ることを示して止める。
 pub(crate) fn local_flake_accounts() -> Result<Vec<LocalFlakeAccount>> {
+    if std::env::consts::OS != "macos" {
+        bail!(
+            "全ユーザー走査は macOS のユーザーレコードに依存するため macOS 以外では使えない（`--user` で対象を 1 人に指定する）"
+        );
+    }
     let output = Command::new("dscl")
-        .args([".", "-list", "/Users", "NFSHomeDirectory"])
+        .args([".", "-readall", "/Users", "RecordName", "NFSHomeDirectory"])
         .output()?;
     if !output.status.success() {
-        bail!("dscl -list /Users NFSHomeDirectory command failed");
+        bail!("dscl -readall /Users RecordName NFSHomeDirectory command failed");
     }
     let listing = String::from_utf8(output.stdout)?;
     let mut accounts = parse_user_homes(&listing)
@@ -141,20 +156,71 @@ fn scope_from(managed: Option<&[OsString]>, user: &str) -> ConfigScope {
     }
 }
 
-/// `dscl . -list /Users NFSHomeDirectory` の出力からユーザー名とホームを取り出す。
+/// `dscl . -readall /Users RecordName NFSHomeDirectory` の出力からユーザー名とホームを取り出す。
 ///
-/// 1 行目のホーム位置だけを使う。`root` のように複数のホームを持つレコードがあるため、
-/// 2 列目より後ろは読み捨てる。ホームを持たないレコードは対象から外す。
+/// `dscl` はレコードを `-` だけの行で区切り、属性を次の 2 形式のどちらかで書く。値が空白を含むか
+/// どうかで形式が切り替わるため、両方を読む必要がある。
+///
+/// - どの値も空白を含まない: `NFSHomeDirectory: /Users/alice`（値は空白区切りで 1 行に並ぶ）
+/// - 空白を含む値がある: `NFSHomeDirectory:` の次行から、値 1 件ごとに空白 1 個を前置した行
+///
+/// `-list` は後者の形式を持たず値を空白で連結するだけなので、空白を含むホームと複数のホームを
+/// 区別できない。区別できないとホームが途中で切れ、そのアカウントが黙って対象から外れる。
+///
+/// `root` のように複数のホームを持つレコードがあるため、値は先頭 1 件だけを使う。ユーザー名または
+/// ホームを持たないレコードは対象から外す。
 fn parse_user_homes(listing: &str) -> Vec<(String, PathBuf)> {
-    listing
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let user = fields.next()?;
-            let home = fields.next()?;
-            Some((user.to_string(), PathBuf::from(home)))
-        })
-        .collect()
+    let mut accounts = Vec::new();
+    let mut record = UserRecord::default();
+    // 直前の `<属性>:` 行。次に続く空白前置行がその属性の値になる。
+    let mut pending_attribute = None;
+    for line in listing.lines() {
+        if line == RECORD_SEPARATOR {
+            accounts.extend(std::mem::take(&mut record).into_account());
+            pending_attribute = None;
+        } else if let Some(value) = line.strip_prefix(' ') {
+            // 先頭値だけを採るため、`take` で 2 件目以降を無視する。
+            if let Some(attribute) = pending_attribute.take() {
+                record.set(attribute, value);
+            }
+        } else if let Some((attribute, values)) = line.split_once(": ") {
+            pending_attribute = None;
+            if let Some(value) = values.split_whitespace().next() {
+                record.set(attribute, value);
+            }
+        } else if let Some(attribute) = line.strip_suffix(':') {
+            pending_attribute = Some(attribute);
+        }
+    }
+    accounts.extend(record.into_account());
+    accounts
+}
+
+/// `dscl` の 1 レコードから、必要な 2 属性の先頭値だけを取り出す途中状態。
+#[derive(Default)]
+struct UserRecord {
+    user: Option<String>,
+    home: Option<PathBuf>,
+}
+
+impl UserRecord {
+    /// 関心のある属性の先頭値だけを保持する。同じ属性の 2 件目以降は捨てる。
+    fn set(&mut self, attribute: &str, value: &str) {
+        match attribute {
+            RECORD_NAME_ATTRIBUTE => {
+                self.user.get_or_insert_with(|| value.to_string());
+            }
+            HOME_DIRECTORY_ATTRIBUTE => {
+                self.home.get_or_insert_with(|| PathBuf::from(value));
+            }
+            _ => {}
+        }
+    }
+
+    /// ユーザー名とホームが揃ったレコードだけを列挙対象にする。
+    fn into_account(self) -> Option<(String, PathBuf)> {
+        Some((self.user?, self.home?))
+    }
 }
 
 /// 設定ファイルの配置先を決めるため `$HOME` を必須値として読む。
@@ -212,16 +278,34 @@ mod tests {
         assert_eq!(scope_from(Some(&managed), "bob"), ConfigScope::Home);
     }
 
-    /// `root` のようにホームを複数持つレコードは 1 列目のホームだけを採り、
-    /// ホームを持たないレコードは対象から外す。
+    /// `root` のようにホームを複数持つレコードは先頭のホームだけを採り、ホームを持たない
+    /// レコードは対象から外す。空白を含むホームは `dscl` の空白前置行から全体を採る。
+    ///
+    /// 入力は実機の `dscl . -readall /Users RecordName NFSHomeDirectory` が返す 2 形式を写したもの。
+    /// 空白を含む値は 1 行に並べず、`<属性>:` の次行から 1 件ずつ空白前置で返る。
     #[test]
-    fn parses_user_homes_from_directory_service_listing() {
-        let listing = "alice /Users/alice\nroot /var/root /private/var/root\nnohome\n";
+    fn parses_user_homes_from_directory_service_records() {
+        let listing = concat!(
+            "NFSHomeDirectory: /Users/alice\n",
+            "RecordName: alice\n",
+            "-\n",
+            "NFSHomeDirectory:\n",
+            " /Users/space y\n",
+            "RecordName: spacey\n",
+            "-\n",
+            "NFSHomeDirectory: /var/root /private/var/root\n",
+            "RecordName:\n",
+            " root\n",
+            " BUILTIN\\Local System\n",
+            "-\n",
+            "RecordName: nohome\n",
+        );
 
         assert_eq!(
             parse_user_homes(listing),
             vec![
                 ("alice".to_string(), PathBuf::from("/Users/alice")),
+                ("spacey".to_string(), PathBuf::from("/Users/space y")),
                 ("root".to_string(), PathBuf::from("/var/root")),
             ]
         );

@@ -79,6 +79,8 @@ fn lock_config(config_dir: &std::path::Path) -> Result<()> {
             config_dir.as_os_str().to_os_string(),
         ],
         false,
+        // `init` は利用者が起動する 1 回限りの処理で、無人走査の一部にならないため期限を置かない。
+        None,
     )
 }
 

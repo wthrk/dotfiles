@@ -25,7 +25,7 @@ usage() {
 
 Options:
   --source FLAKE             dotfiles flake（既定: github:wthrk/dotfiles）
-  --user USER                生成する flake に書くユーザー名
+  --user USER                生成する flake に書くユーザー名（実行ユーザーと一致する必要がある）
   --host HOST                生成する flake に書くホスト名
   --system SYSTEM            生成 flake に書く system（例: aarch64-darwin）
   --force                    既存 ~/.config/dotfiles/flake.nix を上書きする
@@ -71,6 +71,18 @@ while (($#)); do
       ;;
   esac
 done
+
+running_user="$(id -un)"
+# このスクリプトは実行ユーザーの `$HOME/.config/dotfiles` に flake を書き、Home Manager もその
+# ユーザーの権限で適用する。降格の仕組みは持たない（別ユーザーへ降格して適用できるのは root で
+# 走る CLI の `HomeApplyUser` だけで、bootstrap はその経路を通らない）。`--user` に別アカウントを
+# 渡すと、生成 flake の出力名だけが別人になり、書き込み先と適用先は実行ユーザーのままになる。
+# 名前の不一致をここで止め、別ユーザーのホームを呼出ユーザー権限で触らせない。
+if [[ -n "$user" && "$user" != "$running_user" ]]; then
+  echo "--user は実行ユーザー（$running_user）と一致する必要があります: $user" >&2
+  echo "対象ユーザーでログインしてから実行してください。" >&2
+  exit 1
+fi
 
 if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   # shellcheck disable=SC1091
@@ -168,8 +180,7 @@ fi
 # ここでは CLI と同じ `/etc/profiles/per-user/` を見て、判断がずれないようにする。所有者が再実行
 # する場合もディレクトリは在るので、存在確認だけでは sudo の要否を決められない。
 system_profiles_dir="/etc/profiles/per-user"
-target_user="${user:-$(id -un)}"
-if [[ ! -d "$system_profiles_dir" || -e "$system_profiles_dir/$target_user" ]]; then
+if [[ ! -d "$system_profiles_dir" || -e "$system_profiles_dir/$running_user" ]]; then
   require_sudo "nix-darwin switch"
 fi
 
