@@ -1,12 +1,15 @@
 #!/usr/bin/env bats
 #
-# 構成を適用済みのマシンで zsh を起動し、その環境を検証する。適用は検証の外側で済ませる。
-# 起動を `script(1)` 経由にするのは、制御端末が無いと compinit と zle が初期化されないため。
+# 構成を適用済みのマシンで zsh をログインシェルとして（`-l`）起動し、その環境を検証する。適用は
+# 検証の外側で済ませる。起動を `script(1)` 経由にするのは、制御端末が無いと compinit と zle が
+# 初期化されないため。
 #
-# 起動するのは実行ユーザーのログインシェルであり、ログインシェルとして（`-l`）起動する。シェルの
-# 位置も PATH も検証側で決め打ちにしない。決め打ちにすると、system 層を持たないサブユーザーで
-# 走らせても system 層の所有者と同じ環境を観測してしまい、そのユーザーの実際のログイン環境で何が
-# 成立するかを見られない。
+# 起動する zsh は実行環境から決める。実行ユーザーのログインシェルが zsh ならそれ自身を起動し、その
+# ユーザーが実際にログインしたときの環境をそのまま観測する。system 層を持たないサブユーザーで走らせた
+# ときに `/etc/profiles/per-user/<user>/bin` が無い状態で何が成立するかは、これでしか見られない。
+#
+# ログインシェルが zsh でない環境（CI runner の `runner` は `/bin/bash`）には観測できるログイン環境が
+# 無いので、構成が入れた zsh を同じ形で起動し、設定そのものの検証だけを行う。
 
 setup() {
     bats_load_library bats-support
@@ -15,9 +18,9 @@ setup() {
 
 setup_file() {
     ZSH_CHECK_USER="$(id -un)"
-    ZSH_CHECK_SHELL="$(zsh_login_shell "${ZSH_CHECK_USER}")"
+    ZSH_CHECK_SHELL="$(zsh_probe_shell "${ZSH_CHECK_USER}")"
     if [ -z "${ZSH_CHECK_SHELL}" ]; then
-        echo "${ZSH_CHECK_USER} のログインシェルを解決できない" >&2
+        echo "${ZSH_CHECK_USER} が起動できる zsh が無い。構成を適用してから実行する" >&2
         return 1
     fi
 
@@ -36,12 +39,30 @@ setup_file() {
     export ZSH_CHECK_USER ZSH_CHECK_SHELL
 }
 
-# 対象ユーザーのログインシェルを macOS のユーザーレコードから読む。
+# 起動する zsh を決める。ログインシェルが zsh のユーザーではそれ自身を返し、実際のログイン環境を
+# 観測する。そうでなければ構成が入れた zsh を返す。どちらも無ければ空を返し、setup_file が止める。
+zsh_probe_shell() {
+    local login_shell
+    login_shell="$(zsh_login_shell "$1")"
+    if [ "${login_shell##*/}" = 'zsh' ] && [ -x "${login_shell}" ]; then
+        printf '%s' "${login_shell}"
+        return 0
+    fi
+    if [ -x "${HOME}/.nix-profile/bin/zsh" ]; then
+        printf '%s' "${HOME}/.nix-profile/bin/zsh"
+    fi
+}
+
+# 対象ユーザーのログインシェルを、実行環境のユーザーデータベースから読む。
 #
 # `$SHELL` は呼び出し元の値なので使えない。ログインシェルはユーザーごとに違うため、実際に
-# 記録されているものを読む。
+# 記録されているものを読む。macOS には `getent` が無く Linux には `dscl` が無いので、在る方を使う。
 zsh_login_shell() {
-    dscl . -read "/Users/$1" UserShell 2>/dev/null | awk '/^UserShell:/ { print $2 }'
+    if command -v getent >/dev/null 2>&1; then
+        getent passwd "$1" | awk -F: '{ print $7 }'
+    else
+        dscl . -read "/Users/$1" UserShell 2>/dev/null | awk '/^UserShell:/ { print $2 }'
+    fi
 }
 
 # 渡した zsh コードの出力を制御文字除去済みで返す。終了 status は判定に使わない
