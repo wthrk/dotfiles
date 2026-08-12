@@ -1,7 +1,8 @@
-//! ゲスト内シナリオで使う作業ディレクトリ、Nix 設定、ユーザー環境を正規化する。
+//! ゲスト内シナリオで使う作業ディレクトリ、Nix 設定、ユーザーレコードの参照を正規化する。
 //!
 //! GitHub Actions では `GITHUB_WORKSPACE`、Tart では共有ボリューム、手元実行では current_dir を使う。
-//! ユーザー切り替え時の HOME/PATH もここで作り、各 step が個別に推測しないようにする。
+//! ユーザーのホームとログインシェルは macOS のユーザーレコードから読み、各 step が個別に推測しない
+//! ようにする。
 
 use std::env;
 use std::fs;
@@ -19,9 +20,9 @@ pub(crate) struct ScenarioEnv {
     pub(crate) bootstrap_script: PathBuf,
     pub(crate) dotfiles_source: String,
     pub(crate) pass_source_to_bootstrap: bool,
-    pub(crate) bootstrap_source_ref_env: Option<String>,
-    pub(crate) runner_temp: PathBuf,
-    pub(crate) nix_config: String,
+    bootstrap_source_ref_env: Option<String>,
+    runner_temp: PathBuf,
+    nix_config: String,
 }
 
 impl ScenarioEnv {
@@ -77,6 +78,23 @@ impl ScenarioEnv {
         if let Some(source_ref) = &self.bootstrap_source_ref_env {
             command.env("DOTFILES_BOOTSTRAP_SOURCE_REF", source_ref);
         }
+    }
+
+    /// `sudo` の env_reset を越えて対象ユーザーへ渡す、テスト側が決める入力を返す。
+    ///
+    /// 対象ユーザーの HOME/USER/LOGNAME/SHELL は `sudo -H -u` がユーザーレコードから作り直し、
+    /// PATH と Nix の profile 変数はログインシェルの起動ファイルが読む `set-environment` が作る。
+    /// ここに並べるのはそうした環境の写しではなく、CI から与えないと成立しない入力だけである。
+    pub(crate) fn test_inputs(&self) -> Vec<(String, String)> {
+        [("NIX_CONFIG".to_string(), self.nix_config.clone())]
+            .into_iter()
+            .chain(self.bootstrap_source_ref_env.as_ref().map(|source_ref| {
+                (
+                    "DOTFILES_BOOTSTRAP_SOURCE_REF".to_string(),
+                    source_ref.clone(),
+                )
+            }))
+            .collect()
     }
 }
 
@@ -192,66 +210,28 @@ fn local_config_flake_in(home: PathBuf) -> PathBuf {
     home.join(".config/dotfiles/flake.nix")
 }
 
-/// 2 人目の Home Manager 検証で使う、ログインに近い最小環境を作る。
-pub(crate) fn dotfilesci_env(nix_config: &str) -> Result<Vec<(String, String)>> {
-    user_env("dotfilesci", "/bin/zsh", nix_config, None)
-}
-
-/// root として実行するコマンドへ渡す環境を作る。対象ユーザーは渡さない。
+/// 対象ユーザーのログインシェルを、`login(1)` と `sudo -i` が使うのと同じユーザーレコードから読む。
 ///
-/// PATH は nix-darwin 適用後の system profile を先頭に置く。auto-update daemon と同じ全ユーザー
-/// 走査も、root が checkout を扱うための準備も、この環境で実行する。
-pub(crate) fn root_env(nix_config: &str) -> Result<Vec<(String, String)>> {
-    user_env(
-        "root",
-        "/bin/sh",
-        nix_config,
-        Some(
-            "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        ),
-    )
-}
-
-/// Darwin switch 後のユーザー環境に近い PATH を渡し、対象ユーザーとして評価と確認を行う。
-pub(crate) fn ya_env(nix_config: &str) -> Result<Vec<(String, String)>> {
-    user_env(
-        "ya",
-        "/etc/profiles/per-user/ya/bin/zsh",
-        nix_config,
-        Some(
-            "/etc/profiles/per-user/ya/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        ),
-    )
-}
-
-/// `sudo -u` で環境が引き継がれすぎないよう、HOME/USER/LOGNAME/SHELL/NIX_CONFIG/PATH を明示する。
-fn user_env(
-    user: &str,
-    shell: &str,
-    nix_config: &str,
-    path: Option<&str>,
-) -> Result<Vec<(String, String)>> {
-    let base_env = [
-        ("HOME".to_string(), user_home(user)?.display().to_string()),
-        ("USER".to_string(), user.to_string()),
-        ("LOGNAME".to_string(), user.to_string()),
-        ("SHELL".to_string(), shell.to_string()),
-        ("NIX_CONFIG".to_string(), nix_config.to_string()),
-    ];
-    Ok(base_env
-        .into_iter()
-        .chain(path.map(|path| ("PATH".to_string(), path.to_string())))
-        .collect())
+/// シナリオはこのシェルをログインシェルとして起動し、PATH と Nix の profile 変数を、起動ファイルが
+/// 読む nix-darwin の `set-environment` から受け取る。固定値にすると、実ユーザーが読む起動ファイルと
+/// 検証が読む起動ファイルが食い違う。
+pub(crate) fn login_shell(user: &str) -> Result<String> {
+    dscl_read(user, "UserShell")?.with_context(|| format!("UserShell is required for user {user}"))
 }
 
 /// `/Users/<name>` を仮定せず、macOS が持つユーザーレコードからホームを読む。
 fn dscl_home(user: &str) -> Result<Option<PathBuf>> {
+    Ok(dscl_read(user, "NFSHomeDirectory")?.map(PathBuf::from))
+}
+
+/// macOS のユーザーレコードから 1 属性を読む。レコードが無ければ `None`。
+fn dscl_read(user: &str, key: &str) -> Result<Option<String>> {
     let output = Command::new("dscl")
-        .args([".", "-read", &format!("/Users/{user}"), "NFSHomeDirectory"])
+        .args([".", "-read", &format!("/Users/{user}"), key])
         .output()?;
     if !output.status.success() {
         return Ok(None);
     }
     let stdout = String::from_utf8(output.stdout)?;
-    Ok(stdout.split_whitespace().nth(1).map(PathBuf::from))
+    Ok(stdout.split_whitespace().nth(1).map(str::to_string))
 }

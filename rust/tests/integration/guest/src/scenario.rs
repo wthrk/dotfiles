@@ -21,11 +21,11 @@ use crate::{
         assert_managed_links, assert_system_profile_users, ensure_absent_path, ensure_exists,
         ensure_nonempty_path,
     },
-    command::{run_with_env, status_with_env, sudo_user_args},
+    command::{run_with_env, status_with_env, sudo_login_shell_args},
     runtime_env::{
-        ScenarioEnv, current_host, current_user, dotfilesci_env, local_config_dir_for_user,
+        ScenarioEnv, current_host, current_user, local_config_dir_for_user,
         local_config_flake_for_current_user, local_config_flake_for_user, local_config_ref,
-        root_env, user_home, ya_env,
+        login_shell, user_home,
     },
     users::{ensure_local_user, grant_noninteractive_sudo},
 };
@@ -181,14 +181,14 @@ impl ScenarioRunner {
         )?;
         // 2 人目と同じ呼び出し。`--user` も `--host` も `--no-switch` も渡さず、適用範囲は
         // マシンの状態から決まるものに任せる。
-        self.run_bootstrap_sudo_user("ya", &ya_env(&self.env.nix_config)?, &["--force"])?;
+        self.run_bootstrap_sudo_user("ya", &["--force"])?;
 
         // system 層は `ya` だけを管理対象にしている必要がある。この結び付きは CLI の scope 判定が
         // 依存する事実そのものであり、home-manager 側の実装が変われば崩れる。
         assert_system_profile_users(&["ya"])?;
         // 所有者が自分であるマシンでの再実行。bootstrap は同じ引数のまま sudo を要求し、適用範囲も
         // 変わらない。ここで別のユーザーのエントリが増えるなら scope 判定が壊れている。
-        self.run_bootstrap_sudo_user("ya", &ya_env(&self.env.nix_config)?, &["--force"])?;
+        self.run_bootstrap_sudo_user("ya", &["--force"])?;
         assert_system_profile_users(&["ya"])?;
 
         let ya_config_dir = path_str(local_config_dir_for_user("ya")?);
@@ -246,9 +246,8 @@ impl ScenarioRunner {
             ],
         )?;
 
-        let dotfilesci_env = dotfilesci_env(&self.env.nix_config)?;
         // 手順はユーザーの種類で分かれない。`--user` も `--host` も渡さず、1 人目と同じ形で実行する。
-        self.run_bootstrap_sudo_user("dotfilesci", &dotfilesci_env, &["--force"])?;
+        self.run_bootstrap_sudo_user("dotfilesci", &["--force"])?;
 
         // 2 人目のユーザーは管理者ユーザーのホーム状態を流用せず、
         // 自分の生成設定とプロファイルを持つ必要がある。
@@ -268,7 +267,6 @@ impl ScenarioRunner {
         // これにより権限と出力名の退行を検出する。
         self.run_sudo_user(
             "dotfilesci",
-            &dotfilesci_env,
             NIX,
             &[
                 "eval",
@@ -285,7 +283,6 @@ impl ScenarioRunner {
         if self
             .status_sudo_user(
                 "dotfilesci",
-                &dotfilesci_env,
                 NIX,
                 &["eval", "--no-update-lock-file", dotfilesci_darwin.as_str()],
             )?
@@ -297,7 +294,6 @@ impl ScenarioRunner {
         // 2 人目が引数なし `dotfiles update` を実行しても、system 層の所有者は移らない。
         self.run_sudo_user(
             "dotfilesci",
-            &dotfilesci_env,
             NIX,
             &["run", self.dotfiles_source_str(), "--", "update"],
         )?;
@@ -405,45 +401,19 @@ impl ScenarioRunner {
         )
     }
 
-    fn run_bootstrap_sudo_user(
-        &self,
-        user: &str,
-        envs: &[(String, String)],
-        args: &[&str],
-    ) -> Result<()> {
+    fn run_bootstrap_sudo_user(&self, user: &str, args: &[&str]) -> Result<()> {
         let program = self.bootstrap_script_str();
         let args = self.bootstrap_args(args);
         let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        self.run_sudo_user(user, envs, program.as_str(), &arg_refs)
+        self.run_sudo_user(user, program.as_str(), &arg_refs)
     }
 
-    /// 別ユーザーの HOME/PATH を明示して `sudo -u` し、呼び出し元環境の漏れを防ぐ。
-    fn run_sudo_user(
-        &self,
-        user: &str,
-        envs: &[(String, String)],
-        program: &str,
-        args: &[&str],
-    ) -> Result<()> {
-        let envs = envs
-            .iter()
-            .cloned()
-            .chain(
-                self.env
-                    .bootstrap_source_ref_env
-                    .as_ref()
-                    .map(|source_ref| {
-                        (
-                            "DOTFILES_BOOTSTRAP_SOURCE_REF".to_string(),
-                            source_ref.clone(),
-                        )
-                    }),
-            )
-            .collect::<Vec<_>>();
+    /// 対象ユーザーのログインシェル経由で実行し、実ログインと同じ環境で検証する。
+    fn run_sudo_user(&self, user: &str, program: &str, args: &[&str]) -> Result<()> {
         run_with_env(
             Some(&self.env),
             "sudo",
-            sudo_user_args(user, &envs, program, args),
+            self.sudo_args(user, program, args)?,
         )
     }
 
@@ -451,24 +421,34 @@ impl ScenarioRunner {
     fn status_sudo_user(
         &self,
         user: &str,
-        envs: &[(String, String)],
         program: &str,
         args: &[&str],
     ) -> Result<std::process::ExitStatus> {
         status_with_env(
             Some(&self.env),
             "sudo",
-            sudo_user_args(user, envs, program, args),
+            self.sudo_args(user, program, args)?,
         )
     }
 
-    /// root として実行する。対象ユーザーは渡さない。
-    fn run_as_root(&self, program: &str, args: &[&str]) -> Result<()> {
-        self.run_sudo_user("root", &root_env(&self.env.nix_config)?, program, args)
+    /// ユーザーの種類で分岐しない唯一の起動形を組む。実行も終了状態確認も同じ引数を通る。
+    fn sudo_args(&self, user: &str, program: &str, args: &[&str]) -> Result<Vec<String>> {
+        Ok(sudo_login_shell_args(
+            user,
+            login_shell(user)?.as_str(),
+            &self.env.test_inputs(),
+            program,
+            args,
+        ))
     }
 
-    /// `ya` 用のログイン風環境を使って、Darwin switch 後の評価と確認を行う。
+    /// root として実行する。auto-update daemon と同じ全ユーザー走査もこの経路で起動する。
+    fn run_as_root(&self, program: &str, args: &[&str]) -> Result<()> {
+        self.run_sudo_user("root", program, args)
+    }
+
+    /// 1 人目 `ya` として、Darwin switch 後の評価と確認を行う。
     fn run_as_ya(&self, program: &str, args: &[&str]) -> Result<()> {
-        self.run_sudo_user("ya", &ya_env(&self.env.nix_config)?, program, args)
+        self.run_sudo_user("ya", program, args)
     }
 }
