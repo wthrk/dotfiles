@@ -569,3 +569,184 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-13T18:34:53Z"
+state_old = "a3bc5c3cf04197b0bb7352c4481b5da237b163a77fd91a6c4d5e968482a7f28e"
+state_new = "3552cbeb40ca45661741e4dcb3b373da6f696bfbc66c3bbd2d2db19276798576"
+cursor_old = "9d52ad74183e14c22f11316dc280bce51778665d"
+nixpkgs_old = "8e2eeb9477c9d40009a5bd51cd3eef2f5abb26f1"
+nixpkgs_new = "044bfe75bfe4c7bbe043dc17b5e42ea823b84a09"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "6アプリ更新: 🔒1 🗑️2 ✨16 🐛4"
+
+[[update.package]]
+name = "docker"
+old = "29.6.2"
+new = "29.7.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/cli/releases/tag/v29.6.2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド 'docker compose up' が追加され、複数のサービスを同時に起動できるようになった。"
+ref = "https://github.com/docker/cli/releases/tag/v29.7.2"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境変数が設定されている場合に発生するバグが修正された。"
+ref = "https://github.com/docker/cli/releases/tag/v29.7.2"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古い 'docker network create' オプションが非推奨となり、将来のリリースで削除される予定。"
+ref = "https://github.com/docker/cli/releases/tag/v29.7.2"
+
+[[update.package]]
+name = "ffmpeg"
+old = "8.1.2"
+new = "9.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n9.0/Changelog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "AMF Color Converter (vf_vpp_amf) HDR 機能の拡張"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "MP4 muxer に LCEVC トラックのマルチプレクシングサポートを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Playdate ビデオエンコーダーとマルチプレクサを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "v360_vulkan フィルターを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "HE-AAC 960 デコーディング (DAB+) を追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "transpose_cuda フィルターを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "AMF フレームレートコンバーター (vf_frc_amf) フィルターを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "SMPTE 2094-50 メタデータのサポートとパススルーを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ProRes RAW VideoToolbox hwaccel を追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "APV Vulkan hwaccel を追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Animated WebP デコーダーとデマルチプレクサを追加"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "CELT デコーディングサポートを削除 (Opus CELT には影響しない)"
+ref = "https://github.com/FFmpeg/FFmpeg/releases"
+
+[[update.package]]
+name = "firefox-bin"
+old = "153.0.3"
+new = "153.0.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/153.0.4/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグを修正しました。"
+ref = "https://www.firefox.com/en-US/firefox/153.0.4/releasenotes/"
+
+[[update.package]]
+name = "google-chrome"
+old = "151.0.7922.109"
+new = "151.0.7922.138"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "セキュリティの修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "uv"
+old = "0.12.1"
+new = "0.12.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.12.3/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "CPython 3.13.15 を追加"
+ref = "https://github.com/astral-sh/uv/pull/20997"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`uv cache size` に出力形式を選択する `--output-format` を追加"
+ref = "https://github.com/astral-sh/uv/pull/20992"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`uv workspace metadata --quiet` で診断メッセージを抑制しつつ JSON 出力を保持"
+ref = "https://github.com/astral-sh/uv/pull/20991"
+
+[[update.package.change_item]]
+category = "feature"
+text = "大規模ワークスペースのメモリ使用量を削減するために `uv workspace metadata` の JSON 出力をストリーミング"
+ref = "https://github.com/astral-sh/uv/pull/20990"
+
+[[update.package.change_item]]
+category = "fix"
+text = "キャッシュされたホイールとソース配布のアーティファクトサイズ記録で古い uv バージョンとの互換性を保持"
+ref = "https://github.com/astral-sh/uv/pull/20963"
+
+[[update.package.change_item]]
+category = "fix"
+text = "選択したワークスペースメンバーを同期またはエクスポートする際に、ワークスペースルートのデフォルト依存関係グループを含めないように修正"
+ref = "https://github.com/astral-sh/uv/pull/20930"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.228"
+new = "2.1.231"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []

@@ -134,11 +134,11 @@ discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/ffmpeg"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-08-13T18:34:53Z"
 
 ["nix/firefox-bin"]
 origin = "none"
-discovered_at = "2026-08-08T18:28:18Z"
+discovered_at = "2026-08-13T18:34:53Z"
 
 ["nix/fzf"]
 origin = "none"
@@ -292,7 +292,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-07-20T20:42:57Z"
+discovered_at = "2026-08-13T18:34:53Z"
 
 ["nix/vips"]
 origin = "none"
