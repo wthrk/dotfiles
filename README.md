@@ -243,9 +243,21 @@ cargo xtask check runtime --source-hash "$(git rev-parse HEAD)"
 ゲストは渡した commit を GitHub から checkout し、そこでゲスト実行器をビルドして起動します。push 済みの
 commit を渡してください。`runtime-integration.yml` の runner も同じ commit を checkout し、ゲスト上で同じ
 手順を踏みます。一致するのはここまでで、ゲスト OS の版は既定では揃いません。CI は macOS 26 の runner、
-手元の既定イメージ `sequoia-vanilla` は macOS 15 系です。検証対象が bootstrap と darwin switch である以上
-この版差は検証内容の差になるため、CI と同じ版で確認する場合は `DOTFILES_TART_IMAGE` に macOS 26 のイメージを
-指定してください。
+手元の既定イメージ `sequoia-runtime-base` は macOS 15 系です。検証対象が bootstrap と darwin switch である
+以上、この版差は検証内容の差になります。
+
+既定イメージは初回に自分で作ります。ゲストの bootstrap と darwin switch は公開イメージの容量に収まらないため、
+仮想ディスクと APFS container を広げたイメージを packer で作ります。clone 元の公開イメージは
+`packer/runtime-integration-base.pkr.hcl` の `vm_base_name` が指しており、build がレジストリから pull します。
+
+```sh
+packer init packer/runtime-integration-base.pkr.hcl
+packer build packer/runtime-integration-base.pkr.hcl
+```
+
+CI と同じ macOS 26 で確認する場合は、同ファイルの `vm_base_name` を
+`ghcr.io/cirruslabs/macos-tahoe-vanilla:latest` に、`vm_name` を別の名前に変えてから build し、その `vm_name`
+を `DOTFILES_TART_IMAGE` に渡します。
 
 zsh 設定の実挙動検証（補完、キーバインド、PATH、起動時出力）は devShell 内で bats を直接起動します。
 Rust のビルド成果物を必要としないため `cargo xtask check` の下には置いていません。

@@ -44,7 +44,13 @@ struct Args {
     /// ゲストが checkout し、bootstrap が `github:wthrk/dotfiles/<sha>` として参照する commit。
     #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
     source_hash: String,
-    #[arg(long, env = "DOTFILES_TART_IMAGE", default_value = "sequoia-vanilla")]
+    /// clone 元のイメージ。ゲストは仮想ディスクと APFS container を広げ済みのイメージを要するため、
+    /// 既定は `packer/runtime-integration-base.pkr.hcl` が作るものを指す。
+    #[arg(
+        long,
+        env = "DOTFILES_TART_IMAGE",
+        default_value = "sequoia-runtime-base"
+    )]
     image: String,
     #[arg(long, env = "DOTFILES_TART_VM_NAME")]
     vm_name: Option<String>,
@@ -54,8 +60,6 @@ struct Args {
     ssh_password: String,
     #[arg(long, env = "DOTFILES_TART_KEEP_VM", hide = true)]
     keep_vm: Option<String>,
-    #[arg(long, env = "DOTFILES_TART_DISK_SIZE_GB", default_value_t = 120)]
-    disk_size_gb: u16,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -93,9 +97,8 @@ struct TartRunner {
     ssh_password: String,
     ssh_control_path: String,
     keep_vm: bool,
-    disk_size_gb: u16,
     vm_created: bool,
-    vm_started: bool,
+    /// 起動中の `tart run`。VM directory の lock を握るのはこのプロセスなので、削除前に終了を待ち切る。
     tart_child: Option<Child>,
 }
 
@@ -142,9 +145,7 @@ impl TartRunner {
             ssh_password: args.ssh_password,
             ssh_control_path: random_ssh_control_path()?,
             keep_vm: args.keep_vm.is_some(),
-            disk_size_gb: args.disk_size_gb,
             vm_created: false,
-            vm_started: false,
             tart_child: None,
         })
     }
@@ -158,17 +159,6 @@ impl TartRunner {
         run_plain("tart", ["clone", &self.image, &self.vm_name])?;
         self.vm_created = true;
 
-        step("tart disk resize");
-        println!(
-            "resizing VM disk: {} -> {}GB",
-            self.vm_name, self.disk_size_gb
-        );
-        let disk_size = self.disk_size_gb.to_string();
-        run_plain(
-            "tart",
-            ["set", &self.vm_name, "--disk-size", disk_size.as_str()],
-        )?;
-
         step("tart run");
         println!("starting VM: {}", self.vm_name);
         let tart_log = File::create(self.temp_dir.join("tart-run.log"))?;
@@ -178,7 +168,6 @@ impl TartRunner {
             .stdout(Stdio::from(tart_log))
             .stderr(Stdio::from(tart_log_err))
             .spawn()?;
-        self.vm_started = true;
         self.tart_child = Some(child);
 
         step("ssh wait");
@@ -258,6 +247,20 @@ impl TartRunner {
     /// macOS の Unix domain socket 長制限に当たらない短い制御ソケットパスを返す。
     fn ssh_control_path(&self) -> String {
         self.ssh_control_path.clone()
+    }
+
+    /// `tart run` の終了を待ち、VM directory の lock を解放させる。
+    ///
+    /// `tart delete` はその lock を `trylock` するだけなので、終了を待ってから削除する。
+    fn shutdown_vm(&mut self) {
+        let Some(mut child) = self.tart_child.take() else {
+            return;
+        };
+        let _ = Command::new("tart").args(["stop", &self.vm_name]).status();
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
     }
 }
 
@@ -361,14 +364,19 @@ impl Drop for SshSession {
 }
 
 impl Drop for TartRunner {
+    /// clone した VM を、成功時も失敗時も削除する。
     fn drop(&mut self) {
-        if self.vm_started {
-            let _ = Command::new("tart").args(["stop", &self.vm_name]).status();
-        }
+        self.shutdown_vm();
         if self.vm_created && !self.keep_vm {
-            let _ = Command::new("tart")
+            // Drop から失敗は返せないので、残った VM は報告でしか気付けない。
+            match Command::new("tart")
                 .args(["delete", &self.vm_name])
-                .status();
+                .status()
+            {
+                Ok(status) if status.success() => {}
+                Ok(status) => eprintln!("VM {} が削除できませんでした ({status})", self.vm_name),
+                Err(err) => eprintln!("VM {} が削除できませんでした ({err})", self.vm_name),
+            }
         }
         let _ = fs::remove_dir_all(&self.temp_dir);
     }
