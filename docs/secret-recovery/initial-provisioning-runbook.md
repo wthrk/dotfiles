@@ -44,7 +44,7 @@
 
 > primary / spare の YubiKey 2 本を同時期に用意する。primary 紛失後に spare を後付けできないため spare を事前登録する（spec「スペア YubiKey 運用」）。
 
-1. **[CMD]** 環境適用: `dotfiles switch home`（必要なら `dotfiles switch all`）。gpg-agent SSH support（`enable-ssh-support`）が有効になる。
+1. **[CMD]** 環境適用: `dotfiles switch home`（必要なら対象を省略した `dotfiles switch`）。gpg-agent SSH support（`enable-ssh-support`）が有効になる。
 
 2. **[手動]** Bitwarden Password Manager のアカウント（login email / master password）を用意し、account の 2FA として primary と spare の YubiKey を別々に登録する。
    - Bitwarden Web vault に login し、Account settings / Security / Two-step login 相当の設定カテゴリを開く。

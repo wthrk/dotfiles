@@ -39,7 +39,8 @@ pub(crate) fn dispatch() -> Result<()> {
             .build()?
             .block_on(dotfiles_secrets::run(options)),
         Command::Gpg(options) => dotfiles_secrets::run_gpg(options),
-        Command::Switch(options) => crate::switch::run(options),
+        // 利用者が起動する `switch` は自分で中断できるため、外部コマンドに期限を置かない。
+        Command::Switch(options) => crate::switch::run(options, None),
         Command::Update(options) => crate::update::run(options),
         Command::UpdateHistory(options) => crate::update_history::run(options),
     }

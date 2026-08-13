@@ -1,7 +1,10 @@
-//! ホスト側で Tart VM を管理し、ゲスト内の実行時統合テストを起動する。
+//! Tart VM をゲストとして用意し、その中で実行時統合シナリオを起動する。
 //!
-//! ゲスト用バイナリは検証対象のチェックアウトからビルドして VM にコピーする。
-//! SSH はパスワード認証を制御マスターの確立時だけに限定し、その後のシナリオは同じ接続で流す。
+//! ゲスト内で走る手順は `.github/workflows/runtime-integration.yml` が runner に対して行うものと
+//! 同じにする。checkout も guest 実行器のビルドもゲスト内で行い、ホストの成果物は VM へ持ち込まない。
+//! ホスト側が持つのは VM の生成と SSH 接続だけである。
+//!
+//! SSH はパスワード認証を制御マスターの確立時だけに限定し、その後の手順は同じ接続で流す。
 
 use std::env;
 use std::ffi::OsStr;
@@ -16,21 +19,31 @@ use anyhow::bail;
 use clap::{Parser, ValueEnum};
 use dotfiles_core::{command as command_format, path::find_executable};
 
-mod fs_util;
-
 type Result<T> = dotfiles_core::Result<T>;
 
+/// ゲストが checkout する先。CI の `actions/checkout` が作る作業ツリーに対応する。
+const GUEST_REPO_DIR: &str = "$HOME/dotfiles";
+
+/// ゲストが checkout 元にする repository。bootstrap が参照する flake と同じ出所にする。
+const REPO_URL: &str = "https://github.com/wthrk/dotfiles.git";
+
+/// CI の `dtolnay/rust-toolchain@stable` に対応する、ゲスト内での Rust toolchain 導入。
+const INSTALL_RUST_TOOLCHAIN: &str = "curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs \
+     | sh -s -- -y --profile minimal --default-toolchain stable";
+
+/// CI の `reset Homebrew installation` step と同じ除去。
+const RESET_HOMEBREW: &str = "sudo rm -rf /opt/homebrew /usr/local/Homebrew /usr/local/Caskroom \
+     /usr/local/Cellar /usr/local/Frameworks /usr/local/opt /usr/local/var/homebrew \
+     /usr/local/bin/brew";
+
 #[derive(Parser)]
-/// Tart イメージ、VM 名、SSH 認証情報、検証対象リポジトリを clap/env から受け取る。
+/// Tart イメージ、VM 名、SSH 認証情報、検証対象 commit を clap/env から受け取る。
 struct Args {
     #[arg(value_enum)]
     scenario: Option<RuntimeScenario>,
-    #[arg(long, env = "GITHUB_ACTIONS", hide = true)]
-    github_actions: Option<String>,
-    #[arg(long, env = "DOTFILES_REPO_DIR", value_name = "PATH")]
-    repo_dir: Option<PathBuf>,
+    /// ゲストが checkout し、bootstrap が `github:wthrk/dotfiles/<sha>` として参照する commit。
     #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
-    source_hash: Option<String>,
+    source_hash: String,
     #[arg(long, env = "DOTFILES_TART_IMAGE", default_value = "sequoia-vanilla")]
     image: String,
     #[arg(long, env = "DOTFILES_TART_VM_NAME")]
@@ -41,8 +54,6 @@ struct Args {
     ssh_password: String,
     #[arg(long, env = "DOTFILES_TART_KEEP_VM", hide = true)]
     keep_vm: Option<String>,
-    #[arg(long, env = "CARGO_TARGET_DIR", value_name = "PATH", hide = true)]
-    cargo_target_dir: Option<PathBuf>,
     #[arg(long, env = "DOTFILES_TART_DISK_SIZE_GB", default_value_t = 120)]
     disk_size_gb: u16,
 }
@@ -55,21 +66,12 @@ enum RuntimeScenario {
 
 /// ホスト準備またはゲスト実行の失敗を、xtask へ非 0 終了として返す。
 fn main() -> std::process::ExitCode {
-    match run(Args::parse()) {
+    match TartRunner::new(Args::parse()).and_then(TartRunner::run) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");
             std::process::ExitCode::FAILURE
         }
-    }
-}
-
-/// GitHub Actions の macOS ゲスト内では直接実行し、それ以外では Tart VM を作って実行する。
-fn run(args: Args) -> Result<()> {
-    if args.github_actions.is_some() {
-        run_guest_in_ci(args.scenario(), args.source_hash.as_deref())
-    } else {
-        TartRunner::new(args)?.run()
     }
 }
 
@@ -80,41 +82,10 @@ impl Args {
     }
 }
 
-/// CI が既にゲスト環境を提供している場合は、Tart を使わず guest クレートを直接実行する。
-fn run_guest_in_ci(scenario: RuntimeScenario, source_hash: Option<&str>) -> Result<()> {
-    step("integration test guest");
-    let mut command = Command::new("cargo");
-    command.args(["run", "--package", "dotfiles-integration-test-guest"]);
-    append_guest_args(&mut command, source_hash);
-    match scenario {
-        RuntimeScenario::Full => run_command(
-            command,
-            "cargo run --package dotfiles-integration-test-guest",
-        ),
-    }
-}
-
-fn append_guest_args(command: &mut Command, source_hash: Option<&str>) {
-    if let Some(source_hash) = source_hash {
-        command.args(["--", "--source-hash", source_hash]);
-    }
-}
-
-fn guest_args(source_hash: Option<&str>) -> Vec<String> {
-    std::iter::once("/tmp/dotfiles-integration-test-guest".to_string())
-        .chain(
-            source_hash
-                .into_iter()
-                .flat_map(|source_hash| ["--source-hash".to_string(), source_hash.to_string()]),
-        )
-        .collect()
-}
-
-/// Tart VM、共有ディレクトリ、SSH 制御接続の前提値をまとめて所有する。
+/// Tart VM と SSH 制御接続の前提値をまとめて所有する。
 struct TartRunner {
     scenario: RuntimeScenario,
-    repo_dir: PathBuf,
-    source_hash: Option<String>,
+    source_hash: String,
     image: String,
     vm_name: String,
     temp_dir: PathBuf,
@@ -122,7 +93,6 @@ struct TartRunner {
     ssh_password: String,
     ssh_control_path: String,
     keep_vm: bool,
-    cargo_target_dir: Option<PathBuf>,
     disk_size_gb: u16,
     vm_created: bool,
     vm_started: bool,
@@ -149,12 +119,10 @@ impl TartRunner {
         }
 
         let scenario = args.scenario();
-        let repo_dir = args.repo_dir.unwrap_or(env::current_dir()?);
-        if !repo_dir.join("flake.nix").is_file() || !repo_dir.join(".git").exists() {
-            bail!(
-                "repo_dir が dotfiles checkout を指していません: {}",
-                repo_dir.display()
-            );
+        let source_hash = args.source_hash.trim().to_string();
+        // ゲストはこの commit を GitHub から取得する。空文字は checkout も flake 参照も成立しない。
+        if source_hash.is_empty() {
+            bail!("source hash must not be empty");
         }
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -166,8 +134,7 @@ impl TartRunner {
 
         Ok(Self {
             scenario,
-            repo_dir,
-            source_hash: args.source_hash,
+            source_hash,
             image: args.image,
             vm_name,
             temp_dir,
@@ -175,7 +142,6 @@ impl TartRunner {
             ssh_password: args.ssh_password,
             ssh_control_path: random_ssh_control_path()?,
             keep_vm: args.keep_vm.is_some(),
-            cargo_target_dir: args.cargo_target_dir,
             disk_size_gb: args.disk_size_gb,
             vm_created: false,
             vm_started: false,
@@ -183,15 +149,9 @@ impl TartRunner {
         })
     }
 
-    /// guest バイナリを共有ディレクトリへ置き、VM 起動後に SSH で full シナリオを流す。
+    /// VM を起動し、CI の runner と同じ手順でゲストを整えてからシナリオを起動する。
     fn run(mut self) -> Result<()> {
         fs::create_dir_all(&self.temp_dir)?;
-        let guest_binary = self.build_guest_binary()?;
-        let mounted_guest_binary = self.temp_dir.join("dotfiles-integration-test-guest");
-        fs::copy(&guest_binary, &mounted_guest_binary)?;
-        fs_util::executable(&mounted_guest_binary)?;
-        let mounted_repo = self.temp_dir.join("repo");
-        fs_util::copy_repo_source(&self.repo_dir, &mounted_repo)?;
 
         step("tart clone");
         println!("cloning VM: {} -> {}", self.image, self.vm_name);
@@ -214,13 +174,7 @@ impl TartRunner {
         let tart_log = File::create(self.temp_dir.join("tart-run.log"))?;
         let tart_log_err = tart_log.try_clone()?;
         let child = Command::new("tart")
-            .args([
-                "run",
-                "--no-graphics",
-                &format!("--dir=repo:{}:ro", mounted_repo.display()),
-                &format!("--dir=guest:{}", self.temp_dir.display()),
-                &self.vm_name,
-            ])
+            .args(["run", "--no-graphics", &self.vm_name])
             .stdout(Stdio::from(tart_log))
             .stderr(Stdio::from(tart_log_err))
             .spawn()?;
@@ -231,51 +185,27 @@ impl TartRunner {
         let session = self.connect_ssh()?;
         println!("ssh ready: {}", session.destination());
 
-        step("copy integration test guest");
-        session.run(
-            &["/bin/sh -c \"cp '/Volumes/My Shared Files/guest/dotfiles-integration-test-guest' /tmp/dotfiles-integration-test-guest\""],
-        )?;
-        session.run(&["chmod", "+x", "/tmp/dotfiles-integration-test-guest"])?;
+        step("checkout");
+        session.script(&format!(
+            "rm -rf {GUEST_REPO_DIR}; git clone {REPO_URL} {GUEST_REPO_DIR}; \
+             git -C {GUEST_REPO_DIR} checkout {}",
+            self.source_hash
+        ))?;
 
-        step("integration test scenario via tart");
+        step("Rust toolchain");
+        session.script(INSTALL_RUST_TOOLCHAIN)?;
+
+        step("reset Homebrew installation");
+        session.script(RESET_HOMEBREW)?;
+
+        step("runtime integration");
         match self.scenario {
-            RuntimeScenario::Full => {
-                println!("running full runtime scenario");
-                let args = guest_args(self.source_hash.as_deref());
-                let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-                session.run(&refs)?;
-            }
+            RuntimeScenario::Full => session.script(&format!(
+                "cd {GUEST_REPO_DIR}; export PATH=$HOME/.cargo/bin:$PATH; \
+                 cargo run --package dotfiles-integration-test-guest -- --source-hash {}",
+                self.source_hash
+            )),
         }
-
-        Ok(())
-    }
-
-    /// ホスト側で見えている検証対象リポジトリから guest バイナリをビルドする。
-    fn build_guest_binary(&self) -> Result<PathBuf> {
-        step("build integration test guest");
-        let mut command = Command::new("cargo");
-        command.current_dir(&self.repo_dir).args([
-            "build",
-            "--package",
-            "dotfiles-integration-test-guest",
-        ]);
-        run_command(
-            command,
-            "cargo build --package dotfiles-integration-test-guest",
-        )?;
-
-        let binary = fs_util::target_dir(&self.repo_dir, self.cargo_target_dir.as_deref())
-            .join("debug/dotfiles-integration-test-guest");
-        // VM 内で使うテスト実行ファイルはこのゲスト用実行器だけなので、
-        // 出力が存在しない場合はこのチェックアウトを検証できていない。
-        if !binary.is_file() {
-            bail!(
-                "integration test guest binary is missing: {}",
-                binary.display()
-            );
-        }
-        fs_util::executable(&binary)?;
-        Ok(binary)
     }
 
     /// Tart が IP を返し、SSH ポートが開くまで待つ。VM プロセスが先に落ちた場合は失敗にする。
@@ -372,6 +302,18 @@ impl SshSession {
         }
 
         bail!("ssh control master did not become ready")
+    }
+
+    /// 複数コマンドからなるゲスト手順を、remote 側 shell に 1 度だけ解釈させて実行する。
+    ///
+    /// ssh は remote 引数を空白で連結して remote shell へ渡すため、script 本体は single quote で
+    /// 括った 1 語として送る。single quote を含む本体はこの括りを破るので受け付けない。
+    fn script(&self, body: &str) -> Result<()> {
+        if body.contains('\'') {
+            bail!("guest script must not contain single quotes: {body}");
+        }
+        let command = format!("/bin/bash -c 'set -eux; {body}'");
+        self.run(&[command.as_str()])
     }
 
     /// remote command の非 0 終了を、そのままシナリオ失敗として返す。

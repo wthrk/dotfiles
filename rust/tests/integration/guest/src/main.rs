@@ -1,7 +1,7 @@
 //! ゲスト内で実行する統合シナリオのプロセス境界。
 //!
-//! ホスト側 runner からコピーされる場合も、GitHub Actions 内で直接起動される場合も、
-//! ここで選択されたシナリオを同じ `ScenarioRunner` に渡す。
+//! Tart VM でも GitHub Actions の runner でも、ゲスト自身がこの実行器をビルドして起動する。
+//! 選択されたシナリオは同じ `ScenarioRunner` へ渡る。
 
 use std::process::ExitCode;
 
@@ -22,8 +22,9 @@ type Result<T> = dotfiles_core::Result<T>;
 struct Args {
     #[arg(value_enum)]
     scenario: Option<RuntimeScenario>,
+    /// 検証対象 commit。bootstrap と生成 flake が `github:wthrk/dotfiles/<sha>` として参照する。
     #[arg(long, env = "DOTFILES_TEST_SOURCE_HASH")]
-    source_hash: Option<String>,
+    source_hash: String,
 }
 
 /// シナリオ中のコマンド失敗を標準エラーへ出し、ホスト側 SSH に非 0 終了を返す。
@@ -39,6 +40,6 @@ fn main() -> ExitCode {
 
 /// ゲスト環境を検出してから、選択された順序付きシナリオを実行する。
 fn run(args: Args) -> Result<()> {
-    scenario::ScenarioRunner::new(args.source_hash)?
+    scenario::ScenarioRunner::new(&args.source_hash)?
         .run_scenario(args.scenario.unwrap_or(RuntimeScenario::Full))
 }

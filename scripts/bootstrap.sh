@@ -11,7 +11,6 @@ if [[ -n "${DOTFILES_BOOTSTRAP_SOURCE_REF:-}" ]]; then
 fi
 dotfiles_source="${DOTFILES_BOOTSTRAP_SOURCE:-$default_dotfiles_source}"
 nix_installer_url="${DOTFILES_NIX_INSTALLER_URL:-https://releases.nixos.org/nix/nix-2.34.6/install}"
-switch_mode="darwin"
 run_switch=1
 user=""
 host=""
@@ -26,11 +25,9 @@ usage() {
 
 Options:
   --source FLAKE             dotfiles flake（既定: github:wthrk/dotfiles）
-  --user USER                生成する flake に書くユーザー名
+  --user USER                生成する flake に書くユーザー名（実行ユーザーと一致する必要がある）
   --host HOST                生成する flake に書くホスト名
   --system SYSTEM            生成 flake に書く system（例: aarch64-darwin）
-  --mode darwin|home-manager|all
-                             適用モード（既定: darwin）
   --force                    既存 ~/.config/dotfiles/flake.nix を上書きする
   --no-switch                init 後に終了する
   -h, --help                 このヘルプを表示する
@@ -55,10 +52,6 @@ while (($#)); do
       system="$2"
       shift 2
       ;;
-    --mode)
-      switch_mode="$2"
-      shift 2
-      ;;
     --force)
       force=1
       shift
@@ -78,6 +71,18 @@ while (($#)); do
       ;;
   esac
 done
+
+running_user="$(id -un)"
+# このスクリプトは実行ユーザーの `$HOME/.config/dotfiles` に flake を書き、Home Manager もその
+# ユーザーの権限で適用する。降格の仕組みは持たない（別ユーザーへ降格して適用できるのは root で
+# 走る CLI の `HomeApplyUser` だけで、bootstrap はその経路を通らない）。`--user` に別アカウントを
+# 渡すと、生成 flake の出力名だけが別人になり、書き込み先と適用先は実行ユーザーのままになる。
+# 名前の不一致をここで止め、別ユーザーのホームを呼出ユーザー権限で触らせない。
+if [[ -n "$user" && "$user" != "$running_user" ]]; then
+  echo "--user は実行ユーザー（$running_user）と一致する必要があります: $user" >&2
+  echo "対象ユーザーでログインしてから実行してください。" >&2
+  exit 1
+fi
 
 if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   # shellcheck disable=SC1091
@@ -171,27 +176,15 @@ if [[ "$run_switch" == "0" ]]; then
   exit 0
 fi
 
-case "$switch_mode" in
-  darwin)
-    switch_target="darwin"
-    ;;
-  home-manager)
-    switch_target="home"
-    ;;
-  all)
-    switch_target="all"
-    ;;
-  *)
-    echo "未対応の適用モード: $switch_mode" >&2
-    exit 1
-    ;;
-esac
-
-if [[ "$switch_target" == "darwin" || "$switch_target" == "all" ]]; then
+# sudo を要求するのは system 層（nix-darwin）を適用するときだけ。適用対象は CLI が決めるため、
+# ここでは CLI と同じ `/etc/profiles/per-user/` を見て、判断がずれないようにする。所有者が再実行
+# する場合もディレクトリは在るので、存在確認だけでは sudo の要否を決められない。
+system_profiles_dir="/etc/profiles/per-user"
+if [[ ! -d "$system_profiles_dir" || -e "$system_profiles_dir/$running_user" ]]; then
   require_sudo "nix-darwin switch"
 fi
 
-echo "dotfiles switch ${switch_target} を実行します"
+echo "dotfiles switch を実行します"
 switch_env=()
 if [[ -n "$user" ]]; then
   switch_env+=(DOTFILES_USER="$user")
@@ -201,4 +194,4 @@ if [[ -n "$host" ]]; then
 fi
 switch_env+=(DOTFILES_SOURCE="$dotfiles_source")
 
-env "${switch_env[@]}" nix run "${NIX_FLAKE_ARGS[@]}" "$dotfiles_source" -- switch "$switch_target"
+env "${switch_env[@]}" nix run "${NIX_FLAKE_ARGS[@]}" "$dotfiles_source" -- switch

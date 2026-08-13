@@ -1,7 +1,10 @@
 #!/usr/bin/env bats
 #
-# 構成を適用済みのマシンで zsh を起動し、その環境を検証する。適用は検証の外側で済ませる。
-# 起動を `script(1)` 経由にするのは、制御端末が無いと compinit と zle が初期化されないため。
+# 構成を適用済みのマシンで、この構成が入れた zsh をログインシェルとして（`-l`）起動し、その環境を
+# 検証する。適用は検証の外側で済ませる。起動を `script(1)` 経由にするのは、制御端末が無いと compinit
+# と zle が初期化されないため。
+#
+# 起動先は構成が入れた zsh に固定する。実行ユーザーのログインシェルが何であっても検証対象は変わらない。
 
 setup() {
     bats_load_library bats-support
@@ -10,6 +13,11 @@ setup() {
 
 setup_file() {
     ZSH_CHECK_USER="$(id -un)"
+    ZSH_CHECK_SHELL="$(zsh_configured_shell "${ZSH_CHECK_USER}")"
+    if [ -z "${ZSH_CHECK_SHELL}" ]; then
+        echo "構成が入れた zsh が見つからない。構成を適用してから実行する" >&2
+        return 1
+    fi
 
     local zshrc_target=""
     if [ -L "${HOME}/.zshrc" ]; then
@@ -23,7 +31,22 @@ setup_file() {
             ;;
     esac
 
-    export ZSH_CHECK_USER
+    export ZSH_CHECK_USER ZSH_CHECK_SHELL
+}
+
+# 構成が入れた zsh の所在を返す。system 層を持つユーザーでは per-user profile、home 層だけのユーザー
+# では `~/.nix-profile` に置かれる。同一の検証対象の設置場所の違いなので両方を見る。
+#
+# どちらにも無ければ空を返し、setup_file が止める。`/bin/zsh` へ落とすと OS 同梱の zsh を検証対象に
+# すり替えることになるので、候補に入れない。
+zsh_configured_shell() {
+    local candidate
+    for candidate in "/etc/profiles/per-user/$1/bin/zsh" "${HOME}/.nix-profile/bin/zsh"; do
+        if [ -x "${candidate}" ]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
 }
 
 # 渡した zsh コードの出力を制御文字除去済みで返す。終了 status は判定に使わない
@@ -36,30 +59,31 @@ zsh_probe() {
     printf '%s\n' "$1" >"${code_file}"
     # `script(1)` の引数の並びは BSD 版と util-linux 版で違う。実行環境のものに合わせる。
     if script --version 2>/dev/null | grep -q util-linux; then
-        raw="$(zsh_probe_env script -qec "zsh -ic 'source \"${code_file}\"'" /dev/null)"
+        raw="$(zsh_probe_env script -qec "'${ZSH_CHECK_SHELL}' -lic 'source \"${code_file}\"'" /dev/null)"
     else
-        raw="$(zsh_probe_env script -q /dev/null zsh -ic "source \"${code_file}\"")"
+        raw="$(zsh_probe_env script -q /dev/null "${ZSH_CHECK_SHELL}" -lic "source \"${code_file}\"")"
     fi
     strip_terminal_control "${raw}"
 }
 
-# 実機のログイン環境に相当する最小の変数だけを渡して起動する。
+# ログイン直後の環境に相当する最小の変数だけを渡して起動する。
 zsh_probe_env() {
     env -i \
         HOME="${HOME}" \
         USER="${ZSH_CHECK_USER}" \
         LOGNAME="${ZSH_CHECK_USER}" \
-        SHELL="${HOME}/.nix-profile/bin/zsh" \
+        SHELL="${ZSH_CHECK_SHELL}" \
         TERM=xterm-256color \
         LANG=en_US.UTF-8 \
         PATH="$(zsh_probe_path)" \
         "$@"
 }
 
-# 起動前から PATH にあった要素。`ZSH_CHECK_INHERITED_PATH` は除外規則の検証だけが使う。
+# ログインシェルが起動される時点の PATH。Nix の profile はここに入れず、起動ファイルが自分で
+# 足すものだけを観測する。`ZSH_CHECK_INHERITED_PATH` は除外規則の検証だけが使う。
 zsh_probe_path() {
     printf '%s' \
-        "${ZSH_CHECK_INHERITED_PATH:+${ZSH_CHECK_INHERITED_PATH}:}${HOME}/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        "${ZSH_CHECK_INHERITED_PATH:+${ZSH_CHECK_INHERITED_PATH}:}/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 # `script(1)` が pty 出力へ混ぜる制御文字と前後の空白を落とす。

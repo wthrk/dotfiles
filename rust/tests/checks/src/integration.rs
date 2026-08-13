@@ -12,19 +12,15 @@ pub(crate) enum RuntimeScenario {
 }
 
 /// VM の準備と guest 実行は integration クレート側へ任せる。
-pub(crate) fn run(scenario: RuntimeScenario, source_hash: Option<String>) -> Result<()> {
+pub(crate) fn run(scenario: RuntimeScenario, source_hash: &str) -> Result<()> {
     let shell = Shell::new()?;
     match scenario {
         RuntimeScenario::Full => {
-            let mut args = vec![
-                "run".to_string(),
-                "--package".to_string(),
-                "dotfiles-integration-tests".to_string(),
-            ];
-            if let Some(source_hash) = source_hash {
-                args.extend(["--".to_string(), "--source-hash".to_string(), source_hash]);
-            }
-            cmd!(shell, "cargo {args...}").run()?;
+            cmd!(
+                shell,
+                "cargo run --package dotfiles-integration-tests -- --source-hash {source_hash}"
+            )
+            .run()?;
         }
     }
     Ok(())

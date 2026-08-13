@@ -20,14 +20,13 @@
 }:
 let
   # auto-update daemon は nightly bump 後に各マシンを repo pin へ無人収束させる薄い launchd service である。
-  # launchd timer は 09:00 に 1 回だけ起動し、root daemon から `dotfiles update` の既定 target（all）を呼ぶ。
-  # CLI 側が lock 更新と Home Manager を対象ユーザー権限へ降格し、darwin-rebuild だけを root のまま適用する。
-  # wrapper は対象ユーザー・HOME・config-dir・host を明示し、適用順序や target semantics は CLI の `update` / `switch`
-  # と同じ実装に委ねる。
+  # launchd timer は 09:00 に 1 回だけ起動し、root daemon から `dotfiles update` を呼ぶ。対象ユーザーは
+  # 指定せず、このマシンでローカル flake を持つ全ユーザーの解決を CLI に委ねる。CLI 側が各ユーザーの
+  # lock 更新と Home Manager をそのユーザー権限へ降格し、system 層は所有者の flake からだけ適用する。
+  # マシンの自動更新はこの 1 個の daemon であり、スケジュールもログも 1 箇所に残る。
   autoUpdateLabel = "org.dotfiles.auto-update";
 
   homeDir = "/Users/${user}";
-  configDir = "${homeDir}/.config/dotfiles";
 
   # 退役した CapsLock→Ctrl 実装（login のたびに `hidutil` で HID mapping を掛け直していた user agent）。
   retiredKeyboardRemapLabel = "org.dotfiles.keyboard-remap";
@@ -42,16 +41,15 @@ let
   # 絶対 store パスで CLI を指す（PATH 非依存。launchd の最小環境で確実に解決するため）。
   dotfilesBin = "${inputs.self.packages.${autoUpdateSystem}.default}/bin/dotfiles";
 
-  # makeBinPath で確実に解決できる `nix` / coreutils を先頭に置き、`darwin-rebuild` / `home-manager` は実行時
-  # profile から引く（build 時の store パスに固定できないため runtime profile で解決する）。CLI に焼き込まれた
-  # `DOTFILES_DARWIN_REBUILD` / `DOTFILES_HOME_MANAGER` 絶対パスが効くため、この PATH は `nix` の解決にだけ使う。
+  # launchd の最小環境で、CLI が絶対パスを持たないコマンドを解決するための PATH。CLI 自身が引くのは
+  # `sudo`（対象ユーザーへの降格）と `dscl`（ローカル flake を持つユーザーの列挙）で、`nix` / coreutils は
+  # そこから起動する子プロセスが使う。`darwin-rebuild` / `home-manager` は `flake.nix` の `wrapProgram` が
+  # `DOTFILES_DARWIN_REBUILD` / `DOTFILES_HOME_MANAGER` へ焼き込んだ絶対パスで解決するため、ここには要らない。
   autoUpdatePath = lib.concatStringsSep ":" [
     (lib.makeBinPath [
       config.nix.package
       pkgs.coreutils
     ])
-    "/etc/profiles/per-user/${user}/bin"
-    "${homeDir}/.nix-profile/bin"
     "/run/current-system/sw/bin"
     "/nix/var/nix/profiles/default/bin"
     "/usr/bin"
@@ -60,20 +58,17 @@ let
     "/sbin"
   ];
 
-  # launchd timer が呼ぶ薄い wrapper。target は省略し、手動 `dotfiles update` と同じ既定 `all`
-  # （lock 更新後に Home Manager、続いて nix-darwin）を使う。root daemon から呼ぶため `--user` を明示し、CLI が
-  # lock 更新と standalone Home Manager を `sudo -H -u ${user}` で実行できるようにする。`HOME` と `--config-dir` は
-  # 対象ユーザーのローカル flake へ固定し、root の `$HOME/.config/dotfiles` や `homeConfigurations.root` を参照しない。
-  # `--host` は `dotfiles init --host` で短縮 hostname と異なる出力名を使った環境でも `#<host>` を正しく参照する。
+  # launchd timer が呼ぶ薄い wrapper。target と対象ユーザーは指定しない。root で `--user` 省略の
+  # `dotfiles update` は、このマシンでローカル flake を持つ全ユーザーを対象にし、各ユーザーの
+  # 適用範囲もそのユーザーの scope から決まる。ここへ利用者名や config-dir を埋め込むと、daemon が
+  # 1 人だけを見る状態に戻る。`--host` はマシン単位の値で、`dotfiles init --host` で短縮 hostname と
+  # 異なる出力名を使った環境でも `#<host>` を正しく参照する。
   autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg autoUpdatePath}
 
-    exec env HOME=${lib.escapeShellArg homeDir} ${dotfilesBin} update \
-      --config-dir ${lib.escapeShellArg configDir} \
-      --user ${lib.escapeShellArg user} \
-      --host ${lib.escapeShellArg host}
+    exec ${dotfilesBin} update --host ${lib.escapeShellArg host}
   '';
 in
 {

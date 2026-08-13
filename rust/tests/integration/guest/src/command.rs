@@ -42,10 +42,27 @@ where
     Ok(command.status()?)
 }
 
-/// 別ユーザーの HOME/USER/PATH を明示して実行するための `sudo -H -u ... env ...` 引数を作る。
-pub(crate) fn sudo_user_args(
+/// ログインシェルへ渡す唯一のスクリプト本文。位置引数をそのまま `exec` する。
+const EXEC_POSITIONAL_ARGS: &str = r#"exec -- "$@""#;
+
+/// 対象ユーザーのログインシェルを経由して実行するための `sudo -H -u ...` 引数を作る。
+///
+/// `sudo -H -u` は HOME/USER/LOGNAME/SHELL を対象ユーザーのレコードから作り直すが、シェルを挟まない
+/// 起動では起動ファイルが読まれず、PATH と Nix の profile 変数が実ログインと変わる。ログインシェルを
+/// 挟むことで、これらは起動ファイル（zsh なら `/etc/zshenv`、sh なら `/etc/bashrc`）が読む
+/// nix-darwin の `set-environment` から来るようになり、ハーネス側に写しを持たなくて済む。
+///
+/// `test_inputs` は `sudo` の env_reset で消える、テストが与えないと成立しない入力に限る。シェルの起動
+/// ファイルより先に置くが、`set-environment` が上書きするのは PATH と Nix の profile 変数だけなので
+/// 打ち消されない。
+///
+/// 実行対象は `-lc` のスクリプト本文へ埋め込まず、位置引数として渡す。シェルは
+/// [`EXEC_POSITIONAL_ARGS`] しか解釈しないため、引数に空白や shell metacharacter が含まれても
+/// 語分割・glob 展開・変数展開・コマンド置換のいずれも起きない。
+pub(crate) fn sudo_login_shell_args(
     user: &str,
-    envs: &[(String, String)],
+    login_shell: &str,
+    test_inputs: &[(String, String)],
     program: &str,
     args: &[&str],
 ) -> Vec<String> {
@@ -53,11 +70,21 @@ pub(crate) fn sudo_user_args(
         "-H".to_string(),
         "-u".to_string(),
         user.to_string(),
-        "env".to_string(),
+        "/usr/bin/env".to_string(),
     ]
     .into_iter()
-    .chain(envs.iter().map(|(key, value)| format!("{key}={value}")))
-    .chain(std::iter::once(program.to_string()))
+    .chain(
+        test_inputs
+            .iter()
+            .map(|(key, value)| format!("{key}={value}")),
+    )
+    .chain([
+        login_shell.to_string(),
+        "-lc".to_string(),
+        EXEC_POSITIONAL_ARGS.to_string(),
+        login_shell.to_string(),
+        program.to_string(),
+    ])
     .chain(args.iter().map(|arg| (*arg).to_string()))
     .collect()
 }

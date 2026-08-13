@@ -2,13 +2,23 @@
 //!
 //! `switch` は lock 済みの入力をそのまま使う。main など更新される参照へ追従したいときだけ、
 //! このコマンドで `$HOME/.config/dotfiles/flake.lock` を先に更新してから既存の適用処理を実行する。
+//!
+//! root 実行で 1 ユーザー分を指す指定が 1 つも無いときは、このマシンでローカル flake を持つ
+//! 全ユーザーを更新する。auto-update daemon はこの形で起動し、更新の仕組みをユーザーの種類で
+//! 分けない。
 
-use std::{ffi::OsString, path::Path};
+use std::{
+    ffi::OsString,
+    path::Path,
+    time::{Duration, Instant},
+};
 
+use anyhow::bail;
 use clap::Args;
 
 use crate::{
     Result,
+    environment::local_flake_accounts,
     local_flake::INPUT_NAME,
     process::{run as run_process, sudo_as_user_args},
     switch,
@@ -16,20 +26,79 @@ use crate::{
 
 const DEFAULT_NIX_PROGRAM: &str = "/nix/var/nix/profiles/default/bin/nix";
 
+/// 全ユーザー走査で 1 ユーザー分の処理に与える上限。
+///
+/// この経路が起動する外部コマンドは nightly CI の `bump` job と同じ nix 作業（`nix flake update` と
+/// 構成の評価・ビルド）であり、その job は store を持たない macOS runner に対して
+/// `.github/workflows/nightly-update.yml` の `timeout-minutes: 120` で足りている。auto-update daemon は
+/// store が温まった実機で走るので、同じ 120 分は正常な更新を打ち切らない上限として十分に広い。
+/// daemon の発火は `nix/darwin.nix` の `StartCalendarInterval` により 09:00 の 1 日 1 回で、
+/// このマシンでローカル flake を持つ数人分を順に積んでも次の発火には掛からない。
+const USER_UPDATE_TIMEOUT: Duration = Duration::from_secs(120 * 60);
+
 /// 既存の `switch` と同じオプションを受け取り、先に flake.lock を更新する。
 pub(crate) fn run(options: UpdateOptions) -> Result<()> {
-    let config_dir = options.switch.config_dir()?;
+    if options.switch.sweeps_all_users(switch::is_effective_root()) {
+        return run_all_users(&options.switch);
+    }
+    // 利用者自身の実行は中断できるので期限を置かない。
+    run_one_user(options.switch, None)
+}
+
+/// 1 ユーザー分の lock 更新と適用を、既存の `switch` と同じ経路で実行する。
+///
+/// `deadline` を渡すと、このユーザー分の外部コマンドはその時刻で打ち切られる。
+fn run_one_user(options: switch::SwitchOptions, deadline: Option<Instant>) -> Result<()> {
+    let config_dir = options.config_dir()?;
     switch::ensure_config_exists(&config_dir)?;
     // 降格対象は最初の特権コマンドより前に解決する。lock 更新は config dir へ書くため、root 実行で
     // 降格対象が無いまま進むと利用者所有の `flake.lock` が root 所有へ変わる。`HomeApplyUser` は
     // その組み合わせで構築を拒むので、ここで解決しておけば argv を組み立てる前に落ちる。
-    let target_user = options.switch.home_apply_user()?;
+    let target_user = options.home_apply_user()?;
     update_lock(
         &config_dir,
-        options.switch.dry_run(),
+        options.dry_run(),
         target_user.downgrade_target(),
+        deadline,
     )?;
-    switch::run(options.switch)
+    switch::run(options, deadline)
+}
+
+/// auto-update daemon の経路。ローカル flake を持つ全ユーザーを、そのユーザー権限で更新する。
+///
+/// lock 更新と Home Manager は `HomeApplyUser` の降格経路で対象ユーザーへ落とすため、root のまま
+/// 他ユーザーの flake を評価・ビルドしない。system 層はそのユーザーの scope が `Full` のとき、
+/// すなわち `/etc/profiles/per-user/` が所有者として示すユーザーのときだけ適用される。
+///
+/// 走査はユーザー名の昇順で、1 ユーザーの失敗では止めない。失敗は記録して次のユーザーへ進み、
+/// 1 件でもあれば最後に非 0 で終了する。1 ユーザーに与える時間は [`USER_UPDATE_TIMEOUT`] までで、
+/// 超過も失敗として記録する。
+fn run_all_users(base: &switch::SwitchOptions) -> Result<()> {
+    let mut failed = Vec::new();
+    for account in local_flake_accounts()? {
+        println!("==> dotfiles update: {}", account.user);
+        let result = run_one_user(
+            base.for_user(&account.user, account.config_dir),
+            Some(Instant::now() + USER_UPDATE_TIMEOUT),
+        );
+        if let Err(error) = result {
+            eprintln!("==> dotfiles update failed: {}: {error:#}", account.user);
+            failed.push(account.user);
+        }
+    }
+    sweep_result(&failed)
+}
+
+/// 全ユーザー走査の終了状態を、失敗したユーザー名から決める。
+///
+/// daemon の `StandardErrorPath` に残るのはこのメッセージなので、最初の 1 件ではなく失敗した
+/// ユーザーをすべて並べる。
+fn sweep_result(failed: &[String]) -> Result<()> {
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        bail!("dotfiles update failed for: {}", failed.join(", "))
+    }
 }
 
 /// 生成済みローカル flake の `dotfiles` input だけを再 lock する。
@@ -37,9 +106,14 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
 /// 全 input を更新すると各端末が CI bump 済みの repo lock ではなく独自に最新 nixpkgs/taps へ進み、
 /// fleet pin から乖離する。`dotfiles` input のみを更新し、推移的 nixpkgs/taps を repo の committed
 /// lock に追従させる。
-fn update_lock(config_dir: &Path, dry_run: bool, lock_owner: Option<&str>) -> Result<()> {
+fn update_lock(
+    config_dir: &Path,
+    dry_run: bool,
+    lock_owner: Option<&str>,
+    deadline: Option<Instant>,
+) -> Result<()> {
     let invocation = update_lock_invocation(config_dir, lock_owner);
-    run_process(invocation.program, invocation.args, dry_run)
+    run_process(invocation.program, invocation.args, dry_run, deadline)
 }
 
 /// `nix flake update <dotfiles> --flake <config-dir>` の引数列を組み立てる純粋関数。
@@ -82,10 +156,11 @@ pub(crate) struct UpdateOptions {
     switch: switch::SwitchOptions,
 }
 
-/// `update_lock_args` が `dotfiles` input だけを対象に `nix flake update` を組むことを検証する。
+/// `update_lock_args` が `dotfiles` input だけを対象に `nix flake update` を組むこと、および
+/// 全ユーザー走査の終了状態が失敗したユーザー全件から決まることを検証する。
 #[cfg(test)]
 mod tests {
-    use super::{update_lock_args, update_lock_invocation};
+    use super::{sweep_result, update_lock_args, update_lock_invocation};
     use std::ffi::OsString;
     use std::path::Path;
 
@@ -131,6 +206,23 @@ mod tests {
                 OsString::from("/cfg"),
             ]
         );
+    }
+
+    /// 全ユーザーが成功した走査は成功として終わる。
+    #[test]
+    fn sweep_without_failure_succeeds() -> anyhow::Result<()> {
+        sweep_result(&[])
+    }
+
+    /// 途中のユーザーが失敗した走査は非 0 で終わり、失敗したユーザーを全件示す。
+    #[test]
+    fn sweep_with_failures_reports_every_failed_user() {
+        let err = sweep_result(&["dotfilesci".to_string(), "ya".to_string()])
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("dotfilesci"), "{err}");
+        assert!(err.contains("ya"), "{err}");
     }
 
     #[test]
