@@ -42,4 +42,13 @@
     source = "${root}/config/karabiner/karabiner.json";
     force = true;
   };
+
+  # 入力ソースを ABC へ戻す Hammerspoon 設定。Hammerspoon 本体は Homebrew cask で入れる
+  # （`nix/modules/homebrew.nix`）ので、`init.lua` は宣言側のこのリンクが正本になる。読み込み先は
+  # `~/.hammerspoon/init.lua` 固定で XDG 配下ではないため、`xdg.configFile` ではなく `home.file` に置く。
+  # Hammerspoon は macOS 専用なので `mkHome` が Linux で評価されたときはリンクしない。
+  home.file.".hammerspoon/init.lua" = lib.mkIf pkgs.stdenv.isDarwin {
+    source = "${root}/config/hammerspoon/init.lua";
+    force = true;
+  };
 }

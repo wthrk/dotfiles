@@ -32,6 +32,11 @@
     # `services.karabiner-elements.enable` は使わない。pin 済み `karabiner-elements-15.7.0` には上流モジュールが
     # `environment.userLaunchAgents` へ載せる LaunchAgents plist が無く、`userLaunchd` activation の `cp -f` が
     # dangling symlink を掴んで止まるためである。そのため `launchd.user.agents` は空に保つ。
+    #
+    # `hammerspoon` は tty アプリと Zed のフォーカス時に入力ソースを ABC へ戻す実体で、対象アプリと
+    # 強制処理は `config/hammerspoon/init.lua`（`nix/modules/shell-files.nix` がリンク）が持つ。
+    # Karabiner の `select_input_source` は `from` のキーイベントを要求するため、アプリのアクティブ化を
+    # トリガーにできない。
     casks = [
       "azookey"
       "bitwarden"
@@ -39,6 +44,7 @@
       "codex-app"
       "font-cica"
       "ghostty"
+      "hammerspoon"
       "karabiner-elements"
       "kicad"
       "yubico-authenticator"
