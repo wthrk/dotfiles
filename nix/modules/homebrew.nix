@@ -35,6 +35,7 @@
     casks = [
       "azookey"
       "bitwarden"
+      "claude"
       "claude-code@latest"
       "codex-app"
       "font-cica"
