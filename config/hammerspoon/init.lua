@@ -12,16 +12,22 @@ local FORCE_ABC_BUNDLE_IDS = {
   ["dev.zed.Zed"] = true,
 }
 
+local function forceAbcIfTarget(app)
+  if app ~= nil and FORCE_ABC_BUNDLE_IDS[app:bundleID()] then
+    hs.keycodes.currentSourceID(ABC_SOURCE_ID)
+  end
+end
+
 -- watcher は userdata の `__gc` が stop を呼ぶため、global に置いて参照を残す。local にすると
 -- この設定を読み終えた時点で回収され、監視が止まる。
 inputSourceWatcher = hs.application.watcher.new(function(_, event, app)
-  if event ~= hs.application.watcher.activated or app == nil then
-    return
-  end
-
-  if FORCE_ABC_BUNDLE_IDS[app:bundleID()] then
-    hs.keycodes.currentSourceID(ABC_SOURCE_ID)
+  if event == hs.application.watcher.activated then
+    forceAbcIfTarget(app)
   end
 end)
 
 inputSourceWatcher:start()
+
+-- `start()` は NSWorkspace の observer を登録するだけで、開始時点の前面アプリには callback を出さない。
+-- この設定を読み込んだ時点の前面アプリも同じ処理へ通し、対象アプリが前面なら ABC で始める。
+forceAbcIfTarget(hs.application.frontmostApplication())
