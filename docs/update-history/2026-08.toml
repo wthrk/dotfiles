@@ -750,3 +750,66 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-14T18:33:08Z"
+state_old = "3552cbeb40ca45661741e4dcb3b373da6f696bfbc66c3bbd2d2db19276798576"
+state_new = "6cd8e48f3b87cd9d4848acd81a16ba8493c10a7cebf84553c094e9b3d6b2fbfe"
+cursor_old = "331abcfa420d893e0a532c1d76f7a5a6d0dfbebe"
+nixpkgs_old = "044bfe75bfe4c7bbe043dc17b5e42ea823b84a09"
+nixpkgs_new = "6b5e5b7a6631f065bf6908986990b37d845f847f"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: ✨1 🐛2"
+
+[[update.package]]
+name = "chromedriver"
+old = "151.0.7922.109"
+new = "151.0.7922.138"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 151.0.7922.138 では、特定のバグが修正されました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "discord"
+old = "0.0.406"
+new = "0.0.407"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://discord.com/blog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいボイスチャット機能が追加されました。"
+ref = "https://discord.com/blog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "メッセージ送信時のバグが修正されました。"
+ref = "https://discord.com/blog"
+
+[[update.package]]
+name = "claude"
+old = "1.28929.0,d1a6bcd4ef8627d603a8290548a984220b6701cf"
+new = "1.30096.1,194d93c2558cfbfcd2b8b7a90e02774c489d1875"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.231"
+new = "2.1.232"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
