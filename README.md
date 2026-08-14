@@ -47,6 +47,18 @@ macOS 26 のシステム設定のペイン名です。
 `karabiner.json` はリポジトリ側が正本です。Karabiner の GUI から設定を変えると symlink が実ファイルに
 置き換わりますが、次の適用で宣言側に戻ります。変更はリポジトリに入れてください。
 
+## 入力ソースの強制（Hammerspoon）
+
+tty アプリ（Ghostty、iTerm2、Terminal.app）と Zed をアクティブにした瞬間に入力ソースを ABC へ戻す処理は
+`config/hammerspoon/init.lua` にあり、`~/.hammerspoon/init.lua` へリンクします。Hammerspoon 本体は Homebrew
+cask で入ります。`init.lua` はリポジトリ側が正本です。
+
+Hammerspoon の起動は宣言に入りません。初回適用後に一度手で起動し、Preferences の「Launch Hammerspoon at
+login」を有効にしてください。
+
+`init.lua` を変えた適用のあとは、Hammerspoon の Reload Config で読み直します。Hammerspoon は設定ファイルの
+変更を自分では読み直しません。
+
 ## 更新と適用
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
