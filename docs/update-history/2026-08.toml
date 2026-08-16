@@ -843,3 +843,132 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-16T18:17:45Z"
+state_old = "b9f172a8c7543dec5ead938cb134e448c3ead2a269390a4b64ea7e8977234528"
+state_new = "e0b2cb130a02d4da9004696fb5451601f71d40d5a7ddf694b811326a91019cb5"
+cursor_old = "0456aea6868b50fec3d4d5289306e0c83d9636af"
+nixpkgs_old = "6b5e5b7a6631f065bf6908986990b37d845f847f"
+nixpkgs_new = "8be7bd0c83f12e2e3bbba07c9044d6fed9e66f7f"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: ✨7 🐛12"
+
+[[update.package]]
+name = "glow"
+old = "2.1.2"
+new = "3.0.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/charmbracelet/glow/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "適応型ドキュメントのバグを修正しました。"
+
+[[update.package]]
+name = "go"
+old = "1.25.12"
+new = "1.25.13"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://go.dev/doc/devel/release"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Go 1.25.13 では、いくつかの重要なバグ修正が行われました。"
+ref = "https://go.dev/doc/devel/release#go1.25"
+
+[[update.package]]
+name = "pyright"
+old = "1.1.411"
+new = "1.1.412"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/Microsoft/pyright/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "デフォルトのサブクラス型の特殊化を修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "数値リテラルパターンのブール値の狭めを修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ラムダ内の暗黙の __class__ バインディングを修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "is/is not None の右辺の狭めを修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "異なるメンバー型を持つユニオンの属性に代入する際の誤検出を修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`struct.unpack` の型推論に関する問題を修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "クラスの呼び出し可能変数をメソッドでオーバーライドできない問題を修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "プロパティセッターに対するオーバーロードをサポートしました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "スタンドアロンのタイプサーバープロトコル (TSP) サーバーを Pyright に追加しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "非常にネストされた再帰的タプルエイリアスを持つ TypeVarTuple のエスケープを修正しました。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "1.1.410 でモジュールとして検出される問題を修正しました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "TypeForm サポートをデフォルトで有効にしました。"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.14.2"
+new = "1.15.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.15.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`git.diff_base` 設定を追加し、未コミットの変更を `HEAD` またはデフォルトブランチのマージベースに対して表示できるようにした。"
+ref = "https://github.com/zed-industries/zed/pull/61501"
+
+[[update.package.change_item]]
+category = "feature"
+text = "プロジェクトパネルから外部 macOS アプリへのファイルドラッグをサポート。"
+ref = "https://github.com/zed-industries/zed/pull/58161"
+
+[[update.package.change_item]]
+category = "feature"
+text = "JSX と TSX のカスタム要素に対するリンク編集を追加。"
+ref = "https://github.com/zed-industries/zed/pull/58578"
+
+[[update.package.change_item]]
+category = "feature"
+text = "JSX と TSX の return およびアロー関数のボディ内で Emmet 補完を有効化。"
+ref = "https://github.com/zed-industries/zed/pull/53688"
+
+[[update.package.change_item]]
+category = "feature"
+text = "プロジェクトパネルから外部 Linux Wayland アプリへのファイルドラッグをサポート。"
+ref = "https://github.com/zed-industries/zed/pull/61947"
