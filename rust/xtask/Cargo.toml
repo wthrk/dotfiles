@@ -11,4 +11,6 @@ workspace = true
 anyhow.workspace = true
 clap.workspace = true
 dotfiles-core.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+shlex.workspace = true

@@ -111,3 +111,12 @@
 - PR には恒久的な変更内容、必要性、実施検証を記述し、チャット履歴や作業実況は書かない。
 - PR review thread には採用/不採用の理由を返信し、対応済み thread を resolve する。
 - AI review で新規指摘が出た場合は、修正または不採用理由を示し、最新 head で no-issue になるまで繰り返す。
+
+## 9. コマンド操作の機械強制
+
+次の 2 件は繰り返し破られたため、規約文だけにせず、実行前に評価して止める。
+
+- ファイル閲覧をシェルへ流さない。閲覧は Read ツールで行い、`cat` / `head` / `tail` / `sed` を使わない。
+- コマンドの終了コードを `$?` で退避しない。
+
+判定は [`rust/xtask/src/hook.rs`](../../rust/xtask/src/hook.rs) が持ち、`.claude/settings.json` が `Bash` に対して `cargo run --quiet --package xtask -- pre-tool-use` を配線する。判定できない入力は通さない。
