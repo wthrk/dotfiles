@@ -21,14 +21,12 @@ use crate::Result;
 /// `matcher` で `Bash` に限定しているため、`tool_input` は `command` を持つ。
 #[derive(Deserialize)]
 struct Event {
-    #[serde(default)]
     tool_input: ToolInput,
 }
 
 /// `Bash` へ渡された実行コマンド。
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct ToolInput {
-    #[serde(default)]
     command: String,
 }
 
