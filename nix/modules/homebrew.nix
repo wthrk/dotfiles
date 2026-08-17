@@ -31,10 +31,11 @@
     # `config/karabiner/karabiner.json`（`nix/modules/shell-files.nix` がリンク）が持つ。
     # `services.karabiner-elements.enable` は使わない。pin 済み `karabiner-elements-15.7.0` には上流モジュールが
     # `environment.userLaunchAgents` へ載せる LaunchAgents plist が無く、`userLaunchd` activation の `cp -f` が
-    # dangling symlink を掴んで止まるためである。そのため `launchd.user.agents` は空に保つ。
+    # dangling symlink を掴んで止まるためである。
     #
     # `hammerspoon` は tty アプリと Zed のフォーカス時に入力ソースを ABC へ戻す実体で、対象アプリと
-    # 強制処理は `config/hammerspoon/init.lua`（`nix/modules/shell-files.nix` がリンク）が持つ。
+    # 強制処理は `config/hammerspoon/init.lua`（`nix/modules/shell-files.nix` がリンク）が持ち、起動は
+    # `nix/modules/hammerspoon.nix` の LaunchAgent が担う。
     # Karabiner の `select_input_source` は `from` のキーイベントを要求するため、アプリのアクティブ化を
     # トリガーにできない。
     casks = [
