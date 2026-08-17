@@ -119,4 +119,4 @@
 - ファイル閲覧をシェルへ流さない。閲覧は Read ツールで行い、`cat` / `head` / `tail` / `sed` を使わない。
 - コマンドの終了コードを `$?` で退避しない。
 
-判定は [`rust/xtask/src/hook.rs`](../../rust/xtask/src/hook.rs) が持ち、`.claude/settings.json` が `Bash` に対して `cargo run --quiet --package xtask -- pre-tool-use` を配線する。判定できない入力は通さない。
+判定は [`rust/xtask/src/hook.rs`](../../rust/xtask/src/hook.rs) が持ち、`.claude/settings.json` が `Bash` の `PreToolUse` へ配線する。判定できない入力は通さない。判定を実行できなかった場合も通さない。

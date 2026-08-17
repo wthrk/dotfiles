@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cargo run --quiet --package xtask -- pre-tool-use",
+            "command": "cargo run --quiet --package xtask -- pre-tool-use || exit 2",
             "timeout": 300
           }
         ]

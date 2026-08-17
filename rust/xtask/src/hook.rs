@@ -58,9 +58,10 @@ const READERS: [&str; 4] = ["cat", "head", "tail", "sed"];
 /// 展開される位置に現れたら止める綴り。
 const EXIT_CAPTURES: [&str; 2] = ["$?", "${?}"];
 
-/// 引用の外で語を切るシェルのメタ文字のうち、入れ子を持たないもの。
+/// 引用の外で語を切るシェルのメタ文字。
 ///
-/// backtick は開いた置換を閉じる位置まで追う必要があるため、この表ではなく `views` で個別に扱う。
+/// backtick と、コマンド置換の中に現れる括弧は、開いた入れ子を閉じる位置まで追う必要があるため、
+/// この表に任せず `views` で個別に扱う。
 const SEPARATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '\n'];
 
 /// 標準入力のイベントを読んで判定し、止める場合だけ標準出力へ拒否を出す。
@@ -138,6 +139,11 @@ enum Frame {
     DoubleQuote,
     /// `$(` で開いたコマンド置換の中。閉じ括弧まで引用の外と同じに扱う。
     Substitution,
+    /// コマンド置換の中で `(` が開いた subshell の中。
+    ///
+    /// 数えずに写すと、`$( (true); cat README.md)` の内側の `)` で置換を閉じたことにしてしまい、
+    /// シェルが置換の中で実行する後続の語が二重引用の文言へ紛れる。
+    Group,
     /// backtick で開いたコマンド置換の中。次の backtick まで引用の外と同じに扱う。
     Backtick,
 }
@@ -232,7 +238,16 @@ fn views(command: &str) -> Views {
                         frames.push(Frame::Backtick);
                     }
                     index += 1;
-                } else if character == ')' && matches!(frame, Some(Frame::Substitution)) {
+                } else if character == '('
+                    && matches!(frame, Some(Frame::Substitution | Frame::Group))
+                {
+                    frames.push(Frame::Group);
+                    separated.push(' ');
+                    expanded.push(' ');
+                    index += 1;
+                } else if character == ')'
+                    && matches!(frame, Some(Frame::Substitution | Frame::Group))
+                {
                     frames.pop();
                     separated.push(' ');
                     expanded.push(' ');
@@ -342,6 +357,15 @@ mod tests {
             Some(READ_REASON)
         );
         assert_eq!(judge(r#"echo "`cat README.md`""#)?, Some(READ_REASON));
+        // 置換の中の `(` は subshell を開くだけであり、その閉じ括弧では置換は終わらない。
+        assert_eq!(
+            judge(r#"echo "$( (true); cat README.md)""#)?,
+            Some(READ_REASON)
+        );
+        assert_eq!(
+            judge(r#"echo "$( (cd rust; cargo build) 2>&1 | tail -20 )""#)?,
+            Some(READ_REASON)
+        );
         Ok(())
     }
 
