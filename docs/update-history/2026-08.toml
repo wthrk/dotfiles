@@ -972,3 +972,138 @@ ref = "https://github.com/zed-industries/zed/pull/53688"
 category = "feature"
 text = "プロジェクトパネルから外部 Linux Wayland アプリへのファイルドラッグをサポート。"
 ref = "https://github.com/zed-industries/zed/pull/61947"
+
+[[update]]
+at = "2026-08-17T18:22:26Z"
+state_old = "e0b2cb130a02d4da9004696fb5451601f71d40d5a7ddf694b811326a91019cb5"
+state_new = "c1c051cc1d862588d4608c1b212be75a5890934fd523ae456e95d9ae649e8ea3"
+cursor_old = "f486288cbd2f0f028c34c5639037c36344831228"
+nixpkgs_old = "8be7bd0c83f12e2e3bbba07c9044d6fed9e66f7f"
+nixpkgs_new = "f4b6996c4e8b9ee06ce147ec344c885f51071b14"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "5アプリ更新: ⚠️1 🗑️2 ✨4 🐛10"
+
+[[update.package]]
+name = "atuin"
+old = "18.18.1"
+new = "18.19.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド 'atuin search' を追加しました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正により、特定の環境での起動時エラーを解消しました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いコマンド 'atuin old-command' は非推奨となり、次のメジャーリリースで削除される予定です。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package]]
+name = "cargo-llvm-cov"
+old = "0.8.7"
+new = "0.9.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/taiki-e/cargo-llvm-cov/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`--show-missing-lines` の出力形式が変更され、連続する行番号が集約されるようになった。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/497"
+
+[[update.package.change_item]]
+category = "fix"
+text = "2024エディションのワークスペースでのドクトテストカバレッジの修正。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/507"
+
+[[update.package.change_item]]
+category = "fix"
+text = "新しいビルドディレクトリレイアウトを使用している場合に、ビルドスクリプトがレポートに表示される問題を修正。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--fish` の出力形式を修正。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/504"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`cargo llvm-cov report` サブコマンドで `--workspace` / `--all` をサポート。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/500"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Cargo 1.97 で追加された `-m` エイリアスをサポート。"
+ref = "https://github.com/rust-lang/cargo/pull/16858"
+
+[[update.package]]
+name = "fzf"
+old = "0.74.2"
+new = "0.74.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/junegunn/fzf/refs/tags/v0.74.3/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "画像がINDで行が分割される問題を修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`replace-query`がクエリ編集後にアイテムテキストを破損する問題を修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "fzfが終了時にターミナルのブラケットペーストモードをオフにしないようにした。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "応答しない端末での起動ブロックを修正した。"
+
+[[update.package]]
+name = "postgresql"
+old = "14.23"
+new = "14.24"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.postgresql.org/docs/release/14.24/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正が含まれています。"
+
+[[update.package]]
+name = "vscode"
+old = "1.132.0"
+new = "1.133.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_133"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタの設定オプションが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_133#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_133#bug-fixes"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いAPIが非推奨となりました。"
+ref = "https://code.visualstudio.com/updates/v1_133#deprecations"
