@@ -28,8 +28,17 @@ const RECORD_NAME_ATTRIBUTE: &str = "RecordName";
 const HOME_DIRECTORY_ATTRIBUTE: &str = "NFSHomeDirectory";
 
 /// 明示された設定ディレクトリを優先し、省略時は `$HOME/.config/dotfiles` を返す。
+///
+/// 既定値の解決は明示指定が無いときにだけ行う。無人経路（launchd system domain の auto-update
+/// daemon）の環境は `$HOME` を持たないため、明示指定があるのに読むと設定ディレクトリを触る前に
+/// 環境不足で落ちる。遅延評価する `map_or_else` を使い、既定値の解決を分岐の内側へ閉じる。
 pub(crate) fn config_dir(override_dir: Option<PathBuf>) -> Result<PathBuf> {
-    Ok(override_dir.unwrap_or(home_dir()?.join(CONFIG_SUBDIR)))
+    override_dir.map_or_else(default_config_dir, Ok)
+}
+
+/// 設定ディレクトリが明示されなかったときだけ使う `$HOME/.config/dotfiles`。
+fn default_config_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join(CONFIG_SUBDIR))
 }
 
 /// `dotfiles init` が書き込む `flake.nix` のパスを返す。
