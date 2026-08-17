@@ -53,8 +53,9 @@ tty アプリ（Ghostty、iTerm2、Terminal.app）と Zed をアクティブに�
 `config/hammerspoon/init.lua` にあり、`~/.hammerspoon/init.lua` へリンクします。Hammerspoon 本体は Homebrew
 cask で入ります。`init.lua` はリポジトリ側が正本です。
 
-Hammerspoon の起動は宣言に入りません。初回適用後に一度手で起動し、Preferences の「Launch Hammerspoon at
-login」を有効にしてください。
+起動は `nix/modules/hammerspoon.nix` が宣言する LaunchAgent が担います。ログイン時と、cask が
+`/Applications/Hammerspoon.app` を置いた時点の 2 つが起動条件です。適用は home 層（LaunchAgent）から
+system 層（cask）の順に走るため、初回適用では後者が起動を受け持ちます。
 
 `init.lua` を変えた適用のあとは、Hammerspoon の Reload Config で読み直します。Hammerspoon は設定ファイルの
 変更を自分では読み直しません。

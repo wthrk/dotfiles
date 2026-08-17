@@ -14,6 +14,7 @@
     ./modules/git.nix
     ./modules/neovim.nix
     ./modules/editor-apps.nix
+    ./modules/hammerspoon.nix
     ./modules/shell-files.nix
     ./modules/app-configs.nix
     ./modules/direnv.nix
