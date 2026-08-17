@@ -34,8 +34,8 @@ pub(crate) fn run(options: InitOptions) -> Result<()> {
         );
     }
 
-    let user = options.user.unwrap_or(current_user()?);
-    let host = options.host.unwrap_or(current_host()?);
+    let user = options.user.map_or_else(current_user, Ok)?;
+    let host = options.host.map_or_else(current_host, Ok)?;
     let system = options.system.unwrap_or_else(default_system);
     let scope = config_scope(&user)?;
 
