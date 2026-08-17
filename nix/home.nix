@@ -8,6 +8,7 @@
 {
   imports = [
     ./modules/cli.nix
+    ./modules/colima.nix
     ./modules/languages.nix
     ./modules/zsh.nix
     ./modules/gpg.nix

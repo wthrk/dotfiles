@@ -76,12 +76,11 @@ in
     ./modules/macos.nix
     ./modules/homebrew.nix
     ./modules/macos-defaults.nix
-    ./modules/launchagents.nix
   ];
 
-  # launchd 宣言はこの daemon だけに保ち、`launchd.user.agents` は空にする。user agent が 0 件だと上流の
-  # `userLaunchd`（`modules/system/launchd.nix`）が旧世代の user agent を撤去するループごと生成されないため、
-  # 一度足した user agent は後で宣言を消しても適用済みマシンに残る。
+  # nix-darwin 側の launchd 宣言はこの daemon だけに保ち、`launchd.user.agents` は空にする。user agent が
+  # 0 件だと上流の `userLaunchd`（`modules/system/launchd.nix`）が旧世代の user agent を撤去するループごと
+  # 生成されないため、一度足した user agent は後で宣言を消しても適用済みマシンに残る。
   #
   # x86_64-darwin 等 `packageSystems` 外の system では `packages.${system}` が無いため daemon を定義しない。条件は
   # モジュールの **構造**（宣言する option 集合）ではなく option の **値** に `mkIf` で寄せる。`mkIf false` は遅延
@@ -122,10 +121,10 @@ in
   programs.zsh.enable = true;
 
   # 旧 CapsLock→Ctrl 実装の退役。宣言を消すだけでは適用済みマシンから消えないため、activation で撤去する。
-  # user agent は上流の退役ループが走らないので残り、`hidutil` の `UserKeyMapping` は
-  # `system.keyboard.enableKeyMapping` を落としてもクリアされない。旧 plist が残っているマシンでだけ走らせ、
-  # 撤去済みのマシンで `UserKeyMapping` を触り続けないようにする。旧 agent が残る実マシンが無くなったら
-  # この宣言ごと削除してよい。
+  # nix-darwin の `launchd.user.agents` で足した user agent は上流の退役ループが走らないので残り、`hidutil` の
+  # `UserKeyMapping` は `system.keyboard.enableKeyMapping` を落としてもクリアされない。旧 plist が残っている
+  # マシンでだけ走らせ、撤去済みのマシンで `UserKeyMapping` を触り続けないようにする。旧 agent が残る実マシンが
+  # 無くなったらこの宣言ごと削除してよい。
   system.activationScripts.postActivation.text = lib.mkAfter ''
     uid="$(id -u ${lib.escapeShellArg user})"
 
@@ -160,6 +159,9 @@ in
       includeSelfPackage
       ;
   };
+  # `dotfiles switch home` は standalone の `homeConfigurations`（`nix/home.nix`）だけを適用し、Home Manager の
+  # generation は darwin 経由の適用と共有される。darwin 層でしか宣言されていない home 生成物は、home 層だけを
+  # 適用した時点で旧世代のリンクとして撤去される。利用者の生成物は `nix/home.nix` の import 側で宣言する。
   home-manager.users.${user} = import ./home.nix;
 
   nix-homebrew = {
