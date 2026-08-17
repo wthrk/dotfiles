@@ -9,6 +9,7 @@ mod apply;
 mod check;
 mod ci;
 mod cli;
+mod hook;
 
 type Result<T> = dotfiles_core::Result<T>;
 
