@@ -44,8 +44,12 @@ macOS 26 のシステム設定のペイン名です。
   許可すると自動で付きます）。
 - 一般 → ログイン項目と機能拡張 → 機能拡張 で、仮想キーボード/マウスの「ドライバ機能拡張」を許可します。
 
-`karabiner.json` はリポジトリ側が正本です。Karabiner の GUI から設定を変えると symlink が実ファイルに
-置き換わりますが、次の適用で宣言側に戻ります。変更はリポジトリに入れてください。
+`karabiner.json` はリポジトリ側が正本です。変更はリポジトリに入れてください。
+
+`virtual_hid_keyboard.keyboard_type_v2` が空のままだと、Karabiner は Settings ウィンドウを開いて
+キーボードの種類（ANSI / ISO / JIS）を選ぶよう求め、利用者が選んだ値を `karabiner.json` へ保存します。
+保存は `karabiner.json.tmp` へ書いてから rename で対象へ被せる形なので、保存が走ると symlink が実ファイルに
+置き換わり、次の適用で宣言側に戻ります。これを止めるため `keyboard_type_v2` を `ansi` に固定してあります。
 
 ## 入力ソースの強制（Hammerspoon）
 
