@@ -5,6 +5,9 @@
 //!
 //! 無人実行の呼び出し側は期限を渡せる。期限を過ぎたコマンドは打ち切って失敗にし、停止した 1 件が
 //! 後続の処理を無期限に止めないようにする。
+//!
+//! `sudo` による昇格・降格も argv の組み立てなので [`Invocation`] としてここに置く。use case 側で
+//! 組み立てると、同じ権限規則が use case ごとに写る。
 
 use std::ffi::OsString;
 use std::process::{Child, Command, ExitStatus};
@@ -97,6 +100,64 @@ where
     .chain(std::iter::once(program))
     .chain(args)
     .collect()
+}
+
+/// 外部コマンド実行の起動プログラムと引数列。
+///
+/// 権限の切り替えは `sudo` の前置として argv に現れるため、起動側の層ではなくここで組み立てる。
+/// 昇格（root 権限を要する処理）と降格（利用者所有の対象を触る処理）は対になる規則であり、片方だけを
+/// 呼び出し側へ写すと同じ規則が複数の use case へ散る。
+///
+/// euid と降格対象は引数で受け取り、構築を副作用なしにする。caller responsibility: 実行時 euid の解決と
+/// 降格対象の決定は呼び出し側で済ませ、この型には結果だけを渡すこと。
+pub(crate) struct Invocation {
+    pub(crate) program: OsString,
+    pub(crate) args: Vec<OsString>,
+}
+
+impl Invocation {
+    /// 利用者所有の対象を触るコマンドを、降格対象の有無で組み立てる。
+    ///
+    /// 降格対象があれば `sudo -H -u <user>` を前置し、無ければそのまま起動する。root のまま利用者所有の
+    /// ファイルへ書くと所有者が root へ変わるため、降格の要否は呼び出し側の判断をそのまま渡す。
+    pub(crate) fn downgraded<I>(program: OsString, args: I, downgrade_to: Option<&str>) -> Self
+    where
+        I: IntoIterator<Item = OsString>,
+    {
+        match downgrade_to {
+            Some(user) => Self {
+                program: OsString::from("sudo"),
+                args: sudo_as_user_args(user, program, args),
+            },
+            None => Self {
+                program,
+                args: args.into_iter().collect(),
+            },
+        }
+    }
+
+    /// root 権限を要するコマンドを、実行時 euid で `sudo` 前置の有無を切り替えて組み立てる。
+    pub(crate) fn escalated<I>(program: OsString, args: I, is_root: bool) -> Self
+    where
+        I: IntoIterator<Item = OsString>,
+    {
+        if is_root {
+            Self {
+                program,
+                args: args.into_iter().collect(),
+            }
+        } else {
+            Self {
+                program: OsString::from("sudo"),
+                args: std::iter::once(program).chain(args).collect(),
+            }
+        }
+    }
+
+    /// 組み立てた起動を実行する。`dry_run` と `deadline` の扱いは [`run`] と同じ。
+    pub(crate) fn run(self, dry_run: bool, deadline: Option<Instant>) -> Result<()> {
+        run(self.program, self.args, dry_run, deadline)
+    }
 }
 
 /// 外部コマンドの stdout を捕捉して返す。非 0 終了は失敗にする。
