@@ -120,7 +120,7 @@ sudo darwin-rebuild switch --flake ~/.config/dotfiles#<host>
 
 ```sh
 home-manager expire-generations "-30 days"
-sudo nix-collect-garbage --delete-older-than 30d
+nix-collect-garbage --delete-older-than 30d
 ```
 
 ## ローカル flake の生成
