@@ -33,13 +33,6 @@ sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になり
 要求し、実行者のパスワードでは通らず、約 47 秒待ってから実行者のパスワード入力に落ちます。これを避けるため、
 その間は Touch ID を使わず最初からパスワード入力にします。相手がログアウトすれば Touch ID に戻ります。
 
-この切り替えは `nix/pam-touchid-session-guard` の PAM モジュールが担い、`nix/darwin.nix` が sudo の auth
-スタックの `pam_tid.so` より前へ差し込みます。モジュールは utmpx の `console` 行を見て、実行者以外の利用者が
-GUI ログイン中なら PAM data `askpass-enabled` を立てます。`pam_tid.so` はこの data が在ると
-`PAM_AUTHINFO_UNAVAIL` を返します。このキーは man ページを持たない未文書のインターフェースで、根拠は Apple
-の公開ソース [`pam_modules-217.100.6` の `modules/pam_tid/pam_tid.c`](https://github.com/apple-oss-distributions/pam_modules/blob/pam_modules-217.100.6/modules/pam_tid/pam_tid.c)
-です。同ソースでは `pam_get_data` の戻り値だけを見る存在チェックであり、値は参照されません。
-
 ## キーリマップ（Karabiner-Elements）
 
 CapsLock→Ctrl の割り当ては `config/karabiner/karabiner.json` にあり、Karabiner-Elements 本体は Homebrew
