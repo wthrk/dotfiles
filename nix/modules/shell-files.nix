@@ -36,7 +36,7 @@
   # Karabiner は macOS 専用なので `mkHome` が Linux で評価されたときはリンクしない。
   #
   # Karabiner が設定を保存すると store への symlink が実ファイルに置き換わる。`force = true` は、その実ファイルを
-  # 次の activation で宣言側へ戻すために要る。保存の機構と、何を宣言に入れるかは `README.md` のキーリマップ節が持つ。
+  # 次の activation で宣言側へ戻すために要る。保存の機構は `README.md` のキーリマップ節が持つ。
   xdg.configFile."karabiner/karabiner.json" = lib.mkIf pkgs.stdenv.isDarwin {
     source = "${root}/config/karabiner/karabiner.json";
     force = true;
