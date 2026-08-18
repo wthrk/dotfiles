@@ -6,6 +6,9 @@
 //! root 実行で 1 ユーザー分を指す指定が 1 つも無いときは、このマシンでローカル flake を持つ
 //! 全ユーザーを更新する。auto-update daemon はこの形で起動し、更新の仕組みをユーザーの種類で
 //! 分けない。
+//!
+//! 適用が作った世代は GC root なので、掃除しない限り旧世代とその閉包が store に残り続ける。適用の
+//! 直後に、その実行が適用した層の世代だけを [`GENERATION_RETENTION_DAYS`] で切って掃除する。
 
 use std::{
     ffi::OsString,
@@ -17,14 +20,20 @@ use anyhow::bail;
 use clap::Args;
 
 use crate::{
-    Result,
-    environment::local_flake_accounts,
-    local_flake::INPUT_NAME,
-    process::{run as run_process, sudo_as_user_args},
-    switch,
+    Result, environment::local_flake_accounts, local_flake::INPUT_NAME, process::Invocation, switch,
 };
 
 const DEFAULT_NIX_PROGRAM: &str = "/nix/var/nix/profiles/default/bin/nix";
+/// store の掃除を起動する絶対パス。`DEFAULT_NIX_PROGRAM` と同じく PATH に依存させない。
+const DEFAULT_NIX_COLLECT_GARBAGE_PROGRAM: &str =
+    "/nix/var/nix/profiles/default/bin/nix-collect-garbage";
+
+/// 掃除の対象から外す世代の年齢。この日数より新しい世代は残す。
+///
+/// `README.md` の「ロールバック」が案内する `darwin-rebuild switch --rollback` と
+/// `home-manager switch --rollback` は残った世代へ戻るため、この日数がロールバックできる範囲になる。
+/// auto-update daemon は 1 日 1 回更新するので、この日数がそのまま残る世代数の目安になる。
+const GENERATION_RETENTION_DAYS: u32 = 30;
 
 /// 全ユーザー走査で 1 ユーザー分の処理に与える上限。
 ///
@@ -45,7 +54,7 @@ pub(crate) fn run(options: UpdateOptions) -> Result<()> {
     run_one_user(options.switch, None)
 }
 
-/// 1 ユーザー分の lock 更新と適用を、既存の `switch` と同じ経路で実行する。
+/// 1 ユーザー分の lock 更新と適用を、既存の `switch` と同じ経路で実行し、適用が増やした旧世代を掃除する。
 ///
 /// `deadline` を渡すと、このユーザー分の外部コマンドはその時刻で打ち切られる。
 fn run_one_user(options: switch::SwitchOptions, deadline: Option<Instant>) -> Result<()> {
@@ -61,7 +70,91 @@ fn run_one_user(options: switch::SwitchOptions, deadline: Option<Instant>) -> Re
         target_user.downgrade_target(),
         deadline,
     )?;
-    switch::run(options, deadline)
+    let applied = switch::run(options.clone(), deadline)?;
+    collect_garbage(
+        &options,
+        applied,
+        target_user.downgrade_target(),
+        switch::is_effective_root(),
+        deadline,
+    )
+}
+
+/// 適用した層に対応する旧世代の掃除を、適用の直後に実行する。
+///
+/// 掃除の失敗はこのユーザーの更新の失敗として返る。全ユーザー走査では [`run_all_users`] が 1 ユーザー分の
+/// 失敗として記録し、次のユーザーへ進む。
+fn collect_garbage(
+    options: &switch::SwitchOptions,
+    applied: &[switch::SwitchTarget],
+    downgrade_to: Option<&str>,
+    is_root: bool,
+    deadline: Option<Instant>,
+) -> Result<()> {
+    for invocation in
+        garbage_collection_invocations(applied, options.home_manager(), downgrade_to, is_root)
+    {
+        invocation.run(options.dry_run(), deadline)?;
+    }
+    Ok(())
+}
+
+/// 適用した層に対応する掃除のコマンド列を、副作用なしで組み立てる。
+///
+/// home 層を適用したなら対象ユーザーの Home Manager 世代を、system 層を適用したならマシンの store を
+/// 掃除する。層で分けるのは必要な権限が違うためで、Home Manager の世代整理は symlink を消すだけなので
+/// 対象ユーザーの権限で足り、store の掃除は root の権限を要する。system 層を適用しない実行は store を
+/// 触らず、そのマシンの store は所有者の更新が掃除する。
+///
+/// euid と降格対象は引数で受け取り、判定は呼び出し側で解決する。
+fn garbage_collection_invocations(
+    applied: &[switch::SwitchTarget],
+    home_manager: &OsString,
+    downgrade_to: Option<&str>,
+    is_root: bool,
+) -> Vec<Invocation> {
+    [
+        applied.contains(&switch::SwitchTarget::Home).then(|| {
+            Invocation::downgraded(
+                home_manager.clone(),
+                expire_home_generations_args(),
+                downgrade_to,
+            )
+        }),
+        applied.contains(&switch::SwitchTarget::Darwin).then(|| {
+            Invocation::escalated(
+                OsString::from(DEFAULT_NIX_COLLECT_GARBAGE_PROGRAM),
+                collect_store_args(),
+                is_root,
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// `home-manager expire-generations -<日数> days` の引数列を組み立てる純粋関数。
+///
+/// Home Manager の世代は利用者の nix state ディレクトリにあり、root の `nix-collect-garbage` が探す
+/// profile には入らない。現世代は Home Manager 自身が対象から外す。
+fn expire_home_generations_args() -> Vec<OsString> {
+    [
+        OsString::from("expire-generations"),
+        OsString::from(format!("-{GENERATION_RETENTION_DAYS} days")),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// `nix-collect-garbage --delete-older-than <日数>d` の引数列を組み立てる純粋関数。
+fn collect_store_args() -> Vec<OsString> {
+    [
+        OsString::from("--delete-older-than"),
+        OsString::from(format!("{GENERATION_RETENTION_DAYS}d")),
+    ]
+    .into_iter()
+    .collect()
 }
 
 /// auto-update daemon の経路。ローカル flake を持つ全ユーザーを、そのユーザー権限で更新する。
@@ -112,8 +205,7 @@ fn update_lock(
     lock_owner: Option<&str>,
     deadline: Option<Instant>,
 ) -> Result<()> {
-    let invocation = update_lock_invocation(config_dir, lock_owner);
-    run_process(invocation.program, invocation.args, dry_run, deadline)
+    update_lock_invocation(config_dir, lock_owner).run(dry_run, deadline)
 }
 
 /// `nix flake update <dotfiles> --flake <config-dir>` の引数列を組み立てる純粋関数。
@@ -130,23 +222,12 @@ fn update_lock_args(config_dir: &Path) -> Vec<OsString> {
 }
 
 /// lock 更新を root のまま行うか、対象ユーザーへ降格して行うかを引数列へ反映する。
-fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> UpdateLockInvocation {
-    let args = update_lock_args(config_dir);
-    let nix = OsString::from(DEFAULT_NIX_PROGRAM);
-    if let Some(user) = lock_owner {
-        UpdateLockInvocation {
-            program: OsString::from("sudo"),
-            args: sudo_as_user_args(user, nix, args),
-        }
-    } else {
-        UpdateLockInvocation { program: nix, args }
-    }
-}
-
-/// `nix flake update` 実行の起動プログラムと引数列。
-struct UpdateLockInvocation {
-    program: OsString,
-    args: Vec<OsString>,
+fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> Invocation {
+    Invocation::downgraded(
+        OsString::from(DEFAULT_NIX_PROGRAM),
+        update_lock_args(config_dir),
+        lock_owner,
+    )
 }
 
 #[derive(Args)]
@@ -156,11 +237,14 @@ pub(crate) struct UpdateOptions {
     switch: switch::SwitchOptions,
 }
 
-/// `update_lock_args` が `dotfiles` input だけを対象に `nix flake update` を組むこと、および
-/// 全ユーザー走査の終了状態が失敗したユーザー全件から決まることを検証する。
+/// `update_lock_args` が `dotfiles` input だけを対象に `nix flake update` を組むこと、全ユーザー走査の
+/// 終了状態が失敗したユーザー全件から決まること、および store の掃除が euid で昇格を切り替えることを検証する。
 #[cfg(test)]
 mod tests {
-    use super::{sweep_result, update_lock_args, update_lock_invocation};
+    use super::{
+        collect_store_args, garbage_collection_invocations, sweep_result, switch, update_lock_args,
+        update_lock_invocation,
+    };
     use std::ffi::OsString;
     use std::path::Path;
 
@@ -232,5 +316,22 @@ mod tests {
             invocation.program,
             OsString::from("/nix/var/nix/profiles/default/bin/nix")
         );
+    }
+
+    /// 利用者自身の実行では store の掃除を `sudo` で昇格し、root daemon では直接起動する。
+    #[test]
+    fn store_collection_escalates_only_when_not_root() {
+        let home_manager = OsString::from("home-manager");
+        let program = OsString::from("/nix/var/nix/profiles/default/bin/nix-collect-garbage");
+        let applied = [switch::SwitchTarget::Darwin];
+
+        let as_root = garbage_collection_invocations(&applied, &home_manager, None, true);
+        assert_eq!(as_root[0].program, program);
+        assert_eq!(as_root[0].args, collect_store_args());
+
+        let as_user = garbage_collection_invocations(&applied, &home_manager, None, false);
+        assert_eq!(as_user[0].program, OsString::from("sudo"));
+        assert_eq!(as_user[0].args[0], program);
+        assert_eq!(as_user[0].args[1..], collect_store_args()[..]);
     }
 }

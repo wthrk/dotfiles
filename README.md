@@ -110,6 +110,19 @@ home-manager switch --flake ~/.config/dotfiles#<user>
 sudo darwin-rebuild switch --flake ~/.config/dotfiles#<host>
 ```
 
+適用が作る世代は nix の GC root なので、掃除しなければ旧世代とその閉包が nix store に残り続けます。`update`
+は適用の直後に、その実行が適用した層の旧世代を掃除します（`switch` は掃除しません）。home 層を適用したときは
+対象ユーザーの Home Manager 世代を、system 層を適用したときはマシンの store を対象にします。掃除で sudo が
+要るのは store を対象にするとき、つまり system 層を適用した実行だけです。`dotfiles update home` は home 層しか
+適用しないため、system 層を自分が持つマシンでも掃除に sudo は要りません。
+
+掃除で呼ばれるコマンド:
+
+```sh
+home-manager expire-generations "-30 days"
+sudo nix-collect-garbage --delete-older-than 30d
+```
+
 ## ローカル flake の生成
 
 bootstrap を使わずにローカル flake だけを作る場合は `dotfiles init` を使います。
@@ -193,6 +206,8 @@ primary / spare 双方での login / unlock 検証手順は
 `bw-login` が受け付けるフラグは `--serial` と `--email` だけです。`verify-yubikey` は `--serial` に加えて外部確認を要求する option `--check bws` / `--check bw-login` / `--all`（到達できない場合は明示的に失敗します）を受け付け、`--email` は bw-login 確認の login email override にのみ適用されます。
 
 ## ロールバック
+
+`dotfiles update` の掃除は 30 日より古い世代を対象にするため、戻り先として残るのは直近 30 日の世代です。
 
 `nix-darwin`:
 

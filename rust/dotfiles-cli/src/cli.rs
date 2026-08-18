@@ -39,8 +39,9 @@ pub(crate) fn dispatch() -> Result<()> {
             .build()?
             .block_on(dotfiles_secrets::run(options)),
         Command::Gpg(options) => dotfiles_secrets::run_gpg(options),
-        // 利用者が起動する `switch` は自分で中断できるため、外部コマンドに期限を置かない。
-        Command::Switch(options) => crate::switch::run(options, None),
+        // 利用者が起動する `switch` は自分で中断できるため、外部コマンドに期限を置かない。適用した層は
+        // 後始末を選ぶための戻り値であり、後始末を持たないこの経路では使わない。
+        Command::Switch(options) => crate::switch::run(options, None).map(drop),
         Command::Update(options) => crate::update::run(options),
         Command::UpdateHistory(options) => crate::update_history::run(options),
     }

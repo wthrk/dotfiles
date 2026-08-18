@@ -15,14 +15,21 @@ use clap::{Args, ValueEnum};
 use crate::{
     Result,
     environment::{ConfigScope, config_dir, config_scope, current_host, current_user},
-    process::{run as run_process, sudo_as_user_args},
+    process::{Invocation, run as run_process},
 };
 
 /// 指定された対象を、生成済みローカル flake の属性名規約に従って適用する。
 ///
 /// `deadline` は無人実行で 1 対象に与える打ち切り時刻で、外部コマンドの実行へそのまま渡す。利用者
 /// 自身の実行は `None` で呼び、途中のビルドを打ち切らない。
-pub(crate) fn run(options: SwitchOptions, deadline: Option<Instant>) -> Result<()> {
+///
+/// 戻り値は実際に適用した層を適用順で並べたものである。適用後の後始末（世代の掃除）は層ごとに
+/// 必要な権限が違うため、呼び出し側はこの戻り値で対象を選ぶ。ここと別の規則で層を判定すると、
+/// 適用していない層の後始末を走らせることになる。
+pub(crate) fn run(
+    options: SwitchOptions,
+    deadline: Option<Instant>,
+) -> Result<&'static [SwitchTarget]> {
     let config_dir = options.config_dir()?;
     ensure_config_exists(&config_dir)?;
     // 適用範囲は対象ユーザーがこのマシンで持つ層から決まる。scope はそのユーザーに紐づくので、
@@ -32,13 +39,14 @@ pub(crate) fn run(options: SwitchOptions, deadline: Option<Instant>) -> Result<(
         .map(|user| config_scope(&user))
         .transpose()?;
     let target = resolve_target(options.target, scope)?;
+    let applied = switch_order(target);
     // 利用者所有ファイルを書く Home 適用を含むときだけ対象ユーザーを要求する。降格対象は最初の
     // 特権コマンドより前に解決する。Darwin 単独 target は利用者所有ファイルを書かない。
-    let home_user = switch_order(target)
+    let home_user = applied
         .contains(&SwitchTarget::Home)
         .then(|| options.home_apply_user())
         .transpose()?;
-    let host = if switch_order(target).contains(&SwitchTarget::Darwin) {
+    let host = if applied.contains(&SwitchTarget::Darwin) {
         Some(options.host.clone().map_or_else(current_host, Ok)?)
     } else {
         None
@@ -58,14 +66,9 @@ pub(crate) fn run(options: SwitchOptions, deadline: Option<Instant>) -> Result<(
         if invocation.target == SwitchTarget::Darwin {
             prepare_nix_darwin_etc(options.dry_run, deadline)?;
         }
-        run_process(
-            invocation.program,
-            invocation.args,
-            options.dry_run,
-            deadline,
-        )?;
+        invocation.command.run(options.dry_run, deadline)?;
     }
-    Ok(())
+    Ok(applied)
 }
 
 /// 既定または明示された設定ディレクトリに、適用対象の flake が存在することを確認する。
@@ -90,54 +93,40 @@ fn home_manager_invocation(
     downgrade_to: Option<&str>,
     home_manager: &OsString,
 ) -> SwitchInvocation {
-    let args = [
-        OsString::from("switch"),
-        OsString::from("--flake"),
-        flake_ref(config_dir, user),
-    ];
-    if let Some(target_user) = downgrade_to {
-        SwitchInvocation {
-            target: SwitchTarget::Home,
-            program: OsString::from("sudo"),
-            args: sudo_as_user_args(target_user, home_manager.clone(), args),
-        }
-    } else {
-        SwitchInvocation {
-            target: SwitchTarget::Home,
-            program: home_manager.clone(),
-            args: args.into_iter().collect(),
-        }
+    SwitchInvocation {
+        target: SwitchTarget::Home,
+        command: Invocation::downgraded(
+            home_manager.clone(),
+            [
+                OsString::from("switch"),
+                OsString::from("--flake"),
+                flake_ref(config_dir, user),
+            ],
+            downgrade_to,
+        ),
     }
 }
 
 /// `darwin-rebuild switch --flake <ref>` の実行プログラムと引数を、root 実行かどうかで決める。
 ///
-/// root のときは `darwin-rebuild` を直接、非 root のときは `sudo` 経由で昇格する純粋関数で、
-/// euid を引数で受け取り副作用を持たない（呼び出し側で euid を解決する）。
+/// 昇格の規則そのものは [`Invocation::escalated`] が持つ。euid は引数で受け取り副作用を持たない
+/// （呼び出し側で euid を解決する）。
 fn darwin_rebuild_invocation(
     darwin_rebuild: &OsString,
     flake_ref: OsString,
     is_root: bool,
 ) -> SwitchInvocation {
-    let switch_args = [
-        OsString::from("switch"),
-        OsString::from("--flake"),
-        flake_ref,
-    ];
-    if is_root {
-        SwitchInvocation {
-            target: SwitchTarget::Darwin,
-            program: darwin_rebuild.clone(),
-            args: switch_args.into_iter().collect(),
-        }
-    } else {
-        SwitchInvocation {
-            target: SwitchTarget::Darwin,
-            program: OsString::from("sudo"),
-            args: std::iter::once(darwin_rebuild.clone())
-                .chain(switch_args)
-                .collect(),
-        }
+    SwitchInvocation {
+        target: SwitchTarget::Darwin,
+        command: Invocation::escalated(
+            darwin_rebuild.clone(),
+            [
+                OsString::from("switch"),
+                OsString::from("--flake"),
+                flake_ref,
+            ],
+            is_root,
+        ),
     }
 }
 
@@ -175,11 +164,12 @@ struct SwitchInvocationInput<'a> {
     is_root: bool,
 }
 
-/// `dotfiles switch` 実行の起動プログラムと引数列。
+/// 適用する層と、その層を適用する外部コマンドの起動。
+///
+/// 層を持つのは、Darwin 適用の前だけ `/etc` の退避が要るためである。
 struct SwitchInvocation {
     target: SwitchTarget,
-    program: OsString,
-    args: Vec<OsString>,
+    command: Invocation,
 }
 
 /// nix-darwin が `/etc/static` リンクを作る前に、衝突する既存シェル起動ファイルだけを退避する。
@@ -307,6 +297,11 @@ impl SwitchOptions {
         self.dry_run
     }
 
+    /// 適用後に Home Manager の世代を整理する処理が、適用と同じ実行ファイルを使うための入口。
+    pub(crate) fn home_manager(&self) -> &OsString {
+        &self.home_manager
+    }
+
     /// 利用者所有ファイルを触る処理の対象ユーザーを解決する。
     ///
     /// `update` は lock 更新で config dir へ書くため、target に関わらずこれを先に解決する。
@@ -322,7 +317,7 @@ impl SwitchOptions {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 /// `home` と `darwin` は独立して実行でき、`all` は Home Manager の後に Darwin を実行する。
-enum SwitchTarget {
+pub(crate) enum SwitchTarget {
     Home,
     Darwin,
     All,
@@ -457,9 +452,9 @@ mod tests {
             true,
         );
 
-        assert_eq!(invocation.program, OsString::from("darwin-rebuild"));
+        assert_eq!(invocation.command.program, OsString::from("darwin-rebuild"));
         assert_eq!(
-            invocation.args,
+            invocation.command.args,
             vec![
                 OsString::from("switch"),
                 OsString::from("--flake"),
@@ -477,9 +472,9 @@ mod tests {
             false,
         );
 
-        assert_eq!(invocation.program, OsString::from("sudo"));
+        assert_eq!(invocation.command.program, OsString::from("sudo"));
         assert_eq!(
-            invocation.args,
+            invocation.command.args,
             vec![
                 OsString::from("darwin-rebuild"),
                 OsString::from("switch"),
@@ -639,18 +634,21 @@ mod tests {
         });
 
         assert_eq!(invocations.len(), 2);
-        assert_eq!(invocations[0].program, OsString::from("home-manager"));
         assert_eq!(
-            invocations[0].args,
+            invocations[0].command.program,
+            OsString::from("home-manager")
+        );
+        assert_eq!(
+            invocations[0].command.args,
             vec![
                 OsString::from("switch"),
                 OsString::from("--flake"),
                 OsString::from("/cfg#alice"),
             ]
         );
-        assert_eq!(invocations[1].program, OsString::from("sudo"));
+        assert_eq!(invocations[1].command.program, OsString::from("sudo"));
         assert_eq!(
-            invocations[1].args,
+            invocations[1].command.args,
             vec![
                 OsString::from("darwin-rebuild"),
                 OsString::from("switch"),
