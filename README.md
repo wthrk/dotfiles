@@ -69,6 +69,36 @@ system 層（cask）の順に走るため、初回適用では後者が起動を
 監視し、リンク先の内容が読み込み時と変わっていたら `hs.reload()` します。ABC への強制はアクティブ化と
 Hammerspoon の起動が契機で、読み直しでは現在の入力ソースを変えません。
 
+## Nix が入れる GUI アプリ
+
+Nix で入る GUI アプリ（一覧は [`nix/modules/gui-apps.nix`](nix/modules/gui-apps.nix)）は home 層で入り、
+`~/Applications/Home Manager Apps` に置かれます。中身は Nix store の app bundle への symlink です。
+Homebrew cask で入るアプリは従来どおり `/Applications` に実体で置かれます。
+
+system 層（`/Applications/Nix Apps`）には置きません。そこへ置いたアプリの更新は macOS の App Management
+権限を要求し、非 Aqua セッションで走る auto-update daemon が system 層を適用できなくなるためです。
+適用は home 層から system 層の順に走るので、home 層に置いたアプリは system 層の適用が止まっても
+無人更新で最新の pin まで入ります。
+旧世代のアプリが残っているマシンでは、`nix/darwin.nix` の activation が適用時に `/Applications/Nix Apps`
+を撤去します。手作業は要りません。
+
+## Spotlight の索引停止
+
+`nix/modules/macos-defaults.nix` は、起動ボリューム（`/` と `/System/Volumes/Data`）の Spotlight 索引付けを
+止め、既存の索引を消します。マシン全体に効き、そのマシンの全ユーザーが影響を受けます。外付けドライブと
+ネットワーク共有の索引設定は変えません。
+
+索引が無くなるため、Spotlight 検索（⌘Space）、Finder の検索、`mdfind` はいずれも結果を返さなくなります。
+アプリは Finder（`~/Applications/Home Manager Apps` と `/Applications`）か Dock から起動してください。
+
+元に戻すには、上記の宣言を消したうえで索引を有効にします。適用は索引を止める方向にしか働かないので、
+宣言を消すだけでは戻りません。
+
+```sh
+sudo mdutil -i on /
+sudo mdutil -i on /System/Volumes/Data
+```
+
 ## 更新と適用
 
 導入済みの環境では、通常 `dotfiles update` で最新版を取り込んでから設定を適用します。`update` はローカル
