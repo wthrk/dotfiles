@@ -8,7 +8,7 @@ discovered_at = "2026-08-07T18:41:19Z"
 
 ["brew/claude"]
 origin = "none"
-discovered_at = "2026-08-18T18:19:40Z"
+discovered_at = "2026-08-19T18:24:21Z"
 
 ["brew/claude-code@latest"]
 source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
