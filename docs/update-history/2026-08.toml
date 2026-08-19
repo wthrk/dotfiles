@@ -1195,3 +1195,71 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-19T18:24:21Z"
+state_old = "7d245305bee5bcc7587dc336c138fa6a4671b78a02c1935363b48a9ddf8e679b"
+state_new = "7dc79a2607bea42286340f3b2d97fe49aa4b330b380a8463cc25662c0d4139f5"
+cursor_old = "7e0f371a96a96e038a763f1e18e45a56bd5b6850"
+nixpkgs_old = "f165e44f135784a494bca3d4ab4834c139f0b37d"
+nixpkgs_new = "afe3d8ac4395617bdcdac9f188ac8717a062e014"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "4アプリ更新: 🔒1 🗑️1 ✨1 🐛1"
+
+[[update.package]]
+name = "google-chrome"
+old = "151.0.7922.138"
+new = "151.0.7922.170"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "セキュリティの脆弱性を修正しました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-06-15"
+new = "2026-08-03"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコード補完機能が追加されました。"
+ref = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のケースでの型推論のバグが修正されました。"
+ref = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いAPIが非推奨となり、今後のリリースで削除される予定です。"
+ref = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package]]
+name = "claude"
+old = "1.32352.1,6c6aa595ae38b202d9e00c026dc94d3a6a42c332"
+new = "1.32885.1,a757f53392ab406812eac6d069efb087b541c07c"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.234"
+new = "2.1.235"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
