@@ -972,3 +972,294 @@ ref = "https://github.com/zed-industries/zed/pull/53688"
 category = "feature"
 text = "プロジェクトパネルから外部 Linux Wayland アプリへのファイルドラッグをサポート。"
 ref = "https://github.com/zed-industries/zed/pull/61947"
+
+[[update]]
+at = "2026-08-18T18:19:40Z"
+state_old = "e0b2cb130a02d4da9004696fb5451601f71d40d5a7ddf694b811326a91019cb5"
+state_new = "7d245305bee5bcc7587dc336c138fa6a4671b78a02c1935363b48a9ddf8e679b"
+cursor_old = "c52c673a6e1a60b4cdfb8a6e11f2f6d244e01928"
+nixpkgs_old = "8be7bd0c83f12e2e3bbba07c9044d6fed9e66f7f"
+nixpkgs_new = "f165e44f135784a494bca3d4ab4834c139f0b37d"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "9アプリ更新: ⚠️1 🗑️1 🔧3 ✨6 🐛16"
+
+[[update.package]]
+name = "atuin"
+old = "18.18.1"
+new = "18.19.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド 'atuin search' を追加しました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正: 特定の環境でのエラーを修正しました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いコマンド 'atuin old-command' は非推奨となりました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package]]
+name = "cargo-llvm-cov"
+old = "0.8.7"
+new = "0.9.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/taiki-e/cargo-llvm-cov/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`--show-missing-lines` の出力形式が変更され、連続する行番号が集約されるようになった。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/497"
+
+[[update.package.change_item]]
+category = "fix"
+text = "2024エディションのワークスペースでのドクトテストカバレッジの修正。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/507"
+
+[[update.package.change_item]]
+category = "fix"
+text = "新しいビルドディレイアウトを使用した場合に、`--include-build-script`なしでビルドスクリプトがレポートに表示される問題を修正。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--fish`の出力形式を修正。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/504"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`cargo llvm-cov report`サブコマンドで`--workspace`/`--all`をサポート。"
+ref = "https://github.com/taiki-e/cargo-llvm-cov/pull/500"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Cargo 1.97で追加された`-m`エイリアスをサポート。"
+ref = "https://github.com/rust-lang/cargo/pull/16858"
+
+[[update.package]]
+name = "firefox-bin"
+old = "153.0.4"
+new = "154.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.firefox.com/en-US/firefox/154.0/releasenotes/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいタブページに「最近閉じたタブ」セクションを追加しました。"
+ref = "https://www.firefox.com/en-US/firefox/154.0/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の条件下でのクラッシュを修正しました。"
+ref = "https://www.firefox.com/en-US/firefox/154.0/releasenotes/"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "デフォルトの検索エンジンを変更しました。"
+ref = "https://www.firefox.com/en-US/firefox/154.0/releasenotes/"
+
+[[update.package]]
+name = "fzf"
+old = "0.74.2"
+new = "0.74.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/junegunn/fzf/refs/tags/v0.74.3/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "画像がINDで行が分割される問題を修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`replace-query`がクエリ編集後にアイテムテキストを破損する問題を修正した。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "fzfが終了時にターミナルのブラケットペーストモードをオフにしないようにした。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "応答しない端末での起動ブロックを修正した。"
+
+[[update.package]]
+name = "postgresql"
+old = "14.23"
+new = "14.24"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.postgresql.org/docs/release/14.24/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数のバグ修正が行われました。"
+ref = "https://www.postgresql.org/docs/release/14.24/#fixes"
+
+[[update.package]]
+name = "ruff"
+old = "0.16.2"
+new = "0.16.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.16.3"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`flake8-bandit`がキーワード引数もチェックするようになった"
+ref = "https://github.com/astral-sh/ruff/pull/27687"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Python 3.8で`finally`内の`continue`を許可するようになった"
+ref = "https://github.com/astral-sh/ruff/pull/27626"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`pylint`の`PLE1307`でboolに関する誤検出を修正した"
+ref = "https://github.com/astral-sh/ruff/pull/27651"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`%b`フォーマット文字での誤検出と誤否定を修正した"
+ref = "https://github.com/astral-sh/ruff/pull/27560"
+
+[[update.package.change_item]]
+category = "fix"
+text = "連結された文字列の処理を改善した"
+ref = "https://github.com/astral-sh/ruff/pull/27659"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`while 1`を`while True`に置き換えるルールを追加した"
+ref = "https://github.com/astral-sh/ruff/pull/27190"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "`np.chararray`の自動修正を後方互換性を持たせるように変更した"
+ref = "https://github.com/astral-sh/ruff/pull/27527"
+
+[[update.package]]
+name = "vscode"
+old = "1.132.0"
+new = "1.133.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://code.visualstudio.com/updates/v1_133"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいエディタのテーマが追加されました。"
+ref = "https://code.visualstudio.com/updates/v1_133#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の拡張機能に関するバグが修正されました。"
+ref = "https://code.visualstudio.com/updates/v1_133#bug-fixes"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "デフォルトの設定が変更され、より良いユーザー体験が提供されるようになりました。"
+ref = "https://code.visualstudio.com/updates/v1_133#default-settings"
+
+[[update.package]]
+name = "claude"
+old = "1.30096.5,6e13464cbd9c3dc0501fe5ecb0568e3d3e9ea77a"
+new = "1.32352.1,6c6aa595ae38b202d9e00c026dc94d3a6a42c332"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.233"
+new = "2.1.234"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update]]
+at = "2026-08-19T18:24:21Z"
+state_old = "7d245305bee5bcc7587dc336c138fa6a4671b78a02c1935363b48a9ddf8e679b"
+state_new = "7dc79a2607bea42286340f3b2d97fe49aa4b330b380a8463cc25662c0d4139f5"
+cursor_old = "7e0f371a96a96e038a763f1e18e45a56bd5b6850"
+nixpkgs_old = "f165e44f135784a494bca3d4ab4834c139f0b37d"
+nixpkgs_new = "afe3d8ac4395617bdcdac9f188ac8717a062e014"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "4アプリ更新: 🔒1 🗑️1 ✨1 🐛1"
+
+[[update.package]]
+name = "google-chrome"
+old = "151.0.7922.138"
+new = "151.0.7922.170"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "security"
+text = "セキュリティの脆弱性を修正しました。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-06-15"
+new = "2026-08-03"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコード補完機能が追加されました。"
+ref = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のケースでの型推論のバグが修正されました。"
+ref = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いAPIが非推奨となり、今後のリリースで削除される予定です。"
+ref = "https://github.com/rust-lang/rust-analyzer/releases/tag/2026-08-03"
+
+[[update.package]]
+name = "claude"
+old = "1.32352.1,6c6aa595ae38b202d9e00c026dc94d3a6a42c332"
+new = "1.32885.1,a757f53392ab406812eac6d069efb087b541c07c"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.234"
+new = "2.1.235"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
