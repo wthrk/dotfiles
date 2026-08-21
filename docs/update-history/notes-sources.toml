@@ -4,11 +4,11 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/bitwarden"]
 origin = "none"
-discovered_at = "2026-08-07T18:41:19Z"
+discovered_at = "2026-08-21T18:21:19Z"
 
 ["brew/claude"]
 origin = "none"
-discovered_at = "2026-08-19T18:24:21Z"
+discovered_at = "2026-08-21T18:21:19Z"
 
 ["brew/claude-code@latest"]
 source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
@@ -259,6 +259,11 @@ source = "https://rust-analyzer.github.io/"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/rust-default"]
+source = "https://doc.rust-lang.org/stable/releases.html"
+origin = "ai-discovered"
+discovered_at = "2026-08-21T18:21:19Z"
+
 ["nix/rustc"]
 source = "https://doc.rust-lang.org/stable/releases.html#version-1-95-0"
 origin = "ai-discovered"
@@ -326,7 +331,7 @@ discovered_at = "2026-07-08T20:19:09Z"
 
 ["nix/zed-editor"]
 origin = "none"
-discovered_at = "2026-08-16T18:17:45Z"
+discovered_at = "2026-08-21T18:21:19Z"
 
 ["nix/zoxide"]
 origin = "none"
