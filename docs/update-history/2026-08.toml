@@ -1263,3 +1263,124 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-21T18:21:19Z"
+state_old = "7dc79a2607bea42286340f3b2d97fe49aa4b330b380a8463cc25662c0d4139f5"
+state_new = "9424bc072a2822b903c9f09d51024a06e240dce8f47a587ef4260d10e7e5d942"
+cursor_old = "40ab01014f6ffc9f90742268773db061f9912912"
+nixpkgs_old = "afe3d8ac4395617bdcdac9f188ac8717a062e014"
+nixpkgs_new = "391b592eb44808b3bd0cb80bb71b63a5a118b8bb"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "6アプリ更新: 🗑️1 ✨5 🐛5"
+
+[[update.package]]
+name = "chromedriver"
+old = "151.0.7922.138"
+new = "151.0.7922.170"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正が行われました。"
+ref = "https://chromereleases.googleblog.com/search?q=151.0.7922.170"
+
+[[update.package]]
+name = "rust-default"
+old = "1.97.1"
+new = "1.98.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://doc.rust-lang.org/stable/releases.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "&mut のライフタイムを短縮できるようになった。"
+ref = "https://github.com/rust-lang/rust/pull/149219"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい lint を追加し、特定のランタイムシンボルの定義に警告を出す。"
+ref = "https://github.com/rust-lang/rust/pull/155521"
+
+[[update.package.change_item]]
+category = "feature"
+text = "c_void を戻り値として使用することに対する警告を追加。"
+ref = "https://github.com/rust-lang/rust/pull/156379"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Location<'_> のライフタイムを 'static に変更。"
+ref = "https://github.com/rust-lang/rust/pull/146561"
+
+[[update.package.change_item]]
+category = "fix"
+text = "LoongArch CRC Intrinsics を安定化。"
+ref = "https://github.com/rust-lang/rust/issues/156908"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "derive マクロが {core,std}::derive で利用可能になった。"
+ref = "https://github.com/rust-lang/rust/issues/154645"
+
+[[update.package]]
+name = "zed-editor"
+old = "1.15.0"
+new = "1.16.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/zed-industries/zed/releases/tag/v1.16.1"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Git パネルで変更を stash する際にオプションのメッセージプロンプトを追加"
+ref = "https://github.com/zed-industries/zed/pull/62439"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいワークスペースでターミナルパネルが自動的に開くかどうかを制御する設定を追加"
+ref = "https://github.com/zed-industries/zed/pull/54373"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ターミナルツールがパストラバーサルエスケープをブロックできない問題を修正"
+ref = "https://github.com/zed-industries/zed/pull/59937"
+
+[[update.package.change_item]]
+category = "fix"
+text = "遅いまたは不安定な接続での IOPub 接続失敗を修正"
+ref = "https://github.com/zed-industries/zed/pull/62358"
+
+[[update.package]]
+name = "bitwarden"
+old = "2026.7.0"
+new = "2026.8.0"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude"
+old = "1.32885.1,a757f53392ab406812eac6d069efb087b541c07c"
+new = "1.34493.1,255293a41a25d54c5177aa9614fb4cd620e70b78"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.235"
+new = "2.1.238"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
