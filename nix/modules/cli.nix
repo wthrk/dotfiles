@@ -199,6 +199,7 @@ in
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
     ++ lib.optional (gcloudPackage != null) gcloudPackage
     ++ lib.optionals pkgs.stdenv.isDarwin [
+      mas
       pinentry_mac
     ]
     ++ optionalPkg [ "tart" ]

@@ -138,6 +138,25 @@ in
     fi
   '';
 
+  # 旧 system 層 GUI アプリの退役。宣言を `environment.systemPackages` から外すだけでは、既に
+  # `/Applications/Nix Apps` へ実体コピーされた bundle が適用済みマシンに残る。上流が無条件に足す
+  # App Management 検査（`modules/system/applications.nix`）はそのディレクトリを走査し、bundle が
+  # 1 個でもあると非 Aqua セッションの auto-update daemon で activation を中断する。検査は同期
+  # （`activationScripts.applications`）より先に合流するため、さらに前の preActivation で撤去する。
+  # 撤去後は同じ適用内で上流の同期が空のディレクトリを作り直す。bundle が残っているマシンでだけ
+  # 走らせ、撤去済みのマシンで毎回消し直さないようにする。bundle が残る実マシンが無くなったら
+  # この宣言ごと削除してよい。
+  system.activationScripts.preActivation.text = lib.mkAfter ''
+    nixApps='/Applications/Nix Apps'
+
+    for appBundle in "$nixApps"/*.app; do
+      if [ -d "$appBundle" ]; then
+        rm -rf "$nixApps" || echo "Nix Apps: $nixApps の撤去に失敗しました" >&2
+        break
+      fi
+    done
+  '';
+
   # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
   #
   # guard が何を判定して何を止めるかは `nix/pam-touchid-session-guard/pam_touchid_session_guard.c` に書く。
