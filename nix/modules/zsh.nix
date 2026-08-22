@@ -12,6 +12,10 @@
   programs.zsh = {
     enable = true;
     enableCompletion = true;
+    # Home Manager の既定の初期化は `-i` を持たず、別の利用者が所有するディレクトリを fpath に持つ利用者の
+    # ログインを compaudit の対話確認で止める。補完自体は下の `completion.zsh` が初期化する。
+    # `enableCompletion` を偽にすると `nix-zsh-completions` の導入まで落ちるので、初期化だけを空にする。
+    completionInit = "";
     autosuggestion.enable = false;
     syntaxHighlighting.enable = false;
     dotDir = config.home.homeDirectory;

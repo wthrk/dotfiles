@@ -5,11 +5,9 @@ ZSH_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
 ZSH_COMPDUMP="$ZSH_CACHE_DIR/.zcompdump-${ZSH_VERSION}"
 mkdir -p "$ZSH_CACHE_DIR"
 
-if [[ -f "$ZSH_COMPDUMP" ]]; then
-  compinit -C -d "$ZSH_COMPDUMP"
-else
-  compinit -i -d "$ZSH_COMPDUMP"
-fi
+# `-C` にすると、system 層の compinit より後に home 層が fpath へ足したディレクトリを監査する経路が
+# 無くなる。`-i` は監査したうえで落ちたものを fpath から外して続行する。
+compinit -i -d "$ZSH_COMPDUMP"
 
 # 補完候補の表示は zsh 標準補完に合わせ、曖昧な候補を選びやすくする。
 zstyle ':completion:*' menu select
