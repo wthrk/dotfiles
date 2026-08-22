@@ -1384,3 +1384,24 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-22T18:18:29Z"
+state_old = "9424bc072a2822b903c9f09d51024a06e240dce8f47a587ef4260d10e7e5d942"
+state_new = "c7537750d32076e0098f67db64737079ecdb6a1b13d305ec09db50e734a71166"
+cursor_old = "3969bee3f093b6a9803557063e3229fb484c673e"
+nixpkgs_old = "391b592eb44808b3bd0cb80bb71b63a5a118b8bb"
+nixpkgs_new = "391b592eb44808b3bd0cb80bb71b63a5a118b8bb"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.238"
+new = "2.1.240"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
