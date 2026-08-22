@@ -122,6 +122,10 @@ in
   networking.hostName = lib.mkDefault host;
 
   programs.zsh.enable = true;
+  # 既定を止めるだけにせず置き直すのは、home 層を持たない別の利用者と root の補完がここでしか
+  # 初期化されないため。
+  programs.zsh.enableGlobalCompInit = false;
+  programs.zsh.interactiveShellInit = "autoload -Uz compinit && compinit -i";
 
   # 旧 CapsLock→Ctrl 実装の退役。宣言を消すだけでは適用済みマシンから消えないため、activation で撤去する。
   # nix-darwin の `launchd.user.agents` で足した user agent は上流の退役ループが走らないので残り、`hidutil` の

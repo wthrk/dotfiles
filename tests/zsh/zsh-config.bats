@@ -67,6 +67,10 @@ zsh_probe() {
 }
 
 # ログイン直後の環境に相当する最小の変数だけを渡して起動する。
+#
+# `timeout` 越しにするのは、compinit の対話確認のように応答を待って固まる回帰を、suite の停止ではなく
+# 失敗として観測するため。`--foreground` が無いと対象は別プロセスグループへ移り、`script(1)` が制御端末から
+# 読んだ時点で SIGTTIN で止まるので、端末から流したときに全件が待ち時間だけ費やして落ちる。
 zsh_probe_env() {
     env -i \
         HOME="${HOME}" \
@@ -76,7 +80,8 @@ zsh_probe_env() {
         TERM=xterm-256color \
         LANG=en_US.UTF-8 \
         PATH="$(zsh_probe_path)" \
-        "$@"
+        ${ZSH_CHECK_EXTRA_FPATH:+FPATH="${ZSH_CHECK_EXTRA_FPATH}"} \
+        "$(command -v timeout)" --foreground 30 "$@"
 }
 
 # ログインシェルが起動される時点の PATH。Nix の profile はここに入れず、起動ファイルが自分で
@@ -160,6 +165,22 @@ strip_terminal_control() {
 @test 'rancher-desktop の PATH は残る' {
     run zsh_probe 'print -l $path'
     assert_output --partial '.rd/bin'
+}
+
+# ログイン経路の compinit は system 層の `/etc/zshrc`（`compinit -i`）と home 層の `completion.zsh`
+# （dump があれば `-C`、無ければ `-i`）の 2 か所にあり、この検査は両方をまとめて見る。監査する compinit が
+# 起動経路に残ると、別の利用者が所有するディレクトリを fpath に持つマシンで、ログインが続行可否の確認待ちの
+# まま止まる。
+@test '監査を通らない fpath があってもログインが止まらない' {
+    local insecure="${BATS_TEST_TMPDIR}/insecure-fpath"
+    mkdir -p "${insecure}"
+    printf '#compdef zsh-config-probe\n' >"${insecure}/_zsh_config_probe"
+    chmod 777 "${insecure}"
+
+    ZSH_CHECK_EXTRA_FPATH="${insecure}" run zsh_probe 'print probe-reached'
+
+    assert_output --partial 'probe-reached'
+    refute_output --partial 'compinit'
 }
 
 @test '対話起動が余計なエラーを出さない' {
