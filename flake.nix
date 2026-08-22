@@ -51,6 +51,10 @@
     let
       root = ./.;
 
+      # `mkHome` と `mkDarwin` は別々に nixpkgs を import する。片方だけに当てると、同じ利用者環境が
+      # 適用経路ごとに別の派生を指す。
+      packageOverlays = [ (import ./nix/overlays/curl-impersonate-dylib-name.nix) ];
+
       # Homebrew tap の宣言は `homebrew-<owner>-<tap>` の flake input 名に集約し、
       # そこから nix-homebrew と brew bundle の tap 名、clone 先を生成する。
       homebrewTapInputs = nixpkgs.lib.filterAttrs (
@@ -94,7 +98,7 @@
         import nixpkgs {
           inherit system;
           config.allowUnfree = true;
-          overlays = [ inputs.rust-overlay.overlays.default ];
+          overlays = [ inputs.rust-overlay.overlays.default ] ++ packageOverlays;
         };
 
       # repo 全体で使う Rust ツールチェーン。`stable.latest` は rust-overlay が持つ release manifest の
@@ -163,6 +167,9 @@
           };
 
           config = {
+            # nix-darwin が import する nixpkgs には `pkgsFor` の overlays が届かない。
+            nixpkgs.overlays = packageOverlays;
+
             _module.args = {
               inherit inputs root homebrewTaps;
               user = cfg.user;
