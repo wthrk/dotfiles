@@ -32,14 +32,7 @@ pub(crate) fn run(
 ) -> Result<&'static [SwitchTarget]> {
     let config_dir = options.config_dir()?;
     ensure_config_exists(&config_dir)?;
-    // 適用範囲は対象ユーザーがこのマシンで持つ層から決まる。scope はそのユーザーに紐づくので、
-    // 対象ユーザーが決まらない実行では解決しない。
-    let scope = options
-        .scope_user()?
-        .map(|user| config_scope(&user))
-        .transpose()?;
-    let target = resolve_target(options.target, scope)?;
-    let applied = switch_order(target);
+    let applied = planned_targets(&options)?;
     // 利用者所有ファイルを書く Home 適用を含むときだけ対象ユーザーを要求する。降格対象は最初の
     // 特権コマンドより前に解決する。Darwin 単独 target は利用者所有ファイルを書かない。
     let home_user = applied
@@ -47,12 +40,12 @@ pub(crate) fn run(
         .then(|| options.home_apply_user())
         .transpose()?;
     let host = if applied.contains(&SwitchTarget::Darwin) {
-        Some(options.host.clone().map_or_else(current_host, Ok)?)
+        Some(options.host()?)
     } else {
         None
     };
     let invocations = switch_invocations(SwitchInvocationInput {
-        target,
+        targets: applied,
         config_dir: &config_dir,
         user: home_user.as_ref().map_or("", HomeApplyUser::name),
         host: host.as_deref().unwrap_or(""),
@@ -69,6 +62,35 @@ pub(crate) fn run(
         invocation.command.run(options.dry_run, deadline)?;
     }
     Ok(applied)
+}
+
+/// この options が適用する層を、適用順で返す。
+///
+/// 適用範囲は対象ユーザーがこのマシンで持つ層から決まる。scope はそのユーザーに紐づくので、対象
+/// ユーザーが決まらない実行では解決しない。`update` は適用の前にこの層を知る必要があるため、
+/// [`run`] と同じ解決をここから共有する。層の決め方が 2 か所に分かれると、適用する層と、適用前に
+/// 調べる層が食い違う。
+pub(crate) fn planned_targets(options: &SwitchOptions) -> Result<&'static [SwitchTarget]> {
+    let scope = options
+        .scope_user()?
+        .map(|user| config_scope(&user))
+        .transpose()?;
+    Ok(switch_order(resolve_target(options.target, scope)?))
+}
+
+/// 適用順に並んだ層の集合を、その集合をちょうど表す単一の target へ戻す。空集合は `None`。
+///
+/// [`switch_order`] の逆で、`update` が「まだ適用されていない層だけ」を [`run`] へ渡すために使う。
+pub(crate) fn target_covering(targets: &[SwitchTarget]) -> Option<SwitchTarget> {
+    match (
+        targets.contains(&SwitchTarget::Home),
+        targets.contains(&SwitchTarget::Darwin),
+    ) {
+        (true, true) => Some(SwitchTarget::All),
+        (true, false) => Some(SwitchTarget::Home),
+        (false, true) => Some(SwitchTarget::Darwin),
+        (false, false) => None,
+    }
 }
 
 /// 既定または明示された設定ディレクトリに、適用対象の flake が存在することを確認する。
@@ -132,7 +154,8 @@ fn darwin_rebuild_invocation(
 
 /// `dotfiles switch` が実行する外部コマンド列を副作用なしで組み立てる。
 fn switch_invocations(input: SwitchInvocationInput<'_>) -> Vec<SwitchInvocation> {
-    switch_order(input.target)
+    input
+        .targets
         .iter()
         .map(|target| match target {
             SwitchTarget::Home => home_manager_invocation(
@@ -152,7 +175,8 @@ fn switch_invocations(input: SwitchInvocationInput<'_>) -> Vec<SwitchInvocation>
 }
 
 struct SwitchInvocationInput<'a> {
-    target: SwitchTarget,
+    /// 適用順に展開済みの層。`All` は含まない。
+    targets: &'a [SwitchTarget],
     config_dir: &'a Path,
     user: &'a str,
     host: &'a str,
@@ -292,6 +316,21 @@ impl SwitchOptions {
         is_root && self.user.is_none() && self.target.is_none() && self.config_dir.is_none()
     }
 
+    /// まだ適用されていない層だけを適用するために、target を絞った同じ options を作る。
+    ///
+    /// `update` が適用済みの層を外して [`run`] を呼ぶための構築口。target 以外の指定は変えない。
+    pub(crate) fn narrowed_to(&self, target: SwitchTarget) -> Self {
+        Self {
+            target: Some(target),
+            ..self.clone()
+        }
+    }
+
+    /// `#<host>` として flake 属性名に使うホスト名。省略時はこのマシンの短いホスト名。
+    pub(crate) fn host(&self) -> Result<String> {
+        self.host.clone().map_or_else(current_host, Ok)
+    }
+
     /// `update` が lock 更新と switch の両方を同じ予行実行モードで扱う。
     pub(crate) fn dry_run(&self) -> bool {
         self.dry_run
@@ -321,6 +360,17 @@ pub(crate) enum SwitchTarget {
     Home,
     Darwin,
     All,
+}
+
+impl SwitchTarget {
+    /// 端末へ層を示すときの名前。CLI が受け取る target 名と同じ綴りにする。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Home => "home",
+            Self::Darwin => "darwin",
+            Self::All => "all",
+        }
+    }
 }
 
 /// 適用対象を、明示指定と対象ユーザーの scope から決める。
@@ -419,6 +469,7 @@ mod tests {
     use super::{
         ConfigScope, HomeApplyUser, SwitchInvocationInput, SwitchOptions, SwitchTarget,
         darwin_rebuild_invocation, resolve_target, switch_invocations, switch_order,
+        target_covering,
     };
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
@@ -617,13 +668,28 @@ mod tests {
         );
     }
 
+    /// 適用する層の部分集合は、その集合をちょうど表す target へ戻る。`update` は適用済みの層を外した
+    /// 残りをこの形で `run` へ渡すため、往復で層が増減してはならない。
+    #[test]
+    fn target_covering_is_the_inverse_of_switch_order() {
+        for target in [SwitchTarget::Home, SwitchTarget::Darwin, SwitchTarget::All] {
+            assert_eq!(target_covering(switch_order(target)), Some(target));
+        }
+    }
+
+    /// 全層が適用済みなら渡す層が無い。`update` はこれを適用も掃除もしない合図に使う。
+    #[test]
+    fn target_covering_of_nothing_is_none() {
+        assert_eq!(target_covering(&[]), None);
+    }
+
     /// `all` 経路が Home Manager を適用してから nix-darwin を適用するコマンド列を組み立てる。
     #[test]
     fn all_invocations_run_home_manager_then_darwin() {
         let home_manager = OsString::from("home-manager");
         let darwin_rebuild = OsString::from("darwin-rebuild");
         let invocations = switch_invocations(SwitchInvocationInput {
-            target: SwitchTarget::All,
+            targets: switch_order(SwitchTarget::All),
             config_dir: Path::new("/cfg"),
             user: "alice",
             host: "mac",

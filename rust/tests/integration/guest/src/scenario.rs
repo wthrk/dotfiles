@@ -35,6 +35,14 @@ use dotfiles_core::path::{display as path_str, find_executable};
 
 const NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
 
+/// Home Manager が適用完了時に張り替える現世代リンク。`dotfiles update` はこれを home 層の適用済み
+/// 判定に使うため、未適用状態を作るシナリオはここを外す。
+const HOME_GENERATION_LINK: &str = ".local/state/home-manager/gcroots/current-home";
+
+/// nix-darwin が適用完了時に張り替える現世代リンク。`dotfiles update` はこれを system 層の適用済み
+/// 判定に使う。
+const SYSTEM_GENERATION_LINK: &str = "/run/current-system";
+
 const FULL_SCENARIO: &[RuntimeStep] = &[
     RuntimeStep::FreshBootstrap,
     RuntimeStep::DarwinSwitchYa,
@@ -279,7 +287,9 @@ impl ScenarioRunner {
             bail!("2 人目の生成 flake が darwinConfigurations を持っている: {dotfilesci_darwin}");
         }
 
-        // 2 人目が引数なし `dotfiles update` を実行しても、system 層の所有者は移らない。
+        // 2 人目が引数なし `dotfiles update` を実行しても、system 層の所有者は移らない。適用が起きない
+        // 実行では所有者が移らないのは自明なので、home 層を未適用へ戻してから実行する。
+        self.discard_applied_home_generation("dotfilesci")?;
         self.run_sudo_user(
             "dotfilesci",
             NIX,
@@ -289,10 +299,16 @@ impl ScenarioRunner {
 
         // 走査が届いたユーザーだけが復旧する状態を先に作る。両ユーザーのホームから管理リンクを
         // 1 つずつ外し、走査後にそれが戻っていることを見る。これが無いと、走査が 0 人でも所有者
-        // 1 人でも後続の確認は成立したままになる。
+        // 1 人でも後続の確認は成立したままになる。管理リンクを外しても適用済みの印は動かないので、
+        // 併せて home 層と system 層を未適用へ戻し、走査が適用へ進むようにする。system 層を戻すのは、
+        // 適用済みのまま走らせると後続の `assert_system_profile_users` が走査による適用ではなく
+        // 前の手順の結果を見ることになるためである。
         let ya_home = user_home("ya")?;
         self.remove_managed_link(&dotfilesci_home, ".config/zsh")?;
         self.remove_managed_link(&ya_home, ".config/zsh")?;
+        self.discard_applied_home_generation("dotfilesci")?;
+        self.discard_applied_home_generation("ya")?;
+        self.discard_applied_system_generation()?;
 
         // auto-update daemon と同じ root からの全ユーザー走査。両ユーザーが更新され、system 層は
         // 所有者 `ya` の flake からだけ適用される。
@@ -305,7 +321,14 @@ impl ScenarioRunner {
         assert_managed_links(
             path_str(&ya_home).as_str(),
             &[".config/zsh", ".config/nvim/lua", ".zshrc", ".zshenv"],
-        )
+        )?;
+
+        // 直前の走査で両ユーザーの home 層と system 層は現 pin へ適用済みになっている。今度は未適用へ
+        // 戻さずに管理リンクだけを外し、同じ走査をもう一度通す。適用済みの層を飛ばす限りリンクは
+        // 戻らず、毎回適用し直す状態へ退行すると Home Manager が張り直してこの確認が落ちる。
+        self.remove_managed_link(&ya_home, ".config/zsh")?;
+        self.run_as_root(NIX, &["run", self.dotfiles_source_str(), "--", "update"])?;
+        ensure_absent_path(ya_home.join(".config/zsh"))
     }
 
     /// 全ユーザー走査の対象になったかを観測するため、指定ユーザーのホームから管理リンクを外す。
@@ -315,6 +338,34 @@ impl ScenarioRunner {
     /// 確認が空振りになるのを避けるためである。
     fn remove_managed_link(&self, home: &Path, relative: &str) -> Result<()> {
         self.run("sudo", &["rm", path_str(home.join(relative)).as_str()])
+    }
+
+    /// 指定ユーザーの home 層を未適用状態へ戻す。
+    ///
+    /// `update` は lock が指す pin をまだ適用していない層だけを適用する。Home Manager は適用を終えた
+    /// ときにだけ `current-home` を張り替え、次の適用ではそれを現世代として読む。このリンクを外すと
+    /// そのユーザーの home 層は未適用になり、走査が届いたときにだけ適用が起きる。
+    fn discard_applied_home_generation(&self, user: &str) -> Result<()> {
+        let link = user_home(user)?.join(HOME_GENERATION_LINK);
+        self.run("sudo", &["rm", "-f", path_str(link).as_str()])
+    }
+
+    /// system 層を未適用状態へ戻す。
+    ///
+    /// nix-darwin は適用を終えたときにだけ `/run/current-system` を、その世代の store path へ解決した
+    /// 値で張り替える。profile 側の symlink へ向け直すと `update` は store path と一致しない値を読み、
+    /// system 層を未適用として扱う。リンクを消さずに向け直すのは、ゲストの PATH にある
+    /// `/run/current-system/sw/bin` がここを通るためである。
+    fn discard_applied_system_generation(&self) -> Result<()> {
+        self.run(
+            "sudo",
+            &[
+                "ln",
+                "-sfn",
+                "/nix/var/nix/profiles/system",
+                SYSTEM_GENERATION_LINK,
+            ],
+        )
     }
 
     /// 失敗時の環境差分を追えるよう、OS、kernel、ユーザー、Xcode path をログに出す。

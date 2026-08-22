@@ -20,7 +20,7 @@
 }:
 let
   # auto-update daemon は nightly bump 後に各マシンを repo pin へ無人収束させる薄い launchd service である。
-  # launchd timer は 09:00 に 1 回だけ起動し、root daemon から `dotfiles update` を呼ぶ。対象ユーザーは
+  # launchd timer は 30 分ごとに起動し、root daemon から `dotfiles update` を呼ぶ。対象ユーザーは
   # 指定せず、このマシンでローカル flake を持つ全ユーザーの解決を CLI に委ねる。CLI 側が各ユーザーの
   # lock 更新と Home Manager をそのユーザー権限へ降格し、system 層は所有者の flake からだけ適用する。
   # マシンの自動更新はこの 1 個の daemon であり、スケジュールもログも 1 箇所に残る。
@@ -92,12 +92,15 @@ in
     serviceConfig = {
       Label = autoUpdateLabel;
       ProgramArguments = [ "${autoUpdateWrapper}" ];
-      # nightly bump（CI の自動マージ）後に収束させる時刻。ログイン前提を持たないので毎日 09:00。
+      # nightly bump（CI の自動マージ）が入った pin へ、時刻を待たずに収束させるための発火間隔。
+      # 適用済みの層へ適用をやり直させないのは `dotfiles update` 自身の責務で、この間隔はそれを前提に
+      # 決める。`StartInterval` ではなく毎時 00 分と 30 分の 2 件にするのは、スリープ中に飛ばした発火を
+      # launchd が起床時にまとめて 1 回起こすためである（`StartInterval` はスリープ中の発火を落とした
+      # まま次の間隔まで待つ）。走っている間の発火は落ちるので、1 回の実行が次の発火に重なっても
+      # 二重には起動しない。
       StartCalendarInterval = [
-        {
-          Hour = 9;
-          Minute = 0;
-        }
+        { Minute = 0; }
+        { Minute = 30; }
       ];
       # ブート直後の無人適用を避け、定期発火のみで動かす。
       RunAtLoad = false;

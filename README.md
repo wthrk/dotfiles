@@ -110,7 +110,10 @@ lock にある全 input の pin へ追随してから、既存の `switch` と�
 dotfiles update
 ```
 
-ローカルに適用状態ファイルや marker は持たず、冪等性は nix 自身の lock / profile と switch の冪等性に委ねます。
+`update` は lock を更新した後、適用する層それぞれについて、その pin を既に適用し終えているかを調べます。
+適用済みの層は適用も世代の掃除も行わず、まだ適用していない層だけを適用します。調べるのは、適用が完了
+したときにだけ書き換わる Home Manager と nix-darwin 自身の成果物（`~/.local/state/home-manager/gcroots/current-home`
+と `/run/current-system`）で、ローカルに適用状態ファイルや marker は持ちません。
 適用された更新の概要（version 差分と change_items）は repo の `docs/update-history/*.toml`（nightly CI が記録）
 にあり、`dotfiles update-history show` でいつでも閲覧できます。
 
@@ -129,9 +132,10 @@ dotfiles switch darwin
 dotfiles switch all
 ```
 
-自動更新はマシンに 1 つの daemon（`org.dotfiles.auto-update`）が担い、そのマシンでローカル flake を
-持つ全ユーザーを更新します。各ユーザーの lock 更新と Home Manager はそのユーザー権限で実行し、
-system 層は所有者の flake からだけ適用します。
+自動更新はマシンに 1 つの daemon（`org.dotfiles.auto-update`）が担い、毎時 00 分と 30 分に、そのマシンで
+ローカル flake を持つ全ユーザーを更新します。各ユーザーの lock 更新と Home Manager はそのユーザー権限で
+実行し、system 層は所有者の flake からだけ適用します。全層が適用済みなら、発火のたびに走るのは lock の
+更新と適用済みかの評価までで、適用と掃除は行いません。
 
 適用時に呼ばれるコマンド:
 

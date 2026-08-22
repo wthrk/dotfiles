@@ -77,7 +77,10 @@ pub(crate) fn render(
 }
 
 /// CLI 由来の値を Nix の二重引用符文字列へ安全に埋め込む。
-fn escape_nix_string(value: &str) -> String {
+///
+/// 生成 flake が書く属性名と、後からその属性を評価する側が組み立てる名前は同じ規則で引用する必要が
+/// ある。規則が分かれると、引用が要る名前で評価先が生成物とずれる。
+pub(crate) fn escape_nix_string(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
