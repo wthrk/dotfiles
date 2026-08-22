@@ -149,16 +149,28 @@ in
   # `/Applications/Nix Apps` へ実体コピーされた bundle が適用済みマシンに残る。上流が無条件に足す
   # App Management 検査（`modules/system/applications.nix`）はそのディレクトリを走査し、bundle が
   # 1 個でもあると非 Aqua セッションの auto-update daemon で activation を中断する。検査は同期
-  # （`activationScripts.applications`）より先に合流するため、さらに前の preActivation で撤去する。
-  # 撤去後は同じ適用内で上流の同期が空のディレクトリを作り直す。bundle が残っているマシンでだけ
-  # 走らせ、撤去済みのマシンで毎回消し直さないようにする。bundle が残る実マシンが無くなったら
+  # （`activationScripts.applications`）より先に合流するため、さらに前の preActivation で退避する。
+  # 退避後は同じ適用内で上流の同期が空のディレクトリを作り直す。bundle が残っているマシンでだけ
+  # 走らせ、退役済みのマシンで毎回やり直さないようにする。bundle が残る実マシンが無くなったら
   # この宣言ごと削除してよい。
+  #
+  # `rm -rf "$nixApps"` で直接消さず、退避してから消す。検査が走査するのは `/Applications/Nix Apps`
+  # だけなので、bundle 内部の unlink をその走査対象の外へ先に移し、そのうえで実体を回収する。
+  #
+  # 退避先の親は root だけが書ける `/private/var/root` に置く。退避も削除も、失敗したら事実を stderr に
+  # 残して activation は続ける。
   system.activationScripts.preActivation.text = lib.mkAfter ''
     nixApps='/Applications/Nix Apps'
+    retired='/private/var/root/nix-apps-retired'
 
     for appBundle in "$nixApps"/*.app; do
       if [ -d "$appBundle" ]; then
-        rm -rf "$nixApps" || echo "Nix Apps: $nixApps の撤去に失敗しました" >&2
+        if mv "$nixApps" "$retired"; then
+          rm -rf "$retired" || echo "Nix Apps: $retired の削除に失敗しました" >&2
+        else
+          echo "Nix Apps: $nixApps の退避に失敗しました" >&2
+        fi
+
         break
       fi
     done
