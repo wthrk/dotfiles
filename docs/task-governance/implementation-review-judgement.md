@@ -18,7 +18,7 @@
 
 ### 構造レビュー担当
 
-[../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) に従い、層別責務、依存方向、公開範囲、処理単位の責務配置、doc comment 規則、test double / fixture の配置を判定する。判定は形式（ファイル名、公開面の有無、`#[cfg(test)]` か `#[cfg(feature)]` か）ではなく責務で行い、機械的分離を合格根拠にしない。
+[../architecture/hexagonal-implementation-rules.md](../architecture/hexagonal-implementation-rules.md) に従い、層別責務、依存方向、公開範囲、処理単位の責務配置、comment / doc comment 規則、test double / fixture の配置を判定する。判定は形式（ファイル名、公開面の有無、`#[cfg(test)]` か `#[cfg(feature)]` か）ではなく責務で行い、機械的分離を合格根拠にしない。
 
 ### 仕様適合レビュー担当
 
