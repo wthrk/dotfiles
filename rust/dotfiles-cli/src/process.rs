@@ -10,7 +10,9 @@
 //! 組み立てると、同じ権限規則が use case ごとに写る。
 
 use std::ffi::OsString;
-use std::process::{Child, Command, ExitStatus};
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::Result;
@@ -158,40 +160,95 @@ impl Invocation {
     pub(crate) fn run(self, dry_run: bool, deadline: Option<Instant>) -> Result<()> {
         run(self.program, self.args, dry_run, deadline)
     }
+
+    /// 組み立てた起動を実行し、標準出力を捕捉する。`deadline` の扱いは [`run`] と同じ。
+    ///
+    /// 実行予定を端末へ書かない。判定のために値を読むだけの起動であり、利用者が見る「適用として
+    /// 何が走ったか」に混ぜると、適用していない起動が適用の記録に残る。
+    pub(crate) fn run_capture(self, deadline: Option<Instant>) -> Result<String> {
+        capture(self.program, self.args, deadline)
+    }
 }
 
-/// 外部コマンドの stdout を捕捉して返す。非 0 終了は失敗にする。
+/// 外部コマンドを起動して標準出力を捕捉する。非 0 終了は失敗にする。
+///
+/// stdout と stderr は pipe で受け、待機と並行に読み切る。stdin は与えない。捕捉する起動は値を読む
+/// だけであり、親の stdin を子へ渡さない。失敗時は終了状態と stderr 全文を文脈に含める。
+///
+/// 期限を超えた実行は pipe を読み切らずに戻る。`sudo` 越しに起動した孫は pipe の write end を持った
+/// まま残るため、読み切ってから戻ると打ち切りの効き目が孫の寿命まで延びる。
+fn capture(program: OsString, args: Vec<OsString>, deadline: Option<Instant>) -> Result<String> {
+    let mut child = Command::new(&program)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = read_to_end_in_background(child.stdout.take());
+    let stderr = read_to_end_in_background(child.stderr.take());
+    let status = match deadline {
+        None => child.wait()?,
+        Some(deadline) => wait_until(&mut child, deadline, &program)?,
+    };
+    let stdout = joined(stdout, &program)?;
+    let stderr = joined(stderr, &program)?;
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        bail!(
+            "command failed: {}: {}: {}",
+            program.to_string_lossy(),
+            status,
+            stderr.trim()
+        );
+    }
+    Ok(String::from_utf8(stdout)?)
+}
+
+/// 子プロセスの pipe を、別スレッドで EOF まで読み切る。
+///
+/// 読み出しを待機から分けるのは、読まないまま待つと pipe buffer が満ちた時点で子プロセスが書き込みで
+/// 止まり、待機側が期限にも終了にも到達しないためである。
+fn read_to_end_in_background(
+    pipe: Option<impl Read + Send + 'static>,
+) -> JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut read = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut read)?;
+        }
+        Ok(read)
+    })
+}
+
+/// [`read_to_end_in_background`] が読み切った内容を受け取る。
+fn joined(handle: JoinHandle<std::io::Result<Vec<u8>>>, program: &OsString) -> Result<Vec<u8>> {
+    match handle.join() {
+        Ok(read) => Ok(read?),
+        Err(_) => bail!(
+            "failed to read the output of: {}",
+            program.to_string_lossy()
+        ),
+    }
+}
+
+/// 外部コマンドの stdout を期限なしで捕捉して返す。非 0 終了は失敗にする。
 ///
 /// `run` が stdio を継承するのに対し、本関数は `nix flake archive --json` 出力やリリースノート取得の
-/// ように標準出力をプログラム的に読む用途のために `Command::output()` を使う（`environment.rs` の output
-/// 取得パターンに揃える）。`dry_run` 経路は持たず常に実行する。失敗時は終了状態と stderr 全文（前後の
-/// 空白を `trim` した全体）を文脈に含め、stdout は UTF-8 文字列として返す。stderr は端末へは流さず、失敗時の
-/// 診断だけに使う。
+/// ように標準出力をプログラム的に読む用途に使う。`dry_run` 経路は持たず常に実行する。stderr は端末へは
+/// 流さず、失敗時の診断だけに使う。
 pub(crate) fn run_capture<I>(program: impl Into<OsString>, args: I) -> Result<String>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let program = program.into();
-    let args = args.into_iter().collect::<Vec<_>>();
-    let output = Command::new(&program).args(&args).output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "command failed: {}: {}: {}",
-            program.to_string_lossy(),
-            output.status,
-            stderr.trim()
-        );
-    }
-    let stdout = String::from_utf8(output.stdout)?;
-    Ok(stdout)
+    capture(program.into(), args.into_iter().collect(), None)
 }
 
-/// ユーザー権限実行の sudo 引数が HOME を対象ユーザーへ寄せること、および期限付き実行が停止した
-/// コマンドを打ち切ることを検証する。
+/// ユーザー権限実行の sudo 引数が HOME を対象ユーザーへ寄せること、期限付き実行が停止した
+/// コマンドを打ち切ること、および捕捉する起動の打ち切りが孫プロセスの寿命に引きずられないことを
+/// 検証する。
 #[cfg(test)]
 mod tests {
-    use super::{run, sudo_as_user_args};
+    use super::{capture, run, sudo_as_user_args};
     use std::ffi::OsString;
     use std::time::{Duration, Instant};
 
@@ -211,6 +268,30 @@ mod tests {
 
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(30), "{err}");
+    }
+
+    /// 捕捉する起動の打ち切りは、pipe の write end を持つ孫が生きていても期限で戻る。
+    ///
+    /// 直の子を kill しても、その子が起こした `sleep` は捕捉用 pipe を持ったまま残る。打ち切りで
+    /// pipe を読み切ってから戻ると、期限ではなくこの孫の終了まで待つことになる。
+    #[test]
+    fn capture_with_deadline_returns_while_an_orphan_holds_the_pipe() {
+        let started = Instant::now();
+        let err = capture(
+            OsString::from("sh"),
+            vec![
+                OsString::from("-c"),
+                OsString::from("sleep 10 & exec sleep 30"),
+            ],
+            Some(Instant::now() + Duration::from_millis(100)),
+        )
+        .err()
+        .map(|err| err.to_string())
+        .unwrap_or_default();
+
+        assert!(err.contains("timed out"), "{err}");
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
     }
 
     /// 期限を渡さない実行は従来どおり終了状態だけを見る。

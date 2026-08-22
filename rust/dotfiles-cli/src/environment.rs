@@ -114,14 +114,7 @@ pub(crate) fn local_flake_accounts() -> Result<Vec<LocalFlakeAccount>> {
             "全ユーザー走査は macOS のユーザーレコードに依存するため macOS 以外では使えない（`--user` で対象を 1 人に指定する）"
         );
     }
-    let output = Command::new("dscl")
-        .args([".", "-readall", "/Users", "RecordName", "NFSHomeDirectory"])
-        .output()?;
-    if !output.status.success() {
-        bail!("dscl -readall /Users RecordName NFSHomeDirectory command failed");
-    }
-    let listing = String::from_utf8(output.stdout)?;
-    let mut accounts = parse_user_homes(&listing)
+    let mut accounts = directory_service_homes()?
         .into_iter()
         .map(|(user, home)| LocalFlakeAccount {
             user,
@@ -131,6 +124,33 @@ pub(crate) fn local_flake_accounts() -> Result<Vec<LocalFlakeAccount>> {
         .collect::<Vec<_>>();
     accounts.sort_by(|left, right| left.user.cmp(&right.user));
     Ok(accounts)
+}
+
+/// 指定ユーザーのホームを、全ユーザー走査と同じディレクトリサービスから解決する。
+///
+/// 解決できないとき（macOS 以外、`dscl` の失敗、レコード不在）は `None` を返す。`$HOME` ではなく
+/// ユーザーレコードから引くのは、`sudo -H -u <user>` が HOME を組み立てる出所に揃えるためである。
+/// root から他ユーザーを扱う経路と利用者自身の経路で、同じユーザーに違うホームを見せない。
+pub(crate) fn user_home(user: &str) -> Option<PathBuf> {
+    if std::env::consts::OS != "macos" {
+        return None;
+    }
+    directory_service_homes()
+        .ok()?
+        .into_iter()
+        .find(|(name, _)| name == user)
+        .map(|(_, home)| home)
+}
+
+/// macOS のユーザーレコードから、ユーザー名とホームの組を読む。
+fn directory_service_homes() -> Result<Vec<(String, PathBuf)>> {
+    let output = Command::new("dscl")
+        .args([".", "-readall", "/Users", "RecordName", "NFSHomeDirectory"])
+        .output()?;
+    if !output.status.success() {
+        bail!("dscl -readall /Users RecordName NFSHomeDirectory command failed");
+    }
+    Ok(parse_user_homes(&String::from_utf8(output.stdout)?))
 }
 
 /// 現在の OS と CPU から、ローカル flake に記録する既定の Nix system 文字列を作る。

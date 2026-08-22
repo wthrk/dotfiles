@@ -20,6 +20,7 @@ use serde::Deserialize;
 use super::diff::NixPackage;
 use super::sources;
 use crate::Result;
+use crate::local_flake::escape_nix_string;
 use crate::process::run_capture;
 
 /// 宣言パッケージ list を name→生評価値へ畳む最小 `--apply` 式（owner/repo 導出規則は持たない）。
@@ -150,14 +151,6 @@ fn home_manager_packages_attr_path(reference: &str, user: &str) -> String {
         ".#{reference}.config.home-manager.users.\"{}\".home.packages",
         escape_nix_string(user)
     )
-}
-
-/// CLI/eval 由来の値を Nix の二重引用符文字列キーへ安全に埋め込む。
-fn escape_nix_string(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace("${", "\\${")
 }
 
 /// 生評価値 1 件を導出済み [`NixPackage`]（version + repo/changelog/homepage）へ翻訳する純粋関数。
