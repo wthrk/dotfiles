@@ -147,6 +147,7 @@ fn pending_target(
 /// 判定材料は、その層の適用が完了したときにだけ書き換わるリンク（[`HOME_GENERATION_LINK`]、
 /// [`SYSTEM_GENERATION_LINK`]）と、同じ pin から評価した store path の一致である。どちらも
 /// Home Manager と nix-darwin が自分で作る成果物で、適用状態を写した marker を別に持たない。
+/// リンクを書きうる構成が層に複数あるときは、そのいずれかと一致すれば適用済みとする。
 ///
 /// 判定できない事象——評価の失敗、リンクが読めない、ホーム／ホスト名が解決できない——はすべて未適用へ
 /// 倒す。適用漏れを見逃すより余分に適用するほうが安全であり、同じ失敗は続く適用経路がそのまま報告する。
@@ -157,14 +158,14 @@ fn is_applied(
     config_dir: &Path,
     deadline: Option<Instant>,
 ) -> bool {
-    let (attribute, activated) = match target {
+    let (attributes, activated) = match target {
         SwitchTarget::Home => (
-            home_attribute(target_user.name()),
+            home_attributes(target_user.name(), system_layer_host(options).as_deref()),
             user_home(target_user.name()).map(|home| home.join(HOME_GENERATION_LINK)),
         ),
         SwitchTarget::Darwin => match options.host() {
             Ok(host) => (
-                darwin_attribute(&host),
+                vec![darwin_attribute(&host)],
                 Some(PathBuf::from(SYSTEM_GENERATION_LINK)),
             ),
             Err(_) => return false,
@@ -174,13 +175,23 @@ fn is_applied(
     let Some(activated) = activated.and_then(|link| fs::read_link(link).ok()) else {
         return false;
     };
-    evaluate_store_path(
-        config_dir,
-        &attribute,
-        target_user.downgrade_target(),
-        deadline,
-    )
-    .is_some_and(|evaluated| evaluated == activated)
+    attributes.into_iter().any(|attribute| {
+        evaluate_store_path(
+            config_dir,
+            &attribute,
+            target_user.downgrade_target(),
+            deadline,
+        )
+        .is_some_and(|evaluated| evaluated == activated)
+    })
+}
+
+/// 対象ユーザーが system 層まで持つマシンのホスト名。持たない場合と解決できない場合は `None`。
+fn system_layer_host(options: &switch::SwitchOptions) -> Option<String> {
+    match (options.owns_system_layer(), options.host()) {
+        (Ok(true), Ok(host)) => Some(host),
+        _ => None,
+    }
 }
 
 /// 生成 flake の属性を評価して store path を求める。求まらなければ `None`。
@@ -220,12 +231,46 @@ fn evaluate_store_path_args(config_dir: &Path, attribute: &str) -> Vec<OsString>
     .collect()
 }
 
+/// [`HOME_GENERATION_LINK`] を書きうる構成の属性パスを、評価する順に並べる。
+///
+/// system 層を持つユーザーの home 層は 2 経路から適用される。`home-manager switch` が
+/// `homeConfigurations."<user>"` を適用し、その後の `darwin-rebuild switch` が
+/// `home-manager.users."<user>"` の activation をやり直してリンクを上書きする。所有者の適用は
+/// home 層から darwin 層の順に進むので、完走した実行が最後に残すのは darwin 経由の構成である。
+/// そちらを先に評価すると、適用済みの所有者は 1 回の評価で判定が済む。
+///
+/// 2 つの構成は同じ store path にならない。standalone は Home Manager の CLI を `home.packages` に
+/// 持ち、`home-manager.useUserPackages` を有効にした darwin 経由の構成は利用者 profile を
+/// `/etc/profiles/per-user/<user>` へ移して、その path を生成する session 変数へ書く。片方だけと
+/// 突き合わせる形へ戻すと、所有者の home 層は走査のたびに未適用と判定される。
+///
+/// `system_host` は対象ユーザーが system 層まで持つマシンのホスト名で、持たないなら `None`。
+fn home_attributes(user: &str, system_host: Option<&str>) -> Vec<String> {
+    system_host
+        .map(|host| darwin_home_attribute(host, user))
+        .into_iter()
+        .chain([home_attribute(user)])
+        .collect()
+}
+
 /// home 層の適用対象を指す属性パス。`home-manager switch --flake <dir>#<user>` と同じ構成を指す。
 ///
 /// 名前は生成 flake が `homeConfigurations` のキーを書くのと同じ [`escape_nix_string`] で引用する。
 fn home_attribute(user: &str) -> String {
     format!(
         r#"homeConfigurations."{}".activationPackage.outPath"#,
+        escape_nix_string(user)
+    )
+}
+
+/// system 層の適用が実行する home 層の適用対象を指す属性パス。
+///
+/// nix-darwin は `home-manager.users."<user>"` を自分の activation の中で適用する。名前の引用は
+/// [`home_attribute`] と同じで、ホスト名と利用者名の両方に効かせる。
+fn darwin_home_attribute(host: &str, user: &str) -> String {
+    format!(
+        r#"darwinConfigurations."{}".config.home-manager.users."{}".home.activationPackage.outPath"#,
+        escape_nix_string(host),
         escape_nix_string(user)
     )
 }
@@ -403,8 +448,8 @@ pub(crate) struct UpdateOptions {
 mod tests {
     use super::{
         collect_store_args, darwin_attribute, evaluate_store_path_args,
-        garbage_collection_invocations, home_attribute, sweep_result, switch, update_lock_args,
-        update_lock_invocation,
+        garbage_collection_invocations, home_attribute, home_attributes, sweep_result, switch,
+        update_lock_args, update_lock_invocation,
     };
     use std::ffi::OsString;
     use std::path::Path;
@@ -415,6 +460,29 @@ mod tests {
         assert_eq!(
             home_attribute("ya-n"),
             r#"homeConfigurations."ya-n".activationPackage.outPath"#
+        );
+    }
+
+    /// system 層を持たないユーザーの home 層を書くのは `home-manager switch` だけである。
+    #[test]
+    fn home_without_system_layer_is_judged_by_the_standalone_configuration() {
+        assert_eq!(
+            home_attributes("dotfilesci", None),
+            vec![r#"homeConfigurations."dotfilesci".activationPackage.outPath"#.to_string()]
+        );
+    }
+
+    /// system 層の所有者の home 層は darwin 層の適用からも書かれる。完走した適用が最後に残すのは
+    /// darwin 経由の構成なので、そちらを先に評価する。ホスト名と利用者名はどちらも引用する。
+    #[test]
+    fn home_with_system_layer_is_judged_by_both_configurations() {
+        assert_eq!(
+            home_attributes("ya-n", Some("macbook.air")),
+            vec![
+                r#"darwinConfigurations."macbook.air".config.home-manager.users."ya-n".home.activationPackage.outPath"#
+                    .to_string(),
+                r#"homeConfigurations."ya-n".activationPackage.outPath"#.to_string(),
+            ]
         );
     }
 
