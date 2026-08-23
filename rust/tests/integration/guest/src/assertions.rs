@@ -74,6 +74,22 @@ pub(crate) fn ensure_absent_path(path: impl AsRef<Path>) -> Result<()> {
     }
 }
 
+/// 2 つのファイルが同じ内容かを返す。
+///
+/// 置き直しの最中に読むと途中の内容が返るため、判定は不一致に倒れる。呼び出し側は完了を待つ観測と
+/// して繰り返し呼ぶ。
+pub(crate) fn files_have_same_content(
+    left: impl AsRef<Path>,
+    right: impl AsRef<Path>,
+) -> Result<bool> {
+    Ok(fs::read(left)? == fs::read(right)?)
+}
+
+/// symlink が Nix store の中を指しているかを返す。
+pub(crate) fn link_points_into_store(path: impl AsRef<Path>) -> Result<bool> {
+    Ok(fs::read_link(path)?.starts_with("/nix/store"))
+}
+
 /// flake や lock file など、空ファイルでは意味がない成果物の存在を確認する。
 pub(crate) fn ensure_nonempty_path(path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();

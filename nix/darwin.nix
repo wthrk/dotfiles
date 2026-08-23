@@ -63,12 +63,25 @@ let
   # 適用範囲もそのユーザーの scope から決まる。ここへ利用者名や config-dir を埋め込むと、daemon が
   # 1 人だけを見る状態に戻る。`--host` はマシン単位の値で、`dotfiles init --host` で短縮 hostname と
   # 異なる出力名を使った環境でも `#<host>` を正しく参照する。
+  #
+  # 更新処理は job 本体とは別のプロセスグループで起動し、その完了を待つ。nix-darwin の activation は
+  # この daemon の plist に差分があると `launchctl unload` してから plist を置き直して load し直す。
+  # unload は job のプロセスグループを終了させるので、更新処理を job と同じグループで走らせると、
+  # plist の設置と再 load、`/run/current-system` の張り替えを残したまま自分が死ぬ。2026-08-23 の
+  # 無人実行はこれで停止し、以降 daemon は system domain から消えたまま 1 度も発火しなかった。
+  # `set -m` は background job を別のプロセスグループへ置く。`wait` を挟むのは job の生存期間を更新
+  # 処理に合わせ、launchd が同じ label の実行中に次の発火を落とす性質を保つためである。
   autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg autoUpdatePath}
 
-    exec ${dotfilesBin} update --host ${lib.escapeShellArg host}
+    set -m
+    ${dotfilesBin} update --host ${lib.escapeShellArg host} &
+    worker=$!
+    set +m
+
+    wait "$worker"
   '';
 
   # 実行者以外が console を持っている状況を判定し、その間だけ pam_tid.so を認証経路から外す PAM module。
