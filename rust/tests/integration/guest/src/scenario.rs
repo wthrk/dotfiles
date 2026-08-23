@@ -1,7 +1,8 @@
 //! ゲスト側で実行する実行時統合シナリオ。
 //!
 //! 全体シナリオは 1 つの順序付き手順として扱う。初期状態システムの初期設定、1 人目ユーザーの
-//! nix-darwin 切り替え、2 人目ユーザーの導入と更新、管理対象リンクの確認までを一続きで検証する。
+//! nix-darwin 切り替え、2 人目ユーザーの導入と更新、管理対象リンクの確認、auto-update daemon の
+//! 無人適用までを一続きで検証する。
 //!
 //! 1 人目 `ya` と 2 人目 `dotfilesci` は、どちらも適用範囲を指定しない同じ bootstrap 呼び出しを
 //! 通り、入る層だけがマシンの状態で変わる。2 人目の手順が 1 人目の後に来るのは、system 層の
@@ -14,14 +15,17 @@
 //! 1 人目の導入を検証できなくなる。
 
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::{
     Result,
     assertions::{
         assert_managed_links, assert_system_profile_users, ensure_absent_path, ensure_exists,
-        ensure_nonempty_path,
+        ensure_nonempty_path, file_mentions_store_path, files_have_same_content,
+        link_points_into_store,
     },
-    command::{run_with_env, status_with_env, sudo_login_shell_args},
+    command::{run_with_env, status_quiet, status_with_env, sudo_login_shell_args},
     runtime_env::{
         ScenarioEnv, current_host, current_user, local_config_dir_for_user,
         local_config_flake_for_current_user, local_config_flake_for_user, local_config_ref,
@@ -43,10 +47,27 @@ const HOME_GENERATION_LINK: &str = ".local/state/home-manager/gcroots/current-ho
 /// 判定に使う。
 const SYSTEM_GENERATION_LINK: &str = "/run/current-system";
 
+/// 無人更新を起動する launchd daemon の label。
+const AUTO_UPDATE_LABEL: &str = "org.dotfiles.auto-update";
+
+/// 稼働中の daemon が読む plist の設置先。nix-darwin の activation はここへ世代の plist を置き直す。
+const AUTO_UPDATE_INSTALLED_PLIST: &str = "/Library/LaunchDaemons/org.dotfiles.auto-update.plist";
+
+/// 適用が完了した世代が持つ plist。activation の差分比較は、この内容と設置先を突き合わせる。
+const AUTO_UPDATE_GENERATION_PLIST: &str =
+    "/run/current-system/Library/LaunchDaemons/org.dotfiles.auto-update.plist";
+
+/// daemon 1 回分の無人実行に与える上限。lock 更新・評価・system 層の適用がこの中に収まる。
+const AUTO_UPDATE_RUN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// 無人実行の進行を見る間隔。
+const AUTO_UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
 const FULL_SCENARIO: &[RuntimeStep] = &[
     RuntimeStep::FreshBootstrap,
     RuntimeStep::DarwinSwitchYa,
     RuntimeStep::SecondUserHomeManager,
+    RuntimeStep::AutoUpdateDaemonUnattendedApply,
 ];
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -61,6 +82,7 @@ enum RuntimeStep {
     FreshBootstrap,
     DarwinSwitchYa,
     SecondUserHomeManager,
+    AutoUpdateDaemonUnattendedApply,
 }
 
 impl RuntimeStep {
@@ -70,6 +92,7 @@ impl RuntimeStep {
             RuntimeStep::FreshBootstrap => "fresh-bootstrap",
             RuntimeStep::DarwinSwitchYa => "darwin-switch-ya",
             RuntimeStep::SecondUserHomeManager => "second-user-home-manager",
+            RuntimeStep::AutoUpdateDaemonUnattendedApply => "auto-update-daemon-unattended-apply",
         }
     }
 }
@@ -117,6 +140,9 @@ impl ScenarioRunner {
             RuntimeStep::FreshBootstrap => self.fresh_bootstrap(),
             RuntimeStep::DarwinSwitchYa => self.darwin_switch_ya(),
             RuntimeStep::SecondUserHomeManager => self.second_user_home_manager(),
+            RuntimeStep::AutoUpdateDaemonUnattendedApply => {
+                self.auto_update_daemon_unattended_apply()
+            }
         }
     }
 
@@ -331,6 +357,64 @@ impl ScenarioRunner {
         ensure_absent_path(ya_home.join(".config/zsh"))
     }
 
+    /// auto-update daemon の無人実行が、自分を降ろさずに system 層の適用まで完走することを確認する。
+    ///
+    /// nix-darwin の activation は daemon の plist に差分があると `launchctl unload` してから plist を
+    /// 置き直して load し直す。unload の対象は、その activation を起こした無人実行そのものであり、
+    /// 2026-08-23 の無人実行はこれで停止した。差分比較が不一致になるのは plist が世代ごとに変わる値を
+    /// 持つときだけなので、無人実行を起こす前に、設置済み plist が世代のものと一致していることと、
+    /// 世代ごとに変わる値を持たないことを見る。
+    fn auto_update_daemon_unattended_apply(&self) -> Result<()> {
+        self.runner_info()?;
+        self.require_existing_nix()?;
+        if !auto_update_daemon_is_loaded()? {
+            bail!("auto-update daemon が system domain に居ません: {AUTO_UPDATE_LABEL}");
+        }
+        if !auto_update_plist_matches_generation()? {
+            bail!("設置済み plist が世代のものと一致していません: {AUTO_UPDATE_INSTALLED_PLIST}");
+        }
+        // 世代ごとに変わる値は store path として現れる。plist がこれを持つと、世代が変わるたびに
+        // activation は unload の分岐へ入り、無人実行はそこで自分ごと消える。
+        if file_mentions_store_path(AUTO_UPDATE_INSTALLED_PLIST)? {
+            bail!(
+                "plist が世代ごとに変わる store path を持っています: {AUTO_UPDATE_INSTALLED_PLIST}"
+            );
+        }
+
+        // 適用が起きない実行では activation が走らないので、system 層を未適用へ戻す。
+        self.discard_applied_system_generation()?;
+
+        let target = format!("system/{AUTO_UPDATE_LABEL}");
+        self.run("sudo", &["launchctl", "kickstart", target.as_str()])?;
+        self.wait_for_auto_update_run()
+    }
+
+    /// 無人実行が system 層の適用を終えるまで待つ。
+    ///
+    /// 待つ間、daemon が system domain に居続けることと、設置済み plist が置き直されていないことを
+    /// 併せて見る。activation が plist を置き直すのは unload と同じ分岐だけなので、どちらか 1 つでも
+    /// 崩れた時点で、無人実行は自分を降ろしている。
+    fn wait_for_auto_update_run(&self) -> Result<()> {
+        let deadline = Instant::now() + AUTO_UPDATE_RUN_TIMEOUT;
+        loop {
+            if !auto_update_daemon_is_loaded()? {
+                bail!("無人実行が自分の job を降ろしたまま消えました: {AUTO_UPDATE_LABEL}");
+            }
+            if !auto_update_plist_matches_generation()? {
+                bail!(
+                    "activation が設置済み plist を置き直しました: {AUTO_UPDATE_INSTALLED_PLIST}"
+                );
+            }
+            if system_generation_is_activated()? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("auto-update daemon の無人実行が時間内に完走しませんでした");
+            }
+            thread::sleep(AUTO_UPDATE_POLL_INTERVAL);
+        }
+    }
+
     /// 全ユーザー走査の対象になったかを観測するため、指定ユーザーのホームから管理リンクを外す。
     ///
     /// Home Manager のアクティベーションは生成が変わらなくてもリンクを張り直すので、外したリンクは
@@ -465,4 +549,27 @@ impl ScenarioRunner {
     fn run_as_ya(&self, program: &str, args: &[&str]) -> Result<()> {
         self.run_sudo_user("ya", program, args)
     }
+}
+
+/// auto-update daemon が system domain に居るかを返す。
+///
+/// 無人実行の進行中に繰り返し呼ぶため、`launchctl print` の内容は取らず終了状態だけを見る。
+fn auto_update_daemon_is_loaded() -> Result<bool> {
+    let target = format!("system/{AUTO_UPDATE_LABEL}");
+    Ok(status_quiet("sudo", &["launchctl", "print", target.as_str()])?.success())
+}
+
+/// 設置済み plist が、いま適用されている世代の plist と同じ内容かを返す。
+///
+/// activation の差分比較はこの 2 つを突き合わせ、不一致なら daemon を降ろす分岐へ入る。
+fn auto_update_plist_matches_generation() -> Result<bool> {
+    files_have_same_content(AUTO_UPDATE_INSTALLED_PLIST, AUTO_UPDATE_GENERATION_PLIST)
+}
+
+/// system 層の適用が完了しているかを返す。
+///
+/// nix-darwin は activation の最後に、この世代の store path へ解決した値でリンクを張り替える。
+/// profile の symlink を指したままなら、その先の張り替えまで到達していない。
+fn system_generation_is_activated() -> Result<bool> {
+    link_points_into_store(SYSTEM_GENERATION_LINK)
 }

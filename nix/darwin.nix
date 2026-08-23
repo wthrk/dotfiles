@@ -63,6 +63,10 @@ let
   # 適用範囲もそのユーザーの scope から決まる。ここへ利用者名や config-dir を埋め込むと、daemon が
   # 1 人だけを見る状態に戻る。`--host` はマシン単位の値で、`dotfiles init --host` で短縮 hostname と
   # 異なる出力名を使った環境でも `#<host>` を正しく参照する。
+  #
+  # `exec` は job を更新処理そのものへ置き換える。job の寿命が更新処理の寿命と一致することが、
+  # launchd が同じ label の次の発火を落とす条件であり、`launchctl bootout` と `kickstart -k` が
+  # 進行中の更新へ届く条件でもある。
   autoUpdateWrapper = pkgs.writeShellScript "${autoUpdateLabel}-wrapper" ''
     set -euo pipefail
 
@@ -70,6 +74,20 @@ let
 
     exec ${dotfilesBin} update --host ${lib.escapeShellArg host}
   '';
+
+  # plist が指す program のパス。`/etc` 配下の固定文字列で、世代が変わっても同じ値になる。
+  #
+  # nix-darwin の activation は daemon の plist に差分があると `launchctl unload` してから plist を
+  # 置き直して load し直す。unload の対象は、その activation を起こした無人実行そのものである。
+  # plist が世代ごとに変わる値を持つと、更新のたびにこの分岐へ入り、daemon は plist の設置と再 load、
+  # `/run/current-system` の張り替えを残したまま自分ごと消える。2026-08-23 の無人実行はこれで停止し、
+  # 以降 daemon は system domain から消えたまま 1 度も発火しなかった。
+  #
+  # そのため plist には世代ごとに変わる値を載せない。CLI と PATH の store path は wrapper 本体の側へ
+  # 集め、plist からはこの固定パスだけを指す。wrapper の実体は `environment.etc` が同じ activation の
+  # `/etc` 節で置き直すので、次の発火から新しい世代の CLI が起動する。
+  autoUpdateWrapperEtcTarget = "dotfiles/auto-update";
+  autoUpdateProgram = "/etc/${autoUpdateWrapperEtcTarget}";
 
   # 実行者以外が console を持っている状況を判定し、その間だけ pam_tid.so を認証経路から外す PAM module。
   pamTouchIdSessionGuard = pkgs.callPackage ./pam-touchid-session-guard { };
@@ -91,7 +109,7 @@ in
   launchd.daemons.${autoUpdateLabel} = lib.mkIf hasAutoUpdatePackage {
     serviceConfig = {
       Label = autoUpdateLabel;
-      ProgramArguments = [ "${autoUpdateWrapper}" ];
+      ProgramArguments = [ autoUpdateProgram ];
       # nightly bump（CI の自動マージ）が入った pin へ、時刻を待たずに収束させるための発火間隔。
       # 適用済みの層へ適用をやり直させないのは `dotfiles update` 自身の責務で、この間隔はそれを前提に
       # 決める。`StartInterval` ではなく毎時 00 分と 30 分の 2 件にするのは、スリープ中に飛ばした発火を
@@ -107,6 +125,13 @@ in
       StandardOutPath = "/var/log/${autoUpdateLabel}.out.log";
       StandardErrorPath = "/var/log/${autoUpdateLabel}.err.log";
     };
+  };
+
+  # daemon が起動する wrapper の実体。plist が持てない世代ごとの値をここへ置く。`mkIf` を
+  # `environment.etc` の値へ寄せるのは `launchd.daemons` と同じ理由で、package が無い system では
+  # 内側の `autoUpdateWrapper` も評価されないようにするためである。
+  environment.etc = lib.mkIf hasAutoUpdatePackage {
+    ${autoUpdateWrapperEtcTarget}.source = autoUpdateWrapper;
   };
 
   nix.settings = {

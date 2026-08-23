@@ -74,6 +74,26 @@ pub(crate) fn ensure_absent_path(path: impl AsRef<Path>) -> Result<()> {
     }
 }
 
+/// 2 つのファイルが同じ内容かを返す。
+pub(crate) fn files_have_same_content(
+    left: impl AsRef<Path>,
+    right: impl AsRef<Path>,
+) -> Result<bool> {
+    Ok(fs::read(left)? == fs::read(right)?)
+}
+
+/// ファイルが Nix store のパスを本文に含むかを返す。
+///
+/// 世代ごとに変わる値は store path として現れるため、世代に依らない内容かどうかの判定に使う。
+pub(crate) fn file_mentions_store_path(path: impl AsRef<Path>) -> Result<bool> {
+    Ok(String::from_utf8_lossy(&fs::read(path)?).contains("/nix/store/"))
+}
+
+/// symlink が Nix store の中を指しているかを返す。
+pub(crate) fn link_points_into_store(path: impl AsRef<Path>) -> Result<bool> {
+    Ok(fs::read_link(path)?.starts_with("/nix/store"))
+}
+
 /// flake や lock file など、空ファイルでは意味がない成果物の存在を確認する。
 pub(crate) fn ensure_nonempty_path(path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
