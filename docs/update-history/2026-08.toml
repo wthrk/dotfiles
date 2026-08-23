@@ -1405,3 +1405,192 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-08-23T18:17:13Z"
+state_old = "c7537750d32076e0098f67db64737079ecdb6a1b13d305ec09db50e734a71166"
+state_new = "6da5d58893e99963a6d9f727301cf4ac7a3629f2c1637fb54cb7bfbf32b4a996"
+cursor_old = "182f5059ff097340c826ba78dcbd26e025d639b9"
+nixpkgs_old = "391b592eb44808b3bd0cb80bb71b63a5a118b8bb"
+nixpkgs_new = "a831408e6378bc02ebf8cc09b52c96ca86f6bab4"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "7アプリ更新: 🔒1 🗑️3 ✨9 🐛11"
+
+[[update.package]]
+name = "chromedriver"
+old = "151.0.7922.170"
+new = "151.0.7922.174"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 151.0.7922.174 での重要なバグ修正が行われました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "gh"
+old = "2.97.0"
+new = "2.98.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/cli/cli/releases/tag/v2.98.0"
+
+[[update.package.change_item]]
+category = "security"
+text = "ローカル転送ポートがデフォルトで全てのネットワークインターフェースにバインドされる脆弱性を修正しました。"
+ref = "https://github.com/cli/cli/security/advisories/GHSA-vfhh-p7hm-pxfh"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`gh pr checkout` に新しい `--worktree PATH` フラグを追加し、プルリクエストを git ワークツリーにチェックアウトできるようになりました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`gh search issues` コマンドにセマンティック検索機能を追加しました。"
+
+[[update.package]]
+name = "golangci-lint"
+old = "2.12.2"
+new = "2.13.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/golangci/golangci-lint/v2.13.1/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "go1.27 サポートを追加"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`exhaustruct` が非推奨となり `exhaustruct_v5` に置き換えられた"
+
+[[update.package.change_item]]
+category = "fix"
+text = "キャッシュパッケージの事実を修正"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数のリンターのバグ修正が行われた"
+
+[[update.package]]
+name = "google-chrome"
+old = "151.0.7922.170"
+new = "151.0.7922.174"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
+
+[[update.package]]
+name = "uv"
+old = "0.12.3"
+new = "0.12.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.12.5/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "CPython 3.10.21, 3.11.16, 3.12.14 を追加"
+ref = "https://github.com/astral-sh/uv/pull/21138"
+
+[[update.package.change_item]]
+category = "feature"
+text = "同等の優先度の Python インタプリタの選択時に新しいバージョンと標準バリアントを優先"
+ref = "https://github.com/astral-sh/uv/pull/21134"
+
+[[update.package.change_item]]
+category = "fix"
+text = "PEP 723 スクリプト内の相対パッケージインデックスパスを解決"
+ref = "https://github.com/astral-sh/uv/pull/21097"
+
+[[update.package]]
+name = "yt-dlp"
+old = "2026.07.04"
+new = "2026.08.19"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/Changelog.md"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`number_of_digits`が非推奨化されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/4ce0e4d331c34ea1fb8b7f7ec50a0036f3ddcab3"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`random_uuidv4`が非推奨化されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/0d1e029d14058ddfb986fdafb07c00869c89105a"
+
+[[update.package.change_item]]
+category = "fix"
+text = "americastestkitchenのシーズン/シリーズ抽出が修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/d9813a3da6959662841dfb34cad0ee6c07a65d1e"
+
+[[update.package.change_item]]
+category = "fix"
+text = "bfmtvのエクストラクタが修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/537ed68684587fc9aa191275154f0c350f5a452a"
+
+[[update.package.change_item]]
+category = "fix"
+text = "instagramのログイン抽出が修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/1f1101d0dc8a0ee316540fc938edbaca43e4977b"
+
+[[update.package.change_item]]
+category = "fix"
+text = "tiktokのエクストラクタが修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/b375e1d85c8f32c1499bb6ea25f0f200fca25c33"
+
+[[update.package.change_item]]
+category = "fix"
+text = "twitterのイベント処理が修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/2bbfb9972c8f514740a5fcfdff38374d08e9c15c"
+
+[[update.package.change_item]]
+category = "fix"
+text = "whypのエクストラクタが修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/d3ea2cf84a02dfff9cf92bf7ecc31ce936e64621"
+
+[[update.package.change_item]]
+category = "feature"
+text = "bandcampでブラウザの偽装がサポートされました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/ec9425fcd06b04cb980eb73c03aae241ef6e87a3"
+
+[[update.package.change_item]]
+category = "feature"
+text = "tiktokで共有URLがサポートされました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/6218535213c4e9f4cd053707483f0c012e8e2fb8"
+
+[[update.package.change_item]]
+category = "feature"
+text = "youtubeに`visionos`プレイヤークライアントが追加されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/1328586f72cef4cb4cff33e9eff87ad5b7b9fb60"
+
+[[update.package.change_item]]
+category = "feature"
+text = "youtubeに`web_embedded`クライアントのフォールバックが追加されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/commit/5d5b634d8e6b41dc2891847a5ea7a5a3f569a28c"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.240"
+new = "2.1.241"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
