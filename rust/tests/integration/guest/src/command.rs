@@ -1,7 +1,7 @@
 //! ゲスト内で起動するコマンドに、シナリオ共通の環境とログ形式を適用する。
 
 use std::ffi::OsStr;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::{Result, runtime_env::ScenarioEnv};
 use anyhow::bail;
@@ -40,6 +40,16 @@ where
         env.apply_to(&mut command);
     }
     Ok(command.status()?)
+}
+
+/// 進行を待つ間に繰り返す観測のため、終了状態だけを取り、出力はログへ流さない。
+pub(crate) fn status_quiet(program: &str, args: &[&str]) -> Result<std::process::ExitStatus> {
+    Ok(Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?)
 }
 
 /// ログインシェルへ渡す唯一のスクリプト本文。位置引数をそのまま `exec` する。
