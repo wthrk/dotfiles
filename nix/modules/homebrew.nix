@@ -49,7 +49,9 @@
       "hammerspoon"
       "karabiner-elements"
       "kicad"
+      "slack"
       "yubico-authenticator"
+      "zed"
     ];
 
     masApps = { };

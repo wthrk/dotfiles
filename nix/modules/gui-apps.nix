@@ -25,10 +25,8 @@
       google-chrome
       iterm2
       notion-app
-      slack
       vscode
       xquartz
-      zed-editor
     ]
   );
 }
