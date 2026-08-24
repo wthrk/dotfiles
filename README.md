@@ -29,10 +29,6 @@ nix-darwin を適用していないマシンと、既に自分が適用してい
 
 sudo の Touch ID / Apple Watch 認証は nix-darwin 適用後に有効になります。初回 bootstrap で Nix や nix-darwin を入れる前の sudo 認証は、通常のパスワード入力が必要になる場合があります。
 
-別の利用者がユーザーの高速切り替えでログインしたままだと、sudo の認証はその利用者の名前でパスワードを
-要求し、実行者のパスワードでは通らず、約 47 秒待ってから実行者のパスワード入力に落ちます。これを避けるため、
-その間は Touch ID を使わず最初からパスワード入力にします。相手がログアウトすれば Touch ID に戻ります。
-
 ## キーリマップ（Karabiner-Elements）
 
 CapsLock→Ctrl の割り当ては `config/karabiner/karabiner.json` にあり、Karabiner-Elements 本体は Homebrew

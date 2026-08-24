@@ -94,8 +94,6 @@ let
   # 同じ場所を置き直す。
   autoUpdateInstalledPlist = "/Library/LaunchDaemons/${autoUpdateLabel}.plist";
 
-  # 実行者以外が console を持っている状況を判定し、その間だけ pam_tid.so を認証経路から外す PAM module。
-  pamTouchIdSessionGuard = pkgs.callPackage ./pam-touchid-session-guard { };
 in
 {
   imports = [
@@ -242,15 +240,9 @@ in
   '';
 
   # sudo の PAM 設定を nix-darwin で管理し、Touch ID 認証を通常端末と tmux/screen の両方で使えるようにする。
-  #
-  # guard が何を判定して何を止めるかは `nix/pam-touchid-session-guard/pam_touchid_session_guard.c` に書く。
-  # ここが決めるのは配置だけである。判定は pam_tid.so より先に走らなければ意味がないため、nix-darwin が
-  # `touchIdAuth` / `reattach` から生成する 2 行の前へ `lib.mkBefore` で置く。この 2 つの option はそのまま
-  # 有効で、Touch ID は別利用者が console に居ないときの通常経路として残る。
   security.pam.services.sudo_local = {
     touchIdAuth = true;
     reattach = true;
-    text = lib.mkBefore "auth       optional       ${pamTouchIdSessionGuard}/lib/pam/pam_touchid_session_guard.so";
   };
 
   users.users.${user} = {
