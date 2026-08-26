@@ -3,6 +3,10 @@
 //! `dry_run` では実行せず、実行予定のコマンドだけを shell 風に出力する。実行時は終了状態を見て、
 //! 失敗したプログラム名をエラーに含める。
 //!
+//! 捕捉実行（`run_capture`）も含め、実行する外部コマンドと標準入出力はオミットせずに端末へ
+//! 表示し、利用者に進行状況と結果、警告・診断情報を伝える。捕捉した値を機械可読な親 stdout
+//! 契約へ混ぜないため、捕捉実行の表示先は stderr に固定する。
+//!
 //! 無人実行の呼び出し側は期限を渡せる。期限を過ぎたコマンドは打ち切って失敗にし、停止した 1 件が
 //! 後続の処理を無期限に止めないようにする。
 //!
@@ -10,7 +14,7 @@
 //! 組み立てると、同じ権限規則が use case ごとに写る。
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -163,8 +167,8 @@ impl Invocation {
 
     /// 組み立てた起動を実行し、標準出力を捕捉する。`deadline` の扱いは [`run`] と同じ。
     ///
-    /// 実行予定を端末へ書かない。判定のために値を読むだけの起動であり、利用者が見る「適用として
-    /// 何が走ったか」に混ぜると、適用していない起動が適用の記録に残る。
+    /// 実行するコマンドを stderr へ表示したうえで実行し、標準出力を捕捉して返す。
+    /// 標準出力・標準エラー出力とも stderr へ流し、利用者に進行状況や警告・エラーを伝える。
     pub(crate) fn run_capture(self, deadline: Option<Instant>) -> Result<String> {
         capture(self.program, self.args, deadline)
     }
@@ -172,55 +176,77 @@ impl Invocation {
 
 /// 外部コマンドを起動して標準出力を捕捉する。非 0 終了は失敗にする。
 ///
-/// stdout と stderr は pipe で受け、待機と並行に読み切る。stdin は与えない。捕捉する起動は値を読む
-/// だけであり、親の stdin を子へ渡さない。失敗時は終了状態と stderr 全文を文脈に含める。
+/// 実行するコマンドと子プロセス出力を stderr へ表示し、進捗や警告をオミットしない。
+/// stdout は pipe で受け、待機と並行に読み切って stderr へ転送する。これにより、呼び出し元の
+/// 機械可読 stdout 契約を壊さない。stdin は与えない。
 ///
 /// 期限を超えた実行は pipe を読み切らずに戻る。`sudo` 越しに起動した孫は pipe の write end を持った
 /// まま残るため、読み切ってから戻ると打ち切りの効き目が孫の寿命まで延びる。
 fn capture(program: OsString, args: Vec<OsString>, deadline: Option<Instant>) -> Result<String> {
+    eprintln!("$ {}", command::display(&program, &args));
     let mut child = Command::new(&program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
-    let stdout = read_to_end_in_background(child.stdout.take());
-    let stderr = read_to_end_in_background(child.stderr.take());
+    let stdout = read_to_end_and_forward_in_background(child.stdout.take());
     let status = match deadline {
         None => child.wait()?,
         Some(deadline) => wait_until(&mut child, deadline, &program)?,
     };
     let stdout = joined(stdout, &program)?;
-    let stderr = joined(stderr, &program)?;
     if !status.success() {
-        let stderr = String::from_utf8_lossy(&stderr);
-        bail!(
-            "command failed: {}: {}: {}",
-            program.to_string_lossy(),
-            status,
-            stderr.trim()
-        );
+        bail!("command failed: {}: {status}", program.to_string_lossy());
     }
     Ok(String::from_utf8(stdout)?)
 }
 
-/// 子プロセスの pipe を、別スレッドで EOF まで読み切る。
+/// 子プロセスの stdout pipe を stderr へ転送しながら、別スレッドで EOF まで捕捉する。
 ///
 /// 読み出しを待機から分けるのは、読まないまま待つと pipe buffer が満ちた時点で子プロセスが書き込みで
-/// 止まり、待機側が期限にも終了にも到達しないためである。
-fn read_to_end_in_background(
+/// 止まり、待機側が期限にも終了にも到達しないためである。転送先は chunk ごとに flush し、長時間の
+/// 評価中にも子プロセス出力を利用者へ遅延させない。親 stdout は機械可読な呼び出し元が所有する。
+fn read_to_end_and_forward_in_background(
     pipe: Option<impl Read + Send + 'static>,
 ) -> JoinHandle<std::io::Result<Vec<u8>>> {
     std::thread::spawn(move || {
-        let mut read = Vec::new();
+        let mut captured = Vec::new();
         if let Some(mut pipe) = pipe {
-            pipe.read_to_end(&mut read)?;
+            let stderr = std::io::stderr();
+            read_to_end_and_forward(&mut pipe, &mut captured, |chunk| {
+                // pipe の次の読み取り中に lock を持ち続けない。期限後も孫プロセスが write end を
+                // 保持し得るため、ここで lock を保持すると呼び出し元の診断出力まで停止する。
+                let mut terminal = stderr.lock();
+                terminal.write_all(chunk)?;
+                terminal.flush()
+            })?;
         }
-        Ok(read)
+        Ok(captured)
     })
 }
 
-/// [`read_to_end_in_background`] が読み切った内容を受け取る。
+/// stdout の各 chunk を stderr へ転送し、呼び出し元が後から読むため同じ内容を捕捉する。
+///
+/// `forward` は各読み取りの完了後にだけ呼ぶ。呼び出し元は stderr lock のような共有出力資源を
+/// `forward` の呼び出し中だけ保持し、次の `read` を待つ間は解放しなければならない。
+fn read_to_end_and_forward(
+    reader: &mut impl Read,
+    captured: &mut Vec<u8>,
+    mut forward: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        forward(&buffer[..count])?;
+        captured.extend_from_slice(&buffer[..count]);
+    }
+}
+
+/// [`read_to_end_and_forward_in_background`] が読み切った内容を受け取る。
 fn joined(handle: JoinHandle<std::io::Result<Vec<u8>>>, program: &OsString) -> Result<Vec<u8>> {
     match handle.join() {
         Ok(read) => Ok(read?),
@@ -233,9 +259,9 @@ fn joined(handle: JoinHandle<std::io::Result<Vec<u8>>>, program: &OsString) -> R
 
 /// 外部コマンドの stdout を期限なしで捕捉して返す。非 0 終了は失敗にする。
 ///
-/// `run` が stdio を継承するのに対し、本関数は `nix flake archive --json` 出力やリリースノート取得の
-/// ように標準出力をプログラム的に読む用途に使う。`dry_run` 経路は持たず常に実行する。stderr は端末へは
-/// 流さず、失敗時の診断だけに使う。
+/// `run` が標準入出力を継承するのに対し、本関数は `nix flake archive --json` 出力やリリースノート取得の
+/// ように標準出力をプログラム的に読む用途に使う。コマンド表記と子プロセス出力は stderr へ流して
+/// 進行や警告を伝え、呼び出し元の stdout を機械可読な値専用に保つ。`dry_run` 経路は持たず常に実行する。
 pub(crate) fn run_capture<I>(program: impl Into<OsString>, args: I) -> Result<String>
 where
     I: IntoIterator<Item = OsString>,
@@ -244,13 +270,53 @@ where
 }
 
 /// ユーザー権限実行の sudo 引数が HOME を対象ユーザーへ寄せること、期限付き実行が停止した
-/// コマンドを打ち切ること、および捕捉する起動の打ち切りが孫プロセスの寿命に引きずられないことを
-/// 検証する。
+/// コマンドを打ち切ること、捕捉実行が標準出力を正しく返し非 0 終了を失敗にすること、および
+/// 捕捉する起動の打ち切りが孫プロセスの寿命に引きずられないことを検証する。
 #[cfg(test)]
 mod tests {
-    use super::{capture, run, sudo_as_user_args};
+    use super::{capture, read_to_end_and_forward, run, sudo_as_user_args};
     use std::ffi::OsString;
+    use std::io::{Cursor, Write};
     use std::time::{Duration, Instant};
+
+    /// 捕捉実行は標準出力を正しく返し、非 0 終了は失敗として報告する。
+    #[test]
+    fn capture_captures_stdout_and_reports_failure() -> anyhow::Result<()> {
+        let out = capture(
+            OsString::from("echo"),
+            vec![OsString::from("hello dotfiles")],
+            None,
+        )?;
+        assert_eq!(out.trim(), "hello dotfiles");
+
+        let err = capture(
+            OsString::from("sh"),
+            vec![OsString::from("-c"), OsString::from("exit 42")],
+            None,
+        )
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+        assert!(err.contains("command failed"), "{err}");
+        Ok(())
+    }
+
+    /// 捕捉実行の stdout は stderr へ即時転送しつつ、呼び出し元にも同じ値を返せる。
+    #[test]
+    fn captured_stdout_is_forwarded_and_retained() -> std::io::Result<()> {
+        let mut source = Cursor::new(b"nix evaluation output\n".to_vec());
+        let mut stderr = Vec::new();
+        let mut captured = Vec::new();
+
+        read_to_end_and_forward(&mut source, &mut captured, |chunk| {
+            stderr.write_all(chunk)?;
+            stderr.flush()
+        })?;
+
+        assert_eq!(stderr, b"nix evaluation output\n");
+        assert_eq!(captured, stderr);
+        Ok(())
+    }
 
     /// 期限を過ぎても終わらないコマンドは、待ち続けずに失敗として返る。
     #[test]

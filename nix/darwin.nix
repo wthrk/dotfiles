@@ -139,6 +139,9 @@ in
     ${autoUpdateWrapperEtcTarget}.source = autoUpdateWrapper;
   };
 
+  nix.enable = true;
+  nix.package = pkgs.nix;
+
   nix.settings = {
     experimental-features = [
       "nix-command"
@@ -172,6 +175,18 @@ in
       launchctl asuser "$uid" sudo --user=${lib.escapeShellArg user} -- launchctl bootout "gui/$uid/${retiredKeyboardRemapLabel}" >/dev/null 2>&1 || true
       sudo --user=${lib.escapeShellArg user} -- rm -f ${lib.escapeShellArg retiredKeyboardRemapPlist}
       hidutil property --set '{"UserKeyMapping":[]}' > /dev/null
+    fi
+
+    # 初期 Nix インストーラが作成した default profile の GC Root をクリーンアップする。
+    # nix-darwin（nix.enable = true）への移行後は、この activation の世代が Nix 本体を管理するため、
+    # 初期 default profile とその GC root は不要になる。初回移行では旧 /run/current-system はまだ無いので、
+    # activation script が設定する新しい世代の Nix を判定に使う。
+    if [ -x "$systemConfig/sw/bin/nix" ] && [ -e /nix/var/nix/profiles/default ]; then
+      rm -f \
+        /nix/var/nix/profiles/default \
+        /nix/var/nix/profiles/default-1-link \
+        /nix/var/nix/gcroots/default \
+        /nix/var/nix/gcroots/profiles/default
     fi
   '';
 

@@ -33,10 +33,36 @@ use crate::{
     switch::{self, SwitchTarget},
 };
 
-const DEFAULT_NIX_PROGRAM: &str = "/nix/var/nix/profiles/default/bin/nix";
-/// store の掃除を起動する絶対パス。`DEFAULT_NIX_PROGRAM` と同じく PATH に依存させない。
-const DEFAULT_NIX_COLLECT_GARBAGE_PROGRAM: &str =
-    "/nix/var/nix/profiles/default/bin/nix-collect-garbage";
+const NIX_PROGRAM_PATHS: &[&str] = &[
+    "/run/current-system/sw/bin/nix",
+    "/nix/var/nix/profiles/default/bin/nix",
+];
+const NIX_COLLECT_GARBAGE_PROGRAM_PATHS: &[&str] = &[
+    "/run/current-system/sw/bin/nix-collect-garbage",
+    "/nix/var/nix/profiles/default/bin/nix-collect-garbage",
+];
+
+/// nix-darwin または初期 default profile が管理する、信頼済みの絶対パスだけを選ぶ。
+///
+/// 特権実行で PATH を解決すると、呼び出し元の環境にある別の実行ファイルを起動し得るため、既知パスが
+/// 無い環境では起動せず失敗する。
+fn known_nix_program(program: &str, candidates: &[&str]) -> Result<OsString> {
+    candidates
+        .iter()
+        .find(|candidate| Path::new(candidate).is_file())
+        .map(OsString::from)
+        .ok_or_else(|| anyhow::anyhow!("required Nix program is unavailable: {program}"))
+}
+
+/// lock 更新と評価に使う、信頼済みの `nix` の絶対パスを返す。
+fn nix_program() -> Result<OsString> {
+    known_nix_program("nix", NIX_PROGRAM_PATHS)
+}
+
+/// store の掃除に使う、信頼済みの `nix-collect-garbage` の絶対パスを返す。
+fn nix_collect_garbage_program() -> Result<OsString> {
+    known_nix_program("nix-collect-garbage", NIX_COLLECT_GARBAGE_PROGRAM_PATHS)
+}
 
 /// home 層の適用完了を示す、Home Manager がホーム配下に置く GC root。
 ///
@@ -206,7 +232,7 @@ fn evaluate_store_path(
     deadline: Option<Instant>,
 ) -> Option<PathBuf> {
     let evaluated = Invocation::downgraded(
-        OsString::from(DEFAULT_NIX_PROGRAM),
+        nix_program().ok()?,
         evaluate_store_path_args(config_dir, attribute),
         downgrade_to,
     )
@@ -296,7 +322,7 @@ fn collect_garbage(
     deadline: Option<Instant>,
 ) -> Result<()> {
     for invocation in
-        garbage_collection_invocations(applied, options.home_manager(), downgrade_to, is_root)
+        garbage_collection_invocations(applied, options.home_manager(), downgrade_to, is_root)?
     {
         invocation.run(options.dry_run(), deadline)?;
     }
@@ -316,8 +342,8 @@ fn garbage_collection_invocations(
     home_manager: &OsString,
     downgrade_to: Option<&str>,
     is_root: bool,
-) -> Vec<Invocation> {
-    [
+) -> Result<Vec<Invocation>> {
+    Ok([
         applied.contains(&switch::SwitchTarget::Home).then(|| {
             Invocation::downgraded(
                 home_manager.clone(),
@@ -325,17 +351,17 @@ fn garbage_collection_invocations(
                 downgrade_to,
             )
         }),
-        applied.contains(&switch::SwitchTarget::Darwin).then(|| {
-            Invocation::escalated(
-                OsString::from(DEFAULT_NIX_COLLECT_GARBAGE_PROGRAM),
-                collect_store_args(),
-                is_root,
-            )
-        }),
+        applied
+            .contains(&switch::SwitchTarget::Darwin)
+            .then(|| {
+                nix_collect_garbage_program()
+                    .map(|program| Invocation::escalated(program, collect_store_args(), is_root))
+            })
+            .transpose()?,
     ]
     .into_iter()
     .flatten()
-    .collect()
+    .collect())
 }
 
 /// `home-manager expire-generations -<日数> days` の引数列を組み立てる純粋関数。
@@ -409,7 +435,7 @@ fn update_lock(
     lock_owner: Option<&str>,
     deadline: Option<Instant>,
 ) -> Result<()> {
-    update_lock_invocation(config_dir, lock_owner).run(dry_run, deadline)
+    update_lock_invocation(config_dir, lock_owner)?.run(dry_run, deadline)
 }
 
 /// `nix flake update <dotfiles> --flake <config-dir>` の引数列を組み立てる純粋関数。
@@ -426,12 +452,12 @@ fn update_lock_args(config_dir: &Path) -> Vec<OsString> {
 }
 
 /// lock 更新を root のまま行うか、対象ユーザーへ降格して行うかを引数列へ反映する。
-fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> Invocation {
-    Invocation::downgraded(
-        OsString::from(DEFAULT_NIX_PROGRAM),
+fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> Result<Invocation> {
+    Ok(Invocation::downgraded(
+        nix_program()?,
         update_lock_args(config_dir),
         lock_owner,
-    )
+    ))
 }
 
 #[derive(Args)]
@@ -448,8 +474,8 @@ pub(crate) struct UpdateOptions {
 mod tests {
     use super::{
         collect_store_args, darwin_attribute, evaluate_store_path_args,
-        garbage_collection_invocations, home_attribute, home_attributes, sweep_result, switch,
-        update_lock_args, update_lock_invocation,
+        garbage_collection_invocations, home_attribute, home_attributes, known_nix_program,
+        sweep_result, switch, update_lock_args, update_lock_invocation,
     };
     use std::ffi::OsString;
     use std::path::Path;
@@ -529,8 +555,8 @@ mod tests {
 
     /// root daemon の `--user` 経路では lock 更新も対象ユーザーの HOME/uid で実行し、`nix` は絶対パスで起動する。
     #[test]
-    fn update_lock_with_owner_runs_nix_as_target_user() {
-        let invocation = update_lock_invocation(Path::new("/cfg"), Some("alice"));
+    fn update_lock_with_owner_runs_nix_as_target_user() -> anyhow::Result<()> {
+        let invocation = update_lock_invocation(Path::new("/cfg"), Some("alice"))?;
 
         assert_eq!(invocation.program, OsString::from("sudo"));
         assert_eq!(
@@ -544,7 +570,7 @@ mod tests {
                     "PATH={}",
                     std::env::var("PATH").unwrap_or_default()
                 )),
-                OsString::from("/nix/var/nix/profiles/default/bin/nix"),
+                super::nix_program()?,
                 OsString::from("flake"),
                 OsString::from("update"),
                 OsString::from("dotfiles"),
@@ -552,6 +578,7 @@ mod tests {
                 OsString::from("/cfg"),
             ]
         );
+        Ok(())
     }
 
     /// 全ユーザーが成功した走査は成功として終わる。
@@ -572,28 +599,43 @@ mod tests {
     }
 
     #[test]
-    fn update_lock_without_owner_uses_absolute_nix_path() {
-        let invocation = update_lock_invocation(Path::new("/cfg"), None);
-        assert_eq!(
-            invocation.program,
-            OsString::from("/nix/var/nix/profiles/default/bin/nix")
-        );
+    fn update_lock_without_owner_uses_absolute_nix_path() -> anyhow::Result<()> {
+        let invocation = update_lock_invocation(Path::new("/cfg"), None)?;
+        assert_eq!(invocation.program, super::nix_program()?);
+        Ok(())
     }
 
     /// 利用者自身の実行では store の掃除を `sudo` で昇格し、root daemon では直接起動する。
     #[test]
-    fn store_collection_escalates_only_when_not_root() {
+    fn store_collection_escalates_only_when_not_root() -> anyhow::Result<()> {
         let home_manager = OsString::from("home-manager");
-        let program = OsString::from("/nix/var/nix/profiles/default/bin/nix-collect-garbage");
+        let program = super::nix_collect_garbage_program()?;
         let applied = [switch::SwitchTarget::Darwin];
 
-        let as_root = garbage_collection_invocations(&applied, &home_manager, None, true);
+        let as_root = garbage_collection_invocations(&applied, &home_manager, None, true)?;
         assert_eq!(as_root[0].program, program);
         assert_eq!(as_root[0].args, collect_store_args());
 
-        let as_user = garbage_collection_invocations(&applied, &home_manager, None, false);
+        let as_user = garbage_collection_invocations(&applied, &home_manager, None, false)?;
         assert_eq!(as_user[0].program, OsString::from("sudo"));
         assert_eq!(as_user[0].args[0], program);
         assert_eq!(as_user[0].args[1..], collect_store_args()[..]);
+        Ok(())
+    }
+
+    /// 既知の絶対パスが無い環境では、PATH 上の実行ファイル名へフォールバックせず失敗する。
+    #[test]
+    fn missing_known_nix_paths_are_errors() {
+        for program in ["nix", "nix-collect-garbage"] {
+            let error = known_nix_program(program, &["/definitely-not-a-nix-program"])
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+
+            assert!(
+                error.contains("required Nix program is unavailable"),
+                "{error}"
+            );
+        }
     }
 }

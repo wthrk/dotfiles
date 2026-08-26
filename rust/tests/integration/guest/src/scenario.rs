@@ -29,11 +29,18 @@ use crate::{
     },
     users::{ensure_local_user, grant_noninteractive_sudo},
 };
-use anyhow::{Context, bail};
+use anyhow::bail;
 use clap::ValueEnum;
 use dotfiles_core::path::{display as path_str, find_executable};
 
-const NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
+/// nix-darwin 管理の `/run/current-system/sw/bin/nix` を優先し、未適用環境では `/nix/var/nix/profiles/default/bin/nix` を返す。
+fn nix_program() -> &'static str {
+    if Path::new("/run/current-system/sw/bin/nix").exists() {
+        "/run/current-system/sw/bin/nix"
+    } else {
+        "/nix/var/nix/profiles/default/bin/nix"
+    }
+}
 
 /// Home Manager が適用完了時に張り替える現世代リンク。`dotfiles update` はこれを home 層の適用済み
 /// 判定に使うため、未適用状態を作るシナリオはここを外す。
@@ -179,6 +186,14 @@ impl ScenarioRunner {
         // マシンの状態から決まるものに任せる。
         self.run_bootstrap_sudo_user("ya", &["--force"])?;
 
+        // nix-darwin の切り替え後は、インストーラが残した default profile と gcroot を残さない。
+        // これらは system profile に移行済みの Nix 実行環境へ重複した参照を残すため、実ゲスト上で
+        // 不在を確認する。
+        self.ensure_absent("/nix/var/nix/profiles/default")?;
+        self.ensure_absent("/nix/var/nix/profiles/default-1-link")?;
+        self.ensure_absent("/nix/var/nix/gcroots/default")?;
+        self.ensure_absent("/nix/var/nix/gcroots/profiles/default")?;
+
         // system 層は `ya` だけを管理対象にしている必要がある。この結び付きは CLI の scope 判定が
         // 依存する事実そのものであり、home-manager 側の実装が変われば崩れる。
         assert_system_profile_users(&["ya"])?;
@@ -190,13 +205,13 @@ impl ScenarioRunner {
         let ya_config_dir = path_str(local_config_dir_for_user("ya")?);
         // nix-darwin 切り替え後も生成ローカル設定が評価できる必要がある。
         self.run_as_ya(
-            NIX,
+            nix_program(),
             &["flake", "check", "--no-update-lock-file", &ya_config_dir],
         )?;
         let ya_home_activation =
             local_config_ref("ya", "homeConfigurations.ya.activationPackage.drvPath")?;
         self.run_as_ya(
-            NIX,
+            nix_program(),
             &["eval", "--no-update-lock-file", ya_home_activation.as_str()],
         )?;
         // 1 人目の生成 flake は nix-darwin の適用先を持つ。出力名はホスト名で、`--host` を渡して
@@ -206,7 +221,7 @@ impl ScenarioRunner {
             &format!("darwinConfigurations.{}.system", current_host()?),
         )?;
         self.run_as_ya(
-            NIX,
+            nix_program(),
             &["eval", "--no-update-lock-file", ya_darwin_system.as_str()],
         )?;
         // 最後の利用者向け検査として、切り替え対象ユーザーが Nix store 由来の
@@ -263,7 +278,7 @@ impl ScenarioRunner {
         // これにより権限と出力名の退行を検出する。
         self.run_sudo_user(
             "dotfilesci",
-            NIX,
+            nix_program(),
             &[
                 "eval",
                 "--no-update-lock-file",
@@ -279,7 +294,7 @@ impl ScenarioRunner {
         if self
             .status_sudo_user(
                 "dotfilesci",
-                NIX,
+                nix_program(),
                 &["eval", "--no-update-lock-file", dotfilesci_darwin.as_str()],
             )?
             .success()
@@ -292,7 +307,7 @@ impl ScenarioRunner {
         self.discard_applied_home_generation("dotfilesci")?;
         self.run_sudo_user(
             "dotfilesci",
-            NIX,
+            nix_program(),
             &["run", self.dotfiles_source_str(), "--", "update"],
         )?;
         assert_system_profile_users(&["ya"])?;
@@ -312,7 +327,10 @@ impl ScenarioRunner {
 
         // auto-update daemon と同じ root からの全ユーザー走査。両ユーザーが更新され、system 層は
         // 所有者 `ya` の flake からだけ適用される。
-        self.run_as_root(NIX, &["run", self.dotfiles_source_str(), "--", "update"])?;
+        self.run_as_root(
+            nix_program(),
+            &["run", self.dotfiles_source_str(), "--", "update"],
+        )?;
         assert_system_profile_users(&["ya"])?;
         assert_managed_links(
             path_str(&dotfilesci_home).as_str(),
@@ -327,7 +345,10 @@ impl ScenarioRunner {
         // 戻さずに管理リンクだけを外し、同じ走査をもう一度通す。適用済みの層を飛ばす限りリンクは
         // 戻らず、毎回適用し直す状態へ退行すると Home Manager が張り直してこの確認が落ちる。
         self.remove_managed_link(&ya_home, ".config/zsh")?;
-        self.run_as_root(NIX, &["run", self.dotfiles_source_str(), "--", "update"])?;
+        self.run_as_root(
+            nix_program(),
+            &["run", self.dotfiles_source_str(), "--", "update"],
+        )?;
         ensure_absent_path(ya_home.join(".config/zsh"))
     }
 
@@ -338,6 +359,33 @@ impl ScenarioRunner {
     /// 確認が空振りになるのを避けるためである。
     fn remove_managed_link(&self, home: &Path, relative: &str) -> Result<()> {
         self.run("sudo", &["rm", path_str(home.join(relative)).as_str()])
+    }
+
+    /// `--no-switch` の bootstrap を呼び出す。
+    fn bootstrap_current_user_no_switch(&self) -> Result<()> {
+        self.run_bootstrap(&["--no-switch", "--force"])
+    }
+
+    /// 作業ディレクトリ直下の前提ファイルが空でないことを確認し、checkout が揃っていない状態を
+    /// 手順の実行前に検出する。
+    fn ensure_nonempty(&self, path: &str) -> Result<()> {
+        ensure_nonempty_path(self.env.workspace.join(path))
+    }
+
+    /// 2 人目以降の手順が、前段で入った multi-user Nix を使っていることを確認する。
+    fn require_existing_nix(&self) -> Result<()> {
+        let nix = Path::new("/run/current-system/sw/bin/nix");
+        let fallback_nix = Path::new("/nix/var/nix/profiles/default/bin/nix");
+        let nix_daemon_profile = Path::new("/run/current-system/sw/etc/profile.d/nix-daemon.sh");
+        let fallback_nix_daemon_profile =
+            Path::new("/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh");
+        if !nix.exists() && !fallback_nix.exists() {
+            bail!("second-user-home-manager requires existing Nix");
+        }
+        if !nix_daemon_profile.exists() && !fallback_nix_daemon_profile.exists() {
+            bail!("second-user-home-manager requires existing Nix daemon profile");
+        }
+        Ok(())
     }
 
     /// 指定ユーザーの home 層を未適用状態へ戻す。
@@ -374,30 +422,6 @@ impl ScenarioRunner {
         self.run("uname", &["-a"])?;
         self.run("id", &[])?;
         self.run("xcode-select", &["-p"])
-    }
-
-    /// 現在ユーザーで bootstrap の no-switch 経路を実行し、ローカル flake 生成だけを確認する。
-    ///
-    /// 利用者名もホスト名も渡さない。この手順が確かめるのはインストーラ経路と「適用しない」指定で
-    /// あって、生成 flake に書かれる名前ではない。
-    fn bootstrap_current_user_no_switch(&self) -> Result<()> {
-        self.run_bootstrap(&["--no-switch", "--force"])
-    }
-
-    /// 作業ディレクトリ直下の前提ファイルが空でないことを確認し、checkout が揃っていない状態を
-    /// 手順の実行前に検出する。
-    fn ensure_nonempty(&self, path: &str) -> Result<()> {
-        ensure_nonempty_path(self.env.workspace.join(path))
-    }
-
-    /// 2 人目以降の手順が、前段で入った multi-user Nix を使っていることを確認する。
-    fn require_existing_nix(&self) -> Result<()> {
-        let nix = Path::new("/nix/var/nix/profiles/default/bin/nix");
-        let nix_daemon_profile =
-            Path::new("/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh");
-        ensure_nonempty_path(nix).context("second-user-home-manager requires existing Nix")?;
-        ensure_nonempty_path(nix_daemon_profile)
-            .context("second-user-home-manager requires existing Nix daemon profile")
     }
 
     /// dry-run/no-switch がシステム側のパスを作っていないことを検証する。
