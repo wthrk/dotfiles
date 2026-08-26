@@ -39,6 +39,8 @@
     # Karabiner の `select_input_source` は `from` のキーイベントを要求するため、アプリのアクティブ化を
     # トリガーにできない。
     casks = [
+      "antigravity"
+      "antigravity-cli"
       "azookey"
       "bitwarden"
       "claude"

@@ -39,11 +39,6 @@
       url = "github:hashicorp/homebrew-tap";
       flake = false;
     };
-
-    antigravity-nix = {
-      url = "github:jacopone/antigravity-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -60,7 +55,6 @@
       # 適用経路ごとに別の派生を指す。
       packageOverlays = [
         (import ./nix/overlays/curl-impersonate-dylib-name.nix)
-        inputs.antigravity-nix.overlays.default
       ];
 
       # Homebrew tap の宣言は `homebrew-<owner>-<tap>` の flake input 名に集約し、
