@@ -44,12 +44,21 @@
       "claude"
       "claude-code@latest"
       "codex-app"
+      "discord"
+      "firefox"
       "font-cica"
       "ghostty"
+      "google-chrome"
       "hammerspoon"
+      "iterm2"
       "karabiner-elements"
       "kicad"
+      "notion"
+      "slack"
+      "visual-studio-code"
+      "xquartz"
       "yubico-authenticator"
+      "zed"
     ];
 
     masApps = { };

@@ -71,11 +71,10 @@ pub(crate) fn run(
 /// [`run`] と同じ解決をここから共有する。層の決め方が 2 か所に分かれると、適用する層と、適用前に
 /// 調べる層が食い違う。
 pub(crate) fn planned_targets(options: &SwitchOptions) -> Result<&'static [SwitchTarget]> {
-    let scope = options
-        .scope_user()?
-        .map(|user| config_scope(&user))
-        .transpose()?;
-    Ok(switch_order(resolve_target(options.target, scope)?))
+    Ok(switch_order(resolve_target(
+        options.target,
+        options.scope()?,
+    )?))
 }
 
 /// 適用順に並んだ層の集合を、その集合をちょうど表す単一の target へ戻す。空集合は `None`。
@@ -346,6 +345,21 @@ impl SwitchOptions {
     /// `update` は lock 更新で config dir へ書くため、target に関わらずこれを先に解決する。
     pub(crate) fn home_apply_user(&self) -> Result<HomeApplyUser> {
         HomeApplyUser::resolve(self.user.clone(), is_effective_root())
+    }
+
+    /// 対象ユーザーがこのマシンで system 層まで持つか。対象ユーザーが決まらない実行では `false`。
+    ///
+    /// system 層を持つユーザーの home 層は、`home-manager switch` と nix-darwin の activation の
+    /// どちらからも適用される。`update` はその 2 経路を知るためにこれを使う。
+    pub(crate) fn owns_system_layer(&self) -> Result<bool> {
+        Ok(self.scope()? == Some(ConfigScope::Full))
+    }
+
+    /// 対象ユーザーがこのマシンで持つ層の範囲。対象ユーザーが決まらない実行では `None`。
+    fn scope(&self) -> Result<Option<ConfigScope>> {
+        self.scope_user()?
+            .map(|user| config_scope(&user))
+            .transpose()
     }
 
     /// この実行で対象ユーザーが決まるならその名前、決まらないなら `None`。

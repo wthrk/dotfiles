@@ -10,7 +10,6 @@
     ./modules/cli.nix
     ./modules/launch-agents.nix
     ./modules/colima.nix
-    ./modules/gui-apps.nix
     ./modules/languages.nix
     ./modules/zsh.nix
     ./modules/gpg.nix
