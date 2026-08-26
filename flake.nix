@@ -39,6 +39,11 @@
       url = "github:hashicorp/homebrew-tap";
       flake = false;
     };
+
+    antigravity-nix = {
+      url = "github:jacopone/antigravity-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -53,7 +58,10 @@
 
       # `mkHome` と `mkDarwin` は別々に nixpkgs を import する。片方だけに当てると、同じ利用者環境が
       # 適用経路ごとに別の派生を指す。
-      packageOverlays = [ (import ./nix/overlays/curl-impersonate-dylib-name.nix) ];
+      packageOverlays = [
+        (import ./nix/overlays/curl-impersonate-dylib-name.nix)
+        inputs.antigravity-nix.overlays.default
+      ];
 
       # Homebrew tap の宣言は `homebrew-<owner>-<tap>` の flake input 名に集約し、
       # そこから nix-homebrew と brew bundle の tap 名、clone 先を生成する。
