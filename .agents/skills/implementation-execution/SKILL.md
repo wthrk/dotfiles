@@ -32,4 +32,5 @@ While this skill is active, the current actor is the implementation executor.
 - Do not re-select the work unit and do not launch subagents for the same implementation assignment.
 - Read target files, direct dependencies, callers/callees, tests, and any handoff findings before editing.
 - Produce the assigned diff, run the selected verification, and report target diff, commands, results, skipped checks, and residual risk.
+- Do not execute heavy checks (tests, builds, cargo xtask check) for Markdown-only changes unless explicitly requested by the user.
 - Detailed implementation duties are owned by `docs/task-governance/implementation-execution.md`.

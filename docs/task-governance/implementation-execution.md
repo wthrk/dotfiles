@@ -9,6 +9,7 @@
 - 委譲された実装担当は、最初に `.agents/skills/implementation-execution/SKILL.md` を読む。
 - 同じ delegated task について `/orchestration` を起動してはならず、`$dotfiles-task-governance` を orchestration、役割変更、作業単位の再選定に使ってはならない。
 - `AGENTS.md` や `workflow.md` のオーケストレーター向け指示は、親オーケストレーターが委譲前に満たす条件として読む。
+- レビュー担当および完了判定担当はテスト、ビルド、検証コマンドを実行しないため、executable behavior（コード、Nix、shell、workflow、bootstrap 等）を含む変更の場合、実装担当はレビュー引き渡し前に必要な実検証（テスト・静的検査等）をすべて通過させ、その結果を記録しなければならない。Markdown のみの変更では、テスト・ビルド・`cargo xtask check` 等の重い検証コマンドを実行してはならない。
 
 ## 着手前参照
 
@@ -55,9 +56,10 @@ repo 内に補助的な confirmation / review artifact を新設しない。
 
 ## 検証選択
 
+- レビュー担当および完了判定担当はテストやビルドを実行しないため、executable behavior を含む変更の場合、実装担当がレビュー引き渡し前に必要な実検証をすべて通過させる。
 - 変更対象に関係する検証を選ぶ。
-- Markdown のみの変更では、生成文書や記載コマンド検証に関係する場合、または利用者が明示要求した場合を除き、`cargo xtask check` / `cargo xtask check static` を機械的に実行しない。
-- コード、Nix、shell、workflow、bootstrap、生成物の変更では既定検証を実行する。
+- Markdown のみの変更では、利用者が明示要求した場合を除き、`cargo xtask check` / `cargo xtask check static` やテスト・ビルド等の検証コマンドを実行してはならず（禁止）、直接静的精査に留める。
+- コード、Nix、shell、workflow、bootstrap、生成物等の executable behavior を含む変更では既定検証を実行する。
 - 検証は dev shell 内で実行する。dev shell 外なら `direnv exec .` を前置する。
 - 検証コマンドの一覧と用途は repository root の `README.md` を参照する。
 
@@ -72,3 +74,4 @@ repo 内に補助的な confirmation / review artifact を新設しない。
 - 再読対象を読まずに実装方針を決めること。
 - 委譲済み実装担当が同じ task を再オーケストレーションすること。
 - 割り当て作業が許可スコープ内で実際に完了する前に最終応答すること。
+- Markdown のみの変更において、テスト・ビルド・`cargo xtask check` 等の重い検証コマンドを実行すること（利用者が明示要求した場合を除く）。

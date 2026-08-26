@@ -24,6 +24,7 @@ While this skill is active, the current actor is the **task-completion judge**.
 ## Rules
 
 - Perform only the task-completion judge's judgement; do not edit source files, commit, act as a reviewer, or perform another role's work.
+- Do not execute tests, builds, or verification commands; judge strictly through direct static inspection of the target diff, review verdicts, and verification records.
 - Read the target code, documents, issue, PR, or task directly. Do not substitute past records, summaries, or implementer reports for judgement.
 - Apply the governing source for this role and avoid restating its detailed rules here.
 - Return the completion judgement required by `docs/task-governance/task-completion-judgement.md`.
