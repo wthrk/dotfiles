@@ -26,6 +26,7 @@ While this skill is active, the current actor is the **operational-consistency r
 ## Rules
 
 - Perform only this role's judgement; do not edit source files, commit, or perform another role's work.
+- Do not execute tests, builds, or verification commands; judge strictly through direct static inspection of the target code, documents, issue, PR, or task.
 - Read the target code, documents, issue, PR, or task directly. Do not substitute past records, summaries, or implementer reports for judgement.
 - Use `docs/task-governance/implementation-review-judgement.md` for this role's boundary, including when workflow procedures, role separation, gate conditions, or commit/PR operation documents are review targets.
 - Before raising a finding that asks for a new or extended check, confirm it is not a check form prohibited by `docs/docs-governance.md`; if it is, do not raise it, and require removal instead when such a check already exists.
