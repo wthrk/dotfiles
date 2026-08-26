@@ -37,7 +37,7 @@
   #
   # Karabiner が設定を保存すると store への symlink が実ファイルに置き換わる。`force = true` は、その実ファイルを
   # 次の activation で宣言側へ戻すために要る。保存の機構は `README.md` のキーリマップ節が持つ。
-  xdg.configFile."karabiner/karabiner.json" = lib.mkIf pkgs.stdenv.isDarwin {
+  xdg.configFile."karabiner/karabiner.json" = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
     source = "${root}/config/karabiner/karabiner.json";
     force = true;
   };
@@ -46,7 +46,7 @@
   # （`nix/modules/homebrew.nix`）ので、`init.lua` は宣言側のこのリンクが正本になる。読み込み先は
   # `~/.hammerspoon/init.lua` 固定で XDG 配下ではないため、`xdg.configFile` ではなく `home.file` に置く。
   # Hammerspoon は macOS 専用なので `mkHome` が Linux で評価されたときはリンクしない。
-  home.file.".hammerspoon/init.lua" = lib.mkIf pkgs.stdenv.isDarwin {
+  home.file.".hammerspoon/init.lua" = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
     source = "${root}/config/hammerspoon/init.lua";
     force = true;
   };

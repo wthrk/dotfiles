@@ -8,6 +8,7 @@
 {
   imports = [
     ./modules/cli.nix
+    ./modules/launch-agents.nix
     ./modules/colima.nix
     ./modules/languages.nix
     ./modules/zsh.nix
@@ -24,7 +25,8 @@
   home.username = user;
   # ホームの置き場は OS で違う。生成物にはこの値が焼き込まれるので、実行環境の実ホームと
   # 食い違うと起動した zsh が存在しないパスへ書きに行く。
-  home.homeDirectory = if pkgs.stdenv.isDarwin then "/Users/${user}" else "/home/${user}";
+  home.homeDirectory =
+    if pkgs.stdenv.hostPlatform.isDarwin then "/Users/${user}" else "/home/${user}";
   home.stateVersion = "24.11";
 
   programs.home-manager.enable = true;

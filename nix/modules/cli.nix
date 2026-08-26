@@ -91,7 +91,7 @@ let
   # `&&` の短絡に依存しており、unfree 不許可の層では `meta` にも触れない。
   puppeteerChrome =
     if
-      pkgs.stdenv.isDarwin
+      pkgs.stdenv.hostPlatform.isDarwin
       && (pkgs.config.allowUnfree or false)
       && has [ "google-chrome" ] pkgs
       && lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.google-chrome
@@ -198,7 +198,7 @@ in
     ++ npmTools
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
     ++ lib.optional (gcloudPackage != null) gcloudPackage
-    ++ lib.optionals pkgs.stdenv.isDarwin [
+    ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
       mas
       pinentry_mac
     ]
