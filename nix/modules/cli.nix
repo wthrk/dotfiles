@@ -34,6 +34,35 @@ let
       inputs.self.packages.${system}.default
     else
       null;
+  antigravityPackage =
+    if
+      inputs != null
+      && inputs ? antigravity-nix
+      && inputs.antigravity-nix ? packages
+      && has [ system "google-antigravity" ] inputs.antigravity-nix.packages
+    then
+      inputs.antigravity-nix.packages.${system}.google-antigravity
+    else if
+      has [ "google-antigravity" ] pkgs && lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.google-antigravity
+    then
+      pkgs.google-antigravity
+    else
+      null;
+  antigravityCliPackage =
+    if
+      inputs != null
+      && inputs ? antigravity-nix
+      && inputs.antigravity-nix ? packages
+      && has [ system "google-antigravity-cli" ] inputs.antigravity-nix.packages
+    then
+      inputs.antigravity-nix.packages.${system}.google-antigravity-cli
+    else if
+      has [ "google-antigravity-cli" ] pkgs
+      && lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.google-antigravity-cli
+    then
+      pkgs.google-antigravity-cli
+    else
+      null;
 
   # npm 配布の CLI を `bunx` 呼び出しの薄い wrapper として PATH 上に置く。
   #
@@ -198,8 +227,8 @@ in
     ++ npmTools
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
     ++ lib.optional (gcloudPackage != null) gcloudPackage
-    ++ optionalPkg [ "google-antigravity" ]
-    ++ optionalPkg [ "google-antigravity-cli" ]
+    ++ lib.optional (antigravityPackage != null) antigravityPackage
+    ++ lib.optional (antigravityCliPackage != null) antigravityCliPackage
     ++ lib.optionals pkgs.stdenv.isDarwin [
       mas
       pinentry_mac
