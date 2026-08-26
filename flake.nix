@@ -239,7 +239,7 @@
           pkgs.openssl
           pkgs.zlib
         ]
-        ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.pcsclite ];
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.pcsclite ];
 
       # vendored libgit2 / libssh2 を build script が組み立てるときに起動する native ツール。
       cargoBuildTools = pkgs: [
@@ -319,7 +319,7 @@
               --set-default DOTFILES_HOME_MANAGER ${
                 home-manager.packages.${system}.home-manager
               }/bin/home-manager \
-              ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "--set-default DOTFILES_DARWIN_REBUILD ${
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "--set-default DOTFILES_DARWIN_REBUILD ${
                 darwin.packages.${system}.darwin-rebuild
               }/bin/darwin-rebuild"}
           '';
@@ -362,7 +362,7 @@
               pkgs.shellcheck
               pkgs.zsh
             ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.ansible
               pkgs.packer
               pkgs.sshpass
@@ -391,7 +391,7 @@
           default = dotfiles-cli;
           inherit dotfiles-cli;
         }
-        // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           tart = pkgs.tart;
           packer = pkgs.packer;
           ansible = pkgs.ansible;
