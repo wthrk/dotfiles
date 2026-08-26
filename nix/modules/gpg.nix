@@ -14,7 +14,7 @@ let
   # それ以外では端末版を使う。nixpkgs の `pinentry` は変種を選ぶよう削除されており、`pinentry-curses` は
   # `bin/pinentry` を symlink で提供する。
   pinentryProgram =
-    if pkgs.stdenv.isDarwin && (lib.hasAttrByPath [ "pinentry_mac" ] pkgs) then
+    if pkgs.stdenv.hostPlatform.isDarwin && (lib.hasAttrByPath [ "pinentry_mac" ] pkgs) then
       "${pkgs.pinentry_mac}/Applications/pinentry-mac.app/Contents/MacOS/pinentry-mac"
     else
       "${pkgs.pinentry-curses}/bin/pinentry";

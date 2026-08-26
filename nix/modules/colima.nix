@@ -17,7 +17,7 @@ let
   oldPlistPath = "${homeDir}/Library/LaunchAgents/${oldLabel}.plist";
 in
 {
-  dotfiles.launchAgents = lib.mkIf pkgs.stdenv.isDarwin {
+  dotfiles.launchAgents = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
     "${label}" = {
       EnvironmentVariables.PATH = "$HOME/.nix-profile/bin:/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
       KeepAlive = true;
@@ -33,7 +33,7 @@ in
     };
   };
 
-  home.activation.replaceHomebrewColimaLaunchAgent = lib.mkIf pkgs.stdenv.isDarwin (
+  home.activation.replaceHomebrewColimaLaunchAgent = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin (
     lib.hm.dag.entryBefore [ "loadLaunchAgents" ] ''
       /bin/mkdir -p "${logDir}"
 

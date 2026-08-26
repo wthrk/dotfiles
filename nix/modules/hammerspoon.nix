@@ -18,7 +18,7 @@ let
   bundlePath = "/Applications/Hammerspoon.app";
 in
 {
-  dotfiles.launchAgents = lib.mkIf pkgs.stdenv.isDarwin {
+  dotfiles.launchAgents = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
     "org.nix.hammerspoon" = {
       ProgramArguments = [
         "/usr/bin/open"

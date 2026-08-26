@@ -11,7 +11,7 @@
 # 統合検証がシナリオ内で作るユーザーへの適用はこれで止まった。ここでは `launchctl print` で domain の
 # 有無を先に確かめ、無ければ plist を置くだけにして activation を続ける。
 #
-# launchd と `~/Library/LaunchAgents` は macOS にしか無いため、配置と起動は `pkgs.stdenv.isDarwin` の
+# launchd と `~/Library/LaunchAgents` は macOS にしか無いため、配置と起動は `pkgs.stdenv.hostPlatform.isDarwin` の
 # ときだけ有効にする。
 {
   config,
@@ -50,7 +50,7 @@ in
     '';
   };
 
-  config = lib.mkIf (pkgs.stdenv.isDarwin && cfg != { }) {
+  config = lib.mkIf (pkgs.stdenv.hostPlatform.isDarwin && cfg != { }) {
     home.file = lib.mapAttrs' (
       label: settings:
       lib.nameValuePair "Library/LaunchAgents/${label}.plist" {
@@ -88,7 +88,7 @@ in
           /bin/launchctl enable "$service" >/dev/null 2>&1 || true
         done
       else
-        echo "$domain launchd domain is unavailable; installed ${lib.concatStringsSep ", " labels} plist without loading it"
+        echo "$domain launchd domain is unavailable; installed ${lib.escapeShellArg (lib.concatStringsSep ", " labels)} plist without loading it"
       fi
     '';
   };
