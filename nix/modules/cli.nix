@@ -197,10 +197,9 @@ in
     ]
     ++ npmTools
     ++ lib.optional (dotfilesPackage != null) dotfilesPackage
-    ++ [
-      pkgs.google-antigravity
-      pkgs.google-antigravity-cli
-    ]
+    ++ lib.optional (gcloudPackage != null) gcloudPackage
+    ++ optionalPkg [ "google-antigravity" ]
+    ++ optionalPkg [ "google-antigravity-cli" ]
     ++ lib.optionals pkgs.stdenv.isDarwin [
       mas
       pinentry_mac
