@@ -16,12 +16,12 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::Result;
 use anyhow::bail;
 use dotfiles_core::command;
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 
 /// 期限付き実行で子プロセスの終了を確認する間隔。
 ///
@@ -190,71 +190,76 @@ fn capture(program: OsString, args: Vec<OsString>, deadline: Option<Instant>) ->
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let stdout = read_to_end_and_forward_in_background(child.stdout.take());
-    let status = match deadline {
-        None => child.wait()?,
-        Some(deadline) => wait_until(&mut child, deadline, &program)?,
-    };
-    let stdout = joined(stdout, &program)?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        anyhow::anyhow!("failed to capture stdout: {}", program.to_string_lossy())
+    })?;
+    set_nonblocking(&stdout)?;
+    let mut captured = Vec::new();
+    let status = wait_for_capture(&mut child, &mut stdout, &mut captured, deadline, &program)?;
     if !status.success() {
         bail!("command failed: {}: {status}", program.to_string_lossy());
     }
-    Ok(String::from_utf8(stdout)?)
+    Ok(String::from_utf8(captured)?)
 }
 
-/// 子プロセスの stdout pipe を stderr へ転送しながら、別スレッドで EOF まで捕捉する。
+/// 捕捉中の子プロセスを待ち、stdout を stderr へ転送しながら捕捉する。
 ///
-/// 読み出しを待機から分けるのは、読まないまま待つと pipe buffer が満ちた時点で子プロセスが書き込みで
-/// 止まり、待機側が期限にも終了にも到達しないためである。転送先は chunk ごとに flush し、長時間の
-/// 評価中にも子プロセス出力を利用者へ遅延させない。親 stdout は機械可読な呼び出し元が所有する。
-fn read_to_end_and_forward_in_background(
-    pipe: Option<impl Read + Send + 'static>,
-) -> JoinHandle<std::io::Result<Vec<u8>>> {
-    std::thread::spawn(move || {
-        let mut captured = Vec::new();
-        if let Some(mut pipe) = pipe {
-            let stderr = std::io::stderr();
-            read_to_end_and_forward(&mut pipe, &mut captured, |chunk| {
-                // pipe の次の読み取り中に lock を持ち続けない。期限後も孫プロセスが write end を
-                // 保持し得るため、ここで lock を保持すると呼び出し元の診断出力まで停止する。
-                let mut terminal = stderr.lock();
-                terminal.write_all(chunk)?;
-                terminal.flush()
-            })?;
+/// non-blocking pipe を待機と同じループで排出する。別 thread が pipe の EOF を待つ形にすると、timeout 後も
+/// 孫プロセスが write end を保持している間は thread と捕捉 buffer が残り、以後の stderr 表示へ混ざる。
+/// timeout ではこの関数を error で抜け、呼び出し側が `ChildStdout` を drop するため、reader も出力転送も
+/// 残らない。
+fn wait_for_capture(
+    child: &mut Child,
+    stdout: &mut impl Read,
+    captured: &mut Vec<u8>,
+    deadline: Option<Instant>,
+    program: &OsString,
+) -> Result<ExitStatus> {
+    loop {
+        read_available_and_forward(stdout, captured)?;
+        if let Some(status) = child.try_wait()? {
+            // 子の終了と最後の write の間に残った pipe buffer も捕捉する。孫が write end を保持しても、
+            // non-blocking read は EOF を待たない。
+            read_available_and_forward(stdout, captured)?;
+            return Ok(status);
         }
-        Ok(captured)
-    })
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            child.kill()?;
+            child.wait()?;
+            bail!("command timed out: {}", program.to_string_lossy());
+        }
+        std::thread::sleep(WAIT_POLL_INTERVAL);
+    }
 }
 
-/// stdout の各 chunk を stderr へ転送し、呼び出し元が後から読むため同じ内容を捕捉する。
+/// pipe にすでにある stdout の各 chunk を stderr へ転送し、呼び出し元が後から読むため同じ内容を捕捉する。
 ///
-/// `forward` は各読み取りの完了後にだけ呼ぶ。呼び出し元は stderr lock のような共有出力資源を
-/// `forward` の呼び出し中だけ保持し、次の `read` を待つ間は解放しなければならない。
-fn read_to_end_and_forward(
+/// pipe が空ならすぐ戻るため、呼び出し側は timeout と child の終了を継続して確認できる。
+fn read_available_and_forward(
     reader: &mut impl Read,
     captured: &mut Vec<u8>,
-    mut forward: impl FnMut(&[u8]) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut buffer = [0; 8192];
     loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            return Ok(());
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(count) => {
+                let stderr = std::io::stderr();
+                let mut terminal = stderr.lock();
+                terminal.write_all(&buffer[..count])?;
+                terminal.flush()?;
+                captured.extend_from_slice(&buffer[..count]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => return Err(error),
         }
-        forward(&buffer[..count])?;
-        captured.extend_from_slice(&buffer[..count]);
     }
 }
 
-/// [`read_to_end_and_forward_in_background`] が読み切った内容を受け取る。
-fn joined(handle: JoinHandle<std::io::Result<Vec<u8>>>, program: &OsString) -> Result<Vec<u8>> {
-    match handle.join() {
-        Ok(read) => Ok(read?),
-        Err(_) => bail!(
-            "failed to read the output of: {}",
-            program.to_string_lossy()
-        ),
-    }
+/// pipe を non-blocking にして、stdout の EOF を待つ reader thread を作らずに timeout を守る。
+fn set_nonblocking(stdout: &impl std::os::fd::AsFd) -> std::io::Result<()> {
+    let flags = fcntl_getfl(stdout)?;
+    Ok(fcntl_setfl(stdout, flags | OFlags::NONBLOCK)?)
 }
 
 /// 外部コマンドの stdout を期限なしで捕捉して返す。非 0 終了は失敗にする。
@@ -274,9 +279,9 @@ where
 /// 捕捉する起動の打ち切りが孫プロセスの寿命に引きずられないことを検証する。
 #[cfg(test)]
 mod tests {
-    use super::{capture, read_to_end_and_forward, run, sudo_as_user_args};
+    use super::{capture, read_available_and_forward, run, sudo_as_user_args};
     use std::ffi::OsString;
-    use std::io::{Cursor, Write};
+    use std::io::Cursor;
     use std::time::{Duration, Instant};
 
     /// 捕捉実行は標準出力を正しく返し、非 0 終了は失敗として報告する。
@@ -305,16 +310,11 @@ mod tests {
     #[test]
     fn captured_stdout_is_forwarded_and_retained() -> std::io::Result<()> {
         let mut source = Cursor::new(b"nix evaluation output\n".to_vec());
-        let mut stderr = Vec::new();
         let mut captured = Vec::new();
 
-        read_to_end_and_forward(&mut source, &mut captured, |chunk| {
-            stderr.write_all(chunk)?;
-            stderr.flush()
-        })?;
+        read_available_and_forward(&mut source, &mut captured)?;
 
-        assert_eq!(stderr, b"nix evaluation output\n");
-        assert_eq!(captured, stderr);
+        assert_eq!(captured, b"nix evaluation output\n");
         Ok(())
     }
 

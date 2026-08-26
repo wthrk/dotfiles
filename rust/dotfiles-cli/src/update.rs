@@ -343,25 +343,48 @@ fn garbage_collection_invocations(
     downgrade_to: Option<&str>,
     is_root: bool,
 ) -> Result<Vec<Invocation>> {
-    Ok([
-        applied.contains(&switch::SwitchTarget::Home).then(|| {
-            Invocation::downgraded(
-                home_manager.clone(),
-                expire_home_generations_args(),
-                downgrade_to,
-            )
-        }),
-        applied
-            .contains(&switch::SwitchTarget::Darwin)
-            .then(|| {
-                nix_collect_garbage_program()
-                    .map(|program| Invocation::escalated(program, collect_store_args(), is_root))
-            })
-            .transpose()?,
-    ]
-    .into_iter()
-    .flatten()
-    .collect())
+    let garbage_program = applied
+        .contains(&switch::SwitchTarget::Darwin)
+        .then(nix_collect_garbage_program)
+        .transpose()?;
+    garbage_collection_invocations_with_program(
+        applied,
+        home_manager,
+        downgrade_to,
+        is_root,
+        garbage_program,
+    )
+}
+
+/// 解決済みの信頼済み Nix 実行パスから掃除のコマンド列を組み立てる純粋関数。
+///
+/// 実行時のパス解決は [`garbage_collection_invocations`] に残し、この関数は Invocation の権限規則だけを
+/// 扱う。これにより unit test は host の `/run/current-system` や `/nix` に依存しない。
+fn garbage_collection_invocations_with_program(
+    applied: &[switch::SwitchTarget],
+    home_manager: &OsString,
+    downgrade_to: Option<&str>,
+    is_root: bool,
+    garbage_program: Option<OsString>,
+) -> Result<Vec<Invocation>> {
+    let mut invocations = Vec::new();
+    if applied.contains(&switch::SwitchTarget::Home) {
+        invocations.push(Invocation::downgraded(
+            home_manager.clone(),
+            expire_home_generations_args(),
+            downgrade_to,
+        ));
+    }
+    if applied.contains(&switch::SwitchTarget::Darwin) {
+        let program = garbage_program
+            .ok_or_else(|| anyhow::anyhow!("nix-collect-garbage program is unavailable"))?;
+        invocations.push(Invocation::escalated(
+            program,
+            collect_store_args(),
+            is_root,
+        ));
+    }
+    Ok(invocations)
 }
 
 /// `home-manager expire-generations -<日数> days` の引数列を組み立てる純粋関数。
@@ -453,11 +476,23 @@ fn update_lock_args(config_dir: &Path) -> Vec<OsString> {
 
 /// lock 更新を root のまま行うか、対象ユーザーへ降格して行うかを引数列へ反映する。
 fn update_lock_invocation(config_dir: &Path, lock_owner: Option<&str>) -> Result<Invocation> {
-    Ok(Invocation::downgraded(
+    Ok(update_lock_invocation_with_program(
         nix_program()?,
         update_lock_args(config_dir),
         lock_owner,
     ))
+}
+
+/// 解決済みの信頼済み `nix` パスから lock 更新の Invocation を組み立てる純粋関数。
+///
+/// `nix_program` による既知の絶対パス検証は実行経路で済ませてから渡す。ここでは権限切替と引数列だけを
+/// 決めるので、unit test はホストの Nix 導入状態に依存しない。
+fn update_lock_invocation_with_program(
+    nix_program: OsString,
+    args: Vec<OsString>,
+    lock_owner: Option<&str>,
+) -> Invocation {
+    Invocation::downgraded(nix_program, args, lock_owner)
 }
 
 #[derive(Args)]
@@ -474,8 +509,9 @@ pub(crate) struct UpdateOptions {
 mod tests {
     use super::{
         collect_store_args, darwin_attribute, evaluate_store_path_args,
-        garbage_collection_invocations, home_attribute, home_attributes, known_nix_program,
-        sweep_result, switch, update_lock_args, update_lock_invocation,
+        garbage_collection_invocations_with_program, home_attribute, home_attributes,
+        known_nix_program, sweep_result, switch, update_lock_args,
+        update_lock_invocation_with_program,
     };
     use std::ffi::OsString;
     use std::path::Path;
@@ -555,8 +591,13 @@ mod tests {
 
     /// root daemon の `--user` 経路では lock 更新も対象ユーザーの HOME/uid で実行し、`nix` は絶対パスで起動する。
     #[test]
-    fn update_lock_with_owner_runs_nix_as_target_user() -> anyhow::Result<()> {
-        let invocation = update_lock_invocation(Path::new("/cfg"), Some("alice"))?;
+    fn update_lock_with_owner_runs_nix_as_target_user() {
+        let nix = OsString::from("/nix/var/nix/profiles/default/bin/nix");
+        let invocation = update_lock_invocation_with_program(
+            nix.clone(),
+            update_lock_args(Path::new("/cfg")),
+            Some("alice"),
+        );
 
         assert_eq!(invocation.program, OsString::from("sudo"));
         assert_eq!(
@@ -570,7 +611,7 @@ mod tests {
                     "PATH={}",
                     std::env::var("PATH").unwrap_or_default()
                 )),
-                super::nix_program()?,
+                nix,
                 OsString::from("flake"),
                 OsString::from("update"),
                 OsString::from("dotfiles"),
@@ -578,7 +619,6 @@ mod tests {
                 OsString::from("/cfg"),
             ]
         );
-        Ok(())
     }
 
     /// 全ユーザーが成功した走査は成功として終わる。
@@ -599,24 +639,40 @@ mod tests {
     }
 
     #[test]
-    fn update_lock_without_owner_uses_absolute_nix_path() -> anyhow::Result<()> {
-        let invocation = update_lock_invocation(Path::new("/cfg"), None)?;
-        assert_eq!(invocation.program, super::nix_program()?);
-        Ok(())
+    fn update_lock_without_owner_uses_absolute_nix_path() {
+        let nix = OsString::from("/nix/var/nix/profiles/default/bin/nix");
+        let invocation = update_lock_invocation_with_program(
+            nix.clone(),
+            update_lock_args(Path::new("/cfg")),
+            None,
+        );
+        assert_eq!(invocation.program, nix);
     }
 
     /// 利用者自身の実行では store の掃除を `sudo` で昇格し、root daemon では直接起動する。
     #[test]
     fn store_collection_escalates_only_when_not_root() -> anyhow::Result<()> {
         let home_manager = OsString::from("home-manager");
-        let program = super::nix_collect_garbage_program()?;
+        let program = OsString::from("/nix/var/nix/profiles/default/bin/nix-collect-garbage");
         let applied = [switch::SwitchTarget::Darwin];
 
-        let as_root = garbage_collection_invocations(&applied, &home_manager, None, true)?;
+        let as_root = garbage_collection_invocations_with_program(
+            &applied,
+            &home_manager,
+            None,
+            true,
+            Some(program.clone()),
+        )?;
         assert_eq!(as_root[0].program, program);
         assert_eq!(as_root[0].args, collect_store_args());
 
-        let as_user = garbage_collection_invocations(&applied, &home_manager, None, false)?;
+        let as_user = garbage_collection_invocations_with_program(
+            &applied,
+            &home_manager,
+            None,
+            false,
+            Some(program.clone()),
+        )?;
         assert_eq!(as_user[0].program, OsString::from("sudo"));
         assert_eq!(as_user[0].args[0], program);
         assert_eq!(as_user[0].args[1..], collect_store_args()[..]);
