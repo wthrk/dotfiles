@@ -15,6 +15,9 @@
 
 use std::path::Path;
 
+#[cfg(test)]
+use std::{fs, path::PathBuf};
+
 use crate::{
     Result,
     assertions::{
@@ -33,13 +36,50 @@ use anyhow::bail;
 use clap::ValueEnum;
 use dotfiles_core::path::{display as path_str, find_executable};
 
-/// nix-darwin 管理の `/run/current-system/sw/bin/nix` を優先し、未適用環境では `/nix/var/nix/profiles/default/bin/nix` を返す。
+const DARWIN_NIX: &str = "/run/current-system/sw/bin/nix";
+const DARWIN_NIX_DAEMON_PROFILE: &str = "/run/current-system/sw/etc/profile.d/nix-daemon.sh";
+const DEFAULT_PROFILE_NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
+const DEFAULT_PROFILE_NIX_DAEMON_PROFILE: &str =
+    "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh";
+
+/// nix-darwin 管理の Nix と daemon profile を優先し、両方が有効でなければ default profile を使う。
 fn nix_program() -> &'static str {
-    if Path::new("/run/current-system/sw/bin/nix").exists() {
-        "/run/current-system/sw/bin/nix"
-    } else {
-        "/nix/var/nix/profiles/default/bin/nix"
-    }
+    existing_nix_program().unwrap_or(DEFAULT_PROFILE_NIX)
+}
+
+/// Nix 実行ファイルと daemon profile の組が通常ファイルかつ空でない候補を返す。
+///
+/// `/run/current-system` の途中世代や壊れたリンクを優先すると後段の Nix 呼び出しが曖昧に失敗するため、
+/// 同じ導入元の daemon profile まで揃った候補だけを採用する。
+fn existing_nix_program() -> Option<&'static str> {
+    select_existing_nix_program(&[
+        (
+            Path::new(DARWIN_NIX),
+            Path::new(DARWIN_NIX_DAEMON_PROFILE),
+            DARWIN_NIX,
+        ),
+        (
+            Path::new(DEFAULT_PROFILE_NIX),
+            Path::new(DEFAULT_PROFILE_NIX_DAEMON_PROFILE),
+            DEFAULT_PROFILE_NIX,
+        ),
+    ])
+}
+
+fn select_existing_nix_program(
+    candidates: &[(&Path, &Path, &'static str)],
+) -> Option<&'static str> {
+    candidates
+        .iter()
+        .find(|(program, daemon_profile, _)| {
+            is_nonempty_regular_file(program) && is_nonempty_regular_file(daemon_profile)
+        })
+        .map(|(_, _, program_name)| *program_name)
+}
+
+fn is_nonempty_regular_file(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
 /// Home Manager が適用完了時に張り替える現世代リンク。`dotfiles update` はこれを home 層の適用済み
@@ -374,16 +414,10 @@ impl ScenarioRunner {
 
     /// 2 人目以降の手順が、前段で入った multi-user Nix を使っていることを確認する。
     fn require_existing_nix(&self) -> Result<()> {
-        let nix = Path::new("/run/current-system/sw/bin/nix");
-        let fallback_nix = Path::new("/nix/var/nix/profiles/default/bin/nix");
-        let nix_daemon_profile = Path::new("/run/current-system/sw/etc/profile.d/nix-daemon.sh");
-        let fallback_nix_daemon_profile =
-            Path::new("/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh");
-        if !nix.exists() && !fallback_nix.exists() {
-            bail!("second-user-home-manager requires existing Nix");
-        }
-        if !nix_daemon_profile.exists() && !fallback_nix_daemon_profile.exists() {
-            bail!("second-user-home-manager requires existing Nix daemon profile");
+        if existing_nix_program().is_none() {
+            bail!(
+                "second-user-home-manager requires an existing nonempty Nix binary and daemon profile"
+            );
         }
         Ok(())
     }
@@ -488,5 +522,85 @@ impl ScenarioRunner {
     /// 1 人目 `ya` として、Darwin switch 後の評価と確認を行う。
     fn run_as_ya(&self, program: &str, args: &[&str]) -> Result<()> {
         self.run_sudo_user("ya", program, args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Path, PathBuf, fs, is_nonempty_regular_file, select_existing_nix_program};
+    use crate::Result;
+    use std::{
+        process,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Result<Self> {
+            let unique = format!(
+                "dotfiles-scenario-test-{}-{}-{}",
+                process::id(),
+                SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+                TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed),
+            );
+            let path = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+
+        fn remove(self) -> Result<()> {
+            fs::remove_dir_all(self.0)?;
+            Ok(())
+        }
+    }
+
+    fn write_nonempty(path: &Path) -> Result<()> {
+        fs::write(path, "contents")?;
+        Ok(())
+    }
+
+    #[test]
+    fn selects_valid_fallback_when_primary_binary_is_a_directory() -> Result<()> {
+        let temp = TempDir::new()?;
+        let primary_nix = temp.path("primary-nix");
+        let primary_profile = temp.path("primary-profile");
+        let fallback_nix = temp.path("fallback-nix");
+        let fallback_profile = temp.path("fallback-profile");
+        fs::create_dir(&primary_nix)?;
+        write_nonempty(&primary_profile)?;
+        write_nonempty(&fallback_nix)?;
+        write_nonempty(&fallback_profile)?;
+
+        let selected = select_existing_nix_program(&[
+            (&primary_nix, &primary_profile, "primary"),
+            (&fallback_nix, &fallback_profile, "fallback"),
+        ]);
+        temp.remove()?;
+        assert_eq!(selected, Some("fallback"));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_files_and_directories_as_nix_installation_artifacts() -> Result<()> {
+        let temp = TempDir::new()?;
+        let empty_file = temp.path("empty");
+        let directory = temp.path("directory");
+        fs::File::create(&empty_file)?;
+        fs::create_dir(&directory)?;
+
+        assert!(!is_nonempty_regular_file(&empty_file));
+        assert!(!is_nonempty_regular_file(&directory));
+        let selected = select_existing_nix_program(&[(&empty_file, &directory, "invalid")]);
+        temp.remove()?;
+        assert_eq!(selected, None);
+        Ok(())
     }
 }
