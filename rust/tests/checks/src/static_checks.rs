@@ -161,11 +161,11 @@ fn nix_diagnostics(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// `target` 配下を除外し、整形と nil 診断の対象になる Nix ファイルだけを列挙する。
+/// `target` 配下と `./.*` に一致する隠しパス全般を除外し、整形と nil 診断の対象になる Nix ファイルだけを列挙する。
 fn nix_files(shell: &Shell) -> Result<Vec<String>> {
     Ok(cmd!(
         shell,
-        "find . -path ./target -prune -o -name '*.nix' -type f -print"
+        "find . -path './.*' -prune -o -path ./target -prune -o -name '*.nix' -type f -print"
     )
     .read()?
     .lines()

@@ -15,6 +15,9 @@
 
 use std::path::Path;
 
+#[cfg(test)]
+use std::{fs, path::PathBuf};
+
 use crate::{
     Result,
     assertions::{
@@ -29,11 +32,55 @@ use crate::{
     },
     users::{ensure_local_user, grant_noninteractive_sudo},
 };
-use anyhow::{Context, bail};
+use anyhow::bail;
 use clap::ValueEnum;
 use dotfiles_core::path::{display as path_str, find_executable};
 
-const NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
+const DARWIN_NIX: &str = "/run/current-system/sw/bin/nix";
+const DARWIN_NIX_DAEMON_PROFILE: &str = "/run/current-system/sw/etc/profile.d/nix-daemon.sh";
+const DEFAULT_PROFILE_NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
+const DEFAULT_PROFILE_NIX_DAEMON_PROFILE: &str =
+    "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh";
+
+/// nix-darwin 管理の Nix と daemon profile を優先し、両方が有効でなければ default profile を使う。
+fn nix_program() -> &'static str {
+    existing_nix_program().unwrap_or(DEFAULT_PROFILE_NIX)
+}
+
+/// Nix 実行ファイルと daemon profile の組が通常ファイルかつ空でない候補を返す。
+///
+/// `/run/current-system` の途中世代や壊れたリンクを優先すると後段の Nix 呼び出しが曖昧に失敗するため、
+/// 同じ導入元の daemon profile まで揃った候補だけを採用する。
+fn existing_nix_program() -> Option<&'static str> {
+    select_existing_nix_program(&[
+        (
+            Path::new(DARWIN_NIX),
+            Path::new(DARWIN_NIX_DAEMON_PROFILE),
+            DARWIN_NIX,
+        ),
+        (
+            Path::new(DEFAULT_PROFILE_NIX),
+            Path::new(DEFAULT_PROFILE_NIX_DAEMON_PROFILE),
+            DEFAULT_PROFILE_NIX,
+        ),
+    ])
+}
+
+fn select_existing_nix_program(
+    candidates: &[(&Path, &Path, &'static str)],
+) -> Option<&'static str> {
+    candidates
+        .iter()
+        .find(|(program, daemon_profile, _)| {
+            is_nonempty_regular_file(program) && is_nonempty_regular_file(daemon_profile)
+        })
+        .map(|(_, _, program_name)| *program_name)
+}
+
+fn is_nonempty_regular_file(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
 
 /// Home Manager が適用完了時に張り替える現世代リンク。`dotfiles update` はこれを home 層の適用済み
 /// 判定に使うため、未適用状態を作るシナリオはここを外す。
@@ -179,6 +226,14 @@ impl ScenarioRunner {
         // マシンの状態から決まるものに任せる。
         self.run_bootstrap_sudo_user("ya", &["--force"])?;
 
+        // nix-darwin の切り替え後は、インストーラが残した default profile と gcroot を残さない。
+        // これらは system profile に移行済みの Nix 実行環境へ重複した参照を残すため、実ゲスト上で
+        // 不在を確認する。
+        self.ensure_absent("/nix/var/nix/profiles/default")?;
+        self.ensure_absent("/nix/var/nix/profiles/default-1-link")?;
+        self.ensure_absent("/nix/var/nix/gcroots/default")?;
+        self.ensure_absent("/nix/var/nix/gcroots/profiles/default")?;
+
         // system 層は `ya` だけを管理対象にしている必要がある。この結び付きは CLI の scope 判定が
         // 依存する事実そのものであり、home-manager 側の実装が変われば崩れる。
         assert_system_profile_users(&["ya"])?;
@@ -190,13 +245,13 @@ impl ScenarioRunner {
         let ya_config_dir = path_str(local_config_dir_for_user("ya")?);
         // nix-darwin 切り替え後も生成ローカル設定が評価できる必要がある。
         self.run_as_ya(
-            NIX,
+            nix_program(),
             &["flake", "check", "--no-update-lock-file", &ya_config_dir],
         )?;
         let ya_home_activation =
             local_config_ref("ya", "homeConfigurations.ya.activationPackage.drvPath")?;
         self.run_as_ya(
-            NIX,
+            nix_program(),
             &["eval", "--no-update-lock-file", ya_home_activation.as_str()],
         )?;
         // 1 人目の生成 flake は nix-darwin の適用先を持つ。出力名はホスト名で、`--host` を渡して
@@ -206,7 +261,7 @@ impl ScenarioRunner {
             &format!("darwinConfigurations.{}.system", current_host()?),
         )?;
         self.run_as_ya(
-            NIX,
+            nix_program(),
             &["eval", "--no-update-lock-file", ya_darwin_system.as_str()],
         )?;
         // 最後の利用者向け検査として、切り替え対象ユーザーが Nix store 由来の
@@ -263,7 +318,7 @@ impl ScenarioRunner {
         // これにより権限と出力名の退行を検出する。
         self.run_sudo_user(
             "dotfilesci",
-            NIX,
+            nix_program(),
             &[
                 "eval",
                 "--no-update-lock-file",
@@ -279,7 +334,7 @@ impl ScenarioRunner {
         if self
             .status_sudo_user(
                 "dotfilesci",
-                NIX,
+                nix_program(),
                 &["eval", "--no-update-lock-file", dotfilesci_darwin.as_str()],
             )?
             .success()
@@ -292,7 +347,7 @@ impl ScenarioRunner {
         self.discard_applied_home_generation("dotfilesci")?;
         self.run_sudo_user(
             "dotfilesci",
-            NIX,
+            nix_program(),
             &["run", self.dotfiles_source_str(), "--", "update"],
         )?;
         assert_system_profile_users(&["ya"])?;
@@ -312,7 +367,10 @@ impl ScenarioRunner {
 
         // auto-update daemon と同じ root からの全ユーザー走査。両ユーザーが更新され、system 層は
         // 所有者 `ya` の flake からだけ適用される。
-        self.run_as_root(NIX, &["run", self.dotfiles_source_str(), "--", "update"])?;
+        self.run_as_root(
+            nix_program(),
+            &["run", self.dotfiles_source_str(), "--", "update"],
+        )?;
         assert_system_profile_users(&["ya"])?;
         assert_managed_links(
             path_str(&dotfilesci_home).as_str(),
@@ -327,7 +385,10 @@ impl ScenarioRunner {
         // 戻さずに管理リンクだけを外し、同じ走査をもう一度通す。適用済みの層を飛ばす限りリンクは
         // 戻らず、毎回適用し直す状態へ退行すると Home Manager が張り直してこの確認が落ちる。
         self.remove_managed_link(&ya_home, ".config/zsh")?;
-        self.run_as_root(NIX, &["run", self.dotfiles_source_str(), "--", "update"])?;
+        self.run_as_root(
+            nix_program(),
+            &["run", self.dotfiles_source_str(), "--", "update"],
+        )?;
         ensure_absent_path(ya_home.join(".config/zsh"))
     }
 
@@ -338,6 +399,27 @@ impl ScenarioRunner {
     /// 確認が空振りになるのを避けるためである。
     fn remove_managed_link(&self, home: &Path, relative: &str) -> Result<()> {
         self.run("sudo", &["rm", path_str(home.join(relative)).as_str()])
+    }
+
+    /// `--no-switch` の bootstrap を呼び出す。
+    fn bootstrap_current_user_no_switch(&self) -> Result<()> {
+        self.run_bootstrap(&["--no-switch", "--force"])
+    }
+
+    /// 作業ディレクトリ直下の前提ファイルが空でないことを確認し、checkout が揃っていない状態を
+    /// 手順の実行前に検出する。
+    fn ensure_nonempty(&self, path: &str) -> Result<()> {
+        ensure_nonempty_path(self.env.workspace.join(path))
+    }
+
+    /// 2 人目以降の手順が、前段で入った multi-user Nix を使っていることを確認する。
+    fn require_existing_nix(&self) -> Result<()> {
+        if existing_nix_program().is_none() {
+            bail!(
+                "second-user-home-manager requires an existing nonempty Nix binary and daemon profile"
+            );
+        }
+        Ok(())
     }
 
     /// 指定ユーザーの home 層を未適用状態へ戻す。
@@ -374,30 +456,6 @@ impl ScenarioRunner {
         self.run("uname", &["-a"])?;
         self.run("id", &[])?;
         self.run("xcode-select", &["-p"])
-    }
-
-    /// 現在ユーザーで bootstrap の no-switch 経路を実行し、ローカル flake 生成だけを確認する。
-    ///
-    /// 利用者名もホスト名も渡さない。この手順が確かめるのはインストーラ経路と「適用しない」指定で
-    /// あって、生成 flake に書かれる名前ではない。
-    fn bootstrap_current_user_no_switch(&self) -> Result<()> {
-        self.run_bootstrap(&["--no-switch", "--force"])
-    }
-
-    /// 作業ディレクトリ直下の前提ファイルが空でないことを確認し、checkout が揃っていない状態を
-    /// 手順の実行前に検出する。
-    fn ensure_nonempty(&self, path: &str) -> Result<()> {
-        ensure_nonempty_path(self.env.workspace.join(path))
-    }
-
-    /// 2 人目以降の手順が、前段で入った multi-user Nix を使っていることを確認する。
-    fn require_existing_nix(&self) -> Result<()> {
-        let nix = Path::new("/nix/var/nix/profiles/default/bin/nix");
-        let nix_daemon_profile =
-            Path::new("/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh");
-        ensure_nonempty_path(nix).context("second-user-home-manager requires existing Nix")?;
-        ensure_nonempty_path(nix_daemon_profile)
-            .context("second-user-home-manager requires existing Nix daemon profile")
     }
 
     /// dry-run/no-switch がシステム側のパスを作っていないことを検証する。
@@ -464,5 +522,85 @@ impl ScenarioRunner {
     /// 1 人目 `ya` として、Darwin switch 後の評価と確認を行う。
     fn run_as_ya(&self, program: &str, args: &[&str]) -> Result<()> {
         self.run_sudo_user("ya", program, args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Path, PathBuf, fs, is_nonempty_regular_file, select_existing_nix_program};
+    use crate::Result;
+    use std::{
+        process,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Result<Self> {
+            let unique = format!(
+                "dotfiles-scenario-test-{}-{}-{}",
+                process::id(),
+                SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+                TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed),
+            );
+            let path = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+
+        fn remove(self) -> Result<()> {
+            fs::remove_dir_all(self.0)?;
+            Ok(())
+        }
+    }
+
+    fn write_nonempty(path: &Path) -> Result<()> {
+        fs::write(path, "contents")?;
+        Ok(())
+    }
+
+    #[test]
+    fn selects_valid_fallback_when_primary_binary_is_a_directory() -> Result<()> {
+        let temp = TempDir::new()?;
+        let primary_nix = temp.path("primary-nix");
+        let primary_profile = temp.path("primary-profile");
+        let fallback_nix = temp.path("fallback-nix");
+        let fallback_profile = temp.path("fallback-profile");
+        fs::create_dir(&primary_nix)?;
+        write_nonempty(&primary_profile)?;
+        write_nonempty(&fallback_nix)?;
+        write_nonempty(&fallback_profile)?;
+
+        let selected = select_existing_nix_program(&[
+            (&primary_nix, &primary_profile, "primary"),
+            (&fallback_nix, &fallback_profile, "fallback"),
+        ]);
+        temp.remove()?;
+        assert_eq!(selected, Some("fallback"));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_files_and_directories_as_nix_installation_artifacts() -> Result<()> {
+        let temp = TempDir::new()?;
+        let empty_file = temp.path("empty");
+        let directory = temp.path("directory");
+        fs::File::create(&empty_file)?;
+        fs::create_dir(&directory)?;
+
+        assert!(!is_nonempty_regular_file(&empty_file));
+        assert!(!is_nonempty_regular_file(&directory));
+        let selected = select_existing_nix_program(&[(&empty_file, &directory, "invalid")]);
+        temp.remove()?;
+        assert_eq!(selected, None);
+        Ok(())
     }
 }

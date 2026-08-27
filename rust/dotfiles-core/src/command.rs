@@ -16,11 +16,15 @@ pub fn display(program: impl AsRef<OsStr>, args: &[OsString]) -> String {
 
 /// 空白や記号を含む引数だけを単引用符で囲み、ログの読み間違いを減らす。
 pub fn quote(value: &str) -> String {
+    let value = value
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n");
     if value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || "-_./:=@+".contains(ch))
     {
-        value.to_string()
+        value
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
@@ -35,4 +39,23 @@ where
     args.into_iter()
         .map(|arg| arg.as_ref().to_os_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display, quote};
+    use std::ffi::OsString;
+
+    #[test]
+    fn quote_escapes_carriage_returns_and_newlines_into_one_line() {
+        assert_eq!(quote("line1\r\nline2"), "'line1\\r\\nline2'");
+    }
+
+    #[test]
+    fn display_escapes_control_line_breaks_in_program_and_arguments() {
+        let rendered = display("program\nname", &[OsString::from("argument\rvalue")]);
+
+        assert_eq!(rendered, "'program\\nname' 'argument\\rvalue'");
+        assert!(!rendered.contains(['\r', '\n']));
+    }
 }

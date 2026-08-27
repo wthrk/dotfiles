@@ -84,7 +84,10 @@ if [[ -n "$user" && "$user" != "$running_user" ]]; then
   exit 1
 fi
 
-if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+if [[ -f /run/current-system/sw/etc/profile.d/nix-daemon.sh ]]; then
+  # shellcheck disable=SC1091
+  . /run/current-system/sw/etc/profile.d/nix-daemon.sh
+elif [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
   # shellcheck disable=SC1091
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 fi
