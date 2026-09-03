@@ -50,7 +50,9 @@
       "firefox"
       "font-cica"
       "ghostty"
-      "google-chrome"
+      # upstream cask が `sha256 :no_check` となり、greedyCasks の「全成果物を固定する」
+      # 前提を満たさない。Chrome は `cli.nix` が mmdc 用に Nix package として条件付きで提供するため、
+      # Homebrew の無人更新対象には含めない。
       "hammerspoon"
       "iterm2"
       "karabiner-elements"
