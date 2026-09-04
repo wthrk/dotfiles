@@ -663,3 +663,124 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-09-04T18:31:04Z"
+state_old = "ce1367e2dd62c41a80cb204880daee600efa6a68ac754f96fdc08232828ebda6"
+state_new = "51af1fe4aa5b572a72ff689088fce828165dc4c1660f899d06c5d10ba1ea3039"
+cursor_old = "b34f90b40fd42f2fe329811f24ca1efbf6fd4806"
+nixpkgs_old = "9387b3fcc0c23c86661636da63faabad4235a0a6"
+nixpkgs_new = "5545adfad2e98de106a5544ca7067e03010410bd"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "7アプリ更新: ✨4 🐛5"
+
+[[update.package]]
+name = "ruff"
+old = "0.16.4"
+new = "0.16.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.16.5"
+
+[[update.package.change_item]]
+category = "feature"
+text = "コードなしのルールを許可する機能を追加"
+ref = "https://github.com/astral-sh/ruff/pull/28049"
+
+[[update.package.change_item]]
+category = "feature"
+text = "カテゴリセレクタを導入"
+ref = "https://github.com/astral-sh/ruff/pull/27666"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ブロッキングな一般的HTTPリクエストを検出するバグを修正"
+ref = "https://github.com/astral-sh/ruff/pull/28024"
+
+[[update.package.change_item]]
+category = "fix"
+text = "タイムゾーン安全なstrptimeチェーンを許可するバグを修正"
+ref = "https://github.com/astral-sh/ruff/pull/28023"
+
+[[update.package.change_item]]
+category = "fix"
+text = "lambdaデフォルトの副作用を尊重するバグを修正"
+ref = "https://github.com/astral-sh/ruff/pull/28000"
+
+[[update.package]]
+name = "antigravity"
+old = "2.12.0,5051501534642176"
+new = "2.12.2,6298742303883264"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文や機能が追加されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグが修正されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.1.25,6680093607723008"
+new = "1.1.26,5550154686791680"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/changelog/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境でのコマンド実行時に発生するエラーを修正しました。"
+ref = "https://antigravity.google/changelog/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいオプションを追加し、ユーザーがカスタマイズできる機能を強化しました。"
+ref = "https://antigravity.google/changelog/"
+
+[[update.package]]
+name = "claude"
+old = "1.44121.4,0d57a2f7d9b22cb8cd8804faae00208185608888"
+new = "1.46388.2,cb4596255b5868d31be52e09cf9018e559187f04"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.259"
+new = "2.1.260"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "firefox"
+old = "155.0"
+new = "155.0.1"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/mozilla/geckoview/releases"
+change_item = []
+
+[[update.package]]
+name = "zed"
+old = "1.18.0"
+new = "1.18.1"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
