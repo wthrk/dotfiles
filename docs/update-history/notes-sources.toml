@@ -1,12 +1,12 @@
 ["brew/antigravity"]
-source = "https://antigravity.google/changelog"
+source = "https://docs.python.org/3/whatsnew/3.12.html"
 origin = "ai-discovered"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-09-04T18:31:04Z"
 
 ["brew/antigravity-cli"]
-source = "https://antigravity.google/changelog"
+source = "https://antigravity.google/changelog/"
 origin = "ai-discovered"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-09-04T18:31:04Z"
 
 ["brew/azookey"]
 origin = "none"
@@ -18,7 +18,7 @@ discovered_at = "2026-08-21T18:21:19Z"
 
 ["brew/claude"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-09-04T18:31:04Z"
 
 ["brew/claude-code@latest"]
 source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
@@ -62,7 +62,7 @@ discovered_at = "2026-06-17T19:50:01Z"
 
 ["brew/zed"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-09-04T18:31:04Z"
 
 ["nix/age"]
 origin = "none"
@@ -298,7 +298,7 @@ discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-09-04T18:31:04Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
