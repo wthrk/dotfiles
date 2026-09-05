@@ -784,3 +784,52 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-09-05T18:28:08Z"
+state_old = "51af1fe4aa5b572a72ff689088fce828165dc4c1660f899d06c5d10ba1ea3039"
+state_new = "56680c2ef96f6f39a855a853329cb9c25b20fb642dea4f1d2a4682628401d70b"
+cursor_old = "924f9479fcc68d6139c41b490c968bd83ad9e1a9"
+nixpkgs_old = "5545adfad2e98de106a5544ca7067e03010410bd"
+nixpkgs_new = "9b9402b959a2276982ddd5ad3652a38b97f7c40b"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "3アプリ更新: ✨1 🐛1"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.1.26,5550154686791680"
+new = "1.1.27,5211191891591168"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/changelog/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドラインオプションを追加しました。"
+ref = "https://antigravity.google/changelog/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境でのバグを修正しました。"
+ref = "https://antigravity.google/changelog/"
+
+[[update.package]]
+name = "claude"
+old = "1.46388.2,cb4596255b5868d31be52e09cf9018e559187f04"
+new = "1.46388.4,50e62f90a2c85243eef42913398f7c8f1534abef"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.260"
+new = "2.1.261"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
