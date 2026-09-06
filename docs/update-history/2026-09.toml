@@ -833,3 +833,76 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-09-06T18:28:30Z"
+state_old = "56680c2ef96f6f39a855a853329cb9c25b20fb642dea4f1d2a4682628401d70b"
+state_new = "16191b3a4d9ac30b32b1d9ad2031654542f87a3c082fc2cd550f7196f03bfdd5"
+cursor_old = "4d045d2f87c7486dcc038db7e1ab826402930cae"
+nixpkgs_old = "9b9402b959a2276982ddd5ad3652a38b97f7c40b"
+nixpkgs_new = "17de0b976395537756f30a3e78f2f06e5cec89ed"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "4アプリ更新: ⚠️2 ✨1 🐛3"
+
+[[update.package]]
+name = "chromedriver"
+old = "152.0.7977.76"
+new = "152.0.7977.83"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 152.0.7977.83 での重要なバグ修正が行われました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "jujutsu"
+old = "0.44.0"
+new = "0.45.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/jj-vcs/jj/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`jj config {edit,set,unset} --user`が最初のユーザー設定ファイルをターゲットするように変更された。"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`jj git import`が非同居リポジトリでのコミットのインポートを行わなくなった。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい`jj converge`コマンドが追加され、分岐したコミットを自動的に解決する。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`Cargo.lock`なしでのビルドが再び機能するようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SHA-256 Gitリポジトリのコミット署名が正しく保存されるようになった。"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.261"
+new = "2.1.263"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "notion"
+old = "7.32.0"
+new = "7.32.1"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
