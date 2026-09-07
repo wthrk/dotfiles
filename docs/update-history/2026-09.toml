@@ -906,3 +906,134 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-09-07T18:27:20Z"
+state_old = "16191b3a4d9ac30b32b1d9ad2031654542f87a3c082fc2cd550f7196f03bfdd5"
+state_new = "c263aada915f39c2189b66199821647c5ab5a8506897ef1529ef8293ec414417"
+cursor_old = "33510f9caa8b09025b735e7778def8d3ebc1763b"
+nixpkgs_old = "17de0b976395537756f30a3e78f2f06e5cec89ed"
+nixpkgs_new = "94a0f8d9ca5da101ec1cddbdfecfdc1ae1766d04"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "4アプリ更新: ⚠️1 🔧1 ✨5 🐛10"
+
+[[update.package]]
+name = "docker"
+old = "29.7.2"
+new = "29.8.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://www.docker.com/blog/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドが追加されました。"
+ref = "https://github.com/docker/cli/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグが修正されました。"
+ref = "https://github.com/docker/cli/releases"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.4.0"
+new = "5.5.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.5.0"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "新しいイメージダイジェストの調整プロセスにより、不要なコンテナの再作成を防止する。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ビルド専用サービスのデフォルトイメージ参照のプルをスキップする修正。"
+ref = "https://github.com/docker/compose/pull/14010"
+
+[[update.package.change_item]]
+category = "fix"
+text = "プロジェクトのすべてのダングリングイメージを削除しないようにする修正。"
+ref = "https://github.com/docker/compose/pull/14012"
+
+[[update.package.change_item]]
+category = "fix"
+text = "--hashを計算する際にサービス環境を解決する修正。"
+ref = "https://github.com/docker/compose/pull/14002"
+
+[[update.package.change_item]]
+category = "fix"
+text = "読み取り不可能なディレクトリをスキップするようにする修正。"
+ref = "https://github.com/docker/compose/pull/13992"
+
+[[update.package.change_item]]
+category = "fix"
+text = "upモニターで一時的なコンテナイベントを無視する修正。"
+ref = "https://github.com/docker/compose/pull/14038"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ブリッジサブコマンドの引数を検証する修正。"
+ref = "https://github.com/docker/compose/pull/14003"
+
+[[update.package.change_item]]
+category = "fix"
+text = "イメージレコードが消えたコンテナを許容する修正。"
+ref = "https://github.com/docker/compose/pull/14028"
+
+[[update.package]]
+name = "gh"
+old = "2.99.0"
+new = "2.100.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/cli/cli/releases/tag/v2.100.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "GitHub APIリクエストでのper-host `api_host` ルーティングをサポート"
+ref = "https://github.com/cli/cli/pull/14104"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`gh config get` と `gh config set` で `api_host` を公開"
+ref = "https://github.com/cli/cli/pull/14332"
+
+[[update.package.change_item]]
+category = "feature"
+text = "公式拡張として `webhook` を追加"
+ref = "https://github.com/cli/cli/pull/14326"
+
+[[update.package.change_item]]
+category = "fix"
+text = "認証されていないGHESリクエストのテレメトリを無効化"
+ref = "https://github.com/cli/cli/pull/14337"
+
+[[update.package]]
+name = "typescript"
+old = "5.9.3"
+new = "7.0.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/microsoft/typescript/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "TypeScript 7.0 は、10 倍速いネイティブポートを提供します。"
+ref = "https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "新しいネイティブポートにより、従来の TypeScript との互換性が一部失われる可能性があります。"
+ref = "https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "多くのバグ修正が行われ、安定性が向上しました。"
+ref = "https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/"
