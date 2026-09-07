@@ -160,7 +160,7 @@ discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-08-08T18:28:18Z"
+discovered_at = "2026-09-07T18:27:20Z"
 
 ["nix/docker-credential-helpers"]
 source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
@@ -197,7 +197,7 @@ discovered_at = "2026-08-18T18:19:40Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-09-07T18:27:20Z"
 
 ["nix/git"]
 origin = "none"
@@ -356,6 +356,11 @@ discovered_at = "2026-09-03T18:30:25Z"
 source = "https://oldmanprogrammer.net/source.php?dir=projects/tree/CHANGES"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
+
+["nix/typescript"]
+source = "https://github.com/microsoft/typescript/releases"
+origin = "ai-discovered"
+discovered_at = "2026-09-07T18:27:20Z"
 
 ["nix/uv"]
 origin = "none"
