@@ -1037,3 +1037,131 @@ ref = "https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/"
 category = "fix"
 text = "多くのバグ修正が行われ、安定性が向上しました。"
 ref = "https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/"
+
+[[update]]
+at = "2026-09-08T18:30:29Z"
+state_old = "c263aada915f39c2189b66199821647c5ab5a8506897ef1529ef8293ec414417"
+state_new = "b9207cb5d01174791809239ba9cf80d5f6e345cdd8b056530d08b2fd2e85a509"
+cursor_old = "3c64c0eb724116c49e01e36dd8ead75874bc24ec"
+nixpkgs_old = "94a0f8d9ca5da101ec1cddbdfecfdc1ae1766d04"
+nixpkgs_new = "e9b9cbecbf6c25ca26c150d78570e6332694a129"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "3アプリ更新: ✨2 🐛16"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.5.0"
+new = "5.5.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.5.1"
+
+[[update.package.change_item]]
+category = "feature"
+text = "ライフサイクルフックの出力をキャプチャして表示する機能を追加"
+ref = "https://github.com/docker/compose/pull/14091"
+
+[[update.package.change_item]]
+category = "feature"
+text = "otelのシャットダウンエラーを`--debug`で表示する機能を追加"
+ref = "https://github.com/docker/compose/pull/14152"
+
+[[update.package.change_item]]
+category = "fix"
+text = "イベントにサブスクライブする前にサービス名を検証するバグを修正"
+ref = "https://github.com/docker/compose/pull/14076"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`.`と`_`で異なるサービスのターゲット名の衝突を修正"
+ref = "https://github.com/docker/compose/pull/14058"
+
+[[update.package.change_item]]
+category = "fix"
+text = "シンボリックリンクされたディレクトリに同期する際の失敗を修正"
+ref = "https://github.com/docker/compose/pull/14084"
+
+[[update.package.change_item]]
+category = "fix"
+text = "フックが失敗した際にフックの出力をエラーに含めるよう修正"
+ref = "https://github.com/docker/compose/pull/14088"
+
+[[update.package.change_item]]
+category = "fix"
+text = "WindowsでのTTY進行状況を修正"
+ref = "https://github.com/docker/compose/pull/14090"
+
+[[update.package.change_item]]
+category = "fix"
+text = "初期同期時にすべてのファイルを同期するよう修正"
+ref = "https://github.com/docker/compose/pull/14096"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ネットワーク作成時にIPAMオプションを渡すよう修正"
+ref = "https://github.com/docker/compose/pull/14094"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--format`フラグが指定されていない場合にDocker CLI設定からpsFormatを尊重するよう修正"
+ref = "https://github.com/docker/compose/pull/14095"
+
+[[update.package.change_item]]
+category = "fix"
+text = "依存関係の待機タイムアウトを修正"
+ref = "https://github.com/docker/compose/pull/14105"
+
+[[update.package.change_item]]
+category = "fix"
+text = "実際に実行されたスタートパスでstartMxを保持するよう修正"
+ref = "https://github.com/docker/compose/pull/14106"
+
+[[update.package]]
+name = "ruff"
+old = "0.16.5"
+new = "0.16.6"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.16.6"
+
+[[update.package.change_item]]
+category = "fix"
+text = "単項式の解析時にバリデーションを追加"
+ref = "https://github.com/astral-sh/ruff/pull/28233"
+
+[[update.package.change_item]]
+category = "fix"
+text = "builtins.openを認識するように修正"
+ref = "https://github.com/astral-sh/ruff/pull/28021"
+
+[[update.package.change_item]]
+category = "fix"
+text = "matchの主語でのパニックを修正"
+ref = "https://github.com/astral-sh/ruff/pull/27781"
+
+[[update.package.change_item]]
+category = "fix"
+text = "datetimeの境界でtzinfo=Noneを拒否"
+ref = "https://github.com/astral-sh/ruff/pull/28022"
+
+[[update.package.change_item]]
+category = "fix"
+text = "PT017診断の重複を回避"
+ref = "https://github.com/astral-sh/ruff/pull/27918"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Ruff特有の抑制のためのlint.externalヒントを削除"
+ref = "https://github.com/astral-sh/ruff/pull/27923"
+
+[[update.package]]
+name = "claude"
+old = "1.46388.4,50e62f90a2c85243eef42913398f7c8f1534abef"
+new = "1.49585.0,41ad1dff5275eedc8af25989f59f33c5efe14063"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
