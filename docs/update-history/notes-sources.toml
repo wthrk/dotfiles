@@ -18,7 +18,7 @@ discovered_at = "2026-08-21T18:21:19Z"
 
 ["brew/claude"]
 origin = "none"
-discovered_at = "2026-09-05T18:28:08Z"
+discovered_at = "2026-09-08T18:30:29Z"
 
 ["brew/claude-code@latest"]
 source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
@@ -160,7 +160,7 @@ discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-09-07T18:27:20Z"
+discovered_at = "2026-09-08T18:30:29Z"
 
 ["nix/docker-credential-helpers"]
 source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
@@ -298,7 +298,7 @@ discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-09-04T18:31:04Z"
+discovered_at = "2026-09-08T18:30:29Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/"
