@@ -1165,3 +1165,136 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-09-09T18:31:41Z"
+state_old = "b9207cb5d01174791809239ba9cf80d5f6e345cdd8b056530d08b2fd2e85a509"
+state_new = "36d7e0137c16aa8e5fc92e02c4e04f99299033f2d49118e831f7672b5075911c"
+cursor_old = "11fb07824c2fe0d06afa6a072e19ff1a5b1e8d78"
+nixpkgs_old = "e9b9cbecbf6c25ca26c150d78570e6332694a129"
+nixpkgs_new = "a391f95d4557d685fd8e5dc0d4b1f9271aa2f342"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "5アプリ更新: ✨4 🐛11"
+
+[[update.package]]
+name = "diesel-cli"
+old = "2.3.12"
+new = "2.3.13"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`then_order_by` と `distinct_on` の相互作用を修正し、壊れた SQL クエリを拒否するようにした"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "MySQL と MariaDB がカラムの符号に応じて値をデコードするようになった"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SQLite バックエンドの深くネストされた JSONB 値でのスタックオーバーフローを修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SQLite のカスタム集約関数サポートでのヌルポインタ参照の可能性を修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`SqliteConnection::serialize_database_to_buffer` の未定義動作を修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SQLite の値読み取りでのパニックを修正し、無効なスライスや不正確なデータを返さないようにした"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SQLite 値の二重表現での使用後の解放を修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "位置指定の順序付けとウィンドウ関数を使用したクエリの準備済みステートメントキャッシュの破損を修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "短すぎるバッファからの `PgInterval` 型のデシリアライズ中のパニックの可能性を修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "悪意のあるデータベース識別子による生成された schema.rs ファイルでのコードインジェクションの可能性を修正した"
+ref = "https://github.com/diesel-rs/diesel/releases"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.1.27,5211191891591168"
+new = "1.1.28,5576113066475520"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/changelog/"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.263"
+new = "2.1.266"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "iterm2"
+old = "3.6.11"
+new = "3.7.0"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/gnachman/iTerm2/releases/tag/v3.7.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいiOSアプリ「iTerm2 Buddy」を追加し、QRコードでMacとペアリング可能に。"
+ref = "https://github.com/gnachman/iTerm2/releases/tag/v3.7.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "セッションの状態を表示する新機能「Session Status」を追加。"
+ref = "https://github.com/gnachman/iTerm2/releases/tag/v3.7.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "セッションノート機能を追加し、セッションにメモを付けられるように。"
+ref = "https://github.com/gnachman/iTerm2/releases/tag/v3.7.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい「Workgroups」機能を追加し、関連するセッションをグループ化可能に。"
+ref = "https://github.com/gnachman/iTerm2/releases/tag/v3.7.0"
+
+[[update.package.change_item]]
+category = "fix"
+text = "複数のバグ修正を行い、安定性を向上。"
+ref = "https://github.com/gnachman/iTerm2/releases/tag/v3.7.0"
+
+[[update.package]]
+name = "notion"
+old = "7.32.1"
+new = "7.33.0"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
