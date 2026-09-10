@@ -1298,3 +1298,96 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-09-10T18:30:13Z"
+state_old = "36d7e0137c16aa8e5fc92e02c4e04f99299033f2d49118e831f7672b5075911c"
+state_new = "ffbd6e9f9ffa2982516b005fc2dfa77c21026cb8b6dc48daa53eb8b91becfbf0"
+cursor_old = "79cad3d68d17d00ff06b03e33210b54e10bf59c7"
+nixpkgs_old = "a391f95d4557d685fd8e5dc0d4b1f9271aa2f342"
+nixpkgs_new = "d5dfd8e6716dde34398bc14bc87c10dece9c8c68"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: ✨1 🐛8"
+
+[[update.package]]
+name = "uv"
+old = "0.12.5"
+new = "0.12.11"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.12.11/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ソースアーカイブを読み込む前に`uv.lock`に記録されたハッシュで検証する"
+ref = "https://github.com/astral-sh/uv/pull/21223"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`===`で固定されたレジストリ要件のハッシュを検証する"
+ref = "https://github.com/astral-sh/uv/pull/21543"
+
+[[update.package.change_item]]
+category = "fix"
+text = "公開バージョンのハッシュをローカルバージョンに適用する"
+ref = "https://github.com/astral-sh/uv/pull/21544"
+
+[[update.package.change_item]]
+category = "fix"
+text = "UNCパスからのPowerShell仮想環境のアクティベーションをサポートする"
+ref = "https://github.com/astral-sh/uv/pull/19159"
+
+[[update.package.change_item]]
+category = "fix"
+text = ".python-versionと.python-versionsファイルのエントリから空白をトリムする"
+ref = "https://github.com/astral-sh/uv/pull/21529"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`uv add --no-sync`などのコマンドで`VIRTUAL_ENV`の不一致警告を抑制する"
+ref = "https://github.com/astral-sh/uv/pull/21496"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`uv python list`がインタプリタをクエリできない場合に警告を表示する"
+ref = "https://github.com/astral-sh/uv/pull/21498"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.1.28,5576113066475520"
+new = "1.2.0,5210873191596032"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/changelog/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドラインオプションが追加されました。"
+ref = "https://antigravity.google/changelog/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境で発生していたバグが修正されました。"
+ref = "https://antigravity.google/changelog/"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.266"
+new = "2.1.267"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "zed"
+old = "1.18.1"
+new = "1.19.2"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []

@@ -66,7 +66,7 @@ discovered_at = "2026-06-17T19:50:01Z"
 
 ["brew/zed"]
 origin = "none"
-discovered_at = "2026-09-04T18:31:04Z"
+discovered_at = "2026-09-10T18:30:13Z"
 
 ["nix/age"]
 origin = "none"
@@ -368,7 +368,7 @@ discovered_at = "2026-09-07T18:27:20Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-08-23T18:17:13Z"
+discovered_at = "2026-09-10T18:30:13Z"
 
 ["nix/vips"]
 origin = "none"
