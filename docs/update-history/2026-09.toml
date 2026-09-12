@@ -1464,3 +1464,67 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-09-12T18:28:47Z"
+state_old = "76179ca9b7d4e6b06b9b5042aeeb62702951cb6fa6a2f65a569a66cb64b1f604"
+state_new = "c409cb73ec52e17580ef489fce7a681571d80506b6040a0344a423f4da44d9dd"
+cursor_old = "9ce85f0d330d0d42bea6c8d2b6ab83438a760967"
+nixpkgs_old = "aff8a0b28396750446e5537a96461bc4facdb287"
+nixpkgs_new = "aff8a0b28396750446e5537a96461bc4facdb287"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "4アプリ更新: 🗑️1 ✨1 🐛1"
+
+[[update.package]]
+name = "antigravity"
+old = "2.12.2,6298742303883264"
+new = "2.13.0,6362815968182272"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文エラーのメッセージが改善され、より理解しやすくなった。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#new-features-in-python-3-12"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグが修正された。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#bug-fixes"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いモジュールや機能が非推奨となった。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#deprecated"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.2.1,5123043593420800"
+new = "1.2.2,6061403484848128"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/changelog/"
+change_item = []
+
+[[update.package]]
+name = "claude"
+old = "1.52386.1,e89233a543fc201223bf07b169e189d1c967bbeb"
+new = "1.52386.4,5078b3dcabffbffb717315a5f9a0e552c9ca54d6"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.268"
+new = "2.1.269"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
