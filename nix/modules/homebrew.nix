@@ -12,10 +12,17 @@
       upgrade = true;
       # 宣言外パッケージをアンインストールする。nix-darwin はこの値のとき brew bundle へ --force-cleanup を渡す。
       cleanup = "uninstall";
+      # Homebrew は既定（`HOMEBREW_UPGRADE_AUTO_UPDATES_CASKS`）で、`auto_updates true` の cask も app bundle の版が
+      # tap より古ければ greedy 指定なしで upgrade 対象にする（`brew outdated --cask` に notion 7.31.0 != 7.33.0 が
+      # 出る）。`greedy = false` の cask をその cask 自身の updater へ委ねるため、この既定を切る。greedy upgrade
+      # （`greedyCasks` / `greedy = true`）には影響しない。
+      extraEnv = {
+        HOMEBREW_NO_UPGRADE_AUTO_UPDATES_CASKS = "1";
+      };
     };
 
-    # `auto_updates true` / `version :latest` の cask も含め、全 cask を tap pin 追従の無人 upgrade 対象に
-    # する。前提となる「全 cask が sha256 固定」の受容根拠と強制機構は
+    # `auto_updates true` / `version :latest` の cask も含め、個別に `greedy = false` を付けた cask を除く全 cask を
+    # tap pin 追従の無人 upgrade 対象にする。前提となる「全 cask が sha256 固定」の受容根拠と強制機構は
     # docs/automation/homebrew-cask-pinning.md を正本とする。
     greedyCasks = true;
 
@@ -40,7 +47,17 @@
     # トリガーにできない。
     casks = [
       "antigravity"
-      "antigravity-cli"
+      # self-updater（`agy update`）が Homebrew の binary symlink `/opt/homebrew/bin/agy` を実ファイルへ
+      # 置き換える。Homebrew はこの cask を未インストールと見ており（Caskroom は `.metadata` のみ）、
+      # `brew bundle` は `greedy` に関わらず `brew install --cask --adopt` を実行するが、`--adopt` は symlink 以外が
+      # 占める target を上書きしないため、install は実ファイルの `/opt/homebrew/bin/agy` に当たって
+      # 「It seems there is already a Binary at」で失敗する。この install 失敗はリポジトリ差分では解消せず、
+      # `/opt/homebrew/bin/agy` の撤去で解消する。`greedy = false` は、再導入後に self-updater が symlink を
+      # 実ファイルへ置き換えた際の再 upgrade 試行を止める。版の前進は self-updater に委ねる。
+      {
+        name = "antigravity-cli";
+        greedy = false;
+      }
       "azookey"
       "bitwarden"
       "claude"
@@ -55,9 +72,24 @@
       # Homebrew の無人更新対象には含めない。
       "hammerspoon"
       "iterm2"
-      "karabiner-elements"
+      # pkg cask で、upgrade は旧版の uninstall script（`sudo: true`）と `installer` を `sudo` で走らせる。
+      # auto-update daemon の `brew bundle` は root から Homebrew ユーザーへ降格した非対話実行で password を
+      # 渡せず、16.1.0 からの greedy upgrade は `sudo: a password is required` で止まり続けた。版の前進は
+      # Karabiner 自身の updater に委ね、無人 upgrade から外す。
+      {
+        name = "karabiner-elements";
+        greedy = false;
+      }
       "kicad"
-      "notion"
+      # `auto_updates true` の cask で、Notion 自身の updater が `/Applications/Notion.app` を差し替える。greedy
+      # upgrade は root 所有の `/Applications/Notion.app` への `sudo` で password を要求して止まり、その後は
+      # Caskroom に残った旧版との衝突「already an App at '/opt/homebrew/Caskroom/notion/7.31.0/Notion.app'」で
+      # 止まり続けた。`greedy = false` と `onActivation.extraEnv` の `HOMEBREW_NO_UPGRADE_AUTO_UPDATES_CASKS` で
+      # `brew bundle` は `Using notion` で通る。版の前進は Notion 自身の updater に委ね、無人 upgrade から外す。
+      {
+        name = "notion";
+        greedy = false;
+      }
       "slack"
       "visual-studio-code"
       "xquartz"
