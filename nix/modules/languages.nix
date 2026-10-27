@@ -9,15 +9,22 @@
   ...
 }:
 let
-  has = lib.hasAttrByPath;
   get = lib.getAttrFromPath;
-  optionalPkg = path: if has path pkgs then [ (get path pkgs) ] else [ ];
+  # nixpkgs は撤去したパッケージの属性名を、撤去理由を `throw` する alias として残す。属性の有無だけで
+  # 候補を選ぶと撤去済みの候補を採用して評価が落ちるため、候補は評価して例外を出さないものに限る。
+  available =
+    path:
+    let
+      candidate = builtins.tryEval (lib.hasAttrByPath path pkgs && builtins.seq (get path pkgs) true);
+    in
+    candidate.success && candidate.value;
+  optionalPkg = path: if available path then [ (get path pkgs) ] else [ ];
 
-  node = if has [ "nodejs_22" ] pkgs then pkgs.nodejs_22 else pkgs.nodejs;
+  node = if available [ "nodejs_22" ] then pkgs.nodejs_22 else pkgs.nodejs;
   pythonBase =
-    if has [ "python313" ] pkgs then
+    if available [ "python313" ] then
       pkgs.python313
-    else if has [ "python312" ] pkgs then
+    else if available [ "python312" ] then
       pkgs.python312
     else
       pkgs.python3;
@@ -31,8 +38,8 @@ let
       requests
     ]
   );
-  ruby = if has [ "ruby_3_3" ] pkgs then pkgs.ruby_3_3 else pkgs.ruby;
-  go = if has [ "go_1_25" ] pkgs then pkgs.go_1_25 else pkgs.go;
+  ruby = if available [ "ruby_3_3" ] then pkgs.ruby_3_3 else pkgs.ruby;
+  go = if available [ "go_1_25" ] then pkgs.go_1_25 else pkgs.go;
   # rust-overlay の最新 stable ツールチェーン（rustc / cargo / clippy / rustfmt / rust-std）。
   # devShell と flake の buildRustPackage も同じ `stable.latest.default` を使うため、開発環境と
   # 利用者環境で版がずれない。nixpkgs 側の rustc / cargo / clippy / rustfmt は PATH 衝突を避けるため併置しない。
@@ -78,6 +85,13 @@ in
     "bundler"
   ]
   ++ lib.optionals (
-    !(has [ "rubyPackages_3_3" "bundler" ] pkgs) && has [ "rubyPackages" "bundler" ] pkgs
+    !(available [
+      "rubyPackages_3_3"
+      "bundler"
+    ])
+    && available [
+      "rubyPackages"
+      "bundler"
+    ]
   ) [ pkgs.rubyPackages.bundler ];
 }
