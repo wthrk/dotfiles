@@ -8,6 +8,13 @@
     let
       system = builtins.currentSystem;
       pkgs = import nixpkgs { inherit system; };
+      python =
+        if pkgs ? python313 then
+          pkgs.python313
+        else if pkgs ? python312 then
+          pkgs.python312
+        else
+          pkgs.python3;
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -16,24 +23,14 @@
           pkgs.pyright
           pkgs.ruff
           pkgs.black
-          (
-            (
-              if pkgs ? python313 then
-                pkgs.python313
-              else if pkgs ? python312 then
-                pkgs.python312
-              else
-                pkgs.python3
-            ).withPackages
-            (
-              ps: with ps; [
-                pip
-                virtualenv
-                ipython
-                pytest
-              ]
-            )
-          )
+          (python.withPackages (
+            ps: with ps; [
+              pip
+              virtualenv
+              ipython
+              pytest
+            ]
+          ))
         ];
       };
     };
