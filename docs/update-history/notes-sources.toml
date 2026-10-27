@@ -4,9 +4,9 @@ origin = "ai-discovered"
 discovered_at = "2026-09-04T18:31:04Z"
 
 ["brew/antigravity-cli"]
-source = "https://antigravity.google/changelog/"
+source = "https://antigravity.google/docs/changelog"
 origin = "ai-discovered"
-discovered_at = "2026-09-04T18:31:04Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/azookey"]
 origin = "none"
@@ -14,11 +14,11 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/bitwarden"]
 origin = "none"
-discovered_at = "2026-08-21T18:21:19Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/claude"]
 origin = "none"
-discovered_at = "2026-09-12T18:28:47Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/claude-code@latest"]
 source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
@@ -35,13 +35,18 @@ origin = "none"
 discovered_at = "2026-09-03T18:30:25Z"
 
 ["brew/firefox"]
-source = "https://github.com/mozilla/geckoview/releases"
+source = "https://github.com/mozilla/geckodriver/releases"
 origin = "ai-discovered"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
+
+["brew/ghostty"]
+origin = "none"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/iterm2"]
-origin = "none"
-discovered_at = "2026-09-11T18:34:33Z"
+source = "https://iterm2.com/downloads.html"
+origin = "ai-discovered"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/karabiner-elements"]
 origin = "none"
@@ -49,11 +54,11 @@ discovered_at = "2026-09-03T18:30:25Z"
 
 ["brew/kicad"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/notion"]
 origin = "none"
-discovered_at = "2026-09-09T18:31:41Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/visual-studio-code"]
 origin = "none"
@@ -66,7 +71,7 @@ discovered_at = "2026-06-17T19:50:01Z"
 
 ["brew/zed"]
 origin = "none"
-discovered_at = "2026-09-10T18:30:13Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/age"]
 origin = "none"
@@ -74,7 +79,7 @@ discovered_at = "2026-09-03T18:30:25Z"
 
 ["nix/android-tools"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/atuin"]
 source = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
@@ -83,11 +88,16 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/awscli2"]
 origin = "none"
-discovered_at = "2026-07-14T20:41:45Z"
+discovered_at = "2026-10-27T21:33:42Z"
+
+["nix/bash-interactive"]
+source = "https://ftp.gnu.org/gnu/bash/"
+origin = "ai-discovered"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/bitwarden-cli"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/black"]
 origin = "none"
@@ -95,7 +105,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/bun"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/cargo"]
 source = "https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md"
@@ -128,6 +138,10 @@ source = "https://github.com/rust-lang/rust-clippy/blob/master/CHANGELOG.md"
 origin = "ai-discovered"
 discovered_at = "2026-06-11T19:26:39Z"
 
+["nix/cmake"]
+origin = "none"
+discovered_at = "2026-10-27T21:33:42Z"
+
 ["nix/colima"]
 origin = "none"
 discovered_at = "2026-07-11T20:09:39Z"
@@ -137,16 +151,21 @@ origin = "none"
 discovered_at = "2026-09-03T18:30:25Z"
 
 ["nix/coreutils"]
-origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+source = "https://www.gnu.org/software/coreutils/"
+origin = "ai-discovered"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/delve"]
 origin = "none"
-discovered_at = "2026-08-11T18:34:04Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/diesel-cli"]
 origin = "none"
-discovered_at = "2026-09-09T18:31:41Z"
+discovered_at = "2026-10-27T21:33:42Z"
+
+["nix/direnv"]
+origin = "none"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/discord"]
 source = "https://discord.com/blog"
@@ -164,7 +183,7 @@ discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-09-08T18:30:29Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/docker-credential-helpers"]
 source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
@@ -177,7 +196,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/eslint"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/eza"]
 origin = "none"
@@ -189,7 +208,7 @@ discovered_at = "2026-09-03T18:30:25Z"
 
 ["nix/ffmpeg"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/firefox-bin"]
 origin = "none"
@@ -197,15 +216,15 @@ discovered_at = "2026-08-18T18:19:40Z"
 
 ["nix/fzf"]
 origin = "none"
-discovered_at = "2026-08-18T18:19:40Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-09-07T18:27:20Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/git"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/glow"]
 origin = "none"
@@ -218,7 +237,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/golangci-lint"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/google-chrome"]
 source = "https://chromereleases.googleblog.com/2023/10/stable-channel-update-for-desktop.html"
@@ -240,11 +259,11 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/jujutsu"]
 origin = "none"
-discovered_at = "2026-09-06T18:28:30Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/kubectl"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/mariadb-client"]
 source = "https://github.com/mariadb-corporation/mariadb-connector-c/releases"
@@ -260,20 +279,25 @@ origin = "none"
 discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/neovim"]
-origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+source = "https://neovim.io"
+origin = "ai-discovered"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/nix"]
 origin = "none"
-discovered_at = "2026-07-11T20:09:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/nodejs"]
 origin = "none"
-discovered_at = "2026-06-28T19:23:59Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/notion-app"]
 origin = "none"
 discovered_at = "2026-07-15T20:33:09Z"
+
+["nix/ocaml"]
+origin = "none"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/opam"]
 source = "https://github.com/ocaml/opam/blob/master/CHANGES"
@@ -282,7 +306,7 @@ discovered_at = "2026-07-20T20:42:57Z"
 
 ["nix/php-with-extensions"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/postgresql"]
 origin = "none"
@@ -290,24 +314,28 @@ discovered_at = "2026-08-18T18:19:40Z"
 
 ["nix/prettier"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/pyright"]
 origin = "none"
-discovered_at = "2026-08-16T18:17:45Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/ripgrep"]
 origin = "none"
 discovered_at = "2026-07-20T20:42:57Z"
 
+["nix/ruby"]
+origin = "none"
+discovered_at = "2026-10-27T21:33:42Z"
+
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-09-08T18:30:29Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/rust-analyzer"]
-source = "https://rust-analyzer.github.io/"
+source = "https://rust-analyzer.github.io/thisweek/2026/10/26/changelog-351.html"
 origin = "ai-discovered"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/rust-default"]
 source = "https://doc.rust-lang.org/stable/releases.html"
@@ -338,7 +366,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/stylua"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/tart"]
 origin = "none"
@@ -346,7 +374,7 @@ discovered_at = "2026-09-11T18:34:33Z"
 
 ["nix/temurin-bin"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/tesseract"]
 origin = "none"
@@ -368,11 +396,11 @@ discovered_at = "2026-09-07T18:27:20Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-09-10T18:30:13Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/vips"]
 origin = "none"
-discovered_at = "2026-09-03T18:30:25Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/vscode"]
 source = "https://code.visualstudio.com/updates/v1_123"
@@ -386,7 +414,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["nix/yt-dlp"]
 origin = "none"
-discovered_at = "2026-08-23T18:17:13Z"
+discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/yubikey-manager"]
 origin = "none"
