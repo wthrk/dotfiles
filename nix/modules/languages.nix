@@ -49,6 +49,12 @@ let
   # ため、overlay 適用済み `pkgs` を前提にしない。`mkRustBin` は既存 `pkgs` へ非侵襲に `rust-bin` 相当を
   # 構築する rust-overlay の公開 API であり、`packages.*`（上流が未安定と明記）には依存しない。
   rustToolchain = (inputs.rust-overlay.lib.mkRustBin { } pkgs).stable.latest.default;
+  # nixpkgs の `cargo-llvm-cov` は checkPhase で上流のテスト群を走らせ、nixpkgs の Rust toolchain 1.99.0
+  # では 14 件落ちる（NixOS/nixpkgs#576588）。Hydra が落ちているため x86_64-linux はバイナリキャッシュに無く
+  # ソースビルドになり、home 層の closure ごと建たない。テストを外して実体だけ入れる。
+  cargoLlvmCov = pkgs.cargo-llvm-cov.overrideAttrs (_: {
+    doCheck = false;
+  });
 in
 {
   home.packages = [
@@ -63,7 +69,7 @@ in
     pkgs.cargo-audit
     pkgs.cargo-deny
     pkgs.cargo-edit
-    pkgs.cargo-llvm-cov
+    cargoLlvmCov
     pkgs.cargo-make
     go
     pkgs.golangci-lint
