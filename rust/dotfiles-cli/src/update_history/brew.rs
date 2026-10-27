@@ -1,8 +1,9 @@
 //! 宣言 cask の版差分を old/new tap rev の cask `.rb` 定義から決定論的に算出する（ライブ brew 非問い合わせ）。
 //!
 //! reqwest で `raw.githubusercontent.com/homebrew/homebrew-cask/<rev>/Casks/<subdir>/<name>.rb` を取得して
-//! `version "..."` を解析する。全 cask（`auto_updates true` = bitwarden/codex-app/ghostty も含む）が `homebrew.nix`
-//! の `greedyCasks = true` で無人 upgrade の対象になるため、版差分の追跡対象にする。subdir は cask 名の先頭文字
+//! `version "..."` を解析する。`homebrew.nix` は `greedyCasks = true` で `auto_updates true` の cask（bitwarden/
+//! codex-app/ghostty 等）も無人 upgrade の対象にするため、宣言 cask 全件を版差分の追跡対象にする。個別に
+//! `greedy = false` を付けた cask も宣言 cask なので、pin の変化は同じく記録する。subdir は cask 名の先頭文字
 //! （font cask は `font/font-<X>`、`<X>` は `font-` の次の 1 文字）。
 //!
 //! greedy 有効化の前提は「全 cask が sha256 固定」。new rev の cask `.rb` に `sha256 :no_check`（未固定成果物）が
@@ -38,8 +39,8 @@ pub(crate) enum CaskFetch {
 ///
 /// `casks` は参照構成が宣言する cask 名（評価値）。各 cask の `version` を
 /// 両 rev の cask `.rb` から取り、版変化のあるものだけ [`VersionDelta`] にする。版変更なしは捨てる（ノイズ抑制）。
-/// old rev 取得不能は差分なしとして扱わず fail-closed にする。`greedyCasks = true` で全 cask が無人 upgrade 対象になるため `auto_updates true` の
-/// cask も追跡する。new rev の `.rb` が `sha256 :no_check` の未固定成果物なら、または new rev が取得不能で固定性を
+/// old rev 取得不能は差分なしとして扱わず fail-closed にする。`greedyCasks = true` で `auto_updates true` の cask も
+/// 無人 upgrade 対象になるため、それらも追跡する。new rev の `.rb` が `sha256 :no_check` の未固定成果物なら、または new rev が取得不能で固定性を
 /// 確認できないなら fail-closed（`Err`）にする（[`assert_pinned`] / [`cask_delta`]）。
 /// `fetch` は cask `.rb` 取得 seam（本番は reqwest、テストは fake）。
 pub(crate) fn diff_casks(
@@ -161,7 +162,7 @@ fn cask_version(
 
 /// new rev 用: `.rb` を取得し成果物固定を [`assert_pinned`] で検査してから状態（版/不在）を決める。
 ///
-/// greedy 有効化（`homebrew.nix` の `greedyCasks = true`）で全 cask が無人 upgrade 対象になるため、未固定成果物
+/// greedy 有効化（`homebrew.nix` の `greedyCasks = true`）で宣言 cask が無人 upgrade 対象になるため、未固定成果物
 /// （`sha256 :no_check`）が new rev に現れたら fail-closed にし、外部成果物の再現性なき無人差し替えを阻む。404
 /// （`NotFound`）も宣言 cask 欠落を示すため fail-closed にする。取得不能（`Unavailable`）は固定性を確認できないため
 /// `None` を返し、呼び出し側（[`cask_delta`]）が record を失敗させる（fail-closed: 取得障害の夜に未固定 cask の
