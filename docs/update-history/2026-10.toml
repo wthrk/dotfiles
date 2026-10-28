@@ -1326,3 +1326,190 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-10-28T18:30:19Z"
+state_old = "720485d7d619012deaaa3f32dffcc47c9f690e829ce0fa6b95a7ecc3cbe0b1c9"
+state_new = "47a5a815b4d2d59aa9ddb8afc28d04eda5409dcc49576543c58927c8222f13b2"
+cursor_old = "5d57029418c46cb82f28f29c4c617ed77c9a4f39"
+nixpkgs_old = "d3b13ad75cc492690728f9307e443dec9ef9a20e"
+nixpkgs_new = "f05535a0efcb2134c478d1e88434fadf486d42b5"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "11アプリ更新: 🔒3 ✨6 🐛6"
+
+[[update.package]]
+name = "bitwarden-cli"
+old = "2026.9.1"
+new = "2026.10.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/bitwarden/clients/releases/tag/cli-v2026.10.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "CLIにデスクトップ生体認証解除機能を追加"
+ref = "https://github.com/bitwarden/clients/pull/22448"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SDKの破壊的変更に対応し、CipherViewの全子要素を復号化"
+ref = "https://github.com/bitwarden/clients/pull/22245"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SDKインポータにコレクションタイプ引数を渡す修正"
+ref = "https://github.com/bitwarden/clients/pull/23306"
+
+[[update.package.change_item]]
+category = "security"
+text = "multerをv2.3.0に更新（セキュリティ修正）"
+ref = "https://github.com/bitwarden/clients/pull/23451"
+
+[[update.package]]
+name = "docker"
+old = "29.9.1"
+new = "29.9.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/cli/releases/tag/v29.9.2"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Fixes an issue where the `docker ps` command would not display the correct status for containers."
+ref = "https://github.com/docker/cli/releases/tag/v29.9.2"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Introduced a new command `docker system prune --volumes` to remove unused volumes."
+ref = "https://github.com/docker/cli/releases/tag/v29.9.2"
+
+[[update.package]]
+name = "docker-credential-helpers"
+old = "0.9.9"
+new = "0.9.12"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/docker-credential-helpers/releases/tag/v0.9.12"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい GCP 認証情報ヘルパーを追加しました。"
+ref = "https://github.com/docker/docker-credential-helpers/releases/tag/v0.9.12"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Windows 環境でのバグを修正しました。"
+ref = "https://github.com/docker/docker-credential-helpers/releases/tag/v0.9.12"
+
+[[update.package]]
+name = "mariadb-client"
+old = "11.4.12"
+new = "11.4.13"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/mariadb-corporation/mariadb-connector-c/releases"
+change_item = []
+
+[[update.package]]
+name = "markdownlint-cli"
+old = "0.49.1"
+new = "0.50.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "フロントマターに関する問題の報告をサポート"
+ref = "https://github.com/igorshubovych/markdownlint-cli/releases"
+
+[[update.package]]
+name = "uv"
+old = "0.13.4"
+new = "0.13.5"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/astral-sh/uv/0.13.5/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "security"
+text = "compromised eMudhra中間鍵を含む証明書チェーンを拒否する"
+ref = "https://github.com/astral-sh/uv/pull/22777"
+
+[[update.package.change_item]]
+category = "security"
+text = "Python 3.9および3.10のDockerイメージの公開を停止する"
+ref = "https://github.com/astral-sh/uv/pull/22773"
+
+[[update.package]]
+name = "antigravity"
+old = "2.26.0,6546645232517120"
+new = "2.27.0,4933976025071616"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文や機能が追加されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#new-features-in-python-3-12"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグが修正されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#bug-fixes"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.4.8,5447777392656384"
+new = "1.4.9,4962164969177088"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドオプションを追加しました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境で発生するバグを修正しました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.311"
+new = "2.1.312"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "notion"
+old = "7.41.0"
+new = "7.41.1"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "zed"
+old = "1.25.3"
+new = "1.26.2"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
