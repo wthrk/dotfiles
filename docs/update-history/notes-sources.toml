@@ -58,7 +58,7 @@ discovered_at = "2026-10-27T21:33:42Z"
 
 ["brew/notion"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-10-28T18:30:19Z"
 
 ["brew/visual-studio-code"]
 origin = "none"
@@ -71,7 +71,7 @@ discovered_at = "2026-06-17T19:50:01Z"
 
 ["brew/zed"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-10-28T18:30:19Z"
 
 ["nix/age"]
 origin = "none"
@@ -97,7 +97,7 @@ discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/bitwarden-cli"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-10-28T18:30:19Z"
 
 ["nix/black"]
 origin = "none"
@@ -272,7 +272,7 @@ discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/markdownlint-cli"]
 origin = "none"
-discovered_at = "2026-07-15T20:33:09Z"
+discovered_at = "2026-10-28T18:30:19Z"
 
 ["nix/mas"]
 origin = "none"
@@ -396,7 +396,7 @@ discovered_at = "2026-09-07T18:27:20Z"
 
 ["nix/uv"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-10-28T18:30:19Z"
 
 ["nix/vips"]
 origin = "none"
