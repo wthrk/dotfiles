@@ -1513,3 +1513,143 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-10-29T18:30:44Z"
+state_old = "47a5a815b4d2d59aa9ddb8afc28d04eda5409dcc49576543c58927c8222f13b2"
+state_new = "c2c9ba0264a6921dfe348b6d8b9563a26d4f7b0fb695bc706b2d2c2560f56375"
+cursor_old = "5c6195272f6ea29d2bd7311cb2535c7f1ace03a8"
+nixpkgs_old = "f05535a0efcb2134c478d1e88434fadf486d42b5"
+nixpkgs_new = "e62746b0b472753ef019baceab6f1e2e52014980"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "6アプリ更新: 🗑️1 ✨2 🐛12"
+
+[[update.package]]
+name = "chromedriver"
+old = "156.0.8078.48"
+new = "156.0.8078.74"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 156.0.8078.74 では、Chrome 156.0.8120.0 との互換性が修正されました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "gh"
+old = "2.103.2"
+new = "2.103.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/cli/cli/releases/tag/v2.103.3"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--no-refresh`オプションを使用した場合の期限切れトークンの説明を修正"
+ref = "https://github.com/cli/cli/pull/14815"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-10-19"
+new = "2026-10-26"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://rust-analyzer.github.io/thisweek/2026/10/26/changelog-351.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "無効な推論型を持つ範囲パターンを emit する問題を修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23533"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マクロ呼び出しでの inline_call におけるパニックを修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23231"
+
+[[update.package.change_item]]
+category = "fix"
+text = "キーワードモジュール名の補完をエスケープ。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23518"
+
+[[update.package.change_item]]
+category = "fix"
+text = "補完に main と lib モジュールを提供。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23529"
+
+[[update.package.change_item]]
+category = "fix"
+text = "undotted self に対する ref-match を計算。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23489"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Windows における NamedTempFile の問題を修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23424"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Cargo メタデータを取得する際にロックファイルのマニフェスト祖先を検索。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23296"
+
+[[update.package.change_item]]
+category = "fix"
+text = "experimental/serverStatusNotification をサポートしていないクライアントのステータスメッセージ報告を修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23552"
+
+[[update.package]]
+name = "antigravity"
+old = "2.27.0,4933976025071616"
+new = "2.28.1,6709500728705024"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文エラーのメッセージが改善され、より理解しやすくなりました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかのバグが修正され、特に型ヒントに関する問題が解決されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#bug-fixes"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いモジュールや機能が非推奨となり、将来のバージョンで削除される予定です。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#deprecated"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.4.9,4962164969177088"
+new = "1.4.10,5501573669978112"
+change = "downgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドが追加されました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境で発生するバグが修正されました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package]]
+name = "bitwarden"
+old = "2026.10.1"
+new = "2026.10.2"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
