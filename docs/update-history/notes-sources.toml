@@ -14,7 +14,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/bitwarden"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-10-29T18:30:44Z"
 
 ["brew/claude"]
 origin = "none"
@@ -220,7 +220,7 @@ discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/gh"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-10-29T18:30:44Z"
 
 ["nix/git"]
 origin = "none"
