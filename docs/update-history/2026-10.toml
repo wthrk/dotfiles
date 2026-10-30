@@ -1653,3 +1653,71 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-10-30T18:22:56Z"
+state_old = "c2c9ba0264a6921dfe348b6d8b9563a26d4f7b0fb695bc706b2d2c2560f56375"
+state_new = "dfa8b803582e9d63f9087b8d5c6723f68179e5874af507f6290bc04cd0dd8c76"
+cursor_old = "55bff5344f73035e6478fa9702850e342e16f140"
+nixpkgs_old = "e62746b0b472753ef019baceab6f1e2e52014980"
+nixpkgs_new = "e62746b0b472753ef019baceab6f1e2e52014980"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: ✨2 🐛2"
+
+[[update.package]]
+name = "antigravity"
+old = "2.28.1,6709500728705024"
+new = "2.28.2,5937220255875072"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文と機能が追加されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかの重要なバグが修正されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#bug-fixes"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.4.10,5501573669978112"
+new = "1.4.11,5180209989812224"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドオプションを追加しました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境で発生するバグを修正しました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package]]
+name = "claude"
+old = "4.29.0,2609742292f7dbce2e259e76f53620cac4da9002"
+new = "4.4212.0,cbfe3c56d49c49332ad5a9588303c9dbc70a5e7f"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.312"
+new = "2.1.314"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
