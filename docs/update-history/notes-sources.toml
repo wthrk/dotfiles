@@ -97,7 +97,7 @@ discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/bitwarden-cli"]
 origin = "none"
-discovered_at = "2026-10-28T18:30:19Z"
+discovered_at = "2026-10-31T18:21:34Z"
 
 ["nix/black"]
 origin = "none"
@@ -179,7 +179,7 @@ discovered_at = "2026-06-28T19:23:59Z"
 
 ["nix/docker-buildx"]
 origin = "none"
-discovered_at = "2026-07-14T20:41:45Z"
+discovered_at = "2026-10-31T18:21:34Z"
 
 ["nix/docker-compose"]
 origin = "none"
