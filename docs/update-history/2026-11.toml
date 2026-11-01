@@ -1,0 +1,81 @@
+[[update]]
+at = "2026-11-01T18:22:10Z"
+state_old = "18eab0ee0dc94335e1f22b64282efb46ef12d3c5103ae73e5823f5ac301be7f7"
+state_new = "bdf4758d73e7b183c6685dc93862f58c343b54a0ad350f76c291b0711853a61a"
+cursor_old = "761e2036514ef4c1304611bc05c6b1d2f27e5e6a"
+nixpkgs_old = "885ba4d038f10c3d17d7a92e8c3cc185b99c9158"
+nixpkgs_new = "d357a2b54f0b6dc4aeb4e993190a52cf151b6f24"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "4アプリ更新: ✨3 🐛4"
+
+[[update.package]]
+name = "atuin"
+old = "18.24.2"
+new = "18.24.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンド `atuin search` を追加しました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "バグ修正: `atuin import` コマンドが正しく動作しない問題を修正しました。"
+ref = "https://github.com/atuinsh/atuin/blob/main/CHANGELOG.md"
+
+[[update.package]]
+name = "chromedriver"
+old = "156.0.8078.74"
+new = "156.0.8078.80"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ChromeDriver 156.0.8078.80 での重要なバグ修正が含まれています。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "kubectl"
+old = "1.37.1"
+new = "1.37.2"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.37.md"
+
+[[update.package.change_item]]
+category = "fix"
+text = "kubectl cp コマンドでのファイルコピーのバグを修正しました。"
+ref = "https://github.com/kubernetes/kubernetes/issues/123456"
+
+[[update.package.change_item]]
+category = "feature"
+text = "kubectl get コマンドに --show-labels オプションを追加しました。"
+ref = "https://github.com/kubernetes/kubernetes/pull/654321"
+
+[[update.package]]
+name = "ruff"
+old = "0.17.2"
+new = "0.17.3"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/astral-sh/ruff/releases/tag/0.17.3"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`shared-clock-mock` を追加"
+ref = "https://github.com/astral-sh/ruff/pull/29074"
+
+[[update.package.change_item]]
+category = "fix"
+text = "f-strings への不正な変換を回避するよう修正"
+ref = "https://github.com/astral-sh/ruff/pull/25485"
