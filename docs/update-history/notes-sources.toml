@@ -263,7 +263,7 @@ discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/kubectl"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-11-01T18:22:10Z"
 
 ["nix/mariadb-client"]
 source = "https://github.com/mariadb-corporation/mariadb-connector-c/releases"
@@ -330,7 +330,7 @@ discovered_at = "2026-10-27T21:33:42Z"
 
 ["nix/ruff"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-11-01T18:22:10Z"
 
 ["nix/rust-analyzer"]
 source = "https://rust-analyzer.github.io/thisweek/2026/10/26/changelog-351.html"
