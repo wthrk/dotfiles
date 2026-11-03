@@ -91,3 +91,115 @@ reference = "darwinConfigurations.ci-ref"
 severity = "none"
 overall = "0アプリ更新"
 package = []
+
+[[update]]
+at = "2026-11-03T18:23:16Z"
+state_old = "a87caaacc80fcf4d285fa76c50d67b4b4cd1001a667e7079ec2335aeca2fc754"
+state_new = "3fa04ff75e2b9fee44d5966d9da569fff053aa41d6264552f845572bdd9e4890"
+cursor_old = "d86544a42f0e56d12fe4863db889b39073c51175"
+nixpkgs_old = "5c9de89ec55bff981cb8da1a4ee92b10f1438ffc"
+nixpkgs_new = "ea9e3ef341e11c193537f674f821a99f9f436729"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "6アプリ更新: 🔒1 🔧1 ✨5 🐛2"
+
+[[update.package]]
+name = "bun"
+old = "1.4.2"
+new = "1.4.4"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "fix"
+text = "271の問題を修正し、544件に対応しました。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "feature"
+text = "bun fmtがPrettier互換のフォーマッタとして、oxfmtより3倍から6倍速くなりました。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "feature"
+text = "bun checkが大規模プロジェクトで1.4倍から7.8倍速くなりました。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "feature"
+text = "bun installがYarn Berryのロックファイルを移行します。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Bun.SQLがクエリごとに最大48%少ないCPUを使用します。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "feature"
+text = "wsがNode.jsのnpm wsのように動作するように書き直されました。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package.change_item]]
+category = "fix"
+text = "多くのバグ修正とNode.jsの互換性向上が行われました。"
+ref = "https://bun.sh/blog/bun-v1.4.4"
+
+[[update.package]]
+name = "cargo-edit"
+old = "0.13.13"
+new = "0.13.14"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/killercup/cargo-edit/releases/tag/v0.13.14"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "MSRVを1.97に引き上げました。"
+ref = "https://github.com/killercup/cargo-edit/releases/tag/v0.13.14"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.6.0"
+new = "5.6.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.6.1"
+
+[[update.package.change_item]]
+category = "security"
+text = "特定の証明書機関に関するセキュリティ問題への対策として、中間証明書の信頼をブロックする修正が含まれています。"
+ref = "https://go.dev/issue/82345"
+
+[[update.package]]
+name = "bitwarden"
+old = "2026.10.2"
+new = "2026.10.3"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.316"
+new = "2.1.317"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "firefox"
+old = "159.0"
+new = "159.0.1"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/mozilla/geckodriver/releases"
+change_item = []
