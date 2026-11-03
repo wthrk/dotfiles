@@ -14,7 +14,7 @@ discovered_at = "2026-06-11T19:26:39Z"
 
 ["brew/bitwarden"]
 origin = "none"
-discovered_at = "2026-10-29T18:30:44Z"
+discovered_at = "2026-11-03T18:23:16Z"
 
 ["brew/claude"]
 origin = "none"
@@ -105,7 +105,7 @@ discovered_at = "2026-07-11T20:09:39Z"
 
 ["nix/bun"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-11-03T18:23:16Z"
 
 ["nix/cargo"]
 source = "https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md"
@@ -122,7 +122,7 @@ discovered_at = "2026-07-14T20:41:45Z"
 
 ["nix/cargo-edit"]
 origin = "none"
-discovered_at = "2026-06-11T19:26:39Z"
+discovered_at = "2026-11-03T18:23:16Z"
 
 ["nix/cargo-llvm-cov"]
 origin = "none"
@@ -183,7 +183,7 @@ discovered_at = "2026-10-31T18:21:34Z"
 
 ["nix/docker-compose"]
 origin = "none"
-discovered_at = "2026-10-27T21:33:42Z"
+discovered_at = "2026-11-03T18:23:16Z"
 
 ["nix/docker-credential-helpers"]
 source = "https://github.com/docker/docker-credential-helpers/blob/main/README.md"
